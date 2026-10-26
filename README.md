@@ -278,7 +278,7 @@ to 1 MiB encoded, unless `str clipboard false set`; your terminal must
 allow OSC 52 writes. A program in a pane that copies with OSC 52, as Neovim
 and Helix do, copies the same way, up to 64 KiB encoded, but only while
 `clipboard` is on: with it off a program's copy copies nothing, to the
-buffers either. A longer copy, or one that is not padded base64 (RFC 4648)
+buffers either. A longer copy, or one that is not base64 (RFC 4648, padded or not)
 of UTF-8 text, copies nothing, and the clients showing the pane say so.
 fux never reads the clipboard.
 
@@ -433,8 +433,9 @@ fux start && fux --file ~/session.fux # replay on a fresh server
 A dump makes the layouts and launches again: each shell starts afresh in
 its directory, each program `run` started starts again. It never brings
 back what a process held: its screen, its history, what ran in a shell. A
-pane whose directory is not UTF-8 text, which fuxth cannot write, is dumped
-without it, and a comment line says so: it starts where the dump is run.
+pane whose directory is not UTF-8 text, which fuxth cannot write, or a
+shell's directory that fux cannot read, is dumped without it, and a comment line says
+so: it starts where the dump is run.
 
 ## Terminal features
 

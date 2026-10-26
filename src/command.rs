@@ -509,7 +509,8 @@ wire! {
             /// A program started in place of a shell, as `run` starts one,
             /// if given.
             argv: Vec<String>,
-            /// Where its shell starts (default: where the split pane's is).
+            /// Where its shell starts (default: the caller's directory; from a
+            /// client, the split pane's).
             cwd: Option<PathBuf>,
             env: Env,
             /// The shares of their split the split pane and the new one

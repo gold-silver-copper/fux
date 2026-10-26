@@ -121,42 +121,43 @@ pub fn base64(bytes: &[u8]) -> String {
     out
 }
 
-/// The bytes `text` encodes in standard base64, as OSC 52 sends them;
-/// `None` unless it is exactly RFC 4648's encoding of them:
-/// - whole quanta: "the final unit of encoded output will be an integral
-///   multiple of 4 characters with no "=" padding", "two characters followed
-///   by two "=" padding characters" or "three characters followed by one
-///   "=" padding character" (§4), as "Implementations MUST include
-///   appropriate pad characters at the end of encoded data unless the
-///   specification referring to this document explicitly states otherwise"
-///   (§3.2), and OSC 52's, xterm's ctlseqs, does not;
+/// The bytes `text` encodes in standard base64, as OSC 52 sends them,
+/// padded or not; `None` unless it is RFC 4648's encoding of them:
+/// - padding only to end the last quantum ("xx==", "xxx="), or none: §3.2's
+///   "MUST include appropriate pad characters" binds encoders, and the
+///   length alone says how many bytes the last characters hold, so the
+///   unpadded form (xterm and kitty take it) means the same bytes; a lone
+///   last character holds no whole byte;
 /// - "Implementations MUST reject the encoded data if it contains
-///   characters outside the base alphabet" (§3.3), "=" being padding only;
+///   characters outside the base alphabet" (§3.3);
 /// - pad bits "MUST be set to zero by conforming encoders", and "decoders
 ///   MAY chose to reject an encoding if the pad bits have not been set to
 ///   zero" (§3.5), as this one does, so bytes have one encoding.
 pub fn unbase64(text: &[u8]) -> Option<Vec<u8>> {
-    let (quanta, []) = text.as_chunks::<4>() else {
-        return None;
+    let chars = match text {
+        [chars @ .., b'=', b'='] | [chars @ .., b'='] if text.len().is_multiple_of(4) => chars,
+        chars => chars,
     };
     // A capacity hint only.
-    let mut out = Vec::with_capacity(quanta.len().saturating_mul(3));
-    let last = quanta.len().saturating_sub(1);
-    for (i, quantum) in quanta.iter().enumerate() {
-        // Padding ends the last quantum only: "xx==" is one byte, "xxx=" two.
-        let chars = match quantum {
-            [_, _, b'=', b'='] if i == last => 2,
-            [_, _, _, b'='] if i == last => 3,
-            _ => 4,
-        };
+    let mut out = Vec::with_capacity(chars.len().div_ceil(4).saturating_mul(3));
+    // Four characters at a time, and what is left over.
+    let (whole, rest) = chars.as_chunks::<4>();
+    for quantum in whole
+        .iter()
+        .map(|quantum| quantum.as_slice())
+        .chain((!rest.is_empty()).then_some(rest))
+    {
+        if quantum.len() < 2 {
+            return None;
+        }
         let mut n = 0u32;
-        for (c, shift) in quantum.iter().take(chars).zip([18u32, 12, 6, 0]) {
+        for (c, shift) in quantum.iter().zip([18u32, 12, 6, 0]) {
             let value = TABLE.iter().position(|t| t == c)?;
             n |= u32::try_from(value).ok()? << shift;
         }
         // A zero byte, the bytes, then the pad bits.
         let word = n.to_be_bytes();
-        let (bytes, pad) = word.split_at_checked(chars)?;
+        let (bytes, pad) = word.split_at_checked(quantum.len())?;
         if pad.iter().any(|&b| b != 0) {
             return None;
         }
@@ -196,24 +197,27 @@ mod tests {
             ("foobar", "Zm9vYmFy"),
         ] {
             assert_eq!(base64(input.as_bytes()), output);
-            assert_eq!(
-                unbase64(output.as_bytes()).as_deref(),
-                Some(input.as_bytes())
-            );
+            let unpadded = output.trim_end_matches('=');
+            for text in [output, unpadded] {
+                assert_eq!(unbase64(text.as_bytes()).as_deref(), Some(input.as_bytes()));
+            }
         }
-        // Unpadded, misplaced or extra padding, pad bits set, a character
-        // outside the alphabet.
+        // A lone last character, misplaced or extra padding, pad bits set
+        // (padded or not), a character outside the alphabet.
         for bad in [
-            &b"Zg"[..],
-            b"Zm9vYg",
+            &b"Z"[..],
+            b"Zm9vY",
             b"Zg=",
+            b"Zg===",
             b"Zm9v=",
             b"==",
             b"Z===",
             b"Zm=v",
             b"Zg==Zg==",
             b"Zh==",
+            b"Zh",
             b"Zm9=",
+            b"Zm9",
             b"Zm9v!A==",
         ] {
             assert_eq!(unbase64(bad), None, "{bad:?}");

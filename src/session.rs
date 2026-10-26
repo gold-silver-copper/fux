@@ -205,9 +205,6 @@ enum Here<'a> {
 }
 
 impl Here<'_> {
-    /// The CLI with no caller: a command run for no one.
-    const NOWHERE: Here<'static> = Here::Cli(None, None);
-
     fn ws(self) -> Option<WsId> {
         match self {
             Here::Client(_, place) => Some(place.ws),
@@ -548,7 +545,7 @@ impl Session {
     /// One workspace, holding one tab with one shell, laid out on a
     /// client's screen of `size`.
     pub fn start(&mut self, size: Size) -> Result<(), Error> {
-        let (cwd, starting) = (home(), Starting::default());
+        let (cwd, starting) = (home()?, Starting::default());
         let new = NewPane::new(Start::Shell(&[]), &cwd, &starting, (size, None));
         self.create_workspace(Some(MAIN.into()), None, Fit::Clients(size), new)
             .map(drop)
@@ -1102,27 +1099,42 @@ impl Session {
 
     // ------------------------------------------------------------ creation
 
-    fn cwd_for(&self, here: Here, near: Option<PaneId>) -> PathBuf {
-        let near = match here {
-            Here::Cli(_, Some(cwd)) => return cwd.to_owned(),
-            Here::Cli(_, None) => near,
-            Here::Client(_, place) => near.or(Some(place.pane)),
-        };
-        let leader = near.and_then(|p| self.parts.panes().get(&p)?.process().child());
-        leader
-            .and_then(|c| fuxix::process::cwd(c.leader.pid()))
-            .unwrap_or_else(home)
+    /// The directory pane `pane`'s program is in, if it can be read.
+    fn dir_of(&self, pane: PaneId) -> Option<PathBuf> {
+        let child = self.parts.panes().get(&pane)?.process().child()?;
+        fuxix::process::cwd(child.leader.pid())
     }
 
     /// Where a new pane's program starts: `dir`, from the caller's
     /// directory, or with none the directory of the caller, or of `near`.
+    /// A CLI caller's own directory that is unknown fails the start;
+    /// `$HOME` stands in only for a pane's that can't be read, or none.
     /// Unchecked: one the program cannot start in fails its start, with
     /// the system's error.
-    fn start_dir(&self, here: Here, dir: Option<&Path>, near: Option<PaneId>) -> PathBuf {
-        match dir {
-            Some(dir) => self.cwd_for(here, None).join(dir),
-            None => self.cwd_for(here, near),
+    fn start_dir(
+        &self,
+        here: Here,
+        dir: Option<&Path>,
+        near: Option<PaneId>,
+    ) -> Result<PathBuf, Error> {
+        if let Some(dir) = dir.filter(|dir| dir.is_absolute()) {
+            return Ok(dir.to_owned());
         }
+        let near = near.filter(|_| dir.is_none());
+        let known = match here {
+            // Empty: the caller could not read its own (`client::context`).
+            Here::Cli(_, Some(cwd)) if !cwd.is_absolute() => {
+                return Err(fail(Code::Start, "the caller's own directory is unknown"));
+            }
+            Here::Cli(_, Some(cwd)) => Some(cwd.to_owned()),
+            Here::Cli(_, None) => near.and_then(|p| self.dir_of(p)),
+            Here::Client(_, place) => self.dir_of(near.unwrap_or(place.pane)),
+        };
+        let base = known.map_or_else(home, Ok)?;
+        Ok(match dir {
+            Some(dir) => base.join(dir),
+            None => base,
+        })
     }
 
     /// The name a workspace gets when none is given: `workspace-N` after
@@ -2246,7 +2258,7 @@ impl Session {
         (dir, size): (Option<&Path>, command::Size),
         (here, follows): (Here, bool),
     ) -> Result<(PathBuf, Fit, Starts), Error> {
-        let cwd = self.start_dir(here, dir, None);
+        let cwd = self.start_dir(here, dir, None)?;
         let fit = self.new_fit(size, here)?;
         let follower = (here.client().filter(|_| follows)).and_then(|c| self.views.get(&c));
         let screen = (follower.filter(|view| view.sizes())).and_then(Self::screen_size);
@@ -2441,7 +2453,7 @@ impl Session {
     ) -> Result<Reply, Error> {
         let (here, starting) = (self.here(origin)?, self.starting_for(origin));
         let target = self.pane(target)?.id();
-        let cwd = self.start_dir(here, dir, Some(target));
+        let cwd = self.start_dir(here, dir, Some(target))?;
         // The splitting client follows the new pane, if it shows its tab;
         // from the CLI, the clients that focus the split one.
         let tab = self.locate(target).map(|(_, tab)| tab);
@@ -3005,10 +3017,17 @@ fn found(found: AnyRef) -> Reply {
     }
 }
 
-/// `$HOME`, else `/`: where a pane starts when nothing says where.
-fn home() -> PathBuf {
-    let home = std::env::var_os("HOME").map(PathBuf::from);
-    home.filter(|p| p.is_dir()).unwrap_or_else(|| "/".into())
+/// `$HOME`: where a pane starts when nothing says where. Unset, or not an
+/// absolute path (empty, or relative, so only the server's own directory
+/// would place it), nothing starts; one no program can start in fails the
+/// start with the system's error.
+fn home() -> Result<PathBuf, Error> {
+    let why = match std::env::var_os("HOME").map(PathBuf::from) {
+        Some(home) if home.is_absolute() => return Ok(home),
+        Some(home) => format!("$HOME is {home:?}, not an absolute path"),
+        None => "$HOME is not set, and nothing else says where to start".to_owned(),
+    };
+    Err(fail(Code::Start, why))
 }
 
 /// The most read of what a program left on its terminal as it ends, in
@@ -4385,7 +4404,7 @@ mod tests {
         let buffers: Vec<&str> = s.buffers.iter().take(3).map(String::as_str).collect();
         assert_eq!(buffers, ["b", "a", "foo"]);
         let notice = s.views.get(&client).and_then(|v| v.notice.clone());
-        assert!(notice.is_some_and(|n| n.text.contains("is not padded base64")));
+        assert!(notice.is_some_and(|n| n.text.contains("is not base64")));
         // One in a tab no client shows is told once one does.
         run(&mut s, "opts 20 4 size str other name new-workspace")?;
         run(&mut s, "str c1 client str other workspace show-workspace")?;
@@ -5223,6 +5242,16 @@ mod tests {
         let dump = s.dump_layout(None);
         assert!(!dump.contains("tab-3"), "{dump}");
         assert!(dump.contains("given"), "{dump}");
+        Ok(())
+    }
+
+    /// A shell whose directory cannot be read (here none runs) is dumped
+    /// without one, never with `$HOME` in its place: a comment names it.
+    #[test]
+    fn a_dump_leaves_out_a_directory_it_cannot_read() -> Result<(), String> {
+        let dump = started(Config::default())?.dump_layout(None);
+        assert!(dump.contains("# %1: its directory is unknown"), "{dump}");
+        assert!(!dump.contains("cwd"), "{dump}");
         Ok(())
     }
 

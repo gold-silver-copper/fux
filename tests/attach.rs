@@ -921,6 +921,101 @@ fn a_server_a_client_started_outlives_the_clients_terminal() -> Outcome {
     after
 }
 
+/// A first shell started where nothing says where starts in `$HOME`, or
+/// not at all: unset or not an absolute path, the attach fails naming it;
+/// set to no directory, it fails with the system's error. None starts in
+/// `/`, the server's own directory.
+#[test]
+fn a_first_shell_with_no_usable_home_is_refused() -> Outcome {
+    let dir = fuxix::file::scratch()
+        .map_err(e)?
+        .join(format!("fux-home-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).map_err(e)?;
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).map_err(e)?;
+    let nowhere = dir.join("no-such-home");
+    let cases = [
+        (None, "$HOME is not set".to_owned()),
+        (
+            Some(std::path::Path::new("")),
+            r#"$HOME is "", not"#.to_owned(),
+        ),
+        (
+            Some(std::path::Path::new("tmp")),
+            r#"$HOME is "tmp", not"#.to_owned(),
+        ),
+        (
+            Some(nowhere.as_path()),
+            format!("in {nowhere:?}: No such file or directory (os error 2)"),
+        ),
+    ];
+    for (i, (home, said)) in cases.into_iter().enumerate() {
+        let socket = dir.join(format!("s{i}")).join("fux.sock");
+        let mut terminal = Terminal::start(10, 40, &[FUX], |command| {
+            command
+                .env("FUX_SOCKET", &socket)
+                .env("SHELL", "/bin/sh")
+                .env("XDG_CONFIG_HOME", &dir);
+            match home {
+                Some(home) => command.env("HOME", home),
+                None => command.env_remove("HOME"),
+            };
+        })?;
+        let status = terminal.wait_exit();
+        let _ = std::process::Command::new(FUX)
+            .arg("force-kill-server")
+            .env("FUX_SOCKET", &socket)
+            .output();
+        let output = String::from_utf8_lossy(&terminal.output).into_owned();
+        assert!(!status?.success(), "{output}");
+        assert!(output.contains(&said), "{output}");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+    Ok(())
+}
+
+/// A caller whose own directory is gone sends none it knows: a start it
+/// asks for that needs one fails saying so, rather than starting in
+/// `$HOME` or, joined onto nothing, the server's `/`. One given whole still
+/// starts.
+#[test]
+fn a_caller_with_no_directory_starts_nothing_that_needs_one() -> Outcome {
+    let server = Server::start("")?;
+    let before = server.ok(&["ls"])?;
+    for (i, given) in ["", "str . cwd", "str tmp cwd"].into_iter().enumerate() {
+        let gone = server.dir.join(format!("gone-{i}"));
+        std::fs::create_dir_all(&gone).map_err(e)?;
+        let script =
+            format!(r#"cd "$1" && rmdir "$1" && fux opts str main in 80 24 size {given} new-tab"#);
+        let gone = gone.to_string_lossy();
+        let out = server.piped(
+            std::path::Path::new("/bin/sh"),
+            &["-c", &script, "sh", &gone],
+            "",
+        )?;
+        assert_eq!(out.status, 1, "{given}: {}", out.stdout);
+        assert!(
+            out.stderr
+                .ends_with("the caller's own directory is unknown\n"),
+            "{given}: {}",
+            out.stderr
+        );
+    }
+    assert_eq!(server.ok(&["ls"])?, before);
+    let whole = server.dir.join("gone-whole");
+    std::fs::create_dir_all(&whole).map_err(e)?;
+    let script = r#"cd "$1" && rmdir "$1" && fux opts str main in 80 24 size str "$2" cwd new-tab"#;
+    let (gone, here) = (whole.to_string_lossy(), server.dir.to_string_lossy());
+    let out = server.piped(
+        std::path::Path::new("/bin/sh"),
+        &["-c", script, "sh", &gone, &here],
+        "",
+    )?;
+    assert_eq!(out.status, 0, "{}", out.stderr);
+    Ok(())
+}
+
 /// Resizing a terminal signals its client, and a signal can interrupt a
 /// read or write in flight. Typing while the window is resized, hundreds of
 /// times, keeps the client attached and loses no byte (Linux once ended the attachment with "Interrupted system call").

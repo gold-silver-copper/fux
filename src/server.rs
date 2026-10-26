@@ -1318,7 +1318,6 @@ impl Server {
             Some(s) if s.parse() == Ok(session.run) => Within::This,
             Some(_) => Within::Other,
         };
-        let cwd = Some(cwd).filter(|p| p.is_dir());
         // A program run as a client (`str c2 client focused`) names one
         // that must be there.
         // A key's or the prompt's program acts where its client is.
@@ -1332,7 +1331,7 @@ impl Server {
             None => Origin::Cli(Caller {
                 gave: pane,
                 within,
-                cwd,
+                cwd: Some(cwd),
                 env,
             }),
         };
