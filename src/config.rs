@@ -167,7 +167,7 @@ impl Limit {
 
     /// `secs` seconds, or why not.
     pub fn read(secs: u64) -> Result<Limit, String> {
-        Limit::secs(secs).ok_or_else(|| format!("{secs} s: a wait waits at most {MAX_WAIT} s"))
+        Limit::secs(secs).ok_or_else(|| format!("{secs} s: a wait's limit is at most {MAX_WAIT} s"))
     }
 
     pub fn duration(self) -> Duration {

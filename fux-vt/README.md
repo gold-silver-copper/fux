@@ -524,8 +524,8 @@ formulas are in [`THREATS.md`](https://github.com/gold-silver-copper/fux/blob/ma
   (65 with only `PromptMarks`, 1 with no feature that reads OSC), and
   81,921 while it grows.
 - **The work of one call**: `Parser::process_until_stop` stops
-  as `Stop::Budget`, once 16 M weighted units of work (`budget::LIMIT`, half of U; THREATS.md 4.4)
-  are spent since its last such stop, over as many calls as that took.
+  as `Stop::Budget`, once 16 M weighted units of work (`budget::LIMIT`,
+  half of U; THREATS.md 4.4) are spent since its last such stop, over as many calls as that took.
   It looks where a sequence or a string ends, after a line feed (LF,
   VT, FF) carried out, in text or inside a sequence, and after a glyph
   whose wrap scrolled inside left and right margins, never elsewhere

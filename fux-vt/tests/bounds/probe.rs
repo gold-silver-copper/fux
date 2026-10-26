@@ -347,7 +347,7 @@ impl Probe {
         self.fed = self
             .fed
             .saturating_add(u64::try_from(bytes).unwrap_or(u64::MAX));
-        // U is the ceiling of a call of 4 KiB, as fux makes them (THREATS.md
+        // U is the ceiling of a call of 4 KiB (THREATS.md
         // 4.4), or at a screen where one screen-wide sequence costs more,
         // that sequence's most, which the parser leaves to a call of its
         // own (`Work::ceiling`): a call given more, as

@@ -107,9 +107,9 @@ on the pane before it, in any order: the pane given them becomes a request,
 which the word at the end acts on. `run`, `new-tab` and `new-workspace` have
 no pane yet: they start from `opts`, empty options. Of the three, only
 `run` takes a program (`program`, then each `arg`; a shell's line is
-`str sh program str -c arg str LINE arg`); `new-tab` and `new-workspace` start a shell. Their tab is laid
-out on `COLS ROWS size`, else on the caller's own screen (a client's keys),
-else on the caller's tab (`fux` run in a pane): never on the screen of a
+`str sh program str -c arg str LINE arg`); `new-tab` and `new-workspace`
+start a shell. Their tab is laid out on `COLS ROWS size`, else on the
+caller's own screen (a client's keys), else on the caller's tab (`fux` run in a pane): never on the screen of a
 client that does not show the caller's tab. Run from outside fux, a size
 must be given: fux makes none up.
 
@@ -307,7 +307,7 @@ leaves; `fux help WORD` says one at length.
 `S-Left`, `Enter`, `BTab`, `BSpace`, `PageUp`, `F1`–`F35`, …) and any
 single character, which carries its own shift (`T`, not `S-t`); common
 spellings (`Backspace`, `Esc`, `Return`, `Del`, `Ins`, `PgUp`, `PgDn`) are
-taken too, and `key` tells a name it refuses the closest one. `fux key-names`
+taken too, and `key` tells a name it refuses the closest one, if any. `fux key-names`
 prints them all.
 
 **Inside a pane**, a program's environment holds:

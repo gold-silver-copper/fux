@@ -403,11 +403,12 @@ wire! {
 
 wire! {
     /// A wait: until a version of the panes it waits on differs from the
-    /// one it waits from, or its pane closes; how long at most.
+    /// one it waits from, or its pane closes; how long before it times out.
     #[derive(Clone, Debug, PartialEq, Eq)]
     pub struct Wait {
         pub since: Since,
-        /// How long at most; if unsaid, the server's `wait-seconds`.
+        /// How long before it times out; if unsaid, the server's
+        /// `wait-seconds`.
         pub timeout: Option<crate::config::Limit>,
     }
 }
