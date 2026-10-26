@@ -355,7 +355,7 @@ words! {
         Config Prefix "prefix" "key --" "this client's prefix (config)" "str C-a prefix";
         Config Bind "bind" "keys code --" "keys after the prefix run fuxth (config)" "str 'g v' str 'me focused horizontal split drop' bind";
         Config BindRoot "bind-root" "key code --" "a key without the prefix runs fuxth (config)" "str M-n str 'me str next step-tab' bind-root";
-        Config Label "label" "text --" "what the column says the last binding does" "str 'g v' str 'me focused horizontal split drop' bind str 'split right' label";
+        Config Label "label" "text --" "what the column says the last binding does, or a screen's hints the last key bound in it (keys of one label shown together)" "str 'g v' str 'me focused horizontal split drop' bind str 'split right' label";
         Config Group "group" "name --" "the column's heading for the last binding" "str 'g v' str 'me focused horizontal split drop' bind str panes group";
         Config Repeat "repeat" "--" "the last binding's layer repeats until Esc" "str H str 'me focused str left 2 move-border' bind repeat";
         Config Unbind "unbind" "keys --" "keys after the prefix run nothing" "str 'g v' unbind";

@@ -192,7 +192,8 @@ copy mode's cursor in the history only it holds.
 
 The prefix alone opens the **command column**, listing every binding, and
 those without the prefix last: arrows, PageUp/PageDown and Home/End move,
-Enter runs the selected one, a bound key runs its own, Esc closes. A key you
+Enter runs the selected one, a bound key runs its own, Esc closes; its moves
+by keys that are not letters are the choosers' (`str list … bind-in`). A key you
 bind is yours there, even one the column moves with; Esc always closes. The
 prefix again sends it to the pane.
 

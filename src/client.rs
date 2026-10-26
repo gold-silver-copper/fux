@@ -767,23 +767,27 @@ impl Keyboard {
         let mut acts = Vec::new();
         while let Ok(ran) = self.told.try_recv() {
             self.running.pop_front();
-            if let Some((text, error)) = ran.notice {
+            let mut notice = ran.notice;
+            // The screen showing hints at keys that changed: it closes,
+            // rather than say what its keys no longer do, and says so with
+            // what the program said.
+            if ran.opened.is_none() && ran.rebound && self.screen.kind().is_some() {
+                acts.push(match matches!(self.screen, Screen::Copy(_)) {
+                    true => Act::Copy(crate::act::CopyAct::Leave),
+                    false => Act::Hide,
+                });
+                self.screen = Screen::default();
+                let closed = "the keys of fux's screens changed: the one open closed";
+                notice = Some(match notice {
+                    Some((text, error)) => (format!("{text}  ({closed})"), error),
+                    None => (closed.to_owned(), false),
+                });
+            }
+            if let Some((text, error)) = notice {
                 acts.push(Act::Notice { text, error });
             }
-            match ran.opened {
-                Some(screen) => self.open(screen, &mut acts),
-                // The screen showing hints at keys that changed: it closes,
-                // rather than say what its keys no longer do.
-                None if ran.rebound && self.screen.kind().is_some() => {
-                    let left = match matches!(self.screen, Screen::Copy(_)) {
-                        true => Act::Copy(crate::act::CopyAct::Leave),
-                        false => Act::Hide,
-                    };
-                    self.screen = Screen::default();
-                    let text = "the keys of fux's screens changed: the one open closed".to_owned();
-                    acts.extend([left, Act::Notice { text, error: false }]);
-                }
-                None => {}
+            if let Some(screen) = ran.opened {
+                self.open(screen, &mut acts);
             }
         }
         acts.extend(self.release());
@@ -798,10 +802,21 @@ impl Keyboard {
             acts.push(Act::Notice { text, error: true });
             return;
         }
+        let (opened, largest) = {
+            let keys = lock(&self.keymap);
+            (screen.opened(&keys.modes), screen.largest(&keys.modes))
+        };
+        // Sent the server in one frame, and again at each edit of its line,
+        // with the hints of the keys as they are now: one that could grow
+        // past a frame was never to show.
+        if largest.is_some_and(|act| AttachedFrame::Act(Box::new(act)).encode().is_err()) {
+            let text =
+                format!("a screen past {MAX_FRAME} bytes, too large to show, was not opened");
+            return acts.push(Act::Notice { text, error: true });
+        }
         if let Screen::Copy(_) = self.screen {
             acts.push(Act::Copy(crate::act::CopyAct::Leave));
         }
-        let opened = screen.opened(&lock(&self.keymap).modes);
         acts.extend(opened);
         self.screen = screen;
     }
@@ -910,27 +925,10 @@ fn run_job(
             true,
         ),
     });
-    // Opened, a screen is sent the server in one frame, and again at each
-    // edit of its line: one that could grow past a frame was never to show.
-    let fits = |screen: &Screen| {
-        let largest = screen.largest(&lock(keymap).modes);
-        largest.is_none_or(|act| AttachedFrame::Act(Box::new(act)).encode().is_ok())
-    };
-    match asks.opened {
-        Some(screen) if !fits(&screen) => {
-            let text =
-                format!("a screen past {MAX_FRAME} bytes, too large to show, was not opened");
-            Ran {
-                notice: Some((text, true)),
-                opened: None,
-                rebound,
-            }
-        }
-        opened => Ran {
-            notice,
-            opened,
-            rebound,
-        },
+    Ran {
+        notice,
+        opened: asks.opened,
+        rebound,
     }
 }
 
@@ -1482,6 +1480,28 @@ mod tests {
                 acts.as_slice(),
                 [Act::Copy(crate::act::CopyAct::Leave), Act::Notice { .. }]
             ),
+            "{acts:?}"
+        );
+        assert_eq!(keyboard.screen, Screen::default());
+        Ok(())
+    }
+
+    /// A screen opens only if it fits a frame at its largest with the keys
+    /// as they are when it opens; else it says so and opens nothing.
+    #[test]
+    fn a_screen_too_large_to_show_is_refused_as_it_opens() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let socket = socket::checked("/nowhere/fux/s.sock", "test")?;
+        let mut keyboard = Keyboard::new(&socket, "c1".parse()?, Keymap::empty(), false)?;
+        let prompt = crate::screens::Prompt {
+            title: std::iter::repeat_n('t', MAX_FRAME - 2048).collect(),
+            line: crate::view::Line::new(String::new()),
+            action: None,
+        };
+        let mut acts = Vec::new();
+        keyboard.open(Screen::Prompt(prompt), &mut acts);
+        assert!(
+            matches!(acts.as_slice(), [Act::Notice { error: true, .. }]),
             "{acts:?}"
         );
         assert_eq!(keyboard.screen, Screen::default());
