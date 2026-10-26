@@ -342,7 +342,8 @@ body leaves, `SEQ each … end` runs once per element, `CODES try … catch …
 end` runs its handler instead of failing with one of CODES (`str timeout
 try %2 5 timeout wait catch … end`: its body starts with an empty stack;
 the handler, with the stack as at `try` and the failure's own message,
-with no place, word or usage added, and code on it); a failure it does
+with no place, word or usage added, or a failed wait's answer, and code
+on it); a failure it does
 not name goes on, its status kept. An action leaves its answer: printed,
 it is the lines above; given to a word that wants a pane, it is its pane (an action's or wait's on a tab or workspace
 is none, however many panes it has: name the tab again, `@1 wait`), and to

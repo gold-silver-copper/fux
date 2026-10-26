@@ -472,6 +472,10 @@ pub fn vocabulary() -> Result<fuxth::Vocabulary, fuxth::Error> {
     for code in Code::all().filter(|c| c.raised()) {
         vocabulary.raises(code.into())?;
     }
+    // A wait that failed answered too: its handler gets the answer.
+    for code in [Code::Timeout, Code::Closed] {
+        vocabulary.carries(code.into(), "answer")?;
+    }
     Ok(vocabulary)
 }
 
@@ -889,11 +893,21 @@ pub fn run_capped(
                         end: End::Failed { code, message },
                         body,
                     }) => {
-                        // A failure that answered too (a wait's): its answer
-                        // is left, printed before why it failed, unless a
-                        // `try` catches the failure.
-                        pushed(machine, answered(body))?;
-                        pushed(machine, Err(Failed::new(code, message)))?;
+                        let failed = Failed::new(code, message);
+                        // A failure that answered too (a wait's): a `try`
+                        // that catches it gets its answer for its message,
+                        // and one none catches leaves it, printed before
+                        // why it failed.
+                        match answered(body).map(|mut answer| answer.pop()) {
+                            Ok(Some(answer)) => {
+                                pushed(machine, Ok(vec![answer.clone()]))?;
+                                let failure = fuxth::Failure::new(code.into(), failed.message);
+                                let raised = machine.raise_with(failure, answer);
+                                raised.map_err(|e| uncaught(machine, e))?;
+                            }
+                            Ok(None) => pushed(machine, Err(failed))?,
+                            Err(why) => pushed(machine, Err(why))?,
+                        }
                     }
                     reply => pushed(machine, reply.and_then(|reply| answered(reply.body)))?,
                 }

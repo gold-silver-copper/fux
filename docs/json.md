@@ -126,13 +126,17 @@ since (`null` if that status was lost), `signal` the signal that killed
 it; a wait from a version that already holds its end waits for
 something else.
 
-A wait that fails (124 nothing changed, 4 its pane closed) has no JSON: it
-ends the program with that status and says why on stderr, one line, `fux:
-CODE: MESSAGE`, its answer printed first, as text, after the answers of the
-words before it; nothing after it runs, `json` either. Caught by `try`,
-its answer is dropped with the rest of the body's values. A wait on a
-tab's or a workspace's panes answers a line for each that changed, the
-first failing status naming the whole.
+A wait that fails (124 nothing changed, 4 its pane closed) answers too,
+with its status: `{"pane":"%3","version":"%3:0.57.0.3.0:RUN","status":124}`,
+the version it is still at; `{"pane":"%3","status":4}`, its pane closed.
+Uncaught, it ends the program with that status and says why on stderr, one
+line, `fux: CODE: MESSAGE`, its answer printed first, as text, after the
+answers of the words before it; nothing after it runs. Caught by `try`,
+the handler gets its answer in place of the message, under the code:
+`str timeout try %3 5 timeout wait catch drop end json` prints it, and
+`wait` on it waits again from the version it is still at. A wait on a
+tab's or a workspace's panes answers each that changed, the first failing
+status naming the whole.
 
 ## `events`, `X events-of`
 

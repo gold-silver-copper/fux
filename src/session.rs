@@ -4975,6 +4975,28 @@ mod tests {
         Ok(())
     }
 
+    /// A wait that failed answered too: a `try` that catches it gets that
+    /// answer, with its version and status, in place of the message; a
+    /// wait on it waits again from the version it is still at.
+    #[test]
+    fn a_failed_wait_keeps_its_answer() -> Result<(), String> {
+        let mut s = started(Config::default())?;
+        let caught = "str timeout try %1 1 timeout wait catch drop end";
+        let json = output(&mut s, &format!("{caught} json"))?;
+        assert!(
+            json.starts_with(r#"{"pane":"%1","version":"%1:"#) && json.contains(r#""status":124"#),
+            "{json}"
+        );
+        let again = output(&mut s, &format!("{caught} 1 timeout wait")).err();
+        assert!(
+            again.as_ref().is_some_and(
+                |e| e.starts_with("timeout: ") && e.contains("still at version %1:0.0.0.0.0:")
+            ),
+            "{again:?}"
+        );
+        Ok(())
+    }
+
     /// A version names its pane and its server run: a wait from it waits
     /// in that pane, one from another run is refused, as is one its pane
     /// never had, and one of a pane since closed answers `closed`. A

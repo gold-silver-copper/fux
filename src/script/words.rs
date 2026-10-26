@@ -258,7 +258,7 @@ words! {
         Reading Ls "ls" "-- listing" "workspaces, tabs, panes and clients" "fux ls" [];
         Reading Info "info" "handle -- record" "a pane, tab or workspace, all of it" "fux %3 info json" [];
         Reading Get "get" "handle field -- value" "one field of a pane, tab or workspace: version, exited, last_status, idle_ms, cwd" "fux %3 str exited get" [];
-        Reading Json "json" "value -- string" "value as JSON (an answer as its JSON); a failed wait stops the program before json runs" "fux ls json" [];
+        Reading Json "json" "value -- string" "value as JSON (an answer as its JSON); a failed wait's answer is the message try's handler gets" "fux ls json" [];
         Reading Events "events" "--" "what happens, a JSON line each, as it happens" "fux events" [];
         Reading EventsOf "events-of" "watched --" "what happens in a pane, tab or workspace, or on opts everywhere, a JSON line each" "fux str agent workspace events-of" [Either: From];
         Reading Dump "dump" "-- text" "everything, as a program that makes it again (shells new, nothing typed into them)" "fux dump > all.fux; fux start && fux --file all.fux" [];
