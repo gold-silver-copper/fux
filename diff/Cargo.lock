@@ -56,11 +56,11 @@ dependencies = [
 
 [[package]]
 name = "fux"
-version = "0.35.0"
+version = "0.36.0"
 dependencies = [
- "fux-vt 0.14.0",
- "fuxix 0.7.0",
- "fuxth 0.6.0",
+ "fux-vt 0.15.0",
+ "fuxix 0.8.0",
+ "fuxth 0.7.0",
  "signal-hook",
 ]
 
@@ -69,11 +69,11 @@ name = "fux-diff"
 version = "0.0.0"
 dependencies = [
  "fux 0.33.1",
- "fux 0.35.0",
+ "fux 0.36.0",
  "fux-vt 0.12.1",
- "fux-vt 0.14.0",
+ "fux-vt 0.15.0",
  "fuxix 0.6.2",
- "fuxix 0.7.0",
+ "fuxix 0.8.0",
 ]
 
 [[package]]
@@ -92,13 +92,13 @@ checksum = "73a663fa645368669cd918f8ccb75b161697a9b74cf3a87e19b8488cb7024ca7"
 
 [[package]]
 name = "fux-vt"
-version = "0.14.0"
+version = "0.15.0"
 
 [[package]]
 name = "fux-vt-oracle"
 version = "0.0.0"
 dependencies = [
- "fux-vt 0.14.0",
+ "fux-vt 0.15.0",
  "fux-vt 0.4.0",
  "serde_json",
 ]
@@ -122,7 +122,7 @@ dependencies = [
 
 [[package]]
 name = "fuxix"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "libc",
 ]
@@ -135,7 +135,7 @@ checksum = "98ea5f80f0e6ccc29e2362cd52ca36b680703d1a693d7c4b9dd1d2c18177c17f"
 
 [[package]]
 name = "fuxth"
-version = "0.6.0"
+version = "0.7.0"
 
 [[package]]
 name = "getrandom"
