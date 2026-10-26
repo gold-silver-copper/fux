@@ -1916,10 +1916,10 @@ impl Session {
         let wait = match request {
             Request::Do(command) => return Ok(Begun::Done(self.run_command(&command, origin))),
             Request::Wait(wait) => wait,
-            Request::Events(target, json) => {
+            Request::Events(target) => {
                 let target = target.map(|t| self.there(t)).transpose()?;
                 let journal = self.parts.journal();
-                let subscription = crate::events::Subscription::new(target, json, journal);
+                let subscription = crate::events::Subscription::new(target, journal);
                 return Ok(Begun::Events(Box::new(subscription)));
             }
         };
@@ -3579,7 +3579,11 @@ mod tests {
         let lines = told(&mut s, |s| {
             let _ = run(s, "%2 kill-first respawn");
         });
-        let at = |what: &str| lines.find(&format!("{what} %2")).ok_or(lines.clone());
+        let at = |what: &str| {
+            lines
+                .find(&format!(r#""{what}","pane":"%2""#))
+                .ok_or(lines.clone())
+        };
         assert!(at("title")? < at("exited")?, "{lines}");
         assert!(at("bell")? < at("exited")?, "{lines}");
         assert!(at("exited")? < at("respawned")?, "{lines}");
@@ -3757,7 +3761,8 @@ mod tests {
         cut(&mut s);
         let lines = told(&mut s, |s| s.exited(id, Ended::Exited(3)));
         assert!(
-            lines.contains("exited %2") && lines.contains("truncated=true"),
+            lines.contains(r#"{"event":"exited","pane":"%2""#)
+                && lines.contains(r#""truncated":true"#),
             "{lines}"
         );
         let said = notice(&s).map(|n| n.text).unwrap_or_default();
@@ -3779,7 +3784,8 @@ mod tests {
         cut(&mut s);
         let lines = told(&mut s, |s| _ = run(s, "%2 kill-first respawn"));
         assert!(
-            lines.starts_with("respawned %2 ") && lines.contains("truncated=true"),
+            lines.starts_with(r#"{"event":"respawned","pane":"%2""#)
+                && lines.contains(r#""truncated":true"#),
             "{lines}"
         );
         assert!(!lines.contains("exited"), "{lines}");
@@ -3818,7 +3824,11 @@ mod tests {
         assert!(pane.frame_deadline().is_some() && pane.left == Left::default());
         s.launch = None;
         let lines = told(&mut s, |s| _ = run(s, "%2 kill-first respawn"));
-        let at = |what: &str| lines.find(&format!("{what} %2")).ok_or(lines.clone());
+        let at = |what: &str| {
+            lines
+                .find(&format!(r#""{what}","pane":"%2""#))
+                .ok_or(lines.clone())
+        };
         assert!(at("title")? < at("respawned")?, "{lines}");
         Ok(())
     }
@@ -3986,7 +3996,7 @@ mod tests {
         queue(&mut s, b"abc")?;
         let lines = told(&mut s, |s| s.exited(id, Ended::Exited(0)));
         assert!(
-            lines.contains("exited %2 @2 +2 exited=0 input_unread=3"),
+            lines.contains(r#"{"event":"exited","pane":"%2","tab":"@2","workspace":"+2","exited":0,"input_unread":3}"#),
             "{lines}"
         );
         let said = notice(&s).map(|n| n.text).unwrap_or_default();
@@ -4005,7 +4015,9 @@ mod tests {
         queue(&mut s, b"de")?;
         let lines = told(&mut s, |s| _ = run(s, "%2 kill-first respawn"));
         assert!(
-            lines.contains("respawned %2 @2 +2 input_unread=2"),
+            lines.contains(
+                r#"{"event":"respawned","pane":"%2","tab":"@2","workspace":"+2","input_unread":2}"#
+            ),
             "{lines}"
         );
         let said = notice(&s).map(|n| n.text).unwrap_or_default();
@@ -4056,7 +4068,7 @@ mod tests {
             s.exited(PaneId::of(2), crate::process::Ended::Exited(3));
             let _ = run(s, "%2 respawn");
         });
-        let said: Vec<&str> = lines.lines().filter_map(|l| l.split(' ').next()).collect();
+        let said: Vec<&str> = lines.lines().filter_map(|l| l.split('"').nth(3)).collect();
         assert_eq!(said, ["exited", "respawned"], "{lines}");
         Ok(())
     }
@@ -5085,7 +5097,7 @@ mod tests {
     /// What a stream of events subscribed now is told of what `change`
     /// does to `s`.
     fn told(s: &mut Session, change: impl FnOnce(&mut Session)) -> String {
-        let mut stream = crate::events::Subscription::new(None, false, s.parts.journal());
+        let mut stream = crate::events::Subscription::new(None, s.parts.journal());
         change(s);
         stream
             .told(s.parts.journal(), usize::MAX, |t| s.holder(t))
@@ -5105,7 +5117,15 @@ mod tests {
             );
         });
         ran?;
-        assert_eq!(lines, "renamed +1 name=x\nrenamed +1 name=main\n");
+        assert_eq!(
+            lines,
+            concat!(
+                r#"{"event":"renamed","workspace":"+1","name":"x"}"#,
+                "\n",
+                r#"{"event":"renamed","workspace":"+1","name":"main"}"#,
+                "\n"
+            )
+        );
         Ok(())
     }
 
@@ -5120,7 +5140,15 @@ mod tests {
             ran = run(s, tab);
         });
         ran?;
-        assert_eq!(lines, "created @2 +1 name=t\ncreated %2 @2 +1\n");
+        assert_eq!(
+            lines,
+            concat!(
+                r#"{"event":"created","tab":"@2","workspace":"+1","name":"t"}"#,
+                "\n",
+                r#"{"event":"created","pane":"%2","tab":"@2","workspace":"+1"}"#,
+                "\n"
+            )
+        );
         Ok(())
     }
 
@@ -5137,7 +5165,14 @@ mod tests {
             s.output(PaneId::of(1), b"\x1b]2;title\x07");
         });
         ran?;
-        let said = "bell %2 @1 +1\nrenamed @1 +1 name=t\ntitle %1 @1 +1 title=title\n";
+        let said = concat!(
+            r#"{"event":"bell","pane":"%2","tab":"@1","workspace":"+1"}"#,
+            "\n",
+            r#"{"event":"renamed","tab":"@1","workspace":"+1","name":"t"}"#,
+            "\n",
+            r#"{"event":"title","pane":"%1","tab":"@1","workspace":"+1","title":"title"}"#,
+            "\n"
+        );
         assert_eq!(lines, said);
         Ok(())
     }
@@ -5149,7 +5184,14 @@ mod tests {
         let mut s = started(Config::default())?;
         run(&mut s, "%1 split drop")?;
         let lines = told(&mut s, |s| s.exited(PaneId::of(2), Ended::Signalled(9)));
-        let said = "exited %2 @1 +1 signal=9\nclosed %2 @1 +1\nresized %1 @1 +1 cols=80 rows=24\n";
+        let said = concat!(
+            r#"{"event":"exited","pane":"%2","tab":"@1","workspace":"+1","signal":9}"#,
+            "\n",
+            r#"{"event":"closed","pane":"%2","tab":"@1","workspace":"+1"}"#,
+            "\n",
+            r#"{"event":"resized","pane":"%1","tab":"@1","workspace":"+1","cols":80,"rows":24}"#,
+            "\n"
+        );
         assert_eq!(lines, said);
         Ok(())
     }
@@ -5164,8 +5206,16 @@ mod tests {
             s.output(PaneId::of(2), b"\x1b[?2026h\x07\x1b]2;bye\x07");
             s.exited(PaneId::of(2), Ended::Exited(0));
         });
-        let said =
-            "bell %2 @1 +1\ntitle %2 @1 +1 title=bye\nexited %2 @1 +1 exited=0\nclosed %2 @1 +1\n";
+        let said = concat!(
+            r#"{"event":"bell","pane":"%2","tab":"@1","workspace":"+1"}"#,
+            "\n",
+            r#"{"event":"title","pane":"%2","tab":"@1","workspace":"+1","title":"bye"}"#,
+            "\n",
+            r#"{"event":"exited","pane":"%2","tab":"@1","workspace":"+1","exited":0}"#,
+            "\n",
+            r#"{"event":"closed","pane":"%2","tab":"@1","workspace":"+1"}"#,
+            "\n"
+        );
         assert!(lines.starts_with(said), "{lines}");
         Ok(())
     }
@@ -5377,8 +5427,8 @@ mod tests {
         let lines = told(&mut s, |s| {
             let _ = run(s, "%2 80 18 shares split drop");
         });
-        assert!(lines.contains("created %3"), "{lines}");
-        assert!(!lines.contains("resized %3"), "{lines}");
+        assert!(lines.contains(r#""created","pane":"%3""#), "{lines}");
+        assert!(!lines.contains(r#""resized","pane":"%3""#), "{lines}");
         let size = s.parts.panes().get(&PaneId::of(3)).map(Pane::size);
         assert_eq!(size, Some(sized(10, 18)?));
         Ok(())
@@ -5400,7 +5450,8 @@ mod tests {
             let _ = run(s, "%1 split drop");
         });
         assert!(
-            lines.contains("created %2") && !lines.contains("resized %2"),
+            lines.contains(r#""created","pane":"%2""#)
+                && !lines.contains(r#""resized","pane":"%2""#),
             "{lines}"
         );
         assert_eq!(size(&s, 2), Some(sized(10, 40)?));
@@ -5408,7 +5459,8 @@ mod tests {
             let _ = output_as(s, Some(wide), "opts 30 5 size new-tab drop");
         });
         assert!(
-            lines.contains("created %3") && !lines.contains("resized %3"),
+            lines.contains(r#""created","pane":"%3""#)
+                && !lines.contains(r#""resized","pane":"%3""#),
             "{lines}"
         );
         assert_eq!(size(&s, 3), Some(sized(10, 101)?));
@@ -5457,7 +5509,8 @@ mod tests {
                 assert!(moved.is_ok(), "{moved:?}");
             });
             assert!(
-                lines.contains("created") && lines.contains(&format!("moved {pane}")),
+                lines.contains(r#""created""#)
+                    && lines.contains(&format!(r#""moved","pane":"{pane}""#)),
                 "{lines}"
             );
         }

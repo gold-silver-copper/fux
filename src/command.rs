@@ -781,9 +781,9 @@ wire! {
         /// A wait in a pane, or a tab's or workspace's every pane, each of
         /// which answers.
         Wait(wait: Wait),
-        /// What happens, a line each as it happens, until the client goes:
-        /// where the target is, or anywhere without one.
-        Events(target: Option<AnyRef>, json: bool),
+        /// What happens, a JSON line each as it happens, until the client
+        /// goes: where the target is, or anywhere without one.
+        Events(target: Option<AnyRef>),
     }
 }
 

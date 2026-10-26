@@ -243,10 +243,8 @@ words! {
         Reading Info "info" "handle -- record" "a pane, tab or workspace, all of it" "fux %3 info json" [];
         Reading Get "get" "handle field -- value" "one field of a pane, tab or workspace: version, exited, last_status, idle_ms, cwd" "fux %3 str exited get" [];
         Reading Json "json" "value -- json" "value as JSON (an answer as its JSON); a failed wait stops the program before json runs" "fux ls json" [];
-        Reading Events "events" "--" "what happens, a line each, as it happens" "fux events" [];
-        Reading EventsJson "events-json" "--" "what happens, as JSON lines" "fux events-json" [];
-        Reading EventsOf "events-of" "handle --" "what happens in a pane, tab or workspace" "fux str agent workspace events-of" [];
-        Reading EventsOfJson "events-of-json" "handle --" "the same, as JSON lines" "fux str agent workspace events-of-json" [];
+        Reading Events "events" "--" "what happens, a JSON line each, as it happens" "fux events" [];
+        Reading EventsOf "events-of" "handle --" "what happens in a pane, tab or workspace, a JSON line each" "fux str agent workspace events-of" [];
         Reading Dump "dump" "-- text" "everything, as a program that makes it again (shells new, nothing typed into them)" "fux dump > all.fux; fux start && fux --file all.fux" [];
         Reading DumpOf "dump-of" "handle -- text" "a tab or workspace, as a program that makes it again (shells new, nothing typed into them)" "fux str work workspace dump-of > work.fux; fux --file work.fux" [];
         Changing Kill "kill" "handle --" "close a pane, tab or workspace, without asking" "fux %3 kill" [];
@@ -1302,10 +1300,8 @@ impl fuxth::Host for Host<'_> {
                 | Value::List(_)
                 | Value::App(_)) => now(out, Value::str(json_of(&other).render())),
             },
-            Act::Events => tell(Request::Events(None, false)),
-            Act::EventsJson => tell(Request::Events(None, true)),
-            Act::EventsOf => tell(Request::Events(Some(target(&next()?)?), false)),
-            Act::EventsOfJson => tell(Request::Events(Some(target(&next()?)?), true)),
+            Act::Events => tell(Request::Events(None)),
+            Act::EventsOf => tell(Request::Events(Some(target(&next()?)?))),
             Act::Dump => later(ask(Command::DumpLayout { target: None }, Then::Text)),
             Act::DumpOf => {
                 let target = Some(target(&next()?)?);

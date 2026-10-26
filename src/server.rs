@@ -448,10 +448,9 @@ impl Conn {
         }
     }
 
-    /// Ends a stream of events so, `json` or not: its last line, then its
-    /// reply.
-    fn ends(&mut self, session: &mut Session, json: bool, ending: &Ending) {
-        let line = ending.line(json);
+    /// Ends a stream of events so: its last line, then its reply.
+    fn ends(&mut self, session: &mut Session, ending: &Ending) {
+        let line = ending.line();
         split_into(line.as_bytes(), ToCommand::Stdout, &mut self.out);
         self.answer(session, ending.reply());
     }
@@ -787,10 +786,9 @@ impl Server {
             let session = &self.session;
             let holder = |target| session.holder(target);
             let (lines, gone) = subscription.told(session.parts.journal(), room, holder);
-            let json = subscription.json;
             split_into(lines.as_bytes(), ToCommand::Stdout, &mut conn.out);
             if let Some(ending) = gone {
-                conn.ends(&mut self.session, json, &ending);
+                conn.ends(&mut self.session, &ending);
             }
         }
     }
@@ -886,9 +884,8 @@ impl Server {
         // ends, as one of its lines, and ends as a command that is done.
         self.tell_events(true);
         for conn in &mut self.conns {
-            if let Stage::Events(subscription) = &conn.stage {
-                let json = subscription.json;
-                conn.ends(&mut self.session, json, &Ending::Stopped(reason.clone()));
+            if let Stage::Events(_) = &conn.stage {
+                conn.ends(&mut self.session, &Ending::Stopped(reason.clone()));
             }
         }
         self.session.shutdown();
@@ -1352,7 +1349,7 @@ impl Server {
             Begun::Waiting(waiting) => conn.enter(session, Stage::Waiting(waiting)),
             Begun::Events(subscription) => {
                 // Told it is armed: from here on, nothing is missed.
-                let ready = crate::events::ready(subscription.json);
+                let ready = crate::events::ready();
                 conn.send(session, &ToCommand::Stdout(ready.as_bytes().into()));
                 conn.enter(session, Stage::Events(subscription));
             }

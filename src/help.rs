@@ -313,7 +313,7 @@ mod tests {
             assert!(word.row().about.contains(&read), "{word:?}");
         }
         let sides = format!("1 to {} each", crate::view::MOST);
-        let sized = [Act::Resize, Act::ResizeClient, Act::Headless].map(Word::Act);
+        let sized = [Act::Resize, Act::ResizeClient].map(Word::Act);
         for word in sized.into_iter().chain([Word::Opt(Opt::Size)]) {
             assert!(word.row().about.contains(&sides), "{word:?}");
         }

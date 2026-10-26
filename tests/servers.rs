@@ -165,7 +165,7 @@ fn a_started_server_keeps_nothing_of_its_client() -> Outcome {
 fn events_tell_what_happens() -> Outcome {
     let server = Server::start("")?;
     let mut events = Command::new(FUX)
-        .args(["events-json"])
+        .args(["events"])
         .env("FUX_SOCKET", &server.socket)
         .env_remove("FUX_PANE")
         .stdout(Stdio::piped())

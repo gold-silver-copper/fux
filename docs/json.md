@@ -125,7 +125,7 @@ its answer is dropped with the rest of the body's values. A wait on a
 tab's or a workspace's panes answers a line for each that changed, the
 first failing status naming the whole.
 
-## `events-json`, `X events-of-json`
+## `events`, `X events-of`
 
 One object a line: `{"event":NAME,"pane":"%3","tab":"@2","workspace":"+2",…}`,
 `pane`, `tab` and `workspace` each only where it applies: none of them
@@ -141,7 +141,7 @@ even a stream that reads at once, of another pane, miss some, which
 | `event` | Also |
 | --- | --- |
 | `ready` | first: from here on nothing is missed unsaid |
-| `gone` | last: everything `events-of-json` named has closed (status 4) |
+| `gone` | last: everything `events-of` named has closed (status 4) |
 | `created` | `name`, for a tab or workspace |
 | `renamed` | `name`: a pane's, tab's or workspace's new name |
 | `closed`, `bell` | |
@@ -186,8 +186,8 @@ they run, so a `try` may name them too.
 ## `status json`
 
 ```json
-{"socket":"/run/user/1000/fux/server.sock","version":"0.35.0","protocol":21,
- "server_version":"0.35.0","server_protocol":21,"compatible":true}
+{"socket":"/run/user/1000/fux/server.sock","version":"0.35.0","protocol":22,
+ "server_version":"0.35.0","server_protocol":22,"compatible":true}
 ```
 
 With no server, `status` fails (`no_server`), saying the socket and whether

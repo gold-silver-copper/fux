@@ -2553,14 +2553,23 @@ pub(crate) mod tests {
     #[test]
     fn commands_ended_in_one_read_are_journaled_each() -> Result<(), Error> {
         let mut pane = pane(3, 30)?;
-        let mut stream = crate::events::Subscription::new(None, false, &pane.journal);
+        let mut stream = crate::events::Subscription::new(None, &pane.journal);
         pane.output(
             b"\x1b]133;C\x07x\x1b]133;D;1\x07\x07\x1b]133;C\x07\x1b]133;D;0\x07\x1b]2;t\x07",
         );
         let (said, _) = stream.told(&pane.journal, usize::MAX, |_| None);
         assert_eq!(
             said,
-            "done %1 @1 +1 status=1\nbell %1 @1 +1\ndone %1 @1 +1 status=0\ntitle %1 @1 +1 title=t\n"
+            concat!(
+                r#"{"event":"done","pane":"%1","tab":"@1","workspace":"+1","status":1}"#,
+                "\n",
+                r#"{"event":"bell","pane":"%1","tab":"@1","workspace":"+1"}"#,
+                "\n",
+                r#"{"event":"done","pane":"%1","tab":"@1","workspace":"+1","status":0}"#,
+                "\n",
+                r#"{"event":"title","pane":"%1","tab":"@1","workspace":"+1","title":"t"}"#,
+                "\n"
+            )
         );
         Ok(())
     }
