@@ -700,7 +700,7 @@ impl Session {
         starting: &Starting,
     ) -> Result<(), Error> {
         let pane = self.pane(id)?;
-        if let Runs::Shell = pane.runs {
+        if let Runs::DefaultShell = pane.runs {
             let message = format!("{id} runs a shell; respawn restarts what run or split started");
             return Err(fail(Raise::NotRun, message));
         }
@@ -710,7 +710,7 @@ impl Session {
             self.drain(id);
         }
         let pane = self.pane(id)?;
-        let Runs::Program(launch) = &pane.runs else {
+        let Runs::Explicit(launch) = &pane.runs else {
             return Err(Error::NoPane(id));
         };
         if pane.process().child().is_some() && !kill {
@@ -730,7 +730,7 @@ impl Session {
         let size = (pane.size(), graphics.cell());
         // All that can refuse it is done before its program starts, which
         // nothing can then leave running.
-        let runs = Runs::Program(launch.clone());
+        let runs = Runs::Explicit(launch.clone());
         let mut fresh = Pane::new(
             id,
             String::new(),
@@ -791,7 +791,7 @@ impl Session {
             return Err(ended(pane.id(), status));
         }
         let program = match (&pane.runs, pane.process().child()) {
-            (Runs::Program(_), Some(child)) => Some(child.leader.pid()),
+            (Runs::Explicit(_), Some(child)) => Some(child.leader.pid()),
             _ => None,
         };
         let job = pane.process().job().map_err(|errno| {
@@ -1221,10 +1221,10 @@ impl Session {
             env: env.to_vec(),
         };
         let (named, runs) = match start {
-            Start::Shell(..) => (None, Runs::Shell),
+            Start::Shell(..) => (None, Runs::DefaultShell),
             Start::Program(argv, _) => (
                 argv.first().map(String::as_str),
-                Runs::Program(launch.clone()),
+                Runs::Explicit(launch.clone()),
             ),
         };
         let id = ids.pane()?;
@@ -1733,7 +1733,7 @@ impl Session {
             return;
         }
         match pane.runs {
-            Runs::Shell => {
+            Runs::DefaultShell => {
                 let left = pane.ended(ended).left.told("it");
                 let why = process::shell_status(ended).map_or_else(
                     || process::told(ended),
@@ -1741,7 +1741,7 @@ impl Session {
                 );
                 self.close_pane(id, Some(format!("{why}{left}")));
             }
-            Runs::Program(_) => {
+            Runs::Explicit(_) => {
                 // Its leader, exited and unreaped, is reaped with the dying.
                 let (end, gone) = pane.exit(ended);
                 if let Process::Reading(child) | Process::HungUp(child) = gone {
@@ -2850,12 +2850,12 @@ impl Session {
 
     /// A pane's state, as `ls json` has it.
     fn pane_json<'a>(&'a self, p: &'a Pane, now: Instant) -> Fields<'a> {
-        let pid = |c: &Child| Json::Number(i64::from(c.leader.pid().as_raw()));
+        let pid = |c: &Child| Json::Int(i64::from(c.leader.pid().as_raw()));
         let mut fields = vec![
             ("id", Json::str(p.id().to_string())),
             ("name", Json::str(p.name())),
-            ("rows", Json::Number(i64::from(p.size().rows()))),
-            ("cols", Json::Number(i64::from(p.size().cols()))),
+            ("rows", Json::Int(i64::from(p.size().rows()))),
+            ("cols", Json::Int(i64::from(p.size().cols()))),
             ("pid", p.process().child().map_or(Json::Null, pid)),
         ];
         fields.extend(crate::capture::state(
@@ -2933,7 +2933,16 @@ impl Session {
             }
             Some((_, value)) => {
                 let scalar = match &value {
-                    Json::Number(n) => Some(Scalar::Int(*n)),
+                    Json::Int(n) => Some(Scalar::Int(*n)),
+                    // Exactly, or not at all: fuxth's integers are i64s.
+                    Json::Uint(n) => match i64::try_from(*n) {
+                        Ok(n) => Some(Scalar::Int(n)),
+                        Err(_) => {
+                            let message =
+                                format!("{target}'s {field} is {n}, past fuxth's integers");
+                            return Err(fail(Raise::Range, message));
+                        }
+                    },
                     Json::Bool(b) => Some(Scalar::Bool(*b)),
                     Json::Null
                     | Json::String(_)
@@ -2970,8 +2979,8 @@ impl Session {
                 let pane = place.map(|p| p.pane);
                 Json::Object(vec![
                     ("id", Json::str(v.id.to_string())),
-                    ("rows", Json::Number(i64::from(v.rows))),
-                    ("cols", Json::Number(i64::from(v.cols))),
+                    ("rows", Json::Int(i64::from(v.rows))),
+                    ("cols", Json::Int(i64::from(v.cols))),
                     ("workspace", opt(place.map(|p| p.ws.to_string()))),
                     ("tab", opt(place.map(|p| p.tab.to_string()))),
                     ("pane", opt(pane.map(|p| p.to_string()))),
@@ -3053,7 +3062,7 @@ enum Start<'a> {
 }
 
 /// The most bytes a name holds.
-const NAME_MAX: usize = 256;
+pub(crate) const NAME_MAX: usize = 256;
 
 fn check_name(name: &str) -> Result<(), Error> {
     if name.trim().is_empty() {

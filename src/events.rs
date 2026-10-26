@@ -20,7 +20,7 @@ pub const BACKLOG: usize = 1 << 20;
 
 /// How many entries the journal keeps: a subscriber that falls further
 /// behind is told how many it missed.
-const KEPT: usize = 1 << 14;
+pub(crate) const KEPT: usize = 1 << 14;
 
 /// A number of the journal's: the order things happened in.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
@@ -278,7 +278,7 @@ fn missed(count: u64) -> String {
     line(
         "missed",
         (None, None, None),
-        vec![("count", Json::int(count))],
+        vec![("count", Json::uint(count))],
     )
 }
 

@@ -11,7 +11,9 @@ pub type Fields<'a> = Vec<(&'static str, Json<'a>)>;
 pub enum Json<'a> {
     Null,
     Bool(bool),
-    Number(i64),
+    Int(i64),
+    /// A whole number that is never negative, `i64`'s reach or not.
+    Uint(u64),
     String(Cow<'a, str>),
     Array(Vec<Json<'a>>),
     Object(Fields<'a>),
@@ -24,9 +26,18 @@ impl<'a> Json<'a> {
         Json::String(text.into())
     }
 
-    /// A whole number; one past `i64` is `i64::MAX`.
-    pub fn int(n: impl TryInto<i64>) -> Json<'a> {
-        Json::Number(n.try_into().unwrap_or(i64::MAX))
+    pub fn int(n: impl Into<i64>) -> Json<'a> {
+        Json::Int(n.into())
+    }
+
+    pub fn uint(n: impl Into<u64>) -> Json<'a> {
+        Json::Uint(n.into())
+    }
+
+    /// A count or a place in memory, as a `Uint`: every `usize` fits one.
+    pub fn count(n: usize) -> Json<'a> {
+        const _: () = assert!(usize::BITS <= u64::BITS);
+        u64::try_from(n).map_or(Json::Null, Json::Uint)
     }
 
     pub fn render(&self) -> String {
@@ -39,7 +50,10 @@ impl<'a> Json<'a> {
         match self {
             Json::Null => out.push_str("null"),
             Json::Bool(b) => out.push_str(if *b { "true" } else { "false" }),
-            Json::Number(n) => {
+            Json::Int(n) => {
+                let _ = write!(out, "{n}");
+            }
+            Json::Uint(n) => {
                 let _ = write!(out, "{n}");
             }
             Json::String(s) => write_str(out, s),
@@ -176,12 +190,13 @@ mod tests {
             ("a", Json::str("q\"\\\n\u{1}界")),
             (
                 "b",
-                Json::Array(vec![Json::Number(-3), Json::Bool(true), Json::Null]),
+                Json::Array(vec![Json::Int(-3), Json::Bool(true), Json::Null]),
             ),
+            ("c", Json::uint(u64::MAX)),
         ]);
         assert_eq!(
             value.render(),
-            r#"{"a":"q\"\\\n\u0001界","b":[-3,true,null]}"#
+            r#"{"a":"q\"\\\n\u0001界","b":[-3,true,null],"c":18446744073709551615}"#
         );
     }
 

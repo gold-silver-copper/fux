@@ -114,8 +114,8 @@ impl Session {
     /// where, and the variables it was given.
     fn program(&self, id: PaneId) -> Option<&Launch> {
         match &self.parts.panes().get(&id)?.runs {
-            Runs::Program(launch) => Some(launch),
-            Runs::Shell => None,
+            Runs::Explicit(launch) => Some(launch),
+            Runs::DefaultShell => None,
         }
     }
 

@@ -263,7 +263,7 @@ words! {
         Changing Rename "rename" "handle text --" "rename a pane, tab or workspace" "fux %3 str editor rename" [];
         Changing Notify "notify" "handle text --" "a notice on the clients showing it" "fux %3 str 'tests passed' notify" [];
         Changing NotifyAll "notify-all" "text --" "a notice on every client" "fux str 'back soon' notify-all" [];
-        Changing Resize "resize" "handle cols rows --" "what a tab (or a pane's) is laid out on while no client shows it, 1 to 4096 each" "fux @2 120 40 resize" [];
+        Changing Resize "resize" "handle cols rows --" "what a tab (or a pane's) is laid out on while no client shows it, 1 to 4,096 each" "fux @2 120 40 resize" [];
         Changing ResizeAuto "resize-auto" "handle --" "a tab laid out on a client's screen again (at its size until one shows it)" "fux @2 resize-auto" [];
         Changing ResizeX "resize-x" "pane width --" "a pane's width: cells, or a percent" "fux %3 30 percent resize-x" [];
         Changing ResizeY "resize-y" "pane height --" "a pane's height: cells, or a percent" "fux %3 10 resize-y" [];
@@ -288,7 +288,7 @@ words! {
         Clients Zoom "zoom" "client --" "zoom the focused pane, or restore" "fux str c1 client zoom" [];
         Clients Detach "detach" "client --" "detach a client" "fux str c1 client detach" [];
         Clients CaptureClient "capture-client" "client -- capture" "what a client's terminal shows" "fux str c1 client capture-client" [];
-        Clients ResizeClient "resize-client" "client cols rows --" "a headless client's size, 1 to 4096 each" "fux str c1 client 120 40 resize-client" [];
+        Clients ResizeClient "resize-client" "client cols rows --" "a headless client's size, 1 to 4,096 each" "fux str c1 client 120 40 resize-client" [];
         Server Server "server" "name --" "the server named so (NAME.sock in fux's directory), for what follows" "fux str test server start opts 80 24 size str ./app program run" [];
         Server Socket "socket" "path --" "the server on this socket, for what follows" "fux str ./test.sock socket status" [];
         Server Start "start" "--" "start the server in the background, if none answers" "fux start" [];
@@ -306,12 +306,12 @@ words! {
         Config ListKeys "list-keys" "--" "this client's keys, as config lines that make them" "fux list-keys" [];
         Config KeyNames "key-names" "--" "the names keys go by" "fux key-names" [];
         Help Help "help" "--" "the words, under their headings" "fux help" [];
-        Help Explain "explain" "word --" "one word at length (json's says what json gives); or the guide to driving programs from a script or an agent: agents, its first screen, enough for most work; a topic of it (recipes keys read shells programs servers); or guide, all of it" "fux str capture explain" [];
+        Help Explain "explain" "word --" "one word at length (json's says what json gives); or the guide to driving programs from a script or an agent: agents, its first screen, enough for most work; a topic of it (recipes keys read shells programs servers); guide, all of it; or limits, the bounds fux keeps" "fux str capture explain" [];
         Help Check "check" "file --" "read a fuxth file without running it: its mistakes; a config.fux is run dry too" "fux str config.fux check" [];
     }
     Opt {
         Starting Name "name" "x name -- x" "the tab's or workspace's name" "fux opts str web name 80 24 size str ./app program run";
-        Starting Size "size" "x cols rows -- x" "what its tab is laid out on while no client shows it, 1 to 4096 each; needed from outside fux, else the caller's own screen or tab, as fux makes no size up; attach: be a client with no terminal, of this size, which prints its id and runs until signalled" "fux opts 80 24 size str ./app program run";
+        Starting Size "size" "x cols rows -- x" "what its tab is laid out on while no client shows it, 1 to 4,096 each; needed from outside fux, else the caller's own screen or tab, as fux makes no size up; attach: be a client with no terminal, of this size, which prints its id and runs until signalled" "fux opts 80 24 size str ./app program run";
         Starting Cwd "cwd" "x dir -- x" "where it starts" "fux opts str /srv cwd 80 24 size str ./app program run";
         Starting Env "env" "x key var -- x" "a variable for it: text, or a pane, tab or workspace as its id (%3; an action's answer, its pane)" "fux opts str PORT 8080 env 80 24 size str ./app program run";
         Starting Program "program" "x path -- x" "the program to start, in place of a shell" "fux opts 80 24 size str ./app program run";
@@ -454,7 +454,7 @@ fn text(value: &Value<Fux>) -> Result<String, Failure> {
 fn json_of(value: &Value<Fux>) -> crate::json::Json<'static> {
     use crate::json::Json;
     match value {
-        Value::Int(n) => Json::Number(*n),
+        Value::Int(n) => Json::Int(*n),
         Value::Bool(b) => Json::Bool(*b),
         Value::Str(s) => Json::str(s.to_string()),
         // As deep as lists nest, at most fuxth's limit.
@@ -912,7 +912,7 @@ fn hex(hex: &str) -> Result<Vec<u8>, Failure> {
 }
 
 /// The most input one send-keys sends: a request holds it whole.
-const INPUT_MAX: usize = 900 * 1024;
+pub(crate) const INPUT_MAX: usize = 900 * 1024;
 // A frame holds it, with room for the rest of its request; and an empty
 // input queue its text and bytes, which go in as they are (`Pane::input`).
 const _: () = assert!(INPUT_MAX < crate::protocol::MAX_PAYLOAD);

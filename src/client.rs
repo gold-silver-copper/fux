@@ -514,7 +514,7 @@ struct Ran {
 /// The longest a program's notice may be: what it prints past this fails
 /// its write, and a notice longer, made of what it left, is not shown but
 /// said not to be. Well within a frame (`protocol::MAX_FRAME`).
-const NOTICE_MAX: usize = 64 << 10;
+pub(crate) const NOTICE_MAX: usize = 64 << 10;
 
 /// What a key's program prints, for its notice: `NOTICE_MAX` at most.
 #[derive(Default)]
@@ -537,12 +537,12 @@ impl Write for Said {
 
 /// Programs that may wait for the worker, and the bytes of their code:
 /// one that would take them past either is not run, and said not to be.
-const JOBS: usize = 64;
-const JOB_BYTES: usize = 4 << 20;
+pub(crate) const JOBS: usize = 64;
+pub(crate) const JOB_BYTES: usize = 4 << 20;
 /// Inputs that may wait for a program, and the bytes of their pastes: those
 /// past either are not taken, and said not to be (`Keyboard::holds`).
-const HELD: usize = 1024;
-const HELD_BYTES: usize = 1 << 20;
+pub(crate) const HELD: usize = 1024;
+pub(crate) const HELD_BYTES: usize = 1 << 20;
 
 /// The bytes `input` holds beyond itself.
 fn pasted(input: &Input) -> usize {
@@ -1046,7 +1046,7 @@ impl Drop for Raw {
 /// What may wait unwritten for the terminal before the server's frames
 /// are read no more: what the server sends meanwhile waits there, within
 /// its bound.
-const OUTPUT_MAX: usize = 1 << 20;
+pub(crate) const OUTPUT_MAX: usize = 1 << 20;
 
 /// The paints the server relays, for the terminal: handed to a thread
 /// that writes them to stdout, waiting on the terminal as any program does,

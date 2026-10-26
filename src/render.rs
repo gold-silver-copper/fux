@@ -2359,7 +2359,7 @@ mod tests {
             cwd: "/".into(),
             env: Vec::new(),
         };
-        let runs = crate::pane::Runs::Program(launch);
+        let runs = crate::pane::Runs::Explicit(launch);
         let size = (s.parts.panes().get(&id)).ok_or("the pane")?.size();
         let fresh = crate::pane::Pane::new(id, String::new(), runs, size, 1 << 10)
             .map_err(|e| e.to_string())?;

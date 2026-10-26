@@ -137,7 +137,10 @@ impl InputQueue {
     /// full, and then everything until its terminal takes some. Only the
     /// pane queues, which counts what is refused (`Pane::push`).
     fn push(&mut self, bytes: impl AsRef<[u8]>) -> Result<(), Error> {
-        self.push_with(|out| out.extend_from_slice(bytes.as_ref()))
+        let bytes = bytes.as_ref();
+        self.fits(bytes.len())?;
+        self.bytes.push(bytes);
+        Ok(())
     }
     /// Queues what `write` appends to its vector as a piece, in place, or
     /// takes it back and refuses it whole, as `push` does.
@@ -259,7 +262,7 @@ pub const OPTIONS: fux_vt::Options = fux_vt::Options::new()
 /// rest are dropped, and told as a reply dropped for a full queue is.
 pub const REPLIES_MAX: usize = 4096;
 /// The most titles a pane's program can push (`CSI 22 t`): xterm's bound.
-const TITLE_STACK: usize = 10;
+pub(crate) const TITLE_STACK: usize = 10;
 /// The most characters of a title kept.
 pub const TITLE_MAX: usize = 256;
 /// The most characters of a notification kept.
@@ -496,12 +499,13 @@ impl Process {
 /// What a pane runs, which says what its program's exit does.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Runs {
-    /// The shell: its exit closes the pane.
-    Shell,
-    /// A program `fux run` started in place of a shell: its exit leaves the
-    /// pane, with its last screen and its status (`Process::Exited`); how it
-    /// was started, which `fux respawn` starts again.
-    Program(Launch),
+    /// The `shell` setting's shell, fux's default: its exit closes the pane.
+    DefaultShell,
+    /// A program `fux run` was given, in place of the shell: its exit
+    /// leaves the pane, with its last screen and its status
+    /// (`Process::Exited`); how it was started, which `fux respawn` starts
+    /// again.
+    Explicit(Launch),
 }
 
 /// How a program was started: its words, where, and the variables set for
@@ -592,12 +596,12 @@ impl Losses {
             memory,
         } = self;
         Json::Object(vec![
-            ("input", Json::int(input)),
-            ("replies", Json::int(replies)),
-            ("copies_cut", Json::int(copies_cut)),
-            ("copies_not_text", Json::int(copies_not_text)),
-            ("pictures", Json::int(pictures)),
-            ("memory", Json::int(memory)),
+            ("input", Json::uint(input)),
+            ("replies", Json::uint(replies)),
+            ("copies_cut", Json::uint(copies_cut)),
+            ("copies_not_text", Json::uint(copies_not_text)),
+            ("pictures", Json::uint(pictures)),
+            ("memory", Json::uint(memory)),
         ])
     }
 
@@ -944,7 +948,7 @@ impl Left {
             Output::Read => None,
             Output::Cut => Some(("truncated", Json::Bool(true))),
         };
-        let input = (self.input > 0).then(|| ("input_unread", Json::int(self.input)));
+        let input = (self.input > 0).then(|| ("input_unread", Json::count(self.input)));
         cut.into_iter().chain(input)
     }
 
@@ -1592,7 +1596,7 @@ impl Pane {
     ) -> (Process, Left) {
         // Named after its program, unless renamed.
         let name = match (&self.runs, &fresh.runs) {
-            (Runs::Program(old), Runs::Program(new)) if named(&old.argv) == self.name => {
+            (Runs::Explicit(old), Runs::Explicit(new)) if named(&old.argv) == self.name => {
                 named(&new.argv)
             }
             _ => self.name.clone(),
@@ -1918,7 +1922,14 @@ pub(crate) mod tests {
 
     fn pane(rows: u16, cols: u16) -> Result<Lone, Error> {
         let size = size(rows, cols);
-        Pane::new(PaneId::of(1), "sh".into(), Runs::Shell, size, 1 << 10).map(Lone::new)
+        Pane::new(
+            PaneId::of(1),
+            "sh".into(),
+            Runs::DefaultShell,
+            size,
+            1 << 10,
+        )
+        .map(Lone::new)
     }
 
     /// A pane alone, for tests of it: what it tells goes in a journal of
@@ -2045,7 +2056,13 @@ pub(crate) mod tests {
     #[test]
     fn a_frame_past_a_budget_is_read_on_whole() -> Result<(), Error> {
         let size = size(50, 200);
-        let mut pane = Lone::new(Pane::new(PaneId::of(1), "sh".into(), Runs::Shell, size, 0)?);
+        let mut pane = Lone::new(Pane::new(
+            PaneId::of(1),
+            "sh".into(),
+            Runs::DefaultShell,
+            size,
+            0,
+        )?);
         let mut frame = b"\x1b[?2026h".to_vec();
         frame.extend(spends_the_budget(50, 200));
         frame.extend_from_slice(b"\x1b[2J\x1b[HDONE\x1b[?2026lZ");

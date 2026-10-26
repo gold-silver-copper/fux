@@ -40,7 +40,7 @@ macro_rules! stack {
             pub fn json(text: &str) -> String {
                 let json = $fux::json::Json::Array(vec![
                     $fux::json::Json::str(text),
-                    $fux::json::Json::Number(-3),
+                    $fux::json::Json::int(-3i64),
                     $fux::json::Json::Null,
                     $fux::json::Json::Bool(true),
                     $fux::json::Json::Object(vec![("key", $fux::json::Json::str(text))]),

@@ -21,6 +21,7 @@ use std::io::{self, Read, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
+pub(crate) use words::INPUT_MAX;
 pub use words::{Act, After, Group, Keys, Opt, Row, Screen, Takes, Word, from_opts, usage};
 
 /// A config, by its name and text, whose definitions its bindings and
@@ -1262,7 +1263,7 @@ fn program(args: &[String]) -> Result<(Vec<Token>, Given), Failed> {
 
 /// The most steps a command line's program takes: one that loops without
 /// end fails rather than spinning.
-const LINE_STEPS: u64 = 1_000_000_000;
+pub(crate) const LINE_STEPS: u64 = 1_000_000_000;
 
 /// The most text read from a file or stdin may be: a program, or what
 /// `read-file` and `input` read.

@@ -31,7 +31,7 @@ fn guide(topic: &str) -> Option<String> {
 /// topics, as the guide's headings name them.
 pub fn unknown(name: &str) -> String {
     let topics = topics().join(" ");
-    format!("no word or topic {name:?}; the topics: agents {topics} guide")
+    format!("no word or topic {name:?}; the topics: agents {topics} guide limits")
 }
 
 /// The guide's topics, as its headings name them.
@@ -179,9 +179,10 @@ pub fn library() -> Vec<(&'static str, &'static str, &'static str, String)> {
     words
 }
 
-/// One word at length, or a topic of the guide.
+/// One word at length, a topic of the guide, or `limits`.
 pub fn explain(name: &str) -> Option<String> {
-    guide(name).or_else(|| word(name))
+    let limits = (name == "limits").then(limits);
+    limits.or_else(|| guide(name)).or_else(|| word(name))
 }
 
 /// One word at length: its stack effect, what it does, and an example.
@@ -244,18 +245,23 @@ fn settings() -> String {
     out
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::script::Opt;
+/// How much a bound is, as the docs write it.
+#[derive(Clone, Copy, Debug)]
+enum Amount {
+    /// Grouped by commas: `262,144`.
+    Count(usize),
+    /// A count kept as a `u64`, grouped the same.
+    Whole(u64),
+    /// In MiB or KiB when a whole number of them, else in bytes.
+    Bytes(usize),
+    Time(std::time::Duration),
+    /// A cell's width and height.
+    Pixels((u16, u16)),
+}
 
-    /// Where the docs and words' help state a bound, they state the
-    /// constant the check uses; the JSON they show is this protocol's.
-    #[test]
-    fn the_docs_state_each_bound_as_its_check_has_it() {
-        // Thousands grouped by commas, as the docs write them.
-        let grouped = |n: usize| {
-            let digits = n.to_string();
+impl std::fmt::Display for Amount {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let grouped = |digits: String| {
             let mut out = String::new();
             for (i, digit) in digits.chars().enumerate() {
                 if i > 0 && digits.len().saturating_sub(i).is_multiple_of(3) {
@@ -265,53 +271,118 @@ mod tests {
             }
             out
         };
-        // A size in KiB or MiB is one only if it is a whole number of them.
-        let whole = |n: usize, shift: u32| {
-            assert_eq!(n % (1 << shift), 0, "{n} in units of {}", 1 << shift);
-            n >> shift
-        };
-        // Its words, a blank between each, as its lines wrap them.
-        let readme = include_str!("../README.md").split_whitespace();
-        let readme = readme.collect::<Vec<_>>().join(" ");
-        let (least_width, least_height) = fux_vt::CellSize::LEAST;
-        let bell_gap = crate::outer::BELL_GAP.as_millis();
-        for said in [
-            format!("{least_width} by {least_height} pixels"),
-            format!("at most {} cells", grouped(crate::copy::MAX_CELLS)),
-            format!("to {} MiB encoded", whole(crate::copy::MAX_CLIPBOARD, 20)),
-            format!("up to {} KiB encoded", whole(fux_vt::OSC_PAYLOAD_LIMIT, 10)),
-            format!("at most {} MiB", whole(crate::protocol::MAX_FRAME, 20)),
-            format!("past {} MiB", whole(crate::pane::FRAME_LIMIT, 20)),
-            format!("at most once every {bell_gap} ms"),
-        ] {
-            assert!(readme.contains(&said), "README: {said}");
+        match *self {
+            Amount::Count(n) => f.write_str(&grouped(n.to_string())),
+            Amount::Whole(n) => f.write_str(&grouped(n.to_string())),
+            Amount::Bytes(n) if n > 0 && n.is_multiple_of(1 << 20) => write!(f, "{} MiB", n >> 20),
+            Amount::Bytes(n) if n > 0 && n.is_multiple_of(1 << 10) => write!(f, "{} KiB", n >> 10),
+            Amount::Bytes(n) => write!(f, "{} bytes", grouped(n.to_string())),
+            Amount::Time(t) if t.subsec_nanos() == 0 => write!(f, "{} s", t.as_secs()),
+            Amount::Time(t) if t.subsec_nanos().is_multiple_of(1_000_000) => {
+                write!(f, "{} ms", t.as_millis())
+            }
+            Amount::Time(t) => write!(f, "{} ns", t.as_nanos()),
+            Amount::Pixels((width, height)) => write!(f, "{width} by {height} pixels"),
         }
-        // Said in words: "after one second", "about a second after".
-        let second = std::time::Duration::from_secs(1);
-        assert_eq!(crate::pane::FRAME_TIMEOUT, second);
-        assert!(readme.contains("shown anyway after one second"));
-        let longest = format!("at most {} characters", grouped(fuxth::LONGEST));
-        assert!(AGENTS.contains(&longest), "agents.md: {longest}");
+    }
+}
+
+/// Where the docs state a bound, and in what words: `(place, words)`.
+type Said = &'static [(&'static str, &'static str)];
+
+/// The bounds fux keeps, each from the constant its check uses: how much,
+/// what it bounds, and where the docs state it (`README`, `agents`, `json`
+/// or a word's name) in what words, `{}` for how much, which the docs test
+/// finds there.
+#[rustfmt::skip]
+fn bounds() -> Vec<(Amount, &'static str, Said)> {
+    use Amount::{Bytes, Count, Pixels, Time, Whole};
+    use crate::{client, copy, pane, script, server};
+    vec![
+        (Bytes(crate::protocol::MAX_FRAME), "a message between client and server", &[("README", "length-prefixed and at most {}")]),
+        (Bytes(server::OUT_MAX), "what may wait unsent for a client before the copies, programs and keys sent it are refused", &[]),
+        (Bytes(server::TALK_MAX), "what may wait unsent for a client before it is detached", &[]),
+        (Bytes(client::OUTPUT_MAX), "what a client holds unwritten for its terminal before it reads the server no more", &[]),
+        (Count(client::JOBS), "programs waiting for a client to run them", &[]),
+        (Bytes(client::JOB_BYTES), "the code of the programs waiting for a client", &[]),
+        (Count(client::HELD), "inputs a client holds while a program runs, and the prefix key one more", &[]),
+        (Bytes(client::HELD_BYTES), "the pastes of the inputs a client holds", &[]),
+        (Bytes(client::NOTICE_MAX), "a program's notice", &[]),
+        (Bytes(crate::events::BACKLOG), "what an `events` stream may hold unsent before it is sent no more for now, the rest waiting in the journal", &[]),
+        (Count(crate::events::KEPT), "events the journal keeps: an `events` stream further behind is told how many it missed", &[]),
+        (Bytes(pane::INPUT_BYTES), "input waiting for a pane's program", &[("agents", "({} its program has not read)")]),
+        (Bytes(crate::script::INPUT_MAX), "keys one send-keys sends", &[("agents", "{} at most in all"), ("send-keys", "{} at most in all")]),
+        (Bytes(fux_vt::keys::decode::PASTE_LIMIT), "a paste from a client's terminal", &[]),
+        (Bytes(pane::REPLIES_MAX), "replies to one read of a program's output", &[("json", "past {} of replies")]),
+        (Bytes(crate::session::LEFT_MAX), "what is read of what a program left on its terminal as it ended", &[("json", "more than {} on its terminal")]),
+        (Time(pane::FRAME_TIMEOUT), "how long a frame of synchronized output is held", &[("README", "shown anyway after {}")]),
+        (Bytes(pane::FRAME_LIMIT), "a frame of synchronized output held", &[("README", "or past {}")]),
+        (Count(pane::TITLE_MAX), "characters of a title kept", &[("json", "| `title` | what the program set (OSC 0 or 2), else `\"\"`: its first {} characters")]),
+        (Count(pane::TITLE_STACK), "titles a program may push", &[]),
+        (Count(pane::NOTIFICATION_MAX), "characters of a notification kept", &[("json", "| `notification` | the last notification's text, else `null`: its first {} characters")]),
+        (Bytes(crate::session::NAME_MAX), "a name", &[]),
+        (Count(copy::MAX_CELLS), "cells a copy takes", &[("README", "at most {} cells")]),
+        (Bytes(copy::MAX_CLIPBOARD), "a copy to your clipboard, encoded", &[("README", "to {} encoded")]),
+        (Bytes(copy::SEARCH_MAX), "a search in copy mode", &[]),
+        (Bytes(crate::view::LINE_MAX), "a line typed at a prompt", &[]),
+        (Bytes(fux_vt::OSC_PAYLOAD_LIMIT), "a string a program sends, as its copy (OSC 52)", &[("README", "up to {} encoded"), ("json", "the {} a string may be")]),
+        (Whole(u64::from(fux_vt::sixel::MAX_SIDE)), "pixels a side of a sixel picture", &[("json", "{} pixels a side")]),
+        (Count(fux_vt::sixel::MAX_PIXELS), "pixels of a sixel picture in all", &[("json", "{} pixels in all")]),
+        (Pixels(fux_vt::CellSize::LEAST), "the least cell a terminal may say", &[("README", "{}")]),
+        (Time(crate::outer::BELL_GAP), "between two bells told", &[("README", "at most once every {}")]),
+        (Count(crate::config::MAX_BUFFERS), "paste buffers kept", &[]),
+        (Count(crate::config::MAX_WAIT), "seconds a wait may be given", &[]),
+        (Whole(script::PROGRAM_STEPS), "steps of a program a client runs (a config, a key's)", &[]),
+        (Whole(script::LINE_STEPS), "steps of a command line's program", &[]),
+        (Count(fuxth::LONGEST), "characters of a string fuxth builds", &[("agents", "at most {} characters")]),
+        (Whole(fuxth::BUILT), "elements a fuxth run builds in all", &[]),
+        (Whole(fuxth::TOTAL), "elements a fuxth list holds, through the lists in it", &[]),
+        (Bytes(script::SOURCE_MAX), "what read-file and input read", &[("input", "{} at most"), ("read-file", "{} at most")]),
+        (Count(usize::from(crate::view::MOST)), "columns or rows of a size", &[("resize", "1 to {} each"), ("resize-client", "1 to {} each"), ("size", "1 to {} each")]),
+        (Count(fuxix::process::TREE_MAX), "processes a pane's teardown looks through for its session (Linux)", &[]),
+    ]
+}
+
+/// `fux help limits`: the bounds fux keeps.
+fn limits() -> String {
+    let mut out = String::from("The bounds fux keeps, each as its check has it:\n");
+    for (amount, about, _) in bounds() {
+        let about = about.split_whitespace().map(str::to_owned);
+        out.push_str(&format!("  {amount}:{}\n", wrapped(about, "\n      ", 78)));
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::script::Opt;
+
+    /// Where the docs and words' help state a bound, they state it as the
+    /// table of bounds has it, from the constant its check uses; the JSON
+    /// they show is this protocol's.
+    #[test]
+    fn the_docs_state_each_bound_as_its_check_has_it() {
+        // Each place's words, a blank between each, as its lines wrap them.
+        let place = |at: &str| {
+            let text = match at {
+                "README" => include_str!("../README.md"),
+                "agents" => AGENTS,
+                "json" => JSON,
+                word => Word::named(word).map_or("", |w| w.row().about),
+            };
+            text.split_whitespace().collect::<Vec<_>>().join(" ")
+        };
+        for (amount, about, said) in bounds() {
+            for (at, words) in said {
+                let words = words.replace("{}", &amount.to_string());
+                assert!(place(at).contains(&words), "{about}: {at}: {words}");
+            }
+        }
         let protocol = crate::protocol::PROTOCOL;
         for said in [
             format!("\"protocol\":{protocol},"),
             format!("\"server_protocol\":{protocol},"),
-            format!("its first {} characters", crate::pane::TITLE_MAX),
-            format!("its first {} characters", crate::pane::NOTIFICATION_MAX),
-            format!(
-                "more than {} MiB on its terminal",
-                whole(crate::session::LEFT_MAX, 20)
-            ),
-            format!("past {} bytes of replies", crate::pane::REPLIES_MAX),
-            format!(
-                "the {} KiB a string may be",
-                whole(fux_vt::OSC_PAYLOAD_LIMIT, 10)
-            ),
-            format!(
-                "{} pixels a side, {} pixels in all",
-                grouped(usize::try_from(fux_vt::sixel::MAX_SIDE).unwrap_or_default()),
-                grouped(fux_vt::sixel::MAX_PIXELS)
-            ),
             // The language's codes fux's words raise, which a try catches
             // only as fux says so.
             {
@@ -324,14 +395,12 @@ mod tests {
         ] {
             assert!(JSON.contains(&said), "json.md: {said}");
         }
-        let read = format!("{} MiB at most", whole(crate::script::SOURCE_MAX, 20));
-        for word in [Act::Input, Act::ReadFile].map(Word::Act) {
-            assert!(word.row().about.contains(&read), "{word:?}");
-        }
-        let sides = format!("1 to {} each", crate::view::MOST);
-        let sized = [Act::Resize, Act::ResizeClient].map(Word::Act);
-        for word in sized.into_iter().chain([Word::Opt(Opt::Size)]) {
-            assert!(word.row().about.contains(&sides), "{word:?}");
+        // `fux help limits` lists them all, written exactly.
+        let limits = explain("limits").unwrap_or_default();
+        let amounts = limits.lines().filter(|line| !line.starts_with("    "));
+        assert_eq!(amounts.count(), bounds().len() + 1);
+        for amount in ["  1 MiB:", "  1,048,768 bytes:", "  250 ms:", "  4,096:"] {
+            assert!(limits.contains(amount), "{limits}");
         }
     }
 
