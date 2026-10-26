@@ -287,7 +287,7 @@ Every control function ECMA-48 (5th edition, 8.3), DEC STD 070 (its function pag
 | 5-189 DECRC | DECRC (RESTORE CURSOR) | implemented | `margins::decrc_in_origin_mode_brings_the_cursor_inside_the_margins` |  |
 | 5-193 DECRQM | DECRQM (REQUEST MODE) | implemented | `opt_in::mode_reports_answer_decrqm_alone`, `modes::decrqm_reports_the_modes_xterm_keeps` | with `Feature::ModeReports` or `Feature::ExtendedReplies` |
 | 5-195 DECRPM | DECRPM (REPORT MODE) | implemented | `opt_in::mode_reports_answer_decrqm_alone` | sent as DECRQM's answer |
-| 5-196 DECRQSS | DECRQSS (REQUEST SELECTION OR SETTING) | partial | `opt_in::setting_reports_answer_the_pen_the_cursor_shape_and_the_margins`, `opt_in::c0_controls_inside_a_setting_request_are_ignored` | with `Feature::SettingReports`: SGR, DECSCUSR, DECSTBM, DECSLRM and DECSCA; another request is answered invalid |
+| 5-196 DECRQSS | DECRQSS (REQUEST SELECTION OR SETTING) | partial | `opt_in::setting_reports_answer_the_pen_the_cursor_shape_and_the_margins`, `opt_in::c0_controls_inside_a_setting_request_are_ignored` | with `Feature::SettingReports`: SGR, DECSCUSR, DECSTBM, DECSLRM, DECSCA, DECSCL and DECSACE; another request is answered invalid |
 | 5-197 DECRPSS | DECRPSS (REPORT SELECTION OR SETTING) | implemented | `opt_in::setting_reports_answer_the_pen_the_cursor_shape_and_the_margins` | sent as DECRQSS's answer |
 | 5-198 DECRQPSR | DECRQPSR (REQUEST PRESENTATION STATE REPORT) | not implemented |  | a terminal state report (TSI extension) fux-vt does not give |
 | 5-199 DECPSR | DECPSR (PRESENTATION STATE REPORT) | not implemented |  | a terminal state report (TSI extension) fux-vt does not give |
@@ -389,7 +389,7 @@ Every control function ECMA-48 (5th edition, 8.3), DEC STD 070 (its function pag
 | APC Pt ST | APC Pt ST (None.) | implemented | `conformance::a_control_string_ends_at_esc_backslash_alone`, `semantics::ignored_sequences_cancel_and_recover_without_payload_leakage` | has no effect of its own: xterm implements no APC either |
 | DCS Ps ; Ps \| Pt ST | DCS Ps ; Ps \| Pt ST (User-Defined Keys (DECUDK), VT220 and up.) | not applicable |  | the keyboard is the host's: fux-vt encodes the keys a host gives it (keys::encode): user-defined keys are the host's |
 | DCS Ps ! u Pt ST | DCS Ps ! u Pt ST (Assigning User-Preferred Supplemental Sets (DECAUPSS), VT320, VT510.) | not implemented |  | not implemented: the string is read and dropped |
-| DCS $ q Pt ST | DCS $ q Pt ST (Request Status String (DECRQSS), VT420 and up.) | partial | `opt_in::setting_reports_answer_the_pen_the_cursor_shape_and_the_margins` | with `Feature::SettingReports`: SGR, DECSCUSR, DECSTBM, DECSLRM and DECSCA; another request is answered invalid |
+| DCS $ q Pt ST | DCS $ q Pt ST (Request Status String (DECRQSS), VT420 and up.) | partial | `opt_in::setting_reports_answer_the_pen_the_cursor_shape_and_the_margins` | with `Feature::SettingReports`: SGR, DECSCUSR, DECSTBM, DECSLRM, DECSCA, DECSCL and DECSACE; another request is answered invalid |
 | DCS Ps $ t Pt ST | DCS Ps $ t Pt ST (Restore presentation status (DECRSPS), VT320 and up.) | not implemented |  | a terminal state report (TSI extension) fux-vt does not give: the string is read and dropped |
 | DCS + Q Pt ST | DCS + Q Pt ST (Request resource values (XTGETXRES), xterm.) | not applicable |  | a resource xterm keeps and fux-vt does not (X resources) |
 | DCS + p Pt ST | DCS + p Pt ST (Set Termcap/Terminfo Data (XTSETTCAP), xterm.) | not applicable |  | fux-vt keeps no terminfo of its own to change |
