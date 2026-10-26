@@ -270,11 +270,9 @@ words! {
         Clients Focus "focus" "client way --" "left right up down next previous or last pane" "fux str c1 client str left focus" [];
         Clients FocusPane "focus-pane" "client pane --" "focus a pane" "fux str c1 client %3 focus-pane" [];
         Clients ShowTab "show-tab" "client tab --" "show a tab" "fux str c1 client @2 show-tab" [];
-        Clients NextTab "next-tab" "client --" "the next tab" "fux str c1 client next-tab" [];
-        Clients PreviousTab "previous-tab" "client --" "the previous tab" "fux str c1 client previous-tab" [];
+        Clients StepTab "step-tab" "client way --" "show the next or previous tab" "fux str c1 client str next step-tab" [];
         Clients ShowWorkspace "show-workspace" "client workspace --" "show a workspace" "fux str c1 client str work show-workspace" [];
-        Clients NextWorkspace "next-workspace" "client --" "the next workspace" "fux str c1 client next-workspace" [];
-        Clients PreviousWorkspace "previous-workspace" "client --" "the previous workspace" "fux str c1 client previous-workspace" [];
+        Clients StepWorkspace "step-workspace" "client way --" "show the next or previous workspace" "fux str c1 client str previous step-workspace" [];
         Clients Zoom "zoom" "client --" "zoom the focused pane, or restore" "fux str c1 client zoom" [];
         Clients Detach "detach" "client --" "detach a client" "fux str c1 client detach" [];
         Clients CaptureClient "capture-client" "client -- capture" "what a client's terminal shows" "fux str c1 client capture-client" [];
@@ -348,7 +346,7 @@ words! {
     Keys {
         Config Prefix "prefix" "key --" "this client's prefix (config)" "str C-a prefix";
         Config Bind "bind" "keys code --" "keys after the prefix run fuxth (config)" "str 'g v' str 'me focused horizontal split drop' bind";
-        Config BindRoot "bind-root" "key code --" "a key without the prefix runs fuxth (config)" "str M-n str 'me next-tab' bind-root";
+        Config BindRoot "bind-root" "key code --" "a key without the prefix runs fuxth (config)" "str M-n str 'me str next step-tab' bind-root";
         Config Label "label" "text --" "what the column says the last binding does" "str 'g v' str 'me focused horizontal split drop' bind str 'split right' label";
         Config Group "group" "name --" "the column's heading for the last binding" "str 'g v' str 'me focused horizontal split drop' bind str panes group";
         Config Repeat "repeat" "--" "the last binding's layer repeats until Esc" "str H str 'me focused str left 2 move-border' bind repeat";
@@ -500,6 +498,14 @@ fn within<T: TryFrom<i64>>(value: &Value<Fux>, range: RangeInclusive<i64>) -> Re
         };
         fail(Raise::Range, format!("{n} is out of range: {said}"))
     })
+}
+
+/// A way one place along: next or previous.
+fn sibling(value: &Value<Fux>) -> Result<Sibling, Failure> {
+    one_of(
+        value,
+        &[("next", Sibling::Next), ("previous", Sibling::Previous)],
+    )
 }
 
 /// One of a closed set, by its name; refused, naming each, if none.
@@ -1376,8 +1382,7 @@ impl fuxth::Host for Host<'_> {
             }
             Act::Reorder => {
                 let t = target(&next()?)?;
-                let siblings = [("next", Sibling::Next), ("previous", Sibling::Previous)];
-                let toward = one_of(&next()?, &siblings)?;
+                let toward = sibling(&next()?)?;
                 tell(Command::Reorder { target: t, toward })
             }
             Act::ClearHistory => tell(Command::ClearHistory {
@@ -1436,10 +1441,8 @@ impl fuxth::Host for Host<'_> {
                 let w = workspace(&next()?)?;
                 order(c, ClientAction::SelectWorkspace(Pick::Id(w)))
             }
-            Act::NextTab => order(client(&next()?)?, step_tab(Sibling::Next)),
-            Act::PreviousTab => order(client(&next()?)?, step_tab(Sibling::Previous)),
-            Act::NextWorkspace => order(client(&next()?)?, step_workspace(Sibling::Next)),
-            Act::PreviousWorkspace => order(client(&next()?)?, step_workspace(Sibling::Previous)),
+            Act::StepTab => order(client(&next()?)?, step_tab(sibling(&next()?)?)),
+            Act::StepWorkspace => order(client(&next()?)?, step_workspace(sibling(&next()?)?)),
             Act::Zoom => order(client(&next()?)?, ClientAction::Zoom),
             Act::Detach => order(client(&next()?)?, ClientAction::Detach),
             Act::CaptureClient => {

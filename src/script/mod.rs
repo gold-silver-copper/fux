@@ -1360,7 +1360,7 @@ mod tests {
         let mut again = super::Keymap::empty();
         run(
             "other",
-            "str C-a prefix str M-n str 'me next-tab' bind-root",
+            "str C-a prefix str M-n str 'me str next step-tab' bind-root",
             &mut again,
         )?;
         run("listed", &keymap.describe(), &mut again)?;

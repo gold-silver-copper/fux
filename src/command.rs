@@ -85,8 +85,7 @@ impl Kind {
 
 wire! {
     /// Which way `reorder` moves a pane, tab or workspace among its siblings,
-    /// or `focus`, `next-tab` and `next-workspace` (or `previous-…`) step from
-    /// the current one.
+    /// or `focus`, `step-tab` and `step-workspace` step from the current one.
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
     pub enum Sibling {
         Next,

@@ -206,7 +206,7 @@ prefix again sends it to the pane.
 | `a`, then a key | `me me focused rename-prompt` … | pane actions: `r` rename, `x` close, `k` terminate the running command, `s` swap, `t`/`w` move to a tab/workspace, `n`/`W` move to a new one, `m h`/`m l` reorder |
 | `c` | `me copy-mode` | copy and select |
 | `p` | `me focused 0 paste-buffer drop` | paste the newest copy |
-| `n` / `b` | `me next-tab` / `me previous-tab` | next / previous tab |
+| `n` / `b` | `me str next step-tab` / `me str previous step-tab` | next / previous tab |
 | `e` | `me command-prompt` | type any fuxth |
 | `d` | `me detach` | detach this terminal |
 | `r`, then `h` `j` `k` `l` | `me focused str left 1 move-border` … | move a border one cell |
