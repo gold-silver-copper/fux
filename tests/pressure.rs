@@ -223,6 +223,28 @@ fn input_waits_while_the_queue_is_full() -> Outcome {
     Ok(())
 }
 
+/// Frames a client sends faster than a tick handles them wait for its
+/// next turns: thousands in one write, with nothing sent after them, all
+/// arrive in order.
+#[test]
+fn frames_past_a_turn_wait_for_the_next() -> Outcome {
+    use fux::act::Act;
+    use fux::protocol::{AttachedFrame, Frame};
+    let server = Server::start("")?;
+    let mut client = server.attach(20, 100)?;
+    client.ready()?;
+    let (cat, out) = recorder(&server, "")?;
+    let _reap = Reap(vec![cat]);
+    let expected = pasted(0, 3000);
+    let mut frames = Vec::new();
+    for &byte in &expected {
+        let act = Act::Paste(char::from(byte).to_string());
+        frames.extend(AttachedFrame::Act(Box::new(act)).encode().map_err(e)?);
+    }
+    client.write(&frames)?;
+    received(&out, &expected)
+}
+
 /// A scheme report (mode 2031) a full input queue refused is sent once its
 /// program reads again, with nothing else happening in the session.
 #[test]

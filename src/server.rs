@@ -55,6 +55,14 @@ const PANE_READ: usize = 64 * 1024;
 /// Bytes read from one client per tick, so one client cannot hold up the
 /// others: a frame larger than this is read over several ticks.
 const CONN_READ: usize = 256 * 1024;
+/// Frames handled from one client per tick, so one that sends many small
+/// ones cannot hold up the others: the rest wait in its decoder for its
+/// next turn (`Conn::frame_waits`).
+const CONN_FRAMES: usize = 256;
+/// Connections accepted per tick, so a storm of them cannot hold up the
+/// clients already served: the rest wait in the listener's backlog, which
+/// keeps it readable.
+const ACCEPTS: usize = 64;
 /// What a connection's buffers keep once they empty; beyond it, the memory
 /// a large frame or paint took is given back.
 const CONN_KEEP: usize = 64 * 1024;
@@ -367,6 +375,13 @@ impl Conn {
     /// command client only once its last answer is all written.
     fn reads(&self) -> bool {
         self.stage.reads() && (self.out.is_empty() || !matches!(self.stage, Stage::Command))
+    }
+
+    /// Whether a frame it sent waits, read but not handled, for its next
+    /// turn (`CONN_FRAMES`), or an error does: it is served as if readable,
+    /// though its socket may have nothing more.
+    fn frame_waits(&self) -> bool {
+        self.reads() && self.decoder.ready().unwrap_or(true)
     }
 
     /// When the client attached here may be painted: if its view changed,
@@ -861,14 +876,24 @@ impl Server {
                 add(PollFd::new(&child.master, flags), Slot::Pane(*id));
             }
         }
+        // A connection with frames waiting is served this round: the poll
+        // does not wait.
+        let waits = self.conns.iter().any(Conn::frame_waits);
+        let timeout = if waits { Some(Duration::ZERO) } else { timeout };
         match fuxix::poll::poll(&mut fds, timeout) {
             Ok(_) | Err(Errno::INTR) => {}
             Err(error) => log!("poll: {error}"),
         }
+        let conns = &self.conns;
         ready.extend(
             fds.iter()
                 .map(PollFd::revents)
                 .zip(slots.iter().copied())
+                .map(|(flags, slot)| {
+                    let waits = matches!(slot, Slot::Conn(i)
+                        if conns.get(i).is_some_and(Conn::frame_waits));
+                    (if waits { flags | PollFlags::IN } else { flags }, slot)
+                })
                 .filter(|(flags, _)| !flags.is_empty())
                 .map(|(flags, slot)| (slot, flags)),
         );
@@ -1073,10 +1098,10 @@ impl Server {
         }
     }
 
-    /// Accepts the connections waiting on the server's socket.
+    /// Accepts the connections waiting on the server's socket, `ACCEPTS`
+    /// at most.
     fn accept(&mut self) {
-        // Accept until the backlog is empty, so one tick drains it.
-        loop {
+        for _ in 0..ACCEPTS {
             let Some(Listening { listener, .. }) = self.listening() else {
                 return;
             };
@@ -1161,8 +1186,8 @@ impl Server {
     }
 
     /// Handles the whole frames a client sent, then reads more, until it
-    /// has sent no more, or `CONN_READ` bytes, or more than 256 whole
-    /// frames, or a bad one, or it is to be read no more (`Conn::reads`);
+    /// has sent no more, or `CONN_READ` bytes, or `CONN_FRAMES` frames are
+    /// handled, or a bad one, or it is to be read no more (`Conn::reads`);
     /// each whole frame is handled in order, and nothing after a bad one.
     fn read_conn(&mut self, index: usize) {
         let Some(conn) = self.conns.get_mut(index) else {
@@ -1172,7 +1197,7 @@ impl Server {
         let mut decoder = mem::take(&mut conn.decoder);
         let (mut frames, mut read) = (0usize, 0usize);
         let closed = 'read: loop {
-            loop {
+            while frames < CONN_FRAMES {
                 match self.take_frame(index, &mut decoder) {
                     Ok(true) => frames = frames.saturating_add(1),
                     Ok(false) => break,
@@ -1186,7 +1211,7 @@ impl Server {
             let Some(conn) = self.conns.get_mut(index).filter(|c| c.reads()) else {
                 break false;
             };
-            if frames > 256 || read >= CONN_READ {
+            if frames >= CONN_FRAMES || read >= CONN_READ {
                 break false;
             }
             match fuxix::io::read(&conn.stream, &mut self.read_buffer) {
