@@ -559,6 +559,12 @@ impl Decoder {
         self.buffer.shrink(keep);
     }
 
+    /// Whether the bytes held begin with a whole frame, or with a header
+    /// that is an error: either is the next frame taken.
+    pub fn holds_frame(&self) -> bool {
+        !matches!(self.whole(), Ok(None))
+    }
+
     /// The length of the whole frame the bytes held begin with, header
     /// included; `None` if it is not all here yet; an error for a header
     /// that announces no bytes or more than `MAX_FRAME`.
