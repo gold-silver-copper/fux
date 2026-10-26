@@ -1106,9 +1106,11 @@ impl Session {
     }
 
     /// Where a new pane's program starts: `dir`, from the caller's
-    /// directory, or with none the directory of the caller, or of `near`;
-    /// `$HOME` where that is needed and unknown. Unchecked: one the program
-    /// cannot start in fails its start, with the system's error.
+    /// directory, or with none the directory of the caller, or of `near`.
+    /// A CLI caller's own directory that is unknown fails the start;
+    /// `$HOME` stands in only for a pane's that can't be read, or none.
+    /// Unchecked: one the program cannot start in fails its start, with
+    /// the system's error.
     fn start_dir(
         &self,
         here: Here,
