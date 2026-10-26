@@ -434,7 +434,7 @@ A dump makes the layouts and launches again: each shell starts afresh in
 its directory, each program `run` started starts again. It never brings
 back what a process held: its screen, its history, what ran in a shell. A
 pane whose directory is not UTF-8 text, which fuxth cannot write, or a
-shell's that fux cannot read, is dumped without it, and a comment line says
+shell's directory that fux cannot read, is dumped without it, and a comment line says
 so: it starts where the dump is run.
 
 ## Terminal features

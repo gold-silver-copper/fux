@@ -3016,9 +3016,9 @@ fn found(found: AnyRef) -> Reply {
 }
 
 /// `$HOME`: where a pane starts when nothing says where. Unset, or not an
-/// absolute path (empty, or one only the server's own directory would
-/// place), nothing starts; one no program can start in fails the start
-/// with the system's error.
+/// absolute path (empty, or relative, so only the server's own directory
+/// would place it), nothing starts; one no program can start in fails the
+/// start with the system's error.
 fn home() -> Result<PathBuf, Error> {
     let why = match std::env::var_os("HOME").map(PathBuf::from) {
         Some(home) if home.is_absolute() => return Ok(home),
