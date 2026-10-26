@@ -15,7 +15,8 @@ mod tables;
 mod width;
 
 pub use tables::UNICODE_VERSION;
-pub use width::{char_width, str_width};
+pub(crate) use width::cluster_width;
+pub use width::{char_width, clusters, str_width};
 
 /// Whether `c`, printed right after the grapheme cluster `cluster`, would
 /// continue it rather than start the next one, as fux-vt joins what is
@@ -166,7 +167,7 @@ impl Properties {
 
     /// Whether the cluster width rule looks at the character, before or
     /// after it: text with none such takes its characters' columns summed
-    /// (`str_width`).
+    /// (`cluster_width`).
     #[inline]
     pub(crate) fn in_context(self) -> bool {
         self.bits & width::CONTEXT != 0

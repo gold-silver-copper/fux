@@ -131,9 +131,9 @@ enum Kept {
     /// The character just printed there, alone.
     Alone,
     /// Text whose characters' columns sum to 1, none of them one the
-    /// cluster width rule looks at, so `str_width` says 1 of it.
+    /// cluster width rule looks at, so `cluster_width` says 1 of it.
     One,
-    /// Text whose width only `str_width` says.
+    /// Text whose width only `cluster_width` says.
     Unknown,
     /// The cluster is full: once a character of it is dropped, so is every
     /// one after, so a cell always holds a start of its cluster.
@@ -1551,11 +1551,16 @@ impl Screen {
                 // with it the open link, as a glyph printed there would.
                 let blank = g.stored(row, col).is_some_and(|c| !c.has_contents());
                 let end = col.saturating_add(1);
-                // A full cell takes no more (`append`).
+                // A full cell takes no more (`append`), nor the cell
+                // printed last once it has dropped a character, so it
+                // keeps a start of its text.
+                let full = self
+                    .last_print
+                    .is_some_and(|p| p.at == (row, col) && p.full());
                 let mut joined = false;
                 self.with_grid(|g, _, v| {
                     g.mutate_line(row, v, end, |line| {
-                        joined = line.append(usize::from(col), c);
+                        joined = !full && line.append(usize::from(col), c);
                         joined
                     })
                 });
@@ -1850,7 +1855,7 @@ impl Screen {
                     && if summed {
                         !still_one
                     } else {
-                        flag || crate::str_width(line.text(at)) >= 2
+                        flag || crate::unicode::cluster_width(line.text(at)) >= 2
                     };
                 kept
             });

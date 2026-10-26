@@ -170,7 +170,7 @@ B26 and B41 bound host-side objects or host calls.
 | B27 | The kitty keyboard stack | ≤ 32 entries a screen | The oldest goes | 33 × `CSI > 1 u` | `b27` |
 | B28 | Replies | ≤ 16 reply bytes per input byte; each `Reply` ≤ 64 B | — | 585 × DECRQSS `m` with every rendition; each request's longest answer | `b28` |
 | B30 | Cluster text | A cluster ≤ 128 B (`CLUSTER_CAPACITY`); a row's long text ≤ 32C + 128, short ≤ 17C; `text` ≤ 256 a byte | Cut at 128 B; a row with no room drops what would join | `e` + 64 × U+0301 | `b30`; `a_long_cluster_that_ends_at_the_limit_does_not_compact` |
-| B31 | A zero-width character after a full row | `text` ≤ 257 a byte | Dropped | 1,000 × U+200B after a full 1×200 row | `b31` |
+| B31 | A zero-width character after a full row | `text` ≤ 257 a byte | Dropped | 1,000 × U+200B after a full 1×200 row and a BS | `b31` |
 | B32 | Glyph width | Every glyph ≤ 2 columns; U+17D8 is 1 | — | `XYZW\r` U+17D8 on 1×10 | `b32`; `every_character_is_as_wide_as_the_width_rule_says` |
 | B33 | ASCII REP | `cells` ≤ 14,564 a byte; copies past what the screen and history can show are skipped (≤ 720 a REP on 2×10 with 1 KiB of history) | Skipped, same result | 455 × `X ESC[65535b` in 4 KiB | `b33`; `repeat_makes_its_ascii_copies_and_returns` |
 | B34 | Non-ASCII REP | `cells` ≤ 23,832 a byte | As B33 | 372 × `一 ESC[65535b` | `b34`; `rep_spends_a_copy_by_its_width` |

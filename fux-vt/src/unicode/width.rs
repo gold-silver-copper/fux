@@ -35,10 +35,11 @@
 //! wcwidth 0.9.2 and glibc's widths summed make it. Its rules for ligatures
 //! between characters that never share a cluster (Arabic Lam-Alef, Hebrew
 //! Alef-Lamed, Buginese, Tifinagh, Lisu and Old Turkic) take no part: a
-//! cluster is laid out alone. Text of several clusters takes the sum of
-//! theirs.
+//! cluster is laid out alone. A screen gives a cluster's cell 1 column
+//! or 2 (`clusters`).
 
-use super::{Cluster, bits};
+use super::{Cluster, Properties, bits};
+use crate::cell::{CLUSTER_CAPACITY, floor};
 
 /// Where a character's columns alone are in its bits: 0 to 2, or 3 for a
 /// control.
@@ -77,46 +78,73 @@ pub(super) fn of_bits(bits: u16) -> Option<usize> {
     }
 }
 
-/// The columns `text` takes: each of its grapheme clusters' (UAX #29) by
-/// the cluster rule, summed. A cell's cluster is one.
-pub fn str_width(text: &str) -> usize {
-    // Text with none of the characters a rule looks at takes the sum of
-    // its characters' columns, as each cluster of it does.
-    let mut sum = 0usize;
-    for c in text.chars() {
-        let bits = bits(c);
-        if bits & CONTEXT != 0 {
-            return by_clusters(text);
+/// The cells printable `text` takes, printed from a row's start, each as
+/// the text it holds and its columns, 1 or 2; as `Screen::print_as`
+/// places them. A character of width that joins no cluster (UAX #29,
+/// `Cluster`) starts a cell. One of no width joins the cell before it even
+/// when it joins no cluster, and what follows is segmented after it
+/// (README); a Prepend character of no width joins nothing after it. One
+/// of no width with no cell before it is left out. A cell keeps at most
+/// [`CLUSTER_CAPACITY`] bytes, the characters after dropped. It takes 2
+/// columns if its first character does, or once a character joining its
+/// cluster brings its kept text to 2 by the cluster rule
+/// (`cluster_width`), as a cell widens and then stays wide; else 1.
+///
+/// A control takes no cell and ends the cell before it, as one that moves
+/// the cursor (BS, HT, LF, VT, FF, CR) does; what follows is taken as at a
+/// row's start. What a control does on a screen (moving the cursor, an
+/// escape sequence; BEL ends no cluster) is not taken into account.
+pub fn clusters(text: &str) -> impl Iterator<Item = (&str, usize)> {
+    let mut rest = text;
+    std::iter::from_fn(move || {
+        // Printable ASCII before ASCII, or at the end, is a cell of its own.
+        if let [b' '..=b'~', after @ ..] = rest.as_bytes()
+            && after.first().is_none_or(u8::is_ascii)
+        {
+            let (cell, after) = rest.split_at_checked(1)?;
+            rest = after;
+            return Some((cell, 1));
         }
-        sum = sum.saturating_add(match c {
-            '\n' | '\r' => 1,
-            _ => of_bits(bits).unwrap_or(1),
-        });
-    }
-    sum
+        let start = rest.find(|c| char_width(c).is_some_and(|w| w > 0))?;
+        let cell = rest.get(start..)?;
+        let mut chars = cell.char_indices();
+        let (_, first) = chars.next()?;
+        let mut cluster = Cluster::start(first);
+        let mut wide = char_width(first) == Some(2);
+        let mut end = cell.len();
+        for (at, c) in chars {
+            let next = Properties::of(c);
+            let joins = cluster.push_properties(next);
+            let width = next.width();
+            if width.is_none() || (!joins && width != Some(0)) {
+                end = at;
+                break;
+            }
+            let upto = at.saturating_add(c.len_utf8());
+            wide = wide
+                || (joins
+                    && upto <= CLUSTER_CAPACITY
+                    && cell.get(..upto).is_some_and(|t| cluster_width(t) >= 2));
+            if width == Some(0) && next.is_prepend() {
+                cluster = Cluster::ended();
+            } else if !joins {
+                cluster = Cluster::starting(next);
+            }
+        }
+        let (whole, after) = cell.split_at_checked(end)?;
+        rest = after;
+        Some((floor(whole, CLUSTER_CAPACITY), if wide { 2 } else { 1 }))
+    })
 }
 
-/// `str_width` by each cluster, for text holding a character the rule's
-/// arms look at.
-#[cold]
-fn by_clusters(text: &str) -> usize {
-    let mut total = 0usize;
-    let mut start = 0;
-    let mut cluster: Option<Cluster> = None;
-    for (at, c) in text.char_indices() {
-        let joins = match &mut cluster {
-            Some(cluster) => cluster.push(c),
-            None => {
-                cluster = Some(Cluster::start(c));
-                true
-            }
-        };
-        if !joins {
-            total = total.saturating_add(cluster_width(text.get(start..at).unwrap_or("")));
-            start = at;
-        }
+/// The columns printable `text` takes on a screen, from a row's start:
+/// its cells', as [`clusters`] counts them, summed.
+pub fn str_width(text: &str) -> usize {
+    // ASCII is a column a character, but for its controls.
+    if text.is_ascii() {
+        return text.bytes().filter(|b| !b.is_ascii_control()).count();
     }
-    total.saturating_add(cluster_width(text.get(start..).unwrap_or("")))
+    clusters(text).fold(0, |sum, (_, width)| sum.saturating_add(width))
 }
 
 /// What follows a character in its cluster, as the rule reads the cluster
@@ -194,9 +222,10 @@ fn alone(c: char, bits: u16) -> (i8, Next) {
     (width, next)
 }
 
-/// The columns one grapheme cluster takes, read from its end: each
-/// character's, as what follows it in the cluster makes it.
-fn cluster_width(cluster: &str) -> usize {
+/// The columns one grapheme cluster takes by the cluster rule, read from
+/// its end: each character's, as what follows it in the cluster makes it.
+/// A screen widens a narrow cell once its text takes 2.
+pub(crate) fn cluster_width(cluster: &str) -> usize {
     let mut total = 0isize;
     let mut next = Next::DEFAULT;
     let mut widened = false;

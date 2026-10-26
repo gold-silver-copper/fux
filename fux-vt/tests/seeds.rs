@@ -490,6 +490,7 @@ fn seeds() -> Vec<Seed> {
                 let mut out = repeat(&cluster(50), 64);
                 out.extend(cluster(22));
                 out.extend(cluster(8));
+                out.push(0x08);
                 out.extend(repeat("\u{200b}".as_bytes(), 1000));
                 out
             },

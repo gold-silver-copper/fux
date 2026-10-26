@@ -701,7 +701,7 @@ impl Grid {
     /// Writes `text` from (y, x), a cluster a cell (`clusters`), clipped at
     /// `limit`, wide glyphs whole; the column after it is returned.
     fn text(&mut self, y: u16, mut x: u16, text: &str, style: Attributes, limit: u16) -> u16 {
-        for (cluster, width) in clusters(text).filter(|(_, width)| *width > 0) {
+        for (cluster, width) in clusters(text) {
             let Some(end) = x
                 .checked_add(width)
                 .filter(|end| *end <= limit.min(self.cols))
@@ -789,77 +789,16 @@ fn cells(c: char) -> u16 {
     fux_vt::char_width(c).map_or(0, |w| u16::try_from(w).unwrap_or(u16::MAX))
 }
 
-/// The grapheme clusters of fux's own text as fux-vt joins and measures
-/// what is printed, controls dropped, each with its columns (at most 2), so
-/// that fux lays its text out as a pane would. Characters past what a cell
-/// keeps (`fux_vt::CLUSTER_CAPACITY`) are dropped, as a pane drops them.
-fn clusters(text: &str) -> Clusters<'_> {
-    Clusters { text, at: 0 }
+/// The cells fux's own text takes, as a pane prints it from a row's
+/// start (`fux_vt::clusters`): each one's text and columns, 1 or 2.
+fn clusters(text: &str) -> impl Iterator<Item = (&str, u16)> {
+    fux_vt::clusters(text).map(|(cell, width)| (cell, u16::try_from(width).unwrap_or(2)))
 }
 
-/// The clusters of `text` from byte `at` on (`clusters`).
-struct Clusters<'a> {
-    text: &'a str,
-    at: usize,
-}
-
-impl<'a> Iterator for Clusters<'a> {
-    type Item = (&'a str, u16);
-
-    fn next(&mut self) -> Option<(&'a str, u16)> {
-        let text = self.text;
-        loop {
-            let start = self.at;
-            let bytes = text.as_bytes();
-            // ASCII before ASCII, or at the end, is a cluster of its own
-            // (UAX #29): most of fux's text needs no tables.
-            if let Some(&byte) = bytes.get(start)
-                && byte.is_ascii()
-                && bytes.get(start.saturating_add(1)).is_none_or(u8::is_ascii)
-            {
-                self.at = start.saturating_add(1);
-                if byte.is_ascii_control() {
-                    continue;
-                }
-                return Some((text.get(start..self.at).unwrap_or_default(), 1));
-            }
-            let first = text.get(start..)?.chars().next()?;
-            self.at = start.saturating_add(first.len_utf8());
-            if first.is_control() {
-                continue;
-            }
-            // Where the kept text ends: a control ends the cluster, as one
-            // does in a pane.
-            let mut kept = self.at;
-            for c in text.get(self.at..).unwrap_or_default().chars() {
-                let cluster = text.get(start..kept).unwrap_or_default();
-                if c.is_control() || !fux_vt::continues_cluster(cluster, c) {
-                    break;
-                }
-                self.at = self.at.saturating_add(c.len_utf8());
-                if self.at.saturating_sub(start) <= fux_vt::CLUSTER_CAPACITY {
-                    kept = self.at;
-                }
-            }
-            let cluster = text.get(start..kept).unwrap_or_default();
-            let width = fux_vt::str_width(cluster).min(2);
-            return Some((cluster, u16::try_from(width).unwrap_or(2)));
-        }
-    }
-}
-
-/// Display width of a string, controls dropped: its clusters' (`clusters`).
+/// Display width of a string, as a pane prints it (`fux_vt::str_width`).
 pub fn width(text: &str) -> u16 {
-    // ASCII, as most of it is: a column a character.
-    if text.is_ascii() {
-        let printable = text.bytes().filter(|b| !b.is_ascii_control()).count();
-        return u16::try_from(printable)
-            .unwrap_or(u16::MAX)
-            .min(crate::view::MOST);
-    }
-    clusters(text)
-        .map(|(_, width)| width)
-        .fold(0, u16::saturating_add)
+    u16::try_from(fux_vt::str_width(text))
+        .unwrap_or(u16::MAX)
         .min(crate::view::MOST)
 }
 
