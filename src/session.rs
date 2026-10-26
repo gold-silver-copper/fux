@@ -4398,7 +4398,7 @@ mod tests {
         let buffers: Vec<&str> = s.buffers.iter().take(3).map(String::as_str).collect();
         assert_eq!(buffers, ["b", "a", "foo"]);
         let notice = s.views.get(&client).and_then(|v| v.notice.clone());
-        assert!(notice.is_some_and(|n| n.text.contains("is not padded base64")));
+        assert!(notice.is_some_and(|n| n.text.contains("is not base64")));
         // One in a tab no client shows is told once one does.
         run(&mut s, "opts 20 4 size str other name new-workspace")?;
         run(&mut s, "str c1 client str other workspace show-workspace")?;

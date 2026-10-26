@@ -521,7 +521,7 @@ impl Alerts {
 pub enum Uncopied {
     /// It was longer than fux-vt keeps of a string.
     Cut,
-    /// It was not padded base64 (RFC 4648) of UTF-8 text.
+    /// It was not base64 (RFC 4648) of UTF-8 text.
     NotText,
 }
 
@@ -533,7 +533,7 @@ impl std::fmt::Display for Uncopied {
                 "is longer than the {} KiB a string may be",
                 fux_vt::OSC_PAYLOAD_LIMIT / 1024
             ),
-            Uncopied::NotText => f.write_str("is not padded base64 (RFC 4648) of UTF-8 text"),
+            Uncopied::NotText => f.write_str("is not base64 (RFC 4648) of UTF-8 text"),
         }
     }
 }
