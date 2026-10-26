@@ -3062,7 +3062,7 @@ enum Start<'a> {
 }
 
 /// The most bytes a name holds.
-const NAME_MAX: usize = 256;
+pub(crate) const NAME_MAX: usize = 256;
 
 fn check_name(name: &str) -> Result<(), Error> {
     if name.trim().is_empty() {

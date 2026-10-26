@@ -99,8 +99,9 @@ fux %3 str q text send-keys                       # press q: its version from be
 its options and an example;
 `fux help agents` is the recipe for scripts and agents, its first screen
 enough for most work and `fux help TOPIC` the rest
-([docs/agents.md](docs/agents.md)), and `fux help json` what `json` gives
-([docs/json.md](docs/json.md)).
+([docs/agents.md](docs/agents.md)), `fux help json` what `json` gives
+([docs/json.md](docs/json.md)), and `fux help limits` the bounds fux
+keeps.
 
 What a word that acts takes (**options**, a wait, keys, a mouse event) goes
 on the pane before it, in any order: the pane given them becomes a request,
@@ -461,7 +462,7 @@ so: it starts where the dump is run.
   protocol, xterm's modifyOtherKeys, or plain. The decoder and encoder are
   fux-vt's (`fux_vt::keys`), so other hosts of fux-vt can use them.
 - **Synchronized output** (mode 2026): frames reach your terminal whole; a
-  frame is shown anyway after one second or past 2 MiB.
+  frame is shown anyway after 1 s or past 2 MiB.
 - **One terminal answers for a tab.** With several terminals attached,
   a tab's panes are answered (colours, scheme, sixel, cell size) by one
   terminal, the tab's host: of those showing the tab, the one that last

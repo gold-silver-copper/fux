@@ -202,7 +202,7 @@ too). `A counts` gives a version's five counts as integers:
   it took it (its mode line), then the next key. Keys sent to a program
   that exited or that closed its terminal (where the system says so:
   Linux) are refused (`not_running`), and keys past what the pane's input
-  queue holds (about 1 MiB its program has not read) are refused whole
+  queue holds (1,048,768 bytes its program has not read) are refused whole
   (`input_full`; more than the queue ever holds, `too_long`).
 
   ```fux

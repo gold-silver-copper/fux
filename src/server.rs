@@ -62,14 +62,14 @@ const CONN_KEEP: usize = 64 * 1024;
 /// and said to be (`Refused`): a copy, a program, keys. A paint is made
 /// only once all that waited is written (`Conn::paint_due`), so none is
 /// ever refused, nor the state it shows moved on without it.
-const OUT_MAX: usize = 4 << 20;
+pub(crate) const OUT_MAX: usize = 4 << 20;
 /// How far behind the client's own conversation with the server may go:
 /// questions for its terminal, the bell, its screen ended. Each is small,
 /// and one refused would leave the session and the terminal disagreeing,
 /// so a client this far behind is detached instead, told why. One frame of
 /// theirs, `MAX_FRAME` at most, may take the backlog past `OUT_MAX`; a
 /// frame's room more is the conversation's.
-const TALK_MAX: usize = OUT_MAX + 2 * crate::protocol::MAX_FRAME;
+pub(crate) const TALK_MAX: usize = OUT_MAX + 2 * crate::protocol::MAX_FRAME;
 /// How long a stopping server waits for its clients and processes.
 const STOP_WAIT: Duration = Duration::from_millis(500);
 /// A condition that persists is logged once, then at most this often.

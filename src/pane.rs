@@ -262,7 +262,7 @@ pub const OPTIONS: fux_vt::Options = fux_vt::Options::new()
 /// rest are dropped, and told as a reply dropped for a full queue is.
 pub const REPLIES_MAX: usize = 4096;
 /// The most titles a pane's program can push (`CSI 22 t`): xterm's bound.
-const TITLE_STACK: usize = 10;
+pub(crate) const TITLE_STACK: usize = 10;
 /// The most characters of a title kept.
 pub const TITLE_MAX: usize = 256;
 /// The most characters of a notification kept.
