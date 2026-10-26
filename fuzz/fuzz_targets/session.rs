@@ -26,7 +26,7 @@ use fux::keys::{Key, Keystroke};
 use fux::outer;
 use fux::protocol::{Context, ToAttached};
 use fux::render::{Grid, compose_view, paint_into};
-use fux::screens::{Effect, Screen};
+use fux::screens::{Effect, Job, Screen};
 use fux::script::{AsClient, Host, run_capped};
 use fux::session::{InProcess, Outgoing, Session};
 use fux::view::Mode;
@@ -266,17 +266,17 @@ impl Run {
         code: &str,
     ) -> (Result<String, String>, Option<Screen>) {
         let mut opened = None;
-        let said = self.program_opening(client, code, &mut opened);
+        let said = self.program_opening(client, &code.into(), &mut opened);
         (said, opened)
     }
 
     fn program_opening(
         &mut self,
         client: Option<ClientId>,
-        code: &str,
+        job: &Job,
         opened: &mut Option<Screen>,
     ) -> Result<String, String> {
-        let tokens = fuxth::token::source("fuzz", code).map_err(|e| e.to_string())?;
+        let tokens = job.tokens().map_err(|e| e.to_string())?;
         if tokens.iter().any(|t| READS.contains(&&*t.text)) {
             return Err("reads a file".to_owned());
         }
@@ -309,8 +309,9 @@ impl Run {
 
     /// Runs `code` as `client`, telling it what came of it, as a client
     /// does with its bindings' and its prompt's programs.
-    fn run_as(&mut self, client: ClientId, code: &str) {
-        let (said, opened) = self.program(Some(client), code);
+    fn run_as(&mut self, client: ClientId, job: &Job) {
+        let mut opened = None;
+        let said = self.program_opening(Some(client), job, &mut opened);
         if let Some(screen) = opened {
             self.open(client, screen);
         }
@@ -333,7 +334,7 @@ impl Run {
             if let Screen::Copy(_) = keys.screen {
                 acts.push(Act::Copy(CopyAct::Leave));
             }
-            acts.extend(screen.opened());
+            acts.extend(screen.opened(&self.keymap.modes));
             keys.screen = screen;
         }
         self.s.acts(client, acts);
@@ -390,7 +391,7 @@ impl Run {
             // Sent only as a client attaches, by the server.
             Outgoing::To(_, ToAttached::Welcome(..)) => panic!("a welcome from the session"),
             Outgoing::Shutdown { .. } => self.shut = true,
-            Outgoing::To(client, ToAttached::Run(code)) => self.run_as(client, &code),
+            Outgoing::To(client, ToAttached::Run(code)) => self.run_as(client, &code.into()),
             Outgoing::To(client, ToAttached::Ended(kind)) => {
                 if let Some(keys) = self.keys.get_mut(&client) {
                     keys.screen.ended(kind);
@@ -503,7 +504,7 @@ impl Run {
         for effect in effects {
             match effect {
                 Effect::Send(act) => self.s.acts(client, vec![act]),
-                Effect::Run(code) => self.run_as(client, &code),
+                Effect::Run(job) => self.run_as(client, &job),
             }
         }
     }
@@ -542,9 +543,9 @@ impl Run {
                     );
                     self.s.acts(client, vec![act]);
                 }
-                Effect::Run(code) => {
-                    writes |= WRITES.iter().any(|w| code.contains(w));
-                    self.run_as(client, &code);
+                Effect::Run(job) => {
+                    writes |= WRITES.iter().any(|w| job.code.contains(w));
+                    self.run_as(client, &job);
                 }
             }
         }

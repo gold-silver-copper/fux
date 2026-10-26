@@ -257,6 +257,8 @@ impl Models {
                     Some(Bound::Prefix(keys)) => (self.prefixed.iter_mut())
                         .find(|b| b.keys == *keys)
                         .map(|b| &mut b.binding),
+                    // The fuzz writes no screen's keys.
+                    Some(Bound::In(..)) => None,
                 };
                 let Some(binding) = binding else {
                     return false;
@@ -385,7 +387,7 @@ impl Client {
             .chain(self.keymap.root.iter().map(|(_, b)| b.code.as_str()))
             .collect();
         for step in &steps {
-            if let Effect::Run(code) = step {
+            if let Effect::Run(fux::screens::Job { code, .. }) = step {
                 // Only a bound program runs, and it compiles: it did when it
                 // was bound.
                 assert!(
@@ -403,7 +405,7 @@ impl Client {
                     column.unwrap_or_default(),
                 )))]
             } else if let Some((_, binding)) = root {
-                vec![Effect::Run(binding.code.clone())]
+                vec![Effect::Run(binding.code.clone().into())]
             } else {
                 vec![Effect::Send(fux::act::Act::Key(stroke))]
             };
