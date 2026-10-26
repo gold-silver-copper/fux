@@ -104,7 +104,7 @@ and `src/*/tests.rs`. Every mode SM, RM, DECSET and DECRST set is a
 behaviour is the table above. `Parser::with_options` turns each on
 independently: a `Feature` each (`Options::new().with(Feature::Reflow)`),
 and `identity` by `Options::with_identity`. `Parser::process_with`
-delivers to a `Sink`, whose `reply`, `event` and `unhandled` methods
+delivers to a `Sink`, whose `reply`, `event`, `unhandled` and `picture` methods
 discard by default.
 
 | Feature | Behaviour | Tests |

@@ -540,7 +540,7 @@ pub struct Losses {
     pub copies_cut: u64,
     pub copies_not_text: u64,
     /// Sixel pictures it drew not kept whole
-    /// (`fux_vt::Parser::pictures_refused`).
+    /// (`fux_vt::Sink::picture`).
     pub pictures: u64,
     /// Times reading its output, or a resize, was refused memory
     /// (`fux_vt::Parser::refused`): each lost only what it was for.
@@ -609,17 +609,31 @@ impl Losses {
             pictures: p,
             memory: m,
         } = self;
-        let each: [(u64, &str, &str); 6] = [
-            (n, "input dropped", input),
-            (r, "replies to its program dropped", &replies),
-            (c, copies, &cut),
-            (t, copies, &not_text),
-            (p, "sixel pictures not kept whole", pictures),
-            (m, "memory refused", memory),
+        // Each kind: how many, what, why, and what ends its run, till which
+        // more are counted, not told (`Run`).
+        let each: [(u64, &str, &str, &str); 6] = [
+            (n, "input dropped", input, "its program reads"),
+            (
+                r,
+                "replies to its program dropped",
+                &replies,
+                "a read drops none",
+            ),
+            (c, copies, &cut, "a copy is made"),
+            (t, copies, &not_text, "a copy is made"),
+            (
+                p,
+                "sixel pictures not kept whole",
+                pictures,
+                "one is placed whole",
+            ),
+            (m, "memory refused", memory, "a read refuses none"),
         ];
         (each.into_iter())
             .filter(|(n, ..)| *n > 0)
-            .map(|(n, what, why)| format!("{id}: {what} ({n}): {why}"))
+            .map(|(n, what, why, till)| {
+                format!("{id}: {what} ({n}): {why}; more till {till} are counted in its `lost`")
+            })
             .collect()
     }
 }
@@ -1188,9 +1202,10 @@ impl Pane {
             self.scheme_told = Some(scheme);
         }
         let pictures = sink.pictures;
-        // A run of dropped replies ends at a read that drops none while
-        // the queue takes input.
-        if replies == 0 && self.input.refusing == Refusing::No {
+        // A run of dropped replies ends at a read of output that drops
+        // none while the queue takes input: a turn that only finishes work
+        // left reads none.
+        if replies == 0 && self.input.refusing == Refusing::No && !bytes.is_empty() {
             self.input.replies = Run::Over;
         }
         self.lose_replies(replies);
@@ -2149,6 +2164,24 @@ pub(crate) mod tests {
         assert!(pane.take_untold().replies > 0, "told after its run ended");
         pane.output(&queries);
         assert!(pane.take_untold().replies > 0, "a later run");
+        Ok(())
+    }
+
+    /// A turn that reads no output, only finishing work left, ends no run
+    /// of replies dropped: the next read's drops are in the same run.
+    #[test]
+    fn a_turn_reading_nothing_ends_no_run() -> Result<(), Error> {
+        let mut pane = pane(3, 20)?;
+        let queries: Vec<u8> = std::iter::repeat_n(&b"\x1b[6n"[..], REPLIES_MAX)
+            .flatten()
+            .copied()
+            .collect();
+        pane.output(&queries);
+        assert!(pane.take_untold().replies > 0);
+        pane.input.drain_all();
+        pane.read_unread();
+        pane.output(&queries);
+        assert!(!pane.loses(), "the same run");
         Ok(())
     }
 
