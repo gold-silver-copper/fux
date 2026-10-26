@@ -378,9 +378,10 @@ impl Conn {
     }
 
     /// Whether a frame it sent waits, read but not handled, for its next
-    /// turn (`CONN_FRAMES`): it is ready to read whatever its socket says.
+    /// turn (`CONN_FRAMES`), or an error does: it is served as if readable,
+    /// though its socket may have nothing more.
     fn frame_waits(&self) -> bool {
-        self.reads() && self.decoder.holds_frame()
+        self.reads() && self.decoder.ready().unwrap_or(true)
     }
 
     /// When the client attached here may be painted: if its view changed,
@@ -875,7 +876,8 @@ impl Server {
                 add(PollFd::new(&child.master, flags), Slot::Pane(*id));
             }
         }
-        // Frames waiting are handled on this tick, with no wait for others.
+        // A connection with frames waiting is served this round: the poll
+        // does not wait.
         let waits = self.conns.iter().any(Conn::frame_waits);
         let timeout = if waits { Some(Duration::ZERO) } else { timeout };
         match fuxix::poll::poll(&mut fds, timeout) {
