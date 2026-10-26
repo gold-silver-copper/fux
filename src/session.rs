@@ -2,8 +2,8 @@
 //! every command that changes them.
 use crate::code::{Code, Raise};
 use crate::command::{
-    self, AnyRef, ClientAction, Command, Extent, Input, Kind, Mouse, MoveTo, PanePick, PaneResize,
-    Pick, Request, Resized, Sibling, SwapWith, WsRef,
+    self, AnyRef, ClientAction, Command, Extent, Input, Kind, Members, Mouse, MoveTo, PanePick,
+    PaneResize, Pick, Request, Resized, Sibling, SwapWith, WsRef,
 };
 use crate::config::Config;
 use crate::copy::MAX_CELLS;
@@ -2192,6 +2192,20 @@ impl Session {
             }
             Command::Resolve { text, kind } => Ok(found(self.resolve(text, *kind, here)?)),
             Command::PaneNamed { name } => Ok(found(AnyRef::Pane(self.pane_named(name)?))),
+            &Command::Members { target, members } => {
+                let ids: Vec<AnyRef> = match members {
+                    Members::Panes => (self.panes_of(target)?.into_iter())
+                        .map(AnyRef::Pane)
+                        .collect(),
+                    Members::Tabs => (self.tabs_of(self.there(target)?).into_iter())
+                        .map(AnyRef::Tab)
+                        .collect(),
+                };
+                Ok(Reply {
+                    ids,
+                    ..Reply::default()
+                })
+            }
             &Command::ListBuffers => {
                 let line = |(i, text): (usize, &String)| {
                     let preview: String = (text.chars())

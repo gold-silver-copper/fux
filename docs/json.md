@@ -89,7 +89,8 @@ palette numbers or `"#rrggbb"`.
 `run`, `split`, `new-tab`, `new-workspace` and `respawn` leave an answer
 (below), which is also the new pane: a word that wants a pane takes it as
 one, and `wait` waits from its version. `json` of a pane, tab or workspace is its id as a string, `"%4"`,
-and `X info json` all of it.
+and `X info json` all of it. `X panes json` and `X tabs json` are arrays
+of them in layout order, `["%3","%4"]`.
 
 ## Answers and waits
 
@@ -186,8 +187,8 @@ they run, so a `try` may name them too.
 ## `status json`
 
 ```json
-{"socket":"/run/user/1000/fux/server.sock","version":"0.35.0","protocol":21,
- "server_version":"0.35.0","server_protocol":21,"compatible":true}
+{"socket":"/run/user/1000/fux/server.sock","version":"0.35.0","protocol":22,
+ "server_version":"0.35.0","server_protocol":22,"compatible":true}
 ```
 
 With no server, `status` fails (`no_server`), saying the socket and whether
