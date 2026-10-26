@@ -545,7 +545,7 @@ impl Session {
     /// One workspace, holding one tab with one shell, laid out on a
     /// client's screen of `size`.
     pub fn start(&mut self, size: Size) -> Result<(), Error> {
-        let (cwd, starting) = (home(), Starting::default());
+        let (cwd, starting) = (home()?, Starting::default());
         let new = NewPane::new(Start::Shell(&[]), &cwd, &starting, (size, None));
         self.create_workspace(Some(MAIN.into()), None, Fit::Clients(size), new)
             .map(drop)
@@ -1099,15 +1099,6 @@ impl Session {
 
     // ------------------------------------------------------------ creation
 
-    fn cwd_for(&self, here: Here, near: Option<PaneId>) -> PathBuf {
-        let near = match here {
-            Here::Cli(_, Some(cwd)) => return cwd.to_owned(),
-            Here::Cli(_, None) => near,
-            Here::Client(_, place) => near.or(Some(place.pane)),
-        };
-        near.and_then(|p| self.dir_of(p)).unwrap_or_else(home)
-    }
-
     /// The directory pane `pane`'s program is in, if it can be read.
     fn dir_of(&self, pane: PaneId) -> Option<PathBuf> {
         let child = self.parts.panes().get(&pane)?.process().child()?;
@@ -1115,14 +1106,26 @@ impl Session {
     }
 
     /// Where a new pane's program starts: `dir`, from the caller's
-    /// directory, or with none the directory of the caller, or of `near`.
-    /// Unchecked: one the program cannot start in fails its start, with
-    /// the system's error.
-    fn start_dir(&self, here: Here, dir: Option<&Path>, near: Option<PaneId>) -> PathBuf {
-        match dir {
-            Some(dir) => self.cwd_for(here, None).join(dir),
-            None => self.cwd_for(here, near),
+    /// directory, or with none the directory of the caller, or of `near`;
+    /// `$HOME` where that is needed and unknown. Unchecked: one the program
+    /// cannot start in fails its start, with the system's error.
+    fn start_dir(
+        &self,
+        here: Here,
+        dir: Option<&Path>,
+        near: Option<PaneId>,
+    ) -> Result<PathBuf, Error> {
+        if let Some(dir) = dir.filter(|dir| dir.is_absolute()) {
+            return Ok(dir.to_owned());
         }
+        let near = near.filter(|_| dir.is_none());
+        let known = match here {
+            Here::Cli(_, Some(cwd)) => Some(cwd.to_owned()),
+            Here::Cli(_, None) => near.and_then(|p| self.dir_of(p)),
+            Here::Client(_, place) => self.dir_of(near.unwrap_or(place.pane)),
+        };
+        let base = known.map_or_else(home, Ok)?;
+        Ok(dir.map_or_else(|| base.clone(), |dir| base.join(dir)))
     }
 
     /// The name a workspace gets when none is given: `workspace-N` after
@@ -2246,7 +2249,7 @@ impl Session {
         (dir, size): (Option<&Path>, command::Size),
         (here, follows): (Here, bool),
     ) -> Result<(PathBuf, Fit, Starts), Error> {
-        let cwd = self.start_dir(here, dir, None);
+        let cwd = self.start_dir(here, dir, None)?;
         let fit = self.new_fit(size, here)?;
         let follower = (here.client().filter(|_| follows)).and_then(|c| self.views.get(&c));
         let screen = (follower.filter(|view| view.sizes())).and_then(Self::screen_size);
@@ -2441,7 +2444,7 @@ impl Session {
     ) -> Result<Reply, Error> {
         let (here, starting) = (self.here(origin)?, self.starting_for(origin));
         let target = self.pane(target)?.id();
-        let cwd = self.start_dir(here, dir, Some(target));
+        let cwd = self.start_dir(here, dir, Some(target))?;
         // The splitting client follows the new pane, if it shows its tab;
         // from the CLI, the clients that focus the split one.
         let tab = self.locate(target).map(|(_, tab)| tab);
@@ -3005,10 +3008,12 @@ fn found(found: AnyRef) -> Reply {
     }
 }
 
-/// `$HOME`, else `/`: where a pane starts when nothing says where.
-fn home() -> PathBuf {
+/// `$HOME`: where a pane starts when nothing says where. Taken as it is
+/// set: one no program can start in fails the start with the system's
+/// error; unset, nothing starts.
+fn home() -> Result<PathBuf, Error> {
     let home = std::env::var_os("HOME").map(PathBuf::from);
-    home.filter(|p| p.is_dir()).unwrap_or_else(|| "/".into())
+    home.ok_or_else(|| fail(Code::Start, "$HOME is not set, and no directory was given"))
 }
 
 /// The most read of what a program left on its terminal as it ends, in

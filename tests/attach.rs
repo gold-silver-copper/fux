@@ -921,6 +921,54 @@ fn a_server_a_client_started_outlives_the_clients_terminal() -> Outcome {
     after
 }
 
+/// A first shell started where nothing says where starts in `$HOME`, or
+/// not at all: unset, the attach fails naming it; set to no directory, it
+/// fails with the system's error. Neither starts in `/`.
+#[test]
+fn a_first_shell_with_no_usable_home_is_refused() -> Outcome {
+    let dir = fuxix::file::scratch()
+        .map_err(e)?
+        .join(format!("fux-home-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).map_err(e)?;
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).map_err(e)?;
+    let nowhere = dir.join("no-such-home");
+    let cases = [
+        (
+            None,
+            "$HOME is not set, and no directory was given".to_owned(),
+        ),
+        (
+            Some(&nowhere),
+            format!("in {nowhere:?}: No such file or directory (os error 2)"),
+        ),
+    ];
+    for (i, (home, said)) in cases.into_iter().enumerate() {
+        let socket = dir.join(format!("s{i}")).join("fux.sock");
+        let mut terminal = Terminal::start(10, 40, &[FUX], |command| {
+            command
+                .env("FUX_SOCKET", &socket)
+                .env("SHELL", "/bin/sh")
+                .env("XDG_CONFIG_HOME", &dir);
+            match home {
+                Some(home) => command.env("HOME", home),
+                None => command.env_remove("HOME"),
+            };
+        })?;
+        let status = terminal.wait_exit();
+        let _ = std::process::Command::new(FUX)
+            .arg("force-kill-server")
+            .env("FUX_SOCKET", &socket)
+            .output();
+        let output = String::from_utf8_lossy(&terminal.output).into_owned();
+        assert!(!status?.success(), "{output}");
+        assert!(output.contains(&said), "{output}");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+    Ok(())
+}
+
 /// Resizing a terminal signals its client, and a signal can interrupt a
 /// read or write in flight. Typing while the window is resized, hundreds of
 /// times, keeps the client attached and loses no byte (Linux once ended the attachment with "Interrupted system call").
