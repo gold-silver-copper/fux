@@ -387,7 +387,10 @@ pub enum Begun {
 struct Replacement {
     fresh: Pane,
     process: Process,
-    /// When it began: its turns are due from then.
+    /// The history it was made to keep, which a `set` may change meanwhile.
+    history: usize,
+    /// When it began: its turns are due from then, a frame the old program
+    /// holds, with nothing else to read, read by one.
     since: Instant,
 }
 
@@ -774,6 +777,7 @@ impl Session {
         let new = Replacement {
             fresh,
             process,
+            history,
             since,
         };
         self.respawning.insert(id, new);
@@ -783,13 +787,12 @@ impl Session {
 
     /// What ends a turn of pane `id`'s reads: once nothing read waits, a
     /// program that exited with output unread exits, and a respawn under
-    /// way takes its place, a frame its old program holds read first.
+    /// way takes its place, once a frame its old program holds is read
+    /// too, by a turn of its own (`fire`).
     fn after_turn(&mut self, id: PaneId) {
         let respawning = self.respawning.contains_key(&id);
-        if respawning && self.pane(id).is_ok_and(|p| p.frame_deadline().is_some()) {
-            self.read_with(id, |p| p.release_frame());
-        }
-        let Some(pane) = self.parts.panes().get(&id).filter(|p| !p.has_unread()) else {
+        let waits = |p: &&Pane| p.has_unread() || respawning && p.frame_deadline().is_some();
+        let Some(pane) = self.parts.panes().get(&id).filter(|p| !waits(p)) else {
             return;
         };
         if let Some(ended) = pane.exiting {
@@ -802,7 +805,14 @@ impl Session {
             self.end(new.process, true);
             return;
         };
+        // At the pane's size and history now, which may have changed while
+        // it waited.
+        let (size, history) = (pane.size(), self.config.history_bytes.get());
         let (old, left) = pane.respawned(new.fresh, new.process);
+        pane.resize(size);
+        if new.history != history {
+            pane.set_history_bytes(history);
+        }
         // An exit that came while it was no pane's program is told now: the
         // server looks for exits as they are signalled (`Server::reap`).
         let exited = pane.process().child().and_then(|c| c.leader.exited());
@@ -817,7 +827,7 @@ impl Session {
         if let Some(ended) = exited {
             self.exited(id, ended);
         }
-        // Sized as its pane is now, which may have changed while it waited.
+        // Hosted as its pane is now.
         self.touch();
         self.settle();
     }
@@ -1867,7 +1877,13 @@ impl Session {
         match timer {
             Timer::Frame(id) => self.read_with(id, |p| p.release_frame()),
             Timer::Unread(id) => {
-                self.read_with(id, |p| p.read_unread());
+                // A respawn under way reads a frame its old program holds.
+                let frame = self.respawning.contains_key(&id)
+                    && self.pane(id).is_ok_and(|p| p.frame_deadline().is_some());
+                self.read_with(id, |p| match frame {
+                    true => p.release_frame(),
+                    false => p.read_unread(),
+                });
                 self.after_turn(id);
             }
         }
@@ -4093,6 +4109,68 @@ mod tests {
             lines.contains("respawned %2 @2 +2 input_unread=3"),
             "{lines}"
         );
+        for dying in std::mem::take(&mut s.dying) {
+            if let Some(pid) = dying.kill() {
+                process::reaped(pid);
+            }
+        }
+        Ok(())
+    }
+
+    /// A pane resized while respawning, in a tab no client shows, keeps
+    /// that size once its new program takes over.
+    #[test]
+    fn a_resize_while_respawning_is_kept() -> Result<(), String> {
+        let mut s = started(Config::default())?;
+        run(&mut s, "opts 80 24 size str /bin/cat program run")?;
+        let id = PaneId::of(2);
+        s.output(id, &crate::pane::tests::spends_the_budget(24, 80));
+        let begun = s.begin(respawn_of(id, &[]), &Origin::Cli(Caller::default()));
+        let Begun::Waiting(waiting) = begun else {
+            return Err("answered before what was left was read".into());
+        };
+        run(&mut s, "%2 tab 100 30 resize")?;
+        turns(&mut s, id, &waiting)?;
+        let pane = s.pane(id).map_err(|e| e.to_string())?;
+        assert_eq!((pane.respawns, pane.size()), (1, sized(30, 100)?));
+        Ok(())
+    }
+
+    /// A program started for a respawn that exits before it takes over is
+    /// told exited as it does: the server looked for exits as they were
+    /// signalled, when it was no pane's.
+    #[test]
+    fn a_respawned_program_that_ends_first_is_told_exited() -> Result<(), String> {
+        let mut s = started(Config::default())?;
+        run(&mut s, "opts 80 24 size str /bin/cat program run")?;
+        let id = PaneId::of(2);
+        s.output(id, &crate::pane::tests::spends_the_budget(24, 80));
+        let mut stream = crate::events::Subscription::new(None, false, s.parts.journal());
+        // Programs are started, as a server starts them.
+        s.launch = Some("/nonexistent/fux.sock".into());
+        let begun = s.begin(
+            respawn_of(id, &["/bin/true"]),
+            &Origin::Cli(Caller::default()),
+        );
+        s.launch = None;
+        let Begun::Waiting(waiting) = begun else {
+            return Err("answered before what was left was read".into());
+        };
+        let ended = |s: &Session| {
+            let replacement = s.respawning.get(&id).and_then(|r| r.process.child());
+            replacement.and_then(|c| c.leader.exited())
+        };
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while ended(&s).is_none() {
+            assert!(Instant::now() < deadline, "/bin/true never ended");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        turns(&mut s, id, &waiting)?;
+        let lines = stream
+            .told(s.parts.journal(), usize::MAX, |t| s.holder(t))
+            .0;
+        let at = |what: &str| lines.find(&format!("{what} %2")).ok_or(lines.clone());
+        assert!(at("respawned")? < at("exited")?, "{lines}");
         for dying in std::mem::take(&mut s.dying) {
             if let Some(pid) = dying.kill() {
                 process::reaped(pid);
