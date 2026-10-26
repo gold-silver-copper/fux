@@ -253,9 +253,9 @@ too). `A counts` gives a version's five counts as integers:
   shell's pane is refused, `not_run`). The new program starts at once, and
   takes over once what the old one left is read, in turns as any output is,
   and its exit told. Meanwhile the old program is let go and the pane runs
-  none of its own: input and `signal` are refused, as is another respawn
-  (`still_running`); closing the pane ends the new program, and the respawn
-  answers `closed`. The respawn goes on if its caller goes.
+  none of its own: input is refused (`not_running`), as are `signal` and
+  another respawn (`still_running`); closing the pane ends the new program,
+  and the respawn answers `closed`. The respawn goes on if its caller goes.
 
 ## read: Reading the screen
 

@@ -155,10 +155,11 @@ codes! {
     /// A command used wrongly.
     Usage "usage",
     // What a command meets.
-    /// A program that exited or closed its terminal: nothing takes input
-    /// there.
+    /// A program that exited or closed its terminal, or none the pane's
+    /// while it respawns: nothing takes input there.
     NotRunning "not_running",
-    /// A program still running, which a respawn would not end.
+    /// A program still running, which a respawn would not end; or a
+    /// respawn of the pane still under way.
     StillRunning "still_running",
     /// A respawn of a pane whose program `run` did not start.
     NotRun "not_run",
