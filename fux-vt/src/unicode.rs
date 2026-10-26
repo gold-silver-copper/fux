@@ -15,8 +15,7 @@ mod tables;
 mod width;
 
 pub use tables::UNICODE_VERSION;
-pub(crate) use width::cluster_width;
-pub use width::{char_width, clusters, str_width};
+pub use width::{char_width, str_width};
 
 /// Whether `c`, printed right after the grapheme cluster `cluster`, would
 /// continue it rather than start the next one, as fux-vt joins what is
@@ -33,7 +32,9 @@ pub fn continues_cluster(cluster: &str, c: char) -> bool {
     // no look at the cluster.
     let next = Properties::of(c);
     let last = cluster.chars().next_back().map(Properties::of);
-    if last.is_some_and(|last| last.holds_off(next)) {
+    if last.is_some_and(|last| last.is_prepend() && last.width() == Some(0))
+        && next.width() != Some(0)
+    {
         return false;
     }
     if matches!(
@@ -133,14 +134,6 @@ impl Properties {
         self.kind() == Break::Prepend
     }
 
-    /// Whether a character of properties `next` after this one starts the
-    /// next cluster though UAX #29 joins them: this is a Prepend character
-    /// of no width, which fux-vt joins nothing of width to (README).
-    #[inline]
-    fn holds_off(self, next: Self) -> bool {
-        self.is_prepend() && self.width() == Some(0) && next.width() != Some(0)
-    }
-
     /// Extended_Pictographic.
     #[inline]
     fn pictographic(self) -> bool {
@@ -173,7 +166,7 @@ impl Properties {
 
     /// Whether the cluster width rule looks at the character, before or
     /// after it: text with none such takes its characters' columns summed
-    /// (`cluster_width`).
+    /// (`str_width`).
     #[inline]
     pub(crate) fn in_context(self) -> bool {
         self.bits & width::CONTEXT != 0
