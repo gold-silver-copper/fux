@@ -1821,6 +1821,29 @@ mod tests {
         assert_eq!(made, Ok(()));
     }
 
+    /// A kind taken as another is so where a word's effect names it, never
+    /// inside a name: a string is a workspace to `in`, not a handle.
+    #[test]
+    fn a_string_is_a_workspace_only_where_a_word_says() {
+        let compiles = |code: &str| {
+            let tokens = fuxth::token::source("t", code).map_err(|e| e.to_string());
+            tokens.and_then(|t| {
+                super::super::compile(&t)
+                    .map(drop)
+                    .map_err(|e| e.to_string())
+            })
+        };
+        assert_eq!(compiles("opts str agent in new-tab"), Ok(()));
+        assert_eq!(compiles("opts 80 24 size new-tab clear-history"), Ok(()));
+        for wrong in [
+            "str nope kill",
+            "str nope horizontal split",
+            "str nope info",
+        ] {
+            assert!(compiles(wrong).is_err(), "{wrong}");
+        }
+    }
+
     #[test]
     fn an_answer_of_several_panes_is_an_array() {
         let answer = |json: &str| {

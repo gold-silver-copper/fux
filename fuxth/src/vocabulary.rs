@@ -86,16 +86,18 @@ impl Vocabulary {
         Ok(())
     }
 
-    /// Where an effect names kind `name`, a value of kind `also` is taken
-    /// too, and may be given (an action's answer is its pane): said before
-    /// any effect is read, so none read one way and another the other.
+    /// Where a word's effect names kind `name`, a value of kind `also` is
+    /// taken too, and may be given (an action's answer is its pane): said
+    /// before any word, so none read one way and another the other. A name
+    /// of effects (`name`) reads each kind as itself, so it widens none,
+    /// and neither does another kind `also` is taken as.
     pub fn taken_as(&mut self, name: &str, also: &str) -> Result<(), Error> {
-        if !self.words.is_empty() || !self.names.is_empty() {
+        if !self.words.is_empty() {
             return Err(refused(format!(
                 "{name}: taken as more after an effect named it"
             )));
         }
-        let also = taken(&self.lookup(also)?.0);
+        let also = taken(&self.lookup(also, false)?.0);
         let kind = self.kinds.iter_mut().find(|(n, ..)| n == name);
         let kind = kind.ok_or_else(|| refused(format!("{name}: no such kind")))?;
         kind.3 = kind.3.union(also);
@@ -110,7 +112,8 @@ impl Vocabulary {
         let mut map = Map::new();
         for part in kinds.split_whitespace() {
             let (from, to) = part.split_once('>').unwrap_or((part, part));
-            map.push((taken(&self.lookup(from)?.0), taken(&self.lookup(to)?.0)));
+            let (from, to) = (self.lookup(from, false)?.0, self.lookup(to, false)?.0);
+            map.push((taken(&from), taken(&to)));
         }
         self.names.push((name.to_owned(), map, said.to_owned()));
         Ok(())
@@ -119,22 +122,20 @@ impl Vocabulary {
     /// Refuses `name` for a kind or a name of effects if an effect's
     /// `name` means something already.
     fn unnamed(&self, name: &str) -> Result<(), Error> {
-        match self.lookup(name) {
+        match self.lookup(name, false) {
             Ok(_) => Err(refused(format!("{name}: a kind or name already"))),
             Err(_) => Ok(()),
         }
     }
 
-    /// What a name in an effect stands for, and how an error says it.
-    fn lookup(&self, name: &str) -> Result<(Map, String), Error> {
+    /// What a name in an effect stands for, and how an error says it: a
+    /// host kind with what it is taken as too if `widened`.
+    fn lookup(&self, name: &str, widened: bool) -> Result<(Map, String), Error> {
         if let Some((_, map, said)) = self.names.iter().find(|(n, ..)| n == name) {
             return Ok((map.clone(), said.clone()));
         }
-        let host = self
-            .kinds
-            .iter()
-            .find(|(n, ..)| n == name)
-            .map(|kind| kind.3);
+        let host = (self.kinds.iter().enumerate()).find(|(_, (n, ..))| n == name);
+        let host = host.map(|(i, kind)| if widened { kind.3 } else { Kinds::host(i) });
         let core = Kind::ALL
             .into_iter()
             .find(|k| k.name() == name)
@@ -169,7 +170,8 @@ impl Vocabulary {
         let Some((before, after)) = effect.split_once("--") else {
             return Err(refused(format!("{name}: no -- in {effect:?}")));
         };
-        let lookup = |p| (self.lookup(p)).map_err(|e| refused(format!("{name}: {}", e.message)));
+        let lookup =
+            |p| (self.lookup(p, true)).map_err(|e| refused(format!("{name}: {}", e.message)));
         let before: Vec<&str> = before.split_whitespace().collect();
         let takes = before
             .iter()
