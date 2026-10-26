@@ -5,7 +5,7 @@
 use super::{Ask, Bound, Fux, Host, Local, On, Opts, Said, Shell, Then};
 use crate::code::{Code, Raise};
 use crate::command::{
-    AnyRef, Button, ClientAction, Command, Extent, Input, Kind, Mouse, MoveTo, PanePick,
+    AnyRef, Button, ClientAction, Command, Extent, Input, Kind, Members, Mouse, MoveTo, PanePick,
     PaneResize, Percent, Pick, Request, Resized, Sibling, Since, Source, SwapWith, Usage, Wait,
     Wheel, WsRef,
 };
@@ -237,6 +237,8 @@ words! {
         Finding Here "here" "-- pane" "the pane this runs in (FUX_PANE)" "fux here str done notify" [];
         Finding Client "client" "name -- client" "a client by its id, c2" "fux str c1 client str left focus" [];
         Finding Me "me" "-- client" "the client whose key or prompt runs this" "str z str 'me zoom' bind" [];
+        Finding Panes "panes" "handle -- list" "the panes of a pane (itself), a tab or a workspace, in layout order" "fux str agent workspace panes each capture print end" [];
+        Finding Tabs "tabs" "handle -- list" "the tabs of a pane or tab (its own) or a workspace, in the workspace's order" "fux str agent workspace tabs each str name get print end" [];
         Finding Focused "focused" "client -- pane" "the pane a client focuses" "fux str c1 client focused capture" [];
         Starting Opts "opts" "-- opts" "empty options, for run, new-tab, new-workspace and attach (the other words take them on the pane)" "fux opts 80 24 size str ./app program run" [];
         Starting Run "run" "opts -- answer" "start a program in a tab of its own, in workspace agent; its pane stays once it exits" "fux opts str web name 120 40 size str ./app program str --flag arg run" [Opts: Name Size Cwd Env Program Arg In];
@@ -997,6 +999,11 @@ fn find(kind: Kind, found: Value<Fux>, out: &mut Vec<Value<Fux>>) -> Result<Done
     }
 }
 
+/// A request for the panes or tabs of `target`, as a list of handles.
+fn members_of(target: AnyRef, members: Members) -> Ask {
+    ask(Command::Members { target, members }, Then::Handles)
+}
+
 fn ask(request: impl Into<Request>, then: Then) -> Ask {
     Ask::Server {
         request: Box::new(request.into()),
@@ -1284,6 +1291,8 @@ impl fuxth::Host for Host<'_> {
                 };
                 later(ask(info, Then::Answer(Said::Listing)))
             }
+            Act::Panes => later(members_of(target(&next()?)?, Members::Panes)),
+            Act::Tabs => later(members_of(target(&next()?)?, Members::Tabs)),
             Act::Get => {
                 let target = Some(target(&next()?)?);
                 let get = Some(string(&next()?)?);

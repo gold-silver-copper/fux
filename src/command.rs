@@ -614,6 +614,12 @@ wire! {
         PaneNamed {
             name: String,
         },
+        /// The panes or tabs a pane, tab or workspace is or holds,
+        /// answered with their ids in layout order.
+        Members {
+            target: AnyRef,
+            members: Members,
+        },
         ListBuffers,
         ShowBuffer {
             index: usize,
@@ -628,6 +634,15 @@ wire! {
             client: Option<ClientId>,
             action: ClientAction,
         },
+    }
+}
+
+wire! {
+    /// What `Members` answers of a place: its panes, or its tabs.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub enum Members {
+        Panes,
+        Tabs,
     }
 }
 
@@ -733,6 +748,7 @@ impl Command {
             C::Ls { .. }
             | C::Resolve { .. }
             | C::PaneNamed { .. }
+            | C::Members { .. }
             | C::CapturePane { .. }
             | C::DumpLayout { .. }
             | C::SendKeys { .. }

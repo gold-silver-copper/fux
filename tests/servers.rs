@@ -1,7 +1,7 @@
 //! What a script or an agent needs of the server itself: naming the one it
 //! means, not stopping or closing the wrong thing, hearing what happens as
-//! it happens, sending keys to every pane of a tab, and making a dump's
-//! panes again.
+//! it happens, a place's panes and tabs as handles, sending keys to every
+//! pane of a tab, and making a dump's panes again.
 mod support;
 use std::io::{BufRead, BufReader};
 use std::process::{Command, Stdio};
@@ -260,6 +260,67 @@ fn keys_to_a_tab_reach_each_pane() -> Outcome {
     for (pane, line) in [a, b].into_iter().zip(both.lines()) {
         assert!(line.starts_with(&format!("{pane}:")), "{both}");
         server.until(pane, line, |c| c.contains("\nboth-42"))?;
+    }
+    Ok(())
+}
+
+/// `panes` and `tabs` give a place's members as a list of handles, in
+/// layout order, each one a handle the next word takes; a place gone fails
+/// as it would for any word.
+#[test]
+fn panes_and_tabs_are_lists_of_handles() -> Outcome {
+    let server = Server::start("")?;
+    let run = ["opts", "80", "24", "size", "str", "cat", "program", "run"];
+    let a = server.ok(&run)?;
+    let a = first_word(&a);
+    let b = server.ok(&["str", a, "pane", "str", "cat", "program", "split"])?;
+    let c = server.ok(&run)?;
+    let (b, c) = (first_word(&b), first_word(&c));
+    let agent = ["str", "agent", "workspace"];
+    let panes = server.ok(&[&agent[..], &["panes"]].concat())?;
+    assert_eq!(panes.trim(), format!("{a} {b} {c}"));
+    let tabs = server.ok(&[&agent[..], &["tabs"]].concat())?;
+    let Some((t1, t2)) = tabs.trim().split_once(' ') else {
+        return Err(format!("two tabs: {tabs}"));
+    };
+    let each = ["panes", "each", "tab", "print", "end"];
+    let of = server.ok(&[&agent[..], &each].concat())?;
+    assert_eq!(of, format!("{t1}\n{t1}\n{t2}\n"));
+    let each = ["tabs", "each", "panes", "len", "print", "end"];
+    assert_eq!(server.ok(&[&agent[..], &each].concat())?, "2\n1\n");
+    // The order is the layout's, not the ids'.
+    server.ok(&["str", a, "pane", "str", b, "pane", "swap-panes"])?;
+    server.ok(&["str", t2, "tab", "str", "previous", "reorder"])?;
+    let panes = server.ok(&[&agent[..], &["panes"]].concat())?;
+    assert_eq!(panes.trim(), format!("{c} {b} {a}"));
+    let tabs = server.ok(&[&agent[..], &["tabs"]].concat())?;
+    assert_eq!(tabs.trim(), format!("{t2} {t1}"));
+    // A place gone fails as it would for any word; another workspace
+    // keeps the server up.
+    server.ok(&[
+        "opts",
+        "80",
+        "24",
+        "size",
+        "str",
+        "keep",
+        "name",
+        "new-workspace",
+    ])?;
+    for (gone, code) in [
+        (["str", b, "pane", "dup", "kill", "panes"], "no_pane"),
+        (["str", t2, "tab", "dup", "kill", "tabs"], "no_tab"),
+        (
+            ["str", "agent", "workspace", "dup", "kill", "tabs"],
+            "no_workspace",
+        ),
+    ] {
+        let out = server.fux(&gone)?;
+        assert!(
+            out.status == 1 && out.stderr.contains(code),
+            "{}",
+            out.stderr
+        );
     }
     Ok(())
 }

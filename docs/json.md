@@ -89,7 +89,8 @@ palette numbers or `"#rrggbb"`.
 `run`, `split`, `new-tab`, `new-workspace` and `respawn` leave an answer
 (below), which is also the new pane: a word that wants a pane takes it as
 one, and `wait` waits from its version. `json` of a pane, tab or workspace is its id as a string, `"%4"`,
-and `X info json` all of it.
+and `X info json` all of it. `X panes json` and `X tabs json` are arrays
+of them in layout order, `["%3","%4"]`.
 
 ## Answers and waits
 

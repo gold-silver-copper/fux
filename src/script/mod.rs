@@ -9,7 +9,7 @@
 mod words;
 
 use crate::client;
-use crate::code::Code;
+use crate::code::{Code, Raise};
 use crate::command::{AnyRef, Extent, Input, Kind, Mouse, Request, Version, WsRef};
 use crate::id::{ClientId, PaneId, TabId, WsId};
 use crate::keymap::Keymap;
@@ -218,6 +218,8 @@ pub enum Then {
     Nothing,
     /// The pane, tab or workspace it made or found, of `Kind`.
     Handle(Kind),
+    /// The panes or tabs it named, as a list of their handles, in its order.
+    Handles,
     /// Its text, as an answer `json` can show as JSON.
     Answer(Said),
     /// Its text, as a string.
@@ -949,6 +951,17 @@ pub fn answered(reply: Reply, then: Then) -> Result<Vec<Value<Fux>>, Failed> {
                 ));
             }
         },
+        Then::Handles => {
+            let ids = reply
+                .ids
+                .into_iter()
+                .map(|id| Value::App(handle(id)))
+                .collect();
+            let list = fuxth::List::new(ids).ok_or_else(|| {
+                Failed::new(Code::from(Raise::TooLong), "more ids than a list holds")
+            })?;
+            vec![Value::List(std::rc::Rc::new(list))]
+        }
         Then::Answer(said) => vec![Answer::value(text, json, said)],
         Then::Text => vec![Value::str(text)],
         Then::Value => vec![match reply.value {

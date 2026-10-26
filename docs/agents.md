@@ -55,6 +55,7 @@ fux %2 str TERM signal                         # signal what runs in its foregro
 fux %2 kill-first respawn                      # end its program and start it again
 fux str web pane                               # a pane by its tab's name
 fux str logs pane-named                        # a pane by its own name (rename)
+fux str agent workspace panes                  # its panes, in layout order (tabs: its tabs)
 fux ls                                         # what there is: workspaces, tabs, panes
 fux str agent workspace kill                   # at the end: everything run started
 ```
@@ -236,6 +237,8 @@ every cell. Then `json` for the screen and what is known of the pane:
 alternate screen, `history_lines` the history kept, `above` the history
 rows kept above the first row read, `idle_ms` since fux last read output
 from its program (or it started). Rows and columns count from 0.
+Every pane of a tab or workspace, in layout order: `str agent workspace
+panes each capture print end`; `tabs` gives its tabs the same way.
 
 ## shells: Shells and their marks
 
