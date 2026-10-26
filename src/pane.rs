@@ -595,12 +595,12 @@ impl Losses {
             memory,
         } = self;
         Json::Object(vec![
-            ("input", Json::int(input)),
-            ("replies", Json::int(replies)),
-            ("copies_cut", Json::int(copies_cut)),
-            ("copies_not_text", Json::int(copies_not_text)),
-            ("pictures", Json::int(pictures)),
-            ("memory", Json::int(memory)),
+            ("input", Json::uint(input)),
+            ("replies", Json::uint(replies)),
+            ("copies_cut", Json::uint(copies_cut)),
+            ("copies_not_text", Json::uint(copies_not_text)),
+            ("pictures", Json::uint(pictures)),
+            ("memory", Json::uint(memory)),
         ])
     }
 
@@ -947,7 +947,7 @@ impl Left {
             Output::Read => None,
             Output::Cut => Some(("truncated", Json::Bool(true))),
         };
-        let input = (self.input > 0).then(|| ("input_unread", Json::int(self.input)));
+        let input = (self.input > 0).then(|| ("input_unread", Json::count(self.input)));
         cut.into_iter().chain(input)
     }
 

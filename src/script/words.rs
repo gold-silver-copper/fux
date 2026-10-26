@@ -454,7 +454,7 @@ fn text(value: &Value<Fux>) -> Result<String, Failure> {
 fn json_of(value: &Value<Fux>) -> crate::json::Json<'static> {
     use crate::json::Json;
     match value {
-        Value::Int(n) => Json::Number(*n),
+        Value::Int(n) => Json::Int(*n),
         Value::Bool(b) => Json::Bool(*b),
         Value::Str(s) => Json::str(s.to_string()),
         // As deep as lists nest, at most fuxth's limit.

@@ -2850,12 +2850,12 @@ impl Session {
 
     /// A pane's state, as `ls json` has it.
     fn pane_json<'a>(&'a self, p: &'a Pane, now: Instant) -> Fields<'a> {
-        let pid = |c: &Child| Json::Number(i64::from(c.leader.pid().as_raw()));
+        let pid = |c: &Child| Json::Int(i64::from(c.leader.pid().as_raw()));
         let mut fields = vec![
             ("id", Json::str(p.id().to_string())),
             ("name", Json::str(p.name())),
-            ("rows", Json::Number(i64::from(p.size().rows()))),
-            ("cols", Json::Number(i64::from(p.size().cols()))),
+            ("rows", Json::Int(i64::from(p.size().rows()))),
+            ("cols", Json::Int(i64::from(p.size().cols()))),
             ("pid", p.process().child().map_or(Json::Null, pid)),
         ];
         fields.extend(crate::capture::state(
@@ -2933,7 +2933,16 @@ impl Session {
             }
             Some((_, value)) => {
                 let scalar = match &value {
-                    Json::Number(n) => Some(Scalar::Int(*n)),
+                    Json::Int(n) => Some(Scalar::Int(*n)),
+                    // Exactly, or not at all: fuxth's integers are i64s.
+                    Json::Uint(n) => match i64::try_from(*n) {
+                        Ok(n) => Some(Scalar::Int(n)),
+                        Err(_) => {
+                            let message =
+                                format!("{target}'s {field} is {n}, past fuxth's integers");
+                            return Err(fail(Raise::Range, message));
+                        }
+                    },
                     Json::Bool(b) => Some(Scalar::Bool(*b)),
                     Json::Null
                     | Json::String(_)
@@ -2970,8 +2979,8 @@ impl Session {
                 let pane = place.map(|p| p.pane);
                 Json::Object(vec![
                     ("id", Json::str(v.id.to_string())),
-                    ("rows", Json::Number(i64::from(v.rows))),
-                    ("cols", Json::Number(i64::from(v.cols))),
+                    ("rows", Json::Int(i64::from(v.rows))),
+                    ("cols", Json::Int(i64::from(v.cols))),
                     ("workspace", opt(place.map(|p| p.ws.to_string()))),
                     ("tab", opt(place.map(|p| p.tab.to_string()))),
                     ("pane", opt(pane.map(|p| p.to_string()))),

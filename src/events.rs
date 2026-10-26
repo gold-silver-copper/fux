@@ -278,7 +278,7 @@ fn missed(count: u64) -> String {
     line(
         "missed",
         (None, None, None),
-        vec![("count", Json::int(count))],
+        vec![("count", Json::uint(count))],
     )
 }
 

@@ -8,7 +8,6 @@ use crate::keys::mouse::MouseButton;
 use crate::keys::{Direction, KeyPress};
 use fuxix::process::Signal;
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
-use std::time::Duration;
 
 /// Why bytes are not the value they should be.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -98,14 +97,6 @@ impl Wire for std::num::NonZeroU32 {
     }
     fn get(r: &mut Reader<'_>) -> Result<Self, Error> {
         Self::new(u32::get(r)?).ok_or(Error::Bad("share"))
-    }
-}
-
-/// Nothing: a value of no bytes, as an empty frame's payload.
-impl Wire for () {
-    fn put(&self, _: &mut Vec<u8>) {}
-    fn get(_: &mut Reader<'_>) -> Result<Self, Error> {
-        Ok(())
     }
 }
 
@@ -211,8 +202,10 @@ impl<T: Wire> Wire for Vec<T> {
     }
     fn get(r: &mut Reader<'_>) -> Result<Self, Error> {
         let count = u32::get(r)? as usize;
-        // Every item takes a byte at least: a count past the bytes left is
-        // a lie, not room to make.
+        // Every item takes a byte at least, as no `Wire` impl is empty: the
+        // macros' structs have a field and their enums a tag, and each
+        // written by hand puts a number, a length or a tag. A count past
+        // the bytes left is a lie, not room to make.
         if count > r.0.len() {
             return Err(Error::Truncated);
         }
@@ -247,15 +240,6 @@ impl<A: Wire, B: Wire, C: Wire> Wire for (A, B, C) {
     }
     fn get(r: &mut Reader<'_>) -> Result<Self, Error> {
         Ok((A::get(r)?, B::get(r)?, C::get(r)?))
-    }
-}
-
-impl Wire for Duration {
-    fn put(&self, out: &mut Vec<u8>) {
-        u64::try_from(self.as_millis()).unwrap_or(u64::MAX).put(out);
-    }
-    fn get(r: &mut Reader<'_>) -> Result<Self, Error> {
-        u64::get(r).map(Duration::from_millis)
     }
 }
 
@@ -388,11 +372,11 @@ macro_rules! wire_enum {
 }
 pub(crate) use wire_enum;
 
-/// `wire_struct!(Ty { a, b })` expands to `impl Wire for Ty`: its fields
-/// one after another, in the order listed. For a type declared elsewhere;
-/// one declared here says its fields once, in `wire!`.
+/// `wire_struct!(Ty { a, b })` expands to `impl Wire for Ty`: its fields,
+/// one at least, one after another, in the order listed. For a type
+/// declared elsewhere; one declared here says its fields once, in `wire!`.
 macro_rules! wire_struct {
-    ($ty:path { $($f:ident),* $(,)? }) => {
+    ($ty:path { $($f:ident),+ $(,)? }) => {
         impl $crate::wire::Wire for $ty {
             fn put(&self, out: &mut Vec<u8>) {
                 $($crate::wire::Wire::put(&self.$f, out);)*
@@ -451,14 +435,14 @@ macro_rules! wire {
     (
         $(#[$m:meta])*
         $vis:vis struct $ty:ident {
-            $($(#[$fm:meta])* $fvis:vis $f:ident: $ft:ty),* $(,)?
+            $($(#[$fm:meta])* $fvis:vis $f:ident: $ft:ty),+ $(,)?
         }
     ) => {
         $(#[$m])*
         $vis struct $ty {
             $($(#[$fm])* $fvis $f: $ft),*
         }
-        $crate::wire::wire_struct!($ty { $($f),* });
+        $crate::wire::wire_struct!($ty { $($f),+ });
     };
 }
 pub(crate) use wire;

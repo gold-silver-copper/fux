@@ -176,6 +176,16 @@ impl<T: Wire> Payload<'_> for T {
     }
 }
 
+/// No payload: a frame that is its kind alone. Not a `Wire` value, as no
+/// value on the wire is empty (`wire::Wire for Vec`).
+impl Payload<'_> for () {
+    fn put(&self, _: &mut Vec<u8>) {}
+    fn get(payload: &[u8]) -> Result<Self, Error> {
+        let trailing = Error::Wire(crate::wire::Error::Trailing);
+        payload.is_empty().then_some(()).ok_or(trailing)
+    }
+}
+
 impl<'a> Payload<'a> for Cow<'a, [u8]> {
     fn put(&self, out: &mut Vec<u8>) {
         out.extend_from_slice(self);

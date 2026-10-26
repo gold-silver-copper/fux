@@ -107,7 +107,7 @@ pub fn pane(
     let mut state = state(pane, run, Instant::now(), copy_mode);
     // The history rows kept above the first row read: history it was not
     // asked for (rows a range leaves out are not counted).
-    state.push(("above", above.map_or(Json::Null, Json::int)));
+    state.push(("above", above.map_or(Json::Null, Json::count)));
     // A glyph went into the last column: the next one goes on the next
     // line, though the cursor shows on this one's last cell.
     let pending = cursor.is_some() && screen.pending_wrap();
@@ -270,7 +270,11 @@ pub fn state(
         ("hung_up", Json::Bool(hung_up)),
         ("exited", exited),
         ("signal", signal),
-        ("idle_ms", Json::int(idle)),
+        // Past u64's milliseconds no monotonic clock reaches: unknown.
+        (
+            "idle_ms",
+            u64::try_from(idle).map_or(Json::Null, Json::Uint),
+        ),
         ("alt_screen", Json::Bool(screen.mode(Mode::AlternateScreen))),
         ("mouse", Json::Bool(mouse != MouseProtocolMode::None)),
         // What it asked for: whether a move without a button is reported.
@@ -298,17 +302,17 @@ pub fn state(
             }),
         ),
         ("cursor_visible", Json::Bool(screen.mode(Mode::ShowCursor))),
-        ("history_lines", Json::int(screen.history_len())),
+        ("history_lines", Json::count(screen.history_len())),
         ("copy_mode", Json::Bool(copy_mode)),
         ("command_running", Json::Bool(pane.command_running())),
         ("last_status", last_status.map_or(Json::Null, Json::int)),
-        ("bells", Json::int(pane.alerts.rung)),
+        ("bells", Json::uint(pane.alerts.rung)),
         (
             "notification",
             notification.map_or(Json::Null, |n| Json::str(n.as_str().to_owned())),
         ),
         ("truncated", Json::Array(truncated)),
-        ("input_unread", Json::int(pane.left.input)),
+        ("input_unread", Json::count(pane.left.input)),
         (
             "cwd",
             foreground
@@ -331,7 +335,7 @@ pub fn state(
 /// pixels.
 fn picture(shown: fux_vt::Shown<'_>) -> Json<'static> {
     Json::Object(vec![
-        ("row", Json::Number(shown.row)),
+        ("row", Json::Int(shown.row)),
         ("col", Json::int(shown.col)),
         ("rows", Json::int(shown.rows)),
         ("cropped", Json::int(shown.cropped)),
@@ -453,7 +457,7 @@ fn runs(line: &Cells<'_>) -> Json<'static> {
     for group in line.chunk_by(|(_, a), (_, b)| a == b) {
         let len = group.len();
         if let Some((_, attributes)) = group.first().filter(|(_, a)| *a != Attributes::default()) {
-            let mut fields = vec![("col", Json::int(start)), ("len", Json::int(len))];
+            let mut fields = vec![("col", Json::count(start)), ("len", Json::count(len))];
             fields.extend(described(*attributes));
             runs.push(Json::Object(fields));
         }
