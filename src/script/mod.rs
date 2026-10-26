@@ -216,7 +216,7 @@ pub enum Then {
     Nothing,
     /// The pane, tab or workspace it made or found, of `Kind`.
     Handle(Kind),
-    /// The panes, tabs or workspaces it named, as a list, in its order.
+    /// The panes or tabs it named, as a list of their handles, in its order.
     Handles,
     /// Its text, as an answer `json` can show as JSON.
     Answer(Said),

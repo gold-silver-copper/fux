@@ -288,8 +288,40 @@ fn panes_and_tabs_are_lists_of_handles() -> Outcome {
     assert_eq!(of, format!("{t1}\n{t1}\n{t2}\n"));
     let each = ["tabs", "each", "panes", "len", "print", "end"];
     assert_eq!(server.ok(&[&agent[..], &each].concat())?, "2\n1\n");
-    let gone = server.fux(&["str", b, "pane", "dup", "kill", "panes"])?;
-    assert!(gone.stderr.contains("no_pane"), "{}", gone.stderr);
+    // The order is the layout's, not the ids'.
+    server.ok(&["str", a, "pane", "str", b, "pane", "swap-panes"])?;
+    server.ok(&["str", t2, "tab", "str", "previous", "reorder"])?;
+    let panes = server.ok(&[&agent[..], &["panes"]].concat())?;
+    assert_eq!(panes.trim(), format!("{c} {b} {a}"));
+    let tabs = server.ok(&[&agent[..], &["tabs"]].concat())?;
+    assert_eq!(tabs.trim(), format!("{t2} {t1}"));
+    // A place gone fails as it would for any word; another workspace
+    // keeps the server up.
+    server.ok(&[
+        "opts",
+        "80",
+        "24",
+        "size",
+        "str",
+        "keep",
+        "name",
+        "new-workspace",
+    ])?;
+    for (gone, code) in [
+        (["str", b, "pane", "dup", "kill", "panes"], "no_pane"),
+        (["str", t2, "tab", "dup", "kill", "tabs"], "no_tab"),
+        (
+            ["str", "agent", "workspace", "dup", "kill", "tabs"],
+            "no_workspace",
+        ),
+    ] {
+        let out = server.fux(&gone)?;
+        assert!(
+            out.status == 1 && out.stderr.contains(code),
+            "{}",
+            out.stderr
+        );
+    }
     Ok(())
 }
 

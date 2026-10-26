@@ -875,8 +875,7 @@ impl Session {
                 one(&self.panes_of(id)?, many(Kind::Pane)).map(AnyRef::Pane)
             }
             (AnyRef::Workspace(_), Kind::Tab) => {
-                self.there(id)?;
-                one(&self.tabs_of(id), many(Kind::Tab)).map(AnyRef::Tab)
+                one(&self.tabs_of(id)?, many(Kind::Tab)).map(AnyRef::Tab)
             }
         }
     }
@@ -950,16 +949,17 @@ impl Session {
     }
 
     /// The tabs `target` is or holds: a pane's own, a tab, or a
-    /// workspace's every tab.
-    fn tabs_of(&self, target: AnyRef) -> Vec<TabId> {
-        match target {
-            AnyRef::Tab(tab) => vec![tab],
-            AnyRef::Workspace(ws) => {
-                let ws = self.workspace(ws).into_iter();
-                ws.flat_map(|w| w.tabs().iter().map(|t| t.id())).collect()
-            }
-            AnyRef::Pane(pane) => self.locate(pane).map(|(_, tab)| tab).into_iter().collect(),
-        }
+    /// workspace's every tab, in order.
+    fn tabs_of(&self, target: AnyRef) -> Result<Vec<TabId>, Error> {
+        Ok(match target {
+            AnyRef::Tab(tab) => vec![self.tab(tab).ok_or(Error::NoTab(tab))?.id()],
+            AnyRef::Workspace(ws) => (self.workspace(ws).ok_or(Error::NoWorkspace(ws))?)
+                .tabs()
+                .iter()
+                .map(|t| t.id())
+                .collect(),
+            AnyRef::Pane(pane) => vec![self.locate(pane).ok_or(Error::NoPane(pane))?.1],
+        })
     }
 
     /// The panes `target` names: a pane, or a tab's or workspace's every
@@ -2197,7 +2197,7 @@ impl Session {
                     Members::Panes => (self.panes_of(target)?.into_iter())
                         .map(AnyRef::Pane)
                         .collect(),
-                    Members::Tabs => (self.tabs_of(self.there(target)?).into_iter())
+                    Members::Tabs => (self.tabs_of(target)?.into_iter())
                         .map(AnyRef::Tab)
                         .collect(),
                 };
@@ -2308,7 +2308,7 @@ impl Session {
     /// panes, as a split that would is, is refused.
     fn resize_tabs(&mut self, target: AnyRef, size: command::Size) -> Result<(), Error> {
         let size = size.map(view::Screen::size);
-        let tabs = self.tabs_of(self.there(target)?);
+        let tabs = self.tabs_of(target)?;
         if let Some(size) = size {
             let area = Fit::Fixed(size).area();
             for tab in &tabs {
@@ -2484,7 +2484,7 @@ impl Session {
             AnyRef::Tab(_) | AnyRef::Workspace(_) => {
                 let panes = self.panes_of(target).unwrap_or_default();
                 may_go.extend(panes.into_iter().map(AnyRef::Pane));
-                for tab in self.tabs_of(target) {
+                for tab in self.tabs_of(target).unwrap_or_default() {
                     self.remove_tab(tab);
                 }
                 self.after_close();
