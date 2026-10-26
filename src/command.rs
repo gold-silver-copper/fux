@@ -401,6 +401,27 @@ wire! {
 }
 
 wire! {
+    /// Where `send-keys` sends: to a pane, or a tab's or workspace's every
+    /// pane, as they are now; or to one pane only if it is still at a
+    /// version seen (`expect`), checked as the keys are queued.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub enum To {
+        Now(target: AnyRef),
+        Seen(version: Version),
+    }
+}
+
+impl To {
+    /// The pane, tab or workspace it names.
+    pub fn target(self) -> AnyRef {
+        match self {
+            To::Now(target) => target,
+            To::Seen(version) => AnyRef::Pane(version.pane),
+        }
+    }
+}
+
+wire! {
     /// A wait: until a version of the panes it waits on differs from the
     /// one it waits from, or its pane closes; how long before it times out.
     #[derive(Clone, Debug, PartialEq, Eq)]
@@ -576,8 +597,7 @@ wire! {
             by: PaneResize,
         },
         SendKeys {
-            /// The pane, or a tab's or workspace's every pane.
-            target: AnyRef,
+            to: To,
             inputs: Vec<Input>,
         },
         /// What is there, as a layout file: everything, or one tab or

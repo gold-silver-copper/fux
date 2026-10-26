@@ -168,6 +168,9 @@ codes! {
     /// Or a client's: a program or keys sent it while too much waits
     /// unwritten for its terminal.
     InputFull "input_full",
+    /// A pane no longer at the version `send-keys` was given (`expect`):
+    /// it changed since it was seen, and nothing was sent.
+    Stale "stale",
     /// A pane where no shell command was marked (OSC 133), for what needs
     /// one (`last-output`).
     NoMarks "no_marks",

@@ -129,6 +129,9 @@ pub enum On {
     /// A version's pane (`changed`, or an action's or wait's answer): a
     /// wait on it waits from that version.
     Version(Version),
+    /// A version a request expects (`expect`): keys go to its pane only
+    /// while the pane is still at it.
+    Seen(Version),
 }
 
 /// What the server answered, to print as text, or as JSON: the JSON the
