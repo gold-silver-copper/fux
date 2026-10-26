@@ -172,16 +172,27 @@ pub fn listing_text(of: Option<Kind>, listing: &Json) -> String {
         let [id, cols, rows, place @ ..] = shown;
         format!("client {id} {cols}x{rows} {}\n", place.join(" "))
     };
-    match of {
-        Some(Kind::Pane) => pane(listing),
-        Some(Kind::Tab) => tab(listing),
-        Some(Kind::Workspace) => workspace(listing),
-        // Everything, and where a stream of events reads from.
-        None => (items(listing, "workspaces").iter().map(workspace))
-            .chain(items(listing, "clients").iter().map(client))
-            .chain(
-                (listing.get("events")).map(|_| format!("events {}\n", field(listing, "events"))),
-            )
-            .collect(),
-    }
+    // One pane or tab is listed as it is in the whole, less its indent.
+    let (text, indent) = match of {
+        Some(Kind::Pane) => (pane(listing), 4),
+        Some(Kind::Tab) => (tab(listing), 2),
+        Some(Kind::Workspace) => (workspace(listing), 0),
+        None => {
+            let workspaces = items(listing, "workspaces");
+            let clients = items(listing, "clients");
+            let all = workspaces
+                .iter()
+                .map(workspace)
+                .chain(clients.iter().map(client))
+                // and where a stream of events reads from.
+                .chain(
+                    (listing.get("events"))
+                        .map(|_| format!("events {}\n", field(listing, "events"))),
+                );
+            (all.collect(), 0)
+        }
+    };
+    text.lines()
+        .map(|line| format!("{}\n", line.get(indent..).unwrap_or(line)))
+        .collect()
 }
