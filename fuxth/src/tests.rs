@@ -1368,6 +1368,12 @@ fn a_try_catches_the_failures_it_names() -> Result<(), Error> {
     let reason: String = std::iter::repeat_n('x', crate::LONGEST).collect();
     let said = format!("str fail try str {reason} fail catch drop end");
     assert_eq!(run(&said)?, strs(&[&reason]));
+    // A handler with no room for its message and code fails again, for a
+    // try further out.
+    let full = "0 998 range each end str stack_overflow try 1 str fail try str a fail catch drop drop end catch nip end";
+    let left = run(full)?;
+    assert_eq!(left.len(), 999);
+    assert_eq!(left.last(), Some(&Value::str("stack_overflow")));
     // A try's codes are written in its own source, not the one before.
     let mut compiler = Compiler::<Ticket>::new(Vocabulary::default());
     compiler.add(&token::source("one", "str fail")?)?;
@@ -1425,12 +1431,7 @@ fn a_caught_failure_undoes_what_the_body_began() -> Result<(), Error> {
         define safe let n str fail try n deep catch drop end end";
     assert_eq!(
         run(&format!("{deep} 50 safe 7 3 safe"))?,
-        [
-            strs(&["bottom"]),
-            ints(&[7]),
-            strs(&["bottom"])
-        ]
-        .concat(),
+        [strs(&["bottom"]), ints(&[7]), strs(&["bottom"])].concat(),
         "the body's call is not in its definition's last place"
     );
     let recursion = "define down 1 add down 1 end str call_depth try 0 down catch nip end";

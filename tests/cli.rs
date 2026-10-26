@@ -328,8 +328,10 @@ fn mistakes_name_what_the_program_wrote() -> Outcome {
         "str", "type", "try", "list", "1", "end", "0", "at", "str", "x", "type", "catch", "drop",
         "end",
     ])?;
-    let why = caught.trim_end();
-    assert!(!why.is_empty() && inside.contains(&format!("text: {why} (use: ")), "{why}");
+    assert_eq!(
+        caught,
+        "takes a pane, tab, workspace or client, or options, not an integer\n"
+    );
     // Refused before `run` starts anything.
     let before = said(&[
         "opts", "80", "24", "size", "str", "sh", "program", "run", "str", "a", "1", "add",
