@@ -41,7 +41,7 @@ for `id`, `name` and `pid` (it says `pane`):
 | `notification` | the last notification's text, else `null`: its first 500 characters, without control characters |
 | `truncated` | which of `"title"`, `"notification"` and `"output"`, in that order, were cut, else `[]`: the fields above that the program sent more of than they keep, the rest dropped (`["notification"]`, `["title","notification"]`); `"output"` once its program left more than 1 MiB on its terminal as it ended, the rest not read (till it is respawned) |
 | `input_unread` | bytes of input fux queued for its program and had not yet written to its terminal as it ended, let go (till it is respawned), else 0. Input written to its terminal that the program never read is not counted: the system does not say |
-| `cwd`, `argv` | the foreground process's directory and words, where the system says |
+| `cwd`, `argv` | the foreground process's directory and words, where the system says; JSON's text being UTF-8, a byte that is not is shown as U+FFFD |
 
 ## `ls json`
 

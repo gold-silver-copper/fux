@@ -1,5 +1,6 @@
 //! Processes: their IDs, signals, sessions, and how they end.
 use crate::errno::{Errno, Result, check, fit};
+use std::ffi::OsString;
 use std::fmt;
 use std::num::NonZeroI32;
 use std::path::PathBuf;
@@ -456,19 +457,20 @@ pub fn tree() -> Tree {
     tree
 }
 
-/// `pid`'s command line, when the system says: each argument ended by a
-/// NUL, empty ones too. A process that wrote over its arguments, as
-/// `setproctitle` does, has what it wrote, read the same way; ending in no
-/// NUL (the kernel then stops at the first one, past the arguments), it is
-/// one argument. An empty line, as a kernel thread's or a zombie's, is not
-/// said.
+/// `pid`'s command line, when the system says: each argument, its bytes as
+/// they are, ended by a NUL, empty ones too. A process that wrote over its
+/// arguments, as `setproctitle` does, has what it wrote, read the same way;
+/// ending in no NUL (the kernel then stops at the first one, past the
+/// arguments), it is one argument. An empty line, as a kernel thread's or
+/// a zombie's, is not said.
 #[cfg(not(target_os = "macos"))]
-pub fn argv(pid: Pid) -> Option<Vec<String>> {
+pub fn argv(pid: Pid) -> Option<Vec<OsString>> {
+    use std::os::unix::ffi::OsStrExt;
     let raw = std::fs::read(format!("/proc/{pid}/cmdline")).ok()?;
     let line = raw.strip_suffix(&[0]).unwrap_or(&raw);
     (!raw.is_empty()).then(|| {
         (line.split(|b| *b == 0))
-            .map(|w| String::from_utf8_lossy(w).into_owned())
+            .map(|w| std::ffi::OsStr::from_bytes(w).to_owned())
             .collect()
     })
 }
@@ -476,7 +478,7 @@ pub fn argv(pid: Pid) -> Option<Vec<String>> {
 /// `pid`'s command line: macOS keeps it where only a privileged reader
 /// finds it reliably, so it is not said.
 #[cfg(target_os = "macos")]
-pub fn argv(_pid: Pid) -> Option<Vec<String>> {
+pub fn argv(_pid: Pid) -> Option<Vec<OsString>> {
     None
 }
 
@@ -662,7 +664,7 @@ mod tests {
         let _ = child.kill();
         let _ = child.wait();
         let words = ["sh", "-c", script, "", "head", "", "tail", ""];
-        assert_eq!(read, Some(words.map(String::from).to_vec()));
+        assert_eq!(read, Some(words.map(OsString::from).to_vec()));
         Ok(())
     }
 

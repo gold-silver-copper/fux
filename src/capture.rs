@@ -239,7 +239,7 @@ pub fn state(
     let last_status = screen.commands().last_status;
     let argv = match (&pane.runs, job) {
         (_, Ok(Some(job))) => fuxix::process::argv(job),
-        (Runs::Explicit(launch), Ok(None)) => Some(launch.argv.clone()),
+        (Runs::Explicit(launch), Ok(None)) => Some(launch.argv.iter().map(Into::into).collect()),
         (Runs::DefaultShell, Ok(None)) => foreground.and_then(fuxix::process::argv),
         (_, Err(_)) => None,
     };
@@ -317,15 +317,21 @@ pub fn state(
             "cwd",
             foreground
                 .and_then(fuxix::process::cwd)
-                .map_or(Json::Null, |p| Json::str(p.to_string_lossy().into_owned())),
+                .map_or(Json::Null, |p| text(p.as_os_str())),
         ),
         (
             "argv",
             argv.map_or(Json::Null, |a| {
-                Json::Array(a.into_iter().map(Json::str).collect())
+                Json::Array(a.iter().map(|w| text(w)).collect())
             }),
         ),
     ]
+}
+
+/// A path or an argument as JSON text, which must be UTF-8: each byte
+/// that is not shown as U+FFFD, as `docs/json.md` says.
+fn text(os: &std::ffi::OsStr) -> Json<'static> {
+    Json::str(os.to_string_lossy().into_owned())
 }
 
 /// Where a picture is, for `json`: its top row (negative once scrolled
