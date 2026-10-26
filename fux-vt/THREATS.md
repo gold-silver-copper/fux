@@ -36,14 +36,14 @@ cells, whatever its byte budget.
 
 fux's promise, within which every bound and the per-call ceiling hold:
 a pane is at most 4,096 rows × 4,096 columns (`view::MOST`: a client's
-screen less its bar, or a tab given its size by `size` or `resize`);
+screen less its bar, or a tab given its size by `size` or `resize`; the
+probes run at 4,095 × 4,096);
 history is at most 1 GiB (8 MiB by default); a piece is what fux read
 (`Pane::unread`): one read of at most 16 KiB, an exited program's last
 1 MiB, or a held frame, shown once past 2 MiB (`FRAME_LIMIT`), so at most
 2 MiB and one read; a call of n bytes has 4.4's ceiling
 (`Work::ceiling`) ⌈n ÷ 4096⌉ times; the `Feature`s are `fux::pane::OPTIONS`',
-every one but `ExtendedReplies` and `RectangleChecksums` (without
-`Pictures`, `DCS q` is an ignored DCS).
+every one but `ExtendedReplies` and `RectangleChecksums`.
 
 The host also sets the picture budget (`Parser::set_picture_bytes`,
 96 MiB by default, B01; set lower, large pictures clip), its cell size

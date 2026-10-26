@@ -114,7 +114,7 @@ settings! {
     /// unless it says (`SECS timeout`).
     wait Wait "wait-seconds": Limit = Limit::DEFAULT;
     /// Copies, fux's and programs', also reach your terminal's clipboard
-    /// (OSC 52); false, a program's copy copies nothing, to the buffers
+    /// (OSC 52); set false, a program's copy copies nothing, to the buffers
     /// either.
     clipboard Clipboard "clipboard": bool = true;
     /// How many paste buffers are kept.

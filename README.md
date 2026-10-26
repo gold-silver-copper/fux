@@ -281,7 +281,7 @@ bracketed paste. It is also sent to your terminal's clipboard as OSC 52, up
 to 1 MiB encoded, unless `str clipboard false set`; your terminal must
 allow OSC 52 writes. A program in a pane that copies with OSC 52, as Neovim
 and Helix do, copies the same way, up to 64 KiB encoded, but only while
-`clipboard` is true: false, a program's copy copies nothing, to the
+`clipboard` is true: set false, a program's copy copies nothing, to the
 buffers either. A longer copy, or one that is not base64 (RFC 4648,
 padded or not) of UTF-8 text, copies nothing, and the clients showing
 the pane say so. fux never reads the clipboard.

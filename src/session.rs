@@ -710,7 +710,7 @@ impl Session {
     ) -> Result<(), Error> {
         let pane = self.pane(id)?;
         if let Runs::Shell = pane.runs {
-            let message = format!("{id} runs a shell; respawn starts again what `fux run` started");
+            let message = format!("{id} runs a shell; respawn restarts what run or split started");
             return Err(fail(Raise::NotRun, message));
         }
         // An exit waiting on what its program left is told, all of it

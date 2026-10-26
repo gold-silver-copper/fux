@@ -1119,7 +1119,7 @@ fn held_link() -> Vec<u8> {
     out
 }
 
-/// `bytes` in pieces of 4 KiB, as fux feeds a pane.
+/// `bytes` in pieces of 4 KiB.
 fn pieces(mut rest: &[u8]) -> impl Iterator<Item = &[u8]> {
     std::iter::from_fn(move || {
         let (piece, after) = rest.split_at_checked(4096).unwrap_or((rest, &[]));

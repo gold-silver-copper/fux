@@ -113,8 +113,8 @@ from (its program's end too):
 ```
 
 `changed` lists `screen`, `bell` and `done` (a count of the version that
-grew), or `respawned` (the program started again: its counts start
-afresh). `exited` is the program's status if it ended since (`null` if
+grew), or `respawned` (the program started again: its counts but
+`RESPAWNS` start afresh). `exited` is the program's status if it ended since (`null` if
 that status was lost), `signal` the signal that killed it; a wait from a version that already holds its end
 waits for something else.
 
