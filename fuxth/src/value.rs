@@ -129,20 +129,24 @@ impl Text {
         Text { text, chars, marks }
     }
 
-    /// `other` added at the end.
-    pub fn append(&mut self, other: &Text) {
+    /// `other` added at the end: how many characters before it were
+    /// marked, all of them the first time it holds more than ASCII.
+    pub fn append(&mut self, other: &Text) -> usize {
         let (bytes, chars, ascii) = (self.text.len(), self.chars, self.is_ascii());
         self.text.push_str(&other.text);
         self.chars = chars.saturating_add(other.chars);
         if self.is_ascii() {
-            return;
+            return 0;
         }
-        if ascii {
-            // All ASCII until now: marked from the start.
-            self.marks = marks(&self.text, 0, 0).collect();
+        let marked = if ascii {
+            let marks = (1..chars.div_ceil(STRIDE)).map(|k| k.saturating_mul(STRIDE));
+            self.marks = marks.collect();
+            chars
         } else {
-            self.marks.extend(marks(&other.text, chars, bytes));
-        }
+            0
+        };
+        self.marks.extend(marks(&other.text, chars, bytes));
+        marked
     }
 
     /// Character `i` replaced by `other`; nothing if there is none.

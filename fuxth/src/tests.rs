@@ -532,7 +532,8 @@ fn each_walks_any_string_in_time_to_its_length() -> Result<(), Error> {
 
 /// A character of a string is found from the mark before it: each part
 /// of a string grown from ASCII and non-ASCII pieces, as it grows and once
-/// a character is replaced, is what its characters give.
+/// a character is replaced, is what its characters give; and marking an
+/// ASCII string the first time it holds more is charged as a walk over it.
 #[test]
 fn a_strings_characters_are_found_from_its_marks() -> Result<(), Error> {
     let copies = |s: &str, n| std::iter::repeat_n(s, n).collect::<String>();
@@ -565,6 +566,21 @@ fn a_strings_characters_are_found_from_its_marks() -> Result<(), Error> {
     let mut put = Text::new(pieces.concat());
     put.replace(100, &Text::new("ü"));
     check(&put);
+    let steps = |text: &str| -> Result<u64, Error> {
+        let mut compiler = with_stdlib();
+        compiler.add(&token::source("t", text)?)?;
+        let mut machine = Machine::new(compiler.finish()?, Limits::default());
+        machine.run(&mut Toy { asked: Vec::new() }, u64::MAX)?;
+        Ok(machine.steps())
+    };
+    let (ascii, marked) = (
+        steps("str a 6400 copies str b push len")?,
+        steps("str a 6400 copies str é push len")?,
+    );
+    assert!(
+        marked.saturating_sub(ascii) >= 6400 / 64,
+        "{ascii} {marked}"
+    );
     Ok(())
 }
 

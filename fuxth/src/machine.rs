@@ -841,7 +841,10 @@ impl<A: AppValue> Machine<A> {
             (Sequence::Str(mut s), Value::Str(x)) => {
                 self.fits(s.chars_len().saturating_add(x.chars_len()))?;
                 self.build(copied(&s, s.chars_len()).saturating_add(x.chars_len()))?;
-                Rc::make_mut(&mut s).append(&x);
+                // Marking an ASCII string writes a mark per 64 of its characters:
+                // charged as a walk over them.
+                let marked = Rc::make_mut(&mut s).append(&x);
+                self.cost(marked);
                 Ok(Value::Str(s))
             }
             (Sequence::Str(_), x) => {
