@@ -4574,8 +4574,7 @@ mod tests {
         Ok(())
     }
 
-    /// The `json` outputs, byte for byte: escapes, borrowed names and
-    /// formatted IDs alike.
+    /// docs/json.md names every field of a pane's `json`.
     #[test]
     fn the_json_help_names_every_pane_field() -> Result<(), Box<dyn std::error::Error>> {
         let (s, _) = attached(4, 30)?;

@@ -60,7 +60,7 @@ line, the deepest first; `print` prints a value at once.
 | Parsing word | |
 |---|---|
 | `str WORD` | WORD as a string, whatever it looks like: `str 12`, `str 'two words'`, `str ''` |
-| `define NAME … end` | a word of your own; it may call itself, and words defined after it in the same source; it may take a library's or the application's word's name, from there on (not the core's, nor one the source defines already); at the top level only |
+| `define NAME … end` | a word of your own; it may call itself, and words defined after it in the same source; it may take a library's or the application's word's name, from there on (not the core's or a parsing word's, nor one the source defines or a top-level `let` names already); at the top level only |
 | `VALUE let NAME` | NAME pushes VALUE from there on in the text: inside a definition, for that call; at the top level, for the rest of the program (definitions written after it may read it). A later `let NAME` sets it again. |
 | `FLAG if … then`, `FLAG if … else … then` | one branch |
 | `begin … FLAG until` | the body, until FLAG is true |
