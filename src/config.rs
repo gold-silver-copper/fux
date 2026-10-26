@@ -110,7 +110,8 @@ settings! {
     /// `history capture` reads. Past it, the oldest rows go; a change
     /// applies to every pane.
     history_bytes HistoryBytes "history-bytes": Number<0, { 1 << 30 }> = Number(8 << 20);
-    /// How long a wait waits at most unless it says (`SECS timeout`).
+    /// How long a wait waits for a change before it answers `timeout`,
+    /// unless it says (`SECS timeout`).
     wait Wait "wait-seconds": Limit = Limit::DEFAULT;
     /// Copies, fux's and programs', also reach your terminal's clipboard
     /// (OSC 52); false, a program's copy copies nothing, to the buffers

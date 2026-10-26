@@ -40,7 +40,7 @@ yours to say (recipes below).
 A=$(fux opts str web name 100 30 size str ./app program str --fast arg run)  # %2:0.0.0.0.0:RUN
 fux str "$A" changed wait                      # until it differs: %2:0.61.0.0.0:RUN screen
 A=$(fux %2 str y text str Enter key send-keys) # keys: the version from before them
-fux str "$A" changed 600 timeout wait          # 600 s at most (else the server's wait-seconds)
+fux str "$A" changed 600 timeout wait          # 124 if unchanged in 600 s (else the server's wait-seconds)
 fux %2 str y text send-keys wait               # in one program: from the answer's version
 fux %2 str y text send-keys 5 quiet            # until nothing changes there for 5 s
 fux %2 wait                                    # until it differs from now's
@@ -63,7 +63,7 @@ A wait answers its pane's version now and what changed:
 `%2:0.61.1.4.0:RUN screen bell done`, with `exited 3`, `killed by
 SIGTERM` (`killed by signal 64` for one POSIX does not name) or `ended, its
 status lost` if its program ended since, `respawned` once started again (its
-counts then start afresh). Its first word is the version to wait from next.
+`RESPAWNS` grows, its other counts start afresh). Its first word is the version to wait from next.
 A wait from a version that already holds the end waits for something else,
 as any wait does; one from a version of a pane since closed answers
 `%2 closed`. On a tab or workspace a wait waits on the panes there as it
@@ -82,7 +82,10 @@ Topics (`fux help agents TOPIC`; `all` for the whole guide): `recipes`,
 Each is a fuxth program: a file `fux --file FILE` runs, or `fux - <<'EOF'` in a
 script. `A wait` waits from the version answer A holds, so a change between
 two steps is never missed, and leaves the next answer; `A 600 timeout wait`
-waits 600 s at most, else fails with 124 (`timeout`). A loop of waits ends
+fails with 124 (`timeout`) if nothing changed in 600 s. A pane part way
+through a frame (synchronized output) whose bytes fux already holds keeps the
+answer past that time until the frame is whole, and then answers its
+change: a wait never says unchanged of a pane that changed. A loop of waits ends
 when its check holds; to bound the whole of it, run it under the shell's
 `timeout 600 fux --file FILE` (124 too). `A counts` gives a version's five counts
 as integers: `A counts 3 at` is its `DONE`.
@@ -195,7 +198,9 @@ as integers: `A counts 3 at` is its `DONE`.
   `send-keys` or two, as one key: send Escape, wait until the program shows
   it took it (its mode line), then the next key. Keys sent to a program
   that exited or that closed its terminal (where the system says so:
-  Linux) are refused (`not_running`).
+  Linux) are refused (`not_running`), and keys past what the pane's input
+  queue holds (about 1 MiB its program has not read) are refused whole
+  (`input_full`).
 
   ```fux
   %2 str Escape key send-keys
@@ -208,7 +213,8 @@ as integers: `A counts 3 at` is its `DONE`.
   2×COL. A program's own "row 22" is usually counted from 1.
 - **Stop:** `%2 str TERM signal` (`INT`, `KILL`, …) signals what runs in
   its terminal's foreground; `%2 kill` closes the pane; `%2 respawn` starts
-  its program again (`kill-first` ends it first).
+  the program `run` started again once it ended (`kill-first` ends it
+  first; a shell's pane is refused, `not_run`).
 
 ## read: Reading the screen
 
