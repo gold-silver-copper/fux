@@ -277,74 +277,181 @@ pub fn adopt_orphans() -> Result<()> {
 /// not keep: the orphans it adopted ([`adopt_orphans`]); none on macOS. Its
 /// own children are kept, for whoever waits for them.
 pub fn reap_orphans(kept: impl Fn(Pid) -> bool) {
+    // Each child is looked at, however many: not cut at `TREE_MAX`, as
+    // live ones listed first would hide every zombie after them.
     #[cfg(not(target_os = "macos"))]
-    for pid in children("self").into_iter().filter(|pid| !kept(*pid)) {
-        let _ = reap(pid);
+    for task in std::fs::read_dir("/proc/self/task")
+        .into_iter()
+        .flatten()
+        .flatten()
+    {
+        let listed = std::fs::read_to_string(task.path().join("children"));
+        let children = listed.iter().flat_map(|l| l.split_whitespace());
+        for pid in children.filter_map(|c| Pid::from_raw(c.parse().ok()?)) {
+            if !kept(pid) {
+                let _ = reap(pid);
+            }
+        }
     }
     #[cfg(target_os = "macos")]
     let _ = kept;
 }
 
-/// The processes this one started, those they started in turn, and the
-/// orphans it adopted ([`adopt_orphans`]); not itself. A runaway tree is
-/// cut short past 4,096. Found by each one's threads' children.
-#[cfg(not(target_os = "macos"))]
-pub fn tree() -> Vec<Pid> {
-    let mut found = children("self");
-    let mut next = 0;
-    while let Some(pid) = found.get(next).copied()
-        && found.len() <= 4096
-    {
-        next = next.saturating_add(1);
-        found.extend(children(pid));
-    }
-    found
+/// The most processes a [`tree`] holds on Linux: a runaway tree is cut
+/// short here.
+pub const TREE_MAX: usize = 4096;
+
+/// What a [`tree`] found, and whether it looked everywhere.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Tree {
+    pub pids: Vec<Pid>,
+    pub scan: Scan,
 }
 
-/// The children of `pid` (or `self`), by each of its threads'.
+/// How a scan of the tree ended. `Complete` says it read every process it
+/// found, not that what it found is all there is once used: a process may
+/// start or end meanwhile.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Scan {
+    #[default]
+    Complete,
+    /// There may be more: past [`TREE_MAX`] on Linux, or a list that
+    /// filled its buffer on macOS.
+    Truncated,
+    /// The system refused a list, with this error; it read the others.
+    Failed(Errno),
+}
+
+impl Tree {
+    /// Takes `found` in until it holds [`TREE_MAX`]: whether all fit.
+    #[cfg(not(target_os = "macos"))]
+    fn add(&mut self, found: impl IntoIterator<Item = Pid>) -> bool {
+        for pid in found {
+            if self.pids.len() >= TREE_MAX {
+                self.incomplete(Scan::Truncated);
+                return false;
+            }
+            self.pids.push(pid);
+        }
+        true
+    }
+
+    /// The scan missed something; the first miss is the one said.
+    fn incomplete(&mut self, scan: Scan) {
+        if self.scan == Scan::Complete {
+            self.scan = scan;
+        }
+    }
+
+    /// Takes in the children of `pid` (`None`: this process), by each of
+    /// its threads', reading no more of a list than there is room for:
+    /// whether all fit. One that ended since it was found has none; a list
+    /// the system refuses is said, and the others are read.
+    #[cfg(not(target_os = "macos"))]
+    fn read_children(&mut self, pid: Option<Pid>) -> bool {
+        use std::io::{ErrorKind::NotFound, Read};
+        let of = pid.map_or_else(|| "self".to_owned(), |pid| pid.to_string());
+        let tasks = match std::fs::read_dir(format!("/proc/{of}/task")) {
+            Ok(tasks) => tasks,
+            Err(error) if error.kind() == NotFound && pid.is_some() => return true,
+            Err(error) => {
+                self.incomplete(Scan::Failed(errno(&error)));
+                return true;
+            }
+        };
+        for task in tasks {
+            // Room and one more, each a number of 7 digits at most
+            // (PID_MAX_LIMIT, 2^22) and a blank, and one cut short.
+            let room = TREE_MAX.saturating_sub(self.pids.len()).saturating_add(2);
+            let cap = u64::try_from(room).map_or(u64::MAX, |room| room.saturating_mul(8));
+            let mut listed = String::new();
+            let read = (task.and_then(|t| std::fs::File::open(t.path().join("children"))))
+                .and_then(|file| file.take(cap).read_to_string(&mut listed));
+            match read {
+                Ok(bytes) => {
+                    // A list read to the cap may end in part of a number.
+                    let cut = u64::try_from(bytes).is_ok_and(|bytes| bytes >= cap);
+                    let whole = match listed.rsplit_once(' ') {
+                        Some((whole, _)) if cut => whole,
+                        None if cut => "",
+                        _ => &listed,
+                    };
+                    let found = whole.split_whitespace();
+                    if !self.add(found.filter_map(|c| Pid::from_raw(c.parse().ok()?))) {
+                        return false;
+                    }
+                    // Not reached while a number has 7 digits at most; if
+                    // one had more, what was cut is said missed.
+                    if cut {
+                        self.incomplete(Scan::Truncated);
+                    }
+                }
+                Err(error) if error.kind() == NotFound => {}
+                Err(error) => self.incomplete(Scan::Failed(errno(&error))),
+            }
+        }
+        true
+    }
+}
+
+/// The processes this one started, those they started in turn, and the
+/// orphans it adopted ([`adopt_orphans`]); not itself. Found by each one's
+/// threads' children, at most [`TREE_MAX`].
 #[cfg(not(target_os = "macos"))]
-fn children(pid: impl fmt::Display) -> Vec<Pid> {
-    let tasks = std::fs::read_dir(format!("/proc/{pid}/task"));
-    (tasks.into_iter().flatten().filter_map(|t| t.ok()))
-        .flat_map(|task| std::fs::read_to_string(task.path().join("children")))
-        .flat_map(|children| {
-            (children.split_whitespace())
-                .filter_map(|c| Pid::from_raw(c.parse().ok()?))
-                .collect::<Vec<_>>()
-        })
-        .collect()
+pub fn tree() -> Tree {
+    let mut tree = Tree::default();
+    // A kernel without the lists has none to read for any thread.
+    if let Err(error) = std::fs::metadata("/proc/thread-self/children") {
+        tree.incomplete(Scan::Failed(errno(&error)));
+    }
+    let (mut parent, mut next) = (None, 0usize);
+    while tree.read_children(parent) {
+        let Some(pid) = tree.pids.get(next).copied() else {
+            break;
+        };
+        (parent, next) = (Some(pid), next.saturating_add(1));
+    }
+    tree
+}
+
+/// The system's error behind `error`.
+#[cfg(not(target_os = "macos"))]
+fn errno(error: &std::io::Error) -> Errno {
+    Errno::from_io_error(error).unwrap_or(Errno::from_raw(libc::EIO))
 }
 
 /// macOS has no reaper of orphans but launchd: an orphan leaves this
-/// process's tree, so every process the system lists is taken to be in it.
+/// process's tree, so every process the system lists is taken to be in it,
+/// as many as there are (`kern.maxproc` bounds them). libproc says a
+/// failure with a count of 0.
 #[cfg(target_os = "macos")]
-pub fn tree() -> Vec<Pid> {
+pub fn tree() -> Tree {
+    let mut tree = Tree::default();
     // SAFETY: a null buffer asks only for the count.
     let count = unsafe { libc::proc_listallpids(std::ptr::null_mut(), 0) };
-    // Room for processes started between the two calls.
-    let room = usize::try_from(count).unwrap_or(0).saturating_add(64);
-    let pids = listed(room, |buffer, bytes| {
-        // SAFETY: the buffer is `bytes` long and writable.
-        unsafe { libc::proc_listallpids(buffer, bytes) }
-    });
-    (pids.into_iter().flatten())
-        .filter_map(Pid::from_raw)
-        .collect()
-}
-
-/// What a call fills a buffer of `room` `T`s with, given the buffer and
-/// its length in bytes, and answering how many it wrote: `None` if it
-/// failed.
-#[cfg(target_os = "macos")]
-fn listed<T: Default + Clone>(
-    room: usize,
-    call: impl FnOnce(*mut libc::c_void, libc::c_int) -> libc::c_int,
-) -> Option<Vec<T>> {
-    let mut list = vec![T::default(); room];
-    let bytes = libc::c_int::try_from(size_of_val(list.as_slice())).ok()?;
-    let written = usize::try_from(call(list.as_mut_ptr().cast(), bytes)).ok()?;
-    list.truncate(written);
-    Some(list)
+    let Some(count) = usize::try_from(count).ok().filter(|n| *n > 0) else {
+        tree.incomplete(Scan::Failed(Errno::last()));
+        return tree;
+    };
+    // Room for processes started between the two calls; a list that fills
+    // it may have had more.
+    let mut pids: Vec<libc::c_int> = vec![0; count.saturating_add(64)];
+    let Ok(bytes) = libc::c_int::try_from(size_of_val(pids.as_slice())) else {
+        tree.incomplete(Scan::Failed(Errno::INVAL));
+        return tree;
+    };
+    // SAFETY: the buffer is `bytes` long and writable.
+    let written = unsafe { libc::proc_listallpids(pids.as_mut_ptr().cast(), bytes) };
+    let Some(written) = usize::try_from(written).ok().filter(|n| *n > 0) else {
+        tree.incomplete(Scan::Failed(Errno::last()));
+        return tree;
+    };
+    if written >= pids.len() {
+        tree.incomplete(Scan::Truncated);
+    }
+    pids.truncate(written);
+    tree.pids = pids.into_iter().filter_map(Pid::from_raw).collect();
+    tree
 }
 
 /// `pid`'s command line, when the system says: each argument ended by a
@@ -501,6 +608,33 @@ mod tests {
         let pid = Pid::of(&child).ok_or("a pid")?;
         assert_eq!(wait_ended(pid), Some(Status::Exited(3)));
         assert_eq!(reap(pid), Ok(Some(Status::Exited(3))));
+        Ok(())
+    }
+
+    /// The tree finds a child, says its scan finished, and, on Linux,
+    /// stops at its bound saying so.
+    #[test]
+    fn a_tree_says_whether_it_was_cut_short() -> std::result::Result<(), String> {
+        let mut child = Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .map_err(|e| e.to_string())?;
+        let pid = Pid::of(&child).ok_or("a pid")?;
+        let found = tree();
+        let _ = child.kill();
+        let _ = child.wait();
+        assert!(found.pids.contains(&pid));
+        assert_eq!(found.scan, Scan::Complete);
+        #[cfg(not(target_os = "macos"))]
+        {
+            let mut cut = Tree::default();
+            let many =
+                (1..=i32::try_from(TREE_MAX).map_err(|e| e.to_string())?).filter_map(Pid::from_raw);
+            assert!(cut.add(many));
+            assert_eq!(cut.scan, Scan::Complete);
+            assert!(!cut.add([pid]));
+            assert_eq!((cut.pids.len(), cut.scan), (TREE_MAX, Scan::Truncated));
+        }
         Ok(())
     }
 

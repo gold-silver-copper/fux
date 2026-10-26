@@ -14,6 +14,7 @@ impl Errno {
     pub const INPROGRESS: Self = Self(libc::EINPROGRESS);
     pub const MFILE: Self = Self(libc::EMFILE);
     pub const NFILE: Self = Self(libc::ENFILE);
+    pub const SRCH: Self = Self(libc::ESRCH);
     pub(crate) const INVAL: Self = Self(libc::EINVAL);
     /// XNU's kernel-private `EREDRIVEOPEN` (`bsd/sys/errno.h`), which no POSIX
     /// call should return: macOS leaks it from `open("/dev/ptmx")` when

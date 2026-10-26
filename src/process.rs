@@ -1,7 +1,7 @@
 //! A pane's process: its PTY, how it starts, how its exit is noticed, and how
 //! it and its session are ended.
 pub use fuxix::process::Pid;
-use fuxix::process::{Signal, Status};
+use fuxix::process::{Scan, Signal, Status};
 use fuxix::pty::Master;
 use std::path::Path;
 
@@ -149,27 +149,55 @@ impl Leader {
 
     /// Signals its process group and every other process in its session.
     /// A background job started by dash sits in its own group, out of reach
-    /// of the group signal, but stays in the session. The session is looked for in the server's own tree, which
-    /// keeps the orphans its panes leave (`fuxix::process::tree`).
+    /// of the group signal, but stays in the session. The session is looked
+    /// for in the server's own tree, which keeps the orphans its panes
+    /// leave (`fuxix::process::tree`).
     pub fn hang_up(&self) {
         // Found before any signal: once the group's leader dies, its
         // children are on their way to this process, in no one's list.
         self.signal(self.session(), Signal::Hup);
     }
 
-    /// Signals its process group, then each of `others`.
-    fn signal(&self, others: Vec<Pid>, signal: Signal) {
-        let _ = fuxix::process::kill_group(self.0, signal);
-        for pid in others {
-            let _ = fuxix::process::kill(pid, signal);
+    /// Signals its process group, then each of `others`. What it may have
+    /// missed goes to the server's log: a scan for them that did not
+    /// finish, and each signal the system refused (one to a process gone
+    /// already is no loss).
+    fn signal(&self, (others, scan): (Vec<Pid>, Scan), signal: Signal) {
+        let group = fuxix::process::kill_group(self.0, signal).err();
+        let refused: Vec<String> = (group.map(|errno| (self.0, errno)).into_iter())
+            .chain(
+                others
+                    .into_iter()
+                    .filter_map(|pid| Some((pid, fuxix::process::kill(pid, signal).err()?))),
+            )
+            .filter(|(_, errno)| *errno != fuxix::Errno::SRCH)
+            .map(|(pid, errno)| format!("{pid}: {errno}"))
+            .collect();
+        let name = signal.name();
+        match scan {
+            Scan::Complete => {}
+            Scan::Truncated => log!(
+                "SIG{name} to session {}: the scan of processes was cut short, the rest not found",
+                self.0
+            ),
+            Scan::Failed(errno) => log!(
+                "SIG{name} to session {}: processes not all found: {errno}",
+                self.0
+            ),
+        }
+        if !refused.is_empty() {
+            let refused = refused.join(", ");
+            log!("SIG{name} to session {} refused: {refused}", self.0);
         }
     }
 
-    /// The other processes in its session, in the server's tree.
-    fn session(&self) -> Vec<Pid> {
-        (fuxix::process::tree().into_iter())
-            .filter(|pid| *pid != self.0 && fuxix::process::session(*pid) == Some(self.0))
-            .collect()
+    /// The other processes in its session, in the server's tree, and how
+    /// the scan of the tree went.
+    fn session(&self) -> (Vec<Pid>, Scan) {
+        let tree = fuxix::process::tree();
+        let session = (tree.pids.into_iter())
+            .filter(|pid| *pid != self.0 && fuxix::process::session(*pid) == Some(self.0));
+        (session.collect(), tree.scan)
     }
 
     /// Ends its group and the rest of its session and reaps it, without
@@ -181,7 +209,11 @@ impl Leader {
         // session, a job in a group of its own that ignored the hangup
         // (`nohup cmd &`) too, found first. A program that ended by itself
         // leaves those it meant to (`nohup job & exit`).
-        let session = if self.1 { self.session() } else { Vec::new() };
+        let session = if self.1 {
+            self.session()
+        } else {
+            (Vec::new(), Scan::Complete)
+        };
         self.signal(session, Signal::Kill);
         reaped(self.0).then_some(()).ok_or(self.0)
     }

@@ -30,15 +30,6 @@ use std::os::unix::net::{UnixListener, UnixStream};
 
 use std::time::{Duration, Instant};
 
-/// Writes to the server's log, its stderr: `log!("…", args)` expands to
-/// `writeln!(stderr(), "fux server: {}", format_args!("…", args))`. A log
-/// that cannot be written, a full disk, say, loses the line and stops nothing.
-macro_rules! log {
-    ($($arg:tt)*) => {{
-        let _ = writeln!(std::io::stderr(), "fux server: {}", format_args!($($arg)*));
-    }};
-}
-
 /// The least time between two paints for a client, as a flood is painted.
 /// A keystroke's echo (`PaintClock::echo`) and panes gone quiet (`QUIET`) are
 /// painted sooner.

@@ -4,6 +4,18 @@
 pub use fux_vt::bytes;
 pub use fux_vt::keys;
 pub use fux_vt::keys::{decode, encode};
+/// Writes to the server's log, its stderr: `log!("…", args)` writes the
+/// line after `fux server: `. A log that cannot be written, a full disk,
+/// say, loses the line and stops nothing.
+macro_rules! log {
+    ($($arg:tt)*) => {{
+        let _ = std::io::Write::write_fmt(
+            &mut std::io::stderr(),
+            format_args!("fux server: {}\n", format_args!($($arg)*)),
+        );
+    }};
+}
+
 pub mod act;
 pub mod capture;
 pub mod client;
