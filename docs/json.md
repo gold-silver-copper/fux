@@ -1,6 +1,6 @@
 # What `json` gives
 
-(`fux help-json`.) `json` turns the value on top of the stack into JSON:
+(`fux help json`.) `json` turns the value on top of the stack into JSON:
 what a word left, as below; a string as a JSON string; a number or boolean
 as itself; a list as an array of these, each answer in it as `json` gives
 it alone (a capture's, a listing's or an action's object; one of several
@@ -19,7 +19,7 @@ for `id`, `name` and `pid` (it says `pane`):
 | `title` | what the program set (OSC 0 or 2), else `""`: its first 256 characters, without control characters |
 | `rows`, `cols` | its size |
 | `pid` | its program's process, `null` once it exited |
-| `version` | its version, `%3:RESPAWNS.SCREEN.BELLS.DONE.ENDED:RUN`: its pane, its counts and the server's run (`fux help-agents` says what each counts) |
+| `version` | its version, `%3:RESPAWNS.SCREEN.BELLS.DONE.ENDED:RUN`: its pane, its counts and the server's run (`fux help agents` says what each counts) |
 | `program` | what runs in its foreground, as the system names it (Linux keeps a name's first 15 bytes), `null` if its terminal does not say |
 | `hung_up` | its program closed its terminal and runs on: keys are refused (Linux says so; macOS, where fux holds the terminal open, does not) |
 | `exited` | the status its program exited with (a pane whose program is no shell: `run`'s, or a `split` with a program), else `null` |
@@ -192,4 +192,4 @@ they run, so a `try` may name them too.
 
 With no server, `status` fails (`no_server`), saying the socket and whether
 a server that stopped left it there. Every server in fux's directory:
-`status json` on each socket there (`fux help agents servers`).
+`status json` on each socket there (`fux help servers`).

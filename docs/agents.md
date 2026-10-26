@@ -1,7 +1,7 @@
 # Driving programs with fux
 
-(`fux help-agents`: this screen, enough for most work. A topic at length:
-`fux help agents TOPIC`, below; `fux help` lists every word, `fux help WORD`
+(`fux help agents`: this screen, enough for most work. A topic at length:
+`fux help TOPIC`, below; `fux help` lists every word, `fux help WORD`
 explains one.)
 
 A fux command line is a fuxth program: words run left to right, each taking
@@ -75,7 +75,7 @@ time (`%2:0.61.1.4.0:RUN timeout`). In a program, `str timeout try … catch
 … end` goes on after a failure instead (`programs`). Clean up with `fux str
 agent workspace kill`; stop what you start by its pid, never `pkill -f`.
 
-Topics (`fux help agents TOPIC`; `all` for the whole guide): `recipes`,
+Topics (`fux help TOPIC`; `guide` for the whole guide): `recipes`,
 `keys`, `read`, `shells`, `programs`, `servers`.
 
 ## recipes: Waiting for what you need

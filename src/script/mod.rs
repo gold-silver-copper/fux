@@ -1236,16 +1236,9 @@ fn program(args: &[String]) -> Result<(Vec<Token>, Given), Failed> {
                 "--file names the file: fux --file FILE ARGS…",
             ));
         }
-        // Help as other programs give it: `help agents TOPIC`, `help json`,
-        // `help WORD`, `--help`, `--version`.
-        [help, agents, topic] if help == "help" && agents == "agents" => {
-            token::arguments(&["str", topic, "help-agents-on"])
-        }
-        [help, topic] if help == "help" => match topic.as_str() {
-            "agents" => token::arguments(&["help-agents"]),
-            "json" => token::arguments(&["help-json"]),
-            word => token::arguments(&["str", word, "explain"]),
-        },
+        // Help as other programs give it: `help WORD` (or a topic of the
+        // guide), `--help`, `--version`.
+        [help, topic] if help == "help" => token::arguments(&["str", topic, "explain"]),
         [flag] if matches!(flag.as_str(), "--help" | "-h") => token::arguments(&["help"]),
         [flag] if matches!(flag.as_str(), "--version" | "-V") => token::arguments(&["version"]),
         [line] => token::source("command line", line)?,

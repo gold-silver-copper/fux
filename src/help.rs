@@ -1,23 +1,24 @@
 //! fux's help, made from its words (`crate::script::Word`) and the bundled
 //! library's comments, so that it always says what this binary does; and
-//! the recipe for driving programs from a script or an agent
-//! (`help-agents`), which is `docs/agents.md`, built in.
+//! the guide to driving programs from a script or an agent
+//! (`str agents explain`), which is `docs/agents.md`, built in.
 use crate::script::{Act, After, LIBRARY, Word};
 
 /// `docs/agents.md`.
 pub const AGENTS: &str = include_str!("../docs/agents.md");
-/// The guide's first screen (`help-agents`): all before its first topic.
-pub fn agents_first() -> &'static str {
-    AGENTS
-        .split_once("\n## ")
-        .map_or(AGENTS, |(first, _)| first)
-}
 
-/// One topic of the guide (`help-agents-on`), its section headed `## TOPIC:`,
-/// or `all` of it; `None` if it has none so named.
-pub fn agents_topic(topic: &str) -> Option<String> {
-    if topic == "all" {
-        return Some(AGENTS.to_owned());
+/// Of the guide, `agents` its first screen (all before its first topic),
+/// `guide` all of it, else the topic's section, headed `## TOPIC:`; `None`
+/// if it has none so named.
+fn guide(topic: &str) -> Option<String> {
+    match topic {
+        "agents" => {
+            return AGENTS
+                .split_once("\n## ")
+                .map(|(first, _)| first.to_owned());
+        }
+        "guide" => return Some(AGENTS.to_owned()),
+        _ => {}
     }
     let heading = format!("\n## {topic}:");
     let (_, rest) = AGENTS.split_once(&heading)?;
@@ -27,14 +28,7 @@ pub fn agents_topic(topic: &str) -> Option<String> {
     Some(format!("##{}{section}", heading.trim_start_matches("\n##")))
 }
 
-/// The guide's topics, as `help-agents-on` takes them.
-pub fn agents_topics() -> Vec<&'static str> {
-    (AGENTS.split("\n## ").skip(1))
-        .filter_map(|section| section.split_once(':').map(|(topic, _)| topic))
-        .collect()
-}
-
-/// What `json` gives, word by word (`help-json`).
+/// What `json` gives, word by word (`str json explain`).
 pub const JSON: &str = include_str!("../docs/json.md");
 
 /// How fux runs, and every word under its heading.
@@ -64,7 +58,7 @@ with its pane's version from before it acted, one word
 version differs from V, else answers `timeout` after {wait}s unless
 `SECS timeout` says (the server's wait-seconds). A failure prints
 `fux: CODE: MESSAGE` on stderr.
-Driving programs from a script or an agent: `fux help-agents`; one word:
+Driving programs from a script or an agent: `fux help agents`; one word:
 `fux help WORD`.
 ",
     );
@@ -170,8 +164,13 @@ pub fn library() -> Vec<(&'static str, &'static str, &'static str, String)> {
     words
 }
 
-/// One word at length: its stack effect, what it does, and an example.
+/// One word at length, or a topic of the guide.
 pub fn explain(name: &str) -> Option<String> {
+    guide(name).or_else(|| word(name))
+}
+
+/// One word at length: its stack effect, what it does, and an example.
+fn word(name: &str) -> Option<String> {
     if let Some(word) = Word::named(name) {
         let row = word.row();
         let mut out = format!("{}  ( {} )\n\n{}.\n", row.name, row.effect, row.about);
@@ -194,6 +193,8 @@ pub fn explain(name: &str) -> Option<String> {
         }
         if word == Word::Act(Act::Set) {
             out.push_str(&settings());
+        } else if word == Word::Act(Act::Json) {
+            out.push_str(&format!("\n{JSON}"));
         }
         return Some(out);
     }
@@ -319,15 +320,29 @@ mod tests {
         }
     }
 
-    /// The guide's topics, as `help-agents-on` and the guide's first
-    /// screen list them, are its headings, which `help-agents-on` reads.
+    /// The guide's topics, as `explain` takes them.
+    fn agents_topics() -> Vec<&'static str> {
+        (AGENTS.split("\n## ").skip(1))
+            .filter_map(|section| section.split_once(':').map(|(topic, _)| topic))
+            .collect()
+    }
+
+    /// The guide's topics, as `explain` and the guide's first screen
+    /// list them, are its headings, which `explain` reads; none is a word.
     #[test]
     fn the_guide_lists_its_topics_as_its_headings_are() {
         let topics = agents_topics();
         assert!(topics.len() >= 5, "{topics:?}");
-        let on = Word::Act(Act::HelpAgentsOn).row().about;
+        let on = Word::Act(Act::Explain).row().about;
         let listed = format!("({})", topics.join(" "));
         assert!(on.contains(&listed), "{listed}");
+        for topic in topics.iter().chain(&["agents", "guide"]) {
+            assert!(word(topic).is_none(), "{topic} is a word");
+            assert!(
+                explain(topic).is_some_and(|text| AGENTS.contains(&text)),
+                "{topic}"
+            );
+        }
         let quoted: Vec<_> = topics.iter().map(|t| format!("`{t}`")).collect();
         let listed = format!("whole guide): {}.", quoted.join(", "));
         let guide = AGENTS.split_whitespace().collect::<Vec<_>>().join(" ");

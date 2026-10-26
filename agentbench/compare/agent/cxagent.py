@@ -42,7 +42,7 @@ REAL = {n: shutil.which(n) for n in ("tmux", "zellij", "herdr", "sleep")}
 TOOLS = ("fux", "tmux", "zellij", "herdr")
 
 LEARN = {
-    "fux": "fux, a terminal multiplexer. Learn it with `fux help-agents` (start there), `fux help` "
+    "fux": "fux, a terminal multiplexer. Learn it with `fux help agents` (start there), `fux help` "
            "and `fux str WORD explain`. A private fux server is already "
            "running for you: FUX_SOCKET points to it, and nothing in this environment reaches anyone "
            "else's session, so you may use any fux command, kill-server included.",

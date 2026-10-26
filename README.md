@@ -97,9 +97,9 @@ fux %3 str q text send-keys                       # press q: its version from be
 `fux help` lists every word with what it takes and leaves (`x secs -- x`);
 `fux help WORD` (`fux str WORD explain`) says one at length, with
 its options and an example;
-`fux help-agents` is the recipe for scripts and agents, its first screen
-enough for most work and `fux help agents TOPIC` the rest
-([docs/agents.md](docs/agents.md)), and `fux help-json` what `json` gives
+`fux help agents` is the recipe for scripts and agents, its first screen
+enough for most work and `fux help TOPIC` the rest
+([docs/agents.md](docs/agents.md)), and `fux help json` what `json` gives
 ([docs/json.md](docs/json.md)).
 
 What a word that acts takes (**options**, a wait, keys, a mouse event) goes
@@ -295,7 +295,7 @@ sends: `C` where a command's output begins, `D;STATUS` where it ends, `A`
 where a prompt starts. With them, a pane's version counts the commands
 that end, `last_status` says how the last did, `last-output` reads its
 output alone, and copy mode's `[` and `]` jump between prompts; without
-them, each says there are none. `fux help agents shells` shows the lines
+them, each says there are none. `fux help shells` shows the lines
 that send them, for bash, zsh and fish, to put in your own startup files
 ([docs/agents.md](docs/agents.md#shells-shells-and-their-marks)).
 

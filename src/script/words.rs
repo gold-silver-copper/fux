@@ -294,10 +294,7 @@ words! {
         Config ListKeys "list-keys" "--" "this client's keys, as config lines that make them" "fux list-keys" [];
         Config KeyNames "key-names" "--" "the names keys go by" "fux key-names" [];
         Help Help "help" "--" "the words, under their headings" "fux help" [];
-        Help HelpAgents "help-agents" "--" "how to drive programs from a script or an agent: the first screen, enough for most work" "fux help-agents" [];
-        Help HelpAgentsOn "help-agents-on" "word --" "one topic of that guide at length (recipes keys read shells programs servers), or all of it" "fux str recipes help-agents-on" [];
-        Help HelpJson "help-json" "--" "what json gives" "fux help-json" [];
-        Help Explain "explain" "word --" "one word at length" "fux str capture explain" [];
+        Help Explain "explain" "word --" "one word at length (json's says what json gives); or the guide to driving programs from a script or an agent: agents, its first screen, enough for most work; a topic of it (recipes keys read shells programs servers); or guide, all of it" "fux str capture explain" [];
         Help Check "check" "file --" "read a fuxth file without running it: its mistakes; a config.fux is run dry too" "fux str config.fux check" [];
     }
     Opt {
@@ -1498,23 +1495,11 @@ impl fuxth::Host for Host<'_> {
             Act::KeyNames => self.show(&format!("{}\n", crate::keys::all_names().join(" "))),
             // -------------------------------------------------------- help
             Act::Help => self.show(&help::overview()),
-            Act::HelpAgents => self.show(help::agents_first()),
-            Act::HelpAgentsOn => {
-                let topic = string(&next()?)?;
-                let text = help::agents_topic(&topic).ok_or_else(|| {
-                    let topics = help::agents_topics().join(" ");
-                    fail(
-                        Raise::BadValue,
-                        format!("no topic {topic:?}: {topics}, or all"),
-                    )
-                })?;
-                self.show(&text)
-            }
-            Act::HelpJson => self.show(help::JSON),
             Act::Explain => {
                 let word = string(&next()?)?;
-                let text = help::explain(&word)
-                    .ok_or_else(|| fail(Raise::UnknownWord, format!("no word {word:?}")))?;
+                let text = help::explain(&word).ok_or_else(|| {
+                    fail(Raise::UnknownWord, format!("no word or topic {word:?}"))
+                })?;
                 self.show(&text)
             }
             Act::Check => {

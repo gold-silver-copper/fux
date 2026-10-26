@@ -611,7 +611,7 @@ impl Losses {
         let input = "its input queue was full, and takes nothing until its program reads";
         let (cut, not_text) = (Uncopied::Cut, Uncopied::NotText);
         let (cut, not_text) = (format!("each {cut}"), format!("each {not_text}"));
-        let pictures = "`fux help-json` says why one may not be";
+        let pictures = "`fux help json` says why one may not be";
         let (copies, memory) = ("copies (OSC 52) not made", "each lost only what it was for");
         let Losses {
             input: n,
@@ -987,7 +987,7 @@ pub enum Output {
 
 /// What is said of a pane where no shell command was ever marked.
 pub const UNMARKED: &str = "no shell command was marked here (OSC 133 C and D): \
-                            `fux help agents shells` says how to turn marks on";
+                            `fux help shells` says how to turn marks on";
 
 impl Pane {
     pub fn new(
