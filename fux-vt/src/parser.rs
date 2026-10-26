@@ -872,6 +872,8 @@ pub struct Parser {
     refused: u64,
     /// Sixel pictures not placed (`Parser::pictures_refused`).
     pictures_refused: u64,
+    /// Sixel pictures placed whole (`Parser::pictures_placed`).
+    pictures_placed: u64,
 }
 #[cfg(test)]
 mod tests;
@@ -907,6 +909,7 @@ impl Parser {
             end: u64::MAX,
             refused: 0,
             pictures_refused: 0,
+            pictures_placed: 0,
         })
     }
     /// Checks every invariant of the parser and its screen that the state
@@ -1085,6 +1088,12 @@ impl Parser {
     /// history let go is not.
     pub fn pictures_refused(&self) -> u64 {
         self.pictures_refused
+    }
+    /// How many sixel pictures the program sent, with [`Feature::Pictures`],
+    /// that were placed whole: those [`Parser::pictures_refused`] does not
+    /// count, but for one that drew nothing.
+    pub fn pictures_placed(&self) -> u64 {
+        self.pictures_placed
     }
     /// Process output while deliberately discarding terminal query replies.
     pub fn process(&mut self, bytes: &[u8]) -> Result<(), Error> {
@@ -1647,6 +1656,8 @@ impl Parser {
                     let placed = picture.map(|p| drawn && self.screen.place_picture(p));
                     if !whole || placed == Some(false) {
                         self.pictures_refused = self.pictures_refused.saturating_add(1);
+                    } else if placed == Some(true) {
+                        self.pictures_placed = self.pictures_placed.saturating_add(1);
                     }
                 }
                 State::Ground

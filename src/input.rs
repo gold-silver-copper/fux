@@ -29,10 +29,9 @@ impl Session {
             }
             shown |= self.act(client, act);
         }
-        // What a pane lost is told (`tell_lost`): input and replies once a
-        // run, the rest as it is lost. Keys a
-        // pane's program reads show when its output does: nothing to paint
-        // or settle until then.
+        // What a pane lost is told (`tell_lost`), each kind once a run.
+        // Keys a pane's program reads show when its output does: nothing
+        // to paint or settle until then.
         shown |= self.tell_lost();
         // Another client typing hosts the tab's panes, which the settle
         // tells them, painting the tab again where that changed what they

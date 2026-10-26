@@ -83,6 +83,17 @@ enum Refusing {
     Yes(Run),
 }
 
+/// A pane's runs of losses but input's and replies' (`InputQueue`), each
+/// over at a success of its kind: a copy made, a picture placed whole, a
+/// read that refused no memory.
+#[derive(Clone, Copy, Debug, Default)]
+struct LossRuns {
+    copies_cut: Run,
+    copies_not_text: Run,
+    pictures: Run,
+    memory: Run,
+}
+
 /// A run of one kind of drop: none going on; going on and not yet told;
 /// or told, so the rest of it is counted and not told again, as its
 /// notice said what goes on happening till it ends.
@@ -702,6 +713,9 @@ pub struct Pane {
     untold: Losses,
     /// The size its screen was last refused, if its last resize was.
     refused_size: Option<Size>,
+    /// Its runs of copies, pictures and memory lost (`Run`): its runs of
+    /// input and replies are its queue's.
+    loss_runs: LossRuns,
 }
 
 /// A pane to change, with a journal at its place: what its methods do
@@ -807,7 +821,12 @@ impl<'a> PaneMut<'a> {
             .filter(|_| clipboard)
         {
             match copy {
-                Ok(text) => copies.push(text),
+                // A copy made ends the runs of copies refused.
+                Ok(text) => {
+                    let runs = &mut self.pane.loss_runs;
+                    (runs.copies_cut, runs.copies_not_text) = (Run::Over, Run::Over);
+                    copies.push(text);
+                }
                 Err(why) => self.pane.uncopied(why),
             }
         }
@@ -959,6 +978,7 @@ impl Pane {
             lost: Losses::default(),
             untold: Losses::default(),
             refused_size: None,
+            loss_runs: LossRuns::default(),
         })
     }
 
@@ -1122,6 +1142,7 @@ impl Pane {
         tell: &mut Teller<'_>,
     ) -> Option<(usize, fux_vt::Stop)> {
         let refused = (self.parser.refused(), self.parser.pictures_refused());
+        let placed = self.parser.pictures_placed();
         let mut sink = Sink {
             replies: Vec::new(),
             kept: 0,
@@ -1167,8 +1188,17 @@ impl Pane {
             self.input.replies = Run::Over;
         }
         self.lose_replies(replies);
+        // A picture placed whole ends a run of pictures lost; a read
+        // refused no memory, a run of refusals.
+        let memory = self.parser.refused().saturating_sub(refused.0);
+        if self.parser.pictures_placed() != placed {
+            self.loss_runs.pictures = Run::Over;
+        }
+        if memory == 0 && !bytes.is_empty() {
+            self.loss_runs.memory = Run::Over;
+        }
         self.lose(Losses {
-            memory: self.parser.refused().saturating_sub(refused.0),
+            memory,
             pictures: self.parser.pictures_refused().saturating_sub(refused.1),
             ..Losses::default()
         });
@@ -1208,6 +1238,9 @@ impl Pane {
         // A size refused is asked again as the session settles: counted
         // once, till another size is asked.
         let memory = self.parser.refused().saturating_sub(refused);
+        if memory == 0 {
+            self.loss_runs.memory = Run::Over;
+        }
         let again = resized.is_err() && self.refused_size == Some(size);
         self.refused_size = resized.is_err().then_some(size);
         if !again {
@@ -1262,12 +1295,34 @@ impl Pane {
     /// (`Run`).
     fn lose(&mut self, mut losses: Losses) {
         self.lost.add(losses);
-        if self.input.refusing == Refusing::Yes(Run::Told) {
-            losses.input = 0;
+        // Every kind alike: a loss begins a run of its kind, if none goes
+        // on, and one in a run already told is counted, not told again.
+        let gate = |n: &mut u64, run: &mut Run| {
+            if *n > 0 {
+                run.dropped();
+            }
+            if *run == Run::Told {
+                *n = 0;
+            }
+        };
+        let Losses {
+            input,
+            replies,
+            copies_cut,
+            copies_not_text,
+            pictures,
+            memory,
+        } = &mut losses;
+        // Input is refused only while the queue refuses, its run with it.
+        if let Refusing::Yes(run) = &mut self.input.refusing {
+            gate(input, run);
         }
-        if self.input.replies == Run::Told {
-            losses.replies = 0;
-        }
+        gate(replies, &mut self.input.replies);
+        let runs = &mut self.loss_runs;
+        gate(copies_cut, &mut runs.copies_cut);
+        gate(copies_not_text, &mut runs.copies_not_text);
+        gate(pictures, &mut runs.pictures);
+        gate(memory, &mut runs.memory);
         self.untold.add(losses);
     }
 
@@ -1287,14 +1342,10 @@ impl Pane {
 
     /// `n` replies were dropped, in a run of them.
     fn lose_replies(&mut self, n: u64) {
-        if n > 0 {
-            self.input.replies.dropped();
-            let replies = n;
-            self.lose(Losses {
-                replies,
-                ..Losses::default()
-            });
-        }
+        self.lose(Losses {
+            replies: n,
+            ..Losses::default()
+        });
     }
 
     /// Whether it let go of anything not yet told.
@@ -1309,6 +1360,15 @@ impl Pane {
             run.told();
         }
         self.input.replies.told();
+        let runs = &mut self.loss_runs;
+        for run in [
+            &mut runs.copies_cut,
+            &mut runs.copies_not_text,
+            &mut runs.pictures,
+            &mut runs.memory,
+        ] {
+            run.told();
+        }
         std::mem::take(&mut self.untold)
     }
 
@@ -1338,9 +1398,6 @@ impl Pane {
     /// refused is lost.
     fn refused(&mut self, pushed: Result<(), Error>) -> Result<(), Error> {
         if let Err(Error::InputFull) = pushed {
-            if let Refusing::Yes(run) = &mut self.input.refusing {
-                run.dropped();
-            }
             self.lose(Losses {
                 input: 1,
                 ..Losses::default()
@@ -1474,6 +1531,7 @@ impl Pane {
             alerts,
             lost,
             refused_size,
+            loss_runs,
         } = fresh;
         // The new program starts with nothing queued. One that ended said
         // what it left with its exit; one that runs leaves its input now,
@@ -1487,7 +1545,7 @@ impl Pane {
         (self.frame, self.unread, self.frame_left) = (frame, unread, frame_left);
         (self.exiting, self.scheme_told, self.wrote_at) = (exiting, scheme_told, wrote_at);
         (self.mouse_held, self.left, self.alerts, self.lost) = (mouse_held, left, alerts, lost);
-        self.refused_size = refused_size;
+        (self.refused_size, self.loss_runs) = (refused_size, loss_runs);
         tell.tell(Told::Respawned(over));
         self.rename(name, tell);
         // 2^64 respawns are never reached: the count never stands still.
@@ -2103,6 +2161,47 @@ pub(crate) mod tests {
         assert!(pane.push(b"x").is_err());
         assert_eq!(pane.take_untold(), Losses::default(), "the same runs");
         assert_eq!((pane.lost().replies, pane.lost().input), (4, 2));
+        Ok(())
+    }
+
+    /// Every kind of loss is told once a run, which a success of its kind
+    /// ends: pictures lost, by a picture placed whole; copies refused, by a
+    /// copy made.
+    #[test]
+    fn pictures_and_copies_lost_are_told_once_a_run() -> Result<(), Box<dyn std::error::Error>> {
+        let mut pane = pane(3, 20)?;
+        let picture = b"\x1bP9q#1;2;100;0;0!20~\x1b\\";
+        let cell = fux_vt::CellSize::new(10, 20).ok_or("a cell")?;
+        pane.output(picture);
+        assert_eq!(pane.take_untold().pictures, 1, "none draws sixel");
+        pane.output(picture);
+        assert!(!pane.loses(), "the same run");
+        let _ = pane.host(
+            Colours::default(),
+            Default::default(),
+            fux_vt::Graphics::Sixel(cell),
+        );
+        pane.output(picture);
+        let _ = pane.host(
+            Colours::default(),
+            Default::default(),
+            fux_vt::Graphics::Cell(cell),
+        );
+        pane.output(picture);
+        assert_eq!(pane.take_untold().pictures, 1, "a run after one placed");
+        assert_eq!(pane.lost().pictures, 3);
+        let bad = b"\x1b]52;c;***\x07";
+        let copy = |pane: &mut Lone, bytes: &[u8]| {
+            pane.output(bytes);
+            pane.placed().take_read(true).1.len()
+        };
+        copy(&mut pane, bad);
+        assert_eq!(pane.take_untold().copies_not_text, 1);
+        copy(&mut pane, bad);
+        assert!(!pane.loses(), "the same run");
+        assert_eq!(copy(&mut pane, b"\x1b]52;c;Zm9v\x07"), 1);
+        copy(&mut pane, bad);
+        assert_eq!(pane.take_untold().copies_not_text, 1, "a run after a copy");
         Ok(())
     }
 
