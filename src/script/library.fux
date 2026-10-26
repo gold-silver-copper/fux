@@ -7,7 +7,7 @@ define type text send-keys end
 define press key send-keys end
 # pane text -- answer : in a shell: type a line and press Enter; answers as send-keys does
 define line text str Enter key send-keys end
-# -- pane : a tab with a shell, in workspace agent, on the size of the tab fux runs in (from outside fux: opts 80 24 size str agent in new-tab)
+# -- answer : a tab with a shell, in workspace agent, on the size of the tab fux runs in (from outside fux: opts 80 24 size str agent in new-tab)
 define shell opts str agent in new-tab end
 # version -- list : the five counts of a version, an action's or wait's answer, or its text: respawns screen bells done ended
 define counts string words first str : split-on 1 at str . split-on let parts list parts each number end end end

@@ -611,8 +611,9 @@ closed! {
         /// VT510 manual) for SGR (`m`), DECSCUSR (` q`), DECSTBM (`r`),
         /// DECSLRM (`s`), DECSCA (`"q`), DECSCL (`"p`) and DECSACE (`*x`), as
         /// xterm 411 answers: `DCS 1 $ r Pt ST`, `Pt` the sequence that sets
-        /// it. Another request is answered as invalid, `DCS 0 $ r ST`, and a
-        /// default cursor shape (DECSCUSR 0) not at all. XTGETTCAP (`DCS + q
+        /// it: the cursor shape the terminal starts with as `7 SP q`, which
+        /// DECSCUSR 7 restores, and DECSCUSR 0's as `1 SP q`. Another request
+        /// is answered as invalid, `DCS 0 $ r ST`. XTGETTCAP (`DCS + q
         /// Pt ST`) is answered as invalid, `DCS 0 + r ST`. Programs learn
         /// from the pen what the terminal draws: neovim draws its diagnostics
         /// curly only if `4:3` comes back. Off, both are ignored.

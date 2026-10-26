@@ -59,7 +59,8 @@ pub enum Fit {
     /// it was laid out on (the smallest, of several) that showed every
     /// pane, or the one it was made on.
     Clients(fux_vt::Size),
-    /// A screen of this size, client or none: `size` and `resize`.
+    /// A screen of this size, while no client sizes the tab: `size` and
+    /// `resize`.
     Fixed(fux_vt::Size),
 }
 

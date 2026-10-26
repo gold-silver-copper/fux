@@ -23,7 +23,7 @@ checks = []
 # U+17D8 aside).
 unicode-segmentation = "=1.13.3"
 unicode-width = "=0.2.2"
-# The bounds tests' counting allocator (THREATS.md 3.5): live bytes and a
+# The bounds tests' counting allocator (THREATS.md 3.4): live bytes and a
 # peak it resets, for each thread apart, its `unsafe` its own.
 fux-vt-peak = { path = "peak" }
 

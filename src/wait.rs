@@ -27,12 +27,13 @@ pub struct Waiting {
     watches: Vec<(PaneId, Counts)>,
     run: Run,
     deadline: Instant,
-    /// How long it waits at most: its own timeout, else the server's.
+    /// How long it waits for a change before it answers a timeout (later
+    /// while a pane is mid-frame): its own timeout, else the server's.
     limit: Duration,
 }
 
 impl Waiting {
-    /// A wait from `now`, for `limit` at most, until a pane's counts
+    /// A wait from `now`, timing out after `limit`, until a pane's counts
     /// differ from those `watches` gives it.
     pub fn new(watches: Vec<(PaneId, Counts)>, run: Run, now: Instant, limit: Duration) -> Waiting {
         Waiting {

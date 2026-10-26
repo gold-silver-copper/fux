@@ -14,7 +14,9 @@ rows, C = 200 columns) and H = 8 MiB of history.
 ### 1.1 What a program in a pane controls
 
 - Every byte it writes, in any order, amount and chunking. fux feeds
-  pieces of at most 4 KiB; a library host may pass a whole file at once.
+  what it read whole (16 KiB a read; a held frame, or a program's last
+  output as it exits or is respawned over, more); a library host may
+  pass a whole file at once.
 - Through those bytes, all the state they reach: modes, margins, the
   pending wrap, wide glyphs, protection, both screens, styles,
   hyperlinks, prompt marks, OSC payloads, DECRQSS requests, sixel data,
@@ -34,16 +36,22 @@ fux-vt's own limits: rows and columns are `u16`, and rows × columns ≤
 cells, whatever its byte budget.
 
 fux's promise, within which every bound and the per-call ceiling hold:
-a pane is at most 4,095 rows × 4,096 columns (a tab laid out by `resize`
-at most 500 × 500); history is at most 1 GiB (8 MiB by default); pieces
-are at most 4 KiB, and a held frame at most 2 MiB (`FRAME_LIMIT`); every
-`Feature` is on but `RectangleChecksums` (without `Pictures`, `DCS q` is
-an ignored DCS).
+a pane is at most 4,096 rows × 4,096 columns (`view::MOST`: a client's
+screen less its bar, or a tab given its size by `size` or `resize`; the
+probes run at 4,095 × 4,096);
+history is at most 1 GiB (8 MiB by default); a piece is what fux read
+(`Pane::output`), or what a budget stop left of one (`Pane::unread`): one
+read of at most 16 KiB, a program's last 1 MiB as it exits or is
+respawned over, or a held frame, shown once past 2 MiB (`FRAME_LIMIT`),
+so at most 2 MiB and what was appended last: one read, or that last
+1 MiB; a call of n bytes has 4.4's ceiling (`Work::ceiling`)
+max(1, ⌈n ÷ 4096⌉) times; the `Feature`s are `fux::pane::OPTIONS`',
+every one but `ExtendedReplies` and `RectangleChecksums`.
 
 The host also sets the picture budget (`Parser::set_picture_bytes`,
 96 MiB by default, B01; set lower, large pictures clip), its cell size
-(`set_host_graphics`, raised to at least 2×6 pixels so that a picture's
-placement stays within the ceiling, B05), the paste limit
+(`set_host_graphics`; `CellSize` refuses one under 2×6 pixels, so that
+a picture's placement stays within the ceiling, B05), the paste limit
 (`with_paste_limit`; `usize::MAX` removes it) and the `Feature`s, which
 set the OSC limit (B20).
 
@@ -110,8 +118,9 @@ Conventions for every row:
 - Chunkings: each probe feeds its input at 1 B, 16 B and 4 KiB a call,
   and whole (`WHOLE`: all of it, given again from each stop), as
   `tests/bounds/probe.rs` `CHUNKS` lists. A call of n bytes is held to
-  U × ⌈n ÷ 4096⌉. Rows with megabytes of setup feed at no less than
-  16 B or 4 KiB, as each probe says.
+  the ceiling (`Work::ceiling`, 4.4) × max(1, ⌈n ÷ 4096⌉). Rows with
+  megabytes of setup feed at no less than 16 B or 4 KiB, as each probe
+  says.
 - Sizes: 1× is the smallest input that reaches the limit; 10× and 100×
   repeat it. `bNN_1x` and `bNN_10x` run in CI; `bNN_100x` is ignored and
   run at release under a 2 GiB memory cap.
@@ -213,18 +222,20 @@ a map's growth ≤ 2.64 MiB; DECCRA's copy ≈ 1.02 MiB; sixel growth is
 inside P. A resize or RIS (host calls) builds a new history and screens
 beside the old: + 12.10 MiB.
 
-### 3.4 Outside the parser
+### 3.3 Outside the parser
 
 - fux, per pane and client: ≤ P of evicted pictures in its last paint.
-- fux, per pane: its frame buffer (≤ 2 MiB + 16 KiB), and output read
-  but not parsed after a budget stop (`Pane::unread`: a held frame, one
-  16 KiB read and an exited program's last 1 MiB, twice while joined).
+- fux, per pane: its frame buffer (≤ 2 MiB + 16 KiB, or 2 MiB + 1 MiB
+  as its program's last output is read, at its exit or a respawn over
+  it), and output read but not parsed after a budget stop
+  (`Pane::unread`: a held frame, one 16 KiB read and a program's last
+  1 MiB as it exits or is respawned over, twice while joined).
 - fux, per client: encoded sixel data, ≤ `SIXEL_BYTES` = 16 MiB.
 - A parser cloned mid-picture: + ≤ 33.75 MiB.
 - The key decoder: 258 B held (+ 2 × 258 while a read is cut), a paste's
   65,541 B and its `String` (≤ 196,608 B), and `out` until drained.
 
-### 3.5 How the bounds tests measure it
+### 3.4 How the bounds tests measure it
 
 - `tests/bounds.rs` (`required-features = ["checks"]`) makes
   `fux-vt-peak`'s `ThreadPeak` its `#[global_allocator]`. It counts the
@@ -350,7 +361,7 @@ that size (`budget::sequence_most`), whichever is larger.
 
 What is checked where:
 - In CI, the bounds suite (a `checks` build) asserts W ≤ the ceiling
-  for every call of every probe (× ⌈n ÷ 4096⌉ for a call of n bytes),
+  for every call of every probe (× max(1, ⌈n ÷ 4096⌉) for a call of n bytes),
   and `tests/bounds.rs` `budget` asserts, at 4095×4096, that each class
   of screen-wide function stops at the budget and ends with the screen
   one unbudgeted call makes. `guards.rs`

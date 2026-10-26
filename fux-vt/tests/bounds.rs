@@ -62,7 +62,7 @@ const MIB: usize = 1 << 20;
 /// test harness's code on it does.
 const SLACK: usize = 64 << 10;
 
-/// What the bounds tests rely on the allocator for (`THREATS.md` 3.5): it
+/// What the bounds tests rely on the allocator for (`THREATS.md` 3.4): it
 /// counts what is live, a reset peak starts again from what is live, a
 /// growth by `realloc` counts the old block and the new while both live,
 /// and what another thread holds meanwhile is not the probe's.

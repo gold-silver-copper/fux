@@ -16,7 +16,7 @@
 //! - Ghostty's `parser` inputs, vt100-rust's and mosh's: verbatim.
 //!
 //! Each is fed to a fresh 24 by 80 parser with every feature on, as all
-//! three fuzzers make theirs: whole, in fux's 4 KiB reads, and a byte at a
+//! three fuzzers make theirs: whole, in 4 KiB pieces, and a byte at a
 //! time. The checker (`Parser::check`) and the public API's invariants
 //! (`corpus/invariants.rs`) hold after every read, and the three feeds end
 //! alike (THREATS.md section 6). A panic or a fault is a fux-vt defect,
@@ -230,7 +230,7 @@ fn fed(bytes: &[u8], size: usize, every: bool) -> Result<Parser> {
     Ok(parser)
 }
 
-/// One input's replay: whole, in 4 KiB reads, a byte at a time.
+/// One input's replay: whole, in 4 KiB pieces, a byte at a time.
 fn replay(bytes: &[u8]) -> Result {
     let whole = fed(bytes, bytes.len(), true)?;
     let reads = fed(bytes, 4096, true)?;

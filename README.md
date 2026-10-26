@@ -26,22 +26,24 @@ new server holds nothing: the first client to attach starts workspace
 nothing: with no server, or one holding nothing, it is refused. `C-b d`
 detaches, and the shells keep running. Inside a fux pane, `fux` refuses to attach.
 
-The server runs until `fux kill-server`, SIGTERM, SIGINT, SIGHUP, or until
-its last pane closes. It then hangs up every pane, tells each attached
-terminal why, and removes its socket.
+The server runs until `fux kill-server` (refused while a person's terminal
+is attached or from its own panes: [Security](#security)), SIGTERM,
+SIGINT, SIGHUP, or until its last pane closes. It then hangs up every
+pane, tells each attached terminal why, and removes its socket.
 
-Every pane runs your shell (the `shell` setting: `fux help set`). A pane closes
-when its shell exits, showing its viewers the exit status; a tab closes
-with its last pane, a workspace with its last tab.
+A pane runs your shell (the `shell` setting: `fux help set`), or the program
+it was given (`run`, `split`). A shell's pane closes when its shell exits,
+showing its viewers the exit status; a program's pane stays, its exit told,
+until `kill` closes it or `respawn` starts it again. A tab closes with its
+last pane, a workspace with its last tab.
 A pane's lines re-wrap when its width changes, history included.
 
 The bottom row is the bar: the workspace and its tabs on the left; on the
 right the focused pane's number and title (the program's OSC 0/2 title,
 else the pane's name), a notice, or copy mode's position. A screen too
-small for its tab (a watcher's, one smaller than a size the tab was given, or
-one too small for all its panes) shows panes cut off at their right and
-bottom, or none of a pane it has no room for: the bar names them before the
-title, hidden first: `[hidden %3] [cut %2]`.
+small for its tab (a watcher's, or one too small for all its panes)
+shows panes cut off at their right and bottom, or none of a pane it has
+no room for: the bar names them before the title, hidden first: `[hidden %3] [cut %2]`.
 
 ## fuxth
 
@@ -80,7 +82,9 @@ fux %3 str q text send-keys                       # press q: its version from be
 - The language's core is small on purpose: a few words and parsing words
   (`str`, `define`, `let`, `if`, `begin`, `list`, `each`, `try`), listed by
   `fux help` and at length in [fuxth/README.md](fuxth/README.md).
-  Everything else is the standard library, written in fuxth.
+  The rest of the language, its standard library, is written in fuxth;
+  fux's own words (`ls`, `run`, `send-keys` …) are fux's, not the
+  language's.
 - A program is checked before it runs: a word given fewer values than the
   stack surely holds, a value the core's words never take (`str a 1 add`,
   `1 if`), or keys or options left that no word acts on (`%3 str x text`),
@@ -100,13 +104,14 @@ enough for most work and `fux help agents TOPIC` the rest
 What a word that acts takes (**options**, a wait, keys, a mouse event) goes
 on the pane before it, in any order: the pane given them becomes a request,
 which the word at the end acts on. `run`, `new-tab` and `new-workspace` have
-no pane yet: they start from `opts`, empty options. Only `run` takes a program
-(`program`, then each `arg`; a shell's line is `str sh program str -c arg str
-LINE arg`); `new-tab` and `new-workspace` start a shell. Their tab is laid
-out on `COLS ROWS size`, else on the caller's own screen (a client's keys),
-else on the caller's tab (`fux` run in a pane): never on the screen of a
-client that does not show the caller's tab. Run from outside fux, a size
-must be given: fux makes none up.
+no pane yet: they start from `opts`, empty options. Of the three, only
+`run` takes a program (`program`, then each `arg`; a shell's line is
+`str sh program str -c arg str LINE arg`); `new-tab` and `new-workspace`
+start a shell. Their tab is laid out on `COLS ROWS size`, else on the
+caller's own screen (a client's keys), else on the caller's tab (`fux`
+run in a pane): never on the screen of a client that does not show the
+caller's tab. Run from outside fux, a size must be given: fux makes none
+up.
 
 ```sh
 fux opts str web name 120 40 size str ./app program str --verbose arg run
@@ -277,10 +282,10 @@ bracketed paste. It is also sent to your terminal's clipboard as OSC 52, up
 to 1 MiB encoded, unless `str clipboard false set`; your terminal must
 allow OSC 52 writes. A program in a pane that copies with OSC 52, as Neovim
 and Helix do, copies the same way, up to 64 KiB encoded, but only while
-`clipboard` is on: with it off a program's copy copies nothing, to the
-buffers either. A longer copy, or one that is not base64 (RFC 4648, padded or not)
-of UTF-8 text, copies nothing, and the clients showing the pane say so.
-fux never reads the clipboard.
+`clipboard` is true: set false, a program's copy copies nothing, to the
+buffers either. A longer copy, or one that is not base64 (RFC 4648,
+padded or not) of UTF-8 text, copies nothing, and the clients showing
+the pane say so. fux never reads the clipboard.
 
 ## Shell marks
 
@@ -302,8 +307,8 @@ leaves; `fux help WORD` says one at length.
 `S-Left`, `Enter`, `BTab`, `BSpace`, `PageUp`, `F1`–`F35`, …) and any
 single character, which carries its own shift (`T`, not `S-t`); common
 spellings (`Backspace`, `Esc`, `Return`, `Del`, `Ins`, `PgUp`, `PgDn`) are
-taken too, and a name refused is told the closest one. `fux key-names`
-prints them all.
+taken too, and `key` tells a name it refuses the closest one, if any.
+`fux key-names` prints them all.
 
 **Inside a pane**, a program's environment holds:
 
@@ -558,8 +563,9 @@ server` (`NAME.sock` in fux's directory), else `FUX_SOCKET`, else
 a relative path is refused, as is neither set. An auto-started server logs
 to `fux.log` beside it.
 
-- The socket's directory must be yours, mode 0700, reached only through
-  directories no other user can change; fux creates the default one so.
+- The socket's directory must be a directory of yours, not a symbolic
+  link, mode 0700; fux creates the default one so. The directories above
+  it are not checked.
 - The socket is mode 0600 before any connection is accepted, and a lock
   file makes one server its owner.
 - Every peer must run as the server's own user (`SO_PEERCRED` on Linux,
@@ -594,7 +600,8 @@ Against mistakes, rather than against a program of yours that means harm:
 
 ## Development
 
-CI runs, on Linux and macOS:
+CI runs, on Linux and macOS, these and the rest of
+[its gates](.github/workflows/ci.yml):
 
 ```sh
 cargo fmt --all --check
@@ -602,8 +609,9 @@ cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo test --workspace --locked
 ```
 
-The tests start real servers and shells: they need `/bin/sh`, `/bin/dash`
-and `python3`, and use zsh if installed. Tools outside the workspace, each
+The tests start real servers and shells: they need `/bin/sh`, `/bin/bash` and
+`python3`, use `dash` if it is on `PATH`, and with `FUX_TEST_SHELLS=1`
+also zsh and fish. Tools outside the workspace, each
 with a README:
 
 - [`fux-vt/compare`](https://github.com/gold-silver-copper/fux/blob/master/fux-vt/compare/README.md):

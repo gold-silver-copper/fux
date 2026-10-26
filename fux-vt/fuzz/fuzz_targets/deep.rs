@@ -2,7 +2,7 @@
 //! The deep target (`THREATS.md` section 6): large state
 //! and every host call. Up to 511 by 511 cells and 8 MiB of history, every
 //! `Feature` and pictures drawn, fed up to 1 MiB of output a run by
-//! `process_until_stop` in 4 KiB reads, as fux's pane reads, with each
+//! `process_until_stop` in 4 KiB pieces, with each
 //! call's work held to the frozen ceiling U (4.4); a second parser fed a
 //! byte at a time, its row versions checked after every byte while it
 //! holds few enough rows; and between the outputs the host's calls:

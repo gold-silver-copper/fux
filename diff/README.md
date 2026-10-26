@@ -167,7 +167,7 @@ compared by number); `process` and `process_with_replies`, which are
   fux pane and with every option off, each step cut into pieces of 1 to
   2,048 bytes.
 - **The ceiling,** with the corpus: the working tree's fux-vt alone, as a
-  pane, each recording read 4 KiB at a time as fux reads a pane's output
+  pane, each recording read 4 KiB at a time
   (`process_until_stop` until the read is taken): the call that does the
   most work, in fux-vt's work units (`Work::cost`); and a resize of a full
   history at 50×200 to 80 columns, and back. Each is printed as a share of

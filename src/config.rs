@@ -101,18 +101,20 @@ pub trait Reads: Sized {
 }
 
 settings! {
-    /// The program a new pane runs, then its arguments: a list of strings,
-    /// each one word whatever it holds, as `list str /bin/zsh str -l end`.
+    /// The program a pane given none runs (not one `run` or `split` gives
+    /// its own), then its arguments: a list of strings, each one word whatever
+    /// it holds, as `list str /bin/zsh str -l end`.
     shell Shell "shell": Shell = default_shell()
         => "the server's `$SHELL`, else your login shell, else `/bin/sh`";
     /// The bytes of history each pane keeps: how far copy mode scrolls and
     /// `history capture` reads. Past it, the oldest rows go; a change
     /// applies to every pane.
     history_bytes HistoryBytes "history-bytes": Number<0, { 1 << 30 }> = Number(8 << 20);
-    /// How long a wait waits at most unless it says (`SECS timeout`).
+    /// How long a wait waits for a change before it answers `timeout`,
+    /// unless it says (`SECS timeout`).
     wait Wait "wait-seconds": Limit = Limit::DEFAULT;
     /// Copies, fux's and programs', also reach your terminal's clipboard
-    /// (OSC 52); off, a program's copy copies nothing, to the buffers
+    /// (OSC 52); set false, a program's copy copies nothing, to the buffers
     /// either.
     clipboard Clipboard "clipboard": bool = true;
     /// How many paste buffers are kept.
@@ -143,10 +145,10 @@ const KEPT: [&str; 8] = [
 
 /// The most paste buffers kept.
 pub const MAX_BUFFERS: usize = 1000;
-/// The longest a wait waits: a day.
+/// The longest limit a wait may be given: a day.
 pub const MAX_WAIT: usize = 86_400;
 
-/// How long a wait waits at most: up to `MAX_WAIT` seconds, so its
+/// How long a wait waits before it times out: up to `MAX_WAIT` seconds, so its
 /// deadline is a time there is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Limit(u32);
@@ -165,7 +167,7 @@ impl Limit {
 
     /// `secs` seconds, or why not.
     pub fn read(secs: u64) -> Result<Limit, String> {
-        Limit::secs(secs).ok_or_else(|| format!("{secs} s: a wait waits at most {MAX_WAIT} s"))
+        Limit::secs(secs).ok_or_else(|| format!("{secs} s: a wait's limit is at most {MAX_WAIT} s"))
     }
 
     pub fn duration(self) -> Duration {

@@ -32,7 +32,7 @@ for `id`, `name` and `pid` (it says `pane`):
 | `pictures` | the pictures it shows (sixel), oldest first, a newer one covering the pixels of an older one that its own lie on, each at cell `row`, `col`, over `rows` by `cols` cells, the first `cropped` rows gone (scrolled off the top of a screen or region that keeps no history), `width` by `height` pixels |
 | `pictures_refused` | how many sixel pictures its program drew that were not kept, each counted as it ends: begun while its host drew no sixel (its tab not shown, or its host draws no sixel or said no cell size), ended once it did not, lifted past a scroll region's top as it was placed, or cut: what it drew past what a picture may keep (4,096 pixels a side, 8,847,360 pixels in all, and the pictures' memory budget) was not kept, placed or not. One that drew nothing, or that CAN ended, is none; one placed whole and let go later, the oldest first as newer ones need the room, is not counted, as history let go is not |
 | `replies_dropped` | how many replies to its program's queries (a cursor report, a colour, its size) and in-band resize reports (mode 2048) fux dropped since it started: those past 4096 bytes of replies to one read of its output, all of one read's while its input queue was full, or a resize report the full queue refused. A client showing it is told too |
-| `copies_refused` | its program's copies (OSC 52) that copied nothing since it started, by why: `cut`, longer than the 64 KiB a string may be; `not_text`, not base64 (RFC 4648, padded or not) of UTF-8 text (`{"cut":0,"not_text":1}`). None is counted with `set clipboard off`, which copies nothing. A client showing it is told too |
+| `copies_refused` | its program's copies (OSC 52) that copied nothing since it started, by why: `cut`, longer than the 64 KiB a string may be; `not_text`, not base64 (RFC 4648, padded or not) of UTF-8 text (`{"cut":0,"not_text":1}`). None is counted with `str clipboard false set`, which copies nothing. A client showing it is told too |
 | `cell` | the size of a cell in pixels its program was last told, `{"width":9,"height":18}`: its tab's host's (`CSI 16 t`, asked again each time that terminal is resized, as a font zoom resizes it); `null` while it is told none (no terminal shows its tab, or its host said none): then it places no pictures |
 | `cursor_visible` | the cursor shows |
 | `history_lines` | lines of history the screen shown holds: 0 on the alternate screen, though the main screen's is kept (`main-screen all-history capture` reads it) |
@@ -113,10 +113,11 @@ from (its program's end too):
 ```
 
 `changed` lists `screen`, `bell` and `done` (a count of the version that
-grew), or `respawned` (the program started again: its counts start
-afresh). `exited` is the program's status if it ended since (`null` if
-that status was lost), `signal` the signal that killed it; a wait from a version that already holds its end
-waits for something else.
+grew), or `respawned` (the program started again: its counts but
+`RESPAWNS` start afresh). `exited` is the program's status if it ended
+since (`null` if that status was lost), `signal` the signal that killed
+it; a wait from a version that already holds its end waits for
+something else.
 
 A wait that fails (124 nothing changed, 4 its pane closed) has no JSON: it
 ends the program with that status and says why on stderr, one line, `fux:
@@ -146,7 +147,7 @@ even a stream that reads at once, of another pane, miss some, which
 | `created` | `name`, for a tab or workspace |
 | `renamed` | `name`: a pane's, tab's or workspace's new name |
 | `closed`, `bell` | |
-| `respawned` | only when the program it ran over had not ended (a `kill-first` respawn), as one that ended said them with its `exited`: `truncated` (`true`) if it left more than 1 MiB on its terminal: the rest was not read; `input_unread`, if any: bytes of input fux queued for it and had not yet written to its terminal, let go |
+| `respawned` | at every respawn. Its fields, only when the program it ran over had not ended (a `kill-first` respawn), as one that ended said them with its `exited`: `truncated` (`true`) if it left more than 1 MiB on its terminal: the rest was not read; `input_unread`, if any: bytes of input fux queued for it and had not yet written to its terminal, let go |
 | `moved` | `from_tab`, `from_workspace`: where the pane was; `events-of` either place tells it |
 | `exited` | `status` (`null` if it was lost) or `signal`: its program's end; `truncated` (`true`) if it left more than 1 MiB on its terminal as it ended: the rest was not read; `input_unread`, if any: bytes of input fux queued for it and had not yet written to its terminal, let go (as a pane's `input_unread`); a shell's pane then closes (`closed`) |
 | `done` | `status`: a shell command's, `null` if the shell gave none |

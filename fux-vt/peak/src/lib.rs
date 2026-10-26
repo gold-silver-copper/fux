@@ -1,4 +1,4 @@
-//! fux-vt's bounds tests' counting allocator (`THREATS.md` 3.5): the
+//! fux-vt's bounds tests' counting allocator (`THREATS.md` 3.4): the
 //! system's, counting the bytes live and their peak for each thread apart.
 //! A test binary makes it its `#[global_allocator]`; a probe resets the
 //! peak, does its work, and reads both on the thread that did it, so what

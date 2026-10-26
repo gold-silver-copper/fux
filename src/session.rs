@@ -710,7 +710,7 @@ impl Session {
     ) -> Result<(), Error> {
         let pane = self.pane(id)?;
         if let Runs::Shell = pane.runs {
-            let message = format!("{id} runs a shell; respawn starts again what `fux run` started");
+            let message = format!("{id} runs a shell; respawn restarts what run or split started");
             return Err(fail(Raise::NotRun, message));
         }
         // An exit waiting on what its program left is told, all of it
@@ -1123,7 +1123,7 @@ impl Session {
         let known = match here {
             // Empty: the caller could not read its own (`client::context`).
             Here::Cli(_, Some(cwd)) if !cwd.is_absolute() => {
-                return Err(fail(Code::Start, "the caller's own directory is unknown"));
+                return Err(fail(Raise::Start, "the caller's own directory is unknown"));
             }
             Here::Cli(_, Some(cwd)) => Some(cwd.to_owned()),
             Here::Cli(_, None) => near.and_then(|p| self.dir_of(p)),
@@ -1836,7 +1836,7 @@ impl Session {
         }
         let bell = std::mem::take(&mut pane.bell);
         // A program's copies, as copies in copy mode, to the clients showing
-        // it; none with `set clipboard off`. Those that are no copy stay to
+        // it; none with `clipboard` false. Those that are no copy stay to
         // be told. A copy fits the clipboard: fux-vt keeps less of a string.
         const _: () = assert!(fux_vt::OSC_PAYLOAD_LIMIT <= crate::copy::MAX_CLIPBOARD);
         let mut copies = Vec::new();
@@ -1913,8 +1913,8 @@ impl Session {
         true
     }
 
-    /// `text`, copied, goes to the paste buffers and, unless `set clipboard
-    /// off`, to the clipboard of each client in `to` (OSC 52): false if it
+    /// `text`, copied, goes to the paste buffers and, unless `clipboard` is
+    /// false, to the clipboard of each client in `to` (OSC 52): false if it
     /// is too large for the clipboard.
     pub(crate) fn copied(&mut self, text: String, to: &[ClientId]) -> bool {
         let mut fits = true;
@@ -3033,7 +3033,7 @@ fn home() -> Result<PathBuf, Error> {
         Some(home) => format!("$HOME is {home:?}, not an absolute path"),
         None => "$HOME is not set, and nothing else says where to start".to_owned(),
     };
-    Err(fail(Code::Start, why))
+    Err(fail(Raise::Start, why))
 }
 
 /// The most read of what a program left on its terminal as it ends, in
@@ -4376,7 +4376,7 @@ mod tests {
     }
 
     /// A program's OSC 52 write is a copy: to the paste buffers and the
-    /// clipboard of the clients showing it, unless `set clipboard off`;
+    /// clipboard of the clients showing it, unless `clipboard` is false;
     /// one it cannot be is told them.
     #[test]
     fn a_programs_clipboard_write_is_a_copy() -> Result<(), String> {
@@ -4574,8 +4574,7 @@ mod tests {
         Ok(())
     }
 
-    /// The `json` outputs, byte for byte: escapes, borrowed names and
-    /// formatted IDs alike.
+    /// docs/json.md names every field of a pane's `json`.
     #[test]
     fn the_json_help_names_every_pane_field() -> Result<(), Box<dyn std::error::Error>> {
         let (s, _) = attached(4, 30)?;
