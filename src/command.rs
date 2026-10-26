@@ -820,8 +820,9 @@ wire! {
         /// which answers.
         Wait(wait: Wait),
         /// What happens, a JSON line each as it happens, until the client
-        /// goes: where the target is, or anywhere without one.
-        Events(target: Option<AnyRef>),
+        /// goes: where the target is, or anywhere without one; from the
+        /// cursor given, else from now.
+        Events(target: Option<AnyRef>, from: Option<crate::events::Cursor>),
     }
 }
 

@@ -225,6 +225,59 @@ fn events_tell_what_happens() -> Outcome {
     Ok(())
 }
 
+/// A stream from the cursor `ls` gives is told what changed after the
+/// listing, though it changed before the stream began; and a cursor past
+/// the journal's end is refused.
+#[test]
+fn a_stream_from_ls_misses_nothing() -> Outcome {
+    let server = Server::start("")?;
+    let listing = server.ok(&["ls", "json"])?;
+    let cursor = (listing.split(r#""events":""#).nth(1))
+        .and_then(|rest| rest.split('"').next())
+        .ok_or(format!("no cursor in {listing}"))?;
+    server.ok(&[
+        "opts",
+        "str",
+        "w",
+        "name",
+        "80",
+        "24",
+        "size",
+        "new-workspace",
+    ])?;
+    let mut events = Command::new(FUX)
+        .args(["opts", "str", cursor, "from", "events-of"])
+        .env("FUX_SOCKET", &server.socket)
+        .env_remove("FUX_PANE")
+        .stdout(Stdio::piped())
+        .spawn()
+        .map_err(e)?;
+    let mut lines = BufReader::new(events.stdout.take().ok_or("no stdout")?).lines();
+    let mut next = || {
+        lines
+            .next()
+            .ok_or("no line")
+            .and_then(|l| l.map_err(|_| "no line"))
+    };
+    let ready = next()?;
+    let _ = events.kill();
+    let _ = events.wait();
+    assert_eq!(ready, format!(r#"{{"event":"ready","from":"{cursor}"}}"#));
+    let created = next()?;
+    assert!(created.contains(r#""event":"created""#), "{created}");
+    assert!(created.ends_with(r#""name":"w"}"#), "{created}");
+    let (seq, run) = cursor.split_once(':').ok_or("no run")?;
+    let ahead = format!("{}:{run}", seq.parse::<u64>().map_err(e)? + 100);
+    let refused = server.fux(&["opts", "str", &ahead, "from", "events-of"])?;
+    assert_ne!(refused.status, 0);
+    assert!(
+        refused.stderr.contains("past the journal's end"),
+        "{}",
+        refused.stderr
+    );
+    Ok(())
+}
+
 /// Keys sent to a tab reach each of its panes, and a wait on them waits in
 /// each.
 #[test]

@@ -47,8 +47,14 @@ for `id`, `name` and `pid` (it says `pane`):
 
 ```json
 {"workspaces":[{"id":"+1","name":"main","tabs":[{"id":"@1","name":"main","panes":[PANE…]}]}],
- "clients":[{"id":"c1","rows":24,"cols":80,"workspace":"+1","tab":"@1","pane":"%1","zoom":false}]}
+ "clients":[{"id":"c1","rows":24,"cols":80,"workspace":"+1","tab":"@1","pane":"%1","zoom":false}],
+ "events":"42:48211-1867a3f9c2b8e7d6"}
 ```
+
+`events` is a cursor, `SEQ:RUN`: the number the session's journal of events
+gives next, and the server's run, read with the listing. A stream from it
+(`opts str CURSOR from events-of`) tells everything that changed after the
+listing, nothing before it. `ls` ends with it too, as `events CURSOR`.
 
 `X info json` gives that pane, tab (`{"id","name","panes"}`) or workspace
 (`{"id","name","tabs"}`) alone; `X str FIELD get` leaves one of its fields:
@@ -134,6 +140,10 @@ on `ready`, `missed`, `gone` or `stopped`. Events come in the
 order they happened in the whole session, one line each: each is written
 to the session's journal where it happens, and a stream reads the journal from
 its own place. A reader that falls behind is told the rest as it reads.
+A stream starts from now, or with `from` from a cursor, `SEQ:RUN`, as
+`ls` and `ready` give it (`opts str CURSOR from events-of` for everything,
+`X str CURSOR from events-of` for X). A cursor of another server run, or
+past the journal's end, is refused (`bad_value`).
 The journal keeps the session's last 16,384 entries, for every stream
 alike: a pane that makes many in one round (a flood of bells) can make
 even a stream that reads at once, of another pane, miss some, which
@@ -141,7 +151,7 @@ even a stream that reads at once, of another pane, miss some, which
 
 | `event` | Also |
 | --- | --- |
-| `ready` | first: from here on nothing is missed unsaid |
+| `ready` | first: `from`, the cursor it reads from; from there on nothing is missed unsaid |
 | `gone` | last: everything `events-of` named has closed (status 4) |
 | `created` | `name`, for a tab or workspace |
 | `renamed` | `name`: a pane's, tab's or workspace's new name |
@@ -153,7 +163,7 @@ even a stream that reads at once, of another pane, miss some, which
 | `notification` | `text`, `truncated` (`true`) if cut as a pane's `notification` is |
 | `title` | `title`, `truncated` (`true`) if cut as a pane's `title` is |
 | `resized` | `cols`, `rows` |
-| `missed` | `count`: entries the journal let go (past what it keeps) before this stream was told them; with `events-of`, some may be of other things |
+| `missed` | `count`: entries the journal let go (past what it keeps) before this stream was told them, or before its cursor was given; with `events-of`, some may be of other things |
 | `stopped` | last: `reason`, the server stopped |
 
 ## Errors
@@ -187,8 +197,8 @@ they run, so a `try` may name them too.
 ## `status json`
 
 ```json
-{"socket":"/run/user/1000/fux/server.sock","version":"0.35.0","protocol":22,
- "server_version":"0.35.0","server_protocol":22,"compatible":true}
+{"socket":"/run/user/1000/fux/server.sock","version":"0.35.0","protocol":23,
+ "server_version":"0.35.0","server_protocol":23,"compatible":true}
 ```
 
 With no server, `status` fails (`no_server`), saying the socket and whether

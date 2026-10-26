@@ -156,6 +156,15 @@ too). `A counts` gives a version's five counts as integers:
   ```
 - **A bell or notification:** its version's `BELLS`, `counts 2 at`, grows,
   as for a command's end.
+- **What changes anywhere,** as it happens: `fux events` streams a JSON
+  line for each (`fux help json`). To read the session, then follow it
+  without missing what changed in between, start the stream from the
+  cursor `ls json` gave with the listing (its `events`):
+
+  ```sh
+  C=$(fux ls json | jq -r .events)
+  fux opts str "$C" from events-of      # or: fux %3 str "$C" from events-of
+  ```
 - **A deadline, a fallback, a retry:** `try` catches the failures it names
   (`programs`). A key, and C-c if nothing came of it in 10 s:
 

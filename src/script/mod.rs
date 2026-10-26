@@ -110,6 +110,8 @@ pub struct Opts {
     pub kill: bool,
     /// Attaching only to watch (`watch`).
     pub watch: bool,
+    /// Where a stream of events reads from (`from`), else now.
+    pub from: Option<crate::events::Cursor>,
     /// How long a wait waits before it times out.
     pub timeout: Option<crate::config::Limit>,
     pub view: crate::command::CaptureView,

@@ -1921,10 +1921,12 @@ impl Session {
         let wait = match request {
             Request::Do(command) => return Ok(Begun::Done(self.run_command(&command, origin))),
             Request::Wait(wait) => wait,
-            Request::Events(target) => {
+            Request::Events(target, from) => {
                 let target = target.map(|t| self.there(t)).transpose()?;
-                let journal = self.parts.journal();
-                let subscription = crate::events::Subscription::new(target, journal);
+                let end = self.parts.journal().end(self.run);
+                let from = from.map_or(Ok(end), |from| from.within(end));
+                let from = from.map_err(|why| fail(Raise::BadValue, why))?;
+                let subscription = crate::events::Subscription::new(target, from);
                 return Ok(Begun::Events(Box::new(subscription)));
             }
         };
@@ -2852,6 +2854,9 @@ impl Session {
                 shown(place.map(|p| p.pane.to_string())),
             ));
         }
+        if only.is_none() {
+            out.push_str(&format!("events {}\n", self.parts.journal().end(self.run)));
+        }
         out
     }
 
@@ -2998,6 +3003,11 @@ impl Session {
         let mut text = Json::Object(vec![
             ("workspaces", Json::Array(workspaces)),
             ("clients", Json::Array(clients)),
+            // Read with the listing: a stream from it misses nothing after.
+            (
+                "events",
+                Json::str(self.parts.journal().end(self.run).to_string()),
+            ),
         ])
         .render();
         text.push('\n');
@@ -5173,7 +5183,7 @@ mod tests {
     /// What a stream of events subscribed now is told of what `change`
     /// does to `s`.
     fn told(s: &mut Session, change: impl FnOnce(&mut Session)) -> String {
-        let mut stream = crate::events::Subscription::new(None, s.parts.journal());
+        let mut stream = crate::events::Subscription::new(None, s.parts.journal().end(s.run));
         change(s);
         stream
             .told(s.parts.journal(), usize::MAX, |t| s.holder(t))

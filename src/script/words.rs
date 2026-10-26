@@ -192,7 +192,7 @@ pub const KINDS: [(&str, &str, Option<&str>); 11] = [
     ("client", "a client", None), ("size", "a size (from percent)", None),
     ("answer", "an action's answer", None), ("capture", "a capture", None),
     ("listing", "a listing", None), ("json", "a JSON value", None),
-    ("opts", "options (from opts, for run, new-tab, new-workspace and attach; a pane's words take theirs on the pane: `%2 all-history capture`)", Some("nothing takes these options")),
+    ("opts", "options (from opts, for run, new-tab, new-workspace and attach; events-of on them streams everything; a pane's words take theirs on the pane: `%2 all-history capture`)", Some("nothing takes these options")),
     ("request", "a request (a pane given options, keys or a wait)", Some("nothing acts on this request")),
 ];
 
@@ -209,6 +209,7 @@ pub const NAMES: &[(&str, &str, &str)] = &[
     ("place", "pane tab workspace answer request", "a pane, tab or workspace, or a request on one"),
     ("pane", "pane answer", "a pane (from pane, run or split)"),
     ("handle", "pane tab workspace answer", "a pane, tab or workspace"),
+    ("watched", "opts pane tab workspace answer request", "a pane, tab or workspace, a request on one, or opts (everything)"),
     ("ref", "string pane tab workspace answer", "a name, or a pane, tab or workspace"),
     ("text", "string integer boolean", "a string, a number or a boolean"),
     ("new", "integer boolean list", "a setting's value: a number, true or false, or a list (fux help set)"),
@@ -223,7 +224,7 @@ pub const NAMES: &[(&str, &str, &str)] = &[
     ("where", "tab workspace string", "a tab, a workspace, new-tab or new-workspace"),
     ("workspace", "workspace string", "a workspace, or its name"),
 ];
-pub const STRINGS: &str = "name dir key path line id file field setting socket way action code keys word hex version screen";
+pub const STRINGS: &str = "name dir key path line id file field setting socket way action code keys word hex version screen cursor";
 pub const INTEGERS: &str = "cols rows secs n row col lines from to cells";
 
 // Every word of fux's, by family; in help, under its heading.
@@ -256,7 +257,7 @@ words! {
         Reading Get "get" "handle field -- value" "one field of a pane, tab or workspace: version, exited, last_status, idle_ms, cwd" "fux %3 str exited get" [];
         Reading Json "json" "value -- json" "value as JSON (an answer as its JSON); a failed wait stops the program before json runs" "fux ls json" [];
         Reading Events "events" "--" "what happens, a JSON line each, as it happens" "fux events" [];
-        Reading EventsOf "events-of" "handle --" "what happens in a pane, tab or workspace, a JSON line each" "fux str agent workspace events-of" [];
+        Reading EventsOf "events-of" "watched --" "what happens in a pane, tab or workspace, or on opts anywhere, a JSON line each" "fux str agent workspace events-of" [Pane: From];
         Reading Dump "dump" "-- text" "everything, as a program that makes it again (shells new, nothing typed into them)" "fux dump > all.fux; fux start && fux --file all.fux" [];
         Reading DumpOf "dump-of" "handle -- text" "a tab or workspace, as a program that makes it again (shells new, nothing typed into them)" "fux str work workspace dump-of > work.fux; fux --file work.fux" [];
         Changing Kill "kill" "handle --" "close a pane, tab or workspace, without asking" "fux %3 kill" [];
@@ -330,6 +331,7 @@ words! {
         Input Paste "paste" "x text -- x" "text as a paste, bracketed if the program turned that on (an end mark, ESC [201~, in it then dropped); else as it is" "fux %3 str 'a long prompt' paste str Enter key send-keys";
         Input Bytes "bytes" "x hex -- x" "bytes as they are, in hex (1b5b41, c3): part of a key's sequence or of a character" "fux %3 str 1b5b41 bytes send-keys";
         Input Mouse "mouse" "x action row col -- x" "click right middle press release wheel-up wheel-down or move, at a cell from 0" "fux %3 str click 2 10 mouse send-mouse";
+        Reading From "from" "x cursor -- x" "events-of: from this cursor (SEQ:RUN, as ls and a stream's ready give it), not from now: nothing after it is missed" "C=$(fux ls json | jq -r .events); fux opts str \"$C\" from events-of";
         Reading History "history" "x lines -- x" "capture: lines of history first" "fux %3 100 history capture";
         Reading AllHistory "all-history" "x -- x" "capture: all the history first" "fux %3 all-history capture";
         Reading Wrapped "wrapped" "x -- x" "capture: each screen row a line, as wrapped at the pane's width (the cells a mouse event counts), not joined into the lines printed" "fux %3 wrapped 0 2 rows capture";
@@ -708,6 +710,15 @@ fn modify(
     match opt {
         Opt::Changed => built.on = Some(On::Version(version(&next()?)?)),
         Opt::Expect => built.on = Some(On::Seen(version(&next()?)?)),
+        Opt::From => {
+            let text = string(&next()?)?;
+            let Ok(cursor) = text.parse() else {
+                let why =
+                    format!("{text:?} is no cursor: SEQ:RUN, as ls and a stream's ready give it");
+                return Err(fail(Raise::BadValue, why));
+            };
+            built.from = Some(cursor);
+        }
         Opt::Name => built.name = Some(string(&next()?)?),
         Opt::Cwd => built.cwd = Some(string(&next()?)?.into()),
         Opt::In => built.place = Some(workspace(&next()?)?),
@@ -1338,8 +1349,31 @@ impl fuxth::Host for Host<'_> {
                 | Value::List(_)
                 | Value::App(_)) => now(out, Value::str(json_of(&other).render())),
             },
-            Act::Events => tell(Request::Events(None)),
-            Act::EventsOf => tell(Request::Events(Some(target(&next()?)?))),
+            Act::Events => tell(Request::Events(None, None)),
+            Act::EventsOf => {
+                // Options alone stream everything; on a pane, tab or
+                // workspace, what happens there.
+                let (target, built) = match next()? {
+                    Value::App(Fux::Opts(built)) if built.on.is_none() => {
+                        unused(act, &built)?;
+                        (None, *built)
+                    }
+                    other @ (Value::Int(_)
+                    | Value::Bool(_)
+                    | Value::Str(_)
+                    | Value::List(_)
+                    | Value::App(_)) => match request(act, other)? {
+                        (On::Target(target), built) => (Some(target), built),
+                        (On::Version(version), built) => (Some(AnyRef::Pane(version.pane)), built),
+                        (On::Seen(_), _) => return Err(fail(Raise::Type, EXPECTED)),
+                        (On::Client(_), _) => {
+                            let why = "takes a pane, tab or workspace, or opts, not a client";
+                            return Err(fail(Raise::Type, why));
+                        }
+                    },
+                };
+                tell(Request::Events(target, built.from))
+            }
             Act::Dump => later(ask(Command::DumpLayout { target: None }, Then::Text)),
             Act::DumpOf => {
                 let target = Some(target(&next()?)?);

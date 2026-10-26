@@ -51,7 +51,7 @@ fn a_second_server_on_the_same_socket_is_refused() -> Outcome {
     assert!(stderr.contains("another fux server"), "{stderr}");
     assert_eq!(
         server.ok(&["ls"])?.lines().count(),
-        3,
+        4,
         "the first server is untouched"
     );
     Ok(())
