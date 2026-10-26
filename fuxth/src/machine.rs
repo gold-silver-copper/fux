@@ -1214,12 +1214,7 @@ builtins! { m host;
         let len = s.len();
         let i = m.index(i, len)?;
         let item = match &s {
-            Sequence::Str(s) => {
-                if !s.is_ascii() {
-                    m.cost(i);
-                }
-                Some(Value::str(s.part(i, i.saturating_add(1))))
-            }
+            Sequence::Str(s) => Some(Value::str(s.part(i, i.saturating_add(1)))),
             Sequence::List(list) => list.items().get(i).cloned(),
         };
         match item {
@@ -1237,10 +1232,6 @@ builtins! { m host;
         let n = b.saturating_sub(a);
         let part = match &s {
             Sequence::Str(s) => {
-                // Characters not all ASCII are walked to `b`.
-                if !s.is_ascii() {
-                    m.cost(a);
-                }
                 m.build(n)?;
                 Value::str(s.part(a, b))
             }

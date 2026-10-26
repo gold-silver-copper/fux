@@ -530,6 +530,59 @@ fn each_walks_any_string_in_time_to_its_length() -> Result<(), Error> {
     Ok(())
 }
 
+/// A character of a string is found from the mark before it: each part
+/// of a string grown from ASCII and non-ASCII pieces is what its characters
+/// give, and `reverse` and `words` on non-ASCII text take about as long as
+/// on ASCII text as long.
+#[test]
+fn a_strings_characters_are_found_from_its_marks() -> Result<(), Error> {
+    let copies = |s: &str, n| std::iter::repeat_n(s, n).collect::<String>();
+    let pieces = [
+        copies("a", 70),
+        "é".into(),
+        copies("b", 130),
+        copies("日本", 40),
+    ];
+    let mut grown = Text::new("");
+    for piece in &pieces {
+        grown.append(&Text::new(piece.as_str()));
+    }
+    let mut put = Text::new(pieces.concat());
+    put.replace(100, &Text::new("ü"));
+    for text in [grown, put] {
+        let chars: Vec<char> = text.chars().collect();
+        for from in 0..=chars.len() {
+            for to in from..=chars.len().saturating_add(1) {
+                let part: String = chars
+                    .iter()
+                    .skip(from)
+                    .take(to.saturating_sub(from))
+                    .collect();
+                assert_eq!(text.part(from, to), part, "{from} {to}");
+            }
+        }
+    }
+    let time = |c: &str| -> Result<std::time::Duration, Error> {
+        let mut compiler = with_stdlib();
+        compiler.add(&token::source("t", "0 ask dup reverse len swap words len")?)?;
+        let mut machine = Machine::new(compiler.finish()?, Limits::default());
+        let mut host = Toy { asked: Vec::new() };
+        assert_eq!(machine.run(&mut host, u64::MAX)?, Outcome::Suspended(0));
+        machine.push(Value::str(copies(&format!("{c}{c} "), 13_000)))?;
+        let started = std::time::Instant::now();
+        assert_eq!(machine.run(&mut host, u64::MAX)?, Outcome::Finished);
+        assert_eq!(machine.stack(), ints(&[39_000, 13_000]).as_slice());
+        Ok(started.elapsed())
+    };
+    let ascii = time("e")?;
+    let other = time("é")?;
+    assert!(
+        other < ascii * 5 + std::time::Duration::from_millis(100),
+        "{other:?} against {ascii:?}"
+    );
+    Ok(())
+}
+
 /// What the checker can't know it never refuses: a definition that leaves
 /// one value or two, called where two more are taken after; a loop at the
 /// top level that leaves values, then words that take them; a value that

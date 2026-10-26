@@ -90,32 +90,59 @@ pub enum Value<A> {
     App(A),
 }
 
-/// A string's text, with how many characters it has and whether they are
-/// all ASCII: then a character is found by its byte, at once.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// How many characters apart a string's marks are.
+const STRIDE: usize = 64;
+
+/// A string's text, with how many characters it has and, unless they are
+/// all ASCII (then a character starts at its own index), its marks: where
+/// every `STRIDE`th character starts, so a character is found from the
+/// mark before it.
+#[derive(Clone, Debug)]
 pub struct Text {
     text: String,
     chars: usize,
-    ascii: bool,
+    marks: Vec<usize>,
 }
+
+/// Two strings are equal when their text is: the rest follows from it.
+impl PartialEq for Text {
+    fn eq(&self, other: &Self) -> bool {
+        self.text == other.text
+    }
+}
+
+impl Eq for Text {}
 
 impl Text {
     pub fn new(text: impl Into<String>) -> Text {
         let text = text.into();
-        let ascii = text.is_ascii();
-        let chars = if ascii {
-            text.len()
-        } else {
-            text.chars().count()
-        };
-        Text { text, chars, ascii }
+        if text.is_ascii() {
+            let chars = text.len();
+            return Text {
+                text,
+                chars,
+                marks: Vec::new(),
+            };
+        }
+        let chars = text.chars().count();
+        let marks = marks(&text, 0, 0).collect();
+        Text { text, chars, marks }
     }
 
     /// `other` added at the end.
     pub fn append(&mut self, other: &Text) {
+        let (bytes, chars) = (self.text.len(), self.chars);
         self.text.push_str(&other.text);
-        self.chars = self.chars.saturating_add(other.chars);
-        self.ascii &= other.ascii;
+        self.chars = chars.saturating_add(other.chars);
+        if self.chars == self.text.len() {
+            return;
+        }
+        if self.marks.is_empty() {
+            // All ASCII until now: marked from the start.
+            self.marks = marks(&self.text, 0, 0).collect();
+        } else {
+            self.marks.extend(marks(&other.text, chars, bytes));
+        }
     }
 
     /// Character `i` replaced by `other`; nothing if there is none.
@@ -127,9 +154,7 @@ impl Text {
         text.push_str(self.part(0, i));
         text.push_str(&other.text);
         text.push_str(self.part(i.saturating_add(1), self.chars));
-        self.text = text;
-        self.chars = self.chars.saturating_sub(1).saturating_add(other.chars);
-        self.ascii = (self.ascii && other.ascii) || self.text.is_ascii();
+        *self = Text::new(text);
     }
 
     /// How many characters it has.
@@ -137,27 +162,34 @@ impl Text {
         self.chars
     }
 
-    /// Whether every character is ASCII.
-    pub fn is_ascii(&self) -> bool {
-        self.ascii
-    }
-
     /// The characters from `from` up to before `to`.
     pub fn part(&self, from: usize, to: usize) -> &str {
-        if self.ascii {
-            self.text.get(from..to).unwrap_or_default()
-        } else {
-            let len = self.text.len();
-            let mut at = self.text.char_indices().map(|(i, _)| i).chain([len]);
-            let start = at.nth(from).unwrap_or(len);
-            // On from there: `to` is the (to - from - 1)th after `from`.
-            let end = match to.checked_sub(from).and_then(|n| n.checked_sub(1)) {
-                Some(n) => at.nth(n).unwrap_or(len),
-                None => start,
-            };
-            self.text.get(start..end).unwrap_or_default()
-        }
+        let (start, end) = (self.byte(from), self.byte(to));
+        self.text.get(start..end).unwrap_or_default()
     }
+
+    /// The byte where character `i` starts, found from the mark before it;
+    /// the end, for no such character.
+    fn byte(&self, i: usize) -> usize {
+        let len = self.text.len();
+        if self.marks.is_empty() {
+            return i.min(len);
+        }
+        let Some(&mark) = self.marks.get(i / STRIDE) else {
+            return len;
+        };
+        let rest = self.text.get(mark..).unwrap_or_default();
+        let found = rest.char_indices().nth(i % STRIDE);
+        found.map_or(len, |(at, _)| mark.saturating_add(at))
+    }
+}
+
+/// The marks in `text` when its first character is character `first`,
+/// and its first byte byte `byte`, of a string.
+fn marks(text: &str, first: usize, byte: usize) -> impl Iterator<Item = usize> {
+    (text.char_indices().zip(first..))
+        .filter(|(_, i)| i % STRIDE == 0)
+        .map(move |((at, _), _)| byte.saturating_add(at))
 }
 
 impl std::ops::Deref for Text {
