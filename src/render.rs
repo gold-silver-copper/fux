@@ -9,6 +9,7 @@ use crate::layout::{Axis, Placement, Rect};
 use crate::overlay;
 use crate::session::Session;
 use crate::view::{Mode, View};
+use fux_vt::clusters;
 use fux_vt::sixel::Picture;
 use fux_vt::{Attributes, CellRef, Cells, Color, CursorShape, Hyperlink, Rgb, Row, Screen};
 use std::borrow::Cow;
@@ -53,6 +54,9 @@ impl Clone for Grid {
 pub struct Modes {
     /// The cursor's shape (DECSCUSR); `Initial` is the terminal's own.
     pub cursor_shape: CursorShape,
+    /// The focused pane's explicit cursor colour; none restores the
+    /// terminal's configured colour.
+    pub cursor_colour: Option<Rgb>,
     /// The mouse tracking asked for (1000, 1002 or 1003, always
     /// SGR-encoded), 0 for none: the focused pane's program's, while it
     /// has the keys ([`mouse_level`]).
@@ -72,6 +76,7 @@ impl Modes {
             }
         }
         cursor_shape(shown.cursor_shape, self.cursor_shape, out);
+        cursor_colour(shown.cursor_colour, self.cursor_colour, out);
     }
 }
 
@@ -88,6 +93,18 @@ pub fn cursor_shape(was: CursorShape, shape: CursorShape, out: &mut Vec<u8>) {
         out.extend_from_slice(b"\x1b[0 q\x1b[7 q");
     } else {
         let _ = write!(out, "\x1b[{} q", shape.number());
+    }
+}
+
+/// Changes an explicit cursor colour, or restores the terminal's own.
+pub fn cursor_colour(was: Option<Rgb>, colour: Option<Rgb>, out: &mut Vec<u8>) {
+    if was == colour {
+        return;
+    }
+    if let Some(Rgb { r, g, b }) = colour {
+        let _ = write!(out, "\x1b]12;#{r:02x}{g:02x}{b:02x}\x1b\\");
+    } else {
+        out.extend_from_slice(b"\x1b]112\x1b\\");
     }
 }
 
@@ -698,8 +715,20 @@ impl Grid {
 
     /// Writes `text` from (y, x), a cluster a cell (`clusters`), clipped at
     /// `limit`, wide glyphs whole; the column after it is returned.
-    fn text(&mut self, y: u16, mut x: u16, text: &str, style: Attributes, limit: u16) -> u16 {
-        for (cluster, width) in clusters(text) {
+    fn text(&mut self, y: u16, x: u16, text: &str, style: Attributes, limit: u16) -> u16 {
+        self.text_cells(y, x, clusters(text), style, limit)
+    }
+
+    /// Draws measured cells without segmenting their retained text again.
+    fn text_cells<'a>(
+        &mut self,
+        y: u16,
+        mut x: u16,
+        cells: impl Iterator<Item = (&'a str, u16)>,
+        style: Attributes,
+        limit: u16,
+    ) -> u16 {
+        for (cluster, width) in cells {
             let Some(end) = x
                 .checked_add(width)
                 .filter(|end| *end <= limit.min(self.cols))
@@ -787,12 +816,6 @@ fn cells(c: char) -> u16 {
     fux_vt::char_width(c).map_or(0, |w| u16::try_from(w).unwrap_or(u16::MAX))
 }
 
-/// The cells fux's own text takes, as a pane prints it from a row's
-/// start (`fux_vt::clusters`): each one's text and columns, 1 or 2.
-fn clusters(text: &str) -> impl Iterator<Item = (&str, u16)> {
-    fux_vt::clusters(text).map(|(cell, width)| (cell, u16::try_from(width).unwrap_or(2)))
-}
-
 /// Display width of a string, as a pane prints it (`fux_vt::str_width`).
 pub fn width(text: &str) -> u16 {
     u16::try_from(fux_vt::str_width(text))
@@ -800,26 +823,27 @@ pub fn width(text: &str) -> u16 {
         .min(crate::view::MOST)
 }
 
-/// Cuts `text` to `cols` cells, with an ellipsis when cut; as it is, if it
-/// fits.
-pub fn fit(text: &str, cols: u16) -> Cow<'_, str> {
-    if width(text) <= cols {
-        return Cow::Borrowed(text);
-    }
-    // Room for the text, less a cell for the ellipsis.
-    let Some(mut room) = cols.checked_sub(1) else {
-        return Cow::Borrowed("");
-    };
-    let mut out = String::new();
-    for (cluster, width) in clusters(text) {
-        let Some(left) = room.checked_sub(width) else {
-            break;
-        };
-        room = left;
-        out.push_str(cluster);
-    }
-    out.push('…');
-    Cow::Owned(out)
+/// Cuts `text` to `cols` cells, preserving their measured boundaries.
+pub fn fit(text: &str, cols: u16) -> impl Iterator<Item = (&str, u16)> + Clone {
+    fit_cells(clusters(text), cols, width(text) > cols)
+}
+
+fn cell_width<'a>(cells: impl Iterator<Item = (&'a str, u16)>) -> u16 {
+    cells.fold(0u16, |sum, (_, width)| sum.saturating_add(width))
+}
+
+fn fit_cells<'a>(
+    cells: impl Iterator<Item = (&'a str, u16)> + Clone,
+    cols: u16,
+    cut: bool,
+) -> impl Iterator<Item = (&'a str, u16)> + Clone {
+    let room = cols.saturating_sub(u16::from(cut));
+    cells
+        .scan(room, |room, (text, width)| {
+            *room = room.checked_sub(width)?;
+            Some((text, width))
+        })
+        .chain((cut && cols > 0).then_some(("…", 1)))
 }
 
 /// The client's screen as it should look now, in a grid of its own, as a
@@ -925,6 +949,7 @@ pub fn compose_held(
                 {
                     grid.cursor = Some(at);
                     grid.modes.cursor_shape = screen.cursor_shape();
+                    grid.modes.cursor_colour = screen.dynamic_color(12);
                 }
             }
         }
@@ -934,9 +959,12 @@ pub fn compose_held(
             let painted = kept(focus, rect);
             let at = (painted.and_then(|p| p.grid.cursor)).filter(|&(y, x)| rect.contains(y, x));
             grid.cursor = at;
-            if let Some(painted) = painted.filter(|_| at.is_some()) {
-                grid.modes.cursor_shape = painted.grid.modes.cursor_shape;
-            }
+            let modes = painted
+                .filter(|_| at.is_some())
+                .map(|p| p.grid.modes)
+                .unwrap_or_default();
+            grid.modes.cursor_shape = modes.cursor_shape;
+            grid.modes.cursor_colour = modes.cursor_colour;
         }
     }
     // The mouse: reported by the client's terminal only while the focused
@@ -967,7 +995,7 @@ pub fn compose_held(
             let room = view.cols.saturating_sub(2);
             let lines: [Line<'_>; 3] = [
                 (title.as_str().into(), PANEL.with_bold(true)),
-                (prompt_line(before, after, room).into(), PANEL),
+                (prompt_line(before, after, room), PANEL),
                 (hinted(hints).into(), PANEL.with_dim(true)),
             ];
             surface(grid, view, &lines);
@@ -1067,13 +1095,15 @@ fn put_panes(
 /// A prompt's text with its cursor bar, in at most `room` cells: when it is
 /// wider, the line scrolls so the bar shows, with a few cells of what
 /// follows it, and an ellipsis marks each side cut off.
-fn prompt_line(before: &str, after: &str, room: u16) -> String {
-    let line = format!("{before}▏{after}");
-    if width(&line) <= room {
-        return line;
+fn prompt_line<'a>(before: &'a str, after: &'a str, room: u16) -> Text<'a> {
+    let mut chars: Vec<(&str, u16)> = clusters(before).collect();
+    let bar = chars.len();
+    // The inserted cursor owns a cell, including after a Prepend character.
+    chars.push(("▏", 1));
+    chars.extend(clusters(after));
+    if cell_width(chars.iter().copied()) <= room {
+        return Text::Measured(chars);
     }
-    let chars: Vec<(&str, u16)> = clusters(&line).collect();
-    let bar = clusters(before).count();
     // An ellipsis each side, at most.
     let inner = room.saturating_sub(2);
     let ahead = inner / 4;
@@ -1098,16 +1128,15 @@ fn prompt_line(before: &str, after: &str, room: u16) -> String {
         used = n;
         end = end.saturating_add(1);
     }
-    let mut out = String::new();
+    let mut out = Vec::new();
     if start > 0 {
-        out.push('…');
+        out.push(("…", 1));
     }
-    let shown = chars.get(start..end).unwrap_or_default();
-    out.extend(shown.iter().map(|(c, _)| *c));
+    out.extend(chars.get(start..end).unwrap_or_default().iter().copied());
     if end < chars.len() {
-        out.push('…');
+        out.push(("…", 1));
     }
-    out
+    Text::Measured(out)
 }
 
 /// Separator lines, with tees where one meets another; the ones beside the
@@ -1262,14 +1291,29 @@ fn bar(
     if let Some(copy) = &copy_bar {
         // Copy mode's keys replace the tabs.
         let badge = HIGHLIGHT.with_bold(true);
-        let text = match &copy.badge {
-            crate::copy::Badge::Label(label) => fit(&format!(" {label} "), left_limit).into_owned(),
+        match &copy.badge {
+            crate::copy::Badge::Label(label) => {
+                x = grid.text_cells(
+                    y,
+                    x,
+                    fit(&format!(" {label} "), left_limit),
+                    badge,
+                    left_limit,
+                );
+            }
             crate::copy::Badge::Typing(prompt, before, after) => {
                 let room = left_limit.saturating_sub(width(prompt).saturating_add(2));
-                format!(" {prompt}{} ", prompt_line(before, after, room))
+                x = grid.text(y, x, &format!(" {prompt}"), badge, left_limit);
+                x = grid.text_cells(
+                    y,
+                    x,
+                    prompt_line(before, after, room).cells(),
+                    badge,
+                    left_limit,
+                );
+                x = grid.text(y, x, " ", badge, left_limit);
             }
-        };
-        x = grid.text(y, x, &text, badge, left_limit);
+        }
         for crate::act::Hint { keys: key, label } in copy.hints {
             let hint = format!("  {key} {label}");
             if x.saturating_add(width(&hint)) > left_limit {
@@ -1282,7 +1326,7 @@ fn bar(
     } else if let Some(ws) = session.shown_workspace(view.id) {
         let name = format!(" {} ", ws.name());
         let bold = base.with_bold(true);
-        x = grid.text(y, x, &fit(&name, left_limit), bold, left_limit);
+        x = grid.text_cells(y, x, fit(&name, left_limit), bold, left_limit);
         let current = ws.tab_of(view.id).map(|t| t.id());
         for tab in ws.tabs() {
             let Some(room) = left_limit.checked_sub(x).filter(|r| *r > 0) else {
@@ -1296,14 +1340,16 @@ fn bar(
             } else {
                 base
             };
-            x = grid.text(y, x, &fit(&label, room), attrs, left_limit);
+            x = grid.text_cells(y, x, fit(&label, room), attrs, left_limit);
         }
     }
     if let Some((text, attrs)) = right {
         let text = fit(&text, right_width);
         // Right-aligned, a cell from the edge, or from the left if wider.
-        let start = view.cols.saturating_sub(width(&text).saturating_add(1));
-        grid.text(y, start, &text, attrs, view.cols);
+        let start = view
+            .cols
+            .saturating_sub(cell_width(text.clone()).saturating_add(1));
+        grid.text_cells(y, start, text, attrs, view.cols);
     }
 }
 
@@ -1339,7 +1385,38 @@ fn unseen(session: &Session, view: &View, placement: &Placement) -> String {
 }
 
 /// A line of a panel: its text, borrowed where it can be, and its style.
-type Line<'a> = (Cow<'a, str>, Attributes);
+type Line<'a> = (Text<'a>, Attributes);
+
+/// Plain text or cells already measured, as in a scrolled prompt.
+enum Text<'a> {
+    Plain(Cow<'a, str>),
+    Measured(Vec<(&'a str, u16)>),
+}
+
+impl Text<'_> {
+    fn cells(&self) -> impl Iterator<Item = (&str, u16)> + Clone {
+        let (plain, measured) = match self {
+            Self::Plain(text) => (Some(text.as_ref()), None),
+            Self::Measured(cells) => (None, Some(cells)),
+        };
+        plain
+            .into_iter()
+            .flat_map(clusters)
+            .chain(measured.into_iter().flatten().copied())
+    }
+}
+
+impl<'a> From<&'a str> for Text<'a> {
+    fn from(text: &'a str) -> Self {
+        Self::Plain(text.into())
+    }
+}
+
+impl From<String> for Text<'_> {
+    fn from(text: String) -> Self {
+        Self::Plain(text.into())
+    }
+}
 
 /// Adds the `entries` that fit `room`, the `selected` one among them, to a
 /// panel's `lines`, with how many more there are above and below them.
@@ -1369,7 +1446,11 @@ fn surface(grid: &mut Grid, view: &View, lines: &[Line<'_>]) {
     }
     // More lines than rows is the same as exactly as many.
     let height = u16::try_from(lines.len()).unwrap_or(u16::MAX);
-    let inner = lines.iter().map(|(t, _)| width(t)).max().unwrap_or(0);
+    let inner = lines
+        .iter()
+        .map(|(t, _)| cell_width(t.cells()))
+        .max()
+        .unwrap_or(0);
     // A border cell each side of the text.
     let panel = area.corner(height, inner.saturating_add(2));
     // On a short screen the first lines give way, as the last (the help)
@@ -1381,8 +1462,9 @@ fn surface(grid: &mut Grid, view: &View, lines: &[Line<'_>]) {
         grid.fill(line, *attrs);
         // Exact: the panel is at least a cell wide, inside the screen.
         let (x, end) = (line.x().saturating_add(1), line.right().saturating_sub(1));
-        let text = fit(text, line.w().saturating_sub(2));
-        grid.text(line.y(), x, &text, *attrs, end);
+        let cols = line.w().saturating_sub(2);
+        let text = fit_cells(text.cells(), cols, cell_width(text.cells()) > cols);
+        grid.text_cells(line.y(), x, text, *attrs, end);
     }
 }
 
@@ -2042,7 +2124,10 @@ mod tests {
         let inverse = |y, x| grid.get(y, x).is_some_and(|cell| cell.inverse());
         assert!(inverse(1, 0) && inverse(1, 2) && !inverse(0, 0));
         s.input(c, b"y");
-        assert_eq!(s.buffers.front().map(String::as_str), Some("ab\n界b"));
+        assert_eq!(
+            s.buffers.front().map(|(_, text)| text.as_str()),
+            Some("ab\n界b")
+        );
         Ok(())
     }
 
@@ -2104,9 +2189,87 @@ mod tests {
         assert_eq!(at(0), Some((heart.to_owned(), true)));
         assert_eq!(at(2), Some(("x".to_owned(), false)));
         assert_eq!(
-            fit(&format!("{heart}{heart}{heart}"), 4),
+            fit(&format!("{heart}{heart}{heart}"), 4)
+                .map(|(t, _)| t)
+                .collect::<String>(),
             format!("{heart}…")
         );
+    }
+
+    #[test]
+    fn fitted_text_keeps_measured_cell_boundaries_through_drawing() {
+        let long = format!(
+            "👩{}👩XYZ",
+            std::iter::repeat_n("\u{200d}👩", 18).collect::<String>()
+        );
+        assert_eq!(width(&long), 7);
+        let mut grid = Grid::new(1, 6);
+        let fitted = fit(&long, 6);
+        assert_eq!(cell_width(fitted.clone()), 6);
+        assert_eq!(grid.text_cells(0, 0, fitted, Attributes::default(), 6), 6);
+        let cell = |x| {
+            grid.get(0, x)
+                .map(|c| (c.contents().to_owned(), c.is_wide()))
+        };
+        assert!(cell(0).is_some_and(|(t, wide)| wide && t.ends_with('\u{200d}')));
+        assert_eq!(cell(2), Some(("👩".to_owned(), true)));
+        assert_eq!(cell(4), Some(("X".to_owned(), false)));
+        assert_eq!(cell(5), Some(("…".to_owned(), false)));
+    }
+
+    #[test]
+    fn a_scrolled_prompt_keeps_its_cursor_visible() {
+        for (before, room) in [
+            ("a\u{600}".to_owned(), 3),
+            ("\u{d4e}".to_owned(), 3),
+            (
+                format!(
+                    "👩{}👩",
+                    std::iter::repeat_n("\u{200d}👩", 18).collect::<String>()
+                ),
+                7,
+            ),
+        ] {
+            let prompt = prompt_line(&before, "tail", room);
+            assert!(cell_width(prompt.cells()) <= room);
+            let mut grid = Grid::new(1, room);
+            grid.text_cells(0, 0, prompt.cells(), Attributes::default(), room);
+            assert!((0..room).any(|x| grid.get(0, x).is_some_and(|c| c.contents().contains('▏'))));
+        }
+    }
+
+    #[test]
+    fn only_the_focused_pane_owns_the_outer_cursor_colour() -> Result<(), String> {
+        let (mut session, client) = crate::session::testing::attached(10, 40)?;
+        let mut shown = compose(&session, client).ok_or("a screen")?;
+        let paint = |s: &Session, shown: &mut Grid| -> Result<String, String> {
+            let new = compose(s, client).ok_or("a screen")?;
+            let mut out = Vec::new();
+            paint_into(shown, true, &new, &mut out);
+            *shown = new;
+            Ok(String::from_utf8_lossy(&out).into_owned())
+        };
+        session.output(PaneId::of(1), b"\x1b]12;#00ff00\x07");
+        assert!(paint(&session, &mut shown)?.contains("\x1b]12;#00ff00\x1b\\"));
+        assert!(paint(&session, &mut shown)?.is_empty(), "unchanged colour");
+        crate::session::testing::run(&mut session, "str %1 pane horizontal split")?;
+        crate::session::testing::run(&mut session, "str c1 client str %2 pane focus-pane")?;
+        assert!(paint(&session, &mut shown)?.contains("\x1b]112\x1b\\"));
+        session.output(PaneId::of(1), b"\x1b]12;#ff0000\x07");
+        assert!(!paint(&session, &mut shown)?.contains("\x1b]12"));
+        crate::session::testing::run(&mut session, "str c1 client str %1 pane focus-pane")?;
+        assert!(paint(&session, &mut shown)?.contains("\x1b]12;#ff0000\x1b\\"));
+        if let Some(view) = session.views.get_mut(&client) {
+            view.mode = Mode::Panel(Panel::Repeat("repeat".into()));
+        }
+        assert!(paint(&session, &mut shown)?.contains("\x1b]112\x1b\\"));
+        if let Some(view) = session.views.get_mut(&client) {
+            view.mode = Mode::Normal;
+        }
+        assert!(paint(&session, &mut shown)?.contains("\x1b]12;#ff0000\x1b\\"));
+        session.output(PaneId::of(1), b"\x1b]112\x07");
+        assert!(paint(&session, &mut shown)?.contains("\x1b]112\x1b\\"));
+        Ok(())
     }
 
     /// On a line drawn twice as wide (DECDWL, DEC STD 070 5.6.1), copy
@@ -2198,19 +2361,26 @@ mod tests {
         // Focus on %2, the cursor last painted in %1: %2's own.
         let mut painted = compose(&s, &Grid::new(0, 0));
         painted.cursor = Some((held.y(), held.x()));
+        painted.modes.cursor_colour = Some([0, 255, 0].into());
         let fresh = compose(&s, &painted);
         assert!(
             fresh.cursor.is_some_and(|(y, x)| other.contains(y, x)),
             "{:?}",
             fresh.cursor
         );
+        assert_eq!(fresh.modes.cursor_colour, None);
         // Focus on %1, the cursor last painted in %2: none.
         crate::session::testing::run(&mut s, "str c1 client str next focus")?;
         painted.cursor = Some((other.y(), other.x()));
         assert_eq!(compose(&s, &painted).cursor, None);
+        assert_eq!(compose(&s, &painted).modes.cursor_colour, None);
         // And its own, as painted.
         painted.cursor = Some((held.y(), held.x().saturating_add(1)));
         assert_eq!(compose(&s, &painted).cursor, painted.cursor);
+        assert_eq!(
+            compose(&s, &painted).modes.cursor_colour,
+            painted.modes.cursor_colour
+        );
         // But none under fux's own panel, as for any pane.
         s.input(c, b"\x02x");
         assert_eq!(compose(&s, &painted).cursor, None, "under a confirmation");
@@ -2416,15 +2586,22 @@ mod tests {
         for (left, starts, ends) in [(0, "…", "TAIL▏"), (end, "▏spl", "…"), (20, "…", "…")]
         {
             let line = line(text, left);
-            let shown = prompt_line(line.before(), line.after(), 12);
+            let cells = prompt_line(line.before(), line.after(), 12);
+            let shown: String = cells.cells().map(|(text, _)| text).collect();
             assert!(width(&shown) <= 12, "{shown:?} fits");
             assert!(shown.contains('▏'), "{shown:?} shows the cursor");
             assert!(shown.starts_with(starts), "{shown:?} starts {starts:?}");
             assert!(shown.ends_with(ends), "{shown:?} ends {ends:?}");
         }
         // Wide chars count two cells; short text is as it was.
-        assert!(width(&prompt_line("界界界界界界界界", "", 7)) <= 7);
-        assert_eq!(prompt_line("ls", "", 12), "ls▏");
+        assert!(cell_width(prompt_line("界界界界界界界界", "", 7).cells()) <= 7);
+        assert_eq!(
+            prompt_line("ls", "", 12)
+                .cells()
+                .map(|(t, _)| t)
+                .collect::<String>(),
+            "ls▏"
+        );
     }
 
     fn grid_lines(g: &Grid) -> Vec<String> {
@@ -2782,9 +2959,12 @@ mod tests {
 
     #[test]
     fn fit_cuts_at_glyph_boundaries() {
-        assert_eq!(fit("hello", 10), "hello");
-        assert_eq!(fit("hello", 4), "hel…");
-        assert_eq!(fit("界界界", 4), "界…");
-        assert_eq!(fit("x", 0), "");
+        assert_eq!(
+            fit("hello", 10).map(|(t, _)| t).collect::<String>(),
+            "hello"
+        );
+        assert_eq!(fit("hello", 4).map(|(t, _)| t).collect::<String>(), "hel…");
+        assert_eq!(fit("界界界", 4).map(|(t, _)| t).collect::<String>(), "界…");
+        assert_eq!(fit("x", 0).map(|(t, _)| t).collect::<String>(), "");
     }
 }

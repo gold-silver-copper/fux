@@ -101,7 +101,7 @@ const SIDE: &[&str] = &[
     "str clipboard true set",
     "str c1 client str hjkl text send-keys",
     "str c1 client detach",
-    "str %1 pane 0 paste-buffer",
+    "str %1 pane newest paste-buffer",
     "str %1 pane str x key send-keys",
     "str %1 pane str C-b key send-keys",
     "str V str 'me focused vertical split drop' bind",
@@ -179,7 +179,7 @@ type State = (
     String,
     Vec<(ClientId, String, Option<Grid>)>,
     Config,
-    Vec<String>,
+    Vec<(fux::id::BufferId, String)>,
     Keymap,
     Vec<(ClientId, fux::screens::Display)>,
 );
