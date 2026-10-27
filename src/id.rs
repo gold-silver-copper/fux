@@ -61,6 +61,12 @@ pub struct BufferId {
     number: u64,
 }
 
+impl BufferId {
+    pub(crate) fn run(self) -> Run {
+        self.run
+    }
+}
+
 impl fmt::Display for BufferId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "b{}:{}", self.number, self.run)
@@ -192,4 +198,10 @@ impl Ids {
     pub(crate) fn exhaust_tabs(&mut self) {
         self.tab = u32::MAX;
     }
+}
+
+/// The pane and program generation given to a pane's process as `FUX_PANE`.
+pub fn program(text: &str) -> Option<(PaneId, u64)> {
+    let (pane, generation) = text.split_once(':')?;
+    Some((pane.parse().ok()?, number(generation)?))
 }

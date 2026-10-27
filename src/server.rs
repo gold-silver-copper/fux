@@ -454,7 +454,8 @@ impl Conn {
 
     /// Answers a request with its outcome, encoded once and sent in pieces
     /// as long as fit, then their end; and takes the next.
-    fn answer(&mut self, session: &mut Session, reply: Reply) {
+    fn answer(&mut self, session: &mut Session, mut reply: Reply) {
+        reply.run = Some(session.run);
         const REFUSED: &str = "finite reply exceeds its byte or allocation limit";
         // Keep the fixed failure frame available before trying the reply.
         if self
@@ -1437,6 +1438,10 @@ impl Server {
         let Some(conn) = self.conns.get_mut(index) else {
             return;
         };
+        if let Err(error) = session.check_run(context.of) {
+            conn.answer(session, Reply::failed(error.code(), error.to_string()));
+            return;
+        }
         let Context {
             cwd,
             pane,

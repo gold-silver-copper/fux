@@ -126,7 +126,8 @@ settings! {
     /// Variables a new pane takes from whoever starts it (a request's
     /// caller, the client whose key it is) rather than from the server,
     /// which may have started long ago. One the starter lacks is unset,
-    /// but for `FUX`, `FUX_PANE`, `FUX_SOCKET` and `FUX_SERVER`.
+    /// but `FUX`, `FUX_PANE`, `FUX_SOCKET` and `FUX_SERVER` are reserved:
+    /// requesting them here or in `env` is refused.
     update_environment UpdateEnvironment "update-environment": Vec<EnvName> =
         Vec::new();
 }
@@ -366,8 +367,8 @@ impl Wire for Shell {
     }
 }
 
-/// A variable's name a shell takes: letters, digits and `_`, not first a
-/// digit.
+/// A shell variable a caller may pass to a pane: letters, digits and `_`,
+/// not first a digit, excluding the pane's reserved identity names.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EnvName(String);
 
@@ -380,7 +381,7 @@ impl EnvName {
 impl std::str::FromStr for EnvName {
     type Err = String;
     fn from_str(name: &str) -> Result<EnvName, String> {
-        crate::command::var_name(name).map(|()| EnvName(name.to_owned()))
+        crate::command::pane_var(name).map(|()| EnvName(name.to_owned()))
     }
 }
 

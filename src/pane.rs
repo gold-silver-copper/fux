@@ -588,27 +588,6 @@ impl Losses {
         add(&mut self.memory, memory);
     }
 
-    /// As a pane's JSON says them: `{"input":0,"replies":1,…}`.
-    pub fn json(self) -> crate::json::Json {
-        use crate::json::Json;
-        let Losses {
-            input,
-            replies,
-            copies_cut,
-            copies_not_text,
-            pictures,
-            memory,
-        } = self;
-        Json::object(vec![
-            ("input", Json::uint(input)),
-            ("replies", Json::uint(replies)),
-            ("copies_cut", Json::uint(copies_cut)),
-            ("copies_not_text", Json::uint(copies_not_text)),
-            ("pictures", Json::uint(pictures)),
-            ("memory", Json::uint(memory)),
-        ])
-    }
-
     /// What a notice says of them, of pane `id`: for each kind it lost
     /// any of, what, how many, and why (`%1: input dropped (2): …`).
     pub fn told(self, id: PaneId, runs: bool) -> Vec<String> {
@@ -1677,7 +1656,7 @@ impl Pane {
             copied: _,
             untold: _,
             colours: _,
-            respawns: _,
+            respawns,
             title,
             parser,
             process: _,
@@ -1714,8 +1693,7 @@ impl Pane {
         (self.refused_size, self.loss_runs, self.reading) = (refused_size, loss_runs, reading);
         self.read_error = read_error;
         tell.tell(Told::Respawned(over));
-        // Session::respawn checks exhaustion before starting the replacement.
-        self.respawns = self.respawns.saturating_add(1);
+        self.respawns = respawns;
         (std::mem::replace(&mut self.process, process), over)
     }
 

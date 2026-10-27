@@ -11,12 +11,12 @@ mod words;
 use crate::answer::{PaneAnswer, PaneResults};
 use crate::client;
 use crate::code::{Code, Raise};
-use crate::command::{AnyRef, Extent, Input, Kind, Mouse, Request, Version, WsRef};
+use crate::command::{AnyRef, Extent, Input, Kind, Mouse, Request, Run, Version, WsRef};
 use crate::id::{ClientId, PaneId, TabId, WsId};
 use crate::json::Json;
 use crate::keymap::Keymap;
 use crate::layout::Axis;
-use crate::protocol::{Asked, Body, Context, End, Reply};
+use crate::protocol::{Asked, Body, Context, End, Reply, Response};
 use crate::socket::{Choice, SocketPath};
 use fuxth::{AppValue, Code as Lang, Compiler, Limits, Machine, Outcome, Token, Value, token};
 use std::io::{self, Read, Write};
@@ -43,10 +43,10 @@ const KEYS: &str = include_str!("keys.fux");
 /// A value of fux's own on the stack.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Fux {
-    Pane(PaneId),
-    Tab(TabId),
-    Workspace(WsId),
-    Client(ClientId),
+    Pane(PaneId, Option<Run>),
+    Tab(TabId, Option<Run>),
+    Workspace(WsId, Option<Run>),
+    Client(ClientId, Option<Run>),
     /// Options for `run`, `new-tab` or `new-workspace` (from `opts`); or a
     /// request: a pane, tab, workspace or client given options, keys, a
     /// wait or a mouse event, for the word that acts on it after
@@ -55,12 +55,12 @@ pub enum Fux {
     /// A width or height: cells, or a share of the tab.
     Extent(Extent),
     /// What the server said: a capture, a listing, a wait's outcome.
-    Answer(Box<Answer>),
+    Answer(Box<Answer>, Option<Run>),
 }
 
 impl AppValue for Fux {
     fn kind(&self) -> &'static str {
-        if let Fux::Answer(answer) = self {
+        if let Fux::Answer(answer, _) = self {
             return answer.kind();
         }
         let kind = words::KINDS.iter().find(|(name, ..)| *name == self.name());
@@ -69,10 +69,10 @@ impl AppValue for Fux {
 
     fn name(&self) -> &'static str {
         match self {
-            Fux::Pane(_) => "pane",
-            Fux::Tab(_) => "tab",
-            Fux::Workspace(_) => "workspace",
-            Fux::Client(_) => "client",
+            Fux::Pane(_, _) => "pane",
+            Fux::Tab(_, _) => "tab",
+            Fux::Workspace(_, _) => "workspace",
+            Fux::Client(_, _) => "client",
             Fux::Opts(opts) => match opts.on {
                 None => "opts",
                 Some(On::Target(AnyRef::Pane(_)) | On::Version(_)) => "pane-request",
@@ -83,21 +83,46 @@ impl AppValue for Fux {
                 Some(On::Seen(_)) => "expected-request",
             },
             Fux::Extent(_) => "size",
-            Fux::Answer(answer) => answer.name(),
+            Fux::Answer(answer, _) => answer.name(),
         }
     }
 
     fn text(&self) -> String {
         match self {
-            Fux::Pane(p) => p.to_string(),
-            Fux::Tab(t) => t.to_string(),
-            Fux::Workspace(w) => w.to_string(),
-            Fux::Client(c) => c.to_string(),
-            Fux::Answer(answer) => answer.text(),
+            Fux::Pane(p, _) => p.to_string(),
+            Fux::Tab(t, _) => t.to_string(),
+            Fux::Workspace(w, _) => w.to_string(),
+            Fux::Client(c, _) => c.to_string(),
+            Fux::Answer(answer, _) => answer.text(),
             Fux::Extent(Extent::Cells(n)) => n.to_string(),
             Fux::Extent(Extent::Percent(n)) => format!("{}%", n.get()),
             Fux::Opts(_) => format!("({})", self.kind()),
         }
+    }
+}
+
+/// The server run a value was returned by, retained through request options.
+fn scope(value: &Value<Fux>) -> Option<Run> {
+    match value {
+        Value::App(
+            Fux::Pane(_, run)
+            | Fux::Tab(_, run)
+            | Fux::Workspace(_, run)
+            | Fux::Client(_, run)
+            | Fux::Answer(_, run),
+        ) => *run,
+        Value::App(Fux::Opts(opts)) => opts.of,
+        Value::Int(_) | Value::Bool(_) | Value::Str(_) | Value::List(_) | Value::App(_) => None,
+    }
+}
+
+fn same_run(a: Option<Run>, b: Option<Run>) -> Result<Option<Run>, fuxth::Failure> {
+    match (a, b) {
+        (Some(a), Some(b)) if a != b => Err(fuxth::Failure::new(
+            Code::from(Raise::BadValue).into(),
+            "handles are from different server runs",
+        )),
+        (a, b) => Ok(a.or(b)),
     }
 }
 
@@ -106,6 +131,7 @@ impl AppValue for Fux {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Opts {
     pub on: Option<On>,
+    pub of: Option<Run>,
     pub name: Option<String>,
     pub size: crate::command::Size,
     pub cwd: Option<std::path::PathBuf>,
@@ -260,7 +286,11 @@ impl Answer {
 
     /// An answer, as a value on the stack.
     fn value(self) -> Value<Fux> {
-        Value::App(Fux::Answer(Box::new(self)))
+        self.in_run(None)
+    }
+
+    fn in_run(self, run: Option<Run>) -> Value<Fux> {
+        Value::App(Fux::Answer(Box::new(self), run))
     }
 }
 
@@ -291,6 +321,7 @@ pub enum Ask {
     Server {
         request: Box<Request>,
         client: Option<ClientId>,
+        of: Option<Run>,
     },
     /// Something the client itself does that takes over (attaching), or
     /// talks to no server (`status`).
@@ -313,6 +344,7 @@ pub enum Bound {
 pub enum Local {
     /// This terminal, or a client of no terminal of `size`.
     Attach {
+        of: Option<Run>,
         workspace: Option<WsRef>,
         read_only: bool,
         size: Option<fux_vt::Size>,
@@ -936,9 +968,14 @@ pub fn run_capped(
         match machine.run(host, slice).map_err(|e| uncaught(machine, e))? {
             Outcome::Finished => return Ok(machine.stack().to_vec()),
             Outcome::Paused => {}
-            Outcome::Suspended(Ask::Server { request, client }) => {
+            Outcome::Suspended(Ask::Server {
+                request,
+                client,
+                of,
+            }) => {
                 let mut context = host.context.clone();
                 context.client = client.or(context.client);
+                context.of = of;
                 let asked = Asked {
                     after: None,
                     request: *request,
@@ -1050,16 +1087,22 @@ pub fn succeeded(reply: Reply) -> Result<Reply, Failed> {
 /// What a reply's answer puts on the stack: nothing, a string, handles, or
 /// an answer of fux's; a field's value as fuxth's own where it is one.
 pub fn answered(reply: Reply) -> Result<Vec<Value<Fux>>, Failed> {
-    let body = match reply {
-        Reply::Answered(PaneResults::One(answer)) => return Ok(vec![Answer::Pane(answer).value()]),
-        Reply::Answered(PaneResults::Many(answers)) => {
-            return Ok(vec![Answer::Panes(answers).value()]);
+    let run = reply.run;
+    let body = match reply.response {
+        Response::Answered(PaneResults::One(answer)) => {
+            return Ok(vec![Answer::Pane(answer).in_run(run)]);
         }
-        Reply::Returned(body) => body,
-        Reply::Failed { .. } => return Ok(Vec::new()),
+        Response::Answered(PaneResults::Many(answers)) => {
+            return Ok(vec![Answer::Panes(answers).in_run(run)]);
+        }
+        Response::Returned(body) => body,
+        Response::Failed { .. } => return Ok(Vec::new()),
     };
     let handles = |ids: Vec<AnyRef>| {
-        let ids = ids.into_iter().map(|id| Value::App(handle(id))).collect();
+        let ids = ids
+            .into_iter()
+            .map(|id| Value::App(handle(id, run)))
+            .collect();
         let list = fuxth::List::new(ids)
             .ok_or_else(|| Failed::new(Code::from(Raise::TooLong), "more ids than a list holds"))?;
         Ok::<_, Failed>(Value::List(std::rc::Rc::new(list)))
@@ -1067,11 +1110,11 @@ pub fn answered(reply: Reply) -> Result<Vec<Value<Fux>>, Failed> {
     Ok(vec![match body {
         Body::Empty => return Ok(Vec::new()),
         Body::Text(text) => Value::str(text.trim_end_matches('\n')),
-        Body::Found(id) => Value::App(handle(id)),
+        Body::Found(id) => Value::App(handle(id, run)),
         Body::Handles(ids) => handles(ids)?,
         Body::Choices { rows, .. } => handles(rows.into_iter().map(|(id, _)| id).collect())?,
-        Body::Capture(captured) => Answer::Capture(captured).value(),
-        Body::Listing { of, listing } => Answer::Listing { of, listing }.value(),
+        Body::Capture(captured) => Answer::Capture(captured).in_run(run),
+        Body::Listing { of, listing } => Answer::Listing { of, listing }.in_run(run),
         Body::Field(Json::Int(n)) => Value::Int(n),
         Body::Field(Json::Uint(n)) => Value::Int(i64::try_from(n).map_err(|_| {
             Failed::new(
@@ -1088,11 +1131,11 @@ pub fn answered(reply: Reply) -> Result<Vec<Value<Fux>>, Failed> {
 }
 
 /// A handle for `id`.
-pub fn handle(id: AnyRef) -> Fux {
+pub fn handle(id: AnyRef, run: Option<Run>) -> Fux {
     match id {
-        AnyRef::Pane(p) => Fux::Pane(p),
-        AnyRef::Tab(t) => Fux::Tab(t),
-        AnyRef::Workspace(w) => Fux::Workspace(w),
+        AnyRef::Pane(p) => Fux::Pane(p, run),
+        AnyRef::Tab(t) => Fux::Tab(t, run),
+        AnyRef::Workspace(w) => Fux::Workspace(w, run),
     }
 }
 
@@ -1102,6 +1145,7 @@ fn local(what: &Local, server: &mut Server) -> Result<Vec<Value<Fux>>, Failed> {
     match what {
         Local::Server(chosen) => server.choose(chosen.clone()),
         Local::Attach {
+            of,
             workspace,
             read_only,
             size,
@@ -1118,8 +1162,8 @@ fn local(what: &Local, server: &mut Server) -> Result<Vec<Value<Fux>>, Failed> {
             if size.is_none() && client::window_size().is_none() {
                 return Err(client_failed(client::Error::NoSize));
             }
-            // One that only watches starts nothing: no server for it.
-            let socket = match read_only {
+            // Watching or naming a run starts no replacement server.
+            let socket = match *read_only || of.is_some() {
                 true => server.socket()?,
                 false => started(server)?.0,
             };
@@ -1127,8 +1171,9 @@ fn local(what: &Local, server: &mut Server) -> Result<Vec<Value<Fux>>, Failed> {
                 let why = "no server answers: there is nothing to watch";
                 return Err(Failed::new(Code::NoServer, why));
             }
-            let (keymap, problem) = configured(server);
+            let (keymap, problem) = configured(server, *of);
             let attach = client::Attaching {
+                of: *of,
                 workspace: workspace.clone(),
                 read_only: *read_only,
                 keymap,
@@ -1138,7 +1183,7 @@ fn local(what: &Local, server: &mut Server) -> Result<Vec<Value<Fux>>, Failed> {
         }
         Local::Start => {
             if started(server)?.1
-                && let (_, Some(problem)) = configured(server)
+                && let (_, Some(problem)) = configured(server, None)
             {
                 let _ = writeln!(io::stderr(), "fux: {problem}");
             }
@@ -1170,8 +1215,8 @@ fn started(server: &mut Server) -> Result<(SocketPath, bool), Failed> {
 
 /// The client's keymap, its config run on the defaults; and what was wrong
 /// with the config, if anything was.
-pub fn configured(server: &mut Server) -> (Keymap, Option<String>) {
-    match config_keymap(Some(server)) {
+pub fn configured(server: &mut Server, run: Option<Run>) -> (Keymap, Option<String>) {
+    match config_keymap(Some(server), run) {
         Ok(keymap) => (keymap, None),
         // Half a config is no config: the defaults, and why; none, if they
         // are what failed (the failure names keys.fux).
@@ -1192,7 +1237,7 @@ pub fn default_keys() -> Result<Keymap, Failed> {
 
 /// The keymap the config file makes (`run_file`), if there is one; else
 /// the defaults.
-fn config_keymap(server: Option<&mut Server>) -> Result<Keymap, Failed> {
+fn config_keymap(server: Option<&mut Server>, run: Option<Run>) -> Result<Keymap, Failed> {
     let Some(path) = crate::config::default_path() else {
         return default_keys();
     };
@@ -1209,7 +1254,7 @@ fn config_keymap(server: Option<&mut Server>) -> Result<Keymap, Failed> {
         }
         Err(error) => return Err(read_failed(&shown, &error.to_string())),
     };
-    run_config(&shown, &read_text(&shown, file)?, server)
+    run_config(&shown, &read_text(&shown, file)?, server, run)
 }
 
 /// The keymap a config file makes, its words run on the defaults, its
@@ -1217,16 +1262,28 @@ fn config_keymap(server: Option<&mut Server>) -> Result<Keymap, Failed> {
 /// puts in force whole, or with none sent (a dry run); or why it fails. A
 /// config that fails as it runs sends none; one whose answer is lost may
 /// have been put in force, whole. A config attaches nothing, and chooses
-/// no other server.
-pub fn run_file(path: &std::path::Path, server: Option<&mut Server>) -> Result<Keymap, Failed> {
+/// no other server. A given `run` constrains its settings too.
+pub fn run_file(
+    path: &std::path::Path,
+    server: Option<&mut Server>,
+    run: Option<Run>,
+) -> Result<Keymap, Failed> {
     let shown = path.display().to_string();
     let text = read_file(path)?;
-    run_config(&shown, &text, server)
+    run_config(&shown, &text, server, run)
 }
 
 /// Runs one source snapshot as a config, on the bundled keys.
-fn run_config(shown: &str, text: &str, server: Option<&mut Server>) -> Result<Keymap, Failed> {
-    let context = client::context();
+fn run_config(
+    shown: &str,
+    text: &str,
+    server: Option<&mut Server>,
+    run: Option<Run>,
+) -> Result<Keymap, Failed> {
+    let context = Context {
+        of: run,
+        ..client::context()
+    };
     let mut keymap = Keymap {
         config: Some(std::sync::Arc::new((shown.to_owned(), text.to_owned()))),
         ..default_keys()?
@@ -1336,7 +1393,7 @@ pub fn main(args: &[String], out: &mut dyn Write) -> Result<u8, Failed> {
         // An answer with nothing to say (an empty listing) prints no
         // blank line; options or a request, nothing.
         .filter(|value| {
-            !matches!(value, Value::App(Fux::Answer(a)) if a.is_empty())
+            !matches!(value, Value::App(Fux::Answer(a, _)) if a.is_empty())
                 && !matches!(value, Value::App(Fux::Opts(_)))
         })
         .try_for_each(|value| writeln!(host.out, "{}", value.text()))

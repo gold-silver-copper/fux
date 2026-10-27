@@ -116,6 +116,97 @@ impl Budget {
     pub(crate) fn with_limit(bytes: usize) -> Self {
         Self(bytes)
     }
+    pub(crate) fn remaining(&self) -> usize {
+        self.0
+    }
+    pub(crate) fn string(&mut self, text: &str) -> Result<String, crate::session::Error> {
+        self.charge(text.len())?;
+        let mut out = String::new();
+        out.try_reserve_exact(text.len())
+            .map_err(|_| Self::exceeded())?;
+        out.push_str(text);
+        Ok(out)
+    }
+    pub(crate) fn write(
+        &mut self,
+        out: &mut String,
+        args: std::fmt::Arguments<'_>,
+    ) -> Result<(), crate::session::Error> {
+        struct Formatted<'a> {
+            budget: &'a mut Budget,
+            out: &'a mut String,
+        }
+        impl std::fmt::Write for Formatted<'_> {
+            fn write_str(&mut self, text: &str) -> std::fmt::Result {
+                self.budget
+                    .text(self.out, text)
+                    .map_err(|_| std::fmt::Error)
+            }
+        }
+        std::fmt::write(&mut Formatted { budget: self, out }, args).map_err(|_| Self::exceeded())
+    }
+    pub(crate) fn format(
+        &mut self,
+        args: std::fmt::Arguments<'_>,
+    ) -> Result<String, crate::session::Error> {
+        let mut out = String::new();
+        self.write(&mut out, args)?;
+        Ok(out)
+    }
+    pub(crate) fn owned_string(
+        &mut self,
+        text: String,
+    ) -> Result<crate::json::Json, crate::session::Error> {
+        self.charge(text.capacity())?;
+        Ok(crate::json::Json::str(text))
+    }
+    pub(crate) fn optional_owned(
+        &mut self,
+        text: Option<String>,
+    ) -> Result<crate::json::Json, crate::session::Error> {
+        match text {
+            Some(text) => self.owned_string(text),
+            None => Ok(crate::json::Json::Null),
+        }
+    }
+    pub(crate) fn optional_text(
+        &mut self,
+        text: Option<&str>,
+    ) -> Result<crate::json::Json, crate::session::Error> {
+        match text {
+            Some(text) => self.string(text).map(crate::json::Json::str),
+            None => Ok(crate::json::Json::Null),
+        }
+    }
+    fn named(
+        &mut self,
+        fields: impl ExactSizeIterator<Item = (&'static str, crate::json::Json)>,
+    ) -> Result<Vec<(String, crate::json::Json)>, crate::session::Error> {
+        let mut out = self.vector(fields.len())?;
+        for (key, value) in fields {
+            out.push((self.string(key)?, value));
+        }
+        Ok(out)
+    }
+    pub(crate) fn object<const N: usize>(
+        &mut self,
+        fields: [(&'static str, crate::json::Json); N],
+    ) -> Result<crate::json::Json, crate::session::Error> {
+        self.named(fields.into_iter())
+            .map(crate::json::Json::Object)
+    }
+    pub(crate) fn fields(
+        &mut self,
+        fields: crate::json::Fields,
+    ) -> Result<Vec<(String, crate::json::Json)>, crate::session::Error> {
+        let bytes = fields
+            .capacity()
+            .checked_mul(std::mem::size_of::<(&str, crate::json::Json)>())
+            .ok_or_else(Self::exceeded)?;
+        let out = self.named(fields.into_iter())?;
+        self.release(bytes)?;
+        Ok(out)
+    }
     pub(crate) fn charge(&mut self, bytes: usize) -> Result<(), crate::session::Error> {
         self.0 = self.0.checked_sub(bytes).ok_or_else(Self::exceeded)?;
         Ok(())
@@ -275,6 +366,14 @@ pub(crate) fn append(out: &mut Vec<u8>, bytes: &[u8]) -> Result<(), Error> {
     }
     out.extend_from_slice(bytes);
     Ok(())
+}
+
+/// Size of the same bounded encoding, without allocating its bytes.
+pub(crate) fn size<T: Wire>(value: &T) -> Result<usize, Error> {
+    let mut out = Writer::counting(MAX_REPLY);
+    value.put(&mut out);
+    out.check_ref()?;
+    Ok(MAX_REPLY.saturating_sub(out.left))
 }
 
 /// A finite reply's bytes, refused before a write exceeds the cap.
@@ -771,7 +870,10 @@ mod tests {
         let reply = Reply::get(&mut reader)?;
         let charged = MAX_ALLOCATED.saturating_sub(reader.1);
         assert!(charged > 32 << 20 && charged <= MAX_ALLOCATED, "{charged}");
-        assert!(matches!(reply, Reply::Returned(Body::Capture(_))));
+        assert!(matches!(
+            reply.response,
+            crate::protocol::Response::Returned(Body::Capture(_))
+        ));
         Ok(())
     }
 

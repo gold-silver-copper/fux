@@ -333,10 +333,11 @@ pub fn context() -> Context {
     let var = |name| std::env::var(name).ok().filter(|v: &String| !v.is_empty());
     Context {
         cwd: std::env::current_dir().unwrap_or_default(),
-        pane: var("FUX_PANE").and_then(|p| p.parse().ok()),
+        pane: var("FUX_PANE").and_then(|p| crate::id::program(&p)),
         server: var("FUX_SERVER"),
         env: None,
         client: None,
+        of: None,
     }
 }
 
@@ -500,6 +501,7 @@ pub(crate) fn on_one_terminal() -> bool {
 /// How a client attaches: to which workspace, whether it only watches, its
 /// keys, its config run already, and what was wrong with that config.
 pub struct Attaching {
+    pub of: Option<crate::command::Run>,
     pub workspace: Option<crate::command::WsRef>,
     pub read_only: bool,
     pub keymap: Keymap,
@@ -645,7 +647,7 @@ impl Keyboard {
                         client: me,
                         frames,
                     });
-                    let ran = run_job(&mut server, me, &shared, &job, &stops);
+                    let ran = run_job(&mut server, (me, run), &shared, &job, &stops);
                     if tell.send(ran).is_err() {
                         break;
                     }
@@ -916,7 +918,7 @@ fn decoded(input: crate::command::Input) -> Vec<Input> {
 /// `keymap`. A program that fails changes no keys: half a change is none.
 fn run_job(
     server: &mut script::Server,
-    me: crate::id::ClientId,
+    me: (crate::id::ClientId, crate::command::Run),
     keymap: &Mutex<Keymap>,
     job: &Job,
     stop: &script::Stop,
@@ -925,7 +927,8 @@ fn run_job(
     let config = changed.config.clone();
     let mut out = Said::default();
     let mut context = context();
-    context.client = Some(me);
+    context.client = Some(me.0);
+    context.of = Some(me.1);
     let mut asks = script::AsClient {
         asks: server,
         context: context.clone(),
@@ -1019,6 +1022,7 @@ pub fn attach(
     let size = size.or_else(window_size).ok_or(Error::NoSize)?;
     let raw = terminal.then(|| Raw::enter(&stdin)).transpose()?;
     let attach = Attach {
+        of: attaching.of,
         size,
         workspace: attaching.workspace.clone(),
         read_only: attaching.read_only,

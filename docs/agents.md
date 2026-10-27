@@ -383,6 +383,14 @@ it), `str PATH read-file` and `str NAME getenv` (a variable not set fails
 
 ## servers: Servers, sizes and more
 
+- `FUX`, `FUX_PANE`, `FUX_SOCKET` and `FUX_SERVER` are reserved pane
+  identity. Requesting them is refused: `bad_value` in `env`, `config` in
+  `update-environment`. Other names, including `FUX_EXTRA`, remain allowed.
+- Handle values returned by a server retain its run through lists, bindings,
+  answers and request options; using one against another run is refused.
+  A hand-written `%N`, `@N`, `+N` or `str cN client` means the selected server
+  now. Printing one of these handles loses its run: that text is not durable
+  across restarts.
 - `str NAME server` (`NAME.sock` in fux's directory) or `str PATH socket`
   first chooses another server; `start` starts one, with nothing in it
   (the first client to attach starts a shell on its screen; one that only
@@ -397,10 +405,13 @@ it), `str PATH read-file` and `str NAME getenv` (a variable not set fails
     while read -r n; do fux str "$n" server status; done
   ```
   Inside a person's pane, `here` is that pane. Every pane has
-  `FUX_PANE` (its id), `FUX_SOCKET` (its server's socket), `FUX_SERVER` (which run of the server: a
-  `FUX_PANE` of another, or with no `FUX_SERVER`, is no `here`:
-  `stray_pane`) and `FUX` (the fux the server runs, for a script that may
-  not find `fux` on PATH; unset if the server cannot name it). A person
+  `FUX_PANE` (`%N:GENERATION`, the pane and its program generation),
+  `FUX_SOCKET` (its server's socket), `FUX_SERVER` (which run of the server:
+  a `FUX_PANE` of another, or with no `FUX_SERVER`, is no `here`:
+  `stray_pane`; neither is a caller from before a respawn) and `FUX`
+  (the fux the server runs, for a script that may not find `fux` on PATH;
+  unset if the server cannot name it). Resolve `FUX_PANE` with `here`;
+  its text before the colon alone is the pane id. A person
   who wants your panes apart from theirs gives you a server of your own
   (`FUX_SOCKET=PATH fux start`), which they watch by attaching to it.
   `kill-server` from inside its own server is refused;

@@ -159,7 +159,7 @@ fn pane_with(
     let of = Of::Pane {
         version: pane.version(run),
         wrap_pending: cursor.is_some() && screen.pending_wrap(),
-        state: state.into_iter().map(|(k, v)| (k.to_owned(), v)).collect(),
+        state: budget.fields(state)?,
     };
     build(read, of, (screen.size().into(), cursor), view, &mut budget)
 }
@@ -525,40 +525,55 @@ pub(crate) fn state(
     copy_mode: bool,
     budget: &mut crate::wire::Budget,
 ) -> Result<Vec<(&'static str, Json)>, crate::session::Error> {
-    budget.slots::<(String, Json)>(64)?;
-    budget.charge(pane.title().as_str().len())?;
     let screen = pane.screen();
     let cell = screen.graphics().cell();
-    // What runs in the foreground: a job the shell started, else the
-    // program itself; nothing, where its terminal can't tell.
-    let job = pane.process().job();
-    let foreground = (pane.process().child()).and_then(|child| match job {
-        Ok(job) => Some(job.unwrap_or(child.leader.pid())),
-        Err(_) => None,
+    // The terminal reports a group, whose leader may already have exited.
+    // Read that leader alone; a surviving member is not guessed to replace it.
+    let group = pane.process().child().and_then(|child| {
+        fuxix::terminal::foreground_group(&child.master)
+            .ok()
+            .flatten()
     });
-    let program = foreground.and_then(fuxix::process::name);
+    let leader = group.filter(|pid| fuxix::process::exists(*pid));
+    let program = leader.and_then(fuxix::process::name);
+    let argv = leader
+        .map(|pid| fuxix::process::argv(pid, budget.remaining().min(crate::wire::MAX_REPLY / 4)))
+        .transpose()
+        .map_err(|_| crate::wire::Budget::exceeded())?
+        .flatten();
+    let cwd = leader.and_then(fuxix::process::cwd);
+    if let Some(program) = &program {
+        budget.charge(program.capacity())?;
+    }
+    if let Some(cwd) = &cwd {
+        budget.charge(
+            cwd.capacity()
+                .checked_add(
+                    cwd.as_os_str()
+                        .len()
+                        .checked_mul(3)
+                        .ok_or_else(crate::wire::Budget::exceeded)?,
+                )
+                .ok_or_else(crate::wire::Budget::exceeded)?,
+        )?;
+    }
+    let launch_argv = match &pane.runs {
+        Runs::Explicit(launch) => {
+            let mut values = budget.vector(launch.argv.len())?;
+            for word in &launch.argv {
+                values.push(Json::str(budget.string(word)?));
+            }
+            Json::Array(values)
+        }
+        Runs::DefaultShell => Json::Null,
+    };
     let idle = now.saturating_duration_since(pane.wrote_at).as_millis();
     let last_status = screen.commands().last_status;
-    let argv = match (&pane.runs, job) {
-        (_, Ok(Some(job))) => fuxix::process::argv(job, crate::wire::MAX_REPLY / 4)
-            .map_err(|_| crate::wire::Budget::exceeded())?,
-        (Runs::Explicit(launch), Ok(None)) => {
-            budget.slots::<std::ffi::OsString>(launch.argv.len())?;
-            for word in &launch.argv {
-                budget.charge(word.len())?;
-            }
-            Some(launch.argv.iter().map(Into::into).collect())
-        }
-        (Runs::DefaultShell, Ok(None)) => foreground
-            .map(|pid| fuxix::process::argv(pid, crate::wire::MAX_REPLY / 4))
-            .transpose()
-            .map_err(|_| crate::wire::Budget::exceeded())?
-            .flatten(),
-        (_, Err(_)) => None,
-    };
     if let Some(argv) = &argv {
+        budget.slots::<std::ffi::OsString>(argv.capacity())?;
         budget.slots::<Json>(argv.len())?;
         for word in argv {
+            budget.charge(word.capacity())?;
             budget.charge(
                 word.len()
                     .checked_mul(3)
@@ -566,6 +581,7 @@ pub(crate) fn state(
             )?;
         }
     }
+
     let (exited, signal) = match pane.process().exit_status() {
         Some(crate::process::Ended::Exited(code)) => (Json::int(code), Json::Null),
         Some(crate::process::Ended::Signalled(signal)) => (Json::Null, Json::int(signal)),
@@ -576,12 +592,8 @@ pub(crate) fn state(
     let bracketed_paste = screen.mode(Mode::BracketedPaste);
     let mut pictures = Vec::new();
     for shown in screen.pictures() {
-        budget.slots::<(String, Json)>(7)?;
-        budget.slots::<Json>(1)?;
-        pictures
-            .try_reserve(1)
-            .map_err(|_| crate::wire::Budget::exceeded())?;
-        pictures.push(picture(shown));
+        budget.reserve(&mut pictures, 1)?;
+        pictures.push(picture(shown, budget)?);
     }
     let pictures = Json::Array(pictures);
     let notification = pane.alerts.last.as_ref();
@@ -592,18 +604,46 @@ pub(crate) fn state(
         ("output", pane.left.output == crate::pane::Output::Cut),
     ];
     let truncated = cut.into_iter().filter(|(_, cut)| *cut);
-    let truncated = truncated.map(|(field, _)| Json::str(field)).collect();
-    Ok(vec![
-        ("title", Json::str(pane.title().as_str().to_owned())),
+    let mut cut_fields = budget.vector(3)?;
+    for (field, _) in truncated {
+        cut_fields.push(Json::str(budget.string(field)?));
+    }
+    let losses = pane.lost();
+    let lost = budget.object([
+        ("input", Json::uint(losses.input)),
+        ("replies", Json::uint(losses.replies)),
+        ("copies_cut", Json::uint(losses.copies_cut)),
+        ("copies_not_text", Json::uint(losses.copies_not_text)),
+        ("pictures", Json::uint(losses.pictures)),
+        ("memory", Json::uint(losses.memory)),
+    ])?;
+    let cell = match cell {
+        Some(cell) => budget.object([
+            ("width", Json::int(cell.width())),
+            ("height", Json::int(cell.height())),
+        ])?,
+        None => Json::Null,
+    };
+    let read_error = pane.read_error().map(|e| e.to_string());
+    if let Some(error) = &read_error {
+        budget.charge(error.capacity())?;
+    }
+    let values = [
+        ("title", Json::str(budget.string(pane.title().as_str())?)),
         ("program", program.map_or(Json::Null, Json::str)),
+        (
+            "foreground_group",
+            group.map_or(Json::Null, |pid| Json::int(pid.as_raw())),
+        ),
+        (
+            "foreground_leader",
+            leader.map_or(Json::Null, |pid| Json::int(pid.as_raw())),
+        ),
+        ("launch_argv", launch_argv),
         // Its program closed its terminal and runs on: nothing reads keys
         // there (the terminal hung up; Linux says so).
         ("hung_up", Json::Bool(hung_up)),
-        (
-            "read_error",
-            pane.read_error()
-                .map_or(Json::Null, |error| Json::str(error.to_string())),
-        ),
+        ("read_error", read_error.map_or(Json::Null, Json::str)),
         ("exited", exited),
         ("signal", signal),
         // Past u64's milliseconds no monotonic clock reaches: unknown.
@@ -618,25 +658,17 @@ pub(crate) fn state(
             "mouse_mode",
             match mouse {
                 MouseProtocolMode::None => Json::Null,
-                MouseProtocolMode::Press => Json::str("press"),
-                MouseProtocolMode::PressRelease => Json::str("press_release"),
-                MouseProtocolMode::Highlight => Json::str("highlight"),
-                MouseProtocolMode::ButtonMotion => Json::str("button_motion"),
-                MouseProtocolMode::AnyMotion => Json::str("any_motion"),
+                MouseProtocolMode::Press => Json::str(budget.string("press")?),
+                MouseProtocolMode::PressRelease => Json::str(budget.string("press_release")?),
+                MouseProtocolMode::Highlight => Json::str(budget.string("highlight")?),
+                MouseProtocolMode::ButtonMotion => Json::str(budget.string("button_motion")?),
+                MouseProtocolMode::AnyMotion => Json::str(budget.string("any_motion")?),
             },
         ),
         ("bracketed_paste", Json::Bool(bracketed_paste)),
         ("pictures", pictures),
-        ("lost", pane.lost().json()),
-        (
-            "cell",
-            cell.map_or(Json::Null, |cell| {
-                Json::object(vec![
-                    ("width", Json::int(cell.width())),
-                    ("height", Json::int(cell.height())),
-                ])
-            }),
-        ),
+        ("lost", lost),
+        ("cell", cell),
         ("cursor_visible", Json::Bool(screen.mode(Mode::ShowCursor))),
         ("history_lines", Json::count(screen.history_len())),
         ("copy_mode", Json::Bool(copy_mode)),
@@ -645,23 +677,26 @@ pub(crate) fn state(
         ("bells", Json::uint(pane.alerts.rung)),
         (
             "notification",
-            notification.map_or(Json::Null, |n| Json::str(n.as_str().to_owned())),
+            budget.optional_text(notification.map(|n| n.as_str()))?,
         ),
-        ("truncated", Json::Array(truncated)),
+        ("truncated", Json::Array(cut_fields)),
         ("input_unread", Json::count(pane.left.input)),
-        (
-            "cwd",
-            foreground
-                .and_then(fuxix::process::cwd)
-                .map_or(Json::Null, |p| text(p.as_os_str())),
-        ),
+        ("cwd", cwd.map_or(Json::Null, |p| text(p.as_os_str()))),
         (
             "argv",
             argv.map_or(Json::Null, |a| {
                 Json::Array(a.iter().map(|w| text(w)).collect())
             }),
         ),
-    ])
+    ];
+    let mut fields = budget.vector(
+        values
+            .len()
+            .checked_add(1)
+            .ok_or_else(crate::wire::Budget::exceeded)?,
+    )?;
+    fields.extend(values);
+    Ok(fields)
 }
 
 /// A path or an argument as JSON text, which must be UTF-8: each byte
@@ -675,8 +710,11 @@ fn text(os: &std::ffi::OsStr) -> Json {
 /// that are gone (`cropped`: scrolled off a region's top or a screen's
 /// that keeps no history, the rest shown below them), and its size in
 /// pixels.
-fn picture(shown: fux_vt::Shown<'_>) -> Json {
-    Json::object(vec![
+fn picture(
+    shown: fux_vt::Shown<'_>,
+    budget: &mut crate::wire::Budget,
+) -> Result<Json, crate::session::Error> {
+    budget.object([
         ("row", Json::Int(shown.row)),
         ("col", Json::int(shown.col)),
         ("rows", Json::int(shown.rows)),

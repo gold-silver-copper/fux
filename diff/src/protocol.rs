@@ -246,6 +246,7 @@ fn encode(spec: &Spec) -> Result<Vec<u8>, String> {
         .encode()
         .map_err(error),
         Spec::Attach(rows, cols, read_only) => Attach {
+            of: None,
             size: crate::size(rows, cols),
             workspace: None,
             read_only,

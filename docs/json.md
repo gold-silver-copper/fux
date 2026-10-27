@@ -21,7 +21,10 @@ for `id`, `name`, `label` and `pid` (it says `pane`):
 | `rows`, `cols` | its size |
 | `pid` | its program's process, `null` once it exited, and while a respawn of it is under way |
 | `version` | its version, `%3:RESPAWNS.SCREEN.BELLS.DONE.ENDED:RUN`: its pane, its counts and the server's run (`fux help agents` says what each counts) |
-| `program` | what runs in its foreground, as the system names it (Linux keeps a name's first 15 bytes), `null` if its terminal does not say |
+| `foreground_group` | the terminal's observed foreground process group id, or `null` if unknown; its leader may have exited while other members still run |
+| `foreground_leader` | the process id of that group's leader when observed to exist, else `null`; fux does not search for another group member |
+| `program` | the observed foreground leader's program name (Linux keeps its first 15 bytes), or `null` if unknown |
+| `launch_argv` | the arguments its program was last started with (`run`, `split`, or a `respawn` that gave a program), retained separately from live observations; `null` for a default shell |
 | `hung_up` | its program closed its terminal and runs on: keys are refused (Linux says so; macOS, where fux holds the terminal open, does not) |
 | `read_error` | an unexpected PTY read failure as errno text, or `null`: a failed reader is no longer polled and refuses keys; the cause stays after exit until respawn |
 | `exited` | the status its program exited with (a pane whose program is no shell: `run`'s, or a `split` with a program), else `null` |
@@ -43,7 +46,7 @@ for `id`, `name`, `label` and `pid` (it says `pane`):
 | `notification` | the last notification's text, else `null`: its first 500 characters, without control characters |
 | `truncated` | which of `"title"`, `"notification"` and `"output"`, in that order, were cut, else `[]`: the fields above that the program sent more of than they keep, the rest dropped (`["notification"]`, `["title","notification"]`); `"output"` once its program left more than 1 MiB on its terminal as it ended, the rest not read (till it is respawned) |
 | `input_unread` | bytes of input fux queued for its program and had not yet written to its terminal as it ended, let go (till it is respawned), else 0. Input written to its terminal that the program never read is not counted: the system does not say |
-| `cwd`, `argv` | the foreground process's directory and words, where the system says; JSON's text being UTF-8, a byte that is not is shown as U+FFFD |
+| `cwd`, `argv` | the observed foreground leader's directory and arguments, each `null` where unknown; separate OS reads may race with a process changing or exiting. No launch arguments stand in for unknown live arguments. JSON's text being UTF-8, a byte that is not is shown as U+FFFD |
 
 ## `ls json`
 
@@ -237,4 +240,4 @@ a server that stopped left it there. Every server in fux's directory:
 `bytes` is the exact UTF-8 byte length; `preview` contains at most 50 characters,
 with control characters replaced by spaces. The full text is returned only by
 `str ID buffer`. IDs include the server run and are never reused in that run;
-an evicted ID returns `no_buffer`.
+an evicted ID returns `no_buffer`; an ID from another run is refused with `bad_value`.

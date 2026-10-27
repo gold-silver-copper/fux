@@ -356,6 +356,7 @@ impl Fixture {
         };
         let size = fux_vt::Size::new(9000, 9000).map_err(|e| e.to_string())?;
         let attach = Attach {
+            of: None,
             size,
             workspace: None,
             read_only: false,

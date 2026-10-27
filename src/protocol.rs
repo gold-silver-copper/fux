@@ -304,6 +304,7 @@ wire! {
     /// `update-environment` names from.
     #[derive(Clone, Debug, PartialEq, Eq)]
     pub struct Attach {
+        pub of: Option<crate::command::Run>,
         pub size: fux_vt::Size,
         pub workspace: Option<crate::command::WsRef>,
         pub read_only: bool,
@@ -320,6 +321,7 @@ impl Attach {
     /// environment.
     pub fn of(size: fux_vt::Size) -> Attach {
         Attach {
+            of: None,
             size,
             workspace: None,
             read_only: false,
@@ -340,14 +342,16 @@ frames! {
 
 wire! {
     /// Where a request comes from: the caller's directory, its pane
-    /// (`FUX_PANE`) and the server that pane is of (`FUX_SERVER`), its
-    /// environment if the request may start programs (they take what
+    /// and program generation (`FUX_PANE`), that pane's server (`FUX_SERVER`),
+    /// its environment if the request may start programs (they take what
     /// `update-environment` names of it), and the client whose binding or
     /// prompt runs it.
     #[derive(Clone, Debug, Default, PartialEq, Eq)]
     pub struct Context {
+        /// The common run of every handle used by this request, if any.
+        pub of: Option<crate::command::Run>,
         pub cwd: std::path::PathBuf,
-        pub pane: Option<PaneId>,
+        pub pane: Option<(PaneId, u64)>,
         pub server: Option<String>,
         /// None has not been captured; Some, even empty, is the caller's snapshot.
         pub env: Option<Vec<(String, std::ffi::OsString)>>,
@@ -382,10 +386,20 @@ impl OneKind for Asked {
 }
 
 wire! {
+    /// A request's reply and the server run that answered it. A local
+    /// config collector has no run.
+    #[derive(Clone, Debug, Default, PartialEq, Eq)]
+    pub struct Reply {
+        pub run: Option<crate::command::Run>,
+        pub response: Response,
+    }
+}
+
+wire! {
     /// A request's return, ordinary failure, or pane outcomes. Pane outcomes
     /// alone determine whether an action or wait failed.
     #[derive(Clone, Debug, PartialEq, Eq)]
-    pub enum Reply {
+    pub enum Response {
         Returned(body: Body),
         Failed { code: Code, message: String },
         Answered(answers: crate::answer::PaneResults),
@@ -451,22 +465,25 @@ impl End {
 impl Reply {
     /// A failure of kind `code`, with its exit status, and why.
     pub fn failed(code: Code, message: impl Into<String>) -> Self {
-        Self::Failed {
-            code,
-            message: message.into(),
+        Self {
+            run: None,
+            response: Response::Failed {
+                code,
+                message: message.into(),
+            },
         }
     }
 
     /// How the request ended. A collection's first failure in watch order
     /// names the whole; every failed member contributes its explanation.
     pub fn end(&self) -> End {
-        match self {
-            Reply::Returned(_) => End::Done,
-            Reply::Failed { code, message } => End::Failed {
+        match &self.response {
+            Response::Returned(_) => End::Done,
+            Response::Failed { code, message } => End::Failed {
                 code: *code,
                 message: message.clone(),
             },
-            Reply::Answered(answers) => match answers
+            Response::Answered(answers) => match answers
                 .all()
                 .iter()
                 .find_map(crate::answer::PaneAnswer::failure)
@@ -486,7 +503,7 @@ impl Reply {
     }
 }
 
-impl Default for Reply {
+impl Default for Response {
     fn default() -> Self {
         Self::Returned(Body::Empty)
     }
@@ -494,13 +511,19 @@ impl Default for Reply {
 
 impl From<Body> for Reply {
     fn from(body: Body) -> Self {
-        Self::Returned(body)
+        Self {
+            run: None,
+            response: Response::Returned(body),
+        }
     }
 }
 
 impl From<crate::answer::PaneResults> for Reply {
     fn from(answers: crate::answer::PaneResults) -> Self {
-        Self::Answered(answers)
+        Self {
+            run: None,
+            response: Response::Answered(answers),
+        }
     }
 }
 
@@ -703,7 +726,10 @@ mod tests {
                 Some(Code::Timeout),
             ),
         ] {
-            let reply = Reply::Answered(results);
+            let reply = Reply {
+                run: Some(version.run),
+                ..results.into()
+            };
             let bytes = crate::wire::encode(&reply)?;
             let decoded = crate::wire::Reader::new(&bytes).whole::<Reply>()?;
             assert_eq!(decoded, reply);
@@ -716,7 +742,10 @@ mod tests {
             let json = values
                 .first()
                 .map(|v| match v {
-                    fuxth::Value::App(crate::script::Fux::Answer(a)) => a.json().render(),
+                    fuxth::Value::App(crate::script::Fux::Answer(a, run)) => {
+                        assert_eq!(*run, Some(version.run));
+                        a.json().render()
+                    }
                     fuxth::Value::Int(_)
                     | fuxth::Value::Bool(_)
                     | fuxth::Value::Str(_)
@@ -736,7 +765,7 @@ mod tests {
     }
 
     fn has_timeout(reply: &Reply) -> bool {
-        matches!(reply, Reply::Answered(answers) if answers.all().iter().any(|a| a.failure() == Some(Code::Timeout)))
+        matches!(&reply.response, Response::Answered(answers) if answers.all().iter().any(|a| a.failure() == Some(Code::Timeout)))
     }
 
     /// A frame decodes only from the bytes it encodes to: an `Act` whose
@@ -792,6 +821,7 @@ mod tests {
             Attach,
             2,
             Attach {
+                of: None,
                 size,
                 workspace,
                 read_only: false,
@@ -803,6 +833,7 @@ mod tests {
             Attach,
             2,
             Attach {
+                of: None,
                 size,
                 workspace,
                 read_only: true,
@@ -852,8 +883,9 @@ mod tests {
                     name: "界".into(),
                 }),
                 context: Context {
+                    of: Some(run),
                     cwd: "/somewhere".into(),
-                    pane: "%3".parse().ok(),
+                    pane: crate::id::program("%3:2"),
                     server: Some("1-2".into()),
                     env: Some(vec![("K".into(), "V".into())]),
                     client: "c2".parse().ok(),
@@ -1007,7 +1039,7 @@ mod tests {
             ),
             (
                 attach,
-                vec![0, 0, 0, 6, 2, 0, 1, 0, 1, 2],
+                vec![0, 0, 0, 7, 2, 0, 0, 1, 0, 1, 2],
                 "a frame's payload: no option has tag 2",
             ),
             (

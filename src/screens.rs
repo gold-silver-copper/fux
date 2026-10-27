@@ -14,7 +14,7 @@ use crate::decode::Input;
 use crate::id::PaneId;
 use crate::keymap::{Held, Keymap, Modes};
 use crate::keys::{KeyPress, Keystroke};
-use crate::protocol::{Body, Reply};
+use crate::protocol::{Body, Reply, Response};
 use crate::script::{self, Failed, succeeded};
 use crate::view::Line;
 use crate::words::quote;
@@ -301,7 +301,7 @@ fn chooser(
         client: None,
         action: ClientAction::Choices(choices),
     })?)?;
-    let Reply::Returned(Body::Choices { rows, current }) = reply else {
+    let Response::Returned(Body::Choices { rows, current }) = reply.response else {
         return Err(Failed::new(Code::NoTarget, "the server gave no choices"));
     };
     let items = (rows.into_iter())

@@ -21,8 +21,16 @@ impl Session {
         limit: usize,
         directories: &mut impl FnMut(PaneId) -> Option<std::path::PathBuf>,
     ) -> Result<String, super::Error> {
-        // Reply end tag, Body tag, then the text's u32 byte count.
-        let mut out = Source::new(limit.saturating_sub(6));
+        let empty = crate::protocol::Reply {
+            run: Some(self.run),
+            ..crate::protocol::Body::Text(String::new()).into()
+        };
+        let header = crate::wire::size(&empty).map_err(|_| crate::wire::Budget::exceeded())?;
+        let mut out = Source::new(
+            limit
+                .checked_sub(header)
+                .ok_or_else(crate::wire::Budget::exceeded)?,
+        );
         out.format(format_args!(
             "{}\n# fux: running this makes it again\n",
             crate::script::SHEBANG

@@ -14,7 +14,7 @@ use crate::keys::Direction;
 use crate::layout::{self, Axis, NoPane, Placement, Rect, Shares, Tree};
 use crate::pane::{self, Pane, PaneMut, Process, Runs};
 use crate::process::{self, Child, Ended};
-use crate::protocol::{Attach, Body, Reply, ToAttached};
+use crate::protocol::{Attach, Body, Reply, Response, ToAttached};
 use crate::view::{self, ClientKind, Mode, View};
 use crate::wait::{Waiting, Watches};
 use crate::workspace::{Destination, Fit, Parts, Seat, Split, Tab, Workspace};
@@ -83,8 +83,8 @@ pub enum Origin {
 /// A command line's caller on the CLI.
 #[derive(Clone, Debug, Default)]
 pub struct Caller {
-    /// The pane it gave (`FUX_PANE`), of the server `within` says.
-    pub gave: Option<PaneId>,
+    /// The pane and program generation it gave (`FUX_PANE`), of `within`.
+    pub gave: Option<(PaneId, u64)>,
     /// The server whose pane it runs in, by its `FUX_SERVER`.
     pub within: Within,
     /// Its working directory.
@@ -113,7 +113,7 @@ impl Caller {
     /// Its pane, if it gave one of this server's.
     fn pane(&self) -> Option<PaneId> {
         match self.within {
-            Within::This => self.gave,
+            Within::This => self.gave.map(|(pane, _)| pane),
             Within::Unsaid | Within::Other => None,
         }
     }
@@ -471,7 +471,7 @@ fn acted(version: command::Version) -> Reply {
 }
 
 /// A command that failed, told with its code (its status: 1, 4 or 124).
-fn failure(error: Error, origin: &Origin) -> Reply {
+fn failure(error: Error, origin: &Origin, session: &Session) -> Reply {
     // A command that needed its caller's pane, tab or workspace, from a
     // caller whose `FUX_PANE` is another server's pane, or no server's it
     // says: why it got none.
@@ -479,7 +479,7 @@ fn failure(error: Error, origin: &Origin) -> Reply {
         (
             Error::NoPaneGiven | Error::NoWorkspaceGiven,
             Origin::Cli(Caller {
-                gave: Some(pane),
+                gave: Some((pane, generation)),
                 within: within @ (Within::Other | Within::Unsaid),
                 ..
             }),
@@ -490,9 +490,25 @@ fn failure(error: Error, origin: &Origin) -> Reply {
             };
             fail(
                 Raise::StrayPane,
-                format!("FUX_PANE {pane} {whose}, so it is not acted on; name the pane"),
+                format!(
+                    "FUX_PANE {pane}:{generation} {whose}, so it is not acted on; name the pane"
+                ),
             )
         }
+        (
+            Error::NoPaneGiven | Error::NoWorkspaceGiven,
+            Origin::Cli(Caller {
+                gave: Some((pane, generation)),
+                within: Within::This,
+                ..
+            }),
+        ) => match session.parts.panes().contains_key(pane) {
+            true => fail(
+                Raise::StrayPane,
+                format!("FUX_PANE {pane}:{generation} no longer identifies its program"),
+            ),
+            false => Error::NoPane(*pane),
+        },
         (error, _) => error,
     };
     Reply::failed(error.code(), error.to_string())
@@ -629,7 +645,19 @@ impl Session {
                 Ok(Here::Client(client, place))
             }
             Origin::Cli(ref caller) => {
-                let pane = caller.pane().map(|p| (p, self.locate(p).map(|(ws, _)| ws)));
+                let pane = caller
+                    .pane()
+                    .filter(|p| {
+                        caller.gave.is_some_and(|(_, generation)| {
+                            let current = self
+                                .respawning
+                                .get(p)
+                                .map(|new| &new.fresh)
+                                .or_else(|| self.parts.panes().get(p));
+                            current.is_some_and(|pane| pane.respawns == generation)
+                        })
+                    })
+                    .map(|p| (p, self.locate(p).map(|(ws, _)| ws)));
                 Ok(Here::Cli(pane, caller.cwd.as_deref()))
             }
         }
@@ -661,6 +689,7 @@ impl Session {
     fn spawn(
         &self,
         id: PaneId,
+        generation: u64,
         launch: &pane::Launch,
         fresh: &Starting,
         size: (Size, Option<fux_vt::CellSize>),
@@ -669,16 +698,24 @@ impl Session {
             return Ok(None);
         };
         let (argv, env) = (launch.argv.as_slice(), launch.env.as_slice());
-        let mut vars = vec![
-            ("FUX_PANE", id.to_string().into()),
+        let mut vars: Vec<_> = fresh
+            .set
+            .iter()
+            .filter(|(k, _)| k != "FUX" || self.exe.is_some())
+            .map(|(k, v)| (k.as_str(), v.clone()))
+            .collect();
+        vars.extend([
+            ("FUX_PANE", format!("{id}:{generation}").into()),
             ("FUX_SOCKET", socket.as_os_str().to_owned()),
             ("FUX_SERVER", self.run.to_string().into()),
-        ];
+        ]);
         vars.extend((self.exe.as_ref()).map(|exe| ("FUX", exe.as_os_str().to_owned())));
-        vars.extend((fresh.set.iter()).map(|(k, v)| (k.as_str(), v.clone())));
         vars.extend(env.iter().map(|(k, v)| (k.as_str(), v.into())));
         // No `FUX` to give: not one the server was started with either.
-        let unset: Vec<String> = (fresh.unset.iter().cloned())
+        let unset: Vec<String> = fresh
+            .unset
+            .iter()
+            .cloned()
             .chain(self.exe.is_none().then(|| "FUX".to_owned()))
             .filter(|name| !env.iter().any(|(k, _)| k == name))
             .collect();
@@ -741,9 +778,10 @@ impl Session {
         let runs = Runs::Explicit(launch.clone());
         let history = self.config.history_bytes.get();
         let mut fresh = Pane::new(id, None, runs, size.0, history)?;
+        fresh.respawns = respawns;
         // Its program starts sized in that cell, so no resize is due.
         let _ = fresh.host(Default::default(), Default::default(), graphics);
-        let child = self.spawn(id, &launch, starting, size)?;
+        let child = self.spawn(id, respawns, &launch, starting, size)?;
         // What one that runs left is read once another started (a start
         // refused leaves it running, nothing of it cut). Then its program is
         // taken: no more of it is read, and input is refused till the new
@@ -761,8 +799,7 @@ impl Session {
                 }),
             }
         }
-        let mut started = fresh.version(self.run);
-        started.counts.respawns = respawns;
+        let started = fresh.version(self.run);
         let process = child.map_or(Process::Absent, Process::Reading);
         let since = Instant::now();
         let new = Replacement {
@@ -1053,11 +1090,12 @@ impl Session {
             each.push((pane.version(run), bytes));
         }
         let mut answers = each.iter().map(|(version, _)| PaneAnswer::Acted(*version));
-        let reply: Reply = match (to.target(), answers.next()) {
+        let mut reply: Reply = match (to.target(), answers.next()) {
             (AnyRef::Pane(_), Some(one)) => PaneResults::One(one),
             (_, first) => PaneResults::Many(first.into_iter().chain(answers).collect()),
         }
         .into();
+        reply.run = Some(self.run);
         let mut capacity = crate::wire::Writer::counting(crate::wire::MAX_REPLY);
         crate::wire::Wire::put(&reply, &mut capacity);
         capacity
@@ -1294,7 +1332,7 @@ impl Session {
         };
         let id = ids.pane()?;
         let pane = Pane::new(id, None, runs, new.size, config.history_bytes.get())?;
-        let child = self.spawn(id, &launch, new.starting, (new.size, new.cell))?;
+        let child = self.spawn(id, 0, &launch, new.starting, (new.size, new.cell))?;
         Ok(match child {
             Some(child) => pane.running(child),
             None => pane,
@@ -1327,6 +1365,7 @@ impl Session {
     /// A client of `kind` attaches as `attach` says: one that only watches
     /// is one from the start, and sizes nothing.
     pub fn attach_as(&mut self, kind: ClientKind, attach: Attach) -> Result<ClientId, Error> {
+        self.check_run(attach.of)?;
         // A size no view has is refused before anything starts on it.
         let (rows, cols) = attach.size.nonzero();
         let (rows, cols) =
@@ -2106,7 +2145,7 @@ impl Session {
     /// events, its subscription; any other runs at once.
     pub fn begin(&mut self, request: Request, origin: &Origin) -> Begun {
         self.begin_request(request, origin)
-            .unwrap_or_else(|error| Begun::Done(failure(error, origin)))
+            .unwrap_or_else(|error| Begun::Done(failure(error, origin, self)))
     }
 
     /// `begin`'s work: what fails before a request runs is its error.
@@ -2118,10 +2157,10 @@ impl Session {
                 // A respawn is answered once its pane is at the version it
                 // answers: at once, unless what the old program left is
                 // still being read.
-                let waiting = match (&command, &reply) {
+                let waiting = match (&command, &reply.response) {
                     (
                         Command::Respawn { .. },
-                        Reply::Answered(PaneResults::One(PaneAnswer::Acted(started))),
+                        Response::Answered(PaneResults::One(PaneAnswer::Acted(started))),
                     ) => Waiting::Respawn {
                         pane: started.pane,
                         respawns: started.counts.respawns,
@@ -2200,11 +2239,19 @@ impl Session {
         Ok(since.counts)
     }
 
+    /// A value from another run must be refused before anything is acted on.
+    pub fn check_run(&self, run: Option<command::Run>) -> Result<(), Error> {
+        if run.is_some_and(|run| run != self.run) {
+            return Err(fail(Raise::BadValue, "handle is from another server run"));
+        }
+        Ok(())
+    }
+
     /// Runs a command, parsed already: from a line, a binding or a chooser.
     pub fn run_command(&mut self, command: &Command, origin: &Origin) -> Reply {
         let outcome = self
             .execute(command, origin)
-            .unwrap_or_else(|error| failure(error, origin));
+            .unwrap_or_else(|error| failure(error, origin, self));
         if !command.shows_nothing_new() {
             self.changes = self.changes.wrapping_add(1);
             self.touch();
@@ -3010,73 +3057,80 @@ impl Session {
         now: Instant,
         budget: &mut crate::wire::Budget,
     ) -> Result<Fields, Error> {
-        budget.slots::<(String, Json)>(7)?;
-        budget.charge(p.name().map_or(0, str::len).saturating_add(p.label().len()))?;
         let pid = |c: &Child| Json::Int(i64::from(c.leader.pid().as_raw()));
-        let mut fields = vec![
-            ("id", Json::str(p.id().to_string())),
-            ("name", p.name().map_or(Json::Null, Json::str)),
-            ("label", Json::str(p.label())),
-            ("rows", Json::Int(i64::from(p.size().rows()))),
-            ("cols", Json::Int(i64::from(p.size().cols()))),
+        let values = [
+            ("id", budget.owned_string(p.id().to_string())?),
+            ("name", budget.optional_text(p.name())?),
+            ("label", Json::str(budget.string(&p.label())?)),
+            ("rows", Json::int(p.size().rows())),
+            ("cols", Json::int(p.size().cols())),
             ("pid", p.process().child().map_or(Json::Null, pid)),
-            ("version", Json::str(p.version(self.run).to_string())),
+            (
+                "version",
+                budget.owned_string(p.version(self.run).to_string())?,
+            ),
         ];
-        fields.extend(crate::capture::state(p, now, self.copying(p.id()), budget)?);
+        let mut fields = budget.vector(values.len())?;
+        fields.extend(values);
+        let state = crate::capture::state(p, now, self.copying(p.id()), budget)?;
+        budget.reserve(&mut fields, state.len())?;
+        let bytes = state
+            .capacity()
+            .checked_mul(std::mem::size_of::<(&str, Json)>())
+            .ok_or_else(crate::wire::Budget::exceeded)?;
+        fields.extend(state);
+        budget.release(bytes)?;
         Ok(fields)
     }
 
-    /// A tab and its panes, as `ls json` has them.
     fn tab_json<'a>(
         &'a self,
-        t: &'a Tab,
+        tab: &'a Tab,
         now: Instant,
         budget: &mut crate::wire::Budget,
     ) -> Result<Fields, Error> {
-        budget.slots::<(String, Json)>(4)?;
-        budget.charge(
-            t.name()
-                .map_or(0, str::len)
-                .saturating_add(t.label(self.parts.panes()).len()),
-        )?;
-        let ids = self.panes_of(AnyRef::Tab(t.id()))?;
+        let ids = self.panes_of(AnyRef::Tab(tab.id()))?;
         let mut panes = budget.vector(ids.len())?;
         for id in ids {
             if let Some(pane) = self.parts.panes().get(&id) {
-                panes.push(Json::object(self.pane_json(pane, now, budget)?));
+                let fields = self.pane_json(pane, now, budget)?;
+                panes.push(Json::Object(budget.fields(fields)?));
             }
         }
-        Ok(vec![
-            ("id", Json::str(t.id().to_string())),
-            ("name", t.name().map_or(Json::Null, Json::str)),
-            ("label", Json::str(t.label(self.parts.panes()))),
+        let values = [
+            ("id", budget.owned_string(tab.id().to_string())?),
+            ("name", budget.optional_text(tab.name())?),
+            (
+                "label",
+                Json::str(budget.string(&tab.label(self.parts.panes()))?),
+            ),
             ("panes", Json::Array(panes)),
-        ])
+        ];
+        let mut fields = budget.vector(values.len())?;
+        fields.extend(values);
+        Ok(fields)
     }
 
-    /// A workspace, its tabs and their panes, as `ls json` has them.
     fn ws_json<'a>(
         &'a self,
         ws: &'a Workspace,
         now: Instant,
         budget: &mut crate::wire::Budget,
     ) -> Result<Fields, Error> {
-        budget.slots::<(String, Json)>(4)?;
-        budget.charge(
-            ws.name()
-                .map_or(0, str::len)
-                .saturating_add(ws.label().len()),
-        )?;
         let mut tabs = budget.vector(ws.tabs().len())?;
         for tab in ws.tabs() {
-            tabs.push(Json::object(self.tab_json(tab, now, budget)?));
+            let fields = self.tab_json(tab, now, budget)?;
+            tabs.push(Json::Object(budget.fields(fields)?));
         }
-        Ok(vec![
-            ("id", Json::str(ws.id().to_string())),
-            ("name", ws.name().map_or(Json::Null, Json::str)),
-            ("label", Json::str(ws.label())),
+        let values = [
+            ("id", budget.owned_string(ws.id().to_string())?),
+            ("name", budget.optional_text(ws.name())?),
+            ("label", Json::str(budget.string(&ws.label())?)),
             ("tabs", Json::Array(tabs)),
-        ])
+        ];
+        let mut fields = budget.vector(values.len())?;
+        fields.extend(values);
+        Ok(fields)
     }
 
     /// `info` and `get`: one pane, tab or workspace, as JSON, or one field
@@ -3106,7 +3160,7 @@ impl Session {
         let Some(field) = get else {
             return Ok(Body::Listing {
                 of: Some(target.kind()),
-                listing: Json::object(fields),
+                listing: Json::Object(budget.fields(fields)?),
             });
         };
 
@@ -3129,41 +3183,41 @@ impl Session {
     /// `ls json`: everything, and `events`, where a stream reads from.
     fn ls_json(&self, events: crate::events::Cursor) -> Result<Json, Error> {
         let budget = &mut crate::wire::Budget::new();
-        budget.slots::<Json>(self.views.len())?;
-        budget.slots::<(String, Json)>(
-            self.views
-                .len()
-                .checked_mul(7)
-                .ok_or_else(crate::wire::Budget::exceeded)?,
-        )?;
         let now = Instant::now();
         let mut workspaces = budget.vector(self.parts.workspaces().len())?;
         for ws in self.parts.workspaces() {
-            workspaces.push(Json::object(self.ws_json(ws, now, budget)?));
+            let fields = self.ws_json(ws, now, budget)?;
+            workspaces.push(Json::Object(budget.fields(fields)?));
         }
-        let opt = |v: Option<String>| v.map_or(Json::Null, Json::str);
-        let clients = self
-            .views
-            .values()
-            .map(|v| {
-                let place = self.place(v.id);
-                let pane = place.map(|p| p.pane);
-                Json::object(vec![
-                    ("id", Json::str(v.id.to_string())),
-                    ("rows", Json::Int(i64::from(v.rows))),
-                    ("cols", Json::Int(i64::from(v.cols))),
-                    ("workspace", opt(place.map(|p| p.ws.to_string()))),
-                    ("tab", opt(place.map(|p| p.tab.to_string()))),
-                    ("pane", opt(pane.map(|p| p.to_string()))),
-                    ("zoom", Json::Bool(v.zoom)),
-                ])
-            })
-            .collect();
-        Ok(Json::object(vec![
+        let mut clients = budget.vector(self.views.len())?;
+        for view in self.views.values() {
+            let place = self.place(view.id);
+            let fields = [
+                ("id", budget.owned_string(view.id.to_string())?),
+                ("rows", Json::int(view.rows)),
+                ("cols", Json::int(view.cols)),
+                (
+                    "workspace",
+                    budget.optional_owned(place.map(|p| p.ws.to_string()))?,
+                ),
+                (
+                    "tab",
+                    budget.optional_owned(place.map(|p| p.tab.to_string()))?,
+                ),
+                (
+                    "pane",
+                    budget.optional_owned(place.map(|p| p.pane.to_string()))?,
+                ),
+                ("zoom", Json::Bool(view.zoom)),
+            ];
+            clients.push(budget.object(fields)?);
+        }
+        let fields = [
             ("workspaces", Json::Array(workspaces)),
             ("clients", Json::Array(clients)),
-            ("events", Json::str(events.to_string())),
-        ]))
+            ("events", budget.owned_string(events.to_string())?),
+        ];
+        budget.object(fields)
     }
 }
 
@@ -3350,7 +3404,11 @@ impl crate::script::Asks for InProcess<'_> {
             Some(client) if session.views.contains_key(&client) => Origin::Client(client),
             Some(_) | None => Origin::Cli(Caller::default()),
         };
-        let outcome = match session.begin(asked.request.clone(), &origin) {
+        let begun = match session.check_run(asked.context.of) {
+            Ok(()) => session.begin(asked.request.clone(), &origin),
+            Err(error) => Begun::Done(Reply::failed(error.code(), error.to_string())),
+        };
+        let outcome = match begun {
             Begun::Done(outcome) => outcome,
             // As the server answers it: the panes' turns and frames come
             // as they fall due, the soonest first, each answered at its
@@ -3374,7 +3432,10 @@ impl crate::script::Asks for InProcess<'_> {
                 Reply::default()
             }
         };
-        Ok(outcome)
+        Ok(Reply {
+            run: Some(session.run),
+            ..outcome
+        })
     }
 }
 
@@ -3735,6 +3796,40 @@ mod tests {
     }
 
     #[test]
+    fn an_unknown_fux_path_is_not_taken_from_the_starter() -> Result<(), String> {
+        let mut s = started(Config::default())?;
+        s.launch = Some("/nonexistent/fux.sock".into());
+        s.exe = None;
+        let fresh = Starting {
+            set: vec![("FUX".into(), "/wrong/fux".into())],
+            ..Starting::default()
+        };
+        let launch = pane::Launch {
+            argv: ["/bin/sh", "-c", "[ -z \"${FUX+x}\" ]"]
+                .map(str::to_owned)
+                .to_vec(),
+            cwd: "/".into(),
+            env: Vec::new(),
+        };
+        let child = s
+            .spawn(PaneId::of(2), 0, &launch, &fresh, (sized(24, 80)?, None))
+            .map_err(|e| e.to_string())?
+            .ok_or("a child")?;
+        let deadline = Instant::now() + Duration::from_secs(3);
+        let mut status = None;
+        while Instant::now() < deadline {
+            status = child.leader.exited();
+            if status.is_some() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let _ = child.leader.finish();
+        assert_eq!(status, Some(Ended::Exited(0)));
+        Ok(())
+    }
+
+    #[test]
     fn an_empty_environment_unsets_the_configured_names() -> Result<(), String> {
         let mut s = started(Config::default())?;
         assert!(s.config.update_environment.is_empty());
@@ -3875,7 +3970,10 @@ mod tests {
             format!("str {id} buffer"),
             format!("%1 str {id} paste-buffer"),
         ] {
-            assert!(run(&mut other, &code).is_err_and(|e| e.starts_with("no_buffer:")));
+            assert!(
+                run(&mut other, &code)
+                    .is_err_and(|e| e.starts_with("bad_value:") && e.contains("server run"))
+            );
         }
         Ok(())
     }
@@ -4226,7 +4324,7 @@ mod tests {
             &format!("str {big} client str other workspace show-workspace"),
         )?;
         let caller = Caller {
-            gave: Some(PaneId::of(2)),
+            gave: Some((PaneId::of(2), 0)),
             within: Within::This,
             ..Caller::default()
         };
@@ -4445,6 +4543,60 @@ mod tests {
         Err("never answered".into())
     }
 
+    #[test]
+    fn a_replacements_caller_is_current_while_old_output_drains() -> Result<(), String> {
+        let mut s = started(Config::default())?;
+        run(&mut s, "agent-opts 80 24 size str /bin/cat program run")?;
+        let id = PaneId::of(2);
+        let left: Vec<_> = std::iter::repeat_n(crate::pane::tests::spends_the_budget(24, 80), 4)
+            .flatten()
+            .collect();
+        s.output(id, &left);
+        let Begun::Waiting(waiting) = s.begin(respawn_of(id, &[]), &Origin::Cli(Caller::default()))
+        else {
+            return Err("the predecessor's output must still need turns".into());
+        };
+        let caller = |generation| {
+            Origin::Cli(Caller {
+                gave: Some((id, generation)),
+                within: Within::This,
+                ..Caller::default()
+            })
+        };
+        let here = Command::Resolve {
+            text: String::new(),
+            kind: Kind::Pane,
+        };
+        let found = s.run_command(&here, &caller(1));
+        assert_eq!(
+            found.end(),
+            crate::protocol::End::Done,
+            "the replacement's own identity: {found:?}"
+        );
+        assert_eq!(found, Body::Found(AnyRef::Pane(id)).into());
+        assert_eq!(
+            s.run_command(&here, &caller(0)).end().code(),
+            Some(Code::StrayPane)
+        );
+        assert!(s.respawning.contains_key(&id));
+        let (_, turns) = turns(&mut s, id, &waiting)?;
+        assert!(turns > 1, "the old output needed {turns} turns");
+        assert_eq!(
+            s.run_command(&here, &caller(1)).end(),
+            crate::protocol::End::Done
+        );
+        assert_eq!(
+            s.run_command(&here, &caller(0)).end().code(),
+            Some(Code::StrayPane)
+        );
+        run(&mut s, "%2 kill")?;
+        assert_eq!(
+            s.run_command(&here, &caller(1)).end().code(),
+            Some(Code::NoPane)
+        );
+        Ok(())
+    }
+
     /// A respawn over output the parser has yet to read reads it in the
     /// turns any pane's output is read in, its answer waiting till then,
     /// another respawn refused: the old program's bell is told before
@@ -4475,10 +4627,7 @@ mod tests {
         assert!(turns > 1, "read in {turns} turns");
         assert_eq!(answer.end(), crate::protocol::End::Done);
         let pane = s.pane(id).map_err(|e| e.to_string())?;
-        assert_eq!(
-            answer,
-            Reply::Answered(PaneResults::One(PaneAnswer::Acted(pane.version(s.run))))
-        );
+        assert_eq!(answer, acted(pane.version(s.run)));
         let lines = stream
             .told(s.parts.journal(), usize::MAX, |t| s.holder(t))
             .0;
