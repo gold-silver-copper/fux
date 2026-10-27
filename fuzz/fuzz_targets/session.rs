@@ -391,9 +391,9 @@ impl Run {
             Outgoing::To(_, ToAttached::Welcome(..)) => panic!("a welcome from the session"),
             Outgoing::Shutdown { .. } => self.shut = true,
             Outgoing::To(client, ToAttached::Run(code)) => self.run_as(client, &code.into()),
-            Outgoing::To(client, ToAttached::Ended(kind)) => {
+            Outgoing::To(client, ToAttached::Ended(opening)) => {
                 if let Some(keys) = self.keys.get_mut(&client) {
-                    keys.screen.ended(kind);
+                    keys.screen.ended(opening);
                 }
             }
             Outgoing::To(client, ToAttached::Keys(typed)) => {

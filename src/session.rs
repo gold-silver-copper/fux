@@ -735,7 +735,6 @@ impl Session {
         let mut fresh = Pane::new(id, String::new(), runs, size.0, history)?;
         // Its program starts sized in that cell, so no resize is due.
         let _ = fresh.host(Default::default(), Default::default(), graphics);
-        fresh.respawns = respawns;
         let child = self.spawn(id, &launch, starting, size)?;
         // What one that runs left is read once another started (a start
         // refused leaves it running, nothing of it cut). Then its program is
@@ -754,7 +753,8 @@ impl Session {
                 }),
             }
         }
-        let started = fresh.version(self.run);
+        let mut started = fresh.version(self.run);
+        started.counts.respawns = respawns;
         let process = child.map_or(Process::Absent, Process::Reading);
         let since = Instant::now();
         let new = Replacement {
@@ -3322,9 +3322,9 @@ pub(crate) mod testing {
                 super::Outgoing::To(client, ToAttached::Run(code)) => {
                     session.run_as(client, &code.into());
                 }
-                super::Outgoing::To(client, ToAttached::Ended(kind)) => {
+                super::Outgoing::To(client, ToAttached::Ended(opening)) => {
                     if let Some(keys) = session.test_keys.get_mut(&client) {
-                        keys.screen.ended(kind);
+                        keys.screen.ended(opening);
                     }
                 }
                 super::Outgoing::To(client, ToAttached::Keys(inputs)) => {

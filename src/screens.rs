@@ -90,6 +90,8 @@ pub struct Confirm {
 pub enum Effect {
     Send(Act),
     Screen(ScreenAct),
+    /// A replacement key panel, rather than an edit of the one shown.
+    Open(Panel),
     Run(Job),
 }
 
@@ -105,7 +107,6 @@ pub enum Dispatch {
 pub struct Display {
     pub screen: Screen,
     opening: u64,
-    active: bool,
 }
 
 impl Display {
@@ -118,82 +119,84 @@ impl Display {
     /// Open a new instance, admitted with room for its longest edit.
     pub fn open(&mut self, screen: Screen, modes: &Modes) -> Vec<Act> {
         use crate::protocol::{AttachedFrame, Frame, MAX_FRAME};
-        let admitted = (|| {
-            let opening = self.next()?;
-            if screen.largest(modes).is_some_and(|act| {
-                AttachedFrame::Act(Box::new(Act::Screen { opening, act }))
-                    .encode()
-                    .is_err()
-            }) {
-                return Err(format!(
-                    "a screen past {MAX_FRAME} bytes, too large to show, was not opened"
-                ));
-            }
-            Ok(opening)
-        })();
-        let opening = match admitted {
+        let opening = match self.next() {
             Ok(opening) => opening,
             Err(text) => return vec![Act::Notice { text, error: true }],
         };
+        if screen.largest(modes).is_some_and(|act| {
+            AttachedFrame::Act(Box::new(Act::Screen { opening, act }))
+                .encode()
+                .is_err()
+        }) {
+            let text =
+                format!("a screen past {MAX_FRAME} bytes, too large to show, was not opened");
+            return vec![Act::Notice { text, error: true }];
+        }
         let Some(act) = screen.opened(modes) else {
             return Vec::new();
         };
         self.opening = opening;
-        self.active = true;
         self.screen = screen;
         vec![Act::Screen { opening, act }]
     }
 
     /// A server ending belongs only to the opening it names.
     pub fn ended(&mut self, opening: u64) {
-        if self.active && self.opening == opening {
-            self.active = false;
+        if self.shown() && self.opening == opening {
             self.screen = Screen::default();
         }
     }
 
     pub fn close(&mut self) -> Option<Act> {
+        let shown = self.shown();
         self.screen = Screen::default();
-        std::mem::take(&mut self.active).then_some(Act::Screen {
+        shown.then_some(Act::Screen {
             opening: self.opening,
             act: ScreenAct::Hide,
         })
     }
 
+    fn shown(&self) -> bool {
+        !matches!(self.screen, Screen::Keys(Held::Normal | Held::Prefixed))
+    }
+
     pub fn input(&mut self, keymap: &Keymap, input: Input, read_only: bool) -> Vec<Dispatch> {
+        let mut active = self.shown();
         let effects = self.screen.input(keymap, input, read_only);
         effects
             .into_iter()
-            .filter_map(|effect| match effect {
-                Effect::Run(job) => Some(Dispatch::Run(job)),
-                Effect::Send(act) => Some(Dispatch::Send(act)),
-                Effect::Screen(act) => {
-                    if !self.active {
-                        if !matches!(
-                            act,
-                            ScreenAct::Show(_) | ScreenAct::Copy(CopyAct::Enter { .. })
-                        ) {
-                            return None;
-                        }
-                        match self.next() {
-                            Ok(opening) => self.opening = opening,
-                            Err(text) => {
-                                self.screen = Screen::default();
-                                return Some(Dispatch::Send(Act::Notice { text, error: true }));
-                            }
-                        }
-                        self.active = true;
-                    }
-                    if matches!(&act, ScreenAct::Hide)
-                        || matches!(&act, ScreenAct::Copy(copy) if copy.ends())
-                    {
-                        self.active = false;
-                    }
-                    Some(Dispatch::Send(Act::Screen {
-                        opening: self.opening,
+            .filter_map(|effect| {
+                let (act, fresh) = match effect {
+                    Effect::Run(job) => return Some(Dispatch::Run(job)),
+                    Effect::Send(act) => return Some(Dispatch::Send(act)),
+                    Effect::Open(panel) => (ScreenAct::Show(panel), true),
+                    Effect::Screen(act) => (act, false),
+                };
+                if fresh || !active {
+                    if !matches!(
                         act,
-                    }))
+                        ScreenAct::Show(_) | ScreenAct::Copy(CopyAct::Enter { .. })
+                    ) {
+                        return None;
+                    }
+                    match self.next() {
+                        Ok(opening) => self.opening = opening,
+                        Err(text) => {
+                            self.screen = Screen::default();
+                            return Some(Dispatch::Send(Act::Notice { text, error: true }));
+                        }
+                    }
+                    active = true;
                 }
+                if matches!(&act, ScreenAct::Hide)
+                    || matches!(&act, ScreenAct::Copy(copy) if copy.ends())
+                {
+                    active = false;
+                }
+                Some(Dispatch::Send(Act::Screen {
+                    opening: self.opening,
+                    act,
+                }))
             })
             .collect()
     }

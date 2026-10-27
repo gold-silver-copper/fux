@@ -1628,7 +1628,7 @@ impl Pane {
             copied: _,
             untold: _,
             colours: _,
-            respawns,
+            respawns: _,
             title,
             parser,
             process: _,
@@ -1663,7 +1663,8 @@ impl Pane {
         (self.refused_size, self.loss_runs, self.reading) = (refused_size, loss_runs, reading);
         tell.tell(Told::Respawned(over));
         self.rename(name, tell);
-        self.respawns = respawns;
+        // Session::respawn checks exhaustion before starting the replacement.
+        self.respawns = self.respawns.saturating_add(1);
         (std::mem::replace(&mut self.process, process), over)
     }
 

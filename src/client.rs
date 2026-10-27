@@ -749,7 +749,7 @@ impl Keyboard {
     pub fn frame(&mut self, frame: ToAttached<'_>) -> Vec<Act> {
         let mut acts = Vec::new();
         match frame {
-            ToAttached::Ended(kind) => self.screen.ended(kind),
+            ToAttached::Ended(opening) => self.screen.ended(opening),
             ToAttached::Run(code) => self.run(code.into(), &mut acts),
             ToAttached::Keys(typed) => return self.inputs(typed.into_iter().flat_map(decoded)),
             // The attachment's own: `attached` reads them.

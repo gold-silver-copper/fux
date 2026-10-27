@@ -450,8 +450,8 @@ pub fn text(
 fn start(session: &mut Session, client: ClientId, hints: Vec<Hint>, typing: Vec<Hint>) {
     let entered = session
         .place(client)
-        .ok_or(Error::NoPaneGiven)
-        .and_then(|place| enter(session, place, hints, typing));
+        .ok_or_else(|| "copy mode: no pane focused".to_owned())
+        .and_then(|place| enter(session, place, hints, typing).map_err(|e| e.to_string()));
     let Some(view) = session.views.get_mut(&client) else {
         return;
     };
@@ -464,7 +464,7 @@ fn start(session: &mut Session, client: ClientId, hints: Vec<Hint>, typing: Vec<
         }
         Err(error) => {
             let ended = crate::protocol::ToAttached::Ended(view.opening);
-            session.notify_to(client, error.to_string(), true);
+            session.notify_to(client, error, true);
             session
                 .outbox
                 .push(crate::session::Outgoing::To(client, ended));
