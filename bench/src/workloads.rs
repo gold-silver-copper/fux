@@ -1172,24 +1172,10 @@ fn wait(recordings: &[Recording], baseline: bool, total: usize) -> Result<Done, 
 
 /// The client's cold library initialization, without the thread-local cache.
 fn library(baseline: bool) -> Result<Done, String> {
-    let source = include_str!("../../src/script/library.fux");
     if baseline {
-        black_box(source);
+        black_box(());
     } else {
-        let vocabulary = fux::script::vocabulary().map_err(|e| e.to_string())?;
-        let mut compiler = fuxth::Compiler::<fux::script::Fux>::new(vocabulary);
-        black_box(
-            compiler
-                .library("stdlib.fux", fuxth::STDLIB)
-                .map_err(|e| e.to_string())?,
-        );
-        black_box(
-            compiler
-                .library("library.fux", source)
-                .map_err(|e| e.to_string())?,
-        );
-        compiler.prepare();
-        black_box(compiler);
+        black_box(fux::script::libraries().map_err(|e| e.to_string())?);
     }
     Ok(Done {
         units: 1,
