@@ -46,7 +46,7 @@ fux_server() {
 # SECONDS CMD. It has ended once its version's last count, ENDED, is 1
 # (`%2:R.S.B.D.1:RUN`).
 fux_run() {
-  pane=$("$fux_bin" opts "$1" "$2" size str "$work" cwd str sh program str -c arg str "$4" arg run 2>"$work/run.err" | head -n1 | cut -d: -f1) || true
+  pane=$("$fux_bin" agent-opts "$1" "$2" size str "$work" cwd str sh program str -c arg str "$4" arg run 2>"$work/run.err" | head -n1 | cut -d: -f1) || true
   [[ $pane == %* ]] || { echo "release: fux did not start $4" >&2; cat "$work/run.err" >&2; return 1; }
   local end=$((SECONDS + $3))
   until [[ $("$fux_bin" "$pane" str version get 2>/dev/null) == *.1:* ]]; do

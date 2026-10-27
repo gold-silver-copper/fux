@@ -64,7 +64,7 @@ number is a value; %2, @2 and +1 are a pane, a tab and a workspace; `str
 WORD` pushes WORD as text. What is left is printed. What a word that acts
 takes (options, keys, what to read) goes on the pane before it (`%2 str y
 text send-keys`, `%2 all-history capture`); only
-{from_opts} start from opts (`opts str make
+{from_opts} start from opts (`opts str jobs in str make
 program str test arg run`). A new pane is laid out on a size given
 (`opts 80 24 size …`), else the caller's own screen or tab (`fux` run in
 a pane): run from outside fux, a size must be given, as fux makes none

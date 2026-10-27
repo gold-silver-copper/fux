@@ -10,6 +10,16 @@ pub fn listed(names: &[&str], last: &str) -> String {
     }
 }
 
+/// An id and its display label, without repeating an identical label.
+pub(crate) fn labelled(id: impl std::fmt::Display, label: &str) -> String {
+    let id = id.to_string();
+    if label == id {
+        id
+    } else {
+        format!("{id} {label}")
+    }
+}
+
 /// Whether a word needs no quoting for fuxth or a shell. A leading `=`
 /// does: zsh expands `=ls` to the path of `ls` (its EQUALS option), though
 /// `a=b` stays as it is.

@@ -425,8 +425,8 @@ impl Session {
             let same = view
                 .title
                 .as_deref()
-                .is_some_and(|shown| shown.chars().eq(clean(title)));
-            (!same).then(|| clean(title).collect::<String>())
+                .is_some_and(|shown| shown.chars().eq(clean(&title)));
+            (!same).then(|| clean(&title).collect::<String>())
         });
         if let Some(seat) = self.shown_tab_mut(client).and_then(|t| t.seat_mut(client)) {
             seat.rang = false;
@@ -452,13 +452,13 @@ impl Session {
 
     /// The title a view's terminal is given: its focused pane's, else its
     /// tab's name, without control characters (`clean`).
-    fn title_of<'a>(&'a self, view: &View) -> &'a str {
+    fn title_of<'a>(&'a self, view: &View) -> std::borrow::Cow<'a, str> {
         let pane = (self.focused(view.id))
             .and_then(|f| self.parts.panes().get(&f))
             .map(|p| p.title().as_str())
             .filter(|t| !t.is_empty());
-        let tab = self.shown_tab(view.id).map(|t| t.name());
-        pane.or(tab).unwrap_or_default()
+        let tab = self.shown_tab(view.id).map(|t| t.label(self.parts.panes()));
+        pane.map(Into::into).or(tab).unwrap_or_default()
     }
 }
 
@@ -775,10 +775,10 @@ mod tests {
         run(&mut s, "str c1 client str other workspace show-workspace")?;
         s.input(c, b"\x1b[?997;2n");
         assert_eq!(answered(&mut s, 1), "");
-        run(&mut s, "str c1 client str main workspace show-workspace")?;
+        run(&mut s, "str c1 client str +1 workspace show-workspace")?;
         assert_eq!(answered(&mut s, 1), "\x1b[?997;2n");
         // Told: not again.
-        run(&mut s, "str c1 client str main workspace show-workspace")?;
+        run(&mut s, "str c1 client str +1 workspace show-workspace")?;
         assert_eq!(answered(&mut s, 1), "");
         // One never told, as no terminal answered its query, is told once
         // one does.
@@ -868,7 +868,7 @@ mod tests {
         past_the_gap(&mut s);
         s.output(PaneId::of(1), b"\x07");
         assert_eq!(sent(&mut s, c), [BELL.to_vec()]);
-        assert!(tab_label(&s, c).contains(" main! "), "{}", tab_label(&s, c));
+        assert!(tab_label(&s, c).contains(" %1! "), "{}", tab_label(&s, c));
         run(&mut s, "str c1 client str @1 tab show-tab")?;
         let _ = s.before_paint(c);
         run(&mut s, "str c1 client str @2 tab show-tab")?;
