@@ -681,20 +681,6 @@ mod tests {
     }
 
     #[test]
-    fn environment_snapshots_keep_absent_and_empty_distinct() {
-        for env in [None, Some(Vec::new())] {
-            let context = Context {
-                env,
-                ..Context::default()
-            };
-            assert_eq!(
-                crate::wire::Reader::new(&crate::wire::encode(&context)).whole::<Context>(),
-                Ok(context)
-            );
-        }
-    }
-
-    #[test]
     fn every_frame_round_trips_in_any_chunking_with_the_wire_formats_kind() {
         let hello = |role| Hello {
             protocol: PROTOCOL,

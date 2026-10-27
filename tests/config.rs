@@ -215,6 +215,11 @@ fn optional_config_reports_read_failures() -> Outcome {
     let path = server.dir.join("config/fux/config.fux");
     std::fs::remove_file(&path).map_err(e)?;
     assert!(server.ok(&["list-keys"])?.contains("prefix"));
+    std::os::unix::fs::symlink("gone", &path).map_err(e)?;
+    let broken = server.fux(&["list-keys"])?;
+    assert_eq!(broken.status, 1);
+    assert!(broken.stderr.contains("config.fux"), "{}", broken.stderr);
+    std::fs::remove_file(&path).map_err(e)?;
     std::os::unix::fs::symlink("config.fux", &path).map_err(e)?;
     let looping = server.fux(&["list-keys"])?;
     assert_eq!(looping.status, 1);

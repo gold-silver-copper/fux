@@ -1428,9 +1428,8 @@ impl Session {
         let own = (self.sizing(tab)).find(|v| Some(v.id) == here.client());
         own.map(View::pane_area)
             .or_else(|| {
-                self.sizing(tab)
-                    .map(View::pane_area)
-                    .reduce(|a, b| Rect::screen(a.h().min(b.h()), a.w().min(b.w())))
+                self.smallest_screen(tab)
+                    .map(|(rows, cols)| Rect::screen(rows, cols))
             })
             .or_else(|| self.tab(tab).map(|t| t.fit().area()))
     }
@@ -1453,9 +1452,8 @@ impl Session {
                 Here::Client(_, place) => Some(place.tab),
                 Here::Cli(..) => here.pane().and_then(|p| self.locate(p)).map(|(_, tab)| tab),
             };
-            let least = (self.sizing(tab?).filter_map(Self::screen_size))
-                .map(|s| (s.rows(), s.cols()))
-                .reduce(|(r, c), (rows, cols)| (r.min(rows), c.min(cols)))
+            let least = self
+                .smallest_screen(tab?)
                 .and_then(|(rows, cols)| Size::new(rows, cols).ok());
             least.or_else(|| self.tab(tab?).map(|t| t.fit().size()))
         };
@@ -1466,6 +1464,14 @@ impl Session {
                 format!("{why}: give a size (`COLS ROWS size`)"),
             )
         })
+    }
+
+    /// The smallest screen of the clients sizing `tab`'s panes.
+    fn smallest_screen(&self, tab: TabId) -> Option<(u16, u16)> {
+        self.sizing(tab)
+            .map(View::pane_area)
+            .map(|area| (area.h(), area.w()))
+            .reduce(|(rows, cols), (h, w)| (rows.min(h), cols.min(w)))
     }
 
     /// The clients showing tab `tab` that size its panes.

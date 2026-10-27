@@ -1171,7 +1171,14 @@ fn config_keymap(server: Option<&mut Server>) -> Result<Keymap, Failed> {
     let shown = path.display().to_string();
     let file = match std::fs::File::open(&path) {
         Ok(file) => file,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return default_keys(),
+        Err(error)
+            if error.kind() == io::ErrorKind::NotFound
+                && path
+                    .symlink_metadata()
+                    .is_err_and(|e| e.kind() == io::ErrorKind::NotFound) =>
+        {
+            return default_keys();
+        }
         Err(error) => return Err(read_failed(&shown, &error.to_string())),
     };
     run_config(&shown, &read_text(&shown, file)?, server)

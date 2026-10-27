@@ -370,6 +370,12 @@ str C-a prefix
 str shell list str /bin/zsh str -l end set       # a program, then its arguments, a string each
 str clipboard false set
 
+# Optional: take these from whoever starts a pane; the default list is empty.
+str update-environment list
+  str DISPLAY str KRB5CCNAME str SSH_AGENT_PID str SSH_ASKPASS
+  str SSH_AUTH_SOCK str SSH_CONNECTION str WAYLAND_DISPLAY str XAUTHORITY
+end set
+
 unbind-all                                        # optional: no keys at all, the screens' too
 define split-right me focused horizontal split drop end   # a word of the config's
 str v str split-right bind
