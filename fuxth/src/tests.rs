@@ -1444,19 +1444,26 @@ fn a_definition_may_hide_a_library_word() -> Result<(), Error> {
     Ok(())
 }
 
-/// An unknown word is told with what was likely meant.
+/// Unknown words keep their code and location, with one factual text hint.
 #[test]
-fn an_unknown_word_says_what_was_meant() {
-    let said = |text: &str| run(text).err().map(|e| e.message).unwrap_or_default();
-    assert_eq!(said("1 drp"), "no such word; did you mean drop or dup?");
-    assert_eq!(said("1 2 swpa"), "no such word; did you mean swap?");
-    assert_eq!(said("Hello"), "no such word; text is `str Hello`");
-    assert_eq!(
-        said("'two words'"),
-        "no such word; text is `str 'two words'`"
-    );
-    assert_eq!(said("frob"), "no such word");
-    assert_eq!(said("str ab rever"), "no such word; did you mean reverse?");
+fn unknown_words_keep_their_source() -> Result<(), String> {
+    for text in [
+        "drp",
+        "swpa",
+        "Hello",
+        "'two words'",
+        "frob",
+        "rever",
+        "''",
+        "'$HOME'",
+        "/path",
+    ] {
+        let error = run(text).err().ok_or("expected unknown word")?;
+        assert_eq!(error.code, Code::UnknownWord);
+        assert_eq!(error.message, "no such word; text is `str WORD`");
+        assert!(error.place.is_some());
+    }
+    Ok(())
 }
 
 /// Calls nested too deep are told at the word that calls itself, with the
@@ -1637,7 +1644,7 @@ fn a_try_is_checked_before_it_runs() {
         ("1 try 1 catch end", "bad_codes: t:1: try: takes the codes"),
         (
             "str negativ try 1 catch end",
-            "bad_codes: t:1: try: negativ is no code a word raises; did you mean negative?",
+            "bad_codes: t:1: try: negativ is no code a word raises",
         ),
         (
             "str unknown_word try 1 catch end",

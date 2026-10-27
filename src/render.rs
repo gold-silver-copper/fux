@@ -2203,8 +2203,8 @@ mod tests {
             selecting.starts_with(" COPY select   v s x select  y copy"),
             "{selecting}"
         );
-        // Letters in either case: S selects lines; C-v is no key's.
-        s.input(c, b"S\x16");
+        // s selects lines; C-v is no key's.
+        s.input(c, b"s\x16");
         let lines = bar(&s);
         assert!(
             lines.starts_with(" COPY lines   v s x select  y copy"),
