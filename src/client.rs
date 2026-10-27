@@ -285,6 +285,14 @@ impl Requests {
     /// comes. A request that may start programs carries this process's
     /// environment, of which they take what `update-environment` names.
     pub fn ask(&mut self, asked: &Asked, out: &mut dyn Write) -> Result<Reply, Error> {
+        let result = self.ask_reply(asked, out);
+        if result.is_err() {
+            let _ = self.stream.shutdown(std::net::Shutdown::Both);
+        }
+        result
+    }
+
+    fn ask_reply(&mut self, asked: &Asked, out: &mut dyn Write) -> Result<Reply, Error> {
         wait_at_most(&self.stream, None);
         if starts_programs(&asked.request) && asked.context.env.is_none() {
             let mut asked = asked.clone();
@@ -301,7 +309,10 @@ impl Requests {
                         (out.write_all(&bytes).and_then(|()| out.flush()))
                             .map_err(Error::Output)?;
                     }
-                    ToCommand::Part(bytes) => parts.extend_from_slice(&bytes),
+                    ToCommand::Part(bytes) => {
+                        crate::wire::append(&mut parts, &bytes)
+                            .map_err(crate::protocol::Error::Wire)?;
+                    }
                     ToCommand::PartsEnd => {
                         let reply = crate::wire::Reader::new(&parts).whole::<Reply>();
                         return Ok(reply.map_err(crate::protocol::Error::Wire)?);
@@ -1461,6 +1472,54 @@ fn last_frames(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// No end marker is needed to detect an oversized reply. Abandoning
+    /// it closes the stream, so its tail cannot answer a later request.
+    #[test]
+    fn oversized_unfinished_reply_invalidates_connection() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let (stream, mut peer) = UnixStream::pair()?;
+        peer.set_read_timeout(Some(Duration::from_secs(5)))?;
+        peer.set_write_timeout(Some(Duration::from_secs(5)))?;
+        let writer = std::thread::spawn(move || -> io::Result<bool> {
+            let mut header = [0; 4];
+            peer.read_exact(&mut header)?;
+            let mut request = vec![0; u32::from_be_bytes(header) as usize];
+            peer.read_exact(&mut request)?;
+            let part = vec![0; crate::protocol::MAX_PAYLOAD];
+            let frame = ToCommand::Part(std::borrow::Cow::Borrowed(&part))
+                .encode()
+                .map_err(io::Error::other)?;
+            for _ in 0..=crate::wire::MAX_REPLY.div_ceil(part.len()) {
+                if peer.write_all(&frame).is_err() {
+                    break;
+                }
+            }
+            Ok(matches!(peer.read(&mut [0]), Ok(0) | Err(_)))
+        });
+        let mut requests = Requests {
+            stream,
+            decoder: Decoder::default(),
+        };
+        let asked = Asked {
+            after: None,
+            context: Context::default(),
+            request: Request::Do(Command::Ls {
+                target: None,
+                get: None,
+            }),
+        };
+        let result = requests.ask(&asked, &mut io::sink());
+        assert!(matches!(
+            result,
+            Err(Error::Protocol(crate::protocol::Error::Wire(
+                crate::wire::Error::Limit
+            )))
+        ));
+        assert!(requests.ask(&asked, &mut io::sink()).is_err());
+        assert!(writer.join().map_err(|_| "writer stopped")??);
+        Ok(())
+    }
 
     fn new_keyboard(
         socket: &SocketPath,

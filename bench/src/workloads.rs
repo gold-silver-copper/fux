@@ -1218,8 +1218,10 @@ fn capture_history(baseline: bool, history: usize) -> Result<Done, String> {
             Some(usize::MAX),
             fux::command::CaptureView::default(),
             false,
-        );
-        black_box(fux::wire::encode(&capture));
+            history,
+        )
+        .map_err(|e| e.to_string())?;
+        black_box(fux::wire::encode(&capture).map_err(|e| e.to_string())?);
     }
     Ok(Done {
         units: 1,

@@ -8,21 +8,33 @@ use crate::protocol::{Body, Reply};
 use crate::session::{Error, Session};
 
 /// The names of the panes in `roots`, for a chooser row, shortened.
-fn pane_names<'a>(session: &Session, roots: impl IntoIterator<Item = &'a Tree>) -> String {
+fn pane_names<'a>(
+    session: &Session,
+    roots: impl IntoIterator<Item = &'a Tree>,
+    budget: &mut crate::wire::Budget,
+) -> Result<String, Error> {
+    let mut admitted = Ok(());
     let mut names: Vec<String> = Vec::new();
     for root in roots {
         root.for_each_pane(&mut |id| {
-            if let Some(p) = session.parts.panes().get(&id) {
-                names.push(format!("{} {}", p.id(), p.label()));
+            if let Some(p) = session.parts.panes().get(&id)
+                && admitted.is_ok()
+            {
+                admitted = budget.charge(p.label().len().saturating_add(64).saturating_mul(2));
+                if admitted.is_ok() {
+                    names.push(format!("{} {}", p.id(), p.label()));
+                }
             }
         });
     }
-    names.join(", ")
+    admitted?;
+    Ok(names.join(", "))
 }
 
 /// A chooser's rows for client `client`: what each is, its label, and
 /// which one is the client's own.
 pub fn choices(session: &Session, client: ClientId, choices: Choices) -> Result<Reply, Error> {
+    let budget = &mut crate::wire::Budget::new();
     let mut rows = Vec::new();
     let mut current = None;
     match choices {
@@ -32,6 +44,7 @@ pub fn choices(session: &Session, client: ClientId, choices: Choices) -> Result<
                 .workspace(place.ws)
                 .ok_or(Error::NoWorkspace(place.ws))?;
             for tab in ws.tabs() {
+                budget.charge(tab.name().len().saturating_add(128))?;
                 if tab.id() == place.tab {
                     current = Some(rows.len());
                 }
@@ -39,7 +52,7 @@ pub fn choices(session: &Session, client: ClientId, choices: Choices) -> Result<
                     "{} {} — {}",
                     tab.id(),
                     tab.name(),
-                    pane_names(session, [tab.root()])
+                    pane_names(session, [tab.root()], budget)?
                 );
                 rows.push((AnyRef::Tab(tab.id()), label));
             }
@@ -47,11 +60,17 @@ pub fn choices(session: &Session, client: ClientId, choices: Choices) -> Result<
         Choices::Workspaces => {
             let shown = session.shown_workspace(client).map(|w| w.id());
             for ws in session.parts.workspaces() {
+                budget.charge(ws.name().len().saturating_add(128))?;
                 if Some(ws.id()) == shown {
                     current = Some(rows.len());
                 }
                 let roots = ws.tabs().iter().map(|t| t.root());
-                let label = format!("{} {} — {}", ws.id(), ws.name(), pane_names(session, roots));
+                let label = format!(
+                    "{} {} — {}",
+                    ws.id(),
+                    ws.name(),
+                    pane_names(session, roots, budget)?
+                );
                 rows.push((AnyRef::Workspace(ws.id()), label));
             }
         }
@@ -59,13 +78,20 @@ pub fn choices(session: &Session, client: ClientId, choices: Choices) -> Result<
             let root = session
                 .locate(source)
                 .and_then(|(_, tab)| session.root(tab));
+            let mut admitted = Ok(());
             if let Some(root) = root {
                 root.for_each_pane(&mut |id| {
-                    if let Some(p) = session.parts.panes().get(&id).filter(|_| id != source) {
-                        rows.push((AnyRef::Pane(p.id()), format!("{} {}", p.id(), p.label())));
+                    if let Some(p) = session.parts.panes().get(&id).filter(|_| id != source)
+                        && admitted.is_ok()
+                    {
+                        admitted = budget.charge(p.label().len().saturating_add(128));
+                        if admitted.is_ok() {
+                            rows.push((AnyRef::Pane(p.id()), format!("{} {}", p.id(), p.label())));
+                        }
                     }
                 });
             }
+            admitted?;
             if rows.is_empty() {
                 return Err(Error::OnlyOne(Kind::Pane));
             }

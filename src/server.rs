@@ -455,7 +455,41 @@ impl Conn {
     /// Answers a request with its outcome, encoded once and sent in pieces
     /// as long as fit, then their end; and takes the next.
     fn answer(&mut self, session: &mut Session, reply: Reply) {
-        let bytes = crate::wire::encode(&reply);
+        let Ok(bytes) = crate::wire::encode(&reply) else {
+            self.end(
+                session,
+                &ToCommand::Exit("finite reply exceeds its byte or allocation limit"),
+            );
+            return;
+        };
+        // Include every Part header and PartsEnd, before queuing any of it.
+        let headers = bytes
+            .len()
+            .div_ceil(crate::protocol::MAX_PAYLOAD)
+            .checked_mul(5);
+        let queued = headers
+            .and_then(|n| n.checked_add(bytes.len()))
+            .and_then(|n| n.checked_add(5))
+            .and_then(|n| n.checked_add(self.out.len()));
+        if queued
+            .is_none_or(|n| n > crate::wire::MAX_REPLY.saturating_add(crate::protocol::MAX_FRAME))
+        {
+            self.end(
+                session,
+                &ToCommand::Exit("finite reply queue limit exceeded"),
+            );
+            return;
+        }
+        let reserve = headers
+            .and_then(|n| n.checked_add(bytes.len()))
+            .and_then(|n| n.checked_add(5));
+        if reserve.is_none_or(|n| self.out.push_with(|out| out.try_reserve_exact(n)).is_err()) {
+            self.end(
+                session,
+                &ToCommand::Exit("finite reply allocation was refused"),
+            );
+            return;
+        }
         split_into(&bytes, ToCommand::Part, &mut self.out);
         self.send(session, &ToCommand::PartsEnd);
         if self.stage.asked() {
@@ -1569,6 +1603,26 @@ impl Server {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A refused finite reply queues one small failure, never a prefix
+    /// followed by a successful PartsEnd.
+    #[test]
+    fn an_oversized_reply_sends_only_a_failure() -> Result<(), Box<dyn std::error::Error>> {
+        let (mut session, mut conn, _peer) = attached()?;
+        conn.stage = Stage::Command;
+        let text: String = std::iter::repeat_n('x', crate::wire::MAX_REPLY).collect();
+        conn.answer(&mut session, crate::protocol::Body::Text(text).into());
+        assert!(matches!(conn.stage, Stage::Closing));
+        assert!(conn.out.len() < 256);
+        let mut decoder = Decoder::default();
+        decoder.push(conn.out.as_slice());
+        assert!(matches!(
+            decoder.frame::<ToCommand>()?,
+            Some(ToCommand::Exit(_))
+        ));
+        assert!(decoder.frame::<ToCommand>()?.is_none());
+        Ok(())
+    }
 
     /// A session with a client attached on a connection: the session, the
     /// connection, and the client's end of its socket.

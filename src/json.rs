@@ -112,16 +112,8 @@ impl Json {
             2 => Json::Int(i64::get(r)?),
             3 => Json::Uint(u64::get(r)?),
             4 => Json::String(String::get(r)?),
-            5 => Json::Array(
-                (0..u32::get(r)?)
-                    .map(|_| Json::read(r, depth))
-                    .collect::<Result<_, _>>()?,
-            ),
-            6 => Json::Object(
-                (0..u32::get(r)?)
-                    .map(|_| Ok((String::get(r)?, Json::read(r, depth)?)))
-                    .collect::<Result<_, _>>()?,
-            ),
+            5 => Json::Array(r.list(|r| Json::read(r, depth))?),
+            6 => Json::Object(r.list(|r| Ok((String::get(r)?, Json::read(r, depth)?)))?),
             tag => return Err(Error::Tag("JSON value", tag)),
         })
     }
@@ -129,7 +121,7 @@ impl Json {
 
 /// A tag, then its value: an array's or object's count, then its items.
 impl Wire for Json {
-    fn put(&self, out: &mut Vec<u8>) {
+    fn put(&self, out: &mut impl crate::wire::Sink) {
         match self {
             Json::Null => out.push(0),
             Json::Bool(b) => {

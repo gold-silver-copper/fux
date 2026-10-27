@@ -994,6 +994,28 @@ impl Session {
     /// The panes `target` names: a pane, or a tab's or workspace's every
     /// pane, in order.
     fn panes_of(&self, target: AnyRef) -> Result<Vec<PaneId>, Error> {
+        let mut budget = crate::wire::Budget::new();
+        let mut admitted = Ok(());
+        let mut count = |_: PaneId| {
+            if admitted.is_ok() {
+                // A wait's largest answer includes four change tags, and
+                // input replies retain their versions beside queued input.
+                admitted = budget.charge(std::mem::size_of::<PaneAnswer>().saturating_mul(4));
+            }
+        };
+        match target {
+            AnyRef::Pane(id) => count(id),
+            AnyRef::Tab(id) => self
+                .root(id)
+                .ok_or(Error::NoTab(id))?
+                .for_each_pane(&mut count),
+            AnyRef::Workspace(id) => {
+                for tab in self.workspace(id).ok_or(Error::NoWorkspace(id))?.tabs() {
+                    tab.root().for_each_pane(&mut count);
+                }
+            }
+        }
+        admitted?;
         Ok(match target {
             AnyRef::Pane(pane) => vec![self.pane(pane)?.id()],
             AnyRef::Tab(tab) => self.root(tab).ok_or(Error::NoTab(tab))?.panes(),
@@ -1028,17 +1050,21 @@ impl Session {
             pane.fits(bytes.len())?;
             each.push((pane.version(run), bytes));
         }
-        for (version, bytes) in &each {
-            self.pane_mut(version.pane)?.push(bytes)?;
-        }
-        let mut answers = each
-            .into_iter()
-            .map(|(version, _)| PaneAnswer::Acted(version));
-        Ok(match (to.target(), answers.next()) {
+        let mut answers = each.iter().map(|(version, _)| PaneAnswer::Acted(*version));
+        let reply: Reply = match (to.target(), answers.next()) {
             (AnyRef::Pane(_), Some(one)) => Body::Pane(one),
             (_, first) => Body::Panes(first.into_iter().chain(answers).collect()),
         }
-        .into())
+        .into();
+        let mut capacity = crate::wire::Writer::counting(crate::wire::MAX_REPLY);
+        crate::wire::Wire::put(&reply, &mut capacity);
+        capacity
+            .check()
+            .map_err(|_| crate::wire::Budget::exceeded())?;
+        for (version, bytes) in &each {
+            self.pane_mut(version.pane)?.push(bytes)?;
+        }
+        Ok(reply)
     }
 
     /// `pane_mut`, for input: a pane whose program takes none is refused
@@ -2224,7 +2250,7 @@ impl Session {
             }
             Command::DumpLayout { target } => {
                 let only = target.map(|t| self.there(t)).transpose()?;
-                Ok(Body::Text(self.dump_layout(only)).into())
+                Ok(Body::Text(self.dump_layout(only)?).into())
             }
             &Command::SendMouse {
                 target,
@@ -2289,7 +2315,14 @@ impl Session {
                     ));
                 }
                 let copying = self.copying(pane.id());
-                let captured = crate::capture::pane(pane, self.run, history, view, copying);
+                let captured = crate::capture::pane(
+                    pane,
+                    self.run,
+                    history,
+                    view,
+                    copying,
+                    self.config.history_bytes.get(),
+                )?;
                 Ok(Body::Capture(Box::new(captured)).into())
             }
             &Command::Reorder { ref target, toward } => {
@@ -2376,7 +2409,7 @@ impl Session {
             Some(target) => self.ls_one(self.there(target)?, get)?,
             None => Body::Listing {
                 of: None,
-                listing: self.ls_json(events),
+                listing: self.ls_json(events)?,
             },
         }
         .into())
@@ -2672,10 +2705,15 @@ impl Session {
                 return Ok(Reply::default());
             }
             ClientAction::Capture => {
+                let terminal = view()?;
+                crate::capture::client_room(terminal.rows, terminal.cols)?;
                 let mut grid = crate::render::Grid::new(0, 0);
                 let placement = &mut Placement::default();
                 crate::render::compose_view(self, view()?, &mut grid, placement);
-                let captured = crate::capture::client(client, &grid);
+                if (grid.rows, grid.cols) != (terminal.rows, terminal.cols) {
+                    return Err(crate::wire::Budget::exceeded());
+                }
+                let captured = crate::capture::client(client, &grid)?;
                 return Ok(Body::Capture(Box::new(captured)).into());
             }
             ClientAction::Zoom => None,
@@ -2895,7 +2933,14 @@ impl Session {
     // ------------------------------------------------------------------ ls
 
     /// A pane's state, as `ls json` has it.
-    fn pane_json<'a>(&'a self, p: &'a Pane, now: Instant) -> Fields {
+    fn pane_json<'a>(
+        &'a self,
+        p: &'a Pane,
+        now: Instant,
+        budget: &mut crate::wire::Budget,
+    ) -> Result<Fields, Error> {
+        budget.slots::<(String, Json)>(6)?;
+        budget.charge(p.name().len())?;
         let pid = |c: &Child| Json::Int(i64::from(c.leader.pid().as_raw()));
         let mut fields = vec![
             ("id", Json::str(p.id().to_string())),
@@ -2905,31 +2950,51 @@ impl Session {
             ("pid", p.process().child().map_or(Json::Null, pid)),
             ("version", Json::str(p.version(self.run).to_string())),
         ];
-        fields.extend(crate::capture::state(p, now, self.copying(p.id())));
-        fields
+        fields.extend(crate::capture::state(p, now, self.copying(p.id()), budget)?);
+        Ok(fields)
     }
 
     /// A tab and its panes, as `ls json` has them.
-    fn tab_json<'a>(&'a self, t: &'a Tab, now: Instant) -> Fields {
-        let panes = (t.root().panes().into_iter())
+    fn tab_json<'a>(
+        &'a self,
+        t: &'a Tab,
+        now: Instant,
+        budget: &mut crate::wire::Budget,
+    ) -> Result<Fields, Error> {
+        budget.slots::<(String, Json)>(3)?;
+        budget.charge(t.name().len())?;
+        let panes = (self.panes_of(AnyRef::Tab(t.id()))?.into_iter())
             .filter_map(|id| self.parts.panes().get(&id))
-            .map(|p| Json::object(self.pane_json(p, now)))
-            .collect();
-        vec![
+            .map(|p| {
+                budget.slots::<Json>(1)?;
+                Ok(Json::object(self.pane_json(p, now, budget)?))
+            })
+            .collect::<Result<_, Error>>()?;
+        Ok(vec![
             ("id", Json::str(t.id().to_string())),
             ("name", Json::str(t.name())),
             ("panes", Json::Array(panes)),
-        ]
+        ])
     }
 
     /// A workspace, its tabs and their panes, as `ls json` has them.
-    fn ws_json<'a>(&'a self, ws: &'a Workspace, now: Instant) -> Fields {
-        let tabs = (ws.tabs().iter()).map(|t| Json::object(self.tab_json(t, now)));
-        vec![
+    fn ws_json<'a>(
+        &'a self,
+        ws: &'a Workspace,
+        now: Instant,
+        budget: &mut crate::wire::Budget,
+    ) -> Result<Fields, Error> {
+        budget.slots::<(String, Json)>(3)?;
+        budget.slots::<Json>(ws.tabs().len())?;
+        budget.charge(ws.name().len())?;
+        let tabs = (ws.tabs().iter())
+            .map(|t| Ok(Json::object(self.tab_json(t, now, budget)?)))
+            .collect::<Result<_, Error>>()?;
+        Ok(vec![
             ("id", Json::str(ws.id().to_string())),
             ("name", Json::str(ws.name())),
-            ("tabs", Json::Array(tabs.collect())),
-        ]
+            ("tabs", Json::Array(tabs)),
+        ])
     }
 
     /// `info` and `get`: one pane, tab or workspace, as JSON, or one field
@@ -2937,18 +3002,24 @@ impl Session {
     /// (`there`, by its caller).
     fn ls_one(&mut self, target: AnyRef, get: Option<&str>) -> Result<Body, Error> {
         let now = Instant::now();
+        let budget = &mut crate::wire::Budget::new();
         let mut fields = match (target, get) {
             // A pane's version alone, which the recipes read after every
             // change: not the rest of its state (its foreground program's
             // name, argv and cwd).
             (AnyRef::Pane(id), Some("version")) => {
                 let version = |p: &Pane| p.version(self.run).to_string();
-                (self.parts.panes().get(&id)).map(|p| vec![("version", Json::str(version(p)))])
+                (self.parts.panes().get(&id)).map(|p| Ok(vec![("version", Json::str(version(p)))]))
             }
-            (AnyRef::Pane(id), _) => self.parts.panes().get(&id).map(|p| self.pane_json(p, now)),
-            (AnyRef::Tab(id), _) => self.tab(id).map(|t| self.tab_json(t, now)),
-            (AnyRef::Workspace(id), _) => self.workspace(id).map(|w| self.ws_json(w, now)),
+            (AnyRef::Pane(id), _) => self
+                .parts
+                .panes()
+                .get(&id)
+                .map(|p| self.pane_json(p, now, budget)),
+            (AnyRef::Tab(id), _) => self.tab(id).map(|t| self.tab_json(t, now, budget)),
+            (AnyRef::Workspace(id), _) => self.workspace(id).map(|w| self.ws_json(w, now, budget)),
         }
+        .transpose()?
         .unwrap_or_default();
         let Some(field) = get else {
             return Ok(Body::Listing {
@@ -2963,7 +3034,7 @@ impl Session {
             AnyRef::Pane(_) | AnyRef::Workspace(_) => None,
         };
         let pane = single.and_then(|p| p.first().and_then(|id| self.parts.panes().get(id)));
-        if let Some(more) = pane.map(|p| self.pane_json(p, now)) {
+        if let Some(more) = pane.map(|p| self.pane_json(p, now, budget)).transpose()? {
             fields.extend(
                 more.into_iter()
                     .filter(|(name, _)| !["id", "name"].contains(name)),
@@ -2986,11 +3057,20 @@ impl Session {
     }
 
     /// `ls json`: everything, and `events`, where a stream reads from.
-    fn ls_json(&self, events: crate::events::Cursor) -> Json {
+    fn ls_json(&self, events: crate::events::Cursor) -> Result<Json, Error> {
+        let budget = &mut crate::wire::Budget::new();
+        budget.slots::<Json>(self.parts.workspaces().len())?;
+        budget.slots::<Json>(self.views.len())?;
+        budget.slots::<(String, Json)>(
+            self.views
+                .len()
+                .checked_mul(7)
+                .ok_or_else(crate::wire::Budget::exceeded)?,
+        )?;
         let now = Instant::now();
         let workspaces = (self.parts.workspaces().iter())
-            .map(|ws| Json::object(self.ws_json(ws, now)))
-            .collect();
+            .map(|ws| Ok(Json::object(self.ws_json(ws, now, budget)?)))
+            .collect::<Result<_, Error>>()?;
         let opt = |v: Option<String>| v.map_or(Json::Null, Json::str);
         let clients = self
             .views
@@ -3009,11 +3089,11 @@ impl Session {
                 ])
             })
             .collect();
-        Json::object(vec![
+        Ok(Json::object(vec![
             ("workspaces", Json::Array(workspaces)),
             ("clients", Json::Array(clients)),
             ("events", Json::str(events.to_string())),
-        ])
+        ]))
     }
 }
 
@@ -5087,7 +5167,7 @@ mod tests {
     fn the_json_help_names_every_pane_field() -> Result<(), Box<dyn std::error::Error>> {
         let (s, _) = attached(4, 30)?;
         let pane = s.parts.panes().values().next().ok_or("no pane")?;
-        for (name, _) in s.pane_json(pane, Instant::now()) {
+        for (name, _) in s.pane_json(pane, Instant::now(), &mut crate::wire::Budget::new())? {
             let named = crate::help::JSON.contains(&format!("`{name}`"));
             assert!(named, "docs/json.md does not name a pane's {name:?}");
         }
@@ -5840,7 +5920,7 @@ mod tests {
         let tab = "opts 80 24 size str +1 workspace in new-tab drop";
         run(&mut s, &format!("{tab} {tab} str @2 tab kill"))?;
         run(&mut s, &format!("{tab} str @4 tab str given rename"))?;
-        let dump = s.dump_layout(None);
+        let dump = s.dump_layout(None).map_err(|e| e.to_string())?;
         assert!(!dump.contains("tab-3"), "{dump}");
         assert!(dump.contains("given"), "{dump}");
         Ok(())
@@ -5850,7 +5930,9 @@ mod tests {
     /// without one, never with `$HOME` in its place: a comment names it.
     #[test]
     fn a_dump_leaves_out_a_directory_it_cannot_read() -> Result<(), String> {
-        let dump = started(Config::default())?.dump_layout(None);
+        let dump = started(Config::default())?
+            .dump_layout(None)
+            .map_err(|e| e.to_string())?;
         assert!(dump.contains("# %1: its directory is unknown"), "{dump}");
         assert!(!dump.contains("cwd"), "{dump}");
         Ok(())
@@ -5877,7 +5959,7 @@ mod tests {
             argv: vec!["cat".into()],
         };
         s.execute(&program, &Origin::Cli(Caller::default()))?;
-        let dump = s.dump_layout(None);
+        let dump = s.dump_layout(None).map_err(|e| e.to_string())?;
         let _ = dir.parent().map(std::fs::remove_dir_all);
         let told = dump.contains("# %2: its directory \"") && dump.contains("caf\\xE9");
         let written = dump
@@ -5896,7 +5978,7 @@ mod tests {
     fn a_dump_keeps_which_tabs_fit_clients() -> Result<(), String> {
         let (mut s, _) = attached(11, 40)?;
         run(&mut s, "opts 60 20 size str +1 workspace in new-tab drop")?;
-        let dump = s.dump_layout(None);
+        let dump = s.dump_layout(None).map_err(|e| e.to_string())?;
         let mut again = started(Config::default())?;
         run(&mut again, &dump)?;
         let tabs = (again.parts.workspaces().iter()).flat_map(|w| w.tabs());
@@ -5912,11 +5994,11 @@ mod tests {
         let mut s = started(Config::default())?;
         run(&mut s, "opts 600 40 size str +1 workspace in new-tab drop")?;
         let mut again = started(Config::default())?;
-        run(&mut again, &s.dump_layout(None))?;
+        run(&mut again, &s.dump_layout(None).map_err(|e| e.to_string())?)?;
         let tabs = (again.parts.workspaces().iter()).flat_map(|w| w.tabs());
         let mut sizes = tabs.map(|t| t.fit().size());
         let wide = sizes.any(|s| (s.cols(), s.rows()) == (600, 40));
-        assert!(wide, "{}", s.dump_layout(None));
+        assert!(wide, "{}", s.dump_layout(None).map_err(|e| e.to_string())?);
         Ok(())
     }
 
@@ -5929,7 +6011,7 @@ mod tests {
         run(&mut s, "%1 split drop %1 vertical split drop")?;
         run(&mut s, "str c1 client %1 focus-pane str c1 client zoom")?;
         let replays = |s: &Session| {
-            let dump = s.dump_layout(None);
+            let dump = s.dump_layout(None).map_err(|e| e.to_string())?;
             let mut again = started(Config::default())?;
             run(&mut again, &dump).map_err(|e| format!("{e}\n{dump}"))?;
             Ok::<_, String>(again.parts.panes().len())
@@ -5956,7 +6038,9 @@ mod tests {
     /// Tab `tab` dumped and made again where no client is: its panes'
     /// places there.
     fn replayed(s: &Session, tab: TabId) -> Result<Vec<Rect>, String> {
-        let dump = s.dump_layout(Some(AnyRef::Tab(tab)));
+        let dump = s
+            .dump_layout(Some(AnyRef::Tab(tab)))
+            .map_err(|e| e.to_string())?;
         let mut again = started(Config::default())?;
         run(&mut again, &dump).map_err(|e| format!("{e}\n{dump}"))?;
         let made = (again.parts.workspaces().iter())
@@ -6200,7 +6284,9 @@ mod tests {
             "%6 kill",
         ] {
             run(&mut s, change)?;
-            let dump = s.dump_layout(Some(AnyRef::Tab(tab)));
+            let dump = s
+                .dump_layout(Some(AnyRef::Tab(tab)))
+                .map_err(|e| e.to_string())?;
             let mut again = started(Config::default())?;
             run(&mut again, &dump).map_err(|e| format!("{change}: {e}\n{dump}"))?;
             let made = (again.parts.workspaces().iter())

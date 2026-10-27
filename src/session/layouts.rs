@@ -11,7 +11,63 @@ use crate::workspace::{Fit, Tab, Workspace};
 impl Session {
     /// What there is, or `only` that tab or workspace (a pane's: its tab),
     /// as a fuxth program.
-    pub(crate) fn dump_layout(&self, only: Option<AnyRef>) -> String {
+    pub(crate) fn dump_layout(&self, only: Option<AnyRef>) -> Result<String, super::Error> {
+        // Quote expansion is at most four bytes per input byte. Charge
+        // launch words and per-pane syntax before building any source.
+        let mut left = crate::wire::MAX_REPLY / 2;
+        let mut charge = |bytes: usize| -> Result<(), super::Error> {
+            left = left
+                .checked_sub(bytes)
+                .ok_or_else(crate::wire::Budget::exceeded)?;
+            Ok(())
+        };
+        let expanded = |text: &str| {
+            text.len()
+                .checked_mul(4)
+                .and_then(|n| n.checked_add(64))
+                .ok_or_else(crate::wire::Budget::exceeded)
+        };
+        for ws in self.parts.workspaces() {
+            for tab in ws
+                .tabs()
+                .iter()
+                .filter(|t| self.takes_in(only, ws.id(), t.id()))
+            {
+                charge(expanded(ws.name())?)?;
+                charge(expanded(tab.name())?)?;
+                let mut result: Result<(), super::Error> = Ok(());
+                tab.root().for_each_pane(&mut |id| {
+                    if result.is_err() {
+                        return;
+                    }
+                    result = (|| {
+                        charge(2048)?;
+                        if let Some(pane) = self.parts.panes().get(&id) {
+                            charge(expanded(pane.name())?)?;
+                        }
+                        if let Some(launch) = self.program(id) {
+                            charge(
+                                launch
+                                    .cwd
+                                    .as_os_str()
+                                    .len()
+                                    .checked_mul(4)
+                                    .ok_or_else(crate::wire::Budget::exceeded)?,
+                            )?;
+                            for word in launch
+                                .argv
+                                .iter()
+                                .chain(launch.env.iter().flat_map(|(k, v)| [k, v]))
+                            {
+                                charge(expanded(word)?)?;
+                            }
+                        }
+                        Ok(())
+                    })();
+                });
+                result?;
+            }
+        }
         // A script, as a file `chmod +x` makes runnable.
         let shebang = crate::script::SHEBANG;
         let mut out = format!("{shebang}\n# fux: running this makes it again\n");
@@ -30,7 +86,7 @@ impl Session {
                 self.dump_tab(ws, tab, whole, whole && i == 0, &mut out);
             }
         }
-        out
+        Ok(out)
     }
 
     /// The lines that make tab `tab` of `ws`, and its panes:

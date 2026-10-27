@@ -93,6 +93,17 @@ palette numbers or `"#rrggbb"`.
 `CLIENT capture-client json`:
 `{"client":"c1","screen_rows":24,"screen_cols":80,"screen_cursor":[ROW,COL],"lines":["…"]}`.
 
+Finite observations have hard limits: 32 MiB of wire bytes and 128 MiB
+of decoded allocations, shared by nested lists and strings. Server
+builders admit retained data before allocating it. Captures first admit
+row work, then text and run storage, before building their lines. Their
+cell allowance is twice `history-bytes` plus the live screen, up to
+16 Mi cells; blanks count too. Joined ranges include their whole logical
+lines. These caps admit the measured 21.9 MB default-history styled
+capture. A larger observation fails explicitly; it is never clipped.
+Request fewer history rows or a narrower `wrapped` row range to reduce a
+capture. A malformed or oversized reply closes its connection.
+
 ## What a word made
 
 `run`, `split`, `new-tab`, `new-workspace` and `respawn` leave an answer

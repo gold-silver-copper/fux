@@ -462,24 +462,62 @@ pub fn tree() -> Tree {
 /// arguments, as `setproctitle` does, has what it wrote, read the same way;
 /// ending in no NUL (the kernel then stops at the first one, past the
 /// arguments), it is one argument. An empty line, as a kernel thread's or
-/// a zombie's, is not said.
+/// a zombie's, is not said. Allocation beyond `limit` is refused.
 #[cfg(not(target_os = "macos"))]
-pub fn argv(pid: Pid) -> Option<Vec<OsString>> {
+pub fn argv(pid: Pid, limit: usize) -> std::io::Result<Option<Vec<OsString>>> {
+    use std::io::Read;
     use std::os::unix::ffi::OsStrExt;
-    let raw = std::fs::read(format!("/proc/{pid}/cmdline")).ok()?;
+    let Ok(mut file) = std::fs::File::open(format!("/proc/{pid}/cmdline")) else {
+        return Ok(None);
+    };
+    let exceeded =
+        || std::io::Error::other("process arguments exceed the observation allocation limit");
+    let mut raw = Vec::new();
+    let mut buffer = [0u8; 4096];
+    loop {
+        let count = match file.read(&mut buffer) {
+            Ok(n) => n,
+            Err(_) => return Ok(None),
+        };
+        if count == 0 {
+            break;
+        }
+        let needed = raw.len().checked_add(count).ok_or_else(exceeded)?;
+        if needed > limit {
+            return Err(exceeded());
+        }
+        raw.try_reserve(count).map_err(|_| exceeded())?;
+        raw.extend_from_slice(buffer.get(..count).unwrap_or_default());
+    }
     let line = raw.strip_suffix(&[0]).unwrap_or(&raw);
-    (!raw.is_empty()).then(|| {
-        (line.split(|b| *b == 0))
-            .map(|w| std::ffi::OsStr::from_bytes(w).to_owned())
-            .collect()
-    })
+    if raw.is_empty() {
+        return Ok(None);
+    }
+    let count = line.split(|b| *b == 0).count();
+    let slots = count
+        .checked_mul(std::mem::size_of::<OsString>())
+        .ok_or_else(exceeded)?;
+    if raw
+        .len()
+        .checked_mul(2)
+        .and_then(|n| n.checked_add(slots))
+        .is_none_or(|n| n > limit)
+    {
+        return Err(exceeded());
+    }
+    let mut words = Vec::new();
+    words.try_reserve_exact(count).map_err(|_| exceeded())?;
+    for word in line.split(|b| *b == 0) {
+        words.push(std::ffi::OsStr::from_bytes(word).to_owned());
+    }
+    Ok(Some(words))
 }
 
 /// `pid`'s command line: macOS keeps it where only a privileged reader
 /// finds it reliably, so it is not said.
 #[cfg(target_os = "macos")]
-pub fn argv(_pid: Pid) -> Option<Vec<OsString>> {
-    None
+pub fn argv(_pid: Pid, _limit: usize) -> std::io::Result<Option<Vec<OsString>>> {
+    Ok(None)
 }
 
 /// The name of `pid`'s program, when the system says.
@@ -660,11 +698,11 @@ mod tests {
         let mut started = [0u8; 1];
         let out = child.stdout.as_mut().ok_or("its stdout")?;
         out.read_exact(&mut started).map_err(|e| e.to_string())?;
-        let read = argv(pid);
+        let read = argv(pid, 1 << 20).map_err(|e| e.to_string());
         let _ = child.kill();
         let _ = child.wait();
         let words = ["sh", "-c", script, "", "head", "", "tail", ""];
-        assert_eq!(read, Some(words.map(OsString::from).to_vec()));
+        assert_eq!(read?, Some(words.map(OsString::from).to_vec()));
         Ok(())
     }
 
