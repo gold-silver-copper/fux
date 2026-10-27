@@ -1492,7 +1492,16 @@ mod tests {
                     break;
                 }
             }
-            Ok(matches!(peer.read(&mut [0]), Ok(0) | Err(_)))
+            Ok(match peer.read(&mut [0]) {
+                Ok(0) => true,
+                Err(error) => matches!(
+                    error.kind(),
+                    ErrorKind::ConnectionReset
+                        | ErrorKind::ConnectionAborted
+                        | ErrorKind::BrokenPipe
+                ),
+                Ok(_) => false,
+            })
         });
         let mut requests = Requests {
             stream,

@@ -455,11 +455,18 @@ impl Conn {
     /// Answers a request with its outcome, encoded once and sent in pieces
     /// as long as fit, then their end; and takes the next.
     fn answer(&mut self, session: &mut Session, reply: Reply) {
+        const REFUSED: &str = "finite reply exceeds its byte or allocation limit";
+        // Keep the fixed failure frame available before trying the reply.
+        if self
+            .out
+            .push_with(|out| out.try_reserve_exact(REFUSED.len().saturating_add(5)))
+            .is_err()
+        {
+            self.enter(session, Stage::Dead);
+            return;
+        }
         let Ok(bytes) = crate::wire::encode(&reply) else {
-            self.end(
-                session,
-                &ToCommand::Exit("finite reply exceeds its byte or allocation limit"),
-            );
+            self.end(session, &ToCommand::Exit(REFUSED));
             return;
         };
         // Include every Part header and PartsEnd, before queuing any of it.
@@ -474,20 +481,14 @@ impl Conn {
         if queued
             .is_none_or(|n| n > crate::wire::MAX_REPLY.saturating_add(crate::protocol::MAX_FRAME))
         {
-            self.end(
-                session,
-                &ToCommand::Exit("finite reply queue limit exceeded"),
-            );
+            self.end(session, &ToCommand::Exit(REFUSED));
             return;
         }
         let reserve = headers
             .and_then(|n| n.checked_add(bytes.len()))
             .and_then(|n| n.checked_add(5));
         if reserve.is_none_or(|n| self.out.push_with(|out| out.try_reserve_exact(n)).is_err()) {
-            self.end(
-                session,
-                &ToCommand::Exit("finite reply allocation was refused"),
-            );
+            self.end(session, &ToCommand::Exit(REFUSED));
             return;
         }
         split_into(&bytes, ToCommand::Part, &mut self.out);
