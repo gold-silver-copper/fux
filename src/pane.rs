@@ -520,17 +520,12 @@ pub struct Launch {
     pub env: Vec<(String, String)>,
 }
 
-/// What a pane running `argv` is named until it is renamed: its program's
-/// file name.
-pub(crate) fn named(argv: &[String]) -> String {
-    argv.first().map(|p| basename(p)).unwrap_or_default()
-}
-
 /// A program's file name, or the program as given if it has none.
-pub(crate) fn basename(program: &str) -> String {
+fn basename(program: &str) -> &str {
     std::path::Path::new(program)
         .file_name()
-        .map_or_else(|| program.to_owned(), |n| n.to_string_lossy().into_owned())
+        .and_then(|name| name.to_str())
+        .unwrap_or(program)
 }
 
 /// What a program rang or announced since it started: bells, and desktop
@@ -695,8 +690,8 @@ impl std::fmt::Display for Uncopied {
 pub struct Pane {
     /// Given as it is made, and never changed: its events' place.
     id: PaneId,
-    /// Changed by `rename` and `respawned`, which say so.
-    name: String,
+    /// Given by `name` or `rename`, and kept across respawns.
+    name: Option<String>,
     /// Set by the program with OSC 0 or 2, which says so.
     title: Title,
     /// Its screen's size is the PTY's: the smallest rectangle any client
@@ -1012,7 +1007,7 @@ pub const UNMARKED: &str = "no shell command was marked here (OSC 133 C and D): 
 impl Pane {
     pub fn new(
         id: PaneId,
-        name: String,
+        name: Option<String>,
         runs: Runs,
         size: Size,
         history: usize,
@@ -1610,13 +1605,6 @@ impl Pane {
         process: Process,
         tell: &mut Teller<'_>,
     ) -> (Process, Left) {
-        // Named after its program, unless renamed.
-        let name = match (&self.runs, &fresh.runs) {
-            (Runs::Explicit(old), Runs::Explicit(new)) if named(&old.argv) == self.name => {
-                named(&new.argv)
-            }
-            _ => self.name.clone(),
-        };
         // A new program, its own pane, its counts afresh but `respawns`. Kept
         // are its id and name, what the session has yet to take from the
         // old one (a bell, a copy, what it lost untold; its input it let go,
@@ -1662,7 +1650,6 @@ impl Pane {
         (self.mouse_held, self.left, self.alerts, self.lost) = (mouse_held, left, alerts, lost);
         (self.refused_size, self.loss_runs, self.reading) = (refused_size, loss_runs, reading);
         tell.tell(Told::Respawned(over));
-        self.rename(name, tell);
         // 2^64 respawns are never reached: the count never stands still.
         self.respawns = self.respawns.saturating_add(1);
         (std::mem::replace(&mut self.process, process), over)
@@ -1672,15 +1659,15 @@ impl Pane {
         self.id
     }
 
-    pub fn name(&self) -> &str {
-        &self.name
+    pub fn name(&self) -> Option<&str> {
+        self.name.as_deref()
     }
 
     /// Names it `name`: said, if it is another.
     fn rename(&mut self, name: String, tell: &mut Teller<'_>) {
-        if name != self.name {
+        if self.name.as_ref() != Some(&name) {
             tell.tell(Told::Renamed(name.clone()));
-            self.name = name;
+            self.name = Some(name);
         }
     }
 
@@ -1744,11 +1731,20 @@ impl Pane {
         self.title.said()
     }
 
-    pub fn label(&self) -> &str {
-        match self.title.as_str() {
-            "" => &self.name,
-            title => title,
+    /// Its given name, title or launch program, or its id for display.
+    pub fn label(&self) -> std::borrow::Cow<'_, str> {
+        if let Some(name) = self.name() {
+            return name.into();
         }
+        if !self.title.as_str().is_empty() {
+            return self.title.as_str().into();
+        }
+        if let Runs::Explicit(launch) = &self.runs
+            && let Some(program) = launch.argv.first()
+        {
+            return basename(program).into();
+        }
+        self.id.to_string().into()
     }
 }
 
@@ -1938,14 +1934,7 @@ pub(crate) mod tests {
 
     fn pane(rows: u16, cols: u16) -> Result<Lone, Error> {
         let size = size(rows, cols);
-        Pane::new(
-            PaneId::of(1),
-            "sh".into(),
-            Runs::DefaultShell,
-            size,
-            1 << 10,
-        )
-        .map(Lone::new)
+        Pane::new(PaneId::of(1), None, Runs::DefaultShell, size, 1 << 10).map(Lone::new)
     }
 
     /// A pane alone, for tests of it: what it tells goes in a journal of
@@ -2072,13 +2061,7 @@ pub(crate) mod tests {
     #[test]
     fn a_frame_past_a_budget_is_read_on_whole() -> Result<(), Error> {
         let size = size(50, 200);
-        let mut pane = Lone::new(Pane::new(
-            PaneId::of(1),
-            "sh".into(),
-            Runs::DefaultShell,
-            size,
-            0,
-        )?);
+        let mut pane = Lone::new(Pane::new(PaneId::of(1), None, Runs::DefaultShell, size, 0)?);
         let mut frame = b"\x1b[?2026h".to_vec();
         frame.extend(spends_the_budget(50, 200));
         frame.extend_from_slice(b"\x1b[2J\x1b[HDONE\x1b[?2026lZ");

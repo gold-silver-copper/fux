@@ -573,7 +573,7 @@ class Fux(Driver):
     # ------------------------------------------------- the rest
 
     def spawn(self, argv, size=None, name=None):
-        words = ["opts"]
+        words = ["agent-opts"]
         if name:
             words += ["str", name, "name"]
         # fux makes no size up, and no client is attached here: with none

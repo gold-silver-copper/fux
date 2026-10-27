@@ -154,7 +154,6 @@ pub fn listing_text(of: Option<Kind>, listing: &Json) -> String {
         _ => None,
     };
     let pane = |p: &Json| {
-        let label = Some(field(p, "title")).filter(|t| !t.is_empty());
         let process = match (int(p, "pid"), int(p, "exited"), int(p, "signal")) {
             (Some(pid), ..) => format!("pid {pid}"),
             (None, Some(code), _) => crate::process::told(Ended::Exited(code)),
@@ -162,16 +161,16 @@ pub fn listing_text(of: Option<Kind>, listing: &Json) -> String {
             (None, None, None) => crate::process::told(Ended::Lost),
         };
         let (id, cols, rows) = (field(p, "id"), field(p, "cols"), field(p, "rows"));
-        let label = label.unwrap_or_else(|| field(p, "name"));
+        let label = field(p, "label");
         format!("    {id} {label} {cols}x{rows} {process}\n")
     };
     let tab = |t: &Json| {
         let panes: String = items(t, "panes").iter().map(pane).collect();
-        format!("  {} {}\n{panes}", field(t, "id"), field(t, "name"))
+        format!("  {} {}\n{panes}", field(t, "id"), field(t, "label"))
     };
     let workspace = |w: &Json| {
         let tabs: String = items(w, "tabs").iter().map(tab).collect();
-        format!("{} {}\n{tabs}", field(w, "id"), field(w, "name"))
+        format!("{} {}\n{tabs}", field(w, "id"), field(w, "label"))
     };
     let client = |c: &Json| {
         let shown = ["id", "cols", "rows", "workspace", "tab", "pane"].map(|key| field(c, key));

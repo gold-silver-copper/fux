@@ -99,7 +99,7 @@ fn rename_move_swap_reorder_and_kill() -> Outcome {
     server.ok(&["str", "%3", "pane", "str", "+2", "workspace", "move-to"])?;
     server.ok(&["str", "%3", "pane", "str", "new-tab", "move-to"])?;
     let ls = server.ok(&["ls"])?;
-    assert!(ls.contains("@3 tab-2"), "{ls}");
+    assert!(ls.contains("@3 %3"), "{ls}");
     // Reorder tabs and workspaces.
     server.ok(&["str", "@3", "tab", "str", "previous", "reorder"])?;
     let ls = server.ok(&["ls"])?;
@@ -206,7 +206,14 @@ fn errors_statuses_and_what_is_left() -> Outcome {
     // A program's path holding a line end fails to start, the line end
     // shown as `\n`, as is a line separator in a message.
     let path = server.fux(&[
-        "opts", "80", "24", "size", "str", "no\nsuch", "program", "run",
+        "agent-opts",
+        "80",
+        "24",
+        "size",
+        "str",
+        "no\nsuch",
+        "program",
+        "run",
     ])?;
     assert!(
         path.stderr.starts_with("fux: start: ") && path.stderr.contains(r"starting no\nsuch in "),
@@ -221,8 +228,20 @@ fn errors_statuses_and_what_is_left() -> Outcome {
     );
     // A pane that never changes is waited on until the time is up.
     let timed_out = server.fux(&[
-        "opts", "80", "24", "size", "str", "sleep", "program", "str", "30", "arg", "run", "1",
-        "timeout", "wait",
+        "agent-opts",
+        "80",
+        "24",
+        "size",
+        "str",
+        "sleep",
+        "program",
+        "str",
+        "30",
+        "arg",
+        "run",
+        "1",
+        "timeout",
+        "wait",
     ])?;
     assert_eq!(timed_out.status, 124, "{}", timed_out.stderr);
     assert!(
@@ -253,7 +272,7 @@ fn errors_statuses_and_what_is_left() -> Outcome {
     ])?;
     assert_eq!(left, "3\na b\n%1\n@1\n");
     let record = server.ok(&["str", "%1", "pane", "info", "json"])?;
-    assert!(record.starts_with(r#"{"id":"%1","name":"sh""#), "{record}");
+    assert!(record.starts_with(r#"{"id":"%1","name":null"#), "{record}");
     assert_eq!(
         server.ok(&["str", "%1", "pane", "str", "exited", "get"])?,
         "null\n"
@@ -334,7 +353,18 @@ fn mistakes_name_what_the_program_wrote() -> Outcome {
     );
     // Refused before `run` starts anything.
     let before = said(&[
-        "opts", "80", "24", "size", "str", "sh", "program", "run", "str", "a", "1", "add",
+        "agent-opts",
+        "80",
+        "24",
+        "size",
+        "str",
+        "sh",
+        "program",
+        "run",
+        "str",
+        "a",
+        "1",
+        "add",
     ])?;
     assert!(
         before.starts_with("fux: type: argument 12: add: "),
@@ -375,11 +405,12 @@ fn mistakes_name_what_the_program_wrote() -> Outcome {
     assert!(way.contains("up, down, next, previous or last"), "{way}");
     let text = said(&["%1", "opts", "80", "24", "size", "text"])?;
     assert!(text.contains("a string, a number or a boolean"), "{text}");
-    // A workspace of one pane is that pane; of more, said so.
-    assert_eq!(server.ok(&["%1", "workspace", "pane"])?, "%1\n");
+    // A workspace never stands for its member, even when there is only one.
+    let single = said(&["%1", "workspace", "pane"])?;
+    assert!(single.contains("+1 is a workspace, not a pane"), "{single}");
     server.ok(&["%1", "horizontal", "split"])?;
     let many = said(&["%1", "workspace", "pane"])?;
-    assert!(many.contains("+1 is a workspace of 2 panes"), "{many}");
+    assert!(many.contains("+1 is a workspace, not a pane"), "{many}");
     Ok(())
 }
 
@@ -468,7 +499,7 @@ fn ls_json_list_keys_and_help() -> Outcome {
     client.wait_for("$")?;
     let json = server.ok(&["ls", "json"])?;
     for field in [
-        "{\"workspaces\":[{\"id\":\"+1\",\"name\":\"main\",\"tabs\":[{\"id\":\"@1\",\"name\":\"main\",\"panes\":[{\"id\":\"%1\",\"name\":\"sh\",\"rows\":9,\"cols\":50,\"pid\":",
+        "{\"workspaces\":[{\"id\":\"+1\",\"name\":\"main\",\"label\":\"main\",\"tabs\":[{\"id\":\"@1\",\"name\":null,\"label\":\"%1\",\"panes\":[{\"id\":\"%1\",\"name\":null,\"label\":\"%1\",\"rows\":9,\"cols\":50,\"pid\":",
         "\"clients\":[{\"id\":\"c1\",\"rows\":10,\"cols\":50,\"workspace\":\"+1\",\"tab\":\"@1\",\"pane\":\"%1\",\"zoom\":false}],\"events\":\"",
     ] {
         assert!(json.contains(field), "{field}\nin\n{json}");
@@ -500,7 +531,17 @@ fn a_directory_named_in_any_bytes_is_where_a_run_starts() -> Outcome {
     std::fs::create_dir(&dir).map_err(e)?;
     let out = std::process::Command::new(fux())
         .args([
-            "opts", "80", "24", "size", "str", "touch", "program", "str", "here", "arg", "run",
+            "agent-opts",
+            "80",
+            "24",
+            "size",
+            "str",
+            "touch",
+            "program",
+            "str",
+            "here",
+            "arg",
+            "run",
         ])
         .current_dir(&dir)
         .env("FUX_SOCKET", &server.socket)
@@ -551,7 +592,18 @@ fn a_write_that_fails_stops_the_program() -> Outcome {
     };
     let ran = full()?
         .args([
-            "help", "opts", "80", "24", "size", "str", "sleep", "program", "str", "9", "arg", "run",
+            "help",
+            "agent-opts",
+            "80",
+            "24",
+            "size",
+            "str",
+            "sleep",
+            "program",
+            "str",
+            "9",
+            "arg",
+            "run",
         ])
         .output()
         .map_err(e)?;

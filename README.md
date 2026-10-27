@@ -40,8 +40,8 @@ last pane, a workspace with its last tab.
 A pane's lines re-wrap when its width changes, history included.
 
 The bottom row is the bar: the workspace and its tabs on the left; on the
-right the focused pane's number and title (the program's OSC 0/2 title,
-else the pane's name), a notice, or copy mode's position. A screen too
+right the focused pane's id and label (its given name, else its OSC 0/2
+title, launch program or id), a notice, or copy mode's position. A screen too
 small for its tab (a watcher's, or one too small for all its panes)
 shows panes cut off at their right and bottom, or none of a pane it has
 no room for: the bar names them before the title, hidden first: `[hidden %3] [cut %2]`.
@@ -53,7 +53,7 @@ values from a stack and leaving its own.
 
 ```sh
 fux ls                                            # what there is
-A=$(fux opts 80 24 size str htop program run)     # start htop: %3:0.0.0.0.0:RUN, its version
+A=$(fux agent-opts 80 24 size str htop program run)     # start htop: %3:0.0.0.0.0:RUN, its version
 fux str "$A" changed wait                         # until it differs: %3:0.412.0.0.0:RUN screen
 fux %3 capture                                    # its screen
 fux %3 str q text send-keys                       # press q: its version from before
@@ -117,7 +117,7 @@ caller's tab. Run from outside fux, a size must be given: fux makes none
 up.
 
 ```sh
-fux opts str web name 120 40 size str ./app program str --verbose arg run
+fux agent-opts str web name 120 40 size str ./app program str --verbose arg run
 fux %3 200 history capture
 fux %3 str 'make test' text str Enter key send-keys 60 timeout wait
 ```
@@ -125,7 +125,7 @@ fux %3 str 'make test' text str Enter key send-keys 60 timeout wait
 A program can name what it made; a wait on an action's answer waits from the version it holds:
 
 ```sh
-fux opts 80 24 size str sh program str -c arg str 'echo hello; sleep 1' arg run let P   P wait drop   P capture
+fux agent-opts 80 24 size str sh program str -c arg str 'echo hello; sleep 1' arg run let P   P wait drop   P capture
 ```
 
 A script plays well with the shell. `args` gives the arguments after
@@ -150,18 +150,27 @@ the error saying `--file` runs it: no argument is guessed to be a file.
 The bundled words are written in fuxth themselves (`fux help WORD` shows
 each one's code): `type` and `press` (text and a key into a pane), `line`
 (a line typed and Enter), `shell` (a tab with a shell in workspace
-`agent`), `quiet` (a wait until nothing changes for N seconds) and
+`agent`), `agent-opts` (options with `str agent in`), `quiet` (a wait until nothing changes for N seconds) and
 `counts` (a version's counts, as integers).
+
+Native `run` requires an explicit workspace:
+`fux opts str jobs in 80 24 size str ./app program run`.
+The library's `agent-opts` is `opts str agent in`, so the examples choose
+workspace `agent` visibly through that profile. `name` is always optional.
 
 ### Finding things
 
 A pane is `%N`, a tab `@N`, a workspace `+N` or its name, a client `cN`:
 `str %3 pane`, `str @2 tab`, `str work workspace`, `str c1 client`. `pane`
-also takes a tab's name, the tab's one pane (`run`'s tabs are named after
-their program), `tab` and `workspace` a pane, the tab or workspace it is
-in. A pane's own name (what `rename` gave it, else its program's) finds it
-through `pane-named` alone: `str logs pane-named`. A title a program sets
-finds nothing. Inside a pane,
+also takes a pane's given name: `str web pane`. `run ... name` names its
+pane; `new-tab ... name` names its tab. `tab` and `workspace` take a pane,
+the tab or workspace it is in. To choose a member of a container, use
+`panes` or `tabs`; a container never stands for its only member.
+Names are optional and given explicitly. An unnamed thing shows a derived
+`label` (a pane's title or launch program, or an id); labels and program
+titles never participate in name lookup. `get name` returns `null` when
+no name was given. Renaming a thing never renames another.
+Inside a pane,
 `here` is that pane (`FUX_PANE`, below). In a key's program or the
 prompt's, `me` is the client whose key it is, and `me focused` its focused
 pane.
@@ -176,7 +185,7 @@ or an agent:
 
 ```sh
 fux str test server start                         # returns once it answers: nothing in it yet
-fux str test server opts 80 24 size str ./app program run
+fux str test server agent-opts 80 24 size str ./app program run
 fux str test server kill-server
 ```
 
@@ -339,7 +348,7 @@ The rest is the server's own environment, as it was when the server
 started. Two things override it and the table alike: the names in
 `update-environment`, which a pane takes from whoever starts it (`fux help
 set` says what one the starter lacks becomes), and, last, what a program's
-`env` sets (`opts str NAME str VALUE env 80 24 size str PROGRAM program
+`env` sets (`agent-opts str NAME str VALUE env 80 24 size str PROGRAM program
 run`). A starter with no environment at all, as `env -i` leaves one,
 changes none.
 
@@ -424,8 +433,10 @@ once you bind them.
 line `#!/usr/bin/env -S fux --file`, so `chmod +x` makes it runnable), each
 pane a `let` name later lines use; `X dump-of` one tab or workspace. Run it
 to make it again on a running server, each tab in the workspace of its
-name (made if missing; a tab's name is the server's alone, so close what it
-holds first): `fux str dev workspace dump-of > dev.fux; fux --file dev.fux`. Each
+given name (made if missing). An unnamed workspace is recreated as a fresh
+workspace. Only given pane, tab and workspace names are written; display
+labels are never saved as names. Close named tabs that would conflict
+before replay: `fux str dev workspace dump-of > dev.fux; fux --file dev.fux`. Each
 tab is made at the size it has (`size`), which a server with no client
 needs; one that fits clients' screens fits them again after
 (`resize-auto`). Each split is made with shares (`2 1 shares`: the pane
@@ -499,7 +510,7 @@ so: it starts where the dump is run.
   most once every 250 ms; a tab you are not looking at is marked `!` in the
   bar until you show it. `str bell false set` silences both.
 - **Titles.** With `str titles true set`, your terminal's title is the
-  focused pane's (or its tab's name). fux saves your terminal's own title
+  focused pane's (or its tab's label). fux saves your terminal's own title
   first and restores it when you detach or turn titles off.
 - **Hyperlinks** (OSC 8) reach your terminal as links.
 - **Pictures** (sixel). A pane's program is told your terminal draws sixel
@@ -539,14 +550,14 @@ so: it starts where the dump is run.
   `tee`. On Linux (util-linux):
 
   ```sh
-  fux opts str script program str -q arg str -e arg str -f arg str LOG arg str -c arg str 'make test' arg run
+  fux agent-opts str script program str -q arg str -e arg str -f arg str LOG arg str -c arg str 'make test' arg run
   ```
 
   On macOS and the BSDs, whose `script` takes the command as its last
   words and flushes with `-F`:
 
   ```sh
-  fux opts str script program str -q arg str -F arg str LOG arg str sh arg str -c arg str 'make test' arg run
+  fux agent-opts str script program str -q arg str -F arg str LOG arg str sh arg str -c arg str 'make test' arg run
   ```
 
   LOG holds the raw bytes the program wrote to its terminal; util-linux

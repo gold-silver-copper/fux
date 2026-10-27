@@ -233,7 +233,7 @@ fn update_environment_takes_the_clients_variables_or_none() -> Outcome {
                  printf %s \"${FUXT_BYTES-unset}\" | od -An -tx1";
     let out = std::process::Command::new(FUX)
         .args([
-            "opts",
+            "agent-opts",
             "80",
             "24",
             "size",

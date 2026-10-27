@@ -242,16 +242,7 @@ impl Session {
                 // program; either at the size of the client's panes, as
                 // fux sizes no tab from a caller with no screen or tab.
                 let (cols, rows) = (COLS.to_string(), ROWS.to_string());
-                let mut args = vec![
-                    "opts",
-                    &cols,
-                    &rows,
-                    "size",
-                    "str",
-                    "main",
-                    "workspace",
-                    "in",
-                ];
+                let mut args = vec!["opts", &cols, &rows, "size", "str", "+1", "workspace", "in"];
                 match program {
                     Some([first, rest @ ..]) => {
                         args.extend(["str", first.as_str(), "program"]);

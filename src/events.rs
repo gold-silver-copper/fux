@@ -133,7 +133,7 @@ pub enum Event {
 #[derive(Clone, Debug, PartialEq)]
 pub enum Change {
     /// Made, with its name.
-    Created(String),
+    Created(Option<String>),
     /// Named otherwise: its new name.
     Renamed(String),
     Closed,
@@ -181,7 +181,10 @@ impl Change {
     /// Its name, and what else it says.
     fn said(&self) -> (&'static str, Fields) {
         match self {
-            Change::Created(name) => ("created", named(name)),
+            Change::Created(name) => (
+                "created",
+                vec![("name", name.as_ref().map_or(Json::Null, Json::str))],
+            ),
             Change::Renamed(name) => ("renamed", named(name)),
             Change::Closed => ("closed", Vec::new()),
         }
@@ -559,10 +562,10 @@ mod tests {
                     left: cut,
                 })),
             ),
-            Event::Tab((ws, tab), Change::Created(String::new())),
+            Event::Tab((ws, tab), Change::Created(None)),
             Event::Tab((ws, tab), Change::Renamed(String::new())),
             Event::Tab((ws, tab), Change::Closed),
-            Event::Workspace(ws, Change::Created(String::new())),
+            Event::Workspace(ws, Change::Created(None)),
             Event::Workspace(ws, Change::Renamed(String::new())),
             Event::Workspace(ws, Change::Closed),
         ];

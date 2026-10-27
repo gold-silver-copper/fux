@@ -384,7 +384,19 @@ fn a_run_answers_an_exit_with_the_last_of_the_output() -> Outcome {
     let server = Server::start("")?;
     let code = "printf 'X\\033[65535b%.0s' $(seq 4000); echo; echo DO''NE";
     let out = server.fux(&[
-        "opts", "80", "24", "size", "str", "sh", "program", "str", "-c", "arg", "str", code, "arg",
+        "agent-opts",
+        "80",
+        "24",
+        "size",
+        "str",
+        "sh",
+        "program",
+        "str",
+        "-c",
+        "arg",
+        "str",
+        code,
+        "arg",
         "run",
     ])?;
     let pane = out.stdout.split(':').next().ok_or("its pane")?;

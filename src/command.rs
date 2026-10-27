@@ -544,7 +544,7 @@ wire! {
         /// A program, started in place of a shell in a tab of its own, in a
         /// workspace no client is moved to.
         Run {
-            workspace: Option<WsRef>,
+            workspace: WsRef,
             name: Option<String>,
             size: Size,
             cwd: Option<PathBuf>,
@@ -631,11 +631,6 @@ wire! {
         Resolve {
             text: String,
             kind: Kind,
-        },
-        /// The pane given the name `name` (by `rename`, or its program's),
-        /// answered with its id.
-        PaneNamed {
-            name: String,
         },
         /// The panes or tabs a pane, tab or workspace is or holds,
         /// answered with their ids in layout order.
@@ -770,7 +765,6 @@ impl Command {
         match self {
             C::Ls { .. }
             | C::Resolve { .. }
-            | C::PaneNamed { .. }
             | C::Members { .. }
             | C::CapturePane { .. }
             | C::DumpLayout { .. }

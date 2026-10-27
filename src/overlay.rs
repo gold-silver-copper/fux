@@ -38,7 +38,7 @@ pub fn choices(session: &Session, client: ClientId, choices: Choices) -> Result<
                 let label = format!(
                     "{} {} — {}",
                     tab.id(),
-                    tab.name(),
+                    tab.label(session.parts.panes()),
                     pane_names(session, [tab.root()])
                 );
                 rows.push((AnyRef::Tab(tab.id()), label));
@@ -51,7 +51,12 @@ pub fn choices(session: &Session, client: ClientId, choices: Choices) -> Result<
                     current = Some(rows.len());
                 }
                 let roots = ws.tabs().iter().map(|t| t.root());
-                let label = format!("{} {} — {}", ws.id(), ws.name(), pane_names(session, roots));
+                let label = format!(
+                    "{} {} — {}",
+                    ws.id(),
+                    ws.label(),
+                    pane_names(session, roots)
+                );
                 rows.push((AnyRef::Workspace(ws.id()), label));
             }
         }

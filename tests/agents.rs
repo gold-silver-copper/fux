@@ -37,7 +37,7 @@ fn run<'a>(before: &[&'a str], argv: &[&'a str]) -> Vec<&'a str> {
     } else {
         &["80", "24", "size"]
     };
-    [&["opts"][..], size, before, &program(argv), &["run"]].concat()
+    [&["agent-opts"][..], size, before, &program(argv), &["run"]].concat()
 }
 
 /// `send-keys` to `pane` typing `line`, then Enter.
@@ -364,7 +364,18 @@ fn shell_marks_count_commands_and_give_their_output() -> Outcome {
         std::fs::write(&rc, format!("{}{}", later_hook(shell), marks(shell)?)).map_err(e)?;
         let dir = dir.to_string_lossy().into_owned();
         let words = [
-            "opts", "80", "24", "size", "str", shell, "name", "str", home, "str", &dir, "env",
+            "agent-opts",
+            "80",
+            "24",
+            "size",
+            "str",
+            shell,
+            "name",
+            "str",
+            home,
+            "str",
+            &dir,
+            "env",
         ];
         server.ok(&[&words[..], &program(&[shell, "-i"]), &["run"]].concat())?;
         check(shell)?;
@@ -614,7 +625,7 @@ fn pictures_reach_a_terminal_that_draws_sixel() -> Outcome {
     Ok(())
 }
 
-/// `respawn` starts a run program again in its pane, found by its tab's
+/// `respawn` starts a run program again in its pane, found by its given
 /// name; `all-history` reads all history,
 /// `main-screen` what a full-screen program hides, `alt-screen` its last
 /// screen; a mistyped key name is refused.
@@ -675,9 +686,8 @@ fn run_programs_are_restarted_and_read_whole() -> Outcome {
     Ok(())
 }
 
-/// A name that reads as an id, or one taken, is refused; a tab's name finds
-/// it; a click outside the pane is refused; a shell pane's shell is not
-/// signalled.
+/// Pane and tab names are independent, id spellings are refused, and a
+/// click outside a pane or a signal to its default shell is refused.
 #[test]
 fn names_clicks_and_signals_are_checked() -> Outcome {
     let server = Server::start("")?;
@@ -686,12 +696,11 @@ fn names_clicks_and_signals_are_checked() -> Outcome {
         server.fux(&run(&["str", "@1", "name"], &["cat"]))?.status,
         1
     );
-    let taken = server.fux(&["opts", "80", "24", "size", "str", "ed", "name", "new-tab"])?;
-    assert!(
-        taken.stderr.starts_with("fux: name_taken: "),
-        "{}",
-        taken.stderr
-    );
+    server.ok(&[
+        "opts", "80", "24", "size", "str", "+1", "in", "str", "ed", "name", "new-tab",
+    ])?;
+    assert_eq!(server.ok(&["str", "ed", "pane"])?, "%2\n");
+    assert_eq!(server.ok(&["str", "ed", "tab"])?, "@3\n");
     // A common spelling is a key's name too; a typo is told the closest.
     server.ok(&["str", "ed", "pane", "str", "Backspace", "key", "send-keys"])?;
     let typo = server.fux(&["str", "ed", "pane", "str", "C-Bakspace", "key", "send-keys"])?;
@@ -700,10 +709,10 @@ fn names_clicks_and_signals_are_checked() -> Outcome {
         "{}",
         typo.stderr
     );
-    server.ok(&["str", "ed", "tab", "40", "12", "resize"])?;
+    server.ok(&["str", "ed", "pane", "tab", "40", "12", "resize"])?;
     assert!(
         server.ok(&["ls"])?.contains(" 40x12"),
-        "resized by its tab's name"
+        "resized by the named pane's tab"
     );
     let clicks = "printf '\\033[?1000h\\033[?1006hready'; exec cat";
     let before = ["str", "m", "name", "20", "5", "size"];
@@ -826,10 +835,10 @@ fn an_answer_is_its_pane() -> Outcome {
     let pane = id(&server.ok(&run(&[], &["sh", "-c", script]))?);
     let since = server.version(&pane)?;
     let sent = [&typed(&pane, "go")[..], &["str", "name", "get"]];
-    assert_eq!(server.ok(&sent.concat())?.trim(), "sh");
+    assert_eq!(server.ok(&sent.concat())?.trim(), "null");
     server.shows(&pane, "%13 fake")?;
     let waited = ["str", &since, "changed", "wait", "str", "name", "get"];
-    assert_eq!(server.ok(&waited)?.trim(), "sh");
+    assert_eq!(server.ok(&waited)?.trim(), "null");
     Ok(())
 }
 
@@ -979,7 +988,11 @@ fn words_refuse_options_they_do_not_use() -> Outcome {
     // Nothing was made: the two panes, and no workspace "nowhere".
     let ls = server.ok(&["ls"])?;
     assert!(!ls.contains("nowhere"), "{ls}");
-    assert_eq!(ls.matches('%').count(), 2, "{ls}");
+    assert_eq!(
+        ls.lines().filter(|line| line.starts_with("    %")).count(),
+        2,
+        "{ls}"
+    );
     Ok(())
 }
 
@@ -1025,18 +1038,25 @@ fn last_output_is_the_running_command_s_so_far() -> Outcome {
     Ok(())
 }
 
-/// A pane renamed keeps its name when its program is started again. A wait
+/// A given name matching the old program survives respawn. A wait
 /// from the ended program's version tells the new one's end too.
 #[test]
-fn respawn_keeps_a_rename() -> Outcome {
+fn respawn_keeps_a_given_name_matching_the_old_program() -> Outcome {
     let server = Server::start("")?;
-    let pane = id(&server.ok(&run(&[], &["sh", "-c", "exit 0"]))?);
+    let pane = id(&server.ok(&run(&["str", "sh", "name"], &["sh", "-c", "exit 0"]))?);
     server.exits(&pane)?;
     let ended = server.version(&pane)?;
-    server.ok(&["str", &pane, "pane", "str", "keepme", "rename"])?;
-    server.ok(&["str", &pane, "pane", "respawn"])?;
+    server.ok(&[
+        "str",
+        &pane,
+        "pane",
+        "str",
+        "/bin/true",
+        "program",
+        "respawn",
+    ])?;
     let name = server.ok(&["str", &pane, "pane", "str", "name", "get"])?;
-    assert_eq!(name, "keepme\n");
+    assert_eq!(name, "sh\n");
     server.exits(&pane)?;
     let answer = server.ok(&["str", &ended, "changed", "wait"])?;
     assert!(answer.ends_with(" respawned exited 0\n"), "{answer}");

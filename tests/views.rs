@@ -20,7 +20,7 @@ fn tabs_are_created_and_switched_by_key() -> Outcome {
     client.wait_for("$")?;
     client.keys(&format!("{PREFIX}tn"))?;
     client.wait("a second tab", |t| {
-        t.lines().last().is_some_and(|b| b.contains("tab-2"))
+        t.lines().last().is_some_and(|b| b.contains("%2"))
     })?;
     eventually("on @2", || Ok(client_line(&server, "c1")?.contains(" @2 ")))?;
     client.keys("echo on-two\r")?;
@@ -68,7 +68,7 @@ fn workspaces_are_created_and_switched_by_key() -> Outcome {
     client.wait_for("$")?;
     client.keys(&format!("{PREFIX}wn"))?;
     client.wait("the new workspace", |t| {
-        t.lines().last().is_some_and(|b| b.contains("workspace-2"))
+        t.lines().last().is_some_and(|b| b.contains("+2"))
     })?;
     eventually("on +2", || Ok(client_line(&server, "c1")?.contains(" +2 ")))?;
     client.keys(&format!("{PREFIX}wh"))?;
@@ -165,7 +165,7 @@ fn a_pty_is_the_smallest_rectangle_among_the_clients_showing_it() -> Outcome {
     let mut small = server.attach(10, 40)?;
     small.wait_for("$")?;
     eventually("the small size wins", || {
-        Ok(server.ok(&["ls"])?.contains("%1 sh 40x9"))
+        Ok(server.ok(&["ls"])?.contains("%1 %1 40x9"))
     })?;
     // The big client shows the pane at the top left, the rest blank.
     big.keys("stty size\r")?;
@@ -178,16 +178,16 @@ fn a_pty_is_the_smallest_rectangle_among_the_clients_showing_it() -> Outcome {
     // When the small client looks elsewhere, the pane grows.
     small.keys(&format!("{PREFIX}tn"))?;
     eventually("grown to the big client", || {
-        Ok(server.ok(&["ls"])?.contains("%1 sh 100x29"))
+        Ok(server.ok(&["ls"])?.contains("%1 %1 100x29"))
     })?;
     // And when it detaches, only the big client counts.
     small.keys(&format!("{PREFIX}b"))?;
     eventually("small again", || {
-        Ok(server.ok(&["ls"])?.contains("%1 sh 40x9"))
+        Ok(server.ok(&["ls"])?.contains("%1 %1 40x9"))
     })?;
     small.detach()?;
     eventually("the small client gone", || {
-        Ok(server.ok(&["ls"])?.contains("%1 sh 100x29"))
+        Ok(server.ok(&["ls"])?.contains("%1 %1 100x29"))
     })?;
     Ok(())
 }
@@ -222,7 +222,7 @@ fn moving_a_tabs_last_pane_out_closes_the_tab() -> Outcome {
     server.ok(&["str", "%2", "pane", "str", "new-tab", "move-to"])?;
     server.ok(&["str", "%1", "pane", "str", "new-workspace", "move-to"])?;
     let ls = server.ok(&["ls"])?;
-    assert!(ls.contains("+2 workspace-2") && !ls.contains("@2 "), "{ls}");
+    assert!(ls.contains("+2 +2") && !ls.contains("@2 "), "{ls}");
     Ok(())
 }
 
@@ -315,16 +315,36 @@ fn a_hidden_tab_goes_back_to_its_own_size() -> Outcome {
     let mut client = server.attach(25, 84)?;
     client.wait_for("$")?;
     let run = [
-        "opts", "str", "hid", "name", "100", "40", "size", "str", "cat", "program", "run",
+        "agent-opts",
+        "str",
+        "hid",
+        "name",
+        "100",
+        "40",
+        "size",
+        "str",
+        "cat",
+        "program",
+        "run",
     ];
     let pane = server.ok(&run)?;
     let pane = pane.split(':').next().unwrap_or_default();
-    let sized = |size: &str| Ok(server.ok(&["ls"])?.contains(&format!("cat {size}")));
+    let sized = |size: &str| Ok(server.ok(&["ls"])?.contains(&format!("hid {size}")));
     eventually("its own size", || sized("100x40"))?;
     server.ok(&["str", "c1", "client", pane, "tab", "show-tab"])?;
     eventually("the client's size", || sized("84x24"))?;
     let other = server.ok(&[
-        "opts", "84", "24", "size", "str", "sleep", "program", "str", "60", "arg", "run",
+        "agent-opts",
+        "84",
+        "24",
+        "size",
+        "str",
+        "sleep",
+        "program",
+        "str",
+        "60",
+        "arg",
+        "run",
     ])?;
     let other = other.split(':').next().unwrap_or_default();
     server.ok(&["str", "c1", "client", other, "tab", "show-tab"])?;

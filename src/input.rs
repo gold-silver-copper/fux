@@ -445,7 +445,7 @@ mod tests {
         run(&mut s, "str c1 client choose-tab")?;
         s.input(c, b"\x1b[H");
         let shown = screen_text(&s, c)?;
-        assert!(shown.contains("@1 main"), "{shown}");
+        assert!(shown.contains("@1 %1"), "{shown}");
         Ok(())
     }
 
@@ -876,7 +876,7 @@ mod tests {
             ("me str %3 pane confirm-close", &["str %3 pane kill"]),
             ("me str @2 tab confirm-close", &["str @2 tab kill"]),
             (
-                "me str main workspace confirm-close",
+                "me str +1 workspace confirm-close",
                 &["str +1 workspace kill"],
             ),
         ] {
@@ -906,11 +906,11 @@ mod tests {
         // A chooser's `r` and `x` act on the selected item.
         output_as(&mut s, Some(c), "me choose-tab")?;
         s.input(c, b"r");
-        assert_eq!(mode(&s, c), "prompt main|");
-        s.input(c, b"\r");
+        assert_eq!(mode(&s, c), "prompt |");
+        s.input(c, b"chosen\r");
         output_as(&mut s, Some(c), "me choose-tab")?;
         s.input(c, b"x");
-        assert_eq!(mode(&s, c), "confirm close tab @1 main?");
+        assert_eq!(mode(&s, c), "confirm close tab @1 chosen?");
         Ok(())
     }
 
@@ -1021,7 +1021,7 @@ mod tests {
     #[test]
     fn a_key_into_an_exited_program_is_refused_and_told() -> Outcome {
         let (mut s, c) = session()?;
-        run(&mut s, "opts 80 24 size str /bin/cat program run")?;
+        run(&mut s, "agent-opts 80 24 size str /bin/cat program run")?;
         run(&mut s, "str c1 client str %2 pane focus-pane")?;
         s.exited(PaneId::of(2), crate::process::Ended::Exited(3));
         for typed in [b"x".as_slice(), b"\x1b[200~z\x1b[201~"] {
@@ -1121,16 +1121,25 @@ mod tests {
     #[test]
     fn an_overlay_holds_a_workspace_named_by_name_through_a_rename() -> Outcome {
         let (mut s, c) = session()?;
+        run(&mut s, "+1 str main rename")?;
         run(&mut s, "str c1 client str main workspace rename-prompt")?;
         run(&mut s, "str main workspace str other rename")?;
         assert_eq!(mode(&s, c), "prompt main|", "{}", notice(&s, c));
         s.input(c, b"\x7f\x7f\x7f\x7fnew\r");
-        assert_eq!(s.parts.workspaces().first().map(|w| w.name()), Some("new"));
+        assert_eq!(
+            s.parts.workspaces().first().and_then(|w| w.name()),
+            Some("new")
+        );
         run(&mut s, "str c1 client str new workspace confirm-close")?;
         run(&mut s, "str new workspace str again rename")?;
         assert_eq!(mode(&s, c), "confirm close workspace +1 new?");
         s.input(c, b"y");
-        assert!(s.parts.workspaces().iter().all(|w| w.name() != "again"));
+        assert!(
+            s.parts
+                .workspaces()
+                .iter()
+                .all(|w| w.name() != Some("again"))
+        );
         Ok(())
     }
 

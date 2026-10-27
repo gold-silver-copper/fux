@@ -8,8 +8,8 @@ fn a_server_answers_ls_and_stops_on_kill_server() -> Outcome {
     let mut server = Server::start("")?;
     let ls = server.ok(&["ls"])?;
     assert!(ls.contains("+1 main"), "{ls}");
-    assert!(ls.contains("@1 main"), "{ls}");
-    assert!(ls.contains("%1 sh"), "{ls}");
+    assert!(ls.contains("@1 %1"), "{ls}");
+    assert!(ls.contains("%1 %1"), "{ls}");
     let json = server.ok(&["ls", "json"])?;
     assert!(
         json.starts_with("{\"workspaces\":[{\"id\":\"+1\""),
@@ -132,6 +132,6 @@ fn a_client_that_shuts_its_side_still_gets_its_answer() -> Outcome {
         return Err(format!("not a listing: {:?}", reply.body));
     };
     let listed = listing.render();
-    assert!(listed.contains(r#""name":"main""#), "{listed}");
+    assert!(listed.contains(r#""name":null"#), "{listed}");
     Ok(())
 }
