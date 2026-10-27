@@ -63,14 +63,11 @@ fux ls                                         # what there is: workspaces, tabs
 fux str agent workspace kill                   # at the end: everything run started
 ```
 
-Native `run` requires `in`: `opts str jobs in ... run`.
-The library profile `agent-opts` expands to `opts str agent in`.
-`run ... name` gives the pane a name, and `str NAME pane` finds it even
-after splitting or moving it. Unnamed panes, tabs and workspaces have
-`name: null` and a derived display `label`; labels are never lookup names.
-`new-tab ... name` names the tab and `new-workspace ... name` the workspace.
-Use `panes` or `tabs` to choose a container's members explicitly. `get`
-reads only the named object's own fields, whatever its layout.
+`run` needs `in`; `agent-opts` is `opts str agent in`.
+Use `opts str new-workspace in ... run` for a fresh unnamed workspace.
+`get name` is `null` for an unnamed thing, which shows a label instead;
+a label never finds anything. Use `panes` or `tabs` to choose a container's
+members: `get` reads only the object's own fields.
 
 A wait answers its pane's version now and what changed:
 `%2:0.61.1.4.0:RUN screen bell done`, with `exited 3`, `killed by

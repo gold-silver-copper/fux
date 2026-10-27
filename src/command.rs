@@ -10,11 +10,12 @@ use std::num::NonZeroU32;
 use std::path::PathBuf;
 
 wire! {
-    /// A workspace named on the command line: `+N` or its name.
+    /// A workspace destination: an id, a name, or a fresh unnamed workspace.
     #[derive(Clone, Debug, PartialEq, Eq)]
     pub enum WsRef {
         Id(id: WsId),
         Name(name: String),
+        New,
     }
 }
 
@@ -719,6 +720,9 @@ impl std::error::Error for Usage {}
 
 /// A workspace: `+N`, or its name.
 pub fn parse_workspace(text: &str) -> Result<WsRef, Usage> {
+    if text == "new-workspace" {
+        return Ok(WsRef::New);
+    }
     match text.parse::<WsId>() {
         Ok(id) => Ok(WsRef::Id(id)),
         Err(_) if text.starts_with('+') => Err(Usage::Not(Kind::Workspace, text.to_owned())),

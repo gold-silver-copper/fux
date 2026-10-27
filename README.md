@@ -22,8 +22,8 @@ fux                               # attach, starting a server if none runs
 server in the background if none answers; `fux opts str work in attach`
 attaches to workspace `work`, and `fux opts watch attach` only watches
 (keys do nothing but `C-b d`, which detaches). A new server holds
-nothing: the first client to attach starts workspace `main`, with one tab
-and a shell, on its screen. One that watches starts nothing: with no
+nothing: the first client to attach starts one unnamed workspace, `+1`,
+with one tab and a shell, on its screen. One that watches starts nothing: with no
 server, or one holding nothing, it is refused. `C-b d`
 detaches, and the shells keep running. Inside a fux pane, `fux` refuses to attach.
 
@@ -153,10 +153,9 @@ each one's code): `type` and `press` (text and a key into a pane), `line`
 `agent`), `agent-opts` (options with `str agent in`), `quiet` (a wait until nothing changes for N seconds) and
 `counts` (a version's counts, as integers).
 
-Native `run` requires an explicit workspace:
-`fux opts str jobs in 80 24 size str ./app program run`.
-The library's `agent-opts` is `opts str agent in`, so the examples choose
-workspace `agent` visibly through that profile. `name` is always optional.
+`run` needs `in`; `agent-opts` is `opts str agent in`.
+`opts str new-workspace in ... run` starts its program in a fresh unnamed
+workspace.
 
 ### Finding things
 
@@ -166,10 +165,9 @@ also takes a pane's given name: `str web pane`. `run ... name` names its
 pane; `new-tab ... name` names its tab. `tab` and `workspace` take a pane,
 the tab or workspace it is in. To choose a member of a container, use
 `panes` or `tabs`; a container never stands for its only member.
-Names are optional and given explicitly. An unnamed thing shows a derived
-`label` (a pane's title or launch program, or an id); labels and program
-titles never participate in name lookup. `get name` returns `null` when
-no name was given. Renaming a thing never renames another.
+A name is given or absent: `get name` is `null` for an unnamed thing,
+which shows a label instead. A label never finds anything. Renaming one
+thing never renames another.
 Inside a pane,
 `here` is that pane (`FUX_PANE`, below). In a key's program or the
 prompt's, `me` is the client whose key it is, and `me focused` its focused

@@ -239,7 +239,7 @@ pub enum Error {
     NameTaken(String),
     /// A tab has the name: those tabs, then their panes.
     TabNameTaken(String, Vec<TabId>, Vec<PaneId>),
-    /// A workspace name a target would read as a number, not a name.
+    /// A name reserved for target syntax.
     NameReadAsTarget(String),
     /// Any other failure, made in one place and told apart by its code
     /// alone: its code, and why.
@@ -310,7 +310,7 @@ impl std::fmt::Display for Error {
             }
             Self::NameReadAsTarget(name) => write!(
                 f,
-                "{name:?} cannot be a name: a target would read it as a pane, tab or workspace number"
+                "{name:?} cannot be a name: it is reserved for target syntax"
             ),
             Self::Failed { message, .. } => f.write_str(message),
         }
@@ -578,6 +578,10 @@ impl Session {
     }
     pub fn resolve_ws(&self, r: &WsRef) -> Result<WsId, Error> {
         match r {
+            WsRef::New => Err(fail(
+                Raise::BadValue,
+                "new-workspace is a creation destination, not an existing workspace",
+            )),
             WsRef::Id(id) => self.workspace(*id).ok_or(Error::NoWorkspace(*id)),
             WsRef::Name(name) => (self
                 .parts
@@ -1198,6 +1202,9 @@ impl Session {
     ) -> Result<Made, Error> {
         let id = match (self.ws_target(ws, here), ws) {
             (Ok(id), _) => id,
+            (Err(_), Some(WsRef::New)) => {
+                return self.create_workspace(None, name, fit, new);
+            }
             (Err(_), Some(WsRef::Name(ws_name))) => {
                 return self.create_workspace(Some(ws_name.clone()), name, fit, new);
             }
@@ -1701,7 +1708,11 @@ impl Session {
             let closed = why.is_none();
             if let Some(why) = why {
                 for client in &viewers {
-                    self.notify_to(*client, format!("{id} {} {why}", pane.label()), false);
+                    self.notify_to(
+                        *client,
+                        format!("{} {why}", crate::words::labelled(id, &pane.label())),
+                        false,
+                    );
                 }
             }
             self.end_pane(pane, closed, &viewers);
@@ -1856,8 +1867,23 @@ impl Session {
     /// bell rung, its copies made in order, and the views showing it
     /// repainted and told what it refused (`tell_refused`).
     fn read_with(&mut self, id: PaneId, read: impl FnOnce(&mut PaneMut<'_>)) {
-        let tab = self.locate(id).map(|(_, tab)| tab);
-        let viewers = self.viewers(tab);
+        let place = self.locate(id);
+        let viewers = self.viewers(place.map(|(_, tab)| tab));
+        let labelled = place.and_then(|(ws, tab)| {
+            let tab = self.tab(tab)?;
+            let pane = self.parts.panes().get(&id)?;
+            if tab.name().is_some() || tab.root().first_pane() != id || pane.name().is_some() {
+                return None;
+            }
+            let others: Vec<ClientId> = self
+                .workspace(ws)?
+                .viewers
+                .iter()
+                .copied()
+                .filter(|client| !viewers.contains(client))
+                .collect();
+            (!others.is_empty()).then(|| (pane.label().into_owned(), others))
+        });
         let clipboard = self.config.clipboard;
         let Some((mut pane, retold)) = self.hosted(id) else {
             return;
@@ -1874,14 +1900,21 @@ impl Session {
         // of a string.
         const _: () = assert!(fux_vt::OSC_PAYLOAD_LIMIT <= crate::copy::MAX_CLIPBOARD);
         let (bell, copies) = pane.take_read(clipboard);
+        let changed_label = labelled.filter(|(was, _)| was != &*pane.label());
         if bell {
             self.ring(id, Instant::now());
         }
         for text in copies {
             _ = self.copied(text, &viewers);
         }
-        for view in (self.views.values_mut()).filter(|v| viewers.contains(&v.id)) {
-            view.dirty = true;
+        for view in self.views.values_mut() {
+            if viewers.contains(&view.id)
+                || changed_label
+                    .as_ref()
+                    .is_some_and(|(_, clients)| clients.contains(&view.id))
+            {
+                view.dirty = true;
+            }
         }
         self.tell_refused(id, &viewers);
     }
@@ -4899,12 +4932,12 @@ mod tests {
         // Two panes: the tab stays.
         run(&mut s, "str %1 pane horizontal split")?;
         s.exited(PaneId::of(2), crate::process::Ended::Exited(3));
-        assert_eq!(notice(&s).as_deref(), Some("%2 %2 exited with status 3"));
+        assert_eq!(notice(&s).as_deref(), Some("%2 exited with status 3"));
         // A second tab, shown; its only pane exits, and the tab with it.
         run(&mut s, "opts 40 9 size str +1 workspace in new-tab")?;
         run(&mut s, "str c1 client str @2 tab show-tab")?;
         s.exited(PaneId::of(3), crate::process::Ended::Exited(7));
-        assert_eq!(notice(&s).as_deref(), Some("%3 %3 exited with status 7"));
+        assert_eq!(notice(&s).as_deref(), Some("%3 exited with status 7"));
         Ok(())
     }
 
@@ -5103,6 +5136,41 @@ mod tests {
         let ids = s.ids.clone();
         assert!(run(&mut s, "str %1 pane str new-workspace move-to").is_err());
         assert_eq!(s.ids, ids);
+        Ok(())
+    }
+
+    /// A hidden tab's effective label invalidates its workspace's bar;
+    /// ordinary hidden output, or a title hidden by a given name, does not.
+    #[test]
+    fn a_hidden_tabs_label_change_repaints_its_workspace() -> Result<(), String> {
+        let (mut s, client) = attached(10, 80)?;
+        run(&mut s, "opts +1 in 80 24 size new-tab drop")?;
+        let pane = PaneId::of(2);
+        let clean = |s: &mut Session| {
+            for view in s.views.values_mut() {
+                view.dirty = false;
+            }
+        };
+        let dirty = |s: &Session| s.views.get(&client).is_some_and(|view| view.dirty);
+        clean(&mut s);
+        s.output(pane, b"ordinary output");
+        assert!(!dirty(&s), "ordinary hidden output");
+        s.output(pane, b"\x1b]2;finished\x07");
+        assert!(dirty(&s), "the hidden tab's label changed");
+        clean(&mut s);
+        s.output(pane, b"\x1b]2;finished\x07");
+        assert!(!dirty(&s), "the label stayed the same");
+        run(&mut s, "@2 str given rename")?;
+        clean(&mut s);
+        s.output(pane, b"\x1b]2;another title\x07");
+        assert!(!dirty(&s), "a given tab name masks its pane's title");
+        run(
+            &mut s,
+            "opts +1 in 80 24 size new-tab drop %3 str given-pane rename",
+        )?;
+        clean(&mut s);
+        s.output(PaneId::of(3), b"\x1b]2;another title\x07");
+        assert!(!dirty(&s), "a given pane name masks its title");
         Ok(())
     }
 

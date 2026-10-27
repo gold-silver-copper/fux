@@ -95,13 +95,13 @@ fn closing_asks_first_and_acts_on_what_it_asked_about() -> Outcome {
     server.ok(&["str", "%1", "pane", "horizontal", "split"])?;
     server.ok(&["str", "c1", "client", "str", "%2", "pane", "focus-pane"])?;
     client.keys(&format!("{PREFIX}x"))?;
-    client.wait_for("close pane %2 %2?")?;
+    client.wait_for("close pane %2?")?;
     client.keys("n")?;
     client.wait("closed without closing", |t| !t.contains("close pane"))?;
     assert_eq!(panes(&server)?, ["%1", "%2"]);
     // Ask about %2, move focus to %1 meanwhile: y still closes %2.
     client.keys(&format!("{PREFIX}x"))?;
-    client.wait_for("close pane %2 %2?")?;
+    client.wait_for("close pane %2?")?;
     server.ok(&["str", "c1", "client", "str", "%1", "pane", "focus-pane"])?;
     client.keys("y")?;
     pumped(&mut client, "%2 closed", || Ok(panes(&server)? == ["%1"]))?;

@@ -628,6 +628,84 @@ fn a_dump_runs_on_a_new_server_whatever_its_tabs_are_named() -> Outcome {
     Ok(())
 }
 
+/// Replaying explicit programs in an unnamed workspace never starts the
+/// destination server's default shell.
+#[test]
+fn an_unnamed_workspace_replays_independently_of_the_default_shell() -> Outcome {
+    let source = Server::start("")?;
+    source.ok(&[
+        "agent-opts",
+        "80",
+        "24",
+        "size",
+        "str",
+        "first",
+        "name",
+        "str",
+        "cat",
+        "program",
+        "run",
+        "str",
+        "new-workspace",
+        "move-to",
+    ])?;
+    source.ok(&[
+        "str",
+        "first",
+        "pane",
+        "horizontal",
+        "str",
+        "cat",
+        "program",
+        "split",
+        "str",
+        "second",
+        "rename",
+    ])?;
+    source.ok(&[
+        "opts",
+        "str",
+        "first",
+        "pane",
+        "workspace",
+        "in",
+        "80",
+        "24",
+        "size",
+        "str",
+        "third",
+        "name",
+        "str",
+        "cat",
+        "program",
+        "run",
+    ])?;
+    let dump = source.ok(&["str", "first", "pane", "workspace", "dump-of"])?;
+    for shell in [
+        &["str", "/no/such/fux-shell"][..],
+        &["str", "sh", "str", "-c", "str", "exit 0"],
+    ] {
+        let server = Server::start("")?;
+        server.ok(&[&["str", "shell", "list"][..], shell, &["end", "set"]].concat())?;
+        let file = server.dir.join("unnamed.fux");
+        std::fs::write(&file, &dump).map_err(e)?;
+        server.ok(&["--file", &file.to_string_lossy()])?;
+        assert_eq!(
+            server.ok(&["str", "first", "pane", "workspace", "panes", "len"])?,
+            "3\n"
+        );
+        assert_eq!(
+            server.ok(&["str", "first", "pane", "workspace", "tabs", "len"])?,
+            "2\n"
+        );
+        for name in ["first", "second", "third"] {
+            let pid = server.ok(&["str", name, "pane", "str", "pid", "get"])?;
+            assert!(pid.trim().parse::<u32>().is_ok(), "{name}: {pid}");
+        }
+    }
+    Ok(())
+}
+
 /// A workspace whose first tab closed, its pane moved to a new tab, is
 /// made again from its dump: the first tab written opens it.
 #[test]

@@ -13,7 +13,7 @@ fn pane_names<'a>(session: &Session, roots: impl IntoIterator<Item = &'a Tree>) 
     for root in roots {
         root.for_each_pane(&mut |id| {
             if let Some(p) = session.parts.panes().get(&id) {
-                names.push(format!("{} {}", p.id(), p.label()));
+                names.push(crate::words::labelled(p.id(), &p.label()));
             }
         });
     }
@@ -36,9 +36,8 @@ pub fn choices(session: &Session, client: ClientId, choices: Choices) -> Result<
                     current = Some(rows.len());
                 }
                 let label = format!(
-                    "{} {} — {}",
-                    tab.id(),
-                    tab.label(session.parts.panes()),
+                    "{} — {}",
+                    crate::words::labelled(tab.id(), &tab.label(session.parts.panes())),
                     pane_names(session, [tab.root()])
                 );
                 rows.push((AnyRef::Tab(tab.id()), label));
@@ -52,9 +51,8 @@ pub fn choices(session: &Session, client: ClientId, choices: Choices) -> Result<
                 }
                 let roots = ws.tabs().iter().map(|t| t.root());
                 let label = format!(
-                    "{} {} — {}",
-                    ws.id(),
-                    ws.label(),
+                    "{} — {}",
+                    crate::words::labelled(ws.id(), &ws.label()),
                     pane_names(session, roots)
                 );
                 rows.push((AnyRef::Workspace(ws.id()), label));
@@ -67,7 +65,10 @@ pub fn choices(session: &Session, client: ClientId, choices: Choices) -> Result<
             if let Some(root) = root {
                 root.for_each_pane(&mut |id| {
                     if let Some(p) = session.parts.panes().get(&id).filter(|_| id != source) {
-                        rows.push((AnyRef::Pane(p.id()), format!("{} {}", p.id(), p.label())));
+                        rows.push((
+                            AnyRef::Pane(p.id()),
+                            crate::words::labelled(p.id(), &p.label()),
+                        ));
                     }
                 });
             }

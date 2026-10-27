@@ -478,16 +478,11 @@ fn sizes_are_set_as_asked() -> Outcome {
     let left = id(left);
     let left = left.as_str();
     let size = |pane: &str| -> Result<String, String> {
-        let ls = server.ok(&["ls"])?;
-        let line = ls
-            .lines()
-            .find(|l| l.trim_start().starts_with(&format!("{pane} ")));
-        let line = line.ok_or(format!("{pane} in {ls}"))?;
-        Ok(line
-            .split_whitespace()
-            .nth(2)
-            .unwrap_or_default()
-            .to_owned())
+        let fields = server.ok(&[
+            "str", pane, "pane", "dup", "str", "cols", "get", "swap", "str", "rows", "get",
+        ])?;
+        let (cols, rows) = fields.trim().split_once('\n').ok_or("pane dimensions")?;
+        Ok(format!("{cols}x{rows}"))
     };
     assert_eq!(size(left)?, "100x20");
     server.ok(&["str", left, "pane", "100", "22", "resize"])?;

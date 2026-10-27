@@ -165,7 +165,7 @@ fn a_pty_is_the_smallest_rectangle_among_the_clients_showing_it() -> Outcome {
     let mut small = server.attach(10, 40)?;
     small.wait_for("$")?;
     eventually("the small size wins", || {
-        Ok(server.ok(&["ls"])?.contains("%1 %1 40x9"))
+        Ok(server.ok(&["ls"])?.contains("%1 40x9"))
     })?;
     // The big client shows the pane at the top left, the rest blank.
     big.keys("stty size\r")?;
@@ -178,16 +178,16 @@ fn a_pty_is_the_smallest_rectangle_among_the_clients_showing_it() -> Outcome {
     // When the small client looks elsewhere, the pane grows.
     small.keys(&format!("{PREFIX}tn"))?;
     eventually("grown to the big client", || {
-        Ok(server.ok(&["ls"])?.contains("%1 %1 100x29"))
+        Ok(server.ok(&["ls"])?.contains("%1 100x29"))
     })?;
     // And when it detaches, only the big client counts.
     small.keys(&format!("{PREFIX}b"))?;
     eventually("small again", || {
-        Ok(server.ok(&["ls"])?.contains("%1 %1 40x9"))
+        Ok(server.ok(&["ls"])?.contains("%1 40x9"))
     })?;
     small.detach()?;
     eventually("the small client gone", || {
-        Ok(server.ok(&["ls"])?.contains("%1 %1 100x29"))
+        Ok(server.ok(&["ls"])?.contains("%1 100x29"))
     })?;
     Ok(())
 }
@@ -222,7 +222,7 @@ fn moving_a_tabs_last_pane_out_closes_the_tab() -> Outcome {
     server.ok(&["str", "%2", "pane", "str", "new-tab", "move-to"])?;
     server.ok(&["str", "%1", "pane", "str", "new-workspace", "move-to"])?;
     let ls = server.ok(&["ls"])?;
-    assert!(ls.contains("+2 +2") && !ls.contains("@2 "), "{ls}");
+    assert!(ls.contains("+2") && !ls.contains("@2 "), "{ls}");
     Ok(())
 }
 

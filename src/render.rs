@@ -1241,7 +1241,7 @@ fn bar(
             .map(|p| {
                 let mut text = unseen(session, view, placement);
                 unseen_width = width(&text);
-                text.push_str(&format!("{} {}", p.id(), p.label()));
+                text.push_str(&crate::words::labelled(p.id(), &p.label()));
                 if view.zoom {
                     text.push_str(" [zoom]");
                 }

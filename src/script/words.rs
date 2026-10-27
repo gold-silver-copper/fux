@@ -326,7 +326,7 @@ words! {
         Starting Horizontal "horizontal" "x -- x" "split side by side" "fux %3 horizontal split";
         Starting Vertical "vertical" "x -- x" "split stacked" "fux %3 vertical split";
         Starting Shares "shares" "x n n -- x" "split: how the pane and the new one divide the pane's room, A to B (default: halved)" "fux %3 horizontal 2 1 shares split";
-        Starting In "in" "x workspace -- x" "the workspace for run, new-tab (each makes a name not there) or attach" "fux opts str agent in 80 24 size new-tab";
+        Starting In "in" "x workspace -- x" "the workspace for run, new-tab or attach; run and new-tab create a missing name, or a fresh unnamed workspace with str new-workspace in" "fux opts str agent in 80 24 size new-tab";
         Starting Watch "watch" "x -- x" "attach without typing: keys do nothing but the prefix, then d, which detaches" "fux opts watch attach";
         Starting KillFirst "kill-first" "x -- x" "respawn: end the program first if it still runs" "fux %3 kill-first respawn";
         Waiting Changed "changed" "seen -- request" "a wait from this version (%2:0.57.0.3.0:RUN, as an action, a wait or `str version get` gives it; or an answer or capture, its version) of the pane it names, not from now" "A=$(fux %3 str y text send-keys); fux str \"$A\" changed 60 timeout wait";

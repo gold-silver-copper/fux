@@ -33,7 +33,10 @@ end
 # client handle -- : close it, once confirmed
 define confirm-close
   dup kind str answer eq if pane then let it
-  list str 'close ' it kind str ' ' it string str ' ' it str label get str ? end glue
+  it str label get let caption
+  list str 'close ' it kind str ' ' it string
+    caption it string eq not if str ' ' caption then str ?
+  end glue
   list it string str ' kill' end glue
   confirm
 end

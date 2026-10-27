@@ -297,7 +297,7 @@ fn an_empty_caller_environment_is_not_replaced() -> Outcome {
     let server = Server::start("str update-environment list str HOME str ENV end set")?;
     let tokens = fuxth::token::source(
         "test",
-        "opts 80 24 size str /bin/sh program str -c arg str 'echo HOME=${HOME-unset} ENV=${ENV-unset}' arg run",
+        "agent-opts 80 24 size str /bin/sh program str -c arg str 'echo HOME=${HOME-unset} ENV=${ENV-unset}' arg run",
     )
     .map_err(e)?;
     let mut machine = compile(&tokens).map_err(e)?;

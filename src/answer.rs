@@ -162,15 +162,22 @@ pub fn listing_text(of: Option<Kind>, listing: &Json) -> String {
         };
         let (id, cols, rows) = (field(p, "id"), field(p, "cols"), field(p, "rows"));
         let label = field(p, "label");
-        format!("    {id} {label} {cols}x{rows} {process}\n")
+        let labelled = crate::words::labelled(id, &label);
+        format!("    {labelled} {cols}x{rows} {process}\n")
     };
     let tab = |t: &Json| {
         let panes: String = items(t, "panes").iter().map(pane).collect();
-        format!("  {} {}\n{panes}", field(t, "id"), field(t, "label"))
+        format!(
+            "  {}\n{panes}",
+            crate::words::labelled(field(t, "id"), &field(t, "label"))
+        )
     };
     let workspace = |w: &Json| {
         let tabs: String = items(w, "tabs").iter().map(tab).collect();
-        format!("{} {}\n{tabs}", field(w, "id"), field(w, "label"))
+        format!(
+            "{}\n{tabs}",
+            crate::words::labelled(field(w, "id"), &field(w, "label"))
+        )
     };
     let client = |c: &Json| {
         let shown = ["id", "cols", "rows", "workspace", "tab", "pane"].map(|key| field(c, key));

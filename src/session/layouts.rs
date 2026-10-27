@@ -47,20 +47,14 @@ impl Session {
             line.extend([workspace(ws.id()), "in".to_owned()]);
         } else if let Some(name) = ws.name() {
             line.extend(string(name).chain(["in".to_owned()]));
+        } else if program.is_some() {
+            line.extend(string("new-workspace").chain(["in".to_owned()]));
         }
         // Its size, which a server with no client attached needs to make
         // it: one that fits clients is made at the size it has, then fits
         // clients again (`resize-auto`).
         let size = tab.fit().size();
         let (cols, rows) = (size.cols().to_string(), size.rows().to_string());
-        let seed = (creates && program.is_some()).then(|| format!("s{}", first.number()));
-        if let Some(seed) = &seed {
-            push(
-                out,
-                &["opts", &cols, &rows, "size", "new-workspace", "let", seed],
-            );
-            line.extend([seed.clone(), "workspace".to_owned(), "in".to_owned()]);
-        }
         line.extend([cols, rows, "size".to_owned()]);
         self.pane_words(first, &mut line, out);
         line.push(
@@ -76,9 +70,6 @@ impl Session {
         let named = pane_name(first);
         line.extend(["let".to_owned(), named.clone()]);
         push(out, &line);
-        if let Some(seed) = seed {
-            push(out, &[seed, "kill".to_owned()]);
-        }
         if let Some(name) = tab.name() {
             let mut line = vec![named.clone(), "tab".to_owned()];
             line.extend(string(name).chain(["rename".to_owned()]));
