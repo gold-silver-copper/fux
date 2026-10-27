@@ -17,23 +17,30 @@ use std::path::PathBuf;
 use std::process::{Child, Command};
 
 /// A step of opening a PTY that failed, and why.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Debug)]
 pub struct Error {
     pub call: &'static str,
-    pub errno: Errno,
+    pub source: std::io::Error,
 }
 
 /// "grantpt: Permission denied (os error 13)".
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}: {}", self.call, self.errno)
+        write!(f, "{}: {}", self.call, self.source)
     }
 }
 
-impl std::error::Error for Error {}
+impl std::error::Error for Error {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.source)
+    }
+}
 
-fn at(call: &'static str) -> impl FnOnce(Errno) -> Error {
-    move |errno| Error { call, errno }
+fn at<E: Into<std::io::Error>>(call: &'static str) -> impl FnOnce(E) -> Error {
+    move |source| Error {
+        call,
+        source: source.into(),
+    }
 }
 
 /// A PTY's master: close-on-exec, so no program this process starts holds
@@ -152,7 +159,6 @@ pub fn open(size: Size) -> Result<(Master, Slave), Error> {
         .write(true)
         .custom_flags(libc::O_NOCTTY)
         .open(&name)
-        .map_err(|e| Errno::from_io_error(&e).unwrap_or(Errno::INVAL))
         .map_err(at("opening the PTY slave"))?;
     terminal::set_window_size(&master, size, None).map_err(at("TIOCSWINSZ"))?;
     crate::io::set_nonblocking(&master, true).map_err(at("O_NONBLOCK"))?;
@@ -160,10 +166,7 @@ pub fn open(size: Size) -> Result<(Master, Slave), Error> {
     #[cfg(target_os = "macos")]
     let master = Master(
         master,
-        slave
-            .try_clone()
-            .map_err(|e| Errno::from_io_error(&e).unwrap_or(Errno::INVAL))
-            .map_err(at("holding the PTY slave"))?,
+        slave.try_clone().map_err(at("holding the PTY slave"))?,
     );
     #[cfg(not(target_os = "macos"))]
     let master = Master(master);
@@ -194,13 +197,15 @@ fn granted_master() -> Result<OwnedFd, Error> {
         let grant = || check(unsafe { libc::grantpt(master.as_raw_fd()) });
         let null = || std::fs::File::open("/dev/null");
         // Stalled, the master is /dev/null now; dropping it closes that.
-        if let Some(granted) = watched(master.as_fd(), GRANT_LIMIT, null, grant) {
+        if let Some(granted) =
+            watched(master.as_fd(), GRANT_LIMIT, null, grant).map_err(at("grantpt watchdog"))?
+        {
             return granted.map(|_| master).map_err(at("grantpt"));
         }
     }
     Err(Error {
         call: "grantpt",
-        errno: Errno::AGAIN,
+        source: Errno::AGAIN.into(),
     })
 }
 
@@ -224,19 +229,17 @@ const GRANT_LIMIT: std::time::Duration = std::time::Duration::from_secs(1);
 /// `/dev/null` is opened, by `null`, before the call: a process out of
 /// descriptors, as one whose PTY allocation stalls may be, could not open it
 /// after. If it cannot be opened, or the watchdog cannot be started, `call`
-/// runs unwatched.
+/// is not entered, and the preparation error is returned.
 #[cfg(any(target_os = "macos", test))]
 fn watched<T>(
     fd: BorrowedFd<'_>,
     limit: std::time::Duration,
     null: impl FnOnce() -> std::io::Result<std::fs::File>,
     call: impl FnOnce() -> T,
-) -> Option<T> {
+) -> std::io::Result<Option<T>> {
     use std::sync::{Arc, Condvar, Mutex, PoisonError};
     let raw = fd.as_raw_fd();
-    let Ok(null) = null() else {
-        return Some(call());
-    };
+    let null = null()?;
     // (the call returned, fd was replaced), and the watchdog's wake-up.
     let shared = Arc::new((Mutex::new((false, false)), Condvar::new()));
     let watchdog_shared = Arc::clone(&shared);
@@ -258,7 +261,7 @@ fn watched<T>(
                 state.1 = replace_with_null(raw, &null);
             }
             drop(state);
-        });
+        })?;
     let result = call();
     let replaced = {
         let (state, wake) = &*shared;
@@ -267,10 +270,10 @@ fn watched<T>(
         wake.notify_one();
         state.1
     };
-    if let Ok(watchdog) = watchdog {
-        let _ = watchdog.join();
-    }
-    (!replaced).then_some(result)
+    watchdog
+        .join()
+        .map_err(|_| std::io::Error::other("grantpt watchdog panicked"))?;
+    Ok((!replaced).then_some(result))
 }
 
 /// Makes the descriptor `raw` refer to `null`, `/dev/null` opened already,
@@ -541,7 +544,7 @@ mod tests {
             null,
             || 42,
         );
-        assert_eq!(seen, Some(42));
+        assert_eq!(seen.map_err(|e| e.to_string())?, Some(42));
         assert_eq!(behind(reader.as_fd())?, before);
         assert_ne!(before, dev_null()?);
         Ok(())
@@ -566,16 +569,21 @@ mod tests {
                 std::thread::sleep(std::time::Duration::from_millis(300));
             },
         );
-        assert_eq!(seen, None);
+        assert_eq!(seen.map_err(|e| e.to_string())?, None);
         assert_eq!(*order.borrow(), ["open /dev/null", "call"]);
-        // Unable to open it, the call runs unwatched.
+        // Unable to prepare it, the call must not start.
+        let called = std::cell::Cell::new(false);
         let seen = watched(
             reader.as_fd(),
             std::time::Duration::from_millis(20),
             || Err(std::io::Error::from_raw_os_error(libc::EMFILE)),
-            || 7,
+            || called.set(true),
         );
-        assert_eq!(seen, Some(7));
+        assert_eq!(
+            seen.err().and_then(|e| e.raw_os_error()),
+            Some(libc::EMFILE)
+        );
+        assert!(!called.get());
         Ok(())
     }
 
@@ -594,7 +602,7 @@ mod tests {
                 42
             },
         );
-        assert_eq!(seen, None);
+        assert_eq!(seen.map_err(|e| e.to_string())?, None);
         assert_eq!(behind(reader.as_fd())?, dev_null()?);
         Ok(())
     }
@@ -812,7 +820,7 @@ mod tests {
         assert_eq!(path(&raw), PathBuf::from("/dev/pts/7"));
         let error = Error {
             call: "grantpt",
-            errno: Errno::INVAL,
+            source: Errno::INVAL.into(),
         };
         assert!(error.to_string().starts_with("grantpt: "));
     }
