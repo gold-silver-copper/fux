@@ -199,6 +199,12 @@ switches between them at the key that does it, so a key typed fast is never
 read in the wrong one; the server draws what your client shows, and keeps
 copy mode's cursor in the history only it holds.
 
+A binding's program first waits for the server to process this client's
+preceding keys and resizes, including any refusals. Later keys wait for the
+program to finish. Every request stays tied to that attachment and server
+run. This orders input admitted to a pane; it does not wait for the pane's
+program to read it or finish work.
+
 The prefix alone opens the **command column**, listing every binding, and
 those without the prefix last: arrows, PageUp/PageDown and Home/End move,
 Enter runs the selected one, a bound key runs its own, Esc closes; its moves
@@ -506,9 +512,13 @@ so: it starts where the dump is run.
   another host, or none, is told the scheme of the host it has once it
   has one. Colours a program sets (OSC 4, 10, 11) apply to its own pane
   only, and win over your terminal's; your terminal's palette is never
-  changed. A colour no one knows is not answered: one the host didn't
-  say, palette entries past 15 the program didn't set, and every colour
-  in a tab with no host.
+  changed. A pane's cursor colour (OSC 12) is painted only while its
+  cursor is focused; resetting it (OSC 112), changing focus, opening an
+  overlay or detaching restores the terminal's configured colour. This
+  reset does not recover a colour set before attaching. If fux never
+  applied a pane's cursor colour, detach leaves it alone. A colour no one
+  knows is not answered: one the host didn't say, palette entries past 15
+  the program didn't set, and every colour in a tab with no host.
 - **Bells.** A program's bell rings each terminal showing its workspace, at
   most once every 250 ms; a tab you are not looking at is marked `!` in the
   bar until you show it. `str bell false set` silences both.

@@ -226,10 +226,13 @@ impl Session {
         let (row, col) = rect.clamp(event.row, event.col);
         let event = MouseEvent { row, col, ..event };
         self.typed(client);
-        let mut report = Vec::new();
-        let asked = self.parts.panes().get(&pane);
-        asked.is_some_and(|p| p.screen().encode_mouse(event, &mut report))
-            && self.put_in(client, pane, |_, out| out.extend_from_slice(&report))
+        let Some(pane_screen) = self.parts.panes().get(&pane) else {
+            return false;
+        };
+        let Some(reports) = pane_screen.screen().encode_mouse(event) else {
+            return false;
+        };
+        self.put_in(client, pane, |_, out| out.extend(reports.flatten()))
     }
 }
 
@@ -951,6 +954,43 @@ mod tests {
         s.output(PaneId::of(3), b"\x1b[?1000h\x1b[?1006h");
         s.input(c, press(below.x() + 1, below.y() + 2).as_bytes());
         assert_eq!(queued(&mut s, 3), b"\x1b[<0;2;3M");
+        Ok(())
+    }
+
+    #[test]
+    fn a_wheel_expansion_is_admitted_or_refused_whole() -> Outcome {
+        let expected: Vec<u8> = std::iter::repeat_n(b"\x1b[A", 50)
+            .flatten()
+            .copied()
+            .collect();
+        for room in [0, 100, expected.len()] {
+            let (mut s, c) = crate::session::testing::attached(101, 20)?;
+            let id = PaneId::of(1);
+            s.output(id, b"\x1b[?1049h\x1b[?1007h\x1b[?1h\x1b[>1u");
+            let filled = crate::pane::INPUT_BYTES.saturating_sub(room);
+            s.parts
+                .pane_mut(id)
+                .ok_or("no %1")?
+                .push(vec![0; filled])
+                .map_err(|e| e.to_string())?;
+            s.input(c, b"\x1b[<80;1;1M");
+            let refused = room < expected.len();
+            let lost = s.parts.panes().get(&id).ok_or("no %1")?.lost();
+            assert_eq!(lost.input, u64::from(refused), "room for {room} bytes");
+            if refused {
+                assert!(notice(&s, c).starts_with("%1: input dropped (1):"));
+            } else {
+                assert_eq!(notice(&s, c), "");
+            }
+            let input = queued(&mut s, 1);
+            assert!(
+                input
+                    .get(..filled)
+                    .is_some_and(|b| b.iter().all(|b| *b == 0))
+            );
+            let arrows = input.get(filled..).ok_or("the queued prefix")?;
+            assert_eq!(arrows, if refused { &[] } else { expected.as_slice() });
+        }
         Ok(())
     }
 

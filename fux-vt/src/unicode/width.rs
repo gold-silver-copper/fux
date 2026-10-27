@@ -94,7 +94,7 @@ pub(super) fn of_bits(bits: u16) -> Option<usize> {
 /// the cursor (BS, HT, LF, VT, FF, CR) does; what follows is taken as at a
 /// row's start. What a control does on a screen (moving the cursor, an
 /// escape sequence; BEL ends no cluster) is not taken into account.
-pub fn clusters(text: &str) -> impl Iterator<Item = (&str, usize)> {
+pub fn clusters(text: &str) -> impl Iterator<Item = (&str, u16)> + Clone {
     let mut rest = text;
     std::iter::from_fn(move || {
         // Printable ASCII before ASCII, or at the end, is a cell of its own.
@@ -144,7 +144,7 @@ pub fn str_width(text: &str) -> usize {
     if text.is_ascii() {
         return text.bytes().filter(|b| !b.is_ascii_control()).count();
     }
-    clusters(text).fold(0, |sum, (_, width)| sum.saturating_add(width))
+    clusters(text).fold(0, |sum, (_, width)| sum.saturating_add(usize::from(width)))
 }
 
 /// What follows a character in its cluster, as the rule reads the cluster

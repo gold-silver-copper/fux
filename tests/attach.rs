@@ -653,7 +653,10 @@ fn a_signal_detached_client_writes_the_last_paint_before_leaving() -> Outcome {
             version: "0".into(),
             role: Role::Attach,
         });
-        let welcome = ToAttached::Welcome("c1".parse().map_err(e)?);
+        let welcome = ToAttached::Welcome(
+            "c1".parse().map_err(e)?,
+            "1-2".parse().map_err(|()| "test run")?,
+        );
         let ready = ToAttached::Paint(b"READY"[..].into());
         for frame in [hello.encode(), welcome.encode(), ready.encode()] {
             stream.write_all(&frame.map_err(e)?).map_err(e)?;

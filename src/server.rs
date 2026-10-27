@@ -163,6 +163,9 @@ enum Stage {
     /// (`Conn::reads`): a client that never reads its answers is read no
     /// more, and holds no more memory than one answer.
     Command,
+    /// One decoded request awaiting its source attachment's sent prefix.
+    /// Bounded like a wait: one request per command connection.
+    Blocked(Box<Asked>),
     /// Its request waits for its pane (`wait`, or a respawn under way): it
     /// is answered once the wait has an answer. It is read only to notice
     /// the client go.
@@ -187,6 +190,7 @@ impl Stage {
             | Stage::Attached(_)
             | Stage::Command
             | Stage::Waiting(_)
+            | Stage::Blocked(_)
             | Stage::Events(_) => true,
             Stage::Closing | Stage::Dead => false,
         }
@@ -195,7 +199,7 @@ impl Stage {
     /// Whether a request of its is under way: waiting or streaming.
     fn asked(&self) -> bool {
         match self {
-            Stage::Waiting(_) | Stage::Events(_) => true,
+            Stage::Blocked(_) | Stage::Waiting(_) | Stage::Events(_) => true,
             Stage::Hello
             | Stage::Attaching(_)
             | Stage::Attached(_)
@@ -211,6 +215,9 @@ impl Stage {
 /// terminal.
 struct Attached {
     client: ClientId,
+    /// Attached frames handled since Attach, refused ones too: what a
+    /// job's fence waits for.
+    processed: u64,
     /// What the client's terminal shows, for diffing, while `known`.
     shown: Grid,
     /// Whether `shown` is what the terminal shows: if not (a new client, a
@@ -315,6 +322,7 @@ impl Attached {
         let now = Instant::now();
         Attached {
             client,
+            processed: 0,
             shown: Grid::new(0, 0),
             known: false,
             spare: Grid::new(0, 0),
@@ -403,21 +411,22 @@ impl Conn {
     }
 
     /// Moves the connection on to `next`. One that was attached has its
-    /// client detached and its terminal given its own cursor shape back;
-    /// one that is dead stays so.
+    /// client detached and its terminal given its own cursor shape and
+    /// configured colour back; one that is dead stays so.
     fn enter(&mut self, session: &mut Session, next: Stage) {
         if matches!(self.stage, Stage::Dead) {
             return;
         }
         if let Stage::Attached(attached) = mem::replace(&mut self.stage, next) {
             session.detach(attached.client);
-            // A cursor shape a pane set is given back as the terminal's own
-            // (`render::cursor_shape`); one never set is left as it was.
-            let mut shape = Vec::new();
+            // Cursor overrides are given back as the terminal's own;
+            // one never set is left as it was.
+            let mut cursor = Vec::new();
             let initial = fux_vt::CursorShape::Initial;
-            render::cursor_shape(attached.shown.modes.cursor_shape, initial, &mut shape);
-            if !shape.is_empty() {
-                Attached::paint(&mut self.out, &shape);
+            render::cursor_shape(attached.shown.modes.cursor_shape, initial, &mut cursor);
+            render::cursor_colour(attached.shown.modes.cursor_colour, None, &mut cursor);
+            if !cursor.is_empty() {
+                Attached::paint(&mut self.out, &cursor);
             }
         }
     }
@@ -437,7 +446,7 @@ impl Conn {
             Ok(client) => {
                 let attached = Attached::new(client);
                 self.enter(session, Stage::Attached(Box::new(attached)));
-                self.send(session, &ToAttached::Welcome(client));
+                self.send(session, &ToAttached::Welcome(client, session.run));
             }
             Err(error) => self.end(session, &ToAttached::Exit(&error.to_string())),
         }
@@ -812,6 +821,15 @@ impl Server {
     /// what, go into `ready`.
     fn poll(&mut self, timeout: Option<Duration>, ready: &mut Vec<(Slot, PollFlags)>) {
         ready.clear();
+        let runnable: Vec<bool> = self
+            .conns
+            .iter()
+            .map(|conn| {
+                conn.frame_waits()
+                    || matches!(&conn.stage, Stage::Blocked(asked)
+                if !matches!(self.unprocessed(asked), Some(1..)))
+            })
+            .collect();
         let slots = &mut self.slots;
         slots.clear();
         // Built afresh, as it borrows the descriptors; each with its slot.
@@ -868,20 +886,19 @@ impl Server {
         }
         // A connection with frames waiting is served this round: the poll
         // does not wait.
-        let waits = self.conns.iter().any(Conn::frame_waits);
+        let waits = runnable.iter().any(|&ready| ready);
         let timeout = if waits { Some(Duration::ZERO) } else { timeout };
         match fuxix::poll::poll(&mut fds, timeout) {
             Ok(_) | Err(Errno::INTR) => {}
             Err(error) => log!("poll: {error}"),
         }
-        let conns = &self.conns;
         ready.extend(
             fds.iter()
                 .map(PollFd::revents)
                 .zip(slots.iter().copied())
                 .map(|(flags, slot)| {
                     let waits = matches!(slot, Slot::Conn(i)
-                        if conns.get(i).is_some_and(Conn::frame_waits));
+                        if runnable.get(i).copied().unwrap_or(false));
                     (if waits { flags | PollFlags::IN } else { flags }, slot)
                 })
                 .filter(|(flags, _)| !flags.is_empty())
@@ -916,7 +933,7 @@ impl Server {
                 Stage::Attaching(_) | Stage::Attached(_) => {
                     conn.end(session, &ToAttached::Exit(&exit));
                 }
-                Stage::Command | Stage::Waiting(_) | Stage::Events(_) => {
+                Stage::Command | Stage::Blocked(_) | Stage::Waiting(_) | Stage::Events(_) => {
                     conn.end(session, &ToCommand::Exit(&exit));
                 }
                 Stage::Closing | Stage::Dead => {}
@@ -1172,6 +1189,15 @@ impl Server {
         if flags.intersects(PollFlags::IN) || gone || (!reads && conn.reads()) {
             self.read_conn(index);
         }
+        let eligible = self.conns.get(index).is_some_and(|conn| {
+            matches!(&conn.stage, Stage::Blocked(asked) if !matches!(self.unprocessed(asked), Some(1..)))
+        });
+        if eligible && let Some(conn) = self.conns.get_mut(index) {
+            let stage = mem::replace(&mut conn.stage, Stage::Command);
+            if let Stage::Blocked(asked) = stage {
+                self.ordered_request(index, *asked);
+            }
+        }
     }
 
     /// Handles the whole frames a client sent, then reads more, until it
@@ -1273,41 +1299,94 @@ impl Server {
                 };
                 conn.attach(session, kind, attach);
             }
-            Stage::Attached(attached) => match decoder.frame()? {
-                Some(AttachedFrame::Act(act)) => attached.act(session, *act),
-                // The client's terminal was resized, which may have moved
-                // what it shows even if the size it ends at is the same:
-                // forgotten, it is repainted in full either way, and its
-                // cell size, which a font zoom changes, is asked again.
-                Some(AttachedFrame::Resize(size)) => {
-                    attached.known = false;
-                    session.terminal_resized(attached.client);
-                    let resized = session.resize(attached.client, size.rows(), size.cols());
-                    if let Err(refused) = resized {
-                        session.notify_to(attached.client, refused.to_string(), true);
+            Stage::Attached(attached) => {
+                match decoder.frame()? {
+                    Some(AttachedFrame::Act(act)) => attached.act(session, *act),
+                    // The client's terminal was resized, which may have moved
+                    // what it shows even if the size it ends at is the same:
+                    // forgotten, it is repainted in full either way, and its
+                    // cell size, which a font zoom changes, is asked again.
+                    Some(AttachedFrame::Resize(size)) => {
+                        attached.known = false;
+                        session.terminal_resized(attached.client);
+                        let resized = session.resize(attached.client, size.rows(), size.cols());
+                        if let Err(refused) = resized {
+                            session.notify_to(attached.client, refused.to_string(), true);
+                        }
+                    }
+                    Some(AttachedFrame::Detach) => conn.end(session, &ToAttached::Exit("detached")),
+                    None => return Ok(false),
+                }
+                if let Some(attached) = conn.attached() {
+                    if let Some(next) = attached.processed.checked_add(1) {
+                        attached.processed = next;
+                    } else {
+                        conn.end(session, &ToAttached::Exit("attached frame count exhausted"));
                     }
                 }
-                Some(AttachedFrame::Detach) => conn.end(session, &ToAttached::Exit("detached")),
-                None => return Ok(false),
-            },
+            }
             // The last answer is still being written: the next request waits.
             Stage::Command if !conn.out.is_empty() => return Ok(false),
             Stage::Command => {
-                let Some(Asked { request, context }) = decoder.frame()? else {
+                let Some(asked) = decoder.frame()? else {
                     return Ok(false);
                 };
-                self.request(index, request, context);
+                self.ordered_request(index, asked);
             }
             // Nothing more is asked of a waiting command, or a stream. A
             // connection that is ending has had its last word: what came
             // with the Detach, Command or refused Hello that ended it is
             // dropped unread.
-            Stage::Waiting(_) | Stage::Events(_) | Stage::Closing | Stage::Dead => {
+            Stage::Blocked(_)
+            | Stage::Waiting(_)
+            | Stage::Events(_)
+            | Stage::Closing
+            | Stage::Dead => {
                 *decoder = Decoder::default();
                 return Ok(false);
             }
         }
         Ok(true)
+    }
+
+    /// How many attached frames the source has yet to process: zero with
+    /// no fence, or None if the source is not attached in this server run.
+    fn unprocessed(&self, asked: &Asked) -> Option<u64> {
+        let Some(fence) = &asked.after else {
+            return Some(0);
+        };
+        if fence.run != self.session.run {
+            return None;
+        }
+        self.conns.iter().find_map(|conn| {
+            let Stage::Attached(attached) = &conn.stage else {
+                return None;
+            };
+            (attached.client == fence.client)
+                .then(|| fence.frames.saturating_sub(attached.processed))
+        })
+    }
+
+    /// Begins only after the source's earlier attached frames were
+    /// processed. No resolution, mutation or wait baseline precedes this.
+    fn ordered_request(&mut self, index: usize, asked: Asked) {
+        match self.unprocessed(&asked) {
+            Some(0) => self.request(index, asked.request, asked.context),
+            Some(_) => {
+                if let Some(conn) = self.conns.get_mut(index) {
+                    conn.enter(&mut self.session, Stage::Blocked(Box::new(asked)));
+                }
+            }
+            None => {
+                if let Some(conn) = self.conns.get_mut(index) {
+                    let reply = Reply::failed(
+                        Code::NoClient,
+                        "the job's source is not attached in this server run",
+                    );
+                    conn.answer(&mut self.session, reply);
+                }
+            }
+        }
     }
 
     /// A request from connection `index`: answered now, or once its wait
@@ -1521,6 +1600,423 @@ mod tests {
         (painted, exit)
     }
 
+    /// Worker first, source second, unrelated command third. No process or
+    /// listener is started; each turn is chosen by the test.
+    fn ordered_fixture() -> Result<(Server, Vec<UnixStream>, ClientId), Box<dyn std::error::Error>>
+    {
+        let (session, source, peer) = attached()?;
+        let client = session.views.keys().next().copied().ok_or("no client")?;
+        let command = || -> Result<(Conn, UnixStream), std::io::Error> {
+            let (stream, peer) = UnixStream::pair()?;
+            stream.set_nonblocking(true)?;
+            let mut conn = Conn::new(stream);
+            conn.stage = Stage::Command;
+            Ok((conn, peer))
+        };
+        let (worker, worker_peer) = command()?;
+        let (unrelated, unrelated_peer) = command()?;
+        source.stream.set_nonblocking(true)?;
+        let conns = vec![worker, source, unrelated];
+        let peers = vec![worker_peer, peer, unrelated_peer];
+        let server = Server {
+            session,
+            phase: Phase::Stopping(Instant::now()),
+            conns,
+            children: fuxix::signal::Pipe::new(&[])?,
+            stops: fuxix::signal::Pipe::new(&[])?,
+            killed: Vec::new(),
+            read_buffer: vec![0; 64 * 1024],
+            paint_buffer: Vec::new(),
+            slots: Vec::new(),
+            ready: Vec::new(),
+            accept_logged: None,
+        };
+        Ok((server, peers, client))
+    }
+
+    fn key_request(run: crate::command::Run, client: ClientId, frames: u64) -> Asked {
+        Asked {
+            after: Some(crate::protocol::Fence {
+                run,
+                client,
+                frames,
+            }),
+            context: Context {
+                client: Some(client),
+                ..Context::default()
+            },
+            request: crate::command::Command::SendKeys {
+                to: crate::command::To::Now(crate::command::AnyRef::Pane(PaneId::of(1))),
+                inputs: vec![crate::command::Input::Text("Z".into())],
+            }
+            .into(),
+        }
+    }
+
+    /// A queued prefix larger than a fair turn always precedes the job,
+    /// even with the worker served first and frames split across reads.
+    #[test]
+    fn a_job_cannot_overtake_its_attached_prefix() -> Result<(), Box<dyn std::error::Error>> {
+        const KEYS: usize = 3000;
+        for partition in [1, 257, usize::MAX] {
+            let (mut server, _peers, client) = ordered_fixture()?;
+            let key = AttachedFrame::Act(Box::new(crate::act::Act::Key(
+                crate::keys::KeyPress::char('a').into(),
+            )))
+            .encode()?;
+            let resize = AttachedFrame::Resize(fux_vt::Size::new(10, 40)?).encode()?;
+            let mut prefix = Vec::new();
+            for _ in 0..KEYS {
+                prefix.extend_from_slice(&key);
+            }
+            prefix.extend_from_slice(&resize);
+            let frames = u64::try_from(KEYS + 1)?;
+            let asked = key_request(server.session.run, client, frames);
+            server
+                .conns
+                .get_mut(0)
+                .ok_or("worker")?
+                .decoder
+                .push(&asked.encode()?);
+            server.serve_conn(0, PollFlags::IN);
+            assert!(matches!(
+                server.conns.first().map(|c| &c.stage),
+                Some(Stage::Blocked(_))
+            ));
+            assert!(!server.conns.first().ok_or("worker")?.frame_waits());
+            // A blocked worker must not force zero-time polls.
+            let mut ready = Vec::new();
+            server.poll(Some(Duration::ZERO), &mut ready);
+            assert!(!ready.iter().any(|(slot, _)| matches!(slot, Slot::Conn(0))));
+
+            let unrelated = Asked {
+                after: None,
+                request: crate::command::Command::Ls {
+                    target: None,
+                    get: None,
+                }
+                .into(),
+                context: Context::default(),
+            };
+            server
+                .conns
+                .get_mut(2)
+                .ok_or("unrelated")?
+                .decoder
+                .push(&unrelated.encode()?);
+            let mut left = prefix.as_slice();
+            while !left.is_empty() {
+                let (chunk, rest) = left
+                    .split_at_checked(partition.min(left.len()))
+                    .ok_or("partition")?;
+                left = rest;
+                server.conns.get_mut(1).ok_or("source")?.decoder.push(chunk);
+                server.serve_conn(0, PollFlags::IN);
+                let before = server
+                    .conns
+                    .get_mut(1)
+                    .and_then(Conn::attached)
+                    .ok_or("source")?
+                    .processed;
+                server.serve_conn(1, PollFlags::IN);
+                let after = server
+                    .conns
+                    .get_mut(1)
+                    .and_then(Conn::attached)
+                    .ok_or("source")?
+                    .processed;
+                assert!(after - before <= u64::try_from(CONN_FRAMES)?);
+                if before == 0 && after > 0 {
+                    assert!(after < frames);
+                    if partition == usize::MAX {
+                        assert!(server.conns.get(1).ok_or("source")?.frame_waits());
+                    }
+                    server.serve_conn(2, PollFlags::IN);
+                    assert!(!server.conns.get(2).ok_or("unrelated")?.out.is_empty());
+                }
+            }
+            while matches!(server.unprocessed(&asked), Some(1..)) {
+                server.serve_conn(0, PollFlags::IN);
+                let before = server
+                    .conns
+                    .get_mut(1)
+                    .and_then(Conn::attached)
+                    .ok_or("source")?
+                    .processed;
+                assert!(
+                    server
+                        .session
+                        .parts
+                        .panes()
+                        .get(&PaneId::of(1))
+                        .ok_or("pane")?
+                        .input()
+                        .len()
+                        <= KEYS
+                );
+                server.serve_conn(1, PollFlags::IN);
+                let after = server
+                    .conns
+                    .get_mut(1)
+                    .and_then(Conn::attached)
+                    .ok_or("source")?
+                    .processed;
+                assert!(after > before && after - before <= u64::try_from(CONN_FRAMES)?);
+            }
+            server.poll(Some(Duration::ZERO), &mut ready);
+            assert!(ready.iter().any(|(slot, _)| matches!(slot, Slot::Conn(0))));
+            server.serve_conn(0, PollFlags::IN);
+            let got = server
+                .session
+                .parts
+                .pane_mut(PaneId::of(1))
+                .ok_or("pane")?
+                .drain_input();
+            let mut expected = vec![b'a'; KEYS];
+            expected.push(b'Z');
+            assert_eq!(got, expected, "partition {partition}");
+        }
+        Ok(())
+    }
+
+    /// Client ids reused by another server run cannot satisfy an old job.
+    #[test]
+    fn a_fence_only_names_its_original_server() -> Result<(), Box<dyn std::error::Error>> {
+        let (mut server, _peers, client) = ordered_fixture()?;
+        server.ordered_request(
+            0,
+            key_request("1-2".parse().map_err(|()| "test run")?, client, 0),
+        );
+        let conn = server.conns.first().ok_or("worker")?;
+        assert!(matches!(conn.stage, Stage::Command));
+        assert!(!conn.out.is_empty());
+        assert!(
+            server
+                .session
+                .parts
+                .panes()
+                .get(&PaneId::of(1))
+                .ok_or("pane")?
+                .input()
+                .is_empty()
+        );
+        Ok(())
+    }
+
+    /// Cancelling a blocked request drops it; losing its source refuses it.
+    /// Neither path leaves a held request behind after connections move.
+    #[test]
+    fn a_blocked_job_ends_with_its_command_or_source() -> Result<(), Box<dyn std::error::Error>> {
+        for ending in ["cancel", "eof", "detach"] {
+            let (mut server, peers, client) = ordered_fixture()?;
+            server.ordered_request(0, key_request(server.session.run, client, 1000));
+            assert!(matches!(
+                server.conns.first().map(|c| &c.stage),
+                Some(Stage::Blocked(_))
+            ));
+            if ending == "cancel" {
+                peers
+                    .first()
+                    .ok_or("worker")?
+                    .shutdown(std::net::Shutdown::Both)?;
+                server.serve_conn(0, PollFlags::IN);
+                assert!(matches!(
+                    server.conns.first().map(|c| &c.stage),
+                    Some(Stage::Dead)
+                ));
+            } else {
+                if ending == "eof" {
+                    peers
+                        .get(1)
+                        .ok_or("source")?
+                        .shutdown(std::net::Shutdown::Both)?;
+                } else {
+                    server
+                        .conns
+                        .get_mut(1)
+                        .ok_or("source")?
+                        .decoder
+                        .push(&AttachedFrame::Detach.encode()?);
+                }
+                server.serve_conn(1, PollFlags::IN);
+                if let Some(source) = server.conns.get_mut(1) {
+                    source.out = ByteQueue::default();
+                }
+                server.close_conns();
+                server.serve_conn(0, PollFlags::IN);
+                let conn = server.conns.first().ok_or("worker")?;
+                assert!(matches!(conn.stage, Stage::Command));
+                let mut decoder = Decoder::default();
+                decoder.push(conn.out.as_slice());
+                let Some(ToCommand::Part(part)) = decoder.frame()? else {
+                    return Err("no refusal".into());
+                };
+                let reply = crate::wire::Reader::new(&part).whole::<Reply>()?;
+                assert!(matches!(
+                    reply.end,
+                    crate::protocol::End::Failed {
+                        code: Code::NoClient,
+                        ..
+                    }
+                ));
+            }
+            assert!(
+                !server
+                    .conns
+                    .iter()
+                    .any(|c| matches!(c.stage, Stage::Blocked(_)))
+            );
+        }
+        Ok(())
+    }
+
+    /// Waits only for the worker socket: the test chooses every server turn.
+    fn command_readable(server: &Server) -> Result<(), String> {
+        let conn = server.conns.first().ok_or("worker")?;
+        let mut fds = [PollFd::new(&conn.stream, PollFlags::IN)];
+        match fuxix::poll::poll(&mut fds, Some(Duration::from_secs(3))) {
+            Ok(0) => Err("the worker did not ask".into()),
+            Ok(_) => Ok(()),
+            Err(error) => Err(error.to_string()),
+        }
+    }
+
+    /// Handles and writes one greeting or reply without reading ahead into
+    /// the next request, so a transport failure has an exact position.
+    fn command_reply(server: &mut Server) -> Result<(), String> {
+        while server.conns.first().ok_or("worker")?.out.is_empty() {
+            command_readable(server)?;
+            server.serve_conn(0, PollFlags::IN);
+            if matches!(
+                server.conns.first().ok_or("worker")?.stage,
+                Stage::Closing | Stage::Dead
+            ) {
+                return Err("the worker closed before its request".into());
+            }
+        }
+        server
+            .conns
+            .first_mut()
+            .ok_or("worker")?
+            .flush(&mut server.session);
+        Ok(())
+    }
+
+    fn command_connection(server: &mut Server, listener: &UnixListener) -> Result<(), String> {
+        let mut fds = [PollFd::new(listener, PollFlags::IN)];
+        if fuxix::poll::poll(&mut fds, Some(Duration::from_secs(3))).map_err(|e| e.to_string())?
+            == 0
+        {
+            return Err("the worker did not connect".into());
+        }
+        let (stream, _) = listener.accept().map_err(|e| e.to_string())?;
+        stream.set_nonblocking(true).map_err(|e| e.to_string())?;
+        *server.conns.first_mut().ok_or("worker")? = Conn::new(stream);
+        command_reply(server)
+    }
+
+    /// A failed fence and a successful prefix both remain the job's source
+    /// identity: catching a refusal or reconnecting cannot bypass either.
+    #[test]
+    fn every_request_keeps_its_jobs_source_fence() -> Result<(), Box<dyn std::error::Error>> {
+        use crate::script::Asks;
+        use std::os::unix::fs::PermissionsExt;
+        for rejected in [false, true] {
+            let dir = std::env::temp_dir().join(format!("ff-{}-{rejected}", std::process::id()));
+            fs::create_dir_all(&dir)?;
+            fs::set_permissions(&dir, fs::Permissions::from_mode(0o700))?;
+            let path = dir.join("s.sock");
+            let listener = UnixListener::bind(&path)?;
+            listener.set_nonblocking(true)?;
+            let original = "1-2".parse().map_err(|()| "original run")?;
+            let replacement = "2-3".parse().map_err(|()| "replacement run")?;
+            let peer = std::thread::spawn(move || -> Result<Vec<u8>, String> {
+                let (mut server, _peers, client) = ordered_fixture().map_err(|e| e.to_string())?;
+                server.session.run = if rejected { replacement } else { original };
+                command_connection(&mut server, &listener)?;
+                command_reply(&mut server)?; // The first request.
+                if !rejected {
+                    command_readable(&server)?;
+                    server
+                        .conns
+                        .first()
+                        .ok_or("worker")?
+                        .stream
+                        .shutdown(std::net::Shutdown::Both)
+                        .map_err(|e| e.to_string())?;
+                    // The same socket path now belongs to a different run
+                    // that reused the original source's client id.
+                    let (mut next, _next_peers, reused) =
+                        ordered_fixture().map_err(|e| e.to_string())?;
+                    assert_eq!(reused, client);
+                    next.session.run = replacement;
+                    command_connection(&mut next, &listener)?;
+                    server = next;
+                    // Keep the replacement attachment's peers alive until
+                    // its last request has been served.
+                    command_reply(&mut server)?;
+                } else {
+                    command_reply(&mut server)?;
+                }
+                Ok(server
+                    .session
+                    .parts
+                    .pane_mut(PaneId::of(1))
+                    .ok_or("pane")?
+                    .drain_input())
+            });
+            let result = (|| -> Result<Reply, String> {
+                let mut asks = crate::script::Server::new(crate::socket::Choice::Path(path));
+                let client = "c1".parse().map_err(|e| format!("client: {e}"))?;
+                let mut mutation = key_request(original, client, 0);
+                asks.after = mutation.after.take();
+                let probe = Asked {
+                    after: None,
+                    context: mutation.context.clone(),
+                    request: crate::command::Command::Ls {
+                        target: None,
+                        get: None,
+                    }
+                    .into(),
+                };
+                let first = asks
+                    .ask(&probe, &mut std::io::sink())
+                    .map_err(|e| e.to_string())?;
+                if rejected {
+                    assert!(matches!(
+                        first.end,
+                        crate::protocol::End::Failed {
+                            code: Code::NoClient,
+                            ..
+                        }
+                    ));
+                } else {
+                    assert!(matches!(first.end, crate::protocol::End::Done));
+                    assert!(asks.ask(&probe, &mut std::io::sink()).is_err());
+                }
+                asks.ask(&mutation, &mut std::io::sink())
+                    .map_err(|e| e.to_string())
+            })();
+            let input = peer.join().map_err(|_| "server thread panicked")?;
+            fs::remove_dir_all(&dir)?;
+            let reply = result
+                .map_err(|e| format!("client rejected={rejected}: {e}; server: {input:?}"))?;
+            let input = input?;
+            assert!(
+                matches!(
+                    reply.end,
+                    crate::protocol::End::Failed {
+                        code: Code::NoClient,
+                        ..
+                    }
+                ),
+                "rejected={rejected}: {reply:?}"
+            );
+            assert!(input.is_empty(), "rejected={rejected}: {input:?}");
+        }
+        Ok(())
+    }
+
     /// A client whose screen is forgotten, as on a resize that ends at the
     /// same size, is due a full paint though nothing it views changed; but
     /// not while its last frame is still being written.
@@ -1571,6 +2067,24 @@ mod tests {
             matches!(exit, Some(ToAttached::Exit(why)) if why.starts_with("detached: ")),
             "{exit:?}"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn detaching_restores_only_an_explicit_cursor_colour() -> Result<(), String> {
+        for (colour, reset) in [
+            (None, &b""[..]),
+            (Some([0, 255, 0].into()), &b"\x1b]112\x1b\\"[..]),
+        ] {
+            let (mut session, mut conn, _peer) = attached()?;
+            if let Some(attached) = conn.attached() {
+                attached.shown.modes.cursor_colour = colour;
+            }
+            conn.end(&mut session, &ToAttached::Exit("detached"));
+            let (painted, exit) = sent(&conn);
+            assert_eq!(painted, reset);
+            assert_eq!(exit.as_deref(), Some("detached"));
+        }
         Ok(())
     }
 

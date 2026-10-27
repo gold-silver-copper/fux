@@ -632,6 +632,7 @@ fn a_stop_between_requests_leaves_the_connection_asking() -> Outcome {
     let stop = fux::script::Stop::default();
     let mut asks = fux::script::Server::stoppable(path, stop.clone());
     let ls = fux::protocol::Asked {
+        after: None,
         request: fux::command::Command::Ls {
             target: None,
             get: None,
