@@ -20,7 +20,6 @@ use crate::view::ClientKind;
 use crate::wait::Waiting;
 use fuxix::Errno;
 use fuxix::poll::{Events as PollFlags, PollFd};
-use signal_hook::consts::SIGCHLD;
 use std::fs;
 use std::io::{ErrorKind, Write};
 use std::mem;
@@ -528,11 +527,11 @@ pub struct Server {
     session: Session,
     phase: Phase,
     conns: Vec<Conn>,
-    children: crate::SignalPipe,
+    children: fuxix::signal::Pipe,
     /// Closed panes' programs killed but not yet exited, reaped once SIGCHLD
     /// says they have.
     killed: Vec<Pid>,
-    stops: crate::SignalPipe,
+    stops: fuxix::signal::Pipe,
     /// Where bytes read from a client's connection or terminal land before
     /// they are taken; one for the server, reused by every read.
     read_buffer: Vec<u8>,
@@ -568,12 +567,13 @@ impl std::error::Error for Error {}
 /// Runs a server on `socket` until it is told to stop or its last pane
 /// closes.
 pub fn serve(socket: &SocketPath) -> Result<(), Error> {
-    let children = crate::SignalPipe::new(&[SIGCHLD]).map_err(Error::Setup)?;
+    let children = fuxix::signal::Pipe::new(&[fuxix::process::Signal::Chld])
+        .map_err(|e| Error::Setup(e.into()))?;
     // Orphans the panes' programs leave stay the server's to read and reap.
     if let Err(errno) = fuxix::process::adopt_orphans() {
         log!("adopting orphans: {errno}");
     }
-    let stops = crate::SignalPipe::new(&crate::STOPS).map_err(Error::Setup)?;
+    let stops = fuxix::signal::Pipe::new(&crate::STOPS).map_err(|e| Error::Setup(e.into()))?;
     // Settings come from clients (`set`), each running its config.
     let run = crate::command::Run::now().ok_or_else(|| {
         Error::Setup(std::io::Error::other(
@@ -692,11 +692,11 @@ impl Server {
                 match slot {
                     Slot::Listener => self.accept(),
                     Slot::Children => {
-                        crate::drain(self.children.pipe());
+                        crate::drain(self.children.reader());
                         self.reap();
                     }
                     Slot::Stops => {
-                        crate::drain(self.stops.pipe());
+                        crate::drain(self.stops.reader());
                         self.stop("stopped by a signal".into());
                     }
                     Slot::Conn(i) => self.serve_conn(i, flags),
@@ -831,10 +831,10 @@ impl Server {
             );
         }
         add(
-            PollFd::new(self.children.pipe(), PollFlags::IN),
+            PollFd::new(self.children.reader(), PollFlags::IN),
             Slot::Children,
         );
-        add(PollFd::new(self.stops.pipe(), PollFlags::IN), Slot::Stops);
+        add(PollFd::new(self.stops.reader(), PollFlags::IN), Slot::Stops);
         for (i, conn) in self.conns.iter().enumerate() {
             // A connection that is not read is polled only for what it
             // has to write. One with nothing to write either (an attach

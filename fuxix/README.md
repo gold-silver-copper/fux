@@ -42,6 +42,7 @@ quickly, by any processes (see [the report for Apple](https://github.com/gold-si
 | `io::cloexec_from` | `close_range(CLOSE_RANGE_CLOEXEC)`, else `fcntl` on each up to past the descriptors `io::open_end` listed (Android: always) | `fcntl` on each up to past the descriptors `io::open_end` listed | not offered |
 | `io::open_end` | the highest number in `/dev/fd`, before `fork` | the same | not offered |
 | `io::duplicate_inheritable` | `dup` | the same | std's copies are close-on-exec |
+| `signal::notify`, `signal::Pipe` | `sigaction(SA_RESTART)`, a handler that writes a byte to each non-blocking pipe held for its signal (64 at most), saving `errno`; `Pipe` is one pipe for several signals | the same | not offered |
 | `poll::poll` | `ppoll`, with an exact timeout | `poll`, the timeout rounded up to a millisecond | not offered |
 | `process::kill`, `kill_group`, `exists` | `kill`, `killpg`, `kill(pid, 0)` | the same | std signals only its own children, and only with SIGKILL |
 | `process::geteuid`, `session` | `geteuid`, `getsid` | the same | not offered |
