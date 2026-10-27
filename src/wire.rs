@@ -46,7 +46,7 @@ pub struct Reader<'a>(&'a [u8], usize);
 
 impl<'a> Reader<'a> {
     pub fn new(bytes: &'a [u8]) -> Reader<'a> {
-        Reader(bytes, MAX_DECODED)
+        Reader(bytes, MAX_ALLOCATED)
     }
     pub(crate) fn charge(&mut self, bytes: usize) -> Result<(), Error> {
         self.1 = self.1.checked_sub(bytes).ok_or(Error::Limit)?;
@@ -101,21 +101,20 @@ pub trait Wire: Sized {
 /// The default-history styled capture measured 21.9 MB. The next binary
 /// power admits that observation, while bounding unfinished Part streams.
 pub const MAX_REPLY: usize = 32 << 20;
-/// Heap bytes retained by decoding, including list slots and string data.
-/// JSON nulls take one wire byte but a full enum slot in memory.
-pub const MAX_DECODED: usize = 128 << 20;
+/// Shared construction and decoding grant. The default styled capture
+/// peaked at 69,599,283 construction bytes and charged 48,902,484 decoded
+/// bytes. The next binary power above the larger measurement lets the
+/// receiver accept the same owned-data grant the builder admits.
+pub const MAX_ALLOCATED: usize = 128 << 20;
 
 /// Retained construction space, charged before cloning data or growing lists.
 pub(crate) struct Budget(usize);
 impl Budget {
     pub(crate) fn new() -> Self {
-        Self::with_limit(MAX_DECODED / 2)
+        Self::with_limit(MAX_ALLOCATED)
     }
     pub(crate) fn with_limit(bytes: usize) -> Self {
         Self(bytes)
-    }
-    pub(crate) fn remaining(&self) -> usize {
-        self.0
     }
     pub(crate) fn charge(&mut self, bytes: usize) -> Result<(), crate::session::Error> {
         self.0 = self.0.checked_sub(bytes).ok_or_else(Self::exceeded)?;
@@ -133,6 +132,56 @@ impl Budget {
         let mut out = Vec::new();
         out.try_reserve_exact(count).map_err(|_| Self::exceeded())?;
         Ok(out)
+    }
+    pub(crate) fn release(&mut self, bytes: usize) -> Result<(), crate::session::Error> {
+        self.0 = self.0.checked_add(bytes).ok_or_else(Self::exceeded)?;
+        Ok(())
+    }
+    /// Charge the whole replacement block while the old one is live.
+    pub(crate) fn reserve<T>(
+        &mut self,
+        out: &mut Vec<T>,
+        more: usize,
+    ) -> Result<(), crate::session::Error> {
+        let needed = out.len().checked_add(more).ok_or_else(Self::exceeded)?;
+        if needed <= out.capacity() {
+            return Ok(());
+        }
+        let capacity = needed
+            .checked_next_power_of_two()
+            .ok_or_else(Self::exceeded)?
+            .max(4);
+        self.slots::<T>(capacity)?;
+        let old = out
+            .capacity()
+            .checked_mul(std::mem::size_of::<T>())
+            .ok_or_else(Self::exceeded)?;
+        out.try_reserve_exact(capacity.saturating_sub(out.len()))
+            .map_err(|_| Self::exceeded())?;
+        self.release(old)
+    }
+    pub(crate) fn text(
+        &mut self,
+        out: &mut String,
+        text: &str,
+    ) -> Result<(), crate::session::Error> {
+        let needed = out
+            .len()
+            .checked_add(text.len())
+            .ok_or_else(Self::exceeded)?;
+        if needed > out.capacity() {
+            let capacity = needed
+                .checked_next_power_of_two()
+                .ok_or_else(Self::exceeded)?
+                .max(8);
+            self.charge(capacity)?;
+            let old = out.capacity();
+            out.try_reserve_exact(capacity.saturating_sub(out.len()))
+                .map_err(|_| Self::exceeded())?;
+            self.release(old)?;
+        }
+        out.push_str(text);
+        Ok(())
     }
     pub(crate) fn exceeded() -> crate::session::Error {
         crate::session::fail(
@@ -172,6 +221,13 @@ impl Writer {
             bytes: None,
             left: limit,
             failed: false,
+        }
+    }
+    pub(crate) fn check_ref(&self) -> Result<(), Error> {
+        if self.failed {
+            Err(Error::Limit)
+        } else {
+            Ok(())
         }
     }
     pub fn check(self) -> Result<(), Error> {
@@ -671,6 +727,37 @@ mod tests {
         let mut reader = Reader::new(&bytes);
         reader.1 = std::mem::size_of::<crate::json::Json>();
         assert_eq!(reader.whole::<crate::json::Json>(), Err(Error::Limit));
+        Ok(())
+    }
+
+    /// The audited default-history shape needs more than the proposed
+    /// 32 MiB of decoded storage, but fits the shared allocation grant.
+    #[test]
+    fn default_styled_capture_fits_decoded_budget() -> Result<(), Box<dyn std::error::Error>> {
+        use crate::capture::{Captured, Cut, Of};
+        use crate::protocol::{Body, Reply};
+        let line: Vec<_> = (0u8..100)
+            .map(|color| Cut {
+                text: "x".to_owned(),
+                cells: 1,
+                style: fux_vt::Attributes::new(fux_vt::Color::Idx(color), fux_vt::Color::Default),
+            })
+            .collect();
+        let captured = Captured {
+            of: Of::Client(ClientId::of(1)),
+            screen_rows: 40,
+            screen_cols: 120,
+            screen_cursor: None,
+            lines: std::iter::repeat_n(line, 9931).collect(),
+            styles: true,
+            marks: false,
+        };
+        let bytes = encode(&Reply::from(Body::Capture(Box::new(captured))))?;
+        let mut reader = Reader::new(&bytes);
+        let reply = Reply::get(&mut reader)?;
+        let charged = MAX_ALLOCATED.saturating_sub(reader.1);
+        assert!(charged > 32 << 20 && charged <= MAX_ALLOCATED, "{charged}");
+        assert!(matches!(reply.body, Body::Capture(_)));
         Ok(())
     }
 

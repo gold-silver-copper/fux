@@ -14,7 +14,7 @@ use fux_vt::{
 use std::time::Instant;
 
 /// Hard work ceiling, calibrated against the audit's default-history capture.
-pub(crate) const MAX_CELLS: usize = 16 << 20;
+pub(crate) const OUTPUT_CELLS: usize = 2 * crate::wire::MAX_REPLY;
 
 /// Rows selected for a capture, each with the columns its source takes.
 type ReadRows<'a> = Box<dyn Iterator<Item = (Row<'a>, std::ops::Range<usize>)> + 'a>;
@@ -136,9 +136,6 @@ fn pane_with(
     limits: Limits,
 ) -> Result<Captured, crate::session::Error> {
     let screen = pane.screen();
-    if view.source == Source::LastOutput && screen.rows().len() > limits.rows.min(limits.cells) {
-        return Err(too_large());
-    }
     let (read, above) = rows_of(screen, history, view);
     // The cursor's row and column, if it shows on the screen captured: the
     // last output is read from the screen shown, whatever else is asked.
@@ -153,7 +150,7 @@ fn pane_with(
     // Joined, a line some of whose rows `rows` takes is taken whole: the
     // range widened to the whole lines at its ends.
     let selection = selected_rows(read, view, limits)?;
-    let read = || selection.read(rows_of(screen, history, view).0);
+    let read = selection.read(rows_of(screen, history, view).0);
     let mut budget = crate::wire::Budget::new();
     let mut state = state(pane, Instant::now(), copy_mode, &mut budget)?;
     // The history rows kept above the first row read: history it was not
@@ -167,8 +164,8 @@ fn pane_with(
     build(read, of, (screen.size().into(), cursor), view, &mut budget)
 }
 
-fn build<'a>(
-    read: impl Fn() -> ReadRows<'a>,
+fn build(
+    read: ReadRows<'_>,
     of: Of,
     (size, cursor): ((u16, u16), Option<(u16, u16)>),
     view: CaptureView,
@@ -177,41 +174,40 @@ fn build<'a>(
     let mut lines: Vec<Vec<LineRun>> = Vec::new();
     let mut wraps = false;
     let mut blanks = 0usize;
-    admit(read(), view, &of, budget.remaining())?;
-    for (row, span) in read() {
-        // A wide glyph's second cell is drawn as its first: the same style,
-        // so a run of it is not broken in two.
-        let mut lead = Attributes::default();
-        // Joined, the spacer a wide glyph left at the row's end, not fitting
-        // there, is no part of the line (`Row::ends_in_spacer`).
-        let spacer = usize::from(!view.wrapped && row.ends_in_spacer());
-        let cells = row
+    use crate::wire::{Sink, Wire};
+    let mut wire = crate::wire::Writer::counting(crate::wire::MAX_REPLY.saturating_sub(64));
+    of.put(&mut wire);
+    wire.check_ref().map_err(|_| too_large())?;
+    for (row, span) in read {
+        let source_start = span.start;
+        let source_end = columns(row, span.clone(), CaptureView { cols: None, ..view }).end;
+        let span = columns(row, span, view);
+        let count = span.len();
+        let mut lead = if span.start > source_start {
+            row.cell(span.start.saturating_sub(1))
+                .map_or(Attributes::default(), |cell| cell.attributes())
+        } else {
+            Attributes::default()
+        };
+        let mut cells = row
             .cells()
-            .take(row.len().saturating_sub(spacer))
-            .enumerate()
-            .filter(|(col, _)| span.contains(col))
-            .map(move |(_, cell)| {
+            .skip(span.start)
+            .take(source_end.saturating_sub(span.start))
+            .map(move |cell| {
                 if cell.is_wide_continuation() {
                     ("", lead)
                 } else {
                     lead = cell.attributes();
                     (cell.shown(), lead)
                 }
-            });
-        // Columns are relative to the span (last-output may start mid-row).
-        let (start, count) = view.cols.map_or((0, usize::MAX), |(start, end)| {
-            (
-                usize::from(start),
-                usize::from(end)
-                    .saturating_sub(usize::from(start))
-                    .saturating_add(1),
-            )
-        });
-        let mut cells = cells.skip(start).peekable();
+            })
+            .peekable();
         if !wraps || lines.is_empty() {
-            trim_line(&mut lines, blanks);
+            trim_line(&mut lines, blanks, budget)?;
             blanks = 0;
-            lines.try_reserve(1).map_err(|_| too_large())?;
+            0u32.put(&mut wire);
+            wire.check_ref().map_err(|_| too_large())?;
+            budget.reserve(&mut lines, 1).map_err(|_| too_large())?;
             lines.push(Vec::new());
         }
         if let Some(line) = lines.last_mut() {
@@ -246,7 +242,11 @@ fn build<'a>(
                     Attributes::default()
                 };
                 if !line.last().is_some_and(|last| last.style == style) {
-                    line.try_reserve(1).map_err(|_| too_large())?;
+                    0u32.put(&mut wire);
+                    0u32.put(&mut wire);
+                    style.put(&mut wire);
+                    wire.check_ref().map_err(|_| too_large())?;
+                    budget.reserve(line, 1).map_err(|_| too_large())?;
                     line.push(LineRun {
                         text: String::new(),
                         cells: 0,
@@ -254,16 +254,17 @@ fn build<'a>(
                     });
                 }
                 if let Some(last) = line.last_mut() {
-                    last.text.try_reserve(text.len()).map_err(|_| too_large())?;
-                    last.text.push_str(text);
+                    wire.extend_from_slice(text.as_bytes());
+                    wire.check_ref().map_err(|_| too_large())?;
+                    budget.text(&mut last.text, text).map_err(|_| too_large())?;
                     last.cells = last.cells.saturating_add(1);
                 }
             }
         }
         wraps = !view.wrapped && row.continues();
     }
-    trim_line(&mut lines, blanks);
-    Ok(captured(of, size, cursor, lines, view))
+    trim_line(&mut lines, blanks, budget)?;
+    captured(of, size, cursor, lines, view, budget)
 }
 
 /// Select physical rows, widening a joined range to the logical lines
@@ -293,12 +294,24 @@ fn selected_rows(
     if skip > 0 {
         read = Box::new(read.skip(skip));
     }
-    let mut cells = limits.cells;
+    let mut cells = 0usize;
+    let mut line_cells = 0usize;
     let (mut start, mut count, mut line_start) = (skip, 0usize, 0usize);
-    for (index, (row, _)) in read.enumerate() {
+    for (index, (row, span)) in read.enumerate() {
         // Bound the metadata scan too, including the prefix needed to find
         // a joined range's first whole logical line. No row vector is made.
-        cells = cells.checked_sub(row.len().max(1)).ok_or_else(too_large)?;
+        let work = columns(row, span, view).len();
+        if view.wrapped {
+            cells = cells.checked_add(work).ok_or_else(too_large)?;
+        } else {
+            line_cells = line_cells.checked_add(work).ok_or_else(too_large)?;
+            if index >= first {
+                cells = line_cells;
+            }
+        }
+        if cells > limits.cells {
+            return Err(too_large());
+        }
         if index >= limits.rows {
             return Err(too_large());
         }
@@ -312,6 +325,9 @@ fn selected_rows(
         }
         if !row.continues() {
             line_start = index.saturating_add(1);
+            if index < first {
+                line_cells = 0;
+            }
         }
     }
     if !view.wrapped && first >= start.saturating_add(count) {
@@ -320,11 +336,9 @@ fn selected_rows(
     Ok(Selection { start, count })
 }
 
-/// Admission uses today's history setting here alone. Two visited cells
-/// per history byte admit the measured default-history blank workload
-/// (115,673 rows at 80 columns), plus the live screen. Large histories
-/// stop at 16 Mi cells, the next binary power above that measurement,
-/// and still meet the reply's independent byte and allocation caps.
+/// Stored history work follows its byte budget; live cells follow the
+/// screen. Synthesized blanks explicitly kept by full or joined views
+/// have at most two cells per output byte. All terms are admitted here.
 #[derive(Clone, Copy)]
 struct Limits {
     cells: usize,
@@ -338,11 +352,11 @@ impl Limits {
         let cells = history_bytes
             .checked_mul(2)
             .and_then(|n| n.checked_add(live))
-            .ok_or_else(too_large)?
-            .min(MAX_CELLS);
+            .and_then(|n| n.checked_add(OUTPUT_CELLS))
+            .ok_or_else(too_large)?;
         Ok(Self {
             cells,
-            rows: crate::wire::MAX_DECODED
+            rows: crate::wire::MAX_ALLOCATED
                 .checked_div(std::mem::size_of::<Vec<Cut>>())
                 .ok_or_else(too_large)?
                 / 4,
@@ -350,71 +364,35 @@ impl Limits {
     }
 }
 
+fn columns(
+    row: Row<'_>,
+    span: std::ops::Range<usize>,
+    view: CaptureView,
+) -> std::ops::Range<usize> {
+    let retained = if !view.full && (view.wrapped || !row.continues()) {
+        row.stored_len()
+    } else {
+        row.len()
+    };
+    let spacer = usize::from(!view.wrapped && row.ends_in_spacer());
+    let end = row.len().saturating_sub(spacer).min(retained).min(span.end);
+    let (skip, count) = view.cols.map_or((0, usize::MAX), |(a, b)| {
+        (
+            usize::from(a),
+            usize::from(b)
+                .saturating_sub(usize::from(a))
+                .saturating_add(1),
+        )
+    });
+    let first = span.start.saturating_add(skip).min(end);
+    first..first.saturating_add(count).min(end)
+}
+
 fn too_large() -> crate::session::Error {
     crate::session::fail(
         crate::code::Raise::TooLong,
         "capture exceeds its cell, byte or allocation limit; request fewer history rows or a narrower wrapped range",
     )
-}
-
-/// Count the untrimmed payload and retained run slots before creating any
-/// text or runs. Trimming can only reduce this conservative admission.
-fn admit(
-    rows: ReadRows<'_>,
-    view: CaptureView,
-    of: &Of,
-    mut heap: usize,
-) -> Result<(), crate::session::Error> {
-    use crate::wire::{MAX_REPLY, Sink, Wire, Writer};
-    let mut wire = Writer::counting(MAX_REPLY.saturating_sub(64));
-    of.put(&mut wire);
-    for (row, span) in rows {
-        heap = heap
-            .checked_sub(std::mem::size_of::<Vec<Cut>>())
-            .ok_or_else(too_large)?;
-        0u32.put(&mut wire);
-        let spacer = usize::from(!view.wrapped && row.ends_in_spacer());
-        let end = row.len().saturating_sub(spacer).min(span.end);
-        let from = span.start.min(end);
-        let (start, count) = view.cols.map_or((0, usize::MAX), |(a, b)| {
-            (
-                usize::from(a),
-                usize::from(b)
-                    .saturating_sub(usize::from(a))
-                    .saturating_add(1),
-            )
-        });
-        let mut previous = None;
-        let mut lead = Attributes::default();
-        for cell in row.cells().take(end).skip(from).skip(start).take(count) {
-            let text = if cell.is_wide_continuation() {
-                " "
-            } else {
-                lead = cell.attributes();
-                cell.shown()
-            };
-            let style = if view.styles || view.marks {
-                lead
-            } else {
-                Attributes::default()
-            };
-            if previous != Some(style) {
-                0u32.put(&mut wire); // text length
-                0u32.put(&mut wire); // cells
-                style.put(&mut wire);
-                heap = heap
-                    .checked_sub(std::mem::size_of::<LineRun>())
-                    .ok_or_else(too_large)?;
-                previous = Some(style);
-            }
-            wire.extend_from_slice(text.as_bytes());
-            heap = heap.checked_sub(text.len()).ok_or_else(too_large)?;
-            if wire.full() {
-                return Err(too_large());
-            }
-        }
-    }
-    wire.check().map_err(|_| too_large())
 }
 
 /// The rows a capture reads, each with the columns of it it reads: the
@@ -491,51 +469,49 @@ pub fn client(
     client: ClientId,
     grid: &crate::render::Grid,
 ) -> Result<Captured, crate::session::Error> {
-    client_room(grid.rows, grid.cols)?;
-    let mut bytes = crate::wire::MAX_REPLY.saturating_sub(1 << 20);
-    for row in 0..grid.rows {
-        bytes = bytes.checked_sub(32).ok_or_else(too_large)?;
-        for cell in grid.row(row) {
-            bytes = bytes
-                .checked_sub(cell.shown().len())
-                .ok_or_else(too_large)?;
+    use crate::wire::{Sink, Wire};
+    let mut budget = crate::wire::Budget::new();
+    let mut wire = crate::wire::Writer::counting(crate::wire::MAX_REPLY.saturating_sub(64));
+    let of = Of::Client(client);
+    of.put(&mut wire);
+    let mut lines = budget.vector(usize::from(grid.rows))?;
+    for y in 0..grid.rows {
+        0u32.put(&mut wire);
+        0u32.put(&mut wire);
+        0u32.put(&mut wire);
+        Attributes::default().put(&mut wire);
+        wire.check_ref().map_err(|_| too_large())?;
+        let mut text = String::new();
+        for cell in grid.row(y).filter(|cell| !cell.is_wide_continuation()) {
+            wire.extend_from_slice(cell.shown().as_bytes());
+            wire.check_ref().map_err(|_| too_large())?;
+            budget
+                .text(&mut text, cell.shown())
+                .map_err(|_| too_large())?;
         }
+        while text.chars().next_back().is_some_and(char::is_whitespace) {
+            text.pop();
+        }
+        let mut line = budget.vector(1)?;
+        line.push(LineRun {
+            text,
+            cells: 1,
+            style: Attributes::default(),
+        });
+        lines.push(line);
     }
-    let lines = (0..grid.rows)
-        .map(|y| {
-            vec![LineRun {
-                text: grid.row_text(y),
-                cells: 1,
-                style: Attributes::default(),
-            }]
-        })
-        .collect();
     let view = CaptureView {
         full: true,
         ..CaptureView::default()
     };
-    Ok(captured(
+    captured(
         Of::Client(client),
         (grid.rows, grid.cols),
         grid.cursor,
         lines,
         view,
-    ))
-}
-
-/// Admit the composed grid before its cells are allocated or painted.
-pub(crate) fn client_room(rows: u16, cols: u16) -> Result<(), crate::session::Error> {
-    let cells = usize::from(rows)
-        .checked_mul(usize::from(cols))
-        .ok_or_else(too_large)?;
-    if cells
-        > crate::wire::MAX_REPLY
-            .checked_div(std::mem::size_of::<LineRun>())
-            .ok_or_else(too_large)?
-    {
-        return Err(too_large());
-    }
-    Ok(())
+        &mut budget,
+    )
 }
 
 /// What is known of a pane's program, for `json`: its foreground program,
@@ -713,18 +689,24 @@ fn picture(shown: fux_vt::Shown<'_>) -> Json {
 
 /// Remove the last line's unshown trailing blank cells, counted while
 /// reading them rather than inferred from the run's cluster text.
-fn trim_line(lines: &mut [Vec<LineRun>], blanks: usize) {
+fn trim_line(
+    lines: &mut [Vec<LineRun>],
+    blanks: usize,
+    budget: &mut crate::wire::Budget,
+) -> Result<(), crate::session::Error> {
     if let Some(line) = lines.last_mut() {
         for _ in 0..blanks {
             if let Some(last) = line.last_mut() {
                 last.text.pop();
                 last.cells = last.cells.saturating_sub(1);
                 if last.cells == 0 {
+                    budget.release(last.text.capacity())?;
                     line.pop();
                 }
             }
         }
     }
+    Ok(())
 }
 
 /// A capture of `lines`, its empty last lines dropped unless `full`.
@@ -734,34 +716,50 @@ fn captured(
     screen_cursor: Option<(u16, u16)>,
     mut lines: Vec<Vec<LineRun>>,
     view: CaptureView,
-) -> Captured {
-    // Trimming the runs may leave empty lines at the end; full keeps them.
+    budget: &mut crate::wire::Budget,
+) -> Result<Captured, crate::session::Error> {
     if !view.full {
         while lines.last().is_some_and(Vec::is_empty) {
-            lines.pop();
+            if let Some(line) = lines.pop() {
+                budget.release(
+                    line.capacity()
+                        .checked_mul(std::mem::size_of::<LineRun>())
+                        .ok_or_else(too_large)?,
+                )?;
+            }
         }
     }
-    let lines = lines
-        .into_iter()
-        .map(|line| {
-            line.into_iter()
-                .map(|run| Cut {
-                    text: run.text,
-                    cells: u32::try_from(run.cells).unwrap_or(u32::MAX),
-                    style: run.style,
-                })
-                .collect()
-        })
-        .collect();
-    Captured {
+    let old_capacity = lines
+        .capacity()
+        .checked_mul(std::mem::size_of::<Vec<LineRun>>())
+        .ok_or_else(too_large)?;
+    let mut captured = budget.vector(lines.len()).map_err(|_| too_large())?;
+    for line in lines {
+        let old = line
+            .capacity()
+            .checked_mul(std::mem::size_of::<LineRun>())
+            .ok_or_else(too_large)?;
+        let mut cuts = budget.vector(line.len()).map_err(|_| too_large())?;
+        for run in line {
+            cuts.push(Cut {
+                text: run.text,
+                cells: u32::try_from(run.cells).unwrap_or(u32::MAX),
+                style: run.style,
+            });
+        }
+        budget.release(old)?;
+        captured.push(cuts);
+    }
+    budget.release(old_capacity)?;
+    Ok(Captured {
         of,
         screen_rows,
         screen_cols,
         screen_cursor,
-        lines,
+        lines: captured,
         styles: view.styles,
         marks: view.marks,
-    }
+    })
 }
 
 /// Highlighted: reverse video, or a background colour.
@@ -898,7 +896,7 @@ mod tests {
     use crate::pane::{Pane, Runs};
 
     #[test]
-    fn r1_wide_default_history_is_admitted() -> Result<(), Box<dyn std::error::Error>> {
+    fn wide_default_history_is_admitted() -> Result<(), Box<dyn std::error::Error>> {
         let history = crate::config::Config::default().history_bytes.get();
         let mut pane = Lone::new(Pane::new(
             PaneId::of(1),
@@ -925,11 +923,23 @@ mod tests {
             history,
         )?;
         assert!(capture.lines.len() > 80_000);
+        let full = super::pane(
+            &pane,
+            crate::command::Run::now().ok_or("clock")?,
+            Some(100_000),
+            CaptureView {
+                full: true,
+                ..CaptureView::default()
+            },
+            false,
+            history,
+        )?;
+        assert_eq!(full.lines.len(), 100_003);
         Ok(())
     }
 
     #[test]
-    fn r1_last_output_ignores_unselected_history() -> Result<(), Box<dyn std::error::Error>> {
+    fn last_output_ignores_unselected_history() -> Result<(), Box<dyn std::error::Error>> {
         let mut pane = Lone::new(Pane::new(
             PaneId::of(1),
             None,
@@ -961,7 +971,34 @@ mod tests {
     }
 
     #[test]
-    fn r1_short_lines_charge_allocated_capacity() -> Result<(), Box<dyn std::error::Error>> {
+    fn joined_prefix_costs_metadata_only() -> Result<(), Box<dyn std::error::Error>> {
+        let mut pane = Lone::new(Pane::new(
+            PaneId::of(1),
+            None,
+            Runs::DefaultShell,
+            fux_vt::Size::new(1, 200)?,
+            0,
+        )?);
+        pane.output(b"x");
+        let row = pane.screen().rows().next().ok_or("row")?;
+        let read = Box::new(std::iter::repeat_n((row, 0..usize::MAX), 100));
+        let selection = super::selected_rows(
+            read,
+            CaptureView {
+                rows: Some((90, 95)),
+                ..CaptureView::default()
+            },
+            super::Limits {
+                rows: 100,
+                cells: 1200,
+            },
+        )?;
+        assert_eq!((selection.start, selection.count), (90, 6));
+        Ok(())
+    }
+
+    #[test]
+    fn short_lines_charge_allocated_capacity() -> Result<(), Box<dyn std::error::Error>> {
         let mut pane = Lone::new(Pane::new(
             PaneId::of(1),
             None,
@@ -971,8 +1008,7 @@ mod tests {
         )?);
         pane.output(b"x");
         let row = pane.screen().rows().next().ok_or("row")?;
-        let read =
-            || -> super::ReadRows<'_> { Box::new(std::iter::repeat_n((row, 0..usize::MAX), 100)) };
+        let read: super::ReadRows<'_> = Box::new(std::iter::repeat_n((row, 0..usize::MAX), 100));
         let mut budget = crate::wire::Budget::with_limit(8192);
         if let Ok(captured) = super::build(
             read,
@@ -1018,13 +1054,16 @@ mod tests {
             pane.output(b"\r\n");
         }
         let run = crate::command::Run::now().ok_or("a clock")?;
-        let refusal = super::pane(
+        let refusal = super::pane_with(
             &pane,
             run,
             Some(usize::MAX),
             CaptureView::default(),
             false,
-            0,
+            super::Limits {
+                cells: 240,
+                rows: 100,
+            },
         );
         assert!(refusal.is_err());
         assert!(
@@ -1271,14 +1310,15 @@ mod tests {
             cells: max.saturating_add(2),
             style: fux_vt::Attributes::default(),
         }]];
-        super::trim_line(&mut lines, 2);
+        super::trim_line(&mut lines, 2, &mut crate::wire::Budget::new())?;
         let got = super::captured(
             super::Of::Client(crate::id::ClientId::of(1)),
             (1, 3),
             None,
             lines,
             CaptureView::default(),
-        );
+            &mut crate::wire::Budget::new(),
+        )?;
         assert_eq!(got.text(), "x");
         assert_eq!(
             got.lines

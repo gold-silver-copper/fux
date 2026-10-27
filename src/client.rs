@@ -285,14 +285,6 @@ impl Requests {
     /// comes. A request that may start programs carries this process's
     /// environment, of which they take what `update-environment` names.
     pub fn ask(&mut self, asked: &Asked, out: &mut dyn Write) -> Result<Reply, Error> {
-        let result = self.ask_reply(asked, out);
-        if result.is_err() {
-            let _ = self.stream.shutdown(std::net::Shutdown::Both);
-        }
-        result
-    }
-
-    fn ask_reply(&mut self, asked: &Asked, out: &mut dyn Write) -> Result<Reply, Error> {
         wait_at_most(&self.stream, None);
         if starts_programs(&asked.request) && asked.context.env.is_none() {
             let mut asked = asked.clone();
@@ -1470,11 +1462,10 @@ fn last_frames(
 mod tests {
     use super::*;
 
-    /// No end marker is needed to detect an oversized reply. Abandoning
-    /// it closes the stream, so its tail cannot answer a later request.
+    /// No end marker is needed to detect an oversized reply. Its owner
+    /// drops the failed request connection, as script::Server does.
     #[test]
-    fn oversized_unfinished_reply_invalidates_connection() -> Result<(), Box<dyn std::error::Error>>
-    {
+    fn oversized_unfinished_reply_is_refused() -> Result<(), Box<dyn std::error::Error>> {
         let (stream, mut peer) = UnixStream::pair()?;
         peer.set_read_timeout(Some(Duration::from_secs(5)))?;
         peer.set_write_timeout(Some(Duration::from_secs(5)))?;
@@ -1522,7 +1513,7 @@ mod tests {
                 crate::wire::Error::Limit
             )))
         ));
-        assert!(requests.ask(&asked, &mut io::sink()).is_err());
+        drop(requests);
         assert!(writer.join().map_err(|_| "writer stopped")??);
         Ok(())
     }

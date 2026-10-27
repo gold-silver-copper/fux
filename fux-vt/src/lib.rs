@@ -344,6 +344,12 @@ impl<'a> Row<'a> {
     pub fn len(&self) -> usize {
         self.width
     }
+    /// Cells retained in storage. Cells after these, through [`Row::len`],
+    /// are synthesized default blanks, so a trimmed hard-ended read can
+    /// omit them without inspecting each blank.
+    pub fn stored_len(&self) -> usize {
+        self.cells.len().min(self.width)
+    }
     /// Whether the row has no cells.
     pub fn is_empty(&self) -> bool {
         self.width == 0
