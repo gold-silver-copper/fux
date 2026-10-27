@@ -309,6 +309,7 @@ fn bounds() -> Vec<(Amount, &'static str, Said)> {
         (Pixels(fux_vt::CellSize::LEAST), "the least cell a terminal may say", &[("README", "{}")]),
         (Time(crate::outer::BELL_GAP), "between two bells told", &[("README", "at most once every {}")]),
         (Count(crate::config::MAX_BUFFERS), "paste buffers kept", &[]),
+        (Count(crate::session::PREVIEW_MAX), "characters of a paste buffer's preview", &[("README", "at most {} characters"), ("json", "at most {} characters")]),
         (Count(crate::config::MAX_WAIT), "seconds a wait may be given", &[]),
         (Whole(script::PROGRAM_STEPS), "steps of a program a client runs (a config, a key's)", &[]),
         (Whole(script::LINE_STEPS), "steps of a command line's program", &[]),

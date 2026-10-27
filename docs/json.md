@@ -206,10 +206,17 @@ they run, so a `try` may name them too.
 ## `status json`
 
 ```json
-{"socket":"/run/user/1000/fux/server.sock","version":"0.36.0","protocol":25,
- "server_version":"0.36.0","server_protocol":25,"compatible":true}
+{"socket":"/run/user/1000/fux/server.sock","version":"0.36.0","protocol":27,
+ "server_version":"0.36.0","server_protocol":27,"compatible":true}
 ```
 
 With no server, `status` fails (`no_server`), saying the socket and whether
 a server that stopped left it there. Every server in fux's directory:
 `status json` on each socket there (`fux help servers`).
+
+`buffers` returns an array of metadata objects, newest first, for example
+`[{"id":"b7:48211-1867a3f9c2b8e7d6","bytes":7,"preview":"hello  "}]`.
+`bytes` is the exact UTF-8 byte length; `preview` contains at most 50 characters,
+with control characters replaced by spaces. The full text is returned only by
+`str ID buffer`. IDs include the server run and are never reused in that run;
+an evicted ID returns `no_buffer`.
