@@ -3715,6 +3715,7 @@ mod tests {
         Ok(())
     }
 
+    #[cfg(feature = "checks")]
     #[test]
     fn refused_client_capture_returns_an_error() -> Result<(), Box<dyn std::error::Error>> {
         let (mut session, client) = attached(10, 40)?;

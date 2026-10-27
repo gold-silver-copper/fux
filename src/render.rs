@@ -1799,6 +1799,7 @@ fn paint_whole(
 
 #[cfg(test)]
 mod tests {
+    #[cfg(feature = "checks")]
     #[test]
     fn refused_grid_allocation_preserves_the_previous_screen() -> Result<(), fux_vt::Error> {
         fux_vt::refuse_next(1);

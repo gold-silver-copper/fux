@@ -1513,6 +1513,7 @@ mod tests {
         Ok((session, conn, peer))
     }
 
+    #[cfg(feature = "checks")]
     #[test]
     fn a_refused_paint_ends_the_attachment_without_clearing_its_screen()
     -> Result<(), Box<dyn std::error::Error>> {

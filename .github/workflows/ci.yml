@@ -84,6 +84,10 @@ jobs:
           # fux-vt's unit tests of its checker (the faults it finds) build
           # only with `checks`: about a minute beside the workspace's.
           cargo test -p fux-vt --features checks --lib --locked 2>&1 | tee -a "$CI_LOGS/test.log"
+          # Render allocation refusals, without enabling the large VT suites
+          # in the ordinary workspace test run.
+          cargo clippy -p fux --features checks --all-targets --locked -- -D warnings 2>&1 | tee -a "$CI_LOGS/clippy.log"
+          cargo test -p fux --features checks --lib refused_ --locked 2>&1 | tee -a "$CI_LOGS/test.log"
 
       # fux-vt's bounds suite and its frozen seeds (the `checks` feature),
       # in release, as debug is too slow for the step's 5 minutes; built in
