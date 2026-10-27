@@ -2246,7 +2246,7 @@ mod tests {
             std::iter::repeat_n("\u{200d}👩", 18).collect::<String>()
         );
         assert_eq!(width(&long), 7);
-        let mut grid = Grid::new(1, 6);
+        let mut grid = new_grid(1, 6);
         let fitted = fit(&long, 6);
         assert_eq!(cell_width(fitted.clone()), 6);
         assert_eq!(grid.text_cells(0, 0, fitted, Attributes::default(), 6), 6);
@@ -2275,7 +2275,7 @@ mod tests {
         ] {
             let prompt = prompt_line(&before, "tail", room);
             assert!(cell_width(prompt.cells()) <= room);
-            let mut grid = Grid::new(1, room);
+            let mut grid = new_grid(1, room);
             grid.text_cells(0, 0, prompt.cells(), Attributes::default(), room);
             assert!((0..room).any(|x| grid.get(0, x).is_some_and(|c| c.contents().contains('▏'))));
         }
