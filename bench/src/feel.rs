@@ -1561,33 +1561,35 @@ fn report(json: &serde_json::Value, muxes: &[Mux]) -> String {
             out.push('\n');
         }
         out.push('\n');
-        head(
-            &mut out,
-            "each recording to the final screen: ms (KB sent to the client)",
-        );
-        let mut totals = vec![(0f64, 0f64); muxes.len()];
-        for load in first.keys().filter(|l| l.starts_with("corpus:")) {
-            let _ = write!(out, "{load:<24}");
-            for (mux, total) in muxes.iter().zip(&mut totals) {
-                let m = mux.name();
-                let ms = number(&["throughput", m, load, "seconds"]).map(|s| s * 1e3);
-                let sent = number(&["throughput", m, load, "client_bytes"]).map(|b| b / 1e3);
-                total.0 += ms.unwrap_or(f64::NAN);
-                total.1 += sent.unwrap_or(0.0);
-                let _ = write!(out, " {:>8} ({:>6})", cell(ms, 1), cell(sent, 1));
-            }
-            out.push('\n');
-        }
-        let _ = write!(out, "{:<24}", "all recordings");
-        for (ms, sent) in &totals {
-            let _ = write!(
-                out,
-                " {:>8} ({:>6})",
-                cell(Some(*ms), 1),
-                cell(Some(*sent), 1)
+        if first.keys().any(|load| load.starts_with("corpus:")) {
+            head(
+                &mut out,
+                "each recording to the final screen: ms (KB sent to the client)",
             );
+            let mut totals = vec![(0f64, 0f64); muxes.len()];
+            for load in first.keys().filter(|l| l.starts_with("corpus:")) {
+                let _ = write!(out, "{load:<24}");
+                for (mux, total) in muxes.iter().zip(&mut totals) {
+                    let m = mux.name();
+                    let ms = number(&["throughput", m, load, "seconds"]).map(|s| s * 1e3);
+                    let sent = number(&["throughput", m, load, "client_bytes"]).map(|b| b / 1e3);
+                    total.0 += ms.unwrap_or(f64::NAN);
+                    total.1 += sent.unwrap_or(0.0);
+                    let _ = write!(out, " {:>8} ({:>6})", cell(ms, 1), cell(sent, 1));
+                }
+                out.push('\n');
+            }
+            let _ = write!(out, "{:<24}", "all recordings");
+            for (ms, sent) in &totals {
+                let _ = write!(
+                    out,
+                    " {:>8} ({:>6})",
+                    cell(Some(*ms), 1),
+                    cell(Some(*sent), 1)
+                );
+            }
+            out.push_str("\n\n");
         }
-        out.push_str("\n\n");
     }
     if get(&["footprint"]).is_some_and(|l| l.as_object().is_some_and(|m| !m.is_empty())) {
         let _ = writeln!(
@@ -1617,6 +1619,16 @@ fn report(json: &serde_json::Value, muxes: &[Mux]) -> String {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn a_filtered_run_does_not_report_unmeasured_recordings() {
+        let json = serde_json::json!({"throughput": {"fux": {"ascii": {
+            "mb_per_s": 1.0, "client_bytes": 1
+        }}}});
+        let report = super::report(&json, &[super::Mux::Fux]);
+        assert!(report.contains("ascii"));
+        assert!(!report.contains("all recordings"));
+    }
 
     #[test]
     fn perf_acknowledgements_consume_the_terminating_nul() {
