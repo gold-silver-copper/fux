@@ -482,7 +482,7 @@ fn focus_events_reach_a_pane_that_asked_and_cursor_shapes_pass_through() -> Outc
 }
 
 #[test]
-fn a_client_of_another_protocol_is_told_how_to_restart_the_server() -> Outcome {
+fn a_protocol_mismatch_refuses_attach_but_accepts_force_kill() -> Outcome {
     use fux::protocol::{Frame, Greeting, Hello};
     use std::io::{Read, Write};
     let server = Server::start("")?;
@@ -521,8 +521,15 @@ fn a_client_of_another_protocol_is_told_how_to_restart_the_server() -> Outcome {
             && reason.contains("fux force-kill-server"),
         "{reason}"
     );
-    // force-kill-server works whatever the version.
-    assert_eq!(server.fux(&["force-kill-server"])?.status, 0);
+    // The frozen Kill greeting works even with that same wrong version.
+    let mut client = server.attach(10, 40)?;
+    let mut stream = std::os::unix::net::UnixStream::connect(&server.socket).map_err(e)?;
+    let kill = Hello {
+        role: fux::protocol::Role::Kill,
+        ..hello
+    };
+    stream.write_all(&kill.encode().map_err(e)?).map_err(e)?;
+    assert!(client.wait_exit()?.contains("force-kill-server"));
     Ok(())
 }
 

@@ -192,25 +192,9 @@ impl KeyPress {
     pub fn char(c: char) -> Self {
         Self::plain(Key::Char(c))
     }
-    /// The key as fux matches letter keys typed after the prefix, and in
-    /// choosers, menus, confirmations and copy mode: a letter in lower case,
-    /// whatever Shift and Caps Lock did. The prefix itself and root bindings
-    /// (fux's `bind-root`) match the press as it is. A letter with Ctrl or Alt is left as it is,
-    /// and matches no letter key.
-    pub fn folded(self) -> Self {
-        if let Key::Char(c) = self.key
-            && c.is_ascii_alphabetic()
-            && !self.mods.ctrl
-            && !self.mods.alt
-        {
-            return Self::char(c.to_ascii_lowercase());
-        }
-        self
-    }
-    /// The folded key, unless Ctrl or Alt is held: what overlays and copy
-    /// mode act on.
+    /// The decoded key, unless Ctrl or Alt is held.
     pub fn plain_key(self) -> Option<Key> {
-        (!self.mods.ctrl && !self.mods.alt).then_some(self.folded().key)
+        (!self.mods.ctrl && !self.mods.alt).then_some(self.key)
     }
 }
 
@@ -380,12 +364,6 @@ impl std::str::FromStr for KeyPress {
         };
         Ok(KeyPress::new(key, mods))
     }
-}
-
-/// The other spellings a key name may take (`Esc`, `Backspace`), which
-/// the names above print as.
-pub fn aliases() -> impl Iterator<Item = &'static str> {
-    ALIASES.iter().map(|(n, _)| *n)
 }
 
 /// Every key name, as a host lists them.
