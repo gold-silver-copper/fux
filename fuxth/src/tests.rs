@@ -325,7 +325,7 @@ fn errors_at_run_time_say_what_and_where() {
     let error = run("1 2\n  frob").err();
     assert_eq!(
         error.map(|e| e.to_string()).as_deref(),
-        Some("unknown_word: t:2: frob: no such word")
+        Some("unknown_word: t:2: frob: no such word; text is `str WORD`")
     );
     let error = run("define f str x add end\n1 f").err();
     assert_eq!(
