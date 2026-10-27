@@ -112,7 +112,7 @@ impl Counter {
         })
     }
 
-    fn parse(self, stderr: &str) -> Result<u64, String> {
+    pub(crate) fn parse(self, stderr: &str) -> Result<u64, String> {
         let digits = |text: &str| -> Option<u64> {
             let kept: String = text.chars().filter(char::is_ascii_digit).collect();
             kept.parse().ok()

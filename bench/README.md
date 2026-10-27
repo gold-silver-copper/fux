@@ -201,50 +201,33 @@ tmux and zellij do not send, so only fux's are counted.
 
 `capture/history` counts construction and wire encoding of one full 8 MiB
 history at 40×120 (variable length rows); its baseline fills the same
-session. `cli/library` counts one cold vocabulary, standard library,
-bundled library and checker preparation; its baseline only reads the
-embedded source. This component measure excludes command parsing and
-transport: keep actual CLI request counts alongside it. Both use the
-existing counted-workload machinery; existing floors are unchanged.
+session. `cli/library` calls the client's actual cold library initializer,
+`fux::script::libraries`; its baseline is empty. This component measure
+excludes command parsing and transport: keep actual CLI request counts
+alongside it. Both use the existing counted-workload machinery; existing
+floors are unchanged.
 
-For a single Linux real-server budget observation at 8 and 64 MiB:
+To count a real server's work for a single throughput workload on Linux:
 
 ```sh
-python3 bench/budget.py /absolute/path/to/fux "$TMPDIR/budget-before"
+fux-bench feel --muxes fux --parts throughput --only ascii --instructions
+fux-bench feel --muxes fux --parts footprint
 ```
 
-The directory must be new, private, and short enough for a Unix socket.
-This starts and stops its own server, pins its thread to an allowed CPU,
-records server-only whole perf instruction counts for filling and capture,
-instructions per input byte, 10-second idle CPU ticks/context switches,
-CLI capture wall time and server RSS high-water. Raw perf reports, capture
-text, fixtures, environment/load and JSON stay in that directory. Each
-history is measured once. Compare matched builds and fixtures; timings
-are observations on shared hardware, never flaky wall-time CI gates.
-Context switches are a wakeup proxy and CPU ticks are quantized. The
-capture wall time includes the CLI's work, while RSS high-water includes
-setup and cannot be treated as exact live allocations. No capture limit
-is inferred from these measures.
+`--only TEXT` selects matching throughput workloads. `--instructions`
+attaches Linux perf to the session's server PID, with acknowledged enable
+and disable commands around the workload. It measures through the marker
+read from the attached client's PTY, without polling the server. JSON keeps
+the whole perf report, server instructions and instructions per payload
+byte (including the fixed request/reset/marker and paint work). Every
+running PMU must have counted for its entire enabled interval; partial or
+unsupported counts fail the requested measurement. Without the option,
+server instruction counts are unknown (`null`). `FUX_PERF` names perf.
 
-The one-shot observations for the incremental-run change are kept in
-[`measurements/capture.json`](measurements/capture.json), on Linux/AMD
-Ryzen AI Max+ 395, release profile, server pinned to CPU 0:
-
-| History | CLI wall before → after | Server peak RSS before → after | Server instructions before → after |
-| --- | --- | --- | --- |
-| 8 MiB | 102.8 → 27.5 ms | 82.3 → 21.0 MiB | 366.5 → 439.0 M (+19.8%) |
-| 64 MiB | 651.5 → 202.1 ms | 629.8 → 138.6 MiB | 2,918.8 → 3,521.8 M (+20.7%) |
-
-Both output files were byte-identical; both variants recorded zero CPU
-ticks and context switches during each settled 10-second idle interval.
-These are single shared-host samples (load averages in the JSON), not
-universal speed guarantees. Fill instructions/byte varied from 23–25 to
-31–32 across the pair: PTY read chunking and completion polling are not
-controlled by this probe. Use the in-process workloads for counted gates.
-Hard admission caps and the 16 ms server-hold goal are separate work.
-
-The final implementation counts literal blank cells while appending runs,
-so a space inside a grapheme cluster is preserved. These final samples
-replace an earlier variant that trimmed run text without that information.
-The audit prototype's roughly 8% instruction increase is not this
-implementation's measured increase.
+`footprint` also records voluntary and involuntary context switches for
+all threads of the server and attached client during the settled idle
+interval. These counters are unknown without Linux procfs. Context switches
+are a wakeup proxy; CPU time is quantized. Timing and memory observations
+are reported with the environment and load, never used as wall-time gates.
+Compare matched fixtures and builds on a quiet host. Capture admission caps
+and the 16 ms server-hold goal are separate work.
