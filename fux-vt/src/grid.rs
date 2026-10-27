@@ -765,8 +765,8 @@ impl Grid {
         let Some(dst) = self.slice_mut(slot).get_mut(start..end) else {
             return;
         };
-        // A short run cell by cell; a long one by the word-wide loops, whose
-        // set-up a short one would not repay.
+        // Check a short run cell by cell; fold the half flags of a long run
+        // together, whose set-up a short one would not repay.
         let halves = if run.len() < LONG_RUN {
             dst.iter().any(|c| c.is_wide() || c.is_wide_continuation())
         } else {
@@ -789,12 +789,8 @@ impl Grid {
         if first.is_some_and(|(c, b)| c.is_ascii(*b, style)) && unchanged(dst, run, style) {
             return;
         }
-        if run.len() < LONG_RUN {
-            for (cell, byte) in dst.iter_mut().zip(run) {
-                *cell = Compact::ascii(*byte, style);
-            }
-        } else {
-            Compact::fill_ascii(dst, run, style);
+        for (cell, byte) in dst.iter_mut().zip(run) {
+            *cell = Compact::ascii(*byte, style);
         }
         self.changed(slot, end, version);
     }
@@ -2423,7 +2419,7 @@ fn set_link(
     }
 }
 
-/// The run length from which `write_ascii` uses word-wide loops.
+/// The run length from which `write_ascii` folds the wide-glyph half flags.
 const LONG_RUN: usize = 8;
 
 /// Whether `cells` already hold the ASCII `run` in `style`. Out of line,
@@ -2914,7 +2910,7 @@ mod faults {
         })?;
         shows("grid.charged", |g| g.history.charge(1))?;
         // A run past the row's 4 cells, and a link the links held never
-        // counted (guard mutants: the grid's calls to each check).
+        // counted (the grid's calls to each check).
         shows("links.runs", |g| {
             if let Some(&slot) = g.order.get(0)
                 && let Some(row) = g.linked.get_mut(slot)

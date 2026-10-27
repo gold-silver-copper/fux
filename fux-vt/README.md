@@ -580,8 +580,8 @@ formulas are in [`THREATS.md`](https://github.com/gold-silver-copper/fux/blob/ma
   `tests/versions.rs` checks identities and versions. Expected values come
   from the references or xterm, never from fux-vt, and each test cites its
   source.
-- **The `checks` feature**, off by default and for tests, fuzzing and
-  mutation runs only: `Work`, deterministic counters of the work fux-vt
+- **The `checks` feature**, off by default and for tests and fuzzing
+  only: `Work`, deterministic counters of the work fux-vt
   does (cells written, rows walked, bytes scanned and the rest), which the
   bounds suite (`tests/bounds.rs`) holds to each bound's constant per
   input byte; and `Parser::check`, one invariant checker over the parser,

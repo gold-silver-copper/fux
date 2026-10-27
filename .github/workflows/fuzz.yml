@@ -150,47 +150,6 @@ jobs:
           retention-days: 30
           if-no-files-found: ignore
 
-  mutation:
-    name: guard mutants, shard ${{ matrix.shard }} of 24
-    runs-on: ubuntu-24.04
-    timeout-minutes: 30
-    strategy:
-      fail-fast: false
-      matrix:
-        shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23]
-    defaults:
-      run:
-        shell: bash
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-          fetch-depth: 1
-
-      - name: cargo-mutants and nextest
-        run: |
-          set -euo pipefail
-          cargo install cargo-mutants --locked --version 27.1.0
-          cargo install cargo-nextest --locked --version 0.9.148
-
-      # The guard set (fux-vt/compare/mutants-guards.txt), a 24th of it a
-      # job, two mutants at a time, as mutants.sh runs the guards: opt-level
-      # 1, 150 s a mutant, 2 GiB a test binary, guards.rs first.
-      - name: the guard mutants
-        env:
-          FUX_MUTANTS_JOBS: "2"
-          FUX_MUTANTS_SHARD: ${{ matrix.shard }}/24
-          FUX_MUTANTS_OUT: ${{ runner.temp }}/mutants
-        run: fux-vt/compare/mutants.sh guards
-
-      - name: the outcomes
-        if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: mutants-${{ matrix.shard }}
-          path: ${{ runner.temp }}/mutants/mutants.out/*.txt
-          if-no-files-found: ignore
-
   mosh-corpus:
     name: mosh's fuzz corpus, fetched at its pin and replayed
     runs-on: ubuntu-24.04

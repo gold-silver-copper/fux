@@ -207,7 +207,7 @@ too). `A counts` gives a version's five counts as integers:
 - **Keys** go between the pane and `send-keys`: `str T text`, `str NAME
   key` (tmux's names: `Enter`, `Escape`, `Tab`, `BSpace`, `Up`, `PageDown`,
   `F5`, `C-c`, `M-s`, `S-Tab`; `Esc`, `Backspace`, `PgUp` too; a typo is
-  refused, naming the closest), `str T paste` (bracketed if the program
+  refused; `key-names` lists the vocabulary), `str T paste` (bracketed if the program
   asked), `str HEX bytes` (`1b5b41`). 900 KiB at most in all. A key
   N times is a loop: `%2 0 3 range each drop str Down key end
   send-keys`. fuxth reads no files; the shell gives a file's text:

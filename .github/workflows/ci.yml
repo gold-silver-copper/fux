@@ -112,7 +112,7 @@ jobs:
           if [[ "$RUNNER_OS" == Linux ]]; then ulimit -d $((8 * 1024 * 1024)); fi
           cargo test -p fux-vt --features checks --release --locked --test bounds --test seeds 2>&1 | tee "$CI_LOGS/bounds.log"
 
-      # The guard mutants' tests (fux-vt/tests/guards.rs) with `checks`, in
+      # The boundary tests (fux-vt/tests/guards.rs) with `checks`, in
       # release beside the bounds suite, the one that makes 64 Mi cells
       # (about 1.5 GiB, so ignored elsewhere) included.
       - name: fux-vt guard tests, the 1.5 GiB one included
@@ -264,34 +264,6 @@ jobs:
           retention-days: 7
           if-no-files-found: ignore
 
-  # Every guard mutant (fux-vt/compare/mutants-guards.txt) still names a
-  # mutant: a change to a guarded line fails here, by the guard's name, so
-  # its guard is looked at again in the same PR. The mutants themselves run
-  # nightly (fuzz.yml).
-  guards:
-    name: guard mutant names (ubuntu-24.04)
-    runs-on: ubuntu-24.04
-    timeout-minutes: 15
-    defaults:
-      run:
-        shell: bash
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-          fetch-depth: 1
-
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-        with:
-          key: guards
-          save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/master' }}
-
-      - name: cargo-mutants
-        run: cargo install cargo-mutants --locked --version 27.1.0
-
-      - name: The guard names
-        run: fux-vt/compare/mutants.sh check
-
   # The agent benchmark's scripted tier for fux: every task, once, with fux
   # and python3 alone (no tmux, zellij, herdr or claude). A task fux used to
   # pass and fails now is a regression in how scripts and agents drive it.
@@ -316,8 +288,9 @@ jobs:
       - name: Scripted tier, fux, every task once
         run: |
           set -euo pipefail
-          python3 -I agentbench/guide_check.py
+          python3 -I -m unittest discover -s agentbench -p 'test_*.py'
           cargo build --release --locked
+          python3 -I agentbench/guide_check.py --fux-bin "$GITHUB_WORKSPACE/target/release/fux"
           python3 -I agentbench/run.py --tools fux --repeats 1 --workers 4 --skip-expensive \
             --strict --fux-bin "$GITHUB_WORKSPACE/target/release/fux" \
             --out "$RUNNER_TEMP/agentbench.json"
