@@ -14,7 +14,7 @@ exclude = ["tests/external"]
 
 [features]
 # The work counters and the invariant checker (THREATS.md 4.1): for the
-# bounds tests, the fuzz targets and mutation runs, never for a release.
+# bounds tests and the fuzz targets, never for a release.
 checks = []
 
 [dev-dependencies]

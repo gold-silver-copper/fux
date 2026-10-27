@@ -214,7 +214,7 @@ def one(tool, task_id, rep, slot, fux_bin):
         result["trace"] = traceback.format_exc()[-1500:]
     result["seconds"] = round(time.time() - start, 2)
     ok, why = check(task, work)
-    result.update(ok=ok and not str(result["error"] or "").startswith("unsupported"), why=why,
+    result.update(ok=ok and result["error"] is None, why=why,
                   calls=d.calls, sleep_s=round(d.sleep_s, 2), polls=d.polls, log=d.log[-60:])
     try:
         d.stop()

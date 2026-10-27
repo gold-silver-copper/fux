@@ -507,17 +507,17 @@ fn start(
                 env: borrowed(&env),
                 dir,
             };
-            // Attaching creates the first pane asynchronously. Observe
-            // that identity before issuing a command addressed to it.
+            // Attaching creates the first pane after the terminal is up.
             let deadline = Instant::now().checked_add(READY_WAIT).ok_or("a deadline")?;
-            while let Err(error) = session.command(place, &["str", "%1", "pane", "info"]) {
+            while let Err(error) = session.command(place, &["str", "%1", "pane"]) {
                 if Instant::now() >= deadline {
-                    return Err(error);
+                    return Err(format!("fux: the first pane did not appear: {error}"));
                 }
                 std::thread::sleep(Duration::from_millis(10));
             }
             // The first program in pane %1, typed into its shell; each
-            // other in a split beside it. The last pane made
+            // other in a split beside it. Actions answer at once, even
+            // when a program floods output. The last pane made
             // is focused, as tmux, zellij and herdr focus theirs: keys
             // typed at the client go to it (the echo, beside a flood).
             let mut last = String::from("%1");
@@ -540,11 +540,9 @@ fn start(
                 } else {
                     let mut args = vec!["str", "%1", "pane", "horizontal"];
                     args.extend(program_words(p));
-                    args.push("split");
+                    args.extend(["split", "pane"]);
                     let answer = session.command(place, &args)?;
-                    last = answer
-                        .split_whitespace()
-                        .next()
+                    last = Some(answer.trim())
                         .filter(|w| w.starts_with('%'))
                         .ok_or(format!("fux split: no pane in {answer:?}"))?
                         .to_owned();

@@ -231,7 +231,7 @@ pub const NAMES: &[(&str, &str, &str)] = &[
     ("height", "integer size", "cells, or a percent"),
     ("where", "tab workspace string", "a tab, a workspace, new-tab or new-workspace"),
 ];
-pub const STRINGS: &str = "name dir key path line id file field setting socket way action code keys word hex version screen cursor";
+pub const STRINGS: &str = "name dir key path line id file mode field setting socket way action code keys word hex version screen cursor";
 pub const INTEGERS: &str = "cols rows secs n row col lines from to cells";
 
 // Every word of fux's, by family; in help, under its heading.
@@ -315,7 +315,7 @@ words! {
         Config KeyNames "key-names" "--" "the names keys go by" "fux key-names" [];
         Help Help "help" "--" "the words, under their headings" "fux help" [];
         Help Explain "explain" "word --" "one word at length (json's says what json gives); or the guide to driving programs from a script or an agent: agents, its first screen, enough for most work; a topic of it (recipes keys read shells programs servers); guide, all of it; or limits, the bounds fux keeps" "fux str capture explain" [];
-        Help Check "check" "file --" "read a fuxth file without running it: its mistakes; a config.fux is run dry too" "fux str config.fux check" [];
+        Help Check "check" "file mode --" "check a file as program (compile only) or config (also run dry)" "fux str config.fux str config check" [];
     }
     Opt {
         Starting Name "name" "x name -- x" "the tab's or workspace's name" "fux opts str web name 80 24 size str ./app program run";
@@ -772,11 +772,9 @@ fn modify(
         Opt::Key => {
             let word = string(&next()?)?;
             let press = word.parse().map_err(|_| {
-                let closest = closest_key(&word)
-                    .map_or_else(String::new, |k| format!("; the closest is `{k}`"));
                 fail(
                     Raise::NotAKey,
-                    format!("{word:?} is no key's name{closest} (key-names lists them)"),
+                    format!("{word:?} is no key's name (key-names lists them)"),
                 )
             })?;
             built.inputs.push(Input::Key(press));
@@ -872,32 +870,6 @@ fn finished(word: Act, value: Value<Fux>) -> Result<Opts, Failure> {
             &other,
         )),
     }
-}
-
-/// The key name nearest `word`, its modifiers kept (`C-Bakspace`:
-/// `C-BSpace`), if one is near enough to be what was meant.
-fn closest_key(word: &str) -> Option<String> {
-    let mut rest = word;
-    while let Some((prefix, tail)) = rest.split_at_checked(2)
-        && !tail.is_empty()
-        && ["C-", "M-", "S-"]
-            .iter()
-            .any(|m| m.eq_ignore_ascii_case(prefix))
-    {
-        rest = tail;
-    }
-    let mods = word.get(..word.len().saturating_sub(rest.len()))?;
-    let lower = rest.to_lowercase();
-    // An alias near it is said by the name it stands for.
-    let aliases = crate::keys::aliases().filter_map(|alias| {
-        let press: crate::keys::KeyPress = alias.parse().ok()?;
-        Some((alias.to_owned(), press.to_string()))
-    });
-    let names = crate::keys::all_names().into_iter().map(|n| (n.clone(), n));
-    let (far, name) = (names.chain(aliases))
-        .map(|(spelt, name)| (fuxth::distance(&lower, &spelt.to_lowercase()), name))
-        .min()?;
-    (far <= lower.chars().count().div_ceil(2)).then(|| format!("{}{name}", mods.to_uppercase()))
 }
 
 /// The words that take `word`'s options, listed: an option's takers;
@@ -1519,7 +1491,7 @@ impl fuxth::Host for Host<'_> {
             ))),
             Act::Start => local(Local::Start),
             Act::Status => local(Local::Status),
-            Act::KillServer => tell(Command::KillServer { force: false }),
+            Act::KillServer => tell(Command::KillServer),
             Act::ForceKillServer => local(Local::ForceKill),
             Act::Set => {
                 let name = string(&next()?)?;
@@ -1563,21 +1535,16 @@ impl fuxth::Host for Host<'_> {
             }
             Act::Check => {
                 let path = string(&next()?)?;
-                // Read as running it reads it, and refused alike.
+                let config = one_of(&next()?, &[("program", false), ("config", true)])?;
                 let text =
-                    super::read_file(path.as_ref()).map_err(|f| fail(Raise::Read, f.message))?;
-                // Its mistake, with where it is, as the file's own.
-                let checked = |failed: super::Failed| fail(Raise::Check, failed.message);
-                let tokens = fuxth::token::source(&path, &text)
-                    .map_err(|e| checked(super::Failed::from(e)))?;
-                super::compile(&tokens).map_err(checked)?;
-                // A config is run dry too: its bindings made, its settings
-                // checked, nothing sent.
-                let config = std::path::Path::new(&path)
-                    .file_name()
-                    .is_some_and(|n| n == "config.fux");
+                    super::read_file(path.as_ref()).map_err(|f| fail(Raise::Read, f.located()))?;
+                let checked = |failed: super::Failed| fail(Raise::Check, failed.located());
                 if config {
-                    super::run_file(std::path::Path::new(&path), None).map_err(checked)?;
+                    super::run_config(&path, &text, None).map_err(checked)?;
+                } else {
+                    let tokens = fuxth::token::source(&path, &text)
+                        .map_err(|e| checked(super::Failed::from(e)))?;
+                    super::compile(&tokens).map_err(checked)?;
                 }
                 self.show(&format!("{path}: ok\n"))
             }
@@ -1757,7 +1724,7 @@ impl Host<'_> {
                     true => table.bind(key, &string(&next()?)?).map_err(refused)?,
                     false => table.unbind(key).map_err(refused)?,
                 }
-                self.last_bound = Some(Bound::In(modal, key.folded()));
+                self.last_bound = Some(Bound::In(modal, key));
             }
             Keys::UnbindAll => keymap.unbind_all(),
             Keys::Label => {
