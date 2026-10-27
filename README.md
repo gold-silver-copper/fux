@@ -492,9 +492,11 @@ so: it starts where the dump is run.
   another host, or none, is told the scheme of the host it has once it
   has one. Colours a program sets (OSC 4, 10, 11) apply to its own pane
   only, and win over your terminal's; your terminal's palette is never
-  changed. A colour no one knows is not answered: one the host didn't
-  say, palette entries past 15 the program didn't set, and every colour
-  in a tab with no host.
+  changed. A pane's cursor colour (OSC 12) is painted only while its
+  cursor is focused; resetting it (OSC 112), changing focus, opening an
+  overlay or detaching restores the terminal's own colour. A colour no
+  one knows is not answered: one the host didn't say, palette entries past
+  15 the program didn't set, and every colour in a tab with no host.
 - **Bells.** A program's bell rings each terminal showing its workspace, at
   most once every 250 ms; a tab you are not looking at is marked `!` in the
   bar until you show it. `str bell false set` silences both.

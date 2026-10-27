@@ -8,7 +8,8 @@
 //! release in the encodings that do not name the button; 64 to 67 the
 //! wheel; 128 and 129 the back and forward buttons), plus 4 for Shift, 8 for
 //! Alt and 16 for Ctrl, plus 32 for motion. Positions count from one.
-use crate::keys::Modifiers;
+use crate::keys::encode::key_bytes;
+use crate::keys::{Direction, Key, KeyPress, Modifiers};
 use crate::{Mode, MouseProtocolEncoding, MouseProtocolMode};
 use std::io::Write;
 
@@ -103,50 +104,72 @@ const UTF8_LIMIT: u32 = 2015;
 const WHEEL_LINES: u16 = 5;
 
 impl crate::Screen {
-    /// Appends `event`'s report to `out` as the program on this screen asked
-    /// for mouse reports (`CSI ? 9 / 1000 / 1001 / 1002 / 1003 h`, encoded
-    /// as `CSI ? 1005 / 1006 / 1015 h` say), and returns whether there
-    /// was one ([`mouse_bytes`]). With no mouse reporting asked for, on the
-    /// alternate screen, with alternate scroll set (`CSI ? 1007 h`), a wheel
-    /// turn sends the cursor keys instead (xterm 411's `AlternateScroll`,
-    /// scrollbar.c): Up or Down, in the cursor key mode, 5 times, or half
-    /// the screen's rows with Ctrl.
-    pub fn encode_mouse(&self, event: MouseEvent, out: &mut Vec<u8>) -> bool {
+    /// Encodes `event` as the program asked, in chunks of at most 64 bytes.
+    /// With mouse reporting enabled, yields its report ([`mouse_bytes`]),
+    /// or nothing if the mode does not report this event. With no reporting,
+    /// alternate scroll (`CSI ? 1007 h`) on the alternate screen sends Up
+    /// or Down through the negotiated key encoder: 5 keys, or half the
+    /// screen's rows with Ctrl. Modifiers choose the scroll distance and
+    /// are not sent with the arrows (xterm 411's `AlternateScroll`).
+    ///
+    /// Chunks keep whole keys in order; callers must consume every chunk
+    /// or report refused input. An expansion is at most 32,767 arrows.
+    /// A zero-distance scroll yields one empty chunk.
+    pub fn encode_mouse(&self, event: MouseEvent) -> impl Iterator<Item = Vec<u8>> + use<> {
         let mode = self.mouse_protocol_mode();
-        if mode == MouseProtocolMode::None && self.alternate_scroll(event, out) {
-            return true;
-        }
-        mouse_bytes(event, mode, self.mouse_protocol_encoding(), out)
+        let mut bytes = Vec::new();
+        let mut left = if mode == MouseProtocolMode::None
+            && let Some((key, lines)) = self.alternate_scroll(event)
+        {
+            key_bytes(KeyPress::plain(key).into(), self.key_mode(), &mut bytes);
+            lines
+        } else {
+            u16::from(mouse_bytes(
+                event,
+                mode,
+                self.mouse_protocol_encoding(),
+                &mut bytes,
+            ))
+        };
+        let mut empty_scroll = left == 0 && !bytes.is_empty();
+        std::iter::from_fn(move || {
+            if std::mem::take(&mut empty_scroll) {
+                return Some(Vec::new());
+            }
+            if left == 0 || bytes.is_empty() {
+                return None;
+            }
+            // One report or key is at most 64 bytes (B45).
+            let count = usize::from(left).min(64usize.checked_div(bytes.len())?);
+            let count = u16::try_from(count).ok()?;
+            left = left.saturating_sub(count);
+            Some(
+                std::iter::repeat_n(bytes.as_slice(), usize::from(count))
+                    .flatten()
+                    .copied()
+                    .collect(),
+            )
+        })
     }
 
-    /// A wheel turn as cursor keys, with alternate scroll set and the
-    /// alternate screen shown; whether it was one.
-    fn alternate_scroll(&self, event: MouseEvent, out: &mut Vec<u8>) -> bool {
-        let last = match event.action {
-            MouseAction::Press(MouseButton::WheelUp) => b'A',
-            MouseAction::Press(MouseButton::WheelDown) => b'B',
+    /// A wheel turn's key and distance, while alternate scrolling applies.
+    fn alternate_scroll(&self, event: MouseEvent) -> Option<(Key, u16)> {
+        let direction = match event.action {
+            MouseAction::Press(MouseButton::WheelUp) => Direction::Up,
+            MouseAction::Press(MouseButton::WheelDown) => Direction::Down,
             MouseAction::Press(_) | MouseAction::Release(_) | MouseAction::Motion(_) => {
-                return false;
+                return None;
             }
         };
         if !self.mode(Mode::AlternateScroll) || !self.mode(Mode::AlternateScreenSaveCursor) {
-            return false;
+            return None;
         }
         let lines = if event.mods.ctrl {
             self.size().rows() / 2
         } else {
             WHEEL_LINES
         };
-        let key: &[u8] = if self.mode(Mode::ApplicationCursor) {
-            b"\x1bO"
-        } else {
-            b"\x1b["
-        };
-        for _ in 0..lines {
-            out.extend_from_slice(key);
-            out.push(last);
-        }
-        true
+        Some((Key::Arrow(direction), lines))
     }
 }
 

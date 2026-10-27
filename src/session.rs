@@ -2482,7 +2482,9 @@ impl Session {
         let mut report = Vec::new();
         for event in events {
             let release = matches!(event.action, Release(_));
-            if p.screen().encode_mouse(event, &mut report) || (release && x10) {
+            let mut chunks = p.screen().encode_mouse(event).peekable();
+            if chunks.peek().is_some() || (release && x10) {
+                report.extend(chunks.flatten());
                 continue;
             }
             let message = match (mode, event.action) {

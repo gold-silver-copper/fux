@@ -226,10 +226,15 @@ impl Session {
         let (row, col) = rect.clamp(event.row, event.col);
         let event = MouseEvent { row, col, ..event };
         self.typed(client);
-        let mut report = Vec::new();
-        let asked = self.parts.panes().get(&pane);
-        asked.is_some_and(|p| p.screen().encode_mouse(event, &mut report))
-            && self.put_in(client, pane, |_, out| out.extend_from_slice(&report))
+        let Some(pane_screen) = self.parts.panes().get(&pane) else {
+            return false;
+        };
+        let reports = pane_screen.screen().encode_mouse(event);
+        let mut refused = false;
+        for report in reports {
+            refused |= self.put_in(client, pane, |_, out| out.extend_from_slice(&report));
+        }
+        refused
     }
 }
 
@@ -957,6 +962,19 @@ mod tests {
         s.output(PaneId::of(3), b"\x1b[?1000h\x1b[?1006h");
         s.input(c, press(below.x() + 1, below.y() + 2).as_bytes());
         assert_eq!(queued(&mut s, 3), b"\x1b[<0;2;3M");
+        Ok(())
+    }
+
+    #[test]
+    fn a_wheel_report_queues_every_negotiated_scroll_chunk() -> Outcome {
+        let (mut s, c) = crate::session::testing::attached(101, 20)?;
+        s.output(PaneId::of(1), b"\x1b[?1049h\x1b[?1007h\x1b[?1h\x1b[>1u");
+        s.input(c, b"\x1b[<80;1;1M");
+        let expected: Vec<u8> = std::iter::repeat_n(b"\x1b[A", 50)
+            .flatten()
+            .copied()
+            .collect();
+        assert_eq!(queued(&mut s, 1), expected);
         Ok(())
     }
 

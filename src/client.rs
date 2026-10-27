@@ -35,9 +35,10 @@ pub const ENTER: &str =
 /// And puts it back, however the attachment ends, with what the server may
 /// have turned on: the pane's modes (`render::Modes`; the server gives the
 /// cursor's shape back itself, as DECSCUSR has no "the terminal's own"),
-/// scheme reports (mode 2031), and the kitty flags, popped on the alternate
+/// cursor colour (OSC 112), scheme reports (mode 2031), and the kitty flags,
+/// popped on the alternate
 /// screen they were pushed on.
-const LEAVE: &str = "\x1b[23;0t\x1b[?2026l\x1b[?1003l\x1b[?1002l\x1b[?1000l\x1b[?1006l\x1b[?1004l\x1b[?2004l\x1b[?2031l\x1b[<u\x1b[?7h\x1b[0m\x1b[?25h\x1b[?1049l";
+const LEAVE: &str = "\x1b]112\x1b\\\x1b[23;0t\x1b[?2026l\x1b[?1003l\x1b[?1002l\x1b[?1000l\x1b[?1006l\x1b[?1004l\x1b[?2004l\x1b[?2031l\x1b[<u\x1b[?7h\x1b[0m\x1b[?25h\x1b[?1049l";
 
 /// Why a client could not reach the server, start one, or go on.
 #[derive(Debug)]
