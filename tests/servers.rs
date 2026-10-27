@@ -103,7 +103,17 @@ fn servers_are_named_and_kills_are_guarded() -> Outcome {
     );
     // From one of its own panes, kill-server is refused as well.
     let sh = server.ok(&[
-        "opts", "80", "24", "size", "str", "sh", "name", "str", "sh", "program", "run",
+        "agent-opts",
+        "80",
+        "24",
+        "size",
+        "str",
+        "sh",
+        "name",
+        "str",
+        "sh",
+        "program",
+        "run",
     ])?;
     let sh = first_word(&sh);
     let line = format!("'{FUX}' kill-server; echo status=$?");
@@ -222,7 +232,7 @@ fn events_tell_what_happens() -> Outcome {
     let told = (|| {
         next(r#""event":"ready""#)?;
         let pane = server.ok(&[
-            "opts",
+            "agent-opts",
             "80",
             "24",
             "size",
@@ -303,7 +313,7 @@ fn keys_to_a_tab_reach_each_pane() -> Outcome {
         "str", "bash", "program", "str", "--norc", "arg", "str", "-i", "arg",
     ];
     let a = server.ok(&[
-        &["opts", "80", "24", "size", "str", "a", "name"][..],
+        &["agent-opts", "80", "24", "size", "str", "a", "name"][..],
         &bash,
         &["run"],
     ]
@@ -339,7 +349,16 @@ fn keys_to_a_tab_reach_each_pane() -> Outcome {
 #[test]
 fn panes_and_tabs_are_lists_of_handles() -> Outcome {
     let server = Server::start("")?;
-    let run = ["opts", "80", "24", "size", "str", "cat", "program", "run"];
+    let run = [
+        "agent-opts",
+        "80",
+        "24",
+        "size",
+        "str",
+        "cat",
+        "program",
+        "run",
+    ];
     let a = server.ok(&run)?;
     let a = first_word(&a);
     let b = server.ok(&["str", a, "pane", "str", "cat", "program", "split"])?;
@@ -568,15 +587,14 @@ fn a_dump_makes_its_workspace_again() -> Outcome {
     server.ok(&["--file", &file.to_string_lossy()])?;
     let ls = server.ok(&["ls"])?;
     assert!(
-        ls.contains(" jobs\n") && ls.contains(" job\n"),
+        ls.contains(" jobs\n") && ls.contains(" job "),
         "{ls}\nfrom\n{dump}"
     );
     Ok(())
 }
 
-/// A dump run on a new server, whose own `main` tab makes the dump's first
-/// tab `tab-2`, gives a tab it names `tab-2` that name all the same: a
-/// name given takes the one fux gave, which it names anew.
+/// A given name matching an old automatic label survives dump replay;
+/// its unnamed workspace stays separate from a workspace with an old label.
 #[test]
 fn a_dump_runs_on_a_new_server_whatever_its_tabs_are_named() -> Outcome {
     let source = Server::start("")?;
@@ -584,17 +602,112 @@ fn a_dump_runs_on_a_new_server_whatever_its_tabs_are_named() -> Outcome {
         "opts", "80", "24", "size", "str", "main", "in", "str", "tab-2", "name", "str", "sleep",
         "program", "str", "60", "arg", "run",
     ])?;
+    source.ok(&["str", "tab-2", "pane", "str", "new-workspace", "move-to"])?;
     let dump = source.ok(&["dump"])?;
     let server = Server::start("")?;
+    server.ok(&[
+        "opts",
+        "80",
+        "24",
+        "size",
+        "str",
+        "workspace-2",
+        "name",
+        "new-workspace",
+    ])?;
     let file = server.dir.join("source.fux");
     std::fs::write(&file, &dump).map_err(e)?;
     server.ok(&["--file", &file.to_string_lossy()])?;
     let named = server.ok(&["str", "tab-2", "pane"])?;
+    assert_eq!(
+        server.ok(&["str", "tab-2", "pane", "workspace", "str", "name", "get"])?,
+        "null\n"
+    );
+    let held = server.ok(&["str", "workspace-2", "workspace", "panes", "len"])?;
+    assert_eq!(held, "1\n");
     let ls = server.ok(&["ls"])?;
     assert!(
-        ls.contains(&format!("{} sleep ", first_word(&named))),
+        ls.contains(&format!("{} tab-2 ", first_word(&named))),
         "{named}\n{ls}\nfrom\n{dump}"
     );
+    Ok(())
+}
+
+/// Replaying explicit programs in an unnamed workspace never starts the
+/// destination server's default shell.
+#[test]
+fn an_unnamed_workspace_replays_independently_of_the_default_shell() -> Outcome {
+    let source = Server::start("")?;
+    source.ok(&[
+        "agent-opts",
+        "80",
+        "24",
+        "size",
+        "str",
+        "first",
+        "name",
+        "str",
+        "cat",
+        "program",
+        "run",
+        "str",
+        "new-workspace",
+        "move-to",
+    ])?;
+    source.ok(&[
+        "str",
+        "first",
+        "pane",
+        "horizontal",
+        "str",
+        "cat",
+        "program",
+        "split",
+        "str",
+        "second",
+        "rename",
+    ])?;
+    source.ok(&[
+        "opts",
+        "str",
+        "first",
+        "pane",
+        "workspace",
+        "in",
+        "80",
+        "24",
+        "size",
+        "str",
+        "third",
+        "name",
+        "str",
+        "cat",
+        "program",
+        "run",
+    ])?;
+    let dump = source.ok(&["str", "first", "pane", "workspace", "dump-of"])?;
+    for shell in [
+        &["str", "/no/such/fux-shell"][..],
+        &["str", "sh", "str", "-c", "str", "exit 0"],
+    ] {
+        let server = Server::start("")?;
+        server.ok(&[&["str", "shell", "list"][..], shell, &["end", "set"]].concat())?;
+        let file = server.dir.join("unnamed.fux");
+        std::fs::write(&file, &dump).map_err(e)?;
+        server.ok(&["--file", &file.to_string_lossy()])?;
+        assert_eq!(
+            server.ok(&["str", "first", "pane", "workspace", "panes", "len"])?,
+            "3\n"
+        );
+        assert_eq!(
+            server.ok(&["str", "first", "pane", "workspace", "tabs", "len"])?,
+            "2\n"
+        );
+        for name in ["first", "second", "third"] {
+            let pid = server.ok(&["str", name, "pane", "str", "pid", "get"])?;
+            assert!(pid.trim().parse::<u32>().is_ok(), "{name}: {pid}");
+        }
+    }
     Ok(())
 }
 

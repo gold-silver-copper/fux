@@ -189,19 +189,30 @@ pub fn from_opts(last: &str) -> String {
 /// fux's kinds of value, each as its values' `name` says it, as an error
 /// says it, and, for one that must be used, what one left over is told.
 #[rustfmt::skip]
-pub const KINDS: [(&str, &str, Option<&str>); 12] = [
+pub const KINDS: [(&str, &str, Option<&str>); 19] = [
     ("pane", "a pane", None), ("tab", "a tab", None), ("workspace", "a workspace", None),
     ("client", "a client", None), ("size", "a size (from percent)", None),
     ("answer", "an action's answer", None),
+    ("closed-answer", "a closed pane's answer", None),
+    ("client-capture", "a client's capture", None),
     ("answers", "an answer of a tab's or workspace's panes", None), ("capture", "a capture", None),
     ("listing", "a listing", None), ("json", "a JSON value", None),
     ("opts", "options (from opts, for run, new-tab, new-workspace, events-of and attach; a pane's words take theirs on the pane: `%2 all-history capture`)", Some("nothing takes these options")),
-    ("request", "a request (a pane given options, keys or a wait)", Some("nothing acts on this request")),
+    ("pane-request", "a pane request", Some("nothing acts on this request")),
+    ("tab-request", "a tab request", Some("nothing acts on this request")),
+    ("workspace-request", "a workspace request", Some("nothing acts on this request")),
+    ("client-request", "a client request", Some("nothing acts on this request")),
+    ("changed-request", "a changed request", Some("nothing acts on this request")),
+    ("expected-request", "an expected request", Some("nothing acts on this request")),
 ];
 
 /// Kinds taken where an effect names another: an action's answer is its
 /// pane, and a workspace may be given by its name.
-pub const TAKEN_AS: [(&str, &str); 2] = [("pane", "answer"), ("workspace", "string")];
+pub const TAKEN_AS: [(&str, &str); 3] = [
+    ("pane", "answer"),
+    ("pane", "closed-answer"),
+    ("workspace", "string"),
+];
 
 /// The names the words' effects use beyond the kinds' own, each with the
 /// kinds it stands for (`from>to`: what a kind is once the word passes it
@@ -209,21 +220,22 @@ pub const TAKEN_AS: [(&str, &str); 2] = [("pane", "answer"), ("workspace", "stri
 /// of an integer.
 #[rustfmt::skip]
 pub const NAMES: &[(&str, &str, &str)] = &[
+    ("closed-outcome", "closed-answer answers", "a closed pane or collection answer"),
     ("outcome", "answer answers", "an action's or wait's answer: a pane's, or a tab's or workspace's panes'"),
-    ("x", "opts request pane>request tab>request workspace>request client>request answer>request",
+    ("x", "opts pane>pane-request answer>pane-request closed-answer>pane-request tab>tab-request workspace>workspace-request client>client-request pane-request tab-request workspace-request client-request changed-request expected-request",
         "the pane it goes on, under its own values (or a tab, workspace, client, a request on one, or opts)"),
-    ("target", "pane>answer tab>answers workspace>answers client>answers answer request>outcome",
+    ("target", "pane>answer answer closed-answer>answer pane-request>answer expected-request>answer tab>answers tab-request>answers workspace>answers workspace-request>answers client>answers client-request>answers",
         "a pane, tab, workspace or client, or a request on one"),
-    ("subject", "pane answer request", "a pane, or a request on one"),
-    ("place", "pane>answer tab>answers workspace>answers answer request>outcome",
+    ("subject", "pane answer closed-answer pane-request", "a pane, or a request on one"),
+    ("place", "pane>answer answer closed-answer>answer pane-request>answer changed-request>answer tab>answers tab-request>answers workspace>answers workspace-request>answers",
         "a pane, tab or workspace, or a request on one"),
-    ("handle", "pane tab workspace answer", "a pane, tab or workspace"),
-    ("watched", "opts pane tab workspace answer request", "a pane, tab or workspace, a request on one, or opts (everything)"),
-    ("ref", "string pane tab workspace answer", "a name, or a pane, tab or workspace"),
+    ("handle", "pane tab workspace answer closed-answer", "a pane, tab or workspace"),
+    ("watched", "opts pane tab workspace answer closed-answer pane-request tab-request workspace-request", "a pane, tab or workspace, a request on one, or opts (everything)"),
+    ("ref", "string pane tab workspace answer closed-answer", "a name, or a pane, tab or workspace"),
     ("text", "string integer boolean", "a string, a number or a boolean"),
     ("new", "integer boolean list", "a setting's value: a number, true or false, or a list (fux help set)"),
-    ("var", "string integer boolean pane tab workspace answer", "a string, a number, a boolean, or a pane, tab or workspace"),
-    ("value", "integer boolean string list pane tab workspace client size answer answers capture listing json",
+    ("var", "string integer boolean pane tab workspace answer closed-answer", "a string, a number, a boolean, or a pane, tab or workspace"),
+    ("value", "integer boolean string list pane tab workspace client size answer closed-answer answers capture client-capture listing json",
         "a value (options and requests are none: what acts on them gives one)"),
     ("seen", "string answer capture", "a version: an action's or wait's answer, a pane's capture, or its text"),
     ("record", "listing", "a listing"),
@@ -238,8 +250,7 @@ pub const INTEGERS: &str = "cols rows secs n row col lines from to cells";
 words! {
     Finding Starting Waiting Input Reading Changing Clients Server Shell Config Help;
     Act {
-        Finding Pane "pane" "ref -- pane" "the pane ref names: a tab's name (its one pane), %N, a pane, or a tab of one pane" "fux str web pane capture" [];
-        Finding PaneNamed "pane-named" "name -- pane" "the pane given that name (rename, or its program's); never a title" "fux str server pane-named capture" [];
+        Finding Pane "pane" "ref -- pane" "the pane ref names: its given name, %N, a pane, an answer or a version" "fux str web pane capture" [];
         Finding Tab "tab" "ref -- tab" "the tab ref names: its name, @N, or a pane's tab" "fux %3 tab str logs rename" [];
         Finding Workspace "workspace" "ref -- workspace" "the workspace ref names: its name, +N, or a pane's or tab's workspace" "fux str agent workspace kill" [];
         Finding Here "here" "-- pane" "the pane this runs in (FUX_PANE)" "fux here str done notify" [];
@@ -248,8 +259,8 @@ words! {
         Finding Panes "panes" "handle -- list" "the panes of a pane (itself), a tab or a workspace, in layout order" "fux str agent workspace panes each capture print end" [];
         Finding Tabs "tabs" "handle -- list" "the tabs of a pane or tab (its own) or a workspace, in the workspace's order" "fux str agent workspace tabs each str name get print end" [];
         Finding Focused "focused" "client -- pane" "the pane a client focuses" "fux str c1 client focused capture" [];
-        Starting Opts "opts" "-- opts" "empty options, for run, new-tab, new-workspace, events-of and attach (the other words take them on the pane)" "fux opts 80 24 size str ./app program run" [];
-        Starting Run "run" "opts -- answer" "start a program in a tab of its own, in workspace agent; its pane stays once it exits" "fux opts str web name 120 40 size str ./app program str --flag arg run" [Opts: Name Size Cwd Env Program Arg In];
+        Starting Opts "opts" "-- opts" "empty options, for run, new-tab, new-workspace, events-of and attach (the other words take them on the pane)" "fux opts str agent in 80 24 size str ./app program run" [];
+        Starting Run "run" "opts -- answer" "start a program in a tab of its own; in is required, name names its pane; its pane stays once it exits" "fux agent-opts str web name 120 40 size str ./app program str --flag arg run" [Opts: Name Size Cwd Env Program Arg In];
         Starting Split "split" "subject -- answer" "split a pane: a shell, or the program given" "fux %3 vertical split" [Pane: Horizontal Vertical Shares Cwd Env Program Arg];
         Starting NewTab "new-tab" "opts -- answer" "a tab with a shell" "fux opts str logs name 80 24 size str agent in new-tab" [Opts: Name Size Cwd Env In];
         Starting NewWorkspace "new-workspace" "opts -- answer" "a workspace with a tab and a shell" "fux opts str work name 80 24 size new-workspace" [Opts: Name Size Cwd Env];
@@ -295,9 +306,9 @@ words! {
         Clients StepWorkspace "step-workspace" "client way --" "show the next or previous workspace" "fux str c1 client str previous step-workspace" [];
         Clients Zoom "zoom" "client --" "zoom the focused pane, or restore" "fux str c1 client zoom" [];
         Clients Detach "detach" "client --" "detach a client" "fux str c1 client detach" [];
-        Clients CaptureClient "capture-client" "client -- capture" "what a client's terminal shows" "fux str c1 client capture-client" [];
+        Clients CaptureClient "capture-client" "client -- client-capture" "what a client's terminal shows" "fux str c1 client capture-client" [];
         Clients ResizeClient "resize-client" "client cols rows --" "a headless client's size, 1 to 4,096 each" "fux str c1 client 120 40 resize-client" [];
-        Server Server "server" "name --" "the server named so (NAME.sock in fux's directory), for what follows" "fux str test server start opts 80 24 size str ./app program run" [];
+        Server Server "server" "name --" "the server named so (NAME.sock in fux's directory), for what follows" "fux str test server start agent-opts 80 24 size str ./app program run" [];
         Server Socket "socket" "path --" "the server on this socket, for what follows" "fux str ./test.sock socket status" [];
         Server Start "start" "--" "start the server in the background, if none answers" "fux start" [];
         Server Status "status" "-- record" "the server that answers, and its version; with none, fails no_server" "fux status || fux start" [];
@@ -318,21 +329,21 @@ words! {
         Help Check "check" "file mode --" "check a file as program (compile only) or config (also run dry)" "fux str config.fux str config check" [];
     }
     Opt {
-        Starting Name "name" "x name -- x" "the tab's or workspace's name" "fux opts str web name 80 24 size str ./app program run";
-        Starting Size "size" "x cols rows -- x" "what its tab is laid out on while no client shows it, 1 to 4,096 each; needed from outside fux, else the caller's own screen or tab, as fux makes no size up; attach: be a client with no terminal, of this size, which prints its id and runs until signalled" "fux opts 80 24 size str ./app program run";
-        Starting Cwd "cwd" "x dir -- x" "where it starts" "fux opts str /srv cwd 80 24 size str ./app program run";
-        Starting Env "env" "x key var -- x" "a variable for it: text, or a pane, tab or workspace as its id (%3; an action's answer, its pane)" "fux opts str PORT 8080 env 80 24 size str ./app program run";
-        Starting Program "program" "x path -- x" "the program to start, in place of a shell" "fux opts 80 24 size str ./app program run";
-        Starting Arg "arg" "x text -- x" "an argument for the program" "fux opts 80 24 size str ./app program str -v arg run";
+        Starting Name "name" "x name -- x" "the given name: run's pane, new-tab's tab, or new-workspace's workspace" "fux agent-opts str web name 80 24 size str ./app program run";
+        Starting Size "size" "x cols rows -- x" "what its tab is laid out on while no client shows it, 1 to 4,096 each; needed from outside fux, else the caller's own screen or tab, as fux makes no size up; attach: be a client with no terminal, of this size, which prints its id and runs until signalled" "fux agent-opts 80 24 size str ./app program run";
+        Starting Cwd "cwd" "x dir -- x" "where it starts" "fux agent-opts str /srv cwd 80 24 size str ./app program run";
+        Starting Env "env" "x key var -- x" "a variable for it: text, or a pane, tab or workspace as its id (%3; an action's answer, its pane)" "fux agent-opts str PORT 8080 env 80 24 size str ./app program run";
+        Starting Program "program" "x path -- x" "the program to start, in place of a shell" "fux agent-opts 80 24 size str ./app program run";
+        Starting Arg "arg" "x text -- x" "an argument for the program" "fux agent-opts 80 24 size str ./app program str -v arg run";
         Starting Horizontal "horizontal" "x -- x" "split side by side" "fux %3 horizontal split";
         Starting Vertical "vertical" "x -- x" "split stacked" "fux %3 vertical split";
         Starting Shares "shares" "x n n -- x" "split: how the pane and the new one divide the pane's room, A to B (default: halved)" "fux %3 horizontal 2 1 shares split";
-        Starting In "in" "x workspace -- x" "the workspace for run, new-tab (each makes a name not there) or attach" "fux opts str agent in 80 24 size new-tab";
+        Starting In "in" "x workspace -- x" "the workspace for run, new-tab or attach; run and new-tab create a missing name, or a fresh unnamed workspace with str new-workspace in" "fux opts str agent in 80 24 size new-tab";
         Starting Watch "watch" "x -- x" "attach without typing: keys do nothing but the prefix, then d, which detaches" "fux opts watch attach";
         Starting KillFirst "kill-first" "x -- x" "respawn: end the program first if it still runs" "fux %3 kill-first respawn";
-        Waiting Changed "changed" "seen -- request" "a wait from this version (%2:0.57.0.3.0:RUN, as an action, a wait or `str version get` gives it; or an answer or capture, its version) of the pane it names, not from now" "A=$(fux %3 str y text send-keys); fux str \"$A\" changed 60 timeout wait";
+        Waiting Changed "changed" "seen -- changed-request" "a wait from this version (%2:0.57.0.3.0:RUN, as an action, a wait or `str version get` gives it; or an answer or capture, its version) of the pane it names, not from now" "A=$(fux %3 str y text send-keys); fux str \"$A\" changed 60 timeout wait";
         Waiting Timeout "timeout" "x secs -- x" "how long a wait waits for a change before it answers timeout, else the server's wait-seconds" "fux %3 300 timeout wait";
-        Input Expect "expect" "seen -- request" "keys for the pane this version names, which send-keys sends only if the pane is still at it as they are queued, else sends none and fails stale; a version as changed takes it: a capture's is its pane's as it was read" "fux %3 capture let seen seen string str '[y/N]' contains if seen expect str y text send-keys drop then";
+        Input Expect "expect" "seen -- expected-request" "keys for the pane this version names, which send-keys sends only if the pane is still at it as they are queued, else sends none and fails stale; a version as changed takes it: a capture's is its pane's as it was read" "fux %3 capture let seen seen string str '[y/N]' contains if seen expect str y text send-keys drop then";
         Input Text "text" "x text -- x" "text, typed" "fux %3 str 'ls -l' text str Enter key send-keys";
         Input Key "key" "x key -- x" "a key by its name: Enter, C-c, Up, F5" "fux %3 str C-c key send-keys";
         Input Paste "paste" "x text -- x" "text as a paste, bracketed if the program turned that on (an end mark, ESC [201~, in it then dropped); else as it is" "fux %3 str 'a long prompt' paste str Enter key send-keys";
@@ -640,8 +651,9 @@ fn held(value: &Value<Fux>) -> Option<crate::command::Version> {
     }
 }
 
-/// Why a request `expect` made is refused by all but `send-keys`, which
-/// alone checks it.
+/// An explicit baseline is consumed only by its corresponding action.
+const CHANGED: &str = "takes no request changed made: only wait uses its baseline";
+
 const EXPECTED: &str = "takes no request expect made: only send-keys checks a version";
 
 /// The version `value` holds (`Answer::version`), or is as text.
@@ -713,7 +725,7 @@ fn modify(
     };
     built.given.push(opt);
     match opt {
-        Opt::Changed => built.on = Some(On::Version(version(&next()?)?)),
+        Opt::Changed => built.on = Some(On::Changed(version(&next()?)?)),
         Opt::Expect => built.on = Some(On::Seen(version(&next()?)?)),
         Opt::From => {
             let text = string(&next()?)?;
@@ -859,6 +871,7 @@ fn request_pane(word: Act, value: Value<Fux>) -> Result<(PaneId, Opts), Failure>
         (On::Version(version), built) => Ok((version.pane, built)),
         // Refused, not acted on unchecked (`unused` refuses it first today).
         (On::Seen(_), _) => Err(fail(Raise::Type, EXPECTED)),
+        (On::Changed(_), _) => Err(fail(Raise::Type, CHANGED)),
         (On::Target(AnyRef::Tab(_) | AnyRef::Workspace(_)) | On::Client(_), _) => Err(fail(
             Raise::Type,
             "takes a pane (from pane, run or split), or a request on one",
@@ -1106,7 +1119,7 @@ impl fuxth::Host for Host<'_> {
             match value {
                 Value::App(Fux::Opts(opts)) => {
                     let version = match opts.on {
-                        Some(On::Version(v) | On::Seen(v)) => Some(v.run),
+                        Some(On::Version(v) | On::Changed(v) | On::Seen(v)) => Some(v.run),
                         _ => None,
                     };
                     opts.of = super::same_run(of, version)?;
@@ -1174,12 +1187,6 @@ impl Host<'_> {
             Act::Pane => find(Kind::Pane, next()?, out),
             Act::Tab => find(Kind::Tab, next()?, out),
             Act::Workspace => find(Kind::Workspace, next()?, out),
-            Act::PaneNamed => match string(&next()?)? {
-                name if name.trim().is_empty() => {
-                    Err(fail(Raise::NoTarget, "an empty name names no pane"))
-                }
-                name => later(ask(Command::PaneNamed { name })),
-            },
             Act::Here => resolve(String::new(), Kind::Pane),
             Act::Client => {
                 let text = string(&next()?)?;
@@ -1212,11 +1219,16 @@ impl Host<'_> {
                 if built.argv.is_empty() {
                     return Err(fail(
                         Raise::NoProgram,
-                        "needs a program: opts str ./app program run",
+                        "needs a program: agent-opts str ./app program run",
                     ));
                 }
                 let run = Command::Run {
-                    workspace: built.place,
+                    workspace: built.place.ok_or_else(|| {
+                        fail(
+                            Raise::NoWorkspace,
+                            "run needs a workspace: give opts str NAME in, or use agent-opts",
+                        )
+                    })?,
                     name: built.name,
                     size: built.size,
                     cwd: built.cwd,
@@ -1273,7 +1285,7 @@ impl Host<'_> {
                 let (on, built) = request(act, next()?)?;
                 // On a tab or workspace, in each of its panes.
                 let since = match on {
-                    On::Version(version) => Since::Version(version),
+                    On::Version(version) | On::Changed(version) => Since::Version(version),
                     On::Seen(_) => return Err(fail(Raise::Type, EXPECTED)),
                     On::Target(target) => Since::Now(target),
                     On::Client(_) => {
@@ -1301,6 +1313,7 @@ impl Host<'_> {
                     On::Target(target) => To::Now(target),
                     On::Version(version) => To::Now(AnyRef::Pane(version.pane)),
                     On::Seen(version) => To::Seen(version),
+                    On::Changed(_) => return Err(fail(Raise::Type, CHANGED)),
                     On::Client(c) => {
                         // Typed at its terminal: whatever pane they reach is
                         // the client's to choose, so there is none to wait on
@@ -1411,6 +1424,7 @@ impl Host<'_> {
                         (On::Target(target), built) => (Some(target), built),
                         (On::Version(version), built) => (Some(AnyRef::Pane(version.pane)), built),
                         (On::Seen(_), _) => return Err(fail(Raise::Type, EXPECTED)),
+                        (On::Changed(_), _) => return Err(fail(Raise::Type, CHANGED)),
                         (On::Client(_), _) => {
                             let why = "takes a pane, tab or workspace, or opts, not a client";
                             return Err(fail(Raise::Type, why));
@@ -1844,6 +1858,7 @@ impl Host<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use fuxth::AppValue;
 
     /// No word's name needs quoting in a shell. (That no two share one,
     /// nor any the language's, the vocabulary checks as it is made.)
@@ -1920,8 +1935,15 @@ mod tests {
             let tokens = fuxth::token::source("t", code).unwrap_or_default();
             super::super::compile(&tokens).map(drop)
         };
-        assert!(checked("@1 wait capture").is_err());
-        assert!(checked("+1 wait str y text send-keys").is_err());
+        for wrong in [
+            "@1 wait capture",
+            "@1 0 timeout wait capture",
+            "@1 str x text send-keys capture",
+            "+1 wait str y text send-keys",
+            "+1 0 timeout wait str y text send-keys",
+        ] {
+            assert!(checked(wrong).is_err(), "{wrong}");
+        }
         assert_eq!(checked("%1 str x text send-keys wait capture"), Ok(()));
     }
 
@@ -1963,5 +1985,139 @@ mod tests {
     #[test]
     fn a_default_capture_view_is_plain() {
         assert_eq!(crate::command::CaptureView::default(), Opts::default().view);
+    }
+
+    /// Every ordinary modifier preserves the target and baseline, both in
+    /// the checker and in the constructed value. The only kind changes are
+    /// bare handles becoming their corresponding request.
+    #[test]
+    fn modifiers_keep_the_target_and_baseline() -> Result<(), Box<dyn std::error::Error>> {
+        let version: crate::command::Version = "%2:0.0.0.0.0:48211-1867a3f9c2b8e7d6"
+            .parse()
+            .map_err(|()| "version")?;
+        let pane = Fux::Pane(version.pane, Some(version.run));
+        let tab = Fux::Tab(crate::id::TabId::of(1), Some(version.run));
+        let workspace = Fux::Workspace(crate::id::WsId::of(1), Some(version.run));
+        let client = Fux::Client(crate::id::ClientId::of(1), Some(version.run));
+        let on = [
+            None,
+            Some(On::Target(AnyRef::Pane(version.pane))),
+            Some(On::Target(AnyRef::Tab(crate::id::TabId::of(1)))),
+            Some(On::Target(AnyRef::Workspace(crate::id::WsId::of(1)))),
+            Some(On::Client(crate::id::ClientId::of(1))),
+            Some(On::Version(version)),
+            Some(On::Changed(version)),
+            Some(On::Seen(version)),
+        ];
+        let mut targets = vec![
+            pane,
+            tab,
+            workspace,
+            client,
+            Fux::Answer(
+                Box::new(super::super::Answer::Pane(
+                    crate::answer::PaneAnswer::Acted(version),
+                )),
+                Some(version.run),
+            ),
+            Fux::Answer(
+                Box::new(super::super::Answer::Pane(
+                    crate::answer::PaneAnswer::Closed(version.pane),
+                )),
+                Some(version.run),
+            ),
+        ];
+        targets.extend(on.map(|on| {
+            Fux::Opts(Box::new(Opts {
+                on,
+                ..Opts::default()
+            }))
+        }));
+        for target in targets {
+            let expected = modifying(Value::App(target.clone())).map_err(|f| f.message)?;
+            let kind = match target.name() {
+                "pane" | "answer" | "closed-answer" => "pane-request",
+                "tab" => "tab-request",
+                "workspace" => "workspace-request",
+                "client" => "client-request",
+                request => request,
+            };
+            for &opt in Opt::ALL
+                .iter()
+                .filter(|o| !matches!(o, Opt::Changed | Opt::Expect))
+            {
+                let args = match opt {
+                    Opt::Name | Opt::Cwd | Opt::Program | Opt::Arg | Opt::Text | Opt::Paste => {
+                        vec![Value::str("x")]
+                    }
+                    Opt::Size | Opt::Shares => vec![Value::Int(1), Value::Int(1)],
+                    Opt::Rows | Opt::Cols => vec![Value::Int(0), Value::Int(1)],
+                    Opt::Env => vec![Value::str("X"), Value::Int(1)],
+                    Opt::In => vec![Value::str("+1")],
+                    Opt::Timeout | Opt::History => vec![Value::Int(0)],
+                    Opt::Key => vec![Value::str("Enter")],
+                    Opt::Bytes => vec![Value::str("61")],
+                    Opt::Mouse => vec![Value::str("click"), Value::Int(0), Value::Int(0)],
+                    Opt::From => vec![Value::str("0:48211-1867a3f9c2b8e7d6")],
+                    Opt::Horizontal
+                    | Opt::Vertical
+                    | Opt::Watch
+                    | Opt::KillFirst
+                    | Opt::AllHistory
+                    | Opt::Wrapped
+                    | Opt::Full
+                    | Opt::Styles
+                    | Opt::Marks
+                    | Opt::MainScreen
+                    | Opt::AltScreen
+                    | Opt::LastOutput
+                    | Opt::Changed
+                    | Opt::Expect => vec![],
+                };
+                // `arg` requires a program first, which preserves the same kind.
+                let initial = if opt == Opt::Arg {
+                    let mut built = expected.clone();
+                    built.argv.push("sh".into());
+                    Fux::Opts(built)
+                } else {
+                    target.clone()
+                };
+                let mut values = std::iter::once(Value::App(initial)).chain(args.clone());
+                let actual = modify(opt, &mut || {
+                    values
+                        .next()
+                        .ok_or_else(|| fail(Raise::StackUnderflow, "test argument"))
+                })
+                .map_err(|f| f.message)?;
+                assert_eq!(actual.on, expected.on, "{target:?} {opt}");
+                assert_eq!(Fux::Opts(actual).name(), kind, "{target:?} {opt}");
+                let args = args
+                    .iter()
+                    .map(|v| match v {
+                        Value::Str(s) => format!("str {s}"),
+                        Value::Int(_) | Value::Bool(_) | Value::List(_) | Value::App(_) => v.text(),
+                    })
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                for (candidate, ..) in KINDS {
+                    let mut vocabulary = super::super::vocabulary()?;
+                    vocabulary.add("held", &format!("-- {}", target.name()))?;
+                    vocabulary.add("take-kind", &format!("{candidate} --"))?;
+                    let mut compiler = fuxth::Compiler::<Fux>::new(vocabulary);
+                    let source = format!("held {args} {opt} take-kind");
+                    let checked = compiler
+                        .add(&fuxth::token::source("modifier", &source)?)
+                        .and_then(|()| compiler.finish());
+                    // pane accepts answers directly, but none of these outputs is an answer.
+                    assert_eq!(
+                        checked.is_ok(),
+                        candidate == kind,
+                        "{source}: {} -> {candidate}: {checked:?}",
+                        target.name()
+                    );
+                }
+            }
+        }
+        Ok(())
     }
 }

@@ -13,7 +13,16 @@ fn held_handles_refuse_another_server_before_mutating_it() -> Outcome {
     let a = Server::start("")?;
     let b = Server::start("")?;
     for server in [&a, &b] {
-        server.ok(&["opts", "80", "24", "size", "str", "cat", "program", "run"])?;
+        server.ok(&[
+            "agent-opts",
+            "80",
+            "24",
+            "size",
+            "str",
+            "cat",
+            "program",
+            "run",
+        ])?;
     }
     // A scoped attach must refuse its config's Set before changing b too.
     std::fs::write(
@@ -31,6 +40,7 @@ fn held_handles_refuse_another_server_before_mutating_it() -> Outcome {
         ("%2 tab panes 0 at", "kill"),
         ("list list %2 end end let saved", "saved 0 at 0 at kill"),
         ("%2 capture expect str forbidden text", "send-keys"),
+        ("%2 capture changed", "0 timeout wait"),
         ("%2", "%1 swap-panes"),
         ("opts %2 workspace in", "str cat program run"),
         ("opts %2 workspace in 20 10 size", "attach"),
@@ -97,8 +107,20 @@ fn a_background_descendant_cannot_be_here_after_respawn() -> Outcome {
         pid.display()
     );
     server.ok(&[
-        "opts", "80", "24", "size", "str", "sh", "program", "str", "-c", "arg", "str", &script,
-        "arg", "run",
+        "agent-opts",
+        "80",
+        "24",
+        "size",
+        "str",
+        "sh",
+        "program",
+        "str",
+        "-c",
+        "arg",
+        "str",
+        &script,
+        "arg",
+        "run",
     ])?;
     let descendant = pid_in(&pid)?;
     let _reap = Reap(vec![descendant]);
@@ -158,8 +180,19 @@ fn reserved_environment_names_are_refused_before_spawning() -> Outcome {
             "set",
         ])?;
         let explicit = server.fux(&[
-            "opts", "str", name, "str", "forged", "env", "80", "24", "size", "str", "cat",
-            "program", "run",
+            "agent-opts",
+            "str",
+            name,
+            "str",
+            "forged",
+            "env",
+            "80",
+            "24",
+            "size",
+            "str",
+            "cat",
+            "program",
+            "run",
         ])?;
         for (out, code) in [(inherited, "config:"), (explicit, "bad_value:")] {
             assert_eq!(out.status, 1, "{name}: {}", out.stderr);
@@ -184,7 +217,7 @@ fn reserved_environment_names_are_refused_before_spawning() -> Outcome {
         "set",
     ])?;
     server.ok(&[
-        "opts",
+        "agent-opts",
         "str",
         "FUX_EXTRA",
         "str",
@@ -214,7 +247,7 @@ fn reserved_environment_names_are_refused_before_spawning() -> Outcome {
 fn foreground_metadata_observes_exec_and_keeps_launch_arguments_separate() -> Outcome {
     let server = Server::start("")?;
     server.ok(&[
-        "opts",
+        "agent-opts",
         "80",
         "24",
         "size",

@@ -13,10 +13,10 @@ fn a_client_sees_the_shell_and_types_into_it() -> Outcome {
     client.wait("the echo's output", |t| t.lines().any(|l| l == "one-two"))?;
     let bar = client.bar();
     assert!(bar.contains("main"), "{bar}");
-    assert!(bar.contains("%1 sh"), "{bar}");
+    assert!(bar.contains("%1") && !bar.contains("%1 %1"), "{bar}");
     // The pane is the client's size, less the bar.
     let ls = server.ok(&["ls"])?;
-    assert!(ls.contains("%1 sh 40x9"), "{ls}");
+    assert!(ls.contains("%1 40x9"), "{ls}");
     assert!(ls.contains("client c1 40x10 +1 @1 %1"), "{ls}");
     Ok(())
 }
@@ -151,7 +151,7 @@ fn a_resize_reaches_the_program() -> Outcome {
     client.resize(20, 60)?;
     client.keys("stty size\r")?;
     client.wait("the new size", |t| t.lines().any(|l| l == "19 60"))?;
-    assert!(server.ok(&["ls"])?.contains("%1 sh 60x19"));
+    assert!(server.ok(&["ls"])?.contains("%1 60x19"));
     // Past 4096 a way, refused and said: the view keeps its size.
     client.resize(20, 5000)?;
     client.wait("the refusal", |t| {
@@ -203,7 +203,7 @@ fn capture_pane_shows_the_screen_and_history() -> Outcome {
 fn the_real_client_gets_titles_and_bells_and_its_title_back() -> Outcome {
     let server = Server::start("str titles true set")?;
     let mut terminal = Terminal::attach(&server, 12, 50, &[])?;
-    terminal.wait_for("%1 sh")?;
+    terminal.wait_for("%1")?;
     terminal.type_bytes(b"printf '\\033]2;my-title\\007\\007'; echo rang''-it\r")?;
     terminal.wait_for("rang-it")?;
     eventually("the title and the bell", || {
@@ -229,7 +229,7 @@ fn the_real_client_gets_titles_and_bells_and_its_title_back() -> Outcome {
 fn the_real_client_attaches_restores_its_terminal_and_reattaches() -> Outcome {
     let server = Server::start("")?;
     let mut terminal = Terminal::attach(&server, 12, 50, &[])?;
-    terminal.wait_for("%1 sh")?;
+    terminal.wait_for("%1")?;
     terminal.type_bytes(b"echo real-client\r")?;
     terminal.wait_for("real-client")?;
     terminal.resize(15, 70)?;
@@ -739,7 +739,7 @@ fn a_panes_program_has_the_pty_as_its_controlling_terminal() -> Outcome {
     // macOS names some other terminal, and Linux none.)
     let server = Server::start("")?;
     let pane = server.ok(&[
-        "opts",
+        "agent-opts",
         "80",
         "24",
         "size",
@@ -1040,7 +1040,7 @@ fn a_caller_with_no_directory_starts_nothing_that_needs_one() -> Outcome {
 fn resizing_while_typing_keeps_the_client_attached_and_every_byte() -> Outcome {
     let server = Server::start("")?;
     let mut terminal = Terminal::attach(&server, 20, 60, &[])?;
-    terminal.wait_for("%1 sh")?;
+    terminal.wait_for("%1")?;
     let out = server.dir.join("typed");
     // The marker is assembled when it runs, so the typed line never
     // matches it.
@@ -1112,7 +1112,7 @@ fn a_stopped_key_program_leaves_the_next_one_asking() -> Outcome {
                 str k str 'me focused str next-''ok text send-keys' bind";
     let server = Server::start(keys)?;
     let mut terminal = Terminal::attach(&server, 12, 50, &[])?;
-    terminal.wait_for("%1 sh")?;
+    terminal.wait_for("%1")?;
     terminal.type_bytes(b"echo sleep''ing; sleep 100\r")?;
     terminal.wait_for("sleeping")?;
     terminal.type_bytes(b"\x02j")?;

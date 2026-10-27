@@ -25,7 +25,25 @@ wire! {
         /// A wait's, its pane closed.
         Closed(pane: PaneId),
         /// A wait's, nothing changed in time: the version it is still at.
-        TimedOut(since: Version),
+        TimedOut { since: Version, limit: std::time::Duration },
+    }
+}
+
+wire! {
+    /// One pane's answer, or all the members that answered, in watch order.
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    pub enum PaneResults {
+        One(answer: PaneAnswer),
+        Many(answers: Vec<PaneAnswer>),
+    }
+}
+
+impl PaneResults {
+    pub fn all(&self) -> &[PaneAnswer] {
+        match self {
+            Self::One(one) => std::slice::from_ref(one),
+            Self::Many(all) => all,
+        }
     }
 }
 
@@ -66,7 +84,7 @@ impl PaneAnswer {
         match self {
             PaneAnswer::Acted(version)
             | PaneAnswer::Changed { version, .. }
-            | PaneAnswer::TimedOut(version) => version.pane,
+            | PaneAnswer::TimedOut { since: version, .. } => version.pane,
             PaneAnswer::Closed(pane) => *pane,
         }
     }
@@ -77,7 +95,7 @@ impl PaneAnswer {
         match self {
             PaneAnswer::Acted(version)
             | PaneAnswer::Changed { version, .. }
-            | PaneAnswer::TimedOut(version) => Some(*version),
+            | PaneAnswer::TimedOut { since: version, .. } => Some(*version),
             PaneAnswer::Closed(_) => None,
         }
     }
@@ -91,8 +109,21 @@ impl PaneAnswer {
         match self {
             PaneAnswer::Acted(_) | PaneAnswer::Changed { .. } => None,
             PaneAnswer::Closed(_) => Some(Code::Closed),
-            PaneAnswer::TimedOut(_) => Some(Code::Timeout),
+            PaneAnswer::TimedOut { .. } => Some(Code::Timeout),
         }
+    }
+
+    /// Why this outcome failed, if it did.
+    pub fn why(&self) -> Option<String> {
+        Some(match self {
+            PaneAnswer::Acted(_) | PaneAnswer::Changed { .. } => return None,
+            PaneAnswer::Closed(id) => format!("{id}: the pane closed"),
+            PaneAnswer::TimedOut { since, limit } => format!(
+                "{}: unchanged for {}s, still at version {since}",
+                since.pane,
+                limit.as_secs_f64()
+            ),
+        })
     }
 
     /// A line that names the pane: `%2:0.57.1.3.0:RUN screen done exited
@@ -110,7 +141,7 @@ impl PaneAnswer {
                 .collect::<Vec<_>>()
                 .join(" "),
             PaneAnswer::Closed(pane) => format!("{pane} closed"),
-            PaneAnswer::TimedOut(since) => format!("{since} timeout"),
+            PaneAnswer::TimedOut { since, .. } => format!("{since} timeout"),
         }
     }
 
@@ -154,7 +185,6 @@ pub fn listing_text(of: Option<Kind>, listing: &Json) -> String {
         _ => None,
     };
     let pane = |p: &Json| {
-        let label = Some(field(p, "title")).filter(|t| !t.is_empty());
         let process = match (int(p, "pid"), int(p, "exited"), int(p, "signal")) {
             (Some(pid), ..) => format!("pid {pid}"),
             (None, Some(code), _) => crate::process::told(Ended::Exited(code)),
@@ -162,16 +192,23 @@ pub fn listing_text(of: Option<Kind>, listing: &Json) -> String {
             (None, None, None) => crate::process::told(Ended::Lost),
         };
         let (id, cols, rows) = (field(p, "id"), field(p, "cols"), field(p, "rows"));
-        let label = label.unwrap_or_else(|| field(p, "name"));
-        format!("    {id} {label} {cols}x{rows} {process}\n")
+        let label = field(p, "label");
+        let labelled = crate::words::labelled(id, &label);
+        format!("    {labelled} {cols}x{rows} {process}\n")
     };
     let tab = |t: &Json| {
         let panes: String = items(t, "panes").iter().map(pane).collect();
-        format!("  {} {}\n{panes}", field(t, "id"), field(t, "name"))
+        format!(
+            "  {}\n{panes}",
+            crate::words::labelled(field(t, "id"), &field(t, "label"))
+        )
     };
     let workspace = |w: &Json| {
         let tabs: String = items(w, "tabs").iter().map(tab).collect();
-        format!("{} {}\n{tabs}", field(w, "id"), field(w, "name"))
+        format!(
+            "{}\n{tabs}",
+            crate::words::labelled(field(w, "id"), &field(w, "label"))
+        )
     };
     let client = |c: &Json| {
         let shown = ["id", "cols", "rows", "workspace", "tab", "pane"].map(|key| field(c, key));

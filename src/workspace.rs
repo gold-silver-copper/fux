@@ -14,14 +14,14 @@ use crate::events::{Change, Event, Journal, PaneEvent};
 use crate::id::{ClientId, PaneId, TabId, WsId};
 use crate::layout::{self, Axis, NoPane, Rect, Removed, Side, Tree};
 use crate::pane::{Pane, PaneMut};
-use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::collections::{BTreeMap, BTreeSet};
 
 /// A workspace and its tabs, of which it always has one or more: each is
 /// made with one, and the session removes a workspace its last tab leaves.
 pub struct Workspace {
     /// Given as it is made, and never changed: its events' place.
     id: WsId,
-    name: String,
+    name: Option<String>,
     tabs: Vec<Tab>,
     /// The clients showing it: each attached client shows one workspace
     /// while there is any.
@@ -33,10 +33,7 @@ pub struct Workspace {
 pub struct Tab {
     /// Given as it is made, and never changed: its events' place.
     id: TabId,
-    name: String,
-    /// Its name was given (`name`, `rename`), not fux's (`main`, `tab-N`, a
-    /// program's): a name given is the only one, and takes fux's.
-    given: bool,
+    name: Option<String>,
     /// Its panes, of which it has one or more: a tab is made with one, and
     /// closes as its last leaves.
     root: Tree,
@@ -62,12 +59,6 @@ pub enum Fit {
     /// A screen of this size, while no client sizes the tab: `size` and
     /// `resize`.
     Fixed(fux_vt::Size),
-}
-
-/// What the tab at `place`, counted from 1, is named if it is given no
-/// name and is not a workspace's first.
-fn numbered(place: usize) -> String {
-    format!("tab-{place}")
 }
 
 impl Fit {
@@ -119,8 +110,14 @@ impl Workspace {
         self.id
     }
 
-    pub fn name(&self) -> &str {
-        &self.name
+    pub fn name(&self) -> Option<&str> {
+        self.name.as_deref()
+    }
+
+    /// Its given name, or its id for display.
+    pub fn label(&self) -> std::borrow::Cow<'_, str> {
+        self.name()
+            .map_or_else(|| self.id.to_string().into(), Into::into)
     }
 
     pub fn tabs(&self) -> &[Tab] {
@@ -173,7 +170,7 @@ impl Tab {
     /// of `clients`.
     fn new(
         id: TabId,
-        name: String,
+        name: Option<String>,
         fit: Fit,
         clients: impl Iterator<Item = ClientId>,
         pane: PaneId,
@@ -181,7 +178,6 @@ impl Tab {
         Tab {
             id,
             name,
-            given: false,
             root: Tree::Pane(pane),
             changed: true,
             fit,
@@ -194,12 +190,18 @@ impl Tab {
         self.id
     }
 
-    pub fn name(&self) -> &str {
-        &self.name
+    pub fn name(&self) -> Option<&str> {
+        self.name.as_deref()
     }
 
-    pub fn given(&self) -> bool {
-        self.given
+    /// Its given name, or its first pane's label for display.
+    pub fn label<'a>(&'a self, panes: &'a BTreeMap<PaneId, Pane>) -> std::borrow::Cow<'a, str> {
+        if let Some(name) = self.name() {
+            return name.into();
+        }
+        panes
+            .get(&self.root.first_pane())
+            .map_or_else(|| self.id.to_string().into(), Pane::label)
     }
 
     pub fn root(&self) -> &Tree {
@@ -309,10 +311,10 @@ impl Split {
 pub enum Destination {
     /// The end of tab `0`'s layout (`Tree::append`).
     Tab(TabId),
-    /// A new tab of workspace `0`, laid out on `2`, named after its place.
+    /// A new unnamed tab of workspace `0`, laid out on `2`.
     NewTab(WsId, TabId, Fit),
-    /// A new workspace, named, and its one tab, named and laid out so.
-    NewWorkspace((WsId, String), (TabId, String, Fit)),
+    /// A new workspace with an optional name, and its first tab and fit.
+    NewWorkspace((WsId, Option<String>), (TabId, Option<String>, Fit)),
 }
 
 /// Tab `id` of `workspaces`, and its workspace's id.
@@ -338,12 +340,12 @@ fn swap_sibling<T>(items: &mut [T], is: impl Fn(&T) -> bool, toward: Sibling) ->
 fn rename(
     journal: &mut Journal,
     renamed: impl FnOnce(Change) -> Event,
-    old: &mut String,
+    old: &mut Option<String>,
     new: String,
 ) {
-    if *old != new {
+    if old.as_ref() != Some(&new) {
         journal.push(renamed(Change::Renamed(new.clone())));
-        *old = new;
+        *old = Some(new);
     }
 }
 
@@ -478,8 +480,8 @@ impl Parts {
     /// `clients`, holding `pane`, new.
     pub(crate) fn add_workspace(
         &mut self,
-        ws: (WsId, String),
-        first: (TabId, String, Fit),
+        ws: (WsId, Option<String>),
+        first: (TabId, Option<String>, Fit),
         clients: impl Iterator<Item = ClientId>,
         pane: Pane,
     ) {
@@ -491,8 +493,8 @@ impl Parts {
     /// `add_workspace`, holding pane `pane`, in the session.
     fn push_workspace(
         &mut self,
-        (id, name): (WsId, String),
-        (tab, tab_name, fit): (TabId, String, Fit),
+        (id, name): (WsId, Option<String>),
+        (tab, tab_name, fit): (TabId, Option<String>, Fit),
         clients: impl Iterator<Item = ClientId>,
         pane: PaneId,
     ) {
@@ -511,7 +513,7 @@ impl Parts {
         });
     }
 
-    /// Adds tab `id` to workspace `ws`, named `name` or after its place,
+    /// Adds tab `id` to workspace `ws`, with optional name `name`,
     /// laid out on `fit`, holding `pane`, new; the pane given back if
     /// there is no such workspace.
     #[expect(clippy::result_large_err, reason = "a pane given back")]
@@ -539,9 +541,6 @@ impl Parts {
         pane: PaneId,
     ) -> Option<()> {
         let workspace = self.workspaces.iter_mut().find(|w| w.id == ws)?;
-        // Named after its place if no name is given, with a seat for every
-        // client that has one in the others.
-        let name = name.unwrap_or_else(|| numbered(workspace.tabs.len().saturating_add(1)));
         let clients = workspace.tabs.first().map(|t| t.seats.keys().copied());
         let tab = Tab::new(id, name.clone(), fit, clients.into_iter().flatten(), pane);
         workspace.tabs.push(tab);
@@ -669,33 +668,11 @@ impl Parts {
         Some(())
     }
 
-    /// Gives tab `id` the name `name`, if there is one. It takes it
-    /// from each other tab fux named so (`tab-2`, made before a dump's line
-    /// names one so): that one is named anew as fux names tabs, by its
-    /// place, the next number free.
+    /// Gives tab `id` the name `name`, if there is one.
     pub(crate) fn give_tab_name(&mut self, id: TabId, name: String) -> Option<()> {
-        let mut taken: HashSet<String> = (self.workspaces.iter())
-            .flat_map(|ws| std::iter::once(&ws.name).chain(ws.tabs.iter().map(|t| &t.name)))
-            .cloned()
-            .collect();
-        let mut names = vec![(id, name.clone())];
-        for ws in &self.workspaces {
-            for (place, tab) in (1usize..).zip(&ws.tabs) {
-                let free = (place..).map(numbered).find(|n| !taken.contains(n));
-                if let (false, Some(free)) = (tab.given || tab.name != name || tab.id == id, free) {
-                    taken.insert(free.clone());
-                    names.push((tab.id, free));
-                }
-            }
-        }
-        // Given, its name is dumped as it is, renamed or not.
-        tab_mut(&mut self.workspaces, id)?.1.given = true;
-        for (tab, name) in names {
-            if let Some((ws, t)) = tab_mut(&mut self.workspaces, tab) {
-                let renamed = |change| Event::Tab((ws, tab), change);
-                rename(&mut self.journal, renamed, &mut t.name, name);
-            }
-        }
+        let (ws, tab) = tab_mut(&mut self.workspaces, id)?;
+        let renamed = |change| Event::Tab((ws, id), change);
+        rename(&mut self.journal, renamed, &mut tab.name, name);
         Some(())
     }
 

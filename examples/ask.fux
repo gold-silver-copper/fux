@@ -15,7 +15,7 @@ define until-shows
   until
 end
 
-opts str ask name 60 10 size
+agent-opts str ask name 60 10 size
 str sh program str -c arg str 'printf "name? "; read n; echo got ${#n} letters; read n' arg
 run let ASK
 ASK str 'name?' until-shows drop

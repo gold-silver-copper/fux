@@ -478,13 +478,13 @@ impl Checker {
             let room = usize::from(client.cols) / 4;
             let ws = view.workspace.as_deref().and_then(|w| world.workspace(w));
             if let Some(ws) = ws
-                && ws.name.len().saturating_add(2) <= room
-                && !bar.starts_with(&format!(" {} ", ws.name))
+                && ws.label.len().saturating_add(2) <= room
+                && !bar.starts_with(&format!(" {} ", ws.label))
             {
                 return Err(fail(
                     at,
                     "the bar names the client's workspace",
-                    format!("{id} is on {} ({}); the bar is {bar:?}", ws.id, ws.name),
+                    format!("{id} is on {} ({}); the bar is {bar:?}", ws.id, ws.label),
                 ));
             }
             let tab = view.tab.as_ref().and_then(|t| world.tab(t));
@@ -492,19 +492,19 @@ impl Checker {
                 .map(|w| {
                     w.tabs
                         .iter()
-                        .map(|t| t.name.len().saturating_add(2))
+                        .map(|t| t.label.len().saturating_add(2))
                         .sum::<usize>()
-                        .saturating_add(w.name.len().saturating_add(2))
+                        .saturating_add(w.label.len().saturating_add(2))
                 })
                 .unwrap_or(usize::MAX);
             if let Some(tab) = tab
                 && names <= room
-                && !bar.contains(&format!(" {} ", tab.name))
+                && !bar.contains(&format!(" {} ", tab.label))
             {
                 return Err(fail(
                     at,
                     "the bar names the client's tab",
-                    format!("{id} shows {} ({}); the bar is {bar:?}", tab.id, tab.name),
+                    format!("{id} shows {} ({}); the bar is {bar:?}", tab.id, tab.label),
                 ));
             }
             // The right of the bar says `[zoom]` unless a notice, a

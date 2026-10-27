@@ -278,8 +278,8 @@ impl Through {
             client,
             pane,
             rect,
-            shown: Grid::new(0, 0),
-            spare: Grid::new(0, 0),
+            shown: Grid::default(),
+            spare: Grid::default(),
             painted: false,
             placement,
             buffer: Vec::new(),
@@ -382,7 +382,8 @@ impl Through {
         let Some(view) = view.filter(|v| v.dirty) else {
             return Ok(());
         };
-        render::compose_view(&self.session, view, &mut self.spare, &mut self.placement);
+        render::compose_view(&self.session, view, &mut self.spare, &mut self.placement)
+            .map_err(|e| e.to_string())?;
         if !(self.painted && self.spare == self.shown) {
             self.buffer.clear();
             render::paint_into(&self.shown, self.painted, &self.spare, &mut self.buffer);

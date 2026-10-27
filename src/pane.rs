@@ -463,6 +463,8 @@ pub enum Process {
     /// end on every poll, so it is neither polled nor written; its exit, by
     /// SIGCHLD, ends the pane.
     HungUp(Child),
+    /// Reading failed unexpectedly: no longer polled, with the cause retained.
+    ReadFailed(Child, fuxix::Errno),
     /// The program `fux run` started exited so: the pane stays, its last
     /// screen kept to be read.
     Exited(Ended),
@@ -475,7 +477,7 @@ impl Process {
     pub fn child(&self) -> Option<&Child> {
         match self {
             Self::Absent | Self::Exited(_) | Self::Respawning => None,
-            Self::Reading(child) | Self::HungUp(child) => Some(child),
+            Self::Reading(child) | Self::HungUp(child) | Self::ReadFailed(child, _) => Some(child),
         }
     }
 
@@ -483,7 +485,11 @@ impl Process {
     pub fn exit_status(&self) -> Option<Ended> {
         match self {
             Self::Exited(status) => Some(*status),
-            Self::Absent | Self::Reading(_) | Self::HungUp(_) | Self::Respawning => None,
+            Self::Absent
+            | Self::Reading(_)
+            | Self::HungUp(_)
+            | Self::ReadFailed(..)
+            | Self::Respawning => None,
         }
     }
 
@@ -520,17 +526,12 @@ pub struct Launch {
     pub env: Vec<(String, String)>,
 }
 
-/// What a pane running `argv` is named until it is renamed: its program's
-/// file name.
-pub(crate) fn named(argv: &[String]) -> String {
-    argv.first().map(|p| basename(p)).unwrap_or_default()
-}
-
 /// A program's file name, or the program as given if it has none.
-pub(crate) fn basename(program: &str) -> String {
+fn basename(program: &str) -> &str {
     std::path::Path::new(program)
         .file_name()
-        .map_or_else(|| program.to_owned(), |n| n.to_string_lossy().into_owned())
+        .and_then(|name| name.to_str())
+        .unwrap_or(program)
 }
 
 /// What a program rang or announced since it started: bells, and desktop
@@ -695,8 +696,8 @@ impl std::fmt::Display for Uncopied {
 pub struct Pane {
     /// Given as it is made, and never changed: its events' place.
     id: PaneId,
-    /// Changed by `rename` and `respawned`, which say so.
-    name: String,
+    /// Given by `name` or `rename`, and kept across respawns.
+    name: Option<String>,
     /// Set by the program with OSC 0 or 2, which says so.
     title: Title,
     /// Its screen's size is the PTY's: the smallest rectangle any client
@@ -763,6 +764,10 @@ pub struct Pane {
     /// Its runs of copies, pictures and memory lost (`Run`): its runs of
     /// input and replies are its queue's.
     loss_runs: LossRuns,
+    /// First untold PTY resize and read errors, kept until a client sees them.
+    terminal_errors: (Option<fuxix::Errno>, Option<fuxix::Errno>),
+    /// The current program's read failure, retained after its exit.
+    read_error: Option<fuxix::Errno>,
     /// What the read of output under way did so far (`Pane::read_done`).
     reading: Reading,
 }
@@ -800,6 +805,23 @@ impl<'a> PaneMut<'a> {
     }
     pub fn resize(&mut self, size: Size) {
         self.pane.resize(size, &mut self.tell);
+    }
+    pub(crate) fn size_terminal(&mut self) {
+        let result = self.pane.size_terminal();
+        self.pane.terminal_sized(result);
+    }
+    pub(crate) fn read_failed(&mut self, error: fuxix::Errno) {
+        self.pane.terminal_errors.1.get_or_insert(error);
+        self.pane.read_error = Some(error);
+        self.pane.process = match std::mem::replace(&mut self.pane.process, Process::Absent) {
+            Process::Reading(child) | Process::HungUp(child) | Process::ReadFailed(child, _) => {
+                Process::ReadFailed(child, error)
+            }
+            other @ (Process::Absent | Process::Exited(_) | Process::Respawning) => other,
+        };
+    }
+    pub(crate) fn take_terminal_errors(&mut self) -> impl Iterator<Item = String> + use<> {
+        self.pane.take_terminal_errors()
     }
     pub fn respawned(&mut self, fresh: Pane, process: Process) -> (Process, Left) {
         self.pane.respawned(fresh, process, &mut self.tell)
@@ -893,7 +915,9 @@ impl<'a> PaneMut<'a> {
     /// One that ended keeps its status, its end told already.
     pub fn let_go(&mut self) -> Option<Child> {
         match std::mem::replace(&mut self.pane.process, Process::Respawning) {
-            Process::Reading(child) | Process::HungUp(child) => Some(child),
+            Process::Reading(child) | Process::HungUp(child) | Process::ReadFailed(child, _) => {
+                Some(child)
+            }
             Process::Absent | Process::Respawning => None,
             ended @ Process::Exited(_) => {
                 self.pane.process = ended;
@@ -1012,7 +1036,7 @@ pub const UNMARKED: &str = "no shell command was marked here (OSC 133 C and D): 
 impl Pane {
     pub fn new(
         id: PaneId,
-        name: String,
+        name: Option<String>,
         runs: Runs,
         size: Size,
         history: usize,
@@ -1044,6 +1068,8 @@ impl Pane {
             untold: Losses::default(),
             refused_size: None,
             loss_runs: LossRuns::default(),
+            terminal_errors: (None, None),
+            read_error: None,
             reading: Reading::default(),
         })
     }
@@ -1336,7 +1362,10 @@ impl Pane {
             return;
         }
         tell.tell(Told::Resized(size));
-        self.size_terminal();
+        let result = self.size_terminal();
+        if !self.terminal_sized(result) {
+            return;
+        }
         // In-band resize: the report follows the PTY's new size, never
         // precedes it (references/modern/mode_2048_in_band_resize.md). A
         // program that does not read its input loses it, counted; one
@@ -1550,14 +1579,41 @@ impl Pane {
     /// cell it is told makes it, where one is and the whole fits the
     /// kernel's count: a change of either signals the program (SIGWINCH),
     /// which asks again. One the system refuses leaves it as it was, the
-    /// screen sized all the same, as `process::spawn` leaves its pixels.
-    pub(crate) fn size_terminal(&self) {
+    /// screen sized all the same; the caller must report the failure.
+    pub(crate) fn size_terminal(&self) -> Result<(), fuxix::Errno> {
         let Some(child) = self.process.child() else {
-            return;
+            return Ok(());
         };
         let size = self.size();
         let pixels = crate::process::pixels(size, self.screen().graphics().cell());
-        let _ = fuxix::terminal::set_window_size(&child.master, size.nonzero().into(), pixels);
+        fuxix::terminal::set_window_size(&child.master, size.nonzero().into(), pixels)
+    }
+
+    fn terminal_sized(&mut self, result: Result<(), fuxix::Errno>) -> bool {
+        if let Err(error) = result {
+            self.terminal_errors.0.get_or_insert(error);
+            return false;
+        }
+        true
+    }
+
+    pub(crate) fn take_terminal_errors(&mut self) -> impl Iterator<Item = String> + use<> {
+        let (resize, read) = std::mem::take(&mut self.terminal_errors);
+        let id = self.id;
+        [
+            ("resizing program terminal", resize),
+            ("reading program terminal", read),
+        ]
+        .into_iter()
+        .filter_map(move |(operation, error)| error.map(|e| format!("{id}: {operation}: {e}")))
+    }
+    /// The current program's unexpected PTY read error, if there was one.
+    pub fn read_error(&self) -> Option<fuxix::Errno> {
+        self.read_error
+    }
+
+    pub(crate) fn has_terminal_errors(&self) -> bool {
+        self.terminal_errors.0.is_some() || self.terminal_errors.1.is_some()
     }
 
     fn clear_history(&mut self) {
@@ -1610,13 +1666,6 @@ impl Pane {
         process: Process,
         tell: &mut Teller<'_>,
     ) -> (Process, Left) {
-        // Named after its program, unless renamed.
-        let name = match (&self.runs, &fresh.runs) {
-            (Runs::Explicit(old), Runs::Explicit(new)) if named(&old.argv) == self.name => {
-                named(&new.argv)
-            }
-            _ => self.name.clone(),
-        };
         // A new program, its own pane, its counts afresh but `respawns`. Kept
         // are its id and name, what the session has yet to take from the
         // old one (a bell, a copy, what it lost untold; its input it let go,
@@ -1646,6 +1695,8 @@ impl Pane {
             lost,
             refused_size,
             loss_runs,
+            terminal_errors: _,
+            read_error,
             reading,
         } = fresh;
         // The new program starts with nothing queued. One that ended said
@@ -1661,8 +1712,8 @@ impl Pane {
         (self.exiting, self.scheme_told, self.wrote_at) = (exiting, scheme_told, wrote_at);
         (self.mouse_held, self.left, self.alerts, self.lost) = (mouse_held, left, alerts, lost);
         (self.refused_size, self.loss_runs, self.reading) = (refused_size, loss_runs, reading);
+        self.read_error = read_error;
         tell.tell(Told::Respawned(over));
-        self.rename(name, tell);
         self.respawns = respawns;
         (std::mem::replace(&mut self.process, process), over)
     }
@@ -1671,15 +1722,15 @@ impl Pane {
         self.id
     }
 
-    pub fn name(&self) -> &str {
-        &self.name
+    pub fn name(&self) -> Option<&str> {
+        self.name.as_deref()
     }
 
     /// Names it `name`: said, if it is another.
     fn rename(&mut self, name: String, tell: &mut Teller<'_>) {
-        if name != self.name {
+        if self.name.as_ref() != Some(&name) {
             tell.tell(Told::Renamed(name.clone()));
-            self.name = name;
+            self.name = Some(name);
         }
     }
 
@@ -1699,7 +1750,10 @@ impl Pane {
     fn stop_reading(&mut self) {
         self.process = match std::mem::replace(&mut self.process, Process::Absent) {
             Process::Reading(child) | Process::HungUp(child) => Process::HungUp(child),
-            other @ (Process::Absent | Process::Exited(_) | Process::Respawning) => other,
+            other @ (Process::Absent
+            | Process::Exited(_)
+            | Process::Respawning
+            | Process::ReadFailed(..)) => other,
         };
     }
 
@@ -1717,6 +1771,8 @@ impl Pane {
     /// Its program ended so, the input queued for it let go: its end,
     /// said, as a shell's is before its pane closes.
     fn ended(&mut self, ended: Ended, tell: &mut Teller<'_>) -> End {
+        // A live error notice may still be waiting for its first paint.
+        self.terminal_errors.1 = self.terminal_errors.1.or(self.read_error);
         self.left.input = self.input.discard();
         // Its runs end with it, as its input's do.
         self.loss_runs = LossRuns::default();
@@ -1743,11 +1799,20 @@ impl Pane {
         self.title.said()
     }
 
-    pub fn label(&self) -> &str {
-        match self.title.as_str() {
-            "" => &self.name,
-            title => title,
+    /// Its given name, title or launch program, or its id for display.
+    pub fn label(&self) -> std::borrow::Cow<'_, str> {
+        if let Some(name) = self.name() {
+            return name.into();
         }
+        if !self.title.as_str().is_empty() {
+            return self.title.as_str().into();
+        }
+        if let Runs::Explicit(launch) = &self.runs
+            && let Some(program) = launch.argv.first()
+        {
+            return basename(program).into();
+        }
+        self.id.to_string().into()
     }
 }
 
@@ -1937,14 +2002,7 @@ pub(crate) mod tests {
 
     fn pane(rows: u16, cols: u16) -> Result<Lone, Error> {
         let size = size(rows, cols);
-        Pane::new(
-            PaneId::of(1),
-            "sh".into(),
-            Runs::DefaultShell,
-            size,
-            1 << 10,
-        )
-        .map(Lone::new)
+        Pane::new(PaneId::of(1), None, Runs::DefaultShell, size, 1 << 10).map(Lone::new)
     }
 
     /// A pane alone, for tests of it: what it tells goes in a journal of
@@ -2071,13 +2129,7 @@ pub(crate) mod tests {
     #[test]
     fn a_frame_past_a_budget_is_read_on_whole() -> Result<(), Error> {
         let size = size(50, 200);
-        let mut pane = Lone::new(Pane::new(
-            PaneId::of(1),
-            "sh".into(),
-            Runs::DefaultShell,
-            size,
-            0,
-        )?);
+        let mut pane = Lone::new(Pane::new(PaneId::of(1), None, Runs::DefaultShell, size, 0)?);
         let mut frame = b"\x1b[?2026h".to_vec();
         frame.extend(spends_the_budget(50, 200));
         frame.extend_from_slice(b"\x1b[2J\x1b[HDONE\x1b[?2026lZ");
@@ -2205,6 +2257,29 @@ pub(crate) mod tests {
             .map(|c| c.contents().chars().next().unwrap_or(' '))
             .collect();
         assert!(row.trim_end().ends_with('w'), "a resize reads it first");
+        Ok(())
+    }
+
+    #[test]
+    fn a_failed_terminal_resize_keeps_the_real_errno_for_its_notice()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut pane = pane(10, 40)?;
+        let null = std::fs::File::open("/dev/null")?;
+        let size = pane.size().nonzero().into();
+        let error = fuxix::terminal::set_window_size(&null, size, None)
+            .err()
+            .ok_or("resize succeeded")?;
+        assert!(!pane.terminal_sized(Err(error)));
+        assert!(pane.has_terminal_errors());
+        // A subsequent success cannot erase an untold failure.
+        assert!(pane.terminal_sized(Ok(())));
+        let id = pane.id();
+        let notices: Vec<_> = pane.placed().take_terminal_errors().collect();
+        assert_eq!(
+            notices,
+            [format!("{id}: resizing program terminal: {error}")]
+        );
+        assert!(!pane.has_terminal_errors());
         Ok(())
     }
 

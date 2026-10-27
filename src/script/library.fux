@@ -7,10 +7,17 @@ define type text send-keys end
 define press key send-keys end
 # pane text -- answer : in a shell: type a line and press Enter; answers as send-keys does
 define line text str Enter key send-keys end
+# -- opts : launch options explicitly placing new tabs in workspace agent
+define agent-opts opts str agent in end
 # -- answer : a tab with a shell, in workspace agent, on the size of the tab fux runs in (from outside fux: opts 80 24 size str agent in new-tab)
-define shell opts str agent in new-tab end
-# version -- list : the five counts of a version, an action's or wait's answer, or its text: respawns screen bells done ended; a capture's text is its screen, so it is refused
-define counts dup kind str capture eq if str 'counts takes an answer or a version as text, not a capture: its json says its version' fail then string words first str : split-on 1 at str . split-on let parts list parts each number end end end
+define shell agent-opts new-tab end
+# version -- list : the five counts of a version, an action's or wait's answer, or its text: respawns screen bells done ended; a pane or client capture's text is its screen, so it is refused
+define counts
+  dup kind str client-capture eq if str 'counts takes an answer or a version as text: a client capture has no pane version' fail then
+  dup kind str capture eq if str 'counts takes an answer or a version as text, not a capture: its json says its version' fail then
+  string words first str : split-on 1 at str . split-on let parts
+  list parts each number end end
+end
 # pane secs -- : wait from it (a pane from now, an answer or str V changed from its version) until nothing changes there for secs seconds
 define quiet
   let secs
@@ -24,14 +31,17 @@ end
 define rename-prompt
   dup kind str answer eq if pane then let it
   list str 'rename ' it kind str ' ' it string end glue
-  it str name get
+  it str name get dup kind str string eq not if drop str '' then
   list it string str ' swap rename' end glue
   prompt
 end
 # client handle -- : close it, once confirmed
 define confirm-close
   dup kind str answer eq if pane then let it
-  list str 'close ' it kind str ' ' it string str ' ' it str name get str ? end glue
+  it str label get let caption
+  list str 'close ' it kind str ' ' it string
+    caption it string eq not if str ' ' caption then str ?
+  end glue
   list it string str ' kill' end glue
   confirm
 end

@@ -11,7 +11,7 @@ use libfuzzer_sys::fuzz_target;
 /// The bytes that turn `old` (or nothing) into `new`.
 fn paint(old: Option<&Grid>, new: &Grid) -> Vec<u8> {
     let mut out = Vec::new();
-    let blank = Grid::new(new.rows, new.cols);
+    let blank = Grid::default();
     paint_into(old.unwrap_or(&blank), old.is_some(), new, &mut out);
     out
 }
@@ -125,7 +125,9 @@ fn repair(grid: &mut Grid) {
 }
 
 fn grid(rows: u16, cols: u16) -> Grid {
-    Grid::new(rows, cols)
+    let grid = Grid::new(rows, cols);
+    assert!(grid.is_ok(), "{grid:?}");
+    grid.unwrap_or_default()
 }
 
 /// A cell's width, halves, text and attributes; a blank for no cell.

@@ -201,7 +201,7 @@ const WAITED: usize = 4 << 20;
 const COMPILES: usize = 2_000;
 /// Command lines an agent sends, as `docs/agents.md` shows them.
 const LINES: [&str; 4] = [
-    "opts str app name str ./app program str --fast arg run",
+    "agent-opts str app name str ./app program str --fast arg run",
     "%2 str y text str Enter key send-keys",
     "str %2:0.57.0.3.0:48211-1867a3f9c2b8e7d6 changed wait",
     "define twice dup add end list 1 2 3 end each twice end len drop %2 all-history capture",
@@ -770,7 +770,7 @@ fn pane(loads: &[Load], baseline: bool) -> Result<Done, String> {
     let first = loads.first().ok_or("no bytes")?;
     let mut pane = fux::pane::Pane::new(
         "%1".parse::<fux::id::PaneId>().map_err(|e| e.to_string())?,
-        "bench".into(),
+        None,
         fux::pane::Runs::DefaultShell,
         fux_vt::Size::new(first.rows, first.cols).map_err(|e| e.to_string())?,
         HISTORY,
@@ -838,8 +838,8 @@ fn keystroke(recordings: &[Recording], baseline: bool, keys: usize) -> Result<Do
         }
     }
     s.hold_copies();
-    let mut shown = fux::render::Grid::new(0, 0);
-    let mut spare = fux::render::Grid::new(0, 0);
+    let mut shown = fux::render::Grid::default();
+    let mut spare = fux::render::Grid::default();
     let mut placement = fux::layout::Placement::default();
     let mut buffer = Vec::new();
     let mut have = false;
@@ -872,7 +872,8 @@ fn keystroke(recordings: &[Recording], baseline: bool, keys: usize) -> Result<Do
         let Some(view) = s.views.get(&c) else {
             continue;
         };
-        fux::render::compose_view(&s, view, &mut spare, &mut placement);
+        fux::render::compose_view(&s, view, &mut spare, &mut placement)
+            .map_err(|e| e.to_string())?;
         // Every key changes the screen: painted without asking whether it
         // did, as `paint_into` finds what changed.
         fux::render::paint_into(&shown, have, &spare, &mut buffer);
@@ -923,8 +924,8 @@ fn paint(
         );
     }
     let panes: Vec<_> = s.parts.panes().keys().copied().collect();
-    let mut shown = fux::render::Grid::new(0, 0);
-    let mut spare = fux::render::Grid::new(0, 0);
+    let mut shown = fux::render::Grid::default();
+    let mut spare = fux::render::Grid::default();
     let mut placement = fux::layout::Placement::default();
     let mut buffer = Vec::new();
     let (mut painted, mut frames, mut units, mut have) = (0usize, 0usize, 0usize, false);
@@ -952,7 +953,8 @@ fn paint(
                     let Some(view) = s.views.get(&c) else {
                         continue;
                     };
-                    fux::render::compose_view(&s, view, &mut spare, &mut placement);
+                    fux::render::compose_view(&s, view, &mut spare, &mut placement)
+                        .map_err(|e| e.to_string())?;
                     if have && spare == shown {
                         continue;
                     }
