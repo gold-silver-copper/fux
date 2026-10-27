@@ -21,65 +21,12 @@ impl Session {
         limit: usize,
         directories: &mut impl FnMut(PaneId) -> Option<std::path::PathBuf>,
     ) -> Result<String, super::Error> {
-        // Quote expansion is at most four bytes per input byte. Charge
-        // launch words and per-pane syntax before building any source.
-        let mut left = limit / 2;
-        let mut charge = |bytes: usize| -> Result<(), super::Error> {
-            left = left
-                .checked_sub(bytes)
-                .ok_or_else(crate::wire::Budget::exceeded)?;
-            Ok(())
-        };
-        let expanded = |text: &str| {
-            text.len()
-                .checked_mul(4)
-                .and_then(|n| n.checked_add(64))
-                .ok_or_else(crate::wire::Budget::exceeded)
-        };
-        for ws in self.parts.workspaces() {
-            for tab in ws
-                .tabs()
-                .iter()
-                .filter(|t| self.takes_in(only, ws.id(), t.id()))
-            {
-                charge(expanded(ws.name().unwrap_or(""))?)?;
-                charge(expanded(tab.name().unwrap_or(""))?)?;
-                let mut result: Result<(), super::Error> = Ok(());
-                tab.root().for_each_pane(&mut |id| {
-                    if result.is_err() {
-                        return;
-                    }
-                    result = (|| {
-                        charge(2048)?;
-                        if let Some(pane) = self.parts.panes().get(&id) {
-                            charge(expanded(pane.name().unwrap_or(""))?)?;
-                        }
-                        if let Some(launch) = self.program(id) {
-                            charge(
-                                launch
-                                    .cwd
-                                    .as_os_str()
-                                    .len()
-                                    .checked_mul(4)
-                                    .ok_or_else(crate::wire::Budget::exceeded)?,
-                            )?;
-                            for word in launch
-                                .argv
-                                .iter()
-                                .chain(launch.env.iter().flat_map(|(k, v)| [k, v]))
-                            {
-                                charge(expanded(word)?)?;
-                            }
-                        }
-                        Ok(())
-                    })();
-                });
-                result?;
-            }
-        }
-        // A script, as a file `chmod +x` makes runnable.
-        let shebang = crate::script::SHEBANG;
-        let mut out = format!("{shebang}\n# fux: running this makes it again\n");
+        // Reply end tag, Body tag, then the text's u32 byte count.
+        let mut out = Source::new(limit.saturating_sub(6));
+        out.format(format_args!(
+            "{}\n# fux: running this makes it again\n",
+            crate::script::SHEBANG
+        ))?;
         // A tab's or a pane's is its tab alone, not its workspace's part.
         let whole = match only {
             None | Some(AnyRef::Workspace(_)) => true,
@@ -92,10 +39,10 @@ impl Session {
                 .filter(|t| self.takes_in(only, ws.id(), t.id()));
             for (i, tab) in tabs.enumerate() {
                 // The first opens its workspace.
-                self.dump_tab(ws, tab, whole, whole && i == 0, &mut out, directories);
+                self.dump_tab(ws, tab, whole, whole && i == 0, &mut out, directories)?;
             }
         }
-        Ok(out)
+        Ok(out.text)
     }
 
     /// The lines that make tab `tab` of `ws`, and its panes:
@@ -107,9 +54,9 @@ impl Session {
         tab: &Tab,
         whole: bool,
         opens: bool,
-        out: &mut String,
+        out: &mut Source,
         directories: &mut impl FnMut(PaneId) -> Option<std::path::PathBuf>,
-    ) {
+    ) -> Result<(), super::Error> {
         let (root, first) = (tab.root(), tab.root().first_pane());
         let program = self.program(first);
         // An unnamed workspace is recreated as a new workspace, never
@@ -129,7 +76,7 @@ impl Session {
         let size = tab.fit().size();
         let (cols, rows) = (size.cols().to_string(), size.rows().to_string());
         line.extend([cols, rows, "size".to_owned()]);
-        self.pane_words(first, &mut line, out, directories);
+        self.pane_words(first, &mut line, out, directories)?;
         line.push(
             if creates && program.is_none() {
                 "new-workspace"
@@ -142,19 +89,19 @@ impl Session {
         );
         let named = pane_name(first);
         line.extend(["let".to_owned(), named.clone()]);
-        push(out, &line);
+        push(out, &line)?;
         if let Some(name) = tab.name() {
             let mut line = vec![named.clone(), "tab".to_owned()];
             line.extend(string(name).chain(["rename".to_owned()]));
-            push(out, &line);
+            push(out, &line)?;
         }
         if opens {
-            push(out, &[&named, "workspace", "let", &workspace(ws.id())]);
+            push(out, &[&named, "workspace", "let", &workspace(ws.id())])?;
         }
         if matches!(tab.fit(), Fit::Clients(_)) {
-            push(out, &[&named, "tab", "resize-auto"]);
+            push(out, &[&named, "tab", "resize-auto"])?;
         }
-        self.dump_tree(root, out, directories);
+        self.dump_tree(root, out, directories)?;
         // Panes renamed keep their names.
         for pane in root.panes() {
             let Some(p) = self.parts.panes().get(&pane) else {
@@ -163,9 +110,10 @@ impl Session {
             if let Some(name) = p.name() {
                 let mut line = vec![pane_name(pane)];
                 line.extend(string(name).chain(["rename".to_owned()]));
-                push(out, &line);
+                push(out, &line)?;
             }
         }
+        Ok(())
     }
 
     /// The `split` lines that make `tree` from its first pane: each
@@ -175,11 +123,11 @@ impl Session {
     fn dump_tree(
         &self,
         tree: &Tree,
-        out: &mut String,
+        out: &mut Source,
         directories: &mut impl FnMut(PaneId) -> Option<std::path::PathBuf>,
-    ) {
+    ) -> Result<(), super::Error> {
         let Tree::Split(split) = tree else {
-            return;
+            return Ok(());
         };
         let (first, second) = split.children();
         let way = match split.axis() {
@@ -190,11 +138,12 @@ impl Session {
         let pane = second.first_pane();
         let mut line = vec![pane_name(first.first_pane()), way.into()];
         line.extend([a.to_string(), b.to_string(), "shares".to_owned()]);
-        self.pane_words(pane, &mut line, out, directories);
+        self.pane_words(pane, &mut line, out, directories)?;
         line.extend(["split".to_owned(), "let".to_owned(), pane_name(pane)]);
-        push(out, &line);
-        self.dump_tree(first, out, directories);
-        self.dump_tree(second, out, directories);
+        push(out, &line)?;
+        self.dump_tree(first, out, directories)?;
+        self.dump_tree(second, out, directories)?;
+        Ok(())
     }
 
     /// The program `run` started in pane `id`, if it runs one: its words,
@@ -215,20 +164,20 @@ impl Session {
         &self,
         id: PaneId,
         line: &mut Vec<String>,
-        out: &mut String,
+        out: &mut Source,
         directories: &mut impl FnMut(PaneId) -> Option<std::path::PathBuf>,
-    ) {
+    ) -> Result<(), super::Error> {
         let program = self.program(id);
         let cwd = program.map(|launch| launch.cwd.clone());
         let cwd = cwd.or_else(|| directories(id));
         match cwd.as_deref().map(|cwd| (cwd, cwd.to_str())) {
             Some((_, Some(cwd))) => line.extend(string(cwd).chain(["cwd".to_owned()])),
-            Some((cwd, None)) => out.push_str(&format!(
+            Some((cwd, None)) => out.format(format_args!(
                 "# {id}: its directory {cwd:?} is not UTF-8 text, so it starts where this runs\n"
-            )),
-            None => out.push_str(&format!(
+            ))?,
+            None => out.format(format_args!(
                 "# {id}: its directory is unknown, so it starts where this runs\n"
-            )),
+            ))?,
         }
         for (key, value) in program.iter().flat_map(|launch| &launch.env) {
             line.extend(string(key).chain(string(value)).chain(["env".to_owned()]));
@@ -239,6 +188,7 @@ impl Session {
                 line.extend(string(word).chain([what.to_owned()]));
             }
         }
+        Ok(())
     }
 }
 
@@ -259,16 +209,67 @@ fn string(text: &str) -> impl Iterator<Item = String> {
 
 /// Appends a line of words, each quoted as fuxth's tokenizer reads it
 /// back.
-fn push(out: &mut String, line: &[impl AsRef<str>]) {
-    let words = line.iter().map(|w| crate::words::quote(w.as_ref()));
-    out.push_str(&super::joined(words, " "));
-    out.push('\n');
+fn push(out: &mut Source, line: &[impl AsRef<str>]) -> Result<(), super::Error> {
+    for (i, word) in line.iter().enumerate() {
+        if i > 0 {
+            out.push(" ")?;
+        }
+        let word = word.as_ref();
+        if crate::words::bare(word) {
+            out.push(word)?;
+        } else {
+            out.push("'")?;
+            for (i, part) in word.split('\'').enumerate() {
+                if i > 0 {
+                    out.push("'\\''")?;
+                }
+                out.push(part)?;
+            }
+            out.push("'")?;
+        }
+    }
+    out.push("\n")
+}
+
+/// Quoted source and diagnostic formatting share one checked output sink.
+struct Source {
+    text: String,
+    limit: usize,
+    budget: crate::wire::Budget,
+}
+impl Source {
+    fn new(limit: usize) -> Self {
+        Self {
+            text: String::new(),
+            limit,
+            budget: crate::wire::Budget::new(),
+        }
+    }
+    fn push(&mut self, text: &str) -> Result<(), super::Error> {
+        if self
+            .text
+            .len()
+            .checked_add(text.len())
+            .is_none_or(|n| n > self.limit)
+        {
+            return Err(crate::wire::Budget::exceeded());
+        }
+        self.budget.text(&mut self.text, text)
+    }
+    fn format(&mut self, args: std::fmt::Arguments<'_>) -> Result<(), super::Error> {
+        std::fmt::write(self, args).map_err(|_| crate::wire::Budget::exceeded())
+    }
+}
+impl std::fmt::Write for Source {
+    fn write_str(&mut self, text: &str) -> std::fmt::Result {
+        self.push(text).map_err(|_| std::fmt::Error)
+    }
 }
 
 #[cfg(test)]
 mod tests {
     #[test]
-    fn r1_dump_admits_observed_shell_directory_expansion() -> Result<(), String> {
+    fn dump_admits_observed_shell_directory_expansion() -> Result<(), String> {
         let session = crate::session::testing::started(crate::config::Config::default())?;
         let component: String = std::iter::repeat_n('\'', 200).collect();
         let directory = std::path::PathBuf::from(format!(

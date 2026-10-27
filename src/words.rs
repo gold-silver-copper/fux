@@ -23,7 +23,7 @@ pub(crate) fn labelled(id: impl std::fmt::Display, label: &str) -> String {
 /// Whether a word needs no quoting for fuxth or a shell. A leading `=`
 /// does: zsh expands `=ls` to the path of `ls` (its EQUALS option), though
 /// `a=b` stays as it is.
-fn bare(word: &str) -> bool {
+pub(crate) fn bare(word: &str) -> bool {
     !word.is_empty()
         && !word.starts_with('=')
         && word

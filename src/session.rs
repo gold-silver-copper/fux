@@ -985,7 +985,6 @@ impl Session {
             AnyRef::Tab(tab) => Ok(vec![self.tab(tab).ok_or(Error::NoTab(tab))?.id()]),
             AnyRef::Workspace(id) => {
                 let tabs = self.workspace(id).ok_or(Error::NoWorkspace(id))?.tabs();
-                budget.slots::<AnyRef>(tabs.len())?;
                 let mut ids = budget.vector(tabs.len())?;
                 ids.extend(tabs.iter().map(|tab| tab.id()));
                 Ok(ids)
@@ -2417,15 +2416,20 @@ impl Session {
             }
             Command::Resolve { text, kind } => Ok(found(self.resolve(text, *kind, here)?)),
             &Command::Members { target, members } => {
-                let ids: Vec<AnyRef> = match members {
-                    Members::Panes => (self.panes_of(target)?.into_iter())
-                        .map(AnyRef::Pane)
-                        .collect(),
-                    Members::Tabs => (self
-                        .tabs_of(target, &mut crate::wire::Budget::new())?
-                        .into_iter())
-                    .map(AnyRef::Tab)
-                    .collect(),
+                let budget = &mut crate::wire::Budget::new();
+                let ids = match members {
+                    Members::Panes => {
+                        let panes = self.panes_of(target)?;
+                        let mut ids = budget.vector(panes.len())?;
+                        ids.extend(panes.into_iter().map(AnyRef::Pane));
+                        ids
+                    }
+                    Members::Tabs => {
+                        let tabs = self.tabs_of(target, budget)?;
+                        let mut ids = budget.vector(tabs.len())?;
+                        ids.extend(tabs.into_iter().map(AnyRef::Tab));
+                        ids
+                    }
                 };
                 Ok(Body::Handles(ids).into())
             }
@@ -2694,7 +2698,7 @@ impl Session {
         match self.there(target)? {
             AnyRef::Pane(pane) => self.close_pane(pane, None),
             target @ (AnyRef::Tab(_) | AnyRef::Workspace(_)) => {
-                for tab in self.tabs_of(target, budget).unwrap_or_default() {
+                for tab in self.tabs_of(target, budget)? {
                     self.remove_tab(tab);
                 }
                 self.after_close();
@@ -2780,7 +2784,6 @@ impl Session {
             }
             ClientAction::Capture => {
                 let terminal = view()?;
-                crate::capture::client_room(terminal.rows, terminal.cols)?;
                 let mut grid = crate::render::Grid::default();
                 let placement = &mut Placement::default();
                 crate::render::compose_view(self, terminal, &mut grid, placement)
@@ -3696,7 +3699,7 @@ fn bytes(p: &Pane, inputs: &[Input]) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     #[test]
-    fn r1_workspace_kill_propagates_admission_failure() -> Result<(), String> {
+    fn workspace_kill_propagates_admission_failure() -> Result<(), String> {
         let mut session = started(Config::default())?;
         let workspace = session.parts.workspaces().first().ok_or("workspace")?.id();
         let before = session.parts.panes().len();
