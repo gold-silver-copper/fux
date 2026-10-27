@@ -287,6 +287,7 @@ text_wire!(ClientId, "client id");
 text_wire!(KeyPress, "key");
 text_wire!(crate::code::Code, "code");
 text_wire!(crate::command::Version, "version");
+text_wire!(crate::command::Run, "server run");
 text_wire!(crate::events::Cursor, "cursor");
 
 /// Its seconds, read back only if a wait may wait that long.

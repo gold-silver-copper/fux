@@ -192,6 +192,12 @@ switches between them at the key that does it, so a key typed fast is never
 read in the wrong one; the server draws what your client shows, and keeps
 copy mode's cursor in the history only it holds.
 
+A binding's program first waits for the server to process this client's
+preceding keys and resizes, including any refusals. Later keys wait for the
+program to finish. Every request stays tied to that attachment and server
+run. This orders input admitted to a pane; it does not wait for the pane's
+program to read it or finish work.
+
 The prefix alone opens the **command column**, listing every binding, and
 those without the prefix last: arrows, PageUp/PageDown and Home/End move,
 Enter runs the selected one, a bound key runs its own, Esc closes; its moves
