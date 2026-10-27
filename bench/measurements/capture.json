@@ -1,0 +1,134 @@
+{
+  "baseline_commit": "2adaf503",
+  "probe_commit": "0f35fd83",
+  "before": {
+    "environment": {
+      "platform": "Linux-7.2.5-3-omarchy-x86_64-with-glibc2.44",
+      "loadavg": [
+        37.1298828125,
+        16.2734375,
+        8.21630859375
+      ],
+      "perf": "perf version 7.2.3-1",
+      "note": "One sample each on shared hardware. CLI wall includes startup/transport/formatting; server counts include request handling. RSS high-water includes setup. Fill count includes completion polling. Idle context switches proxy wakeups; ticks are quantized."
+    },
+    "captures": [
+      {
+        "history_bytes": 8388608,
+        "cpu": 0,
+        "reply_bytes": 1003969,
+        "cli_wall_seconds": 0.10283099301159382,
+        "server_instructions": 366545010,
+        "rss_before_kib": 13260,
+        "peak_rss_kib": 84260,
+        "peak_before_kib": 13260,
+        "fill": {
+          "bytes": 4198101,
+          "wall_seconds": 0.1377652478404343,
+          "server_instructions": 104463784,
+          "instructions_per_byte": 24.883580456973284
+        },
+        "idle_10_seconds": {
+          "cpu_ticks": 0,
+          "voluntary_ctxt_switches": 0,
+          "nonvoluntary_ctxt_switches": 0
+        }
+      },
+      {
+        "history_bytes": 67108864,
+        "cpu": 0,
+        "reply_bytes": 8048818,
+        "cli_wall_seconds": 0.6515037848148495,
+        "server_instructions": 2918821610,
+        "rss_before_kib": 70772,
+        "peak_rss_kib": 644936,
+        "peak_before_kib": 70772,
+        "fill": {
+          "bytes": 33555163,
+          "wall_seconds": 0.25250705797225237,
+          "server_instructions": 782355164,
+          "instructions_per_byte": 23.315492879590543
+        },
+        "idle_10_seconds": {
+          "cpu_ticks": 0,
+          "voluntary_ctxt_switches": 0,
+          "nonvoluntary_ctxt_switches": 0
+        }
+      }
+    ]
+  },
+  "after": {
+    "environment": {
+      "platform": "Linux-7.2.5-3-omarchy-x86_64-with-glibc2.44",
+      "loadavg": [
+        7.8447265625,
+        15.818359375,
+        10.64306640625
+      ],
+      "perf": "perf version 7.2.3-1",
+      "note": "One sample each on shared hardware. CLI wall includes startup/transport/formatting; server counts include request handling. RSS high-water includes setup. Fill count includes completion polling. Idle context switches proxy wakeups; ticks are quantized."
+    },
+    "captures": [
+      {
+        "history_bytes": 8388608,
+        "cpu": 0,
+        "reply_bytes": 1003969,
+        "cli_wall_seconds": 0.02568623796105385,
+        "server_instructions": 388524354,
+        "rss_before_kib": 13172,
+        "peak_rss_kib": 20996,
+        "peak_before_kib": 13172,
+        "fill": {
+          "bytes": 4198101,
+          "wall_seconds": 0.03988329181447625,
+          "server_instructions": 134759193,
+          "instructions_per_byte": 32.100035944823624
+        },
+        "idle_10_seconds": {
+          "cpu_ticks": 0,
+          "voluntary_ctxt_switches": 0,
+          "nonvoluntary_ctxt_switches": 0
+        }
+      },
+      {
+        "history_bytes": 67108864,
+        "cpu": 0,
+        "reply_bytes": 8048818,
+        "cli_wall_seconds": 0.1887508479412645,
+        "server_instructions": 3117026506,
+        "rss_before_kib": 70724,
+        "peak_rss_kib": 142072,
+        "peak_before_kib": 70724,
+        "fill": {
+          "bytes": 33555163,
+          "wall_seconds": 0.2538478800561279,
+          "server_instructions": 1031919048,
+          "instructions_per_byte": 30.752914178959582
+        },
+        "idle_10_seconds": {
+          "cpu_ticks": 0,
+          "voluntary_ctxt_switches": 0,
+          "nonvoluntary_ctxt_switches": 0
+        }
+      }
+    ]
+  },
+  "counted_workloads": {
+    "capture-history": {
+      "before": 451036178,
+      "base": 81738759,
+      "after": 470310040,
+      "after-base": 81739367,
+      "net_before": 369297419,
+      "net_after": 388570673
+    },
+    "cli-library": {
+      "before": 10149030,
+      "base": 476981,
+      "after": 10149306,
+      "after-base": 477609,
+      "net_before": 9672049,
+      "net_after": 9671697
+    }
+  }
+}

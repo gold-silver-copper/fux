@@ -225,3 +225,20 @@ Context switches are a wakeup proxy and CPU ticks are quantized. The
 capture wall time includes the CLI's work, while RSS high-water includes
 setup and cannot be treated as exact live allocations. No capture limit
 is inferred from these measures.
+
+The one-shot observations for the incremental-run change are kept in
+[`measurements/capture.json`](measurements/capture.json), on Linux/AMD
+Ryzen AI Max+ 395, release profile, server pinned to CPU 0:
+
+| History | CLI wall before → after | Server peak RSS before → after | Server instructions before → after |
+| --- | --- | --- | --- |
+| 8 MiB | 102.8 → 25.7 ms | 82.3 → 20.5 MiB | 366.5 → 388.5 M (+6.0%) |
+| 64 MiB | 651.5 → 188.8 ms | 629.8 → 138.7 MiB | 2,918.8 → 3,117.0 M (+6.8%) |
+
+Both output files were byte-identical; both variants recorded zero CPU
+ticks and context switches during each settled 10-second idle interval.
+These are single shared-host samples (load averages in the JSON), not
+universal speed guarantees. Fill instructions/byte varied from 23–25 to
+31–32 across the pair: PTY read chunking and completion polling are not
+controlled by this probe. Use the in-process workloads for counted gates.
+Hard admission caps and the 16 ms server-hold goal are separate work.
