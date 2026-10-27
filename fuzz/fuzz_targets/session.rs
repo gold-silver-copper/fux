@@ -275,11 +275,15 @@ impl Run {
         job: &Job,
         opened: &mut Option<Screen>,
     ) -> Result<String, String> {
-        let tokens = job.tokens().map_err(|e| e.to_string())?;
+        let told = |failed: fux::script::Failed| match client {
+            Some(_) => failed.notice(),
+            None => failed.to_string(),
+        };
+        let tokens = job.tokens().map_err(|e| told(e.into()))?;
         if tokens.iter().any(|t| READS.contains(&&*t.text)) {
             return Err("reads a file".to_owned());
         }
-        let mut machine = fux::script::compile(&tokens).map_err(|e| e.to_string())?;
+        let mut machine = fux::script::compile(&tokens).map_err(told)?;
         let mut keymap = self.keymap.clone();
         let mut out = Vec::new();
         let context = Context {
@@ -299,7 +303,7 @@ impl Run {
         // As a client keeps what its program did to its keymap.
         self.keymap = keymap;
         let mut text = String::from_utf8_lossy(&out).into_owned();
-        for value in &ended.map_err(|failed| failed.to_string())? {
+        for value in &ended.map_err(told)? {
             text.push_str(&value.text());
             text.push('\n');
         }

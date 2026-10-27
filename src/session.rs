@@ -3233,7 +3233,10 @@ pub(crate) mod testing {
         job: &crate::screens::Job,
     ) -> Result<String, String> {
         let (out, ended) = run_as(session, client, job);
-        let ended = ended.map_err(|e| e.to_string())?;
+        let ended = ended.map_err(|e| match client {
+            Some(_) => e.notice(),
+            None => e.to_string(),
+        })?;
         let mut text = String::from_utf8_lossy(&out).into_owned();
         for value in &ended {
             text.push_str(&value.text());
