@@ -10,18 +10,20 @@ panes an array of their objects). Rows and columns count from 0; times are milli
 ## A pane
 
 `ls json` gives each pane these; `PANE capture json` gives them too, but
-for `id`, `name` and `pid` (it says `pane`):
+for `id`, `name`, `label` and `pid` (it says `pane`):
 
 | Field | Value |
 | --- | --- |
 | `id` | `"%3"` |
-| `name` | its name: the program's, or what `rename` gave it |
+| `name` | its given name (`run ... name` or `rename`), else `null` |
+| `label` | display text: its given name, else title, launch program basename, or id; never a lookup name |
 | `title` | what the program set (OSC 0 or 2), else `""`: its first 256 characters, without control characters |
 | `rows`, `cols` | its size |
 | `pid` | its program's process, `null` once it exited, and while a respawn of it is under way |
 | `version` | its version, `%3:RESPAWNS.SCREEN.BELLS.DONE.ENDED:RUN`: its pane, its counts and the server's run (`fux help agents` says what each counts) |
 | `program` | what runs in its foreground, as the system names it (Linux keeps a name's first 15 bytes), `null` if its terminal does not say |
 | `hung_up` | its program closed its terminal and runs on: keys are refused (Linux says so; macOS, where fux holds the terminal open, does not) |
+| `read_error` | an unexpected PTY read failure as errno text, or `null`: a failed reader is no longer polled and refuses keys; the cause stays after exit until respawn |
 | `exited` | the status its program exited with (a pane whose program is no shell: `run`'s, or a `split` with a program), else `null` |
 | `signal` | the signal that killed it (its number), else `null`; both `null` for a program that ended (its version's ENDED is 1) whose status was lost |
 | `idle_ms` | how long since fux last read output from its program (or it started) |
@@ -46,7 +48,7 @@ for `id`, `name` and `pid` (it says `pane`):
 ## `ls json`
 
 ```json
-{"workspaces":[{"id":"+1","name":"main","tabs":[{"id":"@1","name":"main","panes":[PANE…]}]}],
+{"workspaces":[{"id":"+1","name":null,"label":"+1","tabs":[{"id":"@1","name":null,"label":"%1","panes":[PANE…]}]}],
  "clients":[{"id":"c1","rows":24,"cols":80,"workspace":"+1","tab":"@1","pane":"%1","zoom":false}],
  "events":"42:48211-1867a3f9c2b8e7d6"}
 ```
@@ -58,10 +60,13 @@ gives next, and the server's run, read with the listing. A stream from it
 those the journal let go first: then read `ls` again. `ls` ends with it
 too, as `events CURSOR`.
 
-`X info json` gives that pane, tab (`{"id","name","panes"}`) or workspace
-(`{"id","name","tabs"}`) alone; `X str FIELD get` leaves one of its fields:
+`X info json` gives that pane, tab (`{"id","name","label","panes"}`) or workspace
+(`{"id","name","label","tabs"}`) alone; `X str FIELD get` leaves one of its fields:
 a number or boolean as itself, a string as text, `null` as an answer that
-prints `null` (`string` makes it the text).
+prints `null` (`string` makes it the text). A tab or workspace has an optional
+given `name` (`null` when absent) and a derived display `label`. A tab's
+label is its given name or its first pane's label; a workspace's is its
+given name or id. `get` reads only the object's own fields.
 
 ## `PANE capture json`
 
@@ -172,7 +177,7 @@ even a stream that reads at once, of another pane, miss some, which
 | --- | --- |
 | `ready` | first: `from`, the cursor it reads from; from there on nothing is missed unsaid |
 | `gone` | last: everything `events-of` named has closed (status 4) |
-| `created` | `name`, for a tab or workspace |
+| `created` | `name`, for a tab or workspace, `null` when unnamed |
 | `renamed` | `name`: a pane's, tab's or workspace's new name |
 | `closed`, `bell` | |
 | `respawned` | at every respawn. Its fields, only when the program it ran over had not ended (a `kill-first` respawn), as one that ended said them with its `exited`: `truncated` (`true`) if it left more than 1 MiB on its terminal: the rest was not read; `input_unread`, if any: bytes of input fux queued for it and had not yet written to its terminal, let go |
@@ -197,7 +202,7 @@ wait's own (above). CODE stays; every one fux gives
   `no_buffer`, `no_target`, `stray_pane`, `no_field`, `nothing_there`,
   `selection`, `name_taken`, `ids_exhausted`, `bad_value`, `usage`;
 - what a command meets: `not_running`, `still_running`, `not_run`, `only_shell`,
-  `input_full`, `stale`, `no_marks`, `start`, `size`, `mouse`, `signal`,
+  `input_full`, `stale`, `no_marks`, `start`, `size`, `memory`, `mouse`, `signal`,
   `not_headless`, `own_server`, `people_attached`;
 - how a wait ends: `timeout` (124), `closed` (4), `gone` (4);
 - a program of words: `steps`, `cancelled`, `not_here`, `not_config`,
