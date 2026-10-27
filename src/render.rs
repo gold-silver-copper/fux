@@ -2445,19 +2445,23 @@ mod tests {
     }
 
     #[test]
-    fn prompt_cursor_is_a_measured_cell_after_retained_text() {
-        for before in [
-            "a\u{600}".to_owned(),
-            format!(
-                "👩{}👩",
-                std::iter::repeat_n("\u{200d}👩", 18).collect::<String>()
+    fn a_scrolled_prompt_keeps_its_cursor_visible() {
+        for (before, room) in [
+            ("a\u{600}".to_owned(), 3),
+            ("\u{d4e}".to_owned(), 3),
+            (
+                format!(
+                    "👩{}👩",
+                    std::iter::repeat_n("\u{200d}👩", 18).collect::<String>()
+                ),
+                7,
             ),
         ] {
-            let prompt = prompt_line(&before, "tail", 7);
-            assert!(cell_width(prompt.cells()) <= 7);
-            let mut grid = Grid::new(1, 7);
-            grid.text_cells(0, 0, prompt.cells(), Attributes::default(), 7);
-            assert!((0..7).any(|x| grid.get(0, x).is_some_and(|c| c.contents() == "▏")));
+            let prompt = prompt_line(&before, "tail", room);
+            assert!(cell_width(prompt.cells()) <= room);
+            let mut grid = Grid::new(1, room);
+            grid.text_cells(0, 0, prompt.cells(), Attributes::default(), room);
+            assert!((0..room).any(|x| grid.get(0, x).is_some_and(|c| c.contents().contains('▏'))));
         }
     }
 
