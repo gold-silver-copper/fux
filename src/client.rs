@@ -1643,6 +1643,7 @@ mod tests {
     #[test]
     fn terminal_entry_failures_restore_modes() -> Result<(), Box<dyn std::error::Error>> {
         const CHILD: &str = "FUX_TEST_ENTRY_FAILURE";
+        const REPORT: &str = "fux-entry-restored\n";
         if std::env::var_os(CHILD).is_some() {
             struct Refused {
                 flush: bool,
@@ -1672,6 +1673,7 @@ mod tests {
                 assert!(matches!(&error, Error::Output(e) if e.to_string() == expected));
                 assert_eq!(fuxix::terminal::attributes(&stdin)?.modes(), before);
             }
+            io::stdout().write_all(REPORT.as_bytes())?;
             return Ok(());
         }
         let size =
@@ -1690,8 +1692,8 @@ mod tests {
             ))
             .output()?;
         assert!(
-            output.status.success(),
-            "{}",
+            output.status.success() && String::from_utf8_lossy(&output.stdout).contains(REPORT),
+            "child failed or did not run the restoration checks: {}",
             String::from_utf8_lossy(&output.stdout)
         );
         Ok(())
