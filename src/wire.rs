@@ -270,6 +270,7 @@ text_wire!(PaneId, "pane id");
 text_wire!(TabId, "tab id");
 text_wire!(WsId, "workspace id");
 text_wire!(ClientId, "client id");
+text_wire!(crate::id::BufferId, "buffer id");
 text_wire!(KeyPress, "key");
 text_wire!(crate::code::Code, "code");
 text_wire!(crate::command::Version, "version");

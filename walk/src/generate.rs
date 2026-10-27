@@ -397,7 +397,7 @@ fn cli(rng: &mut Rng, world: &World, clients: &[String]) -> Vec<String> {
         32 => "ls".into(),
         33 => "list-keys".into(),
         34 => "buffers".into(),
-        35 => format!("str {} pane 0 paste-buffer", pane(rng)),
+        35 => format!("str {} pane newest paste-buffer", pane(rng)),
         36 => format!("str {} pane str TERM signal", pane(rng)),
         37 if clients.len() > 1 => format!("str {} client detach", client(rng)),
         38 => format!("str {} client capture-client", client(rng)),

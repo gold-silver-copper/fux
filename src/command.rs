@@ -1,13 +1,31 @@
 //! The requests a client sends the server: typed actions, each built by
 //! fuxth words in a client (`crate::script`) and carried whole over the
 //! socket (`crate::wire`). The server never reads words.
-use crate::id::{ClientId, PaneId, TabId, WsId};
+use crate::id::{BufferId, ClientId, PaneId, TabId, WsId};
 use crate::keys::mouse::MouseButton;
 use crate::keys::{Direction, KeyPress};
 use crate::layout::Axis;
 use crate::wire::wire;
 use std::num::NonZeroU32;
 use std::path::PathBuf;
+
+wire! {
+    /// A copy by its stable id, or the newest at the time of the request.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub enum Buffer {
+        Newest,
+        Id(id: BufferId),
+    }
+}
+
+impl std::fmt::Display for Buffer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Newest => f.write_str("newest"),
+            Self::Id(id) => id.fmt(f),
+        }
+    }
+}
 
 wire! {
     /// A workspace named on the command line: `+N` or its name.
@@ -645,10 +663,10 @@ wire! {
         },
         ListBuffers,
         ShowBuffer {
-            index: usize,
+            buffer: Buffer,
         },
         PasteBuffer {
-            index: usize,
+            buffer: Buffer,
             target: PaneId,
         },
         /// A command on one client's screen: the client named (`str c1 client`), or the one
