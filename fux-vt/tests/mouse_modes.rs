@@ -33,8 +33,10 @@ fn event(action: MouseAction, row: u16, col: u16) -> MouseEvent {
 
 /// What the screen reports for `event`, `None` for nothing.
 fn sent(p: &Parser, event: MouseEvent) -> Option<String> {
-    let out: Vec<u8> = p.screen().encode_mouse(event).flatten().collect();
-    (!out.is_empty()).then(|| String::from_utf8_lossy(&out).replace('\x1b', "^["))
+    p.screen().encode_mouse(event).map(|chunks| {
+        let out: Vec<u8> = chunks.flatten().collect();
+        String::from_utf8_lossy(&out).replace('\x1b', "^[")
+    })
 }
 
 /// DECRQM answers each set while it is, and the latest encoding wins
@@ -183,10 +185,10 @@ fn alternate_scroll_keeps_negotiated_arrows_in_bounded_chunks() -> Result {
                         mods,
                         ..event(MouseAction::Press(button), 0, 0)
                     };
-                    let chunks = p.screen().encode_mouse(event).collect::<Vec<_>>();
-                    assert!(!chunks.is_empty(), "a scroll, even at zero distance");
+                    let chunks = p.screen().encode_mouse(event).ok_or("an accepted scroll")?;
                     let mut out = Vec::new();
                     for chunk in chunks {
+                        assert!(!chunk.is_empty(), "no empty chunks, even at zero distance");
                         assert!(chunk.len() <= 64, "{} bytes in a chunk", chunk.len());
                         assert_eq!(
                             chunk.len().checked_rem(arrow.len()),

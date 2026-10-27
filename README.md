@@ -494,9 +494,11 @@ so: it starts where the dump is run.
   only, and win over your terminal's; your terminal's palette is never
   changed. A pane's cursor colour (OSC 12) is painted only while its
   cursor is focused; resetting it (OSC 112), changing focus, opening an
-  overlay or detaching restores the terminal's own colour. A colour no
-  one knows is not answered: one the host didn't say, palette entries past
-  15 the program didn't set, and every colour in a tab with no host.
+  overlay or detaching restores the terminal's configured colour. This
+  reset does not recover a colour set before attaching. If fux never
+  applied a pane's cursor colour, detach leaves it alone. A colour no one
+  knows is not answered: one the host didn't say, palette entries past 15
+  the program didn't set, and every colour in a tab with no host.
 - **Bells.** A program's bell rings each terminal showing its workspace, at
   most once every 250 ms; a tab you are not looking at is marked `!` in the
   bar until you show it. `str bell false set` silences both.

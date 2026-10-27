@@ -403,8 +403,8 @@ impl Conn {
     }
 
     /// Moves the connection on to `next`. One that was attached has its
-    /// client detached and its terminal given its own cursor shape and colour back;
-    /// one that is dead stays so.
+    /// client detached and its terminal given its own cursor shape and
+    /// configured colour back; one that is dead stays so.
     fn enter(&mut self, session: &mut Session, next: Stage) {
         if matches!(self.stage, Stage::Dead) {
             return;
@@ -1576,15 +1576,20 @@ mod tests {
     }
 
     #[test]
-    fn detaching_restores_an_explicit_cursor_colour_before_exit() -> Result<(), String> {
-        let (mut session, mut conn, _peer) = attached()?;
-        if let Some(attached) = conn.attached() {
-            attached.shown.modes.cursor_colour = Some([0, 255, 0].into());
+    fn detaching_restores_only_an_explicit_cursor_colour() -> Result<(), String> {
+        for (colour, reset) in [
+            (None, &b""[..]),
+            (Some([0, 255, 0].into()), &b"\x1b]112\x1b\\"[..]),
+        ] {
+            let (mut session, mut conn, _peer) = attached()?;
+            if let Some(attached) = conn.attached() {
+                attached.shown.modes.cursor_colour = colour;
+            }
+            conn.end(&mut session, &ToAttached::Exit("detached"));
+            let (painted, exit) = sent(&conn);
+            assert_eq!(painted, reset);
+            assert_eq!(exit.as_deref(), Some("detached"));
         }
-        conn.end(&mut session, &ToAttached::Exit("detached"));
-        let (painted, exit) = sent(&conn);
-        assert_eq!(painted, b"\x1b]112\x1b\\");
-        assert_eq!(exit.as_deref(), Some("detached"));
         Ok(())
     }
 

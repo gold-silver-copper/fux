@@ -56,7 +56,8 @@ impl Clone for Grid {
 pub struct Modes {
     /// The cursor's shape (DECSCUSR); `Initial` is the terminal's own.
     pub cursor_shape: CursorShape,
-    /// An explicit colour of the focused pane's cursor; none restores the terminal's.
+    /// The focused pane's explicit cursor colour; none restores the
+    /// terminal's configured colour.
     pub cursor_colour: Option<Rgb>,
     /// The mouse tracking asked for (1000, 1002 or 1003, always
     /// SGR-encoded), 0 for none: the focused pane's program's, while it
@@ -1102,7 +1103,7 @@ fn prompt_line<'a>(before: &'a str, after: &'a str, room: u16) -> Text<'a> {
     // The inserted cursor owns a cell, including after a Prepend character.
     chars.push(("▏", 1));
     chars.extend(clusters(after));
-    if chars.iter().fold(0u16, |n, (_, w)| n.saturating_add(*w)) <= room {
+    if cell_width(chars.iter().copied()) <= room {
         return Text::Measured(chars);
     }
     // An ellipsis each side, at most.
@@ -1129,18 +1130,12 @@ fn prompt_line<'a>(before: &'a str, after: &'a str, room: u16) -> Text<'a> {
         used = n;
         end = end.saturating_add(1);
     }
-    let tail = end < chars.len();
     let mut out = Vec::new();
     if start > 0 {
         out.push(("…", 1));
     }
-    out.extend(
-        chars
-            .into_iter()
-            .skip(start)
-            .take(end.saturating_sub(start)),
-    );
-    if tail {
+    out.extend(chars.get(start..end).unwrap_or_default().iter().copied());
+    if end < chars.len() {
         out.push(("…", 1));
     }
     Text::Measured(out)
@@ -1401,13 +1396,6 @@ enum Text<'a> {
 }
 
 impl Text<'_> {
-    fn width(&self) -> u16 {
-        match self {
-            Self::Plain(text) => width(text),
-            Self::Measured(_) => cell_width(self.cells()),
-        }
-    }
-
     fn cells(&self) -> impl Iterator<Item = (&str, u16)> + Clone {
         let (plain, measured) = match self {
             Self::Plain(text) => (Some(text.as_ref()), None),
@@ -1477,7 +1465,7 @@ fn surface(grid: &mut Grid, view: &View, lines: &[Line<'_>]) {
         // Exact: the panel is at least a cell wide, inside the screen.
         let (x, end) = (line.x().saturating_add(1), line.right().saturating_sub(1));
         let cols = line.w().saturating_sub(2);
-        let text = fit_cells(text.cells(), cols, text.width() > cols);
+        let text = fit_cells(text.cells(), cols, cell_width(text.cells()) > cols);
         grid.text_cells(line.y(), x, text, *attrs, end);
     }
 }

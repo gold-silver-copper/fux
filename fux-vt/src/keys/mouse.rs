@@ -112,44 +112,33 @@ impl crate::Screen {
     /// screen's rows with Ctrl. Modifiers choose the scroll distance and
     /// are not sent with the arrows (xterm 411's `AlternateScroll`).
     ///
-    /// Chunks keep whole keys in order; callers must consume every chunk
-    /// or report refused input. An expansion is at most 32,767 arrows.
-    /// A zero-distance scroll yields one empty chunk.
-    pub fn encode_mouse(&self, event: MouseEvent) -> impl Iterator<Item = Vec<u8>> + use<> {
+    /// Returns `None` when the event is not reported, and `Some` of an
+    /// empty iterator for an accepted zero-distance scroll. Chunks keep
+    /// whole keys in order, at most 32,767 arrows in an expansion. Callers
+    /// must admit the whole expansion as one input action or refuse it.
+    pub fn encode_mouse(&self, event: MouseEvent) -> Option<impl Iterator<Item = Vec<u8>> + use<>> {
         let mode = self.mouse_protocol_mode();
-        let mut bytes = Vec::new();
-        let mut left = if mode == MouseProtocolMode::None
+        let mut unit = Vec::new();
+        let count = if mode == MouseProtocolMode::None
             && let Some((key, lines)) = self.alternate_scroll(event)
         {
-            key_bytes(KeyPress::plain(key).into(), self.key_mode(), &mut bytes);
+            key_bytes(KeyPress::plain(key).into(), self.key_mode(), &mut unit);
             lines
+        } else if mouse_bytes(event, mode, self.mouse_protocol_encoding(), &mut unit) {
+            1
         } else {
-            u16::from(mouse_bytes(
-                event,
-                mode,
-                self.mouse_protocol_encoding(),
-                &mut bytes,
-            ))
+            return None;
         };
-        let mut empty_scroll = left == 0 && !bytes.is_empty();
-        std::iter::from_fn(move || {
-            if std::mem::take(&mut empty_scroll) {
-                return Some(Vec::new());
-            }
-            if left == 0 || bytes.is_empty() {
-                return None;
-            }
-            // One report or key is at most 64 bytes (B45).
-            let count = usize::from(left).min(64usize.checked_div(bytes.len())?);
-            let count = u16::try_from(count).ok()?;
-            left = left.saturating_sub(count);
-            Some(
-                std::iter::repeat_n(bytes.as_slice(), usize::from(count))
-                    .flatten()
-                    .copied()
-                    .collect(),
-            )
-        })
+        // B45 bounds each unit at 64 bytes; a step always advances.
+        let per = 64usize.checked_div(unit.len()).unwrap_or(1).max(1);
+        let count = usize::from(count);
+        Some((0..count.div_ceil(per)).map(move |chunk| {
+            let left = count.saturating_sub(chunk.saturating_mul(per));
+            std::iter::repeat_n(unit.as_slice(), per.min(left))
+                .flatten()
+                .copied()
+                .collect()
+        }))
     }
 
     /// A wheel turn's key and distance, while alternate scrolling applies.
