@@ -182,8 +182,8 @@ fn send_keys_signal_and_buffers() -> Outcome {
     shows(&server, "%1", "after-sleep")?;
     assert!(server.ok(&["ls"])?.contains("%1"), "the shell survives");
     // No buffers yet.
-    assert_eq!(server.ok(&["buffers"])?.trim(), "");
-    assert_eq!(server.fux(&["0", "buffer"])?.status, 1);
+    assert_eq!(server.ok(&["buffers"])?.trim(), "[]");
+    assert_eq!(server.fux(&["newest", "buffer"])?.status, 1);
     Ok(())
 }
 
@@ -580,6 +580,7 @@ fn a_stop_between_requests_leaves_the_connection_asking() -> Outcome {
     let stop = fux::script::Stop::default();
     let mut asks = fux::script::Server::stoppable(path, stop.clone());
     let ls = fux::protocol::Asked {
+        after: None,
         request: fux::command::Command::Ls {
             target: None,
             get: None,

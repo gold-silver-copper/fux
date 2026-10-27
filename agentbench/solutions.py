@@ -215,7 +215,7 @@ def gone_then_type(d, a, fx):
     d.wait_gone(p, a["gone"])
     d.text(p, a["line"])
     d.keys(p, "Enter")
-    d.wait_text(p, "ok:")
+    d.wait_exit(p)
 
 
 def text_then_type(d, a, fx):

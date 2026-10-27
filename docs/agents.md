@@ -370,7 +370,8 @@ it), `str PATH read-file` and `str NAME getenv` (a variable not set fails
 - Handle values returned by a server retain its run through lists, bindings,
   answers and request options; using one against another run is refused.
   A hand-written `%N`, `@N`, `+N` or `str cN client` means the selected server
-  now. Printing an id loses its run: its text is not durable across restarts.
+  now. Printing one of these handles loses its run: that text is not durable
+  across restarts.
 - `str NAME server` (`NAME.sock` in fux's directory) or `str PATH socket`
   first chooses another server; `start` starts one, with nothing in it
   (the first client to attach starts a shell on its screen; one that only

@@ -20,7 +20,7 @@ use crate::wire::{Wire, wire};
 use std::borrow::Cow;
 
 /// Bumped on any change to the frames below.
-pub const PROTOCOL: u32 = 25;
+pub const PROTOCOL: u32 = 27;
 /// The largest frame, kind byte included.
 pub const MAX_FRAME: usize = 1 << 20;
 /// The largest payload one frame carries.
@@ -360,10 +360,22 @@ wire! {
 }
 
 wire! {
+    /// Attached frames sent before a job was dispatched. Every request
+    /// keeps its source, separate from the client a program may target.
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    pub struct Fence {
+        pub run: crate::command::Run,
+        pub client: ClientId,
+        pub frames: u64,
+    }
+}
+
+wire! {
     /// A command client's frames after its `Hello`: requests, each answered
     /// before the next, and where each comes from.
     #[derive(Clone, Debug, PartialEq, Eq)]
     pub struct Asked {
+        pub after: Option<Fence>,
         pub request: Request,
         pub context: Context,
     }
@@ -689,7 +701,9 @@ mod tests {
     }
 
     #[test]
-    fn every_frame_round_trips_in_any_chunking_with_the_wire_formats_kind() -> Result<(), String> {
+    fn every_frame_round_trips_in_any_chunking_with_the_wire_formats_kind()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let run = "1-2".parse().map_err(|()| "test run")?;
         let hello = |role| Hello {
             protocol: PROTOCOL,
             version: "0.13.0".into(),
@@ -740,6 +754,11 @@ mod tests {
             Asked,
             6,
             Asked {
+                after: Some(Fence {
+                    run,
+                    client: ClientId::of(2),
+                    frames: 3000
+                }),
                 request: Request::Do(crate::command::Command::Rename {
                     target: AnyRef::Pane(crate::id::PaneId::of(3)),
                     name: "界".into(),
@@ -761,11 +780,7 @@ mod tests {
         round_trip!(ToAttached, 8, ToAttached::Exit("detached"));
         round_trip!(ToCommand, 9, ToCommand::Stdout(Cow::Borrowed(b"out")));
         round_trip!(Greeting, 11, Greeting::Done(2));
-        round_trip!(
-            ToAttached,
-            12,
-            ToAttached::Welcome(ClientId::of(2), "1-2".parse().map_err(|()| "run")?)
-        );
+        round_trip!(ToAttached, 12, ToAttached::Welcome(ClientId::of(2), run));
         round_trip!(ToAttached, 14, ToAttached::Ended(ScreenKind::Copy));
         round_trip!(ToAttached, 15, ToAttached::Run("me zoom".into()));
         round_trip!(ToAttached, 16, ToAttached::Keys(Vec::new()));
@@ -877,7 +892,7 @@ mod tests {
             ),
             (
                 command,
-                vec![0, 0, 0, 5, 6, 255, 255, 255, 255],
+                vec![0, 0, 0, 6, 6, 0, 255, 255, 255, 255],
                 "a frame's payload: no Request has tag 255",
             ),
             (server, vec![0, 0, 0, 0], "an empty frame"),

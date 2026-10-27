@@ -107,6 +107,23 @@ fn received(out: &std::path::Path, expected: &[u8]) -> Outcome {
     Ok(())
 }
 
+/// The real binding worker sends its first request with the attachment's
+/// prefix, and held keys follow the completed program.
+#[test]
+fn a_bound_program_follows_the_keys_before_it() -> Outcome {
+    let server = Server::start("str F5 str 'me focused str Z text send-keys drop' bind-root")?;
+    let mut client = server.attach(20, 100)?;
+    client.ready()?;
+    let (cat, out) = recorder(&server, "")?;
+    let _reap = Reap(vec![cat]);
+    let mut typed = vec![b'a'; 3000];
+    typed.extend_from_slice(b"\x1b[15~x");
+    client.send(&typed)?;
+    let mut expected = vec![b'a'; 3000];
+    expected.extend_from_slice(b"Zx");
+    received(&out, &expected)
+}
+
 /// A bracketed paste of `text`, as a terminal sends one.
 fn paste(text: &[u8]) -> Vec<u8> {
     [b"\x1b[200~".as_slice(), text, b"\x1b[201~"].concat()

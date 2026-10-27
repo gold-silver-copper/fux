@@ -5,9 +5,9 @@
 use super::{Ask, Bound, Fux, Host, Local, On, Opts, Shell};
 use crate::code::{Code, Raise};
 use crate::command::{
-    AnyRef, Button, ClientAction, Command, Extent, Input, Kind, Members, Mouse, MoveTo, PanePick,
-    PaneResize, Percent, Pick, Request, Resized, Sibling, Since, Source, SwapWith, To, Usage, Wait,
-    Wheel, WsRef,
+    AnyRef, Buffer, Button, ClientAction, Command, Extent, Input, Kind, Members, Mouse, MoveTo,
+    PanePick, PaneResize, Percent, Pick, Request, Resized, Sibling, Since, Source, SwapWith, To,
+    Usage, Wait, Wheel, WsRef,
 };
 use crate::help;
 use crate::id::{ClientId, PaneId};
@@ -283,9 +283,9 @@ words! {
         Changing SwapToward "swap-toward" "pane way --" "swap a pane with its neighbour" "fux %3 str up swap-toward" [];
         Changing Reorder "reorder" "handle way --" "move one place: next or previous" "fux @2 str next reorder" [];
         Changing ClearHistory "clear-history" "pane --" "drop the pane's history" "fux %3 clear-history" [];
-        Changing Buffers "buffers" "-- text" "the paste buffers, newest 0" "fux buffers" [];
-        Changing Buffer "buffer" "n -- text" "paste buffer n" "fux 0 buffer" [];
-        Changing PasteBuffer "paste-buffer" "pane n -- answer" "paste buffer n into a pane; answers as send-keys does" "fux %3 0 paste-buffer" [];
+        Changing Buffers "buffers" "-- json" "paste buffer metadata, newest first: id, bytes and preview" "fux buffers" [];
+        Changing Buffer "buffer" "id -- text" "exact paste buffer text by id or newest" "fux newest buffer" [];
+        Changing PasteBuffer "paste-buffer" "pane id -- answer" "paste a buffer by id or newest into a pane; answers as send-keys does" "fux %3 newest paste-buffer" [];
         Clients Attach "attach" "opts --" "show the server in this terminal (bare fux is opts attach); with a size, be a client of no terminal instead" "fux opts str work in attach" [Opts: In Size Watch];
         Clients Focus "focus" "client way --" "left right up down next previous or last pane" "fux str c1 client str left focus" [];
         Clients FocusPane "focus-pane" "client pane --" "focus a pane" "fux str c1 client %3 focus-pane" [];
@@ -503,6 +503,19 @@ fn within<T: TryFrom<i64>>(value: &Value<Fux>, range: RangeInclusive<i64>) -> Re
             (from, to) => format!("{from} to {to}"),
         };
         fail(Raise::Range, format!("{n} is out of range: {said}"))
+    })
+}
+
+fn buffer(value: &Value<Fux>) -> Result<Buffer, Failure> {
+    let text = string(value)?;
+    if text == "newest" {
+        return Ok(Buffer::Newest);
+    }
+    text.parse().map(Buffer::Id).map_err(|()| {
+        fail(
+            Raise::BadValue,
+            format!("{text:?} is not a buffer id (bN:RUN) or newest"),
+        )
     })
 }
 
@@ -1486,12 +1499,12 @@ impl Host<'_> {
             }),
             Act::Buffers => later(ask(Command::ListBuffers)),
             Act::Buffer => later(ask(Command::ShowBuffer {
-                index: within(&next()?, COUNT)?,
+                buffer: buffer(&next()?)?,
             })),
             Act::PasteBuffer => {
                 let p = pane(&next()?)?;
-                let index = within(&next()?, COUNT)?;
-                later(ask(Command::PasteBuffer { index, target: p }))
+                let buffer = buffer(&next()?)?;
+                later(ask(Command::PasteBuffer { buffer, target: p }))
             }
             // ----------------------------------------------------- clients
             Act::Attach => {

@@ -669,6 +669,8 @@ fn handles(tokens: &[Token]) -> Result<Vec<Token>, fuxth::Error> {
 pub struct Server {
     chosen: Choice,
     requests: Option<client::Requests>,
+    /// This job's source fence, kept on every request and across retries.
+    pub(crate) after: Option<crate::protocol::Fence>,
     /// What stops a run from another thread, if one may.
     stop: Option<Stop>,
 }
@@ -715,6 +717,7 @@ impl Server {
         Server {
             chosen,
             requests: None,
+            after: None,
             stop: None,
         }
     }
@@ -764,6 +767,11 @@ pub trait Asks {
 /// first.
 impl Asks for Server {
     fn ask(&mut self, asked: &Asked, out: &mut dyn Write) -> Result<Reply, Failed> {
+        let fenced = self.after.as_ref().map(|after| Asked {
+            after: Some(after.clone()),
+            ..asked.clone()
+        });
+        let asked = fenced.as_ref().unwrap_or(asked);
         let requests = match &mut self.requests {
             Some(requests) => requests,
             None => {
@@ -907,6 +915,7 @@ impl Asks for AsClient<'_> {
         let screen = open.clone().build(&mut |command| {
             asks.ask(
                 &Asked {
+                    after: None,
                     request: command.into(),
                     context: context.clone(),
                 },
@@ -956,6 +965,7 @@ pub fn run_capped(
                 context.client = client.or(context.client);
                 context.of = of;
                 let asked = Asked {
+                    after: None,
                     request: *request,
                     context,
                 };
@@ -1274,7 +1284,14 @@ fn run_config(
         && !settings.0.is_empty()
     {
         let request = crate::command::Command::Set(settings.0).into();
-        succeeded(server.ask(&Asked { request, context }, &mut io::sink())?)?;
+        succeeded(server.ask(
+            &Asked {
+                request,
+                context,
+                after: None,
+            },
+            &mut io::sink(),
+        )?)?;
     }
     Ok(keymap)
 }

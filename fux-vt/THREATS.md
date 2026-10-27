@@ -2,7 +2,7 @@
 
 What a program in a pane can make fux-vt do, and the numbers that hold
 it back: the threat model (1), every bound with its test (2), memory
-(3), work and the per-call ceiling (4), guard mutants (5) and the
+(3), work and the per-call ceiling (4), and the
 checker's invariants (6). The code and tests cite it by row (B01 to
 B46 but B10 and B29, which are gone, and B34a) and by section number.
 
@@ -185,7 +185,7 @@ B26 and B41 bound host-side objects or host calls.
 | B42 | Small fixed state | Tab stops a byte a column; the palette about 1.3 KB; kitty stacks 32 entries | — | HTS at every column | `b42` |
 | B43 | Events | Delivered synchronously; fux-vt keeps none | — | 400 × OSC 9 | `b43` |
 | B44 | Refused allocations | Each refusal counts in `Parser::refused()` and degrades as 1.3 says; every later byte is read | 1.3's table | `ESC]133;A BEL hello` with a refusal forced (`refuse_next`) | `b44` |
-| B45 | Key and mouse encoders (host calls) | ≤ 64 B a call | A mouse position past its encoding is clamped | Every key, modifier and mode; mouse at each encoding's edges | `b45` |
+| B45 | Key and mouse encoders (host calls) | ≤ 64 B per key, mouse report or `Screen::encode_mouse` chunk; alternate scroll ≤ 32,767 arrows | Default/UTF-8 positions past their limits emit a 0 byte; hosts admit or refuse each whole scroll expansion | Every key, modifier and mode; mouse at each encoding's edges; negotiated scroll expansion at maximum height | `b45`; `alternate_scroll_keeps_negotiated_arrows_in_bounded_chunks` |
 | B46 | Covering | A placement covers ≤ `COVER_WORDS` = 4,000,000 words of 64 pixels of the pictures under it, the room to note them included (16 B a row shown of each picture covered, and the covered rows' words) and a copy of what was noted of one the host holds; the room, the words promised included, is inside P (B01). It reads the newer picture's drawn grid positions on the rows of those under it, once a grid row: ≤ the positions it drew (B04) | One under it past the words, or past P, goes whole, the newest covered first | 64 pictures, each a column right of the last, opaque (P2 0) and drawn (P2 1) | `b46`; `a_picture_covers_only_the_pixels_it_lies_on` |
 
 ## 3 Memory
@@ -258,8 +258,8 @@ beside the old: + 12.10 MiB.
 
 ### 4.1 The counters
 
-With the `checks` cargo feature (off by default; the bounds tests, the
-fuzz targets and mutation runs turn it on, never a release), fux-vt
+With the `checks` cargo feature (off by default; the bounds tests and
+fuzz targets turn it on, never a release), fux-vt
 counts its work in a per-thread `Work`, read by `Work::now()` and
 differenced with `Work::since`. The counters come from one table
 (`work.rs`), each added to with saturating arithmetic. Without the feature nothing is counted.
@@ -368,40 +368,6 @@ What is checked where:
   `a_call_stops_at_half_the_ceiling_and_not_before` guards `LIMIT`.
 - The worst measured time of one 4 KiB call is in `fux-vt/README.md`'s
   "The time of one call" bullet.
-
-## 5 Guard mutants
-
-A guard mutant is a mutant cargo-mutants makes in a bounded path (a
-limit's comparison, a clamp, a limit constant, a counter's method) that
-the bounds and safety tests must catch: if one survives, a limit can
-move without a test noticing. The guard set is
-`fux-vt/compare/mutants-guards.txt`, run by
-`fux-vt/compare/mutants.sh guards` nightly in `fuzz.yml`.
-
-### 5.1 Writing a limit so it has mutants
-
-fux-vt forbids `clippy::arithmetic_side_effects`, so its arithmetic is
-`saturating_*` and `checked_*`, which cargo-mutants doesn't mutate;
-and cargo-mutants skips any function named `new`. So:
-
-1. Each limit is a strict `<` or `>` in a named function that isn't
-   `new`, returning `bool` (`fn over_cap(&self, ..) -> bool`). Then its
-   off-by-one mutant (`>=`, `<=`) and its body mutants (`true`, `false`)
-   exist; a limit written with `<=` or `>=` has only its inverse.
-2. Each clamp that matters is an `if` with a strict operator, not a bare
-   `min` or `max`.
-3. Limit constants are expressions where natural (`1 << 12`,
-   `4096 * 2160`), which gives them mutants; a bare literal has none, and
-   its one-under, at and one-over test guards it.
-4. Each probe asserts each counter's lower bound (4.3), so a count
-   that stops being made is caught.
-5. Runs are `mutants.sh`'s: with `--features checks`, and fux's tests
-   beside fux-vt's, which kill some mutants fux-vt's tests can't reach.
-6. Where the strict form moves a threshold by one, that is a change of
-   the limit, stated in its row, not of behaviour.
-7. Timeouts, unviable and unattempted mutants are not caught. A mutant
-   no test can tell from the code is equivalent only with a written
-   reason, in `fux-vt/compare/mutants-equivalent.txt`.
 
 ## 6 The invariants the checker asserts
 

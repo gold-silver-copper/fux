@@ -579,18 +579,24 @@ fn lock(keymap: &Mutex<Keymap>) -> std::sync::MutexGuard<'_, Keymap> {
 /// Every mode is the client's (`crate::screens`), changed here at the key
 /// that changes it. A program it runs may open a screen, so the keys typed
 /// while any runs wait for it, and go to the screen it opened, if any.
+///
+/// The transport must handle every returned effect in order: send each
+/// action, count its frame, and pass each admitted job to `Self::dispatch`.
+/// Dropping an admitted job leaves its reservation and held keys waiting.
 pub struct Keyboard {
     keymap: std::sync::Arc<Mutex<Keymap>>,
     screen: Screen,
     read_only: bool,
     decoder: crate::decode::Decoder,
-    jobs: std::sync::mpsc::Sender<Job>,
-    /// One `Ran` for each program sent: as many as `running` holds.
+    jobs: std::sync::mpsc::Sender<(Job, u64)>,
+    /// One `Ran` for the program dispatched, before the next is sent.
     told: std::sync::mpsc::Receiver<Ran>,
     wake: io::PipeReader,
-    /// The bytes of code of each program sent to the worker and not yet
-    /// done, in order: `JOBS` and `JOB_BYTES` at most.
+    /// The weights of admitted programs not yet done, in order:
+    /// `JOBS` and `JOB_BYTES` at most.
     running: VecDeque<usize>,
+    /// Admitted jobs dispatched after the running job's screen effects.
+    pending: VecDeque<Job>,
     /// What stops the program the worker runs (the prefix, then Esc).
     stop: script::Stop,
     /// What was typed while a program ran, in order, and the bytes of its
@@ -599,16 +605,25 @@ pub struct Keyboard {
     held: usize,
 }
 
+/// Ending an attachment stops its outstanding program rather than leaving
+/// its worker running.
+impl Drop for Keyboard {
+    fn drop(&mut self) {
+        self.stop.stop();
+    }
+}
+
 impl Keyboard {
-    /// The keyboard of the client attached as `me` on `socket`, with
+    /// The keyboard of the client attached as `me` in `run` on `socket`, with
     /// `keymap`; `read_only` if it only watches.
     pub fn new(
         socket: &SocketPath,
-        me: (crate::id::ClientId, crate::command::Run),
+        me: crate::id::ClientId,
+        run: crate::command::Run,
         keymap: Keymap,
         read_only: bool,
     ) -> Result<Keyboard, Error> {
-        let (jobs, todo) = std::sync::mpsc::channel::<Job>();
+        let (jobs, todo) = std::sync::mpsc::channel::<(Job, u64)>();
         let (tell, told) = std::sync::mpsc::channel::<Ran>();
         let (wake, poke) = io::pipe()?;
         fuxix::io::set_nonblocking(&wake, true).map_err(io::Error::from)?;
@@ -623,8 +638,13 @@ impl Keyboard {
             .spawn(move || {
                 let chosen = socket::Choice::Path(path);
                 let mut server = script::Server::stoppable(chosen, stops.clone());
-                for job in todo {
-                    let ran = run_job(&mut server, me, &shared, &job, &stops);
+                for (job, frames) in todo {
+                    server.after = Some(crate::protocol::Fence {
+                        run,
+                        client: me,
+                        frames,
+                    });
+                    let ran = run_job(&mut server, (me, run), &shared, &job, &stops);
                     if tell.send(ran).is_err() {
                         break;
                     }
@@ -646,6 +666,7 @@ impl Keyboard {
             told,
             wake,
             running: VecDeque::new(),
+            pending: VecDeque::new(),
             stop,
             waiting: VecDeque::new(),
             held: 0,
@@ -668,8 +689,9 @@ impl Keyboard {
         self.decoder.deadline()
     }
 
-    /// Bytes from its terminal, read at `now`.
-    pub fn bytes(&mut self, bytes: &[u8], now: Instant) -> Vec<Act> {
+    /// Bytes from its terminal, read at `now`. Handle returned effects in
+    /// order, as `Keyboard` requires.
+    pub fn bytes(&mut self, bytes: &[u8], now: Instant) -> Vec<Effect> {
         let mut inputs = Vec::new();
         self.decoder.expire(now);
         self.decoder.bytes(bytes, &mut inputs);
@@ -678,7 +700,8 @@ impl Keyboard {
     }
 
     /// A deadline passed (`Keyboard::deadline`): what waited is taken.
-    pub fn timeout(&mut self) -> Vec<Act> {
+    /// Handle returned effects in order, as `Keyboard` requires.
+    pub fn timeout(&mut self) -> Vec<Effect> {
         let mut inputs = Vec::new();
         self.decoder.timeout(&mut inputs);
         self.inputs(inputs)
@@ -686,7 +709,7 @@ impl Keyboard {
 
     /// Inputs taken one at a time, as if each came alone: however the
     /// terminal's reads split them, they come to the same.
-    fn inputs(&mut self, inputs: impl IntoIterator<Item = Input>) -> Vec<Act> {
+    fn inputs(&mut self, inputs: impl IntoIterator<Item = Input>) -> Vec<Effect> {
         let mut acts = Vec::new();
         let mut refused = 0usize;
         for input in inputs {
@@ -696,7 +719,7 @@ impl Keyboard {
                 self.waiting.pop_back();
                 self.stop.stop();
                 let text = "stopping…".to_owned();
-                acts.push(Act::Notice { text, error: false });
+                acts.push(Effect::Send(Act::Notice { text, error: false }));
             } else if !running || self.holds(&input) {
                 self.held = self.held.saturating_add(pasted(&input));
                 self.waiting.push_back(input);
@@ -710,7 +733,7 @@ impl Keyboard {
             let text = format!(
                 "{refused} inputs not taken: {held} already wait for a program ({bytes} bytes pasted)"
             );
-            acts.push(Act::Notice { text, error: true });
+            acts.push(Effect::Send(Act::Notice { text, error: true }));
         }
         acts
     }
@@ -732,7 +755,7 @@ impl Keyboard {
     }
 
     /// What waits, taken unless a program runs.
-    fn release(&mut self) -> Vec<Act> {
+    fn release(&mut self) -> Vec<Effect> {
         let mut acts = Vec::new();
         while self.running.is_empty() {
             let Some(input) = self.waiting.pop_front() else {
@@ -747,8 +770,9 @@ impl Keyboard {
     /// A frame from the server: copy mode it ended, a program to run (a
     /// screen asked of it from elsewhere), keys to take as typed
     /// (`send-keys` to it), the prefix then Esc among them stopping a
-    /// program as typed ones do.
-    pub fn frame(&mut self, frame: ToAttached<'_>) -> Vec<Act> {
+    /// program as typed ones do. Handle returned effects in order, as
+    /// `Keyboard` requires.
+    pub fn frame(&mut self, frame: ToAttached<'_>) -> Vec<Effect> {
         let mut acts = Vec::new();
         match frame {
             ToAttached::Ended(kind) => self.screen.ended(kind),
@@ -763,7 +787,8 @@ impl Keyboard {
 
     /// What the programs it ran came to, those done: a screen one opened
     /// opens, what one said shows, and the keys that waited go on.
-    pub fn ran(&mut self) -> Vec<Act> {
+    /// Handle returned effects in order, as `Keyboard` requires.
+    pub fn ran(&mut self) -> Vec<Effect> {
         crate::drain(&self.wake);
         let mut acts = Vec::new();
         while let Ok(ran) = self.told.try_recv() {
@@ -773,10 +798,10 @@ impl Keyboard {
             // rather than say what its keys no longer do, and says so with
             // what the program said.
             if ran.opened.is_none() && ran.rebound && self.screen.kind().is_some() {
-                acts.push(match matches!(self.screen, Screen::Copy(_)) {
+                acts.push(Effect::Send(match matches!(self.screen, Screen::Copy(_)) {
                     true => Act::Copy(crate::act::CopyAct::Leave),
                     false => Act::Hide,
-                });
+                }));
                 self.screen = Screen::default();
                 let closed = "the keys of fux's screens changed: the one open closed";
                 notice = Some(match notice {
@@ -785,10 +810,15 @@ impl Keyboard {
                 });
             }
             if let Some((text, error)) = notice {
-                acts.push(Act::Notice { text, error });
+                acts.push(Effect::Send(Act::Notice { text, error }));
             }
             if let Some(screen) = ran.opened {
                 self.open(screen, &mut acts);
+            }
+            // A completed job's screen effects precede the next job's
+            // fence, just as typed acts do.
+            if let Some(job) = self.pending.pop_front() {
+                acts.push(Effect::Run(job));
             }
         }
         acts.extend(self.release());
@@ -797,10 +827,10 @@ impl Keyboard {
 
     /// Opens `screen`, in place of what was open. A client that only
     /// watches opens none: it says why.
-    fn open(&mut self, screen: Screen, acts: &mut Vec<Act>) {
+    fn open(&mut self, screen: Screen, acts: &mut Vec<Effect>) {
         if self.read_only {
             let text = "watching only: no choosers, prompts or copy mode here".to_owned();
-            acts.push(Act::Notice { text, error: true });
+            acts.push(Effect::Send(Act::Notice { text, error: true }));
             return;
         }
         let (opened, largest) = {
@@ -813,28 +843,29 @@ impl Keyboard {
         if largest.is_some_and(|act| AttachedFrame::Act(Box::new(act)).encode().is_err()) {
             let text =
                 format!("a screen past {MAX_FRAME} bytes, too large to show, was not opened");
-            return acts.push(Act::Notice { text, error: true });
+            return acts.push(Effect::Send(Act::Notice { text, error: true }));
         }
         if let Screen::Copy(_) = self.screen {
-            acts.push(Act::Copy(crate::act::CopyAct::Leave));
+            acts.push(Effect::Send(Act::Copy(crate::act::CopyAct::Leave)));
         }
-        acts.extend(opened);
+        acts.extend(opened.into_iter().map(Effect::Send));
         self.screen = screen;
     }
 
     /// What a key or a paste led to: actions for the server, programs to run.
-    fn apply(&mut self, effects: Vec<Effect>, acts: &mut Vec<Act>) {
+    fn apply(&mut self, effects: Vec<Effect>, acts: &mut Vec<Effect>) {
         for effect in effects {
             match effect {
-                Effect::Send(act) => acts.push(act),
+                Effect::Send(act) => acts.push(Effect::Send(act)),
                 Effect::Run(job) => self.run(job, acts),
             }
         }
     }
 
-    /// Sends `job` to the worker, unless as many programs, or as much
-    /// code, as it may hold wait for it.
-    fn run(&mut self, job: Job, acts: &mut Vec<Act>) {
+    /// Reserves `job` in local output order, unless as many programs, or as much
+    /// code, as it may hold wait for it. Each emitted `Effect::Run` owns
+    /// that reservation and must reach `Self::dispatch` in transport order.
+    fn run(&mut self, job: Job, acts: &mut Vec<Effect>) {
         // A stop stops the programs queued with the one it was typed for.
         if self.running.is_empty() {
             self.stop.reset();
@@ -845,19 +876,30 @@ impl Keyboard {
             let text = format!(
                 "a program was not run: {waiting} already wait to run ({bytes} bytes of code)"
             );
-            return acts.push(Act::Notice { text, error: true });
+            return acts.push(Effect::Send(Act::Notice { text, error: true }));
         }
-        if self.jobs.send(job).is_ok() {
-            self.running.push_back(len);
+        self.running.push_back(len);
+        if waiting == 0 {
+            acts.push(Effect::Run(job));
+        } else {
+            self.pending.push_back(job);
         }
     }
 
     /// What the terminal sent, decoded (`Screen::input`).
-    fn input(&mut self, input: Input, acts: &mut Vec<Act>) {
+    fn input(&mut self, input: Input, acts: &mut Vec<Effect>) {
         let keymap = lock(&self.keymap);
         let effects = self.screen.input(&keymap, input, self.read_only);
         drop(keymap);
         self.apply(effects, acts);
+    }
+
+    /// Dispatches an admitted job after its preceding attached frames were
+    /// sent. Every request carries that prefix and its source identity.
+    pub fn dispatch(&mut self, job: Job, frames: u64) -> Result<(), Error> {
+        self.jobs
+            .send((job, frames))
+            .map_err(|_| Error::Failed("the keys worker stopped".into()))
     }
 }
 
@@ -1178,6 +1220,13 @@ impl Output {
     }
 }
 
+/// A frame count must never wrap into a different prefix.
+fn next_frame(frames: u64) -> Result<u64, Error> {
+    frames
+        .checked_add(1)
+        .ok_or_else(|| Error::Failed("attached frame count exhausted".into()))
+}
+
 /// Holds the attachment until the server ends it, and says why: reads the
 /// terminal's keys, with an `output` for it, and runs them through the
 /// client's keys; writes the paints the server relays; passes on the
@@ -1199,6 +1248,7 @@ fn attached(
     let mut buffer = vec![0u8; 64 * 1024];
     let mut keyboard: Option<Keyboard> = None;
     let mut acts = Vec::new();
+    let mut frames = 0u64;
     const STREAM: Option<usize> = Some(0);
     const WINCH: Option<usize> = Some(1);
     const STOPS: Option<usize> = Some(2);
@@ -1222,22 +1272,26 @@ fn attached(
                             .map_err(Error::Output)?;
                     }
                     let keymap = attaching.keymap.clone();
-                    keyboard = Some(Keyboard::new(
-                        socket,
-                        (me, run),
-                        keymap,
-                        attaching.read_only,
-                    )?);
+                    keyboard = Some(Keyboard::new(socket, me, run, keymap, attaching.read_only)?);
                     if let Some(text) = attaching.problem.clone() {
-                        acts.push(Act::Notice { text, error: true });
+                        acts.push(Effect::Send(Act::Notice { text, error: true }));
                     }
                 }
                 (frame, Some(keyboard)) => acts.extend(keyboard.frame(frame)),
                 (_, None) => {}
             }
         }
-        for act in std::mem::take(&mut acts) {
-            let act = AttachedFrame::Act(Box::new(act));
+        for out in std::mem::take(&mut acts) {
+            let act = match out {
+                Effect::Run(job) => {
+                    keyboard
+                        .as_mut()
+                        .ok_or_else(|| Error::Failed("a program has no attached keyboard".into()))?
+                        .dispatch(job, frames)?;
+                    continue;
+                }
+                Effect::Send(act) => AttachedFrame::Act(Box::new(act)),
+            };
             if let Err(ended) = tell(
                 stream,
                 decoder,
@@ -1247,6 +1301,7 @@ fn attached(
             ) {
                 return ended;
             }
+            frames = next_frame(frames)?;
         }
         // The server's frames only while the terminal has room for them; a
         // hang-up is told all the same.
@@ -1319,6 +1374,7 @@ fn attached(
                 {
                     return ended;
                 }
+                frames = next_frame(frames)?;
             }
         }
         if let Some(keyboard) = &mut keyboard {
@@ -1410,31 +1466,135 @@ fn last_frames(
 mod tests {
     use super::*;
 
+    fn new_keyboard(
+        socket: &SocketPath,
+        keymap: Keymap,
+        read_only: bool,
+    ) -> Result<Keyboard, Box<dyn std::error::Error>> {
+        Ok(Keyboard::new(
+            socket,
+            "c1".parse()?,
+            "1-2".parse().map_err(|()| "test run")?,
+            keymap,
+            read_only,
+        )?)
+    }
+
+    fn transport(keyboard: &mut Keyboard, outputs: Vec<Effect>) -> Vec<Act> {
+        outputs
+            .into_iter()
+            .filter_map(|out| match out {
+                Effect::Send(act) => Some(act),
+                Effect::Run(job) => {
+                    assert!(keyboard.dispatch(job, 0).is_ok());
+                    None
+                }
+            })
+            .collect()
+    }
+
+    fn frame(keyboard: &mut Keyboard, frame: ToAttached<'_>) -> Vec<Act> {
+        let outputs = keyboard.frame(frame);
+        transport(keyboard, outputs)
+    }
+
+    fn bytes(keyboard: &mut Keyboard, bytes: &[u8], now: Instant) -> Vec<Act> {
+        let outputs = keyboard.bytes(bytes, now);
+        transport(keyboard, outputs)
+    }
+
+    fn timeout(keyboard: &mut Keyboard) -> Vec<Act> {
+        let outputs = keyboard.timeout();
+        transport(keyboard, outputs)
+    }
+
+    fn ran(keyboard: &mut Keyboard) -> Vec<Act> {
+        let outputs = keyboard.ran();
+        transport(keyboard, outputs)
+    }
+
+    /// A binding reserves its job immediately but cannot start it while
+    /// preceding acts still belong to the local transport.
+    #[test]
+    fn a_binding_emits_its_job_after_prior_keys() -> Result<(), Box<dyn std::error::Error>> {
+        let socket = socket::checked("/nowhere/fux/s.sock", "test")?;
+        let mut keymap = Keymap::empty();
+        keymap.bind_root(
+            KeyPress::char('y'),
+            crate::keymap::Binding::new("str done".into(), true),
+        )?;
+        let mut typed = vec![b'a'; 3000];
+        typed.extend_from_slice(b"yx");
+        for split in [0, 1, 255, 256, 257, 3000, 3001, 3002] {
+            let mut keyboard = new_keyboard(&socket, keymap.clone(), false)?;
+            let (first, last) = typed.split_at_checked(split).ok_or("split")?;
+            let mut outputs = keyboard.bytes(first, Instant::now());
+            outputs.extend(keyboard.bytes(last, Instant::now()));
+            assert_eq!(outputs.len(), 3001);
+            assert!(
+                outputs
+                    .iter()
+                    .take(3000)
+                    .all(|out| matches!(out, Effect::Send(Act::Key(_))))
+            );
+            assert!(matches!(outputs.last(), Some(Effect::Run(_))));
+            assert_eq!(keyboard.running.len(), 1);
+            assert_eq!(keyboard.waiting.len(), 1);
+            assert!(matches!(
+                keyboard.told.try_recv(),
+                Err(std::sync::mpsc::TryRecvError::Empty)
+            ));
+        }
+        Ok(())
+    }
+
+    /// A queued job reaches the transport after its predecessor's screen
+    /// changes, so its first request also fences those attached acts.
+    #[test]
+    fn a_completed_jobs_screen_precedes_the_next_job() -> Result<(), Box<dyn std::error::Error>> {
+        let socket = socket::checked("/nowhere/fux/s.sock", "test")?;
+        let mut keyboard = new_keyboard(&socket, Keymap::empty(), false)?;
+        let first = keyboard.frame(ToAttached::Run("str ready".into()));
+        assert!(
+            keyboard
+                .frame(ToAttached::Run("str next".into()))
+                .is_empty()
+        );
+        assert!(transport(&mut keyboard, first).is_empty());
+        let mut done = [PollFd::new(keyboard.wake(), PollFlags::IN)];
+        assert_ne!(fuxix::poll::poll(&mut done, Some(ANSWER))?, 0);
+        let next = keyboard.ran();
+        assert!(
+            matches!(next.as_slice(), [Effect::Send(Act::Notice { text, .. }), Effect::Run(_)] if text == "ready")
+        );
+        transport(&mut keyboard, next);
+        all_ran(&mut keyboard)?;
+        Ok(())
+    }
+
     /// Keys typed while any program the client ran is running wait for it,
     /// whatever its words (a config's word may open a chooser); the prefix,
     /// then Esc, stops it, and the keys go on once it is done.
     #[test]
     fn keys_wait_for_a_running_program_till_it_is_done() -> Result<(), Box<dyn std::error::Error>> {
         let socket = socket::checked("/nowhere/fux/s.sock", "test")?;
-        let mut keyboard = Keyboard::new(
-            &socket,
-            ("c1".parse()?, "1-2".parse().map_err(|()| "run")?),
-            Keymap::empty(),
-            false,
-        )?;
+        let mut keyboard = new_keyboard(&socket, Keymap::empty(), false)?;
         let now = Instant::now();
         let run = ToAttached::Run("begin false until".into());
-        assert!(keyboard.frame(run).is_empty());
-        assert!(keyboard.bytes(b"x", now).is_empty(), "a key went past it");
-        let mut stopping = keyboard.bytes(b"\x02\x1b", now);
-        stopping.extend(keyboard.timeout());
+        assert!(frame(&mut keyboard, run).is_empty());
+        assert!(
+            bytes(&mut keyboard, b"x", now).is_empty(),
+            "a key went past it"
+        );
+        let mut stopping = bytes(&mut keyboard, b"\x02\x1b", now);
+        stopping.extend(timeout(&mut keyboard));
         assert!(
             matches!(stopping.as_slice(), [Act::Notice { error: false, .. }]),
             "{stopping:?}"
         );
         let mut done = [PollFd::new(keyboard.wake(), PollFlags::IN)];
         fuxix::poll::poll(&mut done, Some(ANSWER))?;
-        let acts = keyboard.ran();
+        let acts = ran(&mut keyboard);
         assert!(matches!(acts.last(), Some(Act::Key(_))), "{acts:?}");
         assert!(keyboard.idle());
         Ok(())
@@ -1448,7 +1608,7 @@ mod tests {
             if fuxix::poll::poll(&mut done, Some(ANSWER))? == 0 {
                 return Err("a program did not end".into());
             }
-            acts.extend(keyboard.ran());
+            acts.extend(ran(keyboard));
         }
         Ok(acts)
     }
@@ -1458,18 +1618,13 @@ mod tests {
     #[test]
     fn queued_programs_keep_each_others_keys() -> Result<(), Box<dyn std::error::Error>> {
         let socket = socket::checked("/nowhere/fux/s.sock", "test")?;
-        let mut keyboard = Keyboard::new(
-            &socket,
-            ("c1".parse()?, "1-2".parse().map_err(|()| "run")?),
-            Keymap::empty(),
-            false,
-        )?;
+        let mut keyboard = new_keyboard(&socket, Keymap::empty(), false)?;
         for code in [
             "str C-a prefix",
             "str F5 str ls bind-root",
             "str F6 str ls bind-root str Nope prefix",
         ] {
-            assert!(keyboard.frame(ToAttached::Run(code.into())).is_empty());
+            assert!(frame(&mut keyboard, ToAttached::Run(code.into())).is_empty());
         }
         all_ran(&mut keyboard)?;
         let keymap = lock(&keyboard.keymap);
@@ -1487,17 +1642,18 @@ mod tests {
     #[test]
     fn a_screen_closes_when_its_keys_change() -> Result<(), Box<dyn std::error::Error>> {
         let socket = socket::checked("/nowhere/fux/s.sock", "test")?;
-        let mut keyboard = Keyboard::new(
-            &socket,
-            ("c1".parse()?, "1-2".parse().map_err(|()| "run")?),
-            Keymap::empty(),
-            false,
-        )?;
+        let mut keyboard = new_keyboard(&socket, Keymap::empty(), false)?;
         keyboard.screen = Screen::Copy(None);
-        keyboard.frame(ToAttached::Run("str F5 str ls bind-root".into()));
+        frame(
+            &mut keyboard,
+            ToAttached::Run("str F5 str ls bind-root".into()),
+        );
         assert_eq!(all_ran(&mut keyboard)?, []);
         assert_eq!(keyboard.screen, Screen::Copy(None));
-        keyboard.frame(ToAttached::Run("str copy str g str top bind-in".into()));
+        frame(
+            &mut keyboard,
+            ToAttached::Run("str copy str g str top bind-in".into()),
+        );
         let acts = all_ran(&mut keyboard)?;
         assert!(
             matches!(
@@ -1516,12 +1672,7 @@ mod tests {
     fn a_screen_too_large_to_show_is_refused_as_it_opens() -> Result<(), Box<dyn std::error::Error>>
     {
         let socket = socket::checked("/nowhere/fux/s.sock", "test")?;
-        let mut keyboard = Keyboard::new(
-            &socket,
-            ("c1".parse()?, "1-2".parse().map_err(|()| "run")?),
-            Keymap::empty(),
-            false,
-        )?;
+        let mut keyboard = new_keyboard(&socket, Keymap::empty(), false)?;
         let prompt = crate::screens::Prompt {
             title: std::iter::repeat_n('t', MAX_FRAME - 2048).collect(),
             line: crate::view::Line::new(String::new()),
@@ -1530,7 +1681,10 @@ mod tests {
         let mut acts = Vec::new();
         keyboard.open(Screen::Prompt(prompt), &mut acts);
         assert!(
-            matches!(acts.as_slice(), [Act::Notice { error: true, .. }]),
+            matches!(
+                acts.as_slice(),
+                [Effect::Send(Act::Notice { error: true, .. })]
+            ),
             "{acts:?}"
         );
         assert_eq!(keyboard.screen, Screen::default());
@@ -1548,16 +1702,11 @@ mod tests {
         keymap.bind_root(KeyPress::char('y'), forever)?;
         let typed = b"y\x02\x1b[27ux";
         for split in 0..=typed.len() {
-            let mut keyboard = Keyboard::new(
-                &socket,
-                ("c1".parse()?, "1-2".parse().map_err(|()| "run")?),
-                keymap.clone(),
-                false,
-            )?;
+            let mut keyboard = new_keyboard(&socket, keymap.clone(), false)?;
             let now = Instant::now();
             let (first, then) = typed.split_at_checked(split).ok_or("past the end")?;
-            let mut acts = keyboard.bytes(first, now);
-            acts.extend(keyboard.bytes(then, now));
+            let mut acts = bytes(&mut keyboard, first, now);
+            acts.extend(bytes(&mut keyboard, then, now));
             let stopping = matches!(acts.as_slice(),
                 [Act::Notice { text, error: false }] if text == "stopping…");
             let after = all_ran(&mut keyboard)?;
@@ -1578,30 +1727,25 @@ mod tests {
     #[test]
     fn what_waits_for_a_program_is_bounded() -> Result<(), Box<dyn std::error::Error>> {
         let socket = socket::checked("/nowhere/fux/s.sock", "test")?;
-        let mut keyboard = Keyboard::new(
-            &socket,
-            ("c1".parse()?, "1-2".parse().map_err(|()| "run")?),
-            Keymap::empty(),
-            false,
-        )?;
+        let mut keyboard = new_keyboard(&socket, Keymap::empty(), false)?;
         let forever = || ToAttached::Run("begin false until".into());
         for _ in 0..JOBS {
-            assert!(keyboard.frame(forever()).is_empty());
+            assert!(frame(&mut keyboard, forever()).is_empty());
         }
         let notice = |acts: &[Act], says: &str| matches!(acts, [Act::Notice { text, error: true }] if text.starts_with(says));
-        let more = keyboard.frame(forever());
+        let more = frame(&mut keyboard, forever());
         assert!(
             notice(&more, "a program was not run: 64 already"),
             "{more:?}"
         );
         let typed = vec![b'x'; HELD + 2];
-        let held = keyboard.bytes(&typed, Instant::now());
+        let held = bytes(&mut keyboard, &typed, Instant::now());
         assert!(
             notice(&held, "2 inputs not taken: 1024 already"),
             "{held:?}"
         );
-        let mut stopping = keyboard.bytes(b"\x02\x1b", Instant::now());
-        stopping.extend(keyboard.timeout());
+        let mut stopping = bytes(&mut keyboard, b"\x02\x1b", Instant::now());
+        stopping.extend(timeout(&mut keyboard));
         assert!(
             matches!(stopping.as_slice(), [Act::Notice { text, error: false }] if text == "stopping…"),
             "{stopping:?}"
@@ -1617,15 +1761,10 @@ mod tests {
     #[test]
     fn a_notice_is_bounded() -> Result<(), Box<dyn std::error::Error>> {
         let socket = socket::checked("/nowhere/fux/s.sock", "test")?;
-        let mut keyboard = Keyboard::new(
-            &socket,
-            ("c1".parse()?, "1-2".parse().map_err(|()| "run")?),
-            Keymap::empty(),
-            false,
-        )?;
+        let mut keyboard = new_keyboard(&socket, Keymap::empty(), false)?;
         let line: String = std::iter::repeat_n('x', 1000).collect();
         let code = format!("0 begin str {line} print 1 add 0 pick 100 eq until drop");
-        assert!(keyboard.frame(ToAttached::Run(code)).is_empty());
+        assert!(frame(&mut keyboard, ToAttached::Run(code)).is_empty());
         let acts = all_ran(&mut keyboard)?;
         let failed = matches!(acts.as_slice(),
             [Act::Notice { text, error: true }] if text.contains("prints 65536 bytes at most"));
@@ -1634,7 +1773,7 @@ mod tests {
         // a notice holds.
         let long: String = std::iter::repeat_n('x', 30_000).collect();
         let left = format!("str {long} 0 pick 0 pick");
-        assert!(keyboard.frame(ToAttached::Run(left)).is_empty());
+        assert!(frame(&mut keyboard, ToAttached::Run(left)).is_empty());
         let acts = all_ran(&mut keyboard)?;
         let refused = matches!(acts.as_slice(),
             [Act::Notice { text, error: true }] if text.starts_with("what the program left"));
@@ -1647,14 +1786,9 @@ mod tests {
     #[test]
     fn a_watcher_is_told_of_what_it_takes_no_further() -> Result<(), Box<dyn std::error::Error>> {
         let socket = socket::checked("/nowhere/fux/s.sock", "test")?;
-        let mut keyboard = Keyboard::new(
-            &socket,
-            ("c1".parse()?, "1-2".parse().map_err(|()| "run")?),
-            Keymap::empty(),
-            true,
-        )?;
+        let mut keyboard = new_keyboard(&socket, Keymap::empty(), true)?;
         for typed in [&b"x"[..], b"\x1b[200~p\x1b[201~", b"\x02c"] {
-            let acts = keyboard.bytes(typed, Instant::now());
+            let acts = bytes(&mut keyboard, typed, Instant::now());
             let notice = acts.first().filter(|_| acts.len() == 1);
             let told =
                 matches!(notice, Some(Act::Notice { text, .. }) if text.contains("d detaches"));

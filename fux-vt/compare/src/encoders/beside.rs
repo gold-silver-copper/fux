@@ -718,8 +718,14 @@ fn compare_mouse(pair: &Pair, setup: &str, tally: &mut Tally) -> Result<(), Stri
                 x: px(event.col, CELL.0),
                 y: px(event.row, CELL.1),
             });
-        let mut ours = Vec::new();
-        pair.fux.screen().encode_mouse(event, &mut ours);
+        let ours: Vec<u8> = pair
+            .fux
+            .screen()
+            .encode_mouse(event)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .collect();
         let mut theirs = Vec::new();
         encoder
             .encode_to_vec(&g, &mut theirs)

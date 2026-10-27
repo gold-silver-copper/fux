@@ -35,3 +35,6 @@ define confirm-close
   list it string str ' kill' end glue
   confirm
 end
+
+# -- id : choose the newest paste buffer when the request runs
+define newest str newest end
