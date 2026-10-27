@@ -1046,15 +1046,7 @@ fn respawn_keeps_a_given_name_matching_the_old_program() -> Outcome {
     let pane = id(&server.ok(&run(&["str", "sh", "name"], &["sh", "-c", "exit 0"]))?);
     server.exits(&pane)?;
     let ended = server.version(&pane)?;
-    server.ok(&[
-        "str",
-        &pane,
-        "pane",
-        "str",
-        "/bin/true",
-        "program",
-        "respawn",
-    ])?;
+    server.ok(&["str", &pane, "pane", "str", "true", "program", "respawn"])?;
     let name = server.ok(&["str", &pane, "pane", "str", "name", "get"])?;
     assert_eq!(name, "sh\n");
     server.exits(&pane)?;
