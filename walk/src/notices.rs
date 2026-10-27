@@ -196,18 +196,29 @@ impl Notices {
         }
         self.templates
             .iter()
-            .any(|t| matches(t, &text, prefix) || (!prefix && contains_whole(t, &text)))
+            .any(|t| matches(t, &text, prefix) || contains_whole(t, &text, prefix))
     }
 }
 
-/// A notice may be a template with a prefix of its own ("config: …"), or a
-/// longer message around one: any template that matches a run of it whole,
-/// from a word boundary.
-fn contains_whole(pattern: &[char], text: &[char]) -> bool {
+/// A notice may put its code before the cause and its source after it.
+/// Match a template from a word boundary, with the source and binding
+/// context that the diagnostic formatter may append.
+fn contains_whole(pattern: &[char], text: &[char], prefix: bool) -> bool {
+    let placed: Vec<char> = pattern.iter().copied().chain(" (*)".chars()).collect();
+    let bound: Vec<char> = pattern
+        .iter()
+        .copied()
+        .chain(", in * (*)".chars())
+        .collect();
     text.iter()
         .enumerate()
         .filter(|(i, _)| *i == 0 || text.get(i.saturating_sub(1)) == Some(&' '))
-        .any(|(i, _)| matches(pattern, text.get(i..).unwrap_or_default(), false))
+        .filter(|(i, _)| !prefix || text.len().saturating_sub(*i) >= 3)
+        .any(|(i, _)| {
+            [pattern, placed.as_slice(), bound.as_slice()]
+                .iter()
+                .any(|p| matches(p, text.get(i..).unwrap_or_default(), prefix))
+        })
 }
 
 #[cfg(test)]
@@ -221,11 +232,12 @@ mod tests {
         for known in [
             "no pane %99",
             "only one pane",
-            "nothing selected: v, s or x starts a selection",
+            "nothing selected: start a selection before copying",
             "the pane's input queue is full; nothing more is queued until its terminal takes some",
             "C-b t q is not bound",
-            "config: bad_binding: /w/config/fux/config.fux:3: bind: unknown_word: binding:1: nonsense: no such word",
-            "unknown_word: prompt:1: nonsense: no such word",
+            "bad_binding: nonsense: no such word; text is `str WORD`, in the binding for x (/w/config/fux/config.fux:3)",
+            "unknown_word: nonsense: no such word; text is `str WORD` (prompt:1)",
+            "unknown_word: nonsense: no such word; text is `str WO…",
             "the pane's input queue is full; nothing…",
         ] {
             assert!(notices.known(known), "{known}");

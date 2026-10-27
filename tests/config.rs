@@ -146,7 +146,7 @@ fn a_bad_config_is_reported() -> Outcome {
     let config = server.dir.join("config").join("fux").join("config.fux");
     std::fs::write(&config, "str Nope prefix\n").map_err(e)?;
     let mut terminal = Terminal::attach(&server, 10, 100, &[])?;
-    terminal.wait_for("config:")?;
+    terminal.wait_for("bad_binding: prefix:")?;
     // The defaults: C-b opens the column.
     terminal.type_bytes(b"\x02")?;
     terminal.wait_for("Commands")?;
@@ -155,7 +155,7 @@ fn a_bad_config_is_reported() -> Outcome {
     // An unknown word is found before anything runs, naming its line.
     std::fs::write(&config, "str history-bytes 5 set\nfrobnicate\n").map_err(e)?;
     let path = config.to_string_lossy().into_owned();
-    let checked = server.fux(&["str", &path, "check"])?;
+    let checked = server.fux(&["str", &path, "str", "config", "check"])?;
     assert_eq!(checked.status, 1);
     assert!(
         checked.stderr.contains("config.fux:2: frobnicate"),
@@ -163,16 +163,24 @@ fn a_bad_config_is_reported() -> Outcome {
         checked.stderr
     );
     std::fs::write(&config, "str C-a prefix\n").map_err(e)?;
-    assert!(server.ok(&["str", &path, "check"])?.ends_with(": ok\n"));
+    assert!(
+        server
+            .ok(&["str", &path, "str", "config", "check"])?
+            .ends_with(": ok\n")
+    );
     // A binding sees the config's definitions, written anywhere in it; a
     // mistake in one, or in a binding, is said at its own line and word.
     let ok = "str v str sr bind\ndefine sr me focused horizontal split drop end\n";
     std::fs::write(&config, ok).map_err(e)?;
-    assert!(server.ok(&["str", &path, "check"])?.ends_with(": ok\n"));
+    assert!(
+        server
+            .ok(&["str", &path, "str", "config", "check"])?
+            .ends_with(": ok\n")
+    );
     for (text, said) in [
         (
             "str C-a prefix\nstr v str sr bind\n",
-            "config.fux:2: sr: no such word, in the binding for v",
+            "config.fux:2: sr: no such word; text is `str WORD`, in the binding for v",
         ),
         (
             "define go %2 capture str x text end\n",
@@ -184,7 +192,7 @@ fn a_bad_config_is_reported() -> Outcome {
         ),
     ] {
         std::fs::write(&config, text).map_err(e)?;
-        let checked = server.fux(&["str", &path, "check"])?;
+        let checked = server.fux(&["str", &path, "str", "config", "check"])?;
         assert_eq!(checked.status, 1, "{text}");
         let stderr = checked
             .stderr
@@ -197,6 +205,117 @@ fn a_bad_config_is_reported() -> Outcome {
         );
         assert!(stderr.contains(said), "{}", checked.stderr);
     }
+    Ok(())
+}
+
+/// Only a missing optional root selects defaults; other read failures are visible.
+#[test]
+fn optional_config_reports_read_failures() -> Outcome {
+    let server = Server::start("")?;
+    let path = server.dir.join("config/fux/config.fux");
+    std::fs::remove_file(&path).map_err(e)?;
+    assert!(server.ok(&["list-keys"])?.contains("prefix"));
+    std::os::unix::fs::symlink("gone", &path).map_err(e)?;
+    let broken = server.fux(&["list-keys"])?;
+    assert_eq!(broken.status, 1);
+    assert!(broken.stderr.contains("config.fux"), "{}", broken.stderr);
+    std::fs::remove_file(&path).map_err(e)?;
+    std::os::unix::fs::symlink("config.fux", &path).map_err(e)?;
+    let looping = server.fux(&["list-keys"])?;
+    assert_eq!(looping.status, 1);
+    assert!(looping.stderr.contains("config.fux"), "{}", looping.stderr);
+    let mut terminal = Terminal::attach(&server, 10, 80, &[])?;
+    terminal.wait_for("read:")?;
+    terminal.type_bytes(b"\x02")?;
+    terminal.wait_for("Commands")?;
+    terminal.type_bytes(b"d")?;
+    terminal.wait_exit()?;
+    std::fs::remove_file(&path).map_err(e)?;
+    std::fs::create_dir(&path).map_err(e)?;
+    assert_eq!(server.fux(&["list-keys"])?.status, 1);
+    std::fs::remove_dir(&path).map_err(e)?;
+    std::fs::write(&path, [0xff]).map_err(e)?;
+    assert!(server.fux(&["list-keys"])?.stderr.contains("not UTF-8"));
+    Ok(())
+}
+
+#[test]
+fn config_notices_show_the_cause_once_before_the_path() -> Outcome {
+    let server = Server::start("")?;
+    let path = server.dir.join("config/fux/config.fux");
+    std::fs::write(&path, "str bell 3 set").map_err(e)?;
+    let failure = fux::script::run_file(&path, None)
+        .err()
+        .ok_or("expected a bad setting")?;
+    assert!(failure.place.is_some());
+    let notice = failure.notice();
+    assert!(
+        notice.starts_with("config: set: bell: takes true or false"),
+        "{notice}"
+    );
+    assert_eq!(notice.matches("config:").count(), 1);
+    assert!(notice.ends_with("config.fux:1)"), "{notice}");
+    let mut terminal = Terminal::attach(&server, 10, 80, &[])?;
+    terminal.wait_for("bell: takes true or false")?;
+    terminal.type_bytes(b"\x02d")?;
+    terminal.wait_exit()?;
+    Ok(())
+}
+
+#[test]
+fn check_mode_is_explicit_and_independent_of_the_filename() -> Outcome {
+    let server = Server::start("")?;
+    for name in ["sample.fux", "config.fux", "arbitrary"] {
+        let path = server.dir.join(name);
+        std::fs::write(&path, "str no-such-setting true set").map_err(e)?;
+        let path = path.to_string_lossy();
+        assert!(
+            server
+                .ok(&["str", &path, "str", "program", "check"])?
+                .ends_with(": ok\n")
+        );
+        let checked = server.fux(&["str", &path, "str", "config", "check"])?;
+        assert_eq!(checked.status, 1);
+        assert!(checked.stderr.contains("no setting"), "{}", checked.stderr);
+        assert_eq!(
+            server.fux(&["str", &path, "str", "auto", "check"])?.status,
+            1
+        );
+        assert_eq!(server.fux(&["str", &path, "check"])?.status, 1);
+    }
+    let path = server.dir.join("dry.fux");
+    std::fs::write(&path, "str shell list str /not-a-program end set").map_err(e)?;
+    server.ok(&["str", &path.to_string_lossy(), "str", "config", "check"])?;
+    server.ok(&["%1", "split", "drop"])?;
+    Ok(())
+}
+
+/// A supplied empty snapshot survives the request connection and server spawn.
+#[test]
+fn an_empty_caller_environment_is_not_replaced() -> Outcome {
+    use fux::script::{Host, Server as Requests, compile, run_capped};
+    let server = Server::start("str update-environment list str HOME str ENV end set")?;
+    let tokens = fuxth::token::source(
+        "test",
+        "opts 80 24 size str /bin/sh program str -c arg str 'echo HOME=${HOME-unset} ENV=${ENV-unset}' arg run",
+    )
+    .map_err(e)?;
+    let mut machine = compile(&tokens).map_err(e)?;
+    let context = fux::protocol::Context {
+        env: Some(Vec::new()),
+        cwd: server.dir.clone(),
+        ..Default::default()
+    };
+    let mut sink = Vec::new();
+    let mut host = Host::new(context, None, &mut sink);
+    let mut requests = Requests::new(fux::socket::Choice::Path(server.socket.clone()));
+    let values =
+        run_capped(&mut machine, &mut host, &mut requests, Some(10000), None).map_err(e)?;
+    let version = values.first().ok_or("run result")?.text();
+    let pane = version.split(':').next().ok_or("pane")?;
+    server.exits(pane)?;
+    let captured = server.ok(&["str", pane, "pane", "capture"])?;
+    assert_eq!(captured.trim(), "HOME=unset ENV=unset");
     Ok(())
 }
 
@@ -214,7 +333,7 @@ fn the_config_words_examples_check() -> Outcome {
             .map(|(_, example)| example)
             .ok_or(format!("no example: {explained}"))?;
         std::fs::write(&config, example).map_err(e)?;
-        let checked = server.fux(&["str", &path, "check"])?;
+        let checked = server.fux(&["str", &path, "str", "config", "check"])?;
         assert_eq!(checked.status, 0, "{example}: {}", checked.stderr);
     }
     Ok(())
