@@ -12,9 +12,18 @@ impl Session {
     /// What there is, or `only` that tab or workspace (a pane's: its tab),
     /// as a fuxth program.
     pub(crate) fn dump_layout(&self, only: Option<AnyRef>) -> Result<String, super::Error> {
+        self.dump_with(only, crate::wire::MAX_REPLY, &mut |id| self.dir_of(id))
+    }
+
+    fn dump_with(
+        &self,
+        only: Option<AnyRef>,
+        limit: usize,
+        directories: &mut impl FnMut(PaneId) -> Option<std::path::PathBuf>,
+    ) -> Result<String, super::Error> {
         // Quote expansion is at most four bytes per input byte. Charge
         // launch words and per-pane syntax before building any source.
-        let mut left = crate::wire::MAX_REPLY / 2;
+        let mut left = limit / 2;
         let mut charge = |bytes: usize| -> Result<(), super::Error> {
             left = left
                 .checked_sub(bytes)
@@ -83,7 +92,7 @@ impl Session {
                 .filter(|t| self.takes_in(only, ws.id(), t.id()));
             for (i, tab) in tabs.enumerate() {
                 // The first opens its workspace.
-                self.dump_tab(ws, tab, whole, whole && i == 0, &mut out);
+                self.dump_tab(ws, tab, whole, whole && i == 0, &mut out, directories);
             }
         }
         Ok(out)
@@ -92,7 +101,15 @@ impl Session {
     /// The lines that make tab `tab` of `ws`, and its panes:
     /// with `whole`, as part of its workspace, which it `opens` if it is the
     /// first written.
-    fn dump_tab(&self, ws: &Workspace, tab: &Tab, whole: bool, opens: bool, out: &mut String) {
+    fn dump_tab(
+        &self,
+        ws: &Workspace,
+        tab: &Tab,
+        whole: bool,
+        opens: bool,
+        out: &mut String,
+        directories: &mut impl FnMut(PaneId) -> Option<std::path::PathBuf>,
+    ) {
         let (root, first) = (tab.root(), tab.root().first_pane());
         let program = self.program(first);
         // An unnamed workspace is recreated as a new workspace, never
@@ -112,7 +129,7 @@ impl Session {
         let size = tab.fit().size();
         let (cols, rows) = (size.cols().to_string(), size.rows().to_string());
         line.extend([cols, rows, "size".to_owned()]);
-        self.pane_words(first, &mut line, out);
+        self.pane_words(first, &mut line, out, directories);
         line.push(
             if creates && program.is_none() {
                 "new-workspace"
@@ -137,7 +154,7 @@ impl Session {
         if matches!(tab.fit(), Fit::Clients(_)) {
             push(out, &[&named, "tab", "resize-auto"]);
         }
-        self.dump_tree(root, out);
+        self.dump_tree(root, out, directories);
         // Panes renamed keep their names.
         for pane in root.panes() {
             let Some(p) = self.parts.panes().get(&pane) else {
@@ -155,7 +172,12 @@ impl Session {
     /// divides what its first child's first pane has with its second's,
     /// as its shares say, and then each child is made from those. So the
     /// layout made again is the one there is, share for share.
-    fn dump_tree(&self, tree: &Tree, out: &mut String) {
+    fn dump_tree(
+        &self,
+        tree: &Tree,
+        out: &mut String,
+        directories: &mut impl FnMut(PaneId) -> Option<std::path::PathBuf>,
+    ) {
         let Tree::Split(split) = tree else {
             return;
         };
@@ -168,11 +190,11 @@ impl Session {
         let pane = second.first_pane();
         let mut line = vec![pane_name(first.first_pane()), way.into()];
         line.extend([a.to_string(), b.to_string(), "shares".to_owned()]);
-        self.pane_words(pane, &mut line, out);
+        self.pane_words(pane, &mut line, out, directories);
         line.extend(["split".to_owned(), "let".to_owned(), pane_name(pane)]);
         push(out, &line);
-        self.dump_tree(first, out);
-        self.dump_tree(second, out);
+        self.dump_tree(first, out, directories);
+        self.dump_tree(second, out, directories);
     }
 
     /// The program `run` started in pane `id`, if it runs one: its words,
@@ -189,10 +211,16 @@ impl Session {
     /// string cannot hold, or a shell's that cannot be read, is left out,
     /// never written changed or guessed: a comment in `out` says so, and
     /// the line starts it where it runs.
-    fn pane_words(&self, id: PaneId, line: &mut Vec<String>, out: &mut String) {
+    fn pane_words(
+        &self,
+        id: PaneId,
+        line: &mut Vec<String>,
+        out: &mut String,
+        directories: &mut impl FnMut(PaneId) -> Option<std::path::PathBuf>,
+    ) {
         let program = self.program(id);
         let cwd = program.map(|launch| launch.cwd.clone());
-        let cwd = cwd.or_else(|| self.dir_of(id));
+        let cwd = cwd.or_else(|| directories(id));
         match cwd.as_deref().map(|cwd| (cwd, cwd.to_str())) {
             Some((_, Some(cwd))) => line.extend(string(cwd).chain(["cwd".to_owned()])),
             Some((cwd, None)) => out.push_str(&format!(
@@ -235,4 +263,31 @@ fn push(out: &mut String, line: &[impl AsRef<str>]) {
     let words = line.iter().map(|w| crate::words::quote(w.as_ref()));
     out.push_str(&super::joined(words, " "));
     out.push('\n');
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn r1_dump_admits_observed_shell_directory_expansion() -> Result<(), String> {
+        let session = crate::session::testing::started(crate::config::Config::default())?;
+        let component: String = std::iter::repeat_n('\'', 200).collect();
+        let directory = std::path::PathBuf::from(format!(
+            "/{}",
+            std::iter::repeat_n(component, 17)
+                .collect::<Vec<_>>()
+                .join("/")
+        ));
+        let mut reads = 0;
+        let result = session.dump_with(None, 8192, &mut |_| {
+            reads += 1;
+            Some(directory.clone())
+        });
+        assert!(
+            result.is_err(),
+            "dump built past its allowance: {} bytes",
+            result.as_ref().map_or(0, String::len)
+        );
+        assert_eq!(reads, 1, "directory must be observed once");
+        Ok(())
+    }
 }

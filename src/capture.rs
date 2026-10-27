@@ -123,12 +123,19 @@ pub fn pane(
     copy_mode: bool,
     history_bytes: usize,
 ) -> Result<Captured, crate::session::Error> {
+    let limits = Limits::new(history_bytes, pane.screen().size().into())?;
+    pane_with(pane, run, history, view, copy_mode, limits)
+}
+
+fn pane_with(
+    pane: &Pane,
+    run: Run,
+    history: Option<usize>,
+    view: CaptureView,
+    copy_mode: bool,
+    limits: Limits,
+) -> Result<Captured, crate::session::Error> {
     let screen = pane.screen();
-    let mut lines: Vec<Vec<LineRun>> = Vec::new();
-    // A soft-wrapped row goes on in the next, joined unless `wrapped`.
-    let mut wraps = false;
-    let mut blanks = 0usize;
-    let limits = Limits::new(history_bytes, screen.size().into())?;
     if view.source == Source::LastOutput && screen.rows().len() > limits.rows.min(limits.cells) {
         return Err(too_large());
     }
@@ -157,7 +164,20 @@ pub fn pane(
         wrap_pending: cursor.is_some() && screen.pending_wrap(),
         state: state.into_iter().map(|(k, v)| (k.to_owned(), v)).collect(),
     };
-    admit(read(), view, &of)?;
+    build(read, of, (screen.size().into(), cursor), view, &mut budget)
+}
+
+fn build<'a>(
+    read: impl Fn() -> ReadRows<'a>,
+    of: Of,
+    (size, cursor): ((u16, u16), Option<(u16, u16)>),
+    view: CaptureView,
+    budget: &mut crate::wire::Budget,
+) -> Result<Captured, crate::session::Error> {
+    let mut lines: Vec<Vec<LineRun>> = Vec::new();
+    let mut wraps = false;
+    let mut blanks = 0usize;
+    admit(read(), view, &of, budget.remaining())?;
     for (row, span) in read() {
         // A wide glyph's second cell is drawn as its first: the same style,
         // so a run of it is not broken in two.
@@ -243,7 +263,7 @@ pub fn pane(
         wraps = !view.wrapped && row.continues();
     }
     trim_line(&mut lines, blanks);
-    Ok(captured(of, screen.size().into(), cursor, lines, view))
+    Ok(captured(of, size, cursor, lines, view))
 }
 
 /// Select physical rows, widening a joined range to the logical lines
@@ -339,11 +359,15 @@ fn too_large() -> crate::session::Error {
 
 /// Count the untrimmed payload and retained run slots before creating any
 /// text or runs. Trimming can only reduce this conservative admission.
-fn admit(rows: ReadRows<'_>, view: CaptureView, of: &Of) -> Result<(), crate::session::Error> {
-    use crate::wire::{MAX_DECODED, MAX_REPLY, Sink, Wire, Writer};
+fn admit(
+    rows: ReadRows<'_>,
+    view: CaptureView,
+    of: &Of,
+    mut heap: usize,
+) -> Result<(), crate::session::Error> {
+    use crate::wire::{MAX_REPLY, Sink, Wire, Writer};
     let mut wire = Writer::counting(MAX_REPLY.saturating_sub(64));
     of.put(&mut wire);
-    let mut heap = MAX_DECODED / 2;
     for (row, span) in rows {
         heap = heap
             .checked_sub(std::mem::size_of::<Vec<Cut>>())
@@ -872,6 +896,111 @@ mod tests {
     use crate::id::PaneId;
     use crate::pane::tests::Lone;
     use crate::pane::{Pane, Runs};
+
+    #[test]
+    fn r1_wide_default_history_is_admitted() -> Result<(), Box<dyn std::error::Error>> {
+        let history = crate::config::Config::default().history_bytes.get();
+        let mut pane = Lone::new(Pane::new(
+            PaneId::of(1),
+            None,
+            Runs::DefaultShell,
+            fux_vt::Size::new(3, 200)?,
+            history,
+        )?);
+        let output: Vec<u8> = std::iter::repeat_n(b"x\r\n".as_slice(), 150_000)
+            .flatten()
+            .copied()
+            .collect();
+        pane.output(&output);
+        while pane.has_unread() {
+            pane.read_unread();
+        }
+        assert!(pane.screen().history_len().saturating_mul(200) > 16 << 20);
+        let capture = super::pane(
+            &pane,
+            crate::command::Run::now().ok_or("clock")?,
+            Some(usize::MAX),
+            CaptureView::default(),
+            false,
+            history,
+        )?;
+        assert!(capture.lines.len() > 80_000);
+        Ok(())
+    }
+
+    #[test]
+    fn r1_last_output_ignores_unselected_history() -> Result<(), Box<dyn std::error::Error>> {
+        let mut pane = Lone::new(Pane::new(
+            PaneId::of(1),
+            None,
+            Runs::DefaultShell,
+            fux_vt::Size::new(3, 4)?,
+            1 << 20,
+        )?);
+        for _ in 0..10 {
+            pane.output(b"x\r\n");
+        }
+        pane.output(b"\x1b]133;C\x07hi\x1b]133;D;0\x07");
+        let view = CaptureView {
+            source: crate::command::Source::LastOutput,
+            ..CaptureView::default()
+        };
+        let capture = super::pane_with(
+            &pane,
+            crate::command::Run::now().ok_or("clock")?,
+            None,
+            view,
+            false,
+            super::Limits {
+                rows: 2,
+                cells: 1000,
+            },
+        )?;
+        assert_eq!(capture.text(), "hi");
+        Ok(())
+    }
+
+    #[test]
+    fn r1_short_lines_charge_allocated_capacity() -> Result<(), Box<dyn std::error::Error>> {
+        let mut pane = Lone::new(Pane::new(
+            PaneId::of(1),
+            None,
+            Runs::DefaultShell,
+            fux_vt::Size::new(1, 2)?,
+            0,
+        )?);
+        pane.output(b"x");
+        let row = pane.screen().rows().next().ok_or("row")?;
+        let read =
+            || -> super::ReadRows<'_> { Box::new(std::iter::repeat_n((row, 0..usize::MAX), 100)) };
+        let mut budget = crate::wire::Budget::with_limit(8192);
+        if let Ok(captured) = super::build(
+            read,
+            super::Of::Client(crate::id::ClientId::of(1)),
+            ((100, 2), None),
+            CaptureView::default(),
+            &mut budget,
+        ) {
+            let mut allocated = captured
+                .lines
+                .capacity()
+                .saturating_mul(std::mem::size_of::<Vec<super::Cut>>());
+            for line in &captured.lines {
+                allocated = allocated.saturating_add(
+                    line.capacity()
+                        .saturating_mul(std::mem::size_of::<super::Cut>()),
+                );
+                for run in line {
+                    allocated = allocated.saturating_add(run.text.capacity());
+                }
+            }
+            assert!(
+                allocated <= 8192,
+                "retained {allocated} bytes for an 8192-byte grant"
+            );
+        }
+        Ok(())
+    }
 
     /// Blanks still cost work, and a single joined row range can expand
     /// beyond the cap. A narrower physical read remains available.

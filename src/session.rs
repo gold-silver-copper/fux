@@ -976,8 +976,11 @@ impl Session {
 
     /// The tabs `target` is or holds: a pane's own, a tab, or a
     /// workspace's every tab, in order.
-    fn tabs_of(&self, target: AnyRef) -> Result<Vec<TabId>, Error> {
-        let mut budget = crate::wire::Budget::new();
+    fn tabs_of(
+        &self,
+        target: AnyRef,
+        budget: &mut crate::wire::Budget,
+    ) -> Result<Vec<TabId>, Error> {
         match target {
             AnyRef::Tab(tab) => Ok(vec![self.tab(tab).ok_or(Error::NoTab(tab))?.id()]),
             AnyRef::Workspace(id) => {
@@ -2347,7 +2350,9 @@ impl Session {
                     .map_err(|e| fail(Raise::Signal, format!("sending the signal: {e}")))?;
                 Ok(acted(version))
             }
-            &Command::Kill { target } => self.kill(target).map(|()| Reply::default()),
+            &Command::Kill { target } => self
+                .kill(target, &mut crate::wire::Budget::new())
+                .map(|()| Reply::default()),
             Command::Rename { target, name } => {
                 let target = self.there(*target)?;
                 self.rename(target, name.clone()).map(|()| Reply::default())
@@ -2416,9 +2421,11 @@ impl Session {
                     Members::Panes => (self.panes_of(target)?.into_iter())
                         .map(AnyRef::Pane)
                         .collect(),
-                    Members::Tabs => (self.tabs_of(target)?.into_iter())
-                        .map(AnyRef::Tab)
-                        .collect(),
+                    Members::Tabs => (self
+                        .tabs_of(target, &mut crate::wire::Budget::new())?
+                        .into_iter())
+                    .map(AnyRef::Tab)
+                    .collect(),
                 };
                 Ok(Body::Handles(ids).into())
             }
@@ -2521,7 +2528,7 @@ impl Session {
     /// panes, as a split that would is, is refused.
     fn resize_tabs(&mut self, target: AnyRef, size: command::Size) -> Result<(), Error> {
         let size = size.map(view::Screen::size);
-        let tabs = self.tabs_of(target)?;
+        let tabs = self.tabs_of(target, &mut crate::wire::Budget::new())?;
         if let Some(size) = size {
             let area = Fit::Fixed(size).area();
             for tab in &tabs {
@@ -2683,11 +2690,11 @@ impl Session {
     }
 
     /// `kill`: a pane closed, or a tab's or workspace's every pane.
-    fn kill(&mut self, target: AnyRef) -> Result<(), Error> {
+    fn kill(&mut self, target: AnyRef, budget: &mut crate::wire::Budget) -> Result<(), Error> {
         match self.there(target)? {
             AnyRef::Pane(pane) => self.close_pane(pane, None),
             target @ (AnyRef::Tab(_) | AnyRef::Workspace(_)) => {
-                for tab in self.tabs_of(target).unwrap_or_default() {
+                for tab in self.tabs_of(target, budget).unwrap_or_default() {
                     self.remove_tab(tab);
                 }
                 self.after_close();
@@ -3688,6 +3695,24 @@ fn bytes(p: &Pane, inputs: &[Input]) -> Vec<u8> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn r1_workspace_kill_propagates_admission_failure() -> Result<(), String> {
+        let mut session = started(Config::default())?;
+        let workspace = session.parts.workspaces().first().ok_or("workspace")?.id();
+        let before = session.parts.panes().len();
+        let result = session.kill(
+            AnyRef::Workspace(workspace),
+            &mut crate::wire::Budget::with_limit(0),
+        );
+        assert!(
+            result.is_err(),
+            "deletion claimed success after admission failed"
+        );
+        assert_eq!(session.parts.panes().len(), before);
+        assert!(session.workspace(workspace).is_some());
+        Ok(())
+    }
+
     /// `rows` by `cols`.
     fn sized(rows: u16, cols: u16) -> Result<fux_vt::Size, String> {
         fux_vt::Size::new(rows, cols).map_err(|e| e.to_string())

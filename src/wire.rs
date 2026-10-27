@@ -109,7 +109,13 @@ pub const MAX_DECODED: usize = 128 << 20;
 pub(crate) struct Budget(usize);
 impl Budget {
     pub(crate) fn new() -> Self {
-        Self(MAX_DECODED / 2)
+        Self::with_limit(MAX_DECODED / 2)
+    }
+    pub(crate) fn with_limit(bytes: usize) -> Self {
+        Self(bytes)
+    }
+    pub(crate) fn remaining(&self) -> usize {
+        self.0
     }
     pub(crate) fn charge(&mut self, bytes: usize) -> Result<(), crate::session::Error> {
         self.0 = self.0.checked_sub(bytes).ok_or_else(Self::exceeded)?;
