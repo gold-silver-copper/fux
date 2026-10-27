@@ -128,9 +128,9 @@ fn a_client_that_shuts_its_side_still_gets_its_answer() -> Outcome {
         }
     }
     let reply = reply.ok_or("no reply")?.map_err(e)?;
-    assert_eq!(reply.end, fux::protocol::End::Done);
-    let fux::protocol::Body::Listing { listing, .. } = &reply.body else {
-        return Err(format!("not a listing: {:?}", reply.body));
+    assert_eq!(reply.end(), fux::protocol::End::Done);
+    let Reply::Returned(fux::protocol::Body::Listing { listing, .. }) = &reply else {
+        return Err(format!("not a listing: {:?}", reply));
     };
     let listed = listing.render();
     assert!(listed.contains(r#""name":null"#), "{listed}");

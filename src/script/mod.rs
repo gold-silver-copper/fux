@@ -8,7 +8,7 @@
 //! words first (`library.fux`).
 mod words;
 
-use crate::answer::PaneAnswer;
+use crate::answer::{PaneAnswer, PaneResults};
 use crate::client;
 use crate::code::{Code, Raise};
 use crate::command::{AnyRef, Extent, Input, Kind, Mouse, Request, Version, WsRef};
@@ -75,7 +75,12 @@ impl AppValue for Fux {
             Fux::Client(_) => "client",
             Fux::Opts(opts) => match opts.on {
                 None => "opts",
-                Some(_) => "request",
+                Some(On::Target(AnyRef::Pane(_)) | On::Version(_)) => "pane-request",
+                Some(On::Target(AnyRef::Tab(_))) => "tab-request",
+                Some(On::Target(AnyRef::Workspace(_))) => "workspace-request",
+                Some(On::Client(_)) => "client-request",
+                Some(On::Changed(_)) => "changed-request",
+                Some(On::Seen(_)) => "expected-request",
             },
             Fux::Extent(_) => "size",
             Fux::Answer(answer) => answer.name(),
@@ -132,9 +137,11 @@ pub struct Opts {
 pub enum On {
     Target(AnyRef),
     Client(ClientId),
-    /// A version's pane (`changed`, or an action's or wait's answer): a
-    /// wait on it waits from that version.
+    /// The version held by an action's or wait's answer: a wait on it
+    /// waits from that version.
     Version(Version),
+    /// An explicit wait baseline, accepted only by `wait`.
+    Changed(Version),
     /// A version a request expects (`expect`): keys go to its pane only
     /// while the pane is still at it.
     Seen(Version),
@@ -167,9 +174,13 @@ impl Answer {
     /// Its kind, as the vocabulary names it.
     fn name(&self) -> &'static str {
         match self {
+            Answer::Pane(PaneAnswer::Closed(_)) => "closed-answer",
             Answer::Pane(_) => "answer",
             Answer::Panes(_) => "answers",
-            Answer::Capture(_) => "capture",
+            Answer::Capture(captured) => match captured.of {
+                crate::capture::Of::Pane { .. } => "capture",
+                crate::capture::Of::Client(_) => "client-capture",
+            },
             Answer::Listing { .. } | Answer::Status(_) => "listing",
             Answer::Json(_) => "json",
         }
@@ -178,6 +189,7 @@ impl Answer {
     /// What it is, said where it is refused.
     fn kind(&self) -> &'static str {
         match self {
+            Answer::Pane(PaneAnswer::Closed(_)) => "a closed pane's answer",
             Answer::Pane(_) => "an action's answer",
             Answer::Panes(_) => "an answer of a tab's or workspace's panes",
             Answer::Capture(captured) => match captured.of {
@@ -507,9 +519,8 @@ pub fn vocabulary() -> Result<fuxth::Vocabulary, fuxth::Error> {
         vocabulary.raises(code.into())?;
     }
     // A wait that failed answered too: its handler gets the answer.
-    for code in PaneAnswer::FAILURES {
-        vocabulary.carries(code.into(), "outcome")?;
-    }
+    vocabulary.carries(Code::Closed.into(), "closed-outcome")?;
+    vocabulary.carries(Code::Timeout.into(), "outcome")?;
     Ok(vocabulary)
 }
 
@@ -934,11 +945,11 @@ pub fn run_capped(
                     context,
                 };
                 match asks.ask(&asked, host.out) {
-                    Ok(Reply {
-                        end: End::Failed { code, message },
-                        body,
-                    }) => raised(machine, (code, message), body)?,
-                    reply => pushed(machine, reply.and_then(|reply| answered(reply.body)))?,
+                    Ok(reply) => match reply.end() {
+                        End::Failed { code, message } => raised(machine, (code, message), reply)?,
+                        End::Done => pushed(machine, answered(reply))?,
+                    },
+                    Err(failed) => pushed(machine, Err(failed))?,
                 }
             }
             Outcome::Suspended(Ask::Local(what)) => {
@@ -960,9 +971,9 @@ pub fn run_capped(
 fn raised(
     machine: &mut Machine<Fux>,
     (code, message): (Code, String),
-    body: Body,
+    reply: Reply,
 ) -> Result<(), Failed> {
-    let answer = answered(body);
+    let answer = answered(reply);
     let Ok(Some(answer)) =
         answer.map(|mut a| a.pop().filter(|_| PaneAnswer::FAILURES.contains(&code)))
     else {
@@ -1029,16 +1040,24 @@ fn uncaught(machine: &Machine<Fux>, mut error: fuxth::Error) -> Failed {
 }
 
 /// A reply's answer, or its failure.
-pub fn succeeded(reply: Reply) -> Result<Body, Failed> {
-    match reply.end {
+pub fn succeeded(reply: Reply) -> Result<Reply, Failed> {
+    match reply.end() {
         End::Failed { code, message } => Err(Failed::new(code, message)),
-        End::Done => Ok(reply.body),
+        End::Done => Ok(reply),
     }
 }
 
 /// What a reply's answer puts on the stack: nothing, a string, handles, or
 /// an answer of fux's; a field's value as fuxth's own where it is one.
-pub fn answered(body: Body) -> Result<Vec<Value<Fux>>, Failed> {
+pub fn answered(reply: Reply) -> Result<Vec<Value<Fux>>, Failed> {
+    let body = match reply {
+        Reply::Answered(PaneResults::One(answer)) => return Ok(vec![Answer::Pane(answer).value()]),
+        Reply::Answered(PaneResults::Many(answers)) => {
+            return Ok(vec![Answer::Panes(answers).value()]);
+        }
+        Reply::Returned(body) => body,
+        Reply::Failed { .. } => return Ok(Vec::new()),
+    };
     let handles = |ids: Vec<AnyRef>| {
         let ids = ids.into_iter().map(|id| Value::App(handle(id))).collect();
         let list = fuxth::List::new(ids)
@@ -1051,8 +1070,6 @@ pub fn answered(body: Body) -> Result<Vec<Value<Fux>>, Failed> {
         Body::Found(id) => Value::App(handle(id)),
         Body::Handles(ids) => handles(ids)?,
         Body::Choices { rows, .. } => handles(rows.into_iter().map(|(id, _)| id).collect())?,
-        Body::Pane(answer) => Answer::Pane(answer).value(),
-        Body::Panes(answers) => Answer::Panes(answers).value(),
         Body::Capture(captured) => Answer::Capture(captured).value(),
         Body::Listing { of, listing } => Answer::Listing { of, listing }.value(),
         Body::Field(Json::Int(n)) => Value::Int(n),
@@ -1415,6 +1432,61 @@ fn read_file(path: &std::path::Path) -> Result<String, Failed> {
 
 #[cfg(test)]
 mod tests {
+    /// Certain target/version errors fail preflight, before even an earlier
+    /// print can run. Pane versions and the bundled recipes remain accepted.
+    #[test]
+    fn target_and_version_boundaries_are_checked_before_effects()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let version = "%2:0.0.0.0.0:48211-1867a3f9c2b8e7d6";
+        for code in [
+            "str c1 client capture-client expect".to_owned(),
+            "str c1 client capture-client changed".to_owned(),
+            "str c1 client 0 timeout wait".to_owned(),
+            format!("str {version} expect 0 timeout wait"),
+            format!("str {version} changed str x text send-keys"),
+            format!("str {version} changed all-history capture"),
+            format!("str {version} changed events-of"),
+            "str x kill".to_owned(),
+        ] {
+            let tokens =
+                super::token::source("boundary", &format!("str SIDE-EFFECT print {code}"))?;
+            let error = super::compile(&tokens)
+                .err()
+                .ok_or_else(|| format!("accepted {code}"))?;
+            assert_eq!(
+                error.code,
+                super::Code::from(crate::code::Raise::Type),
+                "{code}: {error}"
+            );
+        }
+        // Values obtained from a closed-only producer are statically disjoint
+        // from versions. A catch remains string | payload, since ordinary
+        // message failures are still permitted.
+        for kind in ["closed-answer", "client-capture"] {
+            for suffix in ["changed drop", "expect drop"] {
+                let mut vocabulary = super::vocabulary()?;
+                vocabulary.add("held", &format!("-- {kind}"))?;
+                let mut compiler = fuxth::Compiler::<super::Fux>::new(vocabulary);
+                let source = format!("held str SIDE-EFFECT print {suffix}");
+                let error = compiler
+                    .add(&super::token::source("versionless", &source)?)
+                    .and_then(|()| compiler.finish())
+                    .err()
+                    .ok_or_else(|| format!("accepted {source}"))?;
+                assert_eq!(error.code, fuxth::Code::Type, "{source}: {error}");
+            }
+        }
+        for code in [
+            "%1 all-history capture expect str x text send-keys wait capture drop".to_owned(),
+            "%1 str x text send-keys 0 quiet %1 capture drop".to_owned(),
+            format!("str {version} changed 0 timeout wait capture drop"),
+            "str c1 client capture-client json drop".to_owned(),
+        ] {
+            super::compile(&super::token::source("recipe", &code)?).map_err(|f| f.to_string())?;
+        }
+        Ok(())
+    }
+
     /// One argument is a whole program, though it holds a `/` or ends
     /// `.fux`: never a file to read, which `--file` names.
     #[test]

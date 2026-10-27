@@ -1965,7 +1965,7 @@ mod tests {
                 };
                 let reply = crate::wire::Reader::new(&part).whole::<Reply>()?;
                 assert!(matches!(
-                    reply.end,
+                    reply.end(),
                     crate::protocol::End::Failed {
                         code: Code::NoClient,
                         ..
@@ -2096,14 +2096,14 @@ mod tests {
                     .map_err(|e| e.to_string())?;
                 if rejected {
                     assert!(matches!(
-                        first.end,
+                        first.end(),
                         crate::protocol::End::Failed {
                             code: Code::NoClient,
                             ..
                         }
                     ));
                 } else {
-                    assert!(matches!(first.end, crate::protocol::End::Done));
+                    assert!(matches!(first.end(), crate::protocol::End::Done));
                     assert!(asks.ask(&probe, &mut std::io::sink()).is_err());
                 }
                 asks.ask(&mutation, &mut std::io::sink())
@@ -2116,7 +2116,7 @@ mod tests {
             let input = input?;
             assert!(
                 matches!(
-                    reply.end,
+                    reply.end(),
                     crate::protocol::End::Failed {
                         code: Code::NoClient,
                         ..

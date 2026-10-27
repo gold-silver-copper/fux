@@ -530,6 +530,10 @@ fn a_headless_client_is_sized_from_the_command_line() -> Outcome {
     server.ok(&["str", "c1", "client", "60", "12", "resize-client"])?;
     assert!(server.ok(&["ls"])?.contains("client c1 60x12"));
     let capture = ["str", "c1", "client", "capture-client"];
+    assert_eq!(
+        server.ok(&[&capture[..], &["kind"]].concat())?.trim(),
+        "client-capture"
+    );
     eventually("a paint", || Ok(server.ok(&capture)?.contains("main")))?;
     // Keys typed at it are a person's: the prefix and `c` open copy mode.
     let keys = [
@@ -941,7 +945,13 @@ fn words_refuse_options_they_do_not_use() -> Outcome {
     let cat = ["str", "cat", "program"];
     let since = server.version(&pane)?;
     for (before, unused, word) in [
-        (&[][..], &["str", &since, "changed"][..], "capture"),
+        // The checker cannot know a list element's kind; runtime option
+        // validation still refuses an explicit wait baseline on capture.
+        (
+            &[][..],
+            &["list", "str", &since, "changed", "end", "0", "at"][..],
+            "capture",
+        ),
         (&on, &["5", "timeout"], "capture"),
         (&on, &["100", "40", "size"], "capture"),
         (&on, &["str", "x", "name"], "wait"),
