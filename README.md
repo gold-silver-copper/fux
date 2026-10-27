@@ -265,8 +265,8 @@ the lowest number.
 pane holds still while output continues; other terminals see it live. If
 the history drops the rows copy mode holds, copy mode ends and says why.
 
-Its keys, as keys.fux binds them: letters, in either case, and the
-brackets; the arrows, PageUp/PageDown, Home, End, Enter and Esc also work.
+Its keys, as keys.fux binds them: letters matched in the exact case shown,
+and the brackets; the arrows, PageUp/PageDown, Home, End, Enter and Esc also work.
 
 | Keys | Do |
 | --- | --- |
@@ -284,9 +284,8 @@ brackets; the arrows, PageUp/PageDown, Home, End, Enter and Esc also work.
 | `y` or Enter | copy and leave |
 | `q` or Esc | leave without copying |
 
-Search is literal over the whole history, and ignores case unless the
-query has a capital letter. `[` and `]` find prompts marked with
-`OSC 133 ; A` (see [Shell marks](#shell-marks)). A copy keeps wide
+Search is literal and case-sensitive over the whole history. `[` and `]`
+find prompts marked with `OSC 133 ; A` (see [Shell marks](#shell-marks)). A copy keeps wide
 characters whole, joins soft-wrapped lines, and trims trailing blanks. One
 copy is at most 262,144 cells.
 
@@ -319,10 +318,9 @@ leaves; `fux help WORD` says one at length.
 
 **Key names**, for `key`, `bind` and `prefix`, are tmux's (`C-x`, `M-x`,
 `S-Left`, `Enter`, `BTab`, `BSpace`, `PageUp`, `F1`–`F35`, …) and any
-single character, which carries its own shift (`T`, not `S-t`); common
+single character, which carries its own shift (`T` or `S-t`); common
 spellings (`Backspace`, `Esc`, `Return`, `Del`, `Ins`, `PgUp`, `PgDn`) are
-taken too, and `key` tells a name it refuses the closest one, if any.
-`fux key-names` prints them all.
+taken too. Unknown names are refused; `fux key-names` prints the vocabulary.
 
 **Inside a pane**, a program's environment holds:
 
@@ -340,8 +338,8 @@ started. Two things override it and the table alike: the names in
 `update-environment`, which a pane takes from whoever starts it (`fux help
 set` says what one the starter lacks becomes), and, last, what a program's
 `env` sets (`opts str NAME str VALUE env 80 24 size str PROGRAM program
-run`). A starter with no environment at all, as `env -i` leaves one,
-changes none.
+run`). `update-environment` is empty by default. With a configured list,
+an empty caller environment unsets every listed variable.
 
 XTVERSION (`CSI > q`) answers `fux` and its version, secondary device
 attributes (`CSI > c`) the version, and primary ones (`CSI c`) a
@@ -362,14 +360,21 @@ The optional config is `$XDG_CONFIG_HOME/fux/config.fux`, else
 Its `set` words change the server for everyone, all at once when it has
 run; its key words change that client's keys alone. Half a config is no
 config: one that fails sets nothing, the client keeps the default keys,
-and it says why. `fux str FILE check` reads a file without running it and
-says what is wrong.
+and it says why. `fux str FILE str program check` compiles a file without
+running it. `fux str FILE str config check` also runs it dry to validate settings and
+bindings, regardless of the filename.
 
 ```sh
 # ~/.config/fux/config.fux
 str C-a prefix
 str shell list str /bin/zsh str -l end set       # a program, then its arguments, a string each
 str clipboard false set
+
+# Optional: take these from whoever starts a pane; the default list is empty.
+str update-environment list
+  str DISPLAY str KRB5CCNAME str SSH_AGENT_PID str SSH_ASKPASS
+  str SSH_AUTH_SOCK str SSH_CONNECTION str WAYLAND_DISPLAY str XAUTHORITY
+end set
 
 unbind-all                                        # optional: no keys at all, the screens' too
 define split-right me focused horizontal split drop end   # a word of the config's
@@ -492,9 +497,13 @@ so: it starts where the dump is run.
   another host, or none, is told the scheme of the host it has once it
   has one. Colours a program sets (OSC 4, 10, 11) apply to its own pane
   only, and win over your terminal's; your terminal's palette is never
-  changed. A colour no one knows is not answered: one the host didn't
-  say, palette entries past 15 the program didn't set, and every colour
-  in a tab with no host.
+  changed. A pane's cursor colour (OSC 12) is painted only while its
+  cursor is focused; resetting it (OSC 112), changing focus, opening an
+  overlay or detaching restores the terminal's configured colour. This
+  reset does not recover a colour set before attaching. If fux never
+  applied a pane's cursor colour, detach leaves it alone. A colour no one
+  knows is not answered: one the host didn't say, palette entries past 15
+  the program didn't set, and every colour in a tab with no host.
 - **Bells.** A program's bell rings each terminal showing its workspace, at
   most once every 250 ms; a tab you are not looking at is marked `!` in the
   bar until you show it. `str bell false set` silences both.

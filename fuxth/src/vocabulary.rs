@@ -279,8 +279,7 @@ impl Vocabulary {
                 )),
             };
         }
-        let meant = crate::compile::meant(name, all.filter(raised).map(|c| c.name()));
-        Err(format!("{name} is no code a word raises{meant}"))
+        Err(format!("{name} is no code a word raises"))
     }
 
     pub(crate) fn word(&self, id: usize) -> Option<&Word> {

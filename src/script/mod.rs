@@ -374,11 +374,12 @@ impl<'a> Host<'a> {
     }
 }
 
-/// A run's failure: its code, which names its status, and its message.
+/// A run's failure: its code, cause, and source when known.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Failed {
     pub code: Code,
     pub message: String,
+    pub place: Option<token::Place>,
 }
 
 impl Failed {
@@ -387,6 +388,23 @@ impl Failed {
         Failed {
             code: code.into(),
             message: message.into(),
+            place: None,
+        }
+    }
+    /// The cause before its source, for a notice with limited room.
+    pub fn notice(&self) -> String {
+        let message = match &self.place {
+            Some(place) => format!("{} ({place})", self.message),
+            None => self.message.clone(),
+        };
+        Failed::new(self.code, message).to_string()
+    }
+
+    /// The source followed by the cause, for command-line diagnostics.
+    fn located(&self) -> String {
+        match &self.place {
+            Some(place) => format!("{place}: {}", self.message),
+            None => self.message.clone(),
         }
     }
 }
@@ -401,7 +419,7 @@ impl std::fmt::Display for Failed {
             true => c.escape_default().to_string(),
             false => c.to_string(),
         };
-        let lines: Vec<String> = (self.message.lines().map(str::trim))
+        let lines: Vec<String> = (self.located().lines().map(str::trim))
             .filter(|l| !l.is_empty())
             .map(|line| line.chars().map(escaped).collect())
             .collect();
@@ -464,7 +482,12 @@ fn told(mut error: fuxth::Error, usage: bool) -> Failed {
     if Code::of(error.code) == Code::Check {
         (error.place, error.word) = (None, None);
     }
-    Failed::new(Code::of(error.code), error.located())
+    let place = error.place.take();
+    Failed {
+        code: Code::of(error.code),
+        message: error.located(),
+        place,
+    }
 }
 
 /// The vocabulary fuxth compiles fux's programs with: fux's kinds, the
@@ -513,7 +536,7 @@ pub(crate) fn compiled(
     config: Option<&Config>,
     tokens: &[Token],
 ) -> Result<Machine<Fux>, fuxth::Error> {
-    let broken = |f: Failed| fuxth::Error::new(Lang::Contract, f.message, None);
+    let broken = |f: Failed| fuxth::Error::new(Lang::Contract, f.located(), None);
     let ready = READY.with(|ready| ready.as_ref().map(|(c, _)| c.clone()).map_err(Clone::clone));
     let mut compiler = ready.map_err(broken)?;
     if let Some(config) = config {
@@ -968,7 +991,7 @@ fn pushed(
     };
     let values = match values {
         Ok(values) => values,
-        Err(failed) => return raise(machine, failed.code.into(), failed.message),
+        Err(failed) => return raise(machine, failed.code.into(), failed.located()),
     };
     // A stack too full for them is the word's failure too, for a `try`.
     for value in values {
@@ -1142,7 +1165,7 @@ pub fn configured(server: &mut Server) -> (Keymap, Option<String>) {
         // Half a config is no config: the defaults, and why; none, if they
         // are what failed (the failure names keys.fux).
         Err(failed) => match default_keys() {
-            Ok(defaults) => (defaults, Some(format!("config: {failed}"))),
+            Ok(defaults) => (defaults, Some(failed.notice())),
             Err(broken) => (Keymap::empty(), Some(broken.to_string())),
         },
     }
@@ -1159,10 +1182,23 @@ pub fn default_keys() -> Result<Keymap, Failed> {
 /// The keymap the config file makes (`run_file`), if there is one; else
 /// the defaults.
 fn config_keymap(server: Option<&mut Server>) -> Result<Keymap, Failed> {
-    match crate::config::default_path().filter(|p| p.exists()) {
-        Some(path) => run_file(&path, server),
-        None => default_keys(),
-    }
+    let Some(path) = crate::config::default_path() else {
+        return default_keys();
+    };
+    let shown = path.display().to_string();
+    let file = match std::fs::File::open(&path) {
+        Ok(file) => file,
+        Err(error)
+            if error.kind() == io::ErrorKind::NotFound
+                && path
+                    .symlink_metadata()
+                    .is_err_and(|e| e.kind() == io::ErrorKind::NotFound) =>
+        {
+            return default_keys();
+        }
+        Err(error) => return Err(read_failed(&shown, &error.to_string())),
+    };
+    run_config(&shown, &read_text(&shown, file)?, server)
 }
 
 /// The keymap a config file makes, its words run on the defaults, its
@@ -1174,15 +1210,20 @@ fn config_keymap(server: Option<&mut Server>) -> Result<Keymap, Failed> {
 pub fn run_file(path: &std::path::Path, server: Option<&mut Server>) -> Result<Keymap, Failed> {
     let shown = path.display().to_string();
     let text = read_file(path)?;
+    run_config(&shown, &text, server)
+}
+
+/// Runs one source snapshot as a config, on the bundled keys.
+fn run_config(shown: &str, text: &str, server: Option<&mut Server>) -> Result<Keymap, Failed> {
     let context = client::context();
     let mut keymap = Keymap {
-        config: Some(std::sync::Arc::new((shown.clone(), text.clone()))),
+        config: Some(std::sync::Arc::new((shown.to_owned(), text.to_owned()))),
         ..default_keys()?
     };
     let mut settings = Settings::default();
     run_quiet(
-        &shown,
-        &text,
+        shown,
+        text,
         context.clone(),
         Some(&mut keymap),
         &mut settings,
@@ -1346,7 +1387,7 @@ pub(crate) const LINE_STEPS: u64 = 1_000_000_000;
 pub(crate) const SOURCE_MAX: usize = 16 << 20;
 
 fn read_failed(name: &str, why: &str) -> Failed {
-    Failed::new(Code::Read, format!("{name}: {why}"))
+    Failed::new(Code::Read, format!("{why} ({name})"))
 }
 
 /// The text read from `from`, which `name` names and which may be anything

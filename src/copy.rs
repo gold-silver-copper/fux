@@ -312,39 +312,25 @@ fn word_back(row: Row<'_>, col: u16) -> Place<'_> {
     (p.row, w.at(p).0)
 }
 
-fn fold(c: char, ignore_case: bool) -> char {
-    if !ignore_case {
-        c
-    } else if c.is_ascii() {
-        c.to_ascii_lowercase()
-    } else {
-        // A final ς is σ, as a word's last Σ lowers to ς only where the
-        // word is seen whole.
-        let lower = c.to_lowercase().next().unwrap_or(c);
-        if lower == 'ς' { 'σ' } else { lower }
-    }
-}
-
-/// The next match of `query` from the cursor, literal and smart-case, over
+/// The next match of `query` from the cursor, literal and case-sensitive, over
 /// the whole history, wrapping around.
 pub fn find<'a>(query: &str, from: Place<'a>, seek: Seek) -> Option<Place<'a>> {
-    let ignore_case = !query.chars().any(char::is_uppercase);
-    let needle: Vec<char> = query.chars().map(|c| fold(c, ignore_case)).collect();
+    let needle: Vec<char> = query.chars().collect();
     // An empty needle finds nothing.
     let &first = needle.first()?;
-    // One row's folded characters and their columns, and its matches,
+    // One row's characters and their columns, and its matches,
     // reused row after row: a search over a long history allocates nothing
     // for a row without a match, and tries the needle only where its first
     // character is.
-    let (mut folded, mut cols) = (Vec::new(), Vec::new());
+    let (mut chars, mut cols) = (Vec::new(), Vec::new());
     let mut matches_in = |row: Row<'_>, cols: &mut Vec<u16>| {
         cols.clear();
-        folded.clear();
-        folded.extend(glyphs(row).flat_map(|(_, text)| text.chars().map(|c| fold(c, ignore_case))));
-        let starts: Vec<usize> = (0..folded.len())
+        chars.clear();
+        chars.extend(glyphs(row).flat_map(|(_, text)| text.chars()));
+        let starts: Vec<usize> = (0..chars.len())
             .filter(|at| {
-                folded.get(*at) == Some(&first)
-                    && folded
+                chars.get(*at) == Some(&first)
+                    && chars
                         .get(*at..)
                         .is_some_and(|rest| rest.starts_with(&needle))
             })
@@ -668,7 +654,7 @@ pub fn act(session: &mut Session, client: ClientId, act: CopyAct) {
                 Some((kind, start, end)) => {
                     text(screen, kind, start, end).map_err(|e| e.to_string())
                 }
-                None => Err("nothing selected: v, s or x starts a selection".to_owned()),
+                None => Err("nothing selected: start a selection before copying".to_owned()),
             };
             yank(session, client, copied);
             return;
@@ -965,11 +951,11 @@ mod tests {
     }
 
     #[test]
-    fn search_is_literal_smart_case_and_wraps() -> Result<(), String> {
+    fn search_is_exact_and_wraps() -> Result<(), String> {
         let p = screen(b"Alpha beta\r\ngamma BETA\r\nx.y", 3, 20)?;
         let s = p.screen();
         assert_eq!(found(s, "beta", (0, 0), Seek::Forward)?, Some((0, 6)));
-        assert_eq!(found(s, "beta", (0, 6), Seek::Forward)?, Some((1, 6)));
+        assert_eq!(found(s, "beta", (0, 6), Seek::Forward)?, Some((0, 6)));
         assert_eq!(found(s, "BETA", (0, 0), Seek::Forward)?, Some((1, 6)));
         assert_eq!(
             found(s, "beta", (1, 6), Seek::Forward)?,
@@ -983,6 +969,9 @@ mod tests {
             "literal, not a regex"
         );
         assert_eq!(found(s, "zzz", (0, 0), Seek::Forward)?, None);
+        let p = screen("Σ σ ς".as_bytes(), 1, 10)?;
+        assert_eq!(found(p.screen(), "σ", (0, 2), Seek::Forward)?, Some((0, 2)));
+        assert_eq!(found(p.screen(), "ς", (0, 0), Seek::Forward)?, Some((0, 4)));
         Ok(())
     }
 
@@ -1002,7 +991,11 @@ mod tests {
         );
         assert_eq!(found(s, "ab", (0, 9), Seek::Backward)?, Some((0, 5)));
         assert_eq!(found(s, "界x", (0, 0), Seek::Forward)?, Some((0, 12)));
-        assert_eq!(found(s, "AB", (0, 0), Seek::Forward)?, None, "smart case");
+        assert_eq!(
+            found(s, "AB", (0, 0), Seek::Forward)?,
+            None,
+            "case-sensitive"
+        );
         Ok(())
     }
 

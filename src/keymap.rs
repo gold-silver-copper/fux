@@ -689,8 +689,7 @@ pub trait Named: Clone + PartialEq + 'static {
 }
 
 /// A screen's keys, each once, in the order bound: its action, and the
-/// hint that names it, if any. A letter in either case is one key; Escape
-/// is none.
+/// hint that names it, if any. Letter case is exact; Escape is none.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Table<A>(Vec<(KeyPress, A, Option<String>)>);
 
@@ -707,7 +706,7 @@ impl<A: Named> Table<A> {
         if press.key == Key::Escape {
             return Some(A::ESCAPE);
         }
-        let find = |press: KeyPress| (self.0.iter()).find(|(k, ..)| *k == press.folded());
+        let find = |press: KeyPress| (self.0.iter()).find(|(k, ..)| *k == press);
         let named = (!matches!(press.key, Key::Char(_))).then(|| KeyPress::plain(press.key));
         let found = find(press).or_else(|| named.and_then(find));
         found.map(|(_, a, _)| a.clone())
@@ -762,7 +761,7 @@ impl<A: Named> Bindable for Table<A> {
             ));
         };
         // A key bound again keeps its place, as a binding's does.
-        let bound = (key.folded(), act.clone(), None);
+        let bound = (key, act.clone(), None);
         match self.0.iter_mut().find(|(k, ..)| *k == bound.0) {
             Some(was) => *was = bound,
             None => self.0.push(bound),
@@ -771,7 +770,7 @@ impl<A: Named> Bindable for Table<A> {
     }
 
     fn unbind(&mut self, key: KeyPress) -> Result<(), String> {
-        let (key, before) = (key.folded(), self.0.len());
+        let before = self.0.len();
         self.0.retain(|(k, ..)| *k != key);
         let unbound = self.0.len() != before;
         unbound
@@ -781,7 +780,7 @@ impl<A: Named> Bindable for Table<A> {
 
     fn label(&mut self, key: KeyPress) -> Option<&mut Option<String>> {
         (self.0.iter_mut())
-            .find(|(k, ..)| *k == key.folded())
+            .find(|(k, ..)| *k == key)
             .map(|(.., label)| label)
     }
 
@@ -870,6 +869,34 @@ mod tests {
 
     fn stroke(name: &str) -> Result<Keystroke, String> {
         key(name).map(Keystroke::from)
+    }
+
+    #[test]
+    fn modal_keys_keep_case_in_actions_labels_and_unbinding() -> Result<(), String> {
+        fn check<A: Named>(lower: &str, upper: &str) -> Result<(), String> {
+            let mut table = Table::<A>::default();
+            table.bind(key("g")?, lower)?;
+            table.bind(key("S-g")?, upper)?;
+            *table.label(key("g")?).ok_or("g label")? = Some("lower".into());
+            *table.label(key("G")?).ok_or("G label")? = Some("upper".into());
+            assert_eq!(table.get(key("g")?).map(|a| a.name()), Some(lower));
+            assert_eq!(table.get(key("G")?).map(|a| a.name()), Some(upper));
+            let hints = table.hints();
+            assert!(
+                hints
+                    .iter()
+                    .any(|h| h.keys.split_whitespace().any(|k| k == "g") && h.label == "lower")
+            );
+            assert!(hints.iter().any(|h| h.keys == "G" && h.label == "upper"));
+            table.unbind(key("g")?)?;
+            assert!(table.get(key("g")?).is_none());
+            assert_eq!(table.get(key("G")?).map(|a| a.name()), Some(upper));
+            Ok(())
+        }
+        check::<CopyAct>("top", "bottom")?;
+        check::<ListAct>("up", "down")?;
+        check::<LineAct>("home", "end")?;
+        check::<bool>("no", "yes")
     }
 
     #[test]

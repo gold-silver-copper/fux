@@ -403,21 +403,22 @@ impl Conn {
     }
 
     /// Moves the connection on to `next`. One that was attached has its
-    /// client detached and its terminal given its own cursor shape back;
-    /// one that is dead stays so.
+    /// client detached and its terminal given its own cursor shape and
+    /// configured colour back; one that is dead stays so.
     fn enter(&mut self, session: &mut Session, next: Stage) {
         if matches!(self.stage, Stage::Dead) {
             return;
         }
         if let Stage::Attached(attached) = mem::replace(&mut self.stage, next) {
             session.detach(attached.client);
-            // A cursor shape a pane set is given back as the terminal's own
-            // (`render::cursor_shape`); one never set is left as it was.
-            let mut shape = Vec::new();
+            // Cursor overrides are given back as the terminal's own;
+            // one never set is left as it was.
+            let mut cursor = Vec::new();
             let initial = fux_vt::CursorShape::Initial;
-            render::cursor_shape(attached.shown.modes.cursor_shape, initial, &mut shape);
-            if !shape.is_empty() {
-                Attached::paint(&mut self.out, &shape);
+            render::cursor_shape(attached.shown.modes.cursor_shape, initial, &mut cursor);
+            render::cursor_colour(attached.shown.modes.cursor_colour, None, &mut cursor);
+            if !cursor.is_empty() {
+                Attached::paint(&mut self.out, &cursor);
             }
         }
     }
@@ -1571,6 +1572,24 @@ mod tests {
             matches!(exit, Some(ToAttached::Exit(why)) if why.starts_with("detached: ")),
             "{exit:?}"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn detaching_restores_only_an_explicit_cursor_colour() -> Result<(), String> {
+        for (colour, reset) in [
+            (None, &b""[..]),
+            (Some([0, 255, 0].into()), &b"\x1b]112\x1b\\"[..]),
+        ] {
+            let (mut session, mut conn, _peer) = attached()?;
+            if let Some(attached) = conn.attached() {
+                attached.shown.modes.cursor_colour = colour;
+            }
+            conn.end(&mut session, &ToAttached::Exit("detached"));
+            let (painted, exit) = sent(&conn);
+            assert_eq!(painted, reset);
+            assert_eq!(exit.as_deref(), Some("detached"));
+        }
         Ok(())
     }
 

@@ -84,7 +84,7 @@ and `src/*/tests.rs`. Every mode SM, RM, DECSET and DECRST set is a
 | CSI ? 1047 / 1048 h / l | 1047: 47, clearing the alternate screen on leaving it. 1048: DECSC when set, DECRC when reset. | `conformance::modes_1047_and_1048` |
 | CSI ? 9 / 1000 / 1001 / 1002 / 1003 h / l | `mouse_protocol_mode()`; the latest set wins, and a reset clears only the mode in force. Read by `Screen::encode_mouse`. 1001, highlight tracking, is reported as 1000 is (ctlseqs, "Highlight tracking": on a press "the same information as for normal tracking is generated"); the highlight it then asks of the program (`CSI func ; x ; y ; first ; last T`) and the release it reports (`CSI t`, `CSI T`) are the host's selection's, which fux-vt does not drive: a boundary. | `semantics::alternate_mouse_modes_saved_cursor_and_replies`, `mouse_modes::*` |
 | CSI ? 1005 / 1006 / 1015 h / l | `mouse_protocol_encoding()`, by the same rules, as xterm 411's `extend_coords`: 1006 then 1015 is urxvt. Read by `Screen::encode_mouse`. 1016 (SGR with pixels) is permanently reset and changes nothing: a `MouseEvent` names a cell, not the pixel within it. | `semantics::alternate_mouse_modes_saved_cursor_and_replies`, `mouse_modes::each_mode_is_kept_and_reported` |
-| CSI ? 1007 h / l | Alternate scroll (ctlseqs; xterm's `alternateScroll`), off: with no mouse reporting asked for, on the alternate screen, `Screen::encode_mouse` takes a wheel turn as cursor up or down in the cursor key mode, 5 times, half the screen's rows with Ctrl, as xterm 411's default translations scroll (`scroll-back(5,line,m)`, `scroll-back(1,halfpage,m)`) and `AlternateScroll` sends them. | `mouse_modes::alternate_scroll_sends_the_cursor_keys_on_the_alternate_screen` |
+| CSI ? 1007 h / l | Alternate scroll (ctlseqs; xterm's `alternateScroll`), off: with no mouse reporting asked for, on the alternate screen, `Screen::encode_mouse` takes a wheel turn as cursor up or down through the negotiated key encoder, 5 times, half the screen's rows with Ctrl, as xterm 411's default translations scroll (`scroll-back(5,line,m)`, `scroll-back(1,halfpage,m)`) and `AlternateScroll` sends them. | `mouse_modes::alternate_scroll_sends_the_cursor_keys_on_the_alternate_screen` |
 | CSI m | SGR. 0 reset; 1 bold, 2 dim, both possible (see "Where the standards leave the choice"); 3 italic; 4 underline, 21 double, `4:0`–`4:5` none, single, double, curly, dotted, dashed (`4:` is `4:0`; larger numbers change nothing); 5 slow, 6 rapid blink, each replacing the other; 7 inverse; 8 hidden; 9 strikeout; 22–29 end them (22 bold and dim, 24 any underline). 30–37, 90–97, 40–47, 100–107 indexed colours; 39, 49, 59 defaults. 38, 48, 58 (foreground, background, underline colour): `5;n`, `2;r;g;b` (values the list lacks are 0; another kind takes only itself), `5:n`, `2:r:g:b`, `2:cs:r:g:b` (colour space ignored). An out-of-range colour is skipped; the rest applies. | `conformance::sgr_*`, `conformance::underline_styles_*` |
 | CSI 5 n / 6 n / c | DSR 5 → `CSI 0 n`. DSR 6 → `CSI row ; col R`: the line counted from the top margin with DECOM set (the first line if above it), the column from the left margin in origin mode, a cursor waiting to wrap at the last column, where it is (ECMA-48 8.3.14, DEC STD 070 CPR: the active position; the Last Column Flag is a flag, D.6.1). DA (`CSI c`, `CSI 0 c`) → `CSI ? 1 ; 2 c` (`CSI ? 62 ; 6 ; 21 ; 22 ; 28 c` with an identity: level 2, with selective erase, horizontal scrolling, colour text and rectangular editing, DEC STD 070, DA, Table 1). Other parameters and private forms are unhandled unless an option answers them. | `conformance::cursor_reports_*` |
 | CSI Ps x | DECREQTPARM, answered by the VT100 that DA claims without an identity (VT100 User Guide, chapter 3): Ps 0 or none → `CSI 2 ; 1 ; 1 ; 128 ; 128 ; 1 ; 0 x`, 1 → the same with 3, xterm's fixed parameters (ctlseqs). Another Ps, or with an identity, unhandled, as xterm's VT220 leaves it. | `conformance::decreqtparm_*` |
@@ -161,8 +161,10 @@ decoded, and what a program asked for, encoded. It needs no option.
   once, and it ends at the first byte no control sequence holds, a final
   byte dropped with it and any other beginning the next key;
   the output is at most one
-  `Input` a byte. Each encoded key or mouse event is at most 64 bytes
-  (B45; 30 measured over every key, modifier, mode and encoding).
+  `Input` a byte. Each encoded key or mouse report is at most 64 bytes
+  (B45; 30 measured over every key, modifier, mode and encoding). An
+  alternate-scroll event expands into at most 32,767 arrows in chunks
+  of at most 64 bytes, admitted or refused as one action by the host.
 
 **Encoding** reads what the program asked for from its screen:
 
@@ -171,10 +173,12 @@ decoded, and what a program asked for, encoded. It needs no option.
 | `keys::encode::key_bytes(stroke, screen.key_mode(), out)` | the key as `Screen::key_mode()` asks (DECCKM, DECKPAM, DECBKM, the kitty flags, modifyOtherKeys): kitty protocol; xterm's `CSI 27 ; m ; k ~`; or legacy bytes, Ctrl mapping only what Xlib maps (`Ctrl-;` is `;`), Alt an ESC before them (Alt-Escape is ESC ESC). The legacy bytes and modifyOtherKeys are real xterm 411's (tests/data/keys/xterm-keys.txt, `input_suites::xterm_keys`): at level 2 Shift alone on a character Ctrl makes a control of (`@` to DEL, the capitals among them) or on Space is `CSI 27 ; 2 ; code ~`, the shifted character's code, and on any other (`!`) types its text; level 3 escapes every shifted character, and Ctrl alone on Backspace; Shift-Tab is `CSI Z`, ISO_Left_Tab's, with Ctrl, Alt or both in the legacy mode and at level 1, and alone at level 2, `CSI 27 ; 2 ; 9 ~` at level 3 and `CSI 27 ; m ; 9 ~` at level 2 with Ctrl or Alt; Ctrl-Alt-? is ESC `?`, as Ctrl-? is DEL by xterm's own translation. `Key::F` holds a `Function`, F1 to F35: F13 to F35 are kitty's 57376 to 57398, and send nothing in the legacy modes, where xterm has no bytes for them. It takes any `KeyMode` |
 | `keys::encode::paste(text, screen.mode(Mode::BracketedPaste), out)` | the text, framed by `CSI 200 ~` and `CSI 201 ~` with bracketed paste (2004) set; inside the frame every end marker (`ESC [ 201 ~`, or with the C1 CSI U+009B) is removed, as often as removing one makes another; each LF goes as CR, as xterm 411 sends a paste (`button.c`, `pasteLiteralNL` off); other controls go as pasted, where xterm spaces those its tty and `disallowedPasteControls` name (the host's paste has passed its own terminal's filter) |
 | `Screen::focus_report(focused)` | `CSI I` or `CSI O` with focus reporting (1004) set, else nothing (`None`) |
-| `Screen::encode_mouse(event, out)` | a `keys::mouse::MouseEvent`, whose `MouseAction` carries its button (a press always names one), as xterm reports it in the program's mode and encoding: X10 (9) presses of buttons 1 to 3 without modifiers; 1000 presses and releases (the wheel's turns as presses, never released); 1002 also motion with a button held; 1003 also motion with none; 1001 as 1000; in the default encoding (a 0 byte for a position past 223, as xterm 411 sends it), UTF-8 (1005, Cb too, a 0 byte past 2015), SGR (1006, any position, a release naming its button) or urxvt (1015, `CSI Cb ; x ; y M`, Cb plus 32, a release unnamed); with alternate scroll (1007), a wheel turn's cursor keys. `keys::mouse::mouse_bytes` takes them given |
+| `Screen::encode_mouse(event)` | a `keys::mouse::MouseEvent`, whose `MouseAction` carries its button (a press always names one), as xterm reports it in the program's mode and encoding: X10 (9) presses of buttons 1 to 3 without modifiers; 1000 presses and releases (the wheel's turns as presses, never released); 1002 also motion with a button held; 1003 also motion with none; 1001 as 1000; in the default encoding (a 0 byte for a position past 223, as xterm 411 sends it), UTF-8 (1005, Cb too, a 0 byte past 2015), SGR (1006, any position, a release naming its button) or urxvt (1015, `CSI Cb ; x ; y M`, Cb plus 32, a release unnamed); with alternate scroll (1007), a wheel turn's cursor keys in the negotiated key protocol. Returns `Some` of an iterator of chunks of at most 64 bytes, keeping whole keys in order; the host admits all chunks as one action or refuses the whole action. `keys::mouse::mouse_bytes` takes a single report given |
 
-`encode_mouse` returns whether it sent anything, and `focus_report` the
-report or `None`. Motion within one cell is the host's to drop.
+`encode_mouse` returns `None` for an event the mode does not report, and
+`Some` of an empty iterator for an accepted scroll of zero distance.
+`focus_report` returns the report or `None`. Motion within one cell is
+for the host to drop.
 
 - **Colours:** `keys::colour` holds `Rgb` (read from and answered as
   `rgb:RRRR/GGGG/BBBB`), `Scheme` (dark or light, as mode 2031 reports
@@ -580,8 +584,8 @@ formulas are in [`THREATS.md`](https://github.com/gold-silver-copper/fux/blob/ma
   `tests/versions.rs` checks identities and versions. Expected values come
   from the references or xterm, never from fux-vt, and each test cites its
   source.
-- **The `checks` feature**, off by default and for tests, fuzzing and
-  mutation runs only: `Work`, deterministic counters of the work fux-vt
+- **The `checks` feature**, off by default and for tests and fuzzing
+  only: `Work`, deterministic counters of the work fux-vt
   does (cells written, rows walked, bytes scanned and the rest), which the
   bounds suite (`tests/bounds.rs`) holds to each bound's constant per
   input byte; and `Parser::check`, one invariant checker over the parser,

@@ -696,11 +696,12 @@ fn names_clicks_and_signals_are_checked() -> Outcome {
         "{}",
         taken.stderr
     );
-    // A common spelling is a key's name too; a typo is told the closest.
+    // A common spelling is a key's name too; an unknown name is refused with the vocabulary hint.
     server.ok(&["str", "ed", "pane", "str", "Backspace", "key", "send-keys"])?;
     let typo = server.fux(&["str", "ed", "pane", "str", "C-Bakspace", "key", "send-keys"])?;
     assert!(
-        typo.stderr.contains("the closest is `C-BSpace`"),
+        typo.stderr
+            .contains("is no key's name (key-names lists them)"),
         "{}",
         typo.stderr
     );
@@ -1140,7 +1141,7 @@ fn the_docs_recipes_run_as_written() -> Outcome {
         let program = program.split("```").next().unwrap_or_default();
         let file = server.dir.join(format!("shown-{i}.fux"));
         std::fs::write(&file, program).map_err(e)?;
-        server.ok(&["str", &file.to_string_lossy(), "check"])?;
+        server.ok(&["str", &file.to_string_lossy(), "str", "program", "check"])?;
     }
     Ok(())
 }
