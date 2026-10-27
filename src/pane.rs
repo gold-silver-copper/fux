@@ -1785,6 +1785,8 @@ impl Pane {
     /// Its program ended so, the input queued for it let go: its end,
     /// said, as a shell's is before its pane closes.
     fn ended(&mut self, ended: Ended, tell: &mut Teller<'_>) -> End {
+        // A live error notice may still be waiting for its first paint.
+        self.terminal_errors.1 = self.terminal_errors.1.or(self.read_error);
         self.left.input = self.input.discard();
         // Its runs end with it, as its input's do.
         self.loss_runs = LossRuns::default();

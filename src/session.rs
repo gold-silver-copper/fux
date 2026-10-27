@@ -1846,12 +1846,12 @@ impl Session {
             }
             Runs::Explicit(_) => {
                 // Its leader, exited and unreaped, is reaped with the dying.
+                let (end, gone) = pane.exit(ended);
                 let errors: Vec<_> = if viewers.is_empty() {
                     Vec::new()
                 } else {
                     pane.take_terminal_errors().collect()
                 };
-                let (end, gone) = pane.exit(ended);
                 if let Process::Reading(child)
                 | Process::HungUp(child)
                 | Process::ReadFailed(child, _) = gone
@@ -3809,7 +3809,14 @@ mod tests {
 
     #[test]
     fn a_final_read_failure_survives_the_exit_notice() -> Result<(), Box<dyn std::error::Error>> {
-        for (explicit, last) in [(true, false), (false, false), (false, true)] {
+        for (explicit, last, live) in [
+            (true, false, true),
+            (false, false, true),
+            (false, true, true),
+            (true, false, false),
+            (false, false, false),
+            (false, true, false),
+        ] {
             let (mut session, client) = attached(10, 40)?;
             let id = PaneId::of(1);
             if !last {
@@ -3829,11 +3836,15 @@ mod tests {
                     .respawned(fresh, Process::Absent);
             }
             session.output(id, b"saved");
-            session
-                .parts
-                .pane_mut(id)
-                .ok_or("pane")?
-                .read_failed(fuxix::Errno::INVAL);
+            if live {
+                session.read_failed(id, fuxix::Errno::INVAL);
+            } else {
+                session
+                    .parts
+                    .pane_mut(id)
+                    .ok_or("pane")?
+                    .read_failed(fuxix::Errno::INVAL);
+            }
             session.exited(id, Ended::Exited(0));
             let notice = session
                 .views
@@ -3847,6 +3858,7 @@ mod tests {
                 "{notice:?}"
             );
             assert!(notice.text.contains("exited"), "{notice:?}");
+            assert_eq!(notice.text.matches("reading program terminal").count(), 1);
             if explicit {
                 assert_eq!(session.pane(id)?.read_error(), Some(fuxix::Errno::INVAL));
                 assert!(
