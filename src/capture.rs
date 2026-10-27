@@ -266,6 +266,9 @@ fn selected_rows(
     let (first, last) = view
         .rows
         .map_or((0, usize::MAX), |(a, b)| (usize::from(a), usize::from(b)));
+    if view.wrapped && first > last {
+        return Ok(Selection { start: 0, count: 0 });
+    }
     let skip = if view.wrapped { first } else { 0 };
     if skip > 0 {
         read = Box::new(read.skip(skip));
@@ -985,6 +988,7 @@ mod tests {
         assert_eq!(capture((0, 1), false)?, "top\nabcdefghijklm");
         assert_eq!(capture((3, 4), false)?, "abcdefghijklm\nend");
         assert_eq!(capture((2, 2), true)?, "fghij");
+        assert_eq!(capture((4, 3), true)?, "");
         Ok(())
     }
 
