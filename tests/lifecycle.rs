@@ -195,12 +195,11 @@ fn login_shell() -> Option<String> {
 #[test]
 fn a_pane_runs_shell_else_the_login_shell_else_bin_sh() -> Outcome {
     let unset = login_shell().unwrap_or_else(|| "/bin/sh".into());
-    let unset = Path::new(&unset)
-        .file_name()
-        .and_then(|n| n.to_str())
-        .ok_or("the login shell's name")?
-        .to_owned();
-    for (shell, name) in [(Some("/bin/bash"), "bash"), (None, unset.as_str())] {
+    for (shell, expected) in [(Some("/bin/bash"), "/bin/bash"), (None, unset.as_str())] {
+        let name = Path::new(expected)
+            .file_name()
+            .and_then(|n| n.to_str())
+            .ok_or("the login shell's name")?;
         let dir = fuxix::file::scratch()
             .map_err(e)?
             .join(format!("fux-shell-{name}-{}", std::process::id()));
@@ -220,15 +219,16 @@ fn a_pane_runs_shell_else_the_login_shell_else_bin_sh() -> Outcome {
             .stderr(Stdio::null())
             .env("HOME", &dir)
             .env("ENV", "/dev/null")
+            .env("PS1", "$ ")
             .env_remove("FUX_PANE")
             .env_remove("SHELL");
         if let Some(shell) = shell {
             command.env("SHELL", shell);
         }
         let mut child = command.spawn().map_err(e)?;
-        let program = || {
+        let capture = || {
             Command::new(FUX)
-                .args(["%1", "str", "program", "get"])
+                .args(["%1", "capture"])
                 .env("FUX_SOCKET", &socket)
                 .output()
                 .map_err(e)
@@ -244,12 +244,40 @@ fn a_pane_runs_shell_else_the_login_shell_else_bin_sh() -> Outcome {
                 .map_err(e)?;
             Ok(made.status.success())
         })?;
-        // Observe the running process, independently of names and titles.
-        let shown = eventually(&format!("a pane running {name}"), || {
-            let observed = program()?;
-            Ok(observed.status.success()
-                && String::from_utf8_lossy(&observed.stdout).trim() == name)
-        });
+        // Ask the shell for its argv[0]; OS process names may resolve
+        // an executable's symlink, and macOS does not report its argv.
+        let shown = (|| {
+            eventually("the shell's prompt", || {
+                let observed = capture()?;
+                Ok(observed.status.success()
+                    && String::from_utf8_lossy(&observed.stdout).contains('$'))
+            })?;
+            let typed = Command::new(FUX)
+                .args([
+                    "%1",
+                    "str",
+                    r#"printf '\nFUX-SHELL:%s\n' "$0""#,
+                    "text",
+                    "str",
+                    "Enter",
+                    "key",
+                    "send-keys",
+                ])
+                .env("FUX_SOCKET", &socket)
+                .output()
+                .map_err(e)?;
+            if !typed.status.success() {
+                return Err(String::from_utf8_lossy(&typed.stderr).into_owned());
+            }
+            let expected = format!("FUX-SHELL:{expected}");
+            eventually(&format!("a pane running {name}"), || {
+                let observed = capture()?;
+                Ok(observed.status.success()
+                    && String::from_utf8_lossy(&observed.stdout)
+                        .lines()
+                        .any(|line| line == expected))
+            })
+        })();
         let _ = Command::new(FUX)
             .args(["force-kill-server"])
             .env("FUX_SOCKET", &socket)
