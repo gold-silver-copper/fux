@@ -355,8 +355,8 @@ wire! {
 }
 
 wire! {
-    /// Attached frames sent before a job's first request. The source is
-    /// separate from the request's target client, which a program may name.
+    /// Attached frames sent before a job was dispatched. Every request
+    /// keeps its source, separate from the client a program may target.
     #[derive(Clone, Debug, PartialEq, Eq)]
     pub struct Fence {
         pub run: crate::command::Run,

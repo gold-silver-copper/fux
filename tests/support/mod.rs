@@ -523,9 +523,11 @@ impl Client {
             match out {
                 Effect::Send(act) => self.act(act)?,
                 Effect::Run(job) => {
-                    if let Some(keyboard) = &mut self.keyboard {
-                        keyboard.dispatch(job, self.frames).map_err(e)?;
-                    }
+                    self.keyboard
+                        .as_mut()
+                        .ok_or("a program has no attached keyboard")?
+                        .dispatch(job, self.frames)
+                        .map_err(e)?;
                 }
             }
         }

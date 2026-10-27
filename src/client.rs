@@ -13,7 +13,6 @@ use crate::protocol::{
     PROTOCOL, Reply, Role, ToAttached, ToCommand,
 };
 use crate::screens::{Effect, Job, Screen};
-
 use crate::script;
 use crate::socket::{self, SocketPath};
 use fuxix::Errno;
@@ -578,6 +577,10 @@ fn lock(keymap: &Mutex<Keymap>) -> std::sync::MutexGuard<'_, Keymap> {
 /// Every mode is the client's (`crate::screens`), changed here at the key
 /// that changes it. A program it runs may open a screen, so the keys typed
 /// while any runs wait for it, and go to the screen it opened, if any.
+///
+/// The transport must handle every returned effect in order: send each
+/// action, count its frame, and pass each admitted job to `Self::dispatch`.
+/// Dropping an admitted job leaves its reservation and held keys waiting.
 pub struct Keyboard {
     keymap: std::sync::Arc<Mutex<Keymap>>,
     screen: Screen,
@@ -600,6 +603,8 @@ pub struct Keyboard {
     held: usize,
 }
 
+/// Ending an attachment stops its outstanding program rather than leaving
+/// its worker running.
 impl Drop for Keyboard {
     fn drop(&mut self) {
         self.stop.stop();
@@ -682,8 +687,8 @@ impl Keyboard {
         self.decoder.deadline()
     }
 
-    /// Bytes from its terminal, read at `now`. Send the returned actions
-    /// and dispatch the admitted jobs in order (`Keyboard::dispatch`).
+    /// Bytes from its terminal, read at `now`. Handle returned effects in
+    /// order, as `Keyboard` requires.
     pub fn bytes(&mut self, bytes: &[u8], now: Instant) -> Vec<Effect> {
         let mut inputs = Vec::new();
         self.decoder.expire(now);
@@ -693,6 +698,7 @@ impl Keyboard {
     }
 
     /// A deadline passed (`Keyboard::deadline`): what waited is taken.
+    /// Handle returned effects in order, as `Keyboard` requires.
     pub fn timeout(&mut self) -> Vec<Effect> {
         let mut inputs = Vec::new();
         self.decoder.timeout(&mut inputs);
@@ -762,7 +768,8 @@ impl Keyboard {
     /// A frame from the server: copy mode it ended, a program to run (a
     /// screen asked of it from elsewhere), keys to take as typed
     /// (`send-keys` to it), the prefix then Esc among them stopping a
-    /// program as typed ones do.
+    /// program as typed ones do. Handle returned effects in order, as
+    /// `Keyboard` requires.
     pub fn frame(&mut self, frame: ToAttached<'_>) -> Vec<Effect> {
         let mut acts = Vec::new();
         match frame {
@@ -778,6 +785,7 @@ impl Keyboard {
 
     /// What the programs it ran came to, those done: a screen one opened
     /// opens, what one said shows, and the keys that waited go on.
+    /// Handle returned effects in order, as `Keyboard` requires.
     pub fn ran(&mut self) -> Vec<Effect> {
         crate::drain(&self.wake);
         let mut acts = Vec::new();
@@ -853,7 +861,8 @@ impl Keyboard {
     }
 
     /// Reserves `job` in local output order, unless as many programs, or as much
-    /// code, as it may hold wait for it.
+    /// code, as it may hold wait for it. Each emitted `Effect::Run` owns
+    /// that reservation and must reach `Self::dispatch` in transport order.
     fn run(&mut self, job: Job, acts: &mut Vec<Effect>) {
         // A stop stops the programs queued with the one it was typed for.
         if self.running.is_empty() {
@@ -884,7 +893,7 @@ impl Keyboard {
     }
 
     /// Dispatches an admitted job after its preceding attached frames were
-    /// sent. The first request waits for the server to process that prefix.
+    /// sent. Every request carries that prefix and its source identity.
     pub fn dispatch(&mut self, job: Job, frames: u64) -> Result<(), Error> {
         self.jobs
             .send((job, frames))
@@ -1271,9 +1280,10 @@ fn attached(
         for out in std::mem::take(&mut acts) {
             let act = match out {
                 Effect::Run(job) => {
-                    if let Some(keyboard) = &mut keyboard {
-                        keyboard.dispatch(job, frames)?;
-                    }
+                    keyboard
+                        .as_mut()
+                        .ok_or_else(|| Error::Failed("a program has no attached keyboard".into()))?
+                        .dispatch(job, frames)?;
                     continue;
                 }
                 Effect::Send(act) => AttachedFrame::Act(Box::new(act)),

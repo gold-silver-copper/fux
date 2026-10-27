@@ -181,17 +181,6 @@ enum Stage {
     Dead,
 }
 
-/// A missing source is runnable so its request can fail `no_client`.
-fn fence_pending(conns: &[Conn], asked: &Asked) -> bool {
-    asked.after.as_ref().is_some_and(|fence| {
-        conns.iter().any(|conn| {
-            matches!(&conn.stage,
-            Stage::Attached(attached) if attached.client == fence.client
-                && attached.processed < fence.frames)
-        })
-    })
-}
-
 impl Stage {
     /// Whether what the client sends is read.
     fn reads(&self) -> bool {
@@ -226,6 +215,8 @@ impl Stage {
 /// terminal.
 struct Attached {
     client: ClientId,
+    /// Attached frames handled since Attach, refused ones too: what a
+    /// job's fence waits for.
     processed: u64,
     /// What the client's terminal shows, for diffing, while `known`.
     shown: Grid,
@@ -389,9 +380,7 @@ impl Conn {
     /// turn (`CONN_FRAMES`), or an error does: it is served as if readable,
     /// though its socket may have nothing more.
     fn frame_waits(&self) -> bool {
-        !matches!(self.stage, Stage::Blocked(_))
-            && self.reads()
-            && self.decoder.ready().unwrap_or(true)
+        self.reads() && self.decoder.ready().unwrap_or(true)
     }
 
     /// When the client attached here may be painted: if its view changed,
@@ -837,7 +826,7 @@ impl Server {
             .map(|conn| {
                 conn.frame_waits()
                     || matches!(&conn.stage, Stage::Blocked(asked)
-                if !fence_pending(&self.conns, asked))
+                if !matches!(self.unprocessed(asked), Some(1..)))
             })
             .collect();
         let slots = &mut self.slots;
@@ -1200,7 +1189,7 @@ impl Server {
             self.read_conn(index);
         }
         let eligible = self.conns.get(index).is_some_and(|conn| {
-            matches!(&conn.stage, Stage::Blocked(asked) if !fence_pending(&self.conns, asked))
+            matches!(&conn.stage, Stage::Blocked(asked) if !matches!(self.unprocessed(asked), Some(1..)))
         });
         if eligible && let Some(conn) = self.conns.get_mut(index) {
             let stage = mem::replace(&mut conn.stage, Stage::Command);
@@ -1359,28 +1348,43 @@ impl Server {
         Ok(true)
     }
 
+    /// How many attached frames the source has yet to process: zero with
+    /// no fence, or None if the source is not attached in this server run.
+    fn unprocessed(&self, asked: &Asked) -> Option<u64> {
+        let Some(fence) = &asked.after else {
+            return Some(0);
+        };
+        if fence.run != self.session.run {
+            return None;
+        }
+        self.conns.iter().find_map(|conn| {
+            let Stage::Attached(attached) = &conn.stage else {
+                return None;
+            };
+            (attached.client == fence.client)
+                .then(|| fence.frames.saturating_sub(attached.processed))
+        })
+    }
+
     /// Begins only after the source's earlier attached frames were
     /// processed. No resolution, mutation or wait baseline precedes this.
     fn ordered_request(&mut self, index: usize, asked: Asked) {
-        if let Some(fence) = &asked.after
-            && (fence.run != self.session.run
-                || !self.conns.iter().any(|conn| conn.serves(fence.client)))
-        {
-            if let Some(conn) = self.conns.get_mut(index) {
-                let reply = Reply::failed(
-                    Code::NoClient,
-                    format!("no client {} in server run {}", fence.client, fence.run),
-                );
-                conn.answer(&mut self.session, reply);
+        match self.unprocessed(&asked) {
+            Some(0) => self.request(index, asked.request, asked.context),
+            Some(_) => {
+                if let Some(conn) = self.conns.get_mut(index) {
+                    conn.enter(&mut self.session, Stage::Blocked(Box::new(asked)));
+                }
             }
-            return;
-        }
-        if fence_pending(&self.conns, &asked) {
-            if let Some(conn) = self.conns.get_mut(index) {
-                conn.enter(&mut self.session, Stage::Blocked(Box::new(asked)));
+            None => {
+                if let Some(conn) = self.conns.get_mut(index) {
+                    let reply = Reply::failed(
+                        Code::NoClient,
+                        "the job's source is not attached in this server run",
+                    );
+                    conn.answer(&mut self.session, reply);
+                }
             }
-        } else {
-            self.request(index, asked.request, asked.context);
         }
     }
 
@@ -1730,7 +1734,7 @@ mod tests {
                     assert!(!server.conns.get(2).ok_or("unrelated")?.out.is_empty());
                 }
             }
-            while fence_pending(&server.conns, &asked) {
+            while matches!(server.unprocessed(&asked), Some(1..)) {
                 server.serve_conn(0, PollFlags::IN);
                 let before = server
                     .conns
@@ -1861,6 +1865,153 @@ mod tests {
                     .iter()
                     .any(|c| matches!(c.stage, Stage::Blocked(_)))
             );
+        }
+        Ok(())
+    }
+
+    /// Waits only for the worker socket: the test chooses every server turn.
+    fn command_readable(server: &Server) -> Result<(), String> {
+        let conn = server.conns.first().ok_or("worker")?;
+        let mut fds = [PollFd::new(&conn.stream, PollFlags::IN)];
+        match fuxix::poll::poll(&mut fds, Some(Duration::from_secs(3))) {
+            Ok(0) => Err("the worker did not ask".into()),
+            Ok(_) => Ok(()),
+            Err(error) => Err(error.to_string()),
+        }
+    }
+
+    /// Handles and writes one greeting or reply without reading ahead into
+    /// the next request, so a transport failure has an exact position.
+    fn command_reply(server: &mut Server) -> Result<(), String> {
+        while server.conns.first().ok_or("worker")?.out.is_empty() {
+            command_readable(server)?;
+            server.serve_conn(0, PollFlags::IN);
+            if matches!(
+                server.conns.first().ok_or("worker")?.stage,
+                Stage::Closing | Stage::Dead
+            ) {
+                return Err("the worker closed before its request".into());
+            }
+        }
+        server
+            .conns
+            .first_mut()
+            .ok_or("worker")?
+            .flush(&mut server.session);
+        Ok(())
+    }
+
+    fn command_connection(server: &mut Server, listener: &UnixListener) -> Result<(), String> {
+        let mut fds = [PollFd::new(listener, PollFlags::IN)];
+        if fuxix::poll::poll(&mut fds, Some(Duration::from_secs(3))).map_err(|e| e.to_string())?
+            == 0
+        {
+            return Err("the worker did not connect".into());
+        }
+        let (stream, _) = listener.accept().map_err(|e| e.to_string())?;
+        stream.set_nonblocking(true).map_err(|e| e.to_string())?;
+        *server.conns.first_mut().ok_or("worker")? = Conn::new(stream);
+        command_reply(server)
+    }
+
+    /// A failed fence and a successful prefix both remain the job's source
+    /// identity: catching a refusal or reconnecting cannot bypass either.
+    #[test]
+    fn every_request_keeps_its_jobs_source_fence() -> Result<(), Box<dyn std::error::Error>> {
+        use crate::script::Asks;
+        use std::os::unix::fs::PermissionsExt;
+        for rejected in [false, true] {
+            let dir = std::env::temp_dir().join(format!("ff-{}-{rejected}", std::process::id()));
+            fs::create_dir_all(&dir)?;
+            fs::set_permissions(&dir, fs::Permissions::from_mode(0o700))?;
+            let path = dir.join("s.sock");
+            let listener = UnixListener::bind(&path)?;
+            listener.set_nonblocking(true)?;
+            let original = "1-2".parse().map_err(|()| "original run")?;
+            let replacement = "2-3".parse().map_err(|()| "replacement run")?;
+            let peer = std::thread::spawn(move || -> Result<Vec<u8>, String> {
+                let (mut server, _peers, client) = ordered_fixture().map_err(|e| e.to_string())?;
+                server.session.run = if rejected { replacement } else { original };
+                command_connection(&mut server, &listener)?;
+                command_reply(&mut server)?; // The first request.
+                if !rejected {
+                    command_readable(&server)?;
+                    server
+                        .conns
+                        .first()
+                        .ok_or("worker")?
+                        .stream
+                        .shutdown(std::net::Shutdown::Both)
+                        .map_err(|e| e.to_string())?;
+                    // The same socket path now belongs to a different run
+                    // that reused the original source's client id.
+                    let (mut next, _next_peers, reused) =
+                        ordered_fixture().map_err(|e| e.to_string())?;
+                    assert_eq!(reused, client);
+                    next.session.run = replacement;
+                    command_connection(&mut next, &listener)?;
+                    server = next;
+                    // Keep the replacement attachment's peers alive until
+                    // its last request has been served.
+                    command_reply(&mut server)?;
+                } else {
+                    command_reply(&mut server)?;
+                }
+                Ok(server
+                    .session
+                    .parts
+                    .pane_mut(PaneId::of(1))
+                    .ok_or("pane")?
+                    .drain_input())
+            });
+            let result = (|| -> Result<Reply, String> {
+                let mut asks = crate::script::Server::new(crate::socket::Choice::Path(path));
+                let client = "c1".parse().map_err(|e| format!("client: {e}"))?;
+                let mut mutation = key_request(original, client, 0);
+                asks.after = mutation.after.take();
+                let probe = Asked {
+                    after: None,
+                    context: mutation.context.clone(),
+                    request: crate::command::Command::Ls {
+                        target: None,
+                        get: None,
+                    }
+                    .into(),
+                };
+                let first = asks
+                    .ask(&probe, &mut std::io::sink())
+                    .map_err(|e| e.to_string())?;
+                if rejected {
+                    assert!(matches!(
+                        first.end,
+                        crate::protocol::End::Failed {
+                            code: Code::NoClient,
+                            ..
+                        }
+                    ));
+                } else {
+                    assert!(matches!(first.end, crate::protocol::End::Done));
+                    assert!(asks.ask(&probe, &mut std::io::sink()).is_err());
+                }
+                asks.ask(&mutation, &mut std::io::sink())
+                    .map_err(|e| e.to_string())
+            })();
+            let input = peer.join().map_err(|_| "server thread panicked")?;
+            fs::remove_dir_all(&dir)?;
+            let reply = result
+                .map_err(|e| format!("client rejected={rejected}: {e}; server: {input:?}"))?;
+            let input = input?;
+            assert!(
+                matches!(
+                    reply.end,
+                    crate::protocol::End::Failed {
+                        code: Code::NoClient,
+                        ..
+                    }
+                ),
+                "rejected={rejected}: {reply:?}"
+            );
+            assert!(input.is_empty(), "rejected={rejected}: {input:?}");
         }
         Ok(())
     }

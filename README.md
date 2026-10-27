@@ -194,8 +194,9 @@ copy mode's cursor in the history only it holds.
 
 A binding's program first waits for the server to process this client's
 preceding keys and resizes, including any refusals. Later keys wait for the
-program to finish. This orders input admitted to a pane; it does not wait for
-the pane's program to read it or finish work.
+program to finish. Every request stays tied to that attachment and server
+run. This orders input admitted to a pane; it does not wait for the pane's
+program to read it or finish work.
 
 The prefix alone opens the **command column**, listing every binding, and
 those without the prefix last: arrows, PageUp/PageDown and Home/End move,

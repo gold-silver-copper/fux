@@ -614,7 +614,7 @@ fn handles(tokens: &[Token]) -> Result<Vec<Token>, fuxth::Error> {
 pub struct Server {
     chosen: Choice,
     requests: Option<client::Requests>,
-    /// Prefix to process before this job first asks; kept across failed opens.
+    /// This job's source fence, kept on every request and across retries.
     pub(crate) after: Option<crate::protocol::Fence>,
     /// What stops a run from another thread, if one may.
     stop: Option<Stop>,
@@ -734,9 +734,6 @@ impl Asks for Server {
             true => Err(cancelled()),
             false => requests.ask(asked, out).map_err(client_failed),
         };
-        if reply.is_ok() {
-            self.after = None;
-        }
         // Let go of before the flag is read: a stop from then on cannot
         // shut what is kept.
         if let Some(stop) = &self.stop {
