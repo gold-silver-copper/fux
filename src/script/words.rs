@@ -1519,7 +1519,7 @@ impl fuxth::Host for Host<'_> {
             ))),
             Act::Start => local(Local::Start),
             Act::Status => local(Local::Status),
-            Act::KillServer => tell(Command::KillServer { force: false }),
+            Act::KillServer => tell(Command::KillServer),
             Act::ForceKillServer => local(Local::ForceKill),
             Act::Set => {
                 let name = string(&next()?)?;

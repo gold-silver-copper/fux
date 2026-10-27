@@ -86,14 +86,8 @@ impl Compact {
     /// Sets `cells` to the ASCII glyphs of `run`, as [`Compact::ascii`]
     /// makes each, each written as one 64-bit value.
     pub(crate) fn fill_ascii(cells: &mut [Self], run: &[u8], style: u32) {
-        let high = u64::from(style & (STYLE | PROTECTED)) << 32;
         for (cell, &byte) in cells.iter_mut().zip(run) {
-            let bits = high | u64::from(byte);
-            // Exact: the low half is the byte, the high half the word.
-            *cell = Self {
-                text: u32::try_from(bits & 0xffff_ffff).unwrap_or(0).to_le_bytes(),
-                word: u32::try_from(bits >> 32).unwrap_or(0),
-            };
+            *cell = Self::ascii(byte, style);
         }
     }
     /// Whether any of `cells` is either half of a wide glyph.

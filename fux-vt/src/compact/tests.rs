@@ -64,6 +64,19 @@ fn cells_read_back_what_they_were_made_with() {
             char::from(byte).to_string()
         );
     }
+    // Bulk writes keep the text, style and protection, clearing old wide
+    // halves and leaving cells beyond the run alone.
+    let mut cells = [Compact::glyph('界', 2, 0); 3];
+    Compact::fill_ascii(&mut cells, b"ab", style | PROTECTED | HALVES | SPILLED);
+    for (cell, expected) in cells.iter().zip(["a", "b", "界"]) {
+        let read = cell.read(&text, &styles);
+        assert_eq!(read.contents(), expected);
+        if expected != "界" {
+            assert_eq!(read.attributes(), red);
+            assert!(cell.is_protected());
+            assert!(!read.is_wide() && !read.is_wide_continuation());
+        }
+    }
     // Five bytes do not fit inline; none, the cell blank with its halves
     // and style kept.
     let cell = Compact::glyph('x', 2, style);
