@@ -20,7 +20,7 @@ use crate::wire::{Wire, wire};
 use std::borrow::Cow;
 
 /// Bumped on any change to the frames below.
-pub const PROTOCOL: u32 = 23;
+pub const PROTOCOL: u32 = 24;
 /// The largest frame, kind byte included.
 pub const MAX_FRAME: usize = 1 << 20;
 /// The largest payload one frame carries.
@@ -349,7 +349,8 @@ wire! {
         pub cwd: std::path::PathBuf,
         pub pane: Option<PaneId>,
         pub server: Option<String>,
-        pub env: Vec<(String, std::ffi::OsString)>,
+        /// None has not been captured; Some, even empty, is the caller's snapshot.
+        pub env: Option<Vec<(String, std::ffi::OsString)>>,
         pub client: Option<ClientId>,
     }
 }
@@ -737,7 +738,7 @@ mod tests {
                     cwd: "/somewhere".into(),
                     pane: "%3".parse().ok(),
                     server: Some("1-2".into()),
-                    env: vec![("K".into(), "V".into())],
+                    env: Some(vec![("K".into(), "V".into())]),
                     client: "c2".parse().ok(),
                 },
             }

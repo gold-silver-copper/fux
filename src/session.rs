@@ -91,7 +91,7 @@ pub struct Caller {
     pub cwd: Option<PathBuf>,
     /// Its environment, of which panes it starts take what
     /// `update-environment` names.
-    pub env: Vec<(String, std::ffi::OsString)>,
+    pub env: Option<Vec<(String, std::ffi::OsString)>>,
 }
 
 /// The server whose pane a caller on the CLI runs in, as its
@@ -869,14 +869,15 @@ impl Session {
     }
 
     /// What panes started for `origin` take of its environment: none of
-    /// it for one that sent none (a test, a client of no terminal).
+    /// it for an absent snapshot; an empty snapshot unsets every named variable.
     fn starting_for(&self, origin: &Origin) -> Starting {
         let env = match origin {
-            Origin::Cli(caller) => caller.env.as_slice(),
-            Origin::Client(client) => self.views.get(client).map_or(&[][..], |v| v.env.as_slice()),
+            Origin::Cli(caller) => caller.env.as_deref(),
+            Origin::Client(client) => self.views.get(client).map(|v| v.env.as_slice()),
         };
         let mut fresh = Starting::default();
-        for name in (self.config.update_environment.iter()).filter(|_| !env.is_empty()) {
+        let Some(env) = env else { return fresh };
+        for name in &self.config.update_environment {
             match env.iter().rev().find(|(k, _)| k == name.as_str()) {
                 Some((k, v)) => fresh.set.push((k.clone(), v.clone())),
                 None => fresh.unset.push(name.as_str().to_owned()),
@@ -1428,13 +1429,15 @@ impl Session {
 
     /// The area to lay out a tab in for a command: the screen of a client
     /// showing it that sizes its panes (not one that only watches), the
-    /// commanding one's first, else what its fit says.
+    /// commanding one's first, else the smallest screen, else what its fit says.
     fn reference_area(&self, tab: TabId, here: Here) -> Option<Rect> {
         let own = (self.sizing(tab)).find(|v| Some(v.id) == here.client());
-        match own.or_else(|| self.sizing(tab).next()) {
-            Some(view) => Some(view.pane_area()),
-            None => self.tab(tab).map(|t| t.fit().area()),
-        }
+        own.map(View::pane_area)
+            .or_else(|| {
+                self.smallest_screen(tab)
+                    .map(|(rows, cols)| Rect::screen(rows, cols))
+            })
+            .or_else(|| self.tab(tab).map(|t| t.fit().area()))
     }
 
     /// What a new tab is laid out on while no client shows it: `size`, if
@@ -1455,9 +1458,8 @@ impl Session {
                 Here::Client(_, place) => Some(place.tab),
                 Here::Cli(..) => here.pane().and_then(|p| self.locate(p)).map(|(_, tab)| tab),
             };
-            let least = (self.sizing(tab?).filter_map(Self::screen_size))
-                .map(|s| (s.rows(), s.cols()))
-                .reduce(|(r, c), (rows, cols)| (r.min(rows), c.min(cols)))
+            let least = self
+                .smallest_screen(tab?)
                 .and_then(|(rows, cols)| Size::new(rows, cols).ok());
             least.or_else(|| self.tab(tab?).map(|t| t.fit().size()))
         };
@@ -1468,6 +1470,14 @@ impl Session {
                 format!("{why}: give a size (`COLS ROWS size`)"),
             )
         })
+    }
+
+    /// The smallest screen of the clients sizing `tab`'s panes.
+    fn smallest_screen(&self, tab: TabId) -> Option<(u16, u16)> {
+        self.sizing(tab)
+            .map(View::pane_area)
+            .map(|area| (area.h(), area.w()))
+            .reduce(|(rows, cols), (h, w)| (rows.min(h), cols.min(w)))
     }
 
     /// The clients showing tab `tab` that size its panes.
@@ -2114,7 +2124,7 @@ impl Session {
         let starting = self.starting_for(origin);
         match command {
             Command::Ls { target, get } => self.ls(*target, get.as_deref()),
-            &Command::KillServer { force } => self.kill_server(force, origin),
+            Command::KillServer => self.kill_server(origin),
             Command::NewWorkspace {
                 name,
                 size,
@@ -2374,9 +2384,9 @@ impl Session {
     }
 
     /// `kill-server`: from the CLI, refused from one of the server's own
-    /// panes or with people attached, unless `force`.
-    fn kill_server(&mut self, force: bool, origin: &Origin) -> Result<Reply, Error> {
-        if let (Origin::Cli(caller), false) = (origin, force) {
+    /// panes or with people attached.
+    fn kill_server(&mut self, origin: &Origin) -> Result<Reply, Error> {
+        if let Origin::Cli(caller) = origin {
             let pane = caller.pane().filter(|p| self.parts.panes().contains_key(p));
             if pane.is_some() || caller.within == Within::This {
                 let pane = pane.map_or_else(String::new, |p| format!(" {p},"));
@@ -3266,7 +3276,10 @@ pub(crate) mod testing {
         job: &crate::screens::Job,
     ) -> Result<String, String> {
         let (out, ended) = run_as(session, client, job);
-        let ended = ended.map_err(|e| e.to_string())?;
+        let ended = ended.map_err(|e| match client {
+            Some(_) => e.notice(),
+            None => e.to_string(),
+        })?;
         let mut text = String::from_utf8_lossy(&out).into_owned();
         for value in &ended {
             text.push_str(&value.text());
@@ -3548,6 +3561,43 @@ mod tests {
         };
         s.attach_as(ClientKind::Terminal, attach)
             .map_err(|e| e.to_string())
+    }
+
+    #[test]
+    fn an_empty_environment_unsets_the_configured_names() -> Result<(), String> {
+        let mut s = started(Config::default())?;
+        assert!(s.config.update_environment.is_empty());
+        s.config.update_environment = vec!["KEPT".parse()?];
+        let missing = s.starting_for(&Origin::Cli(Caller::default()));
+        assert!(missing.set.is_empty() && missing.unset.is_empty());
+        let empty = s.starting_for(&Origin::Cli(Caller {
+            env: Some(Vec::new()),
+            ..Caller::default()
+        }));
+        assert!(empty.set.is_empty());
+        assert_eq!(empty.unset, ["KEPT"]);
+        let client = s
+            .attach_as(ClientKind::Terminal, Attach::of(sized(24, 80)?))
+            .map_err(|e| e.to_string())?;
+        assert_eq!(s.starting_for(&Origin::Client(client)).unset, ["KEPT"]);
+        Ok(())
+    }
+
+    #[test]
+    fn callerless_resize_uses_the_smallest_screen_in_either_attach_order() -> Result<(), String> {
+        for sizes in [[(20, 100), (30, 60)], [(30, 60), (20, 100)]] {
+            let mut s = started(Config::default())?;
+            watch(&mut s, 3, 5)?;
+            for (rows, cols) in sizes {
+                s.attach(rows, cols, None).map_err(|e| e.to_string())?;
+            }
+            run(&mut s, "%1 horizontal split drop %1 20 resize-x")?;
+            assert_eq!(
+                s.parts.panes().get(&PaneId::of(1)).map(Pane::size),
+                Some(sized(19, 20)?)
+            );
+        }
+        Ok(())
     }
 
     /// A watcher's paste is told it only watches, as its client tells it:
@@ -5382,7 +5432,7 @@ mod tests {
             .map(|n| n.text);
         assert_eq!(
             notice.as_deref(),
-            Some("nothing_there: key:1: choose-pane: only one pane")
+            Some("nothing_there: choose-pane: only one pane (key:1)")
         );
         run(&mut s, "str c1 client choose-tab")?;
         assert!(matches!(
@@ -5548,7 +5598,7 @@ mod tests {
         }
         let env = failed(&mut s, "opts str 1bad str v env new-tab");
         assert!(env.contains("not first a digit"), "{env}");
-        let missing = failed(&mut s, "str /no/such/file.fux check");
+        let missing = failed(&mut s, "str /no/such/file.fux str program check");
         assert!(missing.contains("No such file"), "{missing}");
         let split = failed(&mut s, "str 'two\nlines' fail");
         assert!(split.ends_with(r"two\nlines"), "{split}");
