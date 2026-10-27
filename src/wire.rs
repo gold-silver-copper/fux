@@ -91,6 +91,20 @@ macro_rules! int_wire {
 }
 int_wire!(u8, u16, u32, u64, i32, i64);
 
+impl Wire for std::time::Duration {
+    fn put(&self, out: &mut Vec<u8>) {
+        self.as_secs().put(out);
+        self.subsec_nanos().put(out);
+    }
+    fn get(r: &mut Reader<'_>) -> Result<Self, Error> {
+        let (secs, nanos) = (u64::get(r)?, u32::get(r)?);
+        if nanos >= 1_000_000_000 {
+            return Err(Error::Bad("duration nanoseconds"));
+        }
+        Ok(Self::new(secs, nanos))
+    }
+}
+
 impl Wire for std::num::NonZeroU32 {
     fn put(&self, out: &mut Vec<u8>) {
         self.get().put(out);

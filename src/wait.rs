@@ -12,11 +12,11 @@
 //! and when its time is up (`Waiting::due`); so too a respawn under way,
 //! answered once it is done.
 use crate::after;
-use crate::answer::{Change, PaneAnswer};
+use crate::answer::{Change, PaneAnswer, PaneResults};
 use crate::command::{Counts, Run, Version};
 use crate::id::PaneId;
 use crate::pane::Pane;
-use crate::protocol::{Body, End, Reply};
+use crate::protocol::Reply;
 use crate::session::Session;
 use std::time::{Duration, Instant};
 
@@ -83,13 +83,7 @@ impl Waiting {
                 respawns,
                 reply,
             } => match session.parts.panes().get(id) {
-                None => Some(Reply {
-                    end: End::Failed {
-                        code: crate::code::Code::Closed,
-                        message: format!("{id}: the pane closed"),
-                    },
-                    body: Body::Pane(PaneAnswer::Closed(*id)),
-                }),
+                None => Some(PaneResults::One(PaneAnswer::Closed(*id)).into()),
                 Some(pane) => (pane.respawns >= *respawns).then(|| reply.clone()),
             },
         }
@@ -124,25 +118,18 @@ impl Watch {
         let told = match told.is_empty() {
             false => told,
             true if now >= self.deadline && !framing => (self.watches.all().iter())
-                .map(|(id, since)| PaneAnswer::TimedOut(self.version(*id, *since)))
+                .map(|(id, since)| PaneAnswer::TimedOut {
+                    since: self.version(*id, *since),
+                    limit: self.limit,
+                })
                 .collect(),
             true => return None,
         };
-        let why: String = (told.iter())
-            .filter_map(|answer| Some(format!("{}\n", self.why(answer)?)))
-            .collect();
-        let end = match told.iter().find_map(PaneAnswer::failure) {
-            None => End::Done,
-            Some(code) => End::Failed {
-                code,
-                message: why.trim_end().to_owned(),
-            },
+        let answers = match (&self.watches, told.as_slice()) {
+            (Watches::Pane(_), [one]) => PaneResults::One(one.clone()),
+            _ => PaneResults::Many(told),
         };
-        let body = match (&self.watches, told.as_slice()) {
-            (Watches::Pane(_), [one]) => Body::Pane(one.clone()),
-            _ => Body::Panes(told),
-        };
-        Some(Reply { end, body })
+        Some(answers.into())
     }
 
     /// Pane `id`'s version in its run at `counts`.
@@ -152,19 +139,6 @@ impl Watch {
             counts,
             run: self.run,
         }
-    }
-
-    /// Why `answer` failed, if it did.
-    fn why(&self, answer: &PaneAnswer) -> Option<String> {
-        Some(match answer {
-            PaneAnswer::Acted(_) | PaneAnswer::Changed { .. } => return None,
-            PaneAnswer::Closed(id) => format!("{id}: the pane closed"),
-            PaneAnswer::TimedOut(since) => format!(
-                "{}: unchanged for {}s, still at version {since}",
-                since.pane,
-                self.limit.as_secs_f64()
-            ),
-        })
     }
 }
 

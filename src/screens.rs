@@ -191,7 +191,7 @@ fn chooser(
         client: None,
         action: ClientAction::Choices(choices),
     })?)?;
-    let Body::Choices { rows, current } = reply else {
+    let Reply::Returned(Body::Choices { rows, current }) = reply else {
         return Err(Failed::new(Code::NoTarget, "the server gave no choices"));
     };
     let items = (rows.into_iter())

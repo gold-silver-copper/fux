@@ -351,7 +351,17 @@ is of another kind, `answers`, which no such word takes, however many panes
 it has: name the tab again, `@1 wait`), and to
 `wait`, the version it holds too (`T str y text send-keys wait` waits from
 before the keys; a name keeps that version, so `T wait` later waits from
-when `T` was made, and `T str version get changed wait` from now);
+when `T` was made, and `T str version get changed wait` from now).
+
+Modifiers retain whether a request names a pane, tab, workspace or client.
+`changed` makes a `changed-request`, consumed only by `wait`; `expect`
+makes an `expected-request`, consumed only by `send-keys`. A pane capture
+has kind `capture` and a version; a rendered client screen has kind
+`client-capture` and none. A caught closed pane has kind `closed-answer`:
+it can name its pane (which is gone), but supplies no version to `changed`
+or `expect`. A handler may also receive an ordinary message string, so
+uncertain values still need runtime checks.
+
 `string` makes it text (`%2 capture string str error contains`). The
 standard library, written in fuxth, does the rest (`fux help` lists it). A
 mistake every run would make (too few values, a string given to `add` or
