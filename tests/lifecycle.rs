@@ -226,9 +226,9 @@ fn a_pane_runs_shell_else_the_login_shell_else_bin_sh() -> Outcome {
             command.env("SHELL", shell);
         }
         let mut child = command.spawn().map_err(e)?;
-        let ls = || {
+        let program = || {
             Command::new(FUX)
-                .args(["ls", "json"])
+                .args(["%1", "str", "program", "get"])
                 .env("FUX_SOCKET", &socket)
                 .output()
                 .map_err(e)
@@ -244,11 +244,10 @@ fn a_pane_runs_shell_else_the_login_shell_else_bin_sh() -> Outcome {
                 .map_err(e)?;
             Ok(made.status.success())
         })?;
-        // The name, not the title a shell's startup files may set.
+        // Observe the running process, independently of names and titles.
         let shown = eventually(&format!("a pane running {name}"), || {
-            let ls = ls()?;
-            let ls = String::from_utf8_lossy(&ls.stdout);
-            Ok(ls.contains(&format!(r#""id":"%1","name":"{name}""#)))
+            let observed = program()?;
+            Ok(observed.status.success() && String::from_utf8_lossy(&observed.stdout).trim() == name)
         });
         let _ = Command::new(FUX)
             .args(["force-kill-server"])
