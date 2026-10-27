@@ -33,10 +33,10 @@ fn event(action: MouseAction, row: u16, col: u16) -> MouseEvent {
 
 /// What the screen reports for `event`, `None` for nothing.
 fn sent(p: &Parser, event: MouseEvent) -> Option<String> {
-    let mut out = Vec::new();
-    p.screen()
-        .encode_mouse(event, &mut out)
-        .then(|| String::from_utf8_lossy(&out).replace('\x1b', "^["))
+    p.screen().encode_mouse(event).map(|chunks| {
+        let out: Vec<u8> = chunks.flatten().collect();
+        String::from_utf8_lossy(&out).replace('\x1b', "^[")
+    })
 }
 
 /// DECRQM answers each set while it is, and the latest encoding wins
@@ -159,5 +159,54 @@ fn alternate_scroll_sends_the_cursor_keys_on_the_alternate_screen() -> Result {
     assert_eq!(sent(&p, up), None);
     let p = parser(b"\x1b[?1007h\x1b[?1049h\x1b[?1000h")?;
     assert_eq!(sent(&p, up).as_deref(), Some("^[[M`$$"));
+    Ok(())
+}
+
+/// Scroll expansion keeps every arrow while bounding each encoder chunk,
+/// including the largest legal height, and kitty ignores DECCKM.
+#[test]
+fn alternate_scroll_keeps_negotiated_arrows_in_bounded_chunks() -> Result {
+    for (flags, up, down) in [
+        (&b""[..], &b"\x1bOA"[..], &b"\x1bOB"[..]),
+        (&b"\x1b[>1u"[..], &b"\x1b[A"[..], &b"\x1b[B"[..]),
+        (&b"\x1b[>9u"[..], &b"\x1b[A"[..], &b"\x1b[B"[..]),
+    ] {
+        for rows in [1, 100, u16::MAX] {
+            let mut p = Parser::with_options(
+                Size::new(rows, 1)?,
+                0,
+                Options::new().with(Feature::KittyKeyboard),
+            )?;
+            p.process(b"\x1b[?1049h\x1b[?1007h\x1b[?1h")?;
+            p.process(flags)?;
+            for (button, arrow) in [(MouseButton::WheelUp, up), (MouseButton::WheelDown, down)] {
+                for (mods, count) in [(Modifiers::NONE, 5), (Modifiers::CTRL, rows / 2)] {
+                    let event = MouseEvent {
+                        mods,
+                        ..event(MouseAction::Press(button), 0, 0)
+                    };
+                    let chunks = p.screen().encode_mouse(event).ok_or("an accepted scroll")?;
+                    let mut out = Vec::new();
+                    for chunk in chunks {
+                        assert!(!chunk.is_empty(), "no empty chunks, even at zero distance");
+                        assert!(chunk.len() <= 64, "{} bytes in a chunk", chunk.len());
+                        assert_eq!(
+                            chunk.len().checked_rem(arrow.len()),
+                            Some(0),
+                            "whole arrows"
+                        );
+                        out.extend(chunk);
+                    }
+                    assert_eq!(
+                        out,
+                        std::iter::repeat_n(arrow, usize::from(count))
+                            .flatten()
+                            .copied()
+                            .collect::<Vec<_>>()
+                    );
+                }
+            }
+        }
+    }
     Ok(())
 }
