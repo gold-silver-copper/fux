@@ -288,14 +288,14 @@ fn a_keyboard_worker_cannot_act_as_a_client_of_a_replacement_run() -> Outcome {
     )
     .map_err(e)?;
     let effects = keyboard.frame(fux::protocol::ToAttached::Run("me focused kill".into()));
-    let [fux::screens::Effect::Run(job)] = effects.as_slice() else {
+    let [fux::screens::Dispatch::Run(job)] = effects.as_slice() else {
         return Err(format!("the admitted job: {effects:?}"));
     };
     keyboard.dispatch(job.clone(), 0).map_err(e)?;
     let mut notice = String::new();
     eventually("the old worker's refusal", || {
         for act in keyboard.ran() {
-            if let fux::screens::Effect::Send(fux::act::Act::Notice { text, error: true }) = act {
+            if let fux::screens::Dispatch::Send(fux::act::Act::Notice { text, error: true }) = act {
                 notice = text;
             }
         }

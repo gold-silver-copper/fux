@@ -148,12 +148,16 @@ pub fn clusters(text: &str) -> Vec<String> {
     text.graphemes(true).map(str::to_owned).collect()
 }
 
-/// Adds `c` to `text` if the result fits in `CLUSTER_CAPACITY` bytes.
-pub fn append(text: &mut String, c: char) -> bool {
-    let fits = text
-        .len()
-        .checked_add(c.len_utf8())
-        .is_some_and(|n| n <= CLUSTER_CAPACITY);
+/// Adds `c` to `text` if the cell has dropped no character and the result
+/// fits in `CLUSTER_CAPACITY` bytes. Once full, it keeps only its prefix,
+/// even across the cluster boundaries the zero-width tailoring joins.
+fn append(text: &mut String, c: char, full: &mut bool) -> bool {
+    let fits = !*full
+        && text
+            .len()
+            .checked_add(c.len_utf8())
+            .is_some_and(|n| n <= CLUSTER_CAPACITY);
+    *full = !fits;
     if fits {
         text.push(c);
     }
@@ -174,6 +178,7 @@ pub fn append(text: &mut String, c: char) -> bool {
 /// starts afresh.
 pub fn cells_of(text: &str) -> Vec<(String, bool)> {
     let mut cells: Vec<(String, bool)> = Vec::new();
+    let mut full = false;
     let mut queue: VecDeque<String> = clusters(text).into();
     while let Some(cluster) = queue.pop_front() {
         let mut chars = cluster.chars();
@@ -181,7 +186,7 @@ pub fn cells_of(text: &str) -> Vec<(String, bool)> {
         if zero_prepend(first)
             && let Some((text, wide)) = cells.last_mut()
         {
-            if append(text, first) {
+            if append(text, first, &mut full) {
                 *wide |= text_width(text) >= 2;
             }
             for next in clusters(chars.as_str()).into_iter().rev() {
@@ -192,7 +197,7 @@ pub fn cells_of(text: &str) -> Vec<(String, bool)> {
         if width(first) == Some(0) {
             if let Some((text, wide)) = cells.last_mut() {
                 for c in cluster.chars() {
-                    if !append(text, c) {
+                    if !append(text, c, &mut full) {
                         break;
                     }
                     *wide |= text_width(text) >= 2;
@@ -210,15 +215,15 @@ pub fn cells_of(text: &str) -> Vec<(String, bool)> {
         }
         let mut text = String::from(first);
         let mut wide = width(first) == Some(2);
-        // A start of the cluster: once a character is dropped, the rest go.
-        // After a Prepend character of no width (inside a cluster begun by
-        // one of a column, U+0600), what follows is segmented afresh, as
-        // after one that begins it.
+        full = false;
+        // Once a character is dropped, append drops the rest. After a
+        // Prepend character of no width, kept or dropped (inside a cluster
+        // begun by one of a column, U+0600), what follows is segmented
+        // afresh, as after one that begins it.
         while let Some(c) = chars.next() {
-            if !append(&mut text, c) {
-                break;
+            if append(&mut text, c, &mut full) {
+                wide |= text_width(&text) >= 2;
             }
-            wide |= text_width(&text) >= 2;
             if zero_prepend(c) {
                 for next in clusters(chars.as_str()).into_iter().rev() {
                     queue.push_front(next);

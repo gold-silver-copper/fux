@@ -10,7 +10,7 @@ use fux::keymap::Keymap;
 use fux::protocol::{
     Attach, AttachedFrame, Decoder, Frame, Greeting, Hello, PROTOCOL, Role, ToAttached,
 };
-use fux::screens::Effect;
+use fux::screens::Dispatch;
 use std::io::{Read, Write};
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::UnixStream;
@@ -519,11 +519,11 @@ impl Client {
         Ok(())
     }
 
-    fn acts(&mut self, acts: Vec<Effect>) -> Outcome {
+    fn acts(&mut self, acts: Vec<Dispatch>) -> Outcome {
         for out in acts {
             match out {
-                Effect::Send(act) => self.act(act)?,
-                Effect::Run(job) => {
+                Dispatch::Send(act) => self.act(act)?,
+                Dispatch::Run(job) => {
                     self.keyboard
                         .as_mut()
                         .ok_or("a program has no attached keyboard")?

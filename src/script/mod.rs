@@ -597,9 +597,10 @@ thread_local! {
         const { std::cell::RefCell::new(None) };
 }
 
-/// Its mistake is told without a word's usage, which would read `READY`
-/// as it is made.
-fn libraries() -> Result<(Compiler<Fux>, Rc<[fuxth::Doc]>), Failed> {
+/// The client's libraries, compiled and checked without the thread-local
+/// cache; the bench counts this initialization cold. Its mistake is told
+/// without a word's usage, which would read `READY` as it is made.
+pub fn libraries() -> Result<(Compiler<Fux>, Rc<[fuxth::Doc]>), Failed> {
     let told = |error| told(error, false);
     let mut compiler = Compiler::new(vocabulary().map_err(told)?);
     let mut docs = compiler
