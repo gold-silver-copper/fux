@@ -487,6 +487,10 @@ fn json_of(value: &Value<Fux>) -> crate::json::Json {
     }
 }
 
+fn json_text(value: &Value<Fux>, _limit: usize) -> Result<String, Failure> {
+    Ok(json_of(value).render())
+}
+
 fn int(value: &Value<Fux>) -> Result<i64, Failure> {
     let Value::Int(n) = value else {
         return Err(wrong("an integer", value));
@@ -1405,7 +1409,7 @@ impl Host<'_> {
                 | Value::Bool(_)
                 | Value::Str(_)
                 | Value::List(_)
-                | Value::App(_)) => now(out, Value::str(json_of(&other).render())),
+                | Value::App(_)) => now(out, Value::str(json_text(&other, crate::wire::MAX_ALLOCATED)?)),
             },
             Act::Events => tell(Request::Events(None, None)),
             Act::EventsOf => {
@@ -1945,6 +1949,34 @@ mod tests {
             assert!(checked(wrong).is_err(), "{wrong}");
         }
         assert_eq!(checked("%1 str x text send-keys wait capture"), Ok(()));
+    }
+
+    #[test]
+    fn capture_conversion_and_rendering_share_one_grant() -> Result<(), Box<dyn std::error::Error>> {
+        let allocator = fux_vt_peak::ThreadPeak;
+        let base = allocator.live();
+        let cuts = (0..512).map(|_| crate::capture::Cut {
+            text: "x".into(),
+            cells: 1,
+            style: fux_vt::Attributes::new(fux_vt::Color::Idx(1), fux_vt::Color::Default),
+        }).collect();
+        let capture = crate::capture::Captured {
+            of: crate::capture::Of::Client(crate::id::ClientId::of(1)),
+            screen_rows: 1,
+            screen_cols: 512,
+            screen_cursor: None,
+            lines: vec![cuts],
+            styles: true,
+            marks: false,
+        };
+        let value = Value::App(Fux::Answer(Box::new(super::super::Answer::Capture(Box::new(capture))), None));
+        assert!(json_text(&value, 0).is_err(), "conversion must refuse before allocating beyond the grant");
+        allocator.reset_peak();
+        let text = json_text(&value, 64 << 10).map_err(|f| f.message)?;
+        assert!(text.contains(r#""col":511,"len":1,"fg":1"#));
+        assert!(allocator.peak().saturating_sub(base) <= 64 << 10,
+            "capture input, conversion and rendered text must fit one grant");
+        Ok(())
     }
 
     /// A tab's or workspace's answer is an array, however many panes
