@@ -1,8 +1,41 @@
 //! Signals as bytes on a pipe, for a poll loop to wait on.
 use crate::errno::{Errno, Result, check};
 use crate::process::Signal;
+use std::io::PipeReader;
 use std::os::fd::{AsRawFd, OwnedFd};
 use std::sync::atomic::{AtomicI32, AtomicUsize, Ordering};
+
+/// A pipe that becomes readable when any of its signals arrives: each
+/// writes a byte to the other end, of which its notice holds a copy. Both
+/// ends are non-blocking; dropped, the notices stop, then the pipe closes.
+pub struct Pipe {
+    /// Declared first, so that they are dropped before the read end closes:
+    /// a handler then never writes to a pipe with no reader.
+    _notices: Vec<Notice>,
+    reader: PipeReader,
+}
+
+impl Pipe {
+    pub fn new(signals: &[Signal]) -> Result<Pipe> {
+        let io = |error: std::io::Error| Errno::from_io_error(&error).unwrap_or(Errno::IO);
+        let (reader, write) = std::io::pipe().map_err(io)?;
+        crate::io::set_nonblocking(&reader, true)?;
+        // A failure part-way through drops the notices made before it.
+        let notices = signals
+            .iter()
+            .map(|&signal| notify(signal, write.try_clone().map_err(io)?.into()))
+            .collect::<Result<_>>()?;
+        Ok(Pipe {
+            _notices: notices,
+            reader,
+        })
+    }
+
+    /// The read end, to wait on and drain.
+    pub fn reader(&self) -> &PipeReader {
+        &self.reader
+    }
+}
 
 /// How many notices may be held at once, of every signal.
 const COUNT: usize = 64;
@@ -35,17 +68,17 @@ static RUNNING: AtomicUsize = AtomicUsize::new(0);
 /// dropped. Then `write` is closed, once no handler can still be writing to
 /// it.
 ///
-/// Make `write` non-blocking: a full pipe then drops the byte rather than
-/// hold the handler, and one byte waiting is enough to wake a poll. Several
-/// notices of one signal each get a byte.
+/// `write` is made non-blocking: a full pipe then drops the byte rather
+/// than hold the handler, and one byte waiting is enough to wake a poll.
+/// Several notices of one signal each get a byte.
 ///
 /// The handler replaces what the signal did before, for good, with
 /// `SA_RESTART`. Once every notice of a signal is dropped, the signal is
-/// caught and does nothing. This fails with `INVAL` for a signal that can't
-/// be caught (`KILL`, `STOP`), and with `NOSPC` when 64 notices are held
-/// already.
+/// caught and does nothing. This fails with `NOSPC` when 64 notices are
+/// held already, leaving the signal as it was, and with `INVAL` for a
+/// signal that can't be caught (`KILL`, `STOP`).
 pub fn notify(signal: Signal, write: OwnedFd) -> Result<Notice> {
-    install(signal)?;
+    crate::io::set_nonblocking(&write, true)?;
     let fd = write.as_raw_fd();
     let slot = SLOTS
         .iter()
@@ -56,10 +89,14 @@ pub fn notify(signal: Signal, write: OwnedFd) -> Result<Notice> {
         })
         .ok_or(Errno::NOSPC)?;
     slot.signal.store(signal.raw(), Ordering::SeqCst);
-    Ok(Notice {
+    // Held before the handler is installed, so that no signal arriving in
+    // between is lost; a failed install gives the slot back as it drops.
+    let notice = Notice {
         slot,
         _write: write,
-    })
+    };
+    install(signal)?;
+    Ok(notice)
 }
 
 /// A signal's arrivals written to a pipe, from [`notify`]; dropped, they
@@ -140,13 +177,15 @@ mod tests {
     use super::*;
     use crate::poll::{Events, PollFd, poll};
     use crate::process::{Pid, kill};
-    use std::io::{PipeReader, Read};
+    use std::io::Read;
     use std::time::Duration;
 
     /// The pipe's next byte, or 0 for its end; `None` if none comes in 5 s.
     fn next(pipe: &mut PipeReader) -> Option<usize> {
         let mut fds = [PollFd::new(pipe, Events::IN)];
-        poll(&mut fds, Some(Duration::from_secs(5))).ok()?;
+        if poll(&mut fds, Some(Duration::from_secs(5))).ok()? == 0 {
+            return None;
+        }
         pipe.read(&mut [0u8; 1]).ok()
     }
 

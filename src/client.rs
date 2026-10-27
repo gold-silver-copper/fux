@@ -1013,15 +1013,16 @@ const STOPPED: &str = "detached by a signal";
 /// The signals an attached client answers: a new size, and those that
 /// detach it.
 struct Signals {
-    winch: crate::SignalPipe,
-    stops: crate::SignalPipe,
+    winch: fuxix::signal::Pipe,
+    stops: fuxix::signal::Pipe,
 }
 
 impl Signals {
     fn new() -> Result<Signals, Error> {
         Ok(Signals {
-            winch: crate::SignalPipe::new(&[fuxix::process::Signal::Winch])?,
-            stops: crate::SignalPipe::new(&crate::STOPS)?,
+            winch: fuxix::signal::Pipe::new(&[fuxix::process::Signal::Winch])
+                .map_err(io::Error::from)?,
+            stops: fuxix::signal::Pipe::new(&crate::STOPS).map_err(io::Error::from)?,
         })
     }
 }
@@ -1246,8 +1247,8 @@ fn attached(
         };
         let mut fds = vec![
             PollFd::new(&*stream, reads),
-            PollFd::new(winch.pipe(), PollFlags::IN),
-            PollFd::new(stops.pipe(), PollFlags::IN),
+            PollFd::new(winch.reader(), PollFlags::IN),
+            PollFd::new(stops.reader(), PollFlags::IN),
         ];
         let mut add = |fd| {
             fds.push(fd);
@@ -1300,7 +1301,7 @@ fn attached(
             output.woke()?;
         }
         if is(WINCH) {
-            crate::drain(winch.pipe());
+            crate::drain(winch.reader());
             // A terminal that says no size now keeps the last it said.
             if terminal && let Some(size) = window_size() {
                 let resize = AttachedFrame::Resize(size);

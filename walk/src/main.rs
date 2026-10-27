@@ -12,8 +12,6 @@ mod world;
 use run::{Checker, End, Failure};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
-use std::io::{PipeReader, Read};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 use step::Step;
 
@@ -39,37 +37,21 @@ struct Options {
     stop: Stop,
 }
 
-/// Whether SIGINT or SIGTERM has come: each writes a byte to the pipe.
-struct Stop {
-    pipe: PipeReader,
-    asked: AtomicBool,
-    _notices: Vec<fuxix::signal::Notice>,
-}
+/// Whether SIGINT or SIGTERM has come: each writes a byte to the pipe,
+/// which is never read, so that it stays readable.
+struct Stop(fuxix::signal::Pipe);
 
 impl Stop {
-    fn new() -> std::io::Result<Stop> {
-        let (pipe, write) = std::io::pipe()?;
-        fuxix::io::set_nonblocking(&pipe, true)?;
-        fuxix::io::set_nonblocking(&write, true)?;
-        let notices = [fuxix::process::Signal::Int, fuxix::process::Signal::Term]
-            .into_iter()
-            .map(|signal| -> std::io::Result<_> {
-                Ok(fuxix::signal::notify(signal, write.try_clone()?.into())?)
-            })
-            .collect::<std::io::Result<_>>()?;
-        Ok(Stop {
-            pipe,
-            asked: AtomicBool::new(false),
-            _notices: notices,
-        })
+    fn new() -> fuxix::Result<Stop> {
+        use fuxix::process::Signal;
+        fuxix::signal::Pipe::new(&[Signal::Int, Signal::Term]).map(Stop)
     }
 
     /// Whether a stop was asked for, now or before.
     fn asked(&self) -> bool {
-        if matches!((&self.pipe).read(&mut [0u8; 1]), Ok(n) if n > 0) {
-            self.asked.store(true, Ordering::SeqCst);
-        }
-        self.asked.load(Ordering::SeqCst)
+        use fuxix::poll::{Events, PollFd, poll};
+        let mut fds = [PollFd::new(self.0.reader(), Events::IN)];
+        matches!(poll(&mut fds, Some(Duration::ZERO)), Ok(n) if n > 0)
     }
 }
 

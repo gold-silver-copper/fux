@@ -63,40 +63,6 @@ pub(crate) fn after(from: Instant, wait: Duration) -> Instant {
 /// The signals that stop a server and detach a client.
 pub(crate) const STOPS: [Signal; 3] = [Signal::Term, Signal::Int, Signal::Hup];
 
-/// A pipe that becomes readable when any of its signals arrives: each
-/// writes a byte to the other end, of which its notice holds a copy.
-/// Dropped, the notices stop, which closes those copies.
-pub(crate) struct SignalPipe {
-    pipe: PipeReader,
-    /// Held for the signals' handlers to write through.
-    _notices: Vec<fuxix::signal::Notice>,
-}
-
-impl SignalPipe {
-    pub(crate) fn new(signals: &[Signal]) -> std::io::Result<SignalPipe> {
-        let (pipe, write) = std::io::pipe()?;
-        fuxix::io::set_nonblocking(&pipe, true)?;
-        // A signal never waits on a full pipe: one byte there is enough.
-        fuxix::io::set_nonblocking(&write, true)?;
-        // A failure part-way through drops the notices made before it.
-        let notices = signals
-            .iter()
-            .map(|&signal| -> std::io::Result<_> {
-                Ok(fuxix::signal::notify(signal, write.try_clone()?.into())?)
-            })
-            .collect::<std::io::Result<_>>()?;
-        Ok(SignalPipe {
-            pipe,
-            _notices: notices,
-        })
-    }
-
-    /// The pipe, to wait on and drain.
-    pub(crate) fn pipe(&self) -> &PipeReader {
-        &self.pipe
-    }
-}
-
 /// Reads whatever a pipe holds.
 pub(crate) fn drain(mut pipe: &PipeReader) {
     let mut buffer = [0u8; 256];
@@ -183,37 +149,4 @@ pub(crate) fn status(socket: &socket::SocketPath, probe: &client::Probe) -> Resu
     ];
     fields.extend(theirs);
     Ok(Json::object(fields))
-}
-
-#[cfg(test)]
-mod tests {
-    /// The descriptors this process holds on the pipe whose inode is `ino`.
-    #[cfg(target_os = "linux")]
-    fn holding(ino: u64) -> usize {
-        let pipe = format!("pipe:[{ino}]");
-        std::fs::read_dir("/proc/self/fd")
-            .into_iter()
-            .flatten()
-            .filter_map(|entry| std::fs::read_link(entry.ok()?.path()).ok())
-            .filter(|link| link.as_os_str() == pipe.as_str())
-            .count()
-    }
-
-    #[test]
-    #[cfg(target_os = "linux")]
-    fn a_dropped_signal_pipe_leaves_nothing_registered() -> std::io::Result<()> {
-        use std::os::unix::fs::MetadataExt;
-        let signals = [fuxix::process::Signal::Winch, fuxix::process::Signal::Usr2];
-        let pipe = super::SignalPipe::new(&signals)?;
-        let ino = std::fs::metadata(format!(
-            "/proc/self/fd/{}",
-            std::os::fd::AsRawFd::as_raw_fd(&pipe.pipe)
-        ))?
-        .ino();
-        // The read end, and a write end for each signal's handler.
-        assert_eq!(holding(ino), 3);
-        drop(pipe);
-        assert_eq!(holding(ino), 0, "a handler still holds its write end");
-        Ok(())
-    }
 }
