@@ -1638,15 +1638,18 @@ impl Host<'_> {
             Act::Check => {
                 let path = string(&next()?)?;
                 let config = one_of(&next()?, &[("program", false), ("config", true)])?;
-                let text =
-                    super::read_file(path.as_ref()).map_err(|f| fail(Raise::Read, f.located()))?;
                 let checked = |failed: super::Failed| fail(Raise::Check, failed.located());
+                let image = super::source::file(path.as_ref()).map_err(|f| {
+                    if f.code == Code::Read {
+                        fail(Raise::Read, f.located())
+                    } else {
+                        checked(f)
+                    }
+                })?;
                 if config {
-                    super::run_config(&path, &text, None, None).map_err(checked)?;
+                    super::run_config(image, None, None).map_err(checked)?;
                 } else {
-                    let tokens = fuxth::token::source(&path, &text)
-                        .map_err(|e| checked(super::Failed::from(e)))?;
-                    super::compile(&tokens).map_err(checked)?;
+                    super::compile(&image.tokens()).map_err(checked)?;
                 }
                 self.show(&format!("{path}: ok\n"))
             }

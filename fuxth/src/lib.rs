@@ -3,7 +3,7 @@
 //! A program is words. Numbers push themselves; `str` pushes the next word
 //! as a string; every other word takes values from the stack and gives
 //! values back, and never reads the words after it. The parsing words are
-//! few and fixed: `str`, `define NAME … end`, `let NAME`, `list … end`,
+//! few and fixed: `require PATH`, `str`, `define NAME … end`, `let NAME`, `list … end`,
 //! `each … end`, `if … else … then`, `begin … until` and
 //! `try … catch … end`, which runs its handler for a failure it names.
 //! Words have names, not symbols (`add`, `eq`, `dup`), and none uses a
@@ -41,6 +41,7 @@ mod check;
 mod compile;
 mod error;
 mod machine;
+mod source;
 pub mod token;
 mod value;
 mod vocabulary;
@@ -48,6 +49,7 @@ mod vocabulary;
 pub use compile::{Compiler, Doc, Parsing, Program, Read, Vocabulary};
 pub use error::{Code, Error, Failure};
 pub use machine::{Args, BUILT, Builtin, Done, Host, LONGEST, Limits, Machine, Outcome};
+pub use source::{Loader, Source, SourceImage, SourceLimits};
 pub use token::{Place, Token};
 pub use value::{AppValue, List, NESTING, TOTAL, Text, Value};
 

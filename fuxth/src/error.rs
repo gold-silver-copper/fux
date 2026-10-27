@@ -52,6 +52,8 @@ macro_rules! codes {
 }
 
 codes! {
+    /// A source cannot be required, or its imports form a cycle.
+    Require "require" [found],
     /// A quote is never closed.
     OpenQuote "open_quote" [found],
     /// A word no definition, builtin or application gives.

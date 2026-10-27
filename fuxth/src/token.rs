@@ -4,12 +4,13 @@
 use crate::error::{Code, Error};
 use std::ops::Range;
 use std::rc::Rc;
+use std::sync::Arc;
 
 /// Where a token came from: a line of a file, or an argument.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Place {
     /// A line of a source, from 1.
-    Line { source: Rc<str>, line: u32 },
+    Line { source: Arc<str>, line: u32 },
     /// A command-line argument, from 1.
     Argument(u32),
 }
@@ -56,9 +57,17 @@ pub fn source(source: &str, text: &str) -> Result<Vec<Token>, Error> {
 /// `source`'s tokens, each with the bytes of `text` it is written in:
 /// between two tokens is only whitespace and comments.
 pub(crate) fn spans(source: &str, text: &str) -> Result<Vec<(Token, Range<usize>)>, Error> {
-    let source: Rc<str> = Rc::from(source);
+    spans_limited(source, text, usize::MAX)
+}
+
+fn spans_limited(
+    source: &str,
+    text: &str,
+    limit: usize,
+) -> Result<Vec<(Token, Range<usize>)>, Error> {
+    let source: Arc<str> = Arc::from(source);
     let place = |line: u32| Place::Line {
-        source: Rc::clone(&source),
+        source: Arc::clone(&source),
         line,
     };
     let token = |(text, at, from): (String, u32, usize), to: usize| {
@@ -74,6 +83,19 @@ pub(crate) fn spans(source: &str, text: &str) -> Result<Vec<(Token, Range<usize>
     let mut word: Option<(String, u32, usize)> = None;
     let next_line = |line: u32| line.saturating_add(1);
     while let Some((at, c)) = chars.next() {
+        if tokens.len() >= limit
+            && !matches!(c, '\n' | ' ' | '\t' | '\r' | '#')
+            && !(c == '\\' && matches!(chars.peek(), Some((_, '\n'))))
+        {
+            return Err(Error::new(
+                Code::TooLong,
+                "source token limit exceeded",
+                Some(&Token {
+                    text: Rc::from(""),
+                    place: place(line),
+                }),
+            ));
+        }
         match c {
             '\n' | ' ' | '\t' | '\r' => {
                 tokens.extend(word.take().map(|w| token(w, at)));
@@ -130,6 +152,14 @@ fn open_quote(place: Place, quote: char) -> Error {
         place: Some(place),
         word: None,
     }
+}
+
+/// Tokenizes without allocating more than `limit` tokens.
+pub fn source_limited(source: &str, text: &str, limit: usize) -> Result<Vec<Token>, Error> {
+    Ok(spans_limited(source, text, limit)?
+        .into_iter()
+        .map(|(token, _)| token)
+        .collect())
 }
 
 #[cfg(test)]

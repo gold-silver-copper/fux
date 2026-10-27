@@ -376,6 +376,19 @@ help json` lists every one ([docs/json.md](docs/json.md)).
 
 ## Configuration
 
+`require PATH` loads a literal file while compiling, once per canonical
+path, relative to the requiring file (or the CLI's cwd for arguments and
+stdin). For example, `require shared/keys.fux` in a config shares definitions
+and key bindings. Quotes handle paths with spaces. There is no search path
+or automatic CLI config import. Required files are frozen with the client;
+reattach to read edits. Keys and prompts use the saved definitions and cannot
+load new files with `require`.
+
+The entire import graph is checked before any of it runs. Cycles fail with
+the source chain, file and line. Root plus imports are limited to 16 MiB,
+256 files, 32 active require levels and 1,000,000 tokens. Sources must be
+regular files, opened nonblocking; explicit stdin remains available with `-`.
+
 The optional config is `$XDG_CONFIG_HOME/fux/config.fux`, else
 `~/.config/fux/config.fux`: fuxth, which each client runs as it attaches.
 Its `set` words change the server for everyone, all at once when it has

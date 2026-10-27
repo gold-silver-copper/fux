@@ -17,7 +17,7 @@ line, the deepest first; `print` prints a value at once.
 - **Words, not symbols.** No word uses a character a shell treats specially,
   so a program can be a command's arguments, each argument one word, as well
   as a file.
-- **A small core.** 21 words and 13 parsing words (below). Everything else,
+- **A small core.** 21 words and 14 parsing words (below). Everything else,
   even `dup swap over rot`, is the **standard library** ([`STDLIB`],
   `src/stdlib.fux`), written in fuxth.
 - **Values:** integers (64-bit, checked: no overflow, no division by zero;
@@ -59,6 +59,7 @@ line, the deepest first; `print` prints a value at once.
 
 | Parsing word | |
 |---|---|
+| `require PATH` | loads a literal file once at compile time through the host loader, relative to its requiring file |
 | `str WORD` | WORD as a string, whatever it looks like: `str 12`, `str 'two words'`, `str ''` |
 | `define NAME … end` | a word of your own; it may call itself, and words defined after it in the same source; it may take a library's or the application's word's name, from there on (not the core's or a parsing word's, nor one the source defines or a top-level `let` names already); at the top level only |
 | `VALUE let NAME` | NAME pushes VALUE from there on in the text: inside a definition, for that call; at the top level, for the rest of the program (definitions written after it may read it). A later `let NAME` sets it again. |
@@ -97,6 +98,12 @@ is-space is-digit is-upper is-lower is-letter upper lower copies pad`.
 
 Files are split as a shell splits a line: quotes, backslashes, and `#`
 comments at a word's start.
+
+`require shared/words.fux` inserts the file at that position before the
+whole program is checked. Quote paths with spaces: `require 'shared keys.fux'`.
+Canonical paths are included once per image, including symlink spellings;
+cycles are errors. Nothing runs if an imported file fails to compile or check.
+There is no search path, extension inference, network loader or namespace.
 
 ## Embedding
 
@@ -158,6 +165,20 @@ at the call. A failed `add` leaves the compiler as it was.
 those definitions, not their source's top level or `let` names (a key
 binding of a config's, say); a definition reading one may not be called
 there (`unset`).
+
+`Compiler::load(Source, &mut Loader, SourceLimits)` expands imports and adds
+one source image. `SourceImage::load` also exposes expansion separately for
+hosts with a token adapter. The host supplies canonical path resolution and
+bounded reads of regular files opened nonblocking. Relative paths use the
+requiring file; command-line/stdin roots use the host's captured cwd and fail
+when it is unknown. Default limits, including the root, are 16 MiB, 256 units,
+32 active require edges and 1,000,000 input tokens. The image retains the
+expanded tokens and their source chains and can cross threads; `tokens()`
+replays it without IO. Save it for later definitions-only compilations.
+
+`Compiler::add` and `library` have no loader and explicitly refuse `require`.
+This includes the standalone `run` example and the in-memory differential and
+fuzz embeddings; filesystem-enabled scripts can run with `fux --file FILE`.
 
 For help, [`Builtin`] and [`Parsing`] are the core's words and the parsing
 words: each has `ALL`, `name()` and `named(name)`, a built-in its `effect()`

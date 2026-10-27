@@ -6,6 +6,7 @@
 //!
 //! Every run is fresh: its own stack and dictionary, the bundled library's
 //! words first (`library.fux`).
+mod source;
 mod words;
 
 use crate::answer::{PaneAnswer, PaneResults};
@@ -27,9 +28,8 @@ use std::sync::{Arc, Mutex};
 pub(crate) use words::INPUT_MAX;
 pub use words::{Act, After, Group, Keys, Opt, Row, Screen, Takes, Word, from_opts, usage};
 
-/// A config, by its name and text, whose definitions its bindings and
-/// prompt see.
-pub type Config = std::sync::Arc<(String, String)>;
+/// The frozen source image whose definitions a client's bindings and prompt see.
+pub type Config = Arc<fuxth::SourceImage>;
 
 /// The bundled words, written in fuxth.
 const LIBRARY: &str = include_str!("library.fux");
@@ -471,7 +471,8 @@ impl From<fuxth::Error> for Failed {
 fn telling(error: fuxth::Error) -> Failed {
     let usage = match error.code {
         Lang::StackUnderflow | Lang::Type | Lang::Range => true,
-        Lang::OpenQuote
+        Lang::Require
+        | Lang::OpenQuote
         | Lang::UnknownWord
         | Lang::MissingToken
         | Lang::BadName
@@ -592,8 +593,7 @@ fn configured_compiler(
     }) {
         return Ok(ready);
     }
-    let (name, text) = &**config;
-    compiler.add(&handles(&token::source(name, text)?)?)?;
+    compiler.add(&handles(&config.tokens())?)?;
     let ready = compiler.definitions();
     CONFIGURED.set(Some((Arc::clone(config), ready.clone())));
     Ok(ready)
@@ -1242,7 +1242,7 @@ fn config_keymap(server: Option<&mut Server>, run: Option<Run>) -> Result<Keymap
         return default_keys();
     };
     let shown = path.display().to_string();
-    let file = match std::fs::File::open(&path) {
+    let (path, file) = match source::root(&path) {
         Ok(file) => file,
         Err(error)
             if error.kind() == io::ErrorKind::NotFound
@@ -1254,7 +1254,7 @@ fn config_keymap(server: Option<&mut Server>, run: Option<Run>) -> Result<Keymap
         }
         Err(error) => return Err(read_failed(&shown, &error.to_string())),
     };
-    run_config(&shown, &read_text(&shown, file)?, server, run)
+    run_config(source::opened_file(path, file)?, server, run)
 }
 
 /// The keymap a config file makes, its words run on the defaults, its
@@ -1268,15 +1268,12 @@ pub fn run_file(
     server: Option<&mut Server>,
     run: Option<Run>,
 ) -> Result<Keymap, Failed> {
-    let shown = path.display().to_string();
-    let text = read_file(path)?;
-    run_config(&shown, &text, server, run)
+    run_config(source::file(path)?, server, run)
 }
 
 /// Runs one source snapshot as a config, on the bundled keys.
 fn run_config(
-    shown: &str,
-    text: &str,
+    image: fuxth::SourceImage,
     server: Option<&mut Server>,
     run: Option<Run>,
 ) -> Result<Keymap, Failed> {
@@ -1284,17 +1281,21 @@ fn run_config(
         of: run,
         ..client::context()
     };
+    let tokens = image.tokens();
     let mut keymap = Keymap {
-        config: Some(std::sync::Arc::new((shown.to_owned(), text.to_owned()))),
+        config: Some(Arc::new(image)),
         ..default_keys()?
     };
     let mut settings = Settings::default();
-    run_quiet(
-        shown,
-        text,
-        context.clone(),
-        Some(&mut keymap),
+    let mut machine = compile(&tokens)?;
+    let mut out = io::sink();
+    let mut host = Host::new(context.clone(), Some(&mut keymap), &mut out);
+    run_capped(
+        &mut machine,
+        &mut host,
         &mut settings,
+        Some(PROGRAM_STEPS),
+        None,
     )?;
     if let Some(server) = server
         && !settings.0.is_empty()
@@ -1430,10 +1431,10 @@ fn program(args: &[String]) -> Result<(Vec<Token>, Given), Failed> {
         // A program read whole, at most `SOURCE_MAX` of it.
         [dash] if dash == "-" => {
             let text = read_text("stdin", io::stdin())?;
-            return Ok((token::source("stdin", &text)?, Given::Stdin));
+            return Ok((source::text("stdin", &text)?.tokens(), Given::Stdin));
         }
         [flag, file, rest @ ..] if flag == "--file" => {
-            let tokens = token::source(file, &read_file(file.as_ref())?)?;
+            let tokens = source::file(file.as_ref())?.tokens();
             return Ok((tokens, Given::File(rest.to_vec())));
         }
         [flag] if flag == "--file" => {
@@ -1447,10 +1448,10 @@ fn program(args: &[String]) -> Result<(Vec<Token>, Given), Failed> {
         [help, topic] if help == "help" => token::arguments(&["str", topic, "explain"]),
         [flag] if matches!(flag.as_str(), "--help" | "-h") => token::arguments(&["help"]),
         [flag] if matches!(flag.as_str(), "--version" | "-V") => token::arguments(&["version"]),
-        [line] => token::source("command line", line)?,
+        [line] => return Ok((source::text("command line", line)?.tokens(), Given::Words)),
         words => token::arguments(words),
     };
-    Ok((words, Given::Words))
+    Ok((source::arguments(&words)?.tokens(), Given::Words))
 }
 
 /// The most steps a command line's program takes: one that loops without
