@@ -28,11 +28,12 @@ impl std::fmt::Display for Buffer {
 }
 
 wire! {
-    /// A workspace named on the command line: `+N` or its name.
+    /// A workspace destination: an id, a name, or a fresh unnamed workspace.
     #[derive(Clone, Debug, PartialEq, Eq)]
     pub enum WsRef {
         Id(id: WsId),
         Name(name: String),
+        New,
     }
 }
 
@@ -560,7 +561,7 @@ wire! {
         /// A program, started in place of a shell in a tab of its own, in a
         /// workspace no client is moved to.
         Run {
-            workspace: Option<WsRef>,
+            workspace: WsRef,
             name: Option<String>,
             size: Size,
             cwd: Option<PathBuf>,
@@ -647,11 +648,6 @@ wire! {
         Resolve {
             text: String,
             kind: Kind,
-        },
-        /// The pane given the name `name` (by `rename`, or its program's),
-        /// answered with its id.
-        PaneNamed {
-            name: String,
         },
         /// The panes or tabs a pane, tab or workspace is or holds,
         /// answered with their ids in layout order.
@@ -742,6 +738,9 @@ impl std::error::Error for Usage {}
 
 /// A workspace: `+N`, or its name.
 pub fn parse_workspace(text: &str) -> Result<WsRef, Usage> {
+    if text == "new-workspace" {
+        return Ok(WsRef::New);
+    }
     match text.parse::<WsId>() {
         Ok(id) => Ok(WsRef::Id(id)),
         Err(_) if text.starts_with('+') => Err(Usage::Not(Kind::Workspace, text.to_owned())),
@@ -786,7 +785,6 @@ impl Command {
         match self {
             C::Ls { .. }
             | C::Resolve { .. }
-            | C::PaneNamed { .. }
             | C::Members { .. }
             | C::CapturePane { .. }
             | C::DumpLayout { .. }

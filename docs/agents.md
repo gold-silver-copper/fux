@@ -39,7 +39,7 @@ fux never judges whether a program is done: which change means done is
 yours to say (recipes below).
 
 ```sh
-A=$(fux opts str web name 100 30 size str ./app program str --fast arg run)  # %2:0.0.0.0.0:RUN
+A=$(fux agent-opts str web name 100 30 size str ./app program str --fast arg run)  # %2:0.0.0.0.0:RUN
 fux str "$A" changed wait                      # until it differs: %2:0.61.0.0.0:RUN screen
 A=$(fux %2 str y text str Enter key send-keys) # keys: the version from before them
 fux str "$A" changed 600 timeout wait          # 124 if unchanged in 600 s (else the server's wait-seconds)
@@ -56,12 +56,18 @@ fux %2 str click 3 10 mouse send-mouse         # a click at row 3, column 10, fr
 fux %2 tab 80 24 resize; fux %2 50 percent resize-x; fux %2 horizontal split
 fux %2 str TERM signal                         # signal what runs in its foreground
 fux %2 kill-first respawn                      # end its program and start it again
-fux str web pane                               # a pane by its tab's name
-fux str logs pane-named                        # a pane by its own name (rename)
+fux str web pane                               # a pane by its given name (run's name)
+fux str logs pane                              # a pane by its given name (rename)
 fux str agent workspace panes                  # its panes, in layout order (tabs: its tabs)
 fux ls                                         # what there is: workspaces, tabs, panes
 fux str agent workspace kill                   # at the end: everything run started
 ```
+
+`run` needs `in`; `agent-opts` is `opts str agent in`.
+Use `opts str new-workspace in ... run` for a fresh unnamed workspace.
+`get name` is `null` for an unnamed thing, which shows a label instead;
+a label never finds anything. Use `panes` or `tabs` to choose a container's
+members: `get` reads only the object's own fields.
 
 A wait answers its pane's version now and what changed:
 `%2:0.61.1.4.0:RUN screen bell done`, with `exited 3`, `killed by
@@ -152,7 +158,7 @@ too). `A counts` gives a version's five counts as integers:
   it looks, so it wants an answer from before the end (`run`'s).
 
   ```fux
-  opts 80 24 size str cargo program str test arg run
+  agent-opts 80 24 size str cargo program str test arg run
   begin 600 timeout wait dup counts 4 at 1 eq until
   str exited get
   ```
@@ -181,7 +187,7 @@ too). `A counts` gives a version's five counts as integers:
   `agent`, on the size of the tab `fux` runs in; from outside fux, give it
   a size: `opts 80 24 size str agent in new-tab`. Wait for its prompt
   (a text it shows) before you type: its startup may drop what comes
-  sooner. A command that must run is surer started as the program: `opts
+  sooner. A command that must run is surer started as the program: `agent-opts
   80 24 size str sh program str -c arg str 'make test; exec
   "${SHELL:-sh}"' arg run` (fux gives no `SHELL` of its own).
 - **An agent's whole answer:** on the alternate screen a TUI redraws its
@@ -321,7 +327,7 @@ function mark_prompt --on-event fish_prompt; printf '\e]133;A\a'; end
 In bash, a hook after `mark_end` sees the command's `$?`, though
 `PIPESTATUS` then holds `$?` alone. A remote shell (`ssh`) marks commands if
 its startup does. Or run a remote command in a pane of its own, and wait
-for its exit: `fux opts 80 24 size str ssh program str -n arg str HOST arg
+for its exit: `fux agent-opts 80 24 size str ssh program str -n arg str HOST arg
 str make arg run`.
 
 ## programs: A program
@@ -332,7 +338,7 @@ between steps:
 
 ```fux
 # test.fux: run the tests, wait until they end, read what they printed
-opts str tests name 80 24 size str cargo program str test arg run   # its answer: %2:0.0.0.0.0:RUN
+agent-opts str tests name 80 24 size str cargo program str test arg run   # its answer: %2:0.0.0.0.0:RUN
 begin 600 timeout wait dup counts 4 at 1 eq until  # ENDED, its last count, is 1
 all-history capture
 ```
@@ -416,7 +422,7 @@ it), `str PATH read-file` and `str NAME getenv` (a variable not set fails
   room below its bar).
 - To keep what a program writes, run it under `script` in its pane, so it
   still writes to a terminal (a pipe, as with `tee`, changes what it
-  writes): `opts str script program str -q arg str -e arg str -f arg str
+  writes): `agent-opts str script program str -q arg str -e arg str -f arg str
   LOG arg str -c arg str 'make test' arg run` (util-linux; on macOS and
   the BSDs, `str -q arg str -F arg str LOG arg str sh arg str -c arg str
   'make test' arg`). LOG holds the terminal's raw bytes (util-linux adds a

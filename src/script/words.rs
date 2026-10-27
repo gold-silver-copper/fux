@@ -250,8 +250,7 @@ pub const INTEGERS: &str = "cols rows secs n row col lines from to cells";
 words! {
     Finding Starting Waiting Input Reading Changing Clients Server Shell Config Help;
     Act {
-        Finding Pane "pane" "ref -- pane" "the pane ref names: a tab's name (its one pane), %N, a pane, or a tab of one pane" "fux str web pane capture" [];
-        Finding PaneNamed "pane-named" "name -- pane" "the pane given that name (rename, or its program's); never a title" "fux str server pane-named capture" [];
+        Finding Pane "pane" "ref -- pane" "the pane ref names: its given name, %N, a pane, an answer or a version" "fux str web pane capture" [];
         Finding Tab "tab" "ref -- tab" "the tab ref names: its name, @N, or a pane's tab" "fux %3 tab str logs rename" [];
         Finding Workspace "workspace" "ref -- workspace" "the workspace ref names: its name, +N, or a pane's or tab's workspace" "fux str agent workspace kill" [];
         Finding Here "here" "-- pane" "the pane this runs in (FUX_PANE)" "fux here str done notify" [];
@@ -260,8 +259,8 @@ words! {
         Finding Panes "panes" "handle -- list" "the panes of a pane (itself), a tab or a workspace, in layout order" "fux str agent workspace panes each capture print end" [];
         Finding Tabs "tabs" "handle -- list" "the tabs of a pane or tab (its own) or a workspace, in the workspace's order" "fux str agent workspace tabs each str name get print end" [];
         Finding Focused "focused" "client -- pane" "the pane a client focuses" "fux str c1 client focused capture" [];
-        Starting Opts "opts" "-- opts" "empty options, for run, new-tab, new-workspace, events-of and attach (the other words take them on the pane)" "fux opts 80 24 size str ./app program run" [];
-        Starting Run "run" "opts -- answer" "start a program in a tab of its own, in workspace agent; its pane stays once it exits" "fux opts str web name 120 40 size str ./app program str --flag arg run" [Opts: Name Size Cwd Env Program Arg In];
+        Starting Opts "opts" "-- opts" "empty options, for run, new-tab, new-workspace, events-of and attach (the other words take them on the pane)" "fux opts str agent in 80 24 size str ./app program run" [];
+        Starting Run "run" "opts -- answer" "start a program in a tab of its own; in is required, name names its pane; its pane stays once it exits" "fux agent-opts str web name 120 40 size str ./app program str --flag arg run" [Opts: Name Size Cwd Env Program Arg In];
         Starting Split "split" "subject -- answer" "split a pane: a shell, or the program given" "fux %3 vertical split" [Pane: Horizontal Vertical Shares Cwd Env Program Arg];
         Starting NewTab "new-tab" "opts -- answer" "a tab with a shell" "fux opts str logs name 80 24 size str agent in new-tab" [Opts: Name Size Cwd Env In];
         Starting NewWorkspace "new-workspace" "opts -- answer" "a workspace with a tab and a shell" "fux opts str work name 80 24 size new-workspace" [Opts: Name Size Cwd Env];
@@ -309,7 +308,7 @@ words! {
         Clients Detach "detach" "client --" "detach a client" "fux str c1 client detach" [];
         Clients CaptureClient "capture-client" "client -- client-capture" "what a client's terminal shows" "fux str c1 client capture-client" [];
         Clients ResizeClient "resize-client" "client cols rows --" "a headless client's size, 1 to 4,096 each" "fux str c1 client 120 40 resize-client" [];
-        Server Server "server" "name --" "the server named so (NAME.sock in fux's directory), for what follows" "fux str test server start opts 80 24 size str ./app program run" [];
+        Server Server "server" "name --" "the server named so (NAME.sock in fux's directory), for what follows" "fux str test server start agent-opts 80 24 size str ./app program run" [];
         Server Socket "socket" "path --" "the server on this socket, for what follows" "fux str ./test.sock socket status" [];
         Server Start "start" "--" "start the server in the background, if none answers" "fux start" [];
         Server Status "status" "-- record" "the server that answers, and its version; with none, fails no_server" "fux status || fux start" [];
@@ -330,16 +329,16 @@ words! {
         Help Check "check" "file mode --" "check a file as program (compile only) or config (also run dry)" "fux str config.fux str config check" [];
     }
     Opt {
-        Starting Name "name" "x name -- x" "the tab's or workspace's name" "fux opts str web name 80 24 size str ./app program run";
-        Starting Size "size" "x cols rows -- x" "what its tab is laid out on while no client shows it, 1 to 4,096 each; needed from outside fux, else the caller's own screen or tab, as fux makes no size up; attach: be a client with no terminal, of this size, which prints its id and runs until signalled" "fux opts 80 24 size str ./app program run";
-        Starting Cwd "cwd" "x dir -- x" "where it starts" "fux opts str /srv cwd 80 24 size str ./app program run";
-        Starting Env "env" "x key var -- x" "a variable for it: text, or a pane, tab or workspace as its id (%3; an action's answer, its pane)" "fux opts str PORT 8080 env 80 24 size str ./app program run";
-        Starting Program "program" "x path -- x" "the program to start, in place of a shell" "fux opts 80 24 size str ./app program run";
-        Starting Arg "arg" "x text -- x" "an argument for the program" "fux opts 80 24 size str ./app program str -v arg run";
+        Starting Name "name" "x name -- x" "the given name: run's pane, new-tab's tab, or new-workspace's workspace" "fux agent-opts str web name 80 24 size str ./app program run";
+        Starting Size "size" "x cols rows -- x" "what its tab is laid out on while no client shows it, 1 to 4,096 each; needed from outside fux, else the caller's own screen or tab, as fux makes no size up; attach: be a client with no terminal, of this size, which prints its id and runs until signalled" "fux agent-opts 80 24 size str ./app program run";
+        Starting Cwd "cwd" "x dir -- x" "where it starts" "fux agent-opts str /srv cwd 80 24 size str ./app program run";
+        Starting Env "env" "x key var -- x" "a variable for it: text, or a pane, tab or workspace as its id (%3; an action's answer, its pane)" "fux agent-opts str PORT 8080 env 80 24 size str ./app program run";
+        Starting Program "program" "x path -- x" "the program to start, in place of a shell" "fux agent-opts 80 24 size str ./app program run";
+        Starting Arg "arg" "x text -- x" "an argument for the program" "fux agent-opts 80 24 size str ./app program str -v arg run";
         Starting Horizontal "horizontal" "x -- x" "split side by side" "fux %3 horizontal split";
         Starting Vertical "vertical" "x -- x" "split stacked" "fux %3 vertical split";
         Starting Shares "shares" "x n n -- x" "split: how the pane and the new one divide the pane's room, A to B (default: halved)" "fux %3 horizontal 2 1 shares split";
-        Starting In "in" "x workspace -- x" "the workspace for run, new-tab (each makes a name not there) or attach" "fux opts str agent in 80 24 size new-tab";
+        Starting In "in" "x workspace -- x" "the workspace for run, new-tab or attach; run and new-tab create a missing name, or a fresh unnamed workspace with str new-workspace in" "fux opts str agent in 80 24 size new-tab";
         Starting Watch "watch" "x -- x" "attach without typing: keys do nothing but the prefix, then d, which detaches" "fux opts watch attach";
         Starting KillFirst "kill-first" "x -- x" "respawn: end the program first if it still runs" "fux %3 kill-first respawn";
         Waiting Changed "changed" "seen -- changed-request" "a wait from this version (%2:0.57.0.3.0:RUN, as an action, a wait or `str version get` gives it; or an answer or capture, its version) of the pane it names, not from now" "A=$(fux %3 str y text send-keys); fux str \"$A\" changed 60 timeout wait";
@@ -1114,12 +1113,6 @@ impl fuxth::Host for Host<'_> {
             Act::Pane => find(Kind::Pane, next()?, out),
             Act::Tab => find(Kind::Tab, next()?, out),
             Act::Workspace => find(Kind::Workspace, next()?, out),
-            Act::PaneNamed => match string(&next()?)? {
-                name if name.trim().is_empty() => {
-                    Err(fail(Raise::NoTarget, "an empty name names no pane"))
-                }
-                name => later(ask(Command::PaneNamed { name })),
-            },
             Act::Here => resolve(String::new(), Kind::Pane),
             Act::Client => {
                 let text = string(&next()?)?;
@@ -1152,11 +1145,16 @@ impl fuxth::Host for Host<'_> {
                 if built.argv.is_empty() {
                     return Err(fail(
                         Raise::NoProgram,
-                        "needs a program: opts str ./app program run",
+                        "needs a program: agent-opts str ./app program run",
                     ));
                 }
                 let run = Command::Run {
-                    workspace: built.place,
+                    workspace: built.place.ok_or_else(|| {
+                        fail(
+                            Raise::NoWorkspace,
+                            "run needs a workspace: give opts str NAME in, or use agent-opts",
+                        )
+                    })?,
                     name: built.name,
                     size: built.size,
                     cwd: built.cwd,

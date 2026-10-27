@@ -11,13 +11,13 @@ pub struct Pane {
 
 pub struct Tab {
     pub id: String,
-    pub name: String,
+    pub label: String,
     pub panes: Vec<Pane>,
 }
 
 pub struct Workspace {
     pub id: String,
-    pub name: String,
+    pub label: String,
     pub tabs: Vec<Tab>,
 }
 
@@ -81,13 +81,13 @@ impl World {
                 }
                 tabs.push(Tab {
                     id: text(tab, "id")?,
-                    name: text(tab, "name")?,
+                    label: text(tab, "label")?,
                     panes,
                 });
             }
             workspaces.push(Workspace {
                 id: text(ws, "id")?,
-                name: text(ws, "name")?,
+                label: text(ws, "label")?,
                 tabs,
             });
         }

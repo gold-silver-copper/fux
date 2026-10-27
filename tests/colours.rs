@@ -121,7 +121,7 @@ fn a_change_of_scheme_reaches_the_programs_that_asked_for_it() -> Outcome {
 fn the_real_client_turns_off_colour_scheme_reports_as_it_leaves() -> Outcome {
     let server = Server::start("")?;
     let mut terminal = Terminal::attach(&server, 12, 60, &[])?;
-    terminal.wait_for("%1 sh")?;
+    terminal.wait_for("%1")?;
     terminal.wait_for("\x1b[?2031$p")?;
     terminal.type_bytes(GHOSTTY_ANSWERS)?;
     terminal.wait_for("\x1b[?2031h")?;

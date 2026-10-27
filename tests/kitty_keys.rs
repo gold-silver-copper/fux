@@ -44,7 +44,7 @@ const GHOSTTY_ANSWERS: &[u8] = b"\x1b[?2031;2$y\x1b]10;rgb:ffff/ffff/ffff\x1b\\\
 /// server has pushed the kitty flags it reads keys in the protocol's forms.
 fn ghostty(server: &Server) -> Result<Terminal, String> {
     let mut terminal = Terminal::attach(server, 12, 100, &[])?;
-    terminal.wait_for("%1 sh")?;
+    terminal.wait_for("%1")?;
     terminal.wait_for("\x1b[?u\x1b[c")?;
     terminal.type_bytes(GHOSTTY_ANSWERS)?;
     // Disambiguate and alternate keys.
@@ -113,7 +113,7 @@ fn the_prefix_works_with_the_protocol_and_the_flags_are_popped_on_leaving() -> O
 fn a_terminal_without_the_protocol_gets_nothing_pushed() -> Outcome {
     let server = Server::start("")?;
     let mut terminal = Terminal::attach(&server, 12, 100, &[])?;
-    terminal.wait_for("%1 sh")?;
+    terminal.wait_for("%1")?;
     terminal.wait_for("\x1b[?u\x1b[c")?;
     terminal.type_bytes(b"\x1b[?62;22c")?;
     probe(&server, &mut terminal, "1", b"\r\t")?;

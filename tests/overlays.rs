@@ -95,13 +95,13 @@ fn closing_asks_first_and_acts_on_what_it_asked_about() -> Outcome {
     server.ok(&["str", "%1", "pane", "horizontal", "split"])?;
     server.ok(&["str", "c1", "client", "str", "%2", "pane", "focus-pane"])?;
     client.keys(&format!("{PREFIX}x"))?;
-    client.wait_for("close pane %2 sh?")?;
+    client.wait_for("close pane %2?")?;
     client.keys("n")?;
     client.wait("closed without closing", |t| !t.contains("close pane"))?;
     assert_eq!(panes(&server)?, ["%1", "%2"]);
     // Ask about %2, move focus to %1 meanwhile: y still closes %2.
     client.keys(&format!("{PREFIX}x"))?;
-    client.wait_for("close pane %2 sh?")?;
+    client.wait_for("close pane %2?")?;
     server.ok(&["str", "c1", "client", "str", "%1", "pane", "focus-pane"])?;
     client.keys("y")?;
     pumped(&mut client, "%2 closed", || Ok(panes(&server)? == ["%1"]))?;
@@ -134,7 +134,7 @@ fn pane_actions_are_bindings_a_config_extends() -> Outcome {
     client.wait_for("greet")?;
     client.keys("n")?;
     pumped(&mut client, "%2 in a new tab", || {
-        Ok(server.ok(&["ls"])?.contains("@2 tab-2\n    %2"))
+        Ok(server.ok(&["ls"])?.contains("@2 %2\n    %2"))
     })?;
     Ok(())
 }
@@ -174,7 +174,7 @@ fn choosers_select_rename_and_close() -> Outcome {
     ])?;
     client.keys(&format!("{PREFIX}tg"))?;
     client.wait("the tab chooser, current marked", |t| {
-        t.contains("* @1 main") && t.contains("@3 third")
+        t.contains("* @1 %1") && t.contains("@3 third")
     })?;
     client.keys(&format!("{DOWN}\r"))?;
     pumped(&mut client, "on @2", || {
@@ -282,14 +282,15 @@ fn rename_prompts_start_from_the_current_name() -> Outcome {
     // Asked from the command line, as `a r` asks it.
     server.ok(&["str", "c1", "client", "str", "%1", "pane", "rename-prompt"])?;
     client.wait_for("rename pane %1")?;
-    client.wait_for("sh▏")?;
-    client.keys("ell\r")?;
+    client.wait_for("▏")?;
+    client.keys("shell\r")?;
     pumped(&mut client, "renamed", || {
         Ok(server.ok(&["ls"])?.contains("%1 shell"))
     })?;
     // An empty name is refused, and says so.
     server.ok(&["str", "c1", "client", "str", "%1", "pane", "rename-prompt"])?;
     client.wait_for("rename pane %1")?;
+    client.wait_for("shell▏")?;
     client.keys(&format!("{CLEAR}\r"))?;
     bar_has(&mut client, "a name cannot be empty")?;
     server.ok(&["str", "c1", "client", "str", "@1", "tab", "rename-prompt"])?;
