@@ -5339,7 +5339,7 @@ mod tests {
             .map(|n| n.text);
         assert_eq!(
             notice.as_deref(),
-            Some("nothing_there: key:1: choose-pane: only one pane")
+            Some("nothing_there: choose-pane: only one pane (key:1)")
         );
         run(&mut s, "str c1 client choose-tab")?;
         assert!(matches!(
