@@ -834,6 +834,9 @@ fn escape_prefix(bytes: &[u8], flush: bool) -> Step {
         // or Alt-O.
         Step::Done(n, Some(Input::Key(mut stroke))) if n > 2 => {
             stroke.press.mods.alt = true;
+            if let Some(kitty) = &mut stroke.kitty {
+                kitty.mods |= ALT_BIT;
+            }
             Step::Done(n.saturating_add(1), Some(Input::Key(stroke)))
         }
         // Past a key's window (32 bytes after `ESC [`) it is no key, and
@@ -1366,6 +1369,33 @@ mod tests {
             assert_eq!(out, expected, "split at {split}, expecting {expecting}");
         }
     }
+    #[test]
+    fn prefixed_alt_keeps_every_kitty_modifier() {
+        use crate::keys::encode::{KeyMode, Report, key_bytes};
+        let mode = KeyMode::Kitty {
+            alternate: true,
+            report: Report::Disambiguated,
+            backarrow: false,
+        };
+        for (bytes, expected, mods) in [
+            (&b"\x1b\x1b[97;5u"[..], &b"\x1b[97;7u"[..], 6),
+            (&b"\x1b\x1b[1;193A"[..], &b"\x1b[1;195A"[..], 194),
+        ] {
+            let inputs = all(bytes);
+            split_anywhere(bytes, false, &inputs);
+            let [Input::Key(stroke)] = inputs.as_slice() else {
+                assert_eq!(inputs.len(), 1, "one key");
+                assert!(matches!(inputs.first(), Some(Input::Key(_))));
+                continue;
+            };
+            assert!(stroke.press.mods.alt);
+            assert_eq!(stroke.kitty.map(|k| k.mods), Some(mods));
+            let mut out = Vec::new();
+            key_bytes(*stroke, mode, &mut out);
+            assert_eq!(out, expected);
+        }
+    }
+
     fn key(name: &str) -> Input {
         Input::Key(name.parse().unwrap_or(KeyPress::char('?')).into())
     }
