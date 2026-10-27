@@ -247,7 +247,8 @@ fn a_pane_runs_shell_else_the_login_shell_else_bin_sh() -> Outcome {
         // Observe the running process, independently of names and titles.
         let shown = eventually(&format!("a pane running {name}"), || {
             let observed = program()?;
-            Ok(observed.status.success() && String::from_utf8_lossy(&observed.stdout).trim() == name)
+            Ok(observed.status.success()
+                && String::from_utf8_lossy(&observed.stdout).trim() == name)
         });
         let _ = Command::new(FUX)
             .args(["force-kill-server"])
