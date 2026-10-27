@@ -286,9 +286,9 @@ impl Requests {
     /// environment, of which they take what `update-environment` names.
     pub fn ask(&mut self, asked: &Asked, out: &mut dyn Write) -> Result<Reply, Error> {
         wait_at_most(&self.stream, None);
-        if starts_programs(&asked.request) && asked.context.env.is_empty() {
+        if starts_programs(&asked.request) && asked.context.env.is_none() {
             let mut asked = asked.clone();
-            asked.context.env = environment();
+            asked.context.env = Some(environment());
             send(&mut self.stream, &asked)?;
         } else {
             send(&mut self.stream, asked)?;
@@ -332,7 +332,7 @@ pub fn context() -> Context {
         cwd: std::env::current_dir().unwrap_or_default(),
         pane: var("FUX_PANE").and_then(|p| p.parse().ok()),
         server: var("FUX_SERVER"),
-        env: Vec::new(),
+        env: None,
         client: None,
     }
 }
@@ -903,7 +903,7 @@ fn run_job(
     let notice = match result {
         // Stopped as asked (the prefix, then Esc): no failure of its own.
         Err(_) if stop.stopped() => Some(("stopped".to_owned(), false)),
-        Err(failed) => Some((failed.to_string(), true)),
+        Err(failed) => Some((failed.notice(), true)),
         Ok(stack) => said(String::from_utf8_lossy(&out.0).into_owned(), &stack),
     };
     let notice = notice.map(|(text, error)| match text.len() {

@@ -128,20 +128,8 @@ settings! {
     /// which may have started long ago. One the starter lacks is unset,
     /// but for `FUX`, `FUX_PANE`, `FUX_SOCKET` and `FUX_SERVER`.
     update_environment UpdateEnvironment "update-environment": Vec<EnvName> =
-        KEPT.map(|name| EnvName(name.to_owned())).to_vec();
+        Vec::new();
 }
-
-/// What `update-environment` names at first.
-const KEPT: [&str; 8] = [
-    "DISPLAY",
-    "KRB5CCNAME",
-    "SSH_AGENT_PID",
-    "SSH_ASKPASS",
-    "SSH_AUTH_SOCK",
-    "SSH_CONNECTION",
-    "WAYLAND_DISPLAY",
-    "XAUTHORITY",
-];
 
 /// The most paste buffers kept.
 pub const MAX_BUFFERS: usize = 1000;

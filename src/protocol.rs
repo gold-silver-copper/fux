@@ -349,7 +349,8 @@ wire! {
         pub cwd: std::path::PathBuf,
         pub pane: Option<PaneId>,
         pub server: Option<String>,
-        pub env: Vec<(String, std::ffi::OsString)>,
+        /// None has not been captured; Some, even empty, is the caller's snapshot.
+        pub env: Option<Vec<(String, std::ffi::OsString)>>,
         pub client: Option<ClientId>,
     }
 }
@@ -741,7 +742,7 @@ mod tests {
                     cwd: "/somewhere".into(),
                     pane: "%3".parse().ok(),
                     server: Some("1-2".into()),
-                    env: vec![("K".into(), "V".into())],
+                    env: Some(vec![("K".into(), "V".into())]),
                     client: "c2".parse().ok(),
                 },
             }

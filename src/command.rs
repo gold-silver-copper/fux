@@ -509,10 +509,8 @@ wire! {
             get: Option<String>,
         },
         /// Stops the server; from the CLI, refused from one of its own panes
-        /// or with people attached unless forced.
-        KillServer {
-            force: bool,
-        },
+        /// or with people attached.
+        KillServer,
         NewWorkspace {
             name: Option<String>,
             size: Size,
@@ -793,7 +791,7 @@ impl Command {
             | C::ResizePane { .. }
             | C::ClearHistory { .. }
             | C::Reorder { .. }
-            | C::KillServer { .. }
+            | C::KillServer
             | C::Set(_)
             | C::PasteBuffer { .. } => false,
             C::Client { action, .. } => match action {

@@ -521,28 +521,22 @@ mod tests {
         Ok(())
     }
 
-    /// Like copy mode's, a chooser's and a confirmation's letter keys work
-    /// in either case: Caps Lock changes nothing.
+    /// Unbound upper-case keys do not act as their lower-case bindings.
     #[test]
-    fn list_and_confirm_keys_ignore_case() -> Outcome {
+    fn list_and_confirm_keys_match_exact_case() -> Outcome {
         let (mut s, c) = session()?;
         run(&mut s, NEW_TAB)?;
         run(&mut s, "str c1 client choose-tab")?;
-        s.input(c, b"\x1b[H");
-        s.input(c, b"J");
-        assert!(mode(&s, c).ends_with(" 1"), "J moves down: {}", mode(&s, c));
-        s.input(c, b"K");
-        assert!(mode(&s, c).ends_with(" 0"), "K moves up: {}", mode(&s, c));
-        s.input(c, b"Q");
-        assert_eq!(mode(&s, c), "normal", "Q closes");
-        assert_eq!(screen(&s, c), Screen::default());
-        run(&mut s, "str c1 client str @2 tab confirm-close")?;
-        s.input(c, b"Q");
-        assert_eq!(mode(&s, c), "normal", "Q cancels");
-        assert_eq!(tabs(&s), Some(2));
+        s.input(c, b"\x1b[HJ");
+        assert!(mode(&s, c).ends_with(" 0"));
+        s.input(c, b"j");
+        assert!(mode(&s, c).ends_with(" 1"));
+        s.input(c, b"q");
         run(&mut s, "str c1 client str @2 tab confirm-close")?;
         s.input(c, b"Y");
-        assert_eq!(tabs(&s), Some(1), "Y confirms");
+        assert_eq!(tabs(&s), Some(2));
+        s.input(c, b"y");
+        assert_eq!(tabs(&s), Some(1));
         Ok(())
     }
 
