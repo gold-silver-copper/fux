@@ -72,6 +72,33 @@ fn a_full_cell_drops_zero_width_clusters_after_gb999() -> Result {
     Ok(())
 }
 
+/// GB9b joins the Prepend run, but the zero-width Prepend ends the cell
+/// under the README's tailoring even when it or an earlier Prepend was
+/// dropped. What follows it starts a new cell.
+#[test]
+fn a_dropped_zero_width_prepend_still_ends_the_cell() -> Result {
+    let kept: String = std::iter::repeat_n('\u{600}', 64).collect();
+    for extra in ["", "\u{600}"] {
+        let text = format!("{kept}{extra}\u{605}A");
+        let expected = vec![(kept.clone(), true), ("A".to_owned(), false)];
+        let mut parser = Parser::new(Size::new(1, 6)?, 0)?;
+        parser.process(text.as_bytes())?;
+        let screen = parser.screen();
+        let actual: Vec<_> = screen
+            .rows()
+            .next()
+            .ok_or("row")?
+            .cells()
+            .filter(|c| c.has_contents() && !c.is_wide_continuation())
+            .map(|c| (c.contents().to_owned(), c.is_wide()))
+            .collect();
+        assert_eq!(actual, expected, "{text:?}");
+        assert_eq!(screen.cursor_position(), (0, 3));
+        assert_eq!(cells_of(&text), expected, "{text:?}");
+    }
+    Ok(())
+}
+
 fn character(r: &mut Rng) -> char {
     loop {
         let c = if r.chance(85) {

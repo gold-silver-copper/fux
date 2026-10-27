@@ -216,15 +216,14 @@ pub fn cells_of(text: &str) -> Vec<(String, bool)> {
         let mut text = String::from(first);
         let mut wide = width(first) == Some(2);
         full = false;
-        // A start of the cluster: once a character is dropped, the rest go.
-        // After a Prepend character of no width (inside a cluster begun by
-        // one of a column, U+0600), what follows is segmented afresh, as
-        // after one that begins it.
+        // Once a character is dropped, append drops the rest. After a
+        // Prepend character of no width, kept or dropped (inside a cluster
+        // begun by one of a column, U+0600), what follows is segmented
+        // afresh, as after one that begins it.
         while let Some(c) = chars.next() {
-            if !append(&mut text, c, &mut full) {
-                break;
+            if append(&mut text, c, &mut full) {
+                wide |= text_width(&text) >= 2;
             }
-            wide |= text_width(&text) >= 2;
             if zero_prepend(c) {
                 for next in clusters(chars.as_str()).into_iter().rev() {
                     queue.push_front(next);
