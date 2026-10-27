@@ -2363,9 +2363,6 @@ impl Session {
                 self.reorder(target, toward).map(|()| Reply::default())
             }
             Command::Set(settings) => {
-                for setting in settings {
-                    setting.check().map_err(|why| fail(Raise::BadValue, why))?;
-                }
                 // `run_command` marks every view to paint, as after any
                 // command that can show something new: `titles` shows at
                 // each client's next paint. Each value is one its setting

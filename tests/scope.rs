@@ -161,10 +161,10 @@ fn reserved_environment_names_are_refused_before_spawning() -> Outcome {
             "opts", "str", name, "str", "forged", "env", "80", "24", "size", "str", "cat",
             "program", "run",
         ])?;
-        for out in [inherited, explicit] {
+        for (out, code) in [(inherited, "config:"), (explicit, "bad_value:")] {
             assert_eq!(out.status, 1, "{name}: {}", out.stderr);
             assert!(
-                out.stderr.contains("bad_value:")
+                out.stderr.contains(code)
                     && out.stderr.contains(name)
                     && out.stderr.contains("reserved"),
                 "{}",

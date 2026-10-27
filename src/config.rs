@@ -132,18 +132,6 @@ settings! {
         Vec::new();
 }
 
-impl Setting {
-    /// Refuses inherited names that would overwrite a pane's own identity.
-    pub(crate) fn check(&self) -> Result<(), String> {
-        if let Self::UpdateEnvironment(names) = self {
-            for name in names {
-                crate::command::pane_var(name.as_str())?;
-            }
-        }
-        Ok(())
-    }
-}
-
 /// The most paste buffers kept.
 pub const MAX_BUFFERS: usize = 1000;
 /// The longest limit a wait may be given: a day.
@@ -379,8 +367,8 @@ impl Wire for Shell {
     }
 }
 
-/// A variable's name a shell takes: letters, digits and `_`, not first a
-/// digit.
+/// A shell variable a caller may pass to a pane: letters, digits and `_`,
+/// not first a digit, excluding the pane's reserved identity names.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EnvName(String);
 
@@ -393,7 +381,7 @@ impl EnvName {
 impl std::str::FromStr for EnvName {
     type Err = String;
     fn from_str(name: &str) -> Result<EnvName, String> {
-        crate::command::var_name(name).map(|()| EnvName(name.to_owned()))
+        crate::command::pane_var(name).map(|()| EnvName(name.to_owned()))
     }
 }
 
