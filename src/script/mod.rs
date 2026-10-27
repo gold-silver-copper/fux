@@ -1165,13 +1165,17 @@ fn local(what: &Local, server: &mut Server) -> Result<Vec<Value<Fux>>, Failed> {
             // Watching or naming a run starts no replacement server.
             let socket = match *read_only || of.is_some() {
                 true => server.socket()?,
-                false => started(server)?.0,
+                false => started(server)?,
             };
             if *read_only && !client::answers(&socket) {
                 let why = "no server answers: there is nothing to watch";
                 return Err(Failed::new(Code::NoServer, why));
             }
-            let (keymap, problem) = configured(server, *of);
+            let (keymap, problem) = if size.is_none() && !read_only {
+                configured(server, *of)
+            } else {
+                (default_keys()?, None)
+            };
             let attach = client::Attaching {
                 of: *of,
                 workspace: workspace.clone(),
@@ -1182,11 +1186,7 @@ fn local(what: &Local, server: &mut Server) -> Result<Vec<Value<Fux>>, Failed> {
             client::attach(&socket, attach, *size).map_err(client_failed)?;
         }
         Local::Start => {
-            if started(server)?.1
-                && let (_, Some(problem)) = configured(server, None)
-            {
-                let _ = writeln!(io::stderr(), "fux: {problem}");
-            }
+            started(server)?;
         }
         Local::ForceKill => client::kill_server(&server.socket()?).map_err(client_failed)?,
         Local::Open(_) | Local::Shell(_) => return refuse_local(what),
@@ -1201,20 +1201,17 @@ fn local(what: &Local, server: &mut Server) -> Result<Vec<Value<Fux>>, Failed> {
     Ok(Vec::new())
 }
 
-/// The server, started in the background if none answers: its socket, and
-/// whether it was started, for the config's settings (`set`) to go to it at
-/// once.
-fn started(server: &mut Server) -> Result<(SocketPath, bool), Failed> {
+/// The server's socket, starting it in the background if none answers.
+fn started(server: &mut Server) -> Result<SocketPath, Failed> {
     let socket = server.socket()?;
-    let start = !client::answers(&socket);
-    if start {
+    if !client::answers(&socket) {
         client::start_server(&socket).map_err(client_failed)?;
     }
-    Ok((socket, start))
+    Ok(socket)
 }
 
-/// The client's keymap, its config run on the defaults; and what was wrong
-/// with the config, if anything was.
+/// A typing terminal's keymap, its config run on the defaults; and what
+/// was wrong with the config, if anything was.
 pub fn configured(server: &mut Server, run: Option<Run>) -> (Keymap, Option<String>) {
     match config_keymap(Some(server), run) {
         Ok(keymap) => (keymap, None),
@@ -1327,9 +1324,9 @@ fn run_quiet(
     run_capped(&mut machine, &mut host, asks, Some(PROGRAM_STEPS), None).map(drop)
 }
 
-/// What a config's requests go to: settings alone, as a config runs each
-/// time a client attaches, and must make nothing. Each is kept, in order,
-/// for the run's end: half a config is no config.
+/// What a config's requests go to: settings alone, as a typing terminal
+/// runs its config when attaching, and must make nothing. Each is kept,
+/// in order, for the run's end: half a config is no config.
 #[derive(Default)]
 struct Settings(Vec<crate::config::Setting>);
 

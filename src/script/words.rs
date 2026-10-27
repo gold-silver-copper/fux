@@ -322,7 +322,7 @@ words! {
         Shell Getenv "getenv" "name -- string" "an environment variable's value; one not set fails unset_var" "fux str HOME getenv" [];
         Shell Warn "warn" "value --" "print a value on stderr, a line" "fux str 'no tests found' warn 2 exit" [];
         Shell Exit "exit" "n --" "end the program now, what is left printed, with exit status n, 0 to 255" "fux str 'no tests found' warn 2 exit" [];
-        Config ListKeys "list-keys" "--" "this client's keys, as config lines that make them" "fux list-keys" [];
+        Config ListKeys "list-keys" "--" "this client's keys (the bundled keys from the CLI), as config lines that make them" "fux list-keys" [];
         Config KeyNames "key-names" "--" "the names keys go by" "fux key-names" [];
         Help Help "help" "--" "the words, under their headings" "fux help" [];
         Help Explain "explain" "word --" "one word at length (json's says what json gives); or the guide to driving programs from a script or an agent: agents, its first screen, enough for most work; a topic of it (recipes keys read shells programs servers); guide, all of it; or limits, the bounds fux keeps" "fux str capture explain" [];
@@ -1615,12 +1615,11 @@ impl Host<'_> {
             Act::Warn => local(Local::Shell(Shell::Warn(next()?.text()))),
             Act::Exit => local(Local::Shell(Shell::Exit(within(&next()?, 0..=255)?))),
             // ------------------------------------------------------ config
-            // A client's own; else, from the command line, what the config
-            // makes.
+            // A client's own; else the bundled keys, without a user config.
             Act::ListKeys => {
                 let text = match &self.keymap {
                     Some(keymap) => keymap.describe(),
-                    None => (super::config_keymap(None, None))
+                    None => super::default_keys()
                         .map_err(|e| fail(Raise::Config, e.to_string()))?
                         .describe(),
                 };

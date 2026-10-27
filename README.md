@@ -241,8 +241,9 @@ other: `str 'a g' str '…' bind` adds one to it, listed in the column beside
 the defaults, and `unbind` takes one away. `f`, `g`, `i`, `u` and `y`
 are free for your own bindings. These keys are themselves a config, run
 before yours, in the words yours uses
-([src/script/keys.fux](src/script/keys.fux)); `fux list-keys` prints yours
-the same way.
+([src/script/keys.fux](src/script/keys.fux)); `list-keys` at the client's
+command prompt prints yours the same way. From the CLI, `fux list-keys`
+prints these defaults.
 
 - **Choosers** (`t g`, `w g`, `a s`, `a t`, `a w`) list tabs, workspaces
   or panes. A chooser acts on the item it was opened for, even once
@@ -377,7 +378,9 @@ help json` lists every one ([docs/json.md](docs/json.md)).
 ## Configuration
 
 The optional config is `$XDG_CONFIG_HOME/fux/config.fux`, else
-`~/.config/fux/config.fux`: fuxth, which each client runs as it attaches.
+`~/.config/fux/config.fux`: fuxth, which a typing terminal runs as it attaches.
+`fux start`, watchers, headless attaches (`size attach`) and ordinary CLI
+commands use only the bundled state; they never load this file.
 Its `set` words change the server for everyone, all at once when it has
 run; its key words change that client's keys alone. Half a config is no
 config: one that fails sets nothing, the client keeps the default keys,
@@ -436,13 +439,13 @@ their keys were first bound, `Other` last (a key bound again keeps its place).
 The default keys are a config like yours, run before it, so anything one
 binding does, yours may: rebind a key, `unbind` it, or start from none
 (`unbind-all`, which takes the screens' keys too; Escape still leaves them).
-`fux list-keys` prints your keys as config lines that make them, from
-`unbind-all` on; not your definitions, which a binding may call, so add
-them to your config rather than replace it: `fux list-keys >>
-~/.config/fux/config.fux` gives you every key to edit in place. What it
-appends starts with `unbind-all`, which undoes any key lines earlier in your
-config, so delete those. Default keys a later fux adds then reach you only
-once you bind them.
+`list-keys` in the client's command prompt prints its keys as config lines
+that make them, from `unbind-all` on; not its definitions, which a binding
+may call. From the CLI, `fux list-keys` prints the bundled keys:
+`fux list-keys >> ~/.config/fux/config.fux` gives you every default key to
+edit in place. What it appends starts with `unbind-all`, which undoes any
+key lines earlier in your config, so delete those. Default keys a later
+fux adds then reach you only once you bind them.
 
 ## Saved sessions
 
@@ -597,7 +600,7 @@ so: it starts where the dump is run.
   crash ends them; replay a `dump` you saved to make the layout again.
 - **A format language** for output (tmux's `#{…}`): `json`, and `X str
   FIELD get` for one value.
-- **Watching the config file**: a client runs it as it attaches.
+- **Watching the config file**: a typing terminal runs it as it attaches.
 
 ## Security
 
