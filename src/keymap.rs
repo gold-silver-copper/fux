@@ -217,9 +217,9 @@ pub struct Keymap {
     pub root: Vec<(KeyPress, Binding)>,
     /// The keys of fux's own screens.
     pub modes: Modes,
-    /// The config that made it, by its name and text: its definitions are
+    /// The frozen config that made it: its definitions are
     /// its bindings' and prompt's words too.
-    pub config: Option<std::sync::Arc<(String, String)>>,
+    pub config: Option<crate::script::Config>,
 }
 
 /// The group of bindings without the prefix that gave none.
