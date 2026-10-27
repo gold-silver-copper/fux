@@ -130,21 +130,23 @@ pub fn pane(
     // Joined, a line some of whose rows `rows` takes is taken whole: the
     // range widened to the whole lines at its ends.
     if let Some((start, end)) = view.rows {
-        let rows: Vec<_> = read.collect();
-        let continues = |i: usize| !view.wrapped && rows.get(i).is_some_and(|(r, _)| r.continues());
         let (mut first, mut last) = (usize::from(start), usize::from(end));
-        while let Some(before) = first.checked_sub(1)
-            && continues(before)
-        {
-            first = before;
-        }
-        while continues(last) {
-            last = last.saturating_add(1);
+        if !view.wrapped {
+            let rows: Vec<_> = read.collect();
+            let continues = |i: usize| rows.get(i).is_some_and(|(r, _)| r.continues());
+            while let Some(before) = first.checked_sub(1)
+                && continues(before)
+            {
+                first = before;
+            }
+            while continues(last) {
+                last = last.saturating_add(1);
+            }
+            read = Box::new(rows.into_iter());
         }
         read = Box::new(
-            rows.into_iter()
-                .skip(first)
-                .take(last.saturating_sub(first).saturating_add(1)),
+            read.skip(first)
+                .take(last.saturating_add(1).saturating_sub(first)),
         );
     }
     for (row, span) in read {
