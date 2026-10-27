@@ -1740,17 +1740,31 @@ impl Session {
         // Who sees the pane is known before its tab can go: a tab its
         // closing empties takes its viewers elsewhere.
         let viewers = self.viewers(self.locate(id).map(|(_, t)| t));
-        if let Some(pane) = self.parts.close_pane(id) {
+        let mut notice = None;
+        if let Some(mut pane) = self.parts.close_pane(id) {
             // Closed for its program's end (a reason given), or by fux.
             let closed = why.is_none();
-            if let Some(why) = why {
-                for client in &viewers {
-                    self.notify_to(*client, format!("{id} {} {why}", pane.label()), false);
+            let failed = pane.has_terminal_errors();
+            let status = why.map(|why| format!("{id} {} {why}", pane.label()));
+            let told = status
+                .into_iter()
+                .chain(pane.take_terminal_errors())
+                .collect::<Vec<_>>()
+                .join("; ");
+            if !told.is_empty() {
+                if failed && self.parts.panes().is_empty() {
+                    self.outbox.push(Outgoing::Shutdown(told.clone()));
                 }
+                notice = Some((told, failed));
             }
             self.end_pane(pane, closed, &viewers);
         }
         self.after_close();
+        if let Some((told, failed)) = notice {
+            for client in viewers {
+                self.notify_to(client, told.clone(), failed);
+            }
+        }
     }
 
     /// Removes a tab and whatever panes are in it (`Parts::remove_tab`).
@@ -1808,13 +1822,16 @@ impl Session {
         // till the last of it is read; at each, a frame it holds read, one
         // begun in output read since too.
         if first {
+            if let Some(mut pane) = self.parts.pane_mut(id) {
+                pane.exiting(ended);
+            }
             self.read_left(id);
         }
         self.read_with(id, |p| p.release_frame());
+        let viewers = self.viewers(self.locate(id).map(|(_, tab)| tab));
         let Some(mut pane) = self.parts.pane_mut(id) else {
             return;
         };
-        pane.exiting(ended);
         if pane.has_unread() {
             return;
         }
@@ -1829,6 +1846,11 @@ impl Session {
             }
             Runs::Explicit(_) => {
                 // Its leader, exited and unreaped, is reaped with the dying.
+                let errors: Vec<_> = if viewers.is_empty() {
+                    Vec::new()
+                } else {
+                    pane.take_terminal_errors().collect()
+                };
                 let (end, gone) = pane.exit(ended);
                 if let Process::Reading(child)
                 | Process::HungUp(child)
@@ -1837,9 +1859,13 @@ impl Session {
                     let deadline = Instant::now();
                     self.dying.push(Dying { child, deadline });
                 }
-                let told = format!("{id} {}{}", process::told(end.ended), end.left.told("it"));
-                let left = end.left != pane::Left::default();
-                for client in self.viewers(self.locate(id).map(|(_, t)| t)) {
+                let status = format!("{id} {}{}", process::told(end.ended), end.left.told("it"));
+                let left = end.left != pane::Left::default() || !errors.is_empty();
+                let told = std::iter::once(status)
+                    .chain(errors)
+                    .collect::<Vec<_>>()
+                    .join("; ");
+                for client in viewers {
                     self.notify_to(client, told.clone(), left);
                 }
                 self.touch();
@@ -1864,6 +1890,11 @@ impl Session {
                 DrainEnd::Failed(error) => pane.read_failed(error),
             }
         }
+    }
+
+    /// Stops a failed reader and tells its viewers in this turn.
+    pub(crate) fn read_failed(&mut self, id: PaneId, error: fuxix::Errno) {
+        self.read_with(id, |pane| pane.read_failed(error));
     }
 
     /// Output from a pane's program.
@@ -1965,7 +1996,14 @@ impl Session {
             return false;
         };
         let mut notices = pane.take_untold().told(id, true);
-        notices.extend(pane.take_terminal_errors());
+        // An exit reports terminal failures with its final status, after
+        // its remaining output and frame have been read.
+        if pane.exiting.is_none() {
+            notices.extend(pane.take_terminal_errors());
+        }
+        if notices.is_empty() {
+            return false;
+        }
         let told = notices.join("; ");
         for client in viewers {
             self.notify_to(*client, told.clone(), true);
@@ -2672,7 +2710,7 @@ impl Session {
                 let mut grid = crate::render::Grid::default();
                 let placement = &mut Placement::default();
                 crate::render::compose_view(self, view()?, &mut grid, placement)
-                    .map_err(|e| fail(Raise::Size, format!("capturing {client}: {e}")))?;
+                    .map_err(|e| fail(Raise::Memory, format!("capturing {client}: {e}")))?;
                 let captured = crate::capture::client(client, &grid);
                 return Ok(Body::Capture(Box::new(captured)).into());
             }
@@ -3765,13 +3803,73 @@ mod tests {
         Ok(())
     }
 
+    #[test]
+    fn a_final_read_failure_survives_the_exit_notice() -> Result<(), Box<dyn std::error::Error>> {
+        for (explicit, last) in [(true, false), (false, false), (false, true)] {
+            let (mut session, client) = attached(10, 40)?;
+            let id = PaneId::of(1);
+            if !last {
+                run(&mut session, "%1 horizontal split")?;
+            }
+            if explicit {
+                let runs = Runs::Explicit(pane::Launch {
+                    argv: vec!["/bin/sh".into()],
+                    cwd: "/".into(),
+                    env: Vec::new(),
+                });
+                let fresh = Pane::new(id, "test".into(), runs, sized(9, 40)?, 1024)?;
+                session
+                    .parts
+                    .pane_mut(id)
+                    .ok_or("pane")?
+                    .respawned(fresh, Process::Absent);
+            }
+            session.output(id, b"saved");
+            session
+                .parts
+                .pane_mut(id)
+                .ok_or("pane")?
+                .read_failed(fuxix::Errno::INVAL);
+            session.exited(id, Ended::Exited(0));
+            let notice = session
+                .views
+                .get(&client)
+                .and_then(|view| view.notice.as_ref())
+                .ok_or("notice")?;
+            assert!(
+                notice.error
+                    && notice.text.contains("reading program terminal")
+                    && notice.text.contains(&fuxix::Errno::INVAL.to_string()),
+                "{notice:?}"
+            );
+            assert!(notice.text.contains("exited"), "{notice:?}");
+            if explicit {
+                assert_eq!(session.pane(id)?.read_error(), Some(fuxix::Errno::INVAL));
+                assert!(
+                    session
+                        .pane(id)?
+                        .screen()
+                        .rows()
+                        .any(|row| row.cells_text().contains("saved"))
+                );
+            } else {
+                assert!(session.pane(id).is_err());
+            }
+            if last {
+                assert!(session.outbox.iter().any(|out| matches!(out, Outgoing::Shutdown(why) if why.contains(&fuxix::Errno::INVAL.to_string()))));
+            }
+        }
+        Ok(())
+    }
+
     #[cfg(feature = "checks")]
     #[test]
     fn refused_client_capture_returns_an_error() -> Result<(), Box<dyn std::error::Error>> {
         let (mut session, client) = attached(10, 40)?;
         fux_vt::refuse_next(1);
         let result = session.client(Some(client), &ClientAction::Capture, Here::Cli(None, None));
-        assert!(result.is_err());
+        let error = result.err().ok_or("capture succeeded")?;
+        assert_eq!(error.code(), Code::Memory);
         Ok(())
     }
 

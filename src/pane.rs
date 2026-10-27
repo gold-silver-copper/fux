@@ -771,6 +771,8 @@ pub struct Pane {
     loss_runs: LossRuns,
     /// First untold PTY resize and read errors, kept until a client sees them.
     terminal_errors: (Option<fuxix::Errno>, Option<fuxix::Errno>),
+    /// The current program's read failure, retained after its exit.
+    read_error: Option<fuxix::Errno>,
     /// What the read of output under way did so far (`Pane::read_done`).
     reading: Reading,
 }
@@ -815,6 +817,7 @@ impl<'a> PaneMut<'a> {
     }
     pub(crate) fn read_failed(&mut self, error: fuxix::Errno) {
         self.pane.terminal_errors.1.get_or_insert(error);
+        self.pane.read_error = Some(error);
         self.pane.process = match std::mem::replace(&mut self.pane.process, Process::Absent) {
             Process::Reading(child) | Process::HungUp(child) | Process::ReadFailed(child, _) => {
                 Process::ReadFailed(child, error)
@@ -823,14 +826,7 @@ impl<'a> PaneMut<'a> {
         };
     }
     pub(crate) fn take_terminal_errors(&mut self) -> impl Iterator<Item = String> + use<> {
-        let (resize, read) = std::mem::take(&mut self.pane.terminal_errors);
-        let id = self.pane.id;
-        [
-            ("resizing program terminal", resize),
-            ("reading program terminal", read),
-        ]
-        .into_iter()
-        .filter_map(move |(operation, error)| error.map(|e| format!("{id}: {operation}: {e}")))
+        self.pane.take_terminal_errors()
     }
     pub fn respawned(&mut self, fresh: Pane, process: Process) -> (Process, Left) {
         self.pane.respawned(fresh, process, &mut self.tell)
@@ -1078,6 +1074,7 @@ impl Pane {
             refused_size: None,
             loss_runs: LossRuns::default(),
             terminal_errors: (None, None),
+            read_error: None,
             reading: Reading::default(),
         })
     }
@@ -1605,6 +1602,21 @@ impl Pane {
         true
     }
 
+    pub(crate) fn take_terminal_errors(&mut self) -> impl Iterator<Item = String> + use<> {
+        let (resize, read) = std::mem::take(&mut self.terminal_errors);
+        let id = self.id;
+        [
+            ("resizing program terminal", resize),
+            ("reading program terminal", read),
+        ]
+        .into_iter()
+        .filter_map(move |(operation, error)| error.map(|e| format!("{id}: {operation}: {e}")))
+    }
+    /// The current program's unexpected PTY read error, if there was one.
+    pub fn read_error(&self) -> Option<fuxix::Errno> {
+        self.read_error
+    }
+
     pub(crate) fn has_terminal_errors(&self) -> bool {
         self.terminal_errors.0.is_some() || self.terminal_errors.1.is_some()
     }
@@ -1696,6 +1708,7 @@ impl Pane {
             refused_size,
             loss_runs,
             terminal_errors: _,
+            read_error,
             reading,
         } = fresh;
         // The new program starts with nothing queued. One that ended said
@@ -1711,6 +1724,7 @@ impl Pane {
         (self.exiting, self.scheme_told, self.wrote_at) = (exiting, scheme_told, wrote_at);
         (self.mouse_held, self.left, self.alerts, self.lost) = (mouse_held, left, alerts, lost);
         (self.refused_size, self.loss_runs, self.reading) = (refused_size, loss_runs, reading);
+        self.read_error = read_error;
         tell.tell(Told::Respawned(over));
         self.rename(name, tell);
         // 2^64 respawns are never reached: the count never stands still.
