@@ -43,6 +43,35 @@ impl Rng {
 
 // Printing and grapheme clusters.
 
+/// GB9 joins each modifier; GB999 breaks before the vowel jamo. The
+/// README's zero-width tailoring attaches the jamo to the same cell, whose
+/// kept text must stay a prefix after a modifier did not fit (125 + 4).
+#[test]
+fn a_full_cell_drops_zero_width_clusters_after_gb999() -> Result {
+    let kept: String = std::iter::once('x')
+        .chain(std::iter::repeat_n('\u{1f3fb}', 31))
+        .collect();
+    let text = format!("{kept}\u{1f3fb}\u{1161}a");
+    let expected = vec![(kept, true), ("a".to_owned(), false)];
+    assert_eq!(cells_of(&text), expected);
+    let mut parser = Parser::new(Size::new(1, 6)?, 0)?;
+    for byte in text.bytes() {
+        parser.process(&[byte])?;
+    }
+    let screen = parser.screen();
+    let actual: Vec<_> = screen
+        .rows()
+        .next()
+        .ok_or("row")?
+        .cells()
+        .filter(|c| c.has_contents() && !c.is_wide_continuation())
+        .map(|c| (c.contents().to_owned(), c.is_wide()))
+        .collect();
+    assert_eq!(actual, expected);
+    assert_eq!(screen.cursor_position(), (0, 3));
+    Ok(())
+}
+
 fn character(r: &mut Rng) -> char {
     loop {
         let c = if r.chance(85) {
