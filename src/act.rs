@@ -4,8 +4,8 @@
 //! choosers, prompts, confirmations, copy mode and its search
 //! (`crate::screens`). The server is sent a key only as literal input to
 //! the pane the client focuses (`Act::Key`), what to draw of the client's
-//! screens (`Act::Show`), and the moves of copy mode, whose cursor is the
-//! server's as it alone holds the scrollback (`Act::Copy`).
+//! screens (`ScreenAct::Show`), and the moves of copy mode, whose cursor is the
+//! server's as it alone holds the scrollback (`ScreenAct::Copy`).
 use crate::command::AnyRef;
 use crate::keys::colour::Scheme;
 use crate::keys::decode::Reply;
@@ -27,14 +27,21 @@ wire! {
         /// The terminal's answer to a question fux asked it.
         Reply(reply: Reply),
         /// Draw one of the client's screens over its panes.
-        Show(panel: Panel),
-        /// Draw none: the client is back to its panes (copy mode left too).
-        Hide,
+        Screen { opening: u64, act: ScreenAct },
         /// A notice, from a binding's program: an error if `error`.
         Notice {
             text: String,
             error: bool,
         },
+    }
+}
+
+wire! {
+    /// A change to one opening of a client screen.
+    #[derive(Clone, Debug, PartialEq)]
+    pub enum ScreenAct {
+        Show(panel: Panel),
+        Hide,
         Copy(act: CopyAct),
     }
 }

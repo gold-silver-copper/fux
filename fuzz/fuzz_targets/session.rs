@@ -16,7 +16,7 @@ use std::collections::BTreeMap;
 use std::num::NonZeroUsize;
 
 use fux::act::Act;
-use fux::act::{CopyAct, Panel};
+use fux::act::Panel;
 use fux::config::Config;
 use fux::copy::MAX_CLIPBOARD;
 use fux::decode::{Decoder, Input};
@@ -26,7 +26,7 @@ use fux::keys::{Key, Keystroke};
 use fux::outer;
 use fux::protocol::{Context, ToAttached};
 use fux::render::{Grid, compose_view, paint_into};
-use fux::screens::{Effect, Job, Screen};
+use fux::screens::{Dispatch, Job, Screen};
 use fux::script::{AsClient, Host, run_capped};
 use fux::session::{InProcess, Outgoing, Session};
 use fux::view::Mode;
@@ -181,14 +181,14 @@ type State = (
     Config,
     Vec<(fux::id::BufferId, String)>,
     Keymap,
-    Vec<(ClientId, Screen)>,
+    Vec<(ClientId, fux::screens::Display)>,
 );
 
 /// A client's keys, as its client reads them: its decoder, and the screen
 /// it has open or what its keys are in the middle of.
 #[derive(Default)]
 struct Keys {
-    screen: Screen,
+    screen: fux::screens::Display,
     decoder: Decoder,
 }
 
@@ -299,7 +299,7 @@ impl Run {
             opened: None,
         };
         let ended = run_capped(&mut machine, &mut host, &mut asks, Some(BUDGET), None);
-        *opened = asks.opened.filter(|_| client.is_some());
+        *opened = asks.opened.filter(|_| client.is_some() && ended.is_ok());
         // As a client keeps what its program did to its keymap.
         self.keymap = keymap;
         let mut text = String::from_utf8_lossy(&out).into_owned();
@@ -334,11 +334,7 @@ impl Run {
     fn open(&mut self, client: ClientId, screen: Screen) {
         let mut acts = Vec::new();
         if let Some(keys) = self.keys.get_mut(&client) {
-            if let Screen::Copy(_) = keys.screen {
-                acts.push(Act::Copy(CopyAct::Leave));
-            }
-            acts.extend(screen.opened(&self.keymap.modes));
-            keys.screen = screen;
+            acts.extend(keys.screen.open(screen, &self.keymap.modes));
         }
         self.s.acts(client, acts);
     }
@@ -395,9 +391,9 @@ impl Run {
             Outgoing::To(_, ToAttached::Welcome(..)) => panic!("a welcome from the session"),
             Outgoing::Shutdown { .. } => self.shut = true,
             Outgoing::To(client, ToAttached::Run(code)) => self.run_as(client, &code.into()),
-            Outgoing::To(client, ToAttached::Ended(kind)) => {
+            Outgoing::To(client, ToAttached::Ended(opening)) => {
                 if let Some(keys) = self.keys.get_mut(&client) {
-                    keys.screen.ended(kind);
+                    keys.screen.ended(opening);
                 }
             }
             Outgoing::To(client, ToAttached::Keys(typed)) => {
@@ -503,11 +499,11 @@ impl Run {
     }
 
     /// What a screen's key or paste led to: actions sent, programs run.
-    fn effects(&mut self, client: ClientId, effects: Vec<Effect>) {
+    fn effects(&mut self, client: ClientId, effects: Vec<Dispatch>) {
         for effect in effects {
             match effect {
-                Effect::Send(act) => self.s.acts(client, vec![act]),
-                Effect::Run(job) => self.run_as(client, &job),
+                Dispatch::Send(act) => self.s.acts(client, vec![act]),
+                Dispatch::Run(job) => self.run_as(client, &job),
             }
         }
     }
@@ -522,14 +518,19 @@ impl Run {
         };
         let read_only = view.read_only;
         let mut keys = self.keys.remove(&client).unwrap_or_default();
-        if keys.screen.kind().is_some() && !read_only {
-            let effects = keys.screen.key(&self.keymap, stroke, read_only);
+        if keys.screen.screen.is_open() && !read_only {
+            let effects = keys
+                .screen
+                .input(&self.keymap, Input::Key(stroke), read_only);
             self.keys.insert(client, keys);
             self.effects(client, effects);
             return;
         }
-        let repeating = matches!(keys.screen, Screen::Keys(Held::Repeat { .. })) && !read_only;
-        let steps = keys.screen.key(&self.keymap, stroke, read_only);
+        let repeating =
+            matches!(keys.screen.screen, Screen::Keys(Held::Repeat { .. })) && !read_only;
+        let steps = keys
+            .screen
+            .input(&self.keymap, Input::Key(stroke), read_only);
         self.keys.insert(client, keys);
         if repeating {
             self.drain_panes();
@@ -537,7 +538,7 @@ impl Run {
         let mut writes = false;
         for step in steps {
             match step {
-                Effect::Send(act) => {
+                Dispatch::Send(act) => {
                     let key = matches!(act, Act::Key(_));
                     assert!(
                         !(repeating && key),
@@ -546,7 +547,7 @@ impl Run {
                     );
                     self.s.acts(client, vec![act]);
                 }
-                Effect::Run(job) => {
+                Dispatch::Run(job) => {
                     writes |= WRITES.iter().any(|w| job.code.contains(w));
                     self.run_as(client, &job);
                 }
@@ -691,7 +692,7 @@ fn check(run: &Run) {
         let shown = s.views.get(id).map(|v| &v.mode);
         if matches!(shown, Some(Mode::Panel(Panel::Repeat(_)))) {
             assert!(
-                matches!(keys.screen, Screen::Keys(Held::Repeat { .. })),
+                matches!(keys.screen.screen, Screen::Keys(Held::Repeat { .. })),
                 "{id} shows a repeat bar, its keys {:?}",
                 keys.screen
             );
