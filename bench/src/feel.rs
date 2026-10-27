@@ -481,7 +481,7 @@ fn start(
             // Its settings at once, as the test harness applies them.
             let chosen = fux::socket::Choice::Path(socket.clone());
             let mut to = fux::script::Server::new(chosen);
-            fux::script::run_file(&config, Some(&mut to)).map_err(|e| e.to_string())?;
+            fux::script::run_file(&config, Some(&mut to), None).map_err(|e| e.to_string())?;
             let socket = socket.to_string_lossy().into_owned();
             env.push(("FUX_SOCKET".into(), socket.clone()));
             env.push(("FUX_BIN".into(), place.fux.clone()));

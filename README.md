@@ -330,7 +330,7 @@ taken too, and `key` tells a name it refuses the closest one, if any.
 | --- | --- |
 | `TERM` | `xterm-256color` |
 | `TERM_PROGRAM`, `TERM_PROGRAM_VERSION` | `fux` and fux's version, not the outer terminal's, whose features fux may not have |
-| `FUX_PANE` | the pane, `%N`: `here` to a fux command run there |
+| `FUX_PANE` | the pane and its program generation, `%N:GENERATION`: `here` to a fux command run there; an old generation is refused after respawn |
 | `FUX_SOCKET` | the socket of the pane's server, so a fux command there reaches it |
 | `FUX_SERVER` | which run of which server the pane is of, the run every version names. A fux command from a pane of another server, or of an earlier run of this one, or with `FUX_PANE` and no `FUX_SERVER`, has no `here` there (`stray_pane`); `kill-server` from one of the server's own panes is refused (`own_server`) |
 | `FUX` | the fux executable the server runs, unset if the server cannot name it: what a key's program or a script in a pane runs, as `"${FUX:-fux}"`, when `fux` may not be on its PATH (a server started from a desktop launcher or a systemd unit) |

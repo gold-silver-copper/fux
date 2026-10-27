@@ -20,7 +20,7 @@ use crate::wire::{Wire, wire};
 use std::borrow::Cow;
 
 /// Bumped on any change to the frames below.
-pub const PROTOCOL: u32 = 23;
+pub const PROTOCOL: u32 = 24;
 /// The largest frame, kind byte included.
 pub const MAX_FRAME: usize = 1 << 20;
 /// The largest payload one frame carries.
@@ -304,6 +304,7 @@ wire! {
     /// `update-environment` names from.
     #[derive(Clone, Debug, PartialEq, Eq)]
     pub struct Attach {
+        pub of: Option<crate::command::Run>,
         pub size: fux_vt::Size,
         pub workspace: Option<crate::command::WsRef>,
         pub read_only: bool,
@@ -320,6 +321,7 @@ impl Attach {
     /// environment.
     pub fn of(size: fux_vt::Size) -> Attach {
         Attach {
+            of: None,
             size,
             workspace: None,
             read_only: false,
@@ -340,14 +342,16 @@ frames! {
 
 wire! {
     /// Where a request comes from: the caller's directory, its pane
-    /// (`FUX_PANE`) and the server that pane is of (`FUX_SERVER`), its
-    /// environment if the request may start programs (they take what
+    /// and program generation (`FUX_PANE`), that pane's server (`FUX_SERVER`),
+    /// its environment if the request may start programs (they take what
     /// `update-environment` names of it), and the client whose binding or
     /// prompt runs it.
     #[derive(Clone, Debug, Default, PartialEq, Eq)]
     pub struct Context {
+        /// The common run of every handle used by this request, if any.
+        pub of: Option<crate::command::Run>,
         pub cwd: std::path::PathBuf,
-        pub pane: Option<PaneId>,
+        pub pane: Option<(PaneId, u64)>,
         pub server: Option<String>,
         pub env: Vec<(String, std::ffi::OsString)>,
         pub client: Option<ClientId>,
@@ -374,6 +378,8 @@ wire! {
     /// pane closed).
     #[derive(Clone, Debug, Default, PartialEq, Eq)]
     pub struct Reply {
+        /// Its server run; absent only for a local config collector.
+        pub run: Option<crate::command::Run>,
         pub end: End,
         pub body: Body,
     }
@@ -448,6 +454,7 @@ impl Reply {
     /// A failure of kind `code`, with its exit status, and why.
     pub fn failed(code: Code, message: impl Into<String>) -> Self {
         Self {
+            run: None,
             end: End::Failed {
                 code,
                 message: message.into(),
@@ -460,6 +467,7 @@ impl Reply {
 impl From<Body> for Reply {
     fn from(body: Body) -> Self {
         Self {
+            run: None,
             end: End::Done,
             body,
         }
@@ -514,7 +522,7 @@ frames! {
     pub enum ToAttached<'a> {
         /// The answer to its `Attach`, before anything is painted: its id,
         /// which its bindings' `me` names and a headless client prints.
-        Welcome(client: ClientId) = 12,
+        Welcome(client: ClientId, run: crate::command::Run) = 12,
         /// Bytes for its terminal, which the client writes there: a paint,
         /// or what the server sends it outside one (a copy, the bell,
         /// questions for the terminal). Every paint comes so.
@@ -680,7 +688,7 @@ mod tests {
     }
 
     #[test]
-    fn every_frame_round_trips_in_any_chunking_with_the_wire_formats_kind() {
+    fn every_frame_round_trips_in_any_chunking_with_the_wire_formats_kind() -> Result<(), String> {
         let hello = |role| Hello {
             protocol: PROTOCOL,
             version: "0.13.0".into(),
@@ -694,6 +702,7 @@ mod tests {
             Attach,
             2,
             Attach {
+                of: None,
                 size,
                 workspace,
                 read_only: false,
@@ -705,6 +714,7 @@ mod tests {
             Attach,
             2,
             Attach {
+                of: None,
                 size,
                 workspace,
                 read_only: true,
@@ -734,8 +744,9 @@ mod tests {
                     name: "界".into(),
                 }),
                 context: Context {
+                    of: Some("1-2".parse().map_err(|()| "run")?),
                     cwd: "/somewhere".into(),
-                    pane: "%3".parse().ok(),
+                    pane: crate::id::program("%3:0"),
                     server: Some("1-2".into()),
                     env: vec![("K".into(), "V".into())],
                     client: "c2".parse().ok(),
@@ -749,7 +760,11 @@ mod tests {
         round_trip!(ToAttached, 8, ToAttached::Exit("detached"));
         round_trip!(ToCommand, 9, ToCommand::Stdout(Cow::Borrowed(b"out")));
         round_trip!(Greeting, 11, Greeting::Done(2));
-        round_trip!(ToAttached, 12, ToAttached::Welcome(ClientId::of(2)));
+        round_trip!(
+            ToAttached,
+            12,
+            ToAttached::Welcome(ClientId::of(2), "1-2".parse().map_err(|()| "run")?)
+        );
         round_trip!(ToAttached, 14, ToAttached::Ended(ScreenKind::Copy));
         round_trip!(ToAttached, 15, ToAttached::Run("me zoom".into()));
         round_trip!(ToAttached, 16, ToAttached::Keys(Vec::new()));
@@ -780,6 +795,7 @@ mod tests {
             let encoded = hello(role).encode().unwrap_or_default();
             assert_eq!(encoded.get(9), Some(&byte), "{role:?}");
         }
+        Ok(())
     }
 
     #[test]
@@ -888,7 +904,7 @@ mod tests {
             ),
             (
                 attach,
-                vec![0, 0, 0, 6, 2, 0, 1, 0, 1, 2],
+                vec![0, 0, 0, 7, 2, 0, 0, 1, 0, 1, 2],
                 "a frame's payload: no option has tag 2",
             ),
             (

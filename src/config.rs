@@ -126,7 +126,8 @@ settings! {
     /// Variables a new pane takes from whoever starts it (a request's
     /// caller, the client whose key it is) rather than from the server,
     /// which may have started long ago. One the starter lacks is unset,
-    /// but for `FUX`, `FUX_PANE`, `FUX_SOCKET` and `FUX_SERVER`.
+    /// but for `FUX`, `FUX_PANE`, `FUX_SOCKET` and `FUX_SERVER`, whose pane
+    /// values win. Explicit `env` assignments win over both.
     update_environment UpdateEnvironment "update-environment": Vec<EnvName> =
         KEPT.map(|name| EnvName(name.to_owned())).to_vec();
 }

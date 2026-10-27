@@ -101,6 +101,7 @@ fn a_client_that_shuts_its_side_still_gets_its_answer() -> Outcome {
         }
         .into(),
         context: Context {
+            of: None,
             cwd: std::path::PathBuf::new(),
             pane: None,
             server: None,

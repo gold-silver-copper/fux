@@ -127,7 +127,7 @@ fn a_config_that_fails_sets_nothing() -> Outcome {
                 str nonsense 1 set\n";
     std::fs::write(&config, text).map_err(e)?;
     let socket = fux::socket::Choice::Path(server.socket.clone());
-    let ran = fux::script::run_file(&config, Some(&mut fux::script::Server::new(socket)));
+    let ran = fux::script::run_file(&config, Some(&mut fux::script::Server::new(socket)), None);
     let failed = ran.err().ok_or("the config ran")?;
     assert!(failed.to_string().contains("nonsense"), "{failed}");
     let pane = server.ok(&["str", "%1", "pane", "horizontal", "split"])?;

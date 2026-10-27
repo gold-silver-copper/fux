@@ -471,7 +471,7 @@ fn json_of(value: &Value<Fux>) -> crate::json::Json {
         Value::Str(s) => Json::str(s.to_string()),
         // As deep as lists nest, at most fuxth's limit.
         Value::List(list) => Json::Array(list.items().iter().map(json_of).collect()),
-        Value::App(Fux::Answer(answer)) => answer.json(),
+        Value::App(Fux::Answer(answer, _)) => answer.json(),
         Value::App(_) => Json::str(value.text()),
     }
 }
@@ -536,10 +536,10 @@ fn laid_out(cols: &Value<Fux>, rows: &Value<Fux>) -> Result<crate::view::Screen,
 /// The pane a value is: a pane, or an action's or wait's answer of one
 /// (a closed one's too, whose words then find no pane).
 fn as_pane(value: &Value<Fux>) -> Option<PaneId> {
-    if let Value::App(Fux::Pane(p)) = value {
+    if let Value::App(Fux::Pane(p, _)) = value {
         return Some(*p);
     }
-    if let Value::App(Fux::Answer(answer)) = value
+    if let Value::App(Fux::Answer(answer, _)) = value
         && let super::Answer::Pane(answer) = &**answer
     {
         return Some(answer.pane());
@@ -552,7 +552,7 @@ fn pane(value: &Value<Fux>) -> Result<PaneId, Failure> {
 }
 
 fn client(value: &Value<Fux>) -> Result<ClientId, Failure> {
-    let Value::App(Fux::Client(c)) = value else {
+    let Value::App(Fux::Client(c, _)) = value else {
         return Err(wrong("a client (from me or client)", value));
     };
     Ok(*c)
@@ -562,9 +562,9 @@ fn client(value: &Value<Fux>) -> Result<ClientId, Failure> {
 fn target(value: &Value<Fux>) -> Result<AnyRef, Failure> {
     if let Some(p) = as_pane(value) {
         Ok(AnyRef::Pane(p))
-    } else if let Value::App(Fux::Tab(t)) = value {
+    } else if let Value::App(Fux::Tab(t, _)) = value {
         Ok(AnyRef::Tab(*t))
-    } else if let Value::App(Fux::Workspace(w)) = value {
+    } else if let Value::App(Fux::Workspace(w, _)) = value {
         Ok(AnyRef::Workspace(*w))
     } else {
         Err(wrong("a pane, tab or workspace", value))
@@ -573,7 +573,7 @@ fn target(value: &Value<Fux>) -> Result<AnyRef, Failure> {
 
 /// A workspace, or its name: `+N` read as its id, as `parse_workspace` reads it.
 fn workspace(value: &Value<Fux>) -> Result<WsRef, Failure> {
-    if let Value::App(Fux::Workspace(w)) = value {
+    if let Value::App(Fux::Workspace(w, _)) = value {
         return Ok(WsRef::Id(*w));
     }
     crate::command::parse_workspace(&string(value)?)
@@ -600,7 +600,7 @@ fn unused(word: Act, built: &Opts) -> Result<(), Failure> {
 /// What a request is on: a pane, tab or workspace, a client, or the
 /// version an action's or wait's answer holds, of its pane.
 fn on(value: &Value<Fux>) -> Result<On, Failure> {
-    if let Value::App(Fux::Client(c)) = value {
+    if let Value::App(Fux::Client(c, _)) = value {
         return Ok(On::Client(*c));
     }
     if let Some(version) = held(value) {
@@ -614,7 +614,7 @@ fn on(value: &Value<Fux>) -> Result<On, Failure> {
 /// between is missed.
 fn held(value: &Value<Fux>) -> Option<crate::command::Version> {
     match value {
-        Value::App(Fux::Answer(answer)) => match &**answer {
+        Value::App(Fux::Answer(answer, _)) => match &**answer {
             super::Answer::Pane(answer) => answer.version(),
             // A capture's is for `expect` and `changed` alone (`version`).
             super::Answer::Panes(_)
@@ -635,7 +635,7 @@ const EXPECTED: &str = "takes no request expect made: only send-keys checks a ve
 fn version(value: &Value<Fux>) -> Result<crate::command::Version, Failure> {
     let wanted = "a version: an action's or wait's answer, a pane's capture, or its text";
     let text = match value {
-        Value::App(Fux::Answer(answer)) => {
+        Value::App(Fux::Answer(answer, _)) => {
             return answer.version().ok_or_else(|| wrong(wanted, value));
         }
         Value::Str(text) => text,
@@ -1004,7 +1004,7 @@ fn find(kind: Kind, found: Value<Fux>, out: &mut Vec<Value<Fux>>) -> Result<Done
         if id.kind() != kind {
             return resolve(id.to_string(), kind);
         }
-        out.push(Value::App(super::handle(id)));
+        out.push(Value::App(super::handle(id, super::scope(&found))));
         return Ok(Done::Now);
     }
     match found {
@@ -1033,6 +1033,7 @@ fn ask(request: impl Into<Request>) -> Ask {
     Ask::Server {
         request: Box::new(request.into()),
         client: None,
+        of: None,
     }
 }
 
@@ -1050,6 +1051,7 @@ fn ask_as(client: ClientId, command: Command) -> Ask {
     Ask::Server {
         request: Box::new(command.into()),
         client: Some(client),
+        of: None,
     }
 }
 
@@ -1080,23 +1082,78 @@ impl fuxth::Host for Host<'_> {
         args: fuxth::Args<'_, Fux>,
         out: &mut Vec<Value<Fux>>,
     ) -> Result<Done<Ask>, Failure> {
-        // Each word's id is its place in `Word::ALL`, as the vocabulary
-        // was made.
         let Some(&word) = Word::ALL.get(id) else {
             return Err(Failure::new(
                 fuxth::Code::Contract,
                 "no word of fux's has this id",
             ));
         };
-        let mut args = args.into_iter();
+        let mut of = self.context.of;
+        let mut args = args;
         let mut next = || {
-            args.next().ok_or_else(|| {
+            let value = args.next().ok_or_else(|| {
                 fail(
                     Raise::StackUnderflow,
                     format!("too few values: {}", word.row().effect),
                 )
-            })
+            })?;
+            of = super::same_run(of, super::scope(&value))?;
+            Ok(value)
         };
+        let from = out.len();
+        let result = self.dispatch(word, &mut next, out)?;
+        for value in out.iter_mut().skip(from) {
+            match value {
+                Value::App(Fux::Opts(opts)) => {
+                    let version = match opts.on {
+                        Some(On::Version(v) | On::Seen(v)) => Some(v.run),
+                        _ => None,
+                    };
+                    opts.of = super::same_run(of, version)?;
+                }
+                Value::App(
+                    Fux::Pane(_, run)
+                    | Fux::Tab(_, run)
+                    | Fux::Workspace(_, run)
+                    | Fux::Client(_, run),
+                ) => {
+                    *run = super::same_run(*run, of)?;
+                }
+                Value::Int(_) | Value::Bool(_) | Value::Str(_) | Value::List(_) | Value::App(_) => {
+                }
+            }
+        }
+        match result {
+            Done::Later(Ask::Server {
+                request, client, ..
+            }) => Ok(Done::Later(Ask::Server {
+                request,
+                client,
+                of,
+            })),
+            Done::Later(Ask::Local(Local::Attach {
+                workspace,
+                read_only,
+                size,
+                ..
+            })) => local(Local::Attach {
+                of,
+                workspace,
+                read_only,
+                size,
+            }),
+            result @ (Done::Now | Done::Later(_)) => Ok(result),
+        }
+    }
+}
+
+impl Host<'_> {
+    fn dispatch(
+        &mut self,
+        word: Word,
+        mut next: &mut dyn FnMut() -> Result<Value<Fux>, Failure>,
+        out: &mut Vec<Value<Fux>>,
+    ) -> Result<Done<Ask>, Failure> {
         let now = |out: &mut Vec<Value<Fux>>, value: Value<Fux>| {
             out.push(value);
             Ok(Done::Now)
@@ -1127,10 +1184,10 @@ impl fuxth::Host for Host<'_> {
                 let id = text
                     .parse()
                     .map_err(|e: Usage| fail(Raise::BadValue, e.to_string()))?;
-                now(out, Value::App(Fux::Client(id)))
+                now(out, Value::App(Fux::Client(id, None)))
             }
             Act::Me => match self.context.client {
-                Some(c) => now(out, Value::App(Fux::Client(c))),
+                Some(c) => now(out, Value::App(Fux::Client(c, self.context.of))),
                 None => Err(fail(
                     Raise::NotAClient,
                     "the client whose key or prompt runs this: this runs from the command line",
@@ -1423,8 +1480,8 @@ impl fuxth::Host for Host<'_> {
             Act::MoveTo => {
                 let p = pane(&next()?)?;
                 let to = match next()? {
-                    Value::App(Fux::Tab(t)) => MoveTo::Tab(t),
-                    Value::App(Fux::Workspace(w)) => MoveTo::Workspace(WsRef::Id(w)),
+                    Value::App(Fux::Tab(t, _)) => MoveTo::Tab(t),
+                    Value::App(Fux::Workspace(w, _)) => MoveTo::Workspace(WsRef::Id(w)),
                     Value::Str(s) if **s == *"new-tab" => MoveTo::NewTab,
                     Value::Str(s) if **s == *"new-workspace" => MoveTo::NewWorkspace,
                     other @ (Value::Int(_)
@@ -1468,6 +1525,7 @@ impl fuxth::Host for Host<'_> {
             Act::Attach => {
                 let built = finished(act, next()?)?;
                 local(Local::Attach {
+                    of: None,
                     workspace: built.place,
                     read_only: built.watch,
                     size: built.size.map(|screen| screen.size()),
@@ -1492,7 +1550,7 @@ impl fuxth::Host for Host<'_> {
             Act::ShowTab => {
                 let c = client(&next()?)?;
                 let t = next()?;
-                let Value::App(Fux::Tab(tab)) = &t else {
+                let Value::App(Fux::Tab(tab, _)) = &t else {
                     return Err(wrong("a tab", &t));
                 };
                 order(c, ClientAction::SelectTab(Pick::Id(*tab)))
@@ -1546,7 +1604,7 @@ impl fuxth::Host for Host<'_> {
             Act::ListKeys => {
                 let text = match &self.keymap {
                     Some(keymap) => keymap.describe(),
-                    None => (super::config_keymap(None))
+                    None => (super::config_keymap(None, None))
                         .map_err(|e| fail(Raise::Config, e.to_string()))?
                         .describe(),
                 };
@@ -1577,7 +1635,7 @@ impl fuxth::Host for Host<'_> {
                     .file_name()
                     .is_some_and(|n| n == "config.fux");
                 if config {
-                    super::run_file(std::path::Path::new(&path), None).map_err(checked)?;
+                    super::run_file(std::path::Path::new(&path), None, None).map_err(checked)?;
                 }
                 self.show(&format!("{path}: ok\n"))
             }
@@ -1876,7 +1934,7 @@ mod tests {
     fn an_answer_of_several_panes_is_an_array() -> Result<(), ()> {
         let version = "%1:0.0.0.0.0:1-1".parse()?;
         let one = super::super::Answer::Panes(vec![crate::answer::PaneAnswer::Acted(version)]);
-        let json = json_of(&Value::App(Fux::Answer(Box::new(one)))).render();
+        let json = json_of(&Value::App(Fux::Answer(Box::new(one), None))).render();
         assert_eq!(
             json,
             r#"[{"pane":"%1","version":"%1:0.0.0.0.0:1-1","status":0}]"#

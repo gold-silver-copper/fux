@@ -437,7 +437,7 @@ impl Conn {
             Ok(client) => {
                 let attached = Attached::new(client);
                 self.enter(session, Stage::Attached(Box::new(attached)));
-                self.send(session, &ToAttached::Welcome(client));
+                self.send(session, &ToAttached::Welcome(client, session.run));
             }
             Err(error) => self.end(session, &ToAttached::Exit(&error.to_string())),
         }
@@ -445,7 +445,8 @@ impl Conn {
 
     /// Answers a request with its outcome, encoded once and sent in pieces
     /// as long as fit, then their end; and takes the next.
-    fn answer(&mut self, session: &mut Session, reply: Reply) {
+    fn answer(&mut self, session: &mut Session, mut reply: Reply) {
+        reply.run = Some(session.run);
         let bytes = crate::wire::encode(&reply);
         split_into(&bytes, ToCommand::Part, &mut self.out);
         self.send(session, &ToCommand::PartsEnd);
@@ -1317,6 +1318,10 @@ impl Server {
         let Some(conn) = self.conns.get_mut(index) else {
             return;
         };
+        if let Err(error) = session.check_run(context.of) {
+            conn.answer(session, Reply::failed(error.code(), error.to_string()));
+            return;
+        }
         let Context {
             cwd,
             pane,

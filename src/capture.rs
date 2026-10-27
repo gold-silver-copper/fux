@@ -303,22 +303,23 @@ pub fn client(client: ClientId, grid: &crate::render::Grid) -> Captured {
 pub fn state(pane: &Pane, now: Instant, copy_mode: bool) -> Vec<(&'static str, Json)> {
     let screen = pane.screen();
     let cell = screen.graphics().cell();
-    // What runs in the foreground: a job the shell started, else the
-    // program itself; nothing, where its terminal can't tell.
-    let job = pane.process().job();
-    let foreground = (pane.process().child()).and_then(|child| match job {
-        Ok(job) => Some(job.unwrap_or(child.leader.pid())),
-        Err(_) => None,
+    // The terminal reports a group, whose leader may already have exited.
+    // Read that leader alone; a surviving member is not guessed to replace it.
+    let group = pane.process().child().and_then(|child| {
+        fuxix::terminal::foreground_group(&child.master)
+            .ok()
+            .flatten()
     });
-    let program = foreground.and_then(fuxix::process::name);
+    let leader = group.filter(|pid| fuxix::process::exists(*pid));
+    let program = leader.and_then(fuxix::process::name);
+    let argv = leader.and_then(fuxix::process::argv);
+    let cwd = leader.and_then(fuxix::process::cwd);
+    let launch_argv = match &pane.runs {
+        Runs::Explicit(launch) => Json::Array(launch.argv.iter().map(Json::str).collect()),
+        Runs::DefaultShell => Json::Null,
+    };
     let idle = now.saturating_duration_since(pane.wrote_at).as_millis();
     let last_status = screen.commands().last_status;
-    let argv = match (&pane.runs, job) {
-        (_, Ok(Some(job))) => fuxix::process::argv(job),
-        (Runs::Explicit(launch), Ok(None)) => Some(launch.argv.iter().map(Into::into).collect()),
-        (Runs::DefaultShell, Ok(None)) => foreground.and_then(fuxix::process::argv),
-        (_, Err(_)) => None,
-    };
     let (exited, signal) = match pane.process().exit_status() {
         Some(crate::process::Ended::Exited(code)) => (Json::int(code), Json::Null),
         Some(crate::process::Ended::Signalled(signal)) => (Json::Null, Json::int(signal)),
@@ -340,6 +341,15 @@ pub fn state(pane: &Pane, now: Instant, copy_mode: bool) -> Vec<(&'static str, J
     vec![
         ("title", Json::str(pane.title().as_str().to_owned())),
         ("program", program.map_or(Json::Null, Json::str)),
+        (
+            "foreground_group",
+            group.map_or(Json::Null, |pid| Json::int(pid.as_raw())),
+        ),
+        (
+            "foreground_leader",
+            leader.map_or(Json::Null, |pid| Json::int(pid.as_raw())),
+        ),
+        ("launch_argv", launch_argv),
         // Its program closed its terminal and runs on: nothing reads keys
         // there (the terminal hung up; Linux says so).
         ("hung_up", Json::Bool(hung_up)),
@@ -388,12 +398,7 @@ pub fn state(pane: &Pane, now: Instant, copy_mode: bool) -> Vec<(&'static str, J
         ),
         ("truncated", Json::Array(truncated)),
         ("input_unread", Json::count(pane.left.input)),
-        (
-            "cwd",
-            foreground
-                .and_then(fuxix::process::cwd)
-                .map_or(Json::Null, |p| text(p.as_os_str())),
-        ),
+        ("cwd", cwd.map_or(Json::Null, |p| text(p.as_os_str()))),
         (
             "argv",
             argv.map_or(Json::Null, |a| {

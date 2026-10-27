@@ -84,6 +84,7 @@ impl Waiting {
                 reply,
             } => match session.parts.panes().get(id) {
                 None => Some(Reply {
+                    run: Some(session.run),
                     end: End::Failed {
                         code: crate::code::Code::Closed,
                         message: format!("{id}: the pane closed"),
@@ -142,7 +143,11 @@ impl Watch {
             (Watches::Pane(_), [one]) => Body::Pane(one.clone()),
             _ => Body::Panes(told),
         };
-        Some(Reply { end, body })
+        Some(Reply {
+            run: Some(session.run),
+            end,
+            body,
+        })
     }
 
     /// Pane `id`'s version in its run at `counts`.

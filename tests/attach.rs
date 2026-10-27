@@ -88,6 +88,7 @@ fn a_connection_that_ends_takes_its_client_with_it() -> Outcome {
     let mut keep = server.attach(10, 40)?;
     keep.wait_for("$")?;
     let attach = Attach {
+        of: None,
         size: sized(5, 20)?,
         workspace: None,
         read_only: false,
@@ -189,7 +190,7 @@ fn capture_pane_shows_the_screen_and_history() -> Outcome {
     let run = version.rsplit(':').next().unwrap_or_default();
     let inside = server.fux_env(
         &["here", "capture"],
-        &[("FUX_PANE", "%1"), ("FUX_SERVER", run)],
+        &[("FUX_PANE", "%1:0"), ("FUX_SERVER", run)],
     )?;
     assert_eq!(inside.status, 0);
     assert!(inside.stdout.contains("line8"));
@@ -277,7 +278,7 @@ fn attaching_inside_a_pane_is_refused_unless_unset() -> Outcome {
         &["opts", "attach"],
         &["opts", "str", "main", "in", "attach"],
     ] {
-        let out = server.fux_env(words, &[("FUX_PANE", "%1")])?;
+        let out = server.fux_env(words, &[("FUX_PANE", "%1:0")])?;
         assert_eq!(out.status, 1);
         assert!(out.stderr.contains("unset FUX_PANE"), "{}", out.stderr);
     }
@@ -646,7 +647,8 @@ fn a_signal_detached_client_writes_the_last_paint_before_leaving() -> Outcome {
             version: "0".into(),
             role: Role::Attach,
         });
-        let welcome = ToAttached::Welcome("c1".parse().map_err(e)?);
+        let welcome =
+            ToAttached::Welcome("c1".parse().map_err(e)?, "1-2".parse().map_err(|()| "run")?);
         let ready = ToAttached::Paint(b"READY"[..].into());
         for frame in [hello.encode(), welcome.encode(), ready.encode()] {
             stream.write_all(&frame.map_err(e)?).map_err(e)?;

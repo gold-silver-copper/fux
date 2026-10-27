@@ -83,8 +83,8 @@ pub enum Origin {
 /// A command line's caller on the CLI.
 #[derive(Clone, Debug, Default)]
 pub struct Caller {
-    /// The pane it gave (`FUX_PANE`), of the server `within` says.
-    pub gave: Option<PaneId>,
+    /// The pane and program generation it gave (`FUX_PANE`), of `within`.
+    pub gave: Option<(PaneId, u64)>,
     /// The server whose pane it runs in, by its `FUX_SERVER`.
     pub within: Within,
     /// Its working directory.
@@ -113,7 +113,7 @@ impl Caller {
     /// Its pane, if it gave one of this server's.
     fn pane(&self) -> Option<PaneId> {
         match self.within {
-            Within::This => self.gave,
+            Within::This => self.gave.map(|(pane, _)| pane),
             Within::Unsaid | Within::Other => None,
         }
     }
@@ -479,7 +479,7 @@ fn failure(error: Error, origin: &Origin) -> Reply {
         (
             Error::NoPaneGiven | Error::NoWorkspaceGiven,
             Origin::Cli(Caller {
-                gave: Some(pane),
+                gave: Some((pane, generation)),
                 within: within @ (Within::Other | Within::Unsaid),
                 ..
             }),
@@ -490,9 +490,22 @@ fn failure(error: Error, origin: &Origin) -> Reply {
             };
             fail(
                 Raise::StrayPane,
-                format!("FUX_PANE {pane} {whose}, so it is not acted on; name the pane"),
+                format!(
+                    "FUX_PANE {pane}:{generation} {whose}, so it is not acted on; name the pane"
+                ),
             )
         }
+        (
+            Error::NoPaneGiven | Error::NoWorkspaceGiven,
+            Origin::Cli(Caller {
+                gave: Some((pane, generation)),
+                within: Within::This,
+                ..
+            }),
+        ) => fail(
+            Raise::StrayPane,
+            format!("FUX_PANE {pane}:{generation} no longer identifies its program"),
+        ),
         (error, _) => error,
     };
     Reply::failed(error.code(), error.to_string())
@@ -621,7 +634,15 @@ impl Session {
                 Ok(Here::Client(client, place))
             }
             Origin::Cli(ref caller) => {
-                let pane = caller.pane().map(|p| (p, self.locate(p).map(|(ws, _)| ws)));
+                let pane = caller
+                    .pane()
+                    .filter(|p| {
+                        caller.gave.is_some_and(|(_, generation)| {
+                            self.pane(*p).is_ok_and(|pane| pane.respawns == generation)
+                                && !self.respawning.contains_key(p)
+                        })
+                    })
+                    .map(|p| (p, self.locate(p).map(|(ws, _)| ws)));
                 Ok(Here::Cli(pane, caller.cwd.as_deref()))
             }
         }
@@ -653,6 +674,7 @@ impl Session {
     fn spawn(
         &self,
         id: PaneId,
+        generation: u64,
         launch: &pane::Launch,
         fresh: &Starting,
         size: (Size, Option<fux_vt::CellSize>),
@@ -661,16 +683,24 @@ impl Session {
             return Ok(None);
         };
         let (argv, env) = (launch.argv.as_slice(), launch.env.as_slice());
-        let mut vars = vec![
-            ("FUX_PANE", id.to_string().into()),
+        let mut vars: Vec<_> = fresh
+            .set
+            .iter()
+            .map(|(k, v)| (k.as_str(), v.clone()))
+            .collect();
+        vars.extend([
+            ("FUX_PANE", format!("{id}:{generation}").into()),
             ("FUX_SOCKET", socket.as_os_str().to_owned()),
             ("FUX_SERVER", self.run.to_string().into()),
-        ];
+        ]);
         vars.extend((self.exe.as_ref()).map(|exe| ("FUX", exe.as_os_str().to_owned())));
-        vars.extend((fresh.set.iter()).map(|(k, v)| (k.as_str(), v.clone())));
         vars.extend(env.iter().map(|(k, v)| (k.as_str(), v.into())));
         // No `FUX` to give: not one the server was started with either.
-        let unset: Vec<String> = (fresh.unset.iter().cloned())
+        let unset: Vec<String> = fresh
+            .unset
+            .iter()
+            .filter(|name| !vars.iter().any(|(k, _)| k == *name))
+            .cloned()
             .chain(self.exe.is_none().then(|| "FUX".to_owned()))
             .filter(|name| !env.iter().any(|(k, _)| k == name))
             .collect();
@@ -721,7 +751,12 @@ impl Session {
         // The program it starts is told its host's cell.
         let graphics = self.graphics(id);
         let size = (pane.size(), graphics.cell());
-        let (respawns, exiting) = (pane.respawns.saturating_add(1), pane.exiting);
+        let (respawns, exiting) = (
+            pane.respawns
+                .checked_add(1)
+                .ok_or_else(|| fail(Raise::IdsExhausted, "no program generations are left"))?,
+            pane.exiting,
+        );
         // All that can refuse it is done before its program starts, which
         // nothing can then leave running.
         let runs = Runs::Explicit(launch.clone());
@@ -729,7 +764,7 @@ impl Session {
         let mut fresh = Pane::new(id, String::new(), runs, size.0, history)?;
         // Its program starts sized in that cell, so no resize is due.
         let _ = fresh.host(Default::default(), Default::default(), graphics);
-        let child = self.spawn(id, &launch, starting, size)?;
+        let child = self.spawn(id, respawns, &launch, starting, size)?;
         // What one that runs left is read once another started (a start
         // refused leaves it running, nothing of it cut). Then its program is
         // taken: no more of it is read, and input is refused till the new
@@ -1278,7 +1313,7 @@ impl Session {
         let id = ids.pane()?;
         let name = basename(named.unwrap_or(config.shell.program()));
         let pane = Pane::new(id, name, runs, new.size, config.history_bytes.get())?;
-        let child = self.spawn(id, &launch, new.starting, (new.size, new.cell))?;
+        let child = self.spawn(id, 0, &launch, new.starting, (new.size, new.cell))?;
         Ok(match child {
             Some(child) => pane.running(child),
             None => pane,
@@ -1311,6 +1346,7 @@ impl Session {
     /// A client of `kind` attaches as `attach` says: one that only watches
     /// is one from the start, and sizes nothing.
     pub fn attach_as(&mut self, kind: ClientKind, attach: Attach) -> Result<ClientId, Error> {
+        self.check_run(attach.of)?;
         // A size no view has is refused before anything starts on it.
         let (rows, cols) = attach.size.nonzero();
         let (rows, cols) =
@@ -2069,6 +2105,14 @@ impl Session {
             return Err(fail(Raise::BadValue, why));
         }
         Ok(since.counts)
+    }
+
+    /// A value from another run must be refused before anything is acted on.
+    pub fn check_run(&self, run: Option<command::Run>) -> Result<(), Error> {
+        if run.is_some_and(|run| run != self.run) {
+            return Err(fail(Raise::BadValue, "handle is from another server run"));
+        }
+        Ok(())
     }
 
     /// Runs a command, parsed already: from a line, a binding or a chooser.
@@ -3141,6 +3185,11 @@ impl crate::script::Asks for InProcess<'_> {
         out: &mut dyn std::io::Write,
     ) -> Result<Reply, crate::script::Failed> {
         let session = &mut *self.0;
+        if let Err(error) = session.check_run(asked.context.of) {
+            let mut reply = Reply::failed(error.code(), error.to_string());
+            reply.run = Some(session.run);
+            return Ok(reply);
+        }
         let origin = match asked.context.client {
             Some(client) if session.views.contains_key(&client) => Origin::Client(client),
             Some(_) | None => Origin::Cli(Caller::default()),
@@ -3169,7 +3218,10 @@ impl crate::script::Asks for InProcess<'_> {
                 Reply::default()
             }
         };
-        Ok(outcome)
+        Ok(Reply {
+            run: Some(session.run),
+            ..outcome
+        })
     }
 }
 
@@ -3324,7 +3376,9 @@ pub(crate) mod testing {
     /// What a reply's answer prints, a value a line, or why it failed.
     pub(crate) fn said(reply: &Result<Reply, super::Error>) -> String {
         let values = match reply {
-            Ok(reply) => crate::script::answered(reply.body.clone()).map_err(|f| f.to_string()),
+            Ok(reply) => {
+                crate::script::answered(reply.body.clone(), reply.run).map_err(|f| f.to_string())
+            }
             Err(error) => Err(error.to_string()),
         };
         match values {
@@ -3707,7 +3761,7 @@ mod tests {
             &format!("str {big} client str other workspace show-workspace"),
         )?;
         let caller = Caller {
-            gave: Some(PaneId::of(2)),
+            gave: Some((PaneId::of(2), 0)),
             within: Within::This,
             ..Caller::default()
         };

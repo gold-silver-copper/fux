@@ -150,3 +150,9 @@ impl Ids {
         self.tab = u32::MAX;
     }
 }
+
+/// The pane and program generation given to a pane's process as `FUX_PANE`.
+pub fn program(text: &str) -> Option<(PaneId, u64)> {
+    let (pane, generation) = text.split_once(':')?;
+    Some((pane.parse().ok()?, number(generation)?))
+}

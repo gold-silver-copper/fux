@@ -73,7 +73,11 @@ fn servers_are_named_and_kills_are_guarded() -> Outcome {
     // the private server: it is not that server's, and nothing is done to
     // what has its number there.
     let pane = server.ok(&["str", "%1", "pane", "str", "id", "get"])?;
-    let theirs = [("FUX_PANE", pane.trim()), ("FUX_SERVER", "another-run")];
+    let identity = format!("{}:0", pane.trim());
+    let theirs = [
+        ("FUX_PANE", identity.as_str()),
+        ("FUX_SERVER", "another-run"),
+    ];
     let stray = named(&rt, &["str", "t", "server", "here", "capture"], &theirs)?;
     assert_eq!(stray.status, 1);
     assert!(
