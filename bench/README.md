@@ -198,3 +198,36 @@ One recording's throughput mostly reflects how its output was split into
 reads (fux paints at most every 16 ms); the 16 MiB workloads are throughput
 proper. Paints are counted by the `CSI ? 2026 h` fux begins each with, which
 tmux and zellij do not send, so only fux's are counted.
+
+`capture/history` counts construction and wire encoding of one full 8 MiB
+history at 40×120 (variable length rows); its baseline fills the same
+session. `cli/library` calls the client's actual cold library initializer,
+`fux::script::libraries`; its baseline is empty. This component measure
+excludes command parsing and transport: keep actual CLI request counts
+alongside it. Both use the existing counted-workload machinery; existing
+floors are unchanged.
+
+To count a real server's work for a single throughput workload on Linux:
+
+```sh
+fux-bench feel --muxes fux --parts throughput --only ascii --instructions
+fux-bench feel --muxes fux --parts footprint
+```
+
+`--only TEXT` selects matching throughput workloads. `--instructions`
+attaches Linux perf to the session's server PID, with acknowledged enable
+and disable commands around the workload. It measures through the marker
+read from the attached client's PTY, without polling the server. JSON keeps
+the whole perf report, server instructions and instructions per payload
+byte (including the fixed request/reset/marker and paint work). Every
+running PMU must have counted for its entire enabled interval; partial or
+unsupported counts fail the requested measurement. Without the option,
+server instruction counts are unknown (`null`). `FUX_PERF` names perf.
+
+`footprint` also records voluntary and involuntary context switches for
+all threads of the server and attached client during the settled idle
+interval. These counters are unknown without Linux procfs. Context switches
+are a wakeup proxy; CPU time is quantized. Timing and memory observations
+are reported with the environment and load, never used as wall-time gates.
+Compare matched fixtures and builds on a quiet host. Capture admission caps
+and the 16 ms server-hold goal are separate work.

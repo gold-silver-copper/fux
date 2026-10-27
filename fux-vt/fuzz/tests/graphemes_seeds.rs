@@ -2,7 +2,9 @@
 //! found the engine and the model to disagree on: a full cell,
 //! then a character of no width it cannot take, a control, then a modifier,
 //! which begins a cluster of its own after the control (UAX #29, GB5), not
-//! one more character of the full cell's. Each file is read as the target
+//! one more character of the full cell's; and a full cell whose remaining
+//! bytes fit a zero-width jamo after a dropped modifier, which must still
+//! be dropped to keep a prefix. Each file is read as the target
 //! reads it (`arbitrary_take_rest`, as libfuzzer-sys decodes) and checked as
 //! the target checks, on every `cargo test` of this package.
 use arbitrary::{Arbitrary, Unstructured};
@@ -25,6 +27,6 @@ fn the_graphemes_seeds_replay() -> Result {
         graphemes_target::run(&input);
         replayed = replayed.saturating_add(1);
     }
-    assert!(replayed >= 4, "{replayed} seeds");
+    assert!(replayed >= 8, "{replayed} seeds");
     Ok(())
 }
