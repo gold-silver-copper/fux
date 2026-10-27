@@ -367,6 +367,9 @@ it), `str PATH read-file` and `str NAME getenv` (a variable not set fails
 
 ## servers: Servers, sizes and more
 
+- `FUX`, `FUX_PANE`, `FUX_SOCKET` and `FUX_SERVER` are reserved pane
+  identity. Requesting them in `env` or `update-environment` is refused
+  with `bad_value`; other names, including `FUX_EXTRA`, remain allowed.
 - Handle values returned by a server retain its run through lists, bindings,
   answers and request options; using one against another run is refused.
   A hand-written `%N`, `@N`, `+N` or `str cN client` means the selected server

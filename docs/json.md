@@ -23,7 +23,7 @@ for `id`, `name` and `pid` (it says `pane`):
 | `foreground_group` | the terminal's observed foreground process group id, or `null` if unknown; its leader may have exited while other members still run |
 | `foreground_leader` | the process id of that group's leader when observed to exist, else `null`; fux does not search for another group member |
 | `program` | the observed foreground leader's program name (Linux keeps its first 15 bytes), or `null` if unknown |
-| `launch_argv` | the arguments given to `run` or `split`, retained separately from live observations; `null` for a default shell |
+| `launch_argv` | the arguments its program was last started with (`run`, `split`, or a `respawn` that gave a program), retained separately from live observations; `null` for a default shell |
 | `hung_up` | its program closed its terminal and runs on: keys are refused (Linux says so; macOS, where fux holds the terminal open, does not) |
 | `exited` | the status its program exited with (a pane whose program is no shell: `run`'s, or a `split` with a program), else `null` |
 | `signal` | the signal that killed it (its number), else `null`; both `null` for a program that ended (its version's ENDED is 1) whose status was lost |
@@ -208,8 +208,8 @@ they run, so a `try` may name them too.
 ## `status json`
 
 ```json
-{"socket":"/run/user/1000/fux/server.sock","version":"0.36.0","protocol":27,
- "server_version":"0.36.0","server_protocol":27,"compatible":true}
+{"socket":"/run/user/1000/fux/server.sock","version":"0.36.0","protocol":31,
+ "server_version":"0.36.0","server_protocol":31,"compatible":true}
 ```
 
 With no server, `status` fails (`no_server`), saying the socket and whether
@@ -221,4 +221,4 @@ a server that stopped left it there. Every server in fux's directory:
 `bytes` is the exact UTF-8 byte length; `preview` contains at most 50 characters,
 with control characters replaced by spaces. The full text is returned only by
 `str ID buffer`. IDs include the server run and are never reused in that run;
-an evicted ID returns `no_buffer`.
+an evicted ID returns `no_buffer`; an ID from another run is refused with `bad_value`.

@@ -45,6 +45,28 @@ fn held_handles_refuse_another_server_before_mutating_it() -> Outcome {
         assert_eq!(b.panes()?.len(), 2);
         assert!(!b.ok(&["%2", "capture"])?.contains("forbidden"));
     }
+    a.type_line("%1", "printf '\\033]52;c;b2xk\\007'")?;
+    let mut buffer = String::new();
+    eventually("a run-qualified buffer id", || {
+        let metadata = a.ok(&["buffers"])?;
+        let id = metadata
+            .split("\"id\":\"")
+            .nth(1)
+            .and_then(|s| s.split('"').next());
+        if let Some(id) = id {
+            buffer = id.to_owned();
+        }
+        Ok(!buffer.is_empty())
+    })?;
+    for action in ["buffer", "%2 swap paste-buffer"] {
+        let out = code(&a, &format!("str {buffer} str {socket} socket {action}"))?;
+        assert_eq!(out.status, 1, "{}", out.stderr);
+        assert!(
+            out.stderr.contains("bad_value:") && out.stderr.contains("server run"),
+            "{}",
+            out.stderr
+        );
+    }
     // Written text is explicitly interpreted by the server selected now.
     let out = code(
         &a,
@@ -123,49 +145,54 @@ fn a_background_descendant_cannot_be_here_after_respawn() -> Outcome {
 }
 
 #[test]
-fn inherited_environment_cannot_replace_a_panes_identity() -> Outcome {
-    let server = Server::start(
-        "str update-environment list str FUX_PANE str FUX_SOCKET str FUX_SERVER str FUX end set",
-    )?;
-    let version = server.version("%1")?;
-    let run = version.rsplit(':').next().ok_or("run")?;
-    let script = "printf '%s|%s|%s|%s\\n' \"$FUX_PANE\" \"$FUX_SOCKET\" \"$FUX_SERVER\" \"$FUX\"";
-    let out = server.fux_env(
-        &[
-            "opts", "80", "24", "size", "str", "sh", "program", "str", "-c", "arg", "str", script,
-            "arg", "run",
-        ],
-        &[
-            ("FUX_PANE", "%1:0"),
-            ("FUX_SERVER", run),
-            ("FUX", "/wrong/fux"),
-        ],
-    )?;
-    assert_eq!(out.status, 0, "{}", out.stderr);
-    server.exits("%2")?;
-    let capture = server.ok(&["%2", "capture"])?;
-    assert_eq!(
-        capture,
-        format!("%2:0|{}|{run}|{}\n", server.socket.display(), fux())
-    );
-    // Missing inherited variables cannot unset the pane's own values either.
+fn reserved_environment_names_are_refused_before_spawning() -> Outcome {
+    let server = Server::start("")?;
+    for name in ["FUX", "FUX_PANE", "FUX_SOCKET", "FUX_SERVER"] {
+        let inherited = server.fux(&[
+            "str",
+            "update-environment",
+            "list",
+            "str",
+            name,
+            "end",
+            "set",
+        ])?;
+        let explicit = server.fux(&[
+            "opts", "str", name, "str", "forged", "env", "80", "24", "size", "str", "cat",
+            "program", "run",
+        ])?;
+        for out in [inherited, explicit] {
+            assert_eq!(out.status, 1, "{name}: {}", out.stderr);
+            assert!(
+                out.stderr.contains("bad_value:")
+                    && out.stderr.contains(name)
+                    && out.stderr.contains("reserved"),
+                "{}",
+                out.stderr
+            );
+        }
+        assert_eq!(server.panes()?.len(), 1);
+    }
+    // The reservation is the exact identity set, not a prefix rule.
     server.ok(&[
-        "opts", "80", "24", "size", "str", "sh", "program", "str", "-c", "arg", "str", script,
-        "arg", "run",
+        "str",
+        "update-environment",
+        "list",
+        "str",
+        "FUX_EXTRA",
+        "end",
+        "set",
     ])?;
-    server.exits("%3")?;
-    assert!(server.ok(&["%3", "capture"])?.starts_with("%3:0|"));
-    // Explicit env is intentional and still wins.
     server.ok(&[
         "opts",
+        "str",
+        "FUX_EXTRA",
+        "str",
+        "allowed",
+        "env",
         "80",
         "24",
         "size",
-        "str",
-        "FUX_PANE",
-        "str",
-        "explicit",
-        "env",
         "str",
         "sh",
         "program",
@@ -173,12 +200,12 @@ fn inherited_environment_cannot_replace_a_panes_identity() -> Outcome {
         "-c",
         "arg",
         "str",
-        "echo $FUX_PANE",
+        "echo \"$FUX_PANE $FUX_EXTRA\"",
         "arg",
         "run",
     ])?;
-    server.exits("%4")?;
-    assert_eq!(server.ok(&["%4", "capture"])?, "explicit\n");
+    server.exits("%2")?;
+    assert_eq!(server.ok(&["%2", "capture"])?, "%2:0 allowed\n");
     Ok(())
 }
 

@@ -989,7 +989,7 @@ fn find(kind: Kind, found: Value<Fux>, out: &mut Vec<Value<Fux>>) -> Result<Done
         if id.kind() != kind {
             return resolve(id.to_string(), kind);
         }
-        out.push(Value::App(super::handle(id, super::scope(&found))));
+        out.push(Value::App(super::handle(id, None)));
         return Ok(Done::Now);
     }
     match found {
@@ -1015,10 +1015,25 @@ fn members_of(target: AnyRef, members: Members) -> Ask {
 }
 
 fn ask(request: impl Into<Request>) -> Ask {
+    let request = request.into();
+    let of = if let Request::Do(
+        Command::ShowBuffer {
+            buffer: Buffer::Id(id),
+        }
+        | Command::PasteBuffer {
+            buffer: Buffer::Id(id),
+            ..
+        },
+    ) = &request
+    {
+        Some(id.run())
+    } else {
+        None
+    };
     Ask::Server {
-        request: Box::new(request.into()),
+        request: Box::new(request),
         client: None,
-        of: None,
+        of,
     }
 }
 
@@ -1110,11 +1125,13 @@ impl fuxth::Host for Host<'_> {
         }
         match result {
             Done::Later(Ask::Server {
-                request, client, ..
+                request,
+                client,
+                of: used,
             }) => Ok(Done::Later(Ask::Server {
                 request,
                 client,
-                of,
+                of: super::same_run(of, used)?,
             })),
             Done::Later(Ask::Local(Local::Attach {
                 workspace,

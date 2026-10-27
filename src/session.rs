@@ -471,7 +471,7 @@ fn acted(version: command::Version) -> Reply {
 }
 
 /// A command that failed, told with its code (its status: 1, 4 or 124).
-fn failure(error: Error, origin: &Origin) -> Reply {
+fn failure(error: Error, origin: &Origin, session: &Session) -> Reply {
     // A command that needed its caller's pane, tab or workspace, from a
     // caller whose `FUX_PANE` is another server's pane, or no server's it
     // says: why it got none.
@@ -502,10 +502,13 @@ fn failure(error: Error, origin: &Origin) -> Reply {
                 within: Within::This,
                 ..
             }),
-        ) => fail(
-            Raise::StrayPane,
-            format!("FUX_PANE {pane}:{generation} no longer identifies its program"),
-        ),
+        ) => match session.parts.panes().contains_key(pane) {
+            true => fail(
+                Raise::StrayPane,
+                format!("FUX_PANE {pane}:{generation} no longer identifies its program"),
+            ),
+            false => Error::NoPane(*pane),
+        },
         (error, _) => error,
     };
     Reply::failed(error.code(), error.to_string())
@@ -638,8 +641,12 @@ impl Session {
                     .pane()
                     .filter(|p| {
                         caller.gave.is_some_and(|(_, generation)| {
-                            self.pane(*p).is_ok_and(|pane| pane.respawns == generation)
-                                && !self.respawning.contains_key(p)
+                            let current = self
+                                .respawning
+                                .get(p)
+                                .map(|new| &new.fresh)
+                                .or_else(|| self.parts.panes().get(p));
+                            current.is_some_and(|pane| pane.respawns == generation)
                         })
                     })
                     .map(|p| (p, self.locate(p).map(|(ws, _)| ws)));
@@ -762,6 +769,7 @@ impl Session {
         let runs = Runs::Explicit(launch.clone());
         let history = self.config.history_bytes.get();
         let mut fresh = Pane::new(id, String::new(), runs, size.0, history)?;
+        fresh.respawns = respawns;
         // Its program starts sized in that cell, so no resize is due.
         let _ = fresh.host(Default::default(), Default::default(), graphics);
         let child = self.spawn(id, respawns, &launch, starting, size)?;
@@ -782,8 +790,7 @@ impl Session {
                 }),
             }
         }
-        let mut started = fresh.version(self.run);
-        started.counts.respawns = respawns;
+        let started = fresh.version(self.run);
         let process = child.map_or(Process::Absent, Process::Reading);
         let since = Instant::now();
         let new = Replacement {
@@ -2038,7 +2045,7 @@ impl Session {
     /// events, its subscription; any other runs at once.
     pub fn begin(&mut self, request: Request, origin: &Origin) -> Begun {
         self.begin_request(request, origin)
-            .unwrap_or_else(|error| Begun::Done(failure(error, origin)))
+            .unwrap_or_else(|error| Begun::Done(failure(error, origin, self)))
     }
 
     /// `begin`'s work: what fails before a request runs is its error.
@@ -2145,7 +2152,7 @@ impl Session {
     pub fn run_command(&mut self, command: &Command, origin: &Origin) -> Reply {
         let outcome = self
             .execute(command, origin)
-            .unwrap_or_else(|error| failure(error, origin));
+            .unwrap_or_else(|error| failure(error, origin, self));
         if !command.shows_nothing_new() {
             self.changes = self.changes.wrapping_add(1);
             self.touch();
@@ -2341,6 +2348,9 @@ impl Session {
                 self.reorder(target, toward).map(|()| Reply::default())
             }
             Command::Set(settings) => {
+                for setting in settings {
+                    setting.check().map_err(|why| fail(Raise::BadValue, why))?;
+                }
                 // `run_command` marks every view to paint, as after any
                 // command that can show something new: `titles` shows at
                 // each client's next paint. Each value is one its setting
@@ -3221,16 +3231,15 @@ impl crate::script::Asks for InProcess<'_> {
         out: &mut dyn std::io::Write,
     ) -> Result<Reply, crate::script::Failed> {
         let session = &mut *self.0;
-        if let Err(error) = session.check_run(asked.context.of) {
-            let mut reply = Reply::failed(error.code(), error.to_string());
-            reply.run = Some(session.run);
-            return Ok(reply);
-        }
         let origin = match asked.context.client {
             Some(client) if session.views.contains_key(&client) => Origin::Client(client),
             Some(_) | None => Origin::Cli(Caller::default()),
         };
-        let outcome = match session.begin(asked.request.clone(), &origin) {
+        let begun = match session.check_run(asked.context.of) {
+            Ok(()) => session.begin(asked.request.clone(), &origin),
+            Err(error) => Begun::Done(Reply::failed(error.code(), error.to_string())),
+        };
+        let outcome = match begun {
             Begun::Done(outcome) => outcome,
             // As the server answers it: the panes' turns and frames come
             // as they fall due, the soonest first, each answered at its
@@ -3615,35 +3624,28 @@ mod tests {
             set: vec![("FUX".into(), "/wrong/fux".into())],
             ..Starting::default()
         };
-        for explicit in [false, true] {
-            let want = if explicit { "explicit" } else { "unset" };
-            let launch = pane::Launch {
-                argv: ["/bin/sh", "-c", &format!("[ \"${{FUX-unset}}\" = {want} ]")]
-                    .map(str::to_owned)
-                    .to_vec(),
-                cwd: "/".into(),
-                env: if explicit {
-                    vec![("FUX".into(), "explicit".into())]
-                } else {
-                    Vec::new()
-                },
-            };
-            let child = s
-                .spawn(PaneId::of(2), 0, &launch, &fresh, (sized(24, 80)?, None))
-                .map_err(|e| e.to_string())?
-                .ok_or("a child")?;
-            let deadline = Instant::now() + Duration::from_secs(3);
-            let mut status = None;
-            while Instant::now() < deadline {
-                status = child.leader.exited();
-                if status.is_some() {
-                    break;
-                }
-                std::thread::sleep(Duration::from_millis(5));
+        let launch = pane::Launch {
+            argv: ["/bin/sh", "-c", "[ -z \"${FUX+x}\" ]"]
+                .map(str::to_owned)
+                .to_vec(),
+            cwd: "/".into(),
+            env: Vec::new(),
+        };
+        let child = s
+            .spawn(PaneId::of(2), 0, &launch, &fresh, (sized(24, 80)?, None))
+            .map_err(|e| e.to_string())?
+            .ok_or("a child")?;
+        let deadline = Instant::now() + Duration::from_secs(3);
+        let mut status = None;
+        while Instant::now() < deadline {
+            status = child.leader.exited();
+            if status.is_some() {
+                break;
             }
-            let _ = child.leader.finish();
-            assert_eq!(status, Some(Ended::Exited(0)), "explicit env: {explicit}");
+            std::thread::sleep(Duration::from_millis(5));
         }
+        let _ = child.leader.finish();
+        assert_eq!(status, Some(Ended::Exited(0)));
         Ok(())
     }
 
@@ -3788,7 +3790,10 @@ mod tests {
             format!("str {id} buffer"),
             format!("%1 str {id} paste-buffer"),
         ] {
-            assert!(run(&mut other, &code).is_err_and(|e| e.starts_with("no_buffer:")));
+            assert!(
+                run(&mut other, &code)
+                    .is_err_and(|e| e.starts_with("bad_value:") && e.contains("server run"))
+            );
         }
         Ok(())
     }
@@ -4210,6 +4215,57 @@ mod tests {
             s.fire(Timer::Unread(id));
         }
         Err("never answered".into())
+    }
+
+    #[test]
+    fn a_replacements_caller_is_current_while_old_output_drains() -> Result<(), String> {
+        let mut s = started(Config::default())?;
+        run(&mut s, "opts 80 24 size str /bin/cat program run")?;
+        let id = PaneId::of(2);
+        let left: Vec<_> = std::iter::repeat_n(crate::pane::tests::spends_the_budget(24, 80), 4)
+            .flatten()
+            .collect();
+        s.output(id, &left);
+        let Begun::Waiting(waiting) = s.begin(respawn_of(id, &[]), &Origin::Cli(Caller::default()))
+        else {
+            return Err("the predecessor's output must still need turns".into());
+        };
+        let caller = |generation| {
+            Origin::Cli(Caller {
+                gave: Some((id, generation)),
+                within: Within::This,
+                ..Caller::default()
+            })
+        };
+        let here = Command::Resolve {
+            text: String::new(),
+            kind: Kind::Pane,
+        };
+        let found = s.run_command(&here, &caller(1));
+        assert_eq!(
+            found.end,
+            End::Done,
+            "the replacement's own identity: {found:?}"
+        );
+        assert_eq!(found.body, Body::Found(AnyRef::Pane(id)));
+        assert_eq!(
+            s.run_command(&here, &caller(0)).end.code(),
+            Some(Code::StrayPane)
+        );
+        assert!(s.respawning.contains_key(&id));
+        let (_, turns) = turns(&mut s, id, &waiting)?;
+        assert!(turns > 1, "the old output needed {turns} turns");
+        assert_eq!(s.run_command(&here, &caller(1)).end, End::Done);
+        assert_eq!(
+            s.run_command(&here, &caller(0)).end.code(),
+            Some(Code::StrayPane)
+        );
+        run(&mut s, "%2 kill")?;
+        assert_eq!(
+            s.run_command(&here, &caller(1)).end.code(),
+            Some(Code::NoPane)
+        );
+        Ok(())
     }
 
     /// A respawn over output the parser has yet to read reads it in the

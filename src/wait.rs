@@ -84,7 +84,7 @@ impl Waiting {
                 reply,
             } => match session.parts.panes().get(id) {
                 None => Some(Reply {
-                    run: Some(session.run),
+                    run: None,
                     end: End::Failed {
                         code: crate::code::Code::Closed,
                         message: format!("{id}: the pane closed"),
@@ -144,7 +144,7 @@ impl Watch {
             _ => Body::Panes(told),
         };
         Some(Reply {
-            run: Some(session.run),
+            run: None,
             end,
             body,
         })

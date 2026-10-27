@@ -126,10 +126,22 @@ settings! {
     /// Variables a new pane takes from whoever starts it (a request's
     /// caller, the client whose key it is) rather than from the server,
     /// which may have started long ago. One the starter lacks is unset,
-    /// but for `FUX`, `FUX_PANE`, `FUX_SOCKET` and `FUX_SERVER`, whose pane
-    /// values win. Explicit `env` assignments win over both.
+    /// but `FUX`, `FUX_PANE`, `FUX_SOCKET` and `FUX_SERVER` are reserved:
+    /// requesting them here or in `env` is refused.
     update_environment UpdateEnvironment "update-environment": Vec<EnvName> =
         Vec::new();
+}
+
+impl Setting {
+    /// Refuses inherited names that would overwrite a pane's own identity.
+    pub(crate) fn check(&self) -> Result<(), String> {
+        if let Self::UpdateEnvironment(names) = self {
+            for name in names {
+                crate::command::pane_var(name.as_str())?;
+            }
+        }
+        Ok(())
+    }
 }
 
 /// The most paste buffers kept.

@@ -1325,6 +1325,11 @@ impl Asks for Settings {
                 "a config sets and binds: it runs each time a client attaches, so it makes and changes nothing else",
             ));
         };
+        for setting in settings {
+            setting
+                .check()
+                .map_err(|why| Failed::new(Code::BadValue, why))?;
+        }
         self.0.extend(settings.iter().cloned());
         Ok(Reply::default())
     }

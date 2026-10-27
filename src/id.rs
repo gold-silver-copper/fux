@@ -61,6 +61,12 @@ pub struct BufferId {
     number: u64,
 }
 
+impl BufferId {
+    pub(crate) fn run(self) -> Run {
+        self.run
+    }
+}
+
 impl fmt::Display for BufferId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "b{}:{}", self.number, self.run)
