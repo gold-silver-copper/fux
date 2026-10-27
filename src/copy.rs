@@ -743,11 +743,17 @@ fn yank(session: &mut Session, client: ClientId, copied: Result<String, String>)
         "copied {characters} character{}",
         if characters == 1 { "" } else { "s" }
     );
-    if !session.copied(copied, &[client]) {
-        note.push_str(" to buffer 0; too large for the clipboard");
-    }
+    let result = session.copied(copied, &[client]);
     leave(session, client);
-    session.notify_to(client, note, false);
+    match result {
+        Ok(fits) => {
+            if !fits {
+                note.push_str(" to a paste buffer; too large for the clipboard");
+            }
+            session.notify_to(client, note, false);
+        }
+        Err(why) => session.notify_to(client, why.to_string(), true),
+    }
 }
 
 #[cfg(test)]

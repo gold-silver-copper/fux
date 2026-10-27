@@ -2128,7 +2128,10 @@ mod tests {
         let inverse = |y, x| grid.get(y, x).is_some_and(|cell| cell.inverse());
         assert!(inverse(1, 0) && inverse(1, 2) && !inverse(0, 0));
         s.input(c, b"y");
-        assert_eq!(s.buffers.front().map(String::as_str), Some("ab\n界b"));
+        assert_eq!(
+            s.buffers.front().map(|(_, text)| text.as_str()),
+            Some("ab\n界b")
+        );
         Ok(())
     }
 

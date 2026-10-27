@@ -367,7 +367,7 @@ fn the_clipboard_takes_a_copy_up_to_a_mebibyte() -> Outcome {
     let after =
         String::from_utf8_lossy(client.painted.get(before..).unwrap_or_default()).into_owned();
     assert!(!after.contains("\x1b]52;"), "no OSC 52 write for it");
-    let buffer = server.ok(&["0", "buffer"])?;
+    let buffer = server.ok(&["newest", "buffer"])?;
     assert!(
         buffer.len() > 1 << 20,
         "the buffer holds it all: {} bytes",

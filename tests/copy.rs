@@ -51,7 +51,7 @@ fn search(client: &mut Client, keys: &str, term: &str) -> Outcome {
 
 fn buffer(server: &Server) -> Result<String, String> {
     server
-        .ok(&["0", "buffer"])
+        .ok(&["newest", "buffer"])
         .map(|text| text.strip_suffix('\n').unwrap_or(&text).to_owned())
 }
 
@@ -116,12 +116,15 @@ fn a_word_a_line_and_a_block_are_copied() -> Outcome {
             .last()
             .is_some_and(|b| b.contains("copied 1 character") && !b.contains("characters"))
     })?;
-    server.ok(&["1", "buffer"])?;
-    // Buffers keep the newest first.
+    // Buffers keep metadata newest first, with stable ids.
     let list = server.ok(&["buffers"])?;
-    assert!(list.starts_with("0: 1 bytes: a"), "{list}");
-    assert!(list.contains("1: 13 bytes: beta"), "{list}");
-    assert!(list.contains("3: 5 bytes: alpha"), "{list}");
+    assert!(list.starts_with("[{\"id\":\"b4:"), "{list}");
+    assert!(list.contains("\"bytes\":1,\"preview\":\"a\""), "{list}");
+    assert!(
+        list.contains("\"bytes\":13,\"preview\":\"beta  lin row\""),
+        "{list}"
+    );
+    assert!(list.contains("\"bytes\":5,\"preview\":\"alpha\""), "{list}");
     Ok(())
 }
 
@@ -270,7 +273,12 @@ fn paste_buffers_paste_and_the_clipboard_can_be_off() -> Outcome {
     })?;
     // paste-buffer from the CLI, into another pane.
     server.ok(&["str", "%1", "pane", "horizontal", "split"])?;
-    server.ok(&["str", "%2", "pane", "0", "paste-buffer"])?;
+    let metadata = server.ok(&["buffers"])?;
+    let id = metadata
+        .strip_prefix("[{\"id\":\"")
+        .and_then(|s| s.split('"').next())
+        .ok_or("no buffer id")?;
+    server.ok(&["str", "%2", "pane", "str", id, "paste-buffer"])?;
     eventually("pasted into %2", || {
         Ok(server
             .ok(&["str", "%2", "pane", "capture"])?
@@ -278,7 +286,7 @@ fn paste_buffers_paste_and_the_clipboard_can_be_off() -> Outcome {
     })?;
     assert_eq!(
         server
-            .fux(&["str", "%2", "pane", "5", "paste-buffer"])?
+            .fux(&["str", "%2", "pane", "str", "b1:0-0", "paste-buffer"])?
             .status,
         1
     );

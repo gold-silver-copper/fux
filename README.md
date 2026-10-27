@@ -221,7 +221,7 @@ prefix again sends it to the pane.
 | `z` | `me zoom` | zoom the pane, or restore it |
 | `a`, then a key | `me me focused rename-prompt` … | pane actions: `r` rename, `x` close, `k` terminate the running command, `s` swap, `t`/`w` move to a tab/workspace, `n`/`W` move to a new one, `m h`/`m l` reorder |
 | `c` | `me copy-mode` | copy and select |
-| `p` | `me focused 0 paste-buffer drop` | paste the newest copy |
+| `p` | `me focused newest paste-buffer drop` | paste the newest copy |
 | `n` / `b` | `me str next step-tab` / `me str previous step-tab` | next / previous tab |
 | `e` | `me command-prompt` | type any fuxth |
 | `d` | `me detach` | detach this terminal |
@@ -301,6 +301,14 @@ Search is literal and case-sensitive over the whole history. `[` and `]`
 find prompts marked with `OSC 133 ; A` (see [Shell marks](#shell-marks)). A copy keeps wide
 characters whole, joins soft-wrapped lines, and trims trailing blanks. One
 copy is at most 262,144 cells.
+
+`buffers` returns JSON metadata, newest first: `id`, `bytes`, and a preview
+of at most 50 characters. An id such as `b7:48211-1867a3f9c2b8e7d6` names
+one copy in one server run. `str ID buffer` reads its exact text, including
+trailing newlines; `%2 str ID paste-buffer` pastes it atomically. Later copies
+never change what that id names; eviction or a different server returns
+`no_buffer`. `newest buffer` and `%2 newest paste-buffer` explicitly choose
+the newest copy when the request runs.
 
 **Clipboards.** A copy goes to fux's paste buffers (as many of the newest
 as `buffers` says); `C-b p` pastes the newest, bracketed if the program asked for
