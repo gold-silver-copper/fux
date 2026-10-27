@@ -26,6 +26,7 @@ pub mod io;
 pub mod poll;
 pub mod process;
 pub mod pty;
+pub mod signal;
 pub mod socket;
 pub mod terminal;
 

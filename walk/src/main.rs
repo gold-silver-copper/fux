@@ -12,7 +12,7 @@ mod world;
 use run::{Checker, End, Failure};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
-use std::sync::Arc;
+use std::io::{PipeReader, Read};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 use step::Step;
@@ -36,7 +36,41 @@ struct Options {
     output: PathBuf,
     replay: Option<PathBuf>,
     replay_all: Option<PathBuf>,
-    stop: Arc<AtomicBool>,
+    stop: Stop,
+}
+
+/// Whether SIGINT or SIGTERM has come: each writes a byte to the pipe.
+struct Stop {
+    pipe: PipeReader,
+    asked: AtomicBool,
+    _notices: Vec<fuxix::signal::Notice>,
+}
+
+impl Stop {
+    fn new() -> std::io::Result<Stop> {
+        let (pipe, write) = std::io::pipe()?;
+        fuxix::io::set_nonblocking(&pipe, true)?;
+        fuxix::io::set_nonblocking(&write, true)?;
+        let notices = [fuxix::process::Signal::Int, fuxix::process::Signal::Term]
+            .into_iter()
+            .map(|signal| -> std::io::Result<_> {
+                Ok(fuxix::signal::notify(signal, write.try_clone()?.into())?)
+            })
+            .collect::<std::io::Result<_>>()?;
+        Ok(Stop {
+            pipe,
+            asked: AtomicBool::new(false),
+            _notices: notices,
+        })
+    }
+
+    /// Whether a stop was asked for, now or before.
+    fn asked(&self) -> bool {
+        if matches!((&self.pipe).read(&mut [0u8; 1]), Ok(n) if n > 0) {
+            self.asked.store(true, Ordering::SeqCst);
+        }
+        self.asked.load(Ordering::SeqCst)
+    }
 }
 
 fn options() -> Result<Options, String> {
@@ -53,7 +87,7 @@ fn options() -> Result<Options, String> {
         output: PathBuf::from("walk/runs"),
         replay: None,
         replay_all: None,
-        stop: Arc::new(AtomicBool::new(false)),
+        stop: Stop::new().map_err(|e| format!("fux-walk: {e}"))?,
     };
     let number = |value: Option<String>, flag: &str| -> Result<u64, String> {
         value
@@ -150,7 +184,7 @@ fn replay(o: &Options, steps: &[Step]) -> Result<(), End> {
     let mut checker = Checker::new(o.settle);
     let result = (|| {
         for (at, step) in steps.iter().enumerate() {
-            if o.stop.load(Ordering::SeqCst) {
+            if o.stop.asked() {
                 break;
             }
             let before = run::overlays(&mut fixture);
@@ -261,7 +295,7 @@ fn walk(o: &Options, seed: u64, deadline: Instant) -> Result<Outcome, String> {
     let mut trace: Vec<Step> = Vec::new();
     let result = (|| {
         for at in 0..o.steps {
-            if o.stop.load(Ordering::SeqCst) || Instant::now() > deadline {
+            if o.stop.asked() || Instant::now() > deadline {
                 break;
             }
             let world = world::World::read(&fixture).map_err(|e| {
@@ -354,12 +388,6 @@ fn main() -> ExitCode {
             return ExitCode::from(2);
         }
     };
-    for signal in [signal_hook::consts::SIGINT, signal_hook::consts::SIGTERM] {
-        if let Err(e) = signal_hook::flag::register(signal, Arc::clone(&o.stop)) {
-            eprintln!("fux-walk: {e}");
-            return ExitCode::from(2);
-        }
-    }
     let replays: Vec<PathBuf> = match (&o.replay, &o.replay_all) {
         (Some(file), _) => vec![file.clone()],
         (None, Some(dir)) => {
@@ -413,7 +441,7 @@ fn main() -> ExitCode {
     } else {
         let deadline = fixture::after(Duration::from_secs(o.seconds));
         for seed in o.seed..o.seed.saturating_add(o.seeds) {
-            if o.stop.load(Ordering::SeqCst) || Instant::now() > deadline {
+            if o.stop.asked() || Instant::now() > deadline {
                 break;
             }
             let start = Instant::now();
@@ -439,7 +467,7 @@ fn main() -> ExitCode {
             }
         }
     }
-    if o.stop.load(Ordering::SeqCst) {
+    if o.stop.asked() {
         eprintln!("fux-walk: interrupted");
         failed = true;
     }

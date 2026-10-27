@@ -48,8 +48,8 @@ pub mod wire;
 pub mod words;
 pub mod workspace;
 
+use fuxix::process::Signal;
 use json::Json;
-use signal_hook::consts::{SIGHUP, SIGINT, SIGTERM};
 use std::io::{PipeReader, Read, Write};
 use std::process::ExitCode;
 use std::time::{Duration, Instant};
@@ -61,46 +61,39 @@ pub(crate) fn after(from: Instant, wait: Duration) -> Instant {
 }
 
 /// The signals that stop a server and detach a client.
-pub(crate) const STOPS: [std::ffi::c_int; 3] = [SIGTERM, SIGINT, SIGHUP];
+pub(crate) const STOPS: [Signal; 3] = [Signal::Term, Signal::Int, Signal::Hup];
 
 /// A pipe that becomes readable when any of its signals arrives: each
-/// writes a byte to the other end, of which its handler holds a copy.
-/// Dropped, it unregisters them, which closes those copies.
+/// writes a byte to the other end, of which its notice holds a copy.
+/// Dropped, the notices stop, which closes those copies.
 pub(crate) struct SignalPipe {
     pipe: PipeReader,
-    registered: Vec<signal_hook::SigId>,
+    /// Held for the signals' handlers to write through.
+    _notices: Vec<fuxix::signal::Notice>,
 }
 
 impl SignalPipe {
-    pub(crate) fn new(signals: &[std::ffi::c_int]) -> std::io::Result<SignalPipe> {
+    pub(crate) fn new(signals: &[Signal]) -> std::io::Result<SignalPipe> {
         let (pipe, write) = std::io::pipe()?;
         fuxix::io::set_nonblocking(&pipe, true)?;
         // A signal never waits on a full pipe: one byte there is enough.
         fuxix::io::set_nonblocking(&write, true)?;
-        // Each registered as it is made, so a failure part-way through
-        // unregisters those before it.
-        let mut made = SignalPipe {
+        // A failure part-way through drops the notices made before it.
+        let notices = signals
+            .iter()
+            .map(|&signal| -> std::io::Result<_> {
+                Ok(fuxix::signal::notify(signal, write.try_clone()?.into())?)
+            })
+            .collect::<std::io::Result<_>>()?;
+        Ok(SignalPipe {
             pipe,
-            registered: Vec::new(),
-        };
-        for &signal in signals {
-            let id = signal_hook::low_level::pipe::register(signal, write.try_clone()?)?;
-            made.registered.push(id);
-        }
-        Ok(made)
+            _notices: notices,
+        })
     }
 
     /// The pipe, to wait on and drain.
     pub(crate) fn pipe(&self) -> &PipeReader {
         &self.pipe
-    }
-}
-
-impl Drop for SignalPipe {
-    fn drop(&mut self) {
-        for &id in &self.registered {
-            signal_hook::low_level::unregister(id);
-        }
     }
 }
 
@@ -210,7 +203,7 @@ mod tests {
     #[cfg(target_os = "linux")]
     fn a_dropped_signal_pipe_leaves_nothing_registered() -> std::io::Result<()> {
         use std::os::unix::fs::MetadataExt;
-        let signals = [signal_hook::consts::SIGWINCH, signal_hook::consts::SIGUSR2];
+        let signals = [fuxix::process::Signal::Winch, fuxix::process::Signal::Usr2];
         let pipe = super::SignalPipe::new(&signals)?;
         let ino = std::fs::metadata(format!(
             "/proc/self/fd/{}",

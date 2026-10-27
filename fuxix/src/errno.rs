@@ -16,6 +16,8 @@ impl Errno {
     pub const NFILE: Self = Self(libc::ENFILE);
     pub const SRCH: Self = Self(libc::ESRCH);
     pub(crate) const INVAL: Self = Self(libc::EINVAL);
+    /// No room left: as `signal::notify` says, when every slot is held.
+    pub(crate) const NOSPC: Self = Self(libc::ENOSPC);
     /// XNU's kernel-private `EREDRIVEOPEN` (`bsd/sys/errno.h`), which no POSIX
     /// call should return: macOS leaks it from `open("/dev/ptmx")` when
     /// concurrent openers keep racing for one PTY. See `pty::open`.

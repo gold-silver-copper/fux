@@ -20,7 +20,6 @@ use crate::view::ClientKind;
 use crate::wait::Waiting;
 use fuxix::Errno;
 use fuxix::poll::{Events as PollFlags, PollFd};
-use signal_hook::consts::SIGCHLD;
 use std::fs;
 use std::io::{ErrorKind, Write};
 use std::mem;
@@ -568,7 +567,7 @@ impl std::error::Error for Error {}
 /// Runs a server on `socket` until it is told to stop or its last pane
 /// closes.
 pub fn serve(socket: &SocketPath) -> Result<(), Error> {
-    let children = crate::SignalPipe::new(&[SIGCHLD]).map_err(Error::Setup)?;
+    let children = crate::SignalPipe::new(&[fuxix::process::Signal::Chld]).map_err(Error::Setup)?;
     // Orphans the panes' programs leave stay the server's to read and reap.
     if let Err(errno) = fuxix::process::adopt_orphans() {
         log!("adopting orphans: {errno}");

@@ -691,7 +691,7 @@ fn a_signal_detached_client_writes_the_last_paint_before_leaving() -> Outcome {
 }
 
 /// A pane's program ignores no signal fux ignores: the Rust runtime ignores
-/// SIGPIPE and signal-hook catches others, and neither reaches the program.
+/// SIGPIPE and fux catches others, and neither reaches the program.
 /// Dispositions fux itself inherited ignored (a container's, say) pass on,
 /// as they would to any child, so the baseline is what a plain child of
 /// this test inherits. Linux reports dispositions in /proc.

@@ -61,7 +61,6 @@ dependencies = [
  "fux-vt 0.15.0",
  "fuxix 0.8.0",
  "fuxth 0.7.0",
- "signal-hook",
 ]
 
 [[package]]

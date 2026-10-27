@@ -7,8 +7,8 @@ saves each walk as a trace, and minimizes a failing walk to the steps that
 matter.
 
 Besides fux, fux-vt and fuxix by path it uses `serde_json` (to read `ls
-json`) and `signal-hook` (to stop cleanly
-between steps on SIGINT or SIGTERM). It forbids fux's lints. CI runs its
+json`). It stops cleanly between steps on SIGINT or SIGTERM, which fuxix's
+`signal::notify` writes to a pipe. It forbids fux's lints. CI runs its
 fmt, clippy and `cargo test`, but no walks.
 
 ## Commands

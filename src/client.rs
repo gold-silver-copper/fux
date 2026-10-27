@@ -18,7 +18,6 @@ use crate::socket::{self, SocketPath};
 use fuxix::Errno;
 use fuxix::poll::{Events as PollFlags, PollFd};
 use fuxix::terminal::Termios;
-use signal_hook::consts::SIGWINCH;
 use std::collections::VecDeque;
 use std::io::{self, BufRead, ErrorKind, Read, Write};
 use std::os::unix::net::UnixStream;
@@ -1021,7 +1020,7 @@ struct Signals {
 impl Signals {
     fn new() -> Result<Signals, Error> {
         Ok(Signals {
-            winch: crate::SignalPipe::new(&[SIGWINCH])?,
+            winch: crate::SignalPipe::new(&[fuxix::process::Signal::Winch])?,
             stops: crate::SignalPipe::new(&crate::STOPS)?,
         })
     }
