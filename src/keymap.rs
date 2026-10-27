@@ -7,6 +7,7 @@
 //! each time its keys are typed, the client itself its `me`. The default
 //! bindings are a config too, `script/keys.fux`, run on `Keymap::empty`
 //! before the user's.
+use crate::act::ScreenAct;
 use crate::act::{
     Act, Column, ColumnEntry, CopyAct, Edit, Hint, LineAct, ListAct, Move, Panel, Seek,
 };
@@ -474,14 +475,17 @@ impl Held {
 
     /// The column for the layer at `path`, shown.
     fn open(&mut self, keymap: &Keymap, path: Vec<KeyPress>, selected: usize) -> Vec<Effect> {
-        match keymap.column(&path, selected) {
-            Some(column) => {
-                let selected = column.selected;
-                *self = Held::Column { path, selected };
-                vec![Effect::Send(Act::Show(Panel::Column(column)))]
-            }
+        match self.column(keymap, path, selected) {
+            Some(panel) => vec![Effect::Open(panel)],
             None => vec![HIDE],
         }
+    }
+
+    fn column(&mut self, keymap: &Keymap, path: Vec<KeyPress>, selected: usize) -> Option<Panel> {
+        let column = keymap.column(&path, selected)?;
+        let selected = column.selected;
+        *self = Held::Column { path, selected };
+        Some(Panel::Column(column))
     }
 
     /// The keys in `path` and `press` typed: its binding runs, entering its
@@ -495,17 +499,14 @@ impl Held {
                 let shown = match bar {
                     Some(bar) => {
                         *self = Held::Repeat { path };
-                        Act::Show(Panel::Repeat(bar))
+                        Effect::Open(Panel::Repeat(bar))
                     }
                     None => {
                         *self = Held::Normal;
-                        Act::Hide
+                        HIDE
                     }
                 };
-                vec![
-                    Effect::Send(shown),
-                    Effect::Run(binding.code.as_str().into()),
-                ]
+                vec![shown, Effect::Run(binding.code.as_str().into())]
             }
             Some(Node::Layer(_)) => {
                 let mut deeper = path;
@@ -550,7 +551,10 @@ impl Held {
         // bindings here.
         let unbound = press.mods == Modifiers::NONE && !matches!(press.key, Key::Char(_));
         if let Some(ListAct::Move(moved)) = keymap.modes.list.get(press).filter(|_| unbound) {
-            return self.open(keymap, path, moved.from(selected, last));
+            return match self.column(keymap, path, moved.from(selected, last)) {
+                Some(panel) => vec![Effect::Screen(ScreenAct::Show(panel))],
+                None => vec![HIDE],
+            };
         }
         if press.key == Key::Enter && press.mods == Modifiers::NONE {
             let chosen = keymap.column(&path, selected).and_then(|c| {
@@ -937,14 +941,14 @@ mod tests {
         let keymap = defaults()?;
         let mut held = Held::default();
         let steps = held.press(&keymap, stroke("C-b")?, false);
-        assert!(matches!(
-            steps.as_slice(),
-            [Effect::Send(Act::Show(Panel::Column(_)))]
-        ));
+        assert!(matches!(steps.as_slice(), [Effect::Open(Panel::Column(_))]));
         let steps = held.press(&keymap, stroke("z")?, false);
         assert_eq!(
             steps,
-            [Effect::Send(Act::Hide), Effect::Run("me zoom".into())]
+            [
+                Effect::Screen(ScreenAct::Hide),
+                Effect::Run("me zoom".into())
+            ]
         );
         assert_eq!(held, Held::Normal);
         let steps = held.press(&keymap, stroke("x")?, false);
@@ -1014,7 +1018,10 @@ mod tests {
         };
         press("C-b")?;
         let selected = |steps: Vec<Effect>| match steps.as_slice() {
-            [Effect::Send(Act::Show(Panel::Column(column)))] => Some(column.selected),
+            [
+                Effect::Screen(ScreenAct::Show(Panel::Column(column)))
+                | Effect::Open(Panel::Column(column)),
+            ] => Some(column.selected),
             _ => None,
         };
         for _ in 0..last {
@@ -1035,7 +1042,7 @@ mod tests {
         assert_eq!(
             press("Enter")?,
             [
-                Effect::Send(Act::Hide),
+                Effect::Screen(ScreenAct::Hide),
                 Effect::Run("opts new-tab drop".into())
             ]
         );
@@ -1043,7 +1050,7 @@ mod tests {
         assert_eq!(
             press("j")?,
             [
-                Effect::Send(Act::Hide),
+                Effect::Screen(ScreenAct::Hide),
                 Effect::Run("me str down focus".into())
             ]
         );

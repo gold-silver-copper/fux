@@ -92,6 +92,8 @@ pub struct Options {
     pub muxes: Vec<String>,
     pub parts: Vec<String>,
     pub keys: usize,
+    pub instructions: bool,
+    pub only: Vec<String>,
     pub json: PathBuf,
 }
 
@@ -820,6 +822,33 @@ fn usage(pid: u32) -> Option<(u64, f64)> {
     Some((rss, seconds))
 }
 
+/// Context switches summed over every thread; unavailable without procfs.
+fn switches(pid: u32) -> Option<(u64, u64)> {
+    let mut tasks = std::fs::read_dir(format!("/proc/{pid}/task")).ok()?;
+    tasks.try_fold((0u64, 0u64), |(voluntary, involuntary), task| {
+        let text = std::fs::read_to_string(task.ok()?.path().join("status")).ok()?;
+        let count = |key| {
+            text.lines()
+                .find_map(|line| line.strip_prefix(key))?
+                .trim()
+                .parse::<u64>()
+                .ok()
+        };
+        Some((
+            voluntary.checked_add(count("voluntary_ctxt_switches:")?)?,
+            involuntary.checked_add(count("nonvoluntary_ctxt_switches:")?)?,
+        ))
+    })
+}
+
+fn switch_delta(
+    before: Option<(u64, u64)>,
+    after: Option<(u64, u64)>,
+) -> Option<serde_json::Value> {
+    let ((bv, bi), (av, ai)) = before.zip(after)?;
+    Some(serde_json::json!({"voluntary": av.checked_sub(bv)?, "involuntary": ai.checked_sub(bi)?}))
+}
+
 /// The median and the 99th percentile of `values`, in ms, and their mean.
 fn summary(values: &mut [f64]) -> serde_json::Value {
     // No key: no figures, said as none (null), never a NaN.
@@ -931,6 +960,116 @@ fn type_keys(session: &Session, keys: usize) -> Result<serde_json::Value, String
     Ok(value)
 }
 
+/// A Linux server counter enabled only around one workload. The control
+/// acknowledgement precedes the workload; no request to the server is
+/// needed to know that counting has started or finished.
+struct ServerCount {
+    child: std::process::Child,
+    raw: PathBuf,
+    log: PathBuf,
+}
+
+impl ServerCount {
+    fn start(pid: u32, raw: PathBuf) -> Result<Self, String> {
+        if !cfg!(target_os = "linux") {
+            return Err("server instructions require Linux perf".into());
+        }
+        let log = raw.with_extension("log");
+        let stderr = std::fs::File::create(&log).map_err(|e| e.to_string())?;
+        let child = Command::new(std::env::var_os("FUX_PERF").unwrap_or_else(|| "perf".into()))
+            .args([
+                "stat",
+                "-v",
+                "-x",
+                ",",
+                "--no-scale",
+                "-e",
+                "instructions:u",
+                "--no-inherit",
+                "-p",
+            ])
+            .arg(pid.to_string())
+            .args(["--delay=-1", "--control=fd:0,1", "-o"])
+            .arg(&raw)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(stderr)
+            .spawn()
+            .map_err(|e| format!("perf: {e}"))?;
+        let mut count = Self { child, raw, log };
+        count.control("enable").map_err(|e| count.error(e))?;
+        Ok(count)
+    }
+
+    fn error(&self, why: impl std::fmt::Display) -> String {
+        format!(
+            "perf: {why}: {}",
+            std::fs::read_to_string(&self.log)
+                .unwrap_or_default()
+                .trim()
+        )
+    }
+
+    fn control(&mut self, command: &str) -> Result<(), String> {
+        use fuxix::poll::{Events, PollFd, poll};
+        use std::io::{Read, Write};
+        let input = self.child.stdin.as_mut().ok_or("no perf control pipe")?;
+        writeln!(input, "{command}").map_err(|e| e.to_string())?;
+        let output = self
+            .child
+            .stdout
+            .as_mut()
+            .ok_or("no perf acknowledgement pipe")?;
+        if poll(
+            &mut [PollFd::new(output, Events::IN)],
+            Some(std::time::Duration::from_secs(5)),
+        )
+        .map_err(|e| e.to_string())?
+            == 0
+        {
+            return Err(format!("no acknowledgement of {command}"));
+        }
+        let mut buffer = [0; 16];
+        let n = output.read(&mut buffer).map_err(|e| e.to_string())?;
+        let ack = buffer.get(..n).ok_or("perf acknowledgement too long")?;
+        if !acknowledged(ack) {
+            return Err(format!("unexpected perf acknowledgement: {ack:?}"));
+        }
+        Ok(())
+    }
+
+    fn finish(mut self) -> Result<(u64, String), String> {
+        self.control("disable").map_err(|e| self.error(e))?;
+        let pid = fuxix::process::Pid::of(&self.child).ok_or("perf pid out of range")?;
+        fuxix::process::kill(pid, fuxix::process::Signal::Int).map_err(|e| self.error(e))?;
+        let deadline = std::time::Instant::now().checked_add(std::time::Duration::from_secs(5));
+        while self.child.try_wait().map_err(|e| self.error(e))?.is_none() {
+            if deadline.is_none_or(|d| std::time::Instant::now() >= d) {
+                return Err(self.error("did not exit"));
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        let raw = std::fs::read_to_string(&self.raw).map_err(|e| self.error(e))?;
+        let count =
+            crate::count::Counter::Perf.parse(&format!("fux-perf: begin\n{raw}fux-perf: end\n"))?;
+        Ok((count, raw))
+    }
+}
+
+impl Drop for ServerCount {
+    fn drop(&mut self) {
+        if matches!(self.child.try_wait(), Ok(None)) {
+            let _ = self.child.kill();
+        }
+        let _ = self.child.wait();
+    }
+}
+
+/// perf documents a newline; its control replies also include a NUL.
+fn acknowledged(bytes: &[u8]) -> bool {
+    bytes == b"ack\n" || bytes == b"ack\n\0"
+}
+
 /// A throughput workload: its name and file.
 struct Load {
     name: String,
@@ -939,14 +1078,28 @@ struct Load {
 }
 
 /// Throughput: each of `loads` through `session`'s `__serve`.
-fn serve_loads(session: &Session, loads: &[Load]) -> Result<serde_json::Value, String> {
+fn serve_loads(
+    session: &Session,
+    loads: &[Load],
+    instructions: bool,
+) -> Result<serde_json::Value, String> {
     let mut out = serde_json::Map::new();
     for (i, load) in loads.iter().enumerate() {
         session.terminal.watch(helpers::marker(i).as_bytes());
         let (bytes_before, frames_before) = session.terminal.counts();
+        let counter = if instructions {
+            session
+                .server_pid
+                .map(|pid| ServerCount::start(pid, session.dir.join(format!("load-{i}.perf"))))
+                .transpose()?
+        } else {
+            None
+        };
         let sent = Instant::now();
         session.terminal.type_bytes(format!("{i}\r").as_bytes())?;
         let arrived = session.terminal.arrival(LOAD_WAIT);
+        let counted = counter.map(ServerCount::finish).transpose()?;
+        let instructions = counted.as_ref().map(|(n, _)| *n);
         std::thread::sleep(Duration::from_millis(100));
         let (bytes_after, frames_after) = session.terminal.counts();
         let seconds = arrived.map(|at| at.saturating_duration_since(sent).as_secs_f64());
@@ -956,6 +1109,9 @@ fn serve_loads(session: &Session, loads: &[Load]) -> Result<serde_json::Value, S
             load.name.clone(),
             serde_json::json!({
                 "bytes": load.bytes,
+                "server_instructions": instructions,
+                "server_instructions_per_byte": instructions.map(|n| (n as f64) / (load.bytes.max(1) as f64)),
+                "server_perf": counted.map(|(_, raw)| raw),
                 "seconds": seconds,
                 "mb_per_s": seconds.map(|s| (load.bytes as f64) / s.max(1e-9) / 1e6),
                 "client_bytes": client,
@@ -1041,6 +1197,7 @@ pub fn run(options: &Options) -> Result<bool, String> {
         return Err("a debug build: run it with --release".into());
     }
     let started = Instant::now();
+    let load_before = std::fs::read_to_string("/proc/loadavg").ok();
     let root = crate::against::root()
         .canonicalize()
         .map_err(|e| e.to_string())?;
@@ -1110,6 +1267,12 @@ pub fn run(options: &Options) -> Result<bool, String> {
     let json = serde_json::json!({
         "kind": "fux-bench feel",
         "versions": versions,
+        "environment": {
+            "os": std::env::consts::OS,
+            "arch": std::env::consts::ARCH,
+            "load_average_before": load_before,
+            "load_average_after": std::fs::read_to_string("/proc/loadavg").ok(),
+        },
         "pane": [ROWS, COLS],
         "latency": latency,
         "throughput": throughput,
@@ -1194,7 +1357,15 @@ fn measure(
     }
     let mut throughput = serde_json::Map::new();
     if part("throughput") {
-        let loads = loads(place, root)?;
+        let loads: Vec<_> = loads(place, root)?
+            .into_iter()
+            .filter(|load| {
+                options.only.is_empty() || options.only.iter().any(|name| load.name.contains(name))
+            })
+            .collect();
+        if loads.is_empty() {
+            return Err("no throughput workloads match --only".into());
+        }
         let list = place.dir.join("loads");
         let paths: Vec<String> = loads
             .iter()
@@ -1218,7 +1389,10 @@ fn measure(
                 return Err(format!("{}: the serving program never showed", mux.name()));
             }
             std::thread::sleep(Duration::from_millis(300));
-            throughput.insert(mux.name().into(), serve_loads(&session, &loads)?);
+            throughput.insert(
+                mux.name().into(),
+                serve_loads(&session, &loads, options.instructions)?,
+            );
             eprintln!(
                 "throughput {}: {:.0} s",
                 mux.name(),
@@ -1243,13 +1417,29 @@ fn measure(
                 .map(|(_, cpu)| cpu)
                 .sum()
         };
-        let before: Vec<f64> = sessions.iter().map(cpu).collect();
+        let idle = |s: &Session| {
+            (
+                cpu(s),
+                s.server_pid.and_then(switches),
+                switches(s.terminal.pid()),
+            )
+        };
+        let before: Vec<_> = sessions.iter().map(idle).collect();
         std::thread::sleep(Duration::from_secs(10));
-        let after: Vec<f64> = sessions.iter().map(cpu).collect();
+        let after: Vec<_> = sessions.iter().map(idle).collect();
         for ((s, b), a) in sessions.iter().zip(&before).zip(&after) {
             let mut value = memory(place, s)?;
             if let Some(map) = value.as_object_mut() {
-                map.insert("idle_cpu_seconds_in_10s".into(), serde_json::json!(a - b));
+                map.insert(
+                    "idle_cpu_seconds_in_10s".into(),
+                    serde_json::json!(a.0 - b.0),
+                );
+                map.insert(
+                    "idle_context_switches_in_10s".into(),
+                    serde_json::json!({
+                        "server": switch_delta(b.1, a.1), "client": switch_delta(b.2, a.2),
+                    }),
+                );
             }
             footprint.insert(s.mux.name().into(), value);
         }
@@ -1371,33 +1561,35 @@ fn report(json: &serde_json::Value, muxes: &[Mux]) -> String {
             out.push('\n');
         }
         out.push('\n');
-        head(
-            &mut out,
-            "each recording to the final screen: ms (KB sent to the client)",
-        );
-        let mut totals = vec![(0f64, 0f64); muxes.len()];
-        for load in first.keys().filter(|l| l.starts_with("corpus:")) {
-            let _ = write!(out, "{load:<24}");
-            for (mux, total) in muxes.iter().zip(&mut totals) {
-                let m = mux.name();
-                let ms = number(&["throughput", m, load, "seconds"]).map(|s| s * 1e3);
-                let sent = number(&["throughput", m, load, "client_bytes"]).map(|b| b / 1e3);
-                total.0 += ms.unwrap_or(f64::NAN);
-                total.1 += sent.unwrap_or(0.0);
-                let _ = write!(out, " {:>8} ({:>6})", cell(ms, 1), cell(sent, 1));
-            }
-            out.push('\n');
-        }
-        let _ = write!(out, "{:<24}", "all recordings");
-        for (ms, sent) in &totals {
-            let _ = write!(
-                out,
-                " {:>8} ({:>6})",
-                cell(Some(*ms), 1),
-                cell(Some(*sent), 1)
+        if first.keys().any(|load| load.starts_with("corpus:")) {
+            head(
+                &mut out,
+                "each recording to the final screen: ms (KB sent to the client)",
             );
+            let mut totals = vec![(0f64, 0f64); muxes.len()];
+            for load in first.keys().filter(|l| l.starts_with("corpus:")) {
+                let _ = write!(out, "{load:<24}");
+                for (mux, total) in muxes.iter().zip(&mut totals) {
+                    let m = mux.name();
+                    let ms = number(&["throughput", m, load, "seconds"]).map(|s| s * 1e3);
+                    let sent = number(&["throughput", m, load, "client_bytes"]).map(|b| b / 1e3);
+                    total.0 += ms.unwrap_or(f64::NAN);
+                    total.1 += sent.unwrap_or(0.0);
+                    let _ = write!(out, " {:>8} ({:>6})", cell(ms, 1), cell(sent, 1));
+                }
+                out.push('\n');
+            }
+            let _ = write!(out, "{:<24}", "all recordings");
+            for (ms, sent) in &totals {
+                let _ = write!(
+                    out,
+                    " {:>8} ({:>6})",
+                    cell(Some(*ms), 1),
+                    cell(Some(*sent), 1)
+                );
+            }
+            out.push_str("\n\n");
         }
-        out.push_str("\n\n");
     }
     if get(&["footprint"]).is_some_and(|l| l.as_object().is_some_and(|m| !m.is_empty())) {
         let _ = writeln!(
@@ -1427,6 +1619,34 @@ fn report(json: &serde_json::Value, muxes: &[Mux]) -> String {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn a_filtered_run_does_not_report_unmeasured_recordings() {
+        let json = serde_json::json!({"throughput": {"fux": {"ascii": {
+            "mb_per_s": 1.0, "client_bytes": 1
+        }}}});
+        let report = super::report(&json, &[super::Mux::Fux]);
+        assert!(report.contains("ascii"));
+        assert!(!report.contains("all recordings"));
+    }
+
+    #[test]
+    fn perf_acknowledgements_consume_the_terminating_nul() {
+        assert!(super::acknowledged(b"ack\n\0"));
+        assert!(super::acknowledged(b"ack\n"));
+        assert!(!super::acknowledged(b"\0ack"));
+    }
+
+    /// Missing or reset observations cannot become a made-up zero.
+    #[test]
+    fn context_switches_are_a_delta_or_unknown() {
+        assert_eq!(
+            super::switch_delta(Some((5, 7)), Some((9, 12))),
+            Some(serde_json::json!({"voluntary": 4, "involuntary": 5}))
+        );
+        assert_eq!(super::switch_delta(None, Some((9, 12))), None);
+        assert_eq!(super::switch_delta(Some((9, 12)), Some((5, 7))), None);
+    }
 
     /// No key that came is no figure, said as none, never NaN; a key that
     /// timed out counts at the wait, the least it took.

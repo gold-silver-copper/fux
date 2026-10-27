@@ -1727,7 +1727,7 @@ impl Pane {
         self.read_error = read_error;
         tell.tell(Told::Respawned(over));
         self.rename(name, tell);
-        // 2^64 respawns are never reached: the count never stands still.
+        // Session::respawn checks exhaustion before starting the replacement.
         self.respawns = self.respawns.saturating_add(1);
         (std::mem::replace(&mut self.process, process), over)
     }

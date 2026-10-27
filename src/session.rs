@@ -14,7 +14,7 @@ use crate::keys::Direction;
 use crate::layout::{self, Axis, NoPane, Placement, Rect, Shares, Tree};
 use crate::pane::{self, Pane, PaneMut, Process, Runs, basename};
 use crate::process::{self, Child, Ended};
-use crate::protocol::{Attach, Body, End, Reply, ScreenKind, ToAttached};
+use crate::protocol::{Attach, Body, End, Reply, ToAttached};
 use crate::view::{self, ClientKind, Mode, View};
 use crate::wait::{Waiting, Watches};
 use crate::workspace::{Destination, Fit, Parts, Seat, Split, Tab, Workspace};
@@ -727,7 +727,13 @@ impl Session {
         // The program it starts is told its host's cell.
         let graphics = self.graphics(id);
         let size = (pane.size(), graphics.cell());
-        let (respawns, exiting) = (pane.respawns.saturating_add(1), pane.exiting);
+        let respawns = pane.respawns.checked_add(1).ok_or_else(|| {
+            fail(
+                Raise::IdsExhausted,
+                format!("{id}'s program generations exhausted"),
+            )
+        })?;
+        let exiting = pane.exiting;
         // All that can refuse it is done before its program starts, which
         // nothing can then leave running.
         let runs = Runs::Explicit(launch.clone());
@@ -1546,21 +1552,27 @@ impl Session {
             let Mode::Copy(copy) = &mut view.mode else {
                 continue;
             };
-            let Some(screen) = self.parts.panes().get(&copy.pane).map(Pane::screen) else {
+            let Some(pane) = self.parts.panes().get(&copy.pane) else {
                 continue;
             };
-            if copy.held_at.is_some_and(|at| !screen.changed_since(at)) {
+            let screen = pane.screen();
+            let same = copy.respawns == pane.respawns;
+            if same && copy.held_at.is_some_and(|at| !screen.changed_since(at)) {
                 continue;
             }
-            if copy.resolve(screen).is_some() {
+            if copy.resolve(pane).is_some() {
                 copy.held_at = Some(screen.mark());
             } else {
                 view.mode = Mode::Normal;
                 view.notify(
-                    "copy mode ended: the history dropped the rows it held",
+                    if same {
+                        "copy mode ended: the history dropped the rows it held"
+                    } else {
+                        "copy mode ended: its pane respawned"
+                    },
                     true,
                 );
-                let ended = ToAttached::Ended(ScreenKind::Copy);
+                let ended = ToAttached::Ended(view.opening);
                 self.outbox.push(Outgoing::To(view.id, ended));
             }
         }
@@ -1568,32 +1580,28 @@ impl Session {
 
     /// Ends what a view shows if what it is about is gone: copy mode whose
     /// pane closed or is no longer focused, a chooser about a pane, tab or
-    /// workspace that closed. Which kind it ended, if it did, which
+    /// workspace that closed. Which opening it ended, if it did, which
     /// its client is told (`ToAttached::Ended`), the mode being the client's.
-    fn repair(&self, view: &mut View) -> Option<ScreenKind> {
+    fn repair(&self, view: &mut View) -> Option<u64> {
         use crate::act::{List, Panel};
         let focus = self.focused(view.id);
         // Copy mode's rows are looked for once the panes are sized
         // (`hold_copies`).
-        let (kind, gone) = match &view.mode {
-            Mode::Copy(copy) if !self.parts.panes().contains_key(&copy.pane) => (
-                ScreenKind::Copy,
-                "copy mode ended: its pane closed".to_owned(),
-            ),
-            Mode::Copy(copy) if Some(copy.pane) != focus => (
-                ScreenKind::Copy,
-                "copy mode ended: its pane is no longer focused".to_owned(),
-            ),
+        let gone = match &view.mode {
+            Mode::Copy(copy) if !self.parts.panes().contains_key(&copy.pane) => {
+                "copy mode ended: its pane closed".to_owned()
+            }
+            Mode::Copy(copy) if Some(copy.pane) != focus => {
+                "copy mode ended: its pane is no longer focused".to_owned()
+            }
             Mode::Panel(Panel::List(List {
                 about: Some(about), ..
-            })) if self.there(*about).is_err() => {
-                (ScreenKind::Panel, format!("closed: {} is gone", about))
-            }
+            })) if self.there(*about).is_err() => format!("closed: {} is gone", about),
             Mode::Normal | Mode::Panel(_) | Mode::Copy(_) => return None,
         };
         view.mode = Mode::Normal;
         view.notify(gone, true);
-        Some(kind)
+        Some(view.opening)
     }
 
     /// A PTY is the smallest rectangle any client shows it in; one with
@@ -1740,6 +1748,13 @@ impl Session {
         // Who sees the pane is known before its tab can go: a tab its
         // closing empties takes its viewers elsewhere.
         let viewers = self.viewers(self.locate(id).map(|(_, t)| t));
+        for client in &viewers {
+            if self.focused(*client) == Some(id)
+                && let Some(view) = self.views.get_mut(client)
+            {
+                view.zoom = false;
+            }
+        }
         let mut notice = None;
         if let Some(mut pane) = self.parts.close_pane(id) {
             // Closed for its program's end (a reason given), or by fux.
@@ -1770,6 +1785,11 @@ impl Session {
     /// Removes a tab and whatever panes are in it (`Parts::remove_tab`).
     fn remove_tab(&mut self, tab: TabId) {
         let viewers = self.viewers(Some(tab));
+        for client in &viewers {
+            if let Some(view) = self.views.get_mut(client) {
+                view.zoom = false;
+            }
+        }
         for gone in self.parts.remove_tab(tab) {
             self.end_pane(gone, true, &viewers);
         }
@@ -3385,7 +3405,7 @@ pub(crate) mod testing {
         let ended = crate::script::run_capped(&mut machine, &mut host, &mut asks, None, None);
         let opened = asks.opened;
         session.test_keymap = keymap;
-        if let (Some(client), Some(screen)) = (client, opened) {
+        if let (Some(client), Some(screen), true) = (client, opened, ended.is_ok()) {
             session.open_screen(client, screen);
         }
         deliver(session);
@@ -3403,9 +3423,9 @@ pub(crate) mod testing {
                 super::Outgoing::To(client, ToAttached::Run(code)) => {
                     session.run_as(client, &code.into());
                 }
-                super::Outgoing::To(client, ToAttached::Ended(kind)) => {
+                super::Outgoing::To(client, ToAttached::Ended(opening)) => {
                     if let Some(keys) = session.test_keys.get_mut(&client) {
-                        keys.screen.ended(kind);
+                        keys.screen.ended(opening);
                     }
                 }
                 super::Outgoing::To(client, ToAttached::Keys(inputs)) => {
@@ -3509,7 +3529,7 @@ pub(crate) mod testing {
     #[derive(Default)]
     pub(crate) struct Keys {
         decoder: crate::decode::Decoder,
-        pub(crate) screen: crate::screens::Screen,
+        pub(crate) screen: crate::screens::Display,
     }
 
     impl Session {
@@ -3540,12 +3560,7 @@ pub(crate) mod testing {
         /// Opens a screen on client `client`, as its client does.
         pub(crate) fn open_screen(&mut self, client: ClientId, screen: crate::screens::Screen) {
             let keys = self.test_keys.entry(client).or_default();
-            let mut acts = Vec::new();
-            if let crate::screens::Screen::Copy(_) = keys.screen {
-                acts.push(crate::act::Act::Copy(crate::act::CopyAct::Leave));
-            }
-            acts.extend(screen.opened(&self.test_keymap.modes));
-            keys.screen = screen;
+            let acts = keys.screen.open(screen, &self.test_keymap.modes);
             self.acts(client, acts);
             deliver(self);
         }
@@ -3562,11 +3577,11 @@ pub(crate) mod testing {
             }
         }
 
-        fn effects(&mut self, client: ClientId, effects: Vec<crate::screens::Effect>) {
+        fn effects(&mut self, client: ClientId, effects: Vec<crate::screens::Dispatch>) {
             for effect in effects {
                 match effect {
-                    crate::screens::Effect::Send(act) => self.acts(client, vec![act]),
-                    crate::screens::Effect::Run(job) => self.run_as(client, &job),
+                    crate::screens::Dispatch::Send(act) => self.acts(client, vec![act]),
+                    crate::screens::Dispatch::Run(job) => self.run_as(client, &job),
                 }
                 deliver(self);
             }
@@ -4175,6 +4190,32 @@ mod tests {
         run(&mut s, "opts 80 24 size str other name new-workspace drop")?;
         output_as(&mut s, Some(c), "%3 split drop")?;
         assert!(s.views.get(&c).is_some_and(|v| v.zoom), "still zoomed");
+        Ok(())
+    }
+
+    /// Closing the focused pane ends only the zooms that showed that pane.
+    #[test]
+    fn a_zoom_ends_with_its_pane() -> Result<(), String> {
+        let (mut s, c1) = attached(24, 80)?;
+        let c2 = s.attach(24, 80, None).map_err(|e| e.to_string())?;
+        run(&mut s, "%1 split drop")?;
+        run(
+            &mut s,
+            &format!(
+                "str {c1} client %1 focus-pane str {c1} client zoom str {c2} client %2 focus-pane str {c2} client zoom"
+            ),
+        )?;
+        run(&mut s, "%1 kill")?;
+        assert!(!s.views.get(&c1).ok_or("first view")?.zoom);
+        assert!(s.views.get(&c2).ok_or("second view")?.zoom);
+        run(
+            &mut s,
+            "opts 80 24 size str +1 workspace in new-tab drop @1 kill",
+        )?;
+        assert!(
+            !s.views.get(&c2).ok_or("second view")?.zoom,
+            "closing its tab ends the zoom too"
+        );
         Ok(())
     }
 
@@ -5600,6 +5641,59 @@ mod tests {
         assert!(
             dirty(&s, one) && dirty(&s, two),
             "a bound split repaints every client"
+        );
+        Ok(())
+    }
+
+    /// A replacement parser reuses row ids, but owns none of the old
+    /// program's selection. Respawning ends that copy mode visibly.
+    #[test]
+    fn a_copy_selection_cannot_cross_a_respawn() -> Result<(), String> {
+        use crate::act::{Act, CopyAct, ScreenAct};
+        let (mut s, c) = attached(24, 80)?;
+        output_as(
+            &mut s,
+            Some(c),
+            "opts str /bin/cat program run me swap focus-pane",
+        )?;
+        let pane = s.focused(c).ok_or("pane")?;
+        s.output(pane, b"old text");
+        s.input(c, b"\x02cv");
+        let view = s.views.get(&c).ok_or("view")?;
+        let opening = view.opening;
+        let Mode::Copy(copy) = &view.mode else {
+            return Err("copy mode".into());
+        };
+        let row = copy.cursor.0;
+        assert!(copy.selection.is_some());
+        run(&mut s, &format!("{pane} kill-first respawn"))?;
+        s.output(pane, b"new text");
+        assert!(
+            s.parts
+                .panes()
+                .get(&pane)
+                .ok_or("pane")?
+                .screen()
+                .row_by_id(row)
+                .is_some()
+        );
+        let view = s.views.get(&c).ok_or("view")?;
+        assert!(view.mode.is_normal());
+        assert!(
+            view.notice
+                .as_ref()
+                .is_some_and(|n| n.text.contains("respawned"))
+        );
+        s.acts(
+            c,
+            vec![Act::Screen {
+                opening,
+                act: ScreenAct::Copy(CopyAct::Yank),
+            }],
+        );
+        assert!(
+            s.buffers.is_empty(),
+            "the old selection cannot copy replacement text"
         );
         Ok(())
     }

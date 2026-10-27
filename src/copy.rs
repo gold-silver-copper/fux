@@ -30,6 +30,8 @@ pub struct Search {
 
 pub struct Copy {
     pub pane: PaneId,
+    /// The program whose parser allocated these rows and mark.
+    pub respawns: u64,
     /// The row at the top of the view.
     pub top: RowId,
     pub cursor: (RowId, u16),
@@ -111,7 +113,11 @@ impl<'a> Resolved<'a> {
 
 impl Copy {
     /// Finds the rows it holds, once each; none if any is gone.
-    pub fn resolve<'a>(&self, screen: &'a Screen) -> Option<Resolved<'a>> {
+    pub fn resolve<'a>(&self, pane: &'a crate::pane::Pane) -> Option<Resolved<'a>> {
+        if self.pane != pane.id() || self.respawns != pane.respawns {
+            return None;
+        }
+        let screen = pane.screen();
         let at = |(id, col): (RowId, u16)| Some((screen.row_by_id(id)?, col));
         let selection = match self.selection {
             Some((kind, anchor)) => Some((kind, at(anchor)?)),
@@ -442,10 +448,10 @@ pub fn text(
 /// Starts copy mode for client `client`, on its focused pane; if it cannot
 /// (no pane), says why, and tells the client, whose mode it is.
 fn start(session: &mut Session, client: ClientId, hints: Vec<Hint>, typing: Vec<Hint>) {
-    let Some(place) = session.place(client) else {
-        return;
-    };
-    let entered = enter(session, place, hints, typing);
+    let entered = session
+        .place(client)
+        .ok_or_else(|| "copy mode: no pane focused".to_owned())
+        .and_then(|place| enter(session, place, hints, typing).map_err(|e| e.to_string()));
     let Some(view) = session.views.get_mut(&client) else {
         return;
     };
@@ -457,8 +463,8 @@ fn start(session: &mut Session, client: ClientId, hints: Vec<Hint>, typing: Vec<
             view.notice = None;
         }
         Err(error) => {
-            session.notify_to(client, error.to_string(), true);
-            let ended = crate::protocol::ToAttached::Ended(crate::protocol::ScreenKind::Copy);
+            let ended = crate::protocol::ToAttached::Ended(view.opening);
+            session.notify_to(client, error, true);
             session
                 .outbox
                 .push(crate::session::Outgoing::To(client, ended));
@@ -476,7 +482,8 @@ fn enter(
 ) -> Result<Copy, Error> {
     let pane = place.pane;
     let screen = session.parts.panes().get(&pane);
-    let screen = screen.ok_or(Error::NoPane(pane))?.screen();
+    let source = screen.ok_or(Error::NoPane(pane))?;
+    let screen = source.screen();
     let (cy, cx) = screen.cursor_position();
     let window = screen.window();
     let row = window.row(cy).ok_or(Error::NoRows)?;
@@ -484,6 +491,7 @@ fn enter(
     let top = window.row(0).ok_or(Error::NoRows)?.id();
     Ok(Copy {
         pane,
+        respawns: source.respawns,
         top,
         cursor: (cursor, cx),
         selection: None,
@@ -541,7 +549,7 @@ pub fn act(session: &mut Session, client: ClientId, act: CopyAct) {
 
     // Its rows gone, the key does nothing: `Session::settle`, after it,
     // ends copy mode (`hold_copies`) and tells the client.
-    let Some(at) = copy.resolve(screen) else {
+    let Some(at) = copy.resolve(pane) else {
         return;
     };
     let ((row, col), mut top) = (at.cursor, at.top);
@@ -832,8 +840,8 @@ mod tests {
             let Mode::Copy(copy) = &view.mode else {
                 return None;
             };
-            let screen = s.parts.panes().get(&pane)?.screen();
-            let r = copy.resolve(screen)?;
+            let pane = s.parts.panes().get(&pane)?;
+            let r = copy.resolve(pane)?;
             Some((r.cursor.0.index(), r.cursor.1, r.top.index()))
         };
         assert_eq!(at(&s).map(|(row, _, _)| row), Some(15));
@@ -905,13 +913,14 @@ mod tests {
         s.input(big, b"\x02c");
         s.input(big, &[b'k'; 10]);
         s.input(big, &[b'j'; 14]);
-        let screen = s.parts.panes().get(&pane).ok_or("the pane")?.screen();
+        let pane = s.parts.panes().get(&pane).ok_or("the pane")?;
+        let screen = pane.screen();
         let shown = screen.size().rows();
         let view = s.views.get(&big).ok_or("the client")?;
         let Mode::Copy(copy) = &view.mode else {
             return Err("not in copy mode".into());
         };
-        let r = copy.resolve(screen).ok_or("a row gone")?;
+        let r = copy.resolve(pane).ok_or("a row gone")?;
         assert!(
             r.cursor_in_view(shown).is_some(),
             "the cursor on a row of the {shown} shown"
