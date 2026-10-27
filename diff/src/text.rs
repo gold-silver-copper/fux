@@ -12,7 +12,7 @@ const PIECES: &[&str] = &[
 ];
 
 macro_rules! stack {
-    ($name:ident, $fux:ident, $folded:expr) => {
+    ($name:ident, $fux:ident) => {
         mod $name {
             use $fux::keys::KeyPress;
             use $fux::words;
@@ -24,12 +24,11 @@ macro_rules! stack {
             pub fn key(name: &str) -> String {
                 let press = name.parse::<KeyPress>();
                 format!(
-                    "{press:?} {:?} {:?}",
+                    "{press:?} {:?}",
                     press
                         .as_ref()
                         .map(ToString::to_string)
-                        .map_err(ToString::to_string),
-                    press.as_ref().map(|p| ($folded)(*p).to_string())
+                        .map_err(ToString::to_string)
                 )
             }
 
@@ -51,9 +50,8 @@ macro_rules! stack {
     };
 }
 
-// How each folds a key typed after the prefix, KeyPress::folded.
-stack!(base, baseline, |p: KeyPress| p.folded());
-stack!(cur, fux, |p: KeyPress| p.folded());
+stack!(base, baseline);
+stack!(cur, fux);
 
 pub fn run(r: &mut Rng, scale: usize) -> Outcome {
     let mut lines = 0u64;

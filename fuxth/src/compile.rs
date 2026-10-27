@@ -663,27 +663,13 @@ impl<A: Clone> Compiler<A> {
         Ok(Rc::new(codes))
     }
 
-    /// `token`, a word no one defines, told with what was likely meant:
-    /// text, or a word in scope spelt nearly so.
+    /// An unknown word, with its source and the explicit text syntax.
     fn unknown(&self, token: &Token) -> Error {
-        let text = &*token.text;
-        let message = if text.is_empty() {
-            "no such word: an empty one (str '' pushes an empty string)".to_owned()
-        } else if text.contains(|c: char| c.is_uppercase() || matches!(c, '/' | '$' | ' ')) {
-            let quoted = match text.contains([' ', '$']) {
-                true => format!("'{text}'"),
-                false => text.to_owned(),
-            };
-            format!("no such word; text is `str {quoted}`")
-        } else {
-            let locals = self.current.iter().flat_map(|c| c.locals.keys());
-            let names = (self.names.keys().chain(locals)).map(|name| &**name);
-            format!(
-                "no such word{}",
-                meant(text, names.chain(Parsing::ALL.map(Parsing::name)))
-            )
-        };
-        Error::new(Code::UnknownWord, message, Some(token))
+        Error::new(
+            Code::UnknownWord,
+            "no such word; text is `str WORD`",
+            Some(token),
+        )
     }
 
     /// Compiles `text`, a library named `source`, as `add` does, and gives
@@ -889,55 +875,6 @@ fn mismatched(token: &Token, open: Option<Open>, none: &str) -> Error {
         format!("the open block is {what}, from {}", at.place),
         Some(token),
     )
-}
-
-/// What `text` likely meant, of `names`, as an error says it: "; did you
-/// mean a or b?", the nearest three spelt nearly so or begun so; else
-/// nothing.
-pub(crate) fn meant<'a>(text: &str, names: impl Iterator<Item = &'a str>) -> String {
-    let mut near: Vec<(usize, &str)> = names
-        .filter_map(|name| {
-            let d = distance(text, name);
-            let near = d <= 2 && d.saturating_mul(3) <= text.chars().count();
-            (near || (text.len() >= 3 && name.starts_with(text))).then_some((d, name))
-        })
-        .collect();
-    near.sort_unstable();
-    near.dedup();
-    let near: Vec<&str> = near.into_iter().take(3).map(|(_, name)| name).collect();
-    match near.as_slice() {
-        [] => String::new(),
-        near => format!("; did you mean {}?", crate::vocabulary::listed(near)),
-    }
-}
-
-/// How many characters must change, go, come or swap with the next to
-/// make `a` into `b`.
-pub fn distance(a: &str, b: &str) -> usize {
-    let (a, b): (Vec<char>, Vec<char>) = (a.chars().collect(), b.chars().collect());
-    // Rows of the table, the last two: each cell the distance between a's
-    // first i and b's first j characters.
-    let (mut before, mut row): (Vec<usize>, Vec<usize>) = (Vec::new(), (0..=b.len()).collect());
-    for (i, x) in a.iter().enumerate() {
-        let mut next = vec![i.saturating_add(1)];
-        for (j, y) in b.iter().enumerate() {
-            let at = |r: &[usize], k: usize| r.get(k).copied().unwrap_or(usize::MAX);
-            let change = at(&row, j).saturating_add(usize::from(x != y));
-            let gone = at(&row, j.saturating_add(1)).saturating_add(1);
-            let came = at(&next, j).saturating_add(1);
-            let mut least = change.min(gone).min(came);
-            let swapped = i > 0
-                && j > 0
-                && a.get(i.wrapping_sub(1)) == Some(y)
-                && b.get(j.wrapping_sub(1)) == Some(x);
-            if swapped {
-                least = least.min(at(&before, j.wrapping_sub(1)).saturating_add(1));
-            }
-            next.push(least);
-        }
-        before = std::mem::replace(&mut row, next);
-    }
-    row.last().copied().unwrap_or(0)
 }
 
 /// Whether `text` is written as an integer: digits, after a `-` or not.

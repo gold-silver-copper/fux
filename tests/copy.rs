@@ -56,6 +56,17 @@ fn buffer(server: &Server) -> Result<String, String> {
 }
 
 #[test]
+fn copy_errors_do_not_name_default_selection_keys() -> Outcome {
+    let server = Server::start(
+        "str copy str v unbind-in str copy str s unbind-in str copy str x unbind-in str copy str V str select-char bind-in str copy str Y str yank bind-in",
+    )?;
+    let mut client = prepared(&server, 12, 100, &["sample"])?;
+    copy_mode(&mut client)?;
+    client.keys("Y")?;
+    client.wait_for("nothing selected: start a selection before copying")
+}
+
+#[test]
 fn a_word_a_line_and_a_block_are_copied() -> Outcome {
     let server = Server::start("")?;
     let mut client = prepared(
@@ -131,15 +142,11 @@ fn motions_and_search_move_the_cursor() -> Outcome {
     copy_mode(&mut client)?;
     client.keys("kkk\x1b[Hwwvy")?;
     eventually("the punctuation", || Ok(buffer(&server)? == "."))?;
-    // Keys are letters in either case.
+    // Search: f forward, literal and exact, then n and p.
     copy_mode(&mut client)?;
-    client.keys("KKKEBVEY")?;
-    eventually("in capitals", || Ok(buffer(&server)? == "Four"))?;
-    // Search: f forward, literal, smart-case, then n and p.
-    copy_mode(&mut client)?;
-    search(&mut client, "tf", "line")?;
+    search(&mut client, "tf", "LINE")?;
     client.keys("vllly")?;
-    eventually("the smart-case match", || Ok(buffer(&server)? == "LINE"))?;
+    eventually("the exact match", || Ok(buffer(&server)? == "LINE"))?;
     copy_mode(&mut client)?;
     search(&mut client, "tf", "e")?;
     client.keys("nnp")?;
