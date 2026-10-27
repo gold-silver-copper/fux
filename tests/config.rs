@@ -127,7 +127,7 @@ fn a_config_that_fails_sets_nothing() -> Outcome {
                 str nonsense 1 set\n";
     std::fs::write(&config, text).map_err(e)?;
     let socket = fux::socket::Choice::Path(server.socket.clone());
-    let ran = fux::script::run_file(&config, Some(&mut fux::script::Server::new(socket)));
+    let ran = fux::script::run_file(&config, Some(&mut fux::script::Server::new(socket)), None);
     let failed = ran.err().ok_or("the config ran")?;
     assert!(failed.to_string().contains("nonsense"), "{failed}");
     let pane = server.ok(&["str", "%1", "pane", "horizontal", "split"])?;
@@ -244,7 +244,7 @@ fn config_notices_show_the_cause_once_before_the_path() -> Outcome {
     let server = Server::start("")?;
     let path = server.dir.join("config/fux/config.fux");
     std::fs::write(&path, "str bell 3 set").map_err(e)?;
-    let failure = fux::script::run_file(&path, None)
+    let failure = fux::script::run_file(&path, None, None)
         .err()
         .ok_or("expected a bad setting")?;
     assert!(failure.place.is_some());

@@ -102,6 +102,7 @@ fn a_client_that_shuts_its_side_still_gets_its_answer() -> Outcome {
         }
         .into(),
         context: Context {
+            of: None,
             cwd: std::path::PathBuf::new(),
             pane: None,
             server: None,
@@ -129,7 +130,9 @@ fn a_client_that_shuts_its_side_still_gets_its_answer() -> Outcome {
     }
     let reply = reply.ok_or("no reply")?.map_err(e)?;
     assert_eq!(reply.end(), fux::protocol::End::Done);
-    let Reply::Returned(fux::protocol::Body::Listing { listing, .. }) = &reply else {
+    let fux::protocol::Response::Returned(fux::protocol::Body::Listing { listing, .. }) =
+        &reply.response
+    else {
         return Err(format!("not a listing: {:?}", reply));
     };
     let listed = listing.render();

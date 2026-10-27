@@ -760,15 +760,24 @@ pub fn var_name(name: &str) -> Result<(), String> {
     }
 }
 
-/// Variables a pane's program is given, a name and a value each: every
-/// name one `var_name` takes, from words and the wire alike.
+/// A variable a caller may give a pane, excluding its native identity.
+pub(crate) fn pane_var(name: &str) -> Result<(), String> {
+    var_name(name)?;
+    if matches!(name, "FUX" | "FUX_PANE" | "FUX_SOCKET" | "FUX_SERVER") {
+        return Err(format!("{name} is reserved for pane identity"));
+    }
+    Ok(())
+}
+
+/// Variables a pane's program is given: shell names other than its native
+/// identity, checked from words and the wire alike.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Env(Vec<(String, String)>);
 
 impl Env {
-    /// `name` set to `value` too: refused unless `name` is a variable's.
+    /// `name` set to `value` too: refused if invalid or reserved.
     pub fn push(&mut self, name: String, value: String) -> Result<(), String> {
-        var_name(&name)?;
+        pane_var(&name)?;
         self.0.push((name, value));
         Ok(())
     }
