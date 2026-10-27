@@ -307,6 +307,20 @@ macro_rules! int_wire {
 }
 int_wire!(u8, u16, u32, u64, i32, i64);
 
+impl Wire for std::time::Duration {
+    fn put(&self, out: &mut impl crate::wire::Sink) {
+        self.as_secs().put(out);
+        self.subsec_nanos().put(out);
+    }
+    fn get(r: &mut Reader<'_>) -> Result<Self, Error> {
+        let (secs, nanos) = (u64::get(r)?, u32::get(r)?);
+        if nanos >= 1_000_000_000 {
+            return Err(Error::Bad("duration nanoseconds"));
+        }
+        Ok(Self::new(secs, nanos))
+    }
+}
+
 impl Wire for std::num::NonZeroU32 {
     fn put(&self, out: &mut impl crate::wire::Sink) {
         self.get().put(out);
@@ -757,7 +771,7 @@ mod tests {
         let reply = Reply::get(&mut reader)?;
         let charged = MAX_ALLOCATED.saturating_sub(reader.1);
         assert!(charged > 32 << 20 && charged <= MAX_ALLOCATED, "{charged}");
-        assert!(matches!(reply.body, Body::Capture(_)));
+        assert!(matches!(reply, Reply::Returned(Body::Capture(_))));
         Ok(())
     }
 

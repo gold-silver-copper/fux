@@ -382,13 +382,13 @@ impl OneKind for Asked {
 }
 
 wire! {
-    /// The server's answer to a request: how it ended, and what it
-    /// answers, which a failure has too (a wait's that timed out or whose
-    /// pane closed).
-    #[derive(Clone, Debug, Default, PartialEq, Eq)]
-    pub struct Reply {
-        pub end: End,
-        pub body: Body,
+    /// A request's return, ordinary failure, or pane outcomes. Pane outcomes
+    /// alone determine whether an action or wait failed.
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    pub enum Reply {
+        Returned(body: Body),
+        Failed { code: Code, message: String },
+        Answered(answers: crate::answer::PaneResults),
     }
 }
 
@@ -404,11 +404,6 @@ wire! {
         Found(id: AnyRef),
         /// The panes or tabs a place holds, in its order.
         Handles(ids: Vec<AnyRef>),
-        /// An action's or wait's on a pane, or a program started.
-        Pane(answer: crate::answer::PaneAnswer),
-        /// An action's or wait's on a tab or workspace: each pane's that
-        /// answered.
-        Panes(answers: Vec<crate::answer::PaneAnswer>),
         Capture(captured: Box<crate::capture::Captured>),
         /// `ls`: everything (`of` none), or a pane, tab or workspace and
         /// what is in it (`info`).
@@ -427,19 +422,15 @@ wire! {
     }
 }
 
-wire! {
-    /// How a request ended: the code that names its exit status, if not 0,
-    /// and why it failed, if it did.
-    #[derive(Clone, Debug, Default, PartialEq, Eq)]
-    pub enum End {
-        #[default]
-        Done,
-        /// Failed, with its code and why.
-        Failed {
-            code: Code,
-            message: String,
-        },
-    }
+/// How a request ended, derived from its reply.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum End {
+    #[default]
+    Done,
+    Failed {
+        code: Code,
+        message: String,
+    },
 }
 
 impl End {
@@ -460,22 +451,56 @@ impl End {
 impl Reply {
     /// A failure of kind `code`, with its exit status, and why.
     pub fn failed(code: Code, message: impl Into<String>) -> Self {
-        Self {
-            end: End::Failed {
-                code,
-                message: message.into(),
-            },
-            body: Body::Empty,
+        Self::Failed {
+            code,
+            message: message.into(),
         }
+    }
+
+    /// How the request ended. A collection's first failure in watch order
+    /// names the whole; every failed member contributes its explanation.
+    pub fn end(&self) -> End {
+        match self {
+            Reply::Returned(_) => End::Done,
+            Reply::Failed { code, message } => End::Failed {
+                code: *code,
+                message: message.clone(),
+            },
+            Reply::Answered(answers) => match answers
+                .all()
+                .iter()
+                .find_map(crate::answer::PaneAnswer::failure)
+            {
+                None => End::Done,
+                Some(code) => End::Failed {
+                    code,
+                    message: answers
+                        .all()
+                        .iter()
+                        .filter_map(crate::answer::PaneAnswer::why)
+                        .collect::<Vec<_>>()
+                        .join("\n"),
+                },
+            },
+        }
+    }
+}
+
+impl Default for Reply {
+    fn default() -> Self {
+        Self::Returned(Body::Empty)
     }
 }
 
 impl From<Body> for Reply {
     fn from(body: Body) -> Self {
-        Self {
-            end: End::Done,
-            body,
-        }
+        Self::Returned(body)
+    }
+}
+
+impl From<crate::answer::PaneResults> for Reply {
+    fn from(answers: crate::answer::PaneResults) -> Self {
+        Self::Answered(answers)
     }
 }
 
@@ -644,6 +669,75 @@ impl Decoder {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Pane outcomes survive the wire with one status owner, including
+    /// mixed collections whose first failing member names the whole.
+    #[test]
+    fn pane_outcomes_determine_the_reply_status() -> Result<(), Box<dyn std::error::Error>> {
+        use crate::answer::{PaneAnswer, PaneResults};
+        let version = "%2:0.0.0.0.0:48211-1867a3f9c2b8e7d6"
+            .parse()
+            .map_err(|()| "version")?;
+        let changed = PaneAnswer::Changed {
+            version,
+            changed: vec![crate::answer::Change::Screen],
+            ended: None,
+        };
+        let closed = PaneAnswer::Closed(PaneId::of(3));
+        let timeout = PaneAnswer::TimedOut {
+            since: version,
+            limit: std::time::Duration::from_millis(1500),
+        };
+        for (results, code) in [
+            (PaneResults::One(PaneAnswer::Acted(version)), None),
+            (PaneResults::One(changed.clone()), None),
+            (PaneResults::One(closed.clone()), Some(Code::Closed)),
+            (PaneResults::One(timeout.clone()), Some(Code::Timeout)),
+            (PaneResults::Many(vec![]), None),
+            (
+                PaneResults::Many(vec![changed.clone(), closed.clone(), timeout.clone()]),
+                Some(Code::Closed),
+            ),
+            (
+                PaneResults::Many(vec![changed, timeout, closed]),
+                Some(Code::Timeout),
+            ),
+        ] {
+            let reply = Reply::Answered(results);
+            let bytes = crate::wire::encode(&reply)?;
+            let decoded = crate::wire::Reader::new(&bytes).whole::<Reply>()?;
+            assert_eq!(decoded, reply);
+            assert_eq!(decoded.end().code(), code);
+            assert_eq!(
+                decoded.end().status(),
+                code.map_or(0, |code| code.status().get())
+            );
+            let values = crate::script::answered(decoded.clone()).map_err(|f| f.to_string())?;
+            let json = values
+                .first()
+                .map(|v| match v {
+                    fuxth::Value::App(crate::script::Fux::Answer(a)) => a.json().render(),
+                    fuxth::Value::Int(_)
+                    | fuxth::Value::Bool(_)
+                    | fuxth::Value::Str(_)
+                    | fuxth::Value::List(_)
+                    | fuxth::Value::App(_) => String::new(),
+                })
+                .ok_or("answer")?;
+            assert_eq!(json.contains(r#""status":124"#), has_timeout(&decoded));
+            if let End::Failed { message, .. } = decoded.end() {
+                assert!(!message.is_empty());
+                if has_timeout(&decoded) {
+                    assert!(message.contains("unchanged for 1.5s"), "{message}");
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn has_timeout(reply: &Reply) -> bool {
+        matches!(reply, Reply::Answered(answers) if answers.all().iter().any(|a| a.failure() == Some(Code::Timeout)))
+    }
 
     /// A frame decodes only from the bytes it encodes to: an `Act` whose
     /// key is spelled otherwise (`S-.`, the key `.`) is refused, where it

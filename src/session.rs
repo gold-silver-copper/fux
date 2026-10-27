@@ -1,6 +1,6 @@
 //! The server's state: workspaces, tabs, panes and the clients' views, and
 //! every command that changes them.
-use crate::answer::PaneAnswer;
+use crate::answer::{PaneAnswer, PaneResults};
 use crate::code::{Code, Raise};
 use crate::command::{
     self, AnyRef, ClientAction, Command, Extent, Input, Kind, Members, Mouse, MoveTo, PanePick,
@@ -14,7 +14,7 @@ use crate::keys::Direction;
 use crate::layout::{self, Axis, NoPane, Placement, Rect, Shares, Tree};
 use crate::pane::{self, Pane, PaneMut, Process, Runs};
 use crate::process::{self, Child, Ended};
-use crate::protocol::{Attach, Body, End, Reply, ToAttached};
+use crate::protocol::{Attach, Body, Reply, ToAttached};
 use crate::view::{self, ClientKind, Mode, View};
 use crate::wait::{Waiting, Watches};
 use crate::workspace::{Destination, Fit, Parts, Seat, Split, Tab, Workspace};
@@ -467,7 +467,7 @@ fn bad_value(usage: command::Usage) -> Error {
 /// program started): its version before it acted, or as it starts; what a
 /// wait for its effect waits to differ from.
 fn acted(version: command::Version) -> Reply {
-    Body::Pane(PaneAnswer::Acted(version)).into()
+    PaneResults::One(PaneAnswer::Acted(version)).into()
 }
 
 /// A command that failed, told with its code (its status: 1, 4 or 124).
@@ -1054,8 +1054,8 @@ impl Session {
         }
         let mut answers = each.iter().map(|(version, _)| PaneAnswer::Acted(*version));
         let reply: Reply = match (to.target(), answers.next()) {
-            (AnyRef::Pane(_), Some(one)) => Body::Pane(one),
-            (_, first) => Body::Panes(first.into_iter().chain(answers).collect()),
+            (AnyRef::Pane(_), Some(one)) => PaneResults::One(one),
+            (_, first) => PaneResults::Many(first.into_iter().chain(answers).collect()),
         }
         .into();
         let mut capacity = crate::wire::Writer::counting(crate::wire::MAX_REPLY);
@@ -2118,11 +2118,10 @@ impl Session {
                 // A respawn is answered once its pane is at the version it
                 // answers: at once, unless what the old program left is
                 // still being read.
-                let waiting = match (&command, &reply.end, &reply.body) {
+                let waiting = match (&command, &reply) {
                     (
                         Command::Respawn { .. },
-                        End::Done,
-                        Body::Pane(PaneAnswer::Acted(started)),
+                        Reply::Answered(PaneResults::One(PaneAnswer::Acted(started))),
                     ) => Waiting::Respawn {
                         pane: started.pane,
                         respawns: started.counts.respawns,
@@ -2774,7 +2773,7 @@ impl Session {
             ClientAction::Keys(ref inputs) => {
                 let keys = ToAttached::Keys(inputs.clone());
                 self.outbox.push(Outgoing::To(client, keys));
-                return Ok(Body::Panes(Vec::new()).into());
+                return Ok(PaneResults::Many(Vec::new()).into());
             }
             ClientAction::Detach => {
                 self.detach(client);
@@ -3533,7 +3532,7 @@ pub(crate) mod testing {
     /// What a reply's answer prints, a value a line, or why it failed.
     pub(crate) fn said(reply: &Result<Reply, super::Error>) -> String {
         let values = match reply {
-            Ok(reply) => crate::script::answered(reply.body.clone()).map_err(|f| f.to_string()),
+            Ok(reply) => crate::script::answered(reply.clone()).map_err(|f| f.to_string()),
             Err(error) => Err(error.to_string()),
         };
         match values {
@@ -4467,18 +4466,18 @@ mod tests {
             return Err("a second respawn under way".into());
         };
         assert_eq!(
-            again.end.code(),
+            again.end().code(),
             Some(Code::StillRunning),
             "{:?}",
-            again.end
+            again.end()
         );
         let (answer, turns) = turns(&mut s, id, &waiting)?;
         assert!(turns > 1, "read in {turns} turns");
-        assert_eq!(answer.end, End::Done);
+        assert_eq!(answer.end(), crate::protocol::End::Done);
         let pane = s.pane(id).map_err(|e| e.to_string())?;
         assert_eq!(
-            answer.body,
-            Body::Pane(PaneAnswer::Acted(pane.version(s.run)))
+            answer,
+            Reply::Answered(PaneResults::One(PaneAnswer::Acted(pane.version(s.run))))
         );
         let lines = stream
             .told(s.parts.journal(), usize::MAX, |t| s.holder(t))
@@ -4515,7 +4514,12 @@ mod tests {
         assert_eq!(s.children().count(), 1, "the program started for it");
         run(&mut s, "%2 kill")?;
         let answer = waiting.answer(&s, Instant::now()).ok_or("no answer")?;
-        assert_eq!(answer.end.code(), Some(Code::Closed), "{:?}", answer.end);
+        assert_eq!(
+            answer.end().code(),
+            Some(Code::Closed),
+            "{:?}",
+            answer.end()
+        );
         let said = (s.views.get(&c))
             .and_then(|v| v.notice.clone())
             .map(|n| n.text);
@@ -5526,7 +5530,7 @@ mod tests {
         };
         run(&mut s, "str %1 pane kill")?;
         let answer = waiting.answer(&s, Instant::now()).ok_or("no answer")?;
-        assert_eq!(answer.end.code(), Some(Code::Closed), "{answer:?}");
+        assert_eq!(answer.end().code(), Some(Code::Closed), "{answer:?}");
         Ok(())
     }
 
@@ -5552,6 +5556,69 @@ mod tests {
         Ok(())
     }
 
+    /// A rendered client screen has no pane counts, even when its text
+    /// starts with a valid version. Pane answers and version text keep theirs.
+    #[test]
+    fn counts_refuses_capture_text_as_a_version() -> Result<(), String> {
+        let (mut s, client) = attached(24, 80)?;
+        let shown = "%2:0.57.1.3.0:48211-1867a3f9c2b8e7d6";
+        s.output(PaneId::of(1), shown.as_bytes());
+        let capture = format!("str {client} client capture-client");
+        let text = output(&mut s, &format!("{capture} string"))?;
+        assert_eq!(text.split_whitespace().next(), Some(shown));
+        let refused = output(&mut s, &format!("{capture} counts"))
+            .err()
+            .ok_or("client capture text supplied invented counts")?;
+        assert!(
+            refused.starts_with("fail: ")
+                && refused.contains("a client capture has no pane version"),
+            "{refused}"
+        );
+        let refused = output(&mut s, "%1 capture counts")
+            .err()
+            .ok_or("pane capture text supplied invented counts")?;
+        assert!(
+            refused.starts_with("fail: ") && refused.contains("not a capture"),
+            "{refused}"
+        );
+        assert_eq!(
+            output(&mut s, &format!("str {shown} counts json"))?.trim(),
+            "[0,57,1,3,0]"
+        );
+        let counts = s.pane(PaneId::of(1)).map_err(|e| e.to_string())?.counts();
+        let expected = format!(
+            "[{},{},{},{},{}]",
+            counts.respawns,
+            counts.screen,
+            counts.bells,
+            counts.done,
+            u8::from(counts.ended)
+        );
+        assert_eq!(
+            output(&mut s, "%1 str x text send-keys counts json")?.trim(),
+            expected
+        );
+        Ok(())
+    }
+
+    /// Pane captures, guarded input, a caught wait and the bundled quiet
+    /// loop compose without losing the pane or its version.
+    #[test]
+    fn capture_and_quiet_keep_the_pane_recipe() -> Result<(), String> {
+        let mut s = started(Config::default())?;
+        let json = output(
+            &mut s,
+            "%1 capture expect str x text send-keys let sent \
+             str timeout try sent 0 timeout wait catch drop end \
+             0 quiet %1 all-history capture json",
+        )?;
+        assert!(
+            json.contains(r#""pane":"%1""#) && json.contains(r#""version":"%1:"#),
+            "{json}"
+        );
+        Ok(())
+    }
+
     /// A closed pane's answer is still its pane's: caught, a word that
     /// wants a pane finds that pane gone, rather than refusing the kind.
     #[test]
@@ -5566,6 +5633,10 @@ mod tests {
         assert_eq!(
             output(&mut s, &format!("{caught} json"))?.trim(),
             r#"{"pane":"%2","status":4}"#
+        );
+        assert_eq!(
+            output(&mut s, &format!("{caught} kind"))?.trim(),
+            "closed-answer"
         );
         let gone = output(&mut s, &format!("{caught} capture")).err();
         assert!(

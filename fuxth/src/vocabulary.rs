@@ -220,8 +220,42 @@ impl Vocabulary {
     /// kinds (`Machine::raise_with`): a `try`'s handler gets it in place of
     /// the message.
     pub fn carries(&mut self, code: Code, name: &str) -> Result<(), Error> {
+        if !self.codes.contains(&code) {
+            return Err(refused(format!("{}: no declared code", code.name())));
+        }
+        if self.carried.iter().any(|(held, _)| *held == code) {
+            return Err(refused(format!(
+                "{}: carried kinds declared already",
+                code.name()
+            )));
+        }
         let kinds = taken(&self.lookup(name, false)?.0);
+        if kinds == Kinds::NONE {
+            return Err(refused(format!("{}: no carried kinds", code.name())));
+        }
         self.carried.push((code, kinds));
+        Ok(())
+    }
+
+    /// Checks a host's exceptional payload against its explicit declaration,
+    /// without the plain message string a handler may also receive.
+    pub(crate) fn check_carried<A: AppValue>(
+        &self,
+        code: Code,
+        value: &Value<A>,
+    ) -> Result<(), String> {
+        let Some((_, kinds)) = self.carried.iter().find(|(held, _)| *held == code) else {
+            return Err(format!("{}: no declared carried kinds", code.name()));
+        };
+        let kind = self.kind_of(value);
+        if !kind.may_be(*kinds) {
+            return Err(format!(
+                "{}: the application carried {}, and its declaration says {}",
+                code.name(),
+                self.describe(kind),
+                self.describe(*kinds)
+            ));
+        }
         Ok(())
     }
 

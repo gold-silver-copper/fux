@@ -1700,3 +1700,66 @@ fn a_try_is_checked_before_it_runs() {
     );
     assert!(words.raises(Code::Host("two words")).is_err());
 }
+
+/// Exceptional values obey their explicit declaration before recovery,
+/// including a resumed host word; ordinary message failures stay available.
+#[test]
+fn carried_values_obey_their_contract() -> Result<(), Error> {
+    let far = Code::Host("far");
+    let mut words = vocabulary();
+    words.name("nothing", "", "no value")?;
+    for invalid in [
+        words.carries(Code::Host("negative"), "nothing"),
+        words.carries(far, "boolean"),
+        words.carries(Code::Host("unknown"), "integer"),
+        words.carries(Code::Host("negative"), "unknown"),
+    ] {
+        assert_eq!(invalid.err().map(|e| e.code), Some(Code::Contract));
+    }
+    for (code, value, admitted) in [
+        (far, Value::Int(7), true),
+        (far, Value::Bool(false), false),
+        (
+            far,
+            Value::str("a message is not an integer payload"),
+            false,
+        ),
+        (Code::Host("negative"), Value::Int(7), false),
+        (Code::Host("unknown"), Value::Int(7), false),
+    ] {
+        let mut compiler = Compiler::new(words.clone());
+        compiler.add(&token::source(
+            "carried",
+            "str 'far negative' try 1 ask catch drop end",
+        )?)?;
+        let mut machine = Machine::new(compiler.finish()?, Limits::default());
+        let mut host = Toy { asked: Vec::new() };
+        assert!(matches!(
+            machine.run(&mut host, 100)?,
+            Outcome::Suspended(1)
+        ));
+        let before = machine.stack().to_vec();
+        let raised = machine.raise_with(Failure::new(code, "refused"), value.clone());
+        if admitted {
+            raised?;
+            assert!(matches!(machine.run(&mut host, 100)?, Outcome::Finished));
+            assert_eq!(machine.stack(), [value]);
+        } else {
+            let error = raised
+                .err()
+                .ok_or_else(|| Error::new(Code::Contract, "admitted an invalid payload", None))?;
+            assert_eq!(error.code, Code::Contract);
+            assert_eq!(error.word.as_deref(), Some("ask"));
+            assert_eq!(machine.stack(), before);
+            // Refusal did not enter the handler or clear the pending word.
+            machine.raise_with(Failure::new(far, "refused"), Value::Int(8))?;
+            assert!(matches!(machine.run(&mut host, 100)?, Outcome::Finished));
+            assert_eq!(machine.stack(), [Value::Int(8)]);
+        }
+    }
+    assert_eq!(
+        run("str far try -1000 ask catch drop end")?,
+        [Value::Int(-1000)]
+    );
+    Ok(())
+}
