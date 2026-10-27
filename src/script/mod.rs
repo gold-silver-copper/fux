@@ -858,7 +858,9 @@ impl Asks for Cli {
                     let why = "stdin: the program itself was read from it";
                     return Err(Failed::new(Code::Read, why));
                 }
-                Given::Words | Given::File(_) => string(&read_text("stdin", io::stdin())?),
+                Given::Words | Given::File(_) => {
+                    string(&read_text("stdin", io::stdin(), SOURCE_MAX)?)
+                }
             },
             Shell::ReadFile(path) => string(&read_file(path.as_ref())?),
             Shell::Getenv(name) => string(&getenv(name)?),
@@ -1231,7 +1233,12 @@ pub fn configured(server: &mut Server, run: Option<Run>) -> (Keymap, Option<Stri
 pub fn default_keys() -> Result<Keymap, Failed> {
     let mut keymap = Keymap::empty();
     let dry = &mut Settings::default();
-    run_quiet("keys.fux", KEYS, Context::default(), Some(&mut keymap), dry)?;
+    run_quiet(
+        &token::source("keys.fux", KEYS)?,
+        Context::default(),
+        Some(&mut keymap),
+        dry,
+    )?;
     Ok(keymap)
 }
 
@@ -1287,16 +1294,7 @@ fn run_config(
         ..default_keys()?
     };
     let mut settings = Settings::default();
-    let mut machine = compile(&tokens)?;
-    let mut out = io::sink();
-    let mut host = Host::new(context.clone(), Some(&mut keymap), &mut out);
-    run_capped(
-        &mut machine,
-        &mut host,
-        &mut settings,
-        Some(PROGRAM_STEPS),
-        None,
-    )?;
+    run_quiet(&tokens, context.clone(), Some(&mut keymap), &mut settings)?;
     if let Some(server) = server
         && !settings.0.is_empty()
     {
@@ -1313,16 +1311,15 @@ fn run_config(
     Ok(keymap)
 }
 
-/// Runs the program `text`, read from `name`, its requests going to `asks`
+/// Runs the program in `tokens`, its requests going to `asks`
 /// and its output nowhere, for at most `PROGRAM_STEPS` steps.
 fn run_quiet(
-    name: &str,
-    text: &str,
+    tokens: &[Token],
     context: Context,
     keymap: Option<&mut Keymap>,
     asks: &mut dyn Asks,
 ) -> Result<(), Failed> {
-    let mut machine = compile(&token::source(name, text)?)?;
+    let mut machine = compile(tokens)?;
     let mut out = io::sink();
     let mut host = Host::new(context, keymap, &mut out);
     run_capped(&mut machine, &mut host, asks, Some(PROGRAM_STEPS), None).map(drop)
@@ -1430,7 +1427,7 @@ fn program(args: &[String]) -> Result<(Vec<Token>, Given), Failed> {
         [] => token::arguments(&["opts", "attach"]),
         // A program read whole, at most `SOURCE_MAX` of it.
         [dash] if dash == "-" => {
-            let text = read_text("stdin", io::stdin())?;
+            let text = read_text("stdin", io::stdin(), SOURCE_MAX)?;
             return Ok((source::text("stdin", &text)?.tokens(), Given::Stdin));
         }
         [flag, file, rest @ ..] if flag == "--file" => {
@@ -1460,22 +1457,22 @@ pub(crate) const LINE_STEPS: u64 = 1_000_000_000;
 
 /// The most text read from a file or stdin may be: a program, or what
 /// `read-file` and `input` read.
-pub(crate) const SOURCE_MAX: usize = 16 << 20;
+pub(crate) use fuxth::SOURCE_MAX;
 
 fn read_failed(name: &str, why: &str) -> Failed {
     Failed::new(Code::Read, format!("{why} ({name})"))
 }
 
 /// The text read from `from`, which `name` names and which may be anything
-/// (`/dev/zero`): at most `SOURCE_MAX` bytes of UTF-8.
-fn read_text(name: &str, from: impl Read) -> Result<String, Failed> {
+/// (`/dev/zero`): at most `limit` bytes of UTF-8.
+fn read_text(name: &str, from: impl Read, limit: usize) -> Result<String, Failed> {
     let mut bytes = Vec::new();
-    let most = u64::try_from(SOURCE_MAX).unwrap_or(u64::MAX);
+    let most = u64::try_from(limit).unwrap_or(u64::MAX);
     (from.take(most.saturating_add(1)))
         .read_to_end(&mut bytes)
         .map_err(|e| read_failed(name, &e.to_string()))?;
-    if bytes.len() > SOURCE_MAX {
-        let why = format!("more than {} MiB, the most fux reads", SOURCE_MAX >> 20);
+    if bytes.len() > limit {
+        let why = format!("more than {limit} bytes, the most fux reads");
         return Err(read_failed(name, &why));
     }
     String::from_utf8(bytes).map_err(|_| read_failed(name, "not UTF-8 text"))
@@ -1485,7 +1482,7 @@ fn read_text(name: &str, from: impl Read) -> Result<String, Failed> {
 fn read_file(path: &std::path::Path) -> Result<String, Failed> {
     let name = path.display().to_string();
     let file = std::fs::File::open(path).map_err(|e| read_failed(&name, &e.to_string()))?;
-    read_text(&name, file)
+    read_text(&name, file, SOURCE_MAX)
 }
 
 #[cfg(test)]
@@ -1572,7 +1569,7 @@ mod tests {
     /// What a script asks of its process is the command line's alone: a
     /// config's program, as a key's, is refused it.
     #[test]
-    fn only_the_command_line_asks_its_process() {
+    fn only_the_command_line_asks_its_process() -> Result<(), super::Failed> {
         let words = [
             "args",
             "input",
@@ -1583,13 +1580,19 @@ mod tests {
         ];
         for code in words {
             let dry = &mut super::Settings::default();
-            let ran = super::run_quiet("config", code, Default::default(), None, dry);
+            let ran = super::run_quiet(
+                &super::token::source("config", code)?,
+                Default::default(),
+                None,
+                dry,
+            );
             assert_eq!(
                 ran.err().map(|f| f.code),
                 Some(super::Code::NotHere),
                 "{code}"
             );
         }
+        Ok(())
     }
 
     /// The default keys are a config every line of which binds; what
@@ -1599,7 +1602,12 @@ mod tests {
     fn the_default_keys_are_a_config_list_keys_prints() -> Result<(), super::Failed> {
         let run = |name: &str, text: &str, keymap: &mut super::Keymap| {
             let dry = &mut super::Settings::default();
-            super::run_quiet(name, text, Default::default(), Some(keymap), dry)
+            super::run_quiet(
+                &super::token::source(name, text)?,
+                Default::default(),
+                Some(keymap),
+                dry,
+            )
         };
         let mut keymap = super::default_keys()?;
         let (screens, keys): (Vec<&str>, Vec<&str>) = (super::KEYS.lines())

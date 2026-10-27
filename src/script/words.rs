@@ -1971,8 +1971,7 @@ mod tests {
     fn a_request_costs_its_own_steps_against_the_cap() {
         let run = |config: &str| {
             super::super::run_quiet(
-                "config",
-                config,
+                &fuxth::token::source("config", config).map_err(|e| Code::of(e.code))?,
                 crate::client::context(),
                 None,
                 &mut super::super::Settings::default(),

@@ -22,6 +22,9 @@ pub trait Loader {
     fn read(&mut self, path: &Path, remaining: usize) -> Result<String, String>;
 }
 
+/// The default source byte budget, including the root and its imports.
+pub const SOURCE_MAX: usize = 16 << 20;
+
 /// Aggregate limits, including the root. Depth counts active require edges.
 #[derive(Clone, Copy, Debug)]
 pub struct SourceLimits {
@@ -34,7 +37,7 @@ pub struct SourceLimits {
 impl Default for SourceLimits {
     fn default() -> Self {
         Self {
-            bytes: 16 << 20,
+            bytes: SOURCE_MAX,
             files: 256,
             depth: 32,
             tokens: 1_000_000,

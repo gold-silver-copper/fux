@@ -1,19 +1,19 @@
 //! Filesystem admission for compile-time sources. Every image has its own
 //! loader and captured cwd; replay needs neither.
-use super::{Failed, read_failed};
+use super::{Failed, SOURCE_MAX, read_failed, read_text};
 use fuxth::{Loader, Source, SourceImage, SourceLimits, Token};
-use std::io::{self, Read};
+use std::io;
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 
 struct Files {
-    cwd: Option<PathBuf>,
+    cwd: io::Result<PathBuf>,
 }
 
 impl Files {
     fn new() -> Self {
         Self {
-            cwd: std::env::current_dir().ok(),
+            cwd: std::env::current_dir(),
         }
     }
 }
@@ -24,16 +24,25 @@ impl Loader for Files {
         let full = if path.is_absolute() {
             path.to_owned()
         } else {
-            from.and_then(Path::parent)
-                .or(self.cwd.as_deref())
-                .ok_or("the invocation directory is unknown")?
-                .join(path)
+            let base = match from.and_then(Path::parent) {
+                Some(parent) => parent,
+                None => self
+                    .cwd
+                    .as_deref()
+                    .map_err(|e| format!("the invocation directory is unknown: {e}"))?,
+            };
+            base.join(path)
         };
         full.canonicalize().map_err(|e| e.to_string())
     }
 
     fn read(&mut self, path: &Path, remaining: usize) -> Result<String, String> {
-        read(open(path).map_err(|e| e.to_string())?, remaining).map_err(|e| e.to_string())
+        read_text(
+            &path.display().to_string(),
+            open(path).map_err(|e| e.to_string())?,
+            remaining,
+        )
+        .map_err(|f| f.to_string())
     }
 }
 
@@ -46,20 +55,6 @@ pub(super) fn open(path: &Path) -> io::Result<std::fs::File> {
         return Err(io::Error::other("not a regular source file"));
     }
     Ok(file)
-}
-
-fn read(file: std::fs::File, remaining: usize) -> io::Result<String> {
-    let mut bytes = Vec::new();
-    file.take(
-        u64::try_from(remaining)
-            .unwrap_or(u64::MAX)
-            .saturating_add(1),
-    )
-    .read_to_end(&mut bytes)?;
-    if bytes.len() > remaining {
-        return Err(io::Error::other("source byte limit exceeded"));
-    }
-    String::from_utf8(bytes).map_err(|_| io::Error::other("not UTF-8 text"))
 }
 
 pub(super) fn root(path: &Path) -> io::Result<(PathBuf, std::fs::File)> {
@@ -76,7 +71,7 @@ pub(super) fn file(path: &Path) -> Result<SourceImage, Failed> {
 
 pub(super) fn opened_file(path: PathBuf, file: std::fs::File) -> Result<SourceImage, Failed> {
     let name = path.display().to_string();
-    let text = read(file, super::SOURCE_MAX).map_err(|e| read_failed(&name, &e.to_string()))?;
+    let text = read_text(&name, file, SOURCE_MAX)?;
     Ok(SourceImage::load(
         Source {
             name,
@@ -233,15 +228,32 @@ mod tests {
         ] {
             assert!(SourceImage::load(source.clone(), &mut Files::new(), limits).is_err());
         }
-        assert!(fuxth::token::source_limited("t", "1 2 # comment\n", 2).is_ok());
-        assert!(fuxth::token::source_limited("t", "1 2 3", 2).is_err());
-        assert!(fuxth::token::source_limited("t", "''", 0).is_err());
-        let mut unknown = Files { cwd: None };
-        assert!(unknown.resolve("relative.fux", None).is_err());
-        assert_eq!(
-            unknown.resolve(root.to_str().ok_or("nontext fixture")?, None)?,
-            root.canonicalize()?
-        );
+        Ok(())
+    }
+
+    #[test]
+    fn unknown_invocation_directories_keep_their_cause() -> Result<(), Box<dyn std::error::Error>> {
+        let f = Fixture::new()?;
+        let root = f.write("main.fux", "require child.fux")?;
+        f.write("child.fux", "1")?;
+        for kind in [io::ErrorKind::NotFound, io::ErrorKind::PermissionDenied] {
+            let cause = io::Error::from(kind);
+            let said = cause.to_string();
+            let mut unknown = Files { cwd: Err(cause) };
+            let error = unknown
+                .resolve("relative.fux", None)
+                .err()
+                .ok_or("unknown cwd accepted")?;
+            assert!(error.contains(&said), "{error}");
+            assert_eq!(
+                unknown.resolve(root.to_str().ok_or("nontext fixture")?, None)?,
+                root.canonicalize()?
+            );
+            assert_eq!(
+                unknown.resolve("child.fux", Some(&root))?,
+                f.0.join("child.fux").canonicalize()?
+            );
+        }
         Ok(())
     }
 

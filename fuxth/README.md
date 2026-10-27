@@ -166,12 +166,18 @@ those definitions, not their source's top level or `let` names (a key
 binding of a config's, say); a definition reading one may not be called
 there (`unset`).
 
-`Compiler::load(Source, &mut Loader, SourceLimits)` expands imports and adds
-one source image. `SourceImage::load` also exposes expansion separately for
-hosts with a token adapter. The host supplies canonical path resolution and
-bounded reads of regular files opened nonblocking. Relative paths use the
+Expand imports before compiling:
+
+```rust,ignore
+let image = SourceImage::load(source, &mut loader, limits)?;
+compiler.add(&image.tokens())?;
+```
+
+A host can adapt the expanded tokens before `add`. It supplies canonical
+path resolution and bounded reads of regular files opened nonblocking. Relative paths use the
 requiring file; command-line/stdin roots use the host's captured cwd and fail
-when it is unknown. Default limits, including the root, are 16 MiB, 256 units,
+when it is unknown. Default limits, including the root, are `SOURCE_MAX`
+(16 MiB), 256 units,
 32 active require edges and 1,000,000 input tokens. The image retains the
 expanded tokens and their source chains and can cross threads; `tokens()`
 replays it without IO. Save it for later definitions-only compilations.

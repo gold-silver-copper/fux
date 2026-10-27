@@ -360,7 +360,7 @@ impl<A: Clone> Compiler<A> {
     /// Compiles `tokens`, a source, onto what was compiled before; if it
     /// fails, the compiler is as it was. A definition in it may call one
     /// written after it. This entry point has no loader: `require` is
-    /// refused. Use `load` or add a saved source image's tokens for imports.
+    /// refused. Add a saved source image's tokens for imports.
     pub fn add(&mut self, tokens: &[Token]) -> Result<(), Error> {
         let (words, main, globals) = (self.words.len(), self.main.len(), self.globals);
         let (open, current) = (self.open.clone(), self.current.clone());
@@ -387,19 +387,6 @@ impl<A: Clone> Compiler<A> {
             self.forward.clear();
         }
         added
-    }
-
-    /// Loads a bounded source image through the host, then compiles it as
-    /// one source. Later compilations can reuse its tokens without any IO.
-    pub fn load(
-        &mut self,
-        source: crate::Source,
-        loader: &mut impl crate::Loader,
-        limits: crate::SourceLimits,
-    ) -> Result<crate::SourceImage, Error> {
-        let image = crate::SourceImage::load(source, loader, limits)?;
-        self.add(&image.tokens())?;
-        Ok(image)
     }
 
     /// `name` means `entry` from here on: what it meant before kept, for
