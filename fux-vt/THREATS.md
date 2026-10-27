@@ -258,8 +258,8 @@ beside the old: + 12.10 MiB.
 
 ### 4.1 The counters
 
-With the `checks` cargo feature (off by default; the bounds tests, the
-fuzz targets and mutation runs turn it on, never a release), fux-vt
+With the `checks` cargo feature (off by default; the bounds tests and
+fuzz targets turn it on, never a release), fux-vt
 counts its work in a per-thread `Work`, read by `Work::now()` and
 differenced with `Work::since`. The counters come from one table
 (`work.rs`), each added to with saturating arithmetic. Without the feature nothing is counted.

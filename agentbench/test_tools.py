@@ -58,20 +58,23 @@ class Tools(unittest.TestCase):
     def test_coverage_requires_words_and_reports_missing_native_and_library_names(self):
         help_text = ("Words:\n  capture              pane -- capture\n"
                      "  signal               pane -- answer\n"
+                     "  choose-workspace-for client pane -- x\n"
                      "\nThe libraries (`fux help WORD` says each):\n  quiet\n"
                      "\n\nThe server: socket\n")
         known = guide_check.words_of_fux(help_text)
+        self.assertIn("choose-workspace-for", known)
         source = ('class Fux(Driver):\n'
                   '    def read(self, state):\n'
-                  '        self.fux(*["capture"], "quiet")\n'
+                  '        self.fux(*["capture"], "quiet", "choose-workspace-for")\n'
                   '        return state["signal"]\n')
         used = guide_check.driver_words(source, known)
-        self.assertEqual(used, {"capture", "quiet"})
-        self.assertEqual(guide_check.missing_words(used, "capture quiet"), [])
+        self.assertEqual(used, {"capture", "quiet", "choose-workspace-for"})
+        self.assertEqual(guide_check.missing_words(used, "capture quiet choose-workspace-for"), [])
+        self.assertEqual(guide_check.missing_words(used, "capture quiet"), ["choose-workspace-for"])
         self.assertEqual(guide_check.missing_words(used, "capture-client quietly"),
-                         ["capture", "quiet"])
+                         ["capture", "choose-workspace-for", "quiet"])
         for text in ("", help_text.replace("  quiet", ""),
-                     help_text.replace("  capture", "capture").replace("  signal", "signal")):
+                     help_text.replace("  ", "")):
             with self.subTest(text=text), self.assertRaises(ValueError):
                 guide_check.words_of_fux(text)
         with self.assertRaises(ValueError):

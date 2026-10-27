@@ -538,13 +538,10 @@ fn start(
                 } else {
                     let mut args = vec!["str", "%1", "pane", "horizontal"];
                     args.extend(program_words(p));
-                    args.push("split");
+                    args.extend(["split", "pane"]);
                     let answer = session.command(place, &args)?;
-                    last = answer
-                        .split_whitespace()
-                        .next()
+                    last = Some(answer.trim())
                         .filter(|w| w.starts_with('%'))
-                        .and_then(|w| w.split_once(':').map(|(pane, _)| pane))
                         .ok_or(format!("fux split: no pane in {answer:?}"))?
                         .to_owned();
                 }

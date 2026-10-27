@@ -20,7 +20,7 @@ def words_of_fux(help_text):
     """Native rows and bundled library names in `fux help`."""
     native, separator, rest = help_text.partition("\nThe libraries (`fux help WORD` says each):\n")
     libraries, end, _ = rest.partition("\n\nThe server:")
-    native = set(re.findall(r"^  (\S+) {2,}", native, re.M))
+    native = set(re.findall(r"^  (\S+)", native, re.M))
     libraries = set(libraries.split())
     if not separator or not end or not native or not libraries:
         raise ValueError("fux help did not list both native and library words")
