@@ -58,7 +58,7 @@ id!(
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct BufferId {
     run: Run,
-    number: u32,
+    number: u64,
 }
 
 impl fmt::Display for BufferId {
@@ -112,12 +112,18 @@ pub(crate) struct Ids {
     tab: u32,
     workspace: u32,
     client: u32,
-    buffer: u32,
+    buffer: u64,
 }
 
 impl Ids {
     pub(crate) fn buffer(&mut self, run: Run) -> Result<BufferId, Error> {
-        take(&mut self.buffer, "buffer").map(|number| BufferId { run, number })
+        self.buffer = self.buffer.checked_add(1).ok_or_else(|| {
+            crate::session::fail(crate::code::Raise::IdsExhausted, "no buffer IDs are left")
+        })?;
+        Ok(BufferId {
+            run,
+            number: self.buffer,
+        })
     }
 
     pub(crate) fn pane(&mut self) -> Result<PaneId, Error> {
@@ -179,7 +185,7 @@ impl ClientId {
 #[cfg(test)]
 impl Ids {
     pub(crate) fn exhaust_buffers(&mut self) {
-        self.buffer = u32::MAX;
+        self.buffer = u64::MAX;
     }
 
     /// Uses up the tab IDs.

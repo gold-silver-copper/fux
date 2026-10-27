@@ -2326,7 +2326,7 @@ impl Session {
                 let metadata = |(id, text): &(BufferId, String)| {
                     let preview: String = (text.chars())
                         .map(|c| if c.is_control() { ' ' } else { c })
-                        .take(50)
+                        .take(PREVIEW_MAX)
                         .collect();
                     Json::object(vec![
                         ("id", Json::str(id.to_string())),
@@ -3077,6 +3077,9 @@ enum Start<'a> {
 
 /// The most bytes a name holds.
 pub(crate) const NAME_MAX: usize = 256;
+
+/// Characters kept in a paste buffer's metadata preview.
+pub(crate) const PREVIEW_MAX: usize = 50;
 
 fn check_name(name: &str) -> Result<(), Error> {
     if name.trim().is_empty() {
