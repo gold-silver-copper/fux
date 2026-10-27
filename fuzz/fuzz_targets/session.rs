@@ -35,15 +35,16 @@ use libfuzzer_sys::fuzz_target;
 /// The client's screen as it should look now, in a grid of its own.
 fn compose(s: &Session, c: ClientId) -> Option<Grid> {
     let view = s.views.get(&c)?;
-    let mut grid = Grid::new(0, 0);
-    compose_view(s, view, &mut grid, &mut fux::layout::Placement::default());
+    let mut grid = Grid::default();
+    let result = compose_view(s, view, &mut grid, &mut fux::layout::Placement::default());
+    assert!(result.is_ok(), "{result:?}");
     Some(grid)
 }
 
 /// The bytes that turn `old` (or nothing) into `new`.
 fn paint(old: Option<&Grid>, new: &Grid) -> Vec<u8> {
     let mut out = Vec::new();
-    let blank = Grid::new(new.rows, new.cols);
+    let blank = Grid::default();
     paint_into(old.unwrap_or(&blank), old.is_some(), new, &mut out);
     out
 }
@@ -426,8 +427,8 @@ impl Run {
         for c in clients {
             let (spare, shown, placement, painted) = self.grids.entry(c).or_insert_with(|| {
                 (
-                    Grid::new(0, 0),
-                    Grid::new(0, 0),
+                    Grid::default(),
+                    Grid::default(),
                     fux::layout::Placement::default(),
                     false,
                 )
@@ -435,7 +436,8 @@ impl Run {
             let Some(view) = self.s.views.get(&c) else {
                 continue;
             };
-            compose_view(&self.s, view, spare, placement);
+            let result = compose_view(&self.s, view, spare, placement);
+            assert!(result.is_ok(), "{result:?}");
             let whole = compose(&self.s, c);
             assert!(
                 whole.as_ref() == Some(&*spare),

@@ -337,6 +337,12 @@ impl From<pane::Error> for Error {
 pub(crate) fn refuses_input(pane: &Pane) -> Option<Error> {
     let why = match pane.process() {
         Process::HungUp(_) => "its program closed its terminal: nothing reads input there",
+        Process::ReadFailed(_, error) => {
+            return Some(fail(
+                Raise::NotRunning,
+                format!("{}: reading program terminal failed: {error}", pane.id()),
+            ));
+        }
         Process::Respawning => {
             "it is respawning: no program of its own reads input till it is done"
         }
@@ -1514,7 +1520,7 @@ impl Session {
                     view.dirty = true;
                 }
             }
-            if let Some((pane, true)) = self.hosted(id) {
+            if let Some((mut pane, true)) = self.hosted(id) {
                 pane.size_terminal();
             }
         }
@@ -1697,7 +1703,10 @@ impl Session {
     /// `closed`: fux closed it (`kill`, `kill-server`), not its program's
     /// end: the rest of its session goes too.
     fn end(&mut self, process: Process, closed: bool) {
-        if let Process::Reading(mut child) | Process::HungUp(mut child) = process {
+        if let Process::Reading(mut child)
+        | Process::HungUp(mut child)
+        | Process::ReadFailed(mut child, _) = process
+        {
             if closed {
                 child.leader.closed();
             }
@@ -1811,7 +1820,10 @@ impl Session {
             Runs::Explicit(_) => {
                 // Its leader, exited and unreaped, is reaped with the dying.
                 let (end, gone) = pane.exit(ended);
-                if let Process::Reading(child) | Process::HungUp(child) = gone {
+                if let Process::Reading(child)
+                | Process::HungUp(child)
+                | Process::ReadFailed(child, _) = gone
+                {
                     let deadline = Instant::now();
                     self.dying.push(Dying { child, deadline });
                 }
@@ -1829,14 +1841,18 @@ impl Session {
     /// is respawned over (`unread`), up to `LEFT_MAX`; what is past it is
     /// not, which the pane keeps (`Pane::left`) to say with its end.
     fn read_left(&mut self, id: PaneId) {
-        let Some((left, cut)) = self.pane(id).ok().map(|p| unread(p.process())) else {
+        let Some((left, end)) = self.pane(id).ok().map(|p| unread(p.process())) else {
             return;
         };
         if !left.is_empty() {
             self.output(id, &left);
         }
-        if let (true, Ok(mut pane)) = (cut, self.pane_mut(id)) {
-            pane.left_cut();
+        if let Ok(mut pane) = self.pane_mut(id) {
+            match end {
+                DrainEnd::Empty => {}
+                DrainEnd::Cut => pane.left_cut(),
+                DrainEnd::Failed(error) => pane.read_failed(error),
+            }
         }
     }
 
@@ -1916,7 +1932,7 @@ impl Session {
     /// tells it once one does.
     pub(crate) fn tell_lost(&mut self) -> bool {
         let untold: Vec<PaneId> = (self.parts.panes().iter())
-            .filter(|(_, p)| p.loses())
+            .filter(|(_, p)| p.loses() || p.has_terminal_errors())
             .map(|(id, _)| *id)
             .collect();
         let mut told = false;
@@ -1933,10 +1949,14 @@ impl Session {
     /// one that does.
     fn tell_refused(&mut self, id: PaneId, viewers: &[ClientId]) -> bool {
         let pane = self.parts.pane_mut(id);
-        let Some(mut pane) = pane.filter(|p| p.loses() && !viewers.is_empty()) else {
+        let Some(mut pane) =
+            pane.filter(|p| (p.loses() || p.has_terminal_errors()) && !viewers.is_empty())
+        else {
             return false;
         };
-        let told = pane.take_untold().told(id, true).join("; ");
+        let mut notices = pane.take_untold().told(id, true);
+        notices.extend(pane.take_terminal_errors());
+        let told = notices.join("; ");
         for client in viewers {
             self.notify_to(*client, told.clone(), true);
         }
@@ -2639,9 +2659,10 @@ impl Session {
                 return Ok(Reply::default());
             }
             ClientAction::Capture => {
-                let mut grid = crate::render::Grid::new(0, 0);
+                let mut grid = crate::render::Grid::default();
                 let placement = &mut Placement::default();
-                crate::render::compose_view(self, view()?, &mut grid, placement);
+                crate::render::compose_view(self, view()?, &mut grid, placement)
+                    .map_err(|e| fail(Raise::Size, format!("capturing {client}: {e}")))?;
                 let captured = crate::capture::client(client, &grid);
                 return Ok(Body::Capture(Box::new(captured)).into());
             }
@@ -3010,29 +3031,45 @@ pub(crate) const LEFT_MAX: usize = LEFT_MIB << 20;
 
 /// What a program's terminal holds, unread, up to `LEFT_MAX`, and whether
 /// it held more: read as it ends, so that its last screen is whole.
-fn unread(process: &Process) -> (Vec<u8>, bool) {
+fn unread(process: &Process) -> (Vec<u8>, DrainEnd) {
     match process {
         Process::Reading(child) => left_on(&child.master),
-        Process::HungUp(_) | Process::Absent | Process::Exited(_) | Process::Respawning => {
-            (Vec::new(), false)
-        }
+        Process::HungUp(_)
+        | Process::ReadFailed(..)
+        | Process::Absent
+        | Process::Exited(_)
+        | Process::Respawning => (Vec::new(), DrainEnd::Empty),
     }
 }
 
+#[derive(Debug, PartialEq, Eq)]
+enum DrainEnd {
+    Empty,
+    Cut,
+    Failed(fuxix::Errno),
+}
+
 /// What `fd` holds to read now, up to `LEFT_MAX`, and whether it held more.
-fn left_on(fd: impl std::os::fd::AsFd) -> (Vec<u8>, bool) {
+fn left_on(fd: impl std::os::fd::AsFd) -> (Vec<u8>, DrainEnd) {
+    drain_terminal(|bytes| fuxix::io::read(&fd, bytes))
+}
+
+fn drain_terminal(
+    mut read: impl FnMut(&mut [u8]) -> Result<usize, fuxix::Errno>,
+) -> (Vec<u8>, DrainEnd) {
     let mut left = Vec::new();
     let mut buffer = [0u8; 16384];
     let most = buffer.len();
     loop {
         // A byte past the most, read, says there was more.
         let room = LEFT_MAX.saturating_sub(left.len());
-        let read = buffer.get_mut(..room.clamp(1, most)).unwrap_or_default();
-        match fuxix::io::read(&fd, read) {
-            Ok(n) if n > 0 && room == 0 => return (left, true),
-            Ok(n) if n > 0 => left.extend_from_slice(read.get(..n).unwrap_or_default()),
+        let bytes = buffer.get_mut(..room.clamp(1, most)).unwrap_or_default();
+        match read(bytes) {
+            Ok(n) if n > 0 && room == 0 => return (left, DrainEnd::Cut),
+            Ok(n) if n > 0 => left.extend_from_slice(bytes.get(..n).unwrap_or_default()),
             Err(fuxix::Errno::INTR) => {}
-            Ok(_) | Err(_) => return (left, false),
+            Ok(_) | Err(fuxix::Errno::AGAIN | fuxix::Errno::IO) => return (left, DrainEnd::Empty),
+            Err(error) => return (left, DrainEnd::Failed(error)),
         }
     }
 }
@@ -3634,9 +3671,56 @@ mod tests {
     fn what_is_left_past_the_most_read_is_said() -> Result<(), String> {
         let zeros = std::fs::File::open("/dev/zero").map_err(|e| e.to_string())?;
         let (left, more) = left_on(&zeros);
-        assert_eq!((left.len(), more), (LEFT_MAX, true));
+        assert_eq!((left.len(), more), (LEFT_MAX, DrainEnd::Cut));
         let null = std::fs::File::open("/dev/null").map_err(|e| e.to_string())?;
-        assert_eq!(left_on(&null), (Vec::new(), false));
+        assert_eq!(left_on(&null), (Vec::new(), DrainEnd::Empty));
+        Ok(())
+    }
+
+    #[test]
+    fn unexpected_terminal_read_errors_are_not_empty_output()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut reads = [Ok(1), Err(fuxix::Errno::INTR), Err(fuxix::Errno::INVAL)].into_iter();
+        let (left, end) = drain_terminal(|bytes| {
+            if let Some(first) = bytes.first_mut() {
+                *first = b'x';
+            }
+            reads.next().ok_or(fuxix::Errno::INVAL)?
+        });
+        assert_eq!(
+            (left, end),
+            (b"x".to_vec(), DrainEnd::Failed(fuxix::Errno::INVAL))
+        );
+        for end in [Ok(0), Err(fuxix::Errno::AGAIN), Err(fuxix::Errno::IO)] {
+            assert_eq!(drain_terminal(|_| end), (Vec::new(), DrainEnd::Empty));
+        }
+        let directory = std::fs::File::open(".")?;
+        let (_, end) = left_on(&directory);
+        assert!(matches!(end, DrainEnd::Failed(_)), "{end:?}");
+        let (reader, _writer) = std::io::pipe()?;
+        fuxix::io::set_nonblocking(&reader, true)?;
+        assert_eq!(left_on(&reader), (Vec::new(), DrainEnd::Empty));
+        let (mut session, client) = attached(10, 40)?;
+        let id = *session.parts.panes().keys().next().ok_or("pane")?;
+        session
+            .parts
+            .pane_mut(id)
+            .ok_or("pane")?
+            .read_failed(fuxix::Errno::INVAL);
+        assert!(session.tell_lost());
+        let view = session.views.get(&client).ok_or("client")?;
+        let notice = &view.notice.as_ref().ok_or("notice")?.text;
+        assert!(notice.contains("reading program terminal"), "{notice}");
+        assert!(!session.tell_lost());
+        Ok(())
+    }
+
+    #[test]
+    fn refused_client_capture_returns_an_error() -> Result<(), Box<dyn std::error::Error>> {
+        let (mut session, client) = attached(10, 40)?;
+        fux_vt::refuse_next(1);
+        let result = session.client(Some(client), &ClientAction::Capture, Here::Cli(None, None));
+        assert!(result.is_err());
         Ok(())
     }
 
@@ -4497,7 +4581,9 @@ mod tests {
             s.parts
                 .pane_mut(id)
                 .and_then(|mut p| match p.set_process(Process::Absent) {
-                    Process::Reading(child) | Process::HungUp(child) => Some(child),
+                    Process::Reading(child)
+                    | Process::HungUp(child)
+                    | Process::ReadFailed(child, _) => Some(child),
                     Process::Absent | Process::Exited(_) | Process::Respawning => None,
                 })
         {

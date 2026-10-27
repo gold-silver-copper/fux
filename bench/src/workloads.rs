@@ -824,8 +824,8 @@ fn keystroke(recordings: &[Recording], baseline: bool, keys: usize) -> Result<Do
         }
     }
     s.hold_copies();
-    let mut shown = fux::render::Grid::new(0, 0);
-    let mut spare = fux::render::Grid::new(0, 0);
+    let mut shown = fux::render::Grid::default();
+    let mut spare = fux::render::Grid::default();
     let mut placement = fux::layout::Placement::default();
     let mut buffer = Vec::new();
     let mut have = false;
@@ -858,7 +858,8 @@ fn keystroke(recordings: &[Recording], baseline: bool, keys: usize) -> Result<Do
         let Some(view) = s.views.get(&c) else {
             continue;
         };
-        fux::render::compose_view(&s, view, &mut spare, &mut placement);
+        fux::render::compose_view(&s, view, &mut spare, &mut placement)
+            .map_err(|e| e.to_string())?;
         // Every key changes the screen: painted without asking whether it
         // did, as `paint_into` finds what changed.
         fux::render::paint_into(&shown, have, &spare, &mut buffer);
@@ -909,8 +910,8 @@ fn paint(
         );
     }
     let panes: Vec<_> = s.parts.panes().keys().copied().collect();
-    let mut shown = fux::render::Grid::new(0, 0);
-    let mut spare = fux::render::Grid::new(0, 0);
+    let mut shown = fux::render::Grid::default();
+    let mut spare = fux::render::Grid::default();
     let mut placement = fux::layout::Placement::default();
     let mut buffer = Vec::new();
     let (mut painted, mut frames, mut units, mut have) = (0usize, 0usize, 0usize, false);
@@ -938,7 +939,8 @@ fn paint(
                     let Some(view) = s.views.get(&c) else {
                         continue;
                     };
-                    fux::render::compose_view(&s, view, &mut spare, &mut placement);
+                    fux::render::compose_view(&s, view, &mut spare, &mut placement)
+                        .map_err(|e| e.to_string())?;
                     if have && spare == shown {
                         continue;
                     }

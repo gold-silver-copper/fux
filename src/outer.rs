@@ -611,8 +611,9 @@ mod tests {
             let (Some(view), mut placement) = (s.views.get(&c), Default::default()) else {
                 return 0;
             };
-            let mut grid = crate::render::Grid::new(0, 0);
-            crate::render::compose_view(s, view, &mut grid, &mut placement);
+            let mut grid = crate::render::Grid::default();
+            let result = crate::render::compose_view(s, view, &mut grid, &mut placement);
+            assert!(result.is_ok(), "{result:?}");
             crate::render::pictures(s, c, &placement).len()
         };
         assert_eq!(shown_on_c(&s), 1);

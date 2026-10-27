@@ -688,10 +688,7 @@ impl Cells {
         if len > crate::grid::MAX_CELLS {
             return Err(Error::Capacity);
         }
-        let more = len.saturating_sub(self.cells.len());
-        self.cells
-            .try_reserve_exact(more)
-            .map_err(|_| Error::Capacity)
+        crate::reserve(&mut self.cells, len)
     }
     /// How many cells there are.
     pub fn len(&self) -> usize {

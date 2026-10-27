@@ -27,6 +27,9 @@ fux-vt = { path = "fux-vt", version = "0.15.0" }
 fuxix = { path = "fuxix", version = "0.8.0" }
 fuxth = { path = "fuxth", version = "0.7.0" }
 
+[dev-dependencies]
+fux-vt = { path = "fux-vt", features = ["checks"] }
+
 [profile.dev]
 debug = 0
 

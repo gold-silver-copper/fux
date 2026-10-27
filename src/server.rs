@@ -315,9 +315,9 @@ impl Attached {
         let now = Instant::now();
         Attached {
             client,
-            shown: Grid::new(0, 0),
+            shown: Grid::default(),
             known: false,
-            spare: Grid::new(0, 0),
+            spare: Grid::default(),
             placement: Placement::default(),
             pictures: Vec::new(),
             sixels: render::Sixels::default(),
@@ -998,13 +998,19 @@ impl Server {
             grid: &attached.shown,
             panes: &placed,
         });
-        render::compose_held(
+        if let Err(error) = render::compose_held(
             session,
             view,
             &mut attached.spare,
             &mut attached.placement,
             painted,
-        );
+        ) {
+            conn.end(
+                session,
+                &ToAttached::Exit(&format!("rendering {client}: {error}")),
+            );
+            return;
+        }
         if !before.is_empty() {
             Attached::paint(&mut conn.out, &before);
         }
@@ -1415,7 +1421,13 @@ impl Server {
                 Err(Errno::AGAIN) => break false,
                 Err(Errno::INTR) => continue,
                 // EIO: the slave side is closed; the program is gone.
-                Ok(0) | Err(_) => break true,
+                Ok(0) | Err(Errno::IO) => break true,
+                Err(error) => {
+                    if let Some(mut pane) = self.session.parts.pane_mut(id) {
+                        pane.read_failed(error);
+                    }
+                    break false;
+                }
                 Ok(n) => {
                     // Past PANE_READ by at most one buffer, when the loop ends.
                     total = total.saturating_add(n);
@@ -1499,6 +1511,41 @@ mod tests {
         let mut conn = Conn::new(stream);
         conn.stage = Stage::Attached(Box::new(Attached::new(client)));
         Ok((session, conn, peer))
+    }
+
+    #[test]
+    fn a_refused_paint_ends_the_attachment_without_clearing_its_screen()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (session, mut conn, _peer) = attached()?;
+        let attached = conn.attached().ok_or("attachment")?;
+        attached.shown = Grid::new(10, 40)?;
+        attached.shown.cells.set(
+            0,
+            fux_vt::CellRef::new("K", false, fux_vt::Attributes::default()),
+        );
+        attached.known = true;
+        let now = Instant::now();
+        let mut server = Server {
+            session,
+            phase: Phase::Stopping(now),
+            conns: vec![conn],
+            children: fuxix::signal::Pipe::new(&[])?,
+            killed: Vec::new(),
+            stops: fuxix::signal::Pipe::new(&[])?,
+            read_buffer: Vec::new(),
+            paint_buffer: Vec::new(),
+            slots: Vec::new(),
+            ready: Vec::new(),
+            accept_logged: None,
+        };
+        fux_vt::refuse_next(1);
+        server.paint(0, now);
+        let conn = server.conns.first().ok_or("connection")?;
+        let (painted, exit) = sent(conn);
+        assert!(painted.is_empty(), "{painted:?}");
+        assert!(exit.is_some_and(|why| why.contains("rendering c1")));
+        assert!(matches!(conn.stage, Stage::Closing));
+        Ok(())
     }
 
     /// The frames waiting for the client: what is painted in them, and the
