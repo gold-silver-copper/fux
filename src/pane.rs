@@ -1628,7 +1628,7 @@ impl Pane {
             copied: _,
             untold: _,
             colours: _,
-            respawns: _,
+            respawns,
             title,
             parser,
             process: _,
@@ -1663,8 +1663,7 @@ impl Pane {
         (self.refused_size, self.loss_runs, self.reading) = (refused_size, loss_runs, reading);
         tell.tell(Told::Respawned(over));
         self.rename(name, tell);
-        // 2^64 respawns are never reached: the count never stands still.
-        self.respawns = self.respawns.saturating_add(1);
+        self.respawns = respawns;
         (std::mem::replace(&mut self.process, process), over)
     }
 

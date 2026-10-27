@@ -877,7 +877,7 @@ pub fn compose_held(
     let focus = tab.and_then(|t| t.focus(view.id));
     // Copy mode and its positions, their rows found once for the paint.
     let copy = if let Mode::Copy(copy) = &view.mode {
-        let at = (session.parts.panes().get(&copy.pane)).and_then(|p| copy.resolve(p.screen()));
+        let at = (session.parts.panes().get(&copy.pane)).and_then(|p| copy.resolve(p));
         at.map(|at| (copy.as_ref(), at))
     } else {
         None

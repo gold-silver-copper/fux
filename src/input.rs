@@ -2,7 +2,7 @@
 //! its overlay, its copy mode, or its focused pane. The client reads its
 //! own keyboard and runs its own bindings; a key reaches the server only
 //! as literal input for the pane it focuses.
-use crate::act::Act;
+use crate::act::{Act, CopyAct, ScreenAct};
 use crate::id::ClientId;
 use crate::keys::Keystroke;
 use crate::keys::mouse::{MouseAction, MouseEvent};
@@ -65,28 +65,34 @@ impl Session {
             // the client has moved on from it.
             // A notice from before the screen opened or closed is old news;
             // one the screen's keys bring comes after.
-            Act::Show(panel) => {
-                if let Some(view) = self.views.get_mut(&client) {
-                    let fresh = match &view.mode {
-                        Mode::Panel(was) => {
-                            std::mem::discriminant(was) != std::mem::discriminant(&panel)
-                        }
-                        Mode::Normal | Mode::Copy(_) => true,
-                    };
-                    if fresh {
+            Act::Screen { opening, act } => {
+                let Some(view) = self.views.get_mut(&client) else {
+                    return false;
+                };
+                let starts = matches!(
+                    &act,
+                    ScreenAct::Show(_) | ScreenAct::Copy(CopyAct::Enter { .. })
+                );
+                let fresh = opening > view.opening;
+                if !(fresh && starts || opening == view.opening && !view.mode.is_normal()) {
+                    return false;
+                }
+                if fresh {
+                    view.opening = opening;
+                    view.mode = Mode::Normal;
+                    view.notice = None;
+                }
+                match act {
+                    ScreenAct::Show(panel) => view.mode = Mode::Panel(panel),
+                    ScreenAct::Hide => {
+                        view.mode = Mode::Normal;
                         view.notice = None;
                     }
-                    view.mode = Mode::Panel(panel);
-                }
-            }
-            Act::Hide => {
-                if let Some(view) = self.views.get_mut(&client) {
-                    view.notice = None;
-                    view.mode = Mode::Normal;
+                    ScreenAct::Copy(CopyAct::Enter { .. }) if !fresh => return false,
+                    ScreenAct::Copy(act) => crate::copy::act(self, client, act),
                 }
             }
             Act::Notice { text, error } => self.notify_to(client, text, error),
-            Act::Copy(act) => crate::copy::act(self, client, act),
         }
         if let Some(view) = self.views.get_mut(&client) {
             view.dirty = true;
@@ -278,7 +284,7 @@ mod tests {
     fn screen(s: &Session, c: ClientId) -> Screen {
         s.test_keys
             .get(&c)
-            .map(|k| k.screen.clone())
+            .map(|k| k.screen.screen.clone())
             .unwrap_or_default()
     }
 
@@ -342,6 +348,72 @@ mod tests {
 
     /// A tab in the first workspace.
     const NEW_TAB: &str = "opts 80 24 size str +1 workspace in new-tab";
+
+    /// Every server-side screen action belongs to one opening, including
+    /// edits and copy keys already in flight when that opening ended.
+    #[test]
+    fn stale_screen_actions_cannot_change_a_new_opening() -> Outcome {
+        use crate::act::{Act, CopyAct, ScreenAct};
+        let (mut s, c) = session()?;
+        let panel = Panel::Prompt {
+            title: "prompt".into(),
+            before: "unsent work".into(),
+            after: String::new(),
+            hints: vec![],
+        };
+        for start in [
+            ScreenAct::Show(panel.clone()),
+            ScreenAct::Copy(CopyAct::Enter {
+                hints: vec![],
+                typing: vec![],
+            }),
+        ] {
+            let old = s.views.get(&c).ok_or("view")?.opening.saturating_add(1);
+            let new = old.saturating_add(1);
+            s.acts(
+                c,
+                vec![
+                    Act::Screen {
+                        opening: old,
+                        act: start.clone(),
+                    },
+                    Act::Screen {
+                        opening: new,
+                        act: start.clone(),
+                    },
+                ],
+            );
+            let before = mode(&s, c);
+            for act in [
+                ScreenAct::Hide,
+                ScreenAct::Copy(CopyAct::Leave),
+                ScreenAct::Copy(CopyAct::Yank),
+                ScreenAct::Copy(CopyAct::Top),
+                ScreenAct::Show(panel.clone()),
+                start.clone(),
+            ] {
+                s.acts(c, vec![Act::Screen { opening: old, act }]);
+                assert_eq!(mode(&s, c), before);
+            }
+            s.acts(
+                c,
+                vec![Act::Screen {
+                    opening: new,
+                    act: ScreenAct::Hide,
+                }],
+            );
+            assert_eq!(mode(&s, c), "normal");
+            s.acts(
+                c,
+                vec![Act::Screen {
+                    opening: new,
+                    act: start,
+                }],
+            );
+            assert_eq!(mode(&s, c), "normal", "ended openings cannot redraw");
+        }
+        Ok(())
+    }
 
     /// A name typed into a rename prompt is the name, whatever it looks
     /// like.
@@ -889,7 +961,9 @@ mod tests {
                         .into_iter()
                         .filter_map(|e| match e {
                             crate::screens::Effect::Run(job) => Some(job.code),
-                            crate::screens::Effect::Send(_) => None,
+                            crate::screens::Effect::Send(_) | crate::screens::Effect::Screen(_) => {
+                                None
+                            }
                         })
                         .collect()
                 }

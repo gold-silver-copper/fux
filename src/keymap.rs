@@ -7,6 +7,7 @@
 //! each time its keys are typed, the client itself its `me`. The default
 //! bindings are a config too, `script/keys.fux`, run on `Keymap::empty`
 //! before the user's.
+use crate::act::ScreenAct;
 use crate::act::{
     Act, Column, ColumnEntry, CopyAct, Edit, Hint, LineAct, ListAct, Move, Panel, Seek,
 };
@@ -478,7 +479,7 @@ impl Held {
             Some(column) => {
                 let selected = column.selected;
                 *self = Held::Column { path, selected };
-                vec![Effect::Send(Act::Show(Panel::Column(column)))]
+                vec![Effect::Screen(ScreenAct::Show(Panel::Column(column)))]
             }
             None => vec![HIDE],
         }
@@ -495,15 +496,15 @@ impl Held {
                 let shown = match bar {
                     Some(bar) => {
                         *self = Held::Repeat { path };
-                        Act::Show(Panel::Repeat(bar))
+                        ScreenAct::Show(Panel::Repeat(bar))
                     }
                     None => {
                         *self = Held::Normal;
-                        Act::Hide
+                        ScreenAct::Hide
                     }
                 };
                 vec![
-                    Effect::Send(shown),
+                    Effect::Screen(shown),
                     Effect::Run(binding.code.as_str().into()),
                 ]
             }
@@ -912,12 +913,15 @@ mod tests {
         let steps = held.press(&keymap, stroke("C-b")?, false);
         assert!(matches!(
             steps.as_slice(),
-            [Effect::Send(Act::Show(Panel::Column(_)))]
+            [Effect::Screen(ScreenAct::Show(Panel::Column(_)))]
         ));
         let steps = held.press(&keymap, stroke("z")?, false);
         assert_eq!(
             steps,
-            [Effect::Send(Act::Hide), Effect::Run("me zoom".into())]
+            [
+                Effect::Screen(ScreenAct::Hide),
+                Effect::Run("me zoom".into())
+            ]
         );
         assert_eq!(held, Held::Normal);
         let steps = held.press(&keymap, stroke("x")?, false);
@@ -987,7 +991,7 @@ mod tests {
         };
         press("C-b")?;
         let selected = |steps: Vec<Effect>| match steps.as_slice() {
-            [Effect::Send(Act::Show(Panel::Column(column)))] => Some(column.selected),
+            [Effect::Screen(ScreenAct::Show(Panel::Column(column)))] => Some(column.selected),
             _ => None,
         };
         for _ in 0..last {
@@ -1008,7 +1012,7 @@ mod tests {
         assert_eq!(
             press("Enter")?,
             [
-                Effect::Send(Act::Hide),
+                Effect::Screen(ScreenAct::Hide),
                 Effect::Run("opts new-tab drop".into())
             ]
         );
@@ -1016,7 +1020,7 @@ mod tests {
         assert_eq!(
             press("j")?,
             [
-                Effect::Send(Act::Hide),
+                Effect::Screen(ScreenAct::Hide),
                 Effect::Run("me str down focus".into())
             ]
         );

@@ -9,10 +9,10 @@ use crate::decode::Input;
 use crate::keymap::Keymap;
 use crate::keys::{Key, KeyPress, Modifiers};
 use crate::protocol::{
-    Asked, Attach, AttachedFrame, Context, Decoder, Frame, Greeting, Hello, MAX_FRAME, Mismatch,
-    PROTOCOL, Reply, Role, ToAttached, ToCommand,
+    Asked, Attach, AttachedFrame, Context, Decoder, Frame, Greeting, Hello, Mismatch, PROTOCOL,
+    Reply, Role, ToAttached, ToCommand,
 };
-use crate::screens::{Effect, Job, Screen};
+use crate::screens::{Dispatch, Display, Job, Screen};
 use crate::script;
 use crate::socket::{self, SocketPath};
 use fuxix::Errno;
@@ -579,7 +579,7 @@ fn lock(keymap: &Mutex<Keymap>) -> std::sync::MutexGuard<'_, Keymap> {
 /// while any runs wait for it, and go to the screen it opened, if any.
 pub struct Keyboard {
     keymap: std::sync::Arc<Mutex<Keymap>>,
-    screen: Screen,
+    screen: Display,
     read_only: bool,
     decoder: crate::decode::Decoder,
     jobs: std::sync::mpsc::Sender<Job>,
@@ -637,7 +637,7 @@ impl Keyboard {
         decoder.expect(Instant::now());
         Ok(Keyboard {
             keymap,
-            screen: Screen::default(),
+            screen: Display::default(),
             read_only,
             decoder,
             jobs,
@@ -770,23 +770,27 @@ impl Keyboard {
             // The screen showing hints at keys that changed: it closes,
             // rather than say what its keys no longer do, and says so with
             // what the program said.
-            if ran.opened.is_none() && ran.rebound && self.screen.kind().is_some() {
-                acts.push(match matches!(self.screen, Screen::Copy(_)) {
-                    true => Act::Copy(crate::act::CopyAct::Leave),
-                    false => Act::Hide,
-                });
-                self.screen = Screen::default();
+            if ran.opened.is_none() && ran.rebound && self.screen.screen.is_open() {
+                acts.extend(self.screen.close());
                 let closed = "the keys of fux's screens changed: the one open closed";
                 notice = Some(match notice {
                     Some((text, error)) => (format!("{text}  ({closed})"), error),
                     None => (closed.to_owned(), false),
                 });
             }
+            if let Some(screen) = ran.opened {
+                let at = acts.len();
+                self.open(screen, &mut acts);
+                if let Some(Act::Notice { text, error }) = acts.get_mut(at)
+                    && let Some((said, failed)) = notice.take()
+                {
+                    text.push_str("  ");
+                    text.push_str(&said);
+                    *error |= failed;
+                }
+            }
             if let Some((text, error)) = notice {
                 acts.push(Act::Notice { text, error });
-            }
-            if let Some(screen) = ran.opened {
-                self.open(screen, &mut acts);
             }
         }
         acts.extend(self.release());
@@ -801,31 +805,15 @@ impl Keyboard {
             acts.push(Act::Notice { text, error: true });
             return;
         }
-        let (opened, largest) = {
-            let keys = lock(&self.keymap);
-            (screen.opened(&keys.modes), screen.largest(&keys.modes))
-        };
-        // Sent the server in one frame, and again at each edit of its line,
-        // with the hints of the keys as they are now: one that could grow
-        // past a frame was never to show.
-        if largest.is_some_and(|act| AttachedFrame::Act(Box::new(act)).encode().is_err()) {
-            let text =
-                format!("a screen past {MAX_FRAME} bytes, too large to show, was not opened");
-            return acts.push(Act::Notice { text, error: true });
-        }
-        if let Screen::Copy(_) = self.screen {
-            acts.push(Act::Copy(crate::act::CopyAct::Leave));
-        }
-        acts.extend(opened);
-        self.screen = screen;
+        acts.extend(self.screen.open(screen, &lock(&self.keymap).modes));
     }
 
     /// What a key or a paste led to: actions for the server, programs to run.
-    fn apply(&mut self, effects: Vec<Effect>, acts: &mut Vec<Act>) {
+    fn apply(&mut self, effects: Vec<Dispatch>, acts: &mut Vec<Act>) {
         for effect in effects {
             match effect {
-                Effect::Send(act) => acts.push(act),
-                Effect::Run(job) => self.run(job, acts),
+                Dispatch::Send(act) => acts.push(act),
+                Dispatch::Run(job) => self.run(job, acts),
             }
         }
     }
@@ -911,6 +899,7 @@ fn run_job(
         rebound = keys.modes != changed.modes;
         *keys = changed;
     }
+    let opened = result.is_ok().then_some(asks.opened).flatten();
     let notice = match result {
         // Stopped as asked (the prefix, then Esc): no failure of its own.
         Err(_) if stop.stopped() => Some(("stopped".to_owned(), false)),
@@ -926,7 +915,7 @@ fn run_job(
     });
     Ran {
         notice,
-        opened: asks.opened,
+        opened,
         rebound,
     }
 }
@@ -1469,20 +1458,65 @@ mod tests {
     fn a_screen_closes_when_its_keys_change() -> Result<(), Box<dyn std::error::Error>> {
         let socket = socket::checked("/nowhere/fux/s.sock", "test")?;
         let mut keyboard = Keyboard::new(&socket, "c1".parse()?, Keymap::empty(), false)?;
-        keyboard.screen = Screen::Copy(None);
+        keyboard.open(Screen::Copy(None), &mut Vec::new());
         keyboard.frame(ToAttached::Run("str F5 str ls bind-root".into()));
         assert_eq!(all_ran(&mut keyboard)?, []);
-        assert_eq!(keyboard.screen, Screen::Copy(None));
+        assert_eq!(keyboard.screen.screen, Screen::Copy(None));
         keyboard.frame(ToAttached::Run("str copy str g str top bind-in".into()));
         let acts = all_ran(&mut keyboard)?;
         assert!(
             matches!(
                 acts.as_slice(),
-                [Act::Copy(crate::act::CopyAct::Leave), Act::Notice { .. }]
+                [
+                    Act::Screen {
+                        act: crate::act::ScreenAct::Hide,
+                        ..
+                    },
+                    Act::Notice { .. }
+                ]
             ),
             "{acts:?}"
         );
-        assert_eq!(keyboard.screen, Screen::default());
+        assert_eq!(keyboard.screen.screen, Screen::default());
+        Ok(())
+    }
+
+    /// The actual worker and keyboard send a successful screen before its
+    /// notice; a failed program discards its staged screen and keeps its error.
+    #[test]
+    fn a_jobs_notice_survives_its_screen() -> Result<(), Box<dyn std::error::Error>> {
+        let socket = socket::checked("/nowhere/fux/s.sock", "test")?;
+        let mut keyboard = Keyboard::new(
+            &socket,
+            "c1".parse()?,
+            crate::script::default_keys().map_err(|e| e.to_string())?,
+            false,
+        )?;
+        let (mut session, client) = crate::session::testing::attached(24, 80)?;
+        for (suffix, failed) in [("str hello", false), ("str boom fail", true)] {
+            keyboard.frame(ToAttached::Run(format!("me command-prompt {suffix}")));
+            let acts = all_ran(&mut keyboard)?;
+            assert_eq!(
+                acts.iter()
+                    .filter(|act| matches!(act, Act::Screen { .. }))
+                    .count(),
+                usize::from(!failed)
+            );
+            session.acts(client, acts);
+            let view = session.views.get(&client).ok_or("view")?;
+            let notice = view.notice.as_ref().ok_or("notice")?;
+            assert_eq!(notice.error, failed);
+            assert!(notice.text.contains(if failed { "boom" } else { "hello" }));
+            if let Some(act) = keyboard.screen.close() {
+                session.acts(client, vec![act]);
+            }
+        }
+        keyboard.read_only = true;
+        keyboard.frame(ToAttached::Run("me command-prompt str hello".into()));
+        let acts = all_ran(&mut keyboard)?;
+        assert!(
+            matches!(acts.as_slice(), [Act::Notice { text, error: true }] if text.contains("watching only") && text.contains("hello"))
+        );
         Ok(())
     }
 
@@ -1494,7 +1528,7 @@ mod tests {
         let socket = socket::checked("/nowhere/fux/s.sock", "test")?;
         let mut keyboard = Keyboard::new(&socket, "c1".parse()?, Keymap::empty(), false)?;
         let prompt = crate::screens::Prompt {
-            title: std::iter::repeat_n('t', MAX_FRAME - 2048).collect(),
+            title: std::iter::repeat_n('t', crate::protocol::MAX_FRAME - 2048).collect(),
             line: crate::view::Line::new(String::new()),
             action: None,
         };
@@ -1504,7 +1538,7 @@ mod tests {
             matches!(acts.as_slice(), [Act::Notice { error: true, .. }]),
             "{acts:?}"
         );
-        assert_eq!(keyboard.screen, Screen::default());
+        assert_eq!(keyboard.screen.screen, Screen::default());
         Ok(())
     }
 
