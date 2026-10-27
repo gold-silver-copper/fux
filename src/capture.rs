@@ -13,9 +13,16 @@ use fux_vt::{
 };
 use std::time::Instant;
 
-/// A captured line's cells, each its glyph (the second cell of a wide one
-/// empty, a blank one a space) and its attributes.
-type Cells<'a> = Vec<(&'a str, Attributes)>;
+/// Rows selected for a capture, each with the columns its source takes.
+type ReadRows<'a> = Box<dyn Iterator<Item = (Row<'a>, std::ops::Range<usize>)> + 'a>;
+
+/// A run while it is built and trimmed: its count stays exact until the
+/// surviving cells are converted to the wire's `Cut`.
+struct LineRun {
+    text: String,
+    cells: usize,
+    style: Attributes,
+}
 
 wire! {
     /// A capture, read once: what it read, its screen's size and cursor
@@ -113,9 +120,10 @@ pub fn pane(
     copy_mode: bool,
 ) -> Captured {
     let screen = pane.screen();
-    let mut lines: Vec<Cells<'_>> = Vec::new();
+    let mut lines: Vec<Vec<LineRun>> = Vec::new();
     // A soft-wrapped row goes on in the next, joined unless `wrapped`.
     let mut wraps = false;
+    let mut blanks = 0usize;
     let (read, above) = rows_of(screen, history, view);
     // The cursor's row and column, if it shows on the screen captured: the
     // last output is read from the screen shown, whatever else is asked.
@@ -129,21 +137,8 @@ pub fn pane(
     let cursor = (live && screen.mode(Mode::ShowCursor)).then(|| screen.cursor_position());
     // Joined, a line some of whose rows `rows` takes is taken whole: the
     // range widened to the whole lines at its ends.
-    let continues = |i: usize| !view.wrapped && read.get(i).is_some_and(|(row, _)| row.continues());
-    let taken = view.rows.map(|(start, end)| {
-        let (mut first, mut last) = (usize::from(start), usize::from(end));
-        while let Some(before) = first.checked_sub(1)
-            && continues(before)
-        {
-            first = before;
-        }
-        while continues(last) {
-            last = last.saturating_add(1);
-        }
-        first..=last
-    });
-    let taken = |i: &usize| taken.as_ref().is_none_or(|rows| rows.contains(i));
-    for (_, (row, span)) in read.into_iter().enumerate().filter(|(i, _)| taken(i)) {
+    let read = selected_rows(read, view);
+    for (row, span) in read {
         // A wide glyph's second cell is drawn as its first: the same style,
         // so a run of it is not broken in two.
         let mut lead = Attributes::default();
@@ -163,33 +158,68 @@ pub fn pane(
                     (cell.shown(), lead)
                 }
             });
-        let cells: Cells<'_> = match view.cols {
-            Some((start, end)) => {
-                let (start, end) = (usize::from(start), usize::from(end));
-                let len = end.saturating_sub(start).saturating_add(1);
-                // With the cell after them, to tell a wide glyph cut there.
-                let mut cut: Cells<'_> = cells.skip(start).take(len.saturating_add(1)).collect();
-                let next = (cut.len() > len).then(|| cut.pop()).flatten();
-                // A wide glyph cut in two shows as a blank in the half taken,
-                // so each column is one cell.
-                if next.is_some_and(|(text, _)| text.is_empty())
-                    && let Some(last) = cut.last_mut()
+        // Columns are relative to the span (last-output may start mid-row).
+        let (start, count) = view.cols.map_or((0, usize::MAX), |(start, end)| {
+            (
+                usize::from(start),
+                usize::from(end)
+                    .saturating_sub(usize::from(start))
+                    .saturating_add(1),
+            )
+        });
+        let mut cells = cells.skip(start).peekable();
+        if !wraps || lines.is_empty() {
+            trim_line(&mut lines, blanks);
+            blanks = 0;
+            lines.push(Vec::new());
+        }
+        if let Some(line) = lines.last_mut() {
+            for col in 0..count {
+                let Some((mut text, style)) = cells.next() else {
+                    break;
+                };
+                // A wide glyph cut in two shows a blank in the half taken.
+                if view.cols.is_some()
+                    && ((col == 0 && text.is_empty())
+                        || (col.saturating_add(1) == count
+                            && cells.peek().is_some_and(|(t, _)| t.is_empty())))
                 {
-                    last.0 = " ";
+                    text = " ";
                 }
-                if let Some(first) = cut.first_mut().filter(|(text, _)| text.is_empty()) {
-                    first.0 = " ";
+                // Trim trailing blanks unless highlighted with marks or
+                // painted with styles, alike in SGR and JSON runs. Plain
+                // text trims them all; full keeps them all. Only whole
+                // blank cells count: a cluster may contain a space as
+                // part of its text (Unicode Prepend).
+                blanks = if !view.full
+                    && text == " "
+                    && !(view.marks && highlighted(&style) || view.styles && painted(&style))
+                {
+                    blanks.saturating_add(1)
+                } else {
+                    0
+                };
+                let style = if view.styles || view.marks {
+                    style
+                } else {
+                    Attributes::default()
+                };
+                if !line.last().is_some_and(|last| last.style == style) {
+                    line.push(LineRun {
+                        text: String::new(),
+                        cells: 0,
+                        style,
+                    });
                 }
-                cut
+                if let Some(last) = line.last_mut() {
+                    last.text.push_str(text);
+                    last.cells = last.cells.saturating_add(1);
+                }
             }
-            None => cells.collect(),
-        };
-        match lines.last_mut() {
-            Some(last) if wraps => last.extend(cells),
-            _ => lines.push(cells),
         }
         wraps = !view.wrapped && row.continues();
     }
+    trim_line(&mut lines, blanks);
     let mut state = state(pane, Instant::now(), copy_mode);
     // The history rows kept above the first row read: history it was not
     // asked for (rows a range leaves out are not counted).
@@ -202,6 +232,35 @@ pub fn pane(
     captured(of, screen.size().into(), cursor, lines, view)
 }
 
+/// Select physical rows, widening a joined range to the logical lines
+/// at its ends without reading the rows after those lines.
+fn selected_rows(mut read: ReadRows<'_>, view: CaptureView) -> ReadRows<'_> {
+    if let Some((start, end)) = view.rows {
+        let (mut first, last) = (usize::from(start), usize::from(end));
+        if view.wrapped {
+            read = Box::new(
+                read.skip(first)
+                    .take(last.saturating_add(1).saturating_sub(first)),
+            );
+        } else {
+            // Only through the range's end, then to the end of its line.
+            let mut rows: Vec<_> = read.by_ref().take(last.saturating_add(1)).collect();
+            while rows.last().is_some_and(|(r, _)| r.continues())
+                && let Some(row) = read.next()
+            {
+                rows.push(row);
+            }
+            while let Some(before) = first.checked_sub(1)
+                && rows.get(before).is_some_and(|(r, _)| r.continues())
+            {
+                first = before;
+            }
+            read = Box::new(rows.into_iter().skip(first));
+        }
+    }
+    read
+}
+
 /// The rows a capture reads, each with the columns of it it reads: the
 /// screen and `history` rows above it (of the main screen with
 /// `main-screen`), and how many rows are kept above them; or the last
@@ -210,7 +269,7 @@ fn rows_of(
     screen: &Screen,
     history: Option<usize>,
     view: CaptureView,
-) -> (Vec<(Row<'_>, std::ops::Range<usize>)>, Option<usize>) {
+) -> (ReadRows<'_>, Option<usize>) {
     let rows = match view.source {
         Source::Shown => screen.rows(),
         Source::Main => screen.main_rows(),
@@ -221,23 +280,23 @@ fn rows_of(
     let keep = shown.saturating_add(history.unwrap_or(0));
     // Only the rows kept are read: history past them is skipped unread.
     let skip = rows.len().saturating_sub(keep);
-    let read = rows.skip(skip).map(|row| (row, 0..usize::MAX)).collect();
+    let read = Box::new(rows.skip(skip).map(|row| (row, 0..usize::MAX)));
     (read, Some(skip))
 }
 
 /// The last command's output between its marks, a range of each row's
 /// columns: while one runs, its output so far, to the cursor.
-fn last_output(screen: &Screen) -> Vec<(Row<'_>, std::ops::Range<usize>)> {
+fn last_output(screen: &Screen) -> ReadRows<'_> {
     let commands = screen.commands();
     let (row, col) = screen.cursor_position();
     let cursor = (screen.window().row(row)).map(|r| CommandMark { row: r.id(), col });
     let running = commands.output_start.zip(cursor);
     let ended = running.is_none();
     let Some((start, end)) = running.or(commands.last_output) else {
-        return Vec::new();
+        return Box::new(std::iter::empty());
     };
     let Some(last) = screen.row_index(end.row) else {
-        return Vec::new();
+        return Box::new(std::iter::empty());
     };
     // A start gone (history's limit cut it, or the screen was cleared or
     // switched) or below the end: from what is kept above the end, the
@@ -252,35 +311,35 @@ fn last_output(screen: &Screen) -> Vec<(Row<'_>, std::ops::Range<usize>)> {
         Some(_) => (screen.history_len().min(last), left),
         None => (0, left),
     };
-    let rows: Vec<Row<'_>> = screen
+    let rows = screen
         .rows()
         .skip(first)
-        .take(last.saturating_sub(first).saturating_add(1))
-        .collect();
+        .take(last.saturating_sub(first).saturating_add(1));
     let count = rows.len();
-    rows.into_iter()
-        .enumerate()
-        .filter_map(|(i, row)| {
-            let from = if i == 0 { usize::from(start.col) } else { 0 };
-            // An ended command's output ends at its end mark; a running
-            // one's last row is whole, what it wrote right of the cursor
-            // too.
-            let to = match (i.saturating_add(1) == count && ended, end.col) {
-                (true, col) if i == 0 && start.col >= col => 0,
-                (true, col) => usize::from(col),
-                (false, _) => usize::MAX,
-            };
-            (from < to).then_some((row, from..to))
-        })
-        .collect()
+    Box::new(rows.enumerate().filter_map(move |(i, row)| {
+        let from = if i == 0 { usize::from(start.col) } else { 0 };
+        // An ended command's output ends at its end mark; a running
+        // one's last row is whole, what it wrote right of the cursor
+        // too.
+        let to = match (i.saturating_add(1) == count && ended, end.col) {
+            (true, col) if i == 0 && start.col >= col => 0,
+            (true, col) => usize::from(col),
+            (false, _) => usize::MAX,
+        };
+        (from < to).then_some((row, from..to))
+    }))
 }
 
 /// What a client's terminal shows, row by row.
 pub fn client(client: ClientId, grid: &crate::render::Grid) -> Captured {
-    let lines = (0..grid.rows).map(|y| grid.row_text(y)).collect::<Vec<_>>();
-    let lines = lines
-        .iter()
-        .map(|line| vec![(line.as_str(), Attributes::default())])
+    let lines = (0..grid.rows)
+        .map(|y| {
+            vec![LineRun {
+                text: grid.row_text(y),
+                cells: 1,
+                style: Attributes::default(),
+            }]
+        })
         .collect();
     let view = CaptureView {
         full: true,
@@ -426,44 +485,45 @@ fn picture(shown: fux_vt::Shown<'_>) -> Json {
     ])
 }
 
-/// A capture of `lines`, trimmed as `view` says, each made runs of one
-/// style.
+/// Remove the last line's unshown trailing blank cells, counted while
+/// reading them rather than inferred from the run's cluster text.
+fn trim_line(lines: &mut [Vec<LineRun>], blanks: usize) {
+    if let Some(line) = lines.last_mut() {
+        for _ in 0..blanks {
+            if let Some(last) = line.last_mut() {
+                last.text.pop();
+                last.cells = last.cells.saturating_sub(1);
+                if last.cells == 0 {
+                    line.pop();
+                }
+            }
+        }
+    }
+}
+
+/// A capture of `lines`, its empty last lines dropped unless `full`.
 fn captured(
     of: Of,
     (screen_rows, screen_cols): (u16, u16),
     screen_cursor: Option<(u16, u16)>,
-    mut lines: Vec<Cells<'_>>,
+    mut lines: Vec<Vec<LineRun>>,
     view: CaptureView,
 ) -> Captured {
-    // Blanks at a line's end are trimmed, unless they show: highlighted
-    // with `marks`, painted with `styles` (alike as SGR and in JSON's lines
-    // and runs, a painted surface kept whole); plain text trims them all
-    // (blanks, however painted, are no text). `view.full` keeps them all.
+    // Trimming the runs may leave empty lines at the end; full keeps them.
     if !view.full {
-        let shows = |a: &Attributes| (view.marks && highlighted(a)) || (view.styles && painted(a));
-        for line in lines.iter_mut() {
-            while line
-                .last()
-                .is_some_and(|(text, a)| *text == " " && !shows(a))
-            {
-                line.pop();
-            }
-        }
         while lines.last().is_some_and(Vec::is_empty) {
             lines.pop();
         }
     }
-    // Its styles are kept only if its text or JSON shows them.
-    let styled = view.styles || view.marks;
-    let cut = |run: &[(&str, Attributes)]| Cut {
-        text: run.iter().map(|(text, _)| *text).collect(),
-        cells: u32::try_from(run.len()).unwrap_or(u32::MAX),
-        style: (run.first().filter(|_| styled)).map_or_else(Attributes::default, |(_, a)| *a),
-    };
-    let lines = (lines.iter())
+    let lines = lines
+        .into_iter()
         .map(|line| {
-            line.chunk_by(|(_, a), (_, b)| !styled || a == b)
-                .map(cut)
+            line.into_iter()
+                .map(|run| Cut {
+                    text: run.text,
+                    cells: u32::try_from(run.cells).unwrap_or(u32::MAX),
+                    style: run.style,
+                })
                 .collect()
         })
         .collect();
@@ -689,6 +749,178 @@ mod tests {
         )
         .text();
         assert_eq!(text.lines().next(), Some("abc世"));
+        Ok(())
+    }
+
+    /// Mixed views preserve wide-cell counts and style runs across wraps,
+    /// and trim only blanks whose style the requested view cannot show.
+    #[test]
+    fn mixed_views_keep_cells_runs_and_visible_blanks() -> Result<(), Box<dyn std::error::Error>> {
+        let mut pane = Lone::new(Pane::new(
+            PaneId::of(1),
+            None,
+            Runs::DefaultShell,
+            fux_vt::Size::new(5, 5)?,
+            0,
+        )?);
+        pane.output(
+            "\x1b[31mabcde世\x1b[m\r\nx\x1b[4m  \x1b[m\r\ny\x1b[41m  \x1b[31;49m  \x1b[m"
+                .as_bytes(),
+        );
+        let run = crate::command::Run::now().ok_or("a clock")?;
+        for flags in 0..16 {
+            let view = CaptureView {
+                styles: flags & 1 != 0,
+                marks: flags & 2 != 0,
+                full: flags & 4 != 0,
+                wrapped: flags & 8 != 0,
+                ..CaptureView::default()
+            };
+            let got = super::pane(&pane, run, None, view, false);
+            let actual: Vec<(String, u32)> = got
+                .lines
+                .iter()
+                .map(|line| {
+                    (
+                        line.iter().map(|cut| cut.text.as_str()).collect(),
+                        line.iter().map(|cut| cut.cells).sum(),
+                    )
+                })
+                .collect();
+            let mut want = if view.wrapped {
+                vec![
+                    ("abcde", 5),
+                    if view.full { ("世   ", 5) } else { ("世", 2) },
+                ]
+            } else {
+                vec![if view.full {
+                    ("abcde世   ", 10)
+                } else {
+                    ("abcde世", 7)
+                }]
+            };
+            want.push(match (view.full, view.styles) {
+                (true, _) => ("x    ", 5),
+                (false, true) => ("x  ", 3),
+                (false, false) => ("x", 1),
+            });
+            want.push(match (view.full, view.styles || view.marks) {
+                (true, _) => ("y    ", 5),
+                (false, true) => ("y  ", 3),
+                (false, false) => ("y", 1),
+            });
+            if view.full {
+                want.push(("     ", 5));
+            }
+            let want: Vec<_> = want
+                .into_iter()
+                .map(|(text, cells)| (text.to_owned(), cells))
+                .collect();
+            assert_eq!(actual, want, "{view:?}");
+            for line in &got.lines {
+                assert!(
+                    line.iter()
+                        .zip(line.iter().skip(1))
+                        .all(|(a, b)| a.style != b.style)
+                );
+                if !view.styles && !view.marks {
+                    assert!(
+                        line.iter()
+                            .all(|cut| cut.style == fux_vt::Attributes::default())
+                    );
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// A space joined to a prepend character is glyph text, not a blank
+    /// cell that trimming may remove.
+    #[test]
+    fn a_space_inside_a_cluster_is_not_a_trailing_blank() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let mut pane = Lone::new(Pane::new(
+            PaneId::of(1),
+            None,
+            Runs::DefaultShell,
+            fux_vt::Size::new(2, 10)?,
+            0,
+        )?);
+        pane.output("x\u{0600}  ".as_bytes());
+        let got = super::pane(
+            &pane,
+            crate::command::Run::now().ok_or("a clock")?,
+            None,
+            CaptureView::default(),
+            false,
+        );
+        assert_eq!(got.text(), "x\u{0600} ");
+        assert_eq!(
+            got.lines
+                .first()
+                .and_then(|line| line.first())
+                .map(|cut| cut.cells),
+            Some(3)
+        );
+        Ok(())
+    }
+
+    /// Trimming precedes the wire count's clamp, including when the
+    /// private count exceeds u32. A synthetic count avoids a GiB fixture.
+    #[test]
+    fn cells_are_clamped_only_after_trimming() -> Result<(), Box<dyn std::error::Error>> {
+        let max = usize::try_from(u32::MAX)?;
+        let mut lines = vec![vec![super::LineRun {
+            text: "x  ".into(),
+            cells: max.saturating_add(2),
+            style: fux_vt::Attributes::default(),
+        }]];
+        super::trim_line(&mut lines, 2);
+        let got = super::captured(
+            super::Of::Client(crate::id::ClientId::of(1)),
+            (1, 3),
+            None,
+            lines,
+            CaptureView::default(),
+        );
+        assert_eq!(got.text(), "x");
+        assert_eq!(
+            got.lines
+                .first()
+                .and_then(|line| line.first())
+                .map(|run| run.cells),
+            Some(u32::MAX)
+        );
+        Ok(())
+    }
+
+    /// Selecting part of a joined line reads through that line's end,
+    /// without walking the unrelated rows that follow it.
+    #[test]
+    fn a_joined_range_stops_at_its_last_logical_line() -> Result<(), Box<dyn std::error::Error>> {
+        let mut pane = Lone::new(Pane::new(
+            PaneId::of(1),
+            None,
+            Runs::DefaultShell,
+            fux_vt::Size::new(6, 5)?,
+            0,
+        )?);
+        pane.output(b"abcdefghijklm\r\nlater");
+        let visits = std::cell::Cell::new(0usize);
+        let read = Box::new(pane.screen().rows().map(|row| {
+            visits.set(visits.get().saturating_add(1));
+            (row, 0..usize::MAX)
+        }));
+        let rows: Vec<_> = super::selected_rows(
+            read,
+            CaptureView {
+                rows: Some((1, 1)),
+                ..CaptureView::default()
+            },
+        )
+        .collect();
+        assert_eq!(rows.len(), 3);
+        assert_eq!(visits.get(), 3);
         Ok(())
     }
 

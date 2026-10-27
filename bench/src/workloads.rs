@@ -223,7 +223,16 @@ pub struct Spec {
 /// Every workload, for the recordings in `recordings`.
 pub fn list(recordings: &[Recording]) -> Vec<Spec> {
     let spec = |name: String, about: String| Spec { name, about };
-    let mut out = Vec::new();
+    let mut out = vec![
+        spec(
+            "capture/history".into(),
+            "one all-history plain capture of a full 8 MiB history at 40x120".into(),
+        ),
+        spec(
+            "cli/library".into(),
+            "one cold vocabulary, standard library, bundled library and checker preparation".into(),
+        ),
+    ];
     for layer in ["vt", "pane"] {
         for (name, about, _) in synthetic::GENERATORS {
             out.push(spec(
@@ -405,6 +414,11 @@ fn run_shrunk(
     shrink: usize,
 ) -> Result<Done, String> {
     let size = |n: usize| n.checked_div(shrink).unwrap_or(n);
+    match name {
+        "capture/history" => return capture_history(baseline, size(HISTORY)),
+        "cli/library" => return library(baseline),
+        _ => {}
+    }
     if let Some(r) = RESIZINGS.iter().find(|r| r.name == name) {
         let history = if r.history { size(HISTORY) } else { 0 };
         return resize_history(r, baseline, size(FILL), history);
@@ -1151,6 +1165,64 @@ fn wait(recordings: &[Recording], baseline: bool, total: usize) -> Result<Done, 
     }
     Ok(Done {
         units,
+        frames: 0,
+        painted: 0,
+    })
+}
+
+/// The client's cold library initialization, without the thread-local cache.
+fn library(baseline: bool) -> Result<Done, String> {
+    if baseline {
+        black_box(());
+    } else {
+        black_box(fux::script::libraries().map_err(|e| e.to_string())?);
+    }
+    Ok(Done {
+        units: 1,
+        frames: 0,
+        painted: 0,
+    })
+}
+
+/// Setup is also in the baseline: the measured difference is construction
+/// and wire encoding of one capture, including dropping its allocations.
+fn capture_history(baseline: bool, history: usize) -> Result<Done, String> {
+    let config = fux::config::Config {
+        history_bytes: fux::config::Number::new(history).ok_or("history out of range")?,
+        ..fux::config::Config::default()
+    };
+    let mut s =
+        fux::session::Session::new(config, "/nonexistent/fux.sock".into(), false, server_run()?);
+    s.start(fux_vt::Size::new(40, 120).map_err(|e| e.to_string())?)
+        .map_err(|e| e.to_string())?;
+    let id = *s.parts.panes().keys().next().ok_or("no pane")?;
+    // Variable lengths exercise trimming as well as traversal of full rows.
+    let bytes: Vec<u8> = (1..120)
+        .flat_map(|n| {
+            let mut line = vec![b'x'; n];
+            line.extend_from_slice(b"\r\n");
+            line
+        })
+        .collect();
+    let mut fed = 0usize;
+    while fed < history / 2 {
+        s.output(id, &bytes);
+        unread(&mut s);
+        fed = fed.saturating_add(bytes.len());
+    }
+    if !baseline {
+        let pane = s.parts.panes().get(&id).ok_or("no pane")?;
+        let capture = fux::capture::pane(
+            pane,
+            s.run,
+            Some(usize::MAX),
+            fux::command::CaptureView::default(),
+            false,
+        );
+        black_box(fux::wire::encode(&capture));
+    }
+    Ok(Done {
+        units: 1,
         frames: 0,
         painted: 0,
     })

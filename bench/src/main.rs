@@ -32,6 +32,7 @@ usage: fux-bench [--against REF] [--repeats N] [--jobs N] [--floors FILE | --flo
        fux-bench calls DIR
        fux-bench info [--json FILE]
        fux-bench feel [--muxes LIST] [--parts LIST] [--keys N] [--json FILE]
+                      [--only TEXT]... [--instructions]
 
 (default)  every workload on REF (default master) and on the working tree,
            both built by one recipe (git archive at paths of one length,
@@ -60,7 +61,10 @@ feel       real servers on sockets of their own, each with a client on a
            to the final screen and the bytes sent, idle CPU and memory.
            LIST is joined by commas: muxes direct,fux,tmux,zellij,herdr (those
            installed), parts latency,throughput,footprint; N keys per
-           latency run (default 2000). Wall time; reported, not gated.
+           latency run (default 2000). --only filters throughput workloads.
+           --instructions counts each throughput run on its server PID with
+           Linux perf, without polling the server. Wall time is reported,
+           not gated.
 
 The JSON goes to FILE, by default in bench/target/fux-bench/:
 against-REF-TREE.json by the two commits compared (calibration-TREE.json
@@ -189,6 +193,8 @@ fn run(argv: Vec<String>) -> Result<bool, String> {
             .map(str::to_owned)
             .to_vec(),
         keys: 2000,
+        instructions: false,
+        only: Vec::new(),
         json: results("feel.json"),
     };
     let list = |text: String| text.split(',').map(str::to_owned).collect::<Vec<_>>();
@@ -216,6 +222,7 @@ fn run(argv: Vec<String>) -> Result<bool, String> {
             "--baseline" => baseline = true,
             "--muxes" => feel.muxes = list(value(&mut args, &arg)?),
             "--parts" => feel.parts = list(value(&mut args, &arg)?),
+            "--instructions" if command == "feel" => feel.instructions = true,
             "--keys" => feel.keys = number(&value(&mut args, &arg)?, &arg)?,
             "-h" | "--help" => {
                 println!("{USAGE}");
@@ -247,6 +254,7 @@ fn run(argv: Vec<String>) -> Result<bool, String> {
         },
         "info" => info::run(&options.json.unwrap_or_else(|| results("info.json"))),
         "feel" => {
+            feel.only = options.only;
             feel.json = options.json.unwrap_or_else(|| results("feel.json"));
             feel::run(&feel)
         }

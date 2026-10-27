@@ -899,7 +899,7 @@ pub fn compose_held(
     let focus = tab.and_then(|t| t.focus(view.id));
     // Copy mode and its positions, their rows found once for the paint.
     let copy = if let Mode::Copy(copy) = &view.mode {
-        let at = (session.parts.panes().get(&copy.pane)).and_then(|p| copy.resolve(p.screen()));
+        let at = (session.parts.panes().get(&copy.pane)).and_then(|p| copy.resolve(p));
         at.map(|at| (copy.as_ref(), at))
     } else {
         None
@@ -2307,23 +2307,32 @@ mod tests {
     #[test]
     fn a_respawned_pane_is_composed_anew() -> Result<(), String> {
         let (mut s, c) = crate::session::testing::attached(6, 30)?;
-        let id = PaneId::of(1);
+        use crate::session::testing::{output_as, run};
+        output_as(
+            &mut s,
+            Some(c),
+            "agent-opts str x program run me swap focus-pane",
+        )?;
+        let id = s.focused(c).ok_or("the pane")?;
+        let respawn = format!("{id} kill-first respawn");
+        // Both parsers have gone through the same sizing and host setup.
+        run(&mut s, &respawn)?;
         s.output(id, b"A");
+        let row_key = |s: &Session| {
+            let pane = s.parts.panes().get(&id)?;
+            let row = pane.screen().window().row(0)?;
+            Some((row.id(), row.version()))
+        };
+        let old_key = row_key(&s).ok_or("the row")?;
+        let generation = s.parts.panes().get(&id).ok_or("the pane")?.respawns;
         let mut grid = Grid::new(0, 0);
         let mut placement = Placement::default();
         assert!(compose_into(&s, c, &mut grid, &mut placement));
-        let launch = crate::pane::Launch {
-            argv: vec!["x".into()],
-            cwd: "/".into(),
-            env: Vec::new(),
-        };
-        let runs = crate::pane::Runs::Explicit(launch);
-        let size = (s.parts.panes().get(&id)).ok_or("the pane")?.size();
-        let fresh =
-            crate::pane::Pane::new(id, None, runs, size, 1 << 10).map_err(|e| e.to_string())?;
-        let mut pane = s.parts.pane_mut(id).ok_or("the pane")?;
-        pane.respawned(fresh, crate::pane::Process::Absent);
+        run(&mut s, &respawn)?;
         s.output(id, b"B");
+        let pane = s.parts.panes().get(&id).ok_or("the pane")?;
+        assert_eq!(pane.respawns, generation.saturating_add(1));
+        assert_eq!(row_key(&s), Some(old_key), "the parser reused the row key");
         assert!(compose_into(&s, c, &mut grid, &mut placement));
         assert_eq!(grid.row_text(0), "B");
         Ok(())
