@@ -688,10 +688,7 @@ impl Cells {
         if len > crate::grid::MAX_CELLS {
             return Err(Error::Capacity);
         }
-        let more = len.saturating_sub(self.cells.len());
-        self.cells
-            .try_reserve_exact(more)
-            .map_err(|_| Error::Capacity)
+        crate::reserve(&mut self.cells, len)
     }
     /// How many cells there are.
     pub fn len(&self) -> usize {
@@ -778,6 +775,16 @@ impl Cells {
                 }
             }
         }
+    }
+    /// Replaces the run with `len` blank cells, reusing its allocation.
+    /// Refusal leaves it unchanged; success drops all spilled text without
+    /// allocating to preserve it, even when the run shrinks.
+    pub fn reset(&mut self, len: usize) -> Result<(), Error> {
+        self.room_for(len)?;
+        self.cells.clear();
+        self.text = Text::default();
+        self.cells.resize(len, Stored::default());
+        Ok(())
     }
     /// Makes the run `len` cells long, new ones `cell`. Shrinking stores
     /// text again within the smaller budget, cutting what no longer fits to

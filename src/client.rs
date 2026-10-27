@@ -1080,6 +1080,10 @@ struct Raw;
 
 impl Raw {
     fn enter(stdin: &io::Stdin) -> Result<Raw, Error> {
+        Self::enter_with(stdin, &mut io::stdout())
+    }
+
+    fn enter_with(stdin: &io::Stdin, stdout: &mut impl Write) -> Result<Raw, Error> {
         let original =
             fuxix::terminal::attributes(stdin).map_err(failed("reading terminal modes"))?;
         let mut raw = original.clone();
@@ -1099,9 +1103,8 @@ impl Raw {
         // Made before raw mode, so that failing to set it restores too.
         let entered = Raw;
         fuxix::terminal::set_attributes(stdin, &raw).map_err(failed("setting raw mode"))?;
-        let mut stdout = io::stdout();
-        let _ = stdout.write_all(ENTER.as_bytes());
-        let _ = stdout.flush();
+        stdout.write_all(ENTER.as_bytes()).map_err(Error::Output)?;
+        stdout.flush().map_err(Error::Output)?;
         Ok(entered)
     }
 }
@@ -1916,6 +1919,65 @@ mod tests {
         let opened = open_log(&dir.join("file.log")).is_ok();
         std::fs::remove_dir_all(&dir)?;
         assert_eq!((refused, opened), ([true, true], true));
+        Ok(())
+    }
+
+    #[test]
+    fn terminal_entry_failures_restore_modes() -> Result<(), Box<dyn std::error::Error>> {
+        const CHILD: &str = "FUX_TEST_ENTRY_FAILURE";
+        const REPORT: &str = "fux-entry-restored\n";
+        if std::env::var_os(CHILD).is_some() {
+            struct Refused {
+                flush: bool,
+            }
+            impl Write for Refused {
+                fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+                    if self.flush {
+                        Ok(bytes.len())
+                    } else {
+                        Err(io::Error::other("entry write refused"))
+                    }
+                }
+                fn flush(&mut self) -> io::Result<()> {
+                    Err(io::Error::other("entry flush refused"))
+                }
+            }
+            let stdin = io::stdin();
+            let before = fuxix::terminal::attributes(&stdin)?.modes();
+            for flush in [false, true] {
+                let result = Raw::enter_with(&stdin, &mut Refused { flush });
+                let error = result.err().ok_or("entry succeeded")?;
+                let expected = if flush {
+                    "entry flush refused"
+                } else {
+                    "entry write refused"
+                };
+                assert!(matches!(&error, Error::Output(e) if e.to_string() == expected));
+                assert_eq!(fuxix::terminal::attributes(&stdin)?.modes(), before);
+            }
+            io::stdout().write_all(REPORT.as_bytes())?;
+            return Ok(());
+        }
+        let size =
+            fuxix::terminal::Size::from((std::num::NonZeroU16::MIN, std::num::NonZeroU16::MIN));
+        let (_master, slave) = fuxix::pty::open(size)?;
+        let output = std::process::Command::new(std::env::current_exe()?)
+            .args([
+                "--exact",
+                "client::tests::terminal_entry_failures_restore_modes",
+                "--test-threads",
+                "1",
+            ])
+            .env(CHILD, "1")
+            .stdin(std::process::Stdio::from(
+                std::os::fd::AsFd::as_fd(&slave).try_clone_to_owned()?,
+            ))
+            .output()?;
+        assert!(
+            output.status.success() && String::from_utf8_lossy(&output.stdout).contains(REPORT),
+            "child failed or did not run the restoration checks: {}",
+            String::from_utf8_lossy(&output.stdout)
+        );
         Ok(())
     }
 

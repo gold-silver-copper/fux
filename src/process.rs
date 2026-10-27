@@ -33,8 +33,8 @@ pub fn spawn(
     let (master, slave) = fuxix::pty::open(size.nonzero().into()).map_err(|e| e.to_string())?;
     // Before the program starts, which may ask but once. Its size in
     // cells is set (`open`), or nothing starts; its pixels are told where
-    // the system takes them, else left unknown (0 by 0), as
-    // `Pane::size_terminal` leaves them, a program never refused for them.
+    // the system takes them, else left unknown (0 by 0), a program never
+    // refused for this optional update.
     if let Some(pixels) = pixels(size, cell) {
         let _ = fuxix::terminal::set_window_size(&master, size.nonzero().into(), Some(pixels));
     }

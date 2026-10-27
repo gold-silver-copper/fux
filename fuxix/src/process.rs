@@ -269,10 +269,13 @@ fn waited(pid: Pid, keep: libc::c_int) -> Result<Option<Status>> {
 /// ([`reap_orphans`]). macOS has no reaper of orphans but launchd: none are
 /// adopted.
 pub fn adopt_orphans() -> Result<()> {
-    // SAFETY: prctl with PR_SET_CHILD_SUBREAPER takes numbers and touches
-    // no memory.
     #[cfg(not(target_os = "macos"))]
-    check(unsafe { libc::prctl(libc::PR_SET_CHILD_SUBREAPER, 1, 0, 0, 0) })?;
+    {
+        let set: libc::c_ulong = 1;
+        let unused: libc::c_ulong = 0;
+        // SAFETY: this operation takes machine-word arguments and touches no memory.
+        check(unsafe { libc::prctl(libc::PR_SET_CHILD_SUBREAPER, set, unused, unused, unused) })?;
+    }
     Ok(())
 }
 
