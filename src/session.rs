@@ -686,6 +686,7 @@ impl Session {
         let mut vars: Vec<_> = fresh
             .set
             .iter()
+            .filter(|(k, _)| k != "FUX" || self.exe.is_some())
             .map(|(k, v)| (k.as_str(), v.clone()))
             .collect();
         vars.extend([
@@ -699,7 +700,6 @@ impl Session {
         let unset: Vec<String> = fresh
             .unset
             .iter()
-            .filter(|name| !vars.iter().any(|(k, _)| k == *name))
             .cloned()
             .chain(self.exe.is_none().then(|| "FUX".to_owned()))
             .filter(|name| !env.iter().any(|(k, _)| k == name))
@@ -3565,6 +3565,47 @@ mod tests {
         };
         s.attach_as(ClientKind::Terminal, attach)
             .map_err(|e| e.to_string())
+    }
+
+    #[test]
+    fn an_unknown_fux_path_is_not_taken_from_the_starter() -> Result<(), String> {
+        let mut s = started(Config::default())?;
+        s.launch = Some("/nonexistent/fux.sock".into());
+        s.exe = None;
+        let fresh = Starting {
+            set: vec![("FUX".into(), "/wrong/fux".into())],
+            ..Starting::default()
+        };
+        for explicit in [false, true] {
+            let want = if explicit { "explicit" } else { "unset" };
+            let launch = pane::Launch {
+                argv: ["/bin/sh", "-c", &format!("[ \"${{FUX-unset}}\" = {want} ]")]
+                    .map(str::to_owned)
+                    .to_vec(),
+                cwd: "/".into(),
+                env: if explicit {
+                    vec![("FUX".into(), "explicit".into())]
+                } else {
+                    Vec::new()
+                },
+            };
+            let child = s
+                .spawn(PaneId::of(2), 0, &launch, &fresh, (sized(24, 80)?, None))
+                .map_err(|e| e.to_string())?
+                .ok_or("a child")?;
+            let deadline = Instant::now() + Duration::from_secs(3);
+            let mut status = None;
+            while Instant::now() < deadline {
+                status = child.leader.exited();
+                if status.is_some() {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            let _ = child.leader.finish();
+            assert_eq!(status, Some(Ended::Exited(0)), "explicit env: {explicit}");
+        }
+        Ok(())
     }
 
     /// A watcher's paste is told it only watches, as its client tells it:
