@@ -614,6 +614,8 @@ fn handles(tokens: &[Token]) -> Result<Vec<Token>, fuxth::Error> {
 pub struct Server {
     chosen: Choice,
     requests: Option<client::Requests>,
+    /// Prefix to process before this job first asks; kept across failed opens.
+    pub(crate) after: Option<crate::protocol::Fence>,
     /// What stops a run from another thread, if one may.
     stop: Option<Stop>,
 }
@@ -660,6 +662,7 @@ impl Server {
         Server {
             chosen,
             requests: None,
+            after: None,
             stop: None,
         }
     }
@@ -709,6 +712,11 @@ pub trait Asks {
 /// first.
 impl Asks for Server {
     fn ask(&mut self, asked: &Asked, out: &mut dyn Write) -> Result<Reply, Failed> {
+        let fenced = self.after.as_ref().map(|after| Asked {
+            after: Some(after.clone()),
+            ..asked.clone()
+        });
+        let asked = fenced.as_ref().unwrap_or(asked);
         let requests = match &mut self.requests {
             Some(requests) => requests,
             None => {
@@ -726,6 +734,9 @@ impl Asks for Server {
             true => Err(cancelled()),
             false => requests.ask(asked, out).map_err(client_failed),
         };
+        if reply.is_ok() {
+            self.after = None;
+        }
         // Let go of before the flag is read: a stop from then on cannot
         // shut what is kept.
         if let Some(stop) = &self.stop {
@@ -852,6 +863,7 @@ impl Asks for AsClient<'_> {
         let screen = open.clone().build(&mut |command| {
             asks.ask(
                 &Asked {
+                    after: None,
                     request: command.into(),
                     context: context.clone(),
                 },
@@ -896,6 +908,7 @@ pub fn run_capped(
                 let mut context = host.context.clone();
                 context.client = client.or(context.client);
                 let asked = Asked {
+                    after: None,
                     request: *request,
                     context,
                 };
@@ -1174,7 +1187,14 @@ pub fn run_file(path: &std::path::Path, server: Option<&mut Server>) -> Result<K
         && !settings.0.is_empty()
     {
         let request = crate::command::Command::Set(settings.0).into();
-        succeeded(server.ask(&Asked { request, context }, &mut io::sink())?)?;
+        succeeded(server.ask(
+            &Asked {
+                request,
+                context,
+                after: None,
+            },
+            &mut io::sink(),
+        )?)?;
     }
     Ok(keymap)
 }

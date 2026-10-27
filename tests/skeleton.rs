@@ -95,6 +95,7 @@ fn a_client_that_shuts_its_side_still_gets_its_answer() -> Outcome {
         role: Role::Command,
     };
     let request = Asked {
+        after: None,
         request: Command::Ls {
             target: None,
             get: None,
