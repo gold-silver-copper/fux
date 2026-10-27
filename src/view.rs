@@ -163,6 +163,8 @@ pub struct View {
     pub cols: u16,
     pub zoom: bool,
     pub mode: Mode,
+    /// The latest opening, retained after it ends to refuse stale redraws.
+    pub opening: u64,
     pub notice: Option<Notice>,
     /// What the client's terminal said of itself (`outer`).
     pub terminal: crate::outer::Terminal,
@@ -190,6 +192,7 @@ impl View {
             cols,
             zoom: false,
             mode: Mode::Normal,
+            opening: 0,
             notice: None,
             terminal: crate::outer::Terminal::default(),
             dirty: true,

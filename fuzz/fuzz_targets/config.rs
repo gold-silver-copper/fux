@@ -401,9 +401,9 @@ impl Client {
             let root = self.keymap.root.iter().find(|(k, _)| *k == press);
             let expected = if press == self.keymap.prefix {
                 let column = self.keymap.column(&[], 0);
-                vec![Effect::Send(fux::act::Act::Show(fux::act::Panel::Column(
+                vec![Effect::Open(fux::act::Panel::Column(
                     column.unwrap_or_default(),
-                )))]
+                ))]
             } else if let Some((_, binding)) = root {
                 vec![Effect::Run(binding.code.clone().into())]
             } else {

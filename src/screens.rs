@@ -2,11 +2,11 @@
 //! prompts, confirmations and copy mode. They belong to the client, which
 //! reads the keys: every change of mode happens here, at the key that
 //! causes it, so no key is ever read in another mode's table. The server
-//! draws what the client describes (`Act::Show`), and keeps copy mode's
-//! cursor in the scrollback, which it alone holds (`Act::Copy`).
+//! draws what the client describes (`ScreenAct::Show`), and keeps copy mode's
+//! cursor in the scrollback, which it alone holds (`ScreenAct::Copy`).
 //!
 //! What a screen's entry does is fuxth, run as the client runs a binding.
-use crate::act::{Act, CopyAct, LineAct, List, ListAct, Panel, Seek};
+use crate::act::{Act, CopyAct, LineAct, List, ListAct, Panel, ScreenAct, Seek};
 use crate::code::Code;
 use crate::command::{AnyRef, Choices, ClientAction, Command};
 use crate::copy::SEARCH_MAX;
@@ -14,7 +14,7 @@ use crate::decode::Input;
 use crate::id::PaneId;
 use crate::keymap::{Held, Keymap, Modes};
 use crate::keys::{KeyPress, Keystroke};
-use crate::protocol::{Body, Reply, ScreenKind};
+use crate::protocol::{Body, Reply};
 use crate::script::{self, Failed, succeeded};
 use crate::view::Line;
 use crate::words::quote;
@@ -89,7 +89,117 @@ pub struct Confirm {
 #[derive(Clone, Debug, PartialEq)]
 pub enum Effect {
     Send(Act),
+    Screen(ScreenAct),
+    /// A replacement key panel, rather than an edit of the one shown.
+    Open(Panel),
     Run(Job),
+}
+
+/// Effects ready for the attachment: every screen action names its opening.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Dispatch {
+    Send(Act),
+    Run(Job),
+}
+
+/// A client's display and its opening counter, kept for the attachment's life.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Display {
+    pub screen: Screen,
+    opening: u64,
+}
+
+impl Display {
+    fn next(&self) -> Result<u64, String> {
+        self.opening
+            .checked_add(1)
+            .ok_or_else(|| "screen opening ids exhausted".into())
+    }
+
+    /// Open a new instance, admitted with room for its longest edit.
+    pub fn open(&mut self, screen: Screen, modes: &Modes) -> Vec<Act> {
+        use crate::protocol::{AttachedFrame, Frame, MAX_FRAME};
+        let opening = match self.next() {
+            Ok(opening) => opening,
+            Err(text) => return vec![Act::Notice { text, error: true }],
+        };
+        if screen.largest(modes).is_some_and(|act| {
+            AttachedFrame::Act(Box::new(Act::Screen { opening, act }))
+                .encode()
+                .is_err()
+        }) {
+            let text =
+                format!("a screen past {MAX_FRAME} bytes, too large to show, was not opened");
+            return vec![Act::Notice { text, error: true }];
+        }
+        let Some(act) = screen.opened(modes) else {
+            return Vec::new();
+        };
+        self.opening = opening;
+        self.screen = screen;
+        vec![Act::Screen { opening, act }]
+    }
+
+    /// A server ending belongs only to the opening it names.
+    pub fn ended(&mut self, opening: u64) {
+        if self.shown() && self.opening == opening {
+            self.screen = Screen::default();
+        }
+    }
+
+    pub fn close(&mut self) -> Option<Act> {
+        let shown = self.shown();
+        self.screen = Screen::default();
+        shown.then_some(Act::Screen {
+            opening: self.opening,
+            act: ScreenAct::Hide,
+        })
+    }
+
+    fn shown(&self) -> bool {
+        !matches!(self.screen, Screen::Keys(Held::Normal | Held::Prefixed))
+    }
+
+    pub fn input(&mut self, keymap: &Keymap, input: Input, read_only: bool) -> Vec<Dispatch> {
+        let mut active = self.shown();
+        let effects = self.screen.input(keymap, input, read_only);
+        effects
+            .into_iter()
+            .filter_map(|effect| {
+                let (act, fresh) = match effect {
+                    Effect::Run(job) => return Some(Dispatch::Run(job)),
+                    Effect::Send(act) => return Some(Dispatch::Send(act)),
+                    Effect::Open(panel) => (ScreenAct::Show(panel), true),
+                    Effect::Screen(act) => (act, false),
+                };
+                if fresh || !active {
+                    if !matches!(
+                        act,
+                        ScreenAct::Show(_) | ScreenAct::Copy(CopyAct::Enter { .. })
+                    ) {
+                        return None;
+                    }
+                    match self.next() {
+                        Ok(opening) => self.opening = opening,
+                        Err(text) => {
+                            self.screen = Screen::default();
+                            return Some(Dispatch::Send(Act::Notice { text, error: true }));
+                        }
+                    }
+                    active = true;
+                }
+                if matches!(&act, ScreenAct::Hide)
+                    || matches!(&act, ScreenAct::Copy(copy) if copy.ends())
+                {
+                    active = false;
+                }
+                Some(Dispatch::Send(Act::Screen {
+                    opening: self.opening,
+                    act,
+                }))
+            })
+            .collect()
+    }
 }
 
 /// fuxth for the client to run, and the line typed for it, if any: on its
@@ -127,7 +237,7 @@ impl Job {
 pub const ACTION_MAX: usize = 1 << 16;
 
 /// The effect that hides the screen showing.
-pub const HIDE: Effect = Effect::Send(Act::Hide);
+pub const HIDE: Effect = Effect::Screen(ScreenAct::Hide);
 
 impl Open {
     /// The fuxth that opens it on client `me`: what is relayed to a client
@@ -233,39 +343,27 @@ impl Default for Screen {
 }
 
 impl Screen {
-    /// What the server draws it as, if it is one of the client's screens;
-    /// nothing for its bindings.
-    pub fn kind(&self) -> Option<ScreenKind> {
+    /// Whether it owns the keys, beyond the client's bindings.
+    pub fn is_open(&self) -> bool {
+        !matches!(self, Self::Keys(_))
+    }
+
+    /// What opening it sends the server.
+    pub fn opened(&self, modes: &Modes) -> Option<ScreenAct> {
         match self {
-            Self::Keys(_) => None,
-            Self::Copy(_) => Some(ScreenKind::Copy),
-            Self::List(_) | Self::Prompt(_) | Self::Confirm(_) => Some(ScreenKind::Panel),
-        }
-    }
-
-    /// The server ended its screen of `kind`: closed, if it is still that
-    /// kind (the client may have opened another since).
-    pub fn ended(&mut self, kind: ScreenKind) {
-        if self.kind() == Some(kind) {
-            *self = Self::default();
-        }
-    }
-
-    /// What opening it sends the server: the panel to draw, or copy mode's
-    /// start; each with the hints of `modes`, its keys.
-    pub fn opened(&self, modes: &Modes) -> Option<Act> {
-        match self.kind()? {
-            ScreenKind::Copy => Some(Act::Copy(CopyAct::Enter {
+            Self::Copy(_) => Some(ScreenAct::Copy(CopyAct::Enter {
                 hints: modes.copy.hints(),
                 typing: modes.line.hints(),
             })),
-            ScreenKind::Panel => self.panel(modes).map(Act::Show),
+            Self::Keys(_) | Self::List(_) | Self::Prompt(_) | Self::Confirm(_) => {
+                self.panel(modes).map(ScreenAct::Show)
+            }
         }
     }
 
     /// What `opened` sends at its largest, its line, if it has one, as long
     /// as a line may be: if this fits a frame, so does every edit's.
-    pub fn largest(&self, modes: &Modes) -> Option<Act> {
+    pub fn largest(&self, modes: &Modes) -> Option<ScreenAct> {
         let mut largest = self.clone();
         if let Self::Prompt(prompt) = &mut largest {
             prompt.line = Line::new(std::iter::repeat_n('x', crate::view::LINE_MAX).collect());
@@ -320,7 +418,7 @@ impl Screen {
             }
             Input::FocusIn => send(Act::Focus(true)),
             Input::FocusOut => send(Act::Focus(false)),
-            Input::Mouse(_) if self.kind().is_some() => Vec::new(),
+            Input::Mouse(_) if self.is_open() => Vec::new(),
             Input::Mouse(event) => send(Act::Mouse(event)),
         }
     }
@@ -363,9 +461,7 @@ impl Screen {
         let insert = LineAct::Edit(crate::act::Edit::Insert(text.to_owned()));
         match std::mem::take(self) {
             Self::Keys(Held::Normal) => vec![Effect::Send(Act::Paste(text.to_owned()))],
-            Self::Keys(_) => [Act::Hide, Act::Paste(text.to_owned())]
-                .map(Effect::Send)
-                .into(),
+            Self::Keys(_) => vec![HIDE, Effect::Send(Act::Paste(text.to_owned()))],
             Self::Prompt(prompt) => self.prompt(modes, prompt, insert),
             Self::Copy(Some(search)) => self.copy_search(search, insert),
             other @ (Self::List(_) | Self::Confirm(_) | Self::Copy(_)) => {
@@ -395,7 +491,7 @@ impl Screen {
         list.selected = moved;
         *self = Self::List(list);
         let shown = self.panel(modes).filter(|_| moved != at);
-        Vec::from_iter(shown.map(|p| Effect::Send(Act::Show(p))))
+        Vec::from_iter(shown.map(|p| Effect::Screen(ScreenAct::Show(p))))
     }
 
     fn prompt(&mut self, modes: &Modes, mut prompt: Prompt, act: LineAct) -> Vec<Effect> {
@@ -415,7 +511,9 @@ impl Screen {
             LineAct::Edit(edit) => {
                 let refused = prompt.line.edit(&edit).err();
                 *self = Self::Prompt(prompt);
-                let shown = self.panel(modes).map(|p| Effect::Send(Act::Show(p)));
+                let shown = self
+                    .panel(modes)
+                    .map(|p| Effect::Screen(ScreenAct::Show(p)));
                 shown.into_iter().chain(refused.map(refusal)).collect()
             }
         }
@@ -445,7 +543,7 @@ impl Screen {
             }
             Some(_) | None => Self::Copy(None),
         };
-        Vec::from_iter(act.map(|act| Effect::Send(Act::Copy(act))))
+        Vec::from_iter(act.map(|act| Effect::Screen(ScreenAct::Copy(act))))
     }
 
     fn copy_search(
@@ -463,12 +561,12 @@ impl Screen {
                 let refused = line.edit(&edit).err();
                 let typing = (seek, line.before().to_owned(), line.after().to_owned());
                 *self = Self::Copy(Some((seek, line)));
-                let shown = Effect::Send(Act::Copy(CopyAct::Typing(Some(typing))));
+                let shown = Effect::Screen(ScreenAct::Copy(CopyAct::Typing(Some(typing))));
                 return std::iter::once(shown).chain(refused.map(refusal)).collect();
             }
         };
         *self = Self::Copy(None);
-        vec![Effect::Send(Act::Copy(sent))]
+        vec![Effect::Screen(ScreenAct::Copy(sent))]
     }
 }
 
@@ -503,20 +601,41 @@ mod tests {
         })
     }
 
-    /// What the server ended closes only a screen of its kind: copy mode
-    /// ending as a list opens leaves the list.
+    /// Delayed endings cannot close another opening, even of the same kind.
     #[test]
-    fn a_screen_closes_only_for_its_own_kind_ending() {
-        let mut screen = list();
-        screen.ended(ScreenKind::Copy);
-        assert_eq!(screen, list());
-        screen.ended(ScreenKind::Panel);
-        assert_eq!(screen, Screen::default());
-        let mut copy = Screen::Copy(None);
-        copy.ended(ScreenKind::Panel);
-        assert_eq!(copy, Screen::Copy(None));
-        copy.ended(ScreenKind::Copy);
-        assert_eq!(copy, Screen::default());
+    fn an_ending_closes_only_its_own_opening() -> Result<(), String> {
+        let keys = crate::script::default_keys().map_err(|e| e.to_string())?;
+        let prompt = Screen::Prompt(Prompt {
+            title: "prompt".into(),
+            line: Line::new("unsent work".into()),
+            action: None,
+        });
+        for replacement in [list(), prompt, Screen::Copy(None)] {
+            let mut display = Display::default();
+            display.open(replacement.clone(), &keys.modes);
+            let old = display.opening;
+            display.open(replacement.clone(), &keys.modes);
+            display.ended(old);
+            assert_eq!(display.screen, replacement);
+            let redraw = display.input(&keys, Input::Key(KeyPress::char('j').into()), false);
+            assert!(redraw.iter().all(
+                |e| !matches!(e, Dispatch::Send(Act::Screen { opening, .. }) if *opening == old)
+            ));
+            display.ended(display.opening);
+            assert_eq!(display.screen, Screen::default());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn opening_ids_never_wrap() {
+        let mut display = Display {
+            opening: u64::MAX,
+            ..Display::default()
+        };
+        let acts = display.open(Screen::Copy(None), &Modes::default());
+        assert!(matches!(acts.as_slice(), [Act::Notice { error: true, .. }]));
+        assert_eq!(display.screen, Screen::default());
     }
 
     /// A list moves, chooses, renames and closes on the client: each a
@@ -526,12 +645,12 @@ mod tests {
         let mut screen = list();
         let shown = key(&mut screen, "j")?;
         assert!(
-            matches!(shown.as_slice(), [Effect::Send(Act::Show(Panel::List(l)))] if l.selected == 1)
+            matches!(shown.as_slice(), [Effect::Screen(ScreenAct::Show(Panel::List(l)))] if l.selected == 1)
         );
         assert_eq!(
             key(&mut screen, "Enter")?,
             [
-                Effect::Send(Act::Hide),
+                Effect::Screen(ScreenAct::Hide),
                 Effect::Run("me str @2 tab show-tab".into())
             ]
         );
@@ -540,12 +659,15 @@ mod tests {
         assert_eq!(
             key(&mut screen, "x")?,
             [
-                Effect::Send(Act::Hide),
+                Effect::Screen(ScreenAct::Hide),
                 Effect::Run("me @1 confirm-close".into())
             ]
         );
         let mut screen = list();
-        assert_eq!(key(&mut screen, "Escape")?, [Effect::Send(Act::Hide)]);
+        assert_eq!(
+            key(&mut screen, "Escape")?,
+            [Effect::Screen(ScreenAct::Hide)]
+        );
         Ok(())
     }
 
@@ -580,7 +702,10 @@ mod tests {
             code: "%1 swap rename".into(),
             given: Some("it's -x' drop".into()),
         };
-        assert_eq!(ran, [Effect::Send(Act::Hide), Effect::Run(job.clone())]);
+        assert_eq!(
+            ran,
+            [Effect::Screen(ScreenAct::Hide), Effect::Run(job.clone())]
+        );
         let texts: Vec<String> = (job.tokens().map_err(|e| e.message)?.iter())
             .map(|t| t.text.to_string())
             .collect();
@@ -595,10 +720,11 @@ mod tests {
         let modes = crate::script::default_keys()
             .map_err(|e| e.to_string())?
             .modes;
-        let fits = |act: Option<Act>| {
+        let fits = |act: Option<ScreenAct>| {
             act.is_some_and(|act| {
                 use crate::protocol::Frame;
-                let frame = crate::protocol::AttachedFrame::Act(Box::new(act));
+                let frame =
+                    crate::protocol::AttachedFrame::Act(Box::new(Act::Screen { opening: 1, act }));
                 frame.encode().is_ok()
             })
         };
@@ -645,7 +771,7 @@ mod tests {
         let found = key(&mut screen, "Enter")?;
         assert_eq!(
             found,
-            [Effect::Send(Act::Copy(CopyAct::Find {
+            [Effect::Screen(ScreenAct::Copy(CopyAct::Find {
                 query: "a".into(),
                 seek: Seek::Forward
             }))]
@@ -653,7 +779,7 @@ mod tests {
         assert_eq!(screen, Screen::Copy(None));
         assert_eq!(
             key(&mut screen, "q")?,
-            [Effect::Send(Act::Copy(CopyAct::Leave))]
+            [Effect::Screen(ScreenAct::Copy(CopyAct::Leave))]
         );
         assert_eq!(screen, Screen::default());
         Ok(())
