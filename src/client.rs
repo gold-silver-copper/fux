@@ -496,7 +496,8 @@ pub(crate) fn on_one_terminal() -> bool {
 }
 
 /// How a client attaches: to which workspace, whether it only watches, its
-/// keys, its config run already, and what was wrong with that config.
+/// keys (a typing terminal's config run on them already, else the bundled
+/// ones), and what was wrong with that config.
 pub struct Attaching {
     pub of: Option<crate::command::Run>,
     pub workspace: Option<crate::command::WsRef>,

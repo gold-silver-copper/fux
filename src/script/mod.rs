@@ -1324,9 +1324,9 @@ fn run_quiet(
     run_capped(&mut machine, &mut host, asks, Some(PROGRAM_STEPS), None).map(drop)
 }
 
-/// What a config's requests go to: settings alone, as a config runs each
-/// time a client attaches, and must make nothing. Each is kept, in order,
-/// for the run's end: half a config is no config.
+/// What a config's requests go to: settings alone, as a typing terminal
+/// runs its config when attaching, and must make nothing. Each is kept,
+/// in order, for the run's end: half a config is no config.
 #[derive(Default)]
 struct Settings(Vec<crate::config::Setting>);
 

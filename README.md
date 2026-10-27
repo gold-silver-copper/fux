@@ -241,8 +241,9 @@ other: `str 'a g' str '…' bind` adds one to it, listed in the column beside
 the defaults, and `unbind` takes one away. `f`, `g`, `i`, `u` and `y`
 are free for your own bindings. These keys are themselves a config, run
 before yours, in the words yours uses
-([src/script/keys.fux](src/script/keys.fux)); `fux list-keys` prints yours
-the same way.
+([src/script/keys.fux](src/script/keys.fux)); `list-keys` at the client's
+command prompt prints yours the same way. From the CLI, `fux list-keys`
+prints these defaults.
 
 - **Choosers** (`t g`, `w g`, `a s`, `a t`, `a w`) list tabs, workspaces
   or panes. A chooser acts on the item it was opened for, even once
