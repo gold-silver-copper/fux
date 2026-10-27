@@ -10,6 +10,7 @@ use fux::keymap::Keymap;
 use fux::protocol::{
     Attach, AttachedFrame, Decoder, Frame, Greeting, Hello, PROTOCOL, Role, ToAttached,
 };
+use fux::screens::Effect;
 use std::io::{Read, Write};
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::UnixStream;
@@ -430,6 +431,7 @@ pub struct Client {
     greeted: bool,
     /// Its keys, once the server has said its id.
     keyboard: Option<Keyboard>,
+    frames: u64,
     /// Bytes typed before then, typed once it has.
     typed: Vec<u8>,
     pub id: Option<String>,
@@ -473,6 +475,7 @@ impl Client {
             read_only,
             greeted: false,
             keyboard: None,
+            frames: 0,
             typed: Vec::new(),
             id: None,
             terminal: terminal(rows, cols)?,
@@ -510,12 +513,23 @@ impl Client {
 
     /// An action, sent as it is, as a client that made it of its keys.
     pub fn act(&mut self, act: Act) -> Outcome {
-        self.frame(&AttachedFrame::Act(Box::new(act)))
+        self.frame(&AttachedFrame::Act(Box::new(act)))?;
+        self.frames = self.frames.checked_add(1).ok_or("frame count exhausted")?;
+        Ok(())
     }
 
-    fn acts(&mut self, acts: Vec<Act>) -> Outcome {
-        for act in acts {
-            self.act(act)?;
+    fn acts(&mut self, acts: Vec<Effect>) -> Outcome {
+        for out in acts {
+            match out {
+                Effect::Send(act) => self.act(act)?,
+                Effect::Run(job) => {
+                    self.keyboard
+                        .as_mut()
+                        .ok_or("a program has no attached keyboard")?
+                        .dispatch(job, self.frames)
+                        .map_err(e)?;
+                }
+            }
         }
         Ok(())
     }
@@ -524,7 +538,9 @@ impl Client {
         self.rows = rows;
         self.cols = cols;
         self.terminal = terminal(rows, cols)?;
-        self.frame(&AttachedFrame::Resize(sized(rows, cols)?))
+        self.frame(&AttachedFrame::Resize(sized(rows, cols)?))?;
+        self.frames = self.frames.checked_add(1).ok_or("frame count exhausted")?;
+        Ok(())
     }
 
     pub fn frame<'a>(&mut self, frame: &impl Frame<'a>) -> Outcome {
@@ -581,10 +597,11 @@ impl Client {
                     self.terminal.process(&bytes).map_err(e)?;
                 }
                 ToAttached::Exit(reason) => self.exit = Some(reason.to_owned()),
-                ToAttached::Welcome(me) if self.keyboard.is_none() => {
+                ToAttached::Welcome(me, run) if self.keyboard.is_none() => {
                     let keymap = self.keymap.clone();
-                    self.keyboard =
-                        Some(Keyboard::new(&self.socket, me, keymap, self.read_only).map_err(e)?);
+                    self.keyboard = Some(
+                        Keyboard::new(&self.socket, me, run, keymap, self.read_only).map_err(e)?,
+                    );
                     self.id = Some(me.to_string());
                 }
                 frame @ (ToAttached::Welcome(..)
