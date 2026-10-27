@@ -2094,7 +2094,7 @@ impl Session {
         let starting = self.starting_for(origin);
         match command {
             Command::Ls { target, get } => self.ls(*target, get.as_deref()),
-            &Command::KillServer { force } => self.kill_server(force, origin),
+            Command::KillServer => self.kill_server(origin),
             Command::NewWorkspace {
                 name,
                 size,
@@ -2354,9 +2354,9 @@ impl Session {
     }
 
     /// `kill-server`: from the CLI, refused from one of the server's own
-    /// panes or with people attached, unless `force`.
-    fn kill_server(&mut self, force: bool, origin: &Origin) -> Result<Reply, Error> {
-        if let (Origin::Cli(caller), false) = (origin, force) {
+    /// panes or with people attached.
+    fn kill_server(&mut self, origin: &Origin) -> Result<Reply, Error> {
+        if let Origin::Cli(caller) = origin {
             let pane = caller.pane().filter(|p| self.parts.panes().contains_key(p));
             if pane.is_some() || caller.within == Within::This {
                 let pane = pane.map_or_else(String::new, |p| format!(" {p},"));
