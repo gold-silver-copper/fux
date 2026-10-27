@@ -201,7 +201,7 @@ const WAITED: usize = 4 << 20;
 const COMPILES: usize = 2_000;
 /// Command lines an agent sends, as `docs/agents.md` shows them.
 const LINES: [&str; 4] = [
-    "opts str app name str ./app program str --fast arg run",
+    "agent-opts str app name str ./app program str --fast arg run",
     "%2 str y text str Enter key send-keys",
     "str %2:0.57.0.3.0:48211-1867a3f9c2b8e7d6 changed wait",
     "define twice dup add end list 1 2 3 end each twice end len drop %2 all-history capture",
@@ -770,7 +770,7 @@ fn pane(loads: &[Load], baseline: bool) -> Result<Done, String> {
     let first = loads.first().ok_or("no bytes")?;
     let mut pane = fux::pane::Pane::new(
         "%1".parse::<fux::id::PaneId>().map_err(|e| e.to_string())?,
-        "bench".into(),
+        None,
         fux::pane::Runs::DefaultShell,
         fux_vt::Size::new(first.rows, first.cols).map_err(|e| e.to_string())?,
         HISTORY,

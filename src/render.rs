@@ -1270,7 +1270,7 @@ fn bar(
             .map(|p| {
                 let mut text = unseen(session, view, placement);
                 unseen_width = width(&text);
-                text.push_str(&format!("{} {}", p.id(), p.label()));
+                text.push_str(&crate::words::labelled(p.id(), &p.label()));
                 if view.zoom {
                     text.push_str(" [zoom]");
                 }
@@ -1324,7 +1324,7 @@ fn bar(
             x = grid.text(y, x, &format!(" {label}"), base, left_limit);
         }
     } else if let Some(ws) = session.shown_workspace(view.id) {
-        let name = format!(" {} ", ws.name());
+        let name = format!(" {} ", ws.label());
         let bold = base.with_bold(true);
         x = grid.text_cells(y, x, fit(&name, left_limit), bold, left_limit);
         let current = ws.tab_of(view.id).map(|t| t.id());
@@ -1334,7 +1334,11 @@ fn bar(
             };
             // A bell rang in a tab the client does not show (`outer`).
             let rang = tab.seat(view.id).is_some_and(|s| s.rang) && Some(tab.id()) != current;
-            let label = format!(" {}{} ", tab.name(), if rang { "!" } else { "" });
+            let label = format!(
+                " {}{} ",
+                tab.label(session.parts.panes()),
+                if rang { "!" } else { "" }
+            );
             let attrs = if Some(tab.id()) == current {
                 Attributes::new(Color::Idx(0), Color::Idx(2)).with_bold(true)
             } else {
@@ -2049,7 +2053,7 @@ mod tests {
                 .map(|g| g.row_text(g.rows.saturating_sub(1)))
                 .unwrap_or_default()
         };
-        assert!(bar(&s).starts_with(" main  main"), "{}", bar(&s));
+        assert!(bar(&s).starts_with(" +1  %1"), "{}", bar(&s));
         s.input(c, b"\x02c");
         let copying = bar(&s);
         assert!(
@@ -2058,7 +2062,7 @@ mod tests {
             ),
             "{copying}"
         );
-        assert!(!copying.contains("main"));
+        assert!(!copying.contains("+1"));
         // Where the cursor is, on the right: its line of all the rows.
         assert!(copying.ends_with("1/9"), "{copying}");
         s.input(c, b"v");
@@ -2304,7 +2308,11 @@ mod tests {
     fn a_respawned_pane_is_composed_anew() -> Result<(), String> {
         let (mut s, c) = crate::session::testing::attached(6, 30)?;
         use crate::session::testing::{output_as, run};
-        output_as(&mut s, Some(c), "opts str x program run me swap focus-pane")?;
+        output_as(
+            &mut s,
+            Some(c),
+            "agent-opts str x program run me swap focus-pane",
+        )?;
         let id = s.focused(c).ok_or("the pane")?;
         let respawn = format!("{id} kill-first respawn");
         // Both parsers have gone through the same sizing and host setup.

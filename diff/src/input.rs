@@ -357,7 +357,7 @@ pub fn run(r: &mut Rng, scale: usize) -> Outcome {
             "%1".parse().map_err(|_| "%1")?,
             fux::pane::Runs::DefaultShell,
         );
-        let b = fux::pane::Pane::new(id, String::new(), runs, crate::size(24, 80), 0);
+        let b = fux::pane::Pane::new(id, None, runs, crate::size(24, 80), 0);
         let mut pane = b.map_err(|e| e.to_string())?;
         let mut journal = fux::events::Journal::default();
         let at = (

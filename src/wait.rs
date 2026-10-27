@@ -216,13 +216,7 @@ mod tests {
     #[test]
     fn a_wait_answers_a_frame_whole() -> Result<(), Box<dyn std::error::Error>> {
         let size = fux_vt::Size::new(50, 200)?;
-        let mut pane = Lone::new(Pane::new(
-            PaneId::of(1),
-            "sh".into(),
-            Runs::DefaultShell,
-            size,
-            0,
-        )?);
+        let mut pane = Lone::new(Pane::new(PaneId::of(1), None, Runs::DefaultShell, size, 0)?);
         let (since, run) = (pane.counts(), Run::now().ok_or("a clock")?);
         let mut frame = b"\x1b[?2026h".to_vec();
         frame.extend(crate::pane::tests::spends_the_budget(50, 200));
