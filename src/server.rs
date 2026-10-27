@@ -323,9 +323,9 @@ impl Attached {
         Attached {
             client,
             processed: 0,
-            shown: Grid::new(0, 0),
+            shown: Grid::default(),
             known: false,
-            spare: Grid::new(0, 0),
+            spare: Grid::default(),
             placement: Placement::default(),
             pictures: Vec::new(),
             sixels: render::Sixels::default(),
@@ -1015,13 +1015,19 @@ impl Server {
             grid: &attached.shown,
             panes: &placed,
         });
-        render::compose_held(
+        if let Err(error) = render::compose_held(
             session,
             view,
             &mut attached.spare,
             &mut attached.placement,
             painted,
-        );
+        ) {
+            conn.end(
+                session,
+                &ToAttached::Exit(&format!("rendering {client}: {error}")),
+            );
+            return;
+        }
         if !before.is_empty() {
             Attached::paint(&mut conn.out, &before);
         }
@@ -1460,7 +1466,7 @@ impl Server {
             && (self.session.parts.pane_mut(id)).is_some_and(|mut p| p.write_input());
         self.wrote_input(wrote);
         if flags.intersects(PollFlags::IN | PollFlags::HUP | PollFlags::ERR) {
-            self.read_pane(id);
+            self.read_pane(id, |fd, bytes| fuxix::io::read(fd, bytes));
         }
     }
 
@@ -1473,7 +1479,11 @@ impl Server {
         }
     }
 
-    fn read_pane(&mut self, id: PaneId) {
+    fn read_pane(
+        &mut self,
+        id: PaneId,
+        mut read: impl FnMut(&fuxix::pty::Master, &mut [u8]) -> Result<usize, Errno>,
+    ) {
         let mut total = 0;
         let mut buffer = [0u8; 16384];
         let ended = loop {
@@ -1490,11 +1500,15 @@ impl Server {
             let Process::Reading(child) = &pane.process() else {
                 return;
             };
-            match fuxix::io::read(&child.master, &mut buffer) {
+            match read(&child.master, &mut buffer) {
                 Err(Errno::AGAIN) => break false,
                 Err(Errno::INTR) => continue,
                 // EIO: the slave side is closed; the program is gone.
-                Ok(0) | Err(_) => break true,
+                Ok(0) | Err(Errno::IO) => break true,
+                Err(error) => {
+                    self.session.read_failed(id, error);
+                    break false;
+                }
                 Ok(n) => {
                     // Past PANE_READ by at most one buffer, when the loop ends.
                     total = total.saturating_add(n);
@@ -1578,6 +1592,104 @@ mod tests {
         let mut conn = Conn::new(stream);
         conn.stage = Stage::Attached(Box::new(Attached::new(client)));
         Ok((session, conn, peer))
+    }
+
+    fn server() -> Result<(Server, UnixStream), Box<dyn std::error::Error>> {
+        let (session, conn, peer) = attached()?;
+        Ok((
+            Server {
+                session,
+                phase: Phase::Stopping(Instant::now()),
+                conns: vec![conn],
+                children: fuxix::signal::Pipe::new(&[])?,
+                killed: Vec::new(),
+                stops: fuxix::signal::Pipe::new(&[])?,
+                read_buffer: Vec::new(),
+                paint_buffer: Vec::new(),
+                slots: Vec::new(),
+                ready: Vec::new(),
+                accept_logged: None,
+            },
+            peer,
+        ))
+    }
+
+    #[test]
+    fn a_live_read_failure_is_told_without_another_event() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let (mut server, _peer) = server()?;
+        let id = *server.session.parts.panes().keys().next().ok_or("pane")?;
+        let client = *server.session.views.keys().next().ok_or("client")?;
+        let size = server.session.parts.panes().get(&id).ok_or("pane")?.size();
+        let child = crate::process::spawn(
+            &["/bin/sh".into(), "-c".into(), "read line".into()],
+            std::path::Path::new("/"),
+            (&[], &[]),
+            (size, None),
+        )?;
+        server
+            .session
+            .parts
+            .pane_mut(id)
+            .ok_or("pane")?
+            .set_process(Process::Reading(child));
+        if let Some(view) = server.session.views.get_mut(&client) {
+            view.notice = None;
+            view.dirty = false;
+        }
+        server.read_pane(id, |_, _| Err(Errno::INVAL));
+        let notice = server
+            .session
+            .views
+            .get(&client)
+            .and_then(|view| view.notice.clone());
+        let dirty = server
+            .session
+            .views
+            .get(&client)
+            .is_some_and(|view| view.dirty);
+        let capture = crate::session::testing::output(&mut server.session, "%1 capture json");
+        let info = crate::session::testing::output(&mut server.session, "%1 info json");
+        server.session.exited(id, crate::process::Ended::Exited(0));
+        server.finish();
+        let notice = notice.ok_or("read failure was not delivered")?;
+        assert!(
+            notice.error && notice.text.contains(&Errno::INVAL.to_string()),
+            "{notice:?}"
+        );
+        assert!(dirty);
+        for json in [capture?, info?] {
+            let value = crate::json::Json::str(Errno::INVAL.to_string()).render();
+            assert!(json.contains(&format!("\"read_error\":{value}")), "{json}");
+        }
+        Ok(())
+    }
+
+    #[cfg(feature = "checks")]
+    #[test]
+    fn a_refused_paint_ends_the_attachment_without_clearing_its_screen()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (mut server, _peer) = server()?;
+        let attached = server
+            .conns
+            .first_mut()
+            .and_then(Conn::attached)
+            .ok_or("attachment")?;
+        attached.shown = Grid::new(10, 40)?;
+        attached.shown.cells.set(
+            0,
+            fux_vt::CellRef::new("K", false, fux_vt::Attributes::default()),
+        );
+        attached.known = true;
+        let now = Instant::now();
+        fux_vt::refuse_next(1);
+        server.paint(0, now);
+        let conn = server.conns.first().ok_or("connection")?;
+        let (painted, exit) = sent(conn);
+        assert!(painted.is_empty(), "{painted:?}");
+        assert!(exit.is_some_and(|why| why.contains("rendering c1")));
+        assert!(matches!(conn.stage, Stage::Closing));
+        Ok(())
     }
 
     /// The frames waiting for the client: what is painted in them, and the

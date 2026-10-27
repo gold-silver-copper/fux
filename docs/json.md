@@ -23,6 +23,7 @@ for `id`, `name`, `label` and `pid` (it says `pane`):
 | `version` | its version, `%3:RESPAWNS.SCREEN.BELLS.DONE.ENDED:RUN`: its pane, its counts and the server's run (`fux help agents` says what each counts) |
 | `program` | what runs in its foreground, as the system names it (Linux keeps a name's first 15 bytes), `null` if its terminal does not say |
 | `hung_up` | its program closed its terminal and runs on: keys are refused (Linux says so; macOS, where fux holds the terminal open, does not) |
+| `read_error` | an unexpected PTY read failure as errno text, or `null`: a failed reader is no longer polled and refuses keys; the cause stays after exit until respawn |
 | `exited` | the status its program exited with (a pane whose program is no shell: `run`'s, or a `split` with a program), else `null` |
 | `signal` | the signal that killed it (its number), else `null`; both `null` for a program that ended (its version's ENDED is 1) whose status was lost |
 | `idle_ms` | how long since fux last read output from its program (or it started) |
@@ -190,7 +191,7 @@ wait's own (above). CODE stays; every one fux gives
   `no_buffer`, `no_target`, `stray_pane`, `no_field`, `nothing_there`,
   `selection`, `name_taken`, `ids_exhausted`, `bad_value`, `usage`;
 - what a command meets: `not_running`, `still_running`, `not_run`, `only_shell`,
-  `input_full`, `stale`, `no_marks`, `start`, `size`, `mouse`, `signal`,
+  `input_full`, `stale`, `no_marks`, `start`, `size`, `memory`, `mouse`, `signal`,
   `not_headless`, `own_server`, `people_attached`;
 - how a wait ends: `timeout` (124), `closed` (4), `gone` (4);
 - a program of words: `steps`, `cancelled`, `not_here`, `not_config`,

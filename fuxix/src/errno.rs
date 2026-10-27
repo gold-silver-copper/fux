@@ -18,8 +18,8 @@ impl Errno {
     pub const INVAL: Self = Self(libc::EINVAL);
     /// No room left: as `signal::notify` says, when every slot is held.
     pub const NOSPC: Self = Self(libc::ENOSPC);
-    /// What fuxix reports for an I/O error std gave with no `errno`.
-    pub(crate) const IO: Self = Self(libc::EIO);
+    /// I/O error; a PTY master reports this when its slave closes.
+    pub const IO: Self = Self(libc::EIO);
     /// XNU's kernel-private `EREDRIVEOPEN` (`bsd/sys/errno.h`), which no POSIX
     /// call should return: macOS leaks it from `open("/dev/ptmx")` when
     /// concurrent openers keep racing for one PTY. See `pty::open`.

@@ -16,7 +16,7 @@ use std::borrow::Cow;
 use std::io::Write;
 use std::sync::Arc;
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct Grid {
     pub rows: u16,
     pub cols: u16,
@@ -476,23 +476,14 @@ impl Links {
 }
 
 impl Grid {
-    /// A blank grid `rows` by `cols`; one of no cells if that is more than
-    /// fux-vt's cells hold (`Cells::new`), which draws nothing.
-    pub fn new(rows: u16, cols: u16) -> Grid {
-        let (rows, cols, cells) = match Cells::new(cell_count(rows, cols)) {
-            Ok(cells) => (rows, cols, cells),
-            Err(_) => (0, 0, Cells::default()),
-        };
-        Grid {
+    /// A blank grid `rows` by `cols`, or the cell allocation's refusal.
+    pub fn new(rows: u16, cols: u16) -> Result<Grid, fux_vt::Error> {
+        Ok(Grid {
             rows,
             cols,
-            cells,
-            links: Links::default(),
-            cursor: None,
-            modes: Modes::default(),
-            underline_styles: false,
-            memo: None,
-        }
+            cells: Cells::new(cell_count(rows, cols))?,
+            ..Grid::default()
+        })
     }
     /// The hyperlink of the cell at `y`, `x`, and the pane whose it is.
     pub fn link(&self, y: u16, x: u16) -> Option<(PaneId, &Hyperlink)> {
@@ -502,26 +493,19 @@ impl Grid {
     /// Makes the grid `rows` by `cols`, resizing its cells only if the size
     /// changed, so that a grid composed into again allocates nothing; and
     /// blanks it if `blank`, as a resized grid is anyway.
-    fn reset(&mut self, rows: u16, cols: u16, blank: bool) {
-        self.links.0.clear();
-        if (self.rows, self.cols) == (rows, cols) {
-            if blank {
-                self.cells.fill(0..self.cells.len(), CellRef::default());
-            }
-        } else {
+    fn reset(&mut self, rows: u16, cols: u16, blank: bool) -> Result<(), fux_vt::Error> {
+        if (self.rows, self.cols) != (rows, cols) {
+            // Reserve before changing anything, so refusal leaves the old grid whole.
+            self.cells.reset(cell_count(rows, cols))?;
             (self.rows, self.cols) = (rows, cols);
-            let blank = CellRef::default();
-            // Past what fux-vt's cells hold, a grid of none, which draws
-            // nothing.
-            let made = (self.cells.resize(0, blank))
-                .and_then(|()| self.cells.resize(cell_count(rows, cols), blank));
-            if made.is_err() {
-                (self.rows, self.cols) = (0, 0);
-            }
+        } else if blank {
+            self.cells.fill(0..self.cells.len(), CellRef::default());
         }
+        self.links.0.clear();
         self.cursor = None;
         self.modes = Modes::default();
         self.memo = None;
+        Ok(())
     }
     fn index(&self, y: u16, x: u16) -> Option<usize> {
         (y < self.rows && x < self.cols)
@@ -850,9 +834,10 @@ fn fit_cells<'a>(
 /// test reads it.
 #[cfg(test)]
 pub(crate) fn compose(session: &Session, client: ClientId) -> Option<Grid> {
-    let mut grid = Grid::new(0, 0);
+    let mut grid = Grid::default();
     let view = session.views.get(&client)?;
-    compose_view(session, view, &mut grid, &mut Placement::default());
+    let composed = compose_view(session, view, &mut grid, &mut Placement::default());
+    assert!(composed.is_ok(), "{composed:?}");
     Some(grid)
 }
 
@@ -860,8 +845,13 @@ pub(crate) fn compose(session: &Session, client: ClientId) -> Option<Grid> {
 /// held, laying out its panes in `placement`. The grid's cells and the
 /// placement are reused, not made again; the frame's memo, the bar's text
 /// and the like are made each time.
-pub fn compose_view(session: &Session, view: &View, grid: &mut Grid, placement: &mut Placement) {
-    compose_held(session, view, grid, placement, None);
+pub fn compose_view(
+    session: &Session,
+    view: &View,
+    grid: &mut Grid,
+    placement: &mut Placement,
+) -> Result<(), fux_vt::Error> {
+    compose_held(session, view, grid, placement, None)
 }
 
 /// What a client was last painted: the grid, and where each pane was on
@@ -892,7 +882,7 @@ pub fn compose_held(
     grid: &mut Grid,
     placement: &mut Placement,
     painted: Option<Painted<'_>>,
-) {
+) -> Result<(), fux_vt::Error> {
     session.placement_into(view, placement);
     let placement = &*placement;
     let tab = session.shown_tab(view.id);
@@ -904,7 +894,7 @@ pub fn compose_held(
     } else {
         None
     };
-    put_panes(grid, session, view, placement, focus, copy);
+    put_panes(grid, session, view, placement, focus, copy)?;
     let held =
         |id: &PaneId| (session.parts.panes().get(id)).is_some_and(crate::pane::Pane::mid_frame);
     let kept = |id: PaneId, rect: Rect| painted.filter(|p| p.kept(id, rect, view.rows, view.cols));
@@ -1010,6 +1000,7 @@ pub fn compose_held(
         // A repeat mode shows in the bar, leaving the layout in view.
         Mode::Normal | Mode::Copy(_) | Mode::Panel(Panel::Repeat(_)) => {}
     }
+    Ok(())
 }
 
 /// Puts the panes and separators on the grid, composed for `view` as laid
@@ -1023,7 +1014,7 @@ fn put_panes(
     placement: &Placement,
     focus: Option<PaneId>,
     copy: Option<(&crate::copy::Copy, crate::copy::Resolved)>,
-) {
+) -> Result<(), fux_vt::Error> {
     grid.underline_styles = view.terminal.underline_styles;
     let frame = Frame::of(session, view, placement, focus);
     if let Some(memo) = grid
@@ -1034,7 +1025,7 @@ fn put_panes(
         grid.cursor = None;
         grid.modes = Modes::default();
         grid.memo = Some(memo.update(grid, session));
-        return;
+        return Ok(());
     }
     // The panes and separators, which never overlap, cover the pane area
     // unless a split has no room for even its first child; the bar covers
@@ -1045,7 +1036,7 @@ fn put_panes(
         .map(Rect::area)
         .fold(0u32, u32::saturating_add);
     let tiled = covered == view.pane_area().area();
-    grid.reset(view.rows, view.cols, !tiled);
+    grid.reset(view.rows, view.cols, !tiled)?;
     let mut keys = Vec::new();
     for (id, rect) in &placement.panes {
         let Some(pane) = session.parts.panes().get(id) else {
@@ -1090,6 +1081,7 @@ fn put_panes(
     }
     separators(grid, placement, focus);
     grid.memo = frame.map(|frame| Memo { frame, keys });
+    Ok(())
 }
 
 /// A prompt's text with its cursor bar, in at most `room` cells: when it is
@@ -1659,7 +1651,7 @@ pub fn mouse_level(mode: fux_vt::MouseProtocolMode) -> u16 {
 #[cfg(test)]
 pub(crate) fn paint(old: Option<&Grid>, new: &Grid) -> Vec<u8> {
     let mut out = Vec::new();
-    let blank = Grid::new(new.rows, new.cols);
+    let blank = Grid::default();
     paint_into(old.unwrap_or(&blank), old.is_some(), new, &mut out);
     out
 }
@@ -1774,6 +1766,57 @@ fn differing_rows(old: Option<&Grid>, new: &Grid) -> Vec<u16> {
 
 #[cfg(test)]
 mod tests {
+    #[global_allocator]
+    static ALLOCATOR: fux_vt_peak::ThreadPeak = fux_vt_peak::ThreadPeak;
+
+    #[test]
+    fn shrinking_a_blank_grid_does_not_allocate_for_discarded_text() -> Result<(), fux_vt::Error> {
+        let mut grid = Grid::new(2, 4)?;
+        let text: String = std::iter::once('x')
+            .chain(std::iter::repeat_n('\u{301}', 20))
+            .collect();
+        for i in 0..8 {
+            grid.cells
+                .set(i, CellRef::new(&text, false, Attributes::default()));
+        }
+        assert!(grid.cells.text_len() > 0);
+        ALLOCATOR.reset_peak();
+        let before = ALLOCATOR.live();
+        grid.reset(1, 4, true)?;
+        let allocated = ALLOCATOR.peak().saturating_sub(before);
+        assert_eq!(allocated, 0, "blanking must not preserve spilled text");
+        assert_eq!(grid.cells.text_len(), 0);
+        assert!(grid.cells.iter().all(|cell| !cell.has_contents()));
+        Ok(())
+    }
+
+    #[cfg(feature = "checks")]
+    #[test]
+    fn refused_grid_allocation_preserves_the_previous_screen() -> Result<(), fux_vt::Error> {
+        fux_vt::refuse_next(1);
+        assert!(matches!(
+            super::Grid::new(24, 80),
+            Err(fux_vt::Error::Capacity)
+        ));
+        let mut grid = super::Grid::new(2, 3)?;
+        grid.cells.set(
+            0,
+            fux_vt::CellRef::new("K", false, fux_vt::Attributes::default()),
+        );
+        grid.cursor = Some((1, 2));
+        let before = grid.clone();
+        fux_vt::refuse_next(1);
+        assert_eq!(grid.reset(24, 80, true), Err(fux_vt::Error::Capacity));
+        assert_eq!(grid, before);
+        Ok(())
+    }
+
+    fn new_grid(rows: u16, cols: u16) -> super::Grid {
+        let grid = super::Grid::new(rows, cols);
+        assert!(grid.is_ok(), "{grid:?}");
+        grid.unwrap_or_default()
+    }
+
     /// A picture that moves, its crop the same, is encoded once and sent at
     /// each place with the same data; a new crop is encoded again; another
     /// picture in the same place and crop (a respawned pane's) is sent its
@@ -1826,8 +1869,11 @@ mod tests {
     /// false if there is no such client.
     fn compose_into(s: &Session, c: ClientId, grid: &mut Grid, placement: &mut Placement) -> bool {
         let view = s.views.get(&c);
-        view.map(|view| compose_view(s, view, grid, placement))
-            .is_some()
+        view.is_some_and(|view| {
+            let result = compose_view(s, view, grid, placement);
+            assert!(result.is_ok(), "{result:?}");
+            true
+        })
     }
     use super::*;
 
@@ -1843,9 +1889,9 @@ mod tests {
         // The DECSCUSRs a paint writes, from a terminal whose shape is
         // `was`, its screen known or not.
         let paint = |was: CursorShape, known: bool, shape: CursorShape| {
-            let mut old = Grid::new(2, 3);
+            let mut old = new_grid(2, 3);
             old.modes.cursor_shape = was;
-            let mut new = Grid::new(2, 3);
+            let mut new = new_grid(2, 3);
             new.modes.cursor_shape = shape;
             let mut out = Vec::new();
             paint_into(&old, known, &new, &mut out);
@@ -1880,7 +1926,7 @@ mod tests {
         let (mut session, client) = crate::session::testing::attached(10, 40)?;
         let pane = *session.parts.panes().keys().next().ok_or("no pane")?;
         let mut placement = Placement::default();
-        let (mut before, mut after) = (Grid::new(0, 0), Grid::new(0, 0));
+        let (mut before, mut after) = (Grid::default(), Grid::default());
         session.output(pane, b"$ ");
         compose_into(&session, client, &mut before, &mut placement);
         session.output(pane, b"x");
@@ -1943,7 +1989,7 @@ mod tests {
         let mut r = Rng(0x00c0_ffee);
         for case in 0..40 {
             let (mut s, c) = crate::session::testing::attached(12, 50)?;
-            let (mut spare, mut shown) = (Grid::new(0, 0), Grid::new(0, 0));
+            let (mut spare, mut shown) = (Grid::default(), Grid::default());
             let mut placement = Placement::default();
             let mut painted = false;
             for step in 0..120 {
@@ -2000,9 +2046,9 @@ mod tests {
     /// when it changes.
     #[test]
     fn mouse_reporting_is_painted_when_it_changes() {
-        let mut on = Grid::new(2, 4);
+        let mut on = new_grid(2, 4);
         on.modes.mouse = 1002;
-        let off = Grid::new(2, 4);
+        let off = new_grid(2, 4);
         let text = |b: Vec<u8>| String::from_utf8_lossy(&b).into_owned();
         let first = text(paint(None, &on));
         assert!(
@@ -2157,7 +2203,7 @@ mod tests {
         assert_eq!(used, fresh);
         // Grids of this size and others, full of text.
         for (rows, cols) in [(12, 50), (3, 7), (12, 49), (40, 200)] {
-            let mut other = Grid::new(rows, cols);
+            let mut other = new_grid(rows, cols);
             for y in 0..rows {
                 other.text(
                     y,
@@ -2183,7 +2229,7 @@ mod tests {
     fn fux_text_takes_a_cluster_s_columns() {
         let heart = "\u{2764}\u{FE0F}";
         assert_eq!(width(heart), 2);
-        let mut grid = Grid::new(1, 10);
+        let mut grid = new_grid(1, 10);
         let end = grid.text(0, 0, &format!("{heart}x"), Attributes::default(), 10);
         assert_eq!(end, 3);
         let at = |x| {
@@ -2207,7 +2253,7 @@ mod tests {
             std::iter::repeat_n("\u{200d}👩", 18).collect::<String>()
         );
         assert_eq!(width(&long), 7);
-        let mut grid = Grid::new(1, 6);
+        let mut grid = new_grid(1, 6);
         let fitted = fit(&long, 6);
         assert_eq!(cell_width(fitted.clone()), 6);
         assert_eq!(grid.text_cells(0, 0, fitted, Attributes::default(), 6), 6);
@@ -2236,7 +2282,7 @@ mod tests {
         ] {
             let prompt = prompt_line(&before, "tail", room);
             assert!(cell_width(prompt.cells()) <= room);
-            let mut grid = Grid::new(1, room);
+            let mut grid = new_grid(1, room);
             grid.text_cells(0, 0, prompt.cells(), Attributes::default(), room);
             assert!((0..room).any(|x| grid.get(0, x).is_some_and(|c| c.contents().contains('▏'))));
         }
@@ -2325,7 +2371,7 @@ mod tests {
         };
         let old_key = row_key(&s).ok_or("the row")?;
         let generation = s.parts.panes().get(&id).ok_or("the pane")?.respawns;
-        let mut grid = Grid::new(0, 0);
+        let mut grid = Grid::default();
         let mut placement = Placement::default();
         assert!(compose_into(&s, c, &mut grid, &mut placement));
         run(&mut s, &respawn)?;
@@ -2356,18 +2402,19 @@ mod tests {
         let (held, other) = (place(&s, c, 1)?, place(&s, c, 2)?);
         let panes = [(PaneId::of(1), held), (PaneId::of(2), other)];
         let compose = |s: &Session, painted: &Grid| {
-            let mut grid = Grid::new(0, 0);
+            let mut grid = Grid::default();
             let painted = Some(Painted {
                 grid: painted,
                 panes: &panes,
             });
             if let Some(view) = s.views.get(&c) {
-                compose_held(s, view, &mut grid, &mut Placement::default(), painted);
+                let result = compose_held(s, view, &mut grid, &mut Placement::default(), painted);
+                assert!(result.is_ok(), "{result:?}");
             }
             grid
         };
         // Focus on %2, the cursor last painted in %1: %2's own.
-        let mut painted = compose(&s, &Grid::new(0, 0));
+        let mut painted = compose(&s, &Grid::default());
         painted.cursor = Some((held.y(), held.x()));
         painted.modes.cursor_colour = Some([0, 255, 0].into());
         let fresh = compose(&s, &painted);
@@ -2428,16 +2475,17 @@ mod tests {
                 .is_some_and(crate::pane::Pane::mid_frame)
         );
         let compose = |s: &Session, painted: Option<Painted<'_>>| {
-            let mut grid = Grid::new(0, 0);
+            let mut grid = Grid::default();
             if let Some(view) = s.views.get(&c) {
-                compose_held(s, view, &mut grid, &mut Placement::default(), painted);
+                let result = compose_held(s, view, &mut grid, &mut Placement::default(), painted);
+                assert!(result.is_ok(), "{result:?}");
             }
             (0..grid.rows).map(|y| grid.row_text(y)).collect::<Vec<_>>()
         };
         let rows = compose(&s, None);
         assert!(rows.iter().all(|r| !r.contains('X')), "{rows:#?}");
         // A confirmation over it, painted as it was before (all X): shown.
-        let mut before = Grid::new(10, 40);
+        let mut before = new_grid(10, 40);
         let xs: String = std::iter::repeat_n('X', 40).collect();
         for y in 0..9 {
             before.text(y, 0, &xs, Attributes::default(), 40);
@@ -2463,7 +2511,7 @@ mod tests {
     /// one past it must stop a wide glyph, not overflow (in release, wrap).
     #[test]
     fn a_wide_glyph_does_not_fit_the_widest_last_column() {
-        let mut grid = Grid::new(1, u16::MAX);
+        let mut grid = new_grid(1, u16::MAX);
         let last = u16::MAX.saturating_sub(1);
         let end = grid.text(0, last, "界", Attributes::default(), u16::MAX);
         assert_eq!(end, last);
@@ -2471,7 +2519,7 @@ mod tests {
 
     #[test]
     fn painting_the_widest_last_column_ends() {
-        let mut grid = Grid::new(1, u16::MAX);
+        let mut grid = new_grid(1, u16::MAX);
         let wide = CellRef::new("界", true, Attributes::default());
         grid.set(0, u16::MAX.saturating_sub(1), wide);
         // The glyph is painted as a blank, and moving past it stops the run.
@@ -2489,7 +2537,7 @@ mod tests {
         // terminal measuring each character alone advances 1 and 8, so
         // what follows is placed where fux-vt has it, column 2.
         for cluster in ["\u{2764}\u{fe0f}", "\u{1100}\u{1100}\u{1100}\u{1100}"] {
-            let mut grid = Grid::new(1, 12);
+            let mut grid = new_grid(1, 12);
             grid.set(0, 0, CellRef::new(cluster, true, Attributes::default()));
             grid.set(0, 1, CellRef::wide_continuation());
             grid.text(0, 2, "ab", Attributes::default(), 12);
@@ -2501,7 +2549,7 @@ mod tests {
         }
         // A flag is two columns either way, and a mark adds none: no move.
         for cluster in ["\u{1f1ef}\u{1f1f5}", "e\u{301}"] {
-            let mut grid = Grid::new(1, 12);
+            let mut grid = new_grid(1, 12);
             let wide = cluster.starts_with('\u{1f1ef}');
             grid.set(0, 0, CellRef::new(cluster, wide, Attributes::default()));
             let next = if wide {
@@ -2524,7 +2572,7 @@ mod tests {
     /// and the next glyph still lands where fux-vt has it.
     #[test]
     fn a_glyph_that_would_join_the_one_before_is_placed() -> Result<(), String> {
-        let mut grid = Grid::new(1, 12);
+        let mut grid = new_grid(1, 12);
         grid.text(0, 2, "\u{1F44D}", Attributes::default(), 12);
         grid.text(0, 4, "\u{1F3FD}", Attributes::default(), 12);
         grid.text(0, 6, "x", Attributes::default(), 12);
@@ -2537,7 +2585,7 @@ mod tests {
         let mut parser = terminal(1, 12)?;
         assert_eq!(apply(&bytes, &mut parser), grid_lines(&grid));
         // Glyphs that do not join are painted in one run.
-        let mut plain = Grid::new(1, 12);
+        let mut plain = new_grid(1, 12);
         plain.text(0, 2, "\u{1F44D}\u{1F680}x", Attributes::default(), 12);
         let text = String::from_utf8_lossy(&paint(None, &plain)).into_owned();
         assert!(text.contains("\u{1F44D}\u{1F680}x"), "{text:?}");
@@ -2552,7 +2600,7 @@ mod tests {
     fn marks_short_of_the_edge_are_painted_with_autowrap() -> Result<(), String> {
         let marked = |text| CellRef::new(text, false, Attributes::default());
         let painted = |x: u16, text| {
-            let mut grid = Grid::new(1, 6);
+            let mut grid = new_grid(1, 6);
             grid.fill(Rect::screen(1, 6), Attributes::default());
             grid.set(0, x, marked(text));
             (
@@ -2635,7 +2683,7 @@ mod tests {
     /// A row that did not change gets no bytes at all.
     #[test]
     fn only_the_rows_that_changed_are_painted() -> Result<(), String> {
-        let mut a = Grid::new(6, 20);
+        let mut a = new_grid(6, 20);
         for y in 0..6 {
             a.text(y, 0, &format!("row {y} 界 text"), Attributes::default(), 20);
         }
@@ -2680,7 +2728,7 @@ mod tests {
                 .with_italic(true)
                 .with_inverse(true),
         ];
-        let mut grid = Grid::new(1, 12);
+        let mut grid = new_grid(1, 12);
         for (x, a) in attributes.iter().enumerate() {
             let x = u16::try_from(x).map_err(|e| e.to_string())?;
             grid.text(0, x, "x", *a, 12);
@@ -2704,7 +2752,7 @@ mod tests {
     /// cells wide; on a wide glyph it joins the glyph's first half.
     #[test]
     fn a_mark_of_no_width_stays_on_the_cell_before() -> Result<(), String> {
-        let mut grid = Grid::new(1, 8);
+        let mut grid = new_grid(1, 8);
         let end = grid.text(0, 0, "cafe\u{301} 界\u{301}x", PANEL, 8);
         assert_eq!(end, 8);
         assert_eq!(grid.row_text(0), "cafe\u{301} 界\u{301}x");
@@ -2730,7 +2778,7 @@ mod tests {
     fn underline_styles_are_painted_as_the_terminal_draws_them() -> Result<(), String> {
         use fux_vt::UnderlineStyle::{Curly, Dashed, Dotted, Double, Single};
         let styles = [Single, Double, Curly, Dotted, Dashed];
-        let mut grid = Grid::new(1, 6);
+        let mut grid = new_grid(1, 6);
         for (x, style) in styles.iter().enumerate() {
             let x = u16::try_from(x).map_err(|e| e.to_string())?;
             let a = Attributes::default()
