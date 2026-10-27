@@ -1,7 +1,5 @@
-//! Tests that kill the frozen guard mutants no other test kills
-//! (`THREATS.md` section 5, `fux-vt/compare/mutants-guards.txt`): each names
-//! the guard's row and the mutant, and holds the guard's limit at the
-//! input where the mutant differs from it.
+//! Tests that hold each limit at its boundary (`THREATS.md`): inputs
+//! just below, at and above a bound, and counters for the work done.
 
 use std::ops::Range;
 use std::time::Instant;
@@ -88,8 +86,8 @@ fn a_long_cluster_that_ends_at_the_limit_does_not_compact() -> Result {
 }
 
 /// Runs `f` on a thread of its own and fails if it takes past 60 seconds
-/// (it takes well under one): a guard whose mutant loops forever then
-/// fails a test rather than hanging the run.
+/// (it takes well under one): an unbounded loop fails a test rather than
+/// hanging the run.
 fn in_time<T: Send + 'static>(
     f: impl FnOnce() -> std::result::Result<T, String> + Send + 'static,
 ) -> Result<T> {

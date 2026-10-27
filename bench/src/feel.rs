@@ -505,9 +505,17 @@ fn start(
                 env: borrowed(&env),
                 dir,
             };
+            // Attaching creates the first pane after the terminal is up.
+            let deadline = Instant::now().checked_add(READY_WAIT).ok_or("a deadline")?;
+            while let Err(error) = session.command(place, &["str", "%1", "pane"]) {
+                if Instant::now() >= deadline {
+                    return Err(format!("fux: the first pane did not appear: {error}"));
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
             // The first program in pane %1, typed into its shell; each
-            // other in a split beside it. A flooding program never settles,
-            // so nothing waits for it to (`0 timeout`). The last pane made
+            // other in a split beside it. Actions answer at once, even
+            // when a program floods output. The last pane made
             // is focused, as tmux, zellij and herdr focus theirs: keys
             // typed at the client go to it (the echo, beside a flood).
             let mut last = String::from("%1");
@@ -524,20 +532,19 @@ fn start(
                         "str",
                         "Enter",
                         "key",
-                        "0",
-                        "timeout",
                         "send-keys",
                     ];
                     session.command(place, &args)?;
                 } else {
                     let mut args = vec!["str", "%1", "pane", "horizontal"];
                     args.extend(program_words(p));
-                    args.extend(["0", "timeout", "split"]);
+                    args.push("split");
                     let answer = session.command(place, &args)?;
                     last = answer
                         .split_whitespace()
                         .next()
                         .filter(|w| w.starts_with('%'))
+                        .and_then(|w| w.split_once(':').map(|(pane, _)| pane))
                         .ok_or(format!("fux split: no pane in {answer:?}"))?
                         .to_owned();
                 }

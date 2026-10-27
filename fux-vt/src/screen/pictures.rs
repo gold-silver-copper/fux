@@ -86,8 +86,7 @@ impl CellSize {
 }
 
 /// Whether a cell `width` by `height` pixels holds a sixel band
-/// (`CellSize::LEAST`): a function of its own, which the mutation guards
-/// name (cargo-mutants leaves `new` unmutated).
+/// (`CellSize::LEAST`).
 fn holds_a_band(width: u16, height: u16) -> bool {
     width >= CellSize::LEAST.0 && height >= CellSize::LEAST.1
 }
@@ -961,7 +960,7 @@ mod faults {
 
     /// A placement found whole at the newest version, whose cell holds no
     /// placeholder: `shown` reads none of its rows, and check 32 reads
-    /// them all (guard mutants, `check_pictures_shown`).
+    /// them all (`check_pictures_shown`).
     #[test]
     fn a_picture_shown_without_its_cells_is_a_fault() -> Result<(), Error> {
         let size = Size::new(3, 6).map_err(|_| Error::Capacity)?;
