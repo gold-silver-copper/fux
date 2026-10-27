@@ -479,9 +479,7 @@ impl Grid {
     fn reset(&mut self, rows: u16, cols: u16, blank: bool) -> Result<(), fux_vt::Error> {
         if (self.rows, self.cols) != (rows, cols) {
             // Reserve before changing anything, so refusal leaves the old grid whole.
-            self.cells
-                .resize(cell_count(rows, cols), CellRef::default())?;
-            self.cells.fill(0..self.cells.len(), CellRef::default());
+            self.cells.reset(cell_count(rows, cols))?;
             (self.rows, self.cols) = (rows, cols);
         } else if blank {
             self.cells.fill(0..self.cells.len(), CellRef::default());
@@ -1682,6 +1680,30 @@ fn differing_rows(old: Option<&Grid>, new: &Grid) -> Vec<u16> {
 
 #[cfg(test)]
 mod tests {
+    #[global_allocator]
+    static ALLOCATOR: fux_vt_peak::ThreadPeak = fux_vt_peak::ThreadPeak;
+
+    #[test]
+    fn shrinking_a_blank_grid_does_not_allocate_for_discarded_text() -> Result<(), fux_vt::Error> {
+        let mut grid = Grid::new(2, 4)?;
+        let text: String = std::iter::once('x')
+            .chain(std::iter::repeat_n('\u{301}', 20))
+            .collect();
+        for i in 0..8 {
+            grid.cells
+                .set(i, CellRef::new(&text, false, Attributes::default()));
+        }
+        assert!(grid.cells.text_len() > 0);
+        ALLOCATOR.reset_peak();
+        let before = ALLOCATOR.live();
+        grid.reset(1, 4, true)?;
+        let allocated = ALLOCATOR.peak().saturating_sub(before);
+        assert_eq!(allocated, 0, "blanking must not preserve spilled text");
+        assert_eq!(grid.cells.text_len(), 0);
+        assert!(grid.cells.iter().all(|cell| !cell.has_contents()));
+        Ok(())
+    }
+
     #[cfg(feature = "checks")]
     #[test]
     fn refused_grid_allocation_preserves_the_previous_screen() -> Result<(), fux_vt::Error> {

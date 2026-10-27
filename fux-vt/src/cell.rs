@@ -776,6 +776,16 @@ impl Cells {
             }
         }
     }
+    /// Replaces the run with `len` blank cells, reusing its allocation.
+    /// Refusal leaves it unchanged; success drops all spilled text without
+    /// allocating to preserve it, even when the run shrinks.
+    pub fn reset(&mut self, len: usize) -> Result<(), Error> {
+        self.room_for(len)?;
+        self.cells.clear();
+        self.text = Text::default();
+        self.cells.resize(len, Stored::default());
+        Ok(())
+    }
     /// Makes the run `len` cells long, new ones `cell`. Shrinking stores
     /// text again within the smaller budget, cutting what no longer fits to
     /// 17 bytes. `Error::Capacity`, nothing changed, past `MAX_CELLS` or
