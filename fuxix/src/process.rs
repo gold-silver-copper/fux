@@ -486,7 +486,11 @@ pub fn argv(pid: Pid, limit: usize) -> std::io::Result<Option<Vec<OsString>>> {
         if needed > limit {
             return Err(exceeded());
         }
-        raw.try_reserve(count).map_err(|_| exceeded())?;
+        if needed > raw.capacity() {
+            let capacity = raw.capacity().saturating_mul(2).max(needed).min(limit);
+            raw.try_reserve_exact(capacity.saturating_sub(raw.len()))
+                .map_err(|_| exceeded())?;
+        }
         raw.extend_from_slice(buffer.get(..count).unwrap_or_default());
     }
     let line = raw.strip_suffix(&[0]).unwrap_or(&raw);
@@ -498,8 +502,8 @@ pub fn argv(pid: Pid, limit: usize) -> std::io::Result<Option<Vec<OsString>>> {
         .checked_mul(std::mem::size_of::<OsString>())
         .ok_or_else(exceeded)?;
     if raw
-        .len()
-        .checked_mul(2)
+        .capacity()
+        .checked_add(raw.len())
         .and_then(|n| n.checked_add(slots))
         .is_none_or(|n| n > limit)
     {

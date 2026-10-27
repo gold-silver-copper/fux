@@ -986,51 +986,54 @@ impl Session {
     /// The tabs `target` is or holds: a pane's own, a tab, or a
     /// workspace's every tab, in order.
     fn tabs_of(&self, target: AnyRef) -> Result<Vec<TabId>, Error> {
-        Ok(match target {
-            AnyRef::Tab(tab) => vec![self.tab(tab).ok_or(Error::NoTab(tab))?.id()],
-            AnyRef::Workspace(ws) => (self.workspace(ws).ok_or(Error::NoWorkspace(ws))?)
-                .tabs()
-                .iter()
-                .map(|t| t.id())
-                .collect(),
-            AnyRef::Pane(pane) => vec![self.locate(pane).ok_or(Error::NoPane(pane))?.1],
-        })
+        let mut budget = crate::wire::Budget::new();
+        match target {
+            AnyRef::Tab(tab) => Ok(vec![self.tab(tab).ok_or(Error::NoTab(tab))?.id()]),
+            AnyRef::Workspace(id) => {
+                let tabs = self.workspace(id).ok_or(Error::NoWorkspace(id))?.tabs();
+                budget.slots::<AnyRef>(tabs.len())?;
+                let mut ids = budget.vector(tabs.len())?;
+                ids.extend(tabs.iter().map(|tab| tab.id()));
+                Ok(ids)
+            }
+            AnyRef::Pane(pane) => Ok(vec![self.locate(pane).ok_or(Error::NoPane(pane))?.1]),
+        }
     }
 
     /// The panes `target` names: a pane, or a tab's or workspace's every
-    /// pane, in order.
+    /// pane, in order. Reserve reply capacity before retaining each member.
     fn panes_of(&self, target: AnyRef) -> Result<Vec<PaneId>, Error> {
         let mut budget = crate::wire::Budget::new();
+        let mut ids = Vec::new();
         let mut admitted = Ok(());
-        let mut count = |_: PaneId| {
+        let mut take = |id: PaneId| {
+            if admitted.is_err() {
+                return;
+            }
+            admitted = budget
+                .charge(std::mem::size_of::<PaneAnswer>().saturating_mul(4))
+                .and_then(|()| {
+                    ids.try_reserve(1)
+                        .map_err(|_| crate::wire::Budget::exceeded())
+                });
             if admitted.is_ok() {
-                // A wait's largest answer includes four change tags, and
-                // input replies retain their versions beside queued input.
-                admitted = budget.charge(std::mem::size_of::<PaneAnswer>().saturating_mul(4));
+                ids.push(id);
             }
         };
         match target {
-            AnyRef::Pane(id) => count(id),
+            AnyRef::Pane(id) => take(self.pane(id)?.id()),
             AnyRef::Tab(id) => self
                 .root(id)
                 .ok_or(Error::NoTab(id))?
-                .for_each_pane(&mut count),
+                .for_each_pane(&mut take),
             AnyRef::Workspace(id) => {
                 for tab in self.workspace(id).ok_or(Error::NoWorkspace(id))?.tabs() {
-                    tab.root().for_each_pane(&mut count);
+                    tab.root().for_each_pane(&mut take);
                 }
             }
         }
         admitted?;
-        Ok(match target {
-            AnyRef::Pane(pane) => vec![self.pane(pane)?.id()],
-            AnyRef::Tab(tab) => self.root(tab).ok_or(Error::NoTab(tab))?.panes(),
-            AnyRef::Workspace(ws) => (self.workspace(ws).ok_or(Error::NoWorkspace(ws))?)
-                .tabs()
-                .iter()
-                .flat_map(|t| t.root().panes())
-                .collect(),
-        })
+        Ok(ids)
     }
 
     /// Sends `inputs` to the programs of the panes `to` names, each encoded
@@ -2983,13 +2986,13 @@ impl Session {
     ) -> Result<Fields, Error> {
         budget.slots::<(String, Json)>(3)?;
         budget.charge(t.name().len())?;
-        let panes = (self.panes_of(AnyRef::Tab(t.id()))?.into_iter())
-            .filter_map(|id| self.parts.panes().get(&id))
-            .map(|p| {
-                budget.slots::<Json>(1)?;
-                Ok(Json::object(self.pane_json(p, now, budget)?))
-            })
-            .collect::<Result<_, Error>>()?;
+        let ids = self.panes_of(AnyRef::Tab(t.id()))?;
+        let mut panes = budget.vector(ids.len())?;
+        for id in ids {
+            if let Some(pane) = self.parts.panes().get(&id) {
+                panes.push(Json::object(self.pane_json(pane, now, budget)?));
+            }
+        }
         Ok(vec![
             ("id", Json::str(t.id().to_string())),
             ("name", Json::str(t.name())),
@@ -3005,11 +3008,11 @@ impl Session {
         budget: &mut crate::wire::Budget,
     ) -> Result<Fields, Error> {
         budget.slots::<(String, Json)>(3)?;
-        budget.slots::<Json>(ws.tabs().len())?;
         budget.charge(ws.name().len())?;
-        let tabs = (ws.tabs().iter())
-            .map(|t| Ok(Json::object(self.tab_json(t, now, budget)?)))
-            .collect::<Result<_, Error>>()?;
+        let mut tabs = budget.vector(ws.tabs().len())?;
+        for tab in ws.tabs() {
+            tabs.push(Json::object(self.tab_json(tab, now, budget)?));
+        }
         Ok(vec![
             ("id", Json::str(ws.id().to_string())),
             ("name", Json::str(ws.name())),
@@ -3079,7 +3082,6 @@ impl Session {
     /// `ls json`: everything, and `events`, where a stream reads from.
     fn ls_json(&self, events: crate::events::Cursor) -> Result<Json, Error> {
         let budget = &mut crate::wire::Budget::new();
-        budget.slots::<Json>(self.parts.workspaces().len())?;
         budget.slots::<Json>(self.views.len())?;
         budget.slots::<(String, Json)>(
             self.views
@@ -3088,9 +3090,10 @@ impl Session {
                 .ok_or_else(crate::wire::Budget::exceeded)?,
         )?;
         let now = Instant::now();
-        let workspaces = (self.parts.workspaces().iter())
-            .map(|ws| Ok(Json::object(self.ws_json(ws, now, budget)?)))
-            .collect::<Result<_, Error>>()?;
+        let mut workspaces = budget.vector(self.parts.workspaces().len())?;
+        for ws in self.parts.workspaces() {
+            workspaces.push(Json::object(self.ws_json(ws, now, budget)?));
+        }
         let opt = |v: Option<String>| v.map_or(Json::Null, Json::str);
         let clients = self
             .views

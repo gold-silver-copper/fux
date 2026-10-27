@@ -122,6 +122,12 @@ impl Budget {
                 .ok_or_else(Self::exceeded)?,
         )
     }
+    pub(crate) fn vector<T>(&mut self, count: usize) -> Result<Vec<T>, crate::session::Error> {
+        self.slots::<T>(count)?;
+        let mut out = Vec::new();
+        out.try_reserve_exact(count).map_err(|_| Self::exceeded())?;
+        Ok(out)
+    }
     pub(crate) fn exceeded() -> crate::session::Error {
         crate::session::fail(
             crate::code::Raise::TooLong,
