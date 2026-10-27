@@ -205,8 +205,8 @@ they run, so a `try` may name them too.
 ## `status json`
 
 ```json
-{"socket":"/run/user/1000/fux/server.sock","version":"0.36.0","protocol":23,
- "server_version":"0.36.0","server_protocol":23,"compatible":true}
+{"socket":"/run/user/1000/fux/server.sock","version":"0.36.0","protocol":24,
+ "server_version":"0.36.0","server_protocol":24,"compatible":true}
 ```
 
 With no server, `status` fails (`no_server`), saying the socket and whether
