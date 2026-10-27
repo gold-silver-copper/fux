@@ -115,6 +115,7 @@ pub fn pane(
     let mut lines: Vec<Vec<Cut>> = Vec::new();
     // A soft-wrapped row goes on in the next, joined unless `wrapped`.
     let mut wraps = false;
+    let mut blanks = 0usize;
     let (mut read, above) = rows_of(screen, history, view);
     // The cursor's row and column, if it shows on the screen captured: the
     // last output is read from the screen shown, whatever else is asked.
@@ -177,6 +178,8 @@ pub fn pane(
         });
         let mut cells = cells.skip(start).peekable();
         if !wraps || lines.is_empty() {
+            trim_line(&mut lines, blanks);
+            blanks = 0;
             lines.push(Vec::new());
         }
         if let Some(line) = lines.last_mut() {
@@ -192,6 +195,16 @@ pub fn pane(
                 {
                     text = " ";
                 }
+                // Only whole blank cells may be trimmed: a cluster can
+                // contain a space as part of its text (Unicode Prepend).
+                blanks = if !view.full
+                    && text == " "
+                    && !(view.marks && highlighted(&style) || view.styles && painted(&style))
+                {
+                    blanks.saturating_add(1)
+                } else {
+                    0
+                };
                 let style = if view.styles || view.marks {
                     style
                 } else {
@@ -212,6 +225,7 @@ pub fn pane(
         }
         wraps = !view.wrapped && row.continues();
     }
+    trim_line(&mut lines, blanks);
     let mut state = state(pane, Instant::now(), copy_mode);
     // The history rows kept above the first row read: history it was not
     // asked for (rows a range leaves out are not counted).
@@ -448,6 +462,22 @@ fn picture(shown: fux_vt::Shown<'_>) -> Json {
     ])
 }
 
+/// Remove the last line's unshown trailing blank cells, counted while
+/// reading them rather than inferred from the run's cluster text.
+fn trim_line(lines: &mut [Vec<Cut>], blanks: usize) {
+    if let Some(line) = lines.last_mut() {
+        for _ in 0..blanks {
+            if let Some(last) = line.last_mut() {
+                last.text.pop();
+                last.cells = last.cells.saturating_sub(1);
+                if last.cells == 0 {
+                    line.pop();
+                }
+            }
+        }
+    }
+}
+
 /// A capture of `lines`, trimmed as `view` says, each made runs of one
 /// style.
 fn captured(
@@ -457,27 +487,8 @@ fn captured(
     mut lines: Vec<Vec<Cut>>,
     view: CaptureView,
 ) -> Captured {
-    // Blanks at a line's end are trimmed, unless they show: highlighted
-    // with `marks`, painted with `styles` (alike as SGR and in JSON's lines
-    // and runs, a painted surface kept whole); plain text trims them all
-    // (blanks, however painted, are no text). `view.full` keeps them all.
+    // Trimming the runs may leave empty lines at the end; full keeps them.
     if !view.full {
-        let shows = |a: &Attributes| (view.marks && highlighted(a)) || (view.styles && painted(a));
-        for line in lines.iter_mut() {
-            while let Some(last) = line.last_mut() {
-                if shows(&last.style) {
-                    break;
-                }
-                while last.text.ends_with(' ') {
-                    last.text.pop();
-                    last.cells = last.cells.saturating_sub(1);
-                }
-                if last.cells != 0 {
-                    break;
-                }
-                line.pop();
-            }
-        }
         while lines.last().is_some_and(Vec::is_empty) {
             lines.pop();
         }
@@ -804,6 +815,37 @@ mod tests {
                 }
             }
         }
+        Ok(())
+    }
+
+    /// A space joined to a prepend character is glyph text, not a blank
+    /// cell that trimming may remove.
+    #[test]
+    fn a_space_inside_a_cluster_is_not_a_trailing_blank() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let mut pane = Lone::new(Pane::new(
+            PaneId::of(1),
+            "sh".into(),
+            Runs::DefaultShell,
+            fux_vt::Size::new(2, 10)?,
+            0,
+        )?);
+        pane.output("x\u{0600}  ".as_bytes());
+        let got = super::pane(
+            &pane,
+            crate::command::Run::now().ok_or("a clock")?,
+            None,
+            CaptureView::default(),
+            false,
+        );
+        assert_eq!(got.text(), "x\u{0600} ");
+        assert_eq!(
+            got.lines
+                .first()
+                .and_then(|line| line.first())
+                .map(|cut| cut.cells),
+            Some(3)
+        );
         Ok(())
     }
 

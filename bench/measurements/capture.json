@@ -61,9 +61,9 @@
     "environment": {
       "platform": "Linux-7.2.5-3-omarchy-x86_64-with-glibc2.44",
       "loadavg": [
-        7.8447265625,
-        15.818359375,
-        10.64306640625
+        3.04296875,
+        6.23291015625,
+        7.8935546875
       ],
       "perf": "perf version 7.2.3-1",
       "note": "One sample each on shared hardware. CLI wall includes startup/transport/formatting; server counts include request handling. RSS high-water includes setup. Fill count includes completion polling. Idle context switches proxy wakeups; ticks are quantized."
@@ -73,16 +73,16 @@
         "history_bytes": 8388608,
         "cpu": 0,
         "reply_bytes": 1003969,
-        "cli_wall_seconds": 0.02568623796105385,
-        "server_instructions": 388524354,
-        "rss_before_kib": 13172,
-        "peak_rss_kib": 20996,
-        "peak_before_kib": 13172,
+        "cli_wall_seconds": 0.02745991200208664,
+        "server_instructions": 438957455,
+        "rss_before_kib": 13144,
+        "peak_rss_kib": 21484,
+        "peak_before_kib": 13144,
         "fill": {
           "bytes": 4198101,
-          "wall_seconds": 0.03988329181447625,
-          "server_instructions": 134759193,
-          "instructions_per_byte": 32.100035944823624
+          "wall_seconds": 0.04114637919701636,
+          "server_instructions": 135233327,
+          "instructions_per_byte": 32.21297605750791
         },
         "idle_10_seconds": {
           "cpu_ticks": 0,
@@ -94,16 +94,16 @@
         "history_bytes": 67108864,
         "cpu": 0,
         "reply_bytes": 8048818,
-        "cli_wall_seconds": 0.1887508479412645,
-        "server_instructions": 3117026506,
-        "rss_before_kib": 70724,
-        "peak_rss_kib": 142072,
-        "peak_before_kib": 70724,
+        "cli_wall_seconds": 0.2020705679897219,
+        "server_instructions": 3521783315,
+        "rss_before_kib": 70684,
+        "peak_rss_kib": 141900,
+        "peak_before_kib": 70684,
         "fill": {
           "bytes": 33555163,
-          "wall_seconds": 0.2538478800561279,
-          "server_instructions": 1031919048,
-          "instructions_per_byte": 30.752914178959582
+          "wall_seconds": 0.257554646814242,
+          "server_instructions": 1041975538,
+          "instructions_per_byte": 31.0526144069096
         },
         "idle_10_seconds": {
           "cpu_ticks": 0,
@@ -117,18 +117,19 @@
     "capture-history": {
       "before": 451036178,
       "base": 81738759,
-      "after": 470310040,
-      "after-base": 81739367,
+      "after": 520735707,
+      "after-base": 81739368,
       "net_before": 369297419,
-      "net_after": 388570673
+      "net_after": 438996339
     },
     "cli-library": {
       "before": 10149030,
       "base": 476981,
-      "after": 10149306,
+      "after": 10149398,
       "after-base": 477609,
       "net_before": 9672049,
-      "net_after": 9671697
+      "net_after": 9671789
     }
-  }
+  },
+  "note": "Final after samples replace an earlier variant after fixing trimming of spaces within grapheme clusters. Each history was measured once on this final variant; baseline was not repeated."
 }
