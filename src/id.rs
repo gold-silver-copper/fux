@@ -1,8 +1,8 @@
-//! The IDs of panes, tabs, workspaces and clients. A new one comes only from
+//! The IDs of panes, tabs, workspaces, clients and copies. A new one comes only from
 //! the session's counters, [`Ids`]; any other is read from what a person
 //! typed (`%3`, `@2`, `+1`, `c1`) by `FromStr`, and the session looks it up
 //! before acting on it. No code can make one from a number.
-use crate::command::{Kind, Usage};
+use crate::command::{Kind, Run, Usage};
 use crate::session::Error;
 use std::fmt;
 use std::str::FromStr;
@@ -54,6 +54,34 @@ id!(
     ClientId, 'c'
 );
 
+/// A retained copy, `bN:RUN`: its number is never reused within that server run.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BufferId {
+    run: Run,
+    number: u64,
+}
+
+impl fmt::Display for BufferId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "b{}:{}", self.number, self.run)
+    }
+}
+
+impl FromStr for BufferId {
+    type Err = ();
+    fn from_str(text: &str) -> Result<Self, ()> {
+        let (n, run) = text
+            .strip_prefix('b')
+            .and_then(|s| s.split_once(':'))
+            .ok_or(())?;
+        let id = Self {
+            run: run.parse()?,
+            number: number(n).filter(|n| *n > 0).ok_or(())?,
+        };
+        (id.to_string() == text).then_some(id).ok_or(())
+    }
+}
+
 /// Digits only: no sign, no space.
 pub(crate) fn number<T: FromStr>(text: &str) -> Option<T> {
     if text.is_empty() || !text.bytes().all(|b| b.is_ascii_digit()) {
@@ -84,9 +112,20 @@ pub(crate) struct Ids {
     tab: u32,
     workspace: u32,
     client: u32,
+    buffer: u64,
 }
 
 impl Ids {
+    pub(crate) fn buffer(&mut self, run: Run) -> Result<BufferId, Error> {
+        self.buffer = self.buffer.checked_add(1).ok_or_else(|| {
+            crate::session::fail(crate::code::Raise::IdsExhausted, "no buffer IDs are left")
+        })?;
+        Ok(BufferId {
+            run,
+            number: self.buffer,
+        })
+    }
+
     pub(crate) fn pane(&mut self) -> Result<PaneId, Error> {
         take(&mut self.pane, "pane").map(PaneId)
     }
@@ -145,6 +184,10 @@ impl ClientId {
 }
 #[cfg(test)]
 impl Ids {
+    pub(crate) fn exhaust_buffers(&mut self) {
+        self.buffer = u64::MAX;
+    }
+
     /// Uses up the tab IDs.
     pub(crate) fn exhaust_tabs(&mut self) {
         self.tab = u32::MAX;

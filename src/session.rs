@@ -8,7 +8,7 @@ use crate::command::{
 };
 use crate::config::Config;
 use crate::copy::MAX_CELLS;
-use crate::id::{ClientId, Ids, PaneId, TabId, WsId};
+use crate::id::{BufferId, ClientId, Ids, PaneId, TabId, WsId};
 use crate::json::{Fields, Json};
 use crate::keys::Direction;
 use crate::layout::{self, Axis, NoPane, Placement, Rect, Shares, Tree};
@@ -223,7 +223,7 @@ pub enum Error {
     NoTab(TabId),
     NoWorkspaceGiven,
     NoClient(ClientId),
-    NoBuffer(usize),
+    NoBuffer(command::Buffer),
     /// A pane, tab or workspace alone of its kind, with nothing to move to.
     OnlyOne(Kind),
     AtEnd(Kind),
@@ -389,7 +389,7 @@ pub struct Session {
     pub views: BTreeMap<ClientId, View>,
     pub config: Config,
     /// Paste buffers, newest first.
-    pub buffers: VecDeque<String>,
+    pub buffers: VecDeque<(BufferId, String)>,
     /// The socket a started pane is told to reach its server by, if panes
     /// start real processes; tests of the state alone start none.
     launch: Option<PathBuf>,
@@ -1913,7 +1913,12 @@ impl Session {
             self.ring(id, Instant::now());
         }
         for text in copies {
-            _ = self.copied(text, &viewers);
+            if let Err(why) = self.copied(text, &viewers) {
+                log!("{id}: copy refused: {why}");
+                for &client in &viewers {
+                    self.notify_to(client, why.to_string(), true);
+                }
+            }
         }
         for view in (self.views.values_mut()).filter(|v| viewers.contains(&v.id)) {
             view.dirty = true;
@@ -1955,8 +1960,9 @@ impl Session {
 
     /// `text`, copied, goes to the paste buffers and, unless `clipboard` is
     /// false, to the clipboard of each client in `to` (OSC 52): false if it
-    /// is too large for the clipboard.
-    pub(crate) fn copied(&mut self, text: String, to: &[ClientId]) -> bool {
+    /// is too large for the clipboard. An exhausted id counter refuses the copy.
+    pub(crate) fn copied(&mut self, text: String, to: &[ClientId]) -> Result<bool, Error> {
+        let id = self.ids.buffer(self.run)?;
         let mut fits = true;
         // Encoded for the clipboard before the text moves into the buffers.
         if self.config.clipboard {
@@ -1967,9 +1973,19 @@ impl Session {
                 (self.outbox).extend(to.iter().map(|&client| Outgoing::Copy(client, osc.clone())));
             }
         }
-        self.buffers.push_front(text);
+        self.buffers.push_front((id, text));
         self.buffers.truncate(self.config.buffers.get());
-        fits
+        Ok(fits)
+    }
+
+    fn buffer(&self, buffer: command::Buffer) -> Result<&str, Error> {
+        let found = match buffer {
+            command::Buffer::Newest => self.buffers.front(),
+            command::Buffer::Id(id) => self.buffers.iter().find(|(held, _)| *held == id),
+        };
+        found
+            .map(|(_, text)| text.as_str())
+            .ok_or(Error::NoBuffer(buffer))
     }
 
     /// Everything the server shuts down: every pane is hung up.
@@ -2307,22 +2323,25 @@ impl Session {
                 Ok(Body::Handles(ids).into())
             }
             &Command::ListBuffers => {
-                let line = |(i, text): (usize, &String)| {
+                let metadata = |(id, text): &(BufferId, String)| {
                     let preview: String = (text.chars())
                         .map(|c| if c.is_control() { ' ' } else { c })
-                        .take(50)
+                        .take(PREVIEW_MAX)
                         .collect();
-                    format!("{i}: {} bytes: {preview}\n", text.len())
+                    Json::object(vec![
+                        ("id", Json::str(id.to_string())),
+                        ("bytes", Json::count(text.len())),
+                        ("preview", Json::str(preview)),
+                    ])
                 };
-                let list: String = self.buffers.iter().enumerate().map(line).collect();
-                Ok(Body::Text(list).into())
+                let list = self.buffers.iter().map(metadata).collect();
+                Ok(Body::Field(Json::Array(list)).into())
             }
-            &Command::ShowBuffer { index } => (self.buffers.get(index).cloned())
-                .map(|text| Body::Text(text).into())
-                .ok_or(Error::NoBuffer(index)),
-            &Command::PasteBuffer { index, target } => {
-                let text = self.buffers.get(index).cloned();
-                let paste = Input::Paste(text.ok_or(Error::NoBuffer(index))?);
+            &Command::ShowBuffer { buffer } => self
+                .buffer(buffer)
+                .map(|text| Body::Field(Json::str(text)).into()),
+            &Command::PasteBuffer { buffer, target } => {
+                let paste = Input::Paste(self.buffer(buffer)?.to_owned());
                 self.send_keys(command::To::Now(AnyRef::Pane(target)), &[paste])
             }
             &Command::Client { client, ref action } => self.client(client, action, here),
@@ -3063,6 +3082,9 @@ enum Start<'a> {
 /// The most bytes a name holds.
 pub(crate) const NAME_MAX: usize = 256;
 
+/// Characters kept in a paste buffer's metadata preview.
+pub(crate) const PREVIEW_MAX: usize = 50;
+
 fn check_name(name: &str) -> Result<(), Error> {
     if name.trim().is_empty() {
         return Err(fail(Raise::BadName, "a name cannot be empty or blank"));
@@ -3608,14 +3630,155 @@ mod tests {
         Ok(())
     }
 
+    #[test]
+    fn buffer_reads_keep_every_byte() -> Result<(), String> {
+        let mut s = started(Config::default())?;
+        for text in ["hello\n\n", "", "\n", "a\r\n\0界\n"] {
+            s.copied(text.into(), &[]).map_err(|e| e.to_string())?;
+            assert_eq!(
+                output(&mut s, "newest buffer len")?,
+                format!("{}\n", text.chars().count())
+            );
+            assert_eq!(output(&mut s, "newest buffer")?, format!("{text}\n"));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn buffer_ids_survive_copies_and_refuse_after_eviction() -> Result<(), String> {
+        let mut s = started(Config::default())?;
+        s.copied("chosen\n\n".into(), &[])
+            .map_err(|e| e.to_string())?;
+        let id = s.buffers.front().ok_or("no copy")?.0;
+        // An unsolicited program copy also shifts the ring.
+        s.output(PaneId::of(1), b"\x1b]52;c;bmV3\x07");
+        assert_eq!(output(&mut s, &format!("str {id} buffer"))?, "chosen\n\n\n");
+        assert_eq!(output(&mut s, "newest buffer")?, "new\n");
+        run(&mut s, &format!("%1 str {id} paste-buffer drop"))?;
+        assert_eq!(
+            s.parts
+                .pane_mut(PaneId::of(1))
+                .ok_or("no pane")?
+                .drain_input(),
+            b"chosen\r\r"
+        );
+        for _ in 0..s.config.buffers.get() {
+            s.copied("later".into(), &[]).map_err(|e| e.to_string())?;
+        }
+        for code in [
+            format!("str {id} buffer"),
+            format!("%1 str {id} paste-buffer"),
+        ] {
+            assert!(run(&mut s, &code).is_err_and(|e| e.starts_with("no_buffer:")));
+        }
+        assert!(
+            s.parts
+                .pane_mut(PaneId::of(1))
+                .ok_or("no pane")?
+                .drain_input()
+                .is_empty()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn buffer_ids_belong_to_one_server_run() -> Result<(), String> {
+        let mut s = started(Config::default())?;
+        s.copied("old".into(), &[]).map_err(|e| e.to_string())?;
+        let id = s.buffers.front().ok_or("no copy")?.0;
+        let mut other = started(Config::default())?;
+        other.run = "0-0".parse().map_err(|()| "a run")?;
+        other.copied("new".into(), &[]).map_err(|e| e.to_string())?;
+        for code in [
+            format!("str {id} buffer"),
+            format!("%1 str {id} paste-buffer"),
+        ] {
+            assert!(run(&mut other, &code).is_err_and(|e| e.starts_with("no_buffer:")));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn buffer_metadata_is_bounded_and_has_the_exact_length() -> Result<(), String> {
+        let mut s = started(Config::default())?;
+        let text = std::iter::repeat_n("界\n", 100).collect::<String>();
+        s.copied(text.clone(), &[]).map_err(|e| e.to_string())?;
+        let id = s.buffers.front().ok_or("no copy")?.0;
+        let expected = Json::Array(vec![Json::object(vec![
+            ("id", Json::str(id.to_string())),
+            ("bytes", Json::count(text.len())),
+            (
+                "preview",
+                Json::str(std::iter::repeat_n("界 ", 25).collect::<String>()),
+            ),
+        ])]);
+        assert_eq!(
+            output(&mut s, "buffers json")?,
+            format!("{}\n", expected.render())
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn buffer_id_exhaustion_copies_nothing() -> Result<(), String> {
+        let (mut s, c) = attached(24, 80)?;
+        s.copied("kept".into(), &[]).map_err(|e| e.to_string())?;
+        let before = s.buffers.clone();
+        s.outbox.clear();
+        s.ids.exhaust_buffers();
+        assert!(
+            s.copied("refused".into(), &[c])
+                .is_err_and(|e| e.code() == Code::IdsExhausted)
+        );
+        assert_eq!(s.buffers, before);
+        assert!(s.outbox.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn buffer_paste_keeps_its_native_size_and_atomic_admission() -> Result<(), String> {
+        let mut s = started(Config::default())?;
+        // Larger than script input, but still admitted as one native paste.
+        s.output(PaneId::of(1), b"\x1b[?2004h");
+        let text = format!(
+            "{}\n\n",
+            std::iter::repeat_n('x', crate::pane::INPUT_BYTES - 14).collect::<String>()
+        );
+        s.copied(text.clone(), &[]).map_err(|e| e.to_string())?;
+        run(&mut s, "%1 newest paste-buffer drop")?;
+        let queued = s
+            .parts
+            .pane_mut(PaneId::of(1))
+            .ok_or("no pane")?
+            .drain_input();
+        let expected = format!("\x1b[200~{}\x1b[201~", text.replace('\n', "\r"));
+        assert_eq!(queued.len(), crate::pane::INPUT_BYTES);
+        assert!(queued == expected.as_bytes(), "the whole encoded paste");
+        let mut pane = s.parts.pane_mut(PaneId::of(1)).ok_or("no pane")?;
+        pane.push(vec![b'y'; crate::pane::INPUT_BYTES - 1])
+            .map_err(|e| e.to_string())?;
+        assert!(run(&mut s, "%1 newest paste-buffer").is_err_and(|e| e.starts_with("input_full:")));
+        let queued = s
+            .parts
+            .pane_mut(PaneId::of(1))
+            .ok_or("no pane")?
+            .drain_input();
+        assert_eq!(queued.len(), crate::pane::INPUT_BYTES - 1);
+        assert!(
+            queued.iter().all(|b| *b == b'y'),
+            "the refused paste added nothing"
+        );
+        Ok(())
+    }
+
     /// A paste into a pane whose program exited is refused, as keys are.
     #[test]
     fn a_paste_into_an_exited_pane_is_refused() -> Result<(), String> {
         let mut s = started(Config::default())?;
         run(&mut s, "opts 80 24 size str /bin/cat program run")?;
         s.exited(PaneId::of(2), crate::process::Ended::Exited(3));
-        s.buffers.push_front("x".into());
-        let pasted = run(&mut s, "%2 0 paste-buffer");
+        s.copied("x".into(), &[]).map_err(|e| e.to_string())?;
+        let pasted = run(&mut s, "%2 newest paste-buffer");
         assert!(pasted.is_err_and(|e| e.contains("exited")), "refused");
         Ok(())
     }
@@ -3703,7 +3866,7 @@ mod tests {
         s.output(id, b"\x1b[?2026h\x07\x1b]52;c;aGk=\x07");
         assert!(s.buffers.is_empty(), "held");
         s.resize(c, 30, 100).map_err(|e| e.to_string())?;
-        assert_eq!(s.buffers.front().map(String::as_str), Some("hi"));
+        assert_eq!(s.buffers.front().map(|(_, text)| text.as_str()), Some("hi"));
         assert!(!s.pane(id).map_err(|e| e.to_string())?.bell, "rung");
         Ok(())
     }
@@ -4716,7 +4879,10 @@ mod tests {
         let (mut s, client) = attached(5, 20)?;
         s.outbox.clear();
         s.output(PaneId::of(1), b"\x1b]52;c;Zm9v\x07");
-        assert_eq!(s.buffers.front().map(String::as_str), Some("foo"));
+        assert_eq!(
+            s.buffers.front().map(|(_, text)| text.as_str()),
+            Some("foo")
+        );
         let sent = |s: &Session| {
             s.outbox
                 .iter()
@@ -4731,7 +4897,10 @@ mod tests {
         s.output(PaneId::of(1), long.as_bytes());
         let notice = s.views.get(&client).and_then(|v| v.notice.clone());
         assert!(notice.is_some_and(|n| n.error && n.text.contains("copies (OSC 52) not made (1)")));
-        assert_eq!(s.buffers.front().map(String::as_str), Some("foo"));
+        assert_eq!(
+            s.buffers.front().map(|(_, text)| text.as_str()),
+            Some("foo")
+        );
         // In one read: each copy made, in order, and the refusal between them told.
         if let Some(view) = s.views.get_mut(&client) {
             view.notice = None;
@@ -4740,7 +4909,12 @@ mod tests {
             PaneId::of(1),
             b"\x1b]52;c;YQ==\x07\x1b]52;c;***\x07\x1b]52;c;Yg==\x07",
         );
-        let buffers: Vec<&str> = s.buffers.iter().take(3).map(String::as_str).collect();
+        let buffers: Vec<&str> = s
+            .buffers
+            .iter()
+            .take(3)
+            .map(|(_, text)| text.as_str())
+            .collect();
         assert_eq!(buffers, ["b", "a", "foo"]);
         let notice = s.views.get(&client).and_then(|v| v.notice.clone());
         assert!(notice.is_some_and(|n| n.text.contains("is not base64")));
@@ -4765,7 +4939,7 @@ mod tests {
         run(&mut s, "str clipboard false set")?;
         s.output(PaneId::of(1), b"\x1b]52;c;YmFy\x07");
         assert!(!sent(&s) && s.outbox.is_empty());
-        assert_eq!(s.buffers.front().map(String::as_str), Some("b"));
+        assert_eq!(s.buffers.front().map(|(_, text)| text.as_str()), Some("b"));
         Ok(())
     }
 
