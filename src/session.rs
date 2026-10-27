@@ -5051,6 +5051,51 @@ mod tests {
         Ok(())
     }
 
+    /// A rendered client screen has no pane counts, even when its text
+    /// starts with a valid version. Pane answers and version text keep theirs.
+    #[test]
+    fn counts_refuses_capture_text_as_a_version() -> Result<(), String> {
+        let (mut s, client) = attached(24, 80)?;
+        let shown = "%2:0.57.1.3.0:48211-1867a3f9c2b8e7d6";
+        s.output(PaneId::of(1), shown.as_bytes());
+        let capture = format!("str {client} client capture-client");
+        let text = output(&mut s, &format!("{capture} string"))?;
+        assert_eq!(text.split_whitespace().next(), Some(shown));
+        let refused = output(&mut s, &format!("{capture} counts"))
+            .err()
+            .ok_or("client capture text supplied invented counts")?;
+        assert!(
+            refused.starts_with("fail: ")
+                && refused.contains("a client capture has no pane version"),
+            "{refused}"
+        );
+        let refused = output(&mut s, "%1 capture counts")
+            .err()
+            .ok_or("pane capture text supplied invented counts")?;
+        assert!(
+            refused.starts_with("fail: ") && refused.contains("not a capture"),
+            "{refused}"
+        );
+        assert_eq!(
+            output(&mut s, &format!("str {shown} counts json"))?.trim(),
+            "[0,57,1,3,0]"
+        );
+        let counts = s.pane(PaneId::of(1)).map_err(|e| e.to_string())?.counts();
+        let expected = format!(
+            "[{},{},{},{},{}]",
+            counts.respawns,
+            counts.screen,
+            counts.bells,
+            counts.done,
+            u8::from(counts.ended)
+        );
+        assert_eq!(
+            output(&mut s, "%1 str x text send-keys counts json")?.trim(),
+            expected
+        );
+        Ok(())
+    }
+
     /// Pane captures, guarded input, a caught wait and the bundled quiet
     /// loop compose without losing the pane or its version.
     #[test]

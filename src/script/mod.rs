@@ -137,8 +137,8 @@ pub struct Opts {
 pub enum On {
     Target(AnyRef),
     Client(ClientId),
-    /// A version's pane (`changed`, or an action's or wait's answer): a
-    /// wait on it waits from that version.
+    /// The version held by an action's or wait's answer: a wait on it
+    /// waits from that version.
     Version(Version),
     /// An explicit wait baseline, accepted only by `wait`.
     Changed(Version),
@@ -1450,13 +1450,12 @@ mod tests {
                 vocabulary.add("held", &format!("-- {kind}"))?;
                 let mut compiler = fuxth::Compiler::<super::Fux>::new(vocabulary);
                 let source = format!("held str SIDE-EFFECT print {suffix}");
-                assert!(
-                    compiler
-                        .add(&super::token::source("versionless", &source)?)
-                        .and_then(|()| compiler.finish())
-                        .is_err(),
-                    "{source}"
-                );
+                let error = compiler
+                    .add(&super::token::source("versionless", &source)?)
+                    .and_then(|()| compiler.finish())
+                    .err()
+                    .ok_or_else(|| format!("accepted {source}"))?;
+                assert_eq!(error.code, fuxth::Code::Type, "{source}: {error}");
             }
         }
         for code in [
