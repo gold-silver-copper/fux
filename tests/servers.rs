@@ -89,7 +89,7 @@ fn servers_are_named_and_kills_are_guarded() -> Outcome {
         untargeted.stderr
     );
     // A terminal attached to the server also guards normal CLI shutdown.
-    let _client = server.attach(10, 40)?;
+    let mut client = server.attach(10, 40)?;
     let refused = server.fux(&["kill-server"])?;
     assert_eq!(refused.status, 1);
     assert!(
@@ -123,6 +123,8 @@ fn servers_are_named_and_kills_are_guarded() -> Outcome {
         server.ok(&["ls"])?.contains("+1 main"),
         "the server still runs"
     );
+    assert_eq!(server.fux(&["force-kill-server"])?.status, 0);
+    assert!(client.wait_exit()?.contains("force-kill-server"));
     assert_eq!(
         named(&rt, &["str", "t", "server", "kill-server"], &[])?.status,
         0

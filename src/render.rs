@@ -1586,11 +1586,11 @@ pub fn paint_into(shown: &Grid, known: bool, new: &Grid, out: &mut Vec<u8>) -> b
     let full = !known
         || (shown.rows, shown.cols, shown.underline_styles)
             != (new.rows, new.cols, new.underline_styles);
-    let rows = differing_rows((!full).then_some(shown), new);
+    let before = (!full).then_some(shown);
+    let rows = differing_rows(before, new);
     if !full && rows.is_empty() && (shown.cursor, shown.modes) == (new.cursor, new.modes) {
         return false;
     }
-    let before = (!full).then_some(shown);
     out.extend_from_slice(b"\x1b[?2026h\x1b[?25l");
     if before.is_none() {
         out.extend_from_slice(b"\x1b[0m\x1b[H\x1b[2J");

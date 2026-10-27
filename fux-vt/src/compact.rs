@@ -83,13 +83,6 @@ impl Compact {
             word: style & (STYLE | PROTECTED),
         }
     }
-    /// Sets `cells` to the ASCII glyphs of `run`, as [`Compact::ascii`]
-    /// makes each, each written as one 64-bit value.
-    pub(crate) fn fill_ascii(cells: &mut [Self], run: &[u8], style: u32) {
-        for (cell, &byte) in cells.iter_mut().zip(run) {
-            *cell = Self::ascii(byte, style);
-        }
-    }
     /// Whether any of `cells` is either half of a wide glyph.
     pub(crate) fn any_halves(cells: &[Self]) -> bool {
         cells.iter().fold(0, |any, cell| any | cell.word) & HALVES != 0
