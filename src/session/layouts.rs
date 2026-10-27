@@ -5,7 +5,7 @@ use super::Session;
 use crate::command::AnyRef;
 use crate::id::{PaneId, WsId};
 use crate::layout::{Axis, Tree};
-use crate::pane::{self, Launch, Runs};
+use crate::pane::{Launch, Runs};
 use crate::workspace::{Fit, Tab, Workspace};
 
 impl Session {
@@ -33,8 +33,8 @@ impl Session {
                 .iter()
                 .filter(|t| self.takes_in(only, ws.id(), t.id()))
             {
-                charge(expanded(ws.name())?)?;
-                charge(expanded(tab.name())?)?;
+                charge(expanded(ws.name().unwrap_or(""))?)?;
+                charge(expanded(tab.name().unwrap_or(""))?)?;
                 let mut result: Result<(), super::Error> = Ok(());
                 tab.root().for_each_pane(&mut |id| {
                     if result.is_err() {
@@ -43,7 +43,7 @@ impl Session {
                     result = (|| {
                         charge(2048)?;
                         if let Some(pane) = self.parts.panes().get(&id) {
-                            charge(expanded(pane.name())?)?;
+                            charge(expanded(pane.name().unwrap_or(""))?)?;
                         }
                         if let Some(launch) = self.program(id) {
                             charge(
@@ -95,16 +95,16 @@ impl Session {
     fn dump_tab(&self, ws: &Workspace, tab: &Tab, whole: bool, opens: bool, out: &mut String) {
         let (root, first) = (tab.root(), tab.root().first_pane());
         let program = self.program(first);
-        // A dump run anywhere puts each tab in the workspace of its name,
-        // made if there is none (`in`).
+        // An unnamed workspace is recreated as a new workspace, never
+        // found by its display label. Later tabs use its new handle.
+        let creates = (opens || !whole) && ws.name().is_none();
         let mut line = vec!["opts".to_owned()];
-        match whole && !opens {
-            true => line.extend([workspace(ws.id()), "in".to_owned()]),
-            false => line.extend(string(ws.name()).chain(["in".to_owned()])),
-        }
-        // A name fux gave (`main`, `tab-N`, the program's) it gives again.
-        if tab.given() {
-            line.extend(string(tab.name()).chain(["name".to_owned()]));
+        if whole && !opens {
+            line.extend([workspace(ws.id()), "in".to_owned()]);
+        } else if let Some(name) = ws.name() {
+            line.extend(string(name).chain(["in".to_owned()]));
+        } else if program.is_some() {
+            line.extend(string("new-workspace").chain(["in".to_owned()]));
         }
         // Its size, which a server with no client attached needs to make
         // it: one that fits clients is made at the size it has, then fits
@@ -113,13 +113,24 @@ impl Session {
         let (cols, rows) = (size.cols().to_string(), size.rows().to_string());
         line.extend([cols, rows, "size".to_owned()]);
         self.pane_words(first, &mut line, out);
-        line.push(match program {
-            Some(_) => "run".to_owned(),
-            None => "new-tab".to_owned(),
-        });
+        line.push(
+            if creates && program.is_none() {
+                "new-workspace"
+            } else if program.is_some() {
+                "run"
+            } else {
+                "new-tab"
+            }
+            .to_owned(),
+        );
         let named = pane_name(first);
         line.extend(["let".to_owned(), named.clone()]);
         push(out, &line);
+        if let Some(name) = tab.name() {
+            let mut line = vec![named.clone(), "tab".to_owned()];
+            line.extend(string(name).chain(["rename".to_owned()]));
+            push(out, &line);
+        }
         if opens {
             push(out, &[&named, "workspace", "let", &workspace(ws.id())]);
         }
@@ -132,12 +143,10 @@ impl Session {
             let Some(p) = self.parts.panes().get(&pane) else {
                 continue;
             };
-            let shell = || pane::basename(self.config.shell.program());
-            let default = self
-                .program(pane)
-                .map_or_else(shell, |l| pane::named(&l.argv));
-            if default != p.name() {
-                push(out, &[&pane_name(pane), "str", p.name(), "rename"]);
+            if let Some(name) = p.name() {
+                let mut line = vec![pane_name(pane)];
+                line.extend(string(name).chain(["rename".to_owned()]));
+                push(out, &line);
             }
         }
     }
@@ -196,12 +205,11 @@ impl Session {
         for (key, value) in program.iter().flat_map(|launch| &launch.env) {
             line.extend(string(key).chain(string(value)).chain(["env".to_owned()]));
         }
-        let Some(launch) = program else {
-            return;
-        };
-        for (i, word) in launch.argv.iter().enumerate() {
-            let what = if i == 0 { "program" } else { "arg" };
-            line.extend(string(word).chain([what.to_owned()]));
+        if let Some(launch) = program {
+            for (i, word) in launch.argv.iter().enumerate() {
+                let what = if i == 0 { "program" } else { "arg" };
+                line.extend(string(word).chain([what.to_owned()]));
+            }
         }
     }
 }

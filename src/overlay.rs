@@ -22,7 +22,7 @@ fn pane_names<'a>(
             {
                 admitted = budget.charge(p.label().len().saturating_add(64).saturating_mul(2));
                 if admitted.is_ok() {
-                    names.push(format!("{} {}", p.id(), p.label()));
+                    names.push(crate::words::labelled(p.id(), &p.label()));
                 }
             }
         });
@@ -44,14 +44,13 @@ pub fn choices(session: &Session, client: ClientId, choices: Choices) -> Result<
                 .workspace(place.ws)
                 .ok_or(Error::NoWorkspace(place.ws))?;
             for tab in ws.tabs() {
-                budget.charge(tab.name().len().saturating_add(128))?;
+                budget.charge(tab.label(session.parts.panes()).len().saturating_add(128))?;
                 if tab.id() == place.tab {
                     current = Some(rows.len());
                 }
                 let label = format!(
-                    "{} {} — {}",
-                    tab.id(),
-                    tab.name(),
+                    "{} — {}",
+                    crate::words::labelled(tab.id(), &tab.label(session.parts.panes())),
                     pane_names(session, [tab.root()], budget)?
                 );
                 rows.push((AnyRef::Tab(tab.id()), label));
@@ -60,15 +59,14 @@ pub fn choices(session: &Session, client: ClientId, choices: Choices) -> Result<
         Choices::Workspaces => {
             let shown = session.shown_workspace(client).map(|w| w.id());
             for ws in session.parts.workspaces() {
-                budget.charge(ws.name().len().saturating_add(128))?;
+                budget.charge(ws.label().len().saturating_add(128))?;
                 if Some(ws.id()) == shown {
                     current = Some(rows.len());
                 }
                 let roots = ws.tabs().iter().map(|t| t.root());
                 let label = format!(
-                    "{} {} — {}",
-                    ws.id(),
-                    ws.name(),
+                    "{} — {}",
+                    crate::words::labelled(ws.id(), &ws.label()),
                     pane_names(session, roots, budget)?
                 );
                 rows.push((AnyRef::Workspace(ws.id()), label));
@@ -86,7 +84,10 @@ pub fn choices(session: &Session, client: ClientId, choices: Choices) -> Result<
                     {
                         admitted = budget.charge(p.label().len().saturating_add(128));
                         if admitted.is_ok() {
-                            rows.push((AnyRef::Pane(p.id()), format!("{} {}", p.id(), p.label())));
+                            rows.push((
+                                AnyRef::Pane(p.id()),
+                                crate::words::labelled(p.id(), &p.label()),
+                            ));
                         }
                     }
                 });

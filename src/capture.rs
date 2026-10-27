@@ -13,6 +13,9 @@ use fux_vt::{
 };
 use std::time::Instant;
 
+/// Hard work ceiling, calibrated against the audit's default-history capture.
+pub(crate) const MAX_CELLS: usize = 16 << 20;
+
 /// Rows selected for a capture, each with the columns its source takes.
 type ReadRows<'a> = Box<dyn Iterator<Item = (Row<'a>, std::ops::Range<usize>)> + 'a>;
 
@@ -313,7 +316,7 @@ impl Limits {
             .checked_mul(2)
             .and_then(|n| n.checked_add(live))
             .ok_or_else(too_large)?
-            .min(16 << 20);
+            .min(MAX_CELLS);
         Ok(Self {
             cells,
             rows: crate::wire::MAX_DECODED
@@ -868,7 +871,7 @@ mod tests {
     fn over_budget_capture_refuses_without_clipping() -> Result<(), Box<dyn std::error::Error>> {
         let mut pane = Lone::new(Pane::new(
             PaneId::of(1),
-            "sh".into(),
+            None,
             Runs::DefaultShell,
             fux_vt::Size::new(3, 80)?,
             1 << 20,
@@ -933,13 +936,7 @@ mod tests {
         let join = CaptureView::default();
         let captured = |output: &str| -> Result<String, Box<dyn std::error::Error>> {
             let size = fux_vt::Size::new(3, 5)?;
-            let mut pane = Lone::new(Pane::new(
-                PaneId::of(1),
-                "sh".into(),
-                Runs::DefaultShell,
-                size,
-                0,
-            )?);
+            let mut pane = Lone::new(Pane::new(PaneId::of(1), None, Runs::DefaultShell, size, 0)?);
             pane.output(output.as_bytes());
             Ok(super::pane(
                 &pane,
@@ -968,13 +965,7 @@ mod tests {
     #[test]
     fn rows_inside_a_wrapped_line_take_it_whole() -> Result<(), Box<dyn std::error::Error>> {
         let size = fux_vt::Size::new(6, 5)?;
-        let mut pane = Lone::new(Pane::new(
-            PaneId::of(1),
-            "sh".into(),
-            Runs::DefaultShell,
-            size,
-            0,
-        )?);
+        let mut pane = Lone::new(Pane::new(PaneId::of(1), None, Runs::DefaultShell, size, 0)?);
         pane.output(b"top\r\nabcdefghijklm\r\nend");
         let run = crate::command::Run::now().ok_or("a clock")?;
         let capture = |rows, wrapped| -> Result<String, Box<dyn std::error::Error>> {
@@ -1002,13 +993,7 @@ mod tests {
             ..CaptureView::default()
         };
         let size = fux_vt::Size::new(3, 5)?;
-        let mut pane = Lone::new(Pane::new(
-            PaneId::of(1),
-            "sh".into(),
-            Runs::DefaultShell,
-            size,
-            0,
-        )?);
+        let mut pane = Lone::new(Pane::new(PaneId::of(1), None, Runs::DefaultShell, size, 0)?);
         // 世 at col 4 does not fit and wraps on, leaving the spacer there.
         pane.output("abcd\x1b[5G世".as_bytes());
         let text = super::pane(
@@ -1030,7 +1015,7 @@ mod tests {
     fn mixed_views_keep_cells_runs_and_visible_blanks() -> Result<(), Box<dyn std::error::Error>> {
         let mut pane = Lone::new(Pane::new(
             PaneId::of(1),
-            "sh".into(),
+            None,
             Runs::DefaultShell,
             fux_vt::Size::new(5, 5)?,
             0,
@@ -1113,7 +1098,7 @@ mod tests {
     {
         let mut pane = Lone::new(Pane::new(
             PaneId::of(1),
-            "sh".into(),
+            None,
             Runs::DefaultShell,
             fux_vt::Size::new(2, 10)?,
             0,
@@ -1173,7 +1158,7 @@ mod tests {
     fn a_joined_range_stops_at_its_last_logical_line() -> Result<(), Box<dyn std::error::Error>> {
         let mut pane = Lone::new(Pane::new(
             PaneId::of(1),
-            "sh".into(),
+            None,
             Runs::DefaultShell,
             fux_vt::Size::new(6, 5)?,
             0,
@@ -1204,13 +1189,7 @@ mod tests {
         use crate::json::Json;
         use crate::wire::{Reader, encode};
         let size = fux_vt::Size::new(3, 20)?;
-        let mut pane = Lone::new(Pane::new(
-            PaneId::of(1),
-            "sh".into(),
-            Runs::DefaultShell,
-            size,
-            0,
-        )?);
+        let mut pane = Lone::new(Pane::new(PaneId::of(1), None, Runs::DefaultShell, size, 0)?);
         pane.output(b"\x1b[1;4:3;5;38;2;1;2;3;48;5;9;58;5;2mstyled\x1b[m plain");
         let view = CaptureView {
             styles: true,
@@ -1248,13 +1227,7 @@ mod tests {
             ..CaptureView::default()
         };
         let size = fux_vt::Size::new(3, 20)?;
-        let mut pane = Lone::new(Pane::new(
-            PaneId::of(1),
-            "sh".into(),
-            Runs::DefaultShell,
-            size,
-            0,
-        )?);
+        let mut pane = Lone::new(Pane::new(PaneId::of(1), None, Runs::DefaultShell, size, 0)?);
         pane.output(b"$ \x1b]133;C\x07hello\x1b]133;D;0\x07PROMPT> ");
         let text = super::pane(
             &pane,
