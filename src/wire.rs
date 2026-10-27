@@ -102,7 +102,7 @@ pub trait Wire: Sized {
 /// power admits that observation, while bounding unfinished Part streams.
 pub const MAX_REPLY: usize = 32 << 20;
 /// Shared construction and decoding grant. The default styled capture
-/// peaked at 69,599,283 construction bytes and charged 48,902,484 decoded
+/// peaked at 69,599,591 construction bytes and charged 48,902,720 decoded
 /// bytes. The next binary power above the larger measurement lets the
 /// receiver accept the same owned-data grant the builder admits.
 pub const MAX_ALLOCATED: usize = 128 << 20;
@@ -368,7 +368,7 @@ pub(crate) fn append(out: &mut Vec<u8>, bytes: &[u8]) -> Result<(), Error> {
     Ok(())
 }
 
-/// Size of the same bounded encoding, without allocating its bytes.
+/// Size of the same bounded encoding without constructing its byte vector.
 pub(crate) fn size<T: Wire>(value: &T) -> Result<usize, Error> {
     let mut out = Writer::counting(MAX_REPLY);
     value.put(&mut out);
