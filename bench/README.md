@@ -198,3 +198,30 @@ One recording's throughput mostly reflects how its output was split into
 reads (fux paints at most every 16 ms); the 16 MiB workloads are throughput
 proper. Paints are counted by the `CSI ? 2026 h` fux begins each with, which
 tmux and zellij do not send, so only fux's are counted.
+
+`capture/history` counts construction and wire encoding of one full 8 MiB
+history at 40×120 (variable length rows); its baseline fills the same
+session. `cli/library` counts one cold vocabulary, standard library,
+bundled library and checker preparation; its baseline only reads the
+embedded source. This component measure excludes command parsing and
+transport: keep actual CLI request counts alongside it. Both use the
+existing counted-workload machinery; existing floors are unchanged.
+
+For a single Linux real-server budget observation at 8 and 64 MiB:
+
+```sh
+python3 bench/budget.py /absolute/path/to/fux "$TMPDIR/budget-before"
+```
+
+The directory must be new, private, and short enough for a Unix socket.
+This starts and stops its own server, pins its thread to an allowed CPU,
+records server-only whole perf instruction counts for filling and capture,
+instructions per input byte, 10-second idle CPU ticks/context switches,
+CLI capture wall time and server RSS high-water. Raw perf reports, capture
+text, fixtures, environment/load and JSON stay in that directory. Each
+history is measured once. Compare matched builds and fixtures; timings
+are observations on shared hardware, never flaky wall-time CI gates.
+Context switches are a wakeup proxy and CPU ticks are quantized. The
+capture wall time includes the CLI's work, while RSS high-water includes
+setup and cannot be treated as exact live allocations. No capture limit
+is inferred from these measures.
