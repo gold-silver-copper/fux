@@ -402,6 +402,11 @@ pub fn state(pane: &Pane, now: Instant, copy_mode: bool) -> Vec<(&'static str, J
         // Its program closed its terminal and runs on: nothing reads keys
         // there (the terminal hung up; Linux says so).
         ("hung_up", Json::Bool(hung_up)),
+        (
+            "read_error",
+            pane.read_error()
+                .map_or(Json::Null, |error| Json::str(error.to_string())),
+        ),
         ("exited", exited),
         ("signal", signal),
         // Past u64's milliseconds no monotonic clock reaches: unknown.

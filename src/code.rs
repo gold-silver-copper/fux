@@ -156,7 +156,7 @@ codes! {
     Usage "usage",
     // What a command meets.
     /// A program that exited or closed its terminal, or none the pane's
-    /// while it respawns: nothing takes input there.
+    /// while it respawns; or its terminal reads failed: nothing takes input there.
     NotRunning "not_running",
     /// A program still running, which a respawn would not end; or a
     /// respawn of the pane still under way.
@@ -185,6 +185,8 @@ codes! {
     /// `resize-x` or `resize-y` the layout cannot give; a tab resized, a
     /// split or a pane moved where its tab's panes would not all show.
     Size "size",
+    /// Memory for a client capture's render grid was refused.
+    Memory "memory",
     /// A mouse event the pane's program does not ask for.
     Mouse "mouse",
     /// A signal that could not be sent.

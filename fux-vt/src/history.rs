@@ -37,6 +37,20 @@ const BLOCK: usize = 1 << 12;
 /// size or more.
 const BLOCKS: usize = 1 << 16;
 
+/// Refused metadata is lost, separately from ordinary history eviction.
+fn room_for_metadata<T>(rows: &mut VecDeque<T>) -> bool {
+    #[cfg(feature = "checks")]
+    if crate::check::refusing() {
+        crate::degraded();
+        return false;
+    }
+    if rows.try_reserve(1).is_err() {
+        crate::degraded();
+        return false;
+    }
+    true
+}
+
 /// Values kept for some rows, by row number, oldest first: rows come and
 /// go in order, so lookup is a binary search and removal is from an end.
 #[derive(Clone, Debug)]
@@ -58,7 +72,7 @@ impl<T> ByRow<T> {
     }
     /// Keeps `value` for the newest row; out of memory keeps none.
     fn insert(&mut self, number: u64, value: T) -> bool {
-        let kept = self.0.try_reserve(1).is_ok();
+        let kept = room_for_metadata(&mut self.0);
         if kept {
             self.0.push_back((number, value));
         }
@@ -703,7 +717,7 @@ impl History {
             return false;
         };
         // No memory for it: the line goes on, as xterm's would.
-        let new = self.ended.back() != Some(&number) && self.ended.try_reserve(1).is_ok();
+        let new = self.ended.back() != Some(&number) && room_for_metadata(&mut self.ended);
         if new {
             self.ended.push_back(number);
             self.recount();
@@ -1180,6 +1194,47 @@ mod faults {
             history.trim();
         }
         history
+    }
+
+    #[test]
+    fn refused_history_metadata_is_counted_once_and_eviction_is_not() {
+        let mut history = history();
+        let mut text = Text::default();
+        let mut cells = [Compact::ascii(b'x', 0)];
+        assert!(
+            crate::compact::Line {
+                cells: &mut cells,
+                text: &mut text
+            }
+            .set(
+                0,
+                Compact::ascii(b'x', 0),
+                &format!(
+                    "x{}",
+                    std::iter::repeat_n("\u{301}", 12).collect::<String>()
+                )
+            )
+        );
+        let link = crate::Hyperlink::new(1, "https://example.test", None);
+        let mut links = crate::link::RowLinks::default();
+        assert!(links.set(0..1, Some(&link)));
+        let links = KeptLinks::take(&mut links);
+        assert!(links.is_some() && !text.is_empty());
+        let before = crate::degrades();
+        crate::refuse_next(2);
+        history.attach(Some(text), links);
+        assert_eq!(crate::degrades().saturating_sub(before), 2);
+        crate::refuse_next(1);
+        history.keep_rendition(LineRendition::DoubleWidth);
+        assert_eq!(crate::degrades().saturating_sub(before), 3);
+        crate::refuse_next(1);
+        assert!(!history.keep_ended());
+        assert_eq!(crate::degrades().saturating_sub(before), 4);
+        assert!(history.keep_ended());
+        assert!(!history.keep_ended());
+        history.budget = 0;
+        history.trim();
+        assert_eq!(crate::degrades().saturating_sub(before), 4);
     }
 
     fn faulted(history: &History) -> Vec<&'static str> {
