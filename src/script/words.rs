@@ -223,6 +223,8 @@ pub const TAKEN_AS: [(&str, &str); 3] = [
 /// of an integer.
 #[rustfmt::skip]
 pub const NAMES: &[(&str, &str, &str)] = &[
+    ("revision", "string", "a run-qualified layout revision"),
+    ("tree", "list", "a flat layout node list"),
     ("closed-outcome", "closed-answer answers", "a closed pane or collection answer"),
     ("outcome", "answer answers", "an action's or wait's answer: a pane's, or a tab's or workspace's panes'"),
     ("x", "opts pane>pane-request answer>pane-request closed-answer>pane-request tab>tab-request workspace>workspace-request client>client-request pane-request tab-request workspace-request client-request changed-request expected-request",
@@ -271,10 +273,10 @@ words! {
         Finding All "all" "-- all" "the whole session, for info, notify, events and dump" "fux all info" [];
         Finding Focused "focused" "client -- pane" "the pane a client focuses" "fux str c1 client focused capture" [];
         Starting Opts "opts" "-- opts" "empty options, for run, new-tab, new-workspace, attach and attach-defaults (the other words take them on the pane)" "fux opts str agent in 80 24 size str ./app program run" [];
-        Starting Run "run" "opts -- answer" "start a program in a tab of its own; in is required, name names its pane; its pane stays once it exits" "fux agent-opts str web name 120 40 size str ./app program str --flag arg run" [Opts: Name Size Cwd Env UnsetEnv CopyEnvironment HistoryBytes ProgramClipboard Program Arg In];
-        Starting Split "split" "subject -- answer" "split a pane: a shell, or the program given" "fux %3 vertical split" [Pane: Horizontal Vertical Shares Cwd Env UnsetEnv CopyEnvironment HistoryBytes ProgramClipboard Program ShellProgram Arg];
-        Starting NewTab "new-tab" "opts -- answer" "a tab with the client's shell or explicit launch" "fux opts str logs name 80 24 size str agent in new-tab" [Opts: Name Size Cwd Env UnsetEnv CopyEnvironment HistoryBytes ProgramClipboard Program ShellProgram Arg In];
-        Starting NewWorkspace "new-workspace" "opts -- answer" "a workspace with a tab and the client's shell or explicit launch" "fux opts str work name 80 24 size new-workspace" [Opts: Name Size Cwd Env UnsetEnv CopyEnvironment HistoryBytes ProgramClipboard Program ShellProgram Arg];
+        Starting Run "run" "opts -- answer" "start a program in a tab of its own; in is required, name names its pane; its pane stays once it exits" "fux agent-opts str web name 120 40 size str ./app program str --flag arg run" [Opts: Name Size Cwd Env UnsetEnv CopyEnvironment HistoryBytes Reflow AlternateScrollLines PictureBytes ProgramClipboard Program Arg In];
+        Starting Split "split" "subject -- answer" "split a pane: a shell, or the program given" "fux %3 vertical split" [Pane: Horizontal Vertical Shares Cwd Env UnsetEnv CopyEnvironment HistoryBytes Reflow AlternateScrollLines PictureBytes ProgramClipboard Program ShellProgram Arg];
+        Starting NewTab "new-tab" "opts -- answer" "a tab with the client's shell or explicit launch" "fux opts str logs name 80 24 size str agent in new-tab" [Opts: Name Size Cwd Env UnsetEnv CopyEnvironment HistoryBytes Reflow AlternateScrollLines PictureBytes ProgramClipboard Program ShellProgram Arg In];
+        Starting NewWorkspace "new-workspace" "opts -- answer" "a workspace with a tab and the client's shell or explicit launch" "fux opts str work name 80 24 size new-workspace" [Opts: Name Size Cwd Env UnsetEnv CopyEnvironment HistoryBytes Reflow AlternateScrollLines PictureBytes ProgramClipboard Program ShellProgram Arg];
         Starting Respawn "respawn" "subject -- answer" "start again in its pane the program it was given (run, split), or the one given now" "fux %3 kill-first respawn" [Pane: KillFirst Env UnsetEnv Program Arg];
         Waiting Wait "wait" "place -- place" "wait until the pane's version differs from the one changed gives, else an action's answer's (%2 str y text send-keys wait), else now's, or the pane closes; a tab or workspace: any of the panes there as it begins" "A=$(fux %3 str y text send-keys); fux str \"$A\" changed 60 timeout wait" [Pane: Changed Timeout];
         Input SendKeys "send-keys" "target -- target" "send the keys on it to a pane, every pane of a tab, or a client as typed at its terminal; 900 KiB at most in all" "fux %3 str 'ls -l' text str Enter key send-keys" [Pane: Text Key Paste Bytes Expect];
@@ -294,6 +296,7 @@ words! {
         Changing ResizeX "resize-x" "pane width --" "a pane's width: cells, or a percent" "fux %3 30 percent resize-x" [];
         Changing ResizeY "resize-y" "pane height --" "a pane's height: cells, or a percent" "fux %3 10 resize-y" [];
         Changing Percent "percent" "n -- size" "n percent of the tab, for resize-x and resize-y" "fux %3 30 percent resize-x" [];
+        Changing Arrange "arrange" "tab revision tree --" "replace the whole layout at a run-qualified structural revision" "fux @2 str REVISION list %3 end arrange" [];
         Changing MoveBorder "move-border" "pane way cells --" "move the pane's nearest border: left right up down" "fux %3 str left 5 move-border" [];
         Changing Move "move" "pane where --" "move a pane to a tab, workspace, new-tab, new-workspace, or beside its neighbour: left right up down" "fux %3 str new-tab move" [];
         Changing SwapWith "swap-with" "pane counterpart --" "swap a pane with another pane or its neighbour: left right up down" "fux %3 %4 swap-with" [];
@@ -303,7 +306,7 @@ words! {
         Changing Buffers "buffers" "-- json" "paste buffer metadata, newest first: id, bytes and preview" "fux buffers" [];
         Changing Buffer "buffer" "id -- text" "exact paste buffer text by id or newest" "fux newest buffer" [];
         Changing PasteBuffer "paste-buffer" "pane id -- answer" "paste a buffer by id or newest into a pane; answers as send-keys does" "fux %3 newest paste-buffer" [];
-        Clients Attach "attach" "attachable --" "show the server in this terminal (bare fux uses default-attach); with a size, be a client of no terminal instead; explicit targets and watch refuse creation options" "fux @2 attach" [Either: In Size Watch Cwd Env UnsetEnv CopyEnvironment HistoryBytes ProgramClipboard Program ShellProgram Arg Name];
+        Clients Attach "attach" "attachable --" "show the server in this terminal (bare fux uses default-attach); with a size, be a client of no terminal instead; explicit targets and watch refuse creation options" "fux @2 attach" [Either: In Size Watch Cwd Env UnsetEnv CopyEnvironment HistoryBytes Reflow AlternateScrollLines PictureBytes ProgramClipboard Program ShellProgram Arg Name];
         Clients Focus "focus" "client way --" "left right up down next previous or last pane" "fux str c1 client str left focus" [];
         Clients Show "show" "client handle --" "show and follow a pane, tab or workspace" "fux str c1 client %3 show" [];
         Clients StepTab "step-tab" "client way --" "show the next or previous tab" "fux str c1 client str next step-tab" [];
@@ -338,6 +341,9 @@ words! {
         Starting Env "env" "x key var -- x" "a variable for it: text, or a pane, tab or workspace as its id (%3; an action's answer, its pane)" "fux agent-opts str PORT 8080 env 80 24 size str ./app program run";
         Starting Program "program" "x path -- x" "the program to start, in place of a shell" "fux agent-opts 80 24 size str ./app program run";
         Starting HistoryBytes "history-bytes" "x integer -- x" "history budget for the new pane, in bytes (0 to 1 GiB)" "fux agent-opts 0 history-bytes str /bin/cat program run";
+        Starting Reflow "reflow" "x boolean -- x" "whether the new pane rewraps primary-screen lines on resize" "fux agent-opts false reflow str /bin/cat program run";
+        Starting AlternateScrollLines "alternate-scroll-lines" "x integer -- x" "arrows per alternate-screen wheel action (0 to 32767)" "fux agent-opts 3 alternate-scroll-lines str /bin/cat program run";
+        Starting PictureBytes "picture-bytes" "x integer -- x" "picture budget for the new pane (0 to 96 MiB); zero disables pictures" "fux agent-opts 0 picture-bytes str /bin/cat program run";
         Starting ProgramClipboard "program-clipboard" "x boolean -- x" "whether the new pane's program may copy to paste buffers" "fux agent-opts false program-clipboard str /bin/cat program run";
         Starting ShellProgram "shell-program" "x list -- x" "the checked argv list to start with shell role; its exit closes the pane" "fux opts 80 24 size list str /bin/sh end shell-program new-tab";
         Starting CopyEnvironment "copy-environment" "x list -- x" "replace the client selection for this creation; empty selects nothing; selected values are saved and exported by dump" "fux agent-opts list str LANG end copy-environment str /bin/cat program run";
@@ -831,6 +837,21 @@ fn modify(
             built.history_bytes =
                 Some(HistoryBytes::read(&next()?).map_err(|why| fail(Raise::Range, why))?);
         }
+        Opt::Reflow => {
+            built.reflow = Some(bool::read(&next()?).map_err(|why| fail(Raise::BadValue, why))?)
+        }
+        Opt::AlternateScrollLines => {
+            built.alternate_scroll_lines = Some(
+                crate::command::ScrollLines::read(&next()?)
+                    .map_err(|why| fail(Raise::Range, why))?,
+            )
+        }
+        Opt::PictureBytes => {
+            built.picture_bytes = Some(
+                crate::command::PictureBytes::read(&next()?)
+                    .map_err(|why| fail(Raise::Range, why))?,
+            )
+        }
         Opt::ProgramClipboard => {
             built.program_clipboard =
                 Some(bool::read(&next()?).map_err(|why| fail(Raise::BadValue, why))?);
@@ -1060,6 +1081,9 @@ pub(super) fn check_attach_creation(
                     | Opt::UnsetEnv
                     | Opt::CopyEnvironment
                     | Opt::HistoryBytes
+                    | Opt::Reflow
+                    | Opt::AlternateScrollLines
+                    | Opt::PictureBytes
                     | Opt::ProgramClipboard
                     | Opt::Program
                     | Opt::ShellProgram
@@ -1715,6 +1739,77 @@ impl Host<'_> {
                 let n = within(&next()?, Percent::SHARES)?;
                 let share = Percent::new(n).ok_or_else(|| fail(Raise::Range, "no share"))?;
                 now(out, Value::App(Fux::Extent(Extent::Percent(share))))
+            }
+            Act::Arrange => {
+                let tab = next()?;
+                let Value::App(Fux::Tab(target, _)) = tab else {
+                    return Err(wrong("a tab", &tab));
+                };
+                let revision = next()?;
+                let Value::Str(revision) = &revision else {
+                    return Err(wrong("a layout revision string", &revision));
+                };
+                let revision = revision
+                    .parse()
+                    .map_err(|()| fail(Raise::BadValue, "a layout revision is TAB:REVISION:RUN"))?;
+                let tree = next()?;
+                let Value::List(list) = &tree else {
+                    return Err(wrong("a flat layout list", &tree));
+                };
+                if list.items().is_empty() || list.items().len() > crate::layout::NODES_MAX {
+                    return Err(fail(Raise::TooLong, "a layout needs 1..2047 nodes"));
+                }
+                let mut nodes = Vec::with_capacity(list.items().len());
+                let mut of = None;
+                for node in list.items() {
+                    let node = if let Some(pane) = as_pane(node) {
+                        of = super::same_run(of, super::scope(node))?;
+                        crate::layout::Node::Pane(pane)
+                    } else if let Value::List(fields) = node {
+                        let [axis, first_share, second_share, first, second] = fields.items()
+                        else {
+                            return Err(fail(
+                                Raise::BadValue,
+                                "a split is list AXIS SHARE SHARE FIRST SECOND end",
+                            ));
+                        };
+                        let Value::Str(axis) = axis else {
+                            return Err(wrong("a string", axis));
+                        };
+                        let axis = match &***axis {
+                            "horizontal" => Axis::Horizontal,
+                            "vertical" => Axis::Vertical,
+                            _ => {
+                                return Err(fail(
+                                    Raise::BadValue,
+                                    "layout axis must be horizontal or vertical",
+                                ));
+                            }
+                        };
+                        crate::layout::Node::Split {
+                            axis,
+                            first_share: share(first_share)?,
+                            second_share: share(second_share)?,
+                            first: within(first, 0..=i64::from(u32::MAX))?,
+                            second: within(second, 0..=i64::from(u32::MAX))?,
+                        }
+                    } else {
+                        return Err(wrong("a pane or split list", node));
+                    };
+                    nodes.push(node);
+                }
+                later(Ask::Server {
+                    request: Box::new(
+                        Command::Arrange {
+                            target,
+                            revision,
+                            nodes,
+                        }
+                        .into(),
+                    ),
+                    client: None,
+                    of,
+                })
             }
             Act::MoveBorder => {
                 let p = pane(&next()?)?;
@@ -2725,6 +2820,8 @@ mod tests {
                 }
                 let args = match opt {
                     Opt::HistoryBytes => vec![Value::Int(0)],
+                    Opt::Reflow => vec![Value::Bool(false)],
+                    Opt::AlternateScrollLines | Opt::PictureBytes => vec![Value::Int(0)],
                     Opt::ProgramClipboard => vec![Value::Bool(false)],
                     Opt::Name
                     | Opt::Cwd

@@ -638,6 +638,7 @@ impl Keyboard {
         let path = socket.path().to_owned();
         let stop = script::Stop::default();
         let stops = stop.clone();
+        let timing = state.preferences.decode_timing();
         let state = std::sync::Arc::new(Mutex::new(state));
         let shared = state.clone();
         let spawned = std::thread::Builder::new()
@@ -679,7 +680,7 @@ impl Keyboard {
                 }
             });
         spawned?;
-        let mut decoder = crate::decode::Decoder::default();
+        let mut decoder = crate::decode::Decoder::new(timing);
         // The server asks the terminal about itself as the client attaches.
         decoder.expect(Instant::now());
         Ok(Keyboard {
@@ -719,6 +720,8 @@ impl Keyboard {
     /// order, as `Keyboard` requires.
     pub fn bytes(&mut self, bytes: &[u8], now: Instant) -> Vec<Dispatch> {
         let mut inputs = Vec::new();
+        self.decoder
+            .set_timing(lock(&self.state).preferences.decode_timing());
         self.decoder.expire(now);
         self.decoder.bytes(bytes, &mut inputs);
         self.decoder.mark(now);
@@ -1686,6 +1689,30 @@ mod tests {
     }
 
     #[test]
+    fn decoder_timing_belongs_to_each_client_and_waits_for_idle()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let socket = socket::checked("/nowhere/fux/s.sock", "test")?;
+        let mut a = script::default_state().map_err(|e| e.to_string())?;
+        let b = a.clone();
+        a.preferences.escape_delay = crate::command::DecodeMillis::new(100).ok_or("delay")?;
+        let mut a = new_keyboard(&socket, a, false)?;
+        let mut b = new_keyboard(&socket, b, false)?;
+        let now = Instant::now();
+        assert!(a.bytes(b"\x1b", now).is_empty());
+        assert!(b.bytes(b"\x1b", now).is_empty());
+        assert_eq!(a.deadline(), now.checked_add(Duration::from_millis(100)));
+        assert_eq!(b.deadline(), now.checked_add(Duration::from_millis(35)));
+        lock(&a.state).preferences.escape_delay =
+            crate::command::DecodeMillis::new(200).ok_or("delay")?;
+        assert!(a.bytes(b"[", now).is_empty());
+        assert_eq!(a.deadline(), now.checked_add(Duration::from_millis(100)));
+        a.timeout();
+        assert!(a.bytes(b"\x1b", now).is_empty());
+        assert_eq!(a.deadline(), now.checked_add(Duration::from_millis(200)));
+        Ok(())
+    }
+
+    #[test]
     fn committed_presentation_precedes_the_following_request()
     -> Result<(), Box<dyn std::error::Error>> {
         let path = fuxix::file::scratch()?.join(format!("f5-fence-{}/s", std::process::id()));
@@ -1939,7 +1966,8 @@ mod tests {
             [crate::view::Presentation {
                 bell: false,
                 titles: true,
-                terminal_clipboard: false
+                terminal_clipboard: false,
+                cell_placement: false,
             }]
         );
         updates.clear();

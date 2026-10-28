@@ -23,7 +23,13 @@ fn keeps_mode(n: u16) -> bool {
     let Ok(size) = crate::vt_size(1, 1) else {
         return false;
     };
-    let Ok(mut parser) = fux_vt::Parser::with_options(size, 0, fux::pane::OPTIONS) else {
+    let Ok(mut parser) = fux_vt::Parser::with_options(
+        size,
+        0,
+        fux::pane::OPTIONS
+            .with(fux_vt::Feature::Reflow)
+            .with(fux_vt::Feature::Pictures),
+    ) else {
         return false;
     };
     let mut heard = Heard::default();
@@ -777,7 +783,9 @@ fn tally(recordings: &[Recording]) -> Result<BTreeMap<String, Row>, String> {
     let mut rows: BTreeMap<String, Row> = BTreeMap::new();
     for r in recordings {
         // As fux's panes are set up.
-        let options = fux::pane::OPTIONS;
+        let options = fux::pane::OPTIONS
+            .with(fux_vt::Feature::Reflow)
+            .with(fux_vt::Feature::Pictures);
         let mut parser =
             fux_vt::Parser::with_options(crate::vt_size(r.rows, r.cols)?, 8 << 20, options)
                 .map_err(|e| format!("fux-vt: {e}"))?;
@@ -880,7 +888,7 @@ fn render(names: &[String]) -> Result<String, String> {
          SGR attribute is a row of its own, and an XTGETTCAP request shows the \
          capabilities it asks for. \"Count\" counts every time it was sent, in all the \
          recordings. \"fux-vt\" is what a fux pane's parser does with it, as fux sets \
-         it up (`fux::pane::OPTIONS`), with what fux itself answers.\n"
+         it up, with reflow and pictures enabled, and what fux itself answers.\n"
     );
     let _ = writeln!(out, "Recordings:\n");
     for r in &recordings {

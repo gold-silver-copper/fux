@@ -221,8 +221,14 @@ mod tests {
     #[test]
     fn a_load_left_in_a_string_still_shows_its_marker() -> Result<(), String> {
         let size = fux_vt::Size::new(5, 40).map_err(|e| e.to_string())?;
-        let mut vt =
-            fux_vt::Parser::with_options(size, 0, fux::pane::OPTIONS).map_err(|e| e.to_string())?;
+        let mut vt = fux_vt::Parser::with_options(
+            size,
+            0,
+            fux::pane::OPTIONS
+                .with(fux_vt::Feature::Reflow)
+                .with(fux_vt::Feature::Pictures),
+        )
+        .map_err(|e| e.to_string())?;
         for load in [
             &b"\x1b]0;a title never ended"[..],
             b"\x1bPq#0;2;0;0;0",

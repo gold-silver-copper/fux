@@ -441,7 +441,8 @@ bundled state, preserves earlier explicit CLI settings, and shows one
 diagnostic. Evaluation and local setters send no requests. Each observation wait sends
 this client's `wait-seconds` unless it has an explicit `timeout`.
 Shared paste buffers retain the newest 16 copies; retention is fixed.
-Shell argv, environment selection, `history-bytes` and `program-clipboard`
+Shell argv, environment selection, `history-bytes`, `program-clipboard`,
+`reflow`, `alternate-scroll-lines` and `picture-bytes`
 are local defaults for future creations. Explicit creation options override
 them, including zero and false. Existing panes retain their policy through
 respawn; `%3 4194304 history-budget` changes only that pane's current budget.
@@ -449,6 +450,33 @@ Lowering it evicts the oldest rows immediately. Dump records current budgets
 and permissions. Bell, titles and terminal clipboard delivery belong to each
 view and arrive in its attach request after local commit. Later key or prompt
 changes use a connection-bound action, fenced before following requests.
+
+Emulator defaults are bundled in `src/script/client-defaults.fux`:
+
+| Setting | Default | Bound and lifetime |
+| --- | --- | --- |
+| `reflow` | `true` | Creation policy; rewrap recorded primary-screen lines, never the alternate screen |
+| `alternate-scroll-lines` | `5` | 0–32767 arrows per wheel action when the program enables alternate scroll; Ctrl keeps half-page scrolling |
+| `picture-bytes` | `100663296` | 0–96 MiB per pane; zero disables picture admission and advertisement |
+| `escape-delay-ms` | `35` | 0–65535 ms, per client |
+| `paste-timeout-ms` | `5000` | 0–65535 ms, per client |
+| `cell-placement` | `false` | Per client; position after each non-ASCII glyph |
+
+The three pane settings also have typed creation options, for example
+`fux agent-opts false reflow 0 picture-bytes str /bin/cat program run`.
+They survive terminal reset and respawn, and dump preserves them.
+Decoder changes take effect when reading begins idle, keeping an unfinished
+Escape or paste's existing timing. Zero waits for the next explicit timeout
+event; input and paste byte limits remain fixed.
+
+`str cell-placement true set` forces a redraw of that client's screen.
+The compact default assumes the outer terminal shares fux's Unicode 17
+narrow ambiguous-width and cluster advance rules, with cursor moves for
+known cluster differences. Explicit placement bounds accumulated cursor
+drift; it cannot constrain a mismatched font's glyph footprint. Both modes
+keep fux's stored cell geometry. Neither guesses from locale or terminal name.
+The bounded comparison in `bench/examples/placement.rs` measures output bytes,
+thread CPU and paint latency; it does not measure transport or display latency.
 
 Client defaults load when `set`, `attach-defaults`, `list-keys`, `attach`, a launch or an
 observation wait without `timeout` needs them; ordinary queries and server
@@ -558,6 +586,40 @@ fresh server:
 fux all dump > ~/session.fux              # save when you choose
 fux start && fux --file ~/session.fux # replay on a fresh server
 ```
+
+`arrange` replaces an existing tab's whole layout in one guarded commit:
+
+```fux
+@2 dup str layout_revision get
+list %3 %4 %5 end str horizontal even-of arrange
+```
+
+The list must name every current pane of that tab exactly once. The revision
+is `TAB:REVISION:RUN`, tied to the tab and server run. Layout edits and changes
+to the tab's fit invalidate it, even if a border is moved back. A stale or
+invalid proposal changes nothing. A revision the tab has since moved past
+fails with `stale`. A token for another tab or run, or a future serial, fails
+with `bad_value`.
+Pane focus stays with the same pane.
+Every background and sizing-client screen must show every pane; watchers do
+not constrain it. Success journals one `arranged` invalidation, then sizes
+panes through the normal settle path, which reports PTY resize failures.
+
+The tree is a flat list, rooted at index zero. Each leaf accepts a typed pane
+or its action/wait answer; all retained pane runs must agree. A split is
+`list str horizontal|vertical FIRST-SHARE SECOND-SHARE FIRST-INDEX SECOND-INDEX end`.
+Every index must be reached once; shares are nonzero u32 values. A proposal
+has at most 2,047 nodes and depth 64. Revision exhaustion refuses further
+guarded edits rather than reusing a token.
+
+The library's pure builders accept pane lists: `PANES str horizontal even-of`
+(or `str vertical`) uses balanced splits weighted by pane count;
+`PANES str horizontal str vertical main-of` gives the first pane two shares
+beside an evenly stacked remainder's one (swap the axes for a main pane
+above); `PANES tiled-of` alternates horizontal and vertical splits, weighted
+by pane count. Empty lists fail; the language's list, weight and execution
+budgets also apply. These builders read no session state and submit nothing
+until `arrange`.
 
 A dump makes the layouts and launches again: each shell starts afresh in
 its directory, each program `run` started starts again. It never brings

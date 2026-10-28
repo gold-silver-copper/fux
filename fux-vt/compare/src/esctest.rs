@@ -9,7 +9,7 @@
 //! earlier one left, whatever the terminal's resets do (esctest's own reset
 //! before each test still runs). The tests are reported by area (a test
 //! class, one file of `esctest/tests/`). The terminal is a fux-vt parser
-//! set up as fux's panes are (`fux::pane::OPTIONS`) with the reports
+//! set up with fux's fixed facilities, reflow, pictures and the reports
 //! fux-vt keeps off in panes that esctest needs (see [`options`]): it reads
 //! what esctest writes, and its replies are written back. Each read esctest
 //! makes waits `--timeout` for its reply, so a report fux-vt does not give
@@ -290,10 +290,12 @@ fn request(argv: &[String]) -> Result<Option<Request>, String> {
     Ok(Some(out))
 }
 
-/// How the terminal under test is set up: as fux's panes are, with what
-/// esctest needs that panes leave off.
+/// The fixture selects reflow and pictures, as bundled client defaults do,
+/// and adds the reports esctest needs that panes leave off.
 pub fn options() -> fux_vt::Options {
     fux::pane::OPTIONS
+        .with(fux_vt::Feature::Reflow)
+        .with(fux_vt::Feature::Pictures)
         .with(fux_vt::Feature::RectangleChecksums)
         .with(fux_vt::Feature::ExtendedReplies)
 }

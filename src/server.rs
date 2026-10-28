@@ -1134,6 +1134,7 @@ impl Server {
         let send: Vec<bool> = (pictures.iter())
             .map(|p| {
                 !known
+                    || attached.spare.clears(&attached.shown)
                     || !attached.pictures.contains(p)
                     || !attached.spare.same_in(&attached.shown, p.area)
             })
@@ -1682,6 +1683,41 @@ impl Server {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_answered_wait_leaves_no_cached_deadline() -> Result<(), Box<dyn std::error::Error>> {
+        let (mut server, _peers, _) = ordered_fixture()?;
+        let now = Instant::now();
+        let stop = after(now, Duration::from_secs(10));
+        server.phase = Phase::Stopping(stop);
+        server
+            .conns
+            .get_mut(1)
+            .ok_or("source")?
+            .enter(&mut server.session, Stage::Dead, now);
+        server.session.outbox.clear();
+        let pane = PaneId::of(1);
+        let counts = server
+            .session
+            .parts
+            .panes()
+            .get(&pane)
+            .ok_or("pane")?
+            .counts();
+        let waiting = Waiting::new(
+            crate::wait::Watches::Pane((pane, counts)),
+            server.session.run,
+            now,
+            Duration::from_secs(1),
+        );
+        server.conns.first_mut().ok_or("worker")?.stage = Stage::Waiting(Box::new(waiting));
+        server.session.output(pane, b"changed", now);
+        assert_eq!(
+            server.turn(now, &mut Vec::new()),
+            ControlFlow::Continue(Some(stop))
+        );
+        Ok(())
+    }
 
     #[test]
     fn due_frames_precede_expired_wait_answers() -> Result<(), Box<dyn std::error::Error>> {

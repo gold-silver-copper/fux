@@ -65,7 +65,7 @@ const CLUSTERS: &str = "An emoji sequence (a modifier, a ZWJ sequence, a flag, V
     `corpus --engines xterm,ghostty,wezterm vim-unicode` shows it.";
 
 /// The reason zsh-resize differs.
-const REFLOW: &str = "fux's panes reflow (fux::pane::OPTIONS), as Ghostty, wezterm and \
+const REFLOW: &str = "this fixture reflows like fux's bundled client defaults, as Ghostty, wezterm and \
     libvterm do: at the shrink to 20x60, zsh's line typed before it is rewrapped onto two \
     rows with the cursor on the second, and zsh redraws its prompt from there, so the line \
     shows twice, as in those three. xterm, alacritty and avt, as run here, cut the line \
@@ -736,7 +736,8 @@ impl Recording {
             rows: self.rows,
             cols: self.cols,
             history: 10_000,
-            reflow: fux::pane::OPTIONS.has(fux_vt::Feature::Reflow),
+            // This corpus selects the reflow policy in client-defaults.fux.
+            reflow: true,
             newline_before_resize: false,
             steps: self
                 .steps
