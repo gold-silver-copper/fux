@@ -72,14 +72,25 @@ impl Bar {
         right: Vec<Field>,
         tab_numbers: bool,
     ) -> Result<Self, String> {
-        let bar = Self {
+        if left.len().saturating_add(right.len()) > Self::MAX_FIELDS {
+            return Err("a bar has at most 16 fields".to_owned());
+        }
+        let mut seen = Vec::new();
+        for field in left.iter().chain(&right) {
+            if seen.contains(field) {
+                return Err("a bar field occurs more than once".to_owned());
+            }
+            if matches!(field, Field::Slot(n) if usize::from(*n) >= Slots::MAX) {
+                return Err("a bar slot is 0 to 15".to_owned());
+            }
+            seen.push(*field);
+        }
+        Ok(Self {
             position,
             left,
             right,
             tab_numbers,
-        };
-        bar.validate()?;
-        Ok(bar)
+        })
     }
     pub fn position(&self) -> BarPosition {
         self.position
@@ -92,22 +103,6 @@ impl Bar {
     }
     pub fn tab_numbers(&self) -> bool {
         self.tab_numbers
-    }
-    fn validate(&self) -> Result<(), String> {
-        if self.left.len().saturating_add(self.right.len()) > Self::MAX_FIELDS {
-            return Err("a bar has at most 16 fields".to_owned());
-        }
-        let mut seen = Vec::new();
-        for field in self.left.iter().chain(&self.right) {
-            if seen.contains(field) {
-                return Err("a bar field occurs more than once".to_owned());
-            }
-            if matches!(field, Field::Slot(n) if usize::from(*n) >= Slots::MAX) {
-                return Err("a bar slot is 0 to 15".to_owned());
-            }
-            seen.push(*field);
-        }
-        Ok(())
     }
 }
 impl Wire for Bar {
@@ -137,14 +132,13 @@ impl Slots {
         if values.len() > Self::MAX {
             return Err("at most 16 bar slots".to_owned());
         }
-        let mut seen = Vec::new();
         let mut out = Vec::new();
         for (id, text) in values {
             let text = text.into();
             if usize::from(id) >= Self::MAX {
                 return Err("a bar slot is 0 to 15".to_owned());
             }
-            if seen.contains(&id) {
+            if out.iter().any(|(held, _)| *held == id) {
                 return Err(format!("bar slot {id} occurs more than once"));
             }
             if text.len() > Self::TEXT_MAX || text.chars().any(char::is_control) {
@@ -152,7 +146,6 @@ impl Slots {
                     "bar slot text is at most 256 bytes with no control characters".to_owned(),
                 );
             }
-            seen.push(id);
             out.push((id, text.into_owned()));
         }
         Ok(Self(out))
