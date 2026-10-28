@@ -488,7 +488,7 @@ fn an_absent_selection_unsets_the_server_value() -> Outcome {
     let pane = answer.trim().split(':').next().ok_or("pane")?;
     server.exits(pane)?;
     assert_eq!(server.ok(&[pane, "capture"])?.trim(), "unset");
-    assert!(server.ok(&["dump"])?.contains("str ENV unset-env"));
+    assert!(server.ok(&["all", "dump"])?.contains("str ENV unset-env"));
     Ok(())
 }
 
@@ -572,7 +572,7 @@ fn copy_environment_takes_the_clients_variables_or_none() -> Outcome {
     assert!(bytes.contains("63 61 66 e9"), "{stdout}");
     assert!(
         server
-            .ok(&["dump"])?
+            .ok(&["all", "dump"])?
             .contains("environment FUXT_BYTES is not UTF-8 text")
     );
     Ok(())
@@ -882,14 +882,17 @@ fn launches_save_the_callers_argv_role_and_environment() -> Outcome {
     )])?;
     server.exits(pane)?;
     assert_eq!(server.ok(&[pane, "capture"])?.trim(), "saved|unset");
-    let dump = server.ok(&["dump"])?;
+    let dump = server.ok(&["all", "dump"])?;
     assert!(dump.contains("list end copy-environment"), "{dump}");
     assert!(dump.contains("str ENV unset-env"), "{dump}");
     assert!(dump.contains("str F4_VALUE str saved env"), "{dump}");
     // Changing local selection before replay cannot add a new selected name.
     let replay = format!("str copy-environment list str F4_LEAK end set\n{dump}");
     let _ = server.ok(&[&replay])?;
-    assert_eq!(server.ok(&["dump"])?.matches("str F4_LEAK").count(), 0);
+    assert_eq!(
+        server.ok(&["all", "dump"])?.matches("str F4_LEAK").count(),
+        0
+    );
     Ok(())
 }
 
@@ -927,7 +930,7 @@ fn presentation_updates_only_the_addressed_view_before_a_wait_finishes() -> Outc
 #[test]
 fn pane_creation_overrides_preserve_zero_and_false_and_dump_replays_them() -> Outcome {
     let server = Server::start("")?;
-    let created = server.ok(&["str history-bytes 4096 set str program-clipboard true set agent-opts 40 6 size 0 history-bytes false program-clipboard str /bin/cat program run"])?;
+    let created = server.ok(&["str history-bytes 4096 set str program-clipboard true set agent-opts 40 6 size 0 history-bytes false reflow 0 alternate-scroll-lines 0 picture-bytes false program-clipboard str /bin/cat program run"])?;
     let pane = created.trim().split(':').next().ok_or("pane")?;
     assert_eq!(
         server.ok(&[pane, "str", "history_bytes", "get"])?.trim(),
@@ -953,11 +956,18 @@ fn pane_creation_overrides_preserve_zero_and_false_and_dump_replays_them() -> Ou
         server.ok(&[pane, "str", "history_bytes", "get"])?.trim(),
         "0"
     );
-    let recipe = server.ok(&[pane, "tab", "dump-of"])?;
+    let recipe = server.ok(&[pane, "tab", "dump"])?;
     assert!(
-        recipe.contains("0 history-bytes false program-clipboard"),
+        recipe.contains("0 history-bytes false reflow 0 alternate-scroll-lines 0 picture-bytes false program-clipboard"),
         "{recipe}"
     );
+    for (field, value) in [
+        ("reflow", "false"),
+        ("alternate_scroll_lines", "0"),
+        ("picture_bytes", "0"),
+    ] {
+        assert_eq!(server.ok(&[pane, "str", field, "get"])?.trim(), value);
+    }
     let replay = server.dir.join("pane-policy.fux");
     std::fs::write(
         &replay,
@@ -975,5 +985,12 @@ fn pane_creation_overrides_preserve_zero_and_false_and_dump_replays_them() -> Ou
             .trim(),
         "false"
     );
+    for (field, value) in [
+        ("reflow", "false"),
+        ("alternate_scroll_lines", "0"),
+        ("picture_bytes", "0"),
+    ] {
+        assert_eq!(server.ok(&["%3", "str", field, "get"])?.trim(), value);
+    }
     Ok(())
 }

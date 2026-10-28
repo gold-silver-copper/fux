@@ -83,8 +83,7 @@ wire! {
         pub env: Vec<(String, Option<Path>)>,
         pub initial_cwd: Path,
         pub observed_cwd: Directory,
-        pub history_bytes: usize,
-        pub program_clipboard: bool,
+        pub options: crate::command::PaneOptions,
     }
 }
 wire! {

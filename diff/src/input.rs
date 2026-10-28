@@ -98,14 +98,19 @@ fn key(r: &mut Rng) -> String {
 /// named key's bytes in both cursor modes) and `paste`, all over the
 /// crate `fux`.
 macro_rules! stack {
-    ($name:ident, $fux:ident, $key_bytes:expr, $shown:expr) => {
+    ($name:ident, $fux:ident, $decoder:expr, $key_bytes:expr, $shown:expr) => {
         mod $name {
             use std::time::Instant;
             use $fux::decode::Decoder;
             use $fux::keys::KeyPress;
 
-            #[derive(Default)]
             pub struct Decoding(Decoder);
+
+            impl Default for Decoding {
+                fn default() -> Self {
+                    Self($decoder)
+                }
+            }
 
             impl Decoding {
                 /// The inputs from `bytes`, read at `now`, and until when
@@ -165,6 +170,7 @@ macro_rules! stack {
 stack!(
     base,
     baseline,
+    baseline::decode::Decoder::default(),
     |press, application, out| baseline::encode::key_bytes(
         press.into(),
         baseline::encode::KeyMode::Legacy {
@@ -185,6 +191,7 @@ stack!(
 stack!(
     cur,
     fux,
+    fux::decode::Decoder::new(fux::decode::Timing::new(35, 5000)),
     |press, application, out| fux::encode::key_bytes(
         press.into(),
         fux::encode::KeyMode::Legacy {
@@ -369,6 +376,9 @@ pub fn run(r: &mut Rng, scale: usize) -> Outcome {
             fux::command::PaneOptions {
                 history_bytes: fux::command::HistoryBytes::new(0).ok_or("history budget")?,
                 program_clipboard: true,
+                reflow: true,
+                alternate_scroll_lines: fux::command::ScrollLines::new(5).ok_or("scroll lines")?,
+                picture_bytes: fux::command::PictureBytes::new(100663296).ok_or("pictures")?,
             },
         );
         let mut pane = b.map_err(|e| e.to_string())?;

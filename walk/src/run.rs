@@ -391,7 +391,7 @@ impl Checker {
             let mut captured: Vec<String>;
             loop {
                 let out = fixture
-                    .fux(&["str", &id, "client", "capture-client"])
+                    .fux(&["str", &id, "client", "capture"])
                     .map_err(|e| fail(at, "the server answers", e))?;
                 if out.status != 0 {
                     // It went while we looked.

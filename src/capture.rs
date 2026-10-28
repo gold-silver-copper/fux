@@ -1,4 +1,4 @@
-//! What `capture` and `capture-client` read: a screen's text, trimmed,
+//! What `capture` reads, of a pane or a client: a screen's text, trimmed,
 //! sliced and joined as asked, with its colours and attributes and its
 //! pane's state, as data (`Captured`) that the client renders as text or
 //! as JSON.
@@ -681,7 +681,19 @@ pub(crate) fn state(
         ("cell", cell),
         ("cursor_visible", Json::Bool(screen.mode(Mode::ShowCursor))),
         ("history_bytes", Json::count(pane.history_bytes())),
-        ("program_clipboard", Json::Bool(pane.program_clipboard())),
+        (
+            "program_clipboard",
+            Json::Bool(pane.options().program_clipboard),
+        ),
+        ("reflow", Json::Bool(pane.options().reflow)),
+        (
+            "alternate_scroll_lines",
+            Json::count(usize::from(pane.options().alternate_scroll_lines.get())),
+        ),
+        (
+            "picture_bytes",
+            Json::count(pane.options().picture_bytes.get()),
+        ),
         ("history_lines", Json::count(screen.history_len())),
         ("copy_mode", Json::Bool(copy_mode)),
         ("command_running", Json::Bool(pane.command_running())),

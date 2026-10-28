@@ -3,12 +3,11 @@ use crate::engine::{Engine, Setup};
 use crate::snapshot::{self, Cell, Color, Device, Line, Snapshot, Style, Width};
 use fux_vt::{Blink, CellRef, Event, Feature, Identity, Mode, Options, Parser, Sink};
 
-/// How the parser is set up: as ratty sets it up (reflow, an identity), with
-/// events on so titles can be compared; or, with `reflow` off, as fux does.
+/// The comparison profile: fux's fixed facilities and pictures, with
+/// reflow and identity selected by the case.
 pub fn options(reflow: bool) -> Options {
-    // As fux's panes are set up (`fux::pane::OPTIONS`), with ratty's
-    // reflow and identity in its setup.
     fux::pane::OPTIONS
+        .with(Feature::Pictures)
         .set(Feature::Reflow, reflow)
         .with_identity(Some(if reflow {
             Identity {

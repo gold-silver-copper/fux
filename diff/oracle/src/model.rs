@@ -230,7 +230,7 @@ pub const IDENTITIES: &[(&str, &str)] = &[
 ];
 
 impl Setup {
-    /// As fux sets up every pane (`fux::pane::OPTIONS`).
+    /// A pane fixture with reflow and pictures enabled.
     pub const fn pane() -> Setup {
         Setup {
             events: true,

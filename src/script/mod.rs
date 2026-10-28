@@ -49,7 +49,6 @@ pub(crate) const DEFAULTS: &str = include_str!("client-defaults.fux");
 /// A value of fux's own on the stack.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Fux {
-    All,
     Null,
     Record(Rc<record::Record>),
     /// Rendered observations exceeding ordinary language string limits.
@@ -58,6 +57,8 @@ pub enum Fux {
     Tab(TabId, Option<Run>),
     Workspace(WsId, Option<Run>),
     Client(ClientId, Option<Run>),
+    /// The whole session, optionally with an event replay cursor.
+    All(Option<crate::events::Cursor>),
     /// Options for `run`, `new-tab` or `new-workspace` (from `opts`); or a
     /// request: a pane, tab, workspace or client given options, keys, a
     /// wait or a mouse event, for the word that acts on it after
@@ -80,7 +81,6 @@ impl AppValue for Fux {
 
     fn name(&self) -> &'static str {
         match self {
-            Fux::All => "all",
             Fux::Null => "null",
             Fux::Record(_) => "record",
             Fux::Rendered(_) => "rendered",
@@ -88,6 +88,8 @@ impl AppValue for Fux {
             Fux::Tab(_, _) => "tab",
             Fux::Workspace(_, _) => "workspace",
             Fux::Client(_, _) => "client",
+            Fux::All(None) => "all",
+            Fux::All(Some(_)) => "events-request",
             Fux::Opts(opts) => match opts.on {
                 None => "opts",
                 Some(On::Target(AnyRef::Pane(_)) | On::Version(_)) => "pane-request",
@@ -134,7 +136,7 @@ impl AppValue for Fux {
                 }
                 Answer::Status(listing) => listing.weight(),
             },
-            Fux::All
+            Fux::All(_)
             | Fux::Null
             | Fux::Pane(..)
             | Fux::Tab(..)
@@ -148,7 +150,7 @@ impl AppValue for Fux {
         match self {
             Fux::Record(r) => r.depth(),
             Fux::Rendered(_)
-            | Fux::All
+            | Fux::All(_)
             | Fux::Null
             | Fux::Pane(..)
             | Fux::Tab(..)
@@ -197,7 +199,6 @@ impl AppValue for Fux {
 
     fn write_text(&self, out: &mut dyn std::fmt::Write) -> Result<(), fuxth::Failure> {
         match self {
-            Fux::All => out.write_str("all"),
             Fux::Null => out.write_str("null"),
             Fux::Record(r) => r.write_text(out),
             Fux::Rendered(text) => out.write_str(text),
@@ -208,7 +209,8 @@ impl AppValue for Fux {
             Fux::Answer(answer, _) => answer.write_text(out),
             Fux::Extent(Extent::Cells(n)) => write!(out, "{n}"),
             Fux::Extent(Extent::Percent(n)) => write!(out, "{}%", n.get()),
-            Fux::Opts(_) => write!(out, "({})", self.kind()),
+            Fux::All(None) => write!(out, "all"),
+            Fux::All(Some(_)) | Fux::Opts(_) => write!(out, "({})", self.kind()),
         }
         .map_err(|_| words::observation_failure(crate::wire::Budget::exceeded()))
     }
@@ -252,6 +254,9 @@ pub struct Opts {
     pub argv: Vec<String>,
     pub shell: Option<bool>,
     pub history_bytes: Option<HistoryBytes>,
+    pub reflow: Option<bool>,
+    pub alternate_scroll_lines: Option<crate::command::ScrollLines>,
+    pub picture_bytes: Option<crate::command::PictureBytes>,
     pub program_clipboard: Option<bool>,
     pub copy_environment: Option<Vec<EnvName>>,
     pub axis: Option<Axis>,
@@ -281,6 +286,11 @@ impl Opts {
         defaults: crate::command::PaneOptions,
     ) -> crate::command::PaneOptions {
         crate::command::PaneOptions {
+            reflow: self.reflow.unwrap_or(defaults.reflow),
+            alternate_scroll_lines: self
+                .alternate_scroll_lines
+                .unwrap_or(defaults.alternate_scroll_lines),
+            picture_bytes: self.picture_bytes.unwrap_or(defaults.picture_bytes),
             history_bytes: self.history_bytes.unwrap_or(defaults.history_bytes),
             program_clipboard: self.program_clipboard.unwrap_or(defaults.program_clipboard),
         }
@@ -1968,7 +1978,7 @@ mod tests {
             run: Some(version.run),
             ..Body::Capture(Box::new(capture)).into()
         };
-        let values = held_reply("str c1 client capture-client let held held str client get held str screen_cursor get held str lines get first held str styles get first first str fg get", reply, &mut Vec::new()).map_err(|e| e.to_string())?;
+        let values = held_reply("str c1 client capture let held held str client get held str screen_cursor get held str lines get first held str styles get first first str fg get", reply, &mut Vec::new()).map_err(|e| e.to_string())?;
         assert_eq!(
             values,
             vec![
@@ -2134,6 +2144,165 @@ mod tests {
         Ok(())
     }
 
+    #[test]
+    fn local_json_accepts_observations_from_different_runs()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use super::*;
+        struct Reports(std::collections::VecDeque<Run>);
+        impl Asks for Reports {
+            fn ask(&mut self, _: &Asked, _: &mut dyn Write) -> Result<Reply, Failed> {
+                let run = self
+                    .0
+                    .pop_front()
+                    .ok_or_else(|| Failed::new(Code::Usage, "run"))?;
+                let events = format!("0:{run}")
+                    .parse()
+                    .map_err(|()| Failed::new(Code::Usage, "cursor"))?;
+                Ok(Reply {
+                    run: Some(run),
+                    ..Body::Snapshot(Box::new(crate::inspect::Snapshot {
+                        run,
+                        events,
+                        scope: crate::inspect::Scope::All,
+                        projection: crate::inspect::Projection::Facts,
+                        workspaces: Vec::new(),
+                        tabs: Vec::new(),
+                        panes: Vec::new(),
+                        clients: Vec::new(),
+                    }))
+                    .into()
+                })
+            }
+        }
+        let runs = ["1-0", "2-0"].map(|s| s.parse().map_err(|()| "run"));
+        let mut reports = Reports(runs.into_iter().collect::<Result<_, _>>()?);
+        let mut machine = compile(&token::source(
+            "reports",
+            "ls let a ls let b list a b end json print",
+        )?)
+        .map_err(|e| e.to_string())?;
+        let mut sink = Vec::new();
+        let mut host = Host::new(Context::default(), None, &mut sink);
+        run_capped(&mut machine, &mut host, &mut reports, None, None).map_err(|e| e.to_string())?;
+        let text = String::from_utf8(sink)?;
+        assert!(
+            text.starts_with('[')
+                && text.contains("\"run\":\"1-0\"")
+                && text.contains("\"run\":\"2-0\"")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn arrange_reconciles_its_pane_leaf_runs() -> Result<(), Box<dyn std::error::Error>> {
+        use super::*;
+        use crate::command::{Command, Request};
+        struct Leaves {
+            runs: std::collections::VecDeque<Run>,
+            submitted: Vec<Option<Run>>,
+        }
+        impl Asks for Leaves {
+            fn ask(&mut self, asked: &Asked, _: &mut dyn Write) -> Result<Reply, Failed> {
+                let mut run = None;
+                let body = match asked.request {
+                    Request::Do(Command::Resolve { .. }) => Body::Found(AnyRef::Tab(TabId::of(1))),
+                    Request::Do(Command::Members { .. }) => {
+                        run = self.runs.pop_front();
+                        Body::Handles(vec![AnyRef::Pane(PaneId::of(1))])
+                    }
+                    Request::Do(Command::Arrange { .. }) => {
+                        self.submitted.push(asked.context.of);
+                        Body::Empty
+                    }
+                    Request::Do(_) | Request::Wait(_) | Request::Events(..) => {
+                        return Err(Failed::new(Code::Usage, "unexpected request"));
+                    }
+                };
+                Ok(Reply { run, ..body.into() })
+            }
+        }
+        let ours: Run = "1-0".parse().map_err(|()| "run")?;
+        let other: Run = "2-0".parse().map_err(|()| "run")?;
+        for runs in [[ours, ours], [ours, other]] {
+            let mut leaves = Leaves {
+                runs: runs.into(),
+                submitted: Vec::new(),
+            };
+            let mut machine = compile(&token::source("layout", "@1 panes let a @1 panes let b @1 str @1:0:1-0 list a first b first end str horizontal even-of arrange")?).map_err(|e| e.to_string())?;
+            let mut sink = Vec::new();
+            let mut host = Host::new(Context::default(), None, &mut sink);
+            let result = run_capped(&mut machine, &mut host, &mut leaves, None, None);
+            if runs == [ours, ours] {
+                result.map_err(|e| e.to_string())?;
+                assert_eq!(leaves.submitted, [Some(ours)]);
+            } else {
+                assert!(result.is_err_and(|f| f.code == Code::BadValue));
+                assert!(leaves.submitted.is_empty());
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn layout_scalar_refusals_do_not_copy_retained_strings()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use super::*;
+        struct NoRequests;
+        impl Asks for NoRequests {
+            fn ask(&mut self, _: &Asked, _: &mut dyn Write) -> Result<Reply, Failed> {
+                Err(Failed::new(
+                    Code::Usage,
+                    "invalid scalars must not submit a request",
+                ))
+            }
+        }
+        let longest = "@4294967295:18446744073709551615:4294967295-ffffffffffffffff";
+        assert!(longest.parse::<crate::command::LayoutRevision>().is_ok());
+        let allocator = fux_vt_peak::ThreadPeak;
+        let bad = Value::str(std::iter::repeat_n('x', fuxth::LONGEST / 2).collect::<String>());
+        let mut peaks = Vec::new();
+        for proposal in [
+            "t bad list end arrange",
+            "t str @1:0:1-0 list list bad 1 1 0 0 end end arrange",
+        ] {
+            let code = format!(
+                "input let bad @1 let t 0 16 range each drop str bad_value try {proposal} catch 2drop end end"
+            );
+            let mut machine =
+                compile(&token::source("scalar", &code)?).map_err(|e| e.to_string())?;
+            let mut sink = Vec::new();
+            let mut host = Host::new(Context::default(), None, &mut sink);
+            assert!(matches!(
+                machine.run(&mut host, u64::MAX)?,
+                Outcome::Suspended(Ask::Local(Local::Shell(Shell::Input)))
+            ));
+            machine.import(bad.clone())?;
+            assert!(matches!(
+                machine.run(&mut host, u64::MAX)?,
+                Outcome::Suspended(Ask::Server { .. })
+            ));
+            machine.import(Value::App(Fux::Tab(TabId::of(1), None)))?;
+            let base = allocator.live();
+            allocator.reset_peak();
+            // Imports and host arguments charge their expanded work even when shared;
+            // the property here is bounded allocation during scalar refusal.
+            run_capped(
+                &mut machine,
+                &mut host,
+                &mut NoRequests,
+                Some(1_000_000),
+                None,
+            )
+            .map_err(|e| e.to_string())?;
+            peaks.push(allocator.peak().saturating_sub(base));
+        }
+        assert!(
+            peaks.iter().all(|p| *p < 64 << 10),
+            "scalar refusal peaks: {peaks:?}"
+        );
+        Ok(())
+    }
+
     /// Certain target/version errors fail preflight, before even an earlier
     /// print can run. Pane versions and the bundled recipes remain accepted.
     #[test]
@@ -2141,13 +2310,13 @@ mod tests {
     -> Result<(), Box<dyn std::error::Error>> {
         let version = "%2:0.0.0.0.0:48211-1867a3f9c2b8e7d6";
         for code in [
-            "str c1 client capture-client expect".to_owned(),
-            "str c1 client capture-client changed".to_owned(),
+            "str c1 client capture expect".to_owned(),
+            "str c1 client capture changed".to_owned(),
             "str c1 client 0 timeout wait".to_owned(),
             format!("str {version} expect 0 timeout wait"),
             format!("str {version} changed str x text send-keys"),
             format!("str {version} changed all-history capture"),
-            format!("str {version} changed events-of"),
+            format!("str {version} changed events"),
             "str x kill".to_owned(),
         ] {
             let tokens =
@@ -2182,7 +2351,7 @@ mod tests {
             "%1 all-history capture expect str x text send-keys wait capture drop".to_owned(),
             "%1 str x text send-keys 0 quiet %1 capture drop".to_owned(),
             format!("str {version} changed 0 timeout wait capture drop"),
-            "str c1 client capture-client json drop".to_owned(),
+            "str c1 client capture json drop".to_owned(),
         ] {
             super::compile(&super::token::source("recipe", &code)?).map_err(|f| f.to_string())?;
         }

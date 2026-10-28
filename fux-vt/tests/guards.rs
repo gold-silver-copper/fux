@@ -519,7 +519,7 @@ fn a_paste_of_64_kib_is_kept_and_one_byte_more_is_not() {
         bytes.extend(std::iter::repeat_n(b'x', n));
         bytes.extend_from_slice(b"\x1b[201~");
         let mut out = Vec::new();
-        Decoder::default().bytes(&bytes, &mut out);
+        Decoder::new(fux_vt::keys::decode::Timing::new(35, 5000)).bytes(&bytes, &mut out);
         out
     };
     assert!(matches!(
@@ -536,14 +536,14 @@ fn a_long_read_gives_what_is_held_259_bytes_and_returns() -> Result {
     let (held, idle) = in_time(|| {
         let mut out = Vec::new();
         // An Escape held, then a read of 1,000 `a`s.
-        let mut d = Decoder::default();
+        let mut d = Decoder::new(fux_vt::keys::decode::Timing::new(35, 5000));
         d.bytes(b"\x1b", &mut out);
         let before = fux_vt::Work::now();
         d.bytes(&[b'a'; 1000], &mut out);
         let held = fux_vt::Work::now().since(before).keys;
         // Nothing held, then 516 `a`s and an Escape: 258 bytes are left
         // after the first 259, and they leave the Escape held.
-        let mut d = Decoder::default();
+        let mut d = Decoder::new(fux_vt::keys::decode::Timing::new(35, 5000));
         let mut read = vec![b'a'; 516];
         read.push(0x1b);
         let before = fux_vt::Work::now();
@@ -569,7 +569,7 @@ fn a_sequence_begun_in_the_bytes_given_the_held_is_read_where_it_lies() -> Resul
     read.extend([b'b'; 1000]);
     let (keys, out) = in_time(move || {
         let mut out = Vec::new();
-        let mut d = Decoder::default();
+        let mut d = Decoder::new(fux_vt::keys::decode::Timing::new(35, 5000));
         d.bytes(b"\x1b", &mut out);
         let before = fux_vt::Work::now();
         d.bytes(&read, &mut out);
@@ -577,7 +577,7 @@ fn a_sequence_begun_in_the_bytes_given_the_held_is_read_where_it_lies() -> Resul
     })?;
     assert_eq!(keys, 1 + 1260 + 258 + 2 * 8);
     let mut short = Vec::new();
-    let mut d = Decoder::default();
+    let mut d = Decoder::new(fux_vt::keys::decode::Timing::new(35, 5000));
     d.bytes(b"\x1b", &mut short);
     for byte in [vec![b'a'; 250], b"\x1b[1;2;3;4A".to_vec(), vec![b'b'; 1000]].concat() {
         d.bytes(&[byte], &mut short);
@@ -593,7 +593,7 @@ fn a_sequence_begun_in_what_was_held_is_held_on() -> Result {
     payload.resize(256, b'0');
     let read = [b"P".as_slice(), &payload, b"\x1b\\x"].concat();
     let decoded = |reads: &[&[u8]]| {
-        let mut d = Decoder::default();
+        let mut d = Decoder::new(fux_vt::keys::decode::Timing::new(35, 5000));
         d.expect(Instant::now());
         let mut out = Vec::new();
         d.bytes(b"\x1b\x1b", &mut out);
@@ -617,7 +617,7 @@ fn a_sequence_begun_in_what_was_held_is_held_on() -> Result {
 #[cfg(feature = "checks")]
 #[test]
 fn a_long_read_while_a_string_is_dropped_is_read_whole() {
-    let mut d = Decoder::default();
+    let mut d = Decoder::new(fux_vt::keys::decode::Timing::new(35, 5000));
     let mut out = Vec::new();
     // An OSC answer past its 128 bytes: dropped to its end as it comes.
     let mut long = b"\x1b]1".to_vec();
@@ -640,7 +640,7 @@ fn a_dcs_answer_at_its_limit_decodes_alike_whole_and_split() -> Result {
     payload.resize(256, b'0');
     let answer = [b"\x1bP".as_slice(), &payload, b"\x1b\\"].concat();
     let decoded = |reads: &[&[u8]]| {
-        let mut d = Decoder::default();
+        let mut d = Decoder::new(fux_vt::keys::decode::Timing::new(35, 5000));
         d.expect(Instant::now());
         let mut out = Vec::new();
         for read in reads {
@@ -664,7 +664,7 @@ fn a_long_csi_answer_is_held_up_to_256_bytes() -> Result {
     for (len, holds) in [(65usize, true), (256, true), (257, false)] {
         let mut read = b"\x1b[?".to_vec();
         read.resize(len.saturating_add(2), b'1');
-        let mut d = Decoder::default();
+        let mut d = Decoder::new(fux_vt::keys::decode::Timing::new(35, 5000));
         let mut out = Vec::new();
         let kept = grown(|| {
             d.bytes(&read, &mut out);
@@ -845,7 +845,7 @@ fn a_sweep_takes_the_oldest_links_until_half_the_bound_is_left() -> Result {
 fn a_key_csi_of_32_parameter_bytes_is_typed_at_the_timeout() {
     let mut read = b"\x1b[".to_vec();
     read.resize(34, b'1');
-    let mut d = Decoder::default();
+    let mut d = Decoder::new(fux_vt::keys::decode::Timing::new(35, 5000));
     let mut out = Vec::new();
     d.bytes(&read, &mut out);
     assert!(out.is_empty(), "{out:?}");
@@ -882,7 +882,7 @@ fn a_repeat_on_a_one_column_screen_makes_every_copy() -> Result {
 #[test]
 fn a_read_of_259_bytes_that_ends_on_a_dropped_answer_s_escape_returns() -> Result {
     let (dropped, after, typed) = in_time(|| {
-        let mut d = Decoder::default();
+        let mut d = Decoder::new(fux_vt::keys::decode::Timing::new(35, 5000));
         let mut out = Vec::new();
         d.bytes(b"\x1b", &mut out);
         // `] 1`, 256 `a`s and an ESC: with the Escape held, an OSC answer
@@ -950,7 +950,7 @@ fn a_resize_to_the_same_length_changes_nothing() -> Result {
 #[cfg(feature = "checks")]
 #[test]
 fn an_osc_answer_at_its_limit_is_held_whole() {
-    let mut d = Decoder::default();
+    let mut d = Decoder::new(fux_vt::keys::decode::Timing::new(35, 5000));
     let mut out = Vec::new();
     let mut read = b"\x1b]".to_vec();
     read.extend([b'1'; 128]);
@@ -966,7 +966,7 @@ fn an_osc_answer_at_its_limit_is_held_whole() {
 #[cfg(feature = "checks")]
 #[test]
 fn a_read_of_258_bytes_behind_an_escape_is_fed_once() {
-    let mut d = Decoder::default();
+    let mut d = Decoder::new(fux_vt::keys::decode::Timing::new(35, 5000));
     let mut out = Vec::new();
     d.bytes(b"\x1b", &mut out);
     let mut read = vec![b'a'; 257];

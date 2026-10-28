@@ -721,7 +721,10 @@ fn compare_mouse(pair: &Pair, setup: &str, tally: &mut Tally) -> Result<(), Stri
         let ours: Vec<u8> = pair
             .fux
             .screen()
-            .encode_mouse(event)
+            .encode_mouse(
+                event,
+                fux_vt::keys::mouse::ScrollLines::new(5).ok_or("scroll lines")?,
+            )
             .into_iter()
             .flatten()
             .flatten()

@@ -45,8 +45,9 @@ read of at most 16 KiB, a program's last 1 MiB as it exits or is
 respawned over, or a held frame, shown once past 2 MiB (`FRAME_LIMIT`),
 so at most 2 MiB and what was appended last: one read, or that last
 1 MiB; a call of n bytes has 4.4's ceiling (`Work::ceiling`)
-max(1, ⌈n ÷ 4096⌉) times; the `Feature`s are `fux::pane::OPTIONS`',
-every one but `ExtendedReplies` and `RectangleChecksums`.
+max(1, ⌈n ÷ 4096⌉) times; the fixed `Feature`s are `fux::pane::OPTIONS`',
+with reflow and pictures selected by each pane's checked creation policy.
+`ExtendedReplies` and `RectangleChecksums` stay off.
 
 The host also sets the picture budget (`Parser::set_picture_bytes`,
 96 MiB by default, B01; set lower, large pictures clip), its cell size

@@ -60,6 +60,60 @@ wire! {
     }
 }
 
+/// Admission limits for complete layout replacement. These bound traversal,
+/// allocations and the depth of the resulting recursive native tree.
+pub const NODES_MAX: usize = 2047;
+pub const DEPTH_MAX: usize = 64;
+
+/// Validates a flat layout before constructing its native tree. Pane
+/// membership is checked separately against the tab at the commit boundary.
+pub fn from_nodes(nodes: &[Node]) -> Result<Tree, &'static str> {
+    if nodes.is_empty() || nodes.len() > NODES_MAX {
+        return Err("a layout needs 1..2047 nodes");
+    }
+    let mut seen = vec![false; nodes.len()];
+    let mut pending = vec![(0usize, 0usize)];
+    while let Some((at, depth)) = pending.pop() {
+        if depth > DEPTH_MAX {
+            return Err("layout depth exceeds 64");
+        }
+        let visited = seen
+            .get_mut(at)
+            .ok_or("layout child index is out of range")?;
+        if *visited {
+            return Err("layout nodes must be reached exactly once");
+        }
+        *visited = true;
+        if let Some(Node::Split { first, second, .. }) = nodes.get(at) {
+            let depth = depth.checked_add(1).ok_or("layout depth exceeds 64")?;
+            pending.push((*second as usize, depth));
+            pending.push((*first as usize, depth));
+        }
+    }
+    if seen.iter().any(|v| !v) {
+        return Err("layout contains unreachable nodes");
+    }
+    // The graph above is a bounded tree, so construction cannot cycle.
+    fn build(nodes: &[Node], at: usize) -> Result<Tree, &'static str> {
+        match nodes.get(at).ok_or("layout child index is out of range")? {
+            Node::Pane(pane) => Ok(Tree::Pane(*pane)),
+            Node::Split {
+                axis,
+                first_share,
+                second_share,
+                first,
+                second,
+            } => Ok(Tree::Split(Box::new(Split {
+                axis: *axis,
+                shares: Shares::new(*first_share, *second_share),
+                first: build(nodes, *first as usize)?,
+                second: build(nodes, *second as usize)?,
+            }))),
+        }
+    }
+    build(nodes, 0)
+}
+
 /// Two trees side by side along `axis`, a separator between, sharing what
 /// room there is by `shares`.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -789,6 +843,57 @@ mod tests {
             .iter()
             .map(|n| placed.rect(p(*n)).map(|r| r.w))
             .collect()
+    }
+
+    #[test]
+    fn flat_layouts_require_one_bounded_reachable_tree() -> Result<(), &'static str> {
+        let branch = |first, second| Node::Split {
+            axis: Axis::Horizontal,
+            first_share: NonZeroU32::MIN,
+            second_share: NonZeroU32::MIN,
+            first,
+            second,
+        };
+        let leaf = Node::Pane(p(1));
+        for nodes in [
+            vec![],
+            vec![branch(0, 1), leaf.clone()],
+            vec![branch(1, 1), leaf.clone()],
+            vec![branch(1, 3), leaf.clone(), leaf.clone()],
+            vec![leaf.clone(), leaf.clone()],
+            vec![leaf.clone(); NODES_MAX.saturating_add(1)],
+        ] {
+            assert!(from_nodes(&nodes).is_err());
+        }
+        let chain = |depth: u32| {
+            let mut nodes = Vec::new();
+            for level in 0..depth {
+                nodes.push(branch(level * 2 + 1, level * 2 + 2));
+                nodes.push(Node::Pane(p(level)));
+            }
+            nodes.push(Node::Pane(p(depth)));
+            nodes
+        };
+        assert_eq!(from_nodes(&chain(64))?.panes().len(), 65);
+        assert!(from_nodes(&chain(65)).is_err());
+        let shares = Shares::new(NonZeroU32::MIN, NonZeroU32::MAX);
+        let nodes = vec![
+            Node::Split {
+                axis: Axis::Vertical,
+                first_share: NonZeroU32::MIN,
+                second_share: NonZeroU32::MAX,
+                first: 2,
+                second: 1,
+            },
+            Node::Pane(p(2)),
+            Node::Pane(p(1)),
+        ];
+        let root = from_nodes(&nodes)?;
+        assert_eq!(root.panes(), vec![p(1), p(2)]);
+        assert!(
+            matches!(root, Tree::Split(split) if split.axis() == Axis::Vertical && split.shares() == shares)
+        );
+        Ok(())
     }
 
     #[test]

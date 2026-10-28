@@ -12,8 +12,8 @@ that Unix socket alone: inside a sandbox that denies `connect`, fux cannot
 be driven. **The word that acts
 comes last:** what it takes (keys, a wait's time, what to read) goes on the
 pane before it, and `json` after it. Only `run`, `new-tab`,
-`new-workspace`, `attach` and `events-of` (for everything) start from
-`opts`; of the first three, only
+`new-workspace` and `attach` start from
+`opts`; `all events` streams everything. Of the first three, only
 `run` takes a program (as `split` does): the other two start a shell. Their tab is laid out on
 `COLS ROWS size`, else on the caller's tab when `fux` runs in a pane (the
 smallest screen that sizes it, else its own size), never on the screen of
@@ -165,7 +165,7 @@ too). `A counts` gives a version's five counts as integers:
   ```
 - **A bell or notification:** its version's `BELLS`, `counts 2 at`, grows,
   as for a command's end.
-- **What changes anywhere,** as it happens: `fux events` streams a JSON
+- **What changes anywhere,** as it happens: `fux all events` streams a JSON
   line for each event (`fux help json` lists them). To read the session,
   then follow its events without missing one in between, start the stream
   from the cursor `ls json` gave with the listing (its `events`); a
@@ -173,7 +173,7 @@ too). `A counts` gives a version's five counts as integers:
 
   ```sh
   C=$(fux ls json | jq -r .events)
-  fux opts str "$C" from events-of      # or: fux %3 str "$C" from events-of
+  fux all str "$C" from events      # or: fux %3 str "$C" from events
   ```
 - **A deadline, a fallback, a retry:** `try` catches the failures it names
   (`programs`). A key, and C-c if nothing came of it in 10 s:
@@ -434,7 +434,7 @@ read-file`. `X warn` prints on stderr:
   `kill-server` from inside its own server is refused;
   `force-kill-server` stops it.
 - Nothing is saved on its own: a server that stops, or crashes, takes its
-  session with it. `fux dump > FILE` saves its layout and launches when you
+  session with it. `fux all dump > FILE` saves its layout and launches when you
   choose; `fux start && fux --file FILE` makes them again on a fresh server,
   never its processes' state. That is another server run: versions from
   before it are refused.
@@ -462,7 +462,7 @@ read-file`. `X warn` prints on stderr:
   LOG arg str -c arg str 'make test' arg run` (util-linux; on macOS and
   the BSDs, `str -q arg str -F arg str LOG arg str sh arg str -c arg str
   'make test' arg`). LOG holds the terminal's raw bytes (util-linux adds a
-  first and last line of its own). `dump` prints the layout as a program
+  first and last line of its own). `all dump` prints the layout as a program
   that makes it again; `opts 100 30 size attach` is a client with no
-  terminal (`str c2 client … send-keys` types at it, `capture-client`
+  terminal (`str c2 client … send-keys` types at it, `capture`
   shows it): how to drive fux's own screens.

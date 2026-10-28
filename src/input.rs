@@ -243,7 +243,10 @@ impl Session {
         let Some(pane_screen) = self.parts.panes().get(&pane) else {
             return false;
         };
-        let Some(reports) = pane_screen.screen().encode_mouse(event) else {
+        let Some(reports) = pane_screen
+            .screen()
+            .encode_mouse(event, pane_screen.options().alternate_scroll_lines)
+        else {
             return false;
         };
         self.put_in(client, pane, |_, out| out.extend(reports.flatten()))
@@ -683,7 +686,7 @@ mod tests {
         let (mut s, c) = session()?;
         with_layers(&mut s)?;
         run(&mut s, "str %1 pane horizontal split")?;
-        run(&mut s, "str c1 client str %1 pane focus-pane")?;
+        run(&mut s, "str c1 client str %1 pane show")?;
         let start = pane_width(&s, 1);
         s.input(c, b"\x02y");
         assert_eq!(mode(&s, c), "column y 0");
@@ -732,7 +735,7 @@ mod tests {
     fn a_repeat_mode_may_bind_enter() -> Outcome {
         let (mut s, c) = session()?;
         run(&mut s, "str %1 pane horizontal split")?;
-        run(&mut s, "str c1 client str %1 pane focus-pane")?;
+        run(&mut s, "str c1 client str %1 pane show")?;
         let start = pane_width(&s, 1);
         run(
             &mut s,
@@ -762,7 +765,7 @@ mod tests {
         let (mut s, c) = session()?;
         run(&mut s, "str %1 pane horizontal split")?;
         run(&mut s, "str %2 pane horizontal split")?;
-        run(&mut s, "str c1 client str %3 pane focus-pane")?;
+        run(&mut s, "str c1 client str %3 pane show")?;
         assert_eq!(pane_order(&mut s)?, ["%1", "%2", "%3"]);
         s.input(c, &prefixed("mhh"));
         escape(&mut s, c);
@@ -782,7 +785,7 @@ mod tests {
             &mut s,
             "opts 80 24 size str +1 workspace in str three name new-tab",
         )?;
-        run(&mut s, "str c1 client str @1 tab show-tab")?;
+        run(&mut s, "str c1 client str @1 tab show")?;
         s.input(c, &prefixed("tmll"));
         assert_eq!(mode(&s, c), "repeat REORDER  h l · Esc");
         escape(&mut s, c);
@@ -905,7 +908,7 @@ mod tests {
         run(&mut s, "str %2 pane vertical split")?;
         run(&mut s, NEW_TAB)?;
         run(&mut s, "opts 80 24 size new-workspace")?;
-        run(&mut s, "str c1 client str %2 pane focus-pane")?;
+        run(&mut s, "str c1 client str %2 pane show")?;
         Ok((s, c))
     }
 
@@ -986,34 +989,28 @@ mod tests {
         for (open, programs) in [
             (
                 "me choose-tab",
-                &["me str @1 tab show-tab", "me str @2 tab show-tab"][..],
+                &["me str @1 tab show", "me str @2 tab show"][..],
             ),
             (
                 "me str %2 pane choose-tab-for",
-                &[
-                    "str %2 pane str @1 tab move-to",
-                    "str %2 pane str @2 tab move-to",
-                ],
+                &["str %2 pane str @1 tab move", "str %2 pane str @2 tab move"],
             ),
             (
                 "me choose-workspace",
-                &[
-                    "me str +1 workspace show-workspace",
-                    "me str +2 workspace show-workspace",
-                ],
+                &["me str +1 workspace show", "me str +2 workspace show"],
             ),
             (
                 "me str %2 pane choose-workspace-for",
                 &[
-                    "str %2 pane str +1 workspace move-to",
-                    "str %2 pane str +2 workspace move-to",
+                    "str %2 pane str +1 workspace move",
+                    "str %2 pane str +2 workspace move",
                 ],
             ),
             (
                 "me str %2 pane choose-pane",
                 &[
-                    "str %2 pane str %1 pane swap-panes",
-                    "str %2 pane str %3 pane swap-panes",
+                    "str %2 pane str %1 pane swap-with",
+                    "str %2 pane str %3 pane swap-with",
                 ],
             ),
             ("me str %3 pane confirm-close", &["str %3 pane kill"]),
@@ -1073,7 +1070,7 @@ mod tests {
     fn a_mouse_report_reaches_the_focused_pane_in_its_cells() -> Outcome {
         let (mut s, c) = session()?;
         run(&mut s, "str %1 pane horizontal split")?;
-        run(&mut s, "str c1 client str %2 pane focus-pane")?;
+        run(&mut s, "str c1 client str %2 pane show")?;
         let right = rect_of(&s, c, 2).ok_or("no rect for %2")?;
         assert!(right.x() > 1 && right.y() == 0, "{right:?}");
         // Nothing asked: no reporting, and a report is dropped.
@@ -1096,7 +1093,7 @@ mod tests {
         assert_eq!(queued(&mut s, 2), [0x1b, b'[', b'M', 32, 33, 33]);
         // A pane below another: moved down too.
         run(&mut s, "str %2 pane vertical split")?;
-        run(&mut s, "str c1 client str %3 pane focus-pane")?;
+        run(&mut s, "str c1 client str %3 pane show")?;
         let below = rect_of(&s, c, 3).ok_or("no rect for %3")?;
         assert!(below.y() > 1, "{below:?}");
         s.output(PaneId::of(3), b"\x1b[?1000h\x1b[?1006h");
@@ -1204,7 +1201,7 @@ mod tests {
     fn a_key_into_an_exited_program_is_refused_and_told() -> Outcome {
         let (mut s, c) = session()?;
         run(&mut s, "agent-opts 80 24 size str /bin/cat program run")?;
-        run(&mut s, "str c1 client str %2 pane focus-pane")?;
+        run(&mut s, "str c1 client str %2 pane show")?;
         s.exited(PaneId::of(2), crate::process::Ended::Exited(3));
         for typed in [b"x".as_slice(), b"\x1b[200~z\x1b[201~"] {
             s.input(c, typed);
@@ -1220,7 +1217,7 @@ mod tests {
     fn a_drag_out_of_the_pane_is_kept_to_its_edge() -> Outcome {
         let (mut s, c) = session()?;
         run(&mut s, "str %1 pane horizontal split")?;
-        run(&mut s, "str c1 client str %2 pane focus-pane")?;
+        run(&mut s, "str c1 client str %2 pane show")?;
         let right = rect_of(&s, c, 2).ok_or("no rect for %2")?;
         s.output(PaneId::of(2), b"\x1b[?1002h\x1b[?1006h");
         assert_eq!(asked_mouse_level(&s, c), Some(1002));
@@ -1246,7 +1243,7 @@ mod tests {
     fn the_mouse_is_reported_only_while_no_screen_of_the_clients_is_open() -> Outcome {
         let (mut s, c) = session()?;
         run(&mut s, "str %1 pane horizontal split")?;
-        run(&mut s, "str c1 client str %2 pane focus-pane")?;
+        run(&mut s, "str c1 client str %2 pane show")?;
         s.output(PaneId::of(2), b"\x1b[?1003h\x1b[?1006h");
         assert_eq!(asked_mouse_level(&s, c), Some(1003));
         let right = rect_of(&s, c, 2).ok_or("no rect for %2")?;
@@ -1269,12 +1266,12 @@ mod tests {
             assert_eq!(asked_mouse_level(&s, c), Some(1003), "{name:?}");
         }
         // Focus on a pane whose program did not ask: none.
-        run(&mut s, "str c1 client str %1 pane focus-pane")?;
+        run(&mut s, "str c1 client str %1 pane show")?;
         assert_eq!(asked_mouse_level(&s, c), Some(0));
         s.input(c, b"\x1b[<0;2;2M");
         assert!(queued(&mut s, 1).is_empty() && queued(&mut s, 2).is_empty());
         // Zoomed, the pane fills the screen, and its cells are the screen's.
-        run(&mut s, "str c1 client str %2 pane focus-pane")?;
+        run(&mut s, "str c1 client str %2 pane show")?;
         run(&mut s, "str c1 client zoom")?;
         s.input(c, b"\x1b[<0;2;2M");
         assert_eq!(queued(&mut s, 2), b"\x1b[<0;2;2M");
@@ -1287,7 +1284,7 @@ mod tests {
     fn a_list_whose_item_disappears_closes_and_never_retargets() -> Outcome {
         let (mut s, c) = session()?;
         run(&mut s, "str %1 pane horizontal split")?;
-        run(&mut s, "str c1 client str %2 pane focus-pane")?;
+        run(&mut s, "str c1 client str %2 pane show")?;
         s.input(c, b"\x02as");
         assert!(mode(&s, c).starts_with("list "), "{}", mode(&s, c));
         run(&mut s, "str %2 pane kill")?;
@@ -1332,7 +1329,7 @@ mod tests {
             &mut s,
             "opts 80 24 size str +1 workspace in str second name new-tab",
         )?;
-        run(&mut s, "str c1 client str @2 tab show-tab")?;
+        run(&mut s, "str c1 client str @2 tab show")?;
         s.input(c, b"\x02tg");
         let Some(Mode::Panel(Panel::List(list))) = s.views.get(&c).map(|v| &v.mode) else {
             return Err(mode(&s, c));

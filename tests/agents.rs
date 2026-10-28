@@ -527,9 +527,9 @@ fn a_headless_client_is_sized_from_the_command_line() -> Outcome {
     let id = lines.next().ok_or("its id")?.map_err(e)?;
     assert_eq!(id, "c1");
     assert!(server.ok(&["ls"])?.contains("client c1 50x10"));
-    server.ok(&["str", "c1", "client", "60", "12", "resize-client"])?;
+    server.ok(&["str", "c1", "client", "60", "12", "resize"])?;
     assert!(server.ok(&["ls"])?.contains("client c1 60x12"));
-    let capture = ["str", "c1", "client", "capture-client"];
+    let capture = ["str", "c1", "client", "capture"];
     assert_eq!(
         server.ok(&[&capture[..], &["kind"]].concat())?.trim(),
         "client-capture"
@@ -562,7 +562,7 @@ fn a_headless_client_is_sized_from_the_command_line() -> Outcome {
     ])?;
     let mut terminal = server.attach(10, 40)?;
     terminal.ready()?;
-    let refused = server.fux(&["str", "c2", "client", "60", "12", "resize-client"])?;
+    let refused = server.fux(&["str", "c2", "client", "60", "12", "resize"])?;
     assert!(
         refused.stderr.contains("has a terminal"),
         "{}",
@@ -621,6 +621,18 @@ fn pictures_reach_a_terminal_that_draws_sixel() -> Outcome {
         json.contains(r#""col":0,"rows":1,"cropped":0,"cols":2,"width":20,"height":12}]"#),
         "{json}"
     );
+    // A placement change clears the screen, so unchanged pictures must be sent again.
+    client.painted.clear();
+    let mut presentation = fux::script::default_state()
+        .map_err(e)?
+        .preferences
+        .presentation();
+    presentation.cell_placement = true;
+    client.act(fux::act::Act::Presentation(presentation))?;
+    eventually("the picture resent after placement changes", || {
+        client.pump()?;
+        Ok(painted(&client, b"\x1bP0;1;0q\"1;1;20;12"))
+    })?;
     Ok(())
 }
 
@@ -987,7 +999,13 @@ fn words_refuse_options_they_do_not_use() -> Outcome {
         let refused = server.fux(&[&opts[..], unused, &cat, &["run"]].concat())?;
         assert_eq!(refused.status, 1, "{unused:?} run: {}", refused.stdout);
         assert!(
-            refused.stderr.starts_with("fux: unused: "),
+            refused.stderr.starts_with(
+                if matches!(unused, ["horizontal"] | ["vertical"] | ["kill-first"]) {
+                    "fux: unused: "
+                } else {
+                    "fux: type: "
+                }
+            ),
             "{unused:?} run: {}",
             refused.stderr
         );

@@ -113,8 +113,7 @@ impl Session {
                                 Ok(None) => inspect::Directory::Unknown,
                                 Err(errno) => inspect::Directory::Failed(errno.raw()),
                             },
-                            history_bytes: pane.history_bytes(),
-                            program_clipboard: pane.program_clipboard(),
+                            options: pane.options(),
                         })
                     } else {
                         None

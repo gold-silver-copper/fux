@@ -223,12 +223,12 @@ fn streaming(server: &Server, args: &[&str]) -> Result<(std::process::Child, Nex
     Ok((events, next))
 }
 
-/// `fux events` tells what happens, a line each, from `ready` on, in
+/// `fux all events` tells what happens, a line each, from `ready` on, in
 /// order: a pane made, its bell, its exit, its close.
 #[test]
 fn events_tell_what_happens() -> Outcome {
     let server = Server::start("")?;
-    let (mut events, next) = streaming(&server, &["events"])?;
+    let (mut events, next) = streaming(&server, &["all", "events"])?;
     let told = (|| {
         next(r#""event":"ready""#)?;
         let pane = server.ok(&[
@@ -284,7 +284,7 @@ fn a_stream_from_ls_misses_nothing() -> Outcome {
         "size",
         "new-workspace",
     ])?;
-    let (mut events, next) = streaming(&server, &["opts", "str", cursor, "from", "events-of"])?;
+    let (mut events, next) = streaming(&server, &["all", "str", cursor, "from", "events"])?;
     let told = (|| Ok::<_, String>((next("")?, next("")?)))();
     let _ = events.kill();
     let _ = events.wait();
@@ -294,7 +294,7 @@ fn a_stream_from_ls_misses_nothing() -> Outcome {
     assert!(created.ends_with(r#""name":"w"}"#), "{created}");
     let (seq, run) = cursor.split_once(':').ok_or("no run")?;
     let ahead = format!("{}:{run}", seq.parse::<u64>().map_err(e)? + 100);
-    let refused = server.fux(&["opts", "str", &ahead, "from", "events-of"])?;
+    let refused = server.fux(&["all", "str", &ahead, "from", "events"])?;
     assert_ne!(refused.status, 0);
     assert!(
         refused.stderr.contains("past the journal's end"),
@@ -377,7 +377,7 @@ fn panes_and_tabs_are_lists_of_handles() -> Outcome {
     let each = ["tabs", "each", "panes", "len", "print", "end"];
     assert_eq!(server.ok(&[&agent[..], &each].concat())?, "2\n1\n");
     // The order is the layout's, not the ids'.
-    server.ok(&["str", a, "pane", "str", b, "pane", "swap-panes"])?;
+    server.ok(&["str", a, "pane", "str", b, "pane", "swap-with"])?;
     server.ok(&["str", t2, "tab", "str", "previous", "reorder"])?;
     let panes = server.ok(&[&agent[..], &["panes"]].concat())?;
     assert_eq!(panes.trim(), format!("{c} {b} {a}"));
@@ -515,7 +515,7 @@ fn a_client_that_reads_no_answers_is_read_no_more() -> Outcome {
     Ok(())
 }
 
-/// `dump-of` writes a workspace as a program, and running that program
+/// `dump` writes a workspace as a program, and running that program
 /// makes it again.
 #[test]
 fn a_dump_makes_its_workspace_again() -> Outcome {
@@ -554,7 +554,7 @@ fn a_dump_makes_its_workspace_again() -> Outcome {
         "worker",
         "rename",
     ])?;
-    let dump = server.ok(&["str", "build", "workspace", "dump-of"])?;
+    let dump = server.ok(&["str", "build", "workspace", "dump"])?;
     server.ok(&["str", "build", "workspace", "kill"])?;
     assert!(!server.ok(&["ls"])?.contains("build"));
     // A script: made runnable, it runs as it is.
@@ -581,7 +581,7 @@ fn a_dump_makes_its_workspace_again() -> Outcome {
         "opts", "80", "24", "size", "str", "jobs", "in", "str", "job", "name", "str", "sleep",
         "program", "str", "60", "arg", "run",
     ])?;
-    let dump = server.ok(&["str", "jobs", "workspace", "dump-of"])?;
+    let dump = server.ok(&["str", "jobs", "workspace", "dump"])?;
     server.ok(&["str", "jobs", "workspace", "kill"])?;
     std::fs::write(&file, &dump).map_err(e)?;
     server.ok(&["--file", &file.to_string_lossy()])?;
@@ -602,8 +602,8 @@ fn a_dump_runs_on_a_new_server_whatever_its_tabs_are_named() -> Outcome {
         "opts", "80", "24", "size", "str", "main", "in", "str", "tab-2", "name", "str", "sleep",
         "program", "str", "60", "arg", "run",
     ])?;
-    source.ok(&["str", "tab-2", "pane", "str", "new-workspace", "move-to"])?;
-    let dump = source.ok(&["dump"])?;
+    source.ok(&["str", "tab-2", "pane", "str", "new-workspace", "move"])?;
+    let dump = source.ok(&["all", "dump"])?;
     let server = Server::start("")?;
     server.ok(&[
         "opts",
@@ -652,7 +652,7 @@ fn an_unnamed_workspace_replays_independently_of_the_default_shell() -> Outcome 
         "run",
         "str",
         "new-workspace",
-        "move-to",
+        "move",
     ])?;
     source.ok(&[
         "str",
@@ -685,7 +685,7 @@ fn an_unnamed_workspace_replays_independently_of_the_default_shell() -> Outcome 
         "program",
         "run",
     ])?;
-    let dump = source.ok(&["str", "first", "pane", "workspace", "dump-of"])?;
+    let dump = source.ok(&["str", "first", "pane", "workspace", "dump"])?;
     for shell in [
         &["str", "/no/such/fux-shell"][..],
         &["str", "sh", "str", "-c", "str", "exit 0"],
@@ -727,15 +727,8 @@ fn a_dump_opens_its_workspace_with_the_first_tab_written() -> Outcome {
         "opts", "80", "24", "size", "str", "moved", "in", "str", "sleep", "program", "str", "60",
         "arg", "run",
     ])?;
-    server.ok(&[
-        "str",
-        first_word(&pane),
-        "pane",
-        "str",
-        "new-tab",
-        "move-to",
-    ])?;
-    let dump = server.ok(&["str", "moved", "workspace", "dump-of"])?;
+    server.ok(&["str", first_word(&pane), "pane", "str", "new-tab", "move"])?;
+    let dump = server.ok(&["str", "moved", "workspace", "dump"])?;
     server.ok(&["str", "moved", "workspace", "kill"])?;
     let file = server.dir.join("moved.fux");
     std::fs::write(&file, &dump).map_err(e)?;
@@ -853,7 +846,7 @@ fn dump_replays_the_saved_launch_after_the_program_changes_directory() -> Outcom
             Ok(server.ok(&[pane, "str", "cwd", "get"])?.trim()
                 == child.to_str().ok_or("child text")?)
         })?;
-        let dump = server.ok(&[pane, "tab", "dump-of"])?;
+        let dump = server.ok(&[pane, "tab", "dump"])?;
         assert!(dump.contains(&format!("str {cwd} cwd")), "{dump}");
         server.ok(&[&dump])?;
         let (replayed, _) = server.newest_pane()?;
@@ -885,7 +878,7 @@ fn dump_replays_a_shell_in_its_current_directory() -> Outcome {
                 == child.to_str().ok_or("child text")?,
         )
     })?;
-    let dump = server.ok(&[pane, "tab", "dump-of"])?;
+    let dump = server.ok(&[pane, "tab", "dump"])?;
     assert!(dump.contains(&format!("str {observed} cwd")), "{dump}");
     server.ok(&[&dump])?;
     let (replayed, _) = server.newest_pane()?;

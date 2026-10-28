@@ -115,8 +115,8 @@ keeps.
 What a word that acts takes (**options**, a wait, keys, a mouse event) goes
 on the pane before it, in any order: the pane given them becomes a request,
 which the word at the end acts on. `run`, `new-tab` and `new-workspace` have
-no pane yet, nor has `attach`: they start from `opts`, empty options, as
-`events-of` does to stream everything. Of
+no pane yet, nor has `attach`: they start from `opts`, empty options.
+`all events` streams the whole session. Of
 the first three, only `run` takes a program (`program`, then each `arg`; a
 shell's line is `str sh program str -c arg str LINE arg`); `new-tab` and
 `new-workspace` start a shell. Their tab is laid out on `COLS ROWS size`, else on the
@@ -124,6 +124,15 @@ caller's own screen (a client's keys), else on the caller's tab (`fux`
 run in a pane): never on the screen of a client that does not show the
 caller's tab. Run from outside fux, a size must be given: fux makes none
 up.
+
+`all` names the whole session for `info`, `dump`, `notify` and `events`;
+`ls` is the library word `all info`. `CLIENT HANDLE show` follows a pane,
+tab or workspace. `WORKSPACE panes` lists panes, and `WORKSPACE tabs` lists tabs.
+`capture` takes a pane or client; only panes take capture options and have
+versions. `resize` takes a tab scope or headless client. `move` takes a tab,
+workspace, `str new-tab`, `str new-workspace`, or a direction; `swap-with`
+takes a pane or direction. Directions are `str left`, `str right`, `str up`
+and `str down`.
 
 ```sh
 fux agent-opts str web name 120 40 size str ./app program str --verbose arg run
@@ -235,7 +244,7 @@ prefix again sends it to the pane.
 | `e` | `me command-prompt` | type any fuxth |
 | `d` | `me detach` | detach this terminal |
 | `r`, then `h` `j` `k` `l` | `me focused str left 1 move-border` … | move a border one cell |
-| `m`, then `h` `j` `k` `l` | `me focused str left move-beside` … | move the pane beside its neighbour |
+| `m`, then `h` `j` `k` `l` | `me focused str left move` … | move the pane beside its neighbour |
 | `t`, `w` | tab and workspace layers | below |
 
 `r` and `m` are **repeat modes**: `h` `j` `k` `l` act again without the
@@ -404,8 +413,8 @@ VT220-class terminal.
 ### JSON
 
 `json` on what a word left gives its JSON: `ls json`, `X info json`,
-`pane capture json`, `client capture-client json`, an action's or a
-wait's answer (`… wait json`), `status json`; `events` and `X events-of`
+`pane capture json`, `client capture json`, an action's or a
+wait's answer (`… wait json`), `status json`; `all events` and `X events`
 stream an object a line. These shapes are part of fux's interface; `fux
 help json` lists every one ([docs/json.md](docs/json.md)).
 
@@ -434,7 +443,8 @@ bundled state, preserves earlier explicit CLI settings, and shows one
 diagnostic. Evaluation and local setters send no requests. Each observation wait sends
 this client's `wait-seconds` unless it has an explicit `timeout`.
 Shared paste buffers retain the newest 16 copies; retention is fixed.
-Shell argv, environment selection, `history-bytes` and `program-clipboard`
+Shell argv, environment selection, `history-bytes`, `program-clipboard`,
+`reflow`, `alternate-scroll-lines` and `picture-bytes`
 are local defaults for future creations. Explicit creation options override
 them, including zero and false. Existing panes retain their policy through
 respawn; `%3 4194304 history-budget` changes only that pane's current budget.
@@ -442,6 +452,33 @@ Lowering it evicts the oldest rows immediately. Dump records current budgets
 and permissions. Bell, titles and terminal clipboard delivery belong to each
 view and arrive in its attach request after local commit. Later key or prompt
 changes use a connection-bound action, fenced before following requests.
+
+Emulator defaults are bundled in `src/script/client-defaults.fux`:
+
+| Setting | Default | Bound and lifetime |
+| --- | --- | --- |
+| `reflow` | `true` | Creation policy; rewrap recorded primary-screen lines, never the alternate screen |
+| `alternate-scroll-lines` | `5` | 0–32767 arrows per wheel action when the program enables alternate scroll; Ctrl keeps half-page scrolling |
+| `picture-bytes` | `100663296` | 0–96 MiB per pane; zero disables picture admission and advertisement |
+| `escape-delay-ms` | `35` | 0–65535 ms, per client |
+| `paste-timeout-ms` | `5000` | 0–65535 ms, per client |
+| `cell-placement` | `false` | Per client; position after each non-ASCII glyph |
+
+The three pane settings also have typed creation options, for example
+`fux agent-opts false reflow 0 picture-bytes str /bin/cat program run`.
+They survive terminal reset and respawn, and dump preserves them.
+Decoder changes take effect when reading begins idle, keeping an unfinished
+Escape or paste's existing timing. Zero waits for the next explicit timeout
+event; input and paste byte limits remain fixed.
+
+`str cell-placement true set` forces a redraw of that client's screen.
+The compact default assumes the outer terminal shares fux's Unicode 17
+narrow ambiguous-width and cluster advance rules, with cursor moves for
+known cluster differences. Explicit placement bounds accumulated cursor
+drift; it cannot constrain a mismatched font's glyph footprint. Both modes
+keep fux's stored cell geometry. Neither guesses from locale or terminal name.
+The bounded comparison in `bench/examples/placement.rs` measures output bytes,
+thread CPU and paint latency; it does not measure transport or display latency.
 
 Client defaults load when `set`, `attach-defaults`, `list-keys`, `attach`, a launch or an
 observation wait without `timeout` needs them; ordinary queries and server
@@ -520,14 +557,14 @@ fux adds then reach you only once you bind them.
 
 ## Saved sessions
 
-`dump` prints what there is as a fuxth script that makes it again (its first
+`all dump` prints what there is as a fuxth script that makes it again (its first
 line `#!/usr/bin/env -S fux --file`, so `chmod +x` makes it runnable), each
-pane a `let` name later lines use; `X dump-of` one tab or workspace. Run it
+pane a `let` name later lines use; `X dump` one tab or workspace. Run it
 to make it again on a running server, each tab in the workspace of its
 given name (made if missing). An unnamed workspace is recreated as a fresh
 workspace. Only given pane, tab and workspace names are written; display
 labels are never saved as names. Close named tabs that would conflict
-before replay: `fux str dev workspace dump-of > dev.fux; fux --file dev.fux`. Each
+before replay: `fux str dev workspace dump > dev.fux; fux --file dev.fux`. Each
 tab is made at the size it has (`size`), which a server with no client
 needs; one that fits clients' screens fits them again after
 (`resize-auto`). Each split is made with shares (`2 1 shares`: the pane
@@ -548,9 +585,43 @@ Nothing is saved on its own. To keep a session past its server (a crash, a
 fresh server:
 
 ```sh
-fux dump > ~/session.fux              # save when you choose
+fux all dump > ~/session.fux              # save when you choose
 fux start && fux --file ~/session.fux # replay on a fresh server
 ```
+
+`arrange` replaces an existing tab's whole layout in one guarded commit:
+
+```fux
+@2 dup str layout_revision get
+list %3 %4 %5 end str horizontal even-of arrange
+```
+
+The list must name every current pane of that tab exactly once. The revision
+is `TAB:REVISION:RUN`, tied to the tab and server run. Layout edits and changes
+to the tab's fit invalidate it, even if a border is moved back. A stale or
+invalid proposal changes nothing. A revision the tab has since moved past
+fails with `stale`. A token for another tab or run, or a future serial, fails
+with `bad_value`.
+Pane focus stays with the same pane.
+Every background and sizing-client screen must show every pane; watchers do
+not constrain it. Success journals one `arranged` invalidation, then sizes
+panes through the normal settle path, which reports PTY resize failures.
+
+The tree is a flat list, rooted at index zero. Each leaf accepts a typed pane
+or its action/wait answer; all retained pane runs must agree. A split is
+`list str horizontal|vertical FIRST-SHARE SECOND-SHARE FIRST-INDEX SECOND-INDEX end`.
+Every index must be reached once; shares are nonzero u32 values. A proposal
+has at most 2,047 nodes and depth 64. Revision exhaustion refuses further
+guarded edits rather than reusing a token.
+
+The library's pure builders accept pane lists: `PANES str horizontal even-of`
+(or `str vertical`) uses balanced splits weighted by pane count;
+`PANES str horizontal str vertical main-of` gives the first pane two shares
+beside an evenly stacked remainder's one (swap the axes for a main pane
+above); `PANES tiled-of` alternates horizontal and vertical splits, weighted
+by pane count. Empty lists fail; the language's list, weight and execution
+budgets also apply. These builders read no session state and submit nothing
+until `arrange`.
 
 A dump makes the layouts and launches again: each shell starts afresh in
 its directory, each program `run` started starts again. It never brings
@@ -666,7 +737,7 @@ either case.
   cell the mouse is in, not the pixel within it, and fux makes none up.
   The mode is reported permanently reset and setting it changes nothing,
   so a program reports in cells, as with a terminal without it.
-- **Hooks** (tmux's `set-hook`): read `fux events` and run fux
+- **Hooks** (tmux's `set-hook`): read `fux all events` and run fux
   instead.
 - **Programs that outlive their server**, or a session saved on its own: a
   crash ends them; replay a `dump` you saved to make the layout again.

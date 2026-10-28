@@ -6,6 +6,12 @@ str shell list
   dup str '' eq if drop str /bin/sh then
 end set
 str history-bytes 8388608 set
+str reflow true set
+str alternate-scroll-lines 5 set
+str picture-bytes 100663296 set
+str escape-delay-ms 35 set
+str paste-timeout-ms 5000 set
+str cell-placement false set
 str wait-seconds 30 set
 str program-clipboard true set
 str terminal-clipboard true set

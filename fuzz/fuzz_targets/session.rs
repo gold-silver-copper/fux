@@ -64,9 +64,9 @@ const SIDE: &[&str] = &[
     "str %2 pane kill",
     "str @1 tab kill",
     "str +2 workspace kill",
-    "str %1 pane str right move-beside",
-    "str %2 pane str new-tab move-to",
-    "str %1 pane str %2 pane swap-panes",
+    "str %1 pane str right move",
+    "str %2 pane str new-tab move",
+    "str %1 pane str %2 pane swap-with",
     "str %1 pane str right 5 move-border",
     "str @1 tab str renamed rename",
     "str @1 tab str next reorder",
@@ -91,10 +91,10 @@ const SIDE: &[&str] = &[
     "str 'g n' str 'opts new-tab drop' bind",
     "str 'y l' str 'me focused str right 1 move-border' bind str Grow group repeat",
     "str 'y h' str 'me focused str left 1 move-border' bind str Grow group repeat",
-    "str c1 client str %1 pane focus-pane",
-    "str c1 client str %2 pane focus-pane",
-    "str c1 client str %3 pane focus-pane",
-    "str c1 client str @1 tab show-tab",
+    "str c1 client str %1 pane show",
+    "str c1 client str %2 pane show",
+    "str c1 client str %3 pane show",
+    "str c1 client str @1 tab show",
     "str g unbind",
     "str C-a prefix",
     "str C-b prefix",
@@ -188,10 +188,18 @@ type State = (
 
 /// A client's keys, as its client reads them: its decoder, and the screen
 /// it has open or what its keys are in the middle of.
-#[derive(Default)]
 struct Keys {
     screen: fux::screens::Display,
     decoder: Decoder,
+}
+
+impl Default for Keys {
+    fn default() -> Self {
+        Self {
+            screen: Default::default(),
+            decoder: Decoder::new(defaults().preferences.decode_timing()),
+        }
+    }
 }
 
 /// One session, its clients' keys, and what drove it that the checks need.

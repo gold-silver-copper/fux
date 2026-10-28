@@ -132,7 +132,7 @@ fn an_unchanged_screen_is_not_painted_again() -> Outcome {
     client.pump()?;
     let before = client.painted.len();
     // Selecting the pane already selected changes nothing on screen.
-    server.ok(&["str", "c1", "client", "str", "%1", "pane", "focus-pane"])?;
+    server.ok(&["str", "c1", "client", "str", "%1", "pane", "show"])?;
     std::thread::sleep(std::time::Duration::from_millis(200));
     client.pump()?;
     assert_eq!(

@@ -90,14 +90,30 @@ fn rename_move_swap_reorder_and_kill() -> Outcome {
         1
     );
     // Swap across workspaces.
-    server.ok(&["str", "%1", "pane", "str", "%2", "pane", "swap-panes"])?;
+    server.ok(&["str", "%1", "pane", "str", "%2", "pane", "swap-with"])?;
     let ls = server.ok(&["ls"])?;
     let at = |needle: &str| ls.find(needle).unwrap_or(usize::MAX);
     assert!(at("%2") < at("+2") && at("%1") > at("+2"), "{ls}");
-    // Move to a workspace, then to a new tab.
+    // Swap toward a neighbour uses the same atomic backend as a counterpart.
     server.ok(&["str", "%2", "pane", "horizontal", "split"])?;
-    server.ok(&["str", "%3", "pane", "str", "+2", "workspace", "move-to"])?;
-    server.ok(&["str", "%3", "pane", "str", "new-tab", "move-to"])?;
+    server.ok(&["%2", "str", "right", "swap-with"])?;
+    assert_eq!(server.ok(&["%2", "tab", "panes"])?.trim(), "%3 %2");
+    server.ok(&["%2", "%3", "swap-with"])?;
+    let refused = server.fux(&["%2", "str", "new-tabb", "move"])?;
+    assert_eq!(refused.status, 1, "{}", refused.stderr);
+    assert!(
+        refused.stderr.contains("\"new-tabb\""),
+        "{}",
+        refused.stderr
+    );
+    assert!(
+        refused.stderr.contains("new-workspace"),
+        "{}",
+        refused.stderr
+    );
+    // Move to a workspace, then to a new tab.
+    server.ok(&["str", "%3", "pane", "str", "+2", "workspace", "move"])?;
+    server.ok(&["str", "%3", "pane", "str", "new-tab", "move"])?;
     let ls = server.ok(&["ls"])?;
     assert!(ls.contains("@3 %3"), "{ls}");
     // Reorder tabs and workspaces.
@@ -513,6 +529,23 @@ fn ls_json_list_keys_and_help() -> Outcome {
     ] {
         assert!(json.contains(field), "{field} in {json}");
     }
+    let revision = server.ok(&["@1", "str", "layout_revision", "get"])?;
+    let parsed: fux::command::LayoutRevision =
+        revision.trim().parse().map_err(|()| "layout revision")?;
+    assert_eq!(parsed.tab.to_string(), "@1");
+    assert!(
+        json.contains(&format!("\"layout_revision\":\"{parsed}\"")),
+        "{json}"
+    );
+    // A replay request stays distinguishable from the bare session scope.
+    assert_eq!(
+        server.ok(&["all print all str 0:1-2 from print"])?,
+        "all\n(a whole-session events request)\n"
+    );
+    assert_eq!(
+        server.ok(&["list all all str 0:1-2 from end json"])?,
+        "[\"all\",\"(a whole-session events request)\"]\n"
+    );
     // The command line's own keymap: the defaults.
     let keys = server.ok(&["list-keys"])?;
     assert!(keys.contains("\nstr C-b prefix\n"), "{keys}");
@@ -623,7 +656,7 @@ fn a_write_that_fails_stops_the_program() -> Outcome {
         !server.ok(&["ls"])?.contains("%2"),
         "run ran after help failed"
     );
-    let mut events = full()?.arg("events").spawn().map_err(e)?;
+    let mut events = full()?.args(["all", "events"]).spawn().map_err(e)?;
     eventually("events to end", || {
         Ok(events.try_wait().map_err(e)?.is_some())
     })?;

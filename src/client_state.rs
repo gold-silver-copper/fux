@@ -1,5 +1,7 @@
 //! The keys, frozen definitions and checked preferences owned by one client.
-use crate::command::{EnvName, HistoryBytes, Limit, Program};
+use crate::command::{
+    DecodeMillis, EnvName, HistoryBytes, Limit, PictureBytes, Program, ScrollLines,
+};
 use crate::keymap::Keymap;
 use crate::script::settings::Reads;
 use crate::script::{Config, Fux};
@@ -127,6 +129,18 @@ preferences! {
     shell "shell": Program;
     /// The history budget in bytes for panes this client creates.
     history_bytes "history-bytes": HistoryBytes;
+    /// Rewrap recorded primary-screen lines when a new pane is resized.
+    reflow "reflow": bool;
+    /// Arrows per alternate-screen wheel action; Ctrl keeps half-page scrolling.
+    alternate_scroll_lines "alternate-scroll-lines": ScrollLines;
+    /// Picture byte budget for new panes; zero disables picture support.
+    picture_bytes "picture-bytes": PictureBytes;
+    /// Legacy Escape wait, applied when this client's decoder is idle.
+    escape_delay "escape-delay-ms": DecodeMillis;
+    /// Unfinished paste wait, applied when this client's decoder is idle.
+    paste_timeout "paste-timeout-ms": DecodeMillis;
+    /// Position after each non-ASCII glyph; bounds drift, not glyph footprints.
+    cell_placement "cell-placement": bool;
     /// This client's limit for waits without an explicit timeout.
     wait "wait-seconds": Limit;
     /// Whether newly created panes may copy program output to paste buffers.
@@ -145,6 +159,15 @@ preferences! {
 impl PreferenceDraft {
     pub(crate) fn pane_options(&self) -> Result<crate::command::PaneOptions, String> {
         Ok(crate::command::PaneOptions {
+            reflow: self
+                .reflow
+                .ok_or("bundled initialization did not set reflow")?,
+            alternate_scroll_lines: self
+                .alternate_scroll_lines
+                .ok_or("bundled initialization did not set alternate-scroll-lines")?,
+            picture_bytes: self
+                .picture_bytes
+                .ok_or("bundled initialization did not set picture-bytes")?,
             history_bytes: self
                 .history_bytes
                 .ok_or("bundled initialization did not set history-bytes")?,
@@ -159,6 +182,7 @@ impl PreferenceDraft {
     }
     /// Seed an in-process client draft from its own view.
     pub fn presentation(&mut self, p: crate::view::Presentation) {
+        self.cell_placement = Some(p.cell_placement);
         self.bell = Some(p.bell);
         self.titles = Some(p.titles);
         self.terminal_clipboard = Some(p.terminal_clipboard);
@@ -176,14 +200,25 @@ impl PreferenceDraft {
 }
 
 impl Preferences {
+    pub fn decode_timing(&self) -> crate::decode::Timing {
+        crate::decode::Timing::new(
+            u16::try_from(self.escape_delay.get()).unwrap_or(u16::MAX),
+            u16::try_from(self.paste_timeout.get()).unwrap_or(u16::MAX),
+        )
+    }
+
     pub fn pane_options(&self) -> crate::command::PaneOptions {
         crate::command::PaneOptions {
             history_bytes: self.history_bytes,
             program_clipboard: self.program_clipboard,
+            reflow: self.reflow,
+            alternate_scroll_lines: self.alternate_scroll_lines,
+            picture_bytes: self.picture_bytes,
         }
     }
     pub fn presentation(&self) -> crate::view::Presentation {
         crate::view::Presentation {
+            cell_placement: self.cell_placement,
             bell: self.bell,
             titles: self.titles,
             terminal_clipboard: self.terminal_clipboard,
@@ -207,6 +242,12 @@ mod tests {
         assert!(draft.finish().is_err());
         assert_eq!(state.preferences.history_bytes.get(), 8 << 20);
         assert_eq!(state.preferences.wait.seconds(), 30);
+        assert!(state.preferences.reflow);
+        assert_eq!(state.preferences.alternate_scroll_lines.get(), 5);
+        assert_eq!(state.preferences.picture_bytes.get(), fux_vt::PICTURE_BYTES);
+        assert_eq!(state.preferences.escape_delay.get(), 35);
+        assert_eq!(state.preferences.paste_timeout.get(), 5000);
+        assert!(!state.preferences.cell_placement);
         assert!(state.preferences.program_clipboard && state.preferences.terminal_clipboard);
         assert!(state.preferences.bell && !state.preferences.titles);
         assert!(state.preferences.copy_environment.is_empty());
@@ -232,6 +273,13 @@ mod tests {
             draft.set(name, &value)?;
         }
         for (name, value) in [
+            ("reflow", Value::Int(1)),
+            ("alternate-scroll-lines", Value::Int(-1)),
+            ("alternate-scroll-lines", Value::Int(32768)),
+            ("picture-bytes", Value::Int(100663297)),
+            ("escape-delay-ms", Value::Int(-1)),
+            ("paste-timeout-ms", Value::Int(65536)),
+            ("cell-placement", Value::str("cells")),
             ("history-bytes", Value::Int(-1)),
             ("history-bytes", Value::Int((1 << 30) + 1)),
             ("wait-seconds", Value::Int(86_401)),

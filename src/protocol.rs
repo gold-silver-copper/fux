@@ -20,7 +20,7 @@ use crate::wire::{Wire, wire};
 use std::borrow::Cow;
 
 /// Bumped on any change to the frames below.
-pub const PROTOCOL: u32 = 41;
+pub const PROTOCOL: u32 = 42;
 /// The largest frame, kind byte included.
 pub const MAX_FRAME: usize = 1 << 20;
 /// The largest payload one frame carries.
@@ -103,7 +103,7 @@ wire! {
         /// for that, a `Hello`'s frame and payload never change.
         Kill,
         /// A client with no terminal (`opts COLS ROWS size attach`): `Attach`, then
-        /// nothing but its end; the server sizes it (`resize-client`).
+        /// nothing but its end; the server sizes it (`resize`).
         Headless,
     }
 }

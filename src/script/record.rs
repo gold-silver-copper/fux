@@ -294,7 +294,7 @@ pub(super) fn snapshot(s: inspect::Snapshot) -> Result<V, Failure> {
         record! { b; "id" => id(AnyRef::Tab(t.id),run), "workspace" => id(AnyRef::Workspace(t.workspace),run),
             "name" => b.optional(t.name.as_deref())?, "label" => b.text(&t.label)?,
             "fit" => b.text(if t.fixed { "fixed" } else { "clients" })?, "cols" => number(t.cols)?, "rows" => number(t.rows)?,
-            "nodes" => nodes, "revision" => t.revision.map(|r| b.text(&r.to_string())).unwrap_or_else(|| Ok(null()))?
+            "nodes" => nodes, "layout_revision" => t.revision.map(|r| b.text(&r.to_string())).unwrap_or_else(|| Ok(null()))?
         }
     })?;
     let panes = b.list(&s.panes, |b,p| {
@@ -316,7 +316,8 @@ pub(super) fn snapshot(s: inspect::Snapshot) -> Result<V, Failure> {
                     inspect::Directory::Unknown => null(),
                     inspect::Directory::Failed(errno) => record! { b; "status" => b.text("failed")?, "operation" => b.text("cwd")?, "errno" => number(*errno)? }?,
                 },
-                "history_bytes" => number(r.history_bytes)?, "program_clipboard" => Value::Bool(r.program_clipboard)
+                "history_bytes" => number(r.options.history_bytes.get())?, "program_clipboard" => Value::Bool(r.options.program_clipboard),
+                "reflow" => Value::Bool(r.options.reflow), "alternate_scroll_lines" => number(r.options.alternate_scroll_lines.get())?, "picture_bytes" => number(r.options.picture_bytes.get())?
             }?;
             fields.push((b.budget.string("launch").map_err(super::words::observation_failure)?, recipe));
         }
@@ -332,7 +333,7 @@ pub(super) fn snapshot(s: inspect::Snapshot) -> Result<V, Failure> {
         "zoom" => Value::Bool(c.zoom), "opening" => c.opening.map(number).unwrap_or_else(|| Ok(null()))?, "mode" => b.text(&c.mode)?
     })?;
     let scope = match s.scope {
-        Scope::All => Value::App(Fux::All),
+        Scope::All => Value::App(Fux::All(None)),
         Scope::Target(t) => id(t, run),
         Scope::Client(c) => Value::App(Fux::Client(c, Some(run))),
     };

@@ -781,6 +781,14 @@ impl Parts {
         Some(())
     }
 
+    /// Commits a complete validated replacement and one layout invalidation.
+    pub(crate) fn arrange(&mut self, id: TabId, root: Tree) -> Option<()> {
+        let (ws, tab) = tab_mut(&mut self.workspaces, id)?;
+        tab.edit(|old| *old = root);
+        self.journal.push(Event::Arranged((ws, id)));
+        Some(())
+    }
+
     /// Changes the layout of `pane`'s tab with `change`, which keeps its
     /// panes: moves one, moves a border, or lays them out anew. A change
     /// that would not keep them is undone, and is `None`, as is a pane in

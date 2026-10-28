@@ -98,7 +98,12 @@ Driving programs from a script or an agent: `fux help agents`; one word:
 Below, x is a pane, tab, workspace or client (an action's answer is its
 pane), a request on one, or opts; target, subject and place a pane (or a
 tab, workspace or client) or a request on one; handle a pane, tab or
-workspace; ref a name or a handle; text a string, number or boolean.
+workspace; scope a handle or all; ref a name or a handle; text a string,
+number or boolean. pane-builder is a pane or pane request; capture-source
+maps one of those to capture, and a client to client-capture; sized is a
+handle or headless client. replayable is a pane, tab or workspace, a
+request on one, or all without a cursor; from on all leaves an
+events-request, which only events takes.
 wait and send-keys leave an answer for a pane, and answers for a tab or
 workspace (send-keys: or a client), which no word that wants a pane takes.
 ",
@@ -127,7 +132,7 @@ workspace (send-keys: or a client), which no word that wants a pane takes.
         "\n\nThe server: `str NAME server` or `str PATH socket` first; else\n\
          FUX_SOCKET; else server.sock in $XDG_RUNTIME_DIR/fux, or with\n\
          XDG_RUNTIME_DIR unset $TMPDIR/fux. Nothing is saved on its own:\n\
-         `fux dump > FILE` saves the layouts and launches when you choose\n\
+         `fux all dump > FILE` saves the layouts and launches when you choose\n\
          (never what a process held), and `fux start && fux --file FILE` makes\n\
          them again on a fresh server.\n",
     );
@@ -215,7 +220,7 @@ fn settings() -> String {
             wrapped(about, "\n      ", 78)
         ));
     }
-    out.push_str(&format!("\nShell, copy-environment, history-bytes and program-clipboard supply this\nclient's future launches. Use PANE BYTES history-budget to change one pane.\nBell, titles and terminal-clipboard affect only this client's view: supplied\nwith attach, then updated after local commits before following requests.\nWait-seconds supplies this client's observation wait limits.\nSetters and config evaluation send no requests. Shared paste buffers\nretain the newest {} copies.\n", crate::session::BUFFER_LIMIT));
+    out.push_str(&format!("\nShell, copy-environment, history-bytes, program-clipboard, reflow,\nalternate-scroll-lines and picture-bytes supply this client's future launches.\nUse PANE BYTES history-budget to change one pane.\nBell, titles, terminal-clipboard and cell-placement affect only this client's\nview: supplied with attach, then updated after local commits\nbefore following requests.\nWait-seconds supplies this client's observation wait limits.\nEscape-delay-ms and paste-timeout-ms change at an idle decoder boundary.\nSetters and config evaluation send no requests. Shared paste buffers\nretain the newest {} copies.\n", crate::session::BUFFER_LIMIT));
     out.push_str("\nBundled initialization (client-defaults.fux):\n");
     out.push_str(crate::script::DEFAULTS);
     out
@@ -321,7 +326,7 @@ fn bounds() -> Vec<(Amount, &'static str, Said)> {
         (Whole(fuxth::BUILT), "elements a fuxth run builds in all", &[]),
         (Whole(fuxth::TOTAL), "elements a fuxth list holds, through the lists in it", &[]),
         (Bytes(script::SOURCE_MAX), "what read-file and input read", &[("input", "{} at most"), ("read-file", "{} at most")]),
-        (Count(usize::from(crate::view::MOST)), "columns or rows of a size", &[("resize", "1 to {} each"), ("resize-client", "1 to {} each"), ("size", "1 to {} each")]),
+        (Count(usize::from(crate::view::MOST)), "columns or rows of a size", &[("resize", "1 to {} each"), ("size", "1 to {} each")]),
         (Count(fuxix::process::TREE_MAX), "processes a pane's teardown looks through for its session (Linux)", &[]),
     ]
 }
