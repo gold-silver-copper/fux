@@ -101,7 +101,7 @@ impl Server {
 
     /// The same, with at most `open_files` descriptors (`ulimit -n`).
     pub fn start_limited(config: &str, open_files: Option<u32>) -> Result<Server, String> {
-        Server::start_with(config, open_files, false).map(|(server, _)| server)
+        Server::start_with(config, open_files, false, true).map(|(server, _)| server)
     }
 
     /// A server that inherits a descriptor without close-on-exec, as one
@@ -110,14 +110,19 @@ impl Server {
     /// server. It is made while no other server can start, so only this one
     /// inherits it.
     pub fn start_inheriting(config: &str) -> Result<(Server, i32), String> {
-        let (server, held) = Server::start_with(config, None, true)?;
+        let (server, held) = Server::start_with(config, None, true, true)?;
         Ok((server, held.ok_or("a held descriptor")?))
+    }
+
+    pub fn empty() -> Result<Server, String> {
+        Server::start_with("", None, false, false).map(|(server, _)| server)
     }
 
     fn start_with(
         config: &str,
         open_files: Option<u32>,
         inherit: bool,
+        create: bool,
     ) -> Result<(Server, Option<i32>), String> {
         let base = fuxix::file::scratch().map_err(e)?;
         let dir = base.join(format!(
@@ -193,6 +198,9 @@ impl Server {
         // Explicit fixture setup: scripted clients receive these prepared
         // keys, rather than implicitly loading a user's config on attach.
         server.state = fux::script::run_file(&config_path).map_err(e)?;
+        if !create {
+            return Ok((server, held));
+        }
         // A server starts with nothing in it; the tests' first shell, %1 in
         // workspace main, is 80 by 24, in the server's home.
         let home = server.dir.to_string_lossy().into_owned();
@@ -486,7 +494,9 @@ impl Client {
         let attach = Attach {
             of: None,
             size: sized(rows, cols)?,
-            workspace: workspace.map(|name| fux::command::WsRef::Name(name.to_owned())),
+            target: workspace.map(|name| {
+                fux::command::AttachTarget::Workspace(fux::command::WsRef::Name(name.to_owned()))
+            }),
             read_only,
             presentation: server.state.preferences.presentation(),
             initial: (workspace.is_none() && !read_only).then(|| fux::command::InitialWorkspace {
@@ -641,7 +651,8 @@ impl Client {
                     );
                     self.id = Some(me.to_string());
                 }
-                frame @ (ToAttached::Welcome(..)
+                frame @ (ToAttached::NeedsInitial
+                | ToAttached::Welcome(..)
                 | ToAttached::Ended(_)
                 | ToAttached::Run(_)
                 | ToAttached::Keys(_)) => {

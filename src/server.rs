@@ -448,6 +448,9 @@ impl Conn {
                 self.enter(session, Stage::Attached(Box::new(attached)));
                 self.send(session, &ToAttached::Welcome(client, session.run));
             }
+            Err(crate::session::Error::NeedsInitial) => {
+                self.end(session, &ToAttached::NeedsInitial)
+            }
             Err(error) => self.end(session, &ToAttached::Exit(&error.to_string())),
         }
     }
@@ -546,7 +549,8 @@ impl Conn {
         match frame {
             ToAttached::Paint(bytes) => Attached::paint(&mut self.out, bytes),
             ToAttached::Exit(_) => self.end(session, frame),
-            ToAttached::Welcome(..)
+            ToAttached::NeedsInitial
+            | ToAttached::Welcome(..)
             | ToAttached::Ended(_)
             | ToAttached::Run(_)
             | ToAttached::Keys(_) => self.send(session, frame),
@@ -1008,6 +1012,7 @@ impl Server {
                         ToAttached::Keys(_) => Some(Theirs::Keys),
                         ToAttached::Paint(_)
                         | ToAttached::Exit(_)
+                        | ToAttached::NeedsInitial
                         | ToAttached::Welcome(..)
                         | ToAttached::Ended(_) => None,
                     };
@@ -1756,7 +1761,8 @@ mod tests {
             match frame {
                 ToAttached::Paint(bytes) => painted.extend_from_slice(&bytes),
                 ToAttached::Exit(reason) => exit = Some(reason.to_owned()),
-                ToAttached::Welcome(..)
+                ToAttached::NeedsInitial
+                | ToAttached::Welcome(..)
                 | ToAttached::Ended(_)
                 | ToAttached::Run(_)
                 | ToAttached::Keys(_) => {}

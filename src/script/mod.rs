@@ -496,7 +496,7 @@ pub enum Local {
     /// This terminal, or a client of no terminal of `size`.
     Attach {
         of: Option<Run>,
-        workspace: Option<WsRef>,
+        target: Option<crate::command::AttachTarget>,
         read_only: bool,
         size: Option<fux_vt::Size>,
         creation: Box<Opts>,
@@ -1383,7 +1383,7 @@ fn local(
         Local::Server(chosen) => server.choose(chosen.clone()),
         Local::Attach {
             of,
-            workspace,
+            target,
             read_only,
             size,
             creation,
@@ -1413,6 +1413,24 @@ fn local(
             } else {
                 (defaults, None)
             };
+            let explicit = target.is_some() || creation.given.contains(&words::Opt::Name);
+            let target = if explicit {
+                target.clone()
+            } else {
+                committed.attach.target.clone()
+            };
+            let of = if explicit {
+                *of
+            } else {
+                same_run(*of, committed.attach.of)
+                    .map_err(|why| Failed::new(Code::BadValue, why.message))?
+            };
+            let mut creation = creation.as_ref().clone();
+            if !creation.given.contains(&words::Opt::Name) {
+                creation.name = committed.attach.name.clone();
+            }
+            words::check_attach_creation(&creation, target.is_some(), *read_only)
+                .map_err(|why| Failed::new(Code::of(why.code), why.message))?;
             // Watching or naming a run starts no replacement server.
             let socket = match *read_only || of.is_some() {
                 true => server.socket()?,
@@ -1424,10 +1442,10 @@ fn local(
             }
             *draft = committed.draft();
             let attach = client::Attaching {
-                of: *of,
-                workspace: workspace.clone(),
+                of,
+                target,
                 read_only: *read_only,
-                creation: creation.as_ref().clone(),
+                creation,
                 state: committed,
                 problem,
             };
@@ -1722,6 +1740,92 @@ fn read_file(path: &std::path::Path) -> Result<String, Failed> {
 #[cfg(test)]
 mod tests {
     #[test]
+    fn attach_words_accept_compiled_action_answers_and_keep_their_run()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use super::*;
+        use crate::command::{AttachTarget, Command, Request};
+        struct Record {
+            version: Version,
+            sent: usize,
+            attached: Option<(Option<Run>, Option<AttachTarget>, Option<fux_vt::Size>)>,
+        }
+        impl Asks for Record {
+            fn ask(&mut self, asked: &Asked, _: &mut dyn Write) -> Result<Reply, Failed> {
+                let mut reply: Reply =
+                    if matches!(asked.request, Request::Do(Command::Resolve { .. })) {
+                        Body::Found(AnyRef::Pane(self.version.pane)).into()
+                    } else if matches!(asked.request, Request::Do(Command::SendKeys { .. })) {
+                        self.sent = self.sent.saturating_add(1);
+                        PaneResults::One(PaneAnswer::Acted(self.version)).into()
+                    } else {
+                        return Err(Failed::new(Code::Usage, "unexpected request"));
+                    };
+                reply.run = Some(self.version.run);
+                Ok(reply)
+            }
+            fn local(
+                &mut self,
+                what: &Local,
+                _: Option<&mut Draft>,
+                _: &mut dyn Write,
+            ) -> Result<Vec<Value<Fux>>, Failed> {
+                let Local::Attach {
+                    of, target, size, ..
+                } = what
+                else {
+                    return Err(Failed::new(Code::Usage, "unexpected local action"));
+                };
+                self.attached = Some((*of, target.clone(), *size));
+                Ok(Vec::new())
+            }
+        }
+        let version: Version = "%1:0.0.0.0.0:1-2".parse().map_err(|()| "version")?;
+        for action in ["attach-defaults", "attach", "80 24 size attach"] {
+            let code = format!("%1 str hello text send-keys {action}");
+            let mut machine =
+                compile(&token::source("answer-attach", &code)?).map_err(|e| e.to_string())?;
+            let mut draft = default_state().map_err(|e| e.to_string())?.draft();
+            let mut sink = io::sink();
+            let mut host = Host::new(Context::default(), Some(&mut draft), &mut sink);
+            let mut record = Record {
+                version,
+                sent: 0,
+                attached: None,
+            };
+            run_capped(
+                &mut machine,
+                &mut host,
+                &mut record,
+                Some(PROGRAM_STEPS),
+                None,
+            )
+            .map_err(|e| e.to_string())?;
+            assert_eq!(record.sent, 1);
+            let target = Some(AttachTarget::Pane(version.pane));
+            if action == "attach-defaults" {
+                let defaults = draft.attach.ok_or("attach defaults")?;
+                assert_eq!((defaults.of, defaults.target), (Some(version.run), target));
+            } else {
+                let size = action
+                    .starts_with("80")
+                    .then(|| fux_vt::Size::new(24, 80))
+                    .transpose()?;
+                assert_eq!(record.attached, Some((Some(version.run), target, size)));
+            }
+        }
+        for baseline in ["changed", "expect"] {
+            for action in ["attach", "attach-defaults"] {
+                let code = format!("str {version} {baseline} {action}");
+                assert!(
+                    compile(&token::source("baseline", &code)?).is_err(),
+                    "{code}"
+                );
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
     fn every_observation_wait_encodes_its_clients_limit() -> Result<(), Box<dyn std::error::Error>>
     {
         use super::*;
@@ -1881,6 +1985,67 @@ mod tests {
         Ok(())
     }
 
+    #[test]
+    fn attach_defaults_replace_targets_and_clear_names_locally() -> Result<(), super::Failed> {
+        use crate::command::{AttachTarget, WsRef};
+        let mut draft = super::default_state()?.draft();
+        let mut run = |code: &str| {
+            super::run_quiet(
+                &super::token::source("config", code)?,
+                Some(&mut draft),
+                false,
+            )
+        };
+        run("opts str work in attach-defaults")?;
+        assert_eq!(
+            draft.attach.as_ref().and_then(|a| a.name.as_deref()),
+            Some("main")
+        );
+        assert_eq!(
+            draft.attach.as_ref().and_then(|a| a.target.clone()),
+            Some(AttachTarget::Workspace(WsRef::Name("work".into())))
+        );
+        for code in [
+            "opts str other in attach-defaults",
+            "opts str fresh name attach-defaults",
+            "opts attach-defaults",
+        ] {
+            super::run_quiet(
+                &super::token::source("config", code)?,
+                Some(&mut draft),
+                false,
+            )?;
+        }
+        let cleared = draft
+            .clone()
+            .finish()
+            .map_err(|why| super::Failed::new(super::Code::Config, why))?;
+        assert!(cleared.attach.target.is_none() && cleared.attach.name.is_none());
+        for code in [
+            "opts str work in str first name attach-defaults",
+            "opts str work in str other in attach-defaults",
+            "opts 80 24 size attach-defaults",
+        ] {
+            assert!(
+                super::run_quiet(
+                    &super::token::source("config", code)?,
+                    Some(&mut draft),
+                    false
+                )
+                .is_err(),
+                "{code}"
+            );
+            assert_eq!(
+                draft
+                    .clone()
+                    .finish()
+                    .map_err(|why| super::Failed::new(super::Code::Config, why))?,
+                cleared
+            );
+        }
+        Ok(())
+    }
+
     /// The default keys are a config every line of which binds; what
     /// `list-keys` prints are config lines that make the same keys again,
     /// from any keys.
@@ -1949,7 +2114,7 @@ mod tests {
         );
         for (code, end) in [
             ("%2 str hi paste", "send-keys"),
-            ("opts str x in", "run, new-tab or attach"),
+            ("opts str x in", "run, new-tab, attach or attach-defaults"),
         ] {
             let tokens = super::program(&[code.to_owned()]).map(|(tokens, _)| tokens);
             let compiled = super::compile(&tokens.unwrap_or_default());

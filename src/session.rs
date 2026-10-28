@@ -221,6 +221,8 @@ impl Here<'_> {
 /// Why a command, or attaching a client, failed: exit status 1.
 #[derive(Debug)]
 pub enum Error {
+    /// Retry an empty writable attach with complete conditional creation inputs.
+    NeedsInitial,
     // What a command names, or its context gives, that is not there.
     NoWorkspace(WsId),
     NoPaneGiven,
@@ -267,6 +269,7 @@ impl Error {
     /// script to tell failures apart by.
     pub fn code(&self) -> Code {
         match self {
+            Self::NeedsInitial => Code::Start,
             Self::NoWorkspace(_) => Code::NoWorkspace,
             Self::NoPane(_) => Code::NoPane,
             Self::NoTab(_) => Code::NoTab,
@@ -285,6 +288,7 @@ impl Error {
 impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::NeedsInitial => f.write_str("an empty attach needs initial launch inputs"),
             Self::NoWorkspace(id) => write!(f, "no workspace {id}"),
             Self::NoPaneGiven => f.write_str("no pane given: name one (`str %N pane`)"),
             Self::NoPane(id) => write!(f, "no pane {id}"),
@@ -1383,7 +1387,7 @@ impl Session {
                     cwd: std::env::current_dir().unwrap_or_default(),
                     env: command::EnvPatch::default(),
                 }),
-                workspace,
+                target: workspace.map(command::AttachTarget::Workspace),
                 ..Attach::of(size, state.preferences.presentation())
             },
         )
@@ -1393,7 +1397,7 @@ impl Session {
     /// is one from the start, and sizes nothing.
     pub fn attach_as(&mut self, kind: ClientKind, attach: Attach) -> Result<ClientId, Error> {
         self.check_run(attach.of)?;
-        if attach.initial.is_some() && (attach.workspace.is_some() || attach.read_only) {
+        if attach.initial.is_some() && (attach.target.is_some() || attach.read_only) {
             return Err(fail(
                 Raise::BadValue,
                 "initial launch inputs require an untargeted writable attach",
@@ -1404,8 +1408,31 @@ impl Session {
         let (rows, cols) =
             view::size(rows.get(), cols.get()).map_err(|why| fail(Raise::Size, why))?;
         self.ids.clone().client()?;
-        let ws = match &attach.workspace {
-            Some(workspace) => self.resolve_ws(workspace)?,
+        let (ws, spot) = match &attach.target {
+            Some(command::AttachTarget::Workspace(workspace)) => {
+                (self.resolve_ws(workspace)?, None)
+            }
+            Some(command::AttachTarget::Tab(tab)) => {
+                let ws = self.tab_workspace(*tab)?;
+                let pane = self.root(*tab).ok_or(Error::NoTab(*tab))?.first_pane();
+                (
+                    ws,
+                    Some(Spot {
+                        tab: *tab,
+                        pane: Some(pane),
+                    }),
+                )
+            }
+            Some(command::AttachTarget::Pane(pane)) => {
+                let (ws, tab) = self.locate(*pane).ok_or(Error::NoPane(*pane))?;
+                (
+                    ws,
+                    Some(Spot {
+                        tab,
+                        pane: Some(*pane),
+                    }),
+                )
+            }
             None => {
                 // A server with nothing in it (just started, or its session
                 // did not come back) starts its first shell on this client's
@@ -1421,13 +1448,14 @@ impl Session {
                             format!("a screen of {rows} rows has no room for a pane below its bar");
                         fail(Raise::Size, why)
                     })?;
-                    let initial = attach.initial.as_ref().ok_or_else(|| {
-                        fail(Raise::Start, "an empty attach needs initial launch inputs")
-                    })?;
+                    let initial = attach.initial.as_ref().ok_or(Error::NeedsInitial)?;
                     self.start(size, initial)?;
                 }
-                (self.parts.workspaces().first().map(|w| w.id()))
-                    .ok_or_else(|| fail(Raise::NoWorkspace, "the server has no workspace"))?
+                (
+                    (self.parts.workspaces().first().map(|w| w.id()))
+                        .ok_or_else(|| fail(Raise::NoWorkspace, "the server has no workspace"))?,
+                    None,
+                )
             }
         };
         let id = self.ids.client()?;
@@ -1435,7 +1463,7 @@ impl Session {
         (view.kind, view.read_only) = (kind, attach.read_only);
         self.views.insert(id, view);
         self.parts.attach(id);
-        self.show(id, ws, None);
+        self.show(id, ws, spot);
         self.ask(id, crate::outer::QUERIES);
         self.settle();
         Ok(id)
@@ -3697,7 +3725,10 @@ pub(crate) mod testing {
                 }
                 other @ (super::Outgoing::To(
                     _,
-                    ToAttached::Paint(_) | ToAttached::Exit(_) | ToAttached::Welcome(..),
+                    ToAttached::Paint(_)
+                    | ToAttached::Exit(_)
+                    | ToAttached::NeedsInitial
+                    | ToAttached::Welcome(..),
                 )
                 | super::Outgoing::Copy(..)
                 | super::Outgoing::Shutdown { .. }) => {
@@ -3946,6 +3977,65 @@ mod tests {
     }
 
     #[test]
+    fn attach_targets_choose_the_exact_place_without_reusing_another_seat() -> Result<(), String> {
+        use command::AttachTarget as T;
+        let (mut s, incumbent) = attached(24, 80)?;
+        run(
+            &mut s,
+            "%1 horizontal split drop opts str second name 80 24 size new-workspace drop",
+        )?;
+        run(&mut s, "str c1 client %2 focus-pane")?;
+        let presentation = crate::script::default_state()
+            .map_err(|e| e.to_string())?
+            .preferences
+            .presentation();
+        for (target, pane) in [
+            (T::Tab(TabId::of(1)), PaneId::of(1)),
+            (T::Pane(PaneId::of(2)), PaneId::of(2)),
+            (T::Workspace(WsRef::Name("second".into())), PaneId::of(3)),
+        ] {
+            let client = s
+                .attach_as(
+                    ClientKind::Headless,
+                    Attach {
+                        of: Some(s.run),
+                        target: Some(target),
+                        ..Attach::of(sized(24, 80)?, presentation)
+                    },
+                )
+                .map_err(|e| e.to_string())?;
+            assert_eq!(s.focused(client), Some(pane));
+            s.detach(client);
+        }
+        assert_eq!(s.focused(incumbent), Some(PaneId::of(2)));
+        let ids = s.ids.clone();
+        for (of, target) in [
+            (None, T::Pane(PaneId::of(99))),
+            (None, T::Tab(TabId::of(99))),
+            (None, T::Workspace(WsRef::Name("missing".into()))),
+            (
+                Some("1-2".parse().map_err(|()| "run")?),
+                T::Pane(PaneId::of(1)),
+            ),
+        ] {
+            assert!(
+                s.attach_as(
+                    ClientKind::Headless,
+                    Attach {
+                        of,
+                        target: Some(target),
+                        ..Attach::of(sized(24, 80)?, presentation)
+                    }
+                )
+                .is_err()
+            );
+            assert_eq!(s.ids, ids);
+            assert_eq!(s.parts.panes().len(), 3);
+        }
+        Ok(())
+    }
+
+    #[test]
     fn failed_attach_does_not_consume_a_client_id() -> Result<(), String> {
         let mut s = Session::new(
             "/nonexistent/fux.sock".into(),
@@ -3971,16 +4061,22 @@ mod tests {
             env: command::EnvPatch::default(),
         };
         let ids = s.ids.clone();
+        assert!(matches!(
+            s.attach_as(ClientKind::Headless, Attach::of(size, presentation)),
+            Err(Error::NeedsInitial)
+        ));
         for attach in [
             Attach {
-                workspace: Some(WsRef::Name("missing".into())),
+                target: Some(command::AttachTarget::Workspace(WsRef::Name(
+                    "missing".into(),
+                ))),
                 ..Attach::of(size, presentation)
             },
             Attach {
                 read_only: true,
                 ..Attach::of(size, presentation)
             },
-            Attach::of(size, presentation),
+            Attach::of(sized(1, 80)?, presentation),
             Attach {
                 initial: Some(initial),
                 ..Attach::of(size, presentation)

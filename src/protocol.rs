@@ -20,7 +20,7 @@ use crate::wire::{Wire, wire};
 use std::borrow::Cow;
 
 /// Bumped on any change to the frames below.
-pub const PROTOCOL: u32 = 39;
+pub const PROTOCOL: u32 = 40;
 /// The largest frame, kind byte included.
 pub const MAX_FRAME: usize = 1 << 20;
 /// The largest payload one frame carries.
@@ -303,7 +303,7 @@ wire! {
     pub struct Attach {
         pub of: Option<crate::command::Run>,
         pub size: fux_vt::Size,
-        pub workspace: Option<crate::command::WsRef>,
+        pub target: Option<crate::command::AttachTarget>,
         pub read_only: bool,
         pub presentation: crate::view::Presentation,
         pub initial: Option<crate::command::InitialWorkspace>,
@@ -320,7 +320,7 @@ impl Attach {
         Attach {
             of: None,
             size,
-            workspace: None,
+            target: None,
             read_only: false,
             presentation,
             initial: None,
@@ -561,6 +561,9 @@ frames! {
         /// The answer to its `Attach`, before anything is painted: its id,
         /// which its bindings' `me` names and a headless client prints.
         Welcome(client: ClientId, run: crate::command::Run) = 12,
+        /// An empty writable untargeted attach needs complete creation inputs.
+        /// This connection is closed without admitting a client.
+        NeedsInitial = 19,
         /// Bytes for its terminal, which the client writes there: a paint,
         /// or what the server sends it outside one (a copy, the bell,
         /// questions for the terminal). Every paint comes so.
@@ -845,20 +848,20 @@ mod tests {
             Attach {
                 of: None,
                 size,
-                workspace,
+                target: workspace.map(crate::command::AttachTarget::Workspace),
                 read_only: false,
                 initial: None,
                 presentation,
             }
         );
-        let workspace = None;
+        let workspace: Option<crate::command::WsRef> = None;
         round_trip!(
             Attach,
             2,
             Attach {
                 of: None,
                 size,
-                workspace,
+                target: workspace.map(crate::command::AttachTarget::Workspace),
                 read_only: true,
                 initial: None,
                 presentation,
@@ -926,6 +929,20 @@ mod tests {
         round_trip!(ToAttached, 14, ToAttached::Ended(7));
         round_trip!(ToAttached, 15, ToAttached::Run("me zoom".into()));
         round_trip!(ToAttached, 16, ToAttached::Keys(Vec::new()));
+        round_trip!(ToAttached, 19, ToAttached::NeedsInitial);
+        for target in [
+            crate::command::AttachTarget::Tab(crate::id::TabId::of(2)),
+            crate::command::AttachTarget::Pane(crate::id::PaneId::of(3)),
+        ] {
+            round_trip!(
+                Attach,
+                2,
+                Attach {
+                    target: Some(target),
+                    ..Attach::of(size, presentation)
+                }
+            );
+        }
         round_trip!(ToCommand, 17, ToCommand::Part(Cow::Borrowed(b"reply")));
         round_trip!(ToCommand, 18, ToCommand::PartsEnd);
         // A Hello's bytes never change, so that `Kill` reaches a server of

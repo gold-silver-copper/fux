@@ -387,6 +387,7 @@ impl Through {
                     _,
                     ToAttached::Paint(_)
                     | ToAttached::Exit(_)
+                    | ToAttached::NeedsInitial
                     | ToAttached::Welcome(..)
                     | ToAttached::Run(_)
                     | ToAttached::Keys(_)

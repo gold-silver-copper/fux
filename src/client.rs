@@ -471,11 +471,38 @@ pub(crate) fn on_one_terminal() -> bool {
 /// ones), and what was wrong with that config.
 pub struct Attaching {
     pub of: Option<crate::command::Run>,
-    pub workspace: Option<crate::command::WsRef>,
+    pub target: Option<crate::command::AttachTarget>,
     pub read_only: bool,
     pub creation: crate::script::Opts,
     pub state: ClientState,
     pub problem: Option<String>,
+}
+
+impl Attaching {
+    fn initial(&self) -> Result<crate::command::InitialWorkspace, Error> {
+        let creation = &self.creation;
+        let (start, env) = creation
+            .launch(
+                &self.state.preferences.shell,
+                &self.state.preferences.copy_environment,
+            )
+            .map_err(Error::Failed)?;
+        Ok(crate::command::InitialWorkspace {
+            name: creation.name.clone(),
+            start,
+            options: creation.pane_options(self.state.preferences.pane_options()),
+            cwd: {
+                let invocation = context().cwd;
+                match creation.cwd.as_deref() {
+                    Some(dir) if dir.is_absolute() => dir.to_path_buf(),
+                    Some(dir) if invocation.is_absolute() => invocation.join(dir),
+                    Some(_) => PathBuf::new(),
+                    None => invocation,
+                }
+            },
+            env,
+        })
+    }
 }
 
 /// What a program on the worker came to: what to say of it, and the
@@ -781,7 +808,10 @@ impl Keyboard {
             ToAttached::Run(code) => self.run(code.into(), &mut acts),
             ToAttached::Keys(typed) => return self.inputs(typed.into_iter().flat_map(decoded)),
             // The attachment's own: `attached` reads them.
-            ToAttached::Welcome(..) | ToAttached::Paint(_) | ToAttached::Exit(_) => {}
+            ToAttached::NeedsInitial
+            | ToAttached::Welcome(..)
+            | ToAttached::Paint(_)
+            | ToAttached::Exit(_) => {}
         }
         acts.extend(self.release());
         acts
@@ -1056,35 +1086,10 @@ pub fn attach(
     let attach = Attach {
         of: attaching.of,
         size,
-        workspace: attaching.workspace.clone(),
+        target: attaching.target.clone(),
         read_only: attaching.read_only,
         presentation: attaching.state.preferences.presentation(),
-        initial: if attaching.workspace.is_none() && !attaching.read_only {
-            let creation = &attaching.creation;
-            let (start, env) = creation
-                .launch(
-                    &attaching.state.preferences.shell,
-                    &attaching.state.preferences.copy_environment,
-                )
-                .map_err(Error::Failed)?;
-            Some(crate::command::InitialWorkspace {
-                name: creation.name.clone(),
-                start,
-                options: creation.pane_options(attaching.state.preferences.pane_options()),
-                cwd: {
-                    let invocation = context().cwd;
-                    match creation.cwd.as_deref() {
-                        Some(dir) if dir.is_absolute() => dir.to_path_buf(),
-                        Some(dir) if invocation.is_absolute() => invocation.join(dir),
-                        Some(_) => PathBuf::new(),
-                        None => invocation,
-                    }
-                },
-                env,
-            })
-        } else {
-            None
-        },
+        initial: None,
     };
     // The server relays every paint, which the client writes to its
     // terminal; the keys are the client's to read.
@@ -1096,6 +1101,7 @@ pub fn attach(
             &mut decoder,
             &signals,
             &attaching,
+            &attach,
             output.as_mut(),
         )
     });
@@ -1296,6 +1302,7 @@ fn attached(
     decoder: &mut Decoder,
     signals: &Signals,
     attaching: &Attaching,
+    attach: &Attach,
     mut output: Option<&mut Output>,
 ) -> Result<String, Error> {
     let Signals { winch, stops } = signals;
@@ -1305,6 +1312,9 @@ fn attached(
     let terminal = output.is_some();
     let mut buffer = vec![0u8; 64 * 1024];
     let mut keyboard: Option<Keyboard> = None;
+    let mut retried = false;
+    let mut viewport = attach.size;
+    let mut pending_resize = None;
     let mut acts = Vec::new();
     let mut frames = 0u64;
     const STREAM: Option<usize> = Some(0);
@@ -1322,6 +1332,32 @@ fn attached(
                         output.push(bytes.into_owned())?;
                     }
                 }
+                (ToAttached::NeedsInitial, None) => {
+                    if retried || attach.target.is_some() || attach.read_only {
+                        return Err(Error::Failed("unexpected needs-initial reply".into()));
+                    }
+                    let initial = attaching.initial()?;
+                    let role = if terminal {
+                        Role::Attach
+                    } else {
+                        Role::Headless
+                    };
+                    let (mut retry, fresh, _) = connect(socket, role)?;
+                    let mut request = attach.clone();
+                    // WINCH may still be pending when the reply arrives.
+                    if terminal && let Some(size) = window_size() {
+                        viewport = size;
+                    }
+                    request.size = viewport;
+                    request.initial = Some(initial);
+                    send(&mut retry, &request)?;
+                    wait_at_most(&retry, None);
+                    *stream = retry;
+                    *decoder = fresh;
+                    frames = 0;
+                    pending_resize = None;
+                    retried = true;
+                }
                 (ToAttached::Exit(reason), None) => return Err(Error::Refused(reason.to_owned())),
                 (ToAttached::Exit(reason), Some(_)) => return Ok(reason.to_owned()),
                 (ToAttached::Welcome(me, run), None) => {
@@ -1338,6 +1374,22 @@ fn attached(
                 (frame, Some(keyboard)) => acts.extend(keyboard.frame(frame)),
                 (_, None) => {}
             }
+        }
+        // Before admission, resizes stay local. Once admitted, send the
+        // latest one before dispatching any job that fences this connection.
+        if keyboard.is_some()
+            && let Some(size) = pending_resize.take()
+        {
+            if let Err(ended) = tell(
+                stream,
+                decoder,
+                true,
+                output.as_deref_mut(),
+                &AttachedFrame::Resize(size),
+            ) {
+                return ended;
+            }
+            frames = next_frame(frames)?;
         }
         for out in std::mem::take(&mut acts) {
             let act = match out {
@@ -1432,13 +1484,8 @@ fn attached(
             crate::drain(winch.reader());
             // A terminal that says no size now keeps the last it said.
             if terminal && let Some(size) = window_size() {
-                let resize = AttachedFrame::Resize(size);
-                let welcomed = keyboard.is_some();
-                if let Err(ended) = tell(stream, decoder, welcomed, output.as_deref_mut(), &resize)
-                {
-                    return ended;
-                }
-                frames = next_frame(frames)?;
+                viewport = size;
+                pending_resize = Some(size);
             }
         }
         if let Some(keyboard) = &mut keyboard {
@@ -1514,7 +1561,8 @@ fn last_frames(
                 }
                 ToAttached::Exit(reason) if welcomed => return Some(Ok(reason.to_owned())),
                 ToAttached::Exit(reason) => return Some(Err(Error::Refused(reason.to_owned()))),
-                ToAttached::Welcome(..)
+                ToAttached::NeedsInitial
+                | ToAttached::Welcome(..)
                 | ToAttached::Ended(_)
                 | ToAttached::Run(_)
                 | ToAttached::Keys(_) => {}
