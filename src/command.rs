@@ -1022,22 +1022,22 @@ impl EnvPatch {
 
     /// Explicit operation values replace selected or saved values.
     pub fn overlay(&mut self, other: &Self) -> Result<(), String> {
-        let names = self
+        let (names, bytes) = self
             .0
             .iter()
             .filter(|(key, _)| !other.0.iter().any(|(k, _)| k == key))
-            .count()
-            .saturating_add(other.0.len());
+            .fold(
+                (other.0.len(), other.encoded_len()),
+                |(names, bytes), (k, v)| {
+                    (
+                        names.saturating_add(1),
+                        bytes.saturating_add(Self::entry_len(k, v)),
+                    )
+                },
+            );
         if names > Self::MAX_NAMES {
             return Err("environment patch exceeds 1024 names".to_owned());
         }
-        let bytes = self
-            .0
-            .iter()
-            .filter(|(key, _)| !other.0.iter().any(|(k, _)| k == key))
-            .fold(other.encoded_len(), |bytes, (k, v)| {
-                bytes.saturating_add(Self::entry_len(k, v))
-            });
         if bytes > crate::protocol::MAX_PAYLOAD {
             return Err("environment patch exceeds the launch frame limit".to_owned());
         }
