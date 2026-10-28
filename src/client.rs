@@ -1620,9 +1620,9 @@ mod tests {
         let asked = Asked {
             after: None,
             context: Context::default(),
-            request: Request::Do(Command::Ls {
-                target: None,
-                get: None,
+            request: Request::Do(Command::Inspect {
+                scope: crate::inspect::Scope::All,
+                projection: crate::inspect::Projection::Facts,
             }),
         };
         let result = requests.ask(&asked, &mut io::sink());

@@ -155,7 +155,10 @@ fn a_run_program_keeps_its_pane_screen_and_status() -> Outcome {
     let since = version(&started);
     let from_start = ["str", &since, "changed", "wait", "json"];
     let json = server.ok(&from_start)?;
-    assert!(json.contains(r#""exited":3,"status":0"#), "{json}");
+    assert!(
+        json.contains(r#""exited":3,"signal":null,"status":0"#),
+        "{json}"
+    );
     let now = server.fux(&["str", &pane, "pane", "1", "timeout", "wait"])?;
     assert_eq!(now.status, 124, "{}", now.stdout);
     let screen = server.ok(&["str", &pane, "pane", "capture"])?;
@@ -190,7 +193,10 @@ fn a_run_program_keeps_its_pane_screen_and_status() -> Outcome {
     let text = server.ok(&waited)?;
     assert!(text.ends_with(" killed by SIGKILL\n"), "{text}");
     let json = server.ok(&[&waited[..], &["json"]].concat())?;
-    assert!(json.contains(r#""signal":9,"status":0"#), "{json}");
+    assert!(
+        json.contains(r#""exited":null,"signal":9,"status":0"#),
+        "{json}"
+    );
     Ok(())
 }
 
@@ -850,15 +856,17 @@ fn a_wait_on_a_workspace_answers_each_of_its_panes() -> Outcome {
 /// An action's answer, and a wait's, is its pane: a word that wants a pane
 /// takes it, never a pane named by what the program wrote (`%13 fake`).
 #[test]
-fn an_answer_is_its_pane() -> Outcome {
+fn an_answer_selects_its_pane_explicitly_for_live_fields() -> Outcome {
     let server = Server::start("")?;
     let script = "read x; echo '%13 fake'; exec cat";
     let pane = id(&server.ok(&run(&[], &["sh", "-c", script]))?);
     let since = server.version(&pane)?;
-    let sent = [&typed(&pane, "go")[..], &["str", "name", "get"]];
+    let sent = [&typed(&pane, "go")[..], &["pane", "str", "name", "get"]];
     assert_eq!(server.ok(&sent.concat())?.trim(), "null");
     server.shows(&pane, "%13 fake")?;
-    let waited = ["str", &since, "changed", "wait", "str", "name", "get"];
+    let waited = [
+        "str", &since, "changed", "wait", "pane", "str", "name", "get",
+    ];
     assert_eq!(server.ok(&waited)?.trim(), "null");
     Ok(())
 }
@@ -885,10 +893,14 @@ fn send_keys_takes_input_up_to_its_limit() -> Outcome {
     let refused = server.fux(&[&many])?;
     assert_eq!(refused.status, 1);
     assert!(refused.stderr.contains("too_long"), "{}", refused.stderr);
-    // Keys count as the request carries them, their names and more: so
-    // many that the request could not be sent are too long too.
-    let keys = format!("{sink} 0 90000 range each drop str C-M-F12 key end send-keys");
-    let refused = server.fux(&[&keys])?;
+    // A key's encoded name and per-input overhead also count: adding one
+    // to the admitted full paste crosses the request boundary.
+    std::fs::write(
+        &file,
+        format!("{sink} str '{text}' paste str C-M-F12 key send-keys"),
+    )
+    .map_err(e)?;
+    let refused = server.fux(&["--file", &file.to_string_lossy()])?;
     assert_eq!(refused.status, 1);
     assert!(refused.stderr.contains("too_long"), "{}", refused.stderr);
     Ok(())
@@ -947,7 +959,8 @@ fn an_answer_in_a_list_is_its_object() -> Outcome {
     assert!(
         json.starts_with(&format!("[{pane_object}"))
             && json.contains(&format!("}},{pane_object}"))
-            && json.contains(",{\"workspaces\":"),
+            && json.contains(",{\"run\":")
+            && json.contains("\"projection\":\"facts\""),
         "{json}"
     );
     Ok(())

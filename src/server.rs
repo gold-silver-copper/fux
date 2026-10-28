@@ -2292,9 +2292,9 @@ mod tests {
 
             let unrelated = Asked {
                 after: None,
-                request: crate::command::Command::Ls {
-                    target: None,
-                    get: None,
+                request: crate::command::Command::Inspect {
+                    scope: crate::inspect::Scope::All,
+                    projection: crate::inspect::Projection::Facts,
                 }
                 .into(),
                 context: Context::default(),
@@ -2582,9 +2582,9 @@ mod tests {
                 let probe = Asked {
                     after: None,
                     context: mutation.context.clone(),
-                    request: crate::command::Command::Ls {
-                        target: None,
-                        get: None,
+                    request: crate::command::Command::Inspect {
+                        scope: crate::inspect::Scope::All,
+                        projection: crate::inspect::Projection::Facts,
                     }
                     .into(),
                 };

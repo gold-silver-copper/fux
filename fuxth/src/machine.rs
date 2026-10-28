@@ -185,6 +185,7 @@ pub struct Machine<A> {
     steps: u64,
     /// Elements built so far.
     built: u64,
+    imports: crate::Imports,
     /// The step taken last: how many frames there were, its code, and its
     /// place in it.
     last: Option<(usize, Option<usize>, usize)>,
@@ -213,6 +214,7 @@ impl<A: AppValue> Machine<A> {
             extra: 0,
             steps: 0,
             built: 0,
+            imports: crate::Imports::new(A::IMPORT_LIMIT),
             last: None,
         }
     }
@@ -222,13 +224,63 @@ impl<A: AppValue> Machine<A> {
         &self.stack
     }
 
-    /// Pushes a value: a suspended word's result.
-    pub fn push(&mut self, value: Value<A>) -> Result<(), Error> {
+    /// Pushes an internal value, already admitted.
+    fn push(&mut self, value: Value<A>) -> Result<(), Error> {
         if self.stack.len() >= self.limits.stack {
             return Err(self.fail(Code::StackOverflow, "the stack is full"));
         }
         self.stack.push(value);
         Ok(())
+    }
+
+    /// Imports a bounded host result, charging its expanded traversal.
+    /// Hosts use this instead of `push` for newly received values.
+    pub fn import(&mut self, value: Value<A>) -> Result<(), Error> {
+        self.admit(&value)?;
+        self.push(value)
+    }
+
+    fn admit(&mut self, value: &Value<A>) -> Result<(), Error> {
+        fn valid<A: AppValue>(value: &Value<A>) -> bool {
+            match value {
+                Value::Str(s) => s.chars_len() <= LONGEST,
+                Value::List(list) => {
+                    list.items().len() <= LONGEST && list.items().iter().all(valid)
+                }
+                Value::App(_) | Value::Int(_) | Value::Bool(_) => true,
+            }
+        }
+        let weight = value.weight();
+        self.cost(usize::try_from(weight).unwrap_or(usize::MAX));
+        let native = matches!(value, Value::App(app) if app.import_bytes().is_some());
+        if value.depth() > NESTING || (!native && weight > TOTAL) {
+            return Err(self.nested());
+        }
+        if !valid(value) {
+            return Err(self.fail(
+                Code::TooLong,
+                "host result exceeds the string or list length limit",
+            ));
+        }
+        fn bytes<A: AppValue>(value: &Value<A>) -> usize {
+            match value {
+                Value::App(app) => app.import_bytes().unwrap_or(0),
+                Value::List(list) => list
+                    .items()
+                    .iter()
+                    .fold(0usize, |n, v| n.saturating_add(bytes(v))),
+                Value::Int(_) | Value::Bool(_) | Value::Str(_) => 0,
+            }
+        }
+        if bytes(value) > A::IMPORT_LIMIT {
+            return Err(self.fail(
+                Code::TooLong,
+                "host byte payload exceeds the import allocation limit",
+            ));
+        }
+        value
+            .retain(&self.imports)
+            .map_err(|failure| self.failed(failure))
     }
 
     /// Raises a suspended word's failure at it, as if the word had failed
@@ -249,6 +301,10 @@ impl<A: AppValue> Machine<A> {
             .check_carried(failure.code, &value)
             .map_err(|message| self.fail(Code::Contract, message))?;
         self.pending = None;
+        if let Err(error) = self.admit(&value) {
+            drop(value);
+            return self.recover(error, None);
+        }
         let error = self.failed(failure);
         self.recover(error, Some(value))
     }
@@ -551,6 +607,12 @@ impl<A: AppValue> Machine<A> {
             .skip(from)
             .map(|v| words.kind_of(v))
             .collect();
+        let walked = self
+            .stack
+            .iter()
+            .skip(from)
+            .fold(0u64, |n, value| n.saturating_add(value.weight()));
+        self.cost(usize::try_from(walked).unwrap_or(usize::MAX));
         let mut out = std::mem::take(&mut self.out);
         out.clear();
         let args = Args {
@@ -567,7 +629,10 @@ impl<A: AppValue> Machine<A> {
         if self.stack.len().saturating_add(out.len()) > self.limits.stack {
             return Err(self.fail(Code::StackOverflow, "the stack is full"));
         }
-        self.stack.append(&mut out);
+        out.reverse();
+        while let Some(value) = out.pop() {
+            self.import(value)?;
+        }
         self.out = out;
         match done {
             Done::Now => self.given(given).map(|()| None),
@@ -991,7 +1056,7 @@ pub(crate) enum Sequence<A> {
     List(Rc<List<A>>),
 }
 
-impl<A> Sequence<A> {
+impl<A: AppValue> Sequence<A> {
     /// How many elements it has.
     fn len(&self) -> usize {
         match self {

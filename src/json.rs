@@ -25,6 +25,17 @@ pub enum Json {
 }
 
 impl Json {
+    pub(crate) fn weight(&self) -> u64 {
+        match self {
+            Self::String(s) => (s.len() as u64).max(1),
+            Self::Array(a) => a.iter().fold(1u64, |n, v| n.saturating_add(v.weight())),
+            Self::Object(a) => a.iter().fold(1u64, |n, (k, v)| {
+                n.saturating_add(k.len() as u64).saturating_add(v.weight())
+            }),
+            Self::Null | Self::Bool(_) | Self::Int(_) | Self::Uint(_) => 1,
+        }
+    }
+
     pub fn str(text: impl Into<String>) -> Json {
         Json::String(text.into())
     }

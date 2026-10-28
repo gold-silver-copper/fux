@@ -132,7 +132,7 @@ fn run_by(text: &str, budget: u64) -> Result<Vec<Value<Ticket>>, Error> {
                 Code::Host("negative"),
                 format!("{n} is below 0"),
             ))?,
-            Outcome::Suspended(n) => machine.push(Value::Int(n.saturating_mul(10)))?,
+            Outcome::Suspended(n) => machine.import(Value::Int(n.saturating_mul(10)))?,
             Outcome::Paused => {}
         }
     }
@@ -546,7 +546,7 @@ fn each_walks_any_string_in_time_to_its_length() -> Result<(), Error> {
         let mut machine = Machine::new(compiler.finish()?, Limits::default());
         let mut host = Toy { asked: Vec::new() };
         assert_eq!(machine.run(&mut host, u64::MAX)?, Outcome::Suspended(0));
-        machine.push(Value::str(
+        machine.import(Value::str(
             std::iter::repeat_n(c, 100_000).collect::<String>(),
         ))?;
         let started = std::time::Instant::now();
@@ -1187,7 +1187,7 @@ fn at_desk(text: &str, lying: bool, answer: Paper) -> (Result<Vec<Value<Paper>>,
         loop {
             match machine.run(&mut desk, 1)? {
                 Outcome::Finished => return Ok(machine.stack().to_vec()),
-                Outcome::Suspended(()) => machine.push(Value::App(answer.clone()))?,
+                Outcome::Suspended(()) => machine.import(Value::App(answer.clone()))?,
                 Outcome::Paused => {}
             }
         }
@@ -1788,5 +1788,176 @@ fn carried_values_obey_their_contract() -> Result<(), Error> {
         run("str far try -1000 ask catch drop end")?,
         [Value::Int(-1000)]
     );
+    Ok(())
+}
+
+#[test]
+fn refused_carried_storage_enters_the_resource_failure_handler() -> Result<(), Error> {
+    #[derive(Clone, Debug, PartialEq)]
+    struct Payload(Shared<Vec<u8>>);
+    impl AppValue for Payload {
+        const IMPORT_LIMIT: usize = 1024;
+        fn kind(&self) -> &'static str {
+            "payload"
+        }
+        fn weight(&self) -> u64 {
+            self.0.len() as u64
+        }
+        fn retain(&self, imports: &Imports) -> Result<(), Failure> {
+            self.0
+                .reserve(imports, Shared::<Vec<u8>>::bytes(self.0.capacity()))
+        }
+    }
+    struct Wait;
+    impl Host for Wait {
+        type Value = Payload;
+        type Request = ();
+        fn call(
+            &mut self,
+            word: usize,
+            _: Args<'_, Payload>,
+            out: &mut Vec<Value<Payload>>,
+        ) -> Result<Done<()>, Failure> {
+            if word == 0 {
+                out.push(Value::App(Payload(Shared::new(vec![0; 800]))));
+                Ok(Done::Now)
+            } else {
+                Ok(Done::Later(()))
+            }
+        }
+        fn print(&mut self, _: &str) -> Result<(), Failure> {
+            Ok(())
+        }
+    }
+    let timeout = Code::Host("timeout");
+    let mut words = Vocabulary::default();
+    words.kind("payload", "a payload")?;
+    words.add("request", "-- payload")?;
+    words.add("wait", "payload -- payload")?;
+    words.raises(timeout)?;
+    words.carries(timeout, "payload")?;
+    let mut compiler = Compiler::<Payload>::new(words);
+    // The saved request keeps its allocation even after wait consumes its copy.
+    compiler.add(&token::source(
+        "carried",
+        "request let saved str 'timeout too_long' try saved wait catch 1 roll drop end 7",
+    )?)?;
+    let mut machine = Machine::new(compiler.finish()?, Limits::default());
+    let mut host = Wait;
+    assert!(matches!(
+        machine.run(&mut host, 1000)?,
+        Outcome::Suspended(())
+    ));
+    machine.raise_with(
+        Failure::new(timeout, "timed out"),
+        Value::App(Payload(Shared::new(vec![0; 400]))),
+    )?;
+    assert!(matches!(machine.run(&mut host, 1000)?, Outcome::Finished));
+    assert_eq!(machine.stack(), [Value::str("too_long"), Value::Int(7)]);
+    Ok(())
+}
+
+#[test]
+fn host_imports_bound_each_value_and_opaque_depth() -> Result<(), Error> {
+    #[derive(Clone, PartialEq)]
+    struct Weighted(u64, u8);
+    impl AppValue for Weighted {
+        fn kind(&self) -> &'static str {
+            "weighted"
+        }
+        fn weight(&self) -> u64 {
+            self.0
+        }
+        fn depth(&self) -> u8 {
+            self.1
+        }
+    }
+    let mut vocabulary = Vocabulary::default();
+    vocabulary.kind("weighted", "weighted")?;
+    let compiler = Compiler::<Weighted>::new(vocabulary);
+    let mut machine = Machine::new(compiler.finish()?, Limits::default());
+    let value = Value::App(Weighted(BUILT / 2, 0));
+    machine.import(value.clone())?;
+    machine.import(value.clone())?;
+    machine.import(value.clone())?;
+    assert_eq!(machine.stack().len(), 3);
+    assert!(List::new(vec![value.clone(), value]).is_none());
+    assert!(List::new(vec![Value::App(Weighted(1, NESTING))]).is_none());
+    Ok(())
+}
+
+#[test]
+fn native_imports_share_reservations_and_refuse_independent_storage() -> Result<(), Error> {
+    #[derive(Clone, PartialEq)]
+    struct Payload(Shared<Vec<u8>>);
+    impl AppValue for Payload {
+        const IMPORT_LIMIT: usize = 256;
+        fn kind(&self) -> &'static str {
+            "payload"
+        }
+        fn weight(&self) -> u64 {
+            TOTAL.saturating_add(1)
+        }
+        fn import_bytes(&self) -> Option<usize> {
+            Some(Shared::<Vec<u8>>::bytes(self.0.capacity()))
+        }
+        fn retain(&self, imports: &Imports) -> Result<(), Failure> {
+            self.0.reserve(imports, self.import_bytes().unwrap_or(0))
+        }
+    }
+    let make = || Value::App(Payload(Shared::new(vec![0; 64])));
+    let compiler = Compiler::<Payload>::new(Vocabulary::default());
+    let mut machine = Machine::new(compiler.finish()?, Limits::default());
+    let value = make();
+    machine.import(value.clone())?;
+    machine.import(value.clone())?;
+    machine.import(value.clone())?;
+    assert_eq!(machine.stack().len(), 3);
+    assert!(List::new(vec![value]).is_none());
+    machine.import(make())?;
+    assert_eq!(
+        machine.import(make()).map_err(|e| e.code),
+        Err(Code::TooLong)
+    );
+    Ok(())
+}
+
+#[test]
+fn imported_strings_and_lists_hold_and_release_their_storage() -> Result<(), Failure> {
+    let grant = Imports::new(1024);
+    let text = || Value::<Ticket>::str(std::iter::repeat_n('x', 500).collect::<String>());
+    let held = text();
+    held.retain(&grant)?;
+    let duplicate = held.clone();
+    duplicate.retain(&grant)?;
+    let list = Value::List(std::rc::Rc::new(
+        List::new(vec![held]).ok_or_else(|| Failure::new(Code::TooLong, "list"))?,
+    ));
+    list.retain(&grant)?;
+    assert_eq!(
+        text().retain(&grant).map_err(|e| e.code),
+        Err(Code::TooLong)
+    );
+    drop(list);
+    assert_eq!(
+        text().retain(&grant).map_err(|e| e.code),
+        Err(Code::TooLong)
+    );
+    drop(duplicate);
+    for _ in 0..100 {
+        text().retain(&grant)?;
+    }
+    let held = text();
+    held.retain(&grant)?;
+    let Value::Str(mut storage) = held else {
+        return Err(Failure::new(Code::Type, "test string"));
+    };
+    std::rc::Rc::make_mut(&mut storage).replace(0, &Text::new("y"));
+    assert_eq!(
+        text().retain(&grant).map_err(|e| e.code),
+        Err(Code::TooLong)
+    );
+    drop(storage);
+    text().retain(&grant)?;
     Ok(())
 }

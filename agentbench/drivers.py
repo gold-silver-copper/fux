@@ -657,8 +657,9 @@ class Fux(Driver):
 
     def find_title(self, title):
         # Every pane `run` starts is in workspace agent.
-        tabs = json.loads(self.fux("str", "agent", "workspace", "str", "tabs", "get").stdout)
-        return next(p["id"] for t in tabs for p in t["panes"] if p["title"] == title)
+        snapshot = json.loads(self.fux("str", "agent", "workspace", "str", "topology",
+                                       "snapshot", "json").stdout)
+        return next(p["id"] for p in snapshot["panes"] if p["title"] == title)
 
     def attach_argv(self):
         return [self.bin]

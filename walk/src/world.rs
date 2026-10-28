@@ -65,9 +65,15 @@ impl World {
         let mut workspaces = Vec::new();
         for ws in list(&root, "workspaces")? {
             let mut tabs = Vec::new();
-            for tab in list(ws, "tabs")? {
+            for tab in list(&root, "tabs")?
+                .iter()
+                .filter(|t| t.get("workspace") == ws.get("id"))
+            {
                 let mut panes = Vec::new();
-                for pane in list(tab, "panes")? {
+                for pane in list(&root, "panes")?
+                    .iter()
+                    .filter(|p| p.get("tab") == tab.get("id"))
+                {
                     panes.push(Pane {
                         id: text(pane, "id")?,
                         rows: size(pane, "rows")?,

@@ -202,7 +202,7 @@ pub fn from_opts(last: &str) -> String {
 /// fux's kinds of value, each as its values' `name` says it, as an error
 /// says it, and, for one that must be used, what one left over is told.
 #[rustfmt::skip]
-pub const KINDS: [(&str, &str, Option<&str>); 21] = [
+pub const KINDS: [(&str, &str, Option<&str>); 23] = [
     ("pane", "a pane", None), ("tab", "a tab", None), ("workspace", "a workspace", None),
     ("all", "the whole session", None),
     ("events-request", "a whole-session events request", Some("nothing acts on this request")),
@@ -211,7 +211,9 @@ pub const KINDS: [(&str, &str, Option<&str>); 21] = [
     ("closed-answer", "a closed pane's answer", None),
     ("client-capture", "a client's capture", None),
     ("answers", "an answer of a tab's or workspace's panes", None), ("capture", "a capture", None),
-    ("listing", "a listing", None), ("json", "a JSON value", None),
+    ("rendered", "rendered observation text", None),
+    ("record", "a record", None), ("null", "null", None),
+    ("listing", "a listing", None),
     ("opts", "options (from opts, for run, new-tab, new-workspace, attach and attach-defaults; a pane's words take theirs on the pane: `%2 all-history capture`)", Some("nothing takes these options")),
     ("pane-request", "a pane request", Some("nothing acts on this request")),
     ("tab-request", "a tab request", Some("nothing acts on this request")),
@@ -257,17 +259,19 @@ pub const NAMES: &[(&str, &str, &str)] = &[
     ("text", "string integer boolean", "a string, a number or a boolean"),
     ("new", "integer boolean list", "a setting's value: a number, true or false, or a list (fux help set)"),
     ("var", "string integer boolean pane tab workspace answer closed-answer", "a string, a number, a boolean, or a pane, tab or workspace"),
-    ("value", "integer boolean string list pane tab workspace client size answer closed-answer answers capture client-capture listing json",
+    ("value", "integer boolean string list pane tab workspace client size answer closed-answer answers capture client-capture listing record rendered null all",
         "a value (options and requests are none: what acts on them gives one)"),
     ("seen", "string answer capture", "a version: an action's or wait's answer, a pane's capture, or its text"),
-    ("record", "listing", "a listing"),
+    ("json-output", "string rendered", "JSON text"),
+    ("readable", "pane tab workspace answer closed-answer capture client-capture listing record", "a handle or held observation"),
+    ("snapshot-scope", "all pane tab workspace client answer closed-answer", "a snapshot scope"),
     ("extent", "integer size", "cells, or a percent"),
     ("pane-or-seen", "pane string answer capture", "a pane, an action's or wait's answer, a pane capture, or version text"),
     ("counterpart", "pane answer closed-answer string", "a pane or a direction"),
     ("sized", "pane tab workspace answer closed-answer client", "a pane, tab, workspace or headless client"),
     ("where", "tab workspace string", "a tab, a workspace, new-tab, new-workspace or a direction"),
 ];
-pub const STRINGS: &str = "name dir key path line id file mode field setting socket way action code keys word hex version screen cursor";
+pub const STRINGS: &str = "name dir key path line id file mode field setting socket way action code keys word hex version screen cursor projection";
 pub const INTEGERS: &str = "cols rows secs n row col lines from to cells";
 
 // Every word of fux's, by family; in help, under its heading.
@@ -296,8 +300,9 @@ words! {
         Input Signal "signal" "subject name -- answer" "TERM KILL INT HUP QUIT USR1 USR2 STOP CONT TSTP WINCH ILL ABRT FPE SEGV PIPE ALRM BUS TRAP SYS XCPU XFSZ VTALRM PROF TTIN TTOU URG CHLD, to the pane's foreground" "fux %3 str TERM signal" [];
         Reading Capture "capture" "capture-source -- capture-source" "a pane screen with its options, or what a client terminal shows (without pane options or a version)" "fux %3 100 history capture" [Pane: History AllHistory Wrapped Full Styles Marks MainScreen AltScreen LastOutput Rows Cols];
         Reading Info "info" "scope -- record" "a pane, tab, workspace or all of the session" "fux all info json" [];
-        Reading Get "get" "handle field -- value" "one field of a pane, tab or workspace: version, exited, last_status, cwd" "fux %3 str exited get" [];
-        Reading Json "json" "value -- string" "value as JSON (an answer as its JSON); a failed wait's answer is the message try's handler gets" "fux ls json" [];
+        Reading Snapshot "snapshot" "snapshot-scope projection -- record" "one bounded observation: facts, topology or recipe" "fux all str topology snapshot json" [];
+        Reading Get "get" "readable field -- value" "a held answer, capture or record field, locally; or a live pane, tab or workspace field" "fux %3 str exited get" [];
+        Reading Json "json" "value -- json-output" "value as JSON (an answer as its JSON); a failed wait's answer is the message try's handler gets" "fux ls json" [];
         Reading Events "events" "watched --" "what happens in a pane, tab, workspace or all, a JSON line each" "fux all events" [Pane: From];
         Reading Dump "dump" "scope -- text" "a tab, workspace or all, as a program that makes it again (new processes, nothing typed into them)" "fux all dump > all.fux; fux start && fux --file all.fux" [];
         Changing Kill "kill" "handle --" "close a pane, tab or workspace, without asking" "fux %3 kill" [];
@@ -314,7 +319,7 @@ words! {
         Changing Reorder "reorder" "handle way --" "move one place: next or previous" "fux @2 str next reorder" [];
         Changing HistoryBudget "history-budget" "pane integer --" "change this pane's history budget in bytes (0 to 1 GiB); lowering evicts old rows" "fux %3 4194304 history-budget" [];
         Changing ClearHistory "clear-history" "pane --" "drop the pane's history" "fux %3 clear-history" [];
-        Changing Buffers "buffers" "-- json" "paste buffer metadata, newest first: id, bytes and preview" "fux buffers" [];
+        Changing Buffers "buffers" "-- list" "paste buffer metadata, newest first: id, bytes and preview" "fux buffers" [];
         Changing Buffer "buffer" "id -- text" "exact paste buffer text by id or newest" "fux newest buffer" [];
         Changing PasteBuffer "paste-buffer" "pane id -- answer" "paste a buffer by id or newest into a pane; answers as send-keys does" "fux %3 newest paste-buffer" [];
         Clients Attach "attach" "attachable --" "show the server in this terminal (bare fux uses default-attach); with a size, be a client of no terminal instead; explicit targets and watch refuse creation options" "fux @2 attach" [Either: In Size Watch Cwd Env UnsetEnv CopyEnvironment HistoryBytes Reflow AlternateScrollLines PictureBytes ProgramClipboard Program ShellProgram Arg Name];
@@ -327,7 +332,7 @@ words! {
         Server Server "server" "name --" "the server named so (NAME.sock in fux's directory), for what follows" "fux str test server start agent-opts 80 24 size str ./app program run" [];
         Server Socket "socket" "path --" "the server on this socket, for what follows" "fux str ./test.sock socket status" [];
         Server Start "start" "--" "start the server in the background, if none answers" "fux start" [];
-        Server Status "status" "-- record" "the server that answers, and its version; with none, fails no_server" "fux status || fux start" [];
+        Server Status "status" "-- listing" "the server that answers, and its version; with none, fails no_server" "fux status || fux start" [];
         Server KillServer "kill-server" "--" "stop the server: not from its own panes, nor with people attached" "fux str test server kill-server" [];
         Server ForceKillServer "force-kill-server" "--" "stop it anyway, whatever fux version it is" "fux str test server force-kill-server" [];
         Config AttachDefaults "attach-defaults" "attachable --" "replace this client's preferred attach place; target-only retains the first name, name-only or empty clears the target; target and name conflict" "opts str main name attach-defaults" [Either: In Name];
@@ -524,9 +529,12 @@ fn json_text(value: &Value<Fux>, limit: usize) -> Result<String, Failure> {
                 Ok(())
             }
             Value::App(Fux::Answer(answer, _)) => {
-                budget.slots::<super::Answer>(1)?;
+                budget.charge(fuxth::Shared::<super::Answer>::bytes(0))?;
                 answer.charge(budget)
             }
+            Value::App(Fux::Record(r)) => budget.charge(r.bytes()),
+            Value::App(app @ Fux::Rendered(_)) => budget.charge(fuxth::AppValue::text_bytes(app)),
+            Value::App(Fux::Null) => Ok(()),
             Value::App(Fux::Opts(opts)) => budget.charge(opts.heap_bytes()),
             Value::App(
                 Fux::Pane(..)
@@ -538,42 +546,47 @@ fn json_text(value: &Value<Fux>, limit: usize) -> Result<String, Failure> {
             ) => Ok(()),
         }
     }
-    fn write(value: &Value<Fux>, out: &mut dyn std::fmt::Write) -> std::fmt::Result {
-        match value {
-            Value::Int(n) => write!(out, "{n}"),
-            Value::Bool(b) => write!(out, "{b}"),
-            Value::Str(s) => crate::json::write_str(out, s),
-            Value::List(list) => {
-                out.write_char('[')?;
-                for (i, item) in list.items().iter().enumerate() {
-                    if i > 0 {
-                        out.write_char(',')?;
-                    }
-                    write(item, out)?;
-                }
-                out.write_char(']')
-            }
-            Value::App(app) => match app {
-                Fux::Answer(answer, _) => answer.write_json(out),
-                Fux::Pane(pane, _) => write!(out, "\"{pane}\""),
-                Fux::Tab(tab, _) => write!(out, "\"{tab}\""),
-                Fux::Workspace(workspace, _) => write!(out, "\"{workspace}\""),
-                Fux::Client(client, _) => write!(out, "\"{client}\""),
-                Fux::Extent(Extent::Cells(n)) => write!(out, "\"{n}\""),
-                Fux::Extent(Extent::Percent(n)) => write!(out, "\"{}%\"", n.get()),
-                Fux::All(None) => crate::json::write_str(out, "all"),
-                Fux::All(Some(_)) | Fux::Opts(_) => {
-                    write!(out, "\"({})\"", fuxth::AppValue::kind(app))
-                }
-            },
-        }
-    }
     let mut budget = crate::wire::Budget::with_limit(limit);
     charge(value, &mut budget).map_err(observation_failure)?;
-    let text =
-        crate::json::render(&mut budget, |out| write(value, out)).map_err(observation_failure)?;
+    let text = crate::json::render(&mut budget, |out| write_json_value(value, out))
+        .map_err(observation_failure)?;
     budget.text_value(&text).map_err(observation_failure)?;
     Ok(text)
+}
+
+pub(super) fn write_json_value(
+    value: &Value<Fux>,
+    out: &mut dyn std::fmt::Write,
+) -> std::fmt::Result {
+    match value {
+        Value::Int(n) => write!(out, "{n}"),
+        Value::Bool(b) => write!(out, "{b}"),
+        Value::Str(s) => crate::json::write_str(out, s),
+        Value::List(list) => {
+            out.write_char('[')?;
+            for (i, item) in list.items().iter().enumerate() {
+                if i > 0 {
+                    out.write_char(',')?;
+                }
+                write_json_value(item, out)?;
+            }
+            out.write_char(']')
+        }
+        Value::App(app) => match app {
+            Fux::Null => out.write_str("null"),
+            Fux::All(None) => out.write_str("\"all\""),
+            Fux::Record(r) => r.write(out),
+            Fux::Rendered(text) => crate::json::write_str(out, text),
+            Fux::Answer(answer, _) => answer.write_json(out),
+            Fux::Pane(pane, _) => write!(out, "\"{pane}\""),
+            Fux::Tab(tab, _) => write!(out, "\"{tab}\""),
+            Fux::Workspace(workspace, _) => write!(out, "\"{workspace}\""),
+            Fux::Client(client, _) => write!(out, "\"{client}\""),
+            Fux::Extent(Extent::Cells(n)) => write!(out, "\"{n}\""),
+            Fux::Extent(Extent::Percent(n)) => write!(out, "\"{}%\"", n.get()),
+            Fux::All(Some(_)) | Fux::Opts(_) => write!(out, "\"({})\"", fuxth::AppValue::kind(app)),
+        },
+    }
 }
 
 fn int(value: &Value<Fux>) -> Result<i64, Failure> {
@@ -641,10 +654,10 @@ fn pick<T>(value: &Value<Fux>) -> Result<Pick<T>, Failure> {
 }
 
 /// One of a closed set, by its name; refused, naming each, if none.
-fn one_of<T: Copy>(value: &Value<Fux>, all: &[(&str, T)]) -> Result<T, Failure> {
+fn one_of<T: Clone>(value: &Value<Fux>, all: &[(&str, T)]) -> Result<T, Failure> {
     let given = string(value)?;
     let found = all.iter().find(|(name, _)| *name == given);
-    found.map(|(_, t)| *t).ok_or_else(|| {
+    found.map(|(_, t)| t.clone()).ok_or_else(|| {
         let names: Vec<&str> = all.iter().map(|(name, _)| *name).collect();
         let names = crate::words::listed(&names, "or");
         fail(Raise::BadValue, format!("{given:?} is not {names}"))
@@ -764,12 +777,8 @@ fn held(value: &Value<Fux>) -> Option<crate::command::Version> {
     match value {
         Value::App(Fux::Answer(answer, _)) => match &**answer {
             super::Answer::Pane(answer) => answer.version(),
-            // Captures become request baselines only through `expect` or `changed`.
-            super::Answer::Panes(_)
-            | super::Answer::Capture(_)
-            | super::Answer::Listing { .. }
-            | super::Answer::Json(_)
-            | super::Answer::Status(_) => None,
+            // A capture's is for `expect` and `changed` alone (`version`).
+            super::Answer::Panes(_) | super::Answer::Capture(_) | super::Answer::Status(_) => None,
         },
         Value::Int(_) | Value::Bool(_) | Value::Str(_) | Value::List(_) | Value::App(_) => None,
     }
@@ -803,7 +812,7 @@ fn version(value: &Value<Fux>) -> Result<crate::command::Version, Failure> {
 /// The options or request `value` is: options stay options; what else it
 /// goes on (a pane, tab, workspace or client, an action's answer) becomes
 /// a request on that.
-fn modifying(value: Value<Fux>) -> Result<Box<Opts>, Failure> {
+fn modifying(value: Value<Fux>) -> Result<std::rc::Rc<Opts>, Failure> {
     let built = match value {
         Value::App(Fux::Opts(built)) => built,
         other @ (Value::Int(_)
@@ -813,7 +822,7 @@ fn modifying(value: Value<Fux>) -> Result<Box<Opts>, Failure> {
         | Value::App(_)) => {
             let on = on(&other)
                 .map_err(|_| wrong("a pane, tab, workspace or client, or options", &other))?;
-            Box::new(Opts {
+            std::rc::Rc::new(Opts {
                 on: Some(on),
                 ..Opts::default()
             })
@@ -850,13 +859,14 @@ const MICE: [(&str, Mouse); 8] = [
 fn modify(
     opt: Opt,
     next: &mut dyn FnMut() -> Result<Value<Fux>, Failure>,
-) -> Result<Box<Opts>, Failure> {
+) -> Result<std::rc::Rc<Opts>, Failure> {
     // `changed` and `expect` make a request; every other option goes on
     // one, or on options.
-    let mut built = match matches!(opt, Opt::Changed | Opt::Expect) {
-        true => Box::default(),
+    let mut shared = match matches!(opt, Opt::Changed | Opt::Expect) {
+        true => std::rc::Rc::default(),
         false => modifying(next()?)?,
     };
+    let built = std::rc::Rc::make_mut(&mut shared);
     if !matches!(
         opt,
         Opt::Arg | Opt::Env | Opt::UnsetEnv | Opt::Text | Opt::Key | Opt::Paste | Opt::Bytes
@@ -924,7 +934,7 @@ fn modify(
                 built.argv = Program::read(&next()?)
                     .map_err(|why| fail(Raise::BadValue, why))?
                     .argv();
-                return Ok(built);
+                return Ok(shared);
             }
             built.argv.push(string(&next()?)?);
         }
@@ -975,7 +985,7 @@ fn modify(
             built.inputs.push(Input::Key(press));
         }
     }
-    Ok(built)
+    Ok(shared)
 }
 
 /// The rows or columns a capture reads, from `next`: the first, then the
@@ -997,7 +1007,7 @@ fn span(
 /// leaves something given unused.
 fn request(word: Act, value: Value<Fux>) -> Result<(On, Opts), Failure> {
     let mut built = match value {
-        Value::App(Fux::Opts(built)) => *built,
+        Value::App(Fux::Opts(built)) => std::rc::Rc::unwrap_or_clone(built),
         other @ (Value::Int(_)
         | Value::Bool(_)
         | Value::Str(_)
@@ -1040,7 +1050,7 @@ fn finished(word: Act, value: Value<Fux>) -> Result<Opts, Failure> {
     match value {
         Value::App(Fux::Opts(built)) if built.on.is_none() => {
             unused(word, &built)?;
-            Ok(*built)
+            Ok(std::rc::Rc::unwrap_or_clone(built))
         }
         other @ (Value::Int(_)
         | Value::Bool(_)
@@ -1059,7 +1069,7 @@ fn attach_options(
     value: Value<Fux>,
 ) -> Result<(Option<crate::command::AttachTarget>, Opts), Failure> {
     use crate::command::AttachTarget as T;
-    let built = *modifying(value)?;
+    let built = std::rc::Rc::unwrap_or_clone(modifying(value)?);
     unused(word, &built)?;
     let target = match (&built.on, &built.place) {
         (None, place) => place.clone().map(T::Workspace),
@@ -1335,7 +1345,7 @@ impl fuxth::Host for Host<'_> {
                         Some(On::Version(v) | On::Changed(v) | On::Seen(v)) => Some(v.run),
                         _ => None,
                     };
-                    opts.of = super::same_run(of, version)?;
+                    std::rc::Rc::make_mut(opts).of = super::same_run(of, version)?;
                 }
                 Value::App(
                     Fux::Pane(_, run)
@@ -1474,7 +1484,7 @@ impl Host<'_> {
             }
             // ---------------------------------------------------- starting
             Act::All => now(out, Value::App(Fux::All(None))),
-            Act::Opts => now(out, Value::App(Fux::Opts(Box::default()))),
+            Act::Opts => now(out, Value::App(Fux::Opts(std::rc::Rc::default()))),
             Act::Run => {
                 let built = finished(act, next()?)?;
                 if built.argv.is_empty() {
@@ -1671,16 +1681,55 @@ impl Host<'_> {
                     view: built.view,
                 }))
             }
-            Act::Info => later(ask(Command::Ls {
-                target: scope(&next()?)?,
-                get: None,
+            Act::Info => later(ask(Command::Inspect {
+                scope: scope(&next()?)?
+                    .map_or(crate::inspect::Scope::All, crate::inspect::Scope::Target),
+                projection: crate::inspect::Projection::Facts,
             })),
+            Act::Snapshot => {
+                let scope = match next()? {
+                    Value::App(Fux::All(None)) => crate::inspect::Scope::All,
+                    Value::App(Fux::Client(c, _)) => crate::inspect::Scope::Client(c),
+                    value @ (Value::Int(_)
+                    | Value::Bool(_)
+                    | Value::Str(_)
+                    | Value::List(_)
+                    | Value::App(_)) => crate::inspect::Scope::Target(target(&value)?),
+                };
+                let projection = one_of(
+                    &next()?,
+                    &[
+                        ("facts", crate::inspect::Projection::Facts),
+                        ("topology", crate::inspect::Projection::Topology),
+                        ("recipe", crate::inspect::Projection::Recipe),
+                    ],
+                )?;
+                later(ask(Command::Inspect { scope, projection }))
+            }
             Act::Panes => later(members_of(target(&next()?)?, Members::Panes)),
             Act::Tabs => later(members_of(target(&next()?)?, Members::Tabs)),
             Act::Get => {
-                let target = Some(target(&next()?)?);
-                let get = Some(string(&next()?)?);
-                later(ask(Command::Ls { target, get }))
+                let value = next()?;
+                let field = string(&next()?)?;
+                match value {
+                    Value::App(Fux::Record(record)) => now(out, record.get(&field)?),
+                    Value::App(Fux::Answer(answer, run)) => {
+                        now(out, super::record::answer_field(&answer, run, &field)?)
+                    }
+                    value @ (Value::Int(_)
+                    | Value::Bool(_)
+                    | Value::Str(_)
+                    | Value::List(_)
+                    | Value::App(_)) => {
+                        if field.len() > crate::session::NAME_MAX {
+                            return Err(fail(Raise::TooLong, "field name is too long"));
+                        }
+                        later(ask(Command::Inspect {
+                            scope: crate::inspect::Scope::Target(target(&value)?),
+                            projection: crate::inspect::Projection::Field(field),
+                        }))
+                    }
+                }
             }
             Act::Json => match next()? {
                 // Options and requests are no value to convert: what acts
@@ -1693,10 +1742,15 @@ impl Host<'_> {
                 | Value::Bool(_)
                 | Value::Str(_)
                 | Value::List(_)
-                | Value::App(_)) => now(
-                    out,
-                    Value::str(json_text(&other, crate::wire::MAX_ALLOCATED)?),
-                ),
+                | Value::App(_)) => {
+                    let text = json_text(&other, crate::wire::MAX_ALLOCATED)?;
+                    let value = if text.chars().count() <= fuxth::LONGEST {
+                        Value::str(text)
+                    } else {
+                        Value::App(Fux::Rendered(fuxth::Shared::new(text)))
+                    };
+                    now(out, value)
+                }
             },
             Act::Events => {
                 let value = next()?;
@@ -1984,9 +2038,9 @@ impl Host<'_> {
             Act::Version => {
                 let value = next()?;
                 if let Value::App(Fux::Pane(p, _)) = value {
-                    later(ask(Command::Ls {
-                        target: Some(AnyRef::Pane(p)),
-                        get: Some("version".into()),
+                    later(ask(Command::Inspect {
+                        scope: crate::inspect::Scope::Target(AnyRef::Pane(p)),
+                        projection: crate::inspect::Projection::Field("version".into()),
                     }))
                 } else {
                     now(out, Value::str(version(&value)?.to_string()))
@@ -2486,7 +2540,7 @@ mod tests {
 
     #[test]
     fn accumulating_options_preserve_order() -> Result<(), Box<dyn std::error::Error>> {
-        let mut value = Value::App(Fux::Opts(Box::default()));
+        let mut value = Value::App(Fux::Opts(std::rc::Rc::default()));
         for (opt, values) in [
             (Opt::Program, vec![Value::str("cat")]),
             (Opt::Arg, vec![Value::str("a")]),
@@ -2683,7 +2737,7 @@ mod tests {
             marks: false,
         };
         let held = fuxth::List::new(vec![Value::App(Limited(Fux::Answer(
-            Box::new(super::super::Answer::Capture(Box::new(captured))),
+            fuxth::Shared::new(super::super::Answer::Capture(Box::new(captured))),
             None,
         )))])
         .ok_or("held list")?;
@@ -2749,7 +2803,7 @@ mod tests {
             marks: false,
         };
         let value = Value::App(Fux::Answer(
-            Box::new(super::super::Answer::Capture(Box::new(capture))),
+            fuxth::Shared::new(super::super::Answer::Capture(Box::new(capture))),
             None,
         ));
         assert!(
@@ -2782,7 +2836,7 @@ mod tests {
         let version = "%1:0.0.0.0.0:1-1".parse().map_err(|()| "version")?;
         let one = super::super::Answer::Panes(vec![crate::answer::PaneAnswer::Acted(version)]);
         let json = json_text(
-            &Value::App(Fux::Answer(Box::new(one), None)),
+            &Value::App(Fux::Answer(fuxth::Shared::new(one), None)),
             crate::wire::MAX_ALLOCATED,
         )
         .map_err(|f| f.message)?;
@@ -2847,20 +2901,20 @@ mod tests {
             workspace,
             client,
             Fux::Answer(
-                Box::new(super::super::Answer::Pane(
+                fuxth::Shared::new(super::super::Answer::Pane(
                     crate::answer::PaneAnswer::Acted(version),
                 )),
                 Some(version.run),
             ),
             Fux::Answer(
-                Box::new(super::super::Answer::Pane(
+                fuxth::Shared::new(super::super::Answer::Pane(
                     crate::answer::PaneAnswer::Closed(version.pane),
                 )),
                 Some(version.run),
             ),
         ];
         targets.extend(on.map(|on| {
-            Fux::Opts(Box::new(Opts {
+            Fux::Opts(std::rc::Rc::new(Opts {
                 on,
                 ..Opts::default()
             }))
@@ -2936,7 +2990,7 @@ mod tests {
                 // `arg` requires a program first, which preserves the same kind.
                 let initial = if opt == Opt::Arg {
                     let mut built = expected.clone();
-                    built.argv.push("sh".into());
+                    std::rc::Rc::make_mut(&mut built).argv.push("sh".into());
                     Fux::Opts(built)
                 } else {
                     target.clone()

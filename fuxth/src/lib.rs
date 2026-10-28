@@ -40,6 +40,7 @@
 mod check;
 mod compile;
 mod error;
+mod import;
 mod machine;
 mod source;
 pub mod token;
@@ -48,6 +49,7 @@ mod vocabulary;
 
 pub use compile::{Compiler, Doc, Parsing, Program, Read, Vocabulary};
 pub use error::{Code, Error, Failure};
+pub use import::{ImportLease, Imports, Shared};
 pub use machine::{Args, BUILT, Builtin, Done, Host, LONGEST, Limits, Machine, Outcome};
 pub use source::{Loader, SOURCE_MAX, Source, SourceImage, SourceLimits};
 pub use token::{Place, Token};

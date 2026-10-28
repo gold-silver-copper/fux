@@ -20,7 +20,7 @@ use crate::wire::{Wire, wire};
 use std::borrow::Cow;
 
 /// Bumped on any change to the frames below.
-pub const PROTOCOL: u32 = 45;
+pub const PROTOCOL: u32 = 46;
 /// The largest frame, kind byte included.
 pub const MAX_FRAME: usize = 1 << 20;
 /// The largest payload one frame carries.
@@ -415,12 +415,7 @@ wire! {
         /// The panes or tabs a place holds, in its order.
         Handles(ids: Vec<AnyRef>),
         Capture(captured: Box<crate::capture::Captured>),
-        /// `ls`: everything (`of` none), or a pane, tab or workspace and
-        /// what is in it (`info`).
-        Listing {
-            of: Option<crate::command::Kind>,
-            listing: Json,
-        },
+        Snapshot(snapshot: Box<crate::inspect::Snapshot>),
         /// One field of a pane, tab or workspace (`get`).
         Field(value: Json),
         /// A chooser's rows: what each is, its label, and the place of the

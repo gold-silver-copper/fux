@@ -1,7 +1,16 @@
 # What `json` gives
 
-(`fux help json`.) `json` turns the value on top of the stack into JSON:
-what a word left, as below; a string as a JSON string; a number or boolean
+(`fux help json`.) `json` turns the value on top of the stack into JSON.
+Small results are ordinary strings. Beyond 1,000,000 characters it returns shared text of kind
+`rendered`: `print` and implicit command output emit it under the existing
+128 MiB finite-observation grant. Explicit `string` conversion still obeys
+the language string limit. All live imported storage shares one 128 MiB grant: captures, rendered output,
+records, strings, lists and options. Reservations follow shared allocations;
+clones and projected children keep their reservation without double charging.
+Dropping the last reference refunds its bytes, so polling and discarding results
+can continue. Per-value limits and traversal charges still apply.
+
+The JSON represents what a word left, as below; a string as a JSON string; a number or boolean
 as itself; a list as an array of these, each answer in it as `json` gives
 it alone (a capture's, a listing's or an action's object; one of several
 panes an array of their objects). Rows and columns count from 0; times are milliseconds; ids are strings (`"%3"`,
@@ -9,7 +18,7 @@ panes an array of their objects). Rows and columns count from 0; times are milli
 
 ## A pane
 
-`ls json` gives each pane these; `PANE capture json` gives them too, but
+`ls json` gives each pane its identity and size, with process fields under `state`; `PANE capture json` gives them too, but
 for `id`, `name`, `label` and `pid` (it says `pane`):
 
 | Field | Value |
@@ -52,33 +61,97 @@ for `id`, `name`, `label` and `pid` (it says `pane`):
 | `input_unread` | bytes of input fux queued for its program and had not yet written to its terminal as it ended, let go (till it is respawned), else 0. Input written to its terminal that the program never read is not counted: the system does not say |
 | `cwd`, `argv` | the observed foreground leader's directory and arguments, each `null` where unknown; separate OS reads may race with a process changing or exiting. No launch arguments stand in for unknown live arguments. JSON's text being UTF-8, a byte that is not is shown as U+FFFD |
 
-## `ls json`
+## Snapshots and local records
 
-```json
-{"workspaces":[{"id":"+1","name":null,"label":"+1","tabs":[{"id":"@1","name":null,"label":"%1","layout_revision":"@1:0:RUN","host":"c1","panes":[PANE…]}]}],
- "clients":[{"id":"c1","rows":24,"cols":80,"workspace":"+1","tab":"@1","pane":"%1","zoom":false,
-   "terminal":{"sixel_reported":null,"cell_reported":null,"underline_styles_reported":null,"kitty_flags_reported":null},
-   "output":{"graphics":"text","underline_styles":false,"clipboard":"osc52","kitty_flags_requested":null}}],
- "events":"42:48211-1867a3f9c2b8e7d6"}
+`SCOPE str PROJECTION snapshot` returns one immutable record. `SCOPE` is
+`all`, a pane, tab, workspace or client. `PROJECTION` is `facts`, `topology`
+or `recipe`. `ls` takes a facts snapshot of all scopes; `X info` takes one
+of X. Plain output lists the hierarchy; `json` renders the same observation.
+
+Every scope has the same envelope: `run`, `events`, `scope`, `projection`,
+`workspaces`, `tabs`, `panes`, and `clients`. The four collections are flat,
+in hierarchy order. Workspace `tabs` is an ordered list of tab handles;
+a tab's `workspace` and a pane's `tab` identify their parents. IDs in fuxth
+are actual handles carrying this server run. JSON renders them as strings.
+An ordinary string that looks like `%3` remains a string.
+
+```fux
+all str topology snapshot let held
+held str panes get each str id get print end
+held str clients get each str pane get print end
 ```
 
-`events` is a cursor, `SEQ:RUN`: the number the session's journal of events
-gives next, and the server's run, read with the listing. A stream from it
-(`all str CURSOR from events`) tells every event (the table under
-`events`) after the listing, none before it, or with `missed` how many of
-those the journal let go first: then read `ls` again. `ls` ends with it
-too, as `events CURSOR`.
+`get` on a record, held action answer, or capture is local, even if the
+source pane has changed, respawned, or closed. A held answer's `pane`,
+`version`, `status`, and applicable change/exit fields come from that answer.
+A capture exposes its saved `pane` (or `client`), version, screen geometry,
+lines, optional styles, and captured state fields such as `last_status`.
+An absent field still fails `no_field`; it never falls back to a live read.
+Use `ANSWER pane str name get` to request the live pane name explicitly.
+Arrays become fuxth lists, objects become records, booleans and integers keep
+their types, and strings keep their exact text. Null has kind `null`; it is
+neither false nor an empty string/list. An absent field fails `no_field`.
+Unsigned numbers above i64 fail `range`. There is no float or string-to-ID
+conversion. `buffers` now returns a list of records; `buffers json` renders
+its array. `X str FIELD get` on a live handle and `panes`/`tabs` remain native
+selective reads. `get id` and container membership return typed handles.
 
-`X info json` gives that pane, tab (`{"id","name","label","layout_revision","host","panes"}`) or workspace
-(`{"id","name","label","tabs"}`) alone; `X str FIELD get` leaves one of its fields:
-a number or boolean as itself, a string as text, `null` as an answer that
-prints `null` (`string` makes it the text). A tab or workspace has an optional
-given `name` (`null` when absent) and a derived display `label`. A tab's
-label is its given name or its first pane's label; a workspace's is its
-given name or id. `get` reads only the object's own fields.
-A tab's `layout_revision` is `TAB:REVISION:RUN`, the guard for `arrange`.
-It changes on layout edits and fit changes, independently of pane output.
-A successful replacement emits one `arranged` event with its tab and workspace.
+Each workspace has `id`, `name`, `label`, and `tabs`. Its `tabs` is always the
+full ordered membership, including in a tab- or pane-scoped snapshot, whose
+`tabs` facts collection contains only the selected tab. Each tab fact has
+`id`, `workspace`, `name`, `label`, `fit` (`fixed` or `clients`), `cols`,
+`rows`, `nodes`, `layout_revision`, and `host`. Client fit reports its retained size.
+
+`layout_revision` is `TAB:REVISION:RUN`, the native layout revision, or null if its
+counter is exhausted. Screen output does not change it. `nodes` uses the
+shared flat layout schema: the root is index zero, a leaf is a typed pane
+handle, and a split is `[AXIS, FIRST_SHARE, SECOND_SHARE, FIRST, SECOND]`.
+The axis is `horizontal` or `vertical`; shares are positive integers and
+children are indices in that same list. These values feed `arrange` directly. Every node is reachable once, with
+one leaf per pane. Layout depth does not consume record nesting. A successful `arrange` emits
+one `arranged` event with the tab and workspace.
+
+Each pane has `id`, `tab`, `name`, `label`, `title`, `pid`, `rows`, `cols`,
+and `version`. A name is given or null; a label is display text. Facts adds
+`state`, containing the process/terminal fields above. Topology uses only
+retained state and performs no process metadata queries. Recipe adds `launch`:
+`choice` (`shell` or `program`), ordered `argv`, `env`, `initial_cwd`,
+`observed_cwd`, `history_bytes`, `program_clipboard`, `reflow`, `alternate_scroll_lines`, and
+`picture_bytes`. Both launch choices
+retain their original inputs. Environment entries have `name` and `value`;
+null means removal. OS text uses `{encoding: utf8, text: ...}` or
+`{encoding: hex, text: ...}` for exact non-UTF-8 bytes. Observed cwd is null
+when unknown, `{status: known, path: ...}`, or
+`{status: failed, operation: cwd, errno: N}`. Replay launches new processes;
+these are launch inputs, not saved process memory.
+
+Each client has `id`, `kind` (`terminal` or `headless`), `read_only`, physical
+`rows`/`cols`, `pane_rows`/`pane_cols`, optional `workspace`/`tab`/`pane`,
+`zoom`, `opening` (null without an open screen), and `mode`.
+
+All includes every root and view. Workspace includes its descendants and
+views showing it; tab includes its whole tab and parent workspace reference.
+Pane facts includes only that pane's facts, with its tab topology and relevant
+views; pane topology/recipe includes its whole tab. Client includes that
+client and its current workspace closure. Missing explicit scopes fail.
+
+`events` is the journal cursor `SEQ:RUN`, gathered with the hierarchy in one
+server turn. A stream from it (`opts str CURSOR from events-of`) starts after
+that observation; a missed journal prefix requires another snapshot. OS
+observations happen during the turn but are not simultaneous OS snapshots.
+A pane version does not certify process metadata or client focus.
+
+Snapshots allow at most 8 MiB of native construction/decoded allocation and
+65,536 entity, workspace-membership and tree nodes. Decode checks the same
+inventory as construction; raw OS bytes, argv items and JSON members consume
+the byte/allocation grant rather than one entity node per byte or item. Client projection separately admits at most
+8 MiB and 65,536 values/fields, with record nesting at most 32. It retains
+the native schema for plain rendering and shares immutable records on clone.
+The tighter language limits still apply, including 1,000,000 characters per
+string and 16,000,000 expanded elements per list/run. Opaque values charge
+expanded traversal; imports also share the live-storage grant above. Constructed strings
+and lists charge the run’s construction grant; repeated shared values count again. A too-large observation fails `too_long`, never truncates or
+combines multiple turns. Narrower scopes are separate observations.
 
 A tab's `host` is the terminal client supplying its panes' capability answers,
 or `null`. Of terminals showing it, the last typist wins, else the first
@@ -184,16 +257,17 @@ from (its program's end too):
 
 ```json
 {"pane":"%3","version":"%3:0.61.1.4.0:RUN","changed":["screen","bell","done"],"status":0}
-{"pane":"%4","version":"%4:0.12.0.0.1:RUN","changed":["screen"],"exited":5,"status":0}
-{"pane":"%5","version":"%5:0.9.0.0.1:RUN","changed":[],"signal":15,"status":0}
+{"pane":"%4","version":"%4:0.12.0.0.1:RUN","changed":["screen"],"exited":5,"signal":null,"status":0}
+{"pane":"%5","version":"%5:0.9.0.0.1:RUN","changed":[],"exited":null,"signal":15,"status":0}
 {"pane":"%2","version":"%2:1.3.0.0.0:RUN","changed":["respawned"],"status":0}
 ```
 
 `changed` lists `screen`, `bell` and `done` (a count of the version that
 grew), or `respawned` (the program started again: its counts but
-`RESPAWNS` start afresh). `exited` is the program's status if it ended
-since (`null` if that status was lost), `signal` the signal that killed
-it; a wait from a version that already holds its end waits for
+`RESPAWNS` start afresh). When the program ended, both `exited` and `signal`
+are present, with inapplicable values `null`. `exited` is the program's status
+if it ended since (`null` if it was signalled or its status was lost),
+`signal` the signal that killed it; a wait from a version that already holds its end waits for
 something else.
 
 A wait that fails (124 nothing changed, 4 its pane closed) answers too,
@@ -276,8 +350,8 @@ they run, so a `try` may name them too.
 ## `status json`
 
 ```json
-{"socket":"/run/user/1000/fux/server.sock","release":"0.36.0","protocol":45,
- "server_release":"0.36.0","server_protocol":45,"compatible":true}
+{"socket":"/run/user/1000/fux/server.sock","release":"0.36.0","protocol":46,
+ "server_release":"0.36.0","server_protocol":46,"compatible":true}
 ```
 
 With no server, `status` fails (`no_server`), saying the socket and whether

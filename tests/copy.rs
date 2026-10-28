@@ -117,7 +117,7 @@ fn a_word_a_line_and_a_block_are_copied() -> Outcome {
             .is_some_and(|b| b.contains("copied 1 character") && !b.contains("characters"))
     })?;
     // Buffers keep metadata newest first, with stable ids.
-    let list = server.ok(&["buffers"])?;
+    let list = server.ok(&["buffers", "json"])?;
     assert!(list.starts_with("[{\"id\":\"b4:"), "{list}");
     assert!(list.contains("\"bytes\":1,\"preview\":\"a\""), "{list}");
     assert!(
@@ -273,7 +273,7 @@ fn paste_buffers_paste_and_the_clipboard_can_be_off() -> Outcome {
     })?;
     // paste-buffer from the CLI, into another pane.
     server.ok(&["str", "%1", "pane", "str", "horizontal", "axis", "split"])?;
-    let metadata = server.ok(&["buffers"])?;
+    let metadata = server.ok(&["buffers", "json"])?;
     let id = metadata
         .strip_prefix("[{\"id\":\"")
         .and_then(|s| s.split('"').next())

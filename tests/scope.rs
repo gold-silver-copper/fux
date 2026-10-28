@@ -58,7 +58,7 @@ fn held_handles_refuse_another_server_before_mutating_it() -> Outcome {
     a.type_line("%1", "printf '\\033]52;c;b2xk\\007'")?;
     let mut buffer = String::new();
     eventually("a run-qualified buffer id", || {
-        let metadata = a.ok(&["buffers"])?;
+        let metadata = a.ok(&["buffers", "json"])?;
         let id = metadata
             .split("\"id\":\"")
             .nth(1)

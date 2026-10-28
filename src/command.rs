@@ -738,12 +738,7 @@ impl Wheel {
 wire! {
     #[derive(Clone, Debug, PartialEq, Eq)]
     pub enum Command {
-        Ls {
-            /// One pane, tab or workspace only.
-            target: Option<AnyRef>,
-            /// One field of its JSON.
-            get: Option<String>,
-        },
+        Inspect { scope: crate::inspect::Scope, projection: crate::inspect::Projection },
         /// Stops the server; from the CLI, refused from one of its own panes
         /// or with people attached.
         KillServer,
@@ -1152,7 +1147,7 @@ impl Command {
     pub fn shows_nothing_new(&self) -> bool {
         use Command as C;
         match self {
-            C::Ls { .. }
+            C::Inspect { .. }
             | C::Resolve { .. }
             | C::Members { .. }
             | C::CapturePane { .. }

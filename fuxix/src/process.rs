@@ -607,24 +607,24 @@ pub fn name<A: crate::Allocation>(
 /// The observed current directory. Stack space handles ordinary paths;
 /// longer paths grow under the same grant, including replacement peaks.
 #[cfg(not(target_os = "macos"))]
-pub fn cwd<A: crate::Allocation>(
+pub fn cwd_observed<A: crate::Allocation>(
     pid: Pid,
     budget: &mut A,
-) -> std::result::Result<Option<PathBuf>, A::Error> {
+) -> std::result::Result<Result<Option<PathBuf>>, A::Error> {
     use std::os::unix::ffi::OsStringExt;
     let Some(path) = proc_path(pid, "cwd") else {
-        return Ok(None);
+        return Ok(Ok(None));
     };
     let mut stack = [0u8; 4096];
     // SAFETY: the path is NUL-terminated and stack is writable for its length.
     let read =
         unsafe { libc::readlink(path.as_ptr().cast(), stack.as_mut_ptr().cast(), stack.len()) };
     let Ok(count) = usize::try_from(read) else {
-        return Ok(None);
+        return Ok(Err(Errno::last()));
     };
     if count < stack.len() {
         let bytes = stack.get(..count).ok_or_else(A::exceeded)?;
-        return budget.os_string(bytes).map(|p| Some(PathBuf::from(p)));
+        return budget.os_string(bytes).map(|p| Ok(Some(PathBuf::from(p))));
     }
     let before = budget.remaining();
     let mut raw = Vec::new();
@@ -638,17 +638,17 @@ pub fn cwd<A: crate::Allocation>(
             let read =
                 unsafe { libc::readlink(path.as_ptr().cast(), raw.as_mut_ptr().cast(), raw.len()) };
             let Ok(count) = usize::try_from(read) else {
-                return Ok(false);
+                return Ok(Err(Errno::last()));
             };
             if count < raw.len() {
                 raw.truncate(count);
-                return Ok(true);
+                return Ok(Ok(()));
             }
             room = room.checked_mul(2).ok_or_else(A::exceeded)?;
         }
     })();
-    if matches!(&result, Ok(true)) {
-        return Ok(Some(PathBuf::from(OsString::from_vec(raw))));
+    if matches!(&result, Ok(Ok(()))) {
+        return Ok(Ok(Some(PathBuf::from(OsString::from_vec(raw)))));
     }
     drop(raw);
     budget.release(
@@ -656,20 +656,20 @@ pub fn cwd<A: crate::Allocation>(
             .checked_sub(budget.remaining())
             .ok_or_else(A::exceeded)?,
     )?;
-    result.map(|_| None)
+    result.map(|result| result.map(|()| None))
 }
 
 /// The observed current directory, copied from the kernel's stack result
 /// only after its exact retained capacity has been admitted.
 #[cfg(target_os = "macos")]
-pub fn cwd<A: crate::Allocation>(
+pub fn cwd_observed<A: crate::Allocation>(
     pid: Pid,
     budget: &mut A,
-) -> std::result::Result<Option<PathBuf>, A::Error> {
+) -> std::result::Result<Result<Option<PathBuf>>, A::Error> {
     use std::os::unix::ffi::OsStringExt;
     let mut info = std::mem::MaybeUninit::<libc::proc_vnodepathinfo>::zeroed();
     let Ok(bytes) = libc::c_int::try_from(size_of::<libc::proc_vnodepathinfo>()) else {
-        return Ok(None);
+        return Ok(Ok(None));
     };
     // SAFETY: info is writable for exactly bytes; a short result is rejected.
     let read = unsafe {
@@ -681,8 +681,11 @@ pub fn cwd<A: crate::Allocation>(
             bytes,
         )
     };
+    if read <= 0 {
+        return Ok(Err(Errno::last()));
+    }
     if read != bytes {
-        return Ok(None);
+        return Ok(Ok(None));
     }
     // SAFETY: proc_pidinfo filled the whole structure, as checked above.
     let info = unsafe { info.assume_init() };
@@ -694,11 +697,11 @@ pub fn cwd<A: crate::Allocation>(
         .take_while(|c| **c != 0);
     let count = path.clone().count();
     if count == 0 {
-        return Ok(None);
+        return Ok(Ok(None));
     }
     let mut bytes = budget.vector(count)?;
     bytes.extend(path.map(|c| c.cast_unsigned()));
-    Ok(Some(PathBuf::from(OsString::from_vec(bytes))))
+    Ok(Ok(Some(PathBuf::from(OsString::from_vec(bytes)))))
 }
 
 #[cfg(test)]
@@ -838,11 +841,20 @@ mod tests {
         let there = own
             .and_then(|pid| {
                 let mut quota = usize::MAX;
-                cwd(pid, &mut quota).ok().flatten()
+                cwd_observed(pid, &mut quota).ok()?.ok().flatten()
             })
             .and_then(|d| d.canonicalize().ok());
         assert!(here.is_some());
         assert_eq!(here, there);
+    }
+
+    #[test]
+    fn cwd_observations_keep_os_failures_distinct_from_unknown() {
+        let mut quota = 8192usize;
+        let Some(missing) = Pid::from_raw(i32::MAX) else {
+            return;
+        };
+        assert!(matches!(cwd_observed(missing, &mut quota), Ok(Err(_))));
     }
 
     #[test]

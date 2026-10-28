@@ -48,6 +48,18 @@ impl<'a> Reader<'a> {
     pub fn new(bytes: &'a [u8]) -> Reader<'a> {
         Reader(bytes, MAX_ALLOCATED)
     }
+    pub(crate) fn limited<T>(
+        &mut self,
+        bytes: usize,
+        read: impl FnOnce(&mut Self) -> Result<T, Error>,
+    ) -> Result<T, Error> {
+        let before = self.1;
+        self.1 = before.min(bytes);
+        let limit = self.1;
+        let result = read(self);
+        self.1 = before.saturating_sub(limit.saturating_sub(self.1));
+        result
+    }
     pub(crate) fn charge(&mut self, bytes: usize) -> Result<(), Error> {
         self.1 = self.1.checked_sub(bytes).ok_or(Error::Limit)?;
         Ok(())

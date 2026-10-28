@@ -1,12 +1,11 @@
 //! What a reply answers of panes, and of everything there is, as data the
 //! client renders as text or as JSON (`json`), each from the one value.
 use crate::code::Code;
-use crate::command::{Kind, Version};
+use crate::command::Version;
 use crate::id::PaneId;
 use crate::json::Json;
 use crate::process::Ended;
 use crate::wire::{closed_wire, wire, wire_enum};
-use std::fmt::Write;
 
 wire! {
     /// What one pane answers, of an action or a wait on it.
@@ -67,7 +66,7 @@ impl Change {
         Change::Done,
     ];
 
-    fn name(self) -> &'static str {
+    pub(crate) fn name(self) -> &'static str {
         match self {
             Change::Respawned => "respawned",
             Change::Screen => "screen",
@@ -187,9 +186,11 @@ impl PaneAnswer {
             }
             out.write_char(']')?;
             match ended {
-                Some(Ended::Exited(code)) => write!(out, ",\"exited\":{code}")?,
-                Some(Ended::Signalled(signal)) => write!(out, ",\"signal\":{signal}")?,
-                Some(Ended::Lost) => out.write_str(",\"exited\":null")?,
+                Some(Ended::Exited(code)) => write!(out, ",\"exited\":{code},\"signal\":null")?,
+                Some(Ended::Signalled(signal)) => {
+                    write!(out, ",\"exited\":null,\"signal\":{signal}")?
+                }
+                Some(Ended::Lost) => out.write_str(",\"exited\":null,\"signal\":null")?,
                 None => {}
             }
         }
@@ -254,194 +255,5 @@ impl PartialEq for Field<'_> {
                 _ => false,
             },
         }
-    }
-}
-
-/// `ls` / `info`, streamed with the original line indentation and no
-/// trailing newlines, as an answer's text has always read.
-pub(crate) fn write_listing(
-    of: Option<Kind>,
-    listing: &Json,
-    out: &mut dyn std::fmt::Write,
-) -> std::fmt::Result {
-    fn field<'a>(json: &'a Json, key: &str) -> Field<'a> {
-        Field(json.get(key).filter(|v| !matches!(v, Json::Null)), "-")
-    }
-    fn items<'a>(json: &'a Json, key: &str) -> &'a [Json] {
-        match json.get(key) {
-            Some(Json::Array(items)) => items,
-            _ => &[],
-        }
-    }
-    fn int(json: &Json, key: &str) -> Option<i32> {
-        match json.get(key) {
-            Some(Json::Int(n)) => i32::try_from(*n).ok(),
-            Some(Json::Uint(n)) => i32::try_from(*n).ok(),
-            _ => None,
-        }
-    }
-    fn pane(p: &Json, out: &mut dyn std::fmt::Write) -> std::fmt::Result {
-        write!(
-            out,
-            "    {} {}x{} ",
-            crate::words::Labelled(field(p, "id"), field(p, "label")),
-            field(p, "cols"),
-            field(p, "rows")
-        )?;
-        match (int(p, "pid"), int(p, "exited"), int(p, "signal")) {
-            (Some(pid), ..) => write!(out, "pid {pid}")?,
-            (None, Some(code), _) => write!(out, "{}", crate::process::Told(Ended::Exited(code)))?,
-            (None, None, Some(raw)) => {
-                write!(out, "{}", crate::process::Told(Ended::Signalled(raw)))?
-            }
-            (None, None, None) => write!(out, "{}", crate::process::Told(Ended::Lost))?,
-        }
-        out.write_char('\n')
-    }
-    fn tab(t: &Json, out: &mut dyn std::fmt::Write) -> std::fmt::Result {
-        writeln!(
-            out,
-            "  {}",
-            crate::words::Labelled(field(t, "id"), field(t, "label"))
-        )?;
-        for p in items(t, "panes") {
-            pane(p, out)?;
-        }
-        Ok(())
-    }
-    fn workspace(w: &Json, out: &mut dyn std::fmt::Write) -> std::fmt::Result {
-        writeln!(
-            out,
-            "{}",
-            crate::words::Labelled(field(w, "id"), field(w, "label"))
-        )?;
-        for t in items(w, "tabs") {
-            tab(t, out)?;
-        }
-        Ok(())
-    }
-    let indent = match of {
-        Some(Kind::Pane) => 4,
-        Some(Kind::Tab) => 2,
-        Some(Kind::Workspace) | None => 0,
-    };
-    let mut lines = Lines {
-        out,
-        indent,
-        prefix: [0; 4],
-        len: 0,
-        start: true,
-        cr: false,
-        newlines: 0,
-    };
-    match of {
-        Some(Kind::Pane) => pane(listing, &mut lines)?,
-        Some(Kind::Tab) => tab(listing, &mut lines)?,
-        Some(Kind::Workspace) => workspace(listing, &mut lines)?,
-        None => {
-            for w in items(listing, "workspaces") {
-                workspace(w, &mut lines)?;
-            }
-            for c in items(listing, "clients") {
-                writeln!(
-                    lines,
-                    "client {} {}x{} {} {} {}",
-                    field(c, "id"),
-                    field(c, "cols"),
-                    field(c, "rows"),
-                    field(c, "workspace"),
-                    field(c, "tab"),
-                    field(c, "pane")
-                )?;
-            }
-            if listing.get("events").is_some() {
-                writeln!(lines, "events {}", field(listing, "events"))?;
-            }
-        }
-    }
-    lines.finish()
-}
-
-/// The old `lines().map(|line| line.get(indent..).unwrap_or(line))`,
-/// without a line vector or String. Only a short undecided prefix is held.
-struct Lines<'a> {
-    out: &'a mut dyn std::fmt::Write,
-    indent: usize,
-    prefix: [u8; 4],
-    len: usize,
-    start: bool,
-    cr: bool,
-    newlines: usize,
-}
-impl Lines<'_> {
-    fn emit(&mut self, text: &str) -> std::fmt::Result {
-        if text.is_empty() {
-            return Ok(());
-        }
-        for _ in 0..self.newlines {
-            self.out.write_char('\n')?;
-        }
-        self.newlines = 0;
-        self.out.write_str(text)
-    }
-    fn prefix(&mut self) -> std::fmt::Result {
-        let prefix = self.prefix;
-        let text = std::str::from_utf8(prefix.get(..self.len).ok_or(std::fmt::Error)?)
-            .map_err(|_| std::fmt::Error)?;
-        self.emit(text)?;
-        self.len = 0;
-        Ok(())
-    }
-    fn content(&mut self, c: char) -> std::fmt::Result {
-        let mut bytes = [0u8; 4];
-        let text = c.encode_utf8(&mut bytes);
-        if self.start {
-            let end = self.len.checked_add(text.len()).ok_or(std::fmt::Error)?;
-            if end <= self.indent {
-                self.prefix
-                    .get_mut(self.len..end)
-                    .ok_or(std::fmt::Error)?
-                    .copy_from_slice(text.as_bytes());
-                self.len = end;
-                if end == self.indent {
-                    self.len = 0;
-                    self.start = false;
-                }
-                return Ok(());
-            }
-            self.prefix()?;
-            self.start = false;
-        }
-        self.emit(text)
-    }
-    fn finish(&mut self) -> std::fmt::Result {
-        if self.cr {
-            self.content('\r')?;
-            self.cr = false;
-        }
-        self.prefix()
-    }
-}
-impl std::fmt::Write for Lines<'_> {
-    fn write_str(&mut self, text: &str) -> std::fmt::Result {
-        for c in text.chars() {
-            if c == '\n' {
-                self.cr = false;
-                self.prefix()?;
-                self.newlines = self.newlines.checked_add(1).ok_or(std::fmt::Error)?;
-                self.start = true;
-            } else {
-                if self.cr {
-                    self.content('\r')?;
-                    self.cr = false;
-                }
-                if c == '\r' {
-                    self.cr = true;
-                } else {
-                    self.content(c)?;
-                }
-            }
-        }
-        Ok(())
     }
 }
