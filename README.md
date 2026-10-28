@@ -125,8 +125,7 @@ up.
 
 `all` names the whole session for `info`, `dump`, `notify` and `events`;
 `ls` is the library word `all info`. `CLIENT HANDLE show` follows a pane,
-tab or workspace. `members` takes a typed choice: `WORKSPACE pane-members
-members` lists panes, and `WORKSPACE tab-members members` lists tabs.
+tab or workspace. `WORKSPACE panes` lists panes, and `WORKSPACE tabs` lists tabs.
 `capture` takes a pane or client; only panes take capture options and have
 versions. `resize` takes a tab scope or headless client. `move` takes a tab,
 workspace, `str new-tab`, `str new-workspace`, or a direction; `swap-with`

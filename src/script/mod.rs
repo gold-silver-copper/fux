@@ -50,8 +50,6 @@ pub enum Fux {
     Client(ClientId, Option<Run>),
     /// The whole session, optionally with an event replay cursor.
     All(Option<crate::events::Cursor>),
-    /// A closed choice of ordered membership.
-    MemberKind(crate::command::Members),
     /// Options for `run`, `new-tab` or `new-workspace` (from `opts`); or a
     /// request: a pane, tab, workspace or client given options, keys, a
     /// wait or a mouse event, for the word that acts on it after
@@ -79,7 +77,6 @@ impl AppValue for Fux {
             Fux::Workspace(_, _) => "workspace",
             Fux::Client(_, _) => "client",
             Fux::All(_) => "all",
-            Fux::MemberKind(_) => "member-kind",
             Fux::Opts(opts) => match opts.on {
                 None => "opts",
                 Some(On::Target(AnyRef::Pane(_)) | On::Version(_)) => "pane-request",
@@ -134,8 +131,6 @@ impl AppValue for Fux {
             Fux::Extent(Extent::Cells(n)) => write!(out, "{n}"),
             Fux::Extent(Extent::Percent(n)) => write!(out, "{}%", n.get()),
             Fux::All(_) => write!(out, "all"),
-            Fux::MemberKind(crate::command::Members::Panes) => write!(out, "pane"),
-            Fux::MemberKind(crate::command::Members::Tabs) => write!(out, "tab"),
             Fux::Opts(_) => write!(out, "({})", self.kind()),
         }
         .map_err(|_| words::observation_failure(crate::wire::Budget::exceeded()))

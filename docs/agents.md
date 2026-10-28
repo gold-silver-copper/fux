@@ -58,7 +58,7 @@ fux %2 str TERM signal                         # signal what runs in its foregro
 fux %2 kill-first respawn                      # end its program and start it again
 fux str web pane                               # a pane by its given name (run's name)
 fux str logs pane                              # a pane by its given name (rename)
-fux str agent workspace pane-members members     # its panes, in layout order (tab-members: its tabs)
+fux str agent workspace panes                  # its panes, in layout order (tabs: its tabs)
 fux ls                                         # what there is: workspaces, tabs, panes
 fux str agent workspace kill                   # at the end: everything run started
 ```

@@ -343,11 +343,11 @@ fn keys_to_a_tab_reach_each_pane() -> Outcome {
     Ok(())
 }
 
-/// `members` gives a place's panes or tabs as a list of handles, in
+/// `panes` and `tabs` give a place's members as a list of handles, in
 /// layout order, each one a handle the next word takes; a place gone fails
 /// as it would for any word.
 #[test]
-fn members_preserves_typed_handles_and_layout_order() -> Outcome {
+fn panes_and_tabs_are_lists_of_handles() -> Outcome {
     let server = Server::start("")?;
     let run = [
         "agent-opts",
@@ -365,32 +365,23 @@ fn members_preserves_typed_handles_and_layout_order() -> Outcome {
     let c = server.ok(&run)?;
     let (b, c) = (first_word(&b), first_word(&c));
     let agent = ["str", "agent", "workspace"];
-    let panes = server.ok(&[&agent[..], &["pane-members", "members"]].concat())?;
+    let panes = server.ok(&[&agent[..], &["panes"]].concat())?;
     assert_eq!(panes.trim(), format!("{a} {b} {c}"));
-    let tabs = server.ok(&[&agent[..], &["tab-members", "members"]].concat())?;
+    let tabs = server.ok(&[&agent[..], &["tabs"]].concat())?;
     let Some((t1, t2)) = tabs.trim().split_once(' ') else {
         return Err(format!("two tabs: {tabs}"));
     };
-    let each = ["pane-members", "members", "each", "tab", "print", "end"];
+    let each = ["panes", "each", "tab", "print", "end"];
     let of = server.ok(&[&agent[..], &each].concat())?;
     assert_eq!(of, format!("{t1}\n{t1}\n{t2}\n"));
-    let each = [
-        "tab-members",
-        "members",
-        "each",
-        "pane-members",
-        "members",
-        "len",
-        "print",
-        "end",
-    ];
+    let each = ["tabs", "each", "panes", "len", "print", "end"];
     assert_eq!(server.ok(&[&agent[..], &each].concat())?, "2\n1\n");
     // The order is the layout's, not the ids'.
     server.ok(&["str", a, "pane", "str", b, "pane", "swap-with"])?;
     server.ok(&["str", t2, "tab", "str", "previous", "reorder"])?;
-    let panes = server.ok(&[&agent[..], &["pane-members", "members"]].concat())?;
+    let panes = server.ok(&[&agent[..], &["panes"]].concat())?;
     assert_eq!(panes.trim(), format!("{c} {b} {a}"));
-    let tabs = server.ok(&[&agent[..], &["tab-members", "members"]].concat())?;
+    let tabs = server.ok(&[&agent[..], &["tabs"]].concat())?;
     assert_eq!(tabs.trim(), format!("{t2} {t1}"));
     // A place gone fails as it would for any word; another workspace
     // keeps the server up.
@@ -405,24 +396,10 @@ fn members_preserves_typed_handles_and_layout_order() -> Outcome {
         "new-workspace",
     ])?;
     for (gone, code) in [
+        (["str", b, "pane", "dup", "kill", "panes"], "no_pane"),
+        (["str", t2, "tab", "dup", "kill", "tabs"], "no_tab"),
         (
-            ["str", b, "pane", "dup", "kill", "pane-members", "members"],
-            "no_pane",
-        ),
-        (
-            ["str", t2, "tab", "dup", "kill", "tab-members", "members"],
-            "no_tab",
-        ),
-        (
-            [
-                "str",
-                "agent",
-                "workspace",
-                "dup",
-                "kill",
-                "tab-members",
-                "members",
-            ],
+            ["str", "agent", "workspace", "dup", "kill", "tabs"],
             "no_workspace",
         ),
     ] {
@@ -646,14 +623,7 @@ fn a_dump_runs_on_a_new_server_whatever_its_tabs_are_named() -> Outcome {
         server.ok(&["str", "tab-2", "pane", "workspace", "str", "name", "get"])?,
         "null\n"
     );
-    let held = server.ok(&[
-        "str",
-        "workspace-2",
-        "workspace",
-        "pane-members",
-        "members",
-        "len",
-    ])?;
+    let held = server.ok(&["str", "workspace-2", "workspace", "panes", "len"])?;
     assert_eq!(held, "1\n");
     let ls = server.ok(&["ls"])?;
     assert!(
@@ -733,27 +703,11 @@ fn an_unnamed_workspace_replays_independently_of_the_default_shell() -> Outcome 
         std::fs::write(&file, format!("{prefix}\n{dump}")).map_err(e)?;
         server.ok(&["--file", &file.to_string_lossy()])?;
         assert_eq!(
-            server.ok(&[
-                "str",
-                "first",
-                "pane",
-                "workspace",
-                "pane-members",
-                "members",
-                "len"
-            ])?,
+            server.ok(&["str", "first", "pane", "workspace", "panes", "len"])?,
             "3\n"
         );
         assert_eq!(
-            server.ok(&[
-                "str",
-                "first",
-                "pane",
-                "workspace",
-                "tab-members",
-                "members",
-                "len"
-            ])?,
+            server.ok(&["str", "first", "pane", "workspace", "tabs", "len"])?,
             "2\n"
         );
         for name in ["first", "second", "third"] {

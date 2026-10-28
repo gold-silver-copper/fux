@@ -97,10 +97,7 @@ fn rename_move_swap_reorder_and_kill() -> Outcome {
     // Swap toward a neighbour uses the same atomic backend as a counterpart.
     server.ok(&["str", "%2", "pane", "horizontal", "split"])?;
     server.ok(&["%2", "str", "right", "swap-with"])?;
-    assert_eq!(
-        server.ok(&["%2", "tab", "pane-members", "members"])?.trim(),
-        "%3 %2"
-    );
+    assert_eq!(server.ok(&["%2", "tab", "panes"])?.trim(), "%3 %2");
     server.ok(&["%2", "%3", "swap-with"])?;
     // Move to a workspace, then to a new tab.
     server.ok(&["str", "%3", "pane", "str", "+2", "workspace", "move"])?;

@@ -189,9 +189,8 @@ pub fn from_opts(last: &str) -> String {
 /// fux's kinds of value, each as its values' `name` says it, as an error
 /// says it, and, for one that must be used, what one left over is told.
 #[rustfmt::skip]
-pub const KINDS: [(&str, &str, Option<&str>); 21] = [
+pub const KINDS: [(&str, &str, Option<&str>); 20] = [
     ("pane", "a pane", None), ("tab", "a tab", None), ("workspace", "a workspace", None),
-    ("member-kind", "a member kind (pane-members or tab-members)", None),
     ("all", "the whole session", None),
     ("client", "a client", None), ("size", "a size (from percent)", None),
     ("answer", "an action's answer", None),
@@ -264,9 +263,8 @@ words! {
         Finding Here "here" "-- pane" "the pane this runs in (FUX_PANE)" "fux here str done notify" [];
         Finding Client "client" "name -- client" "a client by its id, c2" "fux str c1 client str left focus" [];
         Finding Me "me" "-- client" "the client whose key or prompt runs this" "str z str 'me zoom' bind" [];
-        Finding PaneMembers "pane-members" "-- member-kind" "select panes for members" "fux +1 pane-members members" [];
-        Finding TabMembers "tab-members" "-- member-kind" "select tabs for members" "fux +1 tab-members members" [];
-        Finding Members "members" "handle member-kind -- list" "ordered handles of its panes (pane-members) or tabs (tab-members), without process observations" "fux str agent workspace pane-members members each capture print end" [];
+        Finding Panes "panes" "handle -- list" "the panes of a pane (itself), a tab or a workspace, in layout order" "fux str agent workspace panes each capture print end" [];
+        Finding Tabs "tabs" "handle -- list" "the tabs of a pane or tab (its own) or a workspace, in the workspace's order" "fux str agent workspace tabs each str name get print end" [];
         Finding All "all" "-- all" "the whole session, for info, notify, events and dump" "fux all info" [];
         Finding Focused "focused" "client -- pane" "the pane a client focuses" "fux str c1 client focused capture" [];
         Starting Opts "opts" "-- opts" "empty options, for run, new-tab, new-workspace, attach and attach-defaults (the other words take them on the pane)" "fux opts str agent in 80 24 size str ./app program run" [];
@@ -518,8 +516,7 @@ fn json_text(value: &Value<Fux>, limit: usize) -> Result<String, Failure> {
                 | Fux::Workspace(..)
                 | Fux::Client(..)
                 | Fux::Extent(_)
-                | Fux::All(_)
-                | Fux::MemberKind(_),
+                | Fux::All(_),
             ) => Ok(()),
         }
     }
@@ -547,13 +544,6 @@ fn json_text(value: &Value<Fux>, limit: usize) -> Result<String, Failure> {
                 Fux::Extent(Extent::Cells(n)) => write!(out, "\"{n}\""),
                 Fux::Extent(Extent::Percent(n)) => write!(out, "\"{}%\"", n.get()),
                 Fux::All(_) => crate::json::write_str(out, "all"),
-                Fux::MemberKind(members) => crate::json::write_str(
-                    out,
-                    match members {
-                        Members::Panes => "pane",
-                        Members::Tabs => "tab",
-                    },
-                ),
                 Fux::Opts(_) => write!(out, "\"({})\"", fuxth::AppValue::kind(app)),
             },
         }
@@ -1210,6 +1200,11 @@ fn find(kind: Kind, found: Value<Fux>, out: &mut Vec<Value<Fux>>) -> Result<Done
     }
 }
 
+/// A request for the panes or tabs of `target`, as a list of handles.
+fn members_of(target: AnyRef, members: Members) -> Ask {
+    ask(Command::Members { target, members })
+}
+
 fn ask(request: impl Into<Request>) -> Ask {
     let request = request.into();
     let of = if let Request::Do(
@@ -1650,16 +1645,8 @@ impl Host<'_> {
                 target: scope(&next()?)?,
                 get: None,
             })),
-            Act::PaneMembers => now(out, Value::App(Fux::MemberKind(Members::Panes))),
-            Act::TabMembers => now(out, Value::App(Fux::MemberKind(Members::Tabs))),
-            Act::Members => {
-                let target = target(&next()?)?;
-                let value = next()?;
-                let Value::App(Fux::MemberKind(members)) = value else {
-                    return Err(wrong("a member kind (pane-members or tab-members)", &value));
-                };
-                later(ask(Command::Members { target, members }))
-            }
+            Act::Panes => later(members_of(target(&next()?)?, Members::Panes)),
+            Act::Tabs => later(members_of(target(&next()?)?, Members::Tabs)),
             Act::Get => {
                 let target = Some(target(&next()?)?);
                 let get = Some(string(&next()?)?);
@@ -2290,7 +2277,8 @@ mod tests {
             "capture",
             "wait",
             "str x text send-keys",
-            "pane-members members",
+            "panes",
+            "tabs",
             "80 24 resize",
             "attach",
             "str x rename",
@@ -2330,25 +2318,6 @@ mod tests {
         ] {
             let source = format!("str SIDE-EFFECT print str c1 client {suffix}");
             let failure = super::super::compile(&fuxth::token::source("capture", &source)?)
-                .err()
-                .ok_or_else(|| format!("accepted {source}"))?;
-            assert_eq!(failure.code, Code::from(Raise::Type), "{source}: {failure}");
-        }
-        Ok(())
-    }
-
-    #[test]
-    fn member_choices_are_typed_before_any_effect() -> Result<(), Box<dyn std::error::Error>> {
-        for choice in ["pane-members", "tab-members"] {
-            super::super::compile(&fuxth::token::source(
-                "members",
-                &format!("+1 {choice} members drop"),
-            )?)
-            .map_err(|f| f.to_string())?;
-        }
-        for choice in ["str pane", "str tab", "str panes", "false", "1", "all"] {
-            let source = format!("str SIDE-EFFECT print +1 {choice} members");
-            let failure = super::super::compile(&fuxth::token::source("members", &source)?)
                 .err()
                 .ok_or_else(|| format!("accepted {source}"))?;
             assert_eq!(failure.code, Code::from(Raise::Type), "{source}: {failure}");
