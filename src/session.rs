@@ -616,7 +616,7 @@ impl Session {
     pub(crate) fn shows(&self, client: ClientId, tab: TabId) -> bool {
         self.shown_tab(client).is_some_and(|t| t.id() == tab)
     }
-    pub fn resolve_ws(&self, r: &WsRef) -> Result<WsId, Error> {
+    fn resolve_ws(&self, r: &WsRef) -> Result<WsId, Error> {
         match r {
             WsRef::New => Err(fail(
                 Raise::BadValue,
@@ -1882,7 +1882,7 @@ impl Session {
         }
     }
 
-    pub fn touch(&mut self) {
+    fn touch(&mut self) {
         self.views.values_mut().for_each(|view| view.dirty = true);
     }
 

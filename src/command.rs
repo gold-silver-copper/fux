@@ -954,7 +954,7 @@ pub fn parse_workspace(text: &str) -> Result<WsRef, Usage> {
 
 /// Refused, saying why, unless `name` is a variable's name a shell takes:
 /// letters, digits and `_`, not first a digit.
-pub fn var_name(name: &str) -> Result<(), String> {
+fn var_name(name: &str) -> Result<(), String> {
     let first = (name.chars().next()).is_some_and(|c| c.is_ascii_alphabetic() || c == '_');
     match first && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
         true => Ok(()),
@@ -965,7 +965,7 @@ pub fn var_name(name: &str) -> Result<(), String> {
 }
 
 /// A variable a caller may give a pane, excluding its native identity.
-pub(crate) fn pane_var(name: &str) -> Result<(), String> {
+fn pane_var(name: &str) -> Result<(), String> {
     var_name(name)?;
     if matches!(name, "FUX" | "FUX_PANE" | "FUX_SOCKET" | "FUX_SERVER") {
         return Err(format!("{name} is reserved for pane identity"));

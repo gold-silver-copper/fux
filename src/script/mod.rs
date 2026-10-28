@@ -1462,14 +1462,6 @@ fn uncaught(machine: &Machine<Fux>, mut error: fuxth::Error) -> Failed {
     told(error, true)
 }
 
-/// A reply's answer, or its failure.
-pub fn succeeded(reply: Reply) -> Result<Reply, Failed> {
-    match reply.end() {
-        End::Failed { code, message } => Err(Failed::new(code, message)),
-        End::Done => Ok(reply),
-    }
-}
-
 /// What a reply's answer puts on the stack: nothing, a string, handles, or
 /// an answer of fux's; a field's value as fuxth's own where it is one.
 pub fn answered(reply: Reply) -> Result<Vec<Value<Fux>>, Failed> {
@@ -1760,7 +1752,7 @@ impl Asks for ConfigOnly {
 
 /// A program that may not do what the client does itself: a config's or a
 /// key's.
-pub fn refuse_local(what: &Local) -> Result<Vec<Value<Fux>>, Failed> {
+fn refuse_local(what: &Local) -> Result<Vec<Value<Fux>>, Failed> {
     let why = match what {
         Local::Open(_) => "a client's screen opens from its own keys or prompt",
         Local::Attach { .. }

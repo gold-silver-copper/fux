@@ -270,7 +270,7 @@ fn read_more(stream: &mut UnixStream, decoder: &mut Decoder) -> Result<bool, Err
 /// A connection to the server for requests: each sent whole, and answered
 /// before the next. One per run of a program, made when its first request
 /// is.
-pub struct Requests {
+pub(crate) struct Requests {
     stream: UnixStream,
     decoder: Decoder,
 }
