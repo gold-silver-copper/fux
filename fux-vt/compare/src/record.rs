@@ -375,7 +375,7 @@ fn end(child: &mut Child, session: &mut Session) {
 /// the key mode `screen` is in: decoded by fux's decoder, the Escape
 /// deadline passing at the end, and encoded by its encoder.
 fn typed(keys: &[u8], screen: &fux_vt::Screen) -> Vec<u8> {
-    let mut decoder = fux::decode::Decoder::default();
+    let mut decoder = fux::decode::Decoder::new(fux::decode::Timing::new(35, 5000));
     let mut inputs = Vec::new();
     decoder.bytes(keys, &mut inputs);
     decoder.timeout(&mut inputs);

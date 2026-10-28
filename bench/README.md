@@ -51,6 +51,12 @@ too noisy to judge, or a broad loss by program; 2 on an error, a workload
 the tool cannot judge (broken) or a run that failed among them (the JSON
 names the runs that failed).
 
+`cargo run --release --manifest-path bench/Cargo.toml --example placement`
+compares compact and explicit placement on 40×120 ASCII and Unicode grids:
+1,000 full redraws and 1,000 single-cell updates each, with bytes per frame,
+thread CPU, and median/p95 paint latency. This is an in-process check, without
+transport or display latency.
+
 ## The speed gate
 
 `bench/gate.sh [REF]` is the gate a change passes before it merges: the

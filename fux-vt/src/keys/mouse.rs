@@ -98,29 +98,44 @@ const DEFAULT_LIMIT: u32 = 223;
 /// more is the largest two-byte character.
 const UTF8_LIMIT: u32 = 2015;
 
-/// The lines a wheel turn scrolls, as xterm 411's default translations
-/// have it (`scroll-back(5,line,m)`, charproc.c): with Ctrl, half the
-/// screen's (`scroll-back(1,halfpage,m)`).
-const WHEEL_LINES: u16 = 5;
+/// Checked ordinary wheel distance, bounded like Ctrl's half-page step.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ScrollLines(u16);
+
+impl ScrollLines {
+    /// A distance of 0 to 32,767 arrows, or a refusal.
+    pub fn new(lines: usize) -> Option<Self> {
+        u16::try_from(lines).ok().filter(|n| *n <= 32767).map(Self)
+    }
+    /// The number of arrows.
+    pub fn get(self) -> u16 {
+        self.0
+    }
+}
 
 impl crate::Screen {
     /// Encodes `event` as the program asked, in chunks of at most 64 bytes.
     /// With mouse reporting enabled, yields its report ([`mouse_bytes`]),
     /// or nothing if the mode does not report this event. With no reporting,
     /// alternate scroll (`CSI ? 1007 h`) on the alternate screen sends Up
-    /// or Down through the negotiated key encoder: 5 keys, or half the
+    /// or Down through the negotiated key encoder: `lines` keys, or half the
     /// screen's rows with Ctrl. Modifiers choose the scroll distance and
     /// are not sent with the arrows (xterm 411's `AlternateScroll`).
     ///
+    /// `lines` is the ordinary wheel step, at most 32,767 arrows.
     /// Returns `None` when the event is not reported, and `Some` of an
     /// empty iterator for an accepted zero-distance scroll. Chunks keep
     /// whole keys in order, at most 32,767 arrows in an expansion. Callers
     /// must admit the whole expansion as one input action or refuse it.
-    pub fn encode_mouse(&self, event: MouseEvent) -> Option<impl Iterator<Item = Vec<u8>> + use<>> {
+    pub fn encode_mouse(
+        &self,
+        event: MouseEvent,
+        lines: ScrollLines,
+    ) -> Option<impl Iterator<Item = Vec<u8>> + use<>> {
         let mode = self.mouse_protocol_mode();
         let mut unit = Vec::new();
         let count = if mode == MouseProtocolMode::None
-            && let Some((key, lines)) = self.alternate_scroll(event)
+            && let Some((key, lines)) = self.alternate_scroll(event, lines.get())
         {
             key_bytes(KeyPress::plain(key).into(), self.key_mode(), &mut unit);
             lines
@@ -142,7 +157,7 @@ impl crate::Screen {
     }
 
     /// A wheel turn's key and distance, while alternate scrolling applies.
-    fn alternate_scroll(&self, event: MouseEvent) -> Option<(Key, u16)> {
+    fn alternate_scroll(&self, event: MouseEvent, lines: u16) -> Option<(Key, u16)> {
         let direction = match event.action {
             MouseAction::Press(MouseButton::WheelUp) => Direction::Up,
             MouseAction::Press(MouseButton::WheelDown) => Direction::Down,
@@ -156,7 +171,7 @@ impl crate::Screen {
         let lines = if event.mods.ctrl {
             self.size().rows() / 2
         } else {
-            WHEEL_LINES
+            lines
         };
         Some((Key::Arrow(direction), lines))
     }

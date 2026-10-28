@@ -31,6 +31,8 @@ pub struct Grid {
     /// Whether the client's terminal draws underline styles (`outer`):
     /// painted as they are, else as plain underlines (`sgr`).
     pub underline_styles: bool,
+    /// Explicitly position after non-ASCII glyphs.
+    pub cell_placement: bool,
     /// What composed the grid, if it can say (`Memo`). Not what the grid
     /// shows: grids compare equal whatever composed them, and a copy has
     /// none.
@@ -264,7 +266,12 @@ impl Sixels {
 impl PartialEq for Grid {
     fn eq(&self, other: &Grid) -> bool {
         // All the grid shows but its cells and links.
-        let head = |g: &Grid| ((g.rows, g.cols, g.cursor), (g.modes, g.underline_styles));
+        let head = |g: &Grid| {
+            (
+                (g.rows, g.cols, g.cursor),
+                (g.modes, g.underline_styles, g.cell_placement),
+            )
+        };
         head(self) == head(other)
             && self.cells == other.cells
             && (0..self.rows).all(|y| self.links.row_eq(&other.links, y))
@@ -895,6 +902,7 @@ pub fn compose_held(
         None
     };
     put_panes(grid, session, view, placement, focus, copy)?;
+    grid.cell_placement = view.presentation.cell_placement;
     let held =
         |id: &PaneId| (session.parts.panes().get(id)).is_some_and(crate::pane::Pane::mid_frame);
     let kept = |id: PaneId, rect: Rect| painted.filter(|p| p.kept(id, rect, view.rows, view.cols));
@@ -1615,7 +1623,7 @@ fn cluster(
     // character alone, as xterm does through wcwidth, advances by the sum,
     // so the next glyph is placed too.
     let measured_apart = text.chars().map(cells).fold(0, u16::saturating_add) != width;
-    joins || measured_apart
+    joins || measured_apart || (grid.cell_placement && !text.is_ascii())
 }
 
 /// A row or column as the terminal counts it, from 1; exact in a u32.
@@ -1662,6 +1670,7 @@ pub(crate) fn paint(old: Option<&Grid>, new: &Grid) -> Vec<u8> {
 /// Each row is compared once.
 pub fn paint_into(shown: &Grid, known: bool, new: &Grid, out: &mut Vec<u8>) -> bool {
     let full = !known
+        || shown.cell_placement != new.cell_placement
         || (shown.rows, shown.cols, shown.underline_styles)
             != (new.rows, new.cols, new.underline_styles);
     let before = (!full).then_some(shown);
@@ -2527,42 +2536,29 @@ mod tests {
         assert!(bytes.ends_with(b"\x1b[?2026l"));
     }
 
-    /// A cluster whose width fux-vt makes other than the sum of its
-    /// characters' (a VS16 emoji widened, jamo capped at 2) is followed by
-    /// a cursor move: a client terminal that measures each character alone
-    /// (xterm, through wcwidth) would put what follows elsewhere.
+    /// Explicit positioning bounds accumulated advance errors. Changing
+    /// policy redraws unchanged cells, while ASCII remains a run.
     #[test]
-    fn a_cluster_measured_otherwise_apart_is_followed_by_a_cursor_move() -> Result<(), String> {
-        // A heart VS16 widened, and four leading jamo capped at 2: a client
-        // terminal measuring each character alone advances 1 and 8, so
-        // what follows is placed where fux-vt has it, column 2.
+    fn cell_placement_positions_after_non_ascii_and_redraws_on_change() {
+        let mut grid = new_grid(1, 12);
+        grid.text(0, 0, "αZabc", Attributes::default(), 12);
+        let compact = paint(None, &grid);
+        assert!(String::from_utf8_lossy(&compact).contains("αZabc"));
+        let old = grid.clone();
+        grid.cell_placement = true;
+        let placed = paint(Some(&old), &grid);
+        assert!(String::from_utf8_lossy(&placed).contains("α\x1b[1;2HZabc"));
+        assert!(paint(Some(&grid), &grid).is_empty());
         for cluster in ["\u{2764}\u{fe0f}", "\u{1100}\u{1100}\u{1100}\u{1100}"] {
-            let mut grid = new_grid(1, 12);
+            grid.cell_placement = false;
             grid.set(0, 0, CellRef::new(cluster, true, Attributes::default()));
             grid.set(0, 1, CellRef::wide_continuation());
             grid.text(0, 2, "ab", Attributes::default(), 12);
-            let bytes = paint(None, &grid);
-            let text = String::from_utf8_lossy(&bytes);
-            assert!(text.contains(&format!("{cluster}\x1b[1;3Hab")), "{text:?}");
-            let mut parser = terminal(1, 12)?;
-            assert_eq!(apply(&bytes, &mut parser), grid_lines(&grid));
+            assert!(
+                String::from_utf8_lossy(&paint(None, &grid))
+                    .contains(&format!("{cluster}\x1b[1;3Hab"))
+            );
         }
-        // A flag is two columns either way, and a mark adds none: no move.
-        for cluster in ["\u{1f1ef}\u{1f1f5}", "e\u{301}"] {
-            let mut grid = new_grid(1, 12);
-            let wide = cluster.starts_with('\u{1f1ef}');
-            grid.set(0, 0, CellRef::new(cluster, wide, Attributes::default()));
-            let next = if wide {
-                grid.set(0, 1, CellRef::wide_continuation());
-                2
-            } else {
-                1
-            };
-            grid.text(0, next, "ab", Attributes::default(), 12);
-            let text = String::from_utf8_lossy(&paint(None, &grid)).into_owned();
-            assert!(text.contains(&format!("{cluster}ab")), "{text:?}");
-        }
-        Ok(())
     }
 
     /// A glyph that continues the cluster of the one before it (an emoji

@@ -163,6 +163,7 @@ crate::wire::wire! {
         pub bell: bool,
         pub titles: bool,
         pub terminal_clipboard: bool,
+        pub cell_placement: bool,
     }
 }
 

@@ -1051,7 +1051,16 @@ mod tests {
         let policy = PaneOptions {
             history_bytes: HistoryBytes::new(0).ok_or("budget")?,
             program_clipboard: false,
+            reflow: true,
+            alternate_scroll_lines: crate::command::ScrollLines::new(5).ok_or("scroll lines")?,
+            picture_bytes: crate::command::PictureBytes::new(100663296).ok_or("pictures")?,
         };
+        let mut invalid_scroll = Vec::new();
+        32768u16.put(&mut invalid_scroll);
+        assert_eq!(
+            Reader::new(&invalid_scroll).whole::<crate::command::ScrollLines>(),
+            Err(Error::Bad("scroll lines"))
+        );
         let encoded = encode(&policy).map_err(|e| e.to_string())?;
         assert_eq!(Reader::new(&encoded).whole::<PaneOptions>(), Ok(policy));
         let mut invalid = Vec::new();

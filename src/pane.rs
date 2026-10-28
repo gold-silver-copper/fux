@@ -230,7 +230,8 @@ pub const IDENTITY: fux_vt::Identity = fux_vt::Identity {
     version: env!("CARGO_PKG_VERSION"),
 };
 
-/// How every pane's terminal is set up: events (titles, colour queries),
+/// The facilities supported by fux; each creation supplies its reflow and
+/// picture policy explicitly. Events (titles, colour queries),
 /// DECRQM (programs ask it whether synchronized output is known before
 /// they use it), in-band resize, the size query, colour-scheme reports, the kitty
 /// keyboard protocol (fux encodes keys as each pane asks), hyperlinks,
@@ -705,7 +706,7 @@ pub struct Pane {
     process: Process,
     input: InputQueue,
     pub runs: Runs,
-    program_clipboard: bool,
+    options: crate::command::PaneOptions,
     /// The output of a frame the program is drawing in synchronized output,
     /// from BSU on, since when (its timeout's start), and where the parser
     /// will end it; see [`Pane::output`].
@@ -888,7 +889,7 @@ impl<'a> PaneMut<'a> {
     /// is false, which copies nothing and so refuses none.
     pub fn take_read(&mut self) -> (bool, Vec<String>) {
         let mut copies = Vec::new();
-        let allowed = self.pane.program_clipboard;
+        let allowed = self.pane.options.program_clipboard;
         for copy in std::mem::take(&mut self.pane.copied)
             .into_iter()
             .filter(|_| allowed)
@@ -1039,8 +1040,16 @@ impl Pane {
     pub fn history_bytes(&self) -> usize {
         self.parser.history_bytes()
     }
+    /// The creation policy, retained through reset and respawn. History's
+    /// live budget is reported separately by `history_bytes`.
+    pub fn options(&self) -> crate::command::PaneOptions {
+        self.options
+    }
+    pub fn alternate_scroll_lines(&self) -> crate::command::ScrollLines {
+        self.options.alternate_scroll_lines
+    }
     pub fn program_clipboard(&self) -> bool {
-        self.program_clipboard
+        self.options.program_clipboard
     }
 
     pub fn new(
@@ -1050,9 +1059,14 @@ impl Pane {
         size: Size,
         options: crate::command::PaneOptions,
     ) -> Result<Self, Error> {
-        let parser = fux_vt::Parser::with_options(size, options.history_bytes.get(), OPTIONS)
+        let features = OPTIONS
+            .set(Feature::Reflow, options.reflow)
+            .set(Feature::Pictures, options.picture_bytes.get() != 0);
+        let mut parser = fux_vt::Parser::with_options(size, options.history_bytes.get(), features)
             .map_err(|source| Error::Terminal { size, source })?;
+        parser.set_picture_bytes(options.picture_bytes.get());
         Ok(Pane {
+            options,
             id,
             name,
             title: Title::default(),
@@ -1060,7 +1074,6 @@ impl Pane {
             process: Process::Absent,
             input: InputQueue::default(),
             runs,
-            program_clipboard: options.program_clipboard,
             frame: None,
             unread: (Vec::new(), Instant::now()),
             frame_left: 0,
@@ -1708,7 +1721,7 @@ impl Pane {
             terminal_errors: _,
             read_error,
             reading,
-            program_clipboard: _,
+            options: _,
         } = fresh;
         // The new program starts with nothing queued. One that ended said
         // what it left with its exit; one that runs leaves its input now,
@@ -1836,6 +1849,9 @@ pub(crate) mod tests {
         Ok(crate::command::PaneOptions {
             history_bytes: crate::command::HistoryBytes::new(bytes).ok_or("history budget")?,
             program_clipboard: true,
+            reflow: true,
+            alternate_scroll_lines: crate::command::ScrollLines::new(5).ok_or("scroll lines")?,
+            picture_bytes: crate::command::PictureBytes::new(100663296).ok_or("pictures")?,
         })
     }
 
@@ -1854,6 +1870,42 @@ pub(crate) mod tests {
     pub(crate) fn size(rows: u16, cols: u16) -> Size {
         let one = |n| std::num::NonZeroU16::new(n).unwrap_or(std::num::NonZeroU16::MIN);
         Size::from((one(rows), one(cols)))
+    }
+
+    #[test]
+    fn terminal_policy_survives_ris_and_picture_reports_match_admission()
+    -> Result<(), Box<dyn std::error::Error>> {
+        for reflow in [false, true] {
+            for bytes in [0, 1, 4096] {
+                let mut options = options(1024)?;
+                options.reflow = reflow;
+                options.picture_bytes = crate::command::PictureBytes::new(bytes).ok_or("budget")?;
+                let mut pane = Pane::new(PaneId::of(1), None, shell()?, size(3, 8), options)?;
+                let cell = fux_vt::CellSize::new(10, 20).ok_or("cell")?;
+                let _ = pane.host(
+                    Colours::default(),
+                    Default::default(),
+                    fux_vt::Graphics::Sixel(cell),
+                );
+                pane.parser.process(b"\x1bcabcdef")?;
+                pane.parser.resize(size(3, 4))?;
+                assert_eq!(
+                    pane.screen().cursor_position().0,
+                    if reflow { 1 } else { 0 }
+                );
+                let mut reply = Vec::new();
+                pane.parser
+                    .process_with_replies(b"\x1b[c", |b| reply.extend_from_slice(b))?;
+                let reply = String::from_utf8(reply)?;
+                assert_eq!(
+                    reply.trim_end_matches('c').split(';').any(|n| n == "4"),
+                    bytes != 0
+                );
+                pane.parser.process(b"\x1bP9q#1;2;100;0;0!20~\x1b\\")?;
+                assert_eq!(pane.screen().pictures().next().is_some(), bytes == 4096);
+            }
+        }
+        Ok(())
     }
 
     /// Once input is refused, nothing more is queued until the program

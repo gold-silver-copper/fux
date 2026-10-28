@@ -432,7 +432,8 @@ bundled state, preserves earlier explicit CLI settings, and shows one
 diagnostic. Evaluation and local setters send no requests. Each observation wait sends
 this client's `wait-seconds` unless it has an explicit `timeout`.
 Shared paste buffers retain the newest 16 copies; retention is fixed.
-Shell argv, environment selection, `history-bytes` and `program-clipboard`
+Shell argv, environment selection, `history-bytes`, `program-clipboard`,
+`reflow`, `alternate-scroll-lines` and `picture-bytes`
 are local defaults for future creations. Explicit creation options override
 them, including zero and false. Existing panes retain their policy through
 respawn; `%3 4194304 history-budget` changes only that pane's current budget.
@@ -440,6 +441,33 @@ Lowering it evicts the oldest rows immediately. Dump records current budgets
 and permissions. Bell, titles and terminal clipboard delivery belong to each
 view and arrive in its attach request after local commit. Later key or prompt
 changes use a connection-bound action, fenced before following requests.
+
+Emulator defaults are bundled in `src/script/client-defaults.fux`:
+
+| Setting | Default | Bound and lifetime |
+| --- | --- | --- |
+| `reflow` | `true` | Creation policy; rewrap recorded primary-screen lines, never the alternate screen |
+| `alternate-scroll-lines` | `5` | 0–32767 arrows per wheel action when the program enables alternate scroll; Ctrl keeps half-page scrolling |
+| `picture-bytes` | `100663296` | 0–96 MiB per pane; zero disables picture admission and advertisement |
+| `escape-delay-ms` | `35` | 0–65535 ms, per client |
+| `paste-timeout-ms` | `5000` | 0–65535 ms, per client |
+| `cell-placement` | `false` | Per client; position after each non-ASCII glyph |
+
+The three pane settings also have typed creation options, for example
+`fux agent-opts false reflow 0 picture-bytes str /bin/cat program run`.
+They survive terminal reset and respawn, and dump preserves them.
+Decoder changes take effect when reading begins idle, keeping an unfinished
+Escape or paste's existing timing. Zero waits for the next explicit timeout
+event; input and paste byte limits remain fixed.
+
+`str cell-placement true set` forces a redraw of that client's screen.
+The compact default assumes the outer terminal shares fux's Unicode 17
+narrow ambiguous-width and cluster advance rules, with cursor moves for
+known cluster differences. Explicit placement bounds accumulated cursor
+drift; it cannot constrain a mismatched font's glyph footprint. Both modes
+keep fux's stored cell geometry. Neither guesses from locale or terminal name.
+The bounded comparison in `bench/examples/placement.rs` measures output bytes,
+thread CPU and paint latency; it does not measure transport or display latency.
 
 Client defaults load when `set`, `attach-defaults`, `list-keys`, `attach`, a launch or an
 observation wait without `timeout` needs them; ordinary queries and server

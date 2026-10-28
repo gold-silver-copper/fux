@@ -211,7 +211,7 @@ fn xterm_keys() -> Result {
 /// input space-separated, a key by its name (`C-a`, `M-Up`, a character as
 /// itself, or `U+XXXX` for one past ASCII), others by their kind.
 fn decoded(bytes: &[u8]) -> String {
-    let mut decoder = Decoder::default();
+    let mut decoder = Decoder::new(fux_vt::keys::decode::Timing::new(35, 5000));
     let mut out = Vec::new();
     decoder.bytes(bytes, &mut out);
     decoder.timeout(&mut out);

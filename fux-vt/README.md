@@ -134,7 +134,7 @@ decoded, and what a program asked for, encoded. It needs no option.
   however split, into `Input`s: keys (legacy and xterm's modifiers, and
   the kitty keyboard protocol with disambiguate and alternate keys),
   bracketed pastes (whole, at most `PASTE_LIMIT`, 64 KiB, or what
-  `Decoder::with_paste_limit` sets), focus changes,
+  `Decoder::with_paste_limit(timing, limit)` sets), focus changes,
   mouse reports (SGR and the default encoding) and answers to the host's
   own questions (DA1, the kitty flags, DECRQM, OSC 10 and 11, OSC 4
   palette entries, the colour scheme, DECRQSS for underline styles). An
@@ -145,11 +145,12 @@ decoded, and what a program asked for, encoded. It needs no option.
   among them, ends a CSI unfinished: `ESC [` alone is Alt-[, one with
   parameters is dropped, and the byte begins the next key. A
   lone Escape is a key once
-  `ESCAPE_DELAY` (35 ms) passes without more, which the host learns from
+  the Escape delay supplied to `Decoder::new(Timing::new(escape_ms, paste_ms))`
+  passes without more, which the host learns from
   `Decoder::deadline` and tells with `Decoder::timeout`. A character
   begun, a UTF-8 lead byte without its continuation bytes, after an
-  Escape or not, has no deadline: it waits for its bytes, at most 4, as a
-  terminal sends a character's bytes together, and a byte that can't
+  Escape or not, waits up to the fixed one-second reply delay for its bytes,
+  at most 4, and a byte that can't
   continue it ends it, one U+FFFD for what came (Unicode 3.9's maximal subparts). Every buffer is
   bounded (THREATS.md B23 to B27): a paste keeps at most its limit and 5
   bytes (65,541 at its 64 KiB default), however many come in one read; an unfinished sequence at most

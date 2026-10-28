@@ -14,7 +14,7 @@ fn one_long_idle_read_is_decoded_once() {
     one.extend(std::iter::repeat_n(b'1', 300));
     one.push(b'c');
     let input: Vec<u8> = std::iter::repeat_n(one, 100).flatten().collect();
-    let mut decoder = Decoder::default();
+    let mut decoder = Decoder::new(fux_vt::keys::decode::Timing::new(35, 5000));
     let mut out = Vec::new();
     let before = Work::now();
     decoder.bytes(&input, &mut out);
@@ -39,7 +39,7 @@ fn a_read_beginning_inside_a_held_answer_is_cut_once() {
     one.extend(std::iter::repeat_n(b'1', 300));
     one.push(b'c');
     let input: Vec<u8> = std::iter::repeat_n(one, 100).flatten().collect();
-    let mut decoder = Decoder::default();
+    let mut decoder = Decoder::new(fux_vt::keys::decode::Timing::new(35, 5000));
     let mut out = Vec::new();
     let mut rest = input.as_slice();
     while !rest.is_empty() {

@@ -781,6 +781,9 @@ fn pane(loads: &[Load], baseline: bool) -> Result<Done, String> {
         command::PaneOptions {
             history_bytes: command::HistoryBytes::new(HISTORY).ok_or("history budget")?,
             program_clipboard: true,
+            reflow: true,
+            alternate_scroll_lines: fux::command::ScrollLines::new(5).ok_or("scroll lines")?,
+            picture_bytes: fux::command::PictureBytes::new(100663296).ok_or("pictures")?,
         },
     )
     .map_err(|e| e.to_string())?;
@@ -1019,7 +1022,7 @@ fn keys(recordings: &[Recording], kitty: Option<fux::encode::KeyMode>) -> Vec<Ve
 /// The keystrokes fux's decoder reads in `keys`, its Escape deadline passing
 /// at the end.
 fn strokes(keys: &[u8]) -> Vec<fux::keys::Keystroke> {
-    let mut decoder = fux::decode::Decoder::default();
+    let mut decoder = fux::decode::Decoder::new(fux::decode::Timing::new(35, 5000));
     let mut inputs = Vec::new();
     decoder.bytes(keys, &mut inputs);
     decoder.timeout(&mut inputs);
@@ -1041,7 +1044,7 @@ fn decode(steps: &[Vec<u8>], baseline: bool, total: usize) -> Result<Done, Strin
     }
     let mut units = 0usize;
     let mut inputs = Vec::new();
-    let mut decoder = fux::decode::Decoder::default();
+    let mut decoder = fux::decode::Decoder::new(fux::decode::Timing::new(35, 5000));
     while units < total {
         for keys in steps {
             units = units.saturating_add(keys.len());
@@ -1103,6 +1106,7 @@ fn presentation() -> fux::view::Presentation {
         bell: true,
         titles: false,
         terminal_clipboard: true,
+        cell_placement: false,
     }
 }
 
@@ -1110,6 +1114,9 @@ fn pane_options(history: usize) -> Result<command::PaneOptions, String> {
     Ok(command::PaneOptions {
         history_bytes: command::HistoryBytes::new(history).ok_or("history budget")?,
         program_clipboard: true,
+        reflow: true,
+        alternate_scroll_lines: fux::command::ScrollLines::new(5).ok_or("scroll lines")?,
+        picture_bytes: fux::command::PictureBytes::new(100663296).ok_or("pictures")?,
     })
 }
 
