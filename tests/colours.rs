@@ -47,22 +47,30 @@ const GHOSTTY_ANSWERS: &[u8] = b"\x1b[?2031;2$y\x1b]10;rgb:ffff/ffff/ffff\x1b\\\
 #[test]
 fn a_panes_colour_query_gets_the_client_terminals_colours() -> Outcome {
     let server = Server::start("")?;
-    let mut client = server.attach(10, 100)?;
+    let mut client = server.attach(10, 200)?;
     client.wait_for("$")?;
     // The server asked: mode 2031, the colours, and DA1 last.
     wait_painted(&mut client, "\x1b[?2031$p\x1b]10;?\x1b\\\x1b]11;?\x1b\\", 1)?;
     wait_painted(&mut client, "\x1b[c", 1)?;
-    client.send(GHOSTTY_ANSWERS)?;
+    wait_painted(&mut client, "\x1b]4;0;?\x1b\\", 1)?;
+    wait_painted(&mut client, "\x1b]4;15;?\x1b\\", 1)?;
+    client.send(
+        &[
+            b"\x1b]4;1;rgb:1111/2222/3333\x1b\\".as_slice(),
+            GHOSTTY_ANSWERS,
+        ]
+        .concat(),
+    )?;
     // 2031 is known: reports on, and the scheme asked for.
     wait_painted(&mut client, "\x1b[?2031h\x1b[?996n", 1)?;
     client.send(b"\x1b[?997;1n")?;
     probe(
         &server,
-        r"\x1b]11;?\x07\x1b]10;?\x1b\\\x1b[?996n\x1b[c",
+        r"\x1b]4;1;?\x07\x1b]4;2;?\x07\x1b]11;?\x07\x1b]10;?\x1b\\\x1b[?996n\x1b[c",
         "c",
     )?;
     client.wait_for(
-        "answer:ESC]11;rgb:1e1e/1e1e/2020BELESC]10;rgb:ffff/ffff/ffffESC\\ESC[?997;1nESC[?62;6;21;22;28c",
+        "answer:ESC]4;1;rgb:1111/2222/3333BELESC]11;rgb:1e1e/1e1e/2020BELESC]10;rgb:ffff/ffff/ffffESC\\ESC[?997;1nESC[?62;6;21;22;28c",
     )?;
     // The answers were never keys: what is typed now arrives as typed.
     client.keys("echo typed-after\r")?;
@@ -133,21 +141,5 @@ fn the_real_client_turns_off_colour_scheme_reports_as_it_leaves() -> Outcome {
     let off = output.rfind("\x1b[?2031l").ok_or("never turned off")?;
     let left = output.rfind("\x1b[?1049l").ok_or("never left")?;
     assert!(on < off && off < left, "{output:?}");
-    Ok(())
-}
-
-/// A pane's `OSC 4 ; n ; ?` for entries 0 to 15 gets the client terminal's
-/// palette, as its terminal answered the server at attach.
-#[test]
-fn a_panes_palette_query_gets_the_client_terminals_palette() -> Outcome {
-    let server = Server::start("")?;
-    let mut client = server.attach(10, 100)?;
-    client.wait_for("$")?;
-    // Every entry 0 to 15 was asked, before DA1.
-    wait_painted(&mut client, "\x1b]4;0;?\x1b\\", 1)?;
-    wait_painted(&mut client, "\x1b]4;15;?\x1b\\", 1)?;
-    client.send(b"\x1b]4;1;rgb:1111/2222/3333\x1b\\\x1b[?62;22c")?;
-    probe(&server, r"\x1b]4;1;?\x07\x1b]4;2;?\x07", r"\x07")?;
-    client.wait_for("answer:ESC]4;1;rgb:1111/2222/3333BEL")?;
     Ok(())
 }

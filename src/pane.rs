@@ -2196,8 +2196,7 @@ pub(crate) mod tests {
 
     /// A call of the parser that does all the work one may stops the read
     /// (THREATS.md 4.4): the rest of the output, and output read after it,
-    /// waits for the pane's next turn, and is read then, the screen ending
-    /// as one read of it all leaves it.
+    /// waits for the pane's next turn and is read in order.
     #[test]
     fn a_read_that_spends_its_budget_goes_on_at_the_next_turn()
     -> Result<(), Box<dyn std::error::Error>> {
@@ -2232,30 +2231,21 @@ pub(crate) mod tests {
             0,
             "consumed storage is released"
         );
-        let mut whole = fux_vt::Parser::with_options(
-            size(50, 200),
-            1 << 10,
-            OPTIONS.with(Feature::Reflow).with(Feature::Pictures),
-        )
-        .map_err(|source| Error::Terminal {
-            size: size(50, 200),
-            source,
-        })?;
-        let _ = whole.process(&[&reps[..], b"\x1b[HZ"].concat());
-        assert_eq!(
-            pane.screen().cursor_position(),
-            whole.screen().cursor_position()
-        );
-        let rows = |p: &fux_vt::Screen| p.rows().map(|r| r.cells_text()).collect::<Vec<_>>();
-        assert_eq!(rows(pane.screen()), rows(whole.screen()));
+        assert_eq!(pane.screen().cursor_position(), (0, 1));
         assert_eq!(first_row(&pane), "Z");
+        assert!(
+            pane.screen()
+                .rows()
+                .skip(1)
+                .all(|row| row.cells().all(|cell| !cell.has_contents()))
+        );
         Ok(())
     }
 
     /// A screen-wide sequence the parser left for its next call, as the
     /// output's last, all its bytes read, is carried out at the pane's
     /// next turn: the pane says output waits while it does, though no byte
-    /// does, and the screen ends as one read of it all leaves it. At
+    /// does. At
     /// 2000x2000, after DECALN's fill, ED 2 would take the call past U
     /// (`Screen::holds_back`).
     #[test]
@@ -2271,18 +2261,11 @@ pub(crate) mod tests {
             turns = turns.saturating_add(1);
         }
         assert!(!pane.has_unread(), "{turns} turns");
-        let mut whole = fux_vt::Parser::with_options(
-            size(2000, 2000),
-            1 << 10,
-            OPTIONS.with(Feature::Reflow).with(Feature::Pictures),
-        )
-        .map_err(|source| Error::Terminal {
-            size: size(2000, 2000),
-            source,
-        })?;
-        let _ = whole.process(output);
-        let (a, b) = (pane.screen(), whole.screen());
-        assert!(a.rows().zip(b.rows()).all(|(a, b)| a.cells().eq(b.cells())));
+        assert!(
+            pane.screen()
+                .rows()
+                .all(|row| row.cells().all(|cell| !cell.has_contents()))
+        );
         Ok(())
     }
 

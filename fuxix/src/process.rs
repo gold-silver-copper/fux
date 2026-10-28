@@ -833,28 +833,18 @@ mod tests {
     }
 
     #[test]
-    fn a_process_has_a_cwd() {
-        let own = Pid::from_raw(i32::try_from(std::process::id()).unwrap_or(0));
-        let here = std::env::current_dir()
-            .ok()
-            .and_then(|d| d.canonicalize().ok());
-        let there = own
-            .and_then(|pid| {
-                let mut quota = usize::MAX;
-                cwd_observed(pid, &mut quota).ok()?.ok().flatten()
-            })
-            .and_then(|d| d.canonicalize().ok());
-        assert!(here.is_some());
-        assert_eq!(here, there);
-    }
-
-    #[test]
-    fn cwd_observations_keep_os_failures_distinct_from_unknown() {
+    fn cwd_observations_keep_os_failures_distinct_from_known_paths()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let own = Pid::from_raw(i32::try_from(std::process::id())?).ok_or("own pid")?;
         let mut quota = 8192usize;
-        let Some(missing) = Pid::from_raw(i32::MAX) else {
-            return;
-        };
+        let observed = cwd_observed(own, &mut quota)??.ok_or("own cwd")?;
+        assert_eq!(
+            observed.canonicalize()?,
+            std::env::current_dir()?.canonicalize()?
+        );
+        let missing = Pid::from_raw(i32::MAX).ok_or("missing pid")?;
         assert!(matches!(cwd_observed(missing, &mut quota), Ok(Err(_))));
+        Ok(())
     }
 
     #[test]
