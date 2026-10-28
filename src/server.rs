@@ -1782,6 +1782,142 @@ mod tests {
         Ok(())
     }
 
+    fn hidden_row_after_no_output_paint(
+        clear_without_output: bool,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let (mut server, _peer) = server()?;
+        let client = *server.session.views.keys().next().ok_or("client")?;
+        let pane = *server.session.parts.panes().keys().next().ok_or("pane")?;
+        crate::session::testing::output_as(
+            &mut server.session,
+            Some(client),
+            "str bar list str off list end list end false end set str styles list list str bar str default str default end list str notice str default str default end end set",
+        )?;
+        server.session.output(pane, b"\x1b[10;1H\x1b]8;;https://example.test/old\x1b\\old A\x1b]8;;\x1b\\\x1b[5 q\x1b]12;#123456\x07");
+        if clear_without_output {
+            server.session.output(pane, b"\x1b[?25l");
+        }
+        server.paint(0, Instant::now());
+        server.session.notify_to(client, "feedback", false);
+        server.paint(0, Instant::now());
+        let attached = server
+            .conns
+            .first_mut()
+            .and_then(Conn::attached)
+            .ok_or("attached")?;
+        let expected = if clear_without_output {
+            attached.shown.row_text(9)
+        } else {
+            "completed B".to_owned()
+        };
+        let clock = attached.clock.next;
+        let uri = if clear_without_output {
+            ""
+        } else {
+            "https://example.test/latest"
+        };
+        // The bar fills its trailing cell with a literal space, so the
+        // identical-content case writes that cell too, without erasing it.
+        let (text, erase) = if clear_without_output {
+            (format!("{expected} "), "")
+        } else {
+            (expected.clone(), "\x1b[K")
+        };
+        let update = format!("\x1b[10;1H\x1b[0m\x1b]8;;{uri}\x1b\\{text}\x1b]8;;\x1b\\{erase}");
+        server.session.output(pane, update.as_bytes());
+        server.paint(0, Instant::now());
+        assert!(
+            server.paint_buffer.is_empty(),
+            "the completed hidden update should need no bytes"
+        );
+        assert_eq!(
+            server
+                .conns
+                .first_mut()
+                .and_then(Conn::attached)
+                .ok_or("attached")?
+                .clock
+                .next,
+            clock
+        );
+        if clear_without_output {
+            server.session.views.get_mut(&client).ok_or("view")?.notice = None;
+            server.paint(0, Instant::now());
+            assert!(
+                server.paint_buffer.is_empty(),
+                "identical visible content should need no bytes: {:?}",
+                String::from_utf8_lossy(&server.paint_buffer)
+            );
+            assert_eq!(
+                server
+                    .conns
+                    .first_mut()
+                    .and_then(Conn::attached)
+                    .ok_or("attached")?
+                    .clock
+                    .next,
+                clock
+            );
+        }
+        let mut frame = b"\x1b[?2026h\x1b[2 q\x1b]12;#ffffff\x07".to_vec();
+        frame.extend(std::iter::repeat_n(b"X\x1b[65535b", 4000).flatten());
+        frame.extend_from_slice(b"\x1b[?2026l");
+        server.session.output(pane, &frame);
+        assert!(
+            server
+                .session
+                .parts
+                .panes()
+                .get(&pane)
+                .is_some_and(Pane::mid_frame)
+        );
+        server.session.views.get_mut(&client).ok_or("view")?.notice = None;
+        server.paint(0, Instant::now());
+        let shown = &server
+            .conns
+            .first_mut()
+            .and_then(Conn::attached)
+            .ok_or("attached")?
+            .shown;
+        assert_eq!(shown.row_text(9), expected);
+        let cursor = if clear_without_output {
+            None
+        } else {
+            Some((9, 11))
+        };
+        assert_eq!(shown.cursor, cursor);
+        let link = if clear_without_output {
+            None
+        } else {
+            Some("https://example.test/latest")
+        };
+        assert_eq!(shown.link(9, 0).map(|(_, link)| link.uri()), link);
+        if !clear_without_output {
+            assert_eq!(shown.modes.cursor_shape, fux_vt::CursorShape::BlinkingBar);
+            assert_eq!(
+                shown.modes.cursor_colour,
+                Some(fux_vt::Rgb {
+                    r: 0x12,
+                    g: 0x34,
+                    b: 0x56
+                })
+            );
+        }
+        assert!((0..shown.rows).all(|y| !shown.row_text(y).contains('X')));
+        Ok(())
+    }
+
+    #[test]
+    fn no_output_paints_retain_the_latest_complete_hidden_row()
+    -> Result<(), Box<dyn std::error::Error>> {
+        hidden_row_after_no_output_paint(false)
+    }
+
+    #[test]
+    fn no_output_paints_clear_obsolete_hidden_rows() -> Result<(), Box<dyn std::error::Error>> {
+        hidden_row_after_no_output_paint(true)
+    }
+
     #[test]
     fn a_live_read_failure_is_told_without_another_event() -> Result<(), Box<dyn std::error::Error>>
     {
