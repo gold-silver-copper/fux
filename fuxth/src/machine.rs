@@ -484,6 +484,7 @@ impl<A: AppValue> Machine<A> {
             frame.step = frame.step.saturating_add(1);
             match op {
                 Op::Push(value) => self.push(value.clone())?,
+                Op::Argument(value, _) => self.import(value.clone())?,
                 Op::Builtin(builtin) => self.builtin(*builtin, host)?,
                 Op::PickN(n) => self.pick(*n)?,
                 Op::RollN(n) => self.roll(*n)?,
@@ -684,6 +685,9 @@ impl<A: AppValue> Machine<A> {
 
     /// At the program's end: a value left that must be used fails it.
     fn used(&self) -> Result<(), Error> {
+        if self.program.empty && !self.stack.is_empty() {
+            return Err(self.fail(Code::Unused, "a callback must leave an empty stack"));
+        }
         let words = &self.program.vocabulary;
         if let Some(why) = self
             .stack
