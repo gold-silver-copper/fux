@@ -7,6 +7,7 @@ const SOURCES: &[&str] = &[
     include_str!("../../fux-vt/src/bytes.rs"),
     include_str!("../../src/act.rs"),
     include_str!("../../src/client.rs"),
+    include_str!("../../src/client_state.rs"),
     include_str!("../../src/command.rs"),
     include_str!("../../src/config.rs"),
     include_str!("../../src/copy.rs"),
@@ -231,6 +232,8 @@ mod tests {
         assert!(notices.templates.len() > 100, "{}", notices.templates.len());
         for known in [
             "no pane %99",
+            "config: set: no setting \"nope\"; the settings are shell and bell (prompt:1)",
+            "bundled initialization did not set shell",
             "only one pane",
             "nothing selected: start a selection before copying",
             "the pane's input queue is full; nothing more is queued until its terminal takes some",

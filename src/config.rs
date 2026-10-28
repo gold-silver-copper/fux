@@ -1,35 +1,16 @@
-//! The server's settings: what every pane and client of it shares, set by
-//! the `set` word from a client's config or command line. Key bindings and
-//! the prefix are each client's own (`crate::keymap`).
+//! Legacy server policy and checked value readers. Local `set` uses
+//! `client_state`; remaining server consumers migrate with their requests.
 use crate::script::Fux;
 use crate::wire::{Error, Reader, Wire};
-use crate::words;
 use fuxth::Value;
 use std::path::PathBuf;
 use std::time::Duration;
 
-/// `settings! { /// about  field Variant "name": Type = default; … }`
-/// expands to the struct `Config` of those fields, each of its `Type`,
-/// which `Reads`; its `Default`; `NAMES`, every setting's name, in order;
-/// `Setting`, one setting's value, which `Setting::read` reads from a
-/// fuxth value once, as `set` is given it, and `Config::apply` puts in
-/// force; and `table`, every setting with what it takes, its default and
-/// its about, which `fux help set` prints. The row `/// A bell rings.  bell
-/// Bell "bell": bool = true;` gives the field `pub bell: bool`, `true` in
-/// `Default`, `"bell"` in `NAMES`, `Setting::Bell(bool)`, read by
-/// `bool::read`, and in `table` the row `bell`, `true or false`, `true`, `A
-/// bell rings.`. A default the server reads where it runs is told by its
-/// rule, which `=> "RULE"` after it gives `table`, not by the value the
-/// process asking for help would read.
+/// Temporary server policy and its typed transport. Local settings have
+/// their own table, without native preference defaults or wire values.
 macro_rules! settings {
-    (@default $shown:literal; $value:expr) => {
-        $shown.to_owned()
-    };
-    (@default; $value:expr) => {
-        $value
-    };
-    ($($(#[doc = $about:literal])* $field:ident $variant:ident $name:literal: $reads:ty
-        = $default:expr $(=> $shown:literal)?;)*) => {
+    ($($(#[doc = $about:literal])* $field:ident $variant:ident: $reads:ty
+        = $default:expr;)*) => {
         #[derive(Clone, Debug, PartialEq, Eq)]
         pub struct Config {
             $($(#[doc = $about])* pub $field: $reads,)*
@@ -43,31 +24,12 @@ macro_rules! settings {
             }
         }
 
-        /// Every setting's name, in order.
-        pub const NAMES: &[&str] = &[$($name),*];
-
-        /// One setting and its value, read as `set` was given it: on the
-        /// wire, each value is one its type takes.
+        /// Remaining typed server settings, pending consumer migration.
         #[derive(Clone, Debug, PartialEq, Eq)]
         pub enum Setting {
             $($variant($reads),)*
         }
         $crate::wire::wire_enum!(Setting { $($variant(value)),* });
-
-        impl Setting {
-            /// Setting `name` given `value`, as its type reads it, or why
-            /// not.
-            pub fn read(name: &str, value: &Value<Fux>) -> Result<Setting, String> {
-                let named = |why| format!("{name}: {why}");
-                match name {
-                    $($name => <$reads as Reads>::read(value).map(Setting::$variant).map_err(named),)*
-                    other => {
-                        let all = words::listed(NAMES, "and");
-                        Err(format!("no setting {other:?}; the settings are {all}"))
-                    }
-                }
-            }
-        }
 
         impl Config {
             /// `setting` in force.
@@ -77,58 +39,43 @@ macro_rules! settings {
                 }
             }
         }
-
-        /// Every setting, in order, as `fux help set` tells it: its name,
-        /// what it takes, its default as fuxth writes it, and what it does.
-        pub fn table() -> Vec<[String; 4]> {
-            let defaults = Config::default();
-            vec![$([
-                $name.to_owned(),
-                <$reads as Reads>::takes(),
-                settings!(@default $($shown)?; Reads::show(&defaults.$field)),
-                [$($about.trim()),*].join(" "),
-            ],)*]
-        }
     };
 }
 
-/// A setting's type: what fuxth value it takes, read once, as `set` is
-/// given it, and its value written back as fuxth.
+/// A local setting's type, read once as `set` is given it.
 pub trait Reads: Sized {
     fn takes() -> String;
     fn read(value: &Value<Fux>) -> Result<Self, String>;
-    fn show(&self) -> String;
 }
 
 settings! {
     /// The program a pane given none runs (not one `run` or `split` gives
     /// its own), then its arguments: a list of strings, each one word whatever
     /// it holds, as `list str /bin/zsh str -l end`.
-    shell Shell "shell": Shell = default_shell()
-        => "the server's `$SHELL`, else your login shell, else `/bin/sh`";
+    shell Shell: Shell = default_shell();
     /// The bytes of history each pane keeps: how far copy mode scrolls and
     /// `history capture` reads. Past it, the oldest rows go; a change
     /// applies to every pane.
-    history_bytes HistoryBytes "history-bytes": Number<0, { 1 << 30 }> = Number(8 << 20);
+    history_bytes HistoryBytes: Number<0, { 1 << 30 }> = Number(8 << 20);
     /// How long a wait waits for a change before it answers `timeout`,
     /// unless it says (`SECS timeout`).
-    wait Wait "wait-seconds": Limit = Limit::DEFAULT;
+    wait Wait: Limit = Limit::DEFAULT;
     /// Copies, fux's and programs', also reach your terminal's clipboard
     /// (OSC 52); set false, a program's copy copies nothing, to the buffers
     /// either.
-    clipboard Clipboard "clipboard": bool = true;
+    clipboard Clipboard: bool = true;
     /// How many paste buffers are kept.
-    buffers Buffers "buffers": Number<1, MAX_BUFFERS> = Number(16);
+    buffers Buffers: Number<1, MAX_BUFFERS> = Number(16);
     /// A pane's bell rings your terminal and marks its tab.
-    bell Bell "bell": bool = true;
+    bell Bell: bool = true;
     /// Your terminal's title follows the focused pane.
-    titles Titles "titles": bool = false;
+    titles Titles: bool = false;
     /// Variables a new pane takes from whoever starts it (a request's
     /// caller, the client whose key it is) rather than from the server,
     /// which may have started long ago. One the starter lacks is unset,
     /// but `FUX`, `FUX_PANE`, `FUX_SOCKET` and `FUX_SERVER` are reserved:
     /// requesting them here or in `env` is refused.
-    update_environment UpdateEnvironment "update-environment": Vec<EnvName> =
+    update_environment UpdateEnvironment: Vec<EnvName> =
         Vec::new();
 }
 
@@ -228,14 +175,6 @@ fn strings(value: &Value<Fux>) -> Result<Vec<String>, String> {
         .collect()
 }
 
-/// `words` as fuxth writes their list.
-fn fuxth_list<'a>(words: impl IntoIterator<Item = &'a str>) -> String {
-    let items = words
-        .into_iter()
-        .map(|w| format!("str {} ", words::quote(w)));
-    format!("list {}end", items.collect::<String>())
-}
-
 /// A whole number from `MIN` to `MAX`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Number<const MIN: usize, const MAX: usize>(usize);
@@ -260,9 +199,6 @@ impl<const MIN: usize, const MAX: usize> Reads for Number<MIN, MAX> {
         (usize::try_from(n).ok().and_then(Number::new))
             .ok_or_else(|| format!("{n} is out of range, {MIN} to {MAX}"))
     }
-    fn show(&self) -> String {
-        self.0.to_string()
-    }
 }
 
 impl<const MIN: usize, const MAX: usize> Wire for Number<MIN, MAX> {
@@ -284,9 +220,6 @@ impl Reads for Limit {
         let secs = u64::try_from(n).map_err(|_| format!("{n} s: a wait waits 0 s or more"))?;
         Limit::read(secs)
     }
-    fn show(&self) -> String {
-        self.seconds().to_string()
-    }
 }
 
 /// `true` or `false`.
@@ -299,9 +232,6 @@ impl Reads for bool {
             return Err(wrong("true or false", value));
         };
         Ok(*b)
-    }
-    fn show(&self) -> String {
-        self.to_string()
     }
 }
 
@@ -349,9 +279,6 @@ impl Reads for Shell {
         let mut words = strings(value)?.into_iter();
         let program = words.next().ok_or("a program is needed")?;
         Shell::new(program, words.collect())
-    }
-    fn show(&self) -> String {
-        fuxth_list(self.argv().iter().map(String::as_str))
     }
 }
 
@@ -404,9 +331,6 @@ impl Reads for Vec<EnvName> {
     fn read(value: &Value<Fux>) -> Result<Vec<EnvName>, String> {
         strings(value)?.iter().map(|name| name.parse()).collect()
     }
-    fn show(&self) -> String {
-        fuxth_list(self.iter().map(EnvName::as_str))
-    }
 }
 
 /// The config file, a fuxth program a typing terminal runs as it attaches:
@@ -423,56 +347,8 @@ pub fn default_path() -> Option<PathBuf> {
 mod tests {
     use super::*;
 
-    /// The shell's default is told by its rule, which the server follows
-    /// where it runs, not by what the process asking for help would start.
     #[test]
-    fn the_shells_default_is_told_by_its_rule() {
-        let shell = table().into_iter().find(|[name, ..]| name == "shell");
-        assert!(
-            shell.is_some_and(|[_, _, default, _]| default.starts_with("the server's `$SHELL`"))
-        );
-    }
-
-    /// A setting takes the fuxth value it is, read once, as `set` is given
-    /// it; a shell's words are each one argument, blanks, quotes and all.
-    #[test]
-    fn settings_take_their_values_as_fuxth_values() -> Result<(), String> {
-        let list = |words: &[&str]| {
-            let items = words.iter().map(|w| Value::str(*w)).collect();
-            fuxth::List::new(items).map(|list| Value::List(std::rc::Rc::new(list)))
-        };
-        let argv = ["/bin/my shell", "-c", "it's \"quoted\" \\ #"];
-        let mut config = Config::default();
-        for (name, value) in [
-            ("history-bytes", Value::Int(5000)),
-            ("bell", Value::Bool(false)),
-            ("shell", list(&argv).ok_or("a list")?),
-        ] {
-            config.apply(Setting::read(name, &value)?);
-        }
-        assert_eq!(config.history_bytes.get(), 5000);
-        assert!(!config.bell);
-        assert_eq!(config.shell.argv(), argv);
-        for (name, value) in [
-            ("history-bytes", Value::str("5000")),
-            ("history-bytes", Value::Int(-1)),
-            ("buffers", Value::Int(0)),
-            ("bell", Value::str("off")),
-            ("shell", list(&[]).ok_or("a list")?),
-            ("shell", list(&["", "-l"]).ok_or("a list")?),
-            ("shell", list(&["/bin/sh", "a\0b"]).ok_or("a list")?),
-            ("shell", Value::str("/bin/zsh -l")),
-            (
-                "update-environment",
-                list(&["OK", "BAD-NAME"]).ok_or("a list")?,
-            ),
-            ("nonsense", Value::Int(1)),
-        ] {
-            assert!(Setting::read(name, &value).is_err(), "{name} {value:?}");
-        }
-        // Nor does the wire carry what `read` refuses: a count is sent
-        // big-endian, so its last byte is its lowest. The defaults, some
-        // built unchecked, are each read back.
+    fn legacy_settings_keep_their_checked_wire_values() {
         let d = Config::default();
         for setting in [
             Setting::Shell(d.shell),
@@ -491,7 +367,6 @@ mod tests {
         zero.pop();
         zero.push(0);
         assert!(Reader::new(&zero).whole::<Setting>().is_err());
-        Ok(())
     }
 
     /// With `SHELL` unset, the shell is the user's own line's in

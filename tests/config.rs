@@ -1,6 +1,4 @@
-//! The config: a fuxth file a typing terminal runs as it attaches. Its `set`s go
-//! to the server, its `prefix`, `bind` and `unbind` make the client's keys;
-//! a bad one is reported.
+//! Config evaluation commits local state before the temporary settings batch.
 mod support;
 use support::*;
 
@@ -185,6 +183,23 @@ fn settings_reach_the_server() -> Outcome {
         "end",
         "set",
     ])?;
+    // Checking a valid config and a failing action script send no batch.
+    let checked = server.dir.join("checked.fux");
+    std::fs::write(&checked, "str shell list str /no/such/check-shell end set").map_err(e)?;
+    server.ok(&["str", &checked.to_string_lossy(), "str", "config", "check"])?;
+    let failed = server.fux(&[
+        "str",
+        "shell",
+        "list",
+        "str",
+        "/no/such/failed-shell",
+        "end",
+        "set",
+        "str",
+        "Nope",
+        "prefix",
+    ])?;
+    assert_eq!(failed.status, 1);
     let custom = server.ok(&["str", "%1", "pane", "horizontal", "split"])?;
     eventually("the custom prompt", || {
         Ok(server
@@ -201,8 +216,6 @@ fn settings_reach_the_server() -> Outcome {
         &["str", "buffers", "0", "set"][..],
         &["str", "clipboard", "str", "maybe", "set"],
         &["str", "nonsense", "1", "set"],
-        &["str", "C-a", "prefix"],
-        &["str", "q", "str", "me zoom", "bind"],
     ] {
         let out = server.fux(args)?;
         assert_eq!(out.status, 1, "{args:?}: {}", out.stderr);
@@ -210,24 +223,55 @@ fn settings_reach_the_server() -> Outcome {
     Ok(())
 }
 
-/// Half a config is no config: one that fails after a `set` sets nothing,
-/// and says why.
+/// An imported config cannot act on the server or commit half its local state.
 #[test]
-fn a_config_that_fails_sets_nothing() -> Outcome {
-    let server = Server::start("")?;
-    let config = server.dir.join("half.fux");
-    let text = "str shell list str /usr/bin/env str PS1=custom$ str /bin/sh end set\n\
-                str nonsense 1 set\n";
-    std::fs::write(&config, text).map_err(e)?;
-    let socket = fux::socket::Choice::Path(server.socket.clone());
-    let ran = fux::script::run_file(&config, Some(&mut fux::script::Server::new(socket)), None);
-    let failed = ran.err().ok_or("the config ran")?;
-    assert!(failed.to_string().contains("nonsense"), "{failed}");
-    let pane = server.ok(&["str", "%1", "pane", "horizontal", "split"])?;
-    let pane = pane.split_whitespace().next().unwrap_or_default();
-    let shown = || server.ok(&["str", pane, "pane", "capture"]);
-    eventually("a prompt", || Ok(shown()?.contains('$')))?;
-    assert!(!shown()?.contains("custom$"), "the shell was set");
+fn an_imported_failure_keeps_the_whole_bundled_state() -> Outcome {
+    let server = Server::start("str wait-seconds 0 set")?;
+    let directory = server.dir.join("config/fux");
+    std::fs::write(directory.join("config.fux"), "require shared.fux").map_err(e)?;
+    std::fs::write(
+        directory.join("shared.fux"),
+        "str C-a prefix str wait-seconds 0 set str titles true set \
+         define only-in-failed-config 41 end \
+         %1 horizontal split drop",
+    )
+    .map_err(e)?;
+    let before = server.ok(&["ls"])?;
+    let failed = fux::script::run_file(&directory.join("config.fux"))
+        .err()
+        .ok_or("config acted on the server")?;
+    assert_eq!(failed.code, fux::code::Code::NotConfig);
+    assert!(failed.notice().contains("shared.fux"));
+    assert_eq!(server.ok(&["ls"])?, before);
+    let mut terminal = Terminal::attach(&server, 10, 100, &[])?;
+    terminal.wait_for("a config changes only its own client state")?;
+    terminal.type_bytes(b"\x02")?;
+    terminal.wait_for("Commands")?;
+    terminal.type_bytes(b"d")?;
+    terminal.wait_exit()?;
+    assert_eq!(server.panes()?.len(), 1);
+    let probe = server.fux(&[
+        "agent-opts",
+        "80",
+        "24",
+        "size",
+        "str",
+        "/bin/sh",
+        "program",
+        "str",
+        "-c",
+        "arg",
+        "str",
+        "sleep 1",
+        "arg",
+        "run",
+        "wait",
+    ])?;
+    assert_eq!(
+        probe.status, 124,
+        "a failed config forwarded its bundled wait: {}",
+        probe.stderr
+    );
     Ok(())
 }
 
@@ -347,7 +391,7 @@ fn config_notices_show_the_cause_once_before_the_path() -> Outcome {
     let server = Server::start("")?;
     let path = server.dir.join("config/fux/config.fux");
     std::fs::write(&path, "str bell 3 set").map_err(e)?;
-    let failure = fux::script::run_file(&path, None, None)
+    let failure = fux::script::run_file(&path)
         .err()
         .ok_or("expected a bad setting")?;
     assert!(failure.place.is_some());
@@ -491,5 +535,307 @@ fn update_environment_takes_the_clients_variables_or_none() -> Outcome {
     // od spaces its bytes as each system likes.
     let bytes = stdout.split_whitespace().collect::<Vec<_>>().join(" ");
     assert!(bytes.contains("63 61 66 e9"), "{stdout}");
+    Ok(())
+}
+
+#[test]
+fn a_setting_preserves_other_invocations_preferences() -> Outcome {
+    let server = Server::start("str wait-seconds 0 set")?;
+    server.ok(&["str", "bell", "false", "set"])?;
+    let result = server.fux(&[
+        "agent-opts",
+        "80",
+        "24",
+        "size",
+        "str",
+        "/bin/sh",
+        "program",
+        "str",
+        "-c",
+        "arg",
+        "str",
+        "sleep 1",
+        "arg",
+        "run",
+        "wait",
+    ])?;
+    assert_eq!(
+        result.status, 124,
+        "bell changed the wait limit: {}",
+        result.stderr
+    );
+    Ok(())
+}
+
+#[test]
+fn a_program_uses_preferences_before_its_next_operation() -> Outcome {
+    let server = Server::start("")?;
+    let result = server.fux(&[
+        "str",
+        "shell",
+        "list",
+        "str",
+        "/no/such/fux-review-shell",
+        "end",
+        "set",
+        "%1",
+        "horizontal",
+        "split",
+        "drop",
+    ])?;
+    assert_eq!(
+        result.status, 1,
+        "split used the previous shell: {}",
+        result.stdout
+    );
+    assert!(
+        result.stderr.contains("/no/such/fux-review-shell"),
+        "{}",
+        result.stderr
+    );
+    assert_eq!(server.panes()?.len(), 1);
+    let result = server.fux(&[
+        "str",
+        "wait-seconds",
+        "0",
+        "set",
+        "agent-opts",
+        "80",
+        "24",
+        "size",
+        "str",
+        "/bin/sh",
+        "program",
+        "str",
+        "-c",
+        "arg",
+        "str",
+        "sleep 1",
+        "arg",
+        "run",
+        "wait",
+    ])?;
+    assert_eq!(
+        result.status, 124,
+        "wait used the previous limit: {}",
+        result.stderr
+    );
+    Ok(())
+}
+
+/// Both selectors finish the old server's transaction before changing it;
+/// completion and a later request also retain their own destination.
+#[test]
+fn settings_stay_with_the_server_selected_when_written() -> Outcome {
+    for named in [true, false] {
+        let a = Server::start("")?;
+        let b = Server::start("")?;
+        let path = a.dir.join("select.fux");
+        let select = if named {
+            "str fux server".to_owned()
+        } else {
+            format!(
+                "str {} socket",
+                fux::words::quote(&b.socket.to_string_lossy())
+            )
+        };
+        let env = [(
+            "XDG_RUNTIME_DIR",
+            b.dir.to_str().ok_or("a text runtime path")?,
+        )];
+        std::fs::write(
+            &path,
+            format!("str shell list str /no/such/old-server-shell end set {select}"),
+        )
+        .map_err(e)?;
+        let out = a.fux_env(&["--file", &path.to_string_lossy()], &env)?;
+        assert_eq!(out.status, 0, "{}", out.stderr);
+        let probe = a.fux(&["%1", "split", "drop"])?;
+        assert_eq!(probe.status, 1, "the old server lost its setting");
+        assert!(
+            probe.stderr.contains("/no/such/old-server-shell"),
+            "{}",
+            probe.stderr
+        );
+        b.ok(&["%1", "split", "drop"])?;
+        // The next transaction belongs to B, even when a request follows.
+        std::fs::write(
+            &path,
+            format!("{select} str shell list str /no/such/new-server-shell end set ls"),
+        )
+        .map_err(e)?;
+        let out = a.fux_env(&["--file", &path.to_string_lossy()], &env)?;
+        assert_eq!(out.status, 0, "{}", out.stderr);
+        for (server, shell) in [(&a, "old-server-shell"), (&b, "new-server-shell")] {
+            let probe = server.fux(&["%1", "split", "drop"])?;
+            assert_eq!(probe.status, 1);
+            assert!(probe.stderr.contains(shell), "{}", probe.stderr);
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn a_failed_settings_checkpoint_keeps_the_selected_server() -> Outcome {
+    let server = Server::start("")?;
+    let path = server.dir.join("select.fux");
+    std::fs::write(
+        &path,
+        format!(
+            "str no_server try str bell false set str {} socket catch 2drop end ls",
+            fux::words::quote(&server.socket.to_string_lossy())
+        ),
+    )
+    .map_err(e)?;
+    let missing = server.dir.join("missing.sock");
+    let out = server.fux_env(
+        &["--file", &path.to_string_lossy()],
+        &[("FUX_SOCKET", missing.to_str().ok_or("a text socket path")?)],
+    )?;
+    assert_eq!(out.status, 1, "selection changed after forwarding failed");
+    assert!(out.stderr.contains("no_server:"), "{}", out.stderr);
+    assert!(out.stderr.contains("missing.sock"), "{}", out.stderr);
+    Ok(())
+}
+
+#[test]
+fn settings_use_the_programs_addressing_before_a_request_fails() -> Outcome {
+    let server = Server::start("")?;
+    let other = Server::start("")?;
+    let path = server.dir.join("addressing.fux");
+    for (before, after, error) in [
+        (String::new(), "str c999 client focused", "no client c999"),
+        (
+            format!(
+                "str {} socket %1 let foreign str {} socket",
+                fux::words::quote(&other.socket.to_string_lossy()),
+                fux::words::quote(&server.socket.to_string_lossy())
+            ),
+            "foreign capture",
+            "server run",
+        ),
+    ] {
+        server.ok(&["str", "shell", "list", "str", "/bin/sh", "end", "set"])?;
+        std::fs::write(
+            &path,
+            format!("{before} str shell list str /no/such/addressing-shell end set {after}"),
+        )
+        .map_err(e)?;
+        let out = server.fux(&["--file", &path.to_string_lossy()])?;
+        assert_eq!(out.status, 1);
+        assert!(out.stderr.contains(error), "{}", out.stderr);
+        let probe = server.fux(&["%1", "split", "drop"])?;
+        assert_eq!(probe.status, 1, "request addressing discarded the setting");
+        assert!(
+            probe.stderr.contains("/no/such/addressing-shell"),
+            "{}",
+            probe.stderr
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn pending_settings_finish_before_force_killing_the_server() -> Outcome {
+    let server = Server::start("")?;
+    server.ok(&["str", "bell", "false", "set", "force-kill-server"])?;
+    Ok(())
+}
+
+#[test]
+fn key_words_refuse_the_command_line() -> Outcome {
+    let server = Server::start("")?;
+    for words in [
+        &["str", "C-a", "prefix"][..],
+        &["str", "q", "str", "me zoom", "bind"],
+        &["str", "F5", "str", "me zoom", "bind-root"],
+        &["str", "q", "unbind"],
+        &["str", "F5", "unbind-root"],
+        &["unbind-all"],
+        &["str", "copy", "str", "g", "str", "top", "bind-in"],
+        &["str", "copy", "str", "v", "unbind-in"],
+        &["str", "name", "label"],
+        &["str", "name", "group"],
+        &["repeat"],
+    ] {
+        let result = server.fux(words)?;
+        assert_eq!(result.status, 1, "silent CLI key change: {words:?}");
+        assert!(
+            result.stderr.contains("not_config") && result.stderr.contains("config"),
+            "{words:?}: {}",
+            result.stderr
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn unrelated_commands_do_not_load_shell_defaults() -> Outcome {
+    use std::os::unix::ffi::OsStrExt;
+    let server = Server::start("")?;
+    for words in [&["version"][..], &["ls"], &["status"], &["kill-server"]] {
+        let result = std::process::Command::new(FUX)
+            .args(words)
+            .env("FUX_SOCKET", &server.socket)
+            .env("SHELL", std::ffi::OsStr::from_bytes(b"/bin/\xffsh"))
+            .env_remove("FUX_PANE")
+            .env_remove("FUX_SERVER")
+            .output()
+            .map_err(e)?;
+        assert!(
+            result.status.success(),
+            "{words:?}: {}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        assert!(result.stderr.is_empty(), "{words:?} read SHELL");
+    }
+    Ok(())
+}
+
+#[test]
+fn non_text_shell_defaults_report_the_library_fallback() -> Outcome {
+    use std::os::unix::ffi::OsStrExt;
+    let server = Server::start("")?;
+    let result = std::process::Command::new(FUX)
+        .arg("list-keys")
+        .env("FUX_SOCKET", &server.socket)
+        .env("SHELL", std::ffi::OsStr::from_bytes(b"/bin/\xffsh"))
+        .env_remove("FUX_PANE")
+        .env_remove("FUX_SERVER")
+        .output()
+        .map_err(e)?;
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    assert!(String::from_utf8_lossy(&result.stdout).contains("str C-b prefix"));
+    let diagnostic = String::from_utf8_lossy(&result.stderr);
+    assert!(diagnostic.contains("SHELL"), "{diagnostic}");
+    assert_eq!(diagnostic.lines().count(), 1, "{diagnostic}");
+    Ok(())
+}
+
+#[test]
+fn explicit_settings_survive_a_failed_attach_config() -> Outcome {
+    let server = Server::start("")?;
+    std::fs::write(server.dir.join("config/fux/config.fux"), "str Nope prefix").map_err(e)?;
+    let mut terminal = Terminal::attach(
+        &server,
+        12,
+        100,
+        &["str", "titles", "true", "set", "opts", "attach"],
+    )?;
+    terminal.wait_for("bad_binding")?;
+    terminal.type_bytes(b"printf '\\033]2;explicit-title\\007'; echo cli''-ready\r")?;
+    terminal.wait_for("cli-ready")?;
+    terminal.pump();
+    let titled = String::from_utf8_lossy(&terminal.output).contains("\x1b]2;explicit-title\x1b\\");
+    terminal.type_bytes(b"\x02d")?;
+    terminal.wait_exit()?;
+    assert!(
+        titled,
+        "the explicit titles setting was dropped with the failed config"
+    );
     Ok(())
 }

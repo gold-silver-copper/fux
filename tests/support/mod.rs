@@ -6,7 +6,7 @@
 )]
 use fux::act::Act;
 use fux::client::Keyboard;
-use fux::keymap::Keymap;
+use fux::client_state::ClientState;
 use fux::protocol::{
     Attach, AttachedFrame, Decoder, Frame, Greeting, Hello, PROTOCOL, Role, ToAttached,
 };
@@ -73,8 +73,8 @@ pub struct Server {
     pub dir: PathBuf,
     pub socket: PathBuf,
     child: Option<Child>,
-    /// Prepared keys explicitly passed to the scripted clients.
-    pub keymap: Keymap,
+    /// Prepared local state explicitly passed to the scripted clients.
+    pub state: ClientState,
 }
 
 pub struct Output {
@@ -92,8 +92,8 @@ fn output(out: std::process::Output) -> Result<Output, String> {
 }
 
 impl Server {
-    /// A server whose shell is `sh` with a plain prompt. Explicitly run
-    /// `config` to prepare server settings and the scripted clients' keys;
+    /// A server whose shell is `sh` with a plain prompt. Run
+    /// `config` to prepare the scripted clients' whole local state;
     /// also save it for real typing terminals to load.
     pub fn start(config: &str) -> Result<Server, String> {
         Server::start_limited(config, None)
@@ -131,8 +131,12 @@ impl Server {
         let config_dir = dir.join("config").join("fux");
         std::fs::create_dir_all(&config_dir).map_err(e)?;
         let config_path = config_dir.join("config.fux");
-        std::fs::write(&config_path, format!("{config}\n")).map_err(e)?;
-        let socket = dir.join("s").join("fux.sock");
+        std::fs::write(
+            &config_path,
+            format!("str shell list str /bin/sh end set\n{config}\n"),
+        )
+        .map_err(e)?;
+        let socket = dir.join("fux").join("fux.sock");
         let log = std::fs::File::create(dir.join("server.log")).map_err(e)?;
         let (child, held) = {
             let _guard = SPAWN.lock().map_err(e)?;
@@ -177,7 +181,7 @@ impl Server {
             dir,
             socket,
             child: Some(child),
-            keymap: Keymap::empty(),
+            state: fux::script::default_state().map_err(e)?,
         };
         let deadline = after(PATIENCE);
         while UnixStream::connect(&server.socket).is_err() {
@@ -188,9 +192,14 @@ impl Server {
         }
         // Explicit fixture setup: scripted clients receive these prepared
         // keys, rather than implicitly loading a user's config on attach.
-        let socket = fux::socket::Choice::Path(server.socket.clone());
-        let mut to = fux::script::Server::new(socket);
-        server.keymap = fux::script::run_file(&config_path, Some(&mut to), None).map_err(e)?;
+        let (state, changes) = fux::script::run_file(&config_path).map_err(e)?;
+        server.state = state;
+        let mut to = fux::script::Server::new(fux::socket::Choice::Path(server.socket.clone()));
+        server
+            .state
+            .preferences
+            .forward_settings(changes, &mut to, Default::default())
+            .map_err(e)?;
         // A server starts with nothing in it; the tests' first shell, %1 in
         // workspace main, is 80 by 24, in the server's home.
         let home = server.dir.to_string_lossy().into_owned();
@@ -426,7 +435,7 @@ pub struct Client {
     stream: UnixStream,
     decoder: Decoder,
     socket: fux::socket::SocketPath,
-    keymap: Keymap,
+    state: ClientState,
     read_only: bool,
     /// Whether the server's Hello has come.
     greeted: bool,
@@ -473,7 +482,7 @@ impl Client {
             stream,
             decoder: Decoder::default(),
             socket: server.socket_path()?,
-            keymap: server.keymap.clone(),
+            state: server.state.clone(),
             read_only,
             greeted: false,
             keyboard: None,
@@ -600,9 +609,9 @@ impl Client {
                 }
                 ToAttached::Exit(reason) => self.exit = Some(reason.to_owned()),
                 ToAttached::Welcome(me, run) if self.keyboard.is_none() => {
-                    let keymap = self.keymap.clone();
+                    let state = self.state.clone();
                     self.keyboard = Some(
-                        Keyboard::new(&self.socket, me, run, keymap, self.read_only).map_err(e)?,
+                        Keyboard::new(&self.socket, me, run, state, self.read_only).map_err(e)?,
                     );
                     self.id = Some(me.to_string());
                 }

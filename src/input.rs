@@ -659,7 +659,7 @@ mod tests {
         s.input(c, b"\x02g\x02");
         assert_eq!(mode(&s, c), "normal");
         assert_eq!(queued_focused(&mut s, c), b"\x02");
-        let at = (s.test_keymap.column(&[], 0).ok_or("a column")?.entries)
+        let at = (s.test_keymap.keys.column(&[], 0).ok_or("a column")?.entries)
             .iter()
             .position(|e| e.key.to_string() == "g")
             .ok_or("the layer is listed")?;
@@ -873,7 +873,7 @@ mod tests {
         assert_eq!(notice(&s, c), "C-b M-t is not bound");
         escape(&mut s, c);
         // The column lists it last, and runs it.
-        let entries = s.test_keymap.column(&[], 0).ok_or("a column")?.entries;
+        let entries = s.test_keymap.keys.column(&[], 0).ok_or("a column")?.entries;
         assert!(entries.last().is_some_and(|e| e.root), "{entries:?}");
         s.input(c, b"\x02");
         s.input(c, &downs(entries.len().saturating_sub(1)));
@@ -913,7 +913,9 @@ mod tests {
     /// mode.
     #[test]
     fn every_default_binding_runs_its_program() -> Outcome {
-        let keymap = crate::script::default_keys().map_err(|e| e.to_string())?;
+        let keymap = crate::script::default_state()
+            .map(|state| state.keys)
+            .map_err(|e| e.to_string())?;
         let bindings = keymap.bindings.all();
         assert!(!bindings.is_empty());
         let mut refused = Vec::new();
@@ -1007,7 +1009,7 @@ mod tests {
             let codes: Vec<String> = match screen(&s, c) {
                 Screen::List(list) => list.items.into_iter().map(|i| i.code).collect(),
                 mut confirm @ Screen::Confirm(_) => {
-                    (confirm.key(&s.test_keymap, crate::keymap::key("y")?.into(), false))
+                    (confirm.key(&s.test_keymap.keys, crate::keymap::key("y")?.into(), false))
                         .into_iter()
                         .filter_map(|e| match e {
                             crate::screens::Effect::Run(job) => Some(job.code),
