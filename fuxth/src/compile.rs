@@ -744,19 +744,17 @@ impl<A: Clone> Compiler<A> {
     /// it is refused, and the compiler is as it was. A library is whole:
     /// it opens no block another source closes, nor closes one.
     pub fn library(&mut self, source: &str, text: &str) -> Result<Vec<Doc>, Error> {
-        if let Some(open) = self.open.last() {
-            return Err(unclosed(open));
-        }
+        self.source_complete()?;
         let spans = crate::token::spans(source, text)?;
         let tokens: Vec<Token> = spans.iter().map(|(token, _)| token.clone()).collect();
         let before = self.clone();
         self.add(&tokens)?;
-        let docs = match self.open.last() {
-            Some(open) => Err(unclosed(open)),
-            None => (self.made.iter())
+        let docs = self.source_complete().and_then(|()| {
+            self.made
+                .iter()
                 .map(|&(from, to)| Doc::of(text, &spans, from, to))
-                .collect::<Result<Vec<Doc>, Error>>(),
-        };
+                .collect::<Result<Vec<Doc>, Error>>()
+        });
         if docs.is_err() {
             *self = before;
         }
