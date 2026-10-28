@@ -2650,8 +2650,7 @@ mod tests {
     }
 
     /// The default keys are a config every line of which binds; what
-    /// `list-keys` prints are config lines that make the same keys again,
-    /// from any keys.
+    /// list-keys prints reconstructs the same keys from any starting keys.
     #[test]
     fn the_default_keys_are_a_config_list_keys_prints() -> Result<(), super::Failed> {
         let run = |name: &str, text: &str, state: &mut crate::client_state::Draft| {

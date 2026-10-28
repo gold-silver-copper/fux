@@ -240,6 +240,8 @@ struct Attached {
     /// The pictures its terminal was last sent, as they show there, and
     /// their sixel data.
     pictures: Vec<render::Visible>,
+    /// Complete pane pictures, before feedback or a panel hides any.
+    pane_pictures: Vec<render::Visible>,
     sixels: render::Sixels,
 }
 
@@ -335,6 +337,7 @@ impl Attached {
             spare: Grid::default(),
             placement: Placement::default(),
             pictures: Vec::new(),
+            pane_pictures: Vec::new(),
             sixels: render::Sixels::default(),
             clock: PaintClock {
                 next: now,
@@ -1124,9 +1127,22 @@ impl Server {
                     && render::shows_pictures(session, id)
                     && painted.kept(id, rect, rows, cols)
                 {
-                    pictures.extend(attached.pictures.iter().filter(|p| p.pane == id).cloned());
+                    pictures.extend(
+                        attached
+                            .pane_pictures
+                            .iter()
+                            .filter(|p| p.pane == id)
+                            .cloned(),
+                    );
                 }
             }
+        }
+        let overlay = render::bar_overlay(session, view, &attached.placement);
+        attached.pane_pictures = pictures.clone();
+        if !view.mode.is_normal() {
+            pictures.clear();
+        } else if overlay {
+            render::clip_bar_pictures(view, &mut pictures);
         }
         for gone in (attached.pictures.iter()).filter(|p| known && !pictures.contains(p)) {
             attached.shown.forget_area(gone.area);
@@ -1143,11 +1159,17 @@ impl Server {
         // the envelope, whose cursor hide and show would restart a blinking
         // cursor.
         self.paint_buffer.clear();
-        let shown = &attached.shown;
+        let changed = render::paint_into(
+            &attached.shown,
+            known,
+            &attached.spare,
+            &mut self.paint_buffer,
+        );
+        // Recovery state can change behind identical visible cells.
+        mem::swap(&mut attached.shown, &mut attached.spare);
         let mut written = 0;
-        if render::paint_into(shown, known, &attached.spare, &mut self.paint_buffer) {
+        if changed {
             Attached::paint(&mut conn.out, &self.paint_buffer);
-            mem::swap(&mut attached.shown, &mut attached.spare);
             attached.known = true;
             attached.clock.painted(now);
             // Written now rather than when the next poll says it can be: a
@@ -1840,6 +1862,234 @@ mod tests {
             },
             peer,
         ))
+    }
+
+    #[test]
+    fn feedback_restores_complete_pictures_while_the_frame_stays_held()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (mut server, _peer) = server()?;
+        let client = *server.session.views.keys().next().ok_or("client")?;
+        let pane = *server.session.parts.panes().keys().next().ok_or("pane")?;
+        crate::session::testing::output_as(
+            &mut server.session,
+            Some(client),
+            "str bar list str off list end list end false end set",
+        )?;
+        let view = server.session.views.get_mut(&client).ok_or("view")?;
+        view.terminal.sixel = Some(true);
+        view.terminal.cell = fux_vt::CellSize::new(12, 12);
+        server.session.settled();
+        server.paint(0, Instant::now());
+        let picture = std::sync::Arc::new(
+            fux_vt::sixel::Picture::new(12, 24, vec![255; 12 * 24 * 4]).ok_or("picture")?,
+        );
+        let full = vec![
+            render::Visible {
+                pane,
+                area: (8, 0, 2, 1),
+                crop: (0, 0, 12, 24),
+                picture: std::sync::Arc::clone(&picture),
+            },
+            render::Visible {
+                pane,
+                area: (9, 1, 1, 1),
+                crop: (0, 0, 12, 12),
+                picture,
+            },
+        ];
+        let attached = server
+            .conns
+            .first_mut()
+            .and_then(Conn::attached)
+            .ok_or("attached")?;
+        attached.pictures = full.clone();
+        attached.pane_pictures = full.clone();
+        let mut frame = b"\x1b[?2026h".to_vec();
+        frame.extend(std::iter::repeat_n(b"X\x1b[65535b", 4000).flatten());
+        frame.extend_from_slice(b"\x1b[?2026l");
+        server.session.out(pane, &frame);
+        assert!(
+            server
+                .session
+                .parts
+                .panes()
+                .get(&pane)
+                .is_some_and(Pane::mid_frame)
+        );
+        server.session.notify_to(client, "feedback", true);
+        server.paint(0, Instant::now());
+        let covered = &server
+            .conns
+            .first_mut()
+            .and_then(Conn::attached)
+            .ok_or("attached")?
+            .pictures;
+        assert_eq!(covered.len(), 1);
+        assert_eq!(covered.first().map(|p| p.crop.3), Some(12));
+        let out = &mut server.conns.first_mut().ok_or("connection")?.out;
+        out.take(out.len());
+        server.session.views.get_mut(&client).ok_or("view")?.notice = None;
+        server.paint(0, Instant::now());
+        assert!(
+            server
+                .session
+                .parts
+                .panes()
+                .get(&pane)
+                .is_some_and(Pane::mid_frame)
+        );
+        let restored = &server
+            .conns
+            .first_mut()
+            .and_then(Conn::attached)
+            .ok_or("attached")?
+            .pictures;
+        assert!(
+            restored == &full,
+            "the complete picture crops were not restored"
+        );
+        let (sent, _) = sent(server.conns.first().ok_or("connection")?);
+        assert!(
+            String::from_utf8_lossy(&sent).contains("\x1bP"),
+            "restored pixels were not sent"
+        );
+        Ok(())
+    }
+
+    fn hidden_row_after_no_output_paint(
+        clear_without_output: bool,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let (mut server, _peer) = server()?;
+        let client = *server.session.views.keys().next().ok_or("client")?;
+        let pane = *server.session.parts.panes().keys().next().ok_or("pane")?;
+        crate::session::testing::output_as(
+            &mut server.session,
+            Some(client),
+            "str bar list str off list end list end false end set str styles list list str bar str default str default end list str notice str default str default end end set",
+        )?;
+        server.session.out(pane, b"\x1b[10;1H\x1b]8;;https://example.test/old\x1b\\old A\x1b]8;;\x1b\\\x1b[5 q\x1b]12;#123456\x07");
+        if clear_without_output {
+            server.session.out(pane, b"\x1b[?25l");
+        }
+        server.paint(0, Instant::now());
+        server.session.notify_to(client, "feedback", false);
+        server.paint(0, Instant::now());
+        let attached = server
+            .conns
+            .first_mut()
+            .and_then(Conn::attached)
+            .ok_or("attached")?;
+        let expected = if clear_without_output {
+            attached.shown.row_text(9)
+        } else {
+            "completed B".to_owned()
+        };
+        let clock = attached.clock.next;
+        let uri = if clear_without_output {
+            ""
+        } else {
+            "https://example.test/latest"
+        };
+        // The bar fills its trailing cell with a literal space, so the
+        // identical-content case writes that cell too, without erasing it.
+        let (text, erase) = if clear_without_output {
+            (format!("{expected} "), "")
+        } else {
+            (expected.clone(), "\x1b[K")
+        };
+        let update = format!("\x1b[10;1H\x1b[0m\x1b]8;;{uri}\x1b\\{text}\x1b]8;;\x1b\\{erase}");
+        server.session.out(pane, update.as_bytes());
+        server.paint(0, Instant::now());
+        assert!(
+            server.paint_buffer.is_empty(),
+            "the completed hidden update should need no bytes"
+        );
+        assert_eq!(
+            server
+                .conns
+                .first_mut()
+                .and_then(Conn::attached)
+                .ok_or("attached")?
+                .clock
+                .next,
+            clock
+        );
+        if clear_without_output {
+            server.session.views.get_mut(&client).ok_or("view")?.notice = None;
+            server.paint(0, Instant::now());
+            assert!(
+                server.paint_buffer.is_empty(),
+                "identical visible content should need no bytes: {:?}",
+                String::from_utf8_lossy(&server.paint_buffer)
+            );
+            assert_eq!(
+                server
+                    .conns
+                    .first_mut()
+                    .and_then(Conn::attached)
+                    .ok_or("attached")?
+                    .clock
+                    .next,
+                clock
+            );
+        }
+        let mut frame = b"\x1b[?2026h\x1b[2 q\x1b]12;#ffffff\x07".to_vec();
+        frame.extend(std::iter::repeat_n(b"X\x1b[65535b", 4000).flatten());
+        frame.extend_from_slice(b"\x1b[?2026l");
+        server.session.out(pane, &frame);
+        assert!(
+            server
+                .session
+                .parts
+                .panes()
+                .get(&pane)
+                .is_some_and(Pane::mid_frame)
+        );
+        server.session.views.get_mut(&client).ok_or("view")?.notice = None;
+        server.paint(0, Instant::now());
+        let shown = &server
+            .conns
+            .first_mut()
+            .and_then(Conn::attached)
+            .ok_or("attached")?
+            .shown;
+        assert_eq!(shown.row_text(9), expected);
+        let cursor = if clear_without_output {
+            None
+        } else {
+            Some((9, 11))
+        };
+        assert_eq!(shown.cursor, cursor);
+        let link = if clear_without_output {
+            None
+        } else {
+            Some("https://example.test/latest")
+        };
+        assert_eq!(shown.link(9, 0).map(|(_, link)| link.uri()), link);
+        if !clear_without_output {
+            assert_eq!(shown.modes.cursor_shape, fux_vt::CursorShape::BlinkingBar);
+            assert_eq!(
+                shown.modes.cursor_colour,
+                Some(fux_vt::Rgb {
+                    r: 0x12,
+                    g: 0x34,
+                    b: 0x56
+                })
+            );
+        }
+        assert!((0..shown.rows).all(|y| !shown.row_text(y).contains('X')));
+        Ok(())
+    }
+
+    #[test]
+    fn no_output_paints_retain_the_latest_complete_hidden_row()
+    -> Result<(), Box<dyn std::error::Error>> {
+        hidden_row_after_no_output_paint(false)
+    }
+
+    #[test]
+    fn no_output_paints_clear_obsolete_hidden_rows() -> Result<(), Box<dyn std::error::Error>> {
+        hidden_row_after_no_output_paint(true)
     }
 
     #[test]

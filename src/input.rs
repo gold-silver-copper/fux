@@ -56,10 +56,11 @@ impl Session {
     fn act(&mut self, client: ClientId, act: Act) -> bool {
         match act {
             Act::Presentation(presentation) => {
+                let bell = presentation.bell;
                 if let Some(view) = self.views.get_mut(&client) {
                     view.presentation = presentation;
                 }
-                if !presentation.bell {
+                if !bell {
                     self.parts.clear_bells(client);
                 }
             }
@@ -220,7 +221,18 @@ impl Session {
         let Some(rect) = placement.rect(pane) else {
             return false;
         };
-        let inside = rect.contains(event.row, event.col);
+        let visible = if crate::render::bar_overlay(self, view, &placement) {
+            rect.split(
+                crate::layout::Axis::Vertical,
+                view.rows.saturating_sub(1).saturating_sub(rect.y()),
+            )
+            .0
+        } else {
+            rect
+        };
+        let inside = visible.contains(event.row, event.col);
+        // A release still reaches its pane when feedback covers all of it.
+        let rect = if visible.is_empty() { rect } else { visible };
         let seat = self.shown_tab(client).and_then(|t| t.seat(client));
         let held = seat.is_some_and(|s| s.held);
         // A press of a button, not the wheel, holds it; a release lets go.
@@ -1100,6 +1112,31 @@ mod tests {
         s.out(PaneId::of(3), b"\x1b[?1000h\x1b[?1006h");
         s.input(c, press(below.x() + 1, below.y() + 2).as_bytes());
         assert_eq!(queued(&mut s, 3), b"\x1b[<0;2;3M");
+        Ok(())
+    }
+
+    #[test]
+    fn bar_feedback_blocks_mouse_presses_but_preserves_a_held_release() -> Outcome {
+        let (mut s, c) = crate::session::testing::attached(2, 20)?;
+        output_as(
+            &mut s,
+            Some(c),
+            "str bar list str off list end list end false end set",
+        )?;
+        s.size_client(c, 1, 20).map_err(|e| e.to_string())?;
+        s.out(PaneId::of(1), b"\x1b[?1000h\x1b[?1006h");
+        s.input(c, b"\x1b[<0;1;1M");
+        assert_eq!(queued(&mut s, 1), b"\x1b[<0;1;1M");
+        s.notify_to(c, "refused", true);
+        s.input(c, b"\x1b[<0;2;1M");
+        assert!(queued(&mut s, 1).is_empty());
+        s.input(c, b"\x1b[<0;2;1m");
+        assert_eq!(queued(&mut s, 1), b"\x1b[<0;2;1m");
+        assert!(
+            s.shown_tab(c)
+                .and_then(|t| t.seat(c))
+                .is_some_and(|seat| !seat.held)
+        );
         Ok(())
     }
 

@@ -46,12 +46,60 @@ until `kill` closes it or `respawn` starts it again. A tab closes with its
 last pane, a workspace with its last tab.
 A pane's lines re-wrap when its width changes, history included.
 
-The bottom row is the bar: the workspace and its tabs on the left; on the
+By default the bottom row is the bar: the workspace and its tabs on the left; on the
 right the focused pane's id and label (its given name, else its OSC 0/2
 title, launch program or id), a notice, or copy mode's position. A screen too
 small for its tab (a watcher's, or one too small for all its panes)
 shows panes cut off at their right and bottom, or none of a pane it has
 no room for: the bar names them before the title, hidden first: `[hidden %3] [cut %2]`.
+
+### Presentation
+
+Styles, bar contents and prefix-column visibility belong to each client. Set
+these in your config or a bound program; the whole local draft commits before
+its next server request. A refused draft changes nothing. Defaults live in
+`src/script/client-defaults.fux` and `src/script/keys.fux`.
+
+```fux
+str styles list
+  list str bar str default str default end
+  list str border-focus str '#aabbcc' str default str bold end
+end set
+str bar list str top
+  list str workspace str tabs end
+  list list str slot 0 end str pane end
+  true
+end set
+str bar-slots list list 0 str 'my status text' end end set
+str show-column false set
+```
+
+`styles` changes only the roles supplied: `bar`, `tab` (the selected tab),
+`keys`, `notice`, `error`, `panel`, `border` and `border-focus`. Each row has
+a role, foreground, background, then any of `bold`, `dim`, `italic` and
+`underline`. Colours are 0–255, `str default` or `str '#rrggbb'`. Unknown or
+repeated roles/flags and malformed colours refuse the draft.
+
+`bar` is `[position [left fields] [right fields] tab-numbers?]`. Position is
+`top`, `bottom` or `off`; the boolean numbers tabs from 1 in workspace order.
+Fields are `workspace`, `tabs`, `pane` and `[slot N]`, in the order
+given, at most 16 in total, each occurring once. There are no substitutions
+or executable fields. Native notices, copy hints, prefix/repeat/zoom feedback and
+hidden/cut pane indicators take precedence over the right-side fields.
+
+`bar-slots` replaces this client's slot texts with up to 16 `[N text]` rows:
+N is 0–15, each text at most 256 UTF-8 bytes with no control characters.
+Omitted slots are empty. Slot text stays inert even when it spells fuxth.
+A program supplies any changing text explicitly; fux adds no clock or polling
+timer and never evaluates a program during paint.
+
+Top and bottom reserve one row. Off reserves none: native feedback temporarily
+overlays the bottom pane row, covering its text and pictures without resizing
+PTYs. Client captures include that feedback; pane captures retain the underlying
+pane text. Feedback disappears on the normal input/cancel paths. Zoom alone
+does not create an overlay with the bar off; the focused pane fills the screen.
+`str show-column false set` hides the column body while keeping prefix dispatch,
+navigation, Escape cancellation and repeat feedback active; its default is true.
 
 ## fuxth
 

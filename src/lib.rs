@@ -35,6 +35,7 @@ pub mod layout;
 pub mod outer;
 mod overlay;
 pub mod pane;
+pub mod presentation;
 pub mod process;
 pub mod protocol;
 pub mod render;

@@ -17,5 +17,24 @@ str program-clipboard true set
 str terminal-clipboard true set
 str bell true set
 str titles false set
+str show-column true set
 str copy-environment list end set
 opts str main name attach-defaults
+
+# Painter roles, bar fields and text are inert per-client data.
+str styles list
+  list str bar          250 236 end
+  list str tab            0   2 str bold end
+  list str keys           0  11 str bold end
+  list str notice        11 236 end
+  list str error          9 236 end
+  list str panel        255 238 end
+  list str border       240 str default end
+  list str border-focus   2 str default end
+end set
+str bar list str bottom
+  list str workspace str tabs end
+  list str pane end
+  false
+end set
+str bar-slots list end set
