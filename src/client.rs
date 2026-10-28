@@ -296,7 +296,10 @@ impl Requests {
                         (out.write_all(&bytes).and_then(|()| out.flush()))
                             .map_err(Error::Output)?;
                     }
-                    ToCommand::Part(bytes) => parts.extend_from_slice(&bytes),
+                    ToCommand::Part(bytes) => {
+                        crate::wire::append(&mut parts, &bytes)
+                            .map_err(crate::protocol::Error::Wire)?;
+                    }
                     ToCommand::PartsEnd => {
                         let reply = crate::wire::Reader::new(&parts).whole::<Reply>();
                         return Ok(reply.map_err(crate::protocol::Error::Wire)?);
@@ -955,12 +958,13 @@ fn run_job(
 fn said(mut said: String, stack: &[fuxth::Value<script::Fux>]) -> Option<(String, bool)> {
     for value in stack {
         let room = NOTICE_MAX.saturating_sub(said.len());
-        match value.text_upto(room).filter(|text| text.len() < room) {
-            Some(text) => {
+        match value.text_upto(room) {
+            Ok(Some(text)) if text.len() < room => {
                 said.push_str(&text);
                 said.push('\n');
             }
-            None => {
+            Err(failure) => return Some((failure.message, true)),
+            Ok(_) => {
                 let text = format!(
                     "what the program left is longer than a notice ({NOTICE_MAX} bytes): not shown"
                 );
@@ -1478,6 +1482,62 @@ fn last_frames(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// No end marker is needed to detect an oversized reply. Its owner
+    /// drops the failed request connection, as script::Server does.
+    #[test]
+    fn oversized_unfinished_reply_is_refused() -> Result<(), Box<dyn std::error::Error>> {
+        let (stream, mut peer) = UnixStream::pair()?;
+        peer.set_read_timeout(Some(Duration::from_secs(5)))?;
+        peer.set_write_timeout(Some(Duration::from_secs(5)))?;
+        let writer = std::thread::spawn(move || -> io::Result<bool> {
+            let mut header = [0; 4];
+            peer.read_exact(&mut header)?;
+            let mut request = vec![0; u32::from_be_bytes(header) as usize];
+            peer.read_exact(&mut request)?;
+            let part = vec![0; crate::protocol::MAX_PAYLOAD];
+            let frame = ToCommand::Part(std::borrow::Cow::Borrowed(&part))
+                .encode()
+                .map_err(io::Error::other)?;
+            for _ in 0..=crate::wire::MAX_REPLY.div_ceil(part.len()) {
+                if peer.write_all(&frame).is_err() {
+                    break;
+                }
+            }
+            Ok(match peer.read(&mut [0]) {
+                Ok(0) => true,
+                Err(error) => matches!(
+                    error.kind(),
+                    ErrorKind::ConnectionReset
+                        | ErrorKind::ConnectionAborted
+                        | ErrorKind::BrokenPipe
+                ),
+                Ok(_) => false,
+            })
+        });
+        let mut requests = Requests {
+            stream,
+            decoder: Decoder::default(),
+        };
+        let asked = Asked {
+            after: None,
+            context: Context::default(),
+            request: Request::Do(Command::Ls {
+                target: None,
+                get: None,
+            }),
+        };
+        let result = requests.ask(&asked, &mut io::sink());
+        assert!(matches!(
+            result,
+            Err(Error::Protocol(crate::protocol::Error::Wire(
+                crate::wire::Error::Limit
+            )))
+        ));
+        drop(requests);
+        assert!(writer.join().map_err(|_| "writer stopped")??);
+        Ok(())
+    }
 
     fn new_keyboard(
         socket: &SocketPath,

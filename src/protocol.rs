@@ -20,7 +20,7 @@ use crate::wire::{Wire, wire};
 use std::borrow::Cow;
 
 /// Bumped on any change to the frames below.
-pub const PROTOCOL: u32 = 36;
+pub const PROTOCOL: u32 = 37;
 /// The largest frame, kind byte included.
 pub const MAX_FRAME: usize = 1 << 20;
 /// The largest payload one frame carries.
@@ -724,7 +724,7 @@ mod tests {
                 run: Some(version.run),
                 ..results.into()
             };
-            let bytes = crate::wire::encode(&reply);
+            let bytes = crate::wire::encode(&reply)?;
             let decoded = crate::wire::Reader::new(&bytes).whole::<Reply>()?;
             assert_eq!(decoded, reply);
             assert_eq!(decoded.end().code(), code);
@@ -738,7 +738,11 @@ mod tests {
                 .map(|v| match v {
                     fuxth::Value::App(crate::script::Fux::Answer(a, run)) => {
                         assert_eq!(*run, Some(version.run));
-                        a.json().render()
+                        {
+                            let mut out = String::new();
+                            assert!(a.write_json(&mut out).is_ok());
+                            out
+                        }
                     }
                     fuxth::Value::Int(_)
                     | fuxth::Value::Bool(_)

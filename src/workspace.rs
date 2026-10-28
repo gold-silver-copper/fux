@@ -116,8 +116,14 @@ impl Workspace {
 
     /// Its given name, or its id for display.
     pub fn label(&self) -> std::borrow::Cow<'_, str> {
-        self.name()
-            .map_or_else(|| self.id.to_string().into(), Into::into)
+        self.display_label().into()
+    }
+
+    pub(crate) fn display_label(&self) -> crate::words::Label<'_> {
+        self.name().map_or(
+            crate::words::Label::Id(crate::command::AnyRef::Workspace(self.id)),
+            crate::words::Label::Text,
+        )
     }
 
     pub fn tabs(&self) -> &[Tab] {
@@ -196,12 +202,20 @@ impl Tab {
 
     /// Its given name, or its first pane's label for display.
     pub fn label<'a>(&'a self, panes: &'a BTreeMap<PaneId, Pane>) -> std::borrow::Cow<'a, str> {
+        self.display_label(panes).into()
+    }
+
+    pub(crate) fn display_label<'a>(
+        &'a self,
+        panes: &'a BTreeMap<PaneId, Pane>,
+    ) -> crate::words::Label<'a> {
         if let Some(name) = self.name() {
-            return name.into();
+            return crate::words::Label::Text(name);
         }
-        panes
-            .get(&self.root.first_pane())
-            .map_or_else(|| self.id.to_string().into(), Pane::label)
+        panes.get(&self.root.first_pane()).map_or(
+            crate::words::Label::Id(crate::command::AnyRef::Tab(self.id)),
+            Pane::display_label,
+        )
     }
 
     pub fn root(&self) -> &Tree {

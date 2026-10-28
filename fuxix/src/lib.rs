@@ -20,6 +20,7 @@
 #[cfg(not(any(target_os = "linux", target_os = "android", target_os = "macos")))]
 compile_error!("fuxix supports Linux, Android and macOS");
 
+mod allocation;
 mod errno;
 pub mod file;
 pub mod io;
@@ -30,4 +31,5 @@ pub mod signal;
 pub mod socket;
 pub mod terminal;
 
+pub use allocation::Allocation;
 pub use errno::{Errno, Result};

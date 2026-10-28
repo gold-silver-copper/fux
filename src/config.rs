@@ -160,7 +160,7 @@ impl<const MIN: usize, const MAX: usize> Reads for Number<MIN, MAX> {
 }
 
 impl<const MIN: usize, const MAX: usize> Wire for Number<MIN, MAX> {
-    fn put(&self, out: &mut Vec<u8>) {
+    fn put(&self, out: &mut impl crate::wire::Sink) {
         self.0.put(out);
     }
     fn get(r: &mut Reader<'_>) -> Result<Self, Error> {
@@ -224,9 +224,27 @@ impl Program {
     pub(crate) fn encoded_len(&self) -> usize {
         std::iter::once(&self.program)
             .chain(&self.args)
-            .fold(8usize, |bytes, word| {
-                bytes.saturating_add(8).saturating_add(word.len())
+            .fold(4usize, |bytes, word| {
+                bytes.saturating_add(4).saturating_add(word.len())
             })
+    }
+
+    pub(crate) fn heap_bytes(&self) -> usize {
+        self.args.iter().fold(
+            self.program.capacity().saturating_add(
+                self.args
+                    .capacity()
+                    .saturating_mul(std::mem::size_of::<String>()),
+            ),
+            |bytes, arg| bytes.saturating_add(arg.capacity()),
+        )
+    }
+
+    pub(crate) fn iter(&self) -> impl Iterator<Item = &str> {
+        std::iter::once(self.program.as_str()).chain(self.args.iter().map(String::as_str))
+    }
+    pub(crate) fn len(&self) -> usize {
+        self.args.len().saturating_add(1)
     }
 
     pub fn program(&self) -> &str {
@@ -254,7 +272,7 @@ impl Reads for Program {
 
 /// Read back only checked argv.
 impl Wire for Program {
-    fn put(&self, out: &mut Vec<u8>) {
+    fn put(&self, out: &mut impl crate::wire::Sink) {
         self.program.put(out);
         self.args.put(out);
     }
@@ -270,6 +288,9 @@ impl Wire for Program {
 pub struct EnvName(String);
 
 impl EnvName {
+    pub(crate) fn heap_bytes(&self) -> usize {
+        self.0.capacity()
+    }
     pub fn as_str(&self) -> &str {
         &self.0
     }
@@ -283,7 +304,7 @@ impl std::str::FromStr for EnvName {
 }
 
 impl Wire for EnvName {
-    fn put(&self, out: &mut Vec<u8>) {
+    fn put(&self, out: &mut impl crate::wire::Sink) {
         self.0.put(out);
     }
     fn get(r: &mut Reader<'_>) -> Result<Self, Error> {
@@ -341,10 +362,10 @@ mod tests {
             Setting::Bell(d.bell),
             Setting::Titles(d.titles),
         ] {
-            let bytes = crate::wire::encode(&setting);
+            let bytes = crate::wire::encode(&setting).unwrap_or_default();
             assert_eq!(Reader::new(&bytes).whole::<Setting>(), Ok(setting));
         }
-        let mut zero = crate::wire::encode(&Setting::Buffers(Number(1)));
+        let mut zero = crate::wire::encode(&Setting::Buffers(Number(1))).unwrap_or_default();
         zero.pop();
         zero.push(0);
         assert!(Reader::new(&zero).whole::<Setting>().is_err());

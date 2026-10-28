@@ -101,6 +101,25 @@ palette numbers or `"#rrggbb"`.
 `CLIENT capture-client json`:
 `{"client":"c1","screen_rows":24,"screen_cols":80,"screen_cursor":[ROW,COL],"lines":["…"]}`.
 
+Finite observations have hard limits: 32 MiB of wire bytes and a 128 MiB
+allocation grant for construction, decoding, or client rendering. Client JSON
+serialization charges the retained input and output together, and writes capture
+runs directly without constructing a second JSON object graph. Plain text uses
+one grant for the entire value too: nested lists stream their captures and other
+answers into one admitted output, including formatter workspace and text imports.
+Shared references are conservatively charged at each occurrence.
+Builders charge capacity before reserving, including the old and new
+blocks during growth. Captures admit selected cell work before traversal,
+then charge text, runs and wire bytes as they build. Ordinary trimmed
+captures skip synthesized trailing blanks; full captures keep them.
+The cell allowance is twice `history-bytes`, the live screen, and twice
+the wire allowance for synthesized output cells. A joined range's prefix
+costs row metadata, and `last-output` charges only its selected rows.
+These caps admit the measured 21.9 MB default-history styled capture.
+A larger observation fails explicitly; it is never clipped. Request fewer
+history rows or a narrower row range to reduce a capture. A malformed or
+oversized reply ends that request's connection.
+
 ## What a word made
 
 `run`, `split`, `new-tab`, `new-workspace` and `respawn` leave an answer
@@ -213,8 +232,8 @@ they run, so a `try` may name them too.
 ## `status json`
 
 ```json
-{"socket":"/run/user/1000/fux/server.sock","version":"0.36.0","protocol":36,
- "server_version":"0.36.0","server_protocol":36,"compatible":true}
+{"socket":"/run/user/1000/fux/server.sock","version":"0.36.0","protocol":37,
+ "server_version":"0.36.0","server_protocol":37,"compatible":true}
 ```
 
 With no server, `status` fails (`no_server`), saying the socket and whether

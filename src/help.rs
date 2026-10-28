@@ -278,6 +278,9 @@ fn bounds() -> Vec<(Amount, &'static str, Said)> {
     use Amount::{Bytes, Count, Pixels, Time, Whole};
     use crate::{client, copy, pane, script, server};
     vec![
+        (Bytes(crate::wire::MAX_REPLY), "a finite reply's encoded bytes, including all its parts", &[]),
+        (Bytes(crate::wire::MAX_ALLOCATED), "a finite observation's allocation grant, shared by construction or nested decoding", &[]),
+        (Count(crate::capture::OUTPUT_CELLS), "additional capture cells for synthesized output, beside twice history-bytes and the live screen", &[]),
         (Bytes(crate::protocol::MAX_FRAME), "a message between client and server", &[("README", "length-prefixed and at most {}")]),
         (Bytes(crate::session::LAUNCH_BYTES), "saved launch inputs in one session, including pending replacements", &[]),
         (Bytes(crate::session::DUMP_BYTES), "a dump recipe", &[]),

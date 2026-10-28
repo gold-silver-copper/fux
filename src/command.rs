@@ -802,6 +802,18 @@ impl EnvPatch {
         self.0.push((name, value));
         Ok(())
     }
+    pub(crate) fn heap_bytes(&self) -> usize {
+        self.0.iter().fold(
+            self.0
+                .capacity()
+                .saturating_mul(std::mem::size_of::<(String, Option<std::ffi::OsString>)>()),
+            |bytes, (name, value)| {
+                bytes
+                    .saturating_add(name.capacity())
+                    .saturating_add(value.as_ref().map_or(0, std::ffi::OsString::capacity))
+            },
+        )
+    }
     pub fn as_slice(&self) -> &[(String, Option<std::ffi::OsString>)] {
         &self.0
     }
@@ -835,12 +847,12 @@ impl EnvPatch {
     }
 
     fn entry_len(name: &str, value: &Option<std::ffi::OsString>) -> usize {
-        9usize
+        5usize
             .saturating_add(name.len())
-            .saturating_add(value.as_ref().map_or(0, |v| 8usize.saturating_add(v.len())))
+            .saturating_add(value.as_ref().map_or(0, |v| 4usize.saturating_add(v.len())))
     }
     pub(crate) fn encoded_len(&self) -> usize {
-        self.0.iter().fold(8usize, |bytes, (k, v)| {
+        self.0.iter().fold(4usize, |bytes, (k, v)| {
             bytes.saturating_add(Self::entry_len(k, v))
         })
     }

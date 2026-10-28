@@ -37,6 +37,59 @@ impl Errno {
         self.0
     }
 
+    /// The system description and code, with every owned buffer admitted
+    /// before allocation. The ordinary strerror result fits on the stack;
+    /// longer locale messages grow under the caller's shared grant.
+    pub fn message<A: crate::Allocation>(
+        self,
+        budget: &mut A,
+    ) -> std::result::Result<String, A::Error> {
+        let before = budget.remaining();
+        let mut stack = [0u8; 128];
+        let mut heap = Vec::new();
+        let result = (|| {
+            loop {
+                let bytes = if heap.is_empty() {
+                    stack.as_mut_slice()
+                } else {
+                    heap.as_mut_slice()
+                };
+                // SAFETY: strerror_r writes only the supplied, initialized buffer.
+                let status =
+                    unsafe { libc::strerror_r(self.0, bytes.as_mut_ptr().cast(), bytes.len()) };
+                if status == libc::ERANGE {
+                    let room = bytes.len().checked_mul(2).ok_or_else(A::exceeded)?;
+                    let more = room.checked_sub(heap.len()).ok_or_else(A::exceeded)?;
+                    budget.reserve(&mut heap, more)?;
+                    heap.resize(room, 0);
+                    continue;
+                }
+                let end = bytes.iter().position(|b| *b == 0).ok_or_else(A::exceeded)?;
+                let mut text = if (status == 0 || status == libc::EINVAL) && end > 0 {
+                    budget.lossy(bytes.get(..end).ok_or_else(A::exceeded)?)?
+                } else {
+                    let mut text = String::new();
+                    budget.write(&mut text, format_args!("Unknown error {}", self.0))?;
+                    text
+                };
+                let capacity = heap.capacity();
+                drop(std::mem::take(&mut heap));
+                budget.release(capacity)?;
+                budget.write(&mut text, format_args!(" (os error {})", self.0))?;
+                return Ok(text);
+            }
+        })();
+        drop(heap);
+        if result.is_err() {
+            budget.release(
+                before
+                    .checked_sub(budget.remaining())
+                    .ok_or_else(A::exceeded)?,
+            )?;
+        }
+        result
+    }
+
     /// The `errno` a call reported as its number rather than in `errno`.
     pub(crate) const fn from_raw(raw: i32) -> Self {
         Self(raw)
@@ -108,6 +161,14 @@ mod tests {
             Errno::INTR.to_string(),
             std::io::Error::from_raw_os_error(libc::EINTR).to_string()
         );
+        let mut grant = 4096usize;
+        let message = Errno::INTR.message(&mut grant).unwrap_or_default();
+        assert!(message.starts_with("Interrupted system call"));
+        assert!(message.ends_with("(os error 4)"));
+        assert_eq!(4096usize.saturating_sub(grant), message.capacity());
+        let mut tiny = 1usize;
+        assert!(Errno::INTR.message(&mut tiny).is_err());
+        assert_eq!(tiny, 1);
         let io: std::io::Error = Errno::MFILE.into();
         assert_eq!(Errno::from_io_error(&io), Some(Errno::MFILE));
         assert_eq!(Errno::from_raw(libc::EINTR), Errno::INTR);

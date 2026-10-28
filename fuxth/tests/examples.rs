@@ -55,7 +55,9 @@ fn shown(value: &Value<Nothing>) -> String {
     match value {
         Value::Int(n) => n.to_string(),
         Value::Bool(b) => b.to_string(),
-        Value::Str(_) | Value::List(_) | Value::App(_) => value.text(),
+        Value::Str(_) | Value::List(_) | Value::App(_) => {
+            value.text().unwrap_or_else(|f| f.message)
+        }
     }
 }
 

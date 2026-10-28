@@ -528,11 +528,10 @@ pub struct Launch {
 
 impl Launch {
     pub(crate) fn bytes(&self) -> usize {
-        self.argv
-            .encoded_len()
-            .saturating_add(self.env.encoded_len())
-            .saturating_add(self.cwd.as_os_str().len())
-            .saturating_add(9)
+        std::mem::size_of::<Self>()
+            .saturating_add(self.argv.heap_bytes())
+            .saturating_add(self.env.heap_bytes())
+            .saturating_add(self.cwd.capacity())
     }
 }
 
@@ -605,27 +604,6 @@ impl Losses {
         add(&mut self.copies_not_text, copies_not_text);
         add(&mut self.pictures, pictures);
         add(&mut self.memory, memory);
-    }
-
-    /// As a pane's JSON says them: `{"input":0,"replies":1,…}`.
-    pub fn json(self) -> crate::json::Json {
-        use crate::json::Json;
-        let Losses {
-            input,
-            replies,
-            copies_cut,
-            copies_not_text,
-            pictures,
-            memory,
-        } = self;
-        Json::object(vec![
-            ("input", Json::uint(input)),
-            ("replies", Json::uint(replies)),
-            ("copies_cut", Json::uint(copies_cut)),
-            ("copies_not_text", Json::uint(copies_not_text)),
-            ("pictures", Json::uint(pictures)),
-            ("memory", Json::uint(memory)),
-        ])
     }
 
     /// What a notice says of them, of pane `id`: for each kind it lost
@@ -1820,16 +1798,21 @@ impl Pane {
 
     /// Its given name, title or launch program, or its id for display.
     pub fn label(&self) -> std::borrow::Cow<'_, str> {
+        self.display_label().into()
+    }
+
+    pub(crate) fn display_label(&self) -> crate::words::Label<'_> {
+        use crate::words::Label;
         if let Some(name) = self.name() {
-            return name.into();
+            return Label::Text(name);
         }
         if !self.title.as_str().is_empty() {
-            return self.title.as_str().into();
+            return Label::Text(self.title.as_str());
         }
         if let Runs::Explicit(launch) = &self.runs {
-            return basename(launch.argv.program()).into();
+            return Label::Text(basename(launch.argv.program()));
         }
-        self.id.to_string().into()
+        Label::Id(crate::command::AnyRef::Pane(self.id))
     }
 }
 
