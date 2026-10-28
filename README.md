@@ -261,6 +261,16 @@ before yours, in the words yours uses
 command prompt prints yours the same way. From the CLI, `fux list-keys`
 prints these defaults.
 
+`me str last step-tab` and `me str last step-workspace` return to the
+previous distinct tab or workspace that this attachment showed. Last tab
+can cross workspaces; last workspace returns to that workspace's remembered
+tab. Repeating `last` toggles the two places. Showing the same place again
+or reordering it does not change history. Each attachment retains just one
+previous identity of each kind; closing it clears it, with no older fallback.
+If a close selects the remembered place, it ceases to be its own previous
+place. With no previous place, the step refuses. Detaching discards this history.
+For example, bind `str 't q' str 'me str last step-tab' bind` in your config.
+
 - **Choosers** (`t g`, `w g`, `a s`, `a t`, `a w`) list tabs, workspaces
   or panes. A chooser acts on the item it was opened for, even once
   renamed, and closes if that item is gone.
@@ -578,14 +588,43 @@ that touch it, and once those beyond are at their least the next border
 out moves on: each split it moves takes the cells its two sides then have
 as its shares. A terminal's resize changes no share.
 
-Nothing is saved on its own. To keep a session past its server (a crash, a
-`kill -9`, a reboot), dump it when you choose, and replay the dump on a
+A dump is executable launch intent. Replaying it starts new processes with
+new identities, using the saved launch arguments, environment patches,
+directories, names and layouts. It can repeat external side effects. It does
+not save process memory, terminal contents/history, paste buffers, client
+views or journal entries. Replay is a sequence of requests: if a later one
+fails, earlier creations remain. Review the script before running it.
+
+Nothing is saved automatically. To recreate a layout after its server ends
+(a crash, `kill -9`, or a reboot), save a dump beforehand and replay it on a
 fresh server:
 
 ```sh
 fux all dump > ~/session.fux              # save when you choose
 fux start && fux --file ~/session.fux # replay on a fresh server
 ```
+
+Detaching, a client crash, or socket EOF leaves the server's processes,
+pane screens/history, layouts, buffers and journal running. That attachment's
+view, navigation history, focus seats and overlays are discarded. Remaining
+clients can change pane sizing and capability hosts. With every client gone,
+programs still run and their output is parsed into bounded state; no terminal
+hosts their tabs. A killed client cannot reliably restore its outer terminal.
+
+A normal server stop shuts down its panes and discards all in-memory state.
+A server crash or reboot offers no process-survival or recovery guarantee;
+SIGKILL cannot run cleanup, and OS hangup behavior is not a saved session.
+A restart creates a new server run. There is no automatic crash restore or
+live upgrade.
+
+Ordinary requests and attachments require exactly equal protocol numbers;
+release-version proximity does not suffice. On mismatch the existing server
+is left running. Use a client with its protocol to keep working in its panes.
+The frozen Hello/Kill exchange lets `fux force-kill-server` explicitly stop
+an incompatible server and its panes; starting another does not resume them.
+A lost command reply leaves its outcome unknown: the server may already have
+created a process, killed a target or queued input. Repeating that request is
+not a safe way to discover whether the first one ran.
 
 `arrange` replaces an existing tab's whole layout in one guarded commit:
 
@@ -631,6 +670,21 @@ either case.
 
 ## Terminal features
 
+The outer terminal must accept UTF-8 and xterm-style cursor movement,
+erasing, alternate-screen controls and SGR, including indexed/RGB colours.
+Fux emits this dialect directly; it does not choose it from outer `TERM` or
+a terminal-brand database. The `TERM=xterm-256color` given to pane programs
+describes fux, not evidence about the outer terminal.
+
+Queries supply evidence for keyboard flags, underline styles, sixel, cell
+size and colours. `ls json` exposes capability evidence separately from
+each client's effective output, and each tab's chosen `host` (see [JSON](docs/json.md)).
+An unanswered query is unknown. OSC 52 clipboard, OSC 8 links, cursor
+controls and synchronized-output markers are requests the outer terminal
+may ignore; sending them is not proof of support or delivery. Fux promises
+neither universal terminal compatibility nor identical glyphs across fonts
+and width implementations.
+
 - **Mouse.** fux turns on your terminal's mouse reporting only while the
   focused pane's program asks for it (htop, `vim` with `mouse=a`, lazygit)
   and nothing of fux's is open, and gives that program its clicks, drags
@@ -646,8 +700,9 @@ either case.
   and Tab); Escape needs no wait. Each program gets keys as it asked: kitty
   protocol, xterm's modifyOtherKeys, or plain. The decoder and encoder are
   fux-vt's (`fux_vt::keys`), so other hosts of fux-vt can use them.
-- **Synchronized output** (mode 2026): frames reach your terminal whole; a
-  frame is shown anyway after 1 s or past 2 MiB.
+- **Synchronized output** (mode 2026): fux brackets output frames for
+  terminals supporting it. Pane programs' held frames are released after
+  1 s or past 2 MiB even if the program does not end the frame.
 - **One terminal answers for a tab.** With several terminals attached,
   a tab's panes are answered (colours, scheme, sixel, cell size) by one
   terminal, the tab's host: of those showing the tab, the one that last
@@ -677,7 +732,7 @@ either case.
 - **Titles.** With `str titles true set`, your terminal's title is the
   focused pane's (or its tab's label). fux saves your terminal's own title
   first and restores it when you detach or turn titles off.
-- **Hyperlinks** (OSC 8) reach your terminal as links.
+- **Hyperlinks** (OSC 8) are emitted as link requests to your terminal.
 - **Pictures** (sixel). A pane's program is told your terminal draws sixel
   graphics, and the size of its cells (`CSI 16 t`, asked again each time
   your terminal is resized, as a font zoom resizes it), if your terminal
@@ -737,8 +792,8 @@ either case.
   so a program reports in cells, as with a terminal without it.
 - **Hooks** (tmux's `set-hook`): read `fux all events` and run fux
   instead.
-- **Programs that outlive their server**, or a session saved on its own: a
-  crash ends them; replay a `dump` you saved to make the layout again.
+- **Process survival after server failure**, or automatic session saving:
+  replaying a saved `dump` creates new processes and recreates the layout.
 - **A format language** for output (tmux's `#{…}`): `json`, and `X str
   FIELD get` for one value.
 - **Watching the config file**: a typing terminal runs it as it attaches.

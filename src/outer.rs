@@ -129,17 +129,17 @@ pub struct Terminal {
     /// have been asked again, so that a program that asks at the report
     /// gets the new ones.
     change: Option<Scheme>,
-    /// Whether the kitty keyboard flags were pushed.
-    pub kitty: bool,
-    /// Whether the terminal draws underline styles (see `styles!`): the
-    /// client is painted them (`render::sgr`), else plain underlines.
-    pub underline_styles: bool,
+    /// The last decoded kitty flags reported; none until it answers.
+    pub kitty: Option<u8>,
+    /// Positive underline-style evidence (see `styles!`); the decoder
+    /// gives no negative report. Unknown is painted as plain underlines.
+    pub underline_styles: Option<bool>,
     /// Its palette entries 0 to 15, answered to the panes it answers for.
     pub palette: Palette,
     /// Whether it draws sixel graphics (DA1's `4`), and the size of its cells
-    /// in pixels (`CSI 16 t`): pictures in panes are shown on it, and the
-    /// panes it hosts are told so ([`Terminal::graphics`]).
-    pub sixel: bool,
+    /// in pixels (`CSI 16 t`); no DA1 reply means unknown. The panes it
+    /// hosts are told the effective graphics ([`Terminal::graphics`]).
+    pub sixel: Option<bool>,
     pub cell: Option<fux_vt::CellSize>,
     /// The cell it last said, width by height, a refused one too: a
     /// refusal is told as the answer changes, not at each asking.
@@ -147,12 +147,39 @@ pub struct Terminal {
 }
 
 impl Terminal {
+    /// Reports retain unknowns and even cell sizes refused for graphics.
+    pub(crate) fn facts(
+        &self,
+        budget: &mut crate::wire::Budget,
+    ) -> Result<crate::json::Json, crate::session::Error> {
+        use crate::json::Json;
+        let cell = self
+            .said_cell
+            .map(|(width, height)| {
+                budget.object([("width", Json::int(width)), ("height", Json::int(height))])
+            })
+            .transpose()?
+            .unwrap_or(Json::Null);
+        budget.object([
+            ("sixel_reported", self.sixel.map_or(Json::Null, Json::Bool)),
+            ("cell_reported", cell),
+            (
+                "underline_styles_reported",
+                self.underline_styles.map_or(Json::Null, Json::Bool),
+            ),
+            (
+                "kitty_flags_reported",
+                self.kitty.map_or(Json::Null, Json::int),
+            ),
+        ])
+    }
+
     /// What it draws, as the panes it hosts are told: sixel only in a cell
     /// it said, which pictures are laid out in.
     pub fn graphics(&self) -> Graphics {
         match self.cell {
             None => Graphics::Text,
-            Some(cell) if self.sixel => Graphics::Sixel(cell),
+            Some(cell) if self.sixel == Some(true) => Graphics::Sixel(cell),
             Some(cell) => Graphics::Cell(cell),
         }
     }
@@ -217,8 +244,8 @@ impl Session {
             // DA1, the last answer to every round of questions: a change
             // waiting on colours the terminal did not give is told now.
             Reply::Attributes { sixel } => {
-                view.dirty |= terminal.sixel != sixel;
-                terminal.sixel = sixel;
+                view.dirty |= (terminal.sixel == Some(true)) != sixel;
+                terminal.sixel = Some(sixel);
                 self.tell_change(client);
             }
             // A cell smaller than a sixel band is no size a picture can be
@@ -243,23 +270,24 @@ impl Session {
             }
             // The terminal speaks the kitty protocol: its keys are read
             // exactly from now on.
-            Reply::KittyFlags(_) if !terminal.kitty => {
-                terminal.kitty = true;
-                self.ask(client, KITTY_PUSH);
+            Reply::KittyFlags(flags) => {
+                if terminal.kitty.replace(flags).is_none() {
+                    self.ask(client, KITTY_PUSH);
+                }
             }
             // From now on the client is painted underline styles; what it
             // shows already, painted plain, is painted again
             // (`render::paint_into`).
             Reply::UnderlineStyles => {
-                view.dirty |= !terminal.underline_styles;
-                terminal.underline_styles = true;
+                view.dirty |= terminal.underline_styles != Some(true);
+                terminal.underline_styles = Some(true);
             }
             Reply::Palette { index, rgb } => {
                 if let Some(entry) = terminal.palette.get_mut(usize::from(index)) {
                     *entry = Some(rgb);
                 }
             }
-            Reply::Mode { .. } | Reply::KittyFlags(_) => {}
+            Reply::Mode { .. } => {}
         }
     }
 

@@ -1,7 +1,7 @@
 //! One attached client's own view of the shared state.
 use crate::act::{Edit, Panel};
 use crate::copy::Copy;
-use crate::id::ClientId;
+use crate::id::{ClientId, TabId, WsId};
 use crate::layout::Rect;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -175,6 +175,9 @@ pub struct View {
     pub rows: u16,
     pub cols: u16,
     pub zoom: bool,
+    /// The previous distinct places this attachment showed, across workspaces.
+    pub last_tab: Option<TabId>,
+    pub last_workspace: Option<WsId>,
     pub mode: Mode,
     /// The latest opening, retained after it ends to refuse stale redraws.
     pub opening: u64,
@@ -202,6 +205,8 @@ impl View {
             rows,
             cols,
             zoom: false,
+            last_tab: None,
+            last_workspace: None,
             mode: Mode::Normal,
             opening: 0,
             notice: None,

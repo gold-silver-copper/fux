@@ -20,7 +20,7 @@ use crate::wire::{Wire, wire};
 use std::borrow::Cow;
 
 /// Bumped on any change to the frames below.
-pub const PROTOCOL: u32 = 41;
+pub const PROTOCOL: u32 = 42;
 /// The largest frame, kind byte included.
 pub const MAX_FRAME: usize = 1 << 20;
 /// The largest payload one frame carries.
@@ -81,7 +81,7 @@ impl std::fmt::Display for Mismatch {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "the server speaks protocol {} (fux {}); restart it: `fux force-kill-server` stops it",
+            "the server speaks protocol {} (fux {}); use a matching client to keep its panes running. `fux force-kill-server` stops it and its panes; a new server does not resume them",
             self.protocol, self.version
         )
     }
