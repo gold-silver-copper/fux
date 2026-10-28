@@ -449,7 +449,7 @@ class Fux(Driver):
     def since(self, pane):
         """The version to wait from: the last action's, else now's."""
         if pane not in self.versions:
-            self.versions[pane] = self.fux(*self.pane(pane), "str", "version", "get").stdout.strip()
+            self.versions[pane] = self.fux(*self.pane(pane), "version").stdout.strip()
         return self.versions[pane]
 
     def until(self, pane, test, timeout=10):
@@ -602,7 +602,7 @@ class Fux(Driver):
 
     def mouse(self, pane, button, row, col):
         kind = {0: "click", 64: "wheel-up", 65: "wheel-down"}[button]
-        self.act(*self.pane(pane), "str", kind, str(row), str(col), "mouse", "send-mouse")
+        self.act(*self.pane(pane), "str", kind, str(row), str(col), "send-mouse")
 
     def screen(self, pane, history=False):
         return self.fux(*self.pane(pane), *(["all-history"] if history else []), "capture").stdout
@@ -637,10 +637,10 @@ class Fux(Driver):
         self.fux(*self.pane(pane), "tab", str(cols), str(rows), "resize")
 
     def resize_pct(self, pane, pct):
-        self.fux(*self.pane(pane), str(pct), "percent", "resize-x")
+        self.fux(*self.pane(pane), str(pct), "percent", "str", "horizontal", "resize-pane")
 
     def split(self, pane, argv):
-        words = [*self.pane(pane), "horizontal", "str", argv[0], "program"]
+        words = [*self.pane(pane), "str", "horizontal", "axis", "str", argv[0], "program"]
         for a in argv[1:]:
             words += ["str", a, "arg"]
         return self.act(*words, "split")

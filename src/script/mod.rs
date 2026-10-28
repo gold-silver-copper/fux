@@ -16,8 +16,8 @@ use crate::client;
 use crate::client_state::{ClientState, Draft};
 use crate::code::{Code, Raise};
 use crate::command::{
-    AnyRef, EnvName, Extent, HistoryBytes, Input, Kind, Limit, Mouse, Program, Request, Run,
-    Version, WsRef,
+    AnyRef, EnvName, Extent, HistoryBytes, Input, Kind, Limit, Program, Request, Run, Version,
+    WsRef,
 };
 use crate::id::{ClientId, PaneId, TabId, WsId};
 use crate::json::Json;
@@ -60,8 +60,8 @@ pub enum Fux {
     /// The whole session, optionally with an event replay cursor.
     All(Option<crate::events::Cursor>),
     /// Options for `run`, `new-tab` or `new-workspace` (from `opts`); or a
-    /// request: a pane, tab, workspace or client given options, keys, a
-    /// wait or a mouse event, for the word that acts on it after
+    /// request: a pane, tab, workspace or client given options, keys or a
+    /// wait, for the word that acts on it after
     /// (`%2 str ls text str Enter key send-keys`).
     Opts(Box<Opts>),
     /// A width or height: cells, or a share of the tab.
@@ -241,7 +241,7 @@ fn same_run(a: Option<Run>, b: Option<Run>) -> Result<Option<Run>, fuxth::Failur
     }
 }
 
-/// Options, keys, waits and a mouse event, as words give them, and what
+/// Options, keys and waits, as words give them, and what
 /// they are on: nothing, for `run`, `new-tab` and `new-workspace`.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Opts {
@@ -273,8 +273,6 @@ pub struct Opts {
     pub view: crate::command::CaptureView,
     pub history: Option<usize>,
     pub inputs: Vec<Input>,
-    /// A mouse event: what it does, and its row and column.
-    pub mouse: Option<(Mouse, u16, u16)>,
     /// The words given, for the word they go on to refuse any it would not
     /// use.
     pub given: Vec<words::Opt>,
@@ -524,7 +522,7 @@ fn write_status(status: &Json, out: &mut dyn std::fmt::Write) -> std::fmt::Resul
     write!(
         out,
         "fux {} at {}",
-        field("server_version"),
+        field("server_release"),
         field("socket")
     )?;
     if status.get("compatible") == Some(&Json::Bool(false)) {
@@ -533,7 +531,7 @@ fn write_status(status: &Json, out: &mut dyn std::fmt::Write) -> std::fmt::Resul
             " speaks protocol {}, not this fux's ({}, fux {}): `fux force-kill-server` stops it",
             field("server_protocol"),
             field("protocol"),
-            field("version")
+            field("release")
         )?;
     }
     Ok(())
@@ -1695,6 +1693,11 @@ pub const PROGRAM_STEPS: u64 = 10_000_000;
 /// or runs the words given. What is left on the stack is printed, a value a
 /// line. Its exit status (0, or what `exit` gave), or why it failed.
 pub fn main(args: &[String], out: &mut dyn Write) -> Result<u8, Failed> {
+    if matches!(args, [flag] if matches!(flag.as_str(), "--version" | "-V")) {
+        writeln!(out, "{}", env!("CARGO_PKG_VERSION"))
+            .map_err(|e| Failed::new(Code::Output, format!("writing the output: {e}")))?;
+        return Ok(0);
+    }
     let (tokens, from) = program(args)?;
     // Only words can be a file mistaken for a program.
     let mut machine = compiled(None, &tokens).map_err(|e| match from {
@@ -1779,10 +1782,9 @@ fn program(args: &[String]) -> Result<(Vec<Token>, Given), Failed> {
             ));
         }
         // Help as other programs give it: `help WORD` (or a topic of the
-        // guide), `--help`, `--version`.
+        // guide), `--help`. Release flags are handled before compilation.
         [help, topic] if help == "help" => token::arguments(&["str", topic, "explain"]),
         [flag] if matches!(flag.as_str(), "--help" | "-h") => token::arguments(&["help"]),
-        [flag] if matches!(flag.as_str(), "--version" | "-V") => token::arguments(&["version"]),
         [line] => return Ok((source::text("command line", line)?.tokens(), Given::Words)),
         words => token::arguments(words),
     };
@@ -2080,6 +2082,24 @@ mod tests {
     }
 
     #[test]
+    fn release_flags_bypass_the_operand_taking_version_word()
+    -> Result<(), Box<dyn std::error::Error>> {
+        for flag in ["--version", "-V"] {
+            let mut out = Vec::new();
+            assert_eq!(
+                super::main(&[flag.into()], &mut out).map_err(|e| e.to_string())?,
+                0
+            );
+            assert_eq!(
+                String::from_utf8(out)?,
+                format!("{}\n", env!("CARGO_PKG_VERSION"))
+            );
+        }
+        assert!(super::main(&["version".into()], &mut Vec::new()).is_err());
+        Ok(())
+    }
+
+    #[test]
     fn every_observation_wait_encodes_its_clients_limit() -> Result<(), Box<dyn std::error::Error>>
     {
         use super::*;
@@ -2312,6 +2332,10 @@ mod tests {
         for code in [
             "str c1 client capture expect".to_owned(),
             "str c1 client capture changed".to_owned(),
+            "str c1 client capture version".to_owned(),
+            "@1 version".to_owned(),
+            "%1 str horizontal axis 30 str horizontal resize-pane".to_owned(),
+            "%1 str horizontal axis str click 0 0 send-mouse".to_owned(),
             "str c1 client 0 timeout wait".to_owned(),
             format!("str {version} expect 0 timeout wait"),
             format!("str {version} changed str x text send-keys"),
@@ -2334,7 +2358,7 @@ mod tests {
         // from versions. A catch remains string | payload, since ordinary
         // message failures are still permitted.
         for kind in ["closed-answer", "client-capture"] {
-            for suffix in ["changed drop", "expect drop"] {
+            for suffix in ["changed drop", "expect drop", "version drop"] {
                 let mut vocabulary = super::vocabulary()?;
                 vocabulary.add("held", &format!("-- {kind}"))?;
                 let mut compiler = fuxth::Compiler::<super::Fux>::new(vocabulary);
@@ -2479,7 +2503,7 @@ mod tests {
         assert_eq!(listed.matches(" bind-in").count(), screens.len());
         // Quotes, a backslash and a line end, as a config writes them.
         let mine = r#"str M-t str 'me zoom' bind-root str Mine group
-            str g str 'me focused horizontal str sh program str "echo it'\''s" arg split drop' bind
+            str g str 'me focused str horizontal axis str sh program str "echo it'\''s" arg split drop' bind
             str "a \\ and
             a line" label"#;
         run("mine", mine, &mut keymap)?;

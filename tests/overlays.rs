@@ -92,7 +92,7 @@ fn closing_asks_first_and_acts_on_what_it_asked_about() -> Outcome {
     let server = Server::start("")?;
     let mut client = server.attach(20, 90)?;
     client.wait_for("$")?;
-    server.ok(&["str", "%1", "pane", "horizontal", "split"])?;
+    server.ok(&["str", "%1", "pane", "str", "horizontal", "axis", "split"])?;
     server.ok(&["str", "c1", "client", "str", "%2", "pane", "show"])?;
     client.keys(&format!("{PREFIX}x"))?;
     client.wait_for("close pane %2?")?;
@@ -107,7 +107,7 @@ fn closing_asks_first_and_acts_on_what_it_asked_about() -> Outcome {
     pumped(&mut client, "%2 closed", || Ok(panes(&server)? == ["%1"]))?;
     // A question about a pane that goes stays; its y, run, says so and
     // closes nothing else.
-    server.ok(&["str", "%1", "pane", "horizontal", "split"])?;
+    server.ok(&["str", "%1", "pane", "str", "horizontal", "axis", "split"])?;
     server.ok(&["str", "c1", "client", "str", "%3", "pane", "show"])?;
     client.keys(&format!("{PREFIX}x"))?;
     client.wait_for("close pane %3")?;
@@ -127,7 +127,7 @@ fn pane_actions_are_bindings_a_config_extends() -> Outcome {
         Server::start("str 'a g' str 'me focused str hello notify' bind  str greet label")?;
     let mut client = server.attach(30, 100)?;
     client.wait_for("$")?;
-    server.ok(&["str", "%1", "pane", "horizontal", "split"])?;
+    server.ok(&["str", "%1", "pane", "str", "horizontal", "axis", "split"])?;
     server.ok(&["str", "c1", "client", "str", "%2", "pane", "show"])?;
     client.keys(&format!("{PREFIX}a"))?;
     client.wait_for("move to a new tab")?;
@@ -216,7 +216,7 @@ fn choosers_select_rename_and_close() -> Outcome {
     client.keys(&format!("{DOWN}\r"))?;
     bar_has(&mut client, "elsewhere")?;
     // The move chooser of the pane actions moves the pane there.
-    server.ok(&["str", "%4", "pane", "horizontal", "split"])?;
+    server.ok(&["str", "%4", "pane", "str", "horizontal", "axis", "split"])?;
     client.keys(&format!("{PREFIX}aw"))?;
     client.wait_for("move %5 to workspace")?;
     // The chooser starts on the current workspace; +1 is above it.
@@ -235,7 +235,8 @@ fn the_prompt_runs_commands_and_shows_their_output_or_error() -> Outcome {
     client.wait_for("$")?;
     client.keys(&format!("{PREFIX}e"))?;
     client.wait_for("Enter accept")?;
-    client.keys("me focused vertical str echo program str 'from the prompt' arg split\r")?;
+    client
+        .keys("me focused str vertical axis str echo program str 'from the prompt' arg split\r")?;
     client.wait("typed into the new pane", |t| {
         t.lines().any(|l| l == "from the prompt")
     })?;

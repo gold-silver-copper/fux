@@ -50,7 +50,6 @@ impl Session {
             panes: Vec::new(),
             clients: Vec::new(),
         };
-        let now = std::time::Instant::now();
         let mut nodes = 0usize;
         for ws in self.parts.workspaces().iter().filter(|_| !empty) {
             if selected_place.is_some_and(|(id, _)| id != ws.id())
@@ -83,7 +82,7 @@ impl Session {
                     }
                     let pane = self.parts.panes().get(id).ok_or(Error::NoPane(*id))?;
                     let state = if projection == Projection::Facts {
-                        let fields = crate::capture::state(pane, now, self.copying(*id), budget)?;
+                        let fields = crate::capture::state(pane, self.copying(*id), budget)?;
                         Some(crate::json::Json::Object(budget.fields(fields)?))
                     } else {
                         None

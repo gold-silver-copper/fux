@@ -15,9 +15,9 @@ fn shows(server: &Server, pane: &str, needle: &str) -> Outcome {
 #[test]
 fn targets_are_named_or_here_and_never_guessed() -> Outcome {
     let server = Server::start("")?;
-    server.ok(&["str", "%1", "pane", "horizontal", "split"])?;
+    server.ok(&["str", "%1", "pane", "str", "horizontal", "axis", "split"])?;
     // Without FUX_PANE there is no `here`.
-    let out = server.fux(&["here", "horizontal", "split"])?;
+    let out = server.fux(&["here", "str", "horizontal", "axis", "split"])?;
     assert_eq!(out.status, 1);
     assert!(out.stderr.starts_with("fux: no_target: "), "{}", out.stderr);
     // FUX_PANE, of the server FUX_SERVER says, is the caller's pane, and
@@ -31,7 +31,7 @@ fn targets_are_named_or_here_and_never_guessed() -> Outcome {
     let version = server.version("%1")?;
     let run = version.rsplit(':').next().unwrap_or_default();
     let env = [("FUX_PANE", "%2:0"), ("FUX_SERVER", run)];
-    let out = server.fux_env(&["here", "vertical", "split"], &env)?;
+    let out = server.fux_env(&["here", "str", "vertical", "axis", "split"], &env)?;
     assert_eq!(
         (out.status, out.stdout.split(':').next()),
         (0, Some("%3")),
@@ -95,7 +95,7 @@ fn rename_move_swap_reorder_and_kill() -> Outcome {
     let at = |needle: &str| ls.find(needle).unwrap_or(usize::MAX);
     assert!(at("%2") < at("+2") && at("%1") > at("+2"), "{ls}");
     // Swap toward a neighbour uses the same atomic backend as a counterpart.
-    server.ok(&["str", "%2", "pane", "horizontal", "split"])?;
+    server.ok(&["str", "%2", "pane", "str", "horizontal", "axis", "split"])?;
     server.ok(&["%2", "str", "right", "swap-with"])?;
     assert_eq!(server.ok(&["%2", "tab", "panes"])?.trim(), "%3 %2");
     server.ok(&["%2", "%3", "swap-with"])?;
@@ -427,7 +427,7 @@ fn mistakes_name_what_the_program_wrote() -> Outcome {
     // A workspace never stands for its member, even when there is only one.
     let single = said(&["%1", "workspace", "pane"])?;
     assert!(single.contains("+1 is a workspace, not a pane"), "{single}");
-    server.ok(&["%1", "horizontal", "split"])?;
+    server.ok(&["%1", "str", "horizontal", "axis", "split"])?;
     let many = said(&["%1", "workspace", "pane"])?;
     assert!(many.contains("+1 is a workspace, not a pane"), "{many}");
     Ok(())

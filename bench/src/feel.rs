@@ -538,8 +538,16 @@ fn start(
                     session.command(place, &args)?;
                 } else {
                     let history = HISTORY_BYTES.to_string();
-                    let mut args =
-                        vec!["str", "%1", "pane", "horizontal", &history, "history-bytes"];
+                    let mut args = vec![
+                        "str",
+                        "%1",
+                        "pane",
+                        "str",
+                        "horizontal",
+                        "axis",
+                        &history,
+                        "history-bytes",
+                    ];
                     args.extend(program_words(p));
                     args.extend(["split", "pane"]);
                     let answer = session.command(place, &args)?;
@@ -1236,7 +1244,7 @@ pub fn run(options: &Options) -> Result<bool, String> {
     for mux in &muxes {
         let version = match mux {
             Mux::Direct => Ok(String::new()),
-            Mux::Fux => output(Command::new(&fux).arg("version")),
+            Mux::Fux => output(Command::new(&fux).arg("--version")),
             Mux::Tmux => output(Command::new("tmux").arg("-V")),
             Mux::Zellij => output(Command::new("zellij").arg("--version")),
             Mux::Herdr => output(Command::new("herdr").arg("--version")),

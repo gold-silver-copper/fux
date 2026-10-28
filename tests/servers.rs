@@ -61,6 +61,18 @@ fn servers_are_named_and_kills_are_guarded() -> Outcome {
         "{}",
         status.stdout
     );
+    let release = env!("CARGO_PKG_VERSION");
+    assert!(
+        status
+            .stdout
+            .contains(&format!("\"release\":\"{release}\""))
+    );
+    assert!(
+        status
+            .stdout
+            .contains(&format!("\"server_release\":\"{release}\""))
+    );
+    assert!(!status.stdout.contains("\"version\""));
     // With no server, status fails, so a shell's `if fux status` reads it.
     let none = named(&rt, &["str", "none", "server", "status"], &[])?;
     assert_eq!(none.status, 1, "{}", none.stderr);
@@ -319,7 +331,12 @@ fn keys_to_a_tab_reach_each_pane() -> Outcome {
     ]
     .concat())?;
     let a = first_word(&a);
-    let b = server.ok(&[&["str", a, "pane", "horizontal"][..], &bash, &["split"]].concat())?;
+    let b = server.ok(&[
+        &["str", a, "pane", "str", "horizontal", "axis"][..],
+        &bash,
+        &["split"],
+    ]
+    .concat())?;
     let b = first_word(&b);
     // Each pane takes them, answering its version before them, and writes
     // the command's output.
@@ -361,7 +378,18 @@ fn panes_and_tabs_are_lists_of_handles() -> Outcome {
     ];
     let a = server.ok(&run)?;
     let a = first_word(&a);
-    let b = server.ok(&["str", a, "pane", "str", "cat", "program", "split"])?;
+    let b = server.ok(&[
+        "str",
+        a,
+        "pane",
+        "str",
+        "horizontal",
+        "axis",
+        "str",
+        "cat",
+        "program",
+        "split",
+    ])?;
     let c = server.ok(&run)?;
     let (b, c) = (first_word(&b), first_word(&c));
     let agent = ["str", "agent", "workspace"];
@@ -534,7 +562,9 @@ fn a_dump_makes_its_workspace_again() -> Outcome {
         "str",
         first_word(&pane),
         "pane",
+        "str",
         "vertical",
+        "axis",
         "str",
         "sh",
         "program",
@@ -658,7 +688,9 @@ fn an_unnamed_workspace_replays_independently_of_the_default_shell() -> Outcome 
         "str",
         "first",
         "pane",
+        "str",
         "horizontal",
+        "axis",
         "str",
         "cat",
         "program",

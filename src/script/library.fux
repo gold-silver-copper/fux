@@ -13,11 +13,9 @@ define line text str Enter key send-keys end
 define agent-opts opts str agent in end
 # -- answer : a tab with a shell, in workspace agent, on the size of the tab fux runs in (from outside fux: opts 80 24 size str agent in new-tab)
 define shell agent-opts new-tab end
-# version -- list : the five counts of a version, an action's or wait's answer, or its text: respawns screen bells done ended; a pane or client capture's text is its screen, so it is refused
+# pane-or-seen -- list : the five counts of a pane or held version: respawns screen bells done ended
 define counts
-  dup kind str client-capture eq if str 'counts takes an answer or a version as text: a client capture has no pane version' fail then
-  dup kind str capture eq if str 'counts takes an answer or a version as text, not a capture: its json says its version' fail then
-  string words first str : split-on 1 at str . split-on let parts
+  version str : split-on 1 at str . split-on let parts
   list parts each number end end
 end
 # pane secs -- : wait from it (a pane from now, an answer or str V changed from its version) until nothing changes there for secs seconds

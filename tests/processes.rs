@@ -64,7 +64,7 @@ fn a_closed_panes_background_jobs_end_with_it_under_dash() -> Outcome {
         let launch = if how == "workspace kill" {
             "opts 80 24 size str doomed name new-workspace"
         } else {
-            "%1 horizontal split"
+            "%1 str horizontal axis split"
         };
         server.ok(&[&format!("str shell list str {dash} end set {launch}")])?;
         let (pane, _) = server.newest_pane()?;
@@ -121,7 +121,7 @@ fn a_closed_panes_background_jobs_end_with_it_under_dash() -> Outcome {
 #[test]
 fn signal_ends_the_foreground_and_leaves_background_jobs() -> Outcome {
     let server = Server::start("")?;
-    server.ok(&["str", "%1", "pane", "horizontal", "split"])?;
+    server.ok(&["str", "%1", "pane", "str", "horizontal", "axis", "split"])?;
     let (pane, shell) = server.newest_pane()?;
     let job = server.dir.join("job");
     let front = server.dir.join("front");
@@ -154,7 +154,7 @@ fn signal_ends_the_foreground_and_leaves_background_jobs() -> Outcome {
 #[test]
 fn a_stopped_pane_stays_until_its_program_ends() -> Outcome {
     let server = Server::start("")?;
-    server.ok(&["str", "%1", "pane", "horizontal", "split"])?;
+    server.ok(&["str", "%1", "pane", "str", "horizontal", "axis", "split"])?;
     let mut client = server.attach(20, 100)?;
     let (pane, leader) = server.newest_pane()?;
     // Settled: the new shell has a prompt.
@@ -208,7 +208,7 @@ fn a_stopped_pane_stays_until_its_program_ends() -> Outcome {
 #[test]
 fn a_job_stopped_in_a_pane_leaves_the_pane_running() -> Outcome {
     let server = Server::start("")?;
-    server.ok(&["str", "%1", "pane", "horizontal", "split"])?;
+    server.ok(&["str", "%1", "pane", "str", "horizontal", "axis", "split"])?;
     let (pane, _) = server.newest_pane()?;
     let front = server.dir.join("front");
     start_line(

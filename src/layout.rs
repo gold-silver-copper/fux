@@ -21,9 +21,9 @@ wire! {
     /// How a split arranges its children.
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
     pub enum Axis {
-        /// Side by side, divided by vertical separators (`horizontal split`).
+        /// Side by side, divided by vertical separators (`str horizontal axis split`).
         Horizontal,
-        /// Stacked, divided by horizontal separators (`vertical split`).
+        /// Stacked, divided by horizontal separators (`str vertical axis split`).
         Vertical,
     }
 }
