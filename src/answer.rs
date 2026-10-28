@@ -145,22 +145,43 @@ impl PaneAnswer {
         }
     }
 
-    /// As `json` gives it: the pane, its version, what changed and how
-    /// its program ended, and its status.
-    pub fn json(&self) -> Json {
-        let mut fields = vec![("pane", Json::str(self.pane().to_string()))];
-        fields.extend(
-            self.version()
-                .map(|v| ("version", Json::str(v.to_string()))),
-        );
-        if let PaneAnswer::Changed { changed, ended, .. } = self {
-            let changed = changed.iter().map(|c| Json::str(c.name()));
-            fields.push(("changed", Json::Array(changed.collect())));
-            fields.extend(ended.map(Ended::field));
+    pub(crate) fn charge(
+        &self,
+        budget: &mut crate::wire::Budget,
+    ) -> Result<(), crate::session::Error> {
+        if let PaneAnswer::Changed { changed, .. } = self {
+            budget.slots::<Change>(changed.capacity())?;
         }
-        let status = self.failure().map_or(0, |code| code.status().get());
-        fields.push(("status", Json::int(status)));
-        Json::object(fields)
+        Ok(())
+    }
+
+    /// As JSON, without allocating a second owned graph.
+    pub(crate) fn write_json(&self, out: &mut dyn std::fmt::Write) -> std::fmt::Result {
+        write!(out, "{{\"pane\":\"{}\"", self.pane())?;
+        if let Some(version) = self.version() {
+            write!(out, ",\"version\":\"{version}\"")?;
+        }
+        if let PaneAnswer::Changed { changed, ended, .. } = self {
+            out.write_str(",\"changed\":[")?;
+            for (i, change) in changed.iter().enumerate() {
+                if i > 0 {
+                    out.write_char(',')?;
+                }
+                crate::json::write_str(out, change.name())?;
+            }
+            out.write_char(']')?;
+            match ended {
+                Some(Ended::Exited(code)) => write!(out, ",\"exited\":{code}")?,
+                Some(Ended::Signalled(signal)) => write!(out, ",\"signal\":{signal}")?,
+                Some(Ended::Lost) => out.write_str(",\"exited\":null")?,
+                None => {}
+            }
+        }
+        write!(
+            out,
+            ",\"status\":{}}}",
+            self.failure().map_or(0, |code| code.status().get())
+        )
     }
 }
 

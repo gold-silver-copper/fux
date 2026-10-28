@@ -813,117 +813,172 @@ fn painted(a: &Attributes) -> bool {
 }
 
 impl Captured {
-    /// As it is printed: its lines, in SGR with `styles`, what is
-    /// highlighted between `⟦` and `⟧` with `marks`.
-    pub fn text(&self) -> String {
-        let lines: Vec<String> = (self.lines.iter())
-            .map(|line| sgr_line(line, self.marks, self.styles))
-            .collect();
-        lines.join("\n")
+    /// Charge all retained input before converting it on the client.
+    pub(crate) fn charge(
+        &self,
+        budget: &mut crate::wire::Budget,
+    ) -> Result<(), crate::session::Error> {
+        budget.slots::<Vec<Cut>>(self.lines.capacity())?;
+        for line in &self.lines {
+            budget.slots::<Cut>(line.capacity())?;
+            for cut in line {
+                budget.charge(cut.text.capacity())?;
+            }
+        }
+        if let Of::Pane { state, .. } = &self.of {
+            budget.slots::<(String, Json)>(state.capacity())?;
+            for (key, value) in state {
+                budget.charge(key.capacity())?;
+                value.charge(budget)?;
+            }
+        }
+        Ok(())
     }
 
-    /// As `json` gives it: an object naming what it read, with its
-    /// screen's size and cursor, its lines as plain text, their style runs
-    /// with `styles`, and a pane's version, pending wrap and state.
-    pub fn json(&self) -> Json {
-        let mut fields = match &self.of {
-            Of::Pane { version, .. } => vec![("pane", Json::str(version.pane.to_string()))],
-            Of::Client(client) => vec![("client", Json::str(client.to_string()))],
-        };
-        let cursor = self.screen_cursor.map_or(Json::Null, |(y, x)| {
-            Json::Array(vec![Json::int(y), Json::int(x)])
-        });
-        let lines = (self.lines.iter()).map(|l| Json::str(sgr_line(l, self.marks, false)));
-        fields.extend([
-            ("screen_rows", Json::int(self.screen_rows)),
-            ("screen_cols", Json::int(self.screen_cols)),
-            ("screen_cursor", cursor),
-            ("lines", Json::Array(lines.collect())),
-        ]);
+    /// As printed, admitted beside the retained capture before allocation.
+    pub fn text(&self) -> Result<String, crate::session::Error> {
+        let mut budget = crate::wire::Budget::new();
+        self.charge(&mut budget)?;
+        // All SGR flags and three RGB colours occupy fewer than 128 bytes.
+        // Reserve once; each run reuses it, including the counting pass.
+        let mut sgr = budget.vector::<u8>(if self.styles { 128 } else { 0 })?;
+        let text = crate::json::render(&mut budget, |out| {
+            for (i, line) in self.lines.iter().enumerate() {
+                if i > 0 {
+                    out.write_char('\n')?;
+                }
+                write_line(out, line, self.marks, self.styles, &mut sgr)?;
+            }
+            Ok(())
+        })?;
+        budget.text_value(&text)?;
+        Ok(text)
+    }
+
+    /// JSON directly from the capture: no second graph of owned run objects.
+    pub(crate) fn write_json(&self, out: &mut dyn std::fmt::Write) -> std::fmt::Result {
+        match &self.of {
+            Of::Pane { version, .. } => write!(out, "{{\"pane\":\"{}\"", version.pane)?,
+            Of::Client(client) => write!(out, "{{\"client\":\"{client}\"")?,
+        }
+        write!(
+            out,
+            ",\"screen_rows\":{},\"screen_cols\":{},\"screen_cursor\":",
+            self.screen_rows, self.screen_cols
+        )?;
+        match self.screen_cursor {
+            Some((y, x)) => write!(out, "[{y},{x}]")?,
+            None => out.write_str("null")?,
+        }
+        out.write_str(",\"lines\":[")?;
+        struct Escaped<'a>(&'a mut dyn std::fmt::Write);
+        impl std::fmt::Write for Escaped<'_> {
+            fn write_str(&mut self, text: &str) -> std::fmt::Result {
+                crate::json::escaped(self.0, text)
+            }
+        }
+        for (i, line) in self.lines.iter().enumerate() {
+            if i > 0 {
+                out.write_char(',')?;
+            }
+            out.write_char('"')?;
+            write_line(&mut Escaped(out), line, self.marks, false, &mut Vec::new())?;
+            out.write_char('"')?;
+        }
+        out.write_char(']')?;
         if let Of::Pane { wrap_pending, .. } = &self.of {
-            fields.push(("wrap_pending", Json::Bool(*wrap_pending)));
+            write!(out, ",\"wrap_pending\":{wrap_pending}")?;
         }
         if self.styles {
-            fields.push(("styles", Json::Array(self.lines.iter().map(runs).collect())));
+            out.write_str(",\"styles\":[")?;
+            for (i, line) in self.lines.iter().enumerate() {
+                if i > 0 {
+                    out.write_char(',')?;
+                }
+                out.write_char('[')?;
+                let mut start = 0u32;
+                let mut first = true;
+                for cut in line {
+                    if cut.style != Attributes::default() {
+                        if !first {
+                            out.write_char(',')?;
+                        }
+                        first = false;
+                        write!(out, "{{\"col\":{start},\"len\":{}", cut.cells)?;
+                        describe(out, cut.style)?;
+                        out.write_char('}')?;
+                    }
+                    start = start.saturating_add(cut.cells);
+                }
+                out.write_char(']')?;
+            }
+            out.write_char(']')?;
         }
-        let mut json = Json::object(fields);
-        if let (Json::Object(all), Of::Pane { version, state, .. }) = (&mut json, &self.of) {
-            all.push(("version".to_owned(), Json::str(version.to_string())));
-            all.extend(state.iter().cloned());
+        if let Of::Pane { version, state, .. } = &self.of {
+            write!(out, ",\"version\":\"{version}\"")?;
+            for (key, value) in state {
+                out.write_char(',')?;
+                crate::json::write_str(out, key)?;
+                out.write_char(':')?;
+                value.write(out)?;
+            }
         }
-        json
+        out.write_char('}')
     }
 }
 
-/// A line, in SGR with `styles`: each change of attributes set from
-/// nothing, and reset at its end. With `marks`, what is highlighted
-/// (reverse video, or a background colour) is between `⟦` and `⟧`, drawn
-/// outside the SGR.
-fn sgr_line(line: &[Cut], marks: bool, styles: bool) -> String {
-    let mut out = Vec::new();
+/// Write a line without allocating its plain or escaped intermediate text.
+fn write_line(
+    out: &mut dyn std::fmt::Write,
+    line: &[Cut],
+    marks: bool,
+    styles: bool,
+    sgr: &mut Vec<u8>,
+) -> std::fmt::Result {
     let mut pen = Attributes::default();
     let mut on = false;
     for cut in line {
         let lit = marks && highlighted(&cut.style);
         if lit && !on {
-            out.extend_from_slice("⟦".as_bytes());
+            out.write_str("⟦")?;
         }
         if styles && cut.style != pen {
-            crate::render::sgr(&mut out, cut.style, true);
+            sgr.clear();
+            crate::render::sgr(sgr, cut.style, true);
+            out.write_str(std::str::from_utf8(sgr).map_err(|_| std::fmt::Error)?)?;
             pen = cut.style;
         }
         if on && !lit {
-            out.extend_from_slice("⟧".as_bytes());
+            out.write_str("⟧")?;
         }
         on = lit;
-        out.extend_from_slice(cut.text.as_bytes());
+        out.write_str(&cut.text)?;
     }
     if pen != Attributes::default() {
-        out.extend_from_slice(b"\x1b[0m");
+        out.write_str("\x1b[0m")?;
     }
     if on {
-        out.extend_from_slice("⟧".as_bytes());
+        out.write_str("⟧")?;
     }
-    String::from_utf8_lossy(&out).into_owned()
+    Ok(())
 }
 
-/// A line's runs of cells with attributes other than the default: where
-/// each starts, from 0, how many cells, and what it has.
-fn runs(line: &Vec<Cut>) -> Json {
-    let mut runs = Vec::new();
-    let mut start = 0u32;
-    for cut in line {
-        if cut.style != Attributes::default() {
-            let mut fields = vec![("col", Json::uint(start)), ("len", Json::uint(cut.cells))];
-            fields.extend(described(cut.style));
-            runs.push(Json::object(fields));
+/// Attributes in the JSON vocabulary, streamed into the enclosing run.
+fn describe(out: &mut dyn std::fmt::Write, a: Attributes) -> std::fmt::Result {
+    for (name, colour) in [("fg", a.foreground()), ("bg", a.background())] {
+        match colour {
+            Color::Default => {}
+            Color::Idx(n) => write!(out, ",\"{name}\":{n}")?,
+            Color::Rgb(Rgb { r, g, b }) => write!(out, ",\"{name}\":\"#{r:02x}{g:02x}{b:02x}\"")?,
         }
-        start = start.saturating_add(cut.cells);
     }
-    Json::Array(runs)
-}
-
-/// Attributes as `json` names them: the colours other than the default,
-/// and the attributes set.
-fn described(a: Attributes) -> Vec<(&'static str, Json)> {
-    let colour = |c: Color| match c {
-        Color::Idx(n) => Some(Json::int(n)),
-        Color::Rgb(Rgb { r, g, b }) => Some(Json::str(format!("#{r:02x}{g:02x}{b:02x}"))),
-        Color::Default => None,
-    };
-    let mut fields = Vec::new();
-    fields.extend(colour(a.foreground()).map(|c| ("fg", c)));
-    fields.extend(colour(a.background()).map(|c| ("bg", c)));
     let flags = a.sgr_flags().map(|(_, name)| name);
     let underline = a.underline().then_some("underline");
     let blink = (a.blink() != fux_vt::Blink::None).then_some("blink");
-    fields.extend(
-        flags
-            .chain(underline)
-            .chain(blink)
-            .map(|name| (name, Json::Bool(true))),
-    );
-    fields
+    for name in flags.chain(underline).chain(blink) {
+        write!(out, ",\"{name}\":true")?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -1004,7 +1059,7 @@ mod tests {
                 cells: 1000,
             },
         )?;
-        assert_eq!(capture.text(), "hi");
+        assert_eq!(capture.text()?, "hi");
         Ok(())
     }
 
@@ -1160,7 +1215,7 @@ mod tests {
                 false,
                 8 << 20,
             )?
-            .text())
+            .text()?)
         };
         // Cols 3 and 4 erased, 世 at col 4 does not fit and wraps on.
         let first = |output| {
@@ -1188,7 +1243,7 @@ mod tests {
                 wrapped,
                 ..CaptureView::default()
             };
-            Ok(super::pane(&pane, run, None, view, false, 8 << 20)?.text())
+            Ok(super::pane(&pane, run, None, view, false, 8 << 20)?.text()?)
         };
         assert_eq!(capture((2, 2), false)?, "abcdefghijklm");
         assert_eq!(capture((0, 1), false)?, "top\nabcdefghijklm");
@@ -1219,7 +1274,7 @@ mod tests {
             false,
             8 << 20,
         )?
-        .text();
+        .text()?;
         assert_eq!(text.lines().next(), Some("abc世"));
         Ok(())
     }
@@ -1327,7 +1382,7 @@ mod tests {
             false,
             8 << 20,
         )?;
-        assert_eq!(got.text(), "x\u{0600} ");
+        assert_eq!(got.text()?, "x\u{0600} ");
         assert_eq!(
             got.lines
                 .first()
@@ -1357,7 +1412,7 @@ mod tests {
             CaptureView::default(),
             &mut crate::wire::Budget::new(),
         )?;
-        assert_eq!(got.text(), "x");
+        assert_eq!(got.text()?, "x");
         assert_eq!(
             got.lines
                 .first()
@@ -1453,7 +1508,7 @@ mod tests {
             false,
             8 << 20,
         )?
-        .text();
+        .text()?;
         assert_eq!(text, "hello");
         // A running command's row is whole, its cursor at the start of it
         // too (a progress line it rewrites).
@@ -1466,7 +1521,7 @@ mod tests {
             false,
             8 << 20,
         )?
-        .text();
+        .text()?;
         assert_eq!(text, "step 1");
         Ok(())
     }

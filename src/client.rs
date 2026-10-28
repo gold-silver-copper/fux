@@ -979,12 +979,13 @@ fn run_job(
 fn said(mut said: String, stack: &[fuxth::Value<script::Fux>]) -> Option<(String, bool)> {
     for value in stack {
         let room = NOTICE_MAX.saturating_sub(said.len());
-        match value.text_upto(room).filter(|text| text.len() < room) {
-            Some(text) => {
+        match value.text_upto(room) {
+            Ok(Some(text)) if text.len() < room => {
                 said.push_str(&text);
                 said.push('\n');
             }
-            None => {
+            Err(failure) => return Some((failure.message, true)),
+            Ok(_) => {
                 let text = format!(
                     "what the program left is longer than a notice ({NOTICE_MAX} bytes): not shown"
                 );

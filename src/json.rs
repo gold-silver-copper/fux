@@ -2,7 +2,6 @@
 //! no type of its own (a pane's state, a listing, a field), rendered at
 //! the client. fux never reads JSON text.
 use crate::wire::{Error, Reader, Wire};
-use std::fmt::Write;
 
 /// A JSON object's fields as they are built, in order.
 pub type Fields = Vec<(&'static str, Json)>;
@@ -63,43 +62,65 @@ impl Json {
 
     pub fn render(&self) -> String {
         let mut out = String::new();
-        self.write(&mut out);
+        let _ = self.write(&mut out);
         out
     }
 
-    fn write(&self, out: &mut String) {
+    pub(crate) fn write(&self, out: &mut dyn std::fmt::Write) -> std::fmt::Result {
         match self {
-            Json::Null => out.push_str("null"),
-            Json::Bool(b) => out.push_str(if *b { "true" } else { "false" }),
-            Json::Int(n) => {
-                let _ = write!(out, "{n}");
-            }
-            Json::Uint(n) => {
-                let _ = write!(out, "{n}");
-            }
+            Json::Null => out.write_str("null"),
+            Json::Bool(b) => out.write_str(if *b { "true" } else { "false" }),
+            Json::Int(n) => write!(out, "{n}"),
+            Json::Uint(n) => write!(out, "{n}"),
             Json::String(s) => write_str(out, s),
             Json::Array(items) => {
-                out.push('[');
+                out.write_char('[')?;
                 for (i, item) in items.iter().enumerate() {
                     if i > 0 {
-                        out.push(',');
+                        out.write_char(',')?;
                     }
-                    item.write(out);
+                    item.write(out)?;
                 }
-                out.push(']');
+                out.write_char(']')
             }
             Json::Object(fields) => {
-                out.push('{');
+                out.write_char('{')?;
                 for (i, (key, value)) in fields.iter().enumerate() {
                     if i > 0 {
-                        out.push(',');
+                        out.write_char(',')?;
                     }
-                    write_str(out, key);
-                    out.push(':');
-                    value.write(out);
+                    write_str(out, key)?;
+                    out.write_char(':')?;
+                    value.write(out)?;
                 }
-                out.push('}');
+                out.write_char('}')
             }
+        }
+    }
+
+    /// Charge the retained graph, without copying it.
+    pub(crate) fn charge(
+        &self,
+        budget: &mut crate::wire::Budget,
+    ) -> Result<(), crate::session::Error> {
+        match self {
+            Json::String(text) => budget.charge(text.capacity()),
+            Json::Array(items) => {
+                budget.slots::<Json>(items.capacity())?;
+                for item in items {
+                    item.charge(budget)?;
+                }
+                Ok(())
+            }
+            Json::Object(fields) => {
+                budget.slots::<(String, Json)>(fields.capacity())?;
+                for (key, value) in fields {
+                    budget.charge(key.capacity())?;
+                    value.charge(budget)?;
+                }
+                Ok(())
+            }
+            Json::Null | Json::Bool(_) | Json::Int(_) | Json::Uint(_) => Ok(()),
         }
     }
 
@@ -156,22 +177,73 @@ impl Wire for Json {
 }
 
 /// Writes `text` as a JSON string, escaped.
-fn write_str(out: &mut String, text: &str) {
-    out.push('"');
+pub(crate) fn write_str(out: &mut dyn std::fmt::Write, text: &str) -> std::fmt::Result {
+    out.write_char('"')?;
+    escaped(out, text)?;
+    out.write_char('"')
+}
+
+/// A string's contents, also used to escape capture fragments directly.
+pub(crate) fn escaped(out: &mut dyn std::fmt::Write, text: &str) -> std::fmt::Result {
     for c in text.chars() {
         match c {
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            '\t' => out.push_str("\\t"),
+            '"' => out.write_str("\\\"")?,
+            '\\' => out.write_str("\\\\")?,
+            '\n' => out.write_str("\\n")?,
+            '\r' => out.write_str("\\r")?,
+            '\t' => out.write_str("\\t")?,
             c if (c as u32) < 0x20 || c == '\u{7f}' || c == '\u{2028}' || c == '\u{2029}' => {
-                let _ = write!(out, "\\u{:04x}", c as u32);
+                write!(out, "\\u{:04x}", c as u32)?;
             }
-            c => out.push(c),
+            c => out.write_char(c)?,
         }
     }
-    out.push('"');
+    Ok(())
+}
+
+/// Count without allocating, then reserve the exact output beside its live
+/// input. The second pass writes into that admitted capacity only.
+pub(crate) fn render(
+    budget: &mut crate::wire::Budget,
+    mut write: impl FnMut(&mut dyn std::fmt::Write) -> std::fmt::Result,
+) -> Result<String, crate::session::Error> {
+    struct Count {
+        len: usize,
+        left: usize,
+    }
+    impl std::fmt::Write for Count {
+        fn write_str(&mut self, text: &str) -> std::fmt::Result {
+            self.left = self.left.checked_sub(text.len()).ok_or(std::fmt::Error)?;
+            self.len = self.len.checked_add(text.len()).ok_or(std::fmt::Error)?;
+            Ok(())
+        }
+    }
+    let mut count = Count {
+        len: 0,
+        left: budget.remaining(),
+    };
+    write(&mut count).map_err(|_| crate::wire::Budget::exceeded())?;
+    budget.charge(count.len)?;
+    let mut out = String::new();
+    out.try_reserve_exact(count.len)
+        .map_err(|_| crate::wire::Budget::exceeded())?;
+    struct Output<'a> {
+        text: &'a mut String,
+        left: usize,
+    }
+    impl std::fmt::Write for Output<'_> {
+        fn write_str(&mut self, text: &str) -> std::fmt::Result {
+            self.left = self.left.checked_sub(text.len()).ok_or(std::fmt::Error)?;
+            self.text.push_str(text);
+            Ok(())
+        }
+    }
+    write(&mut Output {
+        text: &mut out,
+        left: count.len,
+    })
+    .map_err(|_| crate::wire::Budget::exceeded())?;
+    Ok(out)
 }
 
 /// Standard base64's alphabet, each character's place its value.

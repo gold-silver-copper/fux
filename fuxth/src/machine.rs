@@ -1290,7 +1290,7 @@ builtins! { m host;
     String "string" (x: Any) "x -- s" "x as text, as print shows it" {
         m.walk(&x);
         // Made only as far as a string may be long.
-        let Some(text) = x.text_upto(LONGEST) else {
+        let Some(text) = x.text_upto(LONGEST).map_err(|f| m.fail(f.code, f.message))? else {
             return Err(m.fail(Code::TooLong, format!(
                 "the text is longer than a string may be ({LONGEST})"
             )));
@@ -1300,13 +1300,13 @@ builtins! { m host;
     }
     Print "print" (x: Any) "x --" "print x now, a line" {
         m.walk(&x);
-        let text = x.text();
+        let text = x.text().map_err(|f| m.fail(f.code, f.message))?;
         host.print(&text).map_err(|f| m.fail(f.code, f.message))
     }
     Fail "fail" (x: Any) "x --" "stop the program, with x as the reason" {
         // Its reason is a string a try may keep: made as `string` makes one.
         m.walk(&x);
-        let Some(text) = x.text_upto(LONGEST) else {
+        let Some(text) = x.text_upto(LONGEST).map_err(|f| m.fail(f.code, f.message))? else {
             return Err(m.fail(Code::TooLong, format!(
                 "the reason is longer than a string may be ({LONGEST})"
             )));

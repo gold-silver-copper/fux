@@ -744,7 +744,11 @@ mod tests {
                 .map(|v| match v {
                     fuxth::Value::App(crate::script::Fux::Answer(a, run)) => {
                         assert_eq!(*run, Some(version.run));
-                        a.json().render()
+                        {
+                            let mut out = String::new();
+                            assert!(a.write_json(&mut out).is_ok());
+                            out
+                        }
                     }
                     fuxth::Value::Int(_)
                     | fuxth::Value::Bool(_)

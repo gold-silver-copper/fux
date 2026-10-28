@@ -87,17 +87,17 @@ impl AppValue for Fux {
         }
     }
 
-    fn text(&self) -> String {
-        match self {
+    fn text(&self) -> Result<String, fuxth::Failure> {
+        Ok(match self {
             Fux::Pane(p, _) => p.to_string(),
             Fux::Tab(t, _) => t.to_string(),
             Fux::Workspace(w, _) => w.to_string(),
             Fux::Client(c, _) => c.to_string(),
-            Fux::Answer(answer, _) => answer.text(),
+            Fux::Answer(answer, _) => return answer.text().map_err(words::observation_failure),
             Fux::Extent(Extent::Cells(n)) => n.to_string(),
             Fux::Extent(Extent::Percent(n)) => format!("{}%", n.get()),
             Fux::Opts(_) => format!("({})", self.kind()),
-        }
+        })
     }
 }
 
@@ -229,32 +229,59 @@ impl Answer {
     }
 
     /// As it is printed.
-    pub fn text(&self) -> String {
-        match self {
+    pub fn text(&self) -> Result<String, crate::session::Error> {
+        Ok(match self {
             Answer::Pane(answer) => answer.text(),
             Answer::Panes(answers) => {
                 let lines: Vec<String> = answers.iter().map(PaneAnswer::text).collect();
                 lines.join("\n")
             }
-            Answer::Capture(captured) => captured.text(),
+            Answer::Capture(captured) => return captured.text(),
             Answer::Listing { of, listing } => {
                 let text = crate::answer::listing_text(*of, listing);
                 text.trim_end_matches('\n').to_owned()
             }
             Answer::Json(json) => json.render(),
             Answer::Status(status) => status_text(status),
+        })
+    }
+
+    fn charge(&self, budget: &mut crate::wire::Budget) -> Result<(), crate::session::Error> {
+        match self {
+            Answer::Capture(captured) => {
+                budget.slots::<crate::capture::Captured>(1)?;
+                captured.charge(budget)
+            }
+            Answer::Listing { listing: json, .. } | Answer::Json(json) | Answer::Status(json) => {
+                json.charge(budget)
+            }
+            Answer::Pane(answer) => answer.charge(budget),
+            Answer::Panes(answers) => {
+                budget.slots::<PaneAnswer>(answers.capacity())?;
+                for answer in answers {
+                    answer.charge(budget)?;
+                }
+                Ok(())
+            }
         }
     }
 
-    /// As `json` gives it: one pane's answer as its object, a tab's or
-    /// workspace's as an array of theirs, however many answered.
-    pub fn json(&self) -> Json {
+    pub(crate) fn write_json(&self, out: &mut dyn std::fmt::Write) -> std::fmt::Result {
         match self {
-            Answer::Pane(answer) => answer.json(),
-            Answer::Panes(answers) => Json::Array(answers.iter().map(PaneAnswer::json).collect()),
-            Answer::Capture(captured) => captured.json(),
+            Answer::Pane(answer) => answer.write_json(out),
+            Answer::Panes(answers) => {
+                out.write_char('[')?;
+                for (i, answer) in answers.iter().enumerate() {
+                    if i > 0 {
+                        out.write_char(',')?;
+                    }
+                    answer.write_json(out)?;
+                }
+                out.write_char(']')
+            }
+            Answer::Capture(captured) => captured.write_json(out),
             Answer::Listing { listing: json, .. } | Answer::Json(json) | Answer::Status(json) => {
-                json.clone()
+                json.write(out)
             }
         }
     }
@@ -1396,10 +1423,20 @@ pub fn main(args: &[String], out: &mut dyn Write) -> Result<u8, Failed> {
             !matches!(value, Value::App(Fux::Answer(a, _)) if a.is_empty())
                 && !matches!(value, Value::App(Fux::Opts(_)))
         })
-        .try_for_each(|value| writeln!(host.out, "{}", value.text()))
-        .and_then(|()| host.out.flush());
+        .try_for_each(|value| {
+            let text = value
+                .text()
+                .map_err(|f| Failed::new(Code::of(f.code), f.message))?;
+            writeln!(host.out, "{text}")
+                .map_err(|e| Failed::new(Code::Output, format!("writing the output: {e}")))
+        })
+        .and_then(|()| {
+            host.out
+                .flush()
+                .map_err(|e| Failed::new(Code::Output, format!("writing the output: {e}")))
+        });
     ran?;
-    printed.map_err(|e| Failed::new(Code::Output, format!("writing the output: {e}")))?;
+    printed?;
     Ok(cli.status.unwrap_or(0))
 }
 

@@ -15,6 +15,15 @@ impl AppValue for Ticket {
     fn kind(&self) -> &'static str {
         "a ticket"
     }
+    fn text(&self) -> Result<String, Failure> {
+        if self.0 == i64::MIN {
+            return Err(Failure::new(
+                Code::TooLong,
+                "the host refused text conversion",
+            ));
+        }
+        Ok(self.kind().to_owned())
+    }
 }
 
 struct Toy {
@@ -34,6 +43,10 @@ impl Host for Toy {
         let args: Vec<_> = args.collect();
         assert_eq!(told, args.len(), "an exact count of the values taken");
         match (word, args.as_slice()) {
+            (4, []) => {
+                out.push(Value::App(Ticket(i64::MIN)));
+                Ok(Done::Now)
+            }
             (3, []) => Ok(Done::Now),
             (2, []) => Err(Failure::new(Code::Unused, "nothing uses it")),
             (0, []) => {
@@ -73,6 +86,7 @@ fn vocabulary() -> Vocabulary {
         .and_then(|_| words.add("ask", "any -- any"))
         .and_then(|_| words.add("nope", "--"))
         .and_then(|_| words.add("liar", "-- any"))
+        .and_then(|_| words.add("no-text", "-- ticket"))
         .and_then(|_| words.raises(Code::Host("not_a_number")))
         .and_then(|()| words.raises(Code::Host("refused")))
         .and_then(|()| words.raises(Code::Host("negative")))
@@ -129,6 +143,18 @@ fn ints(values: &[i64]) -> Vec<Value<Ticket>> {
 
 fn code(result: Result<Vec<Value<Ticket>>, Error>) -> Option<&'static str> {
     result.err().map(|e| e.code.name())
+}
+
+#[test]
+fn host_text_refusal_reaches_every_text_word() {
+    for source in [
+        "no-text print",
+        "no-text string",
+        "no-text fail",
+        "list no-text end print",
+    ] {
+        assert_eq!(code(run(source)), Some("too_long"), "{source}");
+    }
 }
 
 #[test]

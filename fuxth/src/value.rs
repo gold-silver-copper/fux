@@ -1,5 +1,6 @@
 //! Values on the stack: integers, booleans, strings, lists, and the
 //! application's own.
+use crate::error::Failure;
 use std::rc::Rc;
 
 /// How deep lists may nest: a list of lists of … at most this many. Every
@@ -18,8 +19,8 @@ pub trait AppValue: Clone + PartialEq {
         bare(self.kind())
     }
     /// How `string` and `print` show it.
-    fn text(&self) -> String {
-        self.kind().to_owned()
+    fn text(&self) -> Result<String, Failure> {
+        Ok(self.kind().to_owned())
     }
 }
 
@@ -161,6 +162,15 @@ impl Text {
         *self = Text::new(text);
     }
 
+    /// Bytes retained in the text and its character index.
+    pub fn heap_bytes(&self) -> usize {
+        self.text.capacity().saturating_add(
+            self.marks
+                .capacity()
+                .saturating_mul(std::mem::size_of::<usize>()),
+        )
+    }
+
     /// How many characters it has.
     pub fn chars_len(&self) -> usize {
         self.chars
@@ -244,6 +254,13 @@ impl<A> List<A> {
         &self.items
     }
 
+    /// Bytes retained in the item vector, excluding the values' own storage.
+    pub fn heap_bytes(&self) -> usize {
+        self.items
+            .capacity()
+            .saturating_mul(std::mem::size_of::<Value<A>>())
+    }
+
     /// A list of `items`; `None` if it would nest deeper than [`NESTING`]
     /// or hold more than [`TOTAL`] in all.
     pub fn new(items: Vec<Value<A>>) -> Option<Self> {
@@ -317,24 +334,34 @@ impl<A: AppValue> Value<A> {
     /// The value as text, as `string` and `print` show it: digits, `true`
     /// or `false`, a string as it is, a list's values' text with a space
     /// between, the application's text.
-    pub fn text(&self) -> String {
+    pub fn text(&self) -> Result<String, Failure> {
+        if let Self::App(app) = self {
+            return app.text();
+        }
         let mut out = String::new();
-        self.write_text(&mut out, usize::MAX);
-        out
+        self.write_text(&mut out, usize::MAX)?;
+        Ok(out)
     }
 
     /// The text, if it is at most `most` characters long.
-    pub fn text_upto(&self, most: usize) -> Option<Text> {
+    pub fn text_upto(&self, most: usize) -> Result<Option<Text>, Failure> {
+        if let Self::App(app) = self {
+            let out = app.text()?;
+            return Ok((out.chars().count() <= most).then(|| Text::new(out)));
+        }
         let mut out = String::new();
         // A character is at most 4 bytes: past that many, it is too long.
         let bytes = most.saturating_mul(4);
-        let text = self.write_text(&mut out, bytes).then(|| Text::new(out))?;
-        (text.chars_len() <= most).then_some(text)
+        if !self.write_text(&mut out, bytes)? {
+            return Ok(None);
+        }
+        let text = Text::new(out);
+        Ok((text.chars_len() <= most).then_some(text))
     }
 
     /// Writes the text, stopping once `out` is past `bytes` long: whether
     /// it wasn't.
-    fn write_text(&self, out: &mut String, bytes: usize) -> bool {
+    fn write_text(&self, out: &mut String, bytes: usize) -> Result<bool, Failure> {
         match self {
             Self::Int(n) => out.push_str(&n.to_string()),
             Self::Bool(b) => out.push_str(if *b { "true" } else { "false" }),
@@ -345,14 +372,14 @@ impl<A: AppValue> Value<A> {
                     if i > 0 {
                         out.push(' ');
                     }
-                    if !item.write_text(out, bytes) {
-                        return false;
+                    if !item.write_text(out, bytes)? {
+                        return Ok(false);
                     }
                 }
             }
-            Self::App(a) => out.push_str(&a.text()),
+            Self::App(a) => out.push_str(&a.text()?),
         }
-        out.len() <= bytes
+        Ok(out.len() <= bytes)
     }
 }
 

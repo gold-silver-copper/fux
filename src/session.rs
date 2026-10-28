@@ -3501,7 +3501,7 @@ pub(crate) mod testing {
         })?;
         let mut text = String::from_utf8_lossy(&out).into_owned();
         for value in &ended {
-            text.push_str(&value.text());
+            text.push_str(&value.text().map_err(|f| f.message)?);
             text.push('\n');
         }
         Ok(text)
@@ -3597,10 +3597,12 @@ pub(crate) mod testing {
             Err(error) => Err(error.to_string()),
         };
         match values {
-            Ok(values) => {
-                let lines: Vec<String> = values.iter().map(fuxth::Value::text).collect();
-                lines.join("\n")
-            }
+            Ok(values) => values
+                .iter()
+                .map(fuxth::Value::text)
+                .collect::<Result<Vec<_>, _>>()
+                .map(|lines| lines.join("\n"))
+                .unwrap_or_else(|f| f.message),
             Err(why) => why,
         }
     }

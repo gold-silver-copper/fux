@@ -153,6 +153,27 @@ impl Budget {
         self.write(&mut out, args)?;
         Ok(out)
     }
+    /// Text imported into fuxth retains its String and builds an Rc and a
+    /// non-ASCII character index. The String was already charged by render.
+    pub(crate) fn text_value(&mut self, text: &str) -> Result<(), crate::session::Error> {
+        if !text.is_ascii() {
+            let marks = text.chars().count().saturating_sub(1) / 64;
+            if marks > 0 {
+                let capacity = marks
+                    .checked_next_power_of_two()
+                    .ok_or_else(Self::exceeded)?
+                    .max(4);
+                self.slots::<usize>(
+                    capacity
+                        .checked_add(capacity / 2)
+                        .ok_or_else(Self::exceeded)?,
+                )?;
+            }
+        }
+        self.slots::<fuxth::Text>(1)?;
+        self.slots::<usize>(2)
+    }
+
     pub(crate) fn owned_string(
         &mut self,
         text: String,
