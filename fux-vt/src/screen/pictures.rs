@@ -73,7 +73,7 @@ impl CellSize {
     pub const LEAST: (u16, u16) = (2, 6);
     /// A cell `width` by `height` pixels, unless smaller than a sixel band.
     pub fn new(width: u16, height: u16) -> Option<Self> {
-        holds_a_band(width, height).then_some(Self { width, height })
+        (width >= Self::LEAST.0 && height >= Self::LEAST.1).then_some(Self { width, height })
     }
     /// Its width in pixels.
     pub fn width(self) -> u16 {
@@ -83,12 +83,6 @@ impl CellSize {
     pub fn height(self) -> u16 {
         self.height
     }
-}
-
-/// Whether a cell `width` by `height` pixels holds a sixel band
-/// (`CellSize::LEAST`).
-fn holds_a_band(width: u16, height: u16) -> bool {
-    width >= CellSize::LEAST.0 && height >= CellSize::LEAST.1
 }
 
 /// A picture placed on a grid.

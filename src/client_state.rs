@@ -57,9 +57,7 @@ impl Draft {
             keys: self.keys,
             config: self.config,
             preferences: self.preferences.finish()?,
-            attach: self
-                .attach
-                .ok_or("bundled initialization did not set attach-defaults")?,
+            attach: required(self.attach, "attach-defaults")?,
         })
     }
 }
@@ -99,8 +97,7 @@ macro_rules! preferences {
 
             fn finish(self) -> Result<Preferences, String> {
                 Ok(Preferences {
-                    $($field: self.$field.ok_or_else(||
-                        format!("bundled initialization did not set {}", $name))?,)*
+                    $($field: required(self.$field, $name)?,)*
                 })
             }
         }
@@ -164,29 +161,26 @@ preferences! {
     copy_environment "copy-environment": Vec<EnvName>;
 }
 
+/// An initialized preference, or the bundled setting that is missing.
+fn required<T>(value: Option<T>, name: &str) -> Result<T, String> {
+    value.ok_or_else(|| format!("bundled initialization did not set {name}"))
+}
+
 impl PreferenceDraft {
     pub(crate) fn pane_options(&self) -> Result<crate::command::PaneOptions, String> {
         Ok(crate::command::PaneOptions {
-            reflow: self
-                .reflow
-                .ok_or("bundled initialization did not set reflow")?,
-            alternate_scroll_lines: self
-                .alternate_scroll_lines
-                .ok_or("bundled initialization did not set alternate-scroll-lines")?,
-            picture_bytes: self
-                .picture_bytes
-                .ok_or("bundled initialization did not set picture-bytes")?,
-            history_bytes: self
-                .history_bytes
-                .ok_or("bundled initialization did not set history-bytes")?,
-            program_clipboard: self
-                .program_clipboard
-                .ok_or("bundled initialization did not set program-clipboard")?,
+            reflow: required(self.reflow, "reflow")?,
+            alternate_scroll_lines: required(
+                self.alternate_scroll_lines,
+                "alternate-scroll-lines",
+            )?,
+            picture_bytes: required(self.picture_bytes, "picture-bytes")?,
+            history_bytes: required(self.history_bytes, "history-bytes")?,
+            program_clipboard: required(self.program_clipboard, "program-clipboard")?,
         })
     }
     pub(crate) fn wait(&self) -> Result<Limit, String> {
-        self.wait
-            .ok_or_else(|| "bundled initialization did not set wait-seconds".to_owned())
+        required(self.wait, "wait-seconds")
     }
     /// Seed an in-process client draft from its own view.
     pub fn presentation(&mut self, p: crate::view::Presentation) {
@@ -200,14 +194,10 @@ impl PreferenceDraft {
         self.terminal_clipboard = Some(p.terminal_clipboard);
     }
     pub(crate) fn shell(&self) -> Result<&Program, String> {
-        self.shell
-            .as_ref()
-            .ok_or_else(|| "bundled initialization did not set shell".to_owned())
+        required(self.shell.as_ref(), "shell")
     }
     pub(crate) fn copy_environment(&self) -> Result<&[EnvName], String> {
-        self.copy_environment
-            .as_deref()
-            .ok_or_else(|| "bundled initialization did not set copy-environment".to_owned())
+        required(self.copy_environment.as_deref(), "copy-environment")
     }
 }
 
@@ -281,7 +271,7 @@ mod tests {
     fn local_settings_keep_the_checked_value_union_and_inner_validators() -> Result<(), String> {
         let list = |words: &[&str]| {
             fuxth::List::new(words.iter().map(|w| Value::str(*w)).collect())
-                .map(|l| Value::List(std::rc::Rc::new(l)))
+                .map(|l| Value::List(fuxth::Shared::new(l)))
                 .ok_or_else(|| "list".to_owned())
         };
         let mut draft = PreferenceDraft::default();

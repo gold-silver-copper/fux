@@ -48,10 +48,7 @@ pub fn arguments<S: AsRef<str>>(args: &[S]) -> Vec<Token> {
 /// `#` at a token's start a comment to the end of its line. A quote may
 /// span lines; one left open is an error at the line it opened on.
 pub fn source(source: &str, text: &str) -> Result<Vec<Token>, Error> {
-    Ok(spans(source, text)?
-        .into_iter()
-        .map(|(token, _)| token)
-        .collect())
+    source_limited(source, text, usize::MAX)
 }
 
 /// `source`'s tokens, each with the bytes of `text` it is written in:

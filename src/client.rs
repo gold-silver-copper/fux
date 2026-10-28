@@ -270,7 +270,7 @@ fn read_more(stream: &mut UnixStream, decoder: &mut Decoder) -> Result<bool, Err
 /// A connection to the server for requests: each sent whole, and answered
 /// before the next. One per run of a program, made when its first request
 /// is.
-pub struct Requests {
+pub(crate) struct Requests {
     stream: UnixStream,
     decoder: Decoder,
 }
@@ -887,17 +887,6 @@ impl Keyboard {
         );
     }
 
-    /// What a key or a paste led to: actions for the server, programs to run.
-    fn apply(&mut self, effects: Vec<Dispatch>, acts: &mut Vec<Dispatch>) {
-        for effect in effects {
-            match effect {
-                Dispatch::Send(act) => acts.push(Dispatch::Send(act)),
-                Dispatch::Run(job) => self.run(job, acts),
-                Dispatch::Fence => acts.push(Dispatch::Fence),
-            }
-        }
-    }
-
     /// Reserves `job` in local output order, unless as many programs, or as much
     /// code, as it may hold wait for it. Each emitted `Dispatch::Run` owns
     /// that reservation and must reach `Self::dispatch` in transport order.
@@ -927,7 +916,12 @@ impl Keyboard {
         let state = lock(&self.state);
         let effects = self.screen.input(&state.keys, input, self.read_only);
         drop(state);
-        self.apply(effects, acts);
+        for effect in effects {
+            match effect {
+                Dispatch::Run(job) => self.run(job, acts),
+                effect @ (Dispatch::Send(_) | Dispatch::Fence) => acts.push(effect),
+            }
+        }
     }
 
     /// A transport completed every send preceding `Dispatch::Fence`.
@@ -1086,7 +1080,9 @@ pub fn attach(
     let (mut stream, mut decoder, _) = connect(socket, role)?;
     let signals = early.map_or_else(Signals::new, Ok)?;
     let size = size.or_else(window_size).ok_or(Error::NoSize)?;
-    let raw = terminal.then(|| Raw::enter(&stdin)).transpose()?;
+    let raw = terminal
+        .then(|| Raw::enter_with(&stdin, &mut io::stdout()))
+        .transpose()?;
     let attach = Attach {
         of: attaching.of,
         size,
@@ -1143,10 +1139,6 @@ impl Signals {
 struct Raw;
 
 impl Raw {
-    fn enter(stdin: &io::Stdin) -> Result<Raw, Error> {
-        Self::enter_with(stdin, &mut io::stdout())
-    }
-
     fn enter_with(stdin: &io::Stdin, stdout: &mut impl Write) -> Result<Raw, Error> {
         let original =
             fuxix::terminal::attributes(stdin).map_err(failed("reading terminal modes"))?;

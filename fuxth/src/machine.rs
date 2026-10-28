@@ -241,13 +241,17 @@ impl<A: AppValue> Machine<A> {
     }
 
     fn admit(&mut self, value: &Value<A>) -> Result<(), Error> {
-        fn valid<A: AppValue>(value: &Value<A>) -> bool {
+        fn valid<A: AppValue>(value: &Value<A>, bytes: &mut usize) -> bool {
             match value {
                 Value::Str(s) => s.chars_len() <= LONGEST,
                 Value::List(list) => {
-                    list.items().len() <= LONGEST && list.items().iter().all(valid)
+                    list.items().len() <= LONGEST && list.items().iter().all(|v| valid(v, bytes))
                 }
-                Value::App(_) | Value::Int(_) | Value::Bool(_) => true,
+                Value::App(app) => {
+                    *bytes = bytes.saturating_add(app.import_bytes().unwrap_or(0));
+                    true
+                }
+                Value::Int(_) | Value::Bool(_) => true,
             }
         }
         let weight = value.weight();
@@ -256,23 +260,14 @@ impl<A: AppValue> Machine<A> {
         if value.depth() > NESTING || (!native && weight > TOTAL) {
             return Err(self.nested());
         }
-        if !valid(value) {
+        let mut bytes = 0;
+        if !valid(value, &mut bytes) {
             return Err(self.fail(
                 Code::TooLong,
                 "host result exceeds the string or list length limit",
             ));
         }
-        fn bytes<A: AppValue>(value: &Value<A>) -> usize {
-            match value {
-                Value::App(app) => app.import_bytes().unwrap_or(0),
-                Value::List(list) => list
-                    .items()
-                    .iter()
-                    .fold(0usize, |n, v| n.saturating_add(bytes(v))),
-                Value::Int(_) | Value::Bool(_) | Value::Str(_) => 0,
-            }
-        }
-        if bytes(value) > A::IMPORT_LIMIT {
+        if bytes > A::IMPORT_LIMIT {
             return Err(self.fail(
                 Code::TooLong,
                 "host byte payload exceeds the import allocation limit",
@@ -841,7 +836,7 @@ impl<A: AppValue> Machine<A> {
     fn list(&mut self, items: Vec<Value<A>>) -> Result<Value<A>, Error> {
         self.build(items.len())?;
         match List::new(items) {
-            Some(list) => Ok(Value::List(Rc::new(list))),
+            Some(list) => Ok(Value::List(crate::Shared::new(list))),
             None => Err(self.nested()),
         }
     }
@@ -921,7 +916,7 @@ impl<A: AppValue> Machine<A> {
         if strings {
             let text = Text::new(text);
             self.build(text.chars_len())?;
-            Ok(Value::Str(Rc::new(text)))
+            Ok(Value::Str(crate::Shared::new(text)))
         } else {
             self.list(items)
         }
@@ -931,19 +926,19 @@ impl<A: AppValue> Machine<A> {
         match (seq, x) {
             (Sequence::List(mut list), x) => {
                 self.fits(list.items().len().saturating_add(1))?;
-                self.build(copied(&list, list.items().len()).saturating_add(1))?;
+                self.build(list.copied(list.items().len()).saturating_add(1))?;
                 // In place when nothing else holds the list.
-                match Rc::make_mut(&mut list).push(x) {
+                match crate::Shared::make_mut(&mut list).push(x) {
                     Some(()) => Ok(Value::List(list)),
                     None => Err(self.nested()),
                 }
             }
             (Sequence::Str(mut s), Value::Str(x)) => {
                 self.fits(s.chars_len().saturating_add(x.chars_len()))?;
-                self.build(copied(&s, s.chars_len()).saturating_add(x.chars_len()))?;
+                self.build(s.copied(s.chars_len()).saturating_add(x.chars_len()))?;
                 // Marking an ASCII string writes a mark per 64 of its characters:
                 // charged as a walk over them.
-                let marked = Rc::make_mut(&mut s).append(&x);
+                let marked = crate::Shared::make_mut(&mut s).append(&x);
                 self.cost(marked);
                 Ok(Value::Str(s))
             }
@@ -969,8 +964,8 @@ impl<A: AppValue> Machine<A> {
         match (seq, x) {
             (Sequence::List(mut list), x) => {
                 let others = list.items().len().saturating_sub(1);
-                self.build(copied(&list, others).saturating_add(1))?;
-                match Rc::make_mut(&mut list).put(i, x) {
+                self.build(list.copied(others).saturating_add(1))?;
+                match crate::Shared::make_mut(&mut list).put(i, x) {
                     Some(looked) => {
                         self.cost(looked);
                         Ok(Value::List(list))
@@ -983,9 +978,9 @@ impl<A: AppValue> Machine<A> {
                 // in place or not.
                 let others = s.chars_len().saturating_sub(1);
                 self.fits(others.saturating_add(x.chars_len()))?;
-                self.build(copied(&s, others).saturating_add(x.chars_len()))?;
+                self.build(s.copied(others).saturating_add(x.chars_len()))?;
                 self.cost(others);
-                Rc::make_mut(&mut s).replace(i, &x);
+                crate::Shared::make_mut(&mut s).replace(i, &x);
                 Ok(Value::Str(s))
             }
             (Sequence::Str(_), x) => {
@@ -994,13 +989,6 @@ impl<A: AppValue> Machine<A> {
             }
         }
     }
-}
-
-/// What changing a value held in `rc` copies first, of its `n` elements
-/// that stay: all of them when it is held elsewhere too, else none (it is
-/// changed in place). What is copied is built.
-fn copied<T>(rc: &Rc<T>, n: usize) -> usize {
-    if Rc::strong_count(rc) > 1 { n } else { 0 }
 }
 
 /// The element of `seq` at `at` (a byte in a string, an index in a list),
@@ -1072,8 +1060,8 @@ fn compare<A: PartialEq>(a: &Value<A>, b: &Value<A>) -> Option<Ordering> {
 /// A string or a list: what the sequence words take, and `each` walks.
 #[derive(Clone, Debug)]
 pub(crate) enum Sequence<A> {
-    Str(Rc<Text>),
-    List(Rc<List<A>>),
+    Str(crate::Shared<Text>),
+    List(crate::Shared<List<A>>),
 }
 
 impl<A: AppValue> Sequence<A> {
@@ -1157,7 +1145,7 @@ impl Joined {
         wants: Some(|_| Wants::Concat),
     };
 
-    fn of<A: AppValue>(value: Value<A>) -> Result<Rc<List<A>>, &'static str> {
+    fn of<A: AppValue>(value: Value<A>) -> Result<crate::Shared<List<A>>, &'static str> {
         match value {
             Value::List(list) => Ok(list),
             other @ (Value::Int(_) | Value::Bool(_) | Value::Str(_) | Value::App(_)) => {
@@ -1381,7 +1369,7 @@ builtins! { m host;
             )));
         };
         m.build(text.chars_len())?;
-        m.push(Value::Str(Rc::new(text)))
+        m.push(Value::Str(crate::Shared::new(text)))
     }
     Print "print" (x: Any) "x --" "print x now, a line" {
         m.walk(&x);

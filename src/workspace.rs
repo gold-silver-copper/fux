@@ -304,18 +304,11 @@ impl Tab {
         let out = change(&mut self.root);
         self.revised();
         self.changed = true;
-        for (client, pane) in self.refocus() {
-            journal.push(Event::View {
-                client,
-                at: Some(((ws, self.id), pane)),
-                change: ViewChange::Focused,
-            });
-        }
+        self.refocus(journal, ws);
         out
     }
 
-    fn refocus(&mut self) -> Vec<(ClientId, PaneId)> {
-        let mut changed = Vec::new();
+    fn refocus(&mut self, journal: &mut Journal, ws: WsId) {
         let root = &self.root;
         let inside = |p: &PaneId| root.contains(*p);
         for (&client, seat) in &mut self.seats {
@@ -325,10 +318,13 @@ impl Tab {
             seat.focus = focus.or(last).unwrap_or_else(|| root.first_pane());
             seat.last = last.filter(|l| *l != seat.focus);
             if before != seat.focus {
-                changed.push((client, seat.focus));
+                journal.push(Event::View {
+                    client,
+                    at: Some(((ws, self.id), seat.focus)),
+                    change: ViewChange::Focused,
+                });
             }
         }
-        changed
     }
 }
 
@@ -433,13 +429,7 @@ impl Parts {
             for tab in &mut w.tabs {
                 let first = tab.root.first_pane();
                 tab.seats.entry(client).or_insert(Seat::on(first));
-                for (client, pane) in tab.refocus() {
-                    self.journal.push(Event::View {
-                        client,
-                        at: Some(((w.id, tab.id), pane)),
-                        change: ViewChange::Focused,
-                    });
-                }
+                tab.refocus(&mut self.journal, w.id);
             }
         }
     }
@@ -486,18 +476,9 @@ impl Parts {
             } else {
                 ViewChange::Shown
             };
-            if before.is_some() {
-                self.journal.push(Event::View {
-                    client,
-                    at: before,
-                    change,
-                });
+            for at in before.map(Some).into_iter().chain([after]) {
+                self.journal.push(Event::View { client, at, change });
             }
-            self.journal.push(Event::View {
-                client,
-                at: after,
-                change,
-            });
         }
     }
 
@@ -880,8 +861,6 @@ impl Parts {
         self.journal.push(Event::Layout(was_a));
         if was_a != was_b {
             self.journal.push(Event::Layout(was_b));
-        }
-        if was_a != was_b {
             (self.journal).push(Event::Pane((was_b, a), PaneEvent::Moved(was_a)));
             (self.journal).push(Event::Pane((was_a, b), PaneEvent::Moved(was_b)));
         }

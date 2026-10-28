@@ -163,8 +163,11 @@ before retaining a suspended result. Immediate host results use that
 same admission automatically, and host argument traversal is charged too.
 `AppValue::IMPORT_LIMIT` fixes the aggregate grant for live imported storage
 (default 128 MiB), including ordinary strings and lists. Heap-owning application
-values implement `retain`, keeping an `ImportLease` with each allocation or using
-`Shared<T>` for an immutable native payload. Shared children reserve themselves;
+values implement `retain(&Imports)` with `Shared<T>` storage, as the language's
+strings and lists do. The machine's opaque import grant can only be charged or
+refunded through those reservations. The wrapper keeps its reservation when the value is edited;
+copying the storage starts a fresh reservation. Values whose ownership leaves a
+shared wrapper carry an `ImportLease` with the owned data instead. Shared children reserve themselves;
 clones do not reserve their allocation twice. The last reference's drop refunds
 its reservation, so polling does not consume a lifetime allowance.
 

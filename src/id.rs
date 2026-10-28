@@ -46,7 +46,7 @@ id!(
     TabId, '@', Kind::Tab
 );
 id!(
-    /// A workspace's number, `+N`: a workspace's default name has it.
+    /// A workspace's number, `+N`.
     WsId, '+', Kind::Workspace
 );
 id!(

@@ -752,8 +752,9 @@ impl Grid {
         }
         self.put(y, x, cell);
     }
-    /// The text of a row, trailing blanks trimmed: for `capture`.
-    pub fn row_text(&self, y: u16) -> String {
+    /// The text of a composed row for tests, trailing blanks trimmed.
+    #[cfg(test)]
+    pub(crate) fn row_text(&self, y: u16) -> String {
         let row = self.row(y).filter(|c| !c.is_wide_continuation());
         row.map(|c| c.shown())
             .collect::<String>()
@@ -1865,7 +1866,7 @@ pub const MOUSE_OFF: &str = "\x1b[?1003l\x1b[?1002l\x1b[?1000l\x1b[?1006l";
 /// `mode`: enough to report everything the program wants, which its own
 /// mode then filters (`fux_vt::Screen::encode_mouse`). X10's presses come
 /// from 1000, whose releases it drops.
-pub fn mouse_level(mode: fux_vt::MouseProtocolMode) -> u16 {
+fn mouse_level(mode: fux_vt::MouseProtocolMode) -> u16 {
     use fux_vt::MouseProtocolMode as M;
     match mode {
         M::None => 0,

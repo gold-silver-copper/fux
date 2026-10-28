@@ -809,17 +809,7 @@ impl<'a, A> Unit<'a, A> {
                 // rest, any.
                 let below = word.takes.len().saturating_sub(taken.len());
                 let at = |i: usize| (i.checked_sub(below)).and_then(|i| taken.get(i)).copied();
-                for (i, (wants, said)) in word.takes.iter().enumerate() {
-                    let got = at(i).unwrap_or(ANY);
-                    if !got.may_be(*wants) {
-                        let n = word.takes.len();
-                        let message = format!(
-                            "takes {said}, not {}",
-                            placed(self.words().describe(got), i, n)
-                        );
-                        return Err(Failing::Type(message));
-                    }
-                }
+                check_inputs(self.words(), &word.takes, &taken)?;
                 for (from, map) in &word.gives {
                     state.push(through(map, from.and_then(at).unwrap_or(ANY)));
                 }
@@ -834,20 +824,7 @@ impl<'a, A> Unit<'a, A> {
                     let mut arguments = state.clone();
                     let taken = arguments.pop(inputs.len())?;
                     state.used = state.used.max(arguments.used);
-                    let below = inputs.len().saturating_sub(taken.len());
-                    for (i, (wants, said)) in inputs.iter().enumerate() {
-                        let got = i
-                            .checked_sub(below)
-                            .and_then(|i| taken.get(i))
-                            .copied()
-                            .unwrap_or(ANY);
-                        if !got.may_be(*wants) {
-                            return Err(Failing::Type(format!(
-                                "takes {said}, not {}",
-                                placed(self.words().describe(got), i, inputs.len())
-                            )));
-                        }
-                    }
+                    check_inputs(self.words(), inputs, &taken)?;
                 }
                 let Some(Some(summary)) = self.known.summaries.get(*id) else {
                     // Nothing known of it yet: a call to itself, the first
@@ -957,6 +934,25 @@ fn placed(got: String, i: usize, n: usize) -> String {
         (_, 2) => format!("{got} under the top"),
         (_, up) => format!("{got} {} under the top", up.saturating_sub(1)),
     }
+}
+
+/// The declared inputs' known kinds, aligned above any unknown deeper values.
+fn check_inputs(
+    words: &Vocabulary,
+    inputs: &[(Kinds, String)],
+    taken: &[Kinds],
+) -> Result<(), Failing> {
+    let missing = inputs.len().saturating_sub(taken.len());
+    let got = std::iter::repeat_n(ANY, missing).chain(taken.iter().copied());
+    for (i, ((wants, said), got)) in inputs.iter().zip(got).enumerate() {
+        if !got.may_be(*wants) {
+            return Err(Failing::Type(format!(
+                "takes {said}, not {}",
+                placed(words.describe(got), i, inputs.len())
+            )));
+        }
+    }
+    Ok(())
 }
 
 fn builtin_step(words: &Vocabulary, builtin: Builtin, state: &mut State) -> Result<Flow, Failing> {

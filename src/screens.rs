@@ -102,11 +102,13 @@ pub struct Prompt {
     pub action: Option<Callback>,
 }
 
-/// A question, and the fuxth its yes runs.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Confirm {
-    pub question: String,
-    pub action: Callback,
+wire! {
+    /// A question, and the fuxth its yes runs.
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    pub struct Confirm {
+        pub question: String,
+        pub action: Callback,
+    }
 }
 
 impl Wire for Prompt {
@@ -128,18 +130,6 @@ impl Wire for Prompt {
             title,
             line,
             action: Option::get(r)?,
-        })
-    }
-}
-impl Wire for Confirm {
-    fn put(&self, out: &mut impl crate::wire::Sink) {
-        self.question.put(out);
-        self.action.put(out);
-    }
-    fn get(r: &mut crate::wire::Reader<'_>) -> Result<Self, crate::wire::Error> {
-        Ok(Self {
-            question: String::get(r)?,
-            action: Callback::get(r)?,
         })
     }
 }

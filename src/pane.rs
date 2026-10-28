@@ -1713,8 +1713,8 @@ impl Pane {
     }
 
     /// Runs `process` in the pane again, as `fresh` (made for it, at its
-    /// size, before the program started) runs it, on a screen as new, its
-    /// history kept; the process that was there, to end, and what it left
+    /// size, before the program started) runs it, using its prepared screen
+    /// and history budget; the process that was there, to end, and what it left
     /// as it was respawned over: none, said, once it ended.
     fn respawned(
         &mut self,
@@ -1722,39 +1722,6 @@ impl Pane {
         process: Process,
         tell: &mut Teller<'_>,
     ) -> (Process, Left) {
-        // A new program, its own pane, its counts afresh but `respawns`. Kept
-        // are its id and name, what the session has yet to take from the
-        // old one (a bell, a copy, what it lost untold; its input it let go,
-        // `InputQueue::discard`), and its colours.
-        let Pane {
-            id: _,
-            name: _,
-            bell: _,
-            copied: _,
-            untold: _,
-            colours: _,
-            respawns,
-            title,
-            parser,
-            process: _,
-            input: _,
-            runs,
-            frame,
-            unread,
-            frame_left,
-            exiting,
-            scheme_told,
-            mouse_held,
-            left,
-            alerts,
-            lost,
-            refused_size,
-            loss_runs,
-            terminal_errors: _,
-            read_error,
-            reading,
-            options,
-        } = fresh;
         // The new program starts with nothing queued. One that ended said
         // what it left with its exit; one that runs leaves its input now,
         // the new program started.
@@ -1763,15 +1730,39 @@ impl Pane {
             Some(_) => Left::default(),
             None => Left { input, ..self.left },
         };
-        (self.title, self.parser, self.runs, self.options) = (title, parser, runs, options);
-        (self.frame, self.unread, self.frame_left) = (frame, unread, frame_left);
-        (self.exiting, self.scheme_told) = (exiting, scheme_told);
-        (self.mouse_held, self.left, self.alerts, self.lost) = (mouse_held, left, alerts, lost);
-        (self.refused_size, self.loss_runs, self.reading) = (refused_size, loss_runs, reading);
-        self.read_error = read_error;
         tell.tell(Told::Respawned(over));
-        self.respawns = respawns;
-        (std::mem::replace(&mut self.process, process), over)
+        // Every field is explicit so additions require a respawn decision.
+        let next = Self {
+            id: self.id,
+            name: std::mem::take(&mut self.name),
+            bell: self.bell,
+            copied: std::mem::take(&mut self.copied),
+            untold: self.untold,
+            colours: self.colours,
+            input: std::mem::take(&mut self.input),
+            terminal_errors: self.terminal_errors,
+            process,
+            respawns: fresh.respawns,
+            title: fresh.title,
+            parser: fresh.parser,
+            runs: fresh.runs,
+            options: fresh.options,
+            frame: fresh.frame,
+            unread: fresh.unread,
+            frame_left: fresh.frame_left,
+            exiting: fresh.exiting,
+            scheme_told: fresh.scheme_told,
+            mouse_held: fresh.mouse_held,
+            left: fresh.left,
+            alerts: fresh.alerts,
+            lost: fresh.lost,
+            refused_size: fresh.refused_size,
+            loss_runs: fresh.loss_runs,
+            read_error: fresh.read_error,
+            reading: fresh.reading,
+        };
+        let old = std::mem::replace(self, next);
+        (old.process, over)
     }
 
     pub fn id(&self) -> PaneId {

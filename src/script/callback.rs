@@ -2,8 +2,8 @@
 use super::{Fux, Value, record};
 use crate::callback::Data;
 use crate::wire::Budget;
+use fuxix::Allocation;
 use fuxth::Failure;
-use std::rc::Rc;
 
 fn runs(v: &Data, of: &mut Option<crate::command::Run>) -> Result<(), Failure> {
     match v {
@@ -34,21 +34,17 @@ fn fail() -> Failure {
         "a callback argument must be an immutable value: scalar, handle, record, null or list",
     )
 }
-fn charged<T>(result: Result<T, crate::session::Error>) -> Result<T, Failure> {
-    result.map_err(super::words::observation_failure)
-}
-
 pub(super) fn data(v: &Value<Fux>, b: &mut Budget) -> Result<Data, Failure> {
     if v.depth() > fuxth::NESTING || v.weight() > fuxth::TOTAL {
         return Err(fail());
     }
-    charged(b.slots::<Data>(1))?;
+    b.slots::<Data>(1)?;
     Ok(match v {
         Value::Int(v) => Data::Int(*v),
         Value::Bool(v) => Data::Bool(*v),
-        Value::Str(v) => Data::Text(charged(b.string(v.as_ref()))?),
+        Value::Str(v) => Data::Text(b.string(v.as_ref())?),
         Value::List(v) => {
-            let mut out = charged(b.vector(v.items().len()))?;
+            let mut out = b.vector(v.items().len())?;
             for v in v.items() {
                 out.push(data(v, b)?);
             }
@@ -56,12 +52,12 @@ pub(super) fn data(v: &Value<Fux>, b: &mut Budget) -> Result<Data, Failure> {
         }
         Value::App(Fux::Record(r)) => {
             if let Some(snapshot) = &r.snapshot {
-                charged(b.charge(snapshot.heap_bytes()?))?;
+                b.charge(snapshot.heap_bytes()?)?;
                 return Ok(Data::Snapshot(Box::new(snapshot.clone())));
             }
-            let mut fields = charged(b.vector(r.fields.len()))?;
+            let mut fields = b.vector(r.fields.len())?;
             for (key, v) in &r.fields {
-                fields.push((charged(b.string(key))?, data(v, b)?));
+                fields.push((b.string(key)?, data(v, b)?));
             }
             Data::Record(fields)
         }
@@ -79,7 +75,7 @@ pub(super) fn data(v: &Value<Fux>, b: &mut Budget) -> Result<Data, Failure> {
 }
 
 pub(super) fn value(v: &Data, b: &mut Budget) -> Result<Value<Fux>, Failure> {
-    charged(b.slots::<Value<Fux>>(1))?;
+    b.slots::<Value<Fux>>(1)?;
     Ok(match v {
         Data::Int(v) => Value::Int(*v),
         Data::Bool(v) => Value::Bool(*v),
@@ -87,27 +83,26 @@ pub(super) fn value(v: &Data, b: &mut Budget) -> Result<Value<Fux>, Failure> {
             if v.chars().count() > fuxth::LONGEST {
                 return Err(fail());
             }
-            charged(b.text_value(v))?;
-            Value::str(charged(b.string(v))?)
+            b.text_value(v)?;
+            Value::str(b.string(v)?)
         }
         Data::List(v) => {
-            let mut out = charged(b.vector(v.len()))?;
+            let mut out = b.vector(v.len())?;
             for v in v {
                 out.push(value(v, b)?);
             }
-            charged(b.slots::<fuxth::List<Fux>>(1))?;
-            charged(b.slots::<usize>(2))?;
-            Value::List(Rc::new(fuxth::List::new(out).ok_or_else(fail)?))
+            b.charge(fuxth::Shared::<fuxth::List<Fux>>::bytes(0))?;
+            Value::List(fuxth::Shared::new(fuxth::List::new(out).ok_or_else(fail)?))
         }
         Data::Record(v) => {
-            let mut fields = charged(b.vector(v.len()))?;
+            let mut fields = b.vector(v.len())?;
             for (key, v) in v {
-                fields.push((charged(b.string(key))?, value(v, b)?));
+                fields.push((b.string(key)?, value(v, b)?));
             }
             record::from_fields(fields, b)?
         }
         Data::Snapshot(s) => {
-            charged(b.charge(s.heap_bytes()?))?;
+            b.charge(s.heap_bytes()?)?;
             record::snapshot_in((**s).clone(), b)?
         }
         Data::Null => Value::App(Fux::Null),
@@ -454,7 +449,7 @@ mod tests {
         let mut budget = Budget::new();
         assert!(
             data(
-                &Value::App(Fux::Opts(Rc::new(Default::default()))),
+                &Value::App(Fux::Opts(std::rc::Rc::new(Default::default()))),
                 &mut budget
             )
             .is_err()
