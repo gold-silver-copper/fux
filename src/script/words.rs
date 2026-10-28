@@ -1270,7 +1270,14 @@ impl fuxth::Host for Host<'_> {
                     format!("too few values: {}", word.row().effect),
                 )
             })?;
-            of = super::same_run(of, super::scope(&value)?)?;
+            if word == Word::Act(Act::Arrange)
+                && let Value::List(list) = &value
+                && (1..=crate::layout::NODES_MAX).contains(&list.items().len())
+            {
+                // One node and at most five scalar split fields per node.
+                args.charge(list.items().len().saturating_mul(6));
+            }
+            of = super::same_run(of, super::scope(&value))?;
             Ok(value)
         };
         let from = out.len();
@@ -1724,55 +1731,49 @@ impl Host<'_> {
                     return Err(fail(Raise::TooLong, "a layout needs 1..2047 nodes"));
                 }
                 let mut nodes = Vec::with_capacity(list.items().len());
+                let mut of = None;
                 for node in list.items() {
-                    let node = match node {
-                        Value::App(Fux::Pane(pane, _)) => crate::layout::Node::Pane(*pane),
-                        Value::List(fields) => {
-                            let mut fields = fields.items().iter();
-                            let mut field = || {
-                                fields.next().ok_or_else(|| {
-                                    fail(
-                                        Raise::BadValue,
-                                        "a split is list AXIS SHARE SHARE FIRST SECOND end",
-                                    )
-                                })
-                            };
-                            let axis = one_of(
-                                field()?,
+                    let node = if let Some(pane) = as_pane(node) {
+                        of = super::same_run(of, super::scope(node))?;
+                        crate::layout::Node::Pane(pane)
+                    } else if let Value::List(fields) = node {
+                        let [axis, first_share, second_share, first, second] = fields.items()
+                        else {
+                            return Err(fail(
+                                Raise::BadValue,
+                                "a split is list AXIS SHARE SHARE FIRST SECOND end",
+                            ));
+                        };
+                        crate::layout::Node::Split {
+                            axis: one_of(
+                                axis,
                                 &[
                                     ("horizontal", Axis::Horizontal),
                                     ("vertical", Axis::Vertical),
                                 ],
-                            )?;
-                            let first_share = share(field()?)?;
-                            let second_share = share(field()?)?;
-                            let first = within(field()?, 0..=i64::from(u32::MAX))?;
-                            let second = within(field()?, 0..=i64::from(u32::MAX))?;
-                            if fields.next().is_some() {
-                                return Err(fail(
-                                    Raise::BadValue,
-                                    "a split has exactly five fields",
-                                ));
-                            }
-                            crate::layout::Node::Split {
-                                axis,
-                                first_share,
-                                second_share,
-                                first,
-                                second,
-                            }
+                            )?,
+                            first_share: share(first_share)?,
+                            second_share: share(second_share)?,
+                            first: within(first, 0..=i64::from(u32::MAX))?,
+                            second: within(second, 0..=i64::from(u32::MAX))?,
                         }
-                        Value::Int(_) | Value::Bool(_) | Value::Str(_) | Value::App(_) => {
-                            return Err(wrong("a pane or split list", node));
-                        }
+                    } else {
+                        return Err(wrong("a pane or split list", node));
                     };
                     nodes.push(node);
                 }
-                later(ask(Command::Arrange {
-                    target,
-                    revision,
-                    nodes,
-                }))
+                later(Ask::Server {
+                    request: Box::new(
+                        Command::Arrange {
+                            target,
+                            revision,
+                            nodes,
+                        }
+                        .into(),
+                    ),
+                    client: None,
+                    of,
+                })
             }
             Act::MoveBorder => {
                 let p = pane(&next()?)?;
@@ -1906,7 +1907,7 @@ impl Host<'_> {
                 self.prepare()
                     .map_err(|why| fail(Raise::Config, why.to_string()))?;
                 let value = next()?;
-                let of = super::scope(&value)?;
+                let of = super::scope(&value);
                 let (target, built) = attach_options(act, value)?;
                 if target.is_some() && built.given.contains(&Opt::Name) {
                     return Err(fail(

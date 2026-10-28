@@ -53,7 +53,7 @@ for `id`, `name`, `label` and `pid` (it says `pane`):
 ## `ls json`
 
 ```json
-{"workspaces":[{"id":"+1","name":null,"label":"+1","tabs":[{"id":"@1","name":null,"label":"%1","panes":[PANE…]}]}],
+{"workspaces":[{"id":"+1","name":null,"label":"+1","tabs":[{"id":"@1","name":null,"label":"%1","layout_revision":"@1:0:RUN","panes":[PANE…]}]}],
  "clients":[{"id":"c1","rows":24,"cols":80,"workspace":"+1","tab":"@1","pane":"%1","zoom":false}],
  "events":"42:48211-1867a3f9c2b8e7d6"}
 ```

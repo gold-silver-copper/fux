@@ -800,14 +800,9 @@ impl Parts {
     ) -> Option<R> {
         let (_, tab) = self.locate(pane)?;
         let (_, tab) = tab_mut(&mut self.workspaces, tab)?;
-        let sorted = |root: &Tree| {
-            let mut panes = root.panes();
-            panes.sort_unstable();
-            panes
-        };
         let mut root = tab.root.clone();
         let out = change(&mut root);
-        if sorted(&root) != sorted(&tab.root) {
+        if !root.same_panes(&tab.root) {
             return None;
         }
         if root != tab.root {

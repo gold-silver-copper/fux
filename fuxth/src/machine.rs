@@ -58,6 +58,15 @@ pub struct Args<'a, A> {
     /// Where the word's values start.
     from: usize,
     at: usize,
+    extra: &'a mut u64,
+}
+
+impl<A> Args<'_, A> {
+    /// Charges bounded host work at the same rate as built-in value walks.
+    /// The host must admit the work before visiting its elements.
+    pub fn charge(&mut self, elements: usize) {
+        *self.extra = self.extra.saturating_add(work_steps(elements));
+    }
 }
 
 impl<A> Iterator for Args<'_, A> {
@@ -124,6 +133,10 @@ pub const BUILT: u64 = 16_000_000;
 
 /// Elements a long step goes through for each step it costs.
 const PER_STEP: u64 = 64;
+
+fn work_steps(elements: usize) -> u64 {
+    u64::try_from(elements).unwrap_or(u64::MAX) / PER_STEP
+}
 
 /// What an application word is to give: it is checked once it has, now
 /// or when the machine resumes. The stack's depth before it gave anything,
@@ -557,6 +570,7 @@ impl<A: AppValue> Machine<A> {
             stack: &mut self.stack,
             from,
             at: from,
+            extra: &mut self.extra,
         };
         let done = host.call(id, args, &mut out).map_err(|f| self.failed(f))?;
         let given = Given {
@@ -731,8 +745,7 @@ impl<A: AppValue> Machine<A> {
 
     /// Charges a long step for going through `n` elements.
     fn cost(&mut self, n: usize) {
-        let n = u64::try_from(n).unwrap_or(u64::MAX);
-        self.extra = self.extra.saturating_add(n / PER_STEP);
+        self.extra = self.extra.saturating_add(work_steps(n));
     }
 
     /// Counts `n` elements built: past what a run may build in all, or past

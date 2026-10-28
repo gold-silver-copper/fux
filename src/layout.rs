@@ -374,6 +374,16 @@ impl Side {
 }
 
 impl Tree {
+    /// Whether `other` holds exactly the same panes, in any order.
+    pub(crate) fn same_panes(&self, other: &Tree) -> bool {
+        let sorted = |tree: &Tree| {
+            let mut panes = tree.panes();
+            panes.sort_unstable();
+            panes
+        };
+        sorted(self) == sorted(other)
+    }
+
     /// Every pane, in tree order: for when a list is needed, as to step
     /// through it by index.
     pub fn panes(&self) -> Vec<PaneId> {

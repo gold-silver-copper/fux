@@ -2352,18 +2352,16 @@ impl Session {
             } => {
                 let tab = self.tab(*target).ok_or(Error::NoTab(*target))?;
                 if tab.revision(self.run) != Some(*revision) {
+                    let now = tab
+                        .revision(self.run)
+                        .map_or_else(|| "exhausted".into(), |r| r.to_string());
                     return Err(fail(
-                        Raise::BadValue,
-                        "layout revision is stale or names another tab or server run",
+                        Raise::Stale,
+                        format!("{target} is at {now}, not {revision}"),
                     ));
                 }
                 let root = layout::from_nodes(nodes).map_err(|why| fail(Raise::BadValue, why))?;
-                let sorted = |root: &Tree| {
-                    let mut panes = root.panes();
-                    panes.sort_unstable();
-                    panes
-                };
-                if sorted(&root) != sorted(tab.root()) {
+                if !root.same_panes(tab.root()) {
                     return Err(fail(
                         Raise::BadValue,
                         "layout must contain every current tab pane exactly once",
@@ -3990,66 +3988,78 @@ mod tests {
         let before = s.root(tab).cloned().ok_or("tree")?;
         let cursor = s.parts.journal().end(s.run);
         let origin = Origin::Cli(Caller::default());
-        let expected_revision = revision;
-        for (revision, nodes) in [
-            (revision, vec![]),
-            (revision, vec![layout::Node::Pane(PaneId::of(1))]),
-            (revision, vec![layout::Node::Pane(PaneId::of(999))]),
+        let valid = vec![
+            layout::Node::Split {
+                axis: Axis::Horizontal,
+                first_share: NonZeroU32::MIN,
+                second_share: NonZeroU32::MIN,
+                first: 1,
+                second: 2,
+            },
+            layout::Node::Pane(PaneId::of(1)),
+            layout::Node::Split {
+                axis: Axis::Horizontal,
+                first_share: NonZeroU32::MIN,
+                second_share: NonZeroU32::MIN,
+                first: 3,
+                second: 4,
+            },
+            layout::Node::Pane(PaneId::of(2)),
+            layout::Node::Pane(PaneId::of(3)),
+        ];
+        let mut duplicate = valid.clone();
+        if let Some(node) = duplicate.last_mut() {
+            *node = layout::Node::Pane(PaneId::of(1));
+        }
+        for (given, nodes, code) in [
+            (revision, vec![], Raise::BadValue),
             (
                 revision,
-                vec![
-                    layout::Node::Split {
-                        axis: Axis::Horizontal,
-                        first_share: NonZeroU32::MIN,
-                        second_share: NonZeroU32::MIN,
-                        first: 1,
-                        second: 2,
-                    },
-                    layout::Node::Pane(PaneId::of(1)),
-                    layout::Node::Split {
-                        axis: Axis::Vertical,
-                        first_share: NonZeroU32::MIN,
-                        second_share: NonZeroU32::MIN,
-                        first: 3,
-                        second: 4,
-                    },
-                    layout::Node::Pane(PaneId::of(1)),
-                    layout::Node::Pane(PaneId::of(3)),
-                ],
+                vec![layout::Node::Pane(PaneId::of(1))],
+                Raise::BadValue,
             ),
+            (
+                revision,
+                vec![layout::Node::Pane(PaneId::of(999))],
+                Raise::BadValue,
+            ),
+            (revision, duplicate, Raise::BadValue),
             (
                 command::LayoutRevision {
                     tab: TabId::of(2),
                     ..revision
                 },
-                vec![layout::Node::Pane(PaneId::of(1))],
+                valid.clone(),
+                Raise::Stale,
             ),
             (
                 command::LayoutRevision {
                     serial: revision.serial.saturating_add(1),
                     ..revision
                 },
-                vec![],
+                valid.clone(),
+                Raise::Stale,
             ),
             (
                 command::LayoutRevision {
                     run: "1-0".parse().map_err(|()| "run")?,
                     ..revision
                 },
-                vec![],
+                valid,
+                Raise::Stale,
             ),
         ] {
             let command = Command::Arrange {
                 target: tab,
-                revision,
+                revision: given,
                 nodes,
             };
-            assert!(s.execute(&command, &origin).is_err());
-            assert_eq!(s.root(tab), Some(&before));
             assert_eq!(
-                s.tab(tab).and_then(|t| t.revision(s.run)),
-                Some(expected_revision)
+                s.execute(&command, &origin).err().map(|e| e.code()),
+                Some(Code::from(code))
             );
+            assert_eq!(s.root(tab), Some(&before));
+            assert_eq!(s.tab(tab).and_then(|t| t.revision(s.run)), Some(revision));
             assert_eq!(s.parts.journal().end(s.run), cursor);
         }
         // Same membership after moving a border and moving it back is still stale.
@@ -4058,7 +4068,7 @@ mod tests {
             "%1 str right 3 move-border %1 str left 3 move-border",
         )?;
         let stale = format!("@1 str {revision} list %1 %2 %3 end str horizontal even-of arrange");
-        assert!(run(&mut s, &stale).is_err());
+        assert!(run(&mut s, &stale).is_err_and(|s| s.starts_with("stale:")));
         let before_fit = s.tab(tab).and_then(|t| t.revision(s.run));
         run(&mut s, "@1 90 30 resize")?;
         assert_ne!(s.tab(tab).and_then(|t| t.revision(s.run)), before_fit);
@@ -4089,6 +4099,20 @@ mod tests {
         assert_eq!(
             s.root(tab).map(Tree::panes),
             Some(vec![PaneId::of(3), PaneId::of(1), PaneId::of(2)])
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn arrange_accepts_the_split_answer_as_a_pane() -> Result<(), String> {
+        let mut s = started()?;
+        run(
+            &mut s,
+            "%1 horizontal split let b @1 dup str layout_revision get list %1 b end str vertical even-of arrange",
+        )?;
+        assert_eq!(
+            s.root(TabId::of(1)).map(Tree::panes),
+            Some(vec![PaneId::of(1), PaneId::of(2)])
         );
         Ok(())
     }

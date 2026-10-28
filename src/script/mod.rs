@@ -138,8 +138,8 @@ impl AppValue for Fux {
 }
 
 /// The server run a value was returned by, retained through request options.
-fn scope(value: &Value<Fux>) -> Result<Option<Run>, fuxth::Failure> {
-    Ok(match value {
+fn scope(value: &Value<Fux>) -> Option<Run> {
+    match value {
         Value::App(
             Fux::Pane(_, run)
             | Fux::Tab(_, run)
@@ -148,15 +148,8 @@ fn scope(value: &Value<Fux>) -> Result<Option<Run>, fuxth::Failure> {
             | Fux::Answer(_, run),
         ) => *run,
         Value::App(Fux::Opts(opts)) => opts.of,
-        Value::List(list) => {
-            let mut run = None;
-            for item in list.items() {
-                run = same_run(run, scope(item)?)?;
-            }
-            run
-        }
-        Value::Int(_) | Value::Bool(_) | Value::Str(_) | Value::App(_) => None,
-    })
+        Value::Int(_) | Value::Bool(_) | Value::Str(_) | Value::List(_) | Value::App(_) => None,
+    }
 }
 
 fn same_run(a: Option<Run>, b: Option<Run>) -> Result<Option<Run>, fuxth::Failure> {
@@ -1912,20 +1905,119 @@ mod tests {
     }
 
     #[test]
-    fn layout_lists_retain_pane_run_identity() -> Result<(), String> {
-        use super::{Fux, PaneId, Rc, Run, Value, scope};
+    fn local_json_accepts_observations_from_different_runs()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use super::*;
+        struct Reports(std::collections::VecDeque<Run>);
+        impl Asks for Reports {
+            fn ask(&mut self, _: &Asked, _: &mut dyn Write) -> Result<Reply, Failed> {
+                Ok(Reply {
+                    run: self.0.pop_front(),
+                    ..Body::Listing {
+                        of: None,
+                        listing: Json::Object(Vec::new()),
+                    }
+                    .into()
+                })
+            }
+        }
+        let runs = ["1-0", "2-0"].map(|s| s.parse().map_err(|()| "run"));
+        let mut reports = Reports(runs.into_iter().collect::<Result<_, _>>()?);
+        let mut machine = compile(&token::source(
+            "reports",
+            "ls let a ls let b list a b end json print",
+        )?)
+        .map_err(|e| e.to_string())?;
+        let mut sink = Vec::new();
+        let mut host = Host::new(Context::default(), None, &mut sink);
+        run_capped(&mut machine, &mut host, &mut reports, None, None).map_err(|e| e.to_string())?;
+        assert_eq!(sink, b"[{},{}]\n");
+        Ok(())
+    }
+
+    #[test]
+    fn arrange_reconciles_its_pane_leaf_runs() -> Result<(), Box<dyn std::error::Error>> {
+        use super::*;
+        use crate::command::{Command, Request};
+        struct Leaves {
+            runs: std::collections::VecDeque<Run>,
+            submitted: Vec<Option<Run>>,
+        }
+        impl Asks for Leaves {
+            fn ask(&mut self, asked: &Asked, _: &mut dyn Write) -> Result<Reply, Failed> {
+                let mut run = None;
+                let body = match asked.request {
+                    Request::Do(Command::Resolve { .. }) => Body::Found(AnyRef::Tab(TabId::of(1))),
+                    Request::Do(Command::Members { .. }) => {
+                        run = self.runs.pop_front();
+                        Body::Handles(vec![AnyRef::Pane(PaneId::of(1))])
+                    }
+                    Request::Do(Command::Arrange { .. }) => {
+                        self.submitted.push(asked.context.of);
+                        Body::Empty
+                    }
+                    Request::Do(_) | Request::Wait(_) | Request::Events(..) => {
+                        return Err(Failed::new(Code::Usage, "unexpected request"));
+                    }
+                };
+                Ok(Reply { run, ..body.into() })
+            }
+        }
         let ours: Run = "1-0".parse().map_err(|()| "run")?;
         let other: Run = "2-0".parse().map_err(|()| "run")?;
-        let leaf = |run| Value::App(Fux::Pane(PaneId::of(1), Some(run)));
-        let list = |items| {
-            fuxth::List::new(items)
-                .map(|l| Value::List(Rc::new(l)))
-                .ok_or("list")
-        };
-        let tree = list(vec![list(vec![leaf(ours)])?])?;
-        assert_eq!(scope(&tree).map_err(|f| f.message)?, Some(ours));
-        let tree = list(vec![tree, leaf(other)])?;
-        assert!(scope(&tree).is_err());
+        for runs in [[ours, ours], [ours, other]] {
+            let mut leaves = Leaves {
+                runs: runs.into(),
+                submitted: Vec::new(),
+            };
+            let mut machine = compile(&token::source("layout", "@1 panes let a @1 panes let b @1 str @1:0:1-0 list a first b first end str horizontal even-of arrange")?).map_err(|e| e.to_string())?;
+            let mut sink = Vec::new();
+            let mut host = Host::new(Context::default(), None, &mut sink);
+            let result = run_capped(&mut machine, &mut host, &mut leaves, None, None);
+            if runs == [ours, ours] {
+                result.map_err(|e| e.to_string())?;
+                assert_eq!(leaves.submitted, [Some(ours)]);
+            } else {
+                assert!(result.is_err_and(|f| f.code == Code::BadValue));
+                assert!(leaves.submitted.is_empty());
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn arrange_charges_bounded_node_parsing() -> Result<(), Box<dyn std::error::Error>> {
+        use super::*;
+        use crate::command::{Command, Request};
+        struct Nodes(Run);
+        impl Asks for Nodes {
+            fn ask(&mut self, asked: &Asked, _: &mut dyn Write) -> Result<Reply, Failed> {
+                let body = match asked.request {
+                    Request::Do(Command::Resolve { .. }) => Body::Found(AnyRef::Tab(TabId::of(1))),
+                    Request::Do(Command::Members { .. }) => {
+                        Body::Handles((1..=2047).map(|n| AnyRef::Pane(PaneId::of(n))).collect())
+                    }
+                    Request::Do(Command::Arrange { .. }) => Body::Empty,
+                    Request::Do(_) | Request::Wait(_) | Request::Events(..) => {
+                        return Err(Failed::new(Code::Usage, "unexpected request"));
+                    }
+                };
+                Ok(Reply {
+                    run: Some(self.0),
+                    ..body.into()
+                })
+            }
+        }
+        let mut nodes = Nodes("1-0".parse().map_err(|()| "run")?);
+        let mut machine = compile(&token::source(
+            "layout",
+            "@1 panes let ps @1 str @1:0:1-0 ps arrange",
+        )?)
+        .map_err(|e| e.to_string())?;
+        let mut sink = Vec::new();
+        let mut host = Host::new(Context::default(), None, &mut sink);
+        run_capped(&mut machine, &mut host, &mut nodes, None, None).map_err(|e| e.to_string())?;
+        assert!(machine.steps() >= 2047 / 64, "{} steps", machine.steps());
         Ok(())
     }
 

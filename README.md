@@ -560,12 +560,15 @@ list %3 %4 %5 end str horizontal even-of arrange
 The list must name every current pane of that tab exactly once. The revision
 is `TAB:REVISION:RUN`, tied to the tab and server run. Layout edits and changes
 to the tab's fit invalidate it, even if a border is moved back. A stale or
-invalid proposal changes nothing. Pane focus stays with the same pane.
+invalid proposal changes nothing. A revision mismatch fails with `stale`,
+so a caller can distinguish a concurrent edit from a malformed proposal.
+Pane focus stays with the same pane.
 Every background and sizing-client screen must show every pane; watchers do
 not constrain it. Success journals one `arranged` invalidation, then sizes
 panes through the normal settle path, which reports PTY resize failures.
 
-The tree is a flat list, rooted at index zero. Each node is a typed pane or
+The tree is a flat list, rooted at index zero. Each leaf accepts a typed pane
+or its action/wait answer; all retained pane runs must agree. A split is
 `list str horizontal|vertical FIRST-SHARE SECOND-SHARE FIRST-INDEX SECOND-INDEX end`.
 Every index must be reached once; shares are nonzero u32 values. A proposal
 has at most 2,047 nodes and depth 64. Revision exhaustion refuses further
