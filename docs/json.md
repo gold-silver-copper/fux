@@ -85,6 +85,7 @@ source pane has changed, respawned, or closed. A held answer's `pane`,
 A capture exposes its saved `pane` (or `client`), version, screen geometry,
 lines, optional styles, and captured state fields such as `last_status`.
 An absent field still fails `no_field`; it never falls back to a live read.
+Use `ANSWER pane str name get` to request the live pane name explicitly.
 Arrays become fuxth lists, objects become records, booleans and integers keep
 their types, and strings keep their exact text. Null has kind `null`; it is
 neither false nor an empty string/list. An absent field fails `no_field`.

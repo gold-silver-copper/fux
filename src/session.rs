@@ -7195,10 +7195,18 @@ mod tests {
     /// `pane`, `tab` and `workspace` too; and `json` gives it as it gives
     /// it alone, in a list too.
     #[test]
-    fn an_actions_answer_is_its_pane() -> Result<(), Box<dyn std::error::Error>> {
+    fn an_actions_answer_keeps_held_fields_and_targets_its_pane()
+    -> Result<(), Box<dyn std::error::Error>> {
         let (mut s, _) = attached(10, 40)?;
         let act = "%1 str x text send-keys";
-        assert_eq!(output(&mut s, &format!("{act} str name get"))?, "null\n");
+        assert!(
+            output(&mut s, &format!("{act} str name get"))
+                .is_err_and(|e| e.starts_with("no_field:"))
+        );
+        assert_eq!(
+            output(&mut s, &format!("{act} pane str name get"))?,
+            "null\n"
+        );
         assert_eq!(
             output(&mut s, &format!("{act} dup tab swap workspace"))?,
             "@1\n+1\n"
