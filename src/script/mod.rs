@@ -500,8 +500,7 @@ impl Answer {
     }
 
     /// It says nothing printed: a capture of no lines, no pane's answers.
-    /// A capture of one blank line says that line, and a listing says at
-    /// least where events read from.
+    /// A capture of one blank line says that line; status always names the server.
     fn is_empty(&self) -> bool {
         match self {
             Answer::Capture(captured) => captured.lines.is_empty(),
@@ -537,7 +536,17 @@ impl Answer {
 /// `status`'s text: the server's version and socket, and if it speaks
 /// another protocol, how to stop it.
 fn write_status(status: &Json, out: &mut dyn std::fmt::Write) -> std::fmt::Result {
-    let field = |key| crate::answer::Field(status.get(key), "");
+    struct Field<'a>(Option<&'a Json>);
+    impl std::fmt::Display for Field<'_> {
+        fn fmt(&self, out: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            match self.0 {
+                Some(Json::String(text)) => out.write_str(text),
+                Some(json) => json.write(out),
+                None => Ok(()),
+            }
+        }
+    }
+    let field = |key| Field(status.get(key));
     write!(
         out,
         "fux {} at {}",
@@ -1487,7 +1496,6 @@ pub fn answered(reply: Reply) -> Result<Vec<Value<Fux>>, Failed> {
     };
     Ok(vec![match body {
         Body::Empty => return Ok(Vec::new()),
-        Body::Text(text) => Value::str(text.trim_end_matches('\n')),
         Body::Found(id) => Value::App(handle(id, run)),
         Body::Handles(ids) => handles(ids)?,
         Body::Capture(captured) => Answer::Capture(captured).in_run(run),
@@ -1800,8 +1808,8 @@ pub fn main(args: &[String], out: &mut dyn Write) -> Result<u8, Failed> {
         Err(_) => machine.stack(),
     };
     let printed = (stack.iter())
-        // An answer with nothing to say (an empty listing) prints no
-        // blank line; options or a request, nothing.
+        // Empty pane outcomes and captures print no blank line;
+        // options or a request, nothing.
         .filter(|value| {
             !matches!(value, Value::App(Fux::Answer(a, _)) if a.is_empty())
                 && !matches!(value, Value::App(Fux::Opts(_)))

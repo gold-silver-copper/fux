@@ -281,7 +281,7 @@ impl PaintClock {
 enum Theirs {
     /// A copy for its clipboard, a pane's OSC 52 or copy mode's.
     Copy,
-    /// A program to run as its own (`str c1 client run`).
+    /// A screen to open on the receiving client.
     Program,
     /// Keys to take as typed (`send-keys` to it).
     Keys,
@@ -1423,7 +1423,7 @@ impl Server {
                 };
                 self.ordered_request(index, asked, now);
             }
-            // Nothing more is asked of a waiting command, or a stream. A
+            // Nothing more is asked of a waiting command. A
             // connection that is ending has had its last word: what came
             // with the Detach, Command or refused Hello that ended it is
             // dropped unread.
@@ -1481,8 +1481,7 @@ impl Server {
         }
     }
 
-    /// A request from connection `index`: answered now, or once its wait
-    /// has its answer, or streamed.
+    /// A request from connection `index`: answered now, or once its wait has an answer.
     fn request(
         &mut self,
         index: usize,
@@ -1612,9 +1611,8 @@ impl Server {
                     total = total.saturating_add(n);
                     self.session
                         .output(id, self.read_buffer.get(..n).unwrap_or_default(), now);
-                    // A short read: that was all, and the poll says when
-                    // there is more, without a read to find none. Full
-                    // reads go on.
+                    // A short read yields to other work. Poll decides
+                    // when to read again; full reads go on.
                     if n < SHORT_READ {
                         break false;
                     }
@@ -1828,7 +1826,7 @@ mod tests {
         let text: String = std::iter::repeat_n('x', crate::wire::MAX_REPLY).collect();
         conn.answer(
             &mut session,
-            crate::protocol::Body::Text(text).into(),
+            crate::protocol::Body::Field(crate::json::Json::str(text)).into(),
             Instant::now(),
         );
         assert!(matches!(conn.stage, Stage::Closing));

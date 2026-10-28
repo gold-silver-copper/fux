@@ -20,7 +20,7 @@ use crate::wire::{Wire, wire};
 use std::borrow::Cow;
 
 /// Bumped on any change to the frames below.
-pub const PROTOCOL: u32 = 49;
+pub const PROTOCOL: u32 = 50;
 /// The largest frame, kind byte included.
 pub const MAX_FRAME: usize = 1 << 20;
 /// The largest payload one frame carries.
@@ -409,7 +409,6 @@ wire! {
     pub enum Body {
         #[default]
         Empty,
-        Text(text: String),
         /// The pane, tab or workspace a lookup found.
         Found(id: AnyRef),
         /// The panes or tabs a place holds, in its order.

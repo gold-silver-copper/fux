@@ -3,7 +3,6 @@
 use crate::code::Code;
 use crate::command::Version;
 use crate::id::PaneId;
-use crate::json::Json;
 use crate::process::Ended;
 use crate::wire::{closed_wire, wire, wire_enum};
 
@@ -199,61 +198,5 @@ impl PaneAnswer {
             ",\"status\":{}}}",
             self.failure().map_or(0, |code| code.status().get())
         )
-    }
-}
-
-/// A field as listings and status show it: string contents, other JSON,
-/// or the caller's placeholder. No owned formatting temporary.
-#[derive(Clone, Copy)]
-pub(crate) struct Field<'a>(pub Option<&'a Json>, pub &'static str);
-impl Field<'_> {
-    fn plain(&self) -> Option<&str> {
-        match self.0 {
-            Some(Json::String(text)) => Some(text),
-            None => Some(self.1),
-            Some(_) => None,
-        }
-    }
-}
-impl std::fmt::Display for Field<'_> {
-    fn fmt(&self, out: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self.0 {
-            Some(Json::String(text)) => out.write_str(text),
-            Some(json) => json.write(out),
-            None => out.write_str(self.1),
-        }
-    }
-}
-impl PartialEq for Field<'_> {
-    fn eq(&self, other: &Self) -> bool {
-        fn same_json(a: &Json, b: &Json) -> bool {
-            match (a, b) {
-                (Json::Int(a), Json::Uint(b)) | (Json::Uint(b), Json::Int(a)) => {
-                    u64::try_from(*a).ok() == Some(*b)
-                }
-                (Json::Array(a), Json::Array(b)) => {
-                    a.len() == b.len() && a.iter().zip(b).all(|(a, b)| same_json(a, b))
-                }
-                (Json::Object(a), Json::Object(b)) => {
-                    a.len() == b.len()
-                        && a.iter()
-                            .zip(b)
-                            .all(|((ka, a), (kb, b))| ka == kb && same_json(a, b))
-                }
-                _ => a == b,
-            }
-        }
-        let same_plain = |plain: &str, json: Option<&Json>| {
-            json.is_some_and(|json| crate::words::writes_exactly(plain, |out| json.write(out)))
-        };
-        match (self.plain(), other.plain()) {
-            (Some(a), Some(b)) => a == b,
-            (Some(a), None) => same_plain(a, other.0),
-            (None, Some(b)) => same_plain(b, self.0),
-            (None, None) => match (self.0, other.0) {
-                (Some(a), Some(b)) => same_json(a, b),
-                _ => false,
-            },
-        }
     }
 }
