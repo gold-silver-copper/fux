@@ -1,26 +1,7 @@
 //! Reservations follow shared imported storage, not stack slots or run totals.
-use crate::{Code, Failure};
-use std::cell::{Cell, RefCell};
+use crate::{Code, Failure, Grant};
+use std::cell::RefCell;
 use std::rc::{Rc, Weak};
-
-#[derive(Debug)]
-struct Grant {
-    limit: usize,
-    used: Cell<usize>,
-}
-
-/// One machine's fixed grant for live imported allocations.
-#[derive(Debug)]
-pub struct Imports(Rc<Grant>);
-
-impl Imports {
-    pub fn new(limit: usize) -> Self {
-        Self(Rc::new(Grant {
-            limit,
-            used: Cell::new(0),
-        }))
-    }
-}
 
 #[derive(Debug)]
 struct Reservation {
@@ -31,7 +12,7 @@ struct Reservation {
 impl Drop for Reservation {
     fn drop(&mut self) {
         if let Some(grant) = self.grant.upgrade() {
-            grant.used.set(grant.used.get().saturating_sub(self.bytes));
+            let _ = grant.release(self.bytes);
         }
     }
 }
@@ -54,30 +35,23 @@ impl PartialEq for ImportLease {
 }
 
 impl ImportLease {
-    pub fn reserve(&self, imports: &Imports, bytes: usize) -> Result<(), Failure> {
+    pub fn reserve(&self, imports: &Rc<Grant>, bytes: usize) -> Result<(), Failure> {
         let mut held = self
             .0
             .try_borrow_mut()
             .map_err(|_| Failure::new(Code::Contract, "recursive storage admission"))?;
-        let owner = Rc::downgrade(&imports.0);
+        let owner = Rc::downgrade(imports);
         if let Some(reservation) = held.as_mut().filter(|r| r.grant.ptr_eq(&owner)) {
             // Mutable storage can grow before the host returns it again.
-            let used = imports.0.used.get().saturating_sub(reservation.bytes);
-            let used = used
-                .checked_add(bytes)
-                .filter(|n| *n <= imports.0.limit)
-                .ok_or_else(full)?;
-            imports.0.used.set(used);
+            if bytes >= reservation.bytes {
+                imports.charge(bytes.saturating_sub(reservation.bytes))
+            } else {
+                imports.release(reservation.bytes.saturating_sub(bytes))
+            }
+            .map_err(|_| full())?;
             reservation.bytes = bytes;
         } else {
-            let used = imports
-                .0
-                .used
-                .get()
-                .checked_add(bytes)
-                .filter(|n| *n <= imports.0.limit)
-                .ok_or_else(full)?;
-            imports.0.used.set(used);
+            imports.charge(bytes).map_err(|_| full())?;
             *held = Some(Reservation {
                 grant: owner,
                 bytes,
@@ -125,7 +99,7 @@ impl<T> Shared<T> {
             .saturating_add(std::mem::size_of::<[usize; 2]>())
     }
 
-    pub fn reserve(&self, imports: &Imports, bytes: usize) -> Result<(), Failure> {
+    pub fn reserve(&self, imports: &Rc<Grant>, bytes: usize) -> Result<(), Failure> {
         self.0.lease.reserve(imports, bytes)
     }
 }

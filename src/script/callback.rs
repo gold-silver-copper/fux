@@ -2,6 +2,7 @@
 use super::{Fux, Value, record};
 use crate::callback::Data;
 use crate::wire::Budget;
+use fuxix::Allocation;
 use fuxth::Failure;
 use std::rc::Rc;
 

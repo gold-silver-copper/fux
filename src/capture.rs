@@ -11,6 +11,7 @@ use fux_vt::{
     Attributes, Blink, Color, CommandMark, Mode, MouseProtocolMode, Rgb, Row, Screen,
     UnderlineStyle,
 };
+use fuxix::Allocation;
 
 /// Synthesized output work: at most two cells per admitted wire byte.
 pub(crate) const OUTPUT_CELLS: usize = 2 * crate::wire::MAX_REPLY;
@@ -1066,6 +1067,7 @@ mod tests {
     use crate::id::PaneId;
     use crate::pane::tests::Lone;
     use crate::pane::{Pane, Runs};
+    use fuxix::Allocation;
     use std::time::Instant;
 
     #[test]

@@ -1,7 +1,7 @@
 //! Values on the stack: integers, booleans, strings, lists, and the
 //! application's own.
 use crate::error::{Code, Failure};
-use crate::{ImportLease, Imports};
+use crate::{Grant, ImportLease};
 use std::rc::Rc;
 
 /// How deep lists may nest: a list of lists of … at most this many. Every
@@ -22,7 +22,7 @@ pub trait AppValue: Clone + PartialEq {
     /// Reserve each owned allocation, recursively visiting shared children.
     /// Inline application values need no reservation. Heap-owning values must
     /// keep a lease with their storage and reserve it here.
-    fn retain(&self, _imports: &Imports) -> Result<(), Failure> {
+    fn retain(&self, _imports: &Rc<Grant>) -> Result<(), Failure> {
         Ok(())
     }
 
@@ -423,30 +423,33 @@ impl<A: AppValue> Value<A> {
         Ok(self.render_text(most, true)?.map(Text::new))
     }
 
-    fn charge_text(&self, left: &mut usize) -> Result<(), Failure> {
-        let bytes = match self {
-            Self::Int(_) | Self::Bool(_) => 0,
+    fn own_bytes(&self) -> usize {
+        match self {
             Self::Str(text) => std::mem::size_of::<Text>()
-                .saturating_add(std::mem::size_of::<usize>().saturating_mul(2))
+                .saturating_add(std::mem::size_of::<[usize; 2]>())
                 .saturating_add(text.heap_bytes()),
             Self::List(list) => std::mem::size_of::<List<A>>()
-                .saturating_add(std::mem::size_of::<usize>().saturating_mul(2))
+                .saturating_add(std::mem::size_of::<[usize; 2]>())
                 .saturating_add(list.heap_bytes()),
-            Self::App(app) => app.text_bytes(),
-        };
-        *left = left.checked_sub(bytes).ok_or_else(text_limit)?;
-        if let Self::List(list) = self {
-            for item in &list.items {
-                item.charge_text(left)?;
-            }
+            Self::Int(_) | Self::Bool(_) | Self::App(_) => 0,
         }
-        Ok(())
+    }
+
+    /// Retained storage, counting each reference, with the application's own
+    /// payload or formatter workspace. `None` when the aggregate overflows.
+    pub fn storage_bytes(&self, app: impl Fn(&A) -> usize + Copy) -> Option<usize> {
+        match self {
+            Self::List(list) => list.items.iter().try_fold(self.own_bytes(), |n, item| {
+                n.checked_add(item.storage_bytes(app)?)
+            }),
+            Self::App(value) => Some(app(value)),
+            Self::Int(_) | Self::Bool(_) | Self::Str(_) => Some(self.own_bytes()),
+        }
     }
 
     fn render_text(&self, most: usize, indexed: bool) -> Result<Option<String>, Failure> {
         struct Count {
-            left: usize,
-            bytes: usize,
+            output: crate::Render,
             chars: usize,
             ascii: bool,
             most: usize,
@@ -462,17 +465,18 @@ impl<A: AppValue> Value<A> {
                     self.long = true;
                     return Err(std::fmt::Error);
                 }
-                self.left = self.left.checked_sub(text.len()).ok_or(std::fmt::Error)?;
-                self.bytes = self.bytes.checked_add(text.len()).ok_or(std::fmt::Error)?;
                 self.ascii &= text.is_ascii();
-                Ok(())
+                self.output.write_str(text)
             }
         }
-        let mut left = A::TEXT_LIMIT;
-        self.charge_text(&mut left)?;
+        let left = A::TEXT_LIMIT
+            .checked_sub(
+                self.storage_bytes(AppValue::text_bytes)
+                    .ok_or_else(text_limit)?,
+            )
+            .ok_or_else(text_limit)?;
         let mut count = Count {
-            left,
-            bytes: 0,
+            output: crate::Render::new(left),
             chars: 0,
             ascii: true,
             most,
@@ -481,28 +485,16 @@ impl<A: AppValue> Value<A> {
         if let Err(failure) = self.write_text(&mut count) {
             return if count.long { Ok(None) } else { Err(failure) };
         }
-        if indexed && Text::import_bytes(count.chars, count.ascii).is_none_or(|n| n > count.left) {
+        if indexed
+            && Text::import_bytes(count.chars, count.ascii)
+                .is_none_or(|n| n > count.output.remaining())
+        {
             return Err(text_limit());
         }
-        let mut text = String::new();
-        text.try_reserve_exact(count.bytes)
-            .map_err(|_| text_limit())?;
-        struct Output<'a> {
-            text: &'a mut String,
-            left: usize,
-        }
-        impl std::fmt::Write for Output<'_> {
-            fn write_str(&mut self, text: &str) -> std::fmt::Result {
-                self.left = self.left.checked_sub(text.len()).ok_or(std::fmt::Error)?;
-                self.text.push_str(text);
-                Ok(())
-            }
-        }
-        self.write_text(&mut Output {
-            text: &mut text,
-            left: count.bytes,
-        })?;
-        Ok(Some(text))
+        count
+            .output
+            .finish(|out| self.write_text(out), text_limit)
+            .map(Some)
     }
 
     fn write_text(&self, out: &mut dyn std::fmt::Write) -> Result<(), Failure> {
@@ -537,22 +529,12 @@ impl<A> Value<A> {
 impl<A: AppValue> Value<A> {
     /// Reserve live shared storage once per machine. Projected children retain
     /// their own leases even after a parent list or record has been dropped.
-    pub fn retain(&self, imports: &Imports) -> Result<(), Failure> {
+    pub fn retain(&self, imports: &Rc<Grant>) -> Result<(), Failure> {
         match self {
             Self::Int(_) | Self::Bool(_) => Ok(()),
-            Self::Str(text) => text.lease.reserve(
-                imports,
-                text.heap_bytes()
-                    .saturating_add(std::mem::size_of::<Text>())
-                    .saturating_add(std::mem::size_of::<[usize; 2]>()),
-            ),
+            Self::Str(text) => text.lease.reserve(imports, self.own_bytes()),
             Self::List(list) => {
-                list.lease.reserve(
-                    imports,
-                    list.heap_bytes()
-                        .saturating_add(std::mem::size_of::<List<A>>())
-                        .saturating_add(std::mem::size_of::<[usize; 2]>()),
-                )?;
+                list.lease.reserve(imports, self.own_bytes())?;
                 for value in list.items() {
                     value.retain(imports)?;
                 }

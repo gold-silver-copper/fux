@@ -2,6 +2,7 @@
 //! no type of its own (a pane's state, a listing, a field), rendered at
 //! the client. fux never reads JSON text.
 use crate::wire::{Error, Reader, Wire};
+use fuxix::Allocation;
 
 /// A JSON object's fields as they are built, in order.
 pub type Fields = Vec<(&'static str, Json)>;
@@ -218,43 +219,13 @@ pub(crate) fn render(
     budget: &mut crate::wire::Budget,
     mut write: impl FnMut(&mut dyn std::fmt::Write) -> std::fmt::Result,
 ) -> Result<String, crate::session::Error> {
-    struct Count {
-        len: usize,
-        left: usize,
-    }
-    impl std::fmt::Write for Count {
-        fn write_str(&mut self, text: &str) -> std::fmt::Result {
-            self.left = self.left.checked_sub(text.len()).ok_or(std::fmt::Error)?;
-            self.len = self.len.checked_add(text.len()).ok_or(std::fmt::Error)?;
-            Ok(())
-        }
-    }
-    let mut count = Count {
-        len: 0,
-        left: budget.remaining(),
-    };
+    let mut count = fuxth::Render::new(budget.remaining());
     write(&mut count).map_err(|_| crate::wire::Budget::exceeded())?;
-    budget.charge(count.len)?;
-    let mut out = String::new();
-    out.try_reserve_exact(count.len)
-        .map_err(|_| crate::wire::Budget::exceeded())?;
-    struct Output<'a> {
-        text: &'a mut String,
-        left: usize,
-    }
-    impl std::fmt::Write for Output<'_> {
-        fn write_str(&mut self, text: &str) -> std::fmt::Result {
-            self.left = self.left.checked_sub(text.len()).ok_or(std::fmt::Error)?;
-            self.text.push_str(text);
-            Ok(())
-        }
-    }
-    write(&mut Output {
-        text: &mut out,
-        left: count.len,
-    })
-    .map_err(|_| crate::wire::Budget::exceeded())?;
-    Ok(out)
+    budget.charge(count.bytes())?;
+    count.finish(
+        |out| write(out).map_err(|_| crate::wire::Budget::exceeded()),
+        crate::wire::Budget::exceeded,
+    )
 }
 
 /// Standard base64's alphabet, each character's place its value.

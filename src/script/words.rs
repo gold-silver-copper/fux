@@ -15,6 +15,7 @@ use crate::id::{ClientId, PaneId};
 use crate::keys::Direction;
 use crate::layout::Axis;
 use crate::screens::Open;
+use fuxix::Allocation;
 use fuxth::{Done, Failure, Value};
 use std::num::NonZeroU32;
 use std::ops::RangeInclusive;
@@ -504,46 +505,17 @@ pub(super) fn observation_failure(error: crate::session::Error) -> Failure {
 
 /// Retained inputs and their rendered output share the observation grant.
 fn json_text(value: &Value<Fux>, limit: usize) -> Result<String, Failure> {
-    fn charge(
-        value: &Value<Fux>,
-        budget: &mut crate::wire::Budget,
-    ) -> Result<(), crate::session::Error> {
-        match value {
-            Value::Int(_) | Value::Bool(_) => Ok(()),
-            Value::Str(text) => {
-                budget.slots::<fuxth::Text>(1)?;
-                budget.slots::<usize>(2)?; // Rc counters.
-                budget.charge(text.heap_bytes())
-            }
-            Value::List(list) => {
-                budget.charge(list.heap_bytes())?;
-                budget.slots::<fuxth::List<Fux>>(1)?;
-                budget.slots::<usize>(2)?;
-                for item in list.items() {
-                    charge(item, budget)?;
-                }
-                Ok(())
-            }
-            Value::App(Fux::Answer(answer, _)) => {
-                budget.charge(fuxth::Shared::<super::Answer>::bytes(0))?;
-                answer.charge(budget)
-            }
-            Value::App(Fux::Record(r)) => budget.charge(r.bytes()),
-            Value::App(app @ Fux::Rendered(_)) => budget.charge(fuxth::AppValue::text_bytes(app)),
-            Value::App(Fux::Null) => Ok(()),
-            Value::App(Fux::Opts(opts)) => budget.charge(opts.heap_bytes()),
-            Value::App(
-                Fux::Pane(..)
-                | Fux::Tab(..)
-                | Fux::Workspace(..)
-                | Fux::Client(..)
-                | Fux::Extent(_)
-                | Fux::All,
-            ) => Ok(()),
-        }
-    }
     let mut budget = crate::wire::Budget::with_limit(limit);
-    charge(value, &mut budget).map_err(observation_failure)?;
+    let bytes = value
+        .storage_bytes(|app| {
+            if let Fux::Answer(answer, _) = app {
+                answer.retained_bytes()
+            } else {
+                fuxth::AppValue::text_bytes(app)
+            }
+        })
+        .ok_or_else(|| observation_failure(crate::wire::Budget::exceeded()))?;
+    budget.charge(bytes).map_err(observation_failure)?;
     let text = crate::json::render(&mut budget, |out| write_json_value(value, out))
         .map_err(observation_failure)?;
     budget.text_value(&text).map_err(observation_failure)?;

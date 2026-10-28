@@ -6,6 +6,7 @@ use crate::command::{EnvPatch, Limit, Percent};
 use crate::id::{ClientId, PaneId, TabId, WsId};
 use crate::keys::mouse::MouseButton;
 use crate::keys::{Direction, KeyPress};
+use fuxix::Allocation;
 use fuxix::process::Signal;
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
 
@@ -42,27 +43,26 @@ impl std::fmt::Display for Error {
 impl std::error::Error for Error {}
 
 /// Bytes being read.
-pub struct Reader<'a>(&'a [u8], usize);
+pub struct Reader<'a>(&'a [u8], fuxth::Grant);
 
 impl<'a> Reader<'a> {
     pub fn new(bytes: &'a [u8]) -> Reader<'a> {
-        Reader(bytes, MAX_ALLOCATED)
+        Reader(bytes, fuxth::Grant::new(MAX_ALLOCATED))
     }
     pub(crate) fn limited<T>(
         &mut self,
         bytes: usize,
         read: impl FnOnce(&mut Self) -> Result<T, Error>,
     ) -> Result<T, Error> {
-        let before = self.1;
-        self.1 = before.min(bytes);
-        let limit = self.1;
+        let before = self.1.remaining();
+        let limit = before.min(bytes);
+        self.1 = fuxth::Grant::new(limit);
         let result = read(self);
-        self.1 = before.saturating_sub(limit.saturating_sub(self.1));
+        self.1 = fuxth::Grant::new(before.saturating_sub(limit.saturating_sub(self.1.remaining())));
         result
     }
     pub(crate) fn charge(&mut self, bytes: usize) -> Result<(), Error> {
-        self.1 = self.1.checked_sub(bytes).ok_or(Error::Limit)?;
-        Ok(())
+        self.1.charge(bytes).map_err(|_| Error::Limit)
     }
     pub(crate) fn list<T>(
         &mut self,
@@ -89,14 +89,14 @@ impl<'a> Reader<'a> {
         max: usize,
         read: impl FnMut(&mut Self) -> Result<T, Error>,
     ) -> Result<Vec<T>, Error> {
-        let count = u32::get(&mut Reader(self.0, self.1))? as usize;
+        let count = u32::get(&mut Reader::new(self.0))? as usize;
         if count > max {
             return Err(Error::Bad("list length"));
         }
         self.list(read)
     }
     pub(crate) fn bounded_text(&mut self, max: usize) -> Result<String, Error> {
-        let count = u32::get(&mut Reader(self.0, self.1))? as usize;
+        let count = u32::get(&mut Reader::new(self.0))? as usize;
         if count > max {
             return Err(Error::Bad("text length"));
         }
@@ -138,26 +138,13 @@ pub const MAX_REPLY: usize = 32 << 20;
 pub const MAX_ALLOCATED: usize = 128 << 20;
 
 /// Retained construction space, charged before cloning data or growing lists.
-pub(crate) struct Budget(usize);
+pub(crate) struct Budget(fuxth::Grant);
 impl Budget {
     pub(crate) fn new() -> Self {
         Self::with_limit(MAX_ALLOCATED)
     }
     pub(crate) fn with_limit(bytes: usize) -> Self {
-        Self(bytes)
-    }
-    pub(crate) fn remaining(&self) -> usize {
-        self.0
-    }
-    pub(crate) fn string(&mut self, text: &str) -> Result<String, crate::session::Error> {
-        fuxix::Allocation::string(self, text)
-    }
-    pub(crate) fn write(
-        &mut self,
-        out: &mut String,
-        args: std::fmt::Arguments<'_>,
-    ) -> Result<(), crate::session::Error> {
-        fuxix::Allocation::write(self, out, args)
+        Self(fuxth::Grant::new(bytes))
     }
     pub(crate) fn format(
         &mut self,
@@ -214,10 +201,6 @@ impl Budget {
         self.release(bytes)?;
         Ok(out)
     }
-    pub(crate) fn charge(&mut self, bytes: usize) -> Result<(), crate::session::Error> {
-        self.0 = self.0.checked_sub(bytes).ok_or_else(Self::exceeded)?;
-        Ok(())
-    }
     pub(crate) fn slots<T>(&mut self, count: usize) -> Result<(), crate::session::Error> {
         self.charge(
             count
@@ -225,49 +208,24 @@ impl Budget {
                 .ok_or_else(Self::exceeded)?,
         )
     }
-    pub(crate) fn vector<T>(&mut self, count: usize) -> Result<Vec<T>, crate::session::Error> {
-        fuxix::Allocation::vector(self, count)
-    }
-    pub(crate) fn release(&mut self, bytes: usize) -> Result<(), crate::session::Error> {
-        self.0 = self.0.checked_add(bytes).ok_or_else(Self::exceeded)?;
-        Ok(())
-    }
-    /// Charge the whole replacement block while the old one is live.
-    pub(crate) fn reserve<T>(
-        &mut self,
-        out: &mut Vec<T>,
-        more: usize,
-    ) -> Result<(), crate::session::Error> {
-        fuxix::Allocation::reserve(self, out, more)
-    }
-    pub(crate) fn text(
-        &mut self,
-        out: &mut String,
-        text: &str,
-    ) -> Result<(), crate::session::Error> {
-        fuxix::Allocation::text(self, out, text)
-    }
-    pub(crate) fn exceeded() -> crate::session::Error {
-        crate::session::fail(
-            crate::code::Raise::TooLong,
-            "finite reply exceeds its byte or allocation limit; request a smaller scope",
-        )
-    }
 }
 
 impl fuxix::Allocation for Budget {
     type Error = crate::session::Error;
     fn remaining(&self) -> usize {
-        self.remaining()
+        self.0.remaining()
     }
     fn charge(&mut self, bytes: usize) -> Result<(), Self::Error> {
-        self.charge(bytes)
+        self.0.charge(bytes).map_err(|_| Self::exceeded())
     }
     fn release(&mut self, bytes: usize) -> Result<(), Self::Error> {
-        self.release(bytes)
+        self.0.release(bytes).map_err(|_| Self::exceeded())
     }
     fn exceeded() -> Self::Error {
-        Self::exceeded()
+        crate::session::fail(
+            crate::code::Raise::TooLong,
+            "finite reply exceeds its byte or allocation limit; request a smaller scope",
+        )
     }
 }
 
@@ -855,11 +813,11 @@ mod tests {
             .saturating_mul(std::mem::size_of::<Vec<String>>())
             .saturating_add(2usize.saturating_mul(std::mem::size_of::<String>()));
         let mut reader = Reader::new(&bytes);
-        reader.1 = slots.saturating_add(5);
+        reader.1 = fuxth::Grant::new(slots.saturating_add(5));
         assert_eq!(reader.whole::<Vec<Vec<String>>>(), Err(Error::Limit));
         let bytes = [5, 0, 0, 0, 4, 0, 0, 0, 0]; // four JSON nulls
         let mut reader = Reader::new(&bytes);
-        reader.1 = std::mem::size_of::<crate::json::Json>();
+        reader.1 = fuxth::Grant::new(std::mem::size_of::<crate::json::Json>());
         assert_eq!(reader.whole::<crate::json::Json>(), Err(Error::Limit));
         Ok(())
     }
@@ -889,7 +847,7 @@ mod tests {
         let bytes = encode(&Reply::from(Body::Capture(Box::new(captured))))?;
         let mut reader = Reader::new(&bytes);
         let reply = Reply::get(&mut reader)?;
-        let charged = MAX_ALLOCATED.saturating_sub(reader.1);
+        let charged = MAX_ALLOCATED.saturating_sub(reader.1.remaining());
         assert!(charged > 32 << 20 && charged <= MAX_ALLOCATED, "{charged}");
         assert!(matches!(
             reply.response,

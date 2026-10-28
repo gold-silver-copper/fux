@@ -7,6 +7,7 @@ use crate::protocol::Body;
 use crate::view::{ClientKind, Mode};
 use crate::wire::Budget;
 use crate::workspace::Fit;
+use fuxix::Allocation;
 
 impl Session {
     pub(super) fn inspect(&self, scope: Scope, projection: Projection) -> Result<Body, Error> {

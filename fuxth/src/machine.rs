@@ -185,7 +185,7 @@ pub struct Machine<A> {
     steps: u64,
     /// Elements built so far.
     built: u64,
-    imports: crate::Imports,
+    imports: Rc<crate::Grant>,
     /// The step taken last: how many frames there were, its code, and its
     /// place in it.
     last: Option<(usize, Option<usize>, usize)>,
@@ -214,7 +214,7 @@ impl<A: AppValue> Machine<A> {
             extra: 0,
             steps: 0,
             built: 0,
-            imports: crate::Imports::new(A::IMPORT_LIMIT),
+            imports: Rc::new(crate::Grant::new(A::IMPORT_LIMIT)),
             last: None,
         }
     }
@@ -241,13 +241,17 @@ impl<A: AppValue> Machine<A> {
     }
 
     fn admit(&mut self, value: &Value<A>) -> Result<(), Error> {
-        fn valid<A: AppValue>(value: &Value<A>) -> bool {
+        fn valid<A: AppValue>(value: &Value<A>, bytes: &mut usize) -> bool {
             match value {
                 Value::Str(s) => s.chars_len() <= LONGEST,
                 Value::List(list) => {
-                    list.items().len() <= LONGEST && list.items().iter().all(valid)
+                    list.items().len() <= LONGEST && list.items().iter().all(|v| valid(v, bytes))
                 }
-                Value::App(_) | Value::Int(_) | Value::Bool(_) => true,
+                Value::App(app) => {
+                    *bytes = bytes.saturating_add(app.import_bytes().unwrap_or(0));
+                    true
+                }
+                Value::Int(_) | Value::Bool(_) => true,
             }
         }
         let weight = value.weight();
@@ -256,23 +260,14 @@ impl<A: AppValue> Machine<A> {
         if value.depth() > NESTING || (!native && weight > TOTAL) {
             return Err(self.nested());
         }
-        if !valid(value) {
+        let mut bytes = 0;
+        if !valid(value, &mut bytes) {
             return Err(self.fail(
                 Code::TooLong,
                 "host result exceeds the string or list length limit",
             ));
         }
-        fn bytes<A: AppValue>(value: &Value<A>) -> usize {
-            match value {
-                Value::App(app) => app.import_bytes().unwrap_or(0),
-                Value::List(list) => list
-                    .items()
-                    .iter()
-                    .fold(0usize, |n, v| n.saturating_add(bytes(v))),
-                Value::Int(_) | Value::Bool(_) | Value::Str(_) => 0,
-            }
-        }
-        if bytes(value) > A::IMPORT_LIMIT {
+        if bytes > A::IMPORT_LIMIT {
             return Err(self.fail(
                 Code::TooLong,
                 "host byte payload exceeds the import allocation limit",

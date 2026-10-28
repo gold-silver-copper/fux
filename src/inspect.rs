@@ -5,6 +5,7 @@ use crate::id::{ClientId, PaneId, TabId, WsId};
 use crate::json::Json;
 use crate::layout::Node;
 use crate::wire::wire;
+use fuxix::Allocation;
 
 /// Aggregate construction space for a snapshot, including its temporary vectors.
 pub const BYTES: usize = 8 << 20;

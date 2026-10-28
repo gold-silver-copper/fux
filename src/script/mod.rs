@@ -25,6 +25,7 @@ use crate::json::Json;
 use crate::layout::Axis;
 use crate::protocol::{Asked, Body, Context, End, Reply, Response};
 use crate::socket::{Choice, SocketPath};
+use fuxix::Allocation;
 use fuxth::{AppValue, Code as Lang, Compiler, Limits, Machine, Outcome, Token, Value, token};
 use std::io::{self, Read, Write};
 use std::rc::Rc;
@@ -116,7 +117,7 @@ impl AppValue for Fux {
         matches!(self, Fux::Rendered(_)).then(|| self.text_bytes())
     }
 
-    fn retain(&self, imports: &fuxth::Imports) -> Result<(), fuxth::Failure> {
+    fn retain(&self, imports: &Rc<fuxth::Grant>) -> Result<(), fuxth::Failure> {
         match self {
             Fux::Record(record) => record.retain(imports),
             Fux::Answer(answer, _) => answer.reserve(imports, answer.retained_bytes()),

@@ -5,6 +5,7 @@ use crate::command::{AnyRef, Run};
 use crate::inspect::{self, Projection, Scope};
 use crate::json::Json;
 use crate::wire::Budget;
+use fuxix::Allocation;
 use fuxth::{AppValue, Failure, List, Value};
 use std::rc::Rc;
 
@@ -27,17 +28,8 @@ impl PartialEq for Record {
 }
 
 impl Record {
-    pub(super) fn retain(&self, imports: &fuxth::Imports) -> Result<(), Failure> {
-        let own = self.fields.iter().fold(
-            std::mem::size_of::<Record>()
-                .saturating_add(std::mem::size_of::<[usize; 2]>())
-                .saturating_add(
-                    self.fields
-                        .capacity()
-                        .saturating_mul(std::mem::size_of::<(String, V)>()),
-                ),
-            |n, (key, _)| n.saturating_add(key.capacity()),
-        );
+    pub(super) fn retain(&self, imports: &Rc<fuxth::Grant>) -> Result<(), Failure> {
+        let own = Self::own_bytes(&self.fields);
         let snapshot = self
             .snapshot
             .as_ref()
@@ -50,6 +42,19 @@ impl Record {
             value.retain(imports)?;
         }
         Ok(())
+    }
+
+    fn own_bytes(fields: &Vec<(String, V)>) -> usize {
+        fields.iter().fold(
+            std::mem::size_of::<Record>()
+                .saturating_add(std::mem::size_of::<[usize; 2]>())
+                .saturating_add(
+                    fields
+                        .capacity()
+                        .saturating_mul(std::mem::size_of::<(String, V)>()),
+                ),
+            |n, (key, _)| n.saturating_add(key.capacity()),
+        )
     }
 
     pub(super) fn get(&self, field: &str) -> Result<V, Failure> {
@@ -200,16 +205,9 @@ impl<'a> Builder<'a> {
             })
             .filter(|n| *n <= fuxth::TOTAL)
             .ok_or_else(fail)?;
-        let bytes = fields.iter().fold(
-            std::mem::size_of::<Record>()
-                .saturating_add(std::mem::size_of::<usize>().saturating_mul(2))
-                .saturating_add(
-                    fields
-                        .capacity()
-                        .saturating_mul(std::mem::size_of::<(String, V)>()),
-                ),
-            |n, (k, v)| n.saturating_add(k.capacity()).saturating_add(retained(v)),
-        );
+        let bytes = fields.iter().fold(Record::own_bytes(&fields), |n, (_, v)| {
+            n.saturating_add(retained(v))
+        });
         self.budget
             .slots::<Record>(1)
             .map_err(super::words::observation_failure)?;
@@ -692,7 +690,7 @@ mod tests {
 
     #[test]
     fn projected_children_keep_only_their_shared_storage_reserved() -> Result<(), Failure> {
-        let grant = fuxth::Imports::new(2048);
+        let grant = Rc::new(fuxth::Grant::new(2048));
         let make = || {
             from_json(&Json::Object(vec![(
                 "text".into(),
