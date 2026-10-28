@@ -87,7 +87,7 @@ const COPY: &[u8] = b"hjklwbaeudtzfrnpvsxoyq";
 /// Lines typed into the command prompt, fuxth the client runs as its
 /// own, some of it wrong.
 const PROMPT: &[&str] = &[
-    "me focused opts horizontal split drop\r",
+    "me focused str horizontal axis split drop\r",
     "me zoom\r",
     "ls\r",
     "me str next step-tab\r",
@@ -123,7 +123,7 @@ pub fn step(rng: &mut Rng, world: &World, clients: &[String], state: &State) -> 
     // there are fewer than two panes, the walk makes one first.
     if panes.len() < 2 {
         let pane = panes.first().copied().unwrap_or("%1");
-        return Step::Cli(words(&format!("str {pane} pane horizontal split")));
+        return Step::Cli(words(&format!("str {pane} pane str horizontal axis split")));
     }
     if clients.is_empty() {
         return Step::Attach { rows: 24, cols: 80 };
@@ -292,14 +292,14 @@ fn cli(rng: &mut Rng, world: &World, clients: &[String]) -> Vec<String> {
             rng.below(9)
         ),
         2 => format!("opts 80 23 size str w{} name new-workspace", rng.below(9)),
-        3 => format!("str {} pane horizontal split", pane(rng)),
+        3 => format!("str {} pane str horizontal axis split", pane(rng)),
         4 => format!(
-            "str {} pane horizontal {} program-clipboard split",
+            "str {} pane str horizontal axis {} program-clipboard split",
             pane(rng),
             rng.chance(50)
         ),
         5 => format!(
-            "str {} pane vertical str echo program str split-typed arg split",
+            "str {} pane str vertical axis str echo program str split-typed arg split",
             pane(rng)
         ),
         6 if panes > 2 => format!("str {} pane kill", pane(rng)),

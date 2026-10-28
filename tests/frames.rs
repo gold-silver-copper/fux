@@ -110,7 +110,7 @@ fn a_pane_part_way_through_frames_holds_up_no_other() -> Outcome {
     let server = Server::start("")?;
     let mut client = server.attach(10, 60)?;
     client.wait_for("$")?;
-    server.ok(&["str", "%1", "pane", "vertical", "split"])?;
+    server.ok(&["str", "%1", "pane", "str", "vertical", "axis", "split"])?;
     type_now(
         &server,
         "%2",

@@ -118,12 +118,12 @@ Each walk is saved in `--output` as `SECONDS-seed-N/`:
 
 - `trace.txt`: `fux-walk trace 1`, comments, then one step per line in
   fux's word grammar, for example `keys c1 '\x02tn'`,
-  `cli str %3 pane opts horizontal split`,
+  `cli str %3 pane str horizontal axis split`,
   `resize c1 2 2`, `child %2 burst 40`, `signal %2 stop`, `config
   prefix-a`. Bytes are printable ASCII as is, `\\` for a backslash and
   `\xNN` for the rest. Replay reads the steps, never the seed.
 - `metadata.txt`: the seed, the fux binary's path, size and FNV-1a hash,
-  `fux version`, `uname -a`, the settle time.
+  `fux --version`, `uname -a`, the settle time.
 - For a failure: `failure.txt` (the step, the invariant, what was seen, the
   end of the server's log; the fixture directory is kept too) and
   `minimized-NNN.txt`.
