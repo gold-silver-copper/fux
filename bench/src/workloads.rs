@@ -836,6 +836,7 @@ fn keystroke(recordings: &[Recording], baseline: bool, keys: usize) -> Result<Do
     let c = s
         .attach_as(fux::view::ClientKind::Terminal, attach)
         .map_err(|e| e.to_string())?;
+    present(&mut s, c);
     let pane = s.parts.panes().keys().next().copied().ok_or("no pane")?;
     // A full screen, as a pane at work shows: the recordings' output.
     for r in recordings.iter().take(8) {
@@ -916,6 +917,7 @@ fn paint(
     let c = s
         .attach_as(fux::view::ClientKind::Terminal, attach)
         .map_err(|e| e.to_string())?;
+    present(&mut s, c);
     if split {
         let split = fux::command::Command::Split {
             options: pane_options(HISTORY)?,
@@ -1100,6 +1102,17 @@ fn encode(
 
 /// A session of `panes` panes in all, none running a process
 /// (`Session::new(.., false)`): their output is what the workload feeds.
+fn present(session: &mut fux::session::Session, client: fux::id::ClientId) {
+    session.acts(
+        client,
+        vec![fux::act::Act::Presentation(fux::view::Presentation {
+            bell: true,
+            titles: false,
+            terminal_clipboard: true,
+        })],
+    );
+}
+
 fn pane_options(history: usize) -> Result<fux::command::PaneOptions, String> {
     Ok(fux::command::PaneOptions {
         history_bytes: fux::config::HistoryBytes::new(history).ok_or("history budget")?,

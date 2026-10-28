@@ -254,15 +254,15 @@ impl Through {
         // The client attaching starts its first shell, on its screen.
         let client_rows = rows.checked_add(1).ok_or("too many rows for the bar")?;
         let size = fux_vt::Size::new(client_rows, cols).map_err(|e| format!("fux: {e}"))?;
+        let preferences = fux::script::default_state()
+            .map_err(|e| e.to_string())?
+            .preferences;
         let client = session
             .attach_as(
                 ClientKind::Terminal,
                 fux::protocol::Attach {
                     initial: Some(fux::command::InitialWorkspace {
-                        options: fux::script::default_state()
-                            .map_err(|e| e.to_string())?
-                            .preferences
-                            .pane_options(),
+                        options: preferences.pane_options(),
                         name: None,
                         start: fux::command::Start::Shell(fux::config::Program::new(
                             "/bin/sh".into(),
@@ -275,6 +275,10 @@ impl Through {
                 },
             )
             .map_err(|e| format!("fux: {e}"))?;
+        session.acts(
+            client,
+            vec![fux::act::Act::Presentation(preferences.presentation())],
+        );
         let mut placement = Placement::default();
         let view = session.views.get(&client).ok_or("fux: no view")?;
         session.placement_into(view, &mut placement);
