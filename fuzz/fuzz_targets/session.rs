@@ -99,8 +99,8 @@ const SIDE: &[&str] = &[
     "str g unbind",
     "str C-a prefix",
     "str C-b prefix",
-    "str clipboard false set",
-    "str clipboard true set",
+    "str program-clipboard false set",
+    "str program-clipboard true set",
     "str c1 client str hjkl text send-keys",
     "str c1 client detach",
     "str %1 pane newest paste-buffer",
@@ -239,6 +239,7 @@ impl Run {
                 kind,
                 fux::protocol::Attach {
                     initial: Some(fux::command::InitialWorkspace {
+                        options: defaults().preferences.pane_options(),
                         name: None,
                         start: fux::command::Start::Shell(defaults().preferences.shell.clone()),
                         cwd: std::env::current_dir().unwrap_or_default(),
@@ -248,6 +249,12 @@ impl Run {
                 },
             )
         {
+            self.s.acts(
+                id,
+                vec![fux::act::Act::Presentation(
+                    defaults().preferences.presentation(),
+                )],
+            );
             self.keys.insert(id, Keys::default());
         }
     }

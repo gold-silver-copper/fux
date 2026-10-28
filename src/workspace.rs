@@ -391,6 +391,17 @@ impl Parts {
         }
     }
 
+    /// Disabling bells clears only this client's pending tab marks.
+    pub(crate) fn clear_bells(&mut self, client: ClientId) {
+        for ws in &mut self.workspaces {
+            for tab in &mut ws.tabs {
+                if let Some(seat) = tab.seat_mut(client) {
+                    seat.rang = false;
+                }
+            }
+        }
+    }
+
     /// A client detaches: nothing names it.
     pub(crate) fn forget(&mut self, client: ClientId) {
         for w in &mut self.workspaces {

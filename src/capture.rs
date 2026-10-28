@@ -172,9 +172,8 @@ pub fn pane(
     history: Option<usize>,
     view: CaptureView,
     copy_mode: bool,
-    history_bytes: usize,
 ) -> Result<Captured, crate::session::Error> {
-    let limits = Limits::new(history_bytes, pane.screen().size().into())?;
+    let limits = Limits::new(pane.history_bytes(), pane.screen().size().into())?;
     pane_with(pane, run, history, view, copy_mode, limits)
 }
 
@@ -681,6 +680,8 @@ pub(crate) fn state(
         ("lost", lost),
         ("cell", cell),
         ("cursor_visible", Json::Bool(screen.mode(Mode::ShowCursor))),
+        ("history_bytes", Json::count(pane.history_bytes())),
+        ("program_clipboard", Json::Bool(pane.program_clipboard())),
         ("history_lines", Json::count(screen.history_len())),
         ("copy_mode", Json::Bool(copy_mode)),
         ("command_running", Json::Bool(pane.command_running())),
@@ -1094,13 +1095,17 @@ mod tests {
 
     #[test]
     fn wide_default_history_is_admitted() -> Result<(), Box<dyn std::error::Error>> {
-        let history = crate::config::Config::default().history_bytes.get();
+        let history = crate::script::default_state()
+            .map_err(|e| e.to_string())?
+            .preferences
+            .history_bytes
+            .get();
         let mut pane = Lone::new(Pane::new(
             PaneId::of(1),
             None,
             crate::pane::tests::shell()?,
             fux_vt::Size::new(3, 200)?,
-            history,
+            crate::pane::tests::options(history)?,
         )?);
         let output: Vec<u8> = std::iter::repeat_n(b"x\r\n".as_slice(), 150_000)
             .flatten()
@@ -1117,7 +1122,6 @@ mod tests {
             Some(usize::MAX),
             CaptureView::default(),
             false,
-            history,
         )?;
         assert!(capture.lines.len() > 80_000);
         let full = super::pane(
@@ -1129,7 +1133,6 @@ mod tests {
                 ..CaptureView::default()
             },
             false,
-            history,
         )?;
         assert_eq!(full.lines.len(), 100_003);
         Ok(())
@@ -1142,7 +1145,7 @@ mod tests {
             None,
             crate::pane::tests::shell()?,
             fux_vt::Size::new(3, 4)?,
-            1 << 20,
+            crate::pane::tests::options(1 << 20)?,
         )?);
         for _ in 0..10 {
             pane.output(b"x\r\n");
@@ -1171,7 +1174,7 @@ mod tests {
             None,
             crate::pane::tests::shell()?,
             fux_vt::Size::new(1, 200)?,
-            0,
+            crate::pane::tests::options(0)?,
         )?);
         pane.output(b"x");
         let row = pane.screen().rows().next().ok_or("row")?;
@@ -1195,7 +1198,7 @@ mod tests {
             None,
             crate::pane::tests::shell()?,
             fux_vt::Size::new(1, 2)?,
-            0,
+            crate::pane::tests::options(0)?,
         )?);
         pane.output(b"x");
         let row = pane.screen().rows().next().ok_or("row")?;
@@ -1238,7 +1241,7 @@ mod tests {
             None,
             crate::pane::tests::shell()?,
             fux_vt::Size::new(3, 80)?,
-            1 << 20,
+            crate::pane::tests::options(1 << 20)?,
         )?);
         pane.output(b"\x1b[41m \x1b[400b");
         for _ in 0..10 {
@@ -1265,7 +1268,7 @@ mod tests {
             full: true,
             ..CaptureView::default()
         };
-        let read = super::pane(&pane, run, Some(usize::MAX), view, false, 0)?;
+        let read = super::pane(&pane, run, Some(usize::MAX), view, false)?;
         assert_eq!(read.lines.len(), 1);
         assert_eq!(
             read.lines.first().and_then(|l| l.first()).map(|r| r.cells),
@@ -1302,7 +1305,7 @@ mod tests {
                 None,
                 crate::pane::tests::shell()?,
                 size,
-                0,
+                crate::pane::tests::options(0)?,
             )?);
             pane.output(output.as_bytes());
             Ok(super::pane(
@@ -1311,7 +1314,6 @@ mod tests {
                 None,
                 join,
                 false,
-                8 << 20,
             )?
             .text()?)
         };
@@ -1337,7 +1339,7 @@ mod tests {
             None,
             crate::pane::tests::shell()?,
             size,
-            0,
+            crate::pane::tests::options(0)?,
         )?);
         pane.output(b"top\r\nabcdefghijklm\r\nend");
         let run = crate::command::Run::now().ok_or("a clock")?;
@@ -1347,7 +1349,7 @@ mod tests {
                 wrapped,
                 ..CaptureView::default()
             };
-            Ok(super::pane(&pane, run, None, view, false, 8 << 20)?.text()?)
+            Ok(super::pane(&pane, run, None, view, false)?.text()?)
         };
         assert_eq!(capture((2, 2), false)?, "abcdefghijklm");
         assert_eq!(capture((0, 1), false)?, "top\nabcdefghijklm");
@@ -1372,7 +1374,7 @@ mod tests {
             None,
             crate::pane::tests::shell()?,
             size,
-            0,
+            crate::pane::tests::options(0)?,
         )?);
         // 世 at col 4 does not fit and wraps on, leaving the spacer there.
         pane.output("abcd\x1b[5G世".as_bytes());
@@ -1382,7 +1384,6 @@ mod tests {
             None,
             view,
             false,
-            8 << 20,
         )?
         .text()?;
         assert_eq!(text.lines().next(), Some("abc世"));
@@ -1398,7 +1399,7 @@ mod tests {
             None,
             crate::pane::tests::shell()?,
             fux_vt::Size::new(5, 5)?,
-            0,
+            crate::pane::tests::options(0)?,
         )?);
         pane.output(
             "\x1b[31mabcde世\x1b[m\r\nx\x1b[4m  \x1b[m\r\ny\x1b[41m  \x1b[31;49m  \x1b[m"
@@ -1413,7 +1414,7 @@ mod tests {
                 wrapped: flags & 8 != 0,
                 ..CaptureView::default()
             };
-            let got = super::pane(&pane, run, None, view, false, 8 << 20)?;
+            let got = super::pane(&pane, run, None, view, false)?;
             let actual: Vec<(String, u32)> = got
                 .lines
                 .iter()
@@ -1481,7 +1482,7 @@ mod tests {
             None,
             crate::pane::tests::shell()?,
             fux_vt::Size::new(2, 10)?,
-            0,
+            crate::pane::tests::options(0)?,
         )?);
         pane.output("x\u{0600}  ".as_bytes());
         let got = super::pane(
@@ -1490,7 +1491,6 @@ mod tests {
             None,
             CaptureView::default(),
             false,
-            8 << 20,
         )?;
         assert_eq!(got.text()?, "x\u{0600} ");
         assert_eq!(
@@ -1542,7 +1542,7 @@ mod tests {
             None,
             crate::pane::tests::shell()?,
             fux_vt::Size::new(6, 5)?,
-            0,
+            crate::pane::tests::options(0)?,
         )?);
         pane.output(b"abcdefghijklm\r\nlater");
         let visits = std::cell::Cell::new(0usize);
@@ -1575,7 +1575,7 @@ mod tests {
             None,
             crate::pane::tests::shell()?,
             size,
-            0,
+            crate::pane::tests::options(0)?,
         )?);
         pane.output(b"\x1b[1;4:3;5;38;2;1;2;3;48;5;9;58;5;2mstyled\x1b[m plain");
         let view = CaptureView {
@@ -1583,14 +1583,8 @@ mod tests {
             ..CaptureView::default()
         };
         let run = crate::command::Run::now().ok_or("a clock")?;
-        let body = crate::protocol::Body::Capture(Box::new(super::pane(
-            &pane,
-            run,
-            None,
-            view,
-            false,
-            8 << 20,
-        )?));
+        let body =
+            crate::protocol::Body::Capture(Box::new(super::pane(&pane, run, None, view, false)?));
         assert_eq!(
             Reader::new(&encode(&body).unwrap_or_default()).whole::<crate::protocol::Body>()?,
             body
@@ -1619,7 +1613,7 @@ mod tests {
             None,
             crate::pane::tests::shell()?,
             size,
-            0,
+            crate::pane::tests::options(0)?,
         )?);
         pane.output(b"$ \x1b]133;C\x07hello\x1b]133;D;0\x07PROMPT> ");
         let text = super::pane(
@@ -1628,7 +1622,6 @@ mod tests {
             None,
             view,
             false,
-            8 << 20,
         )?
         .text()?;
         assert_eq!(text, "hello");
@@ -1641,7 +1634,6 @@ mod tests {
             None,
             view,
             false,
-            8 << 20,
         )?
         .text()?;
         assert_eq!(text, "step 1");

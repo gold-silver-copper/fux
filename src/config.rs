@@ -49,24 +49,15 @@ pub trait Reads: Sized {
 }
 
 settings! {
-    /// The bytes of history each pane keeps: how far copy mode scrolls and
-    /// `history capture` reads. Past it, the oldest rows go; a change
-    /// applies to every pane.
-    history_bytes HistoryBytes: Number<0, { 1 << 30 }> = Number(8 << 20);
     /// How long a wait waits for a change before it answers `timeout`,
     /// unless it says (`SECS timeout`).
     wait Wait: Limit = Limit::DEFAULT;
-    /// Copies, fux's and programs', also reach your terminal's clipboard
-    /// (OSC 52); set false, a program's copy copies nothing, to the buffers
-    /// either.
-    clipboard Clipboard: bool = true;
     /// How many paste buffers are kept.
     buffers Buffers: Number<1, MAX_BUFFERS> = Number(16);
-    /// A pane's bell rings your terminal and marks its tab.
-    bell Bell: bool = true;
-    /// Your terminal's title follows the focused pane.
-    titles Titles: bool = false;
 }
+
+/// A pane's checked history budget, in bytes.
+pub type HistoryBytes = Number<0, { 1 << 30 }>;
 
 /// The most paste buffers kept.
 pub const MAX_BUFFERS: usize = 1000;
@@ -354,14 +345,7 @@ mod tests {
     #[test]
     fn legacy_settings_keep_their_checked_wire_values() {
         let d = Config::default();
-        for setting in [
-            Setting::HistoryBytes(d.history_bytes),
-            Setting::Wait(d.wait),
-            Setting::Clipboard(d.clipboard),
-            Setting::Buffers(d.buffers),
-            Setting::Bell(d.bell),
-            Setting::Titles(d.titles),
-        ] {
+        for setting in [Setting::Wait(d.wait), Setting::Buffers(d.buffers)] {
             let bytes = crate::wire::encode(&setting).unwrap_or_default();
             assert_eq!(Reader::new(&bytes).whole::<Setting>(), Ok(setting));
         }

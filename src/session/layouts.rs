@@ -202,6 +202,14 @@ impl Session {
                 }
             }
             prefix(out)?;
+            out.native(format_args!("{}", pane.history_bytes()))?;
+            out.word("history-bytes")?;
+            out.word(if pane.program_clipboard() {
+                "true"
+            } else {
+                "false"
+            })?;
+            out.word("program-clipboard")?;
             out.word("list")?;
             out.word("end")?;
             out.word("copy-environment")?;
@@ -330,6 +338,10 @@ mod tests {
             crate::command::Run::now().ok_or("clock")?,
         );
         let initial = crate::command::InitialWorkspace {
+            options: crate::script::default_state()
+                .map_err(|e| e.to_string())?
+                .preferences
+                .pane_options(),
             name: None,
             start: crate::command::Start::Shell(crate::config::Program::new(
                 "/bin/sh".into(),

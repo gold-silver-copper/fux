@@ -1055,6 +1055,11 @@ impl Parser {
         }
         resized
     }
+    /// The primary screen's current history budget, in bytes.
+    pub fn history_bytes(&self) -> usize {
+        self.screen.history_bytes()
+    }
+
     /// Keeps at most `bytes` of the primary screen's history from now on:
     /// lowering it lets the oldest rows go at once.
     pub fn set_history_bytes(&mut self, bytes: usize) {

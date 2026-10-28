@@ -1029,6 +1029,10 @@ mod tests {
     fn a_directory_goes_as_its_bytes() -> Result<(), String> {
         let dir = std::path::PathBuf::from(std::ffi::OsStr::from_bytes(b"/tmp/caf\xe9"));
         let split = Command::Split {
+            options: crate::script::default_state()
+                .map_err(|e| e.to_string())?
+                .preferences
+                .pane_options(),
             axis: crate::layout::Axis::Vertical,
             target: crate::id::PaneId::of(1),
             start: crate::command::Start::Shell(crate::config::Program::new(
@@ -1040,7 +1044,33 @@ mod tests {
             shares: None,
         };
         let read = Command::get(&mut Reader::new(&encode(&split).unwrap_or_default())).ok();
-        assert!(matches!(read, Some(Command::Split { cwd: Some(cwd), .. }) if cwd == dir));
+        assert!(matches!(read, Some(Command::Split {
+            cwd: Some(cwd), .. }) if cwd == dir));
+        Ok(())
+    }
+
+    #[test]
+    fn creation_policy_requires_a_checked_budget_and_permission() -> Result<(), String> {
+        use crate::command::PaneOptions;
+        let policy = PaneOptions {
+            history_bytes: crate::config::HistoryBytes::new(0).ok_or("budget")?,
+            program_clipboard: false,
+        };
+        let encoded = encode(&policy).map_err(|e| e.to_string())?;
+        assert_eq!(Reader::new(&encoded).whole::<PaneOptions>(), Ok(policy));
+        let mut invalid = Vec::new();
+        ((1usize << 30) + 1).put(&mut invalid);
+        false.put(&mut invalid);
+        assert!(Reader::new(&invalid).whole::<PaneOptions>().is_err());
+        assert!(
+            Reader::new(
+                encoded
+                    .get(..encoded.len().saturating_sub(1))
+                    .ok_or("bytes")?
+            )
+            .whole::<PaneOptions>()
+            .is_err()
+        );
         Ok(())
     }
 

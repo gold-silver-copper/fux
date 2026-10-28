@@ -162,6 +162,7 @@ struct NewPane<'a> {
     env: &'a command::EnvPatch,
     size: Size,
     cell: Option<fux_vt::CellSize>,
+    options: command::PaneOptions,
 }
 
 impl<'a> NewPane<'a> {
@@ -169,12 +170,14 @@ impl<'a> NewPane<'a> {
         start: &'a Start,
         cwd: &'a Path,
         env: &'a command::EnvPatch,
+        options: command::PaneOptions,
         (size, cell): Starts,
     ) -> Self {
         Self {
             start,
             cwd,
             env,
+            options,
             size,
             cell,
         }
@@ -544,7 +547,13 @@ impl Session {
                 "the caller's own directory is unknown; give an absolute cwd",
             ));
         }
-        let new = NewPane::new(&initial.start, &initial.cwd, &initial.env, (size, None));
+        let new = NewPane::new(
+            &initial.start,
+            &initial.cwd,
+            &initial.env,
+            initial.options,
+            (size, None),
+        );
         self.create_workspace(initial.name.clone(), None, Fit::Clients(size), new)
             .map(drop)
     }
@@ -771,8 +780,12 @@ impl Session {
         // All that can refuse it is done before its program starts, which
         // nothing can then leave running.
         let runs = Runs::Explicit(launch.clone());
-        let history = self.config.history_bytes.get();
-        let mut fresh = Pane::new(id, None, runs, size.0, history)?;
+        let options = command::PaneOptions {
+            history_bytes: crate::config::HistoryBytes::new(pane.history_bytes())
+                .ok_or_else(|| fail(Raise::Start, "pane history budget is out of range"))?,
+            program_clipboard: pane.program_clipboard(),
+        };
+        let mut fresh = Pane::new(id, None, runs, size.0, options)?;
         fresh.respawns = respawns;
         // Its program starts sized in that cell, so no resize is due.
         let _ = fresh.host(Default::default(), Default::default(), graphics);
@@ -820,7 +833,7 @@ impl Session {
         if let Some(ended) = pane.exiting {
             self.exited(id, ended);
         }
-        let Some(new) = self.respawning.remove(&id) else {
+        let Some(mut new) = self.respawning.remove(&id) else {
             return;
         };
         let Some(mut pane) = self.parts.pane_mut(id) else {
@@ -830,9 +843,10 @@ impl Session {
         // At the pane's size and history now, which may have changed while
         // it waited.
         let size = pane.size();
+        let history = pane.history_bytes();
+        new.fresh.set_history_bytes(history);
         let (old, left) = pane.respawned(new.fresh, new.process);
         pane.resize(size);
-        pane.set_history_bytes(self.config.history_bytes.get());
         // An exit that came while it was no pane's program is told now: the
         // server looks for exits as they are signalled (`Server::reap`).
         let exited = pane.process().child().and_then(|c| c.leader.exited());
@@ -1326,7 +1340,6 @@ impl Session {
 
     /// A new pane, its ID taken from `ids`, running what `new` says.
     fn new_pane(&self, ids: &mut Ids, new: NewPane<'_>) -> Result<Pane, Error> {
-        let config = &self.config;
         let start = new.start;
         let launch = pane::Launch {
             argv: start.argv().clone(),
@@ -1339,7 +1352,7 @@ impl Session {
         };
         self.check_launch(&launch)?;
         let id = ids.pane()?;
-        let pane = Pane::new(id, None, runs, new.size, config.history_bytes.get())?;
+        let pane = Pane::new(id, None, runs, new.size, new.options)?;
         let child = self.spawn(id, 0, &launch, (new.size, new.cell))?;
         Ok(match child {
             Some(child) => pane.running(child),
@@ -1363,19 +1376,23 @@ impl Session {
         let workspace = workspace.map_err(bad_value)?;
         let state =
             crate::script::default_state().map_err(|e| fail(Raise::Config, e.to_string()))?;
-        self.attach_as(
+        let presentation = state.preferences.presentation();
+        let client = self.attach_as(
             ClientKind::Terminal,
             Attach {
                 initial: workspace.is_none().then(|| command::InitialWorkspace {
                     name: None,
-                    start: command::Start::Shell(state.preferences.shell),
+                    start: command::Start::Shell(state.preferences.shell.clone()),
+                    options: state.preferences.pane_options(),
                     cwd: std::env::current_dir().unwrap_or_default(),
                     env: command::EnvPatch::default(),
                 }),
                 workspace,
                 ..Attach::of(size)
             },
-        )
+        )?;
+        self.acts(client, vec![crate::act::Act::Presentation(presentation)]);
+        Ok(client)
     }
 
     /// A client of `kind` attaches as `attach` says: one that only watches
@@ -2044,7 +2061,6 @@ impl Session {
                 .collect();
             (!others.is_empty()).then(|| (pane.label().into_owned(), others))
         });
-        let clipboard = self.config.clipboard;
         let Some((mut pane, retold)) = self.hosted(id) else {
             return;
         };
@@ -2054,12 +2070,11 @@ impl Session {
         if retold {
             pane.size_terminal();
         }
-        // A program's copies, as copies in copy mode, to the clients showing
-        // it; none with `clipboard` false. Those that are no copy are
-        // counted, to be told. A copy fits the clipboard: fux-vt keeps less
-        // of a string.
+        // Program copies go to viewers of the tab, including zoomed views
+        // and watchers, when this pane permits them. Invalid copies are
+        // counted and reported. fux-vt's string bound fits the clipboard.
         const _: () = assert!(fux_vt::OSC_PAYLOAD_LIMIT <= crate::copy::MAX_CLIPBOARD);
-        let (bell, copies) = pane.take_read(clipboard);
+        let (bell, copies) = pane.take_read();
         let changed_label = labelled.filter(|(was, _)| was != &*pane.label());
         if bell {
             self.ring(id, Instant::now());
@@ -2127,19 +2142,30 @@ impl Session {
         true
     }
 
-    /// `text`, copied, goes to the paste buffers and, unless `clipboard` is
-    /// false, to the clipboard of each client in `to` (OSC 52): false if it
+    /// `text`, copied, goes to the paste buffers and to each client in `to`
+    /// whose terminal delivery is on (OSC 52): false if it
     /// is too large for the clipboard. An exhausted id counter refuses the copy.
     pub(crate) fn copied(&mut self, text: String, to: &[ClientId]) -> Result<bool, Error> {
         let id = self.ids.buffer(self.run)?;
         let mut fits = true;
-        // Encoded for the clipboard before the text moves into the buffers.
-        if self.config.clipboard {
+        let views = &self.views;
+        let mut recipients = to
+            .iter()
+            .copied()
+            .filter(|client| {
+                views
+                    .get(client)
+                    .is_some_and(|v| v.presentation.is_some_and(|p| p.terminal_clipboard))
+            })
+            .peekable();
+        // Encoded once, before the text moves into the buffers.
+        if recipients.peek().is_some() {
             let encoded = crate::json::base64(text.as_bytes());
             fits = encoded.len() <= crate::copy::MAX_CLIPBOARD;
             if fits {
                 let osc = format!("\x1b]52;c;{encoded}\x07").into_bytes();
-                (self.outbox).extend(to.iter().map(|&client| Outgoing::Copy(client, osc.clone())));
+                self.outbox
+                    .extend(recipients.map(|client| Outgoing::Copy(client, osc.clone())));
             }
         }
         self.buffers.push_front((id, text));
@@ -2304,9 +2330,10 @@ impl Session {
                 cwd,
                 env,
                 start,
+                options,
             } => {
                 let (cwd, fit, sized) = self.opening((cwd.as_deref(), *size), (here, true))?;
-                let new = NewPane::new(start, &cwd, env, sized);
+                let new = NewPane::new(start, &cwd, env, *options, sized);
                 let made = self.create_workspace(name.clone(), None, fit, new)?;
                 self.follow(here, made.ws, None);
                 Ok(acted(self.pane(made.pane)?.version(self.run)))
@@ -2318,12 +2345,13 @@ impl Session {
                 cwd,
                 env,
                 start,
+                options,
             } => {
                 let (cwd, fit, sized) = self.opening((cwd.as_deref(), *size), (here, true))?;
                 if let Some(name) = name {
                     self.check_tab_name(name, None)?;
                 }
-                let new = NewPane::new(start, &cwd, env, sized);
+                let new = NewPane::new(start, &cwd, env, *options, sized);
                 // A workspace named that is not there is made, as `run`
                 // makes one, its first tab this one.
                 let made = self.create_tab(target.as_ref(), here, name.clone(), fit, new)?;
@@ -2341,6 +2369,7 @@ impl Session {
                 cwd,
                 env,
                 argv,
+                options,
             } => {
                 // Its place is out of every client's way: no client follows.
                 let (dir, fit, sized) = self.opening((cwd.as_deref(), *size), (here, false))?;
@@ -2348,7 +2377,7 @@ impl Session {
                     check_name(name)?;
                 }
                 let start = Start::Program(argv.clone());
-                let new = NewPane::new(&start, &dir, env, sized);
+                let new = NewPane::new(&start, &dir, env, *options, sized);
                 let made = self.create_tab(Some(workspace), here, None, fit, new)?;
                 if let Some(name) = name {
                     self.pane_mut(made.pane)?.rename(name.clone());
@@ -2410,7 +2439,14 @@ impl Session {
                 ref cwd,
                 ref env,
                 shares,
-            } => self.split(target, (axis, shares), start, env, cwd.as_deref(), origin),
+                options,
+            } => self.split(
+                target,
+                (axis, shares),
+                (start, env, options),
+                cwd.as_deref(),
+                origin,
+            ),
 
             &Command::Signal { target, signal } => {
                 let group = self.signalled(target)?;
@@ -2455,31 +2491,22 @@ impl Session {
                     ));
                 }
                 let copying = self.copying(pane.id());
-                let captured = crate::capture::pane(
-                    pane,
-                    self.run,
-                    history,
-                    view,
-                    copying,
-                    self.config.history_bytes.get(),
-                )?;
+                let captured = crate::capture::pane(pane, self.run, history, view, copying)?;
                 Ok(Body::Capture(Box::new(captured)).into())
             }
             &Command::Reorder { ref target, toward } => {
                 let target = self.there(*target)?;
                 self.reorder(target, toward).map(|()| Reply::default())
             }
+            &Command::HistoryBudget { target, bytes } => {
+                self.pane_mut(target)?.set_history_bytes(bytes.get());
+                Ok(Reply::default())
+            }
             Command::Set(settings) => {
-                // `run_command` marks every view to paint, as after any
-                // command that can show something new: `titles` shows at
-                // each client's next paint. Each value is one its setting
-                // takes, so all are in force, or the request never came.
+                // The remaining shared wait and buffer policy commits together.
                 for setting in settings {
                     self.config.apply(setting.clone());
                 }
-                // Every pane keeps the history they say.
-                let history = self.config.history_bytes.get();
-                self.parts.each_pane_mut(|p| p.set_history_bytes(history));
                 Ok(Reply::default())
             }
             Command::Resolve { text, kind } => Ok(found(self.resolve(text, *kind, here)?)),
@@ -2725,8 +2752,7 @@ impl Session {
         &mut self,
         target: PaneId,
         (axis, shares): (Axis, Option<(NonZeroU32, NonZeroU32)>),
-        start: &Start,
-        env: &command::EnvPatch,
+        (start, env, options): (&Start, &command::EnvPatch, command::PaneOptions),
         dir: Option<&Path>,
         origin: &Origin,
     ) -> Result<Reply, Error> {
@@ -2746,7 +2772,13 @@ impl Session {
         // nothing can then leave running.
         let (split, size) = self.split_size(target, (axis, shares), &followers)?;
         let mut ids = self.ids.clone();
-        let new = NewPane::new(start, &cwd, env, (size, self.graphics(target).cell()));
+        let new = NewPane::new(
+            start,
+            &cwd,
+            env,
+            options,
+            (size, self.graphics(target).cell()),
+        );
         let pane = self.new_pane(&mut ids, new)?;
         let new = pane.id();
         if let Err(pane) = self.parts.split(pane, split) {
@@ -3519,6 +3551,10 @@ pub(crate) mod testing {
         let mut session = Session::new(config, "/nonexistent/fux.sock".into(), false, run);
         let size = fux_vt::Size::new(24, 80).map_err(|e| e.to_string())?;
         let initial = crate::command::InitialWorkspace {
+            options: crate::script::default_state()
+                .map_err(|e| e.to_string())?
+                .preferences
+                .pane_options(),
             name: None,
             start: crate::command::Start::Shell(crate::config::Program::new(
                 "/bin/sh".into(),
@@ -3853,10 +3889,7 @@ mod tests {
 
     #[test]
     fn retained_launches_and_dump_refuse_their_resource_limits() -> Result<(), String> {
-        let config = Config {
-            history_bytes: crate::config::Number::new(0).ok_or("budget")?,
-            ..Config::default()
-        };
+        let config = Config::default();
         let mut s = started(config)?;
         let mut env = command::EnvPatch::default();
         env.push(
@@ -3868,6 +3901,7 @@ mod tests {
             ),
         )?;
         let command = Command::Run {
+            options: crate::pane::tests::options(0)?,
             workspace: command::WsRef::New,
             name: None,
             size: Some(crate::view::Screen::new(24, 80)?),
@@ -3904,6 +3938,10 @@ mod tests {
         );
         let size = sized(24, 80)?;
         let initial = command::InitialWorkspace {
+            options: crate::script::default_state()
+                .map_err(|e| e.to_string())?
+                .preferences
+                .pane_options(),
             name: None,
             start: command::Start::Shell(crate::config::Program::new(
                 "/bin/sh".into(),
@@ -4332,7 +4370,13 @@ mod tests {
                     cwd: "/".into(),
                     env: command::EnvPatch::default(),
                 });
-                let fresh = Pane::new(id, Some("test".into()), runs, sized(9, 40)?, 1024)?;
+                let fresh = Pane::new(
+                    id,
+                    Some("test".into()),
+                    runs,
+                    sized(9, 40)?,
+                    crate::pane::tests::options(1024)?,
+                )?;
                 session
                     .parts
                     .pane_mut(id)
@@ -4465,6 +4509,10 @@ mod tests {
             ..Caller::default()
         };
         let new_tab = Command::NewTab {
+            options: crate::script::default_state()
+                .map_err(|e| e.to_string())?
+                .preferences
+                .pane_options(),
             start: command::Start::Shell(crate::config::Program::new(
                 "/bin/sh".into(),
                 Vec::new(),
@@ -4751,7 +4799,10 @@ mod tests {
     #[test]
     fn a_respawn_reads_what_was_left_in_turns() -> Result<(), String> {
         let mut s = started(Config::default())?;
-        run(&mut s, "agent-opts 80 24 size str /bin/cat program run")?;
+        run(
+            &mut s,
+            "agent-opts 80 24 size 4096 history-bytes false program-clipboard str /bin/cat program run",
+        )?;
         let (id, origin) = (PaneId::of(2), Origin::Cli(Caller::default()));
         let mut stream = crate::events::Subscription::new(None, s.parts.journal(), s.run, None)?;
         let spends = crate::pane::tests::spends_the_budget(24, 80);
@@ -4770,11 +4821,20 @@ mod tests {
             "{:?}",
             again.end()
         );
+        assert_eq!(
+            s.respawning.get(&id).map(|r| r.fresh.history_bytes()),
+            Some(4096)
+        );
+        run(&mut s, "%2 128 history-budget")?;
         let (answer, turns) = turns(&mut s, id, &waiting)?;
         assert!(turns > 1, "read in {turns} turns");
         assert_eq!(answer.end(), crate::protocol::End::Done);
         let pane = s.pane(id).map_err(|e| e.to_string())?;
         assert_eq!(answer, acted(pane.version(s.run)));
+        assert_eq!(pane.history_bytes(), 128);
+        assert!(!pane.program_clipboard());
+        assert!(output(&mut s, "%2 str history_bytes get")?.contains("128"));
+        assert!(output(&mut s, "dump")?.contains("128 history-bytes false program-clipboard"));
         let lines = stream
             .told(s.parts.journal(), usize::MAX, |t| s.holder(t))
             .0;
@@ -4784,6 +4844,7 @@ mod tests {
                 .ok_or(lines.clone())
         };
         assert!(at("bell")? < at("respawned")?, "{lines}");
+        assert_eq!(lines.matches("history_budget").count(), 1, "{lines}");
         Ok(())
     }
 
@@ -5478,11 +5539,10 @@ mod tests {
         Ok(())
     }
 
-    /// `set history-bytes` changes every pane's history, not only the next
-    /// pane's.
+    /// A budget change evicts rows only in its named pane.
     #[test]
-    fn set_history_bytes_applies_to_panes_there_are() -> Result<(), String> {
-        let (mut s, _) = attached(5, 20)?;
+    fn history_budget_only_changes_its_target() -> Result<(), String> {
+        let (mut s, client) = attached(5, 20)?;
         s.output(
             PaneId::of(1),
             std::iter::repeat_n("line\r\n", 50)
@@ -5497,13 +5557,47 @@ mod tests {
         };
         assert!(history(&s) > Some(2));
         // Two rows of four cells: 24 bytes a row and 8 a cell.
-        run(&mut s, "str history-bytes 112 set")?;
+        run(&mut s, "%1 horizontal 4096 history-bytes split")?;
+        let other = s
+            .pane(PaneId::of(2))
+            .map_err(|e| e.to_string())?
+            .history_bytes();
+        run(&mut s, "str history-bytes 0 set")?;
+        assert!(history(&s) > Some(2));
+        run(
+            &mut s,
+            "str c1 client %1 focus-pane str c1 client copy-mode",
+        )?;
+        s.input(client, b"t");
+        assert!(
+            s.views
+                .get(&client)
+                .is_some_and(|v| matches!(v.mode, Mode::Copy(_)))
+        );
+        run(&mut s, "%1 112 history-budget")?;
+        assert!(
+            s.views
+                .get(&client)
+                .is_some_and(|v| matches!(v.mode, Mode::Normal))
+        );
+        assert!(
+            s.views
+                .get(&client)
+                .and_then(|v| v.notice.as_ref())
+                .is_some_and(|n| n.text.contains("dropped the rows"))
+        );
+        assert_eq!(
+            s.pane(PaneId::of(2))
+                .map_err(|e| e.to_string())?
+                .history_bytes(),
+            other
+        );
         assert_eq!(history(&s), Some(2));
         Ok(())
     }
 
     /// A program's OSC 52 write is a copy: to the paste buffers and the
-    /// clipboard of the clients showing it, unless `clipboard` is false;
+    /// clipboard of eligible clients showing its tab;
     /// one it cannot be is told them.
     #[test]
     fn a_programs_clipboard_write_is_a_copy() -> Result<(), String> {
@@ -5567,10 +5661,59 @@ mod tests {
             "{json}"
         );
         s.outbox.clear();
-        run(&mut s, "str clipboard false set")?;
-        s.output(PaneId::of(1), b"\x1b]52;c;YmFy\x07");
+        run(&mut s, "%1 horizontal false program-clipboard split")?;
+        s.outbox.clear();
+        s.output(PaneId::of(3), b"\x1b]52;c;YmFy\x07");
         assert!(!sent(&s) && s.outbox.is_empty());
         assert_eq!(s.buffers.front().map(|(_, text)| text.as_str()), Some("b"));
+        Ok(())
+    }
+
+    #[test]
+    fn clipboard_permission_and_delivery_have_separate_owners() -> Result<(), String> {
+        use crate::act::Act;
+        let (mut s, a) = attached(8, 40)?;
+        let b = s.attach(8, 40, None).map_err(|e| e.to_string())?;
+        let presentation = crate::script::default_state()
+            .map_err(|e| e.to_string())?
+            .preferences
+            .presentation();
+        s.acts(
+            a,
+            vec![Act::Presentation(crate::view::Presentation {
+                terminal_clipboard: false,
+                ..presentation
+            })],
+        );
+        run(&mut s, "%1 horizontal false program-clipboard split")?;
+        if let Some(view) = s.views.get_mut(&b) {
+            view.zoom = true;
+            view.read_only = true;
+        }
+        s.outbox.clear();
+        s.output(PaneId::of(1), b"\x1b]52;c;Zm9v\x07");
+        assert_eq!(s.buffers.len(), 1);
+        let copies = |s: &Session| {
+            s.outbox
+                .iter()
+                .filter_map(|o| match o {
+                    Outgoing::Copy(c, _) => Some(*c),
+                    Outgoing::To(..) | Outgoing::Shutdown(_) => None,
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(copies(&s), [b]);
+        s.outbox.clear();
+        s.output(PaneId::of(2), b"\x1b]52;c;YmFy\x07");
+        assert_eq!(s.buffers.len(), 1);
+        assert!(copies(&s).is_empty());
+        // Manual copying always stores; it targets only the copying client.
+        s.copied("manual".into(), &[a]).map_err(|e| e.to_string())?;
+        assert_eq!(s.buffers.len(), 2);
+        assert!(copies(&s).is_empty());
+        s.acts(a, vec![Act::Presentation(presentation)]);
+        s.copied("mine".into(), &[a]).map_err(|e| e.to_string())?;
+        assert_eq!(copies(&s), [a]);
         Ok(())
     }
 
@@ -6204,10 +6347,8 @@ mod tests {
     #[test]
     fn output_that_drops_a_copy_modes_rows_ends_it() -> Result<(), Box<dyn std::error::Error>> {
         // Two rows of a cell or none, never three: 24 bytes a row, 8 a cell.
-        let mut s = started(Config {
-            history_bytes: crate::config::Number::new(2 * 32).ok_or("out of range")?,
-            ..Config::default()
-        })?;
+        let mut s = started(Config::default())?;
+        run(&mut s, "%1 64 history-budget")?;
         let client = s.attach(6, 20, None)?;
         s.output(PaneId::of(1), b"a\r\nb\r\nc\r\nd\r\ne\r\nf\r\n");
         run(&mut s, "str c1 client copy-mode")?;
@@ -6233,10 +6374,8 @@ mod tests {
     fn copy_mode_ends_when_sizing_its_pane_drops_its_rows() -> Result<(), Box<dyn std::error::Error>>
     {
         // Two rows of a cell or none, never three: 24 bytes a row, 8 a cell.
-        let mut s = started(Config {
-            history_bytes: crate::config::Number::new(2 * 32).ok_or("out of range")?,
-            ..Config::default()
-        })?;
+        let mut s = started(Config::default())?;
+        run(&mut s, "%1 64 history-budget")?;
         let client = s.attach(6, 20, None)?;
         s.output(PaneId::of(1), b"a\r\nb\r\nc\r\nd\r\ne\r\nf\r\n");
         run(&mut s, "str c1 client copy-mode")?;
@@ -6787,6 +6926,10 @@ mod tests {
         std::fs::create_dir_all(&dir)?;
         let mut s = started(Config::default())?;
         let program = Command::Run {
+            options: crate::script::default_state()
+                .map_err(|e| e.to_string())?
+                .preferences
+                .pane_options(),
             workspace: WsRef::Name("agent".into()),
             name: None,
             size: Some(crate::view::Screen::new(24, 80)?),

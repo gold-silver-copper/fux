@@ -18,6 +18,8 @@ wire! {
     /// One action of an attached client.
     #[derive(Clone, Debug, PartialEq)]
     pub enum Act {
+        /// This connection's committed presentation preferences.
+        Presentation(presentation: crate::view::Presentation),
         /// A key typed, as literal input to the focused pane.
         Key(stroke: Keystroke),
         /// Pasted text, for the focused pane.

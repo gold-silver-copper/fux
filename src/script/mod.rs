@@ -170,6 +170,8 @@ pub struct Opts {
     pub env: crate::command::EnvPatch,
     pub argv: Vec<String>,
     pub shell: Option<bool>,
+    pub history_bytes: Option<crate::config::HistoryBytes>,
+    pub program_clipboard: Option<bool>,
     pub copy_environment: Option<Vec<crate::config::EnvName>>,
     pub axis: Option<Axis>,
     /// A split's shares (`shares`).
@@ -193,6 +195,16 @@ pub struct Opts {
 }
 
 impl Opts {
+    pub(crate) fn pane_options(
+        &self,
+        defaults: crate::command::PaneOptions,
+    ) -> crate::command::PaneOptions {
+        crate::command::PaneOptions {
+            history_bytes: self.history_bytes.unwrap_or(defaults.history_bytes),
+            program_clipboard: self.program_clipboard.unwrap_or(defaults.program_clipboard),
+        }
+    }
+
     pub(crate) fn program(&self) -> Result<crate::config::Program, String> {
         let mut words = self.argv.iter().cloned();
         crate::config::Program::new(words.next().unwrap_or_default(), words.collect())

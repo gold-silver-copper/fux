@@ -318,7 +318,8 @@ impl std::str::FromStr for Run {
 /// but `respawns` afresh): how often its program was respawned, its screen's
 /// revision (fux-vt's: the bytes of output read, plus one for each resize
 /// to another size and each change to its history: cleared, or
-/// `history-bytes` set; the same however the output was cut into reads),
+/// rows evicted by `history-budget`; the same however the output was cut
+/// into reads),
 /// bells and notifications rung, shell commands ended (OSC 133 `D`), and
 /// whether its program ended. Written
 /// `RESPAWNS.SCREEN.BELLS.DONE.ENDED`, `ENDED` 0 or 1.
@@ -537,6 +538,7 @@ wire! {
             cwd: Option<PathBuf>,
             env: EnvPatch,
             start: Start,
+            options: PaneOptions,
         },
         NewTab {
             target: Option<WsRef>,
@@ -545,6 +547,7 @@ wire! {
             cwd: Option<PathBuf>,
             env: EnvPatch,
             start: Start,
+            options: PaneOptions,
         },
         Split {
             axis: Axis,
@@ -558,6 +561,7 @@ wire! {
             /// The shares of their split the split pane and the new one
             /// take (`shares`), if given; else the pane's is halved.
             shares: Option<(NonZeroU32, NonZeroU32)>,
+            options: PaneOptions,
         },
         /// A program, started in place of a shell in a tab of its own, in a
         /// workspace no client is moved to.
@@ -568,6 +572,7 @@ wire! {
             cwd: Option<PathBuf>,
             env: EnvPatch,
             argv: crate::config::Program,
+            options: PaneOptions,
         },
         /// The program `run` started, started again in its pane.
         Respawn {
@@ -626,6 +631,11 @@ wire! {
         DumpLayout {
             target: Option<AnyRef>,
         },
+        /// Change only this pane's history budget.
+        HistoryBudget {
+            target: PaneId,
+            bytes: crate::config::HistoryBytes,
+        },
         /// The pane's history, dropped.
         ClearHistory {
             target: PaneId,
@@ -641,7 +651,7 @@ wire! {
             target: AnyRef,
             toward: Sibling,
         },
-        /// Server settings (`history-bytes`, `clipboard`, …), in force all
+        /// Remaining server settings (`wait-seconds`, `buffers`), in force all
         /// at once: a config's together, as one.
         Set(settings: Vec<crate::config::Setting>),
         /// What a name or an id in text is: the pane, tab or workspace of
@@ -884,11 +894,21 @@ impl Start {
 }
 
 wire! {
+    /// Policy supplied with every creation, retained by that pane.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub struct PaneOptions {
+        pub history_bytes: crate::config::HistoryBytes,
+        pub program_clipboard: bool,
+    }
+}
+
+wire! {
     /// Conditional first-pane inputs, used only by an empty writable attach.
     #[derive(Clone, Debug, PartialEq, Eq)]
     pub struct InitialWorkspace {
         pub name: Option<String>,
         pub start: Start,
+        pub options: PaneOptions,
         pub cwd: PathBuf,
         pub env: EnvPatch,
     }
@@ -923,6 +943,7 @@ impl Command {
             | C::SwapPane { .. }
             | C::ResizePane { .. }
             | C::ClearHistory { .. }
+            | C::HistoryBudget { .. }
             | C::Reorder { .. }
             | C::KillServer
             | C::Set(_)

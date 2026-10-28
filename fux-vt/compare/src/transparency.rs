@@ -259,6 +259,10 @@ impl Through {
                 ClientKind::Terminal,
                 fux::protocol::Attach {
                     initial: Some(fux::command::InitialWorkspace {
+                        options: fux::script::default_state()
+                            .map_err(|e| e.to_string())?
+                            .preferences
+                            .pane_options(),
                         name: None,
                         start: fux::command::Start::Shell(fux::config::Program::new(
                             "/bin/sh".into(),

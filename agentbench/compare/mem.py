@@ -26,13 +26,6 @@ def measure(bin_):
     e = {k: v for k, v in os.environ.items() if k not in ("FUX_SOCKET", "FUX_PANE", "FUX_SERVER")}
     e.update(XDG_RUNTIME_DIR=d, FUX_SOCKET=os.path.join(d, "s"))
     run(bin_, e, "start")
-    # 50,000 rows of 79 cells: 24 bytes a row and 8 a cell; a fux before
-    # history-bytes counts rows.
-    set_ = run(bin_, e, "str", "history-bytes", str(50000 * (24 + 8 * 79)), "set")
-    if set_.returncode != 0:
-        set_ = run(bin_, e, "str", "history-lines", "50000", "set")
-    if set_.returncode != 0:
-        sys.exit(f"{bin_}: history could not be set: {set_.stderr}")
     def server():
         for p in os.listdir("/proc"):
             try:
@@ -44,7 +37,7 @@ def measure(bin_):
     pid = server()
     base = rss(pid)
     fill = "python3 -c \"import sys\nfor i in range(60000): sys.stdout.write('%05d ' % i + 'x' * 73 + '\\n')\"; read x"
-    started = run(bin_, e, "agent-opts", "80", "24", "size", "str", "sh", "program", "str", "-c", "arg", "str", fill, "arg", "run")
+    started = run(bin_, e, "str", "history-bytes", str(50000 * (24 + 8 * 79)), "set", "agent-opts", "80", "24", "size", "str", "sh", "program", "str", "-c", "arg", "str", fill, "arg", "run")
     pane = until_text(bin_, e, started.stdout, "59999 ", 120)
     kept = run(bin_, e, pane, "all-history", "capture").stdout.count("\n")
     time.sleep(1)

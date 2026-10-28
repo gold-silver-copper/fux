@@ -487,6 +487,11 @@ struct Ran {
     rebound: bool,
 }
 
+enum Update {
+    Presentation(crate::view::Presentation),
+    Finished(Ran),
+}
+
 /// The longest a program's notice may be: what it prints past this fails
 /// its write, and a notice longer, made of what it left, is not shown but
 /// said not to be. Well within a frame (`protocol::MAX_FRAME`).
@@ -562,8 +567,8 @@ pub struct Keyboard {
     read_only: bool,
     decoder: crate::decode::Decoder,
     jobs: std::sync::mpsc::Sender<(Job, u64)>,
-    /// One `Ran` for the program dispatched, before the next is sent.
-    told: std::sync::mpsc::Receiver<Ran>,
+    /// Bounded committed presentation updates and the dispatched program's result.
+    told: std::sync::mpsc::Receiver<Update>,
     wake: io::PipeReader,
     /// The weights of admitted programs not yet done, in order:
     /// `JOBS` and `JOB_BYTES` at most.
@@ -597,7 +602,7 @@ impl Keyboard {
         read_only: bool,
     ) -> Result<Keyboard, Error> {
         let (jobs, todo) = std::sync::mpsc::channel::<(Job, u64)>();
-        let (tell, told) = std::sync::mpsc::channel::<Ran>();
+        let (tell, told) = std::sync::mpsc::sync_channel::<Update>(1);
         let (wake, poke) = io::pipe()?;
         fuxix::io::set_nonblocking(&wake, true).map_err(io::Error::from)?;
         fuxix::io::set_nonblocking(&poke, true).map_err(io::Error::from)?;
@@ -617,8 +622,12 @@ impl Keyboard {
                         client: me,
                         frames,
                     });
-                    let ran = run_job(&mut server, (me, run), &shared, &job, &stops);
-                    if tell.send(ran).is_err() {
+                    let mut present = |presentation| {
+                        let _ = tell.send(Update::Presentation(presentation));
+                        let _ = fuxix::io::write(&poke, b"!");
+                    };
+                    let ran = run_job(&mut server, (me, run), &shared, &job, &stops, &mut present);
+                    if tell.send(Update::Finished(ran)).is_err() {
                         break;
                     }
                     // A pipe too full for it is readable: the client wakes
@@ -767,7 +776,17 @@ impl Keyboard {
     pub fn ran(&mut self) -> Vec<Dispatch> {
         crate::drain(&self.wake);
         let mut acts = Vec::new();
-        while let Ok(ran) = self.told.try_recv() {
+        for _ in 0..JOBS {
+            let Ok(update) = self.told.try_recv() else {
+                break;
+            };
+            let ran = match update {
+                Update::Presentation(presentation) => {
+                    acts.push(Dispatch::Send(Act::Presentation(presentation)));
+                    continue;
+                }
+                Update::Finished(ran) => ran,
+            };
             self.running.pop_front();
             let mut notice = ran.notice;
             // The screen showing hints at keys that changed: it closes,
@@ -895,6 +914,7 @@ fn run_job(
     state: &Mutex<ClientState>,
     job: &Job,
     stop: &script::Stop,
+    present: &mut dyn FnMut(crate::view::Presentation),
 ) -> Ran {
     let mut changed = lock(state).draft();
     let config = changed.config.clone();
@@ -906,7 +926,12 @@ fn run_job(
     let mut publish = |committed: &ClientState| {
         let mut live = lock(state);
         rebound |= live.keys.modes != committed.keys.modes;
+        let changed = live.preferences.presentation() != committed.preferences.presentation();
         *live = committed.clone();
+        drop(live);
+        if changed {
+            present(committed.preferences.presentation());
+        }
     };
     let mut asks = script::AsClient {
         asks: server,
@@ -1017,6 +1042,7 @@ pub fn attach(
             Some(crate::command::InitialWorkspace {
                 name: creation.name.clone(),
                 start,
+                options: creation.pane_options(attaching.state.preferences.pane_options()),
                 cwd: {
                     let invocation = context().cwd;
                     match creation.cwd.as_deref() {
@@ -1275,6 +1301,9 @@ fn attached(
                         (writeln!(stdout, "{me}").and_then(|()| stdout.flush()))
                             .map_err(Error::Output)?;
                     }
+                    acts.push(Dispatch::Send(Act::Presentation(
+                        attaching.state.preferences.presentation(),
+                    )));
                     let state = attaching.state.clone();
                     keyboard = Some(Keyboard::new(socket, me, run, state, attaching.read_only)?);
                     if let Some(text) = attaching.problem.clone() {
@@ -1681,134 +1710,59 @@ mod tests {
         Ok(acts)
     }
 
-    /// Every transaction publishes whole before its batch. Failed pending
-    /// changes publish neither; earlier checkpoints remain committed.
     #[test]
-    fn settings_forward_only_after_the_whole_local_commit() -> Result<(), Box<dyn std::error::Error>>
-    {
-        struct Recording<'a> {
-            state: &'a Mutex<ClientState>,
-            batches: Vec<Vec<crate::config::Setting>>,
-            refuse: bool,
-            operations: usize,
-        }
-        impl script::Asks for Recording<'_> {
-            fn ask(
-                &mut self,
-                asked: &Asked,
-                _: &mut dyn Write,
-            ) -> Result<crate::protocol::Reply, script::Failed> {
-                use crate::config::Setting;
-                let Request::Do(Command::Set(settings)) = &asked.request else {
-                    self.operations = self.operations.saturating_add(1);
-                    return Err(script::Failed::new(Code::NotConfig, "operation refused"));
-                };
-                // A setter-by-setter send would see the old live state here.
-                let live = lock(self.state);
-                let p = &live.preferences;
-                assert_eq!(
-                    live.keys.prefix,
-                    Some(KeyPress::new(Key::Char('a'), Modifiers::CTRL))
-                );
-                let expected = [
-                    Setting::HistoryBytes(p.history_bytes),
-                    Setting::Wait(p.wait),
-                    Setting::Clipboard(p.clipboard),
-                    Setting::Buffers(p.buffers),
-                    Setting::Bell(p.bell),
-                    Setting::Titles(p.titles),
-                ];
-                assert!(settings.iter().all(|setting| expected.contains(setting)));
-                drop(live);
-                self.batches.push(settings.clone());
-                if self.refuse {
-                    return Err(script::Failed::new(Code::NoServer, "bridge refused"));
-                }
-                Ok(crate::protocol::Reply::default())
+    fn presentation_commits_whole_and_survives_a_later_failure()
+    -> Result<(), Box<dyn std::error::Error>> {
+        struct Refuse;
+        impl script::Asks for Refuse {
+            fn ask(&mut self, _: &Asked, _: &mut dyn Write) -> Result<Reply, script::Failed> {
+                Err(script::Failed::new(Code::NotConfig, "operation refused"))
             }
         }
         let state = Mutex::new(script::default_state().map_err(|e| e.to_string())?);
-        let mut recording = Recording {
-            state: &state,
-            batches: Vec::new(),
-            refuse: false,
-            operations: 0,
-        };
         let me = (
             crate::id::ClientId::of(1),
             "1-2".parse().map_err(|()| "run")?,
         );
         let stop = script::Stop::default();
-        let code = "str C-a prefix str history-bytes 0 set str wait-seconds 0 set \
-            str clipboard false set str buffers 2 set str bell false set str titles true set \
-            str copy-environment list end set str shell list str /bin/custom end set";
-        assert!(
-            run_job(&mut recording, me, &state, &code.into(), &stop)
-                .notice
-                .is_none()
+        let mut updates = Vec::new();
+        let code = "str history-bytes 0 set str program-clipboard false set str terminal-clipboard false set str bell false set str titles true set";
+        let ran = run_job(&mut Refuse, me, &state, &code.into(), &stop, &mut |p| {
+            updates.push(p)
+        });
+        assert!(ran.notice.is_none());
+        assert_eq!(
+            updates,
+            [crate::view::Presentation {
+                bell: false,
+                titles: true,
+                terminal_clipboard: false
+            }]
         );
-        assert_eq!(recording.batches.len(), 1);
-        assert_eq!(recording.batches.first().map(Vec::len), Some(6));
+        updates.clear();
         let committed = lock(&state).clone();
-        assert_eq!(committed.preferences.shell.program(), "/bin/custom");
-        assert_eq!(committed.preferences.history_bytes.get(), 0);
-        assert_eq!(committed.preferences.wait.seconds(), 0);
-        assert_eq!(committed.preferences.buffers.get(), 2);
-        assert!(!committed.preferences.clipboard && !committed.preferences.bell);
-        assert!(committed.preferences.titles);
-        let failed = "str C-b prefix str titles false set str Nope prefix";
-        assert!(
-            run_job(&mut recording, me, &state, &failed.into(), &stop)
-                .notice
-                .is_some()
-        );
+        let failed = "str titles false set str Nope prefix";
+        let ran = run_job(&mut Refuse, me, &state, &failed.into(), &stop, &mut |p| {
+            updates.push(p)
+        });
+        assert!(ran.notice.is_some());
+        assert!(updates.is_empty());
         assert_eq!(*lock(&state), committed);
-        assert_eq!(recording.batches.len(), 1);
-        // Repeating a value is still an explicit request to apply it.
-        let same = "str titles true set";
-        run_job(&mut recording, me, &state, &same.into(), &stop);
-        assert_eq!(recording.batches.len(), 2);
-        assert_eq!(
-            recording.batches.last(),
-            Some(&vec![crate::config::Setting::Titles(true)])
+        let checkpoint = "str titles false set %1 horizontal split drop";
+        let ran = run_job(
+            &mut Refuse,
+            me,
+            &state,
+            &checkpoint.into(),
+            &stop,
+            &mut |p| updates.push(p),
         );
-        let keys_only = "str C-a prefix";
-        run_job(&mut recording, me, &state, &keys_only.into(), &stop);
-        assert_eq!(recording.batches.len(), 2);
-        recording.refuse = true;
-        let changed = "str titles false set";
-        let failed = run_job(&mut recording, me, &state, &changed.into(), &stop);
-        assert!(
-            failed
-                .notice
-                .is_some_and(|(text, error)| error && text.contains("bridge refused"))
-        );
-        assert!(
-            !lock(&state).preferences.titles,
-            "transport refusal preserves the local commit"
-        );
-        recording.refuse = false;
-        let uses = "str titles true set %1 horizontal split drop";
-        let failed = run_job(&mut recording, me, &state, &uses.into(), &stop);
-        assert!(
-            failed
-                .notice
-                .is_some_and(|(text, _)| text.contains("operation refused"))
-        );
-        assert_eq!(recording.operations, 1);
-        assert!(
-            lock(&state).preferences.titles,
-            "the prior checkpoint remains committed"
-        );
-        assert_eq!(
-            recording.batches.last(),
-            Some(&vec![crate::config::Setting::Titles(true)])
-        );
+        assert!(ran.notice.is_some());
+        assert!(updates.last().is_some_and(|p| !p.titles));
+        assert!(!lock(&state).preferences.titles);
         Ok(())
     }
 
-    /// Two programs queued before either is done each change the keys
-    /// the other left: neither change is lost. One that fails changes none.
     #[test]
     fn queued_programs_commit_the_whole_local_state() -> Result<(), Box<dyn std::error::Error>> {
         let socket = socket::checked("/nowhere/fux/s.sock", "test")?;

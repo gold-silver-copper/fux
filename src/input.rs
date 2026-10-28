@@ -54,6 +54,14 @@ impl Session {
     /// One action: whether it may have changed what the client shows.
     fn act(&mut self, client: ClientId, act: Act) -> bool {
         match act {
+            Act::Presentation(presentation) => {
+                if let Some(view) = self.views.get_mut(&client) {
+                    view.presentation = Some(presentation);
+                }
+                if !presentation.bell {
+                    self.parts.clear_bells(client);
+                }
+            }
             Act::Key(stroke) => return self.key(client, stroke),
             Act::Paste(text) => self.paste(client, &text),
             // A focus change or a mouse report for the program shows

@@ -985,7 +985,21 @@ fn the_history_budget_changes_on_a_live_parser() -> Result {
     assert_eq!(p.screen().history_len(), 3, "the budget holds");
     p.set_history_bytes(0);
     assert_eq!(p.screen().history_len(), 0);
+    let revision = p.screen().revision();
     p.set_history_bytes(1 << 10);
+    assert_eq!(p.history_bytes(), 1 << 10);
+    assert_eq!(
+        p.screen().revision(),
+        revision,
+        "a budget alone is no screen change"
+    );
+    p.process(b"\x1b[?1049h")?;
+    assert_eq!(
+        p.history_bytes(),
+        1 << 10,
+        "the alternate screen has the same primary budget"
+    );
+    p.process(b"\x1b[?1049l")?;
     p.process(b"a\r\nb\r\n")?;
     assert_eq!(p.screen().history_len(), 2);
     Ok(())

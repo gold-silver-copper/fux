@@ -211,7 +211,21 @@ impl Server {
         for word in &argv {
             launch.extend(["str", word]);
         }
-        launch.extend(["end", "shell-program", "new-workspace"]);
+        let history = server.state.preferences.history_bytes.get().to_string();
+        let clipboard = if server.state.preferences.program_clipboard {
+            "true"
+        } else {
+            "false"
+        };
+        launch.extend([
+            "end",
+            "shell-program",
+            &history,
+            "history-bytes",
+            clipboard,
+            "program-clipboard",
+            "new-workspace",
+        ]);
         server.ok(&[&first[..], launch.as_slice()].concat())?;
         Ok((server, held))
     }
@@ -482,6 +496,7 @@ impl Client {
             workspace: workspace.map(|name| fux::command::WsRef::Name(name.to_owned())),
             read_only,
             initial: (workspace.is_none() && !read_only).then(|| fux::command::InitialWorkspace {
+                options: server.state.preferences.pane_options(),
                 name: None,
                 start: fux::command::Start::Shell(server.state.preferences.shell.clone()),
                 cwd: server.dir.clone(),
@@ -489,6 +504,12 @@ impl Client {
             }),
         };
         stream.write_all(&attach.encode().map_err(e)?).map_err(e)?;
+        let presentation = AttachedFrame::Act(Box::new(fux::act::Act::Presentation(
+            server.state.preferences.presentation(),
+        )));
+        stream
+            .write_all(&presentation.encode().map_err(e)?)
+            .map_err(e)?;
         stream.set_nonblocking(true).map_err(e)?;
         Ok(Client {
             stream,
@@ -498,7 +519,7 @@ impl Client {
             read_only,
             greeted: false,
             keyboard: None,
-            frames: 0,
+            frames: 1,
             typed: Vec::new(),
             id: None,
             terminal: terminal(rows, cols)?,

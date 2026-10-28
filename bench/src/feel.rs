@@ -244,7 +244,19 @@ impl Session {
                 // program; either at the size of the client's panes, as
                 // fux sizes no tab from a caller with no screen or tab.
                 let (cols, rows) = (COLS.to_string(), ROWS.to_string());
-                let mut args = vec!["opts", &cols, &rows, "size", "str", "+1", "workspace", "in"];
+                let history = HISTORY_BYTES.to_string();
+                let mut args = vec![
+                    "opts",
+                    &cols,
+                    &rows,
+                    "size",
+                    &history,
+                    "history-bytes",
+                    "str",
+                    "+1",
+                    "workspace",
+                    "in",
+                ];
                 match program {
                     Some([first, rest @ ..]) => {
                         args.extend(["str", first.as_str(), "program"]);
@@ -471,13 +483,6 @@ fn start(
                 }
                 std::thread::sleep(Duration::from_millis(10));
             }
-            let chosen = fux::socket::Choice::Path(socket.clone());
-            let mut to = fux::script::Server::new(chosen);
-            let (state, changes) = fux::script::run_file(&config).map_err(|e| e.to_string())?;
-            state
-                .preferences
-                .forward_settings(changes, &mut to, Default::default())
-                .map_err(|e| e.to_string())?;
             let socket = socket.to_string_lossy().into_owned();
             env.push(("FUX_SOCKET".into(), socket.clone()));
             env.push(("FUX_BIN".into(), place.fux.clone()));
@@ -532,7 +537,9 @@ fn start(
                     ];
                     session.command(place, &args)?;
                 } else {
-                    let mut args = vec!["str", "%1", "pane", "horizontal"];
+                    let history = HISTORY_BYTES.to_string();
+                    let mut args =
+                        vec!["str", "%1", "pane", "horizontal", &history, "history-bytes"];
                     args.extend(program_words(p));
                     args.extend(["split", "pane"]);
                     let answer = session.command(place, &args)?;

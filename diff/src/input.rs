@@ -361,7 +361,16 @@ pub fn run(r: &mut Rng, scale: usize) -> Outcome {
                 env: fux::command::EnvPatch::default(),
             }),
         );
-        let b = fux::pane::Pane::new(id, None, runs, crate::size(24, 80), 0);
+        let b = fux::pane::Pane::new(
+            id,
+            None,
+            runs,
+            crate::size(24, 80),
+            fux::command::PaneOptions {
+                history_bytes: fux::config::HistoryBytes::new(0).ok_or("history budget")?,
+                program_clipboard: true,
+            },
+        );
         let mut pane = b.map_err(|e| e.to_string())?;
         let mut journal = fux::events::Journal::default();
         let at = (

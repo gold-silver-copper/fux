@@ -195,7 +195,7 @@ mod tests {
             None,
             crate::pane::tests::shell()?,
             size,
-            0,
+            crate::pane::tests::options(0)?,
         )?);
         let (since, run) = (pane.counts(), Run::now().ok_or("a clock")?);
         let mut frame = b"\x1b[?2026h".to_vec();
