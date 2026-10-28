@@ -1985,8 +1985,7 @@ mod tests {
             )
             .map_err(|failed| failed.code)
         };
-        let settings: String =
-            std::iter::repeat_n("str terminal-clipboard false set\n", 200).collect();
+        let settings: String = std::iter::repeat_n("str clipboard false set\n", 200).collect();
         assert_eq!(run(&settings), Ok(()));
         let forever = "begin false until";
         assert_eq!(run(forever), Err(Code::Steps));

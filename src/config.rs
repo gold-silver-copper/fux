@@ -39,8 +39,6 @@ macro_rules! settings {
                 }
             }
         }
-
-
     };
 }
 

@@ -3419,6 +3419,7 @@ pub(crate) mod testing {
             Ok(machine) => machine,
             Err(failed) => return (out, Err(failed)),
         };
+        let previous = session.test_keymap.clone();
         let mut keymap = std::mem::take(&mut session.test_keymap);
         let context = crate::protocol::Context {
             client,
@@ -3428,12 +3429,32 @@ pub(crate) mod testing {
         let mut process = InProcess(session);
         let mut asks = crate::script::AsClient {
             asks: &mut process,
-            context,
+            context: context.clone(),
             opened: None,
         };
-        let ended = crate::script::run_capped(&mut machine, &mut host, &mut asks, None, None);
+        let mut ended = crate::script::run_capped(&mut machine, &mut host, &mut asks, None, None);
         let opened = asks.opened;
-        session.test_keymap = keymap;
+        if ended.is_ok() {
+            let forward = keymap.preferences.changed();
+            match keymap.finish() {
+                Ok(committed) => {
+                    session.test_keymap = committed.draft();
+                    if forward
+                        && let Err(failed) = committed
+                            .preferences
+                            .forward_settings(&mut InProcess(session), context)
+                    {
+                        ended = Err(failed);
+                    }
+                }
+                Err(why) => {
+                    session.test_keymap = previous;
+                    ended = Err(crate::script::Failed::new(crate::code::Code::Config, why));
+                }
+            }
+        } else {
+            session.test_keymap = previous;
+        }
         if let (Some(client), Some(screen), true) = (client, opened, ended.is_ok()) {
             session.open_screen(client, screen);
         }
@@ -5210,7 +5231,7 @@ mod tests {
     /// `set history-bytes` changes every pane's history, not only the next
     /// pane's.
     #[test]
-    fn legacy_history_changes_apply_to_existing_panes() -> Result<(), String> {
+    fn set_history_bytes_applies_to_panes_there_are() -> Result<(), String> {
         let (mut s, _) = attached(5, 20)?;
         s.output(
             PaneId::of(1),
@@ -5226,8 +5247,7 @@ mod tests {
         };
         assert!(history(&s) > Some(2));
         // Two rows of four cells: 24 bytes a row and 8 a cell.
-        s.config.history_bytes = crate::config::Number::new(112).ok_or("budget")?;
-        s.parts.each_pane_mut(|p| p.set_history_bytes(112));
+        run(&mut s, "str history-bytes 112 set")?;
         assert_eq!(history(&s), Some(2));
         Ok(())
     }
@@ -5297,7 +5317,7 @@ mod tests {
             "{json}"
         );
         s.outbox.clear();
-        s.config.clipboard = false;
+        run(&mut s, "str clipboard false set")?;
         s.output(PaneId::of(1), b"\x1b]52;c;YmFy\x07");
         assert!(!sent(&s) && s.outbox.is_empty());
         assert_eq!(s.buffers.front().map(|(_, text)| text.as_str()), Some("b"));
@@ -6437,7 +6457,7 @@ mod tests {
             &mut source,
             "opts +1 in 80 24 size str cat name str /bin/cat program run str new-workspace move-to",
         )?;
-        source.config.shell = crate::config::Shell::new("/bin/other".into(), Vec::new())?;
+        run(&mut source, "str shell list str /bin/other end set")?;
         let dump = source.dump_layout(None);
         assert!(!dump.contains("str other rename"), "{dump}");
         let mut again = started(Config::default())?;

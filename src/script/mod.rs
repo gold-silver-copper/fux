@@ -770,7 +770,7 @@ pub trait Asks {
     fn local(
         &mut self,
         what: &Local,
-        _state: Option<&Draft>,
+        _state: Option<&mut Draft>,
         _out: &mut dyn Write,
     ) -> Result<Vec<Value<Fux>>, Failed> {
         refuse_local(what)
@@ -843,7 +843,7 @@ impl Asks for Cli {
     fn local(
         &mut self,
         what: &Local,
-        state: Option<&Draft>,
+        state: Option<&mut Draft>,
         _out: &mut dyn Write,
     ) -> Result<Vec<Value<Fux>>, Failed> {
         let Local::Shell(shell) = what else {
@@ -930,7 +930,7 @@ impl Asks for AsClient<'_> {
     fn local(
         &mut self,
         what: &Local,
-        state: Option<&Draft>,
+        state: Option<&mut Draft>,
         out: &mut dyn Write,
     ) -> Result<Vec<Value<Fux>>, Failed> {
         let Local::Open(open) = what else {
@@ -1004,7 +1004,7 @@ pub fn run_capped(
                 }
             }
             Outcome::Suspended(Ask::Local(what)) => {
-                let values = asks.local(&what, host.state.as_deref(), host.out);
+                let values = asks.local(&what, host.state.as_deref_mut(), host.out);
                 // An exit the host took ends the run here, as it stands.
                 if let (Local::Shell(Shell::Exit(_)), Ok(_)) = (&what, &values) {
                     return Ok(machine.stack().to_vec());
@@ -1158,7 +1158,7 @@ pub fn handle(id: AnyRef, run: Option<Run>) -> Fux {
 fn local(
     what: &Local,
     server: &mut Server,
-    state: Option<&Draft>,
+    draft: Option<&mut Draft>,
 ) -> Result<Vec<Value<Fux>>, Failed> {
     match what {
         Local::Server(chosen) => server.choose(chosen.clone()),
@@ -1180,12 +1180,15 @@ fn local(
             if size.is_none() && client::window_size().is_none() {
                 return Err(client_failed(client::Error::NoSize));
             }
-            let defaults = state
+            let defaults = draft
+                .as_deref()
                 .cloned()
                 .ok_or_else(|| Failed::new(Code::Config, "attach needs this client's local state"))?
                 .finish()
                 .map_err(|why| Failed::new(Code::Config, why))?;
-            let (state, problem) = if size.is_none() && !read_only {
+            let typing = size.is_none() && !read_only;
+            let forward = typing || draft.as_deref().is_some_and(|d| d.preferences.changed());
+            let (committed, mut problem) = if typing {
                 configured(&defaults)
             } else {
                 (defaults, None)
@@ -1199,11 +1202,26 @@ fn local(
                 let why = "no server answers: there is nothing to watch";
                 return Err(Failed::new(Code::NoServer, why));
             }
+            if let Some(draft) = draft {
+                *draft = committed.draft();
+            }
+            if forward
+                && problem.is_none()
+                && let Err(failed) = committed.preferences.forward_settings(
+                    server,
+                    Context {
+                        of: *of,
+                        ..client::context()
+                    },
+                )
+            {
+                problem = Some(failed.notice());
+            }
             let attach = client::Attaching {
                 of: *of,
                 workspace: workspace.clone(),
                 read_only: *read_only,
-                state,
+                state: committed,
                 problem,
             };
             client::attach(&socket, attach, *size).map_err(client_failed)?;
@@ -1315,7 +1333,7 @@ impl Asks for ConfigOnly {
     fn local(
         &mut self,
         what: &Local,
-        _: Option<&Draft>,
+        _: Option<&mut Draft>,
         _: &mut dyn Write,
     ) -> Result<Vec<Value<Fux>>, Failed> {
         match what {
@@ -1386,6 +1404,15 @@ pub fn main(args: &[String], out: &mut dyn Write) -> Result<u8, Failed> {
         .and_then(|()| host.out.flush());
     ran?;
     printed.map_err(|e| Failed::new(Code::Output, format!("writing the output: {e}")))?;
+    if state.preferences.changed() {
+        let context = client::context();
+        let committed = state
+            .finish()
+            .map_err(|why| Failed::new(Code::Config, why))?;
+        committed
+            .preferences
+            .forward_settings(&mut cli.server, context)?;
+    }
     Ok(cli.status.unwrap_or(0))
 }
 

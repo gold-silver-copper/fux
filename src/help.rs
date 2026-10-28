@@ -219,6 +219,7 @@ fn settings() -> String {
             wrapped(about, "\n      ", 78)
         ));
     }
+    out.push_str("\nDuring migration, committed settings are sent together to the remaining\nserver consumers. Individual setters send no requests.\n");
     out.push_str("\nBundled initialization (client-defaults.fux):\n");
     out.push_str(include_str!("script/client-defaults.fux"));
     out

@@ -889,7 +889,7 @@ mod tests {
         assert_eq!(sent(&mut s, c), [BELL.to_vec()]);
         assert!(sent(&mut s, d).is_empty());
         // Off: no bell and no mark.
-        s.config.bell = false;
+        run(&mut s, "str bell false set")?;
         past_the_gap(&mut s);
         s.output(PaneId::of(1), b"\x07");
         assert!(sent(&mut s, c).is_empty());
@@ -903,7 +903,7 @@ mod tests {
         // Off by default: nothing.
         s.output(PaneId::of(1), b"\x1b]2;vim notes\x07");
         assert!(s.before_paint(c).is_empty());
-        s.config.titles = true;
+        run(&mut s, "str titles true set")?;
         let first = s.before_paint(c);
         assert_eq!(first, b"\x1b]2;vim notes\x1b\\");
         // Unchanged: nothing more; changed: the title alone.
@@ -917,7 +917,7 @@ mod tests {
         assert_eq!(s.before_paint(c), b"\x1b]2;notes\x1b\\");
         // Off again: the terminal's own title is restored, once, and saved
         // again for the client's leaving.
-        s.config.titles = false;
+        run(&mut s, "str titles false set")?;
         assert_eq!(s.before_paint(c), [TITLE_POP, TITLE_PUSH].concat());
         assert!(s.before_paint(c).is_empty());
         Ok(())

@@ -99,8 +99,8 @@ const SIDE: &[&str] = &[
     "str g unbind",
     "str C-a prefix",
     "str C-b prefix",
-    "str terminal-clipboard false set",
-    "str program-clipboard true set",
+    "str clipboard false set",
+    "str clipboard true set",
     "str c1 client str hjkl text send-keys",
     "str c1 client detach",
     "str %1 pane newest paste-buffer",
@@ -297,14 +297,21 @@ impl Run {
         // what the session answers.
         let mut asks = AsClient {
             asks: &mut InProcess(&mut self.s),
-            context,
+            context: context.clone(),
             opened: None,
         };
         let ended = run_capped(&mut machine, &mut host, &mut asks, Some(BUDGET), None);
         *opened = asks.opened.filter(|_| client.is_some() && ended.is_ok());
         // As a client keeps what its program did to its keymap.
         if ended.is_ok() {
+            let forward = keymap.preferences.changed();
             self.keymap = keymap.finish().expect("complete state");
+            if forward {
+                self.keymap
+                    .preferences
+                    .forward_settings(&mut InProcess(&mut self.s), context)
+                    .map_err(told)?;
+            }
         }
         let mut text = String::from_utf8_lossy(&out).into_owned();
         for value in &ended.map_err(told)? {

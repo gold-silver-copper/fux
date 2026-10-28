@@ -163,9 +163,7 @@ fn a_resize_reaches_the_program() -> Outcome {
 
 #[test]
 fn capture_pane_shows_the_screen_and_history() -> Outcome {
-    let server = Server::with_settings(vec![fux::config::Setting::HistoryBytes(
-        fux::config::Number::new(100000).ok_or("history budget")?,
-    )])?;
+    let server = Server::start("str history-bytes 100000 set")?;
     let mut client = server.attach(6, 30)?;
     client.wait_for("$")?;
     client.keys("for i in 1 2 3 4 5 6 7 8; do echo line$i; done\r")?;
@@ -203,7 +201,7 @@ fn capture_pane_shows_the_screen_and_history() -> Outcome {
 /// title, its own saved first and restored on leaving; a bell rings it.
 #[test]
 fn the_real_client_gets_titles_and_bells_and_its_title_back() -> Outcome {
-    let server = Server::with_settings(vec![fux::config::Setting::Titles(true)])?;
+    let server = Server::start("str titles true set")?;
     let mut terminal = Terminal::attach(&server, 12, 50, &[])?;
     terminal.wait_for("%1")?;
     terminal.type_bytes(b"printf '\\033]2;my-title\\007\\007'; echo rang''-it\r")?;
@@ -857,10 +855,7 @@ fn a_program_that_cannot_start_is_reported_as_the_system_says() -> Outcome {
         ),
     ] {
         let program = program.to_string_lossy();
-        server.settings(vec![fux::config::Setting::Shell(fux::config::Shell::new(
-            program.to_string(),
-            Vec::new(),
-        )?)])?;
+        server.ok(&["str", "shell", "list", "str", &program, "end", "set"])?;
         let cwd_text = cwd.to_string_lossy();
         let out = server.fux(&[
             "opts",
@@ -883,10 +878,7 @@ fn a_program_that_cannot_start_is_reported_as_the_system_says() -> Outcome {
     // Nothing a failed start made is left.
     assert_eq!(server.ok(&["ls"])?, before);
     // The server is unharmed, and a good shell starts again.
-    server.settings(vec![fux::config::Setting::Shell(fux::config::Shell::new(
-        "/bin/sh".into(),
-        Vec::new(),
-    )?)])?;
+    server.ok(&["str", "shell", "list", "str", "/bin/sh", "end", "set"])?;
     server.ok(&["opts", "80", "24", "size", "new-workspace"])?;
     Ok(())
 }

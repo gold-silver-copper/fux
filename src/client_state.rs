@@ -54,6 +54,7 @@ macro_rules! preferences {
         #[derive(Clone, Debug, Default)]
         pub struct PreferenceDraft {
             $($field: Option<$reads>,)*
+            changed: bool,
         }
 
         impl PreferenceDraft {
@@ -64,7 +65,13 @@ macro_rules! preferences {
                     other => return Err(format!("no setting {other:?}; the settings are {}",
                         crate::words::listed(NAMES, "and"))),
                 }
+                self.changed = true;
                 Ok(())
+            }
+
+            /// Whether a setter ran, even if it repeated a bundled value.
+            pub fn changed(&self) -> bool {
+                self.changed
             }
 
             fn finish(self) -> Result<Preferences, String> {
@@ -77,7 +84,7 @@ macro_rules! preferences {
 
         impl From<Preferences> for PreferenceDraft {
             fn from(p: Preferences) -> Self {
-                Self { $($field: Some(p.$field),)* }
+                Self { $($field: Some(p.$field),)* changed: false }
             }
         }
 
@@ -102,16 +109,48 @@ preferences! {
     history_bytes "history-bytes": Number<0, { 1 << 30 }>;
     /// The limit for this client's waits without an explicit timeout.
     wait "wait-seconds": Limit;
-    /// Whether programs in this client's future panes may write copies.
-    program_clipboard "program-clipboard": bool;
-    /// Whether copies may reach this client's terminal clipboard.
-    terminal_clipboard "terminal-clipboard": bool;
+    /// Program and terminal clipboard policy until their consumers separate.
+    clipboard "clipboard": bool;
+    /// Paste buffers retained until retention becomes a fixed server bound.
+    buffers "buffers": Number<1, { crate::config::MAX_BUFFERS }>;
     /// Whether this client rings and shows tab bell marks.
     bell "bell": bool;
     /// Whether this client's terminal title follows the focused pane.
     titles "titles": bool;
     /// Environment names to select for this client's future launches.
-    copy_environment "copy-environment": Vec<EnvName>;
+    update_environment "update-environment": Vec<EnvName>;
+}
+
+impl Preferences {
+    /// Temporary bridge for consumers still owned by the server. Call only
+    /// after committing local state; setters and config evaluation never send.
+    pub fn forward_settings(
+        &self,
+        asks: &mut dyn crate::script::Asks,
+        context: crate::protocol::Context,
+    ) -> Result<(), crate::script::Failed> {
+        use crate::config::Setting;
+        let p = self;
+        let settings = vec![
+            Setting::Shell(p.shell.clone()),
+            Setting::HistoryBytes(p.history_bytes),
+            Setting::Wait(p.wait),
+            Setting::Clipboard(p.clipboard),
+            Setting::Buffers(p.buffers),
+            Setting::Bell(p.bell),
+            Setting::Titles(p.titles),
+            Setting::UpdateEnvironment(p.update_environment.clone()),
+        ];
+        let reply = asks.ask(
+            &crate::protocol::Asked {
+                request: crate::command::Command::Set(settings).into(),
+                context,
+                after: None,
+            },
+            &mut std::io::sink(),
+        )?;
+        crate::script::succeeded(reply).map(drop)
+    }
 }
 
 #[cfg(test)]
@@ -127,9 +166,10 @@ mod tests {
         assert!(draft.finish().is_err());
         assert_eq!(state.preferences.history_bytes.get(), 8 << 20);
         assert_eq!(state.preferences.wait.seconds(), 30);
-        assert!(state.preferences.program_clipboard && state.preferences.terminal_clipboard);
+        assert_eq!(state.preferences.buffers.get(), 16);
+        assert!(state.preferences.clipboard);
         assert!(state.preferences.bell && !state.preferences.titles);
-        assert!(state.preferences.copy_environment.is_empty());
+        assert!(state.preferences.update_environment.is_empty());
         Ok(())
     }
 
@@ -144,9 +184,9 @@ mod tests {
         for (name, value) in [
             ("history-bytes", Value::Int(0)),
             ("wait-seconds", Value::Int(0)),
-            ("terminal-clipboard", Value::Bool(false)),
+            ("clipboard", Value::Bool(false)),
             ("shell", list(&["/bin/my shell", "a b", ""])?),
-            ("copy-environment", list(&["OK", "FUX_EXTRA"])?),
+            ("update-environment", list(&["OK", "FUX_EXTRA"])?),
         ] {
             draft.set(name, &value)?;
         }
@@ -161,14 +201,16 @@ mod tests {
             ("shell", list(&[""])?),
             ("shell", list(&["/bin/sh", "a\0b"])?),
             ("shell", Value::str("/bin/sh")),
-            ("copy-environment", list(&["BAD-NAME"])?),
-            ("copy-environment", list(&["FUX_PANE"])?),
-            ("copy-environment", list(&["FUX_SOCKET"])?),
-            ("copy-environment", list(&["FUX_SERVER"])?),
-            ("copy-environment", list(&["FUX"])?),
-            ("buffers", Value::Int(16)),
-            ("clipboard", Value::Bool(true)),
-            ("update-environment", list(&[])?),
+            ("update-environment", list(&["BAD-NAME"])?),
+            ("update-environment", list(&["FUX_PANE"])?),
+            ("update-environment", list(&["FUX_SOCKET"])?),
+            ("update-environment", list(&["FUX_SERVER"])?),
+            ("update-environment", list(&["FUX"])?),
+            ("buffers", Value::Int(0)),
+            ("buffers", Value::Int(1001)),
+            ("program-clipboard", Value::Bool(true)),
+            ("terminal-clipboard", Value::Bool(true)),
+            ("copy-environment", list(&[])?),
         ] {
             assert!(draft.set(name, &value).is_err(), "{name}: {value:?}");
         }

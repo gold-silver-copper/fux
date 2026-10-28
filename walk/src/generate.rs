@@ -379,13 +379,13 @@ fn cli(rng: &mut Rng, world: &World, clients: &[String]) -> Vec<String> {
         ),
         27 => rng
             .pick(&[
-                "str terminal-clipboard false set",
-                "str terminal-clipboard true set",
+                "str clipboard false set",
+                "str clipboard true set",
                 "str history-bytes 100000 set",
-                "str wait-seconds 4 set",
+                "str buffers 4 set",
             ])
             .copied()
-            .unwrap_or("str wait-seconds 4 set")
+            .unwrap_or("str buffers 4 set")
             .to_owned(),
         28 => "dump".into(),
         29 => format!(

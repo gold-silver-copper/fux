@@ -99,31 +99,9 @@ impl Server {
         Server::start_limited(config, None)
     }
 
-    /// Explicit transport setup for server consumers awaiting migration.
-    pub fn with_settings(settings: Vec<fux::config::Setting>) -> Result<Server, String> {
-        Server::start_with("", None, false, settings).map(|(server, _)| server)
-    }
-
-    pub fn settings(&self, settings: Vec<fux::config::Setting>) -> Outcome {
-        let socket = self.socket_path()?;
-        let mut requests = fux::client::Requests::open(&socket).map_err(e)?;
-        let reply = requests
-            .ask(
-                &fux::protocol::Asked {
-                    request: fux::command::Command::Set(settings).into(),
-                    context: Default::default(),
-                    after: None,
-                },
-                &mut std::io::sink(),
-            )
-            .map_err(e)?;
-        fux::script::succeeded(reply).map_err(e)?;
-        Ok(())
-    }
-
     /// The same, with at most `open_files` descriptors (`ulimit -n`).
     pub fn start_limited(config: &str, open_files: Option<u32>) -> Result<Server, String> {
-        Server::start_with(config, open_files, false, Vec::new()).map(|(server, _)| server)
+        Server::start_with(config, open_files, false).map(|(server, _)| server)
     }
 
     /// A server that inherits a descriptor without close-on-exec, as one
@@ -132,7 +110,7 @@ impl Server {
     /// server. It is made while no other server can start, so only this one
     /// inherits it.
     pub fn start_inheriting(config: &str) -> Result<(Server, i32), String> {
-        let (server, held) = Server::start_with(config, None, true, Vec::new())?;
+        let (server, held) = Server::start_with(config, None, true)?;
         Ok((server, held.ok_or("a held descriptor")?))
     }
 
@@ -140,7 +118,6 @@ impl Server {
         config: &str,
         open_files: Option<u32>,
         inherit: bool,
-        settings: Vec<fux::config::Setting>,
     ) -> Result<(Server, Option<i32>), String> {
         let base = fuxix::file::scratch().map_err(e)?;
         let dir = base.join(format!(
@@ -154,7 +131,11 @@ impl Server {
         let config_dir = dir.join("config").join("fux");
         std::fs::create_dir_all(&config_dir).map_err(e)?;
         let config_path = config_dir.join("config.fux");
-        std::fs::write(&config_path, format!("{config}\n")).map_err(e)?;
+        std::fs::write(
+            &config_path,
+            format!("str shell list str /bin/sh end set\n{config}\n"),
+        )
+        .map_err(e)?;
         let socket = dir.join("s").join("fux.sock");
         let log = std::fs::File::create(dir.join("server.log")).map_err(e)?;
         let (child, held) = {
@@ -212,9 +193,12 @@ impl Server {
         // Explicit fixture setup: scripted clients receive these prepared
         // keys, rather than implicitly loading a user's config on attach.
         server.state = fux::script::run_file(&config_path).map_err(e)?;
-        if !settings.is_empty() {
-            server.settings(settings)?;
-        }
+        let mut to = fux::script::Server::new(fux::socket::Choice::Path(server.socket.clone()));
+        server
+            .state
+            .preferences
+            .forward_settings(&mut to, Default::default())
+            .map_err(e)?;
         // A server starts with nothing in it; the tests' first shell, %1 in
         // workspace main, is 80 by 24, in the server's home.
         let home = server.dir.to_string_lossy().into_owned();

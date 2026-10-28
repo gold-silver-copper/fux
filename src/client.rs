@@ -918,7 +918,7 @@ fn decoded(input: crate::command::Input) -> Vec<Input> {
 /// Runs a key's or a screen's program as client `me`, on the shared
 /// `state`. A program that fails commits no local changes.
 fn run_job(
-    server: &mut script::Server,
+    server: &mut dyn script::Asks,
     me: (crate::id::ClientId, crate::command::Run),
     state: &Mutex<ClientState>,
     job: &Job,
@@ -935,10 +935,10 @@ fn run_job(
         context: context.clone(),
         opened: None,
     };
-    let result = (|| {
+    let mut result = (|| {
         let tokens = job.tokens()?;
         let mut machine = script::compiled(config.as_ref(), &tokens)?;
-        let mut host = script::Host::new(context, Some(&mut changed), &mut out);
+        let mut host = script::Host::new(context.clone(), Some(&mut changed), &mut out);
         script::run_capped(
             &mut machine,
             &mut host,
@@ -949,11 +949,19 @@ fn run_job(
     })();
     let mut rebound = false;
     if result.is_ok() {
+        let forward = changed.preferences.changed();
         match changed.finish() {
             Ok(changed) => {
                 let mut live = lock(state);
                 rebound = live.keys.modes != changed.keys.modes;
                 *live = changed;
+                let preferences = forward.then(|| live.preferences.clone());
+                drop(live);
+                if let Some(preferences) = preferences
+                    && let Err(failed) = preferences.forward_settings(&mut asks, context)
+                {
+                    result = Err(failed);
+                }
             }
             Err(why) => {
                 return Ran {
@@ -1631,6 +1639,111 @@ mod tests {
             acts.extend(ran(keyboard));
         }
         Ok(acts)
+    }
+
+    /// Setters send nothing themselves. Successful jobs publish one whole
+    /// local state before one batch; failures publish neither.
+    #[test]
+    fn settings_forward_only_after_the_whole_local_commit() -> Result<(), Box<dyn std::error::Error>>
+    {
+        struct Recording<'a> {
+            state: &'a Mutex<ClientState>,
+            batches: Vec<Vec<crate::config::Setting>>,
+            refuse: bool,
+        }
+        impl script::Asks for Recording<'_> {
+            fn ask(
+                &mut self,
+                asked: &Asked,
+                _: &mut dyn Write,
+            ) -> Result<crate::protocol::Reply, script::Failed> {
+                use crate::config::Setting;
+                let Request::Do(Command::Set(settings)) = &asked.request else {
+                    return Err(script::Failed::new(Code::NotConfig, "unexpected request"));
+                };
+                // A setter-by-setter send would see the old live state here.
+                let live = lock(self.state);
+                let p = &live.preferences;
+                assert_eq!(
+                    live.keys.prefix,
+                    Some(KeyPress::new(Key::Char('a'), Modifiers::CTRL))
+                );
+                assert_eq!(
+                    *settings,
+                    vec![
+                        Setting::Shell(p.shell.clone()),
+                        Setting::HistoryBytes(p.history_bytes),
+                        Setting::Wait(p.wait),
+                        Setting::Clipboard(p.clipboard),
+                        Setting::Buffers(p.buffers),
+                        Setting::Bell(p.bell),
+                        Setting::Titles(p.titles),
+                        Setting::UpdateEnvironment(p.update_environment.clone()),
+                    ]
+                );
+                drop(live);
+                self.batches.push(settings.clone());
+                if self.refuse {
+                    return Err(script::Failed::new(Code::NoServer, "bridge refused"));
+                }
+                Ok(crate::protocol::Reply::default())
+            }
+        }
+        let state = Mutex::new(script::default_state().map_err(|e| e.to_string())?);
+        let mut recording = Recording {
+            state: &state,
+            batches: Vec::new(),
+            refuse: false,
+        };
+        let me = (
+            crate::id::ClientId::of(1),
+            "1-2".parse().map_err(|()| "run")?,
+        );
+        let stop = script::Stop::default();
+        let code = "str C-a prefix str history-bytes 0 set str wait-seconds 0 set \
+            str clipboard false set str buffers 2 set str bell false set str titles true set \
+            str update-environment list end set str shell list str /bin/custom end set";
+        assert!(
+            run_job(&mut recording, me, &state, &code.into(), &stop)
+                .notice
+                .is_none()
+        );
+        assert_eq!(recording.batches.len(), 1);
+        let committed = lock(&state).clone();
+        assert_eq!(committed.preferences.shell.program(), "/bin/custom");
+        assert_eq!(committed.preferences.history_bytes.get(), 0);
+        assert_eq!(committed.preferences.wait.seconds(), 0);
+        assert_eq!(committed.preferences.buffers.get(), 2);
+        assert!(!committed.preferences.clipboard && !committed.preferences.bell);
+        assert!(committed.preferences.titles);
+        let failed = "str C-b prefix str titles false set str Nope prefix";
+        assert!(
+            run_job(&mut recording, me, &state, &failed.into(), &stop)
+                .notice
+                .is_some()
+        );
+        assert_eq!(*lock(&state), committed);
+        assert_eq!(recording.batches.len(), 1);
+        // Repeating a value is still an explicit request to apply it.
+        let same = "str titles true set";
+        run_job(&mut recording, me, &state, &same.into(), &stop);
+        assert_eq!(recording.batches.len(), 2);
+        let keys_only = "str C-a prefix";
+        run_job(&mut recording, me, &state, &keys_only.into(), &stop);
+        assert_eq!(recording.batches.len(), 2);
+        recording.refuse = true;
+        let changed = "str titles false set";
+        let failed = run_job(&mut recording, me, &state, &changed.into(), &stop);
+        assert!(
+            failed
+                .notice
+                .is_some_and(|(text, error)| error && text.contains("bridge refused"))
+        );
+        assert!(
+            !lock(&state).preferences.titles,
+            "transport refusal preserves the local commit"
+        );
+        Ok(())
     }
 
     /// Two programs queued before either is done each change the keys

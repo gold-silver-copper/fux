@@ -1,4 +1,4 @@
-//! Config evaluation commits one client's local state, with no server requests.
+//! Config evaluation commits local state before the temporary settings batch.
 mod support;
 use support::*;
 
@@ -89,7 +89,7 @@ fn only_a_typing_terminal_loads_the_user_config() -> Outcome {
     }
     let mut terminal = Terminal::attach(&server, 10, 80, &[])?;
     terminal.wait_for("$")?;
-    assert_eq!(server.fux(&waiting)?.status, 0);
+    assert_eq!(server.fux(&waiting)?.status, 124);
     terminal.type_bytes(b"\x01d")?;
     terminal.wait_exit()?;
     Ok(())
@@ -144,38 +144,81 @@ fn the_config_sets_the_prefix_and_bindings() -> Outcome {
     Ok(())
 }
 
-/// Config preferences stay local, including on a successful check and action script.
+/// Explicit fixture settings reach the server; `set` from the command
+/// line changes a running one; bad values are refused.
 #[test]
-fn settings_stay_in_the_initiating_client() -> Outcome {
-    let server = Server::start("str history-bytes 120 set\nstr wait-seconds 0 set")?;
-    assert_eq!(server.state.preferences.history_bytes.get(), 120);
-    assert_eq!(server.state.preferences.wait.seconds(), 0);
-    let before = server.panes()?.len();
+fn settings_reach_the_server() -> Outcome {
+    // Three rows of two cells or more: 24 bytes a row and 8 a cell.
+    let server = Server::start("str history-bytes 120 set")?;
+    // History bytes apply to new panes.
+    let pane = server.ok(&["str", "%1", "pane", "vertical", "split"])?;
+    let pane = pane.split(':').next().unwrap_or_default();
+    server.type_line(
+        pane,
+        "for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do echo h$i; done",
+    )?;
+    eventually("the loop", || {
+        Ok(server
+            .ok(&["str", pane, "pane", "capture"])?
+            .contains("h15"))
+    })?;
+    let history = server.ok(&["str", pane, "pane", "100", "history", "capture"])?;
+    let rows = history.lines().count();
+    let screen = server
+        .ok(&["str", pane, "pane", "capture"])?
+        .lines()
+        .count();
+    assert!(rows <= screen + 3, "at most 3 lines of history: {history}");
+    // A new shell program applies to new panes.
     server.ok(&[
         "str",
         "shell",
         "list",
         "str",
-        "/no/such/shell",
+        "/usr/bin/env",
+        "str",
+        "PS1=custom$",
+        "str",
+        "/bin/sh",
         "end",
         "set",
     ])?;
-    server.ok(&["%1", "horizontal", "split", "drop"])?;
-    assert_eq!(server.panes()?.len(), before + 1);
+    // Checking a valid config and a failing action script send no batch.
+    let checked = server.dir.join("checked.fux");
+    std::fs::write(&checked, "str shell list str /no/such/check-shell end set").map_err(e)?;
+    server.ok(&["str", &checked.to_string_lossy(), "str", "config", "check"])?;
+    let failed = server.fux(&[
+        "str",
+        "shell",
+        "list",
+        "str",
+        "/no/such/failed-shell",
+        "end",
+        "set",
+        "str",
+        "Nope",
+        "prefix",
+    ])?;
+    assert_eq!(failed.status, 1);
+    let custom = server.ok(&["str", "%1", "pane", "horizontal", "split"])?;
+    eventually("the custom prompt", || {
+        Ok(server
+            .ok(&[
+                "str",
+                custom.split_whitespace().next().unwrap_or_default(),
+                "pane",
+                "capture",
+            ])?
+            .contains("custom$"))
+    })?;
+    // Bad values are refused; keys are a client's, never the server's.
     for args in [
         &["str", "buffers", "0", "set"][..],
-        &["str", "bell", "str", "off", "set"],
-        &[
-            "str",
-            "copy-environment",
-            "list",
-            "str",
-            "FUX",
-            "end",
-            "set",
-        ],
+        &["str", "clipboard", "str", "maybe", "set"],
+        &["str", "nonsense", "1", "set"],
     ] {
-        assert_eq!(server.fux(args)?.status, 1, "{args:?}");
+        let out = server.fux(args)?;
+        assert_eq!(out.status, 1, "{args:?}: {}", out.stderr);
     }
     Ok(())
 }
@@ -183,7 +226,7 @@ fn settings_stay_in_the_initiating_client() -> Outcome {
 /// An imported config cannot act on the server or commit half its local state.
 #[test]
 fn an_imported_failure_keeps_the_whole_bundled_state() -> Outcome {
-    let server = Server::start("")?;
+    let server = Server::start("str wait-seconds 0 set")?;
     let directory = server.dir.join("config/fux");
     std::fs::write(directory.join("config.fux"), "require shared.fux").map_err(e)?;
     std::fs::write(
@@ -207,6 +250,28 @@ fn an_imported_failure_keeps_the_whole_bundled_state() -> Outcome {
     terminal.type_bytes(b"d")?;
     terminal.wait_exit()?;
     assert_eq!(server.panes()?.len(), 1);
+    let probe = server.fux(&[
+        "agent-opts",
+        "80",
+        "24",
+        "size",
+        "str",
+        "/bin/sh",
+        "program",
+        "str",
+        "-c",
+        "arg",
+        "str",
+        "sleep 1",
+        "arg",
+        "run",
+        "wait",
+    ])?;
+    assert_eq!(
+        probe.status, 124,
+        "a failed config forwarded its bundled wait: {}",
+        probe.stderr
+    );
     Ok(())
 }
 
@@ -376,10 +441,7 @@ fn check_mode_is_explicit_and_independent_of_the_filename() -> Outcome {
 #[test]
 fn an_empty_caller_environment_is_not_replaced() -> Outcome {
     use fux::script::{Host, Server as Requests, compile, run_capped};
-    let server = Server::with_settings(vec![fux::config::Setting::UpdateEnvironment(vec![
-        "HOME".parse()?,
-        "ENV".parse()?,
-    ])])?;
+    let server = Server::start("str update-environment list str HOME str ENV end set")?;
     let tokens = fuxth::token::source(
         "test",
         "agent-opts 80 24 size str /bin/sh program str -c arg str 'echo HOME=${HOME-unset} ENV=${ENV-unset}' arg run",
@@ -431,11 +493,8 @@ fn the_config_words_examples_check() -> Outcome {
 #[test]
 fn update_environment_takes_the_clients_variables_or_none() -> Outcome {
     use std::os::unix::ffi::OsStrExt;
-    let server = Server::with_settings(vec![fux::config::Setting::UpdateEnvironment(vec![
-        "ENV".parse()?,
-        "FUXT_GIVEN".parse()?,
-        "FUXT_BYTES".parse()?,
-    ])])?;
+    let server =
+        Server::start("str update-environment list str ENV str FUXT_GIVEN str FUXT_BYTES end set")?;
     let shown = "echo \"[${ENV-unset}] [${FUXT_GIVEN-unset}]\"; \
                  printf %s \"${FUXT_BYTES-unset}\" | od -An -tx1";
     let out = std::process::Command::new(FUX)
