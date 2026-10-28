@@ -435,7 +435,7 @@ while not seen.endswith(b"q"):
         ],
         "7f7f7f78",
     )?;
-    let click = ["str", "click", "2", "4", "mouse"];
+    let click = ["str", "click", "2", "4"];
     seen.borrow_mut()
         .push_str("1b5b3c303b353b334d1b5b3c303b353b336d");
     let said = format!("seen {}\n", seen.borrow());
@@ -488,11 +488,28 @@ fn sizes_are_set_as_asked() -> Outcome {
     server.ok(&["str", left, "pane", "100", "22", "resize"])?;
     assert_eq!(size(left)?, "100x22", "a pane's tab");
     server.ok(&["str", tab, "tab", "100", "20", "resize"])?;
-    let right = id(&server.ok(&["str", left, "pane", "horizontal", "split"])?);
-    server.ok(&["str", &right, "pane", "25", "percent", "resize-x"])?;
+    let right = id(&server.ok(&["str", left, "pane", "str", "horizontal", "axis", "split"])?);
+    server.ok(&[
+        "str",
+        &right,
+        "pane",
+        "25",
+        "percent",
+        "str",
+        "horizontal",
+        "resize-pane",
+    ])?;
     assert_eq!(size(&right)?, "25x20");
     assert_eq!(size(left)?, "74x20");
-    let refused = server.fux(&["str", left, "pane", "100", "resize-x"])?;
+    let refused = server.fux(&[
+        "str",
+        left,
+        "pane",
+        "100",
+        "str",
+        "horizontal",
+        "resize-pane",
+    ])?;
     assert!(
         refused.stderr.starts_with("fux: size: "),
         "{}",
@@ -721,17 +738,7 @@ fn names_clicks_and_signals_are_checked() -> Outcome {
         &server.ok(&run(&before, &["sh", "-c", clicks]))?,
         "ready",
     )?;
-    let outside = [
-        "str",
-        "m",
-        "pane",
-        "str",
-        "click",
-        "5",
-        "0",
-        "mouse",
-        "send-mouse",
-    ];
+    let outside = ["str", "m", "pane", "str", "click", "5", "0", "send-mouse"];
     let outside = server.fux(&outside)?;
     assert!(
         outside.stderr.starts_with("fux: mouse: "),
@@ -756,7 +763,7 @@ fn a_row_range_takes_joined_lines_whole() -> Outcome {
     let started = server.ok(&run(&["20", "6", "size"], &["sh", "-c", long]))?;
     let pane = id(&started);
     shows_after(&server, &started, "next")?;
-    let line = server.ok(&["str", &pane, "pane", "1", "1", "rows", "capture"])?;
+    let line = server.ok(&["str", &pane, "pane", "1", "2", "rows", "capture"])?;
     assert_eq!(line, "aaaaaaaaaaaaaaaaaaaaBBBBBBBBBBBBBBBBBBBBcc\n");
     let plain = server.ok(&["str", &pane, "pane", "capture"])?;
     assert!(
@@ -775,12 +782,14 @@ fn a_row_range_takes_joined_lines_whole() -> Outcome {
     let wide = id(&wide);
     let cut = |first: &str, last: &str| {
         server.ok(&[
-            "str", &wide, "pane", "0", "0", "rows", first, last, "cols", "capture",
+            "str", &wide, "pane", "0", "1", "rows", first, last, "cols", "capture",
         ])
     };
-    assert_eq!(cut("2", "4")?, " BC\n");
-    assert_eq!(cut("0", "1")?, "A\n");
-    assert_eq!(cut("19", "19")?, "Z\n");
+    assert_eq!(cut("2", "5")?, " BC\n");
+    assert_eq!(cut("0", "2")?, "A\n");
+    assert_eq!(cut("19", "20")?, "Z\n");
+    assert_eq!(cut("19", "25")?, "Z\n");
+    assert_eq!(cut("2", "2")?, "");
     // The cursor is the screen's: on the empty row after the last line;
     // and every row kept was read.
     let json = server.ok(&["str", &pane, "pane", "capture", "json"])?;
@@ -798,9 +807,9 @@ fn a_row_range_takes_joined_lines_whole() -> Outcome {
 #[test]
 fn a_wait_on_a_workspace_answers_each_of_its_panes() -> Outcome {
     let server = Server::start("")?;
-    let one = id(&server.ok(&run(&["str", "g", "in"], &["sleep", "30"]))?);
-    let two = id(&server.ok(&run(&["str", "g", "in"], &["sleep", "30"]))?);
-    let timed = server.fux(&["str", "g", "workspace", "1", "timeout", "wait"])?;
+    let one = id(&server.ok(&run(&[], &["sleep", "30"]))?);
+    let two = id(&server.ok(&run(&[], &["sleep", "30"]))?);
+    let timed = server.fux(&["str", "agent", "workspace", "1", "timeout", "wait"])?;
     assert_eq!(timed.status, 124, "{}", timed.stderr);
     for pane in [&one, &two] {
         let line = timed
@@ -961,7 +970,7 @@ fn words_refuse_options_they_do_not_use() -> Outcome {
         (&on, &["str", "x", "name"], "respawn"),
         (&on, &["100", "30", "size"], "respawn"),
         (&on, &["str", "/", "cwd"], "respawn"),
-        (&on, &["vertical"], "respawn"),
+        (&on, &["str", "vertical", "axis"], "respawn"),
         (&opts, &["str", "nowhere", "in"], "new-workspace"),
         (&opts, &["5", "timeout"], "new-tab"),
     ] {
@@ -974,8 +983,8 @@ fn words_refuse_options_they_do_not_use() -> Outcome {
         );
     }
     for unused in [
-        &["horizontal"][..],
-        &["vertical"],
+        &["str", "horizontal", "axis"][..],
+        &["str", "vertical", "axis"],
         &["kill-first"],
         &["full"],
         &["alt-screen"],
@@ -987,7 +996,10 @@ fn words_refuse_options_they_do_not_use() -> Outcome {
         assert_eq!(refused.status, 1, "{unused:?} run: {}", refused.stdout);
         assert!(
             refused.stderr.starts_with(
-                if matches!(unused, ["horizontal"] | ["vertical"] | ["kill-first"]) {
+                if matches!(
+                    unused,
+                    ["str", "horizontal", "axis"] | ["str", "vertical", "axis"] | ["kill-first"]
+                ) {
                     "fux: unused: "
                 } else {
                     "fux: type: "

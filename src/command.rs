@@ -323,7 +323,7 @@ wire! {
 pub type Size = Option<crate::view::Screen>;
 
 wire! {
-    /// A pane's new width or height (`resize-x`, `resize-y`).
+    /// A pane's new width or height (`resize-pane`).
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
     pub enum Extent {
         Cells(cells: u16),
@@ -354,7 +354,7 @@ impl Percent {
 }
 
 wire! {
-    /// How `resize-x`, `resize-y` and `move-border` resize a pane.
+    /// How `resize-pane` and `move-border` resize a pane.
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
     pub enum PaneResize {
         /// Moves the border toward `direction` by this many cells.
@@ -425,9 +425,9 @@ wire! {
         pub source: Source,
         /// Reverse video, how a selection is drawn, between `⟦` and `⟧`.
         pub marks: bool,
-        /// Rows `start..=end`, from 0 at the top of what is captured.
+        /// Rows `start..end`, from 0 at the top of what is captured.
         pub rows: Option<(u16, u16)>,
-        /// Columns `start..=end`, from 0.
+        /// Columns `start..end`, from 0.
         pub cols: Option<(u16, u16)>,
     }
 }

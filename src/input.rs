@@ -441,7 +441,7 @@ mod tests {
     #[test]
     fn replacing_a_key_panel_ends_its_old_notice() -> Outcome {
         let (mut s, c) = session()?;
-        run(&mut s, "%1 horizontal split drop")?;
+        run(&mut s, "%1 str horizontal axis split drop")?;
         s.input(c, b"\x02");
         let prefix = s.views.get(&c).ok_or("view")?.opening;
         s.input(c, b"r");
@@ -682,7 +682,7 @@ mod tests {
     fn a_repeating_binding_keeps_its_layer_until_enter_or_esc() -> Outcome {
         let (mut s, c) = session()?;
         with_layers(&mut s)?;
-        run(&mut s, "str %1 pane horizontal split")?;
+        run(&mut s, "str %1 pane str horizontal axis split")?;
         run(&mut s, "str c1 client str %1 pane show")?;
         let start = pane_width(&s, 1);
         s.input(c, b"\x02y");
@@ -731,7 +731,7 @@ mod tests {
     #[test]
     fn a_repeat_mode_may_bind_enter() -> Outcome {
         let (mut s, c) = session()?;
-        run(&mut s, "str %1 pane horizontal split")?;
+        run(&mut s, "str %1 pane str horizontal axis split")?;
         run(&mut s, "str c1 client str %1 pane show")?;
         let start = pane_width(&s, 1);
         run(
@@ -760,8 +760,8 @@ mod tests {
     #[test]
     fn move_mode_moves_a_pane_until_esc() -> Outcome {
         let (mut s, c) = session()?;
-        run(&mut s, "str %1 pane horizontal split")?;
-        run(&mut s, "str %2 pane horizontal split")?;
+        run(&mut s, "str %1 pane str horizontal axis split")?;
+        run(&mut s, "str %2 pane str horizontal axis split")?;
         run(&mut s, "str c1 client str %3 pane show")?;
         assert_eq!(pane_order(&mut s)?, ["%1", "%2", "%3"]);
         s.input(c, &prefixed("mhh"));
@@ -901,8 +901,8 @@ mod tests {
     /// client on %2.
     fn busy() -> Result<(Session, ClientId), String> {
         let (mut s, c) = session()?;
-        run(&mut s, "str %1 pane horizontal split")?;
-        run(&mut s, "str %2 pane vertical split")?;
+        run(&mut s, "str %1 pane str horizontal axis split")?;
+        run(&mut s, "str %2 pane str vertical axis split")?;
         run(&mut s, NEW_TAB)?;
         run(&mut s, "opts 80 24 size new-workspace")?;
         run(&mut s, "str c1 client str %2 pane show")?;
@@ -1066,7 +1066,7 @@ mod tests {
     #[test]
     fn a_mouse_report_reaches_the_focused_pane_in_its_cells() -> Outcome {
         let (mut s, c) = session()?;
-        run(&mut s, "str %1 pane horizontal split")?;
+        run(&mut s, "str %1 pane str horizontal axis split")?;
         run(&mut s, "str c1 client str %2 pane show")?;
         let right = rect_of(&s, c, 2).ok_or("no rect for %2")?;
         assert!(right.x() > 1 && right.y() == 0, "{right:?}");
@@ -1089,7 +1089,7 @@ mod tests {
         s.input(c, press(right.x(), 0).as_bytes());
         assert_eq!(queued(&mut s, 2), [0x1b, b'[', b'M', 32, 33, 33]);
         // A pane below another: moved down too.
-        run(&mut s, "str %2 pane vertical split")?;
+        run(&mut s, "str %2 pane str vertical axis split")?;
         run(&mut s, "str c1 client str %3 pane show")?;
         let below = rect_of(&s, c, 3).ok_or("no rect for %3")?;
         assert!(below.y() > 1, "{below:?}");
@@ -1213,7 +1213,7 @@ mod tests {
     #[test]
     fn a_drag_out_of_the_pane_is_kept_to_its_edge() -> Outcome {
         let (mut s, c) = session()?;
-        run(&mut s, "str %1 pane horizontal split")?;
+        run(&mut s, "str %1 pane str horizontal axis split")?;
         run(&mut s, "str c1 client str %2 pane show")?;
         let right = rect_of(&s, c, 2).ok_or("no rect for %2")?;
         s.output(PaneId::of(2), b"\x1b[?1002h\x1b[?1006h");
@@ -1239,7 +1239,7 @@ mod tests {
     #[test]
     fn the_mouse_is_reported_only_while_no_screen_of_the_clients_is_open() -> Outcome {
         let (mut s, c) = session()?;
-        run(&mut s, "str %1 pane horizontal split")?;
+        run(&mut s, "str %1 pane str horizontal axis split")?;
         run(&mut s, "str c1 client str %2 pane show")?;
         s.output(PaneId::of(2), b"\x1b[?1003h\x1b[?1006h");
         assert_eq!(asked_mouse_level(&s, c), Some(1003));
@@ -1280,7 +1280,7 @@ mod tests {
     #[test]
     fn a_list_whose_item_disappears_closes_and_never_retargets() -> Outcome {
         let (mut s, c) = session()?;
-        run(&mut s, "str %1 pane horizontal split")?;
+        run(&mut s, "str %1 pane str horizontal axis split")?;
         run(&mut s, "str c1 client str %2 pane show")?;
         s.input(c, b"\x02as");
         assert!(mode(&s, c).starts_with("list "), "{}", mode(&s, c));

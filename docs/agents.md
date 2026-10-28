@@ -48,12 +48,13 @@ fux %2 str y text send-keys 5 quiet            # until nothing changes there for
 fux %2 wait                                    # until it differs from now's
 fux %2 str 'a long prompt' paste send-keys     # a paste, bracketed if the program asked
 fux %2 all-history capture                     # read the screen; also main-screen, last-output, styles
-fux %2 capture json                            # as JSON, with version, exited, idle_ms
-fux %2 str version get                         # one field: version, exited, last_status, cwd
+fux %2 capture json                            # as JSON, with version and exited
+fux %2 version                                 # the live pane version; an answer or capture keeps its held version
+fux %2 str exited get                          # one field: exited, last_status, cwd
 fux %2 str C-c key send-keys                   # a key: Enter, C-c, Up, F5 (`fux key-names`)
 fux str "$V" expect str y text send-keys       # only if %2 is still at V, `capture json`'s version, else `stale`
-fux %2 str click 3 10 mouse send-mouse         # a click at row 3, column 10, from 0
-fux %2 tab 80 24 resize; fux %2 50 percent resize-x; fux %2 horizontal split
+fux %2 str click 3 10 send-mouse               # a click at row 3, column 10, from 0
+fux %2 tab 80 24 resize; fux %2 50 percent str horizontal resize-pane; fux %2 str horizontal axis split
 fux %2 str TERM signal                         # signal what runs in its foreground
 fux %2 kill-first respawn                      # end its program and start it again
 fux str web pane                               # a pane by its given name (run's name)
@@ -249,7 +250,7 @@ too). `A counts` gives a version's five counts as integers:
   %2 capture let seen
   seen expect str y text str Enter key send-keys   # stale if %2 changed since
   ```
-- **Mouse:** `%2 str click ROW COL mouse send-mouse` (also `right`,
+- **Mouse:** `%2 str click ROW COL send-mouse` (also `right`,
   `middle`, `press`, `release`, `wheel-up`, `wheel-down`, `move`), cells
   from 0 as `wrapped capture` counts them; on a double-width row, click at
   2×COL. A program's own "row 22" is usually counted from 1.
@@ -272,7 +273,7 @@ last shell command's output, or the running one's so far, between its
 marks: what a clear erased there reads blank, and an ended command's
 last row ends at its end mark, so a last line ending in `\r` reads
 empty), `wrapped` (each screen row a line; else a line wrapped at the
-pane's width is joined whole), `0 4 rows`, `0 39 cols`, `full`, `marks`
+pane's width is joined whole), `0 4 rows`, `0 40 cols`, `full`, `marks`
 (reverse video and any background colour as `⟦this⟧`: a program that
 paints its whole background is marked whole), `styles`. Blanks at a
 line's end are trimmed, so a prompt's `>>> ` reads `>>>`; `full` keeps
@@ -280,8 +281,10 @@ every cell. Then `json` for the screen and what is known of the pane:
 `screen_cursor` is `[ROW,COL]` (`screen_rows` and `screen_cols` the
 screen's size), `alt_screen` whether a program holds the
 alternate screen, `history_lines` the history kept, `above` the history
-rows kept above the first row read, `idle_ms` since fux last read output
-from its program (or it started). Rows and columns count from 0.
+rows kept above the first row read. Rows and columns are half-open
+`start..end` ranges from 0, like `slice`; equal endpoints select nothing.
+A joined row range includes each whole logical line it touches; `wrapped`
+selects physical rows only.
 Every pane of a tab or workspace, in layout order: `str agent workspace
 panes each capture print end`; `tabs` gives its tabs the same way.
 
@@ -442,7 +445,7 @@ read-file`. `X warn` prints on stderr:
   keep their frozen configuration.
 - A tab no client shows, or only clients that watch, is laid out on its
   `size`; `TAB 40 12 resize` changes it, `resize-auto` gives it back to a
-  client's screen, `PANE 95 percent resize-x` sizes a pane in its tab. A
+  client's screen, `PANE 95 percent str horizontal resize-pane` sizes a pane in its tab. A
   size that cannot be had is refused, and nothing changes; so is a split
   or a move that would hide a pane on the tab's own size or on a screen
   showing it (but one that sizes nothing: that only watches, or has no

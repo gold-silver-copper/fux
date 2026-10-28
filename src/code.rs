@@ -182,7 +182,7 @@ codes! {
     /// no room for a pane below its bar as it starts a server's first
     /// shell; a new tab or workspace given none, whose caller has no
     /// screen that sizes panes and no tab; a pane's
-    /// `resize-x` or `resize-y` the layout cannot give; a tab resized, a
+    /// `resize-pane` the layout cannot give; a tab resized, a
     /// split or a pane moved where its tab's panes would not all show.
     Size "size",
     /// Memory for a client capture's render grid was refused.
@@ -226,12 +226,6 @@ codes! {
     Nested "nested",
     /// A key name no key has.
     NotAKey "not_a_key",
-    /// Options with no program, where one is needed.
-    NoProgram "no_program",
-    /// `send-keys` with no keys.
-    NoKeys "no_keys",
-    /// A value that is not a client.
-    NotAClient "not_a_client",
 }
 
 impl Code {

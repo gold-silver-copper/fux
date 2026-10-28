@@ -5,8 +5,8 @@ str 'k' str 'me str up focus' bind str 'focus up' label str 'Focus' group
 str 'l' str 'me str right focus' bind str 'focus right' label str 'Focus' group
 str 'o' str 'me str next focus' bind str 'next pane' label str 'Focus' group
 str 'q' str 'me str last focus' bind str 'last pane' label str 'Focus' group
-str 'v' str 'me focused horizontal split drop' bind str 'split side by side' label str 'Panes' group
-str 's' str 'me focused vertical split drop' bind str 'split stacked' label str 'Panes' group
+str 'v' str 'me focused str horizontal axis split drop' bind str 'split side by side' label str 'Panes' group
+str 's' str 'me focused str vertical axis split drop' bind str 'split stacked' label str 'Panes' group
 str 'x' str 'me me focused confirm-close' bind str 'close pane' label str 'Panes' group
 str 'z' str 'me zoom' bind str 'zoom or restore' label str 'Panes' group
 str 'a r' str 'me me focused rename-prompt' bind str 'rename pane' label str 'Pane actions' group
