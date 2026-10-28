@@ -199,7 +199,7 @@ pub fn fuxth(text: &str, budget: u64) -> Ended {
             Ok(Outcome::Paused) => {}
             Ok(Outcome::Suspended(n)) => match n.checked_mul(10) {
                 Some(answer) => {
-                    if let Err(e) = machine.push(Value::Int(answer)) {
+                    if let Err(e) = machine.import(Value::Int(answer)) {
                         return failed(e);
                     }
                 }

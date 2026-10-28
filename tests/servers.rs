@@ -437,9 +437,9 @@ fn a_client_that_reads_no_answers_is_read_no_more() -> Outcome {
     stream.write_all(&hello.encode().map_err(e)?).map_err(e)?;
     let ls = Asked {
         after: None,
-        request: Request::Do(Cmd::Ls {
-            target: None,
-            get: None,
+        request: Request::Do(Cmd::Inspect {
+            scope: fux::inspect::Scope::All,
+            projection: fux::inspect::Projection::Facts,
         }),
         context: Context::default(),
     };

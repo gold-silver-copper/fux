@@ -6,6 +6,7 @@
 //!
 //! Every run is fresh: its own stack and dictionary, the bundled library's
 //! words first (`library.fux`).
+mod record;
 mod source;
 mod words;
 
@@ -44,6 +45,9 @@ pub(crate) const DEFAULTS: &str = include_str!("client-defaults.fux");
 /// A value of fux's own on the stack.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Fux {
+    All,
+    Null,
+    Record(Rc<record::Record>),
     Pane(PaneId, Option<Run>),
     Tab(TabId, Option<Run>),
     Workspace(WsId, Option<Run>),
@@ -70,6 +74,9 @@ impl AppValue for Fux {
 
     fn name(&self) -> &'static str {
         match self {
+            Fux::All => "all",
+            Fux::Null => "null",
+            Fux::Record(_) => "record",
             Fux::Pane(_, _) => "pane",
             Fux::Tab(_, _) => "tab",
             Fux::Workspace(_, _) => "workspace",
@@ -90,7 +97,55 @@ impl AppValue for Fux {
 
     const TEXT_LIMIT: usize = crate::wire::MAX_ALLOCATED;
 
+    fn weight(&self) -> u64 {
+        match self {
+            Fux::Record(r) => r.weight(),
+            Fux::Answer(a, _) => match &**a {
+                Answer::Capture(c) => {
+                    let state = match &c.of {
+                        crate::capture::Of::Pane { state, .. } => state
+                            .iter()
+                            .map(|(k, v)| (k.len() as u64).saturating_add(v.weight()))
+                            .fold(1u64, u64::saturating_add),
+                        crate::capture::Of::Client(_) => 1,
+                    };
+                    c.lines.iter().flatten().fold(state, |n, cut| {
+                        n.saturating_add(cut.text.len() as u64).saturating_add(1)
+                    })
+                }
+                Answer::Pane(_) => 16,
+                Answer::Panes(p) => (p.len() as u64).saturating_mul(16).saturating_add(1),
+                Answer::Status(listing) => listing.weight(),
+            },
+            Fux::All
+            | Fux::Null
+            | Fux::Pane(..)
+            | Fux::Tab(..)
+            | Fux::Workspace(..)
+            | Fux::Client(..)
+            | Fux::Opts(_)
+            | Fux::Extent(_) => u64::try_from(self.text_bytes()).unwrap_or(u64::MAX).max(1),
+        }
+    }
+    fn depth(&self) -> u8 {
+        match self {
+            Fux::Record(r) => r.depth(),
+            Fux::All
+            | Fux::Null
+            | Fux::Pane(..)
+            | Fux::Tab(..)
+            | Fux::Workspace(..)
+            | Fux::Client(..)
+            | Fux::Opts(_)
+            | Fux::Extent(_)
+            | Fux::Answer(..) => 0,
+        }
+    }
+
     fn text_bytes(&self) -> usize {
+        if let Fux::Record(r) = self {
+            return r.bytes();
+        }
         if let Fux::Answer(answer, _) = self {
             let mut budget = crate::wire::Budget::with_limit(usize::MAX);
             if budget
@@ -102,11 +157,7 @@ impl AppValue for Fux {
             }
             let scratch = match &**answer {
                 Answer::Capture(c) => c.text_scratch(),
-                Answer::Pane(_)
-                | Answer::Panes(_)
-                | Answer::Listing { .. }
-                | Answer::Json(_)
-                | Answer::Status(_) => 0,
+                Answer::Pane(_) | Answer::Panes(_) | Answer::Status(_) => 0,
             };
             usize::MAX
                 .saturating_sub(budget.remaining())
@@ -120,6 +171,9 @@ impl AppValue for Fux {
 
     fn write_text(&self, out: &mut dyn std::fmt::Write) -> Result<(), fuxth::Failure> {
         match self {
+            Fux::All => out.write_str("all"),
+            Fux::Null => out.write_str("null"),
+            Fux::Record(r) => r.write_text(out),
             Fux::Pane(p, _) => write!(out, "{p}"),
             Fux::Tab(t, _) => write!(out, "{t}"),
             Fux::Workspace(w, _) => write!(out, "{w}"),
@@ -305,14 +359,6 @@ pub enum Answer {
     /// answered, which is no one pane.
     Panes(Vec<PaneAnswer>),
     Capture(Box<crate::capture::Captured>),
-    /// `ls` (`of` none) or `info`.
-    Listing {
-        of: Option<Kind>,
-        listing: Json,
-    },
-    /// A field's value that is no one value of fuxth's: `null`, a list,
-    /// an object.
-    Json(Json),
     /// `status`: the server that answers, and its version.
     Status(Json),
 }
@@ -328,8 +374,7 @@ impl Answer {
                 crate::capture::Of::Pane { .. } => "capture",
                 crate::capture::Of::Client(_) => "client-capture",
             },
-            Answer::Listing { .. } | Answer::Status(_) => "listing",
-            Answer::Json(_) => "json",
+            Answer::Status(_) => "listing",
         }
     }
 
@@ -343,8 +388,6 @@ impl Answer {
                 crate::capture::Of::Pane { .. } => "a capture",
                 crate::capture::Of::Client(_) => "a client's capture",
             },
-            Answer::Listing { .. } => "a listing",
-            Answer::Json(_) => "a JSON value",
             Answer::Status(_) => "a status",
         }
     }
@@ -362,8 +405,6 @@ impl Answer {
                 Ok(())
             }
             Answer::Capture(captured) => captured.write_text(out),
-            Answer::Listing { of, listing } => crate::answer::write_listing(*of, listing, out),
-            Answer::Json(json) => json.write(out),
             Answer::Status(status) => write_status(status, out),
         }
     }
@@ -374,9 +415,7 @@ impl Answer {
                 budget.slots::<crate::capture::Captured>(1)?;
                 captured.charge(budget)
             }
-            Answer::Listing { listing: json, .. } | Answer::Json(json) | Answer::Status(json) => {
-                json.charge(budget)
-            }
+            Answer::Status(json) => json.charge(budget),
             Answer::Pane(answer) => answer.charge(budget),
             Answer::Panes(answers) => {
                 budget.slots::<PaneAnswer>(answers.capacity())?;
@@ -402,9 +441,7 @@ impl Answer {
                 out.write_char(']')
             }
             Answer::Capture(captured) => captured.write_json(out),
-            Answer::Listing { listing: json, .. } | Answer::Json(json) | Answer::Status(json) => {
-                json.write(out)
-            }
+            Answer::Status(json) => json.write(out),
         }
     }
 
@@ -415,7 +452,7 @@ impl Answer {
         match self {
             Answer::Capture(captured) => captured.lines.is_empty(),
             Answer::Panes(answers) => answers.is_empty(),
-            Answer::Pane(_) | Answer::Listing { .. } | Answer::Json(_) | Answer::Status(_) => false,
+            Answer::Pane(_) | Answer::Status(_) => false,
         }
     }
 
@@ -429,7 +466,7 @@ impl Answer {
                 crate::capture::Of::Pane { version, .. } => Some(version),
                 crate::capture::Of::Client(_) => None,
             },
-            Answer::Panes(_) | Answer::Listing { .. } | Answer::Json(_) | Answer::Status(_) => None,
+            Answer::Panes(_) | Answer::Status(_) => None,
         }
     }
 
@@ -1254,7 +1291,7 @@ fn raised(
         Err(error) => {
             // A stack too full for it leaves it unprinted: its failure is
             // still told.
-            drop(machine.push(answer));
+            drop(machine.import(answer));
             Err(uncaught(machine, error))
         }
     }
@@ -1276,7 +1313,7 @@ fn pushed(
     };
     // A stack too full for them is the word's failure too, for a `try`.
     for value in values {
-        if let Err(full) = machine.push(value) {
+        if let Err(full) = machine.import(value) {
             return raise(machine, full.code, full.message);
         }
     }
@@ -1347,18 +1384,20 @@ pub fn answered(reply: Reply) -> Result<Vec<Value<Fux>>, Failed> {
         Body::Handles(ids) => handles(ids)?,
         Body::Choices { rows, .. } => handles(rows.into_iter().map(|(id, _)| id).collect())?,
         Body::Capture(captured) => Answer::Capture(captured).in_run(run),
-        Body::Listing { of, listing } => Answer::Listing { of, listing }.in_run(run),
-        Body::Field(Json::Int(n)) => Value::Int(n),
-        Body::Field(Json::Uint(n)) => Value::Int(i64::try_from(n).map_err(|_| {
-            Failed::new(
-                Code::from(Raise::Range),
-                format!("{n} is past fuxth's integers"),
-            )
-        })?),
-        Body::Field(Json::Bool(b)) => Value::Bool(b),
-        Body::Field(Json::String(s)) => Value::str(s),
-        Body::Field(json @ (Json::Null | Json::Array(_) | Json::Object(_))) => {
-            Answer::Json(json).value()
+        Body::Snapshot(snapshot) => {
+            if run != Some(snapshot.run) {
+                return Err(Failed::new(
+                    Code::of(fuxth::Code::Contract),
+                    "snapshot run differs from reply",
+                ));
+            }
+            snapshot
+                .validate()
+                .map_err(|e| Failed::new(Code::of(fuxth::Code::Contract), e.to_string()))?;
+            record::snapshot(*snapshot).map_err(|e| Failed::new(Code::of(e.code), e.message))?
+        }
+        Body::Field(json) => {
+            record::from_json(&json).map_err(|e| Failed::new(Code::of(e.code), e.message))?
         }
     }])
 }

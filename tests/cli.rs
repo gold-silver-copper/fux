@@ -272,7 +272,10 @@ fn errors_statuses_and_what_is_left() -> Outcome {
     ])?;
     assert_eq!(left, "3\na b\n%1\n@1\n");
     let record = server.ok(&["str", "%1", "pane", "info", "json"])?;
-    assert!(record.starts_with(r#"{"id":"%1","name":null"#), "{record}");
+    assert!(
+        record.contains(r#""panes":[{"id":"%1","tab":"@1","name":null"#),
+        "{record}"
+    );
     assert_eq!(
         server.ok(&["str", "%1", "pane", "str", "exited", "get"])?,
         "null\n"
@@ -499,10 +502,16 @@ fn ls_json_list_keys_and_help() -> Outcome {
     client.wait_for("$")?;
     let json = server.ok(&["ls", "json"])?;
     for field in [
-        "{\"workspaces\":[{\"id\":\"+1\",\"name\":\"main\",\"label\":\"main\",\"tabs\":[{\"id\":\"@1\",\"name\":null,\"label\":\"%1\",\"panes\":[{\"id\":\"%1\",\"name\":null,\"label\":\"%1\",\"rows\":9,\"cols\":50,\"pid\":",
-        "\"clients\":[{\"id\":\"c1\",\"rows\":10,\"cols\":50,\"workspace\":\"+1\",\"tab\":\"@1\",\"pane\":\"%1\",\"zoom\":false}],\"events\":\"",
+        "\"tabs\":[\"@1\"]",
+        "\"workspace\":\"+1\"",
+        "\"tab\":\"@1\"",
+        "\"panes\":[{\"id\":\"%1\"",
+        "\"rows\":9,\"cols\":50",
+        "\"events\":",
+        "\"clients\":[{\"id\":\"c1\"",
+        "\"pane_rows\":9,\"pane_cols\":50",
     ] {
-        assert!(json.contains(field), "{field}\nin\n{json}");
+        assert!(json.contains(field), "{field} in {json}");
     }
     // The command line's own keymap: the defaults.
     let keys = server.ok(&["list-keys"])?;
@@ -633,9 +642,9 @@ fn a_stop_between_requests_leaves_the_connection_asking() -> Outcome {
     let mut asks = fux::script::Server::stoppable(path, stop.clone());
     let ls = fux::protocol::Asked {
         after: None,
-        request: fux::command::Command::Ls {
-            target: None,
-            get: None,
+        request: fux::command::Command::Inspect {
+            scope: fux::inspect::Scope::All,
+            projection: fux::inspect::Projection::Facts,
         }
         .into(),
         context: fux::protocol::Context::default(),

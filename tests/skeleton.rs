@@ -96,9 +96,9 @@ fn a_client_that_shuts_its_side_still_gets_its_answer() -> Outcome {
     };
     let request = Asked {
         after: None,
-        request: Command::Ls {
-            target: None,
-            get: None,
+        request: Command::Inspect {
+            scope: fux::inspect::Scope::All,
+            projection: fux::inspect::Projection::Facts,
         }
         .into(),
         context: Context {
@@ -129,12 +129,11 @@ fn a_client_that_shuts_its_side_still_gets_its_answer() -> Outcome {
     }
     let reply = reply.ok_or("no reply")?.map_err(e)?;
     assert_eq!(reply.end(), fux::protocol::End::Done);
-    let fux::protocol::Response::Returned(fux::protocol::Body::Listing { listing, .. }) =
+    let fux::protocol::Response::Returned(fux::protocol::Body::Snapshot(snapshot)) =
         &reply.response
     else {
         return Err(format!("not a listing: {:?}", reply));
     };
-    let listed = listing.render();
-    assert!(listed.contains(r#""name":null"#), "{listed}");
+    assert!(snapshot.panes.iter().all(|p| p.name.is_none()));
     Ok(())
 }

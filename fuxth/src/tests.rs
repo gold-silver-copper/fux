@@ -132,7 +132,7 @@ fn run_by(text: &str, budget: u64) -> Result<Vec<Value<Ticket>>, Error> {
                 Code::Host("negative"),
                 format!("{n} is below 0"),
             ))?,
-            Outcome::Suspended(n) => machine.push(Value::Int(n.saturating_mul(10)))?,
+            Outcome::Suspended(n) => machine.import(Value::Int(n.saturating_mul(10)))?,
             Outcome::Paused => {}
         }
     }
@@ -546,7 +546,7 @@ fn each_walks_any_string_in_time_to_its_length() -> Result<(), Error> {
         let mut machine = Machine::new(compiler.finish()?, Limits::default());
         let mut host = Toy { asked: Vec::new() };
         assert_eq!(machine.run(&mut host, u64::MAX)?, Outcome::Suspended(0));
-        machine.push(Value::str(
+        machine.import(Value::str(
             std::iter::repeat_n(c, 100_000).collect::<String>(),
         ))?;
         let started = std::time::Instant::now();
@@ -1187,7 +1187,7 @@ fn at_desk(text: &str, lying: bool, answer: Paper) -> (Result<Vec<Value<Paper>>,
         loop {
             match machine.run(&mut desk, 1)? {
                 Outcome::Finished => return Ok(machine.stack().to_vec()),
-                Outcome::Suspended(()) => machine.push(Value::App(answer.clone()))?,
+                Outcome::Suspended(()) => machine.import(Value::App(answer.clone()))?,
                 Outcome::Paused => {}
             }
         }
@@ -1788,5 +1788,37 @@ fn carried_values_obey_their_contract() -> Result<(), Error> {
         run("str far try -1000 ask catch drop end")?,
         [Value::Int(-1000)]
     );
+    Ok(())
+}
+
+#[test]
+fn host_imports_charge_expanded_weight_and_opaque_depth() -> Result<(), Error> {
+    #[derive(Clone, PartialEq)]
+    struct Weighted(u64, u8);
+    impl AppValue for Weighted {
+        fn kind(&self) -> &'static str {
+            "weighted"
+        }
+        fn weight(&self) -> u64 {
+            self.0
+        }
+        fn depth(&self) -> u8 {
+            self.1
+        }
+    }
+    let mut vocabulary = Vocabulary::default();
+    vocabulary.kind("weighted", "weighted")?;
+    let compiler = Compiler::<Weighted>::new(vocabulary);
+    let mut machine = Machine::new(compiler.finish()?, Limits::default());
+    let value = Value::App(Weighted(BUILT / 2, 0));
+    machine.import(value.clone())?;
+    machine.import(value.clone())?;
+    assert_eq!(
+        machine.import(value.clone()).map_err(|e| e.code),
+        Err(Code::TooLong)
+    );
+    assert_eq!(machine.stack().len(), 2);
+    assert!(List::new(vec![value.clone(), value]).is_none());
+    assert!(List::new(vec![Value::App(Weighted(1, NESTING))]).is_none());
     Ok(())
 }

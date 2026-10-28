@@ -28,6 +28,16 @@ pub trait AppValue: Clone + PartialEq {
         0
     }
 
+    /// Expanded work of traversing this value, including shared children.
+    fn weight(&self) -> u64 {
+        1
+    }
+
+    /// Nesting below this value, including opaque records.
+    fn depth(&self) -> u8 {
+        0
+    }
+
     /// Streams the application's text into the aggregate conversion's sink.
     /// Writers propagate sink failure and allocate only the workspace declared
     /// by `text_bytes`, rather than building an intermediate String.
@@ -299,7 +309,9 @@ impl<A> List<A> {
             .capacity()
             .saturating_mul(std::mem::size_of::<Value<A>>())
     }
+}
 
+impl<A: AppValue> List<A> {
     /// A list of `items`; `None` if it would nest deeper than [`NESTING`]
     /// or hold more than [`TOTAL`] in all.
     pub fn new(items: Vec<Value<A>>) -> Option<Self> {
@@ -491,7 +503,9 @@ impl<A> Value<A> {
     pub fn str(text: impl Into<String>) -> Self {
         Self::Str(Rc::new(Text::new(text)))
     }
+}
 
+impl<A: AppValue> Value<A> {
     /// How much it holds in all: a list counts its values' weights and
     /// itself, a string its characters, anything else 1. A walk over the
     /// value goes through about this many things.
@@ -499,7 +513,8 @@ impl<A> Value<A> {
         match self {
             Self::List(list) => list.weight,
             Self::Str(s) => u64::try_from(s.chars_len()).unwrap_or(u64::MAX).max(1),
-            Self::Int(_) | Self::Bool(_) | Self::App(_) => 1,
+            Self::App(app) => app.weight(),
+            Self::Int(_) | Self::Bool(_) => 1,
         }
     }
 
@@ -507,7 +522,8 @@ impl<A> Value<A> {
     pub fn depth(&self) -> u8 {
         match self {
             Self::List(list) => list.depth,
-            Self::Int(_) | Self::Bool(_) | Self::Str(_) | Self::App(_) => 0,
+            Self::App(app) => app.depth(),
+            Self::Int(_) | Self::Bool(_) | Self::Str(_) => 0,
         }
     }
 }

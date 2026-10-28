@@ -123,7 +123,7 @@ let mut machine = Machine::new(compiler.finish()?, Limits::default());
 loop {
     match machine.run(&mut my_host, 10_000)? {
         Outcome::Finished => break,
-        Outcome::Suspended(request) => { /* do it, then */ machine.push(answer)?; }
+        Outcome::Suspended(request) => { /* do it, then */ machine.import(answer)?; }
         // or, if doing it failed: machine.raise(failure)?;
         // or, carrying a value for a try's handler: machine.raise_with(failure, value)?;
         Outcome::Paused => { /* check for Ctrl-C */ }
@@ -147,6 +147,12 @@ a code declared twice is refused (`contract`), so a host adds each once
 and keeps the id `add` gave. The checker follows those kinds, as it does
 the core's, and refuses only what surely fails.
 
+Application values report expanded traversal `weight` and nesting `depth`;
+opaque records cannot hide their children from list and work limits.
+`Machine::import` checks incoming strings/lists and charges the run's construction
+budget before retaining a suspended result. Immediate host results use that
+same admission automatically, and host argument traversal is charged too.
+
 Application values stream their text through `AppValue::write_text` and declare
 retained data and formatter workspace with `text_bytes`. `TEXT_LIMIT` lets a host
 bound one whole conversion: nested lists share it, rather than giving each member
@@ -158,7 +164,7 @@ on the admission and output passes, and propagate a sink failure.
 The host implements [`Host`]: `call(word, args, out)` gets the word's values
 (an iterator, the deepest first) and pushes its results, and answers
 `Done::Now` or `Done::Later(request)`; a suspended word's results are what the
-host pushes before running the machine again, or its failure is what the
+host imports before running the machine again, or its failure is what the
 host raises there (`machine.raise(failure)`), caught by a `try` as one at
 once would be; `machine.at()` is the token of the word it stopped at. The
 codes of its words' failures are the vocabulary's (`raises`), for a `try` to

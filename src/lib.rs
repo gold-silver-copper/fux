@@ -29,6 +29,7 @@ pub mod events;
 mod help;
 pub mod id;
 mod input;
+pub mod inspect;
 pub mod json;
 pub mod keymap;
 pub mod layout;

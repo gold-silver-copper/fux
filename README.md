@@ -71,6 +71,8 @@ fux %3 str q text send-keys                       # press q: its version from be
   text, whatever it looks like: `str 'two words'`.
 - What is left at the end is printed, a value a line: a pane as `%3`, a tab
   `@2`, a workspace `+1`, a client `c1`, a capture or listing as its text.
+  `all str topology snapshot` holds one immutable hierarchy observation;
+  `str panes get` on it reads locally and returns a list of records with typed IDs.
   `json` turns a value into JSON: `fux ls json`, `fux str %3 pane info json`.
 - Every pane has a **version**, one word that names the pane, counts what
   only grows while its program runs (respawns, its screen's revision, bells,

@@ -222,12 +222,41 @@ impl<A: AppValue> Machine<A> {
         &self.stack
     }
 
-    /// Pushes a value: a suspended word's result.
-    pub fn push(&mut self, value: Value<A>) -> Result<(), Error> {
+    /// Pushes an internal value, already admitted.
+    fn push(&mut self, value: Value<A>) -> Result<(), Error> {
         if self.stack.len() >= self.limits.stack {
             return Err(self.fail(Code::StackOverflow, "the stack is full"));
         }
         self.stack.push(value);
+        Ok(())
+    }
+
+    /// Imports a host result, charging its expanded construction and traversal.
+    /// Hosts use this instead of `push` for newly received values.
+    pub fn import(&mut self, value: Value<A>) -> Result<(), Error> {
+        self.admit(&value)?;
+        self.push(value)
+    }
+
+    fn admit(&mut self, value: &Value<A>) -> Result<(), Error> {
+        fn valid<A: AppValue>(value: &Value<A>) -> bool {
+            match value {
+                Value::Str(s) => s.chars_len() <= LONGEST,
+                Value::List(list) => {
+                    list.items().len() <= LONGEST && list.items().iter().all(valid)
+                }
+                Value::App(_) | Value::Int(_) | Value::Bool(_) => true,
+            }
+        }
+        let weight = value.weight();
+        self.cost(usize::try_from(weight).unwrap_or(usize::MAX));
+        if value.depth() > NESTING || weight > TOTAL || !valid(value) {
+            return Err(self.nested());
+        }
+        self.built = self.built.saturating_add(weight);
+        if self.built > BUILT {
+            return Err(self.fail(Code::TooLong, "host imports exceed the construction limit"));
+        }
         Ok(())
     }
 
@@ -244,6 +273,7 @@ impl<A: AppValue> Machine<A> {
     /// `raise`, the failure carrying `value`: a `try`'s handler gets it in
     /// place of the message (`Vocabulary::carries` says of which codes).
     pub fn raise_with(&mut self, failure: Failure, value: Value<A>) -> Result<(), Error> {
+        self.admit(&value)?;
         self.program
             .vocabulary
             .check_carried(failure.code, &value)
@@ -551,6 +581,12 @@ impl<A: AppValue> Machine<A> {
             .skip(from)
             .map(|v| words.kind_of(v))
             .collect();
+        let walked = self
+            .stack
+            .iter()
+            .skip(from)
+            .fold(0u64, |n, value| n.saturating_add(value.weight()));
+        self.cost(usize::try_from(walked).unwrap_or(usize::MAX));
         let mut out = std::mem::take(&mut self.out);
         out.clear();
         let args = Args {
@@ -567,7 +603,10 @@ impl<A: AppValue> Machine<A> {
         if self.stack.len().saturating_add(out.len()) > self.limits.stack {
             return Err(self.fail(Code::StackOverflow, "the stack is full"));
         }
-        self.stack.append(&mut out);
+        out.reverse();
+        while let Some(value) = out.pop() {
+            self.import(value)?;
+        }
         self.out = out;
         match done {
             Done::Now => self.given(given).map(|()| None),
@@ -991,7 +1030,7 @@ pub(crate) enum Sequence<A> {
     List(Rc<List<A>>),
 }
 
-impl<A> Sequence<A> {
+impl<A: AppValue> Sequence<A> {
     /// How many elements it has.
     fn len(&self) -> usize {
         match self {

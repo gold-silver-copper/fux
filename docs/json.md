@@ -9,7 +9,7 @@ panes an array of their objects). Rows and columns count from 0; times are milli
 
 ## A pane
 
-`ls json` gives each pane these; `PANE capture json` gives them too, but
+`ls json` gives each pane its identity and size, with process fields under `state`; `PANE capture json` gives them too, but
 for `id`, `name`, `label` and `pid` (it says `pane`):
 
 | Field | Value |
@@ -50,28 +50,81 @@ for `id`, `name`, `label` and `pid` (it says `pane`):
 | `input_unread` | bytes of input fux queued for its program and had not yet written to its terminal as it ended, let go (till it is respawned), else 0. Input written to its terminal that the program never read is not counted: the system does not say |
 | `cwd`, `argv` | the observed foreground leader's directory and arguments, each `null` where unknown; separate OS reads may race with a process changing or exiting. No launch arguments stand in for unknown live arguments. JSON's text being UTF-8, a byte that is not is shown as U+FFFD |
 
-## `ls json`
+## Snapshots and local records
 
-```json
-{"workspaces":[{"id":"+1","name":null,"label":"+1","tabs":[{"id":"@1","name":null,"label":"%1","panes":[PANE…]}]}],
- "clients":[{"id":"c1","rows":24,"cols":80,"workspace":"+1","tab":"@1","pane":"%1","zoom":false}],
- "events":"42:48211-1867a3f9c2b8e7d6"}
+`SCOPE str PROJECTION snapshot` returns one immutable record. `SCOPE` is
+`all`, a pane, tab, workspace or client. `PROJECTION` is `facts`, `topology`
+or `recipe`. `ls` takes a facts snapshot of all scopes; `X info` takes one
+of X. Plain output lists the hierarchy; `json` renders the same observation.
+
+Every scope has the same envelope: `run`, `events`, `scope`, `projection`,
+`workspaces`, `tabs`, `panes`, and `clients`. The four collections are flat,
+in hierarchy order. Workspace `tabs` is an ordered list of tab handles;
+a tab's `workspace` and a pane's `tab` identify their parents. IDs in fuxth
+are actual handles carrying this server run. JSON renders them as strings.
+An ordinary string that looks like `%3` remains a string.
+
+```fux
+all str topology snapshot let held
+held str panes get each str id get print end
+held str clients get each str pane get print end
 ```
 
-`events` is a cursor, `SEQ:RUN`: the number the session's journal of events
-gives next, and the server's run, read with the listing. A stream from it
-(`opts str CURSOR from events-of`) tells every event (the table under
-`events`) after the listing, none before it, or with `missed` how many of
-those the journal let go first: then read `ls` again. `ls` ends with it
-too, as `events CURSOR`.
+`get` on a record is local, even if the server has since changed or stopped.
+Arrays become fuxth lists, objects become records, booleans and integers keep
+their types, and strings keep their exact text. Null has kind `null`; it is
+neither false nor an empty string/list. An absent field fails `no_field`.
+Unsigned numbers above i64 fail `range`. There is no float or string-to-ID
+conversion. `buffers` now returns a list of records; `buffers json` renders
+its array. `X str FIELD get` on a live handle and `panes`/`tabs` remain native
+selective reads. `get id` and container membership return typed handles.
 
-`X info json` gives that pane, tab (`{"id","name","label","panes"}`) or workspace
-(`{"id","name","label","tabs"}`) alone; `X str FIELD get` leaves one of its fields:
-a number or boolean as itself, a string as text, `null` as an answer that
-prints `null` (`string` makes it the text). A tab or workspace has an optional
-given `name` (`null` when absent) and a derived display `label`. A tab's
-label is its given name or its first pane's label; a workspace's is its
-given name or id. `get` reads only the object's own fields.
+Each workspace has `id`, `name`, `label`, and `tabs`. Each tab has `id`,
+`workspace`, `name`, `label`, `fit` (`fixed` or `clients`), `cols`, `rows`,
+`nodes`, and `root`. For client fit, the size is the retained size. A leaf
+node has `kind: leaf` and `pane`; a split has `kind: split`, `axis`, `first`,
+`second`, and exact positive shares `a`, `b`. Child indices precede their
+parent. Each node is reachable and each pane occurs once. The tree is flat,
+so layout depth does not consume record nesting.
+
+Each pane has `id`, `tab`, `name`, `label`, `title`, `pid`, `rows`, `cols`,
+and `version`. A name is given or null; a label is display text. Facts adds
+`state`, containing the process/terminal fields above. Topology uses only
+retained state and performs no process metadata queries. Recipe adds `launch`:
+`choice` (`shell` or `program`), ordered `argv`, `env`, `initial_cwd`,
+`observed_cwd`, `history_bytes`, and `program_clipboard`. Both launch choices
+retain their original inputs. Environment entries have `name` and `value`;
+null means removal. OS text uses `{encoding: utf8, text: ...}` or
+`{encoding: hex, text: ...}` for exact non-UTF-8 bytes. Observed cwd is null
+when unknown, `{status: known, path: ...}`, or
+`{status: failed, operation: cwd, errno: N}`. Replay launches new processes;
+these are launch inputs, not saved process memory.
+
+Each client has `id`, `kind` (`terminal` or `headless`), `read_only`, physical
+`rows`/`cols`, `pane_rows`/`pane_cols`, optional `workspace`/`tab`/`pane`,
+`zoom`, `opening` (null without an open screen), and `mode`.
+
+All includes every root and view. Workspace includes its descendants and
+views showing it; tab includes its whole tab and parent workspace reference.
+Pane facts includes only that pane's facts, with its tab topology and relevant
+views; pane topology/recipe includes its whole tab. Client includes that
+client and its current workspace closure. Missing explicit scopes fail.
+
+`events` is the journal cursor `SEQ:RUN`, gathered with the hierarchy in one
+server turn. A stream from it (`opts str CURSOR from events-of`) starts after
+that observation; a missed journal prefix requires another snapshot. OS
+observations happen during the turn but are not simultaneous OS snapshots.
+A pane version does not certify process metadata or client focus.
+
+Snapshots allow at most 8 MiB of native construction/decoded allocation and
+65,536 collection/entity nodes. Client projection separately admits at most
+8 MiB and 65,536 values/fields, with record nesting at most 32. It retains
+the native schema for plain rendering and shares immutable records on clone.
+The tighter language limits still apply, including 1,000,000 characters per
+string and 16,000,000 expanded elements per list/run. Opaque values charge
+expanded traversal and imports charge construction; repeated shared values
+count again. A too-large observation fails `too_long`, never truncates or
+combines multiple turns. Narrower scopes are separate observations.
 
 ## `PANE capture json`
 

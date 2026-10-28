@@ -96,7 +96,7 @@ pub fn run(
             Ok(Outcome::Suspended(n)) => {
                 let answered = match n < 0 {
                     true => machine.raise(Failure::new(fuxth::Code::Host("negative"), "below 0")),
-                    false => machine.push(Value::Int(n.saturating_mul(10))),
+                    false => machine.import(Value::Int(n.saturating_mul(10))),
                 };
                 if let Err(e) = answered {
                     return Some(Err(e));

@@ -22,6 +22,7 @@ use fux_vt::Size;
 use std::collections::{BTreeMap, VecDeque};
 use std::num::NonZeroU32;
 use std::path::{Path, PathBuf};
+mod inspect;
 mod layouts;
 use std::time::{Duration, Instant};
 
@@ -2344,7 +2345,9 @@ impl Session {
     fn execute(&mut self, command: &Command, origin: &Origin) -> Result<Reply, Error> {
         let here = self.here(origin)?;
         match command {
-            Command::Ls { target, get } => self.ls(*target, get.as_deref()),
+            Command::Inspect { scope, projection } => {
+                self.inspect(*scope, *projection).map(Into::into)
+            }
             Command::KillServer => self.kill_server(origin),
             Command::NewWorkspace {
                 name,
@@ -2587,22 +2590,6 @@ impl Session {
         let screen = (follower.filter(|view| view.sizes())).and_then(Self::screen_size);
         let cell = follower.and_then(|view| view.terminal.cell);
         Ok((cwd, fit, (screen.unwrap_or(fit.size()), cell)))
-    }
-
-    /// `ls`: everything there is, or `target` and what is in it; or one
-    /// field of the target's (`get`).
-    fn ls(&mut self, target: Option<AnyRef>, get: Option<&str>) -> Result<Reply, Error> {
-        // Where a stream of events reads from, read with the listing: one
-        // from it misses nothing after unsaid.
-        let events = self.parts.journal().end(self.run);
-        Ok(match target {
-            Some(target) => self.ls_one(self.there(target)?, get)?,
-            None => Body::Listing {
-                of: None,
-                listing: self.ls_json(events)?,
-            },
-        }
-        .into())
     }
 
     /// `kill-server`: from the CLI, refused from one of the server's own
@@ -3166,181 +3153,66 @@ impl Session {
         Ok(fields)
     }
 
-    fn tab_json<'a>(
-        &'a self,
-        tab: &'a Tab,
-        now: Instant,
-        budget: &mut crate::wire::Budget,
-    ) -> Result<Fields, Error> {
-        let ids = self.panes_of(AnyRef::Tab(tab.id()), budget)?;
-        let mut panes = budget.vector(ids.len())?;
-        for id in ids {
-            if let Some(pane) = self.parts.panes().get(&id) {
-                let fields = self.pane_json(pane, now, budget)?;
-                panes.push(Json::Object(budget.fields(fields)?));
-            }
-        }
-        let values = [
-            (
-                "id",
-                Json::str(budget.format(format_args!("{}", tab.id()))?),
-            ),
-            ("name", budget.optional_text(tab.name())?),
-            (
-                "label",
-                Json::str(
-                    budget.format(format_args!("{}", tab.display_label(self.parts.panes())))?,
-                ),
-            ),
-            ("panes", Json::Array(panes)),
-        ];
-        let mut fields = budget.vector(values.len())?;
-        fields.extend(values);
-        Ok(fields)
-    }
-
-    fn ws_json<'a>(
-        &'a self,
-        ws: &'a Workspace,
-        now: Instant,
-        budget: &mut crate::wire::Budget,
-    ) -> Result<Fields, Error> {
-        let mut tabs = budget.vector(ws.tabs().len())?;
-        for tab in ws.tabs() {
-            let fields = self.tab_json(tab, now, budget)?;
-            tabs.push(Json::Object(budget.fields(fields)?));
-        }
-        let values = [
-            ("id", Json::str(budget.format(format_args!("{}", ws.id()))?)),
-            ("name", budget.optional_text(ws.name())?),
-            (
-                "label",
-                Json::str(budget.format(format_args!("{}", ws.display_label()))?),
-            ),
-            ("tabs", Json::Array(tabs)),
-        ];
-        let mut fields = budget.vector(values.len())?;
-        fields.extend(values);
-        Ok(fields)
-    }
-
-    /// `info` and `get`: one pane, tab or workspace, as JSON, or one field
-    /// of its JSON (`get`), a string's text as it is. `target` is there
-    /// (`there`, by its caller).
-    fn ls_one(&mut self, target: AnyRef, get: Option<&str>) -> Result<Body, Error> {
-        let now = Instant::now();
+    fn field(&self, target: AnyRef, field: &str) -> Result<Body, Error> {
         let budget = &mut crate::wire::Budget::new();
-        let fields = match (target, get) {
-            // A pane's version alone, which the recipes read after every
-            // change: not the rest of its state (its foreground program's
-            // name, argv and cwd).
-            (AnyRef::Pane(id), Some("version")) => self.parts.panes().get(&id).map(|p| {
-                let version = Json::str(budget.format(format_args!("{}", p.version(self.run)))?);
-                let mut fields = budget.vector(1)?;
-                fields.push(("version", version));
-                Ok(fields)
-            }),
-            (AnyRef::Pane(id), _) => self
-                .parts
-                .panes()
-                .get(&id)
-                .map(|p| self.pane_json(p, now, budget)),
-            (AnyRef::Tab(id), _) => self.tab(id).map(|t| self.tab_json(t, now, budget)),
-            (AnyRef::Workspace(id), _) => self.workspace(id).map(|w| self.ws_json(w, now, budget)),
+        if field == "id" {
+            return Ok(Body::Found(target));
         }
-        .transpose()?
-        .unwrap_or_default();
-        let Some(field) = get else {
-            return Ok(Body::Listing {
-                of: Some(target.kind()),
-                listing: Json::Object(budget.fields(fields)?),
-            });
-        };
-
-        let Some(index) = fields.iter().position(|(name, _)| *name == field) else {
-            struct Names<'a>(&'a Fields);
-            impl std::fmt::Display for Names<'_> {
-                fn fmt(&self, out: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-                    for (i, (name, _)) in self.0.iter().enumerate() {
-                        if i > 0 {
-                            out.write_str(", ")?;
-                        }
-                        out.write_str(name)?;
+        if field == "panes" && !matches!(target, AnyRef::Pane(_)) {
+            let panes = self.panes_of(target, budget)?;
+            let mut ids = budget.vector(panes.len())?;
+            ids.extend(panes.into_iter().map(AnyRef::Pane));
+            return Ok(Body::Handles(ids));
+        }
+        let no_field = || fail(Raise::NoField, format!("{target} has no field {field:?}"));
+        let value = match target {
+            AnyRef::Pane(id) => {
+                let pane = self.pane(id)?;
+                match field {
+                    "name" => budget.optional_text(pane.name())?,
+                    "label" => Json::str(budget.format(format_args!("{}", pane.display_label()))?),
+                    "rows" => Json::int(pane.size().rows()),
+                    "cols" => Json::int(pane.size().cols()),
+                    "pid" => pane
+                        .process()
+                        .child()
+                        .map_or(Json::Null, |c| Json::int(c.leader.pid().as_raw())),
+                    "version" => {
+                        Json::str(budget.format(format_args!("{}", pane.version(self.run)))?)
                     }
-                    Ok(())
+                    _ => self
+                        .pane_json(pane, Instant::now(), budget)?
+                        .into_iter()
+                        .find(|(k, _)| *k == field)
+                        .map(|(_, v)| v)
+                        .ok_or_else(no_field)?,
                 }
             }
-            let message = budget.format(format_args!(
-                "{target} has no field {field:?}; it has {}",
-                Names(&fields)
-            ))?;
-            return Err(fail(Raise::NoField, message));
+            AnyRef::Tab(id) => {
+                let tab = self.tab(id).ok_or(Error::NoTab(id))?;
+                match field {
+                    "name" => budget.optional_text(tab.name())?,
+                    "label" => Json::str(
+                        budget.format(format_args!("{}", tab.display_label(self.parts.panes())))?,
+                    ),
+                    _ => return Err(no_field()),
+                }
+            }
+            AnyRef::Workspace(id) => {
+                let ws = self.workspace(id).ok_or(Error::NoWorkspace(id))?;
+                match field {
+                    "name" => budget.optional_text(ws.name())?,
+                    "label" => Json::str(budget.format(format_args!("{}", ws.display_label()))?),
+                    "tabs" => {
+                        let mut ids = budget.vector(ws.tabs().len())?;
+                        ids.extend(ws.tabs().iter().map(|t| AnyRef::Tab(t.id())));
+                        return Ok(Body::Handles(ids));
+                    }
+                    _ => return Err(no_field()),
+                }
+            }
         };
-        let (_, value) = fields
-            .into_iter()
-            .nth(index)
-            .ok_or_else(crate::wire::Budget::exceeded)?;
-        if let Json::Uint(n) = value
-            && i64::try_from(n).is_err()
-        {
-            let message = budget.format(format_args!(
-                "{target}'s {field} is {n}, past fuxth's integers"
-            ))?;
-            return Err(fail(Raise::Range, message));
-        }
         Ok(Body::Field(value))
-    }
-
-    /// `ls json`: everything, and `events`, where a stream reads from.
-    fn ls_json(&self, events: crate::events::Cursor) -> Result<Json, Error> {
-        let budget = &mut crate::wire::Budget::new();
-        let now = Instant::now();
-        let mut workspaces = budget.vector(self.parts.workspaces().len())?;
-        for ws in self.parts.workspaces() {
-            let fields = self.ws_json(ws, now, budget)?;
-            workspaces.push(Json::Object(budget.fields(fields)?));
-        }
-        let mut clients = budget.vector(self.views.len())?;
-        for view in self.views.values() {
-            let place = self.place(view.id);
-            let fields = [
-                ("id", Json::str(budget.format(format_args!("{}", view.id))?)),
-                ("rows", Json::int(view.rows)),
-                ("cols", Json::int(view.cols)),
-                (
-                    "workspace",
-                    place
-                        .map(|p| budget.format(format_args!("{}", p.ws)).map(Json::str))
-                        .transpose()?
-                        .unwrap_or(Json::Null),
-                ),
-                (
-                    "tab",
-                    place
-                        .map(|p| budget.format(format_args!("{}", p.tab)).map(Json::str))
-                        .transpose()?
-                        .unwrap_or(Json::Null),
-                ),
-                (
-                    "pane",
-                    place
-                        .map(|p| budget.format(format_args!("{}", p.pane)).map(Json::str))
-                        .transpose()?
-                        .unwrap_or(Json::Null),
-                ),
-                ("zoom", Json::Bool(view.zoom)),
-            ];
-            clients.push(budget.object(fields)?);
-        }
-        let fields = [
-            ("workspaces", Json::Array(workspaces)),
-            ("clients", Json::Array(clients)),
-            (
-                "events",
-                Json::str(budget.format(format_args!("{events}"))?),
-            ),
-        ];
-        budget.object(fields)
     }
 }
 
@@ -3919,6 +3791,111 @@ mod tests {
     use super::testing::{attached, output, output_as, requests, run, said, started};
     use super::*;
     use crate::pane::Left;
+
+    #[test]
+    fn snapshot_is_one_turn_and_local_fields_keep_their_typed_run() -> Result<(), String> {
+        let (mut s, _) = attached(12, 50)?;
+        struct Once(Option<Reply>);
+        impl crate::script::Asks for Once {
+            fn ask(
+                &mut self,
+                asked: &crate::protocol::Asked,
+                _: &mut dyn std::io::Write,
+            ) -> Result<Reply, crate::script::Failed> {
+                assert!(matches!(
+                    asked.request,
+                    Request::Do(Command::Inspect { .. })
+                ));
+                self.0
+                    .take()
+                    .ok_or_else(|| crate::script::Failed::new(Code::Usage, "a second roundtrip"))
+            }
+        }
+        let body = s
+            .inspect(
+                crate::inspect::Scope::All,
+                crate::inspect::Projection::Topology,
+            )
+            .map_err(|e| e.to_string())?;
+        let mut once = Once(Some(Reply {
+            run: Some(s.run),
+            ..body.into()
+        }));
+        let tokens = fuxth::token::source("test", "all str topology snapshot let held held str panes get first str id get held str panes get first str name get kind").map_err(|e| e.to_string())?;
+        let mut machine = crate::script::compile(&tokens).map_err(|e| e.to_string())?;
+        let mut out = Vec::new();
+        let mut host =
+            crate::script::Host::new(crate::protocol::Context::default(), None, &mut out);
+        let values = crate::script::run_capped(&mut machine, &mut host, &mut once, None, None)
+            .map_err(|e| e.to_string())?;
+        assert!(once.0.is_none());
+        assert!(
+            matches!(values.first(), Some(fuxth::Value::App(crate::script::Fux::Pane(p, Some(run)))) if *p == PaneId::of(1) && *run == s.run)
+        );
+        assert_eq!(values.last(), Some(&fuxth::Value::str("null")));
+        assert_eq!(
+            output(
+                &mut s,
+                "all str facts snapshot let held %1 str changed rename held str panes get first str name get kind"
+            )?,
+            "null\n"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn snapshot_projections_keep_order_tree_fit_launch_and_cursor() -> Result<(), String> {
+        use crate::inspect::{Node, Projection, Scope};
+        let (mut s, c) = attached(12, 50)?;
+        run(&mut s, "%1 horizontal 2 3 shares split drop")?;
+        for projection in [Projection::Facts, Projection::Topology, Projection::Recipe] {
+            let Body::Snapshot(snapshot) = s
+                .inspect(Scope::Client(c), projection)
+                .map_err(|e| e.to_string())?
+            else {
+                return Err("no snapshot".into());
+            };
+            snapshot.validate().map_err(|e| e.to_string())?;
+            assert_eq!(snapshot.events, s.parts.journal().end(s.run));
+            assert_eq!(
+                snapshot.panes.iter().map(|p| p.id).collect::<Vec<_>>(),
+                [PaneId::of(1), PaneId::of(2)]
+            );
+            let tab = snapshot.tabs.first().ok_or("no tab")?;
+            assert!(
+                matches!(tab.nodes.get(tab.root), Some(Node::Split { a,b,.. }) if a.get() == 2 && b.get() == 3)
+            );
+            assert!(!tab.fixed);
+            assert_eq!(
+                snapshot.clients.first().map(|v| (v.rows, v.pane_rows)),
+                Some((12, 11))
+            );
+            for pane in &snapshot.panes {
+                assert_eq!(pane.state.is_some(), projection == Projection::Facts);
+                assert_eq!(pane.recipe.is_some(), projection == Projection::Recipe);
+                if let Some(recipe) = &pane.recipe {
+                    assert!(recipe.shell);
+                    assert!(!recipe.argv.is_empty());
+                }
+            }
+            let bytes = crate::wire::encode(&*snapshot).map_err(|e| e.to_string())?;
+            assert_eq!(
+                crate::wire::Reader::new(&bytes)
+                    .whole::<crate::inspect::Snapshot>()
+                    .map_err(|e| e.to_string())?,
+                *snapshot
+            );
+            let mut malformed = *snapshot;
+            malformed.tabs.first_mut().ok_or("no tab")?.root = usize::MAX;
+            let bytes = crate::wire::encode(&malformed).map_err(|e| e.to_string())?;
+            assert!(
+                crate::wire::Reader::new(&bytes)
+                    .whole::<crate::inspect::Snapshot>()
+                    .is_err()
+            );
+        }
+        Ok(())
+    }
 
     /// A client that only watches, of `rows` by `cols`, attached.
     fn watch(s: &mut Session, rows: u16, cols: u16) -> Result<ClientId, String> {
@@ -6056,11 +6033,15 @@ mod tests {
         run(&mut s, "opts 40 10 size str +1 workspace in new-tab")?;
         run(&mut s, "str %2 pane vertical split")?;
         let mut ids = |only| {
-            let ls = Command::Ls {
-                target: Some(only),
-                get: None,
+            let ls = Command::Inspect {
+                scope: crate::inspect::Scope::Target(only),
+                projection: crate::inspect::Projection::Facts,
             };
-            let text = said(&s.execute(&ls, &Origin::Cli(Caller::default())));
+            let mut reply = s.execute(&ls, &Origin::Cli(Caller::default()));
+            if let Ok(reply) = &mut reply {
+                reply.run = Some(s.run);
+            }
+            let text = said(&reply);
             let words = text.lines().filter_map(|l| l.split_whitespace().next());
             words.map(str::to_owned).collect::<Vec<_>>().join(" ")
         };
