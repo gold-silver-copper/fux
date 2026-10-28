@@ -232,8 +232,8 @@ struct Attached {
     /// The pictures its terminal was last sent, as they show there, and
     /// their sixel data.
     pictures: Vec<render::Visible>,
-    /// Complete pane pictures while transient feedback clips the sent list.
-    under_pictures: Option<Vec<render::Visible>>,
+    /// Complete pane pictures, before feedback or a panel hides any.
+    pane_pictures: Vec<render::Visible>,
     sixels: render::Sixels,
 }
 
@@ -330,7 +330,7 @@ impl Attached {
             spare: Grid::default(),
             placement: Placement::default(),
             pictures: Vec::new(),
-            under_pictures: None,
+            pane_pictures: Vec::new(),
             sixels: render::Sixels::default(),
             clock: PaintClock {
                 next: now,
@@ -1089,9 +1089,7 @@ impl Server {
                 {
                     pictures.extend(
                         attached
-                            .under_pictures
-                            .as_deref()
-                            .unwrap_or(&attached.pictures)
+                            .pane_pictures
                             .iter()
                             .filter(|p| p.pane == id)
                             .cloned(),
@@ -1100,7 +1098,7 @@ impl Server {
             }
         }
         let overlay = render::bar_overlay(session, view, &attached.placement);
-        attached.under_pictures = (overlay || !view.mode.is_normal()).then(|| pictures.clone());
+        attached.pane_pictures = pictures.clone();
         if !view.mode.is_normal() {
             pictures.clear();
         } else if overlay {
@@ -1121,11 +1119,17 @@ impl Server {
         // the envelope, whose cursor hide and show would restart a blinking
         // cursor.
         self.paint_buffer.clear();
-        let shown = &attached.shown;
+        let changed = render::paint_into(
+            &attached.shown,
+            known,
+            &attached.spare,
+            &mut self.paint_buffer,
+        );
+        // Recovery state can change behind identical visible cells.
+        mem::swap(&mut attached.shown, &mut attached.spare);
         let mut written = 0;
-        if render::paint_into(shown, known, &attached.spare, &mut self.paint_buffer) {
+        if changed {
             Attached::paint(&mut conn.out, &self.paint_buffer);
-            mem::swap(&mut attached.shown, &mut attached.spare);
             attached.known = true;
             attached.clock.painted(now);
             // Written now rather than when the next poll says it can be: a
@@ -1724,12 +1728,13 @@ mod tests {
                 picture,
             },
         ];
-        server
+        let attached = server
             .conns
             .first_mut()
             .and_then(Conn::attached)
-            .ok_or("attached")?
-            .pictures = full.clone();
+            .ok_or("attached")?;
+        attached.pictures = full.clone();
+        attached.pane_pictures = full.clone();
         let mut frame = b"\x1b[?2026h".to_vec();
         frame.extend(std::iter::repeat_n(b"X\x1b[65535b", 4000).flatten());
         frame.extend_from_slice(b"\x1b[?2026l");
