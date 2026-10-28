@@ -56,6 +56,7 @@
 use crate::census;
 use crate::corpus::{self, Recording};
 use crate::synthetic;
+use fux::command;
 use std::hint::black_box;
 use std::path::Path;
 
@@ -772,13 +773,13 @@ fn pane(loads: &[Load], baseline: bool) -> Result<Done, String> {
         "%1".parse::<fux::id::PaneId>().map_err(|e| e.to_string())?,
         None,
         fux::pane::Runs::Shell(fux::pane::Launch {
-            argv: fux::command::Program::new("/bin/sh".into(), Vec::new())?,
+            argv: command::Program::new("/bin/sh".into(), Vec::new())?,
             cwd: "/".into(),
-            env: fux::command::EnvPatch::default(),
+            env: command::EnvPatch::default(),
         }),
         fux_vt::Size::new(first.rows, first.cols).map_err(|e| e.to_string())?,
-        fux::command::PaneOptions {
-            history_bytes: fux::command::HistoryBytes::new(HISTORY).ok_or("history budget")?,
+        command::PaneOptions {
+            history_bytes: command::HistoryBytes::new(HISTORY).ok_or("history budget")?,
             program_clipboard: true,
         },
     )
@@ -916,13 +917,13 @@ fn paint(
         .attach_as(fux::view::ClientKind::Terminal, attach)
         .map_err(|e| e.to_string())?;
     if split {
-        let split = fux::command::Command::Split {
+        let split = command::Command::Split {
             options: pane_options(HISTORY)?,
             axis: fux::layout::Axis::Horizontal,
             target: *s.parts.panes().keys().next().ok_or("no pane")?,
             start: initial()?.start,
             cwd: Some(std::env::current_dir().map_err(|e| e.to_string())?),
-            env: fux::command::EnvPatch::default(),
+            env: command::EnvPatch::default(),
             shares: None,
         };
         s.run_command(
@@ -1105,23 +1106,20 @@ fn presentation() -> fux::view::Presentation {
     }
 }
 
-fn pane_options(history: usize) -> Result<fux::command::PaneOptions, String> {
-    Ok(fux::command::PaneOptions {
-        history_bytes: fux::command::HistoryBytes::new(history).ok_or("history budget")?,
+fn pane_options(history: usize) -> Result<command::PaneOptions, String> {
+    Ok(command::PaneOptions {
+        history_bytes: command::HistoryBytes::new(history).ok_or("history budget")?,
         program_clipboard: true,
     })
 }
 
-fn initial() -> Result<fux::command::InitialWorkspace, String> {
-    Ok(fux::command::InitialWorkspace {
+fn initial() -> Result<command::InitialWorkspace, String> {
+    Ok(command::InitialWorkspace {
         options: pane_options(HISTORY)?,
         name: None,
-        start: fux::command::Start::Shell(fux::command::Program::new(
-            "/bin/sh".into(),
-            Vec::new(),
-        )?),
+        start: command::Start::Shell(command::Program::new("/bin/sh".into(), Vec::new())?),
         cwd: std::env::current_dir().map_err(|e| e.to_string())?,
-        env: fux::command::EnvPatch::default(),
+        env: command::EnvPatch::default(),
     })
 }
 
@@ -1134,13 +1132,13 @@ fn session(panes: usize) -> Result<fux::session::Session, String> {
     )
     .map_err(|e| e.to_string())?;
     for _ in 1..panes {
-        let split = fux::command::Command::Split {
+        let split = command::Command::Split {
             options: pane_options(HISTORY)?,
             axis: fux::layout::Axis::Horizontal,
             target: *s.parts.panes().keys().next().ok_or("no pane")?,
             start: initial()?.start,
             cwd: Some(std::env::current_dir().map_err(|e| e.to_string())?),
-            env: fux::command::EnvPatch::default(),
+            env: command::EnvPatch::default(),
             shares: None,
         };
         s.run_command(
@@ -1158,8 +1156,8 @@ fn session(panes: usize) -> Result<fux::session::Session, String> {
 const WAITS: usize = 8;
 
 /// This process's server run, as a session of its own is made with.
-fn server_run() -> Result<fux::command::Run, String> {
-    fux::command::Run::now().ok_or_else(|| "the clock is before 1970".to_owned())
+fn server_run() -> Result<command::Run, String> {
+    command::Run::now().ok_or_else(|| "the clock is before 1970".to_owned())
 }
 
 fn wait(recordings: &[Recording], baseline: bool, total: usize) -> Result<Done, String> {
@@ -1225,7 +1223,7 @@ fn capture_history(baseline: bool, history: usize) -> Result<Done, String> {
     let mut s = fux::session::Session::new("/nonexistent/fux.sock".into(), false, server_run()?);
     s.start(
         fux_vt::Size::new(40, 120).map_err(|e| e.to_string())?,
-        &fux::command::InitialWorkspace {
+        &command::InitialWorkspace {
             options: pane_options(history)?,
             ..initial()?
         },
@@ -1252,7 +1250,7 @@ fn capture_history(baseline: bool, history: usize) -> Result<Done, String> {
             pane,
             s.run,
             Some(usize::MAX),
-            fux::command::CaptureView::default(),
+            command::CaptureView::default(),
             false,
         )
         .map_err(|e| e.to_string())?;

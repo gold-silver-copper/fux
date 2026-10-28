@@ -62,7 +62,7 @@ impl<const MIN: usize, const MAX: usize> Wire for Number<MIN, MAX> {
         self.0.put(out);
     }
     fn get(r: &mut Reader<'_>) -> Result<Self, Error> {
-        Number::new(usize::get(r)?).ok_or(Error::Bad("setting"))
+        Number::new(usize::get(r)?).ok_or(Error::Bad("number"))
     }
 }
 

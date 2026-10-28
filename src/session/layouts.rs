@@ -322,6 +322,8 @@ impl std::fmt::Write for Source {
 
 #[cfg(test)]
 mod tests {
+    use crate::command::Program;
+
     #[test]
     fn dump_admits_saved_launch_directory_expansion() -> Result<(), String> {
         let component: String = std::iter::repeat_n('\'', 200).collect();
@@ -342,10 +344,7 @@ mod tests {
                 .preferences
                 .pane_options(),
             name: None,
-            start: crate::command::Start::Shell(crate::command::Program::new(
-                "/bin/sh".into(),
-                Vec::new(),
-            )?),
+            start: crate::command::Start::Shell(Program::new("/bin/sh".into(), Vec::new())?),
             cwd: directory,
             env: crate::command::EnvPatch::default(),
         };

@@ -6,9 +6,9 @@ use super::settings::Reads;
 use super::{Ask, Bound, Fux, Host, Local, On, Opts, Shell};
 use crate::code::{Code, Raise};
 use crate::command::{
-    AnyRef, Buffer, Button, ClientAction, Command, Extent, Input, Kind, Members, Mouse, MoveTo,
-    PanePick, PaneResize, Percent, Pick, Request, Resized, Sibling, Since, Source, SwapWith, To,
-    Usage, Wait, Wheel, WsRef,
+    AnyRef, Buffer, Button, ClientAction, Command, EnvName, Extent, HistoryBytes, Input, Kind,
+    Limit, Members, Mouse, MoveTo, PanePick, PaneResize, Percent, Pick, Program, Request, Resized,
+    Sibling, Since, Source, SwapWith, To, Usage, Wait, Wheel, WsRef,
 };
 use crate::help;
 use crate::id::{ClientId, PaneId};
@@ -808,10 +808,8 @@ fn modify(
         Opt::Cwd => built.cwd = Some(string(&next()?)?.into()),
         Opt::In => built.place = Some(workspace(&next()?)?),
         Opt::HistoryBytes => {
-            built.history_bytes = Some(
-                crate::command::HistoryBytes::read(&next()?)
-                    .map_err(|why| fail(Raise::Range, why))?,
-            );
+            built.history_bytes =
+                Some(HistoryBytes::read(&next()?).map_err(|why| fail(Raise::Range, why))?);
         }
         Opt::ProgramClipboard => {
             built.program_clipboard =
@@ -831,7 +829,7 @@ fn modify(
         Opt::Marks => built.view.marks = true,
         Opt::Timeout => {
             let secs = within(&next()?, COUNT)?;
-            let limit = crate::command::Limit::read(secs).map_err(|why| fail(Raise::Range, why))?;
+            let limit = Limit::read(secs).map_err(|why| fail(Raise::Range, why))?;
             built.timeout = Some(limit);
         }
         Opt::Text => built.inputs.push(Input::Text(text(&next()?)?)),
@@ -844,7 +842,7 @@ fn modify(
             }
             built.shell = Some(shell);
             if shell {
-                built.argv = crate::command::Program::read(&next()?)
+                built.argv = Program::read(&next()?)
                     .map_err(|why| fail(Raise::BadValue, why))?
                     .argv();
                 return Ok(built);
@@ -883,10 +881,8 @@ fn modify(
             .push(string(&next()?)?, None)
             .map_err(|why| fail(Raise::BadValue, why))?,
         Opt::CopyEnvironment => {
-            built.copy_environment = Some(
-                Vec::<crate::command::EnvName>::read(&next()?)
-                    .map_err(|why| fail(Raise::BadValue, why))?,
-            );
+            built.copy_environment =
+                Some(Vec::<EnvName>::read(&next()?).map_err(|why| fail(Raise::BadValue, why))?);
         }
         Opt::MainScreen => built.view.source = screen(&built, Source::Main)?,
         Opt::AltScreen => built.view.source = screen(&built, Source::Alternate)?,
@@ -1762,8 +1758,7 @@ impl Host<'_> {
             }
             Act::HistoryBudget => {
                 let target = pane(&next()?)?;
-                let bytes = crate::command::HistoryBytes::read(&next()?)
-                    .map_err(|why| fail(Raise::Range, why))?;
+                let bytes = HistoryBytes::read(&next()?).map_err(|why| fail(Raise::Range, why))?;
                 tell(Command::HistoryBudget { target, bytes })
             }
             Act::ClearHistory => tell(Command::ClearHistory {

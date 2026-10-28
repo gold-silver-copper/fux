@@ -14,7 +14,10 @@ use crate::answer::{PaneAnswer, PaneResults};
 use crate::client;
 use crate::client_state::{ClientState, Draft};
 use crate::code::{Code, Raise};
-use crate::command::{AnyRef, Extent, Input, Kind, Mouse, Request, Run, Version, WsRef};
+use crate::command::{
+    AnyRef, EnvName, Extent, HistoryBytes, Input, Kind, Limit, Mouse, Program, Request, Run,
+    Version, WsRef,
+};
 use crate::id::{ClientId, PaneId, TabId, WsId};
 use crate::json::Json;
 use crate::layout::Axis;
@@ -171,9 +174,9 @@ pub struct Opts {
     pub env: crate::command::EnvPatch,
     pub argv: Vec<String>,
     pub shell: Option<bool>,
-    pub history_bytes: Option<crate::command::HistoryBytes>,
+    pub history_bytes: Option<HistoryBytes>,
     pub program_clipboard: Option<bool>,
-    pub copy_environment: Option<Vec<crate::command::EnvName>>,
+    pub copy_environment: Option<Vec<EnvName>>,
     pub axis: Option<Axis>,
     /// A split's shares (`shares`).
     pub shares: Option<(std::num::NonZeroU32, std::num::NonZeroU32)>,
@@ -184,7 +187,7 @@ pub struct Opts {
     /// Where a stream of events reads from (`from`), else now.
     pub from: Option<crate::events::Cursor>,
     /// How long a wait waits before it times out.
-    pub timeout: Option<crate::command::Limit>,
+    pub timeout: Option<Limit>,
     pub view: crate::command::CaptureView,
     pub history: Option<usize>,
     pub inputs: Vec<Input>,
@@ -206,15 +209,15 @@ impl Opts {
         }
     }
 
-    pub(crate) fn program(&self) -> Result<crate::command::Program, String> {
+    pub(crate) fn program(&self) -> Result<Program, String> {
         let mut words = self.argv.iter().cloned();
-        crate::command::Program::new(words.next().unwrap_or_default(), words.collect())
+        Program::new(words.next().unwrap_or_default(), words.collect())
     }
 
     pub(crate) fn launch(
         &self,
-        shell: &crate::command::Program,
-        selection: &[crate::command::EnvName],
+        shell: &Program,
+        selection: &[EnvName],
     ) -> Result<(crate::command::Start, crate::command::EnvPatch), String> {
         let argv = if self.argv.is_empty() {
             shell.clone()
@@ -257,7 +260,7 @@ impl Opts {
             bytes = bytes.saturating_add(
                 names
                     .capacity()
-                    .saturating_mul(std::mem::size_of::<crate::command::EnvName>()),
+                    .saturating_mul(std::mem::size_of::<EnvName>()),
             );
             for name in names {
                 bytes = bytes.saturating_add(name.heap_bytes());
