@@ -751,7 +751,7 @@ fn held(value: &Value<Fux>) -> Option<crate::command::Version> {
     match value {
         Value::App(Fux::Answer(answer, _)) => match &**answer {
             super::Answer::Pane(answer) => answer.version(),
-            // A capture's is for `expect` and `changed` alone (`version`).
+            // Captures become request baselines only through `expect` or `changed`.
             super::Answer::Panes(_)
             | super::Answer::Capture(_)
             | super::Answer::Listing { .. }
@@ -849,7 +849,10 @@ fn modify(
         Opt::Arg | Opt::Env | Opt::UnsetEnv | Opt::Text | Opt::Key | Opt::Paste | Opt::Bytes
     ) && built.given.iter().any(|given| given.slot() == opt.slot())
     {
-        return Err(fail(Raise::Unused, "this option slot is already given"));
+        return Err(fail(
+            Raise::Unused,
+            format!("{opt}: {} is already given", opt.slot()),
+        ));
     }
     built.given.push(opt);
     match opt {

@@ -55,8 +55,8 @@ pub enum Fux {
     /// The whole session, optionally with an event replay cursor.
     All(Option<crate::events::Cursor>),
     /// Options for `run`, `new-tab` or `new-workspace` (from `opts`); or a
-    /// request: a pane, tab, workspace or client given options, keys, a
-    /// wait or a mouse event, for the word that acts on it after
+    /// request: a pane, tab, workspace or client given options, keys or a
+    /// wait, for the word that acts on it after
     /// (`%2 str ls text str Enter key send-keys`).
     Opts(Box<Opts>),
     /// A width or height: cells, or a share of the tab.

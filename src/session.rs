@@ -6486,31 +6486,24 @@ mod tests {
         Ok(())
     }
 
-    /// A rendered client screen has no pane counts, even when its text
-    /// starts with a valid version. Pane answers and version text keep theirs.
+    /// Counts use the live or held pane version, never rendered screen text.
     #[test]
-    fn counts_refuses_capture_text_as_a_version() -> Result<(), String> {
+    fn counts_use_the_pane_version() -> Result<(), String> {
         let (mut s, client) = attached(24, 80)?;
         let shown = "%2:0.57.1.3.0:48211-1867a3f9c2b8e7d6";
         s.output(PaneId::of(1), shown.as_bytes());
         let capture = format!("str {client} client capture");
         let text = output(&mut s, &format!("{capture} string"))?;
         assert_eq!(text.split_whitespace().next(), Some(shown));
-        let refused = output(&mut s, &format!("{capture} counts"))
-            .err()
-            .ok_or("client capture text supplied invented counts")?;
-        assert!(
-            refused.starts_with("fail: ")
-                && refused.contains("a client capture has no pane version"),
-            "{refused}"
-        );
-        let refused = output(&mut s, "%1 capture counts")
-            .err()
-            .ok_or("pane capture text supplied invented counts")?;
-        assert!(
-            refused.starts_with("fail: ") && refused.contains("not a capture"),
-            "{refused}"
-        );
+        for source in [
+            format!("{capture} counts"),
+            format!("list {capture} end first counts"),
+        ] {
+            let refused = output(&mut s, &source)
+                .err()
+                .ok_or("client capture text supplied invented counts")?;
+            assert!(refused.starts_with("type: "), "{refused}");
+        }
         assert_eq!(
             output(&mut s, &format!("str {shown} counts json"))?.trim(),
             "[0,57,1,3,0]"
@@ -6524,10 +6517,23 @@ mod tests {
             counts.done,
             u8::from(counts.ended)
         );
-        assert_eq!(
-            output(&mut s, "%1 str x text send-keys counts json")?.trim(),
-            expected
+        let baseline = output(&mut s, "%1 version")?;
+        for source in [
+            "%1 counts json",
+            "%1 capture counts json",
+            "%1 str x text send-keys counts json",
+            "%1 capture let sample %1 kill sample counts json",
+        ] {
+            assert_eq!(output(&mut s, source)?.trim(), expected, "{source}");
+        }
+        let closed = format!(
+            "str closed try str {} changed wait catch drop end counts",
+            baseline.trim()
         );
+        let refused = output(&mut s, &closed)
+            .err()
+            .ok_or("closed answer supplied invented counts")?;
+        assert!(refused.starts_with("type: "), "{refused}");
         Ok(())
     }
 
@@ -7071,6 +7077,12 @@ mod tests {
                 .err()
                 .ok_or_else(|| format!("ran {code}"))?;
             assert!(error.starts_with("unused: "), "{code}: {error}");
+            if second == "all-history" {
+                assert!(
+                    error.contains("all-history: history is already given"),
+                    "{error}"
+                );
+            }
             assert_eq!(s.ids, ids);
         }
         let replay = format!("%1 str 0:{} from str 0:{} from events", s.run, s.run);

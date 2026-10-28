@@ -736,8 +736,6 @@ pub struct Pane {
     /// session takes them after every read, so they are fewer than the
     /// bytes it read.
     pub copied: Vec<Result<String, Uncopied>>,
-    /// When its program last wrote, or started.
-    pub wrote_at: Instant,
     /// The mouse button `send-mouse press` holds down until its release: a
     /// `move` meanwhile is a drag.
     pub mouse_held: Option<fux_vt::keys::mouse::MouseButton>,
@@ -1070,7 +1068,6 @@ impl Pane {
             scheme_told: None,
             bell: false,
             copied: Vec::new(),
-            wrote_at: Instant::now(),
             respawns: 0,
             left: Left::default(),
             mouse_held: None,
@@ -1107,7 +1104,6 @@ impl Pane {
     /// the rest of the output waits, unread, for the pane's next turn
     /// ([`Pane::read_unread`]).
     fn output_at(&mut self, bytes: &[u8], now: Instant, tell: &mut Teller<'_>) {
-        self.wrote_at = now;
         if self.has_unread() {
             self.unread.0.extend_from_slice(bytes);
             return;
@@ -1700,7 +1696,6 @@ impl Pane {
             frame_left,
             exiting,
             scheme_told,
-            wrote_at,
             mouse_held,
             left,
             alerts,
@@ -1722,7 +1717,7 @@ impl Pane {
         };
         (self.title, self.parser, self.runs, self.options) = (title, parser, runs, options);
         (self.frame, self.unread, self.frame_left) = (frame, unread, frame_left);
-        (self.exiting, self.scheme_told, self.wrote_at) = (exiting, scheme_told, wrote_at);
+        (self.exiting, self.scheme_told) = (exiting, scheme_told);
         (self.mouse_held, self.left, self.alerts, self.lost) = (mouse_held, left, alerts, lost);
         (self.refused_size, self.loss_runs, self.reading) = (refused_size, loss_runs, reading);
         self.read_error = read_error;

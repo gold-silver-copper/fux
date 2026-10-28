@@ -205,8 +205,8 @@ codes! {
     /// Everything an event stream watched closed.
     Gone "gone" CLOSED,
     // A program of words.
-    /// A word the client runs itself (attach, server, start, status), which
-    /// runs from the command line only: not a key's or a config's.
+    /// A word run where its context is missing: a command-line word in a
+    /// key or config, or `me` outside a key or prompt.
     NotHere "not_here",
     /// A word a config file may not hold.
     NotConfig "not_config",
