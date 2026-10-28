@@ -149,14 +149,14 @@ the core's, and refuses only what surely fails.
 
 Application values report expanded traversal `weight` and nesting `depth`;
 opaque records cannot hide their children from list and work limits.
-`Machine::import` checks incoming strings/lists and charges the run's construction
-budget before retaining a suspended result. Immediate host results use that
+`Machine::import` bounds each incoming value and charges its traversal work
+before retaining a suspended result. Immediate host results use that
 same admission automatically, and host argument traversal is charged too.
 Native byte payloads can report `AppValue::import_bytes` and opt into a fixed
-`IMPORT_BYTES_LIMIT`; their actual retained allocations consume that separate
-cumulative grant rather than masquerading as ordinary strings. Their full
+`IMPORT_BYTES_LIMIT`; their actual retained allocations must fit that grant for each imported
+value. Imports do not consume a lifetime construction allowance. Their full
 weight still charges traversal and inclusion in lists. All other host values
-continue to obey the ordinary string, nesting, list and construction limits.
+continue to obey the ordinary string, nesting and list limits.
 
 Application values stream their text through `AppValue::write_text` and declare
 retained data and formatter workspace with `text_bytes`. `TEXT_LIMIT` lets a host

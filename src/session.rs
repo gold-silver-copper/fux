@@ -1458,7 +1458,7 @@ impl Session {
         (view.kind, view.read_only) = (kind, attach.read_only);
         self.views.insert(id, view);
         self.parts.attach(id);
-        self.show(id, ws, spot);
+        self.parts.show(id, ws, spot);
         self.ask(id, crate::outer::QUERIES);
         self.settle();
         Ok(id)
@@ -1470,20 +1470,23 @@ impl Session {
         self.settle();
     }
 
-    /// Shows `client` workspace `ws`, one there is, and there the tab and
-    /// pane `at` says, each if given and there.
-    fn show(&mut self, client: ClientId, ws: WsId, at: Option<Spot>) {
-        self.parts.show(client, ws, at);
-    }
-
-    /// The command's client, if it has one, follows what it made or moved:
-    /// it is shown it, unzoomed.
+    /// The command's client follows what it made or moved, unzoomed.
+    /// Remember the place before the command: a move may already have
+    /// closed its old tab and selected a temporary replacement.
     fn follow(&mut self, here: Here, ws: WsId, at: Option<Spot>) {
-        if let Here::Client(client, _) = here
-            && let Some(view) = self.views.get_mut(&client)
+        if let Here::Client(client, before) = here
+            && self.views.contains_key(&client)
         {
-            view.zoom = false;
-            self.show(client, ws, at);
+            self.parts.show(client, ws, at);
+            if let (Some(after), Some(view)) = (self.place(client), self.views.get_mut(&client)) {
+                view.zoom = false;
+                if before.tab != after.tab {
+                    view.last_tab = Some(before.tab);
+                }
+                if before.ws != after.ws {
+                    view.last_workspace = Some(before.ws);
+                }
+            }
         }
     }
 
@@ -1684,8 +1687,16 @@ impl Session {
     /// pane closed or is no longer focused, a chooser about a pane, tab or
     /// workspace that closed. Which opening it ended, if it did, which
     /// its client is told (`ToAttached::Ended`), the mode being the client's.
+    /// Forgets remembered places that closed or that a close made current.
     fn repair(&self, view: &mut View) -> Option<u64> {
         use crate::act::{List, Panel};
+        let place = self.place(view.id);
+        view.last_tab = view
+            .last_tab
+            .filter(|id| self.tab(*id).is_some() && place.is_none_or(|at| at.tab != *id));
+        view.last_workspace = view
+            .last_workspace
+            .filter(|id| self.workspace(*id).is_some() && place.is_none_or(|at| at.ws != *id));
         let focus = self.focused(view.id);
         // Copy mode's rows are looked for once the panes are sized
         // (`hold_copies`).
@@ -2935,7 +2946,7 @@ impl Session {
             }
             ClientAction::Zoom => None,
             ClientAction::SelectPane(pick) => Some(self.pick_pane(view()?, place, pick)?),
-            ClientAction::SelectTab(pick) => Some(self.pick_tab(place, pick)?),
+            ClientAction::SelectTab(pick) => Some(self.pick_tab(view()?, place, pick)?),
             ClientAction::SelectWorkspace(ref pick) => Some(self.pick_ws(view()?, pick)?),
         };
         // A select shows the client where it picked, unzoomed.
@@ -3113,9 +3124,15 @@ impl Session {
     }
 
     /// The tab `show` picks for a client at `at`.
-    fn pick_tab(&self, at: Place, to: Pick<TabId>) -> Result<Picked, Error> {
+    fn pick_tab(&self, view: &View, at: Place, to: Pick<TabId>) -> Result<Picked, Error> {
         let (ws, target) = match to {
             Pick::Id(t) => (self.tab_workspace(t)?, t),
+            Pick::Last => {
+                let tab = view
+                    .last_tab
+                    .ok_or_else(|| fail(Raise::NoTab, "no previously shown tab"))?;
+                (self.tab_workspace(tab)?, tab)
+            }
             Pick::Step(toward) => {
                 let tabs = self.workspace(at.ws).map_or(&[][..], Workspace::tabs);
                 let index = tabs.iter().position(|t| t.id() == at.tab);
@@ -3134,6 +3151,9 @@ impl Session {
     fn pick_ws(&self, view: &View, pick: &Pick<WsRef>) -> Result<Picked, Error> {
         let ws = match pick {
             Pick::Id(r) => self.resolve_ws(r)?,
+            Pick::Last => view
+                .last_workspace
+                .ok_or_else(|| fail(Raise::NoWorkspace, "no previously shown workspace"))?,
             Pick::Step(toward) => {
                 let workspaces = self.parts.workspaces();
                 let index = workspaces.iter().position(|w| w.viewers.contains(&view.id));
@@ -3219,6 +3239,11 @@ impl Session {
             AnyRef::Tab(id) => {
                 let tab = self.tab(id).ok_or(Error::NoTab(id))?;
                 match field {
+                    "host" => self
+                        .host(Some(id))
+                        .map(|c| budget.format(format_args!("{c}")).map(Json::str))
+                        .transpose()?
+                        .unwrap_or(Json::Null),
                     "layout_revision" => Json::str(budget.format(format_args!(
                             "{}",
                             tab.revision(self.run)
@@ -3834,7 +3859,7 @@ mod tests {
     use crate::pane::Left;
 
     #[test]
-    fn review_plain_listings_report_a_lost_exit_status() -> Result<(), String> {
+    fn plain_listings_report_a_lost_exit_status() -> Result<(), String> {
         let (mut s, _) = attached(12, 50)?;
         run(
             &mut s,
@@ -3849,7 +3874,7 @@ mod tests {
     }
 
     #[test]
-    fn review_recipe_wire_bytes_do_not_spend_entity_nodes() -> Result<(), String> {
+    fn recipe_wire_bytes_do_not_spend_entity_nodes() -> Result<(), String> {
         use crate::inspect::{Projection, Scope};
         let (s, _) = attached(12, 50)?;
         let Body::Snapshot(mut snapshot) = s
@@ -4014,6 +4039,66 @@ mod tests {
     }
 
     #[test]
+    fn last_places_follow_each_clients_visits_not_order() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let (mut s, c) = attached(10, 40)?;
+        let d = s.attach(10, 40, None)?;
+        run(
+            &mut s,
+            "opts +1 in 80 24 size new-tab drop opts +1 in 80 24 size new-tab drop",
+        )?;
+        for (way, message) in [
+            ("step-tab", "no previously shown tab"),
+            ("step-workspace", "no previously shown workspace"),
+        ] {
+            let error = output_as(&mut s, Some(c), &format!("me str last {way}"))
+                .err()
+                .ok_or("last succeeded before a visit")?;
+            assert!(error.contains(message), "{error}");
+        }
+        output_as(
+            &mut s,
+            Some(c),
+            "me @3 show me @3 show @3 str previous reorder",
+        )?;
+        output_as(&mut s, Some(d), "me @2 show")?;
+        for tab in [1, 3, 1] {
+            output_as(&mut s, Some(c), "me str last step-tab")?;
+            assert_eq!(s.place(c).map(|p| p.tab), Some(TabId::of(tab)));
+            assert_eq!(s.place(d).map(|p| p.tab), Some(TabId::of(2)));
+        }
+        // Following a move must not remember the temporary replacement
+        // selected as its old tab closes.
+        output_as(&mut s, Some(c), "me @2 show %2 @3 move")?;
+        assert_eq!(s.views.get(&c).ok_or("view")?.last_tab, None);
+        output_as(&mut s, Some(c), "me @1 show")?;
+        // Creation follows its caller and records the place it left.
+        output_as(
+            &mut s,
+            Some(c),
+            "opts str / cwd 80 24 size new-workspace drop",
+        )?;
+        run(&mut s, "opts str / cwd 80 24 size new-workspace drop")?;
+        output_as(&mut s, Some(d), "me +3 show")?;
+        output_as(
+            &mut s,
+            Some(c),
+            "me +3 show me +3 show +3 str previous reorder",
+        )?;
+        for ws in [2, 3, 2] {
+            output_as(&mut s, Some(c), "me str last step-workspace")?;
+            assert_eq!(s.place(c).map(|p| p.ws), Some(WsId::of(ws)));
+            assert_eq!(s.place(d).map(|p| p.ws), Some(WsId::of(3)));
+        }
+        // Last tab remembers a visit across workspace boundaries too.
+        output_as(&mut s, Some(c), "me str last step-tab")?;
+        assert_eq!(s.place(c).map(|p| p.ws), Some(WsId::of(3)));
+        output_as(&mut s, Some(d), "me str last step-workspace")?;
+        assert_eq!(s.place(d).map(|p| p.ws), Some(WsId::of(1)));
+        Ok(())
+    }
+
+    #[test]
     fn snapshot_projections_keep_order_tree_fit_launch_and_cursor() -> Result<(), String> {
         use crate::inspect::{Projection, Scope};
         use crate::layout::Node;
@@ -4069,6 +4154,162 @@ mod tests {
                     .is_err()
             );
         }
+        Ok(())
+    }
+
+    #[test]
+    fn last_places_forget_closed_targets_and_detached_clients()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (mut s, c) = attached(10, 40)?;
+        output_as(&mut s, Some(c), "opts str / cwd +1 in new-tab drop")?;
+        run(&mut s, "@1 kill")?;
+        let error = output_as(&mut s, Some(c), "me str last step-tab")
+            .err()
+            .ok_or("closed tab remembered")?;
+        assert!(error.contains("no previously shown tab"), "{error}");
+        // Moving the last pane closes its old tab and workspace.
+        output_as(&mut s, Some(c), "opts str / cwd new-workspace drop")?;
+        run(&mut s, "%2 @3 move")?;
+        let view = s.views.get(&c).ok_or("view")?;
+        assert_eq!((view.last_tab, view.last_workspace), (None, None));
+        output_as(&mut s, Some(c), "opts str / cwd new-workspace drop")?;
+        // Closing the current place selects a survivor; it must not be its own last.
+        run(&mut s, "+3 kill")?;
+        let view = s.views.get(&c).ok_or("view")?;
+        assert_eq!((view.last_tab, view.last_workspace), (None, None));
+        s.detach(c);
+        let d = s.attach(10, 40, None)?;
+        let view = s.views.get(&d).ok_or("view")?;
+        assert_eq!((view.last_tab, view.last_workspace), (None, None));
+        Ok(())
+    }
+
+    #[test]
+    fn capability_facts_distinguish_reports_from_output_and_follow_one_host()
+    -> Result<(), Box<dyn std::error::Error>> {
+        fn facts(s: &Session, id: ClientId) -> Result<Json, Box<dyn std::error::Error>> {
+            let Body::Snapshot(snapshot) = s.inspect(
+                crate::inspect::Scope::Client(id),
+                crate::inspect::Projection::Facts,
+            )?
+            else {
+                return Err("snapshot".into());
+            };
+            let client = snapshot
+                .clients
+                .iter()
+                .find(|c| c.id == id)
+                .ok_or("client")?;
+            Ok(Json::Object(vec![
+                ("terminal".into(), client.terminal_facts.clone()),
+                ("output".into(), client.output.clone()),
+            ]))
+        }
+        let (mut s, c) = attached(10, 40)?;
+        let d = s.attach(10, 40, None)?;
+        let initial = facts(&s, c)?;
+        let terminal = initial.get("terminal").ok_or("terminal")?;
+        for name in [
+            "sixel_reported",
+            "cell_reported",
+            "underline_styles_reported",
+            "kitty_flags_reported",
+        ] {
+            assert_eq!(terminal.get(name), Some(&Json::Null), "{name}");
+        }
+        assert_eq!(
+            initial.get("output").and_then(|o| o.get("graphics")),
+            Some(&Json::str("text"))
+        );
+        s.input(c, b"\x1b[?62c");
+        assert_eq!(
+            facts(&s, c)?
+                .get("terminal")
+                .and_then(|t| t.get("sixel_reported")),
+            Some(&Json::Bool(false))
+        );
+        // Positive sixel evidence still needs an accepted cell size.
+        s.terminal_reply(c, crate::decode::Reply::Attributes { sixel: true });
+        s.terminal_reply(
+            c,
+            crate::decode::Reply::CellSize {
+                width: 1,
+                height: 2,
+            },
+        );
+        let refused = facts(&s, c)?;
+        assert_eq!(
+            refused
+                .get("terminal")
+                .and_then(|t| t.get("cell_reported"))
+                .and_then(|cell| cell.get("width")),
+            Some(&Json::int(1))
+        );
+        assert_eq!(
+            refused.get("output").and_then(|o| o.get("graphics")),
+            Some(&Json::str("text"))
+        );
+        s.terminal_reply(
+            c,
+            crate::decode::Reply::CellSize {
+                width: 10,
+                height: 20,
+            },
+        );
+        s.terminal_reply(c, crate::decode::Reply::UnderlineStyles);
+        s.terminal_reply(c, crate::decode::Reply::KittyFlags(0));
+        assert_eq!(
+            facts(&s, c)?
+                .get("terminal")
+                .and_then(|t| t.get("kitty_flags_reported")),
+            Some(&Json::int(0))
+        );
+        s.terminal_reply(c, crate::decode::Reply::KittyFlags(5));
+        s.settle();
+        let reported = facts(&s, c)?;
+        let terminal = reported.get("terminal").ok_or("terminal")?;
+        assert_eq!(terminal.get("sixel_reported"), Some(&Json::Bool(true)));
+        assert_eq!(
+            terminal.get("underline_styles_reported"),
+            Some(&Json::Bool(true))
+        );
+        assert_eq!(terminal.get("kitty_flags_reported"), Some(&Json::int(5)));
+        let effective = reported.get("output").ok_or("output")?;
+        assert_eq!(effective.get("graphics"), Some(&Json::str("sixel")));
+        assert_eq!(effective.get("underline_styles"), Some(&Json::Bool(true)));
+        assert_eq!(effective.get("clipboard"), Some(&Json::str("osc52")));
+        let requested = crate::outer::KITTY_FLAGS;
+        assert!(crate::outer::KITTY_PUSH.starts_with(format!("\x1b[>{requested}u").as_bytes()));
+        assert_eq!(
+            effective.get("kitty_flags_requested"),
+            Some(&Json::int(requested))
+        );
+        assert_eq!(output(&mut s, "@1 str host get")?, "c1\n");
+        s.input(d, b"x");
+        assert_eq!(output(&mut s, "@1 str host get")?, "c2\n");
+        assert_eq!(s.graphics(PaneId::of(1)), fux_vt::Graphics::Text);
+        assert_eq!(facts(&s, d)?.get("terminal"), initial.get("terminal"));
+        s.terminal_reply(
+            d,
+            crate::decode::Reply::CellSize {
+                width: 10,
+                height: 20,
+            },
+        );
+        s.views
+            .get_mut(&d)
+            .ok_or("view")?
+            .presentation
+            .terminal_clipboard = false;
+        let other = facts(&s, d)?;
+        let effective = other.get("output").ok_or("output")?;
+        assert_eq!(effective.get("graphics"), Some(&Json::str("cell")));
+        assert_eq!(effective.get("clipboard"), Some(&Json::Null));
+        s.detach(d);
+        assert_eq!(output(&mut s, "@1 str host get")?, "c1\n");
+        s.detach(c);
+        assert_eq!(output(&mut s, "@1 str host get")?, "null\n");
+        assert_eq!(s.graphics(PaneId::of(1)), fux_vt::Graphics::Text);
         Ok(())
     }
 

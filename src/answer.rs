@@ -186,9 +186,11 @@ impl PaneAnswer {
             }
             out.write_char(']')?;
             match ended {
-                Some(Ended::Exited(code)) => write!(out, ",\"exited\":{code}")?,
-                Some(Ended::Signalled(signal)) => write!(out, ",\"signal\":{signal}")?,
-                Some(Ended::Lost) => out.write_str(",\"exited\":null")?,
+                Some(Ended::Exited(code)) => write!(out, ",\"exited\":{code},\"signal\":null")?,
+                Some(Ended::Signalled(signal)) => {
+                    write!(out, ",\"exited\":null,\"signal\":{signal}")?
+                }
+                Some(Ended::Lost) => out.write_str(",\"exited\":null,\"signal\":null")?,
                 None => {}
             }
         }

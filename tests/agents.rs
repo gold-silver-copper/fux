@@ -155,7 +155,10 @@ fn a_run_program_keeps_its_pane_screen_and_status() -> Outcome {
     let since = version(&started);
     let from_start = ["str", &since, "changed", "wait", "json"];
     let json = server.ok(&from_start)?;
-    assert!(json.contains(r#""exited":3,"status":0"#), "{json}");
+    assert!(
+        json.contains(r#""exited":3,"signal":null,"status":0"#),
+        "{json}"
+    );
     let now = server.fux(&["str", &pane, "pane", "1", "timeout", "wait"])?;
     assert_eq!(now.status, 124, "{}", now.stdout);
     let screen = server.ok(&["str", &pane, "pane", "capture"])?;
@@ -190,7 +193,10 @@ fn a_run_program_keeps_its_pane_screen_and_status() -> Outcome {
     let text = server.ok(&waited)?;
     assert!(text.ends_with(" killed by SIGKILL\n"), "{text}");
     let json = server.ok(&[&waited[..], &["json"]].concat())?;
-    assert!(json.contains(r#""signal":9,"status":0"#), "{json}");
+    assert!(
+        json.contains(r#""exited":null,"signal":9,"status":0"#),
+        "{json}"
+    );
     Ok(())
 }
 

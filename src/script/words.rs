@@ -325,8 +325,8 @@ words! {
         Clients Attach "attach" "attachable --" "show the server in this terminal (bare fux uses default-attach); with a size, be a client of no terminal instead; explicit targets and watch refuse creation options" "fux @2 attach" [Either: In Size Watch Cwd Env UnsetEnv CopyEnvironment HistoryBytes Reflow AlternateScrollLines PictureBytes ProgramClipboard Program ShellProgram Arg Name];
         Clients Focus "focus" "client way --" "left right up down next previous or last pane" "fux str c1 client str left focus" [];
         Clients Show "show" "client handle --" "show and follow a pane, tab or workspace" "fux str c1 client %3 show" [];
-        Clients StepTab "step-tab" "client way --" "show the next or previous tab" "fux str c1 client str next step-tab" [];
-        Clients StepWorkspace "step-workspace" "client way --" "show the next or previous workspace" "fux str c1 client str previous step-workspace" [];
+        Clients StepTab "step-tab" "client way --" "show the next, previous or last visited tab" "fux str c1 client str next step-tab" [];
+        Clients StepWorkspace "step-workspace" "client way --" "show the next, previous or last visited workspace" "fux str c1 client str previous step-workspace" [];
         Clients Zoom "zoom" "client --" "zoom the focused pane, or restore" "fux str c1 client zoom" [];
         Clients Detach "detach" "client --" "detach a client" "fux str c1 client detach" [];
         Server Server "server" "name --" "the server named so (NAME.sock in fux's directory), for what follows" "fux str test server start agent-opts 80 24 size str ./app program run" [];
@@ -639,6 +639,19 @@ fn sibling(value: &Value<Fux>) -> Result<Sibling, Failure> {
         value,
         &[("next", Sibling::Next), ("previous", Sibling::Previous)],
     )
+}
+
+/// A relative tab or workspace selection, including retained history.
+fn pick<T>(value: &Value<Fux>) -> Result<Pick<T>, Failure> {
+    one_of(
+        value,
+        &[
+            ("next", Some(Sibling::Next)),
+            ("previous", Some(Sibling::Previous)),
+            ("last", None),
+        ],
+    )
+    .map(|step| step.map_or(Pick::Last, Pick::Step))
 }
 
 /// One of a closed set, by its name; refused, naming each, if none.
@@ -1439,8 +1452,6 @@ impl Host<'_> {
             Word::Screen(screen) => return self.open(screen, &mut next),
             Word::Keys(keys) => return self.configure(keys, &mut next),
         };
-        let step_tab = |step| ClientAction::SelectTab(Pick::Step(step));
-        let step_workspace = |step| ClientAction::SelectWorkspace(Pick::Step(step));
         match act {
             // ----------------------------------------------------- finding
             Act::Pane => find(Kind::Pane, next()?, out),
@@ -1965,8 +1976,11 @@ impl Host<'_> {
                 };
                 order(c, action)
             }
-            Act::StepTab => order(client(&next()?)?, step_tab(sibling(&next()?)?)),
-            Act::StepWorkspace => order(client(&next()?)?, step_workspace(sibling(&next()?)?)),
+            Act::StepTab => order(client(&next()?)?, ClientAction::SelectTab(pick(&next()?)?)),
+            Act::StepWorkspace => order(
+                client(&next()?)?,
+                ClientAction::SelectWorkspace(pick(&next()?)?),
+            ),
             Act::Zoom => order(client(&next()?)?, ClientAction::Zoom),
             Act::Detach => order(client(&next()?)?, ClientAction::Detach),
             // ------------------------------------------------------ server

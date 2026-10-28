@@ -107,11 +107,9 @@ impl AppValue for Fux {
     const TEXT_LIMIT: usize = crate::wire::MAX_ALLOCATED;
     const IMPORT_BYTES_LIMIT: usize = crate::wire::MAX_ALLOCATED;
     fn import_bytes(&self) -> Option<usize> {
-        if let Fux::Rendered(_) = self {
-            Some(self.text_bytes())
-        } else {
-            None
-        }
+        (matches!(self, Fux::Rendered(_))
+            || matches!(self, Fux::Answer(answer, _) if matches!(&**answer, Answer::Capture(_))))
+        .then(|| self.text_bytes())
     }
 
     fn weight(&self) -> u64 {
@@ -1863,7 +1861,73 @@ mod tests {
     }
 
     #[test]
-    fn review_large_capture_json_crosses_the_machine_boundary_with_its_byte_grant()
+    fn ended_answers_expose_both_exit_fields() -> Result<(), Box<dyn std::error::Error>> {
+        use super::*;
+        use crate::process::Ended;
+        let version: Version = "%1:0.7.0.0.0:1-1".parse().map_err(|()| "version")?;
+        for (ended, exited, signal) in [
+            (Ended::Exited(7), Value::Int(7), Value::App(Fux::Null)),
+            (Ended::Signalled(9), Value::App(Fux::Null), Value::Int(9)),
+            (Ended::Lost, Value::App(Fux::Null), Value::App(Fux::Null)),
+        ] {
+            let answer = PaneAnswer::Changed {
+                version,
+                changed: Vec::new(),
+                ended: Some(ended),
+            };
+            let mut json = String::new();
+            answer.write_json(&mut json)?;
+            assert!(json.contains("\"exited\":"), "{json}");
+            assert!(json.contains("\"signal\":"), "{json}");
+            let reply = Reply {
+                run: Some(version.run),
+                response: Response::Answered(PaneResults::One(answer)),
+            };
+            let values = held_reply(
+                "%1 0 timeout wait let held held str exited get held str signal get",
+                reply,
+                &mut Vec::new(),
+            )
+            .map_err(|e| e.to_string())?;
+            assert_eq!(values, vec![exited, signal]);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn large_plain_capture_crosses_the_machine_boundary() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let version: super::Version = "%1:0.7.0.0.0:1-1".parse().map_err(|()| "version")?;
+        let capture = crate::capture::Captured {
+            of: crate::capture::Of::Pane {
+                version,
+                wrap_pending: false,
+                state: Vec::new(),
+            },
+            screen_rows: 24,
+            screen_cols: 80,
+            screen_cursor: None,
+            lines: vec![vec![crate::capture::Cut {
+                text: std::iter::repeat_n('x', 17_000_000).collect(),
+                cells: 17_000_000,
+                style: fux_vt::Attributes::default(),
+            }]],
+            styles: false,
+            marks: false,
+        };
+        let reply = super::Reply {
+            run: Some(version.run),
+            ..crate::protocol::Body::Capture(Box::new(capture)).into()
+        };
+        assert!(crate::wire::size(&reply)? <= crate::wire::MAX_REPLY);
+        let mut out = Vec::new();
+        held_reply("%1 all-history capture print", reply, &mut out).map_err(|e| e.to_string())?;
+        assert_eq!(out.len(), 17_000_001);
+        Ok(())
+    }
+
+    #[test]
+    fn large_capture_json_crosses_the_machine_boundary_with_its_byte_grant()
     -> Result<(), Box<dyn std::error::Error>> {
         let version = "%1:0.0.0.0.0:1-1".parse().map_err(|()| "version")?;
         let line: Vec<_> = (0u8..100)
@@ -1910,7 +1974,7 @@ mod tests {
     }
 
     #[test]
-    fn review_held_answers_and_captures_project_without_refreshing()
+    fn held_answers_and_captures_project_without_refreshing()
     -> Result<(), Box<dyn std::error::Error>> {
         use super::*;
         let version: Version = "%1:0.7.0.0.0:1-1".parse().map_err(|()| "version")?;

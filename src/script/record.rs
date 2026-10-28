@@ -294,6 +294,7 @@ pub(super) fn snapshot(s: inspect::Snapshot) -> Result<V, Failure> {
         record! { b; "id" => id(AnyRef::Tab(t.id),run), "workspace" => id(AnyRef::Workspace(t.workspace),run),
             "name" => b.optional(t.name.as_deref())?, "label" => b.text(&t.label)?,
             "fit" => b.text(if t.fixed { "fixed" } else { "clients" })?, "cols" => number(t.cols)?, "rows" => number(t.rows)?,
+            "host" => t.host.map(|c| Value::App(Fux::Client(c,Some(run)))).unwrap_or_else(null),
             "nodes" => nodes, "layout_revision" => t.revision.map(|r| b.text(&r.to_string())).unwrap_or_else(|| Ok(null()))?
         }
     })?;
@@ -326,6 +327,7 @@ pub(super) fn snapshot(s: inspect::Snapshot) -> Result<V, Failure> {
     })?;
     let clients = b.list(&s.clients, |b,c| record! { b;
         "id" => Value::App(Fux::Client(c.id,Some(run))), "kind" => b.text(if c.terminal { "terminal" } else { "headless" })?,
+        "terminal" => b.json(&c.terminal_facts, 0)?, "output" => b.json(&c.output, 0)?,
         "read_only" => Value::Bool(c.read_only), "rows" => number(c.rows)?, "cols" => number(c.cols)?,
         "pane_rows" => number(c.pane_rows)?, "pane_cols" => number(c.pane_cols)?,
         "workspace" => c.workspace.map(|w| id(AnyRef::Workspace(w),run)).unwrap_or_else(null),
@@ -387,8 +389,8 @@ pub(super) fn answer_field(
                 match (field, ended) {
                     ("changed", _) => return b.list(changed, |b, c| b.text(c.name())),
                     ("exited", Some(crate::process::Ended::Exited(n))) => return number(*n),
-                    ("exited", Some(crate::process::Ended::Lost)) => return Ok(null()),
                     ("signal", Some(crate::process::Ended::Signalled(n))) => return number(*n),
+                    ("exited" | "signal", Some(_)) => return Ok(null()),
                     _ => {}
                 }
             }

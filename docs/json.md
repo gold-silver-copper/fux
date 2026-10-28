@@ -4,8 +4,8 @@
 Small results are ordinary strings. Beyond 1,000,000 characters it returns shared text of kind
 `rendered`: `print` and implicit command output emit it under the existing
 128 MiB finite-observation grant. Explicit `string` conversion still obeys
-the language string limit. Native rendered bytes have their own cumulative
-128 MiB import grant, while traversal work is charged at their actual size.
+the language string limit. Each capture or rendered value has a 128 MiB native import grant; imports
+charge traversal work at their actual size, not a lifetime construction total.
 
 The JSON represents what a word left, as below; a string as a JSON string; a number or boolean
 as itself; a list as an array of these, each answer in it as `json` gives
@@ -97,7 +97,7 @@ Each workspace has `id`, `name`, `label`, and `tabs`. Its `tabs` is always the
 full ordered membership, including in a tab- or pane-scoped snapshot, whose
 `tabs` facts collection contains only the selected tab. Each tab fact has
 `id`, `workspace`, `name`, `label`, `fit` (`fixed` or `clients`), `cols`,
-`rows`, `nodes`, and `layout_revision`. Client fit reports its retained size.
+`rows`, `nodes`, `layout_revision`, and `host`. Client fit reports its retained size.
 
 `layout_revision` is `TAB:REVISION:RUN`, the native layout revision, or null if its
 counter is exhausted. Screen output does not change it. `nodes` uses the
@@ -146,9 +146,34 @@ the byte/allocation grant rather than one entity node per byte or item. Client p
 the native schema for plain rendering and shares immutable records on clone.
 The tighter language limits still apply, including 1,000,000 characters per
 string and 16,000,000 expanded elements per list/run. Opaque values charge
-expanded traversal and imports charge construction; repeated shared values
-count again. A too-large observation fails `too_long`, never truncates or
+expanded traversal; each import is bounded independently. Constructed strings
+and lists charge the run’s construction grant; repeated shared values count again. A too-large observation fails `too_long`, never truncates or
 combines multiple turns. Narrower scopes are separate observations.
+
+A tab's `host` is the terminal client supplying its panes' capability answers,
+or `null`. Of terminals showing it, the last typist wins, else the first
+attached. Headless clients never host. No capabilities are combined across
+clients; an unanswered query stays unknown even if a different client answered.
+
+Each client's `terminal` preserves evidence; `output` describes what fux will
+attempt on that client, not what the terminal acknowledged or displayed.
+Headless clients have no terminal reports.
+
+| Field | Value |
+| --- | --- |
+| `terminal.sixel_reported` | `true` or `false` from DA1; `null` before any reply |
+| `terminal.cell_reported` | last reported `{"width":10,"height":20}` in pixels, even zero or a size refused for graphics; `null` before any reply |
+| `terminal.underline_styles_reported` | `true` after positive evidence; otherwise `null`, since the decoder supplies no negative report |
+| `terminal.kitty_flags_reported` | last decoded keyboard flags, including 0; `null` before any reply |
+| `output.graphics` | `"text"` without an accepted cell size; `"cell"` with a cell but no positive sixel report; `"sixel"` with both. A picture still requires the pane host's support and the same cell size on the displaying client |
+| `output.underline_styles` | whether styled underlines are emitted; false emits plain underlines |
+| `output.clipboard` | `"osc52"` if this client's `terminal-clipboard` permits output, else `null`; not a delivery acknowledgement |
+| `output.kitty_flags_requested` | 5 once fux has requested disambiguate and alternate keys, else `null`; distinct from the last flags reported |
+
+Cell reports are asked again on resize; the previous report stays until
+another arrives. These fields and `host` are in the same bounded listing,
+not a separate capability query. They can change without a pane version
+changing; the journal does not promise a complete stream of terminal replies.
 
 ## `PANE capture json`
 
@@ -229,16 +254,17 @@ from (its program's end too):
 
 ```json
 {"pane":"%3","version":"%3:0.61.1.4.0:RUN","changed":["screen","bell","done"],"status":0}
-{"pane":"%4","version":"%4:0.12.0.0.1:RUN","changed":["screen"],"exited":5,"status":0}
-{"pane":"%5","version":"%5:0.9.0.0.1:RUN","changed":[],"signal":15,"status":0}
+{"pane":"%4","version":"%4:0.12.0.0.1:RUN","changed":["screen"],"exited":5,"signal":null,"status":0}
+{"pane":"%5","version":"%5:0.9.0.0.1:RUN","changed":[],"exited":null,"signal":15,"status":0}
 {"pane":"%2","version":"%2:1.3.0.0.0:RUN","changed":["respawned"],"status":0}
 ```
 
 `changed` lists `screen`, `bell` and `done` (a count of the version that
 grew), or `respawned` (the program started again: its counts but
-`RESPAWNS` start afresh). `exited` is the program's status if it ended
-since (`null` if that status was lost), `signal` the signal that killed
-it; a wait from a version that already holds its end waits for
+`RESPAWNS` start afresh). When the program ended, both `exited` and `signal`
+are present, with inapplicable values `null`. `exited` is the program's status
+if it ended since (`null` if it was signalled or its status was lost),
+`signal` the signal that killed it; a wait from a version that already holds its end waits for
 something else.
 
 A wait that fails (124 nothing changed, 4 its pane closed) answers too,
@@ -321,8 +347,8 @@ they run, so a `try` may name them too.
 ## `status json`
 
 ```json
-{"socket":"/run/user/1000/fux/server.sock","release":"0.36.0","protocol":43,
- "server_release":"0.36.0","server_protocol":43,"compatible":true}
+{"socket":"/run/user/1000/fux/server.sock","release":"0.36.0","protocol":44,
+ "server_release":"0.36.0","server_protocol":44,"compatible":true}
 ```
 
 With no server, `status` fails (`no_server`), saying the socket and whether

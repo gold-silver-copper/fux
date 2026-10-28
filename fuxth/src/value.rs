@@ -15,8 +15,8 @@ pub trait AppValue: Clone + PartialEq {
     /// The default adds no host limit to the language's own bounds.
     const TEXT_LIMIT: usize = usize::MAX;
 
-    /// Aggregate admission grant for native byte payloads, separate from strings
-    /// and lists. A host opts in explicitly; ordinary values use `TOTAL`/`BUILT`.
+    /// Admission grant for the native byte payloads in one imported value.
+    /// A host opts in explicitly; ordinary values use the language bounds.
     const IMPORT_BYTES_LIMIT: usize = 0;
 
     /// The allocation retained by a native byte payload, including its wrapper.

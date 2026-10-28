@@ -57,6 +57,7 @@ wire! {
         pub rows: u16,
         pub nodes: Vec<Node>,
         pub revision: Option<crate::command::LayoutRevision>,
+        pub host: Option<ClientId>,
     }
 }
 wire! {
@@ -100,6 +101,8 @@ wire! {
     pub struct Client {
         pub id: ClientId,
         pub terminal: bool,
+        pub terminal_facts: Json,
+        pub output: Json,
         pub read_only: bool,
         pub rows: u16,
         pub cols: u16,
@@ -374,6 +377,8 @@ impl Snapshot {
             }
             for c in &self.clients {
                 budget.charge(c.mode.capacity())?;
+                c.terminal_facts.charge(&mut budget)?;
+                c.output.charge(&mut budget)?;
             }
             Ok::<_, crate::session::Error>(())
         })();

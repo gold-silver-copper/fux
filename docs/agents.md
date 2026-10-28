@@ -274,7 +274,6 @@ handle and `str title get` is the retained title. Use `json` to read the flat
 collections in another language. Topology makes no process metadata queries;
 `facts` adds process/terminal state and `recipe` adds saved launch inputs.
 
-
 `PANE READ capture`, READ any of: `100 history`, `all-history`,
 `main-screen` (what was printed before a program took the screen),
 `alt-screen` (the full screen a program drew last), `last-output` (the

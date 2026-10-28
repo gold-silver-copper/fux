@@ -524,6 +524,9 @@ fn ls_json_list_keys_and_help() -> Outcome {
         "\"panes\":[{\"id\":\"%1\"",
         "\"rows\":9,\"cols\":50",
         "\"events\":",
+        r#""host":"c1""#,
+        r#""terminal":{"sixel_reported":null,"cell_reported":null,"underline_styles_reported":null,"kitty_flags_reported":null}"#,
+        r#""output":{"graphics":"text","underline_styles":false,"clipboard":"osc52","kitty_flags_requested":null}"#,
         "\"clients\":[{\"id\":\"c1\"",
         "\"pane_rows\":9,\"pane_cols\":50",
     ] {

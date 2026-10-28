@@ -185,7 +185,6 @@ pub struct Machine<A> {
     steps: u64,
     /// Elements built so far.
     built: u64,
-    imported_bytes: usize,
     /// The step taken last: how many frames there were, its code, and its
     /// place in it.
     last: Option<(usize, Option<usize>, usize)>,
@@ -214,7 +213,6 @@ impl<A: AppValue> Machine<A> {
             extra: 0,
             steps: 0,
             built: 0,
-            imported_bytes: 0,
             last: None,
         }
     }
@@ -233,7 +231,7 @@ impl<A: AppValue> Machine<A> {
         Ok(())
     }
 
-    /// Imports a host result, charging its expanded construction and traversal.
+    /// Imports a bounded host result, charging its expanded traversal.
     /// Hosts use this instead of `push` for newly received values.
     pub fn import(&mut self, value: Value<A>) -> Result<(), Error> {
         self.admit(&value)?;
@@ -262,34 +260,21 @@ impl<A: AppValue> Machine<A> {
                 "host result exceeds the string or list length limit",
             ));
         }
-        fn imports<A: AppValue>(value: &Value<A>) -> (u64, usize) {
+        fn bytes<A: AppValue>(value: &Value<A>) -> usize {
             match value {
-                Value::App(app) => match app.import_bytes() {
-                    Some(bytes) => (0, bytes),
-                    None => (value.weight(), 0),
-                },
-                Value::List(list) => {
-                    list.items()
-                        .iter()
-                        .fold((1u64, 0usize), |(built, bytes), v| {
-                            let (n, b) = imports(v);
-                            (built.saturating_add(n), bytes.saturating_add(b))
-                        })
-                }
-                Value::Int(_) | Value::Bool(_) | Value::Str(_) => (value.weight(), 0),
+                Value::App(app) => app.import_bytes().unwrap_or(0),
+                Value::List(list) => list
+                    .items()
+                    .iter()
+                    .fold(0usize, |n, v| n.saturating_add(bytes(v))),
+                Value::Int(_) | Value::Bool(_) | Value::Str(_) => 0,
             }
         }
-        let (built, bytes) = imports(value);
-        self.imported_bytes = self.imported_bytes.saturating_add(bytes);
-        if self.imported_bytes > A::IMPORT_BYTES_LIMIT {
+        if bytes(value) > A::IMPORT_BYTES_LIMIT {
             return Err(self.fail(
                 Code::TooLong,
-                "host byte payloads exceed the import allocation limit",
+                "host byte payload exceeds the import allocation limit",
             ));
-        }
-        self.built = self.built.saturating_add(built);
-        if self.built > BUILT {
-            return Err(self.fail(Code::TooLong, "host imports exceed the construction limit"));
         }
         Ok(())
     }

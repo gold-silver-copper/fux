@@ -1,6 +1,7 @@
 use super::{Error, Session};
 use crate::command::AnyRef;
 use crate::inspect::{self, Projection, Scope, Snapshot};
+use crate::json::Json;
 use crate::layout::{Node, Tree};
 use crate::protocol::Body;
 use crate::view::{ClientKind, Mode};
@@ -144,6 +145,7 @@ impl Session {
                     rows: size.rows(),
                     nodes: tree,
                     revision: tab.revision(self.run),
+                    host: self.host(Some(tab.id())),
                 };
                 add(&mut snapshot.tabs, fact, budget, &mut nodes)?;
             }
@@ -174,9 +176,34 @@ impl Session {
                 Mode::Panel(_) => "panel",
                 Mode::Copy(_) => "copy",
             };
+            let terminal = view.terminal.facts(budget)?;
+            let graphics = match view.terminal.graphics() {
+                fux_vt::Graphics::Text => "text",
+                fux_vt::Graphics::Cell(_) => "cell",
+                fux_vt::Graphics::Sixel(_) => "sixel",
+            };
+            let graphics = Json::str(budget.string(graphics)?);
+            let clipboard =
+                budget.optional_text(view.presentation.terminal_clipboard.then_some("osc52"))?;
+            let output = budget.object([
+                ("graphics", graphics),
+                (
+                    "underline_styles",
+                    Json::Bool(view.terminal.underline_styles),
+                ),
+                ("clipboard", clipboard),
+                (
+                    "kitty_flags_requested",
+                    view.terminal
+                        .kitty
+                        .map_or(Json::Null, |_| Json::int(crate::outer::KITTY_FLAGS)),
+                ),
+            ])?;
             let fact = inspect::Client {
                 id: view.id,
                 terminal: view.kind == ClientKind::Terminal,
+                terminal_facts: terminal,
+                output,
                 read_only: view.read_only,
                 rows: view.rows,
                 cols: view.cols,
