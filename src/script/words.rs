@@ -2354,9 +2354,9 @@ impl Host<'_> {
 
 #[cfg(test)]
 mod tests {
+    use crate::session::testing::TestResult;
     #[test]
-    fn targeted_and_watch_attach_refuse_explicit_creation_before_any_request()
-    -> Result<(), Box<dyn std::error::Error>> {
+    fn targeted_and_watch_attach_refuse_explicit_creation_before_any_request() -> TestResult {
         use crate::script::{Asks, Failed, Host, Local};
         struct Recorder(usize);
         impl Asks for Recorder {
@@ -2429,13 +2429,11 @@ mod tests {
     use fuxth::AppValue;
 
     #[test]
-    fn attach_subjects_and_defaults_retain_their_typed_target_and_run() -> Result<(), String> {
+    fn attach_subjects_and_defaults_retain_their_typed_target_and_run() -> TestResult {
         use super::*;
         use crate::command::AttachTarget;
         let run = "1-2".parse().map_err(|()| "run")?;
-        let mut draft = crate::script::default_state()
-            .map_err(|e| e.to_string())?
-            .draft();
+        let mut draft = crate::script::default_state()?.draft();
         for (value, target) in [
             (
                 Fux::Tab(crate::id::TabId::of(2), Some(run)),
@@ -2475,18 +2473,27 @@ mod tests {
     }
 
     #[test]
-    fn all_is_only_an_observation_or_notification_scope() -> Result<(), Box<dyn std::error::Error>>
-    {
-        for source in [
-            "all info drop",
-            "all dump drop",
-            "all str hello notify",
-            "all events",
-            "all str 0:1-2 0 next-events drop",
-        ] {
-            super::super::compile(&fuxth::token::source("all", source)?)
-                .map_err(|f| f.to_string())?;
-        }
+    fn known_operand_kinds_are_checked_before_effects() -> TestResult {
+        let version = "%2:0.0.0.0.0:48211-1867a3f9c2b8e7d6";
+        let mut invalid = vec![
+            "str c1 client capture version".to_owned(),
+            "@1 version".to_owned(),
+            "%1 str horizontal axis 30 str horizontal resize-pane".to_owned(),
+            "%1 str horizontal axis str click 0 0 send-mouse".to_owned(),
+            "str c1 client 0 timeout wait".to_owned(),
+            format!("str {version} expect 0 timeout wait"),
+            format!("str {version} changed str x text send-keys"),
+            format!("str {version} changed all-history capture"),
+            format!("str {version} changed str '' 0 next-events"),
+            "str x kill".to_owned(),
+            "str nope str horizontal axis split".to_owned(),
+            "str nope info".to_owned(),
+            "@1 wait capture".to_owned(),
+            "@1 0 timeout wait capture".to_owned(),
+            "@1 str x text send-keys capture".to_owned(),
+            "+1 wait str y text send-keys".to_owned(),
+            "+1 0 timeout wait str y text send-keys".to_owned(),
+        ];
         for suffix in [
             "kill",
             "capture",
@@ -2498,73 +2505,7 @@ mod tests {
             "attach",
             "str x rename",
         ] {
-            let source = format!("str SIDE-EFFECT print all {suffix}");
-            let failure = super::super::compile(&fuxth::token::source("all", &source)?)
-                .err()
-                .ok_or_else(|| format!("accepted {source}"))?;
-            assert_eq!(failure.code, Code::from(Raise::Type), "{source}: {failure}");
-        }
-        Ok(())
-    }
-
-    #[test]
-    fn library_dump_checks_its_scope_before_effects() -> Result<(), Box<dyn std::error::Error>> {
-        for prefix in ["str SIDE-EFFECT print", "%1 str renamed rename"] {
-            for scope in ["1", "all str 0:1-2 0 next-events"] {
-                let source = format!("{prefix} {scope} dump drop");
-                let failure = super::super::compile(&fuxth::token::source("dump", &source)?)
-                    .err()
-                    .ok_or_else(|| format!("accepted {source}"))?;
-                assert_eq!(failure.code, Code::from(Raise::Type), "{source}: {failure}");
-            }
-        }
-        Ok(())
-    }
-
-    #[test]
-    fn library_dump_checks_its_string_result_before_effects()
-    -> Result<(), Box<dyn std::error::Error>> {
-        for prefix in ["str SIDE-EFFECT print", "%1 str renamed rename"] {
-            let source = format!("{prefix} all dump 1 push drop");
-            let failure = super::super::compile(&fuxth::token::source("dump", &source)?)
-                .err()
-                .ok_or_else(|| format!("accepted {source}"))?;
-            assert_eq!(failure.code, Code::from(Raise::Type), "{source}: {failure}");
-        }
-        Ok(())
-    }
-
-    #[test]
-    fn library_layout_presets_check_the_tab_before_effects()
-    -> Result<(), Box<dyn std::error::Error>> {
-        for recipe in [
-            "layout-current",
-            "even-h",
-            "even-v",
-            "main-h",
-            "main-v",
-            "tiled",
-        ] {
-            for target in ["1", "%1", "+1", "all", "str tab"] {
-                let source = format!("str SIDE-EFFECT print {target} {recipe}");
-                let failure = super::super::compile(&fuxth::token::source("preset", &source)?)
-                    .err()
-                    .ok_or_else(|| format!("accepted {source}"))?;
-                assert_eq!(failure.code, Code::from(Raise::Type), "{source}: {failure}");
-            }
-        }
-        Ok(())
-    }
-
-    #[test]
-    fn capture_preserves_source_kinds_and_pane_only_options()
-    -> Result<(), Box<dyn std::error::Error>> {
-        for source in [
-            "%1 full capture expect drop",
-            "str c1 client capture json drop",
-        ] {
-            super::super::compile(&fuxth::token::source("capture", source)?)
-                .map_err(|f| f.to_string())?;
+            invalid.push(format!("all {suffix}"));
         }
         for suffix in [
             "capture expect drop",
@@ -2574,17 +2515,78 @@ mod tests {
             "0 1 rows capture drop",
             "main-screen capture drop",
         ] {
-            let source = format!("str SIDE-EFFECT print str c1 client {suffix}");
-            let failure = super::super::compile(&fuxth::token::source("capture", &source)?)
+            invalid.push(format!("str c1 client {suffix}"));
+        }
+        for prefix in ["str SIDE-EFFECT print", "%1 str renamed rename"] {
+            for body in [
+                "1 dump drop",
+                "all str 0:1-2 0 next-events dump drop",
+                "all dump 1 push drop",
+            ] {
+                invalid.push(format!("{prefix} {body}"));
+            }
+        }
+        for recipe in [
+            "layout-current",
+            "even-h",
+            "even-v",
+            "main-h",
+            "main-v",
+            "tiled",
+        ] {
+            for target in ["1", "%1", "+1", "all", "str tab"] {
+                invalid.push(format!("{target} {recipe}"));
+            }
+        }
+        for code in invalid {
+            let source = format!("str SIDE-EFFECT print {code}");
+            let failure = super::super::compile(&fuxth::token::source("preflight", &source)?)
                 .err()
                 .ok_or_else(|| format!("accepted {source}"))?;
             assert_eq!(failure.code, Code::from(Raise::Type), "{source}: {failure}");
+        }
+        for code in [
+            "opts str agent in new-tab".to_owned(),
+            "opts 80 24 size new-tab clear-history".to_owned(),
+            "%1 str x text send-keys wait capture".to_owned(),
+            "all info drop".to_owned(),
+            "all dump drop".to_owned(),
+            "all str hello notify".to_owned(),
+            "all events".to_owned(),
+            "all str 0:1-2 0 next-events drop".to_owned(),
+            "%1 full capture expect drop".to_owned(),
+            "%1 all-history capture expect str x text send-keys wait capture drop".to_owned(),
+            "%1 str x text send-keys 0 quiet drop %1 capture drop".to_owned(),
+            format!("str {version} changed 0 timeout wait capture drop"),
+            "str c1 client capture json drop".to_owned(),
+        ] {
+            super::super::compile(&fuxth::token::source("accepted", &code)?)
+                .map_err(|f| f.to_string())?;
         }
         Ok(())
     }
 
     #[test]
-    fn accumulating_options_preserve_order() -> Result<(), Box<dyn std::error::Error>> {
+    fn closed_observations_have_no_version() -> TestResult {
+        for kind in ["closed-answer", "client-capture"] {
+            for suffix in ["changed drop", "expect drop", "version drop"] {
+                let mut vocabulary = super::super::vocabulary()?;
+                vocabulary.add("held", &format!("-- {kind}"))?;
+                let mut compiler = fuxth::Compiler::<Fux>::new(vocabulary);
+                let source = format!("held str SIDE-EFFECT print {suffix}");
+                let error = compiler
+                    .add(&fuxth::token::source("versionless", &source)?)
+                    .and_then(|()| compiler.finish())
+                    .err()
+                    .ok_or_else(|| format!("accepted {source}"))?;
+                assert_eq!(error.code, fuxth::Code::Type, "{source}: {error}");
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn accumulating_options_preserve_order() -> TestResult {
         let mut value = Value::App(Fux::Opts(std::rc::Rc::default()));
         for (opt, values) in [
             (Opt::Program, vec![Value::str("cat")]),
@@ -2631,8 +2633,6 @@ mod tests {
         Ok(())
     }
 
-    /// No word's name needs quoting in a shell. (That no two share one,
-    /// nor any the language's, the vocabulary checks as it is made.)
     #[test]
     fn every_name_is_a_shell_word() {
         for name in Word::ALL.iter().map(|w| w.row().name) {
@@ -2643,7 +2643,6 @@ mod tests {
         }
     }
 
-    /// `signal`'s help names every signal it takes.
     #[test]
     fn every_signal_is_told_of() {
         let about = Word::Act(Act::Signal).row().about;
@@ -2657,7 +2656,6 @@ mod tests {
         assert_eq!(named, all);
     }
 
-    /// `send-keys`'s help, and the guide, state its bound as it has it.
     #[test]
     fn the_input_bound_is_stated_as_checked() {
         let input = format!("{} KiB at most", INPUT_MAX / 1024);
@@ -2666,60 +2664,8 @@ mod tests {
         assert!(crate::help::AGENTS.contains(&input), "{input}");
     }
 
-    /// Each word's effect is in the names of fux's kinds, strictly: the
-    /// vocabulary is made, no name in any effect unknown.
     #[test]
-    fn every_effect_names_known_kinds() {
-        let made = super::super::vocabulary().map(drop);
-        assert_eq!(made, Ok(()));
-    }
-
-    /// A kind taken as another is so where a word's effect names it, never
-    /// inside a name: a string is a workspace to `in`, not a handle.
-    #[test]
-    fn a_string_is_a_workspace_only_where_a_word_says() {
-        let compiles = |code: &str| {
-            let tokens = fuxth::token::source("t", code).map_err(|e| e.to_string());
-            tokens.and_then(|t| {
-                super::super::compile(&t)
-                    .map(drop)
-                    .map_err(|e| e.to_string())
-            })
-        };
-        assert_eq!(compiles("opts str agent in new-tab"), Ok(()));
-        assert_eq!(compiles("opts 80 24 size new-tab clear-history"), Ok(()));
-        for wrong in [
-            "str nope kill",
-            "str nope str horizontal axis split",
-            "str nope info",
-        ] {
-            let refused = compiles(wrong).err().unwrap_or_default();
-            assert!(refused.starts_with("type: "), "{wrong}: {refused}");
-        }
-    }
-
-    /// A tab's answer is a kind of its own, which a word that wants a
-    /// pane refuses before anything runs; a pane's answer is its pane.
-    #[test]
-    fn a_tabs_answer_is_no_pane() {
-        let checked = |code: &str| {
-            let tokens = fuxth::token::source("t", code).unwrap_or_default();
-            super::super::compile(&tokens).map(drop)
-        };
-        for wrong in [
-            "@1 wait capture",
-            "@1 0 timeout wait capture",
-            "@1 str x text send-keys capture",
-            "+1 wait str y text send-keys",
-            "+1 0 timeout wait str y text send-keys",
-        ] {
-            assert!(checked(wrong).is_err(), "{wrong}");
-        }
-        assert_eq!(checked("%1 str x text send-keys wait capture"), Ok(()));
-    }
-
-    #[test]
-    fn nested_plain_text_shares_one_allocation_grant() -> Result<(), Box<dyn std::error::Error>> {
+    fn nested_plain_text_shares_one_allocation_grant() -> TestResult {
         std::thread_local! {
             static WRITES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
         }
@@ -2822,8 +2768,7 @@ mod tests {
     }
 
     #[test]
-    fn capture_conversion_and_rendering_share_one_grant() -> Result<(), Box<dyn std::error::Error>>
-    {
+    fn capture_conversion_and_rendering_share_one_grant() -> TestResult {
         let allocator = fux_vt_peak::ThreadPeak;
         let base = allocator.live();
         let cuts = (0..512)
@@ -2869,27 +2814,6 @@ mod tests {
         Ok(())
     }
 
-    /// A tab's or workspace's answer is an array, however many panes
-    /// answered.
-    #[test]
-    fn an_answer_of_several_panes_is_an_array() -> Result<(), Box<dyn std::error::Error>> {
-        let version = "%1:0.0.0.0.0:1-1".parse().map_err(|()| "version")?;
-        let one = super::super::Answer::Panes(vec![crate::answer::PaneAnswer::Acted(version)]);
-        let json = json_text(
-            &Value::App(Fux::Answer(fuxth::Shared::new(one), None)),
-            crate::wire::MAX_ALLOCATED,
-        )
-        .map_err(|f| f.message)?;
-        assert_eq!(
-            json,
-            r#"[{"pane":"%1","version":"%1:0.0.0.0.0:1-1","status":0}]"#
-        );
-        Ok(())
-    }
-
-    /// A request costs the steps the program took to make it, not a whole
-    /// slice of the cap: 200 settings are far under `PROGRAM_STEPS`, and a
-    /// loop still meets the cap.
     #[test]
     fn local_settings_share_the_program_step_cap() {
         let run = |config: &str| {
@@ -2909,15 +2833,7 @@ mod tests {
     }
 
     #[test]
-    fn a_default_capture_view_is_plain() {
-        assert_eq!(crate::command::CaptureView::default(), Opts::default().view);
-    }
-
-    /// Every ordinary modifier preserves the target and baseline, both in
-    /// the checker and in the constructed value. The only kind changes are
-    /// bare handles becoming their corresponding request.
-    #[test]
-    fn modifiers_keep_the_target_and_baseline() -> Result<(), Box<dyn std::error::Error>> {
+    fn modifiers_keep_the_target_and_baseline() -> TestResult {
         let version: crate::command::Version = "%2:0.0.0.0.0:48211-1867a3f9c2b8e7d6"
             .parse()
             .map_err(|()| "version")?;

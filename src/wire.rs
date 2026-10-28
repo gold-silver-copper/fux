@@ -785,11 +785,10 @@ impl Wire for Percent {
 mod tests {
     use super::*;
     use crate::command::{Command, Extent, Program};
+    use crate::session::testing::TestResult;
 
-    /// An ordinary large styled reply fits; crossing the wire cap fails
-    /// before the accumulator's length or capacity crosses it.
     #[test]
-    fn finite_bytes_are_admitted_before_allocation() -> Result<(), Box<dyn std::error::Error>> {
+    fn finite_bytes_are_admitted_before_allocation() -> TestResult {
         let mut bytes = vec![0; 22 << 20];
         let mut writer = Writer::counting(MAX_REPLY);
         writer.extend_from_slice(&bytes);
@@ -806,10 +805,8 @@ mod tests {
         Ok(())
     }
 
-    /// Small encodings can claim far more decoded space. Charge nested
-    /// list slots and string data against one budget before reserving.
     #[test]
-    fn decoded_allocations_share_one_budget() -> Result<(), Box<dyn std::error::Error>> {
+    fn decoded_allocations_share_one_budget() -> TestResult {
         let bytes = encode(&vec![vec!["abc".to_owned()]; 2])?;
         let slots = 2usize
             .saturating_mul(std::mem::size_of::<Vec<String>>())
@@ -824,21 +821,22 @@ mod tests {
         Ok(())
     }
 
-    /// The audited default-history shape needs more than the proposed
-    /// 32 MiB of decoded storage, but fits the shared allocation grant.
     #[test]
-    fn default_styled_capture_fits_decoded_budget() -> Result<(), Box<dyn std::error::Error>> {
-        use crate::capture::{Captured, Cut, Of};
-        use crate::protocol::{Body, Reply};
+    fn default_styled_capture_fits_wire_and_script_grants() -> TestResult {
+        let version = "%1:0.0.0.0.0:1-1".parse().map_err(|()| "version")?;
         let line: Vec<_> = (0u8..100)
-            .map(|color| Cut {
-                text: "x".to_owned(),
+            .map(|color| crate::capture::Cut {
+                text: "x".into(),
                 cells: 1,
                 style: fux_vt::Attributes::new(fux_vt::Color::Idx(color), fux_vt::Color::Default),
             })
             .collect();
-        let captured = Captured {
-            of: Of::Client(ClientId::of(1)),
+        let capture = crate::capture::Captured {
+            of: crate::capture::Of::Pane {
+                version,
+                wrap_pending: false,
+                state: Vec::new(),
+            },
             screen_rows: 40,
             screen_cols: 120,
             screen_cursor: None,
@@ -846,20 +844,33 @@ mod tests {
             styles: true,
             marks: false,
         };
-        let bytes = encode(&Reply::from(Body::Capture(Box::new(captured))))?;
+        let reply = crate::protocol::Reply {
+            run: Some(version.run),
+            ..crate::protocol::Body::Capture(Box::new(capture)).into()
+        };
+        let bytes = encode(&reply)?;
         let mut reader = Reader::new(&bytes);
-        let reply = Reply::get(&mut reader)?;
+        let reply = crate::protocol::Reply::get(&mut reader)?;
         let charged = MAX_ALLOCATED.saturating_sub(reader.1.remaining());
         assert!(charged > 32 << 20 && charged <= MAX_ALLOCATED, "{charged}");
-        assert!(matches!(
-            reply.response,
-            crate::protocol::Response::Returned(Body::Capture(_))
-        ));
+        let mut out = Vec::new();
+        let result = crate::script::tests::held_reply(
+            "%1 all-history styles capture let h h json print list h h h end json",
+            reply,
+            &mut out,
+        );
+        assert!(
+            out.len() as u64 > fuxth::TOTAL,
+            "admitted capture JSON was not printed: {result:?}"
+        );
+        assert!(out.starts_with(b"{\"pane\":\"%1\"") && out.ends_with(b"}\n"));
+        assert_eq!(
+            result.map_err(|e| e.code),
+            Err(crate::code::Code::from(crate::code::Raise::TooLong))
+        );
         Ok(())
     }
 
-    /// Each variant of an enum `closed_wire!` writes reads back as itself,
-    /// and its tag is its place in `ALL`.
     #[test]
     fn closed_enums_go_on_the_wire_as_their_place() {
         fn each<T: Wire + PartialEq + std::fmt::Debug + Copy>(all: &[T]) {
@@ -876,11 +887,8 @@ mod tests {
         each(&crate::keys::colour::Scheme::ALL);
     }
 
-    /// A size a request gives is a screen's, read as it was written; one
-    /// past `view::MOST`, which a dump could not write, is not
-    /// read at all. Every screen fits a pane.
     #[test]
-    fn a_size_past_a_screens_is_refused_as_it_is_read() -> Result<(), String> {
+    fn a_size_past_a_screens_is_refused_as_it_is_read() -> TestResult {
         use crate::view::{MOST, Screen};
         let most = Screen::new(MOST, MOST)?;
         assert_eq!(
@@ -888,13 +896,11 @@ mod tests {
             Some(most)
         );
         assert!(fux_vt::fits(most.size()));
-        let past = fux_vt::Size::new(10, MOST.saturating_add(1)).map_err(|e| e.to_string())?;
+        let past = fux_vt::Size::new(10, MOST.saturating_add(1))?;
         assert!(Screen::get(&mut Reader::new(&encode(&past).unwrap_or_default())).is_err());
         Ok(())
     }
 
-    /// A button `send-mouse` presses is never the wheel, and the wheel
-    /// turns only as the wheel: each reports as what it is.
     #[test]
     fn buttons_and_the_wheel_report_as_themselves() {
         use crate::command::{Button, Wheel};
@@ -910,11 +916,6 @@ mod tests {
         assert!(ways.iter().all(|w| w.reported().is_wheel()));
     }
 
-    /// A value written as text reads back only from the text it writes:
-    /// `S-.` names the key `.` too, but decoded it would encode as `.`,
-    /// so a frame would not encode to the bytes it came from (the
-    /// `protocol` fuzz target's
-    /// `fuzz/corpus/protocol/regression-a-key-spelled-otherwise`).
     #[test]
     fn a_value_written_as_text_reads_back_only_from_that_text() {
         let text = |t: &str| encode(&t.to_owned()).unwrap_or_default();
@@ -923,61 +924,42 @@ mod tests {
         assert_eq!(dot.map(|k| encode(&k).unwrap_or_default()), Some(text(".")));
     }
 
-    /// A variable's name from the wire is one a shell takes, as from the
-    /// `env` word: `A=B` (or a NUL) would set another, or none.
     #[test]
-    fn a_variable_name_no_shell_takes_is_refused() -> Result<(), String> {
-        let vars = |name: &str| {
-            encode(&vec![(
-                name.to_owned(),
-                Some(std::ffi::OsString::from("x")),
-            )])
-            .map_err(|e| e.to_string())
-        };
-        assert!(EnvPatch::get(&mut Reader::new(&vars("A=B")?)).is_err());
-        assert!(EnvPatch::get(&mut Reader::new(&vars("A\0")?)).is_err());
-        let fine = EnvPatch::get(&mut Reader::new(&vars("A_1")?)).ok();
-        assert_eq!(
-            fine.map(|env| encode(&env))
-                .transpose()
-                .map_err(|e| e.to_string())?,
-            Some(vars("A_1")?)
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn patches_keep_bytes_and_unsets_and_refuse_forged_identity() -> Result<(), String> {
+    fn environment_patches_validate_names_identity_and_bytes() -> TestResult {
         let mut patch = EnvPatch::default();
         patch.push(
-            "BYTES".into(),
+            "A_1".into(),
             Some(std::ffi::OsString::from_vec(vec![0xff, b'x'])),
         )?;
         patch.push("ABSENT".into(), None)?;
         assert_eq!(
-            Reader::new(&encode(&patch).map_err(|e| e.to_string())?).whole::<EnvPatch>(),
+            Reader::new(&encode(&patch)?).whole::<EnvPatch>(),
             Ok(patch.clone())
         );
-        for name in ["FUX", "FUX_PANE", "FUX_SOCKET", "FUX_SERVER", "A=B", "1BAD"] {
+        for name in [
+            "FUX",
+            "FUX_PANE",
+            "FUX_SOCKET",
+            "FUX_SERVER",
+            "A=B",
+            "1BAD",
+            "A\0",
+        ] {
             for value in [None, Some(std::ffi::OsString::from("forged"))] {
                 assert!(patch.push(name.into(), value.clone()).is_err());
-                let bytes = encode(&vec![(name.to_owned(), value)]).map_err(|e| e.to_string())?;
+                let bytes = encode(&vec![(name.to_owned(), value)])?;
                 assert!(Reader::new(&bytes).whole::<EnvPatch>().is_err(), "{name}");
             }
         }
         let duplicate = vec![("A".to_owned(), None::<std::ffi::OsString>); 2];
         assert!(
-            Reader::new(&encode(&duplicate).map_err(|e| e.to_string())?)
+            Reader::new(&encode(&duplicate)?)
                 .whole::<EnvPatch>()
                 .is_err()
         );
-        assert!(patch.push("BYTES".into(), None).is_err());
+        assert!(patch.push("A_1".into(), None).is_err());
         let nul = vec![("A".to_owned(), Some(std::ffi::OsString::from_vec(vec![0])))];
-        assert!(
-            Reader::new(&encode(&nul).map_err(|e| e.to_string())?)
-                .whole::<EnvPatch>()
-                .is_err()
-        );
+        assert!(Reader::new(&encode(&nul)?).whole::<EnvPatch>().is_err());
         assert!(
             patch
                 .push("A".into(), nul.into_iter().next().and_then(|(_, v)| v))
@@ -999,31 +981,26 @@ mod tests {
     }
 
     #[test]
-    fn argv_is_nonempty_and_checked_at_decode() -> Result<(), String> {
+    fn argv_is_nonempty_and_checked_at_decode() -> TestResult {
         for (program, args) in [("", vec![]), ("/bin/sh", vec!["bad\0arg".to_owned()])] {
             assert!(Program::new(program.into(), args.clone()).is_err());
-            let mut bytes = encode(&program.to_owned()).map_err(|e| e.to_string())?;
+            let mut bytes = encode(&program.to_owned())?;
             args.put(&mut bytes);
             assert!(Reader::new(&bytes).whole::<Program>().is_err());
         }
         let program = Program::new("a program".into(), vec!["".into(), "an argument".into()])?;
         assert_eq!(
-            Reader::new(&encode(&program).map_err(|e| e.to_string())?).whole::<Program>(),
+            Reader::new(&encode(&program)?).whole::<Program>(),
             Ok(program)
         );
         Ok(())
     }
 
-    /// A command's directory is the path's bytes, UTF-8 or not: one that
-    /// is not still reaches the session as it was named.
     #[test]
-    fn a_directory_goes_as_its_bytes() -> Result<(), String> {
+    fn a_directory_goes_as_its_bytes() -> TestResult {
         let dir = std::path::PathBuf::from(std::ffi::OsStr::from_bytes(b"/tmp/caf\xe9"));
         let split = Command::Split {
-            options: crate::script::default_state()
-                .map_err(|e| e.to_string())?
-                .preferences
-                .pane_options(),
+            options: crate::script::default_state()?.preferences.pane_options(),
             axis: crate::layout::Axis::Vertical,
             target: crate::id::PaneId::of(1),
             start: crate::command::Start::Shell(Program::new("/bin/sh".into(), Vec::new())?),
@@ -1038,7 +1015,7 @@ mod tests {
     }
 
     #[test]
-    fn creation_policy_requires_a_checked_budget_and_permission() -> Result<(), String> {
+    fn creation_policy_requires_a_checked_budget_and_permission() -> TestResult {
         use crate::command::{HistoryBytes, PaneOptions};
         let policy = PaneOptions {
             history_bytes: HistoryBytes::new(0).ok_or("budget")?,
@@ -1053,7 +1030,7 @@ mod tests {
             Reader::new(&invalid_scroll).whole::<crate::command::ScrollLines>(),
             Err(Error::Bad("scroll lines"))
         );
-        let encoded = encode(&policy).map_err(|e| e.to_string())?;
+        let encoded = encode(&policy)?;
         assert_eq!(Reader::new(&encoded).whole::<PaneOptions>(), Ok(policy));
         let mut invalid = Vec::new();
         ((1usize << 30) + 1).put(&mut invalid);
@@ -1074,8 +1051,6 @@ mod tests {
         Ok(())
     }
 
-    /// A share of a tab is 1 to 100 percent, from the wire too: 250 would
-    /// give a pane two and a half times the tab.
     #[test]
     fn a_percent_past_100_is_refused() {
         let read = |n: u8| Extent::get(&mut Reader::new(&[1, n])).ok();

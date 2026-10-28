@@ -106,6 +106,7 @@ pub(super) fn arguments(tokens: &[Token]) -> Result<SourceImage, Failed> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::session::testing::TestResult;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     struct Fixture(PathBuf);
@@ -151,31 +152,26 @@ mod tests {
     }
 
     #[test]
-    fn a_diamond_runs_each_canonical_file_once_and_keeps_its_sources()
-    -> Result<(), Box<dyn std::error::Error>> {
+    fn a_diamond_runs_each_canonical_file_once_and_keeps_its_sources() -> TestResult {
         let f = Fixture::new()?;
         let root = f.write("main.fux", "require sub/a.fux require b.fux answer print")?;
         f.write("sub/a.fux", "require '../shared file.fux'")?;
         f.write("b.fux", "require alias.fux")?;
         let shared = f.write("shared file.fux", "str once print define answer 41 end")?;
         std::os::unix::fs::symlink(&shared, f.0.join("alias.fux"))?;
-        let image = file(&root).map_err(|e| e.to_string())?;
+        let image = file(&root)?;
         assert_eq!(run(&image)?, "once\n41\n");
         std::fs::remove_file(&shared)?;
         assert_eq!(run(&image)?, "once\n41\n");
         // Parsing operands never become imports; includes work even in an
         // unexecuted branch, because they are resolved before execution.
-        assert_eq!(
-            run(&text("literal", "str require print").map_err(|e| e.to_string())?)?,
-            "require\n"
-        );
+        assert_eq!(run(&text("literal", "str require print")?)?, "require\n");
         assert!(text("branch", "false if require /no/such/fux-source then").is_err());
         Ok(())
     }
 
     #[test]
-    fn import_failures_name_the_chain_before_any_effect() -> Result<(), Box<dyn std::error::Error>>
-    {
+    fn import_failures_name_the_chain_before_any_effect() -> TestResult {
         let f = Fixture::new()?;
         let root = f.write("main.fux", "str before print\nrequire child.fux")?;
         f.write("child.fux", "\nrequire main.fux")?;
@@ -202,8 +198,7 @@ mod tests {
     }
 
     #[test]
-    fn aggregate_limits_include_the_root_and_refuse_before_growth()
-    -> Result<(), Box<dyn std::error::Error>> {
+    fn aggregate_limits_include_the_root_and_refuse_before_growth() -> TestResult {
         let f = Fixture::new()?;
         let root = f.write("main.fux", "require child.fux")?;
         f.write("child.fux", "1 2")?;
@@ -232,7 +227,7 @@ mod tests {
     }
 
     #[test]
-    fn unknown_invocation_directories_keep_their_cause() -> Result<(), Box<dyn std::error::Error>> {
+    fn unknown_invocation_directories_keep_their_cause() -> TestResult {
         let f = Fixture::new()?;
         let root = f.write("main.fux", "require child.fux")?;
         f.write("child.fux", "1")?;
@@ -258,8 +253,7 @@ mod tests {
     }
 
     #[test]
-    fn source_admission_refuses_fifos_devices_and_directories()
-    -> Result<(), Box<dyn std::error::Error>> {
+    fn source_admission_refuses_fifos_devices_and_directories() -> TestResult {
         let f = Fixture::new()?;
         let fifo = f.0.join("pipe");
         assert!(
@@ -277,14 +271,13 @@ mod tests {
     }
 
     #[test]
-    fn client_definitions_use_the_frozen_image_until_a_new_load()
-    -> Result<(), Box<dyn std::error::Error>> {
+    fn client_definitions_use_the_frozen_image_until_a_new_load() -> TestResult {
         let f = Fixture::new()?;
         let root = f.write("main.fux", "require child.fux")?;
         f.write("child.fux", "define answer 41 end")?;
-        let old = crate::script::run_file(&root).map_err(|e| e.to_string())?;
+        let old = crate::script::run_file(&root)?;
         f.write("child.fux", "define answer 42 end")?;
-        let new = crate::script::run_file(&root).map_err(|e| e.to_string())?;
+        let new = crate::script::run_file(&root)?;
         for (keys, expected) in [(&old, "41\n"), (&new, "42\n"), (&old, "41\n")] {
             let mut machine = crate::script::compiled(
                 keys.config.as_ref(),
