@@ -20,7 +20,6 @@ use crate::view::ClientKind;
 use crate::wait::Waiting;
 use fuxix::Errno;
 use fuxix::poll::{Events as PollFlags, PollFd};
-use std::collections::VecDeque;
 use std::fs;
 use std::io::{ErrorKind, Write};
 use std::mem;
@@ -45,6 +44,11 @@ const QUIET: Duration = Duration::from_millis(1);
 const SHORT_READ: usize = 512;
 /// Output read from one pane per tick, so one busy pane cannot starve others.
 const PANE_READ: usize = 64 * 1024;
+/// The pane read slice; one read keeps this size even when storage is shared.
+const PANE_CHUNK: usize = 16 * 1024;
+/// Shared storage for client reads and the smaller pane read slice.
+const READ_BUFFER: usize = 64 * 1024;
+const _: () = assert!(PANE_CHUNK <= READ_BUFFER);
 /// Bytes read from one client per tick, so one client cannot hold up the
 /// others: a frame larger than this is read over several ticks.
 const CONN_READ: usize = 256 * 1024;
@@ -119,6 +123,7 @@ enum Phase {
 
 /// Something the loop waits for until a moment (`Server::wakes`), and
 /// handles once due (`Server::wake`).
+#[derive(Clone, Copy)]
 enum Wake {
     Session(Timer),
     /// A closed pane's program's grace is over: it is killed.
@@ -586,7 +591,7 @@ pub struct Server {
     stops: fuxix::signal::Pipe,
     /// Where bytes read from a client's connection or terminal land before
     /// they are taken; one for the server, reused by every read.
-    read_buffer: Vec<u8>,
+    read_buffer: Box<[u8; READ_BUFFER]>,
     /// Where a paint is made before it is sent; reused by every paint.
     paint_buffer: Vec<u8>,
     /// What each descriptor polled is, and then what is ready; reused by
@@ -596,6 +601,18 @@ pub struct Server {
     ready: Vec<(Slot, PollFlags)>,
     /// When an `accept` failure was last logged.
     accept_logged: Option<Instant>,
+}
+
+/// Allocate the shared buffer without putting a large array on the stack.
+fn read_buffer() -> Result<Box<[u8; READ_BUFFER]>, Error> {
+    vec![0; READ_BUFFER]
+        .into_boxed_slice()
+        .try_into()
+        .map_err(|_| {
+            Error::Setup(std::io::Error::other(
+                "could not size the server read buffer",
+            ))
+        })
 }
 
 /// Why a server could not start.
@@ -634,6 +651,7 @@ pub fn serve(socket: &SocketPath) -> Result<(), Error> {
         ))
     })?;
     let session = Session::new(socket.path().to_owned(), true, run);
+    let read_buffer = read_buffer()?;
     // Last of what can fail: once it listens, a server that started
     // with it finds it there (`socket::bind_socket`).
     let listening = Listening::open(socket)?;
@@ -650,7 +668,7 @@ pub fn serve(socket: &SocketPath) -> Result<(), Error> {
         children,
         killed: Vec::new(),
         stops,
-        read_buffer: vec![0u8; 64 * 1024],
+        read_buffer,
         paint_buffer: Vec::new(),
         slots: Vec::new(),
         pollfds: fuxix::poll::Poll::default(),
@@ -699,22 +717,11 @@ enum Slot {
 
 impl Server {
     fn run(&mut self) {
-        let mut wakes = VecDeque::new();
+        let mut wakes = Vec::new();
         loop {
-            let now = Instant::now();
-            // What the last round read or changed may be what a wait waits
-            // for, or an event to tell.
-            self.answer_waits(now);
-            self.tell_events(false, now);
-            // Input given to panes since the last poll is written now rather
-            // than when the next poll says their terminals can take it.
-            let wrote = self.session.parts.write_input();
-            self.wrote_input(wrote);
-            self.close_conns();
-            // Each change settles as it is made; this catches output that
-            // dropped rows a copy mode held.
-            self.session.hold_copies();
-            self.deliver(now);
+            let ControlFlow::Continue(next) = self.turn(Instant::now(), &mut wakes) else {
+                return;
+            };
             if matches!(self.phase, Phase::Stopping(_))
                 && self.session.dying.is_empty()
                 && self.killed.is_empty()
@@ -723,24 +730,10 @@ impl Server {
                 self.finish();
                 return;
             }
-            // Collect after every mutation, including connection removal.
-            // Nothing changes its timers or indices between here and firing
-            // the due wakes, before the ready descriptors are served.
-            wakes.extend(self.wakes());
-            let now = Instant::now();
-            let timeout = wakes
-                .iter()
-                .map(|(at, _)| *at)
-                .min()
-                .map(|at| at.saturating_duration_since(now));
+            // Long work in the turn must not extend the poll's deadline.
+            let timeout = next.map(|at| at.saturating_duration_since(Instant::now()));
             let mut ready = mem::take(&mut self.ready);
             self.poll(timeout, &mut ready);
-            let resumed = Instant::now();
-            while let Some((at, wake)) = wakes.pop_front() {
-                if at <= resumed && self.wake(wake, Instant::now()).is_break() {
-                    return;
-                }
-            }
             for &(slot, flags) in &ready {
                 let now = Instant::now();
                 match slot {
@@ -759,6 +752,41 @@ impl Server {
             }
             self.ready = ready;
         }
+    }
+
+    /// Finish the preceding descriptor events before polling again. Session
+    /// timers precede answers, and an echo already due paints in this turn.
+    fn turn(
+        &mut self,
+        now: Instant,
+        wakes: &mut Vec<(Instant, Wake)>,
+    ) -> ControlFlow<(), Option<Instant>> {
+        wakes.clear();
+        wakes.extend(self.wakes());
+        let mut changed = false;
+        let mut next = None;
+        for &(at, wake) in wakes.iter() {
+            if at <= now {
+                changed = true;
+                self.wake(wake, now)?;
+            } else {
+                next = Some(next.map_or(at, |next: Instant| next.min(at)));
+            }
+        }
+        changed |= self.answer_waits(now);
+        self.tell_events(false, now);
+        let wrote = self.session.parts.write_input();
+        self.wrote_input(wrote);
+        // Only the deadline survives compaction, never connection indices.
+        self.close_conns();
+        self.session.hold_copies();
+        // Delivery can detach a client, resize its panes or start shutdown.
+        changed |= !self.session.outbox.is_empty();
+        self.deliver(now);
+        if changed {
+            next = self.wakes().map(|(at, _)| at).min();
+        }
+        ControlFlow::Continue(next)
     }
 
     /// Everything the loop waits for, each with when it is due. Paints come
@@ -820,15 +848,18 @@ impl Server {
     }
 
     /// Answers each wait that has its answer.
-    fn answer_waits(&mut self, now: Instant) {
+    fn answer_waits(&mut self, now: Instant) -> bool {
+        let mut answered = false;
         for conn in &mut self.conns {
             let Stage::Waiting(waiting) = &mut conn.stage else {
                 continue;
             };
             if let Some(outcome) = waiting.answer(&self.session, now) {
                 conn.answer(&mut self.session, outcome, now);
+                answered = true;
             }
         }
+        answered
     }
 
     /// Tells each stream of events what the journal holds that it has not
@@ -1281,7 +1312,7 @@ impl Server {
             if frames >= CONN_FRAMES || read >= CONN_READ {
                 break false;
             }
-            match fuxix::io::read(&conn.stream, &mut self.read_buffer) {
+            match fuxix::io::read(&conn.stream, self.read_buffer.as_mut_slice()) {
                 Ok(0) => break true,
                 Ok(n) => {
                     read = read.saturating_add(n);
@@ -1564,10 +1595,11 @@ impl Server {
             let Process::Reading(child) = &pane.process() else {
                 return;
             };
-            match read(
-                &child.master,
-                self.read_buffer.get_mut(..16384).unwrap_or_default(),
-            ) {
+            let Some(buffer) = self.read_buffer.get_mut(..PANE_CHUNK) else {
+                log!("pane read buffer is shorter than {PANE_CHUNK} bytes");
+                return;
+            };
+            match read(&child.master, buffer) {
                 Err(Errno::AGAIN) => break false,
                 Err(Errno::INTR) => continue,
                 // EIO: the slave side is closed; the program is gone.
@@ -1651,6 +1683,74 @@ impl Server {
 mod tests {
     use super::*;
 
+    #[test]
+    fn due_frames_precede_expired_wait_answers() -> Result<(), Box<dyn std::error::Error>> {
+        let (mut server, _peers, _) = ordered_fixture()?;
+        let now = Instant::now();
+        server.phase = Phase::Stopping(after(now, Duration::from_secs(10)));
+        let pane = PaneId::of(1);
+        server.session.output(pane, b"\x1b[?2026hheld", now);
+        let counts = server
+            .session
+            .parts
+            .panes()
+            .get(&pane)
+            .ok_or("pane")?
+            .counts();
+        let waiting = Waiting::new(
+            crate::wait::Watches::Pane((pane, counts)),
+            server.session.run,
+            after(now, Duration::from_millis(1)),
+            crate::pane::FRAME_TIMEOUT,
+        );
+        let late = after(waiting.due().ok_or("deadline")?, Duration::from_millis(1));
+        server.conns.first_mut().ok_or("worker")?.stage = Stage::Waiting(Box::new(waiting));
+        assert!(server.turn(late, &mut Vec::new()).is_continue());
+        let mut decoder = Decoder::default();
+        decoder.push(server.conns.first().ok_or("worker")?.out.as_slice());
+        let Some(ToCommand::Part(part)) = decoder.frame()? else {
+            return Err("wait was not answered".into());
+        };
+        let reply = crate::wire::Reader::new(&part).whole::<Reply>()?;
+        assert!(
+            matches!(
+                reply.response,
+                crate::protocol::Response::Answered(crate::answer::PaneResults::One(
+                    crate::answer::PaneAnswer::Changed { .. }
+                ))
+            ),
+            "{reply:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn an_echo_paints_before_the_next_poll() -> Result<(), Box<dyn std::error::Error>> {
+        let (mut server, _peers, _) = ordered_fixture()?;
+        let now = Instant::now();
+        server.phase = Phase::Stopping(after(now, Duration::from_secs(10)));
+        server.paint(1, now);
+        let pane = PaneId::of(1);
+        let echoed = after(now, Duration::from_millis(1));
+        server.session.output(pane, b"echo", echoed);
+        let attached = server
+            .conns
+            .get_mut(1)
+            .and_then(Conn::attached)
+            .ok_or("attachment")?;
+        attached.clock.echo = Some(pane);
+        attached.clock.output(pane, echoed);
+        assert!(server.turn(echoed, &mut Vec::new()).is_continue());
+        let attached = server
+            .conns
+            .get_mut(1)
+            .and_then(Conn::attached)
+            .ok_or("attachment")?;
+        assert_eq!(attached.clock.next, after(echoed, PAINT));
+        assert!(attached.known);
+        Ok(())
+    }
+
     /// A refused finite reply queues one small failure, never a prefix
     /// followed by a successful PartsEnd.
     #[test]
@@ -1695,7 +1795,7 @@ mod tests {
                 children: fuxix::signal::Pipe::new(&[])?,
                 killed: Vec::new(),
                 stops: fuxix::signal::Pipe::new(&[])?,
-                read_buffer: vec![0; 64 * 1024],
+                read_buffer: read_buffer()?,
                 paint_buffer: Vec::new(),
                 slots: Vec::new(),
                 pollfds: fuxix::poll::Poll::default(),
@@ -1729,7 +1829,14 @@ mod tests {
             view.notice = None;
             view.dirty = false;
         }
-        server.read_pane(id, |_, _| Err(Errno::INVAL), Instant::now());
+        server.read_pane(
+            id,
+            |_, bytes| {
+                assert_eq!(bytes.len(), PANE_CHUNK);
+                Err(Errno::INVAL)
+            },
+            Instant::now(),
+        );
         let notice = server
             .session
             .views
@@ -1744,7 +1851,7 @@ mod tests {
         let info = crate::session::testing::output(&mut server.session, "%1 info json");
         server
             .session
-            .exited(id, crate::process::Ended::Exited(0), Instant::now());
+            .end_program(id, crate::process::Ended::Exited(0));
         server.finish();
         let notice = notice.ok_or("read failure was not delivered")?;
         assert!(
@@ -1832,7 +1939,7 @@ mod tests {
             children: fuxix::signal::Pipe::new(&[])?,
             stops: fuxix::signal::Pipe::new(&[])?,
             killed: Vec::new(),
-            read_buffer: vec![0; 64 * 1024],
+            read_buffer: read_buffer()?,
             paint_buffer: Vec::new(),
             slots: Vec::new(),
             pollfds: fuxix::poll::Poll::default(),
