@@ -4190,7 +4190,7 @@ mod tests {
         run(&mut s, "+3 kill")?;
         let view = s.views.get(&c).ok_or("view")?;
         assert_eq!((view.last_tab, view.last_workspace), (None, None));
-        s.detach(c);
+        s.detach_client(c);
         let d = s.attach(10, 40, None)?;
         let view = s.views.get(&d).ok_or("view")?;
         assert_eq!((view.last_tab, view.last_workspace), (None, None));
@@ -4271,7 +4271,7 @@ mod tests {
             Some(&Json::int(0))
         );
         s.terminal_reply(c, crate::decode::Reply::KittyFlags(5));
-        s.settle();
+        s.settled();
         let reported = facts(&s, c)?;
         let terminal = reported.get("terminal").ok_or("terminal")?;
         assert_eq!(terminal.get("sixel_reported"), Some(&Json::Bool(true)));
@@ -4311,9 +4311,9 @@ mod tests {
         let effective = other.get("output").ok_or("output")?;
         assert_eq!(effective.get("graphics"), Some(&Json::str("cell")));
         assert_eq!(effective.get("clipboard"), Some(&Json::Null));
-        s.detach(d);
+        s.detach_client(d);
         assert_eq!(output(&mut s, "@1 str host get")?, "c1\n");
-        s.detach(c);
+        s.detach_client(c);
         assert_eq!(output(&mut s, "@1 str host get")?, "null\n");
         assert_eq!(s.graphics(PaneId::of(1)), fux_vt::Graphics::Text);
         Ok(())
