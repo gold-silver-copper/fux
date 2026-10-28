@@ -772,13 +772,13 @@ fn pane(loads: &[Load], baseline: bool) -> Result<Done, String> {
         "%1".parse::<fux::id::PaneId>().map_err(|e| e.to_string())?,
         None,
         fux::pane::Runs::Shell(fux::pane::Launch {
-            argv: fux::config::Program::new("/bin/sh".into(), Vec::new())?,
+            argv: fux::command::Program::new("/bin/sh".into(), Vec::new())?,
             cwd: "/".into(),
             env: fux::command::EnvPatch::default(),
         }),
         fux_vt::Size::new(first.rows, first.cols).map_err(|e| e.to_string())?,
         fux::command::PaneOptions {
-            history_bytes: fux::config::HistoryBytes::new(HISTORY).ok_or("history budget")?,
+            history_bytes: fux::command::HistoryBytes::new(HISTORY).ok_or("history budget")?,
             program_clipboard: true,
         },
     )
@@ -1107,7 +1107,7 @@ fn presentation() -> fux::view::Presentation {
 
 fn pane_options(history: usize) -> Result<fux::command::PaneOptions, String> {
     Ok(fux::command::PaneOptions {
-        history_bytes: fux::config::HistoryBytes::new(history).ok_or("history budget")?,
+        history_bytes: fux::command::HistoryBytes::new(history).ok_or("history budget")?,
         program_clipboard: true,
     })
 }
@@ -1116,7 +1116,10 @@ fn initial() -> Result<fux::command::InitialWorkspace, String> {
     Ok(fux::command::InitialWorkspace {
         options: pane_options(HISTORY)?,
         name: None,
-        start: fux::command::Start::Shell(fux::config::Program::new("/bin/sh".into(), Vec::new())?),
+        start: fux::command::Start::Shell(fux::command::Program::new(
+            "/bin/sh".into(),
+            Vec::new(),
+        )?),
         cwd: std::env::current_dir().map_err(|e| e.to_string())?,
         env: fux::command::EnvPatch::default(),
     })

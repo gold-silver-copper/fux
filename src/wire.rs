@@ -608,13 +608,13 @@ text_wire!(crate::command::Run, "server run");
 text_wire!(crate::events::Cursor, "cursor");
 
 /// Its seconds, read back only if a wait may wait that long.
-impl Wire for crate::config::Limit {
+impl Wire for crate::command::Limit {
     fn put(&self, out: &mut impl crate::wire::Sink) {
         self.seconds().put(out);
     }
     fn get(r: &mut Reader<'_>) -> Result<Self, Error> {
         let secs = u32::get(r)?;
-        crate::config::Limit::secs(u64::from(secs)).ok_or(Error::Bad("wait limit"))
+        crate::command::Limit::secs(u64::from(secs)).ok_or(Error::Bad("wait limit"))
     }
 }
 
@@ -1008,7 +1008,7 @@ mod tests {
 
     #[test]
     fn argv_is_nonempty_and_checked_at_decode() -> Result<(), String> {
-        use crate::config::Program;
+        use crate::command::Program;
         for (program, args) in [("", vec![]), ("/bin/sh", vec!["bad\0arg".to_owned()])] {
             assert!(Program::new(program.into(), args.clone()).is_err());
             let mut bytes = encode(&program.to_owned()).map_err(|e| e.to_string())?;
@@ -1035,7 +1035,7 @@ mod tests {
                 .pane_options(),
             axis: crate::layout::Axis::Vertical,
             target: crate::id::PaneId::of(1),
-            start: crate::command::Start::Shell(crate::config::Program::new(
+            start: crate::command::Start::Shell(crate::command::Program::new(
                 "/bin/sh".into(),
                 Vec::new(),
             )?),
@@ -1053,7 +1053,7 @@ mod tests {
     fn creation_policy_requires_a_checked_budget_and_permission() -> Result<(), String> {
         use crate::command::PaneOptions;
         let policy = PaneOptions {
-            history_bytes: crate::config::HistoryBytes::new(0).ok_or("budget")?,
+            history_bytes: crate::command::HistoryBytes::new(0).ok_or("budget")?,
             program_clipboard: false,
         };
         let encoded = encode(&policy).map_err(|e| e.to_string())?;

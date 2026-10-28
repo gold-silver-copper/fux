@@ -342,7 +342,7 @@ mod tests {
                 .preferences
                 .pane_options(),
             name: None,
-            start: crate::command::Start::Shell(crate::config::Program::new(
+            start: crate::command::Start::Shell(crate::command::Program::new(
                 "/bin/sh".into(),
                 Vec::new(),
             )?),

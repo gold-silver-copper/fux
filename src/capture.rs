@@ -1052,7 +1052,7 @@ mod tests {
     -> Result<(), Box<dyn std::error::Error>> {
         let allocator = fux_vt_peak::ThreadPeak;
         let launch = Runs::Explicit(crate::pane::Launch {
-            argv: crate::config::Program::new(
+            argv: crate::command::Program::new(
                 std::iter::repeat_n('l', 6000).collect(),
                 Vec::new(),
             )?,
