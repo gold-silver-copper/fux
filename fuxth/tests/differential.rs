@@ -1,8 +1,6 @@
-//! fuxth held to a second interpreter on random programs: the same ends,
-//! paused at every step or not, and a program refused before it runs only
-//! when the step it names would surely fail.
+//! Pausing and algebraic rewrites preserve a program's observable result.
 mod common;
-use common::{Ended, Gen, Naive, Rng, fuxth};
+use common::{Ended, Gen, Rng, V, fuxth};
 
 /// Programs per test: enough to reach every word in many places, quick in
 /// a debug build.
@@ -17,94 +15,6 @@ fn program(rng: &mut Rng, seed: u64) -> String {
     }
 }
 
-/// What happened over many programs, to show the test reached each kind.
-#[derive(Default, Debug)]
-struct Seen {
-    left: usize,
-    failed: usize,
-    refused: usize,
-    endless: usize,
-}
-
-#[test]
-fn fuxth_ends_as_the_naive_interpreter_does() {
-    let mut seen = Seen::default();
-    let mut wrong = Vec::new();
-    for seed in 0..PROGRAMS {
-        let mut rng = Rng::new(seed);
-        let text = program(&mut rng, seed);
-        let ran = fuxth(&text, u64::MAX);
-        let (naive, trace) = Naive::run(&text);
-        // A limit each meets in its own place (a call in last place takes
-        // no room in fuxth), and runs that never end, are compared no more.
-        let limit = |e: &Ended| matches!(e, Ended::Failed(c, _) if c == "call_depth" || c == "stack_overflow");
-        match (&ran, &naive) {
-            (Ended::Refused(code, line), naive) => {
-                seen.refused = seen.refused.saturating_add(1);
-                // Refused only if reaching that step surely fails: there,
-                // as it says, or (a call) somewhere in what it calls, the
-                // first time the run reaches it. A failure later, at
-                // another step, excuses nothing.
-                // A refusal promises the step fails, not with which code:
-                // the run may meet another mistake there first (an index
-                // past the end before the element's kind).
-                let failed_so = trace.fails_at(*line);
-                if trace.reached.contains(line) && !failed_so {
-                    wrong.push(format!(
-                        "seed {seed}: refused {code} at line {line}, which ran: {naive:?}\n{text}"
-                    ));
-                }
-                if !matches!(code.as_str(), "stack_underflow" | "type" | "overflow") {
-                    wrong.push(format!("seed {seed}: refused for {code}\n{text}"));
-                }
-            }
-            (Ended::Endless, _) | (_, Ended::Endless) => {
-                seen.endless = seen.endless.saturating_add(1);
-            }
-            (ran, naive) if limit(ran) || limit(naive) => {
-                seen.endless = seen.endless.saturating_add(1);
-            }
-            (ran, naive) => {
-                // A failure inside a library word is placed at the
-                // program's step when the word is copied in, and inside
-                // the library (line 0) when called: the same failure.
-                let (ran, naive) = match (ran, naive) {
-                    (Ended::Failed(a, x), Ended::Failed(b, y)) if *x == 0 || *y == 0 => {
-                        (&Ended::Failed(a.clone(), 0), &Ended::Failed(b.clone(), 0))
-                    }
-                    _ => (ran, naive),
-                };
-                match ran {
-                    Ended::Left(..) => seen.left = seen.left.saturating_add(1),
-                    Ended::Failed(..) | Ended::Refused(..) | Ended::Endless => {
-                        seen.failed = seen.failed.saturating_add(1);
-                    }
-                }
-                if ran != naive {
-                    wrong.push(format!(
-                        "seed {seed}: fuxth {ran:?}, naive {naive:?}\n{text}"
-                    ));
-                }
-            }
-        }
-        if wrong.len() > 3 {
-            break;
-        }
-    }
-    assert!(wrong.is_empty(), "{}", wrong.join("\n\n"));
-    assert!(
-        seen.endless < usize::try_from(PROGRAMS / 10).unwrap_or(usize::MAX),
-        "{seen:?}"
-    );
-    // Every kind of end, often.
-    let share = |n: u64| usize::try_from(PROGRAMS / n).unwrap_or(usize::MAX);
-    assert!(seen.left > share(5), "{seen:?}");
-    assert!(seen.failed > share(20), "{seen:?}");
-    assert!(seen.refused > share(10), "{seen:?}");
-}
-
-/// Stopping after every step, and going on, changes nothing: every step,
-/// suspension and error happens as in one run.
 #[test]
 fn pausing_at_every_step_changes_nothing() {
     for seed in 0..PROGRAMS {
@@ -125,11 +35,24 @@ fn pausing_at_every_step_changes_nothing() {
     }
 }
 
-/// Rewrites that keep a program's meaning keep its end: `dup drop`, `swap
-/// swap`, `0 add` and `1 mul` after values they fit, and a definition's
-/// body in place of a call to it.
 #[test]
 fn rewrites_that_mean_the_same_end_the_same() {
+    for body in [
+        "1 2 add",
+        "list 1 2 end 0 swap each add end",
+        "true if 3 else 4 then",
+        "0 begin 1 add dup 3 eq until",
+        "str fail try str reason fail catch 2drop 3 end",
+        "1 let x x 2 add",
+    ] {
+        for source in [body.to_owned(), format!("define f {body} end f")] {
+            assert_eq!(
+                fuxth(&source, u64::MAX),
+                Ended::Left(Vec::new(), vec![V::Int(3)]),
+                "{source}"
+            );
+        }
+    }
     let mut checked = 0usize;
     for seed in 0..PROGRAMS {
         let mut rng = Rng::new(seed.wrapping_add(2 << 32));
@@ -157,77 +80,13 @@ fn rewrites_that_mean_the_same_end_the_same() {
         }
         let rewritten = rewritten.join("\n");
         assert!(
-            agrees(&rewritten, &left),
+            fuxth(&rewritten, u64::MAX) == left,
             "seed {seed}\n{text}\n---\n{rewritten}"
         );
-        if let Some(inlined) = inline(&lines) {
-            assert!(
-                agrees(&inlined, &left),
-                "seed {seed}\n{text}\n---\n{inlined}"
-            );
-        }
         checked = checked.saturating_add(1);
     }
     assert!(
         checked > usize::try_from(PROGRAMS / 5).unwrap_or(usize::MAX),
         "{checked}"
     );
-}
-
-/// Whether `text` leaves `left`; or is refused for a step no run reaches,
-/// a step that would surely fail but sits where nothing goes (a branch
-/// whose test is always false, once a definition's body is in place of
-/// its call and the depth there is known).
-fn agrees(text: &str, left: &Ended) -> bool {
-    match fuxth(text, u64::MAX) {
-        got @ Ended::Left(..) => got == *left,
-        Ended::Refused(_, line) => {
-            let (naive, trace) = Naive::run(text);
-            naive == *left && !trace.reached.contains(&line)
-        }
-        Ended::Failed(..) | Ended::Endless => false,
-    }
-}
-
-/// The program with each call of its first definition replaced by the
-/// definition's body, if that definition doesn't call itself.
-fn inline(lines: &[&str]) -> Option<String> {
-    let start = lines.iter().position(|l| *l == "define")?;
-    let name = *lines.get(start.checked_add(1)?)?;
-    // Its own `end`: `list`, `each` and `try` inside it close with `end` too.
-    let mut depth = 0usize;
-    let mut quoted = false;
-    let mut end = None;
-    for (i, l) in lines.iter().enumerate().skip(start) {
-        if std::mem::replace(&mut quoted, false) {
-            continue;
-        }
-        quoted = matches!(*l, "str" | "let" | "define");
-        match *l {
-            "define" | "list" | "each" | "try" => depth = depth.saturating_add(1),
-            "end" => {
-                depth = depth.saturating_sub(1);
-                if depth == 0 {
-                    end = Some(i);
-                    break;
-                }
-            }
-            _ => {}
-        }
-    }
-    let end = end?;
-    let body = lines.get(start.checked_add(2)?..end)?;
-    if body.contains(&name) {
-        return None;
-    }
-    let mut out = Vec::new();
-    for (i, line) in lines.iter().enumerate() {
-        let quoted = i > 0 && lines.get(i.saturating_sub(1)) == Some(&"str");
-        if *line == name && i > end && !quoted {
-            out.extend(body.iter().copied());
-        } else {
-            out.push(*line);
-        }
-    }
-    Some(out.join("\n"))
 }

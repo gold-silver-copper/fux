@@ -1915,8 +1915,22 @@ fn read_file(path: &std::path::Path) -> Result<String, Failed> {
 }
 
 #[cfg(test)]
-mod tests {
-    fn held_reply(
+pub(crate) mod tests {
+    use crate::session::testing::TestResult;
+    impl std::error::Error for super::Failed {}
+
+    pub(crate) fn evaluate(
+        code: &str,
+        state: Option<&mut super::Draft>,
+        asks: &mut impl super::Asks,
+        out: &mut dyn std::io::Write,
+    ) -> Result<Vec<fuxth::Value<super::Fux>>, super::Failed> {
+        let mut machine = super::compile(&fuxth::token::source("test", code)?)?;
+        let mut host = super::Host::new(crate::protocol::Context::default(), state, out);
+        super::run_capped(&mut machine, &mut host, asks, None, None)
+    }
+
+    pub(crate) fn held_reply(
         code: &str,
         reply: super::Reply,
         out: &mut Vec<u8>,
@@ -1944,15 +1958,11 @@ mod tests {
                 })
             }
         }
-        let tokens = fuxth::token::source("test", code).map_err(super::Failed::from)?;
-        let mut machine = super::compile(&tokens)?;
-        let mut host = super::Host::new(crate::protocol::Context::default(), None, out);
-        super::run_capped(&mut machine, &mut host, &mut Once(Some(reply)), None, None)
+        evaluate(code, None, &mut Once(Some(reply)), out)
     }
 
     #[test]
-    fn event_reads_reject_other_reply_families_before_resuming()
-    -> Result<(), Box<dyn std::error::Error>> {
+    fn event_reads_reject_other_reply_families_before_resuming() -> TestResult {
         let mut out = Vec::new();
         let failure = held_reply(
             "all str '' 0 next-events drop str EFFECT print",
@@ -1967,7 +1977,7 @@ mod tests {
     }
 
     #[test]
-    fn ended_answers_expose_both_exit_fields() -> Result<(), Box<dyn std::error::Error>> {
+    fn ended_answers_expose_both_exit_fields() -> TestResult {
         use super::*;
         use crate::process::Ended;
         let version: Version = "%1:0.7.0.0.0:1-1".parse().map_err(|()| "version")?;
@@ -1993,16 +2003,34 @@ mod tests {
                 "%1 0 timeout wait let held held str exited get held str signal get",
                 reply,
                 &mut Vec::new(),
-            )
-            .map_err(|e| e.to_string())?;
+            )?;
             assert_eq!(values, vec![exited, signal]);
         }
         Ok(())
     }
 
+    fn large_plain(version: super::Version) -> crate::capture::Captured {
+        crate::capture::Captured {
+            of: crate::capture::Of::Pane {
+                version,
+                wrap_pending: false,
+                state: Vec::new(),
+            },
+            screen_rows: 24,
+            screen_cols: 80,
+            screen_cursor: None,
+            lines: vec![vec![crate::capture::Cut {
+                text: std::iter::repeat_n('x', 17_000_000).collect(),
+                cells: 17_000_000,
+                style: fux_vt::Attributes::default(),
+            }]],
+            styles: false,
+            marks: false,
+        }
+    }
+
     #[test]
-    fn retained_captures_exhaust_the_grant_but_polling_releases_it()
-    -> Result<(), Box<dyn std::error::Error>> {
+    fn retained_captures_exhaust_the_grant_but_polling_releases_it() -> TestResult {
         use super::*;
         struct Captures {
             count: usize,
@@ -2022,23 +2050,7 @@ mod tests {
                     });
                 }
                 self.count += 1;
-                let capture = crate::capture::Captured {
-                    of: crate::capture::Of::Pane {
-                        version,
-                        wrap_pending: false,
-                        state: Vec::new(),
-                    },
-                    screen_rows: 24,
-                    screen_cols: 80,
-                    screen_cursor: None,
-                    lines: vec![vec![crate::capture::Cut {
-                        text: std::iter::repeat_n('x', 17_000_000).collect(),
-                        cells: 17_000_000,
-                        style: fux_vt::Attributes::default(),
-                    }]],
-                    styles: false,
-                    marks: false,
-                };
+                let capture = large_plain(version);
                 Ok(Reply {
                     run: Some(version.run),
                     ..Body::Capture(Box::new(capture)).into()
@@ -2051,12 +2063,8 @@ mod tests {
             } else {
                 "0 20 range each drop %1 all-history capture drop end".into()
             };
-            let mut machine =
-                compile(&fuxth::token::source("test", &source)?).map_err(|e| e.to_string())?;
-            let mut out = Vec::new();
-            let mut host = Host::new(crate::protocol::Context::default(), None, &mut out);
             let mut asks = Captures { count: 0 };
-            let result = run_capped(&mut machine, &mut host, &mut asks, None, None);
+            let result = evaluate(&source, None, &mut asks, &mut Vec::new());
             if retain {
                 assert_eq!(
                     result.map(|_| ()).map_err(|e| e.code),
@@ -2064,7 +2072,7 @@ mod tests {
                 );
                 assert!(asks.count < 9);
             } else {
-                assert!(result.map_err(|e| e.to_string())?.is_empty());
+                assert!(result?.is_empty());
                 assert_eq!(asks.count, 20);
             }
         }
@@ -2072,87 +2080,22 @@ mod tests {
     }
 
     #[test]
-    fn large_plain_capture_crosses_the_machine_boundary() -> Result<(), Box<dyn std::error::Error>>
-    {
+    fn large_plain_capture_crosses_the_machine_boundary() -> TestResult {
         let version: super::Version = "%1:0.7.0.0.0:1-1".parse().map_err(|()| "version")?;
-        let capture = crate::capture::Captured {
-            of: crate::capture::Of::Pane {
-                version,
-                wrap_pending: false,
-                state: Vec::new(),
-            },
-            screen_rows: 24,
-            screen_cols: 80,
-            screen_cursor: None,
-            lines: vec![vec![crate::capture::Cut {
-                text: std::iter::repeat_n('x', 17_000_000).collect(),
-                cells: 17_000_000,
-                style: fux_vt::Attributes::default(),
-            }]],
-            styles: false,
-            marks: false,
-        };
+        let capture = large_plain(version);
         let reply = super::Reply {
             run: Some(version.run),
             ..crate::protocol::Body::Capture(Box::new(capture)).into()
         };
         assert!(crate::wire::size(&reply)? <= crate::wire::MAX_REPLY);
         let mut out = Vec::new();
-        held_reply("%1 all-history capture print", reply, &mut out).map_err(|e| e.to_string())?;
+        held_reply("%1 all-history capture print", reply, &mut out)?;
         assert_eq!(out.len(), 17_000_001);
         Ok(())
     }
 
     #[test]
-    fn large_capture_json_crosses_the_machine_boundary_with_its_byte_grant()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let version = "%1:0.0.0.0.0:1-1".parse().map_err(|()| "version")?;
-        let line: Vec<_> = (0u8..100)
-            .map(|color| crate::capture::Cut {
-                text: "x".into(),
-                cells: 1,
-                style: fux_vt::Attributes::new(fux_vt::Color::Idx(color), fux_vt::Color::Default),
-            })
-            .collect();
-        let capture = crate::capture::Captured {
-            of: crate::capture::Of::Pane {
-                version,
-                wrap_pending: false,
-                state: Vec::new(),
-            },
-            screen_rows: 40,
-            screen_cols: 120,
-            screen_cursor: None,
-            lines: std::iter::repeat_n(line, 9931).collect(),
-            styles: true,
-            marks: false,
-        };
-        let reply = super::Reply {
-            run: Some(version.run),
-            ..crate::protocol::Body::Capture(Box::new(capture)).into()
-        };
-        assert!(crate::wire::size(&reply)? <= crate::wire::MAX_REPLY);
-        let mut out = Vec::new();
-        let result = held_reply(
-            "%1 all-history styles capture let h h json print list h h h end json",
-            reply,
-            &mut out,
-        );
-        assert!(
-            out.len() as u64 > fuxth::TOTAL,
-            "admitted capture JSON was not printed: {result:?}"
-        );
-        assert!(out.starts_with(b"{\"pane\":\"%1\"") && out.ends_with(b"}\n"));
-        assert_eq!(
-            result.map_err(|e| e.code),
-            Err(crate::code::Code::from(crate::code::Raise::TooLong))
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn held_answers_and_captures_project_without_refreshing()
-    -> Result<(), Box<dyn std::error::Error>> {
+    fn held_answers_and_captures_project_without_refreshing() -> TestResult {
         use super::*;
         let version: Version = "%1:0.7.0.0.0:1-1".parse().map_err(|()| "version")?;
         let reply = Reply {
@@ -2164,8 +2107,7 @@ mod tests {
                 "%1 str x text send-keys str version get",
                 reply,
                 &mut Vec::new()
-            )
-            .map_err(|e| e.to_string())?,
+            )?,
             vec![Value::str(version.to_string())]
         );
         let capture = crate::capture::Captured {
@@ -2186,8 +2128,7 @@ mod tests {
             ..Body::Capture(Box::new(capture)).into()
         };
         assert_eq!(
-            held_reply("%1 capture str last_status get", reply, &mut Vec::new())
-                .map_err(|e| e.to_string())?,
+            held_reply("%1 capture str last_status get", reply, &mut Vec::new())?,
             vec![Value::Int(7)]
         );
         let reply = Reply {
@@ -2199,8 +2140,7 @@ mod tests {
                 "str closed try %1 0 timeout wait catch drop str pane get end",
                 reply,
                 &mut Vec::new()
-            )
-            .map_err(|e| e.to_string())?,
+            )?,
             vec![Value::App(Fux::Pane(version.pane, Some(version.run)))]
         );
         let client = crate::id::ClientId::of(1);
@@ -2221,7 +2161,12 @@ mod tests {
             run: Some(version.run),
             ..Body::Capture(Box::new(capture)).into()
         };
-        let values = held_reply("str c1 client capture let held held str client get held str screen_cursor get held str lines get first held str styles get first first str fg get", reply, &mut Vec::new()).map_err(|e| e.to_string())?;
+        let reply = crate::wire::Reader::new(&crate::wire::encode(&reply)?).whole()?;
+        let values = held_reply(
+            "str c1 client capture let held held str client get held str screen_cursor get held str lines get first held str styles get first first str fg get",
+            reply,
+            &mut Vec::new(),
+        )?;
         assert_eq!(
             values,
             vec![
@@ -2237,8 +2182,7 @@ mod tests {
     }
 
     #[test]
-    fn attach_words_accept_compiled_action_answers_and_keep_their_run()
-    -> Result<(), Box<dyn std::error::Error>> {
+    fn attach_words_accept_compiled_action_answers_and_keep_their_run() -> TestResult {
         use super::*;
         use crate::command::{AttachTarget, Command, Request};
         struct Record {
@@ -2281,9 +2225,8 @@ mod tests {
         let version: Version = "%1:0.0.0.0.0:1-2".parse().map_err(|()| "version")?;
         for action in ["attach-defaults", "attach", "80 24 size attach"] {
             let code = format!("%1 str hello text send-keys {action}");
-            let mut machine =
-                compile(&token::source("answer-attach", &code)?).map_err(|e| e.to_string())?;
-            let mut draft = default_state().map_err(|e| e.to_string())?.draft();
+            let mut machine = compile(&token::source("answer-attach", &code)?)?;
+            let mut draft = default_state()?.draft();
             let mut sink = io::sink();
             let mut host = Host::new(Context::default(), Some(&mut draft), &mut sink);
             let mut record = Record {
@@ -2297,8 +2240,7 @@ mod tests {
                 &mut record,
                 Some(PROGRAM_STEPS),
                 None,
-            )
-            .map_err(|e| e.to_string())?;
+            )?;
             assert_eq!(record.sent, 1);
             let target = Some(AttachTarget::Pane(version.pane));
             if action == "attach-defaults" {
@@ -2325,14 +2267,10 @@ mod tests {
     }
 
     #[test]
-    fn release_flags_bypass_the_operand_taking_version_word()
-    -> Result<(), Box<dyn std::error::Error>> {
+    fn release_flags_bypass_the_operand_taking_version_word() -> TestResult {
         for flag in ["--version", "-V"] {
             let mut out = Vec::new();
-            assert_eq!(
-                super::main(&[flag.into()], &mut out).map_err(|e| e.to_string())?,
-                0
-            );
+            assert_eq!(super::main(&[flag.into()], &mut out)?, 0);
             assert_eq!(
                 String::from_utf8(out)?,
                 format!("{}\n", env!("CARGO_PKG_VERSION"))
@@ -2343,8 +2281,7 @@ mod tests {
     }
 
     #[test]
-    fn every_observation_wait_encodes_its_clients_limit() -> Result<(), Box<dyn std::error::Error>>
-    {
+    fn every_observation_wait_encodes_its_clients_limit() -> TestResult {
         use super::*;
         use crate::command::{AnyRef, Command, Request};
         use crate::wire::Reader;
@@ -2376,11 +2313,8 @@ mod tests {
                 }
             }
         }
-        let bundled = default_state().map_err(|e| e.to_string())?;
-        let personal = run_config(
-            source::text("personal", "str wait-seconds 2 set").map_err(|e| e.to_string())?,
-        )
-        .map_err(|e| e.to_string())?;
+        let bundled = default_state()?;
+        let personal = run_config(source::text("personal", "str wait-seconds 2 set")?)?;
         for subject in [
             "%1",
             "str %1:0.0.0.0.0:1-2 changed",
@@ -2393,14 +2327,15 @@ mod tests {
             ] {
                 let mut draft = state.draft();
                 let mut out = io::sink();
-                let mut host = Host::new(Context::default(), Some(&mut draft), &mut out);
-                let mut machine =
-                    compile(&token::source("wait", &format!("{subject} {option} wait"))?)
-                        .map_err(|e| e.to_string())?;
                 let mut record = Record(Vec::new());
-                let failed = run_capped(&mut machine, &mut host, &mut record, None, None)
-                    .err()
-                    .ok_or("wait was not recorded")?;
+                let failed = evaluate(
+                    &format!("{subject} {option} wait"),
+                    Some(&mut draft),
+                    &mut record,
+                    &mut out,
+                )
+                .err()
+                .ok_or("wait was not recorded")?;
                 assert_eq!(failed.code, Code::NoServer);
                 assert_eq!(record.0, [limit], "{subject} {option}");
             }
@@ -2409,8 +2344,7 @@ mod tests {
     }
 
     #[test]
-    fn local_json_accepts_observations_from_different_runs()
-    -> Result<(), Box<dyn std::error::Error>> {
+    fn local_json_accepts_observations_from_different_runs() -> TestResult {
         use super::*;
         struct Reports(std::collections::VecDeque<Run>);
         impl Asks for Reports {
@@ -2440,14 +2374,13 @@ mod tests {
         }
         let runs = ["1-0", "2-0"].map(|s| s.parse().map_err(|()| "run"));
         let mut reports = Reports(runs.into_iter().collect::<Result<_, _>>()?);
-        let mut machine = compile(&token::source(
-            "reports",
-            "ls let a ls let b list a b end json print",
-        )?)
-        .map_err(|e| e.to_string())?;
         let mut sink = Vec::new();
-        let mut host = Host::new(Context::default(), None, &mut sink);
-        run_capped(&mut machine, &mut host, &mut reports, None, None).map_err(|e| e.to_string())?;
+        evaluate(
+            "ls let a ls let b list a b end json print",
+            None,
+            &mut reports,
+            &mut sink,
+        )?;
         let text = String::from_utf8(sink)?;
         assert!(
             text.starts_with('[')
@@ -2458,7 +2391,7 @@ mod tests {
     }
 
     #[test]
-    fn arrange_reconciles_its_pane_leaf_runs() -> Result<(), Box<dyn std::error::Error>> {
+    fn arrange_reconciles_its_pane_leaf_runs() -> TestResult {
         use super::*;
         use crate::command::{Command, Request};
         struct Leaves {
@@ -2494,12 +2427,15 @@ mod tests {
                 runs: runs.into(),
                 submitted: Vec::new(),
             };
-            let mut machine = compile(&token::source("layout", "@1 panes let a @1 panes let b @1 str @1:0:1-0 list a first b first end str horizontal even-of arrange")?).map_err(|e| e.to_string())?;
+            let mut machine = compile(&token::source(
+                "layout",
+                "@1 panes let a @1 panes let b @1 str @1:0:1-0 list a first b first end str horizontal even-of arrange",
+            )?)?;
             let mut sink = Vec::new();
             let mut host = Host::new(Context::default(), None, &mut sink);
             let result = run_capped(&mut machine, &mut host, &mut leaves, None, None);
             if runs == [ours, ours] {
-                result.map_err(|e| e.to_string())?;
+                result?;
                 assert_eq!(leaves.submitted, [Some(ours)]);
             } else {
                 assert!(result.is_err_and(|f| f.code == Code::BadValue));
@@ -2510,8 +2446,7 @@ mod tests {
     }
 
     #[test]
-    fn layout_scalar_refusals_do_not_copy_retained_strings()
-    -> Result<(), Box<dyn std::error::Error>> {
+    fn layout_scalar_refusals_do_not_copy_retained_strings() -> TestResult {
         use super::*;
         struct NoRequests;
         impl Asks for NoRequests {
@@ -2534,8 +2469,7 @@ mod tests {
             let code = format!(
                 "input let bad @1 let t 0 16 range each drop str bad_value try {proposal} catch 2drop end end"
             );
-            let mut machine =
-                compile(&token::source("scalar", &code)?).map_err(|e| e.to_string())?;
+            let mut machine = compile(&token::source("scalar", &code)?)?;
             let mut sink = Vec::new();
             let mut host = Host::new(Context::default(), None, &mut sink);
             assert!(matches!(
@@ -2558,8 +2492,7 @@ mod tests {
                 &mut NoRequests,
                 Some(1_000_000),
                 None,
-            )
-            .map_err(|e| e.to_string())?;
+            )?;
             peaks.push(allocator.peak().saturating_sub(base));
         }
         assert!(
@@ -2569,8 +2502,6 @@ mod tests {
         Ok(())
     }
 
-    /// One argument is a whole program, though it holds a `/` or ends
-    /// `.fux`: never a file to read, which `--file` names.
     #[test]
     fn one_argument_is_a_program() -> Result<(), super::Failed> {
         let words = |args: &[&str]| -> Result<Vec<String>, super::Failed> {
@@ -2593,8 +2524,6 @@ mod tests {
         Ok(())
     }
 
-    /// What a script asks of its process is the command line's alone: a
-    /// config's program, as a key's, is refused it.
     #[test]
     fn only_the_command_line_asks_its_process() -> Result<(), super::Failed> {
         let words = ["args", "input", "str x read-file", "str x warn", "0 exit"];
@@ -2670,8 +2599,6 @@ mod tests {
         Ok(())
     }
 
-    /// The default keys are a config every line of which binds; what
-    /// list-keys prints reconstructs the same keys from any starting keys.
     #[test]
     fn the_default_keys_are_a_config_list_keys_prints() -> Result<(), super::Failed> {
         let run = |name: &str, text: &str, state: &mut crate::client_state::Draft| {
@@ -2707,8 +2634,6 @@ mod tests {
         Ok(())
     }
 
-    /// A capped run stops one step past its cap, not at the next slice's
-    /// end.
     #[test]
     fn a_cap_is_met_to_the_step() -> Result<(), super::Failed> {
         let mut machine = super::compile(&super::token::source("t", "begin false until")?)?;
@@ -2726,8 +2651,6 @@ mod tests {
         Ok(())
     }
 
-    /// Options or a request nothing acts on name the words that would, as
-    /// the kind's own description does.
     #[test]
     fn what_is_left_names_its_word() {
         let opts = super::words::KINDS

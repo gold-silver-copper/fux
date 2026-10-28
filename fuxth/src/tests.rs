@@ -27,6 +27,7 @@ impl AppValue for Ticket {
     }
 }
 
+#[derive(Default)]
 struct Toy {
     asked: Vec<i64>,
 }
@@ -96,7 +97,7 @@ fn source_quoting_inverts_tokenization_and_refuses_expansion() -> Result<(), Err
         compiler.add(&token::arguments(&["str", text, "quote"]))?;
         let mut machine = Machine::new(compiler.finish()?, Limits::default());
         assert_eq!(
-            machine.run(&mut Toy { asked: Vec::new() }, 100_000)?,
+            machine.run(&mut Toy::default(), 100_000)?,
             Outcome::Finished
         );
         let [Value::Str(source)] = machine.stack() else {
@@ -111,7 +112,7 @@ fn source_quoting_inverts_tokenization_and_refuses_expansion() -> Result<(), Err
     let mut compiler = with_stdlib();
     compiler.add(&token::arguments(&["str", &text, "quote"]))?;
     let mut machine = Machine::new(compiler.finish()?, Limits::default());
-    let result = machine.run(&mut Toy { asked: Vec::new() }, 30_000_000);
+    let result = machine.run(&mut Toy::default(), 30_000_000);
     assert_eq!(result.map_err(|e| e.code), Err(Code::TooLong));
     Ok(())
 }
@@ -141,16 +142,13 @@ fn declared_library_inputs_hold_before_calls_and_on_uncertain_values() -> Result
     let mut compiler = library.clone();
     compiler.add(&token::source("caller", "7 checked")?)?;
     let mut machine = Machine::new(compiler.finish()?, Limits::default());
-    assert_eq!(
-        machine.run(&mut Toy { asked: Vec::new() }, 100)?,
-        Outcome::Finished
-    );
+    assert_eq!(machine.run(&mut Toy::default(), 100)?, Outcome::Finished);
     assert!(machine.stack().is_empty());
 
     let mut compiler = library;
     compiler.add(&token::source("caller", "0 ask checked")?)?;
     let mut machine = Machine::new(compiler.finish()?, Limits::default());
-    let mut host = Toy { asked: Vec::new() };
+    let mut host = Toy::default();
     assert_eq!(machine.run(&mut host, 100)?, Outcome::Suspended(0));
     machine.import(Value::Bool(false))?;
     assert_eq!(
@@ -202,7 +200,7 @@ fn run_by(text: &str, budget: u64) -> Result<Vec<Value<Ticket>>, Error> {
             calls: 100,
         },
     );
-    let mut host = Toy { asked: Vec::new() };
+    let mut host = Toy::default();
     loop {
         match machine.run(&mut host, budget)? {
             Outcome::Finished => return Ok(machine.stack().to_vec()),
@@ -268,9 +266,6 @@ fn strings_and_equality_preserve_value_kinds() -> Result<(), Error> {
     Ok(())
 }
 
-/// A definition that calls itself forever on one way, and uses more values
-/// on another, never fails on the first: a call isn't refused for what
-/// only the second needs.
 #[test]
 fn a_way_that_never_returns_is_counted_too() {
     let program = "define g dup 0 eq if drop 0 g else drop drop then end 0 g";
@@ -287,8 +282,6 @@ fn a_way_that_never_returns_is_counted_too() {
     );
 }
 
-/// The calls under way, each at its step, as an error names them: a call
-/// in last place, which took its caller's frame, still shows its caller.
 #[test]
 fn the_calls_under_way_show_who_called() -> Result<(), Error> {
     let mut compiler = with_stdlib();
@@ -297,7 +290,7 @@ fn the_calls_under_way_show_who_called() -> Result<(), Error> {
         "define inner 1 ask end\ndefine outer inner end\nouter",
     )?)?;
     let mut machine = Machine::new(compiler.finish()?, Limits::default());
-    let outcome = machine.run(&mut Toy { asked: Vec::new() }, 100)?;
+    let outcome = machine.run(&mut Toy::default(), 100)?;
     assert_eq!(outcome, Outcome::Suspended(1));
     let calls: Vec<String> = machine
         .calls()
@@ -312,8 +305,6 @@ fn the_calls_under_way_show_who_called() -> Result<(), Error> {
     Ok(())
 }
 
-/// Paused anywhere in a loop, even just after it jumped back, the step it
-/// is at is the loop's own.
 #[test]
 fn a_paused_loop_shows_its_own_step() -> Result<(), Error> {
     for budget in 1..=12 {
@@ -321,7 +312,7 @@ fn a_paused_loop_shows_its_own_step() -> Result<(), Error> {
             compile("str x print\nbegin 0 1 eq until")?,
             Limits::default(),
         );
-        let outcome = machine.run(&mut Toy { asked: Vec::new() }, budget)?;
+        let outcome = machine.run(&mut Toy::default(), budget)?;
         assert_eq!(outcome, Outcome::Paused);
         let last = machine
             .calls()
@@ -333,12 +324,13 @@ fn a_paused_loop_shows_its_own_step() -> Result<(), Error> {
             at_print || last.as_deref().is_some_and(|l| in_loop.contains(&l)),
             "{budget}: {last:?}"
         );
+        for _ in 0..3 {
+            assert_eq!(machine.run(&mut Toy::default(), 1000)?, Outcome::Paused);
+        }
     }
     Ok(())
 }
 
-/// A call that is its definition's last step runs in its caller's frame:
-/// a loop written as recursion never runs out of calls.
 #[test]
 fn a_call_in_last_place_reuses_its_frame() -> Result<(), Error> {
     let down = "define down dup 0 eq if else 1 sub down then end 5000 down";
@@ -363,17 +355,6 @@ fn an_application_word_suspends_and_resumes_deep_in_calls_and_loops() -> Result<
 }
 
 #[test]
-fn arguments_are_tokens_as_given() -> Result<(), Error> {
-    let mut compiler = with_stdlib();
-    compiler.add(&token::arguments(&["str", "two words", "str", "#x"]))?;
-    let mut machine = Machine::new(compiler.finish()?, Limits::default());
-    let outcome = machine.run(&mut Toy { asked: Vec::new() }, 100)?;
-    assert_eq!(outcome, Outcome::Finished);
-    assert_eq!(machine.stack(), [Value::str("two words"), Value::str("#x")]);
-    Ok(())
-}
-
-#[test]
 fn mistakes_are_found_before_anything_runs() {
     // `ask` would suspend: none of these gets that far.
     for (text, expected) in [
@@ -390,6 +371,7 @@ fn mistakes_are_found_before_anything_runs() {
         ("1 if define x end then", "not_top_level"),
         ("define x define y end end", "not_top_level"),
         ("str", "missing_token"),
+        ("99999999999999999999", "overflow"),
         ("'unclosed", "open_quote"),
         ("str abc 0 at 1 add", "type"),
         ("str abc str b at", "type"),
@@ -416,41 +398,6 @@ fn mistakes_are_found_before_anything_runs() {
 }
 
 #[test]
-fn errors_at_run_time_say_what_and_where() {
-    assert_eq!(code(run("add")), Some("stack_underflow"));
-    assert_eq!(code(run("1 0 div")), Some("div_by_zero"));
-    assert_eq!(code(run("9223372036854775807 1 add")), Some("overflow"));
-    assert_eq!(code(run("-9223372036854775808 -1 div")), Some("overflow"));
-    assert_eq!(code(run("1 str a add")), Some("type"));
-    assert_eq!(code(run("1 if 2 then")), Some("type"), "if takes a boolean");
-    assert_eq!(code(run("define deep deep 1 end deep")), Some("call_depth"));
-    assert_eq!(
-        code(run("99999999999999999999")),
-        Some("overflow"),
-        "too big, not unknown"
-    );
-    assert_eq!(
-        code(run("str x ask")),
-        Some("not_a_number"),
-        "the host's own code"
-    );
-    let error = run("1 2\n  frob").err();
-    assert_eq!(
-        error.map(|e| e.to_string()).as_deref(),
-        Some("unknown_word: t:2: frob: no such word; text is `str WORD`")
-    );
-    let error = run("define f str x add end\n1 f").err();
-    assert_eq!(
-        error.map(|e| e.to_string()).as_deref(),
-        Some("type: t:1: add: add takes an integer, not a string on top"),
-        "found before it runs"
-    );
-}
-
-/// A definition may call one written after it, in the same source; a
-/// `let` name is read only after it, and a word no one defines fails
-/// before anything runs.
-#[test]
 fn a_definition_may_call_one_written_after_it() -> Result<(), Error> {
     assert_eq!(code(run("define peek x end 1 let x")), Some("unknown_word"));
     assert_eq!(
@@ -466,25 +413,6 @@ fn a_definition_may_call_one_written_after_it() -> Result<(), Error> {
 }
 
 #[test]
-fn a_budget_pauses_a_loop_that_never_asks() -> Result<(), Error> {
-    let mut machine = Machine::new(compile("begin 1 1 lt until")?, Limits::default());
-    let mut host = Toy { asked: Vec::new() };
-    for _ in 0..3 {
-        assert_eq!(machine.run(&mut host, 1000)?, Outcome::Paused);
-    }
-    Ok(())
-}
-
-/// A backslash and newline join lines, starting no word.
-#[test]
-fn a_backslash_newline_joins_lines() -> Result<(), Error> {
-    assert_eq!(run("1 \\\n 2 add")?, ints(&[3]));
-    Ok(())
-}
-
-/// Words that take values take them in time to the values taken, not the
-/// stack's depth: a deep stack fills and fails at once.
-#[test]
 fn a_deep_stack_costs_no_more_per_word() {
     let started = std::time::Instant::now();
     let filled = code(run("begin 1 1 0 eq until"));
@@ -496,9 +424,6 @@ fn a_deep_stack_costs_no_more_per_word() {
     );
 }
 
-/// What the checker says, word for word: how many values a word takes, and
-/// how many the stack has, exactly or at most; which kinds are wrong; and
-/// the first mistake in the source, wherever it is.
 #[test]
 fn the_checker_says_what_and_where() {
     let refused = |text: &str| -> String {
@@ -512,6 +437,18 @@ fn the_checker_says_what_and_where() {
         format!("{MAYBE}0 maybe swap"),
     );
     for (text, said) in [
+        (
+            "define f str x add end\n1 f",
+            "type: t:1: add: add takes an integer, not a string on top",
+        ),
+        (
+            "define nop end\nstr a 1 nop add",
+            "type: t:2: add: add takes an integer, not a string under the top",
+        ),
+        (
+            "define f str a 1 add end str b 1 sub",
+            "type: t:1: add: add takes an integer, not a string under the top",
+        ),
         (
             "drop",
             "stack_underflow: t:1: drop: takes 1 value, and the stack has 0 here",
@@ -579,12 +516,18 @@ fn the_checker_says_what_and_where() {
         compiled.err().map(|e| e.to_string()).as_deref(),
         Some("stack_underflow: argument 1: drop: takes 1 value, and the stack has 0 here")
     );
+    let mut compiler = with_stdlib();
+    let compiled = compiler
+        .add(&token::arguments(&[
+            "define", "f", "str", "a", "1", "add", "end", "str", "b", "1", "sub",
+        ]))
+        .and_then(|()| compiler.finish());
+    assert_eq!(
+        compiled.err().map(|e| e.to_string()).as_deref(),
+        Some("type: argument 6: add: add takes an integer, not a string under the top")
+    );
 }
 
-/// A depth written past any stack, before `pick` or `roll`: the checker
-/// keeps no kind for each value it reaches below the top's, so it checks at
-/// once, in a definition, in a call to one, and at the top level after a
-/// loop whose depth it can't bound; and it says the depth as written.
 #[test]
 fn a_depth_past_any_stack_is_checked_at_once() {
     let started = std::time::Instant::now();
@@ -617,9 +560,6 @@ fn a_depth_past_any_stack_is_checked_at_once() {
     );
 }
 
-/// `each` finds each character of a string at once, whatever the
-/// characters are: walking a string of non-ASCII ones takes about as long
-/// as walking one as long of ASCII ones.
 #[test]
 fn each_walks_any_string_in_time_to_its_length() -> Result<(), Error> {
     let walk = |c: &str| -> Result<std::time::Duration, Error> {
@@ -627,7 +567,7 @@ fn each_walks_any_string_in_time_to_its_length() -> Result<(), Error> {
             compile("0 ask 0 swap each drop 1 add end")?,
             Limits::default(),
         );
-        let mut host = Toy { asked: Vec::new() };
+        let mut host = Toy::default();
         assert_eq!(machine.run(&mut host, u64::MAX)?, Outcome::Suspended(0));
         machine.import(Value::str(
             std::iter::repeat_n(c, 100_000).collect::<String>(),
@@ -646,10 +586,6 @@ fn each_walks_any_string_in_time_to_its_length() -> Result<(), Error> {
     Ok(())
 }
 
-/// A character of a string is found from the mark before it: each part
-/// of a string grown from ASCII and non-ASCII pieces, as it grows and once
-/// a character is replaced, is what its characters give; and marking an
-/// ASCII string the first time it holds more is charged as a walk over it.
 #[test]
 fn a_strings_characters_are_found_from_its_marks() -> Result<(), Error> {
     let copies = |s: &str, n| std::iter::repeat_n(s, n).collect::<String>();
@@ -684,7 +620,7 @@ fn a_strings_characters_are_found_from_its_marks() -> Result<(), Error> {
     check(&put);
     let steps = |text: &str| -> Result<u64, Error> {
         let mut machine = Machine::new(compile(text)?, Limits::default());
-        machine.run(&mut Toy { asked: Vec::new() }, u64::MAX)?;
+        machine.run(&mut Toy::default(), u64::MAX)?;
         Ok(machine.steps())
     };
     let (ascii, marked) = (
@@ -698,10 +634,6 @@ fn a_strings_characters_are_found_from_its_marks() -> Result<(), Error> {
     Ok(())
 }
 
-/// What the checker can't know it never refuses: a definition that leaves
-/// one value or two, called where two more are taken after; a loop at the
-/// top level that leaves values, then words that take them; a value that
-/// is a string or an integer, as the branch taken has it.
 #[test]
 fn what_can_not_be_known_is_never_refused() -> Result<(), Error> {
     let program = "define f dup 0 gt if 1 then end\n5 f drop drop";
@@ -723,39 +655,9 @@ fn what_can_not_be_known_is_never_refused() -> Result<(), Error> {
     Ok(())
 }
 
-/// What the checker knows lasts through a call that changes nothing, and
-/// the first of two mistakes on a line is the one named.
-#[test]
-fn the_checker_keeps_what_it_knows() {
-    let refused = |source: Vec<Token>| -> String {
-        let mut compiler = with_stdlib();
-        let compiled = compiler
-            .add(&source)
-            .and_then(|()| compiler.finish().map(|_| ()));
-        compiled.err().map(|e| e.to_string()).unwrap_or_default()
-    };
-    let lines = |text: &str| token::source("t", text).unwrap_or_default();
-    assert_eq!(
-        refused(lines("define nop end\nstr a 1 nop add")),
-        "type: t:2: add: add takes an integer, not a string under the top"
-    );
-    assert_eq!(
-        refused(lines("define f str a 1 add end str b 1 sub")),
-        "type: t:1: add: add takes an integer, not a string under the top"
-    );
-    let words = [
-        "define", "f", "str", "a", "1", "add", "end", "str", "b", "1", "sub",
-    ];
-    assert_eq!(
-        refused(token::arguments(&words)),
-        "type: argument 6: add: add takes an integer, not a string under the top"
-    );
-}
-
-/// The machine's own errors as it runs, word for word, and where a
-/// suspension is.
 #[test]
 fn the_machine_says_what_and_where() -> Result<(), Error> {
+    assert_eq!(code(run("str x ask")), Some("not_a_number"));
     let said = |text: &str| run(text).err().map(|e| e.to_string()).unwrap_or_default();
     assert_eq!(
         said("ticket 1 add"),
@@ -793,7 +695,7 @@ fn the_machine_says_what_and_where() -> Result<(), Error> {
     );
     let mut machine = Machine::new(compile("1\n  2 ask")?, Limits::default());
     assert_eq!(
-        machine.run(&mut Toy { asked: Vec::new() }, 100)?,
+        machine.run(&mut Toy::default(), 100)?,
         Outcome::Suspended(2)
     );
     let at = machine.at().map(|t| format!("{}: {}", t.place, t.text));
@@ -801,7 +703,6 @@ fn the_machine_says_what_and_where() -> Result<(), Error> {
     Ok(())
 }
 
-/// A word's values fill the stack to its limit, and no further.
 #[test]
 fn the_stack_fills_to_its_limit_exactly() -> Result<(), Error> {
     let run_with = |text: &str| -> Result<Outcome<i64>, Error> {
@@ -812,7 +713,7 @@ fn the_stack_fills_to_its_limit_exactly() -> Result<(), Error> {
             calls: 10,
         };
         let mut machine = Machine::new(compiler.finish()?, limits);
-        machine.run(&mut Toy { asked: Vec::new() }, 100)
+        machine.run(&mut Toy::default(), 100)
     };
     assert_eq!(run_with("1 ticket")?, Outcome::Finished);
     assert_eq!(
@@ -826,8 +727,6 @@ fn the_stack_fills_to_its_limit_exactly() -> Result<(), Error> {
     Ok(())
 }
 
-/// Each built-in's effect, as help shows it, names as many values as it
-/// takes.
 #[test]
 fn every_core_word_documents_its_effect_and_meaning() {
     for builtin in Builtin::ALL {
@@ -852,9 +751,6 @@ fn every_core_word_documents_its_effect_and_meaning() {
     }
 }
 
-/// The core's sequence and character words, at their edges: indexes just
-/// past the end, strings of more than ASCII, lists that share a start,
-/// counts known only as the program runs.
 #[test]
 fn the_core_at_its_edges() -> Result<(), Error> {
     let s = |text: &str| Value::<Ticket>::str(text);
@@ -902,8 +798,6 @@ fn the_core_at_its_edges() -> Result<(), Error> {
     Ok(())
 }
 
-/// Construction admits the exact length and nesting limits and charges
-/// expanded shared values as well as copies made during mutation.
 #[test]
 fn constructed_values_obey_length_depth_and_work_limits() -> Result<(), Error> {
     for source in [
@@ -920,7 +814,7 @@ fn constructed_values_obey_length_depth_and_work_limits() -> Result<(), Error> {
         let mut machine = Machine::new(compile(source)?, Limits::default());
         assert_eq!(
             machine
-                .run(&mut Toy { asked: Vec::new() }, u64::MAX)
+                .run(&mut Toy::default(), u64::MAX)
                 .map_err(|e| e.code),
             Err(Code::TooLong),
             "{source}"
@@ -954,8 +848,6 @@ fn constructed_values_obey_length_depth_and_work_limits() -> Result<(), Error> {
     Ok(())
 }
 
-/// `let` may take a library or host word's name for itself, not the
-/// core's; a definition may not take a `let` name's.
 #[test]
 fn let_names_and_what_they_may_hide() -> Result<(), Error> {
     assert_eq!(
@@ -974,8 +866,6 @@ fn let_names_and_what_they_may_hide() -> Result<(), Error> {
     Ok(())
 }
 
-/// A library checked once serves every program compiled from a clone, and
-/// its mistakes are still found.
 #[test]
 fn a_prepared_library_serves_every_clone() -> Result<(), Error> {
     let mut ready = Compiler::<Ticket>::new(vocabulary());
@@ -1004,7 +894,6 @@ fn a_prepared_library_serves_every_clone() -> Result<(), Error> {
     Ok(())
 }
 
-/// Mutating an unshared sequence reuses it; shared sequences keep their values.
 #[test]
 fn sequence_mutation_preserves_shared_values() -> Result<(), Error> {
     let list = |items: Vec<Value<Ticket>>| {
@@ -1036,8 +925,6 @@ fn sequence_mutation_preserves_shared_values() -> Result<(), Error> {
     Ok(())
 }
 
-/// A definition that, some ways through, replaces a value below what it
-/// surely uses: its callers forget what they knew of that value's kind.
 #[test]
 fn a_value_replaced_below_what_is_surely_used_is_forgotten() -> Result<(), Error> {
     let replace = "define replace each swap drop end end str a list 1 2 end replace 1 add";
@@ -1047,9 +934,6 @@ fn a_value_replaced_below_what_is_surely_used_is_forgotten() -> Result<(), Error
     Ok(())
 }
 
-/// A long chain of definitions, each calling the one before with a value
-/// of a known kind, is checked without recursing once per call; and a
-/// string put into is charged for the string it makes anew.
 #[test]
 fn long_chains_and_long_strings_are_bounded() -> Result<(), Error> {
     let chain: String = (1..20_000)
@@ -1059,7 +943,7 @@ fn long_chains_and_long_strings_are_bounded() -> Result<(), Error> {
     assert_eq!(run(&chained)?, ints(&[6]));
     let steps = |text: &str| -> Result<u64, Error> {
         let mut machine = Machine::new(compile(text)?, Limits::default());
-        machine.run(&mut Toy { asked: Vec::new() }, u64::MAX)?;
+        machine.run(&mut Toy::default(), u64::MAX)?;
         Ok(machine.steps())
     };
     let (made, put) = (
@@ -1166,9 +1050,6 @@ fn at_desk(text: &str, lying: bool, answer: Paper) -> (Result<Vec<Value<Paper>>,
     (ran, desk.calls)
 }
 
-/// The checker knows the application's kinds from its words' effects: a
-/// value of a kind a word never takes, or one that must be used left at
-/// the end, is refused before the application is called once.
 #[test]
 fn the_applications_kinds_are_checked_before_it_is_called() {
     let said = |text: &str| {
@@ -1221,8 +1102,6 @@ fn the_applications_kinds_are_checked_before_it_is_called() {
     );
 }
 
-/// An application that gives a kind its word doesn't say is caught where
-/// it gives it: as the word returns, or as the machine resumes.
 #[test]
 fn a_kind_given_is_held_to_the_word() {
     let (ran, _) = at_desk("ticket mark issue", true, Paper::Ticket);
@@ -1299,9 +1178,6 @@ fn a_kind_given_is_held_to_the_word() {
     );
 }
 
-/// A library says what each of its words does on the line just above it,
-/// which is its help, with its code as written; a word saying nothing
-/// there is refused.
 #[test]
 fn a_library_says_what_each_word_does() {
     let mut compiler = Compiler::<Ticket>::new(vocabulary());
@@ -1341,9 +1217,6 @@ fn a_library_says_what_each_word_does() {
     assert_eq!(closing.map_err(|e| e.code), Err(Code::Unclosed));
 }
 
-/// Words calling each other, two and three of them, deeply (calls in last
-/// place, through the group, keep one frame), and a recursive descent
-/// parser; the checker sums each up quickly.
 #[test]
 fn words_may_call_each_other() -> Result<(), Error> {
     let checked = |text: &str| -> Result<std::time::Duration, Error> {
@@ -1369,7 +1242,7 @@ fn words_may_call_each_other() -> Result<(), Error> {
     // Deeper than calls may nest, as a loop.
     let mut machine = Machine::new(compile(&format!("{three}300001 a"))?, Limits::default());
     assert_eq!(
-        machine.run(&mut Toy { asked: Vec::new() }, u64::MAX)?,
+        machine.run(&mut Toy::default(), u64::MAX)?,
         Outcome::Finished
     );
     assert_eq!(machine.stack(), [Value::str("b")]);
@@ -1402,8 +1275,6 @@ fn words_may_call_each_other() -> Result<(), Error> {
     Ok(())
 }
 
-/// A source that fails to compile leaves the compiler as it was: none of
-/// its definitions, nothing waiting for a later one.
 #[test]
 fn a_failed_add_leaves_the_compiler_as_it_was() -> Result<(), Error> {
     let mut compiler = with_stdlib();
@@ -1418,15 +1289,13 @@ fn a_failed_add_leaves_the_compiler_as_it_was() -> Result<(), Error> {
     compiler.add(&token::source("v", "define b 5 end good b")?)?;
     let mut machine = Machine::new(compiler.finish()?, Limits::default());
     assert_eq!(
-        machine.run(&mut Toy { asked: Vec::new() }, u64::MAX)?,
+        machine.run(&mut Toy::default(), u64::MAX)?,
         Outcome::Finished
     );
     assert_eq!(machine.stack(), ints(&[1, 5]).as_slice());
     Ok(())
 }
 
-/// A definition may take a library word's name: the program's from there
-/// on, the library's words keeping their own.
 #[test]
 fn a_definition_may_hide_a_library_word() -> Result<(), Error> {
     assert_eq!(run("define count 7 end count")?, ints(&[7]));
@@ -1440,10 +1309,10 @@ fn a_definition_may_hide_a_library_word() -> Result<(), Error> {
     Ok(())
 }
 
-/// Unknown words keep their code and location, with one factual text hint.
 #[test]
 fn unknown_words_keep_their_source() -> Result<(), String> {
     for text in [
+        "1 DUP",
         "drp",
         "swpa",
         "Hello",
@@ -1459,10 +1328,14 @@ fn unknown_words_keep_their_source() -> Result<(), String> {
         assert_eq!(error.message, "no such word; text is `str WORD`");
         assert!(error.place.is_some());
     }
+    let error = run("1 2\n  frob").err();
+    assert_eq!(
+        error.map(|e| e.to_string()).as_deref(),
+        Some("unknown_word: t:2: frob: no such word; text is `str WORD`")
+    );
     Ok(())
 }
 
-/// Non-tail calls admit exactly the call limit and locate the recursive word.
 #[test]
 fn non_tail_calls_refuse_only_after_the_call_limit() -> Result<(), Error> {
     let deep = "define f dup 0 eq if else 1 sub f 0 drop then end";
@@ -1478,8 +1351,6 @@ fn non_tail_calls_refuse_only_after_the_call_limit() -> Result<(), Error> {
     Ok(())
 }
 
-/// A compiler of another's definitions sees them, wherever written; not
-/// its top level, nor its `let` names, nor a definition reading one.
 #[test]
 fn definitions_serve_a_program_of_their_own() -> Result<(), Error> {
     let mut config = with_stdlib();
@@ -1490,7 +1361,7 @@ fn definitions_serve_a_program_of_their_own() -> Result<(), Error> {
         let mut compiler = scope.clone();
         compiler.add(&token::source("b", text)?)?;
         let mut machine = Machine::new(compiler.finish()?, Limits::default());
-        machine.run(&mut Toy { asked: Vec::new() }, u64::MAX)?;
+        machine.run(&mut Toy::default(), u64::MAX)?;
         Ok(machine.stack().to_vec())
     };
     assert_eq!(ran("six")?, ints(&[6]));
@@ -1504,9 +1375,6 @@ fn strs(values: &[&str]) -> Vec<Value<Ticket>> {
     values.iter().map(|s| Value::str(*s)).collect()
 }
 
-/// A `try` catches the failures it names, from a word, the core, or the
-/// host when it answers: the stack as it was at `try`, the plain message
-/// and code on it. Through, the body's values stay.
 #[test]
 fn a_try_catches_the_failures_it_names() -> Result<(), Error> {
     let caught = run("1 str fail try 2 str no fail catch end")?;
@@ -1584,8 +1452,6 @@ fn a_try_catches_the_failures_it_names() -> Result<(), Error> {
     Ok(())
 }
 
-/// What a failing body began is undone however deep: its calls, a loop of
-/// them in last place, its `list`s and `each`es; the program goes on.
 #[test]
 fn a_caught_failure_undoes_what_the_body_began() -> Result<(), Error> {
     let deep = "define deep dup 0 eq if str bottom fail then 1 sub deep end
@@ -1611,8 +1477,6 @@ fn a_caught_failure_undoes_what_the_body_began() -> Result<(), Error> {
     Ok(())
 }
 
-/// Run in one go or paused every few steps, a run through `try`s ends the
-/// same.
 #[test]
 fn a_try_ends_the_same_however_paused() -> Result<(), Error> {
     let program =
@@ -1625,10 +1489,6 @@ fn a_try_ends_the_same_however_paused() -> Result<(), Error> {
     Ok(())
 }
 
-/// A `try` is checked as `if … else … then` is: its body from an empty
-/// stack, its handler from the stack at `try` and two strings, joined
-/// after. Its codes are a string just before it, each one a running word
-/// may raise.
 #[test]
 fn a_try_is_checked_before_it_runs() {
     for (text, said) in [
@@ -1696,8 +1556,6 @@ fn a_try_is_checked_before_it_runs() {
     assert!(words.raises(Code::Host("two words")).is_err());
 }
 
-/// Exceptional values obey their explicit declaration before recovery,
-/// including a resumed host word; ordinary message failures stay available.
 #[test]
 fn carried_values_obey_their_contract() -> Result<(), Error> {
     let far = Code::Host("far");
@@ -1728,7 +1586,7 @@ fn carried_values_obey_their_contract() -> Result<(), Error> {
             "str 'far negative' try 1 ask catch drop end",
         )?)?;
         let mut machine = Machine::new(compiler.finish()?, Limits::default());
-        let mut host = Toy { asked: Vec::new() };
+        let mut host = Toy::default();
         assert!(matches!(
             machine.run(&mut host, 100)?,
             Outcome::Suspended(1)

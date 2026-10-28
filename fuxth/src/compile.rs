@@ -967,3 +967,19 @@ fn is_number(text: &str) -> bool {
     let digits = text.strip_prefix('-').unwrap_or(text);
     !digits.is_empty() && digits.chars().all(|c| c.is_ascii_digit())
 }
+
+#[cfg(test)]
+pub(crate) mod testing {
+    use super::*;
+
+    /// Execute a compiler refusal against the real evaluator.
+    pub(crate) fn unchecked<A: Clone>(compiler: Compiler<A>) -> Program<A> {
+        Program {
+            main: compiler.main,
+            empty: false,
+            words: compiler.words,
+            globals: compiler.globals,
+            vocabulary: compiler.vocabulary,
+        }
+    }
+}

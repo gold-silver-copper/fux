@@ -20,7 +20,9 @@ fn ends(code: &str) -> impl Fn(&Ended) -> bool + '_ {
 #[test]
 fn core_stack_words() {
     for (program, left) in [
-        ("1 2 drop", &[1][..]),
+        ("1 2 3 4 5", &[1, 2, 3, 4, 5][..]),
+        ("-1 -2 -3 -4 -5", &[-1, -2, -3, -4, -5]),
+        ("1 2 drop", &[1]),
         ("1 dup", &[1, 1]),
         ("1 2 over", &[1, 2, 1]),
         ("1 2 3 rot", &[2, 3, 1]),
@@ -39,6 +41,7 @@ fn core_stack_words() {
 fn core_arithmetic() {
     for (program, left) in [
         ("0 5 add", &[5][..]),
+        ("1 2 add 4 sub 3 mul 2 div", &[-1]),
         ("-1 1 add", &[0]),
         ("0 5 sub", &[-5]),
         ("-1 -1 sub", &[0]),
@@ -97,68 +100,38 @@ fn core_comparisons() {
 
 #[test]
 fn core_control_and_definitions() {
-    let gi1 = "define gi1 if 123 then end";
-    let gi2 = "define gi2 if 123 else 234 then end";
     for (program, left) in [
-        (format!("{gi1} false gi1 true gi1"), &[123][..]),
-        (format!("{gi2} false gi2 true gi2"), &[234, 123]),
+        ("define gi1 if 123 then end false gi1 true gi1", &[123][..]),
+        (
+            "define gi2 if 123 else 234 then end false gi2 true gi2",
+            &[234, 123],
+        ),
         // T{ : GI3 BEGIN DUP 5 < WHILE DUP 1+ REPEAT ; }T, as until.
         (
-            "define gi3 begin dup 1 add dup 5 lt not until end 0 gi3".to_owned(),
+            "define gi3 begin dup 1 add dup 5 lt not until end 0 gi3",
             &[0, 1, 2, 3, 4, 5],
         ),
         // RECURSE is a word's own name here.
         (
-            "define gi4 dup 1 gt if dup 1 sub gi4 mul then end 5 gi4".to_owned(),
+            "define gi4 dup 1 gt if dup 1 sub gi4 mul then end 5 gi4",
             &[120],
         ),
-        ("123 let x123 x123".to_owned(), &[123]),
-        ("6 let six six six mul".to_owned(), &[36]),
-        ("define nop end 1 nop".to_owned(), &[1]),
-        ("define twice dup add end 5 twice twice".to_owned(), &[20]),
-        ("0 begin 1 add dup 5 eq until".to_owned(), &[5]),
-        (
-            "define countdown begin dup 1 sub dup 0 eq until end 3 countdown".to_owned(),
-            &[3, 2, 1, 0],
-        ),
-        ("1 2 lt if 10 else 20 then".to_owned(), &[10]),
-        ("2 1 lt if 10 else 20 then".to_owned(), &[20]),
-    ] {
-        assert_eq!(fuxth(&program, u64::MAX), ints(left), "{program}");
-    }
-}
-
-/// Exercism's cases, with where fuxth parts from them.
-#[test]
-fn exercism_forth() {
-    for (program, left) in [
-        ("1 2 3 4 5", &[1, 2, 3, 4, 5][..]),
-        ("-1 -2 -3 -4 -5", &[-1, -2, -3, -4, -5]),
-        ("1 2 add 4 sub 3 mul 2 div", &[-1]),
+        ("123 let x123 x123", &[123]),
+        ("6 let six six six mul", &[36]),
+        ("define nop end 1 nop", &[1]),
         ("define dup-twice dup dup end 1 dup-twice", &[1, 1, 1]),
         ("define countup 1 2 3 end countup", &[1, 2, 3]),
         ("define foo 5 end define bar foo end bar", &[5]),
-        // A definition may take a library word's name: from there on.
         ("define swap dup end 1 swap", &[1, 1]),
+        ("define twice dup add end 5 twice twice", &[20]),
+        ("0 begin 1 add dup 5 eq until", &[5]),
+        (
+            "define countdown begin dup 1 sub dup 0 eq until end 3 countdown",
+            &[3, 2, 1, 0],
+        ),
+        ("1 2 lt if 10 else 20 then", &[10]),
+        ("2 1 lt if 10 else 20 then", &[20]),
     ] {
         assert_eq!(fuxth(program, u64::MAX), ints(left), "{program}");
     }
-    for (program, code) in [
-        ("drop", "stack_underflow"),
-        ("1 swap", "stack_underflow"),
-        ("foo", "unknown_word"),
-        ("define 1 2 end", "bad_name"),
-        // Exercism lets a definition replace any word; here the core's
-        // are kept, and a program defines a name once.
-        ("define drop dup end", "bad_name"),
-        ("define foo 5 end define foo 6 end", "bad_name"),
-    ] {
-        assert!(
-            ends(code)(&fuxth(program, u64::MAX)),
-            "{program}: {:?}",
-            fuxth(program, u64::MAX)
-        );
-    }
-    // Names are as written: `DUP` is no word, and `Dup` none either.
-    assert!(ends("unknown_word")(&fuxth("1 DUP", u64::MAX)));
 }

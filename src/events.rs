@@ -794,6 +794,7 @@ mod tests {
     use super::*;
     use crate::command::{AnyRef, Limit, Request};
     use crate::protocol::{Body, Response};
+    use crate::session::testing::TestResult;
     use crate::session::{Begun, Caller, Origin, testing::started};
     use std::time::{Duration, Instant};
 
@@ -808,7 +809,7 @@ mod tests {
     }
 
     #[test]
-    fn the_event_and_status_tables_match_the_finite_schema() -> Result<(), String> {
+    fn the_event_and_status_tables_match_the_finite_schema() -> TestResult {
         use std::collections::BTreeSet;
         let at = ((WsId::of(1), TabId::of(1)), PaneId::of(1));
         let mut events = vec![
@@ -838,7 +839,7 @@ mod tests {
             Told::Notification(Said::default()),
             Told::Title(Said::default()),
             Told::Done(None),
-            Told::Resized(fux_vt::Size::new(24, 80).map_err(|e| e.to_string())?),
+            Told::Resized(fux_vt::Size::new(24, 80)?),
             Told::HistoryBudget(0),
             Told::HistoryCleared,
             Told::Exited(End {
@@ -867,50 +868,6 @@ mod tests {
         }
         let mut names = BTreeSet::from(["ready".to_owned(), "missed".to_owned()]);
         for event in events {
-            match &event {
-                Event::Pane(
-                    _,
-                    PaneEvent::Created
-                    | PaneEvent::Closed
-                    | PaneEvent::Moved(_)
-                    | PaneEvent::Told(
-                        Told::Renamed(_)
-                        | Told::Respawned(_)
-                        | Told::Bell
-                        | Told::Notification(_)
-                        | Told::Title(_)
-                        | Told::Done(_)
-                        | Told::Resized(_)
-                        | Told::HistoryBudget(_)
-                        | Told::HistoryCleared
-                        | Told::Exited(_),
-                    ),
-                )
-                | Event::Tab(
-                    _,
-                    Change::Created(_) | Change::Renamed(_) | Change::Closed | Change::Reordered,
-                )
-                | Event::Workspace(
-                    _,
-                    Change::Created(_) | Change::Renamed(_) | Change::Closed | Change::Reordered,
-                )
-                | Event::View {
-                    change:
-                        ViewChange::Attached
-                        | ViewChange::Detached
-                        | ViewChange::Shown
-                        | ViewChange::Focused
-                        | ViewChange::Zoomed
-                        | ViewChange::Resized
-                        | ViewChange::Presentation
-                        | ViewChange::Screen
-                        | ViewChange::Notice,
-                    ..
-                }
-                | Event::Arranged(_)
-                | Event::Layout(_)
-                | Event::Copied { .. } => {}
-            }
             let json = event.json();
             let Some(Json::String(name)) = json.get("event") else {
                 return Err("event name".into());
@@ -940,9 +897,6 @@ mod tests {
             Status::Gone,
             Status::Stopped(String::new()),
         ] {
-            match status {
-                Status::Continuing | Status::Timeout | Status::Gone | Status::Stopped(_) => {}
-            }
             statuses.insert(status.name().to_owned());
         }
         assert_eq!(statuses, table("| `status` | Meaning |")?);
@@ -952,7 +906,7 @@ mod tests {
     }
 
     #[test]
-    fn scoped_reads_wait_through_unrelated_entries_without_rescanning() -> Result<(), String> {
+    fn scoped_reads_wait_through_unrelated_entries_without_rescanning() -> TestResult {
         let mut session = started()?;
         let now = Instant::now();
         let request = Request::NextEvents {
@@ -995,7 +949,7 @@ mod tests {
     }
 
     #[test]
-    fn batches_resume_at_the_exact_consumed_prefix() -> Result<(), String> {
+    fn batches_resume_at_the_exact_consumed_prefix() -> TestResult {
         let mut journal = Journal::default();
         let mut reader = Reader::new(Scope::All, &journal, run()?, None)?;
         for _ in 0..BATCH_EVENTS.saturating_add(3) {
@@ -1013,7 +967,7 @@ mod tests {
     }
 
     #[test]
-    fn filtered_entries_spend_the_scan_budget_and_advance_the_cursor() -> Result<(), String> {
+    fn filtered_entries_spend_the_scan_budget_and_advance_the_cursor() -> TestResult {
         let mut journal = Journal::default();
         let mut reader = Reader::new(
             Scope::Target(AnyRef::Pane(PaneId::of(2))),
@@ -1027,10 +981,7 @@ mod tests {
         journal.push(bell(2));
         let empty = reader.batch(&journal, true)?;
         assert!(empty.events.is_empty());
-        assert_eq!(
-            empty.next.seq,
-            Seq(u64::try_from(BATCH_SCAN).map_err(|e| e.to_string())?)
-        );
+        assert_eq!(empty.next.seq, Seq(u64::try_from(BATCH_SCAN)?));
         assert_eq!(empty.status, Status::Continuing);
         let matching = reader.batch(&journal, true)?;
         assert_eq!(matching.events.len(), 1);
@@ -1039,7 +990,7 @@ mod tests {
     }
 
     #[test]
-    fn retention_loss_is_exact_even_for_a_filtered_scope() -> Result<(), String> {
+    fn retention_loss_is_exact_even_for_a_filtered_scope() -> TestResult {
         let mut journal = Journal::default();
         let mut reader = Reader::new(
             Scope::Target(AnyRef::Pane(PaneId::of(2))),
@@ -1069,15 +1020,14 @@ mod tests {
         let loss = behind.batch(&strings, true)?;
         assert_eq!(
             loss.missed,
-            u64::try_from(KEPT.saturating_sub(strings.entries.len())).map_err(|e| e.to_string())?
+            u64::try_from(KEPT.saturating_sub(strings.entries.len()))?
         );
         assert!(start.seq > Seq(0));
         Ok(())
     }
 
     #[test]
-    fn impossible_entries_and_exhausted_cursors_refuse_without_unbounded_storage()
-    -> Result<(), String> {
+    fn impossible_entries_and_exhausted_cursors_refuse_without_unbounded_storage() -> TestResult {
         let mut journal = Journal::default();
         let mut reader = Reader::new(Scope::All, &journal, run()?, None)?;
         journal.push(bell(1));
@@ -1103,7 +1053,7 @@ mod tests {
     }
 
     #[test]
-    fn cursors_refuse_other_runs_future_positions_and_noncanonical_text() -> Result<(), String> {
+    fn cursors_refuse_other_runs_future_positions_and_noncanonical_text() -> TestResult {
         let journal = Journal::default();
         for text in ["1:1-0", "0:2-0"] {
             let cursor = text.parse().map_err(|()| "cursor")?;
@@ -1116,7 +1066,7 @@ mod tests {
     }
 
     #[test]
-    fn moves_reach_both_places_and_closure_stops_the_prefix() -> Result<(), String> {
+    fn moves_reach_both_places_and_closure_stops_the_prefix() -> TestResult {
         let mut journal = Journal::default();
         let from = (WsId::of(1), TabId::of(1));
         let to = (WsId::of(2), TabId::of(2));
@@ -1135,7 +1085,7 @@ mod tests {
     }
 
     #[test]
-    fn empty_reads_wait_once_then_return_timeout_or_stopped() -> Result<(), String> {
+    fn empty_reads_wait_once_then_return_timeout_or_stopped() -> TestResult {
         let mut session = started()?;
         let now = Instant::now();
         let scope = Scope::All;

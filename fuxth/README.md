@@ -237,9 +237,9 @@ a block open as the library begins or ends. A list's values are
   with.
 - `tests/standard.rs`: cases from the Forth 2012 core tests and Exercism's
   Forth exercise, in fuxth's words, with where fuxth parts from them.
-- `tests/differential.rs`: random programs run by fuxth and by a second, plain
-  interpreter, which must agree; paused at every step or not, which must not
-  matter; and rewritten in ways that mean the same.
+- `tests/differential.rs`: generated programs paused at every step or rewritten
+  with arithmetic identities retain their observable results. Core semantics and
+  checker refusals have explicit expected values and errors in the unit tests.
 - `tests/gforth.rs`: random integer programs against gforth, when there is one
   (`FUXTH_GFORTH`).
 - `tests/corpus.rs`: any directory of programs (`FUXTH_CORPUS`) held to the

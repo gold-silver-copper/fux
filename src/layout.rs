@@ -956,7 +956,6 @@ mod tests {
         );
     }
 
-    /// A placement made into again, whatever it held, is a fresh one.
     #[test]
     fn placing_into_a_used_placement_is_placing_afresh() {
         let root = made(&[(0, Axis::Horizontal), (1, Axis::Vertical)]);
@@ -987,8 +986,6 @@ mod tests {
         assert!(place(&root, area(0, 5)).panes.is_empty());
     }
 
-    /// A pane's sibling takes their split's place and all its room, every
-    /// other share as it was; the last pane leaves nothing.
     #[test]
     fn a_close_gives_its_room_to_its_sibling() {
         let quarter = Shares::new(NonZeroU32::MIN, NonZeroU32::MIN.saturating_add(2));
@@ -1022,8 +1019,6 @@ mod tests {
         assert_eq!(left.remove(p(9)), Removed::Absent);
     }
 
-    /// A pane moves only within a tree holding both it and its target;
-    /// otherwise nothing is made.
     #[test]
     fn moving_beside_needs_both_panes_in_the_tree() {
         let root = tree();
@@ -1071,14 +1066,7 @@ mod tests {
         let held = root.clone();
         assert_eq!(resize(&mut root, a, p(9), Direction::Left, 1), None);
         assert_eq!(root, held);
-    }
 
-    /// The border that moves is the nearest on the side asked for, however
-    /// deep the pane is, and only the panes touching it change: in
-    /// `0 | (1 / (2 | 3))`, left from 2 moves 0's border, 1 and 2 growing
-    /// and 3 as it was.
-    #[test]
-    fn resizing_in_nested_splits_moves_the_border_on_that_side() {
         let mut root = nested();
         let a = area(81, 24);
         let all = [0, 1, 2, 3];
@@ -1089,22 +1077,8 @@ mod tests {
         // from its left.
         assert_eq!(resize(&mut root, a, p(3), Direction::Right, 2), Some(2));
         assert_eq!(widths(&root, a, &all), [35, 45, 27, 17].map(Some));
-    }
 
-    /// A border stopped at the least of the panes beyond passes the rest
-    /// on to the next border out, the pane alone growing; with none left,
-    /// nothing moves.
-    #[test]
-    fn a_border_at_its_least_passes_the_resize_on() {
         let a = area(100, 24);
-        let row = made(&[(0, Axis::Horizontal), (1, Axis::Horizontal)]);
-        let wide = resize_to(&row, a, p(2), Axis::Horizontal, 80);
-        assert_eq!(
-            wide.map(|t| widths(&t, a, &[0, 1, 2])),
-            Some(vec![Some(16), Some(MIN), Some(80)])
-        );
-        // `0 | (1 / (2 | 3))`, 50 and 24 each below: 2 gives 22, then 0
-        // gives 8, which 1 takes too.
         let mut nested = nested();
         assert_eq!(
             widths(&nested, a, &[0, 1, 2, 3]),
@@ -1119,11 +1093,17 @@ mod tests {
         assert_eq!(pair, held);
     }
 
-    /// A pane between two shrinks to a length, and grows again, its
-    /// neighbours taking and giving.
     #[test]
-    fn a_middle_pane_resizes_to_a_length() {
+    fn resizing_to_a_length_preserves_siblings_and_minimums() {
         let row = made(&[(0, Axis::Horizontal), (1, Axis::Horizontal)]);
+        assert_eq!(
+            resize_to(&row, area(100, 24), p(2), Axis::Horizontal, 80).map(|t| widths(
+                &t,
+                area(100, 24),
+                &[0, 1, 2]
+            )),
+            Some(vec![Some(16), Some(MIN), Some(80)])
+        );
         let a = area(90, 20);
         assert_eq!(widths(&row, a, &[0, 1, 2]), [45, 22, 21].map(Some));
         let smaller = resize_to(&row, a, p(1), Axis::Horizontal, 12);

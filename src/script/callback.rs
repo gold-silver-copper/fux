@@ -254,6 +254,7 @@ mod tests {
     use crate::protocol::{Asked, Context, Reply};
     use crate::screens::{Item, ListScreen, Open, Screen};
     use crate::script::{Asks, Failed, Host};
+    use crate::session::testing::TestResult;
 
     struct NoRequests;
     impl Asks for NoRequests {
@@ -301,8 +302,7 @@ mod tests {
     }
 
     #[test]
-    fn callbacks_use_the_receiving_dictionary_and_preserve_nested_typed_data() -> Result<(), String>
-    {
+    fn callbacks_use_the_receiving_dictionary_and_preserve_nested_typed_data() -> TestResult {
         let context = context()?;
         let handle = Data::Handle("%3".parse().map_err(|()| "pane")?, context.of);
         let payload = Data::Record(vec![(
@@ -315,31 +315,21 @@ mod tests {
                 Data::Text("' drop %1 kill".into()),
             ]),
         )]);
-        let mut state = crate::script::default_state()
-            .map_err(|e| e.to_string())?
-            .draft();
-        state.config = Some(std::sync::Arc::new(
-            crate::script::source::text(
-                "receiver",
-                "define receiver-only nip str value get json print end",
-            )
-            .map_err(|e| e.to_string())?,
-        ));
+        let mut state = crate::script::default_state()?.draft();
+        state.config = Some(std::sync::Arc::new(crate::script::source::text(
+            "receiver",
+            "define receiver-only nip str value get json print end",
+        )?));
         let spec = list(payload, "receiver-only");
         use crate::protocol::{Decoder, Frame, ToAttached};
-        let encoded = ToAttached::Open(spec).encode().map_err(|e| e.to_string())?;
+        let encoded = ToAttached::Open(spec).encode()?;
         let mut decoder = Decoder::default();
         decoder.push(&encoded);
-        let Some(ToAttached::Open(spec)) =
-            decoder.frame::<ToAttached>().map_err(|e| e.to_string())?
-        else {
+        let Some(ToAttached::Open(spec)) = decoder.frame::<ToAttached>()? else {
             return Err("typed screen relay".into());
         };
         assert!(spec.clone().admit(None, &context).is_err());
-        let Screen::List(screen) = spec
-            .admit(Some(&state), &context)
-            .map_err(|e| e.to_string())?
-        else {
+        let Screen::List(screen) = spec.admit(Some(&state), &context)? else {
             return Err("list".into());
         };
         assert!(
@@ -362,9 +352,7 @@ mod tests {
         );
         assert_eq!(values.items().get(1), Some(&Value::App(Fux::Null)));
         let job = screen.action.job([screen.client, item.payload.clone()]);
-        let mut machine = job
-            .machine(state.config.as_ref())
-            .map_err(|e| e.to_string())?;
+        let mut machine = job.machine(state.config.as_ref())?;
         let mut out = Vec::new();
         let mut host = Host::new(context, None, &mut out);
         crate::script::run_capped(
@@ -373,38 +361,34 @@ mod tests {
             &mut NoRequests,
             Some(100_000),
             None,
-        )
-        .map_err(|e| e.to_string())?;
+        )?;
         assert!(String::from_utf8_lossy(&out).contains("[\"%3\",null,true,-3,\"' drop %1 kill\"]"));
         Ok(())
     }
 
     #[test]
-    fn callback_records_keep_their_held_snapshot_presentation() -> Result<(), String> {
+    fn callback_records_keep_their_held_snapshot_presentation() -> TestResult {
         let (mut session, _) = crate::session::testing::attached(8, 30)?;
-        let reply = crate::session::InProcess(&mut session)
-            .ask(&Asked {
-                after: None,
-                context: Context::default(),
-                request: crate::command::Command::Inspect {
-                    scope: crate::inspect::Scope::All,
-                    projection: crate::inspect::Projection::Topology,
-                }
-                .into(),
-            })
-            .map_err(|e| e.to_string())?;
-        let values = crate::script::answered(reply).map_err(|e| e.to_string())?;
+        let reply = crate::session::InProcess(&mut session).ask(&Asked {
+            after: None,
+            context: Context::default(),
+            request: crate::command::Command::Inspect {
+                scope: crate::inspect::Scope::All,
+                projection: crate::inspect::Projection::Topology,
+            }
+            .into(),
+        })?;
+        let values = crate::script::answered(reply)?;
         let record = values.first().ok_or("snapshot")?;
         let data = data(record, &mut Budget::new()).map_err(|e| e.message)?;
-        let text = run(&Callback::from("print").job([data])).map_err(|e| e.to_string())?;
+        let text = run(&Callback::from("print").job([data]))?;
         assert!(text.starts_with("+1\n"), "{text}");
         assert!(text.contains("client c1"), "{text}");
         Ok(())
     }
 
     #[test]
-    fn callbacks_check_actual_kinds_and_empty_results_before_and_after_execution()
-    -> Result<(), String> {
+    fn callbacks_check_actual_kinds_and_empty_results_before_and_after_execution() -> TestResult {
         let context = context()?;
         for (payload, code) in [
             (Data::Text("host".into()), "1 roll drop 1 add drop"),
@@ -424,7 +408,7 @@ mod tests {
     }
 
     #[test]
-    fn screen_admission_checks_every_payload_run_and_aggregate_bound() -> Result<(), String> {
+    fn screen_admission_checks_every_payload_run_and_aggregate_bound() -> TestResult {
         let context = context()?;
         let mut spec = list(
             Data::Handle("%1".parse().map_err(|()| "pane")?, context.of),
