@@ -2521,18 +2521,20 @@ mod tests {
     }
 
     #[test]
-    fn all_is_only_an_observation_or_notification_scope() -> Result<(), Box<dyn std::error::Error>>
-    {
-        for source in [
-            "all info drop",
-            "all dump drop",
-            "all str hello notify",
-            "all events",
-            "all str 0:1-2 0 next-events drop",
-        ] {
-            super::super::compile(&fuxth::token::source("all", source)?)
-                .map_err(|f| f.to_string())?;
-        }
+    fn known_operand_kinds_are_checked_before_effects() -> Result<(), Box<dyn std::error::Error>> {
+        let version = "%2:0.0.0.0.0:48211-1867a3f9c2b8e7d6";
+        let mut invalid = vec![
+            "str c1 client capture version".to_owned(),
+            "@1 version".to_owned(),
+            "%1 str horizontal axis 30 str horizontal resize-pane".to_owned(),
+            "%1 str horizontal axis str click 0 0 send-mouse".to_owned(),
+            "str c1 client 0 timeout wait".to_owned(),
+            format!("str {version} expect 0 timeout wait"),
+            format!("str {version} changed str x text send-keys"),
+            format!("str {version} changed all-history capture"),
+            format!("str {version} changed str '' 0 next-events"),
+            "str x kill".to_owned(),
+        ];
         for suffix in [
             "kill",
             "capture",
@@ -2544,73 +2546,7 @@ mod tests {
             "attach",
             "str x rename",
         ] {
-            let source = format!("str SIDE-EFFECT print all {suffix}");
-            let failure = super::super::compile(&fuxth::token::source("all", &source)?)
-                .err()
-                .ok_or_else(|| format!("accepted {source}"))?;
-            assert_eq!(failure.code, Code::from(Raise::Type), "{source}: {failure}");
-        }
-        Ok(())
-    }
-
-    #[test]
-    fn library_dump_checks_its_scope_before_effects() -> Result<(), Box<dyn std::error::Error>> {
-        for prefix in ["str SIDE-EFFECT print", "%1 str renamed rename"] {
-            for scope in ["1", "all str 0:1-2 0 next-events"] {
-                let source = format!("{prefix} {scope} dump drop");
-                let failure = super::super::compile(&fuxth::token::source("dump", &source)?)
-                    .err()
-                    .ok_or_else(|| format!("accepted {source}"))?;
-                assert_eq!(failure.code, Code::from(Raise::Type), "{source}: {failure}");
-            }
-        }
-        Ok(())
-    }
-
-    #[test]
-    fn library_dump_checks_its_string_result_before_effects()
-    -> Result<(), Box<dyn std::error::Error>> {
-        for prefix in ["str SIDE-EFFECT print", "%1 str renamed rename"] {
-            let source = format!("{prefix} all dump 1 push drop");
-            let failure = super::super::compile(&fuxth::token::source("dump", &source)?)
-                .err()
-                .ok_or_else(|| format!("accepted {source}"))?;
-            assert_eq!(failure.code, Code::from(Raise::Type), "{source}: {failure}");
-        }
-        Ok(())
-    }
-
-    #[test]
-    fn library_layout_presets_check_the_tab_before_effects()
-    -> Result<(), Box<dyn std::error::Error>> {
-        for recipe in [
-            "layout-current",
-            "even-h",
-            "even-v",
-            "main-h",
-            "main-v",
-            "tiled",
-        ] {
-            for target in ["1", "%1", "+1", "all", "str tab"] {
-                let source = format!("str SIDE-EFFECT print {target} {recipe}");
-                let failure = super::super::compile(&fuxth::token::source("preset", &source)?)
-                    .err()
-                    .ok_or_else(|| format!("accepted {source}"))?;
-                assert_eq!(failure.code, Code::from(Raise::Type), "{source}: {failure}");
-            }
-        }
-        Ok(())
-    }
-
-    #[test]
-    fn capture_preserves_source_kinds_and_pane_only_options()
-    -> Result<(), Box<dyn std::error::Error>> {
-        for source in [
-            "%1 full capture expect drop",
-            "str c1 client capture json drop",
-        ] {
-            super::super::compile(&fuxth::token::source("capture", source)?)
-                .map_err(|f| f.to_string())?;
+            invalid.push(format!("all {suffix}"));
         }
         for suffix in [
             "capture expect drop",
@@ -2620,11 +2556,69 @@ mod tests {
             "0 1 rows capture drop",
             "main-screen capture drop",
         ] {
-            let source = format!("str SIDE-EFFECT print str c1 client {suffix}");
-            let failure = super::super::compile(&fuxth::token::source("capture", &source)?)
+            invalid.push(format!("str c1 client {suffix}"));
+        }
+        for prefix in ["str SIDE-EFFECT print", "%1 str renamed rename"] {
+            for body in [
+                "1 dump drop",
+                "all str 0:1-2 0 next-events dump drop",
+                "all dump 1 push drop",
+            ] {
+                invalid.push(format!("{prefix} {body}"));
+            }
+        }
+        for recipe in [
+            "layout-current",
+            "even-h",
+            "even-v",
+            "main-h",
+            "main-v",
+            "tiled",
+        ] {
+            for target in ["1", "%1", "+1", "all", "str tab"] {
+                invalid.push(format!("{target} {recipe}"));
+            }
+        }
+        for code in invalid {
+            let source = format!("str SIDE-EFFECT print {code}");
+            let failure = super::super::compile(&fuxth::token::source("preflight", &source)?)
                 .err()
                 .ok_or_else(|| format!("accepted {source}"))?;
             assert_eq!(failure.code, Code::from(Raise::Type), "{source}: {failure}");
+        }
+        for code in [
+            "all info drop".to_owned(),
+            "all dump drop".to_owned(),
+            "all str hello notify".to_owned(),
+            "all events".to_owned(),
+            "all str 0:1-2 0 next-events drop".to_owned(),
+            "%1 full capture expect drop".to_owned(),
+            "%1 all-history capture expect str x text send-keys wait capture drop".to_owned(),
+            "%1 str x text send-keys 0 quiet drop %1 capture drop".to_owned(),
+            format!("str {version} changed 0 timeout wait capture drop"),
+            "str c1 client capture json drop".to_owned(),
+        ] {
+            super::super::compile(&fuxth::token::source("accepted", &code)?)
+                .map_err(|f| f.to_string())?;
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn closed_observations_have_no_version() -> Result<(), Box<dyn std::error::Error>> {
+        for kind in ["closed-answer", "client-capture"] {
+            for suffix in ["changed drop", "expect drop", "version drop"] {
+                let mut vocabulary = super::super::vocabulary()?;
+                vocabulary.add("held", &format!("-- {kind}"))?;
+                let mut compiler = fuxth::Compiler::<Fux>::new(vocabulary);
+                let source = format!("held str SIDE-EFFECT print {suffix}");
+                let error = compiler
+                    .add(&fuxth::token::source("versionless", &source)?)
+                    .and_then(|()| compiler.finish())
+                    .err()
+                    .ok_or_else(|| format!("accepted {source}"))?;
+                assert_eq!(error.code, fuxth::Code::Type, "{source}: {error}");
+            }
         }
         Ok(())
     }

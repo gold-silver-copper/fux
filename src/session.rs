@@ -5695,31 +5695,25 @@ mod tests {
         Ok(())
     }
 
-    /// A wait on a pane part way through a frame is answered in process as
-    /// a server answers it: once the frame is read whole, its screen
-    /// changed, not as an empty success.
     #[test]
-    fn a_wait_in_process_answers_a_frame_whole() -> Result<(), String> {
-        let mut s = started()?;
-        let mut frame = b"\x1b[?2026h".to_vec();
-        frame.extend(crate::pane::tests::spends_the_budget(24, 80));
-        frame.extend_from_slice(b"DONE\x1b[?2026l");
-        s.out(PaneId::of(1), &frame);
-        assert!(s.pane(PaneId::of(1)).is_ok_and(Pane::mid_frame));
-        let answer = output(&mut s, "%1 0 timeout wait")?;
-        assert!(answer.ends_with(" screen\n"), "{answer}");
-        Ok(())
-    }
-
-    /// A wait on a pane holding a frame that its time releases before the
-    /// wait's is answered in process as a server answers it: the frame
-    /// shown, its screen changed, not timed out.
-    #[test]
-    fn a_wait_in_process_sees_a_frame_released_before_its_time() -> Result<(), String> {
-        let mut s = started()?;
-        s.out(PaneId::of(1), b"\x1b[?2026hHELLO");
-        let answer = output(&mut s, "%1 2 timeout wait")?;
-        assert!(answer.ends_with(" screen\n"), "{answer}");
+    fn in_process_waits_answer_only_after_the_frame_is_released() -> Result<(), String> {
+        for (budgeted, timeout) in [(true, 0), (false, 2)] {
+            let mut s = started()?;
+            let mut frame = b"\x1b[?2026h".to_vec();
+            if budgeted {
+                frame.extend(crate::pane::tests::spends_the_budget(24, 80));
+            }
+            frame.extend_from_slice(b"DONE");
+            if budgeted {
+                frame.extend_from_slice(b"\x1b[?2026l");
+            }
+            s.out(PaneId::of(1), &frame);
+            if budgeted {
+                assert!(s.pane(PaneId::of(1)).is_ok_and(Pane::mid_frame));
+            }
+            let answer = output(&mut s, &format!("%1 {timeout} timeout wait"))?;
+            assert!(answer.ends_with(" screen\n"), "{answer}");
+        }
         Ok(())
     }
 
@@ -6481,55 +6475,72 @@ mod tests {
         Ok(())
     }
 
-    /// A program that exits with output past a read budget still unread
-    /// (`Pane::has_unread`) is at work until it is read, and exited only
-    /// then, its last screen whole: a wait is never told it exited on a
-    /// screen of before. Each REP is spent as 65,535 copies: 2,000 of them
-    /// spend a budget.
+    /// Exit becomes visible only after the last screen, including a frame
+    /// begun before or after the read budget is spent.
     #[test]
-    fn a_program_exits_once_its_output_is_read() -> Result<(), String> {
-        let mut s = started()?;
-        run(&mut s, "agent-opts 80 24 size str /bin/true program run")?;
-        let id = PaneId::of(2);
-        // /bin/sh, which macOS has where it has no /bin/true.
-        let argv = ["/bin/sh", "-c", "exit 0"].map(str::to_owned);
-        let child = process::spawn(&argv, Path::new("/"), (&[], &[]), (sized(4, 20)?, None))?;
-        (s.parts.pane_mut(id).ok_or("the pane")?).set_process(Process::Reading(child));
-        let exited = |s: &Session| {
-            (s.parts.panes().get(&id))
-                .and_then(|p| p.process().child()?.leader.exited())
-                .is_some()
-        };
-        let until = crate::after(Instant::now(), Duration::from_secs(10));
-        while !exited(&s) && Instant::now() < until {
-            std::thread::sleep(Duration::from_millis(10));
+    fn exit_waits_for_the_last_screen_including_held_frames() -> Result<(), String> {
+        for (held, budgeted) in [(false, true), (true, false), (true, true)] {
+            let mut s = started()?;
+            run(&mut s, "agent-opts 80 24 size str /bin/true program run")?;
+            let id = PaneId::of(2);
+            if !held {
+                let argv = ["/bin/sh", "-c", "exit 0"].map(str::to_owned);
+                let child =
+                    process::spawn(&argv, Path::new("/"), (&[], &[]), (sized(4, 20)?, None))?;
+                (s.parts.pane_mut(id).ok_or("the pane")?).set_process(Process::Reading(child));
+                let exited = |s: &Session| {
+                    s.parts
+                        .panes()
+                        .get(&id)
+                        .and_then(|p| p.process().child()?.leader.exited())
+                        .is_some()
+                };
+                let until = crate::after(Instant::now(), Duration::from_secs(10));
+                while !exited(&s) && Instant::now() < until {
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                assert!(exited(&s), "the child did not exit");
+            }
+            let mut out = Vec::new();
+            if budgeted {
+                out.extend(
+                    std::iter::repeat_n(b"X\x1b[65535b", 2000)
+                        .flatten()
+                        .copied(),
+                );
+                out.extend_from_slice(b"\x1b[2J\x1b[H");
+            }
+            if held {
+                out.extend_from_slice(b"\x1b[?2026h");
+            }
+            out.extend_from_slice(b"DONE");
+            s.out(id, &out);
+            s.end_program(id, Ended::Exited(0));
+            if budgeted {
+                let pane = s.parts.panes().get(&id).ok_or("the pane")?;
+                assert!(pane.has_unread(), "the budget stopped no call");
+                assert!(
+                    pane.process().exit_status().is_none(),
+                    "exited with output unread"
+                );
+            }
+            let mut turns = 0u32;
+            while s.parts.panes().get(&id).is_some_and(Pane::has_unread) && turns < 100 {
+                s.fire_now(crate::session::Timer::Unread(id));
+                turns = turns.saturating_add(1);
+            }
+            let pane = s.parts.panes().get(&id).ok_or("the pane")?;
+            assert_eq!(pane.process().exit_status(), Some(Ended::Exited(0)));
+            let text = pane
+                .screen()
+                .rows()
+                .map(|r| r.cells_text())
+                .collect::<String>();
+            assert!(
+                text.contains("DONE"),
+                "held={held}, budgeted={budgeted}: {text:?}"
+            );
         }
-        let mut flood: Vec<u8> = std::iter::repeat_n(b"X\x1b[65535b", 2000)
-            .flatten()
-            .copied()
-            .collect();
-        flood.extend_from_slice(b"\x1b[2J\x1b[HDONE");
-        s.out(id, &flood);
-        s.end_program(id, Ended::Exited(0));
-        let pane = s.parts.panes().get(&id).ok_or("the pane")?;
-        assert!(pane.has_unread(), "the budget stopped no call");
-        assert!(
-            pane.process().exit_status().is_none(),
-            "exited with output unread"
-        );
-        let mut turns = 0u32;
-        while s.parts.panes().get(&id).is_some_and(Pane::has_unread) && turns < 100 {
-            s.fire_now(crate::session::Timer::Unread(id));
-            turns = turns.saturating_add(1);
-        }
-        let pane = s.parts.panes().get(&id).ok_or("the pane")?;
-        assert_eq!(pane.process().exit_status(), Some(Ended::Exited(0)));
-        let text = pane
-            .screen()
-            .rows()
-            .map(|r| r.cells_text())
-            .collect::<String>();
-        assert!(text.contains("DONE"), "{text:?}");
         Ok(())
     }
 
@@ -6583,66 +6594,6 @@ mod tests {
             let _ = child.leader.finish();
         }
         assert!(told, "not told exited in {turns} turns");
-        Ok(())
-    }
-
-    /// A frame of synchronized output held as its program exits is read
-    /// before the exit is told: its last screen is whole.
-    #[test]
-    fn a_frame_held_at_exit_is_on_the_last_screen() -> Result<(), String> {
-        let mut s = started()?;
-        run(&mut s, "agent-opts 80 24 size str /bin/true program run")?;
-        let id = PaneId::of(2);
-        s.out(id, b"\x1b[?2026hHELD");
-        s.end_program(id, Ended::Exited(0));
-        let pane = s.parts.panes().get(&id).ok_or("the pane")?;
-        assert_eq!(pane.process().exit_status(), Some(Ended::Exited(0)));
-        let text = pane
-            .screen()
-            .rows()
-            .map(|r| r.cells_text())
-            .collect::<String>();
-        assert!(text.contains("HELD"), "{text:?}");
-        Ok(())
-    }
-
-    /// A frame begun in output read after the exit, past a read budget, is
-    /// read too before the exit is told.
-    #[test]
-    fn a_frame_begun_after_the_exit_is_on_the_last_screen() -> Result<(), String> {
-        let mut s = started()?;
-        run(&mut s, "agent-opts 80 24 size str /bin/true program run")?;
-        let id = PaneId::of(2);
-        let mut out: Vec<u8> = std::iter::repeat_n(b"X\x1b[65535b", 2000)
-            .flatten()
-            .copied()
-            .collect();
-        out.extend_from_slice(b"\x1b[2J\x1b[H\x1b[?2026hHELD");
-        s.out(id, &out);
-        s.end_program(id, Ended::Exited(0));
-        let mut turns = 0u32;
-        while s
-            .parts
-            .panes()
-            .get(&id)
-            .is_some_and(|p| p.process().exit_status().is_none())
-            && turns < 100
-        {
-            s.fire_now(crate::session::Timer::Unread(id));
-            turns = turns.saturating_add(1);
-        }
-        let pane = s.parts.panes().get(&id).ok_or("the pane")?;
-        assert_eq!(pane.process().exit_status(), Some(Ended::Exited(0)));
-        let text = pane
-            .screen()
-            .rows()
-            .map(|r| r.cells_text())
-            .collect::<String>();
-        assert!(
-            text.contains("HELD"),
-            "no HELD in {} characters",
-            text.len()
-        );
         Ok(())
     }
 
@@ -8281,48 +8232,39 @@ mod tests {
         Ok(())
     }
 
-    /// A shell pane's exit is told, its status with it, then its close
-    /// (and the pane that takes its room).
     #[test]
-    fn a_shell_panes_exit_is_told_before_its_close() -> Result<(), String> {
-        let mut s = started()?;
-        run(&mut s, "%1 str horizontal axis split drop")?;
-        let lines = told(&mut s, |s| {
-            s.end_program(PaneId::of(2), Ended::Signalled(9))
-        });
-        let said = concat!(
-            r#"{"event":"exited","pane":"%2","tab":"@1","workspace":"+1","signal":9}"#,
-            "\n",
-            r#"{"event":"closed","pane":"%2","tab":"@1","workspace":"+1"}"#,
-            "\n",
-            r#"{"event":"resized","pane":"%1","tab":"@1","workspace":"+1","cols":80,"rows":24}"#,
-            "\n"
-        );
-        assert_eq!(lines, said);
-        Ok(())
-    }
-
-    /// What a shell wrote as it exited, a frame it held too, is read
-    /// before its exit is told: its bell and title are not lost.
-    #[test]
-    fn a_shells_last_output_is_told_before_its_exit() -> Result<(), String> {
-        let mut s = started()?;
-        run(&mut s, "%1 str horizontal axis split drop")?;
-        let lines = told(&mut s, |s| {
-            s.out(PaneId::of(2), b"\x1b[?2026h\x07\x1b]2;bye\x07");
-            s.end_program(PaneId::of(2), Ended::Exited(0));
-        });
-        let said = concat!(
-            r#"{"event":"bell","pane":"%2","tab":"@1","workspace":"+1"}"#,
-            "\n",
-            r#"{"event":"title","pane":"%2","tab":"@1","workspace":"+1","title":"bye"}"#,
-            "\n",
-            r#"{"event":"exited","pane":"%2","tab":"@1","workspace":"+1","exited":0}"#,
-            "\n",
-            r#"{"event":"closed","pane":"%2","tab":"@1","workspace":"+1"}"#,
-            "\n"
-        );
-        assert!(lines.starts_with(said), "{lines}");
+    fn final_output_precedes_exit_close_and_sibling_resize() -> Result<(), String> {
+        for (ended, status, output) in [
+            (Ended::Signalled(9), "\"signal\":9", false),
+            (Ended::Exited(0), "\"exited\":0", true),
+        ] {
+            let mut s = started()?;
+            run(&mut s, "%1 str horizontal axis split drop")?;
+            let lines = told(&mut s, |s| {
+                if output {
+                    s.out(PaneId::of(2), b"\x1b[?2026h\x07\x1b]2;bye\x07");
+                }
+                s.end_program(PaneId::of(2), ended);
+            });
+            let prefix = if output {
+                concat!(
+                    r#"{"event":"bell","pane":"%2","tab":"@1","workspace":"+1"}"#,
+                    "\n",
+                    r#"{"event":"title","pane":"%2","tab":"@1","workspace":"+1","title":"bye"}"#,
+                    "\n"
+                )
+            } else {
+                ""
+            };
+            assert_eq!(
+                lines,
+                format!(
+                    "{prefix}{{\"event\":\"exited\",\"pane\":\"%2\",\"tab\":\"@1\",\"workspace\":\"+1\",{status}}}\n{}\n{}\n",
+                    r#"{"event":"closed","pane":"%2","tab":"@1","workspace":"+1"}"#,
+                    r#"{"event":"resized","pane":"%1","tab":"@1","workspace":"+1","cols":80,"rows":24}"#
+                )
+            );
+        }
         Ok(())
     }
 
@@ -8399,19 +8341,6 @@ mod tests {
         Ok(())
     }
 
-    /// A dump names only tabs given a name, regardless of their order.
-    #[test]
-    fn a_dump_names_only_the_tabs_given_a_name() -> Result<(), String> {
-        let mut s = started()?;
-        let tab = "opts 80 24 size str +1 workspace in new-tab drop";
-        run(&mut s, &format!("{tab} {tab} str @2 tab kill"))?;
-        run(&mut s, &format!("{tab} str @4 tab str given rename"))?;
-        let dump = s.dump_recipe(None).map_err(|e| e.to_string())?;
-        assert!(!dump.contains("tab-3"), "{dump}");
-        assert!(dump.contains("given"), "{dump}");
-        Ok(())
-    }
-
     /// Dump preserves given names, including old automatic spellings,
     /// and never promotes a label to a name.
     #[test]
@@ -8426,10 +8355,14 @@ mod tests {
             &mut source,
             "opts +1 in 80 24 size str cat name str /bin/cat program run str new-workspace move",
         )?;
-        run(&mut source, "opts +2 in 80 24 size new-tab drop")?;
+        run(
+            &mut source,
+            "opts +2 in 80 24 size new-tab drop opts +2 in 80 24 size new-tab drop @3 kill opts +2 in 80 24 size new-tab str given rename",
+        )?;
         run(&mut source, "str shell list str /bin/other end set")?;
         let dump = source.dump_recipe(None).map_err(|e| e.to_string())?;
         assert!(!dump.contains("str other rename"), "{dump}");
+        assert!(!dump.contains("tab-3") && dump.contains("given"), "{dump}");
         let mut again = started()?;
         run(&mut again, &dump).map_err(|error| format!("{error}\n{dump}"))?;
         let names = |s: &Session| {
@@ -8529,57 +8462,38 @@ mod tests {
         Ok(())
     }
 
-    /// A dump makes a tab that fits clients' screens at the size it has,
-    /// and it fits them again; a tab given a size keeps it.
     #[test]
-    fn a_dump_keeps_which_tabs_fit_clients() -> Result<(), String> {
-        let (mut s, _) = attached(11, 40)?;
-        run(&mut s, "opts 60 20 size str +1 workspace in new-tab drop")?;
-        let dump = s.dump_recipe(None).map_err(|e| e.to_string())?;
-        let mut again = started()?;
-        run(&mut again, &dump)?;
-        let tabs = (again.parts.workspaces().iter()).flat_map(|w| w.tabs());
-        let fits: Vec<_> = tabs.map(|t| matches!(t.fit(), Fit::Clients(_))).collect();
-        assert!(fits.ends_with(&[true, false]), "{dump}");
-        Ok(())
-    }
-
-    /// A tab as big as a client's screen may be, which a tab that fits
-    /// clients takes, is made again from its dump.
-    #[test]
-    fn a_dump_makes_a_tab_as_big_as_a_screen_again() -> Result<(), String> {
-        let mut s = started()?;
-        run(&mut s, "opts 600 40 size str +1 workspace in new-tab drop")?;
-        let mut again = started()?;
-        run(&mut again, &s.dump_recipe(None).map_err(|e| e.to_string())?)?;
-        let tabs = (again.parts.workspaces().iter()).flat_map(|w| w.tabs());
-        let mut sizes = tabs.map(|t| t.fit().size());
-        let wide = sizes.any(|s| (s.cols(), s.rows()) == (600, 40));
-        assert!(wide, "{}", s.dump_recipe(None).map_err(|e| e.to_string())?);
-        Ok(())
-    }
-
-    /// A dump of a tab is made again however its clients showed it: a
-    /// pane zoomed, which has the whole screen; a screen too small for
-    /// every pane, whose size the tab does not take.
-    #[test]
-    fn a_dump_is_made_again_however_its_tab_was_shown() -> Result<(), String> {
+    fn dumps_preserve_tab_sizing_independently_of_client_views() -> Result<(), String> {
         let (mut s, c) = attached(11, 40)?;
+        run(&mut s, "opts 600 40 size +1 in new-tab drop")?;
         run(
             &mut s,
             "%1 str horizontal axis split drop %1 str vertical axis split drop",
         )?;
         run(&mut s, "str c1 client %1 show str c1 client zoom")?;
-        let replays = |s: &Session| {
+        for tiny in [false, true] {
+            if tiny {
+                run(&mut s, "str c1 client zoom")?;
+                s.size_client(c, 2, 2).map_err(|e| e.to_string())?;
+            }
             let dump = s.dump_recipe(None).map_err(|e| e.to_string())?;
             let mut again = started()?;
             run(&mut again, &dump).map_err(|e| format!("{e}\n{dump}"))?;
-            Ok::<_, String>(again.parts.panes().len())
-        };
-        assert_eq!(replays(&s)?, 4);
-        run(&mut s, "str c1 client zoom")?;
-        s.size_client(c, 2, 2).map_err(|e| e.to_string())?;
-        assert_eq!(replays(&s)?, 4);
+            let tabs = again
+                .parts
+                .workspaces()
+                .iter()
+                .flat_map(|w| w.tabs())
+                .collect::<Vec<_>>();
+            let fits = tabs
+                .iter()
+                .map(|t| matches!(t.fit(), Fit::Clients(_)))
+                .collect::<Vec<_>>();
+            assert!(fits.ends_with(&[true, false]), "{dump}");
+            assert_eq!(tabs.last().map(|t| t.fit().size()), Some(sized(40, 600)?));
+            assert_eq!(again.parts.panes().len(), s.parts.panes().len() + 1);
+            assert_eq!(replayed(&s, TabId::of(1))?, rects(&s, TabId::of(1)));
+        }
         Ok(())
     }
 
@@ -8655,21 +8569,6 @@ mod tests {
             "{refused}"
         );
         let tab: TabId = "@1".parse().map_err(|_| "@1")?;
-        assert_eq!(replayed(&s, tab)?, rects(&s, tab));
-        Ok(())
-    }
-
-    /// Panes are made again at the places they had: 81, 9 and 8 of 100
-    /// columns, each split's nearest to its shares.
-    #[test]
-    fn a_dump_makes_its_panes_again_where_they_were() -> Result<(), String> {
-        let mut s = started()?;
-        let tab = "opts 100 10 size str +1 workspace in new-tab drop";
-        let splits = "%2 str horizontal axis 80 18 shares split drop %3 str horizontal axis 10 8 shares split drop";
-        run(&mut s, &format!("{tab} {splits}"))?;
-        let tab: TabId = "@2".parse().map_err(|_| "@2")?;
-        let widths: Vec<u16> = rects(&s, tab).iter().map(Rect::w).collect();
-        assert_eq!(widths, [81, 9, 8]);
         assert_eq!(replayed(&s, tab)?, rects(&s, tab));
         Ok(())
     }
@@ -8806,14 +8705,30 @@ mod tests {
     fn shares_divide_the_split_panes_room() -> Result<(), String> {
         let tab: TabId = "@2".parse().map_err(|_| "@2")?;
         let widths = |s: &Session| rects(s, tab).iter().map(Rect::w).collect::<Vec<u16>>();
-        let made = "opts 101 10 size str +1 workspace in new-tab drop";
-        for halved in ["", "1 1 shares"] {
+        let made = "opts 101 10 size +1 in new-tab drop";
+        for (cols, split, expected) in [
+            (
+                100,
+                "%2 str horizontal axis 80 18 shares split drop %3 str horizontal axis 10 8 shares split drop",
+                [81, 9, 8],
+            ),
+            (
+                101,
+                "%2 str horizontal axis split drop %3 str horizontal axis 2 1 shares split drop",
+                [50, 33, 16],
+            ),
+            (
+                101,
+                "%2 str horizontal axis 1 1 shares split drop %3 str horizontal axis 2 1 shares split drop",
+                [50, 33, 16],
+            ),
+        ] {
             let mut s = started()?;
-            let split = format!(
-                "%2 str horizontal axis {halved} split drop %3 str horizontal axis 2 1 shares split drop"
-            );
-            run(&mut s, &format!("{made} {split}"))?;
-            assert_eq!(widths(&s), [50, 33, 16], "{halved}");
+            run(
+                &mut s,
+                &format!("opts {cols} 10 size +1 in new-tab drop {split}"),
+            )?;
+            assert_eq!(widths(&s), expected, "{split}");
             assert_eq!(replayed(&s, tab)?, rects(&s, tab));
         }
         let mut s = started()?;

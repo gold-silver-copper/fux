@@ -2569,65 +2569,6 @@ mod tests {
         Ok(())
     }
 
-    /// Certain target/version errors fail preflight, before even an earlier
-    /// print can run. Pane versions and the bundled recipes remain accepted.
-    #[test]
-    fn target_and_version_boundaries_are_checked_before_effects()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let version = "%2:0.0.0.0.0:48211-1867a3f9c2b8e7d6";
-        for code in [
-            "str c1 client capture expect".to_owned(),
-            "str c1 client capture changed".to_owned(),
-            "str c1 client capture version".to_owned(),
-            "@1 version".to_owned(),
-            "%1 str horizontal axis 30 str horizontal resize-pane".to_owned(),
-            "%1 str horizontal axis str click 0 0 send-mouse".to_owned(),
-            "str c1 client 0 timeout wait".to_owned(),
-            format!("str {version} expect 0 timeout wait"),
-            format!("str {version} changed str x text send-keys"),
-            format!("str {version} changed all-history capture"),
-            format!("str {version} changed str '' 0 next-events"),
-            "str x kill".to_owned(),
-        ] {
-            let tokens =
-                super::token::source("boundary", &format!("str SIDE-EFFECT print {code}"))?;
-            let error = super::compile(&tokens)
-                .err()
-                .ok_or_else(|| format!("accepted {code}"))?;
-            assert_eq!(
-                error.code,
-                super::Code::from(crate::code::Raise::Type),
-                "{code}: {error}"
-            );
-        }
-        // Values obtained from a closed-only producer are statically disjoint
-        // from versions. A catch remains string | payload, since ordinary
-        // message failures are still permitted.
-        for kind in ["closed-answer", "client-capture"] {
-            for suffix in ["changed drop", "expect drop", "version drop"] {
-                let mut vocabulary = super::vocabulary()?;
-                vocabulary.add("held", &format!("-- {kind}"))?;
-                let mut compiler = fuxth::Compiler::<super::Fux>::new(vocabulary);
-                let source = format!("held str SIDE-EFFECT print {suffix}");
-                let error = compiler
-                    .add(&super::token::source("versionless", &source)?)
-                    .and_then(|()| compiler.finish())
-                    .err()
-                    .ok_or_else(|| format!("accepted {source}"))?;
-                assert_eq!(error.code, fuxth::Code::Type, "{source}: {error}");
-            }
-        }
-        for code in [
-            "%1 all-history capture expect str x text send-keys wait capture drop".to_owned(),
-            "%1 str x text send-keys 0 quiet drop %1 capture drop".to_owned(),
-            format!("str {version} changed 0 timeout wait capture drop"),
-            "str c1 client capture json drop".to_owned(),
-        ] {
-            super::compile(&super::token::source("recipe", &code)?).map_err(|f| f.to_string())?;
-        }
-        Ok(())
-    }
-
     /// One argument is a whole program, though it holds a `/` or ends
     /// `.fux`: never a file to read, which `--file` names.
     #[test]

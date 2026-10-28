@@ -29,6 +29,7 @@ fn core_stack_words() {
         ("1 2 3 -rot", &[3, 1, 2]),
         ("1 2 2dup", &[1, 2, 1, 2]),
         ("1 2 3 2drop", &[1]),
+        ("1 2 swap over dup drop", &[2, 1, 2]),
     ] {
         assert_eq!(fuxth(program, u64::MAX), ints(left), "{program}");
     }
@@ -43,6 +44,7 @@ fn core_arithmetic() {
         ("-1 -1 sub", &[0]),
         ("2 3 mul", &[6]),
         ("-3 -3 mul", &[9]),
+        ("10 3 sub 2 mul 5 div 7 3 mod", &[2, 1]),
         ("0 negate 1 negate -1 negate", &[0, -1, 1]),
         ("0 abs 1 abs -1 abs", &[0, 1, 1]),
         ("0 1 min 0 -1 min", &[0, -1]),
@@ -54,7 +56,7 @@ fn core_arithmetic() {
         ("-7 2 div -7 2 mod", &[-3, -1]),
         ("7 -2 div 7 -2 mod", &[-3, 1]),
         ("-7 -2 div -7 -2 mod", &[3, -1]),
-        ("-9223372036854775808 -1 mod", &[0]),
+        ("-9223372036854775808 -1 mod 7 -1 mod", &[0, 0]),
     ] {
         assert_eq!(fuxth(program, u64::MAX), ints(left), "{program}");
     }
@@ -111,7 +113,16 @@ fn core_control_and_definitions() {
             &[120],
         ),
         ("123 let x123 x123".to_owned(), &[123]),
+        ("6 let six six six mul".to_owned(), &[36]),
         ("define nop end 1 nop".to_owned(), &[1]),
+        ("define twice dup add end 5 twice twice".to_owned(), &[20]),
+        ("0 begin 1 add dup 5 eq until".to_owned(), &[5]),
+        (
+            "define countdown begin dup 1 sub dup 0 eq until end 3 countdown".to_owned(),
+            &[3, 2, 1, 0],
+        ),
+        ("1 2 lt if 10 else 20 then".to_owned(), &[10]),
+        ("2 1 lt if 10 else 20 then".to_owned(), &[20]),
     ] {
         assert_eq!(fuxth(&program, u64::MAX), ints(left), "{program}");
     }

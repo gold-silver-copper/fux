@@ -963,34 +963,11 @@ mod tests {
         assert_eq!(dot.map(|k| encode(&k).unwrap_or_default()), Some(text(".")));
     }
 
-    /// A variable's name from the wire is one a shell takes, as from the
-    /// `env` word: `A=B` (or a NUL) would set another, or none.
     #[test]
-    fn a_variable_name_no_shell_takes_is_refused() -> Result<(), String> {
-        let vars = |name: &str| {
-            encode(&vec![(
-                name.to_owned(),
-                Some(std::ffi::OsString::from("x")),
-            )])
-            .map_err(|e| e.to_string())
-        };
-        assert!(EnvPatch::get(&mut Reader::new(&vars("A=B")?)).is_err());
-        assert!(EnvPatch::get(&mut Reader::new(&vars("A\0")?)).is_err());
-        let fine = EnvPatch::get(&mut Reader::new(&vars("A_1")?)).ok();
-        assert_eq!(
-            fine.map(|env| encode(&env))
-                .transpose()
-                .map_err(|e| e.to_string())?,
-            Some(vars("A_1")?)
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn patches_keep_bytes_and_unsets_and_refuse_forged_identity() -> Result<(), String> {
+    fn environment_patches_validate_names_identity_and_bytes() -> Result<(), String> {
         let mut patch = EnvPatch::default();
         patch.push(
-            "BYTES".into(),
+            "A_1".into(),
             Some(std::ffi::OsString::from_vec(vec![0xff, b'x'])),
         )?;
         patch.push("ABSENT".into(), None)?;
@@ -998,7 +975,15 @@ mod tests {
             Reader::new(&encode(&patch).map_err(|e| e.to_string())?).whole::<EnvPatch>(),
             Ok(patch.clone())
         );
-        for name in ["FUX", "FUX_PANE", "FUX_SOCKET", "FUX_SERVER", "A=B", "1BAD"] {
+        for name in [
+            "FUX",
+            "FUX_PANE",
+            "FUX_SOCKET",
+            "FUX_SERVER",
+            "A=B",
+            "1BAD",
+            "A\0",
+        ] {
             for value in [None, Some(std::ffi::OsString::from("forged"))] {
                 assert!(patch.push(name.into(), value.clone()).is_err());
                 let bytes = encode(&vec![(name.to_owned(), value)]).map_err(|e| e.to_string())?;
@@ -1011,7 +996,7 @@ mod tests {
                 .whole::<EnvPatch>()
                 .is_err()
         );
-        assert!(patch.push("BYTES".into(), None).is_err());
+        assert!(patch.push("A_1".into(), None).is_err());
         let nul = vec![("A".to_owned(), Some(std::ffi::OsString::from_vec(vec![0])))];
         assert!(
             Reader::new(&encode(&nul).map_err(|e| e.to_string())?)
