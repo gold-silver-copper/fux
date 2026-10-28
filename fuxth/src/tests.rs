@@ -1,7 +1,6 @@
 //! The language, run as a host runs it: compiled whole, then run to its
 //! end, through every suspension.
 use crate::*;
-use std::rc::Rc;
 
 /// A host with one value of its own, a ticket, and four words: `ticket`
 /// (-- t), which hands one out at once; `ask` (n -- n*10), which suspends
@@ -1888,7 +1887,7 @@ fn refused_carried_storage_enters_the_resource_failure_handler() -> Result<(), E
         fn weight(&self) -> u64 {
             self.0.len() as u64
         }
-        fn retain(&self, imports: &Rc<Grant>) -> Result<(), Failure> {
+        fn retain(&self, imports: &Imports) -> Result<(), Failure> {
             self.0
                 .reserve(imports, Shared::<Vec<u8>>::bytes(self.0.capacity()))
         }
@@ -1986,7 +1985,7 @@ fn native_imports_share_reservations_and_refuse_independent_storage() -> Result<
         fn import_bytes(&self) -> Option<usize> {
             Some(Shared::<Vec<u8>>::bytes(self.0.capacity()))
         }
-        fn retain(&self, imports: &Rc<Grant>) -> Result<(), Failure> {
+        fn retain(&self, imports: &Imports) -> Result<(), Failure> {
             self.0.reserve(imports, self.import_bytes().unwrap_or(0))
         }
     }
@@ -2009,7 +2008,7 @@ fn native_imports_share_reservations_and_refuse_independent_storage() -> Result<
 
 #[test]
 fn imported_strings_and_lists_hold_and_release_their_storage() -> Result<(), Failure> {
-    let grant = Rc::new(Grant::new(1024));
+    let grant = Imports::new(1024);
     let text = || Value::<Ticket>::str(std::iter::repeat_n('x', 500).collect::<String>());
     let held = text();
     held.retain(&grant)?;

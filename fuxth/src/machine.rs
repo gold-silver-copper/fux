@@ -185,7 +185,7 @@ pub struct Machine<A> {
     steps: u64,
     /// Elements built so far.
     built: u64,
-    imports: Rc<crate::Grant>,
+    imports: crate::Imports,
     /// The step taken last: how many frames there were, its code, and its
     /// place in it.
     last: Option<(usize, Option<usize>, usize)>,
@@ -214,7 +214,7 @@ impl<A: AppValue> Machine<A> {
             extra: 0,
             steps: 0,
             built: 0,
-            imports: Rc::new(crate::Grant::new(A::IMPORT_LIMIT)),
+            imports: crate::Imports::new(A::IMPORT_LIMIT),
             last: None,
         }
     }

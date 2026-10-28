@@ -770,7 +770,6 @@ impl Captured {
     pub fn text(&self) -> Result<String, crate::session::Error> {
         let mut budget = crate::wire::Budget::new();
         budget.slots::<Captured>(1)?;
-
         budget.charge(crate::wire::retained(self))?;
         budget.charge(self.text_scratch())?;
         let text = crate::json::render(&mut budget, |out| self.write_text(out))?;

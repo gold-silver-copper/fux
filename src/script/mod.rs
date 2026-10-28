@@ -117,7 +117,7 @@ impl AppValue for Fux {
         matches!(self, Fux::Rendered(_)).then(|| self.text_bytes())
     }
 
-    fn retain(&self, imports: &Rc<fuxth::Grant>) -> Result<(), fuxth::Failure> {
+    fn retain(&self, imports: &fuxth::Imports) -> Result<(), fuxth::Failure> {
         match self {
             Fux::Record(record) => record::Record::retain(record, imports),
             Fux::Answer(answer, _) => answer.reserve(imports, answer.retained_bytes()),
@@ -221,13 +221,13 @@ impl AppValue for Fux {
             Fux::All => write!(out, "all"),
             Fux::Opts(_) => write!(out, "({})", self.kind()),
         }
-        .map_err(|_| words::observation_failure(crate::wire::Budget::exceeded()))
+        .map_err(|_| fuxth::Failure::from(crate::wire::Budget::exceeded()))
     }
 }
 
 impl From<crate::session::Error> for fuxth::Failure {
     fn from(error: crate::session::Error) -> Self {
-        words::observation_failure(error)
+        Self::new(error.code().into(), error.to_string())
     }
 }
 

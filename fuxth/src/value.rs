@@ -1,8 +1,7 @@
 //! Values on the stack: integers, booleans, strings, lists, and the
 //! application's own.
 use crate::error::{Code, Failure};
-use crate::{Grant, Shared};
-use std::rc::Rc;
+use crate::{Imports, Shared};
 
 /// How deep lists may nest: a list of lists of … at most this many. Every
 /// walk over a value (comparing, printing, dropping it) goes no deeper.
@@ -22,7 +21,7 @@ pub trait AppValue: Clone + PartialEq {
     /// Reserve each owned allocation, recursively visiting shared children.
     /// Heap-owning values reserve Shared storage here, or carry an ImportLease
     /// when ownership leaves a shared wrapper. Inline values need no reservation.
-    fn retain(&self, _imports: &Rc<Grant>) -> Result<(), Failure> {
+    fn retain(&self, _imports: &Imports) -> Result<(), Failure> {
         Ok(())
     }
 
@@ -511,7 +510,7 @@ impl<A> Value<A> {
 impl<A: AppValue> Value<A> {
     /// Reserve live shared storage once per machine. Projected children retain
     /// their own leases even after a parent list or record has been dropped.
-    pub fn retain(&self, imports: &Rc<Grant>) -> Result<(), Failure> {
+    pub fn retain(&self, imports: &Imports) -> Result<(), Failure> {
         match self {
             Self::Int(_) | Self::Bool(_) => Ok(()),
             Self::Str(text) => text.reserve(imports, self.own_bytes()),

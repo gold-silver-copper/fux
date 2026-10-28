@@ -3,6 +3,16 @@ use crate::{Code, Failure, Grant};
 use std::cell::RefCell;
 use std::rc::{Rc, Weak};
 
+/// One machine's fixed allowance for live imported storage. Only leases can
+/// reserve or refund it; hosts cannot change the counter directly.
+#[derive(Debug)]
+pub struct Imports(Rc<Grant>);
+impl Imports {
+    pub fn new(limit: usize) -> Self {
+        Self(Rc::new(Grant::new(limit)))
+    }
+}
+
 #[derive(Debug)]
 struct Reservation {
     grant: Weak<Grant>,
@@ -31,18 +41,18 @@ impl PartialEq for ImportLease {
     }
 }
 impl ImportLease {
-    pub fn reserve(&self, imports: &Rc<Grant>, bytes: usize) -> Result<(), Failure> {
+    pub fn reserve(&self, imports: &Imports, bytes: usize) -> Result<(), Failure> {
         let mut held = self
             .0
             .try_borrow_mut()
             .map_err(|_| Failure::new(Code::Contract, "recursive storage admission"))?;
-        let owner = Rc::downgrade(imports);
+        let owner = Rc::downgrade(&imports.0);
         let same = held.as_mut().filter(|r| r.grant.ptr_eq(&owner));
         let old = same.as_ref().map_or(0, |r| r.bytes);
         if bytes >= old {
-            imports.charge(bytes.saturating_sub(old))
+            imports.0.charge(bytes.saturating_sub(old))
         } else {
-            imports.release(old.saturating_sub(bytes))
+            imports.0.release(old.saturating_sub(bytes))
         }
         .map_err(|_| full())?;
         if let Some(reservation) = same {
@@ -108,7 +118,7 @@ impl<T> Shared<T> {
             .saturating_add(std::mem::size_of::<[usize; 2]>())
     }
 
-    pub fn reserve(&self, imports: &Rc<Grant>, bytes: usize) -> Result<(), Failure> {
+    pub fn reserve(&self, imports: &Imports, bytes: usize) -> Result<(), Failure> {
         self.0.lease.reserve(imports, bytes)
     }
 }

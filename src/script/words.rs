@@ -499,10 +499,6 @@ fn text(value: &Value<Fux>) -> Result<String, Failure> {
     }
 }
 
-pub(super) fn observation_failure(error: crate::session::Error) -> Failure {
-    fail(Raise::TooLong, error.to_string())
-}
-
 /// Retained inputs and their rendered output share the observation grant.
 fn json_text(value: &Value<Fux>, limit: usize) -> Result<String, Failure> {
     let mut budget = crate::wire::Budget::with_limit(limit);
@@ -514,7 +510,7 @@ fn json_text(value: &Value<Fux>, limit: usize) -> Result<String, Failure> {
                 fuxth::AppValue::text_bytes(app)
             }
         })
-        .ok_or_else(|| observation_failure(crate::wire::Budget::exceeded()))?;
+        .ok_or_else(|| Failure::from(crate::wire::Budget::exceeded()))?;
     budget.charge(bytes)?;
     let text = crate::json::render(&mut budget, |out| write_json_value(value, out))?;
     budget.text_value(&text)?;

@@ -7,7 +7,6 @@ use crate::json::Json;
 use crate::wire::Budget;
 use fuxix::Allocation;
 use fuxth::{AppValue, Failure, List, Value};
-use std::rc::Rc;
 
 type V = Value<Fux>;
 
@@ -29,7 +28,7 @@ impl PartialEq for Record {
 impl Record {
     pub(super) fn retain(
         this: &fuxth::Shared<Self>,
-        imports: &Rc<fuxth::Grant>,
+        imports: &fuxth::Imports,
     ) -> Result<(), Failure> {
         let own = Self::own_bytes(&this.fields);
         let snapshot = this
@@ -175,7 +174,11 @@ impl<'a> Builder<'a> {
                 .checked_add(key.len() as u64)
                 .and_then(|n| n.checked_add(value.weight()))
                 .ok_or_else(fail)?;
-            bytes = bytes.saturating_add(retained(value));
+            bytes = bytes.saturating_add(
+                value
+                    .storage_bytes(AppValue::text_bytes)
+                    .unwrap_or(usize::MAX),
+            );
         }
         let depth = depth
             .checked_add(1)
@@ -229,19 +232,6 @@ impl<'a> Builder<'a> {
         };
         let encoding = self.text(encoding)?;
         self.record([("encoding", encoding), ("text", text)])
-    }
-}
-
-fn retained(value: &V) -> usize {
-    match value {
-        Value::Str(s) => fuxth::Shared::<fuxth::Text>::bytes(s.heap_bytes())
-            .saturating_sub(std::mem::size_of::<[usize; 2]>()),
-        Value::List(list) => list.items().iter().fold(
-            fuxth::Shared::<List<Fux>>::bytes(list.heap_bytes()),
-            |n, v| n.saturating_add(retained(v)),
-        ),
-        Value::App(a) => a.text_bytes(),
-        Value::Int(_) | Value::Bool(_) => 0,
     }
 }
 
@@ -603,7 +593,7 @@ mod tests {
 
     #[test]
     fn projected_children_keep_only_their_shared_storage_reserved() -> Result<(), Failure> {
-        let grant = Rc::new(fuxth::Grant::new(2048));
+        let grant = fuxth::Imports::new(2048);
         let make = || {
             from_json(&Json::Object(vec![(
                 "text".into(),
