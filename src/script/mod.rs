@@ -1187,12 +1187,13 @@ fn local(
                 .finish()
                 .map_err(|why| Failed::new(Code::Config, why))?;
             let typing = size.is_none() && !read_only;
-            let forward = typing || draft.as_deref().is_some_and(|d| d.preferences.changed());
-            let (committed, mut problem) = if typing {
+            let explicit = draft.as_deref().is_some_and(|d| d.preferences.changed());
+            let (committed, mut problem, configured) = if typing {
                 configured(&defaults)
             } else {
-                (defaults, None)
+                (defaults, None, false)
             };
+            let forward = explicit || configured;
             // Watching or naming a run starts no replacement server.
             let socket = match *read_only || of.is_some() {
                 true => server.socket()?,
@@ -1251,11 +1252,12 @@ fn started(server: &mut Server) -> Result<SocketPath, Failed> {
     Ok(socket)
 }
 
-/// A typing terminal's whole state, or the unchanged bundled state and one diagnostic.
-pub fn configured(defaults: &ClientState) -> (ClientState, Option<String>) {
+/// A typing terminal's whole state, one diagnostic if it failed, and whether
+/// successful config evaluation ran a preference setter.
+pub fn configured(defaults: &ClientState) -> (ClientState, Option<String>, bool) {
     match config_state(defaults) {
-        Ok(state) => (state, None),
-        Err(failed) => (defaults.clone(), Some(failed.notice())),
+        Ok((state, changed)) => (state, None, changed),
+        Err(failed) => (defaults.clone(), Some(failed.notice()), false),
     }
 }
 
@@ -1268,9 +1270,9 @@ pub fn default_state() -> Result<ClientState, Failed> {
     draft.finish().map_err(|why| Failed::new(Code::Config, why))
 }
 
-fn config_state(defaults: &ClientState) -> Result<ClientState, Failed> {
+fn config_state(defaults: &ClientState) -> Result<(ClientState, bool), Failed> {
     let Some(path) = crate::config::default_path() else {
-        return Ok(defaults.clone());
+        return Ok((defaults.clone(), false));
     };
     let shown = path.display().to_string();
     let (path, file) = match source::root(&path) {
@@ -1281,7 +1283,7 @@ fn config_state(defaults: &ClientState) -> Result<ClientState, Failed> {
                     .symlink_metadata()
                     .is_err_and(|e| e.kind() == io::ErrorKind::NotFound) =>
         {
-            return Ok(defaults.clone());
+            return Ok((defaults.clone(), false));
         }
         Err(error) => return Err(read_failed(&shown, &error.to_string())),
     };
@@ -1294,15 +1296,22 @@ pub fn run_file(path: &std::path::Path) -> Result<ClientState, Failed> {
 }
 
 fn run_config(image: fuxth::SourceImage) -> Result<ClientState, Failed> {
-    run_config_on(image, &default_state()?)
+    run_config_on(image, &default_state()?).map(|(state, _)| state)
 }
 
-fn run_config_on(image: fuxth::SourceImage, defaults: &ClientState) -> Result<ClientState, Failed> {
+fn run_config_on(
+    image: fuxth::SourceImage,
+    defaults: &ClientState,
+) -> Result<(ClientState, bool), Failed> {
     let tokens = image.tokens();
     let mut draft = defaults.draft();
     draft.config = Some(Arc::new(image));
     run_quiet(&tokens, Some(&mut draft))?;
-    draft.finish().map_err(|why| Failed::new(Code::Config, why))
+    let changed = draft.preferences.changed();
+    let committed = draft
+        .finish()
+        .map_err(|why| Failed::new(Code::Config, why))?;
+    Ok((committed, changed))
 }
 
 /// Runs bounded config code with only local reads and draft mutations.

@@ -397,8 +397,9 @@ commands use only the bundled state; they never load this file.
 Its `set` and key words build one candidate client state. Keys, frozen
 definitions and preferences commit together; a failed config keeps the whole
 bundled state and shows one diagnostic. Evaluation sends no requests. After
-successful evaluation, the committed state's remaining server settings are
-sent once as one batch. Those consumers move to client requests and per-client
+successful evaluation that ran a preference setter, the committed state's
+remaining server settings are sent once as one batch. A config with only
+keys or definitions sends no batch. Those consumers move to client requests and per-client
 presentation in the following migration steps; until then their settings
 continue to affect the shared server.
 

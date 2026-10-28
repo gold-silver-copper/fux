@@ -612,7 +612,9 @@ fn a_signal_detaches_a_client_waiting_on_a_stalled_server() -> Outcome {
     });
     let socket = dir.join("fux.sock");
     let mut terminal = Terminal::start(10, 40, &[FUX, "opts", "attach"], |command| {
-        command.env("FUX_SOCKET", &socket);
+        command
+            .env("FUX_SOCKET", &socket)
+            .env("XDG_CONFIG_HOME", &dir);
     })?;
     terminal.wait_for("\x1b[?1049h")?;
     // Held open, saying no more.
@@ -680,7 +682,9 @@ fn a_signal_detached_client_writes_the_last_paint_before_leaving() -> Outcome {
     });
     let socket = dir.join("fux.sock");
     let mut terminal = Terminal::start(10, 40, &[FUX, "opts", "attach"], |command| {
-        command.env("FUX_SOCKET", &socket);
+        command
+            .env("FUX_SOCKET", &socket)
+            .env("XDG_CONFIG_HOME", &dir);
     })?;
     terminal.wait_for("READY")?;
     signal(
