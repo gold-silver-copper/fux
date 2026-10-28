@@ -99,6 +99,20 @@ fn rename_move_swap_reorder_and_kill() -> Outcome {
     server.ok(&["%2", "str", "right", "swap-with"])?;
     assert_eq!(server.ok(&["%2", "tab", "panes"])?.trim(), "%3 %2");
     server.ok(&["%2", "%3", "swap-with"])?;
+    let refused = server.fux(&["%2", "str", "new-tabb", "move"])?;
+    assert_eq!(refused.status, 1, "{}", refused.stderr);
+    for choice in [
+        "tab",
+        "workspace",
+        "new-tab",
+        "new-workspace",
+        "left",
+        "right",
+        "up",
+        "down",
+    ] {
+        assert!(refused.stderr.contains(choice), "{}", refused.stderr);
+    }
     // Move to a workspace, then to a new tab.
     server.ok(&["str", "%3", "pane", "str", "+2", "workspace", "move"])?;
     server.ok(&["str", "%3", "pane", "str", "new-tab", "move"])?;

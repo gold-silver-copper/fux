@@ -189,9 +189,10 @@ pub fn from_opts(last: &str) -> String {
 /// fux's kinds of value, each as its values' `name` says it, as an error
 /// says it, and, for one that must be used, what one left over is told.
 #[rustfmt::skip]
-pub const KINDS: [(&str, &str, Option<&str>); 20] = [
+pub const KINDS: [(&str, &str, Option<&str>); 21] = [
     ("pane", "a pane", None), ("tab", "a tab", None), ("workspace", "a workspace", None),
     ("all", "the whole session", None),
+    ("events-request", "a whole-session events request", Some("nothing acts on this request")),
     ("client", "a client", None), ("size", "a size (from percent)", None),
     ("answer", "an action's answer", None),
     ("closed-answer", "a closed pane's answer", None),
@@ -233,7 +234,8 @@ pub const NAMES: &[(&str, &str, &str)] = &[
     ("handle", "pane tab workspace answer closed-answer", "a pane, tab or workspace"),
     ("attachable", "opts pane tab workspace answer closed-answer pane-request tab-request workspace-request", "a pane, tab, workspace, a request on one, or opts"),
     ("scope", "pane tab workspace answer closed-answer all", "a pane, tab, workspace or all"),
-    ("watched", "pane>pane-request answer>pane-request closed-answer>pane-request tab>tab-request workspace>workspace-request pane-request tab-request workspace-request all", "a pane, tab, workspace, a request on one, or all"),
+    ("watched", "pane tab workspace answer closed-answer pane-request tab-request workspace-request all events-request", "a pane, tab, workspace, a request on one, or all"),
+    ("replayable", "pane>pane-request answer>pane-request closed-answer>pane-request tab>tab-request workspace>workspace-request pane-request tab-request workspace-request all>events-request", "a pane, tab, workspace, a request on one, or all without a cursor"),
     ("capture-source", "pane>capture answer>capture closed-answer>capture pane-request>capture client>client-capture", "a pane, a request on one, or a client"),
     ("pane-builder", "pane>pane-request answer>pane-request closed-answer>pane-request pane-request", "a pane or a request on one"),
     ("ref", "string pane tab workspace answer closed-answer", "a name, or a pane, tab or workspace"),
@@ -354,7 +356,7 @@ words! {
         Input Paste "paste" "x text -- x" "text as a paste, bracketed if the program turned that on (an end mark, ESC [201~, in it then dropped); else as it is" "fux %3 str 'a long prompt' paste str Enter key send-keys";
         Input Bytes "bytes" "x hex -- x" "bytes as they are, in hex (1b5b41, c3): part of a key's sequence or of a character" "fux %3 str 1b5b41 bytes send-keys";
         Input Mouse "mouse" "x action row col -- x" "click right middle press release wheel-up wheel-down or move, at a cell from 0" "fux %3 str click 2 10 mouse send-mouse";
-        Reading From "from" "watched cursor -- watched" "events: after this cursor (SEQ:RUN, as ls and ready give it), reporting missed entries" "C=$(fux ls json | jq -r .events); fux all str \"$C\" from events";
+        Reading From "from" "replayable cursor -- replayable" "events: after this cursor (SEQ:RUN, as ls and ready give it), reporting missed entries" "C=$(fux ls json | jq -r .events); fux all str \"$C\" from events";
         Reading History "history" "pane-builder lines -- pane-builder" "capture: lines of history first" "fux %3 100 history capture";
         Reading AllHistory "all-history" "pane-builder -- pane-builder" "capture: all the history first" "fux %3 all-history capture";
         Reading Wrapped "wrapped" "pane-builder -- pane-builder" "capture: each screen row a line, as wrapped at the pane's width (the cells a mouse event counts), not joined into the lines printed" "fux %3 wrapped 0 2 rows capture";
@@ -685,6 +687,16 @@ fn scope(value: &Value<Fux>) -> Result<Option<AnyRef>, Failure> {
     }
 }
 
+fn cursor(value: &Value<Fux>) -> Result<crate::events::Cursor, Failure> {
+    let text = string(value)?;
+    text.parse().map_err(|()| {
+        fail(
+            Raise::BadValue,
+            format!("{text:?} is no cursor: SEQ:RUN, as ls and a stream's ready give it"),
+        )
+    })
+}
+
 fn direction(value: &Value<Fux>) -> Result<Direction, Failure> {
     one_of(value, &Direction::ALL.map(|way| (way.name(), way)))
 }
@@ -808,15 +820,7 @@ fn modify(
     match opt {
         Opt::Changed => built.on = Some(On::Changed(version(&next()?)?)),
         Opt::Expect => built.on = Some(On::Seen(version(&next()?)?)),
-        Opt::From => {
-            let text = string(&next()?)?;
-            let Ok(cursor) = text.parse() else {
-                let why =
-                    format!("{text:?} is no cursor: SEQ:RUN, as ls and a stream's ready give it");
-                return Err(fail(Raise::BadValue, why));
-            };
-            built.from = Some(cursor);
-        }
+        Opt::From => built.from = Some(cursor(&next()?)?),
         Opt::Name => built.name = Some(string(&next()?)?),
         Opt::Cwd => built.cwd = Some(string(&next()?)?.into()),
         Opt::In => built.place = Some(workspace(&next()?)?),
@@ -1396,14 +1400,8 @@ impl Host<'_> {
             Word::Act(act) => act,
             Word::Opt(Opt::From) => {
                 let value = next()?;
-                if let Value::App(Fux::All(_)) = value {
-                    let cursor = string(&next()?)?.parse().map_err(|()| {
-                        fail(
-                            Raise::BadValue,
-                            "a cursor is SEQ:RUN, as ls and ready give it",
-                        )
-                    })?;
-                    return now(out, Value::App(Fux::All(Some(cursor))));
+                if let Value::App(Fux::All(None)) = value {
+                    return now(out, Value::App(Fux::All(Some(cursor(&next()?)?))));
                 }
                 let mut values = std::iter::once(Ok(value));
                 let mut input = || values.next().unwrap_or_else(&mut next);
@@ -1739,7 +1737,9 @@ impl Host<'_> {
                     Value::App(Fux::Workspace(w, _)) => MoveTo::Workspace(WsRef::Id(w)),
                     Value::Str(s) if **s == *"new-tab" => MoveTo::NewTab,
                     Value::Str(s) if **s == *"new-workspace" => MoveTo::NewWorkspace,
-                    value @ Value::Str(_) => MoveTo::Beside(direction(&value)?),
+                    value @ Value::Str(_) => MoveTo::Beside(direction(&value).map_err(|_| {
+                        fail(Raise::BadValue, "takes a tab, a workspace, new-tab, new-workspace, left, right, up or down")
+                    })?),
                     value @ (Value::Int(_) | Value::Bool(_) | Value::List(_) | Value::App(_)) => {
                         return Err(wrong(
                             "a tab, workspace, new-tab, new-workspace or direction",
@@ -2289,12 +2289,52 @@ mod tests {
                 .ok_or_else(|| format!("accepted {source}"))?;
             assert_eq!(failure.code, Code::from(Raise::Type), "{source}: {failure}");
         }
-        assert!(
-            scope(&Value::App(Fux::All(Some(
-                "0:1-2".parse().map_err(|()| "cursor")?
-            ))))
-            .is_err()
-        );
+        Ok(())
+    }
+
+    #[test]
+    fn global_replay_requests_are_event_only_and_must_use() -> Result<(), Box<dyn std::error::Error>>
+    {
+        for (suffix, code) in [
+            ("", fuxth::Code::Unused),
+            ("info drop", fuxth::Code::Type),
+            ("dump drop", fuxth::Code::Type),
+            ("str hello notify", fuxth::Code::Type),
+            ("str 0:1-2 from events", fuxth::Code::Type),
+        ] {
+            let source = format!("str SIDE-EFFECT print all str 0:1-2 from {suffix}");
+            let failure = super::super::compile(&fuxth::token::source("replay", &source)?)
+                .err()
+                .ok_or_else(|| format!("accepted {source}"))?;
+            assert_eq!(failure.code, Code::of(code), "{source}: {failure}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn bad_cursors_report_the_given_text_and_their_format() -> Result<(), Box<dyn std::error::Error>>
+    {
+        for scope in [Fux::All(None), Fux::Pane(PaneId::of(1), None)] {
+            let mut sink = std::io::sink();
+            let mut host = Host::new(crate::protocol::Context::default(), None, &mut sink);
+            let mut args = [Value::App(scope), Value::str("12")].into_iter();
+            let failure = host
+                .dispatch(
+                    Word::Opt(Opt::From),
+                    &mut || {
+                        args.next()
+                            .ok_or_else(|| fail(Raise::StackUnderflow, "cursor"))
+                    },
+                    &mut Vec::new(),
+                )
+                .err()
+                .ok_or("accepted a bad cursor")?;
+            assert_eq!(failure.code, Code::from(Raise::BadValue).into());
+            assert_eq!(
+                failure.message,
+                "\"12\" is no cursor: SEQ:RUN, as ls and a stream's ready give it"
+            );
+        }
         Ok(())
     }
 

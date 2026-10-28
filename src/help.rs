@@ -101,7 +101,8 @@ tab, workspace or client) or a request on one; handle a pane, tab or
 workspace; scope a handle or all; ref a name or a handle; text a string,
 number or boolean. pane-builder is a pane or pane request; capture-source
 maps one of those to capture, and a client to client-capture; sized is a
-handle or headless client.
+handle or headless client. replayable is a scope without an event cursor;
+from on all leaves an events-request, which only events takes.
 wait and send-keys leave an answer for a pane, and answers for a tab or
 workspace (send-keys: or a client), which no word that wants a pane takes.
 ",

@@ -311,8 +311,7 @@ fn chooser(
             let it = id;
             let code = match (choices, moving) {
                 (Choices::Panes(source), _) => format!("str {source} pane {it} swap-with"),
-                (Choices::Tabs, None) => format!("me {it} show"),
-                (Choices::Workspaces, None) => format!("me {it} show"),
+                (Choices::Tabs | Choices::Workspaces, None) => format!("me {it} show"),
                 (Choices::Tabs | Choices::Workspaces, Some(p)) => {
                     format!("str {p} pane {it} move")
                 }

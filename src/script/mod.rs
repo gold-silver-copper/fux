@@ -76,7 +76,8 @@ impl AppValue for Fux {
             Fux::Tab(_, _) => "tab",
             Fux::Workspace(_, _) => "workspace",
             Fux::Client(_, _) => "client",
-            Fux::All(_) => "all",
+            Fux::All(None) => "all",
+            Fux::All(Some(_)) => "events-request",
             Fux::Opts(opts) => match opts.on {
                 None => "opts",
                 Some(On::Target(AnyRef::Pane(_)) | On::Version(_)) => "pane-request",
