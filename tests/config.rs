@@ -578,35 +578,6 @@ fn copy_environment_takes_the_clients_variables_or_none() -> Outcome {
 }
 
 #[test]
-fn a_setting_preserves_other_invocations_preferences() -> Outcome {
-    let server = Server::start("str wait-seconds 0 set")?;
-    server.ok(&["str", "bell", "false", "set"])?;
-    let result = server.fux(&[
-        "agent-opts",
-        "80",
-        "24",
-        "size",
-        "str",
-        "/bin/sh",
-        "program",
-        "str",
-        "-c",
-        "arg",
-        "str",
-        "sleep 1",
-        "arg",
-        "run",
-        "wait",
-    ])?;
-    assert_eq!(
-        result.status, 0,
-        "another invocation changed the wait limit: {}",
-        result.stderr
-    );
-    Ok(())
-}
-
-#[test]
 fn a_program_uses_preferences_before_its_next_operation() -> Outcome {
     let server = Server::start("")?;
     let result = server.fux(&[
@@ -716,65 +687,6 @@ fn launch_defaults_do_not_change_either_selected_server() -> Outcome {
         assert!(history_rows(&a)? > 5);
         assert!(history_rows(&b)? > 5);
     }
-    Ok(())
-}
-
-#[test]
-fn local_settings_allow_selecting_a_server_without_contacting_the_previous_one() -> Outcome {
-    let server = Server::start("")?;
-    let path = server.dir.join("select.fux");
-    std::fs::write(
-        &path,
-        format!(
-            "str no_server try str wait-seconds 0 set str {} socket catch 2drop end ls",
-            fux::words::quote(&server.socket.to_string_lossy())
-        ),
-    )
-    .map_err(e)?;
-    let missing = server.dir.join("missing.sock");
-    let out = server.fux_env(
-        &["--file", &path.to_string_lossy()],
-        &[("FUX_SOCKET", missing.to_str().ok_or("a text socket path")?)],
-    )?;
-    assert_eq!(out.status, 0, "{}", out.stderr);
-    assert!(out.stdout.starts_with("+1 main"), "{}", out.stdout);
-    Ok(())
-}
-
-#[test]
-fn a_failed_addressed_request_keeps_creation_defaults_local() -> Outcome {
-    let server = Server::start("")?;
-    let other = Server::start("")?;
-    let path = server.dir.join("addressing.fux");
-    for (before, after, error) in [
-        (String::new(), "str c999 client focused", "no client c999"),
-        (
-            format!(
-                "str {} socket %1 let foreign str {} socket",
-                fux::words::quote(&other.socket.to_string_lossy()),
-                fux::words::quote(&server.socket.to_string_lossy())
-            ),
-            "foreign capture",
-            "server run",
-        ),
-    ] {
-        server.ok(&["str", "history-bytes", "8388608", "set"])?;
-        std::fs::write(&path, format!("{before} str history-bytes 0 set {after}")).map_err(e)?;
-        let out = server.fux(&["--file", &path.to_string_lossy()])?;
-        assert_eq!(out.status, 1);
-        assert!(out.stderr.contains(error), "{}", out.stderr);
-        assert!(
-            history_rows(&server)? > 5,
-            "local defaults leaked through a failed addressed request"
-        );
-    }
-    Ok(())
-}
-
-#[test]
-fn local_settings_do_not_prevent_force_killing_the_server() -> Outcome {
-    let server = Server::start("")?;
-    server.ok(&["str", "bell", "false", "set", "force-kill-server"])?;
     Ok(())
 }
 

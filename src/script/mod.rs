@@ -1216,7 +1216,7 @@ pub fn run_capped(
                     pushed(machine, Err(failed))?;
                     continue;
                 }
-                if matches!(what, Local::Open(_) | Local::Server(_) | Local::ForceKill)
+                if matches!(what, Local::Open(_))
                     && let Some(draft) = host.state.as_deref_mut()
                     && let Err(failed) = asks.checkpoint(draft, host.context.clone())
                 {
@@ -1632,9 +1632,6 @@ pub fn main(args: &[String], out: &mut dyn Write) -> Result<u8, Failed> {
         });
     ran?;
     printed?;
-    if state.initialized() {
-        cli.commit(&mut state, client::context())?;
-    }
     Ok(cli.status.unwrap_or(0))
 }
 

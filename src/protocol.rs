@@ -689,8 +689,6 @@ impl Decoder {
 mod tests {
     use super::*;
 
-    /// Pane outcomes survive the wire with one status owner, including
-    /// mixed collections whose first failing member names the whole.
     #[test]
     fn observation_wait_requires_a_checked_limit() -> Result<(), Box<dyn std::error::Error>> {
         use crate::command::{AnyRef, Since, Wait};
@@ -709,6 +707,8 @@ mod tests {
         Ok(())
     }
 
+    /// Pane outcomes survive the wire with one status owner, including
+    /// mixed collections whose first failing member names the whole.
     #[test]
     fn pane_outcomes_determine_the_reply_status() -> Result<(), Box<dyn std::error::Error>> {
         use crate::answer::{PaneAnswer, PaneResults};

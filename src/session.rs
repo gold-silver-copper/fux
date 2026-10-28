@@ -4820,7 +4820,6 @@ mod tests {
     #[test]
     fn a_respawn_reads_what_was_left_in_turns() -> Result<(), String> {
         let mut s = started()?;
-        run(&mut s, "str wait-seconds 0 set")?;
         run(
             &mut s,
             "agent-opts 80 24 size 4096 history-bytes false program-clipboard str /bin/cat program run",

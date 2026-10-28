@@ -426,24 +426,17 @@ and permissions. Bell, titles and terminal clipboard delivery belong to each
 view and arrive in its attach request after local commit. Later key or prompt
 changes use a connection-bound action, fenced before following requests.
 
-Client defaults load when `set`, `list-keys`, `attach` or a launch needs them;
-ordinary queries and server controls do not load them. Bundled
+Client defaults load when `set`, `list-keys`, `attach`, a launch or an
+observation wait without `timeout` needs them; ordinary queries and server
+controls do not load them. Bundled
 `client-defaults.fux` reads this client's `$SHELL` once and chooses `/bin/sh`
 for an unset or empty value. A non-text value is reported and falls back as
 that library specifies. Bundled `keys.fux` supplies `C-b`; there is no native
 prefix fallback. Key words such as `prefix`, `bind`, `unbind`, `label`,
 `group` and `repeat` refuse the CLI: use a config or an attached prompt.
-In action programs, pending client state commits before the next server
-operation, screen operation, server selection or force-kill-server, and when
-the program finishes. A server selection finishes pending writes against
-the previous server before changing it. Settings use the program's addressing,
-independently of the following request's target. Each transaction forwards
-only its explicitly written remaining shared preferences in one batch.
-Launches carry their own completed creation policy. Individual setters send nothing. A failed transaction
-leaves prior commits intact; settings and server actions already applied
-at earlier checkpoints remain applied. Transport failures preserve the local
-commit and are reported; a lost reply may mean the server batch was applied.
-An explicit headless attach returns its forwarding failure directly.
+In action programs, pending client state commits before the next server or
+screen operation. A failed commit leaves earlier commits intact. Launches
+carry their own completed creation policy; setters send nothing.
 
 `fux str FILE str program check` compiles a file without running it.
 `fux str FILE str config check` also runs it locally to validate settings

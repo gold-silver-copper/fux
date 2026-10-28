@@ -68,8 +68,8 @@ a pane): run from outside fux, a size must be given, as fux makes none
 up. An action answers at once,
 with its pane's version from before it acted, one word
 (`%2:0.57.0.3.0:RUN`); `str V changed wait` waits in V's pane until its
-version differs from V, else answers `timeout` at this client's wait-seconds limit
-unless `SECS timeout` says (see client-defaults.fux). A failure prints
+version differs from V, else answers `timeout` at this client's wait-seconds
+limit unless `SECS timeout` says (see client-defaults.fux). A failure prints
 `fux: CODE: MESSAGE` on stderr.
 Driving programs from a script or an agent: `fux help agents`; one word:
 `fux help WORD`.
@@ -215,7 +215,7 @@ fn settings() -> String {
             wrapped(about, "\n      ", 78)
         ));
     }
-    out.push_str("\nShell, copy-environment, history-bytes and program-clipboard supply this\nclient's future launches. Use PANE BYTES history-budget to change one pane.\nBell, titles and terminal-clipboard affect only this client's view: supplied\nwith attach, then updated after local commits before following requests.\nWait-seconds supplies this client's observation wait limits.\nSetters and config evaluation send no requests. Shared paste buffers\nretain the newest 16 copies.\n");
+    out.push_str(&format!("\nShell, copy-environment, history-bytes and program-clipboard supply this\nclient's future launches. Use PANE BYTES history-budget to change one pane.\nBell, titles and terminal-clipboard affect only this client's view: supplied\nwith attach, then updated after local commits before following requests.\nWait-seconds supplies this client's observation wait limits.\nSetters and config evaluation send no requests. Shared paste buffers\nretain the newest {} copies.\n", crate::session::BUFFER_LIMIT));
     out.push_str("\nBundled initialization (client-defaults.fux):\n");
     out.push_str(crate::script::DEFAULTS);
     out
@@ -312,7 +312,7 @@ fn bounds() -> Vec<(Amount, &'static str, Said)> {
         (Count(fux_vt::sixel::MAX_PIXELS), "pixels of a sixel picture in all", &[("json", "{} pixels in all")]),
         (Pixels(fux_vt::CellSize::LEAST), "the least cell a terminal may say", &[("README", "{}")]),
         (Time(crate::outer::BELL_GAP), "between two bells told", &[("README", "at most once every {}")]),
-        (Count(crate::session::BUFFER_LIMIT), "paste buffers kept", &[]),
+        (Count(crate::session::BUFFER_LIMIT), "paste buffers kept", &[("README", "the newest {}")]),
         (Count(crate::session::PREVIEW_MAX), "characters of a paste buffer's preview", &[("README", "at most {} characters"), ("json", "at most {} characters")]),
         (Count(crate::config::MAX_WAIT), "seconds a wait may be given", &[]),
         (Whole(script::PROGRAM_STEPS), "steps of a program a client runs (a config, a key's)", &[]),
