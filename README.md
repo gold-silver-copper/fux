@@ -423,9 +423,8 @@ them, including zero and false. Existing panes retain their policy through
 respawn; `%3 4194304 history-budget` changes only that pane's current budget.
 Lowering it evicts the oldest rows immediately. Dump records current budgets
 and permissions. Bell, titles and terminal clipboard delivery belong to each
-view and arrive together through its attached connection after local commit.
-Changing those values through a key or prompt updates
-only that connection's view.
+view and arrive in its attach request after local commit. Later key or prompt
+changes use a connection-bound action, fenced before following requests.
 
 Client defaults load when `set`, `list-keys`, `attach` or a launch needs them;
 ordinary queries and server controls do not load them. Bundled

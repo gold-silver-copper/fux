@@ -218,7 +218,7 @@ fn settings() -> String {
             wrapped(about, "\n      ", 78)
         ));
     }
-    out.push_str("\nShell and copy-environment affect only this client and its future launches.\nThe other settings still affect the shared server and its other clients.\nOnly remaining shared preferences explicitly set in a transaction are sent, in one batch,\nbefore the next server request, screen operation, server selection or\nforce-kill-server, and when the program succeeds. Individual setters send no\nrequests. Config evaluation sends nothing; its successful commit forwards\nits explicit preferences when a typing client attaches.\n");
+    out.push_str("\nShell, copy-environment, history-bytes and program-clipboard supply this\nclient's future launches. Use PANE BYTES history-budget to change one pane.\nBell, titles and terminal-clipboard affect only this client's view: supplied\nwith attach, then updated after local commits before following requests.\nOnly wait-seconds and buffers still affect the shared server. Their explicit\nwrites are forwarded together before the next operation or at successful\ncompletion. Individual setters and config evaluation send no requests.\n");
     out.push_str("\nBundled initialization (client-defaults.fux):\n");
     out.push_str(crate::script::DEFAULTS);
     out

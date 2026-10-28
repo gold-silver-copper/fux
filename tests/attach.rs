@@ -93,6 +93,7 @@ fn a_connection_that_ends_takes_its_client_with_it() -> Outcome {
         workspace: None,
         read_only: false,
         initial: None,
+        presentation: server.state.preferences.presentation(),
     };
     let hello = Hello {
         protocol: PROTOCOL,

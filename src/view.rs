@@ -167,8 +167,8 @@ crate::wire::wire! {
 }
 
 pub struct View {
-    /// None until the connection supplies its committed client preferences.
-    pub presentation: Option<Presentation>,
+    /// This connection's committed presentation, supplied at attach.
+    pub presentation: Presentation,
     pub id: ClientId,
     pub kind: ClientKind,
     pub rows: u16,
@@ -193,9 +193,9 @@ pub struct View {
 }
 
 impl View {
-    pub fn new(id: ClientId, rows: u16, cols: u16) -> View {
+    pub fn new(id: ClientId, rows: u16, cols: u16, presentation: Presentation) -> View {
         View {
-            presentation: None,
+            presentation,
             id,
             kind: ClientKind::Terminal,
             rows,

@@ -292,7 +292,12 @@ fn cli(rng: &mut Rng, world: &World, clients: &[String]) -> Vec<String> {
             rng.below(9)
         ),
         2 => format!("opts 80 23 size str w{} name new-workspace", rng.below(9)),
-        3 | 4 => format!("str {} pane horizontal split", pane(rng)),
+        3 => format!("str {} pane horizontal split", pane(rng)),
+        4 => format!(
+            "str {} pane horizontal {} program-clipboard split",
+            pane(rng),
+            rng.chance(50)
+        ),
         5 => format!(
             "str {} pane vertical str echo program str split-typed arg split",
             pane(rng)
@@ -377,16 +382,11 @@ fn cli(rng: &mut Rng, world: &World, clients: &[String]) -> Vec<String> {
             client(rng),
             kind(rng)
         ),
-        27 => rng
-            .pick(&[
-                "str terminal-clipboard false set",
-                "str terminal-clipboard true set",
-                "str history-bytes 100000 set",
-                "str buffers 4 set",
-            ])
-            .copied()
-            .unwrap_or("str buffers 4 set")
-            .to_owned(),
+        27 => match rng.below(3) {
+            0 => format!("str {} pane 0 history-budget", pane(rng)),
+            1 => format!("str {} pane 100000 history-budget", pane(rng)),
+            _ => "str buffers 4 set".into(),
+        },
         28 => "dump".into(),
         29 => format!(
             "str {} pane str typed-by-send-keys text send-keys",

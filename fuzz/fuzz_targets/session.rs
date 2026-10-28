@@ -119,6 +119,8 @@ const SIDE: &[&str] = &[
     "str bell false set",
     "str bell true set",
     "str c2 client str ls text str Enter key send-keys",
+    "str terminal-clipboard false set",
+    "str terminal-clipboard true set",
 ];
 
 /// What a pane's program may say of the mouse.
@@ -197,7 +199,7 @@ struct Keys {
 /// One session, its clients' keys, and what drove it that the checks need.
 struct Run {
     s: Session,
-    /// The keymap of every client: bindings change it, as programs run.
+    /// Shared bindings; presentation comes from the addressed client's view.
     keymap: ClientState,
     keys: BTreeMap<ClientId, Keys>,
     /// Each client's grids as the server keeps them: composed into the
@@ -245,16 +247,10 @@ impl Run {
                         cwd: std::env::current_dir().unwrap_or_default(),
                         env: fux::command::EnvPatch::default(),
                     }),
-                    ..fux::protocol::Attach::of(size)
+                    ..fux::protocol::Attach::of(size, defaults().preferences.presentation())
                 },
             )
         {
-            self.s.acts(
-                id,
-                vec![fux::act::Act::Presentation(
-                    defaults().preferences.presentation(),
-                )],
-            );
             self.keys.insert(id, Keys::default());
         }
     }
@@ -304,7 +300,14 @@ impl Run {
             return Err("reads a file".to_owned());
         }
         let mut machine = fux::script::compile(&tokens).map_err(told)?;
-        let mut keymap = self.keymap.draft();
+        let mut state = self.keymap.clone();
+        if let Some(view) = client.and_then(|c| self.s.views.get(&c)) {
+            let p = view.presentation;
+            state.preferences.bell = p.bell;
+            state.preferences.titles = p.titles;
+            state.preferences.terminal_clipboard = p.terminal_clipboard;
+        }
+        let mut keymap = state.draft();
         let mut out = Vec::new();
         let context = Context {
             client,
@@ -334,6 +337,64 @@ impl Run {
             text.push('\n');
         }
         Ok(text)
+    }
+
+    /// Presentation setters run as a picked client; CLI programs retain their
+    /// own local semantics. Existing SIDE entries keep their positions.
+    fn side(&mut self, pick: u8) -> Result<String, String> {
+        let code = SIDE[usize::from(pick) % SIDE.len()];
+        let client = match code {
+            "str titles true set"
+            | "str titles false set"
+            | "str bell true set"
+            | "str bell false set"
+            | "str terminal-clipboard true set"
+            | "str terminal-clipboard false set" => self.client(pick),
+            _ => None,
+        };
+        let before: Vec<_> = self
+            .s
+            .views
+            .iter()
+            .map(|(id, view)| (*id, view.presentation))
+            .collect();
+        let result = self.program(client, code).0;
+        if let Some(client) = client {
+            assert!(result.is_ok(), "{code}: {result:?}");
+            assert_eq!(
+                self.s.views.get(&client).map(|v| v.presentation),
+                Some(self.keymap.preferences.presentation()),
+                "{code} did not reach its view"
+            );
+            for (other, presentation) in before {
+                if other != client {
+                    assert_eq!(
+                        self.s.views.get(&other).map(|v| v.presentation),
+                        Some(presentation),
+                        "{code} changed another view"
+                    );
+                }
+            }
+        }
+        result
+    }
+
+    fn before_paint(&mut self, client: ClientId) -> Vec<u8> {
+        let before = self.s.views.get(&client).and_then(|v| v.title.clone());
+        let bytes = self.s.before_paint(client);
+        let view = self.s.views.get(&client).expect("the painted view");
+        assert_eq!(
+            view.title.is_some(),
+            view.presentation.titles,
+            "title policy was not applied"
+        );
+        if before != view.title {
+            assert!(!bytes.is_empty(), "a title change was not sent");
+        }
+        if let Some(title) = &view.title {
+            assert!(!title.chars().any(char::is_control), "unclean title");
+        }
+        bytes
     }
 
     /// Runs `code` as `client`, telling it what came of it, as a client
@@ -799,10 +860,10 @@ fuzz_target!(|data: &[u8]| {
                 }
             }
             11 | 12 => {
-                let code = SIDE[usize::from(input.next()) % SIDE.len()];
-                let a = given.program(None, code).0;
-                let b = bytewise.program(None, code).0;
-                assert_eq!(a, b, "{code}");
+                let pick = input.next();
+                let a = given.side(pick);
+                let b = bytewise.side(pick);
+                assert_eq!(a, b, "side {pick}");
             }
             13 => {
                 let pick = input.next();
@@ -827,7 +888,7 @@ fuzz_target!(|data: &[u8]| {
         // titles, however the bytes came.
         let clients: Vec<ClientId> = given.s.views.keys().copied().collect();
         for c in clients {
-            let (a, b) = (given.s.before_paint(c), bytewise.s.before_paint(c));
+            let (a, b) = (given.before_paint(c), bytewise.before_paint(c));
             assert_eq!(a, b, "{c}'s title");
         }
         assert_eq!(given.shut, bytewise.shut);

@@ -1376,8 +1376,7 @@ impl Session {
         let workspace = workspace.map_err(bad_value)?;
         let state =
             crate::script::default_state().map_err(|e| fail(Raise::Config, e.to_string()))?;
-        let presentation = state.preferences.presentation();
-        let client = self.attach_as(
+        self.attach_as(
             ClientKind::Terminal,
             Attach {
                 initial: workspace.is_none().then(|| command::InitialWorkspace {
@@ -1388,11 +1387,9 @@ impl Session {
                     env: command::EnvPatch::default(),
                 }),
                 workspace,
-                ..Attach::of(size)
+                ..Attach::of(size, state.preferences.presentation())
             },
-        )?;
-        self.acts(client, vec![crate::act::Act::Presentation(presentation)]);
-        Ok(client)
+        )
     }
 
     /// A client of `kind` attaches as `attach` says: one that only watches
@@ -1437,7 +1434,7 @@ impl Session {
             }
         };
         let id = self.ids.client()?;
-        let mut view = View::new(id, rows, cols);
+        let mut view = View::new(id, rows, cols, attach.presentation);
         (view.kind, view.read_only) = (kind, attach.read_only);
         self.views.insert(id, view);
         self.parts.attach(id);
@@ -2155,7 +2152,7 @@ impl Session {
             .filter(|client| {
                 views
                     .get(client)
-                    .is_some_and(|v| v.presentation.is_some_and(|p| p.terminal_clipboard))
+                    .is_some_and(|v| v.presentation.terminal_clipboard)
             })
             .peekable();
         // Encoded once, before the text moves into the buffers.
@@ -3495,7 +3492,7 @@ impl crate::script::Asks for InProcess<'_> {
                 .0
                 .views
                 .get(&client)
-                .is_some_and(|view| view.presentation != Some(presentation))
+                .is_some_and(|view| view.presentation != presentation)
         {
             self.0
                 .acts(client, vec![crate::act::Act::Presentation(presentation)]);
@@ -3899,7 +3896,13 @@ mod tests {
     fn watch(s: &mut Session, rows: u16, cols: u16) -> Result<ClientId, String> {
         let attach = Attach {
             read_only: true,
-            ..Attach::of(sized(rows, cols)?)
+            ..Attach::of(
+                sized(rows, cols)?,
+                crate::script::default_state()
+                    .map_err(|e| e.to_string())?
+                    .preferences
+                    .presentation(),
+            )
         };
         s.attach_as(ClientKind::Terminal, attach)
             .map_err(|e| e.to_string())
@@ -3955,6 +3958,10 @@ mod tests {
             command::Run::now().ok_or("clock")?,
         );
         let size = sized(24, 80)?;
+        let presentation = crate::script::default_state()
+            .map_err(|e| e.to_string())?
+            .preferences
+            .presentation();
         let initial = command::InitialWorkspace {
             options: crate::script::default_state()
                 .map_err(|e| e.to_string())?
@@ -3972,16 +3979,16 @@ mod tests {
         for attach in [
             Attach {
                 workspace: Some(WsRef::Name("missing".into())),
-                ..Attach::of(size)
+                ..Attach::of(size, presentation)
             },
             Attach {
                 read_only: true,
-                ..Attach::of(size)
+                ..Attach::of(size, presentation)
             },
-            Attach::of(size),
+            Attach::of(size, presentation),
             Attach {
                 initial: Some(initial),
-                ..Attach::of(size)
+                ..Attach::of(size, presentation)
             },
         ] {
             assert!(s.attach_as(ClientKind::Terminal, attach).is_err());
@@ -5688,6 +5695,36 @@ mod tests {
     }
 
     #[test]
+    fn attach_supplies_presentation_before_any_program_output() -> Result<(), String> {
+        let mut s = started(Config::default())?;
+        let presentation = crate::view::Presentation {
+            bell: true,
+            titles: true,
+            terminal_clipboard: true,
+        };
+        let client = s
+            .attach_as(
+                ClientKind::Terminal,
+                Attach::of(sized(8, 40)?, presentation),
+            )
+            .map_err(|e| e.to_string())?;
+        assert_eq!(
+            s.views.get(&client).map(|v| v.presentation),
+            Some(presentation)
+        );
+        s.outbox.clear();
+        s.output(PaneId::of(1), b"\x1b]2;initial\x07\x07\x1b]52;c;Zm9v\x07");
+        assert!(
+            s.outbox
+                .iter()
+                .any(|out| matches!(out, Outgoing::Copy(c, _) if *c == client))
+        );
+        assert!(s.outbox.iter().any(|out| matches!(out, Outgoing::To(c, ToAttached::Paint(bytes)) if *c == client && bytes.as_ref() == crate::outer::BELL)));
+        assert_eq!(s.before_paint(client), b"\x1b]2;initial\x1b\\");
+        Ok(())
+    }
+
+    #[test]
     fn in_process_commits_publish_presentation_at_each_checkpoint() -> Result<(), String> {
         use crate::script::{AsClient, Asks, Host};
         let (mut s, client) = attached(8, 40)?;
@@ -5722,11 +5759,7 @@ mod tests {
             assert!(result.is_err());
             assert_eq!(published, committed);
             assert!(state.preferences.titles);
-            assert!(
-                s.views
-                    .get(&client)
-                    .is_some_and(|v| v.presentation.is_some_and(|p| p.titles))
-            );
+            assert!(s.views.get(&client).is_some_and(|v| v.presentation.titles));
         }
         Ok(())
     }

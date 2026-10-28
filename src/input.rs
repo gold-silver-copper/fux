@@ -21,8 +21,8 @@ impl Session {
         // Whether any of it may have changed what a client shows.
         let mut shown = false;
         // A client that only watches sends no other acts than its
-        // terminal's replies and notices: its own keyboard holds the rest
-        // (`Keyboard`), as `read_only` is what it said itself.
+        // terminal's replies, notices and presentation: its own keyboard
+        // holds the rest (`Keyboard`), as `read_only` is what it said itself.
         for act in acts {
             if !self.views.contains_key(&client) {
                 break;
@@ -56,7 +56,7 @@ impl Session {
         match act {
             Act::Presentation(presentation) => {
                 if let Some(view) = self.views.get_mut(&client) {
-                    view.presentation = Some(presentation);
+                    view.presentation = presentation;
                 }
                 if !presentation.bell {
                     self.parts.clear_bells(client);

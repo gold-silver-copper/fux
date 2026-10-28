@@ -27,8 +27,8 @@ is one word, `%2:0.57.1.3.0:48211-1867a3f9c2b8e7d6`: its pane, its counts
 counts only grow while one program runs (`respawn` starts all but the first
 afresh): how often its program was respawned, its screen's revision (the
 bytes of output read, plus one for each resize to another size and each
-change to its history: cleared, or `history-bytes` set; the same however
-the output was cut into reads), bells and notifications rung, shell
+change to its history: cleared, or rows evicted by `history-budget`; the same
+however the output was cut into reads), bells and notifications rung, shell
 commands ended (OSC 133 marks), and 1 once its program ended. Every action
 (`run`, `send-keys`, `paste-buffer`, `send-mouse`, `signal`, `split`,
 `new-tab`, `new-workspace`, `respawn`) acts at once and prints the version

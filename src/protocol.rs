@@ -305,6 +305,7 @@ wire! {
         pub size: fux_vt::Size,
         pub workspace: Option<crate::command::WsRef>,
         pub read_only: bool,
+        pub presentation: crate::view::Presentation,
         pub initial: Option<crate::command::InitialWorkspace>,
     }
 }
@@ -315,12 +316,13 @@ impl OneKind for Attach {
 
 impl Attach {
     /// A noncreating client of `size` that types and asks for no workspace.
-    pub fn of(size: fux_vt::Size) -> Attach {
+    pub fn of(size: fux_vt::Size, presentation: crate::view::Presentation) -> Attach {
         Attach {
             of: None,
             size,
             workspace: None,
             read_only: false,
+            presentation,
             initial: None,
         }
     }
@@ -814,6 +816,10 @@ mod tests {
         round_trip!(Hello, 1, hello(Role::Attach));
         round_trip!(Greeting, 1, Greeting::Hello(hello(Role::Kill)));
         let size = fux_vt::Size::from((std::num::NonZeroU16::MIN, std::num::NonZeroU16::MAX));
+        let presentation = crate::script::default_state()
+            .map_err(|e| e.to_string())?
+            .preferences
+            .presentation();
         let workspace = Some(crate::command::WsRef::Name("main".to_owned()));
         round_trip!(
             Attach,
@@ -824,6 +830,7 @@ mod tests {
                 workspace,
                 read_only: false,
                 initial: None,
+                presentation,
             }
         );
         let workspace = None;
@@ -836,6 +843,7 @@ mod tests {
                 workspace,
                 read_only: true,
                 initial: None,
+                presentation,
             }
         );
         let act = Act::Paste("界\n".into());

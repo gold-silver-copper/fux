@@ -271,14 +271,10 @@ impl Through {
                         cwd: std::env::current_dir().map_err(|e| e.to_string())?,
                         env: fux::command::EnvPatch::default(),
                     }),
-                    ..fux::protocol::Attach::of(size)
+                    ..fux::protocol::Attach::of(size, preferences.presentation())
                 },
             )
             .map_err(|e| format!("fux: {e}"))?;
-        session.acts(
-            client,
-            vec![fux::act::Act::Presentation(preferences.presentation())],
-        );
         let mut placement = Placement::default();
         let view = session.views.get(&client).ok_or("fux: no view")?;
         session.placement_into(view, &mut placement);

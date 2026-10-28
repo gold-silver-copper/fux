@@ -1325,9 +1325,7 @@ fn bar(
                 break;
             };
             // A bell rang in a tab the client does not show (`outer`).
-            let rang = view.presentation.is_some_and(|p| p.bell)
-                && tab.seat(view.id).is_some_and(|s| s.rang)
-                && Some(tab.id()) != current;
+            let rang = tab.seat(view.id).is_some_and(|s| s.rang) && Some(tab.id()) != current;
             let label = format!(
                 " {}{} ",
                 tab.label(session.parts.panes()),

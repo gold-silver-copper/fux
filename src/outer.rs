@@ -388,7 +388,7 @@ impl Session {
         };
         let mut rung = Vec::new();
         for view in self.views.values_mut() {
-            if !view.presentation.is_some_and(|p| p.bell) {
+            if !view.presentation.bell {
                 continue;
             }
             let Some(&shown) = viewers.get(&view.id) else {
@@ -420,7 +420,7 @@ impl Session {
         };
         // The title, made only when it is not the one the terminal has:
         // `Some(None)` for the same.
-        let wanted = view.presentation.is_some_and(|p| p.titles).then(|| {
+        let wanted = view.presentation.titles.then(|| {
             let title = self.title_of(view);
             let same = view
                 .title
@@ -623,7 +623,13 @@ mod tests {
         assert_eq!(shown_on_c(&s), 0, "kept, not shown");
         // A headless client, with no terminal, types: d still answers.
         let size = fux_vt::Size::new(24, 80).map_err(|e| e.to_string())?;
-        let attach = crate::protocol::Attach::of(size);
+        let attach = crate::protocol::Attach::of(
+            size,
+            crate::script::default_state()
+                .map_err(|e| e.to_string())?
+                .preferences
+                .presentation(),
+        );
         let headless = s.attach_as(ClientKind::Headless, attach);
         s.input(headless.map_err(|e| e.to_string())?, b"x");
         assert_eq!(s.graphics(PaneId::of(1)), Graphics::Cell(cell(8, 16)?));
@@ -888,11 +894,30 @@ mod tests {
         s.output(PaneId::of(1), b"\x07");
         assert_eq!(sent(&mut s, c), [BELL.to_vec()]);
         assert!(sent(&mut s, d).is_empty());
+        // Disabling bells clears pending marks; enabling does not restore them.
+        run(&mut s, "str c1 client str @2 tab show-tab")?;
+        past_the_gap(&mut s);
+        s.output(PaneId::of(1), b"\x07");
+        assert!(tab_label(&s, c).contains('!'));
+        let _ = sent(&mut s, c);
         // Opposing preferences on the same workspace remain independent.
         run(&mut s, "str c2 client str +1 workspace show-workspace")?;
         let preferences = crate::script::default_state()
             .map_err(|e| e.to_string())?
             .preferences;
+        s.acts(
+            c,
+            vec![crate::act::Act::Presentation(crate::view::Presentation {
+                bell: false,
+                ..preferences.presentation()
+            })],
+        );
+        assert!(!tab_label(&s, c).contains('!'));
+        s.acts(
+            c,
+            vec![crate::act::Act::Presentation(preferences.presentation())],
+        );
+        assert!(!tab_label(&s, c).contains('!'));
         s.acts(
             c,
             vec![crate::act::Act::Presentation(crate::view::Presentation {

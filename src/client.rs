@@ -1067,6 +1067,7 @@ pub fn attach(
         size,
         workspace: attaching.workspace.clone(),
         read_only: attaching.read_only,
+        presentation: attaching.state.preferences.presentation(),
         initial: if attaching.workspace.is_none() && !attaching.read_only {
             let creation = &attaching.creation;
             let (start, env) = creation
@@ -1337,9 +1338,6 @@ fn attached(
                         (writeln!(stdout, "{me}").and_then(|()| stdout.flush()))
                             .map_err(Error::Output)?;
                     }
-                    acts.push(Dispatch::Send(Act::Presentation(
-                        attaching.state.preferences.presentation(),
-                    )));
                     let state = attaching.state.clone();
                     keyboard = Some(Keyboard::new(socket, me, run, state, attaching.read_only)?);
                     if let Some(text) = attaching.problem.clone() {

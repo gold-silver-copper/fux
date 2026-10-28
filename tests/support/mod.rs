@@ -495,6 +495,7 @@ impl Client {
             size: sized(rows, cols)?,
             workspace: workspace.map(|name| fux::command::WsRef::Name(name.to_owned())),
             read_only,
+            presentation: server.state.preferences.presentation(),
             initial: (workspace.is_none() && !read_only).then(|| fux::command::InitialWorkspace {
                 options: server.state.preferences.pane_options(),
                 name: None,
@@ -504,12 +505,6 @@ impl Client {
             }),
         };
         stream.write_all(&attach.encode().map_err(e)?).map_err(e)?;
-        let presentation = AttachedFrame::Act(Box::new(fux::act::Act::Presentation(
-            server.state.preferences.presentation(),
-        )));
-        stream
-            .write_all(&presentation.encode().map_err(e)?)
-            .map_err(e)?;
         stream.set_nonblocking(true).map_err(e)?;
         Ok(Client {
             stream,
@@ -519,7 +514,7 @@ impl Client {
             read_only,
             greeted: false,
             keyboard: None,
-            frames: 1,
+            frames: 0,
             typed: Vec::new(),
             id: None,
             terminal: terminal(rows, cols)?,
