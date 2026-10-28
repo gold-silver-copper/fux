@@ -442,8 +442,7 @@ impl Answer {
     }
 
     /// It says nothing printed: a capture of no lines, no pane's answers.
-    /// A capture of one blank line says that line, and a listing says at
-    /// least where events read from.
+    /// A capture of one blank line says that line; status always names the server.
     fn is_empty(&self) -> bool {
         match self {
             Answer::Capture(captured) => captured.lines.is_empty(),
@@ -479,7 +478,17 @@ impl Answer {
 /// `status`'s text: the server's version and socket, and if it speaks
 /// another protocol, how to stop it.
 fn write_status(status: &Json, out: &mut dyn std::fmt::Write) -> std::fmt::Result {
-    let field = |key| crate::answer::Field(status.get(key), "");
+    struct Field<'a>(Option<&'a Json>);
+    impl std::fmt::Display for Field<'_> {
+        fn fmt(&self, out: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            match self.0 {
+                Some(Json::String(text)) => out.write_str(text),
+                Some(json) => json.write(out),
+                None => Ok(()),
+            }
+        }
+    }
+    let field = |key| Field(status.get(key));
     write!(
         out,
         "fux {} at {}",
@@ -984,9 +993,7 @@ impl Server {
     pub fn new(chosen: Choice) -> Server {
         Server {
             chosen,
-            requests: None,
-            after: None,
-            stop: None,
+            ..Self::default()
         }
     }
 
@@ -1404,14 +1411,6 @@ fn uncaught(machine: &Machine<Fux>, mut error: fuxth::Error) -> Failed {
     told(error, true)
 }
 
-/// A reply's answer, or its failure.
-pub fn succeeded(reply: Reply) -> Result<Reply, Failed> {
-    match reply.end() {
-        End::Failed { code, message } => Err(Failed::new(code, message)),
-        End::Done => Ok(reply),
-    }
-}
-
 /// What a reply's answer puts on the stack: nothing, a string, handles, or
 /// an answer of fux's; a field's value as fuxth's own where it is one.
 pub fn answered(reply: Reply) -> Result<Vec<Value<Fux>>, Failed> {
@@ -1437,7 +1436,6 @@ pub fn answered(reply: Reply) -> Result<Vec<Value<Fux>>, Failed> {
     };
     Ok(vec![match body {
         Body::Empty => return Ok(Vec::new()),
-        Body::Text(text) => Value::str(text.trim_end_matches('\n')),
         Body::Found(id) => Value::App(handle(id, run)),
         Body::Handles(ids) => handles(ids)?,
         Body::Capture(captured) => Answer::Capture(captured).in_run(run),
@@ -1630,7 +1628,7 @@ fn config_state(defaults: &ClientState) -> Result<ClientState, Failed> {
 
 /// Reads a frozen config graph and runs it without a transport capability.
 pub fn run_file(path: &std::path::Path) -> Result<ClientState, Failed> {
-    run_config_on(source::file(path)?, &default_state()?)
+    run_config(source::file(path)?)
 }
 
 fn run_config(image: fuxth::SourceImage) -> Result<ClientState, Failed> {
@@ -1702,7 +1700,7 @@ impl Asks for ConfigOnly {
 
 /// A program that may not do what the client does itself: a config's or a
 /// key's.
-pub fn refuse_local(what: &Local) -> Result<Vec<Value<Fux>>, Failed> {
+fn refuse_local(what: &Local) -> Result<Vec<Value<Fux>>, Failed> {
     let why = match what {
         Local::Open(_) => "a client's screen opens from its own keys or prompt",
         Local::Attach { .. }
@@ -1750,8 +1748,8 @@ pub fn main(args: &[String], out: &mut dyn Write) -> Result<u8, Failed> {
         Err(_) => machine.stack(),
     };
     let printed = (stack.iter())
-        // An answer with nothing to say (an empty listing) prints no
-        // blank line; options or a request, nothing.
+        // Empty pane outcomes and captures print no blank line;
+        // options or a request, nothing.
         .filter(|value| {
             !matches!(value, Value::App(Fux::Answer(a, _)) if a.is_empty())
                 && !matches!(value, Value::App(Fux::Opts(_)))

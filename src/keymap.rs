@@ -5,7 +5,7 @@
 //!
 //! A binding runs fuxth: its code is compiled and run by the client, fresh,
 //! each time its keys are typed, the client itself its `me`. The default
-//! bindings are a config too, `script/keys.fux`, run on `Keymap::empty`
+//! bindings are a config too, `script/keys.fux`, run on `Keymap::default`
 //! before the user's.
 use crate::act::ScreenAct;
 use crate::act::{
@@ -208,8 +208,8 @@ pub fn keys(words: &str) -> Result<Vec<KeyPress>, String> {
         .ok_or_else(|| "no keys given".to_owned())
 }
 
-/// A client's prefix and bindings.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// A client's prefix and bindings; empty until bundled fuxth supplies them.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Keymap {
     pub prefix: Option<KeyPress>,
     pub bindings: Layer,
@@ -225,23 +225,7 @@ const ROOT_GROUP: &str = "Without the prefix";
 /// The group of bindings after the prefix that gave none, listed last.
 const OTHER_GROUP: &str = "Other";
 
-impl Default for Keymap {
-    fn default() -> Self {
-        Self::empty()
-    }
-}
-
 impl Keymap {
-    /// No bindings or prefix. Bundled fuxth supplies both.
-    pub fn empty() -> Self {
-        Self {
-            prefix: None,
-            bindings: Layer::default(),
-            root: Vec::new(),
-            modes: Modes::default(),
-        }
-    }
-
     /// Binds `keys` after the prefix to `binding`.
     pub fn bind(
         &mut self,
@@ -912,7 +896,7 @@ impl Table<LineAct> {
 mod tests {
     #[test]
     fn an_empty_keymap_has_no_native_prefix() {
-        let keys = super::Keymap::empty();
+        let keys = super::Keymap::default();
         let mut held = super::Held::default();
         let stroke = super::KeyPress::new(super::Key::Char('b'), super::Modifiers::CTRL).into();
         assert!(matches!(
@@ -1119,7 +1103,7 @@ mod tests {
 
     #[test]
     fn list_keys_shows_sequences_repeats_and_keys_without_the_prefix() -> Result<(), String> {
-        let mut keymap = Keymap::empty();
+        let mut keymap = Keymap::default();
         keymap.bind(
             &keys("g n")?,
             Binding::new("opts new-tab drop".into(), false),

@@ -122,8 +122,7 @@ impl Caller {
     }
 }
 
-/// Where an attached client is: the workspace and tab it is shown, and the
-/// pane it focuses there.
+/// A workspace, tab and pane: a client's place, or what a command made.
 #[derive(Clone, Copy)]
 pub struct Place {
     pub ws: WsId,
@@ -144,14 +143,6 @@ struct Picked {
 pub(crate) struct Spot {
     pub tab: TabId,
     pub pane: Option<PaneId>,
-}
-
-/// The workspace, tab and pane a command made.
-#[derive(Clone, Copy)]
-struct Made {
-    ws: WsId,
-    tab: TabId,
-    pane: PaneId,
 }
 
 /// A pane's size to begin with, and the cell its program is told it
@@ -617,7 +608,7 @@ impl Session {
     pub(crate) fn shows(&self, client: ClientId, tab: TabId) -> bool {
         self.shown_tab(client).is_some_and(|t| t.id() == tab)
     }
-    pub fn resolve_ws(&self, r: &WsRef) -> Result<WsId, Error> {
+    fn resolve_ws(&self, r: &WsRef) -> Result<WsId, Error> {
         match r {
             WsRef::New => Err(fail(
                 Raise::BadValue,
@@ -908,11 +899,6 @@ impl Session {
         no_tab_named(self.parts.workspaces(), name, except)
     }
 
-    /// Gives tab `id` the name `name`, checked (`Parts::give_tab_name`).
-    fn give_tab_name(&mut self, id: TabId, name: String) -> Result<(), Error> {
-        self.parts.give_tab_name(id, name).ok_or(Error::NoTab(id))
-    }
-
     /// Whether a client is in copy mode on pane `pane`: keys typed there
     /// go to copy mode, not the program.
     pub(crate) fn copying(&self, pane: PaneId) -> bool {
@@ -988,11 +974,10 @@ impl Session {
 
     /// The pane given `name`: never its display label or title.
     fn pane_named(&self, name: &str) -> Result<PaneId, Error> {
-        let mut panes: Vec<PaneId> = (self.parts.panes().values())
+        let panes: Vec<PaneId> = (self.parts.panes().values())
             .filter(|p| p.name() == Some(name))
             .map(|p| p.id())
             .collect();
-        panes.sort();
         if panes.is_empty() {
             return Err(fail(Raise::NoPane, format!("no pane named {name:?}")));
         }
@@ -1252,7 +1237,7 @@ impl Session {
         fit: Fit,
         new: NewPane<'_>,
         now: Instant,
-    ) -> Result<Made, Error> {
+    ) -> Result<Place, Error> {
         if let Some(name) = &name {
             check_workspace_name(name, self.parts.workspaces())?;
         }
@@ -1263,7 +1248,7 @@ impl Session {
         let tab = ids.tab()?;
         let pane = self.new_pane(&mut ids, new, now)?;
         self.ids = ids;
-        let made = Made {
+        let made = Place {
             ws: id,
             tab,
             pane: pane.id(),
@@ -1285,7 +1270,7 @@ impl Session {
         fit: Fit,
         new: NewPane<'_>,
         now: Instant,
-    ) -> Result<Made, Error> {
+    ) -> Result<Place, Error> {
         let id = match (self.ws_target(ws, here), ws) {
             (Ok(id), _) => id,
             (Err(_), Some(WsRef::New)) => {
@@ -1303,7 +1288,7 @@ impl Session {
         let mut ids = self.ids.clone();
         let tab = ids.tab()?;
         let pane = self.new_pane(&mut ids, new, now)?;
-        let made = Made {
+        let made = Place {
             ws: id,
             tab,
             pane: pane.id(),
@@ -1425,7 +1410,6 @@ impl Session {
         let (rows, cols) = attach.size.nonzero();
         let (rows, cols) =
             view::size(rows.get(), cols.get()).map_err(|why| fail(Raise::Size, why))?;
-        self.ids.clone().client()?;
         let (ws, spot) = match &attach.target {
             Some(command::AttachTarget::Workspace(workspace)) => {
                 (self.resolve_ws(workspace)?, None)
@@ -1883,7 +1867,7 @@ impl Session {
         }
     }
 
-    pub fn touch(&mut self) {
+    fn touch(&mut self) {
         self.views.values_mut().for_each(|view| view.dirty = true);
     }
 
@@ -3106,7 +3090,7 @@ impl Session {
             AnyRef::Pane(p) => self.pane_mut(p)?.rename(name),
             AnyRef::Tab(t) => {
                 self.check_tab_name(&name, Some(t))?;
-                self.give_tab_name(t, name)?;
+                self.parts.give_tab_name(t, name).ok_or(Error::NoTab(t))?;
             }
             AnyRef::Workspace(id) => {
                 // The one named (there: `Rename` checks it first), and the
@@ -3511,12 +3495,9 @@ fn check_workspace_name<'a>(
     others: impl IntoIterator<Item = &'a Workspace>,
 ) -> Result<(), Error> {
     check_name(name)?;
-    // A name `workspace` reads back as itself, so that it finds this
-    // workspace and no other: a pane's or tab's id stands for its own.
-    if name.parse::<PaneId>().is_ok()
-        || name.parse::<TabId>().is_ok()
-        || command::parse_workspace(name) != Ok(WsRef::Name(name.to_owned()))
-    {
+    // check_name refused ID sigils; the remaining reserved destination
+    // is the explicit request to create an unnamed workspace.
+    if name == "new-workspace" {
         return Err(Error::NameReadAsTarget(name.to_owned()));
     }
     let others: Vec<&Workspace> = others.into_iter().collect();
@@ -3563,7 +3544,7 @@ fn round<T>(items: &[T], index: usize, toward: Sibling) -> Option<&T> {
 /// A session itself, as what a program's requests go to, for the tests
 /// and the fuzz targets: each is begun at once, and a wait answered at its
 /// limit, there being no programs to wait on, once what is due to be read
-/// is; an event stream, which a real server alone serves, is not.
+/// is. Finite event reads use the same deadlines.
 #[cfg(any(test, feature = "in-process"))]
 pub struct InProcess<'s>(pub &'s mut Session);
 

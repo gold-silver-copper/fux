@@ -951,7 +951,7 @@ pub fn parse_workspace(text: &str) -> Result<WsRef, Usage> {
 
 /// Refused, saying why, unless `name` is a variable's name a shell takes:
 /// letters, digits and `_`, not first a digit.
-pub fn var_name(name: &str) -> Result<(), String> {
+fn var_name(name: &str) -> Result<(), String> {
     let first = (name.chars().next()).is_some_and(|c| c.is_ascii_alphabetic() || c == '_');
     match first && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
         true => Ok(()),
@@ -962,7 +962,7 @@ pub fn var_name(name: &str) -> Result<(), String> {
 }
 
 /// A variable a caller may give a pane, excluding its native identity.
-pub(crate) fn pane_var(name: &str) -> Result<(), String> {
+fn pane_var(name: &str) -> Result<(), String> {
     var_name(name)?;
     if matches!(name, "FUX" | "FUX_PANE" | "FUX_SOCKET" | "FUX_SERVER") {
         return Err(format!("{name} is reserved for pane identity"));
@@ -1019,22 +1019,22 @@ impl EnvPatch {
 
     /// Explicit operation values replace selected or saved values.
     pub fn overlay(&mut self, other: &Self) -> Result<(), String> {
-        let names = self
+        let (names, bytes) = self
             .0
             .iter()
             .filter(|(key, _)| !other.0.iter().any(|(k, _)| k == key))
-            .count()
-            .saturating_add(other.0.len());
+            .fold(
+                (other.0.len(), other.encoded_len()),
+                |(names, bytes), (k, v)| {
+                    (
+                        names.saturating_add(1),
+                        bytes.saturating_add(Self::entry_len(k, v)),
+                    )
+                },
+            );
         if names > Self::MAX_NAMES {
             return Err("environment patch exceeds 1024 names".to_owned());
         }
-        let bytes = self
-            .0
-            .iter()
-            .filter(|(key, _)| !other.0.iter().any(|(k, _)| k == key))
-            .fold(other.encoded_len(), |bytes, (k, v)| {
-                bytes.saturating_add(Self::entry_len(k, v))
-            });
         if bytes > crate::protocol::MAX_PAYLOAD {
             return Err("environment patch exceeds the launch frame limit".to_owned());
         }

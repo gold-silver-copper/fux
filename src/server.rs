@@ -281,8 +281,8 @@ impl PaintClock {
 enum Theirs {
     /// A copy for its clipboard, a pane's OSC 52 or copy mode's.
     Copy,
-    /// A program to run as its own (`str c1 client run`).
-    Program,
+    /// A screen to open on the receiving client.
+    Open,
     /// Keys to take as typed (`send-keys` to it).
     Keys,
 }
@@ -299,7 +299,7 @@ impl std::fmt::Display for Refused {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let what = match self.theirs {
             Theirs::Copy => "a copy (OSC 52) was not sent to its clipboard",
-            Theirs::Program => "the program was not sent it",
+            Theirs::Open => "the program was not sent it",
             Theirs::Keys => "the keys were not sent it",
         };
         let (client, waiting) = (self.client, self.waiting);
@@ -1018,7 +1018,7 @@ impl Server {
                 }
                 Outgoing::To(client, frame) => {
                     let theirs = match frame {
-                        ToAttached::Open(_) => Some(Theirs::Program),
+                        ToAttached::Open(_) => Some(Theirs::Open),
                         ToAttached::Keys(_) => Some(Theirs::Keys),
                         ToAttached::Paint(_)
                         | ToAttached::Exit(_)
@@ -1423,7 +1423,7 @@ impl Server {
                 };
                 self.ordered_request(index, asked, now);
             }
-            // Nothing more is asked of a waiting command, or a stream. A
+            // Nothing more is asked of a waiting command. A
             // connection that is ending has had its last word: what came
             // with the Detach, Command or refused Hello that ended it is
             // dropped unread.
@@ -1481,8 +1481,7 @@ impl Server {
         }
     }
 
-    /// A request from connection `index`: answered now, or once its wait
-    /// has its answer, or streamed.
+    /// A request from connection `index`: answered now, or once its wait has an answer.
     fn request(
         &mut self,
         index: usize,
@@ -1540,7 +1539,7 @@ impl Server {
         let Some(conn) = self.conns.get_mut(index) else {
             return;
         };
-        let theirs = |r: &&Refused| matches!(r.theirs, Theirs::Program | Theirs::Keys);
+        let theirs = |r: &&Refused| matches!(r.theirs, Theirs::Open | Theirs::Keys);
         match begun {
             Begun::Done(outcome) => match refused.iter().find(theirs) {
                 Some(no) => {
@@ -1612,9 +1611,8 @@ impl Server {
                     total = total.saturating_add(n);
                     self.session
                         .output(id, self.read_buffer.get(..n).unwrap_or_default(), now);
-                    // A short read: that was all, and the poll says when
-                    // there is more, without a read to find none. Full
-                    // reads go on.
+                    // A short read yields to other work. Poll decides
+                    // when to read again; full reads go on.
                     if n < SHORT_READ {
                         break false;
                     }
@@ -1828,7 +1826,7 @@ mod tests {
         let text: String = std::iter::repeat_n('x', crate::wire::MAX_REPLY).collect();
         conn.answer(
             &mut session,
-            crate::protocol::Body::Text(text).into(),
+            crate::protocol::Body::Field(crate::json::Json::str(text)).into(),
             Instant::now(),
         );
         assert!(matches!(conn.stage, Stage::Closing));
@@ -2653,8 +2651,8 @@ mod tests {
         Ok(())
     }
 
-    /// A client too far behind is refused what others send it, a program
-    /// say, and told how far; its own conversation goes on past that,
+    /// A client too far behind is refused what others send it, a screen
+    /// to open, and told how far; its own conversation goes on past that,
     /// until it is detached, told why.
     #[test]
     fn a_client_behind_is_refused_what_others_send_it() -> Result<(), String> {
@@ -2669,7 +2667,7 @@ mod tests {
         conn.out.push(&vec![0; OUT_MAX]);
         let run = ToAttached::Open(crate::screens::Open::Copy);
         let refused = conn
-            .tell(&mut session, &run, Some(Theirs::Program), Instant::now())
+            .tell(&mut session, &run, Some(Theirs::Open), Instant::now())
             .err();
         assert_eq!(refused.map(|r| r.waiting), Some(OUT_MAX));
         assert!(conn.tell(&mut session, &bell, None, Instant::now()).is_ok());
