@@ -83,7 +83,7 @@ fn held_handles_refuse_another_server_before_mutating_it() -> Outcome {
         &format!("str {socket} socket %2 str local text send-keys"),
     )?;
     assert_eq!(out.status, 0, "{}", out.stderr);
-    b.ok(&["%1", "horizontal", "split"])?;
+    b.ok(&["%1", "str", "horizontal", "axis", "split"])?;
     Ok(())
 }
 

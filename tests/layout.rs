@@ -46,7 +46,7 @@ fn splitting_side_by_side_and_stacked_draws_separators_and_focuses_the_new_pane(
     assert!(client.bar().contains("%3"), "{}", client.bar());
     // The CLI splits too; a line typed once its shell's prompt shows goes
     // into the new shell.
-    let made = server.ok(&["str", "%1", "pane", "vertical", "split"])?;
+    let made = server.ok(&["str", "%1", "pane", "str", "vertical", "axis", "split"])?;
     let pane = made.split(':').next().unwrap_or_default();
     server.type_line(pane, "echo \"from cli\"")?;
     client.wait_for("from cli")?;
@@ -215,7 +215,7 @@ fn moving_a_pane_by_direction_nests_it_beside_its_neighbour() -> Outcome {
     })?;
     // From the CLI: 2 | (1 / 3), then 2 moves right, beside 1 (the nearer
     // of 1 and 3 by centre, then by number): (1 | 2) / 3.
-    server.ok(&["str", "%1", "pane", "vertical", "split"])?;
+    server.ok(&["str", "%1", "pane", "str", "vertical", "axis", "split"])?;
     server.ok(&["str", "%2", "pane", "str", "right", "move"])?;
     assert_eq!(size(&server, "%3")?.1, 81, "3 spans the width");
     assert_eq!(
@@ -258,7 +258,7 @@ fn a_split_pane_keeps_its_last_line_and_regains_its_rows() -> Outcome {
         Some("last-line"),
         "{before:?}"
     );
-    server.ok(&["str", "%1", "pane", "vertical", "split"])?;
+    server.ok(&["str", "%1", "pane", "str", "vertical", "axis", "split"])?;
     client.wait("two panes", |t| t.contains("%2"))?;
     eventually("the shrunk pane", || {
         let rows = captured(&server, "%1")?;

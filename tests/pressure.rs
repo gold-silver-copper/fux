@@ -310,7 +310,7 @@ fn a_scheme_report_refused_is_sent_as_its_program_reads_again() -> Outcome {
 fn a_program_that_closes_its_terminal_closes_its_pane_at_exit() -> Outcome {
     let server = Server::start("")?;
     eventually("a prompt", || Ok(screen(&server, "%1")?.contains('$')))?;
-    server.ok(&["str", "%1", "pane", "horizontal", "split"])?;
+    server.ok(&["str", "%1", "pane", "str", "horizontal", "axis", "split"])?;
     eventually(
         "a prompt in %2",
         || Ok(screen(&server, "%2")?.contains('$')),

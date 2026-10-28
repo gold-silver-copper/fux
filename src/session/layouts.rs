@@ -138,7 +138,8 @@ impl Session {
             out,
             |out| {
                 out.pane(first.first_pane())?;
-                out.word(way)?;
+                out.string(way)?;
+                out.word("axis")?;
                 out.native(format_args!("{a}"))?;
                 out.native(format_args!("{b}"))?;
                 out.word("shares")

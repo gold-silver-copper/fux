@@ -235,7 +235,7 @@ fn the_pane_holds_still_for_the_copying_client_only() -> Outcome {
 fn copy_mode_ends_when_its_pane_closes_or_its_rows_are_evicted() -> Outcome {
     let server = Server::start("str history-bytes 1000 set")?;
     let mut client = prepared(&server, 10, 40, &["keep"])?;
-    server.ok(&["str", "%1", "pane", "horizontal", "split"])?;
+    server.ok(&["str", "%1", "pane", "str", "horizontal", "axis", "split"])?;
     server.ok(&["str", "c1", "client", "str", "%1", "pane", "show"])?;
     copy_mode(&mut client)?;
     // Hold the top of the history, then push it out.
@@ -272,7 +272,7 @@ fn paste_buffers_paste_and_the_clipboard_can_be_off() -> Outcome {
         t.lines().any(|l| l == "$ hello-paste")
     })?;
     // paste-buffer from the CLI, into another pane.
-    server.ok(&["str", "%1", "pane", "horizontal", "split"])?;
+    server.ok(&["str", "%1", "pane", "str", "horizontal", "axis", "split"])?;
     let metadata = server.ok(&["buffers"])?;
     let id = metadata
         .strip_prefix("[{\"id\":\"")

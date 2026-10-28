@@ -317,7 +317,7 @@ impl Server {
     /// The version of `pane` (`PANE:RESPAWNS.SCREEN.BELLS.DONE.ENDED:RUN`).
     pub fn version(&self, pane: &str) -> Result<String, String> {
         Ok(self
-            .ok(&["str", pane, "pane", "str", "version", "get"])?
+            .ok(&["str", pane, "pane", "version"])?
             .trim()
             .to_owned())
     }

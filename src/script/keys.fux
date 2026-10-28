@@ -6,8 +6,8 @@ true show-column
 # change the prefix they follow with `prefix`. The column lists groups in
 # the order they first appear here, `Other` last.
 
-str v str 'me focused horizontal split drop' bind  str 'split side by side' label  str Panes group
-str s str 'me focused vertical split drop' bind  str 'split stacked' label  str Panes group
+str v str 'me focused str horizontal axis split drop' bind  str 'split side by side' label  str Panes group
+str s str 'me focused str vertical axis split drop' bind  str 'split stacked' label  str Panes group
 str x str 'me me focused confirm-close' bind  str 'close pane' label  str Panes group
 str z str 'me zoom' bind  str 'zoom or restore' label  str Panes group
 str c str 'me copy-mode' bind  str 'copy and select' label  str Panes group
