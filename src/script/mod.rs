@@ -11,7 +11,7 @@ mod words;
 
 use crate::answer::{PaneAnswer, PaneResults};
 use crate::client;
-use crate::client_state::{Changes, ClientState, Draft};
+use crate::client_state::{ClientState, Draft};
 use crate::code::{Code, Raise};
 use crate::command::{AnyRef, Extent, Input, Kind, Mouse, Request, Run, Version, WsRef};
 use crate::id::{ClientId, PaneId, TabId, WsId};
@@ -940,18 +940,15 @@ pub trait Asks {
     /// Publish a complete local state at a commit boundary, if it is shared.
     fn published(&mut self, _state: &ClientState, _context: &Context) {}
 
-    /// Commit all local state, then forward only this transaction's writes.
+    /// Commit all local state.
     fn commit(&mut self, draft: &mut Draft, context: Context) -> Result<(), Failed> {
-        let changes = draft.preferences.changes();
         let committed = draft
             .clone()
             .finish()
             .map_err(|why| Failed::new(Code::Config, why))?;
         *draft = committed.draft();
         self.published(&committed, &context);
-        committed
-            .preferences
-            .forward_settings(changes, self, context)
+        Ok(())
     }
 
     /// Pending preferences must arrive before a later server operation.
@@ -1411,11 +1408,10 @@ fn local(
                 .finish()
                 .map_err(|why| Failed::new(Code::Config, why))?;
             let typing = size.is_none() && !read_only;
-            let explicit = draft.preferences.changes();
-            let (committed, mut problem, configured) = if typing {
+            let (committed, problem) = if typing {
                 configured(&defaults)
             } else {
-                (defaults, None, Changes::default())
+                (defaults, None)
             };
             // Watching or naming a run starts no replacement server.
             let socket = match *read_only || of.is_some() {
@@ -1427,22 +1423,6 @@ fn local(
                 return Err(Failed::new(Code::NoServer, why));
             }
             *draft = committed.draft();
-            draft.preferences.include(explicit.merge(configured));
-            if let Err(failed) = server.commit(
-                draft,
-                Context {
-                    of: *of,
-                    ..client::context()
-                },
-            ) {
-                if size.is_some() {
-                    return Err(failed);
-                }
-                problem = Some(match problem {
-                    Some(problem) => format!("{problem}; {}", failed.notice()),
-                    None => failed.notice(),
-                });
-            }
             let attach = client::Attaching {
                 of: *of,
                 workspace: workspace.clone(),
@@ -1478,12 +1458,11 @@ fn started(server: &mut Server) -> Result<SocketPath, Failed> {
     Ok(socket)
 }
 
-/// A typing terminal's whole state, one diagnostic if it failed, and the
-/// fields explicitly written by successful config evaluation.
-pub fn configured(defaults: &ClientState) -> (ClientState, Option<String>, Changes) {
+/// A typing terminal's whole state and one diagnostic if it failed.
+pub fn configured(defaults: &ClientState) -> (ClientState, Option<String>) {
     match config_state(defaults) {
-        Ok((state, changed)) => (state, None, changed),
-        Err(failed) => (defaults.clone(), Some(failed.notice()), Changes::default()),
+        Ok(state) => (state, None),
+        Err(failed) => (defaults.clone(), Some(failed.notice())),
     }
 }
 
@@ -1496,9 +1475,9 @@ pub fn default_state() -> Result<ClientState, Failed> {
     draft.finish().map_err(|why| Failed::new(Code::Config, why))
 }
 
-fn config_state(defaults: &ClientState) -> Result<(ClientState, Changes), Failed> {
+fn config_state(defaults: &ClientState) -> Result<ClientState, Failed> {
     let Some(path) = crate::config::default_path() else {
-        return Ok((defaults.clone(), Changes::default()));
+        return Ok(defaults.clone());
     };
     let shown = path.display().to_string();
     let (path, file) = match source::root(&path) {
@@ -1509,7 +1488,7 @@ fn config_state(defaults: &ClientState) -> Result<(ClientState, Changes), Failed
                     .symlink_metadata()
                     .is_err_and(|e| e.kind() == io::ErrorKind::NotFound) =>
         {
-            return Ok((defaults.clone(), Changes::default()));
+            return Ok(defaults.clone());
         }
         Err(error) => return Err(read_failed(&shown, &error.to_string())),
     };
@@ -1517,27 +1496,20 @@ fn config_state(defaults: &ClientState) -> Result<(ClientState, Changes), Failed
 }
 
 /// Reads a frozen config graph and runs it without a transport capability.
-pub fn run_file(path: &std::path::Path) -> Result<(ClientState, Changes), Failed> {
+pub fn run_file(path: &std::path::Path) -> Result<ClientState, Failed> {
     run_config_on(source::file(path)?, &default_state()?)
 }
 
 fn run_config(image: fuxth::SourceImage) -> Result<ClientState, Failed> {
-    run_config_on(image, &default_state()?).map(|(state, _)| state)
+    run_config_on(image, &default_state()?)
 }
 
-fn run_config_on(
-    image: fuxth::SourceImage,
-    defaults: &ClientState,
-) -> Result<(ClientState, Changes), Failed> {
+fn run_config_on(image: fuxth::SourceImage, defaults: &ClientState) -> Result<ClientState, Failed> {
     let tokens = image.tokens();
     let mut draft = defaults.draft();
     draft.config = Some(Arc::new(image));
     run_quiet(&tokens, Some(&mut draft), false)?;
-    let changed = draft.preferences.changes();
-    let committed = draft
-        .finish()
-        .map_err(|why| Failed::new(Code::Config, why))?;
-    Ok((committed, changed))
+    draft.finish().map_err(|why| Failed::new(Code::Config, why))
 }
 
 /// Runs bounded config code with only local reads and draft mutations.
@@ -1752,6 +1724,71 @@ fn read_file(path: &std::path::Path) -> Result<String, Failed> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn every_observation_wait_encodes_its_clients_limit() -> Result<(), Box<dyn std::error::Error>>
+    {
+        use super::*;
+        use crate::command::{AnyRef, Command, Request};
+        use crate::wire::Reader;
+        struct Record(Vec<u32>);
+        impl Asks for Record {
+            fn ask(&mut self, asked: &Asked, _: &mut dyn Write) -> Result<Reply, Failed> {
+                let bytes = crate::wire::encode(asked)
+                    .map_err(|e| Failed::new(Code::Usage, e.to_string()))?;
+                let decoded: Asked = Reader::new(&bytes)
+                    .whole()
+                    .map_err(|e| Failed::new(Code::Usage, e.to_string()))?;
+                if let Request::Wait(wait) = decoded.request {
+                    self.0.push(wait.timeout.seconds());
+                    Err(Failed::new(Code::NoServer, "recorded"))
+                } else if let Request::Do(Command::Resolve { .. }) = decoded.request {
+                    Ok(Body::Found(AnyRef::Pane(
+                        "%1".parse()
+                            .map_err(|e| Failed::new(Code::Usage, format!("{e:?}")))?,
+                    ))
+                    .into())
+                } else if let Request::Do(Command::SendKeys { .. }) = decoded.request {
+                    let version = "%1:0.0.0.0.0:1-2"
+                        .parse()
+                        .map_err(|()| Failed::new(Code::Usage, "version"))?;
+                    Ok(PaneResults::One(PaneAnswer::Acted(version)).into())
+                } else {
+                    Err(Failed::new(Code::Usage, "unexpected request"))
+                }
+            }
+        }
+        let bundled = default_state().map_err(|e| e.to_string())?;
+        let personal = run_config(
+            source::text("personal", "str wait-seconds 2 set").map_err(|e| e.to_string())?,
+        )
+        .map_err(|e| e.to_string())?;
+        for subject in [
+            "%1",
+            "str %1:0.0.0.0.0:1-2 changed",
+            "%1 str Enter key send-keys",
+        ] {
+            for (state, option, limit) in [
+                (&personal, "", 2),
+                (&bundled, "", 30),
+                (&personal, "0 timeout", 0),
+            ] {
+                let mut draft = state.draft();
+                let mut out = io::sink();
+                let mut host = Host::new(Context::default(), Some(&mut draft), &mut out);
+                let mut machine =
+                    compile(&token::source("wait", &format!("{subject} {option} wait"))?)
+                        .map_err(|e| e.to_string())?;
+                let mut record = Record(Vec::new());
+                let failed = run_capped(&mut machine, &mut host, &mut record, None, None)
+                    .err()
+                    .ok_or("wait was not recorded")?;
+                assert_eq!(failed.code, Code::NoServer);
+                assert_eq!(record.0, [limit], "{subject} {option}");
+            }
+        }
+        Ok(())
+    }
+
     /// Certain target/version errors fail preflight, before even an earlier
     /// print can run. Pane versions and the bundled recipes remain accepted.
     #[test]

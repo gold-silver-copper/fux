@@ -450,9 +450,8 @@ wire! {
     #[derive(Clone, Debug, PartialEq, Eq)]
     pub struct Wait {
         pub since: Since,
-        /// How long before it times out; if unsaid, the server's
-        /// `wait-seconds`.
-        pub timeout: Option<crate::config::Limit>,
+        /// How long before it times out, supplied by the caller.
+        pub timeout: crate::config::Limit,
     }
 }
 
@@ -651,9 +650,6 @@ wire! {
             target: AnyRef,
             toward: Sibling,
         },
-        /// Remaining server settings (`wait-seconds`, `buffers`), in force all
-        /// at once: a config's together, as one.
-        Set(settings: Vec<crate::config::Setting>),
         /// What a name or an id in text is: the pane, tab or workspace of
         /// `kind` it names (a tab's name, `%3`, …), answered with its id.
         Resolve {
@@ -946,7 +942,6 @@ impl Command {
             | C::HistoryBudget { .. }
             | C::Reorder { .. }
             | C::KillServer
-            | C::Set(_)
             | C::PasteBuffer { .. } => false,
             C::Client { action, .. } => match action {
                 ClientAction::Capture | ClientAction::Keys(_) | ClientAction::Run(_) => true,

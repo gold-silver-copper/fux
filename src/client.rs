@@ -633,22 +633,13 @@ impl Keyboard {
                         }
                         let _ = fuxix::io::write(&poke, b"!");
                         // Receipt follows transmission, not mailbox consumption.
-                        // Stop and disconnect release this local wait too.
-                        while !stops.stopped() {
-                            match received.recv_timeout(Duration::from_millis(50)) {
-                                Ok(frames) => {
-                                    after.set(crate::protocol::Fence {
-                                        frames,
-                                        ..after.get()
-                                    });
-                                    return;
-                                }
-                                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
-                                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
-                                    stops.stop();
-                                    return;
-                                }
-                            }
+                        // Dropping the keyboard drops the receipt sender too.
+                        match received.recv() {
+                            Ok(frames) => after.set(crate::protocol::Fence {
+                                frames,
+                                ..after.get()
+                            }),
+                            Err(_) => stops.stop(),
                         }
                     };
                     let ran = run_job(&mut server, (me, run), &shared, &job, &stops, &mut present);
@@ -1731,7 +1722,7 @@ mod tests {
     }
 
     #[test]
-    fn stopping_releases_a_worker_waiting_for_presentation_transmission()
+    fn dropping_the_keyboard_releases_a_worker_waiting_for_presentation_transmission()
     -> Result<(), Box<dyn std::error::Error>> {
         let socket = socket::checked("/nowhere/fux/s.sock", "test")?;
         let mut keyboard = new_keyboard(
@@ -1751,14 +1742,18 @@ mod tests {
                 .iter()
                 .any(|effect| matches!(effect, Dispatch::Fence))
         );
-        keyboard.stop.stop();
-        while !keyboard.idle() {
-            let mut wake = [PollFd::new(keyboard.wake(), PollFlags::IN)];
-            assert_ne!(fuxix::poll::poll(&mut wake, Some(ANSWER))?, 0);
-            let _ = keyboard.ran();
-        }
-        // No transport receipt was supplied while waiting for completion.
+        let state = std::sync::Arc::downgrade(&keyboard.state);
+        drop(keyboard);
         drop(pending);
+        let deadline = Instant::now().checked_add(ANSWER).ok_or("deadline")?;
+        while state.strong_count() != 0 && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert_eq!(
+            state.strong_count(),
+            0,
+            "worker still holds the client state"
+        );
         Ok(())
     }
 

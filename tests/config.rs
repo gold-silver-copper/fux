@@ -1,4 +1,4 @@
-//! Config evaluation commits local state before the temporary settings batch.
+//! Config evaluation changes only its own client state.
 mod support;
 use support::*;
 
@@ -89,7 +89,7 @@ fn only_a_typing_terminal_loads_the_user_config() -> Outcome {
     }
     let mut terminal = Terminal::attach(&server, 10, 80, &[])?;
     terminal.wait_for("$")?;
-    assert_eq!(server.fux(&waiting)?.status, 124);
+    assert_eq!(server.fux(&waiting)?.status, 0);
     terminal.type_bytes(b"\x01d")?;
     terminal.wait_exit()?;
     Ok(())
@@ -168,7 +168,7 @@ fn launch_preferences_apply_only_to_new_requests() -> Outcome {
         .lines()
         .count();
     assert!(rows <= screen + 3, "at most 3 lines of history: {history}");
-    // Checking a valid config and a failing action script send no batch.
+    // Checking a config and a failing local script leave launch policy alone.
     let checked = server.dir.join("checked.fux");
     std::fs::write(&checked, "str shell list str /no/such/check-shell end set").map_err(e)?;
     server.ok(&["str", &checked.to_string_lossy(), "str", "config", "check"])?;
@@ -230,7 +230,32 @@ fn launch_preferences_apply_only_to_new_requests() -> Outcome {
 fn an_imported_failure_keeps_the_whole_bundled_state() -> Outcome {
     let server = Server::start("str wait-seconds 0 set")?;
     let directory = server.dir.join("config/fux");
+    let mut a = server.attach(8, 80)?;
+    let mut b = server.attach(8, 80)?;
+    a.wait_for("$")?;
+    b.wait_for("$")?;
+    let before = server.ok(&["ls"])?;
     std::fs::write(directory.join("config.fux"), "require shared.fux").map_err(e)?;
+    std::fs::write(
+        directory.join("shared.fux"),
+        "str wait-seconds 2 set str titles true set str history-bytes 0 set",
+    )
+    .map_err(e)?;
+    let configured = fux::script::run_file(&directory.join("config.fux")).map_err(e)?;
+    assert_eq!(configured.preferences.wait.seconds(), 2);
+    assert!(configured.preferences.titles);
+    server.ok(&[
+        "str",
+        &directory.join("config.fux").to_string_lossy(),
+        "str",
+        "config",
+        "check",
+    ])?;
+    assert_eq!(server.ok(&["ls"])?, before);
+    a.pump()?;
+    b.pump()?;
+    assert!(!String::from_utf8_lossy(&a.painted).contains("\x1b]2;"));
+    assert!(!String::from_utf8_lossy(&b.painted).contains("\x1b]2;"));
     std::fs::write(
         directory.join("shared.fux"),
         "str C-a prefix str wait-seconds 0 set str titles true set \
@@ -270,8 +295,8 @@ fn an_imported_failure_keeps_the_whole_bundled_state() -> Outcome {
         "wait",
     ])?;
     assert_eq!(
-        probe.status, 124,
-        "a failed config forwarded its bundled wait: {}",
+        probe.status, 0,
+        "a failed config changed another invocation's wait: {}",
         probe.stderr
     );
     Ok(())
@@ -574,8 +599,8 @@ fn a_setting_preserves_other_invocations_preferences() -> Outcome {
         "wait",
     ])?;
     assert_eq!(
-        result.status, 124,
-        "bell changed the wait limit: {}",
+        result.status, 0,
+        "another invocation changed the wait limit: {}",
         result.stderr
     );
     Ok(())
@@ -637,7 +662,7 @@ fn a_program_uses_preferences_before_its_next_operation() -> Outcome {
     Ok(())
 }
 
-/// A new small pane reveals the server's current shared history setting.
+/// A new small pane uses its invocation's history budget.
 fn history_rows(server: &Server) -> Result<usize, String> {
     let answer = server.ok(&[
         "agent-opts",
@@ -695,7 +720,7 @@ fn launch_defaults_do_not_change_either_selected_server() -> Outcome {
 }
 
 #[test]
-fn a_failed_settings_checkpoint_keeps_the_selected_server() -> Outcome {
+fn local_settings_allow_selecting_a_server_without_contacting_the_previous_one() -> Outcome {
     let server = Server::start("")?;
     let path = server.dir.join("select.fux");
     std::fs::write(
@@ -711,14 +736,13 @@ fn a_failed_settings_checkpoint_keeps_the_selected_server() -> Outcome {
         &["--file", &path.to_string_lossy()],
         &[("FUX_SOCKET", missing.to_str().ok_or("a text socket path")?)],
     )?;
-    assert_eq!(out.status, 1, "selection changed after forwarding failed");
-    assert!(out.stderr.contains("no_server:"), "{}", out.stderr);
-    assert!(out.stderr.contains("missing.sock"), "{}", out.stderr);
+    assert_eq!(out.status, 0, "{}", out.stderr);
+    assert!(out.stdout.starts_with("+1 main"), "{}", out.stdout);
     Ok(())
 }
 
 #[test]
-fn settings_use_the_programs_addressing_before_a_request_fails() -> Outcome {
+fn a_failed_addressed_request_keeps_creation_defaults_local() -> Outcome {
     let server = Server::start("")?;
     let other = Server::start("")?;
     let path = server.dir.join("addressing.fux");
@@ -748,7 +772,7 @@ fn settings_use_the_programs_addressing_before_a_request_fails() -> Outcome {
 }
 
 #[test]
-fn pending_settings_finish_before_force_killing_the_server() -> Outcome {
+fn local_settings_do_not_prevent_force_killing_the_server() -> Outcome {
     let server = Server::start("")?;
     server.ok(&["str", "bell", "false", "set", "force-kill-server"])?;
     Ok(())

@@ -825,9 +825,7 @@ fn pane(loads: &[Load], baseline: bool) -> Result<Done, String> {
 /// server does for a keystroke. The baseline types nothing and paints
 /// nothing: the run is the server's whole work for the keys.
 fn keystroke(recordings: &[Recording], baseline: bool, keys: usize) -> Result<Done, String> {
-    let config = fux::config::Config::default();
-    let mut s =
-        fux::session::Session::new(config, "/nonexistent/fux.sock".into(), false, server_run()?);
+    let mut s = fux::session::Session::new("/nonexistent/fux.sock".into(), false, server_run()?);
     // The client attaching starts its first shell, on its screen.
     let attach = fux::protocol::Attach {
         initial: Some(initial()?),
@@ -906,9 +904,7 @@ fn paint(
     baseline: bool,
     total: usize,
 ) -> Result<Done, String> {
-    let config = fux::config::Config::default();
-    let mut s =
-        fux::session::Session::new(config, "/nonexistent/fux.sock".into(), false, server_run()?);
+    let mut s = fux::session::Session::new("/nonexistent/fux.sock".into(), false, server_run()?);
     let first = recordings.first().ok_or("no recordings")?;
     // The bar takes a row: the pane is the recording's size.
     let size = fux_vt::Size::new(first.rows.saturating_add(1), first.cols);
@@ -1128,9 +1124,7 @@ fn initial() -> Result<fux::command::InitialWorkspace, String> {
 
 /// A session of `panes` panes, with output supplied by the workload.
 fn session(panes: usize) -> Result<fux::session::Session, String> {
-    let config = fux::config::Config::default();
-    let mut s =
-        fux::session::Session::new(config, "/nonexistent/fux.sock".into(), false, server_run()?);
+    let mut s = fux::session::Session::new("/nonexistent/fux.sock".into(), false, server_run()?);
     s.start(
         fux_vt::Size::new(24, 80).map_err(|e| e.to_string())?,
         &initial()?,
@@ -1225,9 +1219,7 @@ fn library(baseline: bool) -> Result<Done, String> {
 /// Setup is also in the baseline: the measured difference is construction
 /// and wire encoding of one capture, including dropping its allocations.
 fn capture_history(baseline: bool, history: usize) -> Result<Done, String> {
-    let config = fux::config::Config::default();
-    let mut s =
-        fux::session::Session::new(config, "/nonexistent/fux.sock".into(), false, server_run()?);
+    let mut s = fux::session::Session::new("/nonexistent/fux.sock".into(), false, server_run()?);
     s.start(
         fux_vt::Size::new(40, 120).map_err(|e| e.to_string())?,
         &fux::command::InitialWorkspace {

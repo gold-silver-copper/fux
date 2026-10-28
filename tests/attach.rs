@@ -1206,7 +1206,7 @@ fn foreground(stat: &str) -> bool {
 }
 
 #[test]
-fn an_explicit_headless_attach_reports_settings_forwarding_failure() -> Outcome {
+fn an_oversized_local_shell_is_refused_before_headless_attach() -> Outcome {
     let server = Server::start("")?;
     let payload = server.dir.join("oversize-argument");
     std::fs::write(&payload, vec![b'x'; fux::protocol::MAX_FRAME]).map_err(e)?;
@@ -1232,27 +1232,13 @@ fn an_explicit_headless_attach_reports_settings_forwarding_failure() -> Outcome 
             "attach",
         ],
     )?;
-    eventually("a refused bridge or headless admission", || {
-        terminal.pump();
-        if terminal.child.try_wait().map_err(e)?.is_some() {
-            return Ok(true);
-        }
-        if server
-            .ok(&["ls"])?
-            .lines()
-            .any(|line| line.starts_with("client c1 "))
-        {
-            server.ok(&["str", "c1", "client", "detach"])?;
-            return Ok(true);
-        }
-        Ok(false)
-    })?;
     let status = terminal.wait_exit()?;
     let output = String::from_utf8_lossy(&terminal.output);
-    assert!(!status.success(), "forwarding failure was lost: {output}");
+    assert!(!status.success(), "oversized shell was accepted: {output}");
     assert!(
         output.contains("frame"),
         "the original failure was lost: {output}"
     );
+    assert!(!server.ok(&["ls"])?.contains("client "));
     Ok(())
 }

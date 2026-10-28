@@ -385,7 +385,7 @@ fn cli(rng: &mut Rng, world: &World, clients: &[String]) -> Vec<String> {
         27 => match rng.below(3) {
             0 => format!("str {} pane 0 history-budget", pane(rng)),
             1 => format!("str {} pane 100000 history-budget", pane(rng)),
-            _ => "str buffers 4 set".into(),
+            _ => "buffers".into(),
         },
         28 => "dump".into(),
         29 => format!(

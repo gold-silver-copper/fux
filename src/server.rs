@@ -619,19 +619,13 @@ pub fn serve(socket: &SocketPath) -> Result<(), Error> {
         log!("adopting orphans: {errno}");
     }
     let stops = fuxix::signal::Pipe::new(&crate::STOPS).map_err(|e| Error::Setup(e.into()))?;
-    // Remaining consumers keep startup policy until requests carry it.
-    // Committed client state supplies one temporary settings batch.
+    // Pane creation and observation requests supply their own policy.
     let run = crate::command::Run::now().ok_or_else(|| {
         Error::Setup(std::io::Error::other(
             "the system clock is before 1970 or past 2554: this run cannot be told from another",
         ))
     })?;
-    let session = Session::new(
-        crate::config::Config::default(),
-        socket.path().to_owned(),
-        true,
-        run,
-    );
+    let session = Session::new(socket.path().to_owned(), true, run);
     // Last of what can fail: once it listens, a server that started
     // with it finds it there (`socket::bind_socket`).
     let listening = Listening::open(socket)?;

@@ -96,7 +96,7 @@ pub struct Watch {
     run: Run,
     deadline: Instant,
     /// How long it waits for a change before it answers a timeout (later
-    /// while a pane is mid-frame): its own timeout, else the server's.
+    /// while a pane is mid-frame), supplied by the request.
     limit: Duration,
 }
 

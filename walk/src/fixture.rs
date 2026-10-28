@@ -175,7 +175,7 @@ impl Fixture {
         std::fs::write(&config, CONFIG_VALID).map_err(|e| e.to_string())?;
         let socket = dir.join("s").join("fux.sock");
         let log = std::fs::File::create(dir.join("server.log")).map_err(|e| e.to_string())?;
-        // As a client starts one; its settings come with the first client.
+        // Start empty; client requests supply pane and view policy.
         let mut server = Command::new(fux);
         server
             .arg(fux::SERVE)

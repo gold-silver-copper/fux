@@ -332,7 +332,6 @@ mod tests {
                 .join("/")
         ));
         let mut session = super::Session::new(
-            crate::config::Config::default(),
             "/nonexistent/fux.sock".into(),
             false,
             crate::command::Run::now().ok_or("clock")?,

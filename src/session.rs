@@ -7,7 +7,6 @@ use crate::command::{
     self, AnyRef, ClientAction, Command, Extent, Input, Kind, Members, Mouse, MoveTo, PanePick,
     PaneResize, Pick, Request, Resized, Sibling, SwapWith, WsRef,
 };
-use crate::config::Config;
 use crate::copy::MAX_CELLS;
 use crate::id::{BufferId, ClientId, Ids, PaneId, TabId, WsId};
 use crate::json::{Fields, Json};
@@ -403,7 +402,6 @@ pub struct Session {
     /// them, which events read.
     pub parts: Parts,
     pub views: BTreeMap<ClientId, View>,
-    pub config: Config,
     /// Paste buffers, newest first.
     pub buffers: VecDeque<(BufferId, String)>,
     /// The socket a started pane is told to reach its server by, if panes
@@ -514,11 +512,10 @@ fn failure(error: Error, origin: &Origin, session: &Session) -> Reply {
 }
 
 impl Session {
-    pub fn new(config: Config, socket: PathBuf, launch: bool, run: command::Run) -> Self {
+    pub fn new(socket: PathBuf, launch: bool, run: command::Run) -> Self {
         Self {
             parts: Parts::default(),
             views: BTreeMap::new(),
-            config,
             buffers: VecDeque::new(),
             launch: launch.then_some(socket),
             exe: std::env::current_exe().ok(),
@@ -2166,7 +2163,7 @@ impl Session {
             }
         }
         self.buffers.push_front((id, text));
-        self.buffers.truncate(self.config.buffers.get());
+        self.buffers.truncate(BUFFER_LIMIT);
         Ok(fits)
     }
 
@@ -2248,7 +2245,7 @@ impl Session {
         {
             return Err(fail(Raise::NoPane, "it holds no pane to wait on"));
         }
-        let limit = wait.timeout.unwrap_or(self.config.wait).duration();
+        let limit = wait.timeout.duration();
         Ok(self.answered(Waiting::new(watches, self.run, now, limit), now))
     }
 
@@ -2497,13 +2494,6 @@ impl Session {
             }
             &Command::HistoryBudget { target, bytes } => {
                 self.pane_mut(target)?.set_history_bytes(bytes.get());
-                Ok(Reply::default())
-            }
-            Command::Set(settings) => {
-                // The remaining shared wait and buffer policy commits together.
-                for setting in settings {
-                    self.config.apply(setting.clone());
-                }
                 Ok(Reply::default())
             }
             Command::Resolve { text, kind } => Ok(found(self.resolve(text, *kind, here)?)),
@@ -3385,6 +3375,9 @@ fn drain_terminal(
 /// The most bytes a name holds.
 pub(crate) const NAME_MAX: usize = 256;
 
+/// The fixed number of shared paste buffers retained.
+pub const BUFFER_LIMIT: usize = 16;
+
 /// Characters kept in a paste buffer's metadata preview.
 pub(crate) const PREVIEW_MAX: usize = 50;
 
@@ -3546,23 +3539,21 @@ impl crate::script::Asks for InProcess<'_> {
     }
 }
 
-/// What the other modules' tests share: a session started with the default
-/// config, a client attached, and a command line run in it.
+/// What the other modules' tests share: a session, a client attached,
+/// and a command line run in it.
 #[cfg(test)]
 pub(crate) mod testing {
     use super::{InProcess, Reply, Session};
     use crate::command::{Command, Request};
-    use crate::config::Config;
     use crate::id::ClientId;
 
-    /// A session of `config`, but for its shell, `/bin/sh` (each pane is
-    /// named after it), started at 80 by 24.
-    pub(crate) fn started(config: Config) -> Result<Session, String> {
+    /// A session with `/bin/sh`, started at 80 by 24.
+    pub(crate) fn started() -> Result<Session, String> {
         // One run for every session of the tests: two that did the same
         // list the same, their cursors too.
         static RUN: std::sync::OnceLock<Option<crate::command::Run>> = std::sync::OnceLock::new();
         let run = (*RUN.get_or_init(crate::command::Run::now)).ok_or("no clock")?;
-        let mut session = Session::new(config, "/nonexistent/fux.sock".into(), false, run);
+        let mut session = Session::new("/nonexistent/fux.sock".into(), false, run);
         let size = fux_vt::Size::new(24, 80).map_err(|e| e.to_string())?;
         let initial = crate::command::InitialWorkspace {
             options: crate::script::default_state()
@@ -3584,10 +3575,10 @@ pub(crate) mod testing {
         Ok(session)
     }
 
-    /// A session started with the default config, and a client of `rows`
+    /// A session with a client of `rows`
     /// by `cols` attached.
     pub(crate) fn attached(rows: u16, cols: u16) -> Result<(Session, ClientId), String> {
-        let mut session = started(Config::default())?;
+        let mut session = started()?;
         let client = session
             .attach(rows, cols, None)
             .map_err(|e| e.to_string())?;
@@ -3643,6 +3634,12 @@ pub(crate) mod testing {
             Err(failed) => return (out, Err(failed)),
         };
         let mut keymap = session.test_keymap.clone();
+        if let Some(p) = client
+            .and_then(|c| session.views.get(&c))
+            .map(|v| v.presentation)
+        {
+            keymap.preferences.presentation(p);
+        }
         let context = crate::protocol::Context {
             client,
             cwd: std::env::current_dir().unwrap_or_default(),
@@ -3910,8 +3907,7 @@ mod tests {
 
     #[test]
     fn retained_launches_and_dump_refuse_their_resource_limits() -> Result<(), String> {
-        let config = Config::default();
-        let mut s = started(config)?;
+        let mut s = started()?;
         let mut env = command::EnvPatch::default();
         env.push(
             "TEXT".into(),
@@ -3952,7 +3948,6 @@ mod tests {
     #[test]
     fn failed_attach_does_not_consume_a_client_id() -> Result<(), String> {
         let mut s = Session::new(
-            Config::default(),
             "/nonexistent/fux.sock".into(),
             false,
             command::Run::now().ok_or("clock")?,
@@ -4019,7 +4014,7 @@ mod tests {
 
     #[test]
     fn an_unknown_fux_path_is_not_taken_from_the_starter() -> Result<(), String> {
-        let mut s = started(Config::default())?;
+        let mut s = started()?;
         s.launch = Some("/nonexistent/fux.sock".into());
         s.exe = None;
         let launch = pane::Launch {
@@ -4051,7 +4046,7 @@ mod tests {
     #[test]
     fn callerless_resize_uses_the_smallest_screen_in_either_attach_order() -> Result<(), String> {
         for sizes in [[(20, 100), (30, 60)], [(30, 60), (20, 100)]] {
-            let mut s = started(Config::default())?;
+            let mut s = started()?;
             watch(&mut s, 3, 5)?;
             for (rows, cols) in sizes {
                 s.attach(rows, cols, None).map_err(|e| e.to_string())?;
@@ -4069,7 +4064,7 @@ mod tests {
     /// the test's input is the client's (`Screen::input`).
     #[test]
     fn a_watchers_paste_is_told_it_only_watches() -> Result<(), String> {
-        let mut s = started(Config::default())?;
+        let mut s = started()?;
         let c = watch(&mut s, 24, 80)?;
         s.input(c, b"\x1b[200~hi\x1b[201~");
         let said = s
@@ -4085,7 +4080,7 @@ mod tests {
     /// moment: its screen, too narrow to split, is not the tab's size.
     #[test]
     fn a_watcher_sizes_nothing_as_it_attaches() -> Result<(), String> {
-        let mut s = started(Config::default())?;
+        let mut s = started()?;
         watch(&mut s, 10, 3)?;
         let pane = s.parts.panes().get(&PaneId::of(1)).map(Pane::size);
         assert_eq!(pane, Some(sized(24, 80)?));
@@ -4096,7 +4091,7 @@ mod tests {
     /// and a split are applied to its panes.
     #[test]
     fn a_tab_only_watched_is_laid_out_on_its_size() -> Result<(), String> {
-        let mut s = started(Config::default())?;
+        let mut s = started()?;
         watch(&mut s, 30, 120)?;
         run(&mut s, "str @1 tab 100 10 resize")?;
         let size = |s: &Session, id| s.parts.panes().get(&PaneId::of(id)).map(Pane::size);
@@ -4108,7 +4103,7 @@ mod tests {
 
     #[test]
     fn buffer_reads_keep_every_byte() -> Result<(), String> {
-        let mut s = started(Config::default())?;
+        let mut s = started()?;
         for text in ["hello\n\n", "", "\n", "a\r\n\0界\n"] {
             s.copied(text.into(), &[]).map_err(|e| e.to_string())?;
             assert_eq!(
@@ -4122,7 +4117,7 @@ mod tests {
 
     #[test]
     fn buffer_ids_survive_copies_and_refuse_after_eviction() -> Result<(), String> {
-        let mut s = started(Config::default())?;
+        let mut s = started()?;
         s.copied("chosen\n\n".into(), &[])
             .map_err(|e| e.to_string())?;
         let id = s.buffers.front().ok_or("no copy")?.0;
@@ -4138,9 +4133,10 @@ mod tests {
                 .drain_input(),
             b"chosen\r\r"
         );
-        for _ in 0..s.config.buffers.get() {
+        for _ in 0..16 {
             s.copied("later".into(), &[]).map_err(|e| e.to_string())?;
         }
+        assert_eq!(s.buffers.len(), 16);
         for code in [
             format!("str {id} buffer"),
             format!("%1 str {id} paste-buffer"),
@@ -4159,10 +4155,10 @@ mod tests {
 
     #[test]
     fn buffer_ids_belong_to_one_server_run() -> Result<(), String> {
-        let mut s = started(Config::default())?;
+        let mut s = started()?;
         s.copied("old".into(), &[]).map_err(|e| e.to_string())?;
         let id = s.buffers.front().ok_or("no copy")?.0;
-        let mut other = started(Config::default())?;
+        let mut other = started()?;
         other.run = "0-0".parse().map_err(|()| "a run")?;
         other.copied("new".into(), &[]).map_err(|e| e.to_string())?;
         for code in [
@@ -4179,7 +4175,7 @@ mod tests {
 
     #[test]
     fn buffer_metadata_is_bounded_and_has_the_exact_length() -> Result<(), String> {
-        let mut s = started(Config::default())?;
+        let mut s = started()?;
         let text = std::iter::repeat_n("界\n", 100).collect::<String>();
         s.copied(text.clone(), &[]).map_err(|e| e.to_string())?;
         let id = s.buffers.front().ok_or("no copy")?.0;
@@ -4216,7 +4212,7 @@ mod tests {
 
     #[test]
     fn buffer_paste_keeps_its_native_size_and_atomic_admission() -> Result<(), String> {
-        let mut s = started(Config::default())?;
+        let mut s = started()?;
         // Larger than script input, but still admitted as one native paste.
         s.output(PaneId::of(1), b"\x1b[?2004h");
         let text = format!(
@@ -4253,7 +4249,7 @@ mod tests {
     /// A paste into a pane whose program exited is refused, as keys are.
     #[test]
     fn a_paste_into_an_exited_pane_is_refused() -> Result<(), String> {
-        let mut s = started(Config::default())?;
+        let mut s = started()?;
         run(&mut s, "agent-opts 80 24 size str /bin/cat program run")?;
         s.exited(PaneId::of(2), crate::process::Ended::Exited(3));
         s.copied("x".into(), &[]).map_err(|e| e.to_string())?;
@@ -4304,7 +4300,7 @@ mod tests {
     /// the respawn: none of it is lost with the old screen.
     #[test]
     fn a_respawn_reads_what_the_old_program_left() -> Result<(), String> {
-        let mut s = started(Config::default())?;
+        let mut s = started()?;
         run(&mut s, "agent-opts 80 24 size str /bin/cat program run")?;
         let id = PaneId::of(2);
         s.output(id, b"\x1b[?2026h\x1b]2;old\x07\x07");
@@ -4560,7 +4556,7 @@ mod tests {
     /// changed, not as an empty success.
     #[test]
     fn a_wait_in_process_answers_a_frame_whole() -> Result<(), String> {
-        let mut s = started(Config::default())?;
+        let mut s = started()?;
         let mut frame = b"\x1b[?2026h".to_vec();
         frame.extend(crate::pane::tests::spends_the_budget(24, 80));
         frame.extend_from_slice(b"DONE\x1b[?2026l");
@@ -4576,7 +4572,7 @@ mod tests {
     /// shown, its screen changed, not timed out.
     #[test]
     fn a_wait_in_process_sees_a_frame_released_before_its_time() -> Result<(), String> {
-        let mut s = started(Config::default())?;
+        let mut s = started()?;
         s.output(PaneId::of(1), b"\x1b[?2026hHELLO");
         let answer = output(&mut s, "%1 2 timeout wait")?;
         assert!(answer.ends_with(" screen\n"), "{answer}");
@@ -4706,7 +4702,7 @@ mod tests {
     /// read, and a cut said, only once another started.
     #[test]
     fn a_respawn_refused_reads_nothing_of_the_old_program() -> Result<(), String> {
-        let mut s = started(Config::default())?;
+        let mut s = started()?;
         run(&mut s, "agent-opts 80 24 size str /bin/cat program run")?;
         let id = PaneId::of(2);
         s.output(id, b"\x1b[?2026h\x1b]2;old\x07");
@@ -4764,7 +4760,7 @@ mod tests {
 
     #[test]
     fn a_replacements_caller_is_current_while_old_output_drains() -> Result<(), String> {
-        let mut s = started(Config::default())?;
+        let mut s = started()?;
         run(&mut s, "agent-opts 80 24 size str /bin/cat program run")?;
         let id = PaneId::of(2);
         let left: Vec<_> = std::iter::repeat_n(crate::pane::tests::spends_the_budget(24, 80), 4)
@@ -4823,7 +4819,8 @@ mod tests {
     /// `respawned`, and the answer is a version the pane has.
     #[test]
     fn a_respawn_reads_what_was_left_in_turns() -> Result<(), String> {
-        let mut s = started(Config::default())?;
+        let mut s = started()?;
+        run(&mut s, "str wait-seconds 0 set")?;
         run(
             &mut s,
             "agent-opts 80 24 size 4096 history-bytes false program-clipboard str /bin/cat program run",
@@ -4837,6 +4834,7 @@ mod tests {
         let Begun::Waiting(waiting) = s.begin(respawn_of(id, &[])?, &origin) else {
             return Err("answered before what was left was read".into());
         };
+        assert_eq!(waiting.due(), None);
         let Begun::Done(again) = s.begin(respawn_of(id, &[])?, &origin) else {
             return Err("a second respawn under way".into());
         };
@@ -4923,7 +4921,7 @@ mod tests {
     #[test]
     fn input_is_refused_while_respawning() -> Result<(), String> {
         for (kill, exiting) in [(true, None), (false, Some(Ended::Exited(0)))] {
-            let mut s = started(Config::default())?;
+            let mut s = started()?;
             run(&mut s, "agent-opts 80 24 size str /bin/cat program run")?;
             let id = PaneId::of(2);
             let argv = ["/bin/cat".to_owned()];
@@ -4969,7 +4967,7 @@ mod tests {
     /// respawn's, the one timer of its pane: no other reads in that round.
     #[test]
     fn a_held_frame_is_a_turn_of_the_respawn() -> Result<(), String> {
-        let mut s = started(Config::default())?;
+        let mut s = started()?;
         run(&mut s, "agent-opts 80 24 size str /bin/cat program run")?;
         let id = PaneId::of(2);
         s.output(id, b"\x1b[?2026hheld");
@@ -4988,7 +4986,7 @@ mod tests {
     /// that size once its new program takes over.
     #[test]
     fn a_resize_while_respawning_is_kept() -> Result<(), String> {
-        let mut s = started(Config::default())?;
+        let mut s = started()?;
         run(&mut s, "agent-opts 80 24 size str /bin/cat program run")?;
         let id = PaneId::of(2);
         s.output(id, &crate::pane::tests::spends_the_budget(24, 80));
@@ -5008,7 +5006,7 @@ mod tests {
     /// signalled, when it was no pane's.
     #[test]
     fn a_respawned_program_that_ends_first_is_told_exited() -> Result<(), String> {
-        let mut s = started(Config::default())?;
+        let mut s = started()?;
         run(&mut s, "agent-opts 80 24 size str /bin/cat program run")?;
         let id = PaneId::of(2);
         s.output(id, &crate::pane::tests::spends_the_budget(24, 80));
@@ -5287,7 +5285,7 @@ mod tests {
     /// exit is not told again before `respawned`.
     #[test]
     fn an_exit_told_is_not_told_again_at_a_respawn() -> Result<(), String> {
-        let mut s = started(Config::default())?;
+        let mut s = started()?;
         run(&mut s, "agent-opts 80 24 size str /bin/cat program run")?;
         let lines = told(&mut s, |s| {
             s.exited(PaneId::of(2), crate::process::Ended::Exited(3));
@@ -5302,7 +5300,7 @@ mod tests {
     /// before dying: the second end never drops the first one's kill.
     #[test]
     fn a_pane_respawned_twice_in_its_grace_kills_both() -> Result<(), String> {
-        let mut s = started(Config::default())?;
+        let mut s = started()?;
         run(&mut s, "agent-opts 80 24 size str /bin/cat program run")?;
         // A test's session starts no program: each is put in the pane.
         let argv = ["/bin/cat".to_owned()];
@@ -5327,7 +5325,7 @@ mod tests {
     /// list: one shape for one answer.
     #[test]
     fn json_of_several_panes_is_one_array() -> Result<(), Box<dyn std::error::Error>> {
-        let mut s = started(Config::default())?;
+        let mut s = started()?;
         run(&mut s, "%1 split")?;
         let alone = output(&mut s, "@1 str x text send-keys json")?;
         assert!(alone.starts_with(r#"[{"pane":"%1","#), "{alone}");
@@ -5344,7 +5342,7 @@ mod tests {
     /// spend a budget.
     #[test]
     fn a_program_exits_once_its_output_is_read() -> Result<(), String> {
-        let mut s = started(Config::default())?;
+        let mut s = started()?;
         run(&mut s, "agent-opts 80 24 size str /bin/true program run")?;
         let id = PaneId::of(2);
         // /bin/sh, which macOS has where it has no /bin/true.
@@ -5446,7 +5444,7 @@ mod tests {
     /// before the exit is told: its last screen is whole.
     #[test]
     fn a_frame_held_at_exit_is_on_the_last_screen() -> Result<(), String> {
-        let mut s = started(Config::default())?;
+        let mut s = started()?;
         run(&mut s, "agent-opts 80 24 size str /bin/true program run")?;
         let id = PaneId::of(2);
         s.output(id, b"\x1b[?2026hHELD");
@@ -5466,7 +5464,7 @@ mod tests {
     /// read too before the exit is told.
     #[test]
     fn a_frame_begun_after_the_exit_is_on_the_last_screen() -> Result<(), String> {
-        let mut s = started(Config::default())?;
+        let mut s = started()?;
         run(&mut s, "agent-opts 80 24 size str /bin/true program run")?;
         let id = PaneId::of(2);
         let mut out: Vec<u8> = std::iter::repeat_n(b"X\x1b[65535b", 2000)
@@ -5506,7 +5504,7 @@ mod tests {
     /// pane that has no room for them refuses them before any is sent.
     #[test]
     fn keys_for_several_panes_go_to_all_or_none() -> Result<(), String> {
-        let mut s = started(Config::default())?;
+        let mut s = started()?;
         run(&mut s, "%1 split drop")?;
         let mut second = s.parts.pane_mut(PaneId::of(2)).ok_or("no %2")?;
         // Its program reads nothing, and its queue is full.
@@ -5534,7 +5532,7 @@ mod tests {
     /// pane read more, none is sent, refused `stale`.
     #[test]
     fn keys_at_a_version_go_only_while_the_pane_is_at_it() -> Result<(), String> {
-        let mut s = started(Config::default())?;
+        let mut s = started()?;
         let queued =
             |s: &mut Session| (s.parts.pane_mut(PaneId::of(1))).map(|mut p| p.drain_input());
         run(&mut s, "%1 capture expect str x text send-keys")?;
@@ -5696,7 +5694,7 @@ mod tests {
 
     #[test]
     fn attach_supplies_presentation_before_any_program_output() -> Result<(), String> {
-        let mut s = started(Config::default())?;
+        let mut s = started()?;
         let presentation = crate::view::Presentation {
             bell: true,
             titles: true,
@@ -5721,6 +5719,32 @@ mod tests {
         );
         assert!(s.outbox.iter().any(|out| matches!(out, Outgoing::To(c, ToAttached::Paint(bytes)) if *c == client && bytes.as_ref() == crate::outer::BELL)));
         assert_eq!(s.before_paint(client), b"\x1b]2;initial\x1b\\");
+        Ok(())
+    }
+
+    #[test]
+    fn in_process_clients_keep_their_own_presentation() -> Result<(), String> {
+        let (mut s, a) = attached(8, 40)?;
+        let b = s.attach(8, 40, None).map_err(|e| e.to_string())?;
+        output_as(
+            &mut s,
+            Some(a),
+            "str titles true set str bell false set str terminal-clipboard false set",
+        )?;
+        output_as(&mut s, Some(b), "me zoom")?;
+        output_as(&mut s, Some(a), "me zoom")?;
+        for (client, titles, bell, terminal_clipboard) in
+            [(a, true, false, false), (b, false, true, true)]
+        {
+            assert_eq!(
+                s.views.get(&client).map(|v| v.presentation),
+                Some(crate::view::Presentation {
+                    titles,
+                    bell,
+                    terminal_clipboard
+                })
+            );
+        }
         Ok(())
     }
 
@@ -5890,12 +5914,7 @@ mod tests {
     #[test]
     fn a_pane_is_made_only_at_a_size_known() -> Result<(), String> {
         let run_id = crate::command::Run::now().ok_or("no clock")?;
-        let mut s = Session::new(
-            Config::default(),
-            "/nonexistent/fux.sock".into(),
-            false,
-            run_id,
-        );
+        let mut s = Session::new("/nonexistent/fux.sock".into(), false, run_id);
         s.test_keymap = crate::script::default_state()
             .map_err(|e| e.to_string())?
             .draft();
@@ -6043,13 +6062,14 @@ mod tests {
     #[test]
     fn a_wait_begun_answers_the_change_and_the_close_after_it()
     -> Result<(), Box<dyn std::error::Error>> {
-        let mut s = started(Config::default())?;
+        let mut s = started()?;
         run(&mut s, "str %1 pane horizontal split")?;
         let origin = Origin::Cli(Caller::default());
+        let timeout = crate::config::Limit::read(30)?;
         let wait = |target| {
             Request::Wait(command::Wait {
                 since: command::Since::Now(target),
-                timeout: None,
+                timeout,
             })
         };
         let ws = s
@@ -6080,7 +6100,7 @@ mod tests {
     /// wait on it waits again from the version it is still at.
     #[test]
     fn a_failed_wait_keeps_its_answer() -> Result<(), String> {
-        let mut s = started(Config::default())?;
+        let mut s = started()?;
         let caught = "str timeout try %1 1 timeout wait catch drop end";
         let json = output(&mut s, &format!("{caught} json"))?;
         assert!(
@@ -6146,7 +6166,7 @@ mod tests {
     /// loop compose without losing the pane or its version.
     #[test]
     fn capture_and_quiet_keep_the_pane_recipe() -> Result<(), String> {
-        let mut s = started(Config::default())?;
+        let mut s = started()?;
         let json = output(
             &mut s,
             "%1 capture expect str x text send-keys let sent \
@@ -6164,7 +6184,7 @@ mod tests {
     /// wants a pane finds that pane gone, rather than refusing the kind.
     #[test]
     fn a_closed_panes_answer_names_its_pane() -> Result<(), String> {
-        let mut s = started(Config::default())?;
+        let mut s = started()?;
         let version = output(&mut s, "%1 vertical split")?;
         run(&mut s, "%2 kill")?;
         let caught = format!(
@@ -6194,7 +6214,7 @@ mod tests {
     /// waits for the frame, never says it is unchanged.
     #[test]
     fn a_version_names_its_pane_and_its_server_run() -> Result<(), Box<dyn std::error::Error>> {
-        let mut s = started(Config::default())?;
+        let mut s = started()?;
         run(&mut s, "str %1 pane horizontal split")?;
         let failed = |s: &mut Session, code: &str| output(s, code).err().unwrap_or_default();
         let of = |s: &Session, pane| s.pane(PaneId::of(pane)).map(|p| p.version(s.run));
@@ -6240,7 +6260,7 @@ mod tests {
         s.output(PaneId::of(1), &frame);
         let wait = Request::Wait(command::Wait {
             since: command::Since::Version(since),
-            timeout: crate::config::Limit::secs(0),
+            timeout: crate::config::Limit::read(0)?,
         });
         let Begun::Waiting(waiting) = s.begin(wait, &Origin::Cli(Caller::default())) else {
             return Err("a wait mid-frame answered at once".into());
@@ -6261,7 +6281,7 @@ mod tests {
     #[test]
     fn workspace_names_stay_unique_and_failures_use_no_ids()
     -> Result<(), Box<dyn std::error::Error>> {
-        let mut s = started(Config::default())?;
+        let mut s = started()?;
         assert!(run(&mut s, "opts 80 24 size str +1 name new-workspace").is_err());
         assert_eq!(
             output(&mut s, "opts 80 24 size str workspace-3 name new-workspace")?,
@@ -6442,7 +6462,7 @@ mod tests {
     #[test]
     fn output_that_drops_a_copy_modes_rows_ends_it() -> Result<(), Box<dyn std::error::Error>> {
         // Two rows of a cell or none, never three: 24 bytes a row, 8 a cell.
-        let mut s = started(Config::default())?;
+        let mut s = started()?;
         run(&mut s, "%1 64 history-budget")?;
         let client = s.attach(6, 20, None)?;
         s.output(PaneId::of(1), b"a\r\nb\r\nc\r\nd\r\ne\r\nf\r\n");
@@ -6469,7 +6489,7 @@ mod tests {
     fn copy_mode_ends_when_sizing_its_pane_drops_its_rows() -> Result<(), Box<dyn std::error::Error>>
     {
         // Two rows of a cell or none, never three: 24 bytes a row, 8 a cell.
-        let mut s = started(Config::default())?;
+        let mut s = started()?;
         run(&mut s, "%1 64 history-budget")?;
         let client = s.attach(6, 20, None)?;
         s.output(PaneId::of(1), b"a\r\nb\r\nc\r\nd\r\ne\r\nf\r\n");
@@ -6596,7 +6616,7 @@ mod tests {
     /// A container has its own fields and never stands for its only member.
     #[test]
     fn lookups_do_not_depend_on_layout_shape() -> Result<(), String> {
-        let mut s = started(Config::default())?;
+        let mut s = started()?;
         for split in [false, true] {
             if split {
                 run(&mut s, "%1 split drop")?;
@@ -6612,7 +6632,7 @@ mod tests {
     /// A launch without a workspace is refused before anything is made.
     #[test]
     fn run_requires_an_explicit_workspace() -> Result<(), String> {
-        let mut s = started(Config::default())?;
+        let mut s = started()?;
         let ids = s.ids.clone();
         let error = output(&mut s, "opts 80 24 size str /bin/cat program run")
             .err()
@@ -6631,7 +6651,7 @@ mod tests {
     /// renaming another tab never changes it or an unnamed neighbour.
     #[test]
     fn names_are_not_reassigned_to_other_tabs() -> Result<(), String> {
-        let mut s = started(Config::default())?;
+        let mut s = started()?;
         run(&mut s, "opts 80 24 size +1 in new-tab drop")?;
         run(&mut s, "@1 str tab-2 rename")?;
         assert_eq!(output(&mut s, "@2 str name get")?, "null\n");
@@ -6813,7 +6833,7 @@ mod tests {
     /// changed and changed back is not lost.
     #[test]
     fn a_rename_and_its_undo_are_both_told() -> Result<(), String> {
-        let mut s = started(Config::default())?;
+        let mut s = started()?;
         let mut ran = Ok(());
         let lines = told(&mut s, |s| {
             ran = run(
@@ -6838,7 +6858,7 @@ mod tests {
     /// and then renamed.
     #[test]
     fn a_tab_made_with_a_name_is_told_made_with_it() -> Result<(), String> {
-        let mut s = started(Config::default())?;
+        let mut s = started()?;
         let mut ran = Ok(());
         let lines = told(&mut s, |s| {
             let tab = "opts 80 24 size str t name str +1 workspace in new-tab drop";
@@ -6861,7 +6881,7 @@ mod tests {
     /// not by where they happened.
     #[test]
     fn events_are_told_in_the_order_they_happened() -> Result<(), String> {
-        let mut s = started(Config::default())?;
+        let mut s = started()?;
         run(&mut s, "%1 split drop")?;
         let mut ran = Ok(());
         let lines = told(&mut s, |s| {
@@ -6886,7 +6906,7 @@ mod tests {
     /// (and the pane that takes its room).
     #[test]
     fn a_shell_panes_exit_is_told_before_its_close() -> Result<(), String> {
-        let mut s = started(Config::default())?;
+        let mut s = started()?;
         run(&mut s, "%1 split drop")?;
         let lines = told(&mut s, |s| s.exited(PaneId::of(2), Ended::Signalled(9)));
         let said = concat!(
@@ -6905,7 +6925,7 @@ mod tests {
     /// before its exit is told: its bell and title are not lost.
     #[test]
     fn a_shells_last_output_is_told_before_its_exit() -> Result<(), String> {
-        let mut s = started(Config::default())?;
+        let mut s = started()?;
         run(&mut s, "%1 split drop")?;
         let lines = told(&mut s, |s| {
             s.output(PaneId::of(2), b"\x1b[?2026h\x07\x1b]2;bye\x07");
@@ -6928,7 +6948,7 @@ mod tests {
     /// A dump names only tabs given a name, regardless of their order.
     #[test]
     fn a_dump_names_only_the_tabs_given_a_name() -> Result<(), String> {
-        let mut s = started(Config::default())?;
+        let mut s = started()?;
         let tab = "opts 80 24 size str +1 workspace in new-tab drop";
         run(&mut s, &format!("{tab} {tab} str @2 tab kill"))?;
         run(&mut s, &format!("{tab} str @4 tab str given rename"))?;
@@ -6942,7 +6962,7 @@ mod tests {
     /// and never promotes a label to a name.
     #[test]
     fn a_dump_preserves_given_and_absent_names() -> Result<(), String> {
-        let mut source = started(Config::default())?;
+        let mut source = started()?;
         run(
             &mut source,
             "+1 str workspace-2 rename @1 str main rename %1 str sh rename",
@@ -6955,7 +6975,7 @@ mod tests {
         run(&mut source, "str shell list str /bin/other end set")?;
         let dump = source.dump_layout(None).map_err(|e| e.to_string())?;
         assert!(!dump.contains("str other rename"), "{dump}");
-        let mut again = started(Config::default())?;
+        let mut again = started()?;
         run(&mut again, &dump).map_err(|error| format!("{error}\n{dump}"))?;
         let names = |s: &Session| {
             s.parts
@@ -6993,7 +7013,7 @@ mod tests {
     /// A shell with no readable current directory keeps its saved launch cwd.
     #[test]
     fn a_dump_keeps_the_saved_shell_directory() -> Result<(), String> {
-        let s = started(Config::default())?;
+        let s = started()?;
         let dump = s.dump_layout(None).map_err(|e| e.to_string())?;
         let cwd = std::env::current_dir().map_err(|e| e.to_string())?;
         assert!(
@@ -7019,7 +7039,7 @@ mod tests {
         let dir = (fuxix::file::scratch()?.join(format!("fux-dump-{}", std::process::id())))
             .join(std::ffi::OsStr::from_bytes(b"caf\xe9"));
         std::fs::create_dir_all(&dir)?;
-        let mut s = started(Config::default())?;
+        let mut s = started()?;
         let program = Command::Run {
             options: crate::script::default_state()
                 .map_err(|e| e.to_string())?
@@ -7040,7 +7060,7 @@ mod tests {
             .lines()
             .any(|l| !l.starts_with('#') && l.contains("caf"));
         assert!(told && !written, "{dump}");
-        let mut again = started(Config::default())?;
+        let mut again = started()?;
         run(&mut again, &dump)?;
         assert_eq!(again.parts.panes().len(), 3, "{dump}");
         Ok(())
@@ -7053,7 +7073,7 @@ mod tests {
         let (mut s, _) = attached(11, 40)?;
         run(&mut s, "opts 60 20 size str +1 workspace in new-tab drop")?;
         let dump = s.dump_layout(None).map_err(|e| e.to_string())?;
-        let mut again = started(Config::default())?;
+        let mut again = started()?;
         run(&mut again, &dump)?;
         let tabs = (again.parts.workspaces().iter()).flat_map(|w| w.tabs());
         let fits: Vec<_> = tabs.map(|t| matches!(t.fit(), Fit::Clients(_))).collect();
@@ -7065,9 +7085,9 @@ mod tests {
     /// clients takes, is made again from its dump.
     #[test]
     fn a_dump_makes_a_tab_as_big_as_a_screen_again() -> Result<(), String> {
-        let mut s = started(Config::default())?;
+        let mut s = started()?;
         run(&mut s, "opts 600 40 size str +1 workspace in new-tab drop")?;
-        let mut again = started(Config::default())?;
+        let mut again = started()?;
         run(&mut again, &s.dump_layout(None).map_err(|e| e.to_string())?)?;
         let tabs = (again.parts.workspaces().iter()).flat_map(|w| w.tabs());
         let mut sizes = tabs.map(|t| t.fit().size());
@@ -7086,7 +7106,7 @@ mod tests {
         run(&mut s, "str c1 client %1 focus-pane str c1 client zoom")?;
         let replays = |s: &Session| {
             let dump = s.dump_layout(None).map_err(|e| e.to_string())?;
-            let mut again = started(Config::default())?;
+            let mut again = started()?;
             run(&mut again, &dump).map_err(|e| format!("{e}\n{dump}"))?;
             Ok::<_, String>(again.parts.panes().len())
         };
@@ -7115,7 +7135,7 @@ mod tests {
         let dump = s
             .dump_layout(Some(AnyRef::Tab(tab)))
             .map_err(|e| e.to_string())?;
-        let mut again = started(Config::default())?;
+        let mut again = started()?;
         run(&mut again, &dump).map_err(|e| format!("{e}\n{dump}"))?;
         let made = (again.parts.workspaces().iter())
             .flat_map(|w| w.tabs())
@@ -7175,7 +7195,7 @@ mod tests {
     /// columns, each split's nearest to its shares.
     #[test]
     fn a_dump_makes_its_panes_again_where_they_were() -> Result<(), String> {
-        let mut s = started(Config::default())?;
+        let mut s = started()?;
         let tab = "opts 100 10 size str +1 workspace in new-tab drop";
         let splits = "%2 80 18 shares split drop %3 10 8 shares split drop";
         run(&mut s, &format!("{tab} {splits}"))?;
@@ -7190,7 +7210,7 @@ mod tests {
     /// not resized to it after its program starts.
     #[test]
     fn a_split_with_shares_starts_at_its_share() -> Result<(), String> {
-        let mut s = started(Config::default())?;
+        let mut s = started()?;
         run(&mut s, "opts 100 10 size str +1 workspace in new-tab drop")?;
         let lines = told(&mut s, |s| {
             let _ = run(s, "%2 80 18 shares split drop");
@@ -7208,7 +7228,7 @@ mod tests {
     /// that client's screen, not the size given for while none shows it.
     #[test]
     fn a_pane_starts_at_the_size_its_screens_give_it() -> Result<(), String> {
-        let mut s = started(Config::default())?;
+        let mut s = started()?;
         let wide = s.attach(11, 101, None).map_err(|e| e.to_string())?;
         s.attach(11, 81, None).map_err(|e| e.to_string())?;
         let size = |s: &Session, id| s.parts.panes().get(&PaneId::of(id)).map(Pane::size);
@@ -7240,7 +7260,7 @@ mod tests {
     /// hide one.
     #[test]
     fn a_screen_with_no_room_sizes_no_pane() -> Result<(), String> {
-        let mut s = started(Config::default())?;
+        let mut s = started()?;
         let small = s.attach(5, 6, None).map_err(|e| e.to_string())?;
         // A client of one row has no room: its tab, which the other
         // client's screen sizes, sizes the tab it makes.
@@ -7314,13 +7334,13 @@ mod tests {
         let widths = |s: &Session| rects(s, tab).iter().map(Rect::w).collect::<Vec<u16>>();
         let made = "opts 101 10 size str +1 workspace in new-tab drop";
         for halved in ["", "1 1 shares"] {
-            let mut s = started(Config::default())?;
+            let mut s = started()?;
             let split = format!("%2 {halved} split drop %3 2 1 shares split drop");
             run(&mut s, &format!("{made} {split}"))?;
             assert_eq!(widths(&s), [50, 33, 16], "{halved}");
             assert_eq!(replayed(&s, tab)?, rects(&s, tab));
         }
-        let mut s = started(Config::default())?;
+        let mut s = started()?;
         run(&mut s, &format!("{made} %2 4294967294 1 shares split drop"))?;
         for split in [
             "%3 split drop",
@@ -7336,7 +7356,7 @@ mod tests {
     /// it was, at every size.
     #[test]
     fn every_layout_change_dumps_as_it_is() -> Result<(), String> {
-        let mut s = started(Config::default())?;
+        let mut s = started()?;
         let made = "opts 100 30 size str +1 workspace in new-tab drop \
                     opts 100 30 size str +1 workspace in new-tab drop";
         run(&mut s, made)?;
@@ -7365,7 +7385,7 @@ mod tests {
             let dump = s
                 .dump_layout(Some(AnyRef::Tab(tab)))
                 .map_err(|e| e.to_string())?;
-            let mut again = started(Config::default())?;
+            let mut again = started()?;
             run(&mut again, &dump).map_err(|e| format!("{change}: {e}\n{dump}"))?;
             let made = (again.parts.workspaces().iter())
                 .flat_map(|w| w.tabs())
@@ -7391,7 +7411,7 @@ mod tests {
     /// split there: it would be hidden, and its dump not made again.
     #[test]
     fn a_pane_is_not_moved_where_it_would_be_hidden() -> Result<(), String> {
-        let mut s = started(Config::default())?;
+        let mut s = started()?;
         let split = "opts 5 4 size str +1 workspace in new-tab drop %2 split drop";
         run(&mut s, split)?;
         let refused = run(&mut s, "%1 str @2 tab move-to").err();
