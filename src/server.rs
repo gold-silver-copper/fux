@@ -37,8 +37,10 @@ const PAINT: Duration = Duration::from_millis(16);
 /// `PAINT`. A program's output in a few bursts, as a screen redrawn is,
 /// shows when it ends; a flood, never quiet so long, keeps to `PAINT`.
 const QUIET: Duration = Duration::from_millis(1);
-/// A pane's read shorter than this is taken for all its terminal had: the
-/// next is left to the poll.
+/// A read shorter than this ends the pane's turn, leaving the next to poll.
+/// This is a fairness rule: the audit measured echo beside a flood at
+/// 0.28–0.41 ms with it, versus 0.53–0.84 ms reading on to EAGAIN or 64 KiB.
+/// It says nothing about whether the terminal still has bytes to read.
 const SHORT_READ: usize = 512;
 /// Output read from one pane per tick, so one busy pane cannot starve others.
 const PANE_READ: usize = 64 * 1024;
@@ -1260,7 +1262,9 @@ impl Server {
         let (mut frames, mut read) = (0usize, 0usize);
         let closed = 'read: loop {
             while frames < CONN_FRAMES {
-                match self.take_frame(index, &mut decoder, now) {
+                // Each frame is a new event: a previous request may have
+                // taken long enough to pass another request's deadline.
+                match self.take_frame(index, &mut decoder, Instant::now()) {
                     Ok(true) => frames = frames.saturating_add(1),
                     Ok(false) => break,
                     Err(error) => {
@@ -1545,7 +1549,6 @@ impl Server {
         now: Instant,
     ) {
         let mut total = 0;
-        let mut buffer = [0u8; 16384];
         let ended = loop {
             if total >= PANE_READ {
                 break false;
@@ -1560,7 +1563,10 @@ impl Server {
             let Process::Reading(child) = &pane.process() else {
                 return;
             };
-            match read(&child.master, &mut buffer) {
+            match read(
+                &child.master,
+                self.read_buffer.get_mut(..16384).unwrap_or_default(),
+            ) {
                 Err(Errno::AGAIN) => break false,
                 Err(Errno::INTR) => continue,
                 // EIO: the slave side is closed; the program is gone.
@@ -1573,7 +1579,7 @@ impl Server {
                     // Past PANE_READ by at most one buffer, when the loop ends.
                     total = total.saturating_add(n);
                     self.session
-                        .output(id, buffer.get(..n).unwrap_or_default(), now);
+                        .output(id, self.read_buffer.get(..n).unwrap_or_default(), now);
                     // A short read: that was all, and the poll says when
                     // there is more, without a read to find none. Full
                     // reads go on.

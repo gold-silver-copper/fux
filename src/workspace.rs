@@ -822,12 +822,18 @@ mod tests {
         session.parts.each_pane_mut(|p| p.keeps_size());
         session.output(two, b"plain output", now);
         assert!(session.parts.input.is_empty(), "old input is left to poll");
-        session.parts.pane_mut(two).ok_or("pane")?
+        session
+            .parts
+            .pane_mut(two)
+            .ok_or("pane")?
             .push_with(|_, bytes| bytes.extend_from_slice(b"key"))
             .map_err(|e| e.to_string())?;
         assert_eq!(session.parts.input, BTreeSet::from([two]));
         session.parts.close_pane(two).ok_or("pane")?;
-        assert!(session.parts.input.is_empty(), "closed panes leave no entries");
+        assert!(
+            session.parts.input.is_empty(),
+            "closed panes leave no entries"
+        );
         Ok(())
     }
 }
