@@ -152,6 +152,11 @@ opaque records cannot hide their children from list and work limits.
 `Machine::import` checks incoming strings/lists and charges the run's construction
 budget before retaining a suspended result. Immediate host results use that
 same admission automatically, and host argument traversal is charged too.
+Native byte payloads can report `AppValue::import_bytes` and opt into a fixed
+`IMPORT_BYTES_LIMIT`; their actual retained allocations consume that separate
+cumulative grant rather than masquerading as ordinary strings. Their full
+weight still charges traversal and inclusion in lists. All other host values
+continue to obey the ordinary string, nesting, list and construction limits.
 
 Application values stream their text through `AppValue::write_text` and declare
 retained data and formatter workspace with `text_bytes`. `TEXT_LIMIT` lets a host

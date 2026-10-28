@@ -1822,3 +1822,33 @@ fn host_imports_charge_expanded_weight_and_opaque_depth() -> Result<(), Error> {
     assert!(List::new(vec![Value::App(Weighted(1, NESTING))]).is_none());
     Ok(())
 }
+
+#[test]
+fn native_payload_imports_charge_bytes_without_widening_lists() -> Result<(), Error> {
+    #[derive(Clone, PartialEq)]
+    struct Payload;
+    impl AppValue for Payload {
+        const IMPORT_BYTES_LIMIT: usize = 128;
+        fn kind(&self) -> &'static str {
+            "payload"
+        }
+        fn weight(&self) -> u64 {
+            TOTAL.saturating_add(1)
+        }
+        fn import_bytes(&self) -> Option<usize> {
+            Some(64)
+        }
+    }
+    let compiler = Compiler::<Payload>::new(Vocabulary::default());
+    let mut machine = Machine::new(compiler.finish()?, Limits::default());
+    let value = Value::App(Payload);
+    machine.import(value.clone())?;
+    machine.import(value.clone())?;
+    assert_eq!(
+        machine.import(value.clone()).map_err(|e| e.code),
+        Err(Code::TooLong)
+    );
+    assert_eq!(machine.stack().len(), 2);
+    assert!(List::new(vec![value]).is_none());
+    Ok(())
+}

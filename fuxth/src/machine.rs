@@ -185,6 +185,7 @@ pub struct Machine<A> {
     steps: u64,
     /// Elements built so far.
     built: u64,
+    imported_bytes: usize,
     /// The step taken last: how many frames there were, its code, and its
     /// place in it.
     last: Option<(usize, Option<usize>, usize)>,
@@ -213,6 +214,7 @@ impl<A: AppValue> Machine<A> {
             extra: 0,
             steps: 0,
             built: 0,
+            imported_bytes: 0,
             last: None,
         }
     }
@@ -250,7 +252,8 @@ impl<A: AppValue> Machine<A> {
         }
         let weight = value.weight();
         self.cost(usize::try_from(weight).unwrap_or(usize::MAX));
-        if value.depth() > NESTING || weight > TOTAL {
+        let native = matches!(value, Value::App(app) if app.import_bytes().is_some());
+        if value.depth() > NESTING || (!native && weight > TOTAL) {
             return Err(self.nested());
         }
         if !valid(value) {
@@ -259,7 +262,32 @@ impl<A: AppValue> Machine<A> {
                 "host result exceeds the string or list length limit",
             ));
         }
-        self.built = self.built.saturating_add(weight);
+        fn imports<A: AppValue>(value: &Value<A>) -> (u64, usize) {
+            match value {
+                Value::App(app) => match app.import_bytes() {
+                    Some(bytes) => (0, bytes),
+                    None => (value.weight(), 0),
+                },
+                Value::List(list) => {
+                    list.items()
+                        .iter()
+                        .fold((1u64, 0usize), |(built, bytes), v| {
+                            let (n, b) = imports(v);
+                            (built.saturating_add(n), bytes.saturating_add(b))
+                        })
+                }
+                Value::Int(_) | Value::Bool(_) | Value::Str(_) => (value.weight(), 0),
+            }
+        }
+        let (built, bytes) = imports(value);
+        self.imported_bytes = self.imported_bytes.saturating_add(bytes);
+        if self.imported_bytes > A::IMPORT_BYTES_LIMIT {
+            return Err(self.fail(
+                Code::TooLong,
+                "host byte payloads exceed the import allocation limit",
+            ));
+        }
+        self.built = self.built.saturating_add(built);
         if self.built > BUILT {
             return Err(self.fail(Code::TooLong, "host imports exceed the construction limit"));
         }
