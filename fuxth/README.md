@@ -152,11 +152,19 @@ opaque records cannot hide their children from list and work limits.
 `Machine::import` bounds each incoming value and charges its traversal work
 before retaining a suspended result. Immediate host results use that
 same admission automatically, and host argument traversal is charged too.
-Native byte payloads can report `AppValue::import_bytes` and opt into a fixed
-`IMPORT_BYTES_LIMIT`; their actual retained allocations must fit that grant for each imported
-value. Imports do not consume a lifetime construction allowance. Their full
-weight still charges traversal and inclusion in lists. All other host values
-continue to obey the ordinary string, nesting and list limits.
+`AppValue::IMPORT_LIMIT` fixes the aggregate grant for live imported storage
+(default 128 MiB), including ordinary strings and lists. Heap-owning application
+values implement `retain`, keeping an `ImportLease` with each allocation or using
+`Shared<T>` for an immutable native payload. Shared children reserve themselves;
+clones do not reserve their allocation twice. The last reference's drop refunds
+its reservation, so polling does not consume a lifetime allowance. Separate
+machines account shared storage against their own grants.
+
+Native byte payloads can report `AppValue::import_bytes` to use the native grant
+instead of the per-value language weight ceiling. Their full weight still charges
+traversal and inclusion in lists. All other host values continue to obey the
+ordinary string, nesting and list limits. Language construction retains its
+existing cumulative build allowance.
 
 Application values stream their text through `AppValue::write_text` and declare
 retained data and formatter workspace with `text_bytes`. `TEXT_LIMIT` lets a host

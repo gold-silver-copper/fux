@@ -529,8 +529,7 @@ fn json_text(value: &Value<Fux>, limit: usize) -> Result<String, Failure> {
                 Ok(())
             }
             Value::App(Fux::Answer(answer, _)) => {
-                budget.slots::<super::Answer>(1)?;
-                budget.slots::<usize>(2)?;
+                budget.charge(fuxth::Shared::<super::Answer>::bytes(0))?;
                 answer.charge(budget)
             }
             Value::App(Fux::Record(r)) => budget.charge(r.bytes()),
@@ -813,7 +812,7 @@ fn version(value: &Value<Fux>) -> Result<crate::command::Version, Failure> {
 /// The options or request `value` is: options stay options; what else it
 /// goes on (a pane, tab, workspace or client, an action's answer) becomes
 /// a request on that.
-fn modifying(value: Value<Fux>) -> Result<Box<Opts>, Failure> {
+fn modifying(value: Value<Fux>) -> Result<std::rc::Rc<Opts>, Failure> {
     let built = match value {
         Value::App(Fux::Opts(built)) => built,
         other @ (Value::Int(_)
@@ -823,7 +822,7 @@ fn modifying(value: Value<Fux>) -> Result<Box<Opts>, Failure> {
         | Value::App(_)) => {
             let on = on(&other)
                 .map_err(|_| wrong("a pane, tab, workspace or client, or options", &other))?;
-            Box::new(Opts {
+            std::rc::Rc::new(Opts {
                 on: Some(on),
                 ..Opts::default()
             })
@@ -860,13 +859,14 @@ const MICE: [(&str, Mouse); 8] = [
 fn modify(
     opt: Opt,
     next: &mut dyn FnMut() -> Result<Value<Fux>, Failure>,
-) -> Result<Box<Opts>, Failure> {
+) -> Result<std::rc::Rc<Opts>, Failure> {
     // `changed` and `expect` make a request; every other option goes on
     // one, or on options.
-    let mut built = match matches!(opt, Opt::Changed | Opt::Expect) {
-        true => Box::default(),
+    let mut shared = match matches!(opt, Opt::Changed | Opt::Expect) {
+        true => std::rc::Rc::default(),
         false => modifying(next()?)?,
     };
+    let built = std::rc::Rc::make_mut(&mut shared);
     if !matches!(
         opt,
         Opt::Arg | Opt::Env | Opt::UnsetEnv | Opt::Text | Opt::Key | Opt::Paste | Opt::Bytes
@@ -934,7 +934,7 @@ fn modify(
                 built.argv = Program::read(&next()?)
                     .map_err(|why| fail(Raise::BadValue, why))?
                     .argv();
-                return Ok(built);
+                return Ok(shared);
             }
             built.argv.push(string(&next()?)?);
         }
@@ -985,7 +985,7 @@ fn modify(
             built.inputs.push(Input::Key(press));
         }
     }
-    Ok(built)
+    Ok(shared)
 }
 
 /// The rows or columns a capture reads, from `next`: the first, then the
@@ -1007,7 +1007,7 @@ fn span(
 /// leaves something given unused.
 fn request(word: Act, value: Value<Fux>) -> Result<(On, Opts), Failure> {
     let mut built = match value {
-        Value::App(Fux::Opts(built)) => *built,
+        Value::App(Fux::Opts(built)) => std::rc::Rc::unwrap_or_clone(built),
         other @ (Value::Int(_)
         | Value::Bool(_)
         | Value::Str(_)
@@ -1050,7 +1050,7 @@ fn finished(word: Act, value: Value<Fux>) -> Result<Opts, Failure> {
     match value {
         Value::App(Fux::Opts(built)) if built.on.is_none() => {
             unused(word, &built)?;
-            Ok(*built)
+            Ok(std::rc::Rc::unwrap_or_clone(built))
         }
         other @ (Value::Int(_)
         | Value::Bool(_)
@@ -1069,7 +1069,7 @@ fn attach_options(
     value: Value<Fux>,
 ) -> Result<(Option<crate::command::AttachTarget>, Opts), Failure> {
     use crate::command::AttachTarget as T;
-    let built = *modifying(value)?;
+    let built = std::rc::Rc::unwrap_or_clone(modifying(value)?);
     unused(word, &built)?;
     let target = match (&built.on, &built.place) {
         (None, place) => place.clone().map(T::Workspace),
@@ -1345,7 +1345,7 @@ impl fuxth::Host for Host<'_> {
                         Some(On::Version(v) | On::Changed(v) | On::Seen(v)) => Some(v.run),
                         _ => None,
                     };
-                    opts.of = super::same_run(of, version)?;
+                    std::rc::Rc::make_mut(opts).of = super::same_run(of, version)?;
                 }
                 Value::App(
                     Fux::Pane(_, run)
@@ -1484,7 +1484,7 @@ impl Host<'_> {
             }
             // ---------------------------------------------------- starting
             Act::All => now(out, Value::App(Fux::All(None))),
-            Act::Opts => now(out, Value::App(Fux::Opts(Box::default()))),
+            Act::Opts => now(out, Value::App(Fux::Opts(std::rc::Rc::default()))),
             Act::Run => {
                 let built = finished(act, next()?)?;
                 if built.argv.is_empty() {
@@ -1747,7 +1747,7 @@ impl Host<'_> {
                     let value = if text.chars().count() <= fuxth::LONGEST {
                         Value::str(text)
                     } else {
-                        Value::App(Fux::Rendered(std::rc::Rc::new(text)))
+                        Value::App(Fux::Rendered(fuxth::Shared::new(text)))
                     };
                     now(out, value)
                 }
@@ -2540,7 +2540,7 @@ mod tests {
 
     #[test]
     fn accumulating_options_preserve_order() -> Result<(), Box<dyn std::error::Error>> {
-        let mut value = Value::App(Fux::Opts(Box::default()));
+        let mut value = Value::App(Fux::Opts(std::rc::Rc::default()));
         for (opt, values) in [
             (Opt::Program, vec![Value::str("cat")]),
             (Opt::Arg, vec![Value::str("a")]),
@@ -2737,7 +2737,7 @@ mod tests {
             marks: false,
         };
         let held = fuxth::List::new(vec![Value::App(Limited(Fux::Answer(
-            std::rc::Rc::new(super::super::Answer::Capture(Box::new(captured))),
+            fuxth::Shared::new(super::super::Answer::Capture(Box::new(captured))),
             None,
         )))])
         .ok_or("held list")?;
@@ -2803,7 +2803,7 @@ mod tests {
             marks: false,
         };
         let value = Value::App(Fux::Answer(
-            std::rc::Rc::new(super::super::Answer::Capture(Box::new(capture))),
+            fuxth::Shared::new(super::super::Answer::Capture(Box::new(capture))),
             None,
         ));
         assert!(
@@ -2836,7 +2836,7 @@ mod tests {
         let version = "%1:0.0.0.0.0:1-1".parse().map_err(|()| "version")?;
         let one = super::super::Answer::Panes(vec![crate::answer::PaneAnswer::Acted(version)]);
         let json = json_text(
-            &Value::App(Fux::Answer(std::rc::Rc::new(one), None)),
+            &Value::App(Fux::Answer(fuxth::Shared::new(one), None)),
             crate::wire::MAX_ALLOCATED,
         )
         .map_err(|f| f.message)?;
@@ -2901,20 +2901,20 @@ mod tests {
             workspace,
             client,
             Fux::Answer(
-                std::rc::Rc::new(super::super::Answer::Pane(
+                fuxth::Shared::new(super::super::Answer::Pane(
                     crate::answer::PaneAnswer::Acted(version),
                 )),
                 Some(version.run),
             ),
             Fux::Answer(
-                std::rc::Rc::new(super::super::Answer::Pane(
+                fuxth::Shared::new(super::super::Answer::Pane(
                     crate::answer::PaneAnswer::Closed(version.pane),
                 )),
                 Some(version.run),
             ),
         ];
         targets.extend(on.map(|on| {
-            Fux::Opts(Box::new(Opts {
+            Fux::Opts(std::rc::Rc::new(Opts {
                 on,
                 ..Opts::default()
             }))
@@ -2990,7 +2990,7 @@ mod tests {
                 // `arg` requires a program first, which preserves the same kind.
                 let initial = if opt == Opt::Arg {
                     let mut built = expected.clone();
-                    built.argv.push("sh".into());
+                    std::rc::Rc::make_mut(&mut built).argv.push("sh".into());
                     Fux::Opts(built)
                 } else {
                     target.clone()

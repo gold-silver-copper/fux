@@ -185,6 +185,7 @@ pub struct Machine<A> {
     steps: u64,
     /// Elements built so far.
     built: u64,
+    imports: crate::Imports,
     /// The step taken last: how many frames there were, its code, and its
     /// place in it.
     last: Option<(usize, Option<usize>, usize)>,
@@ -213,6 +214,7 @@ impl<A: AppValue> Machine<A> {
             extra: 0,
             steps: 0,
             built: 0,
+            imports: crate::Imports::new(A::IMPORT_LIMIT),
             last: None,
         }
     }
@@ -270,13 +272,15 @@ impl<A: AppValue> Machine<A> {
                 Value::Int(_) | Value::Bool(_) | Value::Str(_) => 0,
             }
         }
-        if bytes(value) > A::IMPORT_BYTES_LIMIT {
+        if bytes(value) > A::IMPORT_LIMIT {
             return Err(self.fail(
                 Code::TooLong,
                 "host byte payload exceeds the import allocation limit",
             ));
         }
-        Ok(())
+        value
+            .retain(&self.imports)
+            .map_err(|failure| self.failed(failure))
     }
 
     /// Raises a suspended word's failure at it, as if the word had failed

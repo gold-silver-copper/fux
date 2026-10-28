@@ -1,6 +1,7 @@
 //! Values on the stack: integers, booleans, strings, lists, and the
 //! application's own.
 use crate::error::{Code, Failure};
+use crate::{ImportLease, Imports};
 use std::rc::Rc;
 
 /// How deep lists may nest: a list of lists of … at most this many. Every
@@ -15,9 +16,15 @@ pub trait AppValue: Clone + PartialEq {
     /// The default adds no host limit to the language's own bounds.
     const TEXT_LIMIT: usize = usize::MAX;
 
-    /// Admission grant for the native byte payloads in one imported value.
-    /// A host opts in explicitly; ordinary values use the language bounds.
-    const IMPORT_BYTES_LIMIT: usize = 0;
+    /// Aggregate grant for live imported storage, including strings and lists.
+    const IMPORT_LIMIT: usize = 128 * 1024 * 1024;
+
+    /// Reserve each owned allocation, recursively visiting shared children.
+    /// Inline application values need no reservation. Heap-owning values must
+    /// keep a lease with their storage and reserve it here.
+    fn retain(&self, _imports: &Imports) -> Result<(), Failure> {
+        Ok(())
+    }
 
     /// The allocation retained by a native byte payload, including its wrapper.
     /// Its traversal weight still charges work and bounds inclusion in lists.
@@ -136,6 +143,7 @@ pub struct Text {
     text: String,
     chars: usize,
     marks: Vec<usize>,
+    lease: ImportLease,
 }
 
 /// Two strings are equal when their text is: the rest follows from it.
@@ -156,11 +164,17 @@ impl Text {
                 text,
                 chars,
                 marks: Vec::new(),
+                lease: ImportLease::default(),
             };
         }
         let chars = text.chars().count();
         let marks = marks(&text, 0, 0).collect();
-        Text { text, chars, marks }
+        Text {
+            text,
+            chars,
+            marks,
+            lease: ImportLease::default(),
+        }
     }
 
     /// `other` added at the end: how many characters before it were
@@ -297,6 +311,7 @@ pub struct List<A> {
     items: Vec<Value<A>>,
     depth: u8,
     weight: u64,
+    lease: ImportLease,
 }
 
 /// Two lists are equal when their values are.
@@ -335,6 +350,7 @@ impl<A: AppValue> List<A> {
             items,
             depth,
             weight,
+            lease: ImportLease::default(),
         })
     }
 
@@ -516,6 +532,33 @@ impl<A> Value<A> {
 }
 
 impl<A: AppValue> Value<A> {
+    /// Reserve live shared storage once per machine. Projected children retain
+    /// their own leases even after a parent list or record has been dropped.
+    pub fn retain(&self, imports: &Imports) -> Result<(), Failure> {
+        match self {
+            Self::Int(_) | Self::Bool(_) => Ok(()),
+            Self::Str(text) => text.lease.reserve(
+                imports,
+                text.heap_bytes()
+                    .saturating_add(std::mem::size_of::<Text>())
+                    .saturating_add(std::mem::size_of::<[usize; 2]>()),
+            ),
+            Self::List(list) => {
+                list.lease.reserve(
+                    imports,
+                    list.heap_bytes()
+                        .saturating_add(std::mem::size_of::<List<A>>())
+                        .saturating_add(std::mem::size_of::<[usize; 2]>()),
+                )?;
+                for value in list.items() {
+                    value.retain(imports)?;
+                }
+                Ok(())
+            }
+            Self::App(app) => app.retain(imports),
+        }
+    }
+
     /// How much it holds in all: a list counts its values' weights and
     /// itself, a string its characters, anything else 1. A walk over the
     /// value goes through about this many things.

@@ -1821,11 +1821,11 @@ fn host_imports_bound_each_value_and_opaque_depth() -> Result<(), Error> {
 }
 
 #[test]
-fn native_payload_imports_bound_each_payload_without_widening_lists() -> Result<(), Error> {
+fn native_imports_share_reservations_and_refuse_independent_storage() -> Result<(), Error> {
     #[derive(Clone, PartialEq)]
-    struct Payload(usize);
+    struct Payload(Shared<Vec<u8>>);
     impl AppValue for Payload {
-        const IMPORT_BYTES_LIMIT: usize = 128;
+        const IMPORT_LIMIT: usize = 384;
         fn kind(&self) -> &'static str {
             "payload"
         }
@@ -1833,20 +1833,65 @@ fn native_payload_imports_bound_each_payload_without_widening_lists() -> Result<
             TOTAL.saturating_add(1)
         }
         fn import_bytes(&self) -> Option<usize> {
-            Some(self.0)
+            Some(Shared::<Vec<u8>>::bytes(self.0.capacity()))
+        }
+        fn retain(&self, imports: &Imports) -> Result<(), Failure> {
+            self.0.reserve(imports, self.import_bytes().unwrap_or(0))
         }
     }
+    let make = || Value::App(Payload(Shared::new(vec![0; 64])));
     let compiler = Compiler::<Payload>::new(Vocabulary::default());
     let mut machine = Machine::new(compiler.finish()?, Limits::default());
-    let value = Value::App(Payload(64));
+    let value = make();
     machine.import(value.clone())?;
     machine.import(value.clone())?;
     machine.import(value.clone())?;
     assert_eq!(machine.stack().len(), 3);
     assert!(List::new(vec![value]).is_none());
+    machine.import(make())?;
     assert_eq!(
-        machine.import(Value::App(Payload(129))).map_err(|e| e.code),
+        machine.import(make()).map_err(|e| e.code),
         Err(Code::TooLong)
     );
+    Ok(())
+}
+
+#[test]
+fn imported_strings_and_lists_hold_and_release_their_storage() -> Result<(), Failure> {
+    let grant = Imports::new(1024);
+    let text = || Value::<Ticket>::str(std::iter::repeat_n('x', 500).collect::<String>());
+    let held = text();
+    held.retain(&grant)?;
+    let duplicate = held.clone();
+    duplicate.retain(&grant)?;
+    let list = Value::List(std::rc::Rc::new(
+        List::new(vec![held]).ok_or_else(|| Failure::new(Code::TooLong, "list"))?,
+    ));
+    list.retain(&grant)?;
+    assert_eq!(
+        text().retain(&grant).map_err(|e| e.code),
+        Err(Code::TooLong)
+    );
+    drop(list);
+    assert_eq!(
+        text().retain(&grant).map_err(|e| e.code),
+        Err(Code::TooLong)
+    );
+    drop(duplicate);
+    for _ in 0..100 {
+        text().retain(&grant)?;
+    }
+    // A second live machine charges the same allocation to its own grant.
+    let other = Imports::new(1024);
+    let shared = text();
+    shared.retain(&grant)?;
+    shared.retain(&other)?;
+    assert_eq!(
+        text().retain(&other).map_err(|e| e.code),
+        Err(Code::TooLong)
+    );
+    drop(shared);
+    text().retain(&grant)?;
+    text().retain(&other)?;
     Ok(())
 }

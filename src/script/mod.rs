@@ -52,7 +52,7 @@ pub enum Fux {
     Null,
     Record(Rc<record::Record>),
     /// Rendered observations exceeding ordinary language string limits.
-    Rendered(Rc<String>),
+    Rendered(fuxth::Shared<String>),
     Pane(PaneId, Option<Run>),
     Tab(TabId, Option<Run>),
     Workspace(WsId, Option<Run>),
@@ -63,11 +63,11 @@ pub enum Fux {
     /// request: a pane, tab, workspace or client given options, keys or a
     /// wait, for the word that acts on it after
     /// (`%2 str ls text str Enter key send-keys`).
-    Opts(Box<Opts>),
+    Opts(Rc<Opts>),
     /// A width or height: cells, or a share of the tab.
     Extent(Extent),
     /// What the server said: a capture, a listing, a wait's outcome.
-    Answer(Rc<Answer>, Option<Run>),
+    Answer(fuxth::Shared<Answer>, Option<Run>),
 }
 
 impl AppValue for Fux {
@@ -105,11 +105,34 @@ impl AppValue for Fux {
     }
 
     const TEXT_LIMIT: usize = crate::wire::MAX_ALLOCATED;
-    const IMPORT_BYTES_LIMIT: usize = crate::wire::MAX_ALLOCATED;
+    const IMPORT_LIMIT: usize = crate::wire::MAX_ALLOCATED;
     fn import_bytes(&self) -> Option<usize> {
-        (matches!(self, Fux::Rendered(_))
-            || matches!(self, Fux::Answer(answer, _) if matches!(&**answer, Answer::Capture(_))))
-        .then(|| self.text_bytes())
+        if let Fux::Answer(answer, _) = self
+            && matches!(&**answer, Answer::Capture(_))
+        {
+            return Some(answer.retained_bytes());
+        }
+        matches!(self, Fux::Rendered(_)).then(|| self.text_bytes())
+    }
+
+    fn retain(&self, imports: &fuxth::Imports) -> Result<(), fuxth::Failure> {
+        match self {
+            Fux::Record(record) => record.retain(imports),
+            Fux::Answer(answer, _) => answer.reserve(imports, answer.retained_bytes()),
+            Fux::Rendered(text) => text.reserve(imports, self.text_bytes()),
+            Fux::Opts(opts) => opts.lease.reserve(
+                imports,
+                opts.heap_bytes()
+                    .saturating_add(std::mem::size_of::<[usize; 2]>()),
+            ),
+            Fux::Null
+            | Fux::Pane(..)
+            | Fux::Tab(..)
+            | Fux::Workspace(..)
+            | Fux::Client(..)
+            | Fux::All(_)
+            | Fux::Extent(_) => Ok(()),
+        }
     }
 
     fn weight(&self) -> u64 {
@@ -162,32 +185,18 @@ impl AppValue for Fux {
 
     fn text_bytes(&self) -> usize {
         if let Fux::Rendered(text) = self {
-            return text
-                .capacity()
-                .saturating_add(std::mem::size_of::<String>())
-                .saturating_add(std::mem::size_of::<usize>().saturating_mul(2));
+            return fuxth::Shared::<String>::bytes(text.capacity());
         }
 
         if let Fux::Record(r) = self {
             return r.bytes();
         }
         if let Fux::Answer(answer, _) = self {
-            let mut budget = crate::wire::Budget::with_limit(usize::MAX);
-            if budget
-                .slots::<Answer>(1)
-                .and_then(|()| budget.slots::<usize>(2))
-                .and_then(|()| answer.charge(&mut budget))
-                .is_err()
-            {
-                return usize::MAX;
-            }
             let scratch = match &**answer {
                 Answer::Capture(c) => c.text_scratch(),
                 Answer::Pane(_) | Answer::Panes(_) | Answer::Status(_) => 0,
             };
-            usize::MAX
-                .saturating_sub(budget.remaining())
-                .saturating_add(scratch)
+            answer.retained_bytes().saturating_add(scratch)
         } else if let Fux::Opts(opts) = self {
             opts.heap_bytes()
         } else {
@@ -243,6 +252,7 @@ fn same_run(a: Option<Run>, b: Option<Run>) -> Result<Option<Run>, fuxth::Failur
 /// they are on: nothing, for `run`, `new-tab` and `new-workspace`.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Opts {
+    lease: fuxth::ImportLease,
     pub on: Option<On>,
     pub of: Option<Run>,
     pub name: Option<String>,
@@ -397,6 +407,18 @@ pub enum Answer {
 }
 
 impl Answer {
+    fn retained_bytes(&self) -> usize {
+        let mut budget = crate::wire::Budget::with_limit(usize::MAX);
+        if budget
+            .charge(fuxth::Shared::<Answer>::bytes(0))
+            .and_then(|()| self.charge(&mut budget))
+            .is_err()
+        {
+            return usize::MAX;
+        }
+        usize::MAX.saturating_sub(budget.remaining())
+    }
+
     /// Its kind, as the vocabulary names it.
     fn name(&self) -> &'static str {
         match self {
@@ -509,7 +531,7 @@ impl Answer {
     }
 
     fn in_run(self, run: Option<Run>) -> Value<Fux> {
-        Value::App(Fux::Answer(Rc::new(self), run))
+        Value::App(Fux::Answer(fuxth::Shared::new(self), run))
     }
 }
 
@@ -1895,6 +1917,81 @@ mod tests {
     }
 
     #[test]
+    fn retained_captures_exhaust_the_grant_but_polling_releases_it()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use super::*;
+        struct Captures {
+            count: usize,
+        }
+        impl Asks for Captures {
+            fn ask(
+                &mut self,
+                asked: &crate::protocol::Asked,
+                _: &mut dyn std::io::Write,
+            ) -> Result<Reply, Failed> {
+                let version: Version = "%1:0.7.0.0.0:1-1"
+                    .parse()
+                    .map_err(|()| Failed::new(Code::Usage, "version"))?;
+                if matches!(
+                    asked.request,
+                    Request::Do(crate::command::Command::Resolve { .. })
+                ) {
+                    return Ok(Reply {
+                        run: Some(version.run),
+                        ..Body::Found(AnyRef::Pane(version.pane)).into()
+                    });
+                }
+                self.count += 1;
+                let capture = crate::capture::Captured {
+                    of: crate::capture::Of::Pane {
+                        version,
+                        wrap_pending: false,
+                        state: Vec::new(),
+                    },
+                    screen_rows: 24,
+                    screen_cols: 80,
+                    screen_cursor: None,
+                    lines: vec![vec![crate::capture::Cut {
+                        text: std::iter::repeat_n('x', 17_000_000).collect(),
+                        cells: 17_000_000,
+                        style: fux_vt::Attributes::default(),
+                    }]],
+                    styles: false,
+                    marks: false,
+                };
+                Ok(Reply {
+                    run: Some(version.run),
+                    ..Body::Capture(Box::new(capture)).into()
+                })
+            }
+        }
+        for retain in [false, true] {
+            let source = if retain {
+                std::iter::repeat_n("%1 all-history capture ", 9).collect::<String>()
+            } else {
+                "0 20 range each drop %1 all-history capture drop end".into()
+            };
+            let mut machine =
+                compile(&fuxth::token::source("test", &source)?).map_err(|e| e.to_string())?;
+            let mut out = Vec::new();
+            let mut host = Host::new(crate::protocol::Context::default(), None, &mut out);
+            let mut asks = Captures { count: 0 };
+            let result = run_capped(&mut machine, &mut host, &mut asks, None, None);
+            if retain {
+                assert_eq!(
+                    result.map(|_| ()).map_err(|e| e.code),
+                    Err(Code::from(crate::code::Raise::TooLong))
+                );
+                assert!(asks.count < 9);
+            } else {
+                assert!(result.map_err(|e| e.to_string())?.is_empty());
+                assert_eq!(asks.count, 20);
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
     fn large_plain_capture_crosses_the_machine_boundary() -> Result<(), Box<dyn std::error::Error>>
     {
         let version: super::Version = "%1:0.7.0.0.0:1-1".parse().map_err(|()| "version")?;
@@ -2071,15 +2168,17 @@ mod tests {
         }
         impl Asks for Record {
             fn ask(&mut self, asked: &Asked, _: &mut dyn Write) -> Result<Reply, Failed> {
-                let mut reply: Reply =
-                    if matches!(asked.request, Request::Do(Command::Resolve { .. })) {
-                        Body::Found(AnyRef::Pane(self.version.pane)).into()
-                    } else if matches!(asked.request, Request::Do(Command::SendKeys { .. })) {
-                        self.sent = self.sent.saturating_add(1);
-                        PaneResults::One(PaneAnswer::Acted(self.version)).into()
-                    } else {
-                        return Err(Failed::new(Code::Usage, "unexpected request"));
-                    };
+                let mut reply: Reply = if matches!(
+                    asked.request,
+                    Request::Do(crate::command::Command::Resolve { .. })
+                ) {
+                    Body::Found(AnyRef::Pane(self.version.pane)).into()
+                } else if matches!(asked.request, Request::Do(Command::SendKeys { .. })) {
+                    self.sent = self.sent.saturating_add(1);
+                    PaneResults::One(PaneAnswer::Acted(self.version)).into()
+                } else {
+                    return Err(Failed::new(Code::Usage, "unexpected request"));
+                };
                 reply.run = Some(self.version.run);
                 Ok(reply)
             }
@@ -2180,7 +2279,8 @@ mod tests {
                 if let Request::Wait(wait) = decoded.request {
                     self.0.push(wait.timeout.seconds());
                     Err(Failed::new(Code::NoServer, "recorded"))
-                } else if let Request::Do(Command::Resolve { .. }) = decoded.request {
+                } else if let Request::Do(crate::command::Command::Resolve { .. }) = decoded.request
+                {
                     Ok(Body::Found(AnyRef::Pane(
                         "%1".parse()
                             .map_err(|e| Failed::new(Code::Usage, format!("{e:?}")))?,
@@ -2289,7 +2389,9 @@ mod tests {
             fn ask(&mut self, asked: &Asked, _: &mut dyn Write) -> Result<Reply, Failed> {
                 let mut run = None;
                 let body = match asked.request {
-                    Request::Do(Command::Resolve { .. }) => Body::Found(AnyRef::Tab(TabId::of(1))),
+                    Request::Do(crate::command::Command::Resolve { .. }) => {
+                        Body::Found(AnyRef::Tab(TabId::of(1)))
+                    }
                     Request::Do(Command::Members { .. }) => {
                         run = self.runs.pop_front();
                         Body::Handles(vec![AnyRef::Pane(PaneId::of(1))])

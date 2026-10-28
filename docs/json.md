@@ -4,8 +4,11 @@
 Small results are ordinary strings. Beyond 1,000,000 characters it returns shared text of kind
 `rendered`: `print` and implicit command output emit it under the existing
 128 MiB finite-observation grant. Explicit `string` conversion still obeys
-the language string limit. Each capture or rendered value has a 128 MiB native import grant; imports
-charge traversal work at their actual size, not a lifetime construction total.
+the language string limit. All live imported storage shares one 128 MiB grant: captures, rendered output,
+records, strings, lists and options. Reservations follow shared allocations;
+clones and projected children keep their reservation without double charging.
+Dropping the last reference refunds its bytes, so polling and discarding results
+can continue. Per-value limits and traversal charges still apply.
 
 The JSON represents what a word left, as below; a string as a JSON string; a number or boolean
 as itself; a list as an array of these, each answer in it as `json` gives
@@ -146,7 +149,7 @@ the byte/allocation grant rather than one entity node per byte or item. Client p
 the native schema for plain rendering and shares immutable records on clone.
 The tighter language limits still apply, including 1,000,000 characters per
 string and 16,000,000 expanded elements per list/run. Opaque values charge
-expanded traversal; each import is bounded independently. Constructed strings
+expanded traversal; imports also share the live-storage grant above. Constructed strings
 and lists charge the run’s construction grant; repeated shared values count again. A too-large observation fails `too_long`, never truncates or
 combines multiple turns. Narrower scopes are separate observations.
 

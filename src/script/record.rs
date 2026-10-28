@@ -12,6 +12,7 @@ type V = Value<Fux>;
 
 #[derive(Clone, Debug)]
 pub struct Record {
+    lease: fuxth::ImportLease,
     fields: Vec<(String, V)>,
     weight: u64,
     depth: u8,
@@ -26,6 +27,31 @@ impl PartialEq for Record {
 }
 
 impl Record {
+    pub(super) fn retain(&self, imports: &fuxth::Imports) -> Result<(), Failure> {
+        let own = self.fields.iter().fold(
+            std::mem::size_of::<Record>()
+                .saturating_add(std::mem::size_of::<[usize; 2]>())
+                .saturating_add(
+                    self.fields
+                        .capacity()
+                        .saturating_mul(std::mem::size_of::<(String, V)>()),
+                ),
+            |n, (key, _)| n.saturating_add(key.capacity()),
+        );
+        let snapshot = self
+            .snapshot
+            .as_ref()
+            .map(|s| s.heap_bytes())
+            .transpose()?
+            .map(|bytes| bytes.saturating_sub(std::mem::size_of::<inspect::Snapshot>()))
+            .unwrap_or(0);
+        self.lease.reserve(imports, own.saturating_add(snapshot))?;
+        for (_, value) in &self.fields {
+            value.retain(imports)?;
+        }
+        Ok(())
+    }
+
     pub(super) fn get(&self, field: &str) -> Result<V, Failure> {
         self.fields
             .iter()
@@ -194,6 +220,7 @@ impl Builder {
             .slots::<usize>(2)
             .map_err(super::words::observation_failure)?;
         Ok(Value::App(Fux::Record(Rc::new(Record {
+            lease: fuxth::ImportLease::default(),
             fields,
             depth,
             weight,
@@ -551,6 +578,36 @@ mod tests {
             Err(fuxth::Code::Range)
         );
         assert_eq!(r.get("items")?, Value::List(items));
+        Ok(())
+    }
+
+    #[test]
+    fn projected_children_keep_only_their_shared_storage_reserved() -> Result<(), Failure> {
+        let grant = fuxth::Imports::new(2048);
+        let make = || {
+            from_json(&Json::Object(vec![(
+                "text".into(),
+                Json::String(std::iter::repeat_n('x', 1000).collect()),
+            )]))
+        };
+        let root = make()?;
+        root.retain(&grant)?;
+        let Value::App(Fux::Record(record)) = &root else {
+            return Err(fail());
+        };
+        let child = record.get("text")?;
+        child.retain(&grant)?;
+        for _ in 0..10 {
+            root.clone().retain(&grant)?;
+            child.clone().retain(&grant)?;
+        }
+        assert!(make()?.retain(&grant).is_err());
+        drop(root);
+        assert!(make()?.retain(&grant).is_err());
+        drop(child);
+        for _ in 0..100 {
+            make()?.retain(&grant)?;
+        }
         Ok(())
     }
 
