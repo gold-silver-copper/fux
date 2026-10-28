@@ -560,8 +560,9 @@ list %3 %4 %5 end str horizontal even-of arrange
 The list must name every current pane of that tab exactly once. The revision
 is `TAB:REVISION:RUN`, tied to the tab and server run. Layout edits and changes
 to the tab's fit invalidate it, even if a border is moved back. A stale or
-invalid proposal changes nothing. A revision mismatch fails with `stale`,
-so a caller can distinguish a concurrent edit from a malformed proposal.
+invalid proposal changes nothing. A revision the tab has since moved past
+fails with `stale`. A token for another tab or run, or a future serial, fails
+with `bad_value`.
 Pane focus stays with the same pane.
 Every background and sizing-client screen must show every pane; watchers do
 not constrain it. Success journals one `arranged` invalidation, then sizes

@@ -2351,14 +2351,18 @@ impl Session {
                 nodes,
             } => {
                 let tab = self.tab(*target).ok_or(Error::NoTab(*target))?;
-                if tab.revision(self.run) != Some(*revision) {
-                    let now = tab
-                        .revision(self.run)
-                        .map_or_else(|| "exhausted".into(), |r| r.to_string());
-                    return Err(fail(
-                        Raise::Stale,
-                        format!("{target} is at {now}, not {revision}"),
-                    ));
+                let now = tab.revision(self.run);
+                if now != Some(*revision) {
+                    let behind = revision.tab == *target
+                        && revision.run == self.run
+                        && now.is_none_or(|n| revision.serial < n.serial);
+                    let code = if behind {
+                        Raise::Stale
+                    } else {
+                        Raise::BadValue
+                    };
+                    let now = now.map_or_else(|| "exhausted".into(), |r| r.to_string());
+                    return Err(fail(code, format!("{target} is at {now}, not {revision}")));
                 }
                 let root = layout::from_nodes(nodes).map_err(|why| fail(Raise::BadValue, why))?;
                 if !root.same_panes(tab.root()) {
@@ -4026,11 +4030,19 @@ mod tests {
             (revision, duplicate, Raise::BadValue),
             (
                 command::LayoutRevision {
-                    tab: TabId::of(2),
+                    serial: revision.serial.saturating_sub(1),
                     ..revision
                 },
                 valid.clone(),
                 Raise::Stale,
+            ),
+            (
+                command::LayoutRevision {
+                    tab: TabId::of(2),
+                    ..revision
+                },
+                valid.clone(),
+                Raise::BadValue,
             ),
             (
                 command::LayoutRevision {
@@ -4038,7 +4050,7 @@ mod tests {
                     ..revision
                 },
                 valid.clone(),
-                Raise::Stale,
+                Raise::BadValue,
             ),
             (
                 command::LayoutRevision {
@@ -4046,7 +4058,7 @@ mod tests {
                     ..revision
                 },
                 valid,
-                Raise::Stale,
+                Raise::BadValue,
             ),
         ] {
             let command = Command::Arrange {

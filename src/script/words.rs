@@ -1270,13 +1270,6 @@ impl fuxth::Host for Host<'_> {
                     format!("too few values: {}", word.row().effect),
                 )
             })?;
-            if word == Word::Act(Act::Arrange)
-                && let Value::List(list) = &value
-                && (1..=crate::layout::NODES_MAX).contains(&list.items().len())
-            {
-                // One node and at most five scalar split fields per node.
-                args.charge(list.items().len().saturating_mul(6));
-            }
             of = super::same_run(of, super::scope(&value))?;
             Ok(value)
         };

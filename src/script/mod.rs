@@ -1986,38 +1986,54 @@ mod tests {
     }
 
     #[test]
-    fn arrange_charges_bounded_node_parsing() -> Result<(), Box<dyn std::error::Error>> {
+    fn layout_scalar_refusals_do_not_copy_retained_strings()
+    -> Result<(), Box<dyn std::error::Error>> {
         use super::*;
-        use crate::command::{Command, Request};
-        struct Nodes(Run);
-        impl Asks for Nodes {
-            fn ask(&mut self, asked: &Asked, _: &mut dyn Write) -> Result<Reply, Failed> {
-                let body = match asked.request {
-                    Request::Do(Command::Resolve { .. }) => Body::Found(AnyRef::Tab(TabId::of(1))),
-                    Request::Do(Command::Members { .. }) => {
-                        Body::Handles((1..=2047).map(|n| AnyRef::Pane(PaneId::of(n))).collect())
-                    }
-                    Request::Do(Command::Arrange { .. }) => Body::Empty,
-                    Request::Do(_) | Request::Wait(_) | Request::Events(..) => {
-                        return Err(Failed::new(Code::Usage, "unexpected request"));
-                    }
-                };
-                Ok(Reply {
-                    run: Some(self.0),
-                    ..body.into()
-                })
+        struct NoRequests;
+        impl Asks for NoRequests {
+            fn ask(&mut self, _: &Asked, _: &mut dyn Write) -> Result<Reply, Failed> {
+                Err(Failed::new(
+                    Code::Usage,
+                    "invalid scalars must not submit a request",
+                ))
             }
         }
-        let mut nodes = Nodes("1-0".parse().map_err(|()| "run")?);
-        let mut machine = compile(&token::source(
-            "layout",
-            "@1 panes let ps @1 str @1:0:1-0 ps arrange",
-        )?)
-        .map_err(|e| e.to_string())?;
-        let mut sink = Vec::new();
-        let mut host = Host::new(Context::default(), None, &mut sink);
-        run_capped(&mut machine, &mut host, &mut nodes, None, None).map_err(|e| e.to_string())?;
-        assert!(machine.steps() >= 2047 / 64, "{} steps", machine.steps());
+        let longest = "@4294967295:18446744073709551615:4294967295-ffffffffffffffff";
+        assert!(longest.parse::<crate::command::LayoutRevision>().is_ok());
+        let allocator = fux_vt_peak::ThreadPeak;
+        let bad = Value::str(std::iter::repeat_n('x', fuxth::LONGEST / 2).collect::<String>());
+        let mut peaks = Vec::new();
+        for proposal in [
+            "t bad list end arrange",
+            "t str @1:0:1-0 list list bad 1 1 0 0 end end arrange",
+        ] {
+            let code = format!(
+                "input let bad @1 let t 0 16 range each drop str bad_value try {proposal} catch 2drop end end"
+            );
+            let mut machine =
+                compile(&token::source("scalar", &code)?).map_err(|e| e.to_string())?;
+            let mut sink = Vec::new();
+            let mut host = Host::new(Context::default(), None, &mut sink);
+            assert!(matches!(
+                machine.run(&mut host, u64::MAX)?,
+                Outcome::Suspended(Ask::Local(Local::Shell(Shell::Input)))
+            ));
+            machine.push(bad.clone())?;
+            assert!(matches!(
+                machine.run(&mut host, u64::MAX)?,
+                Outcome::Suspended(Ask::Server { .. })
+            ));
+            machine.push(Value::App(Fux::Tab(TabId::of(1), None)))?;
+            let base = allocator.live();
+            allocator.reset_peak();
+            run_capped(&mut machine, &mut host, &mut NoRequests, Some(10000), None)
+                .map_err(|e| e.to_string())?;
+            peaks.push(allocator.peak().saturating_sub(base));
+        }
+        assert!(
+            peaks.iter().all(|p| *p < 64 << 10),
+            "scalar refusal peaks: {peaks:?}"
+        );
         Ok(())
     }
 
