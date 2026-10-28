@@ -224,3 +224,29 @@ define main-of
 end
 # panes -- tree : balanced tiles, alternating axes, room shared by pane count
 define tiled-of str horizontal true 0 layout-of end
+
+# tab -- tab revision list : one topology observation's tab, revision and panes in tree order
+define layout-current
+  str topology snapshot str tabs get first let tab
+  tab str id get tab str layout_revision get
+  tab str nodes get let nodes list 0 end let pending
+  list
+    begin pending len 0 gt if
+      pending pop let index let pending
+      nodes index at dup is-list if
+        let node pending node 4 at push node 3 at push let pending
+      then
+      false
+    else true then until
+  end
+end
+# tab -- : arrange its current panes side by side, with equal shares
+define even-h layout-current str horizontal even-of arrange end
+# tab -- : arrange its current panes above one another, with equal shares
+define even-v layout-current str vertical even-of arrange end
+# tab -- : first current pane above an equal-share row, taking two shares against its one
+define main-h layout-current str vertical str horizontal main-of arrange end
+# tab -- : first current pane beside an equal-share column, taking two shares against its one
+define main-v layout-current str horizontal str vertical main-of arrange end
+# tab -- : arrange its current panes in balanced tiles, alternating axes
+define tiled layout-current tiled-of arrange end

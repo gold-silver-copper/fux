@@ -732,6 +732,20 @@ by pane count. Empty lists fail; the language's list, weight and execution
 budgets also apply. These builders read no session state and submit nothing
 until `arrange`.
 
+For an existing tab, `@2 even-h`, `@2 even-v`, `@2 main-h`, `@2 main-v`,
+and `@2 tiled` each read one topology snapshot and arrange its panes in tree
+order, using that observation's revision. `even-h` puts panes side by side;
+`even-v` stacks them. `main-h` puts the first pane above the rest in a row;
+`main-v` puts it beside the rest in a column. Both give the main pane two
+shares against the remainder's one. Concurrent layout changes and layouts
+that do not fit are refused by `arrange`, without a retry.
+
+For example, a config binding can arrange the focused tab:
+
+```fux
+str 'a =' str 'me focused tab even-h' bind str 'panes side by side' label
+```
+
 A dump makes the layouts and launches again: each shell starts afresh in
 its directory, each program `run` started starts again. It never brings
 back what a process held: its screen, its history, what ran in a shell. A

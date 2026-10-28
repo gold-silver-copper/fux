@@ -2508,6 +2508,21 @@ mod tests {
     }
 
     #[test]
+    fn library_layout_presets_check_the_tab_before_effects()
+    -> Result<(), Box<dyn std::error::Error>> {
+        for recipe in ["even-h", "even-v", "main-h", "main-v", "tiled"] {
+            for target in ["1", "%1", "+1", "all", "str tab"] {
+                let source = format!("str SIDE-EFFECT print {target} {recipe}");
+                let failure = super::super::compile(&fuxth::token::source("preset", &source)?)
+                    .err()
+                    .ok_or_else(|| format!("accepted {source}"))?;
+                assert_eq!(failure.code, Code::from(Raise::Type), "{source}: {failure}");
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
     fn bad_cursors_report_the_given_text_and_their_format() -> Result<(), Box<dyn std::error::Error>>
     {
         for scope in [Fux::All(None), Fux::Pane(PaneId::of(1), None)] {
