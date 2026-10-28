@@ -20,6 +20,7 @@ pub mod act;
 pub mod answer;
 pub mod capture;
 pub mod client;
+pub mod client_state;
 pub mod code;
 pub mod command;
 pub mod config;

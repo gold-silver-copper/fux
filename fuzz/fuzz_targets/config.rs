@@ -145,7 +145,7 @@ struct Model {
 /// and without it, and the binding `label`, `group` and `repeat` change.
 #[derive(Clone, Debug)]
 struct Models {
-    prefix: KeyPress,
+    prefix: Option<KeyPress>,
     prefixed: Vec<Model>,
     root: Vec<(KeyPress, Binding)>,
     last: Option<Bound>,
@@ -175,7 +175,7 @@ impl Models {
                     return false;
                 };
                 if *root {
-                    let ([key], false) = (keys.as_slice(), keys.first() == Some(&self.prefix))
+                    let ([key], false) = (keys.as_slice(), keys.first().copied() == self.prefix)
                     else {
                         return false;
                     };
@@ -244,7 +244,7 @@ impl Models {
                 if self.root.iter().any(|(k, _)| *k == key) {
                     return false;
                 }
-                self.prefix = key;
+                self.prefix = Some(key);
                 true
             }
             Statement::Label(text) | Statement::Group(text) => {
@@ -336,16 +336,21 @@ fn check_keymap(keymap: &Keymap) {
         assert!(!keys.iter().any(escape), "Escape bound: {keys:?}");
     }
     for (i, (key, _)) in keymap.root.iter().enumerate() {
-        assert_ne!(*key, keymap.prefix, "the prefix bound without itself");
+        assert_ne!(Some(*key), keymap.prefix, "the prefix bound without itself");
         let again = keymap.root.iter().skip(i + 1).any(|(o, _)| o == key);
         assert!(!again, "two bindings of {key:?}");
     }
 }
 
 /// The defaults, built once.
+fn default_state() -> &'static fux::client_state::ClientState {
+    static DEFAULTS: std::sync::OnceLock<fux::client_state::ClientState> =
+        std::sync::OnceLock::new();
+    DEFAULTS.get_or_init(|| fux::script::default_state().expect("the default state initializes"))
+}
+
 fn defaults() -> &'static Keymap {
-    static DEFAULTS: std::sync::OnceLock<Keymap> = std::sync::OnceLock::new();
-    DEFAULTS.get_or_init(|| fux::script::default_keys().expect("the default keys bind"))
+    &default_state().keys
 }
 
 /// Runs `machine` as a config against `keymap`, for at most `BUDGET`
@@ -357,14 +362,18 @@ fn run_config(
     last: Option<Bound>,
 ) -> (bool, Option<Bound>) {
     let mut out = Vec::new();
-    let mut host = Host {
-        context: fux::protocol::Context::default(),
-        keymap: Some(keymap),
-        last_bound: last,
-        out: &mut out,
-    };
+    let mut state = default_state().draft();
+    state.keys = keymap.clone();
+    let mut host = Host::new(
+        fux::protocol::Context::default(),
+        Some(&mut state),
+        &mut out,
+    );
+    host.last_bound = last;
     let finished = matches!(machine.run(&mut host, BUDGET), Ok(Outcome::Finished));
-    (finished, host.last_bound)
+    let last = host.last_bound.clone();
+    *keymap = state.keys;
+    (finished, last)
 }
 
 /// The keys of the client, as its own: the keymap, what its keys are in
@@ -399,7 +408,7 @@ impl Client {
         }
         if !read_only && held_before == Held::Normal {
             let root = self.keymap.root.iter().find(|(k, _)| *k == press);
-            let expected = if press == self.keymap.prefix {
+            let expected = if Some(press) == self.keymap.prefix {
                 let column = self.keymap.column(&[], 0);
                 vec![Effect::Open(fux::act::Panel::Column(
                     column.unwrap_or_default(),

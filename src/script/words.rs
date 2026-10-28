@@ -314,7 +314,7 @@ words! {
         Server Status "status" "-- record" "the server that answers, and its version; with none, fails no_server" "fux status || fux start" [];
         Server KillServer "kill-server" "--" "stop the server: not from its own panes, nor with people attached" "fux str test server kill-server" [];
         Server ForceKillServer "force-kill-server" "--" "stop it anyway, whatever fux version it is" "fux str test server force-kill-server" [];
-        Server Set "set" "setting new --" "a setting of the server's, for every client: `fux help set` lists them" "fux str history-bytes 16777216 set" [];
+        Config Set "set" "setting new --" "a client preference, currently also applied to the shared server: `fux help set` lists their effects" "fux str history-bytes 16777216 set" [];
         Server Version "version" "-- text" "this fux's version (a pane's version is `str version get` on the pane)" "fux version" [];
         Shell Args "args" "-- list" "the strings after fux --file FILE (none for any other program)" "fux args len" [];
         Shell Input "input" "-- string" "the rest of stdin, as UTF-8 text, 16 MiB at most; not when the program came from stdin" "ls | fux input lines len" [];
@@ -1659,11 +1659,19 @@ impl Host<'_> {
             Act::KillServer => tell(Command::KillServer),
             Act::ForceKillServer => local(Local::ForceKill),
             Act::Set => {
+                self.prepare()
+                    .map_err(|failed| fail(Raise::Config, failed.to_string()))?;
                 let name = string(&next()?)?;
-                let setting = crate::config::Setting::read(&name, &next()?);
-                tell(Command::Set(vec![
-                    setting.map_err(|why| fail(Raise::Config, why))?,
-                ]))
+                let value = next()?;
+                let state = self
+                    .state
+                    .as_deref_mut()
+                    .ok_or_else(|| fail(Raise::NotConfig, "set needs this client's local state"))?;
+                state
+                    .preferences
+                    .set(&name, &value)
+                    .map_err(|why| fail(Raise::Config, why))?;
+                Ok(Done::Now)
             }
             Act::Version => now(out, Value::str(env!("CARGO_PKG_VERSION"))),
             // ------------------------------------------------------- shell
@@ -1680,10 +1688,13 @@ impl Host<'_> {
             // ------------------------------------------------------ config
             // A client's own; else the bundled keys, without a user config.
             Act::ListKeys => {
-                let text = match &self.keymap {
-                    Some(keymap) => keymap.describe(),
-                    None => super::default_keys()
+                self.prepare()
+                    .map_err(|failed| fail(Raise::Config, failed.to_string()))?;
+                let text = match &self.state {
+                    Some(state) => state.keys.describe(),
+                    None => super::default_state()
                         .map_err(|e| fail(Raise::Config, e.to_string()))?
+                        .keys
                         .describe(),
                 };
                 self.show(&text)
@@ -1709,7 +1720,7 @@ impl Host<'_> {
                     }
                 })?;
                 if config {
-                    super::run_config(image, None, None).map_err(checked)?;
+                    super::run_config(image).map_err(checked)?;
                 } else {
                     super::compile(&image.tokens()).map_err(checked)?;
                 }
@@ -1722,7 +1733,7 @@ impl Host<'_> {
 /// `job` compiled as its keys or screen will run it, with the config's
 /// definitions: its mistake said as `what`'s, of `code`.
 fn checked(
-    keymap: &crate::keymap::Keymap,
+    state: &crate::client_state::Draft,
     job: &crate::screens::Job,
     code: Raise,
     what: &str,
@@ -1733,7 +1744,7 @@ fn checked(
         failed
     };
     let tokens = job.tokens().map_err(mistake)?;
-    super::compiled(keymap.config.as_ref(), &tokens)
+    super::compiled(state.config.as_ref(), &tokens)
         .map(drop)
         .map_err(mistake)
 }
@@ -1830,7 +1841,7 @@ impl Host<'_> {
             code,
             given: given.then(String::new),
         };
-        if let Some(keymap) = self.keymap.as_deref().filter(|_| here) {
+        if let Some(keymap) = self.state.as_deref().filter(|_| here) {
             checked(keymap, &job, Raise::BadValue, "the action")?;
         }
         Ok(job.code)
@@ -1842,13 +1853,18 @@ impl Host<'_> {
         keys: Keys,
         next: &mut dyn FnMut() -> Result<Value<Fux>, Failure>,
     ) -> Result<Done<Ask>, Failure> {
-        let Some(keymap) = self.keymap.as_deref_mut() else {
-            return Err(fail(
+        let refused_context = || {
+            fail(
                 Raise::NotConfig,
                 "changes a client's keys: in its config, or typed at its prompt",
-            ));
+            )
         };
+        if self.cli {
+            return Err(refused_context());
+        }
+        let state = self.state.as_deref_mut().ok_or_else(refused_context)?;
         let refused = |why: String| fail(Raise::BadBinding, why);
+        let keymap = &mut state.keys;
         match keys {
             Keys::Prefix => {
                 let key = crate::keymap::key(&string(&next()?)?).map_err(refused)?;
@@ -1860,7 +1876,8 @@ impl Host<'_> {
                 // Checked now, rather than each time its keys are typed.
                 let job = code.as_str().into();
                 let what = format!("the binding for {keys_text}");
-                checked(keymap, &job, Raise::BadBinding, &what)?;
+                checked(state, &job, Raise::BadBinding, &what)?;
+                let keymap = &mut state.keys;
                 let binding = crate::keymap::Binding::new(code, keys == Keys::BindRoot);
                 let pressed = crate::keymap::keys(&keys_text).map_err(refused)?;
                 match (keys == Keys::BindRoot, pressed.as_slice()) {
@@ -2190,13 +2207,13 @@ mod tests {
     /// slice of the cap: 200 settings are far under `PROGRAM_STEPS`, and a
     /// loop still meets the cap.
     #[test]
-    fn a_request_costs_its_own_steps_against_the_cap() {
+    fn local_settings_share_the_program_step_cap() {
         let run = |config: &str| {
+            let mut draft = crate::client_state::Draft::default();
             super::super::run_quiet(
                 &fuxth::token::source("config", config).map_err(|e| Code::of(e.code))?,
-                crate::client::context(),
-                None,
-                &mut super::super::Settings::default(),
+                Some(&mut draft),
+                false,
             )
             .map_err(|failed| failed.code)
         };

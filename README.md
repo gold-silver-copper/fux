@@ -394,12 +394,37 @@ The optional config is `$XDG_CONFIG_HOME/fux/config.fux`, else
 `~/.config/fux/config.fux`: fuxth, which a typing terminal runs as it attaches.
 `fux start`, watchers, headless attaches (`size attach`) and ordinary CLI
 commands use only the bundled state; they never load this file.
-Its `set` words change the server for everyone, all at once when it has
-run; its key words change that client's keys alone. Half a config is no
-config: one that fails sets nothing, the client keeps the default keys,
-and it says why. `fux str FILE str program check` compiles a file without
-running it. `fux str FILE str config check` also runs it dry to validate settings and
-bindings, regardless of the filename.
+Its `set` and key words build one candidate client state. Keys, frozen
+definitions and preferences commit together; a failed config keeps the whole
+bundled state, preserves earlier explicit CLI settings, and shows one diagnostic. Evaluation sends no requests. After
+successful evaluation, one batch forwards only the preferences explicitly
+set by that config. Unrelated server settings stay as they were. A config
+with only keys or definitions sends no batch. Remaining server consumers
+move to client requests and per-client presentation in the following steps;
+until then explicit settings still affect the shared server.
+
+Client defaults load only when `set`, `list-keys` or `attach` needs them;
+ordinary queries and server controls do not load them. Bundled
+`client-defaults.fux` reads this client's `$SHELL` once and chooses `/bin/sh`
+for an unset or empty value. A non-text value is reported and falls back as
+that library specifies. Bundled `keys.fux` supplies `C-b`; there is no native
+prefix fallback. Key words such as `prefix`, `bind`, `unbind`, `label`,
+`group` and `repeat` refuse the CLI: use a config or an attached prompt.
+In action programs, pending client state commits before the next server
+operation, screen operation, server selection or force-kill-server, and when
+the program finishes. A server selection finishes pending writes against
+the previous server before changing it. Settings use the program's addressing,
+independently of the following request's target. Each transaction forwards
+only its explicitly written preferences in one batch, so a later split or wait uses
+the new setting. Individual setters send nothing. A failed transaction
+leaves prior commits intact; settings and server actions already applied
+at earlier checkpoints remain applied. Transport failures preserve the local
+commit and are reported; a lost reply may mean the server batch was applied.
+An explicit headless attach returns its forwarding failure directly.
+
+`fux str FILE str program check` compiles a file without running it.
+`fux str FILE str config check` also runs it locally to validate settings
+and bindings, regardless of the filename.
 
 ```sh
 # ~/.config/fux/config.fux
@@ -435,8 +460,8 @@ end
 str y str edit-history bind  str 'edit history' label  str Panes group
 ```
 
-`fux help set` lists the settings: what each takes, its default and what
-it does.
+`fux help set` lists the settings: what each takes and where its bundled
+initialization lives.
 
 **Bindings** run fuxth, compiled when bound, run fresh each time their keys
 are typed, as your client (`me`). A binding, and the command prompt, may use

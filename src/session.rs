@@ -426,7 +426,7 @@ pub struct Session {
     #[cfg(test)]
     pub(crate) test_keys: BTreeMap<ClientId, testing::Keys>,
     #[cfg(test)]
-    pub(crate) test_keymap: crate::keymap::Keymap,
+    pub(crate) test_keymap: crate::client_state::Draft,
 }
 
 /// How the panes a command starts start, passed to what starts them: the
@@ -535,7 +535,7 @@ impl Session {
             #[cfg(test)]
             test_keys: BTreeMap::new(),
             #[cfg(test)]
-            test_keymap: crate::keymap::Keymap::empty(),
+            test_keymap: crate::client_state::Draft::default(),
         }
     }
 
@@ -3456,6 +3456,10 @@ pub struct InProcess<'s>(pub &'s mut Session);
 
 #[cfg(any(test, feature = "in-process"))]
 impl crate::script::Asks for InProcess<'_> {
+    #[cfg(test)]
+    fn published(&mut self, state: &crate::client_state::ClientState) {
+        self.0.test_keymap = state.draft();
+    }
     fn ask(
         &mut self,
         asked: &crate::protocol::Asked,
@@ -3524,7 +3528,9 @@ pub(crate) mod testing {
         let mut session = Session::new(config, "/nonexistent/fux.sock".into(), false, run);
         let size = fux_vt::Size::new(24, 80).map_err(|e| e.to_string())?;
         session.start(size).map_err(|e| e.to_string())?;
-        session.test_keymap = crate::script::default_keys().map_err(|e| e.to_string())?;
+        session.test_keymap = crate::script::default_state()
+            .map_err(|e| e.to_string())?
+            .draft();
         Ok(session)
     }
 
@@ -3586,8 +3592,7 @@ pub(crate) mod testing {
             Ok(machine) => machine,
             Err(failed) => return (out, Err(failed)),
         };
-        let mut keymap =
-            std::mem::replace(&mut session.test_keymap, crate::keymap::Keymap::empty());
+        let mut keymap = session.test_keymap.clone();
         let context = crate::protocol::Context {
             client,
             ..crate::protocol::Context::default()
@@ -3596,12 +3601,16 @@ pub(crate) mod testing {
         let mut process = InProcess(session);
         let mut asks = crate::script::AsClient {
             asks: &mut process,
-            context,
+            context: context.clone(),
             opened: None,
+            on_commit: None,
         };
-        let ended = crate::script::run_capped(&mut machine, &mut host, &mut asks, None, None);
+        let ended = crate::script::run_capped(&mut machine, &mut host, &mut asks, None, None)
+            .and_then(|stack| {
+                crate::script::Asks::commit(&mut asks, &mut keymap, context)?;
+                Ok(stack)
+            });
         let opened = asks.opened;
-        session.test_keymap = keymap;
         if let (Some(client), Some(screen), true) = (client, opened, ended.is_ok()) {
             session.open_screen(client, screen);
         }
@@ -3759,7 +3768,7 @@ pub(crate) mod testing {
         /// Opens a screen on client `client`, as its client does.
         pub(crate) fn open_screen(&mut self, client: ClientId, screen: crate::screens::Screen) {
             let keys = self.test_keys.entry(client).or_default();
-            let acts = keys.screen.open(screen, &self.test_keymap.modes);
+            let acts = keys.screen.open(screen, &self.test_keymap.keys.modes);
             self.acts(client, acts);
             deliver(self);
         }
@@ -3792,7 +3801,7 @@ pub(crate) mod testing {
                     return;
                 };
                 let keys = self.test_keys.entry(client).or_default();
-                let effects = keys.screen.input(&self.test_keymap, input, read_only);
+                let effects = keys.screen.input(&self.test_keymap.keys, input, read_only);
                 self.effects(client, effects);
             }
         }
@@ -5553,6 +5562,9 @@ mod tests {
             false,
             run_id,
         );
+        s.test_keymap = crate::script::default_state()
+            .map_err(|e| e.to_string())?
+            .draft();
         let refused = run(&mut s, "opts new-workspace").err().unwrap_or_default();
         assert!(
             refused.starts_with("size: ") && refused.contains("give a size"),

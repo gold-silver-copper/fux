@@ -1,3 +1,5 @@
+str C-b prefix
+
 # fux's default keys: a config like yours, run before it. Your config may
 # rebind or unbind any of them, or start from none with `unbind-all`, and
 # change the prefix they follow with `prefix`. The column lists groups in

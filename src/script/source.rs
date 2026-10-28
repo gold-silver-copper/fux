@@ -282,9 +282,9 @@ mod tests {
         let f = Fixture::new()?;
         let root = f.write("main.fux", "require child.fux")?;
         f.write("child.fux", "define answer 41 end")?;
-        let old = crate::script::run_file(&root, None, None).map_err(|e| e.to_string())?;
+        let (old, _) = crate::script::run_file(&root).map_err(|e| e.to_string())?;
         f.write("child.fux", "define answer 42 end")?;
-        let new = crate::script::run_file(&root, None, None).map_err(|e| e.to_string())?;
+        let (new, _) = crate::script::run_file(&root).map_err(|e| e.to_string())?;
         for (keys, expected) in [(&old, "41\n"), (&new, "42\n"), (&old, "41\n")] {
             let mut machine = crate::script::compiled(
                 keys.config.as_ref(),
