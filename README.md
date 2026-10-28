@@ -220,13 +220,18 @@ hello bob
 
 These words are the command line's alone: a config's or a key's program is
 refused them (`not_here`). `fux ./greet.fux` is refused as an unknown word,
-the error saying `--file` runs it: no argument is guessed to be a file.
+with the fixed `str WORD` text hint: no argument is guessed to be a file.
+Use `fux --file ./greet.fux` to run it.
 
 The bundled words are written in fuxth themselves (`fux help WORD` shows
 each one's code): `type` and `press` (text and a key into a pane), `line`
 (a line typed and Enter), `shell` (a tab with a shell in workspace
-`agent`), `agent-opts` (options with `str agent in`), `quiet` (a wait until nothing changes for N seconds) and
-`counts` (a version's counts, as integers).
+`agent`), `agent-opts` (options with `str agent in`), and `counts` (a
+version's counts, as integers). `observed` samples a pane or single answer
+and retains an existing pane capture. `shows`, `quiet` and `until-ended`
+return their matching capture; `grows` waits for a counter increase within
+one program generation. Their timeouts apply to each change; use an outer
+shell deadline for the whole loop (`fux help agents`).
 
 `run` needs `in`; `agent-opts` is `opts str agent in`.
 `opts str new-workspace in ... run` starts its program in a fresh unnamed

@@ -22,7 +22,8 @@ import tomllib
 import traceback
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-SCRATCH = os.path.expanduser("~/.cache/claude-tmp/agentbench")
+SCRATCH = os.path.abspath(os.path.expanduser(os.environ.get(
+    "AGENTBENCH_SCRATCH", "~/.cache/claude-tmp/agentbench")))
 FX = f"python3 -I {HERE}/fixtures.py"
 SPOILERS = ["FUX_SOCKET", "FUX_PANE", "TMUX", "TMUX_PANE", "ZELLIJ", "ZELLIJ_SESSION_NAME",
             "ZELLIJ_PANE_ID", "HERDR_ENV", "HERDR_PANE_ID", "HERDR_WORKSPACE_ID", "HERDR_TAB_ID",
@@ -32,6 +33,13 @@ SPOILERS = ["FUX_SOCKET", "FUX_PANE", "TMUX", "TMUX_PANE", "ZELLIJ", "ZELLIJ_SES
 def tasks(path=os.path.join(HERE, "tasks.toml")):
     with open(path, "rb") as f:
         return tomllib.load(f)["task"]
+
+
+def task_pairs(selected, tools, tier):
+    """Explicit applicability only; ordinary unsupported tasks remain failures."""
+    return [(tool, task) for tool in tools for task in selected
+            if tool in task.get("tools", tools)
+            and tier in task.get("tiers", ["scripted", "agents"])]
 
 
 def held(task, name):
@@ -96,7 +104,12 @@ def check(task, work):
     if "held" in task:
         return held(task, "check").check(work)
     c = task["check"]
-    read = lambda name: open(os.path.join(work, name), encoding="utf-8").read() if os.path.exists(os.path.join(work, name)) else None
+    def read(name):
+        path = os.path.join(work, name)
+        if not os.path.exists(path):
+            return None
+        with open(path, encoding="utf-8") as source:
+            return source.read()
     if "answer" in c or "answer_contains" in c:
         got = (read("answer.txt") or "").strip()
         if "answer" in c:
@@ -198,6 +211,9 @@ def one(tool, task_id, rep, slot, fux_bin):
     result = {"tool": tool, "task": task_id, "cat": task["cat"], "rep": rep}
     start = time.time()
     try:
+        if task.get("cat") == "published":
+            import published
+            published.prepare(d, task["recipe"])
         d.start()
         if "held" in task:
             answer = held(task, "solve").solve(d, work, fixtures)
@@ -248,7 +264,7 @@ def main():
     if missing:
         print(f"skipped, a program they need is missing: {', '.join(missing)}", flush=True)
     chosen = [t for t in chosen if t["id"] not in missing]
-    jobs = [(tool, t["id"], rep) for tool in args.tools.split(",") for t in chosen
+    jobs = [(tool, t["id"], rep) for tool, t in task_pairs(chosen, args.tools.split(","), "scripted")
             for rep in range(args.repeats if not t.get("expensive") else 1)]
     slots = list(range(args.slot_base, args.slot_base + args.workers))
     results = []

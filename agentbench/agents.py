@@ -183,12 +183,12 @@ def main():
     ap.add_argument("--fux-bin", default=os.path.join(SCRATCH, "bins", "fux-base"))
     ap.add_argument("--out", required=True)
     args = ap.parse_args()
-    tasks = run.tasks()
+    tasks = [task for task in run.tasks() if "agents" in task.get("tiers", ["scripted", "agents"])]
     if args.tasks != "all":
         tasks = [t for t in tasks if t["id"] in args.tasks.split(",")]
     if args.sample:
         tasks = sample(tasks, args.sample)
-    jobs = [(tool, t) for tool in args.tools.split(",") for t in tasks]
+    jobs = run.task_pairs(tasks, args.tools.split(","), "agents")
     results = []
     if os.path.exists(args.out):
         results = json.load(open(args.out))

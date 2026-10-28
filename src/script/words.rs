@@ -802,7 +802,8 @@ fn version(value: &Value<Fux>) -> Result<crate::command::Version, Failure> {
     };
     text.parse().map_err(|()| {
         let why = format!(
-            "{text:?} is no version: PANE:RESPAWNS.SCREEN.BELLS.DONE.ENDED:RUN, as an action answers it"
+            "{:?} is no version: PANE:RESPAWNS.SCREEN.BELLS.DONE.ENDED:RUN, as an action answers it",
+            &***text
         );
         fail(Raise::BadValue, why)
     })

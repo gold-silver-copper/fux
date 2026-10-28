@@ -555,15 +555,34 @@ class Fux(Driver):
         last = [rows[end][:found.start()]] if found.start() else []
         return "\n".join(rows[begin + 1:end] + last), found.group(1)
 
-    def wait_first_exit(self, panes, timeout=15):
-        """The name of the first of several panes whose program exits."""
-        end = time.time() + timeout
-        while time.time() < end:
-            for name, p in panes.items():
-                if self.has_ended(p):
-                    return name
-            self.nap()
-        raise Timeout("no program exited")
+    def events_cursor(self):
+        """Save before launch, so even exits before subscription are replayed."""
+        return json.loads(self.fux("ls", "json").stdout)["events"]
+
+    def wait_first_exit(self, panes, cursor, timeout=15):
+        """First matching journal exit after a pre-launch cursor; refuse loss."""
+        names = {pane: name for name, pane in panes.items()}
+        command = ["timeout", str(timeout), self.bin, "all", "str", cursor, "from", "events"]
+        self.calls += 1
+        self.log.append(" ".join(shlex.quote(word) for word in command))
+        stream = subprocess.Popen(command, cwd=self.work, env=self.env,
+                                  stdout=subprocess.PIPE, text=True)
+        try:
+            for line in stream.stdout:
+                event = json.loads(line)
+                if event["event"] == "missed":
+                    raise RuntimeError("journal loss: first exit is unknown")
+                if event["event"] == "exited" and event.get("pane") in names:
+                    return names[event["pane"]]
+            raise Timeout("event stream ended before a matching exit")
+        finally:
+            stream.terminate()
+            try:
+                stream.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                stream.kill()
+                stream.wait()
+            stream.stdout.close()
 
     def wait_any_text(self, pane, texts, timeout=15):
         """One of several texts, once the pane shows any: of those it shows

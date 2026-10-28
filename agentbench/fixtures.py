@@ -98,6 +98,26 @@ def menu(items="alpha,beta,gamma,delta,epsilon,zeta", start="0"):
         put()
 
 
+def guide_menu():
+    """Delayed header/selection and delayed redraw for the published TUI recipe."""
+    put = raw()
+    w(f"{ESC}[?1049hChoose\r\n")
+    try:
+        time.sleep(0.15)
+        w(f"{ESC}[H{ESC}[2JChoose\r\n{ESC}[7mAlpha{ESC}[0m\r\nBeta\r\n")
+        while b"\x1b[B" not in read():
+            pass
+        time.sleep(0.15)
+        w(f"{ESC}[H{ESC}[2JChoose\r\nAlpha\r\n{ESC}[7mBeta{ESC}[0m\r\n")
+        while read() not in (b"q", b"\r"):
+            pass
+        record("chosen.txt", "Beta")
+    finally:
+        w(f"{ESC}[?1049l")
+        put()
+    return 0
+
+
 def loader(seconds="2", then="READY", crash="", redraw=""):
     """A spinner for SECONDS, then THEN and a prompt that echoes lines to
     lines.txt until `quit`. With crash=N it exits N instead of being ready;

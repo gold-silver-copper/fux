@@ -18,14 +18,55 @@ define counts
   version str : split-on 1 at str . split-on let parts
   list parts each number end end
 end
-# pane secs -- : wait from it (a pane from now, an answer or str V changed from its version) until nothing changes there for secs seconds
-define quiet
-  let secs
+# pane-or-observation -- capture : retain a pane capture without refreshing it, otherwise sample a pane or single answer; client captures and requests are refused
+define observed
+  dup kind str capture eq if else
+    dup kind str pane eq over kind str answer eq or
+    if capture else str 'observed needs a pane, answer or pane capture' fail then
+  then
+end
+# pane-or-observation text secs -- capture : check first, then plain shown screens after changes; old text and input echo can match; timeout is per change
+define shows
+  let secs let needle observed
   begin
-    let since
-    str timeout try since secs timeout wait false catch 2drop since true end
+    dup string needle contains if true else
+      dup counts 4 at 1 eq if str 'program ended before the text showed' fail then
+      changed secs timeout wait capture false
+    then
   until
-  drop
+end
+# pane-or-observation secs -- capture : last sample after secs with no version change; only timeout is caught; metadata belongs to that saved sample, not the end of the interval
+define quiet
+  let secs observed
+  begin
+    let seen
+    str timeout try seen changed secs timeout wait capture false
+    catch 2drop seen true end
+  until
+end
+# pane-or-observation secs -- capture : checks ended first, even with unknown status; follows the pane across respawns; timeout is per change
+define until-ended
+  let secs observed
+  begin
+    dup counts 4 at 1 eq if true else changed secs timeout wait capture false then
+  until
+end
+# pane-or-seen index amount secs -- observation : growth within one program generation, failing across respawn; index 1..4, nonnegative amount; a bare pane is sampled first; timeout is per change
+define grows
+  let secs let amount let index
+  index 1 lt index 4 gt or if str 'count index must be 1..4' fail then
+  amount 0 lt if str 'count growth must be nonnegative' fail then
+  dup kind str pane eq if observed then
+  dup counts let before
+  before 0 at let generation
+  before index at amount add let goal
+  begin
+    dup counts let now
+    now 0 at generation ne if str 'program respawned during count wait' fail then
+    now index at goal ge if true else
+      changed secs timeout wait false
+    then
+  until
 end
 # client handle -- : a prompt for its new name
 define rename-prompt
