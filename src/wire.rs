@@ -72,6 +72,24 @@ impl<'a> Reader<'a> {
         }
         Ok(out)
     }
+    pub(crate) fn bounded_list<T>(
+        &mut self,
+        max: usize,
+        read: impl FnMut(&mut Self) -> Result<T, Error>,
+    ) -> Result<Vec<T>, Error> {
+        let count = u32::get(&mut Reader(self.0, self.1))? as usize;
+        if count > max {
+            return Err(Error::Bad("list length"));
+        }
+        self.list(read)
+    }
+    pub(crate) fn bounded_text(&mut self, max: usize) -> Result<String, Error> {
+        let count = u32::get(&mut Reader(self.0, self.1))? as usize;
+        if count > max {
+            return Err(Error::Bad("text length"));
+        }
+        String::get(self)
+    }
     fn take<const N: usize>(&mut self) -> Result<[u8; N], Error> {
         let (head, rest) = self.0.split_first_chunk().ok_or(Error::Truncated)?;
         self.0 = rest;

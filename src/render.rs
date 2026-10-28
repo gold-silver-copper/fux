@@ -151,6 +151,7 @@ pub fn pictures(session: &Session, client: ClientId, placement: &Placement) -> V
     else {
         return Vec::new();
     };
+    let overlay = bar_overlay(session, view, placement);
     let cell = (cell.width(), cell.height());
     let mut visible = Vec::new();
     for &(id, rect) in &placement.panes {
@@ -160,12 +161,18 @@ pub fn pictures(session: &Session, client: ClientId, placement: &Placement) -> V
         if !shows_pictures(session, id) {
             continue;
         }
+        let height = if overlay {
+            rect.h()
+                .min(view.rows.saturating_sub(1).saturating_sub(rect.y()))
+        } else {
+            rect.h()
+        };
         for shown in pane.screen().pictures().filter(|s| s.cell == cell) {
             // The rows of the pane it is on, and the columns.
             let end = shown
                 .row
                 .saturating_add(i64::from(shown.rows))
-                .min(i64::from(rect.h()));
+                .min(i64::from(height));
             let start = shown.row.saturating_add(i64::from(shown.cropped)).max(0);
             let right = shown.col.saturating_add(shown.cols).min(rect.w());
             let (Ok(top), Ok(bottom)) = (u16::try_from(start), u16::try_from(end)) else {
@@ -309,6 +316,8 @@ struct Frame {
     panes: Vec<(PaneId, u64, Rect, (u16, u16))>,
     separators: Vec<crate::layout::Separator>,
     focus: PaneId,
+    styles: crate::presentation::Styles,
+    bar_position: crate::presentation::BarPosition,
 }
 
 impl Frame {
@@ -336,6 +345,8 @@ impl Frame {
             panes,
             separators: placement.separators.clone(),
             focus: focus?,
+            styles: view.presentation.styles,
+            bar_position: view.presentation.bar.position,
         })
     }
 }
@@ -803,13 +814,6 @@ fn own_colours(screen: &Screen) -> bool {
     screen.colors_changed() || screen.mode(fux_vt::Mode::ReverseVideo)
 }
 
-const GRAY_BG: Color = Color::Idx(236);
-const BAR_FG: Color = Color::Idx(250);
-/// A panel's lines.
-const PANEL: Attributes = Attributes::new(Color::Idx(255), Color::Idx(238));
-/// What the bar shows in black on yellow: a layer's keys, copy mode's.
-const HIGHLIGHT: Attributes = Attributes::new(Color::Idx(0), Color::Idx(11));
-
 /// How many cells `rows` rows of `cols` are. Exact: a u16 by a u16 fits
 /// even a 32-bit usize.
 fn cell_count(rows: u16, cols: u16) -> usize {
@@ -994,9 +998,13 @@ pub fn compose_held(
     {
         grid.modes.mouse = mouse_level(pane.screen().mouse_protocol_mode());
     }
-    bar(grid, session, view, placement, copy);
+    let panel = view.presentation.styles.panel.attributes();
     match &view.mode {
-        Mode::Panel(Panel::Column(c)) => column(grid, view, c),
+        Mode::Panel(Panel::Column(c)) => {
+            if view.presentation.show_column {
+                column(grid, view, c);
+            }
+        }
         Mode::Panel(Panel::List(list)) => list_panel(grid, view, list),
         Mode::Panel(Panel::Prompt {
             title,
@@ -1007,22 +1015,23 @@ pub fn compose_held(
             // The panel's border takes a cell each side.
             let room = view.cols.saturating_sub(2);
             let lines: [Line<'_>; 3] = [
-                (title.as_str().into(), PANEL.with_bold(true)),
-                (prompt_line(before, after, room), PANEL),
-                (hinted(hints).into(), PANEL.with_dim(true)),
+                (title.as_str().into(), panel.with_bold(true)),
+                (prompt_line(before, after, room), panel),
+                (hinted(hints).into(), panel.with_dim(true)),
             ];
             surface(grid, view, &lines);
         }
         Mode::Panel(Panel::Confirm { question, hints }) => {
             let lines: [Line<'_>; 2] = [
-                (question.as_str().into(), PANEL.with_bold(true)),
-                (hinted(hints).into(), PANEL),
+                (question.as_str().into(), panel.with_bold(true)),
+                (hinted(hints).into(), panel),
             ];
             surface(grid, view, &lines);
         }
         // A repeat mode shows in the bar, leaving the layout in view.
         Mode::Normal | Mode::Copy(_) | Mode::Panel(Panel::Repeat(_)) => {}
     }
+    bar(grid, session, view, placement, copy);
     Ok(())
 }
 
@@ -1102,7 +1111,7 @@ fn put_panes(
         }
         keys.push(pane_keys);
     }
-    separators(grid, placement, focus);
+    separators(grid, placement, focus, view.presentation.styles);
     grid.memo = frame.map(|frame| Memo { frame, keys });
     Ok(())
 }
@@ -1156,7 +1165,12 @@ fn prompt_line<'a>(before: &'a str, after: &'a str, room: u16) -> Text<'a> {
 
 /// Separator lines, with tees where one meets another; the ones beside the
 /// focused pane are highlighted.
-fn separators(grid: &mut Grid, placement: &Placement, focus: Option<PaneId>) {
+fn separators(
+    grid: &mut Grid,
+    placement: &Placement,
+    focus: Option<PaneId>,
+    styles: crate::presentation::Styles,
+) {
     const UP: u8 = 1;
     const DOWN: u8 = 2;
     const LEFT: u8 = 4;
@@ -1208,7 +1222,12 @@ fn separators(grid: &mut Grid, placement: &Placement, focus: Option<PaneId>) {
             _ => "┼",
         };
         let near = focused.is_some_and(|r| r.near(y, x));
-        let style = Attributes::new(Color::Idx(if near { 2 } else { 240 }), Color::Default);
+        let style = if near {
+            styles.border_focus
+        } else {
+            styles.border
+        }
+        .attributes();
         // A separator's cell is no pane's, so no wide glyph has a half there
         // to repair: it is only ever drawn over.
         grid.put(y, x, CellRef::new(glyph, false, style));
@@ -1244,9 +1263,114 @@ fn separators(grid: &mut Grid, placement: &Placement, focus: Option<PaneId>) {
     }
 }
 
-/// The bottom bar: the workspace and its tabs on the left; on the right, the
-/// first there is of a notice, copy mode's position, the keys typed in the
-/// command column, a repeat mode's keys, and the focused pane.
+/// One side of the bar, in the configured field order. No text is code.
+fn bar_fields(
+    session: &Session,
+    view: &View,
+    fields: &[crate::presentation::Field],
+    mut room: u16,
+) -> Vec<(String, Attributes)> {
+    use crate::presentation::Field;
+    let base = view.presentation.styles.bar.attributes();
+    let mut parts = Vec::new();
+    let push = |parts: &mut Vec<_>, room: &mut u16, text: String, attrs| {
+        *room = room.saturating_sub(width(&text));
+        parts.push((text, attrs));
+    };
+    for field in fields {
+        if room == 0 {
+            break;
+        }
+        match field {
+            Field::Workspace => {
+                if let Some(ws) = session.shown_workspace(view.id) {
+                    push(
+                        &mut parts,
+                        &mut room,
+                        format!(" {} ", ws.label()),
+                        base.with_bold(true),
+                    );
+                }
+            }
+            Field::Tabs => {
+                if let Some(ws) = session.shown_workspace(view.id) {
+                    let current = ws.tab_of(view.id).map(|t| t.id());
+                    for (i, tab) in ws.tabs().iter().enumerate() {
+                        if room == 0 {
+                            break;
+                        }
+                        let rang =
+                            tab.seat(view.id).is_some_and(|s| s.rang) && Some(tab.id()) != current;
+                        let number = if view.presentation.bar.tab_numbers {
+                            format!("{} ", i.saturating_add(1))
+                        } else {
+                            String::new()
+                        };
+                        let label = format!(
+                            " {number}{}{} ",
+                            tab.label(session.parts.panes()),
+                            if rang { "!" } else { "" }
+                        );
+                        let attrs = if Some(tab.id()) == current {
+                            view.presentation.styles.tab.attributes()
+                        } else {
+                            base
+                        };
+                        push(&mut parts, &mut room, label, attrs);
+                    }
+                }
+            }
+            Field::Pane => {
+                if let Some(p) = session
+                    .focused(view.id)
+                    .and_then(|f| session.parts.panes().get(&f))
+                {
+                    push(
+                        &mut parts,
+                        &mut room,
+                        crate::words::labelled(p.id(), &p.label()),
+                        base,
+                    );
+                }
+            }
+            Field::Slot(id) => {
+                if let Some(text) = view.presentation.slots.text(*id).filter(|t| !t.is_empty()) {
+                    push(&mut parts, &mut room, format!(" {text} "), base);
+                }
+            }
+        }
+    }
+    parts
+}
+
+fn bar_width(parts: &[(String, Attributes)]) -> u16 {
+    parts
+        .iter()
+        .map(|(t, _)| width(t))
+        .fold(0, u16::saturating_add)
+}
+
+fn bar_parts(grid: &mut Grid, y: u16, mut x: u16, end: u16, parts: &[(String, Attributes)]) {
+    for (text, attrs) in parts {
+        let room = end.saturating_sub(x);
+        if room == 0 {
+            break;
+        }
+        x = grid.text_cells(y, x, fit(text, room), *attrs, end);
+    }
+}
+
+/// Whether native feedback covers the bottom row of a bar-off view.
+pub(crate) fn bar_overlay(session: &Session, view: &View, placement: &Placement) -> bool {
+    view.presentation.bar.position == crate::presentation::BarPosition::Off
+        && (view.notice.is_some()
+            || view.zoom
+            || !view.mode.is_normal()
+            || !unseen(session, view, placement).is_empty())
+}
+
+/// Native feedback takes precedence over the configured right side. With
+/// the bar off, feedback overlays the bottom pane row without resizing it.
 fn bar(
     grid: &mut Grid,
     session: &Session,
@@ -1254,58 +1378,87 @@ fn bar(
     placement: &Placement,
     copy: Option<(&crate::copy::Copy, crate::copy::Resolved)>,
 ) {
-    let Some(y) = view.rows.checked_sub(1) else {
+    use crate::presentation::BarPosition;
+    let Some(bottom) = view.rows.checked_sub(1) else {
         return;
     };
-    let base = Attributes::new(BAR_FG, GRAY_BG);
-    grid.fill(
-        Rect::screen(view.rows, view.cols).corner(1, view.cols),
-        base,
-    );
+    let position = view.presentation.bar.position;
+    let y = if position == BarPosition::Top {
+        0
+    } else {
+        bottom
+    };
+    let base = view.presentation.styles.bar.attributes();
     let pane = |c: &crate::copy::Copy| session.parts.panes().get(&c.pane);
     let copy_bar = copy.and_then(|(c, at)| pane(c).map(|p| c.bar(p.screen(), &at)));
-    // Panes this screen cuts off or hides, named before the title, and
-    // given room past the title's share of the bar.
-    let mut unseen_width = 0;
-    let right: Option<(Cow<'_, str>, Attributes)> = if let Some(notice) = &view.notice {
-        let colour = Color::Idx(if notice.error { 9 } else { 11 });
-        Some((
-            notice.text.as_str().into(),
-            Attributes::new(colour, GRAY_BG),
-        ))
+    let unseen = unseen(session, view, placement);
+    let feedback = view.notice.is_some()
+        || view.zoom
+        || copy_bar.is_some()
+        || !view.mode.is_normal()
+        || !unseen.is_empty();
+    if position == BarPosition::Off && !feedback {
+        return;
+    }
+    if position == BarPosition::Off {
+        // Restore the covered pane cells on the next compose, including
+        // unchanged rows, and never expose its cursor through the feedback.
+        grid.memo = None;
+        grid.cursor = grid.cursor.filter(|(row, _)| *row != y);
+    }
+    let row = Rect::screen(view.rows, view.cols)
+        .split(Axis::Vertical, y)
+        .1
+        .split(Axis::Vertical, 1)
+        .0;
+    grid.fill(row, base);
+    let right = if let Some(notice) = &view.notice {
+        let style = if notice.error {
+            view.presentation.styles.error
+        } else {
+            view.presentation.styles.notice
+        };
+        vec![(notice.text.clone(), style.attributes())]
     } else if let Some(copy) = &copy_bar {
-        Some((copy.position.as_str().into(), base))
+        vec![(copy.position.clone(), base)]
     } else if let Mode::Panel(Panel::Column(column)) = &view.mode {
-        Some((format!("{} …", column.keys).into(), HIGHLIGHT))
-    } else if let Mode::Panel(Panel::Repeat(bar)) = &view.mode {
-        Some((bar.as_str().into(), HIGHLIGHT.with_bold(true)))
+        vec![(
+            format!("{} …", column.keys),
+            view.presentation.styles.keys.attributes(),
+        )]
+    } else if let Mode::Panel(Panel::Repeat(text)) = &view.mode {
+        vec![(text.clone(), view.presentation.styles.keys.attributes())]
     } else {
-        (session.focused(view.id))
-            .and_then(|f| session.parts.panes().get(&f))
-            .map(|p| {
-                let mut text = unseen(session, view, placement);
-                unseen_width = width(&text);
-                text.push_str(&crate::words::labelled(p.id(), &p.label()));
-                if view.zoom {
-                    text.push_str(" [zoom]");
-                }
-                (text.into(), base)
-            })
+        let mut parts = vec![(unseen.clone(), base)];
+        if view.zoom {
+            parts.push(("[zoom] ".to_owned(), base));
+        }
+        if position != BarPosition::Off {
+            parts.extend(bar_fields(
+                session,
+                view,
+                &view.presentation.bar.right,
+                view.cols,
+            ));
+        }
+        parts
     };
-    // At most three quarters of the bar, or what names the unseen panes if
-    // wider, and a gap before it. Exact: the quarters of a u16 add up to
-    // less than one.
-    let right_width = right.as_ref().map_or(0, |(t, _)| {
-        let share = (view.cols / 2).saturating_add(view.cols / 4);
-        width(t).min(share.max(unseen_width)).min(view.cols)
-    });
+    let unseen_width = width(&unseen);
+    let share = if position == BarPosition::Off || view.cols < 4 {
+        view.cols
+    } else {
+        (view.cols / 2).saturating_add(view.cols / 4)
+    };
+    let right_width = bar_width(&right)
+        .min(share.max(unseen_width))
+        .min(view.cols);
     let left_limit = view
         .cols
         .saturating_sub(right_width.saturating_add(u16::from(right_width > 0)));
     let mut x = 0;
     if let Some(copy) = &copy_bar {
         // Copy mode's keys replace the tabs.
-        let badge = HIGHLIGHT.with_bold(true);
+        let badge = view.presentation.styles.keys.attributes();
         match &copy.badge {
             crate::copy::Badge::Label(label) => {
                 x = grid.text_cells(
@@ -1338,38 +1491,17 @@ fn bar(
             x = grid.text(y, x, key, base.with_bold(true), left_limit);
             x = grid.text(y, x, &format!(" {label}"), base, left_limit);
         }
-    } else if let Some(ws) = session.shown_workspace(view.id) {
-        let name = format!(" {} ", ws.label());
-        let bold = base.with_bold(true);
-        x = grid.text_cells(y, x, fit(&name, left_limit), bold, left_limit);
-        let current = ws.tab_of(view.id).map(|t| t.id());
-        for tab in ws.tabs() {
-            let Some(room) = left_limit.checked_sub(x).filter(|r| *r > 0) else {
-                break;
-            };
-            // A bell rang in a tab the client does not show (`outer`).
-            let rang = tab.seat(view.id).is_some_and(|s| s.rang) && Some(tab.id()) != current;
-            let label = format!(
-                " {}{} ",
-                tab.label(session.parts.panes()),
-                if rang { "!" } else { "" }
-            );
-            let attrs = if Some(tab.id()) == current {
-                Attributes::new(Color::Idx(0), Color::Idx(2)).with_bold(true)
-            } else {
-                base
-            };
-            x = grid.text_cells(y, x, fit(&label, room), attrs, left_limit);
-        }
+    } else if position != BarPosition::Off {
+        bar_parts(
+            grid,
+            y,
+            x,
+            left_limit,
+            &bar_fields(session, view, &view.presentation.bar.left, left_limit),
+        );
     }
-    if let Some((text, attrs)) = right {
-        let text = fit(&text, right_width);
-        // Right-aligned, a cell from the edge, or from the left if wider.
-        let start = view
-            .cols
-            .saturating_sub(cell_width(text.clone()).saturating_add(1));
-        grid.text_cells(y, start, text, attrs, view.cols);
-    }
+    let start = view.cols.saturating_sub(right_width.saturating_add(1));
+    bar_parts(grid, y, start, start.saturating_add(right_width), &right);
 }
 
 /// What of the tab `view` shows its screen does not: `[hidden %3]` for each
@@ -1444,22 +1576,28 @@ fn windowed<'a>(
     entries: impl ExactSizeIterator<Item = Line<'a>>,
     selected: usize,
     room: usize,
+    panel: Attributes,
 ) {
     let total = entries.len();
     let start = overlay::window_start(total, selected, room);
     if start > 0 {
-        lines.push((format!("▲ {start} more").into(), PANEL.with_dim(true)));
+        lines.push((format!("▲ {start} more").into(), panel.with_dim(true)));
     }
     lines.extend(entries.skip(start).take(room));
     let below = total.saturating_sub(start.saturating_add(room));
     if below > 0 {
-        lines.push((format!("▼ {below} more").into(), PANEL.with_dim(true)));
+        lines.push((format!("▼ {below} more").into(), panel.with_dim(true)));
     }
 }
 
 /// A panel in the bottom-right corner, above the bar, sized to its lines.
 fn surface(grid: &mut Grid, view: &View, lines: &[Line<'_>]) {
     let area = view.pane_area();
+    let area = if view.presentation.bar.position == crate::presentation::BarPosition::Off {
+        area.split(Axis::Vertical, area.h().saturating_sub(1)).0
+    } else {
+        area
+    };
     if area.is_empty() || lines.is_empty() {
         return;
     }
@@ -1497,22 +1635,24 @@ fn hinted(hints: &[crate::act::Hint]) -> String {
 
 /// A chooser: the entries that fit, the selected one highlighted.
 fn list_panel(grid: &mut Grid, view: &View, list: &List) {
-    let mut lines: Vec<Line<'_>> = vec![(list.title.as_str().into(), PANEL.with_bold(true))];
+    let panel = view.presentation.styles.panel.attributes();
+    let mut lines: Vec<Line<'_>> = vec![(list.title.as_str().into(), panel.with_bold(true))];
     // Its items' rows: it has a title and a help line.
     let capacity = overlay::panel_room(view.rows, 2);
     let entries = list.items.iter().enumerate().map(|(i, item)| {
         let marker = if list.current == Some(i) { "*" } else { " " };
-        let attrs = PANEL.with_inverse(i == list.selected);
+        let attrs = panel.with_inverse(i == list.selected);
         (format!("{marker} {item}").into(), attrs)
     });
-    windowed(&mut lines, entries, list.selected, capacity);
-    lines.push((hinted(&list.hints).into(), PANEL.with_dim(true)));
+    windowed(&mut lines, entries, list.selected, capacity, panel);
+    lines.push((hinted(&list.hints).into(), panel.with_dim(true)));
     surface(grid, view, &lines);
 }
 
 /// The command column: the bindings and layers of its layer, grouped, the
 /// selected one highlighted and those that cannot run now dimmed.
 fn column(grid: &mut Grid, view: &View, column: &crate::act::Column) {
+    let panel = view.presentation.styles.panel.attributes();
     let key_width = column
         .entries
         .iter()
@@ -1525,13 +1665,13 @@ fn column(grid: &mut Grid, view: &View, column: &crate::act::Column) {
     for (index, entry) in column.entries.iter().enumerate() {
         let group = (entry.root, entry.group.as_str());
         if heading != Some(group) {
-            entries.push((group.1.into(), PANEL.with_bold(true)));
+            entries.push((group.1.into(), panel.with_bold(true)));
             heading = Some(group);
         }
         let more = if entry.layer { "…" } else { "" };
         let key = entry.key.to_string();
         let pad = usize::from(key_width.saturating_sub(width(&key)));
-        let mut attrs = PANEL;
+        let mut attrs = panel;
         if index == column.selected {
             attrs = attrs.with_inverse(true);
             selected_row = entries.len();
@@ -1544,11 +1684,17 @@ fn column(grid: &mut Grid, view: &View, column: &crate::act::Column) {
     let body_room = overlay::panel_room(view.rows, usize::from(heading));
     let mut lines: Vec<Line<'_>> = Vec::new();
     if heading {
-        lines.push((column.title.as_str().into(), PANEL.with_bold(true)));
+        lines.push((column.title.as_str().into(), panel.with_bold(true)));
     }
-    windowed(&mut lines, entries.into_iter(), selected_row, body_room);
+    windowed(
+        &mut lines,
+        entries.into_iter(),
+        selected_row,
+        body_room,
+        panel,
+    );
     if column.entries.is_empty() {
-        lines.push(("no bindings".into(), PANEL.with_dim(true)));
+        lines.push(("no bindings".into(), panel.with_dim(true)));
     }
     surface(grid, view, &lines);
 }
@@ -2685,6 +2831,194 @@ mod tests {
         (0..g.rows).map(|y| g.row_text(y)).collect()
     }
 
+    #[test]
+    fn style_commits_repaint_cached_borders_only_for_their_client() -> Result<(), String> {
+        use crate::session::testing::{attached, output_as, run};
+        let (mut session, client) = attached(8, 80)?;
+        let other = session.attach(8, 80, None).map_err(|e| e.to_string())?;
+        run(&mut session, "%1 horizontal split drop")?;
+        let (mut grid, mut placement) = (Grid::default(), Placement::default());
+        assert!(compose_into(&session, client, &mut grid, &mut placement));
+        assert!(grid.memo.is_some());
+        output_as(
+            &mut session,
+            Some(client),
+            "str styles list list str border-focus str '#123456' str default str bold end end set",
+        )?;
+        assert!(compose_into(&session, client, &mut grid, &mut placement));
+        let separator = placement.separators.first().ok_or("separator")?.rect;
+        let expected = Attributes::new(
+            Color::Rgb(fux_vt::Rgb {
+                r: 0x12,
+                g: 0x34,
+                b: 0x56,
+            }),
+            Color::Default,
+        )
+        .with_bold(true);
+        assert_eq!(
+            grid.get(separator.y(), separator.x())
+                .map(|c| c.attributes()),
+            Some(expected)
+        );
+        let other_grid = compose(&session, other).ok_or("other screen")?;
+        assert_ne!(
+            other_grid
+                .get(separator.y(), separator.x())
+                .map(|c| c.attributes()),
+            Some(expected)
+        );
+        // A mode panel and its feedback use this same client's roles.
+        output_as(
+            &mut session,
+            Some(client),
+            "str styles list list str keys 101 102 end list str panel 103 104 end list str error 105 106 end end set",
+        )?;
+        session.input(client, b"\x02");
+        let grid = compose(&session, client).ok_or("column")?;
+        assert!((0..grid.rows).any(|y| (0..grid.cols).any(|x| {
+            grid.get(y, x)
+                .is_some_and(|c| c.attributes().foreground() == Color::Idx(103))
+        })));
+        assert!((0..grid.cols).any(|x| {
+            grid.get(7, x)
+                .is_some_and(|c| c.attributes().foreground() == Color::Idx(101))
+        }));
+        session.notify_to(client, "refused", true);
+        let grid = compose(&session, client).ok_or("notice")?;
+        assert!((0..grid.cols).any(|x| {
+            grid.get(7, x)
+                .is_some_and(|c| c.attributes().foreground() == Color::Idx(105))
+        }));
+        Ok(())
+    }
+
+    #[test]
+    fn bar_fields_follow_client_data_and_slots_stay_inert() -> Result<(), String> {
+        use crate::session::testing::{attached, output_as};
+        let (mut session, client) = attached(8, 100)?;
+        output_as(
+            &mut session,
+            Some(client),
+            "str bar-slots list list 0 str 'me detach' end end set str bar list str top list list str slot 0 end str tabs str workspace end list str pane end true end set",
+        )?;
+        let view = session.views.get(&client).ok_or("view")?;
+        assert_eq!((view.pane_area().y(), view.pane_area().h()), (1, 7));
+        let grid = compose(&session, client).ok_or("screen")?;
+        let bar = grid.row_text(0);
+        assert!(bar.contains("me detach") && bar.contains("1 "), "{bar}");
+        let fields = bar_fields(&session, view, &view.presentation.bar.left, view.cols);
+        assert!(fields.first().is_some_and(|(s, _)| s.contains("me detach")));
+        assert!(fields.get(1).is_some_and(|(s, _)| s.contains("1 ")));
+        assert!(session.views.contains_key(&client));
+        Ok(())
+    }
+
+    #[test]
+    fn bar_off_feedback_overlays_and_restores_the_pane_without_resizing() -> Result<(), String> {
+        use crate::session::testing::{attached, output_as};
+        let (mut session, client) = attached(4, 40)?;
+        output_as(
+            &mut session,
+            Some(client),
+            "str bar list str off list end list end false end set",
+        )?;
+        session.output(PaneId::of(1), b"\x1b[4;1Hlast pane row");
+        let view = session.views.get(&client).ok_or("view")?;
+        assert_eq!(view.pane_area().h(), 4);
+        let (mut grid, mut placement) = (Grid::default(), Placement::default());
+        assert!(compose_into(&session, client, &mut grid, &mut placement));
+        assert!(grid.row_text(3).contains("last pane row"));
+        let size = session
+            .parts
+            .panes()
+            .get(&PaneId::of(1))
+            .ok_or("pane")?
+            .size();
+        session.notify_to(client, "visible refusal", true);
+        assert!(compose_into(&session, client, &mut grid, &mut placement));
+        assert!(grid.row_text(3).contains("visible refusal"));
+        assert_eq!(
+            session.parts.panes().get(&PaneId::of(1)).map(|p| p.size()),
+            Some(size)
+        );
+        assert!(grid.cursor.is_none());
+        if let Some(view) = session.views.get_mut(&client) {
+            view.notice = None;
+        }
+        assert!(compose_into(&session, client, &mut grid, &mut placement));
+        assert!(grid.row_text(3).contains("last pane row"));
+        output_as(&mut session, Some(client), "me zoom")?;
+        assert!(
+            compose(&session, client)
+                .ok_or("zoom")?
+                .row_text(3)
+                .contains("[zoom]")
+        );
+        output_as(&mut session, Some(client), "me zoom")?;
+        // Even a one-cell terminal shows feedback, with the pane area intact.
+        session.resize(client, 1, 1).map_err(|e| e.to_string())?;
+        session.notify_to(client, "refused", true);
+        let grid = compose(&session, client).ok_or("tiny screen")?;
+        assert!(!grid.row_text(0).trim().is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn hidden_column_keeps_dispatch_cancel_and_repeat_feedback() -> Result<(), String> {
+        use crate::session::testing::{attached, output_as};
+        let (mut session, client) = attached(8, 80)?;
+        output_as(
+            &mut session,
+            Some(client),
+            "false show-column str u str 'me focused str renamed rename' bind repeat",
+        )?;
+        session.input(client, b"\x02");
+        let grid = compose(&session, client).ok_or("screen")?;
+        assert!(!grid_lines(&grid).join("\n").contains("split side by side"));
+        assert!(grid.row_text(7).contains("C-b"));
+        session.input(client, b"!");
+        assert!(
+            session
+                .views
+                .get(&client)
+                .and_then(|v| v.notice.as_ref())
+                .is_some_and(|n| n.error)
+        );
+        session.input(client, b"\x1b");
+        session.escape(client);
+        assert!(
+            session
+                .views
+                .get(&client)
+                .is_some_and(|v| v.mode.is_normal())
+        );
+        session.input(client, b"\x02u");
+        assert_eq!(
+            session
+                .parts
+                .panes()
+                .get(&PaneId::of(1))
+                .and_then(|p| p.name()),
+            Some("renamed")
+        );
+        assert!(
+            session
+                .views
+                .get(&client)
+                .is_some_and(|v| matches!(v.mode, Mode::Panel(Panel::Repeat(_))))
+        );
+        session.input(client, b"\x1b");
+        session.escape(client);
+        assert!(
+            session
+                .views
+                .get(&client)
+                .is_some_and(|v| v.mode.is_normal())
+        );
+        Ok(())
+    }
+
     /// The rows a paint writes to: those it moves the cursor to, from 0.
     fn rows_written(bytes: &[u8]) -> Vec<u16> {
         let text = String::from_utf8_lossy(bytes);
@@ -2774,7 +3108,7 @@ mod tests {
     #[test]
     fn a_mark_of_no_width_stays_on_the_cell_before() -> Result<(), String> {
         let mut grid = new_grid(1, 8);
-        let end = grid.text(0, 0, "cafe\u{301} 界\u{301}x", PANEL, 8);
+        let end = grid.text(0, 0, "cafe\u{301} 界\u{301}x", Attributes::default(), 8);
         assert_eq!(end, 8);
         assert_eq!(grid.row_text(0), "cafe\u{301} 界\u{301}x");
         let fourth = grid.row(0).nth(3).map(|c| c.contents().to_owned());

@@ -303,7 +303,7 @@ impl Run {
         let mut machine = fux::script::compile(&tokens).map_err(told)?;
         let mut keymap = self.keymap.draft();
         if let Some(view) = client.and_then(|c| self.s.views.get(&c)) {
-            keymap.preferences.presentation(view.presentation);
+            keymap.preferences.presentation(view.presentation.clone());
         }
         let mut out = Vec::new();
         let context = Context {
@@ -353,20 +353,20 @@ impl Run {
             .s
             .views
             .iter()
-            .map(|(id, view)| (*id, view.presentation))
+            .map(|(id, view)| (*id, view.presentation.clone()))
             .collect();
         let result = self.program(client, code).0;
         if let Some(client) = client {
             assert!(result.is_ok(), "{code}: {result:?}");
             assert_eq!(
-                self.s.views.get(&client).map(|v| v.presentation),
+                self.s.views.get(&client).map(|v| v.presentation.clone()),
                 Some(self.keymap.preferences.presentation()),
                 "{code} did not reach its view"
             );
             for (other, presentation) in before {
                 if other != client {
                     assert_eq!(
-                        self.s.views.get(&other).map(|v| v.presentation),
+                        self.s.views.get(&other).map(|v| v.presentation.clone()),
                         Some(presentation),
                         "{code} changed another view"
                     );

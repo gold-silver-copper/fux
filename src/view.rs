@@ -158,12 +158,16 @@ pub enum ClientKind {
 
 crate::wire::wire! {
     /// Optional output requested by this attached client.
-    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    #[derive(Clone, Debug, PartialEq, Eq)]
     pub struct Presentation {
         pub bell: bool,
         pub titles: bool,
         pub terminal_clipboard: bool,
         pub cell_placement: bool,
+        pub styles: crate::presentation::Styles,
+        pub bar: crate::presentation::Bar,
+        pub slots: crate::presentation::Slots,
+        pub show_column: bool,
     }
 }
 
@@ -215,7 +219,16 @@ impl View {
 
     /// The area panes share on its screen: all but the bar.
     pub fn pane_area(&self) -> Rect {
-        Rect::screen(self.rows.saturating_sub(1), self.cols)
+        let screen = Rect::screen(self.rows, self.cols);
+        match self.presentation.bar.position {
+            crate::presentation::BarPosition::Top => {
+                screen.split(crate::layout::Axis::Vertical, 1).1
+            }
+            crate::presentation::BarPosition::Bottom => {
+                Rect::screen(self.rows.saturating_sub(1), self.cols)
+            }
+            crate::presentation::BarPosition::Off => screen,
+        }
     }
 
     /// Whether it sizes the panes of the tab it shows: one that only

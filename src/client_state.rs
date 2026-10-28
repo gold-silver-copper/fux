@@ -82,7 +82,7 @@ macro_rules! preferences {
             pub fn set(&mut self, name: &str, value: &Value<Fux>) -> Result<(), String> {
                 match name {
                     $($name => {
-                        self.$field = Some(<$reads as Reads>::read(value)
+                        self.$field = Some(<$reads as Reads>::update(value, self.$field.as_ref())
                             .map_err(|why| format!("{name}: {why}"))?);
                         self.changed = true;
                     },)*
@@ -151,6 +151,14 @@ preferences! {
     bell "bell": bool;
     /// Whether this client's terminal title follows its focused pane.
     titles "titles": bool;
+    /// Painter roles; changes may supply a subset of the initialized roles.
+    styles "styles": crate::presentation::Styles;
+    /// Position, ordered left and right fields, and tab numbering.
+    bar "bar": crate::presentation::Bar;
+    /// Inert text supplied explicitly by this client, never evaluated on paint.
+    slots "bar-slots": crate::presentation::Slots;
+    /// Whether the prefix column is drawn; dispatch and bar feedback stay active.
+    show_column "show-column": bool;
     /// Names selected from this client for new launches. Their concrete
     /// values and unsets are saved for respawn and dump.
     copy_environment "copy-environment": Vec<EnvName>;
@@ -182,6 +190,10 @@ impl PreferenceDraft {
     }
     /// Seed an in-process client draft from its own view.
     pub fn presentation(&mut self, p: crate::view::Presentation) {
+        self.styles = Some(p.styles);
+        self.bar = Some(p.bar);
+        self.slots = Some(p.slots);
+        self.show_column = Some(p.show_column);
         self.cell_placement = Some(p.cell_placement);
         self.bell = Some(p.bell);
         self.titles = Some(p.titles);
@@ -218,6 +230,10 @@ impl Preferences {
     }
     pub fn presentation(&self) -> crate::view::Presentation {
         crate::view::Presentation {
+            styles: self.styles,
+            bar: self.bar.clone(),
+            slots: self.slots.clone(),
+            show_column: self.show_column,
             cell_placement: self.cell_placement,
             bell: self.bell,
             titles: self.titles,
@@ -251,6 +267,13 @@ mod tests {
         assert!(state.preferences.program_clipboard && state.preferences.terminal_clipboard);
         assert!(state.preferences.bell && !state.preferences.titles);
         assert!(state.preferences.copy_environment.is_empty());
+        assert!(state.preferences.show_column);
+        let mut draft = state.draft();
+        draft.preferences.styles = None;
+        assert!(draft.finish().is_err());
+        let mut draft = state.draft();
+        draft.preferences.bar = None;
+        assert!(draft.finish().is_err());
         Ok(())
     }
 

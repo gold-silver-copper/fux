@@ -301,3 +301,27 @@ fn a_hidden_tab_goes_back_to_its_own_size() -> Outcome {
     eventually("its own size again", || sized("100x40"))?;
     Ok(())
 }
+
+/// A one-row view with no bar can create the first pane. Feedback overlays
+/// the row in client captures while pane captures keep the underlying text.
+#[test]
+fn a_bar_off_attach_keeps_pane_geometry_under_feedback() -> Outcome {
+    let mut server = Server::empty()?;
+    server.state.preferences.bar.position = fux::presentation::BarPosition::Off;
+    let mut client = server.attach(1, 60)?;
+    client.wait_for("$")?;
+    let capture = || server.ok(&["%1", "capture"]);
+    assert_eq!(capture()?.lines().count(), 1);
+    server.ok(&["all", "str", "overlay-notice", "notify"])?;
+    client.wait_for("overlay-notice")?;
+    assert!(
+        server
+            .ok(&["str", "c1", "client", "capture"])?
+            .contains("overlay-notice")
+    );
+    assert!(!capture()?.contains("overlay-notice"));
+    client.keys("x")?;
+    client.wait_for("$ x")?;
+    assert_eq!(capture()?.lines().count(), 1);
+    Ok(())
+}
