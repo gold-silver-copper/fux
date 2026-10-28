@@ -57,8 +57,9 @@ fn a_closed_panes_background_jobs_end_with_it_under_dash() -> Outcome {
         eprintln!("skipped: dash is not installed");
         return Ok(());
     };
-    let dash = fux::words::quote(&dash.to_string_lossy());
-    let server = Server::start(&format!("str shell list str {dash} end set"))?;
+    let server = Server::with_settings(vec![fux::config::Setting::Shell(
+        fux::config::Shell::new(dash.to_string_lossy().into_owned(), Vec::new())?,
+    )])?;
     let mut reap = Reap::default();
     for how in ["pane kill", "exit", "workspace kill"] {
         if how == "workspace kill" {

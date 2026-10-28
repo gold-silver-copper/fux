@@ -17,11 +17,12 @@ use std::num::NonZeroUsize;
 
 use fux::act::Act;
 use fux::act::Panel;
+use fux::client_state::ClientState;
 use fux::config::Config;
 use fux::copy::MAX_CLIPBOARD;
 use fux::decode::{Decoder, Input};
 use fux::id::{ClientId, PaneId};
-use fux::keymap::{Held, Keymap};
+use fux::keymap::Held;
 use fux::keys::{Key, Keystroke};
 use fux::outer;
 use fux::protocol::{Context, ToAttached};
@@ -98,8 +99,8 @@ const SIDE: &[&str] = &[
     "str g unbind",
     "str C-a prefix",
     "str C-b prefix",
-    "str clipboard false set",
-    "str clipboard true set",
+    "str terminal-clipboard false set",
+    "str program-clipboard true set",
     "str c1 client str hjkl text send-keys",
     "str c1 client detach",
     "str %1 pane newest paste-buffer",
@@ -181,7 +182,7 @@ type State = (
     Vec<(ClientId, String, Option<Grid>)>,
     Config,
     Vec<(fux::id::BufferId, String)>,
-    Keymap,
+    ClientState,
     Vec<(ClientId, fux::screens::Display)>,
 );
 
@@ -197,7 +198,7 @@ struct Keys {
 struct Run {
     s: Session,
     /// The keymap of every client: bindings change it, as programs run.
-    keymap: Keymap,
+    keymap: ClientState,
     keys: BTreeMap<ClientId, Keys>,
     /// Each client's grids as the server keeps them: composed into the
     /// spare, painted against the shown, swapped.
@@ -206,9 +207,9 @@ struct Run {
 }
 
 /// The default keys, built once.
-fn defaults() -> &'static Keymap {
-    static DEFAULTS: std::sync::OnceLock<Keymap> = std::sync::OnceLock::new();
-    DEFAULTS.get_or_init(|| fux::script::default_keys().expect("the default keys bind"))
+fn defaults() -> &'static ClientState {
+    static DEFAULTS: std::sync::OnceLock<ClientState> = std::sync::OnceLock::new();
+    DEFAULTS.get_or_init(|| fux::script::default_state().expect("the default keys bind"))
 }
 
 impl Run {
@@ -285,7 +286,7 @@ impl Run {
             return Err("reads a file".to_owned());
         }
         let mut machine = fux::script::compile(&tokens).map_err(told)?;
-        let mut keymap = self.keymap.clone();
+        let mut keymap = self.keymap.draft();
         let mut out = Vec::new();
         let context = Context {
             client,
@@ -302,7 +303,9 @@ impl Run {
         let ended = run_capped(&mut machine, &mut host, &mut asks, Some(BUDGET), None);
         *opened = asks.opened.filter(|_| client.is_some() && ended.is_ok());
         // As a client keeps what its program did to its keymap.
-        self.keymap = keymap;
+        if ended.is_ok() {
+            self.keymap = keymap.finish().expect("complete state");
+        }
         let mut text = String::from_utf8_lossy(&out).into_owned();
         for value in &ended.map_err(told)? {
             text.push_str(&value.text());
@@ -335,7 +338,7 @@ impl Run {
     fn open(&mut self, client: ClientId, screen: Screen) {
         let mut acts = Vec::new();
         if let Some(keys) = self.keys.get_mut(&client) {
-            acts.extend(keys.screen.open(screen, &self.keymap.modes));
+            acts.extend(keys.screen.open(screen, &self.keymap.keys.modes));
         }
         self.s.acts(client, acts);
     }
@@ -495,7 +498,7 @@ impl Run {
                 continue;
             }
             let keys = self.keys.entry(client).or_default();
-            let effects = keys.screen.input(&self.keymap, input, read_only);
+            let effects = keys.screen.input(&self.keymap.keys, input, read_only);
             self.effects(client, effects);
         }
     }
@@ -523,7 +526,7 @@ impl Run {
         if keys.screen.screen.is_open() && !read_only {
             let effects = keys
                 .screen
-                .input(&self.keymap, Input::Key(stroke), read_only);
+                .input(&self.keymap.keys, Input::Key(stroke), read_only);
             self.keys.insert(client, keys);
             self.effects(client, effects);
             return;
@@ -532,7 +535,7 @@ impl Run {
             matches!(keys.screen.screen, Screen::Keys(Held::Repeat { .. })) && !read_only;
         let steps = keys
             .screen
-            .input(&self.keymap, Input::Key(stroke), read_only);
+            .input(&self.keymap.keys, Input::Key(stroke), read_only);
         self.keys.insert(client, keys);
         if repeating {
             self.drain_panes();

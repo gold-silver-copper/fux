@@ -471,10 +471,27 @@ fn start(
                 }
                 std::thread::sleep(Duration::from_millis(10));
             }
-            // Its settings at once, as the test harness applies them.
+            // The server budget consumer has not migrated to launch requests yet.
             let chosen = fux::socket::Choice::Path(socket.clone());
             let mut to = fux::script::Server::new(chosen);
-            fux::script::run_file(&config, Some(&mut to), None).map_err(|e| e.to_string())?;
+            let bytes = fux::config::Number::new(
+                usize::try_from(HISTORY_BYTES).map_err(|e| e.to_string())?,
+            )
+            .ok_or("history budget")?;
+            let asked = fux::protocol::Asked {
+                request: fux::command::Command::Set(vec![fux::config::Setting::HistoryBytes(
+                    bytes,
+                )])
+                .into(),
+                context: Default::default(),
+                after: None,
+            };
+            use fux::script::Asks;
+            fux::script::succeeded(
+                to.ask(&asked, &mut std::io::sink())
+                    .map_err(|e| e.to_string())?,
+            )
+            .map_err(|e| e.to_string())?;
             let socket = socket.to_string_lossy().into_owned();
             env.push(("FUX_SOCKET".into(), socket.clone()));
             env.push(("FUX_BIN".into(), place.fux.clone()));

@@ -382,17 +382,18 @@ mistake every run would make (too few values, a string given to `add` or
 fails before any word acts; otherwise the words before a failing one have
 already acted. A run exits 0, or with the status of the failure that
 stopped it, or the one `N exit` gives (0 to 255), what is left printed.
-From the command line alone, a script reads `args` (the strings after
-`--file FILE`), `input` (the rest of stdin; not when the program came from
-it), `str PATH read-file` and `str NAME getenv` (a variable not set fails
-`unset_var`, never an empty string), and `X warn` prints on stderr:
+`str NAME getenv` reads a local variable in config or CLI mode; an unset
+variable fails `unset_var`, never an empty string. From the command line
+alone, a script reads `args` (the strings after `--file FILE`), `input`
+(the rest of stdin; not when the program came from it), and `str PATH
+read-file`. `X warn` prints on stderr:
 `args len 0 eq if str 'usage: job.fux PANE' warn 2 exit then`.
 
 ## servers: Servers, sizes and more
 
 - `FUX`, `FUX_PANE`, `FUX_SOCKET` and `FUX_SERVER` are reserved pane
   identity. Requesting them is refused: `bad_value` in `env`, `config` in
-  `update-environment`. Other names, including `FUX_EXTRA`, remain allowed.
+  `copy-environment`. Other names, including `FUX_EXTRA`, remain allowed.
 - Handle values returned by a server retain its run through lists, bindings,
   answers and request options; using one against another run is refused.
   A hand-written `%N`, `@N`, `+N` or `str cN client` means the selected server

@@ -11,11 +11,11 @@ mod words;
 
 use crate::answer::{PaneAnswer, PaneResults};
 use crate::client;
+use crate::client_state::{ClientState, Draft};
 use crate::code::{Code, Raise};
 use crate::command::{AnyRef, Extent, Input, Kind, Mouse, Request, Run, Version, WsRef};
 use crate::id::{ClientId, PaneId, TabId, WsId};
 use crate::json::Json;
-use crate::keymap::Keymap;
 use crate::layout::Axis;
 use crate::protocol::{Asked, Body, Context, End, Reply, Response};
 use crate::socket::{Choice, SocketPath};
@@ -39,6 +39,7 @@ pub const SHEBANG: &str = "#!/usr/bin/env -S fux --file";
 
 /// fux's default keys: a config, run before the user's.
 const KEYS: &str = include_str!("keys.fux");
+const DEFAULTS: &str = include_str!("client-defaults.fux");
 
 /// A value of fux's own on the stack.
 #[derive(Clone, Debug, PartialEq)]
@@ -381,25 +382,21 @@ pub enum Shell {
 }
 
 /// What runs a program's words: where its requests come from, the client's
-/// keymap if it runs as a config, and what its output goes to.
+/// candidate client state, and what its output goes to.
 pub struct Host<'a> {
     pub context: Context,
-    /// The keymap a config's `bind` and `prefix` change.
-    pub keymap: Option<&'a mut Keymap>,
+    /// The whole candidate, changed only by local setters.
+    pub state: Option<&'a mut Draft>,
     /// The binding `label`, `group` and `repeat` change.
     pub last_bound: Option<Bound>,
     pub out: &'a mut dyn Write,
 }
 
 impl<'a> Host<'a> {
-    pub fn new(
-        context: Context,
-        keymap: Option<&'a mut Keymap>,
-        out: &'a mut dyn Write,
-    ) -> Host<'a> {
+    pub fn new(context: Context, state: Option<&'a mut Draft>, out: &'a mut dyn Write) -> Host<'a> {
         Host {
             context,
-            keymap,
+            state,
             last_bound: None,
             out,
         }
@@ -770,7 +767,12 @@ pub trait Asks {
     /// Asks `asked`, what is streamed before its reply going to `out`.
     fn ask(&mut self, asked: &Asked, out: &mut dyn Write) -> Result<Reply, Failed>;
     /// Does what the client does itself: by default, nothing, refused.
-    fn local(&mut self, what: &Local, _out: &mut dyn Write) -> Result<Vec<Value<Fux>>, Failed> {
+    fn local(
+        &mut self,
+        what: &Local,
+        _state: Option<&Draft>,
+        _out: &mut dyn Write,
+    ) -> Result<Vec<Value<Fux>>, Failed> {
         refuse_local(what)
     }
 }
@@ -838,9 +840,14 @@ impl Asks for Cli {
     fn ask(&mut self, asked: &Asked, out: &mut dyn Write) -> Result<Reply, Failed> {
         self.server.ask(asked, out)
     }
-    fn local(&mut self, what: &Local, _out: &mut dyn Write) -> Result<Vec<Value<Fux>>, Failed> {
+    fn local(
+        &mut self,
+        what: &Local,
+        state: Option<&Draft>,
+        _out: &mut dyn Write,
+    ) -> Result<Vec<Value<Fux>>, Failed> {
         let Local::Shell(shell) = what else {
-            return local(what, &mut self.server);
+            return local(what, &mut self.server, state);
         };
         let string = |s: &str| vec![Value::str(s)];
         Ok(match shell {
@@ -920,9 +927,14 @@ impl Asks for AsClient<'_> {
     fn ask(&mut self, asked: &Asked, out: &mut dyn Write) -> Result<Reply, Failed> {
         self.asks.ask(asked, out)
     }
-    fn local(&mut self, what: &Local, out: &mut dyn Write) -> Result<Vec<Value<Fux>>, Failed> {
+    fn local(
+        &mut self,
+        what: &Local,
+        state: Option<&Draft>,
+        out: &mut dyn Write,
+    ) -> Result<Vec<Value<Fux>>, Failed> {
         let Local::Open(open) = what else {
-            return self.asks.local(what, out);
+            return self.asks.local(what, state, out);
         };
         let (asks, context) = (&mut *self.asks, &self.context);
         let mut sink = io::sink();
@@ -992,7 +1004,7 @@ pub fn run_capped(
                 }
             }
             Outcome::Suspended(Ask::Local(what)) => {
-                let values = asks.local(&what, host.out);
+                let values = asks.local(&what, host.state.as_deref(), host.out);
                 // An exit the host took ends the run here, as it stands.
                 if let (Local::Shell(Shell::Exit(_)), Ok(_)) = (&what, &values) {
                     return Ok(machine.stack().to_vec());
@@ -1143,7 +1155,11 @@ pub fn handle(id: AnyRef, run: Option<Run>) -> Fux {
 
 /// What a program does that the client does itself, from the command line:
 /// attaching, choosing, starting and stopping a server, and its status.
-fn local(what: &Local, server: &mut Server) -> Result<Vec<Value<Fux>>, Failed> {
+fn local(
+    what: &Local,
+    server: &mut Server,
+    state: Option<&Draft>,
+) -> Result<Vec<Value<Fux>>, Failed> {
     match what {
         Local::Server(chosen) => server.choose(chosen.clone()),
         Local::Attach {
@@ -1164,6 +1180,16 @@ fn local(what: &Local, server: &mut Server) -> Result<Vec<Value<Fux>>, Failed> {
             if size.is_none() && client::window_size().is_none() {
                 return Err(client_failed(client::Error::NoSize));
             }
+            let defaults = state
+                .cloned()
+                .ok_or_else(|| Failed::new(Code::Config, "attach needs this client's local state"))?
+                .finish()
+                .map_err(|why| Failed::new(Code::Config, why))?;
+            let (state, problem) = if size.is_none() && !read_only {
+                configured(&defaults)
+            } else {
+                (defaults, None)
+            };
             // Watching or naming a run starts no replacement server.
             let socket = match *read_only || of.is_some() {
                 true => server.socket()?,
@@ -1173,16 +1199,11 @@ fn local(what: &Local, server: &mut Server) -> Result<Vec<Value<Fux>>, Failed> {
                 let why = "no server answers: there is nothing to watch";
                 return Err(Failed::new(Code::NoServer, why));
             }
-            let (keymap, problem) = if size.is_none() && !read_only {
-                configured(server, *of)
-            } else {
-                (default_keys()?, None)
-            };
             let attach = client::Attaching {
                 of: *of,
                 workspace: workspace.clone(),
                 read_only: *read_only,
-                keymap,
+                state,
                 problem,
             };
             client::attach(&socket, attach, *size).map_err(client_failed)?;
@@ -1212,38 +1233,26 @@ fn started(server: &mut Server) -> Result<SocketPath, Failed> {
     Ok(socket)
 }
 
-/// A typing terminal's keymap, its config run on the defaults; and what
-/// was wrong with the config, if anything was.
-pub fn configured(server: &mut Server, run: Option<Run>) -> (Keymap, Option<String>) {
-    match config_keymap(Some(server), run) {
-        Ok(keymap) => (keymap, None),
-        // Half a config is no config: the defaults, and why; none, if they
-        // are what failed (the failure names keys.fux).
-        Err(failed) => match default_keys() {
-            Ok(defaults) => (defaults, Some(failed.notice())),
-            Err(broken) => (Keymap::empty(), Some(broken.to_string())),
-        },
+/// A typing terminal's whole state, or the unchanged bundled state and one diagnostic.
+pub fn configured(defaults: &ClientState) -> (ClientState, Option<String>) {
+    match config_state(defaults) {
+        Ok(state) => (state, None),
+        Err(failed) => (defaults.clone(), Some(failed.notice())),
     }
 }
 
-/// The default keys: the bundled config `keys.fux`, run on no bindings.
-pub fn default_keys() -> Result<Keymap, Failed> {
-    let mut keymap = Keymap::empty();
-    let dry = &mut Settings::default();
-    run_quiet(
-        &token::source("keys.fux", KEYS)?,
-        Context::default(),
-        Some(&mut keymap),
-        dry,
-    )?;
-    Ok(keymap)
+/// Complete bundled policy and keys. Missing initialization is an error.
+pub fn default_state() -> Result<ClientState, Failed> {
+    let mut draft = Draft::default();
+    for (name, text) in [("client-defaults.fux", DEFAULTS), ("keys.fux", KEYS)] {
+        run_quiet(&token::source(name, text)?, Some(&mut draft))?;
+    }
+    draft.finish().map_err(|why| Failed::new(Code::Config, why))
 }
 
-/// The keymap the config file makes (`run_file`), if there is one; else
-/// the defaults.
-fn config_keymap(server: Option<&mut Server>, run: Option<Run>) -> Result<Keymap, Failed> {
+fn config_state(defaults: &ClientState) -> Result<ClientState, Failed> {
     let Some(path) = crate::config::default_path() else {
-        return default_keys();
+        return Ok(defaults.clone());
     };
     let shown = path.display().to_string();
     let (path, file) = match source::root(&path) {
@@ -1254,90 +1263,71 @@ fn config_keymap(server: Option<&mut Server>, run: Option<Run>) -> Result<Keymap
                     .symlink_metadata()
                     .is_err_and(|e| e.kind() == io::ErrorKind::NotFound) =>
         {
-            return default_keys();
+            return Ok(defaults.clone());
         }
         Err(error) => return Err(read_failed(&shown, &error.to_string())),
     };
-    run_config(source::opened_file(path, file)?, server, run)
+    run_config_on(source::opened_file(path, file)?, defaults)
 }
 
-/// The keymap a config file makes, its words run on the defaults, its
-/// settings sent to `server` once it has run, as one request the server
-/// puts in force whole, or with none sent (a dry run); or why it fails. A
-/// config that fails as it runs sends none; one whose answer is lost may
-/// have been put in force, whole. A config attaches nothing, and chooses
-/// no other server. A given `run` constrains its settings too.
-pub fn run_file(
-    path: &std::path::Path,
-    server: Option<&mut Server>,
-    run: Option<Run>,
-) -> Result<Keymap, Failed> {
-    run_config(source::file(path)?, server, run)
+/// Reads a frozen config graph and runs it without a transport capability.
+pub fn run_file(path: &std::path::Path) -> Result<ClientState, Failed> {
+    run_config(source::file(path)?)
 }
 
-/// Runs one source snapshot as a config, on the bundled keys.
-fn run_config(
-    image: fuxth::SourceImage,
-    server: Option<&mut Server>,
-    run: Option<Run>,
-) -> Result<Keymap, Failed> {
-    let context = Context {
-        of: run,
-        ..client::context()
-    };
+fn run_config(image: fuxth::SourceImage) -> Result<ClientState, Failed> {
+    run_config_on(image, &default_state()?)
+}
+
+fn run_config_on(image: fuxth::SourceImage, defaults: &ClientState) -> Result<ClientState, Failed> {
     let tokens = image.tokens();
-    let mut keymap = Keymap {
-        config: Some(Arc::new(image)),
-        ..default_keys()?
-    };
-    let mut settings = Settings::default();
-    run_quiet(&tokens, context.clone(), Some(&mut keymap), &mut settings)?;
-    if let Some(server) = server
-        && !settings.0.is_empty()
-    {
-        let request = crate::command::Command::Set(settings.0).into();
-        succeeded(server.ask(
-            &Asked {
-                request,
-                context,
-                after: None,
-            },
-            &mut io::sink(),
-        )?)?;
-    }
-    Ok(keymap)
+    let mut draft = defaults.draft();
+    draft.config = Some(Arc::new(image));
+    run_quiet(&tokens, Some(&mut draft))?;
+    draft.finish().map_err(|why| Failed::new(Code::Config, why))
 }
 
-/// Runs the program in `tokens`, its requests going to `asks`
-/// and its output nowhere, for at most `PROGRAM_STEPS` steps.
-fn run_quiet(
-    tokens: &[Token],
-    context: Context,
-    keymap: Option<&mut Keymap>,
-    asks: &mut dyn Asks,
-) -> Result<(), Failed> {
+/// Runs bounded config code with only local reads and draft mutations.
+fn run_quiet(tokens: &[Token], state: Option<&mut Draft>) -> Result<(), Failed> {
     let mut machine = compile(tokens)?;
     let mut out = io::sink();
-    let mut host = Host::new(context, keymap, &mut out);
-    run_capped(&mut machine, &mut host, asks, Some(PROGRAM_STEPS), None).map(drop)
+    let mut host = Host::new(Context::default(), state, &mut out);
+    run_capped(
+        &mut machine,
+        &mut host,
+        &mut ConfigOnly,
+        Some(PROGRAM_STEPS),
+        None,
+    )
+    .map(drop)
 }
 
-/// What a config's requests go to: settings alone, as a typing terminal
-/// runs its config when attaching, and must make nothing. Each is kept,
-/// in order, for the run's end: half a config is no config.
-#[derive(Default)]
-struct Settings(Vec<crate::config::Setting>);
+/// Config evaluation has no server or connection, even through imports.
+struct ConfigOnly;
 
-impl Asks for Settings {
-    fn ask(&mut self, asked: &Asked, _: &mut dyn Write) -> Result<Reply, Failed> {
-        let Request::Do(crate::command::Command::Set(settings)) = &asked.request else {
-            return Err(Failed::new(
-                Code::NotConfig,
-                "a config sets and binds: it runs each time a client attaches, so it makes and changes nothing else",
-            ));
-        };
-        self.0.extend(settings.iter().cloned());
-        Ok(Reply::default())
+impl Asks for ConfigOnly {
+    fn ask(&mut self, _: &Asked, _: &mut dyn Write) -> Result<Reply, Failed> {
+        Err(Failed::new(
+            Code::NotConfig,
+            "a config changes only its own client state",
+        ))
+    }
+    fn local(
+        &mut self,
+        what: &Local,
+        _: Option<&Draft>,
+        _: &mut dyn Write,
+    ) -> Result<Vec<Value<Fux>>, Failed> {
+        match what {
+            Local::Shell(Shell::Getenv(name)) => Ok(vec![Value::str(getenv(name)?)]),
+            Local::Attach { .. }
+            | Local::Server(_)
+            | Local::Start
+            | Local::Status
+            | Local::ForceKill
+            | Local::Open(_)
+            | Local::Shell(_) => refuse_local(what),
+        }
     }
 }
 
@@ -1371,7 +1361,8 @@ pub fn main(args: &[String], out: &mut dyn Write) -> Result<u8, Failed> {
         Given::Words => Failed::from(a_file(e, args)),
         Given::Stdin | Given::File(_) => Failed::from(e),
     })?;
-    let mut host = Host::new(client::context(), None, out);
+    let mut state = default_state()?.draft();
+    let mut host = Host::new(client::context(), Some(&mut state), out);
     let mut cli = Cli {
         server: Server::default(),
         from,
@@ -1567,22 +1558,9 @@ mod tests {
     /// config's program, as a key's, is refused it.
     #[test]
     fn only_the_command_line_asks_its_process() -> Result<(), super::Failed> {
-        let words = [
-            "args",
-            "input",
-            "str x read-file",
-            "str HOME getenv",
-            "str x warn",
-            "0 exit",
-        ];
+        let words = ["args", "input", "str x read-file", "str x warn", "0 exit"];
         for code in words {
-            let dry = &mut super::Settings::default();
-            let ran = super::run_quiet(
-                &super::token::source("config", code)?,
-                Default::default(),
-                None,
-                dry,
-            );
+            let ran = super::run_quiet(&super::token::source("config", code)?, None);
             assert_eq!(
                 ran.err().map(|f| f.code),
                 Some(super::Code::NotHere),
@@ -1597,21 +1575,18 @@ mod tests {
     /// from any keys.
     #[test]
     fn the_default_keys_are_a_config_list_keys_prints() -> Result<(), super::Failed> {
-        let run = |name: &str, text: &str, keymap: &mut super::Keymap| {
-            let dry = &mut super::Settings::default();
-            super::run_quiet(
-                &super::token::source(name, text)?,
-                Default::default(),
-                Some(keymap),
-                dry,
-            )
+        let run = |name: &str, text: &str, state: &mut crate::client_state::Draft| {
+            super::run_quiet(&super::token::source(name, text)?, Some(state))
         };
-        let mut keymap = super::default_keys()?;
+        let mut keymap = super::default_state()?.draft();
         let (screens, keys): (Vec<&str>, Vec<&str>) = (super::KEYS.lines())
             .filter(|l| !l.is_empty() && !l.starts_with('#'))
             .partition(|l| l.contains(" bind-in"));
-        assert_eq!(keymap.bindings.all().len(), keys.len());
-        let listed = keymap.describe();
+        assert_eq!(
+            keymap.keys.bindings.all().len(),
+            keys.len().saturating_sub(1)
+        );
+        let listed = keymap.keys.describe();
         assert_eq!(listed.matches(" bind-in").count(), screens.len());
         // Quotes, a backslash and a line end, as a config writes them.
         let mine = r#"str M-t str 'me zoom' bind-root str Mine group
@@ -1619,14 +1594,14 @@ mod tests {
             str "a \\ and
             a line" label"#;
         run("mine", mine, &mut keymap)?;
-        let mut again = super::Keymap::empty();
+        let mut again = super::default_state()?.draft();
         run(
             "other",
             "str C-a prefix str M-n str 'me str next step-tab' bind-root",
             &mut again,
         )?;
-        run("listed", &keymap.describe(), &mut again)?;
-        assert_eq!(again, keymap);
+        run("listed", &keymap.keys.describe(), &mut again)?;
+        assert_eq!(again.keys, keymap.keys);
         Ok(())
     }
 
@@ -1640,7 +1615,7 @@ mod tests {
         let ran = super::run_capped(
             &mut machine,
             &mut host,
-            &mut super::Settings::default(),
+            &mut super::ConfigOnly,
             Some(20_000),
             None,
         );

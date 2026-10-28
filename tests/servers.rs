@@ -686,12 +686,13 @@ fn an_unnamed_workspace_replays_independently_of_the_default_shell() -> Outcome 
         "run",
     ])?;
     let dump = source.ok(&["str", "first", "pane", "workspace", "dump-of"])?;
-    for shell in [
-        &["str", "/no/such/fux-shell"][..],
-        &["str", "sh", "str", "-c", "str", "exit 0"],
-    ] {
+    for shell in [&["/no/such/fux-shell"][..], &["sh", "-c", "exit 0"]] {
         let server = Server::start("")?;
-        server.ok(&[&["str", "shell", "list"][..], shell, &["end", "set"]].concat())?;
+        let (program, args) = shell.split_first().ok_or("shell argv")?;
+        server.settings(vec![fux::config::Setting::Shell(fux::config::Shell::new(
+            (*program).to_owned(),
+            args.iter().map(|s| (*s).to_owned()).collect(),
+        )?)])?;
         let file = server.dir.join("unnamed.fux");
         std::fs::write(&file, &dump).map_err(e)?;
         server.ok(&["--file", &file.to_string_lossy()])?;

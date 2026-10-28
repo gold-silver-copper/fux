@@ -426,7 +426,7 @@ pub struct Session {
     #[cfg(test)]
     pub(crate) test_keys: BTreeMap<ClientId, testing::Keys>,
     #[cfg(test)]
-    pub(crate) test_keymap: crate::keymap::Keymap,
+    pub(crate) test_keymap: crate::client_state::Draft,
 }
 
 /// How the panes a command starts start, passed to what starts them: the
@@ -535,7 +535,7 @@ impl Session {
             #[cfg(test)]
             test_keys: BTreeMap::new(),
             #[cfg(test)]
-            test_keymap: crate::keymap::Keymap::empty(),
+            test_keymap: crate::client_state::Draft::default(),
         }
     }
 
@@ -3355,7 +3355,9 @@ pub(crate) mod testing {
         let mut session = Session::new(config, "/nonexistent/fux.sock".into(), false, run);
         let size = fux_vt::Size::new(24, 80).map_err(|e| e.to_string())?;
         session.start(size).map_err(|e| e.to_string())?;
-        session.test_keymap = crate::script::default_keys().map_err(|e| e.to_string())?;
+        session.test_keymap = crate::script::default_state()
+            .map_err(|e| e.to_string())?
+            .draft();
         Ok(session)
     }
 
@@ -3417,8 +3419,7 @@ pub(crate) mod testing {
             Ok(machine) => machine,
             Err(failed) => return (out, Err(failed)),
         };
-        let mut keymap =
-            std::mem::replace(&mut session.test_keymap, crate::keymap::Keymap::empty());
+        let mut keymap = std::mem::take(&mut session.test_keymap);
         let context = crate::protocol::Context {
             client,
             ..crate::protocol::Context::default()
@@ -3588,7 +3589,7 @@ pub(crate) mod testing {
         /// Opens a screen on client `client`, as its client does.
         pub(crate) fn open_screen(&mut self, client: ClientId, screen: crate::screens::Screen) {
             let keys = self.test_keys.entry(client).or_default();
-            let acts = keys.screen.open(screen, &self.test_keymap.modes);
+            let acts = keys.screen.open(screen, &self.test_keymap.keys.modes);
             self.acts(client, acts);
             deliver(self);
         }
@@ -3621,7 +3622,7 @@ pub(crate) mod testing {
                     return;
                 };
                 let keys = self.test_keys.entry(client).or_default();
-                let effects = keys.screen.input(&self.test_keymap, input, read_only);
+                let effects = keys.screen.input(&self.test_keymap.keys, input, read_only);
                 self.effects(client, effects);
             }
         }
@@ -5209,7 +5210,7 @@ mod tests {
     /// `set history-bytes` changes every pane's history, not only the next
     /// pane's.
     #[test]
-    fn set_history_bytes_applies_to_panes_there_are() -> Result<(), String> {
+    fn legacy_history_changes_apply_to_existing_panes() -> Result<(), String> {
         let (mut s, _) = attached(5, 20)?;
         s.output(
             PaneId::of(1),
@@ -5225,7 +5226,8 @@ mod tests {
         };
         assert!(history(&s) > Some(2));
         // Two rows of four cells: 24 bytes a row and 8 a cell.
-        run(&mut s, "str history-bytes 112 set")?;
+        s.config.history_bytes = crate::config::Number::new(112).ok_or("budget")?;
+        s.parts.each_pane_mut(|p| p.set_history_bytes(112));
         assert_eq!(history(&s), Some(2));
         Ok(())
     }
@@ -5295,7 +5297,7 @@ mod tests {
             "{json}"
         );
         s.outbox.clear();
-        run(&mut s, "str clipboard false set")?;
+        s.config.clipboard = false;
         s.output(PaneId::of(1), b"\x1b]52;c;YmFy\x07");
         assert!(!sent(&s) && s.outbox.is_empty());
         assert_eq!(s.buffers.front().map(|(_, text)| text.as_str()), Some("b"));
@@ -6435,7 +6437,7 @@ mod tests {
             &mut source,
             "opts +1 in 80 24 size str cat name str /bin/cat program run str new-workspace move-to",
         )?;
-        run(&mut source, "str shell list str /bin/other end set")?;
+        source.config.shell = crate::config::Shell::new("/bin/other".into(), Vec::new())?;
         let dump = source.dump_layout(None);
         assert!(!dump.contains("str other rename"), "{dump}");
         let mut again = started(Config::default())?;

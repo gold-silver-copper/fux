@@ -3,10 +3,10 @@
 //! paints the server relays to its terminal;
 //! a headless one; and the connection a program's requests go over.
 use crate::act::Act;
+use crate::client_state::ClientState;
 use crate::code::Code;
 use crate::command::{Command, Request};
 use crate::decode::Input;
-use crate::keymap::Keymap;
 use crate::keys::{Key, KeyPress, Modifiers};
 use crate::protocol::{
     Asked, Attach, AttachedFrame, Context, Decoder, Frame, Greeting, Hello, Mismatch, PROTOCOL,
@@ -502,7 +502,7 @@ pub struct Attaching {
     pub of: Option<crate::command::Run>,
     pub workspace: Option<crate::command::WsRef>,
     pub read_only: bool,
-    pub keymap: Keymap,
+    pub state: ClientState,
     pub problem: Option<String>,
 }
 
@@ -561,20 +561,20 @@ fn pasted(input: &Input) -> usize {
     }
 }
 
-/// The keymap the worker and the client share. A program changes a copy,
+/// The state the worker and the client share. A program changes a copy,
 /// put in its place whole (`run_job`), so one that panicked holding it
 /// left no change half made.
-fn lock(keymap: &Mutex<Keymap>) -> std::sync::MutexGuard<'_, Keymap> {
-    keymap
+fn lock(state: &Mutex<ClientState>) -> std::sync::MutexGuard<'_, ClientState> {
+    state
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
-/// An attached client's own keys: its keymap, the screen it has open or
+/// An attached client's own keys: its state, the screen it has open or
 /// what its keys are in the middle of, the decoder its terminal's bytes go
 /// through, and the worker that runs the programs its bindings and screens
 /// give, one after another, as the client. The worker and the client share
-/// the keymap: a program changes it as it ends. What each takes, it turns
+/// the state: a program changes it as it ends. What each takes, it turns
 /// into the actions to send the server.
 ///
 /// Every mode is the client's (`crate::screens`), changed here at the key
@@ -585,7 +585,7 @@ fn lock(keymap: &Mutex<Keymap>) -> std::sync::MutexGuard<'_, Keymap> {
 /// action, count its frame, and pass each admitted job to `Self::dispatch`.
 /// Dropping an admitted job leaves its reservation and held keys waiting.
 pub struct Keyboard {
-    keymap: std::sync::Arc<Mutex<Keymap>>,
+    state: std::sync::Arc<Mutex<ClientState>>,
     screen: Display,
     read_only: bool,
     decoder: crate::decode::Decoder,
@@ -616,12 +616,12 @@ impl Drop for Keyboard {
 
 impl Keyboard {
     /// The keyboard of the client attached as `me` in `run` on `socket`, with
-    /// `keymap`; `read_only` if it only watches.
+    /// `state`; `read_only` if it only watches.
     pub fn new(
         socket: &SocketPath,
         me: crate::id::ClientId,
         run: crate::command::Run,
-        keymap: Keymap,
+        state: ClientState,
         read_only: bool,
     ) -> Result<Keyboard, Error> {
         let (jobs, todo) = std::sync::mpsc::channel::<(Job, u64)>();
@@ -632,8 +632,8 @@ impl Keyboard {
         let path = socket.path().to_owned();
         let stop = script::Stop::default();
         let stops = stop.clone();
-        let keymap = std::sync::Arc::new(Mutex::new(keymap));
-        let shared = keymap.clone();
+        let state = std::sync::Arc::new(Mutex::new(state));
+        let shared = state.clone();
         let spawned = std::thread::Builder::new()
             .name("keys".into())
             .spawn(move || {
@@ -659,7 +659,7 @@ impl Keyboard {
         // The server asks the terminal about itself as the client attaches.
         decoder.expect(Instant::now());
         Ok(Keyboard {
-            keymap,
+            state,
             screen: Display::default(),
             read_only,
             decoder,
@@ -743,14 +743,17 @@ impl Keyboard {
     fn stops(&self, input: &Input) -> bool {
         let is = |input: Option<&Input>, key: KeyPress| matches!(input, Some(Input::Key(stroke)) if stroke.press == key);
         let escape = KeyPress::new(Key::Escape, Modifiers::NONE);
-        is(Some(input), escape) && is(self.waiting.back(), lock(&self.keymap).prefix)
+        is(Some(input), escape)
+            && lock(&self.state)
+                .keys
+                .prefix
+                .is_some_and(|prefix| is(self.waiting.back(), prefix))
     }
 
     /// Whether `input` may wait for a program: the prefix has one place
     /// more, so that Esc after it still stops it.
     fn holds(&self, input: &Input) -> bool {
-        let prefix =
-            matches!(input, Input::Key(stroke) if stroke.press == lock(&self.keymap).prefix);
+        let prefix = matches!(input, Input::Key(stroke) if Some(stroke.press) == lock(&self.state).keys.prefix);
         let room = HELD.saturating_add(usize::from(prefix));
         self.waiting.len() < room && self.held.saturating_add(pasted(input)) <= HELD_BYTES
     }
@@ -840,7 +843,7 @@ impl Keyboard {
         }
         acts.extend(
             self.screen
-                .open(screen, &lock(&self.keymap).modes)
+                .open(screen, &lock(&self.state).keys.modes)
                 .into_iter()
                 .map(Dispatch::Send),
         );
@@ -882,9 +885,9 @@ impl Keyboard {
 
     /// What the terminal sent, decoded (`Screen::input`).
     fn input(&mut self, input: Input, acts: &mut Vec<Dispatch>) {
-        let keymap = lock(&self.keymap);
-        let effects = self.screen.input(&keymap, input, self.read_only);
-        drop(keymap);
+        let state = lock(&self.state);
+        let effects = self.screen.input(&state.keys, input, self.read_only);
+        drop(state);
         self.apply(effects, acts);
     }
 
@@ -913,15 +916,15 @@ fn decoded(input: crate::command::Input) -> Vec<Input> {
 }
 
 /// Runs a key's or a screen's program as client `me`, on the shared
-/// `keymap`. A program that fails changes no keys: half a change is none.
+/// `state`. A program that fails commits no local changes.
 fn run_job(
     server: &mut script::Server,
     me: (crate::id::ClientId, crate::command::Run),
-    keymap: &Mutex<Keymap>,
+    state: &Mutex<ClientState>,
     job: &Job,
     stop: &script::Stop,
 ) -> Ran {
-    let mut changed = lock(keymap).clone();
+    let mut changed = lock(state).draft();
     let config = changed.config.clone();
     let mut out = Said::default();
     let mut context = context();
@@ -946,9 +949,20 @@ fn run_job(
     })();
     let mut rebound = false;
     if result.is_ok() {
-        let mut keys = lock(keymap);
-        rebound = keys.modes != changed.modes;
-        *keys = changed;
+        match changed.finish() {
+            Ok(changed) => {
+                let mut live = lock(state);
+                rebound = live.keys.modes != changed.keys.modes;
+                *live = changed;
+            }
+            Err(why) => {
+                return Ran {
+                    notice: Some((why, true)),
+                    opened: None,
+                    rebound: false,
+                };
+            }
+        }
     }
     let opened = result.is_ok().then_some(asks.opened).flatten();
     let notice = match result {
@@ -1269,8 +1283,8 @@ fn attached(
                         (writeln!(stdout, "{me}").and_then(|()| stdout.flush()))
                             .map_err(Error::Output)?;
                     }
-                    let keymap = attaching.keymap.clone();
-                    keyboard = Some(Keyboard::new(socket, me, run, keymap, attaching.read_only)?);
+                    let state = attaching.state.clone();
+                    keyboard = Some(Keyboard::new(socket, me, run, state, attaching.read_only)?);
                     if let Some(text) = attaching.problem.clone() {
                         acts.push(Dispatch::Send(Act::Notice { text, error: true }));
                     }
@@ -1466,14 +1480,14 @@ mod tests {
 
     fn new_keyboard(
         socket: &SocketPath,
-        keymap: Keymap,
+        state: ClientState,
         read_only: bool,
     ) -> Result<Keyboard, Box<dyn std::error::Error>> {
         Ok(Keyboard::new(
             socket,
             "c1".parse()?,
             "1-2".parse().map_err(|()| "test run")?,
-            keymap,
+            state,
             read_only,
         )?)
     }
@@ -1516,15 +1530,15 @@ mod tests {
     #[test]
     fn a_binding_emits_its_job_after_prior_keys() -> Result<(), Box<dyn std::error::Error>> {
         let socket = socket::checked("/nowhere/fux/s.sock", "test")?;
-        let mut keymap = Keymap::empty();
-        keymap.bind_root(
+        let mut state = script::default_state().map_err(|e| e.to_string())?;
+        state.keys.bind_root(
             KeyPress::char('y'),
             crate::keymap::Binding::new("str done".into(), true),
         )?;
         let mut typed = vec![b'a'; 3000];
         typed.extend_from_slice(b"yx");
         for split in [0, 1, 255, 256, 257, 3000, 3001, 3002] {
-            let mut keyboard = new_keyboard(&socket, keymap.clone(), false)?;
+            let mut keyboard = new_keyboard(&socket, state.clone(), false)?;
             let (first, last) = typed.split_at_checked(split).ok_or("split")?;
             let mut outputs = keyboard.bytes(first, Instant::now());
             outputs.extend(keyboard.bytes(last, Instant::now()));
@@ -1551,7 +1565,11 @@ mod tests {
     #[test]
     fn a_completed_jobs_screen_precedes_the_next_job() -> Result<(), Box<dyn std::error::Error>> {
         let socket = socket::checked("/nowhere/fux/s.sock", "test")?;
-        let mut keyboard = new_keyboard(&socket, Keymap::empty(), false)?;
+        let mut keyboard = new_keyboard(
+            &socket,
+            script::default_state().map_err(|e| e.to_string())?,
+            false,
+        )?;
         let first = keyboard.frame(ToAttached::Run("me command-prompt str ready".into()));
         assert!(
             keyboard
@@ -1576,7 +1594,11 @@ mod tests {
     #[test]
     fn keys_wait_for_a_running_program_till_it_is_done() -> Result<(), Box<dyn std::error::Error>> {
         let socket = socket::checked("/nowhere/fux/s.sock", "test")?;
-        let mut keyboard = new_keyboard(&socket, Keymap::empty(), false)?;
+        let mut keyboard = new_keyboard(
+            &socket,
+            script::default_state().map_err(|e| e.to_string())?,
+            false,
+        )?;
         let now = Instant::now();
         let run = ToAttached::Run("begin false until".into());
         assert!(frame(&mut keyboard, run).is_empty());
@@ -1614,23 +1636,39 @@ mod tests {
     /// Two programs queued before either is done each change the keys
     /// the other left: neither change is lost. One that fails changes none.
     #[test]
-    fn queued_programs_keep_each_others_keys() -> Result<(), Box<dyn std::error::Error>> {
+    fn queued_programs_commit_the_whole_local_state() -> Result<(), Box<dyn std::error::Error>> {
         let socket = socket::checked("/nowhere/fux/s.sock", "test")?;
-        let mut keyboard = new_keyboard(&socket, Keymap::empty(), false)?;
+        let mut keyboard = new_keyboard(
+            &socket,
+            script::default_state().map_err(|e| e.to_string())?,
+            false,
+        )?;
         for code in [
-            "str C-a prefix",
-            "str F5 str ls bind-root",
-            "str F6 str ls bind-root str Nope prefix",
+            "str C-a prefix str wait-seconds 2 set",
+            "str F5 str ls bind-root str titles true set",
+            "str F6 str ls bind-root str wait-seconds 0 set str bell false set str Nope prefix",
         ] {
             assert!(frame(&mut keyboard, ToAttached::Run(code.into())).is_empty());
         }
         all_ran(&mut keyboard)?;
-        let keymap = lock(&keyboard.keymap);
-        let root: Vec<String> = keymap.root.iter().map(|(key, _)| key.to_string()).collect();
+        let state = lock(&keyboard.state);
+        let root: Vec<String> = state
+            .keys
+            .root
+            .iter()
+            .map(|(key, _)| key.to_string())
+            .collect();
         assert_eq!(
-            (keymap.prefix.to_string(), root),
+            (
+                state.keys.prefix.map(|p| p.to_string()).unwrap_or_default(),
+                root
+            ),
             ("C-a".into(), vec!["F5".into()])
         );
+        assert_eq!(state.preferences.wait.seconds(), 2);
+        assert!(state.preferences.titles);
+        assert!(state.preferences.bell);
+        drop(state);
         Ok(())
     }
 
@@ -1640,7 +1678,11 @@ mod tests {
     #[test]
     fn a_screen_closes_when_its_keys_change() -> Result<(), Box<dyn std::error::Error>> {
         let socket = socket::checked("/nowhere/fux/s.sock", "test")?;
-        let mut keyboard = new_keyboard(&socket, Keymap::empty(), false)?;
+        let mut keyboard = new_keyboard(
+            &socket,
+            script::default_state().map_err(|e| e.to_string())?,
+            false,
+        )?;
         keyboard.open(Screen::Copy(None), &mut Vec::new());
         frame(
             &mut keyboard,
@@ -1677,7 +1719,7 @@ mod tests {
         let socket = socket::checked("/nowhere/fux/s.sock", "test")?;
         let mut keyboard = new_keyboard(
             &socket,
-            crate::script::default_keys().map_err(|e| e.to_string())?,
+            crate::script::default_state().map_err(|e| e.to_string())?,
             false,
         )?;
         let (mut session, client) = crate::session::testing::attached(24, 80)?;
@@ -1720,7 +1762,11 @@ mod tests {
     fn a_screen_too_large_to_show_is_refused_as_it_opens() -> Result<(), Box<dyn std::error::Error>>
     {
         let socket = socket::checked("/nowhere/fux/s.sock", "test")?;
-        let mut keyboard = new_keyboard(&socket, Keymap::empty(), false)?;
+        let mut keyboard = new_keyboard(
+            &socket,
+            script::default_state().map_err(|e| e.to_string())?,
+            false,
+        )?;
         let prompt = crate::screens::Prompt {
             title: std::iter::repeat_n('t', crate::protocol::MAX_FRAME - 2048).collect(),
             line: crate::view::Line::new(String::new()),
@@ -1745,12 +1791,12 @@ mod tests {
     #[test]
     fn a_stop_is_the_same_however_the_reads_split() -> Result<(), Box<dyn std::error::Error>> {
         let socket = socket::checked("/nowhere/fux/s.sock", "test")?;
-        let mut keymap = Keymap::empty();
+        let mut state = script::default_state().map_err(|e| e.to_string())?;
         let forever = crate::keymap::Binding::new("begin false until".into(), true);
-        keymap.bind_root(KeyPress::char('y'), forever)?;
+        state.keys.bind_root(KeyPress::char('y'), forever)?;
         let typed = b"y\x02\x1b[27ux";
         for split in 0..=typed.len() {
-            let mut keyboard = new_keyboard(&socket, keymap.clone(), false)?;
+            let mut keyboard = new_keyboard(&socket, state.clone(), false)?;
             let now = Instant::now();
             let (first, then) = typed.split_at_checked(split).ok_or("past the end")?;
             let mut acts = bytes(&mut keyboard, first, now);
@@ -1775,7 +1821,11 @@ mod tests {
     #[test]
     fn what_waits_for_a_program_is_bounded() -> Result<(), Box<dyn std::error::Error>> {
         let socket = socket::checked("/nowhere/fux/s.sock", "test")?;
-        let mut keyboard = new_keyboard(&socket, Keymap::empty(), false)?;
+        let mut keyboard = new_keyboard(
+            &socket,
+            script::default_state().map_err(|e| e.to_string())?,
+            false,
+        )?;
         let forever = || ToAttached::Run("begin false until".into());
         for _ in 0..JOBS {
             assert!(frame(&mut keyboard, forever()).is_empty());
@@ -1809,7 +1859,11 @@ mod tests {
     #[test]
     fn a_notice_is_bounded() -> Result<(), Box<dyn std::error::Error>> {
         let socket = socket::checked("/nowhere/fux/s.sock", "test")?;
-        let mut keyboard = new_keyboard(&socket, Keymap::empty(), false)?;
+        let mut keyboard = new_keyboard(
+            &socket,
+            script::default_state().map_err(|e| e.to_string())?,
+            false,
+        )?;
         let line: String = std::iter::repeat_n('x', 1000).collect();
         let code = format!("0 begin str {line} print 1 add 0 pick 100 eq until drop");
         assert!(frame(&mut keyboard, ToAttached::Run(code)).is_empty());
@@ -1834,7 +1888,11 @@ mod tests {
     #[test]
     fn a_watcher_is_told_of_what_it_takes_no_further() -> Result<(), Box<dyn std::error::Error>> {
         let socket = socket::checked("/nowhere/fux/s.sock", "test")?;
-        let mut keyboard = new_keyboard(&socket, Keymap::empty(), true)?;
+        let mut keyboard = new_keyboard(
+            &socket,
+            script::default_state().map_err(|e| e.to_string())?,
+            true,
+        )?;
         for typed in [&b"x"[..], b"\x1b[200~p\x1b[201~", b"\x02c"] {
             let acts = bytes(&mut keyboard, typed, Instant::now());
             let notice = acts.first().filter(|_| acts.len() == 1);

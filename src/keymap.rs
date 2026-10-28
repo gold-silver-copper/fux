@@ -211,15 +211,12 @@ pub fn keys(words: &str) -> Result<Vec<KeyPress>, String> {
 /// A client's prefix and bindings.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Keymap {
-    pub prefix: KeyPress,
+    pub prefix: Option<KeyPress>,
     pub bindings: Layer,
     /// Keys bound without the prefix, in the order bound; never the prefix.
     pub root: Vec<(KeyPress, Binding)>,
     /// The keys of fux's own screens.
     pub modes: Modes,
-    /// The frozen config that made it: its definitions are
-    /// its bindings' and prompt's words too.
-    pub config: Option<crate::script::Config>,
 }
 
 /// The group of bindings without the prefix that gave none.
@@ -228,16 +225,20 @@ const ROOT_GROUP: &str = "Without the prefix";
 /// The group of bindings after the prefix that gave none, listed last.
 const OTHER_GROUP: &str = "Other";
 
+impl Default for Keymap {
+    fn default() -> Self {
+        Self::empty()
+    }
+}
+
 impl Keymap {
-    /// No bindings, and the default prefix, `C-b`: the default keys
-    /// (`crate::script::default_keys`) are bound on it.
+    /// No bindings or prefix. Bundled fuxth supplies both.
     pub fn empty() -> Self {
         Self {
-            prefix: KeyPress::new(Key::Char('b'), Modifiers::CTRL),
+            prefix: None,
             bindings: Layer::default(),
             root: Vec::new(),
             modes: Modes::default(),
-            config: None,
         }
     }
 
@@ -257,7 +258,7 @@ impl Keymap {
 
     /// Binds `key`, without the prefix, to `binding`.
     pub fn bind_root(&mut self, key: KeyPress, binding: Binding) -> Result<(), String> {
-        if key == self.prefix {
+        if Some(key) == self.prefix {
             return Err(format!(
                 "{key} is the prefix; it cannot be bound without it"
             ));
@@ -322,7 +323,7 @@ impl Keymap {
                 "{key} is bound without the prefix; unbind it first"
             ));
         }
-        self.prefix = key;
+        self.prefix = Some(key);
         Ok(())
     }
 
@@ -376,7 +377,13 @@ impl Keymap {
                 .position(|(r, g)| *r == e.root && *g == e.group);
             (e.root, group)
         });
-        let keys = keys_text(&[&[self.prefix][..], path].concat());
+        let keys = keys_text(
+            &self
+                .prefix
+                .into_iter()
+                .chain(path.iter().copied())
+                .collect::<Vec<_>>(),
+        );
         let title = match path.is_empty() {
             true => "Commands".to_owned(),
             false => format!("{keys}: {}", layer.first().map_or("", |b| b.group.as_str())),
@@ -418,14 +425,17 @@ impl Keymap {
     /// Every binding, as `list-keys` shows them: config lines that make
     /// them again. Not the config's definitions, which a binding may call.
     pub fn describe(&self) -> String {
-        let prefix = quote(&self.prefix.to_string());
+        let prefix = self
+            .prefix
+            .map(|p| format!("str {} prefix\n", quote(&p.to_string())))
+            .unwrap_or_default();
         let bound = (self.bindings.all().into_iter()).map(|(keys, binding, repeat)| {
             let repeat = if repeat { "  repeat" } else { "" };
             format!("{}{repeat}\n", binding.line(&keys_text(&keys), false))
         });
         let root = (self.root.iter())
             .map(|(key, binding)| format!("{}\n", binding.line(&key.to_string(), true)));
-        std::iter::once(format!("unbind-all\nstr {prefix} prefix\n"))
+        std::iter::once(format!("unbind-all\n{prefix}"))
             .chain(bound)
             .chain(root)
             .chain([self.modes.lines()])
@@ -460,7 +470,7 @@ impl Held {
         }
         match std::mem::take(self) {
             Held::Normal | Held::Prefixed => {
-                if press == keymap.prefix {
+                if Some(press) == keymap.prefix {
                     return self.open(keymap, Vec::new(), 0);
                 }
                 match keymap.root_binding(press) {
@@ -517,7 +527,10 @@ impl Held {
                 let mut keys = path.clone();
                 keys.push(press);
                 *self = Held::Column { path, selected: 0 };
-                let text = format!("{} {} is not bound", keymap.prefix, keys_text(&keys));
+                let text = format!(
+                    "{} is not bound",
+                    keys_text(&keymap.prefix.into_iter().chain(keys).collect::<Vec<_>>())
+                );
                 vec![Effect::Send(Act::Notice { text, error: true })]
             }
         }
@@ -541,7 +554,7 @@ impl Held {
         {
             return self.follow(keymap, path, press);
         }
-        if press == keymap.prefix {
+        if Some(press) == keymap.prefix {
             // The prefix, at any depth, goes to the pane.
             return vec![HIDE, Effect::Send(Act::Key(stroke))];
         }
@@ -577,7 +590,7 @@ impl Held {
     }
 
     fn repeating(&mut self, keymap: &Keymap, path: Vec<KeyPress>, press: KeyPress) -> Vec<Effect> {
-        if press == keymap.prefix {
+        if Some(press) == keymap.prefix {
             return self.open(keymap, Vec::new(), 0);
         }
         let bound = keymap.bindings.layer(&path).and_then(|l| l.get(press));
@@ -615,7 +628,7 @@ impl Held {
         if prefixed && press == KeyPress::char('d') {
             return vec![Effect::Run("me detach".into())];
         }
-        if !prefixed && press == keymap.prefix {
+        if !prefixed && Some(press) == keymap.prefix {
             *self = Held::Prefixed;
             return Vec::new();
         }
@@ -626,7 +639,10 @@ impl Held {
 /// What a client that only watches is told of a key or paste it takes no
 /// further: its own way out.
 pub fn watching(keymap: &Keymap) -> Act {
-    let text = format!("watching only: {} d detaches", keymap.prefix);
+    let text = keymap.prefix.map_or_else(
+        || "watching only".to_owned(),
+        |p| format!("watching only: {p} d detaches"),
+    );
     Act::Notice { text, error: false }
 }
 
@@ -864,11 +880,25 @@ impl Table<LineAct> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn an_empty_keymap_has_no_native_prefix() {
+        let keys = super::Keymap::empty();
+        let mut held = super::Held::default();
+        let stroke = super::KeyPress::new(super::Key::Char('b'), super::Modifiers::CTRL).into();
+        assert!(matches!(
+            held.press(&keys, stroke, false).as_slice(),
+            [crate::screens::Effect::Send(crate::act::Act::Key(_))]
+        ));
+        assert_eq!(held, super::Held::Normal);
+    }
+
     use super::*;
     use crate::act::PAGE;
 
     fn defaults() -> Result<Keymap, String> {
-        crate::script::default_keys().map_err(|e| e.to_string())
+        crate::script::default_state()
+            .map(|state| state.keys)
+            .map_err(|e| e.to_string())
     }
 
     fn stroke(name: &str) -> Result<Keystroke, String> {
@@ -1073,7 +1103,7 @@ mod tests {
         keymap.bind_root(key("M-t")?, Binding::new("me zoom".into(), true))?;
         assert_eq!(
             keymap.describe(),
-            "unbind-all\nstr C-b prefix\nstr 'g n' str 'opts new-tab drop' bind\nstr 'y l' str 'me focused str right 1 move-border' bind  repeat\nstr M-t str 'me zoom' bind-root\n"
+            "unbind-all\nstr 'g n' str 'opts new-tab drop' bind\nstr 'y l' str 'me focused str right 1 move-border' bind  repeat\nstr M-t str 'me zoom' bind-root\n"
         );
         Ok(())
     }

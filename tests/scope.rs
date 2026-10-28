@@ -24,7 +24,7 @@ fn held_handles_refuse_another_server_before_mutating_it() -> Outcome {
             "run",
         ])?;
     }
-    // A scoped attach must refuse its config's Set before changing b too.
+    // A scoped attach must refuse the foreign run without changing b.
     std::fs::write(
         a.dir.join("config/fux/config.fux"),
         "str shell list str /no/such/scope-shell end set",
@@ -170,15 +170,8 @@ fn a_background_descendant_cannot_be_here_after_respawn() -> Outcome {
 fn reserved_environment_names_are_refused_before_spawning() -> Outcome {
     let server = Server::start("")?;
     for name in ["FUX", "FUX_PANE", "FUX_SOCKET", "FUX_SERVER"] {
-        let inherited = server.fux(&[
-            "str",
-            "update-environment",
-            "list",
-            "str",
-            name,
-            "end",
-            "set",
-        ])?;
+        let inherited =
+            server.fux(&["str", "copy-environment", "list", "str", name, "end", "set"])?;
         let explicit = server.fux(&[
             "agent-opts",
             "str",
@@ -209,7 +202,7 @@ fn reserved_environment_names_are_refused_before_spawning() -> Outcome {
     // The reservation is the exact identity set, not a prefix rule.
     server.ok(&[
         "str",
-        "update-environment",
+        "copy-environment",
         "list",
         "str",
         "FUX_EXTRA",
@@ -316,7 +309,7 @@ fn a_keyboard_worker_cannot_act_as_a_client_of_a_replacement_run() -> Outcome {
         &b.socket_path()?,
         id.parse().map_err(e)?,
         run,
-        b.keymap.clone(),
+        b.state.clone(),
         false,
     )
     .map_err(e)?;

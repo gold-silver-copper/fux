@@ -208,18 +208,19 @@ fn word(name: &str) -> Option<String> {
     Some(format!("{name}  {shape}: {about}\n"))
 }
 
-/// Every setting `set` takes: its name, what value it takes, its default,
-/// and what it does, from `config`'s table.
+/// Local settings and their bundled initialization source.
 fn settings() -> String {
     let mut out = String::from("\nThe settings:\n");
-    for [name, takes, default, about] in crate::config::table() {
-        let about = format!("{about} By default {default}.");
+    for [name, takes, default, about] in crate::client_state::table() {
+        let about = format!("{about} Initialized by bundled {default}.");
         let about = about.split_whitespace().map(str::to_owned);
         out.push_str(&format!(
             "  {name}: {takes}{}\n",
             wrapped(about, "\n      ", 78)
         ));
     }
+    out.push_str("\nBundled initialization (client-defaults.fux):\n");
+    out.push_str(include_str!("script/client-defaults.fux"));
     out
 }
 
@@ -458,7 +459,7 @@ mod tests {
         assert!(AGENTS.contains("fux "));
         // `set`'s help names every setting.
         let set = explain("set").unwrap_or_default();
-        for name in crate::config::NAMES {
+        for name in crate::client_state::NAMES {
             assert!(set.contains(&format!("\n  {name}: ")), "{name}");
         }
     }

@@ -192,7 +192,9 @@ fn motions_and_search_move_the_cursor() -> Outcome {
 
 #[test]
 fn the_pane_holds_still_for_the_copying_client_only() -> Outcome {
-    let server = Server::start("str history-bytes 100000 set")?;
+    let server = Server::with_settings(vec![fux::config::Setting::HistoryBytes(
+        fux::config::Number::new(100000).ok_or("history budget")?,
+    )])?;
     let mut copier = prepared(&server, 12, 40, &["first", "second"])?;
     let mut watcher = server.attach(12, 40)?;
     watcher.wait_for("second")?;
@@ -233,7 +235,9 @@ fn the_pane_holds_still_for_the_copying_client_only() -> Outcome {
 
 #[test]
 fn copy_mode_ends_when_its_pane_closes_or_its_rows_are_evicted() -> Outcome {
-    let server = Server::start("str history-bytes 1000 set")?;
+    let server = Server::with_settings(vec![fux::config::Setting::HistoryBytes(
+        fux::config::Number::new(1000).ok_or("history budget")?,
+    )])?;
     let mut client = prepared(&server, 10, 40, &["keep"])?;
     server.ok(&["str", "%1", "pane", "horizontal", "split"])?;
     server.ok(&["str", "c1", "client", "str", "%1", "pane", "focus-pane"])?;
@@ -258,7 +262,7 @@ fn copy_mode_ends_when_its_pane_closes_or_its_rows_are_evicted() -> Outcome {
 
 #[test]
 fn paste_buffers_paste_and_the_clipboard_can_be_off() -> Outcome {
-    let server = Server::start("str clipboard false set")?;
+    let server = Server::with_settings(vec![fux::config::Setting::Clipboard(false)])?;
     let mut client = prepared(&server, 12, 40, &["hello-paste"])?;
     copy_mode(&mut client)?;
     client.keys("k\x1b[Hvey")?;

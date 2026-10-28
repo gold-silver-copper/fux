@@ -582,7 +582,9 @@ mod tests {
     /// Key `name` typed at `screen`, with the default bindings.
     fn key(screen: &mut Screen, name: &str) -> Result<Vec<Effect>, String> {
         let stroke = crate::keymap::key(name)?.into();
-        let keymap = crate::script::default_keys().map_err(|e| e.to_string())?;
+        let keymap = crate::script::default_state()
+            .map(|state| state.keys)
+            .map_err(|e| e.to_string())?;
         Ok(screen.key(&keymap, stroke, false))
     }
 
@@ -604,7 +606,9 @@ mod tests {
     /// Delayed endings cannot close another opening, even of the same kind.
     #[test]
     fn an_ending_closes_only_its_own_opening() -> Result<(), String> {
-        let keys = crate::script::default_keys().map_err(|e| e.to_string())?;
+        let keys = crate::script::default_state()
+            .map(|state| state.keys)
+            .map_err(|e| e.to_string())?;
         let prompt = Screen::Prompt(Prompt {
             title: "prompt".into(),
             line: Line::new("unsent work".into()),
@@ -693,7 +697,8 @@ mod tests {
             line: Line::new(String::new()),
             action: Some("%1 swap rename".into()),
         });
-        let modes = crate::script::default_keys()
+        let modes = crate::script::default_state()
+            .map(|state| state.keys)
             .map_err(|e| e.to_string())?
             .modes;
         screen.paste(&modes, "it's -x' drop");
@@ -717,7 +722,8 @@ mod tests {
     /// still fits a frame: an edit never makes a display too large to send.
     #[test]
     fn a_prompt_fits_a_frame_at_its_largest() -> Result<(), String> {
-        let modes = crate::script::default_keys()
+        let modes = crate::script::default_state()
+            .map(|state| state.keys)
             .map_err(|e| e.to_string())?
             .modes;
         let fits = |act: Option<ScreenAct>| {

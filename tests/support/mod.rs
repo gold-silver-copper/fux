@@ -6,7 +6,7 @@
 )]
 use fux::act::Act;
 use fux::client::Keyboard;
-use fux::keymap::Keymap;
+use fux::client_state::ClientState;
 use fux::protocol::{
     Attach, AttachedFrame, Decoder, Frame, Greeting, Hello, PROTOCOL, Role, ToAttached,
 };
@@ -73,8 +73,8 @@ pub struct Server {
     pub dir: PathBuf,
     pub socket: PathBuf,
     child: Option<Child>,
-    /// Prepared keys explicitly passed to the scripted clients.
-    pub keymap: Keymap,
+    /// Prepared local state explicitly passed to the scripted clients.
+    pub state: ClientState,
 }
 
 pub struct Output {
@@ -92,16 +92,38 @@ fn output(out: std::process::Output) -> Result<Output, String> {
 }
 
 impl Server {
-    /// A server whose shell is `sh` with a plain prompt. Explicitly run
-    /// `config` to prepare server settings and the scripted clients' keys;
+    /// A server whose shell is `sh` with a plain prompt. Run
+    /// `config` to prepare the scripted clients' whole local state;
     /// also save it for real typing terminals to load.
     pub fn start(config: &str) -> Result<Server, String> {
         Server::start_limited(config, None)
     }
 
+    /// Explicit transport setup for server consumers awaiting migration.
+    pub fn with_settings(settings: Vec<fux::config::Setting>) -> Result<Server, String> {
+        Server::start_with("", None, false, settings).map(|(server, _)| server)
+    }
+
+    pub fn settings(&self, settings: Vec<fux::config::Setting>) -> Outcome {
+        let socket = self.socket_path()?;
+        let mut requests = fux::client::Requests::open(&socket).map_err(e)?;
+        let reply = requests
+            .ask(
+                &fux::protocol::Asked {
+                    request: fux::command::Command::Set(settings).into(),
+                    context: Default::default(),
+                    after: None,
+                },
+                &mut std::io::sink(),
+            )
+            .map_err(e)?;
+        fux::script::succeeded(reply).map_err(e)?;
+        Ok(())
+    }
+
     /// The same, with at most `open_files` descriptors (`ulimit -n`).
     pub fn start_limited(config: &str, open_files: Option<u32>) -> Result<Server, String> {
-        Server::start_with(config, open_files, false).map(|(server, _)| server)
+        Server::start_with(config, open_files, false, Vec::new()).map(|(server, _)| server)
     }
 
     /// A server that inherits a descriptor without close-on-exec, as one
@@ -110,7 +132,7 @@ impl Server {
     /// server. It is made while no other server can start, so only this one
     /// inherits it.
     pub fn start_inheriting(config: &str) -> Result<(Server, i32), String> {
-        let (server, held) = Server::start_with(config, None, true)?;
+        let (server, held) = Server::start_with(config, None, true, Vec::new())?;
         Ok((server, held.ok_or("a held descriptor")?))
     }
 
@@ -118,6 +140,7 @@ impl Server {
         config: &str,
         open_files: Option<u32>,
         inherit: bool,
+        settings: Vec<fux::config::Setting>,
     ) -> Result<(Server, Option<i32>), String> {
         let base = fuxix::file::scratch().map_err(e)?;
         let dir = base.join(format!(
@@ -177,7 +200,7 @@ impl Server {
             dir,
             socket,
             child: Some(child),
-            keymap: Keymap::empty(),
+            state: fux::script::default_state().map_err(e)?,
         };
         let deadline = after(PATIENCE);
         while UnixStream::connect(&server.socket).is_err() {
@@ -188,9 +211,10 @@ impl Server {
         }
         // Explicit fixture setup: scripted clients receive these prepared
         // keys, rather than implicitly loading a user's config on attach.
-        let socket = fux::socket::Choice::Path(server.socket.clone());
-        let mut to = fux::script::Server::new(socket);
-        server.keymap = fux::script::run_file(&config_path, Some(&mut to), None).map_err(e)?;
+        server.state = fux::script::run_file(&config_path).map_err(e)?;
+        if !settings.is_empty() {
+            server.settings(settings)?;
+        }
         // A server starts with nothing in it; the tests' first shell, %1 in
         // workspace main, is 80 by 24, in the server's home.
         let home = server.dir.to_string_lossy().into_owned();
@@ -426,7 +450,7 @@ pub struct Client {
     stream: UnixStream,
     decoder: Decoder,
     socket: fux::socket::SocketPath,
-    keymap: Keymap,
+    state: ClientState,
     read_only: bool,
     /// Whether the server's Hello has come.
     greeted: bool,
@@ -473,7 +497,7 @@ impl Client {
             stream,
             decoder: Decoder::default(),
             socket: server.socket_path()?,
-            keymap: server.keymap.clone(),
+            state: server.state.clone(),
             read_only,
             greeted: false,
             keyboard: None,
@@ -600,9 +624,9 @@ impl Client {
                 }
                 ToAttached::Exit(reason) => self.exit = Some(reason.to_owned()),
                 ToAttached::Welcome(me, run) if self.keyboard.is_none() => {
-                    let keymap = self.keymap.clone();
+                    let state = self.state.clone();
                     self.keyboard = Some(
-                        Keyboard::new(&self.socket, me, run, keymap, self.read_only).map_err(e)?,
+                        Keyboard::new(&self.socket, me, run, state, self.read_only).map_err(e)?,
                     );
                     self.id = Some(me.to_string());
                 }

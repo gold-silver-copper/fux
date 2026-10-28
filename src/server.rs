@@ -584,8 +584,8 @@ pub fn serve(socket: &SocketPath) -> Result<(), Error> {
         log!("adopting orphans: {errno}");
     }
     let stops = fuxix::signal::Pipe::new(&crate::STOPS).map_err(|e| Error::Setup(e.into()))?;
-    // Settings come from clients (`set`): a typing terminal's config,
-    // or the command line.
+    // Remaining consumers keep startup policy until requests carry it.
+    // Local config evaluation never sends settings.
     let run = crate::command::Run::now().ok_or_else(|| {
         Error::Setup(std::io::Error::other(
             "the system clock is before 1970 or past 2554: this run cannot be told from another",

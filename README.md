@@ -32,7 +32,7 @@ is attached or from its own panes: [Security](#security)), SIGTERM,
 SIGINT, SIGHUP, or until its last pane closes. It then hangs up every
 pane, tells each attached terminal why, and removes its socket.
 
-A pane runs your shell (the `shell` setting: `fux help set`), or the program
+A pane runs the server startup shell, or the program
 it was given (`run`, `split`). A shell's pane closes when its shell exits,
 showing its viewers the exit status; a program's pane stays, its exit told,
 until `kill` closes it or `respawn` starts it again. A tab closes with its
@@ -311,14 +311,12 @@ never change what that id names; eviction or a different server returns
 `no_buffer`. `newest buffer` and `%2 newest paste-buffer` explicitly choose
 the newest copy when the request runs.
 
-**Clipboards.** A copy goes to fux's paste buffers (as many of the newest
-as `buffers` says); `C-b p` pastes the newest, bracketed if the program asked for
+**Clipboards.** A copy goes to fux's paste buffers (the newest 16); `C-b p` pastes the newest, bracketed if the program asked for
 bracketed paste. It is also sent to your terminal's clipboard as OSC 52, up
-to 1 MiB encoded, unless `str clipboard false set`; your terminal must
+to 1 MiB encoded; your terminal must
 allow OSC 52 writes. A program in a pane that copies with OSC 52, as Neovim
-and Helix do, copies the same way, up to 64 KiB encoded, but only while
-`clipboard` is true: set false, a program's copy copies nothing, to the
-buffers either. A longer copy, or one that is not base64 (RFC 4648,
+and Helix do, copies the same way, up to 64 KiB encoded. A longer copy, or
+one that is not base64 (RFC 4648,
 padded or not) of UTF-8 text, copies nothing, and the clients showing
 the pane say so. fux never reads the clipboard.
 
@@ -356,12 +354,8 @@ taken too. Unknown names are refused; `fux key-names` prints the vocabulary.
 | `FUX` | the fux executable the server runs, unset if the server cannot name it: what a key's program or a script in a pane runs, as `"${FUX:-fux}"`, when `fux` may not be on its PATH (a server started from a desktop launcher or a systemd unit) |
 
 The rest is the server's own environment, as it was when the server
-started. Two things override it and the table alike: the names in
-`update-environment`, which a pane takes from whoever starts it (`fux help
-set` says what one the starter lacks becomes), and, last, what a program's
-`env` sets (`agent-opts str NAME str VALUE env 80 24 size str PROGRAM program
-run`). `update-environment` is empty by default. With a configured list,
-an empty caller environment unsets every listed variable.
+started. A program's explicit `env` overrides it (`agent-opts str NAME
+str VALUE env 80 24 size str PROGRAM program run`).
 
 XTVERSION (`CSI > q`) answers `fux` and its version, secondary device
 attributes (`CSI > c`) the version, and primary ones (`CSI c`) a
@@ -394,21 +388,32 @@ The optional config is `$XDG_CONFIG_HOME/fux/config.fux`, else
 `~/.config/fux/config.fux`: fuxth, which a typing terminal runs as it attaches.
 `fux start`, watchers, headless attaches (`size attach`) and ordinary CLI
 commands use only the bundled state; they never load this file.
-Its `set` words change the server for everyone, all at once when it has
-run; its key words change that client's keys alone. Half a config is no
-config: one that fails sets nothing, the client keeps the default keys,
-and it says why. `fux str FILE str program check` compiles a file without
-running it. `fux str FILE str config check` also runs it dry to validate settings and
-bindings, regardless of the filename.
+Its `set` and key words change only that client's state. Config evaluation
+sends no server requests. Keys, frozen definitions and preferences commit
+together; a failure keeps the whole bundled state and shows one diagnostic.
+Bundled `client-defaults.fux` initializes every preference, reading this
+client's `$SHELL` once and using `/bin/sh` for an unset or empty value.
+Bundled `keys.fux` supplies `C-b`; there is no native prefix fallback.
+
+The preference consumers are still being migrated: shell, history, wait,
+environment selection and terminal presentation currently retain their server
+startup behavior. Local `set` records future request and presentation choices;
+it does not yet change those effects. The old `clipboard`, `buffers` and
+`update-environment` setting names are refused.
+
+`fux str FILE str program check` compiles a file without running it.
+`fux str FILE str config check` also runs it locally to validate settings
+and bindings, regardless of the filename.
 
 ```sh
 # ~/.config/fux/config.fux
 str C-a prefix
 str shell list str /bin/zsh str -l end set       # a program, then its arguments, a string each
-str clipboard false set
+str terminal-clipboard false set
+str program-clipboard true set
 
 # Optional: take these from whoever starts a pane; the default list is empty.
-str update-environment list
+str copy-environment list
   str DISPLAY str KRB5CCNAME str SSH_AGENT_PID str SSH_ASKPASS
   str SSH_AUTH_SOCK str SSH_CONNECTION str WAYLAND_DISPLAY str XAUTHORITY
 end set
@@ -435,8 +440,8 @@ end
 str y str edit-history bind  str 'edit history' label  str Panes group
 ```
 
-`fux help set` lists the settings: what each takes, its default and what
-it does.
+`fux help set` lists the settings: what each takes and where its bundled
+initialization lives.
 
 **Bindings** run fuxth, compiled when bound, run fresh each time their keys
 are typed, as your client (`me`). A binding, and the command prompt, may use
@@ -545,10 +550,9 @@ so: it starts where the dump is run.
   the program didn't set, and every colour in a tab with no host.
 - **Bells.** A program's bell rings each terminal showing its workspace, at
   most once every 250 ms; a tab you are not looking at is marked `!` in the
-  bar until you show it. `str bell false set` silences both.
-- **Titles.** With `str titles true set`, your terminal's title is the
-  focused pane's (or its tab's label). fux saves your terminal's own title
-  first and restores it when you detach or turn titles off.
+  bar until you show it.
+- **Titles.** Terminal titles remain off until the per-client presentation
+  consumer is migrated.
 - **Hyperlinks** (OSC 8) reach your terminal as links.
 - **Pictures** (sixel). A pane's program is told your terminal draws sixel
   graphics, and the size of its cells (`CSI 16 t`, asked again each time

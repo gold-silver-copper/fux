@@ -295,7 +295,9 @@ fn a_pane_runs_shell_else_the_login_shell_else_bin_sh() -> Outcome {
 #[test]
 fn a_client_that_stops_reading_catches_up_when_it_reads_again() -> Outcome {
     // Little history, so the memory measured is what waits for the client.
-    let server = Server::start("str history-bytes 160000 set")?;
+    let server = Server::with_settings(vec![fux::config::Setting::HistoryBytes(
+        fux::config::Number::new(160000).ok_or("history budget")?,
+    )])?;
     let pid = server.pid().ok_or("the server's pid")?;
     let mut client = server.attach(60, 200)?;
     client.wait_for("$")?;
