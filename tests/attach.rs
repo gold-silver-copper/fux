@@ -1418,6 +1418,29 @@ fn attach_preferences_apply_before_explicit_operands() -> Outcome {
 }
 
 #[test]
+fn attach_creation_refusals_keep_unused_for_inherited_targets() -> Outcome {
+    let server = Server::start("opts str main in attach-defaults")?;
+    for args in [
+        &["opts", "str", "/bin/sh", "program", "attach"][..],
+        &[
+            "opts", "str", "main", "in", "str", "/bin/sh", "program", "attach",
+        ][..],
+    ] {
+        let mut terminal = Terminal::attach(&server, 10, 40, args)?;
+        assert!(!terminal.wait_exit()?.success());
+        let diagnostic = String::from_utf8_lossy(&terminal.output);
+        assert!(diagnostic.contains("unused:"), "{args:?}: {diagnostic}");
+        assert!(
+            diagnostic.contains("attach: takes no program with a target or watch"),
+            "{diagnostic}"
+        );
+    }
+    assert!(!server.ok(&["ls"])?.contains("client "));
+    assert_eq!(server.panes()?.len(), 1);
+    Ok(())
+}
+
+#[test]
 fn empty_attach_retry_keeps_resize_and_starts_a_new_frame_fence() -> Outcome {
     use fux::protocol::{Attach, AttachedFrame, Decoder, Frame, Greeting, Hello, Role, ToAttached};
     use std::io::{Read, Write};

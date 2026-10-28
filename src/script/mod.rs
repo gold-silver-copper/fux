@@ -1430,7 +1430,7 @@ fn local(
                 creation.name = committed.attach.name.clone();
             }
             words::check_attach_creation(&creation, target.is_some(), *read_only)
-                .map_err(|why| Failed::new(Code::BadValue, why.message))?;
+                .map_err(|why| Failed::new(Code::of(why.code), why.message))?;
             // Watching or naming a run starts no replacement server.
             let socket = match *read_only || of.is_some() {
                 true => server.socket()?,

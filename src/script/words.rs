@@ -2224,8 +2224,6 @@ mod tests {
     use super::*;
     use fuxth::AppValue;
 
-    /// No word's name needs quoting in a shell. (That no two share one,
-    /// nor any the language's, the vocabulary checks as it is made.)
     #[test]
     fn attach_subjects_and_defaults_retain_their_typed_target_and_run() -> Result<(), String> {
         use super::*;
@@ -2272,6 +2270,8 @@ mod tests {
         Ok(())
     }
 
+    /// No word's name needs quoting in a shell. (That no two share one,
+    /// nor any the language's, the vocabulary checks as it is made.)
     #[test]
     fn every_name_is_a_shell_word() {
         for name in Word::ALL.iter().map(|w| w.row().name) {
