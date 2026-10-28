@@ -20,7 +20,7 @@ use crate::wire::{Wire, wire};
 use std::borrow::Cow;
 
 /// Bumped on any change to the frames below.
-pub const PROTOCOL: u32 = 46;
+pub const PROTOCOL: u32 = 47;
 /// The largest frame, kind byte included.
 pub const MAX_FRAME: usize = 1 << 20;
 /// The largest payload one frame carries.
@@ -418,12 +418,6 @@ wire! {
         Snapshot(snapshot: Box<crate::inspect::Snapshot>),
         /// One field of a pane, tab or workspace (`get`).
         Field(value: Json),
-        /// A chooser's rows: what each is, its label, and the place of the
-        /// client's own.
-        Choices {
-            rows: Vec<(AnyRef, String)>,
-            current: Option<usize>,
-        },
     }
 }
 
@@ -569,9 +563,8 @@ frames! {
         /// focused, or with no pane to copy; a chooser, prompt or
         /// confirmation whose subject closed), the mode being the client's.
         Ended(opening: u64) = 14,
-        /// fuxth to run as its own, asked of it from elsewhere (`str c1
-        /// client choose-tab`).
-        Run(code: String) = 15,
+        /// Owned screen data; callbacks are checked by the receiving client.
+        Open(screen: crate::screens::Open) = 15,
         /// Keys to take as typed at its terminal (`send-keys` to a client).
         Keys(keys: Vec<crate::command::Input>) = 16,
     }
@@ -922,7 +915,7 @@ mod tests {
         round_trip!(Greeting, 11, Greeting::Done(2));
         round_trip!(ToAttached, 12, ToAttached::Welcome(ClientId::of(2), run));
         round_trip!(ToAttached, 14, ToAttached::Ended(7));
-        round_trip!(ToAttached, 15, ToAttached::Run("me zoom".into()));
+        round_trip!(ToAttached, 15, ToAttached::Open(crate::screens::Open::Copy));
         round_trip!(ToAttached, 16, ToAttached::Keys(Vec::new()));
         round_trip!(ToAttached, 19, ToAttached::NeedsInitial);
         for target in [

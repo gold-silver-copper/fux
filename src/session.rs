@@ -2957,12 +2957,9 @@ impl Session {
         };
         let view = || self.views.get(&client).ok_or(Error::NoClient(client));
         let picked = match *action {
-            ClientAction::Choices(choices) => {
-                return crate::overlay::choices(self, client, choices);
-            }
-            ClientAction::Run(ref code) => {
-                let run = ToAttached::Run(code.clone());
-                self.outbox.push(Outgoing::To(client, run));
+            ClientAction::Open(ref screen) => {
+                self.outbox
+                    .push(Outgoing::To(client, ToAttached::Open(screen.clone())));
                 return Ok(Reply::default());
             }
             // Taken as typed at its terminal: its bindings see them. No
@@ -3688,11 +3685,7 @@ pub(crate) mod testing {
         Result<Vec<fuxth::Value<crate::script::Fux>>, crate::script::Failed>,
     ) {
         let mut out = Vec::new();
-        let tokens = match job.tokens() {
-            Ok(tokens) => tokens,
-            Err(e) => return (out, Err(crate::script::Failed::from(e))),
-        };
-        let mut machine = match crate::script::compile(&tokens) {
+        let mut machine = match job.machine(None) {
             Ok(machine) => machine,
             Err(failed) => return (out, Err(failed)),
         };
@@ -3737,8 +3730,18 @@ pub(crate) mod testing {
         let mut kept = Vec::new();
         for outgoing in outbox {
             match outgoing {
-                super::Outgoing::To(client, ToAttached::Run(code)) => {
-                    session.run_as(client, &code.into());
+                super::Outgoing::To(client, ToAttached::Open(open)) => {
+                    let context = crate::protocol::Context {
+                        client: Some(client),
+                        of: Some(session.run),
+                        ..Default::default()
+                    };
+                    match open.admit(Some(&session.test_keymap), &context) {
+                        Ok(screen) => session.open_screen(client, screen),
+                        Err(failed) => {
+                            session.notify_to(client, failed.notice(), true);
+                        }
+                    }
                 }
                 super::Outgoing::To(client, ToAttached::Ended(opening)) => {
                     if let Some(keys) = session.test_keys.get_mut(&client) {
@@ -7468,16 +7471,21 @@ mod tests {
     #[test]
     fn a_screen_asked_from_elsewhere_is_the_clients() -> Result<(), Box<dyn std::error::Error>> {
         let (mut s, c) = attached(10, 40)?;
-        run(&mut s, "str c1 client str %1 pane choose-pane")?;
+        run(
+            &mut s,
+            "str c1 client str title list list 1 str inert end end list end list 0 end str missing-callback choose",
+        )?;
         let notice = s
             .views
             .get(&c)
-            .and_then(|v| v.notice.clone())
-            .map(|n| n.text);
-        assert_eq!(
-            notice.as_deref(),
-            Some("nothing_there: choose-pane: only one pane (key:1)")
-        );
+            .and_then(|v| v.notice.as_ref())
+            .map(|n| n.text.as_str())
+            .unwrap_or_default();
+        assert!(notice.contains("missing-callback"), "{notice}");
+        assert!(matches!(
+            s.views.get(&c).map(|v| &v.mode),
+            Some(Mode::Normal)
+        ));
         run(&mut s, "str c1 client choose-tab")?;
         assert!(matches!(
             s.views.get(&c).map(|v| &v.mode),

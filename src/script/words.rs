@@ -237,6 +237,9 @@ pub const TAKEN_AS: [(&str, &str); 3] = [
 /// of an integer.
 #[rustfmt::skip]
 pub const NAMES: &[(&str, &str, &str)] = &[
+    ("title", "string list", "a title or [title,subject handle]"),
+    ("callback", "string list", "source text or [captured arguments,source text]"),
+
     ("revision", "string", "a run-qualified layout revision"),
     ("tree", "list", "a flat layout node list"),
     ("closed-outcome", "closed-answer answers", "a closed pane or collection answer"),
@@ -391,13 +394,9 @@ words! {
         Reading Cols "cols" "pane-builder from to -- pane-builder" "capture: half-open from..to columns, clipped to available cells" "fux %3 0 40 cols capture";
     }
     Screen {
-        Clients ChooseTab "choose-tab" "client --" "a list of tabs to go to" "fux str c1 client choose-tab";
-        Clients ChooseWorkspace "choose-workspace" "client --" "a list of workspaces to go to" "fux str c1 client choose-workspace";
-        Clients ChooseTabFor "choose-tab-for" "client pane --" "a list of tabs to move the pane to" "fux str c1 client %3 choose-tab-for";
-        Clients ChooseWorkspaceFor "choose-workspace-for" "client pane --" "a list of workspaces to move the pane to" "fux str c1 client %3 choose-workspace-for";
-        Clients ChoosePane "choose-pane" "client pane --" "a list of panes to swap the pane with" "fux str c1 client %3 choose-pane";
-        Clients Prompt "prompt" "client name text code --" "a line to type, titled name and starting as text: its submit key (Enter) runs code, the line on its stack" "fux str c1 client str 'rename tab' str logs str '@2 swap rename' prompt";
-        Clients Confirm "confirm" "client text code --" "a question: its yes key (y) runs code" "fux str c1 client str 'close %3?' str '%3 kill' confirm";
+        Clients Choose "choose" "client title list list list code --" "a list of [payload,label] rows; current and selected are [] or [index]; callback receives client payload and leaves nothing" "fux str c1 client str hosts list list str host str Host end end list end list 0 end str 'drop drop' choose";
+        Clients Prompt "prompt" "client name text callback --" "a line to type, titled name and starting as text: its submit key (Enter) runs code, the line on its stack" "fux str c1 client str 'rename tab' str logs str '@2 swap rename' prompt";
+        Clients Confirm "confirm" "client text callback --" "a question: its yes key (y) runs code" "fux str c1 client str 'close %3?' str '%3 kill' confirm";
         Clients CopyMode "copy-mode" "client --" "copy and select in the focused pane" "fux str c1 client copy-mode";
         Clients CommandPrompt "command-prompt" "client --" "a prompt for fuxth" "fux str c1 client command-prompt";
     }
@@ -410,6 +409,7 @@ words! {
         Config Repeat "repeat" "--" "the last binding's layer repeats until Esc" "str H str 'me focused str left 2 move-border' bind repeat";
         Config Unbind "unbind" "keys --" "keys after the prefix run nothing" "str 'g v' unbind";
         Config UnbindRoot "unbind-root" "key --" "a key without the prefix runs nothing" "str M-n unbind-root";
+        Config BindAction "bind-action" "key code --" "an explicit executable list callback, receiving client payload; Escape cannot be bound" "str r str rename-prompt bind-action str rename label";
         Config BindIn "bind-in" "screen key action --" "in one of fux's own screens (copy list line confirm), a key does one of its actions, as the default keys bind each" "str copy str g str top bind-in str top label";
         Config UnbindIn "unbind-in" "screen key --" "in that screen, the key does what it would unbound: in a line, a character types itself; a named key with modifiers does what it does alone" "str copy str g unbind-in";
         Config UnbindAll "unbind-all" "--" "no bindings at all, nor keys in fux's screens (Escape still leaves them)" "unbind-all";
@@ -2154,17 +2154,89 @@ impl Host<'_> {
         let c = client(&next()?)?;
         let here = self.context.client == Some(c);
         let open = match screen {
-            Screen::ChooseTab => Open::ChooseTab(None),
-            Screen::ChooseWorkspace => Open::ChooseWorkspace(None),
+            Screen::Choose => {
+                let heading = next()?;
+                let (title, about) = match &heading {
+                    Value::Str(_) => (string(&heading)?, None),
+                    Value::List(list) => match list.items() {
+                        [title, subject] => (
+                            string(title)?,
+                            Some((target(subject)?, super::scope(subject))),
+                        ),
+                        _ => {
+                            return Err(fail(
+                                Raise::BadValue,
+                                "title is text or [text,subject handle]",
+                            ));
+                        }
+                    },
+                    Value::Int(_) | Value::Bool(_) | Value::App(_) => {
+                        return Err(wrong("a title or [text,subject handle]", &heading));
+                    }
+                };
+                let rows = next()?;
+                let Value::List(rows) = rows else {
+                    return Err(wrong("rows", &rows));
+                };
+                let mut budget = crate::wire::Budget::with_limit(crate::client::JOB_BYTES);
+                let mut items = budget
+                    .vector(rows.items().len())
+                    .map_err(observation_failure)?;
+                for row in rows.items() {
+                    let Value::List(row) = row else {
+                        return Err(wrong("[payload,label]", row));
+                    };
+                    let [payload, label] = row.items() else {
+                        return Err(fail(Raise::BadValue, "a row is [payload,label]"));
+                    };
+                    let payload = super::callback::data(payload, &mut budget)?;
+                    let label = string(label)?;
+                    budget
+                        .charge(label.capacity())
+                        .map_err(observation_failure)?;
+                    items.push(crate::screens::Item { payload, label });
+                }
+                let index = |v: Value<Fux>| -> Result<Option<usize>, Failure> {
+                    let Value::List(list) = &v else {
+                        return Err(wrong("[] or [index]", &v));
+                    };
+                    match list.items() {
+                        [] => Ok(None),
+                        [Value::Int(n)] => usize::try_from(*n)
+                            .ok()
+                            .filter(|n| *n < items.len())
+                            .map(Some)
+                            .ok_or_else(|| {
+                                fail(Raise::BadValue, "index is outside the chooser rows")
+                            }),
+                        _ => Err(fail(
+                            Raise::BadValue,
+                            "an index is [] or [nonnegative integer]",
+                        )),
+                    }
+                };
+                let current = index(next()?)?;
+                let selected = index(next()?)?;
+                if selected.is_none() && !items.is_empty() {
+                    return Err(fail(Raise::BadValue, "nonempty rows need a selected index"));
+                }
+                let action = Self::action(&Value::str(string(&next()?)?))?;
+                Open::List(crate::screens::ListScreen {
+                    title,
+                    items,
+                    current,
+                    selected: selected.unwrap_or(0),
+                    about,
+                    action,
+                    client: crate::callback::Data::Client(c, self.context.of),
+                })
+            }
             Screen::CopyMode => Open::Copy,
             Screen::CommandPrompt => Open::Prompt(crate::screens::Prompt {
                 title: ":".to_owned(),
                 line: crate::view::Line::new(String::new()),
                 action: None,
             }),
-            Screen::ChooseTabFor => Open::ChooseTab(Some(pane(&next()?)?)),
-            Screen::ChooseWorkspaceFor => Open::ChooseWorkspace(Some(pane(&next()?)?)),
-            Screen::ChoosePane => Open::ChoosePane(pane(&next()?)?),
             Screen::Prompt => {
                 let title = text(&next()?)?;
                 // Its start typed, so the line holds no more, nor any other,
@@ -2176,7 +2248,7 @@ impl Host<'_> {
                     false => line.edit(&crate::act::Edit::Insert(start)),
                 };
                 typed.map_err(|why| fail(Raise::BadValue, why))?;
-                let action = Some(self.action(&next()?, true, here)?);
+                let action = Some(Self::action(&next()?)?);
                 Open::Prompt(crate::screens::Prompt {
                     title,
                     line,
@@ -2185,38 +2257,49 @@ impl Host<'_> {
             }
             Screen::Confirm => {
                 let question = text(&next()?)?;
-                let action = self.action(&next()?, false, here)?;
+                let action = Self::action(&next()?)?;
                 Open::Confirm(crate::screens::Confirm { question, action })
             }
         };
         match here {
             true => local(Local::Open(open)),
-            false => order(c, ClientAction::Run(open.code())),
+            false => order(c, ClientAction::Open(open)),
         }
     }
 
-    /// The fuxth a prompt (`given`: the line typed on its stack) or a
-    /// question runs: within `ACTION_MAX`, as the client holds it, outside
-    /// any frame; and compiled now if it opens `here`, in the client's own
-    /// program (one relayed is checked by the client it opens on, with its
-    /// own config, as it runs the word again).
-    fn action(&self, value: &Value<Fux>, given: bool, here: bool) -> Result<String, Failure> {
-        let code = string(value)?;
-        let (len, most) = (code.len(), crate::screens::ACTION_MAX);
-        if len > most {
+    /// Source is explicit; captured values never pass through a tokenizer.
+    fn action(value: &Value<Fux>) -> Result<crate::callback::Callback, Failure> {
+        let mut budget = crate::wire::Budget::with_limit(crate::client::JOB_BYTES);
+        let (code, args) = match value {
+            Value::Str(_) => (string(value)?, Vec::new()),
+            Value::List(v) => match v.items() {
+                [Value::List(args), code] => {
+                    let mut out = budget
+                        .vector(args.items().len())
+                        .map_err(observation_failure)?;
+                    for arg in args.items() {
+                        out.push(super::callback::data(arg, &mut budget)?);
+                    }
+                    (string(code)?, out)
+                }
+                _ => {
+                    return Err(fail(
+                        Raise::BadValue,
+                        "a callback is source text or [captured arguments,source text]",
+                    ));
+                }
+            },
+            Value::Int(_) | Value::Bool(_) | Value::App(_) => {
+                return Err(wrong("a callback", value));
+            }
+        };
+        if code.len() > crate::screens::ACTION_MAX {
             return Err(fail(
                 Raise::TooLong,
-                format!("an action of {len} bytes is past {most}"),
+                "callback source exceeds its byte limit",
             ));
         }
-        let job = crate::screens::Job {
-            code,
-            given: given.then(String::new),
-        };
-        if let Some(keymap) = self.state.as_deref().filter(|_| here) {
-            checked(keymap, &job, Raise::BadValue, "the action")?;
-        }
-        Ok(job.code)
+        Ok(crate::callback::Callback { code, args })
     }
 
     /// A config's word: it changes the client's keymap.
@@ -2271,6 +2354,22 @@ impl Host<'_> {
             Keys::UnbindRoot => {
                 let key = crate::keymap::key(&string(&next()?)?).map_err(refused)?;
                 keymap.unbind_root(key).map_err(refused)?;
+            }
+            Keys::BindAction => {
+                let key = crate::keymap::key(&string(&next()?)?).map_err(refused)?;
+                let code = string(&next()?)?;
+                let action = Self::action(&Value::str(code))?;
+                let tokens = fuxth::token::source("list action", &action.code)
+                    .map_err(|e| refused(e.message))?;
+                super::callback_source(state.config.as_ref(), &tokens)
+                    .map_err(|e| refused(e.to_string()))?;
+                let keymap = &mut state.keys;
+                keymap
+                    .modes
+                    .list
+                    .bind_action(key, action)
+                    .map_err(refused)?;
+                self.last_bound = Some(Bound::In(crate::keymap::Modal::List, key));
             }
             Keys::BindIn | Keys::UnbindIn => {
                 let modal = one_of(&next()?, crate::keymap::Modal::ALL)?;

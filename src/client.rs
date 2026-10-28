@@ -808,7 +808,7 @@ impl Keyboard {
         let mut acts = Vec::new();
         match frame {
             ToAttached::Ended(opening) => self.screen.ended(opening),
-            ToAttached::Run(code) => self.run(code.into(), &mut acts),
+            ToAttached::Open(open) => self.run(Job::open(open), &mut acts),
             ToAttached::Keys(typed) => return self.inputs(typed.into_iter().flat_map(decoded)),
             // The attachment's own: `attached` reads them.
             ToAttached::NeedsInitial
@@ -912,7 +912,7 @@ impl Keyboard {
             self.stop.reset();
         }
         let (waiting, bytes) = (self.running.len(), self.running.iter().sum::<usize>());
-        let len = (job.code.len()).saturating_add(job.given.as_ref().map_or(0, String::len));
+        let len = job.bytes();
         if waiting >= JOBS || bytes.saturating_add(len) > JOB_BYTES {
             let text = format!(
                 "a program was not run: {waiting} already wait to run ({bytes} bytes of code)"
@@ -925,6 +925,13 @@ impl Keyboard {
         } else {
             self.pending.push_back(job);
         }
+    }
+
+    /// Queue an explicit client program using the same admission as a key.
+    pub fn program(&mut self, job: Job) -> Vec<Dispatch> {
+        let mut acts = Vec::new();
+        self.run(job, &mut acts);
+        acts
     }
 
     /// What the terminal sent, decoded (`Screen::input`).
@@ -1000,8 +1007,11 @@ fn run_job(
         on_commit: Some(&mut publish),
     };
     let mut result = (|| {
-        let tokens = job.tokens()?;
-        let mut machine = script::compiled(config.as_ref(), &tokens)?;
+        if let Some(open) = &job.screen {
+            asks.opened = Some(open.clone().admit(Some(&changed), &context)?);
+            return Ok(Vec::new());
+        }
+        let mut machine = job.machine(config.as_ref())?;
         let mut host = script::Host::new(context.clone(), Some(&mut changed), &mut out);
         script::run_capped(
             &mut machine,
@@ -1567,7 +1577,7 @@ fn last_frames(
                 ToAttached::NeedsInitial
                 | ToAttached::Welcome(..)
                 | ToAttached::Ended(_)
-                | ToAttached::Run(_)
+                | ToAttached::Open(_)
                 | ToAttached::Keys(_) => {}
             }
         }
@@ -1668,8 +1678,8 @@ mod tests {
             .collect()
     }
 
-    fn frame(keyboard: &mut Keyboard, frame: ToAttached<'_>) -> Vec<Act> {
-        let outputs = keyboard.frame(frame);
+    fn program(keyboard: &mut Keyboard, job: Job) -> Vec<Act> {
+        let outputs = keyboard.program(job);
         transport(keyboard, outputs)
     }
 
@@ -1723,8 +1733,8 @@ mod tests {
             script::default_state().map_err(|e| e.to_string())?,
             false,
         )?;
-        let effects = keyboard.frame(ToAttached::Run(
-            "str terminal-clipboard false set str styles list list str bar 7 8 end end set str bar-slots list list 0 str inert end end set str show-column false set %1 str Enter key send-keys drop".into(),
+        let effects = keyboard.program(Job::from(
+            "str terminal-clipboard false set str styles list list str bar 7 8 end end set str bar-slots list list 0 str inert end end set str show-column false set %1 str Enter key send-keys drop",
         ));
         let [Dispatch::Run(job)] = effects.as_slice() else {
             return Err("job".into());
@@ -1811,9 +1821,9 @@ mod tests {
             script::default_state().map_err(|e| e.to_string())?,
             false,
         )?;
-        frame(
+        program(
             &mut keyboard,
-            ToAttached::Run("str titles true set %1 30 timeout wait".into()),
+            Job::from("str titles true set %1 30 timeout wait"),
         );
         let mut wake = [PollFd::new(keyboard.wake(), PollFlags::IN)];
         assert_ne!(fuxix::poll::poll(&mut wake, Some(ANSWER))?, 0);
@@ -1883,12 +1893,8 @@ mod tests {
             script::default_state().map_err(|e| e.to_string())?,
             false,
         )?;
-        let first = keyboard.frame(ToAttached::Run("me command-prompt str ready".into()));
-        assert!(
-            keyboard
-                .frame(ToAttached::Run("str next".into()))
-                .is_empty()
-        );
+        let first = keyboard.program(Job::from("me command-prompt str ready"));
+        assert!(keyboard.program(Job::from("str next")).is_empty());
         assert!(transport(&mut keyboard, first).is_empty());
         let mut done = [PollFd::new(keyboard.wake(), PollFlags::IN)];
         assert_ne!(fuxix::poll::poll(&mut done, Some(ANSWER))?, 0);
@@ -1913,8 +1919,8 @@ mod tests {
             false,
         )?;
         let now = Instant::now();
-        let run = ToAttached::Run("begin false until".into());
-        assert!(frame(&mut keyboard, run).is_empty());
+        let run = Job::from("begin false until");
+        assert!(program(&mut keyboard, run).is_empty());
         assert!(
             bytes(&mut keyboard, b"x", now).is_empty(),
             "a key went past it"
@@ -2017,7 +2023,7 @@ mod tests {
             "str F5 str ls bind-root str titles true set",
             "str F6 str ls bind-root str wait-seconds 0 set str bell false set str Nope prefix",
         ] {
-            assert!(frame(&mut keyboard, ToAttached::Run(code.into())).is_empty());
+            assert!(program(&mut keyboard, Job::from(code)).is_empty());
         }
         all_ran(&mut keyboard)?;
         let state = lock(&keyboard.state);
@@ -2053,16 +2059,10 @@ mod tests {
             false,
         )?;
         keyboard.open(Screen::Copy(None), &mut Vec::new());
-        frame(
-            &mut keyboard,
-            ToAttached::Run("str F5 str ls bind-root".into()),
-        );
+        program(&mut keyboard, Job::from("str F5 str ls bind-root"));
         assert_eq!(all_ran(&mut keyboard)?, []);
         assert_eq!(keyboard.screen.screen, Screen::Copy(None));
-        frame(
-            &mut keyboard,
-            ToAttached::Run("str copy str g str top bind-in".into()),
-        );
+        program(&mut keyboard, Job::from("str copy str g str top bind-in"));
         let acts = all_ran(&mut keyboard)?;
         assert!(
             matches!(
@@ -2093,9 +2093,9 @@ mod tests {
         )?;
         let (mut session, client) = crate::session::testing::attached(24, 80)?;
         for (suffix, failed) in [("str hello", false), ("str boom fail", true)] {
-            frame(
+            program(
                 &mut keyboard,
-                ToAttached::Run(format!("me command-prompt {suffix}")),
+                Job::from(format!("me command-prompt {suffix}")),
             );
             let acts = all_ran(&mut keyboard)?;
             assert_eq!(
@@ -2114,10 +2114,7 @@ mod tests {
             }
         }
         keyboard.read_only = true;
-        frame(
-            &mut keyboard,
-            ToAttached::Run("me command-prompt str hello".into()),
-        );
+        program(&mut keyboard, Job::from("me command-prompt str hello"));
         let acts = all_ran(&mut keyboard)?;
         assert!(
             matches!(acts.as_slice(), [Act::Notice { text, error: true }] if text.contains("watching only") && text.contains("hello"))
@@ -2195,12 +2192,12 @@ mod tests {
             script::default_state().map_err(|e| e.to_string())?,
             false,
         )?;
-        let forever = || ToAttached::Run("begin false until".into());
+        let forever = || Job::from("begin false until");
         for _ in 0..JOBS {
-            assert!(frame(&mut keyboard, forever()).is_empty());
+            assert!(program(&mut keyboard, forever()).is_empty());
         }
         let notice = |acts: &[Act], says: &str| matches!(acts, [Act::Notice { text, error: true }] if text.starts_with(says));
-        let more = frame(&mut keyboard, forever());
+        let more = program(&mut keyboard, forever());
         assert!(
             notice(&more, "a program was not run: 64 already"),
             "{more:?}"
@@ -2235,7 +2232,7 @@ mod tests {
         )?;
         let line: String = std::iter::repeat_n('x', 1000).collect();
         let code = format!("0 begin str {line} print 1 add 0 pick 100 eq until drop");
-        assert!(frame(&mut keyboard, ToAttached::Run(code)).is_empty());
+        assert!(program(&mut keyboard, Job::from(code)).is_empty());
         let acts = all_ran(&mut keyboard)?;
         let failed = matches!(acts.as_slice(),
             [Act::Notice { text, error: true }] if text.contains("prints 65536 bytes at most"));
@@ -2244,7 +2241,7 @@ mod tests {
         // a notice holds.
         let long: String = std::iter::repeat_n('x', 30_000).collect();
         let left = format!("str {long} 0 pick 0 pick");
-        assert!(frame(&mut keyboard, ToAttached::Run(left)).is_empty());
+        assert!(program(&mut keyboard, Job::from(left)).is_empty());
         let acts = all_ran(&mut keyboard)?;
         let refused = matches!(acts.as_slice(),
             [Act::Notice { text, error: true }] if text.starts_with("what the program left"));

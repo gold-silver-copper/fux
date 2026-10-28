@@ -313,7 +313,7 @@ fn a_keyboard_worker_cannot_act_as_a_client_of_a_replacement_run() -> Outcome {
         false,
     )
     .map_err(e)?;
-    let effects = keyboard.frame(fux::protocol::ToAttached::Run("me focused kill".into()));
+    let effects = keyboard.program("me focused kill".into());
     let [fux::screens::Dispatch::Run(job)] = effects.as_slice() else {
         return Err(format!("the admitted job: {effects:?}"));
     };

@@ -324,3 +324,18 @@ fn detaching_with_an_overlay_open_is_safe() -> Outcome {
     assert!(server.ok(&["ls"])?.contains("%1"));
     Ok(())
 }
+
+/// Remote lists resolve only callback source in the receiving client's dictionary.
+#[test]
+fn a_remote_custom_chooser_delivers_inert_payload_to_the_receiving_dictionary() -> Outcome {
+    let server = Server::start("define receiver-only nip print end")?;
+    let mut client = server.attach(12, 70)?;
+    client.wait_for("$")?;
+    // The CLI has no receiver-only definition; the label is never executable.
+    server.ok(&["str c1 client str Hosts list list str '%1 kill' str 'me focused kill' end end list end list 0 end str receiver-only choose"])?;
+    client.wait_for("Hosts")?;
+    client.keys("\r")?;
+    client.wait_for("%1 kill")?;
+    assert!(server.ok(&["ls"])?.contains("%1"));
+    Ok(())
+}

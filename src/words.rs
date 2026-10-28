@@ -112,6 +112,19 @@ pub fn quote(word: &str) -> String {
     Quoted(word).to_string()
 }
 
+/// Inert single-line UI text; terminal controls have no display authority.
+pub(crate) fn clean(text: &str) -> String {
+    text.chars()
+        .map(|c| {
+            if c.is_control() || matches!(c, '\u{2028}' | '\u{2029}') {
+                ' '
+            } else {
+                c
+            }
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -10,7 +10,7 @@
 //! has open (`screens::Screen`), else through its bindings (`keymap::Held`,
 //! one keymap all clients share). Its actions go to the session, and its
 //! programs run in-process as that client (a screen one opens opens), as do
-//! the programs the session hands a client (`ToAttached::Run`) and keys sent
+//! the programs the session hands a client (`ToAttached::Open`) and keys sent
 //! to it (`ToAttached::Keys`).
 use std::collections::BTreeMap;
 use std::num::NonZeroUsize;
@@ -305,7 +305,7 @@ impl Run {
         if tokens.iter().any(|t| READS.contains(&&*t.text)) {
             return Err("reads a file".to_owned());
         }
-        let mut machine = fux::script::compile(&tokens).map_err(told)?;
+        let mut machine = job.machine(self.keymap.config.as_ref()).map_err(told)?;
         let mut keymap = self.keymap.draft();
         if let Some(view) = client.and_then(|c| self.s.views.get(&c)) {
             keymap.preferences.presentation(view.presentation.clone());
@@ -482,7 +482,26 @@ impl Run {
                 panic!("an attachment reply from the session")
             }
             Outgoing::Shutdown { .. } => self.shut = true,
-            Outgoing::To(client, ToAttached::Run(code)) => self.run_as(client, &code.into()),
+            Outgoing::To(client, ToAttached::Open(open)) => {
+                let context = Context {
+                    client: Some(client),
+                    of: Some(self.s.run),
+                    ..Default::default()
+                };
+                match open.admit(Some(&self.keymap.draft()), &context) {
+                    Ok(screen) => self.open(client, screen),
+                    Err(failed) => {
+                        self.s.acts(
+                            client,
+                            vec![Act::Notice {
+                                text: failed.notice(),
+                                error: true,
+                            }],
+                            self.now,
+                        );
+                    }
+                }
+            }
             Outgoing::To(client, ToAttached::Ended(opening)) => {
                 if let Some(keys) = self.keys.get_mut(&client) {
                     keys.screen.ended(opening);

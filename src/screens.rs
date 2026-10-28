@@ -7,30 +7,54 @@
 //!
 //! What a screen's entry does is fuxth, run as the client runs a binding.
 use crate::act::{Act, CopyAct, LineAct, List, ListAct, Panel, ScreenAct, Seek};
-use crate::code::Code;
-use crate::command::{AnyRef, Choices, ClientAction, Command};
+use crate::callback::{Callback, Data};
+use crate::command::AnyRef;
 use crate::copy::SEARCH_MAX;
 use crate::decode::Input;
-use crate::id::PaneId;
 use crate::keymap::{Held, Keymap, Modes};
 use crate::keys::{KeyPress, Keystroke};
-use crate::protocol::{Body, Reply, Response};
-use crate::script::{self, Failed, succeeded};
+use crate::script;
 use crate::view::Line;
-use crate::words::quote;
+use crate::wire::{Wire, wire};
 
-/// A screen a word asks to open: a chooser built with what the server
-/// knows by `Open::build`; a prompt or a question as it is given.
+/// A typed screen request; only Callback.code is executable source.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Open {
-    /// The tabs of the client's workspace: to show one, or to move a pane to.
-    ChooseTab(Option<PaneId>),
-    ChooseWorkspace(Option<PaneId>),
-    /// The other panes of a pane's tab, to swap it with.
-    ChoosePane(PaneId),
+    List(ListScreen),
     Prompt(Prompt),
     Confirm(Confirm),
     Copy,
+}
+
+impl Wire for Open {
+    fn put(&self, out: &mut impl crate::wire::Sink) {
+        match self {
+            Self::List(list) => {
+                out.push(0);
+                list.put(out);
+            }
+            Self::Prompt(prompt) => {
+                out.push(1);
+                prompt.put(out);
+            }
+            Self::Confirm(confirm) => {
+                out.push(2);
+                confirm.put(out);
+            }
+            Self::Copy => out.push(3),
+        }
+    }
+    fn get(r: &mut crate::wire::Reader<'_>) -> Result<Self, crate::wire::Error> {
+        r.limited(crate::client::JOB_BYTES, |r| {
+            Ok(match u8::get(r)? {
+                0 => Self::List(ListScreen::get(r)?),
+                1 => Self::Prompt(Prompt::get(r)?),
+                2 => Self::Confirm(Confirm::get(r)?),
+                3 => Self::Copy,
+                tag => return Err(crate::wire::Error::Tag("screen", tag)),
+            })
+        })
+    }
 }
 
 /// One of a client's screens, or none: its keys then go through its
@@ -46,25 +70,26 @@ pub enum Screen {
     Copy(Option<(Seek, Line<SEARCH_MAX>)>),
 }
 
-/// A chooser: its rows, each running fuxth when chosen and about a tab,
-/// workspace or pane, which the list's keys may rename or close.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ListScreen {
-    pub title: String,
-    pub items: Vec<Item>,
-    pub current: Option<usize>,
-    pub selected: usize,
-    /// What it was opened for: the server closes it if that goes.
-    pub about: Option<AnyRef>,
+wire! {
+    /// An admitted chooser with one callback and independent current and selection.
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    pub struct ListScreen {
+        pub title: String,
+        pub items: Vec<Item>,
+        pub current: Option<usize>,
+        pub selected: usize,
+        pub about: Option<(AnyRef, Option<crate::command::Run>)>,
+        pub action: Callback,
+        pub client: Data,
+    }
 }
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Item {
-    pub label: String,
-    /// The fuxth it runs.
-    pub code: String,
-    /// What it is about.
-    pub about: Option<AnyRef>,
+wire! {
+    /// A row's inert label and actual immutable payload.
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    pub struct Item {
+        pub label: String,
+        pub payload: Data,
+    }
 }
 
 /// A line being typed, and what Enter does with it.
@@ -74,14 +99,49 @@ pub struct Prompt {
     pub line: Line,
     /// None: the line is fuxth to run. Some: fuxth run with the line on its
     /// stack, a string.
-    pub action: Option<String>,
+    pub action: Option<Callback>,
 }
 
 /// A question, and the fuxth its yes runs.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Confirm {
     pub question: String,
-    pub action: String,
+    pub action: Callback,
+}
+
+impl Wire for Prompt {
+    fn put(&self, out: &mut impl crate::wire::Sink) {
+        self.title.put(out);
+        self.line.clone().text().put(out);
+        self.action.put(out);
+    }
+    fn get(r: &mut crate::wire::Reader<'_>) -> Result<Self, crate::wire::Error> {
+        let title = String::get(r)?;
+        let text = r.bounded_text(crate::view::LINE_MAX)?;
+        let mut line = Line::new(String::new());
+        if text.contains(char::is_control) {
+            return Err(crate::wire::Error::Bad("prompt text"));
+        }
+        line.edit(&crate::act::Edit::Insert(text))
+            .map_err(|_| crate::wire::Error::Bad("prompt length"))?;
+        Ok(Self {
+            title,
+            line,
+            action: Option::get(r)?,
+        })
+    }
+}
+impl Wire for Confirm {
+    fn put(&self, out: &mut impl crate::wire::Sink) {
+        self.question.put(out);
+        self.action.put(out);
+    }
+    fn get(r: &mut crate::wire::Reader<'_>) -> Result<Self, crate::wire::Error> {
+        Ok(Self {
+            question: String::get(r)?,
+            action: Callback::get(r)?,
+        })
+    }
 }
 
 /// What a key leads to, in a screen or through the bindings: an action for
@@ -204,17 +264,22 @@ impl Display {
     }
 }
 
-/// fuxth for the client to run, and the line typed for it, if any: on its
-/// stack as a string as it begins, never read as code.
+/// An owned worker operation: a program with inert typed arguments,
+/// or a relayed screen awaiting the receiving dictionary's admission.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Job {
     pub code: String,
-    pub given: Option<String>,
+    pub given: Option<Vec<Data>>,
+    pub(crate) screen: Option<Open>,
 }
 
 impl From<String> for Job {
     fn from(code: String) -> Self {
-        Job { code, given: None }
+        Job {
+            code,
+            given: None,
+            screen: None,
+        }
     }
 }
 
@@ -225,12 +290,34 @@ impl From<&str> for Job {
 }
 
 impl Job {
-    /// Its program's tokens: the line given, as `str LINE`, then its code's.
+    /// The code alone; arguments enter the compiler as literal values.
     pub fn tokens(&self) -> Result<Vec<fuxth::token::Token>, fuxth::Error> {
-        let given = (self.given.iter()).flat_map(|line| fuxth::token::arguments(&["str", line]));
-        Ok(given
-            .chain(fuxth::token::source("key", &self.code)?)
-            .collect())
+        fuxth::token::source("key", &self.code)
+    }
+
+    pub fn open(screen: Open) -> Self {
+        Self {
+            code: String::new(),
+            given: None,
+            screen: Some(screen),
+        }
+    }
+
+    pub fn bytes(&self) -> usize {
+        let retained = self.screen.as_ref().map_or(0, Open::bytes);
+        self.given
+            .iter()
+            .flatten()
+            .fold(self.code.capacity().saturating_add(retained), |n, v| {
+                n.saturating_add(v.bytes())
+            })
+    }
+
+    pub fn machine(
+        &self,
+        config: Option<&script::Config>,
+    ) -> Result<fuxth::Machine<script::Fux>, script::Failed> {
+        script::callback_machine(config, &self.tokens()?, self.given.as_deref())
     }
 }
 
@@ -242,99 +329,14 @@ pub const ACTION_MAX: usize = 1 << 16;
 pub const HIDE: Effect = Effect::Screen(ScreenAct::Hide);
 
 impl Open {
-    /// The fuxth that opens it on client `me`: what is relayed to a client
-    /// asked from elsewhere (`str c1 client choose-tab`).
-    pub fn code(&self) -> String {
-        let pane = |p: &PaneId| format!("str {p} {} ", script::Act::Pane);
-        let text = |t: &str| format!("str {} ", quote(t));
-        let (on, screen) = match self {
-            Open::ChooseTab(None) => (String::new(), script::Screen::ChooseTab),
-            Open::ChooseTab(Some(p)) => (pane(p), script::Screen::ChooseTabFor),
-            Open::ChooseWorkspace(None) => (String::new(), script::Screen::ChooseWorkspace),
-            Open::ChooseWorkspace(Some(p)) => (pane(p), script::Screen::ChooseWorkspaceFor),
-            Open::ChoosePane(p) => (pane(p), script::Screen::ChoosePane),
-            Open::Prompt(Prompt { action: None, .. }) => {
-                (String::new(), script::Screen::CommandPrompt)
-            }
-            Open::Prompt(Prompt {
-                title,
-                line,
-                action: Some(action),
-            }) => {
-                let typed = format!("{}{}", line.before(), line.after());
-                let on = [title, &typed, action].map(|t| text(t)).concat();
-                (on, script::Screen::Prompt)
-            }
-            Open::Confirm(Confirm { question, action }) => {
-                (text(question) + &text(action), script::Screen::Confirm)
-            }
-            Open::Copy => (String::new(), script::Screen::CopyMode),
-        };
-        format!("{} {on}{screen}", script::Act::Me)
+    pub fn build(self) -> Screen {
+        match self {
+            Self::List(list) => Screen::List(list),
+            Self::Prompt(prompt) => Screen::Prompt(prompt),
+            Self::Confirm(confirm) => Screen::Confirm(confirm),
+            Self::Copy => Screen::Copy(None),
+        }
     }
-
-    /// The screen, a chooser built with what `ask` answers: its rows.
-    pub fn build(
-        self,
-        ask: &mut dyn FnMut(Command) -> Result<Reply, Failed>,
-    ) -> Result<Screen, Failed> {
-        Ok(match self {
-            Open::Prompt(prompt) => Screen::Prompt(prompt),
-            Open::Confirm(confirm) => Screen::Confirm(confirm),
-            Open::Copy => Screen::Copy(None),
-            Open::ChooseTab(moving) => chooser(ask, Choices::Tabs, moving, "tab")?,
-            Open::ChooseWorkspace(moving) => {
-                chooser(ask, Choices::Workspaces, moving, "workspace")?
-            }
-            Open::ChoosePane(source) => chooser(ask, Choices::Panes(source), Some(source), "pane")?,
-        })
-    }
-}
-
-/// A chooser of tabs, workspaces or panes: to show one, or to move or swap
-/// the pane `moving` with it.
-fn chooser(
-    ask: &mut dyn FnMut(Command) -> Result<Reply, Failed>,
-    choices: Choices,
-    moving: Option<PaneId>,
-    what: &str,
-) -> Result<Screen, Failed> {
-    let reply = succeeded(ask(Command::Client {
-        client: None,
-        action: ClientAction::Choices(choices),
-    })?)?;
-    let Response::Returned(Body::Choices { rows, current }) = reply.response else {
-        return Err(Failed::new(Code::NoTarget, "the server gave no choices"));
-    };
-    let items = (rows.into_iter())
-        .map(|(id, label)| {
-            let it = id;
-            let code = match (choices, moving) {
-                (Choices::Panes(source), _) => format!("str {source} pane {it} swap-with"),
-                (Choices::Tabs | Choices::Workspaces, None) => format!("me {it} show"),
-                (Choices::Tabs | Choices::Workspaces, Some(p)) => {
-                    format!("str {p} pane {it} move")
-                }
-            };
-            Item {
-                label,
-                code,
-                about: Some(id),
-            }
-        })
-        .collect();
-    let title = match (choices, moving) {
-        (Choices::Panes(source), _) => format!("swap {source} with"),
-        (Choices::Tabs | Choices::Workspaces, Some(p)) => format!("move {p} to {what}"),
-        (Choices::Tabs | Choices::Workspaces, None) => format!("{what}s"),
-    };
-    Ok(Screen::List(ListScreen {
-        title,
-        items,
-        selected: current.unwrap_or(0),
-        current,
-        about: moving.map(AnyRef::Pane),
-    }))
 }
 
 impl Default for Screen {
@@ -381,7 +383,7 @@ impl Screen {
                 items: list.items.iter().map(|i| i.label.clone()).collect(),
                 current: list.current,
                 selected: list.selected,
-                about: list.about,
+                about: list.about.map(|(id, _)| id),
                 hints: modes.list.hints(),
             })),
             Self::Prompt(prompt) => Some(Panel::Prompt {
@@ -444,7 +446,7 @@ impl Screen {
                 }
             },
             Self::Confirm(confirm) => match modes.confirm.get(press) {
-                Some(true) => vec![HIDE, Effect::Run(confirm.action.into())],
+                Some(true) => vec![HIDE, Effect::Run(confirm.action.job([]))],
                 Some(false) => vec![HIDE],
                 None => {
                     *self = Self::Confirm(confirm);
@@ -476,19 +478,30 @@ impl Screen {
     fn list(&mut self, modes: &Modes, mut list: ListScreen, press: KeyPress) -> Vec<Effect> {
         let (at, last) = (list.selected, list.items.len().saturating_sub(1));
         let chosen = list.items.get(at);
-        let about = chosen.and_then(|item| item.about);
-        let on = |word: &str| about.map(|it| format!("{} {it} {word}", script::Act::Me));
-        let (moved, code) = match modes.list.get(press) {
-            None => (at, None),
-            Some(ListAct::Move(moved)) => (moved.from(at, last), None),
+        let action = match modes.list.get(press) {
             Some(ListAct::Cancel) => return vec![HIDE],
-            Some(ListAct::Choose) => (at, chosen.map(|item| item.code.clone())),
-            Some(ListAct::Rename) => (at, on("rename-prompt")),
-            Some(ListAct::Close) => (at, on("confirm-close")),
+            Some(ListAct::Choose) => Some(&list.action),
+            Some(ListAct::Action(ref action)) => {
+                if let Some(item) = chosen {
+                    return vec![
+                        HIDE,
+                        Effect::Run(action.job([list.client.clone(), item.payload.clone()])),
+                    ];
+                }
+                None
+            }
+            _ => None,
         };
-        if let Some(code) = code {
-            return vec![HIDE, Effect::Run(code.into())];
+        if let (Some(action), Some(item)) = (action, chosen) {
+            return vec![
+                HIDE,
+                Effect::Run(action.job([list.client.clone(), item.payload.clone()])),
+            ];
         }
+        let moved = match modes.list.get(press) {
+            Some(ListAct::Move(moved)) => moved.from(at, last),
+            _ => at,
+        };
         list.selected = moved;
         *self = Self::List(list);
         let shown = self.panel(modes).filter(|_| moved != at);
@@ -501,10 +514,7 @@ impl Screen {
             LineAct::Submit => {
                 let text = prompt.line.text();
                 let job = match prompt.action {
-                    Some(code) => Some(Job {
-                        code,
-                        given: Some(text),
-                    }),
+                    Some(action) => Some(action.job([Data::Text(text)])),
                     None => Some(text).filter(|t| !t.trim().is_empty()).map(Job::from),
                 };
                 std::iter::once(HIDE).chain(job.map(Effect::Run)).collect()
@@ -592,8 +602,7 @@ mod tests {
     fn list() -> Screen {
         let item = |n: u32| Item {
             label: format!("@{n}"),
-            code: format!("me str @{n} tab show"),
-            about: format!("@{n}").parse().ok().map(AnyRef::Tab),
+            payload: Data::Int(i64::from(n)),
         };
         Screen::List(ListScreen {
             title: "tabs".to_owned(),
@@ -601,6 +610,8 @@ mod tests {
             current: Some(0),
             selected: 0,
             about: None,
+            action: "2drop".into(),
+            client: Data::Int(0),
         })
     }
 
@@ -656,7 +667,7 @@ mod tests {
             key(&mut screen, "Enter")?,
             [
                 Effect::Screen(ScreenAct::Hide),
-                Effect::Run("me str @2 tab show".into())
+                Effect::Run(Callback::from("2drop").job([Data::Int(0), Data::Int(2)]))
             ]
         );
         assert_eq!(screen, Screen::default());
@@ -665,7 +676,7 @@ mod tests {
             key(&mut screen, "x")?,
             [
                 Effect::Screen(ScreenAct::Hide),
-                Effect::Run("me @1 confirm-close".into())
+                Effect::Run(Callback::from("chooser-close").job([Data::Int(0), Data::Int(1)]))
             ]
         );
         let mut screen = list();
@@ -706,16 +717,14 @@ mod tests {
         let ran = key(&mut screen, "Enter")?;
         let job = Job {
             code: "%1 swap rename".into(),
-            given: Some("it's -x' drop".into()),
+            given: Some(vec![Data::Text("it's -x' drop".into())]),
+            screen: None,
         };
         assert_eq!(
             ran,
             [Effect::Screen(ScreenAct::Hide), Effect::Run(job.clone())]
         );
-        let texts: Vec<String> = (job.tokens().map_err(|e| e.message)?.iter())
-            .map(|t| t.text.to_string())
-            .collect();
-        assert_eq!(texts, ["str", "it's -x' drop", "%1", "swap", "rename"]);
+        assert_eq!(job.given, Some(vec![Data::Text("it's -x' drop".into())]));
         Ok(())
     }
 

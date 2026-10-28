@@ -565,7 +565,7 @@ mod tests {
         let (mut s, c) = session()?;
         let long: String =
             std::iter::repeat_n("1 drop ", crate::screens::ACTION_MAX / 7 + 1).collect();
-        for (code, said) in [("nosuch", "in the action"), (long.as_str(), "is past")] {
+        for (code, said) in [("nosuch", "no such word"), (long.as_str(), "exceeds")] {
             let open = format!("me str sure? str '{code}' confirm");
             let refused = output_as(&mut s, Some(c), &open).err().unwrap_or_default();
             assert!(refused.contains(said), "{refused}");
@@ -984,88 +984,168 @@ mod tests {
         Ok(())
     }
 
-    /// What running `code` as the client of a fresh `busy` session leaves.
-    fn ran(code: &str) -> Result<String, String> {
-        let (mut s, c) = busy()?;
-        if let Err(error) = output_as(&mut s, Some(c), code) {
-            s.notify_to(c, error, true);
+    #[test]
+    fn every_library_chooser_builds_its_rows_from_one_topology_observation() -> Outcome {
+        use crate::command::Command;
+        use crate::script::{AsClient, Asks, Host};
+        struct Reads<'a>(crate::session::InProcess<'a>, Vec<Command>);
+        impl Asks for Reads<'_> {
+            fn ask(
+                &mut self,
+                asked: &crate::protocol::Asked,
+                out: &mut dyn std::io::Write,
+            ) -> Result<crate::protocol::Reply, crate::script::Failed> {
+                if let crate::command::Request::Do(command) = &asked.request
+                    && !matches!(command, Command::Resolve { .. })
+                {
+                    self.1.push(command.clone());
+                }
+                self.0.ask(asked, out)
+            }
         }
-        state(&mut s, c)
+        for code in [
+            "me choose-tab",
+            "me choose-workspace",
+            "me %2 choose-tab-for",
+            "me %2 choose-workspace-for",
+            "me %2 choose-pane",
+        ] {
+            let (mut s, c) = busy()?;
+            let context = crate::protocol::Context {
+                client: Some(c),
+                of: Some(s.run),
+                ..Default::default()
+            };
+            let mut state = s.test_keymap.clone();
+            let mut reads = Reads(crate::session::InProcess(&mut s), Vec::new());
+            let mut asks = AsClient {
+                asks: &mut reads,
+                context: context.clone(),
+                opened: None,
+                on_commit: None,
+            };
+            let mut machine = crate::script::compile(
+                &fuxth::token::source("chooser", code).map_err(|e| e.to_string())?,
+            )
+            .map_err(|e| e.to_string())?;
+            let mut out = Vec::new();
+            let mut host = Host::new(context, Some(&mut state), &mut out);
+            crate::script::run_capped(
+                &mut machine,
+                &mut host,
+                &mut asks,
+                Some(crate::script::PROGRAM_STEPS),
+                None,
+            )
+            .map_err(|e| e.to_string())?;
+            let Some(Screen::List(list)) = asks.opened else {
+                return Err(format!("{code}: no list"));
+            };
+            assert!(!list.items.is_empty());
+            assert!(
+                matches!(
+                    reads.1.as_slice(),
+                    [Command::Inspect {
+                        projection: crate::inspect::Projection::Topology,
+                        ..
+                    }]
+                ),
+                "{code}: {:?}",
+                reads.1
+            );
+        }
+        Ok(())
     }
 
-    /// Choosers and confirmations are built by the client from what
-    /// the server says (`Open::build`): each entry's fuxth does what the
-    /// words for it do.
     #[test]
-    fn listed_programs_are_what_their_words_ask() -> Outcome {
-        let (mut s, c) = busy()?;
-        for (open, programs) in [
+    fn list_callbacks_are_explicit_and_labels_remain_inert() -> Outcome {
+        let (mut s, c) = session()?;
+        // A valid executable word is still not a native list action.
+        for bad in [
+            "str list str R str chooser-close bind-in",
+            "str list str R str rename bind-in",
+            "str R str nosuch bind-action",
+            "str Escape str 2drop bind-action",
+        ] {
+            assert!(output_as(&mut s, Some(c), bad).is_err(), "{bad}");
+        }
+        output_as(
+            &mut s,
+            Some(c),
+            "str R str 'nip print' bind-action str test label",
+        )?;
+        run(
+            &mut s,
+            "str c1 client str hosts list list str '%1 kill' str '%1 kill' end end list end list 0 end str 'nip print' choose",
+        )?;
+        s.input(c, b"R");
+        assert!(notice(&s, c).contains("%1 kill"), "{}", notice(&s, c));
+        assert!(s.parts.panes().contains_key(&PaneId::of(1)));
+        Ok(())
+    }
+
+    #[test]
+    fn chooser_selection_is_explicit_and_independent_of_the_current_marker() -> Outcome {
+        let (mut s, c) = session()?;
+        for (rows, current, selected, accepted) in [
+            ("list end", "list end", "list end", true),
+            ("list end", "list 0 end", "list end", false),
             (
-                "me choose-tab",
-                &["me str @1 tab show", "me str @2 tab show"][..],
+                "list list 7 str seven end end",
+                "list end",
+                "list end",
+                false,
             ),
             (
-                "me str %2 pane choose-tab-for",
-                &["str %2 pane str @1 tab move", "str %2 pane str @2 tab move"],
+                "list list 7 str seven end end",
+                "list end",
+                "list -1 end",
+                false,
             ),
             (
-                "me choose-workspace",
-                &["me str +1 workspace show", "me str +2 workspace show"],
-            ),
-            (
-                "me str %2 pane choose-workspace-for",
-                &[
-                    "str %2 pane str +1 workspace move",
-                    "str %2 pane str +2 workspace move",
-                ],
-            ),
-            (
-                "me str %2 pane choose-pane",
-                &[
-                    "str %2 pane str %1 pane swap-with",
-                    "str %2 pane str %3 pane swap-with",
-                ],
-            ),
-            ("me str %3 pane confirm-close", &["str %3 pane kill"]),
-            ("me str @2 tab confirm-close", &["str @2 tab kill"]),
-            (
-                "me str +1 workspace confirm-close",
-                &["str +1 workspace kill"],
+                "list list 7 str seven end end",
+                "list end",
+                "list 1 end",
+                false,
             ),
         ] {
-            output_as(&mut s, Some(c), open)?;
-            // A confirmation's program is what `y` runs.
-            let codes: Vec<String> = match screen(&s, c) {
-                Screen::List(list) => list.items.into_iter().map(|i| i.code).collect(),
-                mut confirm @ Screen::Confirm(_) => {
-                    (confirm.key(&s.test_keymap.keys, crate::keymap::key("y")?.into(), false))
-                        .into_iter()
-                        .filter_map(|e| match e {
-                            crate::screens::Effect::Run(job) => Some(job.code),
-                            crate::screens::Effect::Send(_)
-                            | crate::screens::Effect::Screen(_)
-                            | crate::screens::Effect::Open(_) => None,
-                        })
-                        .collect()
-                }
-                other @ (Screen::Keys(_) | Screen::Prompt(_) | Screen::Copy(_)) => {
-                    return Err(format!("{open}: {other:?}"));
-                }
-            };
-            assert_eq!(codes.len(), programs.len(), "{open}: {codes:?}");
-            for (code, program) in codes.iter().zip(programs) {
-                assert_eq!(ran(code)?, ran(program)?, "{open}: {code}");
-            }
+            let code = format!("me str title {rows} {current} {selected} str 2drop choose");
+            assert_eq!(
+                output_as(&mut s, Some(c), &code).is_ok(),
+                accepted,
+                "{code}"
+            );
             escape(&mut s, c);
         }
-        // A chooser's `r` and `x` act on the selected item.
+        output_as(
+            &mut s,
+            Some(c),
+            "me str title list list 7 str seven end list 8 str eight end end list 1 end list 0 end str 2drop choose",
+        )?;
+        let Screen::List(list) = screen(&s, c) else {
+            return Err(mode(&s, c));
+        };
+        assert_eq!((list.current, list.selected), (Some(1), 0));
+        Ok(())
+    }
+
+    #[test]
+    fn a_stale_selected_row_never_retargets_a_new_object_with_the_same_label() -> Outcome {
+        let (mut s, c) = session()?;
+        run(
+            &mut s,
+            "@1 str shared rename opts 80 24 size str +1 workspace in new-tab drop",
+        )?;
         output_as(&mut s, Some(c), "me choose-tab")?;
-        s.input(c, b"r");
-        assert_eq!(mode(&s, c), "prompt |");
-        s.input(c, b"chosen\r");
-        output_as(&mut s, Some(c), "me choose-tab")?;
-        s.input(c, b"x");
-        assert_eq!(mode(&s, c), "confirm close tab @1 chosen?");
+        run(
+            &mut s,
+            "@1 kill opts 80 24 size str +1 workspace in str shared name new-tab drop",
+        )?;
+        assert!(matches!(screen(&s, c), Screen::List(_)));
+        let before = s.place(c).ok_or("place")?.tab;
+        s.input(c, b"\r");
+        assert_eq!(s.place(c).ok_or("place")?.tab, before);
+        assert!(notice(&s, c).contains("@1"), "{}", notice(&s, c));
         Ok(())
     }
 

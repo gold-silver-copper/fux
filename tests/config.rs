@@ -911,25 +911,13 @@ fn launches_save_the_callers_argv_role_and_environment() -> Outcome {
 /// A remote client action commits while its subsequent wait is still pending.
 #[test]
 fn presentation_updates_only_the_addressed_view_before_a_wait_finishes() -> Outcome {
-    let server = Server::start("")?;
+    let server =
+        Server::start("str F5 str 'str titles true set %1 30 timeout wait drop' bind-root")?;
     let mut a = server.attach(8, 60)?;
     let mut b = server.attach(8, 60)?;
     a.wait_for("$")?;
     b.wait_for("$")?;
-    let mut requests = fux::client::Requests::open(&server.socket_path()?).map_err(e)?;
-    let asked = fux::protocol::Asked {
-        request: fux::command::Command::Client {
-            client: Some("c1".parse().map_err(e)?),
-            action: fux::command::ClientAction::Run(
-                "str titles true set %1 30 timeout wait drop".into(),
-            ),
-        }
-        .into(),
-        context: Default::default(),
-        after: None,
-    };
-    let reply = requests.ask(&asked, &mut std::io::sink()).map_err(e)?;
-    assert_eq!(reply.end(), fux::protocol::End::Done);
+    server.ok(&["str c1 client str F5 key send-keys drop"])?;
     eventually("committed title before the wait finishes", || {
         a.pump()?;
         b.pump()?;

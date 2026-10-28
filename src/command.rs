@@ -914,12 +914,8 @@ wire! {
         /// What the client's terminal shows: the screen the server composes for
         /// it, bar and overlays included.
         Capture,
-        /// The rows of a chooser the client shows: what each is, its label,
-        /// and which is the client's current one.
-        Choices(choices: Choices),
-        /// fuxth for the client to run as its own: what opens one of its
-        /// screens (a chooser, the prompt, copy mode), asked from elsewhere.
-        Run(code: String),
+        /// Owned screen data and explicitly designated callback source.
+        Open(screen: crate::screens::Open),
         /// Keys as typed at its terminal: its bindings, overlays and prompts
         /// take them as a person's keys.
         Keys(inputs: Vec<Input>),
@@ -927,18 +923,6 @@ wire! {
         SelectPane(pick: PanePick),
         SelectTab(pick: Pick<TabId>),
         SelectWorkspace(pick: Pick<WsRef>),
-    }
-}
-
-wire! {
-    /// What a chooser lists.
-    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-    pub enum Choices {
-        /// The tabs of the client's workspace.
-        Tabs,
-        Workspaces,
-        /// The other panes of this one's tab.
-        Panes(pane: PaneId),
     }
 }
 
@@ -1176,9 +1160,8 @@ impl Command {
             | C::KillServer
             | C::PasteBuffer { .. } => false,
             C::Client { action, .. } => match action {
-                ClientAction::Capture | ClientAction::Keys(_) | ClientAction::Run(_) => true,
+                ClientAction::Capture | ClientAction::Keys(_) | ClientAction::Open(_) => true,
                 ClientAction::Detach
-                | ClientAction::Choices(_)
                 | ClientAction::Zoom
                 | ClientAction::SelectPane(_)
                 | ClientAction::SelectTab(_)

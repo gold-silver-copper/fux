@@ -13,11 +13,11 @@ type V = Value<Fux>;
 #[derive(Clone, Debug)]
 pub struct Record {
     lease: fuxth::ImportLease,
-    fields: Vec<(String, V)>,
+    pub(super) fields: Vec<(String, V)>,
     weight: u64,
     depth: u8,
     bytes: usize,
-    snapshot: Option<inspect::Snapshot>,
+    pub(super) snapshot: Option<inspect::Snapshot>,
 }
 
 impl PartialEq for Record {
@@ -114,16 +114,13 @@ fn id(id: AnyRef, run: Run) -> V {
     Value::App(handle(id, Some(run)))
 }
 
-struct Builder {
-    budget: Budget,
+struct Builder<'a> {
+    budget: &'a mut Budget,
     nodes: usize,
 }
-impl Builder {
-    fn new() -> Self {
-        Self {
-            budget: Budget::with_limit(inspect::BYTES),
-            nodes: 0,
-        }
+impl<'a> Builder<'a> {
+    fn new(budget: &'a mut Budget) -> Self {
+        Self { budget, nodes: 0 }
     }
     fn nodes(&mut self, n: usize) -> Result<(), Failure> {
         self.nodes = self
@@ -291,8 +288,14 @@ fn retained(value: &V) -> usize {
     }
 }
 
+pub(super) fn from_fields(fields: Vec<(String, V)>, budget: &mut Budget) -> Result<V, Failure> {
+    let mut b = Builder::new(budget);
+    b.nodes(fields.len())?;
+    b.finish(fields)
+}
+
 pub(super) fn from_json(value: &Json) -> Result<V, Failure> {
-    Builder::new().json(value, 0)
+    Builder::new(&mut Budget::with_limit(inspect::BYTES)).json(value, 0)
 }
 
 macro_rules! record {
@@ -303,8 +306,12 @@ macro_rules! record {
 }
 
 pub(super) fn snapshot(s: inspect::Snapshot) -> Result<V, Failure> {
+    snapshot_in(s, &mut Budget::with_limit(inspect::BYTES))
+}
+
+pub(super) fn snapshot_in(s: inspect::Snapshot, budget: &mut Budget) -> Result<V, Failure> {
     let retained = s.heap_bytes()?;
-    let b = &mut Builder::new();
+    let b = &mut Builder::new(budget);
     let run = s.run;
     let workspaces = b.list(&s.workspaces, |b,w| record! { b;
         "id" => id(AnyRef::Workspace(w.id), run), "name" => b.optional(w.name.as_deref())?,
@@ -392,7 +399,8 @@ pub(super) fn answer_field(
     field: &str,
 ) -> Result<V, Failure> {
     use crate::answer::PaneAnswer;
-    let b = &mut Builder::new();
+    let mut budget = Budget::with_limit(inspect::BYTES);
+    let b = &mut Builder::new(&mut budget);
     let absent = || {
         Failure::new(
             Code::from(Raise::NoField).into(),
@@ -435,7 +443,7 @@ pub(super) fn answer_field(
                 }
                 "lines" => {
                     return b.list(&c.lines, |b, line| {
-                        let text = crate::json::render(&mut b.budget, |out| {
+                        let text = crate::json::render(b.budget, |out| {
                             crate::capture::write_line(out, line, c.marks, false, &mut Vec::new())
                         })
                         .map_err(super::words::observation_failure)?;
@@ -621,7 +629,8 @@ mod tests {
         assert!(from_json(&Json::Array(vec![Json::Bool(false); inspect::NODES])).is_err());
         let text = std::iter::repeat_n('a', fuxth::LONGEST).collect::<String>();
         assert!(from_json(&Json::Array(vec![Json::String(text); 9])).is_err());
-        let mut b = Builder::new();
+        let mut budget = Budget::with_limit(inspect::BYTES);
+        let mut b = Builder::new(&mut budget);
         assert!(
             b.text(&std::iter::repeat_n('a', fuxth::LONGEST.saturating_add(1)).collect::<String>())
                 .is_err()

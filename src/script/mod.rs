@@ -6,6 +6,7 @@
 //!
 //! Every run is fresh: its own stack and dictionary, the bundled library's
 //! words first (`library.fux`).
+mod callback;
 mod record;
 pub(crate) mod settings;
 mod source;
@@ -839,6 +840,41 @@ pub(crate) fn compiled(
     Ok(Machine::new(compiler.finish()?, Limits::default()))
 }
 
+fn callback_failed(f: fuxth::Failure) -> Failed {
+    Failed::new(Code::of(f.code), f.message)
+}
+
+/// Resolve executable callback source now; its input kinds are supplied at opening.
+fn callback_source(config: Option<&Config>, tokens: &[Token]) -> Result<(), Failed> {
+    let mut compiler = READY.with(|r| r.as_ref().map(|(c, _)| c.clone()).map_err(Clone::clone))?;
+    if let Some(config) = config {
+        compiler = configured_compiler(config, compiler)?;
+    }
+    compiler.add(&handles(tokens)?)?;
+    Ok(())
+}
+
+/// Compile explicit callback source with actual immutable arguments.
+pub(crate) fn callback_machine(
+    config: Option<&Config>,
+    tokens: &[Token],
+    args: Option<&[crate::callback::Data]>,
+) -> Result<Machine<Fux>, Failed> {
+    let Some(args) = args else {
+        return compiled(config, tokens).map_err(Failed::from);
+    };
+    let mut compiler = READY.with(|r| r.as_ref().map(|(c, _)| c.clone()).map_err(Clone::clone))?;
+    if let Some(config) = config {
+        compiler = configured_compiler(config, compiler)?;
+    }
+    let mut budget = crate::wire::Budget::with_limit(crate::client::JOB_BYTES);
+    for arg in args {
+        compiler.argument(callback::value(arg, &mut budget).map_err(callback_failed)?);
+    }
+    compiler.add(&handles(tokens)?)?;
+    Ok(Machine::new(compiler.finish_callback()?, Limits::default()))
+}
+
 /// The libraries and `config`'s definitions, compiled and checked once a
 /// thread for each config: a config's bindings, each checked as it binds,
 /// and every key's program after.
@@ -1228,18 +1264,7 @@ impl Asks for AsClient<'_> {
         let Local::Open(open) = what else {
             return self.asks.local(what, state, out);
         };
-        let (asks, context) = (&mut *self.asks, &self.context);
-        let mut sink = io::sink();
-        let screen = open.clone().build(&mut |command| {
-            asks.ask(
-                &Asked {
-                    after: None,
-                    request: command.into(),
-                    context: context.clone(),
-                },
-                &mut sink,
-            )
-        })?;
+        let screen = open.clone().admit(state.as_deref(), &self.context)?;
         self.opened = Some(screen);
         Ok(Vec::new())
     }
@@ -1439,7 +1464,6 @@ pub fn answered(reply: Reply) -> Result<Vec<Value<Fux>>, Failed> {
         Body::Text(text) => Value::str(text.trim_end_matches('\n')),
         Body::Found(id) => Value::App(handle(id, run)),
         Body::Handles(ids) => handles(ids)?,
-        Body::Choices { rows, .. } => handles(rows.into_iter().map(|(id, _)| id).collect())?,
         Body::Capture(captured) => Answer::Capture(captured).in_run(run),
         Body::Snapshot(snapshot) => {
             if run != Some(snapshot.run) {
