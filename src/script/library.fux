@@ -224,3 +224,73 @@ define main-of
 end
 # panes -- tree : balanced tiles, alternating axes, room shared by pane count
 define tiled-of str horizontal true 0 layout-of end
+
+# The caller must resnapshot or explicitly fail its task; filtered losses count too.
+# record -- record : refuse journal loss before any consumer effects
+define events-checked
+  let batch
+  batch str missed get 0 gt if
+    list str '{"event":"missed","count":' batch str missed get string
+      str ',"next":' batch str next get json str '}' end glue print
+    str 'journal entries missed; resnapshot before continuing' fail
+  then
+  batch
+end
+# Timeout is an observation outcome, never evidence that a program is ready.
+# record -- : print one admitted batch as NDJSON, then its exact checkpoint
+define events-print
+  events-checked let batch
+  batch str events get each json print end
+  list str '{"event":' batch str status get json str ',"next":'
+    batch str next get json str ',"reason":' batch str reason get json str '}' end glue print
+end
+# Interpreter step/weight limits remain in force across every batch and print.
+# event-scope cursor secs n -- string : a finite stream of 1 to 256 batches; empty cursor starts now
+define events-since
+  let batches let seconds let cursor let scope
+  batches 1 lt batches 256 gt or if str 'events takes 1 to 256 batches' fail then
+  seconds 0 lt seconds 86400 gt or if str 'events takes 0 to 86400 seconds' fail then
+  scope cursor 0 next-events events-checked let batch
+  cursor str '' eq if batch str next get let cursor then
+  list str '{"event":"ready","from":' cursor json str '}' end glue print
+  batch events-print
+  batch str next get let cursor
+  batch str status get dup str gone eq swap str stopped eq or let ended
+  1 batches range each drop
+    ended not if
+      scope cursor seconds next-events events-checked let batch
+      batch str next get let cursor
+      batch events-print
+      batch str status get dup str gone eq swap str stopped eq or let ended
+    then
+  end
+  cursor
+end
+# For restartable consumers use events-since and retain its returned cursor.
+# event-scope -- : up to 256 batches, 30 seconds per wait; every batch prints its checkpoint
+define events str '' 30 256 events-since drop end
+
+# One finite hook run. Trigger by event AND source; notification cannot trigger another copy.
+# cursor secs n -- string : notify views about admitted program copies, returning the next checkpoint
+define copy-notices
+  let batches let seconds let cursor
+  batches 1 lt batches 256 gt or if str 'copy-notices takes 1 to 256 batches' fail then
+  seconds 0 lt seconds 86400 gt or if str 'copy-notices takes 0 to 86400 seconds' fail then
+  false let ended
+  0 batches range each drop
+    ended not if
+      all cursor seconds next-events events-checked let batch
+      batch str events get each
+        let event
+        event str event get str copied eq if
+          event str origin get str kind get str program eq if
+            all str 'a program copied text' notify
+          then
+        then
+      end
+      batch str next get let cursor
+      batch str status get dup str gone eq swap str stopped eq or let ended
+    then
+  end
+  cursor
+end

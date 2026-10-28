@@ -540,14 +540,9 @@ fn ls_json_list_keys_and_help() -> Outcome {
         json.contains(&format!("\"layout_revision\":\"{parsed}\"")),
         "{json}"
     );
-    // A replay request stays distinguishable from the bare session scope.
     assert_eq!(
-        server.ok(&["all print all str 0:1-2 from print"])?,
-        "all\n(a whole-session events request)\n"
-    );
-    assert_eq!(
-        server.ok(&["list all all str 0:1-2 from end json"])?,
-        "[\"all\",\"(a whole-session events request)\"]\n"
+        server.ok(&["all print list all end json"])?,
+        "all\n[\"all\"]\n"
     );
     // The command line's own keymap: the defaults.
     let keys = server.ok(&["list-keys"])?;
@@ -685,10 +680,9 @@ fn a_stop_between_requests_leaves_the_connection_asking() -> Outcome {
         .into(),
         context: fux::protocol::Context::default(),
     };
-    let mut sink = std::io::sink();
-    asks.ask(&ls, &mut sink).map_err(|f| f.to_string())?;
+    asks.ask(&ls).map_err(|f| f.to_string())?;
     stop.stop();
     stop.reset();
-    asks.ask(&ls, &mut sink).map_err(|f| f.to_string())?;
+    asks.ask(&ls).map_err(|f| f.to_string())?;
     Ok(())
 }

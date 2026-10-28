@@ -288,6 +288,9 @@ impl<const MAX: usize> Said<MAX> {
     pub fn as_str(&self) -> &str {
         &self.text
     }
+    pub(crate) fn retained_bytes(&self) -> usize {
+        self.text.capacity()
+    }
     /// Whether the program sent more than was kept.
     pub fn cut(&self) -> bool {
         self.cut
@@ -806,7 +809,7 @@ impl<'a> PaneMut<'a> {
         journal: &'a mut Journal,
         input: &'a mut BTreeSet<PaneId>,
     ) -> Self {
-        let tell = journal.teller((at, pane.id));
+        let tell = journal.teller((at, pane.id), pane.respawns);
         Self { pane, tell, input }
     }
     pub fn output(&mut self, bytes: &[u8], now: Instant) {
@@ -961,6 +964,7 @@ impl<'a> PaneMut<'a> {
     }
     pub fn clear_history(&mut self) {
         self.pane.clear_history();
+        self.tell.tell(Told::HistoryCleared);
     }
     pub fn set_history_bytes(&mut self, bytes: crate::command::HistoryBytes) {
         if self.pane.options.history_bytes != bytes {
@@ -2829,11 +2833,12 @@ pub(crate) mod tests {
     fn commands_ended_in_one_read_are_journaled_each() -> Result<(), Box<dyn std::error::Error>> {
         let mut pane = pane(3, 30)?;
         let run = "1-0".parse().map_err(|()| "a run")?;
-        let mut stream = crate::events::Subscription::new(None, &pane.journal, run, None)?;
+        let mut stream =
+            crate::events::Reader::new(crate::inspect::Scope::All, &pane.journal, run, None)?;
         pane.output(
             b"\x1b]133;C\x07x\x1b]133;D;1\x07\x07\x1b]133;C\x07\x1b]133;D;0\x07\x1b]2;t\x07",
         );
-        let (said, _) = stream.told(&pane.journal, usize::MAX, |_| None);
+        let (said, _) = stream.lines(&pane.journal, |_| None);
         assert_eq!(
             said,
             concat!(

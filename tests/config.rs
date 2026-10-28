@@ -932,7 +932,7 @@ fn presentation_updates_only_the_addressed_view_before_a_wait_finishes() -> Outc
         context: Default::default(),
         after: None,
     };
-    let reply = requests.ask(&asked, &mut std::io::sink()).map_err(e)?;
+    let reply = requests.ask(&asked).map_err(e)?;
     assert_eq!(reply.end(), fux::protocol::End::Done);
     eventually("committed title before the wait finishes", || {
         a.pump()?;

@@ -140,6 +140,18 @@ impl Ids {
     pub(crate) fn gave(&self, id: PaneId) -> bool {
         id.0 > 0 && id.0 <= self.pane
     }
+    pub(crate) fn gave_scope(&self, scope: crate::inspect::Scope) -> bool {
+        let within = |n: u32, last: u32| n > 0 && n <= last;
+        match scope {
+            crate::inspect::Scope::All => true,
+            crate::inspect::Scope::Target(crate::command::AnyRef::Pane(p)) => self.gave(p),
+            crate::inspect::Scope::Target(crate::command::AnyRef::Tab(t)) => within(t.0, self.tab),
+            crate::inspect::Scope::Target(crate::command::AnyRef::Workspace(w)) => {
+                within(w.0, self.workspace)
+            }
+            crate::inspect::Scope::Client(c) => within(c.0, self.client),
+        }
+    }
     pub(crate) fn tab(&mut self) -> Result<TabId, Error> {
         take(&mut self.tab, "tab").map(TabId)
     }

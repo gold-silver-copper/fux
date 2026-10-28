@@ -18,7 +18,6 @@ enum Spec {
     Detach,
     Paint(Vec<u8>),
     Exit(String),
-    Stdout(Vec<u8>),
     Part(Vec<u8>),
     Done(u8),
 }
@@ -71,8 +70,7 @@ fn spec(r: &mut Rng, big: bool) -> Spec {
         4 => Spec::Detach,
         5..=7 => Spec::Paint(bytes(r, big)),
         8 => Spec::Exit(text(r)),
-        9 | 10 => Spec::Stdout(bytes(r, big)),
-        11 | 12 => Spec::Part(bytes(r, big)),
+        9..=12 => Spec::Part(bytes(r, big)),
         _ => Spec::Done(byte(r)),
     }
 }
@@ -184,7 +182,7 @@ decoded!(base, baseline::protocol::Decoder, |d, kind| {
         // A paint, as to an attached client; output, as to a command
         // client; the rest as the server's first frames.
         Some(7) => again(d.frame::<ToAttached>().map_err(error)?),
-        Some(9) => again(d.frame::<ToCommand>().map_err(error)?),
+        Some(17) => again(d.frame::<ToCommand>().map_err(error)?),
         _ => again(d.frame::<Greeting>().map_err(error)?),
     }
 });
@@ -203,7 +201,7 @@ decoded!(cur, fux::protocol::Decoder, |d, kind| {
         // A paint, as to an attached client; output, as to a command
         // client; the rest as the server's first frames.
         Some(7) => again(d.frame::<ToAttached>().map_err(error)?),
-        Some(9) => again(d.frame::<ToCommand>().map_err(error)?),
+        Some(17) => again(d.frame::<ToCommand>().map_err(error)?),
         _ => again(d.frame::<Greeting>().map_err(error)?),
     }
 });
@@ -216,12 +214,12 @@ fn streamed(payload: &[u8]) -> (Vec<u8>, Vec<u8>) {
     a.push(b"before");
     baseline::protocol::split_into(payload, baseline::protocol::ToAttached::Paint, &mut a);
     a.push(b"before");
-    baseline::protocol::split_into(payload, baseline::protocol::ToCommand::Stdout, &mut a);
+    baseline::protocol::split_into(payload, baseline::protocol::ToCommand::Part, &mut a);
     let mut b = fux::bytes::ByteQueue::default();
     b.push(b"before");
     split_into(payload, ToAttached::Paint, &mut b);
     b.push(b"before");
-    split_into(payload, ToCommand::Stdout, &mut b);
+    split_into(payload, ToCommand::Part, &mut b);
     (a.as_slice().to_vec(), b.as_slice().to_vec())
 }
 
@@ -264,7 +262,6 @@ fn encode(spec: &Spec) -> Result<Vec<u8>, String> {
         Spec::Detach => AttachedFrame::Detach.encode().map_err(error),
         Spec::Paint(bytes) => ToAttached::Paint(Cow::Owned(bytes)).encode().map_err(error),
         Spec::Exit(reason) => Greeting::Exit(&reason).encode().map_err(error),
-        Spec::Stdout(bytes) => ToCommand::Stdout(Cow::Owned(bytes)).encode().map_err(error),
         Spec::Part(bytes) => ToCommand::Part(Cow::Owned(bytes)).encode().map_err(error),
         Spec::Done(status) => Greeting::Done(status).encode().map_err(error),
     }

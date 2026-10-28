@@ -101,9 +101,8 @@ tab, workspace or client) or a request on one; handle a pane, tab or
 workspace; scope a handle or all; ref a name or a handle; text a string,
 number or boolean. pane-builder is a pane or pane request; capture-source
 maps one of those to capture, and a client to client-capture; sized is a
-handle or headless client. replayable is a pane, tab or workspace, a
-request on one, or all without a cursor; from on all leaves an
-events-request, which only events takes.
+handle or headless client. event-scope also accepts a client; a cursor
+is run-qualified journal text, or empty to begin now.
 wait and send-keys leave an answer for a pane, and answers for a tab or
 workspace (send-keys: or a client), which no word that wants a pane takes.
 ",
@@ -295,7 +294,7 @@ fn bounds() -> Vec<(Amount, &'static str, Said)> {
         (Count(client::HELD), "inputs a client holds while a program runs, and the prefix key one more", &[]),
         (Bytes(client::HELD_BYTES), "the pastes of the inputs a client holds", &[]),
         (Bytes(client::NOTICE_MAX), "a program's notice", &[]),
-        (Bytes(crate::events::BACKLOG), "what an `events` stream may hold unsent before it is sent no more for now, the rest waiting in the journal", &[]),
+        (Bytes(crate::events::BATCH_BYTES), "encoded event bytes in one next-events batch", &[]),
         (Count(crate::events::KEPT), "events the journal keeps: an `events` stream further behind is told how many it missed", &[]),
         (Bytes(pane::INPUT_BYTES), "input waiting for a pane's program", &[("agents", "({} its program has not read)")]),
         (Bytes(crate::script::INPUT_MAX), "keys one send-keys sends", &[("agents", "{} at most in all"), ("send-keys", "{} at most in all")]),

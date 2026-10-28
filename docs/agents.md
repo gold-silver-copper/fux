@@ -166,16 +166,26 @@ an answer, pane capture or canonical text. `A counts 3 at` is its `DONE`.
   ```
 - **A bell or notification:** its version's `BELLS`, `counts 2 at`, grows,
   as for a command's end.
-- **What changes anywhere,** as it happens: `fux all events` streams a JSON
-  line for each event (`fux help json` lists them). To read the session,
-  then follow its events without missing one in between, start the stream
-  from the cursor `ls json` gave with the listing (its `events`); a
-  `missed` line says the journal let some go first: read `ls` again.
+- **What changes anywhere:** `all str CURSOR SECONDS next-events` returns
+  a bounded record of ordered events, exact `next`, `missed`, and status.
+  Empty cursor starts now. Acquire the cursor before launching jobs to
+  observe their first recorded exit; group waits do not give exit chronology.
+  Fail or reconcile a fresh snapshot on `missed`; events invalidate state,
+  and do not replicate live OS facts. Timeout means no change was observed.
 
   ```sh
-  C=$(fux ls json | jq -r .events)
-  fux all str "$C" from events      # or: fux %3 str "$C" from events
+  C=$(fux all str '' 0 next-events str next get)
+  # Launch jobs here, then replay from C, including exits already recorded.
+  fux all str "$C" 30 64 events-since drop
   ```
+
+  The library stream prints NDJSON and checkpoints and ends after its
+  explicit batch bound. Save the last successful checkpoint for the next
+  finite run; interpreter budgets remain in force. For hooks, use an
+  ordinary program such as [program-copies.fux](../examples/hooks/program-copies.fux),
+  filtering the triggering event and state as well as known origin.
+  Origins identify supplied client/pane/program context; an external CLI
+  remains unknown. No exactly-once effects or infinite stream is promised.
 - **A deadline, a fallback, a retry:** `try` catches the failures it names
   (`programs`). A key, and C-c if nothing came of it in 10 s:
 

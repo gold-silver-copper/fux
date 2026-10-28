@@ -121,7 +121,7 @@ fn a_client_that_shuts_its_side_still_gets_its_answer() -> Outcome {
         match frame {
             ToCommand::Part(bytes) => parts.extend_from_slice(&bytes),
             ToCommand::PartsEnd => reply = Some(fux::wire::Reader::new(&parts).whole::<Reply>()),
-            ToCommand::Exit(_) | ToCommand::Stdout(_) => {}
+            ToCommand::Exit(_) => {}
         }
     }
     let reply = reply.ok_or("no reply")?.map_err(e)?;

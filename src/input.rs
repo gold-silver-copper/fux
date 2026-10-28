@@ -16,6 +16,12 @@ impl Session {
         if acts.is_empty() {
             return;
         }
+        let previous = self.parts.actor(crate::events::Actor::Client(client));
+        self.client_acts(client, acts, now);
+        self.parts.actor(previous);
+    }
+
+    fn client_acts(&mut self, client: ClientId, acts: Vec<Act>, now: Instant) {
         let changes = self.changes();
         let typist = |s: &Self| s.shown_tab(client).and_then(|t| t.typist);
         let typed = typist(self);
@@ -57,8 +63,11 @@ impl Session {
         match act {
             Act::Presentation(presentation) => {
                 let bell = presentation.bell;
-                if let Some(view) = self.views.get_mut(&client) {
+                if let Some(view) = self.views.get_mut(&client)
+                    && view.presentation != presentation
+                {
                     view.presentation = presentation;
+                    self.view_event(client, crate::events::ViewChange::Presentation);
                 }
                 if !bell {
                     self.parts.clear_bells(client);
@@ -101,6 +110,7 @@ impl Session {
                     ScreenAct::Copy(CopyAct::Enter { .. }) if !fresh => return false,
                     ScreenAct::Copy(act) => crate::copy::act(self, client, act),
                 }
+                self.view_event(client, crate::events::ViewChange::Screen);
             }
             Act::Notice { text, error } => self.notify_to(client, text, error),
         }
@@ -127,6 +137,9 @@ impl Session {
             }
         };
         view.dirty |= shown;
+        if shown {
+            self.view_event(client, crate::events::ViewChange::Screen);
+        }
         // Encoded as its program asked.
         let refused = self.type_in(client, |screen, out| {
             crate::encode::key_bytes(stroke, screen.key_mode(), out)
@@ -929,7 +942,13 @@ mod tests {
     /// what the server draws for the client, its notice, and the screen
     /// its client has open.
     fn state(s: &mut Session, c: ClientId) -> Result<String, String> {
-        let ls = output(s, "ls")?;
+        // Opening the prefix panel and leaving it are real journal events;
+        // direct evaluation has a different history, with the same state.
+        let ls = output(s, "ls")?
+            .lines()
+            .filter(|line| !line.starts_with("events "))
+            .collect::<Vec<_>>()
+            .join("\n");
         Ok(format!(
             "{ls}{}\n{}\n{:?}",
             mode(s, c),

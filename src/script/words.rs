@@ -202,10 +202,9 @@ pub fn from_opts(last: &str) -> String {
 /// fux's kinds of value, each as its values' `name` says it, as an error
 /// says it, and, for one that must be used, what one left over is told.
 #[rustfmt::skip]
-pub const KINDS: [(&str, &str, Option<&str>); 23] = [
+pub const KINDS: [(&str, &str, Option<&str>); 22] = [
     ("pane", "a pane", None), ("tab", "a tab", None), ("workspace", "a workspace", None),
     ("all", "the whole session", None),
-    ("events-request", "a whole-session events request", Some("nothing acts on this request")),
     ("client", "a client", None), ("size", "a size (from percent)", None),
     ("answer", "an action's answer", None),
     ("closed-answer", "a closed pane's answer", None),
@@ -250,9 +249,8 @@ pub const NAMES: &[(&str, &str, &str)] = &[
         "a pane, tab or workspace, or a request on one"),
     ("handle", "pane tab workspace answer closed-answer", "a pane, tab or workspace"),
     ("attachable", "opts pane tab workspace answer closed-answer pane-request tab-request workspace-request", "a pane, tab, workspace, a request on one, or opts"),
+    ("event-scope", "pane tab workspace client answer closed-answer all", "a pane, tab, workspace, client or all"),
     ("scope", "pane tab workspace answer closed-answer all", "a pane, tab, workspace or all"),
-    ("watched", "pane tab workspace answer closed-answer pane-request tab-request workspace-request all events-request", "a pane, tab, workspace, a request on one, or all"),
-    ("replayable", "pane>pane-request answer>pane-request closed-answer>pane-request tab>tab-request workspace>workspace-request pane-request tab-request workspace-request all>events-request", "a pane, tab, workspace, a request on one, or all without a cursor"),
     ("capture-source", "pane>capture answer>capture closed-answer>capture pane-request>capture client>client-capture", "a pane, a request on one, or a client"),
     ("pane-builder", "pane>pane-request answer>pane-request closed-answer>pane-request pane-request", "a pane or a request on one"),
     ("ref", "string pane tab workspace answer closed-answer", "a name, or a pane, tab or workspace"),
@@ -303,7 +301,7 @@ words! {
         Reading Snapshot "snapshot" "snapshot-scope projection -- record" "one bounded observation: facts, topology or recipe" "fux all str topology snapshot json" [];
         Reading Get "get" "readable field -- value" "a held answer, capture or record field, locally; or a live pane, tab or workspace field" "fux %3 str exited get" [];
         Reading Json "json" "value -- json-output" "value as JSON (an answer as its JSON); a failed wait's answer is the message try's handler gets" "fux ls json" [];
-        Reading Events "events" "watched --" "what happens in a pane, tab, workspace or all, a JSON line each" "fux all events" [Pane: From];
+        Reading NextEvents "next-events" "event-scope cursor secs -- record" "one bounded journal batch, with exact next cursor, missed count and status; empty cursor starts now" "fux all str '' 0 next-events json" [];
         Changing Kill "kill" "handle --" "close a pane, tab or workspace, without asking" "fux %3 kill" [];
         Changing Rename "rename" "handle text --" "rename a pane, tab or workspace" "fux %3 str editor rename" [];
         Changing Notify "notify" "scope text --" "a notice on the clients showing it, or every client with all" "fux all str done notify" [];
@@ -376,7 +374,6 @@ words! {
         Input Key "key" "x key -- x" "a key by its name: Enter, C-c, Up, F5" "fux %3 str C-c key send-keys";
         Input Paste "paste" "x text -- x" "text as a paste, bracketed if the program turned that on (an end mark, ESC [201~, in it then dropped); else as it is" "fux %3 str 'a long prompt' paste str Enter key send-keys";
         Input Bytes "bytes" "x hex -- x" "bytes as they are, in hex (1b5b41, c3): part of a key's sequence or of a character" "fux %3 str 1b5b41 bytes send-keys";
-        Reading From "from" "replayable cursor -- replayable" "events: after this cursor (SEQ:RUN, as ls and ready give it), reporting missed entries" "C=$(fux ls json | jq -r .events); fux all str \"$C\" from events";
         Reading History "history" "pane-builder lines -- pane-builder" "capture: lines of history first" "fux %3 100 history capture";
         Reading AllHistory "all-history" "pane-builder -- pane-builder" "capture: all the history first" "fux %3 all-history capture";
         Reading Wrapped "wrapped" "pane-builder -- pane-builder" "capture: each screen row a line, as wrapped at the pane's width (the cells a mouse event counts), not joined into the lines printed" "fux %3 wrapped 0 2 rows capture";
@@ -541,7 +538,7 @@ fn json_text(value: &Value<Fux>, limit: usize) -> Result<String, Failure> {
                 | Fux::Workspace(..)
                 | Fux::Client(..)
                 | Fux::Extent(_)
-                | Fux::All(_),
+                | Fux::All,
             ) => Ok(()),
         }
     }
@@ -573,7 +570,7 @@ pub(super) fn write_json_value(
         }
         Value::App(app) => match app {
             Fux::Null => out.write_str("null"),
-            Fux::All(None) => out.write_str("\"all\""),
+            Fux::All => out.write_str("\"all\""),
             Fux::Record(r) => r.write(out),
             Fux::Rendered(text) => crate::json::write_str(out, text),
             Fux::Answer(answer, _) => answer.write_json(out),
@@ -583,7 +580,7 @@ pub(super) fn write_json_value(
             Fux::Client(client, _) => write!(out, "\"{client}\""),
             Fux::Extent(Extent::Cells(n)) => write!(out, "\"{n}\""),
             Fux::Extent(Extent::Percent(n)) => write!(out, "\"{}%\"", n.get()),
-            Fux::All(Some(_)) | Fux::Opts(_) => write!(out, "\"({})\"", fuxth::AppValue::kind(app)),
+            Fux::Opts(_) => write!(out, "\"({})\"", fuxth::AppValue::kind(app)),
         },
     }
 }
@@ -720,8 +717,7 @@ fn workspace(value: &Value<Fux>) -> Result<WsRef, Failure> {
 
 fn scope(value: &Value<Fux>) -> Result<Option<AnyRef>, Failure> {
     match value {
-        Value::App(Fux::All(None)) => Ok(None),
-        Value::App(Fux::All(Some(_))) => Err(fail(Raise::Unused, "from is only used by events")),
+        Value::App(Fux::All) => Ok(None),
         value @ (Value::Int(_)
         | Value::Bool(_)
         | Value::Str(_)
@@ -735,7 +731,7 @@ fn cursor(value: &Value<Fux>) -> Result<crate::events::Cursor, Failure> {
     text.parse().map_err(|()| {
         fail(
             Raise::BadValue,
-            format!("{text:?} is no cursor: SEQ:RUN, as ls and a stream's ready give it"),
+            format!("{text:?} is no cursor: SEQ:RUN, as snapshot and next-events give it"),
         )
     })
 }
@@ -880,7 +876,6 @@ fn modify(
     match opt {
         Opt::Changed => built.on = Some(On::Changed(version(&next()?)?)),
         Opt::Expect => built.on = Some(On::Seen(version(&next()?)?)),
-        Opt::From => built.from = Some(cursor(&next()?)?),
         Opt::Name => built.name = Some(string(&next()?)?),
         Opt::Cwd => built.cwd = Some(string(&next()?)?.into()),
         Opt::In => built.place = Some(workspace(&next()?)?),
@@ -1438,15 +1433,6 @@ impl Host<'_> {
         let later = |ask: Ask| Ok(Done::Later(ask));
         let act = match word {
             Word::Act(act) => act,
-            Word::Opt(Opt::From) => {
-                let value = next()?;
-                if let Value::App(Fux::All(None)) = value {
-                    return now(out, Value::App(Fux::All(Some(cursor(&next()?)?))));
-                }
-                let mut values = std::iter::once(Ok(value));
-                let mut input = || values.next().unwrap_or_else(&mut next);
-                return now(out, Value::App(Fux::Opts(modify(Opt::From, &mut input)?)));
-            }
             Word::Opt(opt) => return now(out, Value::App(Fux::Opts(modify(opt, &mut next)?))),
             Word::Screen(screen) => return self.open(screen, &mut next),
             Word::Keys(keys) => return self.configure(keys, &mut next),
@@ -1482,7 +1468,7 @@ impl Host<'_> {
                 ))
             }
             // ---------------------------------------------------- starting
-            Act::All => now(out, Value::App(Fux::All(None))),
+            Act::All => now(out, Value::App(Fux::All)),
             Act::Opts => now(out, Value::App(Fux::Opts(std::rc::Rc::default()))),
             Act::Run => {
                 let built = finished(act, next()?)?;
@@ -1687,7 +1673,7 @@ impl Host<'_> {
             })),
             Act::Snapshot => {
                 let scope = match next()? {
-                    Value::App(Fux::All(None)) => crate::inspect::Scope::All,
+                    Value::App(Fux::All) => crate::inspect::Scope::All,
                     Value::App(Fux::Client(c, _)) => crate::inspect::Scope::Client(c),
                     value @ (Value::Int(_)
                     | Value::Bool(_)
@@ -1751,22 +1737,29 @@ impl Host<'_> {
                     now(out, value)
                 }
             },
-            Act::Events => {
-                let value = next()?;
-                if let Value::App(Fux::All(from)) = value {
-                    return tell(Request::Events(None, from));
-                }
-                let (on, built) = request(act, value)?;
-                let target = match on {
-                    On::Target(target) => target,
-                    On::Version(version) => AnyRef::Pane(version.pane),
-                    On::Seen(_) => return Err(fail(Raise::Type, EXPECTED)),
-                    On::Changed(_) => return Err(fail(Raise::Type, CHANGED)),
-                    On::Client(_) => {
-                        return Err(fail(Raise::Type, "takes a pane, tab, workspace or all"));
-                    }
+            Act::NextEvents => {
+                let scope = match next()? {
+                    Value::App(Fux::All) => crate::inspect::Scope::All,
+                    Value::App(Fux::Client(c, _)) => crate::inspect::Scope::Client(c),
+                    value @ (Value::Int(_)
+                    | Value::Bool(_)
+                    | Value::Str(_)
+                    | Value::List(_)
+                    | Value::App(_)) => crate::inspect::Scope::Target(target(&value)?),
                 };
-                tell(Request::Events(Some(target), built.from))
+                let text = string(&next()?)?;
+                let from = if text.is_empty() {
+                    None
+                } else {
+                    Some(cursor(&Value::str(text))?)
+                };
+                let timeout = Limit::read(within(&next()?, 0..=86400)?)
+                    .map_err(|why| fail(Raise::Range, why))?;
+                tell(Request::NextEvents {
+                    scope,
+                    from,
+                    timeout,
+                })
             }
             // ---------------------------------------------------- changing
             Act::Kill => tell(Command::Kill {
@@ -2316,7 +2309,6 @@ mod tests {
             fn ask(
                 &mut self,
                 _: &crate::protocol::Asked,
-                _: &mut dyn std::io::Write,
             ) -> Result<crate::protocol::Reply, Failed> {
                 self.0 += 1;
                 Err(Failed::new(crate::code::Code::Client, "unexpected request"))
@@ -2436,7 +2428,7 @@ mod tests {
             "all dump drop",
             "all str hello notify",
             "all events",
-            "all str 0:1-2 from events",
+            "all str 0:1-2 0 next-events drop",
         ] {
             super::super::compile(&fuxth::token::source("all", source)?)
                 .map_err(|f| f.to_string())?;
@@ -2462,28 +2454,9 @@ mod tests {
     }
 
     #[test]
-    fn global_replay_requests_are_event_only_and_must_use() -> Result<(), Box<dyn std::error::Error>>
-    {
-        for (suffix, code) in [
-            ("", fuxth::Code::Unused),
-            ("info drop", fuxth::Code::Type),
-            ("dump drop", fuxth::Code::Type),
-            ("str hello notify", fuxth::Code::Type),
-            ("str 0:1-2 from events", fuxth::Code::Type),
-        ] {
-            let source = format!("str SIDE-EFFECT print all str 0:1-2 from {suffix}");
-            let failure = super::super::compile(&fuxth::token::source("replay", &source)?)
-                .err()
-                .ok_or_else(|| format!("accepted {source}"))?;
-            assert_eq!(failure.code, Code::of(code), "{source}: {failure}");
-        }
-        Ok(())
-    }
-
-    #[test]
     fn library_dump_checks_its_scope_before_effects() -> Result<(), Box<dyn std::error::Error>> {
         for prefix in ["str SIDE-EFFECT print", "%1 str renamed rename"] {
-            for scope in ["1", "all str 0:1-2 from"] {
+            for scope in ["1", "all str 0:1-2 0 next-events"] {
                 let source = format!("{prefix} {scope} dump drop");
                 let failure = super::super::compile(&fuxth::token::source("dump", &source)?)
                     .err()
@@ -2503,33 +2476,6 @@ mod tests {
                 .err()
                 .ok_or_else(|| format!("accepted {source}"))?;
             assert_eq!(failure.code, Code::from(Raise::Type), "{source}: {failure}");
-        }
-        Ok(())
-    }
-
-    #[test]
-    fn bad_cursors_report_the_given_text_and_their_format() -> Result<(), Box<dyn std::error::Error>>
-    {
-        for scope in [Fux::All(None), Fux::Pane(PaneId::of(1), None)] {
-            let mut sink = std::io::sink();
-            let mut host = Host::new(crate::protocol::Context::default(), None, &mut sink);
-            let mut args = [Value::App(scope), Value::str("12")].into_iter();
-            let failure = host
-                .dispatch(
-                    Word::Opt(Opt::From),
-                    &mut || {
-                        args.next()
-                            .ok_or_else(|| fail(Raise::StackUnderflow, "cursor"))
-                    },
-                    &mut Vec::new(),
-                )
-                .err()
-                .ok_or("accepted a bad cursor")?;
-            assert_eq!(failure.code, Code::from(Raise::BadValue).into());
-            assert_eq!(
-                failure.message,
-                "\"12\" is no cursor: SEQ:RUN, as ls and a stream's ready give it"
-            );
         }
         Ok(())
     }
@@ -2960,14 +2906,6 @@ mod tests {
                 if pane_only && !matches!(kind, "pane-request") {
                     continue;
                 }
-                if opt == Opt::From
-                    && matches!(
-                        kind,
-                        "opts" | "client-request" | "changed-request" | "expected-request"
-                    )
-                {
-                    continue;
-                }
                 let args = match opt {
                     Opt::HistoryBytes => vec![Value::Int(0)],
                     Opt::Reflow => vec![Value::Bool(false)],
@@ -2996,7 +2934,6 @@ mod tests {
                     Opt::Key => vec![Value::str("Enter")],
                     Opt::Bytes => vec![Value::str("61")],
                     Opt::Axis => vec![Value::str("horizontal")],
-                    Opt::From => vec![Value::str("0:48211-1867a3f9c2b8e7d6")],
                     Opt::Watch
                     | Opt::KillFirst
                     | Opt::AllHistory
