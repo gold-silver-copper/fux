@@ -829,7 +829,10 @@ fn keystroke(recordings: &[Recording], baseline: bool, keys: usize) -> Result<Do
     let mut s =
         fux::session::Session::new(config, "/nonexistent/fux.sock".into(), false, server_run()?);
     // The client attaching starts its first shell, on its screen.
-    let attach = fux::protocol::Attach::of(fux_vt::Size::new(41, 120).map_err(|e| e.to_string())?);
+    let attach = fux::protocol::Attach {
+        initial: Some(initial()?),
+        ..fux::protocol::Attach::of(fux_vt::Size::new(41, 120).map_err(|e| e.to_string())?)
+    };
     let c = s
         .attach_as(fux::view::ClientKind::Terminal, attach)
         .map_err(|e| e.to_string())?;
@@ -909,7 +912,10 @@ fn paint(
     let first = recordings.first().ok_or("no recordings")?;
     // The bar takes a row: the pane is the recording's size.
     let size = fux_vt::Size::new(first.rows.saturating_add(1), first.cols);
-    let attach = fux::protocol::Attach::of(size.map_err(|e| e.to_string())?);
+    let attach = fux::protocol::Attach {
+        initial: Some(initial()?),
+        ..fux::protocol::Attach::of(size.map_err(|e| e.to_string())?)
+    };
     let c = s
         .attach_as(fux::view::ClientKind::Terminal, attach)
         .map_err(|e| e.to_string())?;
