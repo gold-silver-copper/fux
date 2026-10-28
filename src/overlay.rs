@@ -6,7 +6,7 @@ use crate::id::ClientId;
 use crate::layout::Tree;
 use crate::protocol::{Body, Reply};
 use crate::session::{Error, Session};
-use crate::words::Labelled;
+use crate::words::{Label, Labelled};
 
 /// The names of the panes in `roots`, for a chooser row, shortened.
 fn pane_names<'a>(
@@ -25,9 +25,9 @@ fn pane_names<'a>(
                     if !names.is_empty() {
                         budget.text(&mut names, ", ")?;
                     }
-                    let label = pane.label();
-                    let id = pane.id().to_string();
-                    budget.write(&mut names, format_args!("{}", Labelled(&id, &label)))
+                    let label = pane.display_label();
+                    let id = Label::Id(AnyRef::Pane(pane.id()));
+                    budget.write(&mut names, format_args!("{}", Labelled(id, label)))
                 })();
             }
         });
@@ -53,9 +53,9 @@ pub fn choices(session: &Session, client: ClientId, choices: Choices) -> Result<
                     current = Some(rows.len());
                 }
                 let names = pane_names(session, [tab.root()], budget)?;
-                let own = tab.label(session.parts.panes());
-                let id = tab.id().to_string();
-                let label = budget.format(format_args!("{} — {names}", Labelled(&id, &own)))?;
+                let own = tab.display_label(session.parts.panes());
+                let id = Label::Id(AnyRef::Tab(tab.id()));
+                let label = budget.format(format_args!("{} — {names}", Labelled(id, own)))?;
                 let bytes = names.capacity();
                 drop(names);
                 budget.release(bytes)?;
@@ -71,9 +71,9 @@ pub fn choices(session: &Session, client: ClientId, choices: Choices) -> Result<
                 }
                 let roots = ws.tabs().iter().map(|t| t.root());
                 let names = pane_names(session, roots, budget)?;
-                let own = ws.label();
-                let id = ws.id().to_string();
-                let label = budget.format(format_args!("{} — {names}", Labelled(&id, &own)))?;
+                let own = ws.display_label();
+                let id = Label::Id(AnyRef::Workspace(ws.id()));
+                let label = budget.format(format_args!("{} — {names}", Labelled(id, own)))?;
                 let bytes = names.capacity();
                 drop(names);
                 budget.release(bytes)?;
@@ -92,9 +92,9 @@ pub fn choices(session: &Session, client: ClientId, choices: Choices) -> Result<
                         && admitted.is_ok()
                     {
                         admitted = (|| {
-                            let own = p.label();
-                            let id = p.id().to_string();
-                            let label = budget.format(format_args!("{}", Labelled(&id, &own)))?;
+                            let own = p.display_label();
+                            let id = Label::Id(AnyRef::Pane(p.id()));
+                            let label = budget.format(format_args!("{}", Labelled(id, own)))?;
                             budget.reserve(&mut rows, 1)?;
                             rows.push((AnyRef::Pane(p.id()), label));
                             Ok(())

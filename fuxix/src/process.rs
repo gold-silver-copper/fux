@@ -460,108 +460,218 @@ pub fn tree() -> Tree {
     tree
 }
 
-/// `pid`'s command line, when the system says: each argument, its bytes as
-/// they are, ended by a NUL, empty ones too. A process that wrote over its
-/// arguments, as `setproctitle` does, has what it wrote, read the same way;
-/// ending in no NUL (the kernel then stops at the first one, past the
-/// arguments), it is one argument. An empty line, as a kernel thread's or
-/// a zombie's, is not said. Allocation beyond `limit` is refused.
+/// Opens one proc file without a heap-allocated path or CString.
 #[cfg(not(target_os = "macos"))]
-pub fn argv(pid: Pid, limit: usize) -> std::io::Result<Option<Vec<OsString>>> {
-    let Ok(file) = std::fs::File::open(format!("/proc/{pid}/cmdline")) else { return Ok(None); };
-    argv_read(file, limit)
+fn proc_path(pid: Pid, part: &str) -> Option<[u8; 64]> {
+    let mut path = [0u8; 64];
+    let mut cursor = std::io::Cursor::new(path.as_mut_slice());
+    std::io::Write::write_fmt(&mut cursor, format_args!("/proc/{pid}/{part}\0")).ok()?;
+    Some(path)
 }
 
-/// Reads NUL-separated arguments from an already opened observation source.
-pub fn argv_read(mut file: impl std::io::Read, limit: usize) -> std::io::Result<Option<Vec<OsString>>> {
-    use std::os::unix::ffi::OsStrExt;
-    let exceeded =
-        || std::io::Error::other("process arguments exceed the observation allocation limit");
-    let mut raw = Vec::new();
-    let mut buffer = [0u8; 4096];
-    loop {
-        let count = match file.read(&mut buffer) {
-            Ok(n) => n,
-            Err(_) => return Ok(None),
-        };
-        if count == 0 {
-            break;
-        }
-        let needed = raw.len().checked_add(count).ok_or_else(exceeded)?;
-        if needed > limit {
-            return Err(exceeded());
-        }
-        if needed > raw.capacity() {
-            let capacity = raw.capacity().saturating_mul(2).max(needed).min(limit);
-            raw.try_reserve_exact(capacity.saturating_sub(raw.len()))
-                .map_err(|_| exceeded())?;
-        }
-        raw.extend_from_slice(buffer.get(..count).unwrap_or_default());
+#[cfg(not(target_os = "macos"))]
+fn proc_file(pid: Pid, part: &str) -> Option<std::fs::File> {
+    use std::os::fd::FromRawFd;
+    let path = proc_path(pid, part)?;
+    // SAFETY: the stack path is NUL-terminated; open only reads it.
+    let fd = unsafe { libc::open(path.as_ptr().cast(), libc::O_RDONLY | libc::O_CLOEXEC) };
+    if fd < 0 {
+        return None;
     }
-    let line = raw.strip_suffix(&[0]).unwrap_or(&raw);
-    if raw.is_empty() {
+    // SAFETY: open returned this new descriptor, whose sole owner is File.
+    Some(unsafe { std::fs::File::from_raw_fd(fd) })
+}
+
+/// `pid`'s NUL-separated command line. Returned allocations remain charged
+/// to the caller; unavailable observations are unknown, not guessed.
+#[cfg(not(target_os = "macos"))]
+pub fn argv<A: crate::Allocation>(
+    pid: Pid,
+    budget: &mut A,
+) -> std::result::Result<Option<Vec<OsString>>, A::Error> {
+    let Some(file) = proc_file(pid, "cmdline") else {
         return Ok(None);
-    }
-    let count = line.split(|b| *b == 0).count();
-    let slots = count
-        .checked_mul(std::mem::size_of::<OsString>())
-        .ok_or_else(exceeded)?;
-    if raw
-        .capacity()
-        .checked_add(raw.len())
-        .and_then(|n| n.checked_add(slots))
-        .is_none_or(|n| n > limit)
-    {
-        return Err(exceeded());
-    }
-    let mut words = Vec::new();
-    words.try_reserve_exact(count).map_err(|_| exceeded())?;
-    for word in line.split(|b| *b == 0) {
-        words.push(std::ffi::OsStr::from_bytes(word).to_owned());
-    }
-    Ok(Some(words))
+    };
+    argv_read(file, budget)
 }
 
-/// `pid`'s command line: macOS keeps it where only a privileged reader
-/// finds it reliably, so it is not said.
+/// macOS does not reliably expose arguments to an unprivileged observer.
 #[cfg(target_os = "macos")]
-pub fn argv(_pid: Pid, _limit: usize) -> std::io::Result<Option<Vec<OsString>>> {
+pub fn argv<A: crate::Allocation>(
+    _pid: Pid,
+    _budget: &mut A,
+) -> std::result::Result<Option<Vec<OsString>>, A::Error> {
     Ok(None)
 }
 
-/// The name of `pid`'s program, when the system says.
-#[cfg(not(target_os = "macos"))]
-pub fn name(pid: Pid) -> Option<String> {
-    let comm = std::fs::read_to_string(format!("/proc/{pid}/comm")).ok()?;
-    Some(comm.trim_end_matches('\n').to_owned()).filter(|n| !n.is_empty())
+/// Reads NUL-separated arguments under the caller's shared grant. A raw
+/// buffer's old and replacement blocks, parsed slots and word bytes all
+/// coexist until conversion is complete, and are admitted before allocation.
+pub fn argv_read<A: crate::Allocation>(
+    mut file: impl std::io::Read,
+    budget: &mut A,
+) -> std::result::Result<Option<Vec<OsString>>, A::Error> {
+    let before = budget.remaining();
+    let mut raw = Vec::new();
+    let result = (|| {
+        let mut buffer = [0u8; 4096];
+        loop {
+            let count = match file.read(&mut buffer) {
+                Ok(n) => n,
+                Err(_) => return Ok(None),
+            };
+            if count == 0 {
+                break;
+            }
+            budget.reserve(&mut raw, count)?;
+            raw.extend_from_slice(buffer.get(..count).ok_or_else(A::exceeded)?);
+        }
+        if raw.is_empty() {
+            return Ok(None);
+        }
+        let line = raw.strip_suffix(&[0]).unwrap_or(&raw);
+        let mut words = budget.vector(line.split(|b| *b == 0).count())?;
+        for word in line.split(|b| *b == 0) {
+            words.push(budget.os_string(word)?);
+        }
+        Ok(Some(words))
+    })();
+    let capacity = raw.capacity();
+    drop(raw);
+    budget.release(capacity)?;
+    if !matches!(&result, Ok(Some(_))) {
+        budget.release(
+            before
+                .checked_sub(budget.remaining())
+                .ok_or_else(A::exceeded)?,
+        )?;
+    }
+    result
 }
 
-/// The name of `pid`'s program, when the system says.
-#[cfg(target_os = "macos")]
-pub fn name(pid: Pid) -> Option<String> {
+/// The observed program name, allocated under the caller's grant.
+#[cfg(not(target_os = "macos"))]
+pub fn name<A: crate::Allocation>(
+    pid: Pid,
+    budget: &mut A,
+) -> std::result::Result<Option<String>, A::Error> {
+    use std::io::Read;
+    let Some(mut file) = proc_file(pid, "comm") else {
+        return Ok(None);
+    };
     let mut buffer = [0u8; 256];
-    let room = u32::try_from(buffer.len()).ok()?;
-    // SAFETY: the buffer is `room` bytes long and writable; the call writes
-    // at most that, and says how much.
-    let written = unsafe { libc::proc_name(pid.as_raw(), buffer.as_mut_ptr().cast(), room) };
-    let name = buffer.get(..usize::try_from(written).ok()?)?;
-    Some(String::from_utf8_lossy(name).into_owned()).filter(|n| !n.is_empty())
+    let mut count = 0usize;
+    loop {
+        let room = buffer.get_mut(count..).ok_or_else(A::exceeded)?;
+        let read = match file.read(room) {
+            Ok(n) => n,
+            Err(_) => return Ok(None),
+        };
+        if read == 0 {
+            break;
+        }
+        count = count.checked_add(read).ok_or_else(A::exceeded)?;
+        if count == buffer.len() {
+            return Err(A::exceeded());
+        }
+    }
+    let text = buffer
+        .get(..count)
+        .and_then(|b| std::str::from_utf8(b).ok())
+        .map(|s| s.trim_end_matches('\n'));
+    text.filter(|s| !s.is_empty())
+        .map(|s| budget.string(s))
+        .transpose()
 }
 
-/// The current directory of `pid`, when the system says.
-#[cfg(not(target_os = "macos"))]
-pub fn cwd(pid: Pid) -> Option<PathBuf> {
-    std::fs::read_link(format!("/proc/{pid}/cwd")).ok()
-}
-
-/// The current directory of `pid`, when the system says.
+/// The observed program name, allocated under the caller's grant.
 #[cfg(target_os = "macos")]
-pub fn cwd(pid: Pid) -> Option<PathBuf> {
-    use std::os::unix::ffi::OsStrExt;
+pub fn name<A: crate::Allocation>(
+    pid: Pid,
+    budget: &mut A,
+) -> std::result::Result<Option<String>, A::Error> {
+    let mut buffer = [0u8; 256];
+    let room = u32::try_from(buffer.len()).map_err(|_| A::exceeded())?;
+    // SAFETY: buffer is writable for room bytes; proc_name reads no other memory.
+    let written = unsafe { libc::proc_name(pid.as_raw(), buffer.as_mut_ptr().cast(), room) };
+    let Some(bytes) = usize::try_from(written)
+        .ok()
+        .and_then(|n| buffer.get(..n))
+        .filter(|s| !s.is_empty())
+    else {
+        return Ok(None);
+    };
+    budget.lossy(bytes).map(Some)
+}
+
+/// The observed current directory. Stack space handles ordinary paths;
+/// longer paths grow under the same grant, including replacement peaks.
+#[cfg(not(target_os = "macos"))]
+pub fn cwd<A: crate::Allocation>(
+    pid: Pid,
+    budget: &mut A,
+) -> std::result::Result<Option<PathBuf>, A::Error> {
+    use std::os::unix::ffi::OsStringExt;
+    let Some(path) = proc_path(pid, "cwd") else {
+        return Ok(None);
+    };
+    let mut stack = [0u8; 4096];
+    // SAFETY: the path is NUL-terminated and stack is writable for its length.
+    let read =
+        unsafe { libc::readlink(path.as_ptr().cast(), stack.as_mut_ptr().cast(), stack.len()) };
+    let Ok(count) = usize::try_from(read) else {
+        return Ok(None);
+    };
+    if count < stack.len() {
+        let bytes = stack.get(..count).ok_or_else(A::exceeded)?;
+        return budget.os_string(bytes).map(|p| Some(PathBuf::from(p)));
+    }
+    let before = budget.remaining();
+    let mut raw = Vec::new();
+    let result = (|| {
+        let mut room = stack.len().checked_mul(2).ok_or_else(A::exceeded)?;
+        loop {
+            let more = room.checked_sub(raw.len()).ok_or_else(A::exceeded)?;
+            budget.reserve(&mut raw, more)?;
+            raw.resize(room, 0);
+            // SAFETY: path is NUL-terminated, and raw is initialized and writable.
+            let read =
+                unsafe { libc::readlink(path.as_ptr().cast(), raw.as_mut_ptr().cast(), raw.len()) };
+            let Ok(count) = usize::try_from(read) else {
+                return Ok(false);
+            };
+            if count < raw.len() {
+                raw.truncate(count);
+                return Ok(true);
+            }
+            room = room.checked_mul(2).ok_or_else(A::exceeded)?;
+        }
+    })();
+    if matches!(&result, Ok(true)) {
+        return Ok(Some(PathBuf::from(OsString::from_vec(raw))));
+    }
+    drop(raw);
+    budget.release(
+        before
+            .checked_sub(budget.remaining())
+            .ok_or_else(A::exceeded)?,
+    )?;
+    result.map(|_| None)
+}
+
+/// The observed current directory, copied from the kernel's stack result
+/// only after its exact retained capacity has been admitted.
+#[cfg(target_os = "macos")]
+pub fn cwd<A: crate::Allocation>(
+    pid: Pid,
+    budget: &mut A,
+) -> std::result::Result<Option<PathBuf>, A::Error> {
+    use std::os::unix::ffi::OsStringExt;
     let mut info = std::mem::MaybeUninit::<libc::proc_vnodepathinfo>::zeroed();
-    let bytes = libc::c_int::try_from(size_of::<libc::proc_vnodepathinfo>()).ok()?;
-    // SAFETY: the buffer is exactly one `proc_vnodepathinfo`, which the call
-    // fills; a short return is checked before the value is read.
+    let Ok(bytes) = libc::c_int::try_from(size_of::<libc::proc_vnodepathinfo>()) else {
+        return Ok(None);
+    };
+    // SAFETY: info is writable for exactly bytes; a short result is rejected.
     let read = unsafe {
         libc::proc_pidinfo(
             pid.as_raw(),
@@ -572,19 +682,23 @@ pub fn cwd(pid: Pid) -> Option<PathBuf> {
         )
     };
     if read != bytes {
-        return None;
+        return Ok(None);
     }
-    // SAFETY: fully written, as checked above.
+    // SAFETY: proc_pidinfo filled the whole structure, as checked above.
     let info = unsafe { info.assume_init() };
-    let path: Vec<u8> = info
+    let path = info
         .pvi_cdir
         .vip_path
         .iter()
         .flatten()
-        .take_while(|c| **c != 0)
-        .map(|c| c.cast_unsigned())
-        .collect();
-    (!path.is_empty()).then(|| PathBuf::from(std::ffi::OsStr::from_bytes(&path)))
+        .take_while(|c| **c != 0);
+    let count = path.clone().count();
+    if count == 0 {
+        return Ok(None);
+    }
+    let mut bytes = budget.vector(count)?;
+    bytes.extend(path.map(|c| c.cast_unsigned()));
+    Ok(Some(PathBuf::from(OsString::from_vec(bytes))))
 }
 
 #[cfg(test)]
@@ -707,7 +821,7 @@ mod tests {
         let mut started = [0u8; 1];
         let out = child.stdout.as_mut().ok_or("its stdout")?;
         out.read_exact(&mut started).map_err(|e| e.to_string())?;
-        let read = argv(pid, 1 << 20).map_err(|e| e.to_string());
+        let read = argv(pid, &mut (1usize << 20)).map_err(|e| e.to_string());
         let _ = child.kill();
         let _ = child.wait();
         let words = ["sh", "-c", script, "", "head", "", "tail", ""];
@@ -721,7 +835,12 @@ mod tests {
         let here = std::env::current_dir()
             .ok()
             .and_then(|d| d.canonicalize().ok());
-        let there = own.and_then(cwd).and_then(|d| d.canonicalize().ok());
+        let there = own
+            .and_then(|pid| {
+                let mut quota = usize::MAX;
+                cwd(pid, &mut quota).ok().flatten()
+            })
+            .and_then(|d| d.canonicalize().ok());
         assert!(here.is_some());
         assert_eq!(here, there);
     }

@@ -1196,10 +1196,26 @@ impl Session {
 
     /// The directory pane `pane`'s program is in, if it can be read.
     fn dir_of(&self, pane: PaneId) -> Option<PathBuf> {
-        let runs = self.parts.panes().get(&pane)?.process().child();
-        // While it respawns, the program started for it.
-        let child = runs.or_else(|| self.respawning.get(&pane)?.process.child())?;
-        fuxix::process::cwd(child.leader.pid())
+        let mut allocation = usize::MAX;
+        self.dir_with(pane, &mut allocation).ok().flatten()
+    }
+
+    fn dir_with<A: fuxix::Allocation>(
+        &self,
+        pane: PaneId,
+        budget: &mut A,
+    ) -> Result<Option<PathBuf>, A::Error> {
+        let Some(p) = self.parts.panes().get(&pane) else {
+            return Ok(None);
+        };
+        let child = p
+            .process()
+            .child()
+            .or_else(|| self.respawning.get(&pane)?.process.child());
+        child
+            .map(|child| fuxix::process::cwd(child.leader.pid(), budget))
+            .transpose()
+            .map(Option::flatten)
     }
 
     /// Where a new pane's program starts: `dir`, from the caller's
@@ -3062,15 +3078,18 @@ impl Session {
     ) -> Result<Fields, Error> {
         let pid = |c: &Child| Json::Int(i64::from(c.leader.pid().as_raw()));
         let values = [
-            ("id", budget.owned_string(p.id().to_string())?),
+            ("id", Json::str(budget.format(format_args!("{}", p.id()))?)),
             ("name", budget.optional_text(p.name())?),
-            ("label", Json::str(budget.string(&p.label())?)),
+            (
+                "label",
+                Json::str(budget.format(format_args!("{}", p.display_label()))?),
+            ),
             ("rows", Json::int(p.size().rows())),
             ("cols", Json::int(p.size().cols())),
             ("pid", p.process().child().map_or(Json::Null, pid)),
             (
                 "version",
-                budget.owned_string(p.version(self.run).to_string())?,
+                Json::str(budget.format(format_args!("{}", p.version(self.run)))?),
             ),
         ];
         let mut fields = budget.vector(values.len())?;
@@ -3101,11 +3120,16 @@ impl Session {
             }
         }
         let values = [
-            ("id", budget.owned_string(tab.id().to_string())?),
+            (
+                "id",
+                Json::str(budget.format(format_args!("{}", tab.id()))?),
+            ),
             ("name", budget.optional_text(tab.name())?),
             (
                 "label",
-                Json::str(budget.string(&tab.label(self.parts.panes()))?),
+                Json::str(
+                    budget.format(format_args!("{}", tab.display_label(self.parts.panes())))?,
+                ),
             ),
             ("panes", Json::Array(panes)),
         ];
@@ -3126,9 +3150,12 @@ impl Session {
             tabs.push(Json::Object(budget.fields(fields)?));
         }
         let values = [
-            ("id", budget.owned_string(ws.id().to_string())?),
+            ("id", Json::str(budget.format(format_args!("{}", ws.id()))?)),
             ("name", budget.optional_text(ws.name())?),
-            ("label", Json::str(budget.string(&ws.label())?)),
+            (
+                "label",
+                Json::str(budget.format(format_args!("{}", ws.display_label()))?),
+            ),
             ("tabs", Json::Array(tabs)),
         ];
         let mut fields = budget.vector(values.len())?;
@@ -3146,10 +3173,12 @@ impl Session {
             // A pane's version alone, which the recipes read after every
             // change: not the rest of its state (its foreground program's
             // name, argv and cwd).
-            (AnyRef::Pane(id), Some("version")) => {
-                let version = |p: &Pane| p.version(self.run).to_string();
-                (self.parts.panes().get(&id)).map(|p| Ok(vec![("version", Json::str(version(p)))]))
-            }
+            (AnyRef::Pane(id), Some("version")) => self.parts.panes().get(&id).map(|p| {
+                let version = Json::str(budget.format(format_args!("{}", p.version(self.run)))?);
+                let mut fields = budget.vector(1)?;
+                fields.push(("version", version));
+                Ok(fields)
+            }),
             (AnyRef::Pane(id), _) => self
                 .parts
                 .panes()
@@ -3167,20 +3196,38 @@ impl Session {
             });
         };
 
-        let names: Vec<&str> = fields.iter().map(|(name, _)| *name).collect();
-        match fields.into_iter().find(|(name, _)| *name == field) {
-            // Exactly, or not at all: fuxth's integers are i64s.
-            Some((_, Json::Uint(n))) if i64::try_from(n).is_err() => {
-                let message = format!("{target}'s {field} is {n}, past fuxth's integers");
-                Err(fail(Raise::Range, message))
+        let Some(index) = fields.iter().position(|(name, _)| *name == field) else {
+            struct Names<'a>(&'a Fields);
+            impl std::fmt::Display for Names<'_> {
+                fn fmt(&self, out: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                    for (i, (name, _)) in self.0.iter().enumerate() {
+                        if i > 0 {
+                            out.write_str(", ")?;
+                        }
+                        out.write_str(name)?;
+                    }
+                    Ok(())
+                }
             }
-            Some((_, value)) => Ok(Body::Field(value)),
-            None => {
-                let (target, fields) = (target, names.join(", "));
-                let message = format!("{target} has no field {field:?}; it has {fields}");
-                Err(fail(Raise::NoField, message))
-            }
+            let message = budget.format(format_args!(
+                "{target} has no field {field:?}; it has {}",
+                Names(&fields)
+            ))?;
+            return Err(fail(Raise::NoField, message));
+        };
+        let (_, value) = fields
+            .into_iter()
+            .nth(index)
+            .ok_or_else(crate::wire::Budget::exceeded)?;
+        if let Json::Uint(n) = value
+            && i64::try_from(n).is_err()
+        {
+            let message = budget.format(format_args!(
+                "{target}'s {field} is {n}, past fuxth's integers"
+            ))?;
+            return Err(fail(Raise::Range, message));
         }
+        Ok(Body::Field(value))
     }
 
     /// `ls json`: everything, and `events`, where a stream reads from.
@@ -3196,20 +3243,29 @@ impl Session {
         for view in self.views.values() {
             let place = self.place(view.id);
             let fields = [
-                ("id", budget.owned_string(view.id.to_string())?),
+                ("id", Json::str(budget.format(format_args!("{}", view.id))?)),
                 ("rows", Json::int(view.rows)),
                 ("cols", Json::int(view.cols)),
                 (
                     "workspace",
-                    budget.optional_owned(place.map(|p| p.ws.to_string()))?,
+                    place
+                        .map(|p| budget.format(format_args!("{}", p.ws)).map(Json::str))
+                        .transpose()?
+                        .unwrap_or(Json::Null),
                 ),
                 (
                     "tab",
-                    budget.optional_owned(place.map(|p| p.tab.to_string()))?,
+                    place
+                        .map(|p| budget.format(format_args!("{}", p.tab)).map(Json::str))
+                        .transpose()?
+                        .unwrap_or(Json::Null),
                 ),
                 (
                     "pane",
-                    budget.optional_owned(place.map(|p| p.pane.to_string()))?,
+                    place
+                        .map(|p| budget.format(format_args!("{}", p.pane)).map(Json::str))
+                        .transpose()?
+                        .unwrap_or(Json::Null),
                 ),
                 ("zoom", Json::Bool(view.zoom)),
             ];
@@ -3218,7 +3274,10 @@ impl Session {
         let fields = [
             ("workspaces", Json::Array(workspaces)),
             ("clients", Json::Array(clients)),
-            ("events", budget.owned_string(events.to_string())?),
+            (
+                "events",
+                Json::str(budget.format(format_args!("{events}"))?),
+            ),
         ];
         budget.object(fields)
     }

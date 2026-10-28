@@ -10,6 +10,48 @@ pub fn listed(names: &[&str], last: &str) -> String {
     }
 }
 
+/// A display label borrowed from state, or its native identity fallback.
+#[derive(Clone, Copy)]
+pub(crate) enum Label<'a> {
+    Text(&'a str),
+    Id(crate::command::AnyRef),
+}
+impl std::fmt::Display for Label<'_> {
+    fn fmt(&self, out: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Text(text) => out.write_str(text),
+            Self::Id(id) => id.fmt(out),
+        }
+    }
+}
+impl PartialEq for Label<'_> {
+    fn eq(&self, other: &Self) -> bool {
+        struct Compare<'a>(&'a str);
+        impl std::fmt::Write for Compare<'_> {
+            fn write_str(&mut self, text: &str) -> std::fmt::Result {
+                self.0 = self.0.strip_prefix(text).ok_or(std::fmt::Error)?;
+                Ok(())
+            }
+        }
+        match (self, other) {
+            (Self::Text(a), Self::Text(b)) => a == b,
+            (Self::Id(a), Self::Id(b)) => a == b,
+            (Self::Text(text), Self::Id(id)) | (Self::Id(id), Self::Text(text)) => {
+                let mut out = Compare(text);
+                std::fmt::write(&mut out, format_args!("{id}")).is_ok() && out.0.is_empty()
+            }
+        }
+    }
+}
+impl<'a> From<Label<'a>> for std::borrow::Cow<'a, str> {
+    fn from(label: Label<'a>) -> Self {
+        match label {
+            Label::Text(text) => text.into(),
+            Label::Id(id) => id.to_string().into(),
+        }
+    }
+}
+
 /// An id and its display label, without repeating an identical label.
 pub(crate) struct Labelled<I, L>(pub I, pub L);
 impl<I: std::fmt::Display + PartialEq<L>, L: std::fmt::Display> std::fmt::Display

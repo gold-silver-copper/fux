@@ -120,30 +120,14 @@ impl Budget {
         self.0
     }
     pub(crate) fn string(&mut self, text: &str) -> Result<String, crate::session::Error> {
-        self.charge(text.len())?;
-        let mut out = String::new();
-        out.try_reserve_exact(text.len())
-            .map_err(|_| Self::exceeded())?;
-        out.push_str(text);
-        Ok(out)
+        fuxix::Allocation::string(self, text)
     }
     pub(crate) fn write(
         &mut self,
         out: &mut String,
         args: std::fmt::Arguments<'_>,
     ) -> Result<(), crate::session::Error> {
-        struct Formatted<'a> {
-            budget: &'a mut Budget,
-            out: &'a mut String,
-        }
-        impl std::fmt::Write for Formatted<'_> {
-            fn write_str(&mut self, text: &str) -> std::fmt::Result {
-                self.budget
-                    .text(self.out, text)
-                    .map_err(|_| std::fmt::Error)
-            }
-        }
-        std::fmt::write(&mut Formatted { budget: self, out }, args).map_err(|_| Self::exceeded())
+        fuxix::Allocation::write(self, out, args)
     }
     pub(crate) fn format(
         &mut self,
@@ -162,22 +146,6 @@ impl Budget {
         )
     }
 
-    pub(crate) fn owned_string(
-        &mut self,
-        text: String,
-    ) -> Result<crate::json::Json, crate::session::Error> {
-        self.charge(text.capacity())?;
-        Ok(crate::json::Json::str(text))
-    }
-    pub(crate) fn optional_owned(
-        &mut self,
-        text: Option<String>,
-    ) -> Result<crate::json::Json, crate::session::Error> {
-        match text {
-            Some(text) => self.owned_string(text),
-            None => Ok(crate::json::Json::Null),
-        }
-    }
     pub(crate) fn optional_text(
         &mut self,
         text: Option<&str>,
@@ -228,10 +196,7 @@ impl Budget {
         )
     }
     pub(crate) fn vector<T>(&mut self, count: usize) -> Result<Vec<T>, crate::session::Error> {
-        self.slots::<T>(count)?;
-        let mut out = Vec::new();
-        out.try_reserve_exact(count).map_err(|_| Self::exceeded())?;
-        Ok(out)
+        fuxix::Allocation::vector(self, count)
     }
     pub(crate) fn release(&mut self, bytes: usize) -> Result<(), crate::session::Error> {
         self.0 = self.0.checked_add(bytes).ok_or_else(Self::exceeded)?;
@@ -243,51 +208,36 @@ impl Budget {
         out: &mut Vec<T>,
         more: usize,
     ) -> Result<(), crate::session::Error> {
-        let needed = out.len().checked_add(more).ok_or_else(Self::exceeded)?;
-        if needed <= out.capacity() {
-            return Ok(());
-        }
-        let capacity = needed
-            .checked_next_power_of_two()
-            .ok_or_else(Self::exceeded)?
-            .max(4);
-        self.slots::<T>(capacity)?;
-        let old = out
-            .capacity()
-            .checked_mul(std::mem::size_of::<T>())
-            .ok_or_else(Self::exceeded)?;
-        out.try_reserve_exact(capacity.saturating_sub(out.len()))
-            .map_err(|_| Self::exceeded())?;
-        self.release(old)
+        fuxix::Allocation::reserve(self, out, more)
     }
     pub(crate) fn text(
         &mut self,
         out: &mut String,
         text: &str,
     ) -> Result<(), crate::session::Error> {
-        let needed = out
-            .len()
-            .checked_add(text.len())
-            .ok_or_else(Self::exceeded)?;
-        if needed > out.capacity() {
-            let capacity = needed
-                .checked_next_power_of_two()
-                .ok_or_else(Self::exceeded)?
-                .max(8);
-            self.charge(capacity)?;
-            let old = out.capacity();
-            out.try_reserve_exact(capacity.saturating_sub(out.len()))
-                .map_err(|_| Self::exceeded())?;
-            self.release(old)?;
-        }
-        out.push_str(text);
-        Ok(())
+        fuxix::Allocation::text(self, out, text)
     }
     pub(crate) fn exceeded() -> crate::session::Error {
         crate::session::fail(
             crate::code::Raise::TooLong,
             "finite reply exceeds its byte or allocation limit; request a smaller scope",
         )
+    }
+}
+
+impl fuxix::Allocation for Budget {
+    type Error = crate::session::Error;
+    fn remaining(&self) -> usize {
+        self.remaining()
+    }
+    fn charge(&mut self, bytes: usize) -> Result<(), Self::Error> {
+        self.charge(bytes)
+    }
+    fn release(&mut self, bytes: usize) -> Result<(), Self::Error> {
+        self.release(bytes)
+    }
+    fn exceeded() -> Self::Error {
+        Self::exceeded()
     }
 }
 
@@ -593,13 +543,53 @@ impl<A: Wire, B: Wire, C: Wire> Wire for (A, B, C) {
     }
 }
 
+/// Formatting never needs an owned spelling: count into stack state,
+/// then write the same Display directly to the wire sink.
+fn put_text(value: &impl std::fmt::Display, out: &mut impl Sink) {
+    struct Count(usize);
+    impl std::fmt::Write for Count {
+        fn write_str(&mut self, text: &str) -> std::fmt::Result {
+            self.0 = self.0.saturating_add(text.len());
+            Ok(())
+        }
+    }
+    struct Output<'a, S>(&'a mut S);
+    impl<S: Sink> std::fmt::Write for Output<'_, S> {
+        fn write_str(&mut self, text: &str) -> std::fmt::Result {
+            self.0.extend_from_slice(text.as_bytes());
+            if self.0.full() {
+                Err(std::fmt::Error)
+            } else {
+                Ok(())
+            }
+        }
+    }
+    let mut count = Count(0);
+    // Display may fail only if its formatter fails; Count never does.
+    let _ = std::fmt::write(&mut count, format_args!("{value}"));
+    u32::try_from(count.0).unwrap_or(u32::MAX).put(out);
+    let _ = std::fmt::write(&mut Output(out), format_args!("{value}"));
+}
+
+fn text_is(value: &impl std::fmt::Display, text: &str) -> bool {
+    struct Equal<'a>(&'a str);
+    impl std::fmt::Write for Equal<'_> {
+        fn write_str(&mut self, text: &str) -> std::fmt::Result {
+            self.0 = self.0.strip_prefix(text).ok_or(std::fmt::Error)?;
+            Ok(())
+        }
+    }
+    let mut equal = Equal(text);
+    std::fmt::write(&mut equal, format_args!("{value}")).is_ok() && equal.0.is_empty()
+}
+
 /// `text_wire!(Ty, "what")` expands to `impl Wire for Ty`: its text
 /// (`%3`, `C-a`), read back through `FromStr` (else `Error::Bad("what")`).
 macro_rules! text_wire {
     ($ty:ty, $sigil:literal) => {
         impl Wire for $ty {
             fn put(&self, out: &mut impl crate::wire::Sink) {
-                self.to_string().put(out);
+                put_text(self, out);
             }
             /// Only the text `put` writes for the value: another
             /// spelling of it (`S-.` for `.`) would decode to a value
@@ -607,7 +597,7 @@ macro_rules! text_wire {
             fn get(r: &mut Reader<'_>) -> Result<Self, Error> {
                 let text = String::get(r)?;
                 let value: Self = text.parse().map_err(|_| Error::Bad($sigil))?;
-                if value.to_string() == text {
+                if text_is(&value, &text) {
                     Ok(value)
                 } else {
                     Err(Error::Bad($sigil))

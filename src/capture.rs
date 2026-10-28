@@ -16,8 +16,59 @@ use std::time::Instant;
 /// Synthesized output work: at most two cells per admitted wire byte.
 pub(crate) const OUTPUT_CELLS: usize = 2 * crate::wire::MAX_REPLY;
 
-/// Rows selected for a capture, each with the columns its source takes.
-type ReadRows<'a> = Box<dyn Iterator<Item = (Row<'a>, std::ops::Range<usize>)> + 'a>;
+/// Borrowed rows and their selected columns, with no boxed iterator state.
+struct ReadRows<'a> {
+    rows: std::iter::Take<std::iter::Skip<fux_vt::Rows<'a>>>,
+    at: usize,
+    count: usize,
+    from: usize,
+    to: usize,
+    ended: bool,
+}
+impl<'a> ReadRows<'a> {
+    fn new(
+        rows: fux_vt::Rows<'a>,
+        skip: usize,
+        count: usize,
+        from: usize,
+        to: usize,
+        ended: bool,
+    ) -> Self {
+        let rows = rows.skip(skip).take(count);
+        let count = rows.len();
+        Self {
+            rows,
+            at: 0,
+            count,
+            from,
+            to,
+            ended,
+        }
+    }
+}
+impl<'a> Iterator for ReadRows<'a> {
+    type Item = (Row<'a>, std::ops::Range<usize>);
+    fn next(&mut self) -> Option<Self::Item> {
+        for row in self.rows.by_ref() {
+            let i = self.at;
+            self.at = self.at.saturating_add(1);
+            let from = if i == 0 { self.from } else { 0 };
+            let to = if self.at == self.count && self.ended {
+                if i == 0 && self.from >= self.to {
+                    0
+                } else {
+                    self.to
+                }
+            } else {
+                usize::MAX
+            };
+            if from < to {
+                return Some((row, from..to));
+            }
+        }
+        None
+    }
+}
 
 /// A run while it is built and trimmed: its count stays exact until the
 /// surviving cells are converted to the wire's `Cut`.
@@ -164,8 +215,8 @@ fn pane_with(
     build(read, of, (screen.size().into(), cursor), view, &mut budget)
 }
 
-fn build(
-    read: ReadRows<'_>,
+fn build<'a>(
+    read: impl Iterator<Item = (Row<'a>, std::ops::Range<usize>)>,
     of: Of,
     (size, cursor): ((u16, u16), Option<(u16, u16)>),
     view: CaptureView,
@@ -274,13 +325,16 @@ struct Selection {
     count: usize,
 }
 impl Selection {
-    fn read<'a>(&self, read: ReadRows<'a>) -> ReadRows<'a> {
-        Box::new(read.skip(self.start).take(self.count))
+    fn read<'a>(
+        &self,
+        read: impl Iterator<Item = (Row<'a>, std::ops::Range<usize>)>,
+    ) -> impl Iterator<Item = (Row<'a>, std::ops::Range<usize>)> {
+        read.skip(self.start).take(self.count)
     }
 }
 
-fn selected_rows(
-    mut read: ReadRows<'_>,
+fn selected_rows<'a>(
+    read: impl Iterator<Item = (Row<'a>, std::ops::Range<usize>)>,
     view: CaptureView,
     limits: Limits,
 ) -> Result<Selection, crate::session::Error> {
@@ -291,9 +345,7 @@ fn selected_rows(
         return Ok(Selection { start: 0, count: 0 });
     }
     let skip = if view.wrapped { first } else { 0 };
-    if skip > 0 {
-        read = Box::new(read.skip(skip));
-    }
+    let read = read.skip(skip);
     let mut cells = 0usize;
     let mut line_cells = 0usize;
     let (mut start, mut count, mut line_start) = (skip, 0usize, 0usize);
@@ -403,8 +455,10 @@ fn rows_of(
     let keep = shown.saturating_add(history.unwrap_or(0));
     // Only the rows kept are read: history past them is skipped unread.
     let skip = rows.len().saturating_sub(keep);
-    let read = Box::new(rows.skip(skip).map(|row| (row, 0..usize::MAX)));
-    (read, Some(skip))
+    (
+        ReadRows::new(rows, skip, usize::MAX, 0, usize::MAX, false),
+        Some(skip),
+    )
 }
 
 /// The last command's output between its marks, a range of each row's
@@ -416,10 +470,10 @@ fn last_output(screen: &Screen) -> ReadRows<'_> {
     let running = commands.output_start.zip(cursor);
     let ended = running.is_none();
     let Some((start, end)) = running.or(commands.last_output) else {
-        return Box::new(std::iter::empty());
+        return ReadRows::new(screen.rows(), 0, 0, 0, 0, true);
     };
     let Some(last) = screen.row_index(end.row) else {
-        return Box::new(std::iter::empty());
+        return ReadRows::new(screen.rows(), 0, 0, 0, 0, true);
     };
     // A start gone (history's limit cut it, or the screen was cleared or
     // switched) or below the end: from what is kept above the end, the
@@ -434,23 +488,14 @@ fn last_output(screen: &Screen) -> ReadRows<'_> {
         Some(_) => (screen.history_len().min(last), left),
         None => (0, left),
     };
-    let rows = screen
-        .rows()
-        .skip(first)
-        .take(last.saturating_sub(first).saturating_add(1));
-    let count = rows.len();
-    Box::new(rows.enumerate().filter_map(move |(i, row)| {
-        let from = if i == 0 { usize::from(start.col) } else { 0 };
-        // An ended command's output ends at its end mark; a running
-        // one's last row is whole, what it wrote right of the cursor
-        // too.
-        let to = match (i.saturating_add(1) == count && ended, end.col) {
-            (true, col) if i == 0 && start.col >= col => 0,
-            (true, col) => usize::from(col),
-            (false, _) => usize::MAX,
-        };
-        (from < to).then_some((row, from..to))
-    }))
+    ReadRows::new(
+        screen.rows(),
+        first,
+        last.saturating_sub(first).saturating_add(1),
+        usize::from(start.col),
+        usize::from(end.col),
+        ended,
+    )
 }
 
 /// What a client's terminal shows, row by row.
@@ -524,27 +569,30 @@ pub(crate) fn state(
             .flatten()
     });
     let leader = group.filter(|pid| fuxix::process::exists(*pid));
-    let program = leader.and_then(fuxix::process::name);
+    let program = leader
+        .map(|pid| fuxix::process::name(pid, budget))
+        .transpose()?
+        .flatten();
     let (launch_argv, argv) = arguments(&pane.runs, budget, |budget| {
-        leader.map(|pid| fuxix::process::argv(pid, budget.remaining().min(crate::wire::MAX_REPLY / 4)))
-            .transpose().map_err(|_| crate::wire::Budget::exceeded()).map(Option::flatten)
+        leader
+            .map(|pid| fuxix::process::argv(pid, budget))
+            .transpose()
+            .map(Option::flatten)
     })?;
-    let cwd = leader.and_then(fuxix::process::cwd);
-    if let Some(program) = &program {
-        budget.charge(program.capacity())?;
-    }
-    if let Some(cwd) = &cwd {
-        budget.charge(
-            cwd.capacity()
-                .checked_add(
-                    cwd.as_os_str()
-                        .len()
-                        .checked_mul(3)
-                        .ok_or_else(crate::wire::Budget::exceeded)?,
-                )
-                .ok_or_else(crate::wire::Budget::exceeded)?,
-        )?;
-    }
+    let cwd = match leader
+        .map(|pid| fuxix::process::cwd(pid, budget))
+        .transpose()?
+        .flatten()
+    {
+        Some(path) => {
+            let text = fuxix::Allocation::lossy(budget, path.as_os_str().as_encoded_bytes())?;
+            let capacity = path.capacity();
+            drop(path);
+            budget.release(capacity)?;
+            Json::str(text)
+        }
+        None => Json::Null,
+    };
     let idle = now.saturating_duration_since(pane.wrote_at).as_millis();
     let last_status = screen.commands().last_status;
 
@@ -590,10 +638,7 @@ pub(crate) fn state(
         ])?,
         None => Json::Null,
     };
-    let read_error = pane.read_error().map(|e| e.to_string());
-    if let Some(error) = &read_error {
-        budget.charge(error.capacity())?;
-    }
+    let read_error = pane.read_error().map(|e| e.message(budget)).transpose()?;
     let values = [
         ("title", Json::str(budget.string(pane.title().as_str())?)),
         ("program", program.map_or(Json::Null, Json::str)),
@@ -647,7 +692,7 @@ pub(crate) fn state(
         ),
         ("truncated", Json::Array(cut_fields)),
         ("input_unread", Json::count(pane.left.input)),
-        ("cwd", cwd.map_or(Json::Null, |p| text(p.as_os_str()))),
+        ("cwd", cwd),
         ("argv", argv),
     ];
     let mut fields = budget.vector(
@@ -663,33 +708,46 @@ pub(crate) fn state(
 fn arguments(
     runs: &Runs,
     budget: &mut crate::wire::Budget,
-    observe: impl FnOnce(&mut crate::wire::Budget) -> Result<Option<Vec<std::ffi::OsString>>, crate::session::Error>,
+    observe: impl FnOnce(
+        &mut crate::wire::Budget,
+    ) -> Result<Option<Vec<std::ffi::OsString>>, crate::session::Error>,
 ) -> Result<(Json, Json), crate::session::Error> {
-    let argv = observe(budget)?;
+    let argv = match observe(budget)? {
+        Some(words) => {
+            let bytes = words.iter().try_fold(
+                words
+                    .capacity()
+                    .checked_mul(std::mem::size_of::<std::ffi::OsString>())
+                    .ok_or_else(crate::wire::Budget::exceeded)?,
+                |n, word| {
+                    n.checked_add(word.capacity())
+                        .ok_or_else(crate::wire::Budget::exceeded)
+                },
+            )?;
+            let mut values = budget.vector(words.len())?;
+            for word in &words {
+                values.push(Json::str(fuxix::Allocation::lossy(
+                    budget,
+                    word.as_encoded_bytes(),
+                )?));
+            }
+            drop(words);
+            budget.release(bytes)?;
+            Json::Array(values)
+        }
+        None => Json::Null,
+    };
     let launch = match runs {
         Runs::Explicit(launch) => {
             let mut values = budget.vector(launch.argv.len())?;
-            for word in &launch.argv { values.push(Json::str(budget.string(word)?)); }
+            for word in &launch.argv {
+                values.push(Json::str(budget.string(word)?));
+            }
             Json::Array(values)
         }
         Runs::DefaultShell => Json::Null,
     };
-    if let Some(argv) = &argv {
-        budget.slots::<std::ffi::OsString>(argv.capacity())?;
-        budget.slots::<Json>(argv.len())?;
-        for word in argv {
-            budget.charge(word.capacity())?;
-            budget.charge(word.len().checked_mul(3).ok_or_else(crate::wire::Budget::exceeded)?)?;
-        }
-    }
-    let argv = argv.map_or(Json::Null, |a| Json::Array(a.iter().map(|w| text(w)).collect()));
     Ok((launch, argv))
-}
-
-/// A path or an argument as JSON text, which must be UTF-8: each byte
-/// that is not shown as U+FFFD, as `docs/json.md` says.
-fn text(os: &std::ffi::OsStr) -> Json {
-    Json::str(os.to_string_lossy().into_owned())
 }
 
 /// Where a picture is, for `json`: its top row (negative once scrolled
@@ -776,6 +834,7 @@ fn captured(
         captured.push(cuts);
     }
     budget.release(old_capacity)?;
+    budget.slots::<Captured>(1)?;
     Ok(Captured {
         of,
         screen_rows,
@@ -992,26 +1051,43 @@ mod tests {
     use crate::pane::{Pane, Runs};
 
     #[test]
-    fn argument_observation_peak_stays_within_shared_grant() -> Result<(), Box<dyn std::error::Error>> {
+    fn argument_observation_peak_stays_within_shared_grant()
+    -> Result<(), Box<dyn std::error::Error>> {
         let allocator = fux_vt_peak::ThreadPeak;
         let launch = Runs::Explicit(crate::pane::Launch {
             argv: vec![std::iter::repeat_n('l', 6000).collect()],
-            cwd: "/".into(), env: Vec::new(),
+            cwd: "/".into(),
+            env: Vec::new(),
         });
         let mut peak = 0;
-        for len in [2500, 5000] {
-            let mut raw: Vec<u8> = std::iter::repeat_n(b'a', len).collect();
+        for (len, byte) in [(2500, b'a'), (5000, b'a'), (2500, 0xff)] {
+            let mut raw: Vec<u8> = std::iter::repeat_n(byte, len).collect();
             raw.push(0);
             let baseline = allocator.live();
             allocator.reset_peak();
-            let result = super::arguments(&launch, &mut crate::wire::Budget::with_limit(8192), |budget| {
-                fuxix::process::argv_read(raw.as_slice(), budget.remaining())
-                    .map_err(|_| crate::wire::Budget::exceeded())
-            });
+            let result = super::arguments(
+                &launch,
+                &mut crate::wire::Budget::with_limit(8192),
+                |budget| fuxix::process::argv_read(raw.as_slice(), budget),
+            );
             assert!(result.is_err());
             peak = peak.max(allocator.peak().saturating_sub(baseline));
         }
-        assert!(peak <= 8192, "argument observation allocated {peak} bytes under an 8192-byte grant");
+        assert!(
+            peak <= 8192,
+            "argument observation allocated {peak} bytes under an 8192-byte grant"
+        );
+        let raw = b"a\0\xff\0\0";
+        let mut budget = crate::wire::Budget::with_limit(8192);
+        let baseline = allocator.live();
+        allocator.reset_peak();
+        let (_, observed) = super::arguments(&Runs::DefaultShell, &mut budget, |budget| {
+            fuxix::process::argv_read(raw.as_slice(), budget)
+        })?;
+        let retained = allocator.live().saturating_sub(baseline);
+        assert_eq!(retained, 8192usize.saturating_sub(budget.remaining()));
+        assert!(allocator.peak().saturating_sub(baseline) <= 8192);
+        assert_eq!(observed.render(), "[\"a\",\"�\",\"\"]");
         Ok(())
     }
 
@@ -1122,7 +1198,7 @@ mod tests {
         )?);
         pane.output(b"x");
         let row = pane.screen().rows().next().ok_or("row")?;
-        let read: super::ReadRows<'_> = Box::new(std::iter::repeat_n((row, 0..usize::MAX), 100));
+        let read = std::iter::repeat_n((row, 0..usize::MAX), 100);
         let mut budget = crate::wire::Budget::with_limit(8192);
         if let Ok(captured) = super::build(
             read,
