@@ -4,12 +4,13 @@
 use crate::error::{Code, Error};
 use std::ops::Range;
 use std::rc::Rc;
+use std::sync::Arc;
 
 /// Where a token came from: a line of a file, or an argument.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Place {
     /// A line of a source, from 1.
-    Line { source: Rc<str>, line: u32 },
+    Line { source: Arc<str>, line: u32 },
     /// A command-line argument, from 1.
     Argument(u32),
 }
@@ -56,17 +57,37 @@ pub fn source(source: &str, text: &str) -> Result<Vec<Token>, Error> {
 /// `source`'s tokens, each with the bytes of `text` it is written in:
 /// between two tokens is only whitespace and comments.
 pub(crate) fn spans(source: &str, text: &str) -> Result<Vec<(Token, Range<usize>)>, Error> {
-    let source: Rc<str> = Rc::from(source);
+    spans_limited(source, text, usize::MAX)
+}
+
+fn spans_limited(
+    source: &str,
+    text: &str,
+    limit: usize,
+) -> Result<Vec<(Token, Range<usize>)>, Error> {
+    let source: Arc<str> = Arc::from(source);
     let place = |line: u32| Place::Line {
-        source: Rc::clone(&source),
+        source: Arc::clone(&source),
         line,
     };
-    let token = |(text, at, from): (String, u32, usize), to: usize| {
-        let place = place(at);
-        let text = Rc::from(text);
-        (Token { text, place }, from..to)
-    };
     let mut tokens = Vec::new();
+    let mut push = |word: Option<(String, u32, usize)>, to| {
+        if let Some((text, at, from)) = word {
+            let token = Token {
+                text: Rc::from(text),
+                place: place(at),
+            };
+            if tokens.len() >= limit {
+                return Err(Error::new(
+                    Code::TooLong,
+                    "source token limit exceeded",
+                    Some(&token),
+                ));
+            }
+            tokens.push((token, from..to));
+        }
+        Ok(())
+    };
     let mut chars = text.char_indices().peekable();
     let mut line = 1u32;
     // The token being read, the line it began on and where; `None` between
@@ -76,7 +97,7 @@ pub(crate) fn spans(source: &str, text: &str) -> Result<Vec<(Token, Range<usize>
     while let Some((at, c)) = chars.next() {
         match c {
             '\n' | ' ' | '\t' | '\r' => {
-                tokens.extend(word.take().map(|w| token(w, at)));
+                push(word.take(), at)?;
                 if c == '\n' {
                     line = next_line(line);
                 }
@@ -119,7 +140,7 @@ pub(crate) fn spans(source: &str, text: &str) -> Result<Vec<(Token, Range<usize>
             }
         }
     }
-    tokens.extend(word.map(|w| token(w, text.len())));
+    push(word, text.len())?;
     Ok(tokens)
 }
 
@@ -130,6 +151,14 @@ fn open_quote(place: Place, quote: char) -> Error {
         place: Some(place),
         word: None,
     }
+}
+
+/// Tokenizes while retaining at most `limit` tokens.
+pub fn source_limited(source: &str, text: &str, limit: usize) -> Result<Vec<Token>, Error> {
+    Ok(spans_limited(source, text, limit)?
+        .into_iter()
+        .map(|(token, _)| token)
+        .collect())
 }
 
 #[cfg(test)]
@@ -179,6 +208,31 @@ mod tests {
         let tokens = source("t", "\"one\ntwo\" three")?;
         let lines: Vec<String> = tokens.iter().map(|t| t.place.to_string()).collect();
         assert_eq!(lines, ["t:1", "t:2"]);
+        Ok(())
+    }
+
+    #[test]
+    fn the_limit_counts_emitted_tokens() -> Result<(), Error> {
+        for text in [
+            "1 2",
+            "1 2 # comment\n",
+            "1 2 \\\n # comment",
+            "'one two' ''",
+        ] {
+            assert_eq!(source_limited("t", text, 2)?.len(), 2);
+        }
+        for text in ["1\n2", "1\n2 ", "1\n'2 3'"] {
+            let error = source_limited("t", text, 1).err();
+            assert!(matches!(
+                error,
+                Some(Error {
+                    code: Code::TooLong,
+                    place: Some(Place::Line { line: 2, .. }),
+                    ..
+                })
+            ));
+        }
+        assert!(source_limited("t", "''", 0).is_err());
         Ok(())
     }
 

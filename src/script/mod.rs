@@ -6,6 +6,7 @@
 //!
 //! Every run is fresh: its own stack and dictionary, the bundled library's
 //! words first (`library.fux`).
+mod source;
 mod words;
 
 use crate::answer::{PaneAnswer, PaneResults};
@@ -27,9 +28,8 @@ use std::sync::{Arc, Mutex};
 pub(crate) use words::INPUT_MAX;
 pub use words::{Act, After, Group, Keys, Opt, Row, Screen, Takes, Word, from_opts, usage};
 
-/// A config, by its name and text, whose definitions its bindings and
-/// prompt see.
-pub type Config = std::sync::Arc<(String, String)>;
+/// The frozen source image whose definitions a client's bindings and prompt see.
+pub type Config = Arc<fuxth::SourceImage>;
 
 /// The bundled words, written in fuxth.
 const LIBRARY: &str = include_str!("library.fux");
@@ -498,7 +498,8 @@ impl From<fuxth::Error> for Failed {
 fn telling(error: fuxth::Error) -> Failed {
     let usage = match error.code {
         Lang::StackUnderflow | Lang::Type | Lang::Range => true,
-        Lang::OpenQuote
+        Lang::Require
+        | Lang::OpenQuote
         | Lang::UnknownWord
         | Lang::MissingToken
         | Lang::BadName
@@ -619,8 +620,7 @@ fn configured_compiler(
     }) {
         return Ok(ready);
     }
-    let (name, text) = &**config;
-    compiler.add(&handles(&token::source(name, text)?)?)?;
+    compiler.add(&handles(&config.tokens())?)?;
     let ready = compiler.definitions();
     CONFIGURED.set(Some((Arc::clone(config), ready.clone())));
     Ok(ready)
@@ -885,7 +885,9 @@ impl Asks for Cli {
                     let why = "stdin: the program itself was read from it";
                     return Err(Failed::new(Code::Read, why));
                 }
-                Given::Words | Given::File(_) => string(&read_text("stdin", io::stdin())?),
+                Given::Words | Given::File(_) => {
+                    string(&read_text("stdin", io::stdin(), SOURCE_MAX)?)
+                }
             },
             Shell::ReadFile(path) => string(&read_file(path.as_ref())?),
             Shell::Getenv(name) => string(&getenv(name)?),
@@ -1192,13 +1194,17 @@ fn local(what: &Local, server: &mut Server) -> Result<Vec<Value<Fux>>, Failed> {
             // Watching or naming a run starts no replacement server.
             let socket = match *read_only || of.is_some() {
                 true => server.socket()?,
-                false => started(server)?.0,
+                false => started(server)?,
             };
             if *read_only && !client::answers(&socket) {
                 let why = "no server answers: there is nothing to watch";
                 return Err(Failed::new(Code::NoServer, why));
             }
-            let (keymap, problem) = configured(server, *of);
+            let (keymap, problem) = if size.is_none() && !read_only {
+                configured(server, *of)
+            } else {
+                (default_keys()?, None)
+            };
             let attach = client::Attaching {
                 of: *of,
                 workspace: workspace.clone(),
@@ -1209,11 +1215,7 @@ fn local(what: &Local, server: &mut Server) -> Result<Vec<Value<Fux>>, Failed> {
             client::attach(&socket, attach, *size).map_err(client_failed)?;
         }
         Local::Start => {
-            if started(server)?.1
-                && let (_, Some(problem)) = configured(server, None)
-            {
-                let _ = writeln!(io::stderr(), "fux: {problem}");
-            }
+            started(server)?;
         }
         Local::ForceKill => client::kill_server(&server.socket()?).map_err(client_failed)?,
         Local::Open(_) | Local::Shell(_) => return refuse_local(what),
@@ -1228,20 +1230,17 @@ fn local(what: &Local, server: &mut Server) -> Result<Vec<Value<Fux>>, Failed> {
     Ok(Vec::new())
 }
 
-/// The server, started in the background if none answers: its socket, and
-/// whether it was started, for the config's settings (`set`) to go to it at
-/// once.
-fn started(server: &mut Server) -> Result<(SocketPath, bool), Failed> {
+/// The server's socket, starting it in the background if none answers.
+fn started(server: &mut Server) -> Result<SocketPath, Failed> {
     let socket = server.socket()?;
-    let start = !client::answers(&socket);
-    if start {
+    if !client::answers(&socket) {
         client::start_server(&socket).map_err(client_failed)?;
     }
-    Ok((socket, start))
+    Ok(socket)
 }
 
-/// The client's keymap, its config run on the defaults; and what was wrong
-/// with the config, if anything was.
+/// A typing terminal's keymap, its config run on the defaults; and what
+/// was wrong with the config, if anything was.
 pub fn configured(server: &mut Server, run: Option<Run>) -> (Keymap, Option<String>) {
     match config_keymap(Some(server), run) {
         Ok(keymap) => (keymap, None),
@@ -1258,7 +1257,12 @@ pub fn configured(server: &mut Server, run: Option<Run>) -> (Keymap, Option<Stri
 pub fn default_keys() -> Result<Keymap, Failed> {
     let mut keymap = Keymap::empty();
     let dry = &mut Settings::default();
-    run_quiet("keys.fux", KEYS, Context::default(), Some(&mut keymap), dry)?;
+    run_quiet(
+        &token::source("keys.fux", KEYS)?,
+        Context::default(),
+        Some(&mut keymap),
+        dry,
+    )?;
     Ok(keymap)
 }
 
@@ -1269,7 +1273,7 @@ fn config_keymap(server: Option<&mut Server>, run: Option<Run>) -> Result<Keymap
         return default_keys();
     };
     let shown = path.display().to_string();
-    let file = match std::fs::File::open(&path) {
+    let (path, file) = match source::root(&path) {
         Ok(file) => file,
         Err(error)
             if error.kind() == io::ErrorKind::NotFound
@@ -1281,7 +1285,7 @@ fn config_keymap(server: Option<&mut Server>, run: Option<Run>) -> Result<Keymap
         }
         Err(error) => return Err(read_failed(&shown, &error.to_string())),
     };
-    run_config(&shown, &read_text(&shown, file)?, server, run)
+    run_config(source::opened_file(path, file)?, server, run)
 }
 
 /// The keymap a config file makes, its words run on the defaults, its
@@ -1295,15 +1299,12 @@ pub fn run_file(
     server: Option<&mut Server>,
     run: Option<Run>,
 ) -> Result<Keymap, Failed> {
-    let shown = path.display().to_string();
-    let text = read_file(path)?;
-    run_config(&shown, &text, server, run)
+    run_config(source::file(path)?, server, run)
 }
 
 /// Runs one source snapshot as a config, on the bundled keys.
 fn run_config(
-    shown: &str,
-    text: &str,
+    image: fuxth::SourceImage,
     server: Option<&mut Server>,
     run: Option<Run>,
 ) -> Result<Keymap, Failed> {
@@ -1311,18 +1312,13 @@ fn run_config(
         of: run,
         ..client::context()
     };
+    let tokens = image.tokens();
     let mut keymap = Keymap {
-        config: Some(std::sync::Arc::new((shown.to_owned(), text.to_owned()))),
+        config: Some(Arc::new(image)),
         ..default_keys()?
     };
     let mut settings = Settings::default();
-    run_quiet(
-        shown,
-        text,
-        context.clone(),
-        Some(&mut keymap),
-        &mut settings,
-    )?;
+    run_quiet(&tokens, context.clone(), Some(&mut keymap), &mut settings)?;
     if let Some(server) = server
         && !settings.0.is_empty()
     {
@@ -1339,24 +1335,23 @@ fn run_config(
     Ok(keymap)
 }
 
-/// Runs the program `text`, read from `name`, its requests going to `asks`
+/// Runs the program in `tokens`, its requests going to `asks`
 /// and its output nowhere, for at most `PROGRAM_STEPS` steps.
 fn run_quiet(
-    name: &str,
-    text: &str,
+    tokens: &[Token],
     context: Context,
     keymap: Option<&mut Keymap>,
     asks: &mut dyn Asks,
 ) -> Result<(), Failed> {
-    let mut machine = compile(&token::source(name, text)?)?;
+    let mut machine = compile(tokens)?;
     let mut out = io::sink();
     let mut host = Host::new(context, keymap, &mut out);
     run_capped(&mut machine, &mut host, asks, Some(PROGRAM_STEPS), None).map(drop)
 }
 
-/// What a config's requests go to: settings alone, as a config runs each
-/// time a client attaches, and must make nothing. Each is kept, in order,
-/// for the run's end: half a config is no config.
+/// What a config's requests go to: settings alone, as a typing terminal
+/// runs its config when attaching, and must make nothing. Each is kept,
+/// in order, for the run's end: half a config is no config.
 #[derive(Default)]
 struct Settings(Vec<crate::config::Setting>);
 
@@ -1466,11 +1461,11 @@ fn program(args: &[String]) -> Result<(Vec<Token>, Given), Failed> {
         [] => token::arguments(&["opts", "attach"]),
         // A program read whole, at most `SOURCE_MAX` of it.
         [dash] if dash == "-" => {
-            let text = read_text("stdin", io::stdin())?;
-            return Ok((token::source("stdin", &text)?, Given::Stdin));
+            let text = read_text("stdin", io::stdin(), SOURCE_MAX)?;
+            return Ok((source::text("stdin", &text)?.tokens(), Given::Stdin));
         }
         [flag, file, rest @ ..] if flag == "--file" => {
-            let tokens = token::source(file, &read_file(file.as_ref())?)?;
+            let tokens = source::file(file.as_ref())?.tokens();
             return Ok((tokens, Given::File(rest.to_vec())));
         }
         [flag] if flag == "--file" => {
@@ -1484,10 +1479,10 @@ fn program(args: &[String]) -> Result<(Vec<Token>, Given), Failed> {
         [help, topic] if help == "help" => token::arguments(&["str", topic, "explain"]),
         [flag] if matches!(flag.as_str(), "--help" | "-h") => token::arguments(&["help"]),
         [flag] if matches!(flag.as_str(), "--version" | "-V") => token::arguments(&["version"]),
-        [line] => token::source("command line", line)?,
+        [line] => return Ok((source::text("command line", line)?.tokens(), Given::Words)),
         words => token::arguments(words),
     };
-    Ok((words, Given::Words))
+    Ok((source::arguments(&words)?.tokens(), Given::Words))
 }
 
 /// The most steps a command line's program takes: one that loops without
@@ -1496,22 +1491,22 @@ pub(crate) const LINE_STEPS: u64 = 1_000_000_000;
 
 /// The most text read from a file or stdin may be: a program, or what
 /// `read-file` and `input` read.
-pub(crate) const SOURCE_MAX: usize = 16 << 20;
+pub(crate) use fuxth::SOURCE_MAX;
 
 fn read_failed(name: &str, why: &str) -> Failed {
     Failed::new(Code::Read, format!("{why} ({name})"))
 }
 
 /// The text read from `from`, which `name` names and which may be anything
-/// (`/dev/zero`): at most `SOURCE_MAX` bytes of UTF-8.
-fn read_text(name: &str, from: impl Read) -> Result<String, Failed> {
+/// (`/dev/zero`): at most `limit` bytes of UTF-8.
+fn read_text(name: &str, from: impl Read, limit: usize) -> Result<String, Failed> {
     let mut bytes = Vec::new();
-    let most = u64::try_from(SOURCE_MAX).unwrap_or(u64::MAX);
+    let most = u64::try_from(limit).unwrap_or(u64::MAX);
     (from.take(most.saturating_add(1)))
         .read_to_end(&mut bytes)
         .map_err(|e| read_failed(name, &e.to_string()))?;
-    if bytes.len() > SOURCE_MAX {
-        let why = format!("more than {} MiB, the most fux reads", SOURCE_MAX >> 20);
+    if bytes.len() > limit {
+        let why = format!("more than {limit} bytes, the most fux reads");
         return Err(read_failed(name, &why));
     }
     String::from_utf8(bytes).map_err(|_| read_failed(name, "not UTF-8 text"))
@@ -1521,7 +1516,7 @@ fn read_text(name: &str, from: impl Read) -> Result<String, Failed> {
 fn read_file(path: &std::path::Path) -> Result<String, Failed> {
     let name = path.display().to_string();
     let file = std::fs::File::open(path).map_err(|e| read_failed(&name, &e.to_string()))?;
-    read_text(&name, file)
+    read_text(&name, file, SOURCE_MAX)
 }
 
 #[cfg(test)]
@@ -1608,7 +1603,7 @@ mod tests {
     /// What a script asks of its process is the command line's alone: a
     /// config's program, as a key's, is refused it.
     #[test]
-    fn only_the_command_line_asks_its_process() {
+    fn only_the_command_line_asks_its_process() -> Result<(), super::Failed> {
         let words = [
             "args",
             "input",
@@ -1619,13 +1614,19 @@ mod tests {
         ];
         for code in words {
             let dry = &mut super::Settings::default();
-            let ran = super::run_quiet("config", code, Default::default(), None, dry);
+            let ran = super::run_quiet(
+                &super::token::source("config", code)?,
+                Default::default(),
+                None,
+                dry,
+            );
             assert_eq!(
                 ran.err().map(|f| f.code),
                 Some(super::Code::NotHere),
                 "{code}"
             );
         }
+        Ok(())
     }
 
     /// The default keys are a config every line of which binds; what
@@ -1635,7 +1636,12 @@ mod tests {
     fn the_default_keys_are_a_config_list_keys_prints() -> Result<(), super::Failed> {
         let run = |name: &str, text: &str, keymap: &mut super::Keymap| {
             let dry = &mut super::Settings::default();
-            super::run_quiet(name, text, Default::default(), Some(keymap), dry)
+            super::run_quiet(
+                &super::token::source(name, text)?,
+                Default::default(),
+                Some(keymap),
+                dry,
+            )
         };
         let mut keymap = super::default_keys()?;
         let (screens, keys): (Vec<&str>, Vec<&str>) = (super::KEYS.lines())

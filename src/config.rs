@@ -409,9 +409,8 @@ impl Reads for Vec<EnvName> {
     }
 }
 
-/// The config file, a fuxth program each client runs as it attaches (and
-/// a server's first client, as it starts it): `$XDG_CONFIG_HOME/fux/config.fux`,
-/// else `~/.config/fux/config.fux`.
+/// The config file, a fuxth program a typing terminal runs as it attaches:
+/// `$XDG_CONFIG_HOME/fux/config.fux`, else `~/.config/fux/config.fux`.
 pub fn default_path() -> Option<PathBuf> {
     let set = |name: &str| std::env::var_os(name).filter(|d| !d.is_empty());
     let config = set("XDG_CONFIG_HOME")

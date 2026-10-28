@@ -56,6 +56,7 @@ fn shown(value: &Value<Nothing>) -> String {
 
 fn run(path: &str) -> Result<Vec<String>, String> {
     let text = std::fs::read_to_string(path).map_err(|e| format!("read: {path}: {e}"))?;
+    // This in-memory embedding deliberately supplies no require loader.
     let mut compiler = Compiler::new(Vocabulary::default());
     let compiled = token::source("stdlib.fux", STDLIB)
         .and_then(|t| compiler.add(&t))

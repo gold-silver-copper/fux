@@ -4,7 +4,7 @@
 //! program does anything.
 //!
 //! The parsing words are a fixed set, the only ones that read the token
-//! after them or shape the program: `str`, `define NAME … end`,
+//! after them or shape the program: `require PATH`, `str`, `define NAME … end`,
 //! `let NAME`, `if … else … then`, `begin … until`, `list … end`,
 //! `each … end` and `try … catch … end`. Control flow is compiled to jumps,
 //! its open blocks kept on a compile-time stack. Every other word takes and
@@ -55,6 +55,7 @@ macro_rules! parsing {
 
 parsing! {
     Str "str" Text,
+    Require "require" Text,
     Define "define" Name,
     End "end",
     Let "let" Name,
@@ -107,6 +108,10 @@ impl Parsing {
             Parsing::Each => (
                 "SEQ each … end",
                 "the body once per element of SEQ, a string or list, the element pushed",
+            ),
+            Parsing::Require => (
+                "require PATH",
+                "loads a literal file once at compile time, relative to its source",
             ),
             Parsing::Str => ("str WORD", "WORD as text, whatever it looks like"),
             Parsing::Try | Parsing::Catch => (
@@ -354,7 +359,8 @@ impl<A: Clone> Compiler<A> {
 
     /// Compiles `tokens`, a source, onto what was compiled before; if it
     /// fails, the compiler is as it was. A definition in it may call one
-    /// written after it.
+    /// written after it. This entry point has no loader: `require` is
+    /// refused. Add a saved source image's tokens for imports.
     pub fn add(&mut self, tokens: &[Token]) -> Result<(), Error> {
         let (words, main, globals) = (self.words.len(), self.main.len(), self.globals);
         let (open, current) = (self.open.clone(), self.current.clone());
@@ -402,6 +408,14 @@ impl<A: Clone> Compiler<A> {
             let text = &*token.text;
             let literal = std::mem::take(&mut self.literal);
             match Parsing::named(text) {
+                Some(Parsing::Require) => {
+                    tokens.next().ok_or_else(|| missing(token, "a path"))?;
+                    return Err(Error::new(
+                        Code::Require,
+                        "this compiler has no source loader",
+                        Some(token),
+                    ));
+                }
                 Some(Parsing::Str) => {
                     let next = tokens.next().ok_or_else(|| missing(token, "a string"))?;
                     self.code().push(Op::Push(Value::str(&*next.text)), token);

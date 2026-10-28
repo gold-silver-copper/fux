@@ -216,7 +216,7 @@ wait's own (above). CODE stays; every one fux gives
 - a program of words: `steps`, `cancelled`, `not_here`, `not_config`,
   `config`, `bad_binding`, `check`, `read`, `unset_var`, `output`, `nested`,
   `not_a_key`, `no_program`, `no_keys`, `not_a_client`;
-- the language's own: `open_quote`, `unknown_word`, `missing_token`,
+- the language's own: `require`, `open_quote`, `unknown_word`, `missing_token`,
   `bad_name`, `not_top_level`, `unmatched`, `unclosed`, `stack_underflow`,
   `stack_overflow`, `call_depth`, `type`, `div_by_zero`, `overflow`,
   `unset`, `unused`, `range`, `fail`, `too_long`, `bad_codes`, `contract`.

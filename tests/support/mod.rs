@@ -73,7 +73,7 @@ pub struct Server {
     pub dir: PathBuf,
     pub socket: PathBuf,
     child: Option<Child>,
-    /// Its clients' keys: the defaults, and what the config binds.
+    /// Prepared keys explicitly passed to the scripted clients.
     pub keymap: Keymap,
 }
 
@@ -92,8 +92,9 @@ fn output(out: std::process::Output) -> Result<Output, String> {
 }
 
 impl Server {
-    /// A server whose shell is `sh` with a plain prompt, and `config`, a
-    /// fuxth config its clients run: what it `set`s, set as it starts.
+    /// A server whose shell is `sh` with a plain prompt. Explicitly run
+    /// `config` to prepare server settings and the scripted clients' keys;
+    /// also save it for real typing terminals to load.
     pub fn start(config: &str) -> Result<Server, String> {
         Server::start_limited(config, None)
     }
@@ -185,8 +186,8 @@ impl Server {
             }
             std::thread::sleep(Duration::from_millis(10));
         }
-        // The config, as a client runs it: its settings to the server, its
-        // bindings to the keymap the scripted clients type through.
+        // Explicit fixture setup: scripted clients receive these prepared
+        // keys, rather than implicitly loading a user's config on attach.
         let socket = fux::socket::Choice::Path(server.socket.clone());
         let mut to = fux::script::Server::new(socket);
         server.keymap = fux::script::run_file(&config_path, Some(&mut to), None).map_err(e)?;

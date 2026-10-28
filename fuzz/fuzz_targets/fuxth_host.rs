@@ -54,7 +54,8 @@ pub const LIMITS: Limits = Limits {
 /// Steps a run may take in all.
 pub const STEPS: u64 = 100_000;
 
-/// `text` compiled after the standard library.
+/// `text` compiled after the standard library. No filesystem loader is
+/// supplied: `require` is refused, so fuzz input never opens a path.
 pub fn compile(text: &str) -> Result<fuxth::Program<Nothing>, Error> {
     let mut compiler = READY.with(Clone::clone)?;
     compiler.add(&token::source("fuzz", text)?)?;

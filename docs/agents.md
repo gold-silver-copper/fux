@@ -332,6 +332,13 @@ str make arg run`.
 
 ## programs: A program
 
+Use `require profiles/agent.fux` to explicitly load shared definitions or
+policy before the whole program is checked. Paths are literal, relative to
+the requiring file or the invocation cwd for command-line/stdin roots.
+Canonical paths load once; cycles fail. No user config is imported implicitly
+by a CLI program. The source graph is capped at 16 MiB, 256 files, 32 require
+levels and 1,000,000 tokens; only regular files are admitted.
+
 A file of fuxth runs with `fux --file FILE ARGS…` (or `fux -` from stdin;
 a script may start `#!/usr/bin/env -S fux --file`), and keeps its names
 between steps:

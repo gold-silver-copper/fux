@@ -1,8 +1,101 @@
-//! The config: a fuxth file each client runs as it attaches. Its `set`s go
+//! The config: a fuxth file a typing terminal runs as it attaches. Its `set`s go
 //! to the server, its `prefix`, `bind` and `unbind` make the client's keys;
 //! a bad one is reported.
 mod support;
 use support::*;
+
+/// Ambient config is for a typing terminal, including when a terminal is
+/// available to a watcher or a headless invocation.
+#[test]
+fn only_a_typing_terminal_loads_the_user_config() -> Outcome {
+    let server = Server::start("")?;
+    std::fs::write(
+        server.dir.join("config/fux/config.fux"),
+        "str wait-seconds 0 set\nstr C-a prefix\n",
+    )
+    .map_err(e)?;
+    // With the bundled wait, this waits for the child's output/exit. A
+    // leaked wait=0 instead answers timeout before the child writes.
+    let waiting = [
+        "opts",
+        "str",
+        "main",
+        "in",
+        "80",
+        "24",
+        "size",
+        "str",
+        "/bin/sh",
+        "program",
+        "str",
+        "-c",
+        "arg",
+        "str",
+        "sleep 1; echo observed",
+        "arg",
+        "run",
+        "wait",
+    ];
+    // Exercise start on a fresh socket: an already running server would
+    // bypass the old startup config path. Clean up even on a refusal.
+    let socket = server.dir.join("started/fux.sock");
+    let socket = socket.to_str().ok_or("a text socket path")?;
+    let env = [("FUX_SOCKET", socket)];
+    let started = (|| {
+        let out = server.fux_env(&["start"], &env)?;
+        if out.status != 0 || !out.stderr.is_empty() {
+            return Err(format!("start: {}", out.stderr));
+        }
+        let out = server.fux_env(&waiting, &env)?;
+        if out.status != 0 {
+            return Err(format!("start loaded the config: {}", out.stderr));
+        }
+        Ok(())
+    })();
+    let _ = server.fux_env(&["force-kill-server"], &env);
+    started?;
+    assert!(server.ok(&["list-keys"])?.contains("str C-b prefix"));
+    for args in [
+        &["opts", "watch", "attach"][..],
+        &["opts", "80", "10", "size", "attach"],
+        &["opts", "80", "10", "size", "watch", "attach"],
+    ] {
+        let mut terminal = Terminal::attach(&server, 10, 80, args)?;
+        let mut id = String::new();
+        eventually("the attached client", || {
+            id = server
+                .ok(&["ls"])?
+                .lines()
+                .find_map(|line| line.strip_prefix("client "))
+                .and_then(|line| line.split_whitespace().next())
+                .unwrap_or_default()
+                .to_owned();
+            Ok(!id.is_empty())
+        })?;
+        let out = server.fux(&waiting)?;
+        assert_eq!(out.status, 0, "{args:?}: {}", out.stderr);
+        // Bundled C-b d works even though the user's prefix is C-a.
+        server.ok(&[
+            "str",
+            &id,
+            "client",
+            "str",
+            "C-b",
+            "key",
+            "str",
+            "d",
+            "key",
+            "send-keys",
+        ])?;
+        terminal.wait_exit()?;
+    }
+    let mut terminal = Terminal::attach(&server, 10, 80, &[])?;
+    terminal.wait_for("$")?;
+    assert_eq!(server.fux(&waiting)?.status, 124);
+    terminal.type_bytes(b"\x01d")?;
+    terminal.wait_exit()?;
+    Ok(())
+}
 
 #[test]
 fn the_config_sets_the_prefix_and_bindings() -> Outcome {
@@ -53,7 +146,7 @@ fn the_config_sets_the_prefix_and_bindings() -> Outcome {
     Ok(())
 }
 
-/// A config's `set`s reach the server as it starts; `set` from the command
+/// Explicit fixture settings reach the server; `set` from the command
 /// line changes a running one; bad values are refused.
 #[test]
 fn settings_reach_the_server() -> Outcome {
@@ -214,28 +307,38 @@ fn optional_config_reports_read_failures() -> Outcome {
     let server = Server::start("")?;
     let path = server.dir.join("config/fux/config.fux");
     std::fs::remove_file(&path).map_err(e)?;
-    assert!(server.ok(&["list-keys"])?.contains("prefix"));
-    std::os::unix::fs::symlink("gone", &path).map_err(e)?;
-    let broken = server.fux(&["list-keys"])?;
-    assert_eq!(broken.status, 1);
-    assert!(broken.stderr.contains("config.fux"), "{}", broken.stderr);
-    std::fs::remove_file(&path).map_err(e)?;
-    std::os::unix::fs::symlink("config.fux", &path).map_err(e)?;
-    let looping = server.fux(&["list-keys"])?;
-    assert_eq!(looping.status, 1);
-    assert!(looping.stderr.contains("config.fux"), "{}", looping.stderr);
     let mut terminal = Terminal::attach(&server, 10, 80, &[])?;
-    terminal.wait_for("read:")?;
+    terminal.wait_for("$")?;
     terminal.type_bytes(b"\x02")?;
     terminal.wait_for("Commands")?;
+    assert!(!String::from_utf8_lossy(&terminal.output).contains("read:"));
     terminal.type_bytes(b"d")?;
     terminal.wait_exit()?;
-    std::fs::remove_file(&path).map_err(e)?;
-    std::fs::create_dir(&path).map_err(e)?;
-    assert_eq!(server.fux(&["list-keys"])?.status, 1);
-    std::fs::remove_dir(&path).map_err(e)?;
-    std::fs::write(&path, [0xff]).map_err(e)?;
-    assert!(server.fux(&["list-keys"])?.stderr.contains("not UTF-8"));
+    // Every read failure remains visible to a typing terminal; ordinary
+    // CLI commands never inspect the optional config.
+    for kind in ["broken", "loop", "directory", "non-text"] {
+        match kind {
+            "broken" => std::os::unix::fs::symlink("gone", &path).map_err(e)?,
+            "loop" => std::os::unix::fs::symlink("config.fux", &path).map_err(e)?,
+            "directory" => std::fs::create_dir(&path).map_err(e)?,
+            _ => std::fs::write(&path, [0xff]).map_err(e)?,
+        }
+        assert!(server.ok(&["list-keys"])?.contains("prefix"));
+        let mut terminal = Terminal::attach(&server, 10, 80, &[])?;
+        terminal.wait_for("read:")?;
+        if kind == "non-text" {
+            terminal.wait_for("not UTF-8")?;
+        }
+        terminal.type_bytes(b"\x02")?;
+        terminal.wait_for("Commands")?;
+        terminal.type_bytes(b"d")?;
+        terminal.wait_exit()?;
+        if kind == "directory" {
+            std::fs::remove_dir(&path).map_err(e)?;
+        } else {
+            std::fs::remove_file(&path).map_err(e)?;
+        }
+    }
     Ok(())
 }
 
