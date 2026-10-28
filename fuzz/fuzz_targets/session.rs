@@ -197,6 +197,7 @@ struct Keys {
 /// One session, its clients' keys, and what drove it that the checks need.
 struct Run {
     s: Session,
+    now: std::time::Instant,
     /// Shared bindings; presentation comes from the addressed client's view.
     keymap: ClientState,
     keys: BTreeMap<ClientId, Keys>,
@@ -213,11 +214,12 @@ fn defaults() -> &'static ClientState {
 }
 
 impl Run {
-    fn new(rows: u16, cols: u16, run: fux::command::Run) -> Run {
+    fn new(rows: u16, cols: u16, run: fux::command::Run, now: std::time::Instant) -> Run {
         let s = Session::new("/nonexistent/fux.sock".into(), false, run);
         // The client attaching starts its first shell, on its screen.
         let mut run = Run {
             s,
+            now,
             keymap: defaults().clone(),
             keys: BTreeMap::new(),
             grids: BTreeMap::new(),
@@ -242,6 +244,7 @@ impl Run {
                     }),
                     ..fux::protocol::Attach::of(size, defaults().preferences.presentation())
                 },
+                self.now,
             )
         {
             self.keys.insert(id, Keys::default());
@@ -249,7 +252,7 @@ impl Run {
     }
 
     fn detach(&mut self, client: ClientId) {
-        self.s.detach(client);
+        self.s.detach(client, self.now);
         self.keys.remove(&client);
     }
 
@@ -402,7 +405,8 @@ impl Run {
             }
         };
         if let Some((text, error)) = notice {
-            self.s.acts(client, vec![Act::Notice { text, error }]);
+            self.s
+                .acts(client, vec![Act::Notice { text, error }], self.now);
         }
     }
 
@@ -412,7 +416,7 @@ impl Run {
         if let Some(keys) = self.keys.get_mut(&client) {
             acts.extend(keys.screen.open(screen, &self.keymap.keys.modes));
         }
-        self.s.acts(client, acts);
+        self.s.acts(client, acts, self.now);
     }
 
     /// What the server does after every event: settle, then act on the
@@ -421,7 +425,7 @@ impl Run {
         // What the clients do with what they were sent can send more: a
         // few rounds, the rest left for the next event.
         for _ in 0..4 {
-            self.s.settle();
+            self.s.settle(self.now);
             let outbox = std::mem::take(&mut self.s.outbox);
             if outbox.is_empty() {
                 break;
@@ -581,7 +585,7 @@ impl Run {
     fn effects(&mut self, client: ClientId, effects: Vec<Dispatch>) {
         for effect in effects {
             match effect {
-                Dispatch::Send(act) => self.s.acts(client, vec![act]),
+                Dispatch::Send(act) => self.s.acts(client, vec![act], self.now),
                 Dispatch::Run(job) => self.run_as(client, &job),
                 Dispatch::Fence => {}
             }
@@ -625,7 +629,7 @@ impl Run {
                         "{} sent on in a repeat mode",
                         stroke.press
                     );
-                    self.s.acts(client, vec![act]);
+                    self.s.acts(client, vec![act], self.now);
                 }
                 Dispatch::Fence => {}
                 Dispatch::Run(job) => {
@@ -787,8 +791,9 @@ fuzz_target!(|data: &[u8]| {
     // one at a time. However the bytes arrive, the same result.
     // One server run for both: what they list (`ls`'s cursor) names it.
     let run = fux::command::Run::now().expect("a clock after 1970");
-    let mut given = Run::new(rows, cols, run);
-    let mut bytewise = Run::new(rows, cols, run);
+    let now = std::time::Instant::now();
+    let mut given = Run::new(rows, cols, run, now);
+    let mut bytewise = Run::new(rows, cols, run, now);
     check(&given);
     while !input.0.is_empty() && !given.shut {
         let tag = input.next();
@@ -797,8 +802,8 @@ fuzz_target!(|data: &[u8]| {
                 let pick = input.next();
                 let mode = MOUSE_MODES[usize::from(input.next()) % MOUSE_MODES.len()];
                 if let Some(p) = given.pane(pick) {
-                    given.s.output(p, mode);
-                    bytewise.s.output(p, mode);
+                    given.s.output(p, mode, now);
+                    bytewise.s.output(p, mode, now);
                 }
             }
             17 => {
@@ -834,8 +839,8 @@ fuzz_target!(|data: &[u8]| {
             9 => {
                 let (pick, (rows, cols)) = (input.next(), size(input.next(), input.next()));
                 if let Some(c) = given.client(pick) {
-                    let given_resized = given.s.resize(c, rows, cols).is_ok();
-                    let bytewise_resized = bytewise.s.resize(c, rows, cols).is_ok();
+                    let given_resized = given.s.resize(c, rows, cols, now).is_ok();
+                    let bytewise_resized = bytewise.s.resize(c, rows, cols, now).is_ok();
                     assert_eq!(given_resized, bytewise_resized);
                 }
             }
@@ -860,15 +865,15 @@ fuzz_target!(|data: &[u8]| {
                 let len = 1 + usize::from(input.next() % 64);
                 let bytes = input.take(len);
                 if let Some(p) = given.pane(pick) {
-                    given.s.output(p, bytes);
-                    bytewise.s.output(p, bytes);
+                    given.s.output(p, bytes, now);
+                    bytewise.s.output(p, bytes, now);
                 }
             }
             _ => {
                 let pick = input.next();
                 if let Some(p) = given.pane(pick) {
-                    given.s.exited(p, fux::process::Ended::Exited(0));
-                    bytewise.s.exited(p, fux::process::Ended::Exited(0));
+                    given.s.exited(p, fux::process::Ended::Exited(0), now);
+                    bytewise.s.exited(p, fux::process::Ended::Exited(0), now);
                 }
             }
         }

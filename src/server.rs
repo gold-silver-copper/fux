@@ -318,8 +318,7 @@ fn write_out(fd: impl std::os::fd::AsFd, out: &mut ByteQueue) -> bool {
 }
 
 impl Attached {
-    fn new(client: ClientId) -> Attached {
-        let now = Instant::now();
+    fn new(client: ClientId, now: Instant) -> Attached {
         Attached {
             client,
             processed: 0,
@@ -339,9 +338,9 @@ impl Attached {
 
     /// Actions from the client, to the session: a key's pane, the client's
     /// focus, is the one whose echo is painted at once.
-    fn act(&mut self, session: &mut Session, act: crate::act::Act) {
+    fn act(&mut self, session: &mut Session, act: crate::act::Act, now: Instant) {
         let typed = matches!(act, crate::act::Act::Key(_) | crate::act::Act::Paste(_));
-        session.acts(self.client, vec![act]);
+        session.acts(self.client, vec![act], now);
         if typed {
             self.clock.echo = session.focused(self.client);
         }
@@ -413,12 +412,12 @@ impl Conn {
     /// Moves the connection on to `next`. One that was attached has its
     /// client detached and its terminal given its own cursor shape and
     /// configured colour back; one that is dead stays so.
-    fn enter(&mut self, session: &mut Session, next: Stage) {
+    fn enter(&mut self, session: &mut Session, next: Stage, now: Instant) {
         if matches!(self.stage, Stage::Dead) {
             return;
         }
         if let Stage::Attached(attached) = mem::replace(&mut self.stage, next) {
-            session.detach(attached.client);
+            session.detach(attached.client, now);
             // Cursor overrides are given back as the terminal's own;
             // one never set is left as it was.
             let mut cursor = Vec::new();
@@ -433,31 +432,31 @@ impl Conn {
 
     /// Encodes a frame straight into the output; a connection whose frame
     /// cannot be encoded fails.
-    fn send<'a>(&mut self, session: &mut Session, frame: &impl Frame<'a>) {
+    fn send<'a>(&mut self, session: &mut Session, frame: &impl Frame<'a>, now: Instant) {
         if self.out.push_with(|out| frame.encode_into(out)).is_err() {
-            self.enter(session, Stage::Dead);
+            self.enter(session, Stage::Dead, now);
         }
     }
 
     /// Its client attaches as `attach` says: it is told its id before
     /// anything is painted; or why it cannot attach.
-    fn attach(&mut self, session: &mut Session, kind: ClientKind, attach: Attach) {
-        match session.attach_as(kind, attach) {
+    fn attach(&mut self, session: &mut Session, kind: ClientKind, attach: Attach, now: Instant) {
+        match session.attach_as(kind, attach, now) {
             Ok(client) => {
-                let attached = Attached::new(client);
-                self.enter(session, Stage::Attached(Box::new(attached)));
-                self.send(session, &ToAttached::Welcome(client, session.run));
+                let attached = Attached::new(client, now);
+                self.enter(session, Stage::Attached(Box::new(attached)), now);
+                self.send(session, &ToAttached::Welcome(client, session.run), now);
             }
             Err(crate::session::Error::NeedsInitial) => {
-                self.end(session, &ToAttached::NeedsInitial)
+                self.end(session, &ToAttached::NeedsInitial, now)
             }
-            Err(error) => self.end(session, &ToAttached::Exit(&error.to_string())),
+            Err(error) => self.end(session, &ToAttached::Exit(&error.to_string()), now),
         }
     }
 
     /// Answers a request with its outcome, encoded once and sent in pieces
     /// as long as fit, then their end; and takes the next.
-    fn answer(&mut self, session: &mut Session, mut reply: Reply) {
+    fn answer(&mut self, session: &mut Session, mut reply: Reply, now: Instant) {
         reply.run = Some(session.run);
         const REFUSED: &str = "finite reply exceeds its byte or allocation limit";
         // Keep the fixed failure frame available before trying the reply.
@@ -466,11 +465,11 @@ impl Conn {
             .push_with(|out| out.try_reserve_exact(REFUSED.len().saturating_add(5)))
             .is_err()
         {
-            self.enter(session, Stage::Dead);
+            self.enter(session, Stage::Dead, now);
             return;
         }
         let Ok(bytes) = crate::wire::encode(&reply) else {
-            self.end(session, &ToCommand::Exit(REFUSED));
+            self.end(session, &ToCommand::Exit(REFUSED), now);
             return;
         };
         // Include every Part header and PartsEnd, before queuing any of it.
@@ -485,35 +484,35 @@ impl Conn {
         if queued
             .is_none_or(|n| n > crate::wire::MAX_REPLY.saturating_add(crate::protocol::MAX_FRAME))
         {
-            self.end(session, &ToCommand::Exit(REFUSED));
+            self.end(session, &ToCommand::Exit(REFUSED), now);
             return;
         }
         let reserve = headers
             .and_then(|n| n.checked_add(bytes.len()))
             .and_then(|n| n.checked_add(5));
         if reserve.is_none_or(|n| self.out.push_with(|out| out.try_reserve_exact(n)).is_err()) {
-            self.end(session, &ToCommand::Exit(REFUSED));
+            self.end(session, &ToCommand::Exit(REFUSED), now);
             return;
         }
         split_into(&bytes, ToCommand::Part, &mut self.out);
-        self.send(session, &ToCommand::PartsEnd);
+        self.send(session, &ToCommand::PartsEnd, now);
         if self.stage.asked() {
-            self.enter(session, Stage::Command);
+            self.enter(session, Stage::Command, now);
         }
     }
 
     /// Ends a stream of events so: its last line, then its reply.
-    fn ends(&mut self, session: &mut Session, ending: &Ending) {
+    fn ends(&mut self, session: &mut Session, ending: &Ending, now: Instant) {
         let line = ending.line();
         split_into(line.as_bytes(), ToCommand::Stdout, &mut self.out);
-        self.answer(session, ending.reply());
+        self.answer(session, ending.reply(), now);
     }
 
     /// Sends the connection's last frame, its client detached and its
     /// terminal given back first: it closes once what waits is sent.
-    fn end<'a>(&mut self, session: &mut Session, frame: &impl Frame<'a>) {
-        self.enter(session, Stage::Closing);
-        self.send(session, frame);
+    fn end<'a>(&mut self, session: &mut Session, frame: &impl Frame<'a>, now: Instant) {
+        self.enter(session, Stage::Closing, now);
+        self.send(session, frame, now);
     }
 
     /// Sends the client attached here `frame`, an `Exit` as its last
@@ -524,6 +523,7 @@ impl Conn {
         session: &mut Session,
         frame: &ToAttached,
         theirs: Option<Theirs>,
+        now: Instant,
     ) -> Result<(), Refused> {
         let Some(client) = self.attached().map(|a| a.client) else {
             return Ok(());
@@ -541,29 +541,29 @@ impl Conn {
             None if waiting >= TALK_MAX && !matches!(frame, ToAttached::Exit(_)) => {
                 log!("{client} detached: {waiting} bytes waited unwritten for it");
                 let why = format!("detached: {waiting} bytes waited unwritten for this terminal");
-                self.end(session, &ToAttached::Exit(&why));
+                self.end(session, &ToAttached::Exit(&why), now);
                 return Ok(());
             }
             Some(_) | None => {}
         }
         match frame {
             ToAttached::Paint(bytes) => Attached::paint(&mut self.out, bytes),
-            ToAttached::Exit(_) => self.end(session, frame),
+            ToAttached::Exit(_) => self.end(session, frame, now),
             ToAttached::NeedsInitial
             | ToAttached::Welcome(..)
             | ToAttached::Ended(_)
             | ToAttached::Run(_)
-            | ToAttached::Keys(_) => self.send(session, frame),
+            | ToAttached::Keys(_) => self.send(session, frame, now),
         }
         Ok(())
     }
 
     /// Writes what waits for the client until it is all written or the
     /// socket takes no more; a connection that fails is dead.
-    fn flush(&mut self, session: &mut Session) {
+    fn flush(&mut self, session: &mut Session, now: Instant) {
         let before = self.out.len();
         if !write_out(&self.stream, &mut self.out) {
-            self.enter(session, Stage::Dead);
+            self.enter(session, Stage::Dead, now);
         }
         let written = before.saturating_sub(self.out.len());
         let (ahead, paint) = self.paint;
@@ -707,7 +707,7 @@ impl Server {
             // What the last round read or changed may be what a wait waits
             // for, or an event to tell.
             self.answer_waits(now);
-            self.tell_events(false);
+            self.tell_events(false, now);
             // Input given to panes since the last poll is written now rather
             // than when the next poll says their terminals can take it.
             let mut wrote = false;
@@ -719,7 +719,7 @@ impl Server {
             // Each change settles as it is made; this catches output that
             // dropped rows a copy mode held.
             self.session.hold_copies();
-            self.deliver();
+            self.deliver(now);
             if matches!(self.phase, Phase::Stopping(_))
                 && self.session.dying.is_empty()
                 && self.killed.is_empty()
@@ -733,18 +733,19 @@ impl Server {
             let mut ready = mem::take(&mut self.ready);
             self.poll(timeout, &mut ready);
             for &(slot, flags) in &ready {
+                let now = Instant::now();
                 match slot {
-                    Slot::Listener => self.accept(),
+                    Slot::Listener => self.accept(now),
                     Slot::Children => {
                         crate::drain(self.children.reader());
-                        self.reap();
+                        self.reap(now);
                     }
                     Slot::Stops => {
                         crate::drain(self.stops.reader());
-                        self.stop("stopped by a signal".into());
+                        self.stop("stopped by a signal".into(), now);
                     }
-                    Slot::Conn(i) => self.serve_conn(i, flags),
-                    Slot::Pane(id) => self.serve_pane(id, flags),
+                    Slot::Conn(i) => self.serve_conn(i, flags, now),
+                    Slot::Pane(id) => self.serve_pane(id, flags, now),
                 }
             }
             self.ready = ready;
@@ -780,7 +781,7 @@ impl Server {
     /// once the server has stopped.
     fn wake(&mut self, wake: Wake, now: Instant) -> ControlFlow<()> {
         match wake {
-            Wake::Session(timer) => self.session.fire(timer),
+            Wake::Session(timer) => self.session.fire(timer, now),
             Wake::Grace => {
                 let (due, dying) = mem::take(&mut self.session.dying)
                     .into_iter()
@@ -799,7 +800,7 @@ impl Server {
             }
             Wake::Paint(index) => {
                 self.session.hold_copies();
-                self.deliver();
+                self.deliver(now);
                 self.paint(index, now);
             }
             // The loop answers waits after every wake: these only set when
@@ -816,7 +817,7 @@ impl Server {
                 continue;
             };
             if let Some(outcome) = waiting.answer(&self.session, now) {
-                conn.answer(&mut self.session, outcome);
+                conn.answer(&mut self.session, outcome, now);
             }
         }
     }
@@ -825,7 +826,7 @@ impl Server {
     /// read, as far as its output has room (`all`: room or none): a reader
     /// too slow is told the rest as it catches up, or how much of it the
     /// journal let go.
-    fn tell_events(&mut self, all: bool) {
+    fn tell_events(&mut self, all: bool, now: Instant) {
         for conn in &mut self.conns {
             let Stage::Events(subscription) = &mut conn.stage else {
                 continue;
@@ -839,7 +840,7 @@ impl Server {
             let (lines, gone) = subscription.told(session.parts.journal(), room, holder);
             split_into(lines.as_bytes(), ToCommand::Stdout, &mut conn.out);
             if let Some(ending) = gone {
-                conn.ends(&mut self.session, &ending);
+                conn.ends(&mut self.session, &ending, now);
             }
         }
     }
@@ -942,34 +943,34 @@ impl Server {
     }
 
     /// Stops the server, saying why.
-    fn stop(&mut self, reason: String) {
+    fn stop(&mut self, reason: String, now: Instant) {
         if let Phase::Stopping(_) = self.phase {
             return;
         }
         log!("{reason}");
         // The sockets go first: from now on a client finds no server.
-        self.phase = Phase::Stopping(after(Instant::now(), STOP_WAIT));
+        self.phase = Phase::Stopping(after(now, STOP_WAIT));
         // A stream is told all the journal holds for it, and says why it
         // ends, as one of its lines, and ends as a command that is done.
-        self.tell_events(true);
+        self.tell_events(true, now);
         for conn in &mut self.conns {
             if let Stage::Events(_) = &conn.stage {
-                conn.ends(&mut self.session, &Ending::Stopped(reason.clone()));
+                conn.ends(&mut self.session, &Ending::Stopped(reason.clone()), now);
             }
         }
-        self.session.shutdown();
+        self.session.shutdown(now);
         // Every connection still open ends, so no command runs on what is
         // left of the session.
         let exit = format!("the fux server stopped: {reason}");
         for conn in &mut self.conns {
             let session = &mut self.session;
             match conn.stage {
-                Stage::Hello => conn.end(session, &Greeting::Exit(&exit)),
+                Stage::Hello => conn.end(session, &Greeting::Exit(&exit), now),
                 Stage::Attaching(_) | Stage::Attached(_) => {
-                    conn.end(session, &ToAttached::Exit(&exit));
+                    conn.end(session, &ToAttached::Exit(&exit), now);
                 }
                 Stage::Command | Stage::Blocked(_) | Stage::Waiting(_) | Stage::Events(_) => {
-                    conn.end(session, &ToCommand::Exit(&exit));
+                    conn.end(session, &ToCommand::Exit(&exit), now);
                 }
                 Stage::Closing | Stage::Dead => {}
             }
@@ -978,8 +979,8 @@ impl Server {
 
     /// Does what the session asks outside itself: sends its frames,
     /// telling each client what it was refused, then stops if it asks.
-    fn deliver(&mut self) {
-        for refused in self.send_frames() {
+    fn deliver(&mut self, now: Instant) {
+        for refused in self.send_frames(now) {
             (self.session).notify_to(refused.client, refused.to_string(), true);
         }
         let (stops, rest) = (mem::take(&mut self.session.outbox).into_iter())
@@ -987,7 +988,7 @@ impl Server {
         self.session.outbox = rest;
         for stop in stops {
             if let Outgoing::Shutdown(reason) = stop {
-                self.stop(reason);
+                self.stop(reason, now);
             }
         }
     }
@@ -995,7 +996,7 @@ impl Server {
     /// Sends the clients the frames the session has for them, and says
     /// what it could not send one too far behind. A stop it asks for
     /// stays, for `deliver`: the answer that asked for it goes first.
-    fn send_frames(&mut self) -> Vec<Refused> {
+    fn send_frames(&mut self, now: Instant) -> Vec<Refused> {
         let mut refused = Vec::new();
         for outgoing in mem::take(&mut self.session.outbox) {
             let (client, frame, theirs) = match outgoing {
@@ -1020,7 +1021,7 @@ impl Server {
                 }
             };
             if let Some(conn) = self.conns.iter_mut().find(|c| c.serves(client))
-                && let Err(no) = conn.tell(&mut self.session, &frame, theirs)
+                && let Err(no) = conn.tell(&mut self.session, &frame, theirs, now)
             {
                 refused.push(no);
             }
@@ -1061,6 +1062,7 @@ impl Server {
             conn.end(
                 session,
                 &ToAttached::Exit(&format!("rendering {client}: {error}")),
+                now,
             );
             return;
         }
@@ -1112,7 +1114,7 @@ impl Server {
             // Written now rather than when the next poll says it can be: a
             // keystroke's echo goes out a round sooner.
             let before = conn.out.len();
-            conn.flush(session);
+            conn.flush(session, now);
             written = before.saturating_sub(conn.out.len());
         }
         let Stage::Attached(attached) = &mut conn.stage else {
@@ -1148,7 +1150,7 @@ impl Server {
 
     /// Accepts the connections waiting on the server's socket, `ACCEPTS`
     /// at most.
-    fn accept(&mut self) {
+    fn accept(&mut self, now: Instant) {
         for _ in 0..ACCEPTS {
             let Some(Listening { listener, .. }) = self.listening() else {
                 return;
@@ -1170,7 +1172,6 @@ impl Server {
                     // Out of descriptors, or something else that persists.
                     // The listener stays readable, so it rests rather than
                     // being polled again at once.
-                    let now = Instant::now();
                     if let Phase::Serving { resting, .. } = &mut self.phase {
                         *resting = Some(after(now, ACCEPT_REST));
                     }
@@ -1209,7 +1210,7 @@ impl Server {
     }
 
     /// A client's connection is ready, as `poll` found it (`flags`).
-    fn serve_conn(&mut self, index: usize, flags: PollFlags) {
+    fn serve_conn(&mut self, index: usize, flags: PollFlags, now: Instant) {
         let Some(conn) = self.conns.get_mut(index) else {
             return;
         };
@@ -1221,15 +1222,15 @@ impl Server {
         // written takes what it sent first; one that is still not read,
         // with nothing to write, is dead.
         if flags.intersects(PollFlags::OUT) || (gone && !reads) {
-            conn.flush(&mut self.session);
+            conn.flush(&mut self.session, now);
         }
         if gone && !conn.reads() && conn.out.is_empty() {
-            conn.enter(&mut self.session, Stage::Dead);
+            conn.enter(&mut self.session, Stage::Dead, now);
         }
         // A command client whose answer is now written: its next request
         // may already wait, read before.
         if flags.intersects(PollFlags::IN) || gone || (!reads && conn.reads()) {
-            self.read_conn(index);
+            self.read_conn(index, now);
         }
         let eligible = self.conns.get(index).is_some_and(|conn| {
             matches!(&conn.stage, Stage::Blocked(asked) if !matches!(self.unprocessed(asked), Some(1..)))
@@ -1237,7 +1238,7 @@ impl Server {
         if eligible && let Some(conn) = self.conns.get_mut(index) {
             let stage = mem::replace(&mut conn.stage, Stage::Command);
             if let Stage::Blocked(asked) = stage {
-                self.ordered_request(index, *asked);
+                self.ordered_request(index, *asked, now);
             }
         }
     }
@@ -1246,7 +1247,7 @@ impl Server {
     /// has sent no more, or `CONN_READ` bytes, or `CONN_FRAMES` frames are
     /// handled, or a bad one, or it is to be read no more (`Conn::reads`);
     /// each whole frame is handled in order, and nothing after a bad one.
-    fn read_conn(&mut self, index: usize) {
+    fn read_conn(&mut self, index: usize, now: Instant) {
         let Some(conn) = self.conns.get_mut(index) else {
             return;
         };
@@ -1255,7 +1256,7 @@ impl Server {
         let (mut frames, mut read) = (0usize, 0usize);
         let closed = 'read: loop {
             while frames < CONN_FRAMES {
-                match self.take_frame(index, &mut decoder) {
+                match self.take_frame(index, &mut decoder, now) {
                     Ok(true) => frames = frames.saturating_add(1),
                     Ok(false) => break,
                     Err(error) => {
@@ -1293,7 +1294,7 @@ impl Server {
                 } else {
                     Stage::Dead
                 };
-                conn.enter(&mut self.session, next);
+                conn.enter(&mut self.session, next, now);
             }
         }
     }
@@ -1305,6 +1306,7 @@ impl Server {
         &mut self,
         index: usize,
         decoder: &mut Decoder,
+        now: Instant,
     ) -> Result<bool, crate::protocol::Error> {
         let session = &mut self.session;
         let Some(conn) = self.conns.get_mut(index) else {
@@ -1317,33 +1319,33 @@ impl Server {
                 };
                 let ours = Hello::ours(hello.role);
                 let between = Mismatch::between(&hello, &ours);
-                conn.send(session, &Greeting::Hello(ours));
+                conn.send(session, &Greeting::Hello(ours), now);
                 match (between, hello.role) {
                     (Err(mismatch), _) => {
-                        conn.end(session, &Greeting::Exit(&mismatch.to_string()));
+                        conn.end(session, &Greeting::Exit(&mismatch.to_string()), now);
                     }
                     (Ok(()), Role::Kill) => {
-                        conn.end(session, &Greeting::Done(0));
-                        self.stop("stopped by fux force-kill-server".into());
+                        conn.end(session, &Greeting::Done(0), now);
+                        self.stop("stopped by fux force-kill-server".into(), now);
                     }
                     (Ok(()), Role::Attach) => {
-                        conn.enter(session, Stage::Attaching(ClientKind::Terminal));
+                        conn.enter(session, Stage::Attaching(ClientKind::Terminal), now);
                     }
                     (Ok(()), Role::Headless) => {
-                        conn.enter(session, Stage::Attaching(ClientKind::Headless));
+                        conn.enter(session, Stage::Attaching(ClientKind::Headless), now);
                     }
-                    (Ok(()), Role::Command) => conn.enter(session, Stage::Command),
+                    (Ok(()), Role::Command) => conn.enter(session, Stage::Command, now),
                 }
             }
             &mut Stage::Attaching(kind) => {
                 let Some(attach) = decoder.frame::<Attach>()? else {
                     return Ok(false);
                 };
-                conn.attach(session, kind, attach);
+                conn.attach(session, kind, attach, now);
             }
             Stage::Attached(attached) => {
                 match decoder.frame()? {
-                    Some(AttachedFrame::Act(act)) => attached.act(session, *act),
+                    Some(AttachedFrame::Act(act)) => attached.act(session, *act, now),
                     // The client's terminal was resized, which may have moved
                     // what it shows even if the size it ends at is the same:
                     // forgotten, it is repainted in full either way, and its
@@ -1351,19 +1353,26 @@ impl Server {
                     Some(AttachedFrame::Resize(size)) => {
                         attached.known = false;
                         session.terminal_resized(attached.client);
-                        let resized = session.resize(attached.client, size.rows(), size.cols());
+                        let resized =
+                            session.resize(attached.client, size.rows(), size.cols(), now);
                         if let Err(refused) = resized {
                             session.notify_to(attached.client, refused.to_string(), true);
                         }
                     }
-                    Some(AttachedFrame::Detach) => conn.end(session, &ToAttached::Exit("detached")),
+                    Some(AttachedFrame::Detach) => {
+                        conn.end(session, &ToAttached::Exit("detached"), now)
+                    }
                     None => return Ok(false),
                 }
                 if let Some(attached) = conn.attached() {
                     if let Some(next) = attached.processed.checked_add(1) {
                         attached.processed = next;
                     } else {
-                        conn.end(session, &ToAttached::Exit("attached frame count exhausted"));
+                        conn.end(
+                            session,
+                            &ToAttached::Exit("attached frame count exhausted"),
+                            now,
+                        );
                     }
                 }
             }
@@ -1373,7 +1382,7 @@ impl Server {
                 let Some(asked) = decoder.frame()? else {
                     return Ok(false);
                 };
-                self.ordered_request(index, asked);
+                self.ordered_request(index, asked, now);
             }
             // Nothing more is asked of a waiting command, or a stream. A
             // connection that is ending has had its last word: what came
@@ -1411,12 +1420,12 @@ impl Server {
 
     /// Begins only after the source's earlier attached frames were
     /// processed. No resolution, mutation or wait baseline precedes this.
-    fn ordered_request(&mut self, index: usize, asked: Asked) {
+    fn ordered_request(&mut self, index: usize, asked: Asked, now: Instant) {
         match self.unprocessed(&asked) {
-            Some(0) => self.request(index, asked.request, asked.context),
+            Some(0) => self.request(index, asked.request, asked.context, now),
             Some(_) => {
                 if let Some(conn) = self.conns.get_mut(index) {
-                    conn.enter(&mut self.session, Stage::Blocked(Box::new(asked)));
+                    conn.enter(&mut self.session, Stage::Blocked(Box::new(asked)), now);
                 }
             }
             None => {
@@ -1425,7 +1434,7 @@ impl Server {
                         Code::NoClient,
                         "the job's source is not attached in this server run",
                     );
-                    conn.answer(&mut self.session, reply);
+                    conn.answer(&mut self.session, reply, now);
                 }
             }
         }
@@ -1433,13 +1442,19 @@ impl Server {
 
     /// A request from connection `index`: answered now, or once its wait
     /// has its answer, or streamed.
-    fn request(&mut self, index: usize, request: crate::command::Request, context: Context) {
+    fn request(
+        &mut self,
+        index: usize,
+        request: crate::command::Request,
+        context: Context,
+        now: Instant,
+    ) {
         let session = &mut self.session;
         let Some(conn) = self.conns.get_mut(index) else {
             return;
         };
         if let Err(error) = session.check_run(context.of) {
-            conn.answer(session, Reply::failed(error.code(), error.to_string()));
+            conn.answer(session, Reply::failed(error.code(), error.to_string()), now);
             return;
         }
         let Context {
@@ -1462,7 +1477,7 @@ impl Server {
         let origin = match client {
             Some(c) if !session.views.contains_key(&c) => {
                 let outcome = Reply::failed(Code::NoClient, format!("no client {c}"));
-                conn.answer(session, outcome);
+                conn.answer(session, outcome, now);
                 return;
             }
             Some(client) => Origin::Client(client),
@@ -1472,10 +1487,10 @@ impl Server {
                 cwd: Some(cwd),
             }),
         };
-        let begun = session.begin(request, &origin);
+        let begun = session.begin(request, &origin, now);
         // What it sends a client goes now: a program or keys refused are
         // its answer. Nothing else sends either.
-        let refused = self.send_frames();
+        let refused = self.send_frames(now);
         let session = &mut self.session;
         let Some(conn) = self.conns.get_mut(index) else {
             return;
@@ -1483,15 +1498,17 @@ impl Server {
         let theirs = |r: &&Refused| matches!(r.theirs, Theirs::Program | Theirs::Keys);
         match begun {
             Begun::Done(outcome) => match refused.iter().find(theirs) {
-                Some(no) => conn.answer(session, Reply::failed(Code::InputFull, no.to_string())),
-                None => conn.answer(session, outcome),
+                Some(no) => {
+                    conn.answer(session, Reply::failed(Code::InputFull, no.to_string()), now)
+                }
+                None => conn.answer(session, outcome, now),
             },
-            Begun::Waiting(waiting) => conn.enter(session, Stage::Waiting(waiting)),
+            Begun::Waiting(waiting) => conn.enter(session, Stage::Waiting(waiting), now),
             Begun::Events(subscription) => {
                 // Told it is armed: from here on, nothing is missed.
                 let ready = subscription.ready();
-                conn.send(session, &ToCommand::Stdout(ready.as_bytes().into()));
-                conn.enter(session, Stage::Events(subscription));
+                conn.send(session, &ToCommand::Stdout(ready.as_bytes().into()), now);
+                conn.enter(session, Stage::Events(subscription), now);
             }
         }
         for no in refused {
@@ -1499,12 +1516,12 @@ impl Server {
         }
     }
 
-    fn serve_pane(&mut self, id: PaneId, flags: PollFlags) {
+    fn serve_pane(&mut self, id: PaneId, flags: PollFlags, now: Instant) {
         let wrote = flags.intersects(PollFlags::OUT)
             && (self.session.parts.pane_mut(id)).is_some_and(|mut p| p.write_input());
         self.wrote_input(wrote);
         if flags.intersects(PollFlags::IN | PollFlags::HUP | PollFlags::ERR) {
-            self.read_pane(id, |fd, bytes| fuxix::io::read(fd, bytes));
+            self.read_pane(id, |fd, bytes| fuxix::io::read(fd, bytes), now);
         }
     }
 
@@ -1521,6 +1538,7 @@ impl Server {
         &mut self,
         id: PaneId,
         mut read: impl FnMut(&fuxix::pty::Master, &mut [u8]) -> Result<usize, Errno>,
+        now: Instant,
     ) {
         let mut total = 0;
         let mut buffer = [0u8; 16384];
@@ -1544,13 +1562,14 @@ impl Server {
                 // EIO: the slave side is closed; the program is gone.
                 Ok(0) | Err(Errno::IO) => break true,
                 Err(error) => {
-                    self.session.read_failed(id, error);
+                    self.session.read_failed(id, error, now);
                     break false;
                 }
                 Ok(n) => {
                     // Past PANE_READ by at most one buffer, when the loop ends.
                     total = total.saturating_add(n);
-                    self.session.output(id, buffer.get(..n).unwrap_or_default());
+                    self.session
+                        .output(id, buffer.get(..n).unwrap_or_default(), now);
                     // A short read: that was all, and the poll says when
                     // there is more, without a read to find none. Full
                     // reads go on.
@@ -1561,13 +1580,12 @@ impl Server {
             }
         };
         if total > 0 {
-            let now = Instant::now();
             for attached in self.conns.iter_mut().filter_map(Conn::attached) {
                 attached.clock.output(id, now);
             }
         }
         if ended {
-            self.reap();
+            self.reap(now);
             // Hung up, unless its exit is being told (the rest of its
             // output still to read): then it exited, and did not hang up.
             if let Some(mut pane) = self.session.parts.pane_mut(id)
@@ -1581,7 +1599,7 @@ impl Server {
     /// Checks every killed program and every pane's, since signals
     /// coalesce, and reaps the orphans the server adopted, every child
     /// that is no pane's leader.
-    fn reap(&mut self) {
+    fn reap(&mut self, now: Instant) {
         self.reap_killed();
         let session = &self.session;
         let leaders: Vec<Pid> = (session.children())
@@ -1593,7 +1611,7 @@ impl Server {
             .filter_map(|(id, pane)| Some((*id, pane.process().child()?.leader.exited()?)))
             .collect();
         for (id, status) in exited {
-            self.session.exited(id, status);
+            self.session.exited(id, status, now);
         }
     }
 
@@ -1626,10 +1644,14 @@ mod tests {
     /// followed by a successful PartsEnd.
     #[test]
     fn an_oversized_reply_sends_only_a_failure() -> Result<(), Box<dyn std::error::Error>> {
-        let (mut session, mut conn, _peer) = attached()?;
+        let (mut session, mut conn, _peer) = attached(Instant::now())?;
         conn.stage = Stage::Command;
         let text: String = std::iter::repeat_n('x', crate::wire::MAX_REPLY).collect();
-        conn.answer(&mut session, crate::protocol::Body::Text(text).into());
+        conn.answer(
+            &mut session,
+            crate::protocol::Body::Text(text).into(),
+            Instant::now(),
+        );
         assert!(matches!(conn.stage, Stage::Closing));
         assert!(conn.out.len() < 256);
         let mut decoder = Decoder::default();
@@ -1644,16 +1666,16 @@ mod tests {
 
     /// A session with a client attached on a connection: the session, the
     /// connection, and the client's end of its socket.
-    fn attached() -> Result<(Session, Conn, UnixStream), String> {
+    fn attached(now: Instant) -> Result<(Session, Conn, UnixStream), String> {
         let (session, client) = crate::session::testing::attached(10, 40)?;
         let (stream, peer) = UnixStream::pair().map_err(|e| e.to_string())?;
         let mut conn = Conn::new(stream);
-        conn.stage = Stage::Attached(Box::new(Attached::new(client)));
+        conn.stage = Stage::Attached(Box::new(Attached::new(client, now)));
         Ok((session, conn, peer))
     }
 
     fn server() -> Result<(Server, UnixStream), Box<dyn std::error::Error>> {
-        let (session, conn, peer) = attached()?;
+        let (session, conn, peer) = attached(Instant::now())?;
         Ok((
             Server {
                 session,
@@ -1695,7 +1717,7 @@ mod tests {
             view.notice = None;
             view.dirty = false;
         }
-        server.read_pane(id, |_, _| Err(Errno::INVAL));
+        server.read_pane(id, |_, _| Err(Errno::INVAL), Instant::now());
         let notice = server
             .session
             .views
@@ -1708,7 +1730,9 @@ mod tests {
             .is_some_and(|view| view.dirty);
         let capture = crate::session::testing::output(&mut server.session, "%1 capture json");
         let info = crate::session::testing::output(&mut server.session, "%1 info json");
-        server.session.exited(id, crate::process::Ended::Exited(0));
+        server
+            .session
+            .exited(id, crate::process::Ended::Exited(0), Instant::now());
         server.finish();
         let notice = notice.ok_or("read failure was not delivered")?;
         assert!(
@@ -1775,7 +1799,7 @@ mod tests {
     /// listener is started; each turn is chosen by the test.
     fn ordered_fixture() -> Result<(Server, Vec<UnixStream>, ClientId), Box<dyn std::error::Error>>
     {
-        let (session, source, peer) = attached()?;
+        let (session, source, peer) = attached(Instant::now())?;
         let client = session.views.keys().next().copied().ok_or("no client")?;
         let command = || -> Result<(Conn, UnixStream), std::io::Error> {
             let (stream, peer) = UnixStream::pair()?;
@@ -1849,7 +1873,7 @@ mod tests {
                 .ok_or("worker")?
                 .decoder
                 .push(&asked.encode()?);
-            server.serve_conn(0, PollFlags::IN);
+            server.serve_conn(0, PollFlags::IN, Instant::now());
             assert!(matches!(
                 server.conns.first().map(|c| &c.stage),
                 Some(Stage::Blocked(_))
@@ -1882,14 +1906,14 @@ mod tests {
                     .ok_or("partition")?;
                 left = rest;
                 server.conns.get_mut(1).ok_or("source")?.decoder.push(chunk);
-                server.serve_conn(0, PollFlags::IN);
+                server.serve_conn(0, PollFlags::IN, Instant::now());
                 let before = server
                     .conns
                     .get_mut(1)
                     .and_then(Conn::attached)
                     .ok_or("source")?
                     .processed;
-                server.serve_conn(1, PollFlags::IN);
+                server.serve_conn(1, PollFlags::IN, Instant::now());
                 let after = server
                     .conns
                     .get_mut(1)
@@ -1902,12 +1926,12 @@ mod tests {
                     if partition == usize::MAX {
                         assert!(server.conns.get(1).ok_or("source")?.frame_waits());
                     }
-                    server.serve_conn(2, PollFlags::IN);
+                    server.serve_conn(2, PollFlags::IN, Instant::now());
                     assert!(!server.conns.get(2).ok_or("unrelated")?.out.is_empty());
                 }
             }
             while matches!(server.unprocessed(&asked), Some(1..)) {
-                server.serve_conn(0, PollFlags::IN);
+                server.serve_conn(0, PollFlags::IN, Instant::now());
                 let before = server
                     .conns
                     .get_mut(1)
@@ -1925,7 +1949,7 @@ mod tests {
                         .len()
                         <= KEYS
                 );
-                server.serve_conn(1, PollFlags::IN);
+                server.serve_conn(1, PollFlags::IN, Instant::now());
                 let after = server
                     .conns
                     .get_mut(1)
@@ -1936,7 +1960,7 @@ mod tests {
             }
             server.poll(Some(Duration::ZERO), &mut ready);
             assert!(ready.iter().any(|(slot, _)| matches!(slot, Slot::Conn(0))));
-            server.serve_conn(0, PollFlags::IN);
+            server.serve_conn(0, PollFlags::IN, Instant::now());
             let got = server
                 .session
                 .parts
@@ -1957,6 +1981,7 @@ mod tests {
         server.ordered_request(
             0,
             key_request("1-2".parse().map_err(|()| "test run")?, client, 0),
+            Instant::now(),
         );
         let conn = server.conns.first().ok_or("worker")?;
         assert!(matches!(conn.stage, Stage::Command));
@@ -1980,7 +2005,11 @@ mod tests {
     fn a_blocked_job_ends_with_its_command_or_source() -> Result<(), Box<dyn std::error::Error>> {
         for ending in ["cancel", "eof", "detach"] {
             let (mut server, peers, client) = ordered_fixture()?;
-            server.ordered_request(0, key_request(server.session.run, client, 1000));
+            server.ordered_request(
+                0,
+                key_request(server.session.run, client, 1000),
+                Instant::now(),
+            );
             assert!(matches!(
                 server.conns.first().map(|c| &c.stage),
                 Some(Stage::Blocked(_))
@@ -1990,7 +2019,7 @@ mod tests {
                     .first()
                     .ok_or("worker")?
                     .shutdown(std::net::Shutdown::Both)?;
-                server.serve_conn(0, PollFlags::IN);
+                server.serve_conn(0, PollFlags::IN, Instant::now());
                 assert!(matches!(
                     server.conns.first().map(|c| &c.stage),
                     Some(Stage::Dead)
@@ -2009,12 +2038,12 @@ mod tests {
                         .decoder
                         .push(&AttachedFrame::Detach.encode()?);
                 }
-                server.serve_conn(1, PollFlags::IN);
+                server.serve_conn(1, PollFlags::IN, Instant::now());
                 if let Some(source) = server.conns.get_mut(1) {
                     source.out = ByteQueue::default();
                 }
                 server.close_conns();
-                server.serve_conn(0, PollFlags::IN);
+                server.serve_conn(0, PollFlags::IN, Instant::now());
                 let conn = server.conns.first().ok_or("worker")?;
                 assert!(matches!(conn.stage, Stage::Command));
                 let mut decoder = Decoder::default();
@@ -2057,7 +2086,7 @@ mod tests {
     fn command_reply(server: &mut Server) -> Result<(), String> {
         while server.conns.first().ok_or("worker")?.out.is_empty() {
             command_readable(server)?;
-            server.serve_conn(0, PollFlags::IN);
+            server.serve_conn(0, PollFlags::IN, Instant::now());
             if matches!(
                 server.conns.first().ok_or("worker")?.stage,
                 Stage::Closing | Stage::Dead
@@ -2069,7 +2098,7 @@ mod tests {
             .conns
             .first_mut()
             .ok_or("worker")?
-            .flush(&mut server.session);
+            .flush(&mut server.session, Instant::now());
         Ok(())
     }
 
@@ -2196,7 +2225,7 @@ mod tests {
     /// not while its last frame is still being written.
     #[test]
     fn a_forgotten_screen_is_due_a_paint_once_the_last_is_sent() -> Result<(), String> {
-        let (mut session, mut conn, _peer) = attached()?;
+        let (mut session, mut conn, _peer) = attached(Instant::now())?;
         session.views.values_mut().for_each(|v| v.dirty = false);
         if let Some(attached) = conn.attached() {
             attached.known = true;
@@ -2217,22 +2246,24 @@ mod tests {
     #[test]
     fn a_client_behind_is_refused_what_others_send_it() -> Result<(), String> {
         // A paint, however large, is no backlog: the client is not behind.
-        let (mut session, mut conn, _peer) = attached()?;
+        let (mut session, mut conn, _peer) = attached(Instant::now())?;
         conn.out.push(&vec![0; 2 * TALK_MAX]);
         conn.paint = (0, conn.out.len());
         let bell = ToAttached::Paint(crate::outer::BELL.into());
-        assert!(conn.tell(&mut session, &bell, None).is_ok());
+        assert!(conn.tell(&mut session, &bell, None, Instant::now()).is_ok());
         assert!(matches!(conn.stage, Stage::Attached(_)), "detached");
-        let (mut session, mut conn, _peer) = attached()?;
+        let (mut session, mut conn, _peer) = attached(Instant::now())?;
         conn.out.push(&vec![0; OUT_MAX]);
         let run = ToAttached::Run("me zoom".into());
-        let refused = conn.tell(&mut session, &run, Some(Theirs::Program)).err();
+        let refused = conn
+            .tell(&mut session, &run, Some(Theirs::Program), Instant::now())
+            .err();
         assert_eq!(refused.map(|r| r.waiting), Some(OUT_MAX));
-        assert!(conn.tell(&mut session, &bell, None).is_ok());
+        assert!(conn.tell(&mut session, &bell, None, Instant::now()).is_ok());
         assert!(conn.out.len() > OUT_MAX, "the bell was sent");
         conn.out.push(&vec![0; TALK_MAX - OUT_MAX]);
         let before = conn.out.len();
-        assert!(conn.tell(&mut session, &bell, None).is_ok());
+        assert!(conn.tell(&mut session, &bell, None, Instant::now()).is_ok());
         assert!(matches!(conn.stage, Stage::Closing));
         let mut decoder = Decoder::default();
         decoder.push(conn.out.as_slice().get(before..).unwrap_or_default());
@@ -2250,11 +2281,11 @@ mod tests {
             (None, &b""[..]),
             (Some([0, 255, 0].into()), &b"\x1b]112\x1b\\"[..]),
         ] {
-            let (mut session, mut conn, _peer) = attached()?;
+            let (mut session, mut conn, _peer) = attached(Instant::now())?;
             if let Some(attached) = conn.attached() {
                 attached.shown.modes.cursor_colour = colour;
             }
-            conn.end(&mut session, &ToAttached::Exit("detached"));
+            conn.end(&mut session, &ToAttached::Exit("detached"), Instant::now());
             let (painted, exit) = sent(&conn);
             assert_eq!(painted, reset);
             assert_eq!(exit.as_deref(), Some("detached"));
@@ -2272,11 +2303,11 @@ mod tests {
             (fux_vt::CursorShape::Initial, ""),
             (fux_vt::CursorShape::SteadyBar, "\x1b[0 q\x1b[7 q"),
         ] {
-            let (mut session, mut conn, _peer) = attached()?;
+            let (mut session, mut conn, _peer) = attached(Instant::now())?;
             if let Some(attached) = conn.attached() {
                 attached.shown.modes.cursor_shape = shape;
             }
-            conn.end(&mut session, &ToAttached::Exit("detached"));
+            conn.end(&mut session, &ToAttached::Exit("detached"), Instant::now());
             let (painted, exit) = sent(&conn);
             assert_eq!(String::from_utf8_lossy(&painted), given, "{shape:?}");
             assert_eq!(exit.as_deref(), Some("detached"));

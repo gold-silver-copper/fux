@@ -172,9 +172,10 @@ pub fn pane(
     history: Option<usize>,
     view: CaptureView,
     copy_mode: bool,
+    now: Instant,
 ) -> Result<Captured, crate::session::Error> {
     let limits = Limits::new(pane.history_bytes(), pane.screen().size().into())?;
-    pane_with(pane, run, history, view, copy_mode, limits)
+    pane_with(pane, run, history, view, copy_mode, now, limits)
 }
 
 fn pane_with(
@@ -183,6 +184,7 @@ fn pane_with(
     history: Option<usize>,
     view: CaptureView,
     copy_mode: bool,
+    now: Instant,
     limits: Limits,
 ) -> Result<Captured, crate::session::Error> {
     let screen = pane.screen();
@@ -202,7 +204,7 @@ fn pane_with(
     let selection = selected_rows(read, view, limits)?;
     let read = selection.read(rows_of(screen, history, view).0);
     let mut budget = crate::wire::Budget::new();
-    let mut state = state(pane, Instant::now(), copy_mode, &mut budget)?;
+    let mut state = state(pane, now, copy_mode, &mut budget)?;
     // The history rows kept above the first row read: history it was not
     // asked for (rows a range leaves out are not counted).
     state.push(("above", above.map_or(Json::Null, Json::count)));
@@ -1046,6 +1048,7 @@ mod tests {
     use crate::id::PaneId;
     use crate::pane::tests::Lone;
     use crate::pane::{Pane, Runs};
+    use std::time::Instant;
 
     #[test]
     fn argument_observation_peak_stays_within_shared_grant()
@@ -1103,6 +1106,7 @@ mod tests {
             crate::pane::tests::shell()?,
             fux_vt::Size::new(3, 200)?,
             crate::pane::tests::options(history)?,
+            Instant::now(),
         )?);
         let output: Vec<u8> = std::iter::repeat_n(b"x\r\n".as_slice(), 150_000)
             .flatten()
@@ -1119,6 +1123,7 @@ mod tests {
             Some(usize::MAX),
             CaptureView::default(),
             false,
+            Instant::now(),
         )?;
         assert!(capture.lines.len() > 80_000);
         let full = super::pane(
@@ -1130,6 +1135,7 @@ mod tests {
                 ..CaptureView::default()
             },
             false,
+            Instant::now(),
         )?;
         assert_eq!(full.lines.len(), 100_003);
         Ok(())
@@ -1143,6 +1149,7 @@ mod tests {
             crate::pane::tests::shell()?,
             fux_vt::Size::new(3, 4)?,
             crate::pane::tests::options(1 << 20)?,
+            Instant::now(),
         )?);
         for _ in 0..10 {
             pane.output(b"x\r\n");
@@ -1158,6 +1165,7 @@ mod tests {
             None,
             view,
             false,
+            Instant::now(),
             super::Limits { cells: 2 },
         )?;
         assert_eq!(capture.text()?, "hi");
@@ -1172,6 +1180,7 @@ mod tests {
             crate::pane::tests::shell()?,
             fux_vt::Size::new(1, 200)?,
             crate::pane::tests::options(0)?,
+            Instant::now(),
         )?);
         pane.output(b"x");
         let row = pane.screen().rows().next().ok_or("row")?;
@@ -1196,6 +1205,7 @@ mod tests {
             crate::pane::tests::shell()?,
             fux_vt::Size::new(1, 2)?,
             crate::pane::tests::options(0)?,
+            Instant::now(),
         )?);
         pane.output(b"x");
         let row = pane.screen().rows().next().ok_or("row")?;
@@ -1239,6 +1249,7 @@ mod tests {
             crate::pane::tests::shell()?,
             fux_vt::Size::new(3, 80)?,
             crate::pane::tests::options(1 << 20)?,
+            Instant::now(),
         )?);
         pane.output(b"\x1b[41m \x1b[400b");
         for _ in 0..10 {
@@ -1251,6 +1262,7 @@ mod tests {
             Some(usize::MAX),
             CaptureView::default(),
             false,
+            Instant::now(),
             super::Limits { cells: 240 },
         );
         assert!(refusal.is_err());
@@ -1265,7 +1277,7 @@ mod tests {
             full: true,
             ..CaptureView::default()
         };
-        let read = super::pane(&pane, run, Some(usize::MAX), view, false)?;
+        let read = super::pane(&pane, run, Some(usize::MAX), view, false, Instant::now())?;
         assert_eq!(read.lines.len(), 1);
         assert_eq!(
             read.lines.first().and_then(|l| l.first()).map(|r| r.cells),
@@ -1303,6 +1315,7 @@ mod tests {
                 crate::pane::tests::shell()?,
                 size,
                 crate::pane::tests::options(0)?,
+                Instant::now(),
             )?);
             pane.output(output.as_bytes());
             Ok(super::pane(
@@ -1311,6 +1324,7 @@ mod tests {
                 None,
                 join,
                 false,
+                Instant::now(),
             )?
             .text()?)
         };
@@ -1337,6 +1351,7 @@ mod tests {
             crate::pane::tests::shell()?,
             size,
             crate::pane::tests::options(0)?,
+            Instant::now(),
         )?);
         pane.output(b"top\r\nabcdefghijklm\r\nend");
         let run = crate::command::Run::now().ok_or("a clock")?;
@@ -1346,7 +1361,7 @@ mod tests {
                 wrapped,
                 ..CaptureView::default()
             };
-            Ok(super::pane(&pane, run, None, view, false)?.text()?)
+            Ok(super::pane(&pane, run, None, view, false, Instant::now())?.text()?)
         };
         assert_eq!(capture((2, 2), false)?, "abcdefghijklm");
         assert_eq!(capture((0, 1), false)?, "top\nabcdefghijklm");
@@ -1372,6 +1387,7 @@ mod tests {
             crate::pane::tests::shell()?,
             size,
             crate::pane::tests::options(0)?,
+            Instant::now(),
         )?);
         // 世 at col 4 does not fit and wraps on, leaving the spacer there.
         pane.output("abcd\x1b[5G世".as_bytes());
@@ -1381,6 +1397,7 @@ mod tests {
             None,
             view,
             false,
+            Instant::now(),
         )?
         .text()?;
         assert_eq!(text.lines().next(), Some("abc世"));
@@ -1397,6 +1414,7 @@ mod tests {
             crate::pane::tests::shell()?,
             fux_vt::Size::new(5, 5)?,
             crate::pane::tests::options(0)?,
+            Instant::now(),
         )?);
         pane.output(
             "\x1b[31mabcde世\x1b[m\r\nx\x1b[4m  \x1b[m\r\ny\x1b[41m  \x1b[31;49m  \x1b[m"
@@ -1411,7 +1429,7 @@ mod tests {
                 wrapped: flags & 8 != 0,
                 ..CaptureView::default()
             };
-            let got = super::pane(&pane, run, None, view, false)?;
+            let got = super::pane(&pane, run, None, view, false, Instant::now())?;
             let actual: Vec<(String, u32)> = got
                 .lines
                 .iter()
@@ -1480,6 +1498,7 @@ mod tests {
             crate::pane::tests::shell()?,
             fux_vt::Size::new(2, 10)?,
             crate::pane::tests::options(0)?,
+            Instant::now(),
         )?);
         pane.output("x\u{0600}  ".as_bytes());
         let got = super::pane(
@@ -1488,6 +1507,7 @@ mod tests {
             None,
             CaptureView::default(),
             false,
+            Instant::now(),
         )?;
         assert_eq!(got.text()?, "x\u{0600} ");
         assert_eq!(
@@ -1540,6 +1560,7 @@ mod tests {
             crate::pane::tests::shell()?,
             fux_vt::Size::new(6, 5)?,
             crate::pane::tests::options(0)?,
+            Instant::now(),
         )?);
         pane.output(b"abcdefghijklm\r\nlater");
         let visits = std::cell::Cell::new(0usize);
@@ -1573,6 +1594,7 @@ mod tests {
             crate::pane::tests::shell()?,
             size,
             crate::pane::tests::options(0)?,
+            Instant::now(),
         )?);
         pane.output(b"\x1b[1;4:3;5;38;2;1;2;3;48;5;9;58;5;2mstyled\x1b[m plain");
         let view = CaptureView {
@@ -1580,8 +1602,14 @@ mod tests {
             ..CaptureView::default()
         };
         let run = crate::command::Run::now().ok_or("a clock")?;
-        let body =
-            crate::protocol::Body::Capture(Box::new(super::pane(&pane, run, None, view, false)?));
+        let body = crate::protocol::Body::Capture(Box::new(super::pane(
+            &pane,
+            run,
+            None,
+            view,
+            false,
+            Instant::now(),
+        )?));
         assert_eq!(
             Reader::new(&encode(&body).unwrap_or_default()).whole::<crate::protocol::Body>()?,
             body
@@ -1611,6 +1639,7 @@ mod tests {
             crate::pane::tests::shell()?,
             size,
             crate::pane::tests::options(0)?,
+            Instant::now(),
         )?);
         pane.output(b"$ \x1b]133;C\x07hello\x1b]133;D;0\x07PROMPT> ");
         let text = super::pane(
@@ -1619,6 +1648,7 @@ mod tests {
             None,
             view,
             false,
+            Instant::now(),
         )?
         .text()?;
         assert_eq!(text, "hello");
@@ -1631,6 +1661,7 @@ mod tests {
             None,
             view,
             false,
+            Instant::now(),
         )?
         .text()?;
         assert_eq!(text, "step 1");

@@ -789,20 +789,20 @@ impl<'a> PaneMut<'a> {
         let tell = journal.teller((at, pane.id));
         Self { pane, tell }
     }
-    pub fn output(&mut self, bytes: &[u8]) {
-        self.pane.output(bytes, &mut self.tell);
+    pub fn output(&mut self, bytes: &[u8], now: Instant) {
+        self.pane.output(bytes, now, &mut self.tell);
         self.pane.read_done();
     }
-    pub fn read_unread(&mut self) {
-        self.pane.read_unread(&mut self.tell);
+    pub fn read_unread(&mut self, now: Instant) {
+        self.pane.read_unread(now, &mut self.tell);
         self.pane.read_done();
     }
-    pub fn release_frame(&mut self) {
-        self.pane.release_frame(&mut self.tell);
+    pub fn release_frame(&mut self, now: Instant) {
+        self.pane.release_frame(now, &mut self.tell);
         self.pane.read_done();
     }
-    pub fn resize(&mut self, size: Size) {
-        self.pane.resize(size, &mut self.tell);
+    pub fn resize(&mut self, size: Size, now: Instant) {
+        self.pane.resize(size, now, &mut self.tell);
     }
     pub(crate) fn size_terminal(&mut self) {
         let result = self.pane.size_terminal();
@@ -1049,6 +1049,7 @@ impl Pane {
         runs: Runs,
         size: Size,
         options: crate::command::PaneOptions,
+        now: Instant,
     ) -> Result<Self, Error> {
         let parser = fux_vt::Parser::with_options(size, options.history_bytes.get(), OPTIONS)
             .map_err(|source| Error::Terminal { size, source })?;
@@ -1062,14 +1063,14 @@ impl Pane {
             runs,
             program_clipboard: options.program_clipboard,
             frame: None,
-            unread: (Vec::new(), Instant::now()),
+            unread: (Vec::new(), now),
             frame_left: 0,
             exiting: None,
             colours: Colours::default(),
             scheme_told: None,
             bell: false,
             copied: Vec::new(),
-            wrote_at: Instant::now(),
+            wrote_at: now,
             respawns: 0,
             left: Left::default(),
             mouse_held: None,
@@ -1096,16 +1097,10 @@ impl Pane {
     /// frame is read anyway once [`FRAME_TIMEOUT`] passes
     /// ([`Pane::release_frame`]) or it grows past [`FRAME_LIMIT`]; after
     /// that the program's output is read as it comes until its next BSU.
-    fn output(&mut self, bytes: &[u8], tell: &mut Teller<'_>) {
-        self.output_at(bytes, Instant::now(), tell)
-    }
-
-    /// [`Pane::output`] at `now`.
-    ///
     /// Each call of the parser does at most a stated amount of work; at it,
     /// the rest of the output waits, unread, for the pane's next turn
     /// ([`Pane::read_unread`]).
-    fn output_at(&mut self, bytes: &[u8], now: Instant, tell: &mut Teller<'_>) {
+    fn output(&mut self, bytes: &[u8], now: Instant, tell: &mut Teller<'_>) {
         self.wrote_at = now;
         if self.has_unread() {
             self.unread.0.extend_from_slice(bytes);
@@ -1144,13 +1139,13 @@ impl Pane {
     /// Reads the output waiting since a call of the parser did all the work
     /// one may, until the next call does: the rest of a frame first, as
     /// the frame was read.
-    fn read_unread(&mut self, tell: &mut Teller<'_>) {
+    fn read_unread(&mut self, now: Instant, tell: &mut Teller<'_>) {
         let unread = std::mem::take(&mut self.unread.0);
         // Only the work of a sequence read already: a call of no bytes does
         // it, and stops again if that spends its budget.
         if unread.is_empty() {
             if self.parse(&[], false, tell).is_some() {
-                self.wait_unread(Vec::new());
+                self.wait_unread(Vec::new(), now);
             }
             return;
         }
@@ -1159,20 +1154,20 @@ impl Pane {
         let (frame, after) = unread.split_at_checked(at).unwrap_or((&unread, &[]));
         if let Some((taken, _)) = self.parse(frame, false, tell) {
             self.frame_left = frame.len().saturating_sub(taken);
-            self.wait_unread(unread.get(taken..).unwrap_or_default().to_vec());
+            self.wait_unread(unread.get(taken..).unwrap_or_default().to_vec(), now);
             return;
         }
         // The rest of a frame read: the read ends at the next frame.
         self.reading.framed |= at > 0;
-        self.read(after, Instant::now(), tell);
+        self.read(after, now, tell);
     }
 
     /// `left` waits to be read on the pane's next turn, from now.
-    fn wait_unread(&mut self, left: Vec<u8>) {
-        self.unread = (left, Instant::now());
+    fn wait_unread(&mut self, left: Vec<u8>, now: Instant) {
+        self.unread = (left, now);
     }
 
-    /// Reads `bytes` as [`Pane::output_at`] does at `now`, with no output
+    /// Reads `bytes` as [`Pane::output`] does at `now`, with no output
     /// waiting.
     fn read(&mut self, bytes: &[u8], now: Instant, tell: &mut Teller<'_>) {
         let mut rest = bytes;
@@ -1182,7 +1177,7 @@ impl Pane {
                 held.extend_from_slice(rest);
                 let Some(end) = scan.end(held) else {
                     if held.len() > FRAME_LIMIT {
-                        self.release_frame(tell);
+                        self.release_frame(now, tell);
                     }
                     return;
                 };
@@ -1194,7 +1189,7 @@ impl Pane {
                 if let Some((taken, _)) = self.parse(&frame, false, tell) {
                     let left = frame.get(taken..).unwrap_or_default();
                     self.frame_left = left.len();
-                    self.wait_unread([left, rest].concat());
+                    self.wait_unread([left, rest].concat(), now);
                     return;
                 }
                 // A frame read whole: the read ends at the next frame.
@@ -1212,7 +1207,7 @@ impl Pane {
                         rest = rest.get(end..).unwrap_or_default();
                     }
                     Some((end, _)) => {
-                        self.wait_unread(rest.get(end..).unwrap_or_default().to_vec());
+                        self.wait_unread(rest.get(end..).unwrap_or_default().to_vec(), now);
                         return;
                     }
                 }
@@ -1228,7 +1223,7 @@ impl Pane {
     }
 
     /// Reads the held frame now, ended or not.
-    fn release_frame(&mut self, tell: &mut Teller<'_>) {
+    fn release_frame(&mut self, now: Instant, tell: &mut Teller<'_>) {
         let Some((held, ..)) = self.frame.take() else {
             return;
         };
@@ -1237,7 +1232,7 @@ impl Pane {
             Some((taken, _)) => {
                 let left = held.get(taken..).unwrap_or_default().to_vec();
                 self.frame_left = left.len();
-                self.wait_unread(left);
+                self.wait_unread(left, now);
             }
             // A frame read whole: the read ends at the next frame.
             None => self.reading.framed = true,
@@ -1345,11 +1340,11 @@ impl Pane {
 
     /// Resizes the screen and the PTY. A held frame is read first: it was
     /// drawn for the old size.
-    fn resize(&mut self, size: Size, tell: &mut Teller<'_>) {
+    fn resize(&mut self, size: Size, now: Instant, tell: &mut Teller<'_>) {
         if self.size() == size {
             return;
         }
-        self.release_frame(tell);
+        self.release_frame(now, tell);
         // The frame read now ends its read, before the resize's own losses.
         self.read_done();
         let refused = self.parser.refused();
@@ -2038,6 +2033,7 @@ pub(crate) mod tests {
             crate::pane::tests::shell()?,
             size,
             crate::pane::tests::options(1 << 10)?,
+            Instant::now(),
         )
         .map(Lone::new)
         .map_err(Into::into)
@@ -2073,21 +2069,21 @@ pub(crate) mod tests {
             PaneMut::new(&mut self.pane, at, &mut self.journal)
         }
         pub(crate) fn output(&mut self, bytes: &[u8]) {
-            self.placed().output(bytes);
+            self.placed().output(bytes, Instant::now());
         }
         pub(crate) fn output_at(&mut self, bytes: &[u8], now: Instant) {
             let mut placed = self.placed();
-            placed.pane.output_at(bytes, now, &mut placed.tell);
+            placed.pane.output(bytes, now, &mut placed.tell);
             placed.pane.read_done();
         }
         pub(crate) fn read_unread(&mut self) {
-            self.placed().read_unread();
+            self.placed().read_unread(Instant::now());
         }
         pub(crate) fn release_frame(&mut self) {
-            self.placed().release_frame();
+            self.placed().release_frame(Instant::now());
         }
         pub(crate) fn resize(&mut self, size: Size) {
-            self.placed().resize(size);
+            self.placed().resize(size, Instant::now());
         }
     }
 
@@ -2100,16 +2096,23 @@ pub(crate) mod tests {
     -> Result<(), Box<dyn std::error::Error>> {
         let reps = spends_the_budget(50, 200);
         let mut pane = pane(50, 200)?;
-        pane.output(&reps);
+        let now = Instant::now();
+        pane.placed().output(&reps, now);
         assert!(pane.has_unread(), "the budget stopped no call");
-        pane.output(b"\x1b[HZ");
+        assert_eq!(pane.unread_due(), Some(now));
+        let next = after(now, Duration::from_secs(1));
+        pane.placed().output(b"\x1b[HZ", next);
+        assert_eq!(pane.wrote_at, next);
         assert!(
             !first_row(&pane).starts_with('Z'),
             "output after the stop is read before it"
         );
         let mut turns = 0u32;
         while pane.has_unread() && turns < 100 {
-            pane.read_unread();
+            pane.placed().read_unread(next);
+            if pane.has_unread() {
+                assert_eq!(pane.unread_due(), Some(next));
+            }
             turns = turns.saturating_add(1);
         }
         assert!(!pane.has_unread(), "{turns} turns");
@@ -2175,6 +2178,7 @@ pub(crate) mod tests {
             crate::pane::tests::shell()?,
             size,
             crate::pane::tests::options(0)?,
+            Instant::now(),
         )?);
         let mut frame = b"\x1b[?2026h".to_vec();
         frame.extend(spends_the_budget(50, 200));

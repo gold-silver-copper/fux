@@ -370,6 +370,7 @@ pub fn run(r: &mut Rng, scale: usize) -> Outcome {
                 history_bytes: fux::command::HistoryBytes::new(0).ok_or("history budget")?,
                 program_clipboard: true,
             },
+            std::time::Instant::now(),
         );
         let mut pane = b.map_err(|e| e.to_string())?;
         let mut journal = fux::events::Journal::default();

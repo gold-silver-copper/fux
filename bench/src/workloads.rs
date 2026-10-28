@@ -767,6 +767,7 @@ fn resize_history(
 }
 
 fn pane(loads: &[Load], baseline: bool) -> Result<Done, String> {
+    let now = std::time::Instant::now();
     let units = loads.iter().map(|l| l.bytes.len()).sum();
     let first = loads.first().ok_or("no bytes")?;
     let mut pane = fux::pane::Pane::new(
@@ -782,6 +783,7 @@ fn pane(loads: &[Load], baseline: bool) -> Result<Done, String> {
             history_bytes: command::HistoryBytes::new(HISTORY).ok_or("history budget")?,
             program_clipboard: true,
         },
+        now,
     )
     .map_err(|e| e.to_string())?;
     if baseline {
@@ -801,12 +803,15 @@ fn pane(loads: &[Load], baseline: bool) -> Result<Done, String> {
     );
     let mut pane = fux::pane::PaneMut::new(&mut pane, at, &mut journal);
     for load in loads {
-        pane.resize(fux_vt::Size::new(load.rows, load.cols).map_err(|e| e.to_string())?);
+        pane.resize(
+            fux_vt::Size::new(load.rows, load.cols).map_err(|e| e.to_string())?,
+            now,
+        );
         for piece in given(&load.bytes) {
-            pane.output(black_box(piece));
+            pane.output(black_box(piece), now);
             // What a call's budget left is read on the pane's next turns.
             while pane.has_unread() {
-                pane.read_unread();
+                pane.read_unread(now);
             }
         }
     }
@@ -826,6 +831,7 @@ fn pane(loads: &[Load], baseline: bool) -> Result<Done, String> {
 /// server does for a keystroke. The baseline types nothing and paints
 /// nothing: the run is the server's whole work for the keys.
 fn keystroke(recordings: &[Recording], baseline: bool, keys: usize) -> Result<Done, String> {
+    let now = std::time::Instant::now();
     let mut s = fux::session::Session::new("/nonexistent/fux.sock".into(), false, server_run()?);
     // The client attaching starts its first shell, on its screen.
     let attach = fux::protocol::Attach {
@@ -836,13 +842,13 @@ fn keystroke(recordings: &[Recording], baseline: bool, keys: usize) -> Result<Do
         )
     };
     let c = s
-        .attach_as(fux::view::ClientKind::Terminal, attach)
+        .attach_as(fux::view::ClientKind::Terminal, attach, now)
         .map_err(|e| e.to_string())?;
     let pane = s.parts.panes().keys().next().copied().ok_or("no pane")?;
     // A full screen, as a pane at work shows: the recordings' output.
     for r in recordings.iter().take(8) {
         for (_, output) in &r.steps {
-            s.output(pane, output);
+            s.output(pane, output, now);
             unread(&mut s);
         }
     }
@@ -862,7 +868,7 @@ fn keystroke(recordings: &[Recording], baseline: bool, keys: usize) -> Result<Do
         let key = b'a'.saturating_add(u8::try_from(i % 26).unwrap_or(0));
         // As the client sends a key its bindings leave for the pane.
         let press = fux::keys::KeyPress::char(char::from(key));
-        s.acts(c, vec![fux::act::Act::Key(press.into())]);
+        s.acts(c, vec![fux::act::Act::Key(press.into())], now);
         // What the PTY would carry to the program, and its echo back.
         let typed = s
             .parts
@@ -871,7 +877,7 @@ fn keystroke(recordings: &[Recording], baseline: bool, keys: usize) -> Result<Do
             .unwrap_or_default();
         black_box(&typed);
         let glyph = char::from(key).encode_utf8(&mut echo);
-        s.output(pane, glyph.as_bytes());
+        s.output(pane, glyph.as_bytes(), now);
         s.hold_copies();
         buffer.clear();
         buffer.extend_from_slice(&s.before_paint(c));
@@ -905,6 +911,7 @@ fn paint(
     baseline: bool,
     total: usize,
 ) -> Result<Done, String> {
+    let now = std::time::Instant::now();
     let mut s = fux::session::Session::new("/nonexistent/fux.sock".into(), false, server_run()?);
     let first = recordings.first().ok_or("no recordings")?;
     // The bar takes a row: the pane is the recording's size.
@@ -914,7 +921,7 @@ fn paint(
         ..fux::protocol::Attach::of(size.map_err(|e| e.to_string())?, presentation())
     };
     let c = s
-        .attach_as(fux::view::ClientKind::Terminal, attach)
+        .attach_as(fux::view::ClientKind::Terminal, attach, now)
         .map_err(|e| e.to_string())?;
     if split {
         let split = command::Command::Split {
@@ -929,6 +936,7 @@ fn paint(
         s.run_command(
             &split,
             &fux::session::Origin::Cli(fux::session::Caller::default()),
+            now,
         );
     }
     let panes: Vec<_> = s.parts.panes().keys().copied().collect();
@@ -939,13 +947,13 @@ fn paint(
     let (mut painted, mut frames, mut units, mut have) = (0usize, 0usize, 0usize, false);
     while units < total {
         for r in recordings {
-            s.resize(c, r.rows.saturating_add(1), r.cols)
+            s.resize(c, r.rows.saturating_add(1), r.cols, now)
                 .map_err(|e| e.to_string())?;
             for (_, output) in &r.steps {
                 for read in pieces(output, PANE_READ) {
                     for piece in given(read) {
                         for &id in &panes {
-                            s.output(id, piece);
+                            s.output(id, piece, now);
                         }
                         unread(&mut s);
                     }
@@ -1125,10 +1133,12 @@ fn initial() -> Result<command::InitialWorkspace, String> {
 
 /// A session of `panes` panes, with output supplied by the workload.
 fn session(panes: usize) -> Result<fux::session::Session, String> {
+    let now = std::time::Instant::now();
     let mut s = fux::session::Session::new("/nonexistent/fux.sock".into(), false, server_run()?);
     s.start(
         fux_vt::Size::new(24, 80).map_err(|e| e.to_string())?,
         &initial()?,
+        now,
     )
     .map_err(|e| e.to_string())?;
     for _ in 1..panes {
@@ -1144,6 +1154,7 @@ fn session(panes: usize) -> Result<fux::session::Session, String> {
         s.run_command(
             &split,
             &fux::session::Origin::Cli(fux::session::Caller::default()),
+            now,
         );
     }
     Ok(s)
@@ -1185,7 +1196,7 @@ fn wait(recordings: &[Recording], baseline: bool, total: usize) -> Result<Done, 
                 .ok_or("no pane")?;
             n = n.saturating_add(1);
             for piece in given(read) {
-                s.output(pane, piece);
+                s.output(pane, piece, now);
             }
             unread(&mut s);
             units = units.saturating_add(read.len());
@@ -1220,6 +1231,7 @@ fn library(baseline: bool) -> Result<Done, String> {
 /// Setup is also in the baseline: the measured difference is construction
 /// and wire encoding of one capture, including dropping its allocations.
 fn capture_history(baseline: bool, history: usize) -> Result<Done, String> {
+    let now = std::time::Instant::now();
     let mut s = fux::session::Session::new("/nonexistent/fux.sock".into(), false, server_run()?);
     s.start(
         fux_vt::Size::new(40, 120).map_err(|e| e.to_string())?,
@@ -1227,6 +1239,7 @@ fn capture_history(baseline: bool, history: usize) -> Result<Done, String> {
             options: pane_options(history)?,
             ..initial()?
         },
+        now,
     )
     .map_err(|e| e.to_string())?;
     let id = *s.parts.panes().keys().next().ok_or("no pane")?;
@@ -1240,7 +1253,7 @@ fn capture_history(baseline: bool, history: usize) -> Result<Done, String> {
         .collect();
     let mut fed = 0usize;
     while fed < history / 2 {
-        s.output(id, &bytes);
+        s.output(id, &bytes, now);
         unread(&mut s);
         fed = fed.saturating_add(bytes.len());
     }
@@ -1252,6 +1265,7 @@ fn capture_history(baseline: bool, history: usize) -> Result<Done, String> {
             Some(usize::MAX),
             command::CaptureView::default(),
             false,
+            now,
         )
         .map_err(|e| e.to_string())?;
         black_box(fux::wire::encode(&capture).map_err(|e| e.to_string())?);
@@ -1287,6 +1301,7 @@ fn compile(baseline: bool, compiles: usize) -> Result<Done, String> {
 /// Reads what every pane's output left waiting at its call's budget
 /// (`Pane::read_unread`), as the server's next turns do, until none waits.
 fn unread(s: &mut fux::session::Session) {
+    let now = std::time::Instant::now();
     loop {
         let waiting: Vec<_> = (s.timers())
             .filter_map(|(_, timer)| {
@@ -1297,7 +1312,7 @@ fn unread(s: &mut fux::session::Session) {
             return;
         }
         for timer in waiting {
-            s.fire(timer);
+            s.fire(timer, now);
         }
     }
 }
