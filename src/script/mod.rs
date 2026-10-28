@@ -52,6 +52,8 @@ pub enum Fux {
     Tab(TabId, Option<Run>),
     Workspace(WsId, Option<Run>),
     Client(ClientId, Option<Run>),
+    /// The whole session, optionally with an event replay cursor.
+    All(Option<crate::events::Cursor>),
     /// Options for `run`, `new-tab` or `new-workspace` (from `opts`); or a
     /// request: a pane, tab, workspace or client given options, keys, a
     /// wait or a mouse event, for the word that acts on it after
@@ -78,6 +80,8 @@ impl AppValue for Fux {
             Fux::Tab(_, _) => "tab",
             Fux::Workspace(_, _) => "workspace",
             Fux::Client(_, _) => "client",
+            Fux::All(None) => "all",
+            Fux::All(Some(_)) => "events-request",
             Fux::Opts(opts) => match opts.on {
                 None => "opts",
                 Some(On::Target(AnyRef::Pane(_)) | On::Version(_)) => "pane-request",
@@ -131,7 +135,8 @@ impl AppValue for Fux {
             Fux::Answer(answer, _) => answer.write_text(out),
             Fux::Extent(Extent::Cells(n)) => write!(out, "{n}"),
             Fux::Extent(Extent::Percent(n)) => write!(out, "{}%", n.get()),
-            Fux::Opts(_) => write!(out, "({})", self.kind()),
+            Fux::All(None) => write!(out, "all"),
+            Fux::All(Some(_)) | Fux::Opts(_) => write!(out, "({})", self.kind()),
         }
         .map_err(|_| words::observation_failure(crate::wire::Budget::exceeded()))
     }
@@ -1911,13 +1916,13 @@ mod tests {
     -> Result<(), Box<dyn std::error::Error>> {
         let version = "%2:0.0.0.0.0:48211-1867a3f9c2b8e7d6";
         for code in [
-            "str c1 client capture-client expect".to_owned(),
-            "str c1 client capture-client changed".to_owned(),
+            "str c1 client capture expect".to_owned(),
+            "str c1 client capture changed".to_owned(),
             "str c1 client 0 timeout wait".to_owned(),
             format!("str {version} expect 0 timeout wait"),
             format!("str {version} changed str x text send-keys"),
             format!("str {version} changed all-history capture"),
-            format!("str {version} changed events-of"),
+            format!("str {version} changed events"),
             "str x kill".to_owned(),
         ] {
             let tokens =
@@ -1952,7 +1957,7 @@ mod tests {
             "%1 all-history capture expect str x text send-keys wait capture drop".to_owned(),
             "%1 str x text send-keys 0 quiet %1 capture drop".to_owned(),
             format!("str {version} changed 0 timeout wait capture drop"),
-            "str c1 client capture-client json drop".to_owned(),
+            "str c1 client capture json drop".to_owned(),
         ] {
             super::compile(&super::token::source("recipe", &code)?).map_err(|f| f.to_string())?;
         }

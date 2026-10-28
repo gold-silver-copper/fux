@@ -20,7 +20,7 @@ fux-vt = { path = "../fux-vt" }
 fuxix = { path = "../fuxix" }
 # Reads a trace line back as fuxth reads a file.
 fuxth = { path = "../fuxth" }
-# Reads `ls --json` and `capture-client --json`; fux itself only writes JSON.
+# Reads `ls --json` and `capture --json`; fux itself only writes JSON.
 serde_json = "1"
 
 [lints.rust]

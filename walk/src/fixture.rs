@@ -105,7 +105,7 @@ impl Client {
         }
     }
 
-    /// The screen's rows, as `capture-client` prints them.
+    /// The screen's rows, as `capture` prints them.
     pub fn lines(&self) -> Vec<String> {
         let window = self.screen.screen().window();
         (0..self.rows)
