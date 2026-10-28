@@ -3155,7 +3155,7 @@ mod tests {
     fn retained_pictures_are_clipped_away_from_bar_feedback() -> Result<(), String> {
         let (mut session, client) = crate::session::testing::attached(4, 40)?;
         let view = session.views.get_mut(&client).ok_or("view")?;
-        view.terminal.sixel = true;
+        view.terminal.sixel = Some(true);
         view.terminal.cell = fux_vt::CellSize::new(12, 12);
         let picture = Arc::new(Picture::new(12, 48, vec![255; 12 * 48 * 4]).ok_or("picture")?);
         let mut pictures = vec![

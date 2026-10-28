@@ -1703,7 +1703,7 @@ mod tests {
             "str bar list str off list end list end false end set",
         )?;
         let view = server.session.views.get_mut(&client).ok_or("view")?;
-        view.terminal.sixel = true;
+        view.terminal.sixel = Some(true);
         view.terminal.cell = fux_vt::CellSize::new(12, 12);
         server.session.settle();
         server.paint(0, Instant::now());
