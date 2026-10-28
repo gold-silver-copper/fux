@@ -2,6 +2,7 @@
 //! every command that changes them.
 use crate::answer::{PaneAnswer, PaneResults};
 use crate::code::{Code, Raise};
+use crate::command::Start;
 use crate::command::{
     self, AnyRef, ClientAction, Command, Extent, Input, Kind, Members, Mouse, MoveTo, PanePick,
     PaneResize, Pick, Request, Resized, Sibling, SwapWith, WsRef,
@@ -89,9 +90,6 @@ pub struct Caller {
     pub within: Within,
     /// Its working directory.
     pub cwd: Option<PathBuf>,
-    /// Its environment, of which panes it starts take what
-    /// `update-environment` names.
-    pub env: Option<Vec<(String, std::ffi::OsString)>>,
 }
 
 /// The server whose pane a caller on the CLI runs in, as its
@@ -159,19 +157,24 @@ type Starts = (Size, Option<fux_vt::CellSize>);
 /// and how it starts (`Starts`).
 #[derive(Clone, Copy)]
 struct NewPane<'a> {
-    start: Start<'a>,
+    start: &'a Start,
     cwd: &'a Path,
-    starting: &'a Starting,
+    env: &'a command::EnvPatch,
     size: Size,
     cell: Option<fux_vt::CellSize>,
 }
 
 impl<'a> NewPane<'a> {
-    fn new(start: Start<'a>, cwd: &'a Path, starting: &'a Starting, (size, cell): Starts) -> Self {
+    fn new(
+        start: &'a Start,
+        cwd: &'a Path,
+        env: &'a command::EnvPatch,
+        (size, cell): Starts,
+    ) -> Self {
         Self {
             start,
             cwd,
-            starting,
+            env,
             size,
             cell,
         }
@@ -387,6 +390,10 @@ struct Replacement {
 
 /// How long a closing pane's processes have to exit after the hangup.
 pub const GRACE: Duration = Duration::from_millis(100);
+/// Retained launch inputs, including pending replacements, in one session.
+pub(crate) const LAUNCH_BYTES: usize = 16 << 20;
+/// The largest recipe the dump serializer builds.
+pub(crate) const DUMP_BYTES: usize = 16 << 20;
 
 pub struct Session {
     /// Its workspaces, tabs and panes, and the journal of what happened to
@@ -427,17 +434,6 @@ pub struct Session {
     pub(crate) test_keys: BTreeMap<ClientId, testing::Keys>,
     #[cfg(test)]
     pub(crate) test_keymap: crate::client_state::Draft,
-}
-
-/// How the panes a command starts start, passed to what starts them: the
-/// variables they take from whoever starts them rather than the server
-/// (those `update-environment` names that the starter has, and those it
-/// has not, which they are not given either). A pane started for no
-/// command (the first shell) starts as `Starting::default()` says.
-#[derive(Clone, Debug, Default)]
-struct Starting {
-    set: Vec<(String, std::ffi::OsString)>,
-    unset: Vec<String>,
 }
 
 /// The one item of `items`; of several, why not: `many` says it from how
@@ -539,12 +535,17 @@ impl Session {
         }
     }
 
-    /// One workspace, holding one tab with one shell, laid out on a
+    /// One workspace, holding one tab with its explicit launch, laid out on a
     /// client's screen of `size`.
-    pub fn start(&mut self, size: Size) -> Result<(), Error> {
-        let (cwd, starting) = (home()?, Starting::default());
-        let new = NewPane::new(Start::Shell(&[]), &cwd, &starting, (size, None));
-        self.create_workspace(None, None, Fit::Clients(size), new)
+    pub fn start(&mut self, size: Size, initial: &command::InitialWorkspace) -> Result<(), Error> {
+        if !initial.cwd.is_absolute() {
+            return Err(fail(
+                Raise::Start,
+                "the caller's own directory is unknown; give an absolute cwd",
+            ));
+        }
+        let new = NewPane::new(&initial.start, &initial.cwd, &initial.env, (size, None));
+        self.create_workspace(initial.name.clone(), None, Fit::Clients(size), new)
             .map(drop)
     }
 
@@ -683,26 +684,22 @@ impl Session {
     /// Starts `argv` with `env` as pane `id`'s program, in `cwd` at `size`
     /// in cells of `cell`, if panes start real processes: told of its
     /// server (`FUX_PANE`, `FUX_SOCKET`, `FUX_SERVER`, and `FUX`, the fux
-    /// running it, unset if it cannot be had), given its starter's
-    /// variables, and not those its starter had not (but for the server's
-    /// own above), unless `env` sets them.
+    /// running it, unset if it cannot be had). The saved environment patch
+    /// applies first, and the server supplies authoritative identity last.
     fn spawn(
         &self,
         id: PaneId,
         generation: u64,
         launch: &pane::Launch,
-        fresh: &Starting,
         size: (Size, Option<fux_vt::CellSize>),
     ) -> Result<Option<Child>, Error> {
         let Some(socket) = &self.launch else {
             return Ok(None);
         };
-        let (argv, env) = (launch.argv.as_slice(), launch.env.as_slice());
-        let mut vars: Vec<_> = fresh
-            .set
+        let (argv, env) = (launch.argv.argv(), launch.env.as_slice());
+        let mut vars: Vec<_> = env
             .iter()
-            .filter(|(k, _)| k != "FUX" || self.exe.is_some())
-            .map(|(k, v)| (k.as_str(), v.clone()))
+            .filter_map(|(k, v)| v.as_ref().map(|v| (k.as_str(), v.clone())))
             .collect();
         vars.extend([
             ("FUX_PANE", format!("{id}:{generation}").into()),
@@ -710,16 +707,14 @@ impl Session {
             ("FUX_SERVER", self.run.to_string().into()),
         ]);
         vars.extend((self.exe.as_ref()).map(|exe| ("FUX", exe.as_os_str().to_owned())));
-        vars.extend(env.iter().map(|(k, v)| (k.as_str(), v.into())));
         // No `FUX` to give: not one the server was started with either.
-        let unset: Vec<String> = fresh
-            .unset
+        let unset: Vec<String> = env
             .iter()
-            .cloned()
+            .filter(|(_, v)| v.is_none())
+            .map(|(k, _)| k.clone())
             .chain(self.exe.is_none().then(|| "FUX".to_owned()))
-            .filter(|name| !env.iter().any(|(k, _)| k == name))
             .collect();
-        let child = process::spawn(argv, &launch.cwd, (&vars, &unset), size)
+        let child = process::spawn(&argv, &launch.cwd, (&vars, &unset), size)
             .map_err(|m| fail(Raise::Start, m))?;
         Ok(Some(child))
     }
@@ -736,9 +731,8 @@ impl Session {
         &mut self,
         id: PaneId,
         kill: bool,
-        env: &[(String, String)],
-        argv: &[String],
-        starting: &Starting,
+        env: &command::EnvPatch,
+        argv: Option<&crate::config::Program>,
     ) -> Result<Reply, Error> {
         let pane = self.pane(id)?;
         let Runs::Explicit(launch) = &pane.runs else {
@@ -756,13 +750,14 @@ impl Session {
             return Err(fail(Raise::StillRunning, message));
         }
         let mut launch = launch.clone();
-        if !argv.is_empty() {
-            launch.argv = argv.to_vec();
+        if let Some(argv) = argv {
+            launch.argv = argv.clone();
         }
-        for (key, value) in env {
-            launch.env.retain(|(k, _)| k != key);
-            launch.env.push((key.clone(), value.clone()));
-        }
+        launch
+            .env
+            .overlay(env)
+            .map_err(|why| fail(Raise::Start, why))?;
+        self.check_launch(&launch)?;
         // The program it starts is told its host's cell.
         let graphics = self.graphics(id);
         let size = (pane.size(), graphics.cell());
@@ -781,7 +776,7 @@ impl Session {
         fresh.respawns = respawns;
         // Its program starts sized in that cell, so no resize is due.
         let _ = fresh.host(Default::default(), Default::default(), graphics);
-        let child = self.spawn(id, respawns, &launch, starting, size)?;
+        let child = self.spawn(id, respawns, &launch, size)?;
         // What one that runs left is read once another started (a start
         // refused leaves it running, nothing of it cut). Then its program is
         // taken: no more of it is read, and input is refused till the new
@@ -912,24 +907,6 @@ impl Session {
         self.views
             .values()
             .any(|v| matches!(&v.mode, Mode::Copy(copy) if copy.pane == pane))
-    }
-
-    /// What panes started for `origin` take of its environment: none of
-    /// it for an absent snapshot; an empty snapshot unsets every named variable.
-    fn starting_for(&self, origin: &Origin) -> Starting {
-        let env = match origin {
-            Origin::Cli(caller) => caller.env.as_deref(),
-            Origin::Client(client) => self.views.get(client).map(|v| v.env.as_slice()),
-        };
-        let mut fresh = Starting::default();
-        let Some(env) = env else { return fresh };
-        for name in &self.config.update_environment {
-            match env.iter().rev().find(|(k, _)| k == name.as_str()) {
-                Some((k, v)) => fresh.set.push((k.clone(), v.clone())),
-                None => fresh.unset.push(name.as_str().to_owned()),
-            }
-        }
-        fresh
     }
 
     /// What `id`, written `text`, stands for as a `kind`: itself; a pane's
@@ -1202,7 +1179,12 @@ impl Session {
             Here::Cli(_, None) => near.and_then(|p| self.dir_of(p)),
             Here::Client(_, place) => self.dir_of(near.unwrap_or(place.pane)),
         };
-        let base = known.map_or_else(home, Ok)?;
+        let base = known.ok_or_else(|| {
+            fail(
+                Raise::Start,
+                "the nearby working directory is unknown; give an absolute cwd",
+            )
+        })?;
         Ok(match dir {
             Some(dir) => base.join(dir),
             None => base,
@@ -1279,28 +1261,45 @@ impl Session {
         Ok(made)
     }
 
+    /// Retained launch inputs, including a pending replacement, share one bound.
+    fn check_launch(&self, launch: &pane::Launch) -> Result<(), Error> {
+        let bytes = self
+            .parts
+            .panes()
+            .values()
+            .map(|p| p.runs.launch().bytes())
+            .chain(
+                self.respawning
+                    .values()
+                    .map(|r| r.fresh.runs.launch().bytes()),
+            )
+            .fold(launch.bytes(), usize::saturating_add);
+        if bytes > LAUNCH_BYTES {
+            return Err(fail(
+                Raise::TooLong,
+                "saved launch inputs exceed the session's 16 MiB limit",
+            ));
+        }
+        Ok(())
+    }
+
     /// A new pane, its ID taken from `ids`, running what `new` says.
     fn new_pane(&self, ids: &mut Ids, new: NewPane<'_>) -> Result<Pane, Error> {
         let config = &self.config;
         let start = new.start;
-        let env = match start {
-            Start::Shell(env) | Start::Program(_, env) => env,
-        };
         let launch = pane::Launch {
-            argv: match start {
-                Start::Shell(..) => config.shell.argv(),
-                Start::Program(argv, _) => argv.to_vec(),
-            },
+            argv: start.argv().clone(),
             cwd: new.cwd.to_path_buf(),
-            env: env.to_vec(),
+            env: new.env.clone(),
         };
         let runs = match start {
-            Start::Shell(..) => Runs::DefaultShell,
+            Start::Shell(..) => Runs::Shell(launch.clone()),
             Start::Program(..) => Runs::Explicit(launch.clone()),
         };
+        self.check_launch(&launch)?;
         let id = ids.pane()?;
         let pane = Pane::new(id, None, runs, new.size, config.history_bytes.get())?;
-        let child = self.spawn(id, 0, &launch, new.starting, (new.size, new.cell))?;
+        let child = self.spawn(id, 0, &launch, (new.size, new.cell))?;
         Ok(match child {
             Some(child) => pane.running(child),
             None => pane,
@@ -1321,9 +1320,17 @@ impl Session {
         let workspace = workspace.map(command::parse_workspace).transpose();
         let size = Size::new(rows, cols).map_err(|e| fail(Raise::Size, e.to_string()))?;
         let workspace = workspace.map_err(bad_value)?;
+        let state =
+            crate::script::default_state().map_err(|e| fail(Raise::Config, e.to_string()))?;
         self.attach_as(
             ClientKind::Terminal,
             Attach {
+                initial: workspace.is_none().then(|| command::InitialWorkspace {
+                    name: None,
+                    start: command::Start::Shell(state.preferences.shell),
+                    cwd: std::env::current_dir().unwrap_or_default(),
+                    env: command::EnvPatch::default(),
+                }),
                 workspace,
                 ..Attach::of(size)
             },
@@ -1334,10 +1341,17 @@ impl Session {
     /// is one from the start, and sizes nothing.
     pub fn attach_as(&mut self, kind: ClientKind, attach: Attach) -> Result<ClientId, Error> {
         self.check_run(attach.of)?;
+        if attach.initial.is_some() && (attach.workspace.is_some() || attach.read_only) {
+            return Err(fail(
+                Raise::BadValue,
+                "initial launch inputs require an untargeted writable attach",
+            ));
+        }
         // A size no view has is refused before anything starts on it.
         let (rows, cols) = attach.size.nonzero();
         let (rows, cols) =
             view::size(rows.get(), cols.get()).map_err(|why| fail(Raise::Size, why))?;
+        let id = self.ids.client()?;
         let ws = match &attach.workspace {
             Some(workspace) => self.resolve_ws(workspace)?,
             None => {
@@ -1355,15 +1369,17 @@ impl Session {
                             format!("a screen of {rows} rows has no room for a pane below its bar");
                         fail(Raise::Size, why)
                     })?;
-                    self.start(size)?;
+                    let initial = attach.initial.as_ref().ok_or_else(|| {
+                        fail(Raise::Start, "an empty attach needs initial launch inputs")
+                    })?;
+                    self.start(size, initial)?;
                 }
                 (self.parts.workspaces().first().map(|w| w.id()))
                     .ok_or_else(|| fail(Raise::NoWorkspace, "the server has no workspace"))?
             }
         };
-        let id = self.ids.client()?;
         let mut view = View::new(id, rows, cols);
-        (view.kind, view.read_only, view.env) = (kind, attach.read_only, attach.env);
+        (view.kind, view.read_only) = (kind, attach.read_only);
         self.views.insert(id, view);
         self.parts.attach(id);
         self.show(id, ws, None);
@@ -1867,7 +1883,7 @@ impl Session {
             return;
         }
         match pane.runs {
-            Runs::DefaultShell => {
+            Runs::Shell(_) => {
                 let left = pane.ended(ended).left.told("it");
                 let why = process::shell_status(ended).map_or_else(
                     || process::told(ended),
@@ -2235,7 +2251,6 @@ impl Session {
 
     fn execute(&mut self, command: &Command, origin: &Origin) -> Result<Reply, Error> {
         let here = self.here(origin)?;
-        let starting = self.starting_for(origin);
         match command {
             Command::Ls { target, get } => self.ls(*target, get.as_deref()),
             Command::KillServer => self.kill_server(origin),
@@ -2244,9 +2259,10 @@ impl Session {
                 size,
                 cwd,
                 env,
+                start,
             } => {
                 let (cwd, fit, sized) = self.opening((cwd.as_deref(), *size), (here, true))?;
-                let new = NewPane::new(Start::Shell(env.as_slice()), &cwd, &starting, sized);
+                let new = NewPane::new(start, &cwd, env, sized);
                 let made = self.create_workspace(name.clone(), None, fit, new)?;
                 self.follow(here, made.ws, None);
                 Ok(acted(self.pane(made.pane)?.version(self.run)))
@@ -2257,12 +2273,13 @@ impl Session {
                 size,
                 cwd,
                 env,
+                start,
             } => {
                 let (cwd, fit, sized) = self.opening((cwd.as_deref(), *size), (here, true))?;
                 if let Some(name) = name {
                     self.check_tab_name(name, None)?;
                 }
-                let new = NewPane::new(Start::Shell(env.as_slice()), &cwd, &starting, sized);
+                let new = NewPane::new(start, &cwd, env, sized);
                 // A workspace named that is not there is made, as `run`
                 // makes one, its first tab this one.
                 let made = self.create_tab(target.as_ref(), here, name.clone(), fit, new)?;
@@ -2286,8 +2303,8 @@ impl Session {
                 if let Some(name) = name {
                     check_name(name)?;
                 }
-                let new =
-                    NewPane::new(Start::Program(argv, env.as_slice()), &dir, &starting, sized);
+                let start = Start::Program(argv.clone());
+                let new = NewPane::new(&start, &dir, env, sized);
                 let made = self.create_tab(Some(workspace), here, None, fit, new)?;
                 if let Some(name) = name {
                     self.pane_mut(made.pane)?.rename(name.clone());
@@ -2299,7 +2316,7 @@ impl Session {
                 kill,
                 ref env,
                 ref argv,
-            } => self.respawn(target, kill, env.as_slice(), argv, &starting),
+            } => self.respawn(target, kill, env, argv.as_ref()),
             Command::Notify { target, text } => {
                 let to: Vec<ClientId> = match target {
                     None => self.views.keys().copied().collect(),
@@ -2334,7 +2351,7 @@ impl Session {
             }
             Command::DumpLayout { target } => {
                 let only = target.map(|t| self.there(t)).transpose()?;
-                Ok(Body::Text(self.dump_layout(only)).into())
+                Ok(Body::Text(self.dump_layout(only)?).into())
             }
             &Command::SendMouse {
                 target,
@@ -2345,17 +2362,12 @@ impl Session {
             &Command::Split {
                 axis,
                 target,
-                ref argv,
+                ref start,
                 ref cwd,
                 ref env,
                 shares,
-            } => {
-                let start = match argv.is_empty() {
-                    true => Start::Shell(env.as_slice()),
-                    false => Start::Program(argv, env.as_slice()),
-                };
-                self.split(target, (axis, shares), start, cwd.as_deref(), origin)
-            }
+            } => self.split(target, (axis, shares), start, env, cwd.as_deref(), origin),
+
             &Command::Signal { target, signal } => {
                 let group = self.signalled(target)?;
                 let version = self.pane(target)?.version(self.run);
@@ -2653,11 +2665,12 @@ impl Session {
         &mut self,
         target: PaneId,
         (axis, shares): (Axis, Option<(NonZeroU32, NonZeroU32)>),
-        start: Start<'_>,
+        start: &Start,
+        env: &command::EnvPatch,
         dir: Option<&Path>,
         origin: &Origin,
     ) -> Result<Reply, Error> {
-        let (here, starting) = (self.here(origin)?, self.starting_for(origin));
+        let here = self.here(origin)?;
         let target = self.pane(target)?.id();
         let cwd = self.start_dir(here, dir, Some(target))?;
         // The splitting client follows the new pane, if it shows its tab;
@@ -2673,7 +2686,7 @@ impl Session {
         // nothing can then leave running.
         let (split, size) = self.split_size(target, (axis, shares), &followers)?;
         let mut ids = self.ids.clone();
-        let new = NewPane::new(start, &cwd, &starting, (size, self.graphics(target).cell()));
+        let new = NewPane::new(start, &cwd, env, (size, self.graphics(target).cell()));
         let pane = self.new_pane(&mut ids, new)?;
         let new = pane.id();
         if let Err(pane) = self.parts.split(pane, split) {
@@ -3119,19 +3132,6 @@ fn found(found: AnyRef) -> Reply {
     Body::Found(found).into()
 }
 
-/// `$HOME`: where a pane starts when nothing says where. Unset, or not an
-/// absolute path (empty, or relative, so only the server's own directory
-/// would place it), nothing starts; one no program can start in fails the
-/// start with the system's error.
-fn home() -> Result<PathBuf, Error> {
-    let why = match std::env::var_os("HOME").map(PathBuf::from) {
-        Some(home) if home.is_absolute() => return Ok(home),
-        Some(home) => format!("$HOME is {home:?}, not an absolute path"),
-        None => "$HOME is not set, and nothing else says where to start".to_owned(),
-    };
-    Err(fail(Raise::Start, why))
-}
-
 /// The most read of what a program left on its terminal as it ends, in
 /// MiB, as it is said: a whole number of them.
 pub(crate) const LEFT_MIB: usize = 1;
@@ -3181,15 +3181,6 @@ fn drain_terminal(
             Err(error) => return (left, DrainEnd::Failed(error)),
         }
     }
-}
-
-/// What a new pane starts.
-#[derive(Clone, Copy)]
-enum Start<'a> {
-    /// The shell, with variables set for it.
-    Shell(&'a [(String, String)]),
-    /// A program, run in place of a shell, with variables set for it.
-    Program(&'a [String], &'a [(String, String)]),
 }
 
 /// The most bytes a name holds.
@@ -3299,7 +3290,10 @@ impl crate::script::Asks for InProcess<'_> {
         let session = &mut *self.0;
         let origin = match asked.context.client {
             Some(client) if session.views.contains_key(&client) => Origin::Client(client),
-            Some(_) | None => Origin::Cli(Caller::default()),
+            Some(_) | None => Origin::Cli(Caller {
+                cwd: Some(asked.context.cwd.clone()),
+                ..Caller::default()
+            }),
         };
         let begun = match session.check_run(asked.context.of) {
             Ok(()) => session.begin(asked.request.clone(), &origin),
@@ -3348,17 +3342,22 @@ pub(crate) mod testing {
     /// A session of `config`, but for its shell, `/bin/sh` (each pane is
     /// named after it), started at 80 by 24.
     pub(crate) fn started(config: Config) -> Result<Session, String> {
-        let config = Config {
-            shell: crate::config::Shell::new("/bin/sh".to_owned(), Vec::new())?,
-            ..config
-        };
         // One run for every session of the tests: two that did the same
         // list the same, their cursors too.
         static RUN: std::sync::OnceLock<Option<crate::command::Run>> = std::sync::OnceLock::new();
         let run = (*RUN.get_or_init(crate::command::Run::now)).ok_or("no clock")?;
         let mut session = Session::new(config, "/nonexistent/fux.sock".into(), false, run);
         let size = fux_vt::Size::new(24, 80).map_err(|e| e.to_string())?;
-        session.start(size).map_err(|e| e.to_string())?;
+        let initial = crate::command::InitialWorkspace {
+            name: None,
+            start: crate::command::Start::Shell(crate::config::Program::new(
+                "/bin/sh".into(),
+                Vec::new(),
+            )?),
+            cwd: std::env::current_dir().map_err(|e| e.to_string())?,
+            env: crate::command::EnvPatch::default(),
+        };
+        session.start(size, &initial).map_err(|e| e.to_string())?;
         session.test_keymap = crate::script::default_state()
             .map_err(|e| e.to_string())?
             .draft();
@@ -3426,6 +3425,7 @@ pub(crate) mod testing {
         let mut keymap = session.test_keymap.clone();
         let context = crate::protocol::Context {
             client,
+            cwd: std::env::current_dir().unwrap_or_default(),
             ..crate::protocol::Context::default()
         };
         let mut host = crate::script::Host::new(context.clone(), Some(&mut keymap), &mut out);
@@ -3680,23 +3680,80 @@ mod tests {
     }
 
     #[test]
+    fn retained_launches_and_dump_refuse_their_resource_limits() -> Result<(), String> {
+        let config = Config {
+            history_bytes: crate::config::Number::new(0).ok_or("budget")?,
+            ..Config::default()
+        };
+        let mut s = started(config)?;
+        let mut env = command::EnvPatch::default();
+        env.push(
+            "TEXT".into(),
+            Some(
+                std::iter::repeat_n('\'', 1 << 19)
+                    .collect::<String>()
+                    .into(),
+            ),
+        )?;
+        let command = Command::Run {
+            workspace: command::WsRef::New,
+            name: None,
+            size: Some(crate::view::Screen::new(24, 80)?),
+            cwd: Some("/".into()),
+            env,
+            argv: crate::config::Program::new("/bin/cat".into(), Vec::new())?,
+        };
+        let origin = Origin::Cli(Caller::default());
+        let mut refused = false;
+        for _ in 0..40 {
+            let before = s.parts.panes().len();
+            if let Err(error) = s.execute(&command, &origin) {
+                assert!(error.to_string().contains("saved launch inputs"), "{error}");
+                assert_eq!(s.parts.panes().len(), before);
+                refused = true;
+                break;
+            }
+        }
+        assert!(refused);
+        assert!(
+            s.dump_layout(None)
+                .is_err_and(|e| e.to_string().contains("dump exceeds"))
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn an_unknown_nearby_directory_refuses_creation() -> Result<(), String> {
+        let (mut s, client) = attached(24, 80)?;
+        let before = s.parts.panes().len();
+        let failure = output_as(&mut s, Some(client), "%1 split")
+            .err()
+            .ok_or("unknown cwd accepted")?;
+        assert!(
+            failure.contains("working directory is unknown"),
+            "{failure}"
+        );
+        assert_eq!(s.parts.panes().len(), before);
+        output_as(&mut s, Some(client), "%1 str / cwd split drop")?;
+        assert_eq!(s.parts.panes().len(), before + 1);
+        Ok(())
+    }
+
+    #[test]
     fn an_unknown_fux_path_is_not_taken_from_the_starter() -> Result<(), String> {
         let mut s = started(Config::default())?;
         s.launch = Some("/nonexistent/fux.sock".into());
         s.exe = None;
-        let fresh = Starting {
-            set: vec![("FUX".into(), "/wrong/fux".into())],
-            ..Starting::default()
-        };
         let launch = pane::Launch {
-            argv: ["/bin/sh", "-c", "[ -z \"${FUX+x}\" ]"]
-                .map(str::to_owned)
-                .to_vec(),
+            argv: crate::config::Program::new(
+                "/bin/sh".into(),
+                vec!["-c".into(), "[ -z \"${FUX+x}\" ]".into()],
+            )?,
             cwd: "/".into(),
-            env: Vec::new(),
+            env: command::EnvPatch::default(),
         };
         let child = s
-            .spawn(PaneId::of(2), 0, &launch, &fresh, (sized(24, 80)?, None))
+            .spawn(PaneId::of(2), 0, &launch, (sized(24, 80)?, None))
             .map_err(|e| e.to_string())?
             .ok_or("a child")?;
         let deadline = Instant::now() + Duration::from_secs(3);
@@ -3710,26 +3767,6 @@ mod tests {
         }
         let _ = child.leader.finish();
         assert_eq!(status, Some(Ended::Exited(0)));
-        Ok(())
-    }
-
-    #[test]
-    fn an_empty_environment_unsets_the_configured_names() -> Result<(), String> {
-        let mut s = started(Config::default())?;
-        assert!(s.config.update_environment.is_empty());
-        s.config.update_environment = vec!["KEPT".parse()?];
-        let missing = s.starting_for(&Origin::Cli(Caller::default()));
-        assert!(missing.set.is_empty() && missing.unset.is_empty());
-        let empty = s.starting_for(&Origin::Cli(Caller {
-            env: Some(Vec::new()),
-            ..Caller::default()
-        }));
-        assert!(empty.set.is_empty());
-        assert_eq!(empty.unset, ["KEPT"]);
-        let client = s
-            .attach_as(ClientKind::Terminal, Attach::of(sized(24, 80)?))
-            .map_err(|e| e.to_string())?;
-        assert_eq!(s.starting_for(&Origin::Client(client)).unset, ["KEPT"]);
         Ok(())
     }
 
@@ -4076,9 +4113,9 @@ mod tests {
             }
             if explicit {
                 let runs = Runs::Explicit(pane::Launch {
-                    argv: vec!["/bin/sh".into()],
+                    argv: crate::config::Program::new("/bin/sh".into(), Vec::new())?,
                     cwd: "/".into(),
-                    env: Vec::new(),
+                    env: command::EnvPatch::default(),
                 });
                 let fresh = Pane::new(id, Some("test".into()), runs, sized(9, 40)?, 1024)?;
                 session
@@ -4213,11 +4250,15 @@ mod tests {
             ..Caller::default()
         };
         let new_tab = Command::NewTab {
+            start: command::Start::Shell(crate::config::Program::new(
+                "/bin/sh".into(),
+                Vec::new(),
+            )?),
             target: None,
             name: None,
             size: None,
-            cwd: None,
-            env: crate::command::Env::default(),
+            cwd: Some("/".into()),
+            env: crate::command::EnvPatch::default(),
         };
         s.execute(&new_tab, &Origin::Cli(caller))?;
         let tab = s.tab("@3".parse()?).ok_or("the new tab")?;
@@ -4259,10 +4300,10 @@ mod tests {
     #[test]
     fn a_split_elsewhere_leaves_the_splitters_zoom() -> Result<(), String> {
         let (mut s, c) = attached(24, 80)?;
-        run(&mut s, "%1 split drop")?;
+        run(&mut s, "%1 str / cwd split drop")?;
         run(&mut s, &format!("str {c} client zoom"))?;
         run(&mut s, "opts 80 24 size str other name new-workspace drop")?;
-        output_as(&mut s, Some(c), "%3 split drop")?;
+        output_as(&mut s, Some(c), "%3 str / cwd split drop")?;
         assert!(s.views.get(&c).is_some_and(|v| v.zoom), "still zoomed");
         Ok(())
     }
@@ -4405,13 +4446,19 @@ mod tests {
 
     /// A respawn of `id`, ending what runs there first; `argv` instead of
     /// its program, if given.
-    fn respawn_of(id: PaneId, argv: &[&str]) -> Request {
-        Request::Do(Command::Respawn {
+    fn respawn_of(id: PaneId, argv: &[&str]) -> Result<Request, String> {
+        Ok(Request::Do(Command::Respawn {
             target: id,
             kill: true,
-            env: command::Env::default(),
-            argv: argv.iter().map(|a| (*a).to_owned()).collect(),
-        })
+            env: command::EnvPatch::default(),
+            argv: match argv.split_first() {
+                Some((p, args)) => Some(crate::config::Program::new(
+                    (*p).into(),
+                    args.iter().map(|a| (*a).into()).collect(),
+                )?),
+                None => None,
+            },
+        }))
     }
 
     /// The turns that finish what `waiting` waits for, in pane `id`, to
@@ -4436,7 +4483,8 @@ mod tests {
             .flatten()
             .collect();
         s.output(id, &left);
-        let Begun::Waiting(waiting) = s.begin(respawn_of(id, &[]), &Origin::Cli(Caller::default()))
+        let Begun::Waiting(waiting) =
+            s.begin(respawn_of(id, &[])?, &Origin::Cli(Caller::default()))
         else {
             return Err("the predecessor's output must still need turns".into());
         };
@@ -4495,10 +4543,10 @@ mod tests {
         let mut left: Vec<u8> = std::iter::repeat_n(spends, 4).flatten().collect();
         left.push(0x07);
         s.output(id, &left);
-        let Begun::Waiting(waiting) = s.begin(respawn_of(id, &[]), &origin) else {
+        let Begun::Waiting(waiting) = s.begin(respawn_of(id, &[])?, &origin) else {
             return Err("answered before what was left was read".into());
         };
-        let Begun::Done(again) = s.begin(respawn_of(id, &[]), &origin) else {
+        let Begun::Done(again) = s.begin(respawn_of(id, &[])?, &origin) else {
             return Err("a second respawn under way".into());
         };
         assert_eq!(
@@ -4539,7 +4587,7 @@ mod tests {
         s.output(id, &crate::pane::tests::spends_the_budget(23, 80));
         // Programs are started, as a server starts them.
         s.launch = Some("/nonexistent/fux.sock".into());
-        let begun = s.begin(respawn_of(id, &[]), &Origin::Cli(Caller::default()));
+        let begun = s.begin(respawn_of(id, &[])?, &Origin::Cli(Caller::default()));
         s.launch = None;
         let Begun::Waiting(waiting) = begun else {
             return Err("answered before what was left was read".into());
@@ -4591,8 +4639,8 @@ mod tests {
             let respawn = Request::Do(Command::Respawn {
                 target: id,
                 kill,
-                env: command::Env::default(),
-                argv: Vec::new(),
+                env: command::EnvPatch::default(),
+                argv: None,
             });
             let Begun::Waiting(waiting) = s.begin(respawn, &Origin::Cli(Caller::default())) else {
                 return Err("answered before what was left was read".into());
@@ -4624,7 +4672,7 @@ mod tests {
         run(&mut s, "agent-opts 80 24 size str /bin/cat program run")?;
         let id = PaneId::of(2);
         s.output(id, b"\x1b[?2026hheld");
-        let begun = s.begin(respawn_of(id, &[]), &Origin::Cli(Caller::default()));
+        let begun = s.begin(respawn_of(id, &[])?, &Origin::Cli(Caller::default()));
         let Begun::Waiting(waiting) = begun else {
             return Err("answered with a frame held".into());
         };
@@ -4643,7 +4691,7 @@ mod tests {
         run(&mut s, "agent-opts 80 24 size str /bin/cat program run")?;
         let id = PaneId::of(2);
         s.output(id, &crate::pane::tests::spends_the_budget(24, 80));
-        let begun = s.begin(respawn_of(id, &[]), &Origin::Cli(Caller::default()));
+        let begun = s.begin(respawn_of(id, &[])?, &Origin::Cli(Caller::default()));
         let Begun::Waiting(waiting) = begun else {
             return Err("answered before what was left was read".into());
         };
@@ -4667,7 +4715,7 @@ mod tests {
         // Programs are started, as a server starts them.
         s.launch = Some("/nonexistent/fux.sock".into());
         let begun = s.begin(
-            respawn_of(id, &["/bin/sh", "-c", "exit 0"]),
+            respawn_of(id, &["/bin/sh", "-c", "exit 0"])?,
             &Origin::Cli(Caller::default()),
         );
         s.launch = None;
@@ -4723,7 +4771,7 @@ mod tests {
         s.input(c, b"\x1b[6;20;10t");
         let id = PaneId::of(2);
         s.launch = Some("/nonexistent/fux.sock".into());
-        (s.respawn(id, false, &[], &[], &Starting::default())).map_err(|e| e.to_string())?;
+        (s.respawn(id, false, &command::EnvPatch::default(), None)).map_err(|e| e.to_string())?;
         let mut pane = s.parts.pane_mut(id).ok_or("the pane")?;
         let size = pane.size();
         let child = pane.set_process(Process::Absent);
@@ -4750,7 +4798,7 @@ mod tests {
         let origin = Origin::Client(c);
         let here = s.here(&origin).map_err(|e| e.to_string())?;
         let mut cell = |follows: bool| {
-            let opening = s.opening((None, None), (here, follows));
+            let opening = s.opening((Some(Path::new("/")), None), (here, follows));
             opening
                 .map(|(_, _, (_, cell))| cell)
                 .map_err(|e| e.to_string())
@@ -5351,11 +5399,15 @@ mod tests {
     #[test]
     fn a_tab_no_client_shows_is_sized_as_on_a_clients_screen() -> Result<(), String> {
         let (mut s, c) = attached(11, 40)?;
-        output_as(&mut s, Some(c), "opts str +1 workspace in new-tab drop")?;
+        output_as(
+            &mut s,
+            Some(c),
+            "opts str +1 workspace in str / cwd new-tab drop",
+        )?;
         run(&mut s, "str c1 client str @1 tab show-tab")?;
         let size = |s: &Session, p| s.parts.panes().get(&PaneId::of(p)).map(Pane::size);
         assert_eq!(size(&s, 2), Some(sized(10, 40)?));
-        run(&mut s, "str %2 pane vertical split")?;
+        run(&mut s, "str %2 pane vertical str / cwd split")?;
         let (top, bottom) = (size(&s, 2), size(&s, 3));
         let rows = top
             .zip(bottom)
@@ -5370,7 +5422,7 @@ mod tests {
         // Nor does a swap or a move in another tab.
         run(
             &mut s,
-            "%1 split drop %1 %4 swap-panes %4 str new-tab move-to",
+            "%1 str / cwd split drop %1 %4 swap-panes %4 str new-tab move-to",
         )?;
         assert_eq!(size(&s, 2), Some(sized(10, 40)?));
         Ok(())
@@ -5888,7 +5940,7 @@ mod tests {
         output_as(
             &mut s,
             Some(c),
-            "agent-opts str /bin/cat program run me swap focus-pane",
+            "agent-opts str /bin/cat program str / cwd run me swap focus-pane",
         )?;
         let pane = s.focused(c).ok_or("pane")?;
         s.output(pane, b"old text");
@@ -6139,7 +6191,11 @@ mod tests {
             output(&mut s, "@1 str name get @2 str name get")?,
             "given\ntab-2\n"
         );
-        assert!(s.dump_layout(None).contains("str tab-2 rename"));
+        assert!(
+            s.dump_layout(None)
+                .map_err(|e| e.to_string())?
+                .contains("str tab-2 rename")
+        );
         Ok(())
     }
 
@@ -6427,7 +6483,7 @@ mod tests {
         let tab = "opts 80 24 size str +1 workspace in new-tab drop";
         run(&mut s, &format!("{tab} {tab} str @2 tab kill"))?;
         run(&mut s, &format!("{tab} str @4 tab str given rename"))?;
-        let dump = s.dump_layout(None);
+        let dump = s.dump_layout(None).map_err(|e| e.to_string())?;
         assert!(!dump.contains("tab-3"), "{dump}");
         assert!(dump.contains("given"), "{dump}");
         Ok(())
@@ -6448,7 +6504,7 @@ mod tests {
             "opts +1 in 80 24 size str cat name str /bin/cat program run str new-workspace move-to",
         )?;
         run(&mut source, "str shell list str /bin/other end set")?;
-        let dump = source.dump_layout(None);
+        let dump = source.dump_layout(None).map_err(|e| e.to_string())?;
         assert!(!dump.contains("str other rename"), "{dump}");
         let mut again = started(Config::default())?;
         run(&mut again, &dump).map_err(|error| format!("{error}\n{dump}"))?;
@@ -6485,13 +6541,17 @@ mod tests {
         Ok(())
     }
 
-    /// A shell whose directory cannot be read (here none runs) is dumped
-    /// without one, never with `$HOME` in its place: a comment names it.
+    /// A shell with no readable current directory keeps its saved launch cwd.
     #[test]
-    fn a_dump_leaves_out_a_directory_it_cannot_read() -> Result<(), String> {
-        let dump = started(Config::default())?.dump_layout(None);
-        assert!(dump.contains("# %1: its directory is unknown"), "{dump}");
-        assert!(!dump.contains("cwd"), "{dump}");
+    fn a_dump_keeps_the_saved_shell_directory() -> Result<(), String> {
+        let s = started(Config::default())?;
+        let dump = s.dump_layout(None).map_err(|e| e.to_string())?;
+        let cwd = std::env::current_dir().map_err(|e| e.to_string())?;
+        assert!(
+            dump.contains(&format!("str {} cwd", cwd.display())),
+            "{dump}"
+        );
+        assert!(dump.contains("shell-program"), "{dump}");
         Ok(())
     }
 
@@ -6512,11 +6572,11 @@ mod tests {
             name: None,
             size: Some(crate::view::Screen::new(24, 80)?),
             cwd: Some(dir.clone()),
-            env: crate::command::Env::default(),
-            argv: vec!["cat".into()],
+            env: crate::command::EnvPatch::default(),
+            argv: crate::config::Program::new("cat".into(), Vec::new())?,
         };
         s.execute(&program, &Origin::Cli(Caller::default()))?;
-        let dump = s.dump_layout(None);
+        let dump = s.dump_layout(None).map_err(|e| e.to_string())?;
         let _ = dir.parent().map(std::fs::remove_dir_all);
         let told = dump.contains("# %2: its directory \"") && dump.contains("caf\\xE9");
         let written = dump
@@ -6535,7 +6595,7 @@ mod tests {
     fn a_dump_keeps_which_tabs_fit_clients() -> Result<(), String> {
         let (mut s, _) = attached(11, 40)?;
         run(&mut s, "opts 60 20 size str +1 workspace in new-tab drop")?;
-        let dump = s.dump_layout(None);
+        let dump = s.dump_layout(None).map_err(|e| e.to_string())?;
         let mut again = started(Config::default())?;
         run(&mut again, &dump)?;
         let tabs = (again.parts.workspaces().iter()).flat_map(|w| w.tabs());
@@ -6551,11 +6611,11 @@ mod tests {
         let mut s = started(Config::default())?;
         run(&mut s, "opts 600 40 size str +1 workspace in new-tab drop")?;
         let mut again = started(Config::default())?;
-        run(&mut again, &s.dump_layout(None))?;
+        run(&mut again, &s.dump_layout(None).map_err(|e| e.to_string())?)?;
         let tabs = (again.parts.workspaces().iter()).flat_map(|w| w.tabs());
         let mut sizes = tabs.map(|t| t.fit().size());
         let wide = sizes.any(|s| (s.cols(), s.rows()) == (600, 40));
-        assert!(wide, "{}", s.dump_layout(None));
+        assert!(wide, "{}", s.dump_layout(None).map_err(|e| e.to_string())?);
         Ok(())
     }
 
@@ -6568,7 +6628,7 @@ mod tests {
         run(&mut s, "%1 split drop %1 vertical split drop")?;
         run(&mut s, "str c1 client %1 focus-pane str c1 client zoom")?;
         let replays = |s: &Session| {
-            let dump = s.dump_layout(None);
+            let dump = s.dump_layout(None).map_err(|e| e.to_string())?;
             let mut again = started(Config::default())?;
             run(&mut again, &dump).map_err(|e| format!("{e}\n{dump}"))?;
             Ok::<_, String>(again.parts.panes().len())
@@ -6595,7 +6655,9 @@ mod tests {
     /// Tab `tab` dumped and made again where no client is: its panes'
     /// places there.
     fn replayed(s: &Session, tab: TabId) -> Result<Vec<Rect>, String> {
-        let dump = s.dump_layout(Some(AnyRef::Tab(tab)));
+        let dump = s
+            .dump_layout(Some(AnyRef::Tab(tab)))
+            .map_err(|e| e.to_string())?;
         let mut again = started(Config::default())?;
         run(&mut again, &dump).map_err(|e| format!("{e}\n{dump}"))?;
         let made = (again.parts.workspaces().iter())
@@ -6696,7 +6758,7 @@ mod tests {
         // The narrow one, zoomed, follows the split unzoomed.
         run(&mut s, "str c2 client zoom")?;
         let lines = told(&mut s, |s| {
-            let _ = run(s, "%1 split drop");
+            let _ = run(s, "%1 str / cwd split drop");
         });
         assert!(
             lines.contains(r#""created","pane":"%2""#)
@@ -6705,7 +6767,7 @@ mod tests {
         );
         assert_eq!(size(&s, 2), Some(sized(10, 40)?));
         let lines = told(&mut s, |s| {
-            let _ = output_as(s, Some(wide), "opts 30 5 size new-tab drop");
+            let _ = output_as(s, Some(wide), "opts 30 5 size str / cwd new-tab drop");
         });
         assert!(
             lines.contains(r#""created","pane":"%3""#)
@@ -6728,12 +6790,16 @@ mod tests {
         let one = s.attach(1, 40, None).map_err(|e| e.to_string())?;
         s.attach(11, 40, None).map_err(|e| e.to_string())?;
         s.detach(small);
-        output_as(&mut s, Some(one), "opts str +1 workspace in new-tab drop")?;
+        output_as(
+            &mut s,
+            Some(one),
+            "opts str +1 workspace in str / cwd new-tab drop",
+        )?;
         let size = s.parts.panes().get(&PaneId::of(2)).map(Pane::size);
         assert_eq!(size, Some(sized(10, 40)?));
         let small = s.attach(5, 6, None).map_err(|e| e.to_string())?;
-        let made = "opts 100 10 size str +1 workspace in new-tab \
-                    dup split drop dup split drop split drop";
+        let made = "opts 100 10 size str +1 workspace in str / cwd new-tab \
+                    dup str / cwd split drop dup str / cwd split drop str / cwd split drop";
         run(&mut s, made)?;
         let refused = output_as(&mut s, Some(small), "%2 str @3 tab move-to").err();
         let refused = refused.unwrap_or_default();
@@ -6839,7 +6905,9 @@ mod tests {
             "%6 kill",
         ] {
             run(&mut s, change)?;
-            let dump = s.dump_layout(Some(AnyRef::Tab(tab)));
+            let dump = s
+                .dump_layout(Some(AnyRef::Tab(tab)))
+                .map_err(|e| e.to_string())?;
             let mut again = started(Config::default())?;
             run(&mut again, &dump).map_err(|e| format!("{change}: {e}\n{dump}"))?;
             let made = (again.parts.workspaces().iter())

@@ -182,15 +182,21 @@ fn told(id: PaneId, pane: Option<&Pane>, since: Counts, run: Run) -> Option<Pane
 mod tests {
     use crate::command::{Counts, Run, Version};
     use crate::id::PaneId;
+    use crate::pane::Pane;
     use crate::pane::tests::Lone;
-    use crate::pane::{Pane, Runs};
 
     /// A wait answers no change part way through a frame, and the frame's
     /// whole screen once it is read.
     #[test]
     fn a_wait_answers_a_frame_whole() -> Result<(), Box<dyn std::error::Error>> {
         let size = fux_vt::Size::new(50, 200)?;
-        let mut pane = Lone::new(Pane::new(PaneId::of(1), None, Runs::DefaultShell, size, 0)?);
+        let mut pane = Lone::new(Pane::new(
+            PaneId::of(1),
+            None,
+            crate::pane::tests::shell()?,
+            size,
+            0,
+        )?);
         let (since, run) = (pane.counts(), Run::now().ok_or("a clock")?);
         let mut frame = b"\x1b[?2026h".to_vec();
         frame.extend(crate::pane::tests::spends_the_budget(50, 200));

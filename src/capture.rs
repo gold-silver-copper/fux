@@ -5,7 +5,7 @@
 use crate::command::{CaptureView, Run, Source, Version};
 use crate::id::ClientId;
 use crate::json::Json;
-use crate::pane::{Pane, Process, Runs};
+use crate::pane::{Pane, Process};
 use crate::wire::{wire, wire_enum};
 use fux_vt::{
     Attributes, Blink, Color, CommandMark, Mode, MouseProtocolMode, Rgb, Row, Screen,
@@ -373,10 +373,15 @@ pub fn state(pane: &Pane, now: Instant, copy_mode: bool) -> Vec<(&'static str, J
     let program = leader.and_then(fuxix::process::name);
     let argv = leader.and_then(fuxix::process::argv);
     let cwd = leader.and_then(fuxix::process::cwd);
-    let launch_argv = match &pane.runs {
-        Runs::Explicit(launch) => Json::Array(launch.argv.iter().map(Json::str).collect()),
-        Runs::DefaultShell => Json::Null,
-    };
+    let launch_argv = Json::Array(
+        pane.runs
+            .launch()
+            .argv
+            .argv()
+            .iter()
+            .map(Json::str)
+            .collect(),
+    );
     let idle = now.saturating_duration_since(pane.wrote_at).as_millis();
     let last_status = screen.commands().last_status;
     let (exited, signal) = match pane.process().exit_status() {
@@ -678,8 +683,8 @@ fn described(a: Attributes) -> Vec<(&'static str, Json)> {
 mod tests {
     use crate::command::CaptureView;
     use crate::id::PaneId;
+    use crate::pane::Pane;
     use crate::pane::tests::Lone;
-    use crate::pane::{Pane, Runs};
 
     /// A soft-wrapped row's last cell is the spacer a wide glyph left, no
     /// part of the line, only while nothing was painted there: a blank EL
@@ -691,7 +696,13 @@ mod tests {
         let join = CaptureView::default();
         let captured = |output: &str| -> Result<String, Box<dyn std::error::Error>> {
             let size = fux_vt::Size::new(3, 5)?;
-            let mut pane = Lone::new(Pane::new(PaneId::of(1), None, Runs::DefaultShell, size, 0)?);
+            let mut pane = Lone::new(Pane::new(
+                PaneId::of(1),
+                None,
+                crate::pane::tests::shell()?,
+                size,
+                0,
+            )?);
             pane.output(output.as_bytes());
             Ok(super::pane(
                 &pane,
@@ -719,7 +730,13 @@ mod tests {
     #[test]
     fn rows_inside_a_wrapped_line_take_it_whole() -> Result<(), Box<dyn std::error::Error>> {
         let size = fux_vt::Size::new(6, 5)?;
-        let mut pane = Lone::new(Pane::new(PaneId::of(1), None, Runs::DefaultShell, size, 0)?);
+        let mut pane = Lone::new(Pane::new(
+            PaneId::of(1),
+            None,
+            crate::pane::tests::shell()?,
+            size,
+            0,
+        )?);
         pane.output(b"top\r\nabcdefghijklm\r\nend");
         let run = crate::command::Run::now().ok_or("a clock")?;
         let capture = |rows, wrapped| {
@@ -747,7 +764,13 @@ mod tests {
             ..CaptureView::default()
         };
         let size = fux_vt::Size::new(3, 5)?;
-        let mut pane = Lone::new(Pane::new(PaneId::of(1), None, Runs::DefaultShell, size, 0)?);
+        let mut pane = Lone::new(Pane::new(
+            PaneId::of(1),
+            None,
+            crate::pane::tests::shell()?,
+            size,
+            0,
+        )?);
         // 世 at col 4 does not fit and wraps on, leaving the spacer there.
         pane.output("abcd\x1b[5G世".as_bytes());
         let text = super::pane(
@@ -769,7 +792,7 @@ mod tests {
         let mut pane = Lone::new(Pane::new(
             PaneId::of(1),
             None,
-            Runs::DefaultShell,
+            crate::pane::tests::shell()?,
             fux_vt::Size::new(5, 5)?,
             0,
         )?);
@@ -852,7 +875,7 @@ mod tests {
         let mut pane = Lone::new(Pane::new(
             PaneId::of(1),
             None,
-            Runs::DefaultShell,
+            crate::pane::tests::shell()?,
             fux_vt::Size::new(2, 10)?,
             0,
         )?);
@@ -911,7 +934,7 @@ mod tests {
         let mut pane = Lone::new(Pane::new(
             PaneId::of(1),
             None,
-            Runs::DefaultShell,
+            crate::pane::tests::shell()?,
             fux_vt::Size::new(6, 5)?,
             0,
         )?);
@@ -941,7 +964,13 @@ mod tests {
         use crate::json::Json;
         use crate::wire::{Reader, encode};
         let size = fux_vt::Size::new(3, 20)?;
-        let mut pane = Lone::new(Pane::new(PaneId::of(1), None, Runs::DefaultShell, size, 0)?);
+        let mut pane = Lone::new(Pane::new(
+            PaneId::of(1),
+            None,
+            crate::pane::tests::shell()?,
+            size,
+            0,
+        )?);
         pane.output(b"\x1b[1;4:3;5;38;2;1;2;3;48;5;9;58;5;2mstyled\x1b[m plain");
         let view = CaptureView {
             styles: true,
@@ -969,7 +998,13 @@ mod tests {
             ..CaptureView::default()
         };
         let size = fux_vt::Size::new(3, 20)?;
-        let mut pane = Lone::new(Pane::new(PaneId::of(1), None, Runs::DefaultShell, size, 0)?);
+        let mut pane = Lone::new(Pane::new(
+            PaneId::of(1),
+            None,
+            crate::pane::tests::shell()?,
+            size,
+            0,
+        )?);
         pane.output(b"$ \x1b]133;C\x07hello\x1b]133;D;0\x07PROMPT> ");
         let text = super::pane(
             &pane,

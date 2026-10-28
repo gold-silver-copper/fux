@@ -1412,7 +1412,6 @@ impl Server {
             cwd,
             pane,
             server,
-            env,
             client,
             ..
         } = context;
@@ -1437,7 +1436,6 @@ impl Server {
                 gave: pane,
                 within,
                 cwd: Some(cwd),
-                env,
             }),
         };
         let begun = session.begin(request, &origin);

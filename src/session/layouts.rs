@@ -1,7 +1,8 @@
 //! What a session holds, written as the fuxth program that makes it again
 //! (`dump`): each pane made becomes a constant (`p5`) that later lines name.
 //! Its layouts and launches, never its processes' state.
-use super::Session;
+use super::{Error, Session, fail};
+use crate::code::Raise;
 use crate::command::AnyRef;
 use crate::id::{PaneId, WsId};
 use crate::layout::{Axis, Tree};
@@ -11,10 +12,12 @@ use crate::workspace::{Fit, Tab, Workspace};
 impl Session {
     /// What there is, or `only` that tab or workspace (a pane's: its tab),
     /// as a fuxth program.
-    pub(crate) fn dump_layout(&self, only: Option<AnyRef>) -> String {
+    pub(crate) fn dump_layout(&self, only: Option<AnyRef>) -> Result<String, Error> {
         // A script, as a file `chmod +x` makes runnable.
         let shebang = crate::script::SHEBANG;
-        let mut out = format!("{shebang}\n# fux: running this makes it again\n");
+        let mut out = format!(
+            "{shebang}\n# fux: running this makes it again\n# Environment patches apply to the server startup environment.\n"
+        );
         // A tab's or a pane's is its tab alone, not its workspace's part.
         let whole = match only {
             None | Some(AnyRef::Workspace(_)) => true,
@@ -27,16 +30,23 @@ impl Session {
                 .filter(|t| self.takes_in(only, ws.id(), t.id()));
             for (i, tab) in tabs.enumerate() {
                 // The first opens its workspace.
-                self.dump_tab(ws, tab, whole, whole && i == 0, &mut out);
+                self.dump_tab(ws, tab, whole, whole && i == 0, &mut out)?;
             }
         }
-        out
+        Ok(out)
     }
 
     /// The lines that make tab `tab` of `ws`, and its panes:
     /// with `whole`, as part of its workspace, which it `opens` if it is the
     /// first written.
-    fn dump_tab(&self, ws: &Workspace, tab: &Tab, whole: bool, opens: bool, out: &mut String) {
+    fn dump_tab(
+        &self,
+        ws: &Workspace,
+        tab: &Tab,
+        whole: bool,
+        opens: bool,
+        out: &mut String,
+    ) -> Result<(), Error> {
         let (root, first) = (tab.root(), tab.root().first_pane());
         let program = self.program(first);
         // An unnamed workspace is recreated as a new workspace, never
@@ -56,7 +66,7 @@ impl Session {
         let size = tab.fit().size();
         let (cols, rows) = (size.cols().to_string(), size.rows().to_string());
         line.extend([cols, rows, "size".to_owned()]);
-        self.pane_words(first, &mut line, out);
+        self.pane_words(first, &mut line, out)?;
         line.push(
             if creates && program.is_none() {
                 "new-workspace"
@@ -69,19 +79,19 @@ impl Session {
         );
         let named = pane_name(first);
         line.extend(["let".to_owned(), named.clone()]);
-        push(out, &line);
+        push(out, &line)?;
         if let Some(name) = tab.name() {
             let mut line = vec![named.clone(), "tab".to_owned()];
             line.extend(string(name).chain(["rename".to_owned()]));
-            push(out, &line);
+            push(out, &line)?;
         }
         if opens {
-            push(out, &[&named, "workspace", "let", &workspace(ws.id())]);
+            push(out, &[&named, "workspace", "let", &workspace(ws.id())])?;
         }
         if matches!(tab.fit(), Fit::Clients(_)) {
-            push(out, &[&named, "tab", "resize-auto"]);
+            push(out, &[&named, "tab", "resize-auto"])?;
         }
-        self.dump_tree(root, out);
+        self.dump_tree(root, out)?;
         // Panes renamed keep their names.
         for pane in root.panes() {
             let Some(p) = self.parts.panes().get(&pane) else {
@@ -90,18 +100,19 @@ impl Session {
             if let Some(name) = p.name() {
                 let mut line = vec![pane_name(pane)];
                 line.extend(string(name).chain(["rename".to_owned()]));
-                push(out, &line);
+                push(out, &line)?;
             }
         }
+        Ok(())
     }
 
     /// The `split` lines that make `tree` from its first pane: each
     /// divides what its first child's first pane has with its second's,
     /// as its shares say, and then each child is made from those. So the
     /// layout made again is the one there is, share for share.
-    fn dump_tree(&self, tree: &Tree, out: &mut String) {
+    fn dump_tree(&self, tree: &Tree, out: &mut String) -> Result<(), Error> {
         let Tree::Split(split) = tree else {
-            return;
+            return Ok(());
         };
         let (first, second) = split.children();
         let way = match split.axis() {
@@ -112,11 +123,12 @@ impl Session {
         let pane = second.first_pane();
         let mut line = vec![pane_name(first.first_pane()), way.into()];
         line.extend([a.to_string(), b.to_string(), "shares".to_owned()]);
-        self.pane_words(pane, &mut line, out);
+        self.pane_words(pane, &mut line, out)?;
         line.extend(["split".to_owned(), "let".to_owned(), pane_name(pane)]);
-        push(out, &line);
-        self.dump_tree(first, out);
-        self.dump_tree(second, out);
+        push(out, &line)?;
+        self.dump_tree(first, out)?;
+        self.dump_tree(second, out)?;
+        Ok(())
     }
 
     /// The program `run` started in pane `id`, if it runs one: its words,
@@ -124,37 +136,76 @@ impl Session {
     fn program(&self, id: PaneId) -> Option<&Launch> {
         match &self.parts.panes().get(&id)?.runs {
             Runs::Explicit(launch) => Some(launch),
-            Runs::DefaultShell => None,
+            Runs::Shell(_) => None,
         }
     }
 
     /// The options a line gives pane `id`: where it starts, and a program's
-    /// variables and words. A directory that is not text, which a fuxth
-    /// string cannot hold, or a shell's that cannot be read, is left out,
+    /// variables and words. The current directory is used when known, else
+    /// the saved launch directory. A directory that is not text is left out,
     /// never written changed or guessed: a comment in `out` says so, and
     /// the line starts it where it runs.
-    fn pane_words(&self, id: PaneId, line: &mut Vec<String>, out: &mut String) {
-        let program = self.program(id);
-        let cwd = program.map(|launch| launch.cwd.clone());
-        let cwd = cwd.or_else(|| self.dir_of(id));
+    fn pane_words(
+        &self,
+        id: PaneId,
+        line: &mut Vec<String>,
+        out: &mut String,
+    ) -> Result<(), Error> {
+        let Some(pane) = self.parts.panes().get(&id) else {
+            return Ok(());
+        };
+        let (launch, shell) = match &pane.runs {
+            Runs::Shell(launch) => (launch, true),
+            Runs::Explicit(launch) => (launch, false),
+        };
+        let cwd = self.dir_of(id).or_else(|| Some(launch.cwd.clone()));
+        line.extend([
+            "list".to_owned(),
+            "end".to_owned(),
+            "copy-environment".to_owned(),
+        ]);
         match cwd.as_deref().map(|cwd| (cwd, cwd.to_str())) {
             Some((_, Some(cwd))) => line.extend(string(cwd).chain(["cwd".to_owned()])),
-            Some((cwd, None)) => out.push_str(&format!(
-                "# {id}: its directory {cwd:?} is not UTF-8 text, so it starts where this runs\n"
-            )),
-            None => out.push_str(&format!(
-                "# {id}: its directory is unknown, so it starts where this runs\n"
-            )),
+            Some((cwd, None)) => append(
+                out,
+                &format!(
+                    "# {id}: its directory {cwd:?} is not UTF-8 text, so it starts where this runs\n"
+                ),
+            )?,
+            None => append(
+                out,
+                &format!("# {id}: its directory is unknown, so it starts where this runs\n"),
+            )?,
         }
-        for (key, value) in program.iter().flat_map(|launch| &launch.env) {
-            line.extend(string(key).chain(string(value)).chain(["env".to_owned()]));
+        for (key, value) in launch.env.as_slice() {
+            match value {
+                None => line.extend(string(key).chain(["unset-env".to_owned()])),
+                Some(value) => match value.to_str() {
+                    Some(value) => {
+                        line.extend(string(key).chain(string(value)).chain(["env".to_owned()]))
+                    }
+                    None => append(
+                        out,
+                        &format!(
+                            "# {id}: environment {key} is not UTF-8 text; its saved value is omitted\n"
+                        ),
+                    )?,
+                },
+            }
         }
-        if let Some(launch) = program {
-            for (i, word) in launch.argv.iter().enumerate() {
+        if shell {
+            line.push("list".to_owned());
+            for word in launch.argv.argv() {
+                line.extend(string(&word));
+            }
+            line.extend(["end".to_owned(), "shell-program".to_owned()]);
+        } else {
+            for (i, word) in launch.argv.argv().iter().enumerate() {
                 let what = if i == 0 { "program" } else { "arg" };
                 line.extend(string(word).chain([what.to_owned()]));
             }
         }
+        Ok(())
     }
 }
 
@@ -175,8 +226,16 @@ fn string(text: &str) -> impl Iterator<Item = String> {
 
 /// Appends a line of words, each quoted as fuxth's tokenizer reads it
 /// back.
-fn push(out: &mut String, line: &[impl AsRef<str>]) {
+fn push(out: &mut String, line: &[impl AsRef<str>]) -> Result<(), Error> {
     let words = line.iter().map(|w| crate::words::quote(w.as_ref()));
-    out.push_str(&super::joined(words, " "));
-    out.push('\n');
+    append(out, &super::joined(words, " "))?;
+    append(out, "\n")
+}
+
+fn append(out: &mut String, text: &str) -> Result<(), Error> {
+    if out.len().saturating_add(text.len()) > super::DUMP_BYTES {
+        return Err(fail(Raise::TooLong, "dump exceeds the 16 MiB limit"));
+    }
+    out.push_str(text);
+    Ok(())
 }

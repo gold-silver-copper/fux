@@ -136,8 +136,10 @@ pub struct Opts {
     pub name: Option<String>,
     pub size: crate::command::Size,
     pub cwd: Option<std::path::PathBuf>,
-    pub env: crate::command::Env,
+    pub env: crate::command::EnvPatch,
     pub argv: Vec<String>,
+    pub shell: Option<bool>,
+    pub copy_environment: Option<Vec<crate::config::EnvName>>,
     pub axis: Option<Axis>,
     /// A split's shares (`shares`).
     pub shares: Option<(std::num::NonZeroU32, std::num::NonZeroU32)>,
@@ -349,6 +351,7 @@ pub enum Local {
         workspace: Option<WsRef>,
         read_only: bool,
         size: Option<fux_vt::Size>,
+        creation: Box<Opts>,
     },
     /// The server for what follows: its socket, by name or path.
     Server(Choice),
@@ -1238,6 +1241,7 @@ fn local(
             workspace,
             read_only,
             size,
+            creation,
         } => {
             if size.is_none() && std::env::var_os("FUX_PANE").is_some_and(|p| !p.is_empty()) {
                 let why = "this is a fux pane: attaching here would show fux inside itself \
@@ -1295,6 +1299,7 @@ fn local(
                 of: *of,
                 workspace: workspace.clone(),
                 read_only: *read_only,
+                creation: creation.as_ref().clone(),
                 state: committed,
                 problem,
             };
@@ -1526,7 +1531,7 @@ fn a_file(mut error: fuxth::Error, args: &[String]) -> fuxth::Error {
 /// never a file, whatever it holds; else each is a word.
 fn program(args: &[String]) -> Result<(Vec<Token>, Given), Failed> {
     let words = match args {
-        [] => token::arguments(&["opts", "attach"]),
+        [] => token::arguments(&["default-attach"]),
         // A program read whole, at most `SOURCE_MAX` of it.
         [dash] if dash == "-" => {
             let text = read_text("stdin", io::stdin(), SOURCE_MAX)?;

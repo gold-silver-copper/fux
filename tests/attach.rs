@@ -92,7 +92,7 @@ fn a_connection_that_ends_takes_its_client_with_it() -> Outcome {
         size: sized(5, 20)?,
         workspace: None,
         read_only: false,
-        env: Vec::new(),
+        initial: None,
     };
     let hello = Hello {
         protocol: PROTOCOL,
@@ -859,9 +859,15 @@ fn a_program_that_cannot_start_is_reported_as_the_system_says() -> Outcome {
         ),
     ] {
         let program = program.to_string_lossy();
-        server.ok(&["str", "shell", "list", "str", &program, "end", "set"])?;
         let cwd_text = cwd.to_string_lossy();
         let out = server.fux(&[
+            "str",
+            "shell",
+            "list",
+            "str",
+            &program,
+            "end",
+            "set",
             "opts",
             "80",
             "24",
@@ -942,39 +948,29 @@ fn a_server_a_client_started_outlives_the_clients_terminal() -> Outcome {
     after
 }
 
-/// A first shell started where nothing says where starts in `$HOME`, or
-/// not at all: unset or not an absolute path, the attach fails naming it;
-/// set to no directory, it fails with the system's error. None starts in
-/// `/`, the server's own directory.
+/// The first pane uses the invoking client's directory, regardless of HOME.
 #[test]
-fn a_first_shell_with_no_usable_home_is_refused() -> Outcome {
+fn a_first_shell_starts_in_the_invocation_directory() -> Outcome {
     let dir = fuxix::file::scratch()
         .map_err(e)?
-        .join(format!("fux-home-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
+        .join(format!("fux-cwd-{}", std::process::id()));
     std::fs::create_dir_all(&dir).map_err(e)?;
     use std::os::unix::fs::PermissionsExt;
     std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).map_err(e)?;
-    let nowhere = dir.join("no-such-home");
-    let cases = [
-        (None, "$HOME is not set".to_owned()),
-        (
-            Some(std::path::Path::new("")),
-            r#"$HOME is "", not"#.to_owned(),
-        ),
-        (
-            Some(std::path::Path::new("tmp")),
-            r#"$HOME is "tmp", not"#.to_owned(),
-        ),
-        (
-            Some(nowhere.as_path()),
-            format!("in {nowhere:?}: No such file or directory (os error 2)"),
-        ),
-    ];
-    for (i, (home, said)) in cases.into_iter().enumerate() {
+    for (i, home) in [
+        None,
+        Some(""),
+        Some("relative"),
+        Some("/nonexistent/fux-home"),
+    ]
+    .into_iter()
+    .enumerate()
+    {
         let socket = dir.join(format!("s{i}")).join("fux.sock");
+        let marker = dir.join(format!("cwd{i}"));
         let mut terminal = Terminal::start(10, 40, &[FUX], |command| {
             command
+                .current_dir(&dir)
                 .env("FUX_SOCKET", &socket)
                 .env("SHELL", "/bin/sh")
                 .env("XDG_CONFIG_HOME", &dir);
@@ -983,16 +979,20 @@ fn a_first_shell_with_no_usable_home_is_refused() -> Outcome {
                 None => command.env_remove("HOME"),
             };
         })?;
+        terminal.wait_for("%1")?;
+        terminal.type_bytes(format!("pwd > '{}'; exit\r", marker.display()).as_bytes())?;
         let status = terminal.wait_exit();
         let _ = std::process::Command::new(FUX)
             .arg("force-kill-server")
             .env("FUX_SOCKET", &socket)
             .output();
-        let output = String::from_utf8_lossy(&terminal.output).into_owned();
-        assert!(!status?.success(), "{output}");
-        assert!(output.contains(&said), "{output}");
+        assert!(status?.success());
+        assert_eq!(
+            std::fs::read_to_string(&marker).map_err(e)?.trim(),
+            dir.to_str().ok_or("cwd text")?
+        );
     }
-    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::remove_dir_all(&dir).map_err(e)?;
     Ok(())
 }
 

@@ -535,25 +535,27 @@ wire! {
             size: Size,
             /// Where its shell starts (default: the caller's directory).
             cwd: Option<PathBuf>,
-            env: Env,
+            env: EnvPatch,
+            start: Start,
         },
         NewTab {
             target: Option<WsRef>,
             name: Option<String>,
             size: Size,
             cwd: Option<PathBuf>,
-            env: Env,
+            env: EnvPatch,
+            start: Start,
         },
         Split {
             axis: Axis,
             target: PaneId,
             /// A program started in place of a shell, as `run` starts one,
             /// if given.
-            argv: Vec<String>,
+            start: Start,
             /// Where its shell starts (default: the caller's directory; from a
             /// client, the split pane's).
             cwd: Option<PathBuf>,
-            env: Env,
+            env: EnvPatch,
             /// The shares of their split the split pane and the new one
             /// take (`shares`), if given; else the pane's is halved.
             shares: Option<(NonZeroU32, NonZeroU32)>,
@@ -565,17 +567,17 @@ wire! {
             name: Option<String>,
             size: Size,
             cwd: Option<PathBuf>,
-            env: Env,
-            argv: Vec<String>,
+            env: EnvPatch,
+            argv: crate::config::Program,
         },
         /// The program `run` started, started again in its pane.
         Respawn {
             target: PaneId,
             /// Ends it first if it still runs.
             kill: bool,
-            env: Env,
+            env: EnvPatch,
             /// Another program instead: the one it ran without.
-            argv: Vec<String>,
+            argv: Option<crate::config::Program>,
         },
         /// A notice on the clients showing the target: every client without.
         Notify {
@@ -772,17 +774,112 @@ pub(crate) fn pane_var(name: &str) -> Result<(), String> {
 /// Variables a pane's program is given: shell names other than its native
 /// identity, checked from words and the wire alike.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct Env(Vec<(String, String)>);
+pub struct EnvPatch(Vec<(String, Option<std::ffi::OsString>)>);
 
-impl Env {
-    /// `name` set to `value` too: refused if invalid or reserved.
-    pub fn push(&mut self, name: String, value: String) -> Result<(), String> {
+impl EnvPatch {
+    /// The most distinct selected or explicit environment names in one launch.
+    pub const MAX_NAMES: usize = 1024;
+    /// A distinct checked name, either set to bytes or explicitly unset.
+    pub fn push(&mut self, name: String, value: Option<std::ffi::OsString>) -> Result<(), String> {
+        use std::os::unix::ffi::OsStrExt;
         pane_var(&name)?;
+        if self.0.len() >= Self::MAX_NAMES {
+            return Err("environment patch exceeds 1024 names".to_owned());
+        }
+        if self.0.iter().any(|(key, _)| key == &name) {
+            return Err(format!("{name}: repeated environment name"));
+        }
+        if value.as_ref().is_some_and(|v| v.as_bytes().contains(&0)) {
+            return Err(format!("{name}: an environment value holds no NUL"));
+        }
+        if self
+            .encoded_len()
+            .saturating_add(Self::entry_len(&name, &value))
+            > crate::protocol::MAX_PAYLOAD
+        {
+            return Err("environment patch exceeds the launch frame limit".to_owned());
+        }
         self.0.push((name, value));
         Ok(())
     }
-    pub fn as_slice(&self) -> &[(String, String)] {
+    pub fn as_slice(&self) -> &[(String, Option<std::ffi::OsString>)] {
         &self.0
+    }
+
+    /// Explicit operation values replace selected or saved values.
+    pub fn overlay(&mut self, other: &Self) -> Result<(), String> {
+        let names = self
+            .0
+            .iter()
+            .filter(|(key, _)| !other.0.iter().any(|(k, _)| k == key))
+            .count()
+            .saturating_add(other.0.len());
+        if names > Self::MAX_NAMES {
+            return Err("environment patch exceeds 1024 names".to_owned());
+        }
+        let bytes = self
+            .0
+            .iter()
+            .filter(|(key, _)| !other.0.iter().any(|(k, _)| k == key))
+            .fold(other.encoded_len(), |bytes, (k, v)| {
+                bytes.saturating_add(Self::entry_len(k, v))
+            });
+        if bytes > crate::protocol::MAX_PAYLOAD {
+            return Err("environment patch exceeds the launch frame limit".to_owned());
+        }
+        for (name, value) in &other.0 {
+            self.0.retain(|(key, _)| key != name);
+            self.0.push((name.clone(), value.clone()));
+        }
+        Ok(())
+    }
+
+    fn entry_len(name: &str, value: &Option<std::ffi::OsString>) -> usize {
+        9usize
+            .saturating_add(name.len())
+            .saturating_add(value.as_ref().map_or(0, |v| 8usize.saturating_add(v.len())))
+    }
+    pub(crate) fn encoded_len(&self) -> usize {
+        self.0.iter().fold(8usize, |bytes, (k, v)| {
+            bytes.saturating_add(Self::entry_len(k, v))
+        })
+    }
+
+    /// Capture only the selected names, including explicit absence.
+    pub fn selected(names: &[crate::config::EnvName]) -> Result<Self, String> {
+        let mut patch = Self::default();
+        for name in names {
+            patch.push(name.as_str().to_owned(), std::env::var_os(name.as_str()))?;
+        }
+        Ok(patch)
+    }
+}
+
+wire! {
+    /// The role determines exit, signal and respawn semantics; argv is explicit.
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    pub enum Start {
+        Shell(argv: crate::config::Program),
+        Program(argv: crate::config::Program),
+    }
+}
+
+impl Start {
+    pub fn argv(&self) -> &crate::config::Program {
+        match self {
+            Self::Shell(argv) | Self::Program(argv) => argv,
+        }
+    }
+}
+
+wire! {
+    /// Conditional first-pane inputs, used only by an empty writable attach.
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    pub struct InitialWorkspace {
+        pub name: Option<String>,
+        pub start: Start,
+        pub cwd: PathBuf,
+        pub env: EnvPatch,
     }
 }
 

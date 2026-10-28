@@ -49,10 +49,6 @@ pub trait Reads: Sized {
 }
 
 settings! {
-    /// The program a pane given none runs (not one `run` or `split` gives
-    /// its own), then its arguments: a list of strings, each one word whatever
-    /// it holds, as `list str /bin/zsh str -l end`.
-    shell Shell: Shell = default_shell();
     /// The bytes of history each pane keeps: how far copy mode scrolls and
     /// `history capture` reads. Past it, the oldest rows go; a change
     /// applies to every pane.
@@ -70,13 +66,6 @@ settings! {
     bell Bell: bool = true;
     /// Your terminal's title follows the focused pane.
     titles Titles: bool = false;
-    /// Variables a new pane takes from whoever starts it (a request's
-    /// caller, the client whose key it is) rather than from the server,
-    /// which may have started long ago. One the starter lacks is unset,
-    /// but `FUX`, `FUX_PANE`, `FUX_SOCKET` and `FUX_SERVER` are reserved:
-    /// requesting them here or in `env` is refused.
-    update_environment UpdateEnvironment: Vec<EnvName> =
-        Vec::new();
 }
 
 /// The most paste buffers kept.
@@ -113,37 +102,6 @@ impl Limit {
     pub fn seconds(self) -> u32 {
         self.0
     }
-}
-
-/// The user's login shell from `/etc/passwd`, for when `SHELL` is unset
-/// (a service, a sandbox, a cleared environment).
-fn login_shell() -> Option<String> {
-    let passwd = std::fs::read_to_string("/etc/passwd").ok()?;
-    shell_of(&passwd, fuxix::process::geteuid())
-}
-
-/// The shell of user `uid` in `passwd`, the text of `/etc/passwd`.
-fn shell_of(passwd: &str, uid: u32) -> Option<String> {
-    let uid = uid.to_string();
-    passwd.lines().find_map(|line| {
-        let fields: Vec<&str> = line.split(':').collect();
-        (fields.get(2) == Some(&uid.as_str()))
-            .then(|| fields.get(6).map(|s| s.trim().to_owned()))
-            .flatten()
-            .filter(|s| !s.is_empty())
-    })
-}
-
-/// `SHELL`, else the login shell, else `/bin/sh`: the program alone, with
-/// no arguments.
-fn default_shell() -> Shell {
-    let alone = |program| Shell::new(program, Vec::new()).ok();
-    (std::env::var("SHELL").ok().and_then(alone))
-        .or_else(|| login_shell().and_then(alone))
-        .unwrap_or_else(|| Shell {
-            program: "/bin/sh".to_owned(),
-            args: Vec::new(),
-        })
 }
 
 /// Why `value` is not what a setting takes.
@@ -235,18 +193,18 @@ impl Reads for bool {
     }
 }
 
-/// The shell fux starts in a pane: a program, never empty, then its
+/// The argv fux starts in a pane: a program, never empty, then its
 /// arguments, each a word as it is, blanks, quotes and all, but for NUL,
 /// which no word a program is given holds.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Shell {
+pub struct Program {
     program: String,
     args: Vec<String>,
 }
 
-impl Shell {
-    /// `program` and `args`, or why they are no shell.
-    pub fn new(program: String, args: Vec<String>) -> Result<Shell, String> {
+impl Program {
+    /// `program` and `args`, or why they are no program.
+    pub fn new(program: String, args: Vec<String>) -> Result<Program, String> {
         if program.is_empty() {
             return Err("a program is needed".to_owned());
         }
@@ -256,7 +214,19 @@ impl Shell {
         {
             return Err(format!("{word:?}: a program's word holds no NUL"));
         }
-        Ok(Shell { program, args })
+        let checked = Program { program, args };
+        if checked.encoded_len() > crate::protocol::MAX_PAYLOAD {
+            return Err("program argv exceeds the launch frame limit".to_owned());
+        }
+        Ok(checked)
+    }
+
+    pub(crate) fn encoded_len(&self) -> usize {
+        std::iter::once(&self.program)
+            .chain(&self.args)
+            .fold(8usize, |bytes, word| {
+                bytes.saturating_add(8).saturating_add(word.len())
+            })
     }
 
     pub fn program(&self) -> &str {
@@ -271,26 +241,26 @@ impl Shell {
 }
 
 /// The program, then its arguments: a list of strings, not empty.
-impl Reads for Shell {
+impl Reads for Program {
     fn takes() -> String {
         "a list of strings: a program, then its arguments".to_owned()
     }
-    fn read(value: &Value<Fux>) -> Result<Shell, String> {
+    fn read(value: &Value<Fux>) -> Result<Program, String> {
         let mut words = strings(value)?.into_iter();
         let program = words.next().ok_or("a program is needed")?;
-        Shell::new(program, words.collect())
+        Program::new(program, words.collect())
     }
 }
 
-/// Read back only if it is a shell.
-impl Wire for Shell {
+/// Read back only checked argv.
+impl Wire for Program {
     fn put(&self, out: &mut Vec<u8>) {
         self.program.put(out);
         self.args.put(out);
     }
     fn get(r: &mut Reader<'_>) -> Result<Self, Error> {
         let (program, args) = (String::get(r)?, Vec::get(r)?);
-        Shell::new(program, args).map_err(|_| Error::Bad("shell"))
+        Program::new(program, args).map_err(|_| Error::Bad("program"))
     }
 }
 
@@ -329,7 +299,20 @@ impl Reads for Vec<EnvName> {
         "a list of variables' names".to_owned()
     }
     fn read(value: &Value<Fux>) -> Result<Vec<EnvName>, String> {
-        strings(value)?.iter().map(|name| name.parse()).collect()
+        let names = strings(value)?;
+        if names.len() > crate::command::EnvPatch::MAX_NAMES {
+            return Err("environment selection exceeds 1024 names".to_owned());
+        }
+        let mut seen = std::collections::BTreeSet::new();
+        names
+            .iter()
+            .map(|name| {
+                if !seen.insert(name) {
+                    return Err(format!("{name}: repeated environment name"));
+                }
+                name.parse()
+            })
+            .collect()
     }
 }
 
@@ -351,14 +334,12 @@ mod tests {
     fn legacy_settings_keep_their_checked_wire_values() {
         let d = Config::default();
         for setting in [
-            Setting::Shell(d.shell),
             Setting::HistoryBytes(d.history_bytes),
             Setting::Wait(d.wait),
             Setting::Clipboard(d.clipboard),
             Setting::Buffers(d.buffers),
             Setting::Bell(d.bell),
             Setting::Titles(d.titles),
-            Setting::UpdateEnvironment(d.update_environment),
         ] {
             let bytes = crate::wire::encode(&setting);
             assert_eq!(Reader::new(&bytes).whole::<Setting>(), Ok(setting));
@@ -367,18 +348,5 @@ mod tests {
         zero.pop();
         zero.push(0);
         assert!(Reader::new(&zero).whole::<Setting>().is_err());
-    }
-
-    /// With `SHELL` unset, the shell is the user's own line's in
-    /// `/etc/passwd`, not the first line's.
-    #[test]
-    fn the_login_shell_is_the_users_own() {
-        let passwd = "root:x:0:0::/root:/bin/bash\n\
-                      me:x:1001:1001::/home/me:/usr/bin/zsh\n\
-                      bare:x:1002:1002::/home/bare:\n";
-        assert_eq!(shell_of(passwd, 1001).as_deref(), Some("/usr/bin/zsh"));
-        assert_eq!(shell_of(passwd, 0).as_deref(), Some("/bin/bash"));
-        assert_eq!(shell_of(passwd, 1002), None);
-        assert_eq!(shell_of(passwd, 7), None);
     }
 }

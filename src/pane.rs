@@ -508,8 +508,8 @@ impl Process {
 /// What a pane runs, which says what its program's exit does.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Runs {
-    /// The `shell` setting's shell, fux's default: its exit closes the pane.
-    DefaultShell,
+    /// A shell with saved launch inputs: its exit closes the pane.
+    Shell(Launch),
     /// A program `fux run` was given, in place of the shell: its exit
     /// leaves the pane, with its last screen and its status
     /// (`Process::Exited`); how it was started, which `fux respawn` starts
@@ -521,9 +521,28 @@ pub enum Runs {
 /// it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Launch {
-    pub argv: Vec<String>,
+    pub argv: crate::config::Program,
     pub cwd: std::path::PathBuf,
-    pub env: Vec<(String, String)>,
+    pub env: crate::command::EnvPatch,
+}
+
+impl Launch {
+    pub(crate) fn bytes(&self) -> usize {
+        self.argv
+            .encoded_len()
+            .saturating_add(self.env.encoded_len())
+            .saturating_add(self.cwd.as_os_str().len())
+            .saturating_add(9)
+    }
+}
+
+impl Runs {
+    /// The concrete inputs saved for this pane, whichever role it has.
+    pub fn launch(&self) -> &Launch {
+        match self {
+            Self::Shell(launch) | Self::Explicit(launch) => launch,
+        }
+    }
 }
 
 /// A program's file name, or the program as given if it has none.
@@ -1807,10 +1826,8 @@ impl Pane {
         if !self.title.as_str().is_empty() {
             return self.title.as_str().into();
         }
-        if let Runs::Explicit(launch) = &self.runs
-            && let Some(program) = launch.argv.first()
-        {
-            return basename(program).into();
+        if let Runs::Explicit(launch) = &self.runs {
+            return basename(launch.argv.program()).into();
         }
         self.id.to_string().into()
     }
@@ -1820,6 +1837,14 @@ impl Pane {
 pub(crate) mod tests {
     use super::*;
     use fux_vt::Mode;
+
+    pub(crate) fn shell() -> Result<Runs, String> {
+        Ok(Runs::Shell(Launch {
+            argv: crate::config::Program::new("/bin/sh".into(), Vec::new())?,
+            cwd: "/".into(),
+            env: crate::command::EnvPatch::default(),
+        }))
+    }
 
     /// `rows` by `cols`, each at least one.
     pub(crate) fn size(rows: u16, cols: u16) -> Size {
@@ -1862,7 +1887,7 @@ pub(crate) mod tests {
     /// The screen follows the modes fux sends on, focus reporting and the
     /// cursor's shape, from output split anywhere.
     #[test]
-    fn modes_follow_output_split_anywhere() -> Result<(), Error> {
+    fn modes_follow_output_split_anywhere() -> Result<(), Box<dyn std::error::Error>> {
         let stream = b"x\x1b[?1004;2004hy\x1b[5 qz\x1b[?25l";
         for split in 0..stream.len() {
             let (a, b) = stream.split_at_checked(split).unwrap_or((stream, &[]));
@@ -1886,7 +1911,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn output_answers_queries_and_takes_titles() -> Result<(), Error> {
+    fn output_answers_queries_and_takes_titles() -> Result<(), Box<dyn std::error::Error>> {
         let mut pane = pane(5, 20)?;
         pane.output(b"hello\x1b]2;my title\x07\x1b[6n");
         assert_eq!(pane.title.as_str(), "my title");
@@ -1903,7 +1928,8 @@ pub(crate) mod tests {
     /// DA1 sent after a query as a sentinel comes after its answer; so is
     /// `CSI ? 996 n`, with the scheme. What is not known is not answered.
     #[test]
-    fn colour_queries_are_answered_from_the_session_s_colours() -> Result<(), Error> {
+    fn colour_queries_are_answered_from_the_session_s_colours()
+    -> Result<(), Box<dyn std::error::Error>> {
         use crate::outer::{Colours, Scheme};
         let mut pane = pane(3, 30)?;
         pane.output(b"\x1b]11;?\x07\x1b]10;?\x1b\\\x1b[?996n\x1b[c");
@@ -1933,7 +1959,7 @@ pub(crate) mod tests {
     /// past a read's replies, was not told: the scheme it was told stays
     /// as it was, so the session tells it again (`tell_schemes`).
     #[test]
-    fn a_scheme_answer_refused_is_not_told() -> Result<(), Error> {
+    fn a_scheme_answer_refused_is_not_told() -> Result<(), Box<dyn std::error::Error>> {
         use crate::outer::{Colours, Scheme};
         let mut pane = pane(3, 30)?;
         pane.colours = Colours {
@@ -2000,9 +2026,17 @@ pub(crate) mod tests {
         output(n.saturating_mul(2))
     }
 
-    fn pane(rows: u16, cols: u16) -> Result<Lone, Error> {
+    fn pane(rows: u16, cols: u16) -> Result<Lone, Box<dyn std::error::Error>> {
         let size = size(rows, cols);
-        Pane::new(PaneId::of(1), None, Runs::DefaultShell, size, 1 << 10).map(Lone::new)
+        Pane::new(
+            PaneId::of(1),
+            None,
+            crate::pane::tests::shell()?,
+            size,
+            1 << 10,
+        )
+        .map(Lone::new)
+        .map_err(Into::into)
     }
 
     /// A pane alone, for tests of it: what it tells goes in a journal of
@@ -2058,7 +2092,8 @@ pub(crate) mod tests {
     /// waits for the pane's next turn, and is read then, the screen ending
     /// as one read of it all leaves it.
     #[test]
-    fn a_read_that_spends_its_budget_goes_on_at_the_next_turn() -> Result<(), Error> {
+    fn a_read_that_spends_its_budget_goes_on_at_the_next_turn()
+    -> Result<(), Box<dyn std::error::Error>> {
         let reps = spends_the_budget(50, 200);
         let mut pane = pane(50, 200)?;
         pane.output(&reps);
@@ -2099,7 +2134,8 @@ pub(crate) mod tests {
     /// 2000x2000, after DECALN's fill, ED 2 would take the call past U
     /// (`Screen::holds_back`).
     #[test]
-    fn a_sequence_left_past_the_budget_at_the_outputs_end_goes_on() -> Result<(), Error> {
+    fn a_sequence_left_past_the_budget_at_the_outputs_end_goes_on()
+    -> Result<(), Box<dyn std::error::Error>> {
         let output = b"\x1b#8\x1b[2J";
         let mut pane = pane(2000, 2000)?;
         pane.output(output);
@@ -2127,9 +2163,15 @@ pub(crate) mod tests {
     /// the next turns, its rest first, and the pane says it is part way
     /// through one till it ends; what came after it is read after.
     #[test]
-    fn a_frame_past_a_budget_is_read_on_whole() -> Result<(), Error> {
+    fn a_frame_past_a_budget_is_read_on_whole() -> Result<(), Box<dyn std::error::Error>> {
         let size = size(50, 200);
-        let mut pane = Lone::new(Pane::new(PaneId::of(1), None, Runs::DefaultShell, size, 0)?);
+        let mut pane = Lone::new(Pane::new(
+            PaneId::of(1),
+            None,
+            crate::pane::tests::shell()?,
+            size,
+            0,
+        )?);
         let mut frame = b"\x1b[?2026h".to_vec();
         frame.extend(spends_the_budget(50, 200));
         frame.extend_from_slice(b"\x1b[2J\x1b[HDONE\x1b[?2026lZ");
@@ -2148,7 +2190,8 @@ pub(crate) mod tests {
     /// A frame begun in output read a turn after it came is held its full
     /// timeout from when it is read, not from when the output came.
     #[test]
-    fn a_frame_begun_in_output_read_later_is_held_its_timeout() -> Result<(), Error> {
+    fn a_frame_begun_in_output_read_later_is_held_its_timeout()
+    -> Result<(), Box<dyn std::error::Error>> {
         let mut out = spends_the_budget(50, 200);
         out.extend_from_slice(b"\x1b[?2026hY");
         let mut pane = pane(50, 200)?;
@@ -2169,7 +2212,7 @@ pub(crate) mod tests {
     /// it ends, however its bytes are split across reads: the BSU, the
     /// frame and the ESU each in pieces, and several frames in one read.
     #[test]
-    fn a_synchronized_frame_reaches_the_screen_whole() -> Result<(), Error> {
+    fn a_synchronized_frame_reaches_the_screen_whole() -> Result<(), Box<dyn std::error::Error>> {
         let mut pane = pane(3, 30)?;
         pane.output(b"a\x1b[?2026hb");
         assert_eq!(first_row(&pane), "a", "the frame is held");
@@ -2198,7 +2241,8 @@ pub(crate) mod tests {
     /// an ESU that ends an OSC; but not at an ESU whose CSI CAN cancels,
     /// nor at a parameter with a subparameter, which `set_modes` skips.
     #[test]
-    fn a_frame_ends_at_any_reset_of_synchronized_output() -> Result<(), Error> {
+    fn a_frame_ends_at_any_reset_of_synchronized_output() -> Result<(), Box<dyn std::error::Error>>
+    {
         for end in [
             &b"\x1b[?25;2026l"[..],
             b"\x1b[?20\r26l",
@@ -2226,7 +2270,7 @@ pub(crate) mod tests {
     /// it outgrows the limit; until the next BSU, output is then read as it
     /// comes. A resize reads it first.
     #[test]
-    fn a_frame_that_does_not_end_is_read_anyway() -> Result<(), Error> {
+    fn a_frame_that_does_not_end_is_read_anyway() -> Result<(), Box<dyn std::error::Error>> {
         let mut pane = pane(3, 30)?;
         let t0 = Instant::now();
         pane.output_at(b"\x1b[?2026hx", t0);
@@ -2286,7 +2330,7 @@ pub(crate) mod tests {
     /// A program that set in-band resize is told its new size after a
     /// resize, and on setting it; one that did not is told nothing.
     #[test]
-    fn a_resize_reports_the_size_in_band_when_asked() -> Result<(), Error> {
+    fn a_resize_reports_the_size_in_band_when_asked() -> Result<(), Box<dyn std::error::Error>> {
         let mut pane = pane(3, 30)?;
         pane.resize(size(4, 20));
         assert!(pane.input.drain_all().is_empty(), "not asked");
@@ -2303,7 +2347,7 @@ pub(crate) mod tests {
     /// once for the run of refusals, which ends as the program reads; and
     /// again after.
     #[test]
-    fn a_refused_piece_is_told_once_a_run() -> Result<(), Error> {
+    fn a_refused_piece_is_told_once_a_run() -> Result<(), Box<dyn std::error::Error>> {
         let mut pane = pane(3, 20)?;
         pane.push(vec![0; INPUT_BYTES])?;
         assert_eq!(pane.take_untold(), Losses::default());
@@ -2322,7 +2366,7 @@ pub(crate) mod tests {
     /// A run of drops of one kind told keeps no other kind, and no later
     /// run, from being told: not one that ended before it was told.
     #[test]
-    fn each_run_of_drops_is_told_once() -> Result<(), Error> {
+    fn each_run_of_drops_is_told_once() -> Result<(), Box<dyn std::error::Error>> {
         let mut pane = pane(3, 20)?;
         let queries: Vec<u8> = std::iter::repeat_n(&b"\x1b[6n"[..], REPLIES_MAX)
             .flatten()
@@ -2349,7 +2393,7 @@ pub(crate) mod tests {
     /// A turn that reads no output, only finishing work left, ends no run
     /// of replies dropped: the next read's drops are in the same run.
     #[test]
-    fn a_turn_reading_nothing_ends_no_run() -> Result<(), Error> {
+    fn a_turn_reading_nothing_ends_no_run() -> Result<(), Box<dyn std::error::Error>> {
         let mut pane = pane(3, 20)?;
         let queries: Vec<u8> = std::iter::repeat_n(&b"\x1b[6n"[..], REPLIES_MAX)
             .flatten()
@@ -2368,7 +2412,7 @@ pub(crate) mod tests {
     /// frame's BSU, read alone first, ends no run, so frames that each
     /// drop replies are one run, told once.
     #[test]
-    fn frames_dropping_replies_are_one_run() -> Result<(), Error> {
+    fn frames_dropping_replies_are_one_run() -> Result<(), Box<dyn std::error::Error>> {
         let mut pane = pane(3, 20)?;
         let queries = std::iter::repeat_n(&b"\x1b[6n"[..], REPLIES_MAX)
             .flatten()
@@ -2404,7 +2448,7 @@ pub(crate) mod tests {
     /// the same output: a clean frame between two that drop replies ends
     /// the run, and the second is told.
     #[test]
-    fn a_clean_frame_between_ends_the_run() -> Result<(), Error> {
+    fn a_clean_frame_between_ends_the_run() -> Result<(), Box<dyn std::error::Error>> {
         let mut pane = pane(3, 20)?;
         let queries: Vec<u8> = std::iter::repeat_n(&b"\x1b[6n"[..], REPLIES_MAX)
             .flatten()
@@ -2437,7 +2481,7 @@ pub(crate) mod tests {
     /// input: the input refused after it is told. Both runs go on while
     /// the queue refuses, reads with no query and resize reports alike.
     #[test]
-    fn a_reply_refused_starts_no_run_of_input() -> Result<(), Error> {
+    fn a_reply_refused_starts_no_run_of_input() -> Result<(), Box<dyn std::error::Error>> {
         let mut pane = pane(3, 20)?;
         pane.output(b"\x1b[?2048h");
         let room = pane.input.room();
@@ -2513,7 +2557,7 @@ pub(crate) mod tests {
     /// A resize report the full queue refuses starts a run of replies:
     /// the next one in it is counted, not told again.
     #[test]
-    fn resize_reports_refused_are_told_once_a_run() -> Result<(), Error> {
+    fn resize_reports_refused_are_told_once_a_run() -> Result<(), Box<dyn std::error::Error>> {
         let mut pane = pane(3, 20)?;
         pane.output(b"\x1b[?2048h");
         let room = pane.input.room();
@@ -2539,7 +2583,7 @@ pub(crate) mod tests {
     /// once for reads that drop them one after another, and again for a
     /// later drop after a read that dropped none.
     #[test]
-    fn replies_past_a_reads_bound_are_told_dropped() -> Result<(), Error> {
+    fn replies_past_a_reads_bound_are_told_dropped() -> Result<(), Box<dyn std::error::Error>> {
         let mut pane = pane(3, 20)?;
         pane.output(b"\x1b[6n");
         assert!(!pane.loses());
@@ -2566,7 +2610,7 @@ pub(crate) mod tests {
     /// says so, as is one longer than fux-vt keeps of a string; one that
     /// fits is whole. The guide states the bounds.
     #[test]
-    fn what_is_cut_of_a_title_is_said() -> Result<(), Error> {
+    fn what_is_cut_of_a_title_is_said() -> Result<(), Box<dyn std::error::Error>> {
         let mut pane = pane(3, 20)?;
         let (long, fits) = (
             std::iter::repeat_n('t', TITLE_MAX + 1).collect::<String>(),
@@ -2602,7 +2646,7 @@ pub(crate) mod tests {
     /// title; the stack keeps at most ten; a pop with none pushed changes
     /// nothing.
     #[test]
-    fn a_pushed_title_comes_back_when_popped() -> Result<(), Error> {
+    fn a_pushed_title_comes_back_when_popped() -> Result<(), Box<dyn std::error::Error>> {
         let mut pane = pane(3, 30)?;
         pane.output(b"\x1b]2;shell\x07\x1b[22;0t\x1b]2;vim\x07");
         assert_eq!(pane.title.as_str(), "vim");

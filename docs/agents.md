@@ -393,7 +393,7 @@ read-file`. `X warn` prints on stderr:
 
 - `FUX`, `FUX_PANE`, `FUX_SOCKET` and `FUX_SERVER` are reserved pane
   identity. Requesting them is refused: `bad_value` in `env`, `config` in
-  `update-environment`. Other names, including `FUX_EXTRA`, remain allowed.
+  `copy-environment`. Other names, including `FUX_EXTRA`, remain allowed.
 - Handle values returned by a server retain its run through lists, bindings,
   answers and request options; using one against another run is refused.
   A hand-written `%N`, `@N`, `+N` or `str cN client` means the selected server

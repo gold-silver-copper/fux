@@ -235,7 +235,18 @@ impl Run {
     fn attach(&mut self, rows: u16, cols: u16) {
         let kind = fux::view::ClientKind::Terminal;
         if let Ok(size) = fux_vt::Size::new(rows, cols)
-            && let Ok(id) = self.s.attach_as(kind, fux::protocol::Attach::of(size))
+            && let Ok(id) = self.s.attach_as(
+                kind,
+                fux::protocol::Attach {
+                    initial: Some(fux::command::InitialWorkspace {
+                        name: None,
+                        start: fux::command::Start::Shell(defaults().preferences.shell.clone()),
+                        cwd: std::env::current_dir().unwrap_or_default(),
+                        env: fux::command::EnvPatch::default(),
+                    }),
+                    ..fux::protocol::Attach::of(size)
+                },
+            )
         {
             self.keys.insert(id, Keys::default());
         }

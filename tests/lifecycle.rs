@@ -175,31 +175,15 @@ fn the_default_socket_is_under_xdg_runtime_dir_else_tmpdir() -> Outcome {
     Ok(())
 }
 
-/// The login shell `/etc/passwd` gives this user, if it gives one.
-fn login_shell() -> Option<String> {
-    let euid = fuxix::process::geteuid().to_string();
-    let passwd = std::fs::read_to_string("/etc/passwd").ok()?;
-    passwd.lines().find_map(|line| {
-        let fields: Vec<&str> = line.split(':').collect();
-        (fields.get(2) == Some(&euid.as_str()))
-            .then(|| fields.get(6).map(|s| s.trim().to_owned()))
-            .flatten()
-            .filter(|s| !s.is_empty())
-    })
-}
-
-/// With no `set shell`, a pane runs `$SHELL`; with no `$SHELL`, the user's
-/// login shell from `/etc/passwd`, and with none there, `/bin/sh`. Each
-/// server has a socket of its own (never the default, which a real server
-/// may hold).
+/// The initiating client's SHELL is read by its library, with /bin/sh
+/// when it is absent. The server's different SHELL is never consulted.
 #[test]
-fn a_pane_runs_shell_else_the_login_shell_else_bin_sh() -> Outcome {
-    let unset = login_shell().unwrap_or_else(|| "/bin/sh".into());
-    for (shell, expected) in [(Some("/bin/bash"), "/bin/bash"), (None, unset.as_str())] {
+fn a_pane_runs_the_clients_shell_else_bin_sh() -> Outcome {
+    for (shell, expected) in [(Some("/bin/bash"), "/bin/bash"), (None, "/bin/sh")] {
         let name = Path::new(expected)
             .file_name()
             .and_then(|n| n.to_str())
-            .ok_or("the login shell's name")?;
+            .ok_or("the shell's name")?;
         let dir = fuxix::file::scratch()
             .map_err(e)?
             .join(format!("fux-shell-{name}-{}", std::process::id()));
@@ -221,10 +205,7 @@ fn a_pane_runs_shell_else_the_login_shell_else_bin_sh() -> Outcome {
             .env("ENV", "/dev/null")
             .env("PS1", "$ ")
             .env_remove("FUX_PANE")
-            .env_remove("SHELL");
-        if let Some(shell) = shell {
-            command.env("SHELL", shell);
-        }
+            .env("SHELL", "/no/such/server-shell");
         let mut child = command.spawn().map_err(e)?;
         let capture = || {
             Command::new(FUX)
@@ -236,12 +217,17 @@ fn a_pane_runs_shell_else_the_login_shell_else_bin_sh() -> Outcome {
         // A server starts with nothing in it: its first shell, once it
         // answers.
         eventually("the first shell made", || {
-            let made = Command::new(FUX)
+            let mut creating = Command::new(FUX);
+            creating
                 .args(["opts", "80", "24", "size", "new-workspace"])
+                .current_dir(&dir)
                 .env("FUX_SOCKET", &socket)
                 .env_remove("FUX_PANE")
-                .output()
-                .map_err(e)?;
+                .env_remove("SHELL");
+            if let Some(shell) = shell {
+                creating.env("SHELL", shell);
+            }
+            let made = creating.output().map_err(e)?;
             Ok(made.status.success())
         })?;
         // Ask the shell for its argv[0]; OS process names may resolve

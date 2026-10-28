@@ -20,7 +20,7 @@ use crate::wire::{Wire, wire};
 use std::borrow::Cow;
 
 /// Bumped on any change to the frames below.
-pub const PROTOCOL: u32 = 35;
+pub const PROTOCOL: u32 = 36;
 /// The largest frame, kind byte included.
 pub const MAX_FRAME: usize = 1 << 20;
 /// The largest payload one frame carries.
@@ -298,17 +298,14 @@ impl OneKind for Hello {
 }
 
 wire! {
-    /// An attaching client's one frame after its `Hello`: its terminal's size,
-    /// the workspace it asks for, whether it only watches, and its
-    /// environment, which panes started from its keys take what
-    /// `update-environment` names from.
+    /// An attaching client and its optional conditional first launch.
     #[derive(Clone, Debug, PartialEq, Eq)]
     pub struct Attach {
         pub of: Option<crate::command::Run>,
         pub size: fux_vt::Size,
         pub workspace: Option<crate::command::WsRef>,
         pub read_only: bool,
-        pub env: Vec<(String, std::ffi::OsString)>,
+        pub initial: Option<crate::command::InitialWorkspace>,
     }
 }
 
@@ -317,15 +314,14 @@ impl OneKind for Attach {
 }
 
 impl Attach {
-    /// A client of `size` that types, asks for no workspace, and has no
-    /// environment.
+    /// A noncreating client of `size` that types and asks for no workspace.
     pub fn of(size: fux_vt::Size) -> Attach {
         Attach {
             of: None,
             size,
             workspace: None,
             read_only: false,
-            env: Vec::new(),
+            initial: None,
         }
     }
 }
@@ -343,8 +339,7 @@ frames! {
 wire! {
     /// Where a request comes from: the caller's directory, its pane
     /// and program generation (`FUX_PANE`), that pane's server (`FUX_SERVER`),
-    /// its environment if the request may start programs (they take what
-    /// `update-environment` names of it), and the client whose binding or
+    /// the client whose binding or
     /// prompt runs it.
     #[derive(Clone, Debug, Default, PartialEq, Eq)]
     pub struct Context {
@@ -353,8 +348,7 @@ wire! {
         pub cwd: std::path::PathBuf,
         pub pane: Option<(PaneId, u64)>,
         pub server: Option<String>,
-        /// None has not been captured; Some, even empty, is the caller's snapshot.
-        pub env: Option<Vec<(String, std::ffi::OsString)>>,
+        /// The attached client whose key or prompt runs the request.
         pub client: Option<ClientId>,
     }
 }
@@ -825,7 +819,7 @@ mod tests {
                 size,
                 workspace,
                 read_only: false,
-                env: Vec::new(),
+                initial: None,
             }
         );
         let workspace = None;
@@ -837,7 +831,7 @@ mod tests {
                 size,
                 workspace,
                 read_only: true,
-                env: vec![("DISPLAY".into(), ":0".into())],
+                initial: None,
             }
         );
         let act = Act::Paste("界\n".into());
@@ -887,7 +881,6 @@ mod tests {
                     cwd: "/somewhere".into(),
                     pane: crate::id::program("%3:2"),
                     server: Some("1-2".into()),
-                    env: Some(vec![("K".into(), "V".into())]),
                     client: "c2".parse().ok(),
                 },
             }

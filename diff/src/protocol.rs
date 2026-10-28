@@ -250,7 +250,7 @@ fn encode(spec: &Spec) -> Result<Vec<u8>, String> {
             size: crate::size(rows, cols),
             workspace: None,
             read_only,
-            env: Vec::new(),
+            initial: None,
         }
         .encode()
         .map_err(error),

@@ -771,7 +771,11 @@ fn pane(loads: &[Load], baseline: bool) -> Result<Done, String> {
     let mut pane = fux::pane::Pane::new(
         "%1".parse::<fux::id::PaneId>().map_err(|e| e.to_string())?,
         None,
-        fux::pane::Runs::DefaultShell,
+        fux::pane::Runs::Shell(fux::pane::Launch {
+            argv: fux::config::Program::new("/bin/sh".into(), Vec::new())?,
+            cwd: "/".into(),
+            env: fux::command::EnvPatch::default(),
+        }),
         fux_vt::Size::new(first.rows, first.cols).map_err(|e| e.to_string())?,
         HISTORY,
     )
@@ -913,9 +917,9 @@ fn paint(
         let split = fux::command::Command::Split {
             axis: fux::layout::Axis::Horizontal,
             target: *s.parts.panes().keys().next().ok_or("no pane")?,
-            argv: Vec::new(),
-            cwd: None,
-            env: fux::command::Env::default(),
+            start: initial()?.start,
+            cwd: Some(std::env::current_dir().map_err(|e| e.to_string())?),
+            env: fux::command::EnvPatch::default(),
             shares: None,
         };
         s.run_command(
@@ -1092,6 +1096,15 @@ fn encode(
 
 /// A session of `panes` panes in all, none running a process
 /// (`Session::new(.., false)`): their output is what the workload feeds.
+fn initial() -> Result<fux::command::InitialWorkspace, String> {
+    Ok(fux::command::InitialWorkspace {
+        name: None,
+        start: fux::command::Start::Shell(fux::config::Program::new("/bin/sh".into(), Vec::new())?),
+        cwd: std::env::current_dir().map_err(|e| e.to_string())?,
+        env: fux::command::EnvPatch::default(),
+    })
+}
+
 fn session(panes: usize) -> Result<fux::session::Session, String> {
     let config = fux::config::Config {
         history_bytes: fux::config::Number::new(HISTORY).ok_or("history out of range")?,
@@ -1099,15 +1112,18 @@ fn session(panes: usize) -> Result<fux::session::Session, String> {
     };
     let mut s =
         fux::session::Session::new(config, "/nonexistent/fux.sock".into(), false, server_run()?);
-    s.start(fux_vt::Size::new(24, 80).map_err(|e| e.to_string())?)
-        .map_err(|e| e.to_string())?;
+    s.start(
+        fux_vt::Size::new(24, 80).map_err(|e| e.to_string())?,
+        &initial()?,
+    )
+    .map_err(|e| e.to_string())?;
     for _ in 1..panes {
         let split = fux::command::Command::Split {
             axis: fux::layout::Axis::Horizontal,
             target: *s.parts.panes().keys().next().ok_or("no pane")?,
-            argv: Vec::new(),
-            cwd: None,
-            env: fux::command::Env::default(),
+            start: initial()?.start,
+            cwd: Some(std::env::current_dir().map_err(|e| e.to_string())?),
+            env: fux::command::EnvPatch::default(),
             shares: None,
         };
         s.run_command(
@@ -1195,8 +1211,11 @@ fn capture_history(baseline: bool, history: usize) -> Result<Done, String> {
     };
     let mut s =
         fux::session::Session::new(config, "/nonexistent/fux.sock".into(), false, server_run()?);
-    s.start(fux_vt::Size::new(40, 120).map_err(|e| e.to_string())?)
-        .map_err(|e| e.to_string())?;
+    s.start(
+        fux_vt::Size::new(40, 120).map_err(|e| e.to_string())?,
+        &initial()?,
+    )
+    .map_err(|e| e.to_string())?;
     let id = *s.parts.panes().keys().next().ok_or("no pane")?;
     // Variable lengths exercise trimming as well as traversal of full rows.
     let bytes: Vec<u8> = (1..120)

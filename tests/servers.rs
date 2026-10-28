@@ -634,7 +634,7 @@ fn a_dump_runs_on_a_new_server_whatever_its_tabs_are_named() -> Outcome {
 }
 
 /// Replaying explicit programs in an unnamed workspace never starts the
-/// destination server's default shell.
+/// replaying client's default shell.
 #[test]
 fn an_unnamed_workspace_replays_independently_of_the_default_shell() -> Outcome {
     let source = Server::start("")?;
@@ -691,9 +691,16 @@ fn an_unnamed_workspace_replays_independently_of_the_default_shell() -> Outcome 
         &["str", "sh", "str", "-c", "str", "exit 0"],
     ] {
         let server = Server::start("")?;
-        server.ok(&[&["str", "shell", "list"][..], shell, &["end", "set"]].concat())?;
+        let mut prefix = vec!["str", "shell", "list"];
+        prefix.extend_from_slice(shell);
+        prefix.extend(["end", "set"]);
+        let prefix = prefix
+            .iter()
+            .map(|w| fux::words::quote(w))
+            .collect::<Vec<_>>()
+            .join(" ");
         let file = server.dir.join("unnamed.fux");
-        std::fs::write(&file, &dump).map_err(e)?;
+        std::fs::write(&file, format!("{prefix}\n{dump}")).map_err(e)?;
         server.ok(&["--file", &file.to_string_lossy()])?;
         assert_eq!(
             server.ok(&["str", "first", "pane", "workspace", "panes", "len"])?,
