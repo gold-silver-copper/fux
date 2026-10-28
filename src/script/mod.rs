@@ -1051,9 +1051,7 @@ impl Server {
     pub fn new(chosen: Choice) -> Server {
         Server {
             chosen,
-            requests: None,
-            after: None,
-            stop: None,
+            ..Self::default()
         }
     }
 
@@ -1688,7 +1686,7 @@ fn config_state(defaults: &ClientState) -> Result<ClientState, Failed> {
 
 /// Reads a frozen config graph and runs it without a transport capability.
 pub fn run_file(path: &std::path::Path) -> Result<ClientState, Failed> {
-    run_config_on(source::file(path)?, &default_state()?)
+    run_config(source::file(path)?)
 }
 
 fn run_config(image: fuxth::SourceImage) -> Result<ClientState, Failed> {
