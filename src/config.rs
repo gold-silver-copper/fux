@@ -202,7 +202,7 @@ impl<const MIN: usize, const MAX: usize> Reads for Number<MIN, MAX> {
 }
 
 impl<const MIN: usize, const MAX: usize> Wire for Number<MIN, MAX> {
-    fn put(&self, out: &mut Vec<u8>) {
+    fn put(&self, out: &mut impl crate::wire::Sink) {
         self.0.put(out);
     }
     fn get(r: &mut Reader<'_>) -> Result<Self, Error> {
@@ -284,7 +284,7 @@ impl Reads for Shell {
 
 /// Read back only if it is a shell.
 impl Wire for Shell {
-    fn put(&self, out: &mut Vec<u8>) {
+    fn put(&self, out: &mut impl crate::wire::Sink) {
         self.program.put(out);
         self.args.put(out);
     }
@@ -313,7 +313,7 @@ impl std::str::FromStr for EnvName {
 }
 
 impl Wire for EnvName {
-    fn put(&self, out: &mut Vec<u8>) {
+    fn put(&self, out: &mut impl crate::wire::Sink) {
         self.0.put(out);
     }
     fn get(r: &mut Reader<'_>) -> Result<Self, Error> {
@@ -360,10 +360,10 @@ mod tests {
             Setting::Titles(d.titles),
             Setting::UpdateEnvironment(d.update_environment),
         ] {
-            let bytes = crate::wire::encode(&setting);
+            let bytes = crate::wire::encode(&setting).unwrap_or_default();
             assert_eq!(Reader::new(&bytes).whole::<Setting>(), Ok(setting));
         }
-        let mut zero = crate::wire::encode(&Setting::Buffers(Number(1)));
+        let mut zero = crate::wire::encode(&Setting::Buffers(Number(1))).unwrap_or_default();
         zero.pop();
         zero.push(0);
         assert!(Reader::new(&zero).whole::<Setting>().is_err());

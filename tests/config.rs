@@ -458,7 +458,11 @@ fn an_empty_caller_environment_is_not_replaced() -> Outcome {
     let mut requests = Requests::new(fux::socket::Choice::Path(server.socket.clone()));
     let values =
         run_capped(&mut machine, &mut host, &mut requests, Some(10000), None).map_err(e)?;
-    let version = values.first().ok_or("run result")?.text();
+    let version = values
+        .first()
+        .ok_or("run result")?
+        .text()
+        .map_err(|f| f.message)?;
     let pane = version.split(':').next().ok_or("pane")?;
     server.exits(pane)?;
     let captured = server.ok(&["str", pane, "pane", "capture"])?;

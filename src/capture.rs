@@ -13,8 +13,62 @@ use fux_vt::{
 };
 use std::time::Instant;
 
-/// Rows selected for a capture, each with the columns its source takes.
-type ReadRows<'a> = Box<dyn Iterator<Item = (Row<'a>, std::ops::Range<usize>)> + 'a>;
+/// Synthesized output work: at most two cells per admitted wire byte.
+pub(crate) const OUTPUT_CELLS: usize = 2 * crate::wire::MAX_REPLY;
+
+/// Borrowed rows and their selected columns, with no boxed iterator state.
+struct ReadRows<'a> {
+    rows: std::iter::Take<std::iter::Skip<fux_vt::Rows<'a>>>,
+    at: usize,
+    count: usize,
+    from: usize,
+    to: usize,
+    ended: bool,
+}
+impl<'a> ReadRows<'a> {
+    fn new(
+        rows: fux_vt::Rows<'a>,
+        skip: usize,
+        count: usize,
+        from: usize,
+        to: usize,
+        ended: bool,
+    ) -> Self {
+        let rows = rows.skip(skip).take(count);
+        let count = rows.len();
+        Self {
+            rows,
+            at: 0,
+            count,
+            from,
+            to,
+            ended,
+        }
+    }
+}
+impl<'a> Iterator for ReadRows<'a> {
+    type Item = (Row<'a>, std::ops::Range<usize>);
+    fn next(&mut self) -> Option<Self::Item> {
+        for row in self.rows.by_ref() {
+            let i = self.at;
+            self.at = self.at.saturating_add(1);
+            let from = if i == 0 { self.from } else { 0 };
+            let to = if self.at == self.count && self.ended {
+                if i == 0 && self.from >= self.to {
+                    0
+                } else {
+                    self.to
+                }
+            } else {
+                usize::MAX
+            };
+            if from < to {
+                return Some((row, from..to));
+            }
+        }
+        None
+    }
+}
 
 /// A run while it is built and trimmed: its count stays exact until the
 /// surviving cells are converted to the wire's `Cut`.
@@ -74,7 +128,7 @@ wire_enum!(Blink { None, Slow, Rapid });
 /// The style's colours, its flags and its underline's style and blink, as
 /// the vocabulary of `Attributes` gives and takes them.
 impl crate::wire::Wire for Attributes {
-    fn put(&self, out: &mut Vec<u8>) {
+    fn put(&self, out: &mut impl crate::wire::Sink) {
         let a = *self;
         [a.foreground(), a.background(), a.underline_color()]
             .iter()
@@ -118,12 +172,21 @@ pub fn pane(
     history: Option<usize>,
     view: CaptureView,
     copy_mode: bool,
-) -> Captured {
+    history_bytes: usize,
+) -> Result<Captured, crate::session::Error> {
+    let limits = Limits::new(history_bytes, pane.screen().size().into())?;
+    pane_with(pane, run, history, view, copy_mode, limits)
+}
+
+fn pane_with(
+    pane: &Pane,
+    run: Run,
+    history: Option<usize>,
+    view: CaptureView,
+    copy_mode: bool,
+    limits: Limits,
+) -> Result<Captured, crate::session::Error> {
     let screen = pane.screen();
-    let mut lines: Vec<Vec<LineRun>> = Vec::new();
-    // A soft-wrapped row goes on in the next, joined unless `wrapped`.
-    let mut wraps = false;
-    let mut blanks = 0usize;
     let (read, above) = rows_of(screen, history, view);
     // The cursor's row and column, if it shows on the screen captured: the
     // last output is read from the screen shown, whatever else is asked.
@@ -137,40 +200,65 @@ pub fn pane(
     let cursor = (live && screen.mode(Mode::ShowCursor)).then(|| screen.cursor_position());
     // Joined, a line some of whose rows `rows` takes is taken whole: the
     // range widened to the whole lines at its ends.
-    let read = selected_rows(read, view);
+    let selection = selected_rows(read, view, limits)?;
+    let read = selection.read(rows_of(screen, history, view).0);
+    let mut budget = crate::wire::Budget::new();
+    let mut state = state(pane, Instant::now(), copy_mode, &mut budget)?;
+    // The history rows kept above the first row read: history it was not
+    // asked for (rows a range leaves out are not counted).
+    state.push(("above", above.map_or(Json::Null, Json::count)));
+    let of = Of::Pane {
+        version: pane.version(run),
+        wrap_pending: cursor.is_some() && screen.pending_wrap(),
+        state: budget.fields(state)?,
+    };
+    build(read, of, (screen.size().into(), cursor), view, &mut budget)
+}
+
+fn build<'a>(
+    read: impl Iterator<Item = (Row<'a>, std::ops::Range<usize>)>,
+    of: Of,
+    (size, cursor): ((u16, u16), Option<(u16, u16)>),
+    view: CaptureView,
+    budget: &mut crate::wire::Budget,
+) -> Result<Captured, crate::session::Error> {
+    let mut lines: Vec<Vec<LineRun>> = Vec::new();
+    let mut wraps = false;
+    let mut blanks = 0usize;
+    use crate::wire::{Sink, Wire};
+    let mut wire = crate::wire::Writer::counting(crate::wire::MAX_REPLY.saturating_sub(64));
+    of.put(&mut wire);
+    wire.check_ref().map_err(|_| too_large())?;
     for (row, span) in read {
-        // A wide glyph's second cell is drawn as its first: the same style,
-        // so a run of it is not broken in two.
-        let mut lead = Attributes::default();
-        // Joined, the spacer a wide glyph left at the row's end, not fitting
-        // there, is no part of the line (`Row::ends_in_spacer`).
-        let spacer = usize::from(!view.wrapped && row.ends_in_spacer());
-        let cells = row
+        let source_start = span.start;
+        let source_end = columns(row, span.clone(), CaptureView { cols: None, ..view }).end;
+        let span = columns(row, span, view);
+        let count = span.len();
+        let mut lead = if span.start > source_start {
+            row.cell(span.start.saturating_sub(1))
+                .map_or(Attributes::default(), |cell| cell.attributes())
+        } else {
+            Attributes::default()
+        };
+        let mut cells = row
             .cells()
-            .take(row.len().saturating_sub(spacer))
-            .enumerate()
-            .filter(|(col, _)| span.contains(col))
-            .map(move |(_, cell)| {
+            .skip(span.start)
+            .take(source_end.saturating_sub(span.start))
+            .map(move |cell| {
                 if cell.is_wide_continuation() {
                     ("", lead)
                 } else {
                     lead = cell.attributes();
                     (cell.shown(), lead)
                 }
-            });
-        // Columns are relative to the span (last-output may start mid-row).
-        let (start, count) = view.cols.map_or((0, usize::MAX), |(start, end)| {
-            (
-                usize::from(start),
-                usize::from(end)
-                    .saturating_sub(usize::from(start))
-                    .saturating_add(1),
-            )
-        });
-        let mut cells = cells.skip(start).peekable();
+            })
+            .peekable();
         if !wraps || lines.is_empty() {
-            trim_line(&mut lines, blanks);
+            trim_line(&mut lines, blanks, budget)?;
             blanks = 0;
+            0u32.put(&mut wire);
+            wire.check_ref().map_err(|_| too_large())?;
+            budget.reserve(&mut lines, 1).map_err(|_| too_large())?;
             lines.push(Vec::new());
         }
         if let Some(line) = lines.last_mut() {
@@ -205,6 +293,11 @@ pub fn pane(
                     Attributes::default()
                 };
                 if !line.last().is_some_and(|last| last.style == style) {
+                    0u32.put(&mut wire);
+                    0u32.put(&mut wire);
+                    style.put(&mut wire);
+                    wire.check_ref().map_err(|_| too_large())?;
+                    budget.reserve(line, 1).map_err(|_| too_large())?;
                     line.push(LineRun {
                         text: String::new(),
                         cells: 0,
@@ -212,53 +305,135 @@ pub fn pane(
                     });
                 }
                 if let Some(last) = line.last_mut() {
-                    last.text.push_str(text);
+                    wire.extend_from_slice(text.as_bytes());
+                    wire.check_ref().map_err(|_| too_large())?;
+                    budget.text(&mut last.text, text).map_err(|_| too_large())?;
                     last.cells = last.cells.saturating_add(1);
                 }
             }
         }
         wraps = !view.wrapped && row.continues();
     }
-    trim_line(&mut lines, blanks);
-    let mut state = state(pane, Instant::now(), copy_mode);
-    // The history rows kept above the first row read: history it was not
-    // asked for (rows a range leaves out are not counted).
-    state.push(("above", above.map_or(Json::Null, Json::count)));
-    let of = Of::Pane {
-        version: pane.version(run),
-        wrap_pending: cursor.is_some() && screen.pending_wrap(),
-        state: state.into_iter().map(|(k, v)| (k.to_owned(), v)).collect(),
-    };
-    captured(of, screen.size().into(), cursor, lines, view)
+    trim_line(&mut lines, blanks, budget)?;
+    captured(of, size, cursor, lines, view, budget)
 }
 
 /// Select physical rows, widening a joined range to the logical lines
 /// at its ends without reading the rows after those lines.
-fn selected_rows(mut read: ReadRows<'_>, view: CaptureView) -> ReadRows<'_> {
-    if let Some((start, end)) = view.rows {
-        let (mut first, last) = (usize::from(start), usize::from(end));
+struct Selection {
+    start: usize,
+    count: usize,
+}
+impl Selection {
+    fn read<'a>(
+        &self,
+        read: impl Iterator<Item = (Row<'a>, std::ops::Range<usize>)>,
+    ) -> impl Iterator<Item = (Row<'a>, std::ops::Range<usize>)> {
+        read.skip(self.start).take(self.count)
+    }
+}
+
+fn selected_rows<'a>(
+    read: impl Iterator<Item = (Row<'a>, std::ops::Range<usize>)>,
+    view: CaptureView,
+    limits: Limits,
+) -> Result<Selection, crate::session::Error> {
+    let (first, last) = view
+        .rows
+        .map_or((0, usize::MAX), |(a, b)| (usize::from(a), usize::from(b)));
+    if view.wrapped && first > last {
+        return Ok(Selection { start: 0, count: 0 });
+    }
+    let skip = if view.wrapped { first } else { 0 };
+    let read = read.skip(skip);
+    let mut cells = 0usize;
+    let mut line_cells = 0usize;
+    let (mut start, mut count, mut line_start) = (skip, 0usize, 0usize);
+    for (index, (row, span)) in read.enumerate() {
+        // The VT bounds retained rows; this scan allocates no row vector.
+        let work = columns(row, span, view).len();
         if view.wrapped {
-            read = Box::new(
-                read.skip(first)
-                    .take(last.saturating_add(1).saturating_sub(first)),
-            );
+            cells = cells.checked_add(work).ok_or_else(too_large)?;
         } else {
-            // Only through the range's end, then to the end of its line.
-            let mut rows: Vec<_> = read.by_ref().take(last.saturating_add(1)).collect();
-            while rows.last().is_some_and(|(r, _)| r.continues())
-                && let Some(row) = read.next()
-            {
-                rows.push(row);
+            line_cells = line_cells.checked_add(work).ok_or_else(too_large)?;
+            if index >= first {
+                cells = line_cells;
             }
-            while let Some(before) = first.checked_sub(1)
-                && rows.get(before).is_some_and(|(r, _)| r.continues())
-            {
-                first = before;
+        }
+        if cells > limits.cells {
+            return Err(too_large());
+        }
+        if !view.wrapped && index <= first {
+            start = line_start;
+        }
+        let end = index.checked_add(skip).ok_or_else(too_large)?;
+        count = end.saturating_add(1).saturating_sub(start);
+        if end >= last && (view.wrapped || !row.continues()) {
+            break;
+        }
+        if !row.continues() {
+            line_start = index.saturating_add(1);
+            if index < first {
+                line_cells = 0;
             }
-            read = Box::new(rows.into_iter().skip(first));
         }
     }
-    read
+    if !view.wrapped && first >= start.saturating_add(count) {
+        count = 0;
+    }
+    Ok(Selection { start, count })
+}
+
+/// Stored history work follows its byte budget; live cells follow the
+/// screen. Synthesized blanks explicitly kept by full or joined views
+/// have at most two cells per output byte. All terms are admitted here.
+#[derive(Clone, Copy)]
+struct Limits {
+    cells: usize,
+}
+impl Limits {
+    fn new(history_bytes: usize, (rows, cols): (u16, u16)) -> Result<Self, crate::session::Error> {
+        let live = usize::from(rows)
+            .checked_mul(usize::from(cols))
+            .ok_or_else(too_large)?;
+        let cells = history_bytes
+            .checked_mul(2)
+            .and_then(|n| n.checked_add(live))
+            .and_then(|n| n.checked_add(OUTPUT_CELLS))
+            .ok_or_else(too_large)?;
+        Ok(Self { cells })
+    }
+}
+
+fn columns(
+    row: Row<'_>,
+    span: std::ops::Range<usize>,
+    view: CaptureView,
+) -> std::ops::Range<usize> {
+    let retained = if !view.full && (view.wrapped || !row.continues()) {
+        row.stored_len()
+    } else {
+        row.len()
+    };
+    let spacer = usize::from(!view.wrapped && row.ends_in_spacer());
+    let end = row.len().saturating_sub(spacer).min(retained).min(span.end);
+    let (skip, count) = view.cols.map_or((0, usize::MAX), |(a, b)| {
+        (
+            usize::from(a),
+            usize::from(b)
+                .saturating_sub(usize::from(a))
+                .saturating_add(1),
+        )
+    });
+    let first = span.start.saturating_add(skip).min(end);
+    first..first.saturating_add(count).min(end)
+}
+
+fn too_large() -> crate::session::Error {
+    crate::session::fail(
+        crate::code::Raise::TooLong,
+        "capture exceeds its cell, byte or allocation limit; request fewer history rows or a narrower wrapped range",
+    )
 }
 
 /// The rows a capture reads, each with the columns of it it reads: the
@@ -280,8 +455,10 @@ fn rows_of(
     let keep = shown.saturating_add(history.unwrap_or(0));
     // Only the rows kept are read: history past them is skipped unread.
     let skip = rows.len().saturating_sub(keep);
-    let read = Box::new(rows.skip(skip).map(|row| (row, 0..usize::MAX)));
-    (read, Some(skip))
+    (
+        ReadRows::new(rows, skip, usize::MAX, 0, usize::MAX, false),
+        Some(skip),
+    )
 }
 
 /// The last command's output between its marks, a range of each row's
@@ -293,10 +470,10 @@ fn last_output(screen: &Screen) -> ReadRows<'_> {
     let running = commands.output_start.zip(cursor);
     let ended = running.is_none();
     let Some((start, end)) = running.or(commands.last_output) else {
-        return Box::new(std::iter::empty());
+        return ReadRows::new(screen.rows(), 0, 0, 0, 0, true);
     };
     let Some(last) = screen.row_index(end.row) else {
-        return Box::new(std::iter::empty());
+        return ReadRows::new(screen.rows(), 0, 0, 0, 0, true);
     };
     // A start gone (history's limit cut it, or the screen was cleared or
     // switched) or below the end: from what is kept above the end, the
@@ -311,36 +488,52 @@ fn last_output(screen: &Screen) -> ReadRows<'_> {
         Some(_) => (screen.history_len().min(last), left),
         None => (0, left),
     };
-    let rows = screen
-        .rows()
-        .skip(first)
-        .take(last.saturating_sub(first).saturating_add(1));
-    let count = rows.len();
-    Box::new(rows.enumerate().filter_map(move |(i, row)| {
-        let from = if i == 0 { usize::from(start.col) } else { 0 };
-        // An ended command's output ends at its end mark; a running
-        // one's last row is whole, what it wrote right of the cursor
-        // too.
-        let to = match (i.saturating_add(1) == count && ended, end.col) {
-            (true, col) if i == 0 && start.col >= col => 0,
-            (true, col) => usize::from(col),
-            (false, _) => usize::MAX,
-        };
-        (from < to).then_some((row, from..to))
-    }))
+    ReadRows::new(
+        screen.rows(),
+        first,
+        last.saturating_sub(first).saturating_add(1),
+        usize::from(start.col),
+        usize::from(end.col),
+        ended,
+    )
 }
 
 /// What a client's terminal shows, row by row.
-pub fn client(client: ClientId, grid: &crate::render::Grid) -> Captured {
-    let lines = (0..grid.rows)
-        .map(|y| {
-            vec![LineRun {
-                text: grid.row_text(y),
-                cells: 1,
-                style: Attributes::default(),
-            }]
-        })
-        .collect();
+pub fn client(
+    client: ClientId,
+    grid: &crate::render::Grid,
+) -> Result<Captured, crate::session::Error> {
+    use crate::wire::{Sink, Wire};
+    let mut budget = crate::wire::Budget::new();
+    let mut wire = crate::wire::Writer::counting(crate::wire::MAX_REPLY.saturating_sub(64));
+    let of = Of::Client(client);
+    of.put(&mut wire);
+    let mut lines = budget.vector(usize::from(grid.rows))?;
+    for y in 0..grid.rows {
+        0u32.put(&mut wire);
+        0u32.put(&mut wire);
+        0u32.put(&mut wire);
+        Attributes::default().put(&mut wire);
+        wire.check_ref().map_err(|_| too_large())?;
+        let mut text = String::new();
+        for cell in grid.row(y).filter(|cell| !cell.is_wide_continuation()) {
+            wire.extend_from_slice(cell.shown().as_bytes());
+            wire.check_ref().map_err(|_| too_large())?;
+            budget
+                .text(&mut text, cell.shown())
+                .map_err(|_| too_large())?;
+        }
+        while text.chars().next_back().is_some_and(char::is_whitespace) {
+            text.pop();
+        }
+        let mut line = budget.vector(1)?;
+        line.push(LineRun {
+            text,
+            cells: 1,
+            style: Attributes::default(),
+        });
+        lines.push(line);
+    }
     let view = CaptureView {
         full: true,
         ..CaptureView::default()
@@ -351,6 +544,7 @@ pub fn client(client: ClientId, grid: &crate::render::Grid) -> Captured {
         grid.cursor,
         lines,
         view,
+        &mut budget,
     )
 }
 
@@ -359,7 +553,12 @@ pub fn client(client: ClientId, grid: &crate::render::Grid) -> Captured {
 /// that say how it takes input; whether a client is in copy mode on it,
 /// and the cell its program is told, by its tab's host
 /// (`Session::host_panes`).
-pub fn state(pane: &Pane, now: Instant, copy_mode: bool) -> Vec<(&'static str, Json)> {
+pub(crate) fn state(
+    pane: &Pane,
+    now: Instant,
+    copy_mode: bool,
+    budget: &mut crate::wire::Budget,
+) -> Result<Vec<(&'static str, Json)>, crate::session::Error> {
     let screen = pane.screen();
     let cell = screen.graphics().cell();
     // The terminal reports a group, whose leader may already have exited.
@@ -370,15 +569,33 @@ pub fn state(pane: &Pane, now: Instant, copy_mode: bool) -> Vec<(&'static str, J
             .flatten()
     });
     let leader = group.filter(|pid| fuxix::process::exists(*pid));
-    let program = leader.and_then(fuxix::process::name);
-    let argv = leader.and_then(fuxix::process::argv);
-    let cwd = leader.and_then(fuxix::process::cwd);
-    let launch_argv = match &pane.runs {
-        Runs::Explicit(launch) => Json::Array(launch.argv.iter().map(Json::str).collect()),
-        Runs::DefaultShell => Json::Null,
+    let program = leader
+        .map(|pid| fuxix::process::name(pid, budget))
+        .transpose()?
+        .flatten();
+    let (launch_argv, argv) = arguments(&pane.runs, budget, |budget| {
+        leader
+            .map(|pid| fuxix::process::argv(pid, budget))
+            .transpose()
+            .map(Option::flatten)
+    })?;
+    let cwd = match leader
+        .map(|pid| fuxix::process::cwd(pid, budget))
+        .transpose()?
+        .flatten()
+    {
+        Some(path) => {
+            let text = fuxix::Allocation::lossy(budget, path.as_os_str().as_encoded_bytes())?;
+            let capacity = path.capacity();
+            drop(path);
+            budget.release(capacity)?;
+            Json::str(text)
+        }
+        None => Json::Null,
     };
     let idle = now.saturating_duration_since(pane.wrote_at).as_millis();
     let last_status = screen.commands().last_status;
+
     let (exited, signal) = match pane.process().exit_status() {
         Some(crate::process::Ended::Exited(code)) => (Json::int(code), Json::Null),
         Some(crate::process::Ended::Signalled(signal)) => (Json::Null, Json::int(signal)),
@@ -387,7 +604,12 @@ pub fn state(pane: &Pane, now: Instant, copy_mode: bool) -> Vec<(&'static str, J
     let hung_up = matches!(pane.process(), Process::HungUp(_));
     let mouse = screen.mouse_protocol_mode();
     let bracketed_paste = screen.mode(Mode::BracketedPaste);
-    let pictures = Json::Array(screen.pictures().map(picture).collect());
+    let mut pictures = Vec::new();
+    for shown in screen.pictures() {
+        budget.reserve(&mut pictures, 1)?;
+        pictures.push(picture(shown, budget)?);
+    }
+    let pictures = Json::Array(pictures);
     let notification = pane.alerts.last.as_ref();
     // The fields whose value the program sent more of than is kept.
     let cut = [
@@ -396,9 +618,29 @@ pub fn state(pane: &Pane, now: Instant, copy_mode: bool) -> Vec<(&'static str, J
         ("output", pane.left.output == crate::pane::Output::Cut),
     ];
     let truncated = cut.into_iter().filter(|(_, cut)| *cut);
-    let truncated = truncated.map(|(field, _)| Json::str(field)).collect();
-    vec![
-        ("title", Json::str(pane.title().as_str().to_owned())),
+    let mut cut_fields = budget.vector(3)?;
+    for (field, _) in truncated {
+        cut_fields.push(Json::str(budget.string(field)?));
+    }
+    let losses = pane.lost();
+    let lost = budget.object([
+        ("input", Json::uint(losses.input)),
+        ("replies", Json::uint(losses.replies)),
+        ("copies_cut", Json::uint(losses.copies_cut)),
+        ("copies_not_text", Json::uint(losses.copies_not_text)),
+        ("pictures", Json::uint(losses.pictures)),
+        ("memory", Json::uint(losses.memory)),
+    ])?;
+    let cell = match cell {
+        Some(cell) => budget.object([
+            ("width", Json::int(cell.width())),
+            ("height", Json::int(cell.height())),
+        ])?,
+        None => Json::Null,
+    };
+    let read_error = pane.read_error().map(|e| e.message(budget)).transpose()?;
+    let values = [
+        ("title", Json::str(budget.string(pane.title().as_str())?)),
         ("program", program.map_or(Json::Null, Json::str)),
         (
             "foreground_group",
@@ -412,11 +654,7 @@ pub fn state(pane: &Pane, now: Instant, copy_mode: bool) -> Vec<(&'static str, J
         // Its program closed its terminal and runs on: nothing reads keys
         // there (the terminal hung up; Linux says so).
         ("hung_up", Json::Bool(hung_up)),
-        (
-            "read_error",
-            pane.read_error()
-                .map_or(Json::Null, |error| Json::str(error.to_string())),
-        ),
+        ("read_error", read_error.map_or(Json::Null, Json::str)),
         ("exited", exited),
         ("signal", signal),
         // Past u64's milliseconds no monotonic clock reaches: unknown.
@@ -431,25 +669,17 @@ pub fn state(pane: &Pane, now: Instant, copy_mode: bool) -> Vec<(&'static str, J
             "mouse_mode",
             match mouse {
                 MouseProtocolMode::None => Json::Null,
-                MouseProtocolMode::Press => Json::str("press"),
-                MouseProtocolMode::PressRelease => Json::str("press_release"),
-                MouseProtocolMode::Highlight => Json::str("highlight"),
-                MouseProtocolMode::ButtonMotion => Json::str("button_motion"),
-                MouseProtocolMode::AnyMotion => Json::str("any_motion"),
+                MouseProtocolMode::Press => Json::str(budget.string("press")?),
+                MouseProtocolMode::PressRelease => Json::str(budget.string("press_release")?),
+                MouseProtocolMode::Highlight => Json::str(budget.string("highlight")?),
+                MouseProtocolMode::ButtonMotion => Json::str(budget.string("button_motion")?),
+                MouseProtocolMode::AnyMotion => Json::str(budget.string("any_motion")?),
             },
         ),
         ("bracketed_paste", Json::Bool(bracketed_paste)),
         ("pictures", pictures),
-        ("lost", pane.lost().json()),
-        (
-            "cell",
-            cell.map_or(Json::Null, |cell| {
-                Json::object(vec![
-                    ("width", Json::int(cell.width())),
-                    ("height", Json::int(cell.height())),
-                ])
-            }),
-        ),
+        ("lost", lost),
+        ("cell", cell),
         ("cursor_visible", Json::Bool(screen.mode(Mode::ShowCursor))),
         ("history_lines", Json::count(screen.history_len())),
         ("copy_mode", Json::Bool(copy_mode)),
@@ -458,24 +688,66 @@ pub fn state(pane: &Pane, now: Instant, copy_mode: bool) -> Vec<(&'static str, J
         ("bells", Json::uint(pane.alerts.rung)),
         (
             "notification",
-            notification.map_or(Json::Null, |n| Json::str(n.as_str().to_owned())),
+            budget.optional_text(notification.map(|n| n.as_str()))?,
         ),
-        ("truncated", Json::Array(truncated)),
+        ("truncated", Json::Array(cut_fields)),
         ("input_unread", Json::count(pane.left.input)),
-        ("cwd", cwd.map_or(Json::Null, |p| text(p.as_os_str()))),
-        (
-            "argv",
-            argv.map_or(Json::Null, |a| {
-                Json::Array(a.iter().map(|w| text(w)).collect())
-            }),
-        ),
-    ]
+        ("cwd", cwd),
+        ("argv", argv),
+    ];
+    let mut fields = budget.vector(
+        values
+            .len()
+            .checked_add(1)
+            .ok_or_else(crate::wire::Budget::exceeded)?,
+    )?;
+    fields.extend(values);
+    Ok(fields)
 }
 
-/// A path or an argument as JSON text, which must be UTF-8: each byte
-/// that is not shown as U+FFFD, as `docs/json.md` says.
-fn text(os: &std::ffi::OsStr) -> Json {
-    Json::str(os.to_string_lossy().into_owned())
+fn arguments(
+    runs: &Runs,
+    budget: &mut crate::wire::Budget,
+    observe: impl FnOnce(
+        &mut crate::wire::Budget,
+    ) -> Result<Option<Vec<std::ffi::OsString>>, crate::session::Error>,
+) -> Result<(Json, Json), crate::session::Error> {
+    let argv = match observe(budget)? {
+        Some(words) => {
+            let bytes = words.iter().try_fold(
+                words
+                    .capacity()
+                    .checked_mul(std::mem::size_of::<std::ffi::OsString>())
+                    .ok_or_else(crate::wire::Budget::exceeded)?,
+                |n, word| {
+                    n.checked_add(word.capacity())
+                        .ok_or_else(crate::wire::Budget::exceeded)
+                },
+            )?;
+            let mut values = budget.vector(words.len())?;
+            for word in &words {
+                values.push(Json::str(fuxix::Allocation::lossy(
+                    budget,
+                    word.as_encoded_bytes(),
+                )?));
+            }
+            drop(words);
+            budget.release(bytes)?;
+            Json::Array(values)
+        }
+        None => Json::Null,
+    };
+    let launch = match runs {
+        Runs::Explicit(launch) => {
+            let mut values = budget.vector(launch.argv.len())?;
+            for word in &launch.argv {
+                values.push(Json::str(budget.string(word)?));
+            }
+            Json::Array(values)
+        }
+        Runs::DefaultShell => Json::Null,
+    };
+    Ok((launch, argv))
 }
 
 /// Where a picture is, for `json`: its top row (negative once scrolled
@@ -483,8 +755,11 @@ fn text(os: &std::ffi::OsStr) -> Json {
 /// that are gone (`cropped`: scrolled off a region's top or a screen's
 /// that keeps no history, the rest shown below them), and its size in
 /// pixels.
-fn picture(shown: fux_vt::Shown<'_>) -> Json {
-    Json::object(vec![
+fn picture(
+    shown: fux_vt::Shown<'_>,
+    budget: &mut crate::wire::Budget,
+) -> Result<Json, crate::session::Error> {
+    budget.object([
         ("row", Json::Int(shown.row)),
         ("col", Json::int(shown.col)),
         ("rows", Json::int(shown.rows)),
@@ -497,18 +772,24 @@ fn picture(shown: fux_vt::Shown<'_>) -> Json {
 
 /// Remove the last line's unshown trailing blank cells, counted while
 /// reading them rather than inferred from the run's cluster text.
-fn trim_line(lines: &mut [Vec<LineRun>], blanks: usize) {
+fn trim_line(
+    lines: &mut [Vec<LineRun>],
+    blanks: usize,
+    budget: &mut crate::wire::Budget,
+) -> Result<(), crate::session::Error> {
     if let Some(line) = lines.last_mut() {
         for _ in 0..blanks {
             if let Some(last) = line.last_mut() {
                 last.text.pop();
                 last.cells = last.cells.saturating_sub(1);
                 if last.cells == 0 {
+                    budget.release(last.text.capacity())?;
                     line.pop();
                 }
             }
         }
     }
+    Ok(())
 }
 
 /// A capture of `lines`, its empty last lines dropped unless `full`.
@@ -518,34 +799,51 @@ fn captured(
     screen_cursor: Option<(u16, u16)>,
     mut lines: Vec<Vec<LineRun>>,
     view: CaptureView,
-) -> Captured {
-    // Trimming the runs may leave empty lines at the end; full keeps them.
+    budget: &mut crate::wire::Budget,
+) -> Result<Captured, crate::session::Error> {
     if !view.full {
         while lines.last().is_some_and(Vec::is_empty) {
-            lines.pop();
+            if let Some(line) = lines.pop() {
+                budget.release(
+                    line.capacity()
+                        .checked_mul(std::mem::size_of::<LineRun>())
+                        .ok_or_else(too_large)?,
+                )?;
+            }
         }
     }
-    let lines = lines
-        .into_iter()
-        .map(|line| {
-            line.into_iter()
-                .map(|run| Cut {
-                    text: run.text,
-                    cells: u32::try_from(run.cells).unwrap_or(u32::MAX),
-                    style: run.style,
-                })
-                .collect()
-        })
-        .collect();
-    Captured {
+    let old_capacity = lines
+        .capacity()
+        .checked_mul(std::mem::size_of::<Vec<LineRun>>())
+        .ok_or_else(too_large)?;
+    let mut captured = budget.vector(lines.len()).map_err(|_| too_large())?;
+    for line in lines {
+        let old = line
+            .capacity()
+            .checked_mul(std::mem::size_of::<LineRun>())
+            .ok_or_else(too_large)?;
+        let mut cuts = budget.vector(line.len()).map_err(|_| too_large())?;
+        for run in line {
+            cuts.push(Cut {
+                text: run.text,
+                cells: u32::try_from(run.cells).unwrap_or(u32::MAX),
+                style: run.style,
+            });
+        }
+        budget.release(old)?;
+        captured.push(cuts);
+    }
+    budget.release(old_capacity)?;
+    budget.slots::<Captured>(1)?;
+    Ok(Captured {
         of,
         screen_rows,
         screen_cols,
         screen_cursor,
-        lines,
+        lines: captured,
         styles: view.styles,
         marks: view.marks,
-    }
+    })
 }
 
 /// Highlighted: reverse video, or a background colour.
@@ -561,117 +859,188 @@ fn painted(a: &Attributes) -> bool {
 }
 
 impl Captured {
-    /// As it is printed: its lines, in SGR with `styles`, what is
-    /// highlighted between `⟦` and `⟧` with `marks`.
-    pub fn text(&self) -> String {
-        let lines: Vec<String> = (self.lines.iter())
-            .map(|line| sgr_line(line, self.marks, self.styles))
-            .collect();
-        lines.join("\n")
+    /// Charge all retained input before converting it on the client.
+    pub(crate) fn charge(
+        &self,
+        budget: &mut crate::wire::Budget,
+    ) -> Result<(), crate::session::Error> {
+        budget.slots::<Vec<Cut>>(self.lines.capacity())?;
+        for line in &self.lines {
+            budget.slots::<Cut>(line.capacity())?;
+            for cut in line {
+                budget.charge(cut.text.capacity())?;
+            }
+        }
+        if let Of::Pane { state, .. } = &self.of {
+            budget.slots::<(String, Json)>(state.capacity())?;
+            for (key, value) in state {
+                budget.charge(key.capacity())?;
+                value.charge(budget)?;
+            }
+        }
+        Ok(())
     }
 
-    /// As `json` gives it: an object naming what it read, with its
-    /// screen's size and cursor, its lines as plain text, their style runs
-    /// with `styles`, and a pane's version, pending wrap and state.
-    pub fn json(&self) -> Json {
-        let mut fields = match &self.of {
-            Of::Pane { version, .. } => vec![("pane", Json::str(version.pane.to_string()))],
-            Of::Client(client) => vec![("client", Json::str(client.to_string()))],
-        };
-        let cursor = self.screen_cursor.map_or(Json::Null, |(y, x)| {
-            Json::Array(vec![Json::int(y), Json::int(x)])
-        });
-        let lines = (self.lines.iter()).map(|l| Json::str(sgr_line(l, self.marks, false)));
-        fields.extend([
-            ("screen_rows", Json::int(self.screen_rows)),
-            ("screen_cols", Json::int(self.screen_cols)),
-            ("screen_cursor", cursor),
-            ("lines", Json::Array(lines.collect())),
-        ]);
+    /// As printed, admitted beside the retained capture before allocation.
+    pub fn text(&self) -> Result<String, crate::session::Error> {
+        let mut budget = crate::wire::Budget::new();
+        budget.slots::<Captured>(1)?;
+        self.text_with(&mut budget)
+    }
+
+    pub(crate) fn text_with(
+        &self,
+        budget: &mut crate::wire::Budget,
+    ) -> Result<String, crate::session::Error> {
+        self.charge(budget)?;
+        budget.charge(self.text_scratch())?;
+        let text = crate::json::render(budget, |out| self.write_text(out))?;
+        budget.text_value(&text)?;
+        Ok(text)
+    }
+
+    pub(crate) fn text_scratch(&self) -> usize {
+        if self.styles { 128 } else { 0 }
+    }
+
+    pub(crate) fn write_text(&self, out: &mut dyn std::fmt::Write) -> std::fmt::Result {
+        // All flags and three RGB colours fit in the declared scratch space.
+        let mut sgr = Vec::new();
+        sgr.try_reserve_exact(self.text_scratch())
+            .map_err(|_| std::fmt::Error)?;
+        for (i, line) in self.lines.iter().enumerate() {
+            if i > 0 {
+                out.write_char('\n')?;
+            }
+            write_line(out, line, self.marks, self.styles, &mut sgr)?;
+        }
+        Ok(())
+    }
+
+    /// JSON directly from the capture: no second graph of owned run objects.
+    pub(crate) fn write_json(&self, out: &mut dyn std::fmt::Write) -> std::fmt::Result {
+        match &self.of {
+            Of::Pane { version, .. } => write!(out, "{{\"pane\":\"{}\"", version.pane)?,
+            Of::Client(client) => write!(out, "{{\"client\":\"{client}\"")?,
+        }
+        write!(
+            out,
+            ",\"screen_rows\":{},\"screen_cols\":{},\"screen_cursor\":",
+            self.screen_rows, self.screen_cols
+        )?;
+        match self.screen_cursor {
+            Some((y, x)) => write!(out, "[{y},{x}]")?,
+            None => out.write_str("null")?,
+        }
+        out.write_str(",\"lines\":[")?;
+        struct Escaped<'a>(&'a mut dyn std::fmt::Write);
+        impl std::fmt::Write for Escaped<'_> {
+            fn write_str(&mut self, text: &str) -> std::fmt::Result {
+                crate::json::escaped(self.0, text)
+            }
+        }
+        for (i, line) in self.lines.iter().enumerate() {
+            if i > 0 {
+                out.write_char(',')?;
+            }
+            out.write_char('"')?;
+            write_line(&mut Escaped(out), line, self.marks, false, &mut Vec::new())?;
+            out.write_char('"')?;
+        }
+        out.write_char(']')?;
         if let Of::Pane { wrap_pending, .. } = &self.of {
-            fields.push(("wrap_pending", Json::Bool(*wrap_pending)));
+            write!(out, ",\"wrap_pending\":{wrap_pending}")?;
         }
         if self.styles {
-            fields.push(("styles", Json::Array(self.lines.iter().map(runs).collect())));
+            out.write_str(",\"styles\":[")?;
+            for (i, line) in self.lines.iter().enumerate() {
+                if i > 0 {
+                    out.write_char(',')?;
+                }
+                out.write_char('[')?;
+                let mut start = 0u32;
+                let mut first = true;
+                for cut in line {
+                    if cut.style != Attributes::default() {
+                        if !first {
+                            out.write_char(',')?;
+                        }
+                        first = false;
+                        write!(out, "{{\"col\":{start},\"len\":{}", cut.cells)?;
+                        describe(out, cut.style)?;
+                        out.write_char('}')?;
+                    }
+                    start = start.saturating_add(cut.cells);
+                }
+                out.write_char(']')?;
+            }
+            out.write_char(']')?;
         }
-        let mut json = Json::object(fields);
-        if let (Json::Object(all), Of::Pane { version, state, .. }) = (&mut json, &self.of) {
-            all.push(("version".to_owned(), Json::str(version.to_string())));
-            all.extend(state.iter().cloned());
+        if let Of::Pane { version, state, .. } = &self.of {
+            write!(out, ",\"version\":\"{version}\"")?;
+            for (key, value) in state {
+                out.write_char(',')?;
+                crate::json::write_str(out, key)?;
+                out.write_char(':')?;
+                value.write(out)?;
+            }
         }
-        json
+        out.write_char('}')
     }
 }
 
-/// A line, in SGR with `styles`: each change of attributes set from
-/// nothing, and reset at its end. With `marks`, what is highlighted
-/// (reverse video, or a background colour) is between `⟦` and `⟧`, drawn
-/// outside the SGR.
-fn sgr_line(line: &[Cut], marks: bool, styles: bool) -> String {
-    let mut out = Vec::new();
+/// Write a line without allocating its plain or escaped intermediate text.
+fn write_line(
+    out: &mut dyn std::fmt::Write,
+    line: &[Cut],
+    marks: bool,
+    styles: bool,
+    sgr: &mut Vec<u8>,
+) -> std::fmt::Result {
     let mut pen = Attributes::default();
     let mut on = false;
     for cut in line {
         let lit = marks && highlighted(&cut.style);
         if lit && !on {
-            out.extend_from_slice("⟦".as_bytes());
+            out.write_str("⟦")?;
         }
         if styles && cut.style != pen {
-            crate::render::sgr(&mut out, cut.style, true);
+            sgr.clear();
+            crate::render::sgr(sgr, cut.style, true);
+            out.write_str(std::str::from_utf8(sgr).map_err(|_| std::fmt::Error)?)?;
             pen = cut.style;
         }
         if on && !lit {
-            out.extend_from_slice("⟧".as_bytes());
+            out.write_str("⟧")?;
         }
         on = lit;
-        out.extend_from_slice(cut.text.as_bytes());
+        out.write_str(&cut.text)?;
     }
     if pen != Attributes::default() {
-        out.extend_from_slice(b"\x1b[0m");
+        out.write_str("\x1b[0m")?;
     }
     if on {
-        out.extend_from_slice("⟧".as_bytes());
+        out.write_str("⟧")?;
     }
-    String::from_utf8_lossy(&out).into_owned()
+    Ok(())
 }
 
-/// A line's runs of cells with attributes other than the default: where
-/// each starts, from 0, how many cells, and what it has.
-fn runs(line: &Vec<Cut>) -> Json {
-    let mut runs = Vec::new();
-    let mut start = 0u32;
-    for cut in line {
-        if cut.style != Attributes::default() {
-            let mut fields = vec![("col", Json::uint(start)), ("len", Json::uint(cut.cells))];
-            fields.extend(described(cut.style));
-            runs.push(Json::object(fields));
+/// Attributes in the JSON vocabulary, streamed into the enclosing run.
+fn describe(out: &mut dyn std::fmt::Write, a: Attributes) -> std::fmt::Result {
+    for (name, colour) in [("fg", a.foreground()), ("bg", a.background())] {
+        match colour {
+            Color::Default => {}
+            Color::Idx(n) => write!(out, ",\"{name}\":{n}")?,
+            Color::Rgb(Rgb { r, g, b }) => write!(out, ",\"{name}\":\"#{r:02x}{g:02x}{b:02x}\"")?,
         }
-        start = start.saturating_add(cut.cells);
     }
-    Json::Array(runs)
-}
-
-/// Attributes as `json` names them: the colours other than the default,
-/// and the attributes set.
-fn described(a: Attributes) -> Vec<(&'static str, Json)> {
-    let colour = |c: Color| match c {
-        Color::Idx(n) => Some(Json::int(n)),
-        Color::Rgb(Rgb { r, g, b }) => Some(Json::str(format!("#{r:02x}{g:02x}{b:02x}"))),
-        Color::Default => None,
-    };
-    let mut fields = Vec::new();
-    fields.extend(colour(a.foreground()).map(|c| ("fg", c)));
-    fields.extend(colour(a.background()).map(|c| ("bg", c)));
     let flags = a.sgr_flags().map(|(_, name)| name);
     let underline = a.underline().then_some("underline");
     let blink = (a.blink() != fux_vt::Blink::None).then_some("blink");
-    fields.extend(
-        flags
-            .chain(underline)
-            .chain(blink)
-            .map(|name| (name, Json::Bool(true))),
-    );
-    fields
+    for name in flags.chain(underline).chain(blink) {
+        write!(out, ",\"{name}\":true")?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -680,6 +1049,242 @@ mod tests {
     use crate::id::PaneId;
     use crate::pane::tests::Lone;
     use crate::pane::{Pane, Runs};
+
+    #[test]
+    fn argument_observation_peak_stays_within_shared_grant()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let allocator = fux_vt_peak::ThreadPeak;
+        let launch = Runs::Explicit(crate::pane::Launch {
+            argv: vec![std::iter::repeat_n('l', 6000).collect()],
+            cwd: "/".into(),
+            env: Vec::new(),
+        });
+        let mut peak = 0;
+        for (len, byte) in [(2500, b'a'), (5000, b'a'), (2500, 0xff)] {
+            let mut raw: Vec<u8> = std::iter::repeat_n(byte, len).collect();
+            raw.push(0);
+            let baseline = allocator.live();
+            allocator.reset_peak();
+            let result = super::arguments(
+                &launch,
+                &mut crate::wire::Budget::with_limit(8192),
+                |budget| fuxix::process::argv_read(raw.as_slice(), budget),
+            );
+            assert!(result.is_err());
+            peak = peak.max(allocator.peak().saturating_sub(baseline));
+        }
+        assert!(
+            peak <= 8192,
+            "argument observation allocated {peak} bytes under an 8192-byte grant"
+        );
+        let raw = b"a\0\xff\0\0";
+        let mut budget = crate::wire::Budget::with_limit(8192);
+        let baseline = allocator.live();
+        allocator.reset_peak();
+        let (_, observed) = super::arguments(&Runs::DefaultShell, &mut budget, |budget| {
+            fuxix::process::argv_read(raw.as_slice(), budget)
+        })?;
+        let retained = allocator.live().saturating_sub(baseline);
+        assert_eq!(retained, 8192usize.saturating_sub(budget.remaining()));
+        assert!(allocator.peak().saturating_sub(baseline) <= 8192);
+        assert_eq!(observed.render(), "[\"a\",\"�\",\"\"]");
+        Ok(())
+    }
+
+    #[test]
+    fn wide_default_history_is_admitted() -> Result<(), Box<dyn std::error::Error>> {
+        let history = crate::config::Config::default().history_bytes.get();
+        let mut pane = Lone::new(Pane::new(
+            PaneId::of(1),
+            None,
+            Runs::DefaultShell,
+            fux_vt::Size::new(3, 200)?,
+            history,
+        )?);
+        let output: Vec<u8> = std::iter::repeat_n(b"x\r\n".as_slice(), 150_000)
+            .flatten()
+            .copied()
+            .collect();
+        pane.output(&output);
+        while pane.has_unread() {
+            pane.read_unread();
+        }
+        assert!(pane.screen().history_len().saturating_mul(200) > 16 << 20);
+        let capture = super::pane(
+            &pane,
+            crate::command::Run::now().ok_or("clock")?,
+            Some(usize::MAX),
+            CaptureView::default(),
+            false,
+            history,
+        )?;
+        assert!(capture.lines.len() > 80_000);
+        let full = super::pane(
+            &pane,
+            crate::command::Run::now().ok_or("clock")?,
+            Some(100_000),
+            CaptureView {
+                full: true,
+                ..CaptureView::default()
+            },
+            false,
+            history,
+        )?;
+        assert_eq!(full.lines.len(), 100_003);
+        Ok(())
+    }
+
+    #[test]
+    fn last_output_ignores_unselected_history() -> Result<(), Box<dyn std::error::Error>> {
+        let mut pane = Lone::new(Pane::new(
+            PaneId::of(1),
+            None,
+            Runs::DefaultShell,
+            fux_vt::Size::new(3, 4)?,
+            1 << 20,
+        )?);
+        for _ in 0..10 {
+            pane.output(b"x\r\n");
+        }
+        pane.output(b"\x1b]133;C\x07hi\x1b]133;D;0\x07");
+        let view = CaptureView {
+            source: crate::command::Source::LastOutput,
+            ..CaptureView::default()
+        };
+        let capture = super::pane_with(
+            &pane,
+            crate::command::Run::now().ok_or("clock")?,
+            None,
+            view,
+            false,
+            super::Limits { cells: 2 },
+        )?;
+        assert_eq!(capture.text()?, "hi");
+        Ok(())
+    }
+
+    #[test]
+    fn joined_prefix_costs_metadata_only() -> Result<(), Box<dyn std::error::Error>> {
+        let mut pane = Lone::new(Pane::new(
+            PaneId::of(1),
+            None,
+            Runs::DefaultShell,
+            fux_vt::Size::new(1, 200)?,
+            0,
+        )?);
+        pane.output(b"x");
+        let row = pane.screen().rows().next().ok_or("row")?;
+        let read = Box::new(std::iter::repeat_n((row, 0..usize::MAX), 100));
+        let selection = super::selected_rows(
+            read,
+            CaptureView {
+                rows: Some((90, 95)),
+                ..CaptureView::default()
+            },
+            super::Limits { cells: 1200 },
+        )?;
+        assert_eq!((selection.start, selection.count), (90, 6));
+        Ok(())
+    }
+
+    #[test]
+    fn short_lines_charge_allocated_capacity() -> Result<(), Box<dyn std::error::Error>> {
+        let mut pane = Lone::new(Pane::new(
+            PaneId::of(1),
+            None,
+            Runs::DefaultShell,
+            fux_vt::Size::new(1, 2)?,
+            0,
+        )?);
+        pane.output(b"x");
+        let row = pane.screen().rows().next().ok_or("row")?;
+        let read = std::iter::repeat_n((row, 0..usize::MAX), 100);
+        let mut budget = crate::wire::Budget::with_limit(8192);
+        if let Ok(captured) = super::build(
+            read,
+            super::Of::Client(crate::id::ClientId::of(1)),
+            ((100, 2), None),
+            CaptureView::default(),
+            &mut budget,
+        ) {
+            let mut allocated = captured
+                .lines
+                .capacity()
+                .saturating_mul(std::mem::size_of::<Vec<super::Cut>>());
+            for line in &captured.lines {
+                allocated = allocated.saturating_add(
+                    line.capacity()
+                        .saturating_mul(std::mem::size_of::<super::Cut>()),
+                );
+                for run in line {
+                    allocated = allocated.saturating_add(run.text.capacity());
+                }
+            }
+            assert!(
+                allocated <= 8192,
+                "retained {allocated} bytes for an 8192-byte grant"
+            );
+        }
+        Ok(())
+    }
+
+    /// Blanks still cost work, and a single joined row range can expand
+    /// beyond the cap. A narrower physical read remains available.
+    #[test]
+    fn over_budget_capture_refuses_without_clipping() -> Result<(), Box<dyn std::error::Error>> {
+        let mut pane = Lone::new(Pane::new(
+            PaneId::of(1),
+            None,
+            Runs::DefaultShell,
+            fux_vt::Size::new(3, 80)?,
+            1 << 20,
+        )?);
+        pane.output(b"\x1b[41m \x1b[400b");
+        for _ in 0..10 {
+            pane.output(b"\r\n");
+        }
+        let run = crate::command::Run::now().ok_or("a clock")?;
+        let refusal = super::pane_with(
+            &pane,
+            run,
+            Some(usize::MAX),
+            CaptureView::default(),
+            false,
+            super::Limits { cells: 240 },
+        );
+        assert!(refusal.is_err());
+        assert!(
+            refusal
+                .err()
+                .is_some_and(|e| e.to_string().contains("request fewer history"))
+        );
+        let view = CaptureView {
+            wrapped: true,
+            rows: Some((0, 0)),
+            full: true,
+            ..CaptureView::default()
+        };
+        let read = super::pane(&pane, run, Some(usize::MAX), view, false, 0)?;
+        assert_eq!(read.lines.len(), 1);
+        assert_eq!(
+            read.lines.first().and_then(|l| l.first()).map(|r| r.cells),
+            Some(80)
+        );
+        let limits = super::Limits { cells: 80 };
+        let read = Box::new(pane.screen().rows().map(|row| (row, 0..usize::MAX)));
+        assert!(
+            super::selected_rows(
+                read,
+                CaptureView {
+                    rows: Some((0, 0)),
+                    ..CaptureView::default()
+                },
+                limits
+            )
+            .is_err()
+        );
+        Ok(())
+    }
 
     /// A soft-wrapped row's last cell is the spacer a wide glyph left, no
     /// part of the line, only while nothing was painted there: a blank EL
@@ -699,8 +1304,9 @@ mod tests {
                 None,
                 join,
                 false,
-            )
-            .text())
+                8 << 20,
+            )?
+            .text()?)
         };
         // Cols 3 and 4 erased, 世 at col 4 does not fit and wraps on.
         let first = |output| {
@@ -722,18 +1328,19 @@ mod tests {
         let mut pane = Lone::new(Pane::new(PaneId::of(1), None, Runs::DefaultShell, size, 0)?);
         pane.output(b"top\r\nabcdefghijklm\r\nend");
         let run = crate::command::Run::now().ok_or("a clock")?;
-        let capture = |rows, wrapped| {
+        let capture = |rows, wrapped| -> Result<String, Box<dyn std::error::Error>> {
             let view = CaptureView {
                 rows: Some(rows),
                 wrapped,
                 ..CaptureView::default()
             };
-            super::pane(&pane, run, None, view, false).text()
+            Ok(super::pane(&pane, run, None, view, false, 8 << 20)?.text()?)
         };
-        assert_eq!(capture((2, 2), false), "abcdefghijklm");
-        assert_eq!(capture((0, 1), false), "top\nabcdefghijklm");
-        assert_eq!(capture((3, 4), false), "abcdefghijklm\nend");
-        assert_eq!(capture((2, 2), true), "fghij");
+        assert_eq!(capture((2, 2), false)?, "abcdefghijklm");
+        assert_eq!(capture((0, 1), false)?, "top\nabcdefghijklm");
+        assert_eq!(capture((3, 4), false)?, "abcdefghijklm\nend");
+        assert_eq!(capture((2, 2), true)?, "fghij");
+        assert_eq!(capture((4, 3), true)?, "");
         Ok(())
     }
 
@@ -756,8 +1363,9 @@ mod tests {
             None,
             view,
             false,
-        )
-        .text();
+            8 << 20,
+        )?
+        .text()?;
         assert_eq!(text.lines().next(), Some("abc世"));
         Ok(())
     }
@@ -786,7 +1394,7 @@ mod tests {
                 wrapped: flags & 8 != 0,
                 ..CaptureView::default()
             };
-            let got = super::pane(&pane, run, None, view, false);
+            let got = super::pane(&pane, run, None, view, false, 8 << 20)?;
             let actual: Vec<(String, u32)> = got
                 .lines
                 .iter()
@@ -863,8 +1471,9 @@ mod tests {
             None,
             CaptureView::default(),
             false,
-        );
-        assert_eq!(got.text(), "x\u{0600} ");
+            8 << 20,
+        )?;
+        assert_eq!(got.text()?, "x\u{0600} ");
         assert_eq!(
             got.lines
                 .first()
@@ -885,15 +1494,16 @@ mod tests {
             cells: max.saturating_add(2),
             style: fux_vt::Attributes::default(),
         }]];
-        super::trim_line(&mut lines, 2);
+        super::trim_line(&mut lines, 2, &mut crate::wire::Budget::new())?;
         let got = super::captured(
             super::Of::Client(crate::id::ClientId::of(1)),
             (1, 3),
             None,
             lines,
             CaptureView::default(),
-        );
-        assert_eq!(got.text(), "x");
+            &mut crate::wire::Budget::new(),
+        )?;
+        assert_eq!(got.text()?, "x");
         assert_eq!(
             got.lines
                 .first()
@@ -921,15 +1531,15 @@ mod tests {
             visits.set(visits.get().saturating_add(1));
             (row, 0..usize::MAX)
         }));
-        let rows: Vec<_> = super::selected_rows(
+        let selection = super::selected_rows(
             read,
             CaptureView {
                 rows: Some((1, 1)),
                 ..CaptureView::default()
             },
-        )
-        .collect();
-        assert_eq!(rows.len(), 3);
+            super::Limits::new(8 << 20, (6, 5))?,
+        )?;
+        assert_eq!(selection.count, 3);
         assert_eq!(visits.get(), 3);
         Ok(())
     }
@@ -948,14 +1558,24 @@ mod tests {
             ..CaptureView::default()
         };
         let run = crate::command::Run::now().ok_or("a clock")?;
-        let body =
-            crate::protocol::Body::Capture(Box::new(super::pane(&pane, run, None, view, false)));
+        let body = crate::protocol::Body::Capture(Box::new(super::pane(
+            &pane,
+            run,
+            None,
+            view,
+            false,
+            8 << 20,
+        )?));
         assert_eq!(
-            Reader::new(&encode(&body)).whole::<crate::protocol::Body>()?,
+            Reader::new(&encode(&body).unwrap_or_default()).whole::<crate::protocol::Body>()?,
             body
         );
         let deep = (0..40).fold(Json::Null, |inner, _| Json::Array(vec![inner]));
-        assert!(Reader::new(&encode(&deep)).whole::<Json>().is_err());
+        assert!(
+            Reader::new(&encode(&deep).unwrap_or_default())
+                .whole::<Json>()
+                .is_err()
+        );
         Ok(())
     }
 
@@ -977,8 +1597,9 @@ mod tests {
             None,
             view,
             false,
-        )
-        .text();
+            8 << 20,
+        )?
+        .text()?;
         assert_eq!(text, "hello");
         // A running command's row is whole, its cursor at the start of it
         // too (a progress line it rewrites).
@@ -989,8 +1610,9 @@ mod tests {
             None,
             view,
             false,
-        )
-        .text();
+            8 << 20,
+        )?
+        .text()?;
         assert_eq!(text, "step 1");
         Ok(())
     }

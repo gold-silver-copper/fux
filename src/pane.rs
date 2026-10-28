@@ -588,27 +588,6 @@ impl Losses {
         add(&mut self.memory, memory);
     }
 
-    /// As a pane's JSON says them: `{"input":0,"replies":1,…}`.
-    pub fn json(self) -> crate::json::Json {
-        use crate::json::Json;
-        let Losses {
-            input,
-            replies,
-            copies_cut,
-            copies_not_text,
-            pictures,
-            memory,
-        } = self;
-        Json::object(vec![
-            ("input", Json::uint(input)),
-            ("replies", Json::uint(replies)),
-            ("copies_cut", Json::uint(copies_cut)),
-            ("copies_not_text", Json::uint(copies_not_text)),
-            ("pictures", Json::uint(pictures)),
-            ("memory", Json::uint(memory)),
-        ])
-    }
-
     /// What a notice says of them, of pane `id`: for each kind it lost
     /// any of, what, how many, and why (`%1: input dropped (2): …`).
     pub fn told(self, id: PaneId, runs: bool) -> Vec<String> {
@@ -1801,18 +1780,23 @@ impl Pane {
 
     /// Its given name, title or launch program, or its id for display.
     pub fn label(&self) -> std::borrow::Cow<'_, str> {
+        self.display_label().into()
+    }
+
+    pub(crate) fn display_label(&self) -> crate::words::Label<'_> {
+        use crate::words::Label;
         if let Some(name) = self.name() {
-            return name.into();
+            return Label::Text(name);
         }
         if !self.title.as_str().is_empty() {
-            return self.title.as_str().into();
+            return Label::Text(self.title.as_str());
         }
         if let Runs::Explicit(launch) = &self.runs
             && let Some(program) = launch.argv.first()
         {
-            return basename(program).into();
+            return Label::Text(basename(program));
         }
-        self.id.to_string().into()
+        Label::Id(crate::command::AnyRef::Pane(self.id))
     }
 }
 

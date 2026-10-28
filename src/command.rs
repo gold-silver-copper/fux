@@ -781,6 +781,18 @@ impl Env {
         self.0.push((name, value));
         Ok(())
     }
+    pub(crate) fn heap_bytes(&self) -> usize {
+        self.0.iter().fold(
+            self.0
+                .capacity()
+                .saturating_mul(std::mem::size_of::<(String, String)>()),
+            |bytes, (name, value)| {
+                bytes
+                    .saturating_add(name.capacity())
+                    .saturating_add(value.capacity())
+            },
+        )
+    }
     pub fn as_slice(&self) -> &[(String, String)] {
         &self.0
     }

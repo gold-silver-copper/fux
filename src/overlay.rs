@@ -6,23 +6,40 @@ use crate::id::ClientId;
 use crate::layout::Tree;
 use crate::protocol::{Body, Reply};
 use crate::session::{Error, Session};
+use crate::words::{Label, Labelled};
 
 /// The names of the panes in `roots`, for a chooser row, shortened.
-fn pane_names<'a>(session: &Session, roots: impl IntoIterator<Item = &'a Tree>) -> String {
-    let mut names: Vec<String> = Vec::new();
+fn pane_names<'a>(
+    session: &Session,
+    roots: impl IntoIterator<Item = &'a Tree>,
+    budget: &mut crate::wire::Budget,
+) -> Result<String, Error> {
+    let mut admitted: Result<(), Error> = Ok(());
+    let mut names = String::new();
     for root in roots {
         root.for_each_pane(&mut |id| {
-            if let Some(p) = session.parts.panes().get(&id) {
-                names.push(crate::words::labelled(p.id(), &p.label()));
+            if let Some(pane) = session.parts.panes().get(&id)
+                && admitted.is_ok()
+            {
+                admitted = (|| {
+                    if !names.is_empty() {
+                        budget.text(&mut names, ", ")?;
+                    }
+                    let label = pane.display_label();
+                    let id = Label::Id(AnyRef::Pane(pane.id()));
+                    budget.write(&mut names, format_args!("{}", Labelled(id, label)))
+                })();
             }
         });
     }
-    names.join(", ")
+    admitted?;
+    Ok(names)
 }
 
 /// A chooser's rows for client `client`: what each is, its label, and
 /// which one is the client's own.
 pub fn choices(session: &Session, client: ClientId, choices: Choices) -> Result<Reply, Error> {
+    let budget = &mut crate::wire::Budget::new();
     let mut rows = Vec::new();
     let mut current = None;
     match choices {
@@ -35,11 +52,14 @@ pub fn choices(session: &Session, client: ClientId, choices: Choices) -> Result<
                 if tab.id() == place.tab {
                     current = Some(rows.len());
                 }
-                let label = format!(
-                    "{} — {}",
-                    crate::words::labelled(tab.id(), &tab.label(session.parts.panes())),
-                    pane_names(session, [tab.root()])
-                );
+                let names = pane_names(session, [tab.root()], budget)?;
+                let own = tab.display_label(session.parts.panes());
+                let id = Label::Id(AnyRef::Tab(tab.id()));
+                let label = budget.format(format_args!("{} — {names}", Labelled(id, own)))?;
+                let bytes = names.capacity();
+                drop(names);
+                budget.release(bytes)?;
+                budget.reserve(&mut rows, 1)?;
                 rows.push((AnyRef::Tab(tab.id()), label));
             }
         }
@@ -50,11 +70,14 @@ pub fn choices(session: &Session, client: ClientId, choices: Choices) -> Result<
                     current = Some(rows.len());
                 }
                 let roots = ws.tabs().iter().map(|t| t.root());
-                let label = format!(
-                    "{} — {}",
-                    crate::words::labelled(ws.id(), &ws.label()),
-                    pane_names(session, roots)
-                );
+                let names = pane_names(session, roots, budget)?;
+                let own = ws.display_label();
+                let id = Label::Id(AnyRef::Workspace(ws.id()));
+                let label = budget.format(format_args!("{} — {names}", Labelled(id, own)))?;
+                let bytes = names.capacity();
+                drop(names);
+                budget.release(bytes)?;
+                budget.reserve(&mut rows, 1)?;
                 rows.push((AnyRef::Workspace(ws.id()), label));
             }
         }
@@ -62,16 +85,24 @@ pub fn choices(session: &Session, client: ClientId, choices: Choices) -> Result<
             let root = session
                 .locate(source)
                 .and_then(|(_, tab)| session.root(tab));
+            let mut admitted: Result<(), Error> = Ok(());
             if let Some(root) = root {
                 root.for_each_pane(&mut |id| {
-                    if let Some(p) = session.parts.panes().get(&id).filter(|_| id != source) {
-                        rows.push((
-                            AnyRef::Pane(p.id()),
-                            crate::words::labelled(p.id(), &p.label()),
-                        ));
+                    if let Some(p) = session.parts.panes().get(&id).filter(|_| id != source)
+                        && admitted.is_ok()
+                    {
+                        admitted = (|| {
+                            let own = p.display_label();
+                            let id = Label::Id(AnyRef::Pane(p.id()));
+                            let label = budget.format(format_args!("{}", Labelled(id, own)))?;
+                            budget.reserve(&mut rows, 1)?;
+                            rows.push((AnyRef::Pane(p.id()), label));
+                            Ok(())
+                        })();
                     }
                 });
             }
+            admitted?;
             if rows.is_empty() {
                 return Err(Error::OnlyOne(Kind::Pane));
             }

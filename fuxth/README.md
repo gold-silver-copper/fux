@@ -147,6 +147,14 @@ a code declared twice is refused (`contract`), so a host adds each once
 and keeps the id `add` gave. The checker follows those kinds, as it does
 the core's, and refuses only what surely fails.
 
+Application values stream their text through `AppValue::write_text` and declare
+retained data and formatter workspace with `text_bytes`. `TEXT_LIMIT` lets a host
+bound one whole conversion: nested lists share it, rather than giving each member
+its own limit. Admission counts the output before reserving its exact capacity;
+`string` and `fail` also admit the character index. Shared references are charged
+conservatively at each occurrence. Text writers describe the same immutable text
+on the admission and output passes, and propagate a sink failure.
+
 The host implements [`Host`]: `call(word, args, out)` gets the word's values
 (an iterator, the deepest first) and pushes its results, and answers
 `Done::Now` or `Done::Later(request)`; a suspended word's results are what the
