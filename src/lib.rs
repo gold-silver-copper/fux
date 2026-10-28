@@ -23,7 +23,6 @@ pub mod client;
 pub mod client_state;
 pub mod code;
 pub mod command;
-pub mod config;
 pub mod copy;
 pub mod events;
 mod help;

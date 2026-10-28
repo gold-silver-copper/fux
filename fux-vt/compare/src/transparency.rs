@@ -263,7 +263,7 @@ impl Through {
                     initial: Some(fux::command::InitialWorkspace {
                         options: preferences.pane_options(),
                         name: None,
-                        start: fux::command::Start::Shell(fux::config::Program::new(
+                        start: fux::command::Start::Shell(fux::command::Program::new(
                             "/bin/sh".into(),
                             Vec::new(),
                         )?),

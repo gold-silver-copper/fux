@@ -1,6 +1,7 @@
 //! The keys, frozen definitions and checked preferences owned by one client.
-use crate::config::{EnvName, Limit, Program, Reads};
+use crate::command::{EnvName, HistoryBytes, Limit, Program};
 use crate::keymap::Keymap;
+use crate::script::settings::Reads;
 use crate::script::{Config, Fux};
 use fuxth::Value;
 
@@ -125,7 +126,7 @@ preferences! {
     /// This client's shell argv for new panes.
     shell "shell": Program;
     /// The history budget in bytes for panes this client creates.
-    history_bytes "history-bytes": crate::config::HistoryBytes;
+    history_bytes "history-bytes": HistoryBytes;
     /// This client's limit for waits without an explicit timeout.
     wait "wait-seconds": Limit;
     /// Whether newly created panes may copy program output to paste buffers.

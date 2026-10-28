@@ -17,7 +17,7 @@ pub fn probe() -> String {
     format!(
         "{:?}\n{:?}",
         baseline::config::default_path(),
-        fux::config::default_path()
+        fux::script::default_path()
     )
 }
 

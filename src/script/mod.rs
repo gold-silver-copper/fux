@@ -6,6 +6,7 @@
 //!
 //! Every run is fresh: its own stack and dictionary, the bundled library's
 //! words first (`library.fux`).
+pub(crate) mod settings;
 mod source;
 mod words;
 
@@ -13,7 +14,10 @@ use crate::answer::{PaneAnswer, PaneResults};
 use crate::client;
 use crate::client_state::{ClientState, Draft};
 use crate::code::{Code, Raise};
-use crate::command::{AnyRef, Extent, Input, Kind, Mouse, Request, Run, Version, WsRef};
+use crate::command::{
+    AnyRef, EnvName, Extent, HistoryBytes, Input, Kind, Limit, Mouse, Program, Request, Run,
+    Version, WsRef,
+};
 use crate::id::{ClientId, PaneId, TabId, WsId};
 use crate::json::Json;
 use crate::layout::Axis;
@@ -170,9 +174,9 @@ pub struct Opts {
     pub env: crate::command::EnvPatch,
     pub argv: Vec<String>,
     pub shell: Option<bool>,
-    pub history_bytes: Option<crate::config::HistoryBytes>,
+    pub history_bytes: Option<HistoryBytes>,
     pub program_clipboard: Option<bool>,
-    pub copy_environment: Option<Vec<crate::config::EnvName>>,
+    pub copy_environment: Option<Vec<EnvName>>,
     pub axis: Option<Axis>,
     /// A split's shares (`shares`).
     pub shares: Option<(std::num::NonZeroU32, std::num::NonZeroU32)>,
@@ -183,7 +187,7 @@ pub struct Opts {
     /// Where a stream of events reads from (`from`), else now.
     pub from: Option<crate::events::Cursor>,
     /// How long a wait waits before it times out.
-    pub timeout: Option<crate::config::Limit>,
+    pub timeout: Option<Limit>,
     pub view: crate::command::CaptureView,
     pub history: Option<usize>,
     pub inputs: Vec<Input>,
@@ -205,15 +209,15 @@ impl Opts {
         }
     }
 
-    pub(crate) fn program(&self) -> Result<crate::config::Program, String> {
+    pub(crate) fn program(&self) -> Result<Program, String> {
         let mut words = self.argv.iter().cloned();
-        crate::config::Program::new(words.next().unwrap_or_default(), words.collect())
+        Program::new(words.next().unwrap_or_default(), words.collect())
     }
 
     pub(crate) fn launch(
         &self,
-        shell: &crate::config::Program,
-        selection: &[crate::config::EnvName],
+        shell: &Program,
+        selection: &[EnvName],
     ) -> Result<(crate::command::Start, crate::command::EnvPatch), String> {
         let argv = if self.argv.is_empty() {
             shell.clone()
@@ -256,7 +260,7 @@ impl Opts {
             bytes = bytes.saturating_add(
                 names
                     .capacity()
-                    .saturating_mul(std::mem::size_of::<crate::config::EnvName>()),
+                    .saturating_mul(std::mem::size_of::<EnvName>()),
             );
             for name in names {
                 bytes = bytes.saturating_add(name.heap_bytes());
@@ -1493,8 +1497,18 @@ pub fn default_state() -> Result<ClientState, Failed> {
     draft.finish().map_err(|why| Failed::new(Code::Config, why))
 }
 
+/// The config file, a fuxth program a typing terminal runs as it attaches:
+/// `$XDG_CONFIG_HOME/fux/config.fux`, else `~/.config/fux/config.fux`.
+pub fn default_path() -> Option<std::path::PathBuf> {
+    let set = |name: &str| std::env::var_os(name).filter(|d| !d.is_empty());
+    let config = set("XDG_CONFIG_HOME")
+        .map(std::path::PathBuf::from)
+        .or_else(|| set("HOME").map(|home| std::path::PathBuf::from(home).join(".config")))?;
+    Some(config.join("fux").join("config.fux"))
+}
+
 fn config_state(defaults: &ClientState) -> Result<ClientState, Failed> {
-    let Some(path) = crate::config::default_path() else {
+    let Some(path) = default_path() else {
         return Ok(defaults.clone());
     };
     let shown = path.display().to_string();

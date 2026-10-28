@@ -1042,7 +1042,7 @@ fn describe(out: &mut dyn std::fmt::Write, a: Attributes) -> std::fmt::Result {
 
 #[cfg(test)]
 mod tests {
-    use crate::command::CaptureView;
+    use crate::command::{CaptureView, Program};
     use crate::id::PaneId;
     use crate::pane::tests::Lone;
     use crate::pane::{Pane, Runs};
@@ -1052,10 +1052,7 @@ mod tests {
     -> Result<(), Box<dyn std::error::Error>> {
         let allocator = fux_vt_peak::ThreadPeak;
         let launch = Runs::Explicit(crate::pane::Launch {
-            argv: crate::config::Program::new(
-                std::iter::repeat_n('l', 6000).collect(),
-                Vec::new(),
-            )?,
+            argv: Program::new(std::iter::repeat_n('l', 6000).collect(), Vec::new())?,
             cwd: "/".into(),
             env: crate::command::EnvPatch::default(),
         });

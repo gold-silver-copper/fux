@@ -356,7 +356,7 @@ pub fn run(r: &mut Rng, scale: usize) -> Outcome {
         let (id, runs) = (
             "%1".parse().map_err(|_| "%1")?,
             fux::pane::Runs::Shell(fux::pane::Launch {
-                argv: fux::config::Program::new("/bin/sh".into(), Vec::new())?,
+                argv: fux::command::Program::new("/bin/sh".into(), Vec::new())?,
                 cwd: "/".into(),
                 env: fux::command::EnvPatch::default(),
             }),
@@ -367,7 +367,7 @@ pub fn run(r: &mut Rng, scale: usize) -> Outcome {
             runs,
             crate::size(24, 80),
             fux::command::PaneOptions {
-                history_bytes: fux::config::HistoryBytes::new(0).ok_or("history budget")?,
+                history_bytes: fux::command::HistoryBytes::new(0).ok_or("history budget")?,
                 program_clipboard: true,
             },
         );

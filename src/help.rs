@@ -314,7 +314,7 @@ fn bounds() -> Vec<(Amount, &'static str, Said)> {
         (Time(crate::outer::BELL_GAP), "between two bells told", &[("README", "at most once every {}")]),
         (Count(crate::session::BUFFER_LIMIT), "paste buffers kept", &[("README", "the newest {}")]),
         (Count(crate::session::PREVIEW_MAX), "characters of a paste buffer's preview", &[("README", "at most {} characters"), ("json", "at most {} characters")]),
-        (Count(crate::config::MAX_WAIT), "seconds a wait may be given", &[]),
+        (Count(crate::command::MAX_WAIT), "seconds a wait may be given", &[]),
         (Whole(script::PROGRAM_STEPS), "steps of a program a client runs (a config, a key's)", &[]),
         (Whole(script::LINE_STEPS), "steps of a command line's program", &[]),
         (Count(fuxth::LONGEST), "characters of a string fuxth builds", &[("agents", "at most {} characters")]),

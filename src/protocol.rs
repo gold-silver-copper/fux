@@ -694,11 +694,11 @@ mod tests {
 
     #[test]
     fn observation_wait_requires_a_checked_limit() -> Result<(), Box<dyn std::error::Error>> {
-        use crate::command::{AnyRef, Since, Wait};
+        use crate::command::{AnyRef, Limit, Since, Wait};
         use crate::wire::Reader;
         let wait = Wait {
             since: Since::Now(AnyRef::Pane("%1".parse()?)),
-            timeout: crate::config::Limit::read(0)?,
+            timeout: Limit::read(0)?,
         };
         let bytes = crate::wire::encode(&wait)?;
         assert_eq!(Reader::new(&bytes).whole::<Wait>()?, wait);
