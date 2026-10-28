@@ -236,7 +236,7 @@ fn copy_mode_ends_when_its_pane_closes_or_its_rows_are_evicted() -> Outcome {
     let server = Server::start("str history-bytes 1000 set")?;
     let mut client = prepared(&server, 10, 40, &["keep"])?;
     server.ok(&["str", "%1", "pane", "horizontal", "split"])?;
-    server.ok(&["str", "c1", "client", "str", "%1", "pane", "focus-pane"])?;
+    server.ok(&["str", "c1", "client", "str", "%1", "pane", "show"])?;
     copy_mode(&mut client)?;
     // Hold the top of the history, then push it out.
     client.keys("t")?;

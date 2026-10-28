@@ -310,11 +310,11 @@ fn chooser(
         .map(|(id, label)| {
             let it = id;
             let code = match (choices, moving) {
-                (Choices::Panes(source), _) => format!("str {source} pane {it} swap-panes"),
-                (Choices::Tabs, None) => format!("me {it} show-tab"),
-                (Choices::Workspaces, None) => format!("me {it} show-workspace"),
+                (Choices::Panes(source), _) => format!("str {source} pane {it} swap-with"),
+                (Choices::Tabs, None) => format!("me {it} show"),
+                (Choices::Workspaces, None) => format!("me {it} show"),
                 (Choices::Tabs | Choices::Workspaces, Some(p)) => {
-                    format!("str {p} pane {it} move-to")
+                    format!("str {p} pane {it} move")
                 }
             };
             Item {
@@ -593,7 +593,7 @@ mod tests {
     fn list() -> Screen {
         let item = |n: u32| Item {
             label: format!("@{n}"),
-            code: format!("me str @{n} tab show-tab"),
+            code: format!("me str @{n} tab show"),
             about: format!("@{n}").parse().ok().map(AnyRef::Tab),
         };
         Screen::List(ListScreen {
@@ -657,7 +657,7 @@ mod tests {
             key(&mut screen, "Enter")?,
             [
                 Effect::Screen(ScreenAct::Hide),
-                Effect::Run("me str @2 tab show-tab".into())
+                Effect::Run("me str @2 tab show".into())
             ]
         );
         assert_eq!(screen, Screen::default());

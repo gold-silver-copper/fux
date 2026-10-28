@@ -1,4 +1,4 @@
-//! `fux events`: what happens in the session, a line each as it happens,
+//! `fux all events`: what happens in the session, a line each as it happens,
 //! for a script that would otherwise poll `fux ls json`. Each change to the
 //! session's workspaces, tabs and panes, and what each pane's program does
 //! that events tell (a bell, a notification, a title, a shell command's

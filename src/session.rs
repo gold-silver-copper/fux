@@ -376,7 +376,7 @@ fn ended(pane: PaneId, status: Ended) -> Error {
 pub enum Begun {
     Done(Reply),
     Waiting(Box<Waiting>),
-    /// `fux events`: a stream, until the client goes.
+    /// `fux all events`: a stream, until the client goes.
     Events(Box<crate::events::Subscription>),
 }
 
@@ -3096,7 +3096,7 @@ impl Session {
         })
     }
 
-    /// The tab `show-tab` picks for a client at `at`.
+    /// The tab `show` picks for a client at `at`.
     fn pick_tab(&self, at: Place, to: Pick<TabId>) -> Result<Picked, Error> {
         let (ws, target) = match to {
             Pick::Id(t) => (self.tab_workspace(t)?, t),
@@ -3114,7 +3114,7 @@ impl Session {
         Ok(Picked { ws, at })
     }
 
-    /// The workspace `show-workspace` picks for client `view`.
+    /// The workspace `show` picks for client `view`.
     fn pick_ws(&self, view: &View, pick: &Pick<WsRef>) -> Result<Picked, Error> {
         let ws = match pick {
             Pick::Id(r) => self.resolve_ws(r)?,
@@ -3984,7 +3984,7 @@ mod tests {
             &mut s,
             "%1 horizontal split drop opts str second name 80 24 size new-workspace drop",
         )?;
-        run(&mut s, "str c1 client %2 focus-pane")?;
+        run(&mut s, "str c1 client %2 show")?;
         let presentation = crate::script::default_state()
             .map_err(|e| e.to_string())?
             .preferences
@@ -4361,10 +4361,7 @@ mod tests {
     fn an_ended_pane_asks_for_no_reports_and_refuses_keys() -> Result<(), String> {
         let (mut s, c) = attached(24, 80)?;
         run(&mut s, "agent-opts 80 23 size str /bin/cat program run")?;
-        run(
-            &mut s,
-            &format!("str {c} client str +2 workspace show-workspace"),
-        )?;
+        run(&mut s, &format!("str {c} client str +2 workspace show"))?;
         let id = PaneId::of(2);
         // A test's session starts no program: one is put in the pane.
         let argv = ["/bin/cat".to_owned()];
@@ -4575,7 +4572,7 @@ mod tests {
     fn a_fixed_tab_no_client_sizes_is_laid_out_on_its_size() -> Result<(), String> {
         let (mut s, c) = attached(24, 80)?;
         run(&mut s, "opts 40 12 size str +1 workspace in new-tab drop")?;
-        run(&mut s, &format!("str {c} client str @2 tab show-tab"))?;
+        run(&mut s, &format!("str {c} client str @2 tab show"))?;
         let size = |s: &Session| {
             s.pane(PaneId::of(2))
                 .map(|p| (p.size().cols(), p.size().rows()))
@@ -4618,7 +4615,7 @@ mod tests {
         run(&mut s, "opts 100 30 size str other name new-workspace drop")?;
         run(
             &mut s,
-            &format!("str {big} client str other workspace show-workspace"),
+            &format!("str {big} client str other workspace show"),
         )?;
         let caller = Caller {
             gave: Some((PaneId::of(2), 0)),
@@ -4697,7 +4694,7 @@ mod tests {
         run(
             &mut s,
             &format!(
-                "str {c1} client %1 focus-pane str {c1} client zoom str {c2} client %2 focus-pane str {c2} client zoom"
+                "str {c1} client %1 show str {c1} client zoom str {c2} client %2 show str {c2} client zoom"
             ),
         )?;
         run(&mut s, "%1 kill")?;
@@ -4737,10 +4734,7 @@ mod tests {
     fn output_cut_at_an_end_is_told_with_the_end() -> Result<(), String> {
         let (mut s, c) = attached(24, 80)?;
         run(&mut s, "agent-opts 80 23 size str /bin/cat program run")?;
-        run(
-            &mut s,
-            &format!("str {c} client str +2 workspace show-workspace"),
-        )?;
+        run(&mut s, &format!("str {c} client str +2 workspace show"))?;
         let id = PaneId::of(2);
         let notice = |s: &Session| s.views.get(&c).and_then(|v| v.notice.clone());
         let cut = |s: &mut Session| (s.parts.pane_mut(id)).map(|mut p| p.left_cut());
@@ -4952,7 +4946,7 @@ mod tests {
         assert_eq!(pane.history_bytes(), 128);
         assert!(!pane.program_clipboard());
         assert!(output(&mut s, "%2 str history_bytes get")?.contains("128"));
-        assert!(output(&mut s, "dump")?.contains("128 history-bytes false program-clipboard"));
+        assert!(output(&mut s, "all dump")?.contains("128 history-bytes false program-clipboard"));
         let lines = stream
             .told(s.parts.journal(), usize::MAX, |t| s.holder(t))
             .0;
@@ -4973,10 +4967,7 @@ mod tests {
     fn a_pane_closed_while_respawning_abandons_it() -> Result<(), String> {
         let (mut s, c) = attached(24, 80)?;
         run(&mut s, "agent-opts 80 23 size str /bin/cat program run")?;
-        run(
-            &mut s,
-            &format!("str {c} client str +2 workspace show-workspace"),
-        )?;
+        run(&mut s, &format!("str {c} client str +2 workspace show"))?;
         let id = PaneId::of(2);
         s.output(id, &crate::pane::tests::spends_the_budget(23, 80));
         // Programs are started, as a server starts them.
@@ -5158,10 +5149,7 @@ mod tests {
     fn a_program_starts_in_the_cell_of_the_terminal_drawing_it() -> Result<(), String> {
         let (mut s, c) = attached(24, 80)?;
         run(&mut s, "agent-opts 80 23 size str /bin/cat program run")?;
-        run(
-            &mut s,
-            &format!("str {c} client str +2 workspace show-workspace"),
-        )?;
+        run(&mut s, &format!("str {c} client str +2 workspace show"))?;
         s.input(c, b"\x1b[6;20;10t");
         let id = PaneId::of(2);
         s.launch = Some("/nonexistent/fux.sock".into());
@@ -5257,7 +5245,7 @@ mod tests {
         let told = winsize(&s);
         assert!(told.is_some_and(|(_, pixels)| pixels.is_some()), "{told:?}");
         run(&mut s, "opts 80 24 size str other name new-workspace drop")?;
-        let show = |ws: &str| format!("str {c} client str {ws} workspace show-workspace");
+        let show = |ws: &str| format!("str {c} client str {ws} workspace show");
         let unknown = |s: &Session| winsize(s).is_some_and(|(_, pixels)| pixels.is_none());
         run(&mut s, &show("other"))?;
         assert!(unknown(&s), "hidden");
@@ -5281,10 +5269,7 @@ mod tests {
     fn a_respawn_with_no_host_is_told_no_cell() -> Result<(), String> {
         let (mut s, c) = attached(24, 80)?;
         run(&mut s, "agent-opts 80 23 size str /bin/cat program run")?;
-        run(
-            &mut s,
-            &format!("str {c} client str +2 workspace show-workspace"),
-        )?;
+        run(&mut s, &format!("str {c} client str +2 workspace show"))?;
         s.input(c, b"\x1b[6;20;10t");
         s.output(PaneId::of(2), b"x");
         s.detach(c);
@@ -5301,10 +5286,7 @@ mod tests {
     fn input_an_ended_program_never_read_is_told() -> Result<(), String> {
         let (mut s, c) = attached(24, 80)?;
         run(&mut s, "agent-opts 80 23 size str /bin/cat program run")?;
-        run(
-            &mut s,
-            &format!("str {c} client str +2 workspace show-workspace"),
-        )?;
+        run(&mut s, &format!("str {c} client str +2 workspace show"))?;
         let id = PaneId::of(2);
         let notice = |s: &Session| s.views.get(&c).and_then(|v| v.notice.clone());
         let queue = |s: &mut Session, bytes: &[u8]| {
@@ -5356,10 +5338,7 @@ mod tests {
     fn a_respawned_program_reads_no_report_the_ended_one_asked_for() -> Result<(), String> {
         let (mut s, c) = attached(24, 80)?;
         run(&mut s, "agent-opts 80 23 size str /bin/cat program run")?;
-        run(
-            &mut s,
-            &format!("str {c} client str +2 workspace show-workspace"),
-        )?;
+        run(&mut s, &format!("str {c} client str +2 workspace show"))?;
         let id = PaneId::of(2);
         let queued = |s: &Session| {
             s.pane(id)
@@ -5682,10 +5661,7 @@ mod tests {
             .history_bytes();
         run(&mut s, "str history-bytes 0 set")?;
         assert!(history(&s) > Some(2));
-        run(
-            &mut s,
-            "str c1 client %1 focus-pane str c1 client copy-mode",
-        )?;
+        run(&mut s, "str c1 client %1 show str c1 client copy-mode")?;
         s.input(client, b"t");
         assert!(
             s.views
@@ -5763,13 +5739,13 @@ mod tests {
         assert!(notice.is_some_and(|n| n.text.contains("is not base64")));
         // One in a tab no client shows is told once one does.
         run(&mut s, "opts 20 4 size str other name new-workspace")?;
-        run(&mut s, "str c1 client str other workspace show-workspace")?;
+        run(&mut s, "str c1 client str other workspace show")?;
         if let Some(view) = s.views.get_mut(&client) {
             view.notice = None;
         }
         s.output(PaneId::of(1), b"\x1b]52;c;***\x07\x1b]52;c;***\x07");
         assert!(s.views.get(&client).is_some_and(|v| v.notice.is_none()));
-        run(&mut s, "str c1 client str +1 workspace show-workspace")?;
+        run(&mut s, "str c1 client str +1 workspace show")?;
         let notice = s.views.get(&client).and_then(|v| v.notice.clone());
         assert!(notice.is_some_and(|n| n.text.contains("%1: copies (OSC 52) not made (2)")));
         // Counted in its JSON too, for a reader no notice reaches.
@@ -5976,7 +5952,7 @@ mod tests {
             Some(c),
             "opts str +1 workspace in str / cwd new-tab drop",
         )?;
-        run(&mut s, "str c1 client str @1 tab show-tab")?;
+        run(&mut s, "str c1 client str @1 tab show")?;
         let size = |s: &Session, p| s.parts.panes().get(&PaneId::of(p)).map(Pane::size);
         assert_eq!(size(&s, 2), Some(sized(10, 40)?));
         run(&mut s, "str %2 pane vertical str / cwd split")?;
@@ -5987,14 +5963,14 @@ mod tests {
         assert_eq!(rows, Some((5, 4, 40, 40)), "stacked, a separator between");
         // Leaving a tab whose layout is unchanged resizes nothing: a zoomed
         // pane keeps the whole screen.
-        run(&mut s, "str c1 client str @2 tab show-tab")?;
+        run(&mut s, "str c1 client str @2 tab show")?;
         run(&mut s, "str c1 client zoom")?;
-        run(&mut s, "str c1 client str @1 tab show-tab")?;
+        run(&mut s, "str c1 client str @1 tab show")?;
         assert_eq!(size(&s, 2), Some(sized(10, 40)?));
         // Nor does a swap or a move in another tab.
         run(
             &mut s,
-            "%1 str / cwd split drop %1 %4 swap-panes %4 str new-tab move-to",
+            "%1 str / cwd split drop %1 %4 swap-with %4 str new-tab move",
         )?;
         assert_eq!(size(&s, 2), Some(sized(10, 40)?));
         Ok(())
@@ -6124,7 +6100,7 @@ mod tests {
         assert_eq!(notice(&s).as_deref(), Some("%2 exited with status 3"));
         // A second tab, shown; its only pane exits, and the tab with it.
         run(&mut s, "opts 40 9 size str +1 workspace in new-tab")?;
-        run(&mut s, "str c1 client str @2 tab show-tab")?;
+        run(&mut s, "str c1 client str @2 tab show")?;
         s.exited(PaneId::of(3), crate::process::Ended::Exited(7));
         assert_eq!(notice(&s).as_deref(), Some("%3 exited with status 7"));
         Ok(())
@@ -6139,8 +6115,8 @@ mod tests {
         let (mut s, _) = attached(10, 40)?;
         run(&mut s, "str %1 pane horizontal split")?;
         run(&mut s, "opts 40 9 size str +1 workspace in new-tab")?;
-        run(&mut s, "str %3 pane str @1 tab move-to")?;
-        run(&mut s, "str %1 pane str right move-beside")?;
+        run(&mut s, "str %3 pane str @1 tab move")?;
+        run(&mut s, "str %1 pane str right move")?;
         let holding = |s: &Session, pane| {
             let tabs = s.parts.workspaces().iter().flat_map(|w| w.tabs());
             tabs.filter(|t| t.holds(pane)).count()
@@ -6219,7 +6195,7 @@ mod tests {
         let (mut s, client) = attached(24, 80)?;
         let shown = "%2:0.57.1.3.0:48211-1867a3f9c2b8e7d6";
         s.output(PaneId::of(1), shown.as_bytes());
-        let capture = format!("str {client} client capture-client");
+        let capture = format!("str {client} client capture");
         let text = output(&mut s, &format!("{capture} string"))?;
         assert_eq!(text.split_whitespace().next(), Some(shown));
         let refused = output(&mut s, &format!("{capture} counts"))
@@ -6391,7 +6367,7 @@ mod tests {
         // ID either.
         s.ids.exhaust_tabs();
         let ids = s.ids.clone();
-        assert!(run(&mut s, "str %1 pane str new-workspace move-to").is_err());
+        assert!(run(&mut s, "str %1 pane str new-workspace move").is_err());
         assert_eq!(s.ids, ids);
         Ok(())
     }
@@ -6508,7 +6484,7 @@ mod tests {
         output_as(
             &mut s,
             Some(c),
-            "agent-opts str /bin/cat program str / cwd run me swap focus-pane",
+            "agent-opts str /bin/cat program str / cwd run me swap show",
         )?;
         let pane = s.focused(c).ok_or("pane")?;
         s.output(pane, b"old text");
@@ -7065,7 +7041,7 @@ mod tests {
         run(&mut source, "%1 split drop")?;
         run(
             &mut source,
-            "opts +1 in 80 24 size str cat name str /bin/cat program run str new-workspace move-to",
+            "opts +1 in 80 24 size str cat name str /bin/cat program run str new-workspace move",
         )?;
         run(&mut source, "str shell list str /bin/other end set")?;
         let dump = source.dump_layout(None).map_err(|e| e.to_string())?;
@@ -7198,7 +7174,7 @@ mod tests {
     fn a_dump_is_made_again_however_its_tab_was_shown() -> Result<(), String> {
         let (mut s, c) = attached(11, 40)?;
         run(&mut s, "%1 split drop %1 vertical split drop")?;
-        run(&mut s, "str c1 client %1 focus-pane str c1 client zoom")?;
+        run(&mut s, "str c1 client %1 show str c1 client zoom")?;
         let replays = |s: &Session| {
             let dump = s.dump_layout(None).map_err(|e| e.to_string())?;
             let mut again = started()?;
@@ -7245,7 +7221,7 @@ mod tests {
     fn a_tab_given_a_size_splits_only_while_it_shows_every_pane() -> Result<(), String> {
         let (mut s, _) = attached(50, 200)?;
         let tab = "opts 40 12 size str +1 workspace in new-tab drop";
-        run(&mut s, &format!("{tab} str c1 client str @2 tab show-tab"))?;
+        run(&mut s, &format!("{tab} str c1 client str @2 tab show"))?;
         // Four panes stacked take their 2 rows each and 3 separators.
         run(
             &mut s,
@@ -7373,7 +7349,7 @@ mod tests {
         let made = "opts 100 10 size str +1 workspace in str / cwd new-tab \
                     dup str / cwd split drop dup str / cwd split drop str / cwd split drop";
         run(&mut s, made)?;
-        let refused = output_as(&mut s, Some(small), "%2 str @3 tab move-to").err();
+        let refused = output_as(&mut s, Some(small), "%2 str @3 tab move").err();
         let refused = refused.unwrap_or_default();
         assert!(
             refused.contains("no room") && refused.contains("screen"),
@@ -7392,7 +7368,7 @@ mod tests {
         run(&mut s, "%1 split drop %1 split drop")?;
         for (pane, to) in [("%1", "new-tab"), ("%2", "new-workspace")] {
             let lines = told(&mut s, |s| {
-                let moved = output_as(s, Some(tiny), &format!("{pane} str {to} move-to"));
+                let moved = output_as(s, Some(tiny), &format!("{pane} str {to} move"));
                 assert!(moved.is_ok(), "{moved:?}");
             });
             assert!(
@@ -7470,10 +7446,10 @@ mod tests {
             "%5 7 resize-y",
             "%6 str left 3 move-border",
             "%2 30 percent resize-x",
-            "%2 %6 swap-panes",
-            "%4 str left move-beside",
+            "%2 %6 swap-with",
+            "%4 str left move",
             "%5 kill",
-            "%3 str @2 tab move-to",
+            "%3 str @2 tab move",
             "%6 kill",
         ] {
             run(&mut s, change)?;
@@ -7509,7 +7485,7 @@ mod tests {
         let mut s = started()?;
         let split = "opts 5 4 size str +1 workspace in new-tab drop %2 split drop";
         run(&mut s, split)?;
-        let refused = run(&mut s, "%1 str @2 tab move-to").err();
+        let refused = run(&mut s, "%1 str @2 tab move").err();
         let refused = refused.unwrap_or_default();
         assert!(
             refused.starts_with("size: ") && refused.contains("no room"),

@@ -37,11 +37,11 @@ fn held_handles_refuse_another_server_before_mutating_it() -> Outcome {
         ("%2 str harmless text send-keys", "kill"),
         ("%2 tab", "kill"),
         ("%2 workspace", "kill"),
-        ("%2 tab panes 0 at", "kill"),
+        ("%2 tab pane-members members 0 at", "kill"),
         ("list list %2 end end let saved", "saved 0 at 0 at kill"),
         ("%2 capture expect str forbidden text", "send-keys"),
         ("%2 capture changed", "0 timeout wait"),
-        ("%2", "%1 swap-panes"),
+        ("%2", "%1 swap-with"),
         ("opts %2 workspace in", "str cat program run"),
         ("opts %2 workspace in 20 10 size", "attach"),
         (

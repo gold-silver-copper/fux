@@ -16,10 +16,10 @@ str 'r h' str 'me focused str left 1 move-border' bind str 'shrink or grow left'
 str 'r j' str 'me focused str down 1 move-border' bind str 'shrink or grow down' label str 'Resize' group repeat
 str 'r k' str 'me focused str up 1 move-border' bind str 'shrink or grow up' label str 'Resize' group repeat
 str 'r l' str 'me focused str right 1 move-border' bind str 'shrink or grow right' label str 'Resize' group repeat
-str 'm h' str 'me focused str left move-beside' bind str 'move left' label str 'Move' group repeat
-str 'm j' str 'me focused str down move-beside' bind str 'move down' label str 'Move' group repeat
-str 'm k' str 'me focused str up move-beside' bind str 'move up' label str 'Move' group repeat
-str 'm l' str 'me focused str right move-beside' bind str 'move right' label str 'Move' group repeat
+str 'm h' str 'me focused str left move' bind str 'move left' label str 'Move' group repeat
+str 'm j' str 'me focused str down move' bind str 'move down' label str 'Move' group repeat
+str 'm k' str 'me focused str up move' bind str 'move up' label str 'Move' group repeat
+str 'm l' str 'me focused str right move' bind str 'move right' label str 'Move' group repeat
 str 'n' str 'me str next step-tab' bind str 'next tab' label str 'Tabs' group
 str 'b' str 'me str previous step-tab' bind str 'previous tab' label str 'Tabs' group
 str 't n' str 'opts new-tab drop' bind str 'new tab' label str 'Tabs' group

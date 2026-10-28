@@ -90,14 +90,21 @@ fn rename_move_swap_reorder_and_kill() -> Outcome {
         1
     );
     // Swap across workspaces.
-    server.ok(&["str", "%1", "pane", "str", "%2", "pane", "swap-panes"])?;
+    server.ok(&["str", "%1", "pane", "str", "%2", "pane", "swap-with"])?;
     let ls = server.ok(&["ls"])?;
     let at = |needle: &str| ls.find(needle).unwrap_or(usize::MAX);
     assert!(at("%2") < at("+2") && at("%1") > at("+2"), "{ls}");
-    // Move to a workspace, then to a new tab.
+    // Swap toward a neighbour uses the same atomic backend as a counterpart.
     server.ok(&["str", "%2", "pane", "horizontal", "split"])?;
-    server.ok(&["str", "%3", "pane", "str", "+2", "workspace", "move-to"])?;
-    server.ok(&["str", "%3", "pane", "str", "new-tab", "move-to"])?;
+    server.ok(&["%2", "str", "right", "swap-with"])?;
+    assert_eq!(
+        server.ok(&["%2", "tab", "pane-members", "members"])?.trim(),
+        "%3 %2"
+    );
+    server.ok(&["%2", "%3", "swap-with"])?;
+    // Move to a workspace, then to a new tab.
+    server.ok(&["str", "%3", "pane", "str", "+2", "workspace", "move"])?;
+    server.ok(&["str", "%3", "pane", "str", "new-tab", "move"])?;
     let ls = server.ok(&["ls"])?;
     assert!(ls.contains("@3 %3"), "{ls}");
     // Reorder tabs and workspaces.
@@ -614,7 +621,7 @@ fn a_write_that_fails_stops_the_program() -> Outcome {
         !server.ok(&["ls"])?.contains("%2"),
         "run ran after help failed"
     );
-    let mut events = full()?.arg("events").spawn().map_err(e)?;
+    let mut events = full()?.args(["all", "events"]).spawn().map_err(e)?;
     eventually("events to end", || {
         Ok(events.try_wait().map_err(e)?.is_some())
     })?;
