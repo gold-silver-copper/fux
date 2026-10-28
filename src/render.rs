@@ -2000,8 +2000,8 @@ mod tests {
             b"\x1b[2;4r\x1b[4H\n\n\x1b[r",
         ];
         let commands = [
-            "str %1 pane horizontal split",
-            "str %1 pane vertical split",
+            "str %1 pane str horizontal axis split",
+            "str %1 pane str vertical axis split",
             "str c1 client zoom",
             "str c1 client copy-mode",
             "str c1 client command-prompt",
@@ -2210,7 +2210,7 @@ mod tests {
         let (mut s, c) = crate::session::testing::attached(12, 50)?;
         s.out(PaneId::of(1), b"first screen\r\n\x1b[5 q");
         let before = compose(&s, c).ok_or("a screen")?;
-        crate::session::testing::run(&mut s, "str %1 pane horizontal split")?;
+        crate::session::testing::run(&mut s, "str %1 pane str horizontal axis split")?;
         // The focused pane hides its cursor, and a smaller client makes the
         // panes smaller than their places: compose leaves cells untouched.
         s.out(PaneId::of(2), "界 second\r\n\x1b[?25l".as_bytes());
@@ -2324,7 +2324,7 @@ mod tests {
         session.out(PaneId::of(1), b"\x1b]12;#00ff00\x07");
         assert!(paint(&session, &mut shown)?.contains("\x1b]12;#00ff00\x1b\\"));
         assert!(paint(&session, &mut shown)?.is_empty(), "unchanged colour");
-        crate::session::testing::run(&mut session, "str %1 pane horizontal split")?;
+        crate::session::testing::run(&mut session, "str %1 pane str horizontal axis split")?;
         crate::session::testing::run(&mut session, "str c1 client str %2 pane show")?;
         assert!(paint(&session, &mut shown)?.contains("\x1b]112\x1b\\"));
         session.out(PaneId::of(1), b"\x1b]12;#ff0000\x07");
@@ -2413,7 +2413,7 @@ mod tests {
     #[test]
     fn a_held_pane_keeps_only_its_own_cursor() -> Result<(), String> {
         let (mut s, c) = crate::session::testing::attached(10, 40)?;
-        crate::session::testing::run(&mut s, "str %1 pane horizontal split")?;
+        crate::session::testing::run(&mut s, "str %1 pane str horizontal axis split")?;
         s.out(PaneId::of(1), &frame_past_a_budget());
         assert!(
             s.parts
@@ -2857,7 +2857,7 @@ mod tests {
     #[test]
     fn a_panes_palette_is_painted_and_stays_the_panes() -> Result<(), Box<dyn std::error::Error>> {
         let (mut s, c) = crate::session::testing::attached(6, 41)?;
-        crate::session::testing::run(&mut s, "str %1 pane horizontal split")?;
+        crate::session::testing::run(&mut s, "str %1 pane str horizontal axis split")?;
         let set = b"\x1b]4;1;#ff0000\x1b\\\x1b]10;rgb:11/22/33;#000080\x07";
         s.out(PaneId::of(1), &[&set[..], b"\x1b[31mR\x1b[39mD"].concat());
         s.out(PaneId::of(2), b"\x1b[31mR\x1b[39mD");
@@ -2931,7 +2931,7 @@ mod tests {
     #[test]
     fn a_pane_in_reverse_video_is_painted_reversed() -> Result<(), Box<dyn std::error::Error>> {
         let (mut s, c) = crate::session::testing::attached(6, 41)?;
-        crate::session::testing::run(&mut s, "str %1 pane horizontal split")?;
+        crate::session::testing::run(&mut s, "str %1 pane str horizontal axis split")?;
         s.out(PaneId::of(1), b"\x1b[?5ha\x1b[7mb\x1b[27m");
         s.out(PaneId::of(2), b"a");
         let mut client = fux_vt::Parser::new(fux_vt::Size::new(6, 41)?, 0)?;
@@ -2981,7 +2981,7 @@ mod tests {
     #[test]
     fn hyperlinks_are_painted_with_their_panes_ids() -> Result<(), Box<dyn std::error::Error>> {
         let (mut s, c) = crate::session::testing::attached(6, 41)?;
-        crate::session::testing::run(&mut s, "str %1 pane horizontal split")?;
+        crate::session::testing::run(&mut s, "str %1 pane str horizontal axis split")?;
         let linked = b"a\x1b]8;;http://x\x1b\\link\x1b]8;;\x1b\\b";
         s.out(PaneId::of(1), linked);
         s.out(PaneId::of(2), linked);

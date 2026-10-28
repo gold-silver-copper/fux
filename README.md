@@ -110,10 +110,15 @@ enough for most work and `fux help TOPIC` the rest
 ([docs/json.md](docs/json.md)), and `fux help limits` the bounds fux
 keeps.
 
-What a word that acts takes (**options**, a wait, keys, a mouse event) goes
+What a word that acts takes (**options**, a wait, keys) goes
 on the pane before it, in any order: the pane given them becomes a request,
 which the word at the end acts on. `run`, `new-tab` and `new-workspace` have
 no pane yet, nor has `attach`: they start from `opts`, empty options.
+A single-valued option occurs once; arguments and input fragments accumulate
+in order. `split` requires `str horizontal axis` (side by side) or
+`str vertical axis` (stacked). `resize-pane` takes a pane, cells or a
+percent, and `str horizontal` or `str vertical`. Mouse events are positional:
+`%2 str click 3 10 send-mouse`.
 `all events` streams the whole session. Of
 the first three, only `run` takes a program (`program`, then each `arg`; a
 shell's line is `str sh program str -c arg str LINE arg`); `new-tab` and
@@ -127,7 +132,11 @@ up.
 `ls` is the library word `all info`. `CLIENT HANDLE show` follows a pane,
 tab or workspace. `WORKSPACE panes` lists panes, and `WORKSPACE tabs` lists tabs.
 `capture` takes a pane or client; only panes take capture options and have
-versions. `resize` takes a tab scope or headless client. `move` takes a tab,
+versions. `PANE version` reads the current version; `ANSWER version` and
+`CAPTURE version` return the version held when observed. `--version` prints
+the binary release, and `status json` gives `release` and `server_release`.
+Capture `rows` and `cols` use half-open `start..end` ranges, like `slice`.
+`resize` takes a tab scope or headless client. `move` takes a tab,
 workspace, `str new-tab`, `str new-workspace`, or a direction; `swap-with`
 takes a pane or direction. Directions are `str left`, `str right`, `str up`
 and `str down`.
@@ -232,7 +241,7 @@ prefix again sends it to the pane.
 | --- | --- | --- |
 | `h` `j` `k` `l` | `me str left focus` … | focus the pane that way |
 | `o` / `q` | `me str next focus` / `me str last focus` | focus the next / last pane |
-| `v` / `s` | `me focused horizontal split drop` / `… vertical …` | split side by side / stacked |
+| `v` / `s` | `me focused str horizontal axis split drop` / `… str vertical axis …` | split side by side / stacked |
 | `x` | `me me focused confirm-close` | close the pane (asks `y`/`n`) |
 | `z` | `me zoom` | zoom the pane, or restore it |
 | `a`, then a key | `me me focused rename-prompt` … | pane actions: `r` rename, `x` close, `k` terminate the running command, `s` swap, `t`/`w` move to a tab/workspace, `n`/`W` move to a new one, `m h`/`m l` reorder |
@@ -267,7 +276,7 @@ prints these defaults.
   Enter selects, `r` renames, `x` closes, Esc or `q` cancels; arrows,
   `j`/`k`, PageUp/PageDown and Home/End move.
 - **The command prompt** (`e`) runs fuxth as your client, `me` and all
-  (`me focused vertical str htop program split`), and shows what it
+  (`me focused str vertical axis str htop program split`), and shows what it
   printed, or its failure, in the bar. It and the rename prompts edit with
   the arrows, Home, End, Backspace and Delete.
 - **Prompts and questions of your own:** `prompt` opens a line whose Enter
@@ -507,11 +516,11 @@ str copy-environment list
 end set
 
 unbind-all                                        # optional: no keys at all, the screens' too
-define split-right me focused horizontal split drop end   # a word of the config's
+define split-right me focused str horizontal axis split drop end   # a word of the config's
 str v str split-right bind
 str 't n' str 'opts new-tab drop' bind            # t is a layer: C-b t n
 str 'r l' str 'me focused str right 1 move-border' bind  repeat   # C-b r l l l, then Esc
-str g str 'me focused vertical str lazygit program split drop' bind
+str g str 'me focused str vertical axis str lazygit program split drop' bind
   str 'lazygit' label  str Tools group            # what the column shows, and under which heading
 str M-h str 'me str left focus' bind-root         # no prefix: Alt-h alone
 
@@ -519,7 +528,7 @@ str M-h str 'me str left focus' bind-root         # no prefix: Alt-h alone
 # gives the program the pane's id, and `"${FUX:-fux}"` is the server's fux,
 # on PATH or not; after a failure, Enter closes it
 define edit-history
-  me focused vertical
+  me focused str vertical axis
   str FUX_TARGET me focused env
   str sh program str -c arg
   str 'f=$(mktemp) && "${FUX:-fux}" "$FUX_TARGET" all-history capture >"$f" && ${EDITOR:-vi} "$f" || read -r _; rm -f "$f"; "${FUX:-fux}" here kill' arg

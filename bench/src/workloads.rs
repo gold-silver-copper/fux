@@ -1309,7 +1309,6 @@ fn capture_history(baseline: bool, history: usize) -> Result<Done, String> {
             Some(usize::MAX),
             command::CaptureView::default(),
             false,
-            now,
         )
         .map_err(|e| e.to_string())?;
         black_box(fux::wire::encode(&capture).map_err(|e| e.to_string())?);

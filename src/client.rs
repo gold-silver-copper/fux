@@ -1979,7 +1979,7 @@ mod tests {
         assert!(ran.notice.is_some());
         assert!(updates.is_empty());
         assert_eq!(*lock(&state), committed);
-        let checkpoint = "str titles false set %1 horizontal split drop";
+        let checkpoint = "str titles false set %1 str horizontal axis split drop";
         let ran = run_job(
             &mut Refuse,
             me,

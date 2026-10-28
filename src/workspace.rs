@@ -839,7 +839,7 @@ mod tests {
     #[test]
     fn only_new_input_schedules_a_pane_for_the_sweep() -> Result<(), String> {
         let mut session = started()?;
-        run(&mut session, "%1 split drop")?;
+        run(&mut session, "%1 str horizontal axis split drop")?;
         let one = PaneId::of(1);
         let two = PaneId::of(2);
         let now = Instant::now();

@@ -11,7 +11,6 @@ use fux_vt::{
     Attributes, Blink, Color, CommandMark, Mode, MouseProtocolMode, Rgb, Row, Screen,
     UnderlineStyle,
 };
-use std::time::Instant;
 
 /// Synthesized output work: at most two cells per admitted wire byte.
 pub(crate) const OUTPUT_CELLS: usize = 2 * crate::wire::MAX_REPLY;
@@ -172,10 +171,9 @@ pub fn pane(
     history: Option<usize>,
     view: CaptureView,
     copy_mode: bool,
-    now: Instant,
 ) -> Result<Captured, crate::session::Error> {
     let limits = Limits::new(pane.history_bytes(), pane.screen().size().into())?;
-    pane_with(pane, run, history, view, copy_mode, now, limits)
+    pane_with(pane, run, history, view, copy_mode, limits)
 }
 
 fn pane_with(
@@ -184,7 +182,6 @@ fn pane_with(
     history: Option<usize>,
     view: CaptureView,
     copy_mode: bool,
-    now: Instant,
     limits: Limits,
 ) -> Result<Captured, crate::session::Error> {
     let screen = pane.screen();
@@ -204,7 +201,7 @@ fn pane_with(
     let selection = selected_rows(read, view, limits)?;
     let read = selection.read(rows_of(screen, history, view).0);
     let mut budget = crate::wire::Budget::new();
-    let mut state = state(pane, now, copy_mode, &mut budget)?;
+    let mut state = state(pane, copy_mode, &mut budget)?;
     // The history rows kept above the first row read: history it was not
     // asked for (rows a range leaves out are not counted).
     state.push(("above", above.map_or(Json::Null, Json::count)));
@@ -339,10 +336,10 @@ fn selected_rows<'a>(
     view: CaptureView,
     limits: Limits,
 ) -> Result<Selection, crate::session::Error> {
-    let (first, last) = view
+    let (first, end) = view
         .rows
         .map_or((0, usize::MAX), |(a, b)| (usize::from(a), usize::from(b)));
-    if view.wrapped && first > last {
+    if first >= end {
         return Ok(Selection { start: 0, count: 0 });
     }
     let skip = if view.wrapped { first } else { 0 };
@@ -367,9 +364,12 @@ fn selected_rows<'a>(
         if !view.wrapped && index <= first {
             start = line_start;
         }
-        let end = index.checked_add(skip).ok_or_else(too_large)?;
-        count = end.saturating_add(1).saturating_sub(start);
-        if end >= last && (view.wrapped || !row.continues()) {
+        let past = index
+            .checked_add(skip)
+            .ok_or_else(too_large)?
+            .saturating_add(1);
+        count = past.saturating_sub(start);
+        if past >= end && (view.wrapped || !row.continues()) {
             break;
         }
         if !row.continues() {
@@ -421,9 +421,7 @@ fn columns(
     let (skip, count) = view.cols.map_or((0, usize::MAX), |(a, b)| {
         (
             usize::from(a),
-            usize::from(b)
-                .saturating_sub(usize::from(a))
-                .saturating_add(1),
+            usize::from(b).saturating_sub(usize::from(a)),
         )
     });
     let first = span.start.saturating_add(skip).min(end);
@@ -550,13 +548,12 @@ pub fn client(
 }
 
 /// What is known of a pane's program, for `json`: its foreground program,
-/// the status it exited with, how long since it last wrote, and the modes
+/// the status it exited with, and the modes
 /// that say how it takes input; whether a client is in copy mode on it,
 /// and the cell its program is told, by its tab's host
 /// (`Session::host_panes`).
 pub(crate) fn state(
     pane: &Pane,
-    now: Instant,
     copy_mode: bool,
     budget: &mut crate::wire::Budget,
 ) -> Result<Vec<(&'static str, Json)>, crate::session::Error> {
@@ -594,7 +591,6 @@ pub(crate) fn state(
         }
         None => Json::Null,
     };
-    let idle = now.saturating_duration_since(pane.wrote_at).as_millis();
     let last_status = screen.commands().last_status;
 
     let (exited, signal) = match pane.process().exit_status() {
@@ -658,11 +654,6 @@ pub(crate) fn state(
         ("read_error", read_error.map_or(Json::Null, Json::str)),
         ("exited", exited),
         ("signal", signal),
-        // Past u64's milliseconds no monotonic clock reaches: unknown.
-        (
-            "idle_ms",
-            u64::try_from(idle).map_or(Json::Null, Json::Uint),
-        ),
         ("alt_screen", Json::Bool(screen.mode(Mode::AlternateScreen))),
         ("mouse", Json::Bool(mouse != MouseProtocolMode::None)),
         // What it asked for: whether a move without a button is reported.
@@ -1135,7 +1126,6 @@ mod tests {
             Some(usize::MAX),
             CaptureView::default(),
             false,
-            Instant::now(),
         )?;
         assert!(capture.lines.len() > 80_000);
         let full = super::pane(
@@ -1147,7 +1137,6 @@ mod tests {
                 ..CaptureView::default()
             },
             false,
-            Instant::now(),
         )?;
         assert_eq!(full.lines.len(), 100_003);
         Ok(())
@@ -1177,7 +1166,6 @@ mod tests {
             None,
             view,
             false,
-            Instant::now(),
             super::Limits { cells: 2 },
         )?;
         assert_eq!(capture.text()?, "hi");
@@ -1200,7 +1188,7 @@ mod tests {
         let selection = super::selected_rows(
             read,
             CaptureView {
-                rows: Some((90, 95)),
+                rows: Some((90, 96)),
                 ..CaptureView::default()
             },
             super::Limits { cells: 1200 },
@@ -1274,7 +1262,6 @@ mod tests {
             Some(usize::MAX),
             CaptureView::default(),
             false,
-            Instant::now(),
             super::Limits { cells: 240 },
         );
         assert!(refusal.is_err());
@@ -1285,11 +1272,11 @@ mod tests {
         );
         let view = CaptureView {
             wrapped: true,
-            rows: Some((0, 0)),
+            rows: Some((0, 1)),
             full: true,
             ..CaptureView::default()
         };
-        let read = super::pane(&pane, run, Some(usize::MAX), view, false, Instant::now())?;
+        let read = super::pane(&pane, run, Some(usize::MAX), view, false)?;
         assert_eq!(read.lines.len(), 1);
         assert_eq!(
             read.lines.first().and_then(|l| l.first()).map(|r| r.cells),
@@ -1301,7 +1288,7 @@ mod tests {
             super::selected_rows(
                 read,
                 CaptureView {
-                    rows: Some((0, 0)),
+                    rows: Some((0, 1)),
                     ..CaptureView::default()
                 },
                 limits
@@ -1336,7 +1323,6 @@ mod tests {
                 None,
                 join,
                 false,
-                Instant::now(),
             )?
             .text()?)
         };
@@ -1373,13 +1359,19 @@ mod tests {
                 wrapped,
                 ..CaptureView::default()
             };
-            Ok(super::pane(&pane, run, None, view, false, Instant::now())?.text()?)
+            Ok(super::pane(&pane, run, None, view, false)?.text()?)
         };
-        assert_eq!(capture((2, 2), false)?, "abcdefghijklm");
-        assert_eq!(capture((0, 1), false)?, "top\nabcdefghijklm");
-        assert_eq!(capture((3, 4), false)?, "abcdefghijklm\nend");
-        assert_eq!(capture((2, 2), true)?, "fghij");
-        assert_eq!(capture((4, 3), true)?, "");
+        assert_eq!(capture((2, 3), false)?, "abcdefghijklm");
+        assert_eq!(capture((0, 2), false)?, "top\nabcdefghijklm");
+        assert_eq!(capture((3, 5), false)?, "abcdefghijklm\nend");
+        assert_eq!(capture((2, 3), true)?, "fghij");
+        for wrapped in [false, true] {
+            for at in [0, 2, 4, 100] {
+                assert_eq!(capture((at, at), wrapped)?, "");
+            }
+        }
+        assert_eq!(capture((0, 1), false)?, "top");
+        assert_eq!(capture((1, 4), true)?, "abcde\nfghij\nklm");
         Ok(())
     }
 
@@ -1389,7 +1381,7 @@ mod tests {
     fn columns_cut_short_of_the_spacer_keep_their_last_cell()
     -> Result<(), Box<dyn std::error::Error>> {
         let view = CaptureView {
-            cols: Some((0, 2)),
+            cols: Some((0, 3)),
             ..CaptureView::default()
         };
         let size = fux_vt::Size::new(3, 5)?;
@@ -1409,7 +1401,6 @@ mod tests {
             None,
             view,
             false,
-            Instant::now(),
         )?
         .text()?;
         assert_eq!(text.lines().next(), Some("abc世"));
@@ -1441,7 +1432,7 @@ mod tests {
                 wrapped: flags & 8 != 0,
                 ..CaptureView::default()
             };
-            let got = super::pane(&pane, run, None, view, false, Instant::now())?;
+            let got = super::pane(&pane, run, None, view, false)?;
             let actual: Vec<(String, u32)> = got
                 .lines
                 .iter()
@@ -1519,7 +1510,6 @@ mod tests {
             None,
             CaptureView::default(),
             false,
-            Instant::now(),
         )?;
         assert_eq!(got.text()?, "x\u{0600} ");
         assert_eq!(
@@ -1583,7 +1573,7 @@ mod tests {
         let selection = super::selected_rows(
             read,
             CaptureView {
-                rows: Some((1, 1)),
+                rows: Some((1, 2)),
                 ..CaptureView::default()
             },
             super::Limits::new(8 << 20, (6, 5))?,
@@ -1614,14 +1604,8 @@ mod tests {
             ..CaptureView::default()
         };
         let run = crate::command::Run::now().ok_or("a clock")?;
-        let body = crate::protocol::Body::Capture(Box::new(super::pane(
-            &pane,
-            run,
-            None,
-            view,
-            false,
-            Instant::now(),
-        )?));
+        let body =
+            crate::protocol::Body::Capture(Box::new(super::pane(&pane, run, None, view, false)?));
         assert_eq!(
             Reader::new(&encode(&body).unwrap_or_default()).whole::<crate::protocol::Body>()?,
             body
@@ -1660,7 +1644,6 @@ mod tests {
             None,
             view,
             false,
-            Instant::now(),
         )?
         .text()?;
         assert_eq!(text, "hello");
@@ -1673,7 +1656,6 @@ mod tests {
             None,
             view,
             false,
-            Instant::now(),
         )?
         .text()?;
         assert_eq!(text, "step 1");

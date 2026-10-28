@@ -100,9 +100,9 @@ fn the_config_sets_the_prefix_and_bindings() -> Outcome {
     let server = Server::start(
         "str C-a prefix\n\
          str y str split-below bind\n\
-         define split-below me focused vertical split drop end\n\
+         define split-below me focused str vertical axis split drop end\n\
          str h unbind\n\
-         str g str 'me focused horizontal str sh program str -c arg str \"echo from-g; exec sh\" arg split drop' bind\n\
+         str g str 'me focused str horizontal axis str sh program str -c arg str \"echo from-g; exec sh\" arg split drop' bind\n\
          str Tools group\n",
     )?;
     let mut client = server.attach(24, 90)?;
@@ -150,7 +150,15 @@ fn launch_preferences_apply_only_to_new_requests() -> Outcome {
     // Three rows of two cells or more: 24 bytes a row and 8 a cell.
     let server = Server::start("str history-bytes 120 set")?;
     // History bytes apply to new panes.
-    let pane = server.ok(&["%1", "vertical", "120", "history-bytes", "split"])?;
+    let pane = server.ok(&[
+        "%1",
+        "str",
+        "vertical",
+        "axis",
+        "120",
+        "history-bytes",
+        "split",
+    ])?;
     let pane = pane.split(':').next().unwrap_or_default();
     server.type_line(
         pane,
@@ -199,7 +207,9 @@ fn launch_preferences_apply_only_to_new_requests() -> Outcome {
         "end",
         "set",
         "%1",
+        "str",
         "horizontal",
+        "axis",
         "split",
     ])?;
 
@@ -261,7 +271,7 @@ fn an_imported_failure_keeps_the_whole_bundled_state() -> Outcome {
         "str C-a prefix str wait-seconds 0 set str titles true set \
          opts str missing in attach-defaults \
          define only-in-failed-config 41 end \
-         %1 horizontal split drop",
+         %1 str horizontal axis split drop",
     )
     .map_err(e)?;
     let before = server.ok(&["ls"])?;
@@ -335,7 +345,7 @@ fn a_bad_config_is_reported() -> Outcome {
     );
     // A binding sees the config's definitions, written anywhere in it; a
     // mistake in one, or in a binding, is said at its own line and word.
-    let ok = "str v str sr bind\ndefine sr me focused horizontal split drop end\n";
+    let ok = "str v str sr bind\ndefine sr me focused str horizontal axis split drop end\n";
     std::fs::write(&config, ok).map_err(e)?;
     assert!(
         server
@@ -461,7 +471,7 @@ fn check_mode_is_explicit_and_independent_of_the_filename() -> Outcome {
     let path = server.dir.join("dry.fux");
     std::fs::write(&path, "str shell list str /not-a-program end set").map_err(e)?;
     server.ok(&["str", &path.to_string_lossy(), "str", "config", "check"])?;
-    server.ok(&["%1", "split", "drop"])?;
+    server.ok(&["%1", "str", "horizontal", "axis", "split", "drop"])?;
     Ok(())
 }
 
@@ -590,7 +600,9 @@ fn a_program_uses_preferences_before_its_next_operation() -> Outcome {
         "end",
         "set",
         "%1",
+        "str",
         "horizontal",
+        "axis",
         "split",
         "drop",
     ])?;
@@ -722,7 +734,7 @@ fn key_words_refuse_the_command_line() -> Outcome {
 fn unrelated_commands_do_not_load_shell_defaults() -> Outcome {
     use std::os::unix::ffi::OsStrExt;
     let server = Server::start("")?;
-    for words in [&["version"][..], &["ls"], &["status"], &["kill-server"]] {
+    for words in [&["--version"][..], &["ls"], &["status"], &["kill-server"]] {
         let result = std::process::Command::new(FUX)
             .args(words)
             .env("FUX_SOCKET", &server.socket)
@@ -828,18 +840,18 @@ fn launches_save_the_callers_argv_role_and_environment() -> Outcome {
     }
     assert!(
         server
-            .ok(&["%1", "split", "info", "json"])?
+            .ok(&["%1", "str", "horizontal", "axis", "split", "info", "json"])?
             .contains("\"launch_argv\":[\"/bin/sh\"]")
     );
     let before = server.panes()?.len();
     for (conflict, code) in [
         (
             "opts str main in 80 24 size list str /bin/sh end shell-program str /bin/cat program new-tab",
-            "bad_value",
+            "unused",
         ),
         (
             "opts str main in 80 24 size str /bin/cat program list str /bin/sh end shell-program new-tab",
-            "bad_value",
+            "unused",
         ),
         (
             "agent-opts 80 24 size list str /bin/sh end shell-program run",
