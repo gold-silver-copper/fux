@@ -4229,18 +4229,36 @@ mod tests {
     #[test]
     fn snapshot_is_one_turn_and_local_fields_keep_their_typed_run() -> TestResult {
         let (mut s, _) = attached(12, 50)?;
+        struct Once(Option<Reply>);
+        impl crate::script::Asks for Once {
+            fn ask(
+                &mut self,
+                asked: &crate::protocol::Asked,
+            ) -> Result<Reply, crate::script::Failed> {
+                assert!(matches!(
+                    asked.request,
+                    Request::Do(Command::Inspect { .. })
+                ));
+                self.0
+                    .take()
+                    .ok_or_else(|| crate::script::Failed::new(Code::Usage, "a second roundtrip"))
+            }
+        }
         let body = s.inspect(
             crate::inspect::Scope::All,
             crate::inspect::Projection::Topology,
         )?;
-        let values = crate::script::tests::held_reply(
+        let mut once = Once(Some(Reply {
+            run: Some(s.run),
+            ..body.into()
+        }));
+        let values = crate::script::tests::evaluate(
             "all str topology snapshot let held held str panes get first str id get held str panes get first str name get kind",
-            Reply {
-                run: Some(s.run),
-                ..body.into()
-            },
+            None,
+            &mut once,
             &mut Vec::new(),
         )?;
+        assert!(once.0.is_none());
         assert!(
             matches!(values.first(), Some(fuxth::Value::App(crate::script::Fux::Pane(p, Some(run)))) if *p == PaneId::of(1) && *run == s.run)
         );
@@ -6293,12 +6311,14 @@ mod tests {
                 run(&mut s, "%1 str horizontal axis split")?;
             }
             let alone = output(&mut s, "@1 str x text send-keys json")?;
-            assert!(alone.starts_with(r#"[{"pane":"%1","#), "{alone}");
-            assert_eq!(alone.lines().count(), 1);
-            assert_eq!(
-                alone.matches("\"status\":0").count(),
-                if split { 2 } else { 1 }
-            );
+            let mut expected = Vec::new();
+            for id in s.root(TabId::of(1)).ok_or("layout")?.panes() {
+                expected.push(format!(
+                    r#"{{"pane":"{id}","version":"{}","status":0}}"#,
+                    s.pane(id)?.version(s.run)
+                ));
+            }
+            assert_eq!(alone, format!("[{}]\n", expected.join(",")));
             let listed = output(&mut s, "list @1 str x text send-keys end json")?;
             assert_eq!(listed, format!("[{}]\n", alone.trim_end()));
         }
