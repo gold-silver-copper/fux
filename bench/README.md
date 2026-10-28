@@ -231,8 +231,3 @@ are a wakeup proxy; CPU time is quantized. Timing and memory observations
 are reported with the environment and load, never used as wall-time gates.
 Compare matched fixtures and builds on a quiet host. Capture admission caps
 and the 16 ms server-hold goal are separate work.
-
-The [G1 measurements](g1-perf.md) record the checker and loop changes,
-including CPU, instructions, latency and budget misses. `pane/pending`
-feeds a 128 KiB synchronized frame of screen-wide edits at 16 KiB per read,
-then resumes parser-budget yields; its baseline omits parsing.
