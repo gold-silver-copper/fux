@@ -19,6 +19,7 @@ seen string print seen version print
 ```
 
 **Run a command, read its output and actual exit status.**
+Run with `timeout 30 fux -` and this program on stdin:
 
 ```fux
 agent-opts 80 24 size str sh program str -c arg
@@ -78,6 +79,12 @@ pane that changed. A loop of waits ends when its check holds; to bound the
 whole of it, run it under the shell's `timeout 600 fux --file FILE` (124
 too). `counts` gives five integers from a live pane or the version held by
 an answer, pane capture or canonical text. `A counts 3 at` is its `DONE`.
+
+A wait's text answer is its version, then what changed (`screen`, `bell`,
+`done`, `respawned`), then `exited N`, `killed by SIGNAME` (or `killed by
+signal N` for an unnamed signal), or `ended, its status lost` if the program
+ended. A closed pane answers `%2 closed`. A tab/workspace wait freezes its
+panes as it begins and answers changes in watch order, not exit chronology.
 
 - **Quiet for N seconds** (an agent's TUI done, or asking you something):
   `quiet` waits until nothing changes for N seconds (from a pane, an
@@ -173,11 +180,14 @@ an answer, pane capture or canonical text. `A counts 3 at` is its `DONE`.
   fux all str "$C" from events      # or: fux %3 str "$C" from events
   ```
 - **First recorded exit across jobs:** save this as `first-exit.py` and
-  run `python3 first-exit.py` on the private socket. Take the cursor before
+  run `python3 -I first-exit.py` on the private socket. Take the cursor before
   launching, even if jobs might finish before subscription. Replay order
   is server-recorded order, not physical OS termination order. Loss is a
   failure; resnapshotting cannot recover which missing exit was first.
-  The subscriber is always terminated and reaped. No group wait is used.
+  Any of a, b or c may be recorded first: launch latency can change their
+  order. The result includes the cursor, pane/name map and first exit record
+  as an auditable result. The subscriber is
+  always terminated and reaped. No group wait is used.
 
   ```python
   def first_exit(fux):
@@ -197,7 +207,7 @@ an answer, pane capture or canonical text. `A counts 3 at` is its `DONE`.
                   if event["event"] == "missed":
                       raise RuntimeError("journal loss: first exit is unknown")
                   if event["event"] == "exited" and event.get("pane") in panes:
-                      return panes[event["pane"]]
+                      return {"cursor": cursor, "panes": panes, "first": event}
               raise RuntimeError("event stream ended before an exit")
           finally:
               stream.terminate()
@@ -213,6 +223,7 @@ an answer, pane capture or canonical text. `A counts 3 at` is its `DONE`.
 
 
   if __name__ == "__main__":
+      import json
       import subprocess
       def fux(*words, stream=False):
           command = ["timeout", "30", "fux", *words]
@@ -220,7 +231,7 @@ an answer, pane capture or canonical text. `A counts 3 at` is its `DONE`.
               return subprocess.Popen(command, stdout=subprocess.PIPE, text=True)
           return subprocess.run(command, check=True, capture_output=True,
                                 text=True, timeout=30).stdout
-      print(first_exit(fux))
+      print(json.dumps(first_exit(fux)))
   ```
 - **A deadline, a fallback, a retry:** `try` catches the failures it names
   (`programs`). A key, and C-c if nothing came of it in 10 s:

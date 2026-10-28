@@ -18,16 +18,14 @@ define counts
   version str : split-on 1 at str . split-on let parts
   list parts each number end end
 end
-# A capture is never refreshed here; client captures and requests are outside this domain.
-# pane-or-observation -- capture : retain a pane capture, otherwise sample a pane or single answer
+# pane-or-observation -- capture : retain a pane capture without refreshing it, otherwise sample a pane or single answer; client captures and requests are refused
 define observed
   dup kind str capture eq if else
     dup kind str pane eq over kind str answer eq or
     if capture else str 'observed needs a pane, answer or pane capture' fail then
   then
 end
-# Old text and input echo can match. Each wait has its own timeout.
-# pane-or-observation text secs -- capture : check first, then plain shown screens after changes
+# pane-or-observation text secs -- capture : check first, then plain shown screens after changes; old text and input echo can match; timeout is per change
 define shows
   let secs let needle observed
   begin
@@ -37,8 +35,7 @@ define shows
     then
   until
 end
-# Only timeout is caught; metadata belongs to that saved sample.
-# pane-or-observation secs -- capture : last sample after secs with no version change
+# pane-or-observation secs -- capture : last sample after secs with no version change; only timeout is caught; metadata belongs to that saved sample, not the end of the interval
 define quiet
   let secs observed
   begin
@@ -47,16 +44,14 @@ define quiet
     catch 2drop seen true end
   until
 end
-# Ending with unknown status still satisfies this condition.
-# pane-or-observation secs -- capture : checks ended first; follows the pane across respawns
+# pane-or-observation secs -- capture : checks ended first, even with unknown status; follows the pane across respawns; timeout is per change
 define until-ended
   let secs observed
   begin
     dup counts 4 at 1 eq if true else changed secs timeout wait capture false then
   until
 end
-# Index 1..4, nonnegative amount; a bare pane is sampled before establishing the baseline.
-# pane-or-seen index amount secs -- observation : growth within one program generation
+# pane-or-seen index amount secs -- observation : growth within one program generation, failing across respawn; index 1..4, nonnegative amount; a bare pane is sampled first; timeout is per change
 define grows
   let secs let amount let index
   index 1 lt index 4 gt or if str 'count index must be 1..4' fail then

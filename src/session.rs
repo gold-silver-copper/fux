@@ -7881,7 +7881,7 @@ mod tests {
         let split = failed(&mut s, "str 'two\nlines' fail");
         assert!(split.ends_with(r"two\nlines"), "{split}");
         let version = failed(&mut s, "str 1.2.3 changed wait");
-        assert!(version.contains("is no version"), "{version}");
+        assert!(version.contains("\"1.2.3\" is no version"), "{version}");
         Ok(())
     }
 

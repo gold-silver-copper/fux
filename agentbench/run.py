@@ -35,6 +35,13 @@ def tasks(path=os.path.join(HERE, "tasks.toml")):
         return tomllib.load(f)["task"]
 
 
+def task_pairs(selected, tools, tier):
+    """Explicit applicability only; ordinary unsupported tasks remain failures."""
+    return [(tool, task) for tool in tools for task in selected
+            if tool in task.get("tools", tools)
+            and tier in task.get("tiers", ["scripted", "agents"])]
+
+
 def held(task, name):
     """A held task's own module, `solve` or `check`, from `held/<slug>/`."""
     import importlib.util
@@ -257,7 +264,7 @@ def main():
     if missing:
         print(f"skipped, a program they need is missing: {', '.join(missing)}", flush=True)
     chosen = [t for t in chosen if t["id"] not in missing]
-    jobs = [(tool, t["id"], rep) for tool in args.tools.split(",") for t in chosen
+    jobs = [(tool, t["id"], rep) for tool, t in task_pairs(chosen, args.tools.split(","), "scripted")
             for rep in range(args.repeats if not t.get("expensive") else 1)]
     slots = list(range(args.slot_base, args.slot_base + args.workers))
     results = []

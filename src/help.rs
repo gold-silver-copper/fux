@@ -97,20 +97,17 @@ Driving programs from a script or an agent: `fux help agents`; one word:
 
 Effects read `inputs -- outputs`; `a>b` maps input kind a to output kind b.
 Alternative kinds retain their distinctions; requests must reach an action.
-Below, x is a pane, tab, workspace or client (an action's answer is its
-pane), a request on one, or opts; target, subject and place a pane (or a
-tab, workspace or client) or a request on one; handle a pane, tab or
-workspace; scope a handle or all; ref a name or a handle; text a string,
-number or boolean. pane-builder is a pane or pane request; capture-source
-maps a pane, answer, closed-answer or pane request to capture, and a
-client to client-capture; sized is a
-handle or headless client. replayable is a pane, tab or workspace, a
-request on one, or all without a cursor; from on all leaves an
-events-request, which only events takes.
 wait and send-keys leave an answer for a pane, and answers for a tab or
 workspace (send-keys: or a client), which no word that wants a pane takes.
 ",
     );
+    let names = crate::script::NAMES
+        .iter()
+        .map(|(name, _, said)| format!("{name}: {said}."))
+        .collect::<Vec<_>>()
+        .join(" ");
+    out.push_str(&wrapped(names.split(' ').map(str::to_owned), "\n", 74));
+    out.push('\n');
     let mut rows: Vec<_> = Word::ALL.iter().map(|w| w.row()).collect();
     rows.sort_by_key(|row| row.group);
     let mut group = None;
@@ -413,11 +410,14 @@ mod tests {
             );
         }
         let first = explain("agents").unwrap_or_default();
-        let advertised: Vec<_> = first
-            .split(|c: char| !c.is_ascii_alphanumeric() && c != '-')
-            .collect();
+        let advertised = first.split_once("More:").map_or("", |(_, links)| links);
         for topic in topics.iter().chain(&["guide"]) {
-            assert!(advertised.contains(topic), "first screen omits {topic}");
+            let link = format!("`{topic}`");
+            let command = format!("`fux help {topic}`");
+            assert!(
+                advertised.contains(&link) || advertised.contains(&command),
+                "topic links omit {topic}"
+            );
         }
     }
 

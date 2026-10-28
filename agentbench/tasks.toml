@@ -1058,6 +1058,8 @@ held = "build-tests-preview-panes"
 [[task]]
 id = "published-prompt"
 cat = "published"
+tools = ["fux"]
+tiers = ["scripted"]
 goal = "Execute the published launch/prompt and guarded-input recipes on their first invocation."
 recipe = "published_prompt"
 check = { answer = "42" }
@@ -1065,6 +1067,8 @@ check = { answer = "42" }
 [[task]]
 id = "published-exit"
 cat = "published"
+tools = ["fux"]
+tiers = ["scripted"]
 goal = "Execute the published command output and exit-status recipe unchanged."
 recipe = "published_exit"
 check = { answer = "7" }
@@ -1072,6 +1076,8 @@ check = { answer = "7" }
 [[task]]
 id = "published-tui"
 cat = "published"
+tools = ["fux"]
+tiers = ["scripted"]
 goal = "Execute both published view-specific TUI recipes against delayed selection/redraws."
 recipe = "published_tui"
 check = { file = "chosen.txt", equals = "Beta" }
@@ -1079,6 +1085,8 @@ check = { file = "chosen.txt", equals = "Beta" }
 [[task]]
 id = "published-first-exit"
 cat = "published"
+tools = ["fux"]
+tiers = ["scripted"]
 goal = "Execute the published cursor-before-launch journal recipe unchanged."
 recipe = "published_first_exit"
-check = { answer = "b" }
+check = { answer = "recorded" }
