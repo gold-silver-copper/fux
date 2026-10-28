@@ -638,10 +638,35 @@ fn a_program_uses_preferences_before_its_next_operation() -> Outcome {
     Ok(())
 }
 
-/// A launch preference follows the invocation across a server selection,
-/// without changing either server's future launches.
+/// A new small pane reveals the server's current shared history setting.
+fn history_rows(server: &Server) -> Result<usize, String> {
+    let answer = server.ok(&[
+        "agent-opts",
+        "80",
+        "5",
+        "size",
+        "str",
+        "/bin/sh",
+        "program",
+        "str",
+        "-c",
+        "arg",
+        "str",
+        "i=0; while [ \"$i\" -lt 40 ]; do echo row; i=$((i+1)); done",
+        "arg",
+        "run",
+    ])?;
+    let pane = answer.trim().split(':').next().ok_or("pane")?;
+    server.exits(pane)?;
+    Ok(server
+        .ok(&[pane, "all-history", "capture"])?
+        .lines()
+        .count())
+}
+
+/// Pending shared settings reach the server selected when they were written.
 #[test]
-fn local_shell_defaults_follow_the_invocation_across_server_selection() -> Outcome {
+fn settings_stay_with_the_server_selected_when_written() -> Outcome {
     for named in [true, false] {
         let a = Server::start("")?;
         let b = Server::start("")?;
@@ -653,22 +678,22 @@ fn local_shell_defaults_follow_the_invocation_across_server_selection() -> Outco
                 fux::words::quote(&b.socket.to_string_lossy())
             )
         };
-        let code =
-            format!("str shell list str /no/such/local-shell end set {select} %1 split drop");
-        let out = a.fux_env(
-            &[&code],
-            &[("XDG_RUNTIME_DIR", b.dir.to_str().ok_or("runtime path")?)],
-        )?;
-        assert_eq!(out.status, 1);
+        let runtime = [("XDG_RUNTIME_DIR", b.dir.to_str().ok_or("runtime path")?)];
+        let code = format!("str history-bytes 0 set {select}");
+        let out = a.fux_env(&[&code], &runtime)?;
+        assert_eq!(out.status, 0, "{}", out.stderr);
         assert!(
-            out.stderr.contains("/no/such/local-shell"),
-            "{}",
-            out.stderr
+            history_rows(&a)? <= 5,
+            "old server lost its pending setting"
         );
-        for server in [&a, &b] {
-            assert_eq!(server.panes()?.len(), 1);
-            server.ok(&["%1", "split", "drop"])?;
-        }
+        assert!(
+            history_rows(&b)? > 5,
+            "setting reached the newly selected server"
+        );
+        let out = a.fux_env(&[&format!("{select} str history-bytes 0 set ls")], &runtime)?;
+        assert_eq!(out.status, 0, "{}", out.stderr);
+        assert!(history_rows(&a)? <= 5);
+        assert!(history_rows(&b)? <= 5);
     }
     Ok(())
 }
@@ -697,7 +722,7 @@ fn a_failed_settings_checkpoint_keeps_the_selected_server() -> Outcome {
 }
 
 #[test]
-fn a_failed_addressed_request_does_not_publish_local_shell_defaults() -> Outcome {
+fn settings_use_the_programs_addressing_before_a_request_fails() -> Outcome {
     let server = Server::start("")?;
     let other = Server::start("")?;
     let path = server.dir.join("addressing.fux");
@@ -713,24 +738,14 @@ fn a_failed_addressed_request_does_not_publish_local_shell_defaults() -> Outcome
             "server run",
         ),
     ] {
-        server.ok(&["str", "shell", "list", "str", "/bin/sh", "end", "set"])?;
-        std::fs::write(
-            &path,
-            format!("{before} str shell list str /no/such/addressing-shell end set {after}"),
-        )
-        .map_err(e)?;
+        server.ok(&["str", "history-bytes", "8388608", "set"])?;
+        std::fs::write(&path, format!("{before} str history-bytes 0 set {after}")).map_err(e)?;
         let out = server.fux(&["--file", &path.to_string_lossy()])?;
         assert_eq!(out.status, 1);
         assert!(out.stderr.contains(error), "{}", out.stderr);
-        let probe = server.fux(&["%1", "split", "drop"])?;
-        assert_eq!(
-            probe.status, 0,
-            "a failed caller changed another invocation"
-        );
         assert!(
-            !probe.stderr.contains("/no/such/addressing-shell"),
-            "{}",
-            probe.stderr
+            history_rows(&server)? <= 5,
+            "a failed addressed request discarded the shared setting"
         );
     }
     Ok(())
@@ -878,14 +893,33 @@ fn launches_save_the_callers_argv_role_and_environment() -> Outcome {
             Ok(!server.panes()?.iter().any(|(p, _)| p == pane))
         })?;
     }
+    assert!(
+        server
+            .ok(&["%1", "split", "info", "json"])?
+            .contains("\"launch_argv\":[\"/bin/sh\"]")
+    );
     let before = server.panes()?.len();
-    for conflict in [
-        "opts str main in 80 24 size list str /bin/sh end shell-program str /bin/cat program new-tab",
-        "opts str main in 80 24 size str /bin/cat program list str /bin/sh end shell-program new-tab",
-        "agent-opts 80 24 size list str /bin/sh end shell-program run",
+    for (conflict, code) in [
+        (
+            "opts str main in 80 24 size list str /bin/sh end shell-program str /bin/cat program new-tab",
+            "bad_value",
+        ),
+        (
+            "opts str main in 80 24 size str /bin/cat program list str /bin/sh end shell-program new-tab",
+            "bad_value",
+        ),
+        (
+            "agent-opts 80 24 size list str /bin/sh end shell-program run",
+            "unused",
+        ),
     ] {
         let out = server.fux(&[conflict])?;
         assert_eq!(out.status, 1, "{conflict}");
+        assert!(
+            out.stderr.starts_with(&format!("fux: {code}: ")),
+            "{}",
+            out.stderr
+        );
         assert_eq!(server.panes()?.len(), before);
     }
     let code = "str copy-environment list str F4_VALUE str ENV end set \

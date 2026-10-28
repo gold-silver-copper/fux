@@ -826,3 +826,47 @@ fn a_socket_served_by_another_uid_is_refused() -> Outcome {
     let _ = listener.wait();
     Ok(())
 }
+
+/// Argv and cwd are one saved launch, including relative arguments and executables.
+#[test]
+fn dump_replays_the_saved_launch_after_the_program_changes_directory() -> Outcome {
+    use std::os::unix::fs::PermissionsExt;
+    for (argv, creation) in [
+        ("str /bin/sh program str worker.sh arg", "run"),
+        ("str ./worker.sh program", "run"),
+        (
+            "list str /bin/sh str worker.sh end shell-program",
+            "new-tab",
+        ),
+    ] {
+        let server = Server::start("")?;
+        let directory = server.dir.join("launch");
+        let child = directory.join("child");
+        std::fs::create_dir_all(&child).map_err(e)?;
+        let script = directory.join("worker.sh");
+        std::fs::write(
+            &script,
+            "#!/bin/sh\ncd child\nprintf 'saved-launch\n'\nexec /bin/cat\n",
+        )
+        .map_err(e)?;
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).map_err(e)?;
+        let cwd = fux::words::quote(directory.to_str().ok_or("cwd text")?);
+        let answer = server.ok(&[&format!(
+            "agent-opts 80 24 size str {cwd} cwd {argv} {creation}"
+        )])?;
+        let pane = answer.trim().split(':').next().ok_or("pane")?;
+        eventually("the program changed directory", || {
+            Ok(server.ok(&[pane, "str", "cwd", "get"])?.trim()
+                == child.to_str().ok_or("child text")?)
+        })?;
+        let dump = server.ok(&[pane, "tab", "dump-of"])?;
+        assert!(dump.contains(&format!("str {cwd} cwd")), "{dump}");
+        server.ok(&[&dump])?;
+        let (replayed, _) = server.newest_pane()?;
+        assert_ne!(replayed, pane);
+        eventually("the saved launch replayed", || {
+            Ok(server.ok(&[&replayed, "capture"])?.contains("saved-launch"))
+        })?;
+    }
+    Ok(())
+}

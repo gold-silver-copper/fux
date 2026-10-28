@@ -549,8 +549,7 @@ wire! {
         Split {
             axis: Axis,
             target: PaneId,
-            /// A program started in place of a shell, as `run` starts one,
-            /// if given.
+            /// Its launch: the shell or program role, with argv.
             start: Start,
             /// Where its shell starts (default: the caller's directory; from a
             /// client, the split pane's).

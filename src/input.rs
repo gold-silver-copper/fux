@@ -914,21 +914,49 @@ mod tests {
         ))
     }
 
-    /// A default launch cannot infer a live directory from these panes,
-    /// which have no processes. Typing its key reports that fact and creates nothing.
+    /// Typing a default binding's keys does what running its program as the
+    /// client does, and the program runs; a repeating one also enters its
+    /// mode.
     #[test]
-    fn default_launch_bindings_refuse_unknown_directories() -> Outcome {
-        for keys in ["v", "s", "tn", "wn"] {
-            let (mut s, c) = busy()?;
-            let before = s.parts.panes().len();
-            s.input(c, &prefixed(keys));
-            assert_eq!(s.parts.panes().len(), before, "{keys}");
-            let said = notice(&s, c);
-            assert!(
-                said.contains("working directory is unknown"),
-                "{keys}: {said}"
-            );
+    fn every_default_binding_runs_its_program() -> Outcome {
+        let keymap = crate::script::default_state()
+            .map(|state| state.keys)
+            .map_err(|e| e.to_string())?;
+        let bindings = keymap.bindings.all();
+        assert!(!bindings.is_empty());
+        let mut refused = Vec::new();
+        for (path, binding, repeat) in bindings {
+            let keys: String = path.iter().map(crate::keys::KeyPress::to_string).collect();
+            let (mut typed, c) = busy()?;
+            typed.input(c, &prefixed(&keys));
+            if repeat {
+                assert!(
+                    mode(&typed, c).starts_with("repeat "),
+                    "{keys}: {}",
+                    mode(&typed, c)
+                );
+                typed.input(c, b"\r");
+            }
+            let (mut ran, d) = busy()?;
+            if let Err(error) = output_as(&mut ran, Some(d), &binding.code) {
+                refused.push(keys.clone());
+                // Leaving a repeat mode clears what its keys said.
+                if !repeat {
+                    ran.notify_to(d, error, true);
+                }
+            }
+            assert_eq!(state(&mut typed, c)?, state(&mut ran, d)?, "{keys}");
         }
+        // Refused as the session stands: no pane that way, no copy to
+        // paste, nothing before the first tab or workspace, nothing but a
+        // shell to signal, and no readable nearby cwd in these processless panes.
+        refused.sort();
+        assert_eq!(
+            refused,
+            [
+                "ak", "k", "l", "mk", "ml", "p", "s", "tmh", "tn", "v", "wmh", "wn"
+            ]
+        );
         Ok(())
     }
 

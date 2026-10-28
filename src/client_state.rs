@@ -179,9 +179,6 @@ impl Preferences {
         asks: &mut A,
         context: crate::protocol::Context,
     ) -> Result<(), crate::script::Failed> {
-        if !changes.any() {
-            return Ok(());
-        }
         let settings = changes.settings(self);
         if settings.is_empty() {
             return Ok(());

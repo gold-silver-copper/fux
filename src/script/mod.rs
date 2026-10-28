@@ -193,6 +193,33 @@ pub struct Opts {
 }
 
 impl Opts {
+    pub(crate) fn program(&self) -> Result<crate::config::Program, String> {
+        let mut words = self.argv.iter().cloned();
+        crate::config::Program::new(words.next().unwrap_or_default(), words.collect())
+    }
+
+    pub(crate) fn launch(
+        &self,
+        shell: &crate::config::Program,
+        selection: &[crate::config::EnvName],
+    ) -> Result<(crate::command::Start, crate::command::EnvPatch), String> {
+        let argv = if self.argv.is_empty() {
+            shell.clone()
+        } else {
+            self.program()?
+        };
+        let mut env = crate::command::EnvPatch::selected(
+            self.copy_environment.as_deref().unwrap_or(selection),
+        )?;
+        env.overlay(&self.env)?;
+        let start = if self.shell == Some(false) {
+            crate::command::Start::Program(argv)
+        } else {
+            crate::command::Start::Shell(argv)
+        };
+        Ok((start, env))
+    }
+
     fn heap_bytes(&self) -> usize {
         let mut bytes = std::mem::size_of::<Opts>()
             .saturating_add(self.name.as_ref().map_or(0, String::capacity))

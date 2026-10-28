@@ -1008,28 +1008,15 @@ pub fn attach(
         read_only: attaching.read_only,
         initial: if attaching.workspace.is_none() && !attaching.read_only {
             let creation = &attaching.creation;
-            let argv = match creation.argv.split_first() {
-                Some((program, args)) => {
-                    crate::config::Program::new(program.clone(), args.to_vec())
-                        .map_err(Error::Failed)?
-                }
-                None => attaching.state.preferences.shell.clone(),
-            };
-            let mut env = crate::command::EnvPatch::selected(
-                creation
-                    .copy_environment
-                    .as_deref()
-                    .unwrap_or(&attaching.state.preferences.copy_environment),
-            )
-            .map_err(Error::Failed)?;
-            env.overlay(&creation.env).map_err(Error::Failed)?;
+            let (start, env) = creation
+                .launch(
+                    &attaching.state.preferences.shell,
+                    &attaching.state.preferences.copy_environment,
+                )
+                .map_err(Error::Failed)?;
             Some(crate::command::InitialWorkspace {
                 name: creation.name.clone(),
-                start: if creation.shell == Some(false) {
-                    crate::command::Start::Program(argv)
-                } else {
-                    crate::command::Start::Shell(argv)
-                },
+                start,
                 cwd: {
                     let invocation = context().cwd;
                     match creation.cwd.as_deref() {

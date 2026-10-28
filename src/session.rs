@@ -1392,7 +1392,7 @@ impl Session {
         let (rows, cols) = attach.size.nonzero();
         let (rows, cols) =
             view::size(rows.get(), cols.get()).map_err(|why| fail(Raise::Size, why))?;
-        let id = self.ids.client()?;
+        self.ids.clone().client()?;
         let ws = match &attach.workspace {
             Some(workspace) => self.resolve_ws(workspace)?,
             None => {
@@ -1419,6 +1419,7 @@ impl Session {
                     .ok_or_else(|| fail(Raise::NoWorkspace, "the server has no workspace"))?
             }
         };
+        let id = self.ids.client()?;
         let mut view = View::new(id, rows, cols);
         (view.kind, view.read_only) = (kind, attach.read_only);
         self.views.insert(id, view);
@@ -3890,6 +3891,49 @@ mod tests {
             s.dump_layout(None)
                 .is_err_and(|e| e.code() == Code::from(Raise::TooLong))
         );
+        Ok(())
+    }
+
+    #[test]
+    fn failed_attach_does_not_consume_a_client_id() -> Result<(), String> {
+        let mut s = Session::new(
+            Config::default(),
+            "/nonexistent/fux.sock".into(),
+            false,
+            command::Run::now().ok_or("clock")?,
+        );
+        let size = sized(24, 80)?;
+        let initial = command::InitialWorkspace {
+            name: None,
+            start: command::Start::Shell(crate::config::Program::new(
+                "/bin/sh".into(),
+                Vec::new(),
+            )?),
+            cwd: "relative".into(),
+            env: command::EnvPatch::default(),
+        };
+        let ids = s.ids.clone();
+        for attach in [
+            Attach {
+                workspace: Some(WsRef::Name("missing".into())),
+                ..Attach::of(size)
+            },
+            Attach {
+                read_only: true,
+                ..Attach::of(size)
+            },
+            Attach::of(size),
+            Attach {
+                initial: Some(initial),
+                ..Attach::of(size)
+            },
+        ] {
+            assert!(s.attach_as(ClientKind::Terminal, attach).is_err());
+            assert_eq!(s.ids, ids);
+            assert!(s.views.is_empty() && s.parts.panes().is_empty());
+        }
+        let client = s.attach(24, 80, None).map_err(|e| e.to_string())?;
+        assert_eq!(client, ClientId::of(1));
         Ok(())
     }
 

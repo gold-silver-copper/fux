@@ -371,6 +371,10 @@ pane; program exit retains it. Respawn uses the saved program launch and
 explicit overrides, without selecting the new caller's environment. An unknown
 nearby working directory is refused: give an absolute `cwd`. The first pane
 starts in the invoking client's directory, independently of HOME.
+Dump records the saved argv, role, cwd and environment patch together, even
+if the running program has since changed directories.
+Creation options on attach require an untargeted writable invocation; `in` and
+`watch` refuse those options instead of ignoring them.
 
 XTVERSION (`CSI > q`) answers `fux` and its version, secondary device
 attributes (`CSI > c`) the version, and primary ones (`CSI c`) a
