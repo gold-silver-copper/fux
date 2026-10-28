@@ -367,7 +367,8 @@ into layout/view invalidations. The finite coverage schema is:
 `all events` is a library program: up to 256 batches, waiting at most 30 seconds
 each, with the interpreter's total step/weight limits still enforced.
 `SCOPE str CURSOR SECONDS BATCHES events-since` accepts 1 to 256 batches and
-returns its final cursor. It prints NDJSON: an armed `ready` with `from`,
+returns its final cursor. The initial immediate arming/replay read counts
+toward that bound; SECONDS applies to later waits. It prints NDJSON: an armed `ready` with `from`,
 then events and a checkpoint marker after every batch (its status as `event`,
 `next`, `reason`). Loss prints `missed` with its count/cursor and fails before
 consumer effects. Keep the last successful checkpoint to restart; effects

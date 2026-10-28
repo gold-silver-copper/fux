@@ -11,6 +11,7 @@ sockets of its own), which `run.py` checks before anything starts.
 """
 import fcntl
 import json
+import math
 import os
 import pty
 import re
@@ -555,15 +556,33 @@ class Fux(Driver):
         last = [rows[end][:found.start()]] if found.start() else []
         return "\n".join(rows[begin + 1:end] + last), found.group(1)
 
-    def wait_first_exit(self, panes, timeout=15):
-        """The name of the first of several panes whose program exits."""
-        end = time.time() + timeout
-        while time.time() < end:
-            for name, p in panes.items():
-                if self.has_ended(p):
-                    return name
-            self.nap()
-        raise Timeout("no program exited")
+    def events_cursor(self):
+        """Save before launch, so even exits before subscription are replayed."""
+        return json.loads(self.fux("ls", "json").stdout)["events"]
+
+    def wait_first_exit(self, panes, cursor, timeout=15):
+        """First matching journal exit after a pre-launch cursor; refuse loss."""
+        names = {pane: name for name, pane in panes.items()}
+        deadline = time.monotonic() + timeout
+        for _ in range(256):
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise Timeout("event deadline ended before a matching exit")
+            seconds = min(5, math.ceil(remaining))
+            try:
+                batch = json.loads(self.fux("all", "str", cursor, str(seconds),
+                                            "next-events", "json", timeout=remaining).stdout)
+            except subprocess.TimeoutExpired as error:
+                raise Timeout("event deadline ended before a matching exit") from error
+            if batch["missed"]:
+                raise RuntimeError("journal loss: first exit is unknown")
+            for event in batch["events"]:
+                if event["event"] == "exited" and event.get("pane") in names:
+                    return names[event["pane"]]
+            cursor = batch["next"]
+            if batch["status"] != "continuing":
+                raise Timeout("event read ended before a matching exit: " + batch["status"])
+        raise Timeout("event batch limit reached before a matching exit")
 
     def wait_any_text(self, pane, texts, timeout=15):
         """One of several texts, once the pane shows any: of those it shows

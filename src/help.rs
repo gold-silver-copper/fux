@@ -95,18 +95,19 @@ Driving programs from a script or an agent: `fux help agents`; one word:
     out.push_str(
         "
 
-Below, x is a pane, tab, workspace or client (an action's answer is its
-pane), a request on one, or opts; target, subject and place a pane (or a
-tab, workspace or client) or a request on one; handle a pane, tab or
-workspace; scope a handle or all; ref a name or a handle; text a string,
-number or boolean. pane-builder is a pane or pane request; capture-source
-maps one of those to capture, and a client to client-capture; sized is a
-handle or headless client. event-scope also accepts a client; a cursor
-is run-qualified journal text, or empty to begin now.
+Effects read `inputs -- outputs`; `a>b` maps input kind a to output kind b.
+Alternative kinds retain their distinctions; requests must reach an action.
 wait and send-keys leave an answer for a pane, and answers for a tab or
 workspace (send-keys: or a client), which no word that wants a pane takes.
 ",
     );
+    let names = crate::script::NAMES
+        .iter()
+        .map(|(name, _, said)| format!("{name}: {said}."))
+        .collect::<Vec<_>>()
+        .join(" ");
+    out.push_str(&wrapped(names.split(' ').map(str::to_owned), "\n", 74));
+    out.push('\n');
     let mut rows: Vec<_> = Word::ALL.iter().map(|w| w.row()).collect();
     rows.sort_by_key(|row| row.group);
     let mut group = None;
@@ -407,10 +408,16 @@ mod tests {
                 "{topic}"
             );
         }
-        let quoted: Vec<_> = topics.iter().map(|t| format!("`{t}`")).collect();
-        let listed = format!("whole guide): {}.", quoted.join(", "));
-        let guide = AGENTS.split_whitespace().collect::<Vec<_>>().join(" ");
-        assert!(guide.contains(&listed), "agents.md: {listed}");
+        let first = explain("agents").unwrap_or_default();
+        let advertised = first.split_once("More:").map_or("", |(_, links)| links);
+        for topic in topics.iter().chain(&["guide"]) {
+            let link = format!("`{topic}`");
+            let command = format!("`fux help {topic}`");
+            assert!(
+                advertised.contains(&link) || advertised.contains(&command),
+                "topic links omit {topic}"
+            );
+        }
     }
 
     /// Every word, and every word of the library, has its help; examples

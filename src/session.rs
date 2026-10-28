@@ -7274,7 +7274,7 @@ mod tests {
             &mut s,
             "%1 capture expect str x text send-keys let sent \
              str timeout try sent 0 timeout wait catch drop end \
-             0 quiet %1 all-history capture json",
+             0 quiet json",
         )?;
         assert!(
             json.contains(r#""pane":"%1""#) && json.contains(r#""version":"%1:"#),
@@ -8073,7 +8073,7 @@ mod tests {
         let split = failed(&mut s, "str 'two\nlines' fail");
         assert!(split.ends_with(r"two\nlines"), "{split}");
         let version = failed(&mut s, "str 1.2.3 changed wait");
-        assert!(version.contains("is no version"), "{version}");
+        assert!(version.contains("\"1.2.3\" is no version"), "{version}");
         Ok(())
     }
 

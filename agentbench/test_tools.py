@@ -14,6 +14,8 @@ import drivers
 import guide_check
 import run
 import solutions
+import published
+import report
 
 
 class Tools(unittest.TestCase):
@@ -56,6 +58,111 @@ class Tools(unittest.TestCase):
                         self.assertEqual(result["error"] is None, error is None)
                         self.assertTrue(driver.stopped)
                         reap.assert_called_once()
+
+    def test_published_journal_recipe_saves_cursor_before_launch_and_refuses_loss(self):
+        namespace = {"__name__": "test_recipe"}
+        exec(published.block("**First recorded exit across jobs:**", "python"), namespace)
+        for event in ({"event": "exited", "pane": "%1"},
+                      {"event": "exited", "pane": "%2"},
+                      {"event": "exited", "pane": "%3"},
+                      {"event": "missed", "count": 1}):
+            calls = []
+
+            def fux(*words):
+                calls.append(words)
+                if words == ("ls", "json"):
+                    return '{"events":"0:RUN"}'
+                if words[-1] == "run":
+                    return f"%{sum(c[-1] == 'run' for c in calls)}:0:RUN"
+                if "next-events" in words:
+                    return json.dumps({"events": [] if event["event"] == "missed" else [event],
+                                       "missed": event.get("count", 0),
+                                       "next": "1:RUN", "status": "continuing"})
+                return ""
+
+            with self.subTest(event=event):
+                if event["event"] == "missed":
+                    with self.assertRaisesRegex(RuntimeError, "first exit is unknown"):
+                        namespace["first_exit"](fux)
+                else:
+                    receipt = namespace["first_exit"](fux)
+                    self.assertEqual(receipt["first"], event)
+                    self.assertEqual(receipt["cursor"], "0:RUN")
+                    self.assertEqual(receipt["panes"], {"%1": "a", "%2": "b", "%3": "c"})
+                self.assertEqual(calls[0], ("ls", "json"))
+                self.assertEqual(calls[4], ("all", "str", "0:RUN", "5", "next-events", "json"))
+                self.assertEqual(calls[-3:], [("str", f"%{n}", "pane", "kill") for n in (1, 2, 3)])
+
+    def test_first_exit_driver_continues_from_filtered_batch_prefixes(self):
+        driver = drivers.Fux.__new__(drivers.Fux)
+        batches = iter([
+            {"events": [], "next": "256:RUN", "missed": 0, "status": "continuing"},
+            {"events": [{"event": "exited", "pane": "%1"}], "next": "257:RUN",
+             "missed": 0, "status": "continuing"},
+        ])
+        calls = []
+
+        def fux(*words, **kwargs):
+            calls.append(words)
+            return SimpleNamespace(stdout=json.dumps(next(batches)))
+
+        driver.fux = fux
+        self.assertEqual(driver.wait_first_exit({"a": "%1"}, "0:RUN"), "a")
+        self.assertEqual([call[2] for call in calls], ["0:RUN", "256:RUN"])
+
+    def test_published_tasks_are_scripted_fux_only_and_count_in_reports(self):
+        tasks = run.tasks()
+        guide = [task for task in tasks if task["cat"] == "published"]
+        tools = ["fux", "tmux", "zellij", "herdr"]
+        pairs = run.task_pairs(guide, tools, "scripted")
+        self.assertEqual([(tool, task["id"]) for tool, task in pairs],
+                         [("fux", task["id"]) for task in guide])
+        self.assertEqual(run.task_pairs(guide, tools, "agents"), [])
+        # An ordinary comparative task is scheduled even if its driver may
+        # report unsupported: applicability does not turn that into a skip.
+        ordinary = {"id": "ordinary"}
+        self.assertEqual(len(run.task_pairs([ordinary], tools, "scripted")), 4)
+        results = [{"tool": tool, "cat": task["cat"], "task": task["id"],
+                    "ok": True, "calls": 1, "sleep_s": 0} for tool, task in pairs]
+        table = report.scripted_table(results, "guide")
+        self.assertIn("| published | 4/4", table)
+        self.assertIn("| **all** | **4/4**", table)
+        results[0]["ok"] = False
+        self.assertIn("| **all** | **3/4**", report.scripted_table(results, "guide"))
+
+    def test_published_first_exit_uses_an_independent_prelaunch_cursor(self):
+        receipt = {"cursor": "9:RUN", "panes": {"%1": "a", "%2": "b"},
+                   "first": {"event": "exited", "pane": "%1"}}
+        with tempfile.TemporaryDirectory() as work:
+            (Path(work) / "fux-calls").write_text(".\n" * 8)
+            calls = []
+
+            def cursor():
+                calls.append("cursor")
+                return "0:RUN"
+
+            def script(*args, **kwargs):
+                calls.append("recipe")
+                return SimpleNamespace(stdout=json.dumps(receipt))
+
+            driver = SimpleNamespace(name="fux", work=work, calls=0,
+                                     spawn=lambda *a: "%0", kill=lambda *a: None,
+                                     events_cursor=cursor, run=script)
+            for recorded in ("a", "b"):
+                with self.subTest(recorded=recorded):
+                    calls.clear()
+
+                    def replay(panes, since):
+                        self.assertEqual(since, "0:RUN")
+                        return recorded
+
+                    driver.wait_first_exit = replay
+                    if recorded == "a":
+                        self.assertEqual(published.first_exit(driver, {}, ""), "recorded")
+                    else:
+                        with self.assertRaisesRegex(RuntimeError, "differs from"):
+                            published.first_exit(driver, {}, "")
+                    self.assertEqual(calls, ["cursor", "recipe"])
 
     def test_title_lookup_uses_one_topology_observation(self):
         driver = drivers.Fux.__new__(drivers.Fux)
