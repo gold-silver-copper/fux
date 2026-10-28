@@ -412,10 +412,13 @@ mod tests {
                 "{topic}"
             );
         }
-        let quoted: Vec<_> = topics.iter().map(|t| format!("`{t}`")).collect();
-        let listed = format!("whole guide): {}.", quoted.join(", "));
-        let guide = AGENTS.split_whitespace().collect::<Vec<_>>().join(" ");
-        assert!(guide.contains(&listed), "agents.md: {listed}");
+        let first = explain("agents").unwrap_or_default();
+        let advertised: Vec<_> = first
+            .split(|c: char| !c.is_ascii_alphanumeric() && c != '-')
+            .collect();
+        for topic in topics.iter().chain(&["guide"]) {
+            assert!(advertised.contains(topic), "first screen omits {topic}");
+        }
     }
 
     /// Every word, and every word of the library, has its help; examples

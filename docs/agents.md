@@ -62,7 +62,8 @@ exits; stop on `missed`. This gives first recorded exit, never OS chronology
 or group-wait order. The complete recipe is below.
 
 More: `fux help recipes`, `keys`, `read`, `shells`, `programs`, `servers`;
-`fux help json` gives the full schema, `fux help WORD` a word's contract.
+`fux help guide` gives all topics, `fux help json` the full schema,
+`fux help WORD` a word's contract.
 
 ## recipes: Waiting for what you need
 
