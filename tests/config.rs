@@ -942,7 +942,7 @@ fn presentation_updates_only_the_addressed_view_before_a_wait_finishes() -> Outc
 #[test]
 fn pane_creation_overrides_preserve_zero_and_false_and_dump_replays_them() -> Outcome {
     let server = Server::start("")?;
-    let created = server.ok(&["str history-bytes 4096 set str program-clipboard true set agent-opts 40 6 size 0 history-bytes false program-clipboard str /bin/cat program run"])?;
+    let created = server.ok(&["str history-bytes 4096 set str program-clipboard true set agent-opts 40 6 size 0 history-bytes false reflow 0 alternate-scroll-lines 0 picture-bytes false program-clipboard str /bin/cat program run"])?;
     let pane = created.trim().split(':').next().ok_or("pane")?;
     assert_eq!(
         server.ok(&[pane, "str", "history_bytes", "get"])?.trim(),
@@ -970,9 +970,16 @@ fn pane_creation_overrides_preserve_zero_and_false_and_dump_replays_them() -> Ou
     );
     let recipe = server.ok(&[pane, "tab", "dump"])?;
     assert!(
-        recipe.contains("0 history-bytes false program-clipboard"),
+        recipe.contains("0 history-bytes false reflow 0 alternate-scroll-lines 0 picture-bytes false program-clipboard"),
         "{recipe}"
     );
+    for (field, value) in [
+        ("reflow", "false"),
+        ("alternate_scroll_lines", "0"),
+        ("picture_bytes", "0"),
+    ] {
+        assert_eq!(server.ok(&[pane, "str", field, "get"])?.trim(), value);
+    }
     let replay = server.dir.join("pane-policy.fux");
     std::fs::write(
         &replay,
@@ -990,5 +997,12 @@ fn pane_creation_overrides_preserve_zero_and_false_and_dump_replays_them() -> Ou
             .trim(),
         "false"
     );
+    for (field, value) in [
+        ("reflow", "false"),
+        ("alternate_scroll_lines", "0"),
+        ("picture_bytes", "0"),
+    ] {
+        assert_eq!(server.ok(&["%3", "str", field, "get"])?.trim(), value);
+    }
     Ok(())
 }

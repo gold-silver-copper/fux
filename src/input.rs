@@ -243,7 +243,10 @@ impl Session {
         let Some(pane_screen) = self.parts.panes().get(&pane) else {
             return false;
         };
-        let Some(reports) = pane_screen.screen().encode_mouse(event) else {
+        let Some(reports) = pane_screen
+            .screen()
+            .encode_mouse(event, pane_screen.options().alternate_scroll_lines)
+        else {
             return false;
         };
         self.put_in(client, pane, |_, out| out.extend(reports.flatten()))

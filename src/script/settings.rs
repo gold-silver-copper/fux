@@ -108,3 +108,16 @@ impl Reads for Vec<EnvName> {
             .collect()
     }
 }
+
+impl Reads for crate::command::ScrollLines {
+    fn takes() -> String {
+        "a number, 0 to 32767".to_owned()
+    }
+    fn read(value: &Value<Fux>) -> Result<Self, String> {
+        let n = int(value)?;
+        usize::try_from(n)
+            .ok()
+            .and_then(Self::new)
+            .ok_or_else(|| format!("{n} is out of range, 0 to 32767"))
+    }
+}

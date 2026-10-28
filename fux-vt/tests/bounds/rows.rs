@@ -984,7 +984,14 @@ fn decoded(
     most: usize,
     keep: bool,
 ) -> Result<Decoded, String> {
-    decoded_by(Decoder::default(), input, chunk, per_read, most, keep)
+    decoded_by(
+        Decoder::new(fux_vt::keys::decode::Timing::new(35, 5000)),
+        input,
+        chunk,
+        per_read,
+        most,
+        keep,
+    )
 }
 
 /// `decoded`, by `decoder`.
@@ -1057,7 +1064,10 @@ pub fn b23(scale: Scale, chunk: usize) -> Found {
         let mut one = b("\x1b[200~");
         one.extend(repeat(b"p", len));
         one.extend(b("\x1b[201~"));
-        let (mut decoder, mut out) = (Decoder::default(), Vec::new());
+        let (mut decoder, mut out) = (
+            Decoder::new(fux_vt::keys::decode::Timing::new(35, 5000)),
+            Vec::new(),
+        );
         let (mut pasted, mut refused) = (0usize, 0usize);
         for piece in super::probe::pieces(&repeat(&one, scale.times()), chunk) {
             decoder.bytes(piece, &mut out);
@@ -1128,14 +1138,17 @@ pub fn b24(scale: Scale, chunk: usize) -> Found {
     // begin ST; and a `CSI ?` answer at its limit after an Escape.
     // A read scans and copies what is held: 2 × 258 a read (THREATS.md B24).
     let expecting = || {
-        let mut decoder = Decoder::default();
+        let mut decoder = Decoder::new(fux_vt::keys::decode::Timing::new(35, 5000));
         decoder.expect(Instant::now());
         decoder
     };
     let mut answer = b("\x1bP1+r");
     answer.extend(repeat(b"6", 258 - 7));
     answer.extend(b"\x1b\\");
-    for decoder in [Decoder::default(), expecting()] {
+    for decoder in [
+        Decoder::new(fux_vt::keys::decode::Timing::new(35, 5000)),
+        expecting(),
+    ] {
         decoded_by(
             decoder,
             &repeat(&answer, scale.times()),
@@ -1199,7 +1212,7 @@ pub fn b25(scale: Scale, chunk: usize) -> Found {
         (past("\x1b[?", 2 + 257, "c"), false),
     ] {
         let decode = |size: usize| {
-            let mut decoder = Decoder::default();
+            let mut decoder = Decoder::new(fux_vt::keys::decode::Timing::new(35, 5000));
             if expect {
                 decoder.expect(Instant::now());
             }

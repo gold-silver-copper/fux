@@ -319,7 +319,8 @@ fn every_report_decodes_to_its_event() {
                         continue;
                     };
                     let mut inputs = Vec::new();
-                    Decoder::default().bytes(&sent, &mut inputs);
+                    Decoder::new(crate::keys::decode::Timing::new(35, 5000))
+                        .bytes(&sent, &mut inputs);
                     // What the report carries: X10 leaves out the
                     // modifiers; the default encoding, which button
                     // was released.

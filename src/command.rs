@@ -13,6 +13,22 @@ use std::time::Duration;
 /// A pane's checked history budget, in bytes.
 pub type HistoryBytes = Number<0, { 1 << 30 }>;
 
+/// A lower picture budget, up to the emulator's native ceiling.
+pub type PictureBytes = Number<0, { fux_vt::PICTURE_BYTES }>;
+/// Alternate scrolling admits at most 32,767 arrows as one action.
+pub use fux_vt::keys::mouse::ScrollLines;
+
+impl Wire for ScrollLines {
+    fn put(&self, out: &mut impl crate::wire::Sink) {
+        self.get().put(out);
+    }
+    fn get(r: &mut Reader<'_>) -> Result<Self, Error> {
+        Self::new(usize::from(u16::get(r)?)).ok_or(Error::Bad("scroll lines"))
+    }
+}
+/// A finite decoder wait in milliseconds, bounded by its u16 representation.
+pub type DecodeMillis = Number<0, 65535>;
+
 /// The longest limit a wait may be given: a day.
 pub const MAX_WAIT: usize = 86_400;
 
@@ -1061,6 +1077,9 @@ wire! {
     pub struct PaneOptions {
         pub history_bytes: HistoryBytes,
         pub program_clipboard: bool,
+        pub reflow: bool,
+        pub alternate_scroll_lines: ScrollLines,
+        pub picture_bytes: PictureBytes,
     }
 }
 

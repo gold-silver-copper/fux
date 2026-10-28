@@ -781,12 +781,7 @@ impl Session {
         // All that can refuse it is done before its program starts, which
         // nothing can then leave running.
         let runs = Runs::Explicit(launch.clone());
-        let options = command::PaneOptions {
-            history_bytes: command::HistoryBytes::new(pane.history_bytes())
-                .ok_or_else(|| fail(Raise::Start, "pane history budget is out of range"))?,
-            program_clipboard: pane.program_clipboard(),
-        };
-        let mut fresh = Pane::new(id, None, runs, size.0, options)?;
+        let mut fresh = Pane::new(id, None, runs, size.0, pane.options())?;
         fresh.respawns = respawns;
         // Its program starts sized in that cell, so no resize is due.
         let _ = fresh.host(Default::default(), Default::default(), graphics);
@@ -844,8 +839,7 @@ impl Session {
         // At the pane's size and history now, which may have changed while
         // it waited.
         let size = pane.size();
-        let history = pane.history_bytes();
-        new.fresh.set_history_bytes(history);
+        new.fresh.set_history_bytes(pane.options().history_bytes);
         let (old, left) = pane.respawned(new.fresh, new.process);
         pane.resize(size);
         // An exit that came while it was no pane's program is told now: the
@@ -2521,7 +2515,7 @@ impl Session {
                 self.reorder(target, toward).map(|()| Reply::default())
             }
             &Command::HistoryBudget { target, bytes } => {
-                self.pane_mut(target)?.set_history_bytes(bytes.get());
+                self.pane_mut(target)?.set_history_bytes(bytes);
                 Ok(Reply::default())
             }
             Command::Resolve { text, kind } => Ok(found(self.resolve(text, *kind, here)?)),
@@ -2734,7 +2728,10 @@ impl Session {
         let mut report = Vec::new();
         for event in events {
             let release = matches!(event.action, Release(_));
-            if let Some(chunks) = p.screen().encode_mouse(event) {
+            if let Some(chunks) = p
+                .screen()
+                .encode_mouse(event, p.options().alternate_scroll_lines)
+            {
                 report.extend(chunks.flatten());
                 continue;
             }
@@ -3808,10 +3805,18 @@ pub(crate) mod testing {
 
     /// A client's keys, as its client reads them: its decoder, and the
     /// screen it has open or what its keys are in the middle of.
-    #[derive(Default)]
     pub(crate) struct Keys {
         decoder: crate::decode::Decoder,
         pub(crate) screen: crate::screens::Display,
+    }
+
+    impl Default for Keys {
+        fn default() -> Self {
+            Self {
+                decoder: crate::decode::Decoder::new(crate::decode::Timing::new(35, 5000)),
+                screen: Default::default(),
+            }
+        }
     }
 
     impl Session {
@@ -4912,7 +4917,7 @@ mod tests {
         let mut s = started()?;
         run(
             &mut s,
-            "agent-opts 80 24 size 4096 history-bytes false program-clipboard str /bin/cat program run",
+            "agent-opts 80 24 size 4096 history-bytes false reflow 3 alternate-scroll-lines 1024 picture-bytes false program-clipboard str /bin/cat program run",
         )?;
         let (id, origin) = (PaneId::of(2), Origin::Cli(Caller::default()));
         let mut stream = crate::events::Subscription::new(None, s.parts.journal(), s.run, None)?;
@@ -4944,9 +4949,13 @@ mod tests {
         let pane = s.pane(id).map_err(|e| e.to_string())?;
         assert_eq!(answer, acted(pane.version(s.run)));
         assert_eq!(pane.history_bytes(), 128);
-        assert!(!pane.program_clipboard());
+        assert_eq!(pane.options().history_bytes.get(), 128);
+        assert!(!pane.options().program_clipboard);
+        assert!(!pane.options().reflow);
+        assert_eq!(pane.options().alternate_scroll_lines.get(), 3);
+        assert_eq!(pane.options().picture_bytes.get(), 1024);
         assert!(output(&mut s, "%2 str history_bytes get")?.contains("128"));
-        assert!(output(&mut s, "all dump")?.contains("128 history-bytes false program-clipboard"));
+        assert!(output(&mut s, "all dump")?.contains("128 history-bytes false reflow 3 alternate-scroll-lines 1024 picture-bytes false program-clipboard"));
         let lines = stream
             .told(s.parts.journal(), usize::MAX, |t| s.holder(t))
             .0;
@@ -5773,6 +5782,7 @@ mod tests {
             bell: true,
             titles: true,
             terminal_clipboard: true,
+            cell_placement: false,
         };
         let client = s
             .attach_as(
@@ -5815,7 +5825,8 @@ mod tests {
                 Some(crate::view::Presentation {
                     titles,
                     bell,
-                    terminal_clipboard
+                    terminal_clipboard,
+                    cell_placement: false,
                 })
             );
         }
@@ -5875,6 +5886,7 @@ mod tests {
             a,
             vec![Act::Presentation(crate::view::Presentation {
                 terminal_clipboard: false,
+                cell_placement: false,
                 ..presentation
             })],
         );
@@ -6750,6 +6762,14 @@ mod tests {
                 "new-tab",
             ),
             ("opts", "0 history-bytes", "1 history-bytes", "new-tab"),
+            ("opts", "false reflow", "true reflow", "new-tab"),
+            (
+                "opts",
+                "0 alternate-scroll-lines",
+                "1 alternate-scroll-lines",
+                "new-tab",
+            ),
+            ("opts", "0 picture-bytes", "1 picture-bytes", "new-tab"),
             (
                 "opts",
                 "false program-clipboard",

@@ -39,6 +39,9 @@ for `id`, `name`, `label` and `pid` (it says `pane`):
 | `cursor_visible` | the cursor shows |
 | `history_bytes` | the pane's current history budget, retained across respawn |
 | `program_clipboard` | whether this pane accepts program OSC 52 copies; fixed at creation |
+| `reflow` | whether primary-screen lines rewrap on resize; retained across reset and respawn |
+| `alternate_scroll_lines` | the ordinary wheel step when the program enables alternate scroll; 0–32767 arrows |
+| `picture_bytes` | the creation picture budget, 0–96 MiB; zero disables picture support |
 | `history_lines` | lines of history the screen shown holds: 0 on the alternate screen, though the main screen's is kept (`main-screen all-history capture` reads it) |
 | `copy_mode` | a client has it in copy mode |
 | `command_running` | a shell command runs (OSC 133 marks) |
@@ -242,8 +245,8 @@ they run, so a `try` may name them too.
 ## `status json`
 
 ```json
-{"socket":"/run/user/1000/fux/server.sock","release":"0.36.0","protocol":41,
- "server_release":"0.36.0","server_protocol":41,"compatible":true}
+{"socket":"/run/user/1000/fux/server.sock","release":"0.36.0","protocol":42,
+ "server_release":"0.36.0","server_protocol":42,"compatible":true}
 ```
 
 With no server, `status` fails (`no_server`), saying the socket and whether
