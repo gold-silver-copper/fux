@@ -80,6 +80,42 @@ fn with_stdlib() -> Compiler<Ticket> {
     compiler
 }
 
+#[test]
+fn source_quoting_inverts_tokenization_and_refuses_expansion() -> Result<(), Error> {
+    for text in [
+        "",
+        "ordinary",
+        "'",
+        "\\",
+        "line\nnext\r\ttab",
+        "# comment",
+        "'\\\"雪😀",
+        "str evil drop\n# injected source",
+    ] {
+        let mut compiler = with_stdlib();
+        compiler.add(&token::arguments(&["str", text, "quote"]))?;
+        let mut machine = Machine::new(compiler.finish()?, Limits::default());
+        assert_eq!(
+            machine.run(&mut Toy { asked: Vec::new() }, 100_000)?,
+            Outcome::Finished
+        );
+        let [Value::Str(source)] = machine.stack() else {
+            return Err(Error::new(Code::Type, "quote did not return text", None));
+        };
+        let tokens = token::source("quoted", source)?;
+        assert_eq!(tokens.len(), 1);
+        assert_eq!(tokens.first().map(|t| t.text.as_ref()), Some(text));
+    }
+    let text: String =
+        std::iter::repeat_n(char::from(39), LONGEST.checked_div(4).unwrap_or(0)).collect();
+    let mut compiler = with_stdlib();
+    compiler.add(&token::arguments(&["str", &text, "quote"]))?;
+    let mut machine = Machine::new(compiler.finish()?, Limits::default());
+    let result = machine.run(&mut Toy { asked: Vec::new() }, 30_000_000);
+    assert_eq!(result.map_err(|e| e.code), Err(Code::TooLong));
+    Ok(())
+}
+
 fn vocabulary() -> Vocabulary {
     let mut words = Vocabulary::default();
     let added = (words.kind("ticket", "a ticket"))
