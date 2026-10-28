@@ -66,19 +66,57 @@ impl<'fd> PollFd<'fd> {
     }
 }
 
+/// Reusable poll storage. Only a live list borrows descriptors; the next
+/// list clears the saved descriptor numbers before any are waited on.
+#[derive(Default)]
+pub struct Poll {
+    fds: Vec<libc::pollfd>,
+}
+
+/// Descriptors borrowed until this list has finished waiting on them.
+pub struct List<'poll, 'fd> {
+    fds: &'poll mut Vec<libc::pollfd>,
+    fd: PhantomData<BorrowedFd<'fd>>,
+}
+
+impl Poll {
+    pub fn list<'fd>(&mut self) -> List<'_, 'fd> {
+        self.fds.clear();
+        List {
+            fds: &mut self.fds,
+            fd: PhantomData,
+        }
+    }
+}
+
+impl<'fd> List<'_, 'fd> {
+    pub fn push(&mut self, fd: PollFd<'fd>) {
+        self.fds.push(fd.raw);
+    }
+
+    pub fn poll(&mut self, timeout: Option<Duration>) -> Result<usize> {
+        let count = fit(self.fds.len())?;
+        fit(wait(self.fds.as_mut_ptr(), count, timeout)?)
+    }
+
+    pub fn revents(&self) -> impl Iterator<Item = Events> + '_ {
+        self.fds.iter().map(|fd| Events(fd.revents))
+    }
+}
+
 /// Waits until one of `fds` is ready, or `timeout` passes (`None`: no
 /// timeout). How many are ready. On Linux and Android the timeout is exact
 /// (`ppoll`); on macOS it is rounded up to a whole millisecond, so a short
 /// one does not become a busy loop.
 pub fn poll(fds: &mut [PollFd<'_>], timeout: Option<Duration>) -> Result<usize> {
     let count: libc::nfds_t = fit(fds.len())?;
-    let ready = wait(fds, count, timeout)?;
+    let ready = wait(fds.as_mut_ptr().cast(), count, timeout)?;
     fit(ready)
 }
 
 #[cfg(not(target_os = "macos"))]
 fn wait(
-    fds: &mut [PollFd<'_>],
+    fds: *mut libc::pollfd,
     count: libc::nfds_t,
     timeout: Option<Duration>,
 ) -> Result<libc::c_int> {
@@ -92,26 +130,24 @@ fn wait(
     let limit = timespec
         .as_ref()
         .map_or(std::ptr::null(), std::ptr::from_ref);
-    // SAFETY: PollFd is repr(transparent) over pollfd, so `fds` is `count`
-    // pollfds, which the call reads and whose revents it writes; each
-    // descriptor is borrowed for the call. The timeout is null or a whole
-    // timespec, and no signal mask is passed.
-    check(unsafe { libc::ppoll(fds.as_mut_ptr().cast(), count, limit, std::ptr::null()) })
+    // SAFETY: Both callers supply `count` initialized pollfds, writable
+    // for this call, with every descriptor borrowed until it returns.
+    // The timeout is null or a whole timespec, and no signal mask is passed.
+    check(unsafe { libc::ppoll(fds, count, limit, std::ptr::null()) })
 }
 
 #[cfg(target_os = "macos")]
 fn wait(
-    fds: &mut [PollFd<'_>],
+    fds: *mut libc::pollfd,
     count: libc::nfds_t,
     timeout: Option<Duration>,
 ) -> Result<libc::c_int> {
     let millis = timeout.map_or(-1, |t| {
         libc::c_int::try_from(t.as_nanos().div_ceil(1_000_000)).unwrap_or(libc::c_int::MAX)
     });
-    // SAFETY: PollFd is repr(transparent) over pollfd, so `fds` is `count`
-    // pollfds, which the call reads and whose revents it writes; each
-    // descriptor is borrowed for the call.
-    check(unsafe { libc::poll(fds.as_mut_ptr().cast(), count, millis) })
+    // SAFETY: Both callers supply `count` initialized pollfds, writable
+    // for this call, with every descriptor borrowed until it returns.
+    check(unsafe { libc::poll(fds, count, millis) })
 }
 
 #[cfg(test)]
@@ -119,6 +155,28 @@ mod tests {
     use super::*;
     use std::io::Write;
     use std::time::Instant;
+
+    #[test]
+    fn a_reused_list_keeps_only_its_current_descriptors() -> std::result::Result<(), String> {
+        let (ready, mut writer) = std::io::pipe().map_err(|e| e.to_string())?;
+        let (idle, _writer) = std::io::pipe().map_err(|e| e.to_string())?;
+        writer.write_all(b"x").map_err(|e| e.to_string())?;
+        let mut storage = Poll::default();
+        {
+            let mut list = storage.list();
+            list.push(PollFd::new(&ready, Events::IN));
+            assert_eq!(list.poll(Some(Duration::ZERO)), Ok(1));
+            assert!(list.revents().all(|flags| flags.intersects(Events::IN)));
+        }
+        let capacity = storage.fds.capacity();
+        let mut list = storage.list();
+        list.push(PollFd::new(&idle, Events::IN));
+        assert_eq!(list.poll(Some(Duration::ZERO)), Ok(0));
+        assert_eq!(list.revents().count(), 1);
+        assert!(list.revents().all(|flags| flags.is_empty()));
+        assert_eq!(list.fds.capacity(), capacity);
+        Ok(())
+    }
 
     #[test]
     fn a_pipe_is_ready_once_written_and_a_timeout_passes() -> std::result::Result<(), String> {

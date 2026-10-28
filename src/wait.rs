@@ -184,6 +184,7 @@ mod tests {
     use crate::id::PaneId;
     use crate::pane::Pane;
     use crate::pane::tests::Lone;
+    use std::time::Instant;
 
     /// A wait answers no change part way through a frame, and the frame's
     /// whole screen once it is read.
@@ -196,6 +197,7 @@ mod tests {
             crate::pane::tests::shell()?,
             size,
             crate::pane::tests::options(0)?,
+            Instant::now(),
         )?);
         let (since, run) = (pane.counts(), Run::now().ok_or("a clock")?);
         let mut frame = b"\x1b[?2026h".to_vec();

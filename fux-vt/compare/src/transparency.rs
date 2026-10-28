@@ -272,6 +272,7 @@ impl Through {
                     }),
                     ..fux::protocol::Attach::of(size, preferences.presentation())
                 },
+                std::time::Instant::now(),
             )
             .map_err(|e| format!("fux: {e}"))?;
         let mut placement = Placement::default();
@@ -315,7 +316,7 @@ impl Through {
     pub fn resize(&mut self, rows: u16, cols: u16) -> Result<(), String> {
         let client_rows = rows.checked_add(1).ok_or("too many rows for the bar")?;
         (self.session)
-            .resize(self.client, client_rows, cols)
+            .resize(self.client, client_rows, cols, std::time::Instant::now())
             .map_err(|e| format!("fux: {e}"))?;
         self.terminal.resize(client_rows, cols)?;
         let view = self.session.views.get(&self.client).ok_or("fux: no view")?;
@@ -337,12 +338,13 @@ impl Through {
     /// The program's output, read into the pane as the server reads it;
     /// its replies are read by the program.
     pub fn output(&mut self, bytes: &[u8]) {
+        let at = std::time::Instant::now();
         let mut rest = bytes;
         while !rest.is_empty() {
             let (now, later) = rest
                 .split_at_checked(READ.min(rest.len()))
                 .unwrap_or((rest, &[]));
-            self.session.output(self.pane, now);
+            self.session.output(self.pane, now, at);
             rest = later;
         }
         self.session
@@ -359,7 +361,10 @@ impl Through {
 
     /// Releases a held frame, as the server does once its timeout passes.
     pub fn release(&mut self) {
-        self.session.fire(fux::session::Timer::Frame(self.pane));
+        self.session.fire(
+            fux::session::Timer::Frame(self.pane),
+            std::time::Instant::now(),
+        );
     }
 
     /// One turn of the server's loop for this client: settle, send what is
