@@ -6,10 +6,11 @@ use crate::inspect::Scope;
 use crate::json::Json;
 use crate::pane::{End, Left, NOTIFICATION_MAX, Said, TITLE_MAX};
 use crate::wire::wire;
+use std::cell::Cell;
 use std::collections::VecDeque;
 
 pub(crate) const KEPT: usize = 1 << 14;
-const KEPT_BYTES: usize = 8 << 20;
+pub(crate) const KEPT_BYTES: usize = 8 << 20;
 pub const BATCH_EVENTS: usize = 64;
 pub const BATCH_SCAN: usize = 256;
 pub const BATCH_BYTES: usize = 256 << 10;
@@ -53,25 +54,26 @@ pub enum Actor {
 }
 }
 impl Actor {
+    pub(crate) fn kind(self) -> &'static str {
+        match self {
+            Self::Unknown => "unknown",
+            Self::Server => "server",
+            Self::Client(_) => "client",
+            Self::Pane(..) => "pane",
+            Self::Program(..) => "program",
+        }
+    }
     fn json(self) -> Json {
-        let (kind, extra) = match self {
-            Self::Unknown => ("unknown", Vec::new()),
-            Self::Server => ("server", Vec::new()),
-            Self::Client(c) => ("client", vec![("client", Json::str(c.to_string()))]),
-            Self::Pane(p, generation) | Self::Program(p, generation) => (
-                if matches!(self, Self::Pane(..)) {
-                    "pane"
-                } else {
-                    "program"
-                },
-                vec![
-                    ("pane", Json::str(p.to_string())),
-                    ("generation", Json::uint(generation)),
-                ],
-            ),
+        let extra = match self {
+            Self::Unknown | Self::Server => Vec::new(),
+            Self::Client(c) => vec![("client", Json::str(c.to_string()))],
+            Self::Pane(p, generation) | Self::Program(p, generation) => vec![
+                ("pane", Json::str(p.to_string())),
+                ("generation", Json::uint(generation)),
+            ],
         };
         Json::object(
-            std::iter::once(("kind", Json::str(kind)))
+            std::iter::once(("kind", Json::str(self.kind())))
                 .chain(extra)
                 .collect(),
         )
@@ -171,16 +173,16 @@ impl Journal {
             | Event::Copied { .. } => 0,
         };
         let bytes = heap.saturating_add(std::mem::size_of::<Entry>());
+        let seq = self.next;
+        self.next = Seq(next);
+        if bytes > KEPT_BYTES {
+            return;
+        }
         while self.entries.len() >= KEPT || self.bytes.saturating_add(bytes) > KEPT_BYTES {
             let Some(old) = self.entries.pop_front() else {
                 break;
             };
             self.bytes = self.bytes.saturating_sub(old.bytes);
-        }
-        let seq = self.next;
-        self.next = Seq(next);
-        if bytes > KEPT_BYTES {
-            return;
         }
         self.entries.push_back(Entry {
             seq,
@@ -577,18 +579,36 @@ impl Reader {
         }
     }
     pub fn batch(&mut self, journal: &Journal, exists: bool) -> Result<Batch, String> {
+        self.scan(journal, exists, BATCH_SCAN)
+            .map(|(batch, _)| batch)
+    }
+    fn scan(
+        &mut self,
+        journal: &Journal,
+        exists: bool,
+        limit: usize,
+    ) -> Result<(Batch, usize), String> {
         if journal.exhausted {
             return Err("journal cursor IDs exhausted".into());
         }
-        let (missed, entries) = journal.from(self.next.seq);
+        let (mut missed, entries) = journal.from(self.next.seq);
         self.next.seq = Seq(self.next.seq.0.saturating_add(missed));
         let mut events = Vec::new();
         let mut bytes = 0usize;
         let mut gone = false;
-        for entry in entries.take(BATCH_SCAN) {
+        let mut entries = entries;
+        let mut scanned = 0usize;
+        for _ in 0..limit {
             if events.len() == BATCH_EVENTS {
                 break;
             }
+            let Some(entry) = entries.next() else {
+                missed = missed.saturating_add(journal.next.0.saturating_sub(self.next.seq.0));
+                self.next.seq = journal.next;
+                break;
+            };
+            missed = missed.saturating_add(entry.seq.0.saturating_sub(self.next.seq.0));
+            self.next.seq = entry.seq;
             let mut value = None;
             if self.wants(&entry.event) {
                 let next = Cursor {
@@ -634,6 +654,7 @@ impl Reader {
                 value = Some(item);
             }
             self.next.seq = Seq(entry.seq.0.saturating_add(1));
+            scanned = scanned.saturating_add(1);
             events.extend(value);
             if self.ends(&entry.event) {
                 gone = true;
@@ -641,16 +662,19 @@ impl Reader {
             }
         }
         let caught_up = self.next == journal.end(self.next.run);
-        Ok(Batch {
-            events,
-            next: self.next,
-            missed,
-            status: if gone || caught_up && !exists {
-                Status::Gone
-            } else {
-                Status::Continuing
+        Ok((
+            Batch {
+                events,
+                next: self.next,
+                missed,
+                status: if gone || caught_up && !exists {
+                    Status::Gone
+                } else {
+                    Status::Continuing
+                },
             },
-        })
+            scanned,
+        ))
     }
     #[cfg(test)]
     pub(crate) fn lines(
@@ -681,69 +705,87 @@ impl Reader {
 
 /// A pending finite read, owned by its requesting connection.
 pub struct Read {
-    pub reader: Reader,
+    reader: Cell<Reader>,
+    scanned: Cell<usize>,
     pub deadline: std::time::Instant,
 }
+
+fn reply(batch: Result<Batch, String>) -> crate::protocol::Reply {
+    match batch {
+        Ok(batch) => crate::protocol::Body::Events(Box::new(batch)).into(),
+        Err(why) => crate::protocol::Reply::failed(
+            crate::code::Code::from(crate::code::Raise::TooLong),
+            why,
+        ),
+    }
+}
+
 impl Read {
+    pub fn new(reader: Reader, deadline: std::time::Instant) -> Self {
+        Self {
+            reader: Cell::new(reader),
+            scanned: Cell::new(0),
+            deadline,
+        }
+    }
     pub fn answer(
         &self,
         session: &crate::session::Session,
         now: std::time::Instant,
     ) -> Option<crate::protocol::Reply> {
-        let exists = match self.reader.scope {
-            Scope::All => true,
-            Scope::Target(target) => session.holder(target).is_some(),
-            Scope::Client(client) => session.views.contains_key(&client),
-        };
-        if session.parts.journal().exhausted {
+        let mut reader = self.reader.get();
+        let journal = session.parts.journal();
+        if journal.exhausted {
             return Some(crate::protocol::Reply::failed(
                 crate::code::Code::IdsExhausted,
                 "journal cursor IDs exhausted",
             ));
         }
-        // No repeated scan while waiting: filtered progress is returned too.
-        if self.reader.next == session.parts.journal().end(session.run)
-            && exists
-            && now < self.deadline
-        {
+        let exists = match reader.scope {
+            Scope::All => true,
+            Scope::Target(target) => session.holder(target).is_some(),
+            Scope::Client(client) => session.views.contains_key(&client),
+        };
+        if reader.next == journal.end(session.run) && exists && now < self.deadline {
             return None;
         }
-        let mut reader = self.reader;
-        let mut batch = match reader.batch(session.parts.journal(), exists) {
+        let (mut batch, scanned) = match reader.scan(
+            journal,
+            exists,
+            BATCH_SCAN.saturating_sub(self.scanned.get()),
+        ) {
             Ok(batch) => batch,
-            Err(why) => {
-                return Some(crate::protocol::Reply::failed(
-                    crate::code::Code::from(crate::code::Raise::TooLong),
-                    why,
-                ));
-            }
+            Err(why) => return Some(reply(Err(why))),
         };
-        if batch.status == Status::Continuing
-            && batch.events.is_empty()
-            && batch.missed == 0
-            && batch.next == self.reader.next
-        {
-            batch.status = Status::Timeout;
+        self.reader.set(reader);
+        self.scanned.set(self.scanned.get().saturating_add(scanned));
+        if batch.events.is_empty() && batch.missed == 0 && batch.status == Status::Continuing {
+            if now >= self.deadline {
+                batch.status = Status::Timeout;
+            } else if self.scanned.get() < BATCH_SCAN {
+                return None;
+            }
         }
-        Some(crate::protocol::Body::Events(Box::new(batch)).into())
+        Some(reply(Ok(batch)))
     }
     pub(crate) fn stopped(
         &self,
         session: &crate::session::Session,
         reason: &str,
     ) -> crate::protocol::Reply {
-        let mut reader = self.reader;
-        let mut batch = match reader.batch(session.parts.journal(), true) {
-            Ok(batch) => batch,
-            Err(why) => {
-                return crate::protocol::Reply::failed(
-                    crate::code::Code::from(crate::code::Raise::TooLong),
-                    why,
-                );
-            }
-        };
-        batch.status = Status::Stopped(reason.to_owned());
-        crate::protocol::Body::Events(Box::new(batch)).into()
+        let mut reader = self.reader.get();
+        reply(
+            reader
+                .scan(
+                    session.parts.journal(),
+                    true,
+                    BATCH_SCAN.saturating_sub(self.scanned.get()),
+                )
+                .map(|(mut batch, _)| {
+                    batch.status = Status::Stopped(reason.to_owned());
+                    batch
+                }),
+        )
     }
 }
 
@@ -763,6 +805,193 @@ mod tests {
             ((WsId::of(1), TabId::of(1)), PaneId::of(pane)),
             PaneEvent::Told(Told::Bell),
         )
+    }
+
+    #[test]
+    fn the_event_and_status_tables_match_the_finite_schema() -> Result<(), String> {
+        use std::collections::BTreeSet;
+        let at = ((WsId::of(1), TabId::of(1)), PaneId::of(1));
+        let mut events = vec![
+            Event::Pane(at, PaneEvent::Created),
+            Event::Pane(at, PaneEvent::Closed),
+            Event::Pane(at, PaneEvent::Moved(at.0)),
+            Event::Arranged(at.0),
+            Event::Layout(at.0),
+            Event::Copied {
+                buffer: "b1:1-0".parse().map_err(|()| "buffer")?,
+                at: Some(at),
+            },
+        ];
+        for change in [
+            Change::Created(None),
+            Change::Renamed(String::new()),
+            Change::Closed,
+            Change::Reordered,
+        ] {
+            events.push(Event::Tab(at.0, change.clone()));
+            events.push(Event::Workspace(at.0.0, change));
+        }
+        for told in [
+            Told::Renamed(String::new()),
+            Told::Respawned(Left::default()),
+            Told::Bell,
+            Told::Notification(Said::default()),
+            Told::Title(Said::default()),
+            Told::Done(None),
+            Told::Resized(fux_vt::Size::new(24, 80).map_err(|e| e.to_string())?),
+            Told::HistoryBudget(0),
+            Told::HistoryCleared,
+            Told::Exited(End {
+                ended: crate::process::Ended::Lost,
+                left: Left::default(),
+            }),
+        ] {
+            events.push(Event::Pane(at, PaneEvent::Told(told)));
+        }
+        for change in [
+            ViewChange::Attached,
+            ViewChange::Detached,
+            ViewChange::Shown,
+            ViewChange::Focused,
+            ViewChange::Zoomed,
+            ViewChange::Resized,
+            ViewChange::Presentation,
+            ViewChange::Screen,
+            ViewChange::Notice,
+        ] {
+            events.push(Event::View {
+                client: ClientId::of(1),
+                at: Some(at),
+                change,
+            });
+        }
+        let mut names = BTreeSet::from(["ready".to_owned(), "missed".to_owned()]);
+        for event in events {
+            match &event {
+                Event::Pane(
+                    _,
+                    PaneEvent::Created
+                    | PaneEvent::Closed
+                    | PaneEvent::Moved(_)
+                    | PaneEvent::Told(
+                        Told::Renamed(_)
+                        | Told::Respawned(_)
+                        | Told::Bell
+                        | Told::Notification(_)
+                        | Told::Title(_)
+                        | Told::Done(_)
+                        | Told::Resized(_)
+                        | Told::HistoryBudget(_)
+                        | Told::HistoryCleared
+                        | Told::Exited(_),
+                    ),
+                )
+                | Event::Tab(
+                    _,
+                    Change::Created(_) | Change::Renamed(_) | Change::Closed | Change::Reordered,
+                )
+                | Event::Workspace(
+                    _,
+                    Change::Created(_) | Change::Renamed(_) | Change::Closed | Change::Reordered,
+                )
+                | Event::View {
+                    change:
+                        ViewChange::Attached
+                        | ViewChange::Detached
+                        | ViewChange::Shown
+                        | ViewChange::Focused
+                        | ViewChange::Zoomed
+                        | ViewChange::Resized
+                        | ViewChange::Presentation
+                        | ViewChange::Screen
+                        | ViewChange::Notice,
+                    ..
+                }
+                | Event::Arranged(_)
+                | Event::Layout(_)
+                | Event::Copied { .. } => {}
+            }
+            let json = event.json();
+            let Some(Json::String(name)) = json.get("event") else {
+                return Err("event name".into());
+            };
+            names.insert(name.clone());
+        }
+        let docs = include_str!("../docs/json.md");
+        let table = |anchor: &str| -> Result<BTreeSet<String>, String> {
+            let rows = docs
+                .split_once(anchor)
+                .and_then(|(_, rest)| rest.split_once("| --- | --- |\n"))
+                .ok_or_else(|| format!("missing table: {anchor}"))?
+                .1;
+            Ok(rows
+                .lines()
+                .take_while(|row| row.starts_with('|'))
+                .filter_map(|row| row.strip_prefix("| `")?.split(" |").next())
+                .flat_map(|cell| cell.split(", "))
+                .map(|name| name.trim_matches('`').to_owned())
+                .collect())
+        };
+        assert_eq!(names, table("The finite coverage schema is:")?);
+        let mut statuses = BTreeSet::new();
+        for status in [
+            Status::Continuing,
+            Status::Timeout,
+            Status::Gone,
+            Status::Stopped(String::new()),
+        ] {
+            match status {
+                Status::Continuing | Status::Timeout | Status::Gone | Status::Stopped(_) => {}
+            }
+            statuses.insert(status.name().to_owned());
+        }
+        assert_eq!(statuses, table("| `status` | Meaning |")?);
+        assert!(docs.contains(&format!("last {},{:03} entries", KEPT / 1000, KEPT % 1000)));
+        assert!(docs.contains(&format!("{} MiB retained-entry", KEPT_BYTES / (1 << 20))));
+        Ok(())
+    }
+
+    #[test]
+    fn scoped_reads_wait_through_unrelated_entries_without_rescanning() -> Result<(), String> {
+        let mut session = started()?;
+        let now = Instant::now();
+        let request = Request::NextEvents {
+            scope: Scope::Target(AnyRef::Pane(PaneId::of(1))),
+            from: None,
+            timeout: Limit::read(5)?,
+        };
+        let Begun::Waiting(waiting) = session.begin(request, &Origin::Cli(Caller::default()), now)
+        else {
+            return Err("did not wait".into());
+        };
+        for _ in 0..BATCH_SCAN / 2 {
+            session
+                .parts
+                .journal_mut()
+                .push(Event::Workspace(WsId::of(2), Change::Reordered));
+        }
+        for _ in 0..3 {
+            assert!(
+                waiting.answer(&session, now).is_none(),
+                "unrelated entries ended the wait"
+            );
+        }
+        for _ in 0..BATCH_SCAN / 2 {
+            session
+                .parts
+                .journal_mut()
+                .push(Event::Workspace(WsId::of(2), Change::Reordered));
+        }
+        let reply = waiting
+            .answer(&session, now)
+            .ok_or("scan limit did not return progress")?;
+        let Response::Returned(Body::Events(batch)) = reply.response else {
+            return Err("batch".into());
+        };
+        assert!(batch.events.is_empty());
+        assert_eq!(batch.status, Status::Continuing);
+        assert_eq!(batch.next, session.parts.journal().end(session.run));
+        Ok(())
     }
 
     #[test]
@@ -851,19 +1080,21 @@ mod tests {
     -> Result<(), String> {
         let mut journal = Journal::default();
         let mut reader = Reader::new(Scope::All, &journal, run()?, None)?;
-        journal.push(Event::Workspace(
-            WsId::of(1),
-            Change::Renamed(std::iter::repeat_n('x', BATCH_BYTES.saturating_add(1)).collect()),
-        ));
-        assert!(reader.batch(&journal, true).is_err());
+        journal.push(bell(1));
         journal.push(Event::Workspace(
             WsId::of(1),
             Change::Renamed(String::with_capacity(KEPT_BYTES.saturating_add(1))),
         ));
         assert!(journal.bytes <= KEPT_BYTES);
         let batch = reader.batch(&journal, true)?;
-        assert_eq!(batch.missed, 2);
+        assert_eq!(batch.events.len(), 1);
+        assert_eq!(batch.missed, 1);
         assert_eq!(batch.next, journal.end(run()?));
+        journal.push(Event::Workspace(
+            WsId::of(1),
+            Change::Renamed(std::iter::repeat_n('x', BATCH_BYTES.saturating_add(1)).collect()),
+        ));
+        assert!(reader.batch(&journal, true).is_err());
         journal.next = Seq(u64::MAX);
         journal.push(bell(1));
         assert!(Reader::new(Scope::All, &journal, run()?, None).is_err());

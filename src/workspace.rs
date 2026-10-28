@@ -404,6 +404,12 @@ fn rename(
     }
 }
 
+fn place_of(workspaces: &[Workspace], client: ClientId) -> Option<crate::events::PaneAt> {
+    let ws = workspaces.iter().find(|w| w.viewers.contains(&client))?;
+    let tab = ws.tab_of(client)?;
+    Some(((ws.id, tab.id), tab.focus(client)?))
+}
+
 impl Parts {
     pub fn workspaces(&self) -> &[Workspace] {
         &self.workspaces
@@ -464,16 +470,7 @@ impl Parts {
     /// Shows `client` workspace `ws`, and there the tab and pane `at`
     /// says, each if given and there.
     pub(crate) fn show(&mut self, client: ClientId, ws: WsId, at: Option<crate::session::Spot>) {
-        let place = |workspaces: &[Workspace]| {
-            workspaces
-                .iter()
-                .find(|w| w.viewers.contains(&client))
-                .and_then(|w| {
-                    let tab = w.tab_of(client)?;
-                    Some(((w.id, tab.id), tab.focus(client)?))
-                })
-        };
-        let before = place(&self.workspaces);
+        let before = place_of(&self.workspaces, client);
         for w in &mut self.workspaces {
             if w.id != ws {
                 w.viewers.remove(&client);
@@ -482,13 +479,20 @@ impl Parts {
                 w.show(client, at);
             }
         }
-        let after = place(&self.workspaces);
+        let after = place_of(&self.workspaces, client);
         if before != after {
             let change = if before.map(|at| at.0) == after.map(|at| at.0) {
                 ViewChange::Focused
             } else {
                 ViewChange::Shown
             };
+            if before.is_some() {
+                self.journal.push(Event::View {
+                    client,
+                    at: before,
+                    change,
+                });
+            }
             self.journal.push(Event::View {
                 client,
                 at: after,
@@ -518,6 +522,15 @@ impl Parts {
             self.journal.push(Event::Workspace(ws, Change::Reordered));
         }
         Some(changed)
+    }
+
+    pub(crate) fn typed(&mut self, id: TabId, client: ClientId, changed_host: bool) {
+        if let Some((ws, tab)) = tab_mut(&mut self.workspaces, id) {
+            tab.typist = Some(client);
+            if changed_host {
+                self.journal.push(Event::Layout((ws, id)));
+            }
+        }
     }
 
     pub(crate) fn shown_on(&mut self, id: TabId, size: fux_vt::Size) {
@@ -811,14 +824,7 @@ impl Parts {
             self.journal.push(Event::Workspace(id, Change::Closed));
         }
         for client in clients {
-            let at = self
-                .workspaces
-                .iter()
-                .find(|w| w.viewers.contains(&client))
-                .and_then(|w| {
-                    let tab = w.tab_of(client)?;
-                    Some(((w.id, tab.id), tab.focus(client)?))
-                });
+            let at = place_of(&self.workspaces, client);
             self.journal.push(Event::View {
                 client,
                 at,

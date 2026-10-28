@@ -987,3 +987,18 @@ fn the_copy_hook_recipe_consumes_a_real_program_copy() -> Outcome {
     assert!(!feedback.contains(r#""event":"copied""#), "{feedback}");
     Ok(())
 }
+
+#[test]
+fn addressing_a_client_does_not_claim_its_origin() -> Outcome {
+    let server = Server::start("")?;
+    let mut view = server.attach(12, 80)?;
+    view.ready()?;
+    let client = view.id.as_deref().ok_or("client")?;
+    server.ok(&["%1 str horizontal axis split drop"])?;
+    let cursor = server.ok(&["all str '' 0 next-events str next get"])?;
+    server.ok(&[&format!("str {client} client %1 show")])?;
+    let origins = server.ok(&[&format!("all str {} 0 next-events str events get each let event event str event get str focused eq if event str origin get str kind get print then end", cursor.trim())])?;
+    assert!(!origins.trim().is_empty());
+    assert!(origins.lines().all(|line| line == "unknown"), "{origins}");
+    Ok(())
+}

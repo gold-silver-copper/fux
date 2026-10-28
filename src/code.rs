@@ -202,8 +202,6 @@ codes! {
     Timeout "timeout" TIMED_OUT,
     /// The pane waited on closed.
     Closed "closed" CLOSED,
-    /// Everything an event stream watched closed.
-    Gone "gone" CLOSED,
     // A program of words.
     /// A word run where its context is missing: a command-line word in a
     /// key or config, or `me` outside a key or prompt.

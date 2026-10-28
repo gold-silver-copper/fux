@@ -765,6 +765,7 @@ impl Server {
             }
         }
         changed |= self.answer_waits(now);
+        let answered_at = self.session.parts.journal().end(self.session.run);
         let wrote = self.session.parts.write_input();
         self.wrote_input(wrote);
         // Only the deadline survives compaction, never connection indices.
@@ -773,6 +774,9 @@ impl Server {
         // Delivery can detach a client, resize its panes or start shutdown.
         changed |= !self.session.outbox.is_empty();
         self.deliver(now);
+        if self.session.parts.journal().end(self.session.run) != answered_at {
+            changed |= self.answer_waits(now);
+        }
         if changed {
             next = self.wakes().map(|(at, _)| at).min();
         }
@@ -1453,7 +1457,13 @@ impl Server {
     /// processed. No resolution, mutation or wait baseline precedes this.
     fn ordered_request(&mut self, index: usize, asked: Asked, now: Instant) {
         match self.unprocessed(&asked) {
-            Some(0) => self.request(index, asked.request, asked.context, now),
+            Some(0) => self.request(
+                index,
+                asked.request,
+                asked.context,
+                asked.after.map(|fence| fence.client),
+                now,
+            ),
             Some(_) => {
                 if let Some(conn) = self.conns.get_mut(index) {
                     conn.enter(&mut self.session, Stage::Blocked(Box::new(asked)), now);
@@ -1478,6 +1488,7 @@ impl Server {
         index: usize,
         request: crate::command::Request,
         context: Context,
+        source: Option<ClientId>,
         now: Instant,
     ) {
         let session = &mut self.session;
@@ -1505,18 +1516,21 @@ impl Server {
         // A program run as a client (`str c2 client focused`) names one
         // that must be there.
         // A key's or the prompt's program acts where its client is.
+        let cli = Origin::Cli(Caller {
+            gave: pane,
+            within,
+            cwd: Some(cwd),
+        });
+        let actor =
+            source.map_or_else(|| session.request_actor(&cli), crate::events::Actor::Client);
         let origin = match client {
             Some(c) if !session.views.contains_key(&c) => {
                 let outcome = Reply::failed(Code::NoClient, format!("no client {c}"));
                 conn.answer(session, outcome, now);
                 return;
             }
-            Some(client) => Origin::Client(client),
-            None => Origin::Cli(Caller {
-                gave: pane,
-                within,
-                cwd: Some(cwd),
-            }),
+            Some(client) => Origin::ClientContext { client, actor },
+            None => cli,
         };
         let begun = session.begin(request, &origin, now);
         // What it sends a client goes now: a program or keys refused are
@@ -1667,6 +1681,40 @@ impl Server {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn delivery_departures_answer_event_reads_in_the_same_turn()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (mut server, _peers, client) = ordered_fixture()?;
+        let now = Instant::now();
+        server.phase = Phase::Stopping(after(now, Duration::from_secs(60)));
+        server.session.outbox.clear();
+        let reader = crate::events::Reader::new(
+            crate::inspect::Scope::Client(client),
+            server.session.parts.journal(),
+            server.session.run,
+            None,
+        )?;
+        server.conns.first_mut().ok_or("worker")?.stage =
+            Stage::Waiting(Box::new(Waiting::Events(crate::events::Read::new(
+                reader,
+                after(now, Duration::from_secs(30)),
+            ))));
+        server
+            .session
+            .outbox
+            .push(Outgoing::To(client, ToAttached::Exit("test")));
+        let _ = server.turn(now, &mut Vec::new());
+        assert!(!server.session.views.contains_key(&client));
+        assert!(
+            matches!(
+                server.conns.first().map(|conn| &conn.stage),
+                Some(Stage::Command)
+            ),
+            "delivery left the event read waiting"
+        );
+        Ok(())
+    }
 
     #[test]
     fn an_answered_wait_leaves_no_cached_deadline() -> Result<(), Box<dyn std::error::Error>> {

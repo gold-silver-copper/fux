@@ -76,6 +76,11 @@ pub enum Timer {
 pub enum Origin {
     /// A client's key or prompt: where the client is.
     Client(ClientId),
+    /// A request addressing a client, with its separately known source.
+    ClientContext {
+        client: ClientId,
+        actor: crate::events::Actor,
+    },
     /// The CLI: who runs the command, and from where.
     Cli(Caller),
 }
@@ -643,7 +648,7 @@ impl Session {
     /// the CLI caller's pane's.
     fn here<'a>(&self, origin: &'a Origin) -> Result<Here<'a>, Error> {
         match *origin {
-            Origin::Client(client) => {
+            Origin::Client(client) | Origin::ClientContext { client, .. } => {
                 let place = self.place(client).ok_or(Error::NoClient(client))?;
                 Ok(Here::Client(client, place))
             }
@@ -2349,10 +2354,7 @@ impl Session {
                 let reader =
                     crate::events::Reader::new(scope, self.parts.journal(), self.run, from)
                         .map_err(|why| fail(Raise::BadValue, why))?;
-                let read = crate::events::Read {
-                    reader,
-                    deadline: crate::after(now, timeout.duration()),
-                };
+                let read = crate::events::Read::new(reader, crate::after(now, timeout.duration()));
                 return Ok(self.answered(Waiting::Events(read), now));
             }
         };
@@ -2441,10 +2443,11 @@ impl Session {
         outcome
     }
 
-    fn request_actor(&self, origin: &Origin) -> crate::events::Actor {
+    pub(crate) fn request_actor(&self, origin: &Origin) -> crate::events::Actor {
         use crate::events::Actor;
         match origin {
             Origin::Client(client) => Actor::Client(*client),
+            Origin::ClientContext { actor, .. } => *actor,
             Origin::Cli(caller) => match (caller.within, caller.gave) {
                 (Within::This, Some((pane, generation)))
                     if self
@@ -2790,7 +2793,9 @@ impl Session {
             }
         }
         let reason = match origin {
-            Origin::Client(_) => "stopped by kill-server, from a key or the prompt",
+            Origin::Client(_) | Origin::ClientContext { .. } => {
+                "stopped by kill-server, in a client context"
+            }
             Origin::Cli(_) => "stopped by fux kill-server",
         };
         self.outbox.push(Outgoing::Shutdown(reason.into()));
@@ -9129,6 +9134,100 @@ mod journal_tests {
         }
         let failed = output(&mut s, &format!("all str {from} 0 1 events-since drop"));
         assert!(failed.is_err_and(|e| e.contains("resnapshot")));
+        let marker = output(
+            &mut s,
+            &format!("str fail try all str {from} 0 1 events-since drop catch 2drop end"),
+        )?;
+        assert!(marker.contains(r#""event":"missed""#), "{marker}");
+        Ok(())
+    }
+    #[test]
+    fn client_departures_invalidate_former_tabs_and_workspaces() -> Result<(), String> {
+        for target in ["@2", "str +2 workspace"] {
+            let (mut s, client) = testing::attached(24, 80)?;
+            run(
+                &mut s,
+                "opts 80 23 size str +1 workspace in new-tab drop opts 80 23 size new-workspace drop @1 80 23 resize @2 80 23 resize @3 80 23 resize",
+            )?;
+            let from = s.parts.journal().end(s.run);
+            run(&mut s, &format!("str {client} client {target} show"))?;
+            for scope in [
+                Scope::Target(AnyRef::Tab(TabId::of(1))),
+                Scope::Target(AnyRef::Workspace(WsId::of(1))),
+            ] {
+                let b = Reader::new(scope, s.parts.journal(), s.run, Some(from))?
+                    .batch(s.parts.journal(), true)?;
+                assert!(
+                    !named(&b, "shown").is_empty(),
+                    "departure from {scope:?}: {}",
+                    b.json().render()
+                );
+                assert!(named(&b, "resized").is_empty());
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn typing_invalidates_a_changed_host_once() -> Result<(), String> {
+        let (mut s, first) = testing::attached(24, 80)?;
+        let second = s.attach(24, 80, None).map_err(|e| e.to_string())?;
+        let tab = TabId::of(1);
+        assert_eq!(s.host(Some(tab)), Some(first));
+        let from = s.parts.journal().end(s.run);
+        s.input(second, b"x");
+        assert_eq!(s.host(Some(tab)), Some(second));
+        let b = Reader::new(
+            Scope::Target(AnyRef::Tab(tab)),
+            s.parts.journal(),
+            s.run,
+            Some(from),
+        )?
+        .batch(s.parts.journal(), true)?;
+        assert!(!b.events.is_empty(), "host changed without invalidation");
+        assert!(b.events.iter().all(|e| e.origin == Actor::Client(second)));
+        let after = s.parts.journal().end(s.run);
+        s.input(second, b"y");
+        assert_eq!(
+            s.parts.journal().end(s.run),
+            after,
+            "unchanged host must not journal every key"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn paste_invalidates_notice_dismissal() -> Result<(), String> {
+        let (mut s, client) = testing::attached(24, 80)?;
+        s.typed(client);
+        s.notify_to(client, "notice", false);
+        let from = s.parts.journal().end(s.run);
+        s.apply(client, vec![crate::act::Act::Paste("quiet input".into())]);
+        assert!(
+            s.views
+                .get(&client)
+                .is_some_and(|view| view.notice.is_none())
+        );
+        let b = Reader::new(Scope::Client(client), s.parts.journal(), s.run, Some(from))?
+            .batch(s.parts.journal(), true)?;
+        assert!(!b.events.is_empty(), "notice cleared without invalidation");
+        assert!(b.events.iter().all(|e| e.origin == Actor::Client(client)));
+        Ok(())
+    }
+    #[test]
+    fn copy_cursor_motion_keeps_the_journal_quiet() -> Result<(), String> {
+        let (mut s, client) = testing::attached(24, 80)?;
+        run(&mut s, &format!("str {client} client copy-mode"))?;
+        let from = s.parts.journal().end(s.run);
+        s.input(client, b"k");
+        assert!(
+            s.views
+                .get(&client)
+                .is_some_and(|view| matches!(view.mode, Mode::Copy(_)))
+        );
+        assert_eq!(s.parts.journal().end(s.run), from);
+        s.input(client, b"q");
+        assert_eq!(named(&batch(&s, from)?, "screen").len(), 1);
         Ok(())
     }
 }

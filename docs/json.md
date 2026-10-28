@@ -308,28 +308,31 @@ them as short IDs for display. The cursor and buffer ID remain run-qualified
 when exported as text.
 
 `SECONDS` is an explicit 0 to 86,400 second timeout. With nothing to scan,
-the connection waits until a change, closure, shutdown, cancellation or its
-deadline. Zero requests an immediate read. There is one request in flight,
+the connection waits until a matching change, loss, closure, shutdown,
+cancellation, its total scan bound, or its deadline. Filtered progress stays
+in the pending read and is never rescanned. Zero requests an immediate read. There is one request in flight,
 no server subscription registry and no timer polling loop. Cancellation
 closes the pending read. Status is:
 
 | `status` | Meaning |
 | --- | --- |
 | `continuing` | bounded progress; read again from `next`, even with no matches |
-| `timeout` | no progress before the deadline; `next` is unchanged; no readiness claim |
+| `timeout` | no matching event before the deadline; `next` includes filtered progress; no readiness claim |
 | `gone` | the scoped object closed; the final close is included when retained |
 | `stopped` | the server stopped; `reason` says why; a final bounded prefix may leave unread entries |
 
 The journal keeps at most the last 16,384 entries and an 8 MiB retained-entry
 charge, plus its bounded deque storage. Either limit may evict entries.
-`missed` counts exactly the entries evicted before this cursor, including
+`missed` counts exactly the entries evicted or refused retention before this cursor, including
 nonmatches. On loss, resnapshot and reconcile, or fail the task explicitly.
 The journal guarantees ordered invalidations, not complete state replication:
 a later snapshot can already contain newer state. Live cwd, foreground
 process observations and continuous terminal cell changes are excluded.
 
 Known origin is supplied context, not authenticated human or agent identity:
-`client` carries its client, `pane` carries a CLI caller's pane and program
+`client` carries an attached source client named by a validated fence, independent of
+any client it addresses. Naming a client in an external CLI request does
+not supply its origin. `pane` carries a CLI caller's pane and program
 generation, `program` carries the terminal producer's pane and generation,
 `server` denotes a server action, and an external CLI is `unknown`. Deferred
 respawns retain their requesting origin. Server-observed disconnects are
@@ -347,11 +350,11 @@ into layout/view invalidations. The finite coverage schema is:
 | `renamed` | `name` |
 | `closed` | closure invalidates membership/layout and repaired views |
 | `reordered` | changed tab/workspace order |
-| `laid_out` | tab/workspace; same-tab swap, reshaping or fit changed |
+| `laid_out` | tab/workspace; same-tab swap, reshaping, fit or effective host changed |
 | `arranged` | one guarded complete layout replacement; pane resizes can follow |
 | `moved` | `from_tab`, `from_workspace`; both old and new scopes receive it |
 | `attached`, `detached` | `client` and its last place if known |
-| `shown`, `focused`, `zoomed` | `client` and the affected place; includes automatic repair |
+| `shown`, `focused`, `zoomed` | `client` and the affected place; departures invalidate both places; includes automatic repair |
 | `view_resized`, `presentation`, `screen`, `notice` | `client`; size, committed presentation, screen/copy state or notice invalidated |
 | `copied` | admitted stable `buffer` ID, no duplicate text; denied program copies emit none |
 | `history_budget` | pane's new `history_bytes` |
@@ -363,6 +366,7 @@ into layout/view invalidations. The finite coverage schema is:
 | `notification` | `text`, optional `truncated` |
 | `title` | `title`, optional `truncated` |
 | `resized` | pane `cols`, `rows` |
+| `ready`, `missed` | library stream markers only: armed cursor, or explicit lost-entry count |
 
 `all events` is a library program: up to 256 batches, waiting at most 30 seconds
 each, with the interpreter's total step/weight limits still enforced.
@@ -372,7 +376,9 @@ toward that bound; SECONDS applies to later waits. It prints NDJSON: an armed `r
 then events and a checkpoint marker after every batch (its status as `event`,
 `next`, `reason`). Loss prints `missed` with its count/cursor and fails before
 consumer effects. Keep the last successful checkpoint to restart; effects
-are not exactly once. There is no unlimited finite-reply accumulator.
+are not exactly once. A gone scope ends the library stream successfully; `gone` is data, not a raised error.
+There is no unlimited finite-reply accumulator. Copy cursor motion is continuous
+view state; opening or leaving copy mode invalidates the view.
 
 `copy-notices` is one ordinary hook recipe over those same batches. It filters
 both event and origin, notifying about admitted program copies. Notification
@@ -394,7 +400,7 @@ wait's own (above). CODE stays; every one fux gives
 - what a command meets: `not_running`, `still_running`, `not_run`, `only_shell`,
   `input_full`, `stale`, `no_marks`, `start`, `size`, `memory`, `mouse`, `signal`,
   `not_headless`, `own_server`, `people_attached`;
-- how a wait ends: `timeout` (124), `closed` (4), `gone` (4);
+- how a wait ends: `timeout` (124), `closed` (4);
 - a program of words: `steps`, `cancelled`, `not_here`, `not_config`,
   `config`, `bad_binding`, `check`, `read`, `unset_var`, `output`, `nested`,
   `not_a_key`;

@@ -580,7 +580,7 @@ class Fux(Driver):
                 if event["event"] == "exited" and event.get("pane") in names:
                     return names[event["pane"]]
             cursor = batch["next"]
-            if batch["status"] != "continuing":
+            if batch["status"] in ("gone", "stopped"):
                 raise Timeout("event read ended before a matching exit: " + batch["status"])
         raise Timeout("event batch limit reached before a matching exit")
 

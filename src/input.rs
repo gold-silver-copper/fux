@@ -101,6 +101,7 @@ impl Session {
                     view.mode = Mode::Normal;
                     view.notice = None;
                 }
+                let changed = fresh || !matches!(act, ScreenAct::Copy(_));
                 match act {
                     ScreenAct::Show(panel) => view.mode = Mode::Panel(panel),
                     ScreenAct::Hide => {
@@ -110,7 +111,14 @@ impl Session {
                     ScreenAct::Copy(CopyAct::Enter { .. }) if !fresh => return false,
                     ScreenAct::Copy(act) => crate::copy::act(self, client, act),
                 }
-                self.view_event(client, crate::events::ViewChange::Screen);
+                if changed
+                    || self
+                        .views
+                        .get(&client)
+                        .is_some_and(|view| view.mode.is_normal())
+                {
+                    self.view_event(client, crate::events::ViewChange::Screen);
+                }
             }
             Act::Notice { text, error } => self.notify_to(client, text, error),
         }
@@ -196,7 +204,9 @@ impl Session {
         if !view.mode.is_normal() {
             return;
         }
-        view.notice = None;
+        if view.notice.take().is_some() {
+            self.view_event(client, crate::events::ViewChange::Notice);
+        }
         let _ = self.type_in(client, |screen, out| {
             crate::encode::paste(text, screen.mode(fux_vt::Mode::BracketedPaste), out)
         });

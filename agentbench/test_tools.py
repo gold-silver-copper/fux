@@ -93,6 +93,39 @@ class Tools(unittest.TestCase):
                 self.assertEqual(calls[4], ("all", "str", "0:RUN", "5", "next-events", "json"))
                 self.assertEqual(calls[-3:], [("str", f"%{n}", "pane", "kill") for n in (1, 2, 3)])
 
+    def test_published_recipe_waits_past_a_batch_timeout(self):
+        namespace = {"__name__": "test_recipe"}
+        exec(published.block("**First recorded exit across jobs:**", "python"), namespace)
+        batches = iter([
+            {"events": [], "next": "0:RUN", "missed": 0, "status": "timeout"},
+            {"events": [{"event": "exited", "pane": "%1"}], "next": "1:RUN", "missed": 0, "status": "continuing"},
+        ])
+        launched = []
+        def fux(*words):
+            if words == ("ls", "json"): return '{"events":"0:RUN"}'
+            if words[-1] == "run":
+                launched.append(words)
+                return f"%{len(launched)}:0:RUN"
+            if "next-events" in words: return json.dumps(next(batches))
+            return ""
+        self.assertEqual(namespace["first_exit"](fux)["first"]["pane"], "%1")
+
+    def test_first_exit_driver_waits_past_a_batch_timeout(self):
+        driver = drivers.Fux.__new__(drivers.Fux)
+        batches = iter([
+            {"events": [], "next": "0:RUN", "missed": 0, "status": "timeout"},
+            {"events": [{"event": "exited", "pane": "%1"}], "next": "1:RUN", "missed": 0, "status": "continuing"},
+        ])
+        calls = []
+        def fux(*words, **kwargs):
+            calls.append((words, kwargs["timeout"]))
+            return SimpleNamespace(stdout=json.dumps(next(batches)))
+        driver.fux = fux
+        with patch.object(drivers.time, "monotonic", side_effect=[0, 0, 5]):
+            self.assertEqual(driver.wait_first_exit({"a": "%1"}, "0:RUN", timeout=15), "a")
+        self.assertEqual([call[0][2] for call in calls], ["0:RUN", "0:RUN"])
+        self.assertEqual([call[1] for call in calls], [15, 10])
+
     def test_first_exit_driver_continues_from_filtered_batch_prefixes(self):
         driver = drivers.Fux.__new__(drivers.Fux)
         batches = iter([

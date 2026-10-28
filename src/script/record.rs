@@ -359,13 +359,7 @@ pub(super) fn events(batch: crate::events::Batch) -> Result<V, Failure> {
             ));
         }
         use crate::events::Actor;
-        let kind = b.text(match item.origin {
-            Actor::Unknown => "unknown",
-            Actor::Server => "server",
-            Actor::Client(_) => "client",
-            Actor::Pane(..) => "pane",
-            Actor::Program(..) => "program",
-        })?;
+        let kind = b.text(item.origin.kind())?;
         let origin = match item.origin {
             Actor::Client(c) => b.record([
                 ("kind", kind),

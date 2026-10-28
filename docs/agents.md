@@ -218,7 +218,7 @@ panes as it begins and answers changes in watch order, not exit chronology.
                   if event["event"] == "exited" and event.get("pane") in panes:
                       return {"cursor": cursor, "panes": panes, "first": event}
               next_cursor = batch["next"]
-              if batch["status"] != "continuing":
+              if batch["status"] in ("gone", "stopped"):
                   raise RuntimeError("event read ended before an exit: " + batch["status"])
           raise RuntimeError("event batch limit reached before an exit")
       finally:

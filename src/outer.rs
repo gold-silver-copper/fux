@@ -359,8 +359,13 @@ impl Session {
     /// typist as it was.
     pub(crate) fn typed(&mut self, client: ClientId) {
         let terminal = self.views.get(&client).map(|v| v.kind) == Some(ClientKind::Terminal);
-        if let Some(tab) = self.shown_tab_mut(client).filter(|_| terminal) {
-            tab.typist = Some(client);
+        if let Some(tab) = self
+            .shown_tab(client)
+            .filter(|tab| terminal && tab.typist != Some(client))
+            .map(|tab| tab.id())
+        {
+            let changed_host = self.host(Some(tab)) != Some(client);
+            self.parts.typed(tab, client, changed_host);
         }
     }
 
