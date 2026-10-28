@@ -93,7 +93,7 @@ fn closing_asks_first_and_acts_on_what_it_asked_about() -> Outcome {
     let mut client = server.attach(20, 90)?;
     client.wait_for("$")?;
     server.ok(&["str", "%1", "pane", "horizontal", "split"])?;
-    server.ok(&["str", "c1", "client", "str", "%2", "pane", "focus-pane"])?;
+    server.ok(&["str", "c1", "client", "str", "%2", "pane", "show"])?;
     client.keys(&format!("{PREFIX}x"))?;
     client.wait_for("close pane %2?")?;
     client.keys("n")?;
@@ -102,13 +102,13 @@ fn closing_asks_first_and_acts_on_what_it_asked_about() -> Outcome {
     // Ask about %2, move focus to %1 meanwhile: y still closes %2.
     client.keys(&format!("{PREFIX}x"))?;
     client.wait_for("close pane %2?")?;
-    server.ok(&["str", "c1", "client", "str", "%1", "pane", "focus-pane"])?;
+    server.ok(&["str", "c1", "client", "str", "%1", "pane", "show"])?;
     client.keys("y")?;
     pumped(&mut client, "%2 closed", || Ok(panes(&server)? == ["%1"]))?;
     // A question about a pane that goes stays; its y, run, says so and
     // closes nothing else.
     server.ok(&["str", "%1", "pane", "horizontal", "split"])?;
-    server.ok(&["str", "c1", "client", "str", "%3", "pane", "focus-pane"])?;
+    server.ok(&["str", "c1", "client", "str", "%3", "pane", "show"])?;
     client.keys(&format!("{PREFIX}x"))?;
     client.wait_for("close pane %3")?;
     server.ok(&["str", "%3", "pane", "kill"])?;
@@ -128,7 +128,7 @@ fn pane_actions_are_bindings_a_config_extends() -> Outcome {
     let mut client = server.attach(30, 100)?;
     client.wait_for("$")?;
     server.ok(&["str", "%1", "pane", "horizontal", "split"])?;
-    server.ok(&["str", "c1", "client", "str", "%2", "pane", "focus-pane"])?;
+    server.ok(&["str", "c1", "client", "str", "%2", "pane", "show"])?;
     client.keys(&format!("{PREFIX}a"))?;
     client.wait_for("move to a new tab")?;
     client.wait_for("greet")?;

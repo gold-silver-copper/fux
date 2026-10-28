@@ -83,7 +83,7 @@ there, counted as ended, not failed.
 
 After each step the walk waits until it has settled, never with a bare
 sleep: an act's marker shows in its pane, and every client's painted
-screen equals its `capture-client`. Then:
+screen equals its `capture`. Then:
 
 - **the server** runs, answers, and its log has no panic;
 - **structure** (`ls json`): ids are unique (a client's workspace, tab
@@ -92,7 +92,7 @@ screen equals its `capture-client`. Then:
   closing;
 - **sizes:** a pane a client surely shows fits that client's pane area;
 - **the frame oracle:** every client's terminal shows, row for row, what
-  the server composes for it (`capture-client`);
+  the server composes for it (`capture`);
 - **painting:** the screen has the client's rows, none wider than its
   columns, no wide glyph starting in the last column; the bar names the
   client's workspace and tab where there is room, and says `[zoom]` when

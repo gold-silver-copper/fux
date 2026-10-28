@@ -51,6 +51,9 @@ end
 # -- id : choose the newest paste buffer when the request runs
 define newest str newest end
 
+# -- listing : all workspaces, tabs, panes and clients
+define ls all info end
+
 # way -- way : a checked layout axis, independent of how many panes there are
 define layout-axis
   dup str horizontal eq over str vertical eq or not

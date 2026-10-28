@@ -279,7 +279,7 @@ wire! {
 }
 
 wire! {
-    /// Which tab or workspace `show-tab` or `show-workspace` picks.
+    /// Which tab or workspace `show` picks.
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
     pub enum Pick<T> {
         Step(step: Sibling),

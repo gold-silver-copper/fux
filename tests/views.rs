@@ -89,15 +89,7 @@ fn workspaces_are_created_and_switched_by_key() -> Outcome {
         "name",
         "new-workspace",
     ])?;
-    server.ok(&[
-        "str",
-        "c1",
-        "client",
-        "str",
-        "third",
-        "workspace",
-        "show-workspace",
-    ])?;
+    server.ok(&["str", "c1", "client", "str", "third", "workspace", "show"])?;
     client.wait("the third", |t| {
         t.lines().last().is_some_and(|b| b.contains("third"))
     })?;
@@ -210,8 +202,8 @@ fn moving_a_tabs_last_pane_out_closes_the_tab() -> Outcome {
         "in",
         "new-tab",
     ])?;
-    server.ok(&["str", "c1", "client", "str", "@1", "tab", "show-tab"])?;
-    server.ok(&["str", "%1", "pane", "str", "@2", "tab", "move-to"])?;
+    server.ok(&["str", "c1", "client", "str", "@1", "tab", "show"])?;
+    server.ok(&["str", "%1", "pane", "str", "@2", "tab", "move"])?;
     let ls = server.ok(&["ls"])?;
     assert!(
         !ls.contains("@1 ") && ls.contains("client c1 80x20 +1 @2 "),
@@ -219,90 +211,44 @@ fn moving_a_tabs_last_pane_out_closes_the_tab() -> Outcome {
     );
     // Moving to a new tab and a new workspace creates them; the tab and
     // the workspace each leaves with nothing in them close.
-    server.ok(&["str", "%2", "pane", "str", "new-tab", "move-to"])?;
-    server.ok(&["str", "%1", "pane", "str", "new-workspace", "move-to"])?;
+    server.ok(&["str", "%2", "pane", "str", "new-tab", "move"])?;
+    server.ok(&["str", "%1", "pane", "str", "new-workspace", "move"])?;
     let ls = server.ok(&["ls"])?;
     assert!(ls.contains("+2") && !ls.contains("@2 "), "{ls}");
     Ok(())
 }
 
-/// `capture-client` prints what a client's terminal shows: in every mode,
-/// once its paints have arrived, the client's own screen and the capture
-/// agree row for row, bar and overlays included.
+/// Client capture includes the composed UI and has no pane version.
 #[test]
-fn capture_client_shows_what_a_client_shows_in_every_mode() -> Outcome {
+fn client_capture_includes_ui_without_a_pane_version() -> Outcome {
     let server = Server::start("")?;
-    server.ok(&["str", "%1", "pane", "horizontal", "split"])?;
     let mut client = server.attach(20, 90)?;
     client.wait_for("$")?;
-    let captured = |server: &Server| -> Result<Vec<String>, String> {
-        Ok(server
-            .ok(&["str", "c1", "client", "capture-client"])?
-            .lines()
-            .map(str::to_owned)
-            .collect())
-    };
-    let agree = |client: &mut Client, server: &Server, mode: &str| -> Outcome {
-        client
-            .wait(mode, |t| {
-                captured(server).is_ok_and(|rows| rows.join("\n") == t)
-            })
-            .map_err(|error| {
-                format!(
-                    "{error}\ncapture-client shows:\n{}",
-                    captured(server).unwrap_or_default().join("\n")
-                )
-            })
-    };
-    agree(&mut client, &server, "normal")?;
-    // Leaving a mode is done once the screen is as it was.
-    let normal = client.text();
-    let escape = |client: &mut Client| -> Outcome {
-        client.keys("\x1b")?;
-        client.wait("normal again", |t| t == normal)
-    };
-    for (keys, mode, shows) in [
-        ("\x02", "the column", "Commands"),
-        ("\x02t", "a layer", "Tabs"),
-        ("\x02tg", "a chooser", "@1"),
-        ("\x02aw", "a pane's workspace chooser", "+1"),
-        ("\x02e", "the prompt", "Enter accept"),
-        ("\x02x", "a confirmation", "close"),
-        ("\x02c", "copy mode", "COPY"),
-    ] {
-        client.keys(keys)?;
-        client.wait_for(shows)?;
-        agree(&mut client, &server, mode)?;
-        escape(&mut client)?;
-    }
-    // A repeat mode, from its layer's first key: the bar names it.
-    client.keys("\x02rh")?;
-    client.wait("resize mode", |t| {
-        t.lines().last().is_some_and(|b| b.contains("RESIZE"))
-    })?;
-    agree(&mut client, &server, "a repeat mode")?;
-    // The resize moved the border, so the screen is not as it was.
-    client.keys("\x1b")?;
-    client.wait("the mode ended", |t| {
-        !t.lines().last().is_some_and(|b| b.contains("RESIZE"))
-    })?;
+    server.ok(&["all", "str", "session-notice", "notify"])?;
+    client.wait_for("session-notice")?;
+    assert!(
+        server
+            .ok(&["str", "c1", "client", "capture"])?
+            .contains("session-notice")
+    );
+    client.keys("\x02e")?;
+    client.wait_for("Enter accept")?;
+    let capture = server.ok(&["str", "c1", "client", "capture"])?;
+    assert!(capture.contains("Enter accept"), "{capture}");
+    assert_eq!(capture.lines().count(), 20);
     // As JSON: the client, its size, the cursor or null, and the rows.
-    let json = server.ok(&["str", "c1", "client", "capture-client", "json"])?;
+    let json = server.ok(&["str", "c1", "client", "capture", "json"])?;
     assert!(
         json.starts_with(
             "{\"client\":\"c1\",\"screen_rows\":20,\"screen_cols\":90,\"screen_cursor\":"
         ),
         "{json}"
     );
+    assert!(!json.contains("\"version\":"), "{json}");
     let rows = json.split_once("\"lines\":[").map_or("", |(_, rows)| rows);
     assert_eq!(rows.matches("\",\"").count() + 1, 20, "twenty rows: {json}");
     // A client that is not there is an error.
-    assert_eq!(
-        server
-            .fux(&["str", "c9", "client", "capture-client"])?
-            .status,
-        1
-    );
+    assert_eq!(server.fux(&["str", "c9", "client", "capture"])?.status, 1);
     Ok(())
 }
 
@@ -331,7 +277,7 @@ fn a_hidden_tab_goes_back_to_its_own_size() -> Outcome {
     let pane = pane.split(':').next().unwrap_or_default();
     let sized = |size: &str| Ok(server.ok(&["ls"])?.contains(&format!("hid {size}")));
     eventually("its own size", || sized("100x40"))?;
-    server.ok(&["str", "c1", "client", pane, "tab", "show-tab"])?;
+    server.ok(&["str", "c1", "client", pane, "tab", "show"])?;
     eventually("the client's size", || sized("84x24"))?;
     let other = server.ok(&[
         "agent-opts",
@@ -347,19 +293,11 @@ fn a_hidden_tab_goes_back_to_its_own_size() -> Outcome {
         "run",
     ])?;
     let other = other.split(':').next().unwrap_or_default();
-    server.ok(&["str", "c1", "client", other, "tab", "show-tab"])?;
+    server.ok(&["str", "c1", "client", other, "tab", "show"])?;
     eventually("its own size, another tab shown", || sized("100x40"))?;
-    server.ok(&["str", "c1", "client", pane, "tab", "show-tab"])?;
+    server.ok(&["str", "c1", "client", pane, "tab", "show"])?;
     eventually("the client's size again", || sized("84x24"))?;
-    server.ok(&[
-        "str",
-        "c1",
-        "client",
-        "str",
-        "main",
-        "workspace",
-        "show-workspace",
-    ])?;
+    server.ok(&["str", "c1", "client", "str", "main", "workspace", "show"])?;
     eventually("its own size again", || sized("100x40"))?;
     Ok(())
 }

@@ -877,7 +877,7 @@ mod tests {
         s.input(c, b"\x02cf");
         s.input(c, &[b'x'; 60]);
         s.input(c, b"END");
-        let shown = crate::session::testing::output(&mut s, "str c1 client capture-client")?;
+        let shown = crate::session::testing::output(&mut s, "str c1 client capture")?;
         let bar = shown.lines().last().ok_or("no bar")?;
         assert!(bar.contains("END\u{258f}"), "{bar}");
         Ok(())
