@@ -490,11 +490,7 @@ mod tests {
     /// What pane `pane`'s program is answered to `OSC 4 ; n ; ?`.
     fn entry(s: &mut Session, pane: u32, n: u8) -> String {
         let _ = answered(s, pane);
-        s.output(
-            PaneId::of(pane),
-            format!("\x1b]4;{n};?\x07").as_bytes(),
-            Instant::now(),
-        );
+        s.out(PaneId::of(pane), format!("\x1b]4;{n};?\x07").as_bytes());
         answered(s, pane)
     }
 
@@ -515,9 +511,9 @@ mod tests {
         // The program's own colour wins, and nothing the host gave is
         // painted.
         let before = crate::render::compose(&s, c);
-        s.output(PaneId::of(1), b"\x1b]4;1;#00ff00\x07", Instant::now());
+        s.out(PaneId::of(1), b"\x1b]4;1;#00ff00\x07");
         assert_eq!(entry(&mut s, 1, 1), "\x1b]4;1;rgb:0000/ffff/0000\x07");
-        s.output(PaneId::of(1), b"\x1b]104;1\x07", Instant::now());
+        s.out(PaneId::of(1), b"\x1b]104;1\x07");
         assert_eq!(entry(&mut s, 1, 1), "\x1b]4;1;rgb:1111/2222/3333\x07");
         assert_eq!(crate::render::compose(&s, c), before);
         Ok(())
@@ -527,9 +523,7 @@ mod tests {
     fn another_client_typing_replaces_the_palette_whole() -> Outcome {
         let (mut s, c) = session()?;
         s.input(c, b"\x1b]4;1;rgb:1111/2222/3333\x1b\\\x1b[?62c");
-        let d = s
-            .attach(10, 40, None, Instant::now())
-            .map_err(|e| e.to_string())?;
+        let d = s.attach(10, 40, None).map_err(|e| e.to_string())?;
         s.input(d, b"\x1b]4;2;rgb:4444/5555/6666\x1b\\\x1b[?62c");
         s.input(c, b"x");
         assert_eq!(entry(&mut s, 1, 1), "\x1b]4;1;rgb:1111/2222/3333\x07");
@@ -550,11 +544,7 @@ mod tests {
         );
         let ask = |s: &mut Session, pane| {
             let _ = answered(s, pane);
-            s.output(
-                PaneId::of(pane),
-                b"\x1b]11;?\x07\x1b]4;1;?\x07",
-                Instant::now(),
-            );
+            s.out(PaneId::of(pane), b"\x1b]11;?\x07\x1b]4;1;?\x07");
             answered(s, pane)
         };
         let theirs = "\x1b]11;rgb:1111/2222/3333\x07\x1b]4;1;rgb:1111/2222/3333\x07";
@@ -562,7 +552,7 @@ mod tests {
         // A workspace c1 neither shows nor typed into: no terminal's.
         run(&mut s, "opts 80 24 size str other name new-workspace")?;
         assert_eq!(ask(&mut s, 2), "");
-        s.output(PaneId::of(2), b"\x1b]11;#445566\x07", Instant::now());
+        s.out(PaneId::of(2), b"\x1b]11;#445566\x07");
         assert_eq!(ask(&mut s, 2), "\x1b]11;rgb:4444/5555/6666\x07");
         // c1 typed into %1's tab and went to another: it answers no more.
         s.input(c, b"x");
@@ -578,7 +568,7 @@ mod tests {
     fn a_panes_cell_is_its_hosts() -> Outcome {
         let (mut s, c) = session()?;
         let cell = |s: &mut Session| {
-            s.output(PaneId::of(1), b"", Instant::now());
+            s.out(PaneId::of(1), b"");
             (s.parts.panes().get(&PaneId::of(1))).and_then(|p| p.screen().graphics().cell())
         };
         assert_eq!(cell(&mut s), None);
@@ -586,9 +576,7 @@ mod tests {
         s.input(c, b"\x1b[6;20;10t\x1b[?62c");
         assert_eq!(cell(&mut s), fux_vt::CellSize::new(10, 20));
         // c typed here and shows another tab; d shows this one with no cell.
-        let d = s
-            .attach(10, 40, None, Instant::now())
-            .map_err(|e| e.to_string())?;
+        let d = s.attach(10, 40, None).map_err(|e| e.to_string())?;
         s.input(c, b"x");
         run(&mut s, "opts 80 24 size str +1 workspace in new-tab")?;
         run(&mut s, "str c1 client str @2 tab show")?;
@@ -610,21 +598,15 @@ mod tests {
         let cell = |w, h| fux_vt::CellSize::new(w, h).ok_or("a cell");
         let background = |s: &mut Session| {
             let _ = answered(s, 1);
-            s.output(PaneId::of(1), b"\x1b]11;?\x07", Instant::now());
+            s.out(PaneId::of(1), b"\x1b]11;?\x07");
             answered(s, 1)
         };
         s.input(c, b"\x1b]11;#112233\x1b\\\x1b[6;20;10t\x1b[?62;4;22c");
-        let d = s
-            .attach(24, 80, None, Instant::now())
-            .map_err(|e| e.to_string())?;
+        let d = s.attach(24, 80, None).map_err(|e| e.to_string())?;
         s.input(d, b"\x1b[6;16;8t\x1b[?62;22c");
         assert_eq!(s.graphics(PaneId::of(1)), Graphics::Sixel(cell(10, 20)?));
         assert_eq!(background(&mut s), "\x1b]11;rgb:1111/2222/3333\x07");
-        s.output(
-            PaneId::of(1),
-            b"\x1bP9q#1;2;100;0;0!20~\x1b\\",
-            Instant::now(),
-        );
+        s.out(PaneId::of(1), b"\x1bP9q#1;2;100;0;0!20~\x1b\\");
         let shown_on_c = |s: &Session| {
             let (Some(view), mut placement) = (s.views.get(&c), Default::default()) else {
                 return 0;
@@ -648,7 +630,7 @@ mod tests {
                 .preferences
                 .presentation(),
         );
-        let headless = s.attach_as(ClientKind::Headless, attach, Instant::now());
+        let headless = s.attach_client(ClientKind::Headless, attach);
         s.input(headless.map_err(|e| e.to_string())?, b"x");
         assert_eq!(s.graphics(PaneId::of(1)), Graphics::Cell(cell(8, 16)?));
         assert_eq!(background(&mut s), "");
@@ -656,7 +638,7 @@ mod tests {
         s.input(c, b"x");
         assert_eq!(background(&mut s), "\x1b]11;rgb:1111/2222/3333\x07");
         assert_eq!(shown_on_c(&s), 1);
-        s.detach(c, Instant::now());
+        s.detach_client(c);
         assert_eq!(s.graphics(PaneId::of(1)), Graphics::Cell(cell(8, 16)?));
         Ok(())
     }
@@ -669,7 +651,7 @@ mod tests {
         let (mut s, c) = session()?;
         let cell = |s: &mut Session| crate::session::testing::output(s, "%1 capture json");
         s.input(c, b"\x1b[6;20;10t\x1b[?62c");
-        s.output(PaneId::of(1), b"idle from now", Instant::now());
+        s.out(PaneId::of(1), b"idle from now");
         assert!(cell(&mut s)?.contains(r#""cell":{"width":10,"height":20}"#));
         let _ = sent(&mut s, c);
         s.terminal_resized(c);
@@ -740,18 +722,16 @@ mod tests {
         let (mut s, c) = session()?;
         let cell = |s: &mut Session| crate::session::testing::output(s, "%1 capture json");
         let told = |w: u16, h: u16| format!(r#""cell":{{"width":{w},"height":{h}}}"#);
-        let d = s
-            .attach(10, 40, None, Instant::now())
-            .map_err(|e| e.to_string())?;
+        let d = s.attach(10, 40, None).map_err(|e| e.to_string())?;
         s.input(c, b"\x1b[6;20;10t\x1b[?62;4;22c");
         s.input(d, b"\x1b[6;24;12t\x1b[?62;4;22c");
         s.input(d, b"x");
         assert!(cell(&mut s)?.contains(&told(12, 24)));
         s.input(c, b"x");
         assert!(cell(&mut s)?.contains(&told(10, 20)));
-        s.detach(c, Instant::now());
+        s.detach_client(c);
         assert!(cell(&mut s)?.contains(&told(12, 24)));
-        s.detach(d, Instant::now());
+        s.detach_client(d);
         assert!(cell(&mut s)?.contains(r#""cell":null"#));
         Ok(())
     }
@@ -763,7 +743,7 @@ mod tests {
         let (mut s, c) = session()?;
         let picture = b"\x1bP9q#1;2;100;0;0!20~\x1b\\";
         let refused = |s: &mut Session| {
-            s.output(PaneId::of(1), picture, Instant::now());
+            s.out(PaneId::of(1), picture);
             (s.parts.panes().get(&PaneId::of(1))).map(|p| p.lost().pictures)
         };
         s.input(c, b"\x1b[6;20;10t\x1b[?62;4;22c");
@@ -794,7 +774,7 @@ mod tests {
     #[test]
     fn a_scheme_change_missed_in_an_unshown_tab_is_told_once_shown() -> Outcome {
         let (mut s, c) = session()?;
-        s.output(PaneId::of(1), b"\x1b[?2031h", Instant::now());
+        s.out(PaneId::of(1), b"\x1b[?2031h");
         s.input(c, b"\x1b[?997;1n");
         assert_eq!(answered(&mut s, 1), "\x1b[?997;1n");
         run(&mut s, "opts 80 24 size str other name new-workspace")?;
@@ -808,7 +788,7 @@ mod tests {
         assert_eq!(answered(&mut s, 1), "");
         // One never told, as no terminal answered its query, is told once
         // one does.
-        s.output(PaneId::of(2), b"\x1b[?2031h\x1b[?996n", Instant::now());
+        s.out(PaneId::of(2), b"\x1b[?2031h\x1b[?996n");
         assert_eq!(answered(&mut s, 2), "");
         run(&mut s, "str c1 client str other workspace show")?;
         assert_eq!(answered(&mut s, 2), "\x1b[?997;2n");
@@ -820,7 +800,7 @@ mod tests {
     #[test]
     fn a_scheme_report_refused_is_sent_once_the_queue_takes_it() -> Outcome {
         let (mut s, c) = session()?;
-        s.output(PaneId::of(1), b"\x1b[?2031h", Instant::now());
+        s.out(PaneId::of(1), b"\x1b[?2031h");
         s.input(c, b"\x1b[?997;1n");
         assert_eq!(answered(&mut s, 1), "\x1b[?997;1n");
         let full = vec![0; crate::pane::INPUT_BYTES];
@@ -830,7 +810,7 @@ mod tests {
         let notice = (s.views.get_mut(&c)).and_then(|v| v.notice.take());
         assert!(notice.is_none(), "nothing is lost: {notice:?}");
         assert_eq!(answered(&mut s, 1).len(), crate::pane::INPUT_BYTES);
-        s.settle(Instant::now());
+        s.settled();
         assert_eq!(answered(&mut s, 1), "\x1b[?997;2n");
         Ok(())
     }
@@ -876,13 +856,13 @@ mod tests {
     fn a_bell_rings_the_clients_showing_its_workspace_and_marks_its_tab() -> Outcome {
         let (mut s, c) = session()?;
         let _ = sent(&mut s, c);
-        s.output(PaneId::of(1), b"\x07", Instant::now());
+        s.out(PaneId::of(1), b"\x07");
         assert_eq!(sent(&mut s, c), [BELL.to_vec()]);
         // Again at once: not rung twice within the gap.
-        s.output(PaneId::of(1), b"\x07\x07", Instant::now());
+        s.out(PaneId::of(1), b"\x07\x07");
         assert!(sent(&mut s, c).is_empty());
         past_the_gap(&mut s);
-        s.output(PaneId::of(1), b"\x07", Instant::now());
+        s.out(PaneId::of(1), b"\x07");
         assert_eq!(sent(&mut s, c), [BELL.to_vec()]);
         // In a tab the client does not show: its tab is marked until shown.
         run(
@@ -890,10 +870,10 @@ mod tests {
             "opts 80 24 size str +1 workspace in str other name new-tab",
         )?;
         run(&mut s, "str c1 client str @2 tab show")?;
-        s.settle(Instant::now());
+        s.settled();
         let _ = s.before_paint(c);
         past_the_gap(&mut s);
-        s.output(PaneId::of(1), b"\x07", Instant::now());
+        s.out(PaneId::of(1), b"\x07");
         assert_eq!(sent(&mut s, c), [BELL.to_vec()]);
         assert!(tab_label(&s, c).contains(" %1! "), "{}", tab_label(&s, c));
         run(&mut s, "str c1 client str @1 tab show")?;
@@ -905,19 +885,17 @@ mod tests {
         run(&mut s, "str c1 client str @1 tab show")?;
         let _ = s.before_paint(c);
         run(&mut s, "opts 80 24 size str elsewhere name new-workspace")?;
-        let d = s
-            .attach(10, 40, None, Instant::now())
-            .map_err(|e| e.to_string())?;
+        let d = s.attach(10, 40, None).map_err(|e| e.to_string())?;
         run(&mut s, "str c2 client str elsewhere workspace show")?;
         let _ = sent(&mut s, d);
         past_the_gap(&mut s);
-        s.output(PaneId::of(1), b"\x07", Instant::now());
+        s.out(PaneId::of(1), b"\x07");
         assert_eq!(sent(&mut s, c), [BELL.to_vec()]);
         assert!(sent(&mut s, d).is_empty());
         // Disabling bells clears pending marks; enabling does not restore them.
         run(&mut s, "str c1 client str @2 tab show")?;
         past_the_gap(&mut s);
-        s.output(PaneId::of(1), b"\x07", Instant::now());
+        s.out(PaneId::of(1), b"\x07");
         assert!(tab_label(&s, c).contains('!'));
         let _ = sent(&mut s, c);
         // Opposing preferences on the same workspace remain independent.
@@ -925,31 +903,28 @@ mod tests {
         let preferences = crate::script::default_state()
             .map_err(|e| e.to_string())?
             .preferences;
-        s.acts(
+        s.apply(
             c,
             vec![crate::act::Act::Presentation(crate::view::Presentation {
                 bell: false,
                 ..preferences.presentation()
             })],
-            Instant::now(),
         );
         assert!(!tab_label(&s, c).contains('!'));
-        s.acts(
+        s.apply(
             c,
             vec![crate::act::Act::Presentation(preferences.presentation())],
-            Instant::now(),
         );
         assert!(!tab_label(&s, c).contains('!'));
-        s.acts(
+        s.apply(
             c,
             vec![crate::act::Act::Presentation(crate::view::Presentation {
                 bell: false,
                 ..preferences.presentation()
             })],
-            Instant::now(),
         );
         past_the_gap(&mut s);
-        s.output(PaneId::of(1), b"\x07", Instant::now());
+        s.out(PaneId::of(1), b"\x07");
         assert!(sent(&mut s, c).is_empty());
         assert!(!tab_label(&s, c).contains('!'));
         assert_eq!(sent(&mut s, d), [BELL.to_vec()]);
@@ -959,29 +934,26 @@ mod tests {
     #[test]
     fn titles_follow_the_focused_pane_and_are_restored_when_turned_off() -> Outcome {
         let (mut s, c) = session()?;
-        let other = s
-            .attach(10, 40, None, Instant::now())
-            .map_err(|e| e.to_string())?;
+        let other = s.attach(10, 40, None).map_err(|e| e.to_string())?;
         // Off by default: nothing.
-        s.output(PaneId::of(1), b"\x1b]2;vim notes\x07", Instant::now());
+        s.out(PaneId::of(1), b"\x1b]2;vim notes\x07");
         assert!(s.before_paint(c).is_empty());
         let preferences = crate::script::default_state()
             .map_err(|e| e.to_string())?
             .preferences;
-        s.acts(
+        s.apply(
             c,
             vec![crate::act::Act::Presentation(crate::view::Presentation {
                 titles: true,
                 ..preferences.presentation()
             })],
-            Instant::now(),
         );
         assert!(s.before_paint(other).is_empty());
         let first = s.before_paint(c);
         assert_eq!(first, b"\x1b]2;vim notes\x1b\\");
         // Unchanged: nothing more; changed: the title alone.
         assert!(s.before_paint(c).is_empty());
-        s.output(PaneId::of(1), b"\x1b]2;make\x07", Instant::now());
+        s.out(PaneId::of(1), b"\x1b]2;make\x07");
         assert_eq!(s.before_paint(c), b"\x1b]2;make\x1b\\");
         // A pane with no title: its tab's name.
         run(&mut s, "str %1 pane horizontal split")?;
@@ -990,10 +962,9 @@ mod tests {
         assert_eq!(s.before_paint(c), b"\x1b]2;notes\x1b\\");
         // Off again: the terminal's own title is restored, once, and saved
         // again for the client's leaving.
-        s.acts(
+        s.apply(
             c,
             vec![crate::act::Act::Presentation(preferences.presentation())],
-            Instant::now(),
         );
         assert_eq!(s.before_paint(c), [TITLE_POP, TITLE_PUSH].concat());
         assert!(s.before_paint(c).is_empty());

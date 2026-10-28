@@ -1379,7 +1379,6 @@ impl Session {
         rows: u16,
         cols: u16,
         workspace: Option<&str>,
-        now: Instant,
     ) -> Result<ClientId, Error> {
         let workspace = workspace.map(command::parse_workspace).transpose();
         let size = Size::new(rows, cols).map_err(|e| fail(Raise::Size, e.to_string()))?;
@@ -1399,7 +1398,7 @@ impl Session {
                 target: workspace.map(command::AttachTarget::Workspace),
                 ..Attach::of(size, state.preferences.presentation())
             },
-            now,
+            Instant::now(),
         )
     }
 
@@ -3619,6 +3618,62 @@ pub(crate) mod testing {
     use crate::id::ClientId;
     use std::time::Instant;
 
+    impl Session {
+        pub(crate) fn out(&mut self, id: crate::id::PaneId, bytes: &[u8]) {
+            self.output(id, bytes, Instant::now())
+        }
+        pub(crate) fn apply(&mut self, client: ClientId, acts: Vec<crate::act::Act>) {
+            self.acts(client, acts, Instant::now())
+        }
+        pub(crate) fn size_client(
+            &mut self,
+            client: ClientId,
+            rows: u16,
+            cols: u16,
+        ) -> Result<bool, super::Error> {
+            self.resize(client, rows, cols, Instant::now())
+        }
+        pub(crate) fn end_program(&mut self, id: crate::id::PaneId, status: crate::process::Ended) {
+            self.exited(id, status, Instant::now())
+        }
+        pub(crate) fn settled(&mut self) {
+            self.settle(Instant::now())
+        }
+        pub(crate) fn detach_client(&mut self, id: ClientId) {
+            self.detach(id, Instant::now())
+        }
+        pub(crate) fn attach_client(
+            &mut self,
+            kind: crate::view::ClientKind,
+            attach: crate::protocol::Attach,
+        ) -> Result<ClientId, super::Error> {
+            self.attach_as(kind, attach, Instant::now())
+        }
+        pub(crate) fn close_now(&mut self, id: crate::id::PaneId, why: Option<String>) {
+            self.close_pane(id, why, Instant::now())
+        }
+        pub(crate) fn begin_now(
+            &mut self,
+            request: Request,
+            origin: &super::Origin,
+        ) -> super::Begun {
+            self.begin(request, origin, Instant::now())
+        }
+        pub(crate) fn command_now(&mut self, command: &Command, origin: &super::Origin) -> Reply {
+            self.run_command(command, origin, Instant::now())
+        }
+        pub(crate) fn start_now(
+            &mut self,
+            size: fux_vt::Size,
+            initial: &command::InitialWorkspace,
+        ) -> Result<(), super::Error> {
+            self.start(size, initial, Instant::now())
+        }
+        pub(crate) fn fire_now(&mut self, timer: super::Timer) {
+            self.fire(timer, Instant::now())
+        }
+    }
+
     /// A session with `/bin/sh`, started at 80 by 24.
     pub(crate) fn started() -> Result<Session, String> {
         // One run for every session of the tests: two that did the same
@@ -3641,7 +3696,7 @@ pub(crate) mod testing {
             env: crate::command::EnvPatch::default(),
         };
         session
-            .start(size, &initial, Instant::now())
+            .start_now(size, &initial)
             .map_err(|e| e.to_string())?;
         session.test_keymap = crate::script::default_state()
             .map_err(|e| e.to_string())?
@@ -3654,7 +3709,7 @@ pub(crate) mod testing {
     pub(crate) fn attached(rows: u16, cols: u16) -> Result<(Session, ClientId), String> {
         let mut session = started()?;
         let client = session
-            .attach(rows, cols, None, Instant::now())
+            .attach(rows, cols, None)
             .map_err(|e| e.to_string())?;
         Ok((session, client))
     }
@@ -3894,7 +3949,7 @@ pub(crate) mod testing {
         pub(crate) fn open_screen(&mut self, client: ClientId, screen: crate::screens::Screen) {
             let keys = self.test_keys.entry(client).or_default();
             let acts = keys.screen.open(screen, &self.test_keymap.keys.modes);
-            self.acts(client, acts, Instant::now());
+            self.apply(client, acts);
             deliver(self);
         }
 
@@ -3913,9 +3968,7 @@ pub(crate) mod testing {
         fn effects(&mut self, client: ClientId, effects: Vec<crate::screens::Dispatch>) {
             for effect in effects {
                 match effect {
-                    crate::screens::Dispatch::Send(act) => {
-                        self.acts(client, vec![act], Instant::now())
-                    }
+                    crate::screens::Dispatch::Send(act) => self.apply(client, vec![act]),
                     crate::screens::Dispatch::Run(job) => self.run_as(client, &job),
                     crate::screens::Dispatch::Fence => {}
                 }
@@ -3980,7 +4033,7 @@ mod tests {
                     .presentation(),
             )
         };
-        s.attach_as(ClientKind::Terminal, attach, Instant::now())
+        s.attach_client(ClientKind::Terminal, attach)
             .map_err(|e| e.to_string())
     }
 
@@ -4043,18 +4096,17 @@ mod tests {
             (T::Workspace(WsRef::Name("second".into())), PaneId::of(3)),
         ] {
             let client = s
-                .attach_as(
+                .attach_client(
                     ClientKind::Headless,
                     Attach {
                         of: Some(s.run),
                         target: Some(target),
                         ..Attach::of(sized(24, 80)?, presentation)
                     },
-                    Instant::now(),
                 )
                 .map_err(|e| e.to_string())?;
             assert_eq!(s.focused(client), Some(pane));
-            s.detach(client, Instant::now());
+            s.detach_client(client);
         }
         assert_eq!(s.focused(incumbent), Some(PaneId::of(2)));
         let ids = s.ids.clone();
@@ -4068,14 +4120,13 @@ mod tests {
             ),
         ] {
             assert!(
-                s.attach_as(
+                s.attach_client(
                     ClientKind::Headless,
                     Attach {
                         of,
                         target: Some(target),
                         ..Attach::of(sized(24, 80)?, presentation)
-                    },
-                    Instant::now(),
+                    }
                 )
                 .is_err()
             );
@@ -4109,11 +4160,7 @@ mod tests {
         };
         let ids = s.ids.clone();
         assert!(matches!(
-            s.attach_as(
-                ClientKind::Headless,
-                Attach::of(size, presentation),
-                Instant::now()
-            ),
+            s.attach_client(ClientKind::Headless, Attach::of(size, presentation)),
             Err(Error::NeedsInitial)
         ));
         for attach in [
@@ -4133,16 +4180,11 @@ mod tests {
                 ..Attach::of(size, presentation)
             },
         ] {
-            assert!(
-                s.attach_as(ClientKind::Terminal, attach, Instant::now())
-                    .is_err()
-            );
+            assert!(s.attach_client(ClientKind::Terminal, attach).is_err());
             assert_eq!(s.ids, ids);
             assert!(s.views.is_empty() && s.parts.panes().is_empty());
         }
-        let client = s
-            .attach(24, 80, None, Instant::now())
-            .map_err(|e| e.to_string())?;
+        let client = s.attach(24, 80, None).map_err(|e| e.to_string())?;
         assert_eq!(client, ClientId::of(1));
         Ok(())
     }
@@ -4201,8 +4243,7 @@ mod tests {
             let mut s = started()?;
             watch(&mut s, 3, 5)?;
             for (rows, cols) in sizes {
-                s.attach(rows, cols, None, Instant::now())
-                    .map_err(|e| e.to_string())?;
+                s.attach(rows, cols, None).map_err(|e| e.to_string())?;
             }
             run(&mut s, "%1 horizontal split drop %1 20 resize-x")?;
             assert_eq!(
@@ -4275,7 +4316,7 @@ mod tests {
             .map_err(|e| e.to_string())?;
         let id = s.buffers.front().ok_or("no copy")?.0;
         // An unsolicited program copy also shifts the ring.
-        s.output(PaneId::of(1), b"\x1b]52;c;bmV3\x07", Instant::now());
+        s.out(PaneId::of(1), b"\x1b]52;c;bmV3\x07");
         assert_eq!(output(&mut s, &format!("str {id} buffer"))?, "chosen\n\n\n");
         assert_eq!(output(&mut s, "newest buffer")?, "new\n");
         run(&mut s, &format!("%1 str {id} paste-buffer drop"))?;
@@ -4367,7 +4408,7 @@ mod tests {
     fn buffer_paste_keeps_its_native_size_and_atomic_admission() -> Result<(), String> {
         let mut s = started()?;
         // Larger than script input, but still admitted as one native paste.
-        s.output(PaneId::of(1), b"\x1b[?2004h", Instant::now());
+        s.out(PaneId::of(1), b"\x1b[?2004h");
         let text = format!(
             "{}\n\n",
             std::iter::repeat_n('x', crate::pane::INPUT_BYTES - 14).collect::<String>()
@@ -4404,11 +4445,7 @@ mod tests {
     fn a_paste_into_an_exited_pane_is_refused() -> Result<(), String> {
         let mut s = started()?;
         run(&mut s, "agent-opts 80 24 size str /bin/cat program run")?;
-        s.exited(
-            PaneId::of(2),
-            crate::process::Ended::Exited(3),
-            Instant::now(),
-        );
+        s.end_program(PaneId::of(2), crate::process::Ended::Exited(3));
         s.copied("x".into(), &[]).map_err(|e| e.to_string())?;
         let pasted = run(&mut s, "%2 newest paste-buffer");
         assert!(pasted.is_err_and(|e| e.contains("exited")), "refused");
@@ -4428,10 +4465,10 @@ mod tests {
         let argv = ["/bin/cat".to_owned()];
         let child = process::spawn(&argv, Path::new("/"), (&[], &[]), (sized(4, 20)?, None))?;
         (s.parts.pane_mut(id).ok_or("the pane")?).set_process(Process::Reading(child));
-        s.output(id, b"\x1b[?1000h\x1b[?1004h", Instant::now());
+        s.out(id, b"\x1b[?1000h\x1b[?1004h");
         let mouse = |s: &Session| crate::render::compose(s, c).map(|g| g.modes.mouse);
         assert_eq!(mouse(&s), Some(1000), "asked while it runs");
-        s.exited(id, Ended::Signalled(9), Instant::now());
+        s.end_program(id, Ended::Signalled(9));
         assert_eq!(mouse(&s), Some(0), "asked for none once it ended");
         let notice = |s: &mut Session, typed: &[u8]| {
             let view = s.views.get_mut(&c).map(|v| v.notice = None);
@@ -4457,7 +4494,7 @@ mod tests {
         let mut s = started()?;
         run(&mut s, "agent-opts 80 24 size str /bin/cat program run")?;
         let id = PaneId::of(2);
-        s.output(id, b"\x1b[?2026h\x1b]2;old\x07\x07", Instant::now());
+        s.out(id, b"\x1b[?2026h\x1b]2;old\x07\x07");
         let mut pane = s.parts.pane_mut(id).ok_or("the pane")?;
         pane.exiting(crate::process::Ended::Exited(3));
         let lines = told(&mut s, |s| {
@@ -4559,7 +4596,7 @@ mod tests {
                     .ok_or("pane")?
                     .respawned(fresh, Process::Absent);
             }
-            session.output(id, b"saved", Instant::now());
+            session.out(id, b"saved");
             if live {
                 session.read_failed(id, fuxix::Errno::INVAL, Instant::now());
             } else {
@@ -4569,7 +4606,7 @@ mod tests {
                     .ok_or("pane")?
                     .read_failed(fuxix::Errno::INVAL);
             }
-            session.exited(id, Ended::Exited(0), Instant::now());
+            session.end_program(id, Ended::Exited(0));
             let notice = session
                 .views
                 .get(&client)
@@ -4624,10 +4661,9 @@ mod tests {
     fn a_frame_a_resize_reads_is_read_whole() -> Result<(), String> {
         let (mut s, c) = attached(24, 80)?;
         let id = PaneId::of(1);
-        s.output(id, b"\x1b[?2026h\x07\x1b]52;c;aGk=\x07", Instant::now());
+        s.out(id, b"\x1b[?2026h\x07\x1b]52;c;aGk=\x07");
         assert!(s.buffers.is_empty(), "held");
-        s.resize(c, 30, 100, Instant::now())
-            .map_err(|e| e.to_string())?;
+        s.size_client(c, 30, 100).map_err(|e| e.to_string())?;
         assert_eq!(s.buffers.front().map(|(_, text)| text.as_str()), Some("hi"));
         assert!(!s.pane(id).map_err(|e| e.to_string())?.bell, "rung");
         Ok(())
@@ -4646,8 +4682,7 @@ mod tests {
                 .map(|p| (p.size().cols(), p.size().rows()))
         };
         assert_eq!(size(&s).ok(), Some((80, 23)), "sized by the client");
-        s.resize(c, 1, 80, Instant::now())
-            .map_err(|e| e.to_string())?;
+        s.size_client(c, 1, 80).map_err(|e| e.to_string())?;
         assert_eq!(size(&s).ok(), Some((40, 12)), "on its own size");
         Ok(())
     }
@@ -4680,7 +4715,7 @@ mod tests {
     #[test]
     fn a_new_tab_takes_the_screen_of_the_callers_tab() -> Result<(), Box<dyn std::error::Error>> {
         let (mut s, _small) = attached(24, 80)?;
-        let big = s.attach(50, 200, None, Instant::now())?;
+        let big = s.attach(50, 200, None)?;
         run(&mut s, "opts 100 30 size str other name new-workspace drop")?;
         run(
             &mut s,
@@ -4719,7 +4754,7 @@ mod tests {
         let mut frame = b"\x1b[?2026h".to_vec();
         frame.extend(crate::pane::tests::spends_the_budget(24, 80));
         frame.extend_from_slice(b"DONE\x1b[?2026l");
-        s.output(PaneId::of(1), &frame, Instant::now());
+        s.out(PaneId::of(1), &frame);
         assert!(s.pane(PaneId::of(1)).is_ok_and(Pane::mid_frame));
         let answer = output(&mut s, "%1 0 timeout wait")?;
         assert!(answer.ends_with(" screen\n"), "{answer}");
@@ -4732,7 +4767,7 @@ mod tests {
     #[test]
     fn a_wait_in_process_sees_a_frame_released_before_its_time() -> Result<(), String> {
         let mut s = started()?;
-        s.output(PaneId::of(1), b"\x1b[?2026hHELLO", Instant::now());
+        s.out(PaneId::of(1), b"\x1b[?2026hHELLO");
         let answer = output(&mut s, "%1 2 timeout wait")?;
         assert!(answer.ends_with(" screen\n"), "{answer}");
         Ok(())
@@ -4755,9 +4790,7 @@ mod tests {
     #[test]
     fn a_zoom_ends_with_its_pane() -> Result<(), String> {
         let (mut s, c1) = attached(24, 80)?;
-        let c2 = s
-            .attach(24, 80, None, Instant::now())
-            .map_err(|e| e.to_string())?;
+        let c2 = s.attach(24, 80, None).map_err(|e| e.to_string())?;
         run(&mut s, "%1 split drop")?;
         run(
             &mut s,
@@ -4789,7 +4822,7 @@ mod tests {
         run(&mut s, "%1 split drop")?;
         run(&mut s, &format!("str {c} client zoom"))?;
         let zoomed = sizes(&s);
-        s.detach(c, Instant::now());
+        s.detach_client(c);
         assert_eq!(sizes(&s), zoomed);
         Ok(())
     }
@@ -4807,7 +4840,7 @@ mod tests {
         let notice = |s: &Session| s.views.get(&c).and_then(|v| v.notice.clone());
         let cut = |s: &mut Session| (s.parts.pane_mut(id)).map(|mut p| p.left_cut());
         cut(&mut s);
-        let lines = told(&mut s, |s| s.exited(id, Ended::Exited(3), Instant::now()));
+        let lines = told(&mut s, |s| s.end_program(id, Ended::Exited(3)));
         assert!(
             lines.contains(r#"{"event":"exited","pane":"%2""#)
                 && lines.contains(r#""truncated":true"#),
@@ -4827,7 +4860,7 @@ mod tests {
         assert!(json.contains(r#""truncated":[]"#), "{json}");
         // So too with `kill-first`, which ends only a program that runs.
         cut(&mut s);
-        s.exited(id, Ended::Exited(3), Instant::now());
+        s.end_program(id, Ended::Exited(3));
         let lines = told(&mut s, |s| _ = run(s, "%2 kill-first respawn"));
         assert!(!lines.contains("truncated"), "{lines}");
         // One respawned over while it runs is told so at the respawn.
@@ -4863,7 +4896,7 @@ mod tests {
         let mut s = started()?;
         run(&mut s, "agent-opts 80 24 size str /bin/cat program run")?;
         let id = PaneId::of(2);
-        s.output(id, b"\x1b[?2026h\x1b]2;old\x07", Instant::now());
+        s.out(id, b"\x1b[?2026h\x1b]2;old\x07");
         // Programs are started, as a server starts them.
         s.launch = Some("/nonexistent/fux.sock".into());
         let mut refused = String::new();
@@ -4911,7 +4944,7 @@ mod tests {
                 return Ok((answer, turns));
             }
             assert!(s.timers().any(|t| t.1 == Timer::Unread(id)), "no turn due");
-            s.fire(Timer::Unread(id), Instant::now());
+            s.fire_now(Timer::Unread(id));
         }
         Err("never answered".into())
     }
@@ -4924,12 +4957,10 @@ mod tests {
         let left: Vec<_> = std::iter::repeat_n(crate::pane::tests::spends_the_budget(24, 80), 4)
             .flatten()
             .collect();
-        s.output(id, &left, Instant::now());
-        let Begun::Waiting(waiting) = s.begin(
-            respawn_of(id, &[])?,
-            &Origin::Cli(Caller::default()),
-            Instant::now(),
-        ) else {
+        s.out(id, &left);
+        let Begun::Waiting(waiting) =
+            s.begin_now(respawn_of(id, &[])?, &Origin::Cli(Caller::default()))
+        else {
             return Err("the predecessor's output must still need turns".into());
         };
         let caller = |generation| {
@@ -4943,7 +4974,7 @@ mod tests {
             text: String::new(),
             kind: Kind::Pane,
         };
-        let found = s.run_command(&here, &caller(1), Instant::now());
+        let found = s.command_now(&here, &caller(1));
         assert_eq!(
             found.end(),
             crate::protocol::End::Done,
@@ -4951,29 +4982,23 @@ mod tests {
         );
         assert_eq!(found, Body::Found(AnyRef::Pane(id)).into());
         assert_eq!(
-            s.run_command(&here, &caller(0), Instant::now())
-                .end()
-                .code(),
+            s.command_now(&here, &caller(0)).end().code(),
             Some(Code::StrayPane)
         );
         assert!(s.respawning.contains_key(&id));
         let (_, turns) = turns(&mut s, id, &waiting)?;
         assert!(turns > 1, "the old output needed {turns} turns");
         assert_eq!(
-            s.run_command(&here, &caller(1), Instant::now()).end(),
+            s.command_now(&here, &caller(1)).end(),
             crate::protocol::End::Done
         );
         assert_eq!(
-            s.run_command(&here, &caller(0), Instant::now())
-                .end()
-                .code(),
+            s.command_now(&here, &caller(0)).end().code(),
             Some(Code::StrayPane)
         );
         run(&mut s, "%2 kill")?;
         assert_eq!(
-            s.run_command(&here, &caller(1), Instant::now())
-                .end()
-                .code(),
+            s.command_now(&here, &caller(1)).end().code(),
             Some(Code::NoPane)
         );
         Ok(())
@@ -4995,12 +5020,12 @@ mod tests {
         let spends = crate::pane::tests::spends_the_budget(24, 80);
         let mut left: Vec<u8> = std::iter::repeat_n(spends, 4).flatten().collect();
         left.push(0x07);
-        s.output(id, &left, Instant::now());
-        let Begun::Waiting(waiting) = s.begin(respawn_of(id, &[])?, &origin, Instant::now()) else {
+        s.out(id, &left);
+        let Begun::Waiting(waiting) = s.begin_now(respawn_of(id, &[])?, &origin) else {
             return Err("answered before what was left was read".into());
         };
         assert_eq!(waiting.due(), None);
-        let Begun::Done(again) = s.begin(respawn_of(id, &[])?, &origin, Instant::now()) else {
+        let Begun::Done(again) = s.begin_now(respawn_of(id, &[])?, &origin) else {
             return Err("a second respawn under way".into());
         };
         assert_eq!(
@@ -5045,18 +5070,10 @@ mod tests {
         run(&mut s, "agent-opts 80 23 size str /bin/cat program run")?;
         run(&mut s, &format!("str {c} client str +2 workspace show"))?;
         let id = PaneId::of(2);
-        s.output(
-            id,
-            &crate::pane::tests::spends_the_budget(23, 80),
-            Instant::now(),
-        );
+        s.out(id, &crate::pane::tests::spends_the_budget(23, 80));
         // Programs are started, as a server starts them.
         s.launch = Some("/nonexistent/fux.sock".into());
-        let begun = s.begin(
-            respawn_of(id, &[])?,
-            &Origin::Cli(Caller::default()),
-            Instant::now(),
-        );
+        let begun = s.begin_now(respawn_of(id, &[])?, &Origin::Cli(Caller::default()));
         s.launch = None;
         let Begun::Waiting(waiting) = begun else {
             return Err("answered before what was left was read".into());
@@ -5102,11 +5119,7 @@ mod tests {
             if let Some(ended) = exiting {
                 pane.exiting(ended);
             }
-            s.output(
-                id,
-                &crate::pane::tests::spends_the_budget(24, 80),
-                Instant::now(),
-            );
+            s.out(id, &crate::pane::tests::spends_the_budget(24, 80));
             let mut stream =
                 crate::events::Subscription::new(None, s.parts.journal(), s.run, None)?;
             let respawn = Request::Do(Command::Respawn {
@@ -5115,8 +5128,7 @@ mod tests {
                 env: command::EnvPatch::default(),
                 argv: None,
             });
-            let Begun::Waiting(waiting) =
-                s.begin(respawn, &Origin::Cli(Caller::default()), Instant::now())
+            let Begun::Waiting(waiting) = s.begin_now(respawn, &Origin::Cli(Caller::default()))
             else {
                 return Err("answered before what was left was read".into());
             };
@@ -5146,12 +5158,8 @@ mod tests {
         let mut s = started()?;
         run(&mut s, "agent-opts 80 24 size str /bin/cat program run")?;
         let id = PaneId::of(2);
-        s.output(id, b"\x1b[?2026hheld", Instant::now());
-        let begun = s.begin(
-            respawn_of(id, &[])?,
-            &Origin::Cli(Caller::default()),
-            Instant::now(),
-        );
+        s.out(id, b"\x1b[?2026hheld");
+        let begun = s.begin_now(respawn_of(id, &[])?, &Origin::Cli(Caller::default()));
         let Begun::Waiting(waiting) = begun else {
             return Err("answered with a frame held".into());
         };
@@ -5169,16 +5177,8 @@ mod tests {
         let mut s = started()?;
         run(&mut s, "agent-opts 80 24 size str /bin/cat program run")?;
         let id = PaneId::of(2);
-        s.output(
-            id,
-            &crate::pane::tests::spends_the_budget(24, 80),
-            Instant::now(),
-        );
-        let begun = s.begin(
-            respawn_of(id, &[])?,
-            &Origin::Cli(Caller::default()),
-            Instant::now(),
-        );
+        s.out(id, &crate::pane::tests::spends_the_budget(24, 80));
+        let begun = s.begin_now(respawn_of(id, &[])?, &Origin::Cli(Caller::default()));
         let Begun::Waiting(waiting) = begun else {
             return Err("answered before what was left was read".into());
         };
@@ -5197,18 +5197,13 @@ mod tests {
         let mut s = started()?;
         run(&mut s, "agent-opts 80 24 size str /bin/cat program run")?;
         let id = PaneId::of(2);
-        s.output(
-            id,
-            &crate::pane::tests::spends_the_budget(24, 80),
-            Instant::now(),
-        );
+        s.out(id, &crate::pane::tests::spends_the_budget(24, 80));
         let mut stream = crate::events::Subscription::new(None, s.parts.journal(), s.run, None)?;
         // Programs are started, as a server starts them.
         s.launch = Some("/nonexistent/fux.sock".into());
-        let begun = s.begin(
+        let begun = s.begin_now(
             respawn_of(id, &["/bin/sh", "-c", "exit 0"])?,
             &Origin::Cli(Caller::default()),
-            Instant::now(),
         );
         s.launch = None;
         let Begun::Waiting(waiting) = begun else {
@@ -5370,7 +5365,7 @@ mod tests {
         assert!(unknown(&s), "hidden");
         run(&mut s, &show("+1"))?;
         assert_eq!(winsize(&s), told, "shown again");
-        s.detach(c, Instant::now());
+        s.detach_client(c);
         assert!(unknown(&s), "detached");
         let mut pane = s.parts.pane_mut(id).ok_or("the pane")?;
         if let Process::Reading(child) = pane.set_process(Process::Absent) {
@@ -5390,8 +5385,8 @@ mod tests {
         run(&mut s, "agent-opts 80 23 size str /bin/cat program run")?;
         run(&mut s, &format!("str {c} client str +2 workspace show"))?;
         s.input(c, b"\x1b[6;20;10t");
-        s.output(PaneId::of(2), b"x", Instant::now());
-        s.detach(c, Instant::now());
+        s.out(PaneId::of(2), b"x");
+        s.detach_client(c);
         run(&mut s, "%2 respawn")?;
         let json = output(&mut s, "%2 capture json")?;
         assert!(json.contains(r#""cell":null"#), "{json}");
@@ -5413,7 +5408,7 @@ mod tests {
             pane.push(bytes).map_err(|e| e.to_string())
         };
         queue(&mut s, b"abc")?;
-        let lines = told(&mut s, |s| s.exited(id, Ended::Exited(0), Instant::now()));
+        let lines = told(&mut s, |s| s.end_program(id, Ended::Exited(0)));
         assert!(
             lines.contains(r#"{"event":"exited","pane":"%2","tab":"@2","workspace":"+2","exited":0,"input_unread":3}"#),
             "{lines}"
@@ -5464,8 +5459,8 @@ mod tests {
                 .map(|p| p.input().len())
                 .map_err(|e| e.to_string())
         };
-        s.output(id, b"\x1b[?2048h\x1b[?2031h", Instant::now());
-        s.exited(id, Ended::Exited(0), Instant::now());
+        s.out(id, b"\x1b[?2048h\x1b[?2031h");
+        s.end_program(id, Ended::Exited(0));
         (s.parts.pane_mut(id).ok_or("the pane")?).resize(sized(10, 40)?, Instant::now());
         s.input(c, b"\x1b[?997;1n");
         assert_eq!(queued(&s)?, 0);
@@ -5481,11 +5476,7 @@ mod tests {
         let mut s = started()?;
         run(&mut s, "agent-opts 80 24 size str /bin/cat program run")?;
         let lines = told(&mut s, |s| {
-            s.exited(
-                PaneId::of(2),
-                crate::process::Ended::Exited(3),
-                Instant::now(),
-            );
+            s.end_program(PaneId::of(2), crate::process::Ended::Exited(3));
             let _ = run(s, "%2 respawn");
         });
         let said: Vec<&str> = lines.lines().filter_map(|l| l.split('"').nth(3)).collect();
@@ -5560,8 +5551,8 @@ mod tests {
             .copied()
             .collect();
         flood.extend_from_slice(b"\x1b[2J\x1b[HDONE");
-        s.output(id, &flood, Instant::now());
-        s.exited(id, Ended::Exited(0), Instant::now());
+        s.out(id, &flood);
+        s.end_program(id, Ended::Exited(0));
         let pane = s.parts.panes().get(&id).ok_or("the pane")?;
         assert!(pane.has_unread(), "the budget stopped no call");
         assert!(
@@ -5570,7 +5561,7 @@ mod tests {
         );
         let mut turns = 0u32;
         while s.parts.panes().get(&id).is_some_and(Pane::has_unread) && turns < 100 {
-            s.fire(crate::session::Timer::Unread(id), Instant::now());
+            s.fire_now(crate::session::Timer::Unread(id));
             turns = turns.saturating_add(1);
         }
         let pane = s.parts.panes().get(&id).ok_or("the pane")?;
@@ -5607,11 +5598,11 @@ mod tests {
                 .is_some_and(|p| p.process().exit_status().is_some())
         };
         let mut turns = 0u32;
-        s.exited(id, Ended::Exited(0), Instant::now());
+        s.end_program(id, Ended::Exited(0));
         while !exited(&s) && turns < 100 {
-            s.fire(crate::session::Timer::Unread(id), Instant::now());
+            s.fire_now(crate::session::Timer::Unread(id));
             // As each reap of another child does.
-            s.exited(id, Ended::Exited(0), Instant::now());
+            s.end_program(id, Ended::Exited(0));
             turns = turns.saturating_add(1);
         }
         let told = exited(&s);
@@ -5644,8 +5635,8 @@ mod tests {
         let mut s = started()?;
         run(&mut s, "agent-opts 80 24 size str /bin/true program run")?;
         let id = PaneId::of(2);
-        s.output(id, b"\x1b[?2026hHELD", Instant::now());
-        s.exited(id, Ended::Exited(0), Instant::now());
+        s.out(id, b"\x1b[?2026hHELD");
+        s.end_program(id, Ended::Exited(0));
         let pane = s.parts.panes().get(&id).ok_or("the pane")?;
         assert_eq!(pane.process().exit_status(), Some(Ended::Exited(0)));
         let text = pane
@@ -5669,8 +5660,8 @@ mod tests {
             .copied()
             .collect();
         out.extend_from_slice(b"\x1b[2J\x1b[H\x1b[?2026hHELD");
-        s.output(id, &out, Instant::now());
-        s.exited(id, Ended::Exited(0), Instant::now());
+        s.out(id, &out);
+        s.end_program(id, Ended::Exited(0));
         let mut turns = 0u32;
         while s
             .parts
@@ -5679,7 +5670,7 @@ mod tests {
             .is_some_and(|p| p.process().exit_status().is_none())
             && turns < 100
         {
-            s.fire(crate::session::Timer::Unread(id), Instant::now());
+            s.fire_now(crate::session::Timer::Unread(id));
             turns = turns.saturating_add(1);
         }
         let pane = s.parts.panes().get(&id).ok_or("the pane")?;
@@ -5738,7 +5729,7 @@ mod tests {
             .pane(PaneId::of(1))
             .map_err(|e| e.to_string())?
             .version(s.run);
-        s.output(PaneId::of(1), b"E", Instant::now());
+        s.out(PaneId::of(1), b"E");
         let stale = output(&mut s, &format!("str {seen} expect str x text send-keys"));
         let stale = stale.err().unwrap_or_default();
         assert!(
@@ -5752,11 +5743,7 @@ mod tests {
             .pane(PaneId::of(2))
             .map_err(|e| e.to_string())?
             .version(s.run);
-        s.exited(
-            PaneId::of(2),
-            crate::process::Ended::Exited(0),
-            Instant::now(),
-        );
+        s.end_program(PaneId::of(2), crate::process::Ended::Exited(0));
         let ended = output(&mut s, &format!("str {seen} expect str x text send-keys"));
         let ended = ended.err().unwrap_or_default();
         assert!(ended.starts_with("stale: "), "{ended}");
@@ -5767,12 +5754,11 @@ mod tests {
     #[test]
     fn history_budget_only_changes_its_target() -> Result<(), String> {
         let (mut s, client) = attached(5, 20)?;
-        s.output(
+        s.out(
             PaneId::of(1),
             std::iter::repeat_n("line\r\n", 50)
                 .collect::<String>()
                 .as_bytes(),
-            Instant::now(),
         );
         let history = |s: &Session| {
             s.parts
@@ -5825,7 +5811,7 @@ mod tests {
     fn a_programs_clipboard_write_is_a_copy() -> Result<(), String> {
         let (mut s, client) = attached(5, 20)?;
         s.outbox.clear();
-        s.output(PaneId::of(1), b"\x1b]52;c;Zm9v\x07", Instant::now());
+        s.out(PaneId::of(1), b"\x1b]52;c;Zm9v\x07");
         assert_eq!(
             s.buffers.front().map(|(_, text)| text.as_str()),
             Some("foo")
@@ -5841,7 +5827,7 @@ mod tests {
             "\x1b]52;c;{}\x07",
             std::iter::repeat_n('A', fux_vt::OSC_PAYLOAD_LIMIT).collect::<String>()
         );
-        s.output(PaneId::of(1), long.as_bytes(), Instant::now());
+        s.out(PaneId::of(1), long.as_bytes());
         let notice = s.views.get(&client).and_then(|v| v.notice.clone());
         assert!(notice.is_some_and(|n| n.error && n.text.contains("copies (OSC 52) not made (1)")));
         assert_eq!(
@@ -5852,10 +5838,9 @@ mod tests {
         if let Some(view) = s.views.get_mut(&client) {
             view.notice = None;
         }
-        s.output(
+        s.out(
             PaneId::of(1),
             b"\x1b]52;c;YQ==\x07\x1b]52;c;***\x07\x1b]52;c;Yg==\x07",
-            Instant::now(),
         );
         let buffers: Vec<&str> = s
             .buffers
@@ -5872,11 +5857,7 @@ mod tests {
         if let Some(view) = s.views.get_mut(&client) {
             view.notice = None;
         }
-        s.output(
-            PaneId::of(1),
-            b"\x1b]52;c;***\x07\x1b]52;c;***\x07",
-            Instant::now(),
-        );
+        s.out(PaneId::of(1), b"\x1b]52;c;***\x07\x1b]52;c;***\x07");
         assert!(s.views.get(&client).is_some_and(|v| v.notice.is_none()));
         run(&mut s, "str c1 client str +1 workspace show")?;
         let notice = s.views.get(&client).and_then(|v| v.notice.clone());
@@ -5890,7 +5871,7 @@ mod tests {
         s.outbox.clear();
         run(&mut s, "%1 horizontal false program-clipboard split")?;
         s.outbox.clear();
-        s.output(PaneId::of(3), b"\x1b]52;c;YmFy\x07", Instant::now());
+        s.out(PaneId::of(3), b"\x1b]52;c;YmFy\x07");
         assert!(!sent(&s) && s.outbox.is_empty());
         assert_eq!(s.buffers.front().map(|(_, text)| text.as_str()), Some("b"));
         Ok(())
@@ -5905,10 +5886,9 @@ mod tests {
             terminal_clipboard: true,
         };
         let client = s
-            .attach_as(
+            .attach_client(
                 ClientKind::Terminal,
                 Attach::of(sized(8, 40)?, presentation),
-                Instant::now(),
             )
             .map_err(|e| e.to_string())?;
         assert_eq!(
@@ -5916,11 +5896,7 @@ mod tests {
             Some(presentation)
         );
         s.outbox.clear();
-        s.output(
-            PaneId::of(1),
-            b"\x1b]2;initial\x07\x07\x1b]52;c;Zm9v\x07",
-            Instant::now(),
-        );
+        s.out(PaneId::of(1), b"\x1b]2;initial\x07\x07\x1b]52;c;Zm9v\x07");
         assert!(
             s.outbox
                 .iter()
@@ -5934,9 +5910,7 @@ mod tests {
     #[test]
     fn in_process_clients_keep_their_own_presentation() -> Result<(), String> {
         let (mut s, a) = attached(8, 40)?;
-        let b = s
-            .attach(8, 40, None, Instant::now())
-            .map_err(|e| e.to_string())?;
+        let b = s.attach(8, 40, None).map_err(|e| e.to_string())?;
         output_as(
             &mut s,
             Some(a),
@@ -6003,20 +5977,17 @@ mod tests {
     fn clipboard_permission_and_delivery_have_separate_owners() -> Result<(), String> {
         use crate::act::Act;
         let (mut s, a) = attached(8, 40)?;
-        let b = s
-            .attach(8, 40, None, Instant::now())
-            .map_err(|e| e.to_string())?;
+        let b = s.attach(8, 40, None).map_err(|e| e.to_string())?;
         let presentation = crate::script::default_state()
             .map_err(|e| e.to_string())?
             .preferences
             .presentation();
-        s.acts(
+        s.apply(
             a,
             vec![Act::Presentation(crate::view::Presentation {
                 terminal_clipboard: false,
                 ..presentation
             })],
-            Instant::now(),
         );
         run(&mut s, "%1 horizontal false program-clipboard split")?;
         if let Some(view) = s.views.get_mut(&b) {
@@ -6024,7 +5995,7 @@ mod tests {
             view.read_only = true;
         }
         s.outbox.clear();
-        s.output(PaneId::of(1), b"\x1b]52;c;Zm9v\x07", Instant::now());
+        s.out(PaneId::of(1), b"\x1b]52;c;Zm9v\x07");
         assert_eq!(s.buffers.len(), 1);
         let copies = |s: &Session| {
             s.outbox
@@ -6037,14 +6008,14 @@ mod tests {
         };
         assert_eq!(copies(&s), [b]);
         s.outbox.clear();
-        s.output(PaneId::of(2), b"\x1b]52;c;YmFy\x07", Instant::now());
+        s.out(PaneId::of(2), b"\x1b]52;c;YmFy\x07");
         assert_eq!(s.buffers.len(), 1);
         assert!(copies(&s).is_empty());
         // Manual copying always stores; it targets only the copying client.
         s.copied("manual".into(), &[a]).map_err(|e| e.to_string())?;
         assert_eq!(s.buffers.len(), 2);
         assert!(copies(&s).is_empty());
-        s.acts(a, vec![Act::Presentation(presentation)], Instant::now());
+        s.apply(a, vec![Act::Presentation(presentation)]);
         s.copied("mine".into(), &[a]).map_err(|e| e.to_string())?;
         assert_eq!(copies(&s), [a]);
         Ok(())
@@ -6056,7 +6027,7 @@ mod tests {
     #[test]
     fn replies_dropped_are_counted_in_a_panes_json() -> Result<(), String> {
         let (mut s, c) = attached(5, 20)?;
-        s.detach(c, Instant::now());
+        s.detach_client(c);
         let id = PaneId::of(1);
         // `ESC [ 1 ; 1 R` each: as many as fit a read's replies, and one more.
         let fit = crate::pane::REPLIES_MAX / b"\x1b[1;1R".len();
@@ -6064,18 +6035,18 @@ mod tests {
             .flatten()
             .copied()
             .collect();
-        s.output(id, &queries, Instant::now());
+        s.out(id, &queries);
         let json = output(&mut s, "%1 capture json")?;
         assert!(json.contains(r#""replies":1,"#), "{json}");
         let mut pane = s.parts.pane_mut(id).ok_or("the pane")?;
         let room = pane.input().room();
         pane.push(vec![b'x'; room]).map_err(|e| e.to_string())?;
-        s.output(id, b"\x1b[6n\x1b[6n", Instant::now());
+        s.out(id, b"\x1b[6n\x1b[6n");
         let json = output(&mut s, "%1 capture json")?;
         assert!(json.contains(r#""replies":3,"#), "{json}");
         // In-band resize reports the full queue refuses are counted: the
         // one setting mode 2048 answers, and the one a resize sends.
-        s.output(id, b"\x1b[?2048h", Instant::now());
+        s.out(id, b"\x1b[?2048h");
         let json = output(&mut s, "%1 capture json")?;
         assert!(json.contains(r#""replies":4,"#), "{json}");
         run(&mut s, "@1 30 6 resize")?;
@@ -6140,23 +6111,18 @@ mod tests {
         assert!(s.parts.panes().is_empty());
         // A client of a size no view has starts nothing, nor does one that
         // only watches: there is nothing to watch.
-        assert!(
-            s.attach(view::MOST.saturating_add(1), 40, None, Instant::now())
-                .is_err()
-        );
+        assert!(s.attach(view::MOST.saturating_add(1), 40, None).is_err());
         assert!(watch(&mut s, 11, 40).is_err());
         assert!(s.parts.panes().is_empty());
         let size = |s: &Session, p| s.parts.panes().get(&PaneId::of(p)).map(|p| p.size().into());
-        let c = s
-            .attach(11, 40, None, Instant::now())
-            .map_err(|e| e.to_string())?;
+        let c = s.attach(11, 40, None).map_err(|e| e.to_string())?;
         assert_eq!(size(&s, 1), Some((10, 40)));
         // Nor from a caller with no screen or tab of its own, whatever
         // client is attached.
         let refused = run(&mut s, "opts str +1 workspace in new-tab").err();
         assert!(refused.is_some_and(|r| r.starts_with("size: ")));
         run(&mut s, "str %1 pane vertical split")?;
-        s.detach(c, Instant::now());
+        s.detach_client(c);
         run(&mut s, "%2 kill")?;
         assert_eq!(
             size(&s, 1),
@@ -6215,11 +6181,7 @@ mod tests {
         let (mut s, _) = attached(4, 30)?;
         run(&mut s, "str %1 pane horizontal split")?;
         run(&mut s, r#"str %1 pane str 'say "hi" \ 界' rename"#)?;
-        s.output(
-            PaneId::of(2),
-            "a\tb 界\x1b]2;tab\\title\x07".as_bytes(),
-            Instant::now(),
-        );
+        s.out(PaneId::of(2), "a\tb 界\x1b]2;tab\\title\x07".as_bytes());
         let ls = output(&mut s, "ls json")?;
         assert!(ls.contains(r#""name":"say \"hi\" \\ 界""#), "{ls}");
         assert!(ls.contains(r#""title":"tab\\title""#), "{ls}");
@@ -6228,7 +6190,7 @@ mod tests {
             "\x1b]2;{}\x07",
             std::iter::repeat_n('t', crate::pane::TITLE_MAX + 1).collect::<String>()
         );
-        s.output(PaneId::of(2), long.as_bytes(), Instant::now());
+        s.out(PaneId::of(2), long.as_bytes());
         let capture = output(&mut s, "str %2 pane capture json")?;
         assert!(capture.contains(r#""truncated":["title"]"#), "{capture}");
         assert!(capture.contains(r#""lines":["a       b 界"]"#), "{capture}");
@@ -6248,20 +6210,12 @@ mod tests {
         };
         // Two panes: the tab stays.
         run(&mut s, "str %1 pane horizontal split")?;
-        s.exited(
-            PaneId::of(2),
-            crate::process::Ended::Exited(3),
-            Instant::now(),
-        );
+        s.end_program(PaneId::of(2), crate::process::Ended::Exited(3));
         assert_eq!(notice(&s).as_deref(), Some("%2 exited with status 3"));
         // A second tab, shown; its only pane exits, and the tab with it.
         run(&mut s, "opts 40 9 size str +1 workspace in new-tab")?;
         run(&mut s, "str c1 client str @2 tab show")?;
-        s.exited(
-            PaneId::of(3),
-            crate::process::Ended::Exited(7),
-            Instant::now(),
-        );
+        s.end_program(PaneId::of(3), crate::process::Ended::Exited(7));
         assert_eq!(notice(&s).as_deref(), Some("%3 exited with status 7"));
         Ok(())
     }
@@ -6309,17 +6263,15 @@ mod tests {
             .first()
             .map(|w| w.id())
             .ok_or("a workspace")?;
-        let Begun::Waiting(waiting) = s.begin(wait(AnyRef::Workspace(ws)), &origin, Instant::now())
-        else {
+        let Begun::Waiting(waiting) = s.begin_now(wait(AnyRef::Workspace(ws)), &origin) else {
             return Err("the workspace's wait answered at once".into());
         };
         assert!(waiting.answer(&s, Instant::now()).is_none());
-        s.output(PaneId::of(2), b"E", Instant::now());
+        s.out(PaneId::of(2), b"E");
         let answer = waiting.answer(&s, Instant::now()).ok_or("no answer")?;
         let text = said(&Ok(answer));
         assert!(text.starts_with("%2:") && !text.contains("%1"), "{text}");
-        let Begun::Waiting(waiting) =
-            s.begin(wait(AnyRef::Pane(PaneId::of(1))), &origin, Instant::now())
+        let Begun::Waiting(waiting) = s.begin_now(wait(AnyRef::Pane(PaneId::of(1))), &origin)
         else {
             return Err("the pane's wait answered at once".into());
         };
@@ -6357,7 +6309,7 @@ mod tests {
     fn counts_refuses_capture_text_as_a_version() -> Result<(), String> {
         let (mut s, client) = attached(24, 80)?;
         let shown = "%2:0.57.1.3.0:48211-1867a3f9c2b8e7d6";
-        s.output(PaneId::of(1), shown.as_bytes(), Instant::now());
+        s.out(PaneId::of(1), shown.as_bytes());
         let capture = format!("str {client} client capture");
         let text = output(&mut s, &format!("{capture} string"))?;
         assert_eq!(text.split_whitespace().next(), Some(shown));
@@ -6453,7 +6405,7 @@ mod tests {
         let failed = |s: &mut Session, code: &str| output(s, code).err().unwrap_or_default();
         let of = |s: &Session, pane| s.pane(PaneId::of(pane)).map(|p| p.version(s.run));
         let (one, two) = (of(&s, 1)?, of(&s, 2)?);
-        s.output(PaneId::of(2), b"E", Instant::now());
+        s.out(PaneId::of(2), b"E");
         // From %2's version, though asked nowhere else: %2's change.
         let answer = output(&mut s, &format!("str {two} changed 0 timeout wait"))?;
         assert!(
@@ -6491,20 +6443,18 @@ mod tests {
         frame.extend(crate::pane::tests::spends_the_budget(23, 80));
         frame.extend_from_slice(b"DONE\x1b[?2026l");
         let since = of(&s, 1)?;
-        s.output(PaneId::of(1), &frame, Instant::now());
+        s.out(PaneId::of(1), &frame);
         let wait = Request::Wait(command::Wait {
             since: command::Since::Version(since),
             timeout: command::Limit::read(0)?,
         });
-        let Begun::Waiting(waiting) =
-            s.begin(wait, &Origin::Cli(Caller::default()), Instant::now())
-        else {
+        let Begun::Waiting(waiting) = s.begin_now(wait, &Origin::Cli(Caller::default())) else {
             return Err("a wait mid-frame answered at once".into());
         };
         let due = waiting.due().ok_or("a wait with no time")?;
         while s.pane(PaneId::of(1))?.mid_frame() {
             assert!(waiting.answer(&s, due).is_none());
-            s.fire(Timer::Unread(PaneId::of(1)), Instant::now());
+            s.fire_now(Timer::Unread(PaneId::of(1)));
         }
         let answer = waiting.answer(&s, due).ok_or("no answer")?;
         let text = said(&Ok(answer));
@@ -6551,23 +6501,23 @@ mod tests {
         };
         let dirty = |s: &Session| s.views.get(&client).is_some_and(|view| view.dirty);
         clean(&mut s);
-        s.output(pane, b"ordinary output", Instant::now());
+        s.out(pane, b"ordinary output");
         assert!(!dirty(&s), "ordinary hidden output");
-        s.output(pane, b"\x1b]2;finished\x07", Instant::now());
+        s.out(pane, b"\x1b]2;finished\x07");
         assert!(dirty(&s), "the hidden tab's label changed");
         clean(&mut s);
-        s.output(pane, b"\x1b]2;finished\x07", Instant::now());
+        s.out(pane, b"\x1b]2;finished\x07");
         assert!(!dirty(&s), "the label stayed the same");
         run(&mut s, "@2 str given rename")?;
         clean(&mut s);
-        s.output(pane, b"\x1b]2;another title\x07", Instant::now());
+        s.out(pane, b"\x1b]2;another title\x07");
         assert!(!dirty(&s), "a given tab name masks its pane's title");
         run(
             &mut s,
             "opts +1 in 80 24 size new-tab drop %3 str given-pane rename",
         )?;
         clean(&mut s);
-        s.output(PaneId::of(3), b"\x1b]2;another title\x07", Instant::now());
+        s.out(PaneId::of(3), b"\x1b]2;another title\x07");
         assert!(!dirty(&s), "a given pane name masks its title");
         Ok(())
     }
@@ -6580,7 +6530,7 @@ mod tests {
     fn only_screens_that_may_change_are_marked_for_painting()
     -> Result<(), Box<dyn std::error::Error>> {
         let (mut s, one) = attached(10, 40)?;
-        let two = s.attach(10, 40, None, Instant::now())?;
+        let two = s.attach(10, 40, None)?;
         let clean = |s: &mut Session| {
             for view in s.views.values_mut() {
                 view.dirty = false;
@@ -6595,7 +6545,7 @@ mod tests {
             !dirty(&s, one) && !dirty(&s, two),
             "typing into a pane repaints no one until the pane answers"
         );
-        s.output(crate::id::PaneId::of(1), b"ls", Instant::now());
+        s.out(crate::id::PaneId::of(1), b"ls");
         assert!(dirty(&s, one) && dirty(&s, two), "its echo repaints both");
         clean(&mut s);
         // A key that changes the typist's own screen repaints it alone.
@@ -6652,7 +6602,7 @@ mod tests {
             "agent-opts str /bin/cat program str / cwd run me swap show",
         )?;
         let pane = s.focused(c).ok_or("pane")?;
-        s.output(pane, b"old text", Instant::now());
+        s.out(pane, b"old text");
         s.input(c, b"\x02cv");
         let view = s.views.get(&c).ok_or("view")?;
         let opening = view.opening;
@@ -6662,7 +6612,7 @@ mod tests {
         let row = copy.cursor.0;
         assert!(copy.selection.is_some());
         run(&mut s, &format!("{pane} kill-first respawn"))?;
-        s.output(pane, b"new text", Instant::now());
+        s.out(pane, b"new text");
         assert!(
             s.parts
                 .panes()
@@ -6679,13 +6629,12 @@ mod tests {
                 .as_ref()
                 .is_some_and(|n| n.text.contains("respawned"))
         );
-        s.acts(
+        s.apply(
             c,
             vec![Act::Screen {
                 opening,
                 act: ScreenAct::Copy(CopyAct::Yank),
             }],
-            Instant::now(),
         );
         assert!(
             s.buffers.is_empty(),
@@ -6701,16 +6650,12 @@ mod tests {
         // Two rows of a cell or none, never three: 24 bytes a row, 8 a cell.
         let mut s = started()?;
         run(&mut s, "%1 64 history-budget")?;
-        let client = s.attach(6, 20, None, Instant::now())?;
-        s.output(
-            PaneId::of(1),
-            b"a\r\nb\r\nc\r\nd\r\ne\r\nf\r\n",
-            Instant::now(),
-        );
+        let client = s.attach(6, 20, None)?;
+        s.out(PaneId::of(1), b"a\r\nb\r\nc\r\nd\r\ne\r\nf\r\n");
         run(&mut s, "str c1 client copy-mode")?;
         // To the oldest row, which the next lines of output push out.
         s.input(client, b"g");
-        s.output(PaneId::of(1), b"g\r\nh\r\ni\r\nj\r\n", Instant::now());
+        s.out(PaneId::of(1), b"g\r\nh\r\ni\r\nj\r\n");
         s.hold_copies();
         let view = s.views.get(&client).ok_or("the view")?;
         assert!(matches!(view.mode, Mode::Normal), "copy mode ended");
@@ -6732,15 +6677,11 @@ mod tests {
         // Two rows of a cell or none, never three: 24 bytes a row, 8 a cell.
         let mut s = started()?;
         run(&mut s, "%1 64 history-budget")?;
-        let client = s.attach(6, 20, None, Instant::now())?;
-        s.output(
-            PaneId::of(1),
-            b"a\r\nb\r\nc\r\nd\r\ne\r\nf\r\n",
-            Instant::now(),
-        );
+        let client = s.attach(6, 20, None)?;
+        s.out(PaneId::of(1), b"a\r\nb\r\nc\r\nd\r\ne\r\nf\r\n");
         run(&mut s, "str c1 client copy-mode")?;
         s.input(client, b"g");
-        s.resize(client, 3, 20, Instant::now())?;
+        s.size_client(client, 3, 20)?;
         let view = s.views.get(&client).ok_or("the view")?;
         assert!(matches!(view.mode, Mode::Normal), "copy mode ended");
         Ok(())
@@ -6764,7 +6705,7 @@ mod tests {
             if let Some(view) = s.views.get_mut(&c) {
                 view.dirty = false;
             }
-            let resized = s.resize(c, rows, 40, Instant::now()).ok();
+            let resized = s.size_client(c, rows, 40).ok();
             let dirty = s.views.get(&c).is_some_and(|v| v.dirty);
             assert_eq!(
                 (resized, dirty),
@@ -6772,7 +6713,7 @@ mod tests {
                 "{rows} rows"
             );
         }
-        assert!(s.attach(past, 40, None, Instant::now()).is_err());
+        assert!(s.attach(past, 40, None).is_err());
         Ok(())
     }
 
@@ -6849,7 +6790,7 @@ mod tests {
         );
         run(&mut s, "%2 horizontal split drop")?;
         assert_eq!(output(&mut s, "str web pane")?, "%2\n");
-        s.output(PaneId::of(2), b"\x1b]2;spool\x07", Instant::now());
+        s.out(PaneId::of(2), b"\x1b]2;spool\x07");
         assert!(output(&mut s, "str spool pane").is_err());
         assert!(output(&mut s, "str cat pane").is_err());
         assert_eq!(output(&mut s, "str %1")?, "%1\n");
@@ -6929,29 +6870,28 @@ mod tests {
                 .unwrap_or_default()
                 .to_owned())
         };
-        s.output(PaneId::of(1), b"0123456789\x1b[1;6H", Instant::now());
+        s.out(PaneId::of(1), b"0123456789\x1b[1;6H");
         assert_eq!(cursor(&mut s, "")?, "[0,5]");
         assert_eq!(cursor(&mut s, "2 7 cols")?, "[0,5]");
         assert_eq!(cursor(&mut s, "0 2 cols")?, "[0,5]");
-        s.output(PaneId::of(1), b"\x1b[?25l", Instant::now());
+        s.out(PaneId::of(1), b"\x1b[?25l");
         assert_eq!(cursor(&mut s, "")?, "null", "hidden");
-        s.output(PaneId::of(1), b"\x1b[?25h\x1b[3;1H", Instant::now());
+        s.out(PaneId::of(1), b"\x1b[?25h\x1b[3;1H");
         assert_eq!(cursor(&mut s, "")?, "[2,0]", "on a blank row trimmed");
-        s.output(
+        s.out(
             PaneId::of(1),
             &[b"\x1b[2J\x1b[H".as_slice(), &[b'A'; 45], b"\r\nBC"].concat(),
-            Instant::now(),
         );
         assert_eq!(cursor(&mut s, "")?, "[2,2]");
         assert_eq!(cursor(&mut s, "wrapped")?, "[2,2]");
-        s.output(PaneId::of(1), b"\x1b[?1049h\x1b[HALT", Instant::now());
+        s.out(PaneId::of(1), b"\x1b[?1049h\x1b[HALT");
         assert_eq!(cursor(&mut s, "alt-screen")?, "[0,3]");
         assert_eq!(cursor(&mut s, "main-screen")?, "null");
-        s.output(PaneId::of(1), b"\x1b[?1049l", Instant::now());
+        s.out(PaneId::of(1), b"\x1b[?1049l");
         assert_eq!(cursor(&mut s, "alt-screen")?, "null");
         assert_eq!(cursor(&mut s, "main-screen")?, "[2,2]");
         // What is highlighted is marked in JSON's lines too.
-        s.output(PaneId::of(1), b"\x1b[7mSEL\x1b[0m", Instant::now());
+        s.out(PaneId::of(1), b"\x1b[7mSEL\x1b[0m");
         let json = output(&mut s, "%1 marks capture json")?;
         assert!(json.contains("\"BC⟦SEL⟧\""), "{json}");
         let inverted = output(&mut s, "%1 5 2 rows capture");
@@ -6961,15 +6901,11 @@ mod tests {
         );
         // A glyph in the last column leaves the cursor on it, the wrap
         // pending: said so.
-        s.output(
-            PaneId::of(1),
-            &[b"\r\n".as_slice(), &[b'D'; 40]].concat(),
-            Instant::now(),
-        );
+        s.out(PaneId::of(1), &[b"\r\n".as_slice(), &[b'D'; 40]].concat());
         assert_eq!(cursor(&mut s, "wrapped")?, "[3,39]");
         let json = output(&mut s, "%1 capture json")?;
         assert!(json.contains(r#""wrap_pending":true"#), "{json}");
-        s.output(PaneId::of(1), b"\r", Instant::now());
+        s.out(PaneId::of(1), b"\r");
         let json = output(&mut s, "%1 capture json")?;
         assert!(json.contains(r#""wrap_pending":false"#), "{json}");
         Ok(())
@@ -7135,9 +7071,9 @@ mod tests {
         run(&mut s, "%1 split drop")?;
         let mut ran = Ok(());
         let lines = told(&mut s, |s| {
-            s.output(PaneId::of(2), b"\x07", Instant::now());
+            s.out(PaneId::of(2), b"\x07");
             ran = run(s, "str @1 tab str t rename");
-            s.output(PaneId::of(1), b"\x1b]2;title\x07", Instant::now());
+            s.out(PaneId::of(1), b"\x1b]2;title\x07");
         });
         ran?;
         let said = concat!(
@@ -7159,7 +7095,7 @@ mod tests {
         let mut s = started()?;
         run(&mut s, "%1 split drop")?;
         let lines = told(&mut s, |s| {
-            s.exited(PaneId::of(2), Ended::Signalled(9), Instant::now())
+            s.end_program(PaneId::of(2), Ended::Signalled(9))
         });
         let said = concat!(
             r#"{"event":"exited","pane":"%2","tab":"@1","workspace":"+1","signal":9}"#,
@@ -7180,12 +7116,8 @@ mod tests {
         let mut s = started()?;
         run(&mut s, "%1 split drop")?;
         let lines = told(&mut s, |s| {
-            s.output(
-                PaneId::of(2),
-                b"\x1b[?2026h\x07\x1b]2;bye\x07",
-                Instant::now(),
-            );
-            s.exited(PaneId::of(2), Ended::Exited(0), Instant::now());
+            s.out(PaneId::of(2), b"\x1b[?2026h\x07\x1b]2;bye\x07");
+            s.end_program(PaneId::of(2), Ended::Exited(0));
         });
         let said = concat!(
             r#"{"event":"bell","pane":"%2","tab":"@1","workspace":"+1"}"#,
@@ -7368,8 +7300,7 @@ mod tests {
         };
         assert_eq!(replays(&s)?, 4);
         run(&mut s, "str c1 client zoom")?;
-        s.resize(c, 2, 2, Instant::now())
-            .map_err(|e| e.to_string())?;
+        s.size_client(c, 2, 2).map_err(|e| e.to_string())?;
         assert_eq!(replays(&s)?, 4);
         Ok(())
     }
@@ -7432,8 +7363,7 @@ mod tests {
     fn a_tab_fitting_clients_splits_only_while_each_screen_shows_every_pane() -> Result<(), String>
     {
         let (mut s, _) = attached(50, 200)?;
-        s.attach(50, 30, None, Instant::now())
-            .map_err(|e| e.to_string())?;
+        s.attach(50, 30, None).map_err(|e| e.to_string())?;
         watch(&mut s, 50, 8)?;
         // Ten panes side by side take their 2 columns each and 9 separators.
         for _ in 1..10 {
@@ -7487,11 +7417,8 @@ mod tests {
     #[test]
     fn a_pane_starts_at_the_size_its_screens_give_it() -> Result<(), String> {
         let mut s = started()?;
-        let wide = s
-            .attach(11, 101, None, Instant::now())
-            .map_err(|e| e.to_string())?;
-        s.attach(11, 81, None, Instant::now())
-            .map_err(|e| e.to_string())?;
+        let wide = s.attach(11, 101, None).map_err(|e| e.to_string())?;
+        s.attach(11, 81, None).map_err(|e| e.to_string())?;
         let size = |s: &Session, id| s.parts.panes().get(&PaneId::of(id)).map(Pane::size);
         // The narrow one, zoomed, follows the split unzoomed.
         run(&mut s, "str c2 client zoom")?;
@@ -7522,17 +7449,12 @@ mod tests {
     #[test]
     fn a_screen_with_no_room_sizes_no_pane() -> Result<(), String> {
         let mut s = started()?;
-        let small = s
-            .attach(5, 6, None, Instant::now())
-            .map_err(|e| e.to_string())?;
+        let small = s.attach(5, 6, None).map_err(|e| e.to_string())?;
         // A client of one row has no room: its tab, which the other
         // client's screen sizes, sizes the tab it makes.
-        let one = s
-            .attach(1, 40, None, Instant::now())
-            .map_err(|e| e.to_string())?;
-        s.attach(11, 40, None, Instant::now())
-            .map_err(|e| e.to_string())?;
-        s.detach(small, Instant::now());
+        let one = s.attach(1, 40, None).map_err(|e| e.to_string())?;
+        s.attach(11, 40, None).map_err(|e| e.to_string())?;
+        s.detach_client(small);
         output_as(
             &mut s,
             Some(one),
@@ -7540,9 +7462,7 @@ mod tests {
         )?;
         let size = s.parts.panes().get(&PaneId::of(2)).map(Pane::size);
         assert_eq!(size, Some(sized(10, 40)?));
-        let small = s
-            .attach(5, 6, None, Instant::now())
-            .map_err(|e| e.to_string())?;
+        let small = s.attach(5, 6, None).map_err(|e| e.to_string())?;
         let made = "opts 100 10 size str +1 workspace in str / cwd new-tab \
                     dup str / cwd split drop dup str / cwd split drop str / cwd split drop";
         run(&mut s, made)?;
@@ -7561,9 +7481,7 @@ mod tests {
     #[test]
     fn a_screen_with_no_room_refuses_nothing() -> Result<(), String> {
         let (mut s, _) = attached(11, 40)?;
-        let tiny = s
-            .attach(1, 40, None, Instant::now())
-            .map_err(|e| e.to_string())?;
+        let tiny = s.attach(1, 40, None).map_err(|e| e.to_string())?;
         run(&mut s, "%1 split drop %1 split drop")?;
         for (pane, to) in [("%1", "new-tab"), ("%2", "new-workspace")] {
             let lines = told(&mut s, |s| {
@@ -7585,8 +7503,7 @@ mod tests {
     fn no_border_moves_where_a_pane_is_hidden() -> Result<(), String> {
         let (mut s, c) = attached(11, 40)?;
         run(&mut s, "%1 split drop %2 split drop")?;
-        s.resize(c, 11, 6, Instant::now())
-            .map_err(|e| e.to_string())?;
+        s.size_client(c, 11, 6).map_err(|e| e.to_string())?;
         let refused = run(&mut s, "%1 str right 1 move-border").err();
         let refused = refused.unwrap_or_default();
         assert!(
@@ -7721,11 +7638,11 @@ mod tests {
             Err(Error::NoPane(p)) if p == PaneId::of(9)
         ));
         assert!(matches!(
-            s.attach(10, 40, Some("%1"), Instant::now()),
+            s.attach(10, 40, Some("%1")),
             Err(e) if e.code() == Code::NoWorkspace
         ));
         assert!(matches!(
-            s.attach(10, 40, Some("+x"), Instant::now()),
+            s.attach(10, 40, Some("+x")),
             Err(e) if e.code() == Code::BadValue && e.to_string().contains("+x")
         ));
         Ok(())

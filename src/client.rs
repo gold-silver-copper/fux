@@ -2066,13 +2066,13 @@ mod tests {
                     .count(),
                 usize::from(!failed)
             );
-            session.acts(client, acts, Instant::now());
+            session.apply(client, acts);
             let view = session.views.get(&client).ok_or("view")?;
             let notice = view.notice.as_ref().ok_or("notice")?;
             assert_eq!(notice.error, failed);
             assert!(notice.text.contains(if failed { "boom" } else { "hello" }));
             if let Some(act) = keyboard.screen.close() {
-                session.acts(client, vec![act], Instant::now());
+                session.apply(client, vec![act]);
             }
         }
         keyboard.read_only = true;

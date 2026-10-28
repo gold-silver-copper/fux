@@ -349,10 +349,9 @@ mod tests {
             env: crate::command::EnvPatch::default(),
         };
         session
-            .start(
+            .start_now(
                 fux_vt::Size::new(24, 80).map_err(|e| e.to_string())?,
                 &initial,
-                std::time::Instant::now(),
             )
             .map_err(|e| e.to_string())?;
         let result = session.dump_with(None, 8192);

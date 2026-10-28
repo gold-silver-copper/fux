@@ -767,7 +767,6 @@ fn yank(session: &mut Session, client: ClientId, copied: Result<String, String>)
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::Instant;
 
     fn screen(text: &[u8], rows: u16, cols: u16) -> Result<fux_vt::Parser, String> {
         let size = fux_vt::Size::new(rows, cols).map_err(|e| e.to_string())?;
@@ -793,7 +792,7 @@ mod tests {
         use crate::keymap::Named;
         for (_, copy_act) in CopyAct::NAMES {
             let (mut s, c) = crate::session::testing::attached(6, 30)?;
-            s.output(PaneId::of(1), b"one\r\ntwo", Instant::now());
+            s.out(PaneId::of(1), b"one\r\ntwo");
             let (hints, typing) = (Vec::new(), Vec::new());
             act(&mut s, c, CopyAct::Enter { hints, typing });
             act(&mut s, c, copy_act.clone());
@@ -819,7 +818,7 @@ mod tests {
             }
         }
         output.push_str("\x1b]133;A\x07$ ");
-        s.output(pane, output.as_bytes(), Instant::now());
+        s.out(pane, output.as_bytes());
         let screen = |s: &Session| s.parts.panes().get(&pane).map(|p| p.screen().clone());
         let first = screen(&s).ok_or("the pane")?;
         let starts: Vec<usize> = first
@@ -904,14 +903,13 @@ mod tests {
     #[test]
     fn copy_mode_moves_within_the_rows_shown() -> Result<(), String> {
         let (mut s, big) = crate::session::testing::attached(16, 40)?;
-        s.attach(8, 40, None, Instant::now())
-            .map_err(|e| e.to_string())?;
+        s.attach(8, 40, None).map_err(|e| e.to_string())?;
         let pane = PaneId::of(1);
         let mut output = String::new();
         for n in 0..60 {
             output.push_str(&format!("line {n}\r\n"));
         }
-        s.output(pane, output.as_bytes(), Instant::now());
+        s.out(pane, output.as_bytes());
         s.input(big, b"\x02c");
         s.input(big, &[b'k'; 10]);
         s.input(big, &[b'j'; 14]);
@@ -936,11 +934,7 @@ mod tests {
     #[test]
     fn copy_mode_entered_on_a_wide_glyphs_second_half_starts_at_its_first() -> Result<(), String> {
         let (mut s, c) = crate::session::testing::attached(5, 20)?;
-        s.output(
-            PaneId::of(1),
-            "a\u{754c}b\x1b[1;3H".as_bytes(),
-            Instant::now(),
-        );
+        s.out(PaneId::of(1), "a\u{754c}b\x1b[1;3H".as_bytes());
         s.input(c, b"\x02c");
         let view = s.views.get(&c).ok_or("the client")?;
         let Mode::Copy(copy) = &view.mode else {
