@@ -872,7 +872,7 @@ fn keystroke(recordings: &[Recording], baseline: bool, keys: usize) -> Result<Do
         initial: Some(initial()?),
         ..fux::protocol::Attach::of(
             fux_vt::Size::new(41, 120).map_err(|e| e.to_string())?,
-            presentation(),
+            presentation()?,
         )
     };
     let c = s
@@ -952,7 +952,7 @@ fn paint(
     let size = fux_vt::Size::new(first.rows.saturating_add(1), first.cols);
     let attach = fux::protocol::Attach {
         initial: Some(initial()?),
-        ..fux::protocol::Attach::of(size.map_err(|e| e.to_string())?, presentation())
+        ..fux::protocol::Attach::of(size.map_err(|e| e.to_string())?, presentation()?)
     };
     let c = s
         .attach_as(fux::view::ClientKind::Terminal, attach, now)
@@ -1146,13 +1146,10 @@ fn encode(
     })
 }
 
-fn presentation() -> fux::view::Presentation {
-    fux::view::Presentation {
-        bell: true,
-        titles: false,
-        terminal_clipboard: true,
-        cell_placement: false,
-    }
+fn presentation() -> Result<fux::view::Presentation, String> {
+    fux::script::default_state()
+        .map(|s| s.preferences.presentation())
+        .map_err(|e| e.to_string())
 }
 
 fn pane_options(history: usize) -> Result<command::PaneOptions, String> {

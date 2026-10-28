@@ -1451,7 +1451,14 @@ impl Session {
                     return Err(fail(Raise::NoWorkspace, why));
                 }
                 if self.parts.workspaces().is_empty() {
-                    let size = Size::new(rows.saturating_sub(1), cols).map_err(|_| {
+                    let size = Size::new(
+                        rows.saturating_sub(u16::from(
+                            attach.presentation.bar.position()
+                                != crate::presentation::BarPosition::Off,
+                        )),
+                        cols,
+                    )
+                    .map_err(|_| {
                         let why =
                             format!("a screen of {rows} rows has no room for a pane below its bar");
                         fail(Raise::Size, why)
@@ -3846,7 +3853,7 @@ pub(crate) mod testing {
         let mut keymap = session.test_keymap.clone();
         if let Some(p) = client
             .and_then(|c| session.views.get(&c))
-            .map(|v| v.presentation)
+            .map(|v| v.presentation.clone())
         {
             keymap.preferences.presentation(p);
         }
@@ -4641,7 +4648,7 @@ mod tests {
                     Attach {
                         of: Some(s.run),
                         target: Some(target),
-                        ..Attach::of(sized(24, 80)?, presentation)
+                        ..Attach::of(sized(24, 80)?, presentation.clone())
                     },
                 )
                 .map_err(|e| e.to_string())?;
@@ -4665,7 +4672,7 @@ mod tests {
                     Attach {
                         of,
                         target: Some(target),
-                        ..Attach::of(sized(24, 80)?, presentation)
+                        ..Attach::of(sized(24, 80)?, presentation.clone())
                     }
                 )
                 .is_err()
@@ -4700,7 +4707,7 @@ mod tests {
         };
         let ids = s.ids.clone();
         assert!(matches!(
-            s.attach_client(ClientKind::Headless, Attach::of(size, presentation)),
+            s.attach_client(ClientKind::Headless, Attach::of(size, presentation.clone())),
             Err(Error::NeedsInitial)
         ));
         for attach in [
@@ -4708,16 +4715,16 @@ mod tests {
                 target: Some(command::AttachTarget::Workspace(WsRef::Name(
                     "missing".into(),
                 ))),
-                ..Attach::of(size, presentation)
+                ..Attach::of(size, presentation.clone())
             },
             Attach {
                 read_only: true,
-                ..Attach::of(size, presentation)
+                ..Attach::of(size, presentation.clone())
             },
-            Attach::of(sized(1, 80)?, presentation),
+            Attach::of(sized(1, 80)?, presentation.clone()),
             Attach {
                 initial: Some(initial),
-                ..Attach::of(size, presentation)
+                ..Attach::of(size, presentation.clone())
             },
         ] {
             assert!(s.attach_client(ClientKind::Terminal, attach).is_err());
@@ -6436,6 +6443,47 @@ mod tests {
     }
 
     #[test]
+    fn invalid_presentation_data_discards_the_entire_local_draft() -> Result<(), String> {
+        let (mut session, client) = attached(8, 80)?;
+        let before = session
+            .views
+            .get(&client)
+            .ok_or("view")?
+            .presentation
+            .clone();
+        let too_many = std::iter::repeat_n("str workspace ", 17).collect::<String>();
+        let too_long = std::iter::repeat_n('x', 257).collect::<String>();
+        let cases = [
+            "str styles list list str typo 0 1 end end set".to_owned(),
+            "str styles list list str bar 0 1 end list str bar 2 3 end end set".to_owned(),
+            "str styles list list str bar str '#12345g' 1 end end set".to_owned(),
+            "str styles list list str bar 256 1 end end set".to_owned(),
+            "str styles list list str bar 0 1 str bold str bold end end set".to_owned(),
+            "str bar list str bottom list str unknown end list end false end set".to_owned(),
+            "str bar list str bottom list str pane end list str pane end false end set".to_owned(),
+            format!("str bar list str bottom list {too_many} end list end false end set"),
+            "str bar list str top list list str slot 16 end end list end false end set".to_owned(),
+            "str bar-slots list list 0 str one end list 0 str two end end set".to_owned(),
+            "str bar-slots list list 0 10 char end end set".to_owned(),
+            format!("str bar-slots list list 0 str {too_long} end end set"),
+        ];
+        for invalid in cases {
+            // A valid preceding change is discarded with the refused draft.
+            let code = format!("str show-column false set {invalid}");
+            assert!(
+                output_as(&mut session, Some(client), &code).is_err(),
+                "{code}"
+            );
+            assert_eq!(
+                session.views.get(&client).map(|v| &v.presentation),
+                Some(&before),
+                "{code}"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
     fn attach_supplies_presentation_before_any_program_output() -> Result<(), String> {
         let mut s = started()?;
         let presentation = crate::view::Presentation {
@@ -6443,15 +6491,19 @@ mod tests {
             titles: true,
             terminal_clipboard: true,
             cell_placement: false,
+            ..crate::script::default_state()
+                .map_err(|e| e.to_string())?
+                .preferences
+                .presentation()
         };
         let client = s
             .attach_client(
                 ClientKind::Terminal,
-                Attach::of(sized(8, 40)?, presentation),
+                Attach::of(sized(8, 40)?, presentation.clone()),
             )
             .map_err(|e| e.to_string())?;
         assert_eq!(
-            s.views.get(&client).map(|v| v.presentation),
+            s.views.get(&client).map(|v| v.presentation.clone()),
             Some(presentation)
         );
         s.outbox.clear();
@@ -6481,12 +6533,16 @@ mod tests {
             [(a, true, false, false), (b, false, true, true)]
         {
             assert_eq!(
-                s.views.get(&client).map(|v| v.presentation),
+                s.views.get(&client).map(|v| v.presentation.clone()),
                 Some(crate::view::Presentation {
                     titles,
                     bell,
                     terminal_clipboard,
                     cell_placement: false,
+                    ..crate::script::default_state()
+                        .map_err(|e| e.to_string())?
+                        .preferences
+                        .presentation()
                 })
             );
         }
@@ -6547,7 +6603,7 @@ mod tests {
             vec![Act::Presentation(crate::view::Presentation {
                 terminal_clipboard: false,
                 cell_placement: false,
-                ..presentation
+                ..presentation.clone()
             })],
         );
         run(

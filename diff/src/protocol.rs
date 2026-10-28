@@ -251,12 +251,10 @@ fn encode(spec: &Spec) -> Result<Vec<u8>, String> {
             target: None,
             read_only,
             initial: None,
-            presentation: fux::view::Presentation {
-                bell: true,
-                titles: false,
-                terminal_clipboard: true,
-                cell_placement: false,
-            },
+            presentation: fux::script::default_state()
+                .map_err(|e| e.to_string())?
+                .preferences
+                .presentation(),
         }
         .encode()
         .map_err(error),

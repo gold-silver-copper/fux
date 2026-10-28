@@ -20,7 +20,7 @@ use crate::wire::{Wire, wire};
 use std::borrow::Cow;
 
 /// Bumped on any change to the frames below.
-pub const PROTOCOL: u32 = 43;
+pub const PROTOCOL: u32 = 45;
 /// The largest frame, kind byte included.
 pub const MAX_FRAME: usize = 1 << 20;
 /// The largest payload one frame carries.
@@ -851,7 +851,7 @@ mod tests {
                 target: workspace.map(crate::command::AttachTarget::Workspace),
                 read_only: false,
                 initial: None,
-                presentation,
+                presentation: presentation.clone(),
             }
         );
         let workspace: Option<crate::command::WsRef> = None;
@@ -864,7 +864,7 @@ mod tests {
                 target: workspace.map(crate::command::AttachTarget::Workspace),
                 read_only: true,
                 initial: None,
-                presentation,
+                presentation: presentation.clone(),
             }
         );
         let act = Act::Paste("界\n".into());
@@ -939,7 +939,7 @@ mod tests {
                 2,
                 Attach {
                     target: Some(target),
-                    ..Attach::of(size, presentation)
+                    ..Attach::of(size, presentation.clone())
                 }
             );
         }
