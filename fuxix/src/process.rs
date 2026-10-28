@@ -468,11 +468,13 @@ pub fn tree() -> Tree {
 /// a zombie's, is not said. Allocation beyond `limit` is refused.
 #[cfg(not(target_os = "macos"))]
 pub fn argv(pid: Pid, limit: usize) -> std::io::Result<Option<Vec<OsString>>> {
-    use std::io::Read;
+    let Ok(file) = std::fs::File::open(format!("/proc/{pid}/cmdline")) else { return Ok(None); };
+    argv_read(file, limit)
+}
+
+/// Reads NUL-separated arguments from an already opened observation source.
+pub fn argv_read(mut file: impl std::io::Read, limit: usize) -> std::io::Result<Option<Vec<OsString>>> {
     use std::os::unix::ffi::OsStrExt;
-    let Ok(mut file) = std::fs::File::open(format!("/proc/{pid}/cmdline")) else {
-        return Ok(None);
-    };
     let exceeded =
         || std::io::Error::other("process arguments exceed the observation allocation limit");
     let mut raw = Vec::new();

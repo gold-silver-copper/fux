@@ -525,11 +525,10 @@ pub(crate) fn state(
     });
     let leader = group.filter(|pid| fuxix::process::exists(*pid));
     let program = leader.and_then(fuxix::process::name);
-    let argv = leader
-        .map(|pid| fuxix::process::argv(pid, budget.remaining().min(crate::wire::MAX_REPLY / 4)))
-        .transpose()
-        .map_err(|_| crate::wire::Budget::exceeded())?
-        .flatten();
+    let (launch_argv, argv) = arguments(&pane.runs, budget, |budget| {
+        leader.map(|pid| fuxix::process::argv(pid, budget.remaining().min(crate::wire::MAX_REPLY / 4)))
+            .transpose().map_err(|_| crate::wire::Budget::exceeded()).map(Option::flatten)
+    })?;
     let cwd = leader.and_then(fuxix::process::cwd);
     if let Some(program) = &program {
         budget.charge(program.capacity())?;
@@ -546,30 +545,8 @@ pub(crate) fn state(
                 .ok_or_else(crate::wire::Budget::exceeded)?,
         )?;
     }
-    let launch_argv = match &pane.runs {
-        Runs::Explicit(launch) => {
-            let mut values = budget.vector(launch.argv.len())?;
-            for word in &launch.argv {
-                values.push(Json::str(budget.string(word)?));
-            }
-            Json::Array(values)
-        }
-        Runs::DefaultShell => Json::Null,
-    };
     let idle = now.saturating_duration_since(pane.wrote_at).as_millis();
     let last_status = screen.commands().last_status;
-    if let Some(argv) = &argv {
-        budget.slots::<std::ffi::OsString>(argv.capacity())?;
-        budget.slots::<Json>(argv.len())?;
-        for word in argv {
-            budget.charge(word.capacity())?;
-            budget.charge(
-                word.len()
-                    .checked_mul(3)
-                    .ok_or_else(crate::wire::Budget::exceeded)?,
-            )?;
-        }
-    }
 
     let (exited, signal) = match pane.process().exit_status() {
         Some(crate::process::Ended::Exited(code)) => (Json::int(code), Json::Null),
@@ -671,12 +648,7 @@ pub(crate) fn state(
         ("truncated", Json::Array(cut_fields)),
         ("input_unread", Json::count(pane.left.input)),
         ("cwd", cwd.map_or(Json::Null, |p| text(p.as_os_str()))),
-        (
-            "argv",
-            argv.map_or(Json::Null, |a| {
-                Json::Array(a.iter().map(|w| text(w)).collect())
-            }),
-        ),
+        ("argv", argv),
     ];
     let mut fields = budget.vector(
         values
@@ -686,6 +658,32 @@ pub(crate) fn state(
     )?;
     fields.extend(values);
     Ok(fields)
+}
+
+fn arguments(
+    runs: &Runs,
+    budget: &mut crate::wire::Budget,
+    observe: impl FnOnce(&mut crate::wire::Budget) -> Result<Option<Vec<std::ffi::OsString>>, crate::session::Error>,
+) -> Result<(Json, Json), crate::session::Error> {
+    let argv = observe(budget)?;
+    let launch = match runs {
+        Runs::Explicit(launch) => {
+            let mut values = budget.vector(launch.argv.len())?;
+            for word in &launch.argv { values.push(Json::str(budget.string(word)?)); }
+            Json::Array(values)
+        }
+        Runs::DefaultShell => Json::Null,
+    };
+    if let Some(argv) = &argv {
+        budget.slots::<std::ffi::OsString>(argv.capacity())?;
+        budget.slots::<Json>(argv.len())?;
+        for word in argv {
+            budget.charge(word.capacity())?;
+            budget.charge(word.len().checked_mul(3).ok_or_else(crate::wire::Budget::exceeded)?)?;
+        }
+    }
+    let argv = argv.map_or(Json::Null, |a| Json::Array(a.iter().map(|w| text(w)).collect()));
+    Ok((launch, argv))
 }
 
 /// A path or an argument as JSON text, which must be UTF-8: each byte
@@ -992,6 +990,30 @@ mod tests {
     use crate::id::PaneId;
     use crate::pane::tests::Lone;
     use crate::pane::{Pane, Runs};
+
+    #[test]
+    fn argument_observation_peak_stays_within_shared_grant() -> Result<(), Box<dyn std::error::Error>> {
+        let allocator = fux_vt_peak::ThreadPeak;
+        let launch = Runs::Explicit(crate::pane::Launch {
+            argv: vec![std::iter::repeat_n('l', 6000).collect()],
+            cwd: "/".into(), env: Vec::new(),
+        });
+        let mut peak = 0;
+        for len in [2500, 5000] {
+            let mut raw: Vec<u8> = std::iter::repeat_n(b'a', len).collect();
+            raw.push(0);
+            let baseline = allocator.live();
+            allocator.reset_peak();
+            let result = super::arguments(&launch, &mut crate::wire::Budget::with_limit(8192), |budget| {
+                fuxix::process::argv_read(raw.as_slice(), budget.remaining())
+                    .map_err(|_| crate::wire::Budget::exceeded())
+            });
+            assert!(result.is_err());
+            peak = peak.max(allocator.peak().saturating_sub(baseline));
+        }
+        assert!(peak <= 8192, "argument observation allocated {peak} bytes under an 8192-byte grant");
+        Ok(())
+    }
 
     #[test]
     fn wide_default_history_is_admitted() -> Result<(), Box<dyn std::error::Error>> {
