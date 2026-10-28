@@ -1051,7 +1051,7 @@ mod tests {
             None,
             view,
             false,
-            super::Limits { cells: 1000 },
+            super::Limits { cells: 2 },
         )?;
         assert_eq!(capture.text()?, "hi");
         Ok(())
