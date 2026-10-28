@@ -742,8 +742,6 @@ mod tests {
         assert_eq!(Pid::from_raw(42).map(Pid::as_raw), Some(42));
     }
 
-    /// A stopped child is not an ended one, on either platform; an
-    /// ended one is reported, then reaped, with the signal that ended it.
     #[test]
     fn a_stopped_child_has_not_ended_and_a_killed_one_has() -> std::result::Result<(), String> {
         let mut child = Command::new("sleep")
@@ -779,8 +777,6 @@ mod tests {
         Ok(())
     }
 
-    /// The tree finds a child, says its scan finished, and, on Linux,
-    /// stops at its bound saying so.
     #[test]
     fn a_tree_says_whether_it_was_cut_short() -> std::result::Result<(), String> {
         let mut child = Command::new("sleep")
@@ -806,7 +802,6 @@ mod tests {
         Ok(())
     }
 
-    /// Empty arguments are arguments.
     #[cfg(not(target_os = "macos"))]
     #[test]
     fn argv_keeps_empty_arguments() -> std::result::Result<(), String> {

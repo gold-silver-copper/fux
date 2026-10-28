@@ -474,7 +474,6 @@ mod tests {
         assert_eq!(paired, [vec![70], vec![20]]);
     }
 
-    /// A workload made alone is the one `bench` makes among all of them.
     #[test]
     fn a_workload_alone_is_benchs() -> Result<(), String> {
         let ascii = super::load("ascii", 1)?;

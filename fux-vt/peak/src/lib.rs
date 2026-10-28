@@ -106,8 +106,6 @@ mod tests {
     #[global_allocator]
     static ALLOCATOR: ThreadPeak = ThreadPeak;
 
-    /// What this thread makes counts, what another makes doesn't, a reset
-    /// peak starts from what is live, and a growth counts both blocks.
     #[test]
     fn each_thread_counts_its_own() -> std::thread::Result<()> {
         // What spawning a thread makes on this one, and the test's own.

@@ -1,8 +1,6 @@
 use super::*;
 use crate::test_rng::Rng;
 
-/// A cell stored in `Cells` reads back as it was made, whichever part of
-/// the text keeps it.
 #[test]
 fn stored_cells_read_back_as_they_were_made() {
     let attributes = Attributes {
@@ -28,8 +26,6 @@ fn stored_cells_read_back_as_they_were_made() {
     }
 }
 
-/// Past the 16 MiB a cell's locator reaches, a cluster is not kept whole,
-/// and `set` says so: every cell `set` says it kept reads back whole.
 #[test]
 fn cells_past_a_locator_s_reach_say_their_text_was_not_kept() -> Result<(), Error> {
     let cluster: String = std::iter::once('e')
@@ -49,9 +45,6 @@ fn cells_past_a_locator_s_reach_say_their_text_was_not_kept() -> Result<(), Erro
     Ok(())
 }
 
-/// The underline's style takes three bits of the flags, apart from every
-/// other style's: each style, set over any other attributes, reads back
-/// alone, and setting it changes nothing else.
 #[test]
 fn underline_styles_keep_to_their_own_bits() {
     use super::UnderlineStyle;
@@ -112,11 +105,6 @@ fn owned_cells_copy_text_from_wherever_it_is_and_compare_by_it() {
     assert_eq!(b.range(2..9).len(), 2);
 }
 
-/// `range_eq` is `range(..).eq(range(..))`, faster: on two rows of cells
-/// edited at random, every way cells are written (text short and long,
-/// wide halves, attributes, fills, whole cells, copies from the other
-/// row), over random ranges, in and past the rows. The rows start the
-/// same and drift, so both answers come up.
 #[test]
 fn range_eq_agrees_with_comparing_each_cell() {
     let mut r = Rng(0x5eed_ce11);

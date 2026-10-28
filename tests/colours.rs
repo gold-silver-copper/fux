@@ -98,9 +98,6 @@ fn a_terminal_that_answers_nothing_leaves_keys_working() -> Outcome {
     Ok(())
 }
 
-/// When the terminal reports a change of scheme, the server asks its
-/// colours again, and once they are in, tells each program that set mode
-/// 2031; a program that asks then gets the new colours.
 #[test]
 fn a_change_of_scheme_reaches_the_programs_that_asked_for_it() -> Outcome {
     let server = Server::start("")?;
@@ -123,8 +120,6 @@ fn a_change_of_scheme_reaches_the_programs_that_asked_for_it() -> Outcome {
     Ok(())
 }
 
-/// Whatever the server turned on in the terminal, the real client turns
-/// off as it leaves.
 #[test]
 fn the_real_client_turns_off_colour_scheme_reports_as_it_leaves() -> Outcome {
     let server = Server::start("")?;

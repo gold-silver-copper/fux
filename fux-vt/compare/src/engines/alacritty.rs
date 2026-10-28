@@ -542,10 +542,6 @@ impl Engine for Alacritty {
 mod tests {
     use crate::engine::Setup;
 
-    /// A 1x2 grid holding U+4E00 is not narrowed to one column: alacritty
-    /// sits it out with an error of its engine's class, where its resize
-    /// would loop until memory ran out (2026-10-17, 55 GB). A resize that
-    /// keeps two columns still goes through.
     #[test]
     fn a_shrink_to_one_column_is_refused() -> Result<(), String> {
         let setup = Setup {
@@ -565,9 +561,6 @@ mod tests {
         Ok(())
     }
 
-    /// What alacritty asks its host is answered as a host would: a colour
-    /// no program set, from xterm 411's default palette; the window's size
-    /// in pixels (8 by 16 a cell); each counted as the host's answer.
     #[test]
     fn its_host_answers_the_colours_and_size_it_asks_for() -> Result<(), String> {
         let setup = Setup {

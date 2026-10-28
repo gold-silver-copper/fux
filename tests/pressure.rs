@@ -28,10 +28,6 @@ fn send_now(server: &Server, pane: &str, keys: &[&str]) -> Outcome {
     Ok(())
 }
 
-/// Connections held open without a word exhaust the server's descriptors.
-/// The server says so in its log once, not once a tick or a connection, and
-/// serves again when they close; as it does after a burst of connections
-/// each closed at once.
 #[test]
 fn a_server_out_of_descriptors_recovers() -> Outcome {
     let server = Server::start_limited("", Some(64))?;
@@ -107,8 +103,6 @@ fn received(out: &std::path::Path, expected: &[u8]) -> Outcome {
     Ok(())
 }
 
-/// The real binding worker sends its first request with the attachment's
-/// prefix, and held keys follow the completed program.
 #[test]
 fn a_bound_program_follows_the_keys_before_it() -> Outcome {
     let server = Server::start("str F5 str 'me focused str Z text send-keys drop' bind-root")?;
@@ -138,12 +132,6 @@ fn pasted(i: usize, len: usize) -> Vec<u8> {
         .collect()
 }
 
-/// Input for a program that has stopped reading waits for it rather than
-/// being lost: thousands of single keys, from a client and from
-/// `send-keys`, and many pastes, all arrive in order once it reads again.
-/// Past the queue's bound, input is refused whole with the documented
-/// notice, and, as it says, nothing more is queued until its terminal takes some:
-/// what arrives is exactly what was accepted.
 #[test]
 fn input_waits_while_the_queue_is_full() -> Outcome {
     let server = Server::start("")?;
@@ -240,9 +228,6 @@ fn input_waits_while_the_queue_is_full() -> Outcome {
     Ok(())
 }
 
-/// Frames a client sends faster than a tick handles them wait for its
-/// next turns: thousands in one write, with nothing sent after them, all
-/// arrive in order.
 #[test]
 fn frames_past_a_turn_wait_for_the_next() -> Outcome {
     use fux::act::Act;
@@ -262,8 +247,6 @@ fn frames_past_a_turn_wait_for_the_next() -> Outcome {
     received(&out, &expected)
 }
 
-/// A scheme report (mode 2031) a full input queue refused is sent once its
-/// program reads again, with nothing else happening in the session.
 #[test]
 fn a_scheme_report_refused_is_sent_as_its_program_reads_again() -> Outcome {
     let server = Server::start("")?;
@@ -301,11 +284,6 @@ fn a_scheme_report_refused_is_sent_as_its_program_reads_again() -> Outcome {
     })
 }
 
-/// A program that closes its terminal but keeps running leaves its PTY
-/// hung up: the master reports the end on every poll until the program
-/// exits. The server stops polling it, and closes the pane when the
-/// program exits. (On macOS the server holds the terminal open itself,
-/// `fuxix::pty::Master`, so it never hangs up there.)
 #[test]
 fn a_program_that_closes_its_terminal_closes_its_pane_at_exit() -> Outcome {
     let server = Server::start("")?;
@@ -325,11 +303,6 @@ fn a_program_that_closes_its_terminal_closes_its_pane_at_exit() -> Outcome {
     Ok(())
 }
 
-/// One client flooding a pane whose program does not read its input holds
-/// up no one: the server reads at most a bounded amount from it per tick,
-/// drops what the full queue refuses, and
-/// gives back the memory the flood took. Other commands are served
-/// meanwhile, and the server's memory stays small.
 #[test]
 fn a_client_flooding_a_pane_that_does_not_read_holds_up_no_one() -> Outcome {
     use fux::act::Act;

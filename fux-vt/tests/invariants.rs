@@ -66,13 +66,6 @@ impl Sink for Replies {
     }
 }
 
-/// The adversarial corpus, after the terminal-edge streams, fed whole and in
-/// pieces of one to seven bytes: the two parsers agree (screens, history,
-/// links, prompt marks, replies) and the invariants hold after every
-/// operation. Without options; and with every feature, with and without
-/// reflow, links opened and closed, prompts marked and cells
-/// inserted and deleted among the operations, and the screen resized now
-/// and then. Then one 160 KiB stream.
 #[test]
 fn the_adversarial_corpus_is_chunk_invariant_and_bounded() -> Result {
     let extra: [&[u8]; 11] = [
@@ -197,8 +190,6 @@ fn generated_edits_resizes_and_arbitrary_bytes_preserve_grid_invariants() -> Res
     Ok(())
 }
 
-/// A row's text stays within its budget however it is filled and resized:
-/// clusters that do not fit keep what fits inline, in their one cell.
 #[test]
 fn a_rows_text_stays_within_its_budget_through_resizes() -> Result {
     let zalgo: String = std::iter::once('e')
@@ -249,10 +240,6 @@ fn degenerate_reflows_keep_every_invariant() -> Result {
     Ok(())
 }
 
-/// A resize, with reflow and without, makes the grid anew around the
-/// style table it shares, and its history is charged for that table as
-/// the old one's was (B11): more distinct styles than the screen's share
-/// holds, kept by history's rows, then each resize.
 #[test]
 fn a_resize_keeps_history_charged_for_the_shared_styles() -> Result {
     for reflow in [false, true] {
@@ -287,10 +274,6 @@ fn a_cloned_parser_keeps_every_invariant() -> Result {
     Ok(())
 }
 
-/// A style a cloned parser adds is charged to its history for the table
-/// its copy holds, which the clone made at its length, not the room the
-/// shared one had (B11): more distinct styles than the screen's
-/// share holds, then one more on the clone.
 #[test]
 fn a_cloned_parser_charges_the_styles_it_adds() -> Result {
     let mut p = Parser::new(Size::new(2, 4)?, 1 << 20)?;

@@ -203,9 +203,6 @@ fn send_keys_signal_and_buffers() -> Outcome {
     Ok(())
 }
 
-/// A word's error names its code and exits 1; a wait's failure keeps its
-/// status; what is left on the stack is printed, a value a line, bottom
-/// first; `json` turns an answer into JSON.
 #[test]
 fn errors_statuses_and_what_is_left() -> Outcome {
     let server = Server::start("")?;
@@ -339,9 +336,6 @@ fn errors_statuses_and_what_is_left() -> Outcome {
     Ok(())
 }
 
-/// A mistake is named by what the program wrote: a failure inside a
-/// bundled word by the step that called it; a mistake every run makes,
-/// before anything runs; a name that would always be a handle, refused.
 #[test]
 fn mistakes_name_what_the_program_wrote() -> Outcome {
     let server = Server::start("")?;
@@ -433,7 +427,6 @@ fn mistakes_name_what_the_program_wrote() -> Outcome {
     Ok(())
 }
 
-/// `fux -` runs stdin, and `fux --file FILE` a file, whatever its name.
 #[test]
 fn programs_come_from_stdin_and_files() -> Outcome {
     let server = Server::start("")?;
@@ -459,10 +452,6 @@ fn programs_come_from_stdin_and_files() -> Outcome {
     Ok(())
 }
 
-/// A script runs as a shell runs it: from its `#!` line, with its
-/// arguments; it reads stdin, files and the environment (a variable not
-/// set fails `unset_var`), warns on stderr, and ends with the status it
-/// gives. A file given as a word is not run: the error says how.
 #[test]
 fn a_script_runs_as_the_shell_runs_it() -> Outcome {
     use std::os::unix::fs::PermissionsExt;
@@ -559,9 +548,6 @@ fn ls_json_list_keys_and_help() -> Outcome {
     Ok(())
 }
 
-/// A caller in a directory whose name is not UTF-8 starts what it runs
-/// there: the path's bytes reach the server as they are, not made text.
-/// Linux only: macOS's file systems refuse a name that is not UTF-8.
 #[cfg(target_os = "linux")]
 #[test]
 fn a_directory_named_in_any_bytes_is_where_a_run_starts() -> Outcome {
@@ -598,8 +584,6 @@ fn a_directory_named_in_any_bytes_is_where_a_run_starts() -> Outcome {
     eventually("the file it made there", || Ok(dir.join("here").exists()))
 }
 
-/// An argument that is not UTF-8 text is refused as a usage error, said,
-/// not a panic.
 #[test]
 fn an_argument_that_is_not_text_is_refused() -> Outcome {
     use std::os::unix::ffi::OsStrExt;
@@ -614,8 +598,6 @@ fn an_argument_that_is_not_text_is_refused() -> Outcome {
     Ok(())
 }
 
-/// Output that cannot be written fails where it is written, with
-/// `output`: what comes after it never runs, and a stream ends.
 #[cfg(target_os = "linux")]
 #[test]
 fn a_write_that_fails_stops_the_program() -> Outcome {
@@ -661,9 +643,6 @@ fn a_write_that_fails_stops_the_program() -> Outcome {
     Ok(())
 }
 
-/// A stop between requests ends the run, not the connection: the next
-/// run's request is asked on it, as one after a stop under way is asked on
-/// a new one.
 #[test]
 fn a_stop_between_requests_leaves_the_connection_asking() -> Outcome {
     use fux::script::Asks;

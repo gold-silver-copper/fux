@@ -1997,8 +1997,6 @@ mod faults {
         Ok(())
     }
 
-    /// Every check of the checker runs on a parser, and is named in its
-    /// report: one dropped from `check` would not be.
     #[test]
     fn every_check_is_reported() -> Result<(), Error> {
         let mut parser = parser()?;
@@ -2046,7 +2044,6 @@ mod faults {
         Ok(())
     }
 
-    /// The checker does no work the counters see.
     #[test]
     fn the_checker_is_no_work() -> Result<(), Error> {
         let mut parser = parser()?;
@@ -2058,7 +2055,6 @@ mod faults {
         Ok(())
     }
 
-    /// The frame scan goes on within what it was given.
     #[test]
     fn a_frame_scan_past_its_bytes_is_a_fault() -> Result<(), Error> {
         let parser = parser()?;

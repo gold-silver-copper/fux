@@ -1322,8 +1322,6 @@ fn files(seed: &Seed) -> Vec<(PathBuf, Vec<u8>)> {
     files
 }
 
-/// A seed in `deep`'s format feeds its bytes, whole: its file is the
-/// reproducer that reaches its limit (`every_seed_reaches_its_limit`).
 #[test]
 fn deep_seeds_feed_their_bytes() {
     for seed in seeds() {
@@ -1345,7 +1343,6 @@ fn deep_seeds_feed_their_bytes() {
     }
 }
 
-/// Each seed reaches the limit it is for.
 #[test]
 fn every_seed_reaches_its_limit() -> Result {
     for seed in seeds() {
@@ -1368,7 +1365,6 @@ fn every_seed_names_its_row_once() {
     }
 }
 
-/// Writes every seed's files.
 #[test]
 #[ignore = "writes the seed files: run it after changing a seed"]
 fn write_the_seeds() -> Result {

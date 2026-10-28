@@ -859,9 +859,6 @@ mod tests {
     use crate::families::{self, Authority, FAMILIES, Status};
     use crate::snapshot::{Cell, Line, Snapshot, Style, Width};
 
-    /// Every named case of a family a standard decides has its expected
-    /// fields, once, and only those cases have them; every field is one a
-    /// screen of the case's size has.
     #[test]
     fn every_case_a_standard_decides_has_its_expected_fields() {
         for &(name, family, (rows, cols), _) in CASES {

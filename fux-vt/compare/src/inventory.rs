@@ -915,9 +915,6 @@ fn render(names: &[String]) -> Result<String, String> {
 mod tests {
     use super::{Token, tokens};
 
-    /// The committed inventory is what `inventory` makes of the corpus
-    /// now: a mode fux-vt comes to keep, or a reply it comes to give,
-    /// shows as a change to commit.
     #[test]
     fn the_inventory_regenerates_unchanged() -> Result<(), String> {
         let path = crate::corpus::dir().join("INVENTORY.md");
@@ -930,9 +927,6 @@ mod tests {
         Ok(())
     }
 
-    /// The modes are fux-vt's own, read from its DECRQM: 1045 and 2027
-    /// among them, which the list kept by hand lacked; a number it does not
-    /// know is not.
     #[test]
     fn a_mode_is_kept_as_fux_vt_reports_it() {
         assert!(super::keeps_mode(7) && super::keeps_mode(1045) && super::keeps_mode(2027));

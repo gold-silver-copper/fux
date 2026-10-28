@@ -316,10 +316,6 @@ fn vt100_rusts_fuzz_seeds_replay_with_no_fault() -> Result {
     Ok(())
 }
 
-/// mosh's two corpora, GPL-3.0: fetched into the target directory at
-/// [`MOSH_COMMIT`], checked against `external/mosh.sha256`, and replayed.
-/// A failed fetch fails the test, unless [`OFFLINE`] is 1: then it is
-/// skipped, said on stderr.
 #[test]
 #[ignore = "fetches mosh's GPL-3.0 corpus at a pinned commit"]
 fn moshs_fuzz_corpus_replays_with_no_fault() -> Result {

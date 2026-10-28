@@ -1,9 +1,6 @@
 use super::*;
 use crate::test_rng::Rng;
 
-/// B20: the OSC buffer has room for the limit the features set and the
-/// byte that marks a string overflowed, and no more, however a string is
-/// split: 65 bytes with prompt marks alone, 1 with no feature reading OSC.
 #[test]
 fn the_osc_buffer_has_room_for_its_limit_alone() -> Result<(), Error> {
     for (options, room) in [
@@ -20,8 +17,6 @@ fn the_osc_buffer_has_room_for_its_limit_alone() -> Result<(), Error> {
     Ok(())
 }
 
-/// Mixed text keeps each cluster on its starting cell, including the last
-/// ASCII character before a mark, selector, or joiner.
 #[test]
 fn text_runs_keep_grapheme_boundaries() -> Result<(), Error> {
     let mut parser = Parser::new(Size::of(3, 20), 0)?;
@@ -60,9 +55,6 @@ fn wide_glyph_rows(rows: u16, cols: u16) -> Vec<u8> {
     text
 }
 
-/// The ASCII run path writes up to a half of a wide glyph and goes on past
-/// it: a run over a row that holds one costs the row, not a retry of the
-/// rest of the run for every byte.
 #[test]
 fn a_run_over_a_wide_glyph_costs_its_length() -> Result<(), Error> {
     let mut p = Parser::new(Size::of(40, 8000), 0)?;
@@ -76,10 +68,6 @@ fn a_run_over_a_wide_glyph_costs_its_length() -> Result<(), Error> {
     Ok(())
 }
 
-/// A line feed carried out in text is a place `process_until_stop` looks
-/// at the budget, as its scroll can move a row's text into history: with
-/// the budget spent, a run of LF, VT or FF stops
-/// after the first, and one of CR, which moves no row, does not stop.
 #[test]
 fn a_line_feed_stops_at_a_spent_budget() -> Result<(), Error> {
     let mut parser = Parser::new(Size::of(2, 4), 8)?;
@@ -96,8 +84,6 @@ fn a_line_feed_stops_at_a_spent_budget() -> Result<(), Error> {
     Ok(())
 }
 
-/// A sequence whose work exceeds the remaining budget waits for the next
-/// call, even when that call has no bytes, and runs before any new text.
 #[test]
 fn a_screen_wide_sequence_past_the_ceiling_waits_for_the_next_call() -> Result<(), Error> {
     let size = Size::of(1000, 1000);
@@ -131,9 +117,6 @@ fn a_screen_wide_sequence_past_the_ceiling_waits_for_the_next_call() -> Result<(
     Ok(())
 }
 
-/// The alternate screen holds no cells until a program shows it: not as
-/// made, nor resized, reset (RIS, DECSTR) or left, its modes saved and
-/// restored unset; then as many as the screen.
 #[test]
 fn the_alternate_screen_holds_no_cells_until_shown() -> Result<(), Error> {
     let mut parser = Parser::new(Size::of(50, 200), 0)?;
@@ -165,9 +148,6 @@ fn printable_slowly(bytes: &[u8]) -> usize {
         .count()
 }
 
-/// `printable`, found a word at a time, is the run counted a byte at a
-/// time: every byte at every place of runs up to 24 long, after every
-/// printable byte and before, and random bytes, mostly printable.
 #[test]
 fn printable_runs_are_found_a_word_at_a_time_as_a_byte_at_a_time() {
     for len in 1..=24usize {
@@ -206,8 +186,6 @@ fn printable_runs_are_found_a_word_at_a_time_as_a_byte_at_a_time() {
     }
 }
 
-/// Scanning held bytes and reading streamed bytes stop at the first reset,
-/// including a saved mode, and ignore cancelled or incomplete sequences.
 #[test]
 fn a_frame_scan_stops_at_the_first_synchronized_output_reset() -> Result<(), Error> {
     for saved in [false, true] {
@@ -272,8 +250,6 @@ fn a_frame_scan_stops_at_the_first_synchronized_output_reset() -> Result<(), Err
     Ok(())
 }
 
-/// `esc_in` finds the first ESC at every place in and past a word, and
-/// none where there is none.
 #[test]
 fn esc_in_finds_the_first_esc() {
     for len in 0..20 {
@@ -292,9 +268,6 @@ fn esc_in_finds_the_first_esc() {
     }
 }
 
-/// The word scans for strings, `control_in` and `string_end`, find the
-/// byte a byte-at-a-time scan finds, at every place in and past a word,
-/// among bytes of every kind.
 #[test]
 fn the_string_scans_find_what_a_byte_at_a_time_finds() {
     let mut r = Rng(7);
@@ -313,12 +286,6 @@ fn the_string_scans_find_what_a_byte_at_a_time_finds() {
     }
 }
 
-/// A scroll of many rows inside a region spends what it does: the region's
-/// slots turned once, not once a row, and the rows brought in. At
-/// 4,095 rows of one column, 100 IL 4095s are 8,190 cells and 8,190 slots
-/// each, about 11 M units in all, under the budget's 16 M, so the call
-/// takes them without a stop; charged a slot a row a row, each was 16.8 M
-/// slots, and the first stopped it.
 #[test]
 fn a_region_scroll_spends_its_slots_once() -> Result<(), Error> {
     let mut parser = Parser::new(Size::of(4095, 1), 0)?;

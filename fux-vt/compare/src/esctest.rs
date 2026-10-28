@@ -2481,8 +2481,6 @@ a
 *** 1 test passed, 2 known bugs, 2 TESTS FAILED ***
 ";
 
-    /// esctest's log gives each test's outcome: a pass, a failure with its
-    /// exception, a skip, and a test xterm fails that passes.
     #[test]
     fn the_log_gives_each_outcome() -> Result<(), String> {
         let found = super::outcomes(LOG);
@@ -2520,8 +2518,6 @@ a
         Ok(())
     }
 
-    /// Every reason in fux-vt's list and in Ghostty's says where its
-    /// feature is specified, so each test of `--beside`'s lists has one.
     #[test]
     fn every_listed_reason_has_a_source() -> Result<(), String> {
         for file in ["esctest-expected.txt", "esctest-expected-ghostty.txt"] {
@@ -2537,13 +2533,6 @@ a
         Ok(())
     }
 
-    /// A `not-implemented:` line says the corpus sends its sequence when it
-    /// does: the kind reads as "no program in the corpus sends it" unless
-    /// the line says otherwise, so a line whose sequence a recording sends
-    /// (corpus/INVENTORY.md, which the_inventory_regenerates_unchanged
-    /// keeps current) cites the inventory and denies nothing. Each such
-    /// line names what its test sends, as inventory keys (a prefix and a
-    /// suffix); every line is named, so none goes unchecked.
     #[test]
     fn no_not_implemented_reason_denies_a_sequence_the_corpus_sends() -> Result<(), String> {
         const SENDS: &[(&str, &[(&str, &str)])] = &[
@@ -2620,9 +2609,6 @@ a
         Ok(())
     }
 
-    /// Two terminals' results side by side: each area's tallies, the
-    /// tests only one passes with the failing one's reason, and those run
-    /// in one only.
     #[test]
     fn a_comparison_lists_what_one_passes_and_the_other_fails() -> Result<(), String> {
         let areas = vec![super::Area {
@@ -2676,7 +2662,6 @@ a
         Ok(())
     }
 
-    /// A test's own log lines before its outcome do not hide it.
     #[test]
     fn a_tests_own_log_lines_come_before_its_outcome() {
         let found = super::outcomes(
@@ -2699,9 +2684,6 @@ a
         );
     }
 
-    /// The list of expected failures: a scope, a reason of a known kind,
-    /// each test once; a listed test that passes, or a failure not listed,
-    /// is a mismatch.
     #[test]
     fn the_list_is_checked_both_ways() -> Result<(), String> {
         let list = super::expected(
@@ -2763,9 +2745,6 @@ a
         Ok(())
     }
 
-    /// A test whose run errs or panics has no result (infrastructure), and
-    /// the others still come back (at the parent one area's error or a
-    /// worker's panic ended esctest with no table and no JSON).
     #[test]
     fn a_failed_run_costs_its_test_alone() -> Result<(), String> {
         use super::{Limit, Place, Ran, Subject};
@@ -2803,7 +2782,6 @@ a
         Ok(())
     }
 
-    /// Each test runs alone, and comes back in its area, in order.
     #[test]
     fn every_test_runs_alone() {
         let areas = vec![
@@ -2821,11 +2799,6 @@ a
         assert_eq!(names, [("A", "A.t1"), ("A", "A.t2"), ("B", "B.t1")]);
     }
 
-    /// A run's results, classified: a timeout reading cells the adapter
-    /// could not answer is adapter-limited; one the engine's own failure
-    /// caused is the engine's; a test with no result is infrastructure's,
-    /// and a mismatch, but not a failure; every one but the skipped is in
-    /// the denominator.
     #[test]
     fn results_are_classified() -> Result<(), String> {
         use super::{Limit, Place, Ran, Subject};

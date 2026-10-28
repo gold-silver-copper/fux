@@ -257,11 +257,6 @@ fn device(parser: &Parser) -> Device {
 mod tests {
     use crate::engine::Setup;
 
-    /// The adapter's history keeps at least the rows asked of full rows of
-    /// plain cells, at widths that do and don't divide a block, as the
-    /// cases and the bench read it ("history rows kept"): 10,000 rows at
-    /// 200 columns, the bench's census size, kept 9,791 when a row was
-    /// counted at its own cells alone.
     #[test]
     fn history_keeps_the_rows_asked() -> Result<(), String> {
         for (rows, cols) in [

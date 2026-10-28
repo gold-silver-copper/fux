@@ -42,8 +42,6 @@ fn found(history: &History) -> Vec<Found> {
         .collect()
 }
 
-/// A row's cells are those before its blank tail; a coloured blank is no
-/// part of the tail.
 #[test]
 fn a_row_keeps_the_cells_before_its_blank_tail() {
     let mut cells = row(5, b'a', 0);
@@ -56,10 +54,6 @@ fn a_row_keeps_the_cells_before_its_blank_tail() {
     assert!(trimmed(&[]).is_empty());
 }
 
-/// Rows of every length, none, one, many, and longer than a block, read
-/// back as they came, in order, through block after block, as the oldest
-/// go past the budget; and the bytes counted are those the rows keep: 24
-/// a row, 8 a cell.
 #[test]
 fn rows_read_back_as_they_came_while_the_oldest_go() -> Result<(), Error> {
     let budget = 64 << 10;
@@ -107,8 +101,6 @@ fn rows_read_back_as_they_came_while_the_oldest_go() -> Result<(), Error> {
     Ok(())
 }
 
-/// Blocks the rows have left are let go: the history's memory stops
-/// growing at its budget, and fills most of it.
 #[test]
 fn memory_stops_growing_at_the_budget() -> Result<(), Error> {
     let budget = 256 << 10;
@@ -134,10 +126,6 @@ fn memory_stops_growing_at_the_budget() -> Result<(), Error> {
     Ok(())
 }
 
-/// Block numbers are 16 bits and wrap (`BLOCKS`): a long-lived
-/// pane makes 65,536 blocks in about 268 M cells. Numbered from just below
-/// the wrap, rows of a block each read back as they came across it, while
-/// the oldest go past the budget, and the bytes counted stay those held.
 #[test]
 fn block_numbers_wrap() -> Result<(), Error> {
     let budget = 256 << 10;

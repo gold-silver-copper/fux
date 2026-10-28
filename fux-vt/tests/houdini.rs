@@ -268,8 +268,6 @@ fn every_reply_feature_answers_vt_houdini_as_the_authority_says() -> Result {
     Ok(())
 }
 
-/// vt-houdini's verdict on the CVEs: a reply holding `cve` gave the
-/// payload back. None may, whatever is on.
 #[test]
 fn no_reply_gives_a_cve_payload_back() -> Result {
     for options in [Options::default(), every()] {

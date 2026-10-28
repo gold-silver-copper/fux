@@ -978,8 +978,6 @@ mod tests {
         assert_eq!(style.underline_color, Color::Rgb(4, 5, 6));
     }
 
-    /// tmux's `-e` prints a hyperlink as OSC 8 before its cells and closes
-    /// it after; a link left open goes on into the next row.
     #[test]
     fn hyperlinks_are_read_from_osc_8() {
         let mut tmux = Reader::new(Glyphs::Tmux);
@@ -1025,8 +1023,6 @@ mod tests {
         );
     }
 
-    /// xterm prints an SGR before every cell with an attribute, and none
-    /// before a plain cell that follows one.
     #[test]
     fn an_xterm_cell_with_no_sgr_before_it_is_plain() {
         let mut xterm = Reader::new(Glyphs::Xterm);

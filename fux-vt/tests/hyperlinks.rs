@@ -82,8 +82,6 @@ fn only_osc_8_opens_and_closes_a_link_and_only_painted_cells_take_it() -> Result
     Ok(())
 }
 
-/// The spec's `id`: cells of the same id and URI are one link, wherever
-/// and whenever they were printed; another URI, or no id, is another link.
 #[test]
 fn an_id_joins_the_cells_of_one_link() -> Result {
     let p = parser(
@@ -105,7 +103,6 @@ fn an_id_joins_the_cells_of_one_link() -> Result {
     Ok(())
 }
 
-/// Without the option, OSC 8 is ignored, as it always was.
 #[test]
 fn without_the_option_links_are_ignored() -> Result {
     let mut p = Parser::new(Size::new(1, 4)?, 0)?;
@@ -118,9 +115,6 @@ fn without_the_option_links_are_ignored() -> Result {
     Ok(())
 }
 
-/// A wide glyph's second half has the link of its first; a blank cell has
-/// none, even inside an open link; a mark after a blank cell gives it a
-/// space and the link.
 #[test]
 fn wide_glyphs_blanks_and_marks() -> Result {
     let p = parser(
@@ -136,7 +130,6 @@ fn wide_glyphs_blanks_and_marks() -> Result {
     Ok(())
 }
 
-/// Links go into history with their rows, and leave with them.
 #[test]
 fn links_scroll_with_their_rows() -> Result {
     // Two rows of one cell, 24 bytes a row and 8 a cell, and the links'
@@ -180,8 +173,6 @@ fn links_scroll_with_their_rows() -> Result {
     Ok(())
 }
 
-/// Erasing blanks cells, which have no link; what is printed over a link
-/// takes the link open then, or none.
 #[test]
 fn erasing_and_overwriting_end_links() -> Result {
     let open = b"\x1b]8;;u\x07abcdef\x1b]8;;\x07";
@@ -203,7 +194,6 @@ fn erasing_and_overwriting_end_links() -> Result {
     Ok(())
 }
 
-/// ICH and DCH, and printing in insert mode, move links with their cells.
 #[test]
 fn inserting_and_deleting_move_links() -> Result {
     let mut p = parser(1, 6, 0, b"a\x1b]8;;u\x07bc\x1b]8;;\x07d")?;
@@ -216,8 +206,6 @@ fn inserting_and_deleting_move_links() -> Result {
     Ok(())
 }
 
-/// A resize keeps the links of the cells it keeps; a reflow moves them
-/// with their cells, and back.
 #[test]
 fn resizing_and_reflowing_keep_links() -> Result {
     let text = b"ab\x1b]8;;u\x07cdef\x1b]8;;\x07gh";
@@ -243,8 +231,6 @@ fn resizing_and_reflowing_keep_links() -> Result {
     Ok(())
 }
 
-/// A link is a cell's change: a row redrawn with a link it did not have
-/// takes a new version, and one redrawn as it was keeps its own.
 #[test]
 fn a_new_link_is_a_new_version() -> Result {
     let mut p = parser(1, 4, 0, b"ab")?;
@@ -260,9 +246,6 @@ fn a_new_link_is_a_new_version() -> Result {
     Ok(())
 }
 
-/// The spec's limits: a URI past 2083 bytes, or an id past 250, or either
-/// with a byte that is not printable ASCII, opens no link, and closes the
-/// one open; so does an OSC string past the payload limit.
 #[test]
 fn links_past_their_limits_are_not_opened() -> Result {
     let uri: String = std::iter::repeat_n('u', URI_LIMIT).collect();
@@ -294,8 +277,6 @@ fn links_past_their_limits_are_not_opened() -> Result {
     Ok(())
 }
 
-/// More links than a screen holds: the history rows printed first lose
-/// theirs, and the newest still have theirs.
 #[test]
 fn links_are_bounded_and_history_loses_them_first() -> Result {
     // History for 4,000 rows of one linked cell: a 24-byte record, an
@@ -323,8 +304,6 @@ fn links_are_bounded_and_history_loses_them_first() -> Result {
     Ok(())
 }
 
-/// Each screen keeps its own cells' links; the open link goes on across a
-/// switch, and RIS closes it and forgets every link.
 #[test]
 fn screens_and_resets() -> Result {
     let mut p = parser(1, 4, 0, b"\x1b]8;;u\x07a\x1b[?1049hb")?;
@@ -342,9 +321,6 @@ fn screens_and_resets() -> Result {
     Ok(())
 }
 
-/// A line made double width loses its cells past its new end (DECDWL,
-/// note 2), and their links with them: a row linked only past its half
-/// has no link left.
 #[test]
 fn a_line_made_double_width_loses_the_links_past_its_end() -> Result {
     let p = parser(

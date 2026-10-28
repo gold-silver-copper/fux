@@ -437,7 +437,6 @@ mod tests {
         }
     }
 
-    /// One key, one value: Shift and `a` built is the `A` that `S-a` names.
     #[test]
     fn a_press_built_is_the_press_named() {
         let shifted = KeyPress::new(Key::Char('a'), Modifiers::SHIFT);

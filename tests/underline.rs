@@ -50,10 +50,6 @@ fn underline_styles_follow_terminal_capabilities() -> Outcome {
     Ok(())
 }
 
-/// neovim's handshake (neovim 0.12.5, `tui_query_extended_underline` and
-/// `handle_term_response`): a curly underline set, then DECRQSS of the
-/// pen; it draws diagnostics curly only on `DCS 1 $ r 0 ; 4:3 m ST`. The
-/// pane answers so, whatever the client's terminal is.
 #[test]
 fn a_pane_answers_neovims_question_about_styles() -> Outcome {
     let server = Server::start("")?;

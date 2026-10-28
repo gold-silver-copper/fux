@@ -54,8 +54,6 @@ fn a_second_server_on_the_same_socket_is_refused() -> Outcome {
     Ok(())
 }
 
-/// A pane's program is told it runs in fux, whatever terminal fux runs in:
-/// `TERM_PROGRAM` is `fux`, and `TERM_PROGRAM_VERSION` fux's version.
 #[test]
 fn a_pane_is_told_it_runs_in_fux() -> Outcome {
     let server = Server::start("")?;
@@ -72,8 +70,6 @@ fn a_pane_is_told_it_runs_in_fux() -> Outcome {
     })
 }
 
-/// A client that sends its command and then shuts its side of the socket,
-/// as a script piping one in does, still gets the output and the status.
 #[test]
 fn a_client_that_shuts_its_side_still_gets_its_answer() -> Outcome {
     use fux::command::Command;

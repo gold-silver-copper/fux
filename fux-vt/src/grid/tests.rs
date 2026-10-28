@@ -68,9 +68,6 @@ fn narrowing_live_rows_uses_the_new_width() -> Result<(), Error> {
     Ok(())
 }
 
-/// `move_row` is `remove(from)` then `insert(to)`, for every pair of rows,
-/// in an order that is one slice and in one that has wrapped round into two;
-/// and it moves nothing for an index out of range.
 #[test]
 fn moving_a_row_is_a_removal_then_an_insertion() -> Result<(), Error> {
     let mut next = 0;
@@ -337,12 +334,6 @@ fn read_row(grid: &Grid, y: u16) -> Vec<(String, bool, bool, Attributes, Option<
         .collect()
 }
 
-/// Scrolling between left and right margins as wide as the screen
-/// (`scroll_columns`, which copies cells, their text and their links from
-/// row to row) leaves every row reading as scrolling the rows themselves
-/// (`scroll_region`, which moves them) does: over random grids, with wide
-/// glyphs, halves alone, clusters kept in a row's text and links, every
-/// region, count and way, blanks in the default style or another.
 #[test]
 fn scrolling_between_full_margins_is_scrolling_rows() -> Result<(), Error> {
     let mut r = Rng(0x0ef1_0000_0000_0069);
@@ -382,9 +373,6 @@ fn scrolling_between_full_margins_is_scrolling_rows() -> Result<(), Error> {
     Ok(())
 }
 
-/// Turning rows that cross the ring's end turns those rows and no others,
-/// as turning them where the ring starts at its top does, each way and
-/// by every count.
 #[test]
 fn a_rotation_across_the_rings_end_turns_only_its_rows() {
     for top in 0..6 {

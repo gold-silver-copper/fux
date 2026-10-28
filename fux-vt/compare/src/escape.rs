@@ -92,8 +92,6 @@ mod tests {
         assert_eq!(super::unescape(&text), Ok(bytes.to_vec()));
     }
 
-    /// An escape is whole or refused: `\x` takes two hex digits, `\u{`
-    /// its closing brace (at the parent, `\x7` and `\u{754c` were taken).
     #[test]
     fn a_short_escape_is_refused() {
         assert!(super::unescape("\\x7").is_err());

@@ -608,7 +608,6 @@ mod tests {
         })
     }
 
-    /// Delayed endings cannot close another opening, even of the same kind.
     #[test]
     fn an_ending_closes_only_its_own_opening() -> Result<(), String> {
         let keys = crate::script::default_state()
@@ -647,8 +646,6 @@ mod tests {
         assert_eq!(display.screen, Screen::default());
     }
 
-    /// A list moves, chooses, renames and closes on the client: each a
-    /// change of mode made at the key itself.
     #[test]
     fn a_list_is_the_clients() -> Result<(), String> {
         let mut screen = list();
@@ -680,7 +677,6 @@ mod tests {
         Ok(())
     }
 
-    /// A paste where no line is typed goes nowhere, and says so.
     #[test]
     fn a_paste_no_screen_takes_is_told() {
         let told = vec![refusal(
@@ -693,8 +689,6 @@ mod tests {
         }
     }
 
-    /// A prompt's action is given the line typed as a string, whatever it
-    /// looks like: never read as code.
     #[test]
     fn a_prompt_gives_its_line_to_its_action() -> Result<(), String> {
         let mut screen = Screen::Prompt(Prompt {
@@ -721,8 +715,6 @@ mod tests {
         Ok(())
     }
 
-    /// A prompt opens only if its line, grown as long as a line may be,
-    /// still fits a frame: an edit never makes a display too large to send.
     #[test]
     fn a_prompt_fits_a_frame_at_its_largest() -> Result<(), String> {
         let modes = crate::script::default_state()
@@ -748,8 +740,6 @@ mod tests {
         Ok(())
     }
 
-    /// A named key with a modifier does what it does alone, unless bound
-    /// so: Ctrl-Backspace deletes in a line.
     #[test]
     fn a_named_key_acts_with_its_modifiers() -> Result<(), String> {
         let mut screen = Screen::Prompt(Prompt {
@@ -770,8 +760,6 @@ mod tests {
         Ok(())
     }
 
-    /// Copy mode's search line is typed on the client; the search it asks
-    /// for is the server's to make.
     #[test]
     fn copy_mode_searches_from_the_clients_line() -> Result<(), String> {
         let mut screen = Screen::Copy(None);

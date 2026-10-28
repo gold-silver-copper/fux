@@ -575,8 +575,6 @@ fn sign(bin: &Path, bytes: &[u8]) -> Result<(), String> {
 mod tests {
     use std::time::Duration;
 
-    /// A recording made again replaces its line in SHA256SUMS, and the
-    /// others stay, sorted by name.
     #[test]
     fn a_recording_is_signed_once() -> Result<(), String> {
         let dir = std::env::temp_dir().join(format!("fux-vt-sign-{}", std::process::id()));
@@ -596,8 +594,6 @@ mod tests {
         Ok(())
     }
 
-    /// Keys reach the program as fux gives them to a pane, in the key mode
-    /// it asked for (fux-vt/src/keys/encode.rs).
     #[test]
     fn keys_are_typed_in_the_programs_key_mode() -> Result<(), Box<dyn std::error::Error>> {
         let options = fux_vt::Options::new().with(fux_vt::Feature::KittyKeyboard);

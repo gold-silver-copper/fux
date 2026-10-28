@@ -600,9 +600,6 @@ mod tests {
         Ok(())
     }
 
-    /// A pane's cell size is its host's, whether or not it said its
-    /// colours: unknown while its host said none, not kept from one that
-    /// typed there and went to another tab.
     #[test]
     fn a_panes_cell_is_its_hosts() -> Outcome {
         let (mut s, c) = session()?;
@@ -626,11 +623,6 @@ mod tests {
         Ok(())
     }
 
-    /// One terminal answers for a tab, all it said and nothing else: the
-    /// first attached until one types there, then the typist's. One that
-    /// draws no sixel tells its panes none, and shows its pictures on no
-    /// terminal, though another showing the tab draws sixel; a colour it
-    /// did not say is unknown, though another said it.
     #[test]
     fn the_typists_terminal_answers_for_its_tab_alone() -> Outcome {
         let (mut s, c) = session()?;
@@ -682,9 +674,6 @@ mod tests {
         Ok(())
     }
 
-    /// A terminal resized, as a font zoom resizes it, is asked its cell
-    /// size again, the last it said kept till it answers; a pane idle
-    /// since is said in JSON to be told the new one.
     #[test]
     fn a_resized_terminals_cell_is_the_last_it_said_till_it_answers() -> Outcome {
         let (mut s, c) = session()?;
@@ -701,10 +690,6 @@ mod tests {
         Ok(())
     }
 
-    /// A cell answer that changes the cell a pane's program is told sizes
-    /// its terminal in pixels at once, which signals it (SIGWINCH), not at
-    /// its next output; and a refused cell is told once, not again at
-    /// each asking, the program told it has none.
     #[test]
     fn a_new_cell_is_told_at_once_and_a_refused_one_once() -> Outcome {
         let (mut s, c) = session()?;
@@ -754,8 +739,6 @@ mod tests {
         Ok(())
     }
 
-    /// An idle pane is told the cell of its host as another comes to: one
-    /// typed there, or the host detached; with none, that it has none.
     #[test]
     fn a_pane_is_told_the_cell_of_its_host_now() -> Outcome {
         let (mut s, c) = session()?;
@@ -775,8 +758,6 @@ mod tests {
         Ok(())
     }
 
-    /// A picture drawn while its pane's host draws no sixel is not kept,
-    /// and counted (`Losses::pictures`).
     #[test]
     fn a_picture_its_host_does_not_draw_is_counted() -> Outcome {
         let (mut s, c) = session()?;
@@ -793,8 +774,6 @@ mod tests {
         Ok(())
     }
 
-    /// A cell said 0 wide or high is no size said, which is no fault; one
-    /// under a sixel band (`CellSize::LEAST`) is refused, and told.
     #[test]
     fn a_cell_of_0_is_no_size_and_a_small_one_is_refused() -> Outcome {
         let (mut s, c) = session()?;
@@ -807,9 +786,6 @@ mod tests {
         Ok(())
     }
 
-    /// A program taking scheme reports (mode 2031) in a tab no terminal
-    /// answers for misses its terminal's change, and is told it once the
-    /// tab is shown again.
     #[test]
     fn a_scheme_change_missed_in_an_unshown_tab_is_told_once_shown() -> Outcome {
         let (mut s, c) = session()?;
@@ -834,8 +810,6 @@ mod tests {
         Ok(())
     }
 
-    /// A scheme report a full input queue refuses is not taken as told: it
-    /// is sent once the program reads, late, and nothing is lost.
     #[test]
     fn a_scheme_report_refused_is_sent_once_the_queue_takes_it() -> Outcome {
         let (mut s, c) = session()?;

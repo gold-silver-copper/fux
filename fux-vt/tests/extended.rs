@@ -234,11 +234,6 @@ fn a_cluster_joins_across_process_calls_but_not_across_cursor_moves() -> Result 
     Ok(())
 }
 
-/// A cluster in the last column that grows two columns wide is placed as
-/// a wide glyph printed there is (mode 2027's spec, "Variation Selector
-/// 16": it "may possibly cause reflowing of that symbol to the next line
-/// if on right margin with AutoWrap mode set"): on the next line, the
-/// column it left a spacer, the line feed scrolling at the bottom margin.
 #[test]
 fn a_cluster_grown_wide_in_the_last_column_wraps_as_a_wide_glyph() -> Result {
     let heart = "\u{2764}\u{fe0f}";
@@ -329,7 +324,6 @@ fn a_cluster_grown_wide_in_the_last_column_wraps_as_a_wide_glyph() -> Result {
     Ok(())
 }
 
-/// Reflow joins the line again over the spacer the cluster left.
 #[test]
 fn reflow_joins_a_cluster_that_wrapped_as_it_grew() -> Result {
     let mut p = Parser::with_options(Size::new(2, 4)?, 1000, REFLOW)?;
@@ -358,8 +352,6 @@ fn widening_needs_room_and_clears_what_it_covers() -> Result {
     Ok(())
 }
 
-/// Clusters longer than a cell holds inline are kept whole, in the row's
-/// text, one cell each: the cursor lands where unicode-width lays them out.
 #[test]
 fn long_clusters_keep_one_cell_and_all_their_text() -> Result {
     for cluster in [
@@ -514,11 +506,6 @@ fn identity_versions_encode_like_xterm_and_long_names_go_unanswered() -> Result 
 
 // Kitty keyboard protocol and modifyOtherKeys.
 
-/// The flags are pushed, set, popped and reported as the kitty keyboard
-/// protocol's "Progressive enhancement" has them, and kept only as far as
-/// fux honours them, not report event types (2): the kitty keyboard
-/// protocol's Detection of support has a program learn so by setting the
-/// flags it wants and asking.
 #[test]
 fn kitty_keyboard_flags_push_set_pop_and_answer_queries() -> Result {
     let mut p = Parser::with_options(Size::new(5, 20)?, 0, KEYBOARD)?;
@@ -579,9 +566,6 @@ fn kitty_keyboard_stacks_are_per_screen_bounded_and_reset() -> Result {
     Ok(())
 }
 
-/// Each screen's stack stays with it while its cells are cleared or
-/// resized: 1049 clears the alternate screen each time it is shown, and
-/// 1047 once it is shown again. RIS empties both.
 #[test]
 fn kitty_keyboard_stacks_outlive_clears_and_resizes() -> Result {
     let mut p = Parser::with_options(Size::new(5, 20)?, 0, KEYBOARD)?;
@@ -712,11 +696,6 @@ fn reflow_keeps_the_cursor_on_its_character() -> Result {
     Ok(())
 }
 
-/// The saved cursor moves with its character as the cursor does, so a
-/// program that saved it (vim's 1049) finds it where it left it: after
-/// the prompt, not inside the wrapped text above (`fux-vt-compare cases
-/// reflow-moves-the-saved-cursor`: wezterm and xterm.js agree; xterm
-/// does not reflow).
 #[test]
 fn reflow_moves_the_saved_cursor_with_its_character() -> Result {
     let mut p = Parser::with_options(Size::new(8, 20)?, 10000, REFLOW)?;
@@ -740,10 +719,6 @@ fn reflow_moves_the_saved_cursor_with_its_character() -> Result {
     Ok(())
 }
 
-/// A cursor in the blanks past a line's text stays on the line's last
-/// row, in its last column at most, as resizing without reflow keeps it:
-/// it never waits to wrap, so the next glyph leaves no empty soft-wrapped
-/// row behind.
 #[test]
 fn reflow_keeps_a_cursor_past_the_text_on_its_row() -> Result {
     let mut p = Parser::with_options(Size::new(3, 10)?, 100, REFLOW)?;
@@ -757,12 +732,6 @@ fn reflow_keeps_a_cursor_past_the_text_on_its_row() -> Result {
     Ok(())
 }
 
-/// DL and IL move rows across the region's top, and the row above it
-/// keeps its soft wrap, as xterm keeps it (`fux-vt-compare replay
-/// --engines xterm --size 2x1 '\e[999Cab\e[L'`; soft wrap is xterm's own
-/// notion): reflow then joins it to the row that moved up, as Ghostty,
-/// alacritty and wezterm join them (`replay --engines all --size 4x6
-/// 'abcdefgh\r\nxyz\e[2;1H\e[M' resize:4x12`).
 #[test]
 fn deleting_or_inserting_lines_keeps_the_wrap_above() -> Result {
     let mut p = Parser::with_options(Size::new(4, 6)?, 100, REFLOW)?;
@@ -816,12 +785,6 @@ fn reflowed_heights_scroll_into_history_and_drop_blank_rows_first() -> Result {
     Ok(())
 }
 
-/// Rows in history stay there on a resize: the blank rows below the cursor
-/// are dropped only as far as the screen's own lines are past the new
-/// height, so none is given up to bring a history row back above the
-/// cursor. A shrink after a line scrolled into history and the screen was
-/// cleared (ED 2) left the cursor on row 1, under a history row brought
-/// back.
 #[test]
 fn a_shrink_takes_no_history_back_onto_the_screen() -> Result {
     let mut p = Parser::with_options(Size::new(4, 10)?, 100, REFLOW)?;
@@ -854,8 +817,6 @@ fn a_shrink_takes_no_history_back_onto_the_screen() -> Result {
     Ok(())
 }
 
-/// One column cannot show a wide glyph: reflowed to it, the line keeps
-/// its narrow characters alone, and the cursor stays after them.
 #[test]
 fn reflow_to_one_column_leaves_wide_glyphs_out() -> Result {
     let mut p = Parser::with_options(Size::new(4, 6)?, 10, REFLOW)?;
@@ -939,10 +900,6 @@ fn without_the_option_resizing_does_not_reflow() -> Result {
     Ok(())
 }
 
-/// A string ended by ST (`ESC \`) is a sequence fux-vt implements: the
-/// `ESC \` that ends it reaches no `Sink::unhandled`, whatever string it
-/// ends (an OSC, a DCS, an APC, a PM, an SOS), as with BEL; and a lone
-/// `ESC \` is no unhandled sequence either.
 #[test]
 fn a_string_ended_by_st_leaves_nothing_unhandled() -> Result {
     for input in [
@@ -966,9 +923,6 @@ fn a_string_ended_by_st_leaves_nothing_unhandled() -> Result {
     Ok(())
 }
 
-/// The history budget changes on a live parser: lowered, the oldest rows
-/// go at once and readers read every row again; raised, rows gather again.
-/// A row of two cells holds 40 bytes: its 24-byte record and its cells.
 #[test]
 fn the_history_budget_changes_on_a_live_parser() -> Result {
     let mut p = Parser::new(Size::new(2, 10)?, 1 << 20)?;
@@ -1137,12 +1091,6 @@ fn a_picture_whose_top_scrolled_off_a_region_shows_what_is_left() -> Result {
     Ok(())
 }
 
-/// A picture taller than the region below it scrolls its own top off the
-/// region's top margin as it is placed, which is cropped as a later
-/// scroll's would be: the rest shown on the region's rows, and the row
-/// above the margin, another picture's, neither taken as it nor taken
-/// from that picture, and the checker reads it so too (the terminal fuzz
-/// target, "picture 53 shown without its cells").
 #[test]
 fn a_picture_scrolling_its_top_off_a_region_as_placed_is_cropped() -> Result {
     let mut p = Parser::with_options(Size::new(6, 4)?, 10, PICTURES)?;
@@ -1165,13 +1113,6 @@ fn a_picture_scrolling_its_top_off_a_region_as_placed_is_cropped() -> Result {
     Ok(())
 }
 
-/// The rows a region's scroll took from a picture stay taken, whatever
-/// margins are set after (README, "A picture whose top scrolls off a
-/// region's top margin is cropped there"): with the margins reset, as
-/// programs reset them, the picture of the test above still shows its
-/// second row, its first cropped; and a picture cropped by the top of a
-/// screen that keeps no history keeps the rows that still hold it when a
-/// margin is set inside it later.
 #[test]
 fn a_pictures_crop_is_the_scrolls_not_the_margins_set_after() -> Result {
     let graphics =
@@ -1207,11 +1148,6 @@ fn a_pictures_crop_is_the_scrolls_not_the_margins_set_after() -> Result {
     Ok(())
 }
 
-/// A picture taller than the screen and the history kept, its top gone
-/// above the oldest row history keeps, is cropped there, and the checker
-/// counts it so: its crop counted from the oldest row kept, not the
-/// screen's top (the terminal fuzz target on seed b01-raster-pictures,
-/// "shown with 88 rows cropped, 92 noted").
 #[test]
 fn a_picture_cropped_above_the_oldest_row_kept_is_checked_so() -> Result {
     let mut p = Parser::with_options(Size::new(2, 4)?, 120, PICTURES)?;
@@ -1235,12 +1171,6 @@ fn a_picture_cropped_above_the_oldest_row_kept_is_checked_so() -> Result {
     Ok(())
 }
 
-/// A picture being drawn lets another go only for the room it takes: a
-/// doubling of its pixels that could not fit even with every picture gone
-/// lets none go, and the exact growth that fits beside them is taken.
-/// The budget holds the first picture (4 by 6 pixels, 96
-/// bytes) and the second at 11 by 6 (264), with its 10 by 6 drawn first
-/// (240), but not its doubling to 20 by 6 beside those 240 (720).
 #[test]
 fn a_growth_that_cannot_fit_lets_no_picture_go() -> Result {
     let mut p = Parser::with_options(Size::new(6, 20)?, 0, PICTURES)?;
@@ -1277,10 +1207,6 @@ fn trailing_graphics_new_lines_take_the_cursor_down_8_rows_at_most() -> Result {
     Ok(())
 }
 
-/// A lowered picture budget holds the pictures kept too, when the one
-/// being drawn is past it alone: a 100 by 6 picture kept
-/// (2,400 bytes) and another of its size being drawn, then a budget of
-/// 1,000: neither is kept.
 #[test]
 fn a_lowered_picture_budget_holds_the_pictures_kept() -> Result {
     let mut p = Parser::with_options(Size::new(6, 60)?, 0, PICTURES)?;
@@ -1294,11 +1220,6 @@ fn a_lowered_picture_budget_holds_the_pictures_kept() -> Result {
     Ok(())
 }
 
-/// A picture shows while every cell it covers, row by row down from its
-/// top, holds the placeholder: a region scroll that moves part of it past
-/// the rest, or an edit in the call that placed it, takes it away, as
-/// text over a cell does, however the screen remembers having found it
-/// whole.
 #[test]
 fn a_picture_split_or_written_over_after_it_was_placed_is_gone() -> Result {
     // 4 pixels by 24 at 4 by 8: one cell by three, at rows 1 to 3, with
@@ -1331,9 +1252,6 @@ fn a_picture_split_or_written_over_after_it_was_placed_is_gone() -> Result {
     Ok(())
 }
 
-/// A picture whose rows scroll into history is shown there, where they
-/// are, as history lets its oldest rows go, and still after a resize
-/// makes history anew and brings some of them back.
 #[test]
 fn a_picture_scrolled_into_history_is_shown_where_it_is() -> Result {
     // 420 bytes of history: 24 a row and 8 a cell, so the 17th row the
@@ -1359,8 +1277,6 @@ fn a_picture_scrolled_into_history_is_shown_where_it_is() -> Result {
     Ok(())
 }
 
-/// A copy reads a picture's cells as a reader sees them, as blanks
-/// (`CellRef::shown`), not as the placeholder that marks them.
 #[test]
 fn a_copy_over_a_picture_reads_its_cells_as_blanks() -> Result {
     let mut p = Parser::with_options(Size::new(6, 10)?, 10, PICTURES)?;
@@ -1494,9 +1410,6 @@ fn c0_controls_inside_sixel_are_ignored_and_bel_rings() -> Result {
     Ok(())
 }
 
-/// Without `Feature::Pictures`, sixel is ignored as any other DCS is:
-/// nothing is placed, the cells hold what was written around it, the
-/// cursor stays, and the terminal says no sixel though its host draws it.
 #[test]
 fn sixel_is_ignored_without_pictures() -> Result {
     let mut p = Parser::new(Size::new(6, 10)?, 10)?;
@@ -1515,8 +1428,6 @@ fn sixel_is_ignored_without_pictures() -> Result {
     Ok(())
 }
 
-/// The host's graphics are what a program is told: sixel in DA1, and the
-/// cell's and the screen's pixel sizes.
 #[test]
 fn graphics_queries_are_answered_from_the_host() -> Result {
     let mut p = Parser::with_options(Size::new(6, 10)?, 10, PICTURES)?;

@@ -372,8 +372,6 @@ mod tests {
         }
     }
 
-    /// Every style a number holds reads back as itself, and only those
-    /// styles have numbers.
     #[test]
     fn a_style_of_its_own_number_reads_back_as_itself() {
         let styles = Styles::default();
@@ -485,7 +483,6 @@ mod faults {
         assert!(styles.check().is_err());
     }
 
-    /// Styles that hash alike are a fault of the spread: 65 at one place.
     #[test]
     fn styles_that_hash_alike_are_a_fault() {
         let mut styles = Styles::default();

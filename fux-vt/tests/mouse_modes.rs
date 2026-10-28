@@ -41,9 +41,6 @@ fn sent(p: &Parser, event: MouseEvent) -> Option<String> {
         })
 }
 
-/// DECRQM answers each set while it is, and the latest encoding wins
-/// (xterm 411's `extend_coords`): 1006 then 1015 is urxvt, and resetting
-/// 1006 then leaves it so.
 #[test]
 fn each_mode_is_kept_and_reported() -> Result {
     for n in [1001, 1007, 1015] {
@@ -74,9 +71,6 @@ fn each_mode_is_kept_and_reported() -> Result {
     Ok(())
 }
 
-/// urxvt (1015): `CSI code ; column ; row M`, the code plus 32 as the
-/// default encoding has it, a release unnamed (3), no limit on the
-/// position.
 #[test]
 fn urxvt_sends_the_code_plus_32_and_decimal_positions() -> Result {
     let p = parser(b"\x1b[?1002h\x1b[?1015h")?;
@@ -100,9 +94,6 @@ fn urxvt_sends_the_code_plus_32_and_decimal_positions() -> Result {
     Ok(())
 }
 
-/// SGR with pixels (1016) is permanently reset, a cell size known or not:
-/// an event names a cell, not the pixel within it. Setting it changes
-/// nothing, so a program that asked for SGR first gets SGR in cells.
 #[test]
 fn sgr_pixels_is_never_set_and_the_cell_encoding_stays() -> Result {
     let mut p = parser(b"\x1b[?1000h\x1b[?1006h\x1b[?1016h")?;
@@ -115,8 +106,6 @@ fn sgr_pixels_is_never_set_and_the_cell_encoding_stays() -> Result {
     Ok(())
 }
 
-/// Highlight tracking (1001) reports as normal tracking (1000): presses
-/// and releases, no motion. Its highlight phase is the host's.
 #[test]
 fn highlight_tracking_reports_as_normal_tracking() -> Result {
     let p = parser(b"\x1b[?1001h\x1b[?1006h")?;
@@ -133,11 +122,6 @@ fn highlight_tracking_reports_as_normal_tracking() -> Result {
     Ok(())
 }
 
-/// Alternate scroll (1007): with no mouse reporting, on the alternate
-/// screen, a wheel turn sends cursor up or down, in the cursor key mode,
-/// 5 times (xterm 411's `scroll-back(5,line,m)`), half the screen's rows
-/// with Ctrl (`scroll-back(1,halfpage,m)`); on the main screen, or with
-/// mouse reporting asked for, it does not.
 #[test]
 fn alternate_scroll_sends_the_cursor_keys_on_the_alternate_screen() -> Result {
     let up = event(MouseAction::Press(MouseButton::WheelUp), 3, 3);
@@ -164,8 +148,6 @@ fn alternate_scroll_sends_the_cursor_keys_on_the_alternate_screen() -> Result {
     Ok(())
 }
 
-/// Scroll expansion keeps every arrow while bounding each encoder chunk,
-/// including the largest legal height, and kitty ignores DECCKM.
 #[test]
 fn alternate_scroll_keeps_negotiated_arrows_in_bounded_chunks() -> Result {
     for (flags, up, down) in [

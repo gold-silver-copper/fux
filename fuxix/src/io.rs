@@ -270,11 +270,6 @@ mod tests {
         Ok(())
     }
 
-    /// One at a time, a descriptor at or above the soft limit (open before
-    /// the limit fell, as one a parent passes past `ulimit -Sn`) is marked
-    /// too. In a child, whose limit it lowers, making only
-    /// async-signal-safe calls, one number freed below the limit, as Linux's
-    /// listing takes one.
     #[test]
     fn one_at_a_time_marks_past_the_soft_limit() -> std::result::Result<(), String> {
         let file = std::fs::File::open("/dev/null").map_err(|e| e.to_string())?;
@@ -325,8 +320,6 @@ mod tests {
         Ok(())
     }
 
-    /// One at a time, every descriptor is marked: one opened after the
-    /// listing, past a free number, too.
     #[test]
     fn one_at_a_time_marks_those_opened_since_the_listing() -> std::result::Result<(), String> {
         let file = std::fs::File::open("/dev/null").map_err(|e| e.to_string())?;

@@ -545,9 +545,6 @@ mod tests {
     use std::process::{Command, Stdio};
     use std::time::{Duration, Instant};
 
-    /// A request node never answers fails once its wait is over, and the
-    /// process is stopped, so the next terminal starts another (at the
-    /// parent the read waited for ever).
     #[test]
     fn a_request_never_answered_fails_in_time() -> Result<(), String> {
         let child = Command::new("sh")
@@ -573,8 +570,6 @@ mod tests {
         Ok(())
     }
 
-    /// xterm.js is fed in the chunk every engine is fed, not a MiB a
-    /// write: 10 KiB at 4096 is three writes, the last alone answered.
     #[test]
     fn xterm_js_is_fed_in_the_chunk_every_engine_is_fed() {
         let bytes = vec![b'x'; 10 << 10];

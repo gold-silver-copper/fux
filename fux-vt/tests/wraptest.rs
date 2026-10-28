@@ -262,8 +262,6 @@ const CHECKS: &[Check] = &[
     },
 ];
 
-/// wraptest's own first step: CUP past the last column stops in it, and
-/// CPR gives the width.
 #[test]
 fn wraptest_measures_the_width() -> Result {
     let (reports, _) = run("\x1b[1;999H\x1b[6n")?;

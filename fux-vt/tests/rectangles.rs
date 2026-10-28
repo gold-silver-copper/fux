@@ -181,10 +181,6 @@ fn deccra_copies_a_rectangle() -> Result {
     Ok(())
 }
 
-/// DECCRA blanks a wide glyph the rectangle cuts, at the source's edges
-/// as at the destination's: half a glyph copied is no glyph, so it never
-/// joins a half that was there (row 1's `世`) nor spills past the
-/// rectangle into one (row 1's `界`).
 #[test]
 fn deccra_blanks_a_wide_glyph_it_cuts() -> Result {
     let mut parser = Parser::new(Size::new(2, 4)?, 0)?;
@@ -329,11 +325,6 @@ fn decrara_reverses_the_renditions_of_an_area() -> Result {
     Ok(())
 }
 
-/// DECCARA's change stays when the style it makes sweeps the style table,
-/// which numbers the styles in use anew, the area's own cells' too: 4,096
-/// distinct backgrounds fill the table, all but the first two then
-/// unused, so that making the bold one sweeps it, and the bold style can
-/// take the number the cell's old one had before.
 #[test]
 fn deccara_keeps_its_change_across_a_style_sweep() -> Result {
     let mut parser = Parser::new(Size::new(1, 2)?, 1 << 20)?;

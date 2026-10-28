@@ -66,10 +66,6 @@ fn probe(server: &Server, terminal: &mut Terminal, flags: &str, keys: &[u8]) -> 
     terminal.type_bytes(keys)
 }
 
-/// Shift-Enter and Ctrl-I, as Ghostty sends them with the flags fux
-/// pushed, reach a pane whose program pushed disambiguate as the kitty spec
-/// says (`CSI 13 ; 2 u`, `CSI 105 ; 5 u`), and a legacy pane as Enter and Tab,
-/// the bytes it got before. Escape is a key at once.
 #[test]
 fn keys_reach_each_pane_as_its_program_asked() -> Outcome {
     let server = Server::start("")?;
@@ -86,9 +82,6 @@ fn keys_reach_each_pane_as_its_program_asked() -> Outcome {
     Ok(())
 }
 
-/// The prefix and a binding work as Ghostty sends them in the protocol
-/// (`CSI 98 ; 5 u` is Ctrl-B), and the client pops the flags as it leaves,
-/// on the alternate screen, before leaving it.
 #[test]
 fn the_prefix_works_with_the_protocol_and_the_flags_are_popped_on_leaving() -> Outcome {
     let server = Server::start("")?;
@@ -107,8 +100,6 @@ fn the_prefix_works_with_the_protocol_and_the_flags_are_popped_on_leaving() -> O
     Ok(())
 }
 
-/// A terminal that does not answer `CSI ? u` gets nothing pushed, and its
-/// keys work as before.
 #[test]
 fn a_terminal_without_the_protocol_gets_nothing_pushed() -> Outcome {
     let server = Server::start("")?;
