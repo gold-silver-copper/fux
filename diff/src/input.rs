@@ -355,7 +355,11 @@ pub fn run(r: &mut Rng, scale: usize) -> Outcome {
         let mut a = baseline::pane::InputQueue::default();
         let (id, runs) = (
             "%1".parse().map_err(|_| "%1")?,
-            fux::pane::Runs::DefaultShell,
+            fux::pane::Runs::Shell(fux::pane::Launch {
+                argv: fux::config::Program::new("/bin/sh".into(), Vec::new())?,
+                cwd: "/".into(),
+                env: fux::command::EnvPatch::default(),
+            }),
         );
         let b = fux::pane::Pane::new(id, None, runs, crate::size(24, 80), 0);
         let mut pane = b.map_err(|e| e.to_string())?;

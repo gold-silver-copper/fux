@@ -1,6 +1,8 @@
 # fux's bundled words, written in fuxth: every program may use them.
 # `explain NAME` says what each does.
 
+# -- : attach, naming a first workspace main when the server is empty
+define default-attach opts str main name attach end
 # pane text -- answer : type text into a pane, nothing pressed after it; answers as send-keys does
 define type text send-keys end
 # pane name -- answer : press a key in a pane: Enter, C-c, Up; answers as send-keys does

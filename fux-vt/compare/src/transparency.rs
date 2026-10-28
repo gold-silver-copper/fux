@@ -255,7 +255,21 @@ impl Through {
         let client_rows = rows.checked_add(1).ok_or("too many rows for the bar")?;
         let size = fux_vt::Size::new(client_rows, cols).map_err(|e| format!("fux: {e}"))?;
         let client = session
-            .attach_as(ClientKind::Terminal, fux::protocol::Attach::of(size))
+            .attach_as(
+                ClientKind::Terminal,
+                fux::protocol::Attach {
+                    initial: Some(fux::command::InitialWorkspace {
+                        name: None,
+                        start: fux::command::Start::Shell(fux::config::Program::new(
+                            "/bin/sh".into(),
+                            Vec::new(),
+                        )?),
+                        cwd: std::env::current_dir().map_err(|e| e.to_string())?,
+                        env: fux::command::EnvPatch::default(),
+                    }),
+                    ..fux::protocol::Attach::of(size)
+                },
+            )
             .map_err(|e| format!("fux: {e}"))?;
         let mut placement = Placement::default();
         let view = session.views.get(&client).ok_or("fux: no view")?;

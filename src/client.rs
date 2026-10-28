@@ -5,6 +5,7 @@
 use crate::act::Act;
 use crate::client_state::ClientState;
 use crate::code::Code;
+#[cfg(test)]
 use crate::command::{Command, Request};
 use crate::decode::Input;
 use crate::keys::{Key, KeyPress, Modifiers};
@@ -282,17 +283,11 @@ impl Requests {
 
     /// Sends `asked`, and waits for its reply, which may come in pieces:
     /// what the server streams before it (`events`) goes to `out` as it
-    /// comes. A request that may start programs carries this process's
-    /// environment, of which they take what `update-environment` names.
+    /// comes. Launch requests already contain their selected environment patch.
     pub fn ask(&mut self, asked: &Asked, out: &mut dyn Write) -> Result<Reply, Error> {
         wait_at_most(&self.stream, None);
-        if starts_programs(&asked.request) && asked.context.env.is_none() {
-            let mut asked = asked.clone();
-            asked.context.env = Some(environment());
-            send(&mut self.stream, &asked)?;
-        } else {
-            send(&mut self.stream, asked)?;
-        }
+
+        send(&mut self.stream, asked)?;
         let mut parts = Vec::new();
         loop {
             while let Some(frame) = self.decoder.frame()? {
@@ -327,43 +322,16 @@ impl Requests {
 }
 
 /// Where requests from this process come from: its directory, its pane
-/// and that pane's server. Its environment goes only with the requests
-/// that may start programs (`Requests::ask`).
+/// and that pane's server. Launch environment is carried in the request.
 pub fn context() -> Context {
     let var = |name| std::env::var(name).ok().filter(|v: &String| !v.is_empty());
     Context {
         cwd: std::env::current_dir().unwrap_or_default(),
         pane: var("FUX_PANE").and_then(|p| crate::id::program(&p)),
         server: var("FUX_SERVER"),
-        env: None,
         client: None,
         of: None,
     }
-}
-
-/// Whether `request` may start programs: the only requests whose caller's
-/// environment the server reads.
-fn starts_programs(request: &Request) -> bool {
-    let Request::Do(command) = request else {
-        return false;
-    };
-    matches!(
-        command,
-        Command::NewWorkspace { .. }
-            | Command::NewTab { .. }
-            | Command::Run { .. }
-            | Command::Respawn { .. }
-            | Command::Split { .. }
-    )
-}
-
-/// This process's environment, its values as the bytes they are, its
-/// names as far as they are UTF-8 (as every name `update-environment`
-/// takes is): the server gives panes started for it what that names of it.
-pub fn environment() -> Vec<(String, std::ffi::OsString)> {
-    std::env::vars_os()
-        .filter_map(|(k, v)| Some((k.into_string().ok()?, v)))
-        .collect()
 }
 
 /// Stops the server, whatever fux version it is.
@@ -505,6 +473,7 @@ pub struct Attaching {
     pub of: Option<crate::command::Run>,
     pub workspace: Option<crate::command::WsRef>,
     pub read_only: bool,
+    pub creation: crate::script::Opts,
     pub state: ClientState,
     pub problem: Option<String>,
 }
@@ -1037,7 +1006,31 @@ pub fn attach(
         size,
         workspace: attaching.workspace.clone(),
         read_only: attaching.read_only,
-        env: environment(),
+        initial: if attaching.workspace.is_none() && !attaching.read_only {
+            let creation = &attaching.creation;
+            let (start, env) = creation
+                .launch(
+                    &attaching.state.preferences.shell,
+                    &attaching.state.preferences.copy_environment,
+                )
+                .map_err(Error::Failed)?;
+            Some(crate::command::InitialWorkspace {
+                name: creation.name.clone(),
+                start,
+                cwd: {
+                    let invocation = context().cwd;
+                    match creation.cwd.as_deref() {
+                        Some(dir) if dir.is_absolute() => dir.to_path_buf(),
+                        Some(dir) if invocation.is_absolute() => invocation.join(dir),
+                        Some(_) => PathBuf::new(),
+                        None => invocation,
+                    }
+                },
+                env,
+            })
+        } else {
+            None
+        },
     };
     // The server relays every paint, which the client writes to its
     // terminal; the keys are the client's to read.
@@ -1718,14 +1711,12 @@ mod tests {
                     Some(KeyPress::new(Key::Char('a'), Modifiers::CTRL))
                 );
                 let expected = [
-                    Setting::Shell(p.shell.clone()),
                     Setting::HistoryBytes(p.history_bytes),
                     Setting::Wait(p.wait),
                     Setting::Clipboard(p.clipboard),
                     Setting::Buffers(p.buffers),
                     Setting::Bell(p.bell),
                     Setting::Titles(p.titles),
-                    Setting::UpdateEnvironment(p.update_environment.clone()),
                 ];
                 assert!(settings.iter().all(|setting| expected.contains(setting)));
                 drop(live);
@@ -1750,14 +1741,14 @@ mod tests {
         let stop = script::Stop::default();
         let code = "str C-a prefix str history-bytes 0 set str wait-seconds 0 set \
             str clipboard false set str buffers 2 set str bell false set str titles true set \
-            str update-environment list end set str shell list str /bin/custom end set";
+            str copy-environment list end set str shell list str /bin/custom end set";
         assert!(
             run_job(&mut recording, me, &state, &code.into(), &stop)
                 .notice
                 .is_none()
         );
         assert_eq!(recording.batches.len(), 1);
-        assert_eq!(recording.batches.first().map(Vec::len), Some(8));
+        assert_eq!(recording.batches.first().map(Vec::len), Some(6));
         let committed = lock(&state).clone();
         assert_eq!(committed.preferences.shell.program(), "/bin/custom");
         assert_eq!(committed.preferences.history_bytes.get(), 0);

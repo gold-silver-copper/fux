@@ -634,7 +634,7 @@ fn a_dump_runs_on_a_new_server_whatever_its_tabs_are_named() -> Outcome {
 }
 
 /// Replaying explicit programs in an unnamed workspace never starts the
-/// destination server's default shell.
+/// replaying client's default shell.
 #[test]
 fn an_unnamed_workspace_replays_independently_of_the_default_shell() -> Outcome {
     let source = Server::start("")?;
@@ -691,9 +691,16 @@ fn an_unnamed_workspace_replays_independently_of_the_default_shell() -> Outcome 
         &["str", "sh", "str", "-c", "str", "exit 0"],
     ] {
         let server = Server::start("")?;
-        server.ok(&[&["str", "shell", "list"][..], shell, &["end", "set"]].concat())?;
+        let mut prefix = vec!["str", "shell", "list"];
+        prefix.extend_from_slice(shell);
+        prefix.extend(["end", "set"]);
+        let prefix = prefix
+            .iter()
+            .map(|w| fux::words::quote(w))
+            .collect::<Vec<_>>()
+            .join(" ");
         let file = server.dir.join("unnamed.fux");
-        std::fs::write(&file, &dump).map_err(e)?;
+        std::fs::write(&file, format!("{prefix}\n{dump}")).map_err(e)?;
         server.ok(&["--file", &file.to_string_lossy()])?;
         assert_eq!(
             server.ok(&["str", "first", "pane", "workspace", "panes", "len"])?,
@@ -817,5 +824,78 @@ fn a_socket_served_by_another_uid_is_refused() -> Outcome {
     );
     let _ = listener.kill();
     let _ = listener.wait();
+    Ok(())
+}
+
+/// Argv and cwd are one saved launch, including relative arguments and executables.
+#[test]
+fn dump_replays_the_saved_launch_after_the_program_changes_directory() -> Outcome {
+    use std::os::unix::fs::PermissionsExt;
+    for argv in [
+        "str /bin/sh program str worker.sh arg",
+        "str ./worker.sh program",
+    ] {
+        let server = Server::start("")?;
+        let directory = server.dir.join("launch");
+        let child = directory.join("child");
+        std::fs::create_dir_all(&child).map_err(e)?;
+        let script = directory.join("worker.sh");
+        std::fs::write(
+            &script,
+            "#!/bin/sh\ncd child\nprintf 'saved-launch\n'\nexec /bin/cat\n",
+        )
+        .map_err(e)?;
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).map_err(e)?;
+        let cwd = fux::words::quote(directory.to_str().ok_or("cwd text")?);
+        let answer = server.ok(&[&format!("agent-opts 80 24 size str {cwd} cwd {argv} run")])?;
+        let pane = answer.trim().split(':').next().ok_or("pane")?;
+        eventually("the program changed directory", || {
+            Ok(server.ok(&[pane, "str", "cwd", "get"])?.trim()
+                == child.to_str().ok_or("child text")?)
+        })?;
+        let dump = server.ok(&[pane, "tab", "dump-of"])?;
+        assert!(dump.contains(&format!("str {cwd} cwd")), "{dump}");
+        server.ok(&[&dump])?;
+        let (replayed, _) = server.newest_pane()?;
+        assert_ne!(replayed, pane);
+        eventually("the saved launch replayed", || {
+            Ok(server.ok(&[&replayed, "capture"])?.contains("saved-launch"))
+        })?;
+    }
+    Ok(())
+}
+
+/// Shell replay starts in the observed directory, retaining its saved argv.
+#[test]
+fn dump_replays_a_shell_in_its_current_directory() -> Outcome {
+    let server = Server::start("")?;
+    let directory = server.dir.join("launch");
+    let child = directory.join("child");
+    std::fs::create_dir_all(&child).map_err(e)?;
+    let cwd = fux::words::quote(directory.to_str().ok_or("cwd text")?);
+    let observed = fux::words::quote(child.to_str().ok_or("child text")?);
+    let body = fux::words::quote("cd \"$1\" && printf 'shell-directory\\n' && exec /bin/cat");
+    let answer = server.ok(&[&format!(
+        "agent-opts 80 24 size str {cwd} cwd list str /bin/sh str -c str {body} str shell str {observed} end shell-program new-tab"
+    )])?;
+    let pane = answer.trim().split(':').next().ok_or("pane")?;
+    eventually("the shell changed directory", || {
+        Ok(
+            server.ok(&[pane, "str", "cwd", "get"])?.trim()
+                == child.to_str().ok_or("child text")?,
+        )
+    })?;
+    let dump = server.ok(&[pane, "tab", "dump-of"])?;
+    assert!(dump.contains(&format!("str {observed} cwd")), "{dump}");
+    server.ok(&[&dump])?;
+    let (replayed, _) = server.newest_pane()?;
+    assert_ne!(replayed, pane);
+    eventually("the shell replayed in its current directory", || {
+        Ok(server
+            .ok(&[&replayed, "capture"])?
+            .contains("shell-directory")
+            && server.ok(&[&replayed, "str", "cwd", "get"])?.trim()
+                == child.to_str().ok_or("child text")?)
+    })?;
     Ok(())
 }

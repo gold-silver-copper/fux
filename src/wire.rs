@@ -2,7 +2,7 @@
 //! as the same value, so that the server receives what a client's words
 //! built, and never reads words itself. Big-endian numbers; a string or a
 //! list is its length then its items; an option or an enum its tag first.
-use crate::command::{Env, Percent};
+use crate::command::{EnvPatch, Percent};
 use crate::id::{ClientId, PaneId, TabId, WsId};
 use crate::keys::mouse::MouseButton;
 use crate::keys::{Direction, KeyPress};
@@ -466,13 +466,13 @@ impl Wire for std::path::PathBuf {
 
 /// Variables, each name checked as it is read: one no shell takes is
 /// refused.
-impl Wire for Env {
+impl Wire for EnvPatch {
     fn put(&self, out: &mut impl crate::wire::Sink) {
         put_list(self.as_slice(), out);
     }
     fn get(r: &mut Reader<'_>) -> Result<Self, Error> {
-        let mut env = Env::default();
-        for (name, value) in Vec::<(String, String)>::get(r)? {
+        let mut env = EnvPatch::default();
+        for (name, value) in Vec::<(String, Option<std::ffi::OsString>)>::get(r)? {
             env.push(name, value)
                 .map_err(|_| Error::Bad("variable name"))?;
         }
@@ -934,33 +934,114 @@ mod tests {
     /// A variable's name from the wire is one a shell takes, as from the
     /// `env` word: `A=B` (or a NUL) would set another, or none.
     #[test]
-    fn a_variable_name_no_shell_takes_is_refused() {
-        let vars =
-            |name: &str| encode(&vec![(name.to_owned(), "x".to_owned())]).unwrap_or_default();
-        assert!(Env::get(&mut Reader::new(&vars("A=B"))).is_err());
-        assert!(Env::get(&mut Reader::new(&vars("A\0"))).is_err());
-        let fine = Env::get(&mut Reader::new(&vars("A_1"))).ok();
+    fn a_variable_name_no_shell_takes_is_refused() -> Result<(), String> {
+        let vars = |name: &str| {
+            encode(&vec![(
+                name.to_owned(),
+                Some(std::ffi::OsString::from("x")),
+            )])
+            .map_err(|e| e.to_string())
+        };
+        assert!(EnvPatch::get(&mut Reader::new(&vars("A=B")?)).is_err());
+        assert!(EnvPatch::get(&mut Reader::new(&vars("A\0")?)).is_err());
+        let fine = EnvPatch::get(&mut Reader::new(&vars("A_1")?)).ok();
         assert_eq!(
-            fine.map(|env| encode(&env).unwrap_or_default()),
-            Some(vars("A_1"))
+            fine.map(|env| encode(&env))
+                .transpose()
+                .map_err(|e| e.to_string())?,
+            Some(vars("A_1")?)
         );
+        Ok(())
+    }
+
+    #[test]
+    fn patches_keep_bytes_and_unsets_and_refuse_forged_identity() -> Result<(), String> {
+        let mut patch = EnvPatch::default();
+        patch.push(
+            "BYTES".into(),
+            Some(std::ffi::OsString::from_vec(vec![0xff, b'x'])),
+        )?;
+        patch.push("ABSENT".into(), None)?;
+        assert_eq!(
+            Reader::new(&encode(&patch).map_err(|e| e.to_string())?).whole::<EnvPatch>(),
+            Ok(patch.clone())
+        );
+        for name in ["FUX", "FUX_PANE", "FUX_SOCKET", "FUX_SERVER", "A=B", "1BAD"] {
+            for value in [None, Some(std::ffi::OsString::from("forged"))] {
+                assert!(patch.push(name.into(), value.clone()).is_err());
+                let bytes = encode(&vec![(name.to_owned(), value)]).map_err(|e| e.to_string())?;
+                assert!(Reader::new(&bytes).whole::<EnvPatch>().is_err(), "{name}");
+            }
+        }
+        let duplicate = vec![("A".to_owned(), None::<std::ffi::OsString>); 2];
+        assert!(
+            Reader::new(&encode(&duplicate).map_err(|e| e.to_string())?)
+                .whole::<EnvPatch>()
+                .is_err()
+        );
+        assert!(patch.push("BYTES".into(), None).is_err());
+        let nul = vec![("A".to_owned(), Some(std::ffi::OsString::from_vec(vec![0])))];
+        assert!(
+            Reader::new(&encode(&nul).map_err(|e| e.to_string())?)
+                .whole::<EnvPatch>()
+                .is_err()
+        );
+        assert!(
+            patch
+                .push("A".into(), nul.into_iter().next().and_then(|(_, v)| v))
+                .is_err()
+        );
+        assert!(
+            patch
+                .push(
+                    "BIG".into(),
+                    Some(
+                        std::iter::repeat_n('x', crate::protocol::MAX_FRAME)
+                            .collect::<String>()
+                            .into()
+                    )
+                )
+                .is_err()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn argv_is_nonempty_and_checked_at_decode() -> Result<(), String> {
+        use crate::config::Program;
+        for (program, args) in [("", vec![]), ("/bin/sh", vec!["bad\0arg".to_owned()])] {
+            assert!(Program::new(program.into(), args.clone()).is_err());
+            let mut bytes = encode(&program.to_owned()).map_err(|e| e.to_string())?;
+            args.put(&mut bytes);
+            assert!(Reader::new(&bytes).whole::<Program>().is_err());
+        }
+        let program = Program::new("a program".into(), vec!["".into(), "an argument".into()])?;
+        assert_eq!(
+            Reader::new(&encode(&program).map_err(|e| e.to_string())?).whole::<Program>(),
+            Ok(program)
+        );
+        Ok(())
     }
 
     /// A command's directory is the path's bytes, UTF-8 or not: one that
     /// is not still reaches the session as it was named.
     #[test]
-    fn a_directory_goes_as_its_bytes() {
+    fn a_directory_goes_as_its_bytes() -> Result<(), String> {
         let dir = std::path::PathBuf::from(std::ffi::OsStr::from_bytes(b"/tmp/caf\xe9"));
         let split = Command::Split {
             axis: crate::layout::Axis::Vertical,
             target: crate::id::PaneId::of(1),
-            argv: Vec::new(),
+            start: crate::command::Start::Shell(crate::config::Program::new(
+                "/bin/sh".into(),
+                Vec::new(),
+            )?),
             cwd: Some(dir.clone()),
-            env: Env::default(),
+            env: EnvPatch::default(),
             shares: None,
         };
         let read = Command::get(&mut Reader::new(&encode(&split).unwrap_or_default())).ok();
         assert!(matches!(read, Some(Command::Split { cwd: Some(cwd), .. }) if cwd == dir));
+        Ok(())
     }
 
     /// A share of a tab is 1 to 100 percent, from the wire too: 250 would

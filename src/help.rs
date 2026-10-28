@@ -218,7 +218,7 @@ fn settings() -> String {
             wrapped(about, "\n      ", 78)
         ));
     }
-    out.push_str("\nThese settings currently affect the shared server and its other clients.\nOnly preferences explicitly set in a transaction are sent, in one batch,\nbefore the next server request, screen operation, server selection or\nforce-kill-server, and when the program succeeds. Individual setters send no\nrequests. Config evaluation sends nothing; its successful commit forwards\nits explicit preferences when a typing client attaches.\n");
+    out.push_str("\nShell and copy-environment affect only this client and its future launches.\nThe other settings still affect the shared server and its other clients.\nOnly remaining shared preferences explicitly set in a transaction are sent, in one batch,\nbefore the next server request, screen operation, server selection or\nforce-kill-server, and when the program succeeds. Individual setters send no\nrequests. Config evaluation sends nothing; its successful commit forwards\nits explicit preferences when a typing client attaches.\n");
     out.push_str("\nBundled initialization (client-defaults.fux):\n");
     out.push_str(crate::script::DEFAULTS);
     out
@@ -282,6 +282,9 @@ fn bounds() -> Vec<(Amount, &'static str, Said)> {
         (Bytes(crate::wire::MAX_ALLOCATED), "a finite observation's allocation grant, shared by construction or nested decoding", &[]),
         (Count(crate::capture::OUTPUT_CELLS), "additional capture cells for synthesized output, beside twice history-bytes and the live screen", &[]),
         (Bytes(crate::protocol::MAX_FRAME), "a message between client and server", &[("README", "length-prefixed and at most {}")]),
+        (Bytes(crate::session::LAUNCH_BYTES), "saved launch inputs in one session, including pending replacements", &[]),
+        (Bytes(crate::session::DUMP_BYTES), "a dump recipe", &[]),
+        (Count(crate::command::EnvPatch::MAX_NAMES), "environment names selected or patched in one launch", &[]),
         (Bytes(server::OUT_MAX), "what may wait unsent for a client before the copies, programs and keys sent it are refused", &[]),
         (Bytes(server::TALK_MAX), "what may wait unsent for a client before it is detached", &[]),
         (Bytes(client::OUTPUT_MAX), "what a client holds unwritten for its terminal before it reads the server no more", &[]),

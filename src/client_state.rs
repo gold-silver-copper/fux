@@ -1,5 +1,5 @@
 //! The keys, frozen definitions and checked preferences owned by one client.
-use crate::config::{EnvName, Limit, Number, Reads, Shell};
+use crate::config::{EnvName, Limit, Number, Program, Reads};
 use crate::keymap::Keymap;
 use crate::script::{Config, Fux};
 use fuxth::Value;
@@ -49,7 +49,7 @@ impl Draft {
 
 /// The closed local table keeps each setting's existing checked reader.
 macro_rules! preferences {
-    ($($(#[doc = $about:literal])* $field:ident $variant:ident $name:literal: $reads:ty;)*) => {
+    ($($(#[doc = $about:literal])* $field:ident $name:literal: $reads:ty $(=> $variant:ident)?;)*) => {
         #[derive(Clone, Debug, PartialEq, Eq)]
         pub struct Preferences {
             $($(#[doc = $about])* pub $field: $reads,)*
@@ -68,9 +68,9 @@ macro_rules! preferences {
             }
             fn settings(self, p: &Preferences) -> Vec<crate::config::Setting> {
                 let mut settings = Vec::new();
-                $(if self.$field {
+                $($(if self.$field {
                     settings.push(crate::config::Setting::$variant(p.$field.clone()));
-                })*
+                })?)*
                 settings
             }
         }
@@ -136,25 +136,38 @@ macro_rules! preferences {
 }
 
 preferences! {
-    /// The shared default shell argv for new panes.
-    shell Shell "shell": Shell;
+    /// This client's shell argv for new panes.
+    shell "shell": Program;
     /// The shared history budget in bytes, applied to every existing and new
     /// pane. Lowering it can discard retained history in every pane.
-    history_bytes HistoryBytes "history-bytes": Number<0, { 1 << 30 }>;
+    history_bytes "history-bytes": Number<0, { 1 << 30 }> => HistoryBytes;
     /// The shared limit for waits without an explicit timeout.
-    wait Wait "wait-seconds": Limit;
+    wait "wait-seconds": Limit => Wait;
     /// Whether programs may write the shared clipboard and copies reach
     /// clients' terminal clipboards.
-    clipboard Clipboard "clipboard": bool;
+    clipboard "clipboard": bool => Clipboard;
     /// The number of shared paste buffers retained.
-    buffers Buffers "buffers": Number<1, { crate::config::MAX_BUFFERS }>;
+    buffers "buffers": Number<1, { crate::config::MAX_BUFFERS }> => Buffers;
     /// Whether clients ring and show tab bell marks.
-    bell Bell "bell": bool;
+    bell "bell": bool => Bell;
     /// Whether clients' terminal titles follow their focused panes.
-    titles Titles "titles": bool;
-    /// The shared list of environment names new launches take from their
-    /// requesting client.
-    update_environment UpdateEnvironment "update-environment": Vec<EnvName>;
+    titles "titles": bool => Titles;
+    /// Names selected from this client for new launches. Their concrete
+    /// values and unsets are saved for respawn and dump.
+    copy_environment "copy-environment": Vec<EnvName>;
+}
+
+impl PreferenceDraft {
+    pub(crate) fn shell(&self) -> Result<&Program, String> {
+        self.shell
+            .as_ref()
+            .ok_or_else(|| "bundled initialization did not set shell".to_owned())
+    }
+    pub(crate) fn copy_environment(&self) -> Result<&[EnvName], String> {
+        self.copy_environment
+            .as_deref()
+            .ok_or_else(|| "bundled initialization did not set copy-environment".to_owned())
+    }
 }
 
 impl Preferences {
@@ -166,10 +179,10 @@ impl Preferences {
         asks: &mut A,
         context: crate::protocol::Context,
     ) -> Result<(), crate::script::Failed> {
-        if !changes.any() {
+        let settings = changes.settings(self);
+        if settings.is_empty() {
             return Ok(());
         }
-        let settings = changes.settings(self);
         let reply = asks.ask(
             &crate::protocol::Asked {
                 request: crate::command::Command::Set(settings).into(),
@@ -198,7 +211,7 @@ mod tests {
         assert_eq!(state.preferences.buffers.get(), 16);
         assert!(state.preferences.clipboard);
         assert!(state.preferences.bell && !state.preferences.titles);
-        assert!(state.preferences.update_environment.is_empty());
+        assert!(state.preferences.copy_environment.is_empty());
         Ok(())
     }
 
@@ -215,7 +228,7 @@ mod tests {
             ("wait-seconds", Value::Int(0)),
             ("clipboard", Value::Bool(false)),
             ("shell", list(&["/bin/my shell", "a b", ""])?),
-            ("update-environment", list(&["OK", "FUX_EXTRA"])?),
+            ("copy-environment", list(&["OK", "FUX_EXTRA"])?),
         ] {
             draft.set(name, &value)?;
         }
@@ -230,16 +243,15 @@ mod tests {
             ("shell", list(&[""])?),
             ("shell", list(&["/bin/sh", "a\0b"])?),
             ("shell", Value::str("/bin/sh")),
-            ("update-environment", list(&["BAD-NAME"])?),
-            ("update-environment", list(&["FUX_PANE"])?),
-            ("update-environment", list(&["FUX_SOCKET"])?),
-            ("update-environment", list(&["FUX_SERVER"])?),
-            ("update-environment", list(&["FUX"])?),
+            ("copy-environment", list(&["BAD-NAME"])?),
+            ("copy-environment", list(&["FUX_PANE"])?),
+            ("copy-environment", list(&["FUX_SOCKET"])?),
+            ("copy-environment", list(&["FUX_SERVER"])?),
+            ("copy-environment", list(&["FUX"])?),
             ("buffers", Value::Int(0)),
             ("buffers", Value::Int(1001)),
             ("program-clipboard", Value::Bool(true)),
             ("terminal-clipboard", Value::Bool(true)),
-            ("copy-environment", list(&[])?),
         ] {
             assert!(draft.set(name, &value).is_err(), "{name}: {value:?}");
         }

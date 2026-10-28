@@ -206,7 +206,13 @@ impl Server {
         let first = [
             "opts", "str", "main", "name", "80", "24", "size", "str", &home, "cwd",
         ];
-        server.ok(&[&first[..], &["new-workspace"]].concat())?;
+        let argv = server.state.preferences.shell.argv();
+        let mut launch: Vec<&str> = vec!["list"];
+        for word in &argv {
+            launch.extend(["str", word]);
+        }
+        launch.extend(["end", "shell-program", "new-workspace"]);
+        server.ok(&[&first[..], launch.as_slice()].concat())?;
         Ok((server, held))
     }
 
@@ -243,6 +249,7 @@ impl Server {
         let mut command = Command::new(program);
         command
             .env("FUX_SOCKET", &self.socket)
+            .env("SHELL", "/bin/sh")
             .env("XDG_CONFIG_HOME", self.dir.join("config"))
             .env_remove("FUX_PANE")
             .env_remove("FUX_SERVER");
@@ -474,7 +481,12 @@ impl Client {
             size: sized(rows, cols)?,
             workspace: workspace.map(|name| fux::command::WsRef::Name(name.to_owned())),
             read_only,
-            env: Vec::new(),
+            initial: (workspace.is_none() && !read_only).then(|| fux::command::InitialWorkspace {
+                name: None,
+                start: fux::command::Start::Shell(server.state.preferences.shell.clone()),
+                cwd: server.dir.clone(),
+                env: fux::command::EnvPatch::default(),
+            }),
         };
         stream.write_all(&attach.encode().map_err(e)?).map_err(e)?;
         stream.set_nonblocking(true).map_err(e)?;

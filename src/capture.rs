@@ -737,16 +737,12 @@ fn arguments(
         }
         None => Json::Null,
     };
-    let launch = match runs {
-        Runs::Explicit(launch) => {
-            let mut values = budget.vector(launch.argv.len())?;
-            for word in &launch.argv {
-                values.push(Json::str(budget.string(word)?));
-            }
-            Json::Array(values)
-        }
-        Runs::DefaultShell => Json::Null,
-    };
+    let program = &runs.launch().argv;
+    let mut values = budget.vector(program.len())?;
+    for word in program.iter() {
+        values.push(Json::str(budget.string(word)?));
+    }
+    let launch = Json::Array(values);
     Ok((launch, argv))
 }
 
@@ -1055,9 +1051,12 @@ mod tests {
     -> Result<(), Box<dyn std::error::Error>> {
         let allocator = fux_vt_peak::ThreadPeak;
         let launch = Runs::Explicit(crate::pane::Launch {
-            argv: vec![std::iter::repeat_n('l', 6000).collect()],
+            argv: crate::config::Program::new(
+                std::iter::repeat_n('l', 6000).collect(),
+                Vec::new(),
+            )?,
             cwd: "/".into(),
-            env: Vec::new(),
+            env: crate::command::EnvPatch::default(),
         });
         let mut peak = 0;
         for (len, byte) in [(2500, b'a'), (5000, b'a'), (2500, 0xff)] {
@@ -1078,16 +1077,18 @@ mod tests {
             "argument observation allocated {peak} bytes under an 8192-byte grant"
         );
         let raw = b"a\0\xff\0\0";
+        let shell = crate::pane::tests::shell()?;
         let mut budget = crate::wire::Budget::with_limit(8192);
         let baseline = allocator.live();
         allocator.reset_peak();
-        let (_, observed) = super::arguments(&Runs::DefaultShell, &mut budget, |budget| {
+        let (saved, observed) = super::arguments(&shell, &mut budget, |budget| {
             fuxix::process::argv_read(raw.as_slice(), budget)
         })?;
         let retained = allocator.live().saturating_sub(baseline);
         assert_eq!(retained, 8192usize.saturating_sub(budget.remaining()));
         assert!(allocator.peak().saturating_sub(baseline) <= 8192);
         assert_eq!(observed.render(), "[\"a\",\"�\",\"\"]");
+        assert_eq!(saved.render(), "[\"/bin/sh\"]");
         Ok(())
     }
 
@@ -1097,7 +1098,7 @@ mod tests {
         let mut pane = Lone::new(Pane::new(
             PaneId::of(1),
             None,
-            Runs::DefaultShell,
+            crate::pane::tests::shell()?,
             fux_vt::Size::new(3, 200)?,
             history,
         )?);
@@ -1139,7 +1140,7 @@ mod tests {
         let mut pane = Lone::new(Pane::new(
             PaneId::of(1),
             None,
-            Runs::DefaultShell,
+            crate::pane::tests::shell()?,
             fux_vt::Size::new(3, 4)?,
             1 << 20,
         )?);
@@ -1168,7 +1169,7 @@ mod tests {
         let mut pane = Lone::new(Pane::new(
             PaneId::of(1),
             None,
-            Runs::DefaultShell,
+            crate::pane::tests::shell()?,
             fux_vt::Size::new(1, 200)?,
             0,
         )?);
@@ -1192,7 +1193,7 @@ mod tests {
         let mut pane = Lone::new(Pane::new(
             PaneId::of(1),
             None,
-            Runs::DefaultShell,
+            crate::pane::tests::shell()?,
             fux_vt::Size::new(1, 2)?,
             0,
         )?);
@@ -1235,7 +1236,7 @@ mod tests {
         let mut pane = Lone::new(Pane::new(
             PaneId::of(1),
             None,
-            Runs::DefaultShell,
+            crate::pane::tests::shell()?,
             fux_vt::Size::new(3, 80)?,
             1 << 20,
         )?);
@@ -1296,7 +1297,13 @@ mod tests {
         let join = CaptureView::default();
         let captured = |output: &str| -> Result<String, Box<dyn std::error::Error>> {
             let size = fux_vt::Size::new(3, 5)?;
-            let mut pane = Lone::new(Pane::new(PaneId::of(1), None, Runs::DefaultShell, size, 0)?);
+            let mut pane = Lone::new(Pane::new(
+                PaneId::of(1),
+                None,
+                crate::pane::tests::shell()?,
+                size,
+                0,
+            )?);
             pane.output(output.as_bytes());
             Ok(super::pane(
                 &pane,
@@ -1325,7 +1332,13 @@ mod tests {
     #[test]
     fn rows_inside_a_wrapped_line_take_it_whole() -> Result<(), Box<dyn std::error::Error>> {
         let size = fux_vt::Size::new(6, 5)?;
-        let mut pane = Lone::new(Pane::new(PaneId::of(1), None, Runs::DefaultShell, size, 0)?);
+        let mut pane = Lone::new(Pane::new(
+            PaneId::of(1),
+            None,
+            crate::pane::tests::shell()?,
+            size,
+            0,
+        )?);
         pane.output(b"top\r\nabcdefghijklm\r\nend");
         let run = crate::command::Run::now().ok_or("a clock")?;
         let capture = |rows, wrapped| -> Result<String, Box<dyn std::error::Error>> {
@@ -1354,7 +1367,13 @@ mod tests {
             ..CaptureView::default()
         };
         let size = fux_vt::Size::new(3, 5)?;
-        let mut pane = Lone::new(Pane::new(PaneId::of(1), None, Runs::DefaultShell, size, 0)?);
+        let mut pane = Lone::new(Pane::new(
+            PaneId::of(1),
+            None,
+            crate::pane::tests::shell()?,
+            size,
+            0,
+        )?);
         // 世 at col 4 does not fit and wraps on, leaving the spacer there.
         pane.output("abcd\x1b[5G世".as_bytes());
         let text = super::pane(
@@ -1377,7 +1396,7 @@ mod tests {
         let mut pane = Lone::new(Pane::new(
             PaneId::of(1),
             None,
-            Runs::DefaultShell,
+            crate::pane::tests::shell()?,
             fux_vt::Size::new(5, 5)?,
             0,
         )?);
@@ -1460,7 +1479,7 @@ mod tests {
         let mut pane = Lone::new(Pane::new(
             PaneId::of(1),
             None,
-            Runs::DefaultShell,
+            crate::pane::tests::shell()?,
             fux_vt::Size::new(2, 10)?,
             0,
         )?);
@@ -1521,7 +1540,7 @@ mod tests {
         let mut pane = Lone::new(Pane::new(
             PaneId::of(1),
             None,
-            Runs::DefaultShell,
+            crate::pane::tests::shell()?,
             fux_vt::Size::new(6, 5)?,
             0,
         )?);
@@ -1551,7 +1570,13 @@ mod tests {
         use crate::json::Json;
         use crate::wire::{Reader, encode};
         let size = fux_vt::Size::new(3, 20)?;
-        let mut pane = Lone::new(Pane::new(PaneId::of(1), None, Runs::DefaultShell, size, 0)?);
+        let mut pane = Lone::new(Pane::new(
+            PaneId::of(1),
+            None,
+            crate::pane::tests::shell()?,
+            size,
+            0,
+        )?);
         pane.output(b"\x1b[1;4:3;5;38;2;1;2;3;48;5;9;58;5;2mstyled\x1b[m plain");
         let view = CaptureView {
             styles: true,
@@ -1589,7 +1614,13 @@ mod tests {
             ..CaptureView::default()
         };
         let size = fux_vt::Size::new(3, 20)?;
-        let mut pane = Lone::new(Pane::new(PaneId::of(1), None, Runs::DefaultShell, size, 0)?);
+        let mut pane = Lone::new(Pane::new(
+            PaneId::of(1),
+            None,
+            crate::pane::tests::shell()?,
+            size,
+            0,
+        )?);
         pane.output(b"$ \x1b]133;C\x07hello\x1b]133;D;0\x07PROMPT> ");
         let text = super::pane(
             &pane,

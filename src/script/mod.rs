@@ -167,8 +167,10 @@ pub struct Opts {
     pub name: Option<String>,
     pub size: crate::command::Size,
     pub cwd: Option<std::path::PathBuf>,
-    pub env: crate::command::Env,
+    pub env: crate::command::EnvPatch,
     pub argv: Vec<String>,
+    pub shell: Option<bool>,
+    pub copy_environment: Option<Vec<crate::config::EnvName>>,
     pub axis: Option<Axis>,
     /// A split's shares (`shares`).
     pub shares: Option<(std::num::NonZeroU32, std::num::NonZeroU32)>,
@@ -191,6 +193,33 @@ pub struct Opts {
 }
 
 impl Opts {
+    pub(crate) fn program(&self) -> Result<crate::config::Program, String> {
+        let mut words = self.argv.iter().cloned();
+        crate::config::Program::new(words.next().unwrap_or_default(), words.collect())
+    }
+
+    pub(crate) fn launch(
+        &self,
+        shell: &crate::config::Program,
+        selection: &[crate::config::EnvName],
+    ) -> Result<(crate::command::Start, crate::command::EnvPatch), String> {
+        let argv = if self.argv.is_empty() {
+            shell.clone()
+        } else {
+            self.program()?
+        };
+        let mut env = crate::command::EnvPatch::selected(
+            self.copy_environment.as_deref().unwrap_or(selection),
+        )?;
+        env.overlay(&self.env)?;
+        let start = if self.shell == Some(false) {
+            crate::command::Start::Program(argv)
+        } else {
+            crate::command::Start::Shell(argv)
+        };
+        Ok((start, env))
+    }
+
     fn heap_bytes(&self) -> usize {
         let mut bytes = std::mem::size_of::<Opts>()
             .saturating_add(self.name.as_ref().map_or(0, String::capacity))
@@ -211,6 +240,16 @@ impl Opts {
                     .capacity()
                     .saturating_mul(std::mem::size_of::<words::Opt>()),
             );
+        if let Some(names) = &self.copy_environment {
+            bytes = bytes.saturating_add(
+                names
+                    .capacity()
+                    .saturating_mul(std::mem::size_of::<crate::config::EnvName>()),
+            );
+            for name in names {
+                bytes = bytes.saturating_add(name.heap_bytes());
+            }
+        }
         for arg in &self.argv {
             bytes = bytes.saturating_add(arg.capacity());
         }
@@ -448,6 +487,7 @@ pub enum Local {
         workspace: Option<WsRef>,
         read_only: bool,
         size: Option<fux_vt::Size>,
+        creation: Box<Opts>,
     },
     /// The server for what follows: its socket, by name or path.
     Server(Choice),
@@ -1337,6 +1377,7 @@ fn local(
             workspace,
             read_only,
             size,
+            creation,
         } => {
             if size.is_none() && std::env::var_os("FUX_PANE").is_some_and(|p| !p.is_empty()) {
                 let why = "this is a fux pane: attaching here would show fux inside itself \
@@ -1394,6 +1435,7 @@ fn local(
                 of: *of,
                 workspace: workspace.clone(),
                 read_only: *read_only,
+                creation: creation.as_ref().clone(),
                 state: committed,
                 problem,
             };
@@ -1635,7 +1677,7 @@ fn a_file(mut error: fuxth::Error, args: &[String]) -> fuxth::Error {
 /// never a file, whatever it holds; else each is a word.
 fn program(args: &[String]) -> Result<(Vec<Token>, Given), Failed> {
     let words = match args {
-        [] => token::arguments(&["opts", "attach"]),
+        [] => token::arguments(&["default-attach"]),
         // A program read whole, at most `SOURCE_MAX` of it.
         [dash] if dash == "-" => {
             let text = read_text("stdin", io::stdin(), SOURCE_MAX)?;

@@ -249,11 +249,18 @@ fn the_prompt_runs_commands_and_shows_their_output_or_error() -> Outcome {
     client.wait_for("Enter accept")?;
     client.keys("nope\r")?;
     bar_has(&mut client, "nope: no such word")?;
+    // The focused program exited, so it has no readable nearby cwd.
+    server.exits("%2")?;
+    client.keys(&format!("{PREFIX}e"))?;
+    client.wait_for("Enter accept")?;
+    client.keys("opts new-tab\r")?;
+    bar_has(&mut client, "working directory is unknown")?;
+    assert_eq!(panes(&server)?.len(), 2);
     // Editing: typing, moving and deleting before Enter.
     client.keys(&format!("{PREFIX}e"))?;
     client.wait_for("Enter accept")?;
     client.keys(
-        "opts str edited nameX\x7f new-tab\x1b[D\x1b[D\x1b[D\x1b[D\x1b[D\x1b[D\x1b[H\x1b[F\r",
+        "opts str / cwd str edited nameX\x7f new-tab\x1b[D\x1b[D\x1b[D\x1b[D\x1b[D\x1b[D\x1b[H\x1b[F\r",
     )?;
     pumped(&mut client, "the edited command ran", || {
         Ok(server.ok(&["ls"])?.contains("edited"))

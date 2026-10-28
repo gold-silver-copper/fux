@@ -169,20 +169,6 @@ fn settings_reach_the_server() -> Outcome {
         .lines()
         .count();
     assert!(rows <= screen + 3, "at most 3 lines of history: {history}");
-    // A new shell program applies to new panes.
-    server.ok(&[
-        "str",
-        "shell",
-        "list",
-        "str",
-        "/usr/bin/env",
-        "str",
-        "PS1=custom$",
-        "str",
-        "/bin/sh",
-        "end",
-        "set",
-    ])?;
     // Checking a valid config and a failing action script send no batch.
     let checked = server.dir.join("checked.fux");
     std::fs::write(&checked, "str shell list str /no/such/check-shell end set").map_err(e)?;
@@ -200,7 +186,24 @@ fn settings_reach_the_server() -> Outcome {
         "prefix",
     ])?;
     assert_eq!(failed.status, 1);
-    let custom = server.ok(&["str", "%1", "pane", "horizontal", "split"])?;
+    // A new shell program applies to new panes.
+    let custom = server.ok(&[
+        "str",
+        "shell",
+        "list",
+        "str",
+        "/usr/bin/env",
+        "str",
+        "PS1=custom$",
+        "str",
+        "/bin/sh",
+        "end",
+        "set",
+        "%1",
+        "horizontal",
+        "split",
+    ])?;
+
     eventually("the custom prompt", || {
         Ok(server
             .ok(&[
@@ -437,36 +440,30 @@ fn check_mode_is_explicit_and_independent_of_the_filename() -> Outcome {
     Ok(())
 }
 
-/// A supplied empty snapshot survives the request connection and server spawn.
+/// Selected absence is saved even when the patch has no present values.
 #[test]
-fn an_empty_caller_environment_is_not_replaced() -> Outcome {
-    use fux::script::{Host, Server as Requests, compile, run_capped};
-    let server = Server::start("str update-environment list str HOME str ENV end set")?;
-    let tokens = fuxth::token::source(
-        "test",
-        "agent-opts 80 24 size str /bin/sh program str -c arg str 'echo HOME=${HOME-unset} ENV=${ENV-unset}' arg run",
-    )
-    .map_err(e)?;
-    let mut machine = compile(&tokens).map_err(e)?;
-    let context = fux::protocol::Context {
-        env: Some(Vec::new()),
-        cwd: server.dir.clone(),
-        ..Default::default()
-    };
-    let mut sink = Vec::new();
-    let mut host = Host::new(context, None, &mut sink);
-    let mut requests = Requests::new(fux::socket::Choice::Path(server.socket.clone()));
-    let values =
-        run_capped(&mut machine, &mut host, &mut requests, Some(10000), None).map_err(e)?;
-    let version = values
-        .first()
-        .ok_or("run result")?
-        .text()
-        .map_err(|f| f.message)?;
-    let pane = version.split(':').next().ok_or("pane")?;
+fn an_absent_selection_unsets_the_server_value() -> Outcome {
+    let server = Server::start("")?;
+    let code = "str copy-environment list str ENV end set agent-opts 80 24 size \
+        str /bin/sh program str -c arg str 'echo ${ENV-unset}' arg run";
+    let out = std::process::Command::new(FUX)
+        .arg(code)
+        .env("FUX_SOCKET", &server.socket)
+        .env_remove("FUX_PANE")
+        .env_remove("FUX_SERVER")
+        .env_remove("ENV")
+        .output()
+        .map_err(e)?;
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let answer = String::from_utf8(out.stdout).map_err(e)?;
+    let pane = answer.trim().split(':').next().ok_or("pane")?;
     server.exits(pane)?;
-    let captured = server.ok(&["str", pane, "pane", "capture"])?;
-    assert_eq!(captured.trim(), "HOME=unset ENV=unset");
+    assert_eq!(server.ok(&[pane, "capture"])?.trim(), "unset");
+    assert!(server.ok(&["dump"])?.contains("str ENV unset-env"));
     Ok(())
 }
 
@@ -490,20 +487,29 @@ fn the_config_words_examples_check() -> Outcome {
     Ok(())
 }
 
-/// `update-environment` names what a new pane takes from the client that
+/// `copy-environment` names what a new pane takes from the client that
 /// made it: one the client has is passed on, as the bytes it is, UTF-8 or
 /// not; one it lacks is removed, even though the server has it (here
 /// `ENV`, which the test server is given).
 #[test]
-fn update_environment_takes_the_clients_variables_or_none() -> Outcome {
+fn copy_environment_takes_the_clients_variables_or_none() -> Outcome {
     use std::os::unix::ffi::OsStrExt;
     let server =
-        Server::start("str update-environment list str ENV str FUXT_GIVEN str FUXT_BYTES end set")?;
+        Server::start("str copy-environment list str ENV str FUXT_GIVEN str FUXT_BYTES end set")?;
     let shown = "echo \"[${ENV-unset}] [${FUXT_GIVEN-unset}]\"; \
                  printf %s \"${FUXT_BYTES-unset}\" | od -An -tx1";
     let out = std::process::Command::new(FUX)
         .args([
             "agent-opts",
+            "list",
+            "str",
+            "ENV",
+            "str",
+            "FUXT_GIVEN",
+            "str",
+            "FUXT_BYTES",
+            "end",
+            "copy-environment",
             "80",
             "24",
             "size",
@@ -539,6 +545,11 @@ fn update_environment_takes_the_clients_variables_or_none() -> Outcome {
     // od spaces its bytes as each system likes.
     let bytes = stdout.split_whitespace().collect::<Vec<_>>().join(" ");
     assert!(bytes.contains("63 61 66 e9"), "{stdout}");
+    assert!(
+        server
+            .ok(&["dump"])?
+            .contains("environment FUXT_BYTES is not UTF-8 text")
+    );
     Ok(())
 }
 
@@ -627,14 +638,38 @@ fn a_program_uses_preferences_before_its_next_operation() -> Outcome {
     Ok(())
 }
 
-/// Both selectors finish the old server's transaction before changing it;
-/// completion and a later request also retain their own destination.
+/// A new small pane reveals the server's current shared history setting.
+fn history_rows(server: &Server) -> Result<usize, String> {
+    let answer = server.ok(&[
+        "agent-opts",
+        "80",
+        "5",
+        "size",
+        "str",
+        "/bin/sh",
+        "program",
+        "str",
+        "-c",
+        "arg",
+        "str",
+        "i=0; while [ \"$i\" -lt 40 ]; do echo row; i=$((i+1)); done",
+        "arg",
+        "run",
+    ])?;
+    let pane = answer.trim().split(':').next().ok_or("pane")?;
+    server.exits(pane)?;
+    Ok(server
+        .ok(&[pane, "all-history", "capture"])?
+        .lines()
+        .count())
+}
+
+/// Pending shared settings reach the server selected when they were written.
 #[test]
 fn settings_stay_with_the_server_selected_when_written() -> Outcome {
     for named in [true, false] {
         let a = Server::start("")?;
         let b = Server::start("")?;
-        let path = a.dir.join("select.fux");
         let select = if named {
             "str fux server".to_owned()
         } else {
@@ -643,38 +678,22 @@ fn settings_stay_with_the_server_selected_when_written() -> Outcome {
                 fux::words::quote(&b.socket.to_string_lossy())
             )
         };
-        let env = [(
-            "XDG_RUNTIME_DIR",
-            b.dir.to_str().ok_or("a text runtime path")?,
-        )];
-        std::fs::write(
-            &path,
-            format!("str shell list str /no/such/old-server-shell end set {select}"),
-        )
-        .map_err(e)?;
-        let out = a.fux_env(&["--file", &path.to_string_lossy()], &env)?;
+        let runtime = [("XDG_RUNTIME_DIR", b.dir.to_str().ok_or("runtime path")?)];
+        let code = format!("str history-bytes 0 set {select}");
+        let out = a.fux_env(&[&code], &runtime)?;
         assert_eq!(out.status, 0, "{}", out.stderr);
-        let probe = a.fux(&["%1", "split", "drop"])?;
-        assert_eq!(probe.status, 1, "the old server lost its setting");
         assert!(
-            probe.stderr.contains("/no/such/old-server-shell"),
-            "{}",
-            probe.stderr
+            history_rows(&a)? <= 5,
+            "old server lost its pending setting"
         );
-        b.ok(&["%1", "split", "drop"])?;
-        // The next transaction belongs to B, even when a request follows.
-        std::fs::write(
-            &path,
-            format!("{select} str shell list str /no/such/new-server-shell end set ls"),
-        )
-        .map_err(e)?;
-        let out = a.fux_env(&["--file", &path.to_string_lossy()], &env)?;
+        assert!(
+            history_rows(&b)? > 5,
+            "setting reached the newly selected server"
+        );
+        let out = a.fux_env(&[&format!("{select} str history-bytes 0 set ls")], &runtime)?;
         assert_eq!(out.status, 0, "{}", out.stderr);
-        for (server, shell) in [(&a, "old-server-shell"), (&b, "new-server-shell")] {
-            let probe = server.fux(&["%1", "split", "drop"])?;
-            assert_eq!(probe.status, 1);
-            assert!(probe.stderr.contains(shell), "{}", probe.stderr);
-        }
+        assert!(history_rows(&a)? <= 5);
+        assert!(history_rows(&b)? <= 5);
     }
     Ok(())
 }
@@ -719,21 +738,14 @@ fn settings_use_the_programs_addressing_before_a_request_fails() -> Outcome {
             "server run",
         ),
     ] {
-        server.ok(&["str", "shell", "list", "str", "/bin/sh", "end", "set"])?;
-        std::fs::write(
-            &path,
-            format!("{before} str shell list str /no/such/addressing-shell end set {after}"),
-        )
-        .map_err(e)?;
+        server.ok(&["str", "history-bytes", "8388608", "set"])?;
+        std::fs::write(&path, format!("{before} str history-bytes 0 set {after}")).map_err(e)?;
         let out = server.fux(&["--file", &path.to_string_lossy()])?;
         assert_eq!(out.status, 1);
         assert!(out.stderr.contains(error), "{}", out.stderr);
-        let probe = server.fux(&["%1", "split", "drop"])?;
-        assert_eq!(probe.status, 1, "request addressing discarded the setting");
         assert!(
-            probe.stderr.contains("/no/such/addressing-shell"),
-            "{}",
-            probe.stderr
+            history_rows(&server)? <= 5,
+            "a failed addressed request discarded the shared setting"
         );
     }
     Ok(())
@@ -841,5 +853,109 @@ fn explicit_settings_survive_a_failed_attach_config() -> Outcome {
         titled,
         "the explicit titles setting was dropped with the failed config"
     );
+    Ok(())
+}
+
+/// Launch policy belongs to each initiating client, and its saved patch
+/// survives both respawn and replay under a different client's selection.
+#[test]
+fn launches_save_the_callers_argv_role_and_environment() -> Outcome {
+    let server = Server::start("")?;
+    for marker in ["alpha", "beta"] {
+        let code = format!(
+            "str shell list str /bin/sh str -c str 'printf {marker}; exec /bin/cat' end set \
+             opts str main in 80 24 size str {marker} name new-tab"
+        );
+        let answer = server.ok(&[&code])?;
+        let pane = answer.trim().split(':').next().ok_or("shell pane")?;
+        eventually("shell output", || {
+            Ok(server.ok(&[pane, "capture"])?.contains(marker))
+        })?;
+        let saved = server.ok(&[pane, "info", "json"])?;
+        assert!(
+            saved.contains(&format!("printf {marker}; exec /bin/cat")),
+            "{saved}"
+        );
+        assert!(
+            server
+                .fux(&[pane, "respawn"])?
+                .stderr
+                .contains("runs a shell")
+        );
+        assert!(
+            server
+                .fux(&[pane, "str", "TERM", "signal"])?
+                .stderr
+                .contains("only_shell")
+        );
+        server.ok(&[pane, "str", "C-d", "key", "send-keys", "drop"])?;
+        eventually("shell closes", || {
+            Ok(!server.panes()?.iter().any(|(p, _)| p == pane))
+        })?;
+    }
+    assert!(
+        server
+            .ok(&["%1", "split", "info", "json"])?
+            .contains("\"launch_argv\":[\"/bin/sh\"]")
+    );
+    let before = server.panes()?.len();
+    for (conflict, code) in [
+        (
+            "opts str main in 80 24 size list str /bin/sh end shell-program str /bin/cat program new-tab",
+            "bad_value",
+        ),
+        (
+            "opts str main in 80 24 size str /bin/cat program list str /bin/sh end shell-program new-tab",
+            "bad_value",
+        ),
+        (
+            "agent-opts 80 24 size list str /bin/sh end shell-program run",
+            "unused",
+        ),
+    ] {
+        let out = server.fux(&[conflict])?;
+        assert_eq!(out.status, 1, "{conflict}");
+        assert!(
+            out.stderr.starts_with(&format!("fux: {code}: ")),
+            "{}",
+            out.stderr
+        );
+        assert_eq!(server.panes()?.len(), before);
+    }
+    let code = "str copy-environment list str F4_VALUE str ENV end set \
+        agent-opts 80 24 size str /bin/sh program str -c arg \
+        str 'printf \"%s|%s\" \"$F4_VALUE\" \"${ENV-unset}\"' arg run";
+    let out = std::process::Command::new(FUX)
+        .arg(code)
+        .env("FUX_SOCKET", &server.socket)
+        .env_remove("FUX_PANE")
+        .env_remove("FUX_SERVER")
+        .env_remove("ENV")
+        .env("F4_VALUE", "saved")
+        .output()
+        .map_err(e)?;
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let answer = String::from_utf8(out.stdout).map_err(e)?;
+    let pane = answer.trim().split(':').next().ok_or("program pane")?;
+    server.exits(pane)?;
+    assert_eq!(server.ok(&[pane, "capture"])?.trim(), "saved|unset");
+    // A new caller's selection never replaces the saved patch on respawn.
+    server.ok(&[&format!(
+        "str copy-environment list str HOME end set {pane} respawn drop"
+    )])?;
+    server.exits(pane)?;
+    assert_eq!(server.ok(&[pane, "capture"])?.trim(), "saved|unset");
+    let dump = server.ok(&["dump"])?;
+    assert!(dump.contains("list end copy-environment"), "{dump}");
+    assert!(dump.contains("str ENV unset-env"), "{dump}");
+    assert!(dump.contains("str F4_VALUE str saved env"), "{dump}");
+    // Changing local selection before replay cannot add a new selected name.
+    let replay = format!("str copy-environment list str F4_LEAK end set\n{dump}");
+    let _ = server.ok(&[&replay])?;
+    assert_eq!(server.ok(&["dump"])?.matches("str F4_LEAK").count(), 0);
     Ok(())
 }

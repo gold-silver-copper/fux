@@ -18,13 +18,13 @@ fux                               # attach, starting a server if none runs
 
 ## Using it
 
-`fux` alone attaches this terminal (it runs `opts attach`), starting a
-server in the background if none answers; `fux opts str work in attach`
-attaches to workspace `work`, and `fux opts watch attach` only watches
+`fux` alone attaches this terminal (it runs `default-attach`, which supplies
+`opts str main name attach`), starting a server in the background if none
+answers; `fux opts str work in attach` attaches to workspace `work`, and `fux opts watch attach` only watches
 (keys do nothing but `C-b d`, which detaches). A new server holds
-nothing: the first client to attach starts one unnamed workspace, `+1`,
-with one tab and a shell, on its screen. One that watches starts nothing: with no
-server, or one holding nothing, it is refused. `C-b d`
+nothing: bare `fux` starts workspace `main`, with one tab and a shell, on
+its screen. An explicit `fux opts attach` starts an unnamed workspace, `+1`.
+One that watches starts nothing: with no server, or one holding nothing, it is refused. `C-b d`
 detaches, and the shells keep running. Inside a fux pane, `fux` refuses to attach.
 
 The server runs until `fux kill-server` (refused while a person's terminal
@@ -355,13 +355,27 @@ taken too. Unknown names are refused; `fux key-names` prints the vocabulary.
 | `FUX_SERVER` | which run of which server the pane is of, the run every version names. A fux command from a pane of another server, or of an earlier run of this one, or with `FUX_PANE` and no `FUX_SERVER`, has no `here` there (`stray_pane`); `kill-server` from one of the server's own panes is refused (`own_server`) |
 | `FUX` | the fux executable the server runs, unset if the server cannot name it: what a key's program or a script in a pane runs, as `"${FUX:-fux}"`, when `fux` may not be on its PATH (a server started from a desktop launcher or a systemd unit) |
 
-The rest is the server's own environment, as it was when the server
-started. Two things override it and the table alike: the names in
-`update-environment`, which a pane takes from whoever starts it (`fux help
-set` says what one the starter lacks becomes), and, last, what a program's
-`env` sets (`agent-opts str NAME str VALUE env 80 24 size str PROGRAM program
-run`). `update-environment` is empty by default. With a configured list,
-an empty caller environment unsets every listed variable.
+The rest is the server's environment when it started. A client's
+`copy-environment` selects names for each new launch; a selected name absent
+from that client is explicitly unset. The library selection is empty. An
+operation's `list end copy-environment` replaces that selection with an empty
+one; `env` and `unset-env` override selected entries. Repeated explicit names
+and changes to the four identity names above are refused. Values keep their
+original bytes; selection and a resulting patch are limited to 1,024 distinct
+names. The concrete patch is saved for respawn and exported by
+`dump`, so selected values remain available after the client detaches.
+
+Every launch carries checked argv and a role. `program` chooses program role;
+`list str /bin/sh end shell-program` chooses shell role. Shell exit closes its
+pane; program exit retains it. Respawn uses the saved program launch and
+explicit overrides, without selecting the new caller's environment. An unknown
+nearby working directory is refused: give an absolute `cwd`. The first pane
+starts in the invoking client's directory, independently of HOME.
+Dump records saved argv, role and environment patches. Programs keep their
+saved launch cwd, even if they have since changed directories; shells use
+their current directory when it is known.
+Creation options on attach require an untargeted writable invocation; `in` and
+`watch` refuse those options instead of ignoring them.
 
 XTVERSION (`CSI > q`) answers `fux` and its version, secondary device
 attributes (`CSI > c`) the version, and primary ones (`CSI c`) a
@@ -397,13 +411,14 @@ commands use only the bundled state; they never load this file.
 Its `set` and key words build one candidate client state. Keys, frozen
 definitions and preferences commit together; a failed config keeps the whole
 bundled state, preserves earlier explicit CLI settings, and shows one diagnostic. Evaluation sends no requests. After
-successful evaluation, one batch forwards only the preferences explicitly
-set by that config. Unrelated server settings stay as they were. A config
+successful evaluation, one batch forwards only the remaining shared preferences
+explicitly set by that config. Shell argv and environment selection are entirely
+local. Unrelated server settings stay as they were. A config
 with only keys or definitions sends no batch. Remaining server consumers
 move to client requests and per-client presentation in the following steps;
-until then explicit settings still affect the shared server.
+until then the other explicit settings still affect the shared server.
 
-Client defaults load only when `set`, `list-keys` or `attach` needs them;
+Client defaults load when `set`, `list-keys`, `attach` or a launch needs them;
 ordinary queries and server controls do not load them. Bundled
 `client-defaults.fux` reads this client's `$SHELL` once and chooses `/bin/sh`
 for an unset or empty value. A non-text value is reported and falls back as
@@ -433,7 +448,7 @@ str shell list str /bin/zsh str -l end set       # a program, then its arguments
 str clipboard false set
 
 # Optional: take these from whoever starts a pane; the default list is empty.
-str update-environment list
+str copy-environment list
   str DISPLAY str KRB5CCNAME str SSH_AGENT_PID str SSH_ASKPASS
   str SSH_AUTH_SOCK str SSH_CONNECTION str WAYLAND_DISPLAY str XAUTHORITY
 end set
@@ -522,9 +537,10 @@ fux start && fux --file ~/session.fux # replay on a fresh server
 A dump makes the layouts and launches again: each shell starts afresh in
 its directory, each program `run` started starts again. It never brings
 back what a process held: its screen, its history, what ran in a shell. A
-pane whose directory is not UTF-8 text, which fuxth cannot write, or a
-shell's directory that fux cannot read, is dumped without it, and a comment line says
-so: it starts where the dump is run.
+pane whose directory is not UTF-8 text, which fuxth cannot write, is dumped
+without it: it starts where the dump is run. A shell whose current directory
+fux cannot read uses its saved launch directory. A comment line explains
+either case.
 
 ## Terminal features
 
@@ -658,7 +674,8 @@ to `fux.log` beside it.
   file makes one server its owner.
 - Every peer must run as the server's own user (`SO_PEERCRED` on Linux,
   `getpeereid` on macOS); others, root included, are refused.
-- Messages are length-prefixed and at most 1 MiB.
+- Messages are length-prefixed and at most 1 MiB. Saved launch inputs, including pending
+  respawns, are limited to 16 MiB per session; a dump is limited to 16 MiB.
 
 Anyone who can open the socket can run anything as you (`run`,
 `send-keys`). As with tmux, the socket's permissions are the access

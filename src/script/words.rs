@@ -260,11 +260,11 @@ words! {
         Finding Tabs "tabs" "handle -- list" "the tabs of a pane or tab (its own) or a workspace, in the workspace's order" "fux str agent workspace tabs each str name get print end" [];
         Finding Focused "focused" "client -- pane" "the pane a client focuses" "fux str c1 client focused capture" [];
         Starting Opts "opts" "-- opts" "empty options, for run, new-tab, new-workspace, events-of and attach (the other words take them on the pane)" "fux opts str agent in 80 24 size str ./app program run" [];
-        Starting Run "run" "opts -- answer" "start a program in a tab of its own; in is required, name names its pane; its pane stays once it exits" "fux agent-opts str web name 120 40 size str ./app program str --flag arg run" [Opts: Name Size Cwd Env Program Arg In];
-        Starting Split "split" "subject -- answer" "split a pane: a shell, or the program given" "fux %3 vertical split" [Pane: Horizontal Vertical Shares Cwd Env Program Arg];
-        Starting NewTab "new-tab" "opts -- answer" "a tab with a shell" "fux opts str logs name 80 24 size str agent in new-tab" [Opts: Name Size Cwd Env In];
-        Starting NewWorkspace "new-workspace" "opts -- answer" "a workspace with a tab and a shell" "fux opts str work name 80 24 size new-workspace" [Opts: Name Size Cwd Env];
-        Starting Respawn "respawn" "subject -- answer" "start again in its pane the program it was given (run, split), or the one given now" "fux %3 kill-first respawn" [Pane: KillFirst Env Program Arg];
+        Starting Run "run" "opts -- answer" "start a program in a tab of its own; in is required, name names its pane; its pane stays once it exits" "fux agent-opts str web name 120 40 size str ./app program str --flag arg run" [Opts: Name Size Cwd Env UnsetEnv CopyEnvironment Program Arg In];
+        Starting Split "split" "subject -- answer" "split a pane: a shell, or the program given" "fux %3 vertical split" [Pane: Horizontal Vertical Shares Cwd Env UnsetEnv CopyEnvironment Program ShellProgram Arg];
+        Starting NewTab "new-tab" "opts -- answer" "a tab with the client's shell or explicit launch" "fux opts str logs name 80 24 size str agent in new-tab" [Opts: Name Size Cwd Env UnsetEnv CopyEnvironment Program ShellProgram Arg In];
+        Starting NewWorkspace "new-workspace" "opts -- answer" "a workspace with a tab and the client's shell or explicit launch" "fux opts str work name 80 24 size new-workspace" [Opts: Name Size Cwd Env UnsetEnv CopyEnvironment Program ShellProgram Arg];
+        Starting Respawn "respawn" "subject -- answer" "start again in its pane the program it was given (run, split), or the one given now" "fux %3 kill-first respawn" [Pane: KillFirst Env UnsetEnv Program Arg];
         Waiting Wait "wait" "place -- place" "wait until the pane's version differs from the one changed gives, else an action's answer's (%2 str y text send-keys wait), else now's, or the pane closes; a tab or workspace: any of the panes there as it begins" "A=$(fux %3 str y text send-keys); fux str \"$A\" changed 60 timeout wait" [Pane: Changed Timeout];
         Input SendKeys "send-keys" "target -- target" "send the keys on it to a pane, every pane of a tab, or a client as typed at its terminal; 900 KiB at most in all" "fux %3 str 'ls -l' text str Enter key send-keys" [Pane: Text Key Paste Bytes Expect];
         Input SendMouse "send-mouse" "subject -- answer" "send the mouse event on it" "fux %3 str click 2 10 mouse send-mouse" [Pane: Mouse];
@@ -297,7 +297,7 @@ words! {
         Changing Buffers "buffers" "-- json" "paste buffer metadata, newest first: id, bytes and preview" "fux buffers" [];
         Changing Buffer "buffer" "id -- text" "exact paste buffer text by id or newest" "fux newest buffer" [];
         Changing PasteBuffer "paste-buffer" "pane id -- answer" "paste a buffer by id or newest into a pane; answers as send-keys does" "fux %3 newest paste-buffer" [];
-        Clients Attach "attach" "opts --" "show the server in this terminal (bare fux is opts attach); with a size, be a client of no terminal instead" "fux opts str work in attach" [Opts: In Size Watch];
+        Clients Attach "attach" "opts --" "show the server in this terminal (bare fux uses default-attach); with a size, be a client of no terminal instead; in and watch refuse creation options" "fux opts str work in attach" [Opts: In Size Watch Cwd Env UnsetEnv CopyEnvironment Program ShellProgram Arg Name];
         Clients Focus "focus" "client way --" "left right up down next previous or last pane" "fux str c1 client str left focus" [];
         Clients FocusPane "focus-pane" "client pane --" "focus a pane" "fux str c1 client %3 focus-pane" [];
         Clients ShowTab "show-tab" "client tab --" "show a tab" "fux str c1 client @2 show-tab" [];
@@ -314,7 +314,7 @@ words! {
         Server Status "status" "-- record" "the server that answers, and its version; with none, fails no_server" "fux status || fux start" [];
         Server KillServer "kill-server" "--" "stop the server: not from its own panes, nor with people attached" "fux str test server kill-server" [];
         Server ForceKillServer "force-kill-server" "--" "stop it anyway, whatever fux version it is" "fux str test server force-kill-server" [];
-        Config Set "set" "setting new --" "a client preference, currently also applied to the shared server: `fux help set` lists their effects" "fux str history-bytes 16777216 set" [];
+        Config Set "set" "setting new --" "a client preference; shell and copy-environment are local, other settings still apply to the shared server: `fux help set` lists their effects" "fux str history-bytes 16777216 set" [];
         Server Version "version" "-- text" "this fux's version (a pane's version is `str version get` on the pane)" "fux version" [];
         Shell Args "args" "-- list" "the strings after fux --file FILE (none for any other program)" "fux args len" [];
         Shell Input "input" "-- string" "the rest of stdin, as UTF-8 text, 16 MiB at most; not when the program came from stdin" "ls | fux input lines len" [];
@@ -334,6 +334,9 @@ words! {
         Starting Cwd "cwd" "x dir -- x" "where it starts" "fux agent-opts str /srv cwd 80 24 size str ./app program run";
         Starting Env "env" "x key var -- x" "a variable for it: text, or a pane, tab or workspace as its id (%3; an action's answer, its pane)" "fux agent-opts str PORT 8080 env 80 24 size str ./app program run";
         Starting Program "program" "x path -- x" "the program to start, in place of a shell" "fux agent-opts 80 24 size str ./app program run";
+        Starting ShellProgram "shell-program" "x list -- x" "the checked argv list to start with shell role; its exit closes the pane" "fux opts 80 24 size list str /bin/sh end shell-program new-tab";
+        Starting CopyEnvironment "copy-environment" "x list -- x" "replace the client selection for this creation; empty selects nothing; selected values are saved and exported by dump" "fux agent-opts list str LANG end copy-environment str /bin/cat program run";
+        Starting UnsetEnv "unset-env" "x name -- x" "explicitly remove this environment name from the child" "fux agent-opts str OLD unset-env str /bin/cat program run";
         Starting Arg "arg" "x text -- x" "an argument for the program" "fux agent-opts 80 24 size str ./app program str -v arg run";
         Starting Horizontal "horizontal" "x -- x" "split side by side" "fux %3 horizontal split";
         Starting Vertical "vertical" "x -- x" "split stacked" "fux %3 vertical split";
@@ -819,7 +822,19 @@ fn modify(
         Opt::Text => built.inputs.push(Input::Text(text(&next()?)?)),
         Opt::Paste => built.inputs.push(Input::Paste(text(&next()?)?)),
         Opt::Bytes => built.inputs.push(Input::Bytes(hex(&string(&next()?)?)?)),
-        Opt::Program => {
+        Opt::Program | Opt::ShellProgram => {
+            let shell = opt == Opt::ShellProgram;
+            if built.shell.is_some_and(|was| was != shell) {
+                return Err(fail(Raise::BadValue, "program and shell-program conflict"));
+            }
+            built.shell = Some(shell);
+            if shell {
+                use crate::config::Reads;
+                built.argv = crate::config::Program::read(&next()?)
+                    .map_err(|why| fail(Raise::BadValue, why))?
+                    .argv();
+                return Ok(built);
+            }
             let program = string(&next()?)?;
             match built.argv.first_mut() {
                 Some(first) => *first = program,
@@ -846,8 +861,19 @@ fn modify(
             };
             built
                 .env
-                .push(key, value)
+                .push(key, Some(value.into()))
                 .map_err(|why| fail(Raise::BadValue, why))?;
+        }
+        Opt::UnsetEnv => built
+            .env
+            .push(string(&next()?)?, None)
+            .map_err(|why| fail(Raise::BadValue, why))?,
+        Opt::CopyEnvironment => {
+            use crate::config::Reads;
+            built.copy_environment = Some(
+                Vec::<crate::config::EnvName>::read(&next()?)
+                    .map_err(|why| fail(Raise::BadValue, why))?,
+            );
         }
         Opt::MainScreen => built.view.source = screen(&built, Source::Main)?,
         Opt::AltScreen => built.view.source = screen(&built, Source::Alternate)?,
@@ -1210,15 +1236,42 @@ impl fuxth::Host for Host<'_> {
                 workspace,
                 read_only,
                 size,
+                creation,
                 ..
             })) => local(Local::Attach {
                 of,
                 workspace,
                 read_only,
                 size,
+                creation,
             }),
             result @ (Done::Now | Done::Later(_)) => Ok(result),
         }
+    }
+}
+
+impl Host<'_> {
+    fn launch(
+        &mut self,
+        built: &Opts,
+    ) -> Result<(crate::command::Start, crate::command::EnvPatch), Failure> {
+        self.prepare()
+            .map_err(|why| fail(Raise::Config, why.to_string()))?;
+        let preferences = &self
+            .state
+            .as_deref()
+            .ok_or_else(|| fail(Raise::Config, "launch needs client defaults"))?
+            .preferences;
+        built
+            .launch(
+                preferences
+                    .shell()
+                    .map_err(|why| fail(Raise::Config, why))?,
+                preferences
+                    .copy_environment()
+                    .map_err(|why| fail(Raise::Config, why))?,
+            )
+            .map_err(|why| fail(Raise::BadValue, why))
     }
 }
 
@@ -1282,6 +1335,12 @@ impl Host<'_> {
                         "needs a program: agent-opts str ./app program run",
                     ));
                 }
+                let (start, env) = self.launch(&built)?;
+                let argv = match start {
+                    crate::command::Start::Shell(argv) | crate::command::Start::Program(argv) => {
+                        argv
+                    }
+                };
                 let run = Command::Run {
                     workspace: built.place.ok_or_else(|| {
                         fail(
@@ -1292,40 +1351,45 @@ impl Host<'_> {
                     name: built.name,
                     size: built.size,
                     cwd: built.cwd,
-                    env: built.env,
-                    argv: built.argv,
+                    env,
+                    argv,
                 };
                 later(ask(run))
             }
             Act::NewTab => {
                 let built = finished(act, next()?)?;
+                let (start, env) = self.launch(&built)?;
                 let tab = Command::NewTab {
                     target: built.place,
                     name: built.name,
                     size: built.size,
                     cwd: built.cwd,
-                    env: built.env,
+                    env,
+                    start,
                 };
                 later(ask(tab))
             }
             Act::NewWorkspace => {
                 let built = finished(act, next()?)?;
+                let (start, env) = self.launch(&built)?;
                 let workspace = Command::NewWorkspace {
                     name: built.name,
                     size: built.size,
                     cwd: built.cwd,
-                    env: built.env,
+                    env,
+                    start,
                 };
                 later(ask(workspace))
             }
             Act::Split => {
                 let (p, built) = request_pane(act, next()?)?;
+                let (start, env) = self.launch(&built)?;
                 let split = Command::Split {
                     axis: built.axis.unwrap_or(Axis::Horizontal),
                     target: p,
-                    argv: built.argv,
+                    start,
                     cwd: built.cwd,
-                    env: built.env,
+                    env,
                     shares: built.shares,
                 };
                 later(ask(split))
@@ -1335,8 +1399,12 @@ impl Host<'_> {
                 let respawn = Command::Respawn {
                     target: p,
                     kill: built.kill,
+                    argv: if built.argv.is_empty() {
+                        None
+                    } else {
+                        Some(built.program().map_err(|why| fail(Raise::BadValue, why))?)
+                    },
                     env: built.env,
-                    argv: built.argv,
                 };
                 later(ask(respawn))
             }
@@ -1603,11 +1671,32 @@ impl Host<'_> {
             // ----------------------------------------------------- clients
             Act::Attach => {
                 let built = finished(act, next()?)?;
+                if (built.place.is_some() || built.watch)
+                    && let Some(option) = built.given.iter().find(|option| {
+                        matches!(
+                            option,
+                            Opt::Name
+                                | Opt::Cwd
+                                | Opt::Env
+                                | Opt::UnsetEnv
+                                | Opt::CopyEnvironment
+                                | Opt::Program
+                                | Opt::ShellProgram
+                                | Opt::Arg
+                        )
+                    })
+                {
+                    return Err(fail(
+                        Raise::Unused,
+                        format!("takes no {option} with in or watch"),
+                    ));
+                }
                 local(Local::Attach {
                     of: None,
-                    workspace: built.place,
+                    workspace: built.place.clone(),
                     read_only: built.watch,
                     size: built.size.map(|screen| screen.size()),
+                    creation: Box::new(built),
                 })
             }
             Act::Focus => {
@@ -1939,6 +2028,76 @@ impl Host<'_> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn targeted_and_watch_attach_refuse_explicit_creation_before_any_request()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use crate::script::{Asks, Failed, Host, Local};
+        struct Recorder(usize);
+        impl Asks for Recorder {
+            fn ask(
+                &mut self,
+                _: &crate::protocol::Asked,
+                _: &mut dyn std::io::Write,
+            ) -> Result<crate::protocol::Reply, Failed> {
+                self.0 += 1;
+                Err(Failed::new(crate::code::Code::Client, "unexpected request"))
+            }
+            fn local(
+                &mut self,
+                _: &Local,
+                _: Option<&mut crate::client_state::Draft>,
+                _: &mut dyn std::io::Write,
+            ) -> Result<Vec<fuxth::Value<crate::script::Fux>>, Failed> {
+                self.0 += 1;
+                Err(Failed::new(
+                    crate::code::Code::Client,
+                    "unexpected local operation",
+                ))
+            }
+        }
+        for selector in ["str main in", "watch"] {
+            for option in [
+                "str x name",
+                "str / cwd",
+                "str X str value env",
+                "str X unset-env",
+                "list end copy-environment",
+                "str '' program",
+                "list str /bin/sh end shell-program",
+                "str /bin/sh program str -l arg",
+            ] {
+                let code = format!("str bell false set opts {selector} {option} 80 24 size attach");
+                let tokens = fuxth::token::source("attach", &code)?;
+                let mut machine = crate::script::compile(&tokens).map_err(|f| f.to_string())?;
+                let mut state = crate::script::default_state()
+                    .map_err(|f| f.to_string())?
+                    .draft();
+                let mut sink = Vec::new();
+                let mut host = Host::new(
+                    crate::protocol::Context::default(),
+                    Some(&mut state),
+                    &mut sink,
+                );
+                let mut recorder = Recorder(0);
+                let result = crate::script::run_capped(
+                    &mut machine,
+                    &mut host,
+                    &mut recorder,
+                    Some(10000),
+                    None,
+                );
+                assert!(
+                    result.is_err_and(
+                        |f| f.code == crate::code::Code::from(crate::code::Raise::Unused)
+                    ),
+                    "{code}"
+                );
+                assert_eq!(recorder.0, 0, "{code}");
+            }
+        }
+        Ok(())
+    }
+
     use super::*;
     use fuxth::AppValue;
 
@@ -2288,9 +2447,21 @@ mod tests {
                 .filter(|o| !matches!(o, Opt::Changed | Opt::Expect))
             {
                 let args = match opt {
-                    Opt::Name | Opt::Cwd | Opt::Program | Opt::Arg | Opt::Text | Opt::Paste => {
+                    Opt::Name
+                    | Opt::Cwd
+                    | Opt::Program
+                    | Opt::Arg
+                    | Opt::Text
+                    | Opt::Paste
+                    | Opt::UnsetEnv => {
                         vec![Value::str("x")]
                     }
+                    Opt::ShellProgram => vec![Value::List(std::rc::Rc::new(
+                        fuxth::List::new(vec![Value::str("sh")]).ok_or("list")?,
+                    ))],
+                    Opt::CopyEnvironment => vec![Value::List(std::rc::Rc::new(
+                        fuxth::List::new(vec![]).ok_or("list")?,
+                    ))],
                     Opt::Size | Opt::Shares => vec![Value::Int(1), Value::Int(1)],
                     Opt::Rows | Opt::Cols => vec![Value::Int(0), Value::Int(1)],
                     Opt::Env => vec![Value::str("X"), Value::Int(1)],
@@ -2336,7 +2507,18 @@ mod tests {
                     .iter()
                     .map(|v| match v {
                         Value::Str(s) => format!("str {s}"),
-                        Value::Int(_) | Value::Bool(_) | Value::List(_) | Value::App(_) => {
+                        Value::List(list) => format!(
+                            "list {} end",
+                            list.items()
+                                .iter()
+                                .map(|v| format!(
+                                    "str {}",
+                                    crate::words::quote(&v.text().unwrap_or_default())
+                                ))
+                                .collect::<Vec<_>>()
+                                .join(" ")
+                        ),
+                        Value::Int(_) | Value::Bool(_) | Value::App(_) => {
                             v.text().unwrap_or_default()
                         }
                     })

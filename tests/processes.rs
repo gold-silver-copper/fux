@@ -61,20 +61,12 @@ fn a_closed_panes_background_jobs_end_with_it_under_dash() -> Outcome {
     let server = Server::start(&format!("str shell list str {dash} end set"))?;
     let mut reap = Reap::default();
     for how in ["pane kill", "exit", "workspace kill"] {
-        if how == "workspace kill" {
-            server.ok(&[
-                "opts",
-                "80",
-                "24",
-                "size",
-                "str",
-                "doomed",
-                "name",
-                "new-workspace",
-            ])?;
+        let launch = if how == "workspace kill" {
+            "opts 80 24 size str doomed name new-workspace"
         } else {
-            server.ok(&["str", "%1", "pane", "horizontal", "split"])?;
-        }
+            "%1 horizontal split"
+        };
+        server.ok(&[&format!("str shell list str {dash} end set {launch}")])?;
         let (pane, _) = server.newest_pane()?;
         let job = server.dir.join(format!("job-{how}"));
         let kept = server.dir.join(format!("nohup-{how}"));

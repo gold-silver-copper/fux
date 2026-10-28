@@ -624,7 +624,7 @@ mod tests {
     fn with_layers(s: &mut Session) -> Outcome {
         run(
             s,
-            "str 'g n' str 'opts new-tab drop' bind str 'new tab' label str Tabs group",
+            "str 'g n' str 'opts str / cwd new-tab drop' bind str 'new tab' label str Tabs group",
         )?;
         run(
             s,
@@ -788,7 +788,7 @@ mod tests {
     #[test]
     fn keys_after_the_prefix_match_as_typed() -> Outcome {
         let (mut s, c) = session()?;
-        run(&mut s, "str V str 'opts new-tab drop' bind")?;
+        run(&mut s, "str V str 'opts str / cwd new-tab drop' bind")?;
         s.input(c, &prefixed("V"));
         assert_eq!(tabs(&s), Some(2));
         assert_eq!(mode(&s, c), "normal");
@@ -811,7 +811,7 @@ mod tests {
         s.input(c, &prefixed("\x1b[B\x1b[B\x1b[A"));
         assert_eq!(mode(&s, c), "column 1");
         escape(&mut s, c);
-        run(&mut s, "str Up str 'opts new-tab drop' bind")?;
+        run(&mut s, "str Up str 'opts str / cwd new-tab drop' bind")?;
         s.input(c, &prefixed("\x1b[A"));
         assert_eq!(tabs(&s), Some(2));
         assert_eq!(mode(&s, c), "normal");
@@ -823,13 +823,16 @@ mod tests {
         let _ = queued_focused(&mut s, c);
         s.input(c, &[0x02, 0x02]);
         assert_eq!(queued_focused(&mut s, c), b"\x02");
-        run(&mut s, "str C-b str 'opts new-tab drop' bind")?;
+        run(&mut s, "str C-b str 'opts str / cwd new-tab drop' bind")?;
         s.input(c, &[0x02, 0x02]);
         assert_eq!(tabs(&s), Some(3));
         assert!(queued_focused(&mut s, c).is_empty());
         // A digit, a function key and a chord bind as letters do.
         for key in ["1", "F5", "M-n"] {
-            run(&mut s, &format!("str {key} str 'opts new-tab drop' bind"))?;
+            run(
+                &mut s,
+                &format!("str {key} str 'opts str / cwd new-tab drop' bind"),
+            )?;
         }
         s.input(c, &prefixed("1"));
         s.input(c, &prefixed("\x1b[15~"));
@@ -854,7 +857,10 @@ mod tests {
     #[test]
     fn a_key_bound_without_the_prefix_runs_at_once_and_reaches_no_pane() -> Outcome {
         let (mut s, c) = session()?;
-        run(&mut s, "str M-t str 'opts new-tab drop' bind-root")?;
+        run(
+            &mut s,
+            "str M-t str 'opts str / cwd new-tab drop' bind-root",
+        )?;
         s.input(c, b"\x1bt");
         assert_eq!(tabs(&s), Some(2));
         assert!(queued_focused(&mut s, c).is_empty());
@@ -943,9 +949,14 @@ mod tests {
         }
         // Refused as the session stands: no pane that way, no copy to
         // paste, nothing before the first tab or workspace, nothing but a
-        // shell to signal.
+        // shell to signal, and no readable nearby cwd in these processless panes.
         refused.sort();
-        assert_eq!(refused, ["ak", "k", "l", "mk", "ml", "p", "tmh", "wmh"]);
+        assert_eq!(
+            refused,
+            [
+                "ak", "k", "l", "mk", "ml", "p", "s", "tmh", "tn", "v", "wmh", "wn"
+            ]
+        );
         Ok(())
     }
 

@@ -360,7 +360,7 @@ impl Fixture {
             size,
             workspace: None,
             read_only: false,
-            env: Vec::new(),
+            initial: None,
         };
         for frame in [hello.encode(), attach.encode()] {
             stream

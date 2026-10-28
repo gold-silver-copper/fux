@@ -11,4 +11,4 @@ str clipboard true set
 str buffers 16 set
 str bell true set
 str titles false set
-str update-environment list end set
+str copy-environment list end set

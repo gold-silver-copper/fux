@@ -6,22 +6,12 @@ use crate::layout::{Axis, Tree};
 use crate::pane::{Launch, Runs};
 use crate::workspace::{Fit, Tab, Workspace};
 
-type Directories<'a> = dyn FnMut(PaneId, &mut crate::wire::Budget) -> Result<Option<std::path::PathBuf>, super::Error>
-    + 'a;
-
 impl Session {
     pub(crate) fn dump_layout(&self, only: Option<AnyRef>) -> Result<String, super::Error> {
-        self.dump_with(only, crate::wire::MAX_REPLY, &mut |id, budget| {
-            self.dir_with(id, budget)
-        })
+        self.dump_with(only, super::DUMP_BYTES.min(crate::wire::MAX_REPLY))
     }
 
-    fn dump_with(
-        &self,
-        only: Option<AnyRef>,
-        limit: usize,
-        directories: &mut Directories<'_>,
-    ) -> Result<String, super::Error> {
+    fn dump_with(&self, only: Option<AnyRef>, limit: usize) -> Result<String, super::Error> {
         let empty = crate::protocol::Reply {
             run: Some(self.run),
             ..crate::protocol::Body::Text(String::new()).into()
@@ -33,7 +23,7 @@ impl Session {
                 .ok_or_else(crate::wire::Budget::exceeded)?,
         );
         out.format(format_args!(
-            "{}\n# fux: running this makes it again\n",
+            "{}\n# fux: running this makes it again\n# Environment patches apply to the server startup environment.\n",
             crate::script::SHEBANG
         ))?;
         let whole = match only {
@@ -46,7 +36,7 @@ impl Session {
                 .iter()
                 .filter(|t| self.takes_in(only, ws.id(), t.id()));
             for (i, tab) in tabs.enumerate() {
-                self.dump_tab(ws, tab, whole, whole && i == 0, &mut out, directories)?;
+                self.dump_tab(ws, tab, whole, whole && i == 0, &mut out)?;
             }
         }
         Ok(out.text)
@@ -59,7 +49,6 @@ impl Session {
         whole: bool,
         opens: bool,
         out: &mut Source,
-        directories: &mut Directories<'_>,
     ) -> Result<(), super::Error> {
         let (root, first) = (tab.root(), tab.root().first_pane());
         let explicit = self.program(first).is_some();
@@ -67,7 +56,6 @@ impl Session {
         self.dump_launch_line(
             first,
             out,
-            directories,
             |out| {
                 out.word("opts")?;
                 if whole && !opens {
@@ -117,7 +105,7 @@ impl Session {
             out.word("resize-auto")?;
             out.end()?;
         }
-        self.dump_tree(root, out, directories)?;
+        self.dump_tree(root, out)?;
         let mut result = Ok(());
         root.for_each_pane(&mut |pane| {
             if result.is_ok()
@@ -134,12 +122,7 @@ impl Session {
         result
     }
 
-    fn dump_tree(
-        &self,
-        tree: &Tree,
-        out: &mut Source,
-        directories: &mut Directories<'_>,
-    ) -> Result<(), super::Error> {
+    fn dump_tree(&self, tree: &Tree, out: &mut Source) -> Result<(), super::Error> {
         let Tree::Split(split) = tree else {
             return Ok(());
         };
@@ -153,7 +136,6 @@ impl Session {
         self.dump_launch_line(
             pane,
             out,
-            directories,
             |out| {
                 out.pane(first.first_pane())?;
                 out.word(way)?;
@@ -167,52 +149,90 @@ impl Session {
                 out.pane(pane)
             },
         )?;
-        self.dump_tree(first, out, directories)?;
-        self.dump_tree(second, out, directories)
+        self.dump_tree(first, out)?;
+        self.dump_tree(second, out)
     }
 
     fn program(&self, id: PaneId) -> Option<&Launch> {
         match &self.parts.panes().get(&id)?.runs {
             Runs::Explicit(launch) => Some(launch),
-            Runs::DefaultShell => None,
+            Runs::Shell(_) => None,
         }
     }
 
-    /// Observe once before writing the line, so a diagnostic precedes it.
-    /// Launch intent is borrowed; an observed path stays charged until dropped.
+    /// Restore shells in their observed cwd and programs in their saved launch cwd.
     fn dump_launch_line(
         &self,
         id: PaneId,
         out: &mut Source,
-        directories: &mut Directories<'_>,
         prefix: impl FnOnce(&mut Source) -> Result<(), super::Error>,
         suffix: impl FnOnce(&mut Source) -> Result<(), super::Error>,
     ) -> Result<(), super::Error> {
-        let program = self.program(id);
-        let observed = if program.is_none() {
-            directories(id, &mut out.budget)?
+        let pane = self
+            .parts
+            .panes()
+            .get(&id)
+            .ok_or(super::Error::NoPane(id))?;
+        let (launch, shell) = match &pane.runs {
+            Runs::Shell(launch) => (launch, true),
+            Runs::Explicit(launch) => (launch, false),
+        };
+        let observed = if shell {
+            self.dir_with(id, &mut out.budget)?
         } else {
             None
         };
-        let cwd = program.map(|p| p.cwd.as_path()).or(observed.as_deref());
         let result = (|| {
-            match cwd {
-                Some(path) if path.to_str().is_none() => out.format(format_args!("# {id}: its directory {path:?} is not UTF-8 text, so it starts where this runs\n"))?,
-                None => out.format(format_args!("# {id}: its directory is unknown, so it starts where this runs\n"))?,
-                Some(_) => {}
+            if shell && observed.is_none() {
+                out.format(format_args!(
+                    "# {id}: its current directory is unknown, so it starts in its launch directory\n"
+                ))?;
+            }
+            let cwd = observed.as_deref().unwrap_or(&launch.cwd);
+            if cwd.to_str().is_none() {
+                out.format(format_args!(
+                    "# {id}: its directory {cwd:?} is not UTF-8 text, so it starts where this runs\n"
+                ))?;
+            }
+            for (key, value) in launch.env.as_slice() {
+                if value.as_ref().is_some_and(|v| v.to_str().is_none()) {
+                    out.format(format_args!(
+                        "# {id}: environment {key} is not UTF-8 text; its saved value is omitted\n"
+                    ))?;
+                }
             }
             prefix(out)?;
-            if let Some(cwd) = cwd.and_then(|p| p.to_str()) {
+            out.word("list")?;
+            out.word("end")?;
+            out.word("copy-environment")?;
+            if let Some(cwd) = cwd.to_str() {
                 out.string(cwd)?;
                 out.word("cwd")?;
             }
-            for (key, value) in program.iter().flat_map(|p| &p.env) {
-                out.string(key)?;
-                out.string(value)?;
-                out.word("env")?;
+            for (key, value) in launch.env.as_slice() {
+                match value {
+                    None => {
+                        out.string(key)?;
+                        out.word("unset-env")?;
+                    }
+                    Some(value) => {
+                        if let Some(value) = value.to_str() {
+                            out.string(key)?;
+                            out.string(value)?;
+                            out.word("env")?;
+                        }
+                    }
+                }
             }
-            if let Some(program) = program {
-                for (i, word) in program.argv.iter().enumerate() {
+            if shell {
+                out.word("list")?;
+                for word in launch.argv.iter() {
+                    out.string(word)?;
+                }
+                out.word("end")?;
+                out.word("shell-program")?;
+            } else {
+                for (i, word) in launch.argv.iter().enumerate() {
                     out.string(word)?;
                     out.word(if i == 0 { "program" } else { "arg" })?;
                 }
@@ -295,8 +315,7 @@ impl std::fmt::Write for Source {
 #[cfg(test)]
 mod tests {
     #[test]
-    fn dump_admits_observed_shell_directory_expansion() -> Result<(), String> {
-        let session = crate::session::testing::started(crate::config::Config::default())?;
+    fn dump_admits_saved_launch_directory_expansion() -> Result<(), String> {
         let component: String = std::iter::repeat_n('\'', 200).collect();
         let directory = std::path::PathBuf::from(format!(
             "/{}",
@@ -304,18 +323,33 @@ mod tests {
                 .collect::<Vec<_>>()
                 .join("/")
         ));
-        let mut reads = 0;
-        let result = session.dump_with(None, 8192, &mut |_, budget| {
-            reads += 1;
-            fuxix::Allocation::os_string(budget, directory.as_os_str().as_encoded_bytes())
-                .map(|p| Some(std::path::PathBuf::from(p)))
-        });
+        let mut session = super::Session::new(
+            crate::config::Config::default(),
+            "/nonexistent/fux.sock".into(),
+            false,
+            crate::command::Run::now().ok_or("clock")?,
+        );
+        let initial = crate::command::InitialWorkspace {
+            name: None,
+            start: crate::command::Start::Shell(crate::config::Program::new(
+                "/bin/sh".into(),
+                Vec::new(),
+            )?),
+            cwd: directory,
+            env: crate::command::EnvPatch::default(),
+        };
+        session
+            .start(
+                fux_vt::Size::new(24, 80).map_err(|e| e.to_string())?,
+                &initial,
+            )
+            .map_err(|e| e.to_string())?;
+        let result = session.dump_with(None, 8192);
         assert!(
             result.is_err(),
             "dump built past its allowance: {} bytes",
             result.as_ref().map_or(0, String::len)
         );
-        assert_eq!(reads, 1, "directory must be observed once");
         Ok(())
     }
 }

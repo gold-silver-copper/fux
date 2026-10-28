@@ -2357,7 +2357,7 @@ mod tests {
         output_as(
             &mut s,
             Some(c),
-            "agent-opts str x program run me swap focus-pane",
+            "agent-opts str / cwd str x program run me swap focus-pane",
         )?;
         let id = s.focused(c).ok_or("the pane")?;
         let respawn = format!("{id} kill-first respawn");

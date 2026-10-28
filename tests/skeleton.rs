@@ -106,7 +106,6 @@ fn a_client_that_shuts_its_side_still_gets_its_answer() -> Outcome {
             cwd: std::path::PathBuf::new(),
             pane: None,
             server: None,
-            env: None,
             client: None,
         },
     };

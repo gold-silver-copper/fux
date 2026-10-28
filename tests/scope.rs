@@ -170,15 +170,8 @@ fn a_background_descendant_cannot_be_here_after_respawn() -> Outcome {
 fn reserved_environment_names_are_refused_before_spawning() -> Outcome {
     let server = Server::start("")?;
     for name in ["FUX", "FUX_PANE", "FUX_SOCKET", "FUX_SERVER"] {
-        let inherited = server.fux(&[
-            "str",
-            "update-environment",
-            "list",
-            "str",
-            name,
-            "end",
-            "set",
-        ])?;
+        let inherited =
+            server.fux(&["str", "copy-environment", "list", "str", name, "end", "set"])?;
         let explicit = server.fux(&[
             "agent-opts",
             "str",
@@ -209,7 +202,7 @@ fn reserved_environment_names_are_refused_before_spawning() -> Outcome {
     // The reservation is the exact identity set, not a prefix rule.
     server.ok(&[
         "str",
-        "update-environment",
+        "copy-environment",
         "list",
         "str",
         "FUX_EXTRA",
