@@ -64,6 +64,7 @@ impl std::error::Error for Error {}
 #[derive(Default)]
 pub struct InputQueue {
     bytes: ByteQueue,
+    touched: bool,
     /// Whether it refuses, and its run of input lost, which goes on only
     /// while it refuses.
     refusing: Refusing,
@@ -140,6 +141,7 @@ impl InputQueue {
         let bytes = bytes.as_ref();
         self.fits(bytes.len())?;
         self.bytes.push(bytes);
+        self.touched |= !bytes.is_empty();
         Ok(())
     }
     /// Queues what `write` appends to its vector as a piece, in place, or
@@ -155,7 +157,9 @@ impl InputQueue {
             }
             len
         });
-        self.refuse(len, room)
+        self.refuse(len, room)?;
+        self.touched |= len > 0;
+        Ok(())
     }
     /// How many bytes it holds, not yet written to the program.
     pub fn len(&self) -> usize {
@@ -781,28 +785,51 @@ pub struct Pane {
 pub struct PaneMut<'a> {
     pane: &'a mut Pane,
     tell: Teller<'a>,
+    input: Option<&'a mut std::collections::BTreeSet<PaneId>>,
 }
 
 impl<'a> PaneMut<'a> {
+    fn queued(&mut self) {
+        if let Some(input) = &mut self.input
+            && std::mem::take(&mut self.pane.input.touched)
+            && !self.pane.input.is_empty()
+        {
+            input.insert(self.pane.id);
+        }
+    }
+
+    pub(crate) fn track_input(mut self, input: &'a mut std::collections::BTreeSet<PaneId>) -> Self {
+        self.input = Some(input);
+        self
+    }
+
     /// `pane`, in tab `at`, telling `journal`.
     pub fn new(pane: &'a mut Pane, at: (WsId, TabId), journal: &'a mut Journal) -> Self {
         let tell = journal.teller((at, pane.id));
-        Self { pane, tell }
+        Self {
+            pane,
+            tell,
+            input: None,
+        }
     }
     pub fn output(&mut self, bytes: &[u8], now: Instant) {
         self.pane.output(bytes, now, &mut self.tell);
+        self.queued();
         self.pane.read_done();
     }
     pub fn read_unread(&mut self, now: Instant) {
         self.pane.read_unread(now, &mut self.tell);
+        self.queued();
         self.pane.read_done();
     }
     pub fn release_frame(&mut self, now: Instant) {
         self.pane.release_frame(now, &mut self.tell);
+        self.queued();
         self.pane.read_done();
     }
     pub fn resize(&mut self, size: Size, now: Instant) {
         self.pane.resize(size, now, &mut self.tell);
+        self.queued();
     }
     pub(crate) fn size_terminal(&mut self) {
         let result = self.pane.size_terminal();
@@ -822,7 +849,9 @@ impl<'a> PaneMut<'a> {
         self.pane.take_terminal_errors()
     }
     pub fn respawned(&mut self, fresh: Pane, process: Process) -> (Process, Left) {
-        self.pane.respawned(fresh, process, &mut self.tell)
+        let result = self.pane.respawned(fresh, process, &mut self.tell);
+        self.queued();
+        result
     }
     pub fn rename(&mut self, name: String) {
         self.pane.rename(name, &mut self.tell);
@@ -840,10 +869,14 @@ impl<'a> PaneMut<'a> {
         self.pane.write_input()
     }
     pub fn push(&mut self, bytes: impl AsRef<[u8]>) -> Result<(), Error> {
-        self.pane.push(bytes)
+        let result = self.pane.push(bytes);
+        self.queued();
+        result
     }
     pub fn push_with(&mut self, write: impl FnOnce(&Screen, &mut Vec<u8>)) -> Result<(), Error> {
-        self.pane.push_with(write)
+        let result = self.pane.push_with(write);
+        self.queued();
+        result
     }
     pub fn fits(&mut self, len: usize) -> Result<(), Error> {
         self.pane.fits(len)
@@ -855,7 +888,7 @@ impl<'a> PaneMut<'a> {
         report: Vec<u8>,
         held: Option<fux_vt::keys::mouse::MouseButton>,
     ) -> Result<(), Error> {
-        self.pane.push(report)?;
+        self.push(report)?;
         self.pane.mouse_held = held;
         Ok(())
     }
@@ -865,6 +898,7 @@ impl<'a> PaneMut<'a> {
         if self.pane.offer(scheme.report()) {
             self.pane.scheme_told = Some(scheme);
         }
+        self.queued();
     }
     #[must_use]
     pub fn host(
@@ -1319,7 +1353,7 @@ impl Pane {
 
     /// Writes the waiting input, as far as the program's terminal takes it;
     /// whether it took any, which makes room in the queue.
-    fn write_input(&mut self) -> bool {
+    pub(crate) fn write_input(&mut self) -> bool {
         let Process::Reading(child) = &self.process else {
             return false;
         };

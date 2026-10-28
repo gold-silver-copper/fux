@@ -705,10 +705,7 @@ impl Server {
             self.tell_events(false, now);
             // Input given to panes since the last poll is written now rather
             // than when the next poll says their terminals can take it.
-            let mut wrote = false;
-            self.session
-                .parts
-                .each_pane_mut(|p| wrote |= p.write_input());
+            let wrote = self.session.parts.write_input();
             self.wrote_input(wrote);
             self.close_conns();
             // Each change settles as it is made; this catches output that
