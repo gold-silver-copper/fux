@@ -818,7 +818,8 @@ fn pane(loads: &[Load], baseline: bool) -> Result<Done, String> {
         "+1".parse().map_err(|_| "+1")?,
         "@1".parse().map_err(|_| "@1")?,
     );
-    let mut pane = fux::pane::PaneMut::new(&mut pane, at, &mut journal);
+    let mut queued_input = std::collections::BTreeSet::new();
+    let mut pane = fux::pane::PaneMut::new(&mut pane, at, &mut journal, &mut queued_input);
     for load in loads {
         pane.resize(
             fux_vt::Size::new(load.rows, load.cols).map_err(|e| e.to_string())?,

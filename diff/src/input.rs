@@ -378,7 +378,8 @@ pub fn run(r: &mut Rng, scale: usize) -> Outcome {
             "+1".parse().map_err(|_| "+1")?,
             "@1".parse().map_err(|_| "@1")?,
         );
-        let mut b = fux::pane::PaneMut::new(&mut pane, at, &mut journal);
+        let mut queued_input = std::collections::BTreeSet::new();
+        let mut b = fux::pane::PaneMut::new(&mut pane, at, &mut journal, &mut queued_input);
         let mut log = Vec::new();
         for _ in 0..r.below(60) {
             let next = match r.below(10) {

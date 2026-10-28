@@ -476,10 +476,12 @@ impl Parts {
     /// Pane `id`, to change.
     pub fn pane_mut(&mut self, id: PaneId) -> Option<PaneMut<'_>> {
         let at = self.locate(id)?;
-        Some(
-            PaneMut::new(self.panes.get_mut(&id)?, at, &mut self.journal)
-                .track_input(&mut self.input),
-        )
+        Some(PaneMut::new(
+            self.panes.get_mut(&id)?,
+            at,
+            &mut self.journal,
+            &mut self.input,
+        ))
     }
 
     /// Changes each pane with `change`, tab by tab: each at the place it
@@ -495,9 +497,7 @@ impl Parts {
             for tab in &ws.tabs {
                 for id in tab.root.panes() {
                     if let Some(pane) = panes.get_mut(&id) {
-                        change(
-                            &mut PaneMut::new(pane, (ws.id, tab.id), journal).track_input(input),
-                        );
+                        change(&mut PaneMut::new(pane, (ws.id, tab.id), journal, input));
                     }
                 }
             }

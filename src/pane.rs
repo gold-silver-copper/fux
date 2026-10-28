@@ -6,7 +6,7 @@ use crate::id::{PaneId, TabId, WsId};
 use crate::outer::{Colours, Scheme};
 use crate::process::{Child, Ended, Pid};
 use fux_vt::{Event, Feature, Screen, Size};
-use std::collections::VecDeque;
+use std::collections::{BTreeSet, VecDeque};
 use std::time::{Duration, Instant};
 
 /// The largest piece a client's typing gives: a whole paste and its
@@ -794,32 +794,26 @@ struct Pending {
 pub struct PaneMut<'a> {
     pane: &'a mut Pane,
     tell: Teller<'a>,
-    input: Option<&'a mut std::collections::BTreeSet<PaneId>>,
+    input: &'a mut BTreeSet<PaneId>,
 }
 
 impl<'a> PaneMut<'a> {
     fn queued(&mut self) {
-        if let Some(input) = &mut self.input
-            && std::mem::take(&mut self.pane.input.touched)
-            && !self.pane.input.is_empty()
-        {
-            input.insert(self.pane.id);
+        if std::mem::take(&mut self.pane.input.touched) && !self.pane.input.is_empty() {
+            self.input.insert(self.pane.id);
         }
     }
 
-    pub(crate) fn track_input(mut self, input: &'a mut std::collections::BTreeSet<PaneId>) -> Self {
-        self.input = Some(input);
-        self
-    }
-
-    /// `pane`, in tab `at`, telling `journal`.
-    pub fn new(pane: &'a mut Pane, at: (WsId, TabId), journal: &'a mut Journal) -> Self {
+    /// `pane`, in tab `at`, telling `journal`; new input is noted in
+    /// `input` for its next sweep.
+    pub fn new(
+        pane: &'a mut Pane,
+        at: (WsId, TabId),
+        journal: &'a mut Journal,
+        input: &'a mut BTreeSet<PaneId>,
+    ) -> Self {
         let tell = journal.teller((at, pane.id));
-        Self {
-            pane,
-            tell,
-            input: None,
-        }
+        Self { pane, tell, input }
     }
     pub fn output(&mut self, bytes: &[u8], now: Instant) {
         self.pane.output(bytes, now, &mut self.tell);
@@ -2099,6 +2093,7 @@ pub(crate) mod tests {
     pub(crate) struct Lone {
         pub pane: Pane,
         pub journal: Journal,
+        queued_input: BTreeSet<PaneId>,
     }
 
     impl std::ops::Deref for Lone {
@@ -2117,19 +2112,26 @@ pub(crate) mod tests {
     impl Lone {
         pub(crate) fn new(pane: Pane) -> Self {
             let journal = Journal::default();
-            Self { pane, journal }
+            Self {
+                pane,
+                journal,
+                queued_input: BTreeSet::new(),
+            }
         }
         pub(crate) fn placed(&mut self) -> PaneMut<'_> {
             let at = (WsId::of(1), TabId::of(1));
-            PaneMut::new(&mut self.pane, at, &mut self.journal)
+            PaneMut::new(
+                &mut self.pane,
+                at,
+                &mut self.journal,
+                &mut self.queued_input,
+            )
         }
         pub(crate) fn output(&mut self, bytes: &[u8]) {
             self.placed().output(bytes, Instant::now());
         }
         pub(crate) fn output_at(&mut self, bytes: &[u8], now: Instant) {
-            let mut placed = self.placed();
-            placed.pane.output(bytes, now, &mut placed.tell);
-            placed.pane.read_done();
+            self.placed().output(bytes, now);
         }
         pub(crate) fn read_unread(&mut self) {
             self.placed().read_unread(Instant::now());
