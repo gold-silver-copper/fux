@@ -2206,9 +2206,8 @@ mod tests {
         Ok(())
     }
 
-    /// The default keys are a config every line of which binds; what
-    /// `list-keys` prints are config lines that make the same keys again,
-    /// from any keys.
+    /// Every default binding is retained, and list-keys reconstructs its
+    /// bindings independently of presentation initialization.
     #[test]
     fn the_default_keys_are_a_config_list_keys_prints() -> Result<(), super::Failed> {
         let run = |name: &str, text: &str, state: &mut crate::client_state::Draft| {
@@ -2216,12 +2215,12 @@ mod tests {
         };
         let mut keymap = super::default_state()?.draft();
         let (screens, keys): (Vec<&str>, Vec<&str>) = (super::KEYS.lines())
-            .filter(|l| !l.is_empty() && !l.starts_with('#'))
+            .filter(|l| {
+                l.split_whitespace()
+                    .any(|w| matches!(w, "bind" | "bind-root" | "bind-in"))
+            })
             .partition(|l| l.contains(" bind-in"));
-        assert_eq!(
-            keymap.keys.bindings.all().len(),
-            keys.len().saturating_sub(1)
-        );
+        assert_eq!(keymap.keys.bindings.all().len(), keys.len());
         let listed = keymap.keys.describe();
         assert_eq!(listed.matches(" bind-in").count(), screens.len());
         // Quotes, a backslash and a line end, as a config writes them.

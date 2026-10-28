@@ -1088,6 +1088,9 @@ impl Server {
                 }
             }
         }
+        if render::bar_overlay(session, view, &attached.placement) {
+            render::clip_bar_pictures(view, &mut pictures);
+        }
         for gone in (attached.pictures.iter()).filter(|p| known && !pictures.contains(p)) {
             attached.shown.forget_area(gone.area);
         }

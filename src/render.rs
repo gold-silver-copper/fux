@@ -37,6 +37,16 @@ pub struct Grid {
     /// shows: grids compare equal whatever composed them, and a copy has
     /// none.
     memo: Option<Memo>,
+    /// The pane cells behind bar-off feedback, one bounded row, for a
+    /// synchronized frame held while that feedback comes and goes.
+    under_bar: Option<Box<UnderBar>>,
+}
+
+#[derive(Clone, Debug)]
+struct UnderBar {
+    row: u16,
+    cells: Cells,
+    links: Links,
 }
 
 impl Clone for Grid {
@@ -44,6 +54,7 @@ impl Clone for Grid {
         Grid {
             cells: self.cells.clone(),
             links: self.links.clone(),
+            under_bar: self.under_bar.clone(),
             memo: None,
             ..*self
         }
@@ -203,6 +214,22 @@ pub fn pictures(session: &Session, client: ClientId, placement: &Placement) -> V
         }
     }
     visible
+}
+
+/// Clips retained synchronized-frame pictures away from bar-off feedback.
+pub(crate) fn clip_bar_pictures(view: &View, pictures: &mut Vec<Visible>) {
+    let fux_vt::Graphics::Sixel(cell) = view.terminal.graphics() else {
+        return;
+    };
+    let bottom = view.rows.saturating_sub(1);
+    pictures.retain_mut(|picture| {
+        picture.area.2 = picture.area.2.min(bottom.saturating_sub(picture.area.0));
+        picture.crop.3 = picture
+            .crop
+            .3
+            .min(u32::from(picture.area.2).saturating_mul(u32::from(cell.height())));
+        picture.area.2 > 0
+    });
 }
 
 /// The sixel data of the pictures a client was last sent, each with its
@@ -453,6 +480,11 @@ struct Links(Vec<Option<Vec<Link>>>);
 type Link = Option<(PaneId, Hyperlink)>;
 
 impl Links {
+    fn at(&self, y: u16, x: u16) -> Option<(PaneId, &Hyperlink)> {
+        let (pane, link) = self.row(y)?.get(usize::from(x))?.as_ref()?;
+        Some((*pane, link))
+    }
+
     fn row(&self, y: u16) -> Option<&[Link]> {
         self.0.get(usize::from(y))?.as_deref()
     }
@@ -505,8 +537,7 @@ impl Grid {
     }
     /// The hyperlink of the cell at `y`, `x`, and the pane whose it is.
     pub fn link(&self, y: u16, x: u16) -> Option<(PaneId, &Hyperlink)> {
-        let (pane, link) = self.links.row(y)?.get(usize::from(x))?.as_ref()?;
-        Some((*pane, link))
+        self.links.at(y, x)
     }
     /// Makes the grid `rows` by `cols`, resizing its cells only if the size
     /// changed, so that a grid composed into again allocates nothing; and
@@ -767,15 +798,34 @@ impl Grid {
     /// (`compose_held`).
     fn keep_area(&mut self, shown: &Grid, area: Rect) {
         for y in area.rows() {
+            let under = shown.under_bar.as_deref().filter(|u| u.row == y);
             for x in area.cols() {
+                let cell = under.map_or_else(|| shown.get(y, x), |u| u.cells.get(usize::from(x)));
                 if let Some(i) = self.index(y, x)
-                    && let Some(cell) = shown.cells.get(i)
+                    && let Some(cell) = cell
                 {
                     self.cells.set(i, cell);
-                    self.links.set(y, x, shown.link(y, x), self.cols);
+                    let link = under.map_or_else(|| shown.link(y, x), |u| u.links.at(0, x));
+                    self.links.set(y, x, link, self.cols);
                 }
             }
         }
+    }
+
+    fn cover_bar(&mut self, row: u16) -> Result<(), fux_vt::Error> {
+        let mut under = UnderBar {
+            row,
+            cells: Cells::new(usize::from(self.cols))?,
+            links: Links::default(),
+        };
+        for x in 0..self.cols {
+            if let Some(cell) = self.get(row, x) {
+                under.cells.set(usize::from(x), cell);
+            }
+            under.links.set(0, x, self.link(row, x), self.cols);
+        }
+        self.under_bar = Some(Box::new(under));
+        Ok(())
     }
 
     fn fill(&mut self, area: Rect, style: Attributes) {
@@ -921,6 +971,7 @@ pub fn compose_held(
         None
     };
     put_panes(grid, session, view, placement, focus, copy)?;
+    grid.under_bar = None;
     grid.cell_placement = view.presentation.cell_placement;
     let held =
         |id: &PaneId| (session.parts.panes().get(id)).is_some_and(crate::pane::Pane::mid_frame);
@@ -1031,7 +1082,7 @@ pub fn compose_held(
         // A repeat mode shows in the bar, leaving the layout in view.
         Mode::Normal | Mode::Copy(_) | Mode::Panel(Panel::Repeat(_)) => {}
     }
-    bar(grid, session, view, placement, copy);
+    bar(grid, session, view, placement, copy)?;
     Ok(())
 }
 
@@ -1377,10 +1428,10 @@ fn bar(
     view: &View,
     placement: &Placement,
     copy: Option<(&crate::copy::Copy, crate::copy::Resolved)>,
-) {
+) -> Result<(), fux_vt::Error> {
     use crate::presentation::BarPosition;
     let Some(bottom) = view.rows.checked_sub(1) else {
-        return;
+        return Ok(());
     };
     let position = view.presentation.bar.position;
     let y = if position == BarPosition::Top {
@@ -1398,11 +1449,12 @@ fn bar(
         || !view.mode.is_normal()
         || !unseen.is_empty();
     if position == BarPosition::Off && !feedback {
-        return;
+        return Ok(());
     }
     if position == BarPosition::Off {
         // Restore the covered pane cells on the next compose, including
         // unchanged rows, and never expose its cursor through the feedback.
+        grid.cover_bar(y)?;
         grid.memo = None;
         grid.cursor = grid.cursor.filter(|(row, _)| *row != y);
     }
@@ -1502,6 +1554,7 @@ fn bar(
     }
     let start = view.cols.saturating_sub(right_width.saturating_add(1));
     bar_parts(grid, y, start, start.saturating_add(right_width), &right);
+    Ok(())
 }
 
 /// What of the tab `view` shows its screen does not: `[hidden %3]` for each
@@ -2961,6 +3014,90 @@ mod tests {
         session.notify_to(client, "refused", true);
         let grid = compose(&session, client).ok_or("tiny screen")?;
         assert!(!grid.row_text(0).trim().is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn bar_feedback_preserves_the_row_behind_a_held_frame() -> Result<(), String> {
+        use crate::session::testing::{attached, output_as};
+        let (mut session, client) = attached(4, 40)?;
+        output_as(
+            &mut session,
+            Some(client),
+            "str bar list str off list end list end false end set",
+        )?;
+        session.output(
+            PaneId::of(1),
+            b"\x1b[4;1H\x1b]8;;https://example.test/\x1b\\old pane row\x1b]8;;\x1b\\",
+        );
+        let before = compose(&session, client).ok_or("before")?;
+        let view = session.views.get(&client).ok_or("view")?;
+        let panes = session.placement(view).panes;
+        session.output(PaneId::of(1), &frame_past_a_budget());
+        assert!(
+            session
+                .parts
+                .panes()
+                .get(&PaneId::of(1))
+                .is_some_and(crate::pane::Pane::mid_frame)
+        );
+        let held = |session: &Session, shown: &Grid| -> Result<Grid, String> {
+            let mut grid = Grid::default();
+            compose_held(
+                session,
+                session.views.get(&client).ok_or("view")?,
+                &mut grid,
+                &mut Placement::default(),
+                Some(Painted {
+                    grid: shown,
+                    panes: &panes,
+                }),
+            )
+            .map_err(|e| e.to_string())?;
+            Ok(grid)
+        };
+        session.notify_to(client, "feedback", true);
+        let covered = held(&session, &before)?;
+        assert!(covered.row_text(3).contains("feedback"));
+        if let Some(view) = session.views.get_mut(&client) {
+            view.notice = None;
+        }
+        let restored = held(&session, &covered)?;
+        assert!(restored.row_text(3).contains("old pane row"));
+        assert!(!restored.row_text(3).contains('X'));
+        assert_eq!(
+            restored.link(3, 0).map(|(_, link)| link.uri()),
+            Some("https://example.test/")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn retained_pictures_are_clipped_away_from_bar_feedback() -> Result<(), String> {
+        let (mut session, client) = crate::session::testing::attached(4, 40)?;
+        let view = session.views.get_mut(&client).ok_or("view")?;
+        view.terminal.sixel = true;
+        view.terminal.cell = fux_vt::CellSize::new(12, 12);
+        let picture = Arc::new(Picture::new(12, 48, vec![255; 12 * 48 * 4]).ok_or("picture")?);
+        let mut pictures = vec![
+            Visible {
+                pane: PaneId::of(1),
+                area: (0, 0, 4, 1),
+                crop: (0, 0, 12, 48),
+                picture: Arc::clone(&picture),
+            },
+            Visible {
+                pane: PaneId::of(1),
+                area: (3, 1, 1, 1),
+                crop: (0, 0, 12, 12),
+                picture,
+            },
+        ];
+        clip_bar_pictures(view, &mut pictures);
+        assert_eq!(pictures.len(), 1);
+        let visible = pictures.first().ok_or("visible")?;
+        assert_eq!(visible.area, (0, 0, 3, 1));
+        assert_eq!(visible.crop, (0, 0, 12, 36));
         Ok(())
     }
 
