@@ -16,6 +16,12 @@ impl Session {
         if acts.is_empty() {
             return;
         }
+        let previous = self.parts.actor(crate::events::Actor::Client(client));
+        self.client_acts(client, acts, now);
+        self.parts.actor(previous);
+    }
+
+    fn client_acts(&mut self, client: ClientId, acts: Vec<Act>, now: Instant) {
         let changes = self.changes();
         let typist = |s: &Self| s.shown_tab(client).and_then(|t| t.typist);
         let typed = typist(self);
@@ -57,8 +63,11 @@ impl Session {
         match act {
             Act::Presentation(presentation) => {
                 let bell = presentation.bell;
-                if let Some(view) = self.views.get_mut(&client) {
+                if let Some(view) = self.views.get_mut(&client)
+                    && view.presentation != presentation
+                {
                     view.presentation = presentation;
+                    self.view_event(client, crate::events::ViewChange::Presentation);
                 }
                 if !bell {
                     self.parts.clear_bells(client);
@@ -87,11 +96,13 @@ impl Session {
                 if !(fresh && starts || opening == view.opening && !view.mode.is_normal()) {
                     return false;
                 }
+                let notice = view.notice.clone();
                 if fresh {
                     view.opening = opening;
                     view.mode = Mode::Normal;
                     view.notice = None;
                 }
+                let changed = fresh || !matches!(act, ScreenAct::Copy(_));
                 match act {
                     ScreenAct::Show(panel) => view.mode = Mode::Panel(panel),
                     ScreenAct::Hide => {
@@ -100,6 +111,21 @@ impl Session {
                     }
                     ScreenAct::Copy(CopyAct::Enter { .. }) if !fresh => return false,
                     ScreenAct::Copy(act) => crate::copy::act(self, client, act),
+                }
+                if self
+                    .views
+                    .get(&client)
+                    .is_some_and(|view| view.notice != notice)
+                {
+                    self.view_event(client, crate::events::ViewChange::Notice);
+                }
+                if changed
+                    || self
+                        .views
+                        .get(&client)
+                        .is_some_and(|view| view.mode.is_normal())
+                {
+                    self.view_event(client, crate::events::ViewChange::Screen);
                 }
             }
             Act::Notice { text, error } => self.notify_to(client, text, error),
@@ -127,6 +153,9 @@ impl Session {
             }
         };
         view.dirty |= shown;
+        if shown {
+            self.view_event(client, crate::events::ViewChange::Screen);
+        }
         // Encoded as its program asked.
         let refused = self.type_in(client, |screen, out| {
             crate::encode::key_bytes(stroke, screen.key_mode(), out)
@@ -183,7 +212,9 @@ impl Session {
         if !view.mode.is_normal() {
             return;
         }
-        view.notice = None;
+        if view.notice.take().is_some() {
+            self.view_event(client, crate::events::ViewChange::Notice);
+        }
         let _ = self.type_in(client, |screen, out| {
             crate::encode::paste(text, screen.mode(fux_vt::Mode::BracketedPaste), out)
         });
@@ -929,7 +960,13 @@ mod tests {
     /// what the server draws for the client, its notice, and the screen
     /// its client has open.
     fn state(s: &mut Session, c: ClientId) -> Result<String, String> {
-        let ls = output(s, "ls")?;
+        // Opening the prefix panel and leaving it are real journal events;
+        // direct evaluation has a different history, with the same state.
+        let ls = output(s, "ls")?
+            .lines()
+            .filter(|line| !line.starts_with("events "))
+            .collect::<Vec<_>>()
+            .join("\n");
         Ok(format!(
             "{ls}{}\n{}\n{:?}",
             mode(s, c),
@@ -993,14 +1030,13 @@ mod tests {
             fn ask(
                 &mut self,
                 asked: &crate::protocol::Asked,
-                out: &mut dyn std::io::Write,
             ) -> Result<crate::protocol::Reply, crate::script::Failed> {
                 if let crate::command::Request::Do(command) = &asked.request
                     && !matches!(command, Command::Resolve { .. })
                 {
                     self.1.push(command.clone());
                 }
-                self.0.ask(asked, out)
+                self.0.ask(asked)
             }
         }
         for (code, captures) in [

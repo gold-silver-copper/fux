@@ -169,7 +169,7 @@ in order. `split` requires `str horizontal axis` (side by side) or
 `str vertical axis` (stacked). `resize-pane` takes a pane, cells or a
 percent, and `str horizontal` or `str vertical`. Mouse events are positional:
 `%2 str click 3 10 send-mouse`.
-`all events` streams the whole session. Of
+`all events` streams a finite run of journal batches; `next-events` returns one batch. Of
 the first three, only `run` takes a program (`program`, then each `arg`; a
 shell's line is `str sh program str -c arg str LINE arg`); `new-tab` and
 `new-workspace` start a shell. Their tab is laid out on `COLS ROWS size`, else on the
@@ -517,7 +517,8 @@ VT220-class terminal.
 `json` on what a word left gives its JSON: `ls json`, `X info json`,
 `pane capture json`, `client capture json`, an action's or a
 wait's answer (`… wait json`), `status json`; `all events` and `X events`
-stream an object a line. These shapes are part of fux's interface; `fux
+stream NDJSON events and checkpoints for at most 256 batches. `SCOPE str CURSOR SECONDS next-events`
+returns one bounded record with `events`, exact `next`, `missed` and `status`. These shapes are part of fux's interface; `fux
 help json` lists every one ([docs/json.md](docs/json.md)).
 
 ## Configuration
@@ -911,8 +912,11 @@ and width implementations.
   cell the mouse is in, not the pixel within it, and fux makes none up.
   The mode is reported permanently reset and setting it changes nothing,
   so a program reports in cells, as with a terminal without it.
-- **Hooks** (tmux's `set-hook`): read `fux all events` and run fux
-  instead.
+- **Hooks** (tmux's `set-hook`): run an ordinary program over `next-events`.
+  The library's `events-since` streams bounded runs with checkpoints, and
+  `copy-notices` demonstrates filtering event and origin. See
+  [the hook recipe](examples/hooks/program-copies.fux). Loss requires a new
+  snapshot or explicit failure; hooks do not run on the server.
 - **Process survival after server failure**, or automatic session saving:
   replaying a saved `dump` creates new processes and recreates the layout.
 - **A format language** for output (tmux's `#{…}`): `json`, and `X str

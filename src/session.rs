@@ -76,6 +76,11 @@ pub enum Timer {
 pub enum Origin {
     /// A client's key or prompt: where the client is.
     Client(ClientId),
+    /// A request addressing a client, with its separately known source.
+    ClientContext {
+        client: ClientId,
+        actor: crate::events::Actor,
+    },
     /// The CLI: who runs the command, and from where.
     Cli(Caller),
 }
@@ -376,8 +381,6 @@ fn ended(pane: PaneId, status: Ended) -> Error {
 pub enum Begun {
     Done(Reply),
     Waiting(Box<Waiting>),
-    /// `fux all events`: a stream, until the client goes.
-    Events(Box<crate::events::Subscription>),
 }
 
 /// A respawn under way: the pane made for the program started, and the
@@ -387,6 +390,7 @@ pub enum Begun {
 /// terminal till then. If the pane closes first, the respawn is abandoned
 /// (`Session::end_pane`), and said to be.
 struct Replacement {
+    actor: crate::events::Actor,
     fresh: Pane,
     process: Process,
     /// When it began: its turns are due from then, a frame the old program
@@ -644,7 +648,7 @@ impl Session {
     /// the CLI caller's pane's.
     fn here<'a>(&self, origin: &'a Origin) -> Result<Here<'a>, Error> {
         match *origin {
-            Origin::Client(client) => {
+            Origin::Client(client) | Origin::ClientContext { client, .. } => {
                 let place = self.place(client).ok_or(Error::NoClient(client))?;
                 Ok(Here::Client(client, place))
             }
@@ -801,6 +805,7 @@ impl Session {
         let process = child.map_or(Process::Absent, Process::Reading);
         let since = now;
         let new = Replacement {
+            actor: self.parts.journal().current_actor(),
             fresh,
             process,
             since,
@@ -826,7 +831,9 @@ impl Session {
         let Some(mut new) = self.respawning.remove(&id) else {
             return;
         };
+        let actor = self.parts.actor(new.actor);
         let Some(mut pane) = self.parts.pane_mut(id) else {
+            self.parts.actor(actor);
             self.end(new.process, true, now);
             return;
         };
@@ -839,6 +846,7 @@ impl Session {
         // An exit that came while it was no pane's program is told now: the
         // server looks for exits as they are signalled (`Server::reap`).
         let exited = pane.process().child().and_then(|c| c.leader.exited());
+        self.parts.actor(actor);
         self.end(old, true, now);
         let left = left.told("the program it ran");
         if !left.is_empty() {
@@ -1392,6 +1400,19 @@ impl Session {
         attach: Attach,
         now: Instant,
     ) -> Result<ClientId, Error> {
+        let client = self.ids.clone().client()?;
+        let previous = self.parts.actor(crate::events::Actor::Client(client));
+        let result = self.attach_checked(kind, attach, now);
+        self.parts.actor(previous);
+        result
+    }
+
+    fn attach_checked(
+        &mut self,
+        kind: ClientKind,
+        attach: Attach,
+        now: Instant,
+    ) -> Result<ClientId, Error> {
         self.check_run(attach.of)?;
         if attach.initial.is_some() && (attach.target.is_some() || attach.read_only) {
             return Err(fail(
@@ -1467,12 +1488,16 @@ impl Session {
         self.views.insert(id, view);
         self.parts.attach(id);
         self.parts.show(id, ws, spot);
+        self.view_event(id, crate::events::ViewChange::Attached);
         self.ask(id, crate::outer::QUERIES);
         self.settle(now);
         Ok(id)
     }
 
     pub fn detach(&mut self, id: ClientId, now: Instant) {
+        if self.views.contains_key(&id) {
+            self.view_event(id, crate::events::ViewChange::Detached);
+        }
         self.views.remove(&id);
         self.parts.forget(id);
         self.settle(now);
@@ -1486,8 +1511,8 @@ impl Session {
             && self.views.contains_key(&client)
         {
             self.parts.show(client, ws, at);
+            self.zoom_to(client, false);
             if let (Some(after), Some(view)) = (self.place(client), self.views.get_mut(&client)) {
-                view.zoom = false;
                 if before.tab != after.tab {
                     view.last_tab = Some(before.tab);
                 }
@@ -1513,6 +1538,7 @@ impl Session {
         let Some(view) = view else { return Ok(false) };
         (view.rows, view.cols) = size;
         view.dirty = true;
+        self.view_event(id, crate::events::ViewChange::Resized);
         self.settle(now);
         Ok(true)
     }
@@ -1521,7 +1547,15 @@ impl Session {
     /// attached.
     pub fn notify_to(&mut self, client: ClientId, text: impl Into<String>, error: bool) {
         if let Some(view) = self.views.get_mut(&client) {
+            let text = text.into();
+            let changed = view
+                .notice
+                .as_ref()
+                .is_none_or(|notice| notice.text != text || notice.error != error);
             view.notify(text, error);
+            if changed {
+                self.view_event(client, crate::events::ViewChange::Notice);
+            }
         }
     }
 
@@ -1627,6 +1661,11 @@ impl Session {
             .filter_map(|view| Some(Outgoing::To(view.id, ToAttached::Ended(self.repair(view)?))))
             .collect();
         self.views = views;
+        for ended in &ended {
+            if let Outgoing::To(client, _) = ended {
+                self.view_event(*client, crate::events::ViewChange::Screen);
+            }
+        }
         self.outbox.extend(ended);
         self.size_panes(now);
         self.host_panes();
@@ -1693,6 +1732,13 @@ impl Session {
                 );
                 let ended = ToAttached::Ended(view.opening);
                 self.outbox.push(Outgoing::To(view.id, ended));
+                let id = pane.id();
+                let at = self.parts.locate(id).map(|at| (at, id));
+                self.parts.journal_mut().push(crate::events::Event::View {
+                    client: view.id,
+                    at,
+                    change: crate::events::ViewChange::Screen,
+                });
             }
         }
     }
@@ -1754,9 +1800,7 @@ impl Session {
             }
         }
         for (&tab, &size) in &screens {
-            if let Some(tab) = self.parts.tab_mut(tab) {
-                tab.shown_on(size.into());
-            }
+            self.parts.shown_on(tab, size.into());
         }
         let mut dropped = std::mem::take(&mut self.sized);
         let fixed =
@@ -1876,10 +1920,8 @@ impl Session {
         // closing empties takes its viewers elsewhere.
         let viewers = self.viewers(self.locate(id).map(|(_, t)| t));
         for client in &viewers {
-            if self.focused(*client) == Some(id)
-                && let Some(view) = self.views.get_mut(client)
-            {
-                view.zoom = false;
+            if self.focused(*client) == Some(id) {
+                self.zoom_to(*client, false);
             }
         }
         let mut notice = None;
@@ -1914,9 +1956,7 @@ impl Session {
     fn remove_tab(&mut self, tab: TabId, now: Instant) {
         let viewers = self.viewers(Some(tab));
         for client in &viewers {
-            if let Some(view) = self.views.get_mut(client) {
-                view.zoom = false;
-            }
+            self.zoom_to(*client, false);
         }
         for gone in self.parts.remove_tab(tab) {
             self.end_pane(gone, true, &viewers, now);
@@ -1962,6 +2002,17 @@ impl Session {
     /// and notifications journaled, from the turn that reads the last of
     /// it (`Session::fire`); a shell's pane then closes.
     pub fn exited(&mut self, id: PaneId, ended: Ended, now: Instant) {
+        let Some(generation) = self.parts.panes().get(&id).map(|p| p.respawns) else {
+            return;
+        };
+        let previous = self
+            .parts
+            .actor(crate::events::Actor::Program(id, generation));
+        self.program_exited(id, ended, now);
+        self.parts.actor(previous);
+    }
+
+    fn program_exited(&mut self, id: PaneId, ended: Ended, now: Instant) {
         let Some(first) = self.parts.panes().get(&id).map(|p| p.exiting.is_none()) else {
             return;
         };
@@ -2120,18 +2171,25 @@ impl Session {
         // and watchers, when this pane permits them. Invalid copies are
         // counted and reported. fux-vt's string bound fits the clipboard.
         const _: () = assert!(fux_vt::OSC_PAYLOAD_LIMIT <= crate::copy::MAX_CLIPBOARD);
+        let generation = pane.respawns;
         let (bell, copies) = pane.take_read();
         let changed_label = labelled.filter(|(was, _)| was != &*pane.label());
         if bell {
             self.ring(id, now);
         }
-        for text in copies {
-            if let Err(why) = self.copied(text, &viewers) {
-                log!("{id}: copy refused: {why}");
-                for &client in &viewers {
-                    self.notify_to(client, why.to_string(), true);
+        if !copies.is_empty() {
+            let previous = self
+                .parts
+                .actor(crate::events::Actor::Program(id, generation));
+            for text in copies {
+                if let Err(why) = self.copied(text, Some(id), &viewers) {
+                    log!("{id}: copy refused: {why}");
+                    for &client in &viewers {
+                        self.notify_to(client, why.to_string(), true);
+                    }
                 }
             }
+            self.parts.actor(previous);
         }
         for view in self.views.values_mut() {
             if viewers.contains(&view.id)
@@ -2191,7 +2249,12 @@ impl Session {
     /// `text`, copied, goes to the paste buffers and to each client in `to`
     /// whose terminal delivery is on (OSC 52): false if it
     /// is too large for the clipboard. An exhausted id counter refuses the copy.
-    pub(crate) fn copied(&mut self, text: String, to: &[ClientId]) -> Result<bool, Error> {
+    pub(crate) fn copied(
+        &mut self,
+        text: String,
+        pane: Option<PaneId>,
+        to: &[ClientId],
+    ) -> Result<bool, Error> {
         let id = self.ids.buffer(self.run)?;
         let mut fits = true;
         let views = &self.views;
@@ -2214,7 +2277,11 @@ impl Session {
                     .extend(recipients.map(|client| Outgoing::Copy(client, osc.clone())));
             }
         }
+        let at = pane.and_then(|p| self.locate(p).map(|at| (at, p)));
         self.buffers.push_front((id, text));
+        self.parts
+            .journal_mut()
+            .push(crate::events::Event::Copied { buffer: id, at });
         self.buffers.truncate(BUFFER_LIMIT);
         Ok(fits)
     }
@@ -2239,8 +2306,8 @@ impl Session {
     // ------------------------------------------------------------ commands
 
     /// Begins a request from a client: one that waits gives its wait,
-    /// which the server asks for its answer until it has one; a stream of
-    /// events, its subscription; any other runs at once.
+    /// which the server asks for its answer until it has one. Event reads
+    /// use the same bounded wait; commands run at once.
     pub fn begin(&mut self, request: Request, origin: &Origin, now: Instant) -> Begun {
         self.begin_request(request, origin, now)
             .unwrap_or_else(|error| Begun::Done(failure(error, origin, self)))
@@ -2273,13 +2340,22 @@ impl Session {
                 return Ok(self.answered(waiting, now));
             }
             Request::Wait(wait) => wait,
-            Request::Events(target, from) => {
-                let target = target.map(|t| self.there(t)).transpose()?;
-                let journal = self.parts.journal();
-                let subscription =
-                    crate::events::Subscription::new(target, journal, self.run, from)
+            Request::NextEvents {
+                scope,
+                from,
+                timeout,
+            } => {
+                if !self.ids.gave_scope(scope) {
+                    return Err(fail(
+                        Raise::BadValue,
+                        "event scope was never issued by this server run",
+                    ));
+                }
+                let reader =
+                    crate::events::Reader::new(scope, self.parts.journal(), self.run, from)
                         .map_err(|why| fail(Raise::BadValue, why))?;
-                return Ok(Begun::Events(Box::new(subscription)));
+                let read = crate::events::Read::new(reader, crate::after(now, timeout.duration()));
+                return Ok(self.answered(Waiting::Events(read), now));
             }
         };
         let watches = match wait.since {
@@ -2353,6 +2429,8 @@ impl Session {
 
     /// Runs a command, parsed already: from a line, a binding or a chooser.
     pub fn run_command(&mut self, command: &Command, origin: &Origin, now: Instant) -> Reply {
+        let actor = self.request_actor(origin);
+        let previous = self.parts.actor(actor);
         let outcome = self
             .execute(command, origin, now)
             .unwrap_or_else(|error| failure(error, origin, self));
@@ -2361,7 +2439,42 @@ impl Session {
             self.touch();
         }
         self.settle(now);
+        self.parts.actor(previous);
         outcome
+    }
+
+    pub(crate) fn request_actor(&self, origin: &Origin) -> crate::events::Actor {
+        use crate::events::Actor;
+        match origin {
+            Origin::Client(client) => Actor::Client(*client),
+            Origin::ClientContext { actor, .. } => *actor,
+            Origin::Cli(caller) => match (caller.within, caller.gave) {
+                (Within::This, Some((pane, generation)))
+                    if self
+                        .parts
+                        .panes()
+                        .get(&pane)
+                        .is_some_and(|p| p.respawns == generation) =>
+                {
+                    Actor::Pane(pane, generation)
+                }
+                _ => Actor::Unknown,
+            },
+        }
+    }
+
+    fn zoom_to(&mut self, client: ClientId, zoom: bool) {
+        if let Some(view) = self.views.get_mut(&client).filter(|v| v.zoom != zoom) {
+            view.zoom = zoom;
+            self.view_event(client, crate::events::ViewChange::Zoomed);
+        }
+    }
+
+    pub(crate) fn view_event(&mut self, client: ClientId, change: crate::events::ViewChange) {
+        let at = self.place(client).map(|p| ((p.ws, p.tab), p.pane));
+        self.parts
+            .journal_mut()
+            .push(crate::events::Event::View { client, at, change });
     }
 
     /// How many commands have run that may change what clients show.
@@ -2680,7 +2793,9 @@ impl Session {
             }
         }
         let reason = match origin {
-            Origin::Client(_) => "stopped by kill-server, from a key or the prompt",
+            Origin::Client(_) | Origin::ClientContext { .. } => {
+                "stopped by kill-server, in a client context"
+            }
             Origin::Cli(_) => "stopped by fux kill-server",
         };
         self.outbox.push(Outgoing::Shutdown(reason.into()));
@@ -2854,10 +2969,9 @@ impl Session {
         }
         self.ids = ids;
         let (_, tab) = self.locate(new).ok_or(Error::NoPane(new))?;
-        let split = self.parts.tab_mut(tab).ok_or(Error::NoTab(tab))?;
-        for view in (self.views.values_mut()).filter(|v| followers.contains(&v.id)) {
-            split.set_focus(view.id, new);
-            view.zoom = false;
+        for client in followers {
+            self.parts.focus(tab, client, new);
+            self.zoom_to(client, false);
         }
         let version = self.pane(new)?.version(self.run);
         Ok(acted(version))
@@ -2975,9 +3089,12 @@ impl Session {
         // A select shows the client where it picked, unzoomed.
         match picked {
             Some(Picked { ws, at }) => self.follow(Here::Client(client, place), ws, at),
-            None => (self.views.get_mut(&client))
-                .into_iter()
-                .for_each(|v| v.zoom = !v.zoom),
+            None => {
+                if let Some(view) = self.views.get(&client) {
+                    let zoom = !view.zoom;
+                    self.zoom_to(client, zoom);
+                }
+            }
         }
         Ok(Reply::default())
     }
@@ -3475,11 +3592,7 @@ impl crate::script::Asks for InProcess<'_> {
             );
         }
     }
-    fn ask(
-        &mut self,
-        asked: &crate::protocol::Asked,
-        out: &mut dyn std::io::Write,
-    ) -> Result<Reply, crate::script::Failed> {
+    fn ask(&mut self, asked: &crate::protocol::Asked) -> Result<Reply, crate::script::Failed> {
         let session = &mut *self.0;
         let origin = match asked.context.client {
             Some(client) if session.views.contains_key(&client) => Origin::Client(client),
@@ -3511,10 +3624,6 @@ impl crate::script::Asks for InProcess<'_> {
                 };
                 session.fire(timer, now);
             },
-            Begun::Events(_) => {
-                let _ = std::io::Write::write_all(out, b"events stream from a real server only\n");
-                Reply::default()
-            }
         };
         Ok(Reply {
             run: Some(session.run),
@@ -3542,7 +3651,6 @@ pub(crate) mod testing {
                 fn ask(
                     &mut self,
                     asked: &crate::protocol::Asked,
-                    _: &mut dyn std::io::Write,
                 ) -> Result<Reply, crate::script::Failed> {
                     assert!(matches!(
                         asked.request,
@@ -3866,7 +3974,6 @@ pub(crate) mod testing {
             fn ask(
                 &mut self,
                 asked: &crate::protocol::Asked,
-                out: &mut dyn std::io::Write,
             ) -> Result<Reply, crate::script::Failed> {
                 let recorded = match &asked.request {
                     Request::Do(Command::Client { action, .. }) => Command::Client {
@@ -3875,7 +3982,7 @@ pub(crate) mod testing {
                     },
                     Request::Do(Command::Resolve { .. })
                     | Request::Wait(..)
-                    | Request::Events(..) => return self.0.ask(asked, out),
+                    | Request::NextEvents { .. } => return self.0.ask(asked),
                     Request::Do(command) => command.clone(),
                 };
                 self.1.push(recorded);
@@ -4150,7 +4257,6 @@ mod tests {
             fn ask(
                 &mut self,
                 asked: &crate::protocol::Asked,
-                _: &mut dyn std::io::Write,
             ) -> Result<Reply, crate::script::Failed> {
                 assert!(matches!(
                     asked.request,
@@ -4768,7 +4874,6 @@ mod tests {
             fn ask(
                 &mut self,
                 asked: &crate::protocol::Asked,
-                out: &mut dyn std::io::Write,
             ) -> Result<Reply, crate::script::Failed> {
                 match &asked.request {
                     Request::Do(Command::Resolve { .. }) => {}
@@ -4784,14 +4889,14 @@ mod tests {
                         self.commits = self.commits.saturating_add(1);
                         assert_eq!(asked.context.of, Some(revision.run));
                     }
-                    Request::Do(_) | Request::Wait(_) | Request::Events(..) => {
+                    Request::Do(_) | Request::Wait(_) | Request::NextEvents { .. } => {
                         return Err(crate::script::Failed::new(
                             Code::Usage,
                             "unexpected preset request",
                         ));
                     }
                 }
-                let reply = crate::script::Asks::ask(&mut InProcess(self.session), asked, out)?;
+                let reply = crate::script::Asks::ask(&mut InProcess(self.session), asked)?;
                 if self.resize && matches!(asked.request, Request::Do(Command::Inspect { .. })) {
                     run(self.session, "@1 121 40 resize")
                         .map_err(|e| crate::script::Failed::new(Code::Usage, e))?;
@@ -5136,7 +5241,8 @@ mod tests {
     fn buffer_reads_keep_every_byte() -> Result<(), String> {
         let mut s = started()?;
         for text in ["hello\n\n", "", "\n", "a\r\n\0界\n"] {
-            s.copied(text.into(), &[]).map_err(|e| e.to_string())?;
+            s.copied(text.into(), None, &[])
+                .map_err(|e| e.to_string())?;
             assert_eq!(
                 output(&mut s, "newest buffer len")?,
                 format!("{}\n", text.chars().count())
@@ -5149,7 +5255,7 @@ mod tests {
     #[test]
     fn buffer_ids_survive_copies_and_refuse_after_eviction() -> Result<(), String> {
         let mut s = started()?;
-        s.copied("chosen\n\n".into(), &[])
+        s.copied("chosen\n\n".into(), None, &[])
             .map_err(|e| e.to_string())?;
         let id = s.buffers.front().ok_or("no copy")?.0;
         // An unsolicited program copy also shifts the ring.
@@ -5165,7 +5271,8 @@ mod tests {
             b"chosen\r\r"
         );
         for _ in 0..16 {
-            s.copied("later".into(), &[]).map_err(|e| e.to_string())?;
+            s.copied("later".into(), None, &[])
+                .map_err(|e| e.to_string())?;
         }
         assert_eq!(s.buffers.len(), 16);
         for code in [
@@ -5187,11 +5294,14 @@ mod tests {
     #[test]
     fn buffer_ids_belong_to_one_server_run() -> Result<(), String> {
         let mut s = started()?;
-        s.copied("old".into(), &[]).map_err(|e| e.to_string())?;
+        s.copied("old".into(), None, &[])
+            .map_err(|e| e.to_string())?;
         let id = s.buffers.front().ok_or("no copy")?.0;
         let mut other = started()?;
         other.run = "0-0".parse().map_err(|()| "a run")?;
-        other.copied("new".into(), &[]).map_err(|e| e.to_string())?;
+        other
+            .copied("new".into(), None, &[])
+            .map_err(|e| e.to_string())?;
         for code in [
             format!("str {id} buffer"),
             format!("%1 str {id} paste-buffer"),
@@ -5208,7 +5318,8 @@ mod tests {
     fn buffer_metadata_is_bounded_and_has_the_exact_length() -> Result<(), String> {
         let mut s = started()?;
         let text = std::iter::repeat_n("界\n", 100).collect::<String>();
-        s.copied(text.clone(), &[]).map_err(|e| e.to_string())?;
+        s.copied(text.clone(), None, &[])
+            .map_err(|e| e.to_string())?;
         let id = s.buffers.front().ok_or("no copy")?.0;
         let expected = Json::Array(vec![Json::object(vec![
             ("id", Json::str(id.to_string())),
@@ -5228,12 +5339,13 @@ mod tests {
     #[test]
     fn buffer_id_exhaustion_copies_nothing() -> Result<(), String> {
         let (mut s, c) = attached(24, 80)?;
-        s.copied("kept".into(), &[]).map_err(|e| e.to_string())?;
+        s.copied("kept".into(), None, &[])
+            .map_err(|e| e.to_string())?;
         let before = s.buffers.clone();
         s.outbox.clear();
         s.ids.exhaust_buffers();
         assert!(
-            s.copied("refused".into(), &[c])
+            s.copied("refused".into(), None, &[c])
                 .is_err_and(|e| e.code() == Code::IdsExhausted)
         );
         assert_eq!(s.buffers, before);
@@ -5250,7 +5362,8 @@ mod tests {
             "{}\n\n",
             std::iter::repeat_n('x', crate::pane::INPUT_BYTES - 14).collect::<String>()
         );
-        s.copied(text.clone(), &[]).map_err(|e| e.to_string())?;
+        s.copied(text.clone(), None, &[])
+            .map_err(|e| e.to_string())?;
         run(&mut s, "%1 newest paste-buffer drop")?;
         let queued = s
             .parts
@@ -5283,7 +5396,7 @@ mod tests {
         let mut s = started()?;
         run(&mut s, "agent-opts 80 24 size str /bin/cat program run")?;
         s.end_program(PaneId::of(2), crate::process::Ended::Exited(3));
-        s.copied("x".into(), &[]).map_err(|e| e.to_string())?;
+        s.copied("x".into(), None, &[]).map_err(|e| e.to_string())?;
         let pasted = run(&mut s, "%2 newest paste-buffer");
         assert!(pasted.is_err_and(|e| e.contains("exited")), "refused");
         Ok(())
@@ -5857,7 +5970,8 @@ mod tests {
             "agent-opts 80 24 size 4096 history-bytes false reflow 3 alternate-scroll-lines 1024 picture-bytes false program-clipboard str /bin/cat program run",
         )?;
         let (id, origin) = (PaneId::of(2), Origin::Cli(Caller::default()));
-        let mut stream = crate::events::Subscription::new(None, s.parts.journal(), s.run, None)?;
+        let mut stream =
+            crate::events::Reader::new(crate::inspect::Scope::All, s.parts.journal(), s.run, None)?;
         let spends = crate::pane::tests::spends_the_budget(24, 80);
         let mut left: Vec<u8> = std::iter::repeat_n(spends, 4).flatten().collect();
         left.push(0x07);
@@ -5893,9 +6007,7 @@ mod tests {
         assert_eq!(pane.options().picture_bytes.get(), 1024);
         assert!(output(&mut s, "%2 str history_bytes get")?.contains("128"));
         assert!(output(&mut s, "all dump")?.contains("128 history-bytes false reflow 3 alternate-scroll-lines 1024 picture-bytes false program-clipboard"));
-        let lines = stream
-            .told(s.parts.journal(), usize::MAX, |t| s.holder(t))
-            .0;
+        let lines = stream.lines(s.parts.journal(), |t| s.holder(t)).0;
         let at = |what: &str| {
             lines
                 .find(&format!(r#""{what}","pane":"%2""#))
@@ -5965,8 +6077,12 @@ mod tests {
                 pane.exiting(ended);
             }
             s.out(id, &crate::pane::tests::spends_the_budget(24, 80));
-            let mut stream =
-                crate::events::Subscription::new(None, s.parts.journal(), s.run, None)?;
+            let mut stream = crate::events::Reader::new(
+                crate::inspect::Scope::All,
+                s.parts.journal(),
+                s.run,
+                None,
+            )?;
             let respawn = Request::Do(Command::Respawn {
                 target: id,
                 kill,
@@ -5982,9 +6098,7 @@ mod tests {
             let signalled = s.signalled(id).map(drop).map_err(|e| e.to_string());
             assert!(signalled.is_err_and(|e| e.contains("respawning")));
             turns(&mut s, id, &waiting)?;
-            let lines = stream
-                .told(s.parts.journal(), usize::MAX, |t| s.holder(t))
-                .0;
+            let lines = stream.lines(s.parts.journal(), |t| s.holder(t)).0;
             assert!(lines.contains(r#""respawned","pane":"%2""#), "{lines}");
             assert!(!lines.contains("input_unread"), "{lines}");
             for dying in std::mem::take(&mut s.dying) {
@@ -6043,7 +6157,8 @@ mod tests {
         run(&mut s, "agent-opts 80 24 size str /bin/cat program run")?;
         let id = PaneId::of(2);
         s.out(id, &crate::pane::tests::spends_the_budget(24, 80));
-        let mut stream = crate::events::Subscription::new(None, s.parts.journal(), s.run, None)?;
+        let mut stream =
+            crate::events::Reader::new(crate::inspect::Scope::All, s.parts.journal(), s.run, None)?;
         // Programs are started, as a server starts them.
         s.launch = Some("/nonexistent/fux.sock".into());
         let begun = s.begin_now(
@@ -6068,9 +6183,7 @@ mod tests {
         let started = started.map(|c| c.leader.pid());
         assert!(s.children().any(|c| Some(c.leader.pid()) == started));
         turns(&mut s, id, &waiting)?;
-        let lines = stream
-            .told(s.parts.journal(), usize::MAX, |t| s.holder(t))
-            .0;
+        let lines = stream.lines(s.parts.journal(), |t| s.holder(t)).0;
         let at = |what: &str| {
             lines
                 .find(&format!(r#""{what}","pane":"%2""#))
@@ -6915,11 +7028,13 @@ mod tests {
         assert_eq!(s.buffers.len(), 1);
         assert!(copies(&s).is_empty());
         // Manual copying always stores; it targets only the copying client.
-        s.copied("manual".into(), &[a]).map_err(|e| e.to_string())?;
+        s.copied("manual".into(), None, &[a])
+            .map_err(|e| e.to_string())?;
         assert_eq!(s.buffers.len(), 2);
         assert!(copies(&s).is_empty());
         s.apply(a, vec![Act::Presentation(presentation)]);
-        s.copied("mine".into(), &[a]).map_err(|e| e.to_string())?;
+        s.copied("mine".into(), None, &[a])
+            .map_err(|e| e.to_string())?;
         assert_eq!(copies(&s), [a]);
         Ok(())
     }
@@ -7814,9 +7929,6 @@ mod tests {
             }
             assert_eq!(s.ids, ids);
         }
-        let replay = format!("%1 str 0:{} from str 0:{} from events", s.run, s.run);
-        let error = output(&mut s, &replay).err().ok_or("repeated cursor ran")?;
-        assert!(error.starts_with("unused: "), "{error}");
         for first in [
             "wrapped",
             "full",
@@ -8084,7 +8196,8 @@ mod tests {
     /// What a stream of events subscribed now is told of what `change`
     /// does to `s`.
     fn told(s: &mut Session, change: impl FnOnce(&mut Session)) -> String {
-        let stream = crate::events::Subscription::new(None, s.parts.journal(), s.run, None);
+        let stream =
+            crate::events::Reader::new(crate::inspect::Scope::All, s.parts.journal(), s.run, None);
         // From now is never refused; if it were, the caller's comparison
         // shows why.
         let mut stream = match stream {
@@ -8092,9 +8205,7 @@ mod tests {
             Err(why) => return why,
         };
         change(s);
-        stream
-            .told(s.parts.journal(), usize::MAX, |t| s.holder(t))
-            .0
+        stream.lines(s.parts.journal(), |t| s.holder(t)).0
     }
 
     /// A rename and its undo in one request are both told, in order: what
@@ -8826,6 +8937,319 @@ mod tests {
             s.attach(10, 40, Some("+x")),
             Err(e) if e.code() == Code::BadValue && e.to_string().contains("+x")
         ));
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod journal_tests {
+    use super::*;
+    use crate::events::{Actor, Batch, Reader};
+    use crate::inspect::Scope;
+    use testing::{output, run, started};
+
+    fn batch(s: &Session, from: crate::events::Cursor) -> Result<Batch, String> {
+        Reader::new(Scope::All, s.parts.journal(), s.run, Some(from))?
+            .batch(s.parts.journal(), true)
+    }
+    fn named<'a>(b: &'a Batch, name: &str) -> Vec<&'a crate::events::Item> {
+        b.events
+            .iter()
+            .filter(|e| e.data.get("event") == Some(&Json::str(name)))
+            .collect()
+    }
+
+    #[test]
+    fn discrete_layout_and_view_changes_invalidate_in_the_same_turn() -> Result<(), String> {
+        let (mut s, client) = testing::attached(24, 80)?;
+        run(
+            &mut s,
+            "%1 str horizontal axis split drop opts 80 24 size str +1 workspace in new-tab drop",
+        )?;
+        let from = s.parts.journal().end(s.run);
+        run(&mut s, "%1 %2 swap-with @2 str previous reorder")?;
+        run(
+            &mut s,
+            &format!("str {client} client %1 show str {client} client zoom"),
+        )?;
+        run(
+            &mut s,
+            "%2 str right 3 move-border %1 128 history-budget %1 clear-history all str note notify",
+        )?;
+        let b = batch(&s, from)?;
+        for name in [
+            "laid_out",
+            "reordered",
+            "focused",
+            "zoomed",
+            "history_budget",
+            "history_cleared",
+            "notice",
+        ] {
+            assert!(
+                !named(&b, name).is_empty(),
+                "missing {name}: {}",
+                b.json().render()
+            );
+        }
+        let from = b.next;
+        s.detach(client, Instant::now());
+        assert_eq!(named(&batch(&s, from)?, "detached").len(), 1);
+        Ok(())
+    }
+
+    #[test]
+    fn origins_distinguish_supplied_context_and_deferred_respawn() -> Result<(), String> {
+        let (mut s, client) = testing::attached(24, 80)?;
+        run(
+            &mut s,
+            "agent-opts 80 24 size str /bin/cat program run drop",
+        )?;
+        let id = PaneId::of(2);
+        let from = s.parts.journal().end(s.run);
+        let rename = |name: &str| Command::Rename {
+            target: AnyRef::Pane(id),
+            name: name.into(),
+        };
+        s.run_command(&rename("client"), &Origin::Client(client), Instant::now());
+        let caller = Caller {
+            gave: Some((id, 0)),
+            within: Within::This,
+            ..Caller::default()
+        };
+        s.run_command(&rename("pane"), &Origin::Cli(caller), Instant::now());
+        s.run_command(
+            &rename("outside"),
+            &Origin::Cli(Caller::default()),
+            Instant::now(),
+        );
+        testing::output_as(&mut s, Some(client), "@2 90 24 resize")?;
+        s.output(id, b"\x07", Instant::now());
+        // Force the replacement to finish on a later parser turn.
+        let spends = crate::pane::tests::spends_the_budget(24, 80);
+        let left: Vec<u8> = std::iter::repeat_n(spends, 3).flatten().collect();
+        s.output(id, &left, Instant::now());
+        let replacement = Command::Respawn {
+            target: id,
+            kill: false,
+            env: command::EnvPatch::default(),
+            argv: None,
+        };
+        let begun = s.begin(
+            Request::Do(replacement),
+            &Origin::Client(client),
+            Instant::now(),
+        );
+        assert!(matches!(begun, Begun::Waiting(_)));
+        s.run_command(
+            &rename("later"),
+            &Origin::Cli(Caller::default()),
+            Instant::now(),
+        );
+        for _ in 0..32 {
+            if !s.respawning.contains_key(&id) {
+                break;
+            }
+            s.fire(Timer::Unread(id), Instant::now());
+        }
+        assert!(!s.respawning.contains_key(&id));
+        let b = batch(&s, from)?;
+        let actors: Vec<_> = named(&b, "renamed").iter().map(|e| e.origin).collect();
+        assert_eq!(
+            actors,
+            [
+                Actor::Client(client),
+                Actor::Pane(id, 0),
+                Actor::Unknown,
+                Actor::Unknown
+            ]
+        );
+        assert_eq!(
+            named(&b, "bell").first().map(|e| e.origin),
+            Some(Actor::Program(id, 0))
+        );
+        assert_eq!(
+            named(&b, "respawned").first().map(|e| e.origin),
+            Some(Actor::Client(client))
+        );
+        assert_eq!(
+            named(&b, "resized").first().map(|e| e.origin),
+            Some(Actor::Client(client))
+        );
+        assert_eq!(s.parts.journal().current_actor(), Actor::Server);
+        Ok(())
+    }
+
+    #[test]
+    fn copies_reference_only_the_admitted_stable_buffer() -> Result<(), String> {
+        let mut s = started()?;
+        let from = s.parts.journal().end(s.run);
+        s.output(PaneId::of(1), b"\x1b]52;c;aGVsbG8=\x07", Instant::now());
+        let buffer = s.buffers.front().ok_or("buffer")?.0;
+        let b = batch(&s, from)?;
+        let copies = named(&b, "copied");
+        assert_eq!(copies.len(), 1);
+        let copied = copies.first().ok_or("copy event")?;
+        assert_eq!(
+            copied.data.get("buffer"),
+            Some(&Json::str(buffer.to_string()))
+        );
+        assert!(copied.data.get("text").is_none());
+        assert_eq!(copied.origin, Actor::Program(PaneId::of(1), 0));
+        assert_eq!(
+            output(&mut s, &format!("str {from} 0 1 copy-notices"))?,
+            format!("{}\n", b.next)
+        );
+        run(
+            &mut s,
+            "agent-opts 80 24 size false program-clipboard str /bin/cat program run drop",
+        )?;
+        let from = s.parts.journal().end(s.run);
+        s.output(PaneId::of(2), b"\x1b]52;c;bm8=\x07", Instant::now());
+        assert!(named(&batch(&s, from)?, "copied").is_empty());
+        assert_eq!(s.buffers.front().map(|(id, _)| *id), Some(buffer));
+        Ok(())
+    }
+
+    #[test]
+    fn library_streams_checkpoint_and_fail_before_effects_on_loss() -> Result<(), String> {
+        let mut s = started()?;
+        let from = s.parts.journal().end(s.run);
+        run(&mut s, "%1 str hello rename")?;
+        let streamed = output(&mut s, &format!("all str {from} 0 1 events-since drop"))?;
+        assert!(streamed.contains(r#""event":"ready""#), "{streamed}");
+        assert!(streamed.contains(r#""event":"renamed""#), "{streamed}");
+        assert!(
+            streamed.contains(&format!(r#""next":"{}""#, s.parts.journal().end(s.run))),
+            "{streamed}"
+        );
+        // Real records retain the server run in their handles.
+        let kind = output(
+            &mut s,
+            &format!("all str {from} 0 next-events str events get first str pane get kind"),
+        )?;
+        assert_eq!(kind, "pane\n");
+        for _ in 0..crate::events::KEPT.saturating_add(1) {
+            s.output(PaneId::of(1), b"\x07", Instant::now());
+        }
+        let failed = output(&mut s, &format!("all str {from} 0 1 events-since drop"));
+        assert!(failed.is_err_and(|e| e.contains("resnapshot")));
+        let marker = output(
+            &mut s,
+            &format!("str fail try all str {from} 0 1 events-since drop catch 2drop end"),
+        )?;
+        assert!(marker.contains(r#""event":"missed""#), "{marker}");
+        Ok(())
+    }
+    #[test]
+    fn client_departures_invalidate_former_tabs_and_workspaces() -> Result<(), String> {
+        for target in ["@2", "str +2 workspace"] {
+            let (mut s, client) = testing::attached(24, 80)?;
+            run(
+                &mut s,
+                "opts 80 23 size str +1 workspace in new-tab drop opts 80 23 size new-workspace drop @1 80 23 resize @2 80 23 resize @3 80 23 resize",
+            )?;
+            let from = s.parts.journal().end(s.run);
+            run(&mut s, &format!("str {client} client {target} show"))?;
+            for scope in [
+                Scope::Target(AnyRef::Tab(TabId::of(1))),
+                Scope::Target(AnyRef::Workspace(WsId::of(1))),
+            ] {
+                let b = Reader::new(scope, s.parts.journal(), s.run, Some(from))?
+                    .batch(s.parts.journal(), true)?;
+                assert!(
+                    !named(&b, "shown").is_empty(),
+                    "departure from {scope:?}: {}",
+                    b.json().render()
+                );
+                assert!(named(&b, "resized").is_empty());
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn typing_invalidates_a_changed_host_once() -> Result<(), String> {
+        let (mut s, first) = testing::attached(24, 80)?;
+        let second = s.attach(24, 80, None).map_err(|e| e.to_string())?;
+        let tab = TabId::of(1);
+        assert_eq!(s.host(Some(tab)), Some(first));
+        let from = s.parts.journal().end(s.run);
+        s.input(second, b"x");
+        assert_eq!(s.host(Some(tab)), Some(second));
+        let b = Reader::new(
+            Scope::Target(AnyRef::Tab(tab)),
+            s.parts.journal(),
+            s.run,
+            Some(from),
+        )?
+        .batch(s.parts.journal(), true)?;
+        assert!(!b.events.is_empty(), "host changed without invalidation");
+        assert!(b.events.iter().all(|e| e.origin == Actor::Client(second)));
+        let after = s.parts.journal().end(s.run);
+        s.input(second, b"y");
+        assert_eq!(
+            s.parts.journal().end(s.run),
+            after,
+            "unchanged host must not journal every key"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn paste_invalidates_notice_dismissal() -> Result<(), String> {
+        let (mut s, client) = testing::attached(24, 80)?;
+        s.typed(client);
+        s.notify_to(client, "notice", false);
+        let from = s.parts.journal().end(s.run);
+        s.apply(client, vec![crate::act::Act::Paste("quiet input".into())]);
+        assert!(
+            s.views
+                .get(&client)
+                .is_some_and(|view| view.notice.is_none())
+        );
+        let b = Reader::new(Scope::Client(client), s.parts.journal(), s.run, Some(from))?
+            .batch(s.parts.journal(), true)?;
+        assert!(!b.events.is_empty(), "notice cleared without invalidation");
+        assert!(b.events.iter().all(|e| e.origin == Actor::Client(client)));
+        Ok(())
+    }
+    #[test]
+    fn copy_motion_only_invalidates_notice_changes() -> Result<(), String> {
+        let (mut s, client) = testing::attached(24, 80)?;
+        run(&mut s, &format!("str {client} client copy-mode"))?;
+        let from = s.parts.journal().end(s.run);
+        s.input(client, b"k");
+        assert!(
+            s.views
+                .get(&client)
+                .is_some_and(|view| matches!(view.mode, Mode::Copy(_)))
+        );
+        assert_eq!(s.parts.journal().end(s.run), from);
+        for (key, notice, changes) in [
+            (b"n", Some(("no search yet", true)), 1),
+            (b"n", Some(("no search yet", true)), 0),
+            (b"k", None, 1),
+        ] {
+            let from = s.parts.journal().end(s.run);
+            s.input(client, key);
+            let view = s.views.get(&client).ok_or("client")?;
+            assert!(matches!(view.mode, Mode::Copy(_)));
+            assert_eq!(
+                view.notice.as_ref().map(|n| (n.text.as_str(), n.error)),
+                notice
+            );
+            for scope in [Scope::All, Scope::Client(client)] {
+                let b = Reader::new(scope, s.parts.journal(), s.run, Some(from))?
+                    .batch(s.parts.journal(), true)?;
+                assert_eq!(named(&b, "notice").len(), changes, "{notice:?}");
+                assert!(named(&b, "screen").is_empty());
+                assert!(b.events.iter().all(|e| e.origin == Actor::Client(client)));
+            }
+        }
+        let from = s.parts.journal().end(s.run);
+        s.input(client, b"q");
+        assert_eq!(named(&batch(&s, from)?, "screen").len(), 1);
         Ok(())
     }
 }

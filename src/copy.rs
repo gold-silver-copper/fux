@@ -751,7 +751,14 @@ fn yank(session: &mut Session, client: ClientId, copied: Result<String, String>)
         "copied {characters} character{}",
         if characters == 1 { "" } else { "s" }
     );
-    let result = session.copied(copied, &[client]);
+    let pane = session
+        .views
+        .get(&client)
+        .and_then(|view| match &view.mode {
+            Mode::Copy(copy) => Some(copy.pane),
+            Mode::Normal | Mode::Panel(_) => None,
+        });
+    let result = session.copied(copied, pane, &[client]);
     leave(session, client);
     match result {
         Ok(fits) => {

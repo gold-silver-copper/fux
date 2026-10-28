@@ -1,0 +1,8 @@
+#!/usr/bin/env -S fux --file
+# Ordinary client program. Arguments: CURSOR SECONDS BATCHES.
+# CURSOR is a snapshot's events field; an empty cursor starts now.
+# Retain the printed cursor for the next finite run. A missed-event failure
+# requires a new snapshot and explicit reconciliation before restarting.
+args let argv
+argv len 3 ne if str 'program-copies takes CURSOR SECONDS BATCHES' fail then
+argv 0 at argv 1 at number argv 2 at number copy-notices print

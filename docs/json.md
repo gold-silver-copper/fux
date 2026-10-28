@@ -136,7 +136,7 @@ views; pane topology/recipe includes its whole tab. Client includes that
 client and its current workspace closure. Missing explicit scopes fail.
 
 `events` is the journal cursor `SEQ:RUN`, gathered with the hierarchy in one
-server turn. A stream from it (`opts str CURSOR from events-of`) starts after
+server turn. A batch from it (`all str CURSOR 0 next-events`) starts after
 that observation; a missed journal prefix requires another snapshot. OS
 observations happen during the turn but are not simultaneous OS snapshots.
 A pane version does not certify process metadata or client focus.
@@ -282,42 +282,109 @@ the handler gets its answer in place of the message, under the code:
 tab's or a workspace's panes answers each that changed, the first failing
 status naming the whole.
 
-## `all events`, `X events`
+## `next-events` and library event streams
 
-One object a line: `{"event":NAME,"pane":"%3","tab":"@2","workspace":"+2",…}`,
-`pane`, `tab` and `workspace` each only where it applies: none of them
-on `ready`, `missed`, `gone` or `stopped`. Events come in the
-order they happened in the whole session, one line each: each is written
-to the session's journal where it happens, and a stream reads the journal from
-its own place. A reader that falls behind is told the rest as it reads.
-A stream starts from now, or with `from` from a cursor, `SEQ:RUN`, as
-`ls` and `ready` give it (`all str CURSOR from events` for everything,
-`X str CURSOR from events` for X, which must still be there). A cursor
-of another server run, or past the journal's end, is refused
-(`bad_value`).
-The journal keeps the session's last 16,384 entries, for every stream
-alike: a pane that makes many in one round (a flood of bells) can make
-even a stream that reads at once, of another pane, miss some, which
-`missed` says.
+`SCOPE str CURSOR SECONDS next-events` returns one immutable record:
+
+```json
+{"events":[{"event":"bell","pane":"%3","tab":"@2","workspace":"+2","origin":{"kind":"program","pane":"%3","generation":0},"next":"42:7-1f"}],"next":"42:7-1f","missed":0,"status":"continuing","reason":null}
+```
+
+The scope is a pane, tab, workspace, client, or `all`. An empty cursor starts
+at the journal's current end; otherwise use `SEQ:RUN`, from a snapshot's
+`events` field or a previous batch's `next`. Other runs, future positions,
+and scope IDs this server never issued are refused (`bad_value`). Closed
+issued scopes may be replayed from a saved cursor. A pane moving between
+tabs is reported to both its old and new scopes. A client scope reports
+changes to that client's view and seats.
+
+Each batch scans at most 256 entries, including nonmatches, returns at most
+64 whole events and 256 KiB of event JSON, and fits the ordinary finite-reply
+and record limits. `next` is exactly the consumed journal prefix, including
+filtered entries. It can advance with no matching events. Each event also
+has its own continuation `next`. A count of matches is never a cursor.
+In fuxth, subject and origin handles retain their server run; JSON renders
+them as short IDs for display. The cursor and buffer ID remain run-qualified
+when exported as text.
+
+`SECONDS` is an explicit 0 to 86,400 second timeout. With nothing to scan,
+the connection waits until a matching change, loss, closure, shutdown,
+cancellation, its total scan bound, or its deadline. Filtered progress stays
+in the pending read and is never rescanned. Zero requests an immediate read. There is one request in flight,
+no server subscription registry and no timer polling loop. Cancellation
+closes the pending read. Status is:
+
+| `status` | Meaning |
+| --- | --- |
+| `continuing` | bounded progress; read again from `next`, even with no matches |
+| `timeout` | no matching event before the deadline; `next` includes filtered progress; no readiness claim |
+| `gone` | the scoped object closed; the final close is included when retained |
+| `stopped` | the server stopped; `reason` says why; a final bounded prefix may leave unread entries |
+
+The journal keeps at most the last 16,384 entries and an 8 MiB retained-entry
+charge, plus its bounded deque storage. Either limit may evict entries.
+`missed` counts exactly the entries evicted or refused retention before this cursor, including
+nonmatches. On loss, resnapshot and reconcile, or fail the task explicitly.
+The journal guarantees ordered invalidations, not complete state replication:
+a later snapshot can already contain newer state. Live cwd, foreground
+process observations and continuous terminal cell changes are excluded.
+
+Known origin is supplied context, not authenticated human or agent identity:
+`client` carries an attached source client named by a validated fence, independent of
+any client it addresses. Naming a client in an external CLI request does
+not supply its origin. `pane` carries a CLI caller's pane and program
+generation, `program` carries the terminal producer's pane and generation,
+`server` denotes a server action, and an external CLI is `unknown`. Deferred
+respawns retain their requesting origin. Server-observed disconnects are
+server actions; an explicit detach retains its request origin. No agent
+label is inferred.
+
+Client-only keymaps, request preferences and local config evaluation are not
+server state. Committed presentation is journaled as an invalidation; pane
+history changes have their own event. Text and full trees are not copied
+into layout/view invalidations. The finite coverage schema is:
 
 | `event` | Also |
 | --- | --- |
-| `ready` | first: `from`, the cursor it reads from; from there on nothing is missed unsaid |
-| `gone` | last: everything `events` named has closed (status 4) |
-| `created` | `name`, for a tab or workspace, `null` when unnamed |
-| `renamed` | `name`: a pane's, tab's or workspace's new name |
-| `closed`, `bell` | |
-| `arranged` | one complete tab layout replacement; `tab`, `workspace`; pane resizes follow |
-| `respawned` | at every respawn. Its fields, only when the program it ran over had not ended (a `kill-first` respawn), as one that ended said them with its `exited`: `truncated` (`true`) if it left more than 1 MiB on its terminal: the rest was not read; `input_unread`, if any: bytes of input fux queued for it and had not yet written to its terminal, let go |
-| `moved` | `from_tab`, `from_workspace`: where the pane was; `events` either place tells it |
-| `exited` | `exited`, its status (`null` if it was lost), or `signal`: its program's end, as a pane's JSON and a wait say it; `truncated` (`true`) if it left more than 1 MiB on its terminal as it ended: the rest was not read; `input_unread`, if any: bytes of input fux queued for it and had not yet written to its terminal, let go (as a pane's `input_unread`); a shell's pane then closes (`closed`) |
-| `done` | `status`: a shell command's, `null` if the shell gave none |
-| `notification` | `text`, `truncated` (`true`) if cut as a pane's `notification` is |
-| `title` | `title`, `truncated` (`true`) if cut as a pane's `title` is |
-| `resized` | `cols`, `rows` |
-| `history_budget` | `history_bytes`: the pane's new budget, even if no rows were evicted |
-| `missed` | `count`: entries the journal let go (past what it keeps) before this stream was told them, or, from a cursor, entries after it let go before the stream began; with `events`, some may be of other things |
-| `stopped` | last: `reason`, the server stopped |
+| `created` | `name` on tab/workspace, null when unnamed; creation invalidates membership/layout |
+| `renamed` | `name` |
+| `closed` | closure invalidates membership/layout and repaired views |
+| `reordered` | changed tab/workspace order |
+| `laid_out` | tab/workspace; same-tab swap, reshaping, fit or effective host changed |
+| `arranged` | one guarded complete layout replacement; pane resizes can follow |
+| `moved` | `from_tab`, `from_workspace`; both old and new scopes receive it |
+| `attached`, `detached` | `client` and its last place if known |
+| `shown`, `focused`, `zoomed` | `client` and the affected place; departures invalidate both places; includes automatic repair |
+| `view_resized`, `presentation`, `screen`, `notice` | `client`; size, committed presentation, screen/copy state or notice invalidated |
+| `copied` | admitted stable `buffer` ID, no duplicate text; denied program copies emit none |
+| `history_budget` | pane's new `history_bytes` |
+| `history_cleared` | pane history invalidated |
+| `respawned` | generation changed; `truncated` and `input_unread` describe the old program's unread output/input |
+| `exited` | `exited` (null when lost) or `signal`; optional `truncated` and `input_unread`; a shell's pane then closes |
+| `done` | shell command's `status`, null when unreported |
+| `bell` | |
+| `notification` | `text`, optional `truncated` |
+| `title` | `title`, optional `truncated` |
+| `resized` | pane `cols`, `rows` |
+| `ready`, `missed` | library stream markers only: armed cursor, or explicit lost-entry count |
+
+`all events` is a library program: up to 256 batches, waiting at most 30 seconds
+each, with the interpreter's total step/weight limits still enforced.
+`SCOPE str CURSOR SECONDS BATCHES events-since` accepts 1 to 256 batches and
+returns its final cursor. The initial immediate arming/replay read counts
+toward that bound; SECONDS applies to later waits. It prints NDJSON: an armed `ready` with `from`,
+then events and a checkpoint marker after every batch (its status as `event`,
+`next`, `reason`). Loss prints `missed` with its count/cursor and fails before
+consumer effects. Keep the last successful checkpoint to restart; effects
+are not exactly once. A gone scope ends the library stream successfully; `gone` is data, not a raised error.
+There is no unlimited finite-reply accumulator. Copy cursor motion is continuous
+view state; opening or leaving copy mode invalidates the view.
+
+`copy-notices` is one ordinary hook recipe over those same batches. It filters
+both event and origin, notifying about admitted program copies. Notification
+cannot itself generate the copied event that triggers it. See
+[program-copies.fux](../examples/hooks/program-copies.fux). Hooks run as separate
+client programs, with explicit source and bounded runs, never on the server.
 
 ## Errors
 
@@ -333,7 +400,7 @@ wait's own (above). CODE stays; every one fux gives
 - what a command meets: `not_running`, `still_running`, `not_run`, `only_shell`,
   `input_full`, `stale`, `no_marks`, `start`, `size`, `memory`, `mouse`, `signal`,
   `not_headless`, `own_server`, `people_attached`;
-- how a wait ends: `timeout` (124), `closed` (4), `gone` (4);
+- how a wait ends: `timeout` (124), `closed` (4);
 - a program of words: `steps`, `cancelled`, `not_here`, `not_config`,
   `config`, `bad_binding`, `check`, `read`, `unset_var`, `output`, `nested`,
   `not_a_key`;
@@ -350,8 +417,8 @@ they run, so a `try` may name them too.
 ## `status json`
 
 ```json
-{"socket":"/run/user/1000/fux/server.sock","release":"0.36.0","protocol":48,
- "server_release":"0.36.0","server_protocol":48,"compatible":true}
+{"socket":"/run/user/1000/fux/server.sock","release":"0.36.0","protocol":49,
+ "server_release":"0.36.0","server_protocol":49,"compatible":true}
 ```
 
 With no server, `status` fails (`no_server`), saying the socket and whether

@@ -4,7 +4,6 @@
 use crate::after;
 use crate::bytes::ByteQueue;
 use crate::code::Code;
-use crate::events::{BACKLOG, Ending, Subscription};
 use crate::id::{ClientId, PaneId};
 use crate::layout::Placement;
 use crate::pane::{Pane, Process};
@@ -178,9 +177,6 @@ enum Stage {
     /// is answered once the wait has an answer. It is read only to notice
     /// the client go.
     Waiting(Box<Waiting>),
-    /// Its request streams events (`events`) until the client goes, or the
-    /// server stops. It is read only to notice the client go.
-    Events(Box<Subscription>),
     /// Its last frame is sent: it closes once what waits is written, and
     /// is read no more, so a client that has stopped sending, or shut its
     /// side, still gets it all.
@@ -198,16 +194,15 @@ impl Stage {
             | Stage::Attached(_)
             | Stage::Command
             | Stage::Waiting(_)
-            | Stage::Blocked(_)
-            | Stage::Events(_) => true,
+            | Stage::Blocked(_) => true,
             Stage::Closing | Stage::Dead => false,
         }
     }
 
-    /// Whether a request of its is under way: waiting or streaming.
+    /// Whether a request of its is under way, blocked or waiting.
     fn asked(&self) -> bool {
         match self {
-            Stage::Blocked(_) | Stage::Waiting(_) | Stage::Events(_) => true,
+            Stage::Blocked(_) | Stage::Waiting(_) => true,
             Stage::Hello
             | Stage::Attaching(_)
             | Stage::Attached(_)
@@ -512,13 +507,6 @@ impl Conn {
         }
     }
 
-    /// Ends a stream of events so: its last line, then its reply.
-    fn ends(&mut self, session: &mut Session, ending: &Ending, now: Instant) {
-        let line = ending.line();
-        split_into(line.as_bytes(), ToCommand::Stdout, &mut self.out);
-        self.answer(session, ending.reply(), now);
-    }
-
     /// Sends the connection's last frame, its client detached and its
     /// terminal given back first: it closes once what waits is sent.
     fn end<'a>(&mut self, session: &mut Session, frame: &impl Frame<'a>, now: Instant) {
@@ -777,7 +765,7 @@ impl Server {
             }
         }
         changed |= self.answer_waits(now);
-        self.tell_events(false, now);
+        let answered_at = self.session.parts.journal().end(self.session.run);
         let wrote = self.session.parts.write_input();
         self.wrote_input(wrote);
         // Only the deadline survives compaction, never connection indices.
@@ -786,6 +774,9 @@ impl Server {
         // Delivery can detach a client, resize its panes or start shutdown.
         changed |= !self.session.outbox.is_empty();
         self.deliver(now);
+        if self.session.parts.journal().end(self.session.run) != answered_at {
+            changed |= self.answer_waits(now);
+        }
         if changed {
             next = self.wakes().map(|(at, _)| at).min();
         }
@@ -863,29 +854,6 @@ impl Server {
             }
         }
         answered
-    }
-
-    /// Tells each stream of events what the journal holds that it has not
-    /// read, as far as its output has room (`all`: room or none): a reader
-    /// too slow is told the rest as it catches up, or how much of it the
-    /// journal let go.
-    fn tell_events(&mut self, all: bool, now: Instant) {
-        for conn in &mut self.conns {
-            let Stage::Events(subscription) = &mut conn.stage else {
-                continue;
-            };
-            let room = match all {
-                true => usize::MAX,
-                false => BACKLOG.saturating_sub(conn.out.len()),
-            };
-            let session = &self.session;
-            let holder = |target| session.holder(target);
-            let (lines, gone) = subscription.told(session.parts.journal(), room, holder);
-            split_into(lines.as_bytes(), ToCommand::Stdout, &mut conn.out);
-            if let Some(ending) = gone {
-                conn.ends(&mut self.session, &ending, now);
-            }
-        }
     }
 
     /// Drops every connection that is dead, or closing with nothing left to
@@ -991,12 +959,12 @@ impl Server {
         log!("{reason}");
         // The sockets go first: from now on a client finds no server.
         self.phase = Phase::Stopping(after(now, STOP_WAIT));
-        // A stream is told all the journal holds for it, and says why it
-        // ends, as one of its lines, and ends as a command that is done.
-        self.tell_events(true, now);
         for conn in &mut self.conns {
-            if let Stage::Events(_) = &conn.stage {
-                conn.ends(&mut self.session, &Ending::Stopped(reason.clone()), now);
+            if let Stage::Waiting(waiting) = &conn.stage
+                && let Waiting::Events(read) = &**waiting
+            {
+                let reply = read.stopped(&self.session, &reason);
+                conn.answer(&mut self.session, reply, now);
             }
         }
         self.session.shutdown(now);
@@ -1010,7 +978,7 @@ impl Server {
                 Stage::Attaching(_) | Stage::Attached(_) => {
                     conn.end(session, &ToAttached::Exit(&exit), now);
                 }
-                Stage::Command | Stage::Blocked(_) | Stage::Waiting(_) | Stage::Events(_) => {
+                Stage::Command | Stage::Blocked(_) | Stage::Waiting(_) => {
                     conn.end(session, &ToCommand::Exit(&exit), now);
                 }
                 Stage::Closing | Stage::Dead => {}
@@ -1416,14 +1384,22 @@ impl Server {
                     Some(AttachedFrame::Resize(size)) => {
                         attached.known = false;
                         session.terminal_resized(attached.client);
+                        let actor = session
+                            .parts
+                            .actor(crate::events::Actor::Client(attached.client));
                         let resized =
                             session.resize(attached.client, size.rows(), size.cols(), now);
+                        session.parts.actor(actor);
                         if let Err(refused) = resized {
                             session.notify_to(attached.client, refused.to_string(), true);
                         }
                     }
                     Some(AttachedFrame::Detach) => {
-                        conn.end(session, &ToAttached::Exit("detached"), now)
+                        let actor = session
+                            .parts
+                            .actor(crate::events::Actor::Client(attached.client));
+                        conn.end(session, &ToAttached::Exit("detached"), now);
+                        session.parts.actor(actor);
                     }
                     None => return Ok(false),
                 }
@@ -1451,11 +1427,7 @@ impl Server {
             // connection that is ending has had its last word: what came
             // with the Detach, Command or refused Hello that ended it is
             // dropped unread.
-            Stage::Blocked(_)
-            | Stage::Waiting(_)
-            | Stage::Events(_)
-            | Stage::Closing
-            | Stage::Dead => {
+            Stage::Blocked(_) | Stage::Waiting(_) | Stage::Closing | Stage::Dead => {
                 *decoder = Decoder::default();
                 return Ok(false);
             }
@@ -1485,7 +1457,13 @@ impl Server {
     /// processed. No resolution, mutation or wait baseline precedes this.
     fn ordered_request(&mut self, index: usize, asked: Asked, now: Instant) {
         match self.unprocessed(&asked) {
-            Some(0) => self.request(index, asked.request, asked.context, now),
+            Some(0) => self.request(
+                index,
+                asked.request,
+                asked.context,
+                asked.after.map(|fence| fence.client),
+                now,
+            ),
             Some(_) => {
                 if let Some(conn) = self.conns.get_mut(index) {
                     conn.enter(&mut self.session, Stage::Blocked(Box::new(asked)), now);
@@ -1510,6 +1488,7 @@ impl Server {
         index: usize,
         request: crate::command::Request,
         context: Context,
+        source: Option<ClientId>,
         now: Instant,
     ) {
         let session = &mut self.session;
@@ -1537,18 +1516,21 @@ impl Server {
         // A program run as a client (`str c2 client focused`) names one
         // that must be there.
         // A key's or the prompt's program acts where its client is.
+        let cli = Origin::Cli(Caller {
+            gave: pane,
+            within,
+            cwd: Some(cwd),
+        });
+        let actor =
+            source.map_or_else(|| session.request_actor(&cli), crate::events::Actor::Client);
         let origin = match client {
             Some(c) if !session.views.contains_key(&c) => {
                 let outcome = Reply::failed(Code::NoClient, format!("no client {c}"));
                 conn.answer(session, outcome, now);
                 return;
             }
-            Some(client) => Origin::Client(client),
-            None => Origin::Cli(Caller {
-                gave: pane,
-                within,
-                cwd: Some(cwd),
-            }),
+            Some(client) => Origin::ClientContext { client, actor },
+            None => cli,
         };
         let begun = session.begin(request, &origin, now);
         // What it sends a client goes now: a program or keys refused are
@@ -1567,12 +1549,6 @@ impl Server {
                 None => conn.answer(session, outcome, now),
             },
             Begun::Waiting(waiting) => conn.enter(session, Stage::Waiting(waiting), now),
-            Begun::Events(subscription) => {
-                // Told it is armed: from here on, nothing is missed.
-                let ready = subscription.ready();
-                conn.send(session, &ToCommand::Stdout(ready.as_bytes().into()), now);
-                conn.enter(session, Stage::Events(subscription), now);
-            }
         }
         for no in refused {
             session.notify_to(no.client, no.to_string(), true);
@@ -1705,6 +1681,40 @@ impl Server {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn delivery_departures_answer_event_reads_in_the_same_turn()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (mut server, _peers, client) = ordered_fixture()?;
+        let now = Instant::now();
+        server.phase = Phase::Stopping(after(now, Duration::from_secs(60)));
+        server.session.outbox.clear();
+        let reader = crate::events::Reader::new(
+            crate::inspect::Scope::Client(client),
+            server.session.parts.journal(),
+            server.session.run,
+            None,
+        )?;
+        server.conns.first_mut().ok_or("worker")?.stage =
+            Stage::Waiting(Box::new(Waiting::Events(crate::events::Read::new(
+                reader,
+                after(now, Duration::from_secs(30)),
+            ))));
+        server
+            .session
+            .outbox
+            .push(Outgoing::To(client, ToAttached::Exit("test")));
+        let _ = server.turn(now, &mut Vec::new());
+        assert!(!server.session.views.contains_key(&client));
+        assert!(
+            matches!(
+                server.conns.first().map(|conn| &conn.stage),
+                Some(Stage::Command)
+            ),
+            "delivery left the event read waiting"
+        );
+        Ok(())
+    }
 
     #[test]
     fn an_answered_wait_leaves_no_cached_deadline() -> Result<(), Box<dyn std::error::Error>> {
@@ -2588,9 +2598,7 @@ mod tests {
                     }
                     .into(),
                 };
-                let first = asks
-                    .ask(&probe, &mut std::io::sink())
-                    .map_err(|e| e.to_string())?;
+                let first = asks.ask(&probe).map_err(|e| e.to_string())?;
                 if rejected {
                     assert!(matches!(
                         first.end(),
@@ -2601,10 +2609,9 @@ mod tests {
                     ));
                 } else {
                     assert!(matches!(first.end(), crate::protocol::End::Done));
-                    assert!(asks.ask(&probe, &mut std::io::sink()).is_err());
+                    assert!(asks.ask(&probe).is_err());
                 }
-                asks.ask(&mutation, &mut std::io::sink())
-                    .map_err(|e| e.to_string())
+                asks.ask(&mutation).map_err(|e| e.to_string())
             })();
             let input = peer.join().map_err(|_| "server thread panicked")?;
             fs::remove_dir_all(&dir)?;

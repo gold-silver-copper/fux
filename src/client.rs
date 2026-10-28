@@ -281,10 +281,9 @@ impl Requests {
         Ok(Requests { stream, decoder })
     }
 
-    /// Sends `asked`, and waits for its reply, which may come in pieces:
-    /// what the server streams before it (`events`) goes to `out` as it
-    /// comes. Launch requests already contain their selected environment patch.
-    pub fn ask(&mut self, asked: &Asked, out: &mut dyn Write) -> Result<Reply, Error> {
+    /// Sends one request and reads its bounded reply in pieces. Launch
+    /// requests already contain their selected environment patch.
+    pub fn ask(&mut self, asked: &Asked) -> Result<Reply, Error> {
         wait_at_most(&self.stream, None);
 
         send(&mut self.stream, asked)?;
@@ -292,10 +291,6 @@ impl Requests {
         loop {
             while let Some(frame) = self.decoder.frame()? {
                 match frame {
-                    ToCommand::Stdout(bytes) => {
-                        (out.write_all(&bytes).and_then(|()| out.flush()))
-                            .map_err(Error::Output)?;
-                    }
                     ToCommand::Part(bytes) => {
                         crate::wire::append(&mut parts, &bytes)
                             .map_err(crate::protocol::Error::Wire)?;
@@ -1631,7 +1626,7 @@ mod tests {
                 projection: crate::inspect::Projection::Facts,
             }),
         };
-        let result = requests.ask(&asked, &mut io::sink());
+        let result = requests.ask(&asked);
         assert!(matches!(
             result,
             Err(Error::Protocol(crate::protocol::Error::Wire(
@@ -2006,7 +2001,7 @@ mod tests {
     -> Result<(), Box<dyn std::error::Error>> {
         struct Refuse;
         impl script::Asks for Refuse {
-            fn ask(&mut self, _: &Asked, _: &mut dyn Write) -> Result<Reply, script::Failed> {
+            fn ask(&mut self, _: &Asked) -> Result<Reply, script::Failed> {
                 Err(script::Failed::new(Code::NotConfig, "operation refused"))
             }
         }

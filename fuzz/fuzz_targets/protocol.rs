@@ -78,7 +78,6 @@ fn to_command(decoder: &mut Decoder) -> Result<Option<Vec<u8>>, Error> {
     };
     let bytes = encoded(&frame);
     match &frame {
-        ToCommand::Stdout(p) => splits_back(&bytes, p, ToCommand::Stdout),
         ToCommand::Part(p) => splits_back(&bytes, p, ToCommand::Part),
         ToCommand::Exit(_) | ToCommand::PartsEnd => {}
     }

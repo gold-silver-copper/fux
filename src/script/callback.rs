@@ -73,7 +73,7 @@ pub(super) fn data(v: &Value<Fux>, b: &mut Budget) -> Result<Data, Failure> {
         }
         Value::App(Fux::Client(c, run)) => Data::Client(*c, *run),
         Value::App(
-            Fux::Rendered(_) | Fux::All(_) | Fux::Opts(_) | Fux::Extent(_) | Fux::Answer(..),
+            Fux::Rendered(_) | Fux::All | Fux::Opts(_) | Fux::Extent(_) | Fux::Answer(..),
         ) => return Err(fail()),
     })
 }
@@ -257,7 +257,7 @@ mod tests {
 
     struct NoRequests;
     impl Asks for NoRequests {
-        fn ask(&mut self, _: &Asked, _: &mut dyn std::io::Write) -> Result<Reply, Failed> {
+        fn ask(&mut self, _: &Asked) -> Result<Reply, Failed> {
             Err(Failed::new(
                 crate::code::Code::Client,
                 "unexpected server effect",
@@ -383,18 +383,15 @@ mod tests {
     fn callback_records_keep_their_held_snapshot_presentation() -> Result<(), String> {
         let (mut session, _) = crate::session::testing::attached(8, 30)?;
         let reply = crate::session::InProcess(&mut session)
-            .ask(
-                &Asked {
-                    after: None,
-                    context: Context::default(),
-                    request: crate::command::Command::Inspect {
-                        scope: crate::inspect::Scope::All,
-                        projection: crate::inspect::Projection::Topology,
-                    }
-                    .into(),
-                },
-                &mut Vec::new(),
-            )
+            .ask(&Asked {
+                after: None,
+                context: Context::default(),
+                request: crate::command::Command::Inspect {
+                    scope: crate::inspect::Scope::All,
+                    projection: crate::inspect::Projection::Topology,
+                }
+                .into(),
+            })
             .map_err(|e| e.to_string())?;
         let values = crate::script::answered(reply).map_err(|e| e.to_string())?;
         let record = values.first().ok_or("snapshot")?;

@@ -11,6 +11,7 @@ sockets of its own), which `run.py` checks before anything starts.
 """
 import fcntl
 import json
+import math
 import os
 import pty
 import re
@@ -562,27 +563,26 @@ class Fux(Driver):
     def wait_first_exit(self, panes, cursor, timeout=15):
         """First matching journal exit after a pre-launch cursor; refuse loss."""
         names = {pane: name for name, pane in panes.items()}
-        command = ["timeout", str(timeout), self.bin, "all", "str", cursor, "from", "events"]
-        self.calls += 1
-        self.log.append(" ".join(shlex.quote(word) for word in command))
-        stream = subprocess.Popen(command, cwd=self.work, env=self.env,
-                                  stdout=subprocess.PIPE, text=True)
-        try:
-            for line in stream.stdout:
-                event = json.loads(line)
-                if event["event"] == "missed":
-                    raise RuntimeError("journal loss: first exit is unknown")
+        deadline = time.monotonic() + timeout
+        for _ in range(256):
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise Timeout("event deadline ended before a matching exit")
+            seconds = min(5, math.ceil(remaining))
+            try:
+                batch = json.loads(self.fux("all", "str", cursor, str(seconds),
+                                            "next-events", "json", timeout=remaining).stdout)
+            except subprocess.TimeoutExpired as error:
+                raise Timeout("event deadline ended before a matching exit") from error
+            if batch["missed"]:
+                raise RuntimeError("journal loss: first exit is unknown")
+            for event in batch["events"]:
                 if event["event"] == "exited" and event.get("pane") in names:
                     return names[event["pane"]]
-            raise Timeout("event stream ended before a matching exit")
-        finally:
-            stream.terminate()
-            try:
-                stream.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                stream.kill()
-                stream.wait()
-            stream.stdout.close()
+            cursor = batch["next"]
+            if batch["status"] in ("gone", "stopped"):
+                raise Timeout("event read ended before a matching exit: " + batch["status"])
+        raise Timeout("event batch limit reached before a matching exit")
 
     def wait_any_text(self, pane, texts, timeout=15):
         """One of several texts, once the pane shows any: of those it shows

@@ -20,7 +20,7 @@ use crate::wire::{Wire, wire};
 use std::borrow::Cow;
 
 /// Bumped on any change to the frames below.
-pub const PROTOCOL: u32 = 48;
+pub const PROTOCOL: u32 = 49;
 /// The largest frame, kind byte included.
 pub const MAX_FRAME: usize = 1 << 20;
 /// The largest payload one frame carries.
@@ -416,6 +416,7 @@ wire! {
         Handles(ids: Vec<AnyRef>),
         Capture(captured: Box<crate::capture::Captured>),
         Snapshot(snapshot: Box<crate::inspect::Snapshot>),
+        Events(batch: Box<crate::events::Batch>),
         /// One field of a pane, tab or workspace (`get`).
         Field(value: Json),
     }
@@ -527,13 +528,10 @@ frames! {
 }
 
 frames! {
-    /// The server's frames to a command client: what its request streams
-    /// before its reply (`events`, a wait's lines), then the reply in
-    /// pieces; or an `Exit` saying why it ends.
+    /// A command's bounded reply in pieces, or an Exit saying why it ends.
     #[derive(Clone, Debug, PartialEq, Eq)]
     pub enum ToCommand<'a> {
         Exit(reason: &'a str) = EXIT,
-        Stdout(bytes: Cow<'a, [u8]>) = 9,
         /// A piece of a request's reply: its encoding, in order, whole once
         /// `PartsEnd` comes. A reply goes in pieces as long as fit, so it is
         /// encoded once, whatever its length.
@@ -911,7 +909,6 @@ mod tests {
         round_trip!(Greeting, 8, Greeting::Exit("refused"));
         round_trip!(ToCommand, 8, ToCommand::Exit("stopped"));
         round_trip!(ToAttached, 8, ToAttached::Exit("detached"));
-        round_trip!(ToCommand, 9, ToCommand::Stdout(Cow::Borrowed(b"out")));
         round_trip!(Greeting, 11, Greeting::Done(2));
         round_trip!(ToAttached, 12, ToAttached::Welcome(ClientId::of(2), run));
         round_trip!(ToAttached, 14, ToAttached::Ended(7));
@@ -977,7 +974,7 @@ mod tests {
         assert!(ToAttached::Paint(Cow::Borrowed(fits)).encode().is_ok());
         // Refused, it leaves nothing behind.
         let mut out = b"before".to_vec();
-        let stdout = ToCommand::Stdout(Cow::Borrowed(&big));
+        let stdout = ToCommand::Part(Cow::Borrowed(&big));
         assert!(stdout.encode_into(&mut out).is_err());
         assert_eq!(out, b"before");
         let mut decoder = Decoder::default();

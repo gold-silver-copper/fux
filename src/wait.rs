@@ -39,6 +39,7 @@ impl Watches {
 
 /// A request waiting for its answer.
 pub enum Waiting {
+    Events(crate::events::Read),
     /// A wait (`wait`, or an action given wait words).
     Change(Watch),
     /// A respawn whose pane's old program left output still read, in
@@ -69,6 +70,7 @@ impl Waiting {
     /// what it waits for: when a wait's time is up.
     pub fn due(&self) -> Option<Instant> {
         match self {
+            Waiting::Events(read) => Some(read.deadline),
             Waiting::Change(watch) => Some(watch.deadline),
             Waiting::Respawn { .. } => None,
         }
@@ -77,6 +79,7 @@ impl Waiting {
     /// Its answer, if it has one at `now`.
     pub fn answer(&self, session: &Session, now: Instant) -> Option<Reply> {
         match self {
+            Waiting::Events(read) => read.answer(session, now),
             Waiting::Change(watch) => watch.answer(session, now),
             Waiting::Respawn {
                 pane: id,

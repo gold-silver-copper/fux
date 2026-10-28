@@ -298,6 +298,107 @@ pub(super) fn from_json(value: &Json) -> Result<V, Failure> {
     Builder::new(&mut Budget::with_limit(inspect::BYTES)).json(value, 0)
 }
 
+pub(super) fn events(batch: crate::events::Batch) -> Result<V, Failure> {
+    let run = batch.next.run;
+    if batch.events.len() > crate::events::BATCH_EVENTS {
+        return Err(fail());
+    }
+    let mut budget = Budget::with_limit(inspect::BYTES);
+    let mut b = Builder::new(&mut budget);
+    let mut previous = None;
+    let events = b.list(&batch.events, |b, item| {
+        if item.next.run != run
+            || item.next.seq > batch.next.seq
+            || previous.is_some_and(|seq| item.next.seq <= seq)
+        {
+            return Err(fail());
+        }
+        previous = Some(item.next.seq);
+        if !matches!(item.data.get("event"), Some(Json::String(_))) {
+            return Err(fail());
+        }
+        let json = item.json();
+        let Json::Object(fields) = &json else {
+            return Err(fail());
+        };
+        let mut out = b
+            .budget
+            .vector(fields.len().saturating_add(2))
+            .map_err(super::words::observation_failure)?;
+        for (key, value) in fields
+            .iter()
+            .filter(|(key, _)| key != "origin" && key != "next")
+        {
+            b.nodes(1)?;
+            let value = match (
+                key.as_str(),
+                item.pane,
+                item.tab,
+                item.workspace,
+                item.client,
+            ) {
+                ("pane", Some(p), _, _, _) => id(AnyRef::Pane(p), run),
+                ("tab", _, Some(t), _, _) => id(AnyRef::Tab(t), run),
+                ("workspace", _, _, Some(w), _) => id(AnyRef::Workspace(w), run),
+                ("client", _, _, _, Some(c)) => Value::App(Fux::Client(c, Some(run))),
+                _ if key == "from_tab" && item.moved_from.is_some() => item
+                    .moved_from
+                    .map(|(_, t)| id(AnyRef::Tab(t), run))
+                    .ok_or_else(fail)?,
+                _ if key == "from_workspace" && item.moved_from.is_some() => item
+                    .moved_from
+                    .map(|(w, _)| id(AnyRef::Workspace(w), run))
+                    .ok_or_else(fail)?,
+                _ => b.json(value, 0)?,
+            };
+            out.push((
+                b.budget
+                    .string(key)
+                    .map_err(super::words::observation_failure)?,
+                value,
+            ));
+        }
+        use crate::events::Actor;
+        let kind = b.text(item.origin.kind())?;
+        let origin = match item.origin {
+            Actor::Client(c) => b.record([
+                ("kind", kind),
+                ("client", Value::App(Fux::Client(c, Some(run)))),
+            ])?,
+            Actor::Pane(p, generation) | Actor::Program(p, generation) => b.record([
+                ("kind", kind),
+                ("pane", id(AnyRef::Pane(p), run)),
+                ("generation", number(generation)?),
+            ])?,
+            Actor::Server | Actor::Unknown => b.record([("kind", kind)])?,
+        };
+        b.nodes(2)?;
+        out.push((
+            b.budget
+                .string("origin")
+                .map_err(super::words::observation_failure)?,
+            origin,
+        ));
+        out.push(("next".into(), b.text(&item.next.to_string())?));
+        b.finish(out)
+    })?;
+    let next = b.text(&batch.next.to_string())?;
+    let status = b.text(batch.status.name())?;
+    let reason = match &batch.status {
+        crate::events::Status::Stopped(reason) => b.text(reason)?,
+        crate::events::Status::Continuing
+        | crate::events::Status::Timeout
+        | crate::events::Status::Gone => null(),
+    };
+    b.record([
+        ("events", events),
+        ("next", next),
+        ("missed", number(batch.missed)?),
+        ("status", status),
+        ("reason", reason),
+    ])
+}
+
 macro_rules! record {
     ($b:ident; $($key:literal => $value:expr),* $(,)?) => {{
         let fields = [$(( $key, $value )),*];
@@ -369,7 +470,7 @@ pub(super) fn snapshot_in(s: inspect::Snapshot, budget: &mut Budget) -> Result<V
         "zoom" => Value::Bool(c.zoom), "opening" => c.opening.map(number).unwrap_or_else(|| Ok(null()))?, "mode" => b.text(&c.mode)?
     })?;
     let scope = match s.scope {
-        Scope::All => Value::App(Fux::All(None)),
+        Scope::All => Value::App(Fux::All),
         Scope::Target(t) => id(t, run),
         Scope::Client(c) => Value::App(Fux::Client(c, Some(run))),
     };

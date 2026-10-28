@@ -10,7 +10,7 @@
 //! as they make it, and by a pane's own, which a [`PaneMut`] gives the
 //! journal at the pane's place.
 use crate::command::Sibling;
-use crate::events::{Change, Event, Journal, PaneEvent};
+use crate::events::{Actor, Change, Event, Journal, PaneEvent, ViewChange};
 use crate::id::{ClientId, PaneId, TabId, WsId};
 use crate::layout::{self, Axis, NoPane, Rect, Removed, Side, Tree};
 use crate::pane::{Pane, PaneMut};
@@ -295,23 +295,40 @@ impl Tab {
     /// Changes the layout with `change`; each client then focuses the pane
     /// it did if the tab still holds it, else the one before, else the
     /// first.
-    fn edit<R>(&mut self, change: impl FnOnce(&mut Tree) -> R) -> R {
+    fn edit<R>(
+        &mut self,
+        journal: &mut Journal,
+        ws: WsId,
+        change: impl FnOnce(&mut Tree) -> R,
+    ) -> R {
         let out = change(&mut self.root);
         self.revised();
         self.changed = true;
-        self.refocus();
+        for (client, pane) in self.refocus() {
+            journal.push(Event::View {
+                client,
+                at: Some(((ws, self.id), pane)),
+                change: ViewChange::Focused,
+            });
+        }
         out
     }
 
-    fn refocus(&mut self) {
+    fn refocus(&mut self) -> Vec<(ClientId, PaneId)> {
+        let mut changed = Vec::new();
         let root = &self.root;
         let inside = |p: &PaneId| root.contains(*p);
-        for seat in self.seats.values_mut() {
+        for (&client, seat) in &mut self.seats {
+            let before = seat.focus;
             let (focus, last) = (Some(seat.focus).filter(inside), seat.last.filter(inside));
             seat.held &= focus.is_some();
             seat.focus = focus.or(last).unwrap_or_else(|| root.first_pane());
             seat.last = last.filter(|l| *l != seat.focus);
+            if before != seat.focus {
+                changed.push((client, seat.focus));
+            }
         }
+        changed
     }
 }
 
@@ -387,6 +404,12 @@ fn rename(
     }
 }
 
+fn place_of(workspaces: &[Workspace], client: ClientId) -> Option<crate::events::PaneAt> {
+    let ws = workspaces.iter().find(|w| w.viewers.contains(&client))?;
+    let tab = ws.tab_of(client)?;
+    Some(((ws.id, tab.id), tab.focus(client)?))
+}
+
 impl Parts {
     pub fn workspaces(&self) -> &[Workspace] {
         &self.workspaces
@@ -410,7 +433,13 @@ impl Parts {
             for tab in &mut w.tabs {
                 let first = tab.root.first_pane();
                 tab.seats.entry(client).or_insert(Seat::on(first));
-                tab.refocus();
+                for (client, pane) in tab.refocus() {
+                    self.journal.push(Event::View {
+                        client,
+                        at: Some(((w.id, tab.id), pane)),
+                        change: ViewChange::Focused,
+                    });
+                }
             }
         }
     }
@@ -441,6 +470,7 @@ impl Parts {
     /// Shows `client` workspace `ws`, and there the tab and pane `at`
     /// says, each if given and there.
     pub(crate) fn show(&mut self, client: ClientId, ws: WsId, at: Option<crate::session::Spot>) {
+        let before = place_of(&self.workspaces, client);
         for w in &mut self.workspaces {
             if w.id != ws {
                 w.viewers.remove(&client);
@@ -449,25 +479,77 @@ impl Parts {
                 w.show(client, at);
             }
         }
+        let after = place_of(&self.workspaces, client);
+        if before != after {
+            let change = if before.map(|at| at.0) == after.map(|at| at.0) {
+                ViewChange::Focused
+            } else {
+                ViewChange::Shown
+            };
+            if before.is_some() {
+                self.journal.push(Event::View {
+                    client,
+                    at: before,
+                    change,
+                });
+            }
+            self.journal.push(Event::View {
+                client,
+                at: after,
+                change,
+            });
+        }
     }
 
     /// Swaps tab `tab` with its sibling `toward` in its workspace: none if
     /// there is no such tab, false if it has no sibling that way.
     pub(crate) fn reorder_tab(&mut self, tab: TabId, toward: Sibling) -> Option<bool> {
-        (self.workspaces.iter_mut())
-            .find_map(|w| swap_sibling(&mut w.tabs, |t| t.id == tab, toward))
+        let ws = self
+            .workspaces
+            .iter_mut()
+            .find(|w| w.tabs.iter().any(|t| t.id == tab))?;
+        let changed = swap_sibling(&mut ws.tabs, |t| t.id == tab, toward)?;
+        if changed {
+            self.journal
+                .push(Event::Tab((ws.id, tab), Change::Reordered));
+        }
+        Some(changed)
     }
 
-    /// Swaps workspace `ws` with its sibling `toward`, as `reorder_tab`.
     pub(crate) fn reorder_workspace(&mut self, ws: WsId, toward: Sibling) -> Option<bool> {
-        swap_sibling(&mut self.workspaces, |w| w.id == ws, toward)
+        let changed = swap_sibling(&mut self.workspaces, |w| w.id == ws, toward)?;
+        if changed {
+            self.journal.push(Event::Workspace(ws, Change::Reordered));
+        }
+        Some(changed)
     }
 
-    /// Lays tab `tab` out on what `fit` makes of its fit from now on.
+    pub(crate) fn typed(&mut self, id: TabId, client: ClientId, changed_host: bool) {
+        if let Some((ws, tab)) = tab_mut(&mut self.workspaces, id) {
+            tab.typist = Some(client);
+            if changed_host {
+                self.journal.push(Event::Layout((ws, id)));
+            }
+        }
+    }
+
+    pub(crate) fn shown_on(&mut self, id: TabId, size: fux_vt::Size) {
+        if let Some((ws, tab)) = tab_mut(&mut self.workspaces, id) {
+            let before = tab.fit;
+            tab.shown_on(size);
+            if before != tab.fit {
+                self.journal.push(Event::Layout((ws, id)));
+            }
+        }
+    }
+
     pub(crate) fn set_fit(&mut self, tab: TabId, fit: impl FnOnce(Fit) -> Fit) -> Option<()> {
-        let (_, tab) = tab_mut(&mut self.workspaces, tab)?;
+        let (ws, tab) = tab_mut(&mut self.workspaces, tab)?;
         let fit = fit(tab.fit);
-        tab.set_fit(fit);
+        if tab.fit != fit {
+            tab.set_fit(fit);
+            self.journal.push(Event::Layout((ws, tab.id)));
+        }
         Some(())
     }
 
@@ -483,6 +565,28 @@ impl Parts {
 
     pub fn panes(&self) -> &BTreeMap<PaneId, Pane> {
         &self.panes
+    }
+
+    pub(crate) fn journal_mut(&mut self) -> &mut Journal {
+        &mut self.journal
+    }
+
+    pub(crate) fn actor(&mut self, actor: Actor) -> Actor {
+        self.journal.actor(actor)
+    }
+
+    pub(crate) fn focus(&mut self, tab: TabId, client: ClientId, pane: PaneId) {
+        if let Some((ws, tab)) = tab_mut(&mut self.workspaces, tab) {
+            let before = tab.focus(client);
+            tab.set_focus(client, pane);
+            if tab.focus(client) != before {
+                self.journal.push(Event::View {
+                    client,
+                    at: Some(((ws, tab.id), pane)),
+                    change: ViewChange::Focused,
+                });
+            }
+        }
     }
 
     pub fn journal(&self) -> &Journal {
@@ -650,7 +754,7 @@ impl Parts {
         else {
             return Err(pane);
         };
-        t.edit(|r| *r = root);
+        t.edit(&mut self.journal, ws, |r| *r = root);
         self.placed((ws, tab), pane);
         Ok(())
     }
@@ -662,7 +766,7 @@ impl Parts {
         let (_, tab) = tab_mut(&mut self.workspaces, at.1)?;
         let emptied = match tab.root.remove(id) {
             Removed::Left(rest) => {
-                tab.edit(|root| *root = rest);
+                tab.edit(&mut self.journal, at.0, |root| *root = rest);
                 false
             }
             Removed::Emptied => true,
@@ -702,6 +806,12 @@ impl Parts {
         let Some(ws) = ws else {
             return;
         };
+        let clients: Vec<_> = ws
+            .viewers
+            .iter()
+            .copied()
+            .filter(|c| ws.shown.get(c) == Some(&tab))
+            .collect();
         ws.remove_tab(tab);
         let id = ws.id;
         let viewers = ws.tabs.is_empty().then(|| std::mem::take(&mut ws.viewers));
@@ -712,6 +822,14 @@ impl Parts {
                 first.viewers.extend(viewers);
             }
             self.journal.push(Event::Workspace(id, Change::Closed));
+        }
+        for client in clients {
+            let at = place_of(&self.workspaces, client);
+            self.journal.push(Event::View {
+                client,
+                at,
+                change: ViewChange::Shown,
+            });
         }
     }
 
@@ -744,14 +862,24 @@ impl Parts {
     /// Swaps two panes' places: in one tab, or each in the other's, which
     /// moves both.
     pub(crate) fn swap(&mut self, a: PaneId, b: PaneId) {
+        if a == b {
+            return;
+        }
         let (Some(was_a), Some(was_b)) = (self.locate(a), self.locate(b)) else {
             return;
         };
         // Only the tabs that hold them: another, laid out anew, would lose
         // what its panes have (a zoomed pane, its whole screen).
-        let tabs = self.workspaces.iter_mut().flat_map(|w| w.tabs.iter_mut());
-        for tab in tabs.filter(|t| t.id == was_a.1 || t.id == was_b.1) {
-            tab.edit(|root| root.swap(a, b));
+        let tabs = self
+            .workspaces
+            .iter_mut()
+            .flat_map(|w| w.tabs.iter_mut().map(|t| (w.id, t)));
+        for (ws, tab) in tabs.filter(|(_, t)| t.id == was_a.1 || t.id == was_b.1) {
+            tab.edit(&mut self.journal, ws, |root| root.swap(a, b));
+        }
+        self.journal.push(Event::Layout(was_a));
+        if was_a != was_b {
+            self.journal.push(Event::Layout(was_b));
         }
         if was_a != was_b {
             (self.journal).push(Event::Pane((was_b, a), PaneEvent::Moved(was_a)));
@@ -778,7 +906,7 @@ impl Parts {
         let at = match to {
             Destination::Tab(to) => {
                 let (ws, tab) = tab_mut(&mut self.workspaces, to).filter(|_| to != was.1)?;
-                tab.edit(|root| root.append(pane));
+                tab.edit(&mut self.journal, ws, |root| root.append(pane));
                 (ws, to)
             }
             Destination::NewTab(ws, tab, fit) => {
@@ -793,7 +921,7 @@ impl Parts {
         };
         (self.journal).push(Event::Pane((at, pane), PaneEvent::Moved(was)));
         match (rest, tab_mut(&mut self.workspaces, was.1)) {
-            (Some(rest), Some((_, from))) => from.edit(|root| *root = rest),
+            (Some(rest), Some((ws, from))) => from.edit(&mut self.journal, ws, |root| *root = rest),
             (None, _) | (_, None) => self.drop_tab(was.1),
         }
         Some(())
@@ -802,7 +930,7 @@ impl Parts {
     /// Commits a complete validated replacement and one layout invalidation.
     pub(crate) fn arrange(&mut self, id: TabId, root: Tree) -> Option<()> {
         let (ws, tab) = tab_mut(&mut self.workspaces, id)?;
-        tab.edit(|old| *old = root);
+        tab.edit(&mut self.journal, ws, |old| *old = root);
         self.journal.push(Event::Arranged((ws, id)));
         Some(())
     }
@@ -816,15 +944,16 @@ impl Parts {
         pane: PaneId,
         change: impl FnOnce(&mut Tree) -> R,
     ) -> Option<R> {
-        let (_, tab) = self.locate(pane)?;
-        let (_, tab) = tab_mut(&mut self.workspaces, tab)?;
+        let (ws, id) = self.locate(pane)?;
+        let (_, tab) = tab_mut(&mut self.workspaces, id)?;
         let mut root = tab.root.clone();
         let out = change(&mut root);
         if !root.same_panes(&tab.root) {
             return None;
         }
         if root != tab.root {
-            tab.edit(|old| *old = root);
+            tab.edit(&mut self.journal, ws, |old| *old = root);
+            self.journal.push(Event::Layout((ws, id)));
         }
         Some(out)
     }

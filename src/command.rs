@@ -1175,10 +1175,12 @@ wire! {
         /// A wait in a pane, or a tab's or workspace's every pane, each of
         /// which answers.
         Wait(wait: Wait),
-        /// What happens, a JSON line each as it happens, until the client
-        /// goes: where the target is, or anywhere without one; from the
-        /// cursor given, else from now.
-        Events(target: Option<AnyRef>, from: Option<crate::events::Cursor>),
+        /// One finite journal scan, waiting at most timeout for new entries.
+        NextEvents {
+            scope: crate::inspect::Scope,
+            from: Option<crate::events::Cursor>,
+            timeout: Limit,
+        },
     }
 }
 

@@ -59,8 +59,8 @@ pub enum Fux {
     Tab(TabId, Option<Run>),
     Workspace(WsId, Option<Run>),
     Client(ClientId, Option<Run>),
-    /// The whole session, optionally with an event replay cursor.
-    All(Option<crate::events::Cursor>),
+    /// The whole session.
+    All,
     /// Options for `run`, `new-tab` or `new-workspace` (from `opts`); or a
     /// request: a pane, tab, workspace or client given options, keys or a
     /// wait, for the word that acts on it after
@@ -90,8 +90,7 @@ impl AppValue for Fux {
             Fux::Tab(_, _) => "tab",
             Fux::Workspace(_, _) => "workspace",
             Fux::Client(_, _) => "client",
-            Fux::All(None) => "all",
-            Fux::All(Some(_)) => "events-request",
+            Fux::All => "all",
             Fux::Opts(opts) => match opts.on {
                 None => "opts",
                 Some(On::Target(AnyRef::Pane(_)) | On::Version(_)) => "pane-request",
@@ -132,7 +131,7 @@ impl AppValue for Fux {
             | Fux::Tab(..)
             | Fux::Workspace(..)
             | Fux::Client(..)
-            | Fux::All(_)
+            | Fux::All
             | Fux::Extent(_) => Ok(()),
         }
     }
@@ -159,7 +158,7 @@ impl AppValue for Fux {
                 }
                 Answer::Status(listing) => listing.weight(),
             },
-            Fux::All(_)
+            Fux::All
             | Fux::Null
             | Fux::Pane(..)
             | Fux::Tab(..)
@@ -173,7 +172,7 @@ impl AppValue for Fux {
         match self {
             Fux::Record(r) => r.depth(),
             Fux::Rendered(_)
-            | Fux::All(_)
+            | Fux::All
             | Fux::Null
             | Fux::Pane(..)
             | Fux::Tab(..)
@@ -218,8 +217,8 @@ impl AppValue for Fux {
             Fux::Answer(answer, _) => answer.write_text(out),
             Fux::Extent(Extent::Cells(n)) => write!(out, "{n}"),
             Fux::Extent(Extent::Percent(n)) => write!(out, "{}%", n.get()),
-            Fux::All(None) => write!(out, "all"),
-            Fux::All(Some(_)) | Fux::Opts(_) => write!(out, "({})", self.kind()),
+            Fux::All => write!(out, "all"),
+            Fux::Opts(_) => write!(out, "({})", self.kind()),
         }
         .map_err(|_| words::observation_failure(crate::wire::Budget::exceeded()))
     }
@@ -276,8 +275,6 @@ pub struct Opts {
     pub kill: bool,
     /// Attaching only to watch (`watch`).
     pub watch: bool,
-    /// Where a stream of events reads from (`from`), else now.
-    pub from: Option<crate::events::Cursor>,
     /// How long a wait waits before it times out.
     pub timeout: Option<Limit>,
     pub view: crate::command::CaptureView,
@@ -1084,8 +1081,8 @@ fn client_failed(error: client::Error) -> Failed {
 /// itself: a server (`Server`), the command line's (`Cli`), or in tests a
 /// session itself.
 pub trait Asks {
-    /// Asks `asked`, what is streamed before its reply going to `out`.
-    fn ask(&mut self, asked: &Asked, out: &mut dyn Write) -> Result<Reply, Failed>;
+    /// Asks one bounded request and returns its typed reply.
+    fn ask(&mut self, asked: &Asked) -> Result<Reply, Failed>;
     /// Publish a complete local state at a commit boundary, if it is shared.
     fn published(&mut self, _state: &ClientState, _context: &Context) {}
 
@@ -1122,7 +1119,7 @@ pub trait Asks {
 /// The server's: each request asked on one connection, opened at the
 /// first.
 impl Asks for Server {
-    fn ask(&mut self, asked: &Asked, out: &mut dyn Write) -> Result<Reply, Failed> {
+    fn ask(&mut self, asked: &Asked) -> Result<Reply, Failed> {
         let fenced = self.after.as_ref().map(|after| Asked {
             after: Some(after.get()),
             ..asked.clone()
@@ -1143,7 +1140,7 @@ impl Asks for Server {
         }
         let reply = match self.stop.as_ref().is_some_and(Stop::stopped) {
             true => Err(cancelled()),
-            false => requests.ask(asked, out).map_err(client_failed),
+            false => requests.ask(asked).map_err(client_failed),
         };
         // Let go of before the flag is read: a stop from then on cannot
         // shut what is kept.
@@ -1179,8 +1176,8 @@ enum Given {
 }
 
 impl Asks for Cli {
-    fn ask(&mut self, asked: &Asked, out: &mut dyn Write) -> Result<Reply, Failed> {
-        self.server.ask(asked, out)
+    fn ask(&mut self, asked: &Asked) -> Result<Reply, Failed> {
+        self.server.ask(asked)
     }
     fn local(
         &mut self,
@@ -1273,8 +1270,8 @@ impl Asks for AsClient<'_> {
         }
         self.asks.published(state, context);
     }
-    fn ask(&mut self, asked: &Asked, out: &mut dyn Write) -> Result<Reply, Failed> {
-        self.asks.ask(asked, out)
+    fn ask(&mut self, asked: &Asked) -> Result<Reply, Failed> {
+        self.asks.ask(asked)
     }
     fn local(
         &mut self,
@@ -1339,7 +1336,23 @@ pub fn run_capped(
                     request: *request,
                     context,
                 };
-                match asks.ask(&asked, host.out) {
+                match asks.ask(&asked) {
+                    Ok(reply)
+                        if !matches!(reply.response, Response::Failed { .. })
+                            && matches!(asked.request, Request::NextEvents { .. })
+                                != matches!(
+                                    reply.response,
+                                    Response::Returned(Body::Events(_))
+                                ) =>
+                    {
+                        pushed(
+                            machine,
+                            Err(Failed::new(
+                                Code::of(fuxth::Code::Contract),
+                                "reply does not match the event read continuation",
+                            )),
+                        )?;
+                    }
                     Ok(reply) => match reply.end() {
                         End::Failed { code, message } => raised(machine, (code, message), reply)?,
                         End::Done => pushed(machine, answered(reply))?,
@@ -1497,6 +1510,15 @@ pub fn answered(reply: Reply) -> Result<Vec<Value<Fux>>, Failed> {
                 .validate()
                 .map_err(|e| Failed::new(Code::of(fuxth::Code::Contract), e.to_string()))?;
             record::snapshot(*snapshot).map_err(|e| Failed::new(Code::of(e.code), e.message))?
+        }
+        Body::Events(batch) => {
+            if run != Some(batch.next.run) {
+                return Err(Failed::new(
+                    Code::of(fuxth::Code::Contract),
+                    "event batch run differs from reply",
+                ));
+            }
+            record::events(*batch).map_err(|e| Failed::new(Code::of(e.code), e.message))?
         }
         Body::Field(json) => {
             record::from_json(&json).map_err(|e| Failed::new(Code::of(e.code), e.message))?
@@ -1706,7 +1728,7 @@ impl Asks for ConfigOnly {
     fn checkpoint(&mut self, _: &mut Draft, _: Context) -> Result<(), Failed> {
         Ok(())
     }
-    fn ask(&mut self, _: &Asked, _: &mut dyn Write) -> Result<Reply, Failed> {
+    fn ask(&mut self, _: &Asked) -> Result<Reply, Failed> {
         Err(Failed::new(
             Code::NotConfig,
             "a config changes only its own client state",
@@ -1904,7 +1926,6 @@ mod tests {
             fn ask(
                 &mut self,
                 asked: &crate::protocol::Asked,
-                _: &mut dyn std::io::Write,
             ) -> Result<super::Reply, super::Failed> {
                 if let crate::command::Request::Do(crate::command::Command::Resolve {
                     text, ..
@@ -1927,6 +1948,22 @@ mod tests {
         let mut machine = super::compile(&tokens)?;
         let mut host = super::Host::new(crate::protocol::Context::default(), None, out);
         super::run_capped(&mut machine, &mut host, &mut Once(Some(reply)), None, None)
+    }
+
+    #[test]
+    fn event_reads_reject_other_reply_families_before_resuming()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut out = Vec::new();
+        let failure = held_reply(
+            "all str '' 0 next-events drop str EFFECT print",
+            crate::protocol::Body::Field(crate::json::Json::object(Vec::new())).into(),
+            &mut out,
+        )
+        .err()
+        .ok_or("resumed an event read with a field reply")?;
+        assert_eq!(failure.code, crate::code::Code::of(fuxth::Code::Contract));
+        assert!(out.is_empty());
+        Ok(())
     }
 
     #[test]
@@ -1971,11 +2008,7 @@ mod tests {
             count: usize,
         }
         impl Asks for Captures {
-            fn ask(
-                &mut self,
-                asked: &crate::protocol::Asked,
-                _: &mut dyn std::io::Write,
-            ) -> Result<Reply, Failed> {
+            fn ask(&mut self, asked: &crate::protocol::Asked) -> Result<Reply, Failed> {
                 let version: Version = "%1:0.7.0.0.0:1-1"
                     .parse()
                     .map_err(|()| Failed::new(Code::Usage, "version"))?;
@@ -2214,7 +2247,7 @@ mod tests {
             attached: Option<(Option<Run>, Option<AttachTarget>, Option<fux_vt::Size>)>,
         }
         impl Asks for Record {
-            fn ask(&mut self, asked: &Asked, _: &mut dyn Write) -> Result<Reply, Failed> {
+            fn ask(&mut self, asked: &Asked) -> Result<Reply, Failed> {
                 let mut reply: Reply = if matches!(
                     asked.request,
                     Request::Do(crate::command::Command::Resolve { .. })
@@ -2317,7 +2350,7 @@ mod tests {
         use crate::wire::Reader;
         struct Record(Vec<u32>);
         impl Asks for Record {
-            fn ask(&mut self, asked: &Asked, _: &mut dyn Write) -> Result<Reply, Failed> {
+            fn ask(&mut self, asked: &Asked) -> Result<Reply, Failed> {
                 let bytes = crate::wire::encode(asked)
                     .map_err(|e| Failed::new(Code::Usage, e.to_string()))?;
                 let decoded: Asked = Reader::new(&bytes)
@@ -2381,7 +2414,7 @@ mod tests {
         use super::*;
         struct Reports(std::collections::VecDeque<Run>);
         impl Asks for Reports {
-            fn ask(&mut self, _: &Asked, _: &mut dyn Write) -> Result<Reply, Failed> {
+            fn ask(&mut self, _: &Asked) -> Result<Reply, Failed> {
                 let run = self
                     .0
                     .pop_front()
@@ -2433,7 +2466,7 @@ mod tests {
             submitted: Vec<Option<Run>>,
         }
         impl Asks for Leaves {
-            fn ask(&mut self, asked: &Asked, _: &mut dyn Write) -> Result<Reply, Failed> {
+            fn ask(&mut self, asked: &Asked) -> Result<Reply, Failed> {
                 let mut run = None;
                 let body = match asked.request {
                     Request::Do(crate::command::Command::Resolve { .. }) => {
@@ -2447,7 +2480,7 @@ mod tests {
                         self.submitted.push(asked.context.of);
                         Body::Empty
                     }
-                    Request::Do(_) | Request::Wait(_) | Request::Events(..) => {
+                    Request::Do(_) | Request::Wait(_) | Request::NextEvents { .. } => {
                         return Err(Failed::new(Code::Usage, "unexpected request"));
                     }
                 };
@@ -2482,7 +2515,7 @@ mod tests {
         use super::*;
         struct NoRequests;
         impl Asks for NoRequests {
-            fn ask(&mut self, _: &Asked, _: &mut dyn Write) -> Result<Reply, Failed> {
+            fn ask(&mut self, _: &Asked) -> Result<Reply, Failed> {
                 Err(Failed::new(
                     Code::Usage,
                     "invalid scalars must not submit a request",
@@ -2553,7 +2586,7 @@ mod tests {
             format!("str {version} expect 0 timeout wait"),
             format!("str {version} changed str x text send-keys"),
             format!("str {version} changed all-history capture"),
-            format!("str {version} changed events"),
+            format!("str {version} changed str '' 0 next-events"),
             "str x kill".to_owned(),
         ] {
             let tokens =

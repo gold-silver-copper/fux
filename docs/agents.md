@@ -169,16 +169,26 @@ panes as it begins and answers changes in watch order, not exit chronology.
   until
   let seen seen string print seen version print
   ```
-- **What changes anywhere,** as it happens: `fux all events` streams a JSON
-  line for each event (`fux help json` lists them). To read the session,
-  then follow its events without missing one in between, start the stream
-  from the cursor `ls json` gave with the listing (its `events`); a
-  `missed` line says the journal let some go first: read `ls` again.
+- **What changes anywhere:** `all str CURSOR SECONDS next-events` returns
+  a bounded record of ordered events, exact `next`, `missed`, and status.
+  Empty cursor starts now. Acquire the cursor before launching jobs to
+  observe their first recorded exit; group waits do not give exit chronology.
+  Fail or reconcile a fresh snapshot on `missed`; events invalidate state,
+  and do not replicate live OS facts. Timeout means no change was observed.
 
   ```sh
-  C=$(fux ls json | jq -r .events)
-  fux all str "$C" from events      # or: fux %3 str "$C" from events
+  C=$(fux all str '' 0 next-events str next get)
+  # Launch jobs here, then replay from C, including exits already recorded.
+  fux all str "$C" 30 64 events-since drop
   ```
+
+  The library stream prints NDJSON and checkpoints and ends after its
+  explicit batch bound. Save the last successful checkpoint for the next
+  finite run; interpreter budgets remain in force. For hooks, use an
+  ordinary program such as [program-copies.fux](../examples/hooks/program-copies.fux),
+  filtering the triggering event and state as well as known origin.
+  Origins identify supplied client/pane/program context; an external CLI
+  remains unknown. No exactly-once effects or infinite stream is promised.
 - **First recorded exit across jobs:** save this as `first-exit.py` and
   run `python3 -I first-exit.py` on the private socket. Take the cursor before
   launching, even if jobs might finish before subscription. Replay order
@@ -186,49 +196,40 @@ panes as it begins and answers changes in watch order, not exit chronology.
   failure; resnapshotting cannot recover which missing exit was first.
   Any of a, b or c may be recorded first: launch latency can change their
   order. The result includes the cursor, pane/name map and first exit record
-  as an auditable result. The subscriber is
-  always terminated and reaped. No group wait is used.
+  as an auditable result. Reads are finite batches; every CLI subprocess
+  is waited for and every launched pane is cleaned up. No group wait is used.
 
   ```python
   def first_exit(fux):
       import json
-      import subprocess
       cursor = json.loads(fux("ls", "json"))["events"]
+      next_cursor = cursor
       panes = {}
       try:
           for name, seconds in (("a", "0.3"), ("b", "0.05"), ("c", "0.15")):
               answer = fux("agent-opts", "80", "24", "size", "str", "sh", "program",
                            "str", "-c", "arg", "str", "sleep " + seconds, "arg", "run")
               panes[answer.split(":")[0]] = name
-          stream = fux("all", "str", cursor, "from", "events", stream=True)
-          try:
-              for line in stream.stdout:
-                  event = json.loads(line)
-                  if event["event"] == "missed":
-                      raise RuntimeError("journal loss: first exit is unknown")
+          for _ in range(256):
+              batch = json.loads(fux("all", "str", next_cursor, "5", "next-events", "json"))
+              if batch["missed"]:
+                  raise RuntimeError("journal loss: first exit is unknown")
+              for event in batch["events"]:
                   if event["event"] == "exited" and event.get("pane") in panes:
                       return {"cursor": cursor, "panes": panes, "first": event}
-              raise RuntimeError("event stream ended before an exit")
-          finally:
-              stream.terminate()
-              try:
-                  stream.wait(timeout=5)
-              except subprocess.TimeoutExpired:
-                  stream.kill()
-                  stream.wait()
-              stream.stdout.close()
+              next_cursor = batch["next"]
+              if batch["status"] in ("gone", "stopped"):
+                  raise RuntimeError("event read ended before an exit: " + batch["status"])
+          raise RuntimeError("event batch limit reached before an exit")
       finally:
           for pane in panes:
               fux("str", pane, "pane", "kill")
 
-
   if __name__ == "__main__":
       import json
       import subprocess
-      def fux(*words, stream=False):
+      def fux(*words):
           command = ["timeout", "30", "fux", *words]
-          if stream:
-              return subprocess.Popen(command, stdout=subprocess.PIPE, text=True)
           return subprocess.run(command, check=True, capture_output=True,
                                 text=True, timeout=30).stdout
       print(json.dumps(first_exit(fux)))

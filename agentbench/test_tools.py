@@ -3,7 +3,6 @@
     python3 -I -m unittest discover -s agentbench -p 'test_*.py'
 """
 import contextlib
-import io
 import json
 from types import SimpleNamespace
 from pathlib import Path
@@ -68,18 +67,17 @@ class Tools(unittest.TestCase):
                       {"event": "exited", "pane": "%3"},
                       {"event": "missed", "count": 1}):
             calls = []
-            subscriber = SimpleNamespace(stdout=io.StringIO(json.dumps(event) + "\n"),
-                                         terminate=lambda: calls.append("terminate"),
-                                         wait=lambda **kwargs: calls.append("wait"))
 
-            def fux(*words, stream=False):
+            def fux(*words):
                 calls.append(words)
                 if words == ("ls", "json"):
                     return '{"events":"0:RUN"}'
                 if words[-1] == "run":
-                    return f"%{sum(isinstance(c, tuple) and c[-1] == 'run' for c in calls)}:0:RUN"
-                if stream:
-                    return subscriber
+                    return f"%{sum(c[-1] == 'run' for c in calls)}:0:RUN"
+                if "next-events" in words:
+                    return json.dumps({"events": [] if event["event"] == "missed" else [event],
+                                       "missed": event.get("count", 0),
+                                       "next": "1:RUN", "status": "continuing"})
                 return ""
 
             with self.subTest(event=event):
@@ -92,11 +90,58 @@ class Tools(unittest.TestCase):
                     self.assertEqual(receipt["cursor"], "0:RUN")
                     self.assertEqual(receipt["panes"], {"%1": "a", "%2": "b", "%3": "c"})
                 self.assertEqual(calls[0], ("ls", "json"))
-                self.assertEqual(calls[4], ("all", "str", "0:RUN", "from", "events"))
-                self.assertIn("terminate", calls)
-                self.assertIn("wait", calls)
-                self.assertTrue(subscriber.stdout.closed)
+                self.assertEqual(calls[4], ("all", "str", "0:RUN", "5", "next-events", "json"))
                 self.assertEqual(calls[-3:], [("str", f"%{n}", "pane", "kill") for n in (1, 2, 3)])
+
+    def test_published_recipe_waits_past_a_batch_timeout(self):
+        namespace = {"__name__": "test_recipe"}
+        exec(published.block("**First recorded exit across jobs:**", "python"), namespace)
+        batches = iter([
+            {"events": [], "next": "0:RUN", "missed": 0, "status": "timeout"},
+            {"events": [{"event": "exited", "pane": "%1"}], "next": "1:RUN", "missed": 0, "status": "continuing"},
+        ])
+        launched = []
+        def fux(*words):
+            if words == ("ls", "json"): return '{"events":"0:RUN"}'
+            if words[-1] == "run":
+                launched.append(words)
+                return f"%{len(launched)}:0:RUN"
+            if "next-events" in words: return json.dumps(next(batches))
+            return ""
+        self.assertEqual(namespace["first_exit"](fux)["first"]["pane"], "%1")
+
+    def test_first_exit_driver_waits_past_a_batch_timeout(self):
+        driver = drivers.Fux.__new__(drivers.Fux)
+        batches = iter([
+            {"events": [], "next": "0:RUN", "missed": 0, "status": "timeout"},
+            {"events": [{"event": "exited", "pane": "%1"}], "next": "1:RUN", "missed": 0, "status": "continuing"},
+        ])
+        calls = []
+        def fux(*words, **kwargs):
+            calls.append((words, kwargs["timeout"]))
+            return SimpleNamespace(stdout=json.dumps(next(batches)))
+        driver.fux = fux
+        with patch.object(drivers.time, "monotonic", side_effect=[0, 0, 5]):
+            self.assertEqual(driver.wait_first_exit({"a": "%1"}, "0:RUN", timeout=15), "a")
+        self.assertEqual([call[0][2] for call in calls], ["0:RUN", "0:RUN"])
+        self.assertEqual([call[1] for call in calls], [15, 10])
+
+    def test_first_exit_driver_continues_from_filtered_batch_prefixes(self):
+        driver = drivers.Fux.__new__(drivers.Fux)
+        batches = iter([
+            {"events": [], "next": "256:RUN", "missed": 0, "status": "continuing"},
+            {"events": [{"event": "exited", "pane": "%1"}], "next": "257:RUN",
+             "missed": 0, "status": "continuing"},
+        ])
+        calls = []
+
+        def fux(*words, **kwargs):
+            calls.append(words)
+            return SimpleNamespace(stdout=json.dumps(next(batches)))
+
+        driver.fux = fux
+        self.assertEqual(driver.wait_first_exit({"a": "%1"}, "0:RUN"), "a")
+        self.assertEqual([call[2] for call in calls], ["0:RUN", "256:RUN"])
 
     def test_published_tasks_are_scripted_fux_only_and_count_in_reports(self):
         tasks = run.tasks()
