@@ -394,7 +394,7 @@ words! {
         Reading Cols "cols" "pane-builder from to -- pane-builder" "capture: half-open from..to columns, clipped to available cells" "fux %3 0 40 cols capture";
     }
     Screen {
-        Clients Choose "choose" "client title list list list code --" "a list of [payload,label] rows; current and selected are [] or [index]; callback receives client payload and leaves nothing" "fux str c1 client str hosts list list str host str Host end end list end list 0 end str 'drop drop' choose";
+        Clients Choose "choose" "client title list list list callback --" "a list of [payload,label] rows; current and selected are [] or [index]; callback receives captured arguments then client payload and leaves nothing" "fux str c1 client str hosts list list str host str Host end end list end list 0 end str 'drop drop' choose";
         Clients Prompt "prompt" "client name text callback --" "a line to type, titled name and starting as text: its submit key (Enter) runs code, the line on its stack" "fux str c1 client str 'rename tab' str logs str '@2 swap rename' prompt";
         Clients Confirm "confirm" "client text callback --" "a question: its yes key (y) runs code" "fux str c1 client str 'close %3?' str '%3 kill' confirm";
         Clients CopyMode "copy-mode" "client --" "copy and select in the focused pane" "fux str c1 client copy-mode";
@@ -2220,7 +2220,7 @@ impl Host<'_> {
                 if selected.is_none() && !items.is_empty() {
                     return Err(fail(Raise::BadValue, "nonempty rows need a selected index"));
                 }
-                let action = Self::action(&Value::str(string(&next()?)?))?;
+                let action = Self::action(&next()?)?;
                 Open::List(crate::screens::ListScreen {
                     title,
                     items,

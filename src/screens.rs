@@ -478,19 +478,12 @@ impl Screen {
     fn list(&mut self, modes: &Modes, mut list: ListScreen, press: KeyPress) -> Vec<Effect> {
         let (at, last) = (list.selected, list.items.len().saturating_sub(1));
         let chosen = list.items.get(at);
-        let action = match modes.list.get(press) {
+        let act = modes.list.get(press);
+        let action = match &act {
             Some(ListAct::Cancel) => return vec![HIDE],
             Some(ListAct::Choose) => Some(&list.action),
-            Some(ListAct::Action(ref action)) => {
-                if let Some(item) = chosen {
-                    return vec![
-                        HIDE,
-                        Effect::Run(action.job([list.client.clone(), item.payload.clone()])),
-                    ];
-                }
-                None
-            }
-            _ => None,
+            Some(ListAct::Action(action)) => Some(action),
+            Some(ListAct::Move(_)) | None => None,
         };
         if let (Some(action), Some(item)) = (action, chosen) {
             return vec![
@@ -498,9 +491,9 @@ impl Screen {
                 Effect::Run(action.job([list.client.clone(), item.payload.clone()])),
             ];
         }
-        let moved = match modes.list.get(press) {
+        let moved = match act {
             Some(ListAct::Move(moved)) => moved.from(at, last),
-            _ => at,
+            Some(ListAct::Cancel | ListAct::Choose | ListAct::Action(_)) | None => at,
         };
         list.selected = moved;
         *self = Self::List(list);
@@ -676,7 +669,7 @@ mod tests {
             key(&mut screen, "x")?,
             [
                 Effect::Screen(ScreenAct::Hide),
-                Effect::Run(Callback::from("chooser-close").job([Data::Int(0), Data::Int(1)]))
+                Effect::Run(Callback::from("confirm-close").job([Data::Int(0), Data::Int(1)]))
             ]
         );
         let mut screen = list();

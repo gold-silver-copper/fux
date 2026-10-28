@@ -337,7 +337,7 @@ For example, bind `str 't q' str 'me str last step-tab' bind` in your config.
   `j`/`k`, PageUp/PageDown and Home/End move.
   These five choosers are library words over one `choose` primitive. Each
   reads one topology snapshot for its rows, source and current marker.
-  Custom lists use `choose (client title rows current selected code --)`:
+  Custom lists use `choose (client title rows current selected callback --)`:
   rows are `[payload,label]`, and both indices are `[]` or `[index]`.
   Selection is empty only when there are no rows; the current marker is
   independently optional. A title may be `[text,subject-handle]` to close
@@ -349,7 +349,10 @@ For example, bind `str 't q' str 'me str last step-tab' bind` in your config.
   list end list 0 end str 'nip print' choose
   ```
 
-  Enter runs the explicit callback with `client payload`. Immutable scalars,
+  The callback is source or `[captured-arguments,source]`. Enter passes the
+  captured values, then `client payload`; list key actions receive only
+  `client payload`. The move/swap choosers capture their source once, and
+  every row carries its destination handle. Immutable scalars,
   typed handles, records, null and bounded lists are admitted; unfinished
   requests are refused. Source is limited to 64 KiB, the whole screen must
   fit one 1 MiB frame, and retained screen/job data is limited to 4 MiB.
@@ -372,8 +375,8 @@ For example, bind `str 't q' str 'me str last step-tab' bind` in your config.
   one of that screen's actions, and `label` names it in the screen's hints
   (`str copy str g str top bind-in str top label`); `unbind-in` takes one
   away. `bind-in` accepts only native actions. Executable list keys use
-  `str r str chooser-rename bind-action` and
-  `str x str chooser-close bind-action`; each receives `client payload`
+  `str r str rename-prompt bind-action` and
+  `str x str confirm-close bind-action`; each receives `client payload`
   and must leave an empty stack. An unknown native action always refuses.
   Escape always leaves a screen, and is never bound.
 - **A key's program** runs as your client, one at a time. While one that may

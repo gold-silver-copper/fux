@@ -1003,12 +1003,12 @@ mod tests {
                 self.0.ask(asked, out)
             }
         }
-        for code in [
-            "me choose-tab",
-            "me choose-workspace",
-            "me %2 choose-tab-for",
-            "me %2 choose-workspace-for",
-            "me %2 choose-pane",
+        for (code, captures) in [
+            ("me choose-tab", 0),
+            ("me choose-workspace", 0),
+            ("me %2 choose-tab-for", 1),
+            ("me %2 choose-workspace-for", 1),
+            ("me %2 choose-pane", 1),
         ] {
             let (mut s, c) = busy()?;
             let context = crate::protocol::Context {
@@ -1043,6 +1043,17 @@ mod tests {
             };
             assert!(!list.items.is_empty());
             assert!(
+                list.items
+                    .iter()
+                    .all(|item| matches!(item.payload, crate::callback::Data::Handle(..))),
+                "{code}: a row is not a destination handle"
+            );
+            assert_eq!(
+                list.action.args.len(),
+                captures,
+                "{code}: the source should be captured once"
+            );
+            assert!(
                 matches!(
                     reads.1.as_slice(),
                     [Command::Inspect {
@@ -1058,11 +1069,86 @@ mod tests {
     }
 
     #[test]
+    fn library_chooser_callbacks_act_on_the_selected_destination() -> Outcome {
+        for (open, keys, observe, expected) in [
+            ("me choose-tab", "j\r", "me focused tab string", "@2\n"),
+            (
+                "me choose-workspace",
+                "j\r",
+                "me focused workspace string",
+                "+2\n",
+            ),
+            ("me %2 choose-tab-for", "j\r", "%2 tab string", "@2\n"),
+            (
+                "me %2 choose-workspace-for",
+                "j\r",
+                "%2 workspace string",
+                "+2\n",
+            ),
+            (
+                "me %2 choose-pane",
+                "\r",
+                "@1 panes each string print end",
+                "%2\n%1\n%3\n",
+            ),
+        ] {
+            let (mut s, c) = busy()?;
+            output_as(&mut s, Some(c), open)?;
+            s.input(c, keys.as_bytes());
+            assert_eq!(notice(&s, c), "", "{open}");
+            assert_eq!(screen(&s, c), Screen::default(), "{open}");
+            assert_eq!(output_as(&mut s, Some(c), observe)?, expected, "{open}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn list_rename_and_close_callbacks_address_each_choosers_destination() -> Outcome {
+        for (open, target, kind) in [
+            ("me choose-tab", "@1", "tab"),
+            ("me choose-workspace", "+1", "workspace"),
+            ("me %2 choose-tab-for", "@1", "tab"),
+            ("me %2 choose-workspace-for", "+1", "workspace"),
+            ("me %2 choose-pane", "%1", "pane"),
+        ] {
+            let (mut s, c) = busy()?;
+            output_as(&mut s, Some(c), open)?;
+            s.input(c, b"r");
+            let Screen::Prompt(prompt) = screen(&s, c) else {
+                return Err(format!("{open}: rename did not open: {}", notice(&s, c)));
+            };
+            assert_eq!(prompt.title, format!("rename {kind} {target}"));
+            s.input(c, &[0x7f; 16]);
+            s.input(c, b"destination\r");
+            assert_eq!(
+                output(&mut s, &format!("{target} str name get"))?,
+                "destination\n",
+                "{open}"
+            );
+            assert_eq!(output(&mut s, "%2 str name get")?, "null\n", "{open}");
+            output_as(&mut s, Some(c), open)?;
+            s.input(c, b"x");
+            assert_eq!(
+                mode(&s, c),
+                format!("confirm close {kind} {target} destination?"),
+                "{open}: {}",
+                notice(&s, c)
+            );
+            s.input(c, b"y");
+            assert!(
+                output(&mut s, &format!("{target} str name get")).is_err(),
+                "{open}"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
     fn list_callbacks_are_explicit_and_labels_remain_inert() -> Outcome {
         let (mut s, c) = session()?;
         // A valid executable word is still not a native list action.
         for bad in [
-            "str list str R str chooser-close bind-in",
+            "str list str R str confirm-close bind-in",
             "str list str R str rename bind-in",
             "str R str nosuch bind-action",
             "str R str if bind-action",

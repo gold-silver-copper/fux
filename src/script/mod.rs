@@ -818,6 +818,17 @@ pub fn vocabulary() -> Result<fuxth::Vocabulary, fuxth::Error> {
     Ok(vocabulary)
 }
 
+/// The bundled dictionary and this client's frozen definitions.
+fn base(config: Option<&Config>) -> Result<Compiler<Fux>, fuxth::Error> {
+    let broken = |f: Failed| fuxth::Error::new(Lang::Contract, f.located(), None);
+    let ready = READY.with(|ready| ready.as_ref().map(|(c, _)| c.clone()).map_err(Clone::clone));
+    let compiler = ready.map_err(broken)?;
+    match config {
+        Some(config) => configured_compiler(config, compiler),
+        None => Ok(compiler),
+    }
+}
+
 /// Compiles `tokens` after the library: a program ready to run.
 pub fn compile(tokens: &[Token]) -> Result<Machine<Fux>, Failed> {
     compiled(None, tokens).map_err(Failed::from)
@@ -830,12 +841,7 @@ pub(crate) fn compiled(
     config: Option<&Config>,
     tokens: &[Token],
 ) -> Result<Machine<Fux>, fuxth::Error> {
-    let broken = |f: Failed| fuxth::Error::new(Lang::Contract, f.located(), None);
-    let ready = READY.with(|ready| ready.as_ref().map(|(c, _)| c.clone()).map_err(Clone::clone));
-    let mut compiler = ready.map_err(broken)?;
-    if let Some(config) = config {
-        compiler = configured_compiler(config, compiler)?;
-    }
+    let mut compiler = base(config)?;
     compiler.add(&handles(tokens)?)?;
     Ok(Machine::new(compiler.finish()?, Limits::default()))
 }
@@ -846,10 +852,7 @@ fn callback_failed(f: fuxth::Failure) -> Failed {
 
 /// Resolve executable callback source now; its input kinds are supplied at opening.
 fn callback_source(config: Option<&Config>, tokens: &[Token]) -> Result<(), Failed> {
-    let mut compiler = READY.with(|r| r.as_ref().map(|(c, _)| c.clone()).map_err(Clone::clone))?;
-    if let Some(config) = config {
-        compiler = configured_compiler(config, compiler)?;
-    }
+    let mut compiler = base(config)?;
     compiler.add(&handles(tokens)?)?;
     compiler.source_complete().map_err(Failed::from)
 }
@@ -863,10 +866,7 @@ pub(crate) fn callback_machine(
     let Some(args) = args else {
         return compiled(config, tokens).map_err(Failed::from);
     };
-    let mut compiler = READY.with(|r| r.as_ref().map(|(c, _)| c.clone()).map_err(Clone::clone))?;
-    if let Some(config) = config {
-        compiler = configured_compiler(config, compiler)?;
-    }
+    let mut compiler = base(config)?;
     let mut budget = crate::wire::Budget::with_limit(crate::client::JOB_BYTES);
     for arg in args {
         compiler.argument(callback::value(arg, &mut budget).map_err(callback_failed)?);

@@ -136,15 +136,6 @@ define choose-workspace
   rows place str workspace get chooser-index let current
   c str workspaces rows current rows current chooser-selected str show choose
 end
-# client pair -- : move the source to its actual typed destination
-define chooser-move nip dup first swap last move end
-# client pair -- : swap the source with its actual typed destination
-define chooser-swap nip dup first swap last swap-with end
-# rows source -- rows : carry the source alongside each destination
-define chooser-source
-  let source let rows
-  list rows each let row list list source row first end row last end end end
-end
 # client pane -- : choose a destination tab from one topology observation
 define choose-tab-for
   let source let c all str topology snapshot let s
@@ -154,8 +145,8 @@ define choose-tab-for
     dup str workspace get place str workspace get eq if s swap chooser-container-row else drop then
   end end let rows
   rows place str tab get chooser-index let current
-  c list list str 'move ' source string str ' to tab' end glue source end rows source chooser-source
-  current rows current chooser-selected str chooser-move choose
+  c list list str 'move ' source string str ' to tab' end glue source end rows
+  current rows current chooser-selected list list source end str 'nip move' end choose
 end
 # client pane -- : choose a destination workspace from one topology observation
 define choose-workspace-for
@@ -164,8 +155,8 @@ define choose-workspace-for
   s str clients get c chooser-find let place
   list s str workspaces get each s swap chooser-container-row end end let rows
   rows place str workspace get chooser-index let current
-  c list list str 'move ' source string str ' to workspace' end glue source end rows source chooser-source
-  current rows current chooser-selected str chooser-move choose
+  c list list str 'move ' source string str ' to workspace' end glue source end rows
+  current rows current chooser-selected list list source end str 'nip move' end choose
 end
 # client pane -- : choose another pane in its tab, from one topology observation
 define choose-pane
@@ -175,17 +166,6 @@ define choose-pane
     item str tab get tab-id eq item str id get string source string ne and if item chooser-row then
   end end let rows
   rows len 0 eq if str 'only one pane in the source tab' fail then
-  c list list str 'swap ' source string str ' with' end glue source end rows source chooser-source
-  list end list 0 end str chooser-swap choose
+  c list list str 'swap ' source string str ' with' end glue source end rows
+  list end list 0 end list list source end str 'nip swap-with' end choose
 end
-# client payload -- : list actions address a destination handle, including move/swap rows
-define chooser-target
-  dup is-list if last then
-  dup kind let type-name
-  type-name str pane eq type-name str tab eq or type-name str workspace eq or not
-  if str 'this list row has no pane, tab or workspace target' fail then
-end
-# client payload -- : rename the selected target through a typed callback
-define chooser-rename chooser-target rename-prompt end
-# client payload -- : close the selected target through a typed callback
-define chooser-close chooser-target confirm-close end
