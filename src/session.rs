@@ -9215,7 +9215,7 @@ mod journal_tests {
         Ok(())
     }
     #[test]
-    fn copy_cursor_motion_keeps_the_journal_quiet() -> Result<(), String> {
+    fn copy_motion_only_invalidates_notice_changes() -> Result<(), String> {
         let (mut s, client) = testing::attached(24, 80)?;
         run(&mut s, &format!("str {client} client copy-mode"))?;
         let from = s.parts.journal().end(s.run);
@@ -9226,6 +9226,28 @@ mod journal_tests {
                 .is_some_and(|view| matches!(view.mode, Mode::Copy(_)))
         );
         assert_eq!(s.parts.journal().end(s.run), from);
+        for (key, notice, changes) in [
+            (b"n", Some(("no search yet", true)), 1),
+            (b"n", Some(("no search yet", true)), 0),
+            (b"k", None, 1),
+        ] {
+            let from = s.parts.journal().end(s.run);
+            s.input(client, key);
+            let view = s.views.get(&client).ok_or("client")?;
+            assert!(matches!(view.mode, Mode::Copy(_)));
+            assert_eq!(
+                view.notice.as_ref().map(|n| (n.text.as_str(), n.error)),
+                notice
+            );
+            for scope in [Scope::All, Scope::Client(client)] {
+                let b = Reader::new(scope, s.parts.journal(), s.run, Some(from))?
+                    .batch(s.parts.journal(), true)?;
+                assert_eq!(named(&b, "notice").len(), changes, "{notice:?}");
+                assert!(named(&b, "screen").is_empty());
+                assert!(b.events.iter().all(|e| e.origin == Actor::Client(client)));
+            }
+        }
+        let from = s.parts.journal().end(s.run);
         s.input(client, b"q");
         assert_eq!(named(&batch(&s, from)?, "screen").len(), 1);
         Ok(())

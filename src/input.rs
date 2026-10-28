@@ -96,6 +96,7 @@ impl Session {
                 if !(fresh && starts || opening == view.opening && !view.mode.is_normal()) {
                     return false;
                 }
+                let notice = view.notice.clone();
                 if fresh {
                     view.opening = opening;
                     view.mode = Mode::Normal;
@@ -110,6 +111,13 @@ impl Session {
                     }
                     ScreenAct::Copy(CopyAct::Enter { .. }) if !fresh => return false,
                     ScreenAct::Copy(act) => crate::copy::act(self, client, act),
+                }
+                if self
+                    .views
+                    .get(&client)
+                    .is_some_and(|view| view.notice != notice)
+                {
+                    self.view_event(client, crate::events::ViewChange::Notice);
                 }
                 if changed
                     || self
