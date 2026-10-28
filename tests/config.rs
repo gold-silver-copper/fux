@@ -622,3 +622,101 @@ fn a_program_uses_preferences_before_its_next_operation() -> Outcome {
     );
     Ok(())
 }
+
+#[test]
+fn key_words_refuse_the_command_line() -> Outcome {
+    let server = Server::start("")?;
+    for words in [
+        &["str", "C-a", "prefix"][..],
+        &["str", "q", "str", "me zoom", "bind"],
+        &["str", "F5", "str", "me zoom", "bind-root"],
+        &["str", "q", "unbind"],
+        &["str", "F5", "unbind-root"],
+        &["unbind-all"],
+        &["str", "copy", "str", "g", "str", "top", "bind-in"],
+        &["str", "copy", "str", "v", "unbind-in"],
+        &["str", "name", "label"],
+        &["str", "name", "group"],
+        &["repeat"],
+    ] {
+        let result = server.fux(words)?;
+        assert_eq!(result.status, 1, "silent CLI key change: {words:?}");
+        assert!(
+            result.stderr.contains("not_config") && result.stderr.contains("config"),
+            "{words:?}: {}",
+            result.stderr
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn unrelated_commands_do_not_load_shell_defaults() -> Outcome {
+    use std::os::unix::ffi::OsStrExt;
+    let server = Server::start("")?;
+    for words in [&["version"][..], &["ls"], &["status"], &["kill-server"]] {
+        let result = std::process::Command::new(FUX)
+            .args(words)
+            .env("FUX_SOCKET", &server.socket)
+            .env("SHELL", std::ffi::OsStr::from_bytes(b"/bin/\xffsh"))
+            .env_remove("FUX_PANE")
+            .env_remove("FUX_SERVER")
+            .output()
+            .map_err(e)?;
+        assert!(
+            result.status.success(),
+            "{words:?}: {}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        assert!(result.stderr.is_empty(), "{words:?} read SHELL");
+    }
+    Ok(())
+}
+
+#[test]
+fn non_text_shell_defaults_report_the_library_fallback() -> Outcome {
+    use std::os::unix::ffi::OsStrExt;
+    let server = Server::start("")?;
+    let result = std::process::Command::new(FUX)
+        .arg("list-keys")
+        .env("FUX_SOCKET", &server.socket)
+        .env("SHELL", std::ffi::OsStr::from_bytes(b"/bin/\xffsh"))
+        .env_remove("FUX_PANE")
+        .env_remove("FUX_SERVER")
+        .output()
+        .map_err(e)?;
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    assert!(String::from_utf8_lossy(&result.stdout).contains("str C-b prefix"));
+    let diagnostic = String::from_utf8_lossy(&result.stderr);
+    assert!(diagnostic.contains("SHELL"), "{diagnostic}");
+    assert_eq!(diagnostic.lines().count(), 1, "{diagnostic}");
+    Ok(())
+}
+
+#[test]
+fn explicit_settings_survive_a_failed_attach_config() -> Outcome {
+    let server = Server::start("")?;
+    std::fs::write(server.dir.join("config/fux/config.fux"), "str Nope prefix").map_err(e)?;
+    let mut terminal = Terminal::attach(
+        &server,
+        12,
+        100,
+        &["str", "titles", "true", "set", "opts", "attach"],
+    )?;
+    terminal.wait_for("bad_binding")?;
+    terminal.type_bytes(b"printf '\\033]2;explicit-title\\007'; echo cli''-ready\r")?;
+    terminal.wait_for("cli-ready")?;
+    terminal.pump();
+    let titled = String::from_utf8_lossy(&terminal.output).contains("\x1b]2;explicit-title\x1b\\");
+    terminal.type_bytes(b"\x02d")?;
+    terminal.wait_exit()?;
+    assert!(
+        titled,
+        "the explicit titles setting was dropped with the failed config"
+    );
+    Ok(())
+}

@@ -343,13 +343,14 @@ fn check_keymap(keymap: &Keymap) {
 }
 
 /// The defaults, built once.
+fn default_state() -> &'static fux::client_state::ClientState {
+    static DEFAULTS: std::sync::OnceLock<fux::client_state::ClientState> =
+        std::sync::OnceLock::new();
+    DEFAULTS.get_or_init(|| fux::script::default_state().expect("the default state initializes"))
+}
+
 fn defaults() -> &'static Keymap {
-    static DEFAULTS: std::sync::OnceLock<Keymap> = std::sync::OnceLock::new();
-    DEFAULTS.get_or_init(|| {
-        fux::script::default_state()
-            .expect("the default state initializes")
-            .keys
-    })
+    &default_state().keys
 }
 
 /// Runs `machine` as a config against `keymap`, for at most `BUDGET`
@@ -361,16 +362,14 @@ fn run_config(
     last: Option<Bound>,
 ) -> (bool, Option<Bound>) {
     let mut out = Vec::new();
-    let mut state = fux::script::default_state()
-        .expect("the default state initializes")
-        .draft();
+    let mut state = default_state().draft();
     state.keys = keymap.clone();
-    let mut host = Host {
-        context: fux::protocol::Context::default(),
-        state: Some(&mut state),
-        last_bound: last,
-        out: &mut out,
-    };
+    let mut host = Host::new(
+        fux::protocol::Context::default(),
+        Some(&mut state),
+        &mut out,
+    );
+    host.last_bound = last;
     let finished = matches!(machine.run(&mut host, BUDGET), Ok(Outcome::Finished));
     let last = host.last_bound.clone();
     *keymap = state.keys;

@@ -211,8 +211,7 @@ fn word(name: &str) -> Option<String> {
 /// Local settings and their bundled initialization source.
 fn settings() -> String {
     let mut out = String::from("\nThe settings:\n");
-    for [name, takes, default, about] in crate::client_state::table() {
-        let about = format!("{about} Initialized by bundled {default}.");
+    for [name, takes, about] in crate::client_state::table() {
         let about = about.split_whitespace().map(str::to_owned);
         out.push_str(&format!(
             "  {name}: {takes}{}\n",
@@ -221,7 +220,7 @@ fn settings() -> String {
     }
     out.push_str("\nDuring migration, committed settings are sent together to the remaining\nserver consumers. Individual setters send no requests.\n");
     out.push_str("\nBundled initialization (client-defaults.fux):\n");
-    out.push_str(include_str!("script/client-defaults.fux"));
+    out.push_str(crate::script::DEFAULTS);
     out
 }
 

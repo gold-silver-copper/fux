@@ -396,16 +396,20 @@ The optional config is `$XDG_CONFIG_HOME/fux/config.fux`, else
 commands use only the bundled state; they never load this file.
 Its `set` and key words build one candidate client state. Keys, frozen
 definitions and preferences commit together; a failed config keeps the whole
-bundled state and shows one diagnostic. Evaluation sends no requests. After
+bundled state, preserves earlier explicit CLI settings, and shows one diagnostic. Evaluation sends no requests. After
 successful evaluation, one batch forwards only the preferences explicitly
 set by that config. Unrelated server settings stay as they were. A config
 with only keys or definitions sends no batch. Remaining server consumers
 move to client requests and per-client presentation in the following steps;
 until then explicit settings still affect the shared server.
 
-Bundled `client-defaults.fux` initializes every preference, reading this
-client's `$SHELL` once and using `/bin/sh` for an unset or empty value.
-Bundled `keys.fux` supplies `C-b`; there is no native prefix fallback.
+Client defaults load only when `set`, `list-keys` or `attach` needs them;
+ordinary queries and server controls do not load them. Bundled
+`client-defaults.fux` reads this client's `$SHELL` once and chooses `/bin/sh`
+for an unset or empty value. A non-text value is reported and falls back as
+that library specifies. Bundled `keys.fux` supplies `C-b`; there is no native
+prefix fallback. Key words such as `prefix`, `bind`, `unbind`, `label`,
+`group` and `repeat` refuse the CLI: use a config or an attached prompt.
 In action programs, pending client state commits before the next server
 operation and when the program finishes. Each transaction forwards only its
 explicitly written preferences in one batch, so a later split or wait uses

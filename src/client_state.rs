@@ -31,6 +31,10 @@ pub struct Draft {
 }
 
 impl Draft {
+    pub fn initialized(&self) -> bool {
+        self.keys.prefix.is_some()
+    }
+
     pub fn finish(self) -> Result<ClientState, String> {
         if self.keys.prefix.is_none() {
             return Err("bundled initialization did not set the prefix".to_owned());
@@ -100,6 +104,10 @@ macro_rules! preferences {
                 self.changes
             }
 
+            pub(crate) fn include(&mut self, changes: Changes) {
+                self.changes = self.changes.merge(changes);
+            }
+
             fn finish(self) -> Result<Preferences, String> {
                 Ok(Preferences {
                     $($field: self.$field.ok_or_else(||
@@ -117,11 +125,10 @@ macro_rules! preferences {
         pub const NAMES: &[&str] = &[$($name),*];
 
         /// Help describes policy's source without evaluating defaults.
-        pub fn table() -> Vec<[String; 4]> {
+        pub fn table() -> Vec<[String; 3]> {
             vec![$([
                 $name.to_owned(),
                 <$reads as Reads>::takes(),
-                "client-defaults.fux".to_owned(),
                 [$($about.trim()),*].join(" "),
             ],)*]
         }

@@ -39,7 +39,7 @@ pub const SHEBANG: &str = "#!/usr/bin/env -S fux --file";
 
 /// fux's default keys: a config, run before the user's.
 const KEYS: &str = include_str!("keys.fux");
-const DEFAULTS: &str = include_str!("client-defaults.fux");
+pub(crate) const DEFAULTS: &str = include_str!("client-defaults.fux");
 
 /// A value of fux's own on the stack.
 #[derive(Clone, Debug, PartialEq)]
@@ -390,6 +390,7 @@ pub struct Host<'a> {
     /// The binding `label`, `group` and `repeat` change.
     pub last_bound: Option<Bound>,
     pub out: &'a mut dyn Write,
+    cli: bool,
 }
 
 impl<'a> Host<'a> {
@@ -399,7 +400,26 @@ impl<'a> Host<'a> {
             state,
             last_bound: None,
             out,
+            cli: false,
         }
+    }
+
+    fn cli(context: Context, state: &'a mut Draft, out: &'a mut dyn Write) -> Self {
+        Self {
+            cli: true,
+            ..Self::new(context, Some(state), out)
+        }
+    }
+
+    /// Ordinary CLI commands need no keys or preference initialization.
+    fn prepare(&mut self) -> Result<(), Failed> {
+        if self.cli
+            && let Some(state) = self.state.as_deref_mut()
+            && !state.initialized()
+        {
+            *state = default_state()?.draft();
+        }
+        Ok(())
     }
 }
 
@@ -1042,6 +1062,12 @@ pub fn run_capped(
                 }
             }
             Outcome::Suspended(Ask::Local(what)) => {
+                if matches!(what, Local::Attach { .. })
+                    && let Err(failed) = host.prepare()
+                {
+                    pushed(machine, Err(failed))?;
+                    continue;
+                }
                 if matches!(what, Local::Open(_))
                     && let Some(draft) = host.state.as_deref_mut()
                     && let Err(failed) = asks.checkpoint(draft, host.context.clone())
@@ -1225,23 +1251,20 @@ fn local(
             if size.is_none() && client::window_size().is_none() {
                 return Err(client_failed(client::Error::NoSize));
             }
+            let draft = draft.ok_or_else(|| {
+                Failed::new(Code::Config, "attach needs this client's local state")
+            })?;
             let defaults = draft
-                .as_deref()
-                .cloned()
-                .ok_or_else(|| Failed::new(Code::Config, "attach needs this client's local state"))?
+                .clone()
                 .finish()
                 .map_err(|why| Failed::new(Code::Config, why))?;
             let typing = size.is_none() && !read_only;
-            let explicit = draft
-                .as_deref()
-                .map(|d| d.preferences.changes())
-                .unwrap_or_default();
+            let explicit = draft.preferences.changes();
             let (committed, mut problem, configured) = if typing {
                 configured(&defaults)
             } else {
                 (defaults, None, Changes::default())
             };
-            let changes = explicit.merge(configured);
             // Watching or naming a run starts no replacement server.
             let socket = match *read_only || of.is_some() {
                 true => server.socket()?,
@@ -1251,23 +1274,22 @@ fn local(
                 let why = "no server answers: there is nothing to watch";
                 return Err(Failed::new(Code::NoServer, why));
             }
-            if let Some(draft) = draft {
-                *draft = committed.draft();
-            }
-            if problem.is_none()
-                && let Err(failed) = committed.preferences.forward_settings(
-                    changes,
-                    server,
-                    Context {
-                        of: *of,
-                        ..client::context()
-                    },
-                )
-            {
+            *draft = committed.draft();
+            draft.preferences.include(explicit.merge(configured));
+            if let Err(failed) = server.commit(
+                draft,
+                Context {
+                    of: *of,
+                    ..client::context()
+                },
+            ) {
                 if size.is_some() {
                     return Err(failed);
                 }
-                problem = Some(failed.notice());
+                problem = Some(match problem {
+                    Some(problem) => format!("{problem}; {}", failed.notice()),
+                    None => failed.notice(),
+                });
             }
             let attach = client::Attaching {
                 of: *of,
@@ -1316,7 +1338,7 @@ pub fn configured(defaults: &ClientState) -> (ClientState, Option<String>, Chang
 pub fn default_state() -> Result<ClientState, Failed> {
     let mut draft = Draft::default();
     for (name, text) in [("client-defaults.fux", DEFAULTS), ("keys.fux", KEYS)] {
-        run_quiet(&token::source(name, text)?, Some(&mut draft))?;
+        run_quiet(&token::source(name, text)?, Some(&mut draft), true)?;
     }
     draft.finish().map_err(|why| Failed::new(Code::Config, why))
 }
@@ -1357,7 +1379,7 @@ fn run_config_on(
     let tokens = image.tokens();
     let mut draft = defaults.draft();
     draft.config = Some(Arc::new(image));
-    run_quiet(&tokens, Some(&mut draft))?;
+    run_quiet(&tokens, Some(&mut draft), false)?;
     let changed = draft.preferences.changes();
     let committed = draft
         .finish()
@@ -1366,14 +1388,14 @@ fn run_config_on(
 }
 
 /// Runs bounded config code with only local reads and draft mutations.
-fn run_quiet(tokens: &[Token], state: Option<&mut Draft>) -> Result<(), Failed> {
+fn run_quiet(tokens: &[Token], state: Option<&mut Draft>, diagnostics: bool) -> Result<(), Failed> {
     let mut machine = compile(tokens)?;
     let mut out = io::sink();
     let mut host = Host::new(Context::default(), state, &mut out);
     run_capped(
         &mut machine,
         &mut host,
-        &mut ConfigOnly,
+        &mut ConfigOnly { diagnostics },
         Some(PROGRAM_STEPS),
         None,
     )
@@ -1381,7 +1403,10 @@ fn run_quiet(tokens: &[Token], state: Option<&mut Draft>) -> Result<(), Failed> 
 }
 
 /// Config evaluation has no server or connection, even through imports.
-struct ConfigOnly;
+#[derive(Default)]
+struct ConfigOnly {
+    diagnostics: bool,
+}
 
 impl Asks for ConfigOnly {
     fn checkpoint(&mut self, _: &mut Draft, _: Context) -> Result<(), Failed> {
@@ -1401,6 +1426,11 @@ impl Asks for ConfigOnly {
     ) -> Result<Vec<Value<Fux>>, Failed> {
         match what {
             Local::Shell(Shell::Getenv(name)) => Ok(vec![Value::str(getenv(name)?)]),
+            Local::Shell(Shell::Warn(line)) if self.diagnostics => {
+                writeln!(io::stderr(), "{line}")
+                    .map_err(|e| Failed::new(Code::Output, format!("writing to stderr: {e}")))?;
+                Ok(Vec::new())
+            }
             Local::Attach { .. }
             | Local::Server(_)
             | Local::Start
@@ -1442,8 +1472,8 @@ pub fn main(args: &[String], out: &mut dyn Write) -> Result<u8, Failed> {
         Given::Words => Failed::from(a_file(e, args)),
         Given::Stdin | Given::File(_) => Failed::from(e),
     })?;
-    let mut state = default_state()?.draft();
-    let mut host = Host::new(client::context(), Some(&mut state), out);
+    let mut state = Draft::default();
+    let mut host = Host::cli(client::context(), &mut state, out);
     let mut cli = Cli {
         server: Server::default(),
         from,
@@ -1467,7 +1497,9 @@ pub fn main(args: &[String], out: &mut dyn Write) -> Result<u8, Failed> {
         .and_then(|()| host.out.flush());
     ran?;
     printed.map_err(|e| Failed::new(Code::Output, format!("writing the output: {e}")))?;
-    cli.commit(&mut state, client::context())?;
+    if state.initialized() {
+        cli.commit(&mut state, client::context())?;
+    }
     Ok(cli.status.unwrap_or(0))
 }
 
@@ -1642,7 +1674,7 @@ mod tests {
     fn only_the_command_line_asks_its_process() -> Result<(), super::Failed> {
         let words = ["args", "input", "str x read-file", "str x warn", "0 exit"];
         for code in words {
-            let ran = super::run_quiet(&super::token::source("config", code)?, None);
+            let ran = super::run_quiet(&super::token::source("config", code)?, None, false);
             assert_eq!(
                 ran.err().map(|f| f.code),
                 Some(super::Code::NotHere),
@@ -1658,7 +1690,7 @@ mod tests {
     #[test]
     fn the_default_keys_are_a_config_list_keys_prints() -> Result<(), super::Failed> {
         let run = |name: &str, text: &str, state: &mut crate::client_state::Draft| {
-            super::run_quiet(&super::token::source(name, text)?, Some(state))
+            super::run_quiet(&super::token::source(name, text)?, Some(state), false)
         };
         let mut keymap = super::default_state()?.draft();
         let (screens, keys): (Vec<&str>, Vec<&str>) = (super::KEYS.lines())
@@ -1697,7 +1729,7 @@ mod tests {
         let ran = super::run_capped(
             &mut machine,
             &mut host,
-            &mut super::ConfigOnly,
+            &mut super::ConfigOnly::default(),
             Some(20_000),
             None,
         );

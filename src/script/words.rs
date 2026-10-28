@@ -1596,6 +1596,8 @@ impl Host<'_> {
             Act::KillServer => tell(Command::KillServer),
             Act::ForceKillServer => local(Local::ForceKill),
             Act::Set => {
+                self.prepare()
+                    .map_err(|failed| fail(Raise::Config, failed.to_string()))?;
                 let name = string(&next()?)?;
                 let value = next()?;
                 let state = self
@@ -1623,6 +1625,8 @@ impl Host<'_> {
             // ------------------------------------------------------ config
             // A client's own; else the bundled keys, without a user config.
             Act::ListKeys => {
+                self.prepare()
+                    .map_err(|failed| fail(Raise::Config, failed.to_string()))?;
                 let text = match &self.state {
                     Some(state) => state.keys.describe(),
                     None => super::default_state()
@@ -1786,12 +1790,16 @@ impl Host<'_> {
         keys: Keys,
         next: &mut dyn FnMut() -> Result<Value<Fux>, Failure>,
     ) -> Result<Done<Ask>, Failure> {
-        let Some(state) = self.state.as_deref_mut() else {
-            return Err(fail(
+        let refused_context = || {
+            fail(
                 Raise::NotConfig,
                 "changes a client's keys: in its config, or typed at its prompt",
-            ));
+            )
         };
+        if self.cli {
+            return Err(refused_context());
+        }
+        let state = self.state.as_deref_mut().ok_or_else(refused_context)?;
         let refused = |why: String| fail(Raise::BadBinding, why);
         let keymap = &mut state.keys;
         match keys {
@@ -1982,6 +1990,7 @@ mod tests {
             super::super::run_quiet(
                 &fuxth::token::source("config", config).map_err(|e| Code::of(e.code))?,
                 Some(&mut draft),
+                false,
             )
             .map_err(|failed| failed.code)
         };

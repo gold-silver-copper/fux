@@ -1,6 +1,8 @@
 # Policy belongs to this client, initialized once before its user config.
 str shell list
-  str unset_var try str SHELL getenv catch 2drop str /bin/sh end
+  str unset_var try
+    str bad_value try str SHELL getenv catch drop warn str /bin/sh end
+  catch 2drop str /bin/sh end
   dup str '' eq if drop str /bin/sh then
 end set
 str history-bytes 8388608 set
