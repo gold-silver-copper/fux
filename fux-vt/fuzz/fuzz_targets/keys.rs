@@ -78,7 +78,7 @@ fn steps(stream: &[u8]) -> Vec<Step> {
 /// The inputs from `steps`, each read given in pieces of `size` bytes
 /// (whole for 0), with the deadline passing at the end too.
 fn decode(steps: &[Step], size: usize, limit: usize, expect: bool, start: Instant) -> Vec<Input> {
-    let mut decoder = Decoder::with_paste_limit(limit);
+    let mut decoder = Decoder::with_paste_limit(fux_vt::keys::decode::Timing::new(35, 5000), limit);
     if expect {
         decoder.expect(start);
     }

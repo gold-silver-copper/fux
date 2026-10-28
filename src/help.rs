@@ -220,7 +220,7 @@ fn settings() -> String {
             wrapped(about, "\n      ", 78)
         ));
     }
-    out.push_str(&format!("\nShell, copy-environment, history-bytes and program-clipboard supply this\nclient's future launches. Use PANE BYTES history-budget to change one pane.\nBell, titles and terminal-clipboard affect only this client's view: supplied\nwith attach, then updated after local commits before following requests.\nWait-seconds supplies this client's observation wait limits.\nSetters and config evaluation send no requests. Shared paste buffers\nretain the newest {} copies.\n", crate::session::BUFFER_LIMIT));
+    out.push_str(&format!("\nShell, copy-environment, history-bytes, program-clipboard, reflow,\nalternate-scroll-lines and picture-bytes supply this client's future launches.\nUse PANE BYTES history-budget to change one pane.\nBell, titles, terminal-clipboard and cell-placement affect only this client's\nview: supplied with attach, then updated after local commits\nbefore following requests.\nWait-seconds supplies this client's observation wait limits.\nEscape-delay-ms and paste-timeout-ms change at an idle decoder boundary.\nSetters and config evaluation send no requests. Shared paste buffers\nretain the newest {} copies.\n", crate::session::BUFFER_LIMIT));
     out.push_str("\nBundled initialization (client-defaults.fux):\n");
     out.push_str(crate::script::DEFAULTS);
     out

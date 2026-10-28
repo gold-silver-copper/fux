@@ -6,7 +6,7 @@
 //! The expected bytes are those functions'.
 
 use fux_vt::keys::Modifiers;
-use fux_vt::keys::mouse::{MouseAction, MouseButton, MouseEvent};
+use fux_vt::keys::mouse::{MouseAction, MouseButton, MouseEvent, ScrollLines};
 use fux_vt::{
     Feature, Graphics, Mode, MouseProtocolEncoding, MouseProtocolMode, Options, Parser, Size,
 };
@@ -33,10 +33,12 @@ fn event(action: MouseAction, row: u16, col: u16) -> MouseEvent {
 
 /// What the screen reports for `event`, `None` for nothing.
 fn sent(p: &Parser, event: MouseEvent) -> Option<String> {
-    p.screen().encode_mouse(event).map(|chunks| {
-        let out: Vec<u8> = chunks.flatten().collect();
-        String::from_utf8_lossy(&out).replace('\x1b', "^[")
-    })
+    p.screen()
+        .encode_mouse(event, ScrollLines::new(5)?)
+        .map(|chunks| {
+            let out: Vec<u8> = chunks.flatten().collect();
+            String::from_utf8_lossy(&out).replace('\x1b', "^[")
+        })
 }
 
 /// DECRQM answers each set while it is, and the latest encoding wins
@@ -180,12 +182,20 @@ fn alternate_scroll_keeps_negotiated_arrows_in_bounded_chunks() -> Result {
             p.process(b"\x1b[?1049h\x1b[?1007h\x1b[?1h")?;
             p.process(flags)?;
             for (button, arrow) in [(MouseButton::WheelUp, up), (MouseButton::WheelDown, down)] {
-                for (mods, count) in [(Modifiers::NONE, 5), (Modifiers::CTRL, rows / 2)] {
+                for (mods, lines, count) in [
+                    (Modifiers::NONE, 0, 0),
+                    (Modifiers::NONE, 3, 3),
+                    (Modifiers::NONE, 32767, 32767),
+                    (Modifiers::CTRL, 3, rows / 2),
+                ] {
                     let event = MouseEvent {
                         mods,
                         ..event(MouseAction::Press(button), 0, 0)
                     };
-                    let chunks = p.screen().encode_mouse(event).ok_or("an accepted scroll")?;
+                    let chunks = p
+                        .screen()
+                        .encode_mouse(event, ScrollLines::new(lines).ok_or("scroll lines")?)
+                        .ok_or("an accepted scroll")?;
                     let mut out = Vec::new();
                     for chunk in chunks {
                         assert!(!chunk.is_empty(), "no empty chunks, even at zero distance");

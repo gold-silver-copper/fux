@@ -208,7 +208,7 @@ else of the kind fails an allocation instead.
 
 | Engine | What, and pin | Votes | Notes |
 | --- | --- | --- | --- |
-| fux-vt | the subject, by path, set up as `fux::pane::OPTIONS` with reflow and an identity, as fux and ratty set it up | — | `--no-reflow`: without reflow, fux-vt's default, leaving out the families that need it |
+| fux-vt | the subject, by path, set up with `fux::pane::OPTIONS`' fixed facilities plus pictures, with reflow and identity selected by the comparison profile | — | `--no-reflow`: without reflow, fux-vt's default, leaving out the families that need it |
 | ghostty | libghostty-vt `=0.2.1` over Ghostty `7aa95917`, built by Zig 0.16 | yes | mode 2027 on; history kept in bytes |
 | alacritty | alacritty_terminal `=0.26.0` | yes | synchronized updates applied at once (no event loop) |
 | libvterm | libvterm 0.3.3 through a C shim (`src/engines/libvterm_shim.c`) | yes | the shim guards crashes, hangs and out-of-bounds reads that random cases reach |

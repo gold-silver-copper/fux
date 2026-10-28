@@ -255,6 +255,7 @@ fn encode(spec: &Spec) -> Result<Vec<u8>, String> {
                 bell: true,
                 titles: false,
                 terminal_clipboard: true,
+                cell_placement: false,
             },
         }
         .encode()

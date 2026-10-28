@@ -2,7 +2,7 @@
 //! size, so that a run of one is the same instructions every time.
 //!
 //! - `vt/NAME`: fux-vt alone, set up as fux sets up a pane
-//!   (`fux::pane::OPTIONS`), fed in 4 KiB pieces as `compare`'s `bench`
+//!   (its fixed facilities plus explicit reflow and pictures), fed in 4 KiB pieces as `compare`'s `bench`
 //!   feeds it: the synthetic workloads on a 50×200 screen, each recording
 //!   at its own size (`vt/corpus:NAME`), and every recording in turn
 //!   (`vt/corpus`). `vt/ascii@N` and `vt/corpus@N`: the same fed N bytes
@@ -613,8 +613,14 @@ fn vt(loads: &[Load], baseline: bool, chunk: usize) -> Result<Done, String> {
                 p
             }
             None => parser.insert(hosted(
-                fux_vt::Parser::with_options(size, HISTORY, fux::pane::OPTIONS)
-                    .map_err(|e| format!("a parser of {size:?}: {e}"))?,
+                fux_vt::Parser::with_options(
+                    size,
+                    HISTORY,
+                    fux::pane::OPTIONS
+                        .with(fux_vt::Feature::Reflow)
+                        .with(fux_vt::Feature::Pictures),
+                )
+                .map_err(|e| format!("a parser of {size:?}: {e}"))?,
             )),
         };
         for piece in pieces(&load.bytes, chunk) {
@@ -654,7 +660,12 @@ fn pane_parser(history: usize, options: fux_vt::Options) -> Result<fux_vt::Parse
 /// A moment: a pane's parser fed `setup`, then `measured` unless
 /// `baseline`, both 4 KiB a call. Its units are the bytes measured.
 fn moment(setup: &[u8], measured: &[u8], baseline: bool) -> Result<Done, String> {
-    let mut parser = pane_parser(HISTORY, fux::pane::OPTIONS)?;
+    let mut parser = pane_parser(
+        HISTORY,
+        fux::pane::OPTIONS
+            .with(fux_vt::Feature::Reflow)
+            .with(fux_vt::Feature::Pictures),
+    )?;
     for piece in pieces(setup, CHUNK) {
         let _ = parser.process_with(piece, &mut Sink);
     }
@@ -697,8 +708,14 @@ fn sixel_picture(payloads: &Path) -> Result<std::sync::Arc<fux_vt::sixel::Pictur
     let frame = census::make("sixel:256", payloads, 1).ok_or("no sixel:256 payload")??;
     let size = fux_vt::Size::new(census::ROWS, census::COLS).map_err(|e| e.to_string())?;
     let mut parser = hosted(
-        fux_vt::Parser::with_options(size, HISTORY, fux::pane::OPTIONS)
-            .map_err(|e| format!("a parser of {size:?}: {e}"))?,
+        fux_vt::Parser::with_options(
+            size,
+            HISTORY,
+            fux::pane::OPTIONS
+                .with(fux_vt::Feature::Reflow)
+                .with(fux_vt::Feature::Pictures),
+        )
+        .map_err(|e| format!("a parser of {size:?}: {e}"))?,
     );
     parser.process(&frame).map_err(|e| e.to_string())?;
     let shown = parser
@@ -739,13 +756,9 @@ fn resize_history(
     fill: usize,
     history: usize,
 ) -> Result<Done, String> {
-    let options = match r.reflow {
-        true => fux::pane::OPTIONS,
-        false => (fux_vt::Feature::ALL.into_iter())
-            .filter(|&f| f != fux_vt::Feature::Reflow && fux::pane::OPTIONS.has(f))
-            .collect::<fux_vt::Options>()
-            .with_identity(fux::pane::OPTIONS.identity()),
-    };
+    let options = fux::pane::OPTIONS
+        .set(fux_vt::Feature::Reflow, r.reflow)
+        .with(fux_vt::Feature::Pictures);
     let mut parser = full_history(fill, history, options, r.short)?;
     let wide = parser.screen().size();
     let narrow = fux_vt::Size::new(wide.rows(), r.narrow).map_err(|e| e.to_string())?;
@@ -781,6 +794,9 @@ fn pane(loads: &[Load], baseline: bool) -> Result<Done, String> {
         command::PaneOptions {
             history_bytes: command::HistoryBytes::new(HISTORY).ok_or("history budget")?,
             program_clipboard: true,
+            reflow: true,
+            alternate_scroll_lines: fux::command::ScrollLines::new(5).ok_or("scroll lines")?,
+            picture_bytes: fux::command::PictureBytes::new(100663296).ok_or("pictures")?,
         },
     )
     .map_err(|e| e.to_string())?;
@@ -987,8 +1003,14 @@ fn paint(
 /// The key mode of a pane whose program pushed the kitty `flags`.
 fn kitty_mode(flags: u8) -> Result<fux::encode::KeyMode, String> {
     let size = fux_vt::Size::new(1, 1).map_err(|e| e.to_string())?;
-    let mut parser =
-        fux_vt::Parser::with_options(size, 0, fux::pane::OPTIONS).map_err(|e| e.to_string())?;
+    let mut parser = fux_vt::Parser::with_options(
+        size,
+        0,
+        fux::pane::OPTIONS
+            .with(fux_vt::Feature::Reflow)
+            .with(fux_vt::Feature::Pictures),
+    )
+    .map_err(|e| e.to_string())?;
     parser
         .process(format!("\x1b[>{flags}u").as_bytes())
         .map_err(|e| e.to_string())?;
@@ -1019,7 +1041,7 @@ fn keys(recordings: &[Recording], kitty: Option<fux::encode::KeyMode>) -> Vec<Ve
 /// The keystrokes fux's decoder reads in `keys`, its Escape deadline passing
 /// at the end.
 fn strokes(keys: &[u8]) -> Vec<fux::keys::Keystroke> {
-    let mut decoder = fux::decode::Decoder::default();
+    let mut decoder = fux::decode::Decoder::new(fux::decode::Timing::new(35, 5000));
     let mut inputs = Vec::new();
     decoder.bytes(keys, &mut inputs);
     decoder.timeout(&mut inputs);
@@ -1041,7 +1063,7 @@ fn decode(steps: &[Vec<u8>], baseline: bool, total: usize) -> Result<Done, Strin
     }
     let mut units = 0usize;
     let mut inputs = Vec::new();
-    let mut decoder = fux::decode::Decoder::default();
+    let mut decoder = fux::decode::Decoder::new(fux::decode::Timing::new(35, 5000));
     while units < total {
         for keys in steps {
             units = units.saturating_add(keys.len());
@@ -1103,6 +1125,7 @@ fn presentation() -> fux::view::Presentation {
         bell: true,
         titles: false,
         terminal_clipboard: true,
+        cell_placement: false,
     }
 }
 
@@ -1110,6 +1133,9 @@ fn pane_options(history: usize) -> Result<command::PaneOptions, String> {
     Ok(command::PaneOptions {
         history_bytes: command::HistoryBytes::new(history).ok_or("history budget")?,
         program_clipboard: true,
+        reflow: true,
+        alternate_scroll_lines: fux::command::ScrollLines::new(5).ok_or("scroll lines")?,
+        picture_bytes: fux::command::PictureBytes::new(100663296).ok_or("pictures")?,
     })
 }
 
@@ -1406,7 +1432,9 @@ mod tests {
     #[test]
     fn the_history_resized_is_full() -> Result<(), String> {
         let (fill, history) = (super::FILL / 16, super::HISTORY / 16);
-        let pane = fux::pane::OPTIONS;
+        let pane = fux::pane::OPTIONS
+            .with(fux_vt::Feature::Reflow)
+            .with(fux_vt::Feature::Pictures);
         let rows = super::full_history(fill, history, pane, false)?
             .screen()
             .history_len();

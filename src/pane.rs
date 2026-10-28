@@ -230,7 +230,8 @@ pub const IDENTITY: fux_vt::Identity = fux_vt::Identity {
     version: env!("CARGO_PKG_VERSION"),
 };
 
-/// How every pane's terminal is set up: events (titles, colour queries),
+/// The fixed facilities supported by fux. Each creation supplies its
+/// emulator policy separately. Events (titles, colour queries),
 /// DECRQM (programs ask it whether synchronized output is known before
 /// they use it), in-band resize, the size query, colour-scheme reports, the kitty
 /// keyboard protocol (fux encodes keys as each pane asks), hyperlinks,
@@ -239,10 +240,7 @@ pub const IDENTITY: fux_vt::Identity = fux_vt::Identity {
 /// far as its terminal draws them, `render::sgr`), the palette (a pane's
 /// program sets and asks its colours, OSC 4, 10 to 19 and the rest, and
 /// is drawn in them, `render::pane_colours`, without its client's palette
-/// changing), pictures (sixel a pane's program draws, which fux draws on
-/// clients whose terminals draw sixel, `render::pictures`), reflow (a
-/// resized pane's lines re-wrap at its new width, its history with them,
-/// as in the terminals fux runs in) and fux's identity.
+/// changing) and fux's identity.
 pub const OPTIONS: fux_vt::Options = fux_vt::Options::new()
     .with(Feature::Events)
     .with(Feature::ModeReports)
@@ -254,8 +252,6 @@ pub const OPTIONS: fux_vt::Options = fux_vt::Options::new()
     .with(Feature::PromptMarks)
     .with(Feature::SettingReports)
     .with(Feature::Palette)
-    .with(Feature::Pictures)
-    .with(Feature::Reflow)
     .with_identity(Some(IDENTITY));
 
 /// The most bytes of replies one read of a program's output queues: the
@@ -705,7 +701,7 @@ pub struct Pane {
     process: Process,
     input: InputQueue,
     pub runs: Runs,
-    program_clipboard: bool,
+    options: crate::command::PaneOptions,
     /// The output of a frame the program is drawing in synchronized output,
     /// from BSU on, since when (its timeout's start), and where the parser
     /// will end it; see [`Pane::output`].
@@ -888,7 +884,7 @@ impl<'a> PaneMut<'a> {
     /// is false, which copies nothing and so refuses none.
     pub fn take_read(&mut self) -> (bool, Vec<String>) {
         let mut copies = Vec::new();
-        let allowed = self.pane.program_clipboard;
+        let allowed = self.pane.options.program_clipboard;
         for copy in std::mem::take(&mut self.pane.copied)
             .into_iter()
             .filter(|_| allowed)
@@ -931,10 +927,10 @@ impl<'a> PaneMut<'a> {
     pub fn clear_history(&mut self) {
         self.pane.clear_history();
     }
-    pub fn set_history_bytes(&mut self, bytes: usize) {
-        if self.pane.history_bytes() != bytes {
+    pub fn set_history_bytes(&mut self, bytes: crate::command::HistoryBytes) {
+        if self.pane.options.history_bytes != bytes {
             self.pane.set_history_bytes(bytes);
-            self.tell.tell(Told::HistoryBudget(bytes));
+            self.tell.tell(Told::HistoryBudget(bytes.get()));
         }
     }
     pub fn stop_reading(&mut self) {
@@ -1039,8 +1035,9 @@ impl Pane {
     pub fn history_bytes(&self) -> usize {
         self.parser.history_bytes()
     }
-    pub fn program_clipboard(&self) -> bool {
-        self.program_clipboard
+    /// The current pane policy, retained through reset and respawn.
+    pub fn options(&self) -> crate::command::PaneOptions {
+        self.options
     }
 
     pub fn new(
@@ -1050,9 +1047,14 @@ impl Pane {
         size: Size,
         options: crate::command::PaneOptions,
     ) -> Result<Self, Error> {
-        let parser = fux_vt::Parser::with_options(size, options.history_bytes.get(), OPTIONS)
+        let features = OPTIONS
+            .set(Feature::Reflow, options.reflow)
+            .set(Feature::Pictures, options.picture_bytes.get() != 0);
+        let mut parser = fux_vt::Parser::with_options(size, options.history_bytes.get(), features)
             .map_err(|source| Error::Terminal { size, source })?;
+        parser.set_picture_bytes(options.picture_bytes.get());
         Ok(Pane {
+            options,
             id,
             name,
             title: Title::default(),
@@ -1060,7 +1062,6 @@ impl Pane {
             process: Process::Absent,
             input: InputQueue::default(),
             runs,
-            program_clipboard: options.program_clipboard,
             frame: None,
             unread: (Vec::new(), Instant::now()),
             frame_left: 0,
@@ -1630,8 +1631,9 @@ impl Pane {
         self.parser.clear_history();
     }
 
-    pub(crate) fn set_history_bytes(&mut self, bytes: usize) {
-        self.parser.set_history_bytes(bytes);
+    pub(crate) fn set_history_bytes(&mut self, bytes: crate::command::HistoryBytes) {
+        self.options.history_bytes = bytes;
+        self.parser.set_history_bytes(bytes.get());
     }
 
     /// Where it stands now (`Version`).
@@ -1708,7 +1710,7 @@ impl Pane {
             terminal_errors: _,
             read_error,
             reading,
-            program_clipboard: _,
+            options,
         } = fresh;
         // The new program starts with nothing queued. One that ended said
         // what it left with its exit; one that runs leaves its input now,
@@ -1718,7 +1720,7 @@ impl Pane {
             Some(_) => Left::default(),
             None => Left { input, ..self.left },
         };
-        (self.title, self.parser, self.runs) = (title, parser, runs);
+        (self.title, self.parser, self.runs, self.options) = (title, parser, runs, options);
         (self.frame, self.unread, self.frame_left) = (frame, unread, frame_left);
         (self.exiting, self.scheme_told, self.wrote_at) = (exiting, scheme_told, wrote_at);
         (self.mouse_held, self.left, self.alerts, self.lost) = (mouse_held, left, alerts, lost);
@@ -1836,6 +1838,9 @@ pub(crate) mod tests {
         Ok(crate::command::PaneOptions {
             history_bytes: crate::command::HistoryBytes::new(bytes).ok_or("history budget")?,
             program_clipboard: true,
+            reflow: true,
+            alternate_scroll_lines: crate::command::ScrollLines::new(5).ok_or("scroll lines")?,
+            picture_bytes: crate::command::PictureBytes::new(100663296).ok_or("pictures")?,
         })
     }
 
@@ -1854,6 +1859,42 @@ pub(crate) mod tests {
     pub(crate) fn size(rows: u16, cols: u16) -> Size {
         let one = |n| std::num::NonZeroU16::new(n).unwrap_or(std::num::NonZeroU16::MIN);
         Size::from((one(rows), one(cols)))
+    }
+
+    #[test]
+    fn terminal_policy_survives_ris_and_picture_reports_match_admission()
+    -> Result<(), Box<dyn std::error::Error>> {
+        for reflow in [false, true] {
+            for bytes in [0, 1, 4096] {
+                let mut options = options(1024)?;
+                options.reflow = reflow;
+                options.picture_bytes = crate::command::PictureBytes::new(bytes).ok_or("budget")?;
+                let mut pane = Pane::new(PaneId::of(1), None, shell()?, size(3, 8), options)?;
+                let cell = fux_vt::CellSize::new(10, 20).ok_or("cell")?;
+                let _ = pane.host(
+                    Colours::default(),
+                    Default::default(),
+                    fux_vt::Graphics::Sixel(cell),
+                );
+                pane.parser.process(b"\x1bcabcdef")?;
+                pane.parser.resize(size(3, 4))?;
+                assert_eq!(
+                    pane.screen().cursor_position().0,
+                    if reflow { 1 } else { 0 }
+                );
+                let mut reply = Vec::new();
+                pane.parser
+                    .process_with_replies(b"\x1b[c", |b| reply.extend_from_slice(b))?;
+                let reply = String::from_utf8(reply)?;
+                assert_eq!(
+                    reply.trim_end_matches('c').split(';').any(|n| n == "4"),
+                    bytes != 0
+                );
+                pane.parser.process(b"\x1bP9q#1;2;100;0;0!20~\x1b\\")?;
+                assert_eq!(pane.screen().pictures().next().is_some(), bytes == 4096);
+            }
+        }
+        Ok(())
     }
 
     /// Once input is refused, nothing more is queued until the program
@@ -2014,14 +2055,17 @@ pub(crate) mod tests {
         };
         let mut n = 1usize;
         while n < 1 << 24 {
-            let stops = fux_vt::Parser::with_options(size(rows, cols), 1 << 10, OPTIONS).is_ok_and(
-                |mut parser| {
-                    matches!(
-                        parser.process_until_stop(&output(n), &mut Discard),
-                        Ok(Some((_, fux_vt::Stop::Budget)))
-                    )
-                },
-            );
+            let stops = fux_vt::Parser::with_options(
+                size(rows, cols),
+                1 << 10,
+                OPTIONS.with(Feature::Reflow).with(Feature::Pictures),
+            )
+            .is_ok_and(|mut parser| {
+                matches!(
+                    parser.process_until_stop(&output(n), &mut Discard),
+                    Ok(Some((_, fux_vt::Stop::Budget)))
+                )
+            });
             if stops {
                 break;
             }
@@ -2113,13 +2157,15 @@ pub(crate) mod tests {
             turns = turns.saturating_add(1);
         }
         assert!(!pane.has_unread(), "{turns} turns");
-        let mut whole =
-            fux_vt::Parser::with_options(size(50, 200), 1 << 10, OPTIONS).map_err(|source| {
-                Error::Terminal {
-                    size: size(50, 200),
-                    source,
-                }
-            })?;
+        let mut whole = fux_vt::Parser::with_options(
+            size(50, 200),
+            1 << 10,
+            OPTIONS.with(Feature::Reflow).with(Feature::Pictures),
+        )
+        .map_err(|source| Error::Terminal {
+            size: size(50, 200),
+            source,
+        })?;
         let _ = whole.process(&[&reps[..], b"\x1b[HZ"].concat());
         assert_eq!(
             pane.screen().cursor_position(),
@@ -2150,13 +2196,15 @@ pub(crate) mod tests {
             turns = turns.saturating_add(1);
         }
         assert!(!pane.has_unread(), "{turns} turns");
-        let mut whole =
-            fux_vt::Parser::with_options(size(2000, 2000), 1 << 10, OPTIONS).map_err(|source| {
-                Error::Terminal {
-                    size: size(2000, 2000),
-                    source,
-                }
-            })?;
+        let mut whole = fux_vt::Parser::with_options(
+            size(2000, 2000),
+            1 << 10,
+            OPTIONS.with(Feature::Reflow).with(Feature::Pictures),
+        )
+        .map_err(|source| Error::Terminal {
+            size: size(2000, 2000),
+            source,
+        })?;
         let _ = whole.process(output);
         let (a, b) = (pane.screen(), whole.screen());
         assert!(a.rows().zip(b.rows()).all(|(a, b)| a.cells().eq(b.cells())));

@@ -1094,6 +1094,7 @@ impl Server {
         let send: Vec<bool> = (pictures.iter())
             .map(|p| {
                 !known
+                    || attached.spare.clears(&attached.shown)
                     || !attached.pictures.contains(p)
                     || !attached.spare.same_in(&attached.shown, p.area)
             })

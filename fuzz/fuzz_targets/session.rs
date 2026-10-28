@@ -188,10 +188,18 @@ type State = (
 
 /// A client's keys, as its client reads them: its decoder, and the screen
 /// it has open or what its keys are in the middle of.
-#[derive(Default)]
 struct Keys {
     screen: fux::screens::Display,
     decoder: Decoder,
+}
+
+impl Default for Keys {
+    fn default() -> Self {
+        Self {
+            screen: Default::default(),
+            decoder: Decoder::new(defaults().preferences.decode_timing()),
+        }
+    }
 }
 
 /// One session, its clients' keys, and what drove it that the checks need.

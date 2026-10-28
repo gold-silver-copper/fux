@@ -621,6 +621,18 @@ fn pictures_reach_a_terminal_that_draws_sixel() -> Outcome {
         json.contains(r#""col":0,"rows":1,"cropped":0,"cols":2,"width":20,"height":12}]"#),
         "{json}"
     );
+    // A placement change clears the screen, so unchanged pictures must be sent again.
+    client.painted.clear();
+    let mut presentation = fux::script::default_state()
+        .map_err(e)?
+        .preferences
+        .presentation();
+    presentation.cell_placement = true;
+    client.act(fux::act::Act::Presentation(presentation))?;
+    eventually("the picture resent after placement changes", || {
+        client.pump()?;
+        Ok(painted(&client, b"\x1bP0;1;0q\"1;1;20;12"))
+    })?;
     Ok(())
 }
 

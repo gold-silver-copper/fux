@@ -180,6 +180,9 @@ pub struct Opts {
     pub argv: Vec<String>,
     pub shell: Option<bool>,
     pub history_bytes: Option<HistoryBytes>,
+    pub reflow: Option<bool>,
+    pub alternate_scroll_lines: Option<crate::command::ScrollLines>,
+    pub picture_bytes: Option<crate::command::PictureBytes>,
     pub program_clipboard: Option<bool>,
     pub copy_environment: Option<Vec<EnvName>>,
     pub axis: Option<Axis>,
@@ -209,6 +212,11 @@ impl Opts {
         defaults: crate::command::PaneOptions,
     ) -> crate::command::PaneOptions {
         crate::command::PaneOptions {
+            reflow: self.reflow.unwrap_or(defaults.reflow),
+            alternate_scroll_lines: self
+                .alternate_scroll_lines
+                .unwrap_or(defaults.alternate_scroll_lines),
+            picture_bytes: self.picture_bytes.unwrap_or(defaults.picture_bytes),
             history_bytes: self.history_bytes.unwrap_or(defaults.history_bytes),
             program_clipboard: self.program_clipboard.unwrap_or(defaults.program_clipboard),
         }

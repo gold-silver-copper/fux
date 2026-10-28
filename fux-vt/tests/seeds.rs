@@ -1159,7 +1159,7 @@ fn replay(seed: &Seed) -> Result<Replayed> {
     let bytes = (seed.bytes)();
     let (before, mut events, mut inputs) = (Work::now(), Events::default(), Vec::new());
     if seed.fuzz == Fuzz::Keys {
-        let mut decoder = Decoder::default();
+        let mut decoder = Decoder::new(fux_vt::keys::decode::Timing::new(35, 5000));
         for piece in pieces(&bytes) {
             decoder.bytes(piece, &mut inputs);
         }
