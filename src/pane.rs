@@ -6,7 +6,7 @@ use crate::id::{PaneId, TabId, WsId};
 use crate::outer::{Colours, Scheme};
 use crate::process::{Child, Ended, Pid};
 use fux_vt::{Event, Feature, Screen, Size};
-use std::collections::VecDeque;
+use std::collections::{BTreeSet, VecDeque};
 use std::time::{Duration, Instant};
 
 /// The largest piece a client's typing gives: a whole paste and its
@@ -64,6 +64,7 @@ impl std::error::Error for Error {}
 #[derive(Default)]
 pub struct InputQueue {
     bytes: ByteQueue,
+    touched: bool,
     /// Whether it refuses, and its run of input lost, which goes on only
     /// while it refuses.
     refusing: Refusing,
@@ -140,6 +141,7 @@ impl InputQueue {
         let bytes = bytes.as_ref();
         self.fits(bytes.len())?;
         self.bytes.push(bytes);
+        self.touched |= !bytes.is_empty();
         Ok(())
     }
     /// Queues what `write` appends to its vector as a piece, in place, or
@@ -155,7 +157,9 @@ impl InputQueue {
             }
             len
         });
-        self.refuse(len, room)
+        self.refuse(len, room)?;
+        self.touched |= len > 0;
+        Ok(())
     }
     /// How many bytes it holds, not yet written to the program.
     pub fn len(&self) -> usize {
@@ -713,7 +717,7 @@ pub struct Pane {
     /// thread. While any waits, output read is put after it, and the
     /// server reads no more from the program; see [`Pane::read_unread`].
     /// With it, since when it waits: its turn is due then.
-    unread: (Vec<u8>, Instant),
+    unread: Pending,
     /// How many of the unread bytes are the rest of a frame being read
     /// (`Pane::mid_frame`).
     frame_left: usize,
@@ -764,6 +768,15 @@ pub struct Pane {
     reading: Reading,
 }
 
+/// Owned output waiting for another parser turn. Consumed prefixes stay
+/// in this allocation until the bytes are read, rather than copied away
+/// at each budget yield.
+struct Pending {
+    bytes: Vec<u8>,
+    at: usize,
+    since: Instant,
+}
+
 /// A pane to change, with a journal at its place: what its methods do
 /// that events tell is journaled as they do it, at its own id. It reads
 /// as a `Pane` and changes it only by its own methods, one for each thing
@@ -775,28 +788,45 @@ pub struct Pane {
 pub struct PaneMut<'a> {
     pane: &'a mut Pane,
     tell: Teller<'a>,
+    input: &'a mut BTreeSet<PaneId>,
 }
 
 impl<'a> PaneMut<'a> {
-    /// `pane`, in tab `at`, telling `journal`.
-    pub fn new(pane: &'a mut Pane, at: (WsId, TabId), journal: &'a mut Journal) -> Self {
+    fn queued(&mut self) {
+        if std::mem::take(&mut self.pane.input.touched) && !self.pane.input.is_empty() {
+            self.input.insert(self.pane.id);
+        }
+    }
+
+    /// `pane`, in tab `at`, telling `journal`; new input is noted in
+    /// `input` for its next sweep.
+    pub fn new(
+        pane: &'a mut Pane,
+        at: (WsId, TabId),
+        journal: &'a mut Journal,
+        input: &'a mut BTreeSet<PaneId>,
+    ) -> Self {
         let tell = journal.teller((at, pane.id));
-        Self { pane, tell }
+        Self { pane, tell, input }
     }
-    pub fn output(&mut self, bytes: &[u8]) {
-        self.pane.output(bytes, &mut self.tell);
+    pub fn output(&mut self, bytes: &[u8], now: Instant) {
+        self.pane.output(bytes, now, &mut self.tell);
+        self.queued();
         self.pane.read_done();
     }
-    pub fn read_unread(&mut self) {
-        self.pane.read_unread(&mut self.tell);
+    pub fn read_unread(&mut self, now: Instant) {
+        self.pane.read_unread(now, &mut self.tell);
+        self.queued();
         self.pane.read_done();
     }
-    pub fn release_frame(&mut self) {
-        self.pane.release_frame(&mut self.tell);
+    pub fn release_frame(&mut self, now: Instant) {
+        self.pane.release_frame(now, &mut self.tell);
+        self.queued();
         self.pane.read_done();
     }
-    pub fn resize(&mut self, size: Size) {
-        self.pane.resize(size, &mut self.tell);
+    pub fn resize(&mut self, size: Size, now: Instant) {
+        self.pane.resize(size, now, &mut self.tell);
+        self.queued();
     }
     pub(crate) fn size_terminal(&mut self) {
         let result = self.pane.size_terminal();
@@ -816,7 +846,9 @@ impl<'a> PaneMut<'a> {
         self.pane.take_terminal_errors()
     }
     pub fn respawned(&mut self, fresh: Pane, process: Process) -> (Process, Left) {
-        self.pane.respawned(fresh, process, &mut self.tell)
+        let result = self.pane.respawned(fresh, process, &mut self.tell);
+        self.queued();
+        result
     }
     pub fn rename(&mut self, name: String) {
         self.pane.rename(name, &mut self.tell);
@@ -834,10 +866,14 @@ impl<'a> PaneMut<'a> {
         self.pane.write_input()
     }
     pub fn push(&mut self, bytes: impl AsRef<[u8]>) -> Result<(), Error> {
-        self.pane.push(bytes)
+        let result = self.pane.push(bytes);
+        self.queued();
+        result
     }
     pub fn push_with(&mut self, write: impl FnOnce(&Screen, &mut Vec<u8>)) -> Result<(), Error> {
-        self.pane.push_with(write)
+        let result = self.pane.push_with(write);
+        self.queued();
+        result
     }
     pub fn fits(&mut self, len: usize) -> Result<(), Error> {
         self.pane.fits(len)
@@ -849,7 +885,7 @@ impl<'a> PaneMut<'a> {
         report: Vec<u8>,
         held: Option<fux_vt::keys::mouse::MouseButton>,
     ) -> Result<(), Error> {
-        self.pane.push(report)?;
+        self.push(report)?;
         self.pane.mouse_held = held;
         Ok(())
     }
@@ -859,6 +895,7 @@ impl<'a> PaneMut<'a> {
         if self.pane.offer(scheme.report()) {
             self.pane.scheme_told = Some(scheme);
         }
+        self.queued();
     }
     #[must_use]
     pub fn host(
@@ -1044,6 +1081,7 @@ impl Pane {
         runs: Runs,
         size: Size,
         options: crate::command::PaneOptions,
+        now: Instant,
     ) -> Result<Self, Error> {
         let features = OPTIONS
             .set(Feature::Reflow, options.reflow)
@@ -1061,7 +1099,11 @@ impl Pane {
             input: InputQueue::default(),
             runs,
             frame: None,
-            unread: (Vec::new(), Instant::now()),
+            unread: Pending {
+                bytes: Vec::new(),
+                at: 0,
+                since: now,
+            },
             frame_left: 0,
             exiting: None,
             colours: Colours::default(),
@@ -1094,21 +1136,17 @@ impl Pane {
     /// frame is read anyway once [`FRAME_TIMEOUT`] passes
     /// ([`Pane::release_frame`]) or it grows past [`FRAME_LIMIT`]; after
     /// that the program's output is read as it comes until its next BSU.
-    fn output(&mut self, bytes: &[u8], tell: &mut Teller<'_>) {
-        self.output_at(bytes, Instant::now(), tell)
-    }
-
-    /// [`Pane::output`] at `now`.
-    ///
     /// Each call of the parser does at most a stated amount of work; at it,
     /// the rest of the output waits, unread, for the pane's next turn
     /// ([`Pane::read_unread`]).
-    fn output_at(&mut self, bytes: &[u8], now: Instant, tell: &mut Teller<'_>) {
+    fn output(&mut self, bytes: &[u8], now: Instant, tell: &mut Teller<'_>) {
         if self.has_unread() {
-            self.unread.0.extend_from_slice(bytes);
+            self.unread.bytes.extend_from_slice(bytes);
             return;
         }
-        self.read(bytes, now, tell);
+        if let Some(at) = self.read(bytes, now, tell) {
+            self.wait_unread(bytes.get(at..).unwrap_or_default().to_vec(), 0, now);
+        }
     }
 
     /// Whether output waits to be read on the pane's next turn
@@ -1118,14 +1156,14 @@ impl Pane {
     /// whole, REP's copies, a checksum's rows), any output read since
     /// waiting behind it.
     pub fn has_unread(&self) -> bool {
-        !self.unread.0.is_empty() || self.parser.has_work_left()
+        self.unread.at < self.unread.bytes.len() || self.parser.has_work_left()
     }
 
     /// When the pane's next turn to read the output waiting is due, if any
     /// waits: since it began to wait, so that it is due on the server's
     /// next turn, whenever that reads the clock.
     pub fn unread_due(&self) -> Option<Instant> {
-        self.has_unread().then_some(self.unread.1)
+        self.has_unread().then_some(self.unread.since)
     }
 
     /// Whether the screen is part way through a frame drawn in
@@ -1141,37 +1179,49 @@ impl Pane {
     /// Reads the output waiting since a call of the parser did all the work
     /// one may, until the next call does: the rest of a frame first, as
     /// the frame was read.
-    fn read_unread(&mut self, tell: &mut Teller<'_>) {
-        let unread = std::mem::take(&mut self.unread.0);
-        // Only the work of a sequence read already: a call of no bytes does
-        // it, and stops again if that spends its budget.
+    fn read_unread(&mut self, now: Instant, tell: &mut Teller<'_>) {
+        let bytes = std::mem::take(&mut self.unread.bytes);
+        let start = std::mem::take(&mut self.unread.at);
+        let unread = bytes.get(start..).unwrap_or_default();
+        // A sequence can have work left even after all its bytes were read.
         if unread.is_empty() {
             if self.parse(&[], false, tell).is_some() {
-                self.wait_unread(Vec::new());
+                self.wait_unread(bytes, start, now);
             }
             return;
         }
         let frame_left = std::mem::take(&mut self.frame_left);
         let at = frame_left.min(unread.len());
-        let (frame, after) = unread.split_at_checked(at).unwrap_or((&unread, &[]));
+        let (frame, after) = unread.split_at_checked(at).unwrap_or((unread, &[]));
         if let Some((taken, _)) = self.parse(frame, false, tell) {
             self.frame_left = frame.len().saturating_sub(taken);
-            self.wait_unread(unread.get(taken..).unwrap_or_default().to_vec());
+            self.wait_unread(bytes, start.saturating_add(taken), now);
             return;
         }
-        // The rest of a frame read: the read ends at the next frame.
         self.reading.framed |= at > 0;
-        self.read(after, Instant::now(), tell);
+        if let Some(taken) = self.read(after, now, tell) {
+            self.wait_unread(bytes, start.saturating_add(at).saturating_add(taken), now);
+        }
     }
 
-    /// `left` waits to be read on the pane's next turn, from now.
-    fn wait_unread(&mut self, left: Vec<u8>) {
-        self.unread = (left, Instant::now());
+    /// `bytes` from `at` waits for the next turn. Give back the allocation
+    /// once consumed, including when only a sequence's work remains.
+    fn wait_unread(&mut self, bytes: Vec<u8>, at: usize, now: Instant) {
+        let (bytes, at) = if at < bytes.len() {
+            (bytes, at)
+        } else {
+            (Vec::new(), 0)
+        };
+        self.unread = Pending {
+            bytes,
+            at,
+            since: now,
+        };
     }
 
-    /// Reads `bytes` as [`Pane::output_at`] does at `now`, with no output
-    /// waiting.
-    fn read(&mut self, bytes: &[u8], now: Instant, tell: &mut Teller<'_>) {
+    /// Reads `bytes` at `now`, returning where its next parser turn starts.
+    /// A held frame already owns its bytes and keeps that allocation itself.
+    fn read(&mut self, bytes: &[u8], now: Instant, tell: &mut Teller<'_>) -> Option<usize> {
         let mut rest = bytes;
         loop {
             if let Some((held, _, scan)) = &mut self.frame {
@@ -1179,29 +1229,25 @@ impl Pane {
                 held.extend_from_slice(rest);
                 let Some(end) = scan.end(held) else {
                     if held.len() > FRAME_LIMIT {
-                        self.release_frame(tell);
+                        self.release_frame(now, tell);
                     }
-                    return;
+                    return None;
                 };
-                let mut frame = std::mem::take(held);
+                let frame = std::mem::take(held);
                 self.frame = None;
-                frame.truncate(end);
-                // The frame ends in what came now: the rest is after it.
                 rest = rest.get(end.saturating_sub(read)..).unwrap_or_default();
-                if let Some((taken, _)) = self.parse(&frame, false, tell) {
-                    let left = frame.get(taken..).unwrap_or_default();
-                    self.frame_left = left.len();
-                    self.wait_unread([left, rest].concat());
-                    return;
+                if let Some((taken, _)) =
+                    self.parse(frame.get(..end).unwrap_or_default(), false, tell)
+                {
+                    self.frame_left = end.saturating_sub(taken);
+                    self.wait_unread(frame, taken, now);
+                    return None;
                 }
-                // A frame read whole: the read ends at the next frame.
                 self.reading.framed = true;
             } else {
                 match self.parse(rest, true, tell) {
-                    None => return,
+                    None => return None,
                     Some((end, fux_vt::Stop::Begun)) => {
-                        // A frame begun after one read whole ends that read,
-                        // with what came between them.
                         if self.reading.framed {
                             self.judge_read();
                         }
@@ -1209,8 +1255,7 @@ impl Pane {
                         rest = rest.get(end..).unwrap_or_default();
                     }
                     Some((end, _)) => {
-                        self.wait_unread(rest.get(end..).unwrap_or_default().to_vec());
-                        return;
+                        return Some(bytes.len().saturating_sub(rest.len()).saturating_add(end));
                     }
                 }
             }
@@ -1225,16 +1270,15 @@ impl Pane {
     }
 
     /// Reads the held frame now, ended or not.
-    fn release_frame(&mut self, tell: &mut Teller<'_>) {
+    fn release_frame(&mut self, now: Instant, tell: &mut Teller<'_>) {
         let Some((held, ..)) = self.frame.take() else {
             return;
         };
         match self.parse(&held, false, tell) {
             // No output waits while a frame is held: it is the first.
             Some((taken, _)) => {
-                let left = held.get(taken..).unwrap_or_default().to_vec();
-                self.frame_left = left.len();
-                self.wait_unread(left);
+                self.frame_left = held.len().saturating_sub(taken);
+                self.wait_unread(held, taken, now);
             }
             // A frame read whole: the read ends at the next frame.
             None => self.reading.framed = true,
@@ -1321,7 +1365,7 @@ impl Pane {
 
     /// Writes the waiting input, as far as the program's terminal takes it;
     /// whether it took any, which makes room in the queue.
-    fn write_input(&mut self) -> bool {
+    pub(crate) fn write_input(&mut self) -> bool {
         let Process::Reading(child) = &self.process else {
             return false;
         };
@@ -1342,11 +1386,11 @@ impl Pane {
 
     /// Resizes the screen and the PTY. A held frame is read first: it was
     /// drawn for the old size.
-    fn resize(&mut self, size: Size, tell: &mut Teller<'_>) {
+    fn resize(&mut self, size: Size, now: Instant, tell: &mut Teller<'_>) {
         if self.size() == size {
             return;
         }
-        self.release_frame(tell);
+        self.release_frame(now, tell);
         // The frame read now ends its read, before the resize's own losses.
         self.read_done();
         let refused = self.parser.refused();
@@ -1864,7 +1908,14 @@ pub(crate) mod tests {
                 let mut options = options(1024)?;
                 options.reflow = reflow;
                 options.picture_bytes = crate::command::PictureBytes::new(bytes).ok_or("budget")?;
-                let mut pane = Pane::new(PaneId::of(1), None, shell()?, size(3, 8), options)?;
+                let mut pane = Pane::new(
+                    PaneId::of(1),
+                    None,
+                    shell()?,
+                    size(3, 8),
+                    options,
+                    Instant::now(),
+                )?;
                 let cell = fux_vt::CellSize::new(10, 20).ok_or("cell")?;
                 let _ = pane.host(
                     Colours::default(),
@@ -2077,6 +2128,7 @@ pub(crate) mod tests {
             crate::pane::tests::shell()?,
             size,
             crate::pane::tests::options(1 << 10)?,
+            Instant::now(),
         )
         .map(Lone::new)
         .map_err(Into::into)
@@ -2087,6 +2139,7 @@ pub(crate) mod tests {
     pub(crate) struct Lone {
         pub pane: Pane,
         pub journal: Journal,
+        queued_input: BTreeSet<PaneId>,
     }
 
     impl std::ops::Deref for Lone {
@@ -2105,28 +2158,35 @@ pub(crate) mod tests {
     impl Lone {
         pub(crate) fn new(pane: Pane) -> Self {
             let journal = Journal::default();
-            Self { pane, journal }
+            Self {
+                pane,
+                journal,
+                queued_input: BTreeSet::new(),
+            }
         }
         pub(crate) fn placed(&mut self) -> PaneMut<'_> {
             let at = (WsId::of(1), TabId::of(1));
-            PaneMut::new(&mut self.pane, at, &mut self.journal)
+            PaneMut::new(
+                &mut self.pane,
+                at,
+                &mut self.journal,
+                &mut self.queued_input,
+            )
         }
         pub(crate) fn output(&mut self, bytes: &[u8]) {
-            self.placed().output(bytes);
+            self.placed().output(bytes, Instant::now());
         }
         pub(crate) fn output_at(&mut self, bytes: &[u8], now: Instant) {
-            let mut placed = self.placed();
-            placed.pane.output_at(bytes, now, &mut placed.tell);
-            placed.pane.read_done();
+            self.placed().output(bytes, now);
         }
         pub(crate) fn read_unread(&mut self) {
-            self.placed().read_unread();
+            self.placed().read_unread(Instant::now());
         }
         pub(crate) fn release_frame(&mut self) {
-            self.placed().release_frame();
+            self.placed().release_frame(Instant::now());
         }
         pub(crate) fn resize(&mut self, size: Size) {
-            self.placed().resize(size);
+            self.placed().resize(size, Instant::now());
         }
     }
 
@@ -2139,19 +2199,35 @@ pub(crate) mod tests {
     -> Result<(), Box<dyn std::error::Error>> {
         let reps = spends_the_budget(50, 200);
         let mut pane = pane(50, 200)?;
-        pane.output(&reps);
+        let now = Instant::now();
+        pane.placed().output(&reps, now);
         assert!(pane.has_unread(), "the budget stopped no call");
-        pane.output(b"\x1b[HZ");
+        assert_eq!(pane.unread_due(), Some(now));
+        let next = after(now, Duration::from_secs(1));
+        pane.placed().output(b"\x1b[HZ", next);
         assert!(
             !first_row(&pane).starts_with('Z'),
             "output after the stop is read before it"
         );
+        let allocation = pane.unread.bytes.as_ptr();
         let mut turns = 0u32;
         while pane.has_unread() && turns < 100 {
-            pane.read_unread();
+            pane.placed().read_unread(next);
+            if !pane.unread.bytes.is_empty() {
+                assert_eq!(pane.unread.bytes.as_ptr(), allocation);
+                assert!(pane.unread.at > 0);
+            }
+            if pane.has_unread() {
+                assert_eq!(pane.unread_due(), Some(next));
+            }
             turns = turns.saturating_add(1);
         }
         assert!(!pane.has_unread(), "{turns} turns");
+        assert_eq!(
+            pane.unread.bytes.capacity(),
+            0,
+            "consumed storage is released"
+        );
         let mut whole = fux_vt::Parser::with_options(
             size(50, 200),
             1 << 10,
@@ -2218,6 +2294,7 @@ pub(crate) mod tests {
             crate::pane::tests::shell()?,
             size,
             crate::pane::tests::options(0)?,
+            Instant::now(),
         )?);
         let mut frame = b"\x1b[?2026h".to_vec();
         frame.extend(spends_the_budget(50, 200));

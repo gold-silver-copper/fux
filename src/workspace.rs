@@ -324,6 +324,8 @@ pub struct Parts {
     /// Each in one tab: a pane is added in its place and leaves with it.
     panes: BTreeMap<PaneId, Pane>,
     journal: Journal,
+    /// Panes given input since the last sweep; at most one entry per pane.
+    input: BTreeSet<PaneId>,
 }
 
 /// A split planned (`Parts::plan_split`): the layout tab `tab` had, and
@@ -500,6 +502,7 @@ impl Parts {
             self.panes.get_mut(&id)?,
             at,
             &mut self.journal,
+            &mut self.input,
         ))
     }
 
@@ -510,16 +513,29 @@ impl Parts {
             workspaces,
             panes,
             journal,
+            input,
         } = self;
         for ws in workspaces.iter() {
             for tab in &ws.tabs {
                 for id in tab.root.panes() {
                     if let Some(pane) = panes.get_mut(&id) {
-                        change(&mut PaneMut::new(pane, (ws.id, tab.id), journal));
+                        change(&mut PaneMut::new(pane, (ws.id, tab.id), journal, input));
                     }
                 }
             }
         }
+    }
+
+    /// Writes only newly queued input. An unwritable remainder waits for
+    /// PTY readiness, rather than being retried by every unrelated event.
+    pub(crate) fn write_input(&mut self) -> bool {
+        let mut wrote = false;
+        while let Some(id) = self.input.pop_first() {
+            if let Some(pane) = self.panes.get_mut(&id) {
+                wrote |= pane.write_input();
+            }
+        }
+        wrote
     }
 
     /// Adds workspace `id` named `name`, its one tab `tab` named
@@ -656,6 +672,7 @@ impl Parts {
         if emptied {
             self.drop_tab(at.1);
         }
+        self.input.remove(&id);
         self.panes.remove(&id)
     }
 
@@ -668,6 +685,7 @@ impl Parts {
         };
         let panes = t.root.panes();
         for &pane in &panes {
+            self.input.remove(&pane);
             self.journal
                 .push(Event::Pane(((ws, tab), pane), PaneEvent::Closed));
         }
@@ -809,5 +827,40 @@ impl Parts {
             tab.edit(|old| *old = root);
         }
         Some(out)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::session::testing::{run, started};
+    use std::time::Instant;
+
+    #[test]
+    fn only_new_input_schedules_a_pane_for_the_sweep() -> Result<(), String> {
+        let mut session = started()?;
+        run(&mut session, "%1 str horizontal axis split drop")?;
+        let one = PaneId::of(1);
+        let two = PaneId::of(2);
+        let now = Instant::now();
+        session.output(one, b"\x1b[6n", now);
+        assert_eq!(session.parts.input, BTreeSet::from([one]));
+        assert!(!session.parts.write_input(), "no processes in this session");
+        session.parts.each_pane_mut(|p| p.keeps_size());
+        session.output(two, b"plain output", now);
+        assert!(session.parts.input.is_empty(), "old input is left to poll");
+        session
+            .parts
+            .pane_mut(two)
+            .ok_or("pane")?
+            .push_with(|_, bytes| bytes.extend_from_slice(b"key"))
+            .map_err(|e| e.to_string())?;
+        assert_eq!(session.parts.input, BTreeSet::from([two]));
+        session.parts.close_pane(two).ok_or("pane")?;
+        assert!(
+            session.parts.input.is_empty(),
+            "closed panes leave no entries"
+        );
+        Ok(())
     }
 }

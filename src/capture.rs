@@ -548,7 +548,7 @@ pub fn client(
 }
 
 /// What is known of a pane's program, for `json`: its foreground program,
-/// the status it exited with, how long since it last wrote, and the modes
+/// the status it exited with, and the modes
 /// that say how it takes input; whether a client is in copy mode on it,
 /// and the cell its program is told, by its tab's host
 /// (`Session::host_panes`).
@@ -1051,6 +1051,7 @@ mod tests {
     use crate::id::PaneId;
     use crate::pane::tests::Lone;
     use crate::pane::{Pane, Runs};
+    use std::time::Instant;
 
     #[test]
     fn argument_observation_peak_stays_within_shared_grant()
@@ -1108,6 +1109,7 @@ mod tests {
             crate::pane::tests::shell()?,
             fux_vt::Size::new(3, 200)?,
             crate::pane::tests::options(history)?,
+            Instant::now(),
         )?);
         let output: Vec<u8> = std::iter::repeat_n(b"x\r\n".as_slice(), 150_000)
             .flatten()
@@ -1148,6 +1150,7 @@ mod tests {
             crate::pane::tests::shell()?,
             fux_vt::Size::new(3, 4)?,
             crate::pane::tests::options(1 << 20)?,
+            Instant::now(),
         )?);
         for _ in 0..10 {
             pane.output(b"x\r\n");
@@ -1177,6 +1180,7 @@ mod tests {
             crate::pane::tests::shell()?,
             fux_vt::Size::new(1, 200)?,
             crate::pane::tests::options(0)?,
+            Instant::now(),
         )?);
         pane.output(b"x");
         let row = pane.screen().rows().next().ok_or("row")?;
@@ -1201,6 +1205,7 @@ mod tests {
             crate::pane::tests::shell()?,
             fux_vt::Size::new(1, 2)?,
             crate::pane::tests::options(0)?,
+            Instant::now(),
         )?);
         pane.output(b"x");
         let row = pane.screen().rows().next().ok_or("row")?;
@@ -1244,6 +1249,7 @@ mod tests {
             crate::pane::tests::shell()?,
             fux_vt::Size::new(3, 80)?,
             crate::pane::tests::options(1 << 20)?,
+            Instant::now(),
         )?);
         pane.output(b"\x1b[41m \x1b[400b");
         for _ in 0..10 {
@@ -1308,6 +1314,7 @@ mod tests {
                 crate::pane::tests::shell()?,
                 size,
                 crate::pane::tests::options(0)?,
+                Instant::now(),
             )?);
             pane.output(output.as_bytes());
             Ok(super::pane(
@@ -1342,6 +1349,7 @@ mod tests {
             crate::pane::tests::shell()?,
             size,
             crate::pane::tests::options(0)?,
+            Instant::now(),
         )?);
         pane.output(b"top\r\nabcdefghijklm\r\nend");
         let run = crate::command::Run::now().ok_or("a clock")?;
@@ -1383,6 +1391,7 @@ mod tests {
             crate::pane::tests::shell()?,
             size,
             crate::pane::tests::options(0)?,
+            Instant::now(),
         )?);
         // 世 at col 4 does not fit and wraps on, leaving the spacer there.
         pane.output("abcd\x1b[5G世".as_bytes());
@@ -1408,6 +1417,7 @@ mod tests {
             crate::pane::tests::shell()?,
             fux_vt::Size::new(5, 5)?,
             crate::pane::tests::options(0)?,
+            Instant::now(),
         )?);
         pane.output(
             "\x1b[31mabcde世\x1b[m\r\nx\x1b[4m  \x1b[m\r\ny\x1b[41m  \x1b[31;49m  \x1b[m"
@@ -1491,6 +1501,7 @@ mod tests {
             crate::pane::tests::shell()?,
             fux_vt::Size::new(2, 10)?,
             crate::pane::tests::options(0)?,
+            Instant::now(),
         )?);
         pane.output("x\u{0600}  ".as_bytes());
         let got = super::pane(
@@ -1551,6 +1562,7 @@ mod tests {
             crate::pane::tests::shell()?,
             fux_vt::Size::new(6, 5)?,
             crate::pane::tests::options(0)?,
+            Instant::now(),
         )?);
         pane.output(b"abcdefghijklm\r\nlater");
         let visits = std::cell::Cell::new(0usize);
@@ -1584,6 +1596,7 @@ mod tests {
             crate::pane::tests::shell()?,
             size,
             crate::pane::tests::options(0)?,
+            Instant::now(),
         )?);
         pane.output(b"\x1b[1;4:3;5;38;2;1;2;3;48;5;9;58;5;2mstyled\x1b[m plain");
         let view = CaptureView {
@@ -1622,6 +1635,7 @@ mod tests {
             crate::pane::tests::shell()?,
             size,
             crate::pane::tests::options(0)?,
+            Instant::now(),
         )?);
         pane.output(b"$ \x1b]133;C\x07hello\x1b]133;D;0\x07PROMPT> ");
         let text = super::pane(
