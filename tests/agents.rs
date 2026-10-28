@@ -841,15 +841,15 @@ fn a_wait_on_a_workspace_answers_each_of_its_panes() -> Outcome {
 /// An action's answer, and a wait's, is its pane: a word that wants a pane
 /// takes it, never a pane named by what the program wrote (`%13 fake`).
 #[test]
-fn an_answer_is_its_pane() -> Outcome {
+fn an_answer_selects_its_pane_explicitly_for_live_fields() -> Outcome {
     let server = Server::start("")?;
     let script = "read x; echo '%13 fake'; exec cat";
     let pane = id(&server.ok(&run(&[], &["sh", "-c", script]))?);
     let since = server.version(&pane)?;
-    let sent = [&typed(&pane, "go")[..], &["str", "name", "get"]];
+    let sent = [&typed(&pane, "go")[..], &["pane", "str", "name", "get"]];
     assert_eq!(server.ok(&sent.concat())?.trim(), "null");
     server.shows(&pane, "%13 fake")?;
-    let waited = ["str", &since, "changed", "wait", "str", "name", "get"];
+    let waited = ["str", &since, "changed", "wait", "pane", "str", "name", "get"];
     assert_eq!(server.ok(&waited)?.trim(), "null");
     Ok(())
 }
