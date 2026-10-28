@@ -206,7 +206,10 @@ impl Text {
         text.push_str(self.part(0, i));
         text.push_str(&other.text);
         text.push_str(self.part(i.saturating_add(1), self.chars));
-        *self = Text::new(text);
+        let Text {
+            text, chars, marks, ..
+        } = Text::new(text);
+        (self.text, self.chars, self.marks) = (text, chars, marks);
     }
 
     /// Space for an Rc<Text> and the peak character-index replacement,

@@ -157,8 +157,7 @@ same admission automatically, and host argument traversal is charged too.
 values implement `retain`, keeping an `ImportLease` with each allocation or using
 `Shared<T>` for an immutable native payload. Shared children reserve themselves;
 clones do not reserve their allocation twice. The last reference's drop refunds
-its reservation, so polling does not consume a lifetime allowance. Separate
-machines account shared storage against their own grants.
+its reservation, so polling does not consume a lifetime allowance.
 
 Native byte payloads can report `AppValue::import_bytes` to use the native grant
 instead of the per-value language weight ceiling. Their full weight still charges

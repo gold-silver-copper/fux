@@ -39,7 +39,7 @@ impl Drop for Reservation {
 /// Kept inside an allocation. Cloning the allocation starts a new reservation;
 /// cloning its Rc keeps this one. Dead machines leave no live grant behind.
 #[derive(Debug, Default)]
-pub struct ImportLease(RefCell<Vec<Reservation>>);
+pub struct ImportLease(RefCell<Option<Reservation>>);
 
 impl Clone for ImportLease {
     fn clone(&self) -> Self {
@@ -59,19 +59,8 @@ impl ImportLease {
             .0
             .try_borrow_mut()
             .map_err(|_| Failure::new(Code::Contract, "recursive storage admission"))?;
-        held.retain(|r| r.grant.strong_count() != 0);
         let owner = Rc::downgrade(&imports.0);
-        if !held.iter().any(|r| r.grant.ptr_eq(&owner)) {
-            held.try_reserve_exact(1).map_err(|_| full())?;
-        }
-        let bytes = bytes
-            .checked_add(
-                held.capacity()
-                    .checked_mul(std::mem::size_of::<Reservation>())
-                    .ok_or_else(full)?,
-            )
-            .ok_or_else(full)?;
-        if let Some(reservation) = held.iter_mut().find(|r| r.grant.ptr_eq(&owner)) {
+        if let Some(reservation) = held.as_mut().filter(|r| r.grant.ptr_eq(&owner)) {
             // Mutable storage can grow before the host returns it again.
             let used = imports.0.used.get().saturating_sub(reservation.bytes);
             let used = used
@@ -89,7 +78,7 @@ impl ImportLease {
                 .filter(|n| *n <= imports.0.limit)
                 .ok_or_else(full)?;
             imports.0.used.set(used);
-            held.push(Reservation {
+            *held = Some(Reservation {
                 grant: owner,
                 bytes,
             });

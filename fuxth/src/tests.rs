@@ -1825,7 +1825,7 @@ fn native_imports_share_reservations_and_refuse_independent_storage() -> Result<
     #[derive(Clone, PartialEq)]
     struct Payload(Shared<Vec<u8>>);
     impl AppValue for Payload {
-        const IMPORT_LIMIT: usize = 384;
+        const IMPORT_LIMIT: usize = 256;
         fn kind(&self) -> &'static str {
             "payload"
         }
@@ -1881,17 +1881,17 @@ fn imported_strings_and_lists_hold_and_release_their_storage() -> Result<(), Fai
     for _ in 0..100 {
         text().retain(&grant)?;
     }
-    // A second live machine charges the same allocation to its own grant.
-    let other = Imports::new(1024);
-    let shared = text();
-    shared.retain(&grant)?;
-    shared.retain(&other)?;
+    let held = text();
+    held.retain(&grant)?;
+    let Value::Str(mut storage) = held else {
+        return Err(Failure::new(Code::Type, "test string"));
+    };
+    std::rc::Rc::make_mut(&mut storage).replace(0, &Text::new("y"));
     assert_eq!(
-        text().retain(&other).map_err(|e| e.code),
+        text().retain(&grant).map_err(|e| e.code),
         Err(Code::TooLong)
     );
-    drop(shared);
+    drop(storage);
     text().retain(&grant)?;
-    text().retain(&other)?;
     Ok(())
 }
