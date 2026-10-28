@@ -62,9 +62,3 @@ pub const STDLIB: &str = include_str!("stdlib.fux");
 
 #[cfg(test)]
 mod tests;
-
-#[cfg(test)]
-extern crate self as fuxth;
-#[cfg(test)]
-#[path = "../tests/common/mod.rs"]
-mod generated;

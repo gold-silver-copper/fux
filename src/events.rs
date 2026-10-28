@@ -868,6 +868,51 @@ mod tests {
         }
         let mut names = BTreeSet::from(["ready".to_owned(), "missed".to_owned()]);
         for event in events {
+            // New variants must bring this schema fixture up to date.
+            match &event {
+                Event::Pane(
+                    _,
+                    PaneEvent::Created
+                    | PaneEvent::Closed
+                    | PaneEvent::Moved(_)
+                    | PaneEvent::Told(
+                        Told::Renamed(_)
+                        | Told::Respawned(_)
+                        | Told::Bell
+                        | Told::Notification(_)
+                        | Told::Title(_)
+                        | Told::Done(_)
+                        | Told::Resized(_)
+                        | Told::HistoryBudget(_)
+                        | Told::HistoryCleared
+                        | Told::Exited(_),
+                    ),
+                )
+                | Event::Tab(
+                    _,
+                    Change::Created(_) | Change::Renamed(_) | Change::Closed | Change::Reordered,
+                )
+                | Event::Workspace(
+                    _,
+                    Change::Created(_) | Change::Renamed(_) | Change::Closed | Change::Reordered,
+                )
+                | Event::View {
+                    change:
+                        ViewChange::Attached
+                        | ViewChange::Detached
+                        | ViewChange::Shown
+                        | ViewChange::Focused
+                        | ViewChange::Zoomed
+                        | ViewChange::Resized
+                        | ViewChange::Presentation
+                        | ViewChange::Screen
+                        | ViewChange::Notice,
+                    ..
+                }
+                | Event::Arranged(_)
+                | Event::Layout(_)
+                | Event::Copied { .. } => {}
+            }
             let json = event.json();
             let Some(Json::String(name)) = json.get("event") else {
                 return Err("event name".into());
@@ -897,6 +942,9 @@ mod tests {
             Status::Gone,
             Status::Stopped(String::new()),
         ] {
+            match status {
+                Status::Continuing | Status::Timeout | Status::Gone | Status::Stopped(_) => {}
+            }
             statuses.insert(status.name().to_owned());
         }
         assert_eq!(statuses, table("| `status` | Meaning |")?);

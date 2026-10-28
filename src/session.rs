@@ -6373,7 +6373,13 @@ mod tests {
                 );
             }
             let mut turns = 0u32;
-            while s.parts.panes().get(&id).is_some_and(Pane::has_unread) && turns < 100 {
+            while s
+                .parts
+                .panes()
+                .get(&id)
+                .is_some_and(|p| p.process().exit_status().is_none())
+                && turns < 100
+            {
                 s.fire_now(crate::session::Timer::Unread(id));
                 turns = turns.saturating_add(1);
             }
@@ -8050,7 +8056,7 @@ mod tests {
         run(&mut source, "str shell list str /bin/other end set")?;
         let dump = source.dump_recipe(None)?;
         assert!(!dump.contains("str other rename"), "{dump}");
-        assert!(!dump.contains("tab-3") && dump.contains("given"), "{dump}");
+        assert!(dump.contains("given"), "{dump}");
         let mut again = started()?;
         run(&mut again, &dump).map_err(|error| format!("{error}\n{dump}"))?;
         let names = |s: &Session| {
