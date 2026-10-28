@@ -90,6 +90,6 @@ use the existing counted-workload interface. Existing floors are retained.
 
 Physical Rust line deltas, separating native code, test modules and tool
 code at their module/harness boundaries: production +185, tests +354,
-tools +41. Bundled fuxth source changes: 0. Most test growth is formatting
+tools +46. Bundled fuxth source changes: 0. Most test growth is formatting
 the supplied time arguments. The new properties cover supplied time and
 stable cursor storage, current poll descriptors, and the touched-input set.
