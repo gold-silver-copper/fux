@@ -681,7 +681,10 @@ pub(crate) fn state(
         ("cell", cell),
         ("cursor_visible", Json::Bool(screen.mode(Mode::ShowCursor))),
         ("history_bytes", Json::count(pane.history_bytes())),
-        ("program_clipboard", Json::Bool(pane.program_clipboard())),
+        (
+            "program_clipboard",
+            Json::Bool(pane.options().program_clipboard),
+        ),
         ("reflow", Json::Bool(pane.options().reflow)),
         (
             "alternate_scroll_lines",

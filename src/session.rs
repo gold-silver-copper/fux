@@ -781,13 +781,7 @@ impl Session {
         // All that can refuse it is done before its program starts, which
         // nothing can then leave running.
         let runs = Runs::Explicit(launch.clone());
-        let options = command::PaneOptions {
-            history_bytes: command::HistoryBytes::new(pane.history_bytes())
-                .ok_or_else(|| fail(Raise::Start, "pane history budget is out of range"))?,
-            program_clipboard: pane.program_clipboard(),
-            ..pane.options()
-        };
-        let mut fresh = Pane::new(id, None, runs, size.0, options)?;
+        let mut fresh = Pane::new(id, None, runs, size.0, pane.options())?;
         fresh.respawns = respawns;
         // Its program starts sized in that cell, so no resize is due.
         let _ = fresh.host(Default::default(), Default::default(), graphics);
@@ -845,8 +839,7 @@ impl Session {
         // At the pane's size and history now, which may have changed while
         // it waited.
         let size = pane.size();
-        let history = pane.history_bytes();
-        new.fresh.set_history_bytes(history);
+        new.fresh.set_history_bytes(pane.options().history_bytes);
         let (old, left) = pane.respawned(new.fresh, new.process);
         pane.resize(size);
         // An exit that came while it was no pane's program is told now: the
@@ -2522,7 +2515,7 @@ impl Session {
                 self.reorder(target, toward).map(|()| Reply::default())
             }
             &Command::HistoryBudget { target, bytes } => {
-                self.pane_mut(target)?.set_history_bytes(bytes.get());
+                self.pane_mut(target)?.set_history_bytes(bytes);
                 Ok(Reply::default())
             }
             Command::Resolve { text, kind } => Ok(found(self.resolve(text, *kind, here)?)),
@@ -2735,7 +2728,10 @@ impl Session {
         let mut report = Vec::new();
         for event in events {
             let release = matches!(event.action, Release(_));
-            if let Some(chunks) = p.screen().encode_mouse(event, p.alternate_scroll_lines()) {
+            if let Some(chunks) = p
+                .screen()
+                .encode_mouse(event, p.options().alternate_scroll_lines)
+            {
                 report.extend(chunks.flatten());
                 continue;
             }
@@ -4953,9 +4949,10 @@ mod tests {
         let pane = s.pane(id).map_err(|e| e.to_string())?;
         assert_eq!(answer, acted(pane.version(s.run)));
         assert_eq!(pane.history_bytes(), 128);
-        assert!(!pane.program_clipboard());
+        assert_eq!(pane.options().history_bytes.get(), 128);
+        assert!(!pane.options().program_clipboard);
         assert!(!pane.options().reflow);
-        assert_eq!(pane.alternate_scroll_lines().get(), 3);
+        assert_eq!(pane.options().alternate_scroll_lines.get(), 3);
         assert_eq!(pane.options().picture_bytes.get(), 1024);
         assert!(output(&mut s, "%2 str history_bytes get")?.contains("128"));
         assert!(output(&mut s, "dump")?.contains("128 history-bytes false reflow 3 alternate-scroll-lines 1024 picture-bytes false program-clipboard"));

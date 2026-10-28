@@ -91,7 +91,7 @@ report of every run beside it.
 
 | Workload | What runs | Fed |
 | --- | --- | --- |
-| `vt/NAME` | fux-vt alone, set up as fux sets up a pane (`fux::pane::OPTIONS`), 8 MiB of history | 4 KiB at a time, as `fux-vt/compare`'s `bench` feeds it |
+| `vt/NAME` | fux-vt alone, fux's fixed facilities plus explicit reflow and pictures, 8 MiB of history | 4 KiB at a time, as `fux-vt/compare`'s `bench` feeds it |
 | `pane/NAME` | `fux::pane::Pane::output` | 16 KiB at a time, as fux's server gives a pane what it reads (up to 64 KiB a tick) |
 | `vt/corpus:NAME` | fux-vt alone on one recording at its size, repeated to 4 MiB (or to 256 resizes, for one that resizes) | 4 KiB at a time |
 | `vt/ascii@N`, `vt/corpus@N` | `vt/ascii` and `vt/corpus`, listed for N of 1, 64, 16384 and 65536 (any `vt/NAME@N` runs by name) | N bytes at a time |

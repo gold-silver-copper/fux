@@ -217,7 +217,7 @@ impl Session {
             out.word("alternate-scroll-lines")?;
             out.native(format_args!("{}", pane.options().picture_bytes.get()))?;
             out.word("picture-bytes")?;
-            out.word(if pane.program_clipboard() {
+            out.word(if pane.options().program_clipboard {
                 "true"
             } else {
                 "false"

@@ -2571,6 +2571,19 @@ mod tests {
                     .contains(&format!("{cluster}\x1b[1;3Hab"))
             );
         }
+        for (cluster, wide) in [("🇯🇵", true), ("e\u{301}", false)] {
+            let mut grid = new_grid(1, 12);
+            grid.cell_placement = false;
+            grid.set(0, 0, CellRef::new(cluster, wide, Attributes::default()));
+            let next = if wide {
+                grid.set(0, 1, CellRef::wide_continuation());
+                2
+            } else {
+                1
+            };
+            grid.text(0, next, "ab", Attributes::default(), 12);
+            assert!(String::from_utf8_lossy(&paint(None, &grid)).contains(&format!("{cluster}ab")));
+        }
     }
 
     /// A glyph that continues the cluster of the one before it (an emoji

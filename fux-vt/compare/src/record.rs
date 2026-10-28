@@ -204,7 +204,9 @@ pub fn replies_now(recording: &crate::corpus::Recording) -> Result<Vec<u8>, Stri
     let mut parser = fux_vt::Parser::with_options(
         crate::vt_size(recording.rows, recording.cols)?,
         8 << 20,
-        fux::pane::OPTIONS,
+        fux::pane::OPTIONS
+            .with(fux_vt::Feature::Reflow)
+            .with(fux_vt::Feature::Pictures),
     )
     .map_err(|e| format!("fux-vt: {e}"))?;
     let mut out = Vec::new();
@@ -403,7 +405,9 @@ pub fn record(request: &Request) -> Result<Recorded, String> {
         .map_err(|e| format!("{}: {e}", request.keys.display()))?;
     let (start, steps) = steps(&text)?;
     // As fux's panes are set up.
-    let options = fux::pane::OPTIONS;
+    let options = fux::pane::OPTIONS
+        .with(fux_vt::Feature::Reflow)
+        .with(fux_vt::Feature::Pictures);
     let parser = fux_vt::Parser::with_options(
         crate::vt_size(request.rows, request.cols)?,
         8 << 20,

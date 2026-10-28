@@ -245,7 +245,7 @@ impl Session {
         };
         let Some(reports) = pane_screen
             .screen()
-            .encode_mouse(event, pane_screen.alternate_scroll_lines())
+            .encode_mouse(event, pane_screen.options().alternate_scroll_lines)
         else {
             return false;
         };
