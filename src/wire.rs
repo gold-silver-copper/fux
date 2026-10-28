@@ -571,18 +571,6 @@ fn put_text(value: &impl std::fmt::Display, out: &mut impl Sink) {
     let _ = std::fmt::write(&mut Output(out), format_args!("{value}"));
 }
 
-fn text_is(value: &impl std::fmt::Display, text: &str) -> bool {
-    struct Equal<'a>(&'a str);
-    impl std::fmt::Write for Equal<'_> {
-        fn write_str(&mut self, text: &str) -> std::fmt::Result {
-            self.0 = self.0.strip_prefix(text).ok_or(std::fmt::Error)?;
-            Ok(())
-        }
-    }
-    let mut equal = Equal(text);
-    std::fmt::write(&mut equal, format_args!("{value}")).is_ok() && equal.0.is_empty()
-}
-
 /// `text_wire!(Ty, "what")` expands to `impl Wire for Ty`: its text
 /// (`%3`, `C-a`), read back through `FromStr` (else `Error::Bad("what")`).
 macro_rules! text_wire {
@@ -597,7 +585,9 @@ macro_rules! text_wire {
             fn get(r: &mut Reader<'_>) -> Result<Self, Error> {
                 let text = String::get(r)?;
                 let value: Self = text.parse().map_err(|_| Error::Bad($sigil))?;
-                if text_is(&value, &text) {
+                if crate::words::writes_exactly(&text, |out| {
+                    std::fmt::write(out, format_args!("{value}"))
+                }) {
                     Ok(value)
                 } else {
                     Err(Error::Bad($sigil))

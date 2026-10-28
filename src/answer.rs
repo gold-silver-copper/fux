@@ -225,13 +225,6 @@ impl std::fmt::Display for Field<'_> {
 }
 impl PartialEq for Field<'_> {
     fn eq(&self, other: &Self) -> bool {
-        struct Compare<'a>(&'a str);
-        impl std::fmt::Write for Compare<'_> {
-            fn write_str(&mut self, text: &str) -> std::fmt::Result {
-                self.0 = self.0.strip_prefix(text).ok_or(std::fmt::Error)?;
-                Ok(())
-            }
-        }
         fn same_json(a: &Json, b: &Json) -> bool {
             match (a, b) {
                 (Json::Int(a), Json::Uint(b)) | (Json::Uint(b), Json::Int(a)) => {
@@ -250,8 +243,7 @@ impl PartialEq for Field<'_> {
             }
         }
         let same_plain = |plain: &str, json: Option<&Json>| {
-            let mut compare = Compare(plain);
-            json.is_some_and(|json| json.write(&mut compare).is_ok() && compare.0.is_empty())
+            json.is_some_and(|json| crate::words::writes_exactly(plain, |out| json.write(out)))
         };
         match (self.plain(), other.plain()) {
             (Some(a), Some(b)) => a == b,

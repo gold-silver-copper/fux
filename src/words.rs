@@ -10,6 +10,22 @@ pub fn listed(names: &[&str], last: &str) -> String {
     }
 }
 
+/// Whether `write` produces exactly `text`, without allocating.
+pub(crate) fn writes_exactly(
+    text: &str,
+    write: impl FnOnce(&mut dyn std::fmt::Write) -> std::fmt::Result,
+) -> bool {
+    struct Rest<'a>(&'a str);
+    impl std::fmt::Write for Rest<'_> {
+        fn write_str(&mut self, part: &str) -> std::fmt::Result {
+            self.0 = self.0.strip_prefix(part).ok_or(std::fmt::Error)?;
+            Ok(())
+        }
+    }
+    let mut rest = Rest(text);
+    write(&mut rest).is_ok() && rest.0.is_empty()
+}
+
 /// A display label borrowed from state, or its native identity fallback.
 #[derive(Clone, Copy)]
 pub(crate) enum Label<'a> {
@@ -26,19 +42,11 @@ impl std::fmt::Display for Label<'_> {
 }
 impl PartialEq for Label<'_> {
     fn eq(&self, other: &Self) -> bool {
-        struct Compare<'a>(&'a str);
-        impl std::fmt::Write for Compare<'_> {
-            fn write_str(&mut self, text: &str) -> std::fmt::Result {
-                self.0 = self.0.strip_prefix(text).ok_or(std::fmt::Error)?;
-                Ok(())
-            }
-        }
         match (self, other) {
             (Self::Text(a), Self::Text(b)) => a == b,
             (Self::Id(a), Self::Id(b)) => a == b,
             (Self::Text(text), Self::Id(id)) | (Self::Id(id), Self::Text(text)) => {
-                let mut out = Compare(text);
-                std::fmt::write(&mut out, format_args!("{id}")).is_ok() && out.0.is_empty()
+                writes_exactly(text, |out| std::fmt::write(out, format_args!("{id}")))
             }
         }
     }
