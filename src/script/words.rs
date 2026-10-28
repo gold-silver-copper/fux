@@ -423,7 +423,9 @@ pub fn usage(word: &str) -> Option<String> {
     // What a request's word goes on: the pane, opts, or either, as the
     // words that take it do.
     let takes = takes.trim().to_uppercase();
-    let request = takes.strip_prefix('X');
+    let request = takes
+        .strip_prefix("PANE-BUILDER")
+        .or_else(|| takes.strip_prefix('X'));
     let takers = match fuxs {
         Some(Word::Opt(opt)) => opt.takers(),
         Some(Word::Act(_) | Word::Screen(_) | Word::Keys(_)) | None => Vec::new(),
@@ -444,11 +446,11 @@ pub fn usage(word: &str) -> Option<String> {
     };
     let leaves = match leaves.trim() {
         "" => String::new(),
-        "x" => format!(", which leaves {left} for the word that acts"),
+        "x" | "pane-builder" => format!(", which leaves {left} for the word that acts"),
         leaves => format!(", which leaves {leaves}"),
     };
     let example = fuxs.map_or_else(String::new, |w| format!("; e.g. {}", w.row().example));
-    // A capture's option says so: it goes between opts and capture.
+    // A capture's option says so: it goes between its pane and capture.
     let kind = match takers == [Act::Capture] {
         true => "a capture option, ",
         false => "",

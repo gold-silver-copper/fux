@@ -616,7 +616,7 @@ mod tests {
             .filter_map(|line| line.split('"').nth(3))
             .collect();
         let docs = include_str!("../docs/json.md");
-        let table = (docs.split("## `events`").nth(1))
+        let table = (docs.split("## `all events`").nth(1))
             .and_then(|rest| rest.split("\n## ").next())
             .and_then(|section| section.split("| --- | --- |").nth(1))
             .ok_or("docs/json.md has no events table")?;
