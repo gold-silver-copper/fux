@@ -537,3 +537,88 @@ fn update_environment_takes_the_clients_variables_or_none() -> Outcome {
     assert!(bytes.contains("63 61 66 e9"), "{stdout}");
     Ok(())
 }
+
+#[test]
+fn a_setting_preserves_other_invocations_preferences() -> Outcome {
+    let server = Server::start("str wait-seconds 0 set")?;
+    server.ok(&["str", "bell", "false", "set"])?;
+    let result = server.fux(&[
+        "agent-opts",
+        "80",
+        "24",
+        "size",
+        "str",
+        "/bin/sh",
+        "program",
+        "str",
+        "-c",
+        "arg",
+        "str",
+        "sleep 1",
+        "arg",
+        "run",
+        "wait",
+    ])?;
+    assert_eq!(
+        result.status, 124,
+        "bell changed the wait limit: {}",
+        result.stderr
+    );
+    Ok(())
+}
+
+#[test]
+fn a_program_uses_preferences_before_its_next_operation() -> Outcome {
+    let server = Server::start("")?;
+    let result = server.fux(&[
+        "str",
+        "shell",
+        "list",
+        "str",
+        "/no/such/fux-review-shell",
+        "end",
+        "set",
+        "%1",
+        "horizontal",
+        "split",
+        "drop",
+    ])?;
+    assert_eq!(
+        result.status, 1,
+        "split used the previous shell: {}",
+        result.stdout
+    );
+    assert!(
+        result.stderr.contains("/no/such/fux-review-shell"),
+        "{}",
+        result.stderr
+    );
+    assert_eq!(server.panes()?.len(), 1);
+    let result = server.fux(&[
+        "str",
+        "wait-seconds",
+        "0",
+        "set",
+        "agent-opts",
+        "80",
+        "24",
+        "size",
+        "str",
+        "/bin/sh",
+        "program",
+        "str",
+        "-c",
+        "arg",
+        "str",
+        "sleep 1",
+        "arg",
+        "run",
+        "wait",
+    ])?;
+    assert_eq!(
+        result.status, 124,
+        "wait used the previous limit: {}",
+        result.stderr
+    );
+    Ok(())
+}

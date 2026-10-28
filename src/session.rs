@@ -3287,6 +3287,10 @@ pub struct InProcess<'s>(pub &'s mut Session);
 
 #[cfg(any(test, feature = "in-process"))]
 impl crate::script::Asks for InProcess<'_> {
+    #[cfg(test)]
+    fn published(&mut self, state: &crate::client_state::ClientState) {
+        self.0.test_keymap = state.draft();
+    }
     fn ask(
         &mut self,
         asked: &crate::protocol::Asked,
@@ -3419,8 +3423,7 @@ pub(crate) mod testing {
             Ok(machine) => machine,
             Err(failed) => return (out, Err(failed)),
         };
-        let previous = session.test_keymap.clone();
-        let mut keymap = std::mem::take(&mut session.test_keymap);
+        let mut keymap = session.test_keymap.clone();
         let context = crate::protocol::Context {
             client,
             ..crate::protocol::Context::default()
@@ -3431,30 +3434,14 @@ pub(crate) mod testing {
             asks: &mut process,
             context: context.clone(),
             opened: None,
+            on_commit: None,
         };
-        let mut ended = crate::script::run_capped(&mut machine, &mut host, &mut asks, None, None);
+        let ended = crate::script::run_capped(&mut machine, &mut host, &mut asks, None, None)
+            .and_then(|stack| {
+                crate::script::Asks::commit(&mut asks, &mut keymap, context)?;
+                Ok(stack)
+            });
         let opened = asks.opened;
-        if ended.is_ok() {
-            let forward = keymap.preferences.changed();
-            match keymap.finish() {
-                Ok(committed) => {
-                    session.test_keymap = committed.draft();
-                    if forward
-                        && let Err(failed) = committed
-                            .preferences
-                            .forward_settings(&mut InProcess(session), context)
-                    {
-                        ended = Err(failed);
-                    }
-                }
-                Err(why) => {
-                    session.test_keymap = previous;
-                    ended = Err(crate::script::Failed::new(crate::code::Code::Config, why));
-                }
-            }
-        } else {
-            session.test_keymap = previous;
-        }
         if let (Some(client), Some(screen), true) = (client, opened, ended.is_ok()) {
             session.open_screen(client, screen);
         }

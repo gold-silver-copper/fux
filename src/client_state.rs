@@ -45,33 +45,59 @@ impl Draft {
 
 /// The closed local table keeps each setting's existing checked reader.
 macro_rules! preferences {
-    ($($(#[doc = $about:literal])* $field:ident $name:literal: $reads:ty;)*) => {
+    ($($(#[doc = $about:literal])* $field:ident $variant:ident $name:literal: $reads:ty;)*) => {
         #[derive(Clone, Debug, PartialEq, Eq)]
         pub struct Preferences {
             $($(#[doc = $about])* pub $field: $reads,)*
         }
 
+        /// Fields explicitly written in one local transaction.
+        #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+        pub struct Changes {
+            $($field: bool,)*
+        }
+
+        impl Changes {
+            pub fn any(self) -> bool { false $(|| self.$field)* }
+            pub fn merge(self, other: Self) -> Self {
+                Self { $($field: self.$field || other.$field,)* }
+            }
+            fn settings(self, p: &Preferences) -> Vec<crate::config::Setting> {
+                let mut settings = Vec::new();
+                $(if self.$field {
+                    settings.push(crate::config::Setting::$variant(p.$field.clone()));
+                })*
+                settings
+            }
+        }
+
         #[derive(Clone, Debug, Default)]
         pub struct PreferenceDraft {
             $($field: Option<$reads>,)*
-            changed: bool,
+            changes: Changes,
         }
 
         impl PreferenceDraft {
             pub fn set(&mut self, name: &str, value: &Value<Fux>) -> Result<(), String> {
                 match name {
-                    $($name => self.$field = Some(<$reads as Reads>::read(value)
-                        .map_err(|why| format!("{name}: {why}"))?),)*
+                    $($name => {
+                        self.$field = Some(<$reads as Reads>::read(value)
+                            .map_err(|why| format!("{name}: {why}"))?);
+                        self.changes.$field = true;
+                    },)*
                     other => return Err(format!("no setting {other:?}; the settings are {}",
                         crate::words::listed(NAMES, "and"))),
                 }
-                self.changed = true;
                 Ok(())
             }
 
             /// Whether a setter ran, even if it repeated a bundled value.
             pub fn changed(&self) -> bool {
-                self.changed
+                self.changes.any()
+            }
+
+            pub fn changes(&self) -> Changes {
+                self.changes
             }
 
             fn finish(self) -> Result<Preferences, String> {
@@ -84,7 +110,7 @@ macro_rules! preferences {
 
         impl From<Preferences> for PreferenceDraft {
             fn from(p: Preferences) -> Self {
-                Self { $($field: Some(p.$field),)* changed: false }
+                Self { $($field: Some(p.$field),)* changes: Changes::default() }
             }
         }
 
@@ -104,43 +130,36 @@ macro_rules! preferences {
 
 preferences! {
     /// The shell argv for this client's future panes.
-    shell "shell": Shell;
+    shell Shell "shell": Shell;
     /// The history budget for this client's future panes, in bytes.
-    history_bytes "history-bytes": Number<0, { 1 << 30 }>;
+    history_bytes HistoryBytes "history-bytes": Number<0, { 1 << 30 }>;
     /// The limit for this client's waits without an explicit timeout.
-    wait "wait-seconds": Limit;
+    wait Wait "wait-seconds": Limit;
     /// Program and terminal clipboard policy until their consumers separate.
-    clipboard "clipboard": bool;
+    clipboard Clipboard "clipboard": bool;
     /// Paste buffers retained until retention becomes a fixed server bound.
-    buffers "buffers": Number<1, { crate::config::MAX_BUFFERS }>;
+    buffers Buffers "buffers": Number<1, { crate::config::MAX_BUFFERS }>;
     /// Whether this client rings and shows tab bell marks.
-    bell "bell": bool;
+    bell Bell "bell": bool;
     /// Whether this client's terminal title follows the focused pane.
-    titles "titles": bool;
+    titles Titles "titles": bool;
     /// Environment names to select for this client's future launches.
-    update_environment "update-environment": Vec<EnvName>;
+    update_environment UpdateEnvironment "update-environment": Vec<EnvName>;
 }
 
 impl Preferences {
     /// Temporary bridge for consumers still owned by the server. Call only
     /// after committing local state; setters and config evaluation never send.
-    pub fn forward_settings(
+    pub fn forward_settings<A: crate::script::Asks + ?Sized>(
         &self,
-        asks: &mut dyn crate::script::Asks,
+        changes: Changes,
+        asks: &mut A,
         context: crate::protocol::Context,
     ) -> Result<(), crate::script::Failed> {
-        use crate::config::Setting;
-        let p = self;
-        let settings = vec![
-            Setting::Shell(p.shell.clone()),
-            Setting::HistoryBytes(p.history_bytes),
-            Setting::Wait(p.wait),
-            Setting::Clipboard(p.clipboard),
-            Setting::Buffers(p.buffers),
-            Setting::Bell(p.bell),
-            Setting::Titles(p.titles),
-            Setting::UpdateEnvironment(p.update_environment.clone()),
-        ];
+        if !changes.any() {
+            return Ok(());
+        }
+        let settings = changes.settings(self);
         let reply = asks.ask(
             &crate::protocol::Asked {
                 request: crate::command::Command::Set(settings).into(),

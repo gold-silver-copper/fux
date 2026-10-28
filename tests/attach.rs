@@ -1203,3 +1203,55 @@ fn job_state(command: &str, test: fn(&str) -> bool) -> Result<bool, String> {
 fn foreground(stat: &str) -> bool {
     stat.starts_with(['R', 'S']) && stat.contains('+')
 }
+
+#[test]
+fn an_explicit_headless_attach_reports_settings_forwarding_failure() -> Outcome {
+    let server = Server::start("")?;
+    let payload = server.dir.join("oversize-argument");
+    std::fs::write(&payload, vec![b'x'; fux::protocol::MAX_FRAME]).map_err(e)?;
+    let mut terminal = Terminal::attach(
+        &server,
+        10,
+        80,
+        &[
+            "str",
+            "shell",
+            "list",
+            "str",
+            "/bin/sh",
+            "str",
+            &payload.to_string_lossy(),
+            "read-file",
+            "end",
+            "set",
+            "opts",
+            "80",
+            "24",
+            "size",
+            "attach",
+        ],
+    )?;
+    eventually("a refused bridge or headless admission", || {
+        terminal.pump();
+        if terminal.child.try_wait().map_err(e)?.is_some() {
+            return Ok(true);
+        }
+        if server
+            .ok(&["ls"])?
+            .lines()
+            .any(|line| line.starts_with("client c1 "))
+        {
+            server.ok(&["str", "c1", "client", "detach"])?;
+            return Ok(true);
+        }
+        Ok(false)
+    })?;
+    let status = terminal.wait_exit()?;
+    let output = String::from_utf8_lossy(&terminal.output);
+    assert!(!status.success(), "forwarding failure was lost: {output}");
+    assert!(
+        output.contains("frame"),
+        "the original failure was lost: {output}"
+    );
+    Ok(())
+}

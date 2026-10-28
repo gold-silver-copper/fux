@@ -397,20 +397,23 @@ commands use only the bundled state; they never load this file.
 Its `set` and key words build one candidate client state. Keys, frozen
 definitions and preferences commit together; a failed config keeps the whole
 bundled state and shows one diagnostic. Evaluation sends no requests. After
-successful evaluation that ran a preference setter, the committed state's
-remaining server settings are sent once as one batch. A config with only
-keys or definitions sends no batch. Those consumers move to client requests and per-client
-presentation in the following migration steps; until then their settings
-continue to affect the shared server.
+successful evaluation, one batch forwards only the preferences explicitly
+set by that config. Unrelated server settings stay as they were. A config
+with only keys or definitions sends no batch. Remaining server consumers
+move to client requests and per-client presentation in the following steps;
+until then explicit settings still affect the shared server.
 
 Bundled `client-defaults.fux` initializes every preference, reading this
 client's `$SHELL` once and using `/bin/sh` for an unset or empty value.
 Bundled `keys.fux` supplies `C-b`; there is no native prefix fallback.
-A successful preference-changing key, prompt or CLI program also forwards
-one batch after committing local state. Individual setter words never send.
-Failed programs send no settings batch. A transport failure is reported and
-leaves the local commit intact; a lost reply may mean the whole server batch
-was applied.
+In action programs, pending client state commits before the next server
+operation and when the program finishes. Each transaction forwards only its
+explicitly written preferences in one batch, so a later split or wait uses
+the new setting. Individual setters send nothing. A failed transaction
+leaves prior commits intact; settings and server actions already applied
+at earlier checkpoints remain applied. Transport failures preserve the local
+commit and are reported; a lost reply may mean the server batch was applied.
+An explicit headless attach returns its forwarding failure directly.
 
 `fux str FILE str program check` compiles a file without running it.
 `fux str FILE str config check` also runs it locally to validate settings

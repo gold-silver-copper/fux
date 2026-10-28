@@ -473,10 +473,10 @@ fn start(
             }
             let chosen = fux::socket::Choice::Path(socket.clone());
             let mut to = fux::script::Server::new(chosen);
-            let state = fux::script::run_file(&config).map_err(|e| e.to_string())?;
+            let (state, changes) = fux::script::run_file(&config).map_err(|e| e.to_string())?;
             state
                 .preferences
-                .forward_settings(&mut to, Default::default())
+                .forward_settings(changes, &mut to, Default::default())
                 .map_err(|e| e.to_string())?;
             let socket = socket.to_string_lossy().into_owned();
             env.push(("FUX_SOCKET".into(), socket.clone()));

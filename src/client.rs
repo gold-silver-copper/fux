@@ -916,7 +916,7 @@ fn decoded(input: crate::command::Input) -> Vec<Input> {
 }
 
 /// Runs a key's or a screen's program as client `me`, on the shared
-/// `state`. A program that fails commits no local changes.
+/// `state`. Each checkpoint commits whole; a failure discards pending changes.
 fn run_job(
     server: &mut dyn script::Asks,
     me: (crate::id::ClientId, crate::command::Run),
@@ -930,10 +930,17 @@ fn run_job(
     let mut context = context();
     context.client = Some(me.0);
     context.of = Some(me.1);
+    let mut rebound = false;
+    let mut publish = |committed: &ClientState| {
+        let mut live = lock(state);
+        rebound |= live.keys.modes != committed.keys.modes;
+        *live = committed.clone();
+    };
     let mut asks = script::AsClient {
         asks: server,
         context: context.clone(),
         opened: None,
+        on_commit: Some(&mut publish),
     };
     let mut result = (|| {
         let tokens = job.tokens()?;
@@ -947,30 +954,10 @@ fn run_job(
             Some(stop),
         )
     })();
-    let mut rebound = false;
-    if result.is_ok() {
-        let forward = changed.preferences.changed();
-        match changed.finish() {
-            Ok(changed) => {
-                let mut live = lock(state);
-                rebound = live.keys.modes != changed.keys.modes;
-                *live = changed;
-                let preferences = forward.then(|| live.preferences.clone());
-                drop(live);
-                if let Some(preferences) = preferences
-                    && let Err(failed) = preferences.forward_settings(&mut asks, context)
-                {
-                    result = Err(failed);
-                }
-            }
-            Err(why) => {
-                return Ran {
-                    notice: Some((why, true)),
-                    opened: None,
-                    rebound: false,
-                };
-            }
-        }
+    if result.is_ok()
+        && let Err(failed) = script::Asks::commit(&mut asks, &mut changed, context)
+    {
+        result = Err(failed);
     }
     let opened = result.is_ok().then_some(asks.opened).flatten();
     let notice = match result {
@@ -1641,8 +1628,8 @@ mod tests {
         Ok(acts)
     }
 
-    /// Setters send nothing themselves. Successful jobs publish one whole
-    /// local state before one batch; failures publish neither.
+    /// Every transaction publishes whole before its batch. Failed pending
+    /// changes publish neither; earlier checkpoints remain committed.
     #[test]
     fn settings_forward_only_after_the_whole_local_commit() -> Result<(), Box<dyn std::error::Error>>
     {
@@ -1650,6 +1637,7 @@ mod tests {
             state: &'a Mutex<ClientState>,
             batches: Vec<Vec<crate::config::Setting>>,
             refuse: bool,
+            operations: usize,
         }
         impl script::Asks for Recording<'_> {
             fn ask(
@@ -1659,7 +1647,8 @@ mod tests {
             ) -> Result<crate::protocol::Reply, script::Failed> {
                 use crate::config::Setting;
                 let Request::Do(Command::Set(settings)) = &asked.request else {
-                    return Err(script::Failed::new(Code::NotConfig, "unexpected request"));
+                    self.operations = self.operations.saturating_add(1);
+                    return Err(script::Failed::new(Code::NotConfig, "operation refused"));
                 };
                 // A setter-by-setter send would see the old live state here.
                 let live = lock(self.state);
@@ -1668,19 +1657,17 @@ mod tests {
                     live.keys.prefix,
                     Some(KeyPress::new(Key::Char('a'), Modifiers::CTRL))
                 );
-                assert_eq!(
-                    *settings,
-                    vec![
-                        Setting::Shell(p.shell.clone()),
-                        Setting::HistoryBytes(p.history_bytes),
-                        Setting::Wait(p.wait),
-                        Setting::Clipboard(p.clipboard),
-                        Setting::Buffers(p.buffers),
-                        Setting::Bell(p.bell),
-                        Setting::Titles(p.titles),
-                        Setting::UpdateEnvironment(p.update_environment.clone()),
-                    ]
-                );
+                let expected = [
+                    Setting::Shell(p.shell.clone()),
+                    Setting::HistoryBytes(p.history_bytes),
+                    Setting::Wait(p.wait),
+                    Setting::Clipboard(p.clipboard),
+                    Setting::Buffers(p.buffers),
+                    Setting::Bell(p.bell),
+                    Setting::Titles(p.titles),
+                    Setting::UpdateEnvironment(p.update_environment.clone()),
+                ];
+                assert!(settings.iter().all(|setting| expected.contains(setting)));
                 drop(live);
                 self.batches.push(settings.clone());
                 if self.refuse {
@@ -1694,6 +1681,7 @@ mod tests {
             state: &state,
             batches: Vec::new(),
             refuse: false,
+            operations: 0,
         };
         let me = (
             crate::id::ClientId::of(1),
@@ -1709,6 +1697,7 @@ mod tests {
                 .is_none()
         );
         assert_eq!(recording.batches.len(), 1);
+        assert_eq!(recording.batches.first().map(Vec::len), Some(8));
         let committed = lock(&state).clone();
         assert_eq!(committed.preferences.shell.program(), "/bin/custom");
         assert_eq!(committed.preferences.history_bytes.get(), 0);
@@ -1728,6 +1717,10 @@ mod tests {
         let same = "str titles true set";
         run_job(&mut recording, me, &state, &same.into(), &stop);
         assert_eq!(recording.batches.len(), 2);
+        assert_eq!(
+            recording.batches.last(),
+            Some(&vec![crate::config::Setting::Titles(true)])
+        );
         let keys_only = "str C-a prefix";
         run_job(&mut recording, me, &state, &keys_only.into(), &stop);
         assert_eq!(recording.batches.len(), 2);
@@ -1742,6 +1735,23 @@ mod tests {
         assert!(
             !lock(&state).preferences.titles,
             "transport refusal preserves the local commit"
+        );
+        recording.refuse = false;
+        let uses = "str titles true set %1 horizontal split drop";
+        let failed = run_job(&mut recording, me, &state, &uses.into(), &stop);
+        assert!(
+            failed
+                .notice
+                .is_some_and(|(text, _)| text.contains("operation refused"))
+        );
+        assert_eq!(recording.operations, 1);
+        assert!(
+            lock(&state).preferences.titles,
+            "the prior checkpoint remains committed"
+        );
+        assert_eq!(
+            recording.batches.last(),
+            Some(&vec![crate::config::Setting::Titles(true)])
         );
         Ok(())
     }

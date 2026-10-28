@@ -295,24 +295,19 @@ impl Run {
         let mut host = Host::new(context.clone(), Some(&mut keymap), &mut out);
         // As a client runs it: the real loop, a screen it opens built with
         // what the session answers.
+        let mut publish = |committed: &ClientState| self.keymap = committed.clone();
         let mut asks = AsClient {
             asks: &mut InProcess(&mut self.s),
             context: context.clone(),
             opened: None,
+            on_commit: Some(&mut publish),
         };
-        let ended = run_capped(&mut machine, &mut host, &mut asks, Some(BUDGET), None);
+        let ended =
+            run_capped(&mut machine, &mut host, &mut asks, Some(BUDGET), None).and_then(|stack| {
+                fux::script::Asks::commit(&mut asks, &mut keymap, context)?;
+                Ok(stack)
+            });
         *opened = asks.opened.filter(|_| client.is_some() && ended.is_ok());
-        // As a client keeps what its program did to its keymap.
-        if ended.is_ok() {
-            let forward = keymap.preferences.changed();
-            self.keymap = keymap.finish().expect("complete state");
-            if forward {
-                self.keymap
-                    .preferences
-                    .forward_settings(&mut InProcess(&mut self.s), context)
-                    .map_err(told)?;
-            }
-        }
         let mut text = String::from_utf8_lossy(&out).into_owned();
         for value in &ended.map_err(told)? {
             text.push_str(&value.text());

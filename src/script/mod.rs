@@ -11,7 +11,7 @@ mod words;
 
 use crate::answer::{PaneAnswer, PaneResults};
 use crate::client;
-use crate::client_state::{ClientState, Draft};
+use crate::client_state::{Changes, ClientState, Draft};
 use crate::code::{Code, Raise};
 use crate::command::{AnyRef, Extent, Input, Kind, Mouse, Request, Run, Version, WsRef};
 use crate::id::{ClientId, PaneId, TabId, WsId};
@@ -766,6 +766,31 @@ fn client_failed(error: client::Error) -> Failed {
 pub trait Asks {
     /// Asks `asked`, what is streamed before its reply going to `out`.
     fn ask(&mut self, asked: &Asked, out: &mut dyn Write) -> Result<Reply, Failed>;
+    /// Publish a complete local state at a commit boundary, if it is shared.
+    fn published(&mut self, _state: &ClientState) {}
+
+    /// Commit all local state, then forward only this transaction's writes.
+    fn commit(&mut self, draft: &mut Draft, context: Context) -> Result<(), Failed> {
+        let changes = draft.preferences.changes();
+        let committed = draft
+            .clone()
+            .finish()
+            .map_err(|why| Failed::new(Code::Config, why))?;
+        *draft = committed.draft();
+        self.published(&committed);
+        committed
+            .preferences
+            .forward_settings(changes, self, context)
+    }
+
+    /// Pending preferences must arrive before a later server operation.
+    fn checkpoint(&mut self, draft: &mut Draft, context: Context) -> Result<(), Failed> {
+        if draft.preferences.changed() {
+            self.commit(draft, context)?;
+        }
+        Ok(())
+    }
+
     /// Does what the client does itself: by default, nothing, refused.
     fn local(
         &mut self,
@@ -921,9 +946,16 @@ pub struct AsClient<'a> {
     pub asks: &'a mut dyn Asks,
     pub context: Context,
     pub opened: Option<crate::screens::Screen>,
+    pub on_commit: Option<&'a mut dyn FnMut(&ClientState)>,
 }
 
 impl Asks for AsClient<'_> {
+    fn published(&mut self, state: &ClientState) {
+        match &mut self.on_commit {
+            Some(publish) => publish(state),
+            None => self.asks.published(state),
+        }
+    }
     fn ask(&mut self, asked: &Asked, out: &mut dyn Write) -> Result<Reply, Failed> {
         self.asks.ask(asked, out)
     }
@@ -995,6 +1027,12 @@ pub fn run_capped(
                     request: *request,
                     context,
                 };
+                if let Some(draft) = host.state.as_deref_mut()
+                    && let Err(failed) = asks.checkpoint(draft, asked.context.clone())
+                {
+                    pushed(machine, Err(failed))?;
+                    continue;
+                }
                 match asks.ask(&asked, host.out) {
                     Ok(reply) => match reply.end() {
                         End::Failed { code, message } => raised(machine, (code, message), reply)?,
@@ -1004,6 +1042,13 @@ pub fn run_capped(
                 }
             }
             Outcome::Suspended(Ask::Local(what)) => {
+                if matches!(what, Local::Open(_))
+                    && let Some(draft) = host.state.as_deref_mut()
+                    && let Err(failed) = asks.checkpoint(draft, host.context.clone())
+                {
+                    pushed(machine, Err(failed))?;
+                    continue;
+                }
                 let values = asks.local(&what, host.state.as_deref_mut(), host.out);
                 // An exit the host took ends the run here, as it stands.
                 if let (Local::Shell(Shell::Exit(_)), Ok(_)) = (&what, &values) {
@@ -1187,13 +1232,16 @@ fn local(
                 .finish()
                 .map_err(|why| Failed::new(Code::Config, why))?;
             let typing = size.is_none() && !read_only;
-            let explicit = draft.as_deref().is_some_and(|d| d.preferences.changed());
+            let explicit = draft
+                .as_deref()
+                .map(|d| d.preferences.changes())
+                .unwrap_or_default();
             let (committed, mut problem, configured) = if typing {
                 configured(&defaults)
             } else {
-                (defaults, None, false)
+                (defaults, None, Changes::default())
             };
-            let forward = explicit || configured;
+            let changes = explicit.merge(configured);
             // Watching or naming a run starts no replacement server.
             let socket = match *read_only || of.is_some() {
                 true => server.socket()?,
@@ -1206,9 +1254,9 @@ fn local(
             if let Some(draft) = draft {
                 *draft = committed.draft();
             }
-            if forward
-                && problem.is_none()
+            if problem.is_none()
                 && let Err(failed) = committed.preferences.forward_settings(
+                    changes,
                     server,
                     Context {
                         of: *of,
@@ -1216,6 +1264,9 @@ fn local(
                     },
                 )
             {
+                if size.is_some() {
+                    return Err(failed);
+                }
                 problem = Some(failed.notice());
             }
             let attach = client::Attaching {
@@ -1252,12 +1303,12 @@ fn started(server: &mut Server) -> Result<SocketPath, Failed> {
     Ok(socket)
 }
 
-/// A typing terminal's whole state, one diagnostic if it failed, and whether
-/// successful config evaluation ran a preference setter.
-pub fn configured(defaults: &ClientState) -> (ClientState, Option<String>, bool) {
+/// A typing terminal's whole state, one diagnostic if it failed, and the
+/// fields explicitly written by successful config evaluation.
+pub fn configured(defaults: &ClientState) -> (ClientState, Option<String>, Changes) {
     match config_state(defaults) {
         Ok((state, changed)) => (state, None, changed),
-        Err(failed) => (defaults.clone(), Some(failed.notice()), false),
+        Err(failed) => (defaults.clone(), Some(failed.notice()), Changes::default()),
     }
 }
 
@@ -1270,9 +1321,9 @@ pub fn default_state() -> Result<ClientState, Failed> {
     draft.finish().map_err(|why| Failed::new(Code::Config, why))
 }
 
-fn config_state(defaults: &ClientState) -> Result<(ClientState, bool), Failed> {
+fn config_state(defaults: &ClientState) -> Result<(ClientState, Changes), Failed> {
     let Some(path) = crate::config::default_path() else {
-        return Ok((defaults.clone(), false));
+        return Ok((defaults.clone(), Changes::default()));
     };
     let shown = path.display().to_string();
     let (path, file) = match source::root(&path) {
@@ -1283,7 +1334,7 @@ fn config_state(defaults: &ClientState) -> Result<(ClientState, bool), Failed> {
                     .symlink_metadata()
                     .is_err_and(|e| e.kind() == io::ErrorKind::NotFound) =>
         {
-            return Ok((defaults.clone(), false));
+            return Ok((defaults.clone(), Changes::default()));
         }
         Err(error) => return Err(read_failed(&shown, &error.to_string())),
     };
@@ -1291,8 +1342,8 @@ fn config_state(defaults: &ClientState) -> Result<(ClientState, bool), Failed> {
 }
 
 /// Reads a frozen config graph and runs it without a transport capability.
-pub fn run_file(path: &std::path::Path) -> Result<ClientState, Failed> {
-    run_config(source::file(path)?)
+pub fn run_file(path: &std::path::Path) -> Result<(ClientState, Changes), Failed> {
+    run_config_on(source::file(path)?, &default_state()?)
 }
 
 fn run_config(image: fuxth::SourceImage) -> Result<ClientState, Failed> {
@@ -1302,12 +1353,12 @@ fn run_config(image: fuxth::SourceImage) -> Result<ClientState, Failed> {
 fn run_config_on(
     image: fuxth::SourceImage,
     defaults: &ClientState,
-) -> Result<(ClientState, bool), Failed> {
+) -> Result<(ClientState, Changes), Failed> {
     let tokens = image.tokens();
     let mut draft = defaults.draft();
     draft.config = Some(Arc::new(image));
     run_quiet(&tokens, Some(&mut draft))?;
-    let changed = draft.preferences.changed();
+    let changed = draft.preferences.changes();
     let committed = draft
         .finish()
         .map_err(|why| Failed::new(Code::Config, why))?;
@@ -1333,6 +1384,9 @@ fn run_quiet(tokens: &[Token], state: Option<&mut Draft>) -> Result<(), Failed> 
 struct ConfigOnly;
 
 impl Asks for ConfigOnly {
+    fn checkpoint(&mut self, _: &mut Draft, _: Context) -> Result<(), Failed> {
+        Ok(())
+    }
     fn ask(&mut self, _: &Asked, _: &mut dyn Write) -> Result<Reply, Failed> {
         Err(Failed::new(
             Code::NotConfig,
@@ -1413,15 +1467,7 @@ pub fn main(args: &[String], out: &mut dyn Write) -> Result<u8, Failed> {
         .and_then(|()| host.out.flush());
     ran?;
     printed.map_err(|e| Failed::new(Code::Output, format!("writing the output: {e}")))?;
-    if state.preferences.changed() {
-        let context = client::context();
-        let committed = state
-            .finish()
-            .map_err(|why| Failed::new(Code::Config, why))?;
-        committed
-            .preferences
-            .forward_settings(&mut cli.server, context)?;
-    }
+    cli.commit(&mut state, client::context())?;
     Ok(cli.status.unwrap_or(0))
 }
 
