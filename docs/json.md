@@ -235,7 +235,7 @@ they run, so a `try` may name them too.
 ## `status json`
 
 ```json
-{"socket":"/run/user/1000/fux/server.sock","version":"0.36.0","protocol":37,
+{"socket":"/run/user/1000/fux/server.sock","version":"0.36.0","protocol":38,
  "server_version":"0.36.0","server_protocol":37,"compatible":true}
 ```
 
