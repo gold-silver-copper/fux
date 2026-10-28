@@ -1018,6 +1018,7 @@ fn attach_options(
             AnyRef::Tab(tab) => T::Tab(*tab),
             AnyRef::Pane(pane) => T::Pane(*pane),
         }),
+        (Some(On::Version(version)), None) => Some(T::Pane(version.pane)),
         (Some(_), Some(_)) => {
             return Err(fail(Raise::BadValue, "attach takes no in with a subject"));
         }

@@ -1740,6 +1740,92 @@ fn read_file(path: &std::path::Path) -> Result<String, Failed> {
 #[cfg(test)]
 mod tests {
     #[test]
+    fn attach_words_accept_compiled_action_answers_and_keep_their_run()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use super::*;
+        use crate::command::{AttachTarget, Command, Request};
+        struct Record {
+            version: Version,
+            sent: usize,
+            attached: Option<(Option<Run>, Option<AttachTarget>, Option<fux_vt::Size>)>,
+        }
+        impl Asks for Record {
+            fn ask(&mut self, asked: &Asked, _: &mut dyn Write) -> Result<Reply, Failed> {
+                let mut reply: Reply =
+                    if matches!(asked.request, Request::Do(Command::Resolve { .. })) {
+                        Body::Found(AnyRef::Pane(self.version.pane)).into()
+                    } else if matches!(asked.request, Request::Do(Command::SendKeys { .. })) {
+                        self.sent = self.sent.saturating_add(1);
+                        PaneResults::One(PaneAnswer::Acted(self.version)).into()
+                    } else {
+                        return Err(Failed::new(Code::Usage, "unexpected request"));
+                    };
+                reply.run = Some(self.version.run);
+                Ok(reply)
+            }
+            fn local(
+                &mut self,
+                what: &Local,
+                _: Option<&mut Draft>,
+                _: &mut dyn Write,
+            ) -> Result<Vec<Value<Fux>>, Failed> {
+                let Local::Attach {
+                    of, target, size, ..
+                } = what
+                else {
+                    return Err(Failed::new(Code::Usage, "unexpected local action"));
+                };
+                self.attached = Some((*of, target.clone(), *size));
+                Ok(Vec::new())
+            }
+        }
+        let version: Version = "%1:0.0.0.0.0:1-2".parse().map_err(|()| "version")?;
+        for action in ["attach-defaults", "attach", "80 24 size attach"] {
+            let code = format!("%1 str hello text send-keys {action}");
+            let mut machine =
+                compile(&token::source("answer-attach", &code)?).map_err(|e| e.to_string())?;
+            let mut draft = default_state().map_err(|e| e.to_string())?.draft();
+            let mut sink = io::sink();
+            let mut host = Host::new(Context::default(), Some(&mut draft), &mut sink);
+            let mut record = Record {
+                version,
+                sent: 0,
+                attached: None,
+            };
+            run_capped(
+                &mut machine,
+                &mut host,
+                &mut record,
+                Some(PROGRAM_STEPS),
+                None,
+            )
+            .map_err(|e| e.to_string())?;
+            assert_eq!(record.sent, 1);
+            let target = Some(AttachTarget::Pane(version.pane));
+            if action == "attach-defaults" {
+                let defaults = draft.attach.ok_or("attach defaults")?;
+                assert_eq!((defaults.of, defaults.target), (Some(version.run), target));
+            } else {
+                let size = action
+                    .starts_with("80")
+                    .then(|| fux_vt::Size::new(24, 80))
+                    .transpose()?;
+                assert_eq!(record.attached, Some((Some(version.run), target, size)));
+            }
+        }
+        for baseline in ["changed", "expect"] {
+            for action in ["attach", "attach-defaults"] {
+                let code = format!("str {version} {baseline} {action}");
+                assert!(
+                    compile(&token::source("baseline", &code)?).is_err(),
+                    "{code}"
+                );
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
     fn every_observation_wait_encodes_its_clients_limit() -> Result<(), Box<dyn std::error::Error>>
     {
         use super::*;

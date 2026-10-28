@@ -1313,6 +1313,8 @@ fn attached(
     let mut buffer = vec![0u8; 64 * 1024];
     let mut keyboard: Option<Keyboard> = None;
     let mut retried = false;
+    let mut viewport = attach.size;
+    let mut pending_resize = None;
     let mut acts = Vec::new();
     let mut frames = 0u64;
     const STREAM: Option<usize> = Some(0);
@@ -1342,11 +1344,18 @@ fn attached(
                     };
                     let (mut retry, fresh, _) = connect(socket, role)?;
                     let mut request = attach.clone();
+                    // WINCH may still be pending when the reply arrives.
+                    if terminal && let Some(size) = window_size() {
+                        viewport = size;
+                    }
+                    request.size = viewport;
                     request.initial = Some(initial);
                     send(&mut retry, &request)?;
                     wait_at_most(&retry, None);
                     *stream = retry;
                     *decoder = fresh;
+                    frames = 0;
+                    pending_resize = None;
                     retried = true;
                 }
                 (ToAttached::Exit(reason), None) => return Err(Error::Refused(reason.to_owned())),
@@ -1365,6 +1374,22 @@ fn attached(
                 (frame, Some(keyboard)) => acts.extend(keyboard.frame(frame)),
                 (_, None) => {}
             }
+        }
+        // Before admission, resizes stay local. Once admitted, send the
+        // latest one before dispatching any job that fences this connection.
+        if keyboard.is_some()
+            && let Some(size) = pending_resize.take()
+        {
+            if let Err(ended) = tell(
+                stream,
+                decoder,
+                true,
+                output.as_deref_mut(),
+                &AttachedFrame::Resize(size),
+            ) {
+                return ended;
+            }
+            frames = next_frame(frames)?;
         }
         for out in std::mem::take(&mut acts) {
             let act = match out {
@@ -1459,13 +1484,8 @@ fn attached(
             crate::drain(winch.reader());
             // A terminal that says no size now keeps the last it said.
             if terminal && let Some(size) = window_size() {
-                let resize = AttachedFrame::Resize(size);
-                let welcomed = keyboard.is_some();
-                if let Err(ended) = tell(stream, decoder, welcomed, output.as_deref_mut(), &resize)
-                {
-                    return ended;
-                }
-                frames = next_frame(frames)?;
+                viewport = size;
+                pending_resize = Some(size);
             }
         }
         if let Some(keyboard) = &mut keyboard {

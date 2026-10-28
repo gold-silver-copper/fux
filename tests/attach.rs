@@ -1416,3 +1416,91 @@ fn attach_preferences_apply_before_explicit_operands() -> Outcome {
     }
     Ok(())
 }
+
+#[test]
+fn empty_attach_retry_keeps_resize_and_starts_a_new_frame_fence() -> Outcome {
+    use fux::protocol::{Attach, AttachedFrame, Decoder, Frame, Greeting, Hello, Role, ToAttached};
+    use std::io::{Read, Write};
+    use std::os::unix::net::{UnixListener, UnixStream};
+
+    fn read<F: for<'d> Frame<'d>>(stream: &mut UnixStream) -> Result<Option<F>, String> {
+        let mut decoder = Decoder::default();
+        let mut bytes = [0u8; 4096];
+        loop {
+            if let Some(frame) = decoder.frame::<F>().map_err(e)? {
+                return Ok(Some(frame));
+            }
+            let n = stream.read(&mut bytes).map_err(e)?;
+            if n == 0 {
+                return Ok(None);
+            }
+            decoder.push(bytes.get(..n).unwrap_or_default());
+        }
+    }
+
+    let server = Server::empty()?;
+    let marker = server.dir.join("initial-size");
+    std::fs::write(
+        server.dir.join("config/fux/config.fux"),
+        format!(
+            "str shell list str /bin/sh str -c str 'stty size > {}; exec /bin/cat' end set\n\
+         str F5 str 'ls drop str fence-complete' bind-root\n",
+            marker.display()
+        ),
+    )
+    .map_err(e)?;
+    // Intercept only the unadmitted probe; retries and all later requests
+    // go directly to the real server and its actual fence barrier.
+    let held = server.dir.join("held.sock");
+    std::fs::rename(&server.socket, &held).map_err(e)?;
+    let listener = UnixListener::bind(&server.socket).map_err(e)?;
+    let mut terminal = Terminal::attach(&server, 10, 40, &["opts", "attach"])?;
+    let mut probe = loop {
+        let (mut stream, _) = listener.accept().map_err(e)?;
+        stream.set_read_timeout(Some(PATIENCE)).map_err(e)?;
+        if read::<Hello>(&mut stream)?.is_some() {
+            break stream;
+        }
+    };
+    probe
+        .write_all(
+            &Greeting::Hello(Hello::ours(Role::Attach))
+                .encode()
+                .map_err(e)?,
+        )
+        .map_err(e)?;
+    let initial = read::<Attach>(&mut probe)?.ok_or("attach probe")?;
+    assert_eq!(initial.size, sized(10, 40)?);
+    terminal.wait_for("\x1b[?1049h")?;
+    terminal.resize(12, 50)?;
+    // Give the client its WINCH turn while NeedsInitial is withheld. The
+    // old client writes Resize here; the corrected client keeps it local.
+    let leaked = {
+        let mut ready = [fuxix::poll::PollFd::new(&probe, fuxix::poll::Events::IN)];
+        fuxix::poll::poll(&mut ready, Some(std::time::Duration::from_millis(250))).map_err(e)? > 0
+    };
+    if leaked {
+        assert!(matches!(
+            read::<AttachedFrame>(&mut probe)?,
+            Some(AttachedFrame::Resize(_))
+        ));
+    }
+    drop(listener);
+    std::fs::remove_file(&server.socket).map_err(e)?;
+    std::fs::rename(&held, &server.socket).map_err(e)?;
+    probe
+        .write_all(&ToAttached::NeedsInitial.encode().map_err(e)?)
+        .map_err(e)?;
+    drop(probe);
+    terminal.wait_for("%1")?;
+    terminal.type_bytes(b"\x1b[15~")?;
+    terminal.wait_for("fence-complete")?;
+    assert!(!leaked, "an unadmitted connection received a resize");
+    eventually("the initial pane size", || {
+        Ok(std::fs::read_to_string(&marker).unwrap_or_default().trim() == "11 50")
+    })?;
+    assert!(server.ok(&["ls"])?.contains("50x11"));
+    terminal.type_bytes(b"\x02d")?;
+    assert!(terminal.wait_exit()?.success());
+    Ok(())
+}
