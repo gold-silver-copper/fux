@@ -172,34 +172,41 @@ impl Budget {
             None => Ok(crate::json::Json::Null),
         }
     }
-    fn named(
+    /// Move a vector into admitted replacement slots while its old block lives.
+    pub(crate) fn map<T, U>(
         &mut self,
-        fields: impl ExactSizeIterator<Item = (&'static str, crate::json::Json)>,
-    ) -> Result<Vec<(String, crate::json::Json)>, crate::session::Error> {
-        let mut out = self.vector(fields.len())?;
-        for (key, value) in fields {
-            out.push((self.string(key)?, value));
+        input: Vec<T>,
+        mut map: impl FnMut(T, &mut Self) -> Result<U, crate::session::Error>,
+    ) -> Result<Vec<U>, crate::session::Error> {
+        let old = input
+            .capacity()
+            .checked_mul(std::mem::size_of::<T>())
+            .ok_or_else(Self::exceeded)?;
+        let mut out = self.vector(input.len())?;
+        for value in input {
+            out.push(map(value, self)?);
         }
+        self.release(old)?;
         Ok(out)
     }
+
     pub(crate) fn object<const N: usize>(
         &mut self,
         fields: [(&'static str, crate::json::Json); N],
     ) -> Result<crate::json::Json, crate::session::Error> {
-        self.named(fields.into_iter())
-            .map(crate::json::Json::Object)
+        let mut out = self.vector(N)?;
+        for (key, value) in fields {
+            out.push((self.string(key)?, value));
+        }
+        Ok(crate::json::Json::Object(out))
     }
     pub(crate) fn fields(
         &mut self,
         fields: crate::json::Fields,
     ) -> Result<Vec<(String, crate::json::Json)>, crate::session::Error> {
-        let bytes = fields
-            .capacity()
-            .checked_mul(std::mem::size_of::<(&str, crate::json::Json)>())
-            .ok_or_else(Self::exceeded)?;
-        let out = self.named(fields.into_iter())?;
-        self.release(bytes)?;
-        Ok(out)
+        self.map(fields, |(key, value), budget| {
+            Ok((budget.string(key)?, value))
+        })
     }
     pub(crate) fn slots<T>(&mut self, count: usize) -> Result<(), crate::session::Error> {
         self.charge(
@@ -231,6 +238,10 @@ impl fuxix::Allocation for Budget {
 
 /// Where wire bytes go. Bounded encoders stop before reserving memory.
 pub trait Sink {
+    /// Charge retained storage; true when only walking allocations.
+    fn storage(&mut self, _bytes: usize) -> bool {
+        false
+    }
     fn extend_from_slice(&mut self, bytes: &[u8]);
     fn push(&mut self, byte: u8) {
         self.extend_from_slice(&[byte]);
@@ -246,56 +257,55 @@ impl Sink for Vec<u8> {
     }
 }
 
+/// Retained capacities follow the same fields as their wire encoding.
+/// Storage sinks skip scalar spellings and byte copies, and visit containers.
+pub(crate) fn retained(value: &impl Wire) -> usize {
+    struct Storage(usize);
+    impl Sink for Storage {
+        fn storage(&mut self, bytes: usize) -> bool {
+            self.0 = self.0.saturating_add(bytes);
+            true
+        }
+        fn extend_from_slice(&mut self, _: &[u8]) {}
+    }
+    let mut storage = Storage(0);
+    value.put(&mut storage);
+    storage.0
+}
+
 /// A fallible wire writer, or a count-only preflight of the same encoding.
 pub struct Writer {
     bytes: Option<Vec<u8>>,
-    left: usize,
-    failed: bool,
+    left: Option<usize>,
 }
 
 impl Writer {
     pub fn counting(limit: usize) -> Self {
         Self {
             bytes: None,
-            left: limit,
-            failed: false,
+            left: Some(limit),
         }
     }
     pub(crate) fn check_ref(&self) -> Result<(), Error> {
-        if self.failed {
-            Err(Error::Limit)
-        } else {
-            Ok(())
-        }
+        self.left.map(|_| ()).ok_or(Error::Limit)
     }
     pub fn check(self) -> Result<(), Error> {
-        if self.failed {
-            Err(Error::Limit)
-        } else {
-            Ok(())
-        }
+        self.check_ref()
     }
 }
 
 impl Sink for Writer {
     fn extend_from_slice(&mut self, bytes: &[u8]) {
-        if self.failed {
-            return;
-        }
-        let Some(left) = self.left.checked_sub(bytes.len()) else {
-            self.failed = true;
-            return;
-        };
-        if let Some(out) = &mut self.bytes
+        self.left = self.left.and_then(|left| left.checked_sub(bytes.len()));
+        if self.left.is_some()
+            && let Some(out) = &mut self.bytes
             && append(out, bytes).is_err()
         {
-            self.failed = true;
-            return;
+            self.left = None;
         }
-        self.left = left;
     }
     fn full(&self) -> bool {
-        self.failed
+        self.left.is_none()
     }
 }
 
@@ -321,20 +331,17 @@ pub(crate) fn size<T: Wire>(value: &T) -> Result<usize, Error> {
     let mut out = Writer::counting(MAX_REPLY);
     value.put(&mut out);
     out.check_ref()?;
-    Ok(MAX_REPLY.saturating_sub(out.left))
+    Ok(MAX_REPLY.saturating_sub(out.left.ok_or(Error::Limit)?))
 }
 
 /// A finite reply's bytes, refused before a write exceeds the cap.
 pub fn encode<T: Wire>(value: &T) -> Result<Vec<u8>, Error> {
     let mut out = Writer {
         bytes: Some(Vec::new()),
-        left: MAX_REPLY,
-        failed: false,
+        left: Some(MAX_REPLY),
     };
     value.put(&mut out);
-    if out.failed {
-        return Err(Error::Limit);
-    }
+    out.check_ref()?;
     Ok(out.bytes.unwrap_or_default())
 }
 
@@ -418,7 +425,9 @@ fn put_bytes(bytes: &[u8], out: &mut impl Sink) {
 
 impl Wire for String {
     fn put(&self, out: &mut impl crate::wire::Sink) {
-        put_bytes(self.as_bytes(), out);
+        if !out.storage(self.capacity()) {
+            put_bytes(self.as_bytes(), out);
+        }
     }
     fn get(r: &mut Reader<'_>) -> Result<Self, Error> {
         let len = u32::get(r)? as usize;
@@ -436,7 +445,9 @@ impl Wire for String {
 /// is any bytes, never made text.
 impl Wire for std::ffi::OsString {
     fn put(&self, out: &mut impl crate::wire::Sink) {
-        put_bytes(self.as_bytes(), out);
+        if !out.storage(self.capacity()) {
+            put_bytes(self.as_bytes(), out);
+        }
     }
     fn get(r: &mut Reader<'_>) -> Result<Self, Error> {
         Vec::get(r).map(Self::from_vec)
@@ -446,7 +457,9 @@ impl Wire for std::ffi::OsString {
 /// A path, as its bytes.
 impl Wire for std::path::PathBuf {
     fn put(&self, out: &mut impl crate::wire::Sink) {
-        put_bytes(self.as_os_str().as_bytes(), out);
+        if !out.storage(self.capacity()) {
+            put_bytes(self.as_os_str().as_bytes(), out);
+        }
     }
     fn get(r: &mut Reader<'_>) -> Result<Self, Error> {
         std::ffi::OsString::get(r).map(Self::from)
@@ -457,7 +470,9 @@ impl Wire for std::path::PathBuf {
 /// refused.
 impl Wire for EnvPatch {
     fn put(&self, out: &mut impl crate::wire::Sink) {
-        put_list(self.as_slice(), out);
+        if !out.storage(self.heap_bytes()) {
+            put_list(self.as_slice(), out);
+        }
     }
     fn get(r: &mut Reader<'_>) -> Result<Self, Error> {
         let mut env = EnvPatch::default();
@@ -490,6 +505,7 @@ impl<T: Wire> Wire for Option<T> {
 
 impl<T: Wire> Wire for Vec<T> {
     fn put(&self, out: &mut impl crate::wire::Sink) {
+        out.storage(self.capacity().saturating_mul(std::mem::size_of::<T>()));
         put_list(self, out);
     }
     fn get(r: &mut Reader<'_>) -> Result<Self, Error> {
@@ -503,6 +519,7 @@ impl<T: Wire> Wire for Vec<T> {
 
 impl<T: Wire> Wire for Box<T> {
     fn put(&self, out: &mut impl crate::wire::Sink) {
+        out.storage(std::mem::size_of::<T>());
         (**self).put(out);
     }
     fn get(r: &mut Reader<'_>) -> Result<Self, Error> {
@@ -511,36 +528,23 @@ impl<T: Wire> Wire for Box<T> {
     }
 }
 
-impl<A: Wire, B: Wire> Wire for (A, B) {
-    fn put(&self, out: &mut impl crate::wire::Sink) {
-        self.0.put(out);
-        self.1.put(out);
-    }
-    fn get(r: &mut Reader<'_>) -> Result<Self, Error> {
-        Ok((A::get(r)?, B::get(r)?))
-    }
+macro_rules! tuple_wire {
+    ($(($($ty:ident: $field:tt),+)),+) => {$ (
+        impl<$($ty: Wire),+> Wire for ($($ty,)+) {
+            fn put(&self, out: &mut impl Sink) { $(self.$field.put(out);)+ }
+            fn get(r: &mut Reader<'_>) -> Result<Self, Error> {
+                Ok(($($ty::get(r)?,)+))
+            }
+        }
+    )+};
 }
-
-impl<A: Wire, B: Wire, C: Wire> Wire for (A, B, C) {
-    fn put(&self, out: &mut impl crate::wire::Sink) {
-        self.0.put(out);
-        self.1.put(out);
-        self.2.put(out);
-    }
-    fn get(r: &mut Reader<'_>) -> Result<Self, Error> {
-        Ok((A::get(r)?, B::get(r)?, C::get(r)?))
-    }
-}
+tuple_wire!((A: 0, B: 1), (A: 0, B: 1, C: 2));
 
 /// Formatting never needs an owned spelling: count into stack state,
 /// then write the same Display directly to the wire sink.
 fn put_text(value: &impl std::fmt::Display, out: &mut impl Sink) {
-    struct Count(usize);
-    impl std::fmt::Write for Count {
-        fn write_str(&mut self, text: &str) -> std::fmt::Result {
-            self.0 = self.0.saturating_add(text.len());
-            Ok(())
-        }
+    if out.storage(0) {
+        return;
     }
     struct Output<'a, S>(&'a mut S);
     impl<S: Sink> std::fmt::Write for Output<'_, S> {
@@ -553,10 +557,10 @@ fn put_text(value: &impl std::fmt::Display, out: &mut impl Sink) {
             }
         }
     }
-    let mut count = Count(0);
+    let mut count = fuxth::Render::new(usize::MAX);
     // Display may fail only if its formatter fails; Count never does.
     let _ = std::fmt::write(&mut count, format_args!("{value}"));
-    u32::try_from(count.0).unwrap_or(u32::MAX).put(out);
+    u32::try_from(count.bytes()).unwrap_or(u32::MAX).put(out);
     let _ = std::fmt::write(&mut Output(out), format_args!("{value}"));
 }
 
@@ -574,9 +578,7 @@ macro_rules! text_wire {
             fn get(r: &mut Reader<'_>) -> Result<Self, Error> {
                 let text = String::get(r)?;
                 let value: Self = text.parse().map_err(|_| Error::Bad($sigil))?;
-                if crate::words::writes_exactly(&text, |out| {
-                    std::fmt::write(out, format_args!("{value}"))
-                }) {
+                if crate::words::writes_exactly(&text, |out| write!(out, "{value}")) {
                     Ok(value)
                 } else {
                     Err(Error::Bad($sigil))

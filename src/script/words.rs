@@ -515,10 +515,9 @@ fn json_text(value: &Value<Fux>, limit: usize) -> Result<String, Failure> {
             }
         })
         .ok_or_else(|| observation_failure(crate::wire::Budget::exceeded()))?;
-    budget.charge(bytes).map_err(observation_failure)?;
-    let text = crate::json::render(&mut budget, |out| write_json_value(value, out))
-        .map_err(observation_failure)?;
-    budget.text_value(&text).map_err(observation_failure)?;
+    budget.charge(bytes)?;
+    let text = crate::json::render(&mut budget, |out| write_json_value(value, out))?;
+    budget.text_value(&text)?;
     Ok(text)
 }
 
@@ -2141,9 +2140,7 @@ impl Host<'_> {
                     return Err(wrong("rows", &rows));
                 };
                 let mut budget = crate::wire::Budget::with_limit(crate::client::JOB_BYTES);
-                let mut items = budget
-                    .vector(rows.items().len())
-                    .map_err(observation_failure)?;
+                let mut items = budget.vector(rows.items().len())?;
                 for row in rows.items() {
                     let Value::List(row) = row else {
                         return Err(wrong("[payload,label]", row));
@@ -2153,9 +2150,7 @@ impl Host<'_> {
                     };
                     let payload = super::callback::data(payload, &mut budget)?;
                     let label = string(label)?;
-                    budget
-                        .charge(label.capacity())
-                        .map_err(observation_failure)?;
+                    budget.charge(label.capacity())?;
                     items.push(crate::screens::Item { payload, label });
                 }
                 let index = |v: Value<Fux>| -> Result<Option<usize>, Failure> {
@@ -2236,9 +2231,7 @@ impl Host<'_> {
             Value::Str(_) => (string(value)?, Vec::new()),
             Value::List(v) => match v.items() {
                 [Value::List(args), code] => {
-                    let mut out = budget
-                        .vector(args.items().len())
-                        .map_err(observation_failure)?;
+                    let mut out = budget.vector(args.items().len())?;
                     for arg in args.items() {
                         out.push(super::callback::data(arg, &mut budget)?);
                     }
@@ -2804,17 +2797,13 @@ mod tests {
             None,
         )))])
         .ok_or("held list")?;
-        let held = std::rc::Rc::new(held);
-        let one = Value::List(std::rc::Rc::clone(&held))
-            .text()
-            .map_err(|f| f.message)?;
+        let held = fuxth::Shared::new(held);
+        let one = Value::List(held.clone()).text().map_err(|f| f.message)?;
         assert!(one.len().saturating_mul(8) > 64 << 10);
         drop(one);
-        let list = fuxth::List::new(
-            std::iter::repeat_n(Value::List(std::rc::Rc::clone(&held)), 8).collect(),
-        )
-        .ok_or("outer list")?;
-        let value = Value::List(std::rc::Rc::new(list));
+        let list = fuxth::List::new(std::iter::repeat_n(Value::List(held.clone()), 8).collect())
+            .ok_or("outer list")?;
+        let value = Value::List(fuxth::Shared::new(list));
         assert_eq!(value.weight(), 17);
         WRITES.set(0);
         allocator.reset_peak();
@@ -2831,9 +2820,8 @@ mod tests {
             allocator.peak().saturating_sub(base) <= 64 << 10,
             "retained input, conversion and output must share the grant"
         );
-        let list = fuxth::List::new(vec![Value::List(std::rc::Rc::clone(&held)); 2])
-            .ok_or("small list")?;
-        let small = Value::List(std::rc::Rc::new(list));
+        let list = fuxth::List::new(vec![Value::List(held.clone()); 2]).ok_or("small list")?;
+        let small = Value::List(fuxth::Shared::new(list));
         allocator.reset_peak();
         let text = small
             .text_upto(usize::MAX)
@@ -2878,7 +2866,7 @@ mod tests {
             "retained input and output must share admission"
         );
         let list = fuxth::List::new(vec![value]).ok_or("list")?;
-        let value = Value::List(std::rc::Rc::new(list));
+        let value = Value::List(fuxth::Shared::new(list));
         allocator.reset_peak();
         let text = json_text(&value, 64 << 10).map_err(|f| f.message)?;
         assert!(text.contains(r#""col":511,"len":1,"fg":1"#));
@@ -3014,10 +3002,10 @@ mod tests {
                     | Opt::UnsetEnv => {
                         vec![Value::str("x")]
                     }
-                    Opt::ShellProgram => vec![Value::List(std::rc::Rc::new(
+                    Opt::ShellProgram => vec![Value::List(fuxth::Shared::new(
                         fuxth::List::new(vec![Value::str("sh")]).ok_or("list")?,
                     ))],
-                    Opt::CopyEnvironment => vec![Value::List(std::rc::Rc::new(
+                    Opt::CopyEnvironment => vec![Value::List(fuxth::Shared::new(
                         fuxth::List::new(vec![]).ok_or("list")?,
                     ))],
                     Opt::Size | Opt::Shares => vec![Value::Int(1), Value::Int(1)],
@@ -3061,7 +3049,7 @@ mod tests {
                 let args = args
                     .iter()
                     .map(|v| match v {
-                        Value::Str(s) => format!("str {s}"),
+                        Value::Str(s) => format!("str {}", **s),
                         Value::List(list) => format!(
                             "list {} end",
                             list.items()

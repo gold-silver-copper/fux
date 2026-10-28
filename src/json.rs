@@ -110,32 +110,6 @@ impl Json {
         }
     }
 
-    /// Charge the retained graph, without copying it.
-    pub(crate) fn charge(
-        &self,
-        budget: &mut crate::wire::Budget,
-    ) -> Result<(), crate::session::Error> {
-        match self {
-            Json::String(text) => budget.charge(text.capacity()),
-            Json::Array(items) => {
-                budget.slots::<Json>(items.capacity())?;
-                for item in items {
-                    item.charge(budget)?;
-                }
-                Ok(())
-            }
-            Json::Object(fields) => {
-                budget.slots::<(String, Json)>(fields.capacity())?;
-                for (key, value) in fields {
-                    budget.charge(key.capacity())?;
-                    value.charge(budget)?;
-                }
-                Ok(())
-            }
-            Json::Null | Json::Bool(_) | Json::Int(_) | Json::Uint(_) => Ok(()),
-        }
-    }
-
     /// A value read from the wire, at most `depth` deep.
     fn read(r: &mut Reader<'_>, depth: usize) -> Result<Json, Error> {
         let depth = depth.checked_sub(1).ok_or(Error::Bad("JSON depth"))?;

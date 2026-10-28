@@ -160,16 +160,6 @@ impl PaneAnswer {
         }
     }
 
-    pub(crate) fn charge(
-        &self,
-        budget: &mut crate::wire::Budget,
-    ) -> Result<(), crate::session::Error> {
-        if let PaneAnswer::Changed { changed, .. } = self {
-            budget.slots::<Change>(changed.capacity())?;
-        }
-        Ok(())
-    }
-
     /// As JSON, without allocating a second owned graph.
     pub(crate) fn write_json(&self, out: &mut dyn std::fmt::Write) -> std::fmt::Result {
         write!(out, "{{\"pane\":\"{}\"", self.pane())?;

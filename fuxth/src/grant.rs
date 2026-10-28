@@ -33,6 +33,7 @@ impl Grant {
 pub struct Render {
     grant: Grant,
     bytes: usize,
+    text: Option<String>,
 }
 
 impl Render {
@@ -40,6 +41,7 @@ impl Render {
         Self {
             grant: Grant::new(bytes),
             bytes: 0,
+            text: None,
         }
     }
 
@@ -52,36 +54,27 @@ impl Render {
     }
 
     pub fn finish<E>(
-        self,
+        mut self,
         write: impl FnOnce(&mut dyn fmt::Write) -> Result<(), E>,
         exceeded: impl FnOnce() -> E,
     ) -> Result<String, E> {
-        struct Output {
-            text: String,
-            grant: Grant,
-        }
-        impl fmt::Write for Output {
-            fn write_str(&mut self, text: &str) -> fmt::Result {
-                self.grant.charge(text.len())?;
-                self.text.push_str(text);
-                Ok(())
-            }
-        }
         let mut text = String::new();
         text.try_reserve_exact(self.bytes).map_err(|_| exceeded())?;
-        let mut out = Output {
-            text,
-            grant: Grant::new(self.bytes),
-        };
-        write(&mut out)?;
-        Ok(out.text)
+        self.grant = Grant::new(self.bytes);
+        self.text = Some(text);
+        write(&mut self)?;
+        Ok(self.text.unwrap_or_default())
     }
 }
 
 impl fmt::Write for Render {
     fn write_str(&mut self, text: &str) -> fmt::Result {
         self.grant.charge(text.len())?;
-        self.bytes = self.bytes.checked_add(text.len()).ok_or(fmt::Error)?;
+        if let Some(out) = &mut self.text {
+            out.push_str(text);
+        } else {
+            self.bytes = self.bytes.checked_add(text.len()).ok_or(fmt::Error)?;
+        }
         Ok(())
     }
 }

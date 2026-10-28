@@ -53,7 +53,7 @@ pub(crate) const DEFAULTS: &str = include_str!("client-defaults.fux");
 #[derive(Clone, Debug, PartialEq)]
 pub enum Fux {
     Null,
-    Record(Rc<record::Record>),
+    Record(fuxth::Shared<record::Record>),
     /// Rendered observations exceeding ordinary language string limits.
     Rendered(fuxth::Shared<String>),
     Pane(PaneId, Option<Run>),
@@ -76,7 +76,7 @@ pub enum Fux {
 impl AppValue for Fux {
     fn kind(&self) -> &'static str {
         if let Fux::Answer(answer, _) = self {
-            return answer.kind();
+            return answer.names().1;
         }
         let kind = words::KINDS.iter().find(|(name, ..)| *name == self.name());
         kind.map_or("a value of fux's", |(_, said, _)| said)
@@ -102,7 +102,7 @@ impl AppValue for Fux {
                 Some(On::Seen(_)) => "expected-request",
             },
             Fux::Extent(_) => "size",
-            Fux::Answer(answer, _) => answer.name(),
+            Fux::Answer(answer, _) => answer.names().0,
         }
     }
 
@@ -119,7 +119,7 @@ impl AppValue for Fux {
 
     fn retain(&self, imports: &Rc<fuxth::Grant>) -> Result<(), fuxth::Failure> {
         match self {
-            Fux::Record(record) => record.retain(imports),
+            Fux::Record(record) => record::Record::retain(record, imports),
             Fux::Answer(answer, _) => answer.reserve(imports, answer.retained_bytes()),
             Fux::Rendered(text) => text.reserve(imports, self.text_bytes()),
             Fux::Opts(opts) => opts.lease.reserve(
@@ -222,6 +222,12 @@ impl AppValue for Fux {
             Fux::Opts(_) => write!(out, "({})", self.kind()),
         }
         .map_err(|_| words::observation_failure(crate::wire::Budget::exceeded()))
+    }
+}
+
+impl From<crate::session::Error> for fuxth::Failure {
+    fn from(error: crate::session::Error) -> Self {
+        words::observation_failure(error)
     }
 }
 
@@ -330,49 +336,20 @@ impl Opts {
     }
 
     fn heap_bytes(&self) -> usize {
-        let mut bytes = std::mem::size_of::<Opts>()
-            .saturating_add(self.name.as_ref().map_or(0, String::capacity))
-            .saturating_add(self.cwd.as_ref().map_or(0, std::path::PathBuf::capacity))
-            .saturating_add(self.env.heap_bytes())
-            .saturating_add(
-                self.argv
-                    .capacity()
-                    .saturating_mul(std::mem::size_of::<String>()),
-            )
-            .saturating_add(
-                self.inputs
-                    .capacity()
-                    .saturating_mul(std::mem::size_of::<Input>()),
-            )
-            .saturating_add(
-                self.given
-                    .capacity()
-                    .saturating_mul(std::mem::size_of::<words::Opt>()),
-            );
-        if let Some(names) = &self.copy_environment {
-            bytes = bytes.saturating_add(
-                names
-                    .capacity()
-                    .saturating_mul(std::mem::size_of::<EnvName>()),
-            );
-            for name in names {
-                bytes = bytes.saturating_add(name.heap_bytes());
-            }
-        }
-        for arg in &self.argv {
-            bytes = bytes.saturating_add(arg.capacity());
-        }
-        if let Some(WsRef::Name(name)) = &self.place {
-            bytes = bytes.saturating_add(name.capacity());
-        }
-        for input in &self.inputs {
-            bytes = bytes.saturating_add(match input {
-                Input::Key(_) => 0,
-                Input::Text(text) | Input::Paste(text) => text.capacity(),
-                Input::Bytes(bytes) => bytes.capacity(),
-            });
-        }
-        bytes
+        [
+            crate::wire::retained(&self.name),
+            crate::wire::retained(&self.cwd),
+            crate::wire::retained(&self.env),
+            crate::wire::retained(&self.argv),
+            crate::wire::retained(&self.inputs),
+            crate::wire::retained(&self.copy_environment),
+            crate::wire::retained(&self.place),
+            self.given
+                .capacity()
+                .saturating_mul(std::mem::size_of::<words::Opt>()),
+        ]
+        .into_iter()
+        .fold(std::mem::size_of::<Self>(), usize::saturating_add)
     }
 }
 
@@ -408,42 +385,24 @@ pub enum Answer {
 
 impl Answer {
     fn retained_bytes(&self) -> usize {
-        let mut budget = crate::wire::Budget::with_limit(usize::MAX);
-        if budget
-            .charge(fuxth::Shared::<Answer>::bytes(0))
-            .and_then(|()| self.charge(&mut budget))
-            .is_err()
-        {
-            return usize::MAX;
-        }
-        usize::MAX.saturating_sub(budget.remaining())
+        fuxth::Shared::<Self>::bytes(match self {
+            Self::Capture(c) => crate::wire::retained(c),
+            Self::Status(s) => crate::wire::retained(s),
+            Self::Pane(p) => crate::wire::retained(p),
+            Self::Panes(p) => crate::wire::retained(p),
+        })
     }
 
-    /// Its kind, as the vocabulary names it.
-    fn name(&self) -> &'static str {
+    fn names(&self) -> (&'static str, &'static str) {
         match self {
-            Answer::Pane(PaneAnswer::Closed(_)) => "closed-answer",
-            Answer::Pane(_) => "answer",
-            Answer::Panes(_) => "answers",
-            Answer::Capture(captured) => match captured.of {
-                crate::capture::Of::Pane { .. } => "capture",
-                crate::capture::Of::Client(_) => "client-capture",
+            Answer::Pane(PaneAnswer::Closed(_)) => ("closed-answer", "a closed pane's answer"),
+            Answer::Pane(_) => ("answer", "an action's answer"),
+            Answer::Panes(_) => ("answers", "an answer of a tab's or workspace's panes"),
+            Answer::Capture(c) => match c.of {
+                crate::capture::Of::Pane { .. } => ("capture", "a capture"),
+                crate::capture::Of::Client(_) => ("client-capture", "a client's capture"),
             },
-            Answer::Status(_) => "listing",
-        }
-    }
-
-    /// What it is, said where it is refused.
-    fn kind(&self) -> &'static str {
-        match self {
-            Answer::Pane(PaneAnswer::Closed(_)) => "a closed pane's answer",
-            Answer::Pane(_) => "an action's answer",
-            Answer::Panes(_) => "an answer of a tab's or workspace's panes",
-            Answer::Capture(captured) => match captured.of {
-                crate::capture::Of::Pane { .. } => "a capture",
-                crate::capture::Of::Client(_) => "a client's capture",
-            },
-            Answer::Status(_) => "a status",
+            Answer::Status(_) => ("listing", "a status"),
         }
     }
 
@@ -461,24 +420,6 @@ impl Answer {
             }
             Answer::Capture(captured) => captured.write_text(out),
             Answer::Status(status) => write_status(status, out),
-        }
-    }
-
-    fn charge(&self, budget: &mut crate::wire::Budget) -> Result<(), crate::session::Error> {
-        match self {
-            Answer::Capture(captured) => {
-                budget.slots::<crate::capture::Captured>(1)?;
-                captured.charge(budget)
-            }
-            Answer::Status(json) => json.charge(budget),
-            Answer::Pane(answer) => answer.charge(budget),
-            Answer::Panes(answers) => {
-                budget.slots::<PaneAnswer>(answers.capacity())?;
-                for answer in answers {
-                    answer.charge(budget)?;
-                }
-                Ok(())
-            }
         }
     }
 
@@ -1198,7 +1139,7 @@ impl Asks for Cli {
                 };
                 let list = fuxth::List::new(args)
                     .ok_or_else(|| Failed::new(Code::Usage, "more arguments than a list holds"))?;
-                vec![Value::List(std::rc::Rc::new(list))]
+                vec![Value::List(fuxth::Shared::new(list))]
             }
             Shell::Input => match self.from {
                 Given::Stdin => {
@@ -1492,7 +1433,7 @@ pub fn answered(reply: Reply) -> Result<Vec<Value<Fux>>, Failed> {
             .collect();
         let list = fuxth::List::new(ids)
             .ok_or_else(|| Failed::new(Code::from(Raise::TooLong), "more ids than a list holds"))?;
-        Ok::<_, Failed>(Value::List(std::rc::Rc::new(list)))
+        Ok::<_, Failed>(Value::List(fuxth::Shared::new(list)))
     };
     Ok(vec![match body {
         Body::Empty => return Ok(Vec::new()),
@@ -2227,7 +2168,7 @@ mod tests {
             values,
             vec![
                 Value::App(Fux::Client(client, Some(version.run))),
-                Value::List(Rc::new(
+                Value::List(fuxth::Shared::new(
                     fuxth::List::new(vec![Value::Int(7), Value::Int(3)]).ok_or("cursor")?
                 )),
                 Value::str("x"),

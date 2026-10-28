@@ -1,7 +1,7 @@
 //! Values on the stack: integers, booleans, strings, lists, and the
 //! application's own.
 use crate::error::{Code, Failure};
-use crate::{Grant, ImportLease};
+use crate::{Grant, Shared};
 use std::rc::Rc;
 
 /// How deep lists may nest: a list of lists of … at most this many. Every
@@ -20,8 +20,8 @@ pub trait AppValue: Clone + PartialEq {
     const IMPORT_LIMIT: usize = 128 * 1024 * 1024;
 
     /// Reserve each owned allocation, recursively visiting shared children.
-    /// Inline application values need no reservation. Heap-owning values must
-    /// keep a lease with their storage and reserve it here.
+    /// Heap-owning values reserve Shared storage here, or carry an ImportLease
+    /// when ownership leaves a shared wrapper. Inline values need no reservation.
     fn retain(&self, _imports: &Rc<Grant>) -> Result<(), Failure> {
         Ok(())
     }
@@ -126,8 +126,8 @@ kinds! {
 pub enum Value<A> {
     Int(i64),
     Bool(bool),
-    Str(Rc<Text>),
-    List(Rc<List<A>>),
+    Str(Shared<Text>),
+    List(Shared<List<A>>),
     App(A),
 }
 
@@ -143,7 +143,6 @@ pub struct Text {
     text: String,
     chars: usize,
     marks: Vec<usize>,
-    lease: ImportLease,
 }
 
 /// Two strings are equal when their text is: the rest follows from it.
@@ -164,17 +163,11 @@ impl Text {
                 text,
                 chars,
                 marks: Vec::new(),
-                lease: ImportLease::default(),
             };
         }
         let chars = text.chars().count();
         let marks = marks(&text, 0, 0).collect();
-        Text {
-            text,
-            chars,
-            marks,
-            lease: ImportLease::default(),
-        }
+        Text { text, chars, marks }
     }
 
     /// `other` added at the end: how many characters before it were
@@ -206,13 +199,10 @@ impl Text {
         text.push_str(self.part(0, i));
         text.push_str(&other.text);
         text.push_str(self.part(i.saturating_add(1), self.chars));
-        let Text {
-            text, chars, marks, ..
-        } = Text::new(text);
-        (self.text, self.chars, self.marks) = (text, chars, marks);
+        *self = Text::new(text);
     }
 
-    /// Space for an Rc<Text> and the peak character-index replacement,
+    /// Space for shared Text storage and the peak character-index replacement,
     /// excluding the String moved into it. `None` if the size overflows.
     pub fn import_bytes(chars: usize, ascii: bool) -> Option<usize> {
         let marks = if ascii {
@@ -228,9 +218,7 @@ impl Text {
                 .checked_add(capacity / 2)?
                 .checked_mul(std::mem::size_of::<usize>())?
         };
-        index
-            .checked_add(std::mem::size_of::<Text>())?
-            .checked_add(std::mem::size_of::<usize>().checked_mul(2)?)
+        index.checked_add(Shared::<Text>::bytes(0))
     }
 
     /// Moves out the String, dropping its character index without a copy.
@@ -314,7 +302,6 @@ pub struct List<A> {
     items: Vec<Value<A>>,
     depth: u8,
     weight: u64,
-    lease: ImportLease,
 }
 
 /// Two lists are equal when their values are.
@@ -353,7 +340,6 @@ impl<A: AppValue> List<A> {
             items,
             depth,
             weight,
-            lease: ImportLease::default(),
         })
     }
 
@@ -425,12 +411,8 @@ impl<A: AppValue> Value<A> {
 
     fn own_bytes(&self) -> usize {
         match self {
-            Self::Str(text) => std::mem::size_of::<Text>()
-                .saturating_add(std::mem::size_of::<[usize; 2]>())
-                .saturating_add(text.heap_bytes()),
-            Self::List(list) => std::mem::size_of::<List<A>>()
-                .saturating_add(std::mem::size_of::<[usize; 2]>())
-                .saturating_add(list.heap_bytes()),
+            Self::Str(text) => Shared::<Text>::bytes(text.heap_bytes()),
+            Self::List(list) => Shared::<List<A>>::bytes(list.heap_bytes()),
             Self::Int(_) | Self::Bool(_) | Self::App(_) => 0,
         }
     }
@@ -522,7 +504,7 @@ fn text_limit() -> Failure {
 
 impl<A> Value<A> {
     pub fn str(text: impl Into<String>) -> Self {
-        Self::Str(Rc::new(Text::new(text)))
+        Self::Str(Shared::new(Text::new(text)))
     }
 }
 
@@ -532,9 +514,9 @@ impl<A: AppValue> Value<A> {
     pub fn retain(&self, imports: &Rc<Grant>) -> Result<(), Failure> {
         match self {
             Self::Int(_) | Self::Bool(_) => Ok(()),
-            Self::Str(text) => text.lease.reserve(imports, self.own_bytes()),
+            Self::Str(text) => text.reserve(imports, self.own_bytes()),
             Self::List(list) => {
-                list.lease.reserve(imports, self.own_bytes())?;
+                list.reserve(imports, self.own_bytes())?;
                 for value in list.items() {
                     value.retain(imports)?;
                 }
