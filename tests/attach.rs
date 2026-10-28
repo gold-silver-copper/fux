@@ -1344,7 +1344,7 @@ fn empty_attach_retries_are_typed_and_create_only_once() -> Outcome {
 }
 
 #[test]
-fn existing_attach_does_not_resolve_unused_launch_environment() -> Outcome {
+fn existing_attach_does_not_resolve_unused_launch_inputs() -> Outcome {
     use std::ffi::OsString;
     use std::os::unix::ffi::OsStringExt;
     let server = Server::start("")?;
@@ -1362,7 +1362,7 @@ fn existing_attach_does_not_resolve_unused_launch_environment() -> Outcome {
             "set",
             "opts",
             "str",
-            "/no/such/program",
+            "",
             "program",
             "str",
             "/no/such/directory",
