@@ -11,6 +11,9 @@ pub const NESTING: u8 = 64;
 /// request being built). Each says what kind it is, for errors, and how it
 /// reads as text.
 pub trait AppValue: Clone + PartialEq {
+    /// A host's allocation grant for one complete text conversion.
+    const TEXT_LIMIT: usize = usize::MAX;
+
     /// What kind it is, as an error says it: "a pane".
     fn kind(&self) -> &'static str;
     /// What kind it is, as `kind` says it: "pane". By default its

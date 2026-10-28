@@ -2006,6 +2006,52 @@ mod tests {
     }
 
     #[test]
+    fn nested_plain_text_shares_one_allocation_grant() -> Result<(), Box<dyn std::error::Error>> {
+        #[derive(Clone, PartialEq)]
+        struct Limited(Fux);
+        impl fuxth::AppValue for Limited {
+            const TEXT_LIMIT: usize = 64 << 10;
+            fn kind(&self) -> &'static str { "a bounded answer" }
+            fn text(&self) -> Result<String, Failure> { fuxth::AppValue::text(&self.0) }
+        }
+        let allocator = fux_vt_peak::ThreadPeak;
+        let base = allocator.live();
+        let captured = crate::capture::Captured {
+            of: crate::capture::Of::Client(crate::id::ClientId::of(1)),
+            screen_rows: 1,
+            screen_cols: 4096,
+            screen_cursor: None,
+            lines: vec![vec![crate::capture::Cut {
+                text: std::iter::repeat_n('界', 4096).collect(),
+                cells: 4096,
+                style: fux_vt::Attributes::default(),
+            }]],
+            styles: false,
+            marks: false,
+        };
+        let held = fuxth::List::new(vec![Value::App(Limited(Fux::Answer(
+            Box::new(super::super::Answer::Capture(Box::new(captured))), None,
+        ))) ]).ok_or("held list")?;
+        let held = std::rc::Rc::new(held);
+        let list = fuxth::List::new(std::iter::repeat_n(Value::List(std::rc::Rc::clone(&held)), 6).collect())
+            .ok_or("outer list")?;
+        let value = Value::List(std::rc::Rc::new(list));
+        assert_eq!(value.weight(), 13);
+        allocator.reset_peak();
+        assert!(value.text().is_err(), "shared captures must not bypass aggregate text admission");
+        assert!(value.text_upto(usize::MAX).is_err());
+        assert!(allocator.peak().saturating_sub(base) <= 64 << 10,
+            "retained input, conversion and output must share the grant");
+        let list = fuxth::List::new(vec![Value::List(std::rc::Rc::clone(&held)); 2]).ok_or("small list")?;
+        let small = Value::List(std::rc::Rc::new(list));
+        allocator.reset_peak();
+        let text = small.text_upto(usize::MAX).map_err(|f| f.message)?.ok_or("text")?;
+        assert_eq!(text.chars_len(), 8193);
+        assert!(allocator.peak().saturating_sub(base) <= 64 << 10);
+        Ok(())
+    }
+
+    #[test]
     fn capture_conversion_and_rendering_share_one_grant() -> Result<(), Box<dyn std::error::Error>>
     {
         let allocator = fux_vt_peak::ThreadPeak;
