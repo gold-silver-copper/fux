@@ -1209,7 +1209,7 @@ fn foreground(stat: &str) -> bool {
 fn an_oversized_local_shell_is_refused_before_headless_attach() -> Outcome {
     let server = Server::start("")?;
     let payload = server.dir.join("oversize-argument");
-    std::fs::write(&payload, vec![b'x'; fux::protocol::MAX_FRAME]).map_err(e)?;
+    std::fs::write(&payload, vec![b'x'; fux::protocol::MAX_FRAME / 2]).map_err(e)?;
     let mut terminal = Terminal::attach(
         &server,
         10,
@@ -1223,6 +1223,7 @@ fn an_oversized_local_shell_is_refused_before_headless_attach() -> Outcome {
             "str",
             &payload.to_string_lossy(),
             "read-file",
+            "dup",
             "end",
             "set",
             "opts",
