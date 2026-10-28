@@ -1053,3 +1053,32 @@ id = "build-tests-preview-panes"
 cat = "panes"
 goal = "Start these three programs exactly once in separate, simultaneously visible terminal areas before the build completes: `python3 -I {fixtures}/builder.py {work}`, `python3 -I {fixtures}/test_runner.py {work}`, and `python3 -I {fixtures}/preview.py {work}`. Wait for BUILD READY and pass its token to the test runner's BUILD TOKEN prompt. Wait for TESTS PASSED, then pass `<build-token> <test-signature>` to the preview's RELEASE PAIR prompt. Once PREVIEW LIVE appears, enter `snapshot`, read its snapshot ticket, and shut the preview down with `shutdown <ticket>`. All three programs must exit successfully. Write `{work}/answer.txt` with exactly three lines, each ending with a newline: `build=<token>\ntests=<signature>\nsnapshot=<ticket>\n`. Include no prompt, receipt-prefix, or other marker lines beyond the specified answer lines."
 held = "build-tests-preview-panes"
+
+# The public guide, executed unchanged; no source repair or model calls.
+[[task]]
+id = "published-prompt"
+cat = "published"
+goal = "Execute the published launch/prompt and guarded-input recipes on their first invocation."
+recipe = "published_prompt"
+check = { answer = "42" }
+
+[[task]]
+id = "published-exit"
+cat = "published"
+goal = "Execute the published command output and exit-status recipe unchanged."
+recipe = "published_exit"
+check = { answer = "7" }
+
+[[task]]
+id = "published-tui"
+cat = "published"
+goal = "Execute both published view-specific TUI recipes against delayed selection/redraws."
+recipe = "published_tui"
+check = { file = "chosen.txt", equals = "Beta" }
+
+[[task]]
+id = "published-first-exit"
+cat = "published"
+goal = "Execute the published cursor-before-launch journal recipe unchanged."
+recipe = "published_first_exit"
+check = { answer = "b" }

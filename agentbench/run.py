@@ -22,7 +22,8 @@ import tomllib
 import traceback
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-SCRATCH = os.path.expanduser("~/.cache/claude-tmp/agentbench")
+SCRATCH = os.path.abspath(os.path.expanduser(os.environ.get(
+    "AGENTBENCH_SCRATCH", "~/.cache/claude-tmp/agentbench")))
 FX = f"python3 -I {HERE}/fixtures.py"
 SPOILERS = ["FUX_SOCKET", "FUX_PANE", "TMUX", "TMUX_PANE", "ZELLIJ", "ZELLIJ_SESSION_NAME",
             "ZELLIJ_PANE_ID", "HERDR_ENV", "HERDR_PANE_ID", "HERDR_WORKSPACE_ID", "HERDR_TAB_ID",
@@ -96,7 +97,12 @@ def check(task, work):
     if "held" in task:
         return held(task, "check").check(work)
     c = task["check"]
-    read = lambda name: open(os.path.join(work, name), encoding="utf-8").read() if os.path.exists(os.path.join(work, name)) else None
+    def read(name):
+        path = os.path.join(work, name)
+        if not os.path.exists(path):
+            return None
+        with open(path, encoding="utf-8") as source:
+            return source.read()
     if "answer" in c or "answer_contains" in c:
         got = (read("answer.txt") or "").strip()
         if "answer" in c:
@@ -198,6 +204,9 @@ def one(tool, task_id, rep, slot, fux_bin):
     result = {"tool": tool, "task": task_id, "cat": task["cat"], "rep": rep}
     start = time.time()
     try:
+        if task.get("cat") == "published":
+            import published
+            published.prepare(d, task["recipe"])
         d.start()
         if "held" in task:
             answer = held(task, "solve").solve(d, work, fixtures)

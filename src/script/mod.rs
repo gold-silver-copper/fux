@@ -2541,7 +2541,7 @@ mod tests {
         }
         for code in [
             "%1 all-history capture expect str x text send-keys wait capture drop".to_owned(),
-            "%1 str x text send-keys 0 quiet %1 capture drop".to_owned(),
+            "%1 str x text send-keys 0 quiet drop %1 capture drop".to_owned(),
             format!("str {version} changed 0 timeout wait capture drop"),
             "str c1 client capture json drop".to_owned(),
         ] {

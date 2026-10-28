@@ -3,6 +3,7 @@
     python3 -I -m unittest discover -s agentbench -p 'test_*.py'
 """
 import contextlib
+import io
 import json
 from types import SimpleNamespace
 from pathlib import Path
@@ -14,6 +15,7 @@ import drivers
 import guide_check
 import run
 import solutions
+import published
 
 
 class Tools(unittest.TestCase):
@@ -56,6 +58,39 @@ class Tools(unittest.TestCase):
                         self.assertEqual(result["error"] is None, error is None)
                         self.assertTrue(driver.stopped)
                         reap.assert_called_once()
+
+    def test_published_journal_recipe_saves_cursor_before_launch_and_refuses_loss(self):
+        namespace = {"__name__": "test_recipe"}
+        exec(published.block("**First recorded exit across jobs:**", "python"), namespace)
+        for event in ({"event": "exited", "pane": "%2"},
+                      {"event": "missed", "count": 1}):
+            calls = []
+            subscriber = SimpleNamespace(stdout=io.StringIO(json.dumps(event) + "\n"),
+                                         terminate=lambda: calls.append("terminate"),
+                                         wait=lambda **kwargs: calls.append("wait"))
+
+            def fux(*words, stream=False):
+                calls.append(words)
+                if words == ("ls", "json"):
+                    return '{"events":"0:RUN"}'
+                if words[-1] == "run":
+                    return f"%{sum(isinstance(c, tuple) and c[-1] == 'run' for c in calls)}:0:RUN"
+                if stream:
+                    return subscriber
+                return ""
+
+            with self.subTest(event=event):
+                if event["event"] == "missed":
+                    with self.assertRaisesRegex(RuntimeError, "first exit is unknown"):
+                        namespace["first_exit"](fux)
+                else:
+                    self.assertEqual(namespace["first_exit"](fux), "b")
+                self.assertEqual(calls[0], ("ls", "json"))
+                self.assertEqual(calls[4], ("all", "str", "0:RUN", "from", "events"))
+                self.assertIn("terminate", calls)
+                self.assertIn("wait", calls)
+                self.assertTrue(subscriber.stdout.closed)
+                self.assertEqual(calls[-3:], [("str", f"%{n}", "pane", "kill") for n in (1, 2, 3)])
 
     def test_title_lookup_uses_one_topology_observation(self):
         driver = drivers.Fux.__new__(drivers.Fux)

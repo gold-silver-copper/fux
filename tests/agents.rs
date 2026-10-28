@@ -1214,3 +1214,103 @@ fn keys_to_a_program_that_closed_its_terminal_are_refused() -> Outcome {
     assert_eq!(hung_up, "true\n");
     Ok(())
 }
+
+/// Every promised input kind reaches the condition, and the matched capture
+/// keeps its text and version for local reads and guarded input.
+#[test]
+fn conditions_accept_panes_answers_and_pane_captures() -> Outcome {
+    let server = Server::start("")?;
+    let started = server.ok(&run(
+        &[],
+        &["sh", "-c", "echo BOOT; sleep 0.1; echo READY; read x"],
+    ))?;
+    let pane = id(&started);
+    for source in [
+        pane.clone(),
+        format!("{pane} str '' text send-keys"),
+        format!("{pane} capture"),
+    ] {
+        for condition in ["str READY 3 shows", "1 quiet"] {
+            let code =
+                format!("{source} {condition} let seen seen string print seen version print");
+            let out = server.ok(&[&code])?;
+            assert!(
+                out.contains("READY\n") && out.contains(&format!("{pane}:")),
+                "{code}: {out}"
+            );
+        }
+    }
+    Ok(())
+}
+
+/// A held capture is a pure observation, even after its pane is closed.
+#[test]
+fn observed_retains_a_capture_without_refreshing_it() -> Outcome {
+    let server = Server::start("")?;
+    let pane = id(&server.ok(&run(&[], &["sh", "-c", "echo READY; read x"]))?);
+    let code = format!(
+        "{pane} str READY 3 shows let seen {pane} kill seen observed str READY 1 shows string"
+    );
+    assert_eq!(server.ok(&[&code])?, "READY\n");
+    Ok(())
+}
+
+/// An ended observation satisfies until-ended immediately on every supported
+/// input kind; its status survives another call to the condition.
+#[test]
+fn until_ended_checks_before_waiting_and_keeps_status() -> Outcome {
+    let server = Server::start("")?;
+    let pane = id(&server.ok(&run(&[], &["sh", "-c", "exit 7"]))?);
+    server.exits(&pane)?;
+    for source in [pane.clone(), format!("{pane} capture")] {
+        let code = format!("{source} 1 until-ended 1 until-ended str exited get");
+        assert_eq!(server.ok(&[&code])?, "7\n");
+    }
+    let code = "agent-opts 80 24 size str sh program str -c arg str 'sleep 0.1; exit 7' arg run 1 timeout wait 1 until-ended str exited get";
+    assert_eq!(server.ok(&[code])?, "7\n");
+    Ok(())
+}
+
+/// Growth validates its counter, arithmetic and generation before comparing
+/// counters from separate invocations. Zero growth accepts every baseline kind.
+#[test]
+fn grows_validates_its_baseline_and_requested_growth() -> Outcome {
+    let server = Server::start("")?;
+    let pane = id(&server.ok(&run(&[], &["sh", "-c", "read x; printf '\\007'; read y"]))?);
+    for source in [
+        pane.clone(),
+        format!("{pane} capture"),
+        format!("{pane} version"),
+        format!("{pane} str '' text send-keys"),
+    ] {
+        server.ok(&[&format!("{source} 2 0 1 grows drop")])?;
+    }
+    for (index, amount) in [(0, 0), (5, 0), (2, -1)] {
+        let refused = server.fux(&[&format!("{pane} capture {index} {amount} 1 grows drop")])?;
+        assert_eq!(refused.status, 1, "{}", refused.stdout);
+    }
+    let bell = format!("{pane} str go line 2 1 3 grows counts 2 at");
+    assert_eq!(server.ok(&[&bell])?, "1\n");
+    let overflow = server.fux(&[&format!("{pane} capture 2 {} 1 grows drop", i64::MAX)])?;
+    assert_eq!(overflow.status, 1);
+    let generation =
+        format!("{pane} capture let seen {pane} kill-first respawn drop seen 1 1 1 grows drop");
+    let refused = server.fux(&[&generation])?;
+    assert!(
+        refused.stderr.contains("program respawned"),
+        "{}",
+        refused.stderr
+    );
+    Ok(())
+}
+
+/// Quiet catches only unchanged timeouts; losing the pane must reach the caller.
+#[test]
+fn quiet_propagates_closure_instead_of_reporting_stability() -> Outcome {
+    let server = Server::start("")?;
+    let pane = id(&server.ok(&run(&[], &["sh", "-c", "echo READY; read x"]))?);
+    let code = format!("{pane} str READY 3 shows let seen {pane} kill seen 1 quiet drop");
+    let closed = server.fux(&[&code])?;
+    assert_eq!(closed.status, 4, "{}", closed.stderr);
+    Ok(())
+}

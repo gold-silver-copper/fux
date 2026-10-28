@@ -95,12 +95,15 @@ Driving programs from a script or an agent: `fux help agents`; one word:
     out.push_str(
         "
 
+Effects read `inputs -- outputs`; `a>b` maps input kind a to output kind b.
+Alternative kinds retain their distinctions; requests must reach an action.
 Below, x is a pane, tab, workspace or client (an action's answer is its
 pane), a request on one, or opts; target, subject and place a pane (or a
 tab, workspace or client) or a request on one; handle a pane, tab or
 workspace; scope a handle or all; ref a name or a handle; text a string,
 number or boolean. pane-builder is a pane or pane request; capture-source
-maps one of those to capture, and a client to client-capture; sized is a
+maps a pane, answer, closed-answer or pane request to capture, and a
+client to client-capture; sized is a
 handle or headless client. replayable is a pane, tab or workspace, a
 request on one, or all without a cursor; from on all leaves an
 events-request, which only events takes.

@@ -7,6 +7,8 @@ import shlex
 import time
 
 from drivers import Exited, Timeout, is_green, is_red
+from published import prompt as published_prompt, exit_status as published_exit
+from published import tui as published_tui, first_exit as published_first_exit
 
 
 def argv(fx, prog):
@@ -60,9 +62,10 @@ def restart(d, a, fx):
 
 
 def first_of(d, a, fx):
+    cursor = d.events_cursor() if hasattr(d, "events_cursor") else None
     panes = {name: d.spawn(argv(fx, prog), name=name) for name, prog in zip("abc", a["progs"])}
     if hasattr(d, "wait_first_exit"):
-        return d.wait_first_exit(panes)
+        return d.wait_first_exit(panes, cursor)
     finished = []
 
     def any_done():
