@@ -305,7 +305,7 @@ impl Run {
         self.keymap = keymap;
         let mut text = String::from_utf8_lossy(&out).into_owned();
         for value in &ended.map_err(told)? {
-            text.push_str(&value.text());
+            text.push_str(&value.text().map_err(|failure| failure.message)?);
             text.push('\n');
         }
         Ok(text)
