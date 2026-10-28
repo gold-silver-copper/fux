@@ -1,5 +1,5 @@
 //! The keys, frozen definitions and checked preferences owned by one client.
-use crate::config::{EnvName, Limit, Number, Program, Reads};
+use crate::config::{EnvName, Limit, Program, Reads};
 use crate::keymap::Keymap;
 use crate::script::{Config, Fux};
 use fuxth::Value;
@@ -49,36 +49,16 @@ impl Draft {
 
 /// The closed local table keeps each setting's existing checked reader.
 macro_rules! preferences {
-    ($($(#[doc = $about:literal])* $field:ident $name:literal: $reads:ty $(=> $variant:ident)?;)*) => {
+    ($($(#[doc = $about:literal])* $field:ident $name:literal: $reads:ty;)*) => {
         #[derive(Clone, Debug, PartialEq, Eq)]
         pub struct Preferences {
             $($(#[doc = $about])* pub $field: $reads,)*
         }
 
-        /// Fields explicitly written in one local transaction.
-        #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-        pub struct Changes {
-            $($field: bool,)*
-        }
-
-        impl Changes {
-            pub fn any(self) -> bool { false $(|| self.$field)* }
-            pub fn merge(self, other: Self) -> Self {
-                Self { $($field: self.$field || other.$field,)* }
-            }
-            fn settings(self, p: &Preferences) -> Vec<crate::config::Setting> {
-                let mut settings = Vec::new();
-                $($(if self.$field {
-                    settings.push(crate::config::Setting::$variant(p.$field.clone()));
-                })?)*
-                settings
-            }
-        }
-
         #[derive(Clone, Debug, Default)]
         pub struct PreferenceDraft {
             $($field: Option<$reads>,)*
-            changes: Changes,
+            changed: bool,
         }
 
         impl PreferenceDraft {
@@ -87,7 +67,7 @@ macro_rules! preferences {
                     $($name => {
                         self.$field = Some(<$reads as Reads>::read(value)
                             .map_err(|why| format!("{name}: {why}"))?);
-                        self.changes.$field = true;
+                        self.changed = true;
                     },)*
                     other => return Err(format!("no setting {other:?}; the settings are {}",
                         crate::words::listed(NAMES, "and"))),
@@ -97,15 +77,7 @@ macro_rules! preferences {
 
             /// Whether a setter ran, even if it repeated a bundled value.
             pub fn changed(&self) -> bool {
-                self.changes.any()
-            }
-
-            pub fn changes(&self) -> Changes {
-                self.changes
-            }
-
-            pub(crate) fn include(&mut self, changes: Changes) {
-                self.changes = self.changes.merge(changes);
+                self.changed
             }
 
             fn finish(self) -> Result<Preferences, String> {
@@ -118,7 +90,7 @@ macro_rules! preferences {
 
         impl From<Preferences> for PreferenceDraft {
             fn from(p: Preferences) -> Self {
-                Self { $($field: Some(p.$field),)* changes: Changes::default() }
+                Self { $($field: Some(p.$field),)* changed: false }
             }
         }
 
@@ -140,14 +112,12 @@ preferences! {
     shell "shell": Program;
     /// The history budget in bytes for panes this client creates.
     history_bytes "history-bytes": crate::config::HistoryBytes;
-    /// The shared limit for waits without an explicit timeout.
-    wait "wait-seconds": Limit => Wait;
+    /// This client's limit for waits without an explicit timeout.
+    wait "wait-seconds": Limit;
     /// Whether newly created panes may copy program output to paste buffers.
     program_clipboard "program-clipboard": bool;
     /// Whether copies are delivered to this client's terminal clipboard.
     terminal_clipboard "terminal-clipboard": bool;
-    /// The number of shared paste buffers retained.
-    buffers "buffers": Number<1, { crate::config::MAX_BUFFERS }> => Buffers;
     /// Whether this client rings and shows tab bell marks.
     bell "bell": bool;
     /// Whether this client's terminal title follows its focused pane.
@@ -167,6 +137,16 @@ impl PreferenceDraft {
                 .program_clipboard
                 .ok_or("bundled initialization did not set program-clipboard")?,
         })
+    }
+    pub(crate) fn wait(&self) -> Result<Limit, String> {
+        self.wait
+            .ok_or_else(|| "bundled initialization did not set wait-seconds".to_owned())
+    }
+    /// Seed an in-process client draft from its own view.
+    pub fn presentation(&mut self, p: crate::view::Presentation) {
+        self.bell = Some(p.bell);
+        self.titles = Some(p.titles);
+        self.terminal_clipboard = Some(p.terminal_clipboard);
     }
     pub(crate) fn shell(&self) -> Result<&Program, String> {
         self.shell
@@ -194,28 +174,6 @@ impl Preferences {
             terminal_clipboard: self.terminal_clipboard,
         }
     }
-    /// Temporary bridge for consumers still owned by the server. Call only
-    /// after committing local state; setters and config evaluation never send.
-    pub fn forward_settings<A: crate::script::Asks + ?Sized>(
-        &self,
-        changes: Changes,
-        asks: &mut A,
-        context: crate::protocol::Context,
-    ) -> Result<(), crate::script::Failed> {
-        let settings = changes.settings(self);
-        if settings.is_empty() {
-            return Ok(());
-        }
-        let reply = asks.ask(
-            &crate::protocol::Asked {
-                request: crate::command::Command::Set(settings).into(),
-                context,
-                after: None,
-            },
-            &mut std::io::sink(),
-        )?;
-        crate::script::succeeded(reply).map(drop)
-    }
 }
 
 #[cfg(test)]
@@ -231,7 +189,6 @@ mod tests {
         assert!(draft.finish().is_err());
         assert_eq!(state.preferences.history_bytes.get(), 8 << 20);
         assert_eq!(state.preferences.wait.seconds(), 30);
-        assert_eq!(state.preferences.buffers.get(), 16);
         assert!(state.preferences.program_clipboard && state.preferences.terminal_clipboard);
         assert!(state.preferences.bell && !state.preferences.titles);
         assert!(state.preferences.copy_environment.is_empty());
@@ -273,7 +230,7 @@ mod tests {
             ("copy-environment", list(&["FUX_SERVER"])?),
             ("copy-environment", list(&["FUX"])?),
             ("buffers", Value::Int(0)),
-            ("buffers", Value::Int(1001)),
+            ("buffers", Value::Int(16)),
             ("clipboard", Value::Bool(true)),
         ] {
             assert!(draft.set(name, &value).is_err(), "{name}: {value:?}");

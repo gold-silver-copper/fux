@@ -246,7 +246,6 @@ impl Through {
     /// client that has just attached.
     pub fn new(kind: &Kind, rows: u16, cols: u16) -> Result<Through, String> {
         let mut session = Session::new(
-            fux::config::Config::default(),
             PathBuf::from("/nonexistent/fux-vt-compare.sock"),
             false,
             fux::command::Run::now().ok_or("the clock is before 1970")?,

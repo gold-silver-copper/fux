@@ -192,14 +192,7 @@ impl Server {
         }
         // Explicit fixture setup: scripted clients receive these prepared
         // keys, rather than implicitly loading a user's config on attach.
-        let (state, changes) = fux::script::run_file(&config_path).map_err(e)?;
-        server.state = state;
-        let mut to = fux::script::Server::new(fux::socket::Choice::Path(server.socket.clone()));
-        server
-            .state
-            .preferences
-            .forward_settings(changes, &mut to, Default::default())
-            .map_err(e)?;
+        server.state = fux::script::run_file(&config_path).map_err(e)?;
         // A server starts with nothing in it; the tests' first shell, %1 in
         // workspace main, is 80 by 24, in the server's home.
         let home = server.dir.to_string_lossy().into_owned();

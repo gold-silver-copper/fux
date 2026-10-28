@@ -1,46 +1,9 @@
-//! Legacy server policy and checked value readers. Local `set` uses
-//! `client_state`; remaining server consumers migrate with their requests.
+//! Checked request values and local setting readers.
 use crate::script::Fux;
 use crate::wire::{Error, Reader, Wire};
 use fuxth::Value;
 use std::path::PathBuf;
 use std::time::Duration;
-
-/// Temporary server policy and its typed transport. Local settings have
-/// their own table, without native preference defaults or wire values.
-macro_rules! settings {
-    ($($(#[doc = $about:literal])* $field:ident $variant:ident: $reads:ty
-        = $default:expr;)*) => {
-        #[derive(Clone, Debug, PartialEq, Eq)]
-        pub struct Config {
-            $($(#[doc = $about])* pub $field: $reads,)*
-        }
-
-        impl Default for Config {
-            fn default() -> Config {
-                Config {
-                    $($field: $default,)*
-                }
-            }
-        }
-
-        /// Remaining typed server settings, pending consumer migration.
-        #[derive(Clone, Debug, PartialEq, Eq)]
-        pub enum Setting {
-            $($variant($reads),)*
-        }
-        $crate::wire::wire_enum!(Setting { $($variant(value)),* });
-
-        impl Config {
-            /// `setting` in force.
-            pub fn apply(&mut self, setting: Setting) {
-                match setting {
-                    $(Setting::$variant(value) => self.$field = value,)*
-                }
-            }
-        }
-    };
-}
 
 /// A local setting's type, read once as `set` is given it.
 pub trait Reads: Sized {
@@ -48,19 +11,9 @@ pub trait Reads: Sized {
     fn read(value: &Value<Fux>) -> Result<Self, String>;
 }
 
-settings! {
-    /// How long a wait waits for a change before it answers `timeout`,
-    /// unless it says (`SECS timeout`).
-    wait Wait: Limit = Limit::DEFAULT;
-    /// How many paste buffers are kept.
-    buffers Buffers: Number<1, MAX_BUFFERS> = Number(16);
-}
-
 /// A pane's checked history budget, in bytes.
 pub type HistoryBytes = Number<0, { 1 << 30 }>;
 
-/// The most paste buffers kept.
-pub const MAX_BUFFERS: usize = 1000;
 /// The longest limit a wait may be given: a day.
 pub const MAX_WAIT: usize = 86_400;
 
@@ -70,11 +23,6 @@ pub const MAX_WAIT: usize = 86_400;
 pub struct Limit(u32);
 
 impl Limit {
-    /// By default: a build or a program's startup is waited through, while
-    /// a wait that cannot be met still answers well inside what a tool
-    /// running a command waits for it.
-    pub const DEFAULT: Limit = Limit(30);
-
     /// `secs` seconds, if at most `MAX_WAIT`.
     pub fn secs(secs: u64) -> Option<Limit> {
         let within = |s: &u32| usize::try_from(*s).is_ok_and(|s| s <= MAX_WAIT);
@@ -336,22 +284,4 @@ pub fn default_path() -> Option<PathBuf> {
         .map(PathBuf::from)
         .or_else(|| set("HOME").map(|home| PathBuf::from(home).join(".config")))?;
     Some(config.join("fux").join("config.fux"))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn legacy_settings_keep_their_checked_wire_values() {
-        let d = Config::default();
-        for setting in [Setting::Wait(d.wait), Setting::Buffers(d.buffers)] {
-            let bytes = crate::wire::encode(&setting).unwrap_or_default();
-            assert_eq!(Reader::new(&bytes).whole::<Setting>(), Ok(setting));
-        }
-        let mut zero = crate::wire::encode(&Setting::Buffers(Number(1))).unwrap_or_default();
-        zero.pop();
-        zero.push(0);
-        assert!(Reader::new(&zero).whole::<Setting>().is_err());
-    }
 }

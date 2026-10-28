@@ -120,7 +120,7 @@ the outbox, takes queued pane input), then checks:
 - a key typed in a repeat mode is not sent on to the pane, and reaches no
   pane unless the binding it runs there sends keys or pastes;
 - a second session given every byte one at a time ends with the same `ls`,
-  modes, notices, screens, configuration, paste buffers, keymap and
+  modes, notices, screens, paste buffers, client configuration, keymap and
   clients' keys and screens.
 
 **`fuxth_tokens`**: fuxth source, any bytes, split into tokens.

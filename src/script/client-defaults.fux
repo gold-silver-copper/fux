@@ -9,7 +9,6 @@ str history-bytes 8388608 set
 str wait-seconds 30 set
 str program-clipboard true set
 str terminal-clipboard true set
-str buffers 16 set
 str bell true set
 str titles false set
 str copy-environment list end set

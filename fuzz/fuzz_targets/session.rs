@@ -18,7 +18,6 @@ use std::num::NonZeroUsize;
 use fux::act::Act;
 use fux::act::Panel;
 use fux::client_state::ClientState;
-use fux::config::Config;
 use fux::copy::MAX_CLIPBOARD;
 use fux::decode::{Decoder, Input};
 use fux::id::{ClientId, PaneId};
@@ -177,12 +176,11 @@ const READS: &[&str] = &["check"];
 const BUDGET: u64 = 20_000;
 
 /// What anyone can tell apart: the session's items, each client's mode,
-/// notice and screen, the configuration, the paste buffers, and each
+/// notice and screen, the paste buffers, and each
 /// client's keymap and keys.
 type State = (
     String,
     Vec<(ClientId, String, Option<Grid>)>,
-    Config,
     Vec<(fux::id::BufferId, String)>,
     ClientState,
     Vec<(ClientId, fux::screens::Display)>,
@@ -216,12 +214,7 @@ fn defaults() -> &'static ClientState {
 
 impl Run {
     fn new(rows: u16, cols: u16, run: fux::command::Run) -> Run {
-        let s = Session::new(
-            Config::default(),
-            "/nonexistent/fux.sock".into(),
-            false,
-            run,
-        );
+        let s = Session::new("/nonexistent/fux.sock".into(), false, run);
         // The client attaching starts its first shell, on its screen.
         let mut run = Run {
             s,
@@ -300,14 +293,10 @@ impl Run {
             return Err("reads a file".to_owned());
         }
         let mut machine = fux::script::compile(&tokens).map_err(told)?;
-        let mut state = self.keymap.clone();
+        let mut keymap = self.keymap.draft();
         if let Some(view) = client.and_then(|c| self.s.views.get(&c)) {
-            let p = view.presentation;
-            state.preferences.bell = p.bell;
-            state.preferences.titles = p.titles;
-            state.preferences.terminal_clipboard = p.terminal_clipboard;
+            keymap.preferences.presentation(view.presentation);
         }
-        let mut keymap = state.draft();
         let mut out = Vec::new();
         let context = Context {
             client,
@@ -727,7 +716,6 @@ impl Run {
         (
             ls,
             screens,
-            self.s.config.clone(),
             self.s.buffers.iter().cloned().collect(),
             self.keymap.clone(),
             held,
