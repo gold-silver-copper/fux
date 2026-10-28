@@ -236,12 +236,22 @@ impl Answer {
                 let lines: Vec<String> = answers.iter().map(PaneAnswer::text).collect();
                 lines.join("\n")
             }
-            Answer::Capture(captured) => return captured.text(),
+            Answer::Capture(captured) => {
+                let mut budget = crate::wire::Budget::new();
+                budget.slots::<Answer>(1)?;
+                budget.slots::<crate::capture::Captured>(1)?;
+                return captured.text_with(&mut budget);
+            }
             Answer::Listing { of, listing } => {
                 let text = crate::answer::listing_text(*of, listing);
                 text.trim_end_matches('\n').to_owned()
             }
-            Answer::Json(json) => json.render(),
+            Answer::Json(json) => {
+                let mut budget = crate::wire::Budget::new();
+                budget.slots::<Answer>(1)?;
+                json.charge(&mut budget)?;
+                return crate::json::render(&mut budget, |out| json.write(out));
+            }
             Answer::Status(status) => status_text(status),
         })
     }

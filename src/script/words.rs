@@ -2038,13 +2038,18 @@ mod tests {
             json_text(&value, 32 << 10).is_err(),
             "retained input and output must share admission"
         );
+        let list = fuxth::List::new(vec![value]).ok_or("list")?;
+        let value = Value::List(std::rc::Rc::new(list));
         allocator.reset_peak();
         let text = json_text(&value, 64 << 10).map_err(|f| f.message)?;
         assert!(text.contains(r#""col":511,"len":1,"fg":1"#));
+        assert!(text.starts_with('['));
+        let imported = Value::<Fux>::str(text);
         assert!(
             allocator.peak().saturating_sub(base) <= 64 << 10,
-            "capture input, conversion and rendered text must fit one grant"
+            "capture input, conversion, rendered text and host import must fit one grant"
         );
+        drop(imported);
         Ok(())
     }
 

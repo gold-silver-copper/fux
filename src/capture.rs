@@ -838,11 +838,19 @@ impl Captured {
     /// As printed, admitted beside the retained capture before allocation.
     pub fn text(&self) -> Result<String, crate::session::Error> {
         let mut budget = crate::wire::Budget::new();
-        self.charge(&mut budget)?;
+        budget.slots::<Captured>(1)?;
+        self.text_with(&mut budget)
+    }
+
+    pub(crate) fn text_with(
+        &self,
+        budget: &mut crate::wire::Budget,
+    ) -> Result<String, crate::session::Error> {
+        self.charge(budget)?;
         // All SGR flags and three RGB colours occupy fewer than 128 bytes.
         // Reserve once; each run reuses it, including the counting pass.
         let mut sgr = budget.vector::<u8>(if self.styles { 128 } else { 0 })?;
-        let text = crate::json::render(&mut budget, |out| {
+        let text = crate::json::render(budget, |out| {
             for (i, line) in self.lines.iter().enumerate() {
                 if i > 0 {
                     out.write_char('\n')?;

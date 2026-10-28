@@ -101,10 +101,10 @@ pub trait Wire: Sized {
 /// The default-history styled capture measured 21.9 MB. The next binary
 /// power admits that observation, while bounding unfinished Part streams.
 pub const MAX_REPLY: usize = 32 << 20;
-/// Shared construction and decoding grant. The default styled capture
-/// peaked at 69,599,591 construction bytes and charged 48,902,720 decoded
-/// bytes. The next binary power above the larger measurement lets the
-/// receiver accept the same owned-data grant the builder admits.
+/// Shared construction, decoding and rendering grant. The default styled
+/// capture peaked at 69,599,591 construction bytes, charged 48,902,720 on
+/// decode, and peaked at 76,561,543 during client rendering including its
+/// retained input. The next binary power admits all three phases.
 pub const MAX_ALLOCATED: usize = 128 << 20;
 
 /// Retained construction space, charged before cloning data or growing lists.

@@ -18,7 +18,8 @@ pub trait AppValue: Clone + PartialEq {
     fn name(&self) -> &'static str {
         bare(self.kind())
     }
-    /// How `string` and `print` show it.
+    /// How `string` and `print` show it, or why conversion is refused.
+    /// Text words propagate this failure to the running program.
     fn text(&self) -> Result<String, Failure> {
         Ok(self.kind().to_owned())
     }
