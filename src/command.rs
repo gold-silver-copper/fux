@@ -165,9 +165,6 @@ impl Wire for Program {
 pub struct EnvName(String);
 
 impl EnvName {
-    pub(crate) fn heap_bytes(&self) -> usize {
-        self.0.capacity()
-    }
     pub fn as_str(&self) -> &str {
         &self.0
     }

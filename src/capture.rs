@@ -11,71 +11,10 @@ use fux_vt::{
     Attributes, Blink, Color, CommandMark, Mode, MouseProtocolMode, Rgb, Row, Screen,
     UnderlineStyle,
 };
+use fuxix::Allocation;
 
 /// Synthesized output work: at most two cells per admitted wire byte.
 pub(crate) const OUTPUT_CELLS: usize = 2 * crate::wire::MAX_REPLY;
-
-/// Borrowed rows and their selected columns, with no boxed iterator state.
-struct ReadRows<'a> {
-    rows: std::iter::Take<std::iter::Skip<fux_vt::Rows<'a>>>,
-    at: usize,
-    count: usize,
-    from: usize,
-    to: usize,
-    ended: bool,
-}
-impl<'a> ReadRows<'a> {
-    fn new(
-        rows: fux_vt::Rows<'a>,
-        skip: usize,
-        count: usize,
-        from: usize,
-        to: usize,
-        ended: bool,
-    ) -> Self {
-        let rows = rows.skip(skip).take(count);
-        let count = rows.len();
-        Self {
-            rows,
-            at: 0,
-            count,
-            from,
-            to,
-            ended,
-        }
-    }
-}
-impl<'a> Iterator for ReadRows<'a> {
-    type Item = (Row<'a>, std::ops::Range<usize>);
-    fn next(&mut self) -> Option<Self::Item> {
-        for row in self.rows.by_ref() {
-            let i = self.at;
-            self.at = self.at.saturating_add(1);
-            let from = if i == 0 { self.from } else { 0 };
-            let to = if self.at == self.count && self.ended {
-                if i == 0 && self.from >= self.to {
-                    0
-                } else {
-                    self.to
-                }
-            } else {
-                usize::MAX
-            };
-            if from < to {
-                return Some((row, from..to));
-            }
-        }
-        None
-    }
-}
-
-/// A run while it is built and trimmed: its count stays exact until the
-/// surviving cells are converted to the wire's `Cut`.
-struct LineRun {
-    text: String,
-    cells: usize,
-    style: Attributes,
-}
 
 wire! {
     /// A capture, read once: what it read, its screen's size and cursor
@@ -128,6 +67,9 @@ wire_enum!(Blink { None, Slow, Rapid });
 /// the vocabulary of `Attributes` gives and takes them.
 impl crate::wire::Wire for Attributes {
     fn put(&self, out: &mut impl crate::wire::Sink) {
+        if out.storage(0) {
+            return;
+        }
         let a = *self;
         [a.foreground(), a.background(), a.underline_color()]
             .iter()
@@ -172,7 +114,7 @@ pub fn pane(
     view: CaptureView,
     copy_mode: bool,
 ) -> Result<Captured, crate::session::Error> {
-    let limits = Limits::new(pane.history_bytes(), pane.screen().size().into())?;
+    let limits = cell_limit(pane.history_bytes(), pane.screen().size().into())?;
     pane_with(pane, run, history, view, copy_mode, limits)
 }
 
@@ -182,7 +124,7 @@ fn pane_with(
     history: Option<usize>,
     view: CaptureView,
     copy_mode: bool,
-    limits: Limits,
+    limits: usize,
 ) -> Result<Captured, crate::session::Error> {
     let screen = pane.screen();
     let (read, above) = rows_of(screen, history, view);
@@ -199,7 +141,10 @@ fn pane_with(
     // Joined, a line some of whose rows `rows` takes is taken whole: the
     // range widened to the whole lines at its ends.
     let selection = selected_rows(read, view, limits)?;
-    let read = selection.read(rows_of(screen, history, view).0);
+    let read = rows_of(screen, history, view)
+        .0
+        .skip(selection.start)
+        .take(selection.len());
     let mut budget = crate::wire::Budget::new();
     let mut state = state(pane, copy_mode, &mut budget)?;
     // The history rows kept above the first row read: history it was not
@@ -220,7 +165,7 @@ fn build<'a>(
     view: CaptureView,
     budget: &mut crate::wire::Budget,
 ) -> Result<Captured, crate::session::Error> {
-    let mut lines: Vec<Vec<LineRun>> = Vec::new();
+    let mut lines: Vec<Vec<Cut>> = Vec::new();
     let mut wraps = false;
     let mut blanks = 0usize;
     use crate::wire::{Sink, Wire};
@@ -296,7 +241,7 @@ fn build<'a>(
                     style.put(&mut wire);
                     wire.check_ref().map_err(|_| too_large())?;
                     budget.reserve(line, 1).map_err(|_| too_large())?;
-                    line.push(LineRun {
+                    line.push(Cut {
                         text: String::new(),
                         cells: 0,
                         style,
@@ -306,7 +251,7 @@ fn build<'a>(
                     wire.extend_from_slice(text.as_bytes());
                     wire.check_ref().map_err(|_| too_large())?;
                     budget.text(&mut last.text, text).map_err(|_| too_large())?;
-                    last.cells = last.cells.saturating_add(1);
+                    last.cells = last.cells.checked_add(1).ok_or_else(too_large)?;
                 }
             }
         }
@@ -318,29 +263,16 @@ fn build<'a>(
 
 /// Select physical rows, widening a joined range to the logical lines
 /// at its ends without reading the rows after those lines.
-struct Selection {
-    start: usize,
-    count: usize,
-}
-impl Selection {
-    fn read<'a>(
-        &self,
-        read: impl Iterator<Item = (Row<'a>, std::ops::Range<usize>)>,
-    ) -> impl Iterator<Item = (Row<'a>, std::ops::Range<usize>)> {
-        read.skip(self.start).take(self.count)
-    }
-}
-
 fn selected_rows<'a>(
     read: impl Iterator<Item = (Row<'a>, std::ops::Range<usize>)>,
     view: CaptureView,
-    limits: Limits,
-) -> Result<Selection, crate::session::Error> {
+    limits: usize,
+) -> Result<std::ops::Range<usize>, crate::session::Error> {
     let (first, end) = view
         .rows
         .map_or((0, usize::MAX), |(a, b)| (usize::from(a), usize::from(b)));
     if first >= end {
-        return Ok(Selection { start: 0, count: 0 });
+        return Ok(0..0);
     }
     let skip = if view.wrapped { first } else { 0 };
     let read = read.skip(skip);
@@ -358,7 +290,7 @@ fn selected_rows<'a>(
                 cells = line_cells;
             }
         }
-        if cells > limits.cells {
+        if cells > limits {
             return Err(too_large());
         }
         if !view.wrapped && index <= first {
@@ -382,28 +314,21 @@ fn selected_rows<'a>(
     if !view.wrapped && first >= start.saturating_add(count) {
         count = 0;
     }
-    Ok(Selection { start, count })
+    Ok(start..start.saturating_add(count))
 }
 
 /// Stored history work follows its byte budget; live cells follow the
 /// screen. Synthesized blanks explicitly kept by full or joined views
 /// have at most two cells per output byte. All terms are admitted here.
-#[derive(Clone, Copy)]
-struct Limits {
-    cells: usize,
-}
-impl Limits {
-    fn new(history_bytes: usize, (rows, cols): (u16, u16)) -> Result<Self, crate::session::Error> {
-        let live = usize::from(rows)
-            .checked_mul(usize::from(cols))
-            .ok_or_else(too_large)?;
-        let cells = history_bytes
-            .checked_mul(2)
-            .and_then(|n| n.checked_add(live))
-            .and_then(|n| n.checked_add(OUTPUT_CELLS))
-            .ok_or_else(too_large)?;
-        Ok(Self { cells })
-    }
+fn cell_limit(
+    history_bytes: usize,
+    (rows, cols): (u16, u16),
+) -> Result<usize, crate::session::Error> {
+    usize::from(rows)
+        .checked_mul(usize::from(cols))
+        .and_then(|live| history_bytes.checked_mul(2)?.checked_add(live))
+        .and_then(|cells| cells.checked_add(OUTPUT_CELLS))
+        .ok_or_else(too_large)
 }
 
 fn columns(
@@ -443,58 +368,66 @@ fn rows_of(
     screen: &Screen,
     history: Option<usize>,
     view: CaptureView,
-) -> (ReadRows<'_>, Option<usize>) {
+) -> (
+    impl Iterator<Item = (Row<'_>, std::ops::Range<usize>)>,
+    Option<usize>,
+) {
     let rows = match view.source {
-        Source::Shown => screen.rows(),
+        Source::Shown | Source::LastOutput => screen.rows(),
         Source::Main => screen.main_rows(),
         Source::Alternate => screen.alternate_rows(),
-        Source::LastOutput => return (last_output(screen), None),
     };
-    let shown = usize::from(screen.size().rows());
-    let keep = shown.saturating_add(history.unwrap_or(0));
-    // Only the rows kept are read: history past them is skipped unread.
-    let skip = rows.len().saturating_sub(keep);
-    (
-        ReadRows::new(rows, skip, usize::MAX, 0, usize::MAX, false),
-        Some(skip),
-    )
+    let (range, columns, ended, above) = if view.source == Source::LastOutput {
+        let (range, columns, ended) = last_output(screen).unwrap_or((0..0, 0..0, true));
+        (range, columns, ended, None)
+    } else {
+        let keep = usize::from(screen.size().rows()).saturating_add(history.unwrap_or(0));
+        let skip = rows.len().saturating_sub(keep);
+        (skip..rows.len(), 0..usize::MAX, false, Some(skip))
+    };
+    let rows = rows.skip(range.start).take(range.len());
+    let count = rows.len();
+    let read = rows.enumerate().filter_map(move |(i, row)| {
+        let from = if i == 0 { columns.start } else { 0 };
+        let to = if i.saturating_add(1) == count && ended {
+            if i == 0 && from >= columns.end {
+                0
+            } else {
+                columns.end
+            }
+        } else {
+            usize::MAX
+        };
+        (from < to).then_some((row, from..to))
+    });
+    (read, above)
 }
 
-/// The last command's output between its marks, a range of each row's
-/// columns: while one runs, its output so far, to the cursor.
-fn last_output(screen: &Screen) -> ReadRows<'_> {
+/// The physical rows and columns between a command's marks, or its cursor
+/// while running. A start lost to history eviction begins at what is kept.
+fn last_output(screen: &Screen) -> Option<(std::ops::Range<usize>, std::ops::Range<usize>, bool)> {
     let commands = screen.commands();
     let (row, col) = screen.cursor_position();
-    let cursor = (screen.window().row(row)).map(|r| CommandMark { row: r.id(), col });
+    let cursor = screen
+        .window()
+        .row(row)
+        .map(|r| CommandMark { row: r.id(), col });
     let running = commands.output_start.zip(cursor);
     let ended = running.is_none();
-    let Some((start, end)) = running.or(commands.last_output) else {
-        return ReadRows::new(screen.rows(), 0, 0, 0, 0, true);
-    };
-    let Some(last) = screen.row_index(end.row) else {
-        return ReadRows::new(screen.rows(), 0, 0, 0, 0, true);
-    };
-    // A start gone (history's limit cut it, or the screen was cleared or
-    // switched) or below the end: from what is kept above the end, the
-    // screen's top if the start was cleared.
+    let (start, end) = running.or(commands.last_output)?;
+    let last = screen.row_index(end.row)?;
     let left = CommandMark { col: 0, ..start };
     let (first, start) = match screen.row_index(start.row) {
-        // An ended command's end left of its start on one row (its last
-        // write a `\r`): the row up to the end. A running one's cursor may
-        // go back so too, its row then whole.
         Some(first) if first == last && ended && start.col > end.col => (first, left),
         Some(first) if first <= last => (first, start),
         Some(_) => (screen.history_len().min(last), left),
         None => (0, left),
     };
-    ReadRows::new(
-        screen.rows(),
-        first,
-        last.saturating_sub(first).saturating_add(1),
-        usize::from(start.col),
-        usize::from(end.col),
+    Some((
+        first..last.saturating_add(1),
+        usize::from(start.col)..usize::from(end.col),
         ended,
-    )
+    ))
 }
 
 /// What a client's terminal shows, row by row.
@@ -526,7 +459,7 @@ pub fn client(
             text.pop();
         }
         let mut line = budget.vector(1)?;
-        line.push(LineRun {
+        line.push(Cut {
             text,
             cells: 1,
             style: Attributes::default(),
@@ -720,16 +653,7 @@ fn arguments(
 ) -> Result<(Json, Json), crate::session::Error> {
     let argv = match observe(budget)? {
         Some(words) => {
-            let bytes = words.iter().try_fold(
-                words
-                    .capacity()
-                    .checked_mul(std::mem::size_of::<std::ffi::OsString>())
-                    .ok_or_else(crate::wire::Budget::exceeded)?,
-                |n, word| {
-                    n.checked_add(word.capacity())
-                        .ok_or_else(crate::wire::Budget::exceeded)
-                },
-            )?;
+            let bytes = crate::wire::retained(&words);
             let mut values = budget.vector(words.len())?;
             for word in &words {
                 values.push(Json::str(fuxix::Allocation::lossy(
@@ -775,7 +699,7 @@ fn picture(
 /// Remove the last line's unshown trailing blank cells, counted while
 /// reading them rather than inferred from the run's cluster text.
 fn trim_line(
-    lines: &mut [Vec<LineRun>],
+    lines: &mut [Vec<Cut>],
     blanks: usize,
     budget: &mut crate::wire::Budget,
 ) -> Result<(), crate::session::Error> {
@@ -799,7 +723,7 @@ fn captured(
     of: Of,
     (screen_rows, screen_cols): (u16, u16),
     screen_cursor: Option<(u16, u16)>,
-    mut lines: Vec<Vec<LineRun>>,
+    mut lines: Vec<Vec<Cut>>,
     view: CaptureView,
     budget: &mut crate::wire::Budget,
 ) -> Result<Captured, crate::session::Error> {
@@ -808,34 +732,15 @@ fn captured(
             if let Some(line) = lines.pop() {
                 budget.release(
                     line.capacity()
-                        .checked_mul(std::mem::size_of::<LineRun>())
+                        .checked_mul(std::mem::size_of::<Cut>())
                         .ok_or_else(too_large)?,
                 )?;
             }
         }
     }
-    let old_capacity = lines
-        .capacity()
-        .checked_mul(std::mem::size_of::<Vec<LineRun>>())
-        .ok_or_else(too_large)?;
-    let mut captured = budget.vector(lines.len()).map_err(|_| too_large())?;
-    for line in lines {
-        let old = line
-            .capacity()
-            .checked_mul(std::mem::size_of::<LineRun>())
-            .ok_or_else(too_large)?;
-        let mut cuts = budget.vector(line.len()).map_err(|_| too_large())?;
-        for run in line {
-            cuts.push(Cut {
-                text: run.text,
-                cells: u32::try_from(run.cells).unwrap_or(u32::MAX),
-                style: run.style,
-            });
-        }
-        budget.release(old)?;
-        captured.push(cuts);
-    }
-    budget.release(old_capacity)?;
+    let captured = budget
+        .map(lines, |line, budget| budget.map(line, |cut, _| Ok(cut)))
+        .map_err(|_| too_large())?;
     budget.slots::<Captured>(1)?;
     Ok(Captured {
         of,
@@ -861,42 +766,13 @@ fn painted(a: &Attributes) -> bool {
 }
 
 impl Captured {
-    /// Charge all retained input before converting it on the client.
-    pub(crate) fn charge(
-        &self,
-        budget: &mut crate::wire::Budget,
-    ) -> Result<(), crate::session::Error> {
-        budget.slots::<Vec<Cut>>(self.lines.capacity())?;
-        for line in &self.lines {
-            budget.slots::<Cut>(line.capacity())?;
-            for cut in line {
-                budget.charge(cut.text.capacity())?;
-            }
-        }
-        if let Of::Pane { state, .. } = &self.of {
-            budget.slots::<(String, Json)>(state.capacity())?;
-            for (key, value) in state {
-                budget.charge(key.capacity())?;
-                value.charge(budget)?;
-            }
-        }
-        Ok(())
-    }
-
     /// As printed, admitted beside the retained capture before allocation.
     pub fn text(&self) -> Result<String, crate::session::Error> {
         let mut budget = crate::wire::Budget::new();
         budget.slots::<Captured>(1)?;
-        self.text_with(&mut budget)
-    }
-
-    pub(crate) fn text_with(
-        &self,
-        budget: &mut crate::wire::Budget,
-    ) -> Result<String, crate::session::Error> {
-        self.charge(budget)?;
+        budget.charge(crate::wire::retained(self))?;
         budget.charge(self.text_scratch())?;
-        let text = crate::json::render(budget, |out| self.write_text(out))?;
+        let text = crate::json::render(&mut budget, |out| self.write_text(out))?;
         budget.text_value(&text)?;
         Ok(text)
     }
@@ -1029,14 +905,18 @@ pub(crate) fn write_line(
 
 /// The shared vocabulary for styled capture runs, streamed or projected locally.
 pub(crate) enum StyleValue {
-    Color(Color),
+    Index(u8),
+    Rgb(Rgb),
     Flag,
 }
 pub(crate) fn style_fields(a: Attributes) -> impl Iterator<Item = (&'static str, StyleValue)> {
     let colors = [("fg", a.foreground()), ("bg", a.background())]
         .into_iter()
-        .filter(|(_, c)| *c != Color::Default)
-        .map(|(k, c)| (k, StyleValue::Color(c)));
+        .filter_map(|(key, color)| match color {
+            Color::Default => None,
+            Color::Idx(n) => Some((key, StyleValue::Index(n))),
+            Color::Rgb(rgb) => Some((key, StyleValue::Rgb(rgb))),
+        });
     let flags = a
         .sgr_flags()
         .map(|(_, name)| name)
@@ -1049,9 +929,8 @@ pub(crate) fn style_fields(a: Attributes) -> impl Iterator<Item = (&'static str,
 fn describe(out: &mut dyn std::fmt::Write, a: Attributes) -> std::fmt::Result {
     for (name, value) in style_fields(a) {
         match value {
-            StyleValue::Color(Color::Default) => {}
-            StyleValue::Color(Color::Idx(n)) => write!(out, ",\"{name}\":{n}")?,
-            StyleValue::Color(Color::Rgb(Rgb { r, g, b })) => {
+            StyleValue::Index(n) => write!(out, ",\"{name}\":{n}")?,
+            StyleValue::Rgb(Rgb { r, g, b }) => {
                 write!(out, ",\"{name}\":\"#{r:02x}{g:02x}{b:02x}\"")?
             }
             StyleValue::Flag => write!(out, ",\"{name}\":true")?,
@@ -1066,6 +945,7 @@ mod tests {
     use crate::id::PaneId;
     use crate::pane::tests::Lone;
     use crate::pane::{Pane, Runs};
+    use fuxix::Allocation;
     use std::time::Instant;
 
     #[test]
@@ -1181,7 +1061,7 @@ mod tests {
             None,
             view,
             false,
-            super::Limits { cells: 2 },
+            2,
         )?;
         assert_eq!(capture.text()?, "hi");
         Ok(())
@@ -1206,9 +1086,9 @@ mod tests {
                 rows: Some((90, 96)),
                 ..CaptureView::default()
             },
-            super::Limits { cells: 1200 },
+            1200,
         )?;
-        assert_eq!((selection.start, selection.count), (90, 6));
+        assert_eq!((selection.start, selection.len()), (90, 6));
         Ok(())
     }
 
@@ -1277,7 +1157,7 @@ mod tests {
             Some(usize::MAX),
             CaptureView::default(),
             false,
-            super::Limits { cells: 240 },
+            240,
         );
         assert!(refusal.is_err());
         assert!(
@@ -1297,7 +1177,7 @@ mod tests {
             read.lines.first().and_then(|l| l.first()).map(|r| r.cells),
             Some(80)
         );
-        let limits = super::Limits { cells: 80 };
+        let limits = 80;
         let read = Box::new(pane.screen().rows().map(|row| (row, 0..usize::MAX)));
         assert!(
             super::selected_rows(
@@ -1537,14 +1417,14 @@ mod tests {
         Ok(())
     }
 
-    /// Trimming precedes the wire count's clamp, including when the
-    /// private count exceeds u32. A synthetic count avoids a GiB fixture.
+    /// Trimming changes the cell count as well as the text. The builder's
+    /// checked u32 count cannot represent a value that needs clamping.
     #[test]
-    fn cells_are_clamped_only_after_trimming() -> Result<(), Box<dyn std::error::Error>> {
-        let max = usize::try_from(u32::MAX)?;
-        let mut lines = vec![vec![super::LineRun {
+    fn trimming_keeps_the_exact_cell_count() -> Result<(), Box<dyn std::error::Error>> {
+        let max = u32::MAX;
+        let mut lines = vec![vec![super::Cut {
             text: "x  ".into(),
-            cells: max.saturating_add(2),
+            cells: max,
             style: fux_vt::Attributes::default(),
         }]];
         super::trim_line(&mut lines, 2, &mut crate::wire::Budget::new())?;
@@ -1562,7 +1442,7 @@ mod tests {
                 .first()
                 .and_then(|line| line.first())
                 .map(|run| run.cells),
-            Some(u32::MAX)
+            Some(max.saturating_sub(2))
         );
         Ok(())
     }
@@ -1591,9 +1471,9 @@ mod tests {
                 rows: Some((1, 2)),
                 ..CaptureView::default()
             },
-            super::Limits::new(8 << 20, (6, 5))?,
+            super::cell_limit(8 << 20, (6, 5))?,
         )?;
-        assert_eq!(selection.count, 3);
+        assert_eq!(selection.len(), 3);
         assert_eq!(visits.get(), 3);
         Ok(())
     }

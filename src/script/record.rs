@@ -5,14 +5,13 @@ use crate::command::{AnyRef, Run};
 use crate::inspect::{self, Projection, Scope};
 use crate::json::Json;
 use crate::wire::Budget;
+use fuxix::Allocation;
 use fuxth::{AppValue, Failure, List, Value};
-use std::rc::Rc;
 
 type V = Value<Fux>;
 
 #[derive(Clone, Debug)]
 pub struct Record {
-    lease: fuxth::ImportLease,
     pub(super) fields: Vec<(String, V)>,
     weight: u64,
     depth: u8,
@@ -27,29 +26,34 @@ impl PartialEq for Record {
 }
 
 impl Record {
-    pub(super) fn retain(&self, imports: &fuxth::Imports) -> Result<(), Failure> {
-        let own = self.fields.iter().fold(
-            std::mem::size_of::<Record>()
-                .saturating_add(std::mem::size_of::<[usize; 2]>())
-                .saturating_add(
-                    self.fields
-                        .capacity()
-                        .saturating_mul(std::mem::size_of::<(String, V)>()),
-                ),
-            |n, (key, _)| n.saturating_add(key.capacity()),
-        );
-        let snapshot = self
+    pub(super) fn retain(
+        this: &fuxth::Shared<Self>,
+        imports: &fuxth::Imports,
+    ) -> Result<(), Failure> {
+        let own = Self::own_bytes(&this.fields);
+        let snapshot = this
             .snapshot
             .as_ref()
             .map(|s| s.heap_bytes())
             .transpose()?
             .map(|bytes| bytes.saturating_sub(std::mem::size_of::<inspect::Snapshot>()))
             .unwrap_or(0);
-        self.lease.reserve(imports, own.saturating_add(snapshot))?;
-        for (_, value) in &self.fields {
+        this.reserve(imports, own.saturating_add(snapshot))?;
+        for (_, value) in &this.fields {
             value.retain(imports)?;
         }
         Ok(())
+    }
+
+    fn own_bytes(fields: &Vec<(String, V)>) -> usize {
+        fields.iter().fold(
+            fuxth::Shared::<Record>::bytes(0).saturating_add(
+                fields
+                    .capacity()
+                    .saturating_mul(std::mem::size_of::<(String, V)>()),
+            ),
+            |n, (key, _)| n.saturating_add(key.capacity()),
+        )
     }
 
     pub(super) fn get(&self, field: &str) -> Result<V, Failure> {
@@ -134,14 +138,8 @@ impl<'a> Builder<'a> {
         if text.chars().count() > fuxth::LONGEST {
             return Err(fail());
         }
-        self.budget
-            .text_value(text)
-            .map_err(super::words::observation_failure)?;
-        Ok(Value::str(
-            self.budget
-                .string(text)
-                .map_err(super::words::observation_failure)?,
-        ))
+        self.budget.text_value(text)?;
+        Ok(Value::str(self.budget.string(text)?))
     }
     fn optional(&mut self, text: Option<&str>) -> Result<V, Failure> {
         text.map(|s| self.text(s)).unwrap_or_else(|| Ok(null()))
@@ -152,72 +150,45 @@ impl<'a> Builder<'a> {
         mut value: impl FnMut(&mut Self, &T) -> Result<V, Failure>,
     ) -> Result<V, Failure> {
         self.nodes(items.len())?;
-        let mut out = self
-            .budget
-            .vector(items.len())
-            .map_err(super::words::observation_failure)?;
+        let mut out = self.budget.vector(items.len())?;
         for item in items {
             out.push(value(self, item)?);
         }
-        self.budget
-            .slots::<List<Fux>>(1)
-            .map_err(super::words::observation_failure)?;
-        self.budget
-            .slots::<usize>(2)
-            .map_err(super::words::observation_failure)?;
+        self.budget.charge(fuxth::Shared::<List<Fux>>::bytes(0))?;
         let list = List::new(out).ok_or_else(fail)?;
-        Ok(Value::List(Rc::new(list)))
+        Ok(Value::List(fuxth::Shared::new(list)))
     }
     fn record<const N: usize>(&mut self, fields: [(&str, V); N]) -> Result<V, Failure> {
         self.nodes(N.saturating_add(1))?;
-        let mut out = self
-            .budget
-            .vector(N)
-            .map_err(super::words::observation_failure)?;
+        let mut out = self.budget.vector(N)?;
         for (key, value) in fields {
-            out.push((
-                self.budget
-                    .string(key)
-                    .map_err(super::words::observation_failure)?,
-                value,
-            ));
+            out.push((self.budget.string(key)?, value));
         }
         self.finish(out)
     }
     fn finish(&mut self, fields: Vec<(String, V)>) -> Result<V, Failure> {
-        let depth = fields
-            .iter()
-            .map(|(_, v)| v.depth())
-            .max()
-            .unwrap_or(0)
+        let (mut depth, mut weight, mut bytes) = (0u8, 1u64, Record::own_bytes(&fields));
+        for (key, value) in &fields {
+            depth = depth.max(value.depth());
+            weight = weight
+                .checked_add(key.len() as u64)
+                .and_then(|n| n.checked_add(value.weight()))
+                .ok_or_else(fail)?;
+            bytes = bytes.saturating_add(
+                value
+                    .storage_bytes(AppValue::text_bytes)
+                    .unwrap_or(usize::MAX),
+            );
+        }
+        let depth = depth
             .checked_add(1)
             .filter(|d| *d <= inspect::DEPTH)
             .ok_or_else(fail)?;
-        let weight = fields
-            .iter()
-            .try_fold(1u64, |n, (k, v)| {
-                n.checked_add(k.len() as u64)?.checked_add(v.weight())
-            })
-            .filter(|n| *n <= fuxth::TOTAL)
-            .ok_or_else(fail)?;
-        let bytes = fields.iter().fold(
-            std::mem::size_of::<Record>()
-                .saturating_add(std::mem::size_of::<usize>().saturating_mul(2))
-                .saturating_add(
-                    fields
-                        .capacity()
-                        .saturating_mul(std::mem::size_of::<(String, V)>()),
-                ),
-            |n, (k, v)| n.saturating_add(k.capacity()).saturating_add(retained(v)),
-        );
-        self.budget
-            .slots::<Record>(1)
-            .map_err(super::words::observation_failure)?;
-        self.budget
-            .slots::<usize>(2)
-            .map_err(super::words::observation_failure)?;
-        Ok(Value::App(Fux::Record(Rc::new(Record {
-            lease: fuxth::ImportLease::default(),
+        if weight > fuxth::TOTAL {
+            return Err(fail());
+        }
+        self.budget.charge(fuxth::Shared::<Record>::bytes(0))?;
+        Ok(Value::App(Fux::Record(fuxth::Shared::new(Record {
             fields,
             depth,
             weight,
@@ -238,15 +209,9 @@ impl<'a> Builder<'a> {
             Json::String(s) => self.text(s),
             Json::Array(items) => self.list(items, |b, v| b.json(v, depth.saturating_add(1))),
             Json::Object(fields) => {
-                let mut out = self
-                    .budget
-                    .vector(fields.len())
-                    .map_err(super::words::observation_failure)?;
+                let mut out = self.budget.vector(fields.len())?;
                 for (key, value) in fields {
-                    let key = self
-                        .budget
-                        .string(key)
-                        .map_err(super::words::observation_failure)?;
+                    let key = self.budget.string(key)?;
                     let value = self.json(value, depth.saturating_add(1))?;
                     out.push((key, value));
                 }
@@ -260,31 +225,13 @@ impl<'a> Builder<'a> {
             inspect::Path::Bytes(bytes) => {
                 let mut text = String::new();
                 for byte in bytes {
-                    self.budget
-                        .write(&mut text, format_args!("{byte:02x}"))
-                        .map_err(super::words::observation_failure)?;
+                    self.budget.write(&mut text, format_args!("{byte:02x}"))?;
                 }
                 ("hex", self.text(&text)?)
             }
         };
         let encoding = self.text(encoding)?;
         self.record([("encoding", encoding), ("text", text)])
-    }
-}
-
-fn retained(value: &V) -> usize {
-    match value {
-        Value::Str(s) => s
-            .heap_bytes()
-            .saturating_add(std::mem::size_of::<fuxth::Text>()),
-        Value::List(list) => list.items().iter().fold(
-            list.heap_bytes()
-                .saturating_add(std::mem::size_of::<List<Fux>>())
-                .saturating_add(std::mem::size_of::<usize>().saturating_mul(2)),
-            |n, v| n.saturating_add(retained(v)),
-        ),
-        Value::App(a) => a.text_bytes(),
-        Value::Int(_) | Value::Bool(_) => 0,
     }
 }
 
@@ -321,42 +268,26 @@ pub(super) fn events(batch: crate::events::Batch) -> Result<V, Failure> {
         let Json::Object(fields) = &json else {
             return Err(fail());
         };
-        let mut out = b
-            .budget
-            .vector(fields.len().saturating_add(2))
-            .map_err(super::words::observation_failure)?;
+        let mut out = b.budget.vector(fields.len().saturating_add(2))?;
         for (key, value) in fields
             .iter()
             .filter(|(key, _)| key != "origin" && key != "next")
         {
             b.nodes(1)?;
-            let value = match (
-                key.as_str(),
-                item.pane,
-                item.tab,
-                item.workspace,
-                item.client,
-            ) {
-                ("pane", Some(p), _, _, _) => id(AnyRef::Pane(p), run),
-                ("tab", _, Some(t), _, _) => id(AnyRef::Tab(t), run),
-                ("workspace", _, _, Some(w), _) => id(AnyRef::Workspace(w), run),
-                ("client", _, _, _, Some(c)) => Value::App(Fux::Client(c, Some(run))),
-                _ if key == "from_tab" && item.moved_from.is_some() => item
-                    .moved_from
-                    .map(|(_, t)| id(AnyRef::Tab(t), run))
-                    .ok_or_else(fail)?,
-                _ if key == "from_workspace" && item.moved_from.is_some() => item
-                    .moved_from
-                    .map(|(w, _)| id(AnyRef::Workspace(w), run))
-                    .ok_or_else(fail)?,
-                _ => b.json(value, 0)?,
+            let native = match key.as_str() {
+                "pane" => item.pane.map(|p| id(AnyRef::Pane(p), run)),
+                "tab" => item.tab.map(|t| id(AnyRef::Tab(t), run)),
+                "workspace" => item.workspace.map(|w| id(AnyRef::Workspace(w), run)),
+                "client" => item.client.map(|c| Value::App(Fux::Client(c, Some(run)))),
+                "from_tab" => item.moved_from.map(|(_, t)| id(AnyRef::Tab(t), run)),
+                "from_workspace" => item.moved_from.map(|(w, _)| id(AnyRef::Workspace(w), run)),
+                _ => None,
             };
-            out.push((
-                b.budget
-                    .string(key)
-                    .map_err(super::words::observation_failure)?,
-                value,
-            ));
+            let value = match native {
+                Some(value) => value,
+                None => b.json(value, 0)?,
+            };
+            out.push((b.budget.string(key)?, value));
         }
         use crate::events::Actor;
         let kind = b.text(item.origin.kind())?;
@@ -373,12 +304,7 @@ pub(super) fn events(batch: crate::events::Batch) -> Result<V, Failure> {
             Actor::Server | Actor::Unknown => b.record([("kind", kind)])?,
         };
         b.nodes(2)?;
-        out.push((
-            b.budget
-                .string("origin")
-                .map_err(super::words::observation_failure)?,
-            origin,
-        ));
+        out.push((b.budget.string("origin")?, origin));
         out.push(("next".into(), b.text(&item.next.to_string())?));
         b.finish(out)
     })?;
@@ -440,9 +366,9 @@ pub(super) fn snapshot_in(s: inspect::Snapshot, budget: &mut Budget) -> Result<V
             ("pid", p.pid.map(number).unwrap_or_else(|| Ok(null()))?),
             ("rows", number(p.rows)?), ("cols", number(p.cols)?), ("version", b.text(&p.version.to_string())?),
         ];
-        let mut fields = b.budget.vector(base.len().saturating_add(2)).map_err(super::words::observation_failure)?;
-        for (key, value) in base { fields.push((b.budget.string(key).map_err(super::words::observation_failure)?, value)); }
-        if let Some(state) = &p.state { fields.push((b.budget.string("state").map_err(super::words::observation_failure)?, b.json(state, 0)?)); }
+        let mut fields = b.budget.vector(base.len().saturating_add(2))?;
+        for (key, value) in base { fields.push((b.budget.string(key)?, value)); }
+        if let Some(state) = &p.state { fields.push((b.budget.string("state")?, b.json(state, 0)?)); }
         if let Some(r) = &p.recipe {
             let env = b.list(&r.env, |b,(key,value)| record! { b; "name" => b.text(key)?, "value" => value.as_ref().map(|p| b.path(p)).unwrap_or_else(|| Ok(null()))? })?;
             let recipe = record! { b; "choice" => b.text(if r.shell { "shell" } else { "program" })?,
@@ -455,7 +381,7 @@ pub(super) fn snapshot_in(s: inspect::Snapshot, budget: &mut Budget) -> Result<V
                 "history_bytes" => number(r.options.history_bytes.get())?, "program_clipboard" => Value::Bool(r.options.program_clipboard),
                 "reflow" => Value::Bool(r.options.reflow), "alternate_scroll_lines" => number(r.options.alternate_scroll_lines.get())?, "picture_bytes" => number(r.options.picture_bytes.get())?
             }?;
-            fields.push((b.budget.string("launch").map_err(super::words::observation_failure)?, recipe));
+            fields.push((b.budget.string("launch")?, recipe));
         }
         b.nodes(fields.len())?;
         b.finish(fields)
@@ -481,7 +407,7 @@ pub(super) fn snapshot_in(s: inspect::Snapshot, budget: &mut Budget) -> Result<V
     let Value::App(Fux::Record(mut record)) = value else {
         return Err(fail());
     };
-    let record_mut = Rc::get_mut(&mut record).ok_or_else(fail)?;
+    let record_mut = fuxth::Shared::get_mut(&mut record).ok_or_else(fail)?;
     record_mut.bytes = record_mut.bytes.checked_add(retained).ok_or_else(fail)?;
     // Plain output traverses the retained schema; JSON and get use local values.
     record_mut.weight = record_mut
@@ -546,60 +472,38 @@ pub(super) fn answer_field(
                     return b.list(&c.lines, |b, line| {
                         let text = crate::json::render(b.budget, |out| {
                             crate::capture::write_line(out, line, c.marks, false, &mut Vec::new())
-                        })
-                        .map_err(super::words::observation_failure)?;
+                        })?;
                         b.text(&text)
                     });
                 }
                 "styles" if c.styles => {
                     return b.list(&c.lines, |b, line| {
-                        let mut values = b
-                            .budget
-                            .vector(
-                                line.iter()
-                                    .filter(|cut| cut.style != fux_vt::Attributes::default())
-                                    .count(),
-                            )
-                            .map_err(super::words::observation_failure)?;
+                        let mut values = b.budget.vector(
+                            line.iter()
+                                .filter(|cut| cut.style != fux_vt::Attributes::default())
+                                .count(),
+                        )?;
                         let mut col = 0u32;
                         for cut in line {
                             if cut.style != fux_vt::Attributes::default() {
-                                let mut fields = b
-                                    .budget
-                                    .vector(2)
-                                    .map_err(super::words::observation_failure)?;
+                                let mut fields = b.budget.vector(2)?;
                                 for (name, value) in
                                     [("col", number(col)?), ("len", number(cut.cells)?)]
                                 {
-                                    fields.push((
-                                        b.budget
-                                            .string(name)
-                                            .map_err(super::words::observation_failure)?,
-                                        value,
-                                    ));
+                                    fields.push((b.budget.string(name)?, value));
                                 }
                                 for (name, value) in crate::capture::style_fields(cut.style) {
                                     let value = match value {
                                         crate::capture::StyleValue::Flag => Value::Bool(true),
-                                        crate::capture::StyleValue::Color(fux_vt::Color::Idx(
-                                            n,
-                                        )) => number(n)?,
-                                        crate::capture::StyleValue::Color(fux_vt::Color::Rgb(
-                                            fux_vt::Rgb { r, g, b: blue },
-                                        )) => b.text(&format!("#{r:02x}{g:02x}{blue:02x}"))?,
-                                        crate::capture::StyleValue::Color(
-                                            fux_vt::Color::Default,
-                                        ) => continue,
+                                        crate::capture::StyleValue::Index(n) => number(n)?,
+                                        crate::capture::StyleValue::Rgb(fux_vt::Rgb {
+                                            r,
+                                            g,
+                                            b: blue,
+                                        }) => b.text(&format!("#{r:02x}{g:02x}{blue:02x}"))?,
                                     };
-                                    b.budget
-                                        .reserve(&mut fields, 1)
-                                        .map_err(super::words::observation_failure)?;
-                                    fields.push((
-                                        b.budget
-                                            .string(name)
-                                            .map_err(super::words::observation_failure)?,
-                                        value,
-                                    ));
+                                    b.budget.reserve(&mut fields, 1)?;
+                                    fields.push((b.budget.string(name)?, value));
                                 }
                                 b.nodes(fields.len().saturating_add(1))?;
                                 values.push(b.finish(fields)?);
@@ -607,13 +511,10 @@ pub(super) fn answer_field(
                             col = col.checked_add(cut.cells).ok_or_else(fail)?;
                         }
                         b.nodes(values.len())?;
-                        b.budget
-                            .slots::<List<Fux>>(1)
-                            .map_err(super::words::observation_failure)?;
-                        b.budget
-                            .slots::<usize>(2)
-                            .map_err(super::words::observation_failure)?;
-                        Ok(Value::List(Rc::new(List::new(values).ok_or_else(fail)?)))
+                        b.budget.charge(fuxth::Shared::<List<Fux>>::bytes(0))?;
+                        Ok(Value::List(fuxth::Shared::new(
+                            List::new(values).ok_or_else(fail)?,
+                        )))
                     });
                 }
                 _ => {}

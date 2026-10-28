@@ -1,24 +1,15 @@
 //! Reservations follow shared imported storage, not stack slots or run totals.
-use crate::{Code, Failure};
-use std::cell::{Cell, RefCell};
+use crate::{Code, Failure, Grant};
+use std::cell::RefCell;
 use std::rc::{Rc, Weak};
 
-#[derive(Debug)]
-struct Grant {
-    limit: usize,
-    used: Cell<usize>,
-}
-
-/// One machine's fixed grant for live imported allocations.
+/// One machine's fixed allowance for live imported storage. Only leases can
+/// reserve or refund it; hosts cannot change the counter directly.
 #[derive(Debug)]
 pub struct Imports(Rc<Grant>);
-
 impl Imports {
     pub fn new(limit: usize) -> Self {
-        Self(Rc::new(Grant {
-            limit,
-            used: Cell::new(0),
-        }))
+        Self(Rc::new(Grant::new(limit)))
     }
 }
 
@@ -31,28 +22,24 @@ struct Reservation {
 impl Drop for Reservation {
     fn drop(&mut self) {
         if let Some(grant) = self.grant.upgrade() {
-            grant.used.set(grant.used.get().saturating_sub(self.bytes));
+            let _ = grant.release(self.bytes);
         }
     }
 }
 
-/// Kept inside an allocation. Cloning the allocation starts a new reservation;
-/// cloning its Rc keeps this one. Dead machines leave no live grant behind.
+/// A reservation carried with owned values that leave shared storage.
 #[derive(Debug, Default)]
 pub struct ImportLease(RefCell<Option<Reservation>>);
-
 impl Clone for ImportLease {
     fn clone(&self) -> Self {
         Self::default()
     }
 }
-
 impl PartialEq for ImportLease {
     fn eq(&self, _: &Self) -> bool {
         true
     }
 }
-
 impl ImportLease {
     pub fn reserve(&self, imports: &Imports, bytes: usize) -> Result<(), Failure> {
         let mut held = self
@@ -60,24 +47,17 @@ impl ImportLease {
             .try_borrow_mut()
             .map_err(|_| Failure::new(Code::Contract, "recursive storage admission"))?;
         let owner = Rc::downgrade(&imports.0);
-        if let Some(reservation) = held.as_mut().filter(|r| r.grant.ptr_eq(&owner)) {
-            // Mutable storage can grow before the host returns it again.
-            let used = imports.0.used.get().saturating_sub(reservation.bytes);
-            let used = used
-                .checked_add(bytes)
-                .filter(|n| *n <= imports.0.limit)
-                .ok_or_else(full)?;
-            imports.0.used.set(used);
+        let same = held.as_mut().filter(|r| r.grant.ptr_eq(&owner));
+        let old = same.as_ref().map_or(0, |r| r.bytes);
+        if bytes >= old {
+            imports.0.charge(bytes.saturating_sub(old))
+        } else {
+            imports.0.release(old.saturating_sub(bytes))
+        }
+        .map_err(|_| full())?;
+        if let Some(reservation) = same {
             reservation.bytes = bytes;
         } else {
-            let used = imports
-                .0
-                .used
-                .get()
-                .checked_add(bytes)
-                .filter(|n| *n <= imports.0.limit)
-                .ok_or_else(full)?;
-            imports.0.used.set(used);
             *held = Some(Reservation {
                 grant: owner,
                 bytes,
@@ -94,11 +74,12 @@ fn full() -> Failure {
     )
 }
 
-/// An immutable native allocation with a reservation shared by every clone.
+/// Shared storage owns its reservation. Editing the value cannot release it;
+/// copying the storage starts a fresh reservation.
 #[derive(Debug, PartialEq)]
 pub struct Shared<T>(Rc<Storage<T>>);
 
-#[derive(Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 struct Storage<T> {
     value: T,
     lease: ImportLease,
@@ -118,6 +99,18 @@ impl<T> Shared<T> {
         }))
     }
 
+    pub fn get_mut(this: &mut Self) -> Option<&mut T> {
+        Rc::get_mut(&mut this.0).map(|storage| &mut storage.value)
+    }
+
+    pub(crate) fn copied(&self, elements: usize) -> usize {
+        if Rc::strong_count(&self.0) > 1 {
+            elements
+        } else {
+            0
+        }
+    }
+
     /// Payload allocation bytes, plus this shared allocation's wrapper.
     pub fn bytes(payload: usize) -> usize {
         payload
@@ -130,9 +123,21 @@ impl<T> Shared<T> {
     }
 }
 
+impl<T: Clone> Shared<T> {
+    pub fn make_mut(this: &mut Self) -> &mut T {
+        &mut Rc::make_mut(&mut this.0).value
+    }
+}
+
 impl<T> std::ops::Deref for Shared<T> {
     type Target = T;
     fn deref(&self) -> &T {
         &self.0.value
+    }
+}
+
+impl<T> AsRef<T> for Shared<T> {
+    fn as_ref(&self) -> &T {
+        self
     }
 }
