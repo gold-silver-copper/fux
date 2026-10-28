@@ -654,6 +654,19 @@ not save process memory, terminal contents/history, paste buffers, client
 views or journal entries. Replay is a sequence of requests: if a later one
 fails, earlier creations remain. Review the script before running it.
 
+`dump` is a library word over one scoped `recipe` snapshot. It builds the
+whole source before returning it, including quoted arguments and empty
+strings. The library's `quote` word returns one source token; `str` followed
+by that token reads the original text back. Quoted newlines stay inside
+string literals, including in omission annotations.
+
+Dump admission follows the existing fuxth bounds: at most 1,000,000
+characters in a string, 16,000,000 elements of construction work, and the
+calling program's step budget. Intermediate lists and quoting expansion
+also count. This accepts fewer large recipes than the former 16 MiB native
+serializer; an oversized recipe fails explicitly with no partial source.
+Dump a smaller scope when a complete session exceeds those bounds.
+
 Nothing is saved automatically. To recreate a layout after its server ends
 (a crash, `kill -9`, or a reboot), save a dump beforehand and replay it on a
 fresh server:
@@ -876,7 +889,7 @@ to `fux.log` beside it.
 - Every peer must run as the server's own user (`SO_PEERCRED` on Linux,
   `getpeereid` on macOS); others, root included, are refused.
 - Messages are length-prefixed and at most 1 MiB. Saved launch inputs, including pending
-  respawns, are limited to 16 MiB per session; a dump is limited to 16 MiB.
+  respawns, are limited to 16 MiB per session; dumps use the fuxth bounds above.
 
 Anyone who can open the socket can run anything as you (`run`,
 `send-keys`). As with tmux, the socket's permissions are the access

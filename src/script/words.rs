@@ -304,7 +304,6 @@ words! {
         Reading Get "get" "readable field -- value" "a held answer, capture or record field, locally; or a live pane, tab or workspace field" "fux %3 str exited get" [];
         Reading Json "json" "value -- json-output" "value as JSON (an answer as its JSON); a failed wait's answer is the message try's handler gets" "fux ls json" [];
         Reading Events "events" "watched --" "what happens in a pane, tab, workspace or all, a JSON line each" "fux all events" [Pane: From];
-        Reading Dump "dump" "scope -- text" "a tab, workspace or all, as a program that makes it again (new processes, nothing typed into them)" "fux all dump > all.fux; fux start && fux --file all.fux" [];
         Changing Kill "kill" "handle --" "close a pane, tab or workspace, without asking" "fux %3 kill" [];
         Changing Rename "rename" "handle text --" "rename a pane, tab or workspace" "fux %3 str editor rename" [];
         Changing Notify "notify" "scope text --" "a notice on the clients showing it, or every client with all" "fux all str done notify" [];
@@ -1769,9 +1768,6 @@ impl Host<'_> {
                 };
                 tell(Request::Events(Some(target), built.from))
             }
-            Act::Dump => later(ask(Command::DumpLayout {
-                target: scope(&next()?)?,
-            })),
             // ---------------------------------------------------- changing
             Act::Kill => tell(Command::Kill {
                 target: target(&next()?)?,
@@ -2480,6 +2476,33 @@ mod tests {
                 .err()
                 .ok_or_else(|| format!("accepted {source}"))?;
             assert_eq!(failure.code, Code::of(code), "{source}: {failure}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn library_dump_checks_its_scope_before_effects() -> Result<(), Box<dyn std::error::Error>> {
+        for prefix in ["str SIDE-EFFECT print", "%1 str renamed rename"] {
+            for scope in ["1", "all str 0:1-2 from"] {
+                let source = format!("{prefix} {scope} dump drop");
+                let failure = super::super::compile(&fuxth::token::source("dump", &source)?)
+                    .err()
+                    .ok_or_else(|| format!("accepted {source}"))?;
+                assert_eq!(failure.code, Code::from(Raise::Type), "{source}: {failure}");
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn library_dump_checks_its_string_result_before_effects()
+    -> Result<(), Box<dyn std::error::Error>> {
+        for prefix in ["str SIDE-EFFECT print", "%1 str renamed rename"] {
+            let source = format!("{prefix} all dump 1 push drop");
+            let failure = super::super::compile(&fuxth::token::source("dump", &source)?)
+                .err()
+                .ok_or_else(|| format!("accepted {source}"))?;
+            assert_eq!(failure.code, Code::from(Raise::Type), "{source}: {failure}");
         }
         Ok(())
     }

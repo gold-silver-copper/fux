@@ -182,6 +182,7 @@ pub(crate) struct Steps<A> {
     pub ops: Vec<Op<A>>,
     pub tokens: Vec<Token>,
     pub locals: usize,
+    pub inputs: Option<Vec<(crate::check::Kinds, String)>>,
 }
 
 impl<A> Steps<A> {
@@ -190,6 +191,7 @@ impl<A> Steps<A> {
             ops: Vec::new(),
             tokens: Vec::new(),
             locals: 0,
+            inputs: None,
         }
     }
     fn push(&mut self, op: Op<A>, token: &Token) {
@@ -217,6 +219,9 @@ impl<A> Steps<A> {
     /// call (`dup` is `0 pick`). Longer words stay calls, so a mistake in
     /// one is said as the whole word's, not one of its steps'.
     fn leaf(&self) -> bool {
+        if self.inputs.is_some() {
+            return false;
+        }
         let [op] = self.ops.as_slice() else {
             return false;
         };
@@ -322,6 +327,38 @@ pub struct Compiler<A> {
 }
 
 impl<A: Clone> Compiler<A> {
+    /// Constrains a library definition's inputs, deepest first, using the
+    /// vocabulary's kind names. Declare these before compiling callers.
+    /// Known disjoint kinds refuse before execution; uncertain inputs are
+    /// checked at runtime before the body. Results remain inferred.
+    pub fn inputs(&mut self, name: &str, kinds: &str) -> Result<(), Error> {
+        let Some(Entry::Word(id)) = self.names.get(name) else {
+            return Err(Error::new(
+                Code::Contract,
+                format!("{name}: no definition"),
+                None,
+            ));
+        };
+        let inputs = self.vocabulary.inputs(kinds)?;
+        let Some(body) = self.words.get_mut(*id) else {
+            return Err(Error::new(
+                Code::Contract,
+                format!("{name}: definition is still open"),
+                None,
+            ));
+        };
+        if body.inputs.is_some() {
+            return Err(Error::new(
+                Code::Contract,
+                format!("{name}: inputs declared already"),
+                None,
+            ));
+        }
+        Rc::make_mut(body).inputs = Some(inputs);
+        self.known = crate::check::Known::default();
+        Ok(())
+    }
+
     pub fn new(vocabulary: Vocabulary) -> Self {
         let mut names = HashMap::new();
         for (id, name) in vocabulary.names().enumerate() {

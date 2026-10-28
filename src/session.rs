@@ -23,7 +23,6 @@ use std::collections::{BTreeMap, VecDeque};
 use std::num::NonZeroU32;
 use std::path::{Path, PathBuf};
 mod inspect;
-mod layouts;
 use std::time::{Duration, Instant};
 
 /// What the server must do outside the session.
@@ -399,8 +398,6 @@ struct Replacement {
 pub const GRACE: Duration = Duration::from_millis(100);
 /// Retained launch inputs, including pending replacements, in one session.
 pub(crate) const LAUNCH_BYTES: usize = 16 << 20;
-/// The largest recipe the dump serializer builds.
-pub(crate) const DUMP_BYTES: usize = 16 << 20;
 
 pub struct Session {
     /// Its workspaces, tabs and panes, and the journal of what happened to
@@ -630,16 +627,6 @@ impl Session {
             .ok_or_else(|| fail(Raise::NoWorkspace, format!("no workspace named {name:?}"))),
         }
         .map(|w| w.id())
-    }
-    /// Whether `only` (with nothing, everything) takes in tab `tab` of
-    /// workspace `ws`: its workspace, the tab, or a pane in it.
-    fn takes_in(&self, only: Option<AnyRef>, ws: WsId, tab: TabId) -> bool {
-        match only {
-            None => true,
-            Some(AnyRef::Workspace(w)) => w == ws,
-            Some(AnyRef::Tab(t)) => t == tab,
-            Some(AnyRef::Pane(p)) => self.locate(p).is_some_and(|(_, t)| t == tab),
-        }
     }
     /// `target`, if it is there; else why not.
     pub fn there(&self, target: AnyRef) -> Result<AnyRef, Error> {
@@ -2524,10 +2511,6 @@ impl Session {
                 self.resize(client, size.rows(), size.cols(), now)?;
                 Ok(Reply::default())
             }
-            Command::DumpLayout { target } => {
-                let only = target.map(|t| self.there(t)).transpose()?;
-                Ok(Body::Text(self.dump_layout(only)?).into())
-            }
             &Command::SendMouse {
                 target,
                 mouse,
@@ -3550,6 +3533,70 @@ pub(crate) mod testing {
     use super::{InProcess, Reply, Session};
     use crate::command::{self, Command, Request};
     use crate::id::ClientId;
+
+    impl Session {
+        /// Exercise the library against exactly one held recipe, without mutating the session.
+        pub(super) fn dump_recipe(
+            &self,
+            only: Option<command::AnyRef>,
+        ) -> Result<String, crate::script::Failed> {
+            struct Once(Option<Reply>);
+            impl crate::script::Asks for Once {
+                fn ask(
+                    &mut self,
+                    asked: &crate::protocol::Asked,
+                    _: &mut dyn std::io::Write,
+                ) -> Result<Reply, crate::script::Failed> {
+                    assert!(matches!(
+                        asked.request,
+                        Request::Do(Command::Inspect {
+                            projection: crate::inspect::Projection::Recipe,
+                            ..
+                        })
+                    ));
+                    self.0.take().ok_or_else(|| {
+                        crate::script::Failed::new(
+                            crate::code::Code::Usage,
+                            "dump made more than one request",
+                        )
+                    })
+                }
+            }
+            let scope = only.map_or(crate::inspect::Scope::All, crate::inspect::Scope::Target);
+            let body = self
+                .inspect(scope, crate::inspect::Projection::Recipe)
+                .map_err(|e| crate::script::Failed::new(e.code(), e.to_string()))?;
+            let tokens =
+                fuxth::token::source("dump", "all dump").map_err(crate::script::Failed::from)?;
+            let mut machine = crate::script::compile(&tokens)?;
+            let mut out = Vec::new();
+            let mut host =
+                crate::script::Host::new(crate::protocol::Context::default(), None, &mut out);
+            let reply = Reply {
+                run: Some(self.run),
+                ..body.into()
+            };
+            let stack = crate::script::run_capped(
+                &mut machine,
+                &mut host,
+                &mut Once(Some(reply)),
+                Some(crate::script::PROGRAM_STEPS),
+                None,
+            );
+            assert!(
+                out.is_empty(),
+                "dump emitted before returning its complete source"
+            );
+            let stack = stack?;
+            match stack.as_slice() {
+                [fuxth::Value::Str(text)] => Ok(text.to_string()),
+                _ => Err(crate::script::Failed::new(
+                    crate::code::Code::Usage,
+                    "dump did not return one string",
+                )),
+            }
+        }
+    }
     use std::time::Instant;
 
     impl Session {
@@ -4677,7 +4724,7 @@ mod tests {
     }
 
     #[test]
-    fn retained_launches_and_dump_refuse_their_resource_limits() -> Result<(), String> {
+    fn retained_launches_refuse_their_resource_limit() -> Result<(), String> {
         let mut s = started()?;
         let mut env = command::EnvPatch::default();
         env.push(
@@ -4702,6 +4749,7 @@ mod tests {
         for _ in 0..40 {
             let before = s.parts.panes().len();
             if let Err(error) = s.execute(&command, &origin, Instant::now()) {
+                assert_eq!(error.code(), Code::from(Raise::TooLong));
                 assert!(error.to_string().contains("saved launch inputs"), "{error}");
                 assert_eq!(s.parts.panes().len(), before);
                 refused = true;
@@ -4709,10 +4757,46 @@ mod tests {
             }
         }
         assert!(refused);
-        assert!(
-            s.dump_layout(None)
-                .is_err_and(|e| e.code() == Code::from(Raise::TooLong))
-        );
+        Ok(())
+    }
+
+    #[test]
+    fn library_dump_refuses_source_expansion_before_emitting() -> Result<(), String> {
+        let mut s = started()?;
+        let mut env = command::EnvPatch::default();
+        env.push(
+            "TEXT".into(),
+            Some(
+                std::iter::repeat_n(char::from(39), 90_000)
+                    .collect::<String>()
+                    .into(),
+            ),
+        )?;
+        let command = Command::Run {
+            options: crate::pane::tests::options(0)?,
+            workspace: command::WsRef::Name("quoted".into()),
+            name: None,
+            size: Some(crate::view::Screen::new(24, 80)?),
+            cwd: Some("/".into()),
+            env,
+            argv: command::Program::new("/bin/cat".into(), Vec::new())?,
+        };
+        for _ in 0..3 {
+            s.execute(&command, &Origin::Cli(Caller::default()), Instant::now())
+                .map_err(|e| e.to_string())?;
+        }
+        // This admits the recipe first, independently of the source expansion.
+        s.inspect(
+            crate::inspect::Scope::All,
+            crate::inspect::Projection::Recipe,
+        )
+        .map_err(|e| e.to_string())?;
+        let error = s
+            .dump_recipe(None)
+            .err()
+            .ok_or("dump admitted oversized source")?;
+        assert_eq!(error.code, Code::from(Raise::TooLong));
+        assert!(error.to_string().contains("concat"), "{error}");
         Ok(())
     }
 
@@ -7725,9 +7809,9 @@ mod tests {
             "given\ntab-2\n"
         );
         assert!(
-            s.dump_layout(None)
+            s.dump_recipe(None)
                 .map_err(|e| e.to_string())?
-                .contains("str tab-2 rename")
+                .contains("str 'tab-2' rename")
         );
         Ok(())
     }
@@ -8019,6 +8103,79 @@ mod tests {
         Ok(())
     }
 
+    /// One scoped recipe retains exact shares, roles, argv, env and text paths.
+    #[test]
+    fn library_dump_replays_exact_shares_and_launch_inputs_in_its_scope() -> Result<(), String> {
+        let mut source = started()?;
+        let value = "apostrophe' backslash\\\nstr INJECTED print\n# 雪";
+        let directory = format!("/saved/{value}");
+        run(
+            &mut source,
+            &format!(
+                "opts str new-workspace in 150 40 size str {} cwd str DATA str {} env str OLD unset-env str /bin/cat program str '' arg str {} arg new-tab drop",
+                crate::words::quote(&directory),
+                crate::words::quote(value),
+                crate::words::quote(value)
+            ),
+        )?;
+        run(
+            &mut source,
+            "%2 str vertical axis 5 3 shares list str /bin/sh str -l str '' end shell-program split drop %2 str horizontal axis 7 2 shares str /bin/cat program split drop @2 str given rename %2 str sh rename",
+        )?;
+        let dump = output(&mut source, "@2 dump")?;
+        let mut again = started()?;
+        run(&mut again, &dump)?;
+        let recipe = |s: &Session, id| {
+            let Body::Snapshot(snapshot) = s
+                .inspect(
+                    crate::inspect::Scope::Target(AnyRef::Tab(id)),
+                    crate::inspect::Projection::Recipe,
+                )
+                .map_err(|e| e.to_string())?
+            else {
+                return Err("not a recipe".to_owned());
+            };
+            Ok(snapshot)
+        };
+        let before = recipe(&source, TabId::of(2))?;
+        let after = recipe(&again, TabId::of(2))?;
+        assert_eq!(
+            again.parts.workspaces().len(),
+            2,
+            "scoped dump exported another workspace"
+        );
+        assert_eq!(
+            before.workspaces.first().and_then(|w| w.name.as_ref()),
+            after.workspaces.first().and_then(|w| w.name.as_ref())
+        );
+        let (a, b) = (
+            before.tabs.first().ok_or("tab")?,
+            after.tabs.first().ok_or("replayed tab")?,
+        );
+        assert_eq!(
+            (&a.name, a.fixed, a.cols, a.rows),
+            (&b.name, b.fixed, b.cols, b.rows)
+        );
+        let shape = |nodes: &[crate::layout::Node]| {
+            nodes
+                .iter()
+                .map(|node| match node {
+                    crate::layout::Node::Pane(_) => crate::layout::Node::Pane(PaneId::of(1)),
+                    split @ crate::layout::Node::Split { .. } => split.clone(),
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(shape(&a.nodes), shape(&b.nodes), "{dump}");
+        let launches = |s: &crate::inspect::Snapshot| {
+            s.panes
+                .iter()
+                .map(|p| (p.name.clone(), p.recipe.clone()))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(launches(&before), launches(&after), "{dump}");
+        Ok(())
+    }
+
     /// A dump names only tabs given a name, regardless of their order.
     #[test]
     fn a_dump_names_only_the_tabs_given_a_name() -> Result<(), String> {
@@ -8026,7 +8183,7 @@ mod tests {
         let tab = "opts 80 24 size str +1 workspace in new-tab drop";
         run(&mut s, &format!("{tab} {tab} str @2 tab kill"))?;
         run(&mut s, &format!("{tab} str @4 tab str given rename"))?;
-        let dump = s.dump_layout(None).map_err(|e| e.to_string())?;
+        let dump = s.dump_recipe(None).map_err(|e| e.to_string())?;
         assert!(!dump.contains("tab-3"), "{dump}");
         assert!(dump.contains("given"), "{dump}");
         Ok(())
@@ -8046,8 +8203,9 @@ mod tests {
             &mut source,
             "opts +1 in 80 24 size str cat name str /bin/cat program run str new-workspace move",
         )?;
+        run(&mut source, "opts +2 in 80 24 size new-tab drop")?;
         run(&mut source, "str shell list str /bin/other end set")?;
-        let dump = source.dump_layout(None).map_err(|e| e.to_string())?;
+        let dump = source.dump_recipe(None).map_err(|e| e.to_string())?;
         assert!(!dump.contains("str other rename"), "{dump}");
         let mut again = started()?;
         run(&mut again, &dump).map_err(|error| format!("{error}\n{dump}"))?;
@@ -8088,10 +8246,18 @@ mod tests {
     #[test]
     fn a_dump_keeps_the_saved_shell_directory() -> Result<(), String> {
         let s = started()?;
-        let dump = s.dump_layout(None).map_err(|e| e.to_string())?;
+        let dump = s.dump_recipe(None).map_err(|e| e.to_string())?;
         let cwd = std::env::current_dir().map_err(|e| e.to_string())?;
+        let cwd = cwd.to_str().ok_or("cwd text")?;
+        let tokens = fuxth::token::source("dump", &dump).map_err(|e| e.to_string())?;
         assert!(
-            dump.contains(&format!("str {} cwd", cwd.display())),
+            tokens
+                .iter()
+                .zip(tokens.iter().skip(1))
+                .zip(tokens.iter().skip(2))
+                .any(|((a, b), c)| a.text.as_ref() == "str"
+                    && b.text.as_ref() == cwd
+                    && c.text.as_ref() == "cwd"),
             "{dump}"
         );
         assert!(dump.contains("shell-program"), "{dump}");
@@ -8127,9 +8293,9 @@ mod tests {
             argv: command::Program::new("cat".into(), Vec::new())?,
         };
         s.execute(&program, &Origin::Cli(Caller::default()), Instant::now())?;
-        let dump = s.dump_layout(None).map_err(|e| e.to_string())?;
+        let dump = s.dump_recipe(None).map_err(|e| e.to_string())?;
         let _ = dir.parent().map(std::fs::remove_dir_all);
-        let told = dump.contains("# %2: its directory \"") && dump.contains("caf\\xE9");
+        let told = dump.contains("# %2: directory bytes (hex) ") && dump.contains("636166e9");
         let written = dump
             .lines()
             .any(|l| !l.starts_with('#') && l.contains("caf"));
@@ -8146,7 +8312,7 @@ mod tests {
     fn a_dump_keeps_which_tabs_fit_clients() -> Result<(), String> {
         let (mut s, _) = attached(11, 40)?;
         run(&mut s, "opts 60 20 size str +1 workspace in new-tab drop")?;
-        let dump = s.dump_layout(None).map_err(|e| e.to_string())?;
+        let dump = s.dump_recipe(None).map_err(|e| e.to_string())?;
         let mut again = started()?;
         run(&mut again, &dump)?;
         let tabs = (again.parts.workspaces().iter()).flat_map(|w| w.tabs());
@@ -8162,11 +8328,11 @@ mod tests {
         let mut s = started()?;
         run(&mut s, "opts 600 40 size str +1 workspace in new-tab drop")?;
         let mut again = started()?;
-        run(&mut again, &s.dump_layout(None).map_err(|e| e.to_string())?)?;
+        run(&mut again, &s.dump_recipe(None).map_err(|e| e.to_string())?)?;
         let tabs = (again.parts.workspaces().iter()).flat_map(|w| w.tabs());
         let mut sizes = tabs.map(|t| t.fit().size());
         let wide = sizes.any(|s| (s.cols(), s.rows()) == (600, 40));
-        assert!(wide, "{}", s.dump_layout(None).map_err(|e| e.to_string())?);
+        assert!(wide, "{}", s.dump_recipe(None).map_err(|e| e.to_string())?);
         Ok(())
     }
 
@@ -8182,7 +8348,7 @@ mod tests {
         )?;
         run(&mut s, "str c1 client %1 show str c1 client zoom")?;
         let replays = |s: &Session| {
-            let dump = s.dump_layout(None).map_err(|e| e.to_string())?;
+            let dump = s.dump_recipe(None).map_err(|e| e.to_string())?;
             let mut again = started()?;
             run(&mut again, &dump).map_err(|e| format!("{e}\n{dump}"))?;
             Ok::<_, String>(again.parts.panes().len())
@@ -8210,7 +8376,7 @@ mod tests {
     /// places there.
     fn replayed(s: &Session, tab: TabId) -> Result<Vec<Rect>, String> {
         let dump = s
-            .dump_layout(Some(AnyRef::Tab(tab)))
+            .dump_recipe(Some(AnyRef::Tab(tab)))
             .map_err(|e| e.to_string())?;
         let mut again = started()?;
         run(&mut again, &dump).map_err(|e| format!("{e}\n{dump}"))?;
@@ -8473,7 +8639,7 @@ mod tests {
         ] {
             run(&mut s, change)?;
             let dump = s
-                .dump_layout(Some(AnyRef::Tab(tab)))
+                .dump_recipe(Some(AnyRef::Tab(tab)))
                 .map_err(|e| e.to_string())?;
             let mut again = started()?;
             run(&mut again, &dump).map_err(|e| format!("{change}: {e}\n{dump}"))?;

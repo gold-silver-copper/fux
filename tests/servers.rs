@@ -879,7 +879,10 @@ fn dump_replays_the_saved_launch_after_the_program_changes_directory() -> Outcom
                 == child.to_str().ok_or("child text")?)
         })?;
         let dump = server.ok(&[pane, "tab", "dump"])?;
-        assert!(dump.contains(&format!("str {cwd} cwd")), "{dump}");
+        assert!(
+            dump.contains(&format!("str '{}' cwd", directory.display())),
+            "{dump}"
+        );
         server.ok(&[&dump])?;
         let (replayed, _) = server.newest_pane()?;
         assert_ne!(replayed, pane);
@@ -911,7 +914,10 @@ fn dump_replays_a_shell_in_its_current_directory() -> Outcome {
         )
     })?;
     let dump = server.ok(&[pane, "tab", "dump"])?;
-    assert!(dump.contains(&format!("str {observed} cwd")), "{dump}");
+    assert!(
+        dump.contains(&format!("str '{}' cwd", child.display())),
+        "{dump}"
+    );
     server.ok(&[&dump])?;
     let (replayed, _) = server.newest_pane()?;
     assert_ne!(replayed, pane);

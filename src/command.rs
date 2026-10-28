@@ -843,11 +843,6 @@ wire! {
             to: To,
             inputs: Vec<Input>,
         },
-        /// What is there, as a layout file: everything, or one tab or
-        /// workspace.
-        DumpLayout {
-            target: Option<AnyRef>,
-        },
         /// Change only this pane's history budget.
         HistoryBudget {
             target: PaneId,
@@ -1151,7 +1146,6 @@ impl Command {
             | C::Resolve { .. }
             | C::Members { .. }
             | C::CapturePane { .. }
-            | C::DumpLayout { .. }
             | C::SendKeys { .. }
             | C::SendMouse { .. }
             | C::Signal { .. }

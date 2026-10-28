@@ -173,6 +173,14 @@ define pack
 end
 
 # ---- Text
+# s -- s : one source token that fuxth reads back unchanged; expansion uses the run's string, weight and work bounds
+define quote
+  let s
+  list str "'"
+    s each dup str "'" eq if drop str "'\\''" then end
+    str "'"
+  end glue
+end
 # s -- n : the integer s writes in decimal, a - first or not
 define number
   let s

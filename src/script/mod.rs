@@ -878,6 +878,7 @@ pub fn libraries() -> Result<(Compiler<Fux>, Rc<[fuxth::Doc]>), Failed> {
         .library("stdlib.fux", fuxth::STDLIB)
         .map_err(told)?;
     docs.extend(compiler.library("library.fux", LIBRARY).map_err(told)?);
+    compiler.inputs("dump", "scope").map_err(told)?;
     compiler.prepare();
     Ok((compiler, docs.into()))
 }

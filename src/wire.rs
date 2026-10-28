@@ -357,7 +357,8 @@ pub(crate) fn append(out: &mut Vec<u8>, bytes: &[u8]) -> Result<(), Error> {
     Ok(())
 }
 
-/// Size of the same bounded encoding without constructing its byte vector.
+/// Test a bounded encoding's size without constructing its byte vector.
+#[cfg(test)]
 pub(crate) fn size<T: Wire>(value: &T) -> Result<usize, Error> {
     let mut out = Writer::counting(MAX_REPLY);
     value.put(&mut out);

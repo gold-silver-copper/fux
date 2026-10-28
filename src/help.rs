@@ -286,7 +286,6 @@ fn bounds() -> Vec<(Amount, &'static str, Said)> {
         (Count(crate::capture::OUTPUT_CELLS), "additional capture cells for synthesized output, beside twice history-bytes and the live screen", &[]),
         (Bytes(crate::protocol::MAX_FRAME), "a message between client and server", &[("README", "length-prefixed and at most {}")]),
         (Bytes(crate::session::LAUNCH_BYTES), "saved launch inputs in one session, including pending replacements", &[]),
-        (Bytes(crate::session::DUMP_BYTES), "a dump recipe", &[]),
         (Count(crate::command::EnvPatch::MAX_NAMES), "environment names selected or patched in one launch", &[]),
         (Bytes(server::OUT_MAX), "what may wait unsent for a client before the copies, programs and keys sent it are refused", &[]),
         (Bytes(server::TALK_MAX), "what may wait unsent for a client before it is detached", &[]),
