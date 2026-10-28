@@ -136,21 +136,24 @@ macro_rules! preferences {
 }
 
 preferences! {
-    /// The shell argv for this client's future panes.
+    /// The shared default shell argv for new panes.
     shell Shell "shell": Shell;
-    /// The history budget for this client's future panes, in bytes.
+    /// The shared history budget in bytes, applied to every existing and new
+    /// pane. Lowering it can discard retained history in every pane.
     history_bytes HistoryBytes "history-bytes": Number<0, { 1 << 30 }>;
-    /// The limit for this client's waits without an explicit timeout.
+    /// The shared limit for waits without an explicit timeout.
     wait Wait "wait-seconds": Limit;
-    /// Program and terminal clipboard policy until their consumers separate.
+    /// Whether programs may write the shared clipboard and copies reach
+    /// clients' terminal clipboards.
     clipboard Clipboard "clipboard": bool;
-    /// Paste buffers retained until retention becomes a fixed server bound.
+    /// The number of shared paste buffers retained.
     buffers Buffers "buffers": Number<1, { crate::config::MAX_BUFFERS }>;
-    /// Whether this client rings and shows tab bell marks.
+    /// Whether clients ring and show tab bell marks.
     bell Bell "bell": bool;
-    /// Whether this client's terminal title follows the focused pane.
+    /// Whether clients' terminal titles follow their focused panes.
     titles Titles "titles": bool;
-    /// Environment names to select for this client's future launches.
+    /// The shared list of environment names new launches take from their
+    /// requesting client.
     update_environment UpdateEnvironment "update-environment": Vec<EnvName>;
 }
 

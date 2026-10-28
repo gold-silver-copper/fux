@@ -623,6 +623,125 @@ fn a_program_uses_preferences_before_its_next_operation() -> Outcome {
     Ok(())
 }
 
+/// Both selectors finish the old server's transaction before changing it;
+/// completion and a later request also retain their own destination.
+#[test]
+fn settings_stay_with_the_server_selected_when_written() -> Outcome {
+    for named in [true, false] {
+        let a = Server::start("")?;
+        let b = Server::start("")?;
+        let path = a.dir.join("select.fux");
+        let select = if named {
+            "str fux server".to_owned()
+        } else {
+            format!(
+                "str {} socket",
+                fux::words::quote(&b.socket.to_string_lossy())
+            )
+        };
+        let env = [(
+            "XDG_RUNTIME_DIR",
+            b.dir.to_str().ok_or("a text runtime path")?,
+        )];
+        std::fs::write(
+            &path,
+            format!("str shell list str /no/such/old-server-shell end set {select}"),
+        )
+        .map_err(e)?;
+        let out = a.fux_env(&["--file", &path.to_string_lossy()], &env)?;
+        assert_eq!(out.status, 0, "{}", out.stderr);
+        let probe = a.fux(&["%1", "split", "drop"])?;
+        assert_eq!(probe.status, 1, "the old server lost its setting");
+        assert!(
+            probe.stderr.contains("/no/such/old-server-shell"),
+            "{}",
+            probe.stderr
+        );
+        b.ok(&["%1", "split", "drop"])?;
+        // The next transaction belongs to B, even when a request follows.
+        std::fs::write(
+            &path,
+            format!("{select} str shell list str /no/such/new-server-shell end set ls"),
+        )
+        .map_err(e)?;
+        let out = a.fux_env(&["--file", &path.to_string_lossy()], &env)?;
+        assert_eq!(out.status, 0, "{}", out.stderr);
+        for (server, shell) in [(&a, "old-server-shell"), (&b, "new-server-shell")] {
+            let probe = server.fux(&["%1", "split", "drop"])?;
+            assert_eq!(probe.status, 1);
+            assert!(probe.stderr.contains(shell), "{}", probe.stderr);
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn a_failed_settings_checkpoint_keeps_the_selected_server() -> Outcome {
+    let server = Server::start("")?;
+    let path = server.dir.join("select.fux");
+    std::fs::write(
+        &path,
+        format!(
+            "str no_server try str bell false set str {} socket catch 2drop end ls",
+            fux::words::quote(&server.socket.to_string_lossy())
+        ),
+    )
+    .map_err(e)?;
+    let missing = server.dir.join("missing.sock");
+    let out = server.fux_env(
+        &["--file", &path.to_string_lossy()],
+        &[("FUX_SOCKET", missing.to_str().ok_or("a text socket path")?)],
+    )?;
+    assert_eq!(out.status, 1, "selection changed after forwarding failed");
+    assert!(out.stderr.contains("no_server:"), "{}", out.stderr);
+    assert!(out.stderr.contains("missing.sock"), "{}", out.stderr);
+    Ok(())
+}
+
+#[test]
+fn settings_use_the_programs_addressing_before_a_request_fails() -> Outcome {
+    let server = Server::start("")?;
+    let other = Server::start("")?;
+    let path = server.dir.join("addressing.fux");
+    for (before, after, error) in [
+        (String::new(), "str c999 client focused", "no client c999"),
+        (
+            format!(
+                "str {} socket %1 let foreign str {} socket",
+                fux::words::quote(&other.socket.to_string_lossy()),
+                fux::words::quote(&server.socket.to_string_lossy())
+            ),
+            "foreign capture",
+            "server run",
+        ),
+    ] {
+        server.ok(&["str", "shell", "list", "str", "/bin/sh", "end", "set"])?;
+        std::fs::write(
+            &path,
+            format!("{before} str shell list str /no/such/addressing-shell end set {after}"),
+        )
+        .map_err(e)?;
+        let out = server.fux(&["--file", &path.to_string_lossy()])?;
+        assert_eq!(out.status, 1);
+        assert!(out.stderr.contains(error), "{}", out.stderr);
+        let probe = server.fux(&["%1", "split", "drop"])?;
+        assert_eq!(probe.status, 1, "request addressing discarded the setting");
+        assert!(
+            probe.stderr.contains("/no/such/addressing-shell"),
+            "{}",
+            probe.stderr
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn pending_settings_finish_before_force_killing_the_server() -> Outcome {
+    let server = Server::start("")?;
+    server.ok(&["str", "bell", "false", "set", "force-kill-server"])?;
+    Ok(())
+}
+
 #[test]
 fn key_words_refuse_the_command_line() -> Outcome {
     let server = Server::start("")?;

@@ -218,7 +218,7 @@ fn settings() -> String {
             wrapped(about, "\n      ", 78)
         ));
     }
-    out.push_str("\nDuring migration, committed settings are sent together to the remaining\nserver consumers. Individual setters send no requests.\n");
+    out.push_str("\nThese settings currently affect the shared server and its other clients.\nOnly preferences explicitly set in a transaction are sent, in one batch,\nbefore the next server request, screen operation, server selection or\nforce-kill-server, and when the program succeeds. Individual setters send no\nrequests. Config evaluation sends nothing; its successful commit forwards\nits explicit preferences when a typing client attaches.\n");
     out.push_str("\nBundled initialization (client-defaults.fux):\n");
     out.push_str(crate::script::DEFAULTS);
     out

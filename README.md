@@ -411,8 +411,11 @@ that library specifies. Bundled `keys.fux` supplies `C-b`; there is no native
 prefix fallback. Key words such as `prefix`, `bind`, `unbind`, `label`,
 `group` and `repeat` refuse the CLI: use a config or an attached prompt.
 In action programs, pending client state commits before the next server
-operation and when the program finishes. Each transaction forwards only its
-explicitly written preferences in one batch, so a later split or wait uses
+operation, screen operation, server selection or force-kill-server, and when
+the program finishes. A server selection finishes pending writes against
+the previous server before changing it. Settings use the program's addressing,
+independently of the following request's target. Each transaction forwards
+only its explicitly written preferences in one batch, so a later split or wait uses
 the new setting. Individual setters send nothing. A failed transaction
 leaves prior commits intact; settings and server actions already applied
 at earlier checkpoints remain applied. Transport failures preserve the local

@@ -136,7 +136,7 @@ impl Server {
             format!("str shell list str /bin/sh end set\n{config}\n"),
         )
         .map_err(e)?;
-        let socket = dir.join("s").join("fux.sock");
+        let socket = dir.join("fux").join("fux.sock");
         let log = std::fs::File::create(dir.join("server.log")).map_err(e)?;
         let (child, held) = {
             let _guard = SPAWN.lock().map_err(e)?;

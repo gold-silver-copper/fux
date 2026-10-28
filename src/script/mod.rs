@@ -1039,6 +1039,12 @@ pub fn run_capped(
                 client,
                 of,
             }) => {
+                if let Some(draft) = host.state.as_deref_mut()
+                    && let Err(failed) = asks.checkpoint(draft, host.context.clone())
+                {
+                    pushed(machine, Err(failed))?;
+                    continue;
+                }
                 let mut context = host.context.clone();
                 context.client = client.or(context.client);
                 context.of = of;
@@ -1047,12 +1053,6 @@ pub fn run_capped(
                     request: *request,
                     context,
                 };
-                if let Some(draft) = host.state.as_deref_mut()
-                    && let Err(failed) = asks.checkpoint(draft, asked.context.clone())
-                {
-                    pushed(machine, Err(failed))?;
-                    continue;
-                }
                 match asks.ask(&asked, host.out) {
                     Ok(reply) => match reply.end() {
                         End::Failed { code, message } => raised(machine, (code, message), reply)?,
@@ -1068,7 +1068,7 @@ pub fn run_capped(
                     pushed(machine, Err(failed))?;
                     continue;
                 }
-                if matches!(what, Local::Open(_))
+                if matches!(what, Local::Open(_) | Local::Server(_) | Local::ForceKill)
                     && let Some(draft) = host.state.as_deref_mut()
                     && let Err(failed) = asks.checkpoint(draft, host.context.clone())
                 {
