@@ -387,22 +387,6 @@ fn shown(p: &crate::Parser) -> Vec<u64> {
     p.screen().pictures().map(|s| s.id).collect()
 }
 
-/// Pictures summing to exactly the budget fit, the last of them as it is
-/// drawn beside the others; a byte more lets the oldest go (B01).
-#[test]
-fn pictures_fill_their_budget_exactly() -> Result<(), Error> {
-    let mut p = pictured(Size::of(24, 80), 8 << 20)?;
-    // 4096 by 2048 pixels: 32 MiB, three to the budget.
-    for _ in 0..3 {
-        p.process(&picture(4096, 2048))?;
-        p.process(b"\n")?;
-    }
-    assert_eq!(shown(&p), [1, 2, 3], "three thirds of the budget");
-    p.process(&picture(1, 1))?;
-    assert_eq!(shown(&p), [2, 3, 4], "a byte past it");
-    Ok(())
-}
-
 /// Past the budget, pictures no longer shown go first, then the oldest
 /// (B01): one covered by text goes before an older one still shown, and
 /// so does one on the other screen.
@@ -485,21 +469,32 @@ fn a_screen_keeps_64_pictures_and_the_65th_lets_the_oldest_go() -> Result<(), Er
 /// go, by the budget set as by one drawn (THREATS.md B01).
 #[test]
 fn pictures_at_the_budget_are_kept_and_a_byte_past_lets_one_go() -> Result<(), Error> {
-    let mut p = pictured(Size::of(24, 80), 8 << 20)?;
-    // 100 by 120 pixels: 48,000 bytes, 10 by 6 cells at 10 by 20.
-    let one = picture(100, 120);
-    p.process(b"\x1b[1;1H")?;
-    p.process(&one)?;
-    p.process(b"\x1b[1;30H")?;
-    p.process(&one)?;
-    p.set_picture_bytes(96_000);
-    assert_eq!(shown(&p), [1, 2], "at the budget");
-    p.set_picture_bytes(95_999);
-    assert_eq!(shown(&p), [2], "a byte past it");
-    p.set_picture_bytes(96_000);
-    p.process(b"\x1b[10;1H")?;
-    p.process(&one)?;
-    assert_eq!(shown(&p), [2, 3], "one drawn at the budget");
+    for (width, height, count, budget) in [(4096, 2048, 3, PICTURE_BYTES), (100, 120, 2, 96_000)] {
+        let mut p = pictured(Size::of(24, 80), 8 << 20)?;
+        p.set_picture_bytes(budget);
+        let one = picture(width, height);
+        for _ in 0..count {
+            p.process(&one)?;
+            p.process(b"\n")?;
+        }
+        assert_eq!(shown(&p), (1..=count).collect::<Vec<_>>(), "at the budget");
+        p.set_picture_bytes(budget - 1);
+        assert_eq!(shown(&p), (2..=count).collect::<Vec<_>>(), "a byte past it");
+        p.set_picture_bytes(budget);
+        p.process(&one)?;
+        p.process(b"\n")?;
+        assert_eq!(
+            shown(&p),
+            (2..=count + 1).collect::<Vec<_>>(),
+            "one drawn at the budget"
+        );
+        p.process(&picture(1, 1))?;
+        assert_eq!(
+            shown(&p),
+            (3..=count + 2).collect::<Vec<_>>(),
+            "one drawn past the budget"
+        );
+    }
     Ok(())
 }
 

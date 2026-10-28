@@ -851,12 +851,6 @@ impl Screen {
     pub(crate) fn primary_grid(&self) -> &Grid {
         &self.primary
     }
-    /// Makes the alternate screen's cells now, as a test compares a screen
-    /// that made them at once with one that waited.
-    #[cfg(test)]
-    pub(crate) fn make_alternate(&mut self) -> Result<(), Error> {
-        self.alternate.make()
-    }
     fn grid(&self) -> &Grid {
         if self.alternate_active {
             &self.alternate

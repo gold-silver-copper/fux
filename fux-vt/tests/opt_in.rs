@@ -75,37 +75,29 @@ fn defaults_deliver_no_events_and_only_the_original_replies() -> Result {
 
 #[test]
 fn events_report_titles_icons_bells_and_clipboard_sets() -> Result {
-    let record = run(EVENTS, SAMPLE)?;
-    assert_eq!(
-        record.events,
-        [
-            "icon:both",
-            "title:both",
-            "icon:icon",
-            "title:title",
-            "bell",
-            "clipboard:c:aGk="
-        ]
-    );
-    // Replies stay the default set: the extended queries above are not answered.
-    assert!(record.replies.is_empty());
-    // BEL executes inside CSI (C0 in a sequence) and ESC-state; not inside OSC.
-    let record = run(EVENTS, b"\x1b[\x07m\x1b\x07")?;
-    assert_eq!(record.events, ["bell", "bell"]);
-    Ok(())
-}
-
-#[test]
-fn events_are_chunk_invariant() -> Result {
-    let whole = run(EVENTS, SAMPLE)?;
-    for size in [1, 2, 3, 7] {
+    for size in [1, 2, 3, 7, SAMPLE.len()] {
         let mut parser = Parser::with_options(Size::new(24, 80)?, 0, EVENTS)?;
         let mut record = Record::default();
         for chunk in pieces::pieces(SAMPLE, size) {
             parser.process_with(chunk, &mut record)?;
         }
-        assert_eq!(record, whole, "chunk size {size}");
+        assert_eq!(
+            record.events,
+            [
+                "icon:both",
+                "title:both",
+                "icon:icon",
+                "title:title",
+                "bell",
+                "clipboard:c:aGk=",
+            ],
+            "chunk size {size}"
+        );
+        assert!(record.replies.is_empty());
     }
+    // BEL executes inside CSI (C0 in a sequence) and ESC-state; not inside OSC.
+    let record = run(EVENTS, b"\x1b[\x07m\x1b\x07")?;
+    assert_eq!(record.events, ["bell", "bell"]);
     Ok(())
 }
 
@@ -295,90 +287,53 @@ fn synchronized_output_is_tracked_and_ended() -> Result {
     Ok(())
 }
 
-/// `Parser::process_until_stop` stops right after the sequence that sets
-/// synchronized output, wherever it is: alone, beside other modes, or split
-/// across calls; and reads everything when none does.
+/// A frame boundary stops just after its complete sequence, even split
+/// across reads. Repeating the current mode starts or ends no frame.
 #[test]
-fn process_until_stop_stops_after_the_sequence_that_sets_2026() -> Result {
-    let mut p = Parser::new(Size::new(2, 20)?, 0)?;
-    let mut sink = Record::default();
-    let begun = |n| Some((n, Stop::Begun));
-    assert_eq!(
-        p.process_until_stop(b"ab\x1b[?2026hcd", &mut sink)?,
-        begun(10)
-    );
-    p.process(b"\x1b[?2026l")?;
-    assert_eq!(
-        p.process_until_stop(b"\x1b[?25;2026h!", &mut sink)?,
-        begun(11)
-    );
-    p.process(b"\x1b[?2026l")?;
-    assert_eq!(p.process_until_stop(b"x\x1b[?20", &mut sink)?, None);
-    assert_eq!(p.process_until_stop(b"26hy", &mut sink)?, begun(3));
-    // Set again while set, the mode does not change: the frame being drawn
-    // goes on, and none begins (the mode 2026 spec: while it is set, the
-    // terminal keeps rendering the last state; setting it again is no new
-    // state). XTRESTORE of it saved set, while set, begins none either.
-    assert_eq!(p.process_until_stop(b"\x1b[?2026h", &mut sink)?, None);
-    p.process(b"\x1b[?2026s")?;
-    assert_eq!(p.process_until_stop(b"\x1b[?2026r", &mut sink)?, None);
-    p.process(b"\x1b[?2026l")?;
-    assert_eq!(p.process_until_stop(b"plain text\r\n", &mut sink)?, None);
-    Ok(())
-}
-
-/// `Parser::process_until_stop` stops right after whatever resets
-/// synchronized output while it is set (ESU, beside other modes or split
-/// across calls; XTRESTORE of it saved reset; DECSTR; RIS), so a host that
-/// reads output as it comes knows the frame is whole; a reset while it is
-/// not set ends nothing.
-#[test]
-fn process_until_stop_stops_after_the_sequence_that_ends_a_frame() -> Result {
-    let mut p = Parser::new(Size::new(2, 20)?, 0)?;
-    let mut sink = Record::default();
-    let ended = |n| Some((n, Stop::Ended));
-    p.process(b"\x1b[?2026s")?;
-    for (end, what) in [
-        (&b"\x1b[?2026lz"[..], "ESU"),
-        (b"\x1b[?25;2026lz", "ESU beside another mode"),
-        (b"\x1b[?2026rz", "XTRESTORE"),
-        (b"\x1b[!pz", "DECSTR"),
-        (b"\x1bcz", "RIS"),
+fn process_until_stop_stops_at_frame_boundaries() -> Result {
+    for (setup, sequence, stop) in [
+        ("", "ab\x1b[?2026h", Stop::Begun),
+        ("", "\x1b[?25;2026h", Stop::Begun),
+        (
+            "\x1b[?2026h\x1b[?2026s\x1b[?2026l",
+            "\x1b[?2026r",
+            Stop::Begun,
+        ),
+        ("\x1b[?2026h", "\x1b[?2026l", Stop::Ended),
+        ("\x1b[?2026h", "\x1b[?25;2026l", Stop::Ended),
+        ("\x1b[?2026s\x1b[?2026h", "\x1b[?2026r", Stop::Ended),
+        ("\x1b[?2026h", "\x1b[!p", Stop::Ended),
+        ("\x1b[?2026h", "\x1bc", Stop::Ended),
     ] {
-        p.process(b"\x1b[?2026h")?;
-        let taken = end.len().saturating_sub(1);
+        for split in 0..sequence.len() {
+            let mut p = Parser::new(Size::new(2, 20)?, 0)?;
+            let mut sink = Record::default();
+            p.process(setup.as_bytes())?;
+            let (head, tail) = sequence.as_bytes().split_at_checked(split).ok_or("split")?;
+            assert_eq!(p.process_until_stop(head, &mut sink)?, None);
+            let rest = [tail, b"\x1b]2;hello h\x07tail"].concat();
+            assert_eq!(
+                p.process_until_stop(&rest, &mut sink)?,
+                Some((tail.len(), stop))
+            );
+            assert_eq!(
+                p.screen().mode(Mode::SynchronizedOutput),
+                stop == Stop::Begun
+            );
+        }
+    }
+    for (setup, input) in [
+        ("\x1b[?2026h", "\x1b[?2026h\x1b[?2026s\x1b[?2026r"),
+        ("", "\x1b[?2026l\x1bc"),
+        ("", "plain text\r\n\x1b[?1h\x1b]2;hhh\x07hh\x1bh"),
+    ] {
+        let mut p = Parser::new(Size::new(2, 20)?, 0)?;
+        p.process(setup.as_bytes())?;
         assert_eq!(
-            p.process_until_stop(end, &mut sink)?,
-            ended(taken),
-            "{what}"
+            p.process_until_stop(input.as_bytes(), &mut Record::default())?,
+            None
         );
     }
-    p.process(b"\x1b[?2026h")?;
-    assert_eq!(p.process_until_stop(b"ab\x1b[?20", &mut sink)?, None);
-    assert_eq!(p.process_until_stop(b"26l", &mut sink)?, ended(3));
-    assert_eq!(p.process_until_stop(b"\x1b[?2026l\x1bc", &mut sink)?, None);
-    Ok(())
-}
-
-/// A frame begun by XTRESTORE (`CSI ? 2026 r`, the mode saved set) stops
-/// `process_until_stop` right after it, as one begun by BSU does; and an
-/// `h` read afterwards, inside a string or not, stops nothing.
-#[test]
-fn process_until_stop_stops_after_an_xtrestore_that_begins_a_frame() -> Result {
-    let mut p = Parser::new(Size::new(2, 20)?, 0)?;
-    let mut sink = Record::default();
-    p.process(b"\x1b[?2026h\x1b[?2026s\x1b[?2026l")?;
-    assert_eq!(
-        p.process_until_stop(b"\x1b[?2026r\x1b]2;hello\x07", &mut sink)?,
-        Some((8, Stop::Begun))
-    );
-    assert!(p.screen().mode(Mode::SynchronizedOutput));
-    // An `h` in a string, or printed, after the frame's sequence is read.
-    p.process(b"\x1b[?2026l")?;
-    assert_eq!(
-        p.process_until_stop(b"\x1b[?1h\x1b]2;hhh\x07hh\x1bh", &mut sink)?,
-        None
-    );
     Ok(())
 }
 

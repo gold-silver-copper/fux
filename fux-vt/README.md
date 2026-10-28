@@ -245,10 +245,9 @@ doing exactly what it would:
   its own;
 - an OSC payload is taken up to its terminator in one pass.
 
-`parser::tests::fast_paths_equal_the_general_path*` and
-`ascii_run_path_equals_scalar_dispatch_*` check them against the general
-path, and the fuzz target `terminal` compares whole, chunked and
-byte-at-a-time processing.
+`parser::tests::text_runs_keep_grapheme_boundaries`, `clusters::*` and
+`conformance::*` check text and sequence semantics. The fuzz target
+`terminal` compares whole, chunked and byte-at-a-time processing.
 
 ## Cells
 
