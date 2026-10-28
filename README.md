@@ -18,13 +18,13 @@ fux                               # attach, starting a server if none runs
 
 ## Using it
 
-`fux` alone attaches this terminal (it runs `opts attach`), starting a
-server in the background if none answers; `fux opts str work in attach`
-attaches to workspace `work`, and `fux opts watch attach` only watches
+`fux` alone attaches this terminal (it runs `default-attach`, which supplies
+`opts str main name attach`), starting a server in the background if none
+answers; `fux opts str work in attach` attaches to workspace `work`, and `fux opts watch attach` only watches
 (keys do nothing but `C-b d`, which detaches). A new server holds
-nothing: the first client to attach starts one unnamed workspace, `+1`,
-with one tab and a shell, on its screen. One that watches starts nothing: with no
-server, or one holding nothing, it is refused. `C-b d`
+nothing: bare `fux` starts workspace `main`, with one tab and a shell, on
+its screen. An explicit `fux opts attach` starts an unnamed workspace, `+1`.
+One that watches starts nothing: with no server, or one holding nothing, it is refused. `C-b d`
 detaches, and the shells keep running. Inside a fux pane, `fux` refuses to attach.
 
 The server runs until `fux kill-server` (refused while a person's terminal
@@ -371,8 +371,9 @@ pane; program exit retains it. Respawn uses the saved program launch and
 explicit overrides, without selecting the new caller's environment. An unknown
 nearby working directory is refused: give an absolute `cwd`. The first pane
 starts in the invoking client's directory, independently of HOME.
-Dump records the saved argv, role, cwd and environment patch together, even
-if the running program has since changed directories.
+Dump records saved argv, role and environment patches. Programs keep their
+saved launch cwd, even if they have since changed directories; shells use
+their current directory when it is known.
 Creation options on attach require an untargeted writable invocation; `in` and
 `watch` refuse those options instead of ignoring them.
 
@@ -536,9 +537,10 @@ fux start && fux --file ~/session.fux # replay on a fresh server
 A dump makes the layouts and launches again: each shell starts afresh in
 its directory, each program `run` started starts again. It never brings
 back what a process held: its screen, its history, what ran in a shell. A
-pane whose directory is not UTF-8 text, which fuxth cannot write, or a
-shell's directory that fux cannot read, is dumped without it, and a comment line says
-so: it starts where the dump is run.
+pane whose directory is not UTF-8 text, which fuxth cannot write, is dumped
+without it: it starts where the dump is run. A shell whose current directory
+fux cannot read uses its saved launch directory. A comment line explains
+either case.
 
 ## Terminal features
 

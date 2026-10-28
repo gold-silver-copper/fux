@@ -160,7 +160,7 @@ impl Session {
         }
     }
 
-    /// Borrow the saved launch, keeping relative argv paired with its original cwd.
+    /// Restore shells in their observed cwd and programs in their saved launch cwd.
     fn dump_launch_line(
         &self,
         id: PaneId,
@@ -177,57 +177,73 @@ impl Session {
             Runs::Shell(launch) => (launch, true),
             Runs::Explicit(launch) => (launch, false),
         };
-        let cwd = launch.cwd.as_path();
-        if cwd.to_str().is_none() {
-            out.format(format_args!(
-                "# {id}: its directory {cwd:?} is not UTF-8 text, so it starts where this runs\n"
-            ))?;
-        }
-        for (key, value) in launch.env.as_slice() {
-            if value.as_ref().is_some_and(|v| v.to_str().is_none()) {
+        let observed = if shell {
+            self.dir_with(id, &mut out.budget)?
+        } else {
+            None
+        };
+        let result = (|| {
+            if shell && observed.is_none() {
                 out.format(format_args!(
-                    "# {id}: environment {key} is not UTF-8 text; its saved value is omitted\n"
+                    "# {id}: its current directory is unknown, so it starts in its launch directory\n"
                 ))?;
             }
-        }
-        prefix(out)?;
-        out.word("list")?;
-        out.word("end")?;
-        out.word("copy-environment")?;
-        if let Some(cwd) = cwd.to_str() {
-            out.string(cwd)?;
-            out.word("cwd")?;
-        }
-        for (key, value) in launch.env.as_slice() {
-            match value {
-                None => {
-                    out.string(key)?;
-                    out.word("unset-env")?;
+            let cwd = observed.as_deref().unwrap_or(&launch.cwd);
+            if cwd.to_str().is_none() {
+                out.format(format_args!(
+                    "# {id}: its directory {cwd:?} is not UTF-8 text, so it starts where this runs\n"
+                ))?;
+            }
+            for (key, value) in launch.env.as_slice() {
+                if value.as_ref().is_some_and(|v| v.to_str().is_none()) {
+                    out.format(format_args!(
+                        "# {id}: environment {key} is not UTF-8 text; its saved value is omitted\n"
+                    ))?;
                 }
-                Some(value) => {
-                    if let Some(value) = value.to_str() {
+            }
+            prefix(out)?;
+            out.word("list")?;
+            out.word("end")?;
+            out.word("copy-environment")?;
+            if let Some(cwd) = cwd.to_str() {
+                out.string(cwd)?;
+                out.word("cwd")?;
+            }
+            for (key, value) in launch.env.as_slice() {
+                match value {
+                    None => {
                         out.string(key)?;
-                        out.string(value)?;
-                        out.word("env")?;
+                        out.word("unset-env")?;
+                    }
+                    Some(value) => {
+                        if let Some(value) = value.to_str() {
+                            out.string(key)?;
+                            out.string(value)?;
+                            out.word("env")?;
+                        }
                     }
                 }
             }
-        }
-        if shell {
-            out.word("list")?;
-            for word in launch.argv.iter() {
-                out.string(word)?;
+            if shell {
+                out.word("list")?;
+                for word in launch.argv.iter() {
+                    out.string(word)?;
+                }
+                out.word("end")?;
+                out.word("shell-program")?;
+            } else {
+                for (i, word) in launch.argv.iter().enumerate() {
+                    out.string(word)?;
+                    out.word(if i == 0 { "program" } else { "arg" })?;
+                }
             }
-            out.word("end")?;
-            out.word("shell-program")?;
-        } else {
-            for (i, word) in launch.argv.iter().enumerate() {
-                out.string(word)?;
-                out.word(if i == 0 { "program" } else { "arg" })?;
-            }
-        }
-        suffix(out)?;
-        out.end()
+            suffix(out)?;
+            out.end()
+        })();
+        let capacity = observed.as_ref().map_or(0, std::path::PathBuf::capacity);
+        drop(observed);
+        out.budget.release(capacity)?;
+        result
     }
 }
 

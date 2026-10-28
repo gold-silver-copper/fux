@@ -6767,6 +6767,10 @@ mod tests {
             "{dump}"
         );
         assert!(dump.contains("shell-program"), "{dump}");
+        assert!(
+            dump.contains("its current directory is unknown, so it starts in its launch directory"),
+            "{dump}"
+        );
         Ok(())
     }
 

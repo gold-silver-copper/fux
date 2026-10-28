@@ -831,13 +831,9 @@ fn a_socket_served_by_another_uid_is_refused() -> Outcome {
 #[test]
 fn dump_replays_the_saved_launch_after_the_program_changes_directory() -> Outcome {
     use std::os::unix::fs::PermissionsExt;
-    for (argv, creation) in [
-        ("str /bin/sh program str worker.sh arg", "run"),
-        ("str ./worker.sh program", "run"),
-        (
-            "list str /bin/sh str worker.sh end shell-program",
-            "new-tab",
-        ),
+    for argv in [
+        "str /bin/sh program str worker.sh arg",
+        "str ./worker.sh program",
     ] {
         let server = Server::start("")?;
         let directory = server.dir.join("launch");
@@ -851,9 +847,7 @@ fn dump_replays_the_saved_launch_after_the_program_changes_directory() -> Outcom
         .map_err(e)?;
         std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).map_err(e)?;
         let cwd = fux::words::quote(directory.to_str().ok_or("cwd text")?);
-        let answer = server.ok(&[&format!(
-            "agent-opts 80 24 size str {cwd} cwd {argv} {creation}"
-        )])?;
+        let answer = server.ok(&[&format!("agent-opts 80 24 size str {cwd} cwd {argv} run")])?;
         let pane = answer.trim().split(':').next().ok_or("pane")?;
         eventually("the program changed directory", || {
             Ok(server.ok(&[pane, "str", "cwd", "get"])?.trim()
@@ -868,5 +862,40 @@ fn dump_replays_the_saved_launch_after_the_program_changes_directory() -> Outcom
             Ok(server.ok(&[&replayed, "capture"])?.contains("saved-launch"))
         })?;
     }
+    Ok(())
+}
+
+/// Shell replay starts in the observed directory, retaining its saved argv.
+#[test]
+fn dump_replays_a_shell_in_its_current_directory() -> Outcome {
+    let server = Server::start("")?;
+    let directory = server.dir.join("launch");
+    let child = directory.join("child");
+    std::fs::create_dir_all(&child).map_err(e)?;
+    let cwd = fux::words::quote(directory.to_str().ok_or("cwd text")?);
+    let observed = fux::words::quote(child.to_str().ok_or("child text")?);
+    let body = fux::words::quote("cd \"$1\" && printf 'shell-directory\\n' && exec /bin/cat");
+    let answer = server.ok(&[&format!(
+        "agent-opts 80 24 size str {cwd} cwd list str /bin/sh str -c str {body} str shell str {observed} end shell-program new-tab"
+    )])?;
+    let pane = answer.trim().split(':').next().ok_or("pane")?;
+    eventually("the shell changed directory", || {
+        Ok(
+            server.ok(&[pane, "str", "cwd", "get"])?.trim()
+                == child.to_str().ok_or("child text")?,
+        )
+    })?;
+    let dump = server.ok(&[pane, "tab", "dump-of"])?;
+    assert!(dump.contains(&format!("str {observed} cwd")), "{dump}");
+    server.ok(&[&dump])?;
+    let (replayed, _) = server.newest_pane()?;
+    assert_ne!(replayed, pane);
+    eventually("the shell replayed in its current directory", || {
+        Ok(server
+            .ok(&[&replayed, "capture"])?
+            .contains("shell-directory")
+            && server.ok(&[&replayed, "str", "cwd", "get"])?.trim()
+                == child.to_str().ok_or("child text")?)
+    })?;
     Ok(())
 }
