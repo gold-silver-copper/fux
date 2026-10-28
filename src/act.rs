@@ -190,15 +190,13 @@ impl CopyAct {
 }
 
 /// What moves a chooser, made of the client's keys.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ListAct {
     Move(Move),
     Choose,
     Cancel,
-    /// Rename what the chosen entry is about.
-    Rename,
-    /// Close what the chosen entry is about.
-    Close,
+    /// Explicitly registered executable list callback.
+    Action(crate::callback::Callback),
 }
 
 /// A move of the selection in a list, or in the command column.

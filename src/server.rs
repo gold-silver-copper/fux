@@ -551,7 +551,7 @@ impl Conn {
             ToAttached::NeedsInitial
             | ToAttached::Welcome(..)
             | ToAttached::Ended(_)
-            | ToAttached::Run(_)
+            | ToAttached::Open(_)
             | ToAttached::Keys(_) => self.send(session, frame, now),
         }
         Ok(())
@@ -1014,7 +1014,7 @@ impl Server {
                 }
                 Outgoing::To(client, frame) => {
                     let theirs = match frame {
-                        ToAttached::Run(_) => Some(Theirs::Program),
+                        ToAttached::Open(_) => Some(Theirs::Program),
                         ToAttached::Keys(_) => Some(Theirs::Keys),
                         ToAttached::Paint(_)
                         | ToAttached::Exit(_)
@@ -2155,7 +2155,7 @@ mod tests {
                 ToAttached::NeedsInitial
                 | ToAttached::Welcome(..)
                 | ToAttached::Ended(_)
-                | ToAttached::Run(_)
+                | ToAttached::Open(_)
                 | ToAttached::Keys(_) => {}
             }
         }
@@ -2619,7 +2619,7 @@ mod tests {
         assert!(matches!(conn.stage, Stage::Attached(_)), "detached");
         let (mut session, mut conn, _peer) = attached(Instant::now())?;
         conn.out.push(&vec![0; OUT_MAX]);
-        let run = ToAttached::Run("me zoom".into());
+        let run = ToAttached::Open(crate::screens::Open::Copy);
         let refused = conn
             .tell(&mut session, &run, Some(Theirs::Program), Instant::now())
             .err();

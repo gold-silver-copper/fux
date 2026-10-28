@@ -6,6 +6,7 @@
 //!
 //! Every run is fresh: its own stack and dictionary, the bundled library's
 //! words first (`library.fux`).
+mod callback;
 mod record;
 pub(crate) mod settings;
 mod source;
@@ -815,6 +816,17 @@ pub fn vocabulary() -> Result<fuxth::Vocabulary, fuxth::Error> {
     Ok(vocabulary)
 }
 
+/// The bundled dictionary and this client's frozen definitions.
+fn base(config: Option<&Config>) -> Result<Compiler<Fux>, fuxth::Error> {
+    let broken = |f: Failed| fuxth::Error::new(Lang::Contract, f.located(), None);
+    let ready = READY.with(|ready| ready.as_ref().map(|(c, _)| c.clone()).map_err(Clone::clone));
+    let compiler = ready.map_err(broken)?;
+    match config {
+        Some(config) => configured_compiler(config, compiler),
+        None => Ok(compiler),
+    }
+}
+
 /// Compiles `tokens` after the library: a program ready to run.
 pub fn compile(tokens: &[Token]) -> Result<Machine<Fux>, Failed> {
     compiled(None, tokens).map_err(Failed::from)
@@ -827,14 +839,38 @@ pub(crate) fn compiled(
     config: Option<&Config>,
     tokens: &[Token],
 ) -> Result<Machine<Fux>, fuxth::Error> {
-    let broken = |f: Failed| fuxth::Error::new(Lang::Contract, f.located(), None);
-    let ready = READY.with(|ready| ready.as_ref().map(|(c, _)| c.clone()).map_err(Clone::clone));
-    let mut compiler = ready.map_err(broken)?;
-    if let Some(config) = config {
-        compiler = configured_compiler(config, compiler)?;
-    }
+    let mut compiler = base(config)?;
     compiler.add(&handles(tokens)?)?;
     Ok(Machine::new(compiler.finish()?, Limits::default()))
+}
+
+fn callback_failed(f: fuxth::Failure) -> Failed {
+    Failed::new(Code::of(f.code), f.message)
+}
+
+/// Resolve executable callback source now; its input kinds are supplied at opening.
+fn callback_source(config: Option<&Config>, tokens: &[Token]) -> Result<(), Failed> {
+    let mut compiler = base(config)?;
+    compiler.add(&handles(tokens)?)?;
+    compiler.source_complete().map_err(Failed::from)
+}
+
+/// Compile explicit callback source with actual immutable arguments.
+pub(crate) fn callback_machine(
+    config: Option<&Config>,
+    tokens: &[Token],
+    args: Option<&[crate::callback::Data]>,
+) -> Result<Machine<Fux>, Failed> {
+    let Some(args) = args else {
+        return compiled(config, tokens).map_err(Failed::from);
+    };
+    let mut compiler = base(config)?;
+    let mut budget = crate::wire::Budget::with_limit(crate::client::JOB_BYTES);
+    for arg in args {
+        compiler.argument(callback::value(arg, &mut budget).map_err(callback_failed)?);
+    }
+    compiler.add(&handles(tokens)?)?;
+    Ok(Machine::new(compiler.finish_callback()?, Limits::default()))
 }
 
 /// The libraries and `config`'s definitions, compiled and checked once a
@@ -990,6 +1026,15 @@ impl Stop {
     /// Whether the run is to stop.
     pub fn stopped(&self) -> bool {
         self.flag.load(Ordering::SeqCst)
+    }
+
+    /// Refuse a cancelled job before it takes another step.
+    pub(crate) fn check(&self) -> Result<(), Failed> {
+        if self.stopped() {
+            Err(cancelled())
+        } else {
+            Ok(())
+        }
     }
 }
 
@@ -1237,14 +1282,7 @@ impl Asks for AsClient<'_> {
         let Local::Open(open) = what else {
             return self.asks.local(what, state, out);
         };
-        let (asks, context) = (&mut *self.asks, &self.context);
-        let screen = open.clone().build(&mut |command| {
-            asks.ask(&Asked {
-                after: None,
-                request: command.into(),
-                context: context.clone(),
-            })
-        })?;
+        let screen = open.clone().admit(state.as_deref(), &self.context)?;
         self.opened = Some(screen);
         Ok(Vec::new())
     }
@@ -1264,8 +1302,8 @@ pub fn run_capped(
     stop: Option<&Stop>,
 ) -> Result<Vec<Value<Fux>>, Failed> {
     loop {
-        if stop.is_some_and(Stop::stopped) {
-            return Err(cancelled());
+        if let Some(stop) = stop {
+            stop.check()?;
         }
         if let Some(steps) = steps.filter(|steps| machine.steps() > *steps) {
             // No try may name it: it ends the run, said at the step reached.
@@ -1460,7 +1498,6 @@ pub fn answered(reply: Reply) -> Result<Vec<Value<Fux>>, Failed> {
         Body::Text(text) => Value::str(text.trim_end_matches('\n')),
         Body::Found(id) => Value::App(handle(id, run)),
         Body::Handles(ids) => handles(ids)?,
-        Body::Choices { rows, .. } => handles(rows.into_iter().map(|(id, _)| id).collect())?,
         Body::Capture(captured) => Answer::Capture(captured).in_run(run),
         Body::Snapshot(snapshot) => {
             if run != Some(snapshot.run) {
@@ -2702,13 +2739,16 @@ mod tests {
         let mut keymap = super::default_state()?.draft();
         let (screens, keys): (Vec<&str>, Vec<&str>) = (super::KEYS.lines())
             .filter(|l| !l.is_empty() && !l.starts_with('#'))
-            .partition(|l| l.contains(" bind-in"));
+            .partition(|l| l.contains(" bind-in") || l.contains(" bind-action"));
         assert_eq!(
             keymap.keys.bindings.all().len(),
             keys.len().saturating_sub(1)
         );
         let listed = keymap.keys.describe();
-        assert_eq!(listed.matches(" bind-in").count(), screens.len());
+        assert_eq!(
+            listed.matches(" bind-in").count() + listed.matches(" bind-action").count(),
+            screens.len()
+        );
         // Quotes, a backslash and a line end, as a config writes them.
         let mine = r#"str M-t str 'me zoom' bind-root str Mine group
             str g str 'me focused str horizontal axis str sh program str "echo it'\''s" arg split drop' bind

@@ -865,7 +865,7 @@ mod tests {
                     | ToAttached::Welcome(..)
                     | ToAttached::Exit(_)
                     | ToAttached::Ended(_)
-                    | ToAttached::Run(_)
+                    | ToAttached::Open(_)
                     | ToAttached::Keys(_),
                 )
                 | Outgoing::Copy(..)

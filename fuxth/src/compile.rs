@@ -138,6 +138,7 @@ pub enum Read {
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum Op<A> {
     Push(Value<A>),
+    Argument(Value<A>, crate::check::Kinds),
     Builtin(Builtin),
     /// `pick` with its count written just before it.
     PickN(usize),
@@ -227,7 +228,7 @@ impl<A> Steps<A> {
         };
         matches!(
             op,
-            Op::Push(_) | Op::Builtin(_) | Op::PickN(_) | Op::RollN(_)
+            Op::Push(_) | Op::Argument(..) | Op::Builtin(_) | Op::PickN(_) | Op::RollN(_)
         )
     }
 }
@@ -236,6 +237,7 @@ impl<A> Steps<A> {
 #[derive(Clone, Debug)]
 pub struct Program<A> {
     pub(crate) main: Steps<A>,
+    pub(crate) empty: bool,
     pub(crate) words: Vec<Rc<Steps<A>>>,
     pub(crate) globals: usize,
     pub(crate) vocabulary: Rc<Vocabulary>,
@@ -392,6 +394,19 @@ impl<A: Clone> Compiler<A> {
             Some(current) => &mut current.code,
             None => &mut self.main,
         }
+    }
+
+    /// Adds an immutable host argument without reading any of its text as code.
+    pub fn argument(&mut self, value: Value<A>)
+    where
+        A: crate::value::AppValue,
+    {
+        let token = Token {
+            text: Rc::from("callback argument"),
+            place: crate::token::Place::Argument(0),
+        };
+        let kind = self.vocabulary.kind_of(&value);
+        self.main.push(Op::Argument(value, kind), &token);
     }
 
     /// Compiles `tokens`, a source, onto what was compiled before; if it
@@ -756,6 +771,7 @@ impl<A: Clone> Compiler<A> {
         }
         let program = Program {
             main: Steps::new(),
+            empty: false,
             words: self.words.clone(),
             globals: self.globals,
             vocabulary: Rc::clone(&self.vocabulary),
@@ -790,11 +806,28 @@ impl<A: Clone> Compiler<A> {
 
     /// The program, every block closed.
     pub fn finish(self) -> Result<Program<A>, Error> {
-        if let Some(open) = self.open.last() {
-            return Err(unclosed(open));
+        self.finish_as(false)
+    }
+
+    /// Checks a callback's result as well as its actual input kinds.
+    /// Uncertain results still require an empty-stack check at runtime.
+    pub fn finish_callback(self) -> Result<Program<A>, Error> {
+        self.finish_as(true)
+    }
+
+    /// Whether all source blocks are closed, without checking an unknown input stack.
+    pub fn source_complete(&self) -> Result<(), Error> {
+        match self.open.last() {
+            Some(open) => Err(unclosed(open)),
+            None => Ok(()),
         }
+    }
+
+    fn finish_as(self, empty: bool) -> Result<Program<A>, Error> {
+        self.source_complete()?;
         let program = Program {
             main: self.main,
+            empty,
             words: self.words,
             globals: self.globals,
             vocabulary: self.vocabulary,

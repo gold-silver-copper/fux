@@ -338,10 +338,11 @@ fn the_clipboard_takes_a_copy_up_to_a_mebibyte() -> Outcome {
     let before = client.painted.len();
     // Large: 1200 lines of 50 family emoji, 25 bytes each, about 2 MiB
     // encoded, in fewer cells than a copy may take.
+    // Build the row once, without spawning seq for every output line.
     server.type_line("%1", "clear")?;
     server.type_line(
         "%1",
-        "i=0; while [ $i -lt 1200 ]; do i=$((i+1)); printf '\\360\\237\\221\\250\\342\\200\\215\\360\\237\\221\\251\\342\\200\\215\\360\\237\\221\\247\\342\\200\\215\\360\\237\\221\\246%.0s' $(seq 50); echo; done; echo done-printing",
+        "row=$(printf '\\360\\237\\221\\250\\342\\200\\215\\360\\237\\221\\251\\342\\200\\215\\360\\237\\221\\247\\342\\200\\215\\360\\237\\221\\246%.0s' $(seq 50)); i=0; while [ $i -lt 1200 ]; do i=$((i+1)); printf '%s\\n' \"$row\"; done; echo done-printing",
     )?;
     client.wait("the output", |t| t.lines().any(|l| l == "done-printing"))?;
     copy_all(&mut client)?;
