@@ -278,9 +278,9 @@ fn errors_statuses_and_what_is_left() -> Outcome {
         "null\n"
     );
     // An option a word would leave unused is refused, not ignored: a new
-    // tab starts a shell, and waits on nothing.
+    // tab waits on nothing.
     {
-        let unused = &["str", "top", "program"][..];
+        let unused = &["1", "timeout"][..];
         let refused =
             server.fux(&[&["opts"][..], unused, &["str", "w", "in", "new-tab"]].concat())?;
         assert!(
@@ -292,7 +292,7 @@ fn errors_statuses_and_what_is_left() -> Outcome {
     // The language's codes fux's words give as they run are caught by
     // name: an option left unused, a word `explain` has not, a name a
     // target would read as an id.
-    let program = "str unused try opts str top program str w in new-tab drop str made catch nip end
+    let program = "str unused try opts 1 timeout str w in new-tab drop str made catch nip end
         str unknown_word try str nosuch explain str shown catch nip end
         str bad_name try str %1 pane tab str %7 rename str renamed catch nip end";
     let caught = server.ok(&program.split_whitespace().collect::<Vec<_>>())?;
