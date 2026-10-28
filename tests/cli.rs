@@ -493,21 +493,40 @@ fn a_script_runs_as_the_shell_runs_it() -> Outcome {
 }
 
 #[test]
-fn ls_json_list_keys_and_help() -> Outcome {
+fn listing_contains_the_tab_revision_and_client_placement() -> Outcome {
     let server = Server::start("")?;
     let mut client = server.attach(10, 50)?;
     client.wait_for("$")?;
     let json = server.ok(&["ls", "json"])?;
     for field in [
-        "{\"workspaces\":[{\"id\":\"+1\",\"name\":\"main\",\"label\":\"main\",\"tabs\":[{\"id\":\"@1\",\"name\":null,\"label\":\"%1\",\"panes\":[{\"id\":\"%1\",\"name\":null,\"label\":\"%1\",\"rows\":9,\"cols\":50,\"pid\":",
+        "{\"workspaces\":[{\"id\":\"+1\",\"name\":\"main\",\"label\":\"main\",\"tabs\":[{\"id\":\"@1\",\"name\":null,\"label\":\"%1\",",
+        "\"panes\":[{\"id\":\"%1\",\"name\":null,\"label\":\"%1\",\"rows\":9,\"cols\":50,\"pid\":",
         "\"clients\":[{\"id\":\"c1\",\"rows\":10,\"cols\":50,\"workspace\":\"+1\",\"tab\":\"@1\",\"pane\":\"%1\",\"zoom\":false}],\"events\":\"",
     ] {
         assert!(json.contains(field), "{field}\nin\n{json}");
     }
-    // The command line's own keymap: the defaults.
+    let revision = server.ok(&["@1", "str", "layout_revision", "get"])?;
+    let parsed: fux::command::LayoutRevision =
+        revision.trim().parse().map_err(|()| "layout revision")?;
+    assert_eq!(parsed.tab.to_string(), "@1");
+    assert!(
+        json.contains(&format!("\"layout_revision\":\"{parsed}\"")),
+        "{json}"
+    );
+    Ok(())
+}
+
+#[test]
+fn the_cli_lists_its_own_default_keymap() -> Outcome {
+    let server = Server::start("")?;
     let keys = server.ok(&["list-keys"])?;
     assert!(keys.contains("\nstr C-b prefix\n"), "{keys}");
-    // help lists every word.
+    Ok(())
+}
+
+#[test]
+fn help_lists_every_native_word() -> Outcome {
+    let server = Server::start("")?;
     let help = server.ok(&["help"])?;
     for word in fux::script::Word::ALL.iter().map(|w| w.row().name) {
         assert!(
