@@ -694,16 +694,9 @@ enum Slot {
 
 impl Server {
     fn run(&mut self) {
+        let mut wakes = Vec::new();
         loop {
             let now = Instant::now();
-            let due: Vec<Wake> = (self.wakes())
-                .filter_map(|(at, wake)| (at <= now).then_some(wake))
-                .collect();
-            for wake in due {
-                if self.wake(wake, now).is_break() {
-                    return;
-                }
-            }
             // What the last round read or changed may be what a wait waits
             // for, or an event to tell.
             self.answer_waits(now);
@@ -728,10 +721,21 @@ impl Server {
                 self.finish();
                 return;
             }
-            let timeout = (self.wakes().map(|(at, _)| at).min())
-                .map(|at| at.saturating_duration_since(Instant::now()));
+            // Collect after every mutation, including connection removal.
+            // Nothing changes its timers or indices between here and firing
+            // the due wakes, before the ready descriptors are served.
+            wakes.extend(self.wakes());
+            let now = Instant::now();
+            let timeout = wakes.iter().map(|(at, _)| *at).min()
+                .map(|at| at.saturating_duration_since(now));
             let mut ready = mem::take(&mut self.ready);
             self.poll(timeout, &mut ready);
+            let resumed = Instant::now();
+            for (at, wake) in wakes.drain(..) {
+                if at <= resumed && self.wake(wake, Instant::now()).is_break() {
+                    return;
+                }
+            }
             for &(slot, flags) in &ready {
                 let now = Instant::now();
                 match slot {
