@@ -15,10 +15,6 @@ impl Rng {
         let n = u64::try_from(n).unwrap_or(u64::MAX);
         usize::try_from(self.next().checked_rem(n).unwrap_or(0)).unwrap_or(0)
     }
-    /// Below `n`, as a `u16`.
-    pub(crate) fn small(&mut self, n: u16) -> u16 {
-        u16::try_from(self.below(usize::from(n))).unwrap_or(0)
-    }
     pub(crate) fn chance(&mut self, percent: usize) -> bool {
         self.below(100) < percent
     }

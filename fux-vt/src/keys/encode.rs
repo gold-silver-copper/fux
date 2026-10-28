@@ -1401,24 +1401,6 @@ mod tests {
             expected.extend_from_slice(PASTE_END);
             assert_eq!(pasted(text, true), expected, "{text:?}");
         }
-    }
-
-    #[test]
-    fn a_pastes_line_ends_go_as_cr() {
-        for bracketed in [false, true] {
-            let mut out = Vec::new();
-            paste("a\nb\r\nc\rd\n", bracketed, &mut out);
-            let text: &[u8] = b"a\rb\rc\rd\r";
-            let expected = match bracketed {
-                true => [PASTE_START, text, PASTE_END].concat(),
-                false => text.to_vec(),
-            };
-            assert_eq!(out, expected, "bracketed {bracketed}");
-        }
-    }
-
-    #[test]
-    fn no_text_ends_a_bracketed_paste() {
         let pieces = ["\x1b", "[", "2", "0", "1", "~", "\u{9b}", "x", "\x1b[201~"];
         // Every text of up to four pieces.
         let mut texts = vec![String::new()];
@@ -1448,6 +1430,20 @@ mod tests {
                 kept,
                 "{text:?}"
             );
+        }
+    }
+
+    #[test]
+    fn a_pastes_line_ends_go_as_cr() {
+        for bracketed in [false, true] {
+            let mut out = Vec::new();
+            paste("a\nb\r\nc\rd\n", bracketed, &mut out);
+            let text: &[u8] = b"a\rb\rc\rd\r";
+            let expected = match bracketed {
+                true => [PASTE_START, text, PASTE_END].concat(),
+                false => text.to_vec(),
+            };
+            assert_eq!(out, expected, "bracketed {bracketed}");
         }
     }
 

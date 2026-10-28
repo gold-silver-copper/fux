@@ -19,6 +19,10 @@ use fux_vt::keys::decode::{Decoder, Input};
 use fux_vt::keys::encode::{KeyMode, OtherKeysLevel, Report, key_bytes};
 use fux_vt::keys::{KeyPress, Keystroke, Kitty};
 
+#[path = "corpus/escapes.rs"]
+mod escapes;
+use escapes::bytes;
+
 type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
 
 /// Bytes as the data writes them, back.
@@ -144,39 +148,6 @@ fn tmux_input_keys() -> Result {
     // Agree, differ as recorded, not applicable.
     assert_eq!(counts, (473, 4, 30));
     Ok(())
-}
-
-/// Bytes as the data writes them.
-fn bytes(text: &str) -> Vec<u8> {
-    let mut out = Vec::new();
-    let mut rest = text.as_bytes();
-    while let Some((&b, tail)) = rest.split_first() {
-        rest = tail;
-        if b != b'\\' {
-            out.push(b);
-            continue;
-        }
-        match rest.split_first() {
-            Some((b'e', tail)) => {
-                out.push(0x1b);
-                rest = tail;
-            }
-            Some((b'x', tail)) => {
-                let hex = tail.get(..2).and_then(|h| std::str::from_utf8(h).ok());
-                out.push(
-                    hex.and_then(|h| u8::from_str_radix(h, 16).ok())
-                        .unwrap_or(0),
-                );
-                rest = tail.get(2..).unwrap_or_default();
-            }
-            Some((b'\\', tail)) => {
-                out.push(b'\\');
-                rest = tail;
-            }
-            _ => out.push(b'\\'),
-        }
-    }
-    out
 }
 
 #[test]

@@ -6,27 +6,6 @@ mod support;
 use std::time::{Duration, Instant};
 use support::*;
 
-/// Types a line into a pane once its shell shows a prompt, answering at
-/// once.
-fn type_now(server: &Server, pane: &str, line: &str) -> Outcome {
-    eventually(&format!("a prompt in {pane}"), || {
-        Ok(server.ok(&["str", pane, "pane", "capture"])?.contains('$'))
-    })?;
-    server.ok(&[
-        "str",
-        pane,
-        "pane",
-        "str",
-        line,
-        "text",
-        "str",
-        "Enter",
-        "key",
-        "send-keys",
-    ])?;
-    Ok(())
-}
-
 /// A line that prints `PRE` and begins a frame drawing `42{first}` in one
 /// write, so that the server has read the frame's start once `PRE` shows;
 /// then `then`. The shell echoes what it is typed, so the text is computed
@@ -45,7 +24,7 @@ fn a_client_is_shown_a_synchronized_frame_only_whole() -> Outcome {
         "until [ -e '{}' ]; do sleep 0.05; done; printf '%sB\\033[?2026l' $((6*7))",
         go.display()
     );
-    type_now(&server, "%1", &frame_line("A", &rest))?;
+    server.type_line("%1", &frame_line("A", &rest))?;
     client.wait_for("PRE")?;
     assert!(
         !client.text().contains("42A"),
@@ -62,7 +41,7 @@ fn a_frame_that_never_ends_is_shown_after_its_timeout() -> Outcome {
     let server = Server::start("")?;
     let mut client = server.attach(10, 60)?;
     client.wait_for("$")?;
-    type_now(&server, "%1", &frame_line("C", "sleep 30"))?;
+    server.type_line("%1", &frame_line("C", "sleep 30"))?;
     client.wait_for("PRE")?;
     assert!(!client.text().contains("42C"), "shown before its timeout");
     client.wait("the frame, after its timeout", |t| t.contains("42C"))?;
@@ -80,8 +59,7 @@ fn a_frame_read_over_several_turns_is_shown_only_whole() -> Outcome {
     let server = Server::start("")?;
     let mut client = server.attach(10, 60)?;
     client.wait_for("$")?;
-    type_now(
-        &server,
+    server.type_line(
         "%1",
         "printf '\\033[?2026h'; printf 'X\\033[65535b%.0s' $(seq 4000); \
          printf '\\033[2J\\033[HDO%sNE\\033[?2026l' ''",
@@ -111,8 +89,7 @@ fn a_pane_part_way_through_frames_holds_up_no_other() -> Outcome {
     let mut client = server.attach(10, 60)?;
     client.wait_for("$")?;
     server.ok(&["str", "%1", "pane", "str", "vertical", "axis", "split"])?;
-    type_now(
-        &server,
+    server.type_line(
         "%2",
         "sleep 2; while :; do printf '\\033[?2026h'; printf 'X\\033[65535b%.0s' $(seq 4000); \
          printf '\\033[2J\\033[HDO%sNE\\033[?2026l' ''; done",
@@ -120,7 +97,7 @@ fn a_pane_part_way_through_frames_holds_up_no_other() -> Outcome {
     // Both lines are typed before the frames begin: in an unoptimized
     // build a turn takes seconds, past a new client's patience for the
     // server's greeting. HELLO comes once they have.
-    type_now(&server, "%1", "sleep 4; echo HE''LLO")?;
+    server.type_line("%1", "sleep 4; echo HE''LLO")?;
     // How long a frame of the flood takes in this build (two budgets and
     // more: seconds unoptimized, on a slow runner more) sets the wait. The
     // flood never ends, so a pane it starved would show HELLO never; one

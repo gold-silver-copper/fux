@@ -110,19 +110,7 @@ fn servers_are_named_and_kills_are_guarded() -> Outcome {
         refused.stderr
     );
     // From one of its own panes, kill-server is refused as well.
-    let sh = server.ok(&[
-        "agent-opts",
-        "80",
-        "24",
-        "size",
-        "str",
-        "sh",
-        "name",
-        "str",
-        "sh",
-        "program",
-        "run",
-    ])?;
+    let sh = server.words("agent-opts 80 24 size str sh name str sh program run")?;
     let sh = first_word(&sh);
     let line = format!("'{FUX}' kill-server; echo status=$?");
     let sent = server.ok(&[
@@ -275,16 +263,7 @@ fn a_stream_from_ls_misses_nothing() -> Outcome {
     let cursor = (listing.split(r#""events":""#).nth(1))
         .and_then(|rest| rest.split('"').next())
         .ok_or(format!("no cursor in {listing}"))?;
-    server.ok(&[
-        "opts",
-        "str",
-        "w",
-        "name",
-        "80",
-        "24",
-        "size",
-        "new-workspace",
-    ])?;
+    server.words("opts str w name 80 24 size new-workspace")?;
     let (mut events, next) = streaming(
         &server,
         &["all", "str", cursor, "30", "256", "events-since", "drop"],
@@ -400,16 +379,7 @@ fn panes_and_tabs_are_lists_of_handles() -> Outcome {
     assert_eq!(tabs.trim(), format!("{t2} {t1}"));
     // A place gone fails as it would for any word; another workspace
     // keeps the server up.
-    server.ok(&[
-        "opts",
-        "80",
-        "24",
-        "size",
-        "str",
-        "keep",
-        "name",
-        "new-workspace",
-    ])?;
+    server.words("opts 80 24 size str keep name new-workspace")?;
     for (gone, code) in [
         (["str", b, "pane", "dup", "kill", "panes"], "no_pane"),
         (["str", t2, "tab", "dup", "kill", "tabs"], "no_tab"),
@@ -529,16 +499,7 @@ fn a_client_that_reads_no_answers_is_read_no_more() -> Outcome {
 #[test]
 fn a_dump_makes_its_workspace_again() -> Outcome {
     let server = Server::start("")?;
-    let pane = server.ok(&[
-        "opts",
-        "80",
-        "24",
-        "size",
-        "str",
-        "build",
-        "name",
-        "new-workspace",
-    ])?;
+    let pane = server.words("opts 80 24 size str build name new-workspace")?;
     let worker = server.ok(&[
         "str",
         first_word(&pane),
@@ -588,10 +549,7 @@ fn a_dump_makes_its_workspace_again() -> Outcome {
     })?;
     // A workspace `run` made: its dump takes the workspace from the answer
     // `run` leaves.
-    server.ok(&[
-        "opts", "80", "24", "size", "str", "jobs", "in", "str", "job", "name", "str", "sleep",
-        "program", "str", "60", "arg", "run",
-    ])?;
+    server.words("opts 80 24 size str jobs in str job name str sleep program str 60 arg run")?;
     let dump = server.ok(&["str", "jobs", "workspace", "dump"])?;
     server.ok(&["str", "jobs", "workspace", "kill"])?;
     std::fs::write(&file, &dump).map_err(e)?;
@@ -607,23 +565,11 @@ fn a_dump_makes_its_workspace_again() -> Outcome {
 #[test]
 fn a_dump_runs_on_a_new_server_whatever_its_tabs_are_named() -> Outcome {
     let source = Server::start("")?;
-    source.ok(&[
-        "opts", "80", "24", "size", "str", "main", "in", "str", "tab-2", "name", "str", "sleep",
-        "program", "str", "60", "arg", "run",
-    ])?;
+    source.words("opts 80 24 size str main in str tab-2 name str sleep program str 60 arg run")?;
     source.ok(&["str", "tab-2", "pane", "str", "new-workspace", "move"])?;
     let dump = source.ok(&["all", "dump"])?;
     let server = Server::start("")?;
-    server.ok(&[
-        "opts",
-        "80",
-        "24",
-        "size",
-        "str",
-        "workspace-2",
-        "name",
-        "new-workspace",
-    ])?;
+    server.words("opts 80 24 size str workspace-2 name new-workspace")?;
     let file = server.dir.join("source.fux");
     std::fs::write(&file, &dump).map_err(e)?;
     server.ok(&["--file", &file.to_string_lossy()])?;
@@ -645,55 +591,11 @@ fn a_dump_runs_on_a_new_server_whatever_its_tabs_are_named() -> Outcome {
 #[test]
 fn an_unnamed_workspace_replays_independently_of_the_default_shell() -> Outcome {
     let source = Server::start("")?;
-    source.ok(&[
-        "agent-opts",
-        "80",
-        "24",
-        "size",
-        "str",
-        "first",
-        "name",
-        "str",
-        "cat",
-        "program",
-        "run",
-        "str",
-        "new-workspace",
-        "move",
-    ])?;
-    source.ok(&[
-        "str",
-        "first",
-        "pane",
-        "str",
-        "horizontal",
-        "axis",
-        "str",
-        "cat",
-        "program",
-        "split",
-        "str",
-        "second",
-        "rename",
-    ])?;
-    source.ok(&[
-        "opts",
-        "str",
-        "first",
-        "pane",
-        "workspace",
-        "in",
-        "80",
-        "24",
-        "size",
-        "str",
-        "third",
-        "name",
-        "str",
-        "cat",
-        "program",
-        "run",
-    ])?;
+    source
+        .words("agent-opts 80 24 size str first name str cat program run str new-workspace move")?;
+    source.words("str first pane str horizontal axis str cat program split str second rename")?;
+    source
+        .words("opts str first pane workspace in 80 24 size str third name str cat program run")?;
     let dump = source.ok(&["str", "first", "pane", "workspace", "dump"])?;
     for shell in [
         &["str", "/no/such/fux-shell"][..],
@@ -730,10 +632,7 @@ fn an_unnamed_workspace_replays_independently_of_the_default_shell() -> Outcome 
 #[test]
 fn a_dump_opens_its_workspace_with_the_first_tab_written() -> Outcome {
     let server = Server::start("")?;
-    let pane = server.ok(&[
-        "opts", "80", "24", "size", "str", "moved", "in", "str", "sleep", "program", "str", "60",
-        "arg", "run",
-    ])?;
+    let pane = server.words("opts 80 24 size str moved in str sleep program str 60 arg run")?;
     server.ok(&["str", first_word(&pane), "pane", "str", "new-tab", "move"])?;
     let dump = server.ok(&["str", "moved", "workspace", "dump"])?;
     server.ok(&["str", "moved", "workspace", "kill"])?;

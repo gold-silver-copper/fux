@@ -314,6 +314,11 @@ impl Server {
         Ok(out.stdout)
     }
 
+    /// Runs whitespace-separated CLI arguments.
+    pub fn words(&self, words: &str) -> Result<String, String> {
+        self.ok(&words.split_whitespace().collect::<Vec<_>>())
+    }
+
     /// The version of `pane` (`PANE:RESPAWNS.SCREEN.BELLS.DONE.ENDED:RUN`).
     pub fn version(&self, pane: &str) -> Result<String, String> {
         Ok(self

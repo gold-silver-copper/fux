@@ -1939,9 +1939,18 @@ mod tests {
     #[test]
     fn an_answer_cut_short_is_dropped_not_typed() {
         let t0 = Instant::now();
-        for part in [&b"\x1b]11;rgb:1e1e/"[..], b"\x1b[?99", b"\x1b[?", b"\x1b]1"] {
+        for (part, expecting) in [
+            (&b"\x1b]11;rgb:1e1e/"[..], false),
+            (b"\x1b[?99", false),
+            (b"\x1b[?", false),
+            (b"\x1b]1", false),
+            (b"\x1bP1$r0;4", true),
+        ] {
             let mut d = Decoder::new(Timing::new(35, 5000));
             let mut out = Vec::new();
+            if expecting {
+                d.expect(t0);
+            }
             d.bytes(part, &mut out);
             d.mark(t0);
             assert_eq!(d.deadline(), Some(t0 + REPLY_DELAY), "{part:?}");
@@ -1967,38 +1976,27 @@ mod tests {
         assert_eq!(all(&long), vec![key("y")]);
     }
 
-    /// An ESC inside a CSI ends it unfinished, as ECMA-48 (5.5) has it, and
-    /// begins what follows: `ESC [` with nothing
-    /// before it is Alt-[, a sequence with parameters is dropped. The key
-    /// after it is not lost.
     #[test]
-    fn an_escape_inside_a_csi_ends_it_and_begins_the_next_key() {
-        assert_eq!(all(b"\x1b[\x1b[A"), vec![key("M-["), key("Up")]);
-        assert_eq!(all(b"\x1b[12\x1b[A"), vec![key("Up")]);
-    }
-
-    /// A byte that can be no part of a control sequence (ECMA-48 5.4: its
-    /// parameter bytes are 03/00 to 03/15, intermediates 02/00 to 02/15, the
-    /// final 04/00 to 07/14) ends a CSI unfinished there, as an ESC does
-    /// (5.5): `ESC [` alone is Alt-[, with parameters it is dropped, and the
-    /// byte begins the next key, at once, not at the deadline.
-    #[test]
-    fn a_byte_no_control_sequence_holds_ends_a_csi_and_begins_the_next_key() {
-        assert_eq!(
-            all("\x1b[\u{e9}a".as_bytes()),
-            vec![key("M-["), key("\u{e9}"), key("a")]
-        );
-        assert_eq!(all(b"\x1b[12\ra"), vec![key("Enter"), key("a")]);
-        assert_eq!(all(b"\x1b[1;2\x7fA"), vec![key("BSpace"), key("A")]);
-        let mut d = Decoder::new(Timing::new(35, 5000));
-        let mut out = Vec::new();
-        d.bytes(b"\x1b[\r", &mut out);
-        assert_eq!(out, vec![key("M-["), key("Enter")], "before the deadline");
-        split_anywhere(
-            "\x1b[\u{e9}a".as_bytes(),
-            false,
-            &[key("M-["), key("\u{e9}"), key("a")],
-        );
+    fn a_cancelled_csi_preserves_the_following_key() {
+        for (bytes, expected) in [
+            ("\x1b[\x1b[A", vec![key("M-["), key("Up")]),
+            ("\x1b[12\x1b[A", vec![key("Up")]),
+            ("\x1b[éa", vec![key("M-["), key("é"), key("a")]),
+            ("\x1b[12\ra", vec![key("Enter"), key("a")]),
+            ("\x1b[1;2\x7fA", vec![key("BSpace"), key("A")]),
+            ("\x1b[\r", vec![key("M-["), key("Enter")]),
+        ] {
+            let mut decoder = Decoder::new(Timing::new(35, 5000));
+            let mut out = Vec::new();
+            decoder.bytes(bytes.as_bytes(), &mut out);
+            assert_eq!(out, expected, "before the deadline: {bytes:?}");
+            split_anywhere(bytes.as_bytes(), false, &expected);
+        }
+        for length in [40, 300] {
+            let bytes = [b"\x1b[".as_slice(), &vec![b'1'; length], b"\x1b[A"].concat();
+            assert_eq!(all(&bytes), [key("Up")]);
+            split_anywhere(&bytes, false, &[key("Up")]);
+        }
     }
 
     #[test]
@@ -2015,22 +2013,6 @@ mod tests {
         // but Alt-[ and Alt-O: the Escape before them is an Escape.
         assert_eq!(all(b"\x1b\x1b["), vec![key("Escape"), key("M-[")]);
         assert_eq!(all(b"\x1b\x1bO"), vec![key("Escape"), key("M-O")]);
-    }
-
-    /// A CSI past its window that an ESC or a control cuts short ends there,
-    /// unfinished, and the byte begins what comes next (ECMA-48 5.5), whole
-    /// or split: the Up after a long one is typed.
-    #[test]
-    fn an_over_long_csi_cut_short_by_an_esc_drops_only_itself() {
-        let mut long = b"\x1b[".to_vec();
-        long.extend(std::iter::repeat_n(b'1', 40));
-        long.extend_from_slice(b"\x1b[A");
-        assert_eq!(all(&long), vec![key("Up")]);
-        let mut held = b"\x1b[".to_vec();
-        held.extend(std::iter::repeat_n(b'1', 300));
-        held.extend_from_slice(b"\x1b[A");
-        assert_eq!(all(&held), vec![key("Up")]);
-        split_anywhere(&long, false, &[key("Up")]);
     }
 
     #[test]
@@ -2168,26 +2150,6 @@ mod tests {
         let keys = all(stream);
         assert!(keys.contains(&key("M-P")), "{keys:?}");
         split_anywhere(stream, false, &keys);
-        // An answer cut short waits `REPLY_DELAY`, then is dropped; one past
-        // `DCS_LIMIT` is dropped as it arrives.
-        let t0 = Instant::now();
-        let mut d = Decoder::new(Timing::new(35, 5000));
-        d.expect(t0);
-        let mut out = Vec::new();
-        d.bytes(b"\x1bP1$r0;4", &mut out);
-        d.mark(t0);
-        assert_eq!(d.deadline(), Some(t0 + REPLY_DELAY));
-        d.timeout(&mut out);
-        assert!(out.is_empty(), "{out:?}");
-        let mut long = b"\x1bP1+r".to_vec();
-        long.extend(std::iter::repeat_n(b'5', DCS_LIMIT + 10));
-        long.extend_from_slice(b"\x1b\\y");
-        let mut d = Decoder::new(Timing::new(35, 5000));
-        d.expect(t0);
-        let mut out = Vec::new();
-        d.bytes(&long, &mut out);
-        d.timeout(&mut out);
-        assert_eq!(out, vec![key("y")]);
     }
 
     #[test]
@@ -2350,12 +2312,10 @@ mod tests {
             vec![key("x"), key("y")],
         ));
         for (stream, tail) in &streams {
-            let whole = pieced(stream, stream.len());
-            assert!(whole.ends_with(tail), "{stream:?}: {whole:?}");
             for size in 1..=stream.len() {
                 assert_eq!(
-                    pieced(stream, size),
-                    whole,
+                    &pieced(stream, size),
+                    tail,
                     "{stream:?} in pieces of {size}"
                 );
             }

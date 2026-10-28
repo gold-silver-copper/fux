@@ -151,6 +151,19 @@ mod tests {
         assert!(queue.is_empty());
         queue.push(b"next");
         assert_eq!((queue.as_slice(), queue.taken), (&b"next"[..], 0));
+        let stream: Vec<u8> = (0..10_000u32).flat_map(u32::to_be_bytes).collect();
+        let mut queue = ByteQueue::default();
+        let mut out: Vec<u8> = Vec::new();
+        let mut rest = stream.as_slice();
+        while let Some((piece, after)) = rest.split_at_checked(7) {
+            queue.push(piece);
+            out.extend(queue.as_slice().iter().take(5));
+            queue.take(5);
+            rest = after;
+        }
+        queue.push(rest);
+        out.extend(queue.as_slice());
+        assert_eq!(out, stream);
     }
 
     #[test]
@@ -169,22 +182,5 @@ mod tests {
             );
         }
         assert_eq!(&bytes, b"deefef");
-    }
-
-    #[test]
-    fn a_long_stream_through_a_queue_is_unchanged() {
-        let stream: Vec<u8> = (0..10_000u32).flat_map(u32::to_be_bytes).collect();
-        let mut queue = ByteQueue::default();
-        let mut out: Vec<u8> = Vec::new();
-        let mut rest = stream.as_slice();
-        while let Some((piece, after)) = rest.split_at_checked(7) {
-            queue.push(piece);
-            out.extend(queue.as_slice().iter().take(5));
-            queue.take(5);
-            rest = after;
-        }
-        queue.push(rest);
-        out.extend(queue.as_slice());
-        assert_eq!(out, stream);
     }
 }

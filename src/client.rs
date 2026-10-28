@@ -1650,6 +1650,14 @@ mod tests {
         )?)
     }
 
+    fn keyboard(read_only: bool) -> Result<Keyboard, Box<dyn std::error::Error>> {
+        new_keyboard(
+            &socket::checked("/nowhere/fux/s.sock", "test")?,
+            script::default_state().map_err(|e| e.to_string())?,
+            read_only,
+        )
+    }
+
     fn transport(keyboard: &mut Keyboard, outputs: Vec<Dispatch>) -> Vec<Act> {
         outputs
             .into_iter()
@@ -1813,12 +1821,7 @@ mod tests {
     #[test]
     fn dropping_the_keyboard_releases_a_worker_waiting_for_presentation_transmission()
     -> Result<(), Box<dyn std::error::Error>> {
-        let socket = socket::checked("/nowhere/fux/s.sock", "test")?;
-        let mut keyboard = new_keyboard(
-            &socket,
-            script::default_state().map_err(|e| e.to_string())?,
-            false,
-        )?;
+        let mut keyboard = keyboard(false)?;
         program(
             &mut keyboard,
             Job::from("str titles true set %1 30 timeout wait"),
@@ -1881,12 +1884,7 @@ mod tests {
 
     #[test]
     fn a_completed_jobs_screen_precedes_the_next_job() -> Result<(), Box<dyn std::error::Error>> {
-        let socket = socket::checked("/nowhere/fux/s.sock", "test")?;
-        let mut keyboard = new_keyboard(
-            &socket,
-            script::default_state().map_err(|e| e.to_string())?,
-            false,
-        )?;
+        let mut keyboard = keyboard(false)?;
         let first = admitted(&mut keyboard, Job::from("me command-prompt str ready"));
         assert!(admitted(&mut keyboard, Job::from("str next")).is_empty());
         assert!(transport(&mut keyboard, first).is_empty());
@@ -1903,12 +1901,7 @@ mod tests {
 
     #[test]
     fn keys_wait_for_a_running_program_till_it_is_done() -> Result<(), Box<dyn std::error::Error>> {
-        let socket = socket::checked("/nowhere/fux/s.sock", "test")?;
-        let mut keyboard = new_keyboard(
-            &socket,
-            script::default_state().map_err(|e| e.to_string())?,
-            false,
-        )?;
+        let mut keyboard = keyboard(false)?;
         let now = Instant::now();
         let run = Job::from("begin false until");
         assert!(program(&mut keyboard, run).is_empty());
@@ -1933,12 +1926,7 @@ mod tests {
     #[test]
     fn stopping_cancels_queued_screen_openings_and_releases_keys()
     -> Result<(), Box<dyn std::error::Error>> {
-        let socket = socket::checked("/nowhere/fux/s.sock", "test")?;
-        let mut keyboard = new_keyboard(
-            &socket,
-            script::default_state().map_err(|e| e.to_string())?,
-            false,
-        )?;
+        let mut keyboard = keyboard(false)?;
         assert!(program(&mut keyboard, "me command-prompt begin false until".into()).is_empty());
         let queued = keyboard.frame(ToAttached::Open(crate::screens::Open::Prompt(
             crate::screens::Prompt {
@@ -2047,12 +2035,7 @@ mod tests {
 
     #[test]
     fn queued_programs_commit_the_whole_local_state() -> Result<(), Box<dyn std::error::Error>> {
-        let socket = socket::checked("/nowhere/fux/s.sock", "test")?;
-        let mut keyboard = new_keyboard(
-            &socket,
-            script::default_state().map_err(|e| e.to_string())?,
-            false,
-        )?;
+        let mut keyboard = keyboard(false)?;
         for code in [
             "str C-a prefix str wait-seconds 2 set",
             "str F5 str ls bind-root str titles true set",
@@ -2084,12 +2067,7 @@ mod tests {
 
     #[test]
     fn a_screen_closes_when_its_keys_change() -> Result<(), Box<dyn std::error::Error>> {
-        let socket = socket::checked("/nowhere/fux/s.sock", "test")?;
-        let mut keyboard = new_keyboard(
-            &socket,
-            script::default_state().map_err(|e| e.to_string())?,
-            false,
-        )?;
+        let mut keyboard = keyboard(false)?;
         keyboard.open(Screen::Copy(None), &mut Vec::new());
         program(&mut keyboard, Job::from("str F5 str ls bind-root"));
         assert_eq!(all_ran(&mut keyboard)?, []);
@@ -2115,12 +2093,7 @@ mod tests {
 
     #[test]
     fn a_jobs_notice_survives_its_screen() -> Result<(), Box<dyn std::error::Error>> {
-        let socket = socket::checked("/nowhere/fux/s.sock", "test")?;
-        let mut keyboard = new_keyboard(
-            &socket,
-            crate::script::default_state().map_err(|e| e.to_string())?,
-            false,
-        )?;
+        let mut keyboard = keyboard(false)?;
         let (mut session, client) = crate::session::testing::attached(24, 80)?;
         for (suffix, failed) in [("str hello", false), ("str boom fail", true)] {
             program(
@@ -2155,12 +2128,7 @@ mod tests {
     #[test]
     fn a_screen_too_large_to_show_is_refused_as_it_opens() -> Result<(), Box<dyn std::error::Error>>
     {
-        let socket = socket::checked("/nowhere/fux/s.sock", "test")?;
-        let mut keyboard = new_keyboard(
-            &socket,
-            script::default_state().map_err(|e| e.to_string())?,
-            false,
-        )?;
+        let mut keyboard = keyboard(false)?;
         let prompt = crate::screens::Prompt {
             title: std::iter::repeat_n('t', crate::protocol::MAX_FRAME - 2048).collect(),
             line: crate::view::Line::new(String::new()),
@@ -2208,12 +2176,7 @@ mod tests {
 
     #[test]
     fn what_waits_for_a_program_is_bounded() -> Result<(), Box<dyn std::error::Error>> {
-        let socket = socket::checked("/nowhere/fux/s.sock", "test")?;
-        let mut keyboard = new_keyboard(
-            &socket,
-            script::default_state().map_err(|e| e.to_string())?,
-            false,
-        )?;
+        let mut keyboard = keyboard(false)?;
         let forever = || Job::from("begin false until");
         for _ in 0..JOBS {
             assert!(program(&mut keyboard, forever()).is_empty());
@@ -2244,12 +2207,7 @@ mod tests {
 
     #[test]
     fn a_notice_is_bounded() -> Result<(), Box<dyn std::error::Error>> {
-        let socket = socket::checked("/nowhere/fux/s.sock", "test")?;
-        let mut keyboard = new_keyboard(
-            &socket,
-            script::default_state().map_err(|e| e.to_string())?,
-            false,
-        )?;
+        let mut keyboard = keyboard(false)?;
         let line: String = std::iter::repeat_n('x', 1000).collect();
         let code = format!("0 begin str {line} print 1 add 0 pick 100 eq until drop");
         assert!(program(&mut keyboard, Job::from(code)).is_empty());
@@ -2271,12 +2229,7 @@ mod tests {
 
     #[test]
     fn a_watcher_is_told_of_what_it_takes_no_further() -> Result<(), Box<dyn std::error::Error>> {
-        let socket = socket::checked("/nowhere/fux/s.sock", "test")?;
-        let mut keyboard = new_keyboard(
-            &socket,
-            script::default_state().map_err(|e| e.to_string())?,
-            true,
-        )?;
+        let mut keyboard = keyboard(true)?;
         for typed in [&b"x"[..], b"\x1b[200~p\x1b[201~", b"\x02c"] {
             let acts = bytes(&mut keyboard, typed, Instant::now());
             let notice = acts.first().filter(|_| acts.len() == 1);

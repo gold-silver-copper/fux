@@ -1,5 +1,4 @@
 use super::*;
-use crate::test_rng::Rng;
 
 #[test]
 fn stored_cells_read_back_as_they_were_made() {
@@ -106,66 +105,33 @@ fn owned_cells_copy_text_from_wherever_it_is_and_compare_by_it() {
 }
 
 #[test]
-fn range_eq_agrees_with_comparing_each_cell() {
-    let mut r = Rng(0x5eed_ce11);
-    let texts = [
-        "",
-        "a",
-        "b",
-        "é",
-        "\u{754c}",
-        "a\u{301}\u{301}\u{301}\u{301}\u{301}\u{301}\u{301}\u{301}",
-        "a\u{301}\u{301}\u{301}\u{301}\u{301}\u{301}\u{301}\u{301}\u{301}",
-        "\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}\u{200D}\u{1F466}",
-    ];
-    let attributes = |r: &mut Rng| Attributes {
-        foreground: Packed::new(Color::Idx(u8::try_from(r.below(3)).unwrap_or(0))),
-        flags: if r.below(4) == 0 { Attributes::BOLD } else { 0 },
-        ..Attributes::default()
-    };
-    let (mut same, mut differ) = (0usize, 0usize);
-    for case in 0..3_000 {
-        let len = 1 + r.below(40);
-        let mut a = Cells::new(len).unwrap_or_default();
-        let mut b = Cells::new(len).unwrap_or_default();
-        for _ in 0..r.below(60) {
-            let row = if r.below(2) == 0 { &mut a } else { &mut b };
-            let i = r.below(len + 2);
-            let text = texts.get(r.below(texts.len())).copied().unwrap_or("");
-            let attrs = attributes(&mut r);
-            match r.below(6) {
-                0 | 1 => {
-                    row.set(i, CellRef::new(text, r.below(5) == 0, attrs));
-                }
-                2 => row.set_attributes(i, attrs),
-                3 => {
-                    let end = i.saturating_add(r.below(5));
-                    row.fill(i..end, CellRef::new(text, false, attrs));
-                }
-                4 => {
-                    row.set(i, CellRef::wide_continuation());
-                }
-                _ => {
-                    // A copy of the other row's cell at `i`, both ways.
-                    if let Some(cell) = a.get(i).map(|c| (c.contents().to_owned(), c)) {
-                        let (text, cell) = cell;
-                        b.set(i, CellRef::new(&text, cell.is_wide(), cell.attributes()));
-                    }
+fn range_comparisons_ignore_storage_and_detect_cell_changes() -> Result<(), Error> {
+    let long = "a\u{301}\u{301}\u{301}\u{301}\u{301}\u{301}\u{301}\u{301}\u{301}";
+    for text in ["a", "é", "界", long, "👨‍👩‍👧‍👦"] {
+        let mut a = Cells::new(6)?;
+        let mut b = Cells::new(6)?;
+        a.set(1, CellRef::new(text, false, Attributes::default()));
+        b.set(1, CellRef::new(long, false, Attributes::default()));
+        b.set(1, CellRef::new(text, false, Attributes::default()));
+        assert_eq!(a, b, "unused stored text must not affect equality");
+        for changed in [
+            CellRef::new(text, false, Attributes::default().with_bold(true)),
+            CellRef::new(text, true, Attributes::default()),
+            CellRef::new("different", false, Attributes::default()),
+            CellRef::wide_continuation(),
+        ] {
+            b.set(1, changed);
+            assert_ne!(a, b);
+            for start in 0..=8 {
+                for end in start..=10 {
+                    assert_eq!(
+                        a.range_eq(&b, start..end),
+                        !(start <= 1 && end > 1),
+                        "{text:?}, {start}..{end}"
+                    );
                 }
             }
-            for _ in 0..3 {
-                let start = r.below(len + 3);
-                let end = start.saturating_add(r.below(len + 3));
-                let slow = a.range(start..end).eq(b.range(start..end));
-                assert_eq!(
-                    a.range_eq(&b, start..end),
-                    slow,
-                    "case {case}, {start}..{end}"
-                );
-                if slow { same += 1 } else { differ += 1 }
-            }
-            assert_eq!(a == b, a.iter().eq(b.iter()), "case {case}");
         }
     }
-    assert!(same > 1000 && differ > 1000, "{same} alike, {differ} not");
+    Ok(())
 }

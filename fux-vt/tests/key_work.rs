@@ -8,54 +8,26 @@ use fux_vt::Work;
 use fux_vt::keys::decode::Decoder;
 
 #[test]
-fn one_long_idle_read_is_decoded_once() {
-    // A hundred `CSI ?` answers, each past its window: 30,400 bytes.
-    let mut one = b"\x1b[?".to_vec();
-    one.extend(std::iter::repeat_n(b'1', 300));
-    one.push(b'c');
+fn each_read_decodes_once_except_for_its_held_prefix() {
+    let one = [b"\x1b[?".as_slice(), &vec![b'1'; 300], b"c"].concat();
     let input: Vec<u8> = std::iter::repeat_n(one, 100).flatten().collect();
-    let mut decoder = Decoder::new(fux_vt::keys::decode::Timing::new(35, 5000));
-    let mut out = Vec::new();
-    let before = Work::now();
-    decoder.bytes(&input, &mut out);
-    let keys = Work::now().since(before).keys;
-    let bytes = u64::try_from(input.len()).unwrap_or(u64::MAX);
-    assert!(keys >= bytes, "{keys} keys counted for {bytes} bytes");
-    assert!(
-        keys <= bytes,
-        "{keys} keys counted for {bytes} bytes read once"
-    );
-    assert!(out.is_empty(), "{out:?} typed from answers");
-}
-
-/// A read that begins inside an answer held is cut once: what decides the
-/// held answer first, then the rest whole, a sequence the first piece
-/// begins read again where it lies (`THREATS.md` B24): at
-/// most 2 keys a byte and 2 × 258 a read, each of a hundred over-long
-/// answers' 4 KiB reads.
-#[test]
-fn a_read_beginning_inside_a_held_answer_is_cut_once() {
-    let mut one = b"\x1b[?".to_vec();
-    one.extend(std::iter::repeat_n(b'1', 300));
-    one.push(b'c');
-    let input: Vec<u8> = std::iter::repeat_n(one, 100).flatten().collect();
-    let mut decoder = Decoder::new(fux_vt::keys::decode::Timing::new(35, 5000));
-    let mut out = Vec::new();
-    let mut rest = input.as_slice();
-    while !rest.is_empty() {
-        let (read, tail) = rest
-            .split_at_checked(4096.min(rest.len()))
-            .unwrap_or_default();
-        let before = Work::now();
-        decoder.bytes(read, &mut out);
-        let keys = Work::now().since(before).keys;
-        let bound = 2 * u64::try_from(read.len()).unwrap_or(u64::MAX) + 2 * 258;
-        assert!(
-            keys <= bound,
-            "{keys} keys for a read of {}, past {bound}",
-            read.len()
-        );
-        rest = tail;
+    for chunk in [input.len(), 4096] {
+        let mut decoder = Decoder::new(fux_vt::keys::decode::Timing::new(35, 5000));
+        let mut out = Vec::new();
+        let mut rest = input.as_slice();
+        while !rest.is_empty() {
+            let (read, tail) = rest.split_at_checked(chunk).unwrap_or((rest, &[]));
+            let before = Work::now();
+            decoder.bytes(read, &mut out);
+            let keys = Work::now().since(before).keys;
+            let bytes = u64::try_from(read.len()).unwrap_or(u64::MAX);
+            if chunk == input.len() {
+                assert_eq!(keys, bytes, "idle read");
+            } else {
+                assert!(keys <= 2 * bytes + 2 * 258, "{keys} keys for {bytes} bytes");
+            }
+            rest = tail;
+        }
+        assert!(out.is_empty(), "{out:?} typed from answers");
     }
-    assert!(out.is_empty(), "{out:?} typed from answers");
 }

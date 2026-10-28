@@ -25,6 +25,10 @@ use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
 const TABLE: &str = include_str!("data/conformance.txt");
+#[path = "corpus/escapes.rs"]
+mod escapes;
+use escapes::bytes;
+
 const ROOT: &str = env!("CARGO_MANIFEST_DIR");
 
 const STATUSES: [&str; 5] = [
@@ -241,39 +245,6 @@ impl Sink for Record {
     fn unhandled(&mut self, _sequence: Unhandled<'_>) {
         self.unhandled = self.unhandled.saturating_add(1);
     }
-}
-
-/// A probe's bytes: `\e` is ESC, `\xHH` a byte, `\\` a backslash.
-fn bytes(text: &str) -> Vec<u8> {
-    let mut out = Vec::new();
-    let mut rest = text.as_bytes();
-    while let Some((&b, tail)) = rest.split_first() {
-        rest = tail;
-        if b != b'\\' {
-            out.push(b);
-            continue;
-        }
-        match rest.split_first() {
-            Some((b'e', tail)) => {
-                out.push(0x1b);
-                rest = tail;
-            }
-            Some((b'x', tail)) => {
-                let hex = tail.get(..2).and_then(|h| std::str::from_utf8(h).ok());
-                out.push(
-                    hex.and_then(|h| u8::from_str_radix(h, 16).ok())
-                        .unwrap_or(0),
-                );
-                rest = tail.get(2..).unwrap_or_default();
-            }
-            Some((b'\\', tail)) => {
-                out.push(b'\\');
-                rest = tail;
-            }
-            _ => out.push(b'\\'),
-        }
-    }
-    out
 }
 
 /// The context every probe runs in: a 6 by 12 screen, every feature on

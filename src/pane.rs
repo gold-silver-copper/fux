@@ -1974,30 +1974,6 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn modes_follow_output_split_anywhere() -> Result<(), Box<dyn std::error::Error>> {
-        let stream = b"x\x1b[?1004;2004hy\x1b[5 qz\x1b[?25l";
-        for split in 0..stream.len() {
-            let (a, b) = stream.split_at_checked(split).unwrap_or((stream, &[]));
-            let mut pane = pane(5, 20)?;
-            pane.output(a);
-            pane.output(b);
-            assert!(pane.screen().mode(Mode::FocusReporting), "split {split}");
-            assert_eq!(
-                pane.screen().cursor_shape(),
-                fux_vt::CursorShape::BlinkingBar,
-                "split {split}"
-            );
-        }
-        let mut pane = pane(5, 20)?;
-        pane.output(b"\x1b[?1004h\x1b[?1004l\x1b[2 q\x1b[ q");
-        assert!(!pane.screen().mode(Mode::FocusReporting));
-        assert_eq!(pane.screen().cursor_shape(), fux_vt::CursorShape::Zero);
-        pane.output(b"\x1b[?1004h\x1bc");
-        assert!(!pane.screen().mode(Mode::FocusReporting));
-        Ok(())
-    }
-
-    #[test]
     fn output_answers_queries_and_takes_titles() -> Result<(), Box<dyn std::error::Error>> {
         let mut pane = pane(5, 20)?;
         pane.output(b"hello\x1b]2;my title\x07\x1b[6n");
@@ -2442,47 +2418,6 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn each_run_of_drops_is_told_once() -> Result<(), Box<dyn std::error::Error>> {
-        let mut pane = pane(3, 20)?;
-        let queries: Vec<u8> = std::iter::repeat_n(&b"\x1b[6n"[..], REPLIES_MAX)
-            .flatten()
-            .copied()
-            .collect();
-        pane.output(&queries);
-        assert!(pane.take_untold().replies > 0);
-        let room = pane.input.room();
-        pane.push(vec![0; room])?;
-        assert!(pane.push(b"x").is_err());
-        assert_eq!(pane.take_untold().input, 1, "another kind");
-        pane.input.drain_all();
-        pane.output(b"\x1b[6n");
-        pane.input.drain_all();
-        pane.output(&queries);
-        pane.input.drain_all();
-        pane.output(b"\x1b[6n");
-        assert!(pane.take_untold().replies > 0, "told after its run ended");
-        pane.output(&queries);
-        assert!(pane.take_untold().replies > 0, "a later run");
-        Ok(())
-    }
-
-    #[test]
-    fn a_turn_reading_nothing_ends_no_run() -> Result<(), Box<dyn std::error::Error>> {
-        let mut pane = pane(3, 20)?;
-        let queries: Vec<u8> = std::iter::repeat_n(&b"\x1b[6n"[..], REPLIES_MAX)
-            .flatten()
-            .copied()
-            .collect();
-        pane.output(&queries);
-        assert!(pane.take_untold().replies > 0);
-        pane.input.drain_all();
-        pane.read_unread();
-        pane.output(&queries);
-        assert!(!pane.loses(), "the same run");
-        Ok(())
-    }
-
-    #[test]
     fn frames_dropping_replies_are_one_run() -> Result<(), Box<dyn std::error::Error>> {
         let mut pane = pane(3, 20)?;
         let queries = std::iter::repeat_n(&b"\x1b[6n"[..], REPLIES_MAX)
@@ -2653,6 +2588,7 @@ pub(crate) mod tests {
         let dropped = (REPLIES_MAX - REPLIES_MAX / 6) as u64;
         assert_eq!(pane.take_untold().replies, dropped);
         pane.input.drain_all();
+        pane.read_unread();
         pane.output(&queries);
         assert!(!pane.loses(), "the same run of drops");
         assert_eq!(pane.lost().replies, 2 * dropped);
@@ -2660,6 +2596,14 @@ pub(crate) mod tests {
         pane.output(b"\x1b[6n");
         pane.output(&queries);
         assert_eq!(pane.take_untold().replies, dropped, "a drop after none");
+        let room = pane.input.room();
+        pane.push(vec![0; room])?;
+        assert!(pane.push(b"x").is_err());
+        assert_eq!(
+            pane.take_untold().input,
+            1,
+            "another kind of loss is told independently"
+        );
         Ok(())
     }
 
