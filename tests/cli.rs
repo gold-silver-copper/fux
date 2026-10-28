@@ -516,7 +516,12 @@ fn ls_json_list_keys_and_help() -> Outcome {
     let json = server.ok(&["ls", "json"])?;
     for field in [
         "{\"workspaces\":[{\"id\":\"+1\",\"name\":\"main\",\"label\":\"main\",\"tabs\":[{\"id\":\"@1\",\"name\":null,\"label\":\"%1\",\"layout_revision\":",
-        "\"clients\":[{\"id\":\"c1\",\"rows\":10,\"cols\":50,\"workspace\":\"+1\",\"tab\":\"@1\",\"pane\":\"%1\",\"zoom\":false}],\"events\":\"",
+        concat!(
+            r#""clients":[{"id":"c1","rows":10,"cols":50,"workspace":"+1","tab":"@1","pane":"%1","zoom":false,"#,
+            r#""terminal":{"sixel_reported":null,"cell_reported":null,"underline_styles_reported":null,"kitty_flags_reported":null},"#,
+            r#""output":{"graphics":"text","underline_styles":false,"clipboard":"osc52","kitty_flags_requested":null}}],"events":""#,
+        ),
+        r#""host":"c1","panes":"#,
     ] {
         assert!(json.contains(field), "{field}\nin\n{json}");
     }
