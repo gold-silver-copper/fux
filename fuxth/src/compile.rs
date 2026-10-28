@@ -778,10 +778,16 @@ impl<A: Clone> Compiler<A> {
         self.finish_as(true)
     }
 
-    fn finish_as(self, empty: bool) -> Result<Program<A>, Error> {
-        if let Some(open) = self.open.last() {
-            return Err(unclosed(open));
+    /// Whether all source blocks are closed, without checking an unknown input stack.
+    pub fn source_complete(&self) -> Result<(), Error> {
+        match self.open.last() {
+            Some(open) => Err(unclosed(open)),
+            None => Ok(()),
         }
+    }
+
+    fn finish_as(self, empty: bool) -> Result<Program<A>, Error> {
+        self.source_complete()?;
         let program = Program {
             main: self.main,
             empty,

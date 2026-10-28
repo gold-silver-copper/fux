@@ -851,7 +851,7 @@ fn callback_source(config: Option<&Config>, tokens: &[Token]) -> Result<(), Fail
         compiler = configured_compiler(config, compiler)?;
     }
     compiler.add(&handles(tokens)?)?;
-    Ok(())
+    compiler.source_complete().map_err(Failed::from)
 }
 
 /// Compile explicit callback source with actual immutable arguments.
@@ -2685,13 +2685,16 @@ mod tests {
         let mut keymap = super::default_state()?.draft();
         let (screens, keys): (Vec<&str>, Vec<&str>) = (super::KEYS.lines())
             .filter(|l| !l.is_empty() && !l.starts_with('#'))
-            .partition(|l| l.contains(" bind-in"));
+            .partition(|l| l.contains(" bind-in") || l.contains(" bind-action"));
         assert_eq!(
             keymap.keys.bindings.all().len(),
             keys.len().saturating_sub(1)
         );
         let listed = keymap.keys.describe();
-        assert_eq!(listed.matches(" bind-in").count(), screens.len());
+        assert_eq!(
+            listed.matches(" bind-in").count() + listed.matches(" bind-action").count(),
+            screens.len()
+        );
         // Quotes, a backslash and a line end, as a config writes them.
         let mine = r#"str M-t str 'me zoom' bind-root str Mine group
             str g str 'me focused str horizontal axis str sh program str "echo it'\''s" arg split drop' bind

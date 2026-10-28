@@ -1065,6 +1065,7 @@ mod tests {
             "str list str R str chooser-close bind-in",
             "str list str R str rename bind-in",
             "str R str nosuch bind-action",
+            "str R str if bind-action",
             "str Escape str 2drop bind-action",
         ] {
             assert!(output_as(&mut s, Some(c), bad).is_err(), "{bad}");
