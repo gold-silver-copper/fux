@@ -7,6 +7,12 @@ This was a shared host; timings are observations, not gates or a claim of
 latency improvement. Load averages and full counter reports were retained
 with the run JSON in the task's private scratch directory.
 
+The step-by-step samples isolate g1 before merging the upstream vocabulary
+PR #283 (`22bb4589`). After that merge, cold library initialization counts
+8,511,832 instructions / 1.34 ms CPU, and `%1 capture` counts 8,618,222 /
+1.96 ms CPU. These counts include the added upstream vocabulary. The
+post-merge CLI remains below 11M and is 118,222 above the proposed 8.5M line.
+
 The checker kept self/forward-call convergence, widening, the diagnostic
 pass and the naive interpreter witness. Cold library initialization fell
 from **10,747,405 to 8,420,050 instructions (21.7%)**, with task CPU

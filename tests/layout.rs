@@ -88,7 +88,7 @@ fn focus_moves_next_previous_last_and_by_direction() -> Outcome {
     })?;
     assert_eq!(focused(&server)?, "%1");
     // From the CLI, a client's focus is named by its client.
-    server.ok(&["str", "c1", "client", "str", "%3", "pane", "focus-pane"])?;
+    server.ok(&["str", "c1", "client", "str", "%3", "pane", "show"])?;
     assert_eq!(focused(&server)?, "%3");
     Ok(())
 }
@@ -216,7 +216,7 @@ fn moving_a_pane_by_direction_nests_it_beside_its_neighbour() -> Outcome {
     // From the CLI: 2 | (1 / 3), then 2 moves right, beside 1 (the nearer
     // of 1 and 3 by centre, then by number): (1 | 2) / 3.
     server.ok(&["str", "%1", "pane", "vertical", "split"])?;
-    server.ok(&["str", "%2", "pane", "str", "right", "move-beside"])?;
+    server.ok(&["str", "%2", "pane", "str", "right", "move"])?;
     assert_eq!(size(&server, "%3")?.1, 81, "3 spans the width");
     assert_eq!(
         size(&server, "%1")?.0,

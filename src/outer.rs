@@ -566,7 +566,7 @@ mod tests {
         assert_eq!(ask(&mut s, 2), "\x1b]11;rgb:4444/5555/6666\x07");
         // c1 typed into %1's tab and went to another: it answers no more.
         s.input(c, b"x");
-        run(&mut s, "str c1 client str other workspace show-workspace")?;
+        run(&mut s, "str c1 client str other workspace show")?;
         assert_eq!(ask(&mut s, 1), "");
         Ok(())
     }
@@ -591,8 +591,8 @@ mod tests {
             .map_err(|e| e.to_string())?;
         s.input(c, b"x");
         run(&mut s, "opts 80 24 size str +1 workspace in new-tab")?;
-        run(&mut s, "str c1 client str @2 tab show-tab")?;
-        run(&mut s, &format!("str {d} client str @1 tab show-tab"))?;
+        run(&mut s, "str c1 client str @2 tab show")?;
+        run(&mut s, &format!("str {d} client str @1 tab show"))?;
         assert_eq!(cell(&mut s), None);
         s.input(d, b"\x1b[6;16;8t\x1b[?62c");
         assert_eq!(cell(&mut s), fux_vt::CellSize::new(8, 16));
@@ -769,7 +769,7 @@ mod tests {
         s.input(c, b"\x1b[6;20;10t\x1b[?62;4;22c");
         assert_eq!(refused(&mut s), Some(0));
         run(&mut s, "opts 80 24 size str other name new-workspace")?;
-        run(&mut s, "str c1 client str other workspace show-workspace")?;
+        run(&mut s, "str c1 client str other workspace show")?;
         assert_eq!(refused(&mut s), Some(1));
         Ok(())
     }
@@ -798,19 +798,19 @@ mod tests {
         s.input(c, b"\x1b[?997;1n");
         assert_eq!(answered(&mut s, 1), "\x1b[?997;1n");
         run(&mut s, "opts 80 24 size str other name new-workspace")?;
-        run(&mut s, "str c1 client str other workspace show-workspace")?;
+        run(&mut s, "str c1 client str other workspace show")?;
         s.input(c, b"\x1b[?997;2n");
         assert_eq!(answered(&mut s, 1), "");
-        run(&mut s, "str c1 client str +1 workspace show-workspace")?;
+        run(&mut s, "str c1 client str +1 workspace show")?;
         assert_eq!(answered(&mut s, 1), "\x1b[?997;2n");
         // Told: not again.
-        run(&mut s, "str c1 client str +1 workspace show-workspace")?;
+        run(&mut s, "str c1 client str +1 workspace show")?;
         assert_eq!(answered(&mut s, 1), "");
         // One never told, as no terminal answered its query, is told once
         // one does.
         s.output(PaneId::of(2), b"\x1b[?2031h\x1b[?996n", Instant::now());
         assert_eq!(answered(&mut s, 2), "");
-        run(&mut s, "str c1 client str other workspace show-workspace")?;
+        run(&mut s, "str c1 client str other workspace show")?;
         assert_eq!(answered(&mut s, 2), "\x1b[?997;2n");
         Ok(())
     }
@@ -889,42 +889,39 @@ mod tests {
             &mut s,
             "opts 80 24 size str +1 workspace in str other name new-tab",
         )?;
-        run(&mut s, "str c1 client str @2 tab show-tab")?;
+        run(&mut s, "str c1 client str @2 tab show")?;
         s.settle(Instant::now());
         let _ = s.before_paint(c);
         past_the_gap(&mut s);
         s.output(PaneId::of(1), b"\x07", Instant::now());
         assert_eq!(sent(&mut s, c), [BELL.to_vec()]);
         assert!(tab_label(&s, c).contains(" %1! "), "{}", tab_label(&s, c));
-        run(&mut s, "str c1 client str @1 tab show-tab")?;
+        run(&mut s, "str c1 client str @1 tab show")?;
         let _ = s.before_paint(c);
-        run(&mut s, "str c1 client str @2 tab show-tab")?;
+        run(&mut s, "str c1 client str @2 tab show")?;
         let _ = s.before_paint(c);
         assert!(!tab_label(&s, c).contains('!'), "{}", tab_label(&s, c));
         // A client on another workspace is not rung.
-        run(&mut s, "str c1 client str @1 tab show-tab")?;
+        run(&mut s, "str c1 client str @1 tab show")?;
         let _ = s.before_paint(c);
         run(&mut s, "opts 80 24 size str elsewhere name new-workspace")?;
         let d = s
             .attach(10, 40, None, Instant::now())
             .map_err(|e| e.to_string())?;
-        run(
-            &mut s,
-            "str c2 client str elsewhere workspace show-workspace",
-        )?;
+        run(&mut s, "str c2 client str elsewhere workspace show")?;
         let _ = sent(&mut s, d);
         past_the_gap(&mut s);
         s.output(PaneId::of(1), b"\x07", Instant::now());
         assert_eq!(sent(&mut s, c), [BELL.to_vec()]);
         assert!(sent(&mut s, d).is_empty());
         // Disabling bells clears pending marks; enabling does not restore them.
-        run(&mut s, "str c1 client str @2 tab show-tab")?;
+        run(&mut s, "str c1 client str @2 tab show")?;
         past_the_gap(&mut s);
         s.output(PaneId::of(1), b"\x07", Instant::now());
         assert!(tab_label(&s, c).contains('!'));
         let _ = sent(&mut s, c);
         // Opposing preferences on the same workspace remain independent.
-        run(&mut s, "str c2 client str +1 workspace show-workspace")?;
+        run(&mut s, "str c2 client str +1 workspace show")?;
         let preferences = crate::script::default_state()
             .map_err(|e| e.to_string())?
             .preferences;
@@ -988,7 +985,7 @@ mod tests {
         assert_eq!(s.before_paint(c), b"\x1b]2;make\x1b\\");
         // A pane with no title: its tab's name.
         run(&mut s, "str %1 pane horizontal split")?;
-        run(&mut s, "str c1 client str %2 pane focus-pane")?;
+        run(&mut s, "str c1 client str %2 pane show")?;
         run(&mut s, "str @1 tab str notes rename")?;
         assert_eq!(s.before_paint(c), b"\x1b]2;notes\x1b\\");
         // Off again: the terminal's own title is restored, once, and saved

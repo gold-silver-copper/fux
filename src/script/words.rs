@@ -178,7 +178,7 @@ impl Opt {
 }
 
 /// The words that start from opts, as the table says: `run, new-tab,
-/// new-workspace, events-of, attach and attach-defaults`, `last` before the last.
+/// new-workspace, attach and attach-defaults`, `last` before the last.
 pub fn from_opts(last: &str) -> String {
     let opts = |act: &&Act| (act.takes()).is_some_and(|t| t.after != After::Pane);
     let names: Vec<&str> = (Act::ALL.iter().filter(opts))
@@ -190,15 +190,17 @@ pub fn from_opts(last: &str) -> String {
 /// fux's kinds of value, each as its values' `name` says it, as an error
 /// says it, and, for one that must be used, what one left over is told.
 #[rustfmt::skip]
-pub const KINDS: [(&str, &str, Option<&str>); 19] = [
+pub const KINDS: [(&str, &str, Option<&str>); 21] = [
     ("pane", "a pane", None), ("tab", "a tab", None), ("workspace", "a workspace", None),
+    ("all", "the whole session", None),
+    ("events-request", "a whole-session events request", Some("nothing acts on this request")),
     ("client", "a client", None), ("size", "a size (from percent)", None),
     ("answer", "an action's answer", None),
     ("closed-answer", "a closed pane's answer", None),
     ("client-capture", "a client's capture", None),
     ("answers", "an answer of a tab's or workspace's panes", None), ("capture", "a capture", None),
     ("listing", "a listing", None), ("json", "a JSON value", None),
-    ("opts", "options (from opts, for run, new-tab, new-workspace, events-of, attach and attach-defaults; a pane's words take theirs on the pane: `%2 all-history capture`)", Some("nothing takes these options")),
+    ("opts", "options (from opts, for run, new-tab, new-workspace, attach and attach-defaults; a pane's words take theirs on the pane: `%2 all-history capture`)", Some("nothing takes these options")),
     ("pane-request", "a pane request", Some("nothing acts on this request")),
     ("tab-request", "a tab request", Some("nothing acts on this request")),
     ("workspace-request", "a workspace request", Some("nothing acts on this request")),
@@ -231,7 +233,12 @@ pub const NAMES: &[(&str, &str, &str)] = &[
     ("place", "pane>answer answer closed-answer>answer pane-request>answer changed-request>answer tab>answers tab-request>answers workspace>answers workspace-request>answers",
         "a pane, tab or workspace, or a request on one"),
     ("handle", "pane tab workspace answer closed-answer", "a pane, tab or workspace"),
-    ("watched", "opts pane tab workspace answer closed-answer pane-request tab-request workspace-request", "a pane, tab or workspace, a request on one, or opts (everything)"),
+    ("attachable", "opts pane tab workspace answer closed-answer pane-request tab-request workspace-request", "a pane, tab, workspace, a request on one, or opts"),
+    ("scope", "pane tab workspace answer closed-answer all", "a pane, tab, workspace or all"),
+    ("watched", "pane tab workspace answer closed-answer pane-request tab-request workspace-request all events-request", "a pane, tab, workspace, a request on one, or all"),
+    ("replayable", "pane>pane-request answer>pane-request closed-answer>pane-request tab>tab-request workspace>workspace-request pane-request tab-request workspace-request all>events-request", "a pane, tab, workspace, a request on one, or all without a cursor"),
+    ("capture-source", "pane>capture answer>capture closed-answer>capture pane-request>capture client>client-capture", "a pane, a request on one, or a client"),
+    ("pane-builder", "pane>pane-request answer>pane-request closed-answer>pane-request pane-request", "a pane or a request on one"),
     ("ref", "string pane tab workspace answer closed-answer", "a name, or a pane, tab or workspace"),
     ("text", "string integer boolean", "a string, a number or a boolean"),
     ("new", "integer boolean list", "a setting's value: a number, true or false, or a list (fux help set)"),
@@ -242,7 +249,9 @@ pub const NAMES: &[(&str, &str, &str)] = &[
     ("record", "listing", "a listing"),
     ("width", "integer size", "cells, or a percent"),
     ("height", "integer size", "cells, or a percent"),
-    ("where", "tab workspace string", "a tab, a workspace, new-tab or new-workspace"),
+    ("counterpart", "pane answer closed-answer string", "a pane or a direction"),
+    ("sized", "pane tab workspace answer closed-answer client", "a pane, tab, workspace or headless client"),
+    ("where", "tab workspace string", "a tab, a workspace, new-tab, new-workspace or a direction"),
 ];
 pub const STRINGS: &str = "name dir key path line id file mode field setting socket way action code keys word hex version screen cursor";
 pub const INTEGERS: &str = "cols rows secs n row col lines from to cells";
@@ -259,8 +268,9 @@ words! {
         Finding Me "me" "-- client" "the client whose key or prompt runs this" "str z str 'me zoom' bind" [];
         Finding Panes "panes" "handle -- list" "the panes of a pane (itself), a tab or a workspace, in layout order" "fux str agent workspace panes each capture print end" [];
         Finding Tabs "tabs" "handle -- list" "the tabs of a pane or tab (its own) or a workspace, in the workspace's order" "fux str agent workspace tabs each str name get print end" [];
+        Finding All "all" "-- all" "the whole session, for info, notify, events and dump" "fux all info" [];
         Finding Focused "focused" "client -- pane" "the pane a client focuses" "fux str c1 client focused capture" [];
-        Starting Opts "opts" "-- opts" "empty options, for run, new-tab, new-workspace, events-of, attach and attach-defaults (the other words take them on the pane)" "fux opts str agent in 80 24 size str ./app program run" [];
+        Starting Opts "opts" "-- opts" "empty options, for run, new-tab, new-workspace, attach and attach-defaults (the other words take them on the pane)" "fux opts str agent in 80 24 size str ./app program run" [];
         Starting Run "run" "opts -- answer" "start a program in a tab of its own; in is required, name names its pane; its pane stays once it exits" "fux agent-opts str web name 120 40 size str ./app program str --flag arg run" [Opts: Name Size Cwd Env UnsetEnv CopyEnvironment HistoryBytes ProgramClipboard Program Arg In];
         Starting Split "split" "subject -- answer" "split a pane: a shell, or the program given" "fux %3 vertical split" [Pane: Horizontal Vertical Shares Cwd Env UnsetEnv CopyEnvironment HistoryBytes ProgramClipboard Program ShellProgram Arg];
         Starting NewTab "new-tab" "opts -- answer" "a tab with the client's shell or explicit launch" "fux opts str logs name 80 24 size str agent in new-tab" [Opts: Name Size Cwd Env UnsetEnv CopyEnvironment HistoryBytes ProgramClipboard Program ShellProgram Arg In];
@@ -270,53 +280,43 @@ words! {
         Input SendKeys "send-keys" "target -- target" "send the keys on it to a pane, every pane of a tab, or a client as typed at its terminal; 900 KiB at most in all" "fux %3 str 'ls -l' text str Enter key send-keys" [Pane: Text Key Paste Bytes Expect];
         Input SendMouse "send-mouse" "subject -- answer" "send the mouse event on it" "fux %3 str click 2 10 mouse send-mouse" [Pane: Mouse];
         Input Signal "signal" "subject name -- answer" "TERM KILL INT HUP QUIT USR1 USR2 STOP CONT TSTP WINCH ILL ABRT FPE SEGV PIPE ALRM BUS TRAP SYS XCPU XFSZ VTALRM PROF TTIN TTOU URG CHLD, to the pane's foreground" "fux %3 str TERM signal" [];
-        Reading Capture "capture" "subject -- capture" "the screen, as the words on the pane say" "fux %3 100 history capture" [Pane: History AllHistory Wrapped Full Styles Marks MainScreen AltScreen LastOutput Rows Cols];
-        Reading Ls "ls" "-- listing" "workspaces, tabs, panes and clients" "fux ls" [];
-        Reading Info "info" "handle -- record" "a pane, tab or workspace, all of it" "fux %3 info json" [];
+        Reading Capture "capture" "capture-source -- capture-source" "a pane screen with its options, or what a client terminal shows (without pane options or a version)" "fux %3 100 history capture" [Pane: History AllHistory Wrapped Full Styles Marks MainScreen AltScreen LastOutput Rows Cols];
+        Reading Info "info" "scope -- record" "a pane, tab, workspace or all of the session" "fux all info json" [];
         Reading Get "get" "handle field -- value" "one field of a pane, tab or workspace: version, exited, last_status, idle_ms, cwd" "fux %3 str exited get" [];
         Reading Json "json" "value -- string" "value as JSON (an answer as its JSON); a failed wait's answer is the message try's handler gets" "fux ls json" [];
-        Reading Events "events" "--" "what happens, a JSON line each, as it happens" "fux events" [];
-        Reading EventsOf "events-of" "watched --" "what happens in a pane, tab or workspace, or on opts everywhere, a JSON line each" "fux str agent workspace events-of" [Either: From];
-        Reading Dump "dump" "-- text" "everything, as a program that makes it again (shells new, nothing typed into them)" "fux dump > all.fux; fux start && fux --file all.fux" [];
-        Reading DumpOf "dump-of" "handle -- text" "a tab or workspace, as a program that makes it again (shells new, nothing typed into them)" "fux str work workspace dump-of > work.fux; fux --file work.fux" [];
+        Reading Events "events" "watched --" "what happens in a pane, tab, workspace or all, a JSON line each" "fux all events" [Pane: From];
+        Reading Dump "dump" "scope -- text" "a tab, workspace or all, as a program that makes it again (new processes, nothing typed into them)" "fux all dump > all.fux; fux start && fux --file all.fux" [];
         Changing Kill "kill" "handle --" "close a pane, tab or workspace, without asking" "fux %3 kill" [];
         Changing Rename "rename" "handle text --" "rename a pane, tab or workspace" "fux %3 str editor rename" [];
-        Changing Notify "notify" "handle text --" "a notice on the clients showing it" "fux %3 str 'tests passed' notify" [];
-        Changing NotifyAll "notify-all" "text --" "a notice on every client" "fux str 'back soon' notify-all" [];
-        Changing Resize "resize" "handle cols rows --" "what a tab (or a pane's) is laid out on while no client shows it, 1 to 4,096 each" "fux @2 120 40 resize" [];
+        Changing Notify "notify" "scope text --" "a notice on the clients showing it, or every client with all" "fux all str done notify" [];
+        Changing Resize "resize" "sized cols rows --" "a tab layout or headless client size, 1 to 4,096 each; a pane selects its tab" "fux @2 120 40 resize" [];
         Changing ResizeAuto "resize-auto" "handle --" "a tab laid out on a client's screen again (at its size until one shows it)" "fux @2 resize-auto" [];
         Changing ResizeX "resize-x" "pane width --" "a pane's width: cells, or a percent" "fux %3 30 percent resize-x" [];
         Changing ResizeY "resize-y" "pane height --" "a pane's height: cells, or a percent" "fux %3 10 resize-y" [];
         Changing Percent "percent" "n -- size" "n percent of the tab, for resize-x and resize-y" "fux %3 30 percent resize-x" [];
         Changing MoveBorder "move-border" "pane way cells --" "move the pane's nearest border: left right up down" "fux %3 str left 5 move-border" [];
-        Changing MoveTo "move-to" "pane where --" "move a pane to a tab, a workspace, new-tab or new-workspace" "fux %3 str new-tab move-to" [];
-        Changing MoveBeside "move-beside" "pane way --" "move a pane beside its neighbour: left right up down" "fux %3 str right move-beside" [];
-        Changing SwapPanes "swap-panes" "pane pane --" "swap two panes" "fux %3 %4 swap-panes" [];
-        Changing SwapToward "swap-toward" "pane way --" "swap a pane with its neighbour" "fux %3 str up swap-toward" [];
+        Changing Move "move" "pane where --" "move a pane to a tab, workspace, new-tab, new-workspace, or beside its neighbour: left right up down" "fux %3 str new-tab move" [];
+        Changing SwapWith "swap-with" "pane counterpart --" "swap a pane with another pane or its neighbour: left right up down" "fux %3 %4 swap-with" [];
         Changing Reorder "reorder" "handle way --" "move one place: next or previous" "fux @2 str next reorder" [];
         Changing HistoryBudget "history-budget" "pane integer --" "change this pane's history budget in bytes (0 to 1 GiB); lowering evicts old rows" "fux %3 4194304 history-budget" [];
         Changing ClearHistory "clear-history" "pane --" "drop the pane's history" "fux %3 clear-history" [];
         Changing Buffers "buffers" "-- json" "paste buffer metadata, newest first: id, bytes and preview" "fux buffers" [];
         Changing Buffer "buffer" "id -- text" "exact paste buffer text by id or newest" "fux newest buffer" [];
         Changing PasteBuffer "paste-buffer" "pane id -- answer" "paste a buffer by id or newest into a pane; answers as send-keys does" "fux %3 newest paste-buffer" [];
-        Clients Attach "attach" "watched --" "show the server in this terminal (bare fux uses default-attach); with a size, be a client of no terminal instead; explicit targets and watch refuse creation options" "fux @2 attach" [Either: In Size Watch Cwd Env UnsetEnv CopyEnvironment HistoryBytes ProgramClipboard Program ShellProgram Arg Name];
+        Clients Attach "attach" "attachable --" "show the server in this terminal (bare fux uses default-attach); with a size, be a client of no terminal instead; explicit targets and watch refuse creation options" "fux @2 attach" [Either: In Size Watch Cwd Env UnsetEnv CopyEnvironment HistoryBytes ProgramClipboard Program ShellProgram Arg Name];
         Clients Focus "focus" "client way --" "left right up down next previous or last pane" "fux str c1 client str left focus" [];
-        Clients FocusPane "focus-pane" "client pane --" "focus a pane" "fux str c1 client %3 focus-pane" [];
-        Clients ShowTab "show-tab" "client tab --" "show a tab" "fux str c1 client @2 show-tab" [];
+        Clients Show "show" "client handle --" "show and follow a pane, tab or workspace" "fux str c1 client %3 show" [];
         Clients StepTab "step-tab" "client way --" "show the next or previous tab" "fux str c1 client str next step-tab" [];
-        Clients ShowWorkspace "show-workspace" "client workspace --" "show a workspace" "fux str c1 client str work show-workspace" [];
         Clients StepWorkspace "step-workspace" "client way --" "show the next or previous workspace" "fux str c1 client str previous step-workspace" [];
         Clients Zoom "zoom" "client --" "zoom the focused pane, or restore" "fux str c1 client zoom" [];
         Clients Detach "detach" "client --" "detach a client" "fux str c1 client detach" [];
-        Clients CaptureClient "capture-client" "client -- client-capture" "what a client's terminal shows" "fux str c1 client capture-client" [];
-        Clients ResizeClient "resize-client" "client cols rows --" "a headless client's size, 1 to 4,096 each" "fux str c1 client 120 40 resize-client" [];
         Server Server "server" "name --" "the server named so (NAME.sock in fux's directory), for what follows" "fux str test server start agent-opts 80 24 size str ./app program run" [];
         Server Socket "socket" "path --" "the server on this socket, for what follows" "fux str ./test.sock socket status" [];
         Server Start "start" "--" "start the server in the background, if none answers" "fux start" [];
         Server Status "status" "-- record" "the server that answers, and its version; with none, fails no_server" "fux status || fux start" [];
         Server KillServer "kill-server" "--" "stop the server: not from its own panes, nor with people attached" "fux str test server kill-server" [];
         Server ForceKillServer "force-kill-server" "--" "stop it anyway, whatever fux version it is" "fux str test server force-kill-server" [];
-        Config AttachDefaults "attach-defaults" "watched --" "replace this client's preferred attach place; target-only retains the first name, name-only or empty clears the target; target and name conflict" "opts str main name attach-defaults" [Either: In Name];
+        Config AttachDefaults "attach-defaults" "attachable --" "replace this client's preferred attach place; target-only retains the first name, name-only or empty clears the target; target and name conflict" "opts str main name attach-defaults" [Either: In Name];
         Config Set "set" "setting new --" "a preference for this client only: `fux help set` lists their effects" "fux str history-bytes 16777216 set" [];
         Server Version "version" "-- text" "this fux's version (a pane's version is `str version get` on the pane)" "fux version" [];
         Shell Args "args" "-- list" "the strings after fux --file FILE (none for any other program)" "fux args len" [];
@@ -357,18 +357,18 @@ words! {
         Input Paste "paste" "x text -- x" "text as a paste, bracketed if the program turned that on (an end mark, ESC [201~, in it then dropped); else as it is" "fux %3 str 'a long prompt' paste str Enter key send-keys";
         Input Bytes "bytes" "x hex -- x" "bytes as they are, in hex (1b5b41, c3): part of a key's sequence or of a character" "fux %3 str 1b5b41 bytes send-keys";
         Input Mouse "mouse" "x action row col -- x" "click right middle press release wheel-up wheel-down or move, at a cell from 0" "fux %3 str click 2 10 mouse send-mouse";
-        Reading From "from" "x cursor -- x" "events-of: from this cursor (SEQ:RUN, as ls and a stream's ready give it), not from now: what came after it, or how many of those the journal let go (missed)" "C=$(fux ls json | jq -r .events); fux opts str \"$C\" from events-of";
-        Reading History "history" "x lines -- x" "capture: lines of history first" "fux %3 100 history capture";
-        Reading AllHistory "all-history" "x -- x" "capture: all the history first" "fux %3 all-history capture";
-        Reading Wrapped "wrapped" "x -- x" "capture: each screen row a line, as wrapped at the pane's width (the cells a mouse event counts), not joined into the lines printed" "fux %3 wrapped 0 2 rows capture";
-        Reading Full "full" "x -- x" "capture: every row and cell, untrimmed" "fux %3 full capture";
-        Reading Styles "styles" "x -- x" "capture: colours and attributes" "fux %3 styles capture";
-        Reading Marks "marks" "x -- x" "capture: highlighted text (reverse video, or a background colour) as ⟦this⟧" "fux %3 marks capture";
-        Reading MainScreen "main-screen" "x -- x" "capture: what was printed before a program took the screen" "fux %3 main-screen capture";
-        Reading AltScreen "alt-screen" "x -- x" "capture: the full screen a program drew last" "fux %3 alt-screen capture";
-        Reading LastOutput "last-output" "x -- x" "capture: the last shell command's output, or the running one's so far (a full-screen one's: its screen to the cursor); fails no_marks where no command was marked (OSC 133); one of main-screen, alt-screen and last-output at most" "fux %3 last-output capture";
-        Reading Rows "rows" "x from to -- x" "capture: those rows only, from 0, each line they touch whole (with wrapped, those rows alone)" "fux %3 0 4 rows capture";
-        Reading Cols "cols" "x from to -- x" "capture: those columns only, from 0" "fux %3 0 39 cols capture";
+        Reading From "from" "replayable cursor -- replayable" "events: after this cursor (SEQ:RUN, as ls and ready give it), reporting missed entries" "C=$(fux ls json | jq -r .events); fux all str \"$C\" from events";
+        Reading History "history" "pane-builder lines -- pane-builder" "capture: lines of history first" "fux %3 100 history capture";
+        Reading AllHistory "all-history" "pane-builder -- pane-builder" "capture: all the history first" "fux %3 all-history capture";
+        Reading Wrapped "wrapped" "pane-builder -- pane-builder" "capture: each screen row a line, as wrapped at the pane's width (the cells a mouse event counts), not joined into the lines printed" "fux %3 wrapped 0 2 rows capture";
+        Reading Full "full" "pane-builder -- pane-builder" "capture: every row and cell, untrimmed" "fux %3 full capture";
+        Reading Styles "styles" "pane-builder -- pane-builder" "capture: colours and attributes" "fux %3 styles capture";
+        Reading Marks "marks" "pane-builder -- pane-builder" "capture: highlighted text (reverse video, or a background colour) as ⟦this⟧" "fux %3 marks capture";
+        Reading MainScreen "main-screen" "pane-builder -- pane-builder" "capture: what was printed before a program took the screen" "fux %3 main-screen capture";
+        Reading AltScreen "alt-screen" "pane-builder -- pane-builder" "capture: the full screen a program drew last" "fux %3 alt-screen capture";
+        Reading LastOutput "last-output" "pane-builder -- pane-builder" "capture: the last shell command's output, or the running one's so far (a full-screen one's: its screen to the cursor); fails no_marks where no command was marked (OSC 133); one of main-screen, alt-screen and last-output at most" "fux %3 last-output capture";
+        Reading Rows "rows" "pane-builder from to -- pane-builder" "capture: those rows only, from 0, each line they touch whole (with wrapped, those rows alone)" "fux %3 0 4 rows capture";
+        Reading Cols "cols" "pane-builder from to -- pane-builder" "capture: those columns only, from 0" "fux %3 0 39 cols capture";
     }
     Screen {
         Clients ChooseTab "choose-tab" "client --" "a list of tabs to go to" "fux str c1 client choose-tab";
@@ -424,7 +424,9 @@ pub fn usage(word: &str) -> Option<String> {
     // What a request's word goes on: the pane, opts, or either, as the
     // words that take it do.
     let takes = takes.trim().to_uppercase();
-    let request = takes.strip_prefix('X');
+    let request = takes
+        .strip_prefix("PANE-BUILDER")
+        .or_else(|| takes.strip_prefix('X'));
     let takers = match fuxs {
         Some(Word::Opt(opt)) => opt.takers(),
         Some(Word::Act(_) | Word::Screen(_) | Word::Keys(_)) | None => Vec::new(),
@@ -445,11 +447,11 @@ pub fn usage(word: &str) -> Option<String> {
     };
     let leaves = match leaves.trim() {
         "" => String::new(),
-        "x" => format!(", which leaves {left} for the word that acts"),
+        "x" | "pane-builder" => format!(", which leaves {left} for the word that acts"),
         leaves => format!(", which leaves {leaves}"),
     };
     let example = fuxs.map_or_else(String::new, |w| format!("; e.g. {}", w.row().example));
-    // A capture's option says so: it goes between opts and capture.
+    // A capture's option says so: it goes between its pane and capture.
     let kind = match takers == [Act::Capture] {
         true => "a capture option, ",
         false => "",
@@ -516,7 +518,8 @@ fn json_text(value: &Value<Fux>, limit: usize) -> Result<String, Failure> {
                 | Fux::Tab(..)
                 | Fux::Workspace(..)
                 | Fux::Client(..)
-                | Fux::Extent(_),
+                | Fux::Extent(_)
+                | Fux::All(_),
             ) => Ok(()),
         }
     }
@@ -543,7 +546,10 @@ fn json_text(value: &Value<Fux>, limit: usize) -> Result<String, Failure> {
                 Fux::Client(client, _) => write!(out, "\"{client}\""),
                 Fux::Extent(Extent::Cells(n)) => write!(out, "\"{n}\""),
                 Fux::Extent(Extent::Percent(n)) => write!(out, "\"{}%\"", n.get()),
-                Fux::Opts(_) => write!(out, "\"({})\"", fuxth::AppValue::kind(app)),
+                Fux::All(None) => crate::json::write_str(out, "all"),
+                Fux::All(Some(_)) | Fux::Opts(_) => {
+                    write!(out, "\"({})\"", fuxth::AppValue::kind(app))
+                }
             },
         }
     }
@@ -672,6 +678,28 @@ fn workspace(value: &Value<Fux>) -> Result<WsRef, Failure> {
         .map_err(|e| fail(Raise::BadValue, e.to_string()))
 }
 
+fn scope(value: &Value<Fux>) -> Result<Option<AnyRef>, Failure> {
+    match value {
+        Value::App(Fux::All(None)) => Ok(None),
+        Value::App(Fux::All(Some(_))) => Err(fail(Raise::Unused, "from is only used by events")),
+        value @ (Value::Int(_)
+        | Value::Bool(_)
+        | Value::Str(_)
+        | Value::List(_)
+        | Value::App(_)) => target(value).map(Some),
+    }
+}
+
+fn cursor(value: &Value<Fux>) -> Result<crate::events::Cursor, Failure> {
+    let text = string(value)?;
+    text.parse().map_err(|()| {
+        fail(
+            Raise::BadValue,
+            format!("{text:?} is no cursor: SEQ:RUN, as ls and a stream's ready give it"),
+        )
+    })
+}
+
 fn direction(value: &Value<Fux>) -> Result<Direction, Failure> {
     one_of(value, &Direction::ALL.map(|way| (way.name(), way)))
 }
@@ -795,15 +823,7 @@ fn modify(
     match opt {
         Opt::Changed => built.on = Some(On::Changed(version(&next()?)?)),
         Opt::Expect => built.on = Some(On::Seen(version(&next()?)?)),
-        Opt::From => {
-            let text = string(&next()?)?;
-            let Ok(cursor) = text.parse() else {
-                let why =
-                    format!("{text:?} is no cursor: SEQ:RUN, as ls and a stream's ready give it");
-                return Err(fail(Raise::BadValue, why));
-            };
-            built.from = Some(cursor);
-        }
+        Opt::From => built.from = Some(cursor(&next()?)?),
         Opt::Name => built.name = Some(string(&next()?)?),
         Opt::Cwd => built.cwd = Some(string(&next()?)?.into()),
         Opt::In => built.place = Some(workspace(&next()?)?),
@@ -1373,6 +1393,15 @@ impl Host<'_> {
         let later = |ask: Ask| Ok(Done::Later(ask));
         let act = match word {
             Word::Act(act) => act,
+            Word::Opt(Opt::From) => {
+                let value = next()?;
+                if let Value::App(Fux::All(None)) = value {
+                    return now(out, Value::App(Fux::All(Some(cursor(&next()?)?))));
+                }
+                let mut values = std::iter::once(Ok(value));
+                let mut input = || values.next().unwrap_or_else(&mut next);
+                return now(out, Value::App(Fux::Opts(modify(Opt::From, &mut input)?)));
+            }
             Word::Opt(opt) => return now(out, Value::App(Fux::Opts(modify(opt, &mut next)?))),
             Word::Screen(screen) => return self.open(screen, &mut next),
             Word::Keys(keys) => return self.configure(keys, &mut next),
@@ -1410,6 +1439,7 @@ impl Host<'_> {
                 ))
             }
             // ---------------------------------------------------- starting
+            Act::All => now(out, Value::App(Fux::All(None))),
             Act::Opts => now(out, Value::App(Fux::Opts(Box::default()))),
             Act::Run => {
                 let built = finished(act, next()?)?;
@@ -1593,28 +1623,21 @@ impl Host<'_> {
             }
             // ----------------------------------------------------- reading
             Act::Capture => {
-                let (p, built) = request_pane(act, next()?)?;
-                let capture = Command::CapturePane {
+                let value = next()?;
+                if let Value::App(Fux::Client(c, _)) = value {
+                    return later(on_client(c, ClientAction::Capture));
+                }
+                let (p, built) = request_pane(act, value)?;
+                later(ask(Command::CapturePane {
                     target: p,
                     history: built.history,
                     view: built.view,
-                };
-                later(ask(capture))
+                }))
             }
-            Act::Ls => {
-                let ls = Command::Ls {
-                    target: None,
-                    get: None,
-                };
-                later(ask(ls))
-            }
-            Act::Info => {
-                let info = Command::Ls {
-                    target: Some(target(&next()?)?),
-                    get: None,
-                };
-                later(ask(info))
-            }
+            Act::Info => later(ask(Command::Ls {
+                target: scope(&next()?)?,
+                get: None,
+            })),
             Act::Panes => later(members_of(target(&next()?)?, Members::Panes)),
             Act::Tabs => later(members_of(target(&next()?)?, Members::Tabs)),
             Act::Get => {
@@ -1638,37 +1661,26 @@ impl Host<'_> {
                     Value::str(json_text(&other, crate::wire::MAX_ALLOCATED)?),
                 ),
             },
-            Act::Events => tell(Request::Events(None, None)),
-            Act::EventsOf => {
-                // Options alone stream everything; on a pane, tab or
-                // workspace, what happens there.
-                let (target, built) = match next()? {
-                    Value::App(Fux::Opts(built)) if built.on.is_none() => {
-                        unused(act, &built)?;
-                        (None, *built)
+            Act::Events => {
+                let value = next()?;
+                if let Value::App(Fux::All(from)) = value {
+                    return tell(Request::Events(None, from));
+                }
+                let (on, built) = request(act, value)?;
+                let target = match on {
+                    On::Target(target) => target,
+                    On::Version(version) => AnyRef::Pane(version.pane),
+                    On::Seen(_) => return Err(fail(Raise::Type, EXPECTED)),
+                    On::Changed(_) => return Err(fail(Raise::Type, CHANGED)),
+                    On::Client(_) => {
+                        return Err(fail(Raise::Type, "takes a pane, tab, workspace or all"));
                     }
-                    other @ (Value::Int(_)
-                    | Value::Bool(_)
-                    | Value::Str(_)
-                    | Value::List(_)
-                    | Value::App(_)) => match request(act, other)? {
-                        (On::Target(target), built) => (Some(target), built),
-                        (On::Version(version), built) => (Some(AnyRef::Pane(version.pane)), built),
-                        (On::Seen(_), _) => return Err(fail(Raise::Type, EXPECTED)),
-                        (On::Changed(_), _) => return Err(fail(Raise::Type, CHANGED)),
-                        (On::Client(_), _) => {
-                            let why = "takes a pane, tab or workspace, or opts, not a client";
-                            return Err(fail(Raise::Type, why));
-                        }
-                    },
                 };
-                tell(Request::Events(target, built.from))
+                tell(Request::Events(Some(target), built.from))
             }
-            Act::Dump => later(ask(Command::DumpLayout { target: None })),
-            Act::DumpOf => {
-                let target = Some(target(&next()?)?);
-                later(ask(Command::DumpLayout { target }))
-            }
+            Act::Dump => later(ask(Command::DumpLayout {
+                target: scope(&next()?)?,
+            })),
             // ---------------------------------------------------- changing
             Act::Kill => tell(Command::Kill {
                 target: target(&next()?)?,
@@ -1679,25 +1691,24 @@ impl Host<'_> {
                 tell(Command::Rename { target, name })
             }
             Act::Notify => {
-                let target = Some(target(&next()?)?);
+                let target = scope(&next()?)?;
                 let text = text(&next()?)?;
                 tell(Command::Notify { target, text })
             }
-            Act::NotifyAll => tell(Command::Notify {
-                target: None,
-                text: text(&next()?)?,
-            }),
             Act::Resize => {
-                let target = target(&next()?)?;
+                let value = next()?;
                 let size = laid_out(&next()?, &next()?)?;
-                tell(Command::Resize(Resized::Tabs(target, Some(size))))
+                let resized = match value {
+                    Value::App(Fux::Client(c, _)) => Resized::Client(c, size),
+                    value @ (Value::Int(_)
+                    | Value::Bool(_)
+                    | Value::Str(_)
+                    | Value::List(_)
+                    | Value::App(_)) => Resized::Tabs(target(&value)?, Some(size)),
+                };
+                tell(Command::Resize(resized))
             }
             Act::ResizeAuto => tell(Command::Resize(Resized::Tabs(target(&next()?)?, None))),
-            Act::ResizeClient => {
-                let c = client(&next()?)?;
-                let size = laid_out(&next()?, &next()?)?;
-                tell(Command::Resize(Resized::Client(c, size)))
-            }
             Act::ResizeX => resize_to(Axis::Horizontal, &mut next),
             Act::ResizeY => resize_to(Axis::Vertical, &mut next),
             Act::Percent => {
@@ -1714,42 +1725,41 @@ impl Host<'_> {
                     by: PaneResize::Border(way, cells),
                 })
             }
-            Act::MoveBeside => {
-                let (target, way) = (pane(&next()?)?, direction(&next()?)?);
-                let to = MoveTo::Beside(way);
-                tell(Command::MovePane { target, to })
-            }
-            Act::SwapToward => {
-                let (target, way) = (pane(&next()?)?, direction(&next()?)?);
-                let with = SwapWith::Toward(way);
-                tell(Command::SwapPane { target, with })
-            }
-            Act::MoveTo => {
-                let p = pane(&next()?)?;
+            Act::Move => {
+                let target = pane(&next()?)?;
                 let to = match next()? {
                     Value::App(Fux::Tab(t, _)) => MoveTo::Tab(t),
                     Value::App(Fux::Workspace(w, _)) => MoveTo::Workspace(WsRef::Id(w)),
                     Value::Str(s) if **s == *"new-tab" => MoveTo::NewTab,
                     Value::Str(s) if **s == *"new-workspace" => MoveTo::NewWorkspace,
-                    other @ (Value::Int(_)
-                    | Value::Bool(_)
-                    | Value::Str(_)
-                    | Value::List(_)
-                    | Value::App(_)) => {
+                    value @ Value::Str(_) => {
+                        let given = string(&value)?;
+                        MoveTo::Beside(direction(&value).map_err(|_| {
+                            let why = format!(
+                                "{given:?} is not new-tab, new-workspace, left, right, up or down"
+                            );
+                            fail(Raise::BadValue, why)
+                        })?)
+                    }
+                    value @ (Value::Int(_) | Value::Bool(_) | Value::List(_) | Value::App(_)) => {
                         return Err(wrong(
-                            "a tab, a workspace, new-tab or new-workspace",
-                            &other,
+                            "a tab, workspace, new-tab, new-workspace or direction",
+                            &value,
                         ));
                     }
                 };
-                tell(Command::MovePane { target: p, to })
+                tell(Command::MovePane { target, to })
             }
-            Act::SwapPanes => {
-                let (a, b) = (pane(&next()?)?, pane(&next()?)?);
-                tell(Command::SwapPane {
-                    target: a,
-                    with: SwapWith::Pane(b),
-                })
+            Act::SwapWith => {
+                let target = pane(&next()?)?;
+                let value = next()?;
+                let with = match value {
+                    Value::Str(_) => SwapWith::Toward(direction(&value)?),
+                    value @ (Value::Int(_) | Value::Bool(_) | Value::List(_) | Value::App(_)) => {
+                        SwapWith::Pane(pane(&value)?)
+                    }
+                };
+                tell(Command::SwapPane { target, with })
             }
             Act::Reorder => {
                 let t = target(&next()?)?;
@@ -1796,32 +1806,19 @@ impl Host<'_> {
                 let pick = one_of(&next()?, &[ways.as_slice(), &steps].concat())?;
                 order(c, ClientAction::SelectPane(pick))
             }
-            Act::FocusPane => {
+            Act::Show => {
                 let c = client(&next()?)?;
-                let p = pane(&next()?)?;
-                order(c, ClientAction::SelectPane(PanePick::Id(p)))
-            }
-            Act::ShowTab => {
-                let c = client(&next()?)?;
-                let t = next()?;
-                let Value::App(Fux::Tab(tab, _)) = &t else {
-                    return Err(wrong("a tab", &t));
+                let action = match target(&next()?)? {
+                    AnyRef::Pane(p) => ClientAction::SelectPane(PanePick::Id(p)),
+                    AnyRef::Tab(t) => ClientAction::SelectTab(Pick::Id(t)),
+                    AnyRef::Workspace(w) => ClientAction::SelectWorkspace(Pick::Id(WsRef::Id(w))),
                 };
-                order(c, ClientAction::SelectTab(Pick::Id(*tab)))
-            }
-            Act::ShowWorkspace => {
-                let c = client(&next()?)?;
-                let w = workspace(&next()?)?;
-                order(c, ClientAction::SelectWorkspace(Pick::Id(w)))
+                order(c, action)
             }
             Act::StepTab => order(client(&next()?)?, step_tab(sibling(&next()?)?)),
             Act::StepWorkspace => order(client(&next()?)?, step_workspace(sibling(&next()?)?)),
             Act::Zoom => order(client(&next()?)?, ClientAction::Zoom),
             Act::Detach => order(client(&next()?)?, ClientAction::Detach),
-            Act::CaptureClient => {
-                let c = client(&next()?)?;
-                later(on_client(c, ClientAction::Capture))
-            }
             // ------------------------------------------------------ server
             Act::Server => local(Local::Server(crate::socket::Choice::Name(
                 string(&next()?)?,
@@ -2261,6 +2258,112 @@ mod tests {
         Ok(())
     }
 
+    #[test]
+    fn all_is_only_an_observation_or_notification_scope() -> Result<(), Box<dyn std::error::Error>>
+    {
+        for source in [
+            "all info drop",
+            "all dump drop",
+            "all str hello notify",
+            "all events",
+            "all str 0:1-2 from events",
+        ] {
+            super::super::compile(&fuxth::token::source("all", source)?)
+                .map_err(|f| f.to_string())?;
+        }
+        for suffix in [
+            "kill",
+            "capture",
+            "wait",
+            "str x text send-keys",
+            "panes",
+            "tabs",
+            "80 24 resize",
+            "attach",
+            "str x rename",
+        ] {
+            let source = format!("str SIDE-EFFECT print all {suffix}");
+            let failure = super::super::compile(&fuxth::token::source("all", &source)?)
+                .err()
+                .ok_or_else(|| format!("accepted {source}"))?;
+            assert_eq!(failure.code, Code::from(Raise::Type), "{source}: {failure}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn global_replay_requests_are_event_only_and_must_use() -> Result<(), Box<dyn std::error::Error>>
+    {
+        for (suffix, code) in [
+            ("", fuxth::Code::Unused),
+            ("info drop", fuxth::Code::Type),
+            ("dump drop", fuxth::Code::Type),
+            ("str hello notify", fuxth::Code::Type),
+            ("str 0:1-2 from events", fuxth::Code::Type),
+        ] {
+            let source = format!("str SIDE-EFFECT print all str 0:1-2 from {suffix}");
+            let failure = super::super::compile(&fuxth::token::source("replay", &source)?)
+                .err()
+                .ok_or_else(|| format!("accepted {source}"))?;
+            assert_eq!(failure.code, Code::of(code), "{source}: {failure}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn bad_cursors_report_the_given_text_and_their_format() -> Result<(), Box<dyn std::error::Error>>
+    {
+        for scope in [Fux::All(None), Fux::Pane(PaneId::of(1), None)] {
+            let mut sink = std::io::sink();
+            let mut host = Host::new(crate::protocol::Context::default(), None, &mut sink);
+            let mut args = [Value::App(scope), Value::str("12")].into_iter();
+            let failure = host
+                .dispatch(
+                    Word::Opt(Opt::From),
+                    &mut || {
+                        args.next()
+                            .ok_or_else(|| fail(Raise::StackUnderflow, "cursor"))
+                    },
+                    &mut Vec::new(),
+                )
+                .err()
+                .ok_or("accepted a bad cursor")?;
+            assert_eq!(failure.code, Code::from(Raise::BadValue).into());
+            assert_eq!(
+                failure.message,
+                "\"12\" is no cursor: SEQ:RUN, as ls and a stream's ready give it"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn capture_preserves_source_kinds_and_pane_only_options()
+    -> Result<(), Box<dyn std::error::Error>> {
+        for source in [
+            "%1 full capture expect drop",
+            "str c1 client capture json drop",
+        ] {
+            super::super::compile(&fuxth::token::source("capture", source)?)
+                .map_err(|f| f.to_string())?;
+        }
+        for suffix in [
+            "capture expect drop",
+            "capture changed drop",
+            "full capture drop",
+            "all-history capture drop",
+            "0 1 rows capture drop",
+            "main-screen capture drop",
+        ] {
+            let source = format!("str SIDE-EFFECT print str c1 client {suffix}");
+            let failure = super::super::compile(&fuxth::token::source("capture", &source)?)
+                .err()
+                .ok_or_else(|| format!("accepted {source}"))?;
+            assert_eq!(failure.code, Code::from(Raise::Type), "{source}: {failure}");
+        }
+        Ok(())
+    }
+
     /// No word's name needs quoting in a shell. (That no two share one,
     /// nor any the language's, the vocabulary checks as it is made.)
     #[test]
@@ -2607,6 +2710,19 @@ mod tests {
                 .iter()
                 .filter(|o| !matches!(o, Opt::Changed | Opt::Expect))
             {
+                let effect = Word::Opt(opt).row().effect;
+                let pane_only = effect.starts_with("pane-builder");
+                if pane_only && !matches!(kind, "pane-request") {
+                    continue;
+                }
+                if opt == Opt::From
+                    && matches!(
+                        kind,
+                        "opts" | "client-request" | "changed-request" | "expected-request"
+                    )
+                {
+                    continue;
+                }
                 let args = match opt {
                     Opt::HistoryBytes => vec![Value::Int(0)],
                     Opt::ProgramClipboard => vec![Value::Bool(false)],

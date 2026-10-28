@@ -113,8 +113,8 @@ keeps.
 What a word that acts takes (**options**, a wait, keys, a mouse event) goes
 on the pane before it, in any order: the pane given them becomes a request,
 which the word at the end acts on. `run`, `new-tab` and `new-workspace` have
-no pane yet, nor has `attach`: they start from `opts`, empty options, as
-`events-of` does to stream everything. Of
+no pane yet, nor has `attach`: they start from `opts`, empty options.
+`all events` streams the whole session. Of
 the first three, only `run` takes a program (`program`, then each `arg`; a
 shell's line is `str sh program str -c arg str LINE arg`); `new-tab` and
 `new-workspace` start a shell. Their tab is laid out on `COLS ROWS size`, else on the
@@ -122,6 +122,15 @@ caller's own screen (a client's keys), else on the caller's tab (`fux`
 run in a pane): never on the screen of a client that does not show the
 caller's tab. Run from outside fux, a size must be given: fux makes none
 up.
+
+`all` names the whole session for `info`, `dump`, `notify` and `events`;
+`ls` is the library word `all info`. `CLIENT HANDLE show` follows a pane,
+tab or workspace. `WORKSPACE panes` lists panes, and `WORKSPACE tabs` lists tabs.
+`capture` takes a pane or client; only panes take capture options and have
+versions. `resize` takes a tab scope or headless client. `move` takes a tab,
+workspace, `str new-tab`, `str new-workspace`, or a direction; `swap-with`
+takes a pane or direction. Directions are `str left`, `str right`, `str up`
+and `str down`.
 
 ```sh
 fux agent-opts str web name 120 40 size str ./app program str --verbose arg run
@@ -233,7 +242,7 @@ prefix again sends it to the pane.
 | `e` | `me command-prompt` | type any fuxth |
 | `d` | `me detach` | detach this terminal |
 | `r`, then `h` `j` `k` `l` | `me focused str left 1 move-border` … | move a border one cell |
-| `m`, then `h` `j` `k` `l` | `me focused str left move-beside` … | move the pane beside its neighbour |
+| `m`, then `h` `j` `k` `l` | `me focused str left move` … | move the pane beside its neighbour |
 | `t`, `w` | tab and workspace layers | below |
 
 `r` and `m` are **repeat modes**: `h` `j` `k` `l` act again without the
@@ -402,8 +411,8 @@ VT220-class terminal.
 ### JSON
 
 `json` on what a word left gives its JSON: `ls json`, `X info json`,
-`pane capture json`, `client capture-client json`, an action's or a
-wait's answer (`… wait json`), `status json`; `events` and `X events-of`
+`pane capture json`, `client capture json`, an action's or a
+wait's answer (`… wait json`), `status json`; `all events` and `X events`
 stream an object a line. These shapes are part of fux's interface; `fux
 help json` lists every one ([docs/json.md](docs/json.md)).
 
@@ -518,14 +527,14 @@ fux adds then reach you only once you bind them.
 
 ## Saved sessions
 
-`dump` prints what there is as a fuxth script that makes it again (its first
+`all dump` prints what there is as a fuxth script that makes it again (its first
 line `#!/usr/bin/env -S fux --file`, so `chmod +x` makes it runnable), each
-pane a `let` name later lines use; `X dump-of` one tab or workspace. Run it
+pane a `let` name later lines use; `X dump` one tab or workspace. Run it
 to make it again on a running server, each tab in the workspace of its
 given name (made if missing). An unnamed workspace is recreated as a fresh
 workspace. Only given pane, tab and workspace names are written; display
 labels are never saved as names. Close named tabs that would conflict
-before replay: `fux str dev workspace dump-of > dev.fux; fux --file dev.fux`. Each
+before replay: `fux str dev workspace dump > dev.fux; fux --file dev.fux`. Each
 tab is made at the size it has (`size`), which a server with no client
 needs; one that fits clients' screens fits them again after
 (`resize-auto`). Each split is made with shares (`2 1 shares`: the pane
@@ -546,7 +555,7 @@ Nothing is saved on its own. To keep a session past its server (a crash, a
 fresh server:
 
 ```sh
-fux dump > ~/session.fux              # save when you choose
+fux all dump > ~/session.fux              # save when you choose
 fux start && fux --file ~/session.fux # replay on a fresh server
 ```
 
@@ -664,7 +673,7 @@ either case.
   cell the mouse is in, not the pixel within it, and fux makes none up.
   The mode is reported permanently reset and setting it changes nothing,
   so a program reports in cells, as with a terminal without it.
-- **Hooks** (tmux's `set-hook`): read `fux events` and run fux
+- **Hooks** (tmux's `set-hook`): read `fux all events` and run fux
   instead.
 - **Programs that outlive their server**, or a session saved on its own: a
   crash ends them; replay a `dump` you saved to make the layout again.
