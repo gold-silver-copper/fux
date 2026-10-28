@@ -893,10 +893,14 @@ fn send_keys_takes_input_up_to_its_limit() -> Outcome {
     let refused = server.fux(&[&many])?;
     assert_eq!(refused.status, 1);
     assert!(refused.stderr.contains("too_long"), "{}", refused.stderr);
-    // Keys count as the request carries them, their names and more: so
-    // many that the request could not be sent are too long too.
-    let keys = format!("{sink} 0 90000 range each drop str C-M-F12 key end send-keys");
-    let refused = server.fux(&[&keys])?;
+    // A key's encoded name and per-input overhead also count: adding one
+    // to the admitted full paste crosses the request boundary.
+    std::fs::write(
+        &file,
+        format!("{sink} str '{text}' paste str C-M-F12 key send-keys"),
+    )
+    .map_err(e)?;
+    let refused = server.fux(&["--file", &file.to_string_lossy()])?;
     assert_eq!(refused.status, 1);
     assert!(refused.stderr.contains("too_long"), "{}", refused.stderr);
     Ok(())
