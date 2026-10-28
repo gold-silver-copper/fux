@@ -2013,6 +2013,8 @@ mod tests {
         assert_eq!(all(&long), vec![key("y")]);
     }
 
+    /// ESC and invalid CSI bytes end only that sequence. The next key arrives
+    /// at once, including after an overlong parameter list.
     #[test]
     fn a_cancelled_csi_preserves_the_following_key() {
         for (bytes, expected) in [

@@ -245,9 +245,11 @@ doing exactly what it would:
   its own;
 - an OSC payload is taken up to its terminator in one pass.
 
-`parser::tests::text_runs_keep_grapheme_boundaries`, `clusters::*` and
-`conformance::*` check text and sequence semantics. The fuzz target
-`terminal` compares whole, chunked and byte-at-a-time processing.
+On every push, `parser::tests::text_runs_keep_their_printing_context` checks
+non-ASCII runs in contexts that change printing, including links and protection;
+`properties::*`, `clusters::*` and `conformance::*` check segmentation and sequence
+semantics. The `terminal` fuzz target compares whole, chunked and byte-at-a-time
+processing nightly and on request.
 
 ## Cells
 

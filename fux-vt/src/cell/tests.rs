@@ -111,10 +111,13 @@ fn owned_cells_copy_text_from_wherever_it_is_and_compare_by_it() {
     assert_eq!(b.range(2..9).len(), 2);
 }
 
+/// Equality reads text, width and attributes across inline, short and long
+/// storage; unused text and ranges outside the cells do not differ.
 #[test]
 fn range_comparisons_ignore_storage_and_detect_cell_changes() -> Result<(), Error> {
     let long = "a\u{301}\u{301}\u{301}\u{301}\u{301}\u{301}\u{301}\u{301}\u{301}";
-    for text in ["a", "é", "界", long, "👨‍👩‍👧‍👦"] {
+    let short = "a\u{301}\u{301}\u{301}\u{301}\u{301}\u{301}\u{301}\u{301}";
+    for text in ["a", "é", "界", short, long, "👨‍👩‍👧‍👦"] {
         let mut a = Cells::new(6)?;
         let mut b = Cells::new(6)?;
         a.set(1, CellRef::new(text, false, Attributes::default()));

@@ -639,6 +639,43 @@ fn rep_repeats_the_preceding_graphic_character() -> Result {
     let p = run(2, 5, "界\x1b[65533b".as_bytes())?;
     assert_eq!(lines(&p), ["界界", "界界"]);
     assert_eq!(p.screen().cursor_position(), (1, 4));
+    // Copy-skipping below the scrolling region uses the halved row's end;
+    // a region starting at the top must retain the copies feeding history.
+    for setup in [
+        "\x1b[1;2r\x1b[3;1H\x1b#6",
+        "\x1b[1;2r",
+        "\x1b[1;2r\x1b[1m界界界\x1b[m\x1b[H",
+        "\x1b[1m界界界\x1b[m\x1b[H\x1b[4h",
+    ] {
+        for glyph in ["x", "界"] {
+            for at in ["", "\x1b[2G"] {
+                for count in [1, 2, 5, 13, 40, 300] {
+                    let start = format!("{setup}{at}{glyph}");
+                    let mut rep = Parser::new(Size::new(3, 7)?, 1 << 10)?;
+                    let mut printed = Parser::new(Size::new(3, 7)?, 1 << 10)?;
+                    rep.process(format!("{start}\x1b[{count}b").as_bytes())?;
+                    printed.process(
+                        format!(
+                            "{start}{}",
+                            std::iter::repeat_n(glyph, count).collect::<String>()
+                        )
+                        .as_bytes(),
+                    )?;
+                    let (a, b) = (rep.screen(), printed.screen());
+                    assert_eq!(
+                        (a.cursor_position(), a.pending_wrap()),
+                        (b.cursor_position(), b.pending_wrap()),
+                        "{start:?}, {count}"
+                    );
+                    for y in 0..3 {
+                        for x in 0..7 {
+                            assert_eq!(a.cell(y, x), b.cell(y, x), "{start:?}, {count}, ({y},{x})");
+                        }
+                    }
+                }
+            }
+        }
+    }
     Ok(())
 }
 

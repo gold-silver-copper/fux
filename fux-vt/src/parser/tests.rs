@@ -1,6 +1,9 @@
 use super::*;
 use crate::test_rng::Rng;
 
+struct Deaf;
+impl Sink for Deaf {}
+
 /// B20: the OSC buffer has room for the limit the features set and the
 /// byte that marks a string overflowed, and no more, however a string is
 /// split: 65 bytes with prompt marks alone, 1 with no feature reading OSC.
@@ -20,30 +23,188 @@ fn the_osc_buffer_has_room_for_its_limit_alone() -> Result<(), Error> {
     Ok(())
 }
 
-/// Mixed text keeps each cluster on its starting cell, including the last
-/// ASCII character before a mark, selector, or joiner.
+/// Non-ASCII runs keep the printing context on every glyph, including the
+/// glyphs after the first that take Screen::run. Dots below are blank cells;
+/// 界 and a Prepend joined to Ж each occupy two columns. DECSCA is checked
+/// by selective erase.
 #[test]
-fn text_runs_keep_grapheme_boundaries() -> Result<(), Error> {
-    let mut parser = Parser::new(Size::of(3, 20), 0)?;
-    parser.process("ab1\u{fe0f}\u{20e3}xé\u{301}界👩\u{200d}🔬Z".as_bytes())?;
-    for (col, text, wide) in [
-        (0, "a", false),
-        (1, "b", false),
-        (2, "1\u{fe0f}\u{20e3}", true),
-        (4, "x", false),
-        (5, "é\u{301}", false),
-        (6, "界", true),
-        (8, "👩\u{200d}🔬", true),
-        (10, "Z", false),
-    ] {
-        let cell = parser.screen().cell(0, col);
+fn text_runs_keep_their_printing_context() -> Result<(), Error> {
+    type Case<'a> = (&'a str, &'a [&'a str], (u16, u16), bool, bool, bool);
+    let cases: &[Case<'_>] = &[
+        ("", &["Ж Ш 界"], (0, 4), false, false, false),
+        (
+            "\x1b[?69h\x1b[3;8s\x1b[1;5H",
+            &["· · · · Ж Ш 界"],
+            (0, 7),
+            true,
+            false,
+            false,
+        ),
+        (
+            "\x1b[?69h\x1b[3;8s\x1b[?6h",
+            &["· · Ж Ш 界"],
+            (0, 6),
+            false,
+            false,
+            false,
+        ),
+        ("\x1b#6", &["Ж Ш 界"], (0, 4), false, false, false),
+        (
+            "\x1b[2;3H界界界界\x1b[2;3H",
+            &["", "· · Ж Ш 界 界 界"],
+            (1, 6),
+            false,
+            false,
+            false,
+        ),
+        (
+            "\x1b[2;3H界a界界\x1b[2;3H",
+            &["", "· · Ж Ш 界 · 界"],
+            (1, 6),
+            false,
+            false,
+            false,
+        ),
+        (
+            "\x1b[2;3H界界界界\x1b[2;4H",
+            &["", "· · · Ж Ш 界 · 界"],
+            (1, 7),
+            false,
+            false,
+            false,
+        ),
+        (
+            "\x1b[2;3H界界界界\x1b[2;3Hx",
+            &["", "· · x Ж Ш 界 · 界"],
+            (1, 7),
+            false,
+            false,
+            false,
+        ),
+        (
+            "\x1b[1;11Hx",
+            &["· · · · · · · · · · x Ж", "Ш 界"],
+            (1, 3),
+            false,
+            false,
+            false,
+        ),
+        (
+            "\x1b[?7l\x1b[1;9H",
+            &["· · · · · · · · Ж Ш 界"],
+            (0, 11),
+            false,
+            false,
+            false,
+        ),
+        ("\x1b[1\"q", &["Ж Ш 界"], (0, 4), false, false, true),
+        ("\x1b[?1049h", &["Ж Ш 界"], (0, 4), false, false, false),
+        (
+            "abcdefghij\r\x1b[4h",
+            &["Ж Ш 界 a b c d e f g h"],
+            (0, 4),
+            false,
+            false,
+            false,
+        ),
+        (
+            "\x1b]8;id=1;http://x\x1b\\",
+            &["Ж Ш 界"],
+            (0, 4),
+            false,
+            true,
+            false,
+        ),
+        ("\u{600}", &["\u{600}Ж Ш 界"], (0, 5), false, false, false),
+        ("\x1b(0", &["Ж Ш 界"], (0, 4), false, false, false),
+        (
+            "\x1b[2;3r\x1b[3;1H",
+            &["", "", "Ж Ш 界"],
+            (2, 4),
+            false,
+            false,
+            false,
+        ),
+        ("AAШA\r", &["Ж Ш 界"], (0, 4), false, false, false),
+        (
+            "\x1b]8;id=1;http://x\x1b\\AAШA\r",
+            &["Ж Ш 界"],
+            (0, 4),
+            false,
+            true,
+            false,
+        ),
+    ];
+    for &(setup, rows, cursor, pending, linked, protected) in cases {
+        let mut parser =
+            Parser::with_options(Size::of(4, 12), 1024, Feature::ALL.into_iter().collect())?;
+        parser.process(setup.as_bytes())?;
+        parser.process("ЖШ界".as_bytes())?;
+        let check_cells = |p: &Parser| {
+            for y in 0..4u16 {
+                let mut expected = Vec::new();
+                for text in rows.get(usize::from(y)).unwrap_or(&"").split_whitespace() {
+                    let wide = matches!(text, "界" | "\u{600}Ж");
+                    expected.push((if text == "·" { "" } else { text }, wide, false));
+                    if wide {
+                        expected.push(("", false, true));
+                    }
+                }
+                expected.resize(12, ("", false, false));
+                for (x, &(text, wide, tail)) in (0..12).zip(&expected) {
+                    let cell = p.screen().cell(y, x);
+                    assert_eq!(
+                        cell.map(|c| (c.contents(), c.is_wide(), c.is_wide_continuation())),
+                        Some((text, wide, tail)),
+                        "{setup:?}: ({y},{x})"
+                    );
+                    assert_eq!(
+                        cell.map(|c| c.attributes()),
+                        Some(crate::Attributes::default()),
+                        "{setup:?}: ({y},{x})"
+                    );
+                    let link =
+                        (linked && (!text.is_empty() || tail)).then_some(("http://x", Some("1")));
+                    assert_eq!(
+                        p.screen().link(y, x).map(|l| (l.uri(), l.id())),
+                        link,
+                        "{setup:?}: ({y},{x})"
+                    );
+                }
+            }
+        };
+        check_cells(&parser);
         assert_eq!(
-            cell.map(|c| (c.contents(), c.is_wide())),
-            Some((text, wide)),
-            "column {col}"
+            (
+                parser.screen().cursor_position(),
+                parser.screen().pending_wrap()
+            ),
+            (cursor, pending),
+            "{setup:?}"
         );
+        if protected {
+            parser.process(b"\x1b[0\"q\x1b[H\x1b[?2K")?;
+            check_cells(&parser);
+        }
     }
-    assert_eq!(parser.screen().cursor_position(), (0, 11));
+    // A glyph already equal to the middle of a run must not stop updates
+    // after it, or the link coverage of the whole run.
+    for link in ["", "\x1b]8;id=1;http://x\x1b\\"] {
+        let mut parser =
+            Parser::with_options(Size::of(4, 12), 1024, Feature::ALL.into_iter().collect())?;
+        parser.process(format!("{link}AAШA\r").as_bytes())?;
+        parser.process("ЖШШШ".as_bytes())?;
+        for (x, text) in ["Ж", "Ш", "Ш", "Ш"].into_iter().enumerate() {
+            let x = u16::try_from(x).map_err(|_| Error::InvalidRange)?;
+            assert_eq!(parser.screen().cell(0, x).map(|c| c.contents()), Some(text));
+            assert_eq!(
+                parser.screen().link(0, x).map(|l| l.uri()),
+                (!link.is_empty()).then_some("http://x")
+            );
+        }
+        assert_eq!(parser.screen().cursor_position(), (0, 4));
+        assert!(!parser.screen().pending_wrap());
+    }
     Ok(())
 }
 
@@ -85,14 +246,11 @@ fn a_line_feed_stops_at_a_spent_budget() -> Result<(), Error> {
     let mut parser = Parser::new(Size::of(2, 4), 8)?;
     for feeds in [b"\n\n\n", b"\x0b\x0b\x0b", b"\x0c\x0c\x0c"] {
         parser.spent = crate::budget::LIMIT;
-        let stop = parser.process_until_stop(feeds, &mut Replies(|_: &[u8]| {}))?;
+        let stop = parser.process_until_stop(feeds, &mut Deaf)?;
         assert_eq!(stop, Some((1, Stop::Budget)), "{}", feeds.escape_ascii());
     }
     parser.spent = crate::budget::LIMIT;
-    assert_eq!(
-        parser.process_until_stop(b"\r\r\r", &mut Replies(|_: &[u8]| {}))?,
-        None
-    );
+    assert_eq!(parser.process_until_stop(b"\r\r\r", &mut Deaf)?, None);
     Ok(())
 }
 
@@ -105,13 +263,13 @@ fn a_screen_wide_sequence_past_the_ceiling_waits_for_the_next_call() -> Result<(
     let first = b"a\x1b[2Jb\x1b[2J";
     for following in ["", "c"] {
         let mut parser = Parser::new(size, 0)?;
-        let stop = parser.process_until_stop(first, &mut Replies(|_: &[u8]| {}))?;
+        let stop = parser.process_until_stop(first, &mut Deaf)?;
         assert_eq!(stop, Some((first.len(), Stop::Budget)));
         assert!(parser.has_work_left());
         let shown = |p: &Parser, col: u16| p.screen().cell(0, col).map(|c| c.contents().to_owned());
         assert_eq!(shown(&parser, 1).as_deref(), Some("b"));
         assert_eq!(
-            parser.process_until_stop(following.as_bytes(), &mut Replies(|_: &[u8]| {}))?,
+            parser.process_until_stop(following.as_bytes(), &mut Deaf)?,
             None
         );
         assert!(!parser.has_work_left());
@@ -122,10 +280,7 @@ fn a_screen_wide_sequence_past_the_ceiling_waits_for_the_next_call() -> Result<(
             parser.screen().cursor_position(),
             (0, if following.is_empty() { 2 } else { 3 })
         );
-        assert_eq!(
-            parser.process_until_stop(&[], &mut Replies(|_: &[u8]| {}))?,
-            None
-        );
+        assert_eq!(parser.process_until_stop(&[], &mut Deaf)?, None);
         assert!(!parser.has_work_left());
     }
     Ok(())
@@ -206,8 +361,9 @@ fn printable_runs_are_found_a_word_at_a_time_as_a_byte_at_a_time() {
     }
 }
 
-/// Scanning held bytes and reading streamed bytes stop at the first reset,
-/// including a saved mode, and ignore cancelled or incomplete sequences.
+/// A scan and a streamed read stop at the first reset, not a later reset in
+/// the same input. Saving 2026 while a frame is held changes what restore
+/// means; cancelled sequences and ESC-terminated strings keep their rules.
 #[test]
 fn a_frame_scan_stops_at_the_first_synchronized_output_reset() -> Result<(), Error> {
     for saved in [false, true] {
@@ -221,7 +377,13 @@ fn a_frame_scan_stops_at_the_first_synchronized_output_reset() -> Result<(), Err
             (b"\x1b[62\"p", true),
             (b"\x1b[63\"p", false),
             (b"\x1b]2;\x1b[?2026l", true),
+            (b"\x1bP1;2|x\x1b[?2026l", true),
+            (b"\x1bPq#0~\x1b[?2026l", true),
+            (b"\x1b_x\x1b[?2026l", true),
             (b"\x1b[?2026r", !saved),
+            (b"\x1b[?2026s\x1b[?2026r", false),
+            (b"\x1b[?25;2026s\x1b[?2026r", false),
+            (b"\x1b[?25s\x1b[?2026r", !saved),
             (b"\x1b[?20\x1826l", false),
             (b"\x1b[?2026:1l", false),
             (b"\x1b[?2026h", false),
@@ -233,39 +395,51 @@ fn a_frame_scan_stops_at_the_first_synchronized_output_reset() -> Result<(), Err
                 parser.process(b"\x1b[?2026h")?;
             }
             parser.process(b"\x1b[?2026s\x1b[?2026h")?;
-            let input = [b"ab".as_slice(), end].concat();
-            let expected = ends.then_some(input.len());
-            for chunk in [1, 2, input.len()] {
-                let mut scan = parser.frame_scan();
-                let mut held = 1;
-                while held < input.len() {
-                    assert_eq!(scan.end(input.get(..held).unwrap_or_default()), None);
-                    held += chunk;
-                }
-                assert_eq!(
-                    scan.end(&input),
-                    expected,
-                    "{end:?}, saved {saved}, chunk {chunk}"
-                );
-                let mut streamed = parser.clone();
-                let mut offset = 0;
-                let mut stopped = None;
-                let mut rest = input.as_slice();
-                while !rest.is_empty() {
-                    let (piece, tail) = rest.split_at_checked(chunk).unwrap_or((rest, &[]));
-                    rest = tail;
-                    if let Some((taken, stop)) =
-                        streamed.process_until_stop(piece, &mut Replies(|_: &[u8]| {}))?
-                    {
-                        stopped = Some((offset + taken, stop));
+            for suffix in [b"".as_slice(), b"x\x1b[?2026l"] {
+                let input = [b"ab".as_slice(), end, suffix].concat();
+                let expected = if ends {
+                    Some(2 + end.len())
+                } else {
+                    (!suffix.is_empty()).then_some(input.len())
+                };
+                for chunk in [1, 2, input.len()] {
+                    let mut scan = parser.frame_scan();
+                    let (mut held, mut found) = (0usize, None);
+                    while held < input.len() && found.is_none() {
+                        held = (held + chunk).min(input.len());
+                        found = scan.end(input.get(..held).ok_or(Error::InvalidRange)?);
+                        assert_eq!(
+                            found,
+                            expected.filter(|&at| at <= held),
+                            "{end:?}, saved {saved}, held {held}"
+                        );
                     }
-                    offset += piece.len();
+                    assert_eq!(found, expected);
+                    let mut streamed = parser.clone();
+                    let (mut offset, mut first) = (0, None);
+                    let mut rest = input.as_slice();
+                    while !rest.is_empty() {
+                        let (mut piece, tail) = rest.split_at_checked(chunk).unwrap_or((rest, &[]));
+                        rest = tail;
+                        while !piece.is_empty() {
+                            let taken = match streamed.process_until_stop(piece, &mut Deaf)? {
+                                Some((taken, stop)) => {
+                                    first.get_or_insert((offset + taken, stop));
+                                    taken
+                                }
+                                None => piece.len(),
+                            };
+                            assert!(taken > 0, "a small frame must make progress");
+                            piece = piece.get(taken..).ok_or(Error::InvalidRange)?;
+                            offset += taken;
+                        }
+                    }
+                    assert_eq!(
+                        first,
+                        expected.map(|at| (at, Stop::Ended)),
+                        "{end:?}, saved {saved}, chunk {chunk}"
+                    );
                 }
-                assert_eq!(
-                    stopped,
-                    expected.map(|at| (at, Stop::Ended)),
-                    "{end:?}, saved {saved}, chunk {chunk}"
-                );
             }
         }
     }
@@ -327,10 +501,7 @@ fn a_region_scroll_spends_its_slots_once() -> Result<(), Error> {
         .copied()
         .collect();
     let start = crate::budget::spent();
-    assert_eq!(
-        parser.process_until_stop(&bytes, &mut Replies(|_: &[u8]| {}))?,
-        None
-    );
+    assert_eq!(parser.process_until_stop(&bytes, &mut Deaf)?, None);
     let spent = crate::budget::spent().saturating_sub(start);
     let each = 8_190 * (crate::budget::weight::cells + crate::budget::weight::slots);
     assert!(spent <= 100 * each, "{spent}");

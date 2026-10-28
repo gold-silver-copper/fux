@@ -2167,48 +2167,70 @@ mod tests {
         Ok(())
     }
 
+    /// Memoised composition and painting preserve the full production paths
+    /// through pane, view and geometry changes. A content-only edit must emit
+    /// its text even when the cursor and modes stay put.
     #[test]
     fn cached_rows_follow_terminal_changes() -> Result<(), String> {
+        use crate::session::testing::run;
         let (mut session, client) = crate::session::testing::attached(6, 30)?;
         let (mut shown, mut spare) = (Grid::default(), Grid::default());
         let mut placement = Placement::default();
-        for (output, text) in [
-            ("hello", "hello"),
-            ("\x1b[2J\x1b[H\x1b[31mred 界", "red 界"),
-            ("\x1b[?1049h\x1b[Halternate", "alternate"),
-            ("\x1b[?1049l", "red 界"),
-            (
-                "\x1b[2J\x1b[Hone\r\ntwo\r\nthree\r\nfour\r\nfive\r\nsix",
-                "two",
-            ),
-            (
-                "\x1b[2J\x1b[H\x1b]8;;https://example.test\x1b\\link\x1b]8;;\x1b\\",
-                "link",
-            ),
+        let mut check = |session: &mut Session| -> Result<Vec<u8>, String> {
+            session.hold_copies();
+            assert!(compose_into(session, client, &mut spare, &mut placement));
+            assert_eq!(spare, compose(session, client).ok_or("client")?);
+            let bytes = paint(Some(&shown), &spare);
+            // Grid::clone drops the memo, so this compares the row-selection
+            // shortcut with the painter's full comparison of the same grids.
+            assert_eq!(bytes, paint(Some(&shown.clone()), &spare.clone()));
+            assert_eq!(bytes.is_empty(), shown == spare);
+            std::mem::swap(&mut shown, &mut spare);
+            Ok(bytes)
+        };
+        session.out(PaneId::of(1), b"hello");
+        check(&mut session)?;
+        let cursor = compose(&session, client).ok_or("client")?.cursor;
+        session.out(PaneId::of(1), b"\x1b7\x1b[HHELLO\x1b8");
+        let bytes = check(&mut session)?;
+        assert!(String::from_utf8_lossy(&bytes).contains("HELLO"));
+        assert_eq!(compose(&session, client).ok_or("client")?.cursor, cursor);
+        for output in [
+            "\x1b[2J\x1b[H\x1b[31mred 界",
+            "\x1b[?1049h\x1b[Halternate",
+            "\x1b[?1049l",
+            "\x1b[2J\x1b[Hone\r\ntwo\r\nthree\r\nfour\r\nfive\r\nsix",
+            "\x1b[2J\x1b[H\x1b]8;;https://example.test\x1b\\link\x1b]8;;\x1b\\",
+            "\x1b]4;1;#00ff00\x07",
+            "\x1b]104\x07",
         ] {
             session.out(PaneId::of(1), output.as_bytes());
-            assert!(compose_into(&session, client, &mut spare, &mut placement));
-            assert_eq!(spare.row_text(0), text);
-            assert!(!paint(Some(&shown), &spare).is_empty());
-            assert!(paint(Some(&spare), &spare).is_empty());
-            std::mem::swap(&mut shown, &mut spare);
+            check(&mut session)?;
         }
-        assert_eq!(
-            shown.link(0, 0).map(|(_, link)| link.uri()),
-            Some("https://example.test")
-        );
-        session.out(PaneId::of(1), b"\x1b]4;1;#00ff00\x07");
-        assert!(compose_into(&session, client, &mut spare, &mut placement));
-        assert_eq!(
-            spare.get(0, 0).map(|cell| cell.fgcolor()),
-            Some(Color::Rgb([0, 255, 0].into()))
-        );
-        session.out(PaneId::of(1), b"\x1b]104\x07");
-        assert!(compose_into(&session, client, &mut shown, &mut placement));
-        assert_eq!(
-            shown.get(0, 0).map(|cell| cell.fgcolor()),
-            Some(Color::Idx(1))
-        );
+        run(&mut session, "str %1 pane str horizontal axis split")?;
+        check(&mut session)?;
+        session.out(PaneId::of(2), b"second pane");
+        check(&mut session)?;
+        run(&mut session, "str c1 client str next focus")?;
+        check(&mut session)?;
+        session.out(PaneId::of(1), b"\x1b[?25l");
+        check(&mut session)?;
+        run(&mut session, "str c1 client copy-mode")?;
+        check(&mut session)?;
+        session.input(client, b"q");
+        check(&mut session)?;
+        for command in ["str c1 client zoom", "str @1 tab str renamed rename"] {
+            run(&mut session, command)?;
+            check(&mut session)?;
+        }
+        session
+            .size_client(client, 8, 41)
+            .map_err(|e| e.to_string())?;
+        check(&mut session)?;
+        session.out(PaneId::of(1), b"\r\na\r\nb\r\nc\r\nd\r\ne\r\nf\r\ng\r\nh");
+        check(&mut session)?;
+        run(&mut session, "str %2 pane kill")?;
+        check(&mut session)?;
         Ok(())
     }
 
@@ -2338,6 +2360,8 @@ mod tests {
         Ok(())
     }
 
+    /// Reused grids of any size lose old cells, blank attributes and cursor
+    /// state, including padding a smaller pane does not paint.
     #[test]
     fn recomposing_clears_stale_cells_and_cursor() -> Result<(), Box<dyn std::error::Error>> {
         let (mut s, c) = crate::session::testing::attached(12, 50)?;
@@ -2346,6 +2370,10 @@ mod tests {
         s.attach(8, 30, None)?;
         for (rows, cols) in [(12, 50), (3, 7), (12, 49), (40, 200)] {
             let mut grid = new_grid(rows, cols);
+            grid.fill(
+                Rect::screen(rows, cols),
+                Attributes::default().with_bold(true),
+            );
             for y in 0..rows {
                 grid.text(
                     y,
@@ -2358,12 +2386,7 @@ mod tests {
             grid.cursor = Some((1, 1));
             grid.modes.cursor_shape = CursorShape::BlinkingUnderline;
             assert!(compose_into(&s, c, &mut grid, &mut Placement::default()));
-            assert_eq!((grid.rows, grid.cols), (12, 50));
-            assert_eq!(grid.cursor, None);
-            assert_eq!(grid.modes.cursor_shape, CursorShape::Initial);
-            assert!(grid.row_text(0).contains("界 second"));
-            assert!((0..grid.rows).all(|y| !grid.row_text(y).contains("junk")));
-            assert!(grid.get(10, 49).is_some_and(|cell| !cell.has_contents()));
+            assert_eq!(grid, compose(&s, c).ok_or("a screen")?);
         }
         Ok(())
     }
@@ -2794,6 +2817,16 @@ mod tests {
         }
     }
 
+    /// Apply a paint as a terminal does, with blank tails trimmed like Grid.
+    fn apply(bytes: &[u8], parser: &mut fux_vt::Parser) -> Result<Vec<String>, String> {
+        parser.process(bytes).map_err(|e| e.to_string())?;
+        let window = parser.screen().window();
+        Ok((0..window.rows())
+            .filter_map(|y| window.row(y))
+            .map(|row| row.cells_text().trim_end_matches(' ').to_owned())
+            .collect())
+    }
+
     fn grid_lines(g: &Grid) -> Vec<String> {
         (0..g.rows).map(|y| g.row_text(y)).collect()
     }
@@ -3162,7 +3195,7 @@ mod tests {
 
     /// A row that did not change gets no bytes at all.
     #[test]
-    fn only_the_rows_that_changed_are_painted() {
+    fn only_the_rows_that_changed_are_painted() -> Result<(), String> {
         let mut a = new_grid(6, 20);
         for y in 0..6 {
             a.text(y, 0, &format!("row {y} 界 text"), Attributes::default(), 20);
@@ -3171,15 +3204,20 @@ mod tests {
         b.text(3, 5, "X", Attributes::default().with_bold(true), 20);
         let diff = paint(Some(&a), &b);
         assert_eq!(rows_written(&diff), [3]);
+        let mut parser = terminal(6, 20)?;
+        apply(&paint(None, &a), &mut parser)?;
+        assert_eq!(apply(&diff, &mut parser)?, grid_lines(&b));
         // The first and last rows, and a wide glyph's second half.
         let mut c = b.clone();
         c.text(0, 19, "!", Attributes::default(), 20);
         c.text(5, 7, "y", Attributes::default(), 20);
         let diff = paint(Some(&b), &c);
         assert_eq!(rows_written(&diff), [0, 5]);
+        assert_eq!(apply(&diff, &mut parser)?, grid_lines(&c));
         // Nothing changed: no row is written; painted whole, every row is.
         assert_eq!(rows_written(&paint(Some(&c), &c)), Vec::<u16>::new());
         assert_eq!(rows_written(&paint(None, &c)), [0, 1, 2, 3, 4, 5]);
+        Ok(())
     }
 
     /// Every attribute fux-vt keeps reaches the client: blink, hidden text

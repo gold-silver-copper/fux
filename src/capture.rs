@@ -1063,21 +1063,8 @@ fn describe(out: &mut dyn std::fmt::Write, a: Attributes) -> std::fmt::Result {
 #[cfg(test)]
 mod tests {
     use crate::command::{CaptureView, Program};
-    use crate::id::PaneId;
-    use crate::pane::tests::Lone;
-    use crate::pane::{Pane, Runs};
-    use std::time::Instant;
-
-    fn pane(rows: u16, cols: u16, history: usize) -> Result<Lone, Box<dyn std::error::Error>> {
-        Ok(Lone::new(Pane::new(
-            PaneId::of(1),
-            None,
-            crate::pane::tests::shell()?,
-            fux_vt::Size::new(rows, cols)?,
-            crate::pane::tests::options(history)?,
-            Instant::now(),
-        )?))
-    }
+    use crate::pane::Runs;
+    use crate::pane::tests::pane;
 
     #[test]
     fn argument_observation_peak_stays_within_shared_grant()

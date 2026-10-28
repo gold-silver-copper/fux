@@ -177,6 +177,8 @@ fn read_row(grid: &Grid, y: u16) -> Vec<(String, bool, bool, Attributes, Option<
         .collect()
 }
 
+/// Rows keep their text, halves, attributes and links while moving only
+/// inside the selected region, in both directions and across the ring end.
 #[test]
 fn scrolling_moves_only_the_selected_rows() -> Result<(), Error> {
     let colour = Attributes::new(crate::Color::Idx(1), crate::Color::Idx(4));
@@ -185,10 +187,29 @@ fn scrolling_moves_only_the_selected_rows() -> Result<(), Error> {
         let mut p =
             crate::Parser::with_options(Size::of(4, 12), 0, crate::Feature::Hyperlinks.into())?;
         for y in 0..4 {
-            p.process(format!("\x1b[{};1H\x1b[{}m{y}界e\u{301}\u{302}\u{303}\x1b]8;;https://{y}\x1b\\link\x1b]8;;\x1b\\", y + 1, 31 + y).as_bytes())?;
+            let marks: String =
+                std::iter::repeat_n("\u{301}", if y == 0 { 9 } else { 3 }).collect();
+            p.process(
+                format!(
+                    "\x1b[{};1H\x1b[{}m{y}界e{marks}\x1b]8;;https://{y}\x1b\\link\x1b]8;;\x1b\\",
+                    y + 1,
+                    31 + y
+                )
+                .as_bytes(),
+            )?;
         }
         let mut grid = p.screen().primary_grid().clone();
         grid.order.top = if scrolls == 0 { 0 } else { 2 };
+        // Raw rows can hold an unpaired head or tail; copying a whole row
+        // must preserve them too, alongside its short and long text.
+        let slot = grid.slot(2).ok_or(Error::InvalidRange)?;
+        for (x, cell) in [
+            (8, Compact::continuation()),
+            (10, Compact::glyph('界', 2, 0)),
+        ] {
+            *grid.slice_mut(slot).get_mut(x).ok_or(Error::InvalidRange)? = cell;
+        }
+        grid.meta.get_mut(slot).ok_or(Error::InvalidRange)?.used = 12;
         let before: Vec<_> = (0..4).map(|y| read_row(&grid, y)).collect();
         for top in 0..4 {
             for bottom in top..4 {

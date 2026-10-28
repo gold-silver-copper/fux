@@ -7,6 +7,8 @@ use fux_vt::{
     Attributes, CellRef, Cells, Color, Event, Feature, Mode, OSC_PAYLOAD_LIMIT, Options, Parser,
     Sink, Size, Stop,
 };
+#[path = "corpus/checksums.rs"]
+mod checksums;
 #[path = "corpus/pieces.rs"]
 mod pieces;
 type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
@@ -789,6 +791,16 @@ fn rectangle_checksums_sum_the_cells() -> Result {
             .replies
             .is_empty()
     );
+    // These contributions also pin the compare tool's independent checksum.
+    for &(output, first, second) in checksums::CELLS {
+        let mut p = Parser::with_options(Size::new(1, 2)?, 0, options)?;
+        p.process(output.as_bytes())?;
+        let mut record = Record::default();
+        p.process_with(checksums::QUERY, &mut record)?;
+        let expected = [(7, first), (8, second)]
+            .map(|(id, sum)| format!("\x1bP{id}!~{:04X}\x1b\\", sum.wrapping_neg()).into_bytes());
+        assert_eq!(record.replies, expected, "{output:?}");
+    }
     Ok(())
 }
 

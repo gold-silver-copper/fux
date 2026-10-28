@@ -469,15 +469,26 @@ fn a_screen_keeps_64_pictures_and_the_65th_lets_the_oldest_go() -> Result<(), Er
 /// go, by the budget set as by one drawn (THREATS.md B01).
 #[test]
 fn pictures_at_the_budget_are_kept_and_a_byte_past_lets_one_go() -> Result<(), Error> {
-    for (width, height, count, budget) in [(4096, 2048, 3, PICTURE_BYTES), (100, 120, 2, 96_000)] {
+    for (width, height, count, configured) in [(4096, 2048, 3, None), (100, 120, 2, Some(96_000))] {
         let mut p = pictured(Size::of(24, 80), 8 << 20)?;
-        p.set_picture_bytes(budget);
+        if let Some(budget) = configured {
+            p.set_picture_bytes(budget);
+        }
+        let budget = configured.unwrap_or(PICTURE_BYTES);
         let one = picture(width, height);
         for _ in 0..count {
             p.process(&one)?;
             p.process(b"\n")?;
         }
         assert_eq!(shown(&p), (1..=count).collect::<Vec<_>>(), "at the budget");
+        let lowering = p.clone();
+        p.process(&picture(1, 1))?;
+        assert_eq!(
+            shown(&p),
+            (2..=count + 1).collect::<Vec<_>>(),
+            "past the initial budget"
+        );
+        p = lowering;
         p.set_picture_bytes(budget - 1);
         assert_eq!(shown(&p), (2..=count).collect::<Vec<_>>(), "a byte past it");
         p.set_picture_bytes(budget);

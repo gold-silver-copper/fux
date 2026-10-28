@@ -1981,7 +1981,7 @@ pub(crate) mod tests {
 
     #[test]
     fn output_answers_queries_and_takes_titles() -> Result<(), Box<dyn std::error::Error>> {
-        let mut pane = pane(5, 20)?;
+        let mut pane = pane(5, 20, 1 << 10)?;
         pane.output(b"hello\x1b]2;my title\x07\x1b[6n");
         assert_eq!(pane.title.as_str(), "my title");
         assert_eq!(pane.label(), "my title");
@@ -2000,7 +2000,7 @@ pub(crate) mod tests {
     fn colour_queries_are_answered_from_the_session_s_colours()
     -> Result<(), Box<dyn std::error::Error>> {
         use crate::outer::{Colours, Scheme};
-        let mut pane = pane(3, 30)?;
+        let mut pane = pane(3, 30, 1 << 10)?;
         pane.output(b"\x1b]11;?\x07\x1b]10;?\x1b\\\x1b[?996n\x1b[c");
         assert_eq!(
             pane.input.drain_all(),
@@ -2030,7 +2030,7 @@ pub(crate) mod tests {
     #[test]
     fn a_scheme_answer_refused_is_not_told() -> Result<(), Box<dyn std::error::Error>> {
         use crate::outer::{Colours, Scheme};
-        let mut pane = pane(3, 30)?;
+        let mut pane = pane(3, 30, 1 << 10)?;
         pane.colours = Colours {
             scheme: Some(Scheme::Light),
             ..Colours::default()
@@ -2098,14 +2098,19 @@ pub(crate) mod tests {
         output(n.saturating_mul(2))
     }
 
-    fn pane(rows: u16, cols: u16) -> Result<Lone, Box<dyn std::error::Error>> {
-        let size = size(rows, cols);
+    /// An isolated pane with explicit geometry and history allowance.
+    pub(crate) fn pane(
+        rows: u16,
+        cols: u16,
+        history: usize,
+    ) -> Result<Lone, Box<dyn std::error::Error>> {
+        let size = Size::new(rows, cols)?;
         Pane::new(
             PaneId::of(1),
             None,
             crate::pane::tests::shell()?,
             size,
-            crate::pane::tests::options(1 << 10)?,
+            crate::pane::tests::options(history)?,
             Instant::now(),
         )
         .map(Lone::new)
@@ -2175,7 +2180,7 @@ pub(crate) mod tests {
     fn a_read_that_spends_its_budget_goes_on_at_the_next_turn()
     -> Result<(), Box<dyn std::error::Error>> {
         let reps = spends_the_budget(50, 200);
-        let mut pane = pane(50, 200)?;
+        let mut pane = pane(50, 200, 1 << 10)?;
         let now = Instant::now();
         pane.placed().output(&reps, now);
         assert!(pane.has_unread(), "the budget stopped no call");
@@ -2226,7 +2231,7 @@ pub(crate) mod tests {
     fn a_sequence_left_past_the_budget_at_the_outputs_end_goes_on()
     -> Result<(), Box<dyn std::error::Error>> {
         let output = b"\x1b#8\x1b[2J";
-        let mut pane = pane(2000, 2000)?;
+        let mut pane = pane(2000, 2000, 1 << 10)?;
         pane.output(output);
         assert!(pane.has_unread(), "the sequences were done in one call");
         let mut turns = 0u32;
@@ -2279,7 +2284,7 @@ pub(crate) mod tests {
     -> Result<(), Box<dyn std::error::Error>> {
         let mut out = spends_the_budget(50, 200);
         out.extend_from_slice(b"\x1b[?2026hY");
-        let mut pane = pane(50, 200)?;
+        let mut pane = pane(50, 200, 1 << 10)?;
         pane.output(&out);
         assert!(pane.has_unread(), "the budget stopped no call");
         std::thread::sleep(FRAME_TIMEOUT.saturating_add(Duration::from_millis(100)));
@@ -2298,7 +2303,7 @@ pub(crate) mod tests {
     /// frame and the ESU each in pieces, and several frames in one read.
     #[test]
     fn a_synchronized_frame_reaches_the_screen_whole() -> Result<(), Box<dyn std::error::Error>> {
-        let mut pane = pane(3, 30)?;
+        let mut pane = pane(3, 30, 1 << 10)?;
         pane.output(b"a\x1b[?2026hb");
         assert_eq!(first_row(&pane), "a", "the frame is held");
         assert!(pane.screen().mode(Mode::SynchronizedOutput));
@@ -2337,13 +2342,13 @@ pub(crate) mod tests {
             // ESC ends the string (ST begins so) and starts the ESU.
             b"\x1b]2;\x1b[?2026l",
         ] {
-            let mut pane = pane(3, 30)?;
+            let mut pane = pane(3, 30, 1 << 10)?;
             pane.output(&[&b"\x1b[?2026hx"[..], end].concat());
             assert_eq!(pane.frame_deadline(), None, "{end:?}");
             assert!(!pane.screen().mode(Mode::SynchronizedOutput), "{end:?}");
         }
         for held in [&b"\x1b[?20\x1826l"[..], b"\x1b[?2026:1l"] {
-            let mut pane = pane(3, 30)?;
+            let mut pane = pane(3, 30, 1 << 10)?;
             pane.output(&[&b"\x1b[?2026hx"[..], held].concat());
             assert!(pane.frame_deadline().is_some(), "{held:?}");
             assert_eq!(first_row(&pane), "", "{held:?}");
@@ -2356,7 +2361,7 @@ pub(crate) mod tests {
     /// comes. A resize reads it first.
     #[test]
     fn a_frame_that_does_not_end_is_read_anyway() -> Result<(), Box<dyn std::error::Error>> {
-        let mut pane = pane(3, 30)?;
+        let mut pane = pane(3, 30, 1 << 10)?;
         let t0 = Instant::now();
         pane.output_at(b"\x1b[?2026hx", t0);
         assert_eq!(pane.frame_deadline(), Some(after(t0, FRAME_TIMEOUT)));
@@ -2392,7 +2397,7 @@ pub(crate) mod tests {
     #[test]
     fn a_failed_terminal_resize_keeps_the_real_errno_for_its_notice()
     -> Result<(), Box<dyn std::error::Error>> {
-        let mut pane = pane(10, 40)?;
+        let mut pane = pane(10, 40, 1 << 10)?;
         let null = std::fs::File::open("/dev/null")?;
         let size = pane.size().nonzero().into();
         let error = fuxix::terminal::set_window_size(&null, size, None)
@@ -2416,7 +2421,7 @@ pub(crate) mod tests {
     /// resize, and on setting it; one that did not is told nothing.
     #[test]
     fn a_resize_reports_the_size_in_band_when_asked() -> Result<(), Box<dyn std::error::Error>> {
-        let mut pane = pane(3, 30)?;
+        let mut pane = pane(3, 30, 1 << 10)?;
         pane.resize(size(4, 20));
         assert!(pane.input.drain_all().is_empty(), "not asked");
         pane.output(b"\x1b[?2048h");
@@ -2433,7 +2438,7 @@ pub(crate) mod tests {
     /// again after.
     #[test]
     fn a_refused_piece_is_told_once_a_run() -> Result<(), Box<dyn std::error::Error>> {
-        let mut pane = pane(3, 20)?;
+        let mut pane = pane(3, 20, 1 << 10)?;
         pane.push(vec![0; INPUT_BYTES])?;
         assert_eq!(pane.take_untold(), Losses::default());
         assert!(pane.push(b"\x1b[I").is_err());
@@ -2453,7 +2458,7 @@ pub(crate) mod tests {
     /// drop replies are one run, told once.
     #[test]
     fn frames_dropping_replies_are_one_run() -> Result<(), Box<dyn std::error::Error>> {
-        let mut pane = pane(3, 20)?;
+        let mut pane = pane(3, 20, 1 << 10)?;
         let queries = std::iter::repeat_n(&b"\x1b[6n"[..], REPLIES_MAX)
             .flatten()
             .copied();
@@ -2489,7 +2494,7 @@ pub(crate) mod tests {
     /// the run, and the second is told.
     #[test]
     fn a_clean_frame_between_ends_the_run() -> Result<(), Box<dyn std::error::Error>> {
-        let mut pane = pane(3, 20)?;
+        let mut pane = pane(3, 20, 1 << 10)?;
         let queries: Vec<u8> = std::iter::repeat_n(&b"\x1b[6n"[..], REPLIES_MAX)
             .flatten()
             .copied()
@@ -2522,7 +2527,7 @@ pub(crate) mod tests {
     /// the queue refuses, reads with no query and resize reports alike.
     #[test]
     fn a_reply_refused_starts_no_run_of_input() -> Result<(), Box<dyn std::error::Error>> {
-        let mut pane = pane(3, 20)?;
+        let mut pane = pane(3, 20, 1 << 10)?;
         pane.output(b"\x1b[?2048h");
         let room = pane.input.room();
         pane.push(vec![0; room.saturating_sub(3)])?;
@@ -2545,7 +2550,7 @@ pub(crate) mod tests {
     /// copy made.
     #[test]
     fn pictures_and_copies_lost_are_told_once_a_run() -> Result<(), Box<dyn std::error::Error>> {
-        let mut pane = pane(3, 20)?;
+        let mut pane = pane(3, 20, 1 << 10)?;
         let picture = b"\x1bP9q#1;2;100;0;0!20~\x1b\\";
         let cell = fux_vt::CellSize::new(10, 20).ok_or("a cell")?;
         pane.output(picture);
@@ -2598,7 +2603,7 @@ pub(crate) mod tests {
     /// the next one in it is counted, not told again.
     #[test]
     fn resize_reports_refused_are_told_once_a_run() -> Result<(), Box<dyn std::error::Error>> {
-        let mut pane = pane(3, 20)?;
+        let mut pane = pane(3, 20, 1 << 10)?;
         pane.output(b"\x1b[?2048h");
         let room = pane.input.room();
         pane.push(vec![0; room])?;
@@ -2621,10 +2626,11 @@ pub(crate) mod tests {
 
     /// Replies past what one read queues are dropped, and that is told:
     /// once for reads that drop them one after another, and again for a
-    /// later drop after a read that dropped none.
+    /// later drop after a read that dropped none. An untold notice survives
+    /// the clean read that ends its loss run.
     #[test]
     fn replies_past_a_reads_bound_are_told_dropped() -> Result<(), Box<dyn std::error::Error>> {
-        let mut pane = pane(3, 20)?;
+        let mut pane = pane(3, 20, 1 << 10)?;
         pane.output(b"\x1b[6n");
         assert!(!pane.loses());
         let queries: Vec<u8> = std::iter::repeat_n(&b"\x1b[6n"[..], REPLIES_MAX)
@@ -2643,7 +2649,16 @@ pub(crate) mod tests {
         pane.input.drain_all();
         pane.output(b"\x1b[6n");
         pane.output(&queries);
-        assert_eq!(pane.take_untold().replies, dropped, "a drop after none");
+        pane.input.drain_all();
+        pane.output(b"\x1b[6n");
+        assert_eq!(
+            pane.take_untold().replies,
+            dropped,
+            "told after its run ended"
+        );
+        pane.input.drain_all();
+        pane.output(&queries);
+        assert_eq!(pane.take_untold().replies, dropped, "a later run");
         let room = pane.input.room();
         pane.push(vec![0; room])?;
         assert!(pane.push(b"x").is_err());
@@ -2660,7 +2675,7 @@ pub(crate) mod tests {
     /// fits is whole. The guide states the bounds.
     #[test]
     fn what_is_cut_of_a_title_is_said() -> Result<(), Box<dyn std::error::Error>> {
-        let mut pane = pane(3, 20)?;
+        let mut pane = pane(3, 20, 1 << 10)?;
         let (long, fits) = (
             std::iter::repeat_n('t', TITLE_MAX + 1).collect::<String>(),
             std::iter::repeat_n('n', NOTIFICATION_MAX).collect::<String>(),
@@ -2696,7 +2711,7 @@ pub(crate) mod tests {
     /// nothing.
     #[test]
     fn a_pushed_title_comes_back_when_popped() -> Result<(), Box<dyn std::error::Error>> {
-        let mut pane = pane(3, 30)?;
+        let mut pane = pane(3, 30, 1 << 10)?;
         pane.output(b"\x1b]2;shell\x07\x1b[22;0t\x1b]2;vim\x07");
         assert_eq!(pane.title.as_str(), "vim");
         pane.output(b"\x1b[23;0t");
@@ -2734,7 +2749,7 @@ pub(crate) mod tests {
     /// the style and says so; the cells keep what neovim then draws.
     #[test]
     fn a_pane_tells_neovim_it_keeps_underline_styles() -> Result<(), Box<dyn std::error::Error>> {
-        let mut pane = pane(3, 30)?;
+        let mut pane = pane(3, 30, 1 << 10)?;
         pane.output(b"\x1b[0m\x1b[4:3m\x1bP$qm\x1b\\");
         assert_eq!(pane.input.drain_all(), b"\x1bP1$r0;4:3m\x1b\\");
         pane.output(b"\x1b[0m\x1b[4:3m\x1b[58:2::255:0:0mx\x1b[0m");
@@ -2752,7 +2767,7 @@ pub(crate) mod tests {
     /// with them, in order.
     #[test]
     fn commands_ended_in_one_read_are_journaled_each() -> Result<(), Box<dyn std::error::Error>> {
-        let mut pane = pane(3, 30)?;
+        let mut pane = pane(3, 30, 1 << 10)?;
         let run = "1-0".parse().map_err(|()| "a run")?;
         let mut stream =
             crate::events::Reader::new(crate::inspect::Scope::All, &pane.journal, run, None)?;
