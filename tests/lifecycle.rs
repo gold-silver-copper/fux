@@ -299,7 +299,7 @@ fn a_client_that_stops_reading_catches_up_when_it_reads_again() -> Outcome {
     server.type_line("%1", "echo caught-up")?;
     eventually("the client to show what the server composes for it", || {
         client.pump()?;
-        let composed = server.ok(&["str", "c1", "client", "capture-client"])?;
+        let composed = server.ok(&["str", "c1", "client", "capture"])?;
         Ok(composed.contains("caught-up") && client.text().trim_end() == composed.trim_end())
     })?;
     // What was waiting for it stayed bounded: one frame.

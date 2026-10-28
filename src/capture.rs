@@ -1,4 +1,4 @@
-//! What `capture` and `capture-client` read: a screen's text, trimmed,
+//! What `capture` reads, of a pane or a client: a screen's text, trimmed,
 //! sliced and joined as asked, with its colours and attributes and its
 //! pane's state, as data (`Captured`) that the client renders as text or
 //! as JSON.

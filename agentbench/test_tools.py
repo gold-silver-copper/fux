@@ -71,7 +71,7 @@ class Tools(unittest.TestCase):
         self.assertEqual(used, {"capture", "quiet", "choose-workspace-for"})
         self.assertEqual(guide_check.missing_words(used, "capture quiet choose-workspace-for"), [])
         self.assertEqual(guide_check.missing_words(used, "capture quiet"), ["choose-workspace-for"])
-        self.assertEqual(guide_check.missing_words(used, "capture-client quietly"),
+        self.assertEqual(guide_check.missing_words(used, "captured quietly"),
                          ["capture", "choose-workspace-for", "quiet"])
         for text in ("", help_text.replace("  quiet", ""),
                      help_text.replace("  ", "")):

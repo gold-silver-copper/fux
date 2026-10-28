@@ -558,7 +558,7 @@ fn start(
                     })
                     .ok_or(format!("fux: no client in {client:?}"))?
                     .to_owned();
-                session.command(place, &["str", &id, "client", &last, "focus-pane"])?;
+                session.command(place, &["str", &id, "client", &last, "show"])?;
             }
             Ok(session)
         }

@@ -710,7 +710,7 @@ impl Grid {
         }
         self.put(y, x, cell);
     }
-    /// The text of a row, trailing blanks trimmed: for `capture-client`.
+    /// The text of a row, trailing blanks trimmed: for `capture`.
     pub fn row_text(&self, y: u16) -> String {
         let row = self.row(y).filter(|c| !c.is_wide_continuation());
         row.map(|c| c.shown())
@@ -2324,11 +2324,11 @@ mod tests {
         assert!(paint(&session, &mut shown)?.contains("\x1b]12;#00ff00\x1b\\"));
         assert!(paint(&session, &mut shown)?.is_empty(), "unchanged colour");
         crate::session::testing::run(&mut session, "str %1 pane horizontal split")?;
-        crate::session::testing::run(&mut session, "str c1 client str %2 pane focus-pane")?;
+        crate::session::testing::run(&mut session, "str c1 client str %2 pane show")?;
         assert!(paint(&session, &mut shown)?.contains("\x1b]112\x1b\\"));
         session.output(PaneId::of(1), b"\x1b]12;#ff0000\x07");
         assert!(!paint(&session, &mut shown)?.contains("\x1b]12"));
-        crate::session::testing::run(&mut session, "str c1 client str %1 pane focus-pane")?;
+        crate::session::testing::run(&mut session, "str c1 client str %1 pane show")?;
         assert!(paint(&session, &mut shown)?.contains("\x1b]12;#ff0000\x1b\\"));
         if let Some(view) = session.views.get_mut(&client) {
             view.mode = Mode::Panel(Panel::Repeat("repeat".into()));
@@ -2378,7 +2378,7 @@ mod tests {
         output_as(
             &mut s,
             Some(c),
-            "agent-opts str / cwd str x program run me swap focus-pane",
+            "agent-opts str / cwd str x program run me swap show",
         )?;
         let id = s.focused(c).ok_or("the pane")?;
         let respawn = format!("{id} kill-first respawn");

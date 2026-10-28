@@ -50,3 +50,6 @@ end
 
 # -- id : choose the newest paste buffer when the request runs
 define newest str newest end
+
+# -- listing : all workspaces, tabs, panes and clients
+define ls all info end

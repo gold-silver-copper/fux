@@ -308,7 +308,7 @@ fn cli(rng: &mut Rng, world: &World, clients: &[String]) -> Vec<String> {
         9 => format!("str {} pane str renamed-{} rename", pane(rng), rng.below(9)),
         10 => format!("str {} tab str tab-{} rename", tab(rng), rng.below(9)),
         11 => format!(
-            "str {} pane {} move-to",
+            "str {} pane {} move",
             pane(rng),
             match rng.below(4) {
                 0 => format!("str {} tab", tab(rng)),
@@ -317,9 +317,9 @@ fn cli(rng: &mut Rng, world: &World, clients: &[String]) -> Vec<String> {
                 _ => "str new-workspace".into(),
             }
         ),
-        12 => format!("str {} pane str {} move-beside", pane(rng), direction(rng)),
-        13 => format!("str {} pane str {} pane swap-panes", pane(rng), pane(rng)),
-        14 => format!("str {} pane str {} swap-toward", pane(rng), direction(rng)),
+        12 => format!("str {} pane str {} move", pane(rng), direction(rng)),
+        13 => format!("str {} pane str {} pane swap-with", pane(rng), pane(rng)),
+        14 => format!("str {} pane str {} swap-with", pane(rng), direction(rng)),
         15 => format!(
             "str {} pane str {} {} move-border",
             pane(rng),
@@ -336,11 +336,7 @@ fn cli(rng: &mut Rng, world: &World, clients: &[String]) -> Vec<String> {
             kind(rng),
             if rng.chance(50) { "next" } else { "previous" }
         ),
-        17 => format!(
-            "str {} client str {} pane focus-pane",
-            client(rng),
-            pane(rng)
-        ),
+        17 => format!("str {} client str {} pane show", client(rng), pane(rng)),
         18 => format!(
             "str {} client str {} focus",
             client(rng),
@@ -348,10 +344,10 @@ fn cli(rng: &mut Rng, world: &World, clients: &[String]) -> Vec<String> {
                 .copied()
                 .unwrap_or("next")
         ),
-        19 => format!("str {} client str {} tab show-tab", client(rng), tab(rng)),
+        19 => format!("str {} client str {} tab show", client(rng), tab(rng)),
         20 => format!("str {} client str next step-tab", client(rng)),
         21 => format!(
-            "str {} client str {} workspace show-workspace",
+            "str {} client str {} workspace show",
             client(rng),
             workspace(rng)
         ),
@@ -386,7 +382,7 @@ fn cli(rng: &mut Rng, world: &World, clients: &[String]) -> Vec<String> {
             0 => format!("str {} pane 0 history-budget", pane(rng)),
             _ => format!("str {} pane 100000 history-budget", pane(rng)),
         },
-        28 => "dump".into(),
+        28 => "all dump".into(),
         29 => format!(
             "str {} pane str typed-by-send-keys text send-keys",
             pane(rng)
@@ -399,7 +395,7 @@ fn cli(rng: &mut Rng, world: &World, clients: &[String]) -> Vec<String> {
         35 => format!("str {} pane newest paste-buffer", pane(rng)),
         36 => format!("str {} pane str TERM signal", pane(rng)),
         37 if clients.len() > 1 => format!("str {} client detach", client(rng)),
-        38 => format!("str {} client capture-client", client(rng)),
+        38 => format!("str {} client capture", client(rng)),
         _ => format!("str {} client str next step-workspace", client(rng)),
     };
     words(&line)
