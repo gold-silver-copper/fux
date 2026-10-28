@@ -51,10 +51,15 @@ end
 # -- id : choose the newest paste buffer when the request runs
 define newest str newest end
 
+# way -- way : a checked layout axis, independent of how many panes there are
+define layout-axis
+  dup str horizontal eq over str vertical eq or not
+  if str 'layout axis must be horizontal or vertical' fail then
+end
 # Empty input is an error; list/step/weight bounds apply before arrange submits anything.
 # panes way alternate base -- tree : balanced flat nodes with absolute child indices; leaves share room by pane count
 define layout-of
-  let base let alternate let way let ps
+  let base let alternate layout-axis let way let ps
   ps len let n
   n 0 eq if str 'a layout needs at least one pane' fail then
   n 1 eq if list ps first end else
@@ -71,7 +76,7 @@ end
 define even-of false 0 layout-of end
 # panes way cross -- tree : first pane takes two shares, the rest one, evenly along cross
 define main-of
-  let cross let way let ps
+  layout-axis let cross layout-axis let way let ps
   ps len 0 eq if str 'a layout needs at least one pane' fail then
   ps len 1 eq if list ps first end else
     list list way 2 1 1 2 end ps first end

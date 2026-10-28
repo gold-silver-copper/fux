@@ -4153,6 +4153,13 @@ mod tests {
             Some((1..=4).map(PaneId::of).collect())
         );
         for recipe in [
+            "str diagonal even-of",
+            "str diagonal str vertical main-of",
+            "str horizontal str diagonal main-of",
+        ] {
+            assert!(run(&mut s, &format!("list %1 end {recipe} drop")).is_err());
+        }
+        for recipe in [
             "str horizontal even-of",
             "str horizontal str vertical main-of",
             "tiled-of",
