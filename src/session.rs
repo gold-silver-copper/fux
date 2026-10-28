@@ -19,6 +19,7 @@ use crate::view::{self, ClientKind, Mode, View};
 use crate::wait::{Waiting, Watches};
 use crate::workspace::{Destination, Fit, Parts, Seat, Split, Tab, Workspace};
 use fux_vt::Size;
+use fuxix::Allocation;
 use std::collections::{BTreeMap, VecDeque};
 use std::num::NonZeroU32;
 use std::path::{Path, PathBuf};

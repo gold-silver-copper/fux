@@ -1,8 +1,7 @@
 //! Values on the stack: integers, booleans, strings, lists, and the
 //! application's own.
 use crate::error::{Code, Failure};
-use crate::{ImportLease, Imports};
-use std::rc::Rc;
+use crate::{Imports, Shared};
 
 /// How deep lists may nest: a list of lists of … at most this many. Every
 /// walk over a value (comparing, printing, dropping it) goes no deeper.
@@ -20,8 +19,8 @@ pub trait AppValue: Clone + PartialEq {
     const IMPORT_LIMIT: usize = 128 * 1024 * 1024;
 
     /// Reserve each owned allocation, recursively visiting shared children.
-    /// Inline application values need no reservation. Heap-owning values must
-    /// keep a lease with their storage and reserve it here.
+    /// Heap-owning values reserve Shared storage here, or carry an ImportLease
+    /// when ownership leaves a shared wrapper. Inline values need no reservation.
     fn retain(&self, _imports: &Imports) -> Result<(), Failure> {
         Ok(())
     }
@@ -126,8 +125,8 @@ kinds! {
 pub enum Value<A> {
     Int(i64),
     Bool(bool),
-    Str(Rc<Text>),
-    List(Rc<List<A>>),
+    Str(Shared<Text>),
+    List(Shared<List<A>>),
     App(A),
 }
 
@@ -143,7 +142,6 @@ pub struct Text {
     text: String,
     chars: usize,
     marks: Vec<usize>,
-    lease: ImportLease,
 }
 
 /// Two strings are equal when their text is: the rest follows from it.
@@ -164,17 +162,11 @@ impl Text {
                 text,
                 chars,
                 marks: Vec::new(),
-                lease: ImportLease::default(),
             };
         }
         let chars = text.chars().count();
         let marks = marks(&text, 0, 0).collect();
-        Text {
-            text,
-            chars,
-            marks,
-            lease: ImportLease::default(),
-        }
+        Text { text, chars, marks }
     }
 
     /// `other` added at the end: how many characters before it were
@@ -206,13 +198,10 @@ impl Text {
         text.push_str(self.part(0, i));
         text.push_str(&other.text);
         text.push_str(self.part(i.saturating_add(1), self.chars));
-        let Text {
-            text, chars, marks, ..
-        } = Text::new(text);
-        (self.text, self.chars, self.marks) = (text, chars, marks);
+        *self = Text::new(text);
     }
 
-    /// Space for an Rc<Text> and the peak character-index replacement,
+    /// Space for shared Text storage and the peak character-index replacement,
     /// excluding the String moved into it. `None` if the size overflows.
     pub fn import_bytes(chars: usize, ascii: bool) -> Option<usize> {
         let marks = if ascii {
@@ -228,9 +217,7 @@ impl Text {
                 .checked_add(capacity / 2)?
                 .checked_mul(std::mem::size_of::<usize>())?
         };
-        index
-            .checked_add(std::mem::size_of::<Text>())?
-            .checked_add(std::mem::size_of::<usize>().checked_mul(2)?)
+        index.checked_add(Shared::<Text>::bytes(0))
     }
 
     /// Moves out the String, dropping its character index without a copy.
@@ -314,7 +301,6 @@ pub struct List<A> {
     items: Vec<Value<A>>,
     depth: u8,
     weight: u64,
-    lease: ImportLease,
 }
 
 /// Two lists are equal when their values are.
@@ -353,7 +339,6 @@ impl<A: AppValue> List<A> {
             items,
             depth,
             weight,
-            lease: ImportLease::default(),
         })
     }
 
@@ -423,30 +408,29 @@ impl<A: AppValue> Value<A> {
         Ok(self.render_text(most, true)?.map(Text::new))
     }
 
-    fn charge_text(&self, left: &mut usize) -> Result<(), Failure> {
-        let bytes = match self {
-            Self::Int(_) | Self::Bool(_) => 0,
-            Self::Str(text) => std::mem::size_of::<Text>()
-                .saturating_add(std::mem::size_of::<usize>().saturating_mul(2))
-                .saturating_add(text.heap_bytes()),
-            Self::List(list) => std::mem::size_of::<List<A>>()
-                .saturating_add(std::mem::size_of::<usize>().saturating_mul(2))
-                .saturating_add(list.heap_bytes()),
-            Self::App(app) => app.text_bytes(),
-        };
-        *left = left.checked_sub(bytes).ok_or_else(text_limit)?;
-        if let Self::List(list) = self {
-            for item in &list.items {
-                item.charge_text(left)?;
-            }
+    fn own_bytes(&self) -> usize {
+        match self {
+            Self::Str(text) => Shared::<Text>::bytes(text.heap_bytes()),
+            Self::List(list) => Shared::<List<A>>::bytes(list.heap_bytes()),
+            Self::Int(_) | Self::Bool(_) | Self::App(_) => 0,
         }
-        Ok(())
+    }
+
+    /// Retained storage, counting each reference, with the application's own
+    /// payload or formatter workspace. `None` when the aggregate overflows.
+    pub fn storage_bytes(&self, app: impl Fn(&A) -> usize + Copy) -> Option<usize> {
+        match self {
+            Self::List(list) => list.items.iter().try_fold(self.own_bytes(), |n, item| {
+                n.checked_add(item.storage_bytes(app)?)
+            }),
+            Self::App(value) => Some(app(value)),
+            Self::Int(_) | Self::Bool(_) | Self::Str(_) => Some(self.own_bytes()),
+        }
     }
 
     fn render_text(&self, most: usize, indexed: bool) -> Result<Option<String>, Failure> {
         struct Count {
-            left: usize,
-            bytes: usize,
+            output: crate::Render,
             chars: usize,
             ascii: bool,
             most: usize,
@@ -462,17 +446,18 @@ impl<A: AppValue> Value<A> {
                     self.long = true;
                     return Err(std::fmt::Error);
                 }
-                self.left = self.left.checked_sub(text.len()).ok_or(std::fmt::Error)?;
-                self.bytes = self.bytes.checked_add(text.len()).ok_or(std::fmt::Error)?;
                 self.ascii &= text.is_ascii();
-                Ok(())
+                self.output.write_str(text)
             }
         }
-        let mut left = A::TEXT_LIMIT;
-        self.charge_text(&mut left)?;
+        let left = A::TEXT_LIMIT
+            .checked_sub(
+                self.storage_bytes(AppValue::text_bytes)
+                    .ok_or_else(text_limit)?,
+            )
+            .ok_or_else(text_limit)?;
         let mut count = Count {
-            left,
-            bytes: 0,
+            output: crate::Render::new(left),
             chars: 0,
             ascii: true,
             most,
@@ -481,28 +466,16 @@ impl<A: AppValue> Value<A> {
         if let Err(failure) = self.write_text(&mut count) {
             return if count.long { Ok(None) } else { Err(failure) };
         }
-        if indexed && Text::import_bytes(count.chars, count.ascii).is_none_or(|n| n > count.left) {
+        if indexed
+            && Text::import_bytes(count.chars, count.ascii)
+                .is_none_or(|n| n > count.output.remaining())
+        {
             return Err(text_limit());
         }
-        let mut text = String::new();
-        text.try_reserve_exact(count.bytes)
-            .map_err(|_| text_limit())?;
-        struct Output<'a> {
-            text: &'a mut String,
-            left: usize,
-        }
-        impl std::fmt::Write for Output<'_> {
-            fn write_str(&mut self, text: &str) -> std::fmt::Result {
-                self.left = self.left.checked_sub(text.len()).ok_or(std::fmt::Error)?;
-                self.text.push_str(text);
-                Ok(())
-            }
-        }
-        self.write_text(&mut Output {
-            text: &mut text,
-            left: count.bytes,
-        })?;
-        Ok(Some(text))
+        count
+            .output
+            .finish(|out| self.write_text(out), text_limit)
+            .map(Some)
     }
 
     fn write_text(&self, out: &mut dyn std::fmt::Write) -> Result<(), Failure> {
@@ -530,7 +503,7 @@ fn text_limit() -> Failure {
 
 impl<A> Value<A> {
     pub fn str(text: impl Into<String>) -> Self {
-        Self::Str(Rc::new(Text::new(text)))
+        Self::Str(Shared::new(Text::new(text)))
     }
 }
 
@@ -540,19 +513,9 @@ impl<A: AppValue> Value<A> {
     pub fn retain(&self, imports: &Imports) -> Result<(), Failure> {
         match self {
             Self::Int(_) | Self::Bool(_) => Ok(()),
-            Self::Str(text) => text.lease.reserve(
-                imports,
-                text.heap_bytes()
-                    .saturating_add(std::mem::size_of::<Text>())
-                    .saturating_add(std::mem::size_of::<[usize; 2]>()),
-            ),
+            Self::Str(text) => text.reserve(imports, self.own_bytes()),
             Self::List(list) => {
-                list.lease.reserve(
-                    imports,
-                    list.heap_bytes()
-                        .saturating_add(std::mem::size_of::<List<A>>())
-                        .saturating_add(std::mem::size_of::<[usize; 2]>()),
-                )?;
+                list.reserve(imports, self.own_bytes())?;
                 for value in list.items() {
                     value.retain(imports)?;
                 }

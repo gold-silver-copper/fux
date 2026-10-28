@@ -5,6 +5,7 @@ use crate::id::{ClientId, PaneId, TabId, WsId};
 use crate::json::Json;
 use crate::layout::Node;
 use crate::wire::wire;
+use fuxix::Allocation;
 
 /// Aggregate construction space for a snapshot, including its temporary vectors.
 pub const BYTES: usize = 8 << 20;
@@ -192,7 +193,7 @@ impl Snapshot {
             self.workspaces.len(),
             budget,
         )?;
-        let tabs = sorted(self.tabs.iter().map(|t| t.id), self.tabs.len(), budget)?;
+        sorted(self.tabs.iter().map(|t| t.id), self.tabs.len(), budget)?;
         let panes = sorted(self.panes.iter().map(|p| p.id), self.panes.len(), budget)?;
         let _clients = sorted(
             self.clients.iter().map(|c| c.id),
@@ -226,7 +227,6 @@ impl Snapshot {
             if ws.binary_search(&t.workspace).is_err()
                 || t.rows == 0
                 || t.cols == 0
-                || t.nodes.len() > NODES
                 || t.nodes.is_empty()
                 || t.revision
                     .is_some_and(|r| r.run != self.run || r.tab != t.id)
@@ -282,8 +282,6 @@ impl Snapshot {
         for p in &self.panes {
             if p.version.run != self.run
                 || p.version.pane != p.id
-                || tabs.binary_search(&p.tab).is_err()
-                || leaves.binary_search_by_key(&p.id, |(id, _)| *id).is_err()
                 || p.state.is_some() != (self.projection == Projection::Facts)
                 || p.recipe.is_some() != (self.projection == Projection::Recipe)
             {
@@ -309,11 +307,6 @@ impl Snapshot {
             if c.workspace != tab_ws || c.tab != pane_tab {
                 return Err(bad());
             }
-            if c.workspace.is_some_and(|w| ws.binary_search(&w).is_err())
-                || c.tab.is_some_and(|t| tabs.binary_search(&t).is_err())
-            {
-                return Err(bad());
-            }
         }
         Ok(())
     }
@@ -321,86 +314,22 @@ impl Snapshot {
 
 impl Snapshot {
     pub(crate) fn heap_bytes(&self) -> Result<usize, fuxth::Failure> {
-        let mut budget = crate::wire::Budget::with_limit(BYTES);
-        let result = (|| {
-            budget.slots::<Self>(1)?;
-            budget.slots::<Workspace>(self.workspaces.capacity())?;
-            budget.slots::<Tab>(self.tabs.capacity())?;
-            budget.slots::<Pane>(self.panes.capacity())?;
-            budget.slots::<Client>(self.clients.capacity())?;
-            for w in &self.workspaces {
-                budget.charge(
-                    w.name
-                        .as_ref()
-                        .map_or(0, String::capacity)
-                        .saturating_add(w.label.capacity()),
-                )?;
-                budget.slots::<TabId>(w.tabs.capacity())?;
-            }
-            for t in &self.tabs {
-                budget.charge(
-                    t.name
-                        .as_ref()
-                        .map_or(0, String::capacity)
-                        .saturating_add(t.label.capacity()),
-                )?;
-                budget.slots::<Node>(t.nodes.capacity())?;
-            }
-            for p in &self.panes {
-                budget.charge(
-                    p.name
-                        .as_ref()
-                        .map_or(0, String::capacity)
-                        .saturating_add(p.label.capacity())
-                        .saturating_add(p.title.capacity()),
-                )?;
-                if let Some(state) = &p.state {
-                    state.charge(&mut budget)?;
-                }
-                if let Some(r) = &p.recipe {
-                    budget.slots::<String>(r.argv.capacity())?;
-                    for arg in &r.argv {
-                        budget.charge(arg.capacity())?;
-                    }
-                    budget.slots::<(String, Option<Path>)>(r.env.capacity())?;
-                    for (key, value) in &r.env {
-                        budget.charge(key.capacity())?;
-                        if let Some(value) = value {
-                            budget.charge(value.bytes())?;
-                        }
-                    }
-                    budget.charge(r.initial_cwd.bytes())?;
-                    if let Directory::Known(path) = &r.observed_cwd {
-                        budget.charge(path.bytes())?;
-                    }
-                }
-            }
-            for c in &self.clients {
-                budget.charge(c.mode.capacity())?;
-                c.terminal_facts.charge(&mut budget)?;
-                c.output.charge(&mut budget)?;
-            }
-            Ok::<_, crate::session::Error>(())
-        })();
-        result.map_err(|e| fuxth::Failure::new(fuxth::Code::TooLong, e.to_string()))?;
-        Ok(BYTES.saturating_sub(budget.remaining()))
+        let bytes = std::mem::size_of::<Self>().saturating_add(crate::wire::retained(self));
+        crate::wire::Budget::with_limit(BYTES)
+            .charge(bytes)
+            .map_err(fuxth::Failure::from)?;
+        Ok(bytes)
     }
 
     pub(crate) fn write_text(&self, out: &mut dyn std::fmt::Write) -> std::fmt::Result {
-        struct Lines<'a> {
-            out: &'a mut dyn std::fmt::Write,
-            first: bool,
-        }
-        impl Lines<'_> {
-            fn line(&mut self, args: std::fmt::Arguments<'_>) -> std::fmt::Result {
-                if !self.first {
-                    self.out.write_char('\n')?;
-                }
-                self.first = false;
-                self.out.write_fmt(args)
+        let mut first = true;
+        let mut line = |out: &mut dyn std::fmt::Write, args: std::fmt::Arguments<'_>| {
+            if !first {
+                out.write_char('\n')?;
             }
-        }
-        let mut lines = Lines { out, first: true };
+            first = false;
+            out.write_fmt(args)
+        };
         let mut tabs = self.tabs.iter().peekable();
         let mut panes = self.panes.iter().peekable();
         let whole = matches!(
@@ -409,24 +338,30 @@ impl Snapshot {
         );
         for w in &self.workspaces {
             if whole {
-                lines.line(format_args!(
-                    "{}",
-                    crate::words::Labelled(
-                        crate::words::Label::Id(AnyRef::Workspace(w.id)),
-                        crate::words::Label::Text(&w.label)
-                    )
-                ))?;
+                line(
+                    out,
+                    format_args!(
+                        "{}",
+                        crate::words::Labelled(
+                            crate::words::Label::Id(AnyRef::Workspace(w.id)),
+                            crate::words::Label::Text(&w.label)
+                        )
+                    ),
+                )?;
             }
             while let Some(t) = tabs.next_if(|t| t.workspace == w.id) {
                 if !matches!(self.scope, Scope::Target(AnyRef::Pane(_))) {
-                    lines.line(format_args!(
-                        "{}{}",
-                        if whole { "  " } else { "" },
-                        crate::words::Labelled(
-                            crate::words::Label::Id(AnyRef::Tab(t.id)),
-                            crate::words::Label::Text(&t.label)
-                        )
-                    ))?;
+                    line(
+                        out,
+                        format_args!(
+                            "{}{}",
+                            if whole { "  " } else { "" },
+                            crate::words::Labelled(
+                                crate::words::Label::Id(AnyRef::Tab(t.id)),
+                                crate::words::Label::Text(&t.label)
+                            )
+                        ),
+                    )?;
                 }
                 while let Some(p) = panes.next_if(|p| p.tab == t.id) {
                     let indent = if whole {
@@ -436,26 +371,29 @@ impl Snapshot {
                     } else {
                         ""
                     };
-                    lines.line(format_args!(
-                        "{indent}{} {}x{}",
-                        crate::words::Labelled(
-                            crate::words::Label::Id(AnyRef::Pane(p.id)),
-                            crate::words::Label::Text(&p.label)
+                    line(
+                        out,
+                        format_args!(
+                            "{indent}{} {}x{}",
+                            crate::words::Labelled(
+                                crate::words::Label::Id(AnyRef::Pane(p.id)),
+                                crate::words::Label::Text(&p.label)
+                            ),
+                            p.cols,
+                            p.rows
                         ),
-                        p.cols,
-                        p.rows
-                    ))?;
+                    )?;
                     if let Some(pid) = p.pid {
-                        write!(lines.out, " pid {pid}")?;
+                        write!(out, " pid {pid}")?;
                     } else if let Some(Json::Int(code)) =
                         p.state.as_ref().and_then(|s| s.get("exited"))
                     {
-                        write!(lines.out, " exited {code}")?;
+                        write!(out, " exited {code}")?;
                     } else if let Some(Json::Int(signal)) =
                         p.state.as_ref().and_then(|s| s.get("signal"))
                     {
                         write!(
-                            lines.out,
+                            out,
                             " {}",
                             crate::process::Told(crate::process::Ended::Signalled(
                                 i32::try_from(*signal).map_err(|_| std::fmt::Error)?
@@ -463,7 +401,7 @@ impl Snapshot {
                         )?;
                     } else if p.state.is_some() {
                         write!(
-                            lines.out,
+                            out,
                             " {}",
                             crate::process::Told(crate::process::Ended::Lost)
                         )?;
@@ -473,33 +411,20 @@ impl Snapshot {
         }
         if matches!(self.scope, Scope::All | Scope::Client(_)) {
             for c in &self.clients {
-                lines.line(format_args!("client {} {}x{} ", c.id, c.cols, c.rows))?;
-                match c.workspace {
-                    Some(w) => write!(lines.out, "{w}")?,
-                    None => lines.out.write_char('-')?,
-                }
-                lines.out.write_char(' ')?;
-                match c.tab {
-                    Some(t) => write!(lines.out, "{t}")?,
-                    None => lines.out.write_char('-')?,
-                }
-                lines.out.write_char(' ')?;
-                match c.pane {
-                    Some(p) => write!(lines.out, "{p}")?,
-                    None => lines.out.write_char('-')?,
-                }
+                line(out, format_args!("client {} {}x{} ", c.id, c.cols, c.rows))?;
+                let label = |id: Option<AnyRef>| {
+                    id.map_or(crate::words::Label::Text("-"), crate::words::Label::Id)
+                };
+                write!(
+                    out,
+                    "{} {} {}",
+                    label(c.workspace.map(AnyRef::Workspace)),
+                    label(c.tab.map(AnyRef::Tab)),
+                    label(c.pane.map(AnyRef::Pane))
+                )?;
             }
-            lines.line(format_args!("events {}", self.events))?;
+            line(out, format_args!("events {}", self.events))?;
         }
         Ok(())
-    }
-}
-
-impl Path {
-    fn bytes(&self) -> usize {
-        match self {
-            Self::Utf8(s) => s.capacity(),
-            Self::Bytes(b) => b.capacity(),
-        }
     }
 }

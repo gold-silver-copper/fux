@@ -896,9 +896,8 @@ fn a_prepared_library_serves_every_clone() -> Result<(), Error> {
 
 #[test]
 fn sequence_mutation_preserves_shared_values() -> Result<(), Error> {
-    let list = |items: Vec<Value<Ticket>>| {
-        crate::List::new(items).map(|l| Value::List(std::rc::Rc::new(l)))
-    };
+    let list =
+        |items: Vec<Value<Ticket>>| crate::List::new(items).map(|l| Value::List(Shared::new(l)));
     assert_eq!(
         run("list 1 end 2 push")?,
         list(ints(&[1, 2])).into_iter().collect::<Vec<_>>()
@@ -1466,7 +1465,7 @@ fn a_caught_failure_undoes_what_the_body_began() -> Result<(), Error> {
     let blocks = "list 1 str fail try 2 list 3 4 end each dup 4 eq if str four fail then end
         catch drop end 5 end list 6 7 end each end";
     let list = List::new([ints(&[1]), strs(&["four"]), ints(&[5])].concat());
-    let list = list.map(|l| Value::List(std::rc::Rc::new(l)));
+    let list = list.map(|l| Value::List(Shared::new(l)));
     assert_eq!(run(blocks)?, [Vec::from_iter(list), ints(&[6, 7])].concat());
     let names = "1 let x str fail try 2 let x x fail catch drop drop end x";
     assert_eq!(
@@ -1756,7 +1755,7 @@ fn imported_strings_and_lists_hold_and_release_their_storage() -> Result<(), Fai
     held.retain(&grant)?;
     let duplicate = held.clone();
     duplicate.retain(&grant)?;
-    let list = Value::List(std::rc::Rc::new(
+    let list = Value::List(Shared::new(
         List::new(vec![held]).ok_or_else(|| Failure::new(Code::TooLong, "list"))?,
     ));
     list.retain(&grant)?;
@@ -1778,7 +1777,7 @@ fn imported_strings_and_lists_hold_and_release_their_storage() -> Result<(), Fai
     let Value::Str(mut storage) = held else {
         return Err(Failure::new(Code::Type, "test string"));
     };
-    std::rc::Rc::make_mut(&mut storage).replace(0, &Text::new("y"));
+    Shared::make_mut(&mut storage).replace(0, &Text::new("y"));
     assert_eq!(
         text().retain(&grant).map_err(|e| e.code),
         Err(Code::TooLong)
