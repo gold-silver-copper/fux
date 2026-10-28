@@ -7,7 +7,7 @@ use std::num::NonZeroU8;
 /// The exit statuses, a meaning each, besides 0: what was asked came.
 /// Any failure but these.
 const FAILED: NonZeroU8 = NonZeroU8::MIN;
-/// The pane waited on closed, or everything an event stream watched.
+/// The pane waited on closed.
 const CLOSED: NonZeroU8 = NonZeroU8::MIN.saturating_add(3);
 /// The time limit came first: as `timeout(1)`.
 const TIMED_OUT: NonZeroU8 = NonZeroU8::MIN.saturating_add(123);
