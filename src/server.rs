@@ -589,6 +589,7 @@ pub struct Server {
     /// What each descriptor polled is, and then what is ready; reused by
     /// every tick.
     slots: Vec<Slot>,
+    pollfds: fuxix::poll::Poll,
     ready: Vec<(Slot, PollFlags)>,
     /// When an `accept` failure was last logged.
     accept_logged: Option<Instant>,
@@ -649,6 +650,7 @@ pub fn serve(socket: &SocketPath) -> Result<(), Error> {
         read_buffer: vec![0u8; 64 * 1024],
         paint_buffer: Vec::new(),
         slots: Vec::new(),
+        pollfds: fuxix::poll::Poll::default(),
         ready: Vec::new(),
         accept_logged: None,
     };
@@ -726,7 +728,10 @@ impl Server {
             // the due wakes, before the ready descriptors are served.
             wakes.extend(self.wakes());
             let now = Instant::now();
-            let timeout = wakes.iter().map(|(at, _)| *at).min()
+            let timeout = wakes
+                .iter()
+                .map(|(at, _)| *at)
+                .min()
                 .map(|at| at.saturating_duration_since(now));
             let mut ready = mem::take(&mut self.ready);
             self.poll(timeout, &mut ready);
@@ -872,8 +877,7 @@ impl Server {
             .collect();
         let slots = &mut self.slots;
         slots.clear();
-        // Built afresh, as it borrows the descriptors; each with its slot.
-        let mut fds = Vec::new();
+        let mut fds = self.pollfds.list();
         let mut add = |fd, slot| {
             fds.push(fd);
             slots.push(slot);
@@ -928,13 +932,12 @@ impl Server {
         // does not wait.
         let waits = runnable.iter().any(|&ready| ready);
         let timeout = if waits { Some(Duration::ZERO) } else { timeout };
-        match fuxix::poll::poll(&mut fds, timeout) {
+        match fds.poll(timeout) {
             Ok(_) | Err(Errno::INTR) => {}
             Err(error) => log!("poll: {error}"),
         }
         ready.extend(
-            fds.iter()
-                .map(PollFd::revents)
+            fds.revents()
                 .zip(slots.iter().copied())
                 .map(|(flags, slot)| {
                     let waits = matches!(slot, Slot::Conn(i)
@@ -1691,6 +1694,7 @@ mod tests {
                 read_buffer: Vec::new(),
                 paint_buffer: Vec::new(),
                 slots: Vec::new(),
+                pollfds: fuxix::poll::Poll::default(),
                 ready: Vec::new(),
                 accept_logged: None,
             },
@@ -1827,6 +1831,7 @@ mod tests {
             read_buffer: vec![0; 64 * 1024],
             paint_buffer: Vec::new(),
             slots: Vec::new(),
+            pollfds: fuxix::poll::Poll::default(),
             ready: Vec::new(),
             accept_logged: None,
         };
