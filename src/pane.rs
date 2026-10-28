@@ -521,7 +521,7 @@ pub enum Runs {
 /// it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Launch {
-    pub argv: crate::config::Program,
+    pub argv: crate::command::Program,
     pub cwd: std::path::PathBuf,
     pub env: crate::command::EnvPatch,
 }
@@ -1834,7 +1834,7 @@ impl Pane {
 pub(crate) mod tests {
     pub(crate) fn options(bytes: usize) -> Result<crate::command::PaneOptions, String> {
         Ok(crate::command::PaneOptions {
-            history_bytes: crate::config::HistoryBytes::new(bytes).ok_or("history budget")?,
+            history_bytes: crate::command::HistoryBytes::new(bytes).ok_or("history budget")?,
             program_clipboard: true,
         })
     }
@@ -1844,7 +1844,7 @@ pub(crate) mod tests {
 
     pub(crate) fn shell() -> Result<Runs, String> {
         Ok(Runs::Shell(Launch {
-            argv: crate::config::Program::new("/bin/sh".into(), Vec::new())?,
+            argv: crate::command::Program::new("/bin/sh".into(), Vec::new())?,
             cwd: "/".into(),
             env: crate::command::EnvPatch::default(),
         }))

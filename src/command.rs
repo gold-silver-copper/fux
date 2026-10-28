@@ -5,9 +5,175 @@ use crate::id::{BufferId, ClientId, PaneId, TabId, WsId};
 use crate::keys::mouse::MouseButton;
 use crate::keys::{Direction, KeyPress};
 use crate::layout::Axis;
-use crate::wire::wire;
+use crate::wire::{Error, Reader, Wire, wire};
 use std::num::NonZeroU32;
 use std::path::PathBuf;
+use std::time::Duration;
+
+/// A pane's checked history budget, in bytes.
+pub type HistoryBytes = Number<0, { 1 << 30 }>;
+
+/// The longest limit a wait may be given: a day.
+pub const MAX_WAIT: usize = 86_400;
+
+/// How long a wait waits before it times out: up to `MAX_WAIT` seconds, so its
+/// deadline is a time there is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Limit(u32);
+
+impl Limit {
+    /// `secs` seconds, if at most `MAX_WAIT`.
+    pub fn secs(secs: u64) -> Option<Limit> {
+        let within = |s: &u32| usize::try_from(*s).is_ok_and(|s| s <= MAX_WAIT);
+        u32::try_from(secs).ok().filter(within).map(Limit)
+    }
+
+    /// `secs` seconds, or why not.
+    pub fn read(secs: u64) -> Result<Limit, String> {
+        Limit::secs(secs).ok_or_else(|| format!("{secs} s: a wait's limit is at most {MAX_WAIT} s"))
+    }
+
+    pub fn duration(self) -> Duration {
+        Duration::from_secs(u64::from(self.0))
+    }
+
+    pub fn seconds(self) -> u32 {
+        self.0
+    }
+}
+
+/// A whole number from `MIN` to `MAX`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Number<const MIN: usize, const MAX: usize>(usize);
+
+impl<const MIN: usize, const MAX: usize> Number<MIN, MAX> {
+    /// `n`, if from `MIN` to `MAX`.
+    pub fn new(n: usize) -> Option<Self> {
+        (MIN..=MAX).contains(&n).then_some(Number(n))
+    }
+
+    pub fn get(self) -> usize {
+        self.0
+    }
+}
+
+impl<const MIN: usize, const MAX: usize> Wire for Number<MIN, MAX> {
+    fn put(&self, out: &mut impl crate::wire::Sink) {
+        self.0.put(out);
+    }
+    fn get(r: &mut Reader<'_>) -> Result<Self, Error> {
+        Number::new(usize::get(r)?).ok_or(Error::Bad("number"))
+    }
+}
+
+/// The argv fux starts in a pane: a program, never empty, then its
+/// arguments, each a word as it is, blanks, quotes and all, but for NUL,
+/// which no word a program is given holds.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Program {
+    program: String,
+    args: Vec<String>,
+}
+
+impl Program {
+    /// `program` and `args`, or why they are no program.
+    pub fn new(program: String, args: Vec<String>) -> Result<Program, String> {
+        if program.is_empty() {
+            return Err("a program is needed".to_owned());
+        }
+        if let Some(word) = std::iter::once(&program)
+            .chain(&args)
+            .find(|w| w.contains('\0'))
+        {
+            return Err(format!("{word:?}: a program's word holds no NUL"));
+        }
+        let checked = Program { program, args };
+        if checked.encoded_len() > crate::protocol::MAX_PAYLOAD {
+            return Err("program argv exceeds the launch frame limit".to_owned());
+        }
+        Ok(checked)
+    }
+
+    pub(crate) fn encoded_len(&self) -> usize {
+        std::iter::once(&self.program)
+            .chain(&self.args)
+            .fold(4usize, |bytes, word| {
+                bytes.saturating_add(4).saturating_add(word.len())
+            })
+    }
+
+    pub(crate) fn heap_bytes(&self) -> usize {
+        self.args.iter().fold(
+            self.program.capacity().saturating_add(
+                self.args
+                    .capacity()
+                    .saturating_mul(std::mem::size_of::<String>()),
+            ),
+            |bytes, arg| bytes.saturating_add(arg.capacity()),
+        )
+    }
+
+    pub(crate) fn iter(&self) -> impl Iterator<Item = &str> {
+        std::iter::once(self.program.as_str()).chain(self.args.iter().map(String::as_str))
+    }
+    pub(crate) fn len(&self) -> usize {
+        self.args.len().saturating_add(1)
+    }
+
+    pub fn program(&self) -> &str {
+        &self.program
+    }
+
+    /// Its command line, the program first.
+    pub fn argv(&self) -> Vec<String> {
+        let all = std::iter::once(&self.program).chain(&self.args);
+        all.cloned().collect()
+    }
+}
+
+/// Read back only checked argv.
+impl Wire for Program {
+    fn put(&self, out: &mut impl crate::wire::Sink) {
+        self.program.put(out);
+        self.args.put(out);
+    }
+    fn get(r: &mut Reader<'_>) -> Result<Self, Error> {
+        let (program, args) = (String::get(r)?, Vec::get(r)?);
+        Program::new(program, args).map_err(|_| Error::Bad("program"))
+    }
+}
+
+/// A shell variable a caller may pass to a pane: letters, digits and `_`,
+/// not first a digit, excluding the pane's reserved identity names.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EnvName(String);
+
+impl EnvName {
+    pub(crate) fn heap_bytes(&self) -> usize {
+        self.0.capacity()
+    }
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::str::FromStr for EnvName {
+    type Err = String;
+    fn from_str(name: &str) -> Result<EnvName, String> {
+        pane_var(name).map(|()| EnvName(name.to_owned()))
+    }
+}
+
+impl Wire for EnvName {
+    fn put(&self, out: &mut impl crate::wire::Sink) {
+        self.0.put(out);
+    }
+    fn get(r: &mut Reader<'_>) -> Result<Self, Error> {
+        String::get(r)?
+            .parse()
+            .map_err(|_| Error::Bad("variable name"))
+    }
+}
 
 wire! {
     /// A copy by its stable id, or the newest at the time of the request.
@@ -451,7 +617,7 @@ wire! {
     pub struct Wait {
         pub since: Since,
         /// How long before it times out, supplied by the caller.
-        pub timeout: crate::config::Limit,
+        pub timeout: Limit,
     }
 }
 
@@ -565,7 +731,7 @@ wire! {
             size: Size,
             cwd: Option<PathBuf>,
             env: EnvPatch,
-            argv: crate::config::Program,
+            argv: Program,
             options: PaneOptions,
         },
         /// The program `run` started, started again in its pane.
@@ -575,7 +741,7 @@ wire! {
             kill: bool,
             env: EnvPatch,
             /// Another program instead: the one it ran without.
-            argv: Option<crate::config::Program>,
+            argv: Option<Program>,
         },
         /// A notice on the clients showing the target: every client without.
         Notify {
@@ -628,7 +794,7 @@ wire! {
         /// Change only this pane's history budget.
         HistoryBudget {
             target: PaneId,
-            bytes: crate::config::HistoryBytes,
+            bytes: HistoryBytes,
         },
         /// The pane's history, dropped.
         ClearHistory {
@@ -858,7 +1024,7 @@ impl EnvPatch {
     }
 
     /// Capture only the selected names, including explicit absence.
-    pub fn selected(names: &[crate::config::EnvName]) -> Result<Self, String> {
+    pub fn selected(names: &[EnvName]) -> Result<Self, String> {
         let mut patch = Self::default();
         for name in names {
             patch.push(name.as_str().to_owned(), std::env::var_os(name.as_str()))?;
@@ -871,13 +1037,13 @@ wire! {
     /// The role determines exit, signal and respawn semantics; argv is explicit.
     #[derive(Clone, Debug, PartialEq, Eq)]
     pub enum Start {
-        Shell(argv: crate::config::Program),
-        Program(argv: crate::config::Program),
+        Shell(argv: Program),
+        Program(argv: Program),
     }
 }
 
 impl Start {
-    pub fn argv(&self) -> &crate::config::Program {
+    pub fn argv(&self) -> &Program {
         match self {
             Self::Shell(argv) | Self::Program(argv) => argv,
         }
@@ -888,7 +1054,7 @@ wire! {
     /// Policy supplied with every creation, retained by that pane.
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
     pub struct PaneOptions {
-        pub history_bytes: crate::config::HistoryBytes,
+        pub history_bytes: HistoryBytes,
         pub program_clipboard: bool,
     }
 }

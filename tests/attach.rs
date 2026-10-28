@@ -1306,7 +1306,7 @@ fn empty_attach_retries_are_typed_and_create_only_once() -> Outcome {
     let mut conditional = attach.clone();
     conditional.initial = Some(fux::command::InitialWorkspace {
         name: Some("first".into()),
-        start: fux::command::Start::Program(fux::config::Program::new(
+        start: fux::command::Start::Program(fux::command::Program::new(
             "/bin/cat".into(),
             Vec::new(),
         )?),

@@ -743,7 +743,7 @@ impl Session {
         id: PaneId,
         kill: bool,
         env: &command::EnvPatch,
-        argv: Option<&crate::config::Program>,
+        argv: Option<&command::Program>,
     ) -> Result<Reply, Error> {
         let pane = self.pane(id)?;
         let Runs::Explicit(launch) = &pane.runs else {
@@ -783,7 +783,7 @@ impl Session {
         // nothing can then leave running.
         let runs = Runs::Explicit(launch.clone());
         let options = command::PaneOptions {
-            history_bytes: crate::config::HistoryBytes::new(pane.history_bytes())
+            history_bytes: command::HistoryBytes::new(pane.history_bytes())
                 .ok_or_else(|| fail(Raise::Start, "pane history budget is out of range"))?,
             program_clipboard: pane.program_clipboard(),
         };
@@ -3444,7 +3444,7 @@ impl crate::script::Asks for InProcess<'_> {
 #[cfg(test)]
 pub(crate) mod testing {
     use super::{InProcess, Reply, Session};
-    use crate::command::{Command, Request};
+    use crate::command::{self, Command, Request};
     use crate::id::ClientId;
 
     /// A session with `/bin/sh`, started at 80 by 24.
@@ -3461,7 +3461,7 @@ pub(crate) mod testing {
                 .preferences
                 .pane_options(),
             name: None,
-            start: crate::command::Start::Shell(crate::config::Program::new(
+            start: crate::command::Start::Shell(command::Program::new(
                 "/bin/sh".into(),
                 Vec::new(),
             )?),
@@ -3932,7 +3932,7 @@ mod tests {
             size: Some(crate::view::Screen::new(24, 80)?),
             cwd: Some("/".into()),
             env,
-            argv: crate::config::Program::new("/bin/cat".into(), Vec::new())?,
+            argv: command::Program::new("/bin/cat".into(), Vec::new())?,
         };
         let origin = Origin::Cli(Caller::default());
         let mut refused = false;
@@ -4030,10 +4030,7 @@ mod tests {
                 .preferences
                 .pane_options(),
             name: None,
-            start: command::Start::Shell(crate::config::Program::new(
-                "/bin/sh".into(),
-                Vec::new(),
-            )?),
+            start: command::Start::Shell(command::Program::new("/bin/sh".into(), Vec::new())?),
             cwd: "relative".into(),
             env: command::EnvPatch::default(),
         };
@@ -4091,7 +4088,7 @@ mod tests {
         s.launch = Some("/nonexistent/fux.sock".into());
         s.exe = None;
         let launch = pane::Launch {
-            argv: crate::config::Program::new(
+            argv: command::Program::new(
                 "/bin/sh".into(),
                 vec!["-c".into(), "[ -z \"${FUX+x}\" ]".into()],
             )?,
@@ -4460,7 +4457,7 @@ mod tests {
             }
             if explicit {
                 let runs = Runs::Explicit(pane::Launch {
-                    argv: crate::config::Program::new("/bin/sh".into(), Vec::new())?,
+                    argv: command::Program::new("/bin/sh".into(), Vec::new())?,
                     cwd: "/".into(),
                     env: command::EnvPatch::default(),
                 });
@@ -4607,10 +4604,7 @@ mod tests {
                 .map_err(|e| e.to_string())?
                 .preferences
                 .pane_options(),
-            start: command::Start::Shell(crate::config::Program::new(
-                "/bin/sh".into(),
-                Vec::new(),
-            )?),
+            start: command::Start::Shell(command::Program::new("/bin/sh".into(), Vec::new())?),
             target: None,
             name: None,
             size: None,
@@ -4809,7 +4803,7 @@ mod tests {
             kill: true,
             env: command::EnvPatch::default(),
             argv: match argv.split_first() {
-                Some((p, args)) => Some(crate::config::Program::new(
+                Some((p, args)) => Some(command::Program::new(
                     (*p).into(),
                     args.iter().map(|a| (*a).into()).collect(),
                 )?),
@@ -6141,7 +6135,7 @@ mod tests {
         let mut s = started()?;
         run(&mut s, "str %1 pane horizontal split")?;
         let origin = Origin::Cli(Caller::default());
-        let timeout = crate::config::Limit::read(30)?;
+        let timeout = command::Limit::read(30)?;
         let wait = |target| {
             Request::Wait(command::Wait {
                 since: command::Since::Now(target),
@@ -6336,7 +6330,7 @@ mod tests {
         s.output(PaneId::of(1), &frame);
         let wait = Request::Wait(command::Wait {
             since: command::Since::Version(since),
-            timeout: crate::config::Limit::read(0)?,
+            timeout: command::Limit::read(0)?,
         });
         let Begun::Waiting(waiting) = s.begin(wait, &Origin::Cli(Caller::default())) else {
             return Err("a wait mid-frame answered at once".into());
@@ -7126,7 +7120,7 @@ mod tests {
             size: Some(crate::view::Screen::new(24, 80)?),
             cwd: Some(dir.clone()),
             env: crate::command::EnvPatch::default(),
-            argv: crate::config::Program::new("cat".into(), Vec::new())?,
+            argv: command::Program::new("cat".into(), Vec::new())?,
         };
         s.execute(&program, &Origin::Cli(Caller::default()))?;
         let dump = s.dump_layout(None).map_err(|e| e.to_string())?;

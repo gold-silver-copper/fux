@@ -2,7 +2,7 @@
 //! as the same value, so that the server receives what a client's words
 //! built, and never reads words itself. Big-endian numbers; a string or a
 //! list is its length then its items; an option or an enum its tag first.
-use crate::command::{EnvPatch, Percent};
+use crate::command::{EnvPatch, Limit, Percent};
 use crate::id::{ClientId, PaneId, TabId, WsId};
 use crate::keys::mouse::MouseButton;
 use crate::keys::{Direction, KeyPress};
@@ -627,13 +627,13 @@ text_wire!(crate::command::Run, "server run");
 text_wire!(crate::events::Cursor, "cursor");
 
 /// Its seconds, read back only if a wait may wait that long.
-impl Wire for crate::config::Limit {
+impl Wire for Limit {
     fn put(&self, out: &mut impl crate::wire::Sink) {
         self.seconds().put(out);
     }
     fn get(r: &mut Reader<'_>) -> Result<Self, Error> {
         let secs = u32::get(r)?;
-        crate::config::Limit::secs(u64::from(secs)).ok_or(Error::Bad("wait limit"))
+        Limit::secs(u64::from(secs)).ok_or(Error::Bad("wait limit"))
     }
 }
 
@@ -811,7 +811,7 @@ impl Wire for Percent {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::command::{Command, Extent};
+    use crate::command::{Command, Extent, Program};
 
     /// An ordinary large styled reply fits; crossing the wire cap fails
     /// before the accumulator's length or capacity crosses it.
@@ -1027,7 +1027,6 @@ mod tests {
 
     #[test]
     fn argv_is_nonempty_and_checked_at_decode() -> Result<(), String> {
-        use crate::config::Program;
         for (program, args) in [("", vec![]), ("/bin/sh", vec!["bad\0arg".to_owned()])] {
             assert!(Program::new(program.into(), args.clone()).is_err());
             let mut bytes = encode(&program.to_owned()).map_err(|e| e.to_string())?;
@@ -1054,10 +1053,7 @@ mod tests {
                 .pane_options(),
             axis: crate::layout::Axis::Vertical,
             target: crate::id::PaneId::of(1),
-            start: crate::command::Start::Shell(crate::config::Program::new(
-                "/bin/sh".into(),
-                Vec::new(),
-            )?),
+            start: crate::command::Start::Shell(Program::new("/bin/sh".into(), Vec::new())?),
             cwd: Some(dir.clone()),
             env: EnvPatch::default(),
             shares: None,
@@ -1070,9 +1066,9 @@ mod tests {
 
     #[test]
     fn creation_policy_requires_a_checked_budget_and_permission() -> Result<(), String> {
-        use crate::command::PaneOptions;
+        use crate::command::{HistoryBytes, PaneOptions};
         let policy = PaneOptions {
-            history_bytes: crate::config::HistoryBytes::new(0).ok_or("budget")?,
+            history_bytes: HistoryBytes::new(0).ok_or("budget")?,
             program_clipboard: false,
         };
         let encoded = encode(&policy).map_err(|e| e.to_string())?;
@@ -1080,7 +1076,10 @@ mod tests {
         let mut invalid = Vec::new();
         ((1usize << 30) + 1).put(&mut invalid);
         false.put(&mut invalid);
-        assert!(Reader::new(&invalid).whole::<PaneOptions>().is_err());
+        assert_eq!(
+            Reader::new(&invalid).whole::<PaneOptions>(),
+            Err(Error::Bad("number"))
+        );
         assert!(
             Reader::new(
                 encoded
