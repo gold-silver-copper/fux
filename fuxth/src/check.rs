@@ -453,7 +453,11 @@ pub(crate) fn definitions<A>(program: &Program<A>, known: &mut Known) {
 /// Definition `id`'s summary, gone over until it stays the same, from what
 /// is known of it (at first, nothing of what a call to itself does).
 fn summarise<A>(program: &Program<A>, known: &mut Known, id: usize, code: &Steps<A>) {
-    for round in 0..=RECURSION_ROUNDS {
+    // A call to this word or a later one can change as summaries grow.
+    // Earlier words are already known: one pass has their complete input.
+    let recursive = code.ops.iter().any(|op| matches!(op, Op::Call(c) if *c >= id));
+    let rounds = if recursive { RECURSION_ROUNDS } else { 0 };
+    for round in 0..=rounds {
         let unit = Unit::new(program, code, State::start(false), known, Some(id));
         let new = unit.run();
         let current = known.summaries.get(id).cloned().flatten();
