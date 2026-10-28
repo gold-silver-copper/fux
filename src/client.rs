@@ -927,13 +927,6 @@ impl Keyboard {
         }
     }
 
-    /// Queue an explicit client program using the same admission as a key.
-    pub fn program(&mut self, job: Job) -> Vec<Dispatch> {
-        let mut acts = Vec::new();
-        self.run(job, &mut acts);
-        acts
-    }
-
     /// What the terminal sent, decoded (`Screen::input`).
     fn input(&mut self, input: Input, acts: &mut Vec<Dispatch>) {
         let state = lock(&self.state);
@@ -1678,8 +1671,14 @@ mod tests {
             .collect()
     }
 
+    fn admitted(keyboard: &mut Keyboard, job: Job) -> Vec<Dispatch> {
+        let mut outputs = Vec::new();
+        keyboard.run(job, &mut outputs);
+        outputs
+    }
+
     fn program(keyboard: &mut Keyboard, job: Job) -> Vec<Act> {
-        let outputs = keyboard.program(job);
+        let outputs = admitted(keyboard, job);
         transport(keyboard, outputs)
     }
 
@@ -1733,9 +1732,12 @@ mod tests {
             script::default_state().map_err(|e| e.to_string())?,
             false,
         )?;
-        let effects = keyboard.program(Job::from(
-            "str terminal-clipboard false set str styles list list str bar 7 8 end end set str bar-slots list list 0 str inert end end set str show-column false set %1 str Enter key send-keys drop",
-        ));
+        let effects = admitted(
+            &mut keyboard,
+            Job::from(
+                "str terminal-clipboard false set str styles list list str bar 7 8 end end set str bar-slots list list 0 str inert end end set str show-column false set %1 str Enter key send-keys drop",
+            ),
+        );
         let [Dispatch::Run(job)] = effects.as_slice() else {
             return Err("job".into());
         };
@@ -1893,8 +1895,8 @@ mod tests {
             script::default_state().map_err(|e| e.to_string())?,
             false,
         )?;
-        let first = keyboard.program(Job::from("me command-prompt str ready"));
-        assert!(keyboard.program(Job::from("str next")).is_empty());
+        let first = admitted(&mut keyboard, Job::from("me command-prompt str ready"));
+        assert!(admitted(&mut keyboard, Job::from("str next")).is_empty());
         assert!(transport(&mut keyboard, first).is_empty());
         let mut done = [PollFd::new(keyboard.wake(), PollFlags::IN)];
         assert_ne!(fuxix::poll::poll(&mut done, Some(ANSWER))?, 0);

@@ -294,7 +294,7 @@ fn a_pipeline_keeps_its_group_when_the_observed_leader_is_gone() -> Outcome {
 #[test]
 fn a_keyboard_worker_cannot_act_as_a_client_of_a_replacement_run() -> Outcome {
     let a = Server::start("")?;
-    let b = Server::start("")?;
+    let b = Server::start("str F5 str 'me focused kill' bind-root")?;
     let mut client = b.attach(24, 80)?;
     client.ready()?;
     let id = client.id.as_deref().ok_or("an attached client id")?;
@@ -313,7 +313,7 @@ fn a_keyboard_worker_cannot_act_as_a_client_of_a_replacement_run() -> Outcome {
         false,
     )
     .map_err(e)?;
-    let effects = keyboard.program("me focused kill".into());
+    let effects = keyboard.bytes(b"\x1b[15~", std::time::Instant::now());
     let [fux::screens::Dispatch::Run(job)] = effects.as_slice() else {
         return Err(format!("the admitted job: {effects:?}"));
     };
