@@ -52,6 +52,146 @@ define newest str newest end
 # -- record : one facts observation of all workspaces, tabs, panes and clients
 define ls all info end
 
+# text -- source : a string literal, never executable data
+define dump-text let text list str 'str ' text quote str ' ' end glue end
+# handle -- source : a local replay binding, independent of the new server's ids
+define dump-id
+  dup kind str workspace eq if str w else str p then let prefix
+  string dup len 1 swap slice prefix swap cat
+end
+# nodes index -- pane : the first leaf of a flat subtree, without recursive calls
+define dump-first
+  swap let nodes
+  begin nodes swap at dup is-list if 3 at false else true then until
+end
+# pane-record -- source : warnings for unknown directories and omitted non-text launch inputs
+define dump-warnings
+  let p p str launch get let launch
+  list
+    launch str choice get str shell eq if
+      launch str observed_cwd get dup kind str null eq
+      if drop true else str status get str known ne then
+      if str '# ' p str id get string str ': its current directory is unknown, so it starts in its launch directory' 10 char then
+    then
+    launch str env get each
+      let e e str value get let v
+      v kind str null ne if v str encoding get str utf8 ne if
+        e str name get dump-text str 'drop # ' p str id get string
+        str ': environment is not UTF-8 text; its saved value is omitted' 10 char
+      then then
+    end
+    launch dump-cwd let cwd
+    cwd str encoding get str utf8 ne if
+      str '# ' p str id get string str ': directory bytes (hex) ' cwd str text get
+      str ' are not UTF-8 text; it starts where this runs' 10 char
+    then
+  end glue
+end
+# launch -- path : shells prefer observed cwd; programs always keep launch cwd
+define dump-cwd
+  let launch launch str initial_cwd get let cwd
+  launch str choice get str shell eq if
+    launch str observed_cwd get let observed
+    observed kind str null ne if observed str status get str known eq if
+      observed str path get let cwd
+    then then
+  then
+  cwd
+end
+# pane-record prefix action -- source : one complete creation, including its saved options and launch role
+define dump-create
+  let action let prefix let p p str launch get let launch
+  list
+    p dump-warnings
+    prefix
+    launch str history_bytes get string str ' history-bytes '
+    launch str reflow get string str ' reflow '
+    launch str alternate_scroll_lines get string str ' alternate-scroll-lines '
+    launch str picture_bytes get string str ' picture-bytes '
+    launch str program_clipboard get string str ' program-clipboard list end copy-environment '
+    launch dump-cwd let cwd
+    cwd str encoding get str utf8 eq if cwd str text get dump-text str 'cwd ' then
+    launch str env get each
+      let e e str value get let v
+      v kind str null eq if e str name get dump-text str 'unset-env ' else
+        v str encoding get str utf8 eq if
+          e str name get dump-text v str text get dump-text str 'env '
+        then
+      then
+    end
+    launch str choice get str shell eq if
+      str 'list ' launch str argv get each dump-text end str 'end shell-program '
+    else
+      true let first-arg launch str argv get each
+        dump-text first-arg if str 'program ' false let first-arg else str 'arg ' then
+      end
+    then
+    action str ' let ' p str id get dump-id 10 char
+  end glue
+end
+# pane source -- source : restore a given name; a null name emits nothing
+define dump-name
+  let name let target
+  name kind str null eq if str '' else
+    list target str ' ' name dump-text str rename 10 char end glue
+  then
+end
+# recipe -- source : serialize one held recipe; flat traversal retains the exact tree and shares
+define dump-recipe
+  let recipe
+  recipe str projection get str recipe ne if str 'dump needs a recipe snapshot' fail then
+  recipe str panes get let panes
+  list panes each str id get end end let ids
+  list
+    str '#!/usr/bin/env -S fux --file' 10 char
+    str '# fux: running this makes it again; environment patches apply to the server startup environment.' 10 char
+    recipe str workspaces get each
+      let ws true let opens
+      recipe str tabs get each
+        let tab tab str workspace get ws str id get eq if
+          tab str nodes get let nodes
+          nodes 0 dump-first let first-pane
+          panes ids first-pane index-of at let p
+          list
+            str 'opts '
+            opens if
+              ws str name get dup kind str null eq if drop else dump-text str 'in ' then
+            else ws str id get dump-id str ' in ' then
+            tab str cols get string str ' ' tab str rows get string str ' size '
+          end glue let prefix
+          p prefix opens ws str name get kind str null eq and
+            if str new-workspace else str new-tab then dump-create
+          opens if
+            first-pane dump-id str ' workspace let ' ws str id get dump-id 10 char
+            false let opens
+          then
+          first-pane dump-id str ' tab' cat tab str name get dump-name
+          tab str fit get str clients eq if first-pane dump-id str ' tab resize-auto' 10 char then
+          list 0 end let pending
+          begin pending len 0 gt if
+            pending pop let index let pending
+            nodes index at dup is-list if
+              let node nodes node 3 at dump-first let before
+              nodes node 4 at dump-first let after
+              panes ids after index-of at
+              list before dump-id str ' ' node 0 at dump-text str 'axis '
+                node 1 at string str ' ' node 2 at string str ' shares ' end glue
+              str split dump-create
+              pending node 4 at push node 3 at push let pending
+            else drop then
+            false
+          else true then until
+          panes each let p p str tab get tab str id get eq if
+            p str id get dump-id p str name get dump-name
+          then end
+        then
+      end
+    end
+  end glue
+end
+# scope -- text : a tab, workspace or all, as one bounded recipe making new processes; the complete source is built before output
+define dump str recipe snapshot dump-recipe end
+
 # way -- way : a checked layout axis, independent of how many panes there are
 define layout-axis
   dup str horizontal eq over str vertical eq or not

@@ -304,7 +304,6 @@ words! {
         Reading Get "get" "readable field -- value" "a held answer, capture or record field, locally; or a live pane, tab or workspace field" "fux %3 str exited get" [];
         Reading Json "json" "value -- json-output" "value as JSON (an answer as its JSON); a failed wait's answer is the message try's handler gets" "fux ls json" [];
         Reading Events "events" "watched --" "what happens in a pane, tab, workspace or all, a JSON line each" "fux all events" [Pane: From];
-        Reading Dump "dump" "scope -- text" "a tab, workspace or all, as a program that makes it again (new processes, nothing typed into them)" "fux all dump > all.fux; fux start && fux --file all.fux" [];
         Changing Kill "kill" "handle --" "close a pane, tab or workspace, without asking" "fux %3 kill" [];
         Changing Rename "rename" "handle text --" "rename a pane, tab or workspace" "fux %3 str editor rename" [];
         Changing Notify "notify" "scope text --" "a notice on the clients showing it, or every client with all" "fux all str done notify" [];
@@ -1769,9 +1768,6 @@ impl Host<'_> {
                 };
                 tell(Request::Events(Some(target), built.from))
             }
-            Act::Dump => later(ask(Command::DumpLayout {
-                target: scope(&next()?)?,
-            })),
             // ---------------------------------------------------- changing
             Act::Kill => tell(Command::Kill {
                 target: target(&next()?)?,
@@ -2471,7 +2467,6 @@ mod tests {
         for (suffix, code) in [
             ("", fuxth::Code::Unused),
             ("info drop", fuxth::Code::Type),
-            ("dump drop", fuxth::Code::Type),
             ("str hello notify", fuxth::Code::Type),
             ("str 0:1-2 from events", fuxth::Code::Type),
         ] {
@@ -2481,6 +2476,16 @@ mod tests {
                 .ok_or_else(|| format!("accepted {source}"))?;
             assert_eq!(failure.code, Code::of(code), "{source}: {failure}");
         }
+        Ok(())
+    }
+
+    #[test]
+    fn library_dump_refuses_an_event_cursor_at_runtime() -> Result<(), String> {
+        let mut session = crate::session::testing::started()?;
+        let error = crate::session::testing::output(&mut session, "all str 0:1-2 from dump")
+            .err()
+            .ok_or("dump accepted an event cursor")?;
+        assert!(error.starts_with("type:"), "{error}");
         Ok(())
     }
 
