@@ -701,6 +701,10 @@ pub trait Named: Clone + PartialEq + 'static {
     const NAMES: &'static [(&'static str, Self)];
     const ESCAPE: Self;
 
+    fn source(&self) -> Option<&str> {
+        None
+    }
+
     fn name(&self) -> &'static str {
         (Self::NAMES.iter())
             .find(|(_, a)| a == self)
@@ -757,6 +761,24 @@ impl<A: Named> Table<A> {
     }
 }
 
+impl Table<ListAct> {
+    pub fn bind_action(
+        &mut self,
+        key: KeyPress,
+        action: crate::callback::Callback,
+    ) -> Result<(), String> {
+        if key.key == Key::Escape {
+            return Err("Escape leaves every screen of fux's own; it cannot be bound".to_owned());
+        }
+        let bound = (key, ListAct::Action(action), None);
+        match self.0.iter_mut().find(|(k, ..)| *k == key) {
+            Some(was) => *was = bound,
+            None => self.0.push(bound),
+        }
+        Ok(())
+    }
+}
+
 /// A screen's table, whatever its actions: what a config's words change.
 pub trait Bindable {
     /// Binds `key` to the action named `name`, in place of what it did.
@@ -809,7 +831,10 @@ impl<A: Named> Bindable for Table<A> {
             let key = quote(&key.to_string());
             let label = label.as_ref().map(|l| format!("  str {} label", quote(l)));
             let label = label.unwrap_or_default();
-            format!("str {modal} str {key} str {} bind-in{label}\n", act.name())
+            match act.source() {
+                Some(code) => format!("str {key} str {} bind-action{label}\n", quote(code)),
+                None => format!("str {modal} str {key} str {} bind-in{label}\n", act.name()),
+            }
         };
         self.0.iter().map(line).collect()
     }
@@ -844,9 +869,14 @@ impl Named for ListAct {
         ("page-up", ListAct::Move(Move::PageUp)), ("page-down", ListAct::Move(Move::PageDown)),
         ("first", ListAct::Move(Move::First)), ("last", ListAct::Move(Move::Last)),
         ("choose", ListAct::Choose), ("cancel", ListAct::Cancel),
-        ("rename", ListAct::Rename), ("close", ListAct::Close),
     ];
     const ESCAPE: Self = ListAct::Cancel;
+    fn source(&self) -> Option<&str> {
+        match self {
+            Self::Action(action) => Some(&action.code),
+            Self::Move(_) | Self::Choose | Self::Cancel => None,
+        }
+    }
 }
 
 impl Named for LineAct {

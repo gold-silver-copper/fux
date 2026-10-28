@@ -18,6 +18,7 @@ macro_rules! log {
 
 pub mod act;
 pub mod answer;
+pub mod callback;
 pub mod capture;
 pub mod client;
 pub mod client_state;

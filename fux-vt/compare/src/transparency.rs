@@ -394,7 +394,7 @@ impl Through {
                     | ToAttached::Exit(_)
                     | ToAttached::NeedsInitial
                     | ToAttached::Welcome(..)
-                    | ToAttached::Run(_)
+                    | ToAttached::Open(_)
                     | ToAttached::Keys(_)
                     | ToAttached::Ended(_),
                 )

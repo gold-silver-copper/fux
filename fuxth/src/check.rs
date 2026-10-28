@@ -384,6 +384,13 @@ pub(crate) fn check<A>(program: &Program<A>, mut known: Known) -> Result<(), Err
     let Some((exit, _)) = exit else {
         return Ok(());
     };
+    if program.empty && exit.depth().0 > 0 {
+        return Err(Error::new(
+            Code::Unused,
+            "a callback must leave an empty stack",
+            tokens.last(),
+        ));
+    }
     let unused = exit.top.iter().find_map(|k| words.unused(*k));
     let Some(why) = unused else {
         return Ok(());
@@ -715,6 +722,7 @@ impl<'a, A> Unit<'a, A> {
                 Op::Jump(to) | Op::Tried(to) => return vec![(*to, state)],
                 Op::JumpUnless(to) => return vec![(next, state.clone()), (*to, state)],
                 Op::Push(_)
+                | Op::Argument(..)
                 | Op::Builtin(_)
                 | Op::PickN(_)
                 | Op::RollN(_)
@@ -758,6 +766,7 @@ impl<'a, A> Unit<'a, A> {
     fn step(&self, op: &Op<A>, state: &mut State) -> Result<Flow, Failing> {
         match op {
             Op::Push(value) => state.push(Kinds::one(Kind::of(value))),
+            Op::Argument(_, kinds) => state.push(*kinds),
             Op::Builtin(builtin) => return builtin_step(self.words(), *builtin, state),
             // As deep as the count says, with no kind kept for each value
             // reached below the top's: those are of any kind, and stay in
