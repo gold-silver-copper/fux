@@ -20,6 +20,7 @@ use crate::view::ClientKind;
 use crate::wait::Waiting;
 use fuxix::Errno;
 use fuxix::poll::{Events as PollFlags, PollFd};
+use std::collections::VecDeque;
 use std::fs;
 use std::io::{ErrorKind, Write};
 use std::mem;
@@ -698,7 +699,7 @@ enum Slot {
 
 impl Server {
     fn run(&mut self) {
-        let mut wakes = Vec::new();
+        let mut wakes = VecDeque::new();
         loop {
             let now = Instant::now();
             // What the last round read or changed may be what a wait waits
@@ -735,7 +736,7 @@ impl Server {
             let mut ready = mem::take(&mut self.ready);
             self.poll(timeout, &mut ready);
             let resumed = Instant::now();
-            for (at, wake) in wakes.drain(..) {
+            while let Some((at, wake)) = wakes.pop_front() {
                 if at <= resumed && self.wake(wake, Instant::now()).is_break() {
                     return;
                 }
@@ -1694,7 +1695,7 @@ mod tests {
                 children: fuxix::signal::Pipe::new(&[])?,
                 killed: Vec::new(),
                 stops: fuxix::signal::Pipe::new(&[])?,
-                read_buffer: Vec::new(),
+                read_buffer: vec![0; 64 * 1024],
                 paint_buffer: Vec::new(),
                 slots: Vec::new(),
                 pollfds: fuxix::poll::Poll::default(),
