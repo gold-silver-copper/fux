@@ -1947,6 +1947,9 @@ pub(crate) mod tests {
         Ok(())
     }
 
+    /// Once input is refused, nothing more is queued until the program
+    /// reads, as the notice says: accepting a later key would deliver it
+    /// with a hole where the refused input was.
     #[test]
     fn after_a_refusal_nothing_is_queued_until_its_terminal_takes_some() {
         let mut queue = InputQueue::default();
@@ -1963,6 +1966,9 @@ pub(crate) mod tests {
         assert!(queue.push(vec![b'k']).is_ok());
     }
 
+    /// A piece more than the queue ever holds is refused alone, told only
+    /// to its sender: an empty queue, which no write empties more, still
+    /// takes what comes after.
     #[test]
     fn a_piece_past_what_the_queue_holds_is_refused_alone() {
         let mut queue = InputQueue::default();
@@ -2018,6 +2024,9 @@ pub(crate) mod tests {
         Ok(())
     }
 
+    /// A scheme query answered while its program's input queue is full, or
+    /// past a read's replies, was not told: the scheme it was told stays
+    /// as it was, so the session tells it again (`tell_schemes`).
     #[test]
     fn a_scheme_answer_refused_is_not_told() -> Result<(), Box<dyn std::error::Error>> {
         use crate::outer::{Colours, Scheme};
@@ -2207,6 +2216,12 @@ pub(crate) mod tests {
         Ok(())
     }
 
+    /// A screen-wide sequence the parser left for its next call, as the
+    /// output's last, all its bytes read, is carried out at the pane's
+    /// next turn: the pane says output waits while it does, though no byte
+    /// does. At
+    /// 2000x2000, after DECALN's fill, ED 2 would take the call past U
+    /// (`Screen::holds_back`).
     #[test]
     fn a_sequence_left_past_the_budget_at_the_outputs_end_goes_on()
     -> Result<(), Box<dyn std::error::Error>> {
@@ -2228,6 +2243,9 @@ pub(crate) mod tests {
         Ok(())
     }
 
+    /// A frame whose reading spends a parser call's budget is read on over
+    /// the next turns, its rest first, and the pane says it is part way
+    /// through one till it ends; what came after it is read after.
     #[test]
     fn a_frame_past_a_budget_is_read_on_whole() -> Result<(), Box<dyn std::error::Error>> {
         let size = size(50, 200);
@@ -2254,6 +2272,8 @@ pub(crate) mod tests {
         Ok(())
     }
 
+    /// A frame begun in output read a turn after it came is held its full
+    /// timeout from when it is read, not from when the output came.
     #[test]
     fn a_frame_begun_in_output_read_later_is_held_its_timeout()
     -> Result<(), Box<dyn std::error::Error>> {
@@ -2273,6 +2293,9 @@ pub(crate) mod tests {
         Ok(())
     }
 
+    /// A frame drawn in synchronized output reaches the screen whole, when
+    /// it ends, however its bytes are split across reads: the BSU, the
+    /// frame and the ESU each in pieces, and several frames in one read.
     #[test]
     fn a_synchronized_frame_reaches_the_screen_whole() -> Result<(), Box<dyn std::error::Error>> {
         let mut pane = pane(3, 30)?;
@@ -2328,6 +2351,9 @@ pub(crate) mod tests {
         Ok(())
     }
 
+    /// A frame that does not end is read once its timeout passes, or once
+    /// it outgrows the limit; until the next BSU, output is then read as it
+    /// comes. A resize reads it first.
     #[test]
     fn a_frame_that_does_not_end_is_read_anyway() -> Result<(), Box<dyn std::error::Error>> {
         let mut pane = pane(3, 30)?;
@@ -2386,6 +2412,8 @@ pub(crate) mod tests {
         Ok(())
     }
 
+    /// A program that set in-band resize is told its new size after a
+    /// resize, and on setting it; one that did not is told nothing.
     #[test]
     fn a_resize_reports_the_size_in_band_when_asked() -> Result<(), Box<dyn std::error::Error>> {
         let mut pane = pane(3, 30)?;
@@ -2400,6 +2428,9 @@ pub(crate) mod tests {
         Ok(())
     }
 
+    /// Pieces the full queue refuses are counted, and told with how many
+    /// once for the run of refusals, which ends as the program reads; and
+    /// again after.
     #[test]
     fn a_refused_piece_is_told_once_a_run() -> Result<(), Box<dyn std::error::Error>> {
         let mut pane = pane(3, 20)?;
@@ -2417,6 +2448,9 @@ pub(crate) mod tests {
         Ok(())
     }
 
+    /// A read is judged whole, over every call of the parser it takes: a
+    /// frame's BSU, read alone first, ends no run, so frames that each
+    /// drop replies are one run, told once.
     #[test]
     fn frames_dropping_replies_are_one_run() -> Result<(), Box<dyn std::error::Error>> {
         let mut pane = pane(3, 20)?;
@@ -2450,6 +2484,9 @@ pub(crate) mod tests {
         Ok(())
     }
 
+    /// A frame read whole ends a read, though the next frame begins in
+    /// the same output: a clean frame between two that drop replies ends
+    /// the run, and the second is told.
     #[test]
     fn a_clean_frame_between_ends_the_run() -> Result<(), Box<dyn std::error::Error>> {
         let mut pane = pane(3, 20)?;
@@ -2480,6 +2517,9 @@ pub(crate) mod tests {
         Ok(())
     }
 
+    /// A reply the full queue refuses starts a run of replies, not of
+    /// input: the input refused after it is told. Both runs go on while
+    /// the queue refuses, reads with no query and resize reports alike.
     #[test]
     fn a_reply_refused_starts_no_run_of_input() -> Result<(), Box<dyn std::error::Error>> {
         let mut pane = pane(3, 20)?;
@@ -2500,6 +2540,9 @@ pub(crate) mod tests {
         Ok(())
     }
 
+    /// Every kind of loss is told once a run, which a success of its kind
+    /// ends: pictures lost, by a picture placed whole; copies refused, by a
+    /// copy made.
     #[test]
     fn pictures_and_copies_lost_are_told_once_a_run() -> Result<(), Box<dyn std::error::Error>> {
         let mut pane = pane(3, 20)?;
@@ -2551,6 +2594,8 @@ pub(crate) mod tests {
         Ok(())
     }
 
+    /// A resize report the full queue refuses starts a run of replies:
+    /// the next one in it is counted, not told again.
     #[test]
     fn resize_reports_refused_are_told_once_a_run() -> Result<(), Box<dyn std::error::Error>> {
         let mut pane = pane(3, 20)?;
@@ -2574,6 +2619,9 @@ pub(crate) mod tests {
         Ok(())
     }
 
+    /// Replies past what one read queues are dropped, and that is told:
+    /// once for reads that drop them one after another, and again for a
+    /// later drop after a read that dropped none.
     #[test]
     fn replies_past_a_reads_bound_are_told_dropped() -> Result<(), Box<dyn std::error::Error>> {
         let mut pane = pane(3, 20)?;
@@ -2607,6 +2655,9 @@ pub(crate) mod tests {
         Ok(())
     }
 
+    /// A title or notification longer than a pane keeps is cut there, and
+    /// says so, as is one longer than fux-vt keeps of a string; one that
+    /// fits is whole. The guide states the bounds.
     #[test]
     fn what_is_cut_of_a_title_is_said() -> Result<(), Box<dyn std::error::Error>> {
         let mut pane = pane(3, 20)?;
@@ -2639,6 +2690,10 @@ pub(crate) mod tests {
         Ok(())
     }
 
+    /// xterm's title stack: vim and tmux push the title on starting and pop
+    /// it on leaving, so the pane's title comes back. Ps 1 (the icon) is no
+    /// title; the stack keeps at most ten; a pop with none pushed changes
+    /// nothing.
     #[test]
     fn a_pushed_title_comes_back_when_popped() -> Result<(), Box<dyn std::error::Error>> {
         let mut pane = pane(3, 30)?;
@@ -2672,6 +2727,11 @@ pub(crate) mod tests {
         Ok(())
     }
 
+    /// neovim's handshake for underline styles (neovim 0.12.5,
+    /// `tui_query_extended_underline`): it sets a curly underline and asks
+    /// for the pen with DECRQSS, and draws its diagnostics curly, with
+    /// their colour (`58:2::r:g:b`), only if `4:3` comes back. A pane keeps
+    /// the style and says so; the cells keep what neovim then draws.
     #[test]
     fn a_pane_tells_neovim_it_keeps_underline_styles() -> Result<(), Box<dyn std::error::Error>> {
         let mut pane = pane(3, 30)?;
@@ -2687,6 +2747,9 @@ pub(crate) mod tests {
         Ok(())
     }
 
+    /// Each shell command that ends goes in the journal with its own
+    /// status, though several end in one read; and a bell and a title
+    /// with them, in order.
     #[test]
     fn commands_ended_in_one_read_are_journaled_each() -> Result<(), Box<dyn std::error::Error>> {
         let mut pane = pane(3, 30)?;

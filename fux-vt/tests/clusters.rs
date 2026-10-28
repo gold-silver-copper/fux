@@ -108,6 +108,7 @@ fn row(given: &[(String, bool)], cols: usize) -> Vec<(String, bool)> {
     [given.to_vec(), empty(cols.saturating_sub(used))].concat()
 }
 
+/// Each takes two columns on a screen (`str_width`).
 #[test]
 fn the_rules_make_two_columns() {
     for (name, x) in RULES {
@@ -133,6 +134,13 @@ fn printed(text: &str) -> Result<Vec<(String, bool)>> {
         .collect())
 }
 
+/// `clusters` names the cells a screen prints, and `str_width` their
+/// columns: for each case of the Unicode conformance test, its controls
+/// left out; and by hand, a character of no width joining the cell before
+/// though it joins no cluster (README), with a spacing mark after it
+/// joining too, a mark with no cell before it, a wide character the text
+/// presentation selector makes 1 column by the rule (its cell stays
+/// wide), and cells past the capacity.
 #[test]
 fn clusters_names_the_cells_a_screen_prints() -> Result {
     let cases = include_str!("data/GraphemeBreakTest.txt");
@@ -181,6 +189,8 @@ fn clusters_names_the_cells_a_screen_prints() -> Result {
     Ok(())
 }
 
+/// At a row's start, the cluster is one wide cell, and the cursor two
+/// columns on.
 #[test]
 fn each_rule_at_a_rows_start() -> Result {
     for (name, x) in RULES {
@@ -191,6 +201,11 @@ fn each_rule_at_a_rows_start() -> Result {
     Ok(())
 }
 
+/// In the last column every cluster ends as a wide glyph printed there
+/// does, at the next line's start: a narrow cell whose cluster becomes two
+/// wide moves there (mode 2027's spec, "Variation Selector 16"), a wide
+/// first character goes there (the README's "Grapheme clusters" and
+/// DECAWM rows).
 #[test]
 fn each_rule_in_the_last_column() -> Result {
     for (name, x) in RULES {
@@ -208,6 +223,8 @@ fn each_rule_in_the_last_column() -> Result {
     Ok(())
 }
 
+/// With a wrap pending, the cluster's first character wraps first, and the
+/// cluster is one wide cell at the next line's start.
 #[test]
 fn each_rule_with_a_wrap_pending() -> Result {
     for (name, x) in RULES {
@@ -222,6 +239,9 @@ fn each_rule_with_a_wrap_pending() -> Result {
     Ok(())
 }
 
+/// At the right margin (DECLRMM, DECSLRM 1;4) the margin's column is the
+/// last column: the same as at the screen's edge, the wrap going to the
+/// left margin.
 #[test]
 fn each_rule_at_the_right_margin() -> Result {
     for (name, x) in RULES {
@@ -233,6 +253,8 @@ fn each_rule_at_the_right_margin() -> Result {
     Ok(())
 }
 
+/// Under IRM the cluster is inserted as a wide glyph is: what was there
+/// moves right two columns, whether the cluster came wide or widened.
 #[test]
 fn each_rule_under_irm() -> Result {
     for (name, x) in RULES {
@@ -247,6 +269,9 @@ fn each_rule_under_irm() -> Result {
     Ok(())
 }
 
+/// Through a reflow (`Feature::Reflow`) the wide cell stays whole: at a
+/// width that leaves it one column, it goes to the next row, a blank
+/// spacer where it was.
 #[test]
 fn each_rule_through_a_reflow() -> Result {
     for (name, x) in RULES {
@@ -268,6 +293,9 @@ fn each_rule_through_a_reflow() -> Result {
     Ok(())
 }
 
+/// At the cluster limit: a cluster keeps at most `CLUSTER_CAPACITY` bytes,
+/// what would pass it dropped, never split into another cell; the cell
+/// stays wide, and what follows takes the next cell.
 #[test]
 fn each_rule_at_the_cluster_limit() -> Result {
     let marks = std::iter::repeat_n("\u{301}", 100).collect::<String>();
@@ -288,6 +316,9 @@ fn each_rule_at_the_cluster_limit() -> Result {
     Ok(())
 }
 
+/// A mark in the first column joins the last cell of the row above when
+/// that row is soft-wrapped, and is dropped when it is not (README,
+/// "Cells").
 #[test]
 fn a_mark_after_a_soft_wrap_joins_the_row_above() -> Result {
     let got = plain(2, 3, "abcd\r\u{301}".as_bytes())?;
@@ -299,6 +330,12 @@ fn a_mark_after_a_soft_wrap_joins_the_row_above() -> Result {
     Ok(())
 }
 
+/// REP after a cluster repeats the character that took the cell (its
+/// first), and the copies are segmented as if printed again (README, REP
+/// row): a flag's first regional indicator twice is a second flag; leading
+/// jamo after one join it (GB6) in one cell; copies of a Prepend character
+/// join one another and what follows (GB9b); and the copies of an emoji
+/// widened by VS16 are the narrow emoji alone.
 #[test]
 fn rep_repeats_a_clusters_first_character_as_if_printed_again() -> Result {
     let flag = plain(1, 8, "\u{1f1ef}\u{1f1f5}\x1b[2b".as_bytes())?;
@@ -345,6 +382,13 @@ fn what_follows_a_character_joined_at_no_width_is_segmented_after_it() -> Result
     Ok(())
 }
 
+/// So too after a zero-width Prepend character, which joins nothing after
+/// it: what follows it is segmented afresh, and a character of no width
+/// joining no cluster there (ZWSP, Control: GB5) still joins the cell, and
+/// what follows that is segmented after it. A lone vowel (V) then a spacing
+/// mark (GB9a) widen the cell, after `x` and after U+0600; so do a tag (an
+/// Extend) and an emoji modifier, which GB9 joins to it (the graphemes
+/// fuzz target, run 39295133788).
 #[test]
 fn what_follows_a_character_joined_at_no_width_after_a_zero_width_prepend_is_segmented_after_it()
 -> Result {

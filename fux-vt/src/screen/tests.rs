@@ -26,6 +26,8 @@ fn sgr_colour_parameters_name_the_sixteen_palette_colours() -> Result<(), Error>
     Ok(())
 }
 
+/// SGR's flag arms are what `Attributes::FLAGS` says: each row's number
+/// sets its bit, and its other number clears it, alone.
 #[test]
 fn sgr_sets_and_clears_each_flag_as_its_row_says() -> Result<(), Error> {
     let mut p = crate::Parser::with_options(Size::of(2, 10), 0, crate::Options::new())?;
@@ -38,6 +40,10 @@ fn sgr_sets_and_clears_each_flag_as_its_row_says() -> Result<(), Error> {
     Ok(())
 }
 
+/// Recycling a slot clears only the cells before its `used` mark, so every
+/// edit must keep the cells past it blank: printing, wide glyphs and
+/// clusters, erasing in the pen's colours or not, inserting and deleting,
+/// scrolling in and out of regions, resizing.
 #[test]
 fn cells_past_a_rows_used_mark_stay_blank() -> Result<(), Error> {
     let pieces: [&[u8]; 24] = [
@@ -89,6 +95,12 @@ fn cells_past_a_rows_used_mark_stay_blank() -> Result<(), Error> {
     Ok(())
 }
 
+/// What each grid counts its links to cost is within the bound, and never
+/// short of what the links its rows and the open link have cost, whatever
+/// the rows went through: printing over links, inserting and deleting
+/// characters, erasing, scrolling into and out of history, both screens,
+/// resizes with and without reflow, RIS, and making room when the links
+/// fill their bound.
 #[test]
 fn the_links_counted_cover_the_rows() -> Result<(), Error> {
     let check = |p: &crate::Parser, step: &str| {
@@ -158,6 +170,11 @@ fn looks(grid: &Grid) -> Vec<crate::grid::tests::Seen> {
         .collect()
 }
 
+/// A sweep renumbers the styles and nothing a reader sees changes: two
+/// parsers given the same output, one with both grids swept after every
+/// piece, look the same throughout, through new colours, erasing in
+/// colour, scrolling into history and in regions, insertion, deletion,
+/// wide glyphs, long clusters, links, both screens and resizes.
 #[test]
 fn sweeping_the_styles_changes_nothing_a_reader_sees() -> Result<(), Error> {
     let pieces: [&[u8]; 22] = [
@@ -234,6 +251,10 @@ fn sweeping_the_styles_changes_nothing_a_reader_sees() -> Result<(), Error> {
     Ok(())
 }
 
+/// Past the floor, new styles sweep the table, and the cells keep their
+/// attributes: a truecolour run, every glyph a colour of its own, scrolled
+/// through history many times over, reads back colour by colour, and the
+/// table stays bounded however many styles were made.
 #[test]
 fn styles_in_use_survive_the_sweeps_that_new_ones_bring() -> Result<(), Error> {
     let (rows, cols, history) = (4u16, 16u16, 30usize);
@@ -267,6 +288,8 @@ fn styles_in_use_survive_the_sweeps_that_new_ones_bring() -> Result<(), Error> {
     Ok(())
 }
 
+/// A command's output starts where its `C` mark put it: a clear of either
+/// screen moves it not.
 #[test]
 fn a_clear_moves_no_commands_output() -> Result<(), Error> {
     for clear in [&b"\x1b[?1049h\x1b[2Jmenu\x1b[?1049l"[..], b"\x1b[2J\x1b[H"] {
@@ -286,6 +309,8 @@ fn a_clear_moves_no_commands_output() -> Result<(), Error> {
     Ok(())
 }
 
+/// The primary screen's saved cursor is the one `CSI ? 1049 l` restores,
+/// seen from the alternate screen too, whatever DECSC saves there.
 #[test]
 fn the_main_saved_cursor_is_what_leaving_the_alternate_screen_restores() -> Result<(), Error> {
     let mut p = crate::Parser::with_options(Size::of(6, 20), 0, crate::Options::new())?;
@@ -306,6 +331,9 @@ fn pictured(size: Size, history: usize) -> Result<crate::Parser, Error> {
     Ok(p)
 }
 
+/// A picture the screen no longer shows holds no pixels: placing another
+/// lets go of one that text covered, and RIS of every one, as it clears
+/// the cells they covered.
 #[test]
 fn pictures_no_longer_shown_are_let_go() -> Result<(), Error> {
     let mut p = pictured(Size::of(6, 10), 10)?;
@@ -359,6 +387,9 @@ fn shown(p: &crate::Parser) -> Vec<u64> {
     p.screen().pictures().map(|s| s.id).collect()
 }
 
+/// Past the budget, pictures no longer shown go first, then the oldest
+/// (B01): one covered by text goes before an older one still shown, and
+/// so does one on the other screen.
 #[test]
 fn pictures_no_longer_shown_go_first() -> Result<(), Error> {
     let mut p = pictured(Size::of(24, 80), 8 << 20)?;
@@ -388,6 +419,8 @@ fn pictures_no_longer_shown_go_first() -> Result<(), Error> {
     Ok(())
 }
 
+/// A lowered budget lets pictures go at once to fit it, and a picture
+/// being drawn that alone is past it lets go of what it drew.
 #[test]
 fn a_lowered_picture_budget_lets_pictures_go() -> Result<(), Error> {
     let mut p = pictured(Size::of(24, 80), 8 << 20)?;
@@ -648,6 +681,9 @@ fn a_picture_s_cells_are_not_printed() -> Result<(), Error> {
     Ok(())
 }
 
+/// No text makes a picture's cells: a mark after one has no cell, and
+/// neither U+10EEEE (kitty's placeholder, plain text to fux-vt) nor U+0080
+/// printed brings a picture back.
 #[test]
 fn text_cannot_forge_a_picture_s_cells() -> Result<(), Error> {
     let mut p = pictured(Size::of(4, 10), 0)?;
@@ -688,6 +724,8 @@ fn a_picture_needs_a_host_cell_of_a_sixel_band_or_more() -> Result<(), Error> {
     Ok(())
 }
 
+/// A picture the pictures' budget refuses room is not placed, and is
+/// counted; one that drew nothing, or that CAN ended, is no picture.
 #[test]
 fn a_picture_refused_room_is_counted() -> Result<(), Error> {
     let options = crate::Options::from(crate::Feature::Pictures);
@@ -704,6 +742,9 @@ fn a_picture_refused_room_is_counted() -> Result<(), Error> {
     Ok(())
 }
 
+/// A picture begun while the host drew no sixel is counted as it ends,
+/// if it drew anything: one empty, or that CAN ended, is none, as on a
+/// host that draws them.
 #[test]
 fn a_picture_no_host_draws_is_counted_as_it_ends() -> Result<(), Error> {
     let options = crate::Options::from(crate::Feature::Pictures);
@@ -716,6 +757,9 @@ fn a_picture_no_host_draws_is_counted_as_it_ends() -> Result<(), Error> {
     Ok(())
 }
 
+/// A picture begun while the host drew sixel and ended once it had no cell
+/// size, or drew no sixel though it has one, read across two reads, is not
+/// placed, and is counted so, once.
 #[test]
 fn a_picture_whose_host_went_as_it_was_read_is_counted() -> Result<(), Error> {
     let options = crate::Options::from(crate::Feature::Pictures);

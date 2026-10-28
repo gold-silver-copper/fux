@@ -140,6 +140,9 @@ fn decrqm_reports_the_modes_xterm_keeps() -> Result {
     Ok(())
 }
 
+/// Grapheme clustering (2027) is permanently set, as kitty and Ghostty
+/// report it: DECRQM says 3 however a program sets, resets, saves or
+/// restores it, and `Screen::mode` reads it set.
 #[test]
 fn grapheme_clustering_is_permanently_set() -> Result {
     let mut p = Parser::with_options(Size::new(25, 80)?, 0, MODES)?;
@@ -194,6 +197,9 @@ fn reverse_wraparound_moves_as_xterm_moves() -> Result {
     Ok(())
 }
 
+/// Where xterm 411 crashes (45 past a soft-wrapped first row) or puts the
+/// cursor above the screen (1045 above the top margin), fux-vt stops at the
+/// first row, as Ghostty does.
 #[test]
 fn reverse_wraparound_stops_at_the_first_row() -> Result {
     let long: String = std::iter::repeat_n('x', 81).collect();
@@ -207,6 +213,8 @@ fn reverse_wraparound_stops_at_the_first_row() -> Result {
     Ok(())
 }
 
+/// The modes are reported by DECRQM; DECSTR and RIS reset both, as xterm
+/// 411 does.
 #[test]
 fn reverse_wraparound_is_a_mode() -> Result {
     let mut p = Parser::with_options(Size::new(25, 80)?, 0, MODES)?;

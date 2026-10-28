@@ -188,6 +188,10 @@ fn margins_and_scrolls_keep_renditions_as_dec_says() -> Result {
     Ok(())
 }
 
+/// Reflow never joins a line that is not single width to the rows around
+/// it, nor splits it: it is a line of its own, which keeps its rendition
+/// and loses what no longer fits in half the width, as DECDWL loses it
+/// (DECDWL, notes 1 and 2). The rows before it reflow as their own line.
 #[test]
 fn reflow_keeps_a_halved_line_whole_and_alone() -> Result {
     let options = Options::new().with(Feature::Reflow);
@@ -230,6 +234,10 @@ fn decsed_and_an_ed_sparing_guarded_glyphs_keep_the_renditions() -> Result {
     Ok(())
 }
 
+/// The rectangular area operations stop at a double-width line's end (DEC
+/// STD 070, 5.6.1, and DECDWL, note 2: a line of double-width characters
+/// holds half the columns): DECFRA over the whole width of a doubled line
+/// fills its 5 columns of 10, as DECSWL then shows; DECRQCRA sums those 5.
 #[test]
 fn rectangles_stop_at_a_double_width_lines_end() -> Result {
     let p = run(4, 10, b"\x1b#6\x1b[88;1;1;1;10$x\x1b#5")?;
@@ -247,6 +255,10 @@ fn rectangles_stop_at_a_double_width_lines_end() -> Result {
     Ok(())
 }
 
+/// The cursor stays on its line's columns when the lines move under it:
+/// SU brings a double-width line to the cursor's row, and leaving the
+/// alternate screen comes back to one, and the cursor goes back to its
+/// last column, as setting the rendition takes it there (DECDWL, note 2).
 #[test]
 fn the_cursor_stays_on_a_double_width_line_brought_under_it() -> Result {
     let p = run(4, 80, b"\x1b[2H\x1b#6\x1b[1;71H\x1b[S")?;
@@ -281,6 +293,11 @@ fn a_wide_glyph_fits_no_halved_line_a_column_long() -> Result {
     Ok(())
 }
 
+/// A wide glyph that wraps onto a halved line a column long is not
+/// printed there either, a double-height line's top or bottom as a
+/// double-width one (`diff/oracle.sh`, case 3453: 2x2, DECDHL's top on the
+/// second row, then `C界` on the first; the compare harness's case 1070,
+/// seed 1, with DECDHL's bottom).
 #[test]
 fn a_wide_glyph_wrapped_onto_a_halved_line_too_short_is_not_printed() -> Result {
     for input in [
@@ -318,6 +335,10 @@ fn a_dropped_wide_glyph_carries_out_the_wrap_waiting() -> Result {
     Ok(())
 }
 
+/// A mark joins the last cell of the soft-wrapped line above the cursor
+/// at that line's end, a halved line's at half the screen, not past it
+/// (`diff/oracle.sh` seed 2, case 8922: 2x2, DECDHL's top, U+FFFD, then
+/// a leading jamo dropped and a trailing one).
 #[test]
 fn a_mark_joins_a_halved_line_above_at_its_end() -> Result {
     let p = run(2, 2, b"\x1b#3\xe2\xe1\x84\x80\xe1\x86\xa8")?;

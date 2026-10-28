@@ -258,6 +258,10 @@ fn mode_reports_answer_decrqm_alone() -> Result {
     Ok(())
 }
 
+/// Synchronized output is state the host reads: set and reset by the
+/// program, and ended by RIS, by DECSTR (so that `tput init` and
+/// `tput reset` never leave a frame waiting) and by any resize, as in
+/// Ghostty.
 #[test]
 fn synchronized_output_is_tracked_and_ended() -> Result {
     let mut p = Parser::new(Size::new(4, 10)?, 0)?;
@@ -283,6 +287,8 @@ fn synchronized_output_is_tracked_and_ended() -> Result {
     Ok(())
 }
 
+/// A frame boundary stops just after its complete sequence, even split
+/// across reads. Repeating the current mode starts or ends no frame.
 #[test]
 fn process_until_stop_stops_at_frame_boundaries() -> Result {
     for (setup, sequence, stop) in [
@@ -373,6 +379,9 @@ fn in_band_resize_reports_the_size() -> Result {
     Ok(())
 }
 
+/// `Feature::SizeReports` answers xterm's text-area size query, `CSI 18 t`,
+/// with the screen's size in characters; not the pixel query, `CSI 14 t`;
+/// and nothing without the option.
 #[test]
 fn size_reports_answer_the_text_area_in_characters() -> Result {
     let options = Options::new().with(Feature::SizeReports);
@@ -571,6 +580,8 @@ fn xtgettcap_is_answered_as_an_invalid_request() -> Result {
     Ok(())
 }
 
+/// Without `Feature::SettingReports`, DECRQSS is a DCS like any other:
+/// consumed, unanswered.
 #[test]
 fn without_the_option_decrqss_is_ignored() -> Result {
     let input = b"\x1b[4:3m\x1bP$qm\x1b\\\x1bP$qr\x1b\\\x1b[5 q\x1bP$q q\x1b\\\x1bP$qx\x1b\\";
@@ -584,6 +595,8 @@ fn without_the_option_decrqss_is_ignored() -> Result {
     Ok(())
 }
 
+/// A DECRQSS answers the same however its bytes arrive, a byte at a time
+/// included.
 #[test]
 fn setting_reports_are_the_same_in_any_pieces() -> Result {
     let input =
@@ -779,6 +792,15 @@ fn rectangle_checksums_sum_the_cells() -> Result {
     Ok(())
 }
 
+/// DECRQCRA over glyphs of a designated set, with
+/// `Feature::RectangleChecksums`: each counts as the DEC code xterm 411
+/// sums for it (`xtermCheckRect` by default calls `xtermCharSetDec`, whose
+/// `unmap_DEC_Spec_Graphic` and `unmap_DEC_Supp_Graphic` give the code of
+/// the cell's byte in its set), not the byte drawn. Each value is xterm
+/// 411's own reply, read from it under Xvfb (`decTerminalID: 420`) for the
+/// same bytes: Special Graphics' ─ 0x1d, ▒ 0x78, π 0xc6, ≤ 0x85, ° 0xb0,
+/// · 0xb7, £ 0xa3, a bold ─ 0x9d; DEC Supplemental's (`ESC ( % 5`) Œ 0x97,
+/// Ÿ 0x98, œ 0x99, Á 0xc1, ¤ 0xa4, and an empty position ESC.
 #[test]
 fn rectangle_checksums_sum_a_designated_glyph_as_xterm_does() -> Result {
     let options = Options::new().with(Feature::RectangleChecksums);

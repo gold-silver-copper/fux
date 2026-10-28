@@ -12,6 +12,8 @@ use std::process::{Command, Output, Stdio};
 use std::time::Duration;
 use support::*;
 
+/// SIGTERM, SIGINT and SIGHUP each stop a server: every attached client is
+/// told why, and the socket is removed.
 #[test]
 fn a_signal_stops_the_server_telling_clients_why_and_removing_its_socket() -> Outcome {
     for sig in [Signal::Term, Signal::Int, Signal::Hup] {
@@ -107,6 +109,8 @@ fn mode_of(path: &Path) -> Result<u32, String> {
 /// The environment set, the variables removed, and where the socket goes.
 type Case<'a> = (&'a [(&'a str, String)], &'a [&'a str], &'a Path);
 
+/// With no FUX_SOCKET, the socket is `$XDG_RUNTIME_DIR/fux/server.sock`,
+/// else `$TMPDIR/fux/server.sock`; the `fux` directory is made private.
 #[test]
 fn the_default_socket_is_under_xdg_runtime_dir_else_tmpdir() -> Outcome {
     let base = fuxix::file::scratch()
@@ -150,6 +154,8 @@ fn the_default_socket_is_under_xdg_runtime_dir_else_tmpdir() -> Outcome {
     Ok(())
 }
 
+/// The initiating client's SHELL is read by its library, with /bin/sh
+/// when it is absent. The server's different SHELL is never consulted.
 #[test]
 fn a_pane_runs_the_clients_shell_else_bin_sh() -> Outcome {
     for (shell, expected) in [(Some("/bin/bash"), "/bin/bash"), (None, "/bin/sh")] {
@@ -248,6 +254,9 @@ fn a_pane_runs_the_clients_shell_else_bin_sh() -> Outcome {
     Ok(())
 }
 
+/// A client that stops reading while a pane floods it gets no frame past
+/// the one in flight, and when it reads again it is brought up to date: its
+/// screen ends as the server composes it.
 #[test]
 fn a_client_that_stops_reading_catches_up_when_it_reads_again() -> Outcome {
     // Little history, so the memory measured is what waits for the client.
@@ -279,6 +288,8 @@ fn a_client_that_stops_reading_catches_up_when_it_reads_again() -> Outcome {
     Ok(())
 }
 
+/// A copy goes to the client's clipboard as OSC 52 unless it is over 1 MiB
+/// encoded; then only to the paste buffer, saying so.
 #[test]
 fn the_clipboard_takes_a_copy_up_to_a_mebibyte() -> Outcome {
     let server = Server::start("")?;

@@ -514,6 +514,8 @@ mod ffi {
 mod tests {
     use crate::engine::Setup;
 
+    /// A CSI of more parameters than libvterm keeps no longer crashes the
+    /// process (build.rs bounds its parser).
     #[test]
     fn a_csi_of_17_parameters_is_read() -> Result<(), String> {
         let mut engine = super::make(&Setup {

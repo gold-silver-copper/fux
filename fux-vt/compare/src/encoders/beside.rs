@@ -915,6 +915,12 @@ mod tests {
         shift: false,
     };
 
+    /// A verdict passes only on the bytes its reason says fux-vt sends (at
+    /// the parent each passed on whatever fux-vt sent): BS for Backspace
+    /// with Ctrl and another modifier, where ghostty sends DEL, and no
+    /// verdict for plain Ctrl-Backspace, BS everywhere; the legacy bytes;
+    /// modifyOtherKeys' `CSI 27 ; M ; K ~` with the key's modifiers and
+    /// code; a paste as pasted, its ends removed.
     #[test]
     fn a_verdict_holds_only_on_what_fux_vt_should_send() {
         let bs = |ours: &[u8]| key_verdict("", Key::Backspace, CTRL, ours, b"\x08", b"\x7f");

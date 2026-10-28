@@ -62,6 +62,11 @@ fn every_conformance_case_breaks_where_uax_29_says() {
     assert_eq!(checked, 766);
 }
 
+/// Every assigned scalar value's properties, against unicode-segmentation:
+/// each is put after and before characters whose rules single out one
+/// property, so a code point classed wrongly breaks differently. Past plane 3
+/// only the tags and variation selectors (E0000..E0FFF) are assigned, other
+/// than private use; the rest is sampled every 61st code point.
 #[test]
 fn every_code_point_is_classed_as_unicode_segmentation_classes_it() {
     // What goes before the code point, and after it.
@@ -126,6 +131,8 @@ fn a_cluster_rebuilt_from_its_text_continues_as_it_would_have() {
     }
 }
 
+/// `continues_cluster` is the state machine's answer, the fast path for
+/// printable ASCII included.
 #[test]
 fn continues_cluster_answers_as_the_state_machine() {
     let clusters = [
@@ -245,6 +252,14 @@ fn one_cluster(text: &str) -> bool {
     breaks(text).next().is_none()
 }
 
+/// The cluster rule (`cluster_width`) is unicode-width 0.2.2's
+/// string width of that cluster, but for a cluster holding U+17D8, a
+/// spacing mark the rule departs on, or a Khmer coeng (whose rule fux-vt
+/// does not take: `a_spacing_mark_and_a_coeng_conjunct_take_their_columns`):
+/// for every character alone,
+/// and before and after each of `CONTEXT`'s; for the ZWJ, keycap,
+/// modifier, flag and tag sequences built of every emoji; and for every
+/// cluster of the Unicode conformance test.
 #[test]
 fn a_cluster_is_as_wide_as_unicode_width_makes_it() {
     use unicode_width::UnicodeWidthStr;
@@ -338,6 +353,11 @@ fn a_cluster_is_as_wide_as_unicode_width_makes_it() {
     assert!(checked > 15_000_000, "{checked} clusters");
 }
 
+/// fux-vt's departures in a cluster: a consonant and a spacing vowel sign
+/// take two columns, each one, as wcwidth 0.9.2 measures them (ucs-detect
+/// measures Bengali, Kannada, Malayalam, Sinhala, Tamil and Grantha so); a
+/// Khmer conjunct, two letters joined by a coeng (Mn, none), two; a spacing
+/// virama none, so a Javanese consonant and its pangkon one.
 #[test]
 fn a_spacing_mark_and_a_coeng_conjunct_take_their_columns() {
     for (text, width) in [
@@ -371,6 +391,7 @@ fn a_spacing_mark_and_a_coeng_conjunct_take_their_columns() {
     }
 }
 
+/// `Cluster::start`'s ASCII shortcut is what the table gives.
 #[test]
 fn a_cluster_started_with_ascii_is_as_the_table_starts_it() {
     for c in ' '..='~' {
@@ -382,6 +403,10 @@ fn a_cluster_started_with_ascii_is_as_the_table_starts_it() {
     }
 }
 
+/// The table's bit for the characters the cluster width rule looks at
+/// (`width::CONTEXT`) is set on exactly those its arms name: a line feed,
+/// a spacing mark fux-vt widens, ZWJ, the keycap, the variation selectors, Kirat Rai's
+/// vowel signs, the regional indicators, the emoji modifiers and the tags.
 #[test]
 fn the_width_rule_looks_at_the_characters_its_arms_name() {
     for c in (0..=0x10_ffffu32).filter_map(char::from_u32) {
@@ -405,6 +430,8 @@ fn the_width_rule_looks_at_the_characters_its_arms_name() {
     }
 }
 
+/// A flag, two regional indicators, is two columns wide by the cluster
+/// rule, as `Screen::join` takes it without measuring: every pair.
 #[test]
 fn every_pair_of_regional_indicators_is_two_columns() {
     for a in '\u{1f1e6}'..='\u{1f1ff}' {

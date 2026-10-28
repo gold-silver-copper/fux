@@ -1582,6 +1582,8 @@ fn last_frames(
 mod tests {
     use super::*;
 
+    /// No end marker is needed to detect an oversized reply. Its owner
+    /// drops the failed request connection, as script::Server does.
     #[test]
     fn oversized_unfinished_reply_is_refused() -> Result<(), Box<dyn std::error::Error>> {
         let (stream, mut peer) = UnixStream::pair()?;
@@ -1849,6 +1851,8 @@ mod tests {
         Ok(())
     }
 
+    /// A binding reserves its job immediately but cannot start it while
+    /// preceding acts still belong to the local transport.
     #[test]
     fn a_binding_emits_its_job_after_prior_keys() -> Result<(), Box<dyn std::error::Error>> {
         let socket = socket::checked("/nowhere/fux/s.sock", "test")?;
@@ -1882,6 +1886,8 @@ mod tests {
         Ok(())
     }
 
+    /// A queued job reaches the transport after its predecessor's screen
+    /// changes, so its first request also fences those attached acts.
     #[test]
     fn a_completed_jobs_screen_precedes_the_next_job() -> Result<(), Box<dyn std::error::Error>> {
         let mut keyboard = keyboard(false)?;
@@ -1899,6 +1905,9 @@ mod tests {
         Ok(())
     }
 
+    /// Keys typed while any program the client ran is running wait for it,
+    /// whatever its words (a config's word may open a chooser); the prefix,
+    /// then Esc, stops it, and the keys go on once it is done.
     #[test]
     fn keys_wait_for_a_running_program_till_it_is_done() -> Result<(), Box<dyn std::error::Error>> {
         let mut keyboard = keyboard(false)?;
@@ -2065,6 +2074,9 @@ mod tests {
         Ok(())
     }
 
+    /// A program that changes the screens' keys while one is open closes
+    /// it, so its hints never name keys that do otherwise; one that changes
+    /// none leaves it open.
     #[test]
     fn a_screen_closes_when_its_keys_change() -> Result<(), Box<dyn std::error::Error>> {
         let mut keyboard = keyboard(false)?;
@@ -2091,6 +2103,8 @@ mod tests {
         Ok(())
     }
 
+    /// The actual worker and keyboard send a successful screen before its
+    /// notice; a failed program discards its staged screen and keeps its error.
     #[test]
     fn a_jobs_notice_survives_its_screen() -> Result<(), Box<dyn std::error::Error>> {
         let mut keyboard = keyboard(false)?;
@@ -2125,6 +2139,8 @@ mod tests {
         Ok(())
     }
 
+    /// A screen opens only if it fits a frame at its largest with the keys
+    /// as they are when it opens; else it says so and opens nothing.
     #[test]
     fn a_screen_too_large_to_show_is_refused_as_it_opens() -> Result<(), Box<dyn std::error::Error>>
     {
@@ -2147,6 +2163,9 @@ mod tests {
         Ok(())
     }
 
+    /// A binding's program, then the prefix, Esc (as `CSI 27 u`) and a key,
+    /// stop the program and leave the key for after it, however the reads
+    /// split them: the cancel is checked at each key, not at a read's end.
     #[test]
     fn a_stop_is_the_same_however_the_reads_split() -> Result<(), Box<dyn std::error::Error>> {
         let socket = socket::checked("/nowhere/fux/s.sock", "test")?;
@@ -2174,6 +2193,9 @@ mod tests {
         Ok(())
     }
 
+    /// While a program runs, what waits for it is bounded: the inputs past
+    /// `HELD` and the programs past `JOBS` are refused, and said to be;
+    /// the prefix, then Esc, still stops it.
     #[test]
     fn what_waits_for_a_program_is_bounded() -> Result<(), Box<dyn std::error::Error>> {
         let mut keyboard = keyboard(false)?;
@@ -2205,6 +2227,8 @@ mod tests {
         Ok(())
     }
 
+    /// A program that prints more than a notice holds fails, said; one
+    /// that leaves more is said not to be shown. Neither is kept.
     #[test]
     fn a_notice_is_bounded() -> Result<(), Box<dyn std::error::Error>> {
         let mut keyboard = keyboard(false)?;
@@ -2227,6 +2251,8 @@ mod tests {
         Ok(())
     }
 
+    /// A client that only watches is told of each key and paste it takes
+    /// no further: a paste, and a key after the prefix but `d`, as a key.
     #[test]
     fn a_watcher_is_told_of_what_it_takes_no_further() -> Result<(), Box<dyn std::error::Error>> {
         let mut keyboard = keyboard(true)?;
@@ -2240,6 +2266,8 @@ mod tests {
         Ok(())
     }
 
+    /// The server's log is a regular file alone: a FIFO no one reads is
+    /// refused at once, not waited on, and a link is not followed.
     #[test]
     fn the_server_log_is_a_regular_file() -> Result<(), Box<dyn std::error::Error>> {
         let dir = fuxix::file::scratch()?.join(format!("fux-log-{}", std::process::id()));
@@ -2350,6 +2378,8 @@ mod tests {
         let _ = frame.encode().map(|bytes| peer.write_all(&bytes));
     }
 
+    /// A server that refuses says why; one that says nothing times out;
+    /// one that hangs up did not answer.
     #[test]
     fn the_client_tells_a_refusal_from_a_timeout() {
         let wait = Duration::from_millis(50);

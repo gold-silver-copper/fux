@@ -135,6 +135,7 @@ fn model(bytes: &[u8], rows: u16, cols: u16) -> Vec<String> {
     screen
 }
 
+/// Random input in random pieces prints what the model decodes it to.
 #[test]
 fn utf8_decodes_as_from_utf8_lossy_in_any_chunking() -> Result {
     let mut r = Rng(0x0075_7466_0038_0001);

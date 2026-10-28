@@ -727,6 +727,8 @@ mod tests {
     use super::Retention;
     use crate::engine::{ENGINES, SUBJECT, Setup};
 
+    /// A cell is its rounds' median feed, none if a round had no setup,
+    /// and the error if one failed.
     #[test]
     fn a_cell_is_the_median_of_its_rounds() {
         let run = |ms: u64| {
@@ -747,6 +749,8 @@ mod tests {
         assert!(matches!(failed, Some(Err(e)) if e == "x"));
     }
 
+    /// `NAME@N` is NAME fed N bytes a call, chosen after the others; a bad
+    /// N or an unknown NAME is refused.
     #[test]
     fn a_workload_at_a_chunk_size_is_fed_that_many_bytes_a_call() -> Result<(), String> {
         let names = ["ascii".to_owned(), "ascii@1".to_owned()];
@@ -760,6 +764,8 @@ mod tests {
         Ok(())
     }
 
+    /// A short recording that resizes is repeated only until it has
+    /// resized [`super::RESIZES_AT_MOST`] times, as fux-bench repeats it.
     #[test]
     fn a_recording_that_resizes_is_repeated_to_a_bound() -> Result<(), String> {
         let load = super::load("corpus:zsh-resize", 4 << 20)?;
@@ -771,6 +777,10 @@ mod tests {
         Ok(())
     }
 
+    /// A recording that resizes is fed at each size it was written at, as
+    /// fux-bench feeds it: zsh-resize's parts are its size, then each
+    /// resize's, its bytes whole; the corpus all in turn resizes to each
+    /// recording's own size.
     #[test]
     fn a_recording_is_fed_at_each_size_it_was_written_at() -> Result<(), String> {
         let recordings = crate::corpus::recordings(&[])?;
@@ -806,6 +816,8 @@ mod tests {
         Ok(())
     }
 
+    /// A hash is the input's, by whichever of shasum and sha256sum there
+    /// is (FIPS 180-2's example "abc"), never a placeholder.
     #[test]
     fn an_input_hashes_to_its_sha256() -> Result<(), String> {
         let abc = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
@@ -821,6 +833,9 @@ mod tests {
         Ok(())
     }
 
+    /// Equal retention holds what it says: every engine this harness sets
+    /// up keeps no history after 300 lines on a 10-row screen, and equal
+    /// budget keeps some.
     #[test]
     fn equal_retention_keeps_no_history() -> Result<(), String> {
         let setup = Setup {
@@ -854,6 +869,8 @@ mod tests {
         Ok(())
     }
 
+    /// A run makes the workloads it times and no other: two named, two
+    /// made, where making every one before choosing took gigabytes.
     #[test]
     fn choosing_a_workload_makes_no_other() -> Result<(), String> {
         super::MADE.with(|made| made.set(0));
@@ -864,6 +881,8 @@ mod tests {
         Ok(())
     }
 
+    /// An engine that can't be made for a table is an error with its
+    /// reason, not "unavailable", which says the harness has no setup.
     #[test]
     fn an_engine_that_cannot_be_made_is_an_error_not_unavailable() {
         let load = super::Load {
@@ -883,6 +902,8 @@ mod tests {
         );
     }
 
+    /// A run with a failed measure fails, after its table; one with none
+    /// (an engine with no setup is no failure) does not.
     #[test]
     fn a_run_with_an_error_cell_fails() -> Result<(), String> {
         let measured = || super::Measured {

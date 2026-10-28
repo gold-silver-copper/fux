@@ -82,6 +82,11 @@ mod glibc {
 
     #[cfg(test)]
     mod tests {
+        /// malloc counts what it hands out in small pieces, which whole
+        /// pages read only roughly: 64 MiB in 1 KiB allocations reads as
+        /// at least 0.9 of that, and freed, falls back. In a process of
+        /// its own ([`crate::memory::alone`]): malloc's count is the whole
+        /// process's.
         #[test]
         fn small_allocations_show_in_malloc() -> Result<(), String> {
             if !crate::memory::alone(module_path!(), "small_allocations_show_in_malloc")? {
@@ -223,6 +228,10 @@ mod mach {
 
     #[cfg(test)]
     mod tests {
+        /// The footprint grows by about what is written into new memory,
+        /// and malloc counts what it hands out: the offsets are right. Large
+        /// enough that what other tests allocate meanwhile (tens of MiB) is
+        /// lost in it.
         #[test]
         fn a_new_buffer_shows_in_both_counts() -> Result<(), String> {
             let before = super::vm_info()?;

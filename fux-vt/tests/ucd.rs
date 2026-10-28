@@ -142,6 +142,9 @@ fn canonical_equivalents_take_the_same_columns() -> Result {
     Ok(())
 }
 
+/// emoji-test (fux-vt's width policy): every fully-qualified,
+/// minimally-qualified and component sequence is one cell, two columns
+/// wide. Unqualified sequences are text, whose width is the width rule's.
 #[test]
 fn every_qualified_emoji_is_one_wide_cell() -> Result {
     let file = include_str!("data/emoji-test.txt");
@@ -169,6 +172,9 @@ fn every_qualified_emoji_is_one_wide_cell() -> Result {
     Ok(())
 }
 
+/// emoji-variation-sequences (fux-vt's width policy): a base with U+FE0F
+/// (emoji style) is one cell, two columns wide; with U+FE0E (text style),
+/// one cell as wide as the base alone.
 #[test]
 fn every_variation_sequence_takes_its_style_s_width() -> Result {
     let file = include_str!("data/emoji-variation-sequences.txt");

@@ -16,6 +16,9 @@ fn painted_eventually(client: &mut Client, from: usize, needle: &str) -> Outcome
     })
 }
 
+/// The client's terminal is asked for mouse reports only while the focused
+/// pane's program wants them, and a report reaches that program, in its
+/// pane's cells; copy mode takes the reports away until it ends.
 #[test]
 fn the_mouse_reaches_a_program_that_asked_for_it_and_no_other() -> Outcome {
     let server = Server::start("")?;

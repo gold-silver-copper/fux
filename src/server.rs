@@ -1819,6 +1819,8 @@ mod tests {
         Ok(())
     }
 
+    /// A refused finite reply queues one small failure, never a prefix
+    /// followed by a successful PartsEnd.
     #[test]
     fn an_oversized_reply_sends_only_a_failure() -> Result<(), Box<dyn std::error::Error>> {
         let (mut session, mut conn, _peer) = attached(Instant::now())?;
@@ -2253,6 +2255,8 @@ mod tests {
         }
     }
 
+    /// A queued prefix larger than a fair turn always precedes the job,
+    /// even with the worker served first and frames split across reads.
     #[test]
     fn a_job_cannot_overtake_its_attached_prefix() -> Result<(), Box<dyn std::error::Error>> {
         const KEYS: usize = 3000;
@@ -2377,6 +2381,7 @@ mod tests {
         Ok(())
     }
 
+    /// Client ids reused by another server run cannot satisfy an old job.
     #[test]
     fn a_fence_only_names_its_original_server() -> Result<(), Box<dyn std::error::Error>> {
         let (mut server, _peers, client) = ordered_fixture()?;
@@ -2401,6 +2406,8 @@ mod tests {
         Ok(())
     }
 
+    /// Cancelling a blocked request drops it; losing its source refuses it.
+    /// Neither path leaves a held request behind after connections move.
     #[test]
     fn a_blocked_job_ends_with_its_command_or_source() -> Result<(), Box<dyn std::error::Error>> {
         for ending in ["cancel", "eof", "detach"] {
@@ -2515,6 +2522,8 @@ mod tests {
         command_reply(server)
     }
 
+    /// A failed fence and a successful prefix both remain the job's source
+    /// identity: catching a refusal or reconnecting cannot bypass either.
     #[test]
     fn every_request_keeps_its_jobs_source_fence() -> Result<(), Box<dyn std::error::Error>> {
         use crate::script::Asks;
@@ -2615,6 +2624,9 @@ mod tests {
         Ok(())
     }
 
+    /// A client whose screen is forgotten, as on a resize that ends at the
+    /// same size, is due a full paint though nothing it views changed; but
+    /// not while its last frame is still being written.
     #[test]
     fn a_forgotten_screen_is_due_a_paint_once_the_last_is_sent() -> Result<(), String> {
         let (mut session, mut conn, _peer) = attached(Instant::now())?;
@@ -2632,6 +2644,9 @@ mod tests {
         Ok(())
     }
 
+    /// A client too far behind is refused what others send it, a program
+    /// say, and told how far; its own conversation goes on past that,
+    /// until it is detached, told why.
     #[test]
     fn a_client_behind_is_refused_what_others_send_it() -> Result<(), String> {
         // A paint, however large, is no backlog: the client is not behind.

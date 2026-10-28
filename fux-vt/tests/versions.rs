@@ -299,6 +299,8 @@ fn fed(p: &mut Parser, bytes: &[u8], cuts: &[usize]) -> Result<usize> {
     Ok(left)
 }
 
+/// A flood of screen-wide sequences, each call stopping at the budget with
+/// the next left over, moves the revision on with each call.
 #[test]
 fn the_revision_moves_on_through_work_left_over() -> Result {
     let mut bytes = Vec::new();
@@ -321,6 +323,10 @@ fn the_revision_moves_on_through_work_left_over() -> Result {
     Ok(())
 }
 
+/// The revision counts the bytes read and the resizes to another size,
+/// however the output is cut: whole, a byte at a time, at random, and past
+/// the work budget, where a screen-wide sequence is left for the next call
+/// (`Parser::has_work_left`).
 #[test]
 fn the_revision_is_the_same_however_output_is_cut() -> Result {
     let mut bytes = b"\x1b[?2026hframe\x1b[?2026l\xe2\x9d\xa4\xef\xb8\x8f\x1b[65535b".to_vec();

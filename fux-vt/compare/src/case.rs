@@ -959,6 +959,8 @@ mod tests {
 
     const PEN: Color = Color::Rgb(10, 20, 30);
 
+    /// A departure is looked for in the output given by the step where
+    /// the case was judged, not in what later steps write.
     #[test]
     fn the_output_judged_is_that_of_the_steps_run() {
         let step = |b: &[u8]| {
@@ -993,6 +995,8 @@ mod tests {
         );
     }
 
+    /// A random case's RIS begins a write of its own: in no
+    /// write of the reset family's cases does RIS follow other output.
     #[test]
     fn ris_is_written_alone_in_random_cases() {
         let families = [
@@ -1057,6 +1061,13 @@ mod tests {
         ])
     }
 
+    /// The engines split three ways on a blank's style by choice, so an
+    /// engine votes only on the parts it makes as xterm does: a blank's
+    /// foreground libvterm and avt, its bold Ghostty, alacritty and
+    /// libvterm. A blank as xterm makes it is not outvoted, even where
+    /// libvterm, wrapping its own way on one column, has a bold glyph
+    /// instead (`run --no-reflow`, seed 1, before the rule); a blank
+    /// otherwise is.
     #[test]
     fn a_blank_s_style_is_judged_by_the_engines_that_make_it_as_xterm_does() -> Result<(), String> {
         let xterm = screen("", PEN, false);
@@ -1108,6 +1119,15 @@ mod tests {
         }
     }
 
+    /// In a family a standard decides, the section's expected fields judge
+    /// what it settles and the deciders the rest: xterm keeping a wrap
+    /// pending through ED (the standard: ED ends it, and the next glyph
+    /// sets it again in the last column) outvotes no one, while fux-vt
+    /// departing from the section fails whatever xterm does, and xterm
+    /// still decides a field the section leaves open. Under the rule
+    /// before (`cases`: xterm's vote alone), the first passed only if
+    /// xterm agreed. A family no engine follows (`pending-wrap`) is judged
+    /// by its section with no engine beside it.
     #[test]
     fn a_decided_family_is_judged_by_its_section_before_its_deciders() -> Result<(), String> {
         let xterm = engine::find("xterm").ok_or("no xterm")?;
@@ -1157,6 +1177,11 @@ mod tests {
         Ok(())
     }
 
+    /// A named case of a family that differs is judged on every field, as
+    /// one that agrees is (at the parent, `cases` printed "fails" and
+    /// passed): a DECSTBM case outvoted on the cursor fails. One recorded
+    /// as differing passes only on its recorded fields, and fails once it
+    /// no longer differs there.
     #[test]
     fn a_named_case_of_a_family_that_differs_must_agree() -> Result<(), String> {
         let ghostty = engine::find("ghostty").ok_or("no ghostty")?;
@@ -1195,6 +1220,10 @@ mod tests {
         Ok(())
     }
 
+    /// libvterm cannot tell dim: judged as the subject, a dim cell Ghostty
+    /// shows is compared with no one, so it agrees, by abstaining. Read
+    /// again without its mask, it differs there: coverage unavailable, not
+    /// a pass (at the parent such a point counted as agreeing).
     #[test]
     fn a_field_the_subject_cannot_tell_is_unavailable_not_a_pass() -> Result<(), String> {
         let libvterm = engine::find("libvterm").ok_or("no libvterm")?;
@@ -1211,6 +1240,11 @@ mod tests {
         Ok(())
     }
 
+    /// A subject that can't tell the device's state (the cursor's
+    /// shape, the tab stops, the line renditions, protection) agrees, read
+    /// again for coverage, where it agrees on everything else: those
+    /// fields are left out of its comparison, not counted unavailable at
+    /// every point (as they were, so Ghostty's corpus agreed on none).
     #[test]
     fn the_device_state_a_subject_cannot_tell_leaves_it_available() -> Result<(), String> {
         let ghostty = engine::find("ghostty").ok_or("no ghostty")?;
@@ -1232,6 +1266,10 @@ mod tests {
         Ok(())
     }
 
+    /// A named case is judged after every step: one that differs midway
+    /// and agrees at its end fails at the step it differs (judged at its
+    /// end alone, as `cases` did, it passed). Ghostty keeps synchronized
+    /// output through DECSTR, fux-vt ends it; resetting it agrees again.
     #[test]
     fn a_named_case_is_judged_after_every_step() -> Result<(), String> {
         let ghostty = engine::find("ghostty").ok_or("no ghostty")?;
@@ -1260,6 +1298,9 @@ mod tests {
         Ok(())
     }
 
+    /// A caught panic says where it was, the hook keeping its location (at
+    /// the parent the hook dropped it); a case shrinks while what it is
+    /// kept for still holds of it, as for a case that errs.
     #[test]
     fn a_panic_names_its_place_and_a_failing_case_shrinks() {
         std::panic::set_hook(Box::new(super::note_panic));
@@ -1312,6 +1353,11 @@ mod tests {
         }
     }
 
+    /// Another engine judged in fux-vt's place, with fux-vt on the panel:
+    /// Ghostty keeps synchronized output on through DECSTR, fux-vt ends it
+    /// (the named case `decstr-ends-synchronized-output`). Each, as the
+    /// subject, is outvoted by the other alone, on the same field, with
+    /// the sides swapped; the replay names the subject.
     #[test]
     fn another_engine_is_judged_as_fux_vt_is() -> Result<(), String> {
         let ghostty = engine::find("ghostty").ok_or("no ghostty")?;
@@ -1350,6 +1396,12 @@ mod tests {
         Ok(())
     }
 
+    /// A field the subject cannot tell is compared with no one, on both
+    /// sides, as an engine's own `Can` masks it: Ghostty tells no link
+    /// groups, so its two links to one URI read as one, where fux-vt and
+    /// alacritty keep two (the named case
+    /// `two-links-without-an-id-to-one-uri-are-two`). With Ghostty the
+    /// subject, neither fux-vt nor alacritty differs on them.
     #[test]
     fn a_field_the_subject_cannot_tell_is_compared_with_no_one() -> Result<(), String> {
         let ghostty = engine::find("ghostty").ok_or("no ghostty")?;
@@ -1383,6 +1435,9 @@ mod tests {
         Ok(())
     }
 
+    /// Judging fux-vt again on the screens read with Ghostty the subject
+    /// gives what running fux-vt as the subject gives, engine by engine,
+    /// in the same order: `corpus --subject` scores both from one run.
     #[test]
     fn a_step_judged_again_is_judged_as_a_run_of_the_other_subject() -> Result<(), String> {
         let ghostty = engine::find("ghostty").ok_or("no ghostty")?;

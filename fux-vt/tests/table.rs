@@ -186,6 +186,8 @@ fn every_test_a_row_names_exists() {
     assert!(bad.is_empty(), "{}", bad.join("\n"));
 }
 
+/// The README's tables name the tests of each row in their last column:
+/// each must exist, as the table's do.
 #[test]
 fn every_test_the_readme_names_exists() -> Result<(), Box<dyn std::error::Error>> {
     let functions = test_functions();

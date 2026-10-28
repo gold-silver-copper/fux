@@ -1214,6 +1214,8 @@ mod tests {
         Ok(())
     }
 
+    /// Blanks still cost work, and a single joined row range can expand
+    /// beyond the cap. A narrower physical read remains available.
     #[test]
     fn over_budget_capture_refuses_without_clipping() -> Result<(), Box<dyn std::error::Error>> {
         let mut pane = pane(3, 80, 1 << 20)?;
@@ -1264,6 +1266,10 @@ mod tests {
         Ok(())
     }
 
+    /// A soft-wrapped row's last cell is the spacer a wide glyph left, no
+    /// part of the line, only while nothing was painted there: a blank EL
+    /// erased in a colour is a cell the program painted, and shows, so a
+    /// joined capture keeps it, as a copy does (`Row::copied`).
     #[test]
     fn a_painted_blank_before_a_wide_glyph_wrapped_on_is_part_of_the_line()
     -> Result<(), Box<dyn std::error::Error>> {
@@ -1292,6 +1298,8 @@ mod tests {
         Ok(())
     }
 
+    /// Rows that start or end inside a wrapped line take it whole, joined;
+    /// `wrapped`, they take the rows asked alone.
     #[test]
     fn rows_inside_a_wrapped_line_take_it_whole() -> Result<(), Box<dyn std::error::Error>> {
         let mut pane = pane(6, 5, 0)?;
@@ -1319,6 +1327,8 @@ mod tests {
         Ok(())
     }
 
+    /// Columns cut from a joined line leave the spacer out only when they
+    /// take its column: cut short of it, the last cell taken is text.
     #[test]
     fn columns_cut_short_of_the_spacer_keep_their_last_cell()
     -> Result<(), Box<dyn std::error::Error>> {
@@ -1341,6 +1351,8 @@ mod tests {
         Ok(())
     }
 
+    /// Mixed views preserve wide-cell counts and style runs across wraps,
+    /// and trim only blanks whose style the requested view cannot show.
     #[test]
     fn mixed_views_keep_cells_runs_and_visible_blanks() -> Result<(), Box<dyn std::error::Error>> {
         let mut pane = pane(5, 5, 0)?;
@@ -1415,6 +1427,8 @@ mod tests {
         Ok(())
     }
 
+    /// A space joined to a prepend character is glyph text, not a blank
+    /// cell that trimming may remove.
     #[test]
     fn a_space_inside_a_cluster_is_not_a_trailing_blank() -> Result<(), Box<dyn std::error::Error>>
     {
@@ -1438,6 +1452,8 @@ mod tests {
         Ok(())
     }
 
+    /// Trimming precedes the wire count's clamp, including when the
+    /// private count exceeds u32. A synthetic count avoids a GiB fixture.
     #[test]
     fn cells_are_clamped_only_after_trimming() -> Result<(), Box<dyn std::error::Error>> {
         let max = usize::try_from(u32::MAX)?;
@@ -1466,6 +1482,8 @@ mod tests {
         Ok(())
     }
 
+    /// Selecting part of a joined line reads through that line's end,
+    /// without walking the unrelated rows that follow it.
     #[test]
     fn a_joined_range_stops_at_its_last_logical_line() -> Result<(), Box<dyn std::error::Error>> {
         let mut pane = pane(6, 5, 0)?;
@@ -1488,6 +1506,8 @@ mod tests {
         Ok(())
     }
 
+    /// A capture goes on the wire and reads back the same, its styles
+    /// too; JSON nested past its bound is refused rather than read.
     #[test]
     fn a_capture_reads_back_as_written() -> Result<(), Box<dyn std::error::Error>> {
         use crate::json::Json;
@@ -1514,6 +1534,9 @@ mod tests {
         Ok(())
     }
 
+    /// An ended command's output is what lies between its marks: a prompt
+    /// drawn after its end mark on the same row is not part of it. A
+    /// running one's is all of its rows so far.
     #[test]
     fn last_output_ends_at_the_end_mark() -> Result<(), Box<dyn std::error::Error>> {
         let view = CaptureView {

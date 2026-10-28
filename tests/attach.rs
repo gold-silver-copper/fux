@@ -4,6 +4,9 @@ mod support;
 use std::os::fd::AsFd;
 use support::*;
 
+/// A client that only watches sees the screen, but its keys reach no
+/// pane and open nothing: a key says it only watches, and the prefix and
+/// the detach key detach it.
 #[test]
 fn a_read_only_client_watches_and_can_only_detach() -> Outcome {
     let server = Server::start("")?;
@@ -57,6 +60,9 @@ fn detach_and_reattach_keep_the_shell_and_its_screen() -> Outcome {
     Ok(())
 }
 
+/// However a connection ends, its client goes with it: a client that breaks
+/// the protocol (a second Attach, a Hello) is dropped and detached, and so
+/// is one that detaches and attaches again in one batch.
 #[test]
 fn a_connection_that_ends_takes_its_client_with_it() -> Outcome {
     use fux::protocol::{Attach, Frame, Hello, PROTOCOL, Role};
@@ -104,6 +110,8 @@ fn a_connection_that_ends_takes_its_client_with_it() -> Outcome {
     Ok(())
 }
 
+/// A screen that did not change is not painted again: a command that
+/// changes nothing a client shows sends it nothing, not even an empty paint.
 #[test]
 fn an_unchanged_screen_is_not_painted_again() -> Outcome {
     let server = Server::start("")?;
@@ -179,6 +187,8 @@ fn capture_pane_shows_the_screen_and_history() -> Outcome {
     Ok(())
 }
 
+/// With `str titles true set`, the real client's terminal is given its pane's
+/// title, its own saved first and restored on leaving; a bell rings it.
 #[test]
 fn the_real_client_gets_titles_and_bells_and_its_title_back() -> Outcome {
     let server = Server::start("str titles true set")?;
@@ -269,6 +279,8 @@ fn attaching_inside_a_pane_is_refused_unless_unset() -> Outcome {
     Ok(())
 }
 
+/// stdin and stdout must be one terminal: with stdout another, attach is
+/// refused, saying so.
 #[test]
 fn attach_needs_stdin_and_stdout_on_one_terminal() -> Outcome {
     let server = Server::start("")?;
@@ -530,6 +542,8 @@ fn fake_server(
     Ok((dir, listener))
 }
 
+/// The client of a server of another protocol is told how to restart it,
+/// even when that server hangs up as soon as it has said so.
 #[test]
 fn a_server_of_another_protocol_is_named_by_the_client() -> Outcome {
     use fux::protocol::{Frame, Greeting, Hello, Role};
@@ -565,6 +579,9 @@ fn a_server_of_another_protocol_is_named_by_the_client() -> Outcome {
     Ok(())
 }
 
+/// A client whose server answers its Hello and then nothing more, while
+/// its terminal is raw, is still detached by a signal, and puts its
+/// terminal back.
 #[test]
 fn a_signal_detaches_a_client_waiting_on_a_stalled_server() -> Outcome {
     use fux::protocol::{Frame, Greeting, Hello, PROTOCOL, Role};
@@ -609,6 +626,9 @@ fn a_signal_detaches_a_client_waiting_on_a_stalled_server() -> Outcome {
     Ok(())
 }
 
+/// A client detached by a signal writes what its server paints until it
+/// lets the client go before it puts its terminal back, so that none of it
+/// lands on the shell after (a mouse mode turned on again, say).
 #[test]
 fn a_signal_detached_client_writes_the_last_paint_before_leaving() -> Outcome {
     use fux::protocol::{Frame, Greeting, Hello, PROTOCOL, Role, ToAttached};
@@ -678,6 +698,11 @@ fn a_signal_detached_client_writes_the_last_paint_before_leaving() -> Outcome {
     Ok(())
 }
 
+/// A pane's program ignores no signal fux ignores: the Rust runtime ignores
+/// SIGPIPE and fux catches others, and neither reaches the program.
+/// Dispositions fux itself inherited ignored (a container's, say) pass on,
+/// as they would to any child, so the baseline is what a plain child of
+/// this test inherits. Linux reports dispositions in /proc.
 #[cfg(target_os = "linux")]
 #[test]
 fn a_panes_program_ignores_no_signal_fux_ignores() -> Outcome {
@@ -799,6 +824,10 @@ fn a_panes_shell_has_the_pty_as_its_terminal_and_job_control() -> Outcome {
     Ok(())
 }
 
+/// A program that cannot start is reported with the system's error as it
+/// is, and where it was started: a missing program, a missing `#!`
+/// interpreter and a missing directory are all the same `NotFound`, which
+/// fux does not guess between; a directory is not checked first.
 #[test]
 fn a_program_that_cannot_start_is_reported_as_the_system_says() -> Outcome {
     let server = Server::start("")?;
@@ -912,6 +941,7 @@ fn a_server_a_client_started_outlives_the_clients_terminal() -> Outcome {
     after
 }
 
+/// The first pane uses the invoking client's directory, regardless of HOME.
 #[test]
 fn a_first_shell_starts_in_the_invocation_directory() -> Outcome {
     let dir = fuxix::file::scratch()
@@ -959,6 +989,10 @@ fn a_first_shell_starts_in_the_invocation_directory() -> Outcome {
     Ok(())
 }
 
+/// A caller whose own directory is gone sends none it knows: a start it
+/// asks for that needs one fails saying so, rather than starting in
+/// `$HOME` or, joined onto nothing, the server's `/`. One given whole still
+/// starts.
 #[test]
 fn a_caller_with_no_directory_starts_nothing_that_needs_one() -> Outcome {
     let server = Server::start("")?;
@@ -996,6 +1030,9 @@ fn a_caller_with_no_directory_starts_nothing_that_needs_one() -> Outcome {
     Ok(())
 }
 
+/// Resizing a terminal signals its client, and a signal can interrupt a
+/// read or write in flight. Typing while the window is resized, hundreds of
+/// times, keeps the client attached and loses no byte (Linux once ended the attachment with "Interrupted system call").
 #[test]
 fn resizing_while_typing_keeps_the_client_attached_and_every_byte() -> Outcome {
     let server = Server::start("")?;
@@ -1064,6 +1101,8 @@ fn resizing_while_typing_keeps_the_client_attached_and_every_byte() -> Outcome {
     Ok(())
 }
 
+/// The prefix, then Esc, stops a key's program waiting at the server; the
+/// next key's program asks on as before.
 #[test]
 fn a_stopped_key_program_leaves_the_next_one_asking() -> Outcome {
     let keys = "str j str 'me focused 600 timeout wait drop' bind \
@@ -1082,6 +1121,8 @@ fn a_stopped_key_program_leaves_the_next_one_asking() -> Outcome {
     terminal.wait_for("next-ok")
 }
 
+/// Commands from the command line are not ended by signals either, when
+/// one arrives while they wait for the server.
 #[test]
 fn a_signal_does_not_end_a_command_waiting_for_the_server() -> Outcome {
     let server = Server::start("")?;
@@ -1108,6 +1149,12 @@ fn a_signal_does_not_end_a_command_waiting_for_the_server() -> Outcome {
     Ok(())
 }
 
+/// A server may inherit descriptors without close-on-exec from whatever
+/// starts it: a shell that leaks them, or, in these tests, another thread
+/// opening one in the moment before it sets the flag. Its panes' programs
+/// inherit none of them. Before a pane's start marked every descriptor above
+/// stderr close-on-exec, the tests above saw a PTY master and a socket of
+/// the test process in a pane, about once in 450 runs.
 #[test]
 fn a_descriptor_the_server_inherited_does_not_reach_its_panes() -> Outcome {
     let (server, held) = Server::start_inheriting("")?;

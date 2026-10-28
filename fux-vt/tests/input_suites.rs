@@ -142,6 +142,7 @@ fn encoder_suite(name: &str, text: &str) -> Result<(usize, usize, usize)> {
     Ok((agree, differ, na))
 }
 
+/// tmux's `regress/input-keys.sh`.
 #[test]
 fn tmux_input_keys() -> Result {
     let counts = encoder_suite("tmux", include_str!("data/keys/tmux-input-keys.txt"))?;
@@ -150,6 +151,7 @@ fn tmux_input_keys() -> Result {
     Ok(())
 }
 
+/// Ghostty's `src/input/key_encode.zig`.
 #[test]
 fn ghostty_key_encode() -> Result {
     let counts = encoder_suite("Ghostty", include_str!("data/keys/ghostty-key-encode.txt"))?;
@@ -158,6 +160,7 @@ fn ghostty_key_encode() -> Result {
     Ok(())
 }
 
+/// kitty's `kitty_tests/keys.py`, re-authored.
 #[test]
 fn kitty_keys() -> Result {
     let counts = encoder_suite("kitty", include_str!("data/keys/kitty-keys.txt"))?;
@@ -166,6 +169,7 @@ fn kitty_keys() -> Result {
     Ok(())
 }
 
+/// Real xterm 411's bytes for every key fux names, through XTest.
 #[test]
 fn xterm_keys() -> Result {
     let counts = encoder_suite("xterm", include_str!("data/keys/xterm-keys.txt"))?;
@@ -263,6 +267,7 @@ fn decoder_suite(name: &str, text: &str) -> Result<(usize, usize, usize)> {
     Ok((agree, differ, na))
 }
 
+/// libtermkey 0.22's decoding cases.
 #[test]
 fn libtermkey_decoding() -> Result {
     let counts = decoder_suite("libtermkey", include_str!("data/keys/libtermkey.txt"))?;

@@ -118,6 +118,9 @@ fn closing_asks_first_and_acts_on_what_it_asked_about() -> Outcome {
     Ok(())
 }
 
+/// The pane actions are a layer of bindings: `a n` moves the focused pane
+/// to a new tab, and a binding a config adds under `a` is listed there
+/// beside the defaults.
 #[test]
 fn pane_actions_are_bindings_a_config_extends() -> Outcome {
     let server =
@@ -287,6 +290,7 @@ fn detaching_with_an_overlay_open_is_safe() -> Outcome {
     Ok(())
 }
 
+/// Remote lists resolve only callback source in the receiving client's dictionary.
 #[test]
 fn a_remote_custom_chooser_delivers_inert_payload_to_the_receiving_dictionary() -> Outcome {
     let server = Server::start("define receiver-only nip print end")?;

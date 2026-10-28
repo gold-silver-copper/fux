@@ -108,6 +108,9 @@ fn the_allocator_counts_live_bytes_a_reset_peak_and_a_growth_transient() -> Resu
     Ok(())
 }
 
+/// A parser's own memory shows: one with 1 MiB of history, fed past it,
+/// holds about that much: more than half of it, less than twice. Its
+/// bound is B17's row's.
 #[test]
 fn a_parser_s_history_shows_in_the_counts() -> Result {
     let _one = one_at_a_time();
@@ -157,6 +160,9 @@ fn fails_as_known(found: &[String], known: &str) -> bool {
         && found.iter().all(|f| f.contains(known))
 }
 
+/// A row known to fail fails so at every chunking, each on its own: one
+/// chunking's error saying it four times, the others failing otherwise,
+/// or passing, is not as known.
 #[test]
 fn a_known_failure_is_matched_at_each_chunking() {
     let known = "past its bound";
@@ -202,6 +208,8 @@ fn judge(row: &str, scale: Scale) -> Result {
     }
 }
 
+/// A bound naming a counter there is none of fails, rather than passing
+/// for counting nothing.
 #[test]
 fn a_bound_naming_no_counter_fails() -> Result {
     let _one = one_at_a_time();
@@ -216,6 +224,7 @@ fn a_bound_naming_no_counter_fails() -> Result {
     Ok(())
 }
 
+/// The list names rows that exist, at scales that exist.
 #[test]
 fn the_known_failing_list_names_rows_and_scales() {
     for line in KNOWN_FAILING
@@ -401,6 +410,10 @@ mod budget {
         Ok(())
     }
 
+    /// A REP inside left and right margins whose wraps scroll past the
+    /// budget stops where the budget is spent, its copies left made by
+    /// the next call, and text in DEC Special Graphics after it stops so
+    /// too: the screen is that of one call given it all.
     #[test]
     fn a_rep_inside_margins_stops_at_the_budget_and_goes_on() -> Result {
         let _one = one_at_a_time();
@@ -457,6 +470,8 @@ mod budget {
         }
     }
 
+    /// A wide glyph's copy writes two cells, and REP spends it as two: the
+    /// budget stops a call after half as many REPs of it.
     #[test]
     fn rep_spends_a_copy_by_its_width() -> Result {
         let _one = one_at_a_time();

@@ -820,6 +820,12 @@ impl Count {
 mod tests {
     use super::{Measure, Pieces, ROWS};
 
+    /// The content a child measures, and what made it, stay held over both
+    /// readings: memory allocated after the first reading reads as grown,
+    /// none of it reused from content freed before (Linux, where freed
+    /// pages stay resident). 8 MiB in small allocations reads as 7.5 at
+    /// least. In a process of its own ([`crate::memory::alone`]): the
+    /// footprint is the whole process's.
     #[cfg(target_os = "linux")]
     #[test]
     fn what_a_child_measures_with_is_held_over_its_readings() -> Result<(), String> {
@@ -869,6 +875,8 @@ mod tests {
         Ok(())
     }
 
+    /// The pieces are the same every time; a workload that does not
+    /// scroll by itself has its screen scrolled out after each.
     #[test]
     fn pieces_are_reproducible_and_scroll_out() -> Result<(), String> {
         let take = |name: &str| -> Result<Vec<Vec<u8>>, String> {

@@ -407,6 +407,8 @@ mod tests {
     /// A tab in the first workspace.
     const NEW_TAB: &str = "opts 80 24 size str +1 workspace in new-tab";
 
+    /// Every server-side screen action belongs to one opening, including
+    /// edits and copy keys already in flight when that opening ended.
     #[test]
     fn stale_screen_actions_cannot_change_a_new_opening() -> Outcome {
         use crate::act::{Act, CopyAct, ScreenAct};
@@ -481,6 +483,8 @@ mod tests {
         Ok(())
     }
 
+    /// A replacement key panel starts a new opening; navigation within
+    /// its column keeps the opening and entering repeat clears old errors.
     #[test]
     fn replacing_a_key_panel_ends_its_old_notice() -> Outcome {
         let (mut s, c) = session()?;
@@ -509,6 +513,8 @@ mod tests {
         Ok(())
     }
 
+    /// A copy opening refused without a focused pane ends on both sides
+    /// and reports the missing focus without command-line instructions.
     #[test]
     fn copy_without_a_focused_pane_ends_visibly() -> Outcome {
         let (mut s, c) = session()?;
@@ -520,6 +526,8 @@ mod tests {
         Ok(())
     }
 
+    /// A name typed into a rename prompt is the name, whatever it looks
+    /// like.
     #[test]
     fn a_rename_prompt_takes_any_name() -> Outcome {
         let (mut s, c) = session()?;
@@ -548,6 +556,8 @@ mod tests {
         Ok(())
     }
 
+    /// A screen's keys are the config's, as the bindings are: one rebound
+    /// acts, and its hint says so; Escape always leaves, and is never bound.
     #[test]
     fn a_screens_keys_are_the_configs() -> Outcome {
         let (mut s, c) = session()?;
@@ -579,6 +589,8 @@ mod tests {
         Ok(())
     }
 
+    /// A question's or a prompt's action is checked as it opens: one with
+    /// a mistake, or past `ACTION_MAX`, opens nothing.
     #[test]
     fn an_action_is_checked_as_its_screen_opens() -> Outcome {
         let (mut s, c) = session()?;
@@ -605,6 +617,8 @@ mod tests {
         Ok(())
     }
 
+    /// On a screen too short for a list's lines, the selected entry stays
+    /// in view: the lines around it give way first.
     #[test]
     fn a_short_screen_keeps_the_selected_entry_in_view() -> Outcome {
         let (mut s, c) = crate::session::testing::attached(3, 40)?;
@@ -618,6 +632,7 @@ mod tests {
         Ok(())
     }
 
+    /// Unbound upper-case keys do not act as their lower-case bindings.
     #[test]
     fn list_and_confirm_keys_match_exact_case() -> Outcome {
         let (mut s, c) = session()?;
@@ -636,6 +651,9 @@ mod tests {
         Ok(())
     }
 
+    /// A long chooser scrolled to the middle shows its title, both "more"
+    /// lines, its items and its help, all within the screen (41 tabs, the
+    /// cursor at the 31st, on 30 rows lost the title).
     #[test]
     fn a_scrolled_list_keeps_its_title() -> Outcome {
         let (mut s, c) = session()?;
@@ -673,6 +691,10 @@ mod tests {
         )
     }
 
+    /// A layer's key opens it, its column titled and showing the keys so
+    /// far; a key it does not bind keeps it open, saying so; its binding
+    /// runs on the next key; the prefix inside it goes to the pane; and
+    /// Enter on its entry in the column opens it too.
     #[test]
     fn a_layer_runs_its_binding_on_the_next_key() -> Outcome {
         let (mut s, c) = session()?;
@@ -874,6 +896,8 @@ mod tests {
         Ok(())
     }
 
+    /// Keys bound without the prefix are listed under headings of their
+    /// own, even one named as a group of keys typed after it is.
     #[test]
     fn keys_without_the_prefix_share_no_heading() -> Outcome {
         let (mut s, c) = crate::session::testing::attached(100, 100)?;
@@ -951,6 +975,9 @@ mod tests {
         ))
     }
 
+    /// Typing a default binding's keys does what running its program as the
+    /// client does, and the program runs; a repeating one also enters its
+    /// mode.
     #[test]
     fn every_default_binding_runs_its_program() -> Outcome {
         let keymap = crate::script::default_state()
@@ -1353,6 +1380,9 @@ mod tests {
         Ok(())
     }
 
+    /// A mouse report a full input queue refuses is told, and so is each
+    /// key, paste, report and focus change refused after it, the notice
+    /// cleared by a key shown again.
     #[test]
     fn a_report_a_full_queue_refuses_is_told_once() -> Outcome {
         let (mut s, c) = session()?;
@@ -1384,6 +1414,8 @@ mod tests {
         Ok(())
     }
 
+    /// The first key a full queue refuses is told, though a run of drops
+    /// before it, of replies, was told already.
     #[test]
     fn the_first_key_refused_is_told() -> Outcome {
         let (mut s, c) = session()?;
@@ -1404,6 +1436,8 @@ mod tests {
         Ok(())
     }
 
+    /// A key or paste typed into a pane whose program exited is refused,
+    /// as `send-keys` is, and told: never queued for no one to read.
     #[test]
     fn a_key_into_an_exited_program_is_refused_and_told() -> Outcome {
         let (mut s, c) = session()?;
@@ -1485,6 +1519,8 @@ mod tests {
         Ok(())
     }
 
+    /// A chooser about a pane that closes closes too, on the server and the
+    /// client, saying why: its entries never act on another pane.
     #[test]
     fn a_list_whose_item_disappears_closes_and_never_retargets() -> Outcome {
         let (mut s, c) = session()?;
@@ -1499,6 +1535,9 @@ mod tests {
         Ok(())
     }
 
+    /// A workspace named by its name is held by its ID: renamed while a
+    /// prompt or a confirmation for it is open, it is the same workspace,
+    /// and they stay open on it.
     #[test]
     fn an_overlay_holds_a_workspace_named_by_name_through_a_rename() -> Outcome {
         let (mut s, c) = session()?;

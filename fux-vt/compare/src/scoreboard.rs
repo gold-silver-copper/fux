@@ -880,6 +880,7 @@ mod tests {
         Ok(dir)
     }
 
+    /// With nothing run, every axis says so, and the files are written.
     #[test]
     fn every_axis_says_when_it_was_not_run() -> Result<(), String> {
         let dir = dir("empty")?;
@@ -901,6 +902,9 @@ mod tests {
         Ok(())
     }
 
+    /// Beside the best other engine: lower is better for costs, higher for
+    /// counts; a tie within the floor, ahead or behind past it, unranked
+    /// with no floor.
     #[test]
     fn standing_beside_the_best_other() -> Result<(), String> {
         use super::{Floor, Standing};
@@ -950,6 +954,11 @@ mod tests {
         Ok(())
     }
 
+    /// Instructions per byte are ranked past a floor of at least 0.25%,
+    /// whatever the repeats' own spread (0.01% here): 0.1% apart is a tie.
+    /// MB/s is read as fux-bench info writes it, by table, and ranked as
+    /// ranked: past max(0.25%, the widest deviation of
+    /// fux-vt's runs from their median), here one run's, so 0.25%.
     #[test]
     fn rows_are_ranked_past_the_floors_their_tools_measure() -> Result<(), String> {
         let dir = dir("floors")?;
@@ -1004,6 +1013,7 @@ mod tests {
         Ok(())
     }
 
+    /// Fuzz time counts from the last crash on.
     #[test]
     fn fuzz_time_counts_from_the_last_crash() -> Result<(), String> {
         let dir = dir("fuzz")?;

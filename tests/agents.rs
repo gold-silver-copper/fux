@@ -139,6 +139,10 @@ fn line_done(server: &Server, pane: &str, line: &str) -> Outcome {
     Ok(())
 }
 
+/// A program `run` starts keeps its pane once it exits: its last screen,
+/// and its status, which a wait and `ls` report (a signal's too); one that
+/// cannot start is refused. It takes no more input. The program starts at
+/// its `size`, in the `agent` workspace, which no client is moved to.
 #[test]
 fn a_run_program_keeps_its_pane_screen_and_status() -> Outcome {
     let server = Server::start("")?;
@@ -196,6 +200,10 @@ fn a_run_program_keeps_its_pane_screen_and_status() -> Outcome {
     Ok(())
 }
 
+/// An action acts at once and answers its pane's version from just before
+/// it acted; a wait from that version answers once the version differs,
+/// with what changed, however late it is asked: nothing between is
+/// missed. A wait from now on a pane that does not change times out (124).
 #[test]
 fn a_wait_from_an_action_s_version_misses_nothing() -> Outcome {
     let server = Server::start("")?;
@@ -257,6 +265,8 @@ fn a_wait_from_an_action_s_version_misses_nothing() -> Outcome {
     Ok(())
 }
 
+/// A version counts bells and notifications rung, and a wait says one
+/// rang; a program started again is said so, its counts afresh.
 #[test]
 fn bells_and_respawns_change_the_version() -> Outcome {
     let server = Server::start("")?;
@@ -280,6 +290,12 @@ fn bells_and_respawns_change_the_version() -> Outcome {
     Ok(())
 }
 
+/// A shell's OSC 133 marks count the commands that end in its pane's
+/// version, `last_status` says how the last ended and `last-output` reads
+/// its output alone; a prompt hook after the marks sees the command's
+/// status; a line that runs nothing ends no command. Where no command was
+/// marked, `last-output` says so and the count stays. The marks are the
+/// docs', for each shell here.
 #[test]
 fn shell_marks_count_commands_and_give_their_output() -> Outcome {
     let server = Server::start("")?;
@@ -384,6 +400,10 @@ fn shell_marks_count_commands_and_give_their_output() -> Outcome {
     Ok(())
 }
 
+/// Keys reach the program as they are sent, in order: a paste bracketed
+/// as it asked, a count repeating only the key before it, bytes as they
+/// are, a click encoded as it asked. The program says all it has read so
+/// far after each read: its terminal may split what one action sent.
 #[test]
 fn input_reaches_the_program_as_sent() -> Outcome {
     const READS: &str = r#"
@@ -440,6 +460,10 @@ while not seen.endswith(b"q"):
     Ok(())
 }
 
+/// Sizes are set, not worked out: a tab no client shows is laid out on its
+/// `size` and later on `resize`'s, and a pane is made a width in cells or
+/// a percentage of its tab; a size it cannot have is refused, nothing
+/// changed.
 #[test]
 fn sizes_are_set_as_asked() -> Outcome {
     let server = Server::start("")?;
@@ -494,6 +518,9 @@ fn sizes_are_set_as_asked() -> Outcome {
     Ok(())
 }
 
+/// A headless client stands in for a terminal of a size set from the
+/// command line: it prints its id, shows what it is sent, and goes on a
+/// signal. A terminal's client sets its own size.
 #[test]
 fn a_headless_client_is_sized_from_the_command_line() -> Outcome {
     use std::io::BufRead;
@@ -555,6 +582,9 @@ fn a_headless_client_is_sized_from_the_command_line() -> Outcome {
     Ok(())
 }
 
+/// A pane's pictures reach a client whose terminal draws sixel, clipped
+/// to the pane, after the program was told the terminal draws them; and
+/// the capture's JSON says where they are.
 #[test]
 fn pictures_reach_a_terminal_that_draws_sixel() -> Outcome {
     let server = Server::start("")?;
@@ -608,6 +638,10 @@ fn pictures_reach_a_terminal_that_draws_sixel() -> Outcome {
     Ok(())
 }
 
+/// `respawn` starts a run program again in its pane, found by its given
+/// name; `all-history` reads all history,
+/// `main-screen` what a full-screen program hides, `alt-screen` its last
+/// screen; a mistyped key name is refused.
 #[test]
 fn run_programs_are_restarted_and_read_whole() -> Outcome {
     let server = Server::start("")?;
@@ -665,6 +699,8 @@ fn run_programs_are_restarted_and_read_whole() -> Outcome {
     Ok(())
 }
 
+/// Pane and tab names are independent, id spellings are refused, and a
+/// click outside a pane or a signal to its default shell is refused.
 #[test]
 fn names_clicks_and_signals_are_checked() -> Outcome {
     let server = Server::start("")?;
@@ -713,6 +749,8 @@ fn names_clicks_and_signals_are_checked() -> Outcome {
     Ok(())
 }
 
+/// A row range takes each line it touches whole; a column range
+/// cuts a wide glyph to a blank, and reaches the last column.
 #[test]
 fn a_row_range_takes_joined_lines_whole() -> Outcome {
     let server = Server::start("")?;
@@ -757,6 +795,10 @@ fn a_row_range_takes_joined_lines_whole() -> Outcome {
     Ok(())
 }
 
+/// A wait on a workspace waits on each of its panes, and answers a line for
+/// each: here none changed, so each timed out, the whole 124. (`session`'s
+/// tests begin a wait before what it waits for: the answer of the pane
+/// that changed, and of one that closed.)
 #[test]
 fn a_wait_on_a_workspace_answers_each_of_its_panes() -> Outcome {
     let server = Server::start("")?;
@@ -788,6 +830,8 @@ fn a_wait_on_a_workspace_answers_each_of_its_panes() -> Outcome {
     Ok(())
 }
 
+/// An action's answer, and a wait's, is its pane: a word that wants a pane
+/// takes it, never a pane named by what the program wrote (`%13 fake`).
 #[test]
 fn an_answer_selects_its_pane_explicitly_for_live_fields() -> Outcome {
     let server = Server::start("")?;
@@ -804,6 +848,9 @@ fn an_answer_selects_its_pane_explicitly_for_live_fields() -> Outcome {
     Ok(())
 }
 
+/// Input as large as one send-keys sends (900 KiB, far past a typed
+/// paste's 64 KiB) goes in one, all of it, from a program read from a
+/// file; more is refused as too long, before anything is sent.
 #[test]
 fn send_keys_takes_input_up_to_its_limit() -> Outcome {
     let server = Server::start("")?;
@@ -836,6 +883,8 @@ fn send_keys_takes_input_up_to_its_limit() -> Outcome {
     Ok(())
 }
 
+/// `json` on a saved capture converts what was captured: never a later
+/// read of the pane, which may have moved on or closed.
 #[test]
 fn json_of_a_saved_capture_is_that_capture() -> Outcome {
     let server = Server::start("")?;
@@ -868,6 +917,8 @@ fn json_of_a_saved_capture_is_that_capture() -> Outcome {
     Ok(())
 }
 
+/// In a list, an answer is as `json` gives it alone: a capture, another,
+/// and a listing are their objects.
 #[test]
 fn an_answer_in_a_list_is_its_object() -> Outcome {
     let server = Server::start("")?;
@@ -892,6 +943,10 @@ fn an_answer_in_a_list_is_its_object() -> Outcome {
     Ok(())
 }
 
+/// A word refuses options it would not use, and makes nothing: a capture
+/// waits for nothing, a wait starts and views nothing, a split takes its
+/// tab's place, a run splits nothing and views nothing, a respawn keeps
+/// its pane's name, size, place and ids.
 #[test]
 fn words_refuse_options_they_do_not_use() -> Outcome {
     let server = Server::start("")?;
@@ -967,6 +1022,8 @@ fn words_refuse_options_they_do_not_use() -> Outcome {
     Ok(())
 }
 
+/// A failed wait answers as text, whatever follows it, and says why on
+/// one line of stderr; nothing after it runs.
 #[test]
 fn a_failed_wait_answers_as_text() -> Outcome {
     let server = Server::start("")?;
@@ -985,6 +1042,8 @@ fn a_failed_wait_answers_as_text() -> Outcome {
     Ok(())
 }
 
+/// While a command runs, its output so far is the last output; a
+/// full-screen one's is its screen, the cursor where it is on it.
 #[test]
 fn last_output_is_the_running_command_s_so_far() -> Outcome {
     if !bash_has_ps0()? {
@@ -1005,6 +1064,8 @@ fn last_output_is_the_running_command_s_so_far() -> Outcome {
     Ok(())
 }
 
+/// A given name matching the old program survives respawn. A wait
+/// from the ended program's version tells the new one's end too.
 #[test]
 fn respawn_keeps_a_given_name_matching_the_old_program() -> Outcome {
     let server = Server::start("")?;
@@ -1020,6 +1081,8 @@ fn respawn_keeps_a_given_name_matching_the_old_program() -> Outcome {
     Ok(())
 }
 
+/// `env` gives a program a pane, tab or workspace as fux writes it, so a
+/// key's program can act on the pane it came from.
 #[test]
 fn env_takes_a_pane_tab_or_workspace() -> Outcome {
     let server = Server::start("")?;
@@ -1036,6 +1099,8 @@ fn env_takes_a_pane_tab_or_workspace() -> Outcome {
     Ok(())
 }
 
+/// A pane's `FUX` is the fux running it, so a key's program reaches fux
+/// with no `fux` on PATH.
 #[test]
 fn a_pane_gets_the_fux_running_it() -> Outcome {
     let server = Server::start("")?;
@@ -1048,6 +1113,10 @@ fn a_pane_gets_the_fux_running_it() -> Outcome {
     Ok(())
 }
 
+/// The docs' recipes run as written, as programs: a quiet screen, a
+/// reply's text, a shell command's end and a program's exit, and a
+/// deadline's fallback, each in a pane of its own; and every program the
+/// guide shows checks.
 #[test]
 fn the_docs_recipes_run_as_written() -> Outcome {
     let server = Server::start("")?;
@@ -1104,6 +1173,10 @@ fn the_docs_recipes_run_as_written() -> Outcome {
     Ok(())
 }
 
+/// Keys to a program that closed its terminal but runs on are refused, as
+/// to one that exited: nothing reads them, and `hung_up` says so. Linux
+/// says it closed it (the terminal hangs up); macOS, where fux holds the
+/// terminal open, does not.
 #[cfg(target_os = "linux")]
 #[test]
 fn keys_to_a_program_that_closed_its_terminal_are_refused() -> Outcome {
@@ -1119,6 +1192,8 @@ fn keys_to_a_program_that_closed_its_terminal_are_refused() -> Outcome {
     Ok(())
 }
 
+/// Every promised input kind reaches the condition, and the matched capture
+/// keeps its text and version for local reads and guarded input.
 #[test]
 fn conditions_accept_panes_answers_and_pane_captures() -> Outcome {
     let server = Server::start("")?;
@@ -1145,6 +1220,7 @@ fn conditions_accept_panes_answers_and_pane_captures() -> Outcome {
     Ok(())
 }
 
+/// A held capture is a pure observation, even after its pane is closed.
 #[test]
 fn observed_retains_a_capture_without_refreshing_it() -> Outcome {
     let server = Server::start("")?;
@@ -1156,6 +1232,8 @@ fn observed_retains_a_capture_without_refreshing_it() -> Outcome {
     Ok(())
 }
 
+/// An ended observation satisfies until-ended immediately on every supported
+/// input kind; its status survives another call to the condition.
 #[test]
 fn until_ended_checks_before_waiting_and_keeps_status() -> Outcome {
     let server = Server::start("")?;
@@ -1170,6 +1248,8 @@ fn until_ended_checks_before_waiting_and_keeps_status() -> Outcome {
     Ok(())
 }
 
+/// Growth validates its counter, arithmetic and generation before comparing
+/// counters from separate invocations. Zero growth accepts every baseline kind.
 #[test]
 fn grows_validates_its_baseline_and_requested_growth() -> Outcome {
     let server = Server::start("")?;
@@ -1201,6 +1281,7 @@ fn grows_validates_its_baseline_and_requested_growth() -> Outcome {
     Ok(())
 }
 
+/// Quiet catches only unchanged timeouts; losing the pane must reach the caller.
 #[test]
 fn quiet_propagates_closure_instead_of_reporting_stability() -> Outcome {
     let server = Server::start("")?;

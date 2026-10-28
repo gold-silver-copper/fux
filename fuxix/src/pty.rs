@@ -421,6 +421,8 @@ mod tests {
         Size::from((std::num::NonZeroU16::MIN, std::num::NonZeroU16::MAX))
     }
 
+    /// Bytes written to the master arrive at the slave and back; both ends
+    /// are close-on-exec, and the master does not wait.
     #[test]
     fn a_pty_carries_bytes_both_ways() -> std::result::Result<(), String> {
         let (master, slave) = open(size()).map_err(|e| e.to_string())?;
@@ -442,6 +444,9 @@ mod tests {
         Ok(())
     }
 
+    /// On macOS the master is close-on-exec from its opening, where the
+    /// system takes `O_CLOEXEC`: as `posix_openpt` gave it, before anything
+    /// else could set the flag.
     #[cfg(target_os = "macos")]
     #[test]
     fn the_macos_master_is_close_on_exec_as_opened() -> std::result::Result<(), String> {
@@ -482,6 +487,9 @@ mod tests {
         (result, calls, sleeps)
     }
 
+    /// The races are retried, with growing sleeps, up to the bound: then
+    /// `AGAIN` for `EREDRIVEOPEN` (never the kernel's -6), and `ENXIO` as it
+    /// is (no PTY is free). Every other result is returned at once.
     #[test]
     fn only_the_races_are_tried_again_and_within_the_bound() {
         let tries = usize::try_from(REDRIVE_TRIES).unwrap_or(0);
@@ -524,6 +532,8 @@ mod tests {
         Ok((meta.file_type().is_char_device(), meta.rdev()))
     }
 
+    /// A call that returns in time is left alone: its result comes back, and
+    /// the descriptor still refers to what it did.
     #[test]
     fn a_call_that_returns_in_time_keeps_its_descriptor() -> std::result::Result<(), String> {
         let (reader, _writer) = std::io::pipe().map_err(|e| e.to_string())?;
@@ -540,6 +550,9 @@ mod tests {
         Ok(())
     }
 
+    /// `/dev/null` is open before the watched call starts: replacing a
+    /// stalled descriptor needs no new one, so a process out of descriptors
+    /// can still be rescued.
     #[test]
     fn dev_null_is_opened_before_the_call() -> std::result::Result<(), String> {
         let (reader, _writer) = std::io::pipe().map_err(|e| e.to_string())?;
@@ -574,6 +587,8 @@ mod tests {
         Ok(())
     }
 
+    /// A call still running at the limit has its descriptor replaced with
+    /// /dev/null, and is reported as stalled whatever it returns.
     #[test]
     fn a_call_that_stalls_has_its_descriptor_replaced_with_dev_null()
     -> std::result::Result<(), String> {
@@ -668,6 +683,8 @@ mod tests {
     /// workers run.
     static STRESS: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+    /// Many threads of one process opening PTYs at once: none fails, and on
+    /// macOS none is slowed by the kernel's retry loop.
     #[test]
     #[ignore = "opens thousands of PTYs on every core: cargo test -p fuxix -- --ignored"]
     fn concurrent_opens_in_one_process_neither_fail_nor_stall() -> std::result::Result<(), String> {
@@ -696,6 +713,9 @@ mod tests {
     /// Set in a worker process of the cross-process test: its rounds.
     const STRESS_WORKER: &str = "FUXIX_PTY_STRESS_WORKER";
 
+    /// Many processes opening PTYs at once, one thread each, so no lock of
+    /// ours stands between them: none fails. The test runs its own binary as
+    /// the workers.
     #[test]
     #[ignore = "opens thousands of PTYs on every core: cargo test -p fuxix -- --ignored"]
     fn concurrent_opens_across_processes_never_fail() -> std::result::Result<(), String> {

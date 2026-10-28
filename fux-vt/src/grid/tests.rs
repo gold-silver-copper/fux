@@ -67,6 +67,9 @@ fn narrowing_live_rows_uses_the_new_width() -> Result<(), Error> {
     Ok(())
 }
 
+/// `move_row` is `remove(from)` then `insert(to)`, for every pair of rows,
+/// in an order that is one slice and in one that has wrapped round into two;
+/// and it moves nothing for an index out of range.
 #[test]
 fn moving_a_row_is_a_removal_then_an_insertion() -> Result<(), Error> {
     let mut next = 0;
@@ -222,6 +225,9 @@ fn scrolling_moves_only_the_selected_rows() -> Result<(), Error> {
     Ok(())
 }
 
+/// Turning rows that cross the ring's end turns those rows and no others,
+/// as turning them where the ring starts at its top does, each way and
+/// by every count.
 #[test]
 fn a_rotation_across_the_rings_end_turns_only_its_rows() {
     for top in 0..6 {

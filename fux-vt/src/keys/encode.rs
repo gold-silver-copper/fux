@@ -824,6 +824,12 @@ mod tests {
         }
     }
 
+    /// With disambiguate (1), as the kitty spec's "Disambiguate escape
+    /// codes" and "Functional key definitions" say: text keys send their
+    /// text; Escape and keys with Ctrl or Alt are `CSI code ; mods u`;
+    /// Enter, Tab and Backspace stay legacy unless modified; the functional
+    /// keys take the `CSI 1 ; mods X` and `CSI n ; mods ~` forms, never SS3,
+    /// even in application cursor mode; F3 is `CSI 13 ~`.
     #[test]
     fn disambiguated_keys_follow_the_kitty_spec() {
         for (name, bytes) in [
@@ -871,6 +877,11 @@ mod tests {
         }
     }
 
+    /// What a kitty-protocol terminal said beyond the press is given back:
+    /// Shift with Ctrl, which the press folds away (ctrl+shift+i is
+    /// `CSI 105 ; 6 u`, the spec's "Legacy text keys" table), Super and the
+    /// locks, a keypad key's own number; with alternate keys (4), the
+    /// shifted and base-layout keys ("Key codes").
     #[test]
     fn a_reported_key_is_given_back_as_reported() {
         let ctrl_shift_i = reported("C-i", 105, Some(73), None, 5);
@@ -895,6 +906,10 @@ mod tests {
         assert_eq!(named("M-A", ALTERNATE), "\x1b[97:65;4u");
     }
 
+    /// Report all keys (8): text keys too are `CSI code ; mods u`, with the
+    /// text as a third parameter if asked (16; the spec's "Text as code
+    /// points": shift+a is `CSI 97 ; 2 ; 65 u`); Enter, Tab and Backspace
+    /// are escapes.
     #[test]
     fn reporting_all_keys_escapes_text_keys() {
         let (all, text) = (Report::AllKeys, Report::AllKeysWithText);
@@ -928,6 +943,14 @@ mod tests {
     const ALL_MODIFIERS: KeyMode = other_keys_level(OtherKeysLevel::All);
     const UNMODIFIED: KeyMode = other_keys_level(OtherKeysLevel::Unmodified);
 
+    /// modifyOtherKeys level 1, as xterm's input.c (patch 412) sends it with
+    /// the Alt key as its Meta modifier. Alone, Alt leaves a key its legacy
+    /// bytes (`filterAltMeta`: "A bare meta-modifier is independent of
+    /// modifyOtherKeys"), as do Ctrl-Alt on a letter and Alt on Enter and
+    /// Tab with Ctrl ("special cases of control+meta ... e.g., emacs"), Ctrl
+    /// and Shift on a key Ctrl makes a control (`allowedCharModifiers`,
+    /// `IsControlAlias`), Shift on a key that types text, Shift-Tab
+    /// (`ISO_Left_Tab`), and Backspace (`ModifyOtherKeys`, `mokUser`).
     #[test]
     fn modify_other_keys_level_1_follows_xterm() {
         for name in [
@@ -1116,6 +1139,9 @@ mod tests {
         Ok(())
     }
 
+    /// A screen's kitty flags pick the protocol: disambiguate or all keys
+    /// make it kitty's, whatever the cursor mode and modifyOtherKeys; the
+    /// other flags alone leave legacy keys. A level past 3 changes no key.
     #[test]
     fn a_screen_s_flags_pick_its_key_protocol() -> Result<(), crate::Error> {
         for (setup, mode) in [
@@ -1247,12 +1273,18 @@ mod tests {
         }
     }
 
+    /// F13 to F35 are kitty's 57376 to 57398 (the kitty spec's
+    /// "Functional key definitions").
     #[test]
     fn function_keys_past_f12_are_numbered_from_57376() {
         assert_eq!(named("F13", DISAMBIGUATED), "\x1b[57376u");
         assert_eq!(named("C-F35", DISAMBIGUATED), "\x1b[57398;5u");
     }
 
+    /// A legacy pane gets Ctrl-Backspace as BS, as xterm, kitty's legacy
+    /// encoding, VTE and Alacritty send it, whatever terminal it was typed
+    /// in; and nothing for a function key past F12, which xterm has no
+    /// bytes for, rather than an ESC a program reads as Escape.
     #[test]
     fn legacy_ctrl_backspace_is_bs_and_an_unnumbered_key_is_nothing() {
         for (name, bytes) in [
@@ -1311,6 +1343,9 @@ mod tests {
         }
     }
 
+    /// Every key, under all eight modifier sets and in every key mode, has a
+    /// non-empty encoding, and a plain character is its own UTF-8 but where
+    /// all keys are escapes.
     #[test]
     fn key_bytes_is_total_and_never_empty() {
         let mut keys = vec![
@@ -1433,6 +1468,7 @@ mod tests {
         }
     }
 
+    /// Each line end, `\n` or `\r\n`, goes as one CR, bracketed or not.
     #[test]
     fn a_pastes_line_ends_go_as_cr() {
         for bracketed in [false, true] {

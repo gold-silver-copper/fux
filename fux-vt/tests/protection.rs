@@ -74,6 +74,9 @@ fn iso_protection_keeps_glyphs_from_ed_el_and_ech() -> Result {
     Ok(())
 }
 
+/// Each glyph keeps its own protection, whichever came last: the ISO
+/// glyphs stay through ED and the DEC ones through DECSED, an unprotected
+/// one through neither.
 #[test]
 fn each_glyph_keeps_its_own_protection() -> Result {
     let row = "\x1bVab\x1bW\x1b[1\"qcd\x1b[0\"qef";
@@ -164,6 +167,10 @@ fn the_saved_cursor_and_decstr() -> Result {
     Ok(())
 }
 
+/// A protected glyph keeps its protection where it goes: ICH, DCH, IL and
+/// IRM move it with it; REP repeats it protected; a glyph printed over it
+/// takes the pen's. A wide glyph's second half goes with its first. The
+/// blanks EL leaves take the pen's colours (`bce`), as ED's do.
 #[test]
 fn protection_goes_with_the_glyph() -> Result {
     assert_eq!(

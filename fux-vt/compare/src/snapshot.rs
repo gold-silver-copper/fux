@@ -900,6 +900,8 @@ pub fn side_by_side_beside(
 mod tests {
     use super::{Cell, Field, Line, Snapshot, Style, Width};
 
+    /// An engine that can't tell the last row's soft wrap (xterm's print)
+    /// is not compared on it, and is on every other row's.
     #[test]
     fn the_last_rows_soft_wrap_is_compared_where_it_is_told() {
         let line = |wrapped| Line {
@@ -932,6 +934,9 @@ mod tests {
         );
     }
 
+    /// The device's state DA claims is compared where an engine can tell
+    /// it, and with no one where it can't: a double-width row, a
+    /// tab stop, the cursor's shape and a protected cell.
     #[test]
     fn the_device_state_is_compared_where_it_is_told() {
         let fux = Snapshot {
@@ -1007,6 +1012,8 @@ mod tests {
             .collect()
     }
 
+    /// Links are told apart by which cells share one, not by the engines'
+    /// names for them, and only among the cells both link to one URI.
     #[test]
     fn links_compare_by_the_cells_they_share() {
         let (u, v) = (Some(("u", "1")), Some(("u", "2")));
@@ -1037,6 +1044,8 @@ mod tests {
         );
     }
 
+    /// A field read by its key has the value a difference in it shows,
+    /// and a row's text covers its cells' text alone.
     #[test]
     fn a_field_reads_as_its_difference_shows_it() {
         let fux = row(&[Some(("u", "1")), None]);
@@ -1064,6 +1073,8 @@ mod tests {
         assert!(!super::covers("row 0 soft-wrapped", "cell (0,1) text"));
     }
 
+    /// A row read short is a difference, not a row whose missing cells
+    /// go uncompared (at the parent they were zipped away).
     #[test]
     fn a_row_read_short_differs() {
         let full = row(&[None, None, None]);
@@ -1077,6 +1088,8 @@ mod tests {
         );
     }
 
+    /// A subject that kept fewer history rows than the other differs, as
+    /// one that kept more does: its loss of its oldest rows is seen.
     #[test]
     fn history_kept_short_differs_both_ways() {
         let mut short = row(&[None]);

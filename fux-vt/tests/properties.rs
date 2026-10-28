@@ -43,6 +43,9 @@ impl Rng {
 
 // Printing and grapheme clusters.
 
+/// GB9 joins each modifier; GB999 breaks before the vowel jamo. The
+/// README's zero-width tailoring attaches the jamo to the same cell, whose
+/// kept text must stay a prefix after a modifier did not fit (125 + 4).
 #[test]
 fn a_full_cell_drops_zero_width_clusters_after_gb999() -> Result {
     let kept: String = std::iter::once('x')
@@ -69,6 +72,9 @@ fn a_full_cell_drops_zero_width_clusters_after_gb999() -> Result {
     Ok(())
 }
 
+/// GB9b joins the Prepend run, but the zero-width Prepend ends the cell
+/// under the README's tailoring even when it or an earlier Prepend was
+/// dropped. What follows it starts a new cell.
 #[test]
 fn a_dropped_zero_width_prepend_still_ends_the_cell() -> Result {
     let kept: String = std::iter::repeat_n('\u{600}', 64).collect();
@@ -107,6 +113,10 @@ fn character(r: &mut Rng) -> char {
     }
 }
 
+/// Random text printed on one line, in random pieces (splitting UTF-8) with
+/// SGR between characters, gives one cell to each cluster fux-vt makes,
+/// holding all of it that fits, as wide as unicode-width lays it out, and
+/// leaves the cursor after the last.
 #[test]
 fn printed_text_is_segmented_as_the_model_says() -> Result {
     let mut r = Rng(0x6ea9_5e61_0000_0001);
@@ -254,6 +264,8 @@ fn lines(parser: &Parser) -> Vec<String> {
     out
 }
 
+/// Reflowing to a narrower width and back keeps every line's text, and the
+/// cursor where it was; so does reflowing to the narrower width alone.
 #[test]
 fn reflow_narrower_and_back_keeps_every_line() -> Result {
     let options = Options::new().with(Feature::Reflow);
@@ -302,6 +314,8 @@ fn reflow_narrower_and_back_keeps_every_line() -> Result {
 
 // Cells.
 
+/// Random edits to `Cells`, of every kind, on runs small enough that their
+/// text budget runs out, agree with a plain list of cells after each.
 #[test]
 fn cells_agree_with_a_plain_list_of_cells() -> Result {
     let texts = models::texts();
@@ -351,6 +365,8 @@ fn cells_agree_with_a_plain_list_of_cells() -> Result {
 
 // The kitty keyboard protocol.
 
+/// Random pushes, pops, sets, screen switches and resets agree with two
+/// plain stacks, one a screen, of at most 32 flag sets.
 #[test]
 fn kitty_keyboard_flags_agree_with_two_plain_stacks() -> Result {
     let options = Options::new().with(Feature::KittyKeyboard);

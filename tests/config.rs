@@ -2,6 +2,8 @@
 mod support;
 use support::*;
 
+/// Ambient config is for a typing terminal, including when a terminal is
+/// available to a watcher or a headless invocation.
 #[test]
 fn only_a_typing_terminal_loads_the_user_config() -> Outcome {
     let server = Server::start("")?;
@@ -142,6 +144,7 @@ fn the_config_sets_the_prefix_and_bindings() -> Outcome {
     Ok(())
 }
 
+/// A client supplies creation policy; another caller uses its own defaults.
 #[test]
 fn launch_preferences_apply_only_to_new_requests() -> Outcome {
     // Three rows of two cells or more: 24 bytes a row and 8 a cell.
@@ -207,6 +210,7 @@ fn launch_preferences_apply_only_to_new_requests() -> Outcome {
     Ok(())
 }
 
+/// An imported config cannot act on the server or commit half its local state.
 #[test]
 fn an_imported_failure_keeps_the_whole_bundled_state() -> Outcome {
     let server = Server::start("str wait-seconds 0 set")?;
@@ -284,6 +288,8 @@ fn an_imported_failure_keeps_the_whole_bundled_state() -> Outcome {
     Ok(())
 }
 
+/// A config that fails is reported to the client attaching with it, which
+/// keeps the default keys; `check` finds its mistakes without running it.
 #[test]
 fn a_bad_config_is_reported() -> Outcome {
     let server = Server::start("")?;
@@ -352,6 +358,7 @@ fn a_bad_config_is_reported() -> Outcome {
     Ok(())
 }
 
+/// Only a missing optional root selects defaults; other read failures are visible.
 #[test]
 fn optional_config_reports_read_failures() -> Outcome {
     let server = Server::start("")?;
@@ -443,6 +450,7 @@ fn check_mode_is_explicit_and_independent_of_the_filename() -> Outcome {
     Ok(())
 }
 
+/// Selected absence is saved even when the patch has no present values.
 #[test]
 fn an_absent_selection_unsets_the_server_value() -> Outcome {
     let server = Server::start("")?;
@@ -469,6 +477,8 @@ fn an_absent_selection_unsets_the_server_value() -> Outcome {
     Ok(())
 }
 
+/// The examples of the words a config uses check as a config: none binds
+/// after a key bound by default.
 #[test]
 fn the_config_words_examples_check() -> Outcome {
     let server = Server::start("")?;
@@ -487,6 +497,10 @@ fn the_config_words_examples_check() -> Outcome {
     Ok(())
 }
 
+/// `copy-environment` names what a new pane takes from the client that
+/// made it: one the client has is passed on, as the bytes it is, UTF-8 or
+/// not; one it lacks is removed, even though the server has it (here
+/// `ENV`, which the test server is given).
 #[test]
 fn copy_environment_takes_the_clients_variables_or_none() -> Outcome {
     use std::os::unix::ffi::OsStrExt;
@@ -634,6 +648,7 @@ fn history_rows(server: &Server) -> Result<usize, String> {
         .count())
 }
 
+/// Local creation defaults never become server policy when selecting servers.
 #[test]
 fn launch_defaults_do_not_change_either_selected_server() -> Outcome {
     for named in [true, false] {
@@ -762,6 +777,8 @@ fn explicit_settings_survive_a_failed_attach_config() -> Outcome {
     Ok(())
 }
 
+/// Launch policy belongs to each initiating client, and its saved patch
+/// survives both respawn and replay under a different client's selection.
 #[test]
 fn launches_save_the_callers_argv_role_and_environment() -> Outcome {
     let server = Server::start("")?;
@@ -870,6 +887,7 @@ fn launches_save_the_callers_argv_role_and_environment() -> Outcome {
     Ok(())
 }
 
+/// A remote client action commits while its subsequent wait is still pending.
 #[test]
 fn presentation_updates_only_the_addressed_view_before_a_wait_finishes() -> Outcome {
     let server =

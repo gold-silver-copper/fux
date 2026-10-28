@@ -673,6 +673,10 @@ fn decstbm_homes_the_cursor_and_ignores_a_region_it_cannot_set() -> Result {
     Ok(())
 }
 
+/// A scroll up of a region at the top of the screen takes the rows it
+/// scrolls off into history, as xterm keeps them, and leaves the lines
+/// below the region: a status line under a chat's lines (irssi, weechat).
+/// A region below the top keeps none, nor does SD.
 #[test]
 fn a_region_at_the_top_scrolls_its_rows_into_history() -> Result {
     let mut p = Parser::new(Size::new(4, 5)?, 1 << 16)?;
@@ -1052,6 +1056,15 @@ fn switching_screens_keeps_the_cursor() -> Result {
     Ok(())
 }
 
+/// What DECSC saves, the pen and the character sets with the cursor, is
+/// the screen's: xterm keeps one saved cursor per screen (`cursor.c`,
+/// `CursorSave` into `screen->sc[screen->whichBuf]`), so a DECSC on the
+/// alternate screen leaves the main screen's, and DECSTR resets the saved
+/// state of the screen shown alone. Expected values are xterm's
+/// (`fux-vt-compare replay --engines xterm --size 2x8
+/// 'a\e[1m\e[?1049h\e[0m\e7b\e[?1049lX'`, and the same with
+/// `'\e(0\e7\e(B\e[?1047h\e7\e[?1047l\e8q'` and
+/// `'\e[2;3H\e[1m\e7\e[0m\e[H\e[?1047h\e[!p\e[?1047l\e8X'`).
 #[test]
 fn each_screen_saves_its_own_pen_and_character_sets() -> Result {
     let p = run(2, 8, b"a\x1b[1m\x1b[?1049h\x1b[0m\x1b7b\x1b[?1049lX")?;

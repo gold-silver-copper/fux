@@ -1712,6 +1712,8 @@ mod tests {
         assert_eq!(crop(&screen, Rect::screen(2, 4)).cursor, super::OUTSIDE);
     }
 
+    /// Where a hidden cursor is shows nowhere; a cursor that shows on one
+    /// side only, or in two places, differs.
     #[test]
     fn the_cursor_is_compared_where_it_shows() -> Result<(), String> {
         let can = ghostty()?.can;
@@ -1734,6 +1736,9 @@ mod tests {
         Ok(())
     }
 
+    /// Combining marks on a glyph a column short of the edge stay on it
+    /// through fux (less-small): with autowrap off, Ghostty put them on the
+    /// last column's cell, where fux had painted a space.
     #[test]
     fn marks_short_of_the_edge_stay_on_their_glyph() -> Result<(), String> {
         let marked = "xxxxxxxx\u{e4}\u{356}\u{32d}\u{308}\u{307}";
@@ -1741,6 +1746,9 @@ mod tests {
         Ok(())
     }
 
+    /// An emoji modifier a program places after its emoji with a cursor
+    /// move of its own (micro-small) is joined to the emoji by Ghostty both
+    /// ways, and what follows stays where the program put it.
     #[test]
     fn a_modifier_placed_after_its_emoji_moves_nothing() -> Result<(), String> {
         let placed = "\x1b[1;3H\u{1F44D}\x1b[1;5H\u{1F3FD}\x1b[1;7Hx \u{1F469}";
@@ -1748,6 +1756,8 @@ mod tests {
         Ok(())
     }
 
+    /// Text, styles, a wide glyph, a link and the cursor look the same
+    /// through fux; and a difference is found where there is one.
     #[test]
     fn a_screen_looks_the_same_through_fux() -> Result<(), String> {
         let shown = b"a\x1b[1;4;38;2;1;2;3mb\x1b[m\xe6\xbc\xa2\x1b]8;;http://x\x1b\\link\x1b]8;;\x1b\\\r\n\x1b[44mz";
@@ -1766,6 +1776,8 @@ mod tests {
         Ok(())
     }
 
+    /// A frame of synchronized output is shown only once it ends, or when
+    /// it is released.
     #[test]
     fn a_frame_shows_at_its_end() -> Result<(), String> {
         let kind = ghostty()?;
@@ -1836,6 +1848,8 @@ mod tests {
         Ok(())
     }
 
+    /// Every recording looks the same through fux as directly, beside
+    /// Ghostty, but as recorded.
     #[test]
     fn every_recording_is_transparent() -> Result<(), String> {
         let kind = ghostty()?;
@@ -1850,6 +1864,13 @@ mod tests {
         Ok(())
     }
 
+    /// A program that changes its palette entries, foreground and
+    /// background looks the same through fux, colours compared as they
+    /// show (`Snapshot::in_colours`), at every 3 bytes; fux paints them
+    /// as colours and never changes its client's (`through_fux` fails if
+    /// it does). Compared by the colours the specs name, as before, the
+    /// two would differ: directly the cell is entry 1, through fux the
+    /// colour it was set to.
     #[test]
     fn a_programs_palette_is_transparent() -> Result<(), String> {
         let output = b"\x1b]4;1;#ff0000\x1b\\\x1b[31mX\x1b[0m\x1b]11;#000080\x1b\\Y\

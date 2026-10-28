@@ -958,6 +958,9 @@ mod faults {
         })
     }
 
+    /// A placement found whole at the newest version, whose cell holds no
+    /// placeholder: `shown` reads none of its rows, and check 32 reads
+    /// them all (`check_pictures_shown`).
     #[test]
     fn a_picture_shown_without_its_cells_is_a_fault() -> Result<(), Error> {
         let size = Size::new(3, 6).map_err(|_| Error::Capacity)?;

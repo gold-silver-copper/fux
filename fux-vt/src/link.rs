@@ -646,6 +646,8 @@ pub(crate) fn parse(payload: &[u8]) -> Option<(&str, Option<&str>)> {
 mod tests {
     use super::*;
 
+    /// A sweep that drops most `id` links shrinks the table and counts it
+    /// as allocated, not by `capacity`, which excludes tombstones.
     #[test]
     fn the_id_table_is_counted_as_allocated_after_a_sweep() {
         let mut links = Links::default();

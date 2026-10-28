@@ -1560,6 +1560,12 @@ mod tests {
         }
     }
 
+    /// A character typed a byte at a time, as a slow link or a terminal
+    /// that writes each byte apart sends it, waits for its bytes as long as
+    /// an answer (`REPLY_DELAY`), alone or after an Escape (Alt); at its
+    /// deadline it is one U+FFFD, so it never holds the keys after it. A
+    /// byte that cannot go on with it gives the maximal subpart's U+FFFD at
+    /// once.
     #[test]
     fn a_character_split_across_reads_waits_for_its_bytes() {
         for (bytes, expected) in [
@@ -1606,6 +1612,9 @@ mod tests {
         assert_eq!(out, vec![key("\u{fffd}"), click]);
     }
 
+    /// xterm's modifyOtherKeys form names a key by the code `CSI code ;
+    /// mods u` does: Enter, Tab, Escape and Backspace too, and 8 as
+    /// Ctrl-Backspace, which `encode.rs` sends for it.
     #[test]
     fn both_coded_forms_name_the_same_keys() {
         for (code, mods, name) in [
@@ -1632,6 +1641,9 @@ mod tests {
         }
     }
 
+    /// The deadline runs from when decoding began waiting, through bytes
+    /// that leave the same sequence waiting; a wait for another sequence
+    /// runs from the read it began in, even one that ended the first wait.
     #[test]
     fn the_deadline_runs_from_when_waiting_began() {
         let ms = Duration::from_millis;
@@ -1656,6 +1668,10 @@ mod tests {
         assert_eq!(due(b"[A\x1b", 70), Some(ms(70) + ESCAPE_DELAY));
     }
 
+    /// A bracketed paste whose end marker never comes ends the paste delay
+    /// after its last bytes: what came of it is the paste, or, past the
+    /// limit, reported too long as soon as it is, the rest dropped; and
+    /// what is typed after it is keys again.
     #[test]
     fn an_unfinished_paste_ends_at_its_deadline() {
         let ms = Duration::from_millis;
@@ -1726,6 +1742,14 @@ mod tests {
         split_anywhere(stream, false, &whole);
     }
 
+    /// The kitty protocol's forms, as a terminal sends them with
+    /// disambiguate and alternate keys pushed (the spec's "Disambiguate
+    /// escape codes", "Key codes", "Modifiers", "Event types" and
+    /// "Functional key definitions"), decode to the press a legacy
+    /// terminal's bytes for the same key do, where those can tell the key:
+    /// Ctrl-Shift-a is `C-a` as 0x01 is, Alt-Shift-1 `M-!` as `ESC !` is,
+    /// Ctrl and a Cyrillic С `C-c`, Caps Lock with Alt and a `M-A`; and to
+    /// the key itself where they cannot (Shift-Enter, Ctrl-I, Ctrl-[).
     #[test]
     fn kitty_forms_decode_to_the_presses_legacy_bytes_do() {
         for (bytes, name) in [
@@ -1814,6 +1838,12 @@ mod tests {
         split_anywhere(stream, false, &whole);
     }
 
+    /// fux's prefix, bindings, overlays and copy mode match decoded presses,
+    /// which send-keys names name: every key that legacy bytes can tell
+    /// decodes to the same press from the kitty protocol's bytes, with the
+    /// flags fux pushes (disambiguate and alternate keys). The kitty bytes
+    /// are the spec's for the key, as fux writes them for a pane with those
+    /// flags (`encode::tests`).
     #[test]
     fn every_key_decodes_alike_with_and_without_the_kitty_protocol() {
         use crate::keys::encode::{KeyMode, Report, key_bytes};
@@ -1912,6 +1942,10 @@ mod tests {
         );
     }
 
+    /// While the terminal's latest flags hold disambiguate, it sends Escape
+    /// as `CSI 27 u`: a bare ESC is a sequence begun, which waits for its
+    /// rest with no deadline, however late it comes. Flags without it, even
+    /// after flags with it, say nothing of Escape.
     #[test]
     fn an_escape_the_terminal_sends_as_csi_u_is_never_waited_out() {
         let t0 = Instant::now();
@@ -1936,6 +1970,9 @@ mod tests {
         assert_eq!(waits(&[b"\x1b[?0u\x1b[?1u"]), (None, true));
     }
 
+    /// An answer cut short waits `REPLY_DELAY`, not the Escape delay, for the
+    /// rest, and at the deadline is dropped, never typed; a lone Escape
+    /// still waits the Escape delay and is a key.
     #[test]
     fn an_answer_cut_short_is_dropped_not_typed() {
         let t0 = Instant::now();
@@ -1999,6 +2036,10 @@ mod tests {
         }
     }
 
+    /// An Escape before a whole CSI or SS3 key is that key with Alt, as
+    /// libtermkey reads it (`termkey.c`, an Escape prefix) and as rxvt and
+    /// PuTTY send Alt with the arrows; `ESC ESC` alone, and before anything
+    /// else, stays an Escape and what follows, as vim's users type it.
     #[test]
     fn an_escape_before_a_key_sequence_is_alt() {
         assert_eq!(all(b"\x1b\x1b[A"), vec![key("M-Up")]);
@@ -2015,6 +2056,8 @@ mod tests {
         assert_eq!(all(b"\x1b\x1bO"), vec![key("Escape"), key("M-O")]);
     }
 
+    /// `ESC O` and a byte no final key names is Alt-O, then that byte, as
+    /// `ESC` and any other byte is: neither is lost.
     #[test]
     fn escape_o_and_a_byte_it_does_not_name_is_alt_o_and_the_byte() {
         assert_eq!(all(b"\x1bOx"), vec![key("M-O"), key("x")]);
@@ -2022,6 +2065,8 @@ mod tests {
         assert_eq!(all(b"\x1bOA"), vec![key("Up")], "a key SS3 names");
     }
 
+    /// A `CSI ?` answer longer than any answer is dropped through its
+    /// final byte, as an over-long OSC or DCS answer is: none of it typed.
     #[test]
     fn an_over_long_csi_answer_is_dropped_through_its_final_byte() {
         let mut long = b"\x1b[?".to_vec();
@@ -2030,6 +2075,9 @@ mod tests {
         assert_eq!(all(&long), vec![key("k")]);
     }
 
+    /// A DCS answer begun while answers are expected is read whole though
+    /// the window for them passes before its end: what it decodes to does
+    /// not depend on where the time between its pieces falls.
     #[test]
     fn a_dcs_answer_begun_in_its_window_is_read_whole_after_it() {
         let t0 = Instant::now();
@@ -2049,6 +2097,11 @@ mod tests {
         assert_eq!(out, expected);
     }
 
+    /// A key report whose code is a control character (`CSI u`, `CSI 1 ;
+    /// 5 u`, xterm's `CSI 27 ; 5 ; 1 ~`), or whose kitty alternate key
+    /// that it would type is one (a base-layout key 1 with Ctrl, a shifted
+    /// key 1), is no key: a key name cannot say it, so no binding could
+    /// match it and nothing could name it back.
     #[test]
     fn a_key_report_of_a_control_character_is_no_key() {
         for report in [
@@ -2076,6 +2129,10 @@ mod tests {
         );
     }
 
+    /// `ESC ]` alone is Alt-] once the Escape delay passes, as `ESC [` is
+    /// Alt-[, or `REPLY_DELAY` while an answer is expected; with anything but
+    /// a digit after it, at once. The answer to DA1, asked last, ends the
+    /// expecting; so does `REPLY_WINDOW` passing.
     #[test]
     fn escape_bracket_waits_longer_while_an_answer_is_expected() {
         let alt_bracket = key("M-]");
@@ -2152,6 +2209,10 @@ mod tests {
         split_anywhere(stream, false, &keys);
     }
 
+    /// `ESC P` is Alt-P at once, unless an answer is
+    /// expected: then it, and `ESC P 1`, wait `REPLY_DELAY` for the rest of
+    /// one, and are Alt-P and the key after, if it does not come. What
+    /// does not begin as an answer is keys at once.
     #[test]
     fn alt_p_waits_only_while_an_answer_is_expected() {
         let alt_p = key("M-P");
@@ -2250,6 +2311,8 @@ mod tests {
         assert_eq!(pasted(3, 3), vec![Input::Paste("xxx".into())]);
     }
 
+    /// An answer's string past its limit is dropped to its end however its
+    /// bytes are read, and none of it is typed.
     #[test]
     fn a_key_csi_at_the_end_of_its_window_waits_for_its_final_byte() {
         // A kitty key whose parameters fill the window, 32 bytes, its final

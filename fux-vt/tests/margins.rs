@@ -400,6 +400,12 @@ fn decic_and_decdc_insert_and_delete_columns() -> Result {
     Ok(())
 }
 
+/// CR goes to the left margin, or to the first column from left of it
+/// outside origin mode (xterm's `CarriageReturn`); BS and CUB stop at the
+/// left margin, unless the cursor is already left of it (`CursorBack`);
+/// CUF stops at the right margin, unless already past it
+/// (`CursorForward`); CNL and CPL end where CR goes (esctest's CR, CUB,
+/// CUF, CNL and CPL tests).
 #[test]
 fn cursor_movements_stop_at_the_margins() -> Result {
     let p = run(
@@ -476,6 +482,10 @@ fn tabs_stop_at_the_right_margin() -> Result {
     Ok(())
 }
 
+/// CBT and CHT cost the line's width at most, whatever their count. With
+/// the margins at columns 3000 and 4000, origin mode and every stop
+/// cleared, each stop back is the left margin, where the cursor already
+/// is, and each stop on the right margin: no count of them moves it again.
 #[test]
 fn a_tab_count_costs_no_more_than_the_line() -> Result {
     let mut p = run(2, 4000, b"\x1b[?69h\x1b[3000;4000s\x1b[?6h\x1b[3g")?;
@@ -491,6 +501,11 @@ fn a_tab_count_costs_no_more_than_the_line() -> Result {
     Ok(())
 }
 
+/// REP prints as printing the character again would: it wraps at the
+/// right margin and scrolls the region between the margins. The copies
+/// past those that fill the region are skipped a line's worth at a time,
+/// a line being the margins' width, which leaves all as printing them
+/// would: REP and printing the same copies agree.
 #[test]
 fn rep_wraps_and_scrolls_between_the_margins() -> Result {
     let p = run(6, 12, b"\x1b[?69h\x1b[3;8s\x1b[2;5r\x1b[4;5Hx\x1b[20b")?;
@@ -586,6 +601,10 @@ fn the_saved_cursor_and_resets() -> Result {
     Ok(())
 }
 
+/// A wide glyph across a margin loses both halves when the region scrolls
+/// or an edit moves one half and not the other, as xterm clears it in
+/// `scrollInMargins`: fux-vt keeps no half of a glyph. xterm leaves half of
+/// one where ICH and DCH cut it at the right margin; fux-vt blanks it.
 #[test]
 fn a_wide_glyph_across_a_margin_goes_whole() -> Result {
     let wide = "\x1b[1;2H\u{4e00}\x1b[1;7H\u{4e00}\x1b[2;2H\u{4e00}\x1b[2;7H\u{4e00}abc";

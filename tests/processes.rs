@@ -41,6 +41,11 @@ fn gone(pid: i32, what: &str) -> Outcome {
     Ok(())
 }
 
+/// dash starts a background job in a process group of its own, out of reach
+/// of a signal to the shell's group, and does not hang it up when it exits
+/// itself. However its pane closes, the job ends with it. A `nohup` job outlives its shell's own `exit`, as it would a closed
+/// terminal; a pane fux closes takes its whole session, the `nohup` job too,
+/// once the hang-up's grace is over.
 #[test]
 fn a_closed_panes_background_jobs_end_with_it_under_dash() -> Outcome {
     // dash's own way with jobs is what is tested; CI's machines all have it.
@@ -111,6 +116,8 @@ fn a_closed_panes_background_jobs_end_with_it_under_dash() -> Outcome {
     Ok(())
 }
 
+/// `signal TERM` ends what runs in the pane's foreground and nothing else: a
+/// background job and the shell stay, as the README says.
 #[test]
 fn signal_ends_the_foreground_and_leaves_background_jobs() -> Outcome {
     let server = Server::start("")?;
@@ -140,6 +147,10 @@ fn signal_ends_the_foreground_and_leaves_background_jobs() -> Outcome {
     gone(job, "a background job, after pane kill")
 }
 
+/// A pane whose program is stopped is not one whose program exited: it
+/// stays, and runs again on SIGCONT. Only an exit or a kill closes it, and
+/// its viewers are told the status (macOS
+/// reported the stop as an exit, status 145).
 #[test]
 fn a_stopped_pane_stays_until_its_program_ends() -> Outcome {
     let server = Server::start("")?;
@@ -192,6 +203,8 @@ fn a_stopped_pane_stays_until_its_program_ends() -> Outcome {
     Ok(())
 }
 
+/// A program the shell stops with Ctrl-Z leaves the pane and its shell as
+/// they were; the stopped job ends when the pane closes.
 #[test]
 fn a_job_stopped_in_a_pane_leaves_the_pane_running() -> Outcome {
     let server = Server::start("")?;
@@ -221,6 +234,9 @@ fn a_job_stopped_in_a_pane_leaves_the_pane_running() -> Outcome {
     gone(job, "a stopped job, after pane kill")
 }
 
+/// A program a pane's program started and left (a double fork) becomes the
+/// server's child, not init's (Linux): once it exits the server reaps it,
+/// leaving no zombie.
 #[cfg(target_os = "linux")]
 #[test]
 fn an_orphan_a_pane_leaves_is_read_and_reaped() -> Outcome {

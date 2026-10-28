@@ -9,6 +9,8 @@ fn texts(line: &Line<'_>) -> String {
         .join("|")
 }
 
+/// Each way of making a cell reads back what it was made with, and the
+/// quick comparisons agree with `==`.
 #[test]
 fn cells_read_back_what_they_were_made_with() {
     let text = Text::default();
@@ -171,6 +173,10 @@ fn a_row_out_of_room_compacts_then_cuts_to_a_short_cluster() {
     }
 }
 
+/// A row's short text compacts only when a cluster would take it past its
+/// limit (`store_short`): one that brings it to the limit exactly is kept
+/// beside the text no cell holds any more, and the next, past it, has the
+/// row compacted first, to what its cells hold.
 #[test]
 fn short_text_compacts_only_past_its_limit() {
     let marks = |n| -> String {

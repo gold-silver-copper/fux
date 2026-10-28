@@ -60,6 +60,9 @@ fn said(list: &[&str]) -> Heard {
     Heard(list.iter().map(|s| (*s).to_owned()).collect())
 }
 
+/// A set entry is answered with its colour, each channel's byte twice, in
+/// the query's form and with its terminator; one neither the program nor
+/// the host set is not answered, as no one knows it.
 #[test]
 fn palette_queries_are_answered_with_the_colour_set_alone() -> Result {
     let (heard, parser) = run(
@@ -77,6 +80,8 @@ fn palette_queries_are_answered_with_the_colour_set_alone() -> Result {
     Ok(())
 }
 
+/// esctest's ChangeColor tests: each form of specification, set and asked
+/// for again (xterm keeps 8 bits a channel: `#fff` is `f0f0`).
 #[test]
 fn specifications_are_kept_as_xterm_keeps_them() -> Result {
     for (spec, answer) in [
@@ -103,6 +108,12 @@ fn specifications_are_kept_as_xterm_keeps_them() -> Result {
     Ok(())
 }
 
+/// xterm's `ChangeAnsiColorRequest`: a pair whose specification cannot be
+/// read, or whose number is out of range, ends the list; a number is read
+/// as `atoi` reads it, so `x` is 0 and `1x` is 1; a query in the list sees
+/// a colour set before it. xterm 411: `OSC 4;3;rgb:ff00/8/80;4;bogus;5;#123`
+/// sets 3 alone; `OSC 4;x;#fff;2;#fff` sets 0 and 2; `OSC 4;-1;#fff;2;#fff`
+/// sets nothing.
 #[test]
 fn a_list_of_colours_is_read_as_xterm_reads_it() -> Result {
     let (_, parser) = run(PALETTE, b"\x1b]4;3;#300;4;bogus;5;#123\x07")?;
@@ -136,6 +147,10 @@ fn a_list_of_colours_is_read_as_xterm_reads_it() -> Result {
     Ok(())
 }
 
+/// OSC 104 resets the entries listed, up to the first that is not a
+/// number followed by `;` or the end, as xterm's `ResetAnsiColorRequest`
+/// reads them; alone, every entry. xterm 411: after `OSC 104;3x;0`, 3 and 0
+/// keep what was set.
 #[test]
 fn osc_104_resets_entries() -> Result {
     let set = b"\x1b]4;0;#111;1;#222;2;#333;3;#444\x07";
@@ -209,6 +224,12 @@ fn special_colours_are_set_queried_and_reset() -> Result {
     Ok(())
 }
 
+/// The dynamic colours (OSC 10 to 19): each parameter the next colour, `?`
+/// asking for it. One the program set is answered by fux-vt; one it has
+/// not is asked of the host, as without the palette. A specification that
+/// cannot be read is skipped and the next parameter read (xterm 411:
+/// `OSC 12;#0a0b0c;bogus;#111111` sets 12 and 14); OSC 110 to 119 reset
+/// one, and nothing with a parameter (`OSC 111;5`).
 #[test]
 fn dynamic_colours_are_set_queried_and_reset() -> Result {
     let (heard, parser) = run(
@@ -247,6 +268,10 @@ fn dynamic_colours_are_set_queried_and_reset() -> Result {
     Ok(())
 }
 
+/// RIS and DECSTR reset the palette, and leave the dynamic and special
+/// colours, as xterm 411 does (`OSC 4;1;#123456`, `ESC c` or `CSI ! p`,
+/// `OSC 4;1;?` is not answered, its colour the terminal's; `OSC 10;#123456` and
+/// `OSC 5;0;#654321` survive both).
 #[test]
 fn ris_and_decstr_reset_the_palette_alone() -> Result {
     for reset in [&b"\x1bc"[..], b"\x1b[!p"] {
@@ -266,6 +291,8 @@ fn ris_and_decstr_reset_the_palette_alone() -> Result {
     Ok(())
 }
 
+/// Without the option the colours are ignored and kept nowhere, and OSC
+/// 10 to 19 queries are events as they always were.
 #[test]
 fn without_the_option_colours_are_ignored() -> Result {
     let input = b"\x1b]4;1;#123456;1;?\x07\x1b]5;0;?\x07\x1b]10;#fff;?\x07\x1b]104\x07\x1b]110\x07";
@@ -279,6 +306,7 @@ fn without_the_option_colours_are_ignored() -> Result {
     Ok(())
 }
 
+/// An OSC string past `OSC_PAYLOAD_LIMIT` is no colour request.
 #[test]
 fn an_overlong_colour_request_is_ignored() -> Result {
     let mut input = b"\x1b]4;1;#123456".to_vec();
@@ -308,6 +336,8 @@ fn run_hosted(
     Ok((heard, parser))
 }
 
+/// An entry the program has not set is answered with the host's colour for
+/// it, if the host gave one; otherwise, and past 15 always, not at all.
 #[test]
 fn an_entry_not_set_is_answered_with_the_hosts_colour() -> Result {
     let host = [(1, [0xbf, 0x61, 0x6a]), (15, [0xec, 0xef, 0xf4])];
@@ -325,6 +355,9 @@ fn an_entry_not_set_is_answered_with_the_hosts_colour() -> Result {
     Ok(())
 }
 
+/// A colour the program set wins over the host's; once the program resets
+/// it (OSC 104, DECSTR, RIS) the host's is answered again, which no reset
+/// clears.
 #[test]
 fn the_programs_colour_wins_and_resets_bring_back_the_hosts() -> Result {
     let host = [(1, [0xbf, 0x61, 0x6a])];
@@ -350,6 +383,8 @@ fn the_programs_colour_wins_and_resets_bring_back_the_hosts() -> Result {
     Ok(())
 }
 
+/// A cleared host colour is not answered any more; without the option
+/// nothing is answered.
 #[test]
 fn host_colours_are_cleared_and_need_the_option() -> Result {
     let (_, mut parser) = run_hosted(PALETTE, &[(1, [1, 2, 3])], b"")?;

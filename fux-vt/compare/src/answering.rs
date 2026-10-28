@@ -447,6 +447,8 @@ mod tests {
         Ok(())
     }
 
+    /// In origin mode DECRQCRA is not answered; everything else still is,
+    /// in order.
     #[test]
     fn origin_mode_is_not_read() -> Result<(), String> {
         let mut terminal = answering(5, 10)?;
@@ -457,6 +459,8 @@ mod tests {
         Ok(())
     }
 
+    /// Finding a DECRQCRA: a whole one, the start of one at the end, and
+    /// sequences that only begin like one.
     #[test]
     fn decrqcra_is_found() {
         assert_eq!(find(b"ab"), Found::None);
@@ -498,6 +502,9 @@ mod tests {
         );
     }
 
+    /// Ghostty's core as esctest's terminal: it answers a cursor report
+    /// and, given its size, the size reports esctest asks before every
+    /// test; its cells are read by checksum.
     #[test]
     fn ghostty_answers_through_its_screen() -> Result<(), String> {
         let ghostty = crate::engine::find("ghostty")
@@ -527,6 +534,8 @@ mod tests {
         Ok(Answering::new(engine, kind.can.origin))
     }
 
+    /// wezterm-term answers the cursor report and the size report itself,
+    /// through its writer: none is the adapter's.
     #[test]
     fn wezterm_answers_for_itself() -> Result<(), String> {
         let mut terminal = engine("wezterm")?;
@@ -536,6 +545,8 @@ mod tests {
         Ok(())
     }
 
+    /// libvterm answers the cursor report but not the size report, which
+    /// is then answered from its screen, and counted.
     #[test]
     fn a_size_report_the_engine_does_not_give_is_told() -> Result<(), String> {
         let mut terminal = engine("libvterm")?;
@@ -545,6 +556,9 @@ mod tests {
         Ok(())
     }
 
+    /// An engine whose origin mode cannot be read (vt100) has no rectangle
+    /// read while the program may have set it: from DECSET 6 to DECRST 6,
+    /// and not after RIS.
     #[test]
     fn origin_mode_unread_is_not_assumed_off() -> Result<(), String> {
         let mut terminal = engine("vt100")?;
@@ -560,6 +574,8 @@ mod tests {
         Ok(())
     }
 
+    /// The other requests: the size report, origin mode set and reset,
+    /// DECSTR and RIS; and what only looks like them.
     #[test]
     fn the_watched_requests_are_found() {
         let at = |bytes: &[u8]| match find(bytes) {

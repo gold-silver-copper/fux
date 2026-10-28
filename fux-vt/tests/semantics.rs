@@ -117,6 +117,8 @@ fn erase_insert_delete_and_wide_halves_are_repaired() -> Result {
     Ok(())
 }
 
+/// A narrow glyph over a wide one's first half blanks its second, as every
+/// other orphaned half is: no space is printed there.
 #[test]
 fn a_narrow_glyph_over_a_wide_ones_first_half_blanks_the_second() -> Result {
     let mut p = Parser::new(Size::new(1, 4)?, 0)?;
@@ -206,6 +208,10 @@ fn copying_widened_history_joins_original_row_extents_without_padding() -> Resul
     Ok(())
 }
 
+/// The blank a wide glyph that did not fit left at a soft-wrapped row's
+/// end is no part of the text, in the row's own last column: a history
+/// row narrower than the window, after a resize without reflow, copies
+/// without it, as at its own width.
 #[test]
 fn a_spacer_in_a_narrower_history_row_is_no_text() -> Result {
     let mut p = Parser::new(Size::new(2, 5)?, 1 << 10)?;
@@ -261,6 +267,11 @@ fn marks_observe_cursor_modes_resize_and_invalid_marks_without_consumption() -> 
     Ok(())
 }
 
+/// A row erased whole no longer goes on the line above: bash, resized,
+/// erases the row its prompt wrapped onto and draws the prompt there again.
+/// The row above keeps its soft wrap, as xterm keeps it (`ClearRight`,
+/// `ScrnClearLines` clear only the rows they erase), and its line ends
+/// with it (`Row::continues`).
 #[test]
 fn a_row_erased_whole_ends_the_line_above() -> Result {
     let mut p = Parser::new(Size::new(3, 10)?, 0)?;
@@ -279,6 +290,11 @@ fn a_row_erased_whole_ends_the_line_above() -> Result {
     Ok(())
 }
 
+/// Above the top row is history's newest: a line that went on from there
+/// ends once the top row is erased whole (a screen cleared, as `koh
+/// connect` and bash do after a resize), and the next prompt there is a
+/// line of its own; the row keeps its soft wrap, as xterm's scrollback
+/// keeps it.
 #[test]
 fn a_top_row_erased_whole_ends_the_line_in_history() -> Result {
     let mut p = Parser::new(Size::new(2, 10)?, 1000)?;
@@ -362,6 +378,8 @@ fn resize_rejects_bad_capacity_without_mutating_state() -> Result {
     Ok(())
 }
 
+/// Focus reporting and the cursor's shape follow output split anywhere;
+/// only their own forms set them, and a full reset clears both.
 #[test]
 fn focus_and_cursor_shape() -> Result {
     use fux_vt::CursorShape::{BlinkingBar, Initial, SteadyBar, Zero};
@@ -548,6 +566,8 @@ fn all_chunk_boundaries_preserve_utf8_escapes_and_ascii_fast_path_results() -> R
     Ok(())
 }
 
+/// Hunt 8 finding 017: shrinking a grid whose bottom line has no trailing
+/// newline must keep that line -- the cursor is on it -- rather than drop it.
 #[test]
 fn shrink_keeps_the_newline_less_bottom_line() -> Result {
     let mut p = Parser::new(Size::new(24, 80)?, 100)?;
@@ -649,6 +669,12 @@ fn vertical_moves_stop_at_the_margin_they_come_to() -> Result {
     Ok(())
 }
 
+/// A resize without reflow keeps a pending wrap, at any width, and resets
+/// the scroll region, as xterm and Ghostty do and as the resize with
+/// reflow does. Each case replayed in both (`fux-vt-compare replay
+/// --engines xterm,ghostty --no-reflow --size 3x5 'abcde' resize:RxC 'X'`,
+/// and `--size 10x5 '\e[2;5r' resize:12x5 '\e[5;1H\nX'`): both put X
+/// where the case does.
 #[test]
 fn a_resize_without_reflow_keeps_a_pending_wrap_and_resets_the_region() -> Result {
     for (rows, cols) in [(4, 5), (3, 8), (3, 4)] {
@@ -675,6 +701,8 @@ fn a_resize_without_reflow_keeps_a_pending_wrap_and_resets_the_region() -> Resul
     Ok(())
 }
 
+/// A resize keeps the cursor DECSC saved, as xterm keeps it: on its row,
+/// which a resize that takes no row away leaves where it was.
 #[test]
 fn a_resize_keeps_the_saved_cursor() -> Result {
     let mut p = Parser::new(Size::new(5, 10)?, 0)?;
@@ -685,6 +713,10 @@ fn a_resize_keeps_the_saved_cursor() -> Result {
     Ok(())
 }
 
+/// Without reflow, a resize that keeps the width keeps the screen's rows'
+/// soft wraps, as it keeps history's: the rows are as they were, and a copy
+/// joins them still (`Row::wrapped`'s contract). One that changes the width
+/// ends them, as a cut or padded row no longer continues on the next.
 #[test]
 fn a_resize_at_the_same_width_keeps_the_soft_wraps() -> Result {
     let wrapped = |p: &Parser| p.screen().rows().map(|r| r.wrapped()).collect::<Vec<_>>();
@@ -700,6 +732,12 @@ fn a_resize_at_the_same_width_keeps_the_soft_wraps() -> Result {
     Ok(())
 }
 
+/// A row scrolled down to the screen's last row keeps its soft wrap, as
+/// xterm 411 keeps it, with alacritty and WezTerm: scrolled up again, it
+/// is still soft-wrapped (`fux-vt-compare replay --engines all --size 5x1
+/// --history 0 'll' '\e[4T' '\e[2S'`: row 2). A report that xterm ended
+/// it read xterm's printout, whose last row ends with no line feed, as
+/// unwrapped.
 #[test]
 fn a_row_scrolled_down_to_the_last_keeps_its_soft_wrap() -> Result {
     let mut p = Parser::new(Size::new(5, 1)?, 0)?;
@@ -711,6 +749,11 @@ fn a_row_scrolled_down_to_the_last_keeps_its_soft_wrap() -> Result {
     Ok(())
 }
 
+/// Showing the alternate screen again after mode 1047 left it keeps the
+/// wrap pending on the primary screen: the clear 1047 put off to then was
+/// xterm's on leaving, which ended only the wrap pending at that time (all
+/// eight engines; `replay --engines all --size 1x4 '\e[?47h' 'ld' '@#'
+/// '89' ' ' '\e[?1047l' ' ' '\e[?47h' ' '`).
 #[test]
 fn showing_the_alternate_screen_again_keeps_the_wrap_pending() -> Result {
     let mut p = Parser::new(Size::new(1, 4)?, 0)?;

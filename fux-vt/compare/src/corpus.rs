@@ -1746,6 +1746,11 @@ fn listed(keys: &[String]) -> String {
 
 #[cfg(test)]
 mod tests {
+    /// A recording's replies are compared with fux-vt's now, versions
+    /// aside and with each change since recorded applied: a DA1 reply as
+    /// recorded matches the one fux-vt gives since a218350c, a DA2 of
+    /// another version matches, and a DA1 reply no change covers does not
+    /// (at the parent the replies were never compared).
     #[test]
     fn replies_are_compared_with_the_changes_since_recorded() {
         let (now, then, used) = super::replies_beside(
@@ -1766,6 +1771,10 @@ mod tests {
         );
     }
 
+    /// Every subject is judged at the same points: one where it fails
+    /// nothing but could not be judged on a field is unavailable, neither
+    /// a pass nor a failure, and a recording with such a point does not
+    /// agree. fux-vt's side, judged on what it tells, is unaffected.
     #[test]
     fn a_point_the_subject_cannot_be_judged_at_is_no_pass() {
         let point = |step, unavailable: &[&str]| super::Point {
@@ -1785,6 +1794,11 @@ mod tests {
         assert!(fux.agrees());
     }
 
+    /// xterm, which decides, abstaining for a limit of its adapter's (SGR
+    /// 58) leaves the vote to judge, as the module says; abstaining for
+    /// anything else (a print that never came) leaves the recording
+    /// unjudged. At the parent both left the vote to judge, marked only
+    /// `!xterm`. Another engine's abstention unjudges nothing.
     #[test]
     fn a_recording_xterm_could_not_judge_is_unjudged() -> Result<(), String> {
         let xterm = crate::engine::find("xterm").ok_or("no xterm")?;
@@ -1813,6 +1827,13 @@ mod tests {
         Ok(())
     }
 
+    /// zsh-resize's points as its exceptions read them: the reflow's
+    /// differences at steps 3, 4 and 8, and its history at 8 and 9, are
+    /// covered, and the run goes on past them; a difference on another
+    /// field or at another step is covered by none, even after the covered
+    /// ones (at the parent, a recording that differs passed whatever
+    /// differed after its first difference); an exception that never
+    /// occurs is stale; `*` stands for any run of characters.
     #[test]
     fn an_exception_covers_its_steps_and_fields_and_no_other() {
         let exceptions = super::ZSH_RESIZE_AT;
@@ -1861,6 +1882,8 @@ mod tests {
         );
     }
 
+    /// Every recording's bytes are the ones recorded: each `.bin` has its
+    /// SHA-256 in `SHA256SUMS`, and it matches.
     #[test]
     fn every_recording_is_its_recorded_bytes() -> Result<(), String> {
         let dir = super::dir();
@@ -1911,6 +1934,8 @@ mod tests {
         Ok(())
     }
 
+    /// A step that resized is two steps of the case: the resize, then the
+    /// output after it.
     #[test]
     fn a_step_chunked_is_judged_after_each_piece() {
         let recording = super::Recording {

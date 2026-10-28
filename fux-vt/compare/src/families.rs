@@ -1501,6 +1501,7 @@ pub fn find(name: &str) -> Option<usize> {
 mod tests {
     use super::{Authority, FAMILIES, Status, XTERM};
 
+    /// The departures' triggers find what they name, and nothing else.
     #[test]
     fn a_departure_is_made_by_what_it_names() {
         let lone = super::LONE_INDICATOR.when;
@@ -1533,6 +1534,9 @@ mod tests {
         }
     }
 
+    /// Every decided family has its check: the test its standard names
+    /// cites the section, or xterm is among the engines beside it. A test
+    /// that does not cite it, or xterm missing, is no check.
     #[test]
     fn every_decided_family_is_checked() {
         for f in FAMILIES {
@@ -1551,6 +1555,7 @@ mod tests {
         assert!(Authority::Xterm.check(&["ghostty"]).is_err());
     }
 
+    /// `*` stands for any run of characters, and nothing else is loose.
     #[test]
     fn a_glob_matches_runs_of_characters() {
         assert!(super::glob("cell (*) text", "cell (0,1) text"));

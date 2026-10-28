@@ -2147,6 +2147,8 @@ mod tests {
         fux_vt::Parser::new(size, 0).map_err(|e| e.to_string())
     }
 
+    /// Typing fits the per-key byte budget; repainting the same screen
+    /// writes nothing.
     #[test]
     fn a_typed_character_paints_within_the_byte_budget() -> Result<(), String> {
         let (mut session, client) = crate::session::testing::attached(10, 40)?;
@@ -2210,6 +2212,8 @@ mod tests {
         Ok(())
     }
 
+    /// Mouse reporting is said from nothing, either way, and again only
+    /// when it changes.
     #[test]
     fn mouse_reporting_is_painted_when_it_changes() {
         let mut on = new_grid(2, 4);
@@ -2242,6 +2246,8 @@ mod tests {
         assert_eq!(levels.map(mouse_level), [0, 1000, 1000, 1002, 1003]);
     }
 
+    /// Copy mode's bar replaces the tabs with what it is doing and its keys'
+    /// hints; a narrow bar drops the last.
     #[test]
     fn copy_mode_replaces_the_tabs_with_its_keys() -> Result<(), Box<dyn std::error::Error>> {
         let (mut s, c) = crate::session::testing::attached(10, 120)?;
@@ -2290,6 +2296,10 @@ mod tests {
         Ok(())
     }
 
+    /// A line a program made double width (DECDWL) or double height
+    /// (DECDHL) is drawn twice as wide, each cell over two columns, a wide
+    /// glyph over four, and the cursor at its glyph's first half; a single
+    /// width line beside it is drawn as it is.
     #[test]
     fn a_double_width_line_is_drawn_twice_as_wide() -> Result<(), Box<dyn std::error::Error>> {
         let (mut s, c) = crate::session::testing::attached(10, 30)?;
@@ -2308,6 +2318,8 @@ mod tests {
         Ok(())
     }
 
+    /// A block whose edge falls on a wide glyph's second half in one of its
+    /// rows highlights that glyph, as `y` copies it whole.
     #[test]
     fn a_block_highlights_the_wide_glyphs_it_copies() -> Result<(), Box<dyn std::error::Error>> {
         let (mut s, c) = crate::session::testing::attached(10, 30)?;
@@ -2356,6 +2368,10 @@ mod tests {
         Ok(())
     }
 
+    /// fux's own text (the bar, titles, panels) takes the columns a pane
+    /// gives the same text, cluster by cluster (fux-vt's width rule): an
+    /// emoji presentation sequence, U+2764 U+FE0F, takes two, though its
+    /// characters alone take one and none.
     #[test]
     fn fux_text_takes_a_cluster_s_columns() {
         let heart = "\u{2764}\u{FE0F}";
@@ -2456,6 +2472,10 @@ mod tests {
         Ok(())
     }
 
+    /// A pane's program started again (`respawn`) draws on a new screen,
+    /// whose rows are numbered from the start again: a grid composed
+    /// again from its memo shows the new screen, not the rows of the old
+    /// one that had the same numbers and versions.
     #[test]
     fn a_respawned_pane_is_composed_anew() -> Result<(), String> {
         let (mut s, c) = crate::session::testing::attached(6, 30)?;
@@ -2490,6 +2510,10 @@ mod tests {
         Ok(())
     }
 
+    /// While a pane is part way through a frame, its cursor is the one the
+    /// client was last painted there, if any: focus moved away from it
+    /// takes the cursor to the pane focused, and focus moved onto it shows
+    /// none there till the frame is whole.
     #[test]
     fn a_held_pane_keeps_only_its_own_cursor() -> Result<(), String> {
         let (mut s, c) = crate::session::testing::attached(10, 40)?;
@@ -2563,6 +2587,9 @@ mod tests {
             .ok_or_else(|| format!("%{id}'s place"))
     }
 
+    /// A pane part way through a frame that the client was never painted
+    /// where it is (a client attached mid-frame, a layout changed) shows
+    /// blank, never half the frame; fux's own panels show over it.
     #[test]
     fn a_held_pane_not_painted_before_is_blank_under_fux_s_panels() -> Result<(), String> {
         let (mut s, c) = crate::session::testing::attached(10, 40)?;
@@ -2606,6 +2633,8 @@ mod tests {
         Ok(())
     }
 
+    /// At the widest a terminal can be, the last column is u16::MAX - 1:
+    /// one past it must stop a wide glyph, not overflow (in release, wrap).
     #[test]
     fn a_wide_glyph_does_not_fit_the_widest_last_column() {
         let mut grid = new_grid(1, u16::MAX);
@@ -2624,6 +2653,8 @@ mod tests {
         assert!(bytes.ends_with(b"\x1b[?2026l"));
     }
 
+    /// Explicit positioning bounds accumulated advance errors. Changing
+    /// policy redraws unchanged cells, while ASCII remains a run.
     #[test]
     fn cell_placement_positions_after_non_ascii_and_redraws_on_change() {
         let mut grid = new_grid(1, 12);
@@ -2660,6 +2691,11 @@ mod tests {
         }
     }
 
+    /// A glyph that continues the cluster of the one before it (an emoji
+    /// modifier micro puts after an emoji with a cursor move of its own) is
+    /// placed by a cursor move, and so is the glyph after it: Ghostty joins
+    /// the modifier to the emoji, as it does when micro writes it directly,
+    /// and the next glyph still lands where fux-vt has it.
     #[test]
     fn a_glyph_that_would_join_the_one_before_is_placed() {
         let mut grid = new_grid(1, 12);
@@ -2679,6 +2715,10 @@ mod tests {
         assert!(text.contains("\u{1F44D}\u{1F680}x"), "{text:?}");
     }
 
+    /// Zero-width characters after a glyph that leaves the cursor in the
+    /// last column are painted with autowrap on, so that Ghostty puts them
+    /// on that glyph and not on the last column's; anywhere else, and in
+    /// the last column itself, a cluster is painted as it is.
     #[test]
     fn marks_short_of_the_edge_are_painted_with_autowrap() {
         let marked = |text| CellRef::new(text, false, Attributes::default());
@@ -2704,6 +2744,8 @@ mod tests {
         }
     }
 
+    /// A prompt wider than its panel scrolls to keep the cursor in view,
+    /// with an ellipsis on each side cut off, never wider than the room.
     #[test]
     fn a_long_prompt_scrolls_to_its_cursor() {
         let text = "split -v -- echo aaaaaaaaaaaaaaaaaaaaTAIL";
@@ -3118,6 +3160,7 @@ mod tests {
         rows
     }
 
+    /// A row that did not change gets no bytes at all.
     #[test]
     fn only_the_rows_that_changed_are_painted() {
         let mut a = new_grid(6, 20);
@@ -3139,6 +3182,9 @@ mod tests {
         assert_eq!(rows_written(&paint(None, &c)), [0, 1, 2, 3, 4, 5]);
     }
 
+    /// Every attribute fux-vt keeps reaches the client: blink, hidden text
+    /// (which must stay hidden), strikeout and the underline colour, beside
+    /// those painted before.
     #[test]
     fn every_attribute_is_painted() -> Result<(), String> {
         let attributes = [
@@ -3253,6 +3299,14 @@ mod tests {
         }
     }
 
+    /// A pane's colours are its own (`fux_vt::Feature::Palette`): a cell
+    /// of an entry its program changed (OSC 4) is painted in the colour it
+    /// set, and its default foreground and background in those it set (OSC
+    /// 10, 11), while the pane beside it, which changed nothing, is painted
+    /// its indices and defaults; the client's terminal is sent no OSC 4,
+    /// 10 or 11, so its own palette stays as it was. Reset (OSC 104, 110,
+    /// 111), the entry is painted as its index again. Each pane answers its
+    /// program's queries with its own colours.
     #[test]
     fn a_panes_palette_is_painted_and_stays_the_panes() -> Result<(), Box<dyn std::error::Error>> {
         let (mut s, c) = crate::session::testing::attached(6, 41)?;
@@ -3372,6 +3426,11 @@ mod tests {
         Ok(())
     }
 
+    /// A pane's hyperlinks reach the client: OSC 8 before the linked cells,
+    /// with an id made of the pane and the link's key, and an OSC 8 that
+    /// closes it after them. Two panes' links never share an id, though
+    /// each pane's first link has the same key; a terminal reading the
+    /// paint has each cell's link.
     #[test]
     fn hyperlinks_are_painted_with_their_panes_ids() -> Result<(), Box<dyn std::error::Error>> {
         let (mut s, c) = crate::session::testing::attached(6, 41)?;

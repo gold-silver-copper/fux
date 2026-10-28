@@ -44,6 +44,10 @@ fn private(dir: &std::path::Path) -> Result<std::path::PathBuf, String> {
     Ok(rt)
 }
 
+/// `str NAME server` names a server for what follows, `start` starts one
+/// and returns once it answers, and `status` says what answers. A FUX_PANE
+/// of another server's pane is not acted on; `kill-server` from a server's
+/// own pane, and a kill with no target, are refused.
 #[test]
 fn servers_are_named_and_kills_are_guarded() -> Outcome {
     let server = Server::start("")?;
@@ -142,6 +146,8 @@ fn servers_are_named_and_kills_are_guarded() -> Outcome {
     Ok(())
 }
 
+/// A server a client starts is a daemon (daemon(7)): it holds none of the
+/// client's descriptors beyond stdio, and keeps no directory of its busy.
 #[cfg(target_os = "linux")]
 #[test]
 fn a_started_server_keeps_nothing_of_its_client() -> Outcome {
@@ -217,6 +223,8 @@ fn streaming(server: &Server, args: &[&str]) -> Result<(std::process::Child, Nex
     Ok((events, next))
 }
 
+/// `fux all events` tells what happens, a line each, from `ready` on, in
+/// order: a pane made, its bell, its exit, its close.
 #[test]
 fn events_tell_what_happens() -> Outcome {
     let server = Server::start("")?;
@@ -256,6 +264,9 @@ fn events_tell_what_happens() -> Outcome {
     told.map(drop)
 }
 
+/// A stream from the cursor `ls` gives is told what changed after the
+/// listing, though it changed before the stream began; and a cursor past
+/// the journal's end is refused.
 #[test]
 fn a_stream_from_ls_misses_nothing() -> Outcome {
     let server = Server::start("")?;
@@ -287,6 +298,8 @@ fn a_stream_from_ls_misses_nothing() -> Outcome {
     Ok(())
 }
 
+/// Keys sent to a tab reach each of its panes, and a wait on them waits in
+/// each.
 #[test]
 fn keys_to_a_tab_reach_each_pane() -> Outcome {
     let server = Server::start("")?;
@@ -329,6 +342,9 @@ fn keys_to_a_tab_reach_each_pane() -> Outcome {
     Ok(())
 }
 
+/// `panes` and `tabs` give a place's members as a list of handles, in
+/// layout order, each one a handle the next word takes; a place gone fails
+/// as it would for any word.
 #[test]
 fn panes_and_tabs_are_lists_of_handles() -> Outcome {
     let server = Server::start("")?;
@@ -398,6 +414,10 @@ fn panes_and_tabs_are_lists_of_handles() -> Outcome {
     Ok(())
 }
 
+/// A command client that sends request after request without reading the
+/// answers is read no more once they back up, the requests it already sent
+/// included, so it holds no more of the server's memory than its socket
+/// does; once it reads, every request is answered.
 #[test]
 fn a_client_that_reads_no_answers_is_read_no_more() -> Outcome {
     use fux::command::{Command as Cmd, Request};
@@ -496,6 +516,8 @@ fn a_client_that_reads_no_answers_is_read_no_more() -> Outcome {
     Ok(())
 }
 
+/// `dump` writes a workspace as a program, and running that program
+/// makes it again.
 #[test]
 fn a_dump_makes_its_workspace_again() -> Outcome {
     let server = Server::start("")?;
@@ -562,6 +584,8 @@ fn a_dump_makes_its_workspace_again() -> Outcome {
     Ok(())
 }
 
+/// A given name matching an old automatic label survives dump replay;
+/// its unnamed workspace stays separate from a workspace with an old label.
 #[test]
 fn a_dump_runs_on_a_new_server_whatever_its_tabs_are_named() -> Outcome {
     let source = Server::start("")?;
@@ -588,6 +612,8 @@ fn a_dump_runs_on_a_new_server_whatever_its_tabs_are_named() -> Outcome {
     Ok(())
 }
 
+/// Replaying explicit programs in an unnamed workspace never starts the
+/// replaying client's default shell.
 #[test]
 fn an_unnamed_workspace_replays_independently_of_the_default_shell() -> Outcome {
     let source = Server::start("")?;
@@ -629,6 +655,8 @@ fn an_unnamed_workspace_replays_independently_of_the_default_shell() -> Outcome 
     Ok(())
 }
 
+/// A workspace whose first tab closed, its pane moved to a new tab, is
+/// made again from its dump: the first tab written opens it.
 #[test]
 fn a_dump_opens_its_workspace_with_the_first_tab_written() -> Outcome {
     let server = Server::start("")?;
@@ -666,6 +694,13 @@ fn serving(socket: &std::path::Path) -> Option<i32> {
         })
 }
 
+/// A socket that is the user's, in a directory of the user's, but listened
+/// on by another uid is refused: the client checks who serves it. The other
+/// uid is a user namespace's (`unshare --map-auto`: the user's own uid as
+/// its root, and the user's subordinate ids), whose root binds the socket
+/// and listens as uid 1. Where that cannot be had (no `newuidmap` or
+/// subordinate ids, or user namespaces restricted, as AppArmor may on
+/// Ubuntu), the test says so and passes.
 #[cfg(target_os = "linux")]
 #[test]
 fn a_socket_served_by_another_uid_is_refused() -> Outcome {
@@ -719,6 +754,7 @@ fn a_socket_served_by_another_uid_is_refused() -> Outcome {
     Ok(())
 }
 
+/// Argv and cwd are one saved launch, including relative arguments and executables.
 #[test]
 fn dump_replays_the_saved_launch_after_the_program_changes_directory() -> Outcome {
     use std::os::unix::fs::PermissionsExt;
@@ -759,6 +795,7 @@ fn dump_replays_the_saved_launch_after_the_program_changes_directory() -> Outcom
     Ok(())
 }
 
+/// Shell replay starts in the observed directory, retaining its saved argv.
 #[test]
 fn dump_replays_a_shell_in_its_current_directory() -> Outcome {
     let server = Server::start("")?;
@@ -796,6 +833,8 @@ fn dump_replays_a_shell_in_its_current_directory() -> Outcome {
     Ok(())
 }
 
+/// The published hook runs as an ordinary client program over retained
+/// native copy events, preserving the same cursor checkpoint boundary.
 #[test]
 fn the_copy_hook_recipe_consumes_a_real_program_copy() -> Outcome {
     let server = Server::start("")?;

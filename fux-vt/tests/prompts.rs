@@ -75,6 +75,10 @@ fn a_and_l_start_a_fresh_line() -> Result {
     Ok(())
 }
 
+/// Marks go into history with their rows, move with IL and DL, leave with
+/// the rows a scroll drops, and go when ED erases their row whole; EL, and
+/// ED from the cursor, leave the cursor's row its mark, as a shell erases
+/// from its prompt to redraw it.
 #[test]
 fn marks_go_with_their_rows() -> Result {
     // Two rows of up to five cells: 24 bytes a row and 8 a cell.
@@ -107,6 +111,8 @@ fn marks_go_with_their_rows() -> Result {
     Ok(())
 }
 
+/// A resize keeps the marks of the rows it keeps; a reflow puts each on
+/// the row its prompt's first character goes to.
 #[test]
 fn marks_survive_resize_and_reflow() -> Result {
     let input = b"\x1b]133;A\x07$ long command\r\noutput\r\n\x1b]133;A\x07$ ";
@@ -136,6 +142,8 @@ fn marks_survive_resize_and_reflow() -> Result {
     Ok(())
 }
 
+/// Without `Feature::PromptMarks`, OSC 133 is ignored: no mark, no fresh
+/// line, and no OSC payload kept.
 #[test]
 fn without_the_option_prompt_marks_are_ignored() -> Result {
     let mut p = Parser::new(Size::new(4, 10)?, 0)?;
@@ -181,6 +189,9 @@ fn n_ends_the_command_running() -> Result {
     Ok(())
 }
 
+/// A mark is where the next character goes: after output that fills its
+/// row, pending its wrap, past the last column, so the output ends after
+/// its last character.
 #[test]
 fn a_mark_after_a_full_row_is_past_its_last_column() -> Result {
     let mut p = Parser::with_options(Size::new(3, 5)?, 0, MARKS)?;
@@ -190,6 +201,9 @@ fn a_mark_after_a_full_row_is_past_its_last_column() -> Result {
     Ok(())
 }
 
+/// Each `D` that ends a running command, and an `N` that ends one, is an
+/// event with the status the shell gave, with `Feature::Events`: two
+/// commands ended in one piece of output are two events, in order.
 #[test]
 fn each_command_ended_is_an_event() -> Result {
     #[derive(Default)]
@@ -213,6 +227,8 @@ fn each_command_ended_is_an_event() -> Result {
     Ok(())
 }
 
+/// A `C` while a command runs moves its start but begins no command:
+/// `started` counts those begun.
 #[test]
 fn a_start_while_a_command_runs_begins_none() -> Result {
     let mut p = Parser::with_options(Size::new(8, 20)?, 10, MARKS)?;

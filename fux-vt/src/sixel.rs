@@ -1126,6 +1126,8 @@ mod tests {
         Ok(())
     }
 
+    /// Colours defined and selected, sixels repeated, bands below one
+    /// another; and the picture encoded back decodes to itself.
     #[test]
     fn sixels_decode_and_encode_back() -> Result<(), String> {
         // Red 2 wide by 6 high, then a band below of one blue column 3 high.
@@ -1149,6 +1151,9 @@ mod tests {
         Ok(())
     }
 
+    /// A picture of more than 256 colours is drawn in a cube of 6 reds, 7
+    /// greens and 6 blues: each channel to its nearest step below, which
+    /// the colour definitions give in percent.
     #[test]
     fn many_colours_are_drawn_in_the_cube() -> Result<(), String> {
         let mut rgba = Vec::new();
@@ -1300,6 +1305,10 @@ mod tests {
         assert!(!whole);
     }
 
+    /// What a picture drew past what one may keep is not kept, and the
+    /// picture says it is not whole: a sixel past `MAX_SIDE` columns, an
+    /// extent past it, or pixels refused room. One that drew nothing is
+    /// empty, not cut, a blank repeat past `MAX_SIDE` too.
     #[test]
     fn a_picture_cut_says_so() {
         let ended = |data: &[u8], room: bool| {
@@ -1337,6 +1346,9 @@ mod tests {
         assert_eq!(picture.and_then(|p| p.pixel(0, 12)), None);
     }
 
+    /// The README states what a picture may keep as `MAX_SIDE` and
+    /// `MAX_PIXELS` have it: the pixels in all, as `MAX_SIDE` by the other
+    /// side, and their RGBA bytes.
     #[test]
     fn the_readme_states_what_a_picture_keeps() {
         // Its words, a blank between each, as its lines wrap them.

@@ -237,6 +237,9 @@ fn captured(server: &Server, pane: &str) -> Result<Vec<String>, String> {
         .collect())
 }
 
+/// A pane whose output overflows it and ends without a newline keeps that
+/// last line when a split shrinks it, and gets the rows the shrink scrolled
+/// away back when it grows again (an emulator once dropped the cursor's row on a shrink).
 #[test]
 fn a_split_pane_keeps_its_last_line_and_regains_its_rows() -> Outcome {
     let server = Server::start("")?;

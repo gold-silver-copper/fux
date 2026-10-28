@@ -1540,6 +1540,8 @@ fn main() -> ExitCode {
 
 #[cfg(test)]
 mod tests {
+    /// `bench --instructions` and `footprint` run few children unless
+    /// `--jobs` says: CARGO_BUILD_JOBS, else 4, never every core.
     #[test]
     fn instructions_take_few_jobs_by_default() {
         assert_eq!(super::few_jobs_from(None), 4);
@@ -1551,6 +1553,10 @@ mod tests {
         assert_eq!(super::children(Some(3)), 3);
     }
 
+    /// A grouped check's command keeps a path with a space in it as one
+    /// word, run alongside the others or, with --jobs, alone ("+"): the
+    /// harness's own `spec` and `together` (lib.sh, which harness.sh
+    /// sources), each given a path under "a b/".
     #[test]
     fn a_grouped_checks_path_with_a_space_stays_one_word() -> Result<(), String> {
         let lib = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("lib.sh");

@@ -168,6 +168,8 @@ fn a_pty_is_the_smallest_rectangle_among_the_clients_showing_it() -> Outcome {
     Ok(())
 }
 
+/// A tab closes as its last pane moves out, as it does when its last pane
+/// closes, and its client is shown the tab beside it.
 #[test]
 fn moving_a_tabs_last_pane_out_closes_the_tab() -> Outcome {
     let server = Server::start("")?;
@@ -190,6 +192,7 @@ fn moving_a_tabs_last_pane_out_closes_the_tab() -> Outcome {
     Ok(())
 }
 
+/// Client capture includes the composed UI and has no pane version.
 #[test]
 fn client_capture_includes_ui_without_a_pane_version() -> Outcome {
     let server = Server::start("")?;
@@ -223,6 +226,9 @@ fn client_capture_includes_ui_without_a_pane_version() -> Outcome {
     Ok(())
 }
 
+/// A tab with a size of its own, shown to a client, takes the client's
+/// screen; hidden again (another tab of its workspace, or another
+/// workspace, shown), it goes back to its own size.
 #[test]
 fn a_hidden_tab_goes_back_to_its_own_size() -> Outcome {
     let server = Server::start("")?;
@@ -258,6 +264,8 @@ fn a_hidden_tab_goes_back_to_its_own_size() -> Outcome {
     Ok(())
 }
 
+/// A one-row view with no bar can create the first pane. Feedback overlays
+/// the row in client captures while pane captures keep the underlying text.
 #[test]
 fn a_bar_off_attach_keeps_pane_geometry_under_feedback() -> Outcome {
     let mut server = Server::empty()?;
