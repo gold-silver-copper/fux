@@ -1038,7 +1038,7 @@ fn put_panes(
     focus: Option<PaneId>,
     copy: Option<(&crate::copy::Copy, crate::copy::Resolved)>,
 ) -> Result<(), fux_vt::Error> {
-    grid.underline_styles = view.terminal.underline_styles == Some(true);
+    grid.underline_styles = view.terminal.underline_styles;
     let frame = Frame::of(session, view, placement, focus);
     if let Some(memo) = grid
         .memo

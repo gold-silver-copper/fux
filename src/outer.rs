@@ -84,6 +84,8 @@ pub const QUERIES: &[u8] = concat!(
 /// Asked of a terminal each time it is resized, which a font zoom does
 /// with its cells too.
 pub const CELL_QUERY: &[u8] = cell!().as_bytes();
+/// The kitty flags pushed: disambiguate (1) and alternate keys (4).
+pub const KITTY_FLAGS: u8 = 5;
 /// Pushes disambiguate and alternate keys (see the module documentation),
 /// and asks the flags again: their answer, disambiguate set, is the
 /// terminal's word that it sends Escape as `CSI 27 u`, which the decoder
@@ -133,7 +135,7 @@ pub struct Terminal {
     pub kitty: Option<u8>,
     /// Positive underline-style evidence (see `styles!`); the decoder
     /// gives no negative report. Unknown is painted as plain underlines.
-    pub underline_styles: Option<bool>,
+    pub underline_styles: bool,
     /// Its palette entries 0 to 15, answered to the panes it answers for.
     pub palette: Palette,
     /// Whether it draws sixel graphics (DA1's `4`), and the size of its cells
@@ -165,7 +167,11 @@ impl Terminal {
             ("cell_reported", cell),
             (
                 "underline_styles_reported",
-                self.underline_styles.map_or(Json::Null, Json::Bool),
+                if self.underline_styles {
+                    Json::Bool(true)
+                } else {
+                    Json::Null
+                },
             ),
             (
                 "kitty_flags_reported",
@@ -279,8 +285,8 @@ impl Session {
             // shows already, painted plain, is painted again
             // (`render::paint_into`).
             Reply::UnderlineStyles => {
-                view.dirty |= terminal.underline_styles != Some(true);
-                terminal.underline_styles = Some(true);
+                view.dirty |= !terminal.underline_styles;
+                terminal.underline_styles = true;
             }
             Reply::Palette { index, rgb } => {
                 if let Some(entry) = terminal.palette.get_mut(usize::from(index)) {

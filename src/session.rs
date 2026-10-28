@@ -1686,6 +1686,7 @@ impl Session {
     /// pane closed or is no longer focused, a chooser about a pane, tab or
     /// workspace that closed. Which opening it ended, if it did, which
     /// its client is told (`ToAttached::Ended`), the mode being the client's.
+    /// Forgets remembered places that closed or that a close made current.
     fn repair(&self, view: &mut View) -> Option<u64> {
         use crate::act::{List, Panel};
         let place = self.place(view.id);
@@ -3379,16 +3380,14 @@ impl Session {
                 ("graphics", graphics),
                 (
                     "underline_styles",
-                    Json::Bool(view.terminal.underline_styles == Some(true)),
+                    Json::Bool(view.terminal.underline_styles),
                 ),
                 ("clipboard", clipboard),
                 (
                     "kitty_flags_requested",
-                    if view.terminal.kitty.is_some() {
-                        Json::int(5_u8)
-                    } else {
-                        Json::Null
-                    },
+                    view.terminal
+                        .kitty
+                        .map_or(Json::Null, |_| Json::int(crate::outer::KITTY_FLAGS)),
                 ),
             ])?;
             let fields = [
@@ -4192,7 +4191,12 @@ mod tests {
         assert_eq!(effective.get("graphics"), Some(&Json::str("sixel")));
         assert_eq!(effective.get("underline_styles"), Some(&Json::Bool(true)));
         assert_eq!(effective.get("clipboard"), Some(&Json::str("osc52")));
-        assert_eq!(effective.get("kitty_flags_requested"), Some(&Json::int(5)));
+        let requested = crate::outer::KITTY_FLAGS;
+        assert!(crate::outer::KITTY_PUSH.starts_with(format!("\x1b[>{requested}u").as_bytes()));
+        assert_eq!(
+            effective.get("kitty_flags_requested"),
+            Some(&Json::int(requested))
+        );
         assert_eq!(output(&mut s, "@1 str host get")?, "c1\n");
         s.input(d, b"x");
         assert_eq!(output(&mut s, "@1 str host get")?, "c2\n");

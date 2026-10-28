@@ -120,6 +120,8 @@ const SIDE: &[&str] = &[
     "str c2 client str ls text str Enter key send-keys",
     "str terminal-clipboard false set",
     "str terminal-clipboard true set",
+    "str c1 client str last step-tab",
+    "str c2 client str last step-workspace",
 ];
 
 /// What a pane's program may say of the mouse.
