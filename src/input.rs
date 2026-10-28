@@ -8,10 +8,11 @@ use crate::keys::Keystroke;
 use crate::keys::mouse::{MouseAction, MouseEvent};
 use crate::session::Session;
 use crate::view::Mode;
+use std::time::Instant;
 
 impl Session {
     /// Actions from a client.
-    pub fn acts(&mut self, client: ClientId, acts: Vec<Act>) {
+    pub fn acts(&mut self, client: ClientId, acts: Vec<Act>, now: Instant) {
         if acts.is_empty() {
             return;
         }
@@ -48,7 +49,7 @@ impl Session {
         {
             view.dirty = true;
         }
-        self.settle();
+        self.settle(now);
     }
 
     /// One action: whether it may have changed what the client shows.
@@ -381,7 +382,7 @@ mod tests {
     fn stale_screen_actions_cannot_change_a_new_opening() -> Outcome {
         use crate::act::{Act, CopyAct, ScreenAct};
         let (mut s, c) = session()?;
-        s.output(PaneId::of(1), b"first\r\nlast");
+        s.out(PaneId::of(1), b"first\r\nlast");
         let cursor = |s: &Session| {
             s.views.get(&c).and_then(|v| match &v.mode {
                 Mode::Copy(copy) => Some(copy.cursor),
@@ -403,7 +404,7 @@ mod tests {
         ] {
             let old = s.views.get(&c).ok_or("view")?.opening.saturating_add(1);
             let new = old.saturating_add(1);
-            s.acts(
+            s.apply(
                 c,
                 vec![
                     Act::Screen {
@@ -426,12 +427,12 @@ mod tests {
                 ScreenAct::Show(Panel::Repeat("old panel".into())),
                 start.clone(),
             ] {
-                s.acts(c, vec![Act::Screen { opening: old, act }]);
+                s.apply(c, vec![Act::Screen { opening: old, act }]);
                 assert_eq!(mode(&s, c), before);
                 assert_eq!(cursor(&s), copy_cursor);
                 assert_eq!(s.views.get(&c).ok_or("view")?.opening, new);
             }
-            s.acts(
+            s.apply(
                 c,
                 vec![Act::Screen {
                     opening: new,
@@ -439,7 +440,7 @@ mod tests {
                 }],
             );
             assert_eq!(mode(&s, c), "normal");
-            s.acts(
+            s.apply(
                 c,
                 vec![Act::Screen {
                     opening: new,
@@ -486,7 +487,7 @@ mod tests {
     #[test]
     fn copy_without_a_focused_pane_ends_visibly() -> Outcome {
         let (mut s, c) = session()?;
-        s.close_pane(PaneId::of(1), None);
+        s.close_now(PaneId::of(1), None);
         s.input(c, b"\x02c");
         assert_eq!(mode(&s, c), "normal");
         assert_eq!(screen(&s, c), Screen::default());
@@ -1090,7 +1091,7 @@ mod tests {
         let press = |col: u16, row: u16| format!("\x1b[<0;{};{}M", col + 1, row + 1);
         s.input(c, press(right.x() + 3, 2).as_bytes());
         assert!(queued(&mut s, 2).is_empty());
-        s.output(PaneId::of(2), b"\x1b[?1000h\x1b[?1006h");
+        s.out(PaneId::of(2), b"\x1b[?1000h\x1b[?1006h");
         assert_eq!(asked_mouse_level(&s, c), Some(1000));
         // Moved to the pane's cells.
         s.input(c, press(right.x() + 3, 2).as_bytes());
@@ -1100,7 +1101,7 @@ mod tests {
         s.input(c, press(right.x() - 1, 2).as_bytes());
         assert!(queued(&mut s, 2).is_empty() && queued(&mut s, 1).is_empty());
         // In the encoding the program asked for: here the default.
-        s.output(PaneId::of(2), b"\x1b[?1006l");
+        s.out(PaneId::of(2), b"\x1b[?1006l");
         s.input(c, press(right.x(), 0).as_bytes());
         assert_eq!(queued(&mut s, 2), [0x1b, b'[', b'M', 32, 33, 33]);
         // A pane below another: moved down too.
@@ -1108,7 +1109,7 @@ mod tests {
         run(&mut s, "str c1 client str %3 pane show")?;
         let below = rect_of(&s, c, 3).ok_or("no rect for %3")?;
         assert!(below.y() > 1, "{below:?}");
-        s.output(PaneId::of(3), b"\x1b[?1000h\x1b[?1006h");
+        s.out(PaneId::of(3), b"\x1b[?1000h\x1b[?1006h");
         s.input(c, press(below.x() + 1, below.y() + 2).as_bytes());
         assert_eq!(queued(&mut s, 3), b"\x1b[<0;2;3M");
         Ok(())
@@ -1122,8 +1123,8 @@ mod tests {
             Some(c),
             "str bar list str off list end list end false end set",
         )?;
-        s.resize(c, 1, 20).map_err(|e| e.to_string())?;
-        s.output(PaneId::of(1), b"\x1b[?1000h\x1b[?1006h");
+        s.size_client(c, 1, 20).map_err(|e| e.to_string())?;
+        s.out(PaneId::of(1), b"\x1b[?1000h\x1b[?1006h");
         s.input(c, b"\x1b[<0;1;1M");
         assert_eq!(queued(&mut s, 1), b"\x1b[<0;1;1M");
         s.notify_to(c, "refused", true);
@@ -1148,7 +1149,7 @@ mod tests {
         for room in [0, 100, expected.len()] {
             let (mut s, c) = crate::session::testing::attached(101, 20)?;
             let id = PaneId::of(1);
-            s.output(id, b"\x1b[?1049h\x1b[?1007h\x1b[?1h\x1b[>1u");
+            s.out(id, b"\x1b[?1049h\x1b[?1007h\x1b[?1h\x1b[>1u");
             let filled = crate::pane::INPUT_BYTES.saturating_sub(room);
             s.parts
                 .pane_mut(id)
@@ -1182,7 +1183,7 @@ mod tests {
     #[test]
     fn a_report_a_full_queue_refuses_is_told_once() -> Outcome {
         let (mut s, c) = session()?;
-        s.output(PaneId::of(1), b"\x1b[?1000h\x1b[?1006h\x1b[?1004h");
+        s.out(PaneId::of(1), b"\x1b[?1000h\x1b[?1006h\x1b[?1004h");
         let full = vec![0; crate::pane::INPUT_BYTES];
         let mut p = s.parts.pane_mut(PaneId::of(1)).ok_or("no %1")?;
         p.push(full).map_err(|e| e.to_string())?;
@@ -1218,7 +1219,7 @@ mod tests {
         let queries: Vec<u8> = std::iter::repeat_n(*b"\x1b[6n", crate::pane::REPLIES_MAX)
             .flatten()
             .collect();
-        s.output(PaneId::of(1), &queries);
+        s.out(PaneId::of(1), &queries);
         let mut p = s.parts.pane_mut(PaneId::of(1)).ok_or("no %1")?;
         let room = p.input().room();
         p.push(vec![0; room]).map_err(|e| e.to_string())?;
@@ -1239,7 +1240,7 @@ mod tests {
         let (mut s, c) = session()?;
         run(&mut s, "agent-opts 80 24 size str /bin/cat program run")?;
         run(&mut s, "str c1 client str %2 pane show")?;
-        s.exited(PaneId::of(2), crate::process::Ended::Exited(3));
+        s.end_program(PaneId::of(2), crate::process::Ended::Exited(3));
         for typed in [b"x".as_slice(), b"\x1b[200~z\x1b[201~"] {
             s.input(c, typed);
             let notice = s.views.get_mut(&c).and_then(|v| v.notice.take());
@@ -1256,7 +1257,7 @@ mod tests {
         run(&mut s, "str %1 pane str horizontal axis split")?;
         run(&mut s, "str c1 client str %2 pane show")?;
         let right = rect_of(&s, c, 2).ok_or("no rect for %2")?;
-        s.output(PaneId::of(2), b"\x1b[?1002h\x1b[?1006h");
+        s.out(PaneId::of(2), b"\x1b[?1002h\x1b[?1006h");
         assert_eq!(asked_mouse_level(&s, c), Some(1002));
         let x = right.x() + 1;
         // Pressed inside, dragged over the left pane and past the bottom,
@@ -1281,7 +1282,7 @@ mod tests {
         let (mut s, c) = session()?;
         run(&mut s, "str %1 pane str horizontal axis split")?;
         run(&mut s, "str c1 client str %2 pane show")?;
-        s.output(PaneId::of(2), b"\x1b[?1003h\x1b[?1006h");
+        s.out(PaneId::of(2), b"\x1b[?1003h\x1b[?1006h");
         assert_eq!(asked_mouse_level(&s, c), Some(1003));
         let right = rect_of(&s, c, 2).ok_or("no rect for %2")?;
         let press = format!("\x1b[<0;{};2M", right.x() + 2);

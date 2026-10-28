@@ -792,7 +792,7 @@ mod tests {
         use crate::keymap::Named;
         for (_, copy_act) in CopyAct::NAMES {
             let (mut s, c) = crate::session::testing::attached(6, 30)?;
-            s.output(PaneId::of(1), b"one\r\ntwo");
+            s.out(PaneId::of(1), b"one\r\ntwo");
             let (hints, typing) = (Vec::new(), Vec::new());
             act(&mut s, c, CopyAct::Enter { hints, typing });
             act(&mut s, c, copy_act.clone());
@@ -818,7 +818,7 @@ mod tests {
             }
         }
         output.push_str("\x1b]133;A\x07$ ");
-        s.output(pane, output.as_bytes());
+        s.out(pane, output.as_bytes());
         let screen = |s: &Session| s.parts.panes().get(&pane).map(|p| p.screen().clone());
         let first = screen(&s).ok_or("the pane")?;
         let starts: Vec<usize> = first
@@ -909,7 +909,7 @@ mod tests {
         for n in 0..60 {
             output.push_str(&format!("line {n}\r\n"));
         }
-        s.output(pane, output.as_bytes());
+        s.out(pane, output.as_bytes());
         s.input(big, b"\x02c");
         s.input(big, &[b'k'; 10]);
         s.input(big, &[b'j'; 14]);
@@ -934,7 +934,7 @@ mod tests {
     #[test]
     fn copy_mode_entered_on_a_wide_glyphs_second_half_starts_at_its_first() -> Result<(), String> {
         let (mut s, c) = crate::session::testing::attached(5, 20)?;
-        s.output(PaneId::of(1), "a\u{754c}b\x1b[1;3H".as_bytes());
+        s.out(PaneId::of(1), "a\u{754c}b\x1b[1;3H".as_bytes());
         s.input(c, b"\x02c");
         let view = s.views.get(&c).ok_or("the client")?;
         let Mode::Copy(copy) = &view.mode else {
