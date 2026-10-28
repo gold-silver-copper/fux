@@ -170,6 +170,8 @@ pub struct Opts {
     pub env: crate::command::EnvPatch,
     pub argv: Vec<String>,
     pub shell: Option<bool>,
+    pub history_bytes: Option<crate::config::HistoryBytes>,
+    pub program_clipboard: Option<bool>,
     pub copy_environment: Option<Vec<crate::config::EnvName>>,
     pub axis: Option<Axis>,
     /// A split's shares (`shares`).
@@ -193,6 +195,16 @@ pub struct Opts {
 }
 
 impl Opts {
+    pub(crate) fn pane_options(
+        &self,
+        defaults: crate::command::PaneOptions,
+    ) -> crate::command::PaneOptions {
+        crate::command::PaneOptions {
+            history_bytes: self.history_bytes.unwrap_or(defaults.history_bytes),
+            program_clipboard: self.program_clipboard.unwrap_or(defaults.program_clipboard),
+        }
+    }
+
     pub(crate) fn program(&self) -> Result<crate::config::Program, String> {
         let mut words = self.argv.iter().cloned();
         crate::config::Program::new(words.next().unwrap_or_default(), words.collect())
@@ -838,7 +850,7 @@ pub struct Server {
     chosen: Choice,
     requests: Option<client::Requests>,
     /// This job's source fence, kept on every request and across retries.
-    pub(crate) after: Option<crate::protocol::Fence>,
+    pub(crate) after: Option<std::rc::Rc<std::cell::Cell<crate::protocol::Fence>>>,
     /// What stops a run from another thread, if one may.
     stop: Option<Stop>,
 }
@@ -926,7 +938,7 @@ pub trait Asks {
     /// Asks `asked`, what is streamed before its reply going to `out`.
     fn ask(&mut self, asked: &Asked, out: &mut dyn Write) -> Result<Reply, Failed>;
     /// Publish a complete local state at a commit boundary, if it is shared.
-    fn published(&mut self, _state: &ClientState) {}
+    fn published(&mut self, _state: &ClientState, _context: &Context) {}
 
     /// Commit all local state, then forward only this transaction's writes.
     fn commit(&mut self, draft: &mut Draft, context: Context) -> Result<(), Failed> {
@@ -936,7 +948,7 @@ pub trait Asks {
             .finish()
             .map_err(|why| Failed::new(Code::Config, why))?;
         *draft = committed.draft();
-        self.published(&committed);
+        self.published(&committed, &context);
         committed
             .preferences
             .forward_settings(changes, self, context)
@@ -966,7 +978,7 @@ pub trait Asks {
 impl Asks for Server {
     fn ask(&mut self, asked: &Asked, out: &mut dyn Write) -> Result<Reply, Failed> {
         let fenced = self.after.as_ref().map(|after| Asked {
-            after: Some(after.clone()),
+            after: Some(after.get()),
             ..asked.clone()
         });
         let asked = fenced.as_ref().unwrap_or(asked);
@@ -1109,11 +1121,11 @@ pub struct AsClient<'a> {
 }
 
 impl Asks for AsClient<'_> {
-    fn published(&mut self, state: &ClientState) {
-        match &mut self.on_commit {
-            Some(publish) => publish(state),
-            None => self.asks.published(state),
+    fn published(&mut self, state: &ClientState, context: &Context) {
+        if let Some(publish) = &mut self.on_commit {
+            publish(state);
         }
+        self.asks.published(state, context);
     }
     fn ask(&mut self, asked: &Asked, out: &mut dyn Write) -> Result<Reply, Failed> {
         self.asks.ask(asked, out)

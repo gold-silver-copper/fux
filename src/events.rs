@@ -165,6 +165,8 @@ pub enum Told {
     /// A shell command ended, with its status if it is known.
     Done(Option<i32>),
     Resized(fux_vt::Size),
+    /// The pane's retained history budget changed.
+    HistoryBudget(usize),
     /// Its program ended.
     Exited(End),
 }
@@ -229,6 +231,10 @@ impl Told {
             Told::Done(status) => (
                 "done",
                 vec![("status", status.map_or(Json::Null, Json::int))],
+            ),
+            Told::HistoryBudget(bytes) => (
+                "history_budget",
+                vec![("history_bytes", Json::count(*bytes))],
             ),
             Told::Resized(size) => {
                 let cols = ("cols", Json::int(size.cols()));
@@ -548,6 +554,7 @@ mod tests {
             Event::Pane(at, PaneEvent::Told(Told::Title(Said::default()))),
             Event::Pane(at, PaneEvent::Told(Told::Done(None))),
             Event::Pane(at, PaneEvent::Told(Told::Resized(size))),
+            Event::Pane(at, PaneEvent::Told(Told::HistoryBudget(0))),
             Event::Pane(
                 at,
                 PaneEvent::Told(Told::Exited(End {
@@ -587,6 +594,7 @@ mod tests {
                         | Told::Title(_)
                         | Told::Done(_)
                         | Told::Resized(_)
+                        | Told::HistoryBudget(_)
                         | Told::Exited(_),
                     ),
                 )

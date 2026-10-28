@@ -487,6 +487,11 @@ struct Ran {
     rebound: bool,
 }
 
+enum Update {
+    Presentation(crate::view::Presentation, std::sync::mpsc::SyncSender<u64>),
+    Finished(Ran),
+}
+
 /// The longest a program's notice may be: what it prints past this fails
 /// its write, and a notice longer, made of what it left, is not shown but
 /// said not to be. Well within a frame (`protocol::MAX_FRAME`).
@@ -554,7 +559,8 @@ fn lock(state: &Mutex<ClientState>) -> std::sync::MutexGuard<'_, ClientState> {
 /// while any runs wait for it, and go to the screen it opened, if any.
 ///
 /// The transport must handle every returned effect in order: send each
-/// action, count its frame, and pass each admitted job to `Self::dispatch`.
+/// action, count its frame, acknowledge `Dispatch::Fence` with `Self::fence`,
+/// and pass each admitted job to `Self::dispatch`.
 /// Dropping an admitted job leaves its reservation and held keys waiting.
 pub struct Keyboard {
     state: std::sync::Arc<Mutex<ClientState>>,
@@ -562,8 +568,9 @@ pub struct Keyboard {
     read_only: bool,
     decoder: crate::decode::Decoder,
     jobs: std::sync::mpsc::Sender<(Job, u64)>,
-    /// One `Ran` for the program dispatched, before the next is sent.
-    told: std::sync::mpsc::Receiver<Ran>,
+    /// Bounded committed presentation updates and the dispatched program's result.
+    told: std::sync::mpsc::Receiver<Update>,
+    receipt: Option<std::sync::mpsc::SyncSender<u64>>,
     wake: io::PipeReader,
     /// The weights of admitted programs not yet done, in order:
     /// `JOBS` and `JOB_BYTES` at most.
@@ -597,7 +604,7 @@ impl Keyboard {
         read_only: bool,
     ) -> Result<Keyboard, Error> {
         let (jobs, todo) = std::sync::mpsc::channel::<(Job, u64)>();
-        let (tell, told) = std::sync::mpsc::channel::<Ran>();
+        let (tell, told) = std::sync::mpsc::sync_channel::<Update>(1);
         let (wake, poke) = io::pipe()?;
         fuxix::io::set_nonblocking(&wake, true).map_err(io::Error::from)?;
         fuxix::io::set_nonblocking(&poke, true).map_err(io::Error::from)?;
@@ -612,13 +619,40 @@ impl Keyboard {
                 let chosen = socket::Choice::Path(path);
                 let mut server = script::Server::stoppable(chosen, stops.clone());
                 for (job, frames) in todo {
-                    server.after = Some(crate::protocol::Fence {
+                    let after = std::rc::Rc::new(std::cell::Cell::new(crate::protocol::Fence {
                         run,
                         client: me,
                         frames,
-                    });
-                    let ran = run_job(&mut server, (me, run), &shared, &job, &stops);
-                    if tell.send(ran).is_err() {
+                    }));
+                    server.after = Some(after.clone());
+                    let mut present = |presentation| {
+                        let (sent, received) = std::sync::mpsc::sync_channel(1);
+                        if tell.send(Update::Presentation(presentation, sent)).is_err() {
+                            stops.stop();
+                            return;
+                        }
+                        let _ = fuxix::io::write(&poke, b"!");
+                        // Receipt follows transmission, not mailbox consumption.
+                        // Stop and disconnect release this local wait too.
+                        while !stops.stopped() {
+                            match received.recv_timeout(Duration::from_millis(50)) {
+                                Ok(frames) => {
+                                    after.set(crate::protocol::Fence {
+                                        frames,
+                                        ..after.get()
+                                    });
+                                    return;
+                                }
+                                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+                                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                                    stops.stop();
+                                    return;
+                                }
+                            }
+                        }
+                    };
+                    let ran = run_job(&mut server, (me, run), &shared, &job, &stops, &mut present);
+                    if tell.send(Update::Finished(ran)).is_err() {
                         break;
                     }
                     // A pipe too full for it is readable: the client wakes
@@ -637,6 +671,7 @@ impl Keyboard {
             decoder,
             jobs,
             told,
+            receipt: None,
             wake,
             running: VecDeque::new(),
             pending: VecDeque::new(),
@@ -767,7 +802,19 @@ impl Keyboard {
     pub fn ran(&mut self) -> Vec<Dispatch> {
         crate::drain(&self.wake);
         let mut acts = Vec::new();
-        while let Ok(ran) = self.told.try_recv() {
+        for _ in 0..JOBS {
+            let Ok(update) = self.told.try_recv() else {
+                break;
+            };
+            let ran = match update {
+                Update::Presentation(presentation, sent) => {
+                    self.receipt = Some(sent);
+                    acts.push(Dispatch::Send(Act::Presentation(presentation)));
+                    acts.push(Dispatch::Fence);
+                    continue;
+                }
+                Update::Finished(ran) => ran,
+            };
             self.running.pop_front();
             let mut notice = ran.notice;
             // The screen showing hints at keys that changed: it closes,
@@ -827,6 +874,7 @@ impl Keyboard {
             match effect {
                 Dispatch::Send(act) => acts.push(Dispatch::Send(act)),
                 Dispatch::Run(job) => self.run(job, acts),
+                Dispatch::Fence => acts.push(Dispatch::Fence),
             }
         }
     }
@@ -863,6 +911,13 @@ impl Keyboard {
         self.apply(effects, acts);
     }
 
+    /// A transport completed every send preceding `Dispatch::Fence`.
+    pub fn fence(&mut self, frames: u64) {
+        if let Some(sent) = self.receipt.take() {
+            let _ = sent.send(frames);
+        }
+    }
+
     /// Dispatches an admitted job after its preceding attached frames were
     /// sent. Every request carries that prefix and its source identity.
     pub fn dispatch(&mut self, job: Job, frames: u64) -> Result<(), Error> {
@@ -895,6 +950,7 @@ fn run_job(
     state: &Mutex<ClientState>,
     job: &Job,
     stop: &script::Stop,
+    present: &mut dyn FnMut(crate::view::Presentation),
 ) -> Ran {
     let mut changed = lock(state).draft();
     let config = changed.config.clone();
@@ -906,7 +962,12 @@ fn run_job(
     let mut publish = |committed: &ClientState| {
         let mut live = lock(state);
         rebound |= live.keys.modes != committed.keys.modes;
+        let changed = live.preferences.presentation() != committed.preferences.presentation();
         *live = committed.clone();
+        drop(live);
+        if changed {
+            present(committed.preferences.presentation());
+        }
     };
     let mut asks = script::AsClient {
         asks: server,
@@ -1006,6 +1067,7 @@ pub fn attach(
         size,
         workspace: attaching.workspace.clone(),
         read_only: attaching.read_only,
+        presentation: attaching.state.preferences.presentation(),
         initial: if attaching.workspace.is_none() && !attaching.read_only {
             let creation = &attaching.creation;
             let (start, env) = creation
@@ -1017,6 +1079,7 @@ pub fn attach(
             Some(crate::command::InitialWorkspace {
                 name: creation.name.clone(),
                 start,
+                options: creation.pane_options(attaching.state.preferences.pane_options()),
                 cwd: {
                     let invocation = context().cwd;
                     match creation.cwd.as_deref() {
@@ -1294,6 +1357,12 @@ fn attached(
                         .dispatch(job, frames)?;
                     continue;
                 }
+                Dispatch::Fence => {
+                    if let Some(keyboard) = &mut keyboard {
+                        keyboard.fence(frames);
+                    }
+                    continue;
+                }
                 Dispatch::Send(act) => AttachedFrame::Act(Box::new(act)),
             };
             if let Err(ended) = tell(
@@ -1545,6 +1614,10 @@ mod tests {
             .into_iter()
             .filter_map(|out| match out {
                 Dispatch::Send(act) => Some(act),
+                Dispatch::Fence => {
+                    keyboard.fence(0);
+                    None
+                }
                 Dispatch::Run(job) => {
                     assert!(keyboard.dispatch(job, 0).is_ok());
                     None
@@ -1571,6 +1644,122 @@ mod tests {
     fn ran(keyboard: &mut Keyboard) -> Vec<Act> {
         let outputs = keyboard.ran();
         transport(keyboard, outputs)
+    }
+
+    #[test]
+    fn committed_presentation_precedes_the_following_request()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let path = fuxix::file::scratch()?.join(format!("f5-fence-{}/s", std::process::id()));
+        let socket = socket::checked(&path, "test")?;
+        let (_endpoint, listener) = socket::bind_socket(&socket)?;
+        let mut keyboard = new_keyboard(
+            &socket,
+            script::default_state().map_err(|e| e.to_string())?,
+            false,
+        )?;
+        let effects = keyboard.frame(ToAttached::Run(
+            "str terminal-clipboard false set %1 str Enter key send-keys drop".into(),
+        ));
+        let [Dispatch::Run(job)] = effects.as_slice() else {
+            return Err("job".into());
+        };
+        keyboard.dispatch(job.clone(), 7)?;
+        let mut wake = [PollFd::new(keyboard.wake(), PollFlags::IN)];
+        assert_ne!(fuxix::poll::poll(&mut wake, Some(ANSWER))?, 0);
+        let pending = keyboard.ran();
+        assert!(
+            matches!(pending.first(), Some(Dispatch::Send(Act::Presentation(p))) if !p.terminal_clipboard)
+        );
+        // Receiving an update is not transmission: hold every dispatch here.
+        let mut requests = [PollFd::new(&listener, PollFlags::IN)];
+        assert_eq!(
+            fuxix::poll::poll(&mut requests, Some(Duration::from_millis(100)))?,
+            0,
+            "the request overtook the unsent presentation"
+        );
+        let (mut attachment, mut view) = UnixStream::pair()?;
+        let mut frames = 7;
+        for effect in pending {
+            match effect {
+                Dispatch::Send(act) => {
+                    send(&mut attachment, &AttachedFrame::Act(Box::new(act)))?;
+                    frames = next_frame(frames)?;
+                }
+                Dispatch::Fence => keyboard.fence(frames),
+                Dispatch::Run(_) => return Err("another job".into()),
+            }
+        }
+        let sent: AttachedFrame =
+            read_frame(&mut view, &mut Decoder::default(), Some(ANSWER))?.ok_or("presentation")?;
+        assert!(
+            matches!(sent, AttachedFrame::Act(act) if matches!(*act, Act::Presentation(p) if !p.terminal_clipboard))
+        );
+        assert_ne!(fuxix::poll::poll(&mut requests, Some(ANSWER))?, 0);
+        let (mut peer, _) = listener.accept()?;
+        let mut decoder = Decoder::default();
+        let _: Hello = read_frame(&mut peer, &mut decoder, Some(ANSWER))?.ok_or("hello")?;
+        send(&mut peer, &Greeting::Hello(ours()))?;
+        let asked: Asked = read_frame(&mut peer, &mut decoder, Some(ANSWER))?.ok_or("request")?;
+        assert_eq!(
+            asked.after,
+            Some(crate::protocol::Fence {
+                run: "1-2".parse().map_err(|()| "run")?,
+                client: "c1".parse()?,
+                frames: 8
+            })
+        );
+        assert!(matches!(
+            asked.request,
+            Request::Do(Command::Resolve { .. })
+        ));
+        let reply = Reply {
+            run: asked.after.map(|f| f.run),
+            ..crate::protocol::Body::Found(crate::command::AnyRef::Pane("%1".parse()?)).into()
+        };
+        let bytes = crate::wire::encode(&reply)?;
+        send(&mut peer, &ToCommand::Part(bytes.into()))?;
+        send(&mut peer, &ToCommand::PartsEnd)?;
+        let next: Asked = read_frame(&mut peer, &mut decoder, Some(ANSWER))?.ok_or("send-keys")?;
+        assert_eq!(next.after, asked.after);
+        assert!(matches!(
+            next.request,
+            Request::Do(Command::SendKeys { .. })
+        ));
+        drop(peer);
+        all_ran(&mut keyboard)?;
+        Ok(())
+    }
+
+    #[test]
+    fn stopping_releases_a_worker_waiting_for_presentation_transmission()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let socket = socket::checked("/nowhere/fux/s.sock", "test")?;
+        let mut keyboard = new_keyboard(
+            &socket,
+            script::default_state().map_err(|e| e.to_string())?,
+            false,
+        )?;
+        frame(
+            &mut keyboard,
+            ToAttached::Run("str titles true set %1 30 timeout wait".into()),
+        );
+        let mut wake = [PollFd::new(keyboard.wake(), PollFlags::IN)];
+        assert_ne!(fuxix::poll::poll(&mut wake, Some(ANSWER))?, 0);
+        let pending = keyboard.ran();
+        assert!(
+            pending
+                .iter()
+                .any(|effect| matches!(effect, Dispatch::Fence))
+        );
+        keyboard.stop.stop();
+        while !keyboard.idle() {
+            let mut wake = [PollFd::new(keyboard.wake(), PollFlags::IN)];
+            assert_ne!(fuxix::poll::poll(&mut wake, Some(ANSWER))?, 0);
+            let _ = keyboard.ran();
+        }
+        // No transport receipt was supplied while waiting for completion.
+        drop(pending);
+        Ok(())
     }
 
     /// A binding reserves its job immediately but cannot start it while
@@ -1681,134 +1870,59 @@ mod tests {
         Ok(acts)
     }
 
-    /// Every transaction publishes whole before its batch. Failed pending
-    /// changes publish neither; earlier checkpoints remain committed.
     #[test]
-    fn settings_forward_only_after_the_whole_local_commit() -> Result<(), Box<dyn std::error::Error>>
-    {
-        struct Recording<'a> {
-            state: &'a Mutex<ClientState>,
-            batches: Vec<Vec<crate::config::Setting>>,
-            refuse: bool,
-            operations: usize,
-        }
-        impl script::Asks for Recording<'_> {
-            fn ask(
-                &mut self,
-                asked: &Asked,
-                _: &mut dyn Write,
-            ) -> Result<crate::protocol::Reply, script::Failed> {
-                use crate::config::Setting;
-                let Request::Do(Command::Set(settings)) = &asked.request else {
-                    self.operations = self.operations.saturating_add(1);
-                    return Err(script::Failed::new(Code::NotConfig, "operation refused"));
-                };
-                // A setter-by-setter send would see the old live state here.
-                let live = lock(self.state);
-                let p = &live.preferences;
-                assert_eq!(
-                    live.keys.prefix,
-                    Some(KeyPress::new(Key::Char('a'), Modifiers::CTRL))
-                );
-                let expected = [
-                    Setting::HistoryBytes(p.history_bytes),
-                    Setting::Wait(p.wait),
-                    Setting::Clipboard(p.clipboard),
-                    Setting::Buffers(p.buffers),
-                    Setting::Bell(p.bell),
-                    Setting::Titles(p.titles),
-                ];
-                assert!(settings.iter().all(|setting| expected.contains(setting)));
-                drop(live);
-                self.batches.push(settings.clone());
-                if self.refuse {
-                    return Err(script::Failed::new(Code::NoServer, "bridge refused"));
-                }
-                Ok(crate::protocol::Reply::default())
+    fn presentation_commits_whole_and_survives_a_later_failure()
+    -> Result<(), Box<dyn std::error::Error>> {
+        struct Refuse;
+        impl script::Asks for Refuse {
+            fn ask(&mut self, _: &Asked, _: &mut dyn Write) -> Result<Reply, script::Failed> {
+                Err(script::Failed::new(Code::NotConfig, "operation refused"))
             }
         }
         let state = Mutex::new(script::default_state().map_err(|e| e.to_string())?);
-        let mut recording = Recording {
-            state: &state,
-            batches: Vec::new(),
-            refuse: false,
-            operations: 0,
-        };
         let me = (
             crate::id::ClientId::of(1),
             "1-2".parse().map_err(|()| "run")?,
         );
         let stop = script::Stop::default();
-        let code = "str C-a prefix str history-bytes 0 set str wait-seconds 0 set \
-            str clipboard false set str buffers 2 set str bell false set str titles true set \
-            str copy-environment list end set str shell list str /bin/custom end set";
-        assert!(
-            run_job(&mut recording, me, &state, &code.into(), &stop)
-                .notice
-                .is_none()
+        let mut updates = Vec::new();
+        let code = "str history-bytes 0 set str program-clipboard false set str terminal-clipboard false set str bell false set str titles true set";
+        let ran = run_job(&mut Refuse, me, &state, &code.into(), &stop, &mut |p| {
+            updates.push(p)
+        });
+        assert!(ran.notice.is_none());
+        assert_eq!(
+            updates,
+            [crate::view::Presentation {
+                bell: false,
+                titles: true,
+                terminal_clipboard: false
+            }]
         );
-        assert_eq!(recording.batches.len(), 1);
-        assert_eq!(recording.batches.first().map(Vec::len), Some(6));
+        updates.clear();
         let committed = lock(&state).clone();
-        assert_eq!(committed.preferences.shell.program(), "/bin/custom");
-        assert_eq!(committed.preferences.history_bytes.get(), 0);
-        assert_eq!(committed.preferences.wait.seconds(), 0);
-        assert_eq!(committed.preferences.buffers.get(), 2);
-        assert!(!committed.preferences.clipboard && !committed.preferences.bell);
-        assert!(committed.preferences.titles);
-        let failed = "str C-b prefix str titles false set str Nope prefix";
-        assert!(
-            run_job(&mut recording, me, &state, &failed.into(), &stop)
-                .notice
-                .is_some()
-        );
+        let failed = "str titles false set str Nope prefix";
+        let ran = run_job(&mut Refuse, me, &state, &failed.into(), &stop, &mut |p| {
+            updates.push(p)
+        });
+        assert!(ran.notice.is_some());
+        assert!(updates.is_empty());
         assert_eq!(*lock(&state), committed);
-        assert_eq!(recording.batches.len(), 1);
-        // Repeating a value is still an explicit request to apply it.
-        let same = "str titles true set";
-        run_job(&mut recording, me, &state, &same.into(), &stop);
-        assert_eq!(recording.batches.len(), 2);
-        assert_eq!(
-            recording.batches.last(),
-            Some(&vec![crate::config::Setting::Titles(true)])
+        let checkpoint = "str titles false set %1 horizontal split drop";
+        let ran = run_job(
+            &mut Refuse,
+            me,
+            &state,
+            &checkpoint.into(),
+            &stop,
+            &mut |p| updates.push(p),
         );
-        let keys_only = "str C-a prefix";
-        run_job(&mut recording, me, &state, &keys_only.into(), &stop);
-        assert_eq!(recording.batches.len(), 2);
-        recording.refuse = true;
-        let changed = "str titles false set";
-        let failed = run_job(&mut recording, me, &state, &changed.into(), &stop);
-        assert!(
-            failed
-                .notice
-                .is_some_and(|(text, error)| error && text.contains("bridge refused"))
-        );
-        assert!(
-            !lock(&state).preferences.titles,
-            "transport refusal preserves the local commit"
-        );
-        recording.refuse = false;
-        let uses = "str titles true set %1 horizontal split drop";
-        let failed = run_job(&mut recording, me, &state, &uses.into(), &stop);
-        assert!(
-            failed
-                .notice
-                .is_some_and(|(text, _)| text.contains("operation refused"))
-        );
-        assert_eq!(recording.operations, 1);
-        assert!(
-            lock(&state).preferences.titles,
-            "the prior checkpoint remains committed"
-        );
-        assert_eq!(
-            recording.batches.last(),
-            Some(&vec![crate::config::Setting::Titles(true)])
-        );
+        assert!(ran.notice.is_some());
+        assert!(updates.last().is_some_and(|p| !p.titles));
+        assert!(!lock(&state).preferences.titles);
         Ok(())
     }
 
-    /// Two programs queued before either is done each change the keys
-    /// the other left: neither change is lost. One that fails changes none.
     #[test]
     fn queued_programs_commit_the_whole_local_state() -> Result<(), Box<dyn std::error::Error>> {
         let socket = socket::checked("/nowhere/fux/s.sock", "test")?;

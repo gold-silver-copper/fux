@@ -705,6 +705,7 @@ pub struct Pane {
     process: Process,
     input: InputQueue,
     pub runs: Runs,
+    program_clipboard: bool,
     /// The output of a frame the program is drawing in synchronized output,
     /// from BSU on, since when (its timeout's start), and where the parser
     /// will end it; see [`Pane::output`].
@@ -883,13 +884,14 @@ impl<'a> PaneMut<'a> {
     }
     /// What the session takes after each read: whether its program rang
     /// the bell, and its copies, in order.
-    /// Refused copies are counted here, unless the `clipboard` setting
+    /// Refused copies are counted here, unless this pane's program-copy permission
     /// is false, which copies nothing and so refuses none.
-    pub fn take_read(&mut self, clipboard: bool) -> (bool, Vec<String>) {
+    pub fn take_read(&mut self) -> (bool, Vec<String>) {
         let mut copies = Vec::new();
+        let allowed = self.pane.program_clipboard;
         for copy in std::mem::take(&mut self.pane.copied)
             .into_iter()
-            .filter(|_| clipboard)
+            .filter(|_| allowed)
         {
             match copy {
                 // A copy made ends the runs of copies refused.
@@ -930,7 +932,10 @@ impl<'a> PaneMut<'a> {
         self.pane.clear_history();
     }
     pub fn set_history_bytes(&mut self, bytes: usize) {
-        self.pane.set_history_bytes(bytes);
+        if self.pane.history_bytes() != bytes {
+            self.pane.set_history_bytes(bytes);
+            self.tell.tell(Told::HistoryBudget(bytes));
+        }
     }
     pub fn stop_reading(&mut self) {
         self.pane.stop_reading();
@@ -1031,14 +1036,21 @@ pub const UNMARKED: &str = "no shell command was marked here (OSC 133 C and D): 
                             `fux help shells` says how to turn marks on";
 
 impl Pane {
+    pub fn history_bytes(&self) -> usize {
+        self.parser.history_bytes()
+    }
+    pub fn program_clipboard(&self) -> bool {
+        self.program_clipboard
+    }
+
     pub fn new(
         id: PaneId,
         name: Option<String>,
         runs: Runs,
         size: Size,
-        history: usize,
+        options: crate::command::PaneOptions,
     ) -> Result<Self, Error> {
-        let parser = fux_vt::Parser::with_options(size, history, OPTIONS)
+        let parser = fux_vt::Parser::with_options(size, options.history_bytes.get(), OPTIONS)
             .map_err(|source| Error::Terminal { size, source })?;
         Ok(Pane {
             id,
@@ -1048,6 +1060,7 @@ impl Pane {
             process: Process::Absent,
             input: InputQueue::default(),
             runs,
+            program_clipboard: options.program_clipboard,
             frame: None,
             unread: (Vec::new(), Instant::now()),
             frame_left: 0,
@@ -1617,7 +1630,7 @@ impl Pane {
         self.parser.clear_history();
     }
 
-    fn set_history_bytes(&mut self, bytes: usize) {
+    pub(crate) fn set_history_bytes(&mut self, bytes: usize) {
         self.parser.set_history_bytes(bytes);
     }
 
@@ -1695,6 +1708,7 @@ impl Pane {
             terminal_errors: _,
             read_error,
             reading,
+            program_clipboard: _,
         } = fresh;
         // The new program starts with nothing queued. One that ended said
         // what it left with its exit; one that runs leaves its input now,
@@ -1818,6 +1832,13 @@ impl Pane {
 
 #[cfg(test)]
 pub(crate) mod tests {
+    pub(crate) fn options(bytes: usize) -> Result<crate::command::PaneOptions, String> {
+        Ok(crate::command::PaneOptions {
+            history_bytes: crate::config::HistoryBytes::new(bytes).ok_or("history budget")?,
+            program_clipboard: true,
+        })
+    }
+
     use super::*;
     use fux_vt::Mode;
 
@@ -2016,7 +2037,7 @@ pub(crate) mod tests {
             None,
             crate::pane::tests::shell()?,
             size,
-            1 << 10,
+            crate::pane::tests::options(1 << 10)?,
         )
         .map(Lone::new)
         .map_err(Into::into)
@@ -2153,7 +2174,7 @@ pub(crate) mod tests {
             None,
             crate::pane::tests::shell()?,
             size,
-            0,
+            crate::pane::tests::options(0)?,
         )?);
         let mut frame = b"\x1b[?2026h".to_vec();
         frame.extend(spends_the_budget(50, 200));
@@ -2525,7 +2546,7 @@ pub(crate) mod tests {
         let bad = b"\x1b]52;c;***\x07";
         let copy = |pane: &mut Lone, bytes: &[u8]| {
             pane.output(bytes);
-            pane.placed().take_read(true).1.len()
+            pane.placed().take_read().1.len()
         };
         copy(&mut pane, bad);
         assert_eq!(pane.take_untold().copies_not_text, 1);

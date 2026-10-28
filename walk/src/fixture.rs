@@ -361,6 +361,10 @@ impl Fixture {
             workspace: None,
             read_only: false,
             initial: None,
+            presentation: fux::script::default_state()
+                .map_err(|e| e.to_string())?
+                .preferences
+                .presentation(),
         };
         for frame in [hello.encode(), attach.encode()] {
             stream

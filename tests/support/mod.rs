@@ -211,7 +211,21 @@ impl Server {
         for word in &argv {
             launch.extend(["str", word]);
         }
-        launch.extend(["end", "shell-program", "new-workspace"]);
+        let history = server.state.preferences.history_bytes.get().to_string();
+        let clipboard = if server.state.preferences.program_clipboard {
+            "true"
+        } else {
+            "false"
+        };
+        launch.extend([
+            "end",
+            "shell-program",
+            &history,
+            "history-bytes",
+            clipboard,
+            "program-clipboard",
+            "new-workspace",
+        ]);
         server.ok(&[&first[..], launch.as_slice()].concat())?;
         Ok((server, held))
     }
@@ -481,7 +495,9 @@ impl Client {
             size: sized(rows, cols)?,
             workspace: workspace.map(|name| fux::command::WsRef::Name(name.to_owned())),
             read_only,
+            presentation: server.state.preferences.presentation(),
             initial: (workspace.is_none() && !read_only).then(|| fux::command::InitialWorkspace {
+                options: server.state.preferences.pane_options(),
                 name: None,
                 start: fux::command::Start::Shell(server.state.preferences.shell.clone()),
                 cwd: server.dir.clone(),
@@ -545,6 +561,11 @@ impl Client {
         for out in acts {
             match out {
                 Dispatch::Send(act) => self.act(act)?,
+                Dispatch::Fence => self
+                    .keyboard
+                    .as_mut()
+                    .ok_or("no keyboard for fence")?
+                    .fence(self.frames),
                 Dispatch::Run(job) => {
                     self.keyboard
                         .as_mut()

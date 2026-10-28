@@ -138,26 +138,36 @@ macro_rules! preferences {
 preferences! {
     /// This client's shell argv for new panes.
     shell "shell": Program;
-    /// The shared history budget in bytes, applied to every existing and new
-    /// pane. Lowering it can discard retained history in every pane.
-    history_bytes "history-bytes": Number<0, { 1 << 30 }> => HistoryBytes;
+    /// The history budget in bytes for panes this client creates.
+    history_bytes "history-bytes": crate::config::HistoryBytes;
     /// The shared limit for waits without an explicit timeout.
     wait "wait-seconds": Limit => Wait;
-    /// Whether programs may write the shared clipboard and copies reach
-    /// clients' terminal clipboards.
-    clipboard "clipboard": bool => Clipboard;
+    /// Whether newly created panes may copy program output to paste buffers.
+    program_clipboard "program-clipboard": bool;
+    /// Whether copies are delivered to this client's terminal clipboard.
+    terminal_clipboard "terminal-clipboard": bool;
     /// The number of shared paste buffers retained.
     buffers "buffers": Number<1, { crate::config::MAX_BUFFERS }> => Buffers;
-    /// Whether clients ring and show tab bell marks.
-    bell "bell": bool => Bell;
-    /// Whether clients' terminal titles follow their focused panes.
-    titles "titles": bool => Titles;
+    /// Whether this client rings and shows tab bell marks.
+    bell "bell": bool;
+    /// Whether this client's terminal title follows its focused pane.
+    titles "titles": bool;
     /// Names selected from this client for new launches. Their concrete
     /// values and unsets are saved for respawn and dump.
     copy_environment "copy-environment": Vec<EnvName>;
 }
 
 impl PreferenceDraft {
+    pub(crate) fn pane_options(&self) -> Result<crate::command::PaneOptions, String> {
+        Ok(crate::command::PaneOptions {
+            history_bytes: self
+                .history_bytes
+                .ok_or("bundled initialization did not set history-bytes")?,
+            program_clipboard: self
+                .program_clipboard
+                .ok_or("bundled initialization did not set program-clipboard")?,
+        })
+    }
     pub(crate) fn shell(&self) -> Result<&Program, String> {
         self.shell
             .as_ref()
@@ -171,6 +181,19 @@ impl PreferenceDraft {
 }
 
 impl Preferences {
+    pub fn pane_options(&self) -> crate::command::PaneOptions {
+        crate::command::PaneOptions {
+            history_bytes: self.history_bytes,
+            program_clipboard: self.program_clipboard,
+        }
+    }
+    pub fn presentation(&self) -> crate::view::Presentation {
+        crate::view::Presentation {
+            bell: self.bell,
+            titles: self.titles,
+            terminal_clipboard: self.terminal_clipboard,
+        }
+    }
     /// Temporary bridge for consumers still owned by the server. Call only
     /// after committing local state; setters and config evaluation never send.
     pub fn forward_settings<A: crate::script::Asks + ?Sized>(
@@ -209,7 +232,7 @@ mod tests {
         assert_eq!(state.preferences.history_bytes.get(), 8 << 20);
         assert_eq!(state.preferences.wait.seconds(), 30);
         assert_eq!(state.preferences.buffers.get(), 16);
-        assert!(state.preferences.clipboard);
+        assert!(state.preferences.program_clipboard && state.preferences.terminal_clipboard);
         assert!(state.preferences.bell && !state.preferences.titles);
         assert!(state.preferences.copy_environment.is_empty());
         Ok(())
@@ -226,7 +249,8 @@ mod tests {
         for (name, value) in [
             ("history-bytes", Value::Int(0)),
             ("wait-seconds", Value::Int(0)),
-            ("clipboard", Value::Bool(false)),
+            ("program-clipboard", Value::Bool(false)),
+            ("terminal-clipboard", Value::Bool(false)),
             ("shell", list(&["/bin/my shell", "a b", ""])?),
             ("copy-environment", list(&["OK", "FUX_EXTRA"])?),
         ] {
@@ -250,8 +274,7 @@ mod tests {
             ("copy-environment", list(&["FUX"])?),
             ("buffers", Value::Int(0)),
             ("buffers", Value::Int(1001)),
-            ("program-clipboard", Value::Bool(true)),
-            ("terminal-clipboard", Value::Bool(true)),
+            ("clipboard", Value::Bool(true)),
         ] {
             assert!(draft.set(name, &value).is_err(), "{name}: {value:?}");
         }

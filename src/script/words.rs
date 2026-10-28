@@ -260,10 +260,10 @@ words! {
         Finding Tabs "tabs" "handle -- list" "the tabs of a pane or tab (its own) or a workspace, in the workspace's order" "fux str agent workspace tabs each str name get print end" [];
         Finding Focused "focused" "client -- pane" "the pane a client focuses" "fux str c1 client focused capture" [];
         Starting Opts "opts" "-- opts" "empty options, for run, new-tab, new-workspace, events-of and attach (the other words take them on the pane)" "fux opts str agent in 80 24 size str ./app program run" [];
-        Starting Run "run" "opts -- answer" "start a program in a tab of its own; in is required, name names its pane; its pane stays once it exits" "fux agent-opts str web name 120 40 size str ./app program str --flag arg run" [Opts: Name Size Cwd Env UnsetEnv CopyEnvironment Program Arg In];
-        Starting Split "split" "subject -- answer" "split a pane: a shell, or the program given" "fux %3 vertical split" [Pane: Horizontal Vertical Shares Cwd Env UnsetEnv CopyEnvironment Program ShellProgram Arg];
-        Starting NewTab "new-tab" "opts -- answer" "a tab with the client's shell or explicit launch" "fux opts str logs name 80 24 size str agent in new-tab" [Opts: Name Size Cwd Env UnsetEnv CopyEnvironment Program ShellProgram Arg In];
-        Starting NewWorkspace "new-workspace" "opts -- answer" "a workspace with a tab and the client's shell or explicit launch" "fux opts str work name 80 24 size new-workspace" [Opts: Name Size Cwd Env UnsetEnv CopyEnvironment Program ShellProgram Arg];
+        Starting Run "run" "opts -- answer" "start a program in a tab of its own; in is required, name names its pane; its pane stays once it exits" "fux agent-opts str web name 120 40 size str ./app program str --flag arg run" [Opts: Name Size Cwd Env UnsetEnv CopyEnvironment HistoryBytes ProgramClipboard Program Arg In];
+        Starting Split "split" "subject -- answer" "split a pane: a shell, or the program given" "fux %3 vertical split" [Pane: Horizontal Vertical Shares Cwd Env UnsetEnv CopyEnvironment HistoryBytes ProgramClipboard Program ShellProgram Arg];
+        Starting NewTab "new-tab" "opts -- answer" "a tab with the client's shell or explicit launch" "fux opts str logs name 80 24 size str agent in new-tab" [Opts: Name Size Cwd Env UnsetEnv CopyEnvironment HistoryBytes ProgramClipboard Program ShellProgram Arg In];
+        Starting NewWorkspace "new-workspace" "opts -- answer" "a workspace with a tab and the client's shell or explicit launch" "fux opts str work name 80 24 size new-workspace" [Opts: Name Size Cwd Env UnsetEnv CopyEnvironment HistoryBytes ProgramClipboard Program ShellProgram Arg];
         Starting Respawn "respawn" "subject -- answer" "start again in its pane the program it was given (run, split), or the one given now" "fux %3 kill-first respawn" [Pane: KillFirst Env UnsetEnv Program Arg];
         Waiting Wait "wait" "place -- place" "wait until the pane's version differs from the one changed gives, else an action's answer's (%2 str y text send-keys wait), else now's, or the pane closes; a tab or workspace: any of the panes there as it begins" "A=$(fux %3 str y text send-keys); fux str \"$A\" changed 60 timeout wait" [Pane: Changed Timeout];
         Input SendKeys "send-keys" "target -- target" "send the keys on it to a pane, every pane of a tab, or a client as typed at its terminal; 900 KiB at most in all" "fux %3 str 'ls -l' text str Enter key send-keys" [Pane: Text Key Paste Bytes Expect];
@@ -293,11 +293,12 @@ words! {
         Changing SwapPanes "swap-panes" "pane pane --" "swap two panes" "fux %3 %4 swap-panes" [];
         Changing SwapToward "swap-toward" "pane way --" "swap a pane with its neighbour" "fux %3 str up swap-toward" [];
         Changing Reorder "reorder" "handle way --" "move one place: next or previous" "fux @2 str next reorder" [];
+        Changing HistoryBudget "history-budget" "pane integer --" "change this pane's history budget in bytes (0 to 1 GiB); lowering evicts old rows" "fux %3 4194304 history-budget" [];
         Changing ClearHistory "clear-history" "pane --" "drop the pane's history" "fux %3 clear-history" [];
         Changing Buffers "buffers" "-- json" "paste buffer metadata, newest first: id, bytes and preview" "fux buffers" [];
         Changing Buffer "buffer" "id -- text" "exact paste buffer text by id or newest" "fux newest buffer" [];
         Changing PasteBuffer "paste-buffer" "pane id -- answer" "paste a buffer by id or newest into a pane; answers as send-keys does" "fux %3 newest paste-buffer" [];
-        Clients Attach "attach" "opts --" "show the server in this terminal (bare fux uses default-attach); with a size, be a client of no terminal instead; in and watch refuse creation options" "fux opts str work in attach" [Opts: In Size Watch Cwd Env UnsetEnv CopyEnvironment Program ShellProgram Arg Name];
+        Clients Attach "attach" "opts --" "show the server in this terminal (bare fux uses default-attach); with a size, be a client of no terminal instead; in and watch refuse creation options" "fux opts str work in attach" [Opts: In Size Watch Cwd Env UnsetEnv CopyEnvironment HistoryBytes ProgramClipboard Program ShellProgram Arg Name];
         Clients Focus "focus" "client way --" "left right up down next previous or last pane" "fux str c1 client str left focus" [];
         Clients FocusPane "focus-pane" "client pane --" "focus a pane" "fux str c1 client %3 focus-pane" [];
         Clients ShowTab "show-tab" "client tab --" "show a tab" "fux str c1 client @2 show-tab" [];
@@ -314,7 +315,7 @@ words! {
         Server Status "status" "-- record" "the server that answers, and its version; with none, fails no_server" "fux status || fux start" [];
         Server KillServer "kill-server" "--" "stop the server: not from its own panes, nor with people attached" "fux str test server kill-server" [];
         Server ForceKillServer "force-kill-server" "--" "stop it anyway, whatever fux version it is" "fux str test server force-kill-server" [];
-        Config Set "set" "setting new --" "a client preference; shell and copy-environment are local, other settings still apply to the shared server: `fux help set` lists their effects" "fux str history-bytes 16777216 set" [];
+        Config Set "set" "setting new --" "a client preference; launch and presentation are local; wait-seconds and buffers still apply to the shared server: `fux help set` lists their effects" "fux str history-bytes 16777216 set" [];
         Server Version "version" "-- text" "this fux's version (a pane's version is `str version get` on the pane)" "fux version" [];
         Shell Args "args" "-- list" "the strings after fux --file FILE (none for any other program)" "fux args len" [];
         Shell Input "input" "-- string" "the rest of stdin, as UTF-8 text, 16 MiB at most; not when the program came from stdin" "ls | fux input lines len" [];
@@ -334,6 +335,8 @@ words! {
         Starting Cwd "cwd" "x dir -- x" "where it starts" "fux agent-opts str /srv cwd 80 24 size str ./app program run";
         Starting Env "env" "x key var -- x" "a variable for it: text, or a pane, tab or workspace as its id (%3; an action's answer, its pane)" "fux agent-opts str PORT 8080 env 80 24 size str ./app program run";
         Starting Program "program" "x path -- x" "the program to start, in place of a shell" "fux agent-opts 80 24 size str ./app program run";
+        Starting HistoryBytes "history-bytes" "x integer -- x" "history budget for the new pane, in bytes (0 to 1 GiB)" "fux agent-opts 0 history-bytes str /bin/cat program run";
+        Starting ProgramClipboard "program-clipboard" "x boolean -- x" "whether the new pane's program may copy to paste buffers" "fux agent-opts false program-clipboard str /bin/cat program run";
         Starting ShellProgram "shell-program" "x list -- x" "the checked argv list to start with shell role; its exit closes the pane" "fux opts 80 24 size list str /bin/sh end shell-program new-tab";
         Starting CopyEnvironment "copy-environment" "x list -- x" "replace the client selection for this creation; empty selects nothing; selected values are saved and exported by dump" "fux agent-opts list str LANG end copy-environment str /bin/cat program run";
         Starting UnsetEnv "unset-env" "x name -- x" "explicitly remove this environment name from the child" "fux agent-opts str OLD unset-env str /bin/cat program run";
@@ -802,6 +805,18 @@ fn modify(
         Opt::Name => built.name = Some(string(&next()?)?),
         Opt::Cwd => built.cwd = Some(string(&next()?)?.into()),
         Opt::In => built.place = Some(workspace(&next()?)?),
+        Opt::HistoryBytes => {
+            use crate::config::Reads;
+            built.history_bytes = Some(
+                crate::config::HistoryBytes::read(&next()?)
+                    .map_err(|why| fail(Raise::Range, why))?,
+            );
+        }
+        Opt::ProgramClipboard => {
+            use crate::config::Reads;
+            built.program_clipboard =
+                Some(bool::read(&next()?).map_err(|why| fail(Raise::BadValue, why))?);
+        }
         Opt::History => built.history = Some(within(&next()?, COUNT)?),
         Opt::AllHistory => built.history = Some(usize::MAX),
         Opt::Size => built.size = Some(laid_out(&next()?, &next()?)?),
@@ -1254,7 +1269,14 @@ impl Host<'_> {
     fn launch(
         &mut self,
         built: &Opts,
-    ) -> Result<(crate::command::Start, crate::command::EnvPatch), Failure> {
+    ) -> Result<
+        (
+            crate::command::Start,
+            crate::command::EnvPatch,
+            crate::command::PaneOptions,
+        ),
+        Failure,
+    > {
         self.prepare()
             .map_err(|why| fail(Raise::Config, why.to_string()))?;
         let preferences = &self
@@ -1262,6 +1284,11 @@ impl Host<'_> {
             .as_deref()
             .ok_or_else(|| fail(Raise::Config, "launch needs client defaults"))?
             .preferences;
+        let options = built.pane_options(
+            preferences
+                .pane_options()
+                .map_err(|why| fail(Raise::Config, why))?,
+        );
         built
             .launch(
                 preferences
@@ -1271,6 +1298,7 @@ impl Host<'_> {
                     .copy_environment()
                     .map_err(|why| fail(Raise::Config, why))?,
             )
+            .map(|(start, env)| (start, env, options))
             .map_err(|why| fail(Raise::BadValue, why))
     }
 }
@@ -1335,7 +1363,7 @@ impl Host<'_> {
                         "needs a program: agent-opts str ./app program run",
                     ));
                 }
-                let (start, env) = self.launch(&built)?;
+                let (start, env, options) = self.launch(&built)?;
                 let argv = match start {
                     crate::command::Start::Shell(argv) | crate::command::Start::Program(argv) => {
                         argv
@@ -1352,44 +1380,48 @@ impl Host<'_> {
                     size: built.size,
                     cwd: built.cwd,
                     env,
+                    options,
                     argv,
                 };
                 later(ask(run))
             }
             Act::NewTab => {
                 let built = finished(act, next()?)?;
-                let (start, env) = self.launch(&built)?;
+                let (start, env, options) = self.launch(&built)?;
                 let tab = Command::NewTab {
                     target: built.place,
                     name: built.name,
                     size: built.size,
                     cwd: built.cwd,
                     env,
+                    options,
                     start,
                 };
                 later(ask(tab))
             }
             Act::NewWorkspace => {
                 let built = finished(act, next()?)?;
-                let (start, env) = self.launch(&built)?;
+                let (start, env, options) = self.launch(&built)?;
                 let workspace = Command::NewWorkspace {
                     name: built.name,
                     size: built.size,
                     cwd: built.cwd,
                     env,
+                    options,
                     start,
                 };
                 later(ask(workspace))
             }
             Act::Split => {
                 let (p, built) = request_pane(act, next()?)?;
-                let (start, env) = self.launch(&built)?;
+                let (start, env, options) = self.launch(&built)?;
                 let split = Command::Split {
                     axis: built.axis.unwrap_or(Axis::Horizontal),
                     target: p,
                     start,
                     cwd: built.cwd,
                     env,
+                    options,
                     shares: built.shares,
                 };
                 later(ask(split))
@@ -1656,6 +1688,13 @@ impl Host<'_> {
                 let toward = sibling(&next()?)?;
                 tell(Command::Reorder { target: t, toward })
             }
+            Act::HistoryBudget => {
+                use crate::config::Reads;
+                let target = pane(&next()?)?;
+                let bytes = crate::config::HistoryBytes::read(&next()?)
+                    .map_err(|why| fail(Raise::Range, why))?;
+                tell(Command::HistoryBudget { target, bytes })
+            }
             Act::ClearHistory => tell(Command::ClearHistory {
                 target: pane(&next()?)?,
             }),
@@ -1680,6 +1719,8 @@ impl Host<'_> {
                                 | Opt::Env
                                 | Opt::UnsetEnv
                                 | Opt::CopyEnvironment
+                                | Opt::HistoryBytes
+                                | Opt::ProgramClipboard
                                 | Opt::Program
                                 | Opt::ShellProgram
                                 | Opt::Arg
@@ -2062,6 +2103,8 @@ mod tests {
                 "str X str value env",
                 "str X unset-env",
                 "list end copy-environment",
+                "0 history-bytes",
+                "false program-clipboard",
                 "str '' program",
                 "list str /bin/sh end shell-program",
                 "str /bin/sh program str -l arg",
@@ -2376,7 +2419,8 @@ mod tests {
             )
             .map_err(|failed| failed.code)
         };
-        let settings: String = std::iter::repeat_n("str clipboard false set\n", 200).collect();
+        let settings: String =
+            std::iter::repeat_n("str terminal-clipboard false set\n", 200).collect();
         assert_eq!(run(&settings), Ok(()));
         let forever = "begin false until";
         assert_eq!(run(forever), Err(Code::Steps));
@@ -2447,6 +2491,8 @@ mod tests {
                 .filter(|o| !matches!(o, Opt::Changed | Opt::Expect))
             {
                 let args = match opt {
+                    Opt::HistoryBytes => vec![Value::Int(0)],
+                    Opt::ProgramClipboard => vec![Value::Bool(false)],
                     Opt::Name
                     | Opt::Cwd
                     | Opt::Program
@@ -2526,6 +2572,7 @@ mod tests {
                     .join(" ");
                 for (candidate, ..) in KINDS {
                     let mut vocabulary = super::super::vocabulary()?;
+                    vocabulary.add("false", "-- boolean")?;
                     vocabulary.add("held", &format!("-- {}", target.name()))?;
                     vocabulary.add("take-kind", &format!("{candidate} --"))?;
                     let mut compiler = fuxth::Compiler::<Fux>::new(vocabulary);

@@ -156,7 +156,19 @@ pub enum ClientKind {
     Headless,
 }
 
+crate::wire::wire! {
+    /// Optional output requested by this attached client.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub struct Presentation {
+        pub bell: bool,
+        pub titles: bool,
+        pub terminal_clipboard: bool,
+    }
+}
+
 pub struct View {
+    /// This connection's committed presentation, supplied at attach.
+    pub presentation: Presentation,
     pub id: ClientId,
     pub kind: ClientKind,
     pub rows: u16,
@@ -181,8 +193,9 @@ pub struct View {
 }
 
 impl View {
-    pub fn new(id: ClientId, rows: u16, cols: u16) -> View {
+    pub fn new(id: ClientId, rows: u16, cols: u16, presentation: Presentation) -> View {
         View {
+            presentation,
             id,
             kind: ClientKind::Terminal,
             rows,

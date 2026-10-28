@@ -144,14 +144,13 @@ fn the_config_sets_the_prefix_and_bindings() -> Outcome {
     Ok(())
 }
 
-/// Explicit fixture settings reach the server; `set` from the command
-/// line changes a running one; bad values are refused.
+/// A client supplies creation policy; another caller uses its own defaults.
 #[test]
-fn settings_reach_the_server() -> Outcome {
+fn launch_preferences_apply_only_to_new_requests() -> Outcome {
     // Three rows of two cells or more: 24 bytes a row and 8 a cell.
     let server = Server::start("str history-bytes 120 set")?;
     // History bytes apply to new panes.
-    let pane = server.ok(&["str", "%1", "pane", "vertical", "split"])?;
+    let pane = server.ok(&["%1", "vertical", "120", "history-bytes", "split"])?;
     let pane = pane.split(':').next().unwrap_or_default();
     server.type_line(
         pane,
@@ -217,7 +216,7 @@ fn settings_reach_the_server() -> Outcome {
     // Bad values are refused; keys are a client's, never the server's.
     for args in [
         &["str", "buffers", "0", "set"][..],
-        &["str", "clipboard", "str", "maybe", "set"],
+        &["str", "terminal-clipboard", "str", "maybe", "set"],
         &["str", "nonsense", "1", "set"],
     ] {
         let out = server.fux(args)?;
@@ -664,9 +663,9 @@ fn history_rows(server: &Server) -> Result<usize, String> {
         .count())
 }
 
-/// Pending shared settings reach the server selected when they were written.
+/// Local creation defaults never become server policy when selecting servers.
 #[test]
-fn settings_stay_with_the_server_selected_when_written() -> Outcome {
+fn launch_defaults_do_not_change_either_selected_server() -> Outcome {
     for named in [true, false] {
         let a = Server::start("")?;
         let b = Server::start("")?;
@@ -682,18 +681,15 @@ fn settings_stay_with_the_server_selected_when_written() -> Outcome {
         let code = format!("str history-bytes 0 set {select}");
         let out = a.fux_env(&[&code], &runtime)?;
         assert_eq!(out.status, 0, "{}", out.stderr);
-        assert!(
-            history_rows(&a)? <= 5,
-            "old server lost its pending setting"
-        );
+        assert!(history_rows(&a)? > 5, "local budget changed the old server");
         assert!(
             history_rows(&b)? > 5,
-            "setting reached the newly selected server"
+            "local budget changed the newly selected server"
         );
         let out = a.fux_env(&[&format!("{select} str history-bytes 0 set ls")], &runtime)?;
         assert_eq!(out.status, 0, "{}", out.stderr);
-        assert!(history_rows(&a)? <= 5);
-        assert!(history_rows(&b)? <= 5);
+        assert!(history_rows(&a)? > 5);
+        assert!(history_rows(&b)? > 5);
     }
     Ok(())
 }
@@ -705,7 +701,7 @@ fn a_failed_settings_checkpoint_keeps_the_selected_server() -> Outcome {
     std::fs::write(
         &path,
         format!(
-            "str no_server try str bell false set str {} socket catch 2drop end ls",
+            "str no_server try str wait-seconds 0 set str {} socket catch 2drop end ls",
             fux::words::quote(&server.socket.to_string_lossy())
         ),
     )
@@ -744,8 +740,8 @@ fn settings_use_the_programs_addressing_before_a_request_fails() -> Outcome {
         assert_eq!(out.status, 1);
         assert!(out.stderr.contains(error), "{}", out.stderr);
         assert!(
-            history_rows(&server)? <= 5,
-            "a failed addressed request discarded the shared setting"
+            history_rows(&server)? > 5,
+            "local defaults leaked through a failed addressed request"
         );
     }
     Ok(())
@@ -957,5 +953,90 @@ fn launches_save_the_callers_argv_role_and_environment() -> Outcome {
     let replay = format!("str copy-environment list str F4_LEAK end set\n{dump}");
     let _ = server.ok(&[&replay])?;
     assert_eq!(server.ok(&["dump"])?.matches("str F4_LEAK").count(), 0);
+    Ok(())
+}
+
+/// A remote client action commits while its subsequent wait is still pending.
+#[test]
+fn presentation_updates_only_the_addressed_view_before_a_wait_finishes() -> Outcome {
+    let server = Server::start("")?;
+    let mut a = server.attach(8, 60)?;
+    let mut b = server.attach(8, 60)?;
+    a.wait_for("$")?;
+    b.wait_for("$")?;
+    let mut requests = fux::client::Requests::open(&server.socket_path()?).map_err(e)?;
+    let asked = fux::protocol::Asked {
+        request: fux::command::Command::Client {
+            client: Some("c1".parse().map_err(e)?),
+            action: fux::command::ClientAction::Run(
+                "str titles true set %1 30 timeout wait drop".into(),
+            ),
+        }
+        .into(),
+        context: Default::default(),
+        after: None,
+    };
+    let reply = requests.ask(&asked, &mut std::io::sink()).map_err(e)?;
+    assert_eq!(reply.end(), fux::protocol::End::Done);
+    eventually("committed title before the wait finishes", || {
+        a.pump()?;
+        b.pump()?;
+        Ok(String::from_utf8_lossy(&a.painted).contains("\x1b]2;"))
+    })?;
+    assert!(!String::from_utf8_lossy(&b.painted).contains("\x1b]2;"));
+    Ok(())
+}
+
+#[test]
+fn pane_creation_overrides_preserve_zero_and_false_and_dump_replays_them() -> Outcome {
+    let server = Server::start("")?;
+    let created = server.ok(&["str history-bytes 4096 set str program-clipboard true set agent-opts 40 6 size 0 history-bytes false program-clipboard str /bin/cat program run"])?;
+    let pane = created.trim().split(':').next().ok_or("pane")?;
+    assert_eq!(
+        server.ok(&[pane, "str", "history_bytes", "get"])?.trim(),
+        "0"
+    );
+    assert_eq!(
+        server
+            .ok(&[pane, "str", "program_clipboard", "get"])?
+            .trim(),
+        "false"
+    );
+    server.ok(&[
+        "str",
+        "history-bytes",
+        "1024",
+        "set",
+        "str",
+        "program-clipboard",
+        "true",
+        "set",
+    ])?;
+    assert_eq!(
+        server.ok(&[pane, "str", "history_bytes", "get"])?.trim(),
+        "0"
+    );
+    let recipe = server.ok(&[pane, "tab", "dump-of"])?;
+    assert!(
+        recipe.contains("0 history-bytes false program-clipboard"),
+        "{recipe}"
+    );
+    let replay = server.dir.join("pane-policy.fux");
+    std::fs::write(
+        &replay,
+        format!("str history-bytes 8192 set str program-clipboard true set\n{recipe}"),
+    )
+    .map_err(e)?;
+    server.ok(&["--file", &replay.to_string_lossy()])?;
+    assert_eq!(
+        server.ok(&["%3", "str", "history_bytes", "get"])?.trim(),
+        "0"
+    );
+    assert_eq!(
+        server
+            .ok(&["%3", "str", "program_clipboard", "get"])?
+            .trim(),
+        "false"
+    );
     Ok(())
 }

@@ -374,9 +374,6 @@ impl Session {
     /// is rung, at most once every [`BELL_GAP`], and one not showing its
     /// tab has the tab marked in its bar until it shows it.
     pub(crate) fn ring(&mut self, id: PaneId, now: Instant) {
-        if !self.config.bell {
-            return;
-        }
         let Some(ws) =
             (self.parts.workspaces().iter()).find(|w| w.tabs().iter().any(|t| t.holds(id)))
         else {
@@ -391,6 +388,9 @@ impl Session {
         };
         let mut rung = Vec::new();
         for view in self.views.values_mut() {
+            if !view.presentation.bell {
+                continue;
+            }
             let Some(&shown) = viewers.get(&view.id) else {
                 continue;
             };
@@ -420,7 +420,7 @@ impl Session {
         };
         // The title, made only when it is not the one the terminal has:
         // `Some(None)` for the same.
-        let wanted = self.config.titles.then(|| {
+        let wanted = view.presentation.titles.then(|| {
             let title = self.title_of(view);
             let same = view
                 .title
@@ -623,7 +623,13 @@ mod tests {
         assert_eq!(shown_on_c(&s), 0, "kept, not shown");
         // A headless client, with no terminal, types: d still answers.
         let size = fux_vt::Size::new(24, 80).map_err(|e| e.to_string())?;
-        let attach = crate::protocol::Attach::of(size);
+        let attach = crate::protocol::Attach::of(
+            size,
+            crate::script::default_state()
+                .map_err(|e| e.to_string())?
+                .preferences
+                .presentation(),
+        );
         let headless = s.attach_as(ClientKind::Headless, attach);
         s.input(headless.map_err(|e| e.to_string())?, b"x");
         assert_eq!(s.graphics(PaneId::of(1)), Graphics::Cell(cell(8, 16)?));
@@ -888,22 +894,63 @@ mod tests {
         s.output(PaneId::of(1), b"\x07");
         assert_eq!(sent(&mut s, c), [BELL.to_vec()]);
         assert!(sent(&mut s, d).is_empty());
-        // Off: no bell and no mark.
-        run(&mut s, "str bell false set")?;
+        // Disabling bells clears pending marks; enabling does not restore them.
+        run(&mut s, "str c1 client str @2 tab show-tab")?;
+        past_the_gap(&mut s);
+        s.output(PaneId::of(1), b"\x07");
+        assert!(tab_label(&s, c).contains('!'));
+        let _ = sent(&mut s, c);
+        // Opposing preferences on the same workspace remain independent.
+        run(&mut s, "str c2 client str +1 workspace show-workspace")?;
+        let preferences = crate::script::default_state()
+            .map_err(|e| e.to_string())?
+            .preferences;
+        s.acts(
+            c,
+            vec![crate::act::Act::Presentation(crate::view::Presentation {
+                bell: false,
+                ..preferences.presentation()
+            })],
+        );
+        assert!(!tab_label(&s, c).contains('!'));
+        s.acts(
+            c,
+            vec![crate::act::Act::Presentation(preferences.presentation())],
+        );
+        assert!(!tab_label(&s, c).contains('!'));
+        s.acts(
+            c,
+            vec![crate::act::Act::Presentation(crate::view::Presentation {
+                bell: false,
+                ..preferences.presentation()
+            })],
+        );
         past_the_gap(&mut s);
         s.output(PaneId::of(1), b"\x07");
         assert!(sent(&mut s, c).is_empty());
         assert!(!tab_label(&s, c).contains('!'));
+        assert_eq!(sent(&mut s, d), [BELL.to_vec()]);
         Ok(())
     }
 
     #[test]
     fn titles_follow_the_focused_pane_and_are_restored_when_turned_off() -> Outcome {
         let (mut s, c) = session()?;
+        let other = s.attach(10, 40, None).map_err(|e| e.to_string())?;
         // Off by default: nothing.
         s.output(PaneId::of(1), b"\x1b]2;vim notes\x07");
         assert!(s.before_paint(c).is_empty());
-        run(&mut s, "str titles true set")?;
+        let preferences = crate::script::default_state()
+            .map_err(|e| e.to_string())?
+            .preferences;
+        s.acts(
+            c,
+            vec![crate::act::Act::Presentation(crate::view::Presentation {
+                titles: true,
+                ..preferences.presentation()
+            })],
+        );
+        assert!(s.before_paint(other).is_empty());
         let first = s.before_paint(c);
         assert_eq!(first, b"\x1b]2;vim notes\x1b\\");
         // Unchanged: nothing more; changed: the title alone.
@@ -917,7 +964,10 @@ mod tests {
         assert_eq!(s.before_paint(c), b"\x1b]2;notes\x1b\\");
         // Off again: the terminal's own title is restored, once, and saved
         // again for the client's leaving.
-        run(&mut s, "str titles false set")?;
+        s.acts(
+            c,
+            vec![crate::act::Act::Presentation(preferences.presentation())],
+        );
         assert_eq!(s.before_paint(c), [TITLE_POP, TITLE_PUSH].concat());
         assert!(s.before_paint(c).is_empty());
         Ok(())

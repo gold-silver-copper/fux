@@ -251,6 +251,11 @@ fn encode(spec: &Spec) -> Result<Vec<u8>, String> {
             workspace: None,
             read_only,
             initial: None,
+            presentation: fux::view::Presentation {
+                bell: true,
+                titles: false,
+                terminal_clipboard: true,
+            },
         }
         .encode()
         .map_err(error),

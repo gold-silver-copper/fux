@@ -1219,7 +1219,7 @@ impl Screen {
     }
     /// The screen's version: one more for each call that processes
     /// output (whether or not it changed a cell), each resize, and each
-    /// change to its history (`clear_history`, `set_history_bytes`). Each
+    /// change to its history (`clear_history`, or `set_history_bytes` when rows are evicted). Each
     /// row keeps the one that last changed it (`Row::version`). How the
     /// output was cut into calls changes it; `revision` does not.
     pub fn version(&self) -> u64 {
@@ -1228,8 +1228,8 @@ impl Screen {
     /// The screen's revision: the bytes of output read, one held back
     /// while a call has stopped at its budget with work left, plus one for
     /// each resize to another size and each change to its history
-    /// (`clear_history`, also `CSI 3 J`; `set_history_bytes` to another
-    /// limit). With no work left it is the same however the output was cut
+    /// (`clear_history`, also `CSI 3 J`; `set_history_bytes` when it evicts
+    /// rows). With no work left it is the same however the output was cut
     /// into calls; it moves on with each call that reads output, and after
     /// anything else that changes the screen.
     pub fn revision(&self) -> u64 {
@@ -1295,12 +1295,20 @@ impl Screen {
         Ok(())
     }
 
+    pub(crate) fn history_bytes(&self) -> usize {
+        self.primary.history_bytes()
+    }
+
     pub(crate) fn set_history_bytes(&mut self, bytes: usize) {
         if self.primary.history_bytes() == bytes {
             return;
         }
+        let rows = self.primary.history_len();
         self.primary.set_history_bytes(bytes);
-        // Rows may have left history: every reader reads again.
+        if self.primary.history_len() == rows {
+            return;
+        }
+        // Rows left history: every reader reads again.
         self.version = self.version.saturating_add(1);
         self.structural = self.version;
         self.revise(1);

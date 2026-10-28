@@ -777,7 +777,10 @@ fn pane(loads: &[Load], baseline: bool) -> Result<Done, String> {
             env: fux::command::EnvPatch::default(),
         }),
         fux_vt::Size::new(first.rows, first.cols).map_err(|e| e.to_string())?,
-        HISTORY,
+        fux::command::PaneOptions {
+            history_bytes: fux::config::HistoryBytes::new(HISTORY).ok_or("history budget")?,
+            program_clipboard: true,
+        },
     )
     .map_err(|e| e.to_string())?;
     if baseline {
@@ -822,16 +825,16 @@ fn pane(loads: &[Load], baseline: bool) -> Result<Done, String> {
 /// server does for a keystroke. The baseline types nothing and paints
 /// nothing: the run is the server's whole work for the keys.
 fn keystroke(recordings: &[Recording], baseline: bool, keys: usize) -> Result<Done, String> {
-    let config = fux::config::Config {
-        history_bytes: fux::config::Number::new(HISTORY).ok_or("history out of range")?,
-        ..fux::config::Config::default()
-    };
+    let config = fux::config::Config::default();
     let mut s =
         fux::session::Session::new(config, "/nonexistent/fux.sock".into(), false, server_run()?);
     // The client attaching starts its first shell, on its screen.
     let attach = fux::protocol::Attach {
         initial: Some(initial()?),
-        ..fux::protocol::Attach::of(fux_vt::Size::new(41, 120).map_err(|e| e.to_string())?)
+        ..fux::protocol::Attach::of(
+            fux_vt::Size::new(41, 120).map_err(|e| e.to_string())?,
+            presentation(),
+        )
     };
     let c = s
         .attach_as(fux::view::ClientKind::Terminal, attach)
@@ -903,10 +906,7 @@ fn paint(
     baseline: bool,
     total: usize,
 ) -> Result<Done, String> {
-    let config = fux::config::Config {
-        history_bytes: fux::config::Number::new(HISTORY).ok_or("history out of range")?,
-        ..fux::config::Config::default()
-    };
+    let config = fux::config::Config::default();
     let mut s =
         fux::session::Session::new(config, "/nonexistent/fux.sock".into(), false, server_run()?);
     let first = recordings.first().ok_or("no recordings")?;
@@ -914,13 +914,14 @@ fn paint(
     let size = fux_vt::Size::new(first.rows.saturating_add(1), first.cols);
     let attach = fux::protocol::Attach {
         initial: Some(initial()?),
-        ..fux::protocol::Attach::of(size.map_err(|e| e.to_string())?)
+        ..fux::protocol::Attach::of(size.map_err(|e| e.to_string())?, presentation())
     };
     let c = s
         .attach_as(fux::view::ClientKind::Terminal, attach)
         .map_err(|e| e.to_string())?;
     if split {
         let split = fux::command::Command::Split {
+            options: pane_options(HISTORY)?,
             axis: fux::layout::Axis::Horizontal,
             target: *s.parts.panes().keys().next().ok_or("no pane")?,
             start: initial()?.start,
@@ -1100,10 +1101,24 @@ fn encode(
     })
 }
 
-/// A session of `panes` panes in all, none running a process
-/// (`Session::new(.., false)`): their output is what the workload feeds.
+fn presentation() -> fux::view::Presentation {
+    fux::view::Presentation {
+        bell: true,
+        titles: false,
+        terminal_clipboard: true,
+    }
+}
+
+fn pane_options(history: usize) -> Result<fux::command::PaneOptions, String> {
+    Ok(fux::command::PaneOptions {
+        history_bytes: fux::config::HistoryBytes::new(history).ok_or("history budget")?,
+        program_clipboard: true,
+    })
+}
+
 fn initial() -> Result<fux::command::InitialWorkspace, String> {
     Ok(fux::command::InitialWorkspace {
+        options: pane_options(HISTORY)?,
         name: None,
         start: fux::command::Start::Shell(fux::config::Program::new("/bin/sh".into(), Vec::new())?),
         cwd: std::env::current_dir().map_err(|e| e.to_string())?,
@@ -1111,11 +1126,9 @@ fn initial() -> Result<fux::command::InitialWorkspace, String> {
     })
 }
 
+/// A session of `panes` panes, with output supplied by the workload.
 fn session(panes: usize) -> Result<fux::session::Session, String> {
-    let config = fux::config::Config {
-        history_bytes: fux::config::Number::new(HISTORY).ok_or("history out of range")?,
-        ..fux::config::Config::default()
-    };
+    let config = fux::config::Config::default();
     let mut s =
         fux::session::Session::new(config, "/nonexistent/fux.sock".into(), false, server_run()?);
     s.start(
@@ -1125,6 +1138,7 @@ fn session(panes: usize) -> Result<fux::session::Session, String> {
     .map_err(|e| e.to_string())?;
     for _ in 1..panes {
         let split = fux::command::Command::Split {
+            options: pane_options(HISTORY)?,
             axis: fux::layout::Axis::Horizontal,
             target: *s.parts.panes().keys().next().ok_or("no pane")?,
             start: initial()?.start,
@@ -1211,15 +1225,15 @@ fn library(baseline: bool) -> Result<Done, String> {
 /// Setup is also in the baseline: the measured difference is construction
 /// and wire encoding of one capture, including dropping its allocations.
 fn capture_history(baseline: bool, history: usize) -> Result<Done, String> {
-    let config = fux::config::Config {
-        history_bytes: fux::config::Number::new(history).ok_or("history out of range")?,
-        ..fux::config::Config::default()
-    };
+    let config = fux::config::Config::default();
     let mut s =
         fux::session::Session::new(config, "/nonexistent/fux.sock".into(), false, server_run()?);
     s.start(
         fux_vt::Size::new(40, 120).map_err(|e| e.to_string())?,
-        &initial()?,
+        &fux::command::InitialWorkspace {
+            options: pane_options(history)?,
+            ..initial()?
+        },
     )
     .map_err(|e| e.to_string())?;
     let id = *s.parts.panes().keys().next().ok_or("no pane")?;
@@ -1245,7 +1259,6 @@ fn capture_history(baseline: bool, history: usize) -> Result<Done, String> {
             Some(usize::MAX),
             fux::command::CaptureView::default(),
             false,
-            history,
         )
         .map_err(|e| e.to_string())?;
         black_box(fux::wire::encode(&capture).map_err(|e| e.to_string())?);

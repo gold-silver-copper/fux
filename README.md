@@ -314,11 +314,15 @@ the newest copy when the request runs.
 **Clipboards.** A copy goes to fux's paste buffers (as many of the newest
 as `buffers` says); `C-b p` pastes the newest, bracketed if the program asked for
 bracketed paste. It is also sent to your terminal's clipboard as OSC 52, up
-to 1 MiB encoded, unless `str clipboard false set`; your terminal must
+to 1 MiB encoded, unless this client sets `str terminal-clipboard false set`; your terminal must
 allow OSC 52 writes. A program in a pane that copies with OSC 52, as Neovim
 and Helix do, copies the same way, up to 64 KiB encoded, but only while
-`clipboard` is true: set false, a program's copy copies nothing, to the
-buffers either. A longer copy, or one that is not base64 (RFC 4648,
+its creation supplied `program-clipboard true` (the bundled default).
+`false program-clipboard` refuses program copies before buffer insertion.
+Accepted program copies go once into the shared buffers, then to clients
+showing that tab whose terminal delivery is on, including watchers and zoomed
+views even when a different pane is focused. A manual yank always enters a
+buffer and is delivered only to the copying client, if enabled. A longer copy, or one that is not base64 (RFC 4648,
 padded or not) of UTF-8 text, copies nothing, and the clients showing
 the pane say so. fux never reads the clipboard.
 
@@ -412,11 +416,15 @@ Its `set` and key words build one candidate client state. Keys, frozen
 definitions and preferences commit together; a failed config keeps the whole
 bundled state, preserves earlier explicit CLI settings, and shows one diagnostic. Evaluation sends no requests. After
 successful evaluation, one batch forwards only the remaining shared preferences
-explicitly set by that config. Shell argv and environment selection are entirely
-local. Unrelated server settings stay as they were. A config
-with only keys or definitions sends no batch. Remaining server consumers
-move to client requests and per-client presentation in the following steps;
-until then the other explicit settings still affect the shared server.
+explicitly set by that config. Only `wait-seconds` and `buffers` remain shared in this migration step.
+Shell argv, environment selection, `history-bytes` and `program-clipboard`
+are local defaults for future creations. Explicit creation options override
+them, including zero and false. Existing panes retain their policy through
+respawn; `%3 4194304 history-budget` changes only that pane's current budget.
+Lowering it evicts the oldest rows immediately. Dump records current budgets
+and permissions. Bell, titles and terminal clipboard delivery belong to each
+view and arrive in its attach request after local commit. Later key or prompt
+changes use a connection-bound action, fenced before following requests.
 
 Client defaults load when `set`, `list-keys`, `attach` or a launch needs them;
 ordinary queries and server controls do not load them. Bundled
@@ -430,8 +438,8 @@ operation, screen operation, server selection or force-kill-server, and when
 the program finishes. A server selection finishes pending writes against
 the previous server before changing it. Settings use the program's addressing,
 independently of the following request's target. Each transaction forwards
-only its explicitly written preferences in one batch, so a later split or wait uses
-the new setting. Individual setters send nothing. A failed transaction
+only its explicitly written remaining shared preferences in one batch.
+Launches carry their own completed creation policy. Individual setters send nothing. A failed transaction
 leaves prior commits intact; settings and server actions already applied
 at earlier checkpoints remain applied. Transport failures preserve the local
 commit and are reported; a lost reply may mean the server batch was applied.
@@ -445,7 +453,7 @@ and bindings, regardless of the filename.
 # ~/.config/fux/config.fux
 str C-a prefix
 str shell list str /bin/zsh str -l end set       # a program, then its arguments, a string each
-str clipboard false set
+str terminal-clipboard false set
 
 # Optional: take these from whoever starts a pane; the default list is empty.
 str copy-environment list
