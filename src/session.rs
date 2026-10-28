@@ -4647,12 +4647,20 @@ mod tests {
             &mut s,
             "@1 7 40 resize %1 str vertical axis split drop %2 str vertical axis split drop",
         )?;
-        let propose =
-            "@1 dup str layout_revision get list %1 %2 %3 end str horizontal even-of arrange";
+        let propose = "@1 even-h";
+        let before = s.root(TabId::of(1)).cloned();
+        let revision = s.tab(TabId::of(1)).and_then(|t| t.revision(s.run));
+        let cursor = s.parts.journal().end(s.run);
         let refused = run(&mut s, propose)
             .err()
             .ok_or("background fit accepted")?;
         assert!(refused.contains("its size, 7x40"), "{refused}");
+        assert_eq!(s.root(TabId::of(1)), before.as_ref());
+        assert_eq!(
+            s.tab(TabId::of(1)).and_then(|t| t.revision(s.run)),
+            revision
+        );
+        assert_eq!(s.parts.journal().end(s.run), cursor);
         run(&mut s, "@1 80 40 resize")?;
         let client = s.attach(40, 7, None).map_err(|e| e.to_string())?;
         watch(&mut s, 3, 3)?;
@@ -4673,12 +4681,14 @@ mod tests {
             "@1 120 40 resize %1 str horizontal axis split drop %2 str horizontal axis split drop %3 str horizontal axis split drop",
         )?;
         let tab = TabId::of(1);
-        let prefix = "@1 dup str layout_revision get list %1 %2 %3 %4 end";
-        for (recipe, axis) in [
-            ("str horizontal even-of", Axis::Horizontal),
-            ("str vertical even-of", Axis::Vertical),
-        ] {
-            run(&mut s, &format!("{prefix} {recipe} arrange"))?;
+        run(
+            &mut s,
+            "@1 dup str layout_revision get list %4 %2 %1 %3 end str horizontal even-of arrange",
+        )?;
+        let order = vec![PaneId::of(4), PaneId::of(2), PaneId::of(1), PaneId::of(3)];
+        for (recipe, axis) in [("even-h", Axis::Horizontal), ("even-v", Axis::Vertical)] {
+            run(&mut s, &format!("@1 {recipe}"))?;
+            assert_eq!(s.root(tab).map(Tree::panes), Some(order.clone()));
             let area = s.tab(tab).ok_or("tab")?.fit().area();
             let placed = layout::place(s.root(tab).ok_or("tree")?, area);
             let lengths: Vec<_> = placed.panes.iter().map(|(_, r)| r.len(axis)).collect();
@@ -4686,18 +4696,33 @@ mod tests {
             let hi = lengths.iter().max().ok_or("lengths")?;
             assert!(hi.abs_diff(*lo) <= 1, "{lengths:?}");
         }
-        run(
-            &mut s,
-            &format!("{prefix} str horizontal str vertical main-of arrange"),
-        )?;
-        assert!(
-            matches!(s.root(tab), Some(Tree::Split(split)) if split.shares().get() == (NonZeroU32::MIN.saturating_add(1), NonZeroU32::MIN))
-        );
-        run(&mut s, &format!("{prefix} tiled-of arrange"))?;
-        assert_eq!(
-            s.root(tab).map(Tree::panes),
-            Some((1..=4).map(PaneId::of).collect())
-        );
+        for (recipe, axis, cross) in [
+            ("main-h", Axis::Vertical, Axis::Horizontal),
+            ("main-v", Axis::Horizontal, Axis::Vertical),
+        ] {
+            run(&mut s, &format!("@1 {recipe}"))?;
+            let Some(Tree::Split(split)) = s.root(tab) else {
+                return Err("main layout".into());
+            };
+            assert_eq!(split.axis(), axis);
+            assert_eq!(
+                split.shares().get(),
+                (NonZeroU32::MIN.saturating_add(1), NonZeroU32::MIN)
+            );
+            let (first, rest) = split.children();
+            assert_eq!(first, &Tree::Pane(PaneId::of(4)));
+            assert!(matches!(rest, Tree::Split(split) if split.axis() == cross));
+            assert_eq!(s.root(tab).map(Tree::panes), Some(order.clone()));
+        }
+        run(&mut s, "@1 tiled")?;
+        let Some(Tree::Split(split)) = s.root(tab) else {
+            return Err("tiled layout".into());
+        };
+        assert_eq!(split.axis(), Axis::Horizontal);
+        for child in [split.children().0, split.children().1] {
+            assert!(matches!(child, Tree::Split(split) if split.axis() == Axis::Vertical));
+        }
+        assert_eq!(s.root(tab).map(Tree::panes), Some(order));
         for recipe in [
             "str diagonal even-of",
             "str diagonal str vertical main-of",
@@ -4719,6 +4744,85 @@ mod tests {
                 &mut s,
                 &format!("@1 dup str layout_revision get list %1 %2 %3 %4 end {recipe} arrange"),
             )?;
+        }
+        run(&mut s, "%2 kill %3 kill %4 kill")?;
+        for recipe in ["even-h", "even-v", "main-h", "main-v", "tiled"] {
+            run(&mut s, &format!("@1 {recipe}"))?;
+            assert_eq!(s.root(tab), Some(&Tree::Pane(PaneId::of(1))));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn layout_presets_submit_one_observations_revision_without_retry() -> Result<(), String> {
+        struct Guarded<'s> {
+            session: &'s mut Session,
+            reads: usize,
+            commits: usize,
+            resize: bool,
+        }
+        impl crate::script::Asks for Guarded<'_> {
+            fn ask(
+                &mut self,
+                asked: &crate::protocol::Asked,
+                out: &mut dyn std::io::Write,
+            ) -> Result<Reply, crate::script::Failed> {
+                match &asked.request {
+                    Request::Do(Command::Resolve { .. }) => {}
+                    Request::Do(Command::Inspect { scope, projection }) => {
+                        assert_eq!(
+                            *scope,
+                            crate::inspect::Scope::Target(AnyRef::Tab(TabId::of(1)))
+                        );
+                        assert_eq!(*projection, crate::inspect::Projection::Topology);
+                        self.reads = self.reads.saturating_add(1);
+                    }
+                    Request::Do(Command::Arrange { revision, .. }) => {
+                        self.commits = self.commits.saturating_add(1);
+                        assert_eq!(asked.context.of, Some(revision.run));
+                    }
+                    Request::Do(_) | Request::Wait(_) | Request::Events(..) => {
+                        return Err(crate::script::Failed::new(
+                            Code::Usage,
+                            "unexpected preset request",
+                        ));
+                    }
+                }
+                let reply = crate::script::Asks::ask(&mut InProcess(self.session), asked, out)?;
+                if self.resize && matches!(asked.request, Request::Do(Command::Inspect { .. })) {
+                    run(self.session, "@1 121 40 resize")
+                        .map_err(|e| crate::script::Failed::new(Code::Usage, e))?;
+                }
+                Ok(reply)
+            }
+        }
+        for recipe in ["even-h", "even-v", "main-h", "main-v", "tiled"] {
+            for resize in [false, true] {
+                let mut s = started()?;
+                run(&mut s, "%1 str horizontal axis split drop")?;
+                let before = s.root(TabId::of(1)).cloned();
+                let tokens = fuxth::token::source("preset", &format!("@1 {recipe}"))
+                    .map_err(|e| e.to_string())?;
+                let mut machine = crate::script::compile(&tokens).map_err(|e| e.to_string())?;
+                let mut out = Vec::new();
+                let mut host =
+                    crate::script::Host::new(crate::protocol::Context::default(), None, &mut out);
+                let mut guarded = Guarded {
+                    session: &mut s,
+                    reads: 0,
+                    commits: 0,
+                    resize,
+                };
+                let result =
+                    crate::script::run_capped(&mut machine, &mut host, &mut guarded, None, None);
+                assert_eq!((guarded.reads, guarded.commits), (1, 1));
+                if resize {
+                    assert!(result.is_err_and(|e| e.code == Code::from(Raise::Stale)));
+                    assert_eq!(s.root(TabId::of(1)), before.as_ref());
+                } else {
+                    assert!(result.map_err(|e| e.to_string())?.is_empty());
+                }
+            }
         }
         Ok(())
     }
