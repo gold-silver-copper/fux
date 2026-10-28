@@ -519,7 +519,10 @@ fn a_protocol_mismatch_refuses_attach_but_accepts_force_kill() -> Outcome {
     let reason = exit.ok_or("no Exit frame")?;
     assert!(
         reason.contains(&format!("protocol {}", fux::protocol::PROTOCOL))
-            && reason.contains("fux force-kill-server"),
+            && reason.contains("use a matching client")
+            && reason.contains("fux force-kill-server")
+            && reason.contains("stops it and its panes")
+            && reason.contains("a new server does not resume them"),
         "{reason}"
     );
     // The frozen Kill greeting works even with that same wrong version.
