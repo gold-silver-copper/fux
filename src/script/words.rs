@@ -545,8 +545,10 @@ fn json_text(value: &Value<Fux>, limit: usize) -> Result<String, Failure> {
                 Fux::Client(client, _) => write!(out, "\"{client}\""),
                 Fux::Extent(Extent::Cells(n)) => write!(out, "\"{n}\""),
                 Fux::Extent(Extent::Percent(n)) => write!(out, "\"{}%\"", n.get()),
-                Fux::All(_) => crate::json::write_str(out, "all"),
-                Fux::Opts(_) => write!(out, "\"({})\"", fuxth::AppValue::kind(app)),
+                Fux::All(None) => crate::json::write_str(out, "all"),
+                Fux::All(Some(_)) | Fux::Opts(_) => {
+                    write!(out, "\"({})\"", fuxth::AppValue::kind(app))
+                }
             },
         }
     }
@@ -1737,9 +1739,15 @@ impl Host<'_> {
                     Value::App(Fux::Workspace(w, _)) => MoveTo::Workspace(WsRef::Id(w)),
                     Value::Str(s) if **s == *"new-tab" => MoveTo::NewTab,
                     Value::Str(s) if **s == *"new-workspace" => MoveTo::NewWorkspace,
-                    value @ Value::Str(_) => MoveTo::Beside(direction(&value).map_err(|_| {
-                        fail(Raise::BadValue, "takes a tab, a workspace, new-tab, new-workspace, left, right, up or down")
-                    })?),
+                    value @ Value::Str(_) => {
+                        let given = string(&value)?;
+                        MoveTo::Beside(direction(&value).map_err(|_| {
+                            let why = format!(
+                                "{given:?} is not new-tab, new-workspace, left, right, up or down"
+                            );
+                            fail(Raise::BadValue, why)
+                        })?)
+                    }
                     value @ (Value::Int(_) | Value::Bool(_) | Value::List(_) | Value::App(_)) => {
                         return Err(wrong(
                             "a tab, workspace, new-tab, new-workspace or direction",

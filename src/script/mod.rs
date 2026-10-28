@@ -131,8 +131,8 @@ impl AppValue for Fux {
             Fux::Answer(answer, _) => answer.write_text(out),
             Fux::Extent(Extent::Cells(n)) => write!(out, "{n}"),
             Fux::Extent(Extent::Percent(n)) => write!(out, "{}%", n.get()),
-            Fux::All(_) => write!(out, "all"),
-            Fux::Opts(_) => write!(out, "({})", self.kind()),
+            Fux::All(None) => write!(out, "all"),
+            Fux::All(Some(_)) | Fux::Opts(_) => write!(out, "({})", self.kind()),
         }
         .map_err(|_| words::observation_failure(crate::wire::Budget::exceeded()))
     }

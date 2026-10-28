@@ -101,18 +101,16 @@ fn rename_move_swap_reorder_and_kill() -> Outcome {
     server.ok(&["%2", "%3", "swap-with"])?;
     let refused = server.fux(&["%2", "str", "new-tabb", "move"])?;
     assert_eq!(refused.status, 1, "{}", refused.stderr);
-    for choice in [
-        "tab",
-        "workspace",
-        "new-tab",
-        "new-workspace",
-        "left",
-        "right",
-        "up",
-        "down",
-    ] {
-        assert!(refused.stderr.contains(choice), "{}", refused.stderr);
-    }
+    assert!(
+        refused.stderr.contains("\"new-tabb\""),
+        "{}",
+        refused.stderr
+    );
+    assert!(
+        refused.stderr.contains("new-workspace"),
+        "{}",
+        refused.stderr
+    );
     // Move to a workspace, then to a new tab.
     server.ok(&["str", "%3", "pane", "str", "+2", "workspace", "move"])?;
     server.ok(&["str", "%3", "pane", "str", "new-tab", "move"])?;
@@ -522,6 +520,15 @@ fn ls_json_list_keys_and_help() -> Outcome {
     ] {
         assert!(json.contains(field), "{field}\nin\n{json}");
     }
+    // A replay request stays distinguishable from the bare session scope.
+    assert_eq!(
+        server.ok(&["all print all str 0:1-2 from print"])?,
+        "all\n(a whole-session events request)\n"
+    );
+    assert_eq!(
+        server.ok(&["list all all str 0:1-2 from end json"])?,
+        "[\"all\",\"(a whole-session events request)\"]\n"
+    );
     // The command line's own keymap: the defaults.
     let keys = server.ok(&["list-keys"])?;
     assert!(keys.contains("\nstr C-b prefix\n"), "{keys}");
