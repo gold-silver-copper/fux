@@ -223,6 +223,8 @@ pub const TAKEN_AS: [(&str, &str); 3] = [
 /// of an integer.
 #[rustfmt::skip]
 pub const NAMES: &[(&str, &str, &str)] = &[
+    ("revision", "string", "a run-qualified layout revision"),
+    ("tree", "list", "a flat layout node list"),
     ("closed-outcome", "closed-answer answers", "a closed pane or collection answer"),
     ("outcome", "answer answers", "an action's or wait's answer: a pane's, or a tab's or workspace's panes'"),
     ("x", "opts pane>pane-request answer>pane-request closed-answer>pane-request tab>tab-request workspace>workspace-request client>client-request pane-request tab-request workspace-request client-request changed-request expected-request",
@@ -294,6 +296,7 @@ words! {
         Changing ResizeX "resize-x" "pane width --" "a pane's width: cells, or a percent" "fux %3 30 percent resize-x" [];
         Changing ResizeY "resize-y" "pane height --" "a pane's height: cells, or a percent" "fux %3 10 resize-y" [];
         Changing Percent "percent" "n -- size" "n percent of the tab, for resize-x and resize-y" "fux %3 30 percent resize-x" [];
+        Changing Arrange "arrange" "tab revision tree --" "replace the whole layout at a run-qualified structural revision" "fux @2 str REVISION list %3 end arrange" [];
         Changing MoveBorder "move-border" "pane way cells --" "move the pane's nearest border: left right up down" "fux %3 str left 5 move-border" [];
         Changing Move "move" "pane where --" "move a pane to a tab, workspace, new-tab, new-workspace, or beside its neighbour: left right up down" "fux %3 str new-tab move" [];
         Changing SwapWith "swap-with" "pane counterpart --" "swap a pane with another pane or its neighbour: left right up down" "fux %3 %4 swap-with" [];
@@ -1736,6 +1739,77 @@ impl Host<'_> {
                 let n = within(&next()?, Percent::SHARES)?;
                 let share = Percent::new(n).ok_or_else(|| fail(Raise::Range, "no share"))?;
                 now(out, Value::App(Fux::Extent(Extent::Percent(share))))
+            }
+            Act::Arrange => {
+                let tab = next()?;
+                let Value::App(Fux::Tab(target, _)) = tab else {
+                    return Err(wrong("a tab", &tab));
+                };
+                let revision = next()?;
+                let Value::Str(revision) = &revision else {
+                    return Err(wrong("a layout revision string", &revision));
+                };
+                let revision = revision
+                    .parse()
+                    .map_err(|()| fail(Raise::BadValue, "a layout revision is TAB:REVISION:RUN"))?;
+                let tree = next()?;
+                let Value::List(list) = &tree else {
+                    return Err(wrong("a flat layout list", &tree));
+                };
+                if list.items().is_empty() || list.items().len() > crate::layout::NODES_MAX {
+                    return Err(fail(Raise::TooLong, "a layout needs 1..2047 nodes"));
+                }
+                let mut nodes = Vec::with_capacity(list.items().len());
+                let mut of = None;
+                for node in list.items() {
+                    let node = if let Some(pane) = as_pane(node) {
+                        of = super::same_run(of, super::scope(node))?;
+                        crate::layout::Node::Pane(pane)
+                    } else if let Value::List(fields) = node {
+                        let [axis, first_share, second_share, first, second] = fields.items()
+                        else {
+                            return Err(fail(
+                                Raise::BadValue,
+                                "a split is list AXIS SHARE SHARE FIRST SECOND end",
+                            ));
+                        };
+                        let Value::Str(axis) = axis else {
+                            return Err(wrong("a string", axis));
+                        };
+                        let axis = match &***axis {
+                            "horizontal" => Axis::Horizontal,
+                            "vertical" => Axis::Vertical,
+                            _ => {
+                                return Err(fail(
+                                    Raise::BadValue,
+                                    "layout axis must be horizontal or vertical",
+                                ));
+                            }
+                        };
+                        crate::layout::Node::Split {
+                            axis,
+                            first_share: share(first_share)?,
+                            second_share: share(second_share)?,
+                            first: within(first, 0..=i64::from(u32::MAX))?,
+                            second: within(second, 0..=i64::from(u32::MAX))?,
+                        }
+                    } else {
+                        return Err(wrong("a pane or split list", node));
+                    };
+                    nodes.push(node);
+                }
+                later(Ask::Server {
+                    request: Box::new(
+                        Command::Arrange {
+                            target,
+                            revision,
+                            nodes,
+                        }
+                        .into(),
+                    ),
+                    client: None,
+                    of,
+                })
             }
             Act::MoveBorder => {
                 let p = pane(&next()?)?;

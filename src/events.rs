@@ -126,6 +126,8 @@ impl Teller<'_> {
 pub enum Event {
     Pane(PaneAt, PaneEvent),
     Tab((WsId, TabId), Change),
+    /// One complete tab layout replacement.
+    Arranged((WsId, TabId)),
     Workspace(WsId, Change),
 }
 
@@ -254,7 +256,7 @@ impl Event {
     fn ids(&self) -> (Option<PaneId>, Option<TabId>, Option<WsId>) {
         match self {
             Event::Pane(((ws, tab), pane), _) => (Some(*pane), Some(*tab), Some(*ws)),
-            Event::Tab((ws, tab), _) => (None, Some(*tab), Some(*ws)),
+            Event::Tab((ws, tab), _) | Event::Arranged((ws, tab)) => (None, Some(*tab), Some(*ws)),
             Event::Workspace(ws, _) => (None, None, Some(*ws)),
         }
     }
@@ -265,7 +267,7 @@ impl Event {
             Event::Pane((_, pane), PaneEvent::Closed) => Some(AnyRef::Pane(*pane)),
             Event::Tab((_, tab), Change::Closed) => Some(AnyRef::Tab(*tab)),
             Event::Workspace(ws, Change::Closed) => Some(AnyRef::Workspace(*ws)),
-            Event::Pane(..) | Event::Tab(..) | Event::Workspace(..) => None,
+            Event::Pane(..) | Event::Tab(..) | Event::Workspace(..) | Event::Arranged(..) => None,
         }
     }
 
@@ -273,6 +275,7 @@ impl Event {
     pub fn line(&self) -> String {
         let (name, fields) = match self {
             Event::Pane(_, what) => what.said(),
+            Event::Arranged(_) => ("arranged", Vec::new()),
             Event::Tab(_, change) | Event::Workspace(_, change) => change.said(),
         };
         line(name, self.ids(), fields)
@@ -381,7 +384,7 @@ impl Subscription {
         let (pane, tab, ws) = event.ids();
         let from = match event {
             Event::Pane(_, PaneEvent::Moved(from)) => Some(*from),
-            Event::Pane(..) | Event::Tab(..) | Event::Workspace(..) => None,
+            Event::Pane(..) | Event::Tab(..) | Event::Workspace(..) | Event::Arranged(..) => None,
         };
         self.target.is_none_or(|target| match target {
             AnyRef::Pane(p) => pane == Some(p),
@@ -572,6 +575,7 @@ mod tests {
             Event::Tab((ws, tab), Change::Created(None)),
             Event::Tab((ws, tab), Change::Renamed(String::new())),
             Event::Tab((ws, tab), Change::Closed),
+            Event::Arranged((ws, tab)),
             Event::Workspace(ws, Change::Created(None)),
             Event::Workspace(ws, Change::Renamed(String::new())),
             Event::Workspace(ws, Change::Closed),
@@ -598,6 +602,7 @@ mod tests {
                         | Told::Exited(_),
                     ),
                 )
+                | Event::Arranged(_)
                 | Event::Tab(_, Change::Created(_) | Change::Renamed(_) | Change::Closed)
                 | Event::Workspace(_, Change::Created(_) | Change::Renamed(_) | Change::Closed) => {
                     lines.push(event.line())

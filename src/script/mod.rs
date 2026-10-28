@@ -1917,6 +1917,139 @@ mod tests {
         Ok(())
     }
 
+    #[test]
+    fn local_json_accepts_observations_from_different_runs()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use super::*;
+        struct Reports(std::collections::VecDeque<Run>);
+        impl Asks for Reports {
+            fn ask(&mut self, _: &Asked, _: &mut dyn Write) -> Result<Reply, Failed> {
+                Ok(Reply {
+                    run: self.0.pop_front(),
+                    ..Body::Listing {
+                        of: None,
+                        listing: Json::Object(Vec::new()),
+                    }
+                    .into()
+                })
+            }
+        }
+        let runs = ["1-0", "2-0"].map(|s| s.parse().map_err(|()| "run"));
+        let mut reports = Reports(runs.into_iter().collect::<Result<_, _>>()?);
+        let mut machine = compile(&token::source(
+            "reports",
+            "ls let a ls let b list a b end json print",
+        )?)
+        .map_err(|e| e.to_string())?;
+        let mut sink = Vec::new();
+        let mut host = Host::new(Context::default(), None, &mut sink);
+        run_capped(&mut machine, &mut host, &mut reports, None, None).map_err(|e| e.to_string())?;
+        assert_eq!(sink, b"[{},{}]\n");
+        Ok(())
+    }
+
+    #[test]
+    fn arrange_reconciles_its_pane_leaf_runs() -> Result<(), Box<dyn std::error::Error>> {
+        use super::*;
+        use crate::command::{Command, Request};
+        struct Leaves {
+            runs: std::collections::VecDeque<Run>,
+            submitted: Vec<Option<Run>>,
+        }
+        impl Asks for Leaves {
+            fn ask(&mut self, asked: &Asked, _: &mut dyn Write) -> Result<Reply, Failed> {
+                let mut run = None;
+                let body = match asked.request {
+                    Request::Do(Command::Resolve { .. }) => Body::Found(AnyRef::Tab(TabId::of(1))),
+                    Request::Do(Command::Members { .. }) => {
+                        run = self.runs.pop_front();
+                        Body::Handles(vec![AnyRef::Pane(PaneId::of(1))])
+                    }
+                    Request::Do(Command::Arrange { .. }) => {
+                        self.submitted.push(asked.context.of);
+                        Body::Empty
+                    }
+                    Request::Do(_) | Request::Wait(_) | Request::Events(..) => {
+                        return Err(Failed::new(Code::Usage, "unexpected request"));
+                    }
+                };
+                Ok(Reply { run, ..body.into() })
+            }
+        }
+        let ours: Run = "1-0".parse().map_err(|()| "run")?;
+        let other: Run = "2-0".parse().map_err(|()| "run")?;
+        for runs in [[ours, ours], [ours, other]] {
+            let mut leaves = Leaves {
+                runs: runs.into(),
+                submitted: Vec::new(),
+            };
+            let mut machine = compile(&token::source("layout", "@1 panes let a @1 panes let b @1 str @1:0:1-0 list a first b first end str horizontal even-of arrange")?).map_err(|e| e.to_string())?;
+            let mut sink = Vec::new();
+            let mut host = Host::new(Context::default(), None, &mut sink);
+            let result = run_capped(&mut machine, &mut host, &mut leaves, None, None);
+            if runs == [ours, ours] {
+                result.map_err(|e| e.to_string())?;
+                assert_eq!(leaves.submitted, [Some(ours)]);
+            } else {
+                assert!(result.is_err_and(|f| f.code == Code::BadValue));
+                assert!(leaves.submitted.is_empty());
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn layout_scalar_refusals_do_not_copy_retained_strings()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use super::*;
+        struct NoRequests;
+        impl Asks for NoRequests {
+            fn ask(&mut self, _: &Asked, _: &mut dyn Write) -> Result<Reply, Failed> {
+                Err(Failed::new(
+                    Code::Usage,
+                    "invalid scalars must not submit a request",
+                ))
+            }
+        }
+        let longest = "@4294967295:18446744073709551615:4294967295-ffffffffffffffff";
+        assert!(longest.parse::<crate::command::LayoutRevision>().is_ok());
+        let allocator = fux_vt_peak::ThreadPeak;
+        let bad = Value::str(std::iter::repeat_n('x', fuxth::LONGEST / 2).collect::<String>());
+        let mut peaks = Vec::new();
+        for proposal in [
+            "t bad list end arrange",
+            "t str @1:0:1-0 list list bad 1 1 0 0 end end arrange",
+        ] {
+            let code = format!(
+                "input let bad @1 let t 0 16 range each drop str bad_value try {proposal} catch 2drop end end"
+            );
+            let mut machine =
+                compile(&token::source("scalar", &code)?).map_err(|e| e.to_string())?;
+            let mut sink = Vec::new();
+            let mut host = Host::new(Context::default(), None, &mut sink);
+            assert!(matches!(
+                machine.run(&mut host, u64::MAX)?,
+                Outcome::Suspended(Ask::Local(Local::Shell(Shell::Input)))
+            ));
+            machine.push(bad.clone())?;
+            assert!(matches!(
+                machine.run(&mut host, u64::MAX)?,
+                Outcome::Suspended(Ask::Server { .. })
+            ));
+            machine.push(Value::App(Fux::Tab(TabId::of(1), None)))?;
+            let base = allocator.live();
+            allocator.reset_peak();
+            run_capped(&mut machine, &mut host, &mut NoRequests, Some(10000), None)
+                .map_err(|e| e.to_string())?;
+            peaks.push(allocator.peak().saturating_sub(base));
+        }
+        assert!(
+            peaks.iter().all(|p| *p < 64 << 10),
+            "scalar refusal peaks: {peaks:?}"
+        );
+        Ok(())
+    }
+
     /// Certain target/version errors fail preflight, before even an earlier
     /// print can run. Pane versions and the bundled recipes remain accepted.
     #[test]
