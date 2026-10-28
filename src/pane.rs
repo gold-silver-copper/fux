@@ -1722,10 +1722,6 @@ impl Pane {
         process: Process,
         tell: &mut Teller<'_>,
     ) -> (Process, Left) {
-        // A new program, its own pane, its counts afresh but `respawns`. Kept
-        // are its id and name, what the session has yet to take from the
-        // old one (a bell, a copy, what it lost untold; its input it let go,
-        // `InputQueue::discard`), and its colours.
         // The new program starts with nothing queued. One that ended said
         // what it left with its exit; one that runs leaves its input now,
         // the new program started.
@@ -1735,6 +1731,7 @@ impl Pane {
             None => Left { input, ..self.left },
         };
         tell.tell(Told::Respawned(over));
+        // Every field is explicit so additions require a respawn decision.
         let next = Self {
             id: self.id,
             name: std::mem::take(&mut self.name),
@@ -1745,7 +1742,24 @@ impl Pane {
             input: std::mem::take(&mut self.input),
             terminal_errors: self.terminal_errors,
             process,
-            ..fresh
+            respawns: fresh.respawns,
+            title: fresh.title,
+            parser: fresh.parser,
+            runs: fresh.runs,
+            options: fresh.options,
+            frame: fresh.frame,
+            unread: fresh.unread,
+            frame_left: fresh.frame_left,
+            exiting: fresh.exiting,
+            scheme_told: fresh.scheme_told,
+            mouse_held: fresh.mouse_held,
+            left: fresh.left,
+            alerts: fresh.alerts,
+            lost: fresh.lost,
+            refused_size: fresh.refused_size,
+            loss_runs: fresh.loss_runs,
+            read_error: fresh.read_error,
+            reading: fresh.reading,
         };
         let old = std::mem::replace(self, next);
         (old.process, over)
