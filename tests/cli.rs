@@ -515,11 +515,20 @@ fn ls_json_list_keys_and_help() -> Outcome {
     client.wait_for("$")?;
     let json = server.ok(&["ls", "json"])?;
     for field in [
-        "{\"workspaces\":[{\"id\":\"+1\",\"name\":\"main\",\"label\":\"main\",\"tabs\":[{\"id\":\"@1\",\"name\":null,\"label\":\"%1\",\"panes\":[{\"id\":\"%1\",\"name\":null,\"label\":\"%1\",\"rows\":9,\"cols\":50,\"pid\":",
+        "{\"workspaces\":[{\"id\":\"+1\",\"name\":\"main\",\"label\":\"main\",\"tabs\":[{\"id\":\"@1\",\"name\":null,\"label\":\"%1\",\"layout_revision\":",
         "\"clients\":[{\"id\":\"c1\",\"rows\":10,\"cols\":50,\"workspace\":\"+1\",\"tab\":\"@1\",\"pane\":\"%1\",\"zoom\":false}],\"events\":\"",
     ] {
         assert!(json.contains(field), "{field}\nin\n{json}");
     }
+    assert!(json.contains("\"panes\":[{\"id\":\"%1\",\"name\":null,\"label\":\"%1\",\"rows\":9,\"cols\":50,\"pid\":"), "{json}");
+    let revision = server.ok(&["@1", "str", "layout_revision", "get"])?;
+    let parsed: fux::command::LayoutRevision =
+        revision.trim().parse().map_err(|()| "layout revision")?;
+    assert_eq!(parsed.tab.to_string(), "@1");
+    assert!(
+        json.contains(&format!("\"layout_revision\":\"{parsed}\"")),
+        "{json}"
+    );
     // A replay request stays distinguishable from the bare session scope.
     assert_eq!(
         server.ok(&["all print all str 0:1-2 from print"])?,

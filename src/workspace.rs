@@ -37,6 +37,8 @@ pub struct Tab {
     /// Its panes, of which it has one or more: a tab is made with one, and
     /// closes as its last leaves.
     root: Tree,
+    /// Exhaustion invalidates guarded edits permanently rather than reusing a revision.
+    revision: Option<u64>,
     /// Its layout changed since its panes were sized for it: one no client
     /// shows is then laid out again (`Session::size_panes`).
     changed: bool,
@@ -185,6 +187,7 @@ impl Tab {
             id,
             name,
             root: Tree::Pane(pane),
+            revision: Some(0),
             changed: true,
             fit,
             seats: clients.map(|c| (c, Seat::on(pane))).collect(),
@@ -222,12 +225,27 @@ impl Tab {
         &self.root
     }
 
+    pub fn revision(&self, run: crate::command::Run) -> Option<crate::command::LayoutRevision> {
+        Some(crate::command::LayoutRevision {
+            tab: self.id,
+            serial: self.revision?,
+            run,
+        })
+    }
+
+    fn revised(&mut self) {
+        self.revision = self.revision.and_then(|n| n.checked_add(1));
+    }
+
     pub fn fit(&self) -> Fit {
         self.fit
     }
 
     /// Lays it out on what `fit` says from now on.
     fn set_fit(&mut self, fit: Fit) {
+        if self.fit != fit {
+            self.revised();
+        }
         self.fit = fit;
         self.changed = true;
     }
@@ -239,8 +257,11 @@ impl Tab {
     pub(crate) fn shown_on(&mut self, size: fux_vt::Size) {
         let area = Fit::Clients(size).area();
         let shows_all = layout::shows_all(&self.root, area);
-        if let (Fit::Clients(last), true) = (&mut self.fit, shows_all) {
+        if let (Fit::Clients(last), true) = (&mut self.fit, shows_all)
+            && *last != size
+        {
             *last = size;
+            self.revised();
         }
     }
 
@@ -276,6 +297,7 @@ impl Tab {
     /// first.
     fn edit<R>(&mut self, change: impl FnOnce(&mut Tree) -> R) -> R {
         let out = change(&mut self.root);
+        self.revised();
         self.changed = true;
         self.refocus();
         out
@@ -759,6 +781,14 @@ impl Parts {
         Some(())
     }
 
+    /// Commits a complete validated replacement and one layout invalidation.
+    pub(crate) fn arrange(&mut self, id: TabId, root: Tree) -> Option<()> {
+        let (ws, tab) = tab_mut(&mut self.workspaces, id)?;
+        tab.edit(|old| *old = root);
+        self.journal.push(Event::Arranged((ws, id)));
+        Some(())
+    }
+
     /// Changes the layout of `pane`'s tab with `change`, which keeps its
     /// panes: moves one, moves a border, or lays them out anew. A change
     /// that would not keep them is undone, and is `None`, as is a pane in
@@ -770,17 +800,14 @@ impl Parts {
     ) -> Option<R> {
         let (_, tab) = self.locate(pane)?;
         let (_, tab) = tab_mut(&mut self.workspaces, tab)?;
-        let sorted = |root: &Tree| {
-            let mut panes = root.panes();
-            panes.sort_unstable();
-            panes
-        };
-        let was = tab.root.clone();
-        let out = tab.edit(change);
-        if sorted(&tab.root) == sorted(&was) {
-            return Some(out);
+        let mut root = tab.root.clone();
+        let out = change(&mut root);
+        if !root.same_panes(&tab.root) {
+            return None;
         }
-        tab.edit(|root| *root = was);
-        None
+        if root != tab.root {
+            tab.edit(|old| *old = root);
+        }
+        Some(out)
     }
 }

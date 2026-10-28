@@ -2339,6 +2339,38 @@ impl Session {
         let here = self.here(origin)?;
         match command {
             Command::Ls { target, get } => self.ls(*target, get.as_deref()),
+            Command::Arrange {
+                target,
+                revision,
+                nodes,
+            } => {
+                let tab = self.tab(*target).ok_or(Error::NoTab(*target))?;
+                let now = tab.revision(self.run);
+                if now != Some(*revision) {
+                    let behind = revision.tab == *target
+                        && revision.run == self.run
+                        && now.is_none_or(|n| revision.serial < n.serial);
+                    let code = if behind {
+                        Raise::Stale
+                    } else {
+                        Raise::BadValue
+                    };
+                    let now = now.map_or_else(|| "exhausted".into(), |r| r.to_string());
+                    return Err(fail(code, format!("{target} is at {now}, not {revision}")));
+                }
+                let root = layout::from_nodes(nodes).map_err(|why| fail(Raise::BadValue, why))?;
+                if !root.same_panes(tab.root()) {
+                    return Err(fail(
+                        Raise::BadValue,
+                        "layout must contain every current tab pane exactly once",
+                    ));
+                }
+                self.room(*target, &root, None)?;
+                self.parts
+                    .arrange(*target, root)
+                    .ok_or(Error::NoTab(*target))?;
+                Ok(Reply::default())
+            }
             Command::KillServer => self.kill_server(origin),
             Command::NewWorkspace {
                 name,
@@ -3187,6 +3219,14 @@ impl Session {
                     budget.format(format_args!("{}", tab.display_label(self.parts.panes())))?,
                 ),
             ),
+            (
+                "layout_revision",
+                Json::str(budget.format(format_args!(
+                        "{}",
+                        tab.revision(self.run)
+                            .ok_or_else(|| fail(Raise::Range, "layout revision exhausted"))?
+                    ))?),
+            ),
             ("panes", Json::Array(panes)),
         ];
         let mut fields = budget.vector(values.len())?;
@@ -3934,6 +3974,246 @@ mod tests {
         };
         s.attach_as(ClientKind::Terminal, attach)
             .map_err(|e| e.to_string())
+    }
+
+    #[test]
+    fn arrange_refuses_invalid_or_stale_proposals_without_a_commit() -> Result<(), String> {
+        let (mut s, client) = attached(24, 80)?;
+        run(
+            &mut s,
+            "%1 str horizontal axis split drop %2 str vertical axis split drop",
+        )?;
+        let tab = TabId::of(1);
+        let revision = s
+            .tab(tab)
+            .and_then(|t| t.revision(s.run))
+            .ok_or("revision")?;
+        s.parts
+            .tab_mut(tab)
+            .ok_or("tab")?
+            .set_focus(client, PaneId::of(3));
+        let before = s.root(tab).cloned().ok_or("tree")?;
+        let cursor = s.parts.journal().end(s.run);
+        let origin = Origin::Cli(Caller::default());
+        let valid = vec![
+            layout::Node::Split {
+                axis: Axis::Horizontal,
+                first_share: NonZeroU32::MIN,
+                second_share: NonZeroU32::MIN,
+                first: 1,
+                second: 2,
+            },
+            layout::Node::Pane(PaneId::of(1)),
+            layout::Node::Split {
+                axis: Axis::Horizontal,
+                first_share: NonZeroU32::MIN,
+                second_share: NonZeroU32::MIN,
+                first: 3,
+                second: 4,
+            },
+            layout::Node::Pane(PaneId::of(2)),
+            layout::Node::Pane(PaneId::of(3)),
+        ];
+        let mut duplicate = valid.clone();
+        if let Some(node) = duplicate.last_mut() {
+            *node = layout::Node::Pane(PaneId::of(1));
+        }
+        for (given, nodes, code) in [
+            (revision, vec![], Raise::BadValue),
+            (
+                revision,
+                vec![layout::Node::Pane(PaneId::of(1))],
+                Raise::BadValue,
+            ),
+            (
+                revision,
+                vec![layout::Node::Pane(PaneId::of(999))],
+                Raise::BadValue,
+            ),
+            (revision, duplicate, Raise::BadValue),
+            (
+                command::LayoutRevision {
+                    serial: revision.serial.saturating_sub(1),
+                    ..revision
+                },
+                valid.clone(),
+                Raise::Stale,
+            ),
+            (
+                command::LayoutRevision {
+                    tab: TabId::of(2),
+                    ..revision
+                },
+                valid.clone(),
+                Raise::BadValue,
+            ),
+            (
+                command::LayoutRevision {
+                    serial: revision.serial.saturating_add(1),
+                    ..revision
+                },
+                valid.clone(),
+                Raise::BadValue,
+            ),
+            (
+                command::LayoutRevision {
+                    run: "1-0".parse().map_err(|()| "run")?,
+                    ..revision
+                },
+                valid,
+                Raise::BadValue,
+            ),
+        ] {
+            let command = Command::Arrange {
+                target: tab,
+                revision: given,
+                nodes,
+            };
+            assert_eq!(
+                s.execute(&command, &origin).err().map(|e| e.code()),
+                Some(Code::from(code))
+            );
+            assert_eq!(s.root(tab), Some(&before));
+            assert_eq!(s.tab(tab).and_then(|t| t.revision(s.run)), Some(revision));
+            assert_eq!(s.parts.journal().end(s.run), cursor);
+        }
+        // Same membership after moving a border and moving it back is still stale.
+        run(
+            &mut s,
+            "%1 str right 3 move-border %1 str left 3 move-border",
+        )?;
+        let stale = format!("@1 str {revision} list %1 %2 %3 end str horizontal even-of arrange");
+        assert!(run(&mut s, &stale).is_err_and(|s| s.starts_with("stale:")));
+        let before_fit = s.tab(tab).and_then(|t| t.revision(s.run));
+        run(&mut s, "@1 90 30 resize")?;
+        assert_ne!(s.tab(tab).and_then(|t| t.revision(s.run)), before_fit);
+        for split in [
+            "list str horizontal 0 1 1 2 end",
+            "list str diagonal 1 1 1 2 end",
+        ] {
+            let invalid = format!("@1 dup str layout_revision get list {split} %1 %2 end arrange");
+            let cursor = s.parts.journal().end(s.run);
+            assert!(run(&mut s, &invalid).is_err());
+            assert_eq!(s.parts.journal().end(s.run), cursor);
+        }
+        // The valid commit preserves each client's focus and journals once.
+        let latest = output(&mut s, "@1 str layout_revision get")?;
+        let command = format!("@1 str {latest} list %3 %1 %2 end str horizontal even-of arrange");
+        let mut result = Ok(());
+        let events = told(&mut s, |s| result = run(s, &command));
+        result?;
+        assert_eq!(
+            events.matches("\"event\":\"arranged\"").count(),
+            1,
+            "{events}"
+        );
+        assert_eq!(
+            s.tab(tab).and_then(|t| t.focus(client)),
+            Some(PaneId::of(3))
+        );
+        assert_eq!(
+            s.root(tab).map(Tree::panes),
+            Some(vec![PaneId::of(3), PaneId::of(1), PaneId::of(2)])
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn arrange_accepts_the_split_answer_as_a_pane() -> Result<(), String> {
+        let mut s = started()?;
+        run(
+            &mut s,
+            "%1 str horizontal axis split let b @1 dup str layout_revision get list %1 b end str vertical even-of arrange",
+        )?;
+        assert_eq!(
+            s.root(TabId::of(1)).map(Tree::panes),
+            Some(vec![PaneId::of(1), PaneId::of(2)])
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn arrange_checks_background_and_all_sizing_views_but_excludes_watchers() -> Result<(), String>
+    {
+        let mut s = started()?;
+        run(
+            &mut s,
+            "@1 7 40 resize %1 str vertical axis split drop %2 str vertical axis split drop",
+        )?;
+        let propose =
+            "@1 dup str layout_revision get list %1 %2 %3 end str horizontal even-of arrange";
+        let refused = run(&mut s, propose)
+            .err()
+            .ok_or("background fit accepted")?;
+        assert!(refused.contains("its size, 7x40"), "{refused}");
+        run(&mut s, "@1 80 40 resize")?;
+        let client = s.attach(40, 7, None).map_err(|e| e.to_string())?;
+        watch(&mut s, 3, 3)?;
+        let refused = run(&mut s, propose)
+            .err()
+            .ok_or("small sizing client accepted")?;
+        assert!(refused.contains(&format!("{client}'s screen")), "{refused}");
+        s.resize(client, 40, 80).map_err(|e| e.to_string())?;
+        run(&mut s, propose)?;
+        Ok(())
+    }
+
+    #[test]
+    fn layout_presets_keep_membership_and_their_stated_shares() -> Result<(), String> {
+        let mut s = started()?;
+        run(
+            &mut s,
+            "@1 120 40 resize %1 str horizontal axis split drop %2 str horizontal axis split drop %3 str horizontal axis split drop",
+        )?;
+        let tab = TabId::of(1);
+        let prefix = "@1 dup str layout_revision get list %1 %2 %3 %4 end";
+        for (recipe, axis) in [
+            ("str horizontal even-of", Axis::Horizontal),
+            ("str vertical even-of", Axis::Vertical),
+        ] {
+            run(&mut s, &format!("{prefix} {recipe} arrange"))?;
+            let area = s.tab(tab).ok_or("tab")?.fit().area();
+            let placed = layout::place(s.root(tab).ok_or("tree")?, area);
+            let lengths: Vec<_> = placed.panes.iter().map(|(_, r)| r.len(axis)).collect();
+            let lo = lengths.iter().min().ok_or("lengths")?;
+            let hi = lengths.iter().max().ok_or("lengths")?;
+            assert!(hi.abs_diff(*lo) <= 1, "{lengths:?}");
+        }
+        run(
+            &mut s,
+            &format!("{prefix} str horizontal str vertical main-of arrange"),
+        )?;
+        assert!(
+            matches!(s.root(tab), Some(Tree::Split(split)) if split.shares().get() == (NonZeroU32::MIN.saturating_add(1), NonZeroU32::MIN))
+        );
+        run(&mut s, &format!("{prefix} tiled-of arrange"))?;
+        assert_eq!(
+            s.root(tab).map(Tree::panes),
+            Some((1..=4).map(PaneId::of).collect())
+        );
+        for recipe in [
+            "str diagonal even-of",
+            "str diagonal str vertical main-of",
+            "str horizontal str diagonal main-of",
+        ] {
+            assert!(run(&mut s, &format!("list %1 end {recipe} drop")).is_err());
+        }
+        for recipe in [
+            "str horizontal even-of",
+            "str horizontal str vertical main-of",
+            "tiled-of",
+        ] {
+            assert!(run(&mut s, &format!("list end {recipe} drop")).is_err());
+            assert_eq!(
+                output(&mut s, &format!("list %1 end {recipe} json"))?,
+                "[\"%1\"]\n"
+            );
+            run(
+                &mut s,
+                &format!("@1 dup str layout_revision get list %1 %2 %3 %4 end {recipe} arrange"),
+            )?;
+        }
+        Ok(())
     }
 
     #[test]
