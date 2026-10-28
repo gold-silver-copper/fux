@@ -566,6 +566,11 @@ impl Client {
         for out in acts {
             match out {
                 Dispatch::Send(act) => self.act(act)?,
+                Dispatch::Fence => self
+                    .keyboard
+                    .as_mut()
+                    .ok_or("no keyboard for fence")?
+                    .fence(self.frames),
                 Dispatch::Run(job) => {
                     self.keyboard
                         .as_mut()

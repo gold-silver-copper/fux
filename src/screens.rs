@@ -100,6 +100,8 @@ pub enum Effect {
 pub enum Dispatch {
     Send(Act),
     Run(Job),
+    /// Tell the worker the frame count after all preceding sends completed.
+    Fence,
 }
 
 /// A client's display and its opening counter, kept for the attachment's life.

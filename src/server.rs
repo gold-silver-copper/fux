@@ -2140,7 +2140,10 @@ mod tests {
                 let mut asks = crate::script::Server::new(crate::socket::Choice::Path(path));
                 let client = "c1".parse().map_err(|e| format!("client: {e}"))?;
                 let mut mutation = key_request(original, client, 0);
-                asks.after = mutation.after.take();
+                asks.after = mutation
+                    .after
+                    .take()
+                    .map(|after| std::rc::Rc::new(std::cell::Cell::new(after)));
                 let probe = Asked {
                     after: None,
                     context: mutation.context.clone(),

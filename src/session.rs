@@ -3480,9 +3480,26 @@ pub struct InProcess<'s>(pub &'s mut Session);
 
 #[cfg(any(test, feature = "in-process"))]
 impl crate::script::Asks for InProcess<'_> {
-    #[cfg(test)]
-    fn published(&mut self, state: &crate::client_state::ClientState) {
-        self.0.test_keymap = state.draft();
+    fn published(
+        &mut self,
+        state: &crate::client_state::ClientState,
+        context: &crate::protocol::Context,
+    ) {
+        #[cfg(test)]
+        {
+            self.0.test_keymap = state.draft();
+        }
+        let presentation = state.preferences.presentation();
+        if let Some(client) = context.client
+            && self
+                .0
+                .views
+                .get(&client)
+                .is_some_and(|view| view.presentation != Some(presentation))
+        {
+            self.0
+                .acts(client, vec![crate::act::Act::Presentation(presentation)]);
+        }
     }
     fn ask(
         &mut self,
@@ -3827,6 +3844,7 @@ pub(crate) mod testing {
                 match effect {
                     crate::screens::Dispatch::Send(act) => self.acts(client, vec![act]),
                     crate::screens::Dispatch::Run(job) => self.run_as(client, &job),
+                    crate::screens::Dispatch::Fence => {}
                 }
                 deliver(self);
             }
@@ -5666,6 +5684,50 @@ mod tests {
         s.output(PaneId::of(3), b"\x1b]52;c;YmFy\x07");
         assert!(!sent(&s) && s.outbox.is_empty());
         assert_eq!(s.buffers.front().map(|(_, text)| text.as_str()), Some("b"));
+        Ok(())
+    }
+
+    #[test]
+    fn in_process_commits_publish_presentation_at_each_checkpoint() -> Result<(), String> {
+        use crate::script::{AsClient, Asks, Host};
+        let (mut s, client) = attached(8, 40)?;
+        let mut state = crate::script::default_state().map_err(|e| e.to_string())?;
+        for (code, committed) in [
+            ("str titles true set %999 capture", true),
+            ("str titles false set str Nope prefix", false),
+        ] {
+            let mut draft = state.draft();
+            let mut published = false;
+            let mut publish = |next: &crate::client_state::ClientState| {
+                published = true;
+                state = next.clone();
+            };
+            let context = crate::protocol::Context {
+                client: Some(client),
+                ..Default::default()
+            };
+            let mut process = InProcess(&mut s);
+            let mut asks = AsClient {
+                asks: &mut process,
+                context: context.clone(),
+                opened: None,
+                on_commit: Some(&mut publish),
+            };
+            let tokens = fuxth::token::source("commit", code).map_err(|e| e.to_string())?;
+            let mut machine = crate::script::compile(&tokens).map_err(|e| e.to_string())?;
+            let mut output = Vec::new();
+            let mut host = Host::new(context.clone(), Some(&mut draft), &mut output);
+            let result = crate::script::run_capped(&mut machine, &mut host, &mut asks, None, None)
+                .and_then(|_| asks.commit(&mut draft, context));
+            assert!(result.is_err());
+            assert_eq!(published, committed);
+            assert!(state.preferences.titles);
+            assert!(
+                s.views
+                    .get(&client)
+                    .is_some_and(|v| v.presentation.is_some_and(|p| p.titles))
+            );
+        }
         Ok(())
     }
 

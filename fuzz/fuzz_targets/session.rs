@@ -313,6 +313,8 @@ impl Run {
         let mut host = Host::new(context.clone(), Some(&mut keymap), &mut out);
         // As a client runs it: the real loop, a screen it opens built with
         // what the session answers.
+        // InProcess publishes this client's presentation synchronously at
+        // the same checkpoint; pending failures publish neither consumer.
         let mut publish = |committed: &ClientState| self.keymap = committed.clone();
         let mut asks = AsClient {
             asks: &mut InProcess(&mut self.s),
@@ -529,6 +531,7 @@ impl Run {
             match effect {
                 Dispatch::Send(act) => self.s.acts(client, vec![act]),
                 Dispatch::Run(job) => self.run_as(client, &job),
+                Dispatch::Fence => {}
             }
         }
     }
@@ -572,6 +575,7 @@ impl Run {
                     );
                     self.s.acts(client, vec![act]);
                 }
+                Dispatch::Fence => {}
                 Dispatch::Run(job) => {
                     writes |= WRITES.iter().any(|w| job.code.contains(w));
                     self.run_as(client, &job);

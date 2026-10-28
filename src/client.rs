@@ -488,7 +488,7 @@ struct Ran {
 }
 
 enum Update {
-    Presentation(crate::view::Presentation),
+    Presentation(crate::view::Presentation, std::sync::mpsc::SyncSender<u64>),
     Finished(Ran),
 }
 
@@ -559,7 +559,8 @@ fn lock(state: &Mutex<ClientState>) -> std::sync::MutexGuard<'_, ClientState> {
 /// while any runs wait for it, and go to the screen it opened, if any.
 ///
 /// The transport must handle every returned effect in order: send each
-/// action, count its frame, and pass each admitted job to `Self::dispatch`.
+/// action, count its frame, acknowledge `Dispatch::Fence` with `Self::fence`,
+/// and pass each admitted job to `Self::dispatch`.
 /// Dropping an admitted job leaves its reservation and held keys waiting.
 pub struct Keyboard {
     state: std::sync::Arc<Mutex<ClientState>>,
@@ -569,6 +570,7 @@ pub struct Keyboard {
     jobs: std::sync::mpsc::Sender<(Job, u64)>,
     /// Bounded committed presentation updates and the dispatched program's result.
     told: std::sync::mpsc::Receiver<Update>,
+    receipt: Option<std::sync::mpsc::SyncSender<u64>>,
     wake: io::PipeReader,
     /// The weights of admitted programs not yet done, in order:
     /// `JOBS` and `JOB_BYTES` at most.
@@ -617,14 +619,37 @@ impl Keyboard {
                 let chosen = socket::Choice::Path(path);
                 let mut server = script::Server::stoppable(chosen, stops.clone());
                 for (job, frames) in todo {
-                    server.after = Some(crate::protocol::Fence {
+                    let after = std::rc::Rc::new(std::cell::Cell::new(crate::protocol::Fence {
                         run,
                         client: me,
                         frames,
-                    });
+                    }));
+                    server.after = Some(after.clone());
                     let mut present = |presentation| {
-                        let _ = tell.send(Update::Presentation(presentation));
+                        let (sent, received) = std::sync::mpsc::sync_channel(1);
+                        if tell.send(Update::Presentation(presentation, sent)).is_err() {
+                            stops.stop();
+                            return;
+                        }
                         let _ = fuxix::io::write(&poke, b"!");
+                        // Receipt follows transmission, not mailbox consumption.
+                        // Stop and disconnect release this local wait too.
+                        while !stops.stopped() {
+                            match received.recv_timeout(Duration::from_millis(50)) {
+                                Ok(frames) => {
+                                    after.set(crate::protocol::Fence {
+                                        frames,
+                                        ..after.get()
+                                    });
+                                    return;
+                                }
+                                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+                                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                                    stops.stop();
+                                    return;
+                                }
+                            }
+                        }
                     };
                     let ran = run_job(&mut server, (me, run), &shared, &job, &stops, &mut present);
                     if tell.send(Update::Finished(ran)).is_err() {
@@ -646,6 +671,7 @@ impl Keyboard {
             decoder,
             jobs,
             told,
+            receipt: None,
             wake,
             running: VecDeque::new(),
             pending: VecDeque::new(),
@@ -781,8 +807,10 @@ impl Keyboard {
                 break;
             };
             let ran = match update {
-                Update::Presentation(presentation) => {
+                Update::Presentation(presentation, sent) => {
+                    self.receipt = Some(sent);
                     acts.push(Dispatch::Send(Act::Presentation(presentation)));
+                    acts.push(Dispatch::Fence);
                     continue;
                 }
                 Update::Finished(ran) => ran,
@@ -846,6 +874,7 @@ impl Keyboard {
             match effect {
                 Dispatch::Send(act) => acts.push(Dispatch::Send(act)),
                 Dispatch::Run(job) => self.run(job, acts),
+                Dispatch::Fence => acts.push(Dispatch::Fence),
             }
         }
     }
@@ -880,6 +909,13 @@ impl Keyboard {
         let effects = self.screen.input(&state.keys, input, self.read_only);
         drop(state);
         self.apply(effects, acts);
+    }
+
+    /// A transport completed every send preceding `Dispatch::Fence`.
+    pub fn fence(&mut self, frames: u64) {
+        if let Some(sent) = self.receipt.take() {
+            let _ = sent.send(frames);
+        }
     }
 
     /// Dispatches an admitted job after its preceding attached frames were
@@ -1323,6 +1359,12 @@ fn attached(
                         .dispatch(job, frames)?;
                     continue;
                 }
+                Dispatch::Fence => {
+                    if let Some(keyboard) = &mut keyboard {
+                        keyboard.fence(frames);
+                    }
+                    continue;
+                }
                 Dispatch::Send(act) => AttachedFrame::Act(Box::new(act)),
             };
             if let Err(ended) = tell(
@@ -1574,6 +1616,10 @@ mod tests {
             .into_iter()
             .filter_map(|out| match out {
                 Dispatch::Send(act) => Some(act),
+                Dispatch::Fence => {
+                    keyboard.fence(0);
+                    None
+                }
                 Dispatch::Run(job) => {
                     assert!(keyboard.dispatch(job, 0).is_ok());
                     None
@@ -1600,6 +1646,122 @@ mod tests {
     fn ran(keyboard: &mut Keyboard) -> Vec<Act> {
         let outputs = keyboard.ran();
         transport(keyboard, outputs)
+    }
+
+    #[test]
+    fn committed_presentation_precedes_the_following_request()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let path = fuxix::file::scratch()?.join(format!("f5-fence-{}/s", std::process::id()));
+        let socket = socket::checked(&path, "test")?;
+        let (_endpoint, listener) = socket::bind_socket(&socket)?;
+        let mut keyboard = new_keyboard(
+            &socket,
+            script::default_state().map_err(|e| e.to_string())?,
+            false,
+        )?;
+        let effects = keyboard.frame(ToAttached::Run(
+            "str terminal-clipboard false set %1 str Enter key send-keys drop".into(),
+        ));
+        let [Dispatch::Run(job)] = effects.as_slice() else {
+            return Err("job".into());
+        };
+        keyboard.dispatch(job.clone(), 7)?;
+        let mut wake = [PollFd::new(keyboard.wake(), PollFlags::IN)];
+        assert_ne!(fuxix::poll::poll(&mut wake, Some(ANSWER))?, 0);
+        let pending = keyboard.ran();
+        assert!(
+            matches!(pending.first(), Some(Dispatch::Send(Act::Presentation(p))) if !p.terminal_clipboard)
+        );
+        // Receiving an update is not transmission: hold every dispatch here.
+        let mut requests = [PollFd::new(&listener, PollFlags::IN)];
+        assert_eq!(
+            fuxix::poll::poll(&mut requests, Some(Duration::from_millis(100)))?,
+            0,
+            "the request overtook the unsent presentation"
+        );
+        let (mut attachment, mut view) = UnixStream::pair()?;
+        let mut frames = 7;
+        for effect in pending {
+            match effect {
+                Dispatch::Send(act) => {
+                    send(&mut attachment, &AttachedFrame::Act(Box::new(act)))?;
+                    frames = next_frame(frames)?;
+                }
+                Dispatch::Fence => keyboard.fence(frames),
+                Dispatch::Run(_) => return Err("another job".into()),
+            }
+        }
+        let sent: AttachedFrame =
+            read_frame(&mut view, &mut Decoder::default(), Some(ANSWER))?.ok_or("presentation")?;
+        assert!(
+            matches!(sent, AttachedFrame::Act(act) if matches!(*act, Act::Presentation(p) if !p.terminal_clipboard))
+        );
+        assert_ne!(fuxix::poll::poll(&mut requests, Some(ANSWER))?, 0);
+        let (mut peer, _) = listener.accept()?;
+        let mut decoder = Decoder::default();
+        let _: Hello = read_frame(&mut peer, &mut decoder, Some(ANSWER))?.ok_or("hello")?;
+        send(&mut peer, &Greeting::Hello(ours()))?;
+        let asked: Asked = read_frame(&mut peer, &mut decoder, Some(ANSWER))?.ok_or("request")?;
+        assert_eq!(
+            asked.after,
+            Some(crate::protocol::Fence {
+                run: "1-2".parse().map_err(|()| "run")?,
+                client: "c1".parse()?,
+                frames: 8
+            })
+        );
+        assert!(matches!(
+            asked.request,
+            Request::Do(Command::Resolve { .. })
+        ));
+        let reply = Reply {
+            run: asked.after.map(|f| f.run),
+            ..crate::protocol::Body::Found(crate::command::AnyRef::Pane("%1".parse()?)).into()
+        };
+        let bytes = crate::wire::encode(&reply)?;
+        send(&mut peer, &ToCommand::Part(bytes.into()))?;
+        send(&mut peer, &ToCommand::PartsEnd)?;
+        let next: Asked = read_frame(&mut peer, &mut decoder, Some(ANSWER))?.ok_or("send-keys")?;
+        assert_eq!(next.after, asked.after);
+        assert!(matches!(
+            next.request,
+            Request::Do(Command::SendKeys { .. })
+        ));
+        drop(peer);
+        all_ran(&mut keyboard)?;
+        Ok(())
+    }
+
+    #[test]
+    fn stopping_releases_a_worker_waiting_for_presentation_transmission()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let socket = socket::checked("/nowhere/fux/s.sock", "test")?;
+        let mut keyboard = new_keyboard(
+            &socket,
+            script::default_state().map_err(|e| e.to_string())?,
+            false,
+        )?;
+        frame(
+            &mut keyboard,
+            ToAttached::Run("str titles true set %1 30 timeout wait".into()),
+        );
+        let mut wake = [PollFd::new(keyboard.wake(), PollFlags::IN)];
+        assert_ne!(fuxix::poll::poll(&mut wake, Some(ANSWER))?, 0);
+        let pending = keyboard.ran();
+        assert!(
+            pending
+                .iter()
+                .any(|effect| matches!(effect, Dispatch::Fence))
+        );
+        keyboard.stop.stop();
+        while !keyboard.idle() {
+            let mut wake = [PollFd::new(keyboard.wake(), PollFlags::IN)];
+            assert_ne!(fuxix::poll::poll(&mut wake, Some(ANSWER))?, 0);
+            let _ = keyboard.ran();
+        }
+        // No transport receipt was supplied while waiting for completion.
+        drop(pending);
+        Ok(())
     }
 
     /// A binding reserves its job immediately but cannot start it while
