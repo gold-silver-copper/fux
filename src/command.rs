@@ -498,6 +498,10 @@ impl std::fmt::Display for LayoutRevision {
 impl std::str::FromStr for LayoutRevision {
     type Err = ();
     fn from_str(text: &str) -> Result<Self, ()> {
+        // @ plus u32 tab, u64 serial, u32 pid and u64 hex time, with separators.
+        if text.len() > 60 {
+            return Err(());
+        }
         let mut parts = text.split(':');
         let revision = Self {
             tab: parts.next().ok_or(())?.parse().map_err(drop)?,

@@ -1720,7 +1720,11 @@ impl Host<'_> {
                 let Value::App(Fux::Tab(target, _)) = tab else {
                     return Err(wrong("a tab", &tab));
                 };
-                let revision = string(&next()?)?
+                let revision = next()?;
+                let Value::Str(revision) = &revision else {
+                    return Err(wrong("a layout revision string", &revision));
+                };
+                let revision = revision
                     .parse()
                     .map_err(|()| fail(Raise::BadValue, "a layout revision is TAB:REVISION:RUN"))?;
                 let tree = next()?;
@@ -1744,14 +1748,21 @@ impl Host<'_> {
                                 "a split is list AXIS SHARE SHARE FIRST SECOND end",
                             ));
                         };
+                        let Value::Str(axis) = axis else {
+                            return Err(wrong("a string", axis));
+                        };
+                        let axis = match &***axis {
+                            "horizontal" => Axis::Horizontal,
+                            "vertical" => Axis::Vertical,
+                            _ => {
+                                return Err(fail(
+                                    Raise::BadValue,
+                                    "layout axis must be horizontal or vertical",
+                                ));
+                            }
+                        };
                         crate::layout::Node::Split {
-                            axis: one_of(
-                                axis,
-                                &[
-                                    ("horizontal", Axis::Horizontal),
-                                    ("vertical", Axis::Vertical),
-                                ],
-                            )?,
+                            axis,
                             first_share: share(first_share)?,
                             second_share: share(second_share)?,
                             first: within(first, 0..=i64::from(u32::MAX))?,
