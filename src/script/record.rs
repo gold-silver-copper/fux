@@ -68,7 +68,10 @@ impl Record {
 }
 
 fn fail() -> Failure {
-    super::words::observation_failure(Budget::exceeded())
+    Failure::new(
+        fuxth::Code::TooLong,
+        "record exceeds its depth, node, byte or language limit; request a smaller scope",
+    )
 }
 fn null() -> V {
     Value::App(Fux::Null)

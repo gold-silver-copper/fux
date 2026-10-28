@@ -926,7 +926,8 @@ fn an_answer_in_a_list_is_its_object() -> Outcome {
     assert!(
         json.starts_with(&format!("[{pane_object}"))
             && json.contains(&format!("}},{pane_object}"))
-            && json.contains(",{\"workspaces\":"),
+            && json.contains(",{\"run\":")
+            && json.contains("\"projection\":\"facts\""),
         "{json}"
     );
     Ok(())

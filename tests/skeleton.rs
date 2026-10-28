@@ -11,10 +11,7 @@ fn a_server_answers_ls_and_stops_on_kill_server() -> Outcome {
     assert!(ls.contains("@1 %1"), "{ls}");
     assert!(ls.contains("%1"), "{ls}");
     let json = server.ok(&["ls", "json"])?;
-    assert!(
-        json.starts_with("{\"workspaces\":[{\"id\":\"+1\""),
-        "{json}"
-    );
+    assert!(json.contains("\"workspaces\":[{\"id\":\"+1\""), "{json}");
     assert!(json.contains("\"clients\":[]"), "{json}");
     let killed = server.fux(&["kill-server"])?;
     assert_eq!(killed.status, 0, "{}", killed.stderr);

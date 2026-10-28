@@ -250,8 +250,14 @@ impl<A: AppValue> Machine<A> {
         }
         let weight = value.weight();
         self.cost(usize::try_from(weight).unwrap_or(usize::MAX));
-        if value.depth() > NESTING || weight > TOTAL || !valid(value) {
+        if value.depth() > NESTING || weight > TOTAL {
             return Err(self.nested());
+        }
+        if !valid(value) {
+            return Err(self.fail(
+                Code::TooLong,
+                "host result exceeds the string or list length limit",
+            ));
         }
         self.built = self.built.saturating_add(weight);
         if self.built > BUILT {

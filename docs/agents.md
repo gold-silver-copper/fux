@@ -60,6 +60,7 @@ fux str web pane                               # a pane by its given name (run's
 fux str logs pane                              # a pane by its given name (rename)
 fux str agent workspace panes                  # its panes, in layout order (tabs: its tabs)
 fux ls                                         # what there is: workspaces, tabs, panes
+fux str agent workspace str topology snapshot json # one flat metadata observation
 fux str agent workspace kill                   # at the end: everything run started
 ```
 
@@ -264,6 +265,14 @@ too). `A counts` gives a version's five counts as integers:
   and the respawn answers `closed`. The respawn goes on if its caller goes.
 
 ## read: Reading the screen
+
+For metadata, take one `snapshot`: `str agent workspace str topology snapshot`
+holds the workspace's ordered tabs, panes, tree and client placement. Its
+`str panes get` is a local list of records; each record's `str id get` is a
+handle and `str title get` is the retained title. Use `json` to read the flat
+collections in another language. Topology makes no process metadata queries;
+`facts` adds process/terminal state and `recipe` adds saved launch inputs.
+
 
 `PANE READ capture`, READ any of: `100 history`, `all-history`,
 `main-screen` (what was printed before a program took the screen),

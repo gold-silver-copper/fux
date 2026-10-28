@@ -182,7 +182,7 @@ fn send_keys_signal_and_buffers() -> Outcome {
     shows(&server, "%1", "after-sleep")?;
     assert!(server.ok(&["ls"])?.contains("%1"), "the shell survives");
     // No buffers yet.
-    assert_eq!(server.ok(&["buffers"])?.trim(), "[]");
+    assert_eq!(server.ok(&["buffers", "json"])?.trim(), "[]");
     assert_eq!(server.fux(&["newest", "buffer"])?.status, 1);
     Ok(())
 }

@@ -3,6 +3,8 @@
     python3 -I -m unittest discover -s agentbench -p 'test_*.py'
 """
 import contextlib
+import json
+from types import SimpleNamespace
 from pathlib import Path
 import tempfile
 import unittest
@@ -54,6 +56,15 @@ class Tools(unittest.TestCase):
                         self.assertEqual(result["error"] is None, error is None)
                         self.assertTrue(driver.stopped)
                         reap.assert_called_once()
+
+    def test_title_lookup_uses_one_topology_observation(self):
+        driver = drivers.Fux.__new__(drivers.Fux)
+        reply = SimpleNamespace(stdout=json.dumps({"panes": [
+            {"id": "%1", "title": "other"}, {"id": "%2", "title": "ledger"}]}))
+        with patch.object(driver, "fux", return_value=reply) as ask:
+            self.assertEqual(driver.find_title("ledger"), "%2")
+            ask.assert_called_once_with("str", "agent", "workspace", "str", "topology",
+                                        "snapshot", "json")
 
     def test_coverage_requires_words_and_reports_missing_native_and_library_names(self):
         help_text = ("Words:\n  capture              pane -- capture\n"
