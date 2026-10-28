@@ -81,7 +81,7 @@ impl std::fmt::Display for Mismatch {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "the server speaks protocol {} (fux {}); restart it: `fux force-kill-server` stops it",
+            "the server speaks protocol {} (fux {}); use a matching client to keep its panes running. `fux force-kill-server` stops it and its panes; a new server does not resume them",
             self.protocol, self.version
         )
     }

@@ -58,6 +58,9 @@ fn tabs_are_created_and_switched_by_key() -> Outcome {
     client.wait("the named tab", |t| {
         t.lines().last().is_some_and(|b| b.contains("logs"))
     })?;
+    server.ok(&["str", "c1", "client", "str", "last", "step-tab"])?;
+    assert!(client_line(&server, "c1")?.contains(" @2 "));
+    client.wait_for("on-two")?;
     Ok(())
 }
 
@@ -98,6 +101,9 @@ fn workspaces_are_created_and_switched_by_key() -> Outcome {
     other.wait("attached to third", |t| {
         t.lines().last().is_some_and(|b| b.contains("third"))
     })?;
+    server.ok(&["str", "c1", "client", "str", "last", "step-workspace"])?;
+    assert!(client_line(&server, "c1")?.contains(" +2 "));
+    assert!(client_line(&server, "c2")?.contains(" +3 "));
     Ok(())
 }
 

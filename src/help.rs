@@ -303,7 +303,7 @@ fn bounds() -> Vec<(Amount, &'static str, Said)> {
         (Bytes(fux_vt::keys::decode::PASTE_LIMIT), "a paste from a client's terminal", &[]),
         (Bytes(pane::REPLIES_MAX), "replies to one read of a program's output", &[("json", "past {} of replies")]),
         (Bytes(crate::session::LEFT_MAX), "what is read of what a program left on its terminal as it ended", &[("json", "more than {} on its terminal")]),
-        (Time(pane::FRAME_TIMEOUT), "how long a frame of synchronized output is held", &[("README", "shown anyway after {}")]),
+        (Time(pane::FRAME_TIMEOUT), "how long a frame of synchronized output is held", &[("README", "held frames are released after {}")]),
         (Bytes(pane::FRAME_LIMIT), "a frame of synchronized output held", &[("README", "or past {}")]),
         (Count(pane::TITLE_MAX), "characters of a title kept", &[("json", "| `title` | what the program set (OSC 0 or 2), else `\"\"`: its first {} characters")]),
         (Count(pane::TITLE_STACK), "titles a program may push", &[]),
