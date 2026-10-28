@@ -55,8 +55,10 @@ for `id`, `name`, `label` and `pid` (it says `pane`):
 ## `ls json`
 
 ```json
-{"workspaces":[{"id":"+1","name":null,"label":"+1","tabs":[{"id":"@1","name":null,"label":"%1","layout_revision":"@1:0:RUN","panes":[PANE…]}]}],
- "clients":[{"id":"c1","rows":24,"cols":80,"workspace":"+1","tab":"@1","pane":"%1","zoom":false}],
+{"workspaces":[{"id":"+1","name":null,"label":"+1","tabs":[{"id":"@1","name":null,"label":"%1","layout_revision":"@1:0:RUN","host":"c1","panes":[PANE…]}]}],
+ "clients":[{"id":"c1","rows":24,"cols":80,"workspace":"+1","tab":"@1","pane":"%1","zoom":false,
+   "terminal":{"sixel_reported":null,"cell_reported":null,"underline_styles_reported":null,"kitty_flags_reported":null},
+   "output":{"graphics":"text","underline_styles":false,"clipboard":"osc52","kitty_flags_requested":null}}],
  "events":"42:48211-1867a3f9c2b8e7d6"}
 ```
 
@@ -67,7 +69,7 @@ gives next, and the server's run, read with the listing. A stream from it
 those the journal let go first: then read `ls` again. `ls` ends with it
 too, as `events CURSOR`.
 
-`X info json` gives that pane, tab (`{"id","name","label","layout_revision","panes"}`) or workspace
+`X info json` gives that pane, tab (`{"id","name","label","layout_revision","host","panes"}`) or workspace
 (`{"id","name","label","tabs"}`) alone; `X str FIELD get` leaves one of its fields:
 a number or boolean as itself, a string as text, `null` as an answer that
 prints `null` (`string` makes it the text). A tab or workspace has an optional
@@ -77,6 +79,31 @@ given name or id. `get` reads only the object's own fields.
 A tab's `layout_revision` is `TAB:REVISION:RUN`, the guard for `arrange`.
 It changes on layout edits and fit changes, independently of pane output.
 A successful replacement emits one `arranged` event with its tab and workspace.
+
+A tab's `host` is the terminal client supplying its panes' capability answers,
+or `null`. Of terminals showing it, the last typist wins, else the first
+attached. Headless clients never host. No capabilities are combined across
+clients; an unanswered query stays unknown even if a different client answered.
+
+Each client's `terminal` preserves evidence; `output` describes what fux will
+attempt on that client, not what the terminal acknowledged or displayed.
+Headless clients have no terminal reports.
+
+| Field | Value |
+| --- | --- |
+| `terminal.sixel_reported` | `true` or `false` from DA1; `null` before any reply |
+| `terminal.cell_reported` | last reported `{"width":10,"height":20}` in pixels, even zero or a size refused for graphics; `null` before any reply |
+| `terminal.underline_styles_reported` | `true` after positive evidence; otherwise `null`, since the decoder supplies no negative report |
+| `terminal.kitty_flags_reported` | last decoded keyboard flags, including 0; `null` before any reply |
+| `output.graphics` | `"text"` without an accepted cell size; `"cell"` with a cell but no positive sixel report; `"sixel"` with both. A picture still requires the pane host's support and the same cell size on the displaying client |
+| `output.underline_styles` | whether styled underlines are emitted; false emits plain underlines |
+| `output.clipboard` | `"osc52"` if this client's `terminal-clipboard` permits output, else `null`; not a delivery acknowledgement |
+| `output.kitty_flags_requested` | 5 once fux has requested disambiguate and alternate keys, else `null`; distinct from the last flags reported |
+
+Cell reports are asked again on resize; the previous report stays until
+another arrives. These fields and `host` are in the same bounded listing,
+not a separate capability query. They can change without a pane version
+changing; the journal does not promise a complete stream of terminal replies.
 
 ## `PANE capture json`
 
@@ -249,8 +276,8 @@ they run, so a `try` may name them too.
 ## `status json`
 
 ```json
-{"socket":"/run/user/1000/fux/server.sock","release":"0.36.0","protocol":42,
- "server_release":"0.36.0","server_protocol":42,"compatible":true}
+{"socket":"/run/user/1000/fux/server.sock","release":"0.36.0","protocol":43,
+ "server_release":"0.36.0","server_protocol":43,"compatible":true}
 ```
 
 With no server, `status` fails (`no_server`), saying the socket and whether

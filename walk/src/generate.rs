@@ -345,7 +345,13 @@ fn cli(rng: &mut Rng, world: &World, clients: &[String]) -> Vec<String> {
                 .unwrap_or("next")
         ),
         19 => format!("str {} client str {} tab show", client(rng), tab(rng)),
-        20 => format!("str {} client str next step-tab", client(rng)),
+        20 => format!(
+            "str {} client str {} step-tab",
+            client(rng),
+            rng.pick(&["next", "previous", "last"])
+                .copied()
+                .unwrap_or("next")
+        ),
         21 => format!(
             "str {} client str {} workspace show",
             client(rng),
@@ -396,7 +402,13 @@ fn cli(rng: &mut Rng, world: &World, clients: &[String]) -> Vec<String> {
         36 => format!("str {} pane str TERM signal", pane(rng)),
         37 if clients.len() > 1 => format!("str {} client detach", client(rng)),
         38 => format!("str {} client capture", client(rng)),
-        _ => format!("str {} client str next step-workspace", client(rng)),
+        _ => format!(
+            "str {} client str {} step-workspace",
+            client(rng),
+            rng.pick(&["next", "previous", "last"])
+                .copied()
+                .unwrap_or("next")
+        ),
     };
     words(&line)
 }
