@@ -127,6 +127,7 @@ define dump-create
       end
     then
     action str ' let ' p str id get dump-id 10 char
+    p str id get dump-id p str name get dump-name
   end glue
 end
 # pane source -- source : restore a given name; a null name emits nothing
@@ -181,9 +182,6 @@ define dump-recipe
             else drop then
             false
           else true then until
-          panes each let p p str tab get tab str id get eq if
-            p str id get dump-id p str name get dump-name
-          then end
         then
       end
     end

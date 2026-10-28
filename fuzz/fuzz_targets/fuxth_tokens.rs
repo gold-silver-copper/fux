@@ -3,7 +3,7 @@
 //! - Splitting never panics.
 //! - Every token's line, and an error's, is a line of the source, and
 //!   tokens come in the order of their lines.
-//! - Each token, quoted as a dump quotes it, reads back as itself.
+//! - Each token, quoted as native hints and list-keys quote it, reads back as itself.
 use fuxth::{Place, token};
 use libfuzzer_sys::fuzz_target;
 

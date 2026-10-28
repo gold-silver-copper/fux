@@ -3536,7 +3536,10 @@ pub(crate) mod testing {
 
     impl Session {
         /// Exercise the library against exactly one held recipe, without mutating the session.
-        pub(super) fn dump_recipe(&self, only: Option<command::AnyRef>) -> Result<String, String> {
+        pub(super) fn dump_recipe(
+            &self,
+            only: Option<command::AnyRef>,
+        ) -> Result<String, crate::script::Failed> {
             struct Once(Option<Reply>);
             impl crate::script::Asks for Once {
                 fn ask(
@@ -3562,9 +3565,10 @@ pub(crate) mod testing {
             let scope = only.map_or(crate::inspect::Scope::All, crate::inspect::Scope::Target);
             let body = self
                 .inspect(scope, crate::inspect::Projection::Recipe)
-                .map_err(|e| e.to_string())?;
-            let tokens = fuxth::token::source("dump", "all dump").map_err(|e| e.to_string())?;
-            let mut machine = crate::script::compile(&tokens).map_err(|e| e.to_string())?;
+                .map_err(|e| crate::script::Failed::new(e.code(), e.to_string()))?;
+            let tokens =
+                fuxth::token::source("dump", "all dump").map_err(crate::script::Failed::from)?;
+            let mut machine = crate::script::compile(&tokens)?;
             let mut out = Vec::new();
             let mut host =
                 crate::script::Host::new(crate::protocol::Context::default(), None, &mut out);
@@ -3583,10 +3587,13 @@ pub(crate) mod testing {
                 out.is_empty(),
                 "dump emitted before returning its complete source"
             );
-            let stack = stack.map_err(|e| e.to_string())?;
+            let stack = stack?;
             match stack.as_slice() {
                 [fuxth::Value::Str(text)] => Ok(text.to_string()),
-                _ => Err("dump did not return one string".into()),
+                _ => Err(crate::script::Failed::new(
+                    crate::code::Code::Usage,
+                    "dump did not return one string",
+                )),
             }
         }
     }
@@ -4717,7 +4724,7 @@ mod tests {
     }
 
     #[test]
-    fn retained_launches_and_dump_refuse_their_resource_limits() -> Result<(), String> {
+    fn retained_launches_refuse_their_resource_limit() -> Result<(), String> {
         let mut s = started()?;
         let mut env = command::EnvPatch::default();
         env.push(
@@ -4742,6 +4749,7 @@ mod tests {
         for _ in 0..40 {
             let before = s.parts.panes().len();
             if let Err(error) = s.execute(&command, &origin, Instant::now()) {
+                assert_eq!(error.code(), Code::from(Raise::TooLong));
                 assert!(error.to_string().contains("saved launch inputs"), "{error}");
                 assert_eq!(s.parts.panes().len(), before);
                 refused = true;
@@ -4749,7 +4757,46 @@ mod tests {
             }
         }
         assert!(refused);
-        assert!(s.dump_recipe(None).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn library_dump_refuses_source_expansion_before_emitting() -> Result<(), String> {
+        let mut s = started()?;
+        let mut env = command::EnvPatch::default();
+        env.push(
+            "TEXT".into(),
+            Some(
+                std::iter::repeat_n(char::from(39), 90_000)
+                    .collect::<String>()
+                    .into(),
+            ),
+        )?;
+        let command = Command::Run {
+            options: crate::pane::tests::options(0)?,
+            workspace: command::WsRef::Name("quoted".into()),
+            name: None,
+            size: Some(crate::view::Screen::new(24, 80)?),
+            cwd: Some("/".into()),
+            env,
+            argv: command::Program::new("/bin/cat".into(), Vec::new())?,
+        };
+        for _ in 0..3 {
+            s.execute(&command, &Origin::Cli(Caller::default()), Instant::now())
+                .map_err(|e| e.to_string())?;
+        }
+        // This admits the recipe first, independently of the source expansion.
+        s.inspect(
+            crate::inspect::Scope::All,
+            crate::inspect::Projection::Recipe,
+        )
+        .map_err(|e| e.to_string())?;
+        let error = s
+            .dump_recipe(None)
+            .err()
+            .ok_or("dump admitted oversized source")?;
+        assert_eq!(error.code, Code::from(Raise::TooLong));
+        assert!(error.to_string().contains("concat"), "{error}");
         Ok(())
     }
 

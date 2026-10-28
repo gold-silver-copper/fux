@@ -580,10 +580,11 @@ fn copy_environment_takes_the_clients_variables_or_none() -> Outcome {
     // od spaces its bytes as each system likes.
     let bytes = stdout.split_whitespace().collect::<Vec<_>>().join(" ");
     assert!(bytes.contains("63 61 66 e9"), "{stdout}");
+    let dump = server.ok(&["all", "dump"])?;
     assert!(
-        server
-            .ok(&["all", "dump"])?
-            .contains(": environment is not UTF-8 text; its saved value is omitted")
+        dump.contains("str 'FUXT_BYTES' drop # ")
+            && dump.contains(": environment is not UTF-8 text; its saved value is omitted"),
+        "{dump}"
     );
     Ok(())
 }

@@ -58,7 +58,7 @@ fn pick<'a>(list: &[&'a str], b: u8) -> &'a str {
 }
 
 /// A word as fuxth reads it back: bare if nothing in it is special, else
-/// in single quotes. As dumps quote (`session::layouts::quote`).
+/// in single quotes, as native hints and list-keys quote words.
 fn quote(word: &str) -> String {
     let bare = !word.is_empty()
         && !word.starts_with('#')
@@ -496,7 +496,7 @@ fuzz_target!(|data: &[u8]| {
                 let Ok(tokens) = fuxth::token::source("fuzz", &text) else {
                     continue;
                 };
-                // Written as a dump writes words, they read back.
+                // Written as native hints and list-keys write words, they read back.
                 let texts: Vec<&str> = tokens.iter().map(|t| &*t.text).collect();
                 let quoted: Vec<String> = texts.iter().map(|t| quote(t)).collect();
                 let again = fuxth::token::source("again", &quoted.join(" "));
