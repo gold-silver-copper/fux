@@ -1000,6 +1000,7 @@ fn run_job(
         on_commit: Some(&mut publish),
     };
     let mut result = (|| {
+        stop.check()?;
         if let Some(open) = &job.screen {
             asks.opened = Some(open.clone().admit(Some(&changed), &context)?);
             return Ok(Vec::new());
@@ -1015,7 +1016,9 @@ fn run_job(
         )
     })();
     if result.is_ok()
-        && let Err(failed) = script::Asks::commit(&mut asks, &mut changed, context)
+        && let Err(failed) = stop
+            .check()
+            .and_then(|()| script::Asks::commit(&mut asks, &mut changed, context))
     {
         result = Err(failed);
     }
@@ -1938,6 +1941,50 @@ mod tests {
         let acts = ran(&mut keyboard);
         assert!(matches!(acts.last(), Some(Act::Key(_))), "{acts:?}");
         assert!(keyboard.idle());
+        Ok(())
+    }
+
+    #[test]
+    fn stopping_cancels_queued_screen_openings_and_releases_keys()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let socket = socket::checked("/nowhere/fux/s.sock", "test")?;
+        let mut keyboard = new_keyboard(
+            &socket,
+            script::default_state().map_err(|e| e.to_string())?,
+            false,
+        )?;
+        assert!(program(&mut keyboard, "me command-prompt begin false until".into()).is_empty());
+        let queued = keyboard.frame(ToAttached::Open(crate::screens::Open::Prompt(
+            crate::screens::Prompt {
+                title: ":".into(),
+                line: crate::view::Line::new(String::new()),
+                action: None,
+            },
+        )));
+        assert!(queued.is_empty());
+        assert_eq!(keyboard.pending.len(), 1);
+        let mut acts = bytes(&mut keyboard, b"x\x02\x1b", Instant::now());
+        acts.extend(timeout(&mut keyboard));
+        assert!(keyboard.stop.stopped());
+        acts.extend(all_ran(&mut keyboard)?);
+        assert!(
+            !acts.iter().any(|act| matches!(act, Act::Screen { .. })),
+            "a cancelled job published a screen: {acts:?}"
+        );
+        let keys: Vec<_> = acts
+            .iter()
+            .filter_map(|act| {
+                if let Act::Key(stroke) = act {
+                    Some(stroke.press)
+                } else {
+                    None
+                }
+            })
+            .collect();
+        assert_eq!(keys, [KeyPress::char('x')]);
+        assert!(keyboard.idle());
+        assert!(keyboard.pending.is_empty());
+        assert_eq!(keyboard.screen.screen, Screen::default());
         Ok(())
     }
 

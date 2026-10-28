@@ -1018,6 +1018,15 @@ impl Stop {
     pub fn stopped(&self) -> bool {
         self.flag.load(Ordering::SeqCst)
     }
+
+    /// Refuse a cancelled job before it takes another step.
+    pub(crate) fn check(&self) -> Result<(), Failed> {
+        if self.stopped() {
+            Err(cancelled())
+        } else {
+            Ok(())
+        }
+    }
 }
 
 impl Server {
@@ -1284,8 +1293,8 @@ pub fn run_capped(
     stop: Option<&Stop>,
 ) -> Result<Vec<Value<Fux>>, Failed> {
     loop {
-        if stop.is_some_and(Stop::stopped) {
-            return Err(cancelled());
+        if let Some(stop) = stop {
+            stop.check()?;
         }
         if let Some(steps) = steps.filter(|steps| machine.steps() > *steps) {
             // No try may name it: it ends the run, said at the step reached.
