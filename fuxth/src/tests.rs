@@ -1792,6 +1792,72 @@ fn carried_values_obey_their_contract() -> Result<(), Error> {
 }
 
 #[test]
+fn refused_carried_storage_enters_the_resource_failure_handler() -> Result<(), Error> {
+    #[derive(Clone, Debug, PartialEq)]
+    struct Payload(Shared<Vec<u8>>);
+    impl AppValue for Payload {
+        const IMPORT_LIMIT: usize = 1024;
+        fn kind(&self) -> &'static str {
+            "payload"
+        }
+        fn weight(&self) -> u64 {
+            self.0.len() as u64
+        }
+        fn retain(&self, imports: &Imports) -> Result<(), Failure> {
+            self.0
+                .reserve(imports, Shared::<Vec<u8>>::bytes(self.0.capacity()))
+        }
+    }
+    struct Wait;
+    impl Host for Wait {
+        type Value = Payload;
+        type Request = ();
+        fn call(
+            &mut self,
+            word: usize,
+            _: Args<'_, Payload>,
+            out: &mut Vec<Value<Payload>>,
+        ) -> Result<Done<()>, Failure> {
+            if word == 0 {
+                out.push(Value::App(Payload(Shared::new(vec![0; 800]))));
+                Ok(Done::Now)
+            } else {
+                Ok(Done::Later(()))
+            }
+        }
+        fn print(&mut self, _: &str) -> Result<(), Failure> {
+            Ok(())
+        }
+    }
+    let timeout = Code::Host("timeout");
+    let mut words = Vocabulary::default();
+    words.kind("payload", "a payload")?;
+    words.add("request", "-- payload")?;
+    words.add("wait", "payload -- payload")?;
+    words.raises(timeout)?;
+    words.carries(timeout, "payload")?;
+    let mut compiler = Compiler::<Payload>::new(words);
+    // The saved request keeps its allocation even after wait consumes its copy.
+    compiler.add(&token::source(
+        "carried",
+        "request let saved str 'timeout too_long' try saved wait catch 1 roll drop end 7",
+    )?)?;
+    let mut machine = Machine::new(compiler.finish()?, Limits::default());
+    let mut host = Wait;
+    assert!(matches!(
+        machine.run(&mut host, 1000)?,
+        Outcome::Suspended(())
+    ));
+    machine.raise_with(
+        Failure::new(timeout, "timed out"),
+        Value::App(Payload(Shared::new(vec![0; 400]))),
+    )?;
+    assert!(matches!(machine.run(&mut host, 1000)?, Outcome::Finished));
+    assert_eq!(machine.stack(), [Value::str("too_long"), Value::Int(7)]);
+    Ok(())
+}
+
+#[test]
 fn host_imports_bound_each_value_and_opaque_depth() -> Result<(), Error> {
     #[derive(Clone, PartialEq)]
     struct Weighted(u64, u8);

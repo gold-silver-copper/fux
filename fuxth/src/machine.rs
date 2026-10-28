@@ -296,12 +296,15 @@ impl<A: AppValue> Machine<A> {
     /// `raise`, the failure carrying `value`: a `try`'s handler gets it in
     /// place of the message (`Vocabulary::carries` says of which codes).
     pub fn raise_with(&mut self, failure: Failure, value: Value<A>) -> Result<(), Error> {
-        self.admit(&value)?;
         self.program
             .vocabulary
             .check_carried(failure.code, &value)
             .map_err(|message| self.fail(Code::Contract, message))?;
         self.pending = None;
+        if let Err(error) = self.admit(&value) {
+            drop(value);
+            return self.recover(error, None);
+        }
         let error = self.failed(failure);
         self.recover(error, Some(value))
     }

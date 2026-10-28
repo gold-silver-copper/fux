@@ -1344,9 +1344,11 @@ fn raised(
     match machine.raise_with(fuxth::Failure::new(code.into(), message), answer.clone()) {
         Ok(()) => Ok(()),
         Err(error) => {
-            // A stack too full for it leaves it unprinted: its failure is
-            // still told.
-            drop(machine.import(answer));
+            // Only the original uncaught wait failure prints its answer.
+            // Admission or recovery refusals must not import it again.
+            if error.code == code.into() {
+                drop(machine.import(answer));
+            }
             Err(uncaught(machine, error))
         }
     }
