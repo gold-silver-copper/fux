@@ -226,6 +226,10 @@ pub fn list(recordings: &[Recording]) -> Vec<Spec> {
     let spec = |name: String, about: String| Spec { name, about };
     let mut out = vec![
         spec(
+            "pane/pending".into(),
+            "a 128 KiB synchronized frame of screen-wide edits, resumed at parser budgets".into(),
+        ),
+        spec(
             "capture/history".into(),
             "one all-history plain capture of a full 8 MiB history at 40x120".into(),
         ),
@@ -418,6 +422,19 @@ fn run_shrunk(
     match name {
         "capture/history" => return capture_history(baseline, size(HISTORY)),
         "cli/library" => return library(baseline),
+        "pane/pending" => {
+            let mut bytes = b"\x1b[?2026h".to_vec();
+            bytes.extend(repeated(b"\x1b#8\x1b[2J", size(128 << 10)));
+            bytes.extend_from_slice(b"\x1b[?2026l");
+            return pane(
+                &[Load {
+                    rows: 50,
+                    cols: 200,
+                    bytes,
+                }],
+                baseline,
+            );
+        }
         _ => {}
     }
     if let Some(r) = RESIZINGS.iter().find(|r| r.name == name) {
