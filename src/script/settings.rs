@@ -301,12 +301,7 @@ impl Reads for crate::presentation::Slots {
                 };
                 let id = u8::try_from(int(id)?).map_err(|_| "a bar slot is 0 to 15")?;
                 let text = word(text)?;
-                if text.len() > Self::TEXT_MAX || text.chars().any(char::is_control) {
-                    return Err(
-                        "bar slot text is at most 256 bytes with no control characters".to_owned(),
-                    );
-                }
-                Ok((id, text.to_owned()))
+                Ok((id, text))
             })
             .collect::<Result<_, String>>()?;
         Self::new(values)

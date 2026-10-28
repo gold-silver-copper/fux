@@ -59,10 +59,10 @@ wire! {
 /// At most sixteen fields across both sides, with no recursive formatting.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Bar {
-    pub position: BarPosition,
-    pub left: Vec<Field>,
-    pub right: Vec<Field>,
-    pub tab_numbers: bool,
+    position: BarPosition,
+    left: Vec<Field>,
+    right: Vec<Field>,
+    tab_numbers: bool,
 }
 impl Bar {
     pub const MAX_FIELDS: usize = 16;
@@ -81,7 +81,19 @@ impl Bar {
         bar.validate()?;
         Ok(bar)
     }
-    pub fn validate(&self) -> Result<(), String> {
+    pub fn position(&self) -> BarPosition {
+        self.position
+    }
+    pub fn left(&self) -> &[Field] {
+        &self.left
+    }
+    pub fn right(&self) -> &[Field] {
+        &self.right
+    }
+    pub fn tab_numbers(&self) -> bool {
+        self.tab_numbers
+    }
+    fn validate(&self) -> Result<(), String> {
         if self.left.len().saturating_add(self.right.len()) > Self::MAX_FIELDS {
             return Err("a bar has at most 16 fields".to_owned());
         }
@@ -119,16 +131,20 @@ pub struct Slots(Vec<(u8, String)>);
 impl Slots {
     pub const MAX: usize = 16;
     pub const TEXT_MAX: usize = 256;
-    pub fn new(values: Vec<(u8, String)>) -> Result<Self, String> {
+    pub fn new<'a, T: Into<std::borrow::Cow<'a, str>>>(
+        values: Vec<(u8, T)>,
+    ) -> Result<Self, String> {
         if values.len() > Self::MAX {
             return Err("at most 16 bar slots".to_owned());
         }
         let mut seen = Vec::new();
-        for (id, text) in &values {
-            if usize::from(*id) >= Self::MAX {
+        let mut out = Vec::new();
+        for (id, text) in values {
+            let text = text.into();
+            if usize::from(id) >= Self::MAX {
                 return Err("a bar slot is 0 to 15".to_owned());
             }
-            if seen.contains(id) {
+            if seen.contains(&id) {
                 return Err(format!("bar slot {id} occurs more than once"));
             }
             if text.len() > Self::TEXT_MAX || text.chars().any(char::is_control) {
@@ -136,9 +152,10 @@ impl Slots {
                     "bar slot text is at most 256 bytes with no control characters".to_owned(),
                 );
             }
-            seen.push(*id);
+            seen.push(id);
+            out.push((id, text.into_owned()));
         }
-        Ok(Self(values))
+        Ok(Self(out))
     }
     pub fn text(&self, id: u8) -> Option<&str> {
         self.0

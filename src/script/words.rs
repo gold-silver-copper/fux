@@ -331,7 +331,6 @@ words! {
         Server KillServer "kill-server" "--" "stop the server: not from its own panes, nor with people attached" "fux str test server kill-server" [];
         Server ForceKillServer "force-kill-server" "--" "stop it anyway, whatever fux version it is" "fux str test server force-kill-server" [];
         Config AttachDefaults "attach-defaults" "attachable --" "replace this client's preferred attach place; target-only retains the first name, name-only or empty clears the target; target and name conflict" "opts str main name attach-defaults" [Either: In Name];
-        Config ShowColumn "show-column" "boolean --" "show this client's prefix column; keys, Escape and bar hints stay active" "false show-column" [];
         Config Set "set" "setting new --" "a preference for this client only: `fux help set` lists their effects" "fux str history-bytes 16777216 set" [];
         Reading Version "version" "pane-or-seen -- string" "a pane's current version, or the version an answer, pane capture or canonical text holds" "fux %3 capture version" [];
         Shell Args "args" "-- list" "the strings after fux --file FILE (none for any other program)" "fux args len" [];
@@ -1953,14 +1952,10 @@ impl Host<'_> {
                 state.attach = Some(crate::client_state::AttachDefaults { of, target, name });
                 Ok(Done::Now)
             }
-            Act::Set | Act::ShowColumn => {
+            Act::Set => {
                 self.prepare()
                     .map_err(|failed| fail(Raise::Config, failed.to_string()))?;
-                let name = if act == Act::ShowColumn {
-                    "show-column".to_owned()
-                } else {
-                    string(&next()?)?
-                };
+                let name = string(&next()?)?;
                 let value = next()?;
                 let state = self
                     .state

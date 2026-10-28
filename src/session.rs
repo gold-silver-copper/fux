@@ -1390,11 +1390,6 @@ impl Session {
     /// A client of `kind` attaches as `attach` says: one that only watches
     /// is one from the start, and sizes nothing.
     pub fn attach_as(&mut self, kind: ClientKind, attach: Attach) -> Result<ClientId, Error> {
-        attach
-            .presentation
-            .bar
-            .validate()
-            .map_err(|why| fail(Raise::BadValue, why))?;
         self.check_run(attach.of)?;
         if attach.initial.is_some() && (attach.target.is_some() || attach.read_only) {
             return Err(fail(
@@ -1444,7 +1439,7 @@ impl Session {
                 if self.parts.workspaces().is_empty() {
                     let size = Size::new(
                         rows.saturating_sub(u16::from(
-                            attach.presentation.bar.position
+                            attach.presentation.bar.position()
                                 != crate::presentation::BarPosition::Off,
                         )),
                         cols,
@@ -6094,7 +6089,7 @@ mod tests {
         ];
         for invalid in cases {
             // A valid preceding change is discarded with the refused draft.
-            let code = format!("false show-column {invalid}");
+            let code = format!("str show-column false set {invalid}");
             assert!(
                 output_as(&mut session, Some(client), &code).is_err(),
                 "{code}"

@@ -71,7 +71,7 @@ str bar list str top
   true
 end set
 str bar-slots list list 0 str 'my status text' end end set
-false show-column
+str show-column false set
 ```
 
 `styles` changes only the roles supplied: `bar`, `tab` (the selected tab),
@@ -96,8 +96,9 @@ timer and never evaluates a program during paint.
 Top and bottom reserve one row. Off reserves none: native feedback temporarily
 overlays the bottom pane row, covering its text and pictures without resizing
 PTYs. Client captures include that feedback; pane captures retain the underlying
-pane text. Feedback disappears on the normal input/cancel paths.
-`false show-column` hides the column body while keeping prefix dispatch,
+pane text. Feedback disappears on the normal input/cancel paths. Zoom alone
+does not create an overlay with the bar off; the focused pane fills the screen.
+`str show-column false set` hides the column body while keeping prefix dispatch,
 navigation, Escape cancellation and repeat feedback active; its default is true.
 
 ## fuxth

@@ -289,6 +289,7 @@ mod tests {
             ("history-bytes", Value::Int(0)),
             ("wait-seconds", Value::Int(0)),
             ("program-clipboard", Value::Bool(false)),
+            ("show-column", Value::Bool(false)),
             ("terminal-clipboard", Value::Bool(false)),
             ("shell", list(&["/bin/my shell", "a b", ""])?),
             ("copy-environment", list(&["OK", "FUX_EXTRA"])?),
@@ -297,6 +298,7 @@ mod tests {
         }
         for (name, value) in [
             ("reflow", Value::Int(1)),
+            ("show-column", Value::Int(1)),
             ("alternate-scroll-lines", Value::Int(-1)),
             ("alternate-scroll-lines", Value::Int(32768)),
             ("picture-bytes", Value::Int(100663297)),
@@ -326,6 +328,9 @@ mod tests {
         }
         let tokens =
             fuxth::token::source("test", "str bell str off set").map_err(|e| e.to_string())?;
+        assert!(crate::script::compile(&tokens).is_err());
+        let tokens =
+            fuxth::token::source("test", "false show-column").map_err(|e| e.to_string())?;
         assert!(crate::script::compile(&tokens).is_err());
         Ok(())
     }

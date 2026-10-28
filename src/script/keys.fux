@@ -1,5 +1,4 @@
 str C-b prefix
-true show-column
 
 # fux's default keys: a config like yours, run before it. Your config may
 # rebind or unbind any of them, or start from none with `unbind-all`, and

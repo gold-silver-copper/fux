@@ -232,6 +232,8 @@ struct Attached {
     /// The pictures its terminal was last sent, as they show there, and
     /// their sixel data.
     pictures: Vec<render::Visible>,
+    /// Complete pane pictures while transient feedback clips the sent list.
+    under_pictures: Option<Vec<render::Visible>>,
     sixels: render::Sixels,
 }
 
@@ -328,6 +330,7 @@ impl Attached {
             spare: Grid::default(),
             placement: Placement::default(),
             pictures: Vec::new(),
+            under_pictures: None,
             sixels: render::Sixels::default(),
             clock: PaintClock {
                 next: now,
@@ -1084,11 +1087,23 @@ impl Server {
                     && render::shows_pictures(session, id)
                     && painted.kept(id, rect, rows, cols)
                 {
-                    pictures.extend(attached.pictures.iter().filter(|p| p.pane == id).cloned());
+                    pictures.extend(
+                        attached
+                            .under_pictures
+                            .as_deref()
+                            .unwrap_or(&attached.pictures)
+                            .iter()
+                            .filter(|p| p.pane == id)
+                            .cloned(),
+                    );
                 }
             }
         }
-        if render::bar_overlay(session, view, &attached.placement) {
+        let overlay = render::bar_overlay(session, view, &attached.placement);
+        attached.under_pictures = (overlay || !view.mode.is_normal()).then(|| pictures.clone());
+        if !view.mode.is_normal() {
+            pictures.clear();
+        } else if overlay {
             render::clip_bar_pictures(view, &mut pictures);
         }
         for gone in (attached.pictures.iter()).filter(|p| known && !pictures.contains(p)) {
@@ -1737,6 +1752,8 @@ mod tests {
             .pictures;
         assert_eq!(covered.len(), 1);
         assert_eq!(covered.first().map(|p| p.crop.3), Some(12));
+        let out = &mut server.conns.first_mut().ok_or("connection")?.out;
+        out.take(out.len());
         server.session.views.get_mut(&client).ok_or("view")?.notice = None;
         server.paint(0, Instant::now());
         assert!(
@@ -1759,7 +1776,7 @@ mod tests {
         );
         let (sent, _) = sent(server.conns.first().ok_or("connection")?);
         assert!(
-            sent.windows(2).any(|bytes| bytes == b"\x1bP"),
+            String::from_utf8_lossy(&sent).contains("\x1bP"),
             "restored pixels were not sent"
         );
         Ok(())

@@ -220,7 +220,7 @@ impl View {
     /// The area panes share on its screen: all but the bar.
     pub fn pane_area(&self) -> Rect {
         let screen = Rect::screen(self.rows, self.cols);
-        match self.presentation.bar.position {
+        match self.presentation.bar.position() {
             crate::presentation::BarPosition::Top => {
                 screen.split(crate::layout::Axis::Vertical, 1).1
             }

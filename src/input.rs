@@ -55,10 +55,6 @@ impl Session {
     fn act(&mut self, client: ClientId, act: Act) -> bool {
         match act {
             Act::Presentation(presentation) => {
-                if let Err(why) = presentation.bar.validate() {
-                    self.notify_to(client, why, true);
-                    return true;
-                }
                 let bell = presentation.bell;
                 if let Some(view) = self.views.get_mut(&client) {
                     view.presentation = presentation;

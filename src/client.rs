@@ -1724,7 +1724,7 @@ mod tests {
             false,
         )?;
         let effects = keyboard.frame(ToAttached::Run(
-            "str terminal-clipboard false set str styles list list str bar 7 8 end end set str bar-slots list list 0 str inert end end set false show-column %1 str Enter key send-keys drop".into(),
+            "str terminal-clipboard false set str styles list list str bar 7 8 end end set str bar-slots list list 0 str inert end end set str show-column false set %1 str Enter key send-keys drop".into(),
         ));
         let [Dispatch::Run(job)] = effects.as_slice() else {
             return Err("job".into());

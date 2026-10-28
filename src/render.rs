@@ -47,6 +47,8 @@ struct UnderBar {
     row: u16,
     cells: Cells,
     links: Links,
+    cursor: Option<(u16, u16)>,
+    modes: Modes,
 }
 
 impl Clone for Grid {
@@ -150,7 +152,8 @@ pub fn shows_pictures(session: &Session, id: PaneId) -> bool {
 }
 
 /// The pictures client `client`'s panes, placed as `placement` has them,
-/// show on its screen: none unless its terminal draws sixel and nothing
+/// may show before transient bar feedback is clipped: none unless its
+/// terminal draws sixel and nothing
 /// covers its panes (an overlay, copy mode); of a pane, only while its
 /// pictures show (`shows_pictures`), those laid out in this terminal's
 /// cell size. Each is clipped to its pane.
@@ -162,7 +165,6 @@ pub fn pictures(session: &Session, client: ClientId, placement: &Placement) -> V
     else {
         return Vec::new();
     };
-    let overlay = bar_overlay(session, view, placement);
     let cell = (cell.width(), cell.height());
     let mut visible = Vec::new();
     for &(id, rect) in &placement.panes {
@@ -172,18 +174,12 @@ pub fn pictures(session: &Session, client: ClientId, placement: &Placement) -> V
         if !shows_pictures(session, id) {
             continue;
         }
-        let height = if overlay {
-            rect.h()
-                .min(view.rows.saturating_sub(1).saturating_sub(rect.y()))
-        } else {
-            rect.h()
-        };
         for shown in pane.screen().pictures().filter(|s| s.cell == cell) {
             // The rows of the pane it is on, and the columns.
             let end = shown
                 .row
                 .saturating_add(i64::from(shown.rows))
-                .min(i64::from(height));
+                .min(i64::from(rect.h()));
             let start = shown.row.saturating_add(i64::from(shown.cropped)).max(0);
             let right = shown.col.saturating_add(shown.cols).min(rect.w());
             let (Ok(top), Ok(bottom)) = (u16::try_from(start), u16::try_from(end)) else {
@@ -216,7 +212,7 @@ pub fn pictures(session: &Session, client: ClientId, placement: &Placement) -> V
     visible
 }
 
-/// Clips retained synchronized-frame pictures away from bar-off feedback.
+/// Clips pane pictures away from bar-off feedback, after held-frame recovery.
 pub(crate) fn clip_bar_pictures(view: &View, pictures: &mut Vec<Visible>) {
     let fux_vt::Graphics::Sixel(cell) = view.terminal.graphics() else {
         return;
@@ -373,7 +369,7 @@ impl Frame {
             separators: placement.separators.clone(),
             focus: focus?,
             styles: view.presentation.styles,
-            bar_position: view.presentation.bar.position,
+            bar_position: view.presentation.bar.position(),
         })
     }
 }
@@ -419,8 +415,12 @@ impl<'a> SameFrame<'a> {
     /// Whether row `y` is in the pane area and has the same pane rows in
     /// both grids: then it shows the same cells.
     fn same_row(&self, y: u16) -> bool {
-        // The bar's row is not memo'd.
-        y < self.frame.rows.saturating_sub(1)
+        let bar = match self.frame.bar_position {
+            crate::presentation::BarPosition::Top => Some(0),
+            crate::presentation::BarPosition::Bottom => self.frame.rows.checked_sub(1),
+            crate::presentation::BarPosition::Off => None,
+        };
+        Some(y) != bar
             && (self.frame.panes.iter())
                 .zip(self.keys.0.iter().zip(self.keys.1))
                 .all(|((_, _, rect, _), (a, b))| {
@@ -812,11 +812,20 @@ impl Grid {
         }
     }
 
+    fn pane_cursor(&self) -> (Option<(u16, u16)>, Modes) {
+        self.under_bar
+            .as_deref()
+            .filter(|u| u.cursor.is_some())
+            .map_or((self.cursor, self.modes), |u| (u.cursor, u.modes))
+    }
+
     fn cover_bar(&mut self, row: u16) -> Result<(), fux_vt::Error> {
         let mut under = UnderBar {
             row,
             cells: Cells::new(usize::from(self.cols))?,
             links: Links::default(),
+            cursor: self.cursor.filter(|(y, _)| *y == row),
+            modes: self.modes,
         };
         for x in 0..self.cols {
             if let Some(cell) = self.get(row, x) {
@@ -1024,13 +1033,15 @@ pub fn compose_held(
         // Only where a pane's own cursor shows: in normal mode (none under
         // an overlay, copy mode's its own).
         if held(&focus) && view.mode.is_normal() {
-            let painted = kept(focus, rect);
-            let at = (painted.and_then(|p| p.grid.cursor)).filter(|&(y, x)| rect.contains(y, x));
+            let (cursor, modes) =
+                kept(focus, rect).map_or((None, Modes::default()), |p| p.grid.pane_cursor());
+            let at = cursor.filter(|&(y, x)| rect.contains(y, x));
             grid.cursor = at;
-            let modes = painted
-                .filter(|_| at.is_some())
-                .map(|p| p.grid.modes)
-                .unwrap_or_default();
+            let modes = if at.is_some() {
+                modes
+            } else {
+                Modes::default()
+            };
             grid.modes.cursor_shape = modes.cursor_shape;
             grid.modes.cursor_colour = modes.cursor_colour;
         }
@@ -1352,7 +1363,7 @@ fn bar_fields(
                         }
                         let rang =
                             tab.seat(view.id).is_some_and(|s| s.rang) && Some(tab.id()) != current;
-                        let number = if view.presentation.bar.tab_numbers {
+                        let number = if view.presentation.bar.tab_numbers() {
                             format!("{} ", i.saturating_add(1))
                         } else {
                             String::new()
@@ -1413,9 +1424,8 @@ fn bar_parts(grid: &mut Grid, y: u16, mut x: u16, end: u16, parts: &[(String, At
 
 /// Whether native feedback covers the bottom row of a bar-off view.
 pub(crate) fn bar_overlay(session: &Session, view: &View, placement: &Placement) -> bool {
-    view.presentation.bar.position == crate::presentation::BarPosition::Off
+    view.presentation.bar.position() == crate::presentation::BarPosition::Off
         && (view.notice.is_some()
-            || view.zoom
             || !view.mode.is_normal()
             || !unseen(session, view, placement).is_empty())
 }
@@ -1433,7 +1443,7 @@ fn bar(
     let Some(bottom) = view.rows.checked_sub(1) else {
         return Ok(());
     };
-    let position = view.presentation.bar.position;
+    let position = view.presentation.bar.position();
     let y = if position == BarPosition::Top {
         0
     } else {
@@ -1443,11 +1453,8 @@ fn bar(
     let pane = |c: &crate::copy::Copy| session.parts.panes().get(&c.pane);
     let copy_bar = copy.and_then(|(c, at)| pane(c).map(|p| c.bar(p.screen(), &at)));
     let unseen = unseen(session, view, placement);
-    let feedback = view.notice.is_some()
-        || view.zoom
-        || copy_bar.is_some()
-        || !view.mode.is_normal()
-        || !unseen.is_empty();
+    let feedback =
+        view.notice.is_some() || copy_bar.is_some() || !view.mode.is_normal() || !unseen.is_empty();
     if position == BarPosition::Off && !feedback {
         return Ok(());
     }
@@ -1489,7 +1496,7 @@ fn bar(
             parts.extend(bar_fields(
                 session,
                 view,
-                &view.presentation.bar.right,
+                view.presentation.bar.right(),
                 view.cols,
             ));
         }
@@ -1549,7 +1556,7 @@ fn bar(
             y,
             x,
             left_limit,
-            &bar_fields(session, view, &view.presentation.bar.left, left_limit),
+            &bar_fields(session, view, view.presentation.bar.left(), left_limit),
         );
     }
     let start = view.cols.saturating_sub(right_width.saturating_add(1));
@@ -1643,10 +1650,10 @@ fn windowed<'a>(
     }
 }
 
-/// A panel in the bottom-right corner, above the bar, sized to its lines.
+/// A panel in the bottom-right corner of the pane area, sized to its lines.
 fn surface(grid: &mut Grid, view: &View, lines: &[Line<'_>]) {
     let area = view.pane_area();
-    let area = if view.presentation.bar.position == crate::presentation::BarPosition::Off {
+    let area = if view.presentation.bar.position() == crate::presentation::BarPosition::Off {
         area.split(Axis::Vertical, area.h().saturating_sub(1)).0
     } else {
         area
@@ -2960,7 +2967,7 @@ mod tests {
         let grid = compose(&session, client).ok_or("screen")?;
         let bar = grid.row_text(0);
         assert!(bar.contains("me detach") && bar.contains("1 "), "{bar}");
-        let fields = bar_fields(&session, view, &view.presentation.bar.left, view.cols);
+        let fields = bar_fields(&session, view, view.presentation.bar.left(), view.cols);
         assert!(fields.first().is_some_and(|(s, _)| s.contains("me detach")));
         assert!(fields.get(1).is_some_and(|(s, _)| s.contains("1 ")));
         assert!(session.views.contains_key(&client));
@@ -3073,14 +3080,6 @@ mod tests {
         }
         assert!(compose_into(&session, client, &mut grid, &mut placement));
         assert!(grid.row_text(3).contains("last pane row"));
-        output_as(&mut session, Some(client), "me zoom")?;
-        assert!(
-            compose(&session, client)
-                .ok_or("zoom")?
-                .row_text(3)
-                .contains("[zoom]")
-        );
-        output_as(&mut session, Some(client), "me zoom")?;
         // Even a one-cell terminal shows feedback, with the pane area intact.
         session.resize(client, 1, 1).map_err(|e| e.to_string())?;
         session.notify_to(client, "refused", true);
@@ -3188,7 +3187,7 @@ mod tests {
         output_as(
             &mut session,
             Some(client),
-            "false show-column str u str 'me focused str renamed rename' bind repeat",
+            "str show-column false set str u str 'me focused str renamed rename' bind repeat",
         )?;
         session.input(client, b"\x02");
         let grid = compose(&session, client).ok_or("screen")?;

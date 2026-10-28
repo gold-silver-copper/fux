@@ -307,7 +307,12 @@ fn a_hidden_tab_goes_back_to_its_own_size() -> Outcome {
 #[test]
 fn a_bar_off_attach_keeps_pane_geometry_under_feedback() -> Outcome {
     let mut server = Server::empty()?;
-    server.state.preferences.bar.position = fux::presentation::BarPosition::Off;
+    server.state.preferences.bar = fux::presentation::Bar::new(
+        fux::presentation::BarPosition::Off,
+        Vec::new(),
+        Vec::new(),
+        false,
+    )?;
     let mut client = server.attach(1, 60)?;
     client.wait_for("$")?;
     let capture = || server.ok(&["%1", "capture"]);
