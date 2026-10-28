@@ -4866,7 +4866,6 @@ mod tests {
             fn ask(
                 &mut self,
                 asked: &crate::protocol::Asked,
-                out: &mut dyn std::io::Write,
             ) -> Result<Reply, crate::script::Failed> {
                 match &asked.request {
                     Request::Do(Command::Resolve { .. }) => {}
@@ -4882,14 +4881,14 @@ mod tests {
                         self.commits = self.commits.saturating_add(1);
                         assert_eq!(asked.context.of, Some(revision.run));
                     }
-                    Request::Do(_) | Request::Wait(_) | Request::Events(..) => {
+                    Request::Do(_) | Request::Wait(_) | Request::NextEvents { .. } => {
                         return Err(crate::script::Failed::new(
                             Code::Usage,
                             "unexpected preset request",
                         ));
                     }
                 }
-                let reply = crate::script::Asks::ask(&mut InProcess(self.session), asked, out)?;
+                let reply = crate::script::Asks::ask(&mut InProcess(self.session), asked)?;
                 if self.resize && matches!(asked.request, Request::Do(Command::Inspect { .. })) {
                     run(self.session, "@1 121 40 resize")
                         .map_err(|e| crate::script::Failed::new(Code::Usage, e))?;
