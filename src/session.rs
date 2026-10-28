@@ -5404,6 +5404,9 @@ mod tests {
             false,
             run_id,
         );
+        s.test_keymap = crate::script::default_state()
+            .map_err(|e| e.to_string())?
+            .draft();
         let refused = run(&mut s, "opts new-workspace").err().unwrap_or_default();
         assert!(
             refused.starts_with("size: ") && refused.contains("give a size"),
