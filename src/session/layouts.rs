@@ -178,7 +178,7 @@ impl Session {
             Runs::Explicit(launch) => (launch, false),
         };
         let observed = if shell {
-            self.dir_with(id, &mut out.budget)?
+            self.dir_with(id, &mut out.budget)?.ok().flatten()
         } else {
             None
         };

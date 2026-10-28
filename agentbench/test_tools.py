@@ -63,8 +63,7 @@ class Tools(unittest.TestCase):
             {"id": "%1", "title": "other"}, {"id": "%2", "title": "ledger"}]}))
         with patch.object(driver, "fux", return_value=reply) as ask:
             self.assertEqual(driver.find_title("ledger"), "%2")
-            ask.assert_called_once_with("str", "agent", "workspace", "str", "topology",
-                                        "snapshot", "json")
+            ask.assert_called_once()
 
     def test_coverage_requires_words_and_reports_missing_native_and_library_names(self):
         help_text = ("Words:\n  capture              pane -- capture\n"

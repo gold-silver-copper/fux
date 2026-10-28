@@ -52,6 +52,8 @@ pub enum Fux {
     All,
     Null,
     Record(Rc<record::Record>),
+    /// Rendered observations exceeding ordinary language string limits.
+    Rendered(Rc<String>),
     Pane(PaneId, Option<Run>),
     Tab(TabId, Option<Run>),
     Workspace(WsId, Option<Run>),
@@ -64,7 +66,7 @@ pub enum Fux {
     /// A width or height: cells, or a share of the tab.
     Extent(Extent),
     /// What the server said: a capture, a listing, a wait's outcome.
-    Answer(Box<Answer>, Option<Run>),
+    Answer(Rc<Answer>, Option<Run>),
 }
 
 impl AppValue for Fux {
@@ -81,6 +83,7 @@ impl AppValue for Fux {
             Fux::All => "all",
             Fux::Null => "null",
             Fux::Record(_) => "record",
+            Fux::Rendered(_) => "rendered",
             Fux::Pane(_, _) => "pane",
             Fux::Tab(_, _) => "tab",
             Fux::Workspace(_, _) => "workspace",
@@ -100,10 +103,19 @@ impl AppValue for Fux {
     }
 
     const TEXT_LIMIT: usize = crate::wire::MAX_ALLOCATED;
+    const IMPORT_BYTES_LIMIT: usize = crate::wire::MAX_ALLOCATED;
+    fn import_bytes(&self) -> Option<usize> {
+        if let Fux::Rendered(_) = self {
+            Some(self.text_bytes())
+        } else {
+            None
+        }
+    }
 
     fn weight(&self) -> u64 {
         match self {
             Fux::Record(r) => r.weight(),
+            Fux::Rendered(text) => text.len() as u64,
             Fux::Answer(a, _) => match &**a {
                 Answer::Capture(c) => {
                     let state = match &c.of {
@@ -117,8 +129,9 @@ impl AppValue for Fux {
                         n.saturating_add(cut.text.len() as u64).saturating_add(1)
                     })
                 }
-                Answer::Pane(_) => 16,
-                Answer::Panes(p) => (p.len() as u64).saturating_mul(16).saturating_add(1),
+                Answer::Pane(_) | Answer::Panes(_) => {
+                    u64::try_from(self.text_bytes()).unwrap_or(u64::MAX).max(1)
+                }
                 Answer::Status(listing) => listing.weight(),
             },
             Fux::All
@@ -134,7 +147,8 @@ impl AppValue for Fux {
     fn depth(&self) -> u8 {
         match self {
             Fux::Record(r) => r.depth(),
-            Fux::All
+            Fux::Rendered(_)
+            | Fux::All
             | Fux::Null
             | Fux::Pane(..)
             | Fux::Tab(..)
@@ -147,6 +161,13 @@ impl AppValue for Fux {
     }
 
     fn text_bytes(&self) -> usize {
+        if let Fux::Rendered(text) = self {
+            return text
+                .capacity()
+                .saturating_add(std::mem::size_of::<String>())
+                .saturating_add(std::mem::size_of::<usize>().saturating_mul(2));
+        }
+
         if let Fux::Record(r) = self {
             return r.bytes();
         }
@@ -154,6 +175,7 @@ impl AppValue for Fux {
             let mut budget = crate::wire::Budget::with_limit(usize::MAX);
             if budget
                 .slots::<Answer>(1)
+                .and_then(|()| budget.slots::<usize>(2))
                 .and_then(|()| answer.charge(&mut budget))
                 .is_err()
             {
@@ -178,6 +200,7 @@ impl AppValue for Fux {
             Fux::All => out.write_str("all"),
             Fux::Null => out.write_str("null"),
             Fux::Record(r) => r.write_text(out),
+            Fux::Rendered(text) => out.write_str(text),
             Fux::Pane(p, _) => write!(out, "{p}"),
             Fux::Tab(t, _) => write!(out, "{t}"),
             Fux::Workspace(w, _) => write!(out, "{w}"),
@@ -480,7 +503,7 @@ impl Answer {
     }
 
     fn in_run(self, run: Option<Run>) -> Value<Fux> {
-        Value::App(Fux::Answer(Box::new(self), run))
+        Value::App(Fux::Answer(Rc::new(self), run))
     }
 }
 
@@ -1792,6 +1815,174 @@ fn read_file(path: &std::path::Path) -> Result<String, Failed> {
 
 #[cfg(test)]
 mod tests {
+    fn held_reply(
+        code: &str,
+        reply: super::Reply,
+        out: &mut Vec<u8>,
+    ) -> Result<Vec<fuxth::Value<super::Fux>>, super::Failed> {
+        struct Once(Option<super::Reply>);
+        impl super::Asks for Once {
+            fn ask(
+                &mut self,
+                asked: &crate::protocol::Asked,
+                _: &mut dyn std::io::Write,
+            ) -> Result<super::Reply, super::Failed> {
+                if let crate::command::Request::Do(crate::command::Command::Resolve {
+                    text, ..
+                }) = &asked.request
+                {
+                    let id = text.parse().map_err(|()| {
+                        super::Failed::new(crate::code::Code::Usage, "test target")
+                    })?;
+                    return Ok(super::Reply {
+                        run: self.0.as_ref().and_then(|r| r.run),
+                        ..crate::protocol::Body::Found(id).into()
+                    });
+                }
+                self.0.take().ok_or_else(|| {
+                    super::Failed::new(crate::code::Code::Usage, "held field made another request")
+                })
+            }
+        }
+        let tokens = fuxth::token::source("test", code).map_err(super::Failed::from)?;
+        let mut machine = super::compile(&tokens)?;
+        let mut host = super::Host::new(crate::protocol::Context::default(), None, out);
+        super::run_capped(&mut machine, &mut host, &mut Once(Some(reply)), None, None)
+    }
+
+    #[test]
+    fn review_large_capture_json_crosses_the_machine_boundary_with_its_byte_grant()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let version = "%1:0.0.0.0.0:1-1".parse().map_err(|()| "version")?;
+        let line: Vec<_> = (0u8..100)
+            .map(|color| crate::capture::Cut {
+                text: "x".into(),
+                cells: 1,
+                style: fux_vt::Attributes::new(fux_vt::Color::Idx(color), fux_vt::Color::Default),
+            })
+            .collect();
+        let capture = crate::capture::Captured {
+            of: crate::capture::Of::Pane {
+                version,
+                wrap_pending: false,
+                state: Vec::new(),
+            },
+            screen_rows: 40,
+            screen_cols: 120,
+            screen_cursor: None,
+            lines: std::iter::repeat_n(line, 9931).collect(),
+            styles: true,
+            marks: false,
+        };
+        let reply = super::Reply {
+            run: Some(version.run),
+            ..crate::protocol::Body::Capture(Box::new(capture)).into()
+        };
+        assert!(crate::wire::size(&reply)? <= crate::wire::MAX_REPLY);
+        let mut out = Vec::new();
+        let result = held_reply(
+            "%1 all-history styles capture let h h json print list h h h end json",
+            reply,
+            &mut out,
+        );
+        assert!(
+            out.len() as u64 > fuxth::TOTAL,
+            "admitted capture JSON was not printed: {result:?}"
+        );
+        assert!(out.starts_with(b"{\"pane\":\"%1\"") && out.ends_with(b"}\n"));
+        assert_eq!(
+            result.map_err(|e| e.code),
+            Err(crate::code::Code::from(crate::code::Raise::TooLong))
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn review_held_answers_and_captures_project_without_refreshing()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use super::*;
+        let version: Version = "%1:0.7.0.0.0:1-1".parse().map_err(|()| "version")?;
+        let reply = Reply {
+            run: Some(version.run),
+            response: Response::Answered(PaneResults::One(PaneAnswer::Acted(version))),
+        };
+        assert_eq!(
+            held_reply(
+                "%1 str x text send-keys str version get",
+                reply,
+                &mut Vec::new()
+            )
+            .map_err(|e| e.to_string())?,
+            vec![Value::str(version.to_string())]
+        );
+        let capture = crate::capture::Captured {
+            of: crate::capture::Of::Pane {
+                version,
+                wrap_pending: false,
+                state: vec![("last_status".into(), Json::Int(7))],
+            },
+            screen_rows: 24,
+            screen_cols: 80,
+            screen_cursor: None,
+            lines: Vec::new(),
+            styles: false,
+            marks: false,
+        };
+        let reply = Reply {
+            run: Some(version.run),
+            ..Body::Capture(Box::new(capture)).into()
+        };
+        assert_eq!(
+            held_reply("%1 capture str last_status get", reply, &mut Vec::new())
+                .map_err(|e| e.to_string())?,
+            vec![Value::Int(7)]
+        );
+        let reply = Reply {
+            run: Some(version.run),
+            response: Response::Answered(PaneResults::One(PaneAnswer::Closed(version.pane))),
+        };
+        assert_eq!(
+            held_reply(
+                "str closed try %1 0 timeout wait catch drop str pane get end",
+                reply,
+                &mut Vec::new()
+            )
+            .map_err(|e| e.to_string())?,
+            vec![Value::App(Fux::Pane(version.pane, Some(version.run)))]
+        );
+        let client = crate::id::ClientId::of(1);
+        let capture = crate::capture::Captured {
+            of: crate::capture::Of::Client(client),
+            screen_rows: 24,
+            screen_cols: 80,
+            screen_cursor: Some((7, 3)),
+            lines: vec![vec![crate::capture::Cut {
+                text: "x".into(),
+                cells: 1,
+                style: fux_vt::Attributes::new(fux_vt::Color::Idx(1), fux_vt::Color::Default),
+            }]],
+            styles: true,
+            marks: false,
+        };
+        let reply = Reply {
+            run: Some(version.run),
+            ..Body::Capture(Box::new(capture)).into()
+        };
+        let values = held_reply("str c1 client capture-client let held held str client get held str screen_cursor get held str lines get first held str styles get first first str fg get", reply, &mut Vec::new()).map_err(|e| e.to_string())?;
+        assert_eq!(
+            values,
+            vec![
+                Value::App(Fux::Client(client, Some(version.run))),
+                Value::List(Rc::new(
+                    fuxth::List::new(vec![Value::Int(7), Value::Int(3)]).ok_or("cursor")?
+                )),
+                Value::str("x"),
+                Value::Int(1)
+            ]
+        );
+        Ok(())
+    }
+
     #[test]
     fn attach_words_accept_compiled_action_answers_and_keep_their_run()
     -> Result<(), Box<dyn std::error::Error>> {

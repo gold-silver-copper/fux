@@ -42,26 +42,22 @@ impl std::fmt::Display for Error {
 impl std::error::Error for Error {}
 
 /// Bytes being read.
-pub struct Reader<'a>(&'a [u8], usize, Option<usize>);
+pub struct Reader<'a>(&'a [u8], usize);
 
 impl<'a> Reader<'a> {
     pub fn new(bytes: &'a [u8]) -> Reader<'a> {
-        Reader(bytes, MAX_ALLOCATED, None)
+        Reader(bytes, MAX_ALLOCATED)
     }
     pub(crate) fn limited<T>(
         &mut self,
         bytes: usize,
-        nodes: usize,
         read: impl FnOnce(&mut Self) -> Result<T, Error>,
     ) -> Result<T, Error> {
         let before = self.1;
-        let outer_nodes = self.2;
         self.1 = before.min(bytes);
-        self.2 = Some(nodes);
         let limit = self.1;
         let result = read(self);
         self.1 = before.saturating_sub(limit.saturating_sub(self.1));
-        self.2 = outer_nodes;
         result
     }
     pub(crate) fn charge(&mut self, bytes: usize) -> Result<(), Error> {
@@ -75,9 +71,6 @@ impl<'a> Reader<'a> {
         let count = u32::get(self)? as usize;
         if count > self.0.len() {
             return Err(Error::Truncated);
-        }
-        if let Some(left) = &mut self.2 {
-            *left = left.checked_sub(count).ok_or(Error::Limit)?;
         }
         self.charge(
             count
@@ -623,6 +616,7 @@ text_wire!(crate::id::BufferId, "buffer id");
 text_wire!(KeyPress, "key");
 text_wire!(crate::code::Code, "code");
 text_wire!(crate::command::Version, "version");
+text_wire!(crate::command::LayoutRevision, "layout revision");
 text_wire!(crate::command::Run, "server run");
 text_wire!(crate::events::Cursor, "cursor");
 

@@ -3,9 +3,8 @@ use crate::command::{AnyRef, Run, Version};
 use crate::events::Cursor;
 use crate::id::{ClientId, PaneId, TabId, WsId};
 use crate::json::Json;
-use crate::layout::Axis;
+use crate::layout::Node;
 use crate::wire::wire;
-use std::num::NonZeroU32;
 
 /// Aggregate construction space for a snapshot, including its temporary vectors.
 pub const BYTES: usize = 8 << 20;
@@ -23,8 +22,8 @@ wire! {
     }
 }
 wire! {
-    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-    pub enum Projection { Facts, Topology, Recipe, Field(field: Field), }
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    pub enum Projection { Facts, Topology, Recipe, Field(field: String), }
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Snapshot {
@@ -57,14 +56,7 @@ wire! {
         pub cols: u16,
         pub rows: u16,
         pub nodes: Vec<Node>,
-        pub root: usize,
-    }
-}
-wire! {
-    #[derive(Clone, Debug, PartialEq, Eq)]
-    pub enum Node {
-        Leaf(pane: PaneId),
-        Split { axis: Axis, first: usize, second: usize, a: NonZeroU32, b: NonZeroU32 },
+        pub revision: Option<crate::command::LayoutRevision>,
     }
 }
 wire! {
@@ -135,7 +127,7 @@ impl crate::wire::Wire for Snapshot {
         self.clients.put(out);
     }
     fn get(r: &mut crate::wire::Reader<'_>) -> Result<Self, crate::wire::Error> {
-        r.limited(BYTES, NODES, |r| {
+        r.limited(BYTES, |r| {
             let snapshot = Self {
                 run: Run::get(r)?,
                 events: Cursor::get(r)?,
@@ -153,6 +145,22 @@ impl crate::wire::Wire for Snapshot {
 }
 
 impl Snapshot {
+    pub(crate) fn node_count(&self) -> Option<usize> {
+        let entities = self
+            .workspaces
+            .len()
+            .checked_add(self.tabs.len())?
+            .checked_add(self.panes.len())?
+            .checked_add(self.clients.len())?;
+        let nodes = self
+            .tabs
+            .iter()
+            .try_fold(entities, |n, t| n.checked_add(t.nodes.len()))?;
+        self.workspaces
+            .iter()
+            .try_fold(nodes, |n, w| n.checked_add(w.tabs.len()))
+    }
+
     /// A closed schema also checks its cross references and flat topology.
     pub(crate) fn validate(&self) -> Result<(), crate::wire::Error> {
         use crate::wire::Error;
@@ -160,6 +168,9 @@ impl Snapshot {
         if self.run != self.events.run || matches!(self.projection, Projection::Field(_)) {
             return Err(bad());
         }
+        self.node_count()
+            .filter(|n| *n <= NODES)
+            .ok_or(Error::Limit)?;
         let budget = &mut crate::wire::Budget::with_limit(BYTES);
         fn sorted<T: Ord + Copy>(
             items: impl Iterator<Item = T>,
@@ -186,18 +197,22 @@ impl Snapshot {
             self.clients.len(),
             budget,
         )?;
-        let mut ordered_tabs = self.tabs.iter();
+        let mut ordered_tabs = self.tabs.iter().peekable();
         for w in &self.workspaces {
             if w.tabs.is_empty() {
                 return Err(bad());
             }
+            sorted(w.tabs.iter().copied(), w.tabs.len(), budget)?;
             for id in &w.tabs {
-                if !ordered_tabs
-                    .next()
+                if ordered_tabs
+                    .peek()
                     .is_some_and(|t| t.id == *id && t.workspace == w.id)
                 {
-                    return Err(bad());
+                    ordered_tabs.next();
                 }
+            }
+            if ordered_tabs.peek().is_some_and(|t| t.workspace == w.id) {
+                return Err(bad());
             }
         }
         if ordered_tabs.next().is_some() {
@@ -210,20 +225,29 @@ impl Snapshot {
                 || t.rows == 0
                 || t.cols == 0
                 || t.nodes.len() > NODES
-                || t.root.checked_add(1) != Some(t.nodes.len())
+                || t.nodes.is_empty()
+                || t.revision
+                    .is_some_and(|r| r.run != self.run || r.tab != t.id)
             {
                 return Err(bad());
             }
-            let mut references = budget
-                .vector::<u8>(t.nodes.len())
+            let mut seen = budget
+                .vector::<bool>(t.nodes.len())
                 .map_err(|_| Error::Limit)?;
-            references.resize(t.nodes.len(), 0);
-            for (at, node) in t.nodes.iter().enumerate() {
-                match node {
-                    Node::Leaf(pane) => {
+            seen.resize(t.nodes.len(), false);
+            let mut pending = budget.vector(1).map_err(|_| Error::Limit)?;
+            pending.push(0usize);
+            while let Some(at) = pending.pop() {
+                let visited = seen.get_mut(at).ok_or_else(bad)?;
+                if *visited {
+                    return Err(bad());
+                }
+                *visited = true;
+                match t.nodes.get(at).ok_or_else(bad)? {
+                    Node::Pane(pane) => {
                         budget.reserve(&mut leaves, 1).map_err(|_| Error::Limit)?;
                         leaves.push((*pane, t.id));
-                        let omitted = matches!((self.scope, self.projection), (Scope::Target(AnyRef::Pane(id)), Projection::Facts) if id != *pane);
+                        let omitted = matches!((self.scope, &self.projection), (Scope::Target(AnyRef::Pane(id)), Projection::Facts) if id != *pane);
                         if !omitted
                             && !ordered_panes
                                 .next()
@@ -231,29 +255,14 @@ impl Snapshot {
                         {
                             return Err(bad());
                         }
-                        if !matches!(
-                            (self.scope, self.projection),
-                            (Scope::Target(AnyRef::Pane(_)), Projection::Facts)
-                        ) && panes.binary_search(pane).is_err()
-                        {
-                            return Err(bad());
-                        }
                     }
                     Node::Split { first, second, .. } => {
-                        for child in [first, second] {
-                            if *child >= at {
-                                return Err(bad());
-                            }
-                            let n = references.get_mut(*child).ok_or_else(bad)?;
-                            if *n != 0 {
-                                return Err(bad());
-                            }
-                            *n = 1;
-                        }
+                        budget.reserve(&mut pending, 2).map_err(|_| Error::Limit)?;
+                        pending.extend([*second as usize, *first as usize]);
                     }
                 }
             }
-            if references.iter().take(t.root).any(|n| *n != 1) {
+            if seen.iter().any(|visited| !visited) {
                 return Err(bad());
             }
         }
@@ -306,60 +315,6 @@ impl Snapshot {
         }
         Ok(())
     }
-}
-
-macro_rules! fields {
-    ($($variant:ident $name:literal,)*) => {
-        wire! {
-            #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-            pub enum Field { $($variant,)* }
-        }
-        impl Field {
-            pub fn named(name: &str) -> Option<Self> { match name { $($name => Some(Self::$variant),)* _ => None } }
-            pub fn name(self) -> &'static str { match self { $(Self::$variant => $name,)* } }
-        }
-    };
-}
-fields! {
-    Id "id",
-    Name "name",
-    Label "label",
-    Rows "rows",
-    Cols "cols",
-    Pid "pid",
-    Version "version",
-    Panes "panes",
-    Tabs "tabs",
-    Title "title",
-    Program "program",
-    ForegroundGroup "foreground_group",
-    ForegroundLeader "foreground_leader",
-    LaunchArgv "launch_argv",
-    HungUp "hung_up",
-    ReadError "read_error",
-    Exited "exited",
-    Signal "signal",
-    IdleMs "idle_ms",
-    AltScreen "alt_screen",
-    Mouse "mouse",
-    MouseMode "mouse_mode",
-    BracketedPaste "bracketed_paste",
-    Pictures "pictures",
-    Lost "lost",
-    Cell "cell",
-    CursorVisible "cursor_visible",
-    HistoryBytes "history_bytes",
-    ProgramClipboard "program_clipboard",
-    HistoryLines "history_lines",
-    CopyMode "copy_mode",
-    CommandRunning "command_running",
-    LastStatus "last_status",
-    Bells "bells",
-    Notification "notification",
-    Truncated "truncated",
-    InputUnread "input_unread",
-    Cwd "cwd",
-    Argv "argv",
 }
 
 impl Snapshot {
@@ -501,6 +456,12 @@ impl Snapshot {
                             crate::process::Told(crate::process::Ended::Signalled(
                                 i32::try_from(*signal).map_err(|_| std::fmt::Error)?
                             ))
+                        )?;
+                    } else if p.state.is_some() {
+                        write!(
+                            lines.out,
+                            " {}",
+                            crate::process::Told(crate::process::Ended::Lost)
                         )?;
                     }
                 }

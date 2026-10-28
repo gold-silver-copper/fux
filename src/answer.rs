@@ -66,7 +66,7 @@ impl Change {
         Change::Done,
     ];
 
-    fn name(self) -> &'static str {
+    pub(crate) fn name(self) -> &'static str {
         match self {
             Change::Respawned => "respawned",
             Change::Screen => "screen",

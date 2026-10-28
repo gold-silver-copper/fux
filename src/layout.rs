@@ -44,6 +44,22 @@ pub enum Tree {
     Split(Box<Split>),
 }
 
+wire! {
+    /// One node of a flat layout. Node zero is the root; children name
+    /// indices in the same list. Every node must be reached exactly once.
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    pub enum Node {
+        Pane(pane: PaneId),
+        Split {
+            axis: Axis,
+            first_share: NonZeroU32,
+            second_share: NonZeroU32,
+            first: u32,
+            second: u32,
+        },
+    }
+}
+
 /// Two trees side by side along `axis`, a separator between, sharing what
 /// room there is by `shares`.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -304,6 +320,16 @@ impl Side {
 }
 
 impl Tree {
+    /// Whether `other` holds exactly the same panes, in any order.
+    pub(crate) fn same_panes(&self, other: &Tree) -> bool {
+        let sorted = |tree: &Tree| {
+            let mut panes = tree.panes();
+            panes.sort_unstable();
+            panes
+        };
+        sorted(self) == sorted(other)
+    }
+
     /// Every pane, in tree order: for when a list is needed, as to step
     /// through it by index.
     pub fn panes(&self) -> Vec<PaneId> {

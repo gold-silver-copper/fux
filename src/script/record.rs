@@ -285,16 +285,16 @@ pub(super) fn snapshot(s: inspect::Snapshot) -> Result<V, Failure> {
     })?;
     let tabs = b.list(&s.tabs, |b,t| {
         let nodes = b.list(&t.nodes, |b,n| match n {
-            inspect::Node::Leaf(p) => record! { b; "kind" => b.text("leaf")?, "pane" => id(AnyRef::Pane(*p), run) },
-            inspect::Node::Split { axis, first, second, a, b: share } => record! { b;
-                "kind" => b.text("split")?, "axis" => b.text(match axis { crate::layout::Axis::Horizontal => "horizontal", crate::layout::Axis::Vertical => "vertical" })?,
-                "first" => number(*first)?, "second" => number(*second)?, "a" => number(a.get())?, "b" => number(share.get())?
-            },
+            crate::layout::Node::Pane(p) => Ok(id(AnyRef::Pane(*p), run)),
+            crate::layout::Node::Split { axis, first, second, first_share, second_share } => {
+                let row = [b.text(match axis { crate::layout::Axis::Horizontal => "horizontal", crate::layout::Axis::Vertical => "vertical" })?, number(first_share.get())?, number(second_share.get())?, number(*first)?, number(*second)?];
+                b.list(&row, |_,v| Ok(v.clone()))
+            }
         })?;
         record! { b; "id" => id(AnyRef::Tab(t.id),run), "workspace" => id(AnyRef::Workspace(t.workspace),run),
             "name" => b.optional(t.name.as_deref())?, "label" => b.text(&t.label)?,
             "fit" => b.text(if t.fixed { "fixed" } else { "clients" })?, "cols" => number(t.cols)?, "rows" => number(t.rows)?,
-            "nodes" => nodes, "root" => number(t.root)?
+            "nodes" => nodes, "revision" => t.revision.map(|r| b.text(&r.to_string())).unwrap_or_else(|| Ok(null()))?
         }
     })?;
     let panes = b.list(&s.panes, |b,p| {
@@ -337,7 +337,7 @@ pub(super) fn snapshot(s: inspect::Snapshot) -> Result<V, Failure> {
         Scope::Client(c) => Value::App(Fux::Client(c, Some(run))),
     };
     let value = record! { b; "run" => b.text(&run.to_string())?, "events" => b.text(&s.events.to_string())?, "scope" => scope,
-        "projection" => b.text(match s.projection { Projection::Facts => "facts", Projection::Topology => "topology", Projection::Recipe => "recipe", Projection::Field(_) => return Err(fail()) })?,
+        "projection" => b.text(match &s.projection { Projection::Facts => "facts", Projection::Topology => "topology", Projection::Recipe => "recipe", Projection::Field(_) => return Err(fail()) })?,
         "workspaces" => workspaces, "tabs" => tabs, "panes" => panes, "clients" => clients
     }?;
     let Value::App(Fux::Record(mut record)) = value else {
@@ -353,6 +353,162 @@ pub(super) fn snapshot(s: inspect::Snapshot) -> Result<V, Failure> {
         .ok_or_else(fail)?;
     record_mut.snapshot = Some(s);
     Ok(Value::App(Fux::Record(record)))
+}
+
+/// Project held native observations directly; never resolve their source again.
+pub(super) fn answer_field(
+    answer: &super::Answer,
+    run: Option<Run>,
+    field: &str,
+) -> Result<V, Failure> {
+    use crate::answer::PaneAnswer;
+    let b = &mut Builder::new();
+    let absent = || {
+        Failure::new(
+            Code::from(Raise::NoField).into(),
+            format!("held observation has no field {field:?}"),
+        )
+    };
+    match answer {
+        super::Answer::Pane(answer) => {
+            match field {
+                "pane" => return Ok(Value::App(Fux::Pane(answer.pane(), run))),
+                "version" => {
+                    return answer
+                        .version()
+                        .map(|v| b.text(&v.to_string()))
+                        .unwrap_or_else(|| Err(absent()));
+                }
+                "status" => return number(answer.failure().map_or(0, |c| c.status().get())),
+                _ => {}
+            }
+            if let PaneAnswer::Changed { changed, ended, .. } = answer {
+                match (field, ended) {
+                    ("changed", _) => return b.list(changed, |b, c| b.text(c.name())),
+                    ("exited", Some(crate::process::Ended::Exited(n))) => return number(*n),
+                    ("exited", Some(crate::process::Ended::Lost)) => return Ok(null()),
+                    ("signal", Some(crate::process::Ended::Signalled(n))) => return number(*n),
+                    _ => {}
+                }
+            }
+            Err(absent())
+        }
+        super::Answer::Capture(c) => {
+            match field {
+                "screen_rows" => return number(c.screen_rows),
+                "screen_cols" => return number(c.screen_cols),
+                "screen_cursor" => {
+                    return match c.screen_cursor {
+                        Some((row, col)) => b.list(&[row, col], |_, n| number(*n)),
+                        None => Ok(null()),
+                    };
+                }
+                "lines" => {
+                    return b.list(&c.lines, |b, line| {
+                        let text = crate::json::render(&mut b.budget, |out| {
+                            crate::capture::write_line(out, line, c.marks, false, &mut Vec::new())
+                        })
+                        .map_err(super::words::observation_failure)?;
+                        b.text(&text)
+                    });
+                }
+                "styles" if c.styles => {
+                    return b.list(&c.lines, |b, line| {
+                        let mut values = b
+                            .budget
+                            .vector(
+                                line.iter()
+                                    .filter(|cut| cut.style != fux_vt::Attributes::default())
+                                    .count(),
+                            )
+                            .map_err(super::words::observation_failure)?;
+                        let mut col = 0u32;
+                        for cut in line {
+                            if cut.style != fux_vt::Attributes::default() {
+                                let mut fields = b
+                                    .budget
+                                    .vector(2)
+                                    .map_err(super::words::observation_failure)?;
+                                for (name, value) in
+                                    [("col", number(col)?), ("len", number(cut.cells)?)]
+                                {
+                                    fields.push((
+                                        b.budget
+                                            .string(name)
+                                            .map_err(super::words::observation_failure)?,
+                                        value,
+                                    ));
+                                }
+                                for (name, value) in crate::capture::style_fields(cut.style) {
+                                    let value = match value {
+                                        crate::capture::StyleValue::Flag => Value::Bool(true),
+                                        crate::capture::StyleValue::Color(fux_vt::Color::Idx(
+                                            n,
+                                        )) => number(n)?,
+                                        crate::capture::StyleValue::Color(fux_vt::Color::Rgb(
+                                            fux_vt::Rgb { r, g, b: blue },
+                                        )) => b.text(&format!("#{r:02x}{g:02x}{blue:02x}"))?,
+                                        crate::capture::StyleValue::Color(
+                                            fux_vt::Color::Default,
+                                        ) => continue,
+                                    };
+                                    b.budget
+                                        .reserve(&mut fields, 1)
+                                        .map_err(super::words::observation_failure)?;
+                                    fields.push((
+                                        b.budget
+                                            .string(name)
+                                            .map_err(super::words::observation_failure)?,
+                                        value,
+                                    ));
+                                }
+                                b.nodes(fields.len().saturating_add(1))?;
+                                values.push(b.finish(fields)?);
+                            }
+                            col = col.checked_add(cut.cells).ok_or_else(fail)?;
+                        }
+                        b.nodes(values.len())?;
+                        b.budget
+                            .slots::<List<Fux>>(1)
+                            .map_err(super::words::observation_failure)?;
+                        b.budget
+                            .slots::<usize>(2)
+                            .map_err(super::words::observation_failure)?;
+                        Ok(Value::List(Rc::new(List::new(values).ok_or_else(fail)?)))
+                    });
+                }
+                _ => {}
+            }
+            match &c.of {
+                crate::capture::Of::Pane {
+                    version,
+                    wrap_pending,
+                    state,
+                } => match field {
+                    "pane" => Ok(Value::App(Fux::Pane(version.pane, Some(version.run)))),
+                    "version" => b.text(&version.to_string()),
+                    "wrap_pending" => Ok(Value::Bool(*wrap_pending)),
+                    field => state
+                        .iter()
+                        .find(|(name, _)| name == field)
+                        .map(|(_, v)| b.json(v, 0))
+                        .unwrap_or_else(|| Err(absent())),
+                },
+                crate::capture::Of::Client(client) => {
+                    if field == "client" {
+                        Ok(Value::App(Fux::Client(*client, run)))
+                    } else {
+                        Err(absent())
+                    }
+                }
+            }
+        }
+        super::Answer::Status(status) => status
+            .get(field)
+            .map(|v| b.json(v, 0))
+            .unwrap_or_else(|| Err(absent())),
+        super::Answer::Panes(_) => Err(absent()),
+    }
 }
 
 #[cfg(test)]

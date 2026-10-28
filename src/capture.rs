@@ -579,7 +579,7 @@ pub(crate) fn state(
             .map(Option::flatten)
     })?;
     let cwd = match leader
-        .map(|pid| fuxix::process::cwd(pid, budget))
+        .map(|pid| fuxix::process::cwd_observed(pid, budget).map(|r| r.ok().flatten()))
         .transpose()?
         .flatten()
     {
@@ -987,7 +987,7 @@ impl Captured {
 }
 
 /// Write a line without allocating its plain or escaped intermediate text.
-fn write_line(
+pub(crate) fn write_line(
     out: &mut dyn std::fmt::Write,
     line: &[Cut],
     marks: bool,
@@ -1022,20 +1022,35 @@ fn write_line(
     Ok(())
 }
 
-/// Attributes in the JSON vocabulary, streamed into the enclosing run.
+/// The shared vocabulary for styled capture runs, streamed or projected locally.
+pub(crate) enum StyleValue {
+    Color(Color),
+    Flag,
+}
+pub(crate) fn style_fields(a: Attributes) -> impl Iterator<Item = (&'static str, StyleValue)> {
+    let colors = [("fg", a.foreground()), ("bg", a.background())]
+        .into_iter()
+        .filter(|(_, c)| *c != Color::Default)
+        .map(|(k, c)| (k, StyleValue::Color(c)));
+    let flags = a
+        .sgr_flags()
+        .map(|(_, name)| name)
+        .chain(a.underline().then_some("underline"))
+        .chain((a.blink() != fux_vt::Blink::None).then_some("blink"))
+        .map(|name| (name, StyleValue::Flag));
+    colors.chain(flags)
+}
+
 fn describe(out: &mut dyn std::fmt::Write, a: Attributes) -> std::fmt::Result {
-    for (name, colour) in [("fg", a.foreground()), ("bg", a.background())] {
-        match colour {
-            Color::Default => {}
-            Color::Idx(n) => write!(out, ",\"{name}\":{n}")?,
-            Color::Rgb(Rgb { r, g, b }) => write!(out, ",\"{name}\":\"#{r:02x}{g:02x}{b:02x}\"")?,
+    for (name, value) in style_fields(a) {
+        match value {
+            StyleValue::Color(Color::Default) => {}
+            StyleValue::Color(Color::Idx(n)) => write!(out, ",\"{name}\":{n}")?,
+            StyleValue::Color(Color::Rgb(Rgb { r, g, b })) => {
+                write!(out, ",\"{name}\":\"#{r:02x}{g:02x}{b:02x}\"")?
+            }
+            StyleValue::Flag => write!(out, ",\"{name}\":true")?,
         }
-    }
-    let flags = a.sgr_flags().map(|(_, name)| name);
-    let underline = a.underline().then_some("underline");
-    let blink = (a.blink() != fux_vt::Blink::None).then_some("blink");
-    for name in flags.chain(underline).chain(blink) {
-        write!(out, ",\"{name}\":true")?;
     }
     Ok(())
 }

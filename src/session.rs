@@ -1190,25 +1190,25 @@ impl Session {
     /// The directory pane `pane`'s program is in, if it can be read.
     fn dir_of(&self, pane: PaneId) -> Option<PathBuf> {
         let mut allocation = usize::MAX;
-        self.dir_with(pane, &mut allocation).ok().flatten()
+        self.dir_with(pane, &mut allocation).ok()?.ok().flatten()
     }
 
     fn dir_with<A: fuxix::Allocation>(
         &self,
         pane: PaneId,
         budget: &mut A,
-    ) -> Result<Option<PathBuf>, A::Error> {
+    ) -> Result<fuxix::Result<Option<PathBuf>>, A::Error> {
         let Some(p) = self.parts.panes().get(&pane) else {
-            return Ok(None);
+            return Ok(Ok(None));
         };
         let child = p
             .process()
             .child()
             .or_else(|| self.respawning.get(&pane)?.process.child());
-        child
-            .map(|child| fuxix::process::cwd(child.leader.pid(), budget))
-            .transpose()
-            .map(Option::flatten)
+        match child {
+            Some(child) => fuxix::process::cwd_observed(child.leader.pid(), budget),
+            None => Ok(Ok(None)),
+        }
     }
 
     /// Where a new pane's program starts: `dir`, from the caller's
@@ -2346,7 +2346,7 @@ impl Session {
         let here = self.here(origin)?;
         match command {
             Command::Inspect { scope, projection } => {
-                self.inspect(*scope, *projection).map(Into::into)
+                self.inspect(*scope, projection.clone()).map(Into::into)
             }
             Command::KillServer => self.kill_server(origin),
             Command::NewWorkspace {
@@ -3793,6 +3793,126 @@ mod tests {
     use crate::pane::Left;
 
     #[test]
+    fn review_plain_listings_report_a_lost_exit_status() -> Result<(), String> {
+        let (mut s, _) = attached(12, 50)?;
+        run(
+            &mut s,
+            "opts str agent in 80 24 size str /bin/cat program run drop",
+        )?;
+        s.exited(PaneId::of(2), Ended::Lost);
+        for code in ["ls", "%2 info"] {
+            let text = output(&mut s, code)?;
+            assert!(text.contains("ended, its status lost"), "{text}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn review_recipe_wire_bytes_do_not_spend_entity_nodes() -> Result<(), String> {
+        use crate::inspect::{Projection, Scope};
+        let (s, _) = attached(12, 50)?;
+        let Body::Snapshot(mut snapshot) = s
+            .inspect(Scope::All, Projection::Recipe)
+            .map_err(|e| e.to_string())?
+        else {
+            return Err("snapshot".into());
+        };
+        let recipe = snapshot
+            .panes
+            .first_mut()
+            .and_then(|p| p.recipe.as_mut())
+            .ok_or("recipe")?;
+        let raw = vec![255; 70_000];
+        recipe
+            .env
+            .push(("RAW".into(), Some(crate::inspect::Path::Bytes(raw))));
+        let bytes = crate::wire::encode(&*snapshot).map_err(|e| e.to_string())?;
+        assert_eq!(
+            crate::wire::Reader::new(&bytes)
+                .whole::<crate::inspect::Snapshot>()
+                .map_err(|e| e.to_string())?,
+            *snapshot
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn held_fields_survive_the_source_pane_closing() -> Result<(), String> {
+        let (mut s, _) = attached(12, 50)?;
+        assert_eq!(
+            output(
+                &mut s,
+                "opts str agent in 80 24 size str /bin/cat program run let held held str version get let before held pane kill held str version get before eq"
+            )?,
+            "true\n"
+        );
+        run(
+            &mut s,
+            "opts str agent in 80 24 size str /bin/cat program run drop",
+        )?;
+        assert_eq!(
+            output(
+                &mut s,
+                "%3 capture let held %3 kill held str last_status get kind"
+            )?,
+            "null\n"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn scoped_topology_keeps_full_membership_and_the_shared_layout_revision() -> Result<(), String>
+    {
+        use crate::inspect::{Projection, Scope};
+        let (mut s, _) = attached(12, 80)?;
+        run(
+            &mut s,
+            "opts +1 in 80 24 size new-tab drop %2 horizontal split drop opts +1 in 80 24 size new-tab drop",
+        )?;
+        for scope in [
+            Scope::Target(AnyRef::Tab("@2".parse().map_err(|_| "tab")?)),
+            Scope::Target(AnyRef::Pane(PaneId::of(2))),
+        ] {
+            let Body::Snapshot(snapshot) = s
+                .inspect(scope, Projection::Topology)
+                .map_err(|e| e.to_string())?
+            else {
+                return Err("snapshot".into());
+            };
+            snapshot.validate().map_err(|e| e.to_string())?;
+            let ws = snapshot.workspaces.first().ok_or("workspace")?;
+            assert_eq!(ws.tabs.len(), 3);
+            assert_eq!(snapshot.tabs.len(), 1);
+            let tab = snapshot.tabs.first().ok_or("tab")?;
+            assert_eq!(tab.revision, s.tab(tab.id).and_then(|t| t.revision(s.run)));
+            assert!(matches!(
+                tab.nodes.first(),
+                Some(crate::layout::Node::Split {
+                    first: 1,
+                    second: 2,
+                    ..
+                })
+            ));
+            let held = crate::script::answered(Reply {
+                run: Some(s.run),
+                ..Body::Snapshot(snapshot).into()
+            })
+            .map_err(|e| e.to_string())?;
+            assert!(!held.is_empty());
+        }
+        let before = s
+            .tab("@2".parse().map_err(|_| "tab")?)
+            .and_then(|t| t.revision(s.run));
+        s.output(PaneId::of(2), b"unchanged layout");
+        assert_eq!(
+            before,
+            s.tab("@2".parse().map_err(|_| "tab")?)
+                .and_then(|t| t.revision(s.run))
+        );
+        Ok(())
+    }
+
+    #[test]
     fn snapshot_is_one_turn_and_local_fields_keep_their_typed_run() -> Result<(), String> {
         let (mut s, _) = attached(12, 50)?;
         struct Once(Option<Reply>);
@@ -3845,12 +3965,13 @@ mod tests {
 
     #[test]
     fn snapshot_projections_keep_order_tree_fit_launch_and_cursor() -> Result<(), String> {
-        use crate::inspect::{Node, Projection, Scope};
+        use crate::inspect::{Projection, Scope};
+        use crate::layout::Node;
         let (mut s, c) = attached(12, 50)?;
         run(&mut s, "%1 horizontal 2 3 shares split drop")?;
         for projection in [Projection::Facts, Projection::Topology, Projection::Recipe] {
             let Body::Snapshot(snapshot) = s
-                .inspect(Scope::Client(c), projection)
+                .inspect(Scope::Client(c), projection.clone())
                 .map_err(|e| e.to_string())?
             else {
                 return Err("no snapshot".into());
@@ -3863,7 +3984,7 @@ mod tests {
             );
             let tab = snapshot.tabs.first().ok_or("no tab")?;
             assert!(
-                matches!(tab.nodes.get(tab.root), Some(Node::Split { a,b,.. }) if a.get() == 2 && b.get() == 3)
+                matches!(tab.nodes.first(), Some(Node::Split { first_share,second_share,.. }) if first_share.get() == 2 && second_share.get() == 3)
             );
             assert!(!tab.fixed);
             assert_eq!(
@@ -3886,7 +4007,11 @@ mod tests {
                 *snapshot
             );
             let mut malformed = *snapshot;
-            malformed.tabs.first_mut().ok_or("no tab")?.root = usize::MAX;
+            if let Some(Node::Split { first, .. }) =
+                malformed.tabs.first_mut().and_then(|t| t.nodes.first_mut())
+            {
+                *first = u32::MAX;
+            }
             let bytes = crate::wire::encode(&malformed).map_err(|e| e.to_string())?;
             assert!(
                 crate::wire::Reader::new(&bytes)

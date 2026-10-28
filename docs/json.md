@@ -1,7 +1,13 @@
 # What `json` gives
 
-(`fux help json`.) `json` turns the value on top of the stack into JSON:
-what a word left, as below; a string as a JSON string; a number or boolean
+(`fux help json`.) `json` turns the value on top of the stack into JSON.
+Small results are ordinary strings. Beyond 1,000,000 characters it returns shared text of kind
+`rendered`: `print` and implicit command output emit it under the existing
+128 MiB finite-observation grant. Explicit `string` conversion still obeys
+the language string limit. Native rendered bytes have their own cumulative
+128 MiB import grant, while traversal work is charged at their actual size.
+
+The JSON represents what a word left, as below; a string as a JSON string; a number or boolean
 as itself; a list as an array of these, each answer in it as `json` gives
 it alone (a capture's, a listing's or an action's object; one of several
 panes an array of their objects). Rows and columns count from 0; times are milliseconds; ids are strings (`"%3"`,
@@ -70,7 +76,12 @@ held str panes get each str id get print end
 held str clients get each str pane get print end
 ```
 
-`get` on a record is local, even if the server has since changed or stopped.
+`get` on a record, held action answer, or capture is local, even if the
+source pane has changed, respawned, or closed. A held answer's `pane`,
+`version`, `status`, and applicable change/exit fields come from that answer.
+A capture exposes its saved `pane` (or `client`), version, screen geometry,
+lines, optional styles, and captured state fields such as `last_status`.
+An absent field still fails `no_field`; it never falls back to a live read.
 Arrays become fuxth lists, objects become records, booleans and integers keep
 their types, and strings keep their exact text. Null has kind `null`; it is
 neither false nor an empty string/list. An absent field fails `no_field`.
@@ -79,13 +90,19 @@ conversion. `buffers` now returns a list of records; `buffers json` renders
 its array. `X str FIELD get` on a live handle and `panes`/`tabs` remain native
 selective reads. `get id` and container membership return typed handles.
 
-Each workspace has `id`, `name`, `label`, and `tabs`. Each tab has `id`,
-`workspace`, `name`, `label`, `fit` (`fixed` or `clients`), `cols`, `rows`,
-`nodes`, and `root`. For client fit, the size is the retained size. A leaf
-node has `kind: leaf` and `pane`; a split has `kind: split`, `axis`, `first`,
-`second`, and exact positive shares `a`, `b`. Child indices precede their
-parent. Each node is reachable and each pane occurs once. The tree is flat,
-so layout depth does not consume record nesting.
+Each workspace has `id`, `name`, `label`, and `tabs`. Its `tabs` is always the
+full ordered membership, including in a tab- or pane-scoped snapshot, whose
+`tabs` facts collection contains only the selected tab. Each tab fact has
+`id`, `workspace`, `name`, `label`, `fit` (`fixed` or `clients`), `cols`,
+`rows`, `nodes`, and `revision`. Client fit reports its retained size.
+
+`revision` is `TAB:REVISION:RUN`, the native layout revision, or null if its
+counter is exhausted. Screen output does not change it. `nodes` uses the
+shared flat layout schema: the root is index zero, a leaf is a typed pane
+handle, and a split is `[AXIS, FIRST_SHARE, SECOND_SHARE, FIRST, SECOND]`.
+The axis is `horizontal` or `vertical`; shares are positive integers and
+children are indices in that same list. Every node is reachable once, with
+one leaf per pane. Layout depth does not consume record nesting.
 
 Each pane has `id`, `tab`, `name`, `label`, `title`, `pid`, `rows`, `cols`,
 and `version`. A name is given or null; a label is display text. Facts adds
@@ -117,7 +134,9 @@ observations happen during the turn but are not simultaneous OS snapshots.
 A pane version does not certify process metadata or client focus.
 
 Snapshots allow at most 8 MiB of native construction/decoded allocation and
-65,536 collection/entity nodes. Client projection separately admits at most
+65,536 entity, workspace-membership and tree nodes. Decode checks the same
+inventory as construction; raw OS bytes, argv items and JSON members consume
+the byte/allocation grant rather than one entity node per byte or item. Client projection separately admits at most
 8 MiB and 65,536 values/fields, with record nesting at most 32. It retains
 the native schema for plain rendering and shares immutable records on clone.
 The tighter language limits still apply, including 1,000,000 characters per

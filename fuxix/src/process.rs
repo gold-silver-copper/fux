@@ -704,15 +704,6 @@ pub fn cwd_observed<A: crate::Allocation>(
     Ok(Ok(Some(PathBuf::from(OsString::from_vec(bytes)))))
 }
 
-/// The current directory when available; callers needing the OS failure use
-/// `cwd_observed`. Both share the caller's allocation grant.
-pub fn cwd<A: crate::Allocation>(
-    pid: Pid,
-    budget: &mut A,
-) -> std::result::Result<Option<PathBuf>, A::Error> {
-    cwd_observed(pid, budget).map(|observed| observed.ok().flatten())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -850,7 +841,7 @@ mod tests {
         let there = own
             .and_then(|pid| {
                 let mut quota = usize::MAX;
-                cwd(pid, &mut quota).ok().flatten()
+                cwd_observed(pid, &mut quota).ok()?.ok().flatten()
             })
             .and_then(|d| d.canonicalize().ok());
         assert!(here.is_some());

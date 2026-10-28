@@ -190,13 +190,14 @@ pub fn from_opts(last: &str) -> String {
 /// fux's kinds of value, each as its values' `name` says it, as an error
 /// says it, and, for one that must be used, what one left over is told.
 #[rustfmt::skip]
-pub const KINDS: [(&str, &str, Option<&str>); 21] = [
+pub const KINDS: [(&str, &str, Option<&str>); 22] = [
     ("pane", "a pane", None), ("tab", "a tab", None), ("workspace", "a workspace", None),
     ("client", "a client", None), ("size", "a size (from percent)", None),
     ("answer", "an action's answer", None),
     ("closed-answer", "a closed pane's answer", None),
     ("client-capture", "a client's capture", None),
     ("answers", "an answer of a tab's or workspace's panes", None), ("capture", "a capture", None),
+    ("rendered", "rendered observation text", None),
     ("record", "a record", None), ("null", "null", None), ("all", "all scopes", None),
     ("listing", "a listing", None),
     ("opts", "options (from opts, for run, new-tab, new-workspace, events-of, attach and attach-defaults; a pane's words take theirs on the pane: `%2 all-history capture`)", Some("nothing takes these options")),
@@ -237,10 +238,11 @@ pub const NAMES: &[(&str, &str, &str)] = &[
     ("text", "string integer boolean", "a string, a number or a boolean"),
     ("new", "integer boolean list", "a setting's value: a number, true or false, or a list (fux help set)"),
     ("var", "string integer boolean pane tab workspace answer closed-answer", "a string, a number, a boolean, or a pane, tab or workspace"),
-    ("value", "integer boolean string list pane tab workspace client size answer closed-answer answers capture client-capture listing record null all",
+    ("value", "integer boolean string list pane tab workspace client size answer closed-answer answers capture client-capture listing record rendered null all",
         "a value (options and requests are none: what acts on them gives one)"),
     ("seen", "string answer capture", "a version: an action's or wait's answer, a pane's capture, or its text"),
-    ("readable", "pane tab workspace answer closed-answer record", "a handle or record"),
+    ("json-output", "string rendered", "JSON text"),
+    ("readable", "pane tab workspace answer closed-answer capture client-capture listing record", "a handle or held observation"),
     ("scope", "all pane tab workspace client answer closed-answer", "a scope"),
     ("width", "integer size", "cells, or a percent"),
     ("height", "integer size", "cells, or a percent"),
@@ -277,8 +279,8 @@ words! {
         Reading Info "info" "handle -- record" "one facts snapshot of a pane, tab or workspace" "fux %3 info json" [];
         Reading All "all" "-- all" "all workspaces and clients" "fux all str topology snapshot" [];
         Reading Snapshot "snapshot" "scope projection -- record" "one bounded observation: facts, topology or recipe" "fux all str topology snapshot json" [];
-        Reading Get "get" "readable field -- value" "one field of a pane, tab or workspace: version, exited, last_status, idle_ms, cwd" "fux %3 str exited get" [];
-        Reading Json "json" "value -- string" "value as JSON (an answer as its JSON); a failed wait's answer is the message try's handler gets" "fux ls json" [];
+        Reading Get "get" "readable field -- value" "a held answer, capture or record field, locally; or a live pane, tab or workspace field" "fux %3 str exited get" [];
+        Reading Json "json" "value -- json-output" "value as JSON (an answer as its JSON); a failed wait's answer is the message try's handler gets" "fux ls json" [];
         Reading Events "events" "--" "what happens, a JSON line each, as it happens" "fux events" [];
         Reading EventsOf "events-of" "watched --" "what happens in a pane, tab or workspace, or on opts everywhere, a JSON line each" "fux str agent workspace events-of" [Either: From];
         Reading Dump "dump" "-- text" "everything, as a program that makes it again (shells new, nothing typed into them)" "fux dump > all.fux; fux start && fux --file all.fux" [];
@@ -512,9 +514,11 @@ fn json_text(value: &Value<Fux>, limit: usize) -> Result<String, Failure> {
             }
             Value::App(Fux::Answer(answer, _)) => {
                 budget.slots::<super::Answer>(1)?;
+                budget.slots::<usize>(2)?;
                 answer.charge(budget)
             }
             Value::App(Fux::Record(r)) => budget.charge(r.bytes()),
+            Value::App(app @ Fux::Rendered(_)) => budget.charge(fuxth::AppValue::text_bytes(app)),
             Value::App(Fux::Null | Fux::All) => Ok(()),
             Value::App(Fux::Opts(opts)) => budget.charge(opts.heap_bytes()),
             Value::App(
@@ -556,6 +560,7 @@ pub(super) fn write_json_value(
             Fux::Null => out.write_str("null"),
             Fux::All => out.write_str("\"all\""),
             Fux::Record(r) => r.write(out),
+            Fux::Rendered(text) => crate::json::write_str(out, text),
             Fux::Answer(answer, _) => answer.write_json(out),
             Fux::Pane(pane, _) => write!(out, "\"{pane}\""),
             Fux::Tab(tab, _) => write!(out, "\"{tab}\""),
@@ -620,10 +625,10 @@ fn sibling(value: &Value<Fux>) -> Result<Sibling, Failure> {
 }
 
 /// One of a closed set, by its name; refused, naming each, if none.
-fn one_of<T: Copy>(value: &Value<Fux>, all: &[(&str, T)]) -> Result<T, Failure> {
+fn one_of<T: Clone>(value: &Value<Fux>, all: &[(&str, T)]) -> Result<T, Failure> {
     let given = string(value)?;
     let found = all.iter().find(|(name, _)| *name == given);
-    found.map(|(_, t)| *t).ok_or_else(|| {
+    found.map(|(_, t)| t.clone()).ok_or_else(|| {
         let names: Vec<&str> = all.iter().map(|(name, _)| *name).collect();
         let names = crate::words::listed(&names, "or");
         fail(Raise::BadValue, format!("{given:?} is not {names}"))
@@ -1646,13 +1651,17 @@ impl Host<'_> {
                 let field = string(&next()?)?;
                 match value {
                     Value::App(Fux::Record(record)) => now(out, record.get(&field)?),
+                    Value::App(Fux::Answer(answer, run)) => {
+                        now(out, super::record::answer_field(&answer, run, &field)?)
+                    }
                     value @ (Value::Int(_)
                     | Value::Bool(_)
                     | Value::Str(_)
                     | Value::List(_)
                     | Value::App(_)) => {
-                        let field = crate::inspect::Field::named(&field)
-                            .ok_or_else(|| fail(Raise::NoField, format!("no field {field:?}")))?;
+                        if field.len() > crate::session::NAME_MAX {
+                            return Err(fail(Raise::TooLong, "field name is too long"));
+                        }
                         later(ask(Command::Inspect {
                             scope: crate::inspect::Scope::Target(target(&value)?),
                             projection: crate::inspect::Projection::Field(field),
@@ -1671,10 +1680,15 @@ impl Host<'_> {
                 | Value::Bool(_)
                 | Value::Str(_)
                 | Value::List(_)
-                | Value::App(_)) => now(
-                    out,
-                    Value::str(json_text(&other, crate::wire::MAX_ALLOCATED)?),
-                ),
+                | Value::App(_)) => {
+                    let text = json_text(&other, crate::wire::MAX_ALLOCATED)?;
+                    let value = if text.chars().count() <= fuxth::LONGEST {
+                        Value::str(text)
+                    } else {
+                        Value::App(Fux::Rendered(std::rc::Rc::new(text)))
+                    };
+                    now(out, value)
+                }
             },
             Act::Events => tell(Request::Events(None, None)),
             Act::EventsOf => {
@@ -2450,7 +2464,7 @@ mod tests {
             marks: false,
         };
         let held = fuxth::List::new(vec![Value::App(Limited(Fux::Answer(
-            Box::new(super::super::Answer::Capture(Box::new(captured))),
+            std::rc::Rc::new(super::super::Answer::Capture(Box::new(captured))),
             None,
         )))])
         .ok_or("held list")?;
@@ -2516,7 +2530,7 @@ mod tests {
             marks: false,
         };
         let value = Value::App(Fux::Answer(
-            Box::new(super::super::Answer::Capture(Box::new(capture))),
+            std::rc::Rc::new(super::super::Answer::Capture(Box::new(capture))),
             None,
         ));
         assert!(
@@ -2549,7 +2563,7 @@ mod tests {
         let version = "%1:0.0.0.0.0:1-1".parse().map_err(|()| "version")?;
         let one = super::super::Answer::Panes(vec![crate::answer::PaneAnswer::Acted(version)]);
         let json = json_text(
-            &Value::App(Fux::Answer(Box::new(one), None)),
+            &Value::App(Fux::Answer(std::rc::Rc::new(one), None)),
             crate::wire::MAX_ALLOCATED,
         )
         .map_err(|f| f.message)?;
@@ -2614,13 +2628,13 @@ mod tests {
             workspace,
             client,
             Fux::Answer(
-                Box::new(super::super::Answer::Pane(
+                std::rc::Rc::new(super::super::Answer::Pane(
                     crate::answer::PaneAnswer::Acted(version),
                 )),
                 Some(version.run),
             ),
             Fux::Answer(
-                Box::new(super::super::Answer::Pane(
+                std::rc::Rc::new(super::super::Answer::Pane(
                     crate::answer::PaneAnswer::Closed(version.pane),
                 )),
                 Some(version.run),
