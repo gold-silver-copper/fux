@@ -1457,7 +1457,9 @@ fn empty_attach_retry_keeps_resize_and_starts_a_new_frame_fence() -> Outcome {
     let mut terminal = Terminal::attach(&server, 10, 40, &["opts", "attach"])?;
     let mut probe = loop {
         let (mut stream, _) = listener.accept().map_err(e)?;
-        stream.set_read_timeout(Some(PATIENCE)).map_err(e)?;
+        // macOS refuses a timeout on the already-closed readiness probe;
+        // its read still returns EOF immediately, just as in wait_at_most.
+        let _ = stream.set_read_timeout(Some(PATIENCE));
         if read::<Hello>(&mut stream)?.is_some() {
             break stream;
         }
