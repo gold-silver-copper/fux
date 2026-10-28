@@ -13,7 +13,7 @@ use fux_vt::{
 };
 use std::time::Instant;
 
-/// Hard work ceiling, calibrated against the audit's default-history capture.
+/// Synthesized output work: at most two cells per admitted wire byte.
 pub(crate) const OUTPUT_CELLS: usize = 2 * crate::wire::MAX_REPLY;
 
 /// Rows selected for a capture, each with the columns its source takes.
@@ -298,8 +298,7 @@ fn selected_rows(
     let mut line_cells = 0usize;
     let (mut start, mut count, mut line_start) = (skip, 0usize, 0usize);
     for (index, (row, span)) in read.enumerate() {
-        // Bound the metadata scan too, including the prefix needed to find
-        // a joined range's first whole logical line. No row vector is made.
+        // The VT bounds retained rows; this scan allocates no row vector.
         let work = columns(row, span, view).len();
         if view.wrapped {
             cells = cells.checked_add(work).ok_or_else(too_large)?;
@@ -310,9 +309,6 @@ fn selected_rows(
             }
         }
         if cells > limits.cells {
-            return Err(too_large());
-        }
-        if index >= limits.rows {
             return Err(too_large());
         }
         if !view.wrapped && index <= first {
@@ -342,7 +338,6 @@ fn selected_rows(
 #[derive(Clone, Copy)]
 struct Limits {
     cells: usize,
-    rows: usize,
 }
 impl Limits {
     fn new(history_bytes: usize, (rows, cols): (u16, u16)) -> Result<Self, crate::session::Error> {
@@ -354,13 +349,7 @@ impl Limits {
             .and_then(|n| n.checked_add(live))
             .and_then(|n| n.checked_add(OUTPUT_CELLS))
             .ok_or_else(too_large)?;
-        Ok(Self {
-            cells,
-            rows: crate::wire::MAX_ALLOCATED
-                .checked_div(std::mem::size_of::<Vec<Cut>>())
-                .ok_or_else(too_large)?
-                / 4,
-        })
+        Ok(Self { cells })
     }
 }
 
@@ -1062,10 +1051,7 @@ mod tests {
             None,
             view,
             false,
-            super::Limits {
-                rows: 2,
-                cells: 1000,
-            },
+            super::Limits { cells: 1000 },
         )?;
         assert_eq!(capture.text()?, "hi");
         Ok(())
@@ -1089,10 +1075,7 @@ mod tests {
                 rows: Some((90, 95)),
                 ..CaptureView::default()
             },
-            super::Limits {
-                rows: 100,
-                cells: 1200,
-            },
+            super::Limits { cells: 1200 },
         )?;
         assert_eq!((selection.start, selection.count), (90, 6));
         Ok(())
@@ -1161,10 +1144,7 @@ mod tests {
             Some(usize::MAX),
             CaptureView::default(),
             false,
-            super::Limits {
-                cells: 240,
-                rows: 100,
-            },
+            super::Limits { cells: 240 },
         );
         assert!(refusal.is_err());
         assert!(
@@ -1184,10 +1164,7 @@ mod tests {
             read.lines.first().and_then(|l| l.first()).map(|r| r.cells),
             Some(80)
         );
-        let limits = super::Limits {
-            cells: 80,
-            rows: 10,
-        };
+        let limits = super::Limits { cells: 80 };
         let read = Box::new(pane.screen().rows().map(|row| (row, 0..usize::MAX)));
         assert!(
             super::selected_rows(

@@ -11,19 +11,25 @@ pub fn listed(names: &[&str], last: &str) -> String {
 }
 
 /// An id and its display label, without repeating an identical label.
-pub(crate) fn labelled(id: impl std::fmt::Display, label: &str) -> String {
-    let id = id.to_string();
-    if label == id {
-        id
-    } else {
-        format!("{id} {label}")
+pub(crate) struct Labelled<'a>(pub &'a str, pub &'a str);
+impl std::fmt::Display for Labelled<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.0)?;
+        if self.1 != self.0 {
+            write!(f, " {}", self.1)?;
+        }
+        Ok(())
     }
+}
+
+pub(crate) fn labelled(id: impl std::fmt::Display, label: &str) -> String {
+    Labelled(&id.to_string(), label).to_string()
 }
 
 /// Whether a word needs no quoting for fuxth or a shell. A leading `=`
 /// does: zsh expands `=ls` to the path of `ls` (its EQUALS option), though
 /// `a=b` stays as it is.
-pub(crate) fn bare(word: &str) -> bool {
+fn bare(word: &str) -> bool {
     !word.is_empty()
         && !word.starts_with('=')
         && word
@@ -31,13 +37,27 @@ pub(crate) fn bare(word: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || "_@%+=:,./-".contains(c))
 }
 
+/// One quoting rule, streamed into either a String or a bounded sink.
+pub(crate) struct Quoted<'a>(pub &'a str);
+impl std::fmt::Display for Quoted<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if bare(self.0) {
+            return f.write_str(self.0);
+        }
+        f.write_str("'")?;
+        for (i, part) in self.0.split('\'').enumerate() {
+            if i > 0 {
+                f.write_str("'\\''")?;
+            }
+            f.write_str(part)?;
+        }
+        f.write_str("'")
+    }
+}
+
 /// Quotes one word so that a shell and fuxth read it back unchanged.
 pub fn quote(word: &str) -> String {
-    if bare(word) {
-        word.to_owned()
-    } else {
-        format!("'{}'", word.replace('\'', "'\\''"))
-    }
+    Quoted(word).to_string()
 }
 
 #[cfg(test)]

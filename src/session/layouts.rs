@@ -222,19 +222,7 @@ fn push(out: &mut Source, line: &[impl AsRef<str>]) -> Result<(), super::Error> 
         if i > 0 {
             out.push(" ")?;
         }
-        let word = word.as_ref();
-        if crate::words::bare(word) {
-            out.push(word)?;
-        } else {
-            out.push("'")?;
-            for (i, part) in word.split('\'').enumerate() {
-                if i > 0 {
-                    out.push("'\\''")?;
-                }
-                out.push(part)?;
-            }
-            out.push("'")?;
-        }
+        out.format(format_args!("{}", crate::words::Quoted(word.as_ref())))?;
     }
     out.push("\n")
 }

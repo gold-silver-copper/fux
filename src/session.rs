@@ -1013,39 +1013,32 @@ impl Session {
 
     /// The tabs `target` is or holds: a pane's own, a tab, or a
     /// workspace's every tab, in order.
-    fn tabs_of(
-        &self,
-        target: AnyRef,
-        budget: &mut crate::wire::Budget,
-    ) -> Result<Vec<TabId>, Error> {
-        match target {
-            AnyRef::Tab(tab) => Ok(vec![self.tab(tab).ok_or(Error::NoTab(tab))?.id()]),
-            AnyRef::Workspace(id) => {
-                let tabs = self.workspace(id).ok_or(Error::NoWorkspace(id))?.tabs();
-                let mut ids = budget.vector(tabs.len())?;
-                ids.extend(tabs.iter().map(|tab| tab.id()));
-                Ok(ids)
-            }
-            AnyRef::Pane(pane) => Ok(vec![self.locate(pane).ok_or(Error::NoPane(pane))?.1]),
-        }
+    fn tabs_of(&self, target: AnyRef) -> Result<impl Iterator<Item = TabId> + '_, Error> {
+        let (one, tabs): (Option<TabId>, &[Tab]) = match target {
+            AnyRef::Tab(tab) => (Some(self.tab(tab).ok_or(Error::NoTab(tab))?.id()), &[]),
+            AnyRef::Workspace(id) => (
+                None,
+                self.workspace(id).ok_or(Error::NoWorkspace(id))?.tabs(),
+            ),
+            AnyRef::Pane(pane) => (Some(self.locate(pane).ok_or(Error::NoPane(pane))?.1), &[]),
+        };
+        Ok(one.into_iter().chain(tabs.iter().map(|tab| tab.id())))
     }
 
     /// The panes `target` names: a pane, or a tab's or workspace's every
-    /// pane, in order. Reserve reply capacity before retaining each member.
-    fn panes_of(&self, target: AnyRef) -> Result<Vec<PaneId>, Error> {
-        let mut budget = crate::wire::Budget::new();
+    /// pane, in order. Charge the member vector's actual capacity.
+    fn panes_of(
+        &self,
+        target: AnyRef,
+        budget: &mut crate::wire::Budget,
+    ) -> Result<Vec<PaneId>, Error> {
         let mut ids = Vec::new();
         let mut admitted = Ok(());
         let mut take = |id: PaneId| {
             if admitted.is_err() {
                 return;
             }
-            admitted = budget
-                .charge(std::mem::size_of::<PaneAnswer>().saturating_mul(4))
-                .and_then(|()| {
-                    ids.try_reserve(1)
-                        .map_err(|_| crate::wire::Budget::exceeded())
-                });
+            admitted = budget.reserve(&mut ids, 1);
             if admitted.is_ok() {
                 ids.push(id);
             }
@@ -1083,7 +1076,7 @@ impl Session {
         // Every pane must take them, or none is sent them: each one's are
         // made and fit first.
         let (run, mut each) = (self.run, Vec::new());
-        for id in self.panes_of(to.target())? {
+        for id in self.panes_of(to.target(), &mut crate::wire::Budget::new())? {
             let mut pane = self.live_pane_mut(id)?;
             let bytes = bytes(&pane, inputs);
             pane.fits(bytes.len())?;
@@ -2183,9 +2176,11 @@ impl Session {
         let watches = match wait.since {
             command::Since::Now(AnyRef::Pane(id)) => Watches::Pane((id, self.pane(id)?.counts())),
             command::Since::Now(target) => Watches::Panes(
-                (self.panes_of(target)?.into_iter())
-                    .map(|id| Ok((id, self.pane(id)?.counts())))
-                    .collect::<Result<Vec<_>, Error>>()?,
+                (self
+                    .panes_of(target, &mut crate::wire::Budget::new())?
+                    .into_iter())
+                .map(|id| Ok((id, self.pane(id)?.counts())))
+                .collect::<Result<Vec<_>, Error>>()?,
             ),
             command::Since::Version(since) => {
                 Watches::Pane((since.pane, self.counts_since(since)?))
@@ -2395,9 +2390,7 @@ impl Session {
                     .map_err(|e| fail(Raise::Signal, format!("sending the signal: {e}")))?;
                 Ok(acted(version))
             }
-            &Command::Kill { target } => self
-                .kill(target, &mut crate::wire::Budget::new())
-                .map(|()| Reply::default()),
+            &Command::Kill { target } => self.kill(target).map(|()| Reply::default()),
             Command::Rename { target, name } => {
                 let target = self.there(*target)?;
                 self.rename(target, name.clone()).map(|()| Reply::default())
@@ -2465,15 +2458,17 @@ impl Session {
                 let budget = &mut crate::wire::Budget::new();
                 let ids = match members {
                     Members::Panes => {
-                        let panes = self.panes_of(target)?;
+                        let panes = self.panes_of(target, budget)?;
                         let mut ids = budget.vector(panes.len())?;
                         ids.extend(panes.into_iter().map(AnyRef::Pane));
                         ids
                     }
                     Members::Tabs => {
-                        let tabs = self.tabs_of(target, budget)?;
-                        let mut ids = budget.vector(tabs.len())?;
-                        ids.extend(tabs.into_iter().map(AnyRef::Tab));
+                        let mut ids = Vec::new();
+                        for tab in self.tabs_of(target)? {
+                            budget.reserve(&mut ids, 1)?;
+                            ids.push(AnyRef::Tab(tab));
+                        }
                         ids
                     }
                 };
@@ -2578,7 +2573,7 @@ impl Session {
     /// panes, as a split that would is, is refused.
     fn resize_tabs(&mut self, target: AnyRef, size: command::Size) -> Result<(), Error> {
         let size = size.map(view::Screen::size);
-        let tabs = self.tabs_of(target, &mut crate::wire::Budget::new())?;
+        let tabs: Vec<_> = self.tabs_of(target)?.collect();
         if let Some(size) = size {
             let area = Fit::Fixed(size).area();
             for tab in &tabs {
@@ -2740,11 +2735,19 @@ impl Session {
     }
 
     /// `kill`: a pane closed, or a tab's or workspace's every pane.
-    fn kill(&mut self, target: AnyRef, budget: &mut crate::wire::Budget) -> Result<(), Error> {
+    fn kill(&mut self, target: AnyRef) -> Result<(), Error> {
         match self.there(target)? {
             AnyRef::Pane(pane) => self.close_pane(pane, None),
-            target @ (AnyRef::Tab(_) | AnyRef::Workspace(_)) => {
-                for tab in self.tabs_of(target, budget)? {
+            AnyRef::Tab(tab) => {
+                self.remove_tab(tab);
+                self.after_close();
+            }
+            AnyRef::Workspace(workspace) => {
+                while let Some(tab) = self
+                    .workspace(workspace)
+                    .and_then(|ws| ws.tabs().first())
+                    .map(Tab::id)
+                {
                     self.remove_tab(tab);
                 }
                 self.after_close();
@@ -3089,7 +3092,7 @@ impl Session {
         now: Instant,
         budget: &mut crate::wire::Budget,
     ) -> Result<Fields, Error> {
-        let ids = self.panes_of(AnyRef::Tab(tab.id()))?;
+        let ids = self.panes_of(AnyRef::Tab(tab.id()), budget)?;
         let mut panes = budget.vector(ids.len())?;
         for id in ids {
             if let Some(pane) = self.parts.panes().get(&id) {
@@ -3760,24 +3763,6 @@ fn bytes(p: &Pane, inputs: &[Input]) -> Vec<u8> {
 
 #[cfg(test)]
 mod tests {
-    #[test]
-    fn workspace_kill_propagates_admission_failure() -> Result<(), String> {
-        let mut session = started(Config::default())?;
-        let workspace = session.parts.workspaces().first().ok_or("workspace")?.id();
-        let before = session.parts.panes().len();
-        let result = session.kill(
-            AnyRef::Workspace(workspace),
-            &mut crate::wire::Budget::with_limit(0),
-        );
-        assert!(
-            result.is_err(),
-            "deletion claimed success after admission failed"
-        );
-        assert_eq!(session.parts.panes().len(), before);
-        assert!(session.workspace(workspace).is_some());
-        Ok(())
-    }
-
     /// `rows` by `cols`.
     fn sized(rows: u16, cols: u16) -> Result<fux_vt::Size, String> {
         fux_vt::Size::new(rows, cols).map_err(|e| e.to_string())
