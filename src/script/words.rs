@@ -726,6 +726,15 @@ fn scope(value: &Value<Fux>) -> Result<Option<AnyRef>, Failure> {
     }
 }
 
+/// A snapshot or journal scope: the session, a client, or a target.
+fn observation_scope(value: &Value<Fux>) -> Result<crate::inspect::Scope, Failure> {
+    if let Value::App(Fux::Client(c, _)) = value {
+        return Ok(crate::inspect::Scope::Client(*c));
+    }
+    scope(value)
+        .map(|target| target.map_or(crate::inspect::Scope::All, crate::inspect::Scope::Target))
+}
+
 fn cursor(value: &Value<Fux>) -> Result<crate::events::Cursor, Failure> {
     let text = string(value)?;
     text.parse().map_err(|()| {
@@ -1673,15 +1682,7 @@ impl Host<'_> {
                 projection: crate::inspect::Projection::Facts,
             })),
             Act::Snapshot => {
-                let scope = match next()? {
-                    Value::App(Fux::All) => crate::inspect::Scope::All,
-                    Value::App(Fux::Client(c, _)) => crate::inspect::Scope::Client(c),
-                    value @ (Value::Int(_)
-                    | Value::Bool(_)
-                    | Value::Str(_)
-                    | Value::List(_)
-                    | Value::App(_)) => crate::inspect::Scope::Target(target(&value)?),
-                };
+                let scope = observation_scope(&next()?)?;
                 let projection = one_of(
                     &next()?,
                     &[
@@ -1739,15 +1740,7 @@ impl Host<'_> {
                 }
             },
             Act::NextEvents => {
-                let scope = match next()? {
-                    Value::App(Fux::All) => crate::inspect::Scope::All,
-                    Value::App(Fux::Client(c, _)) => crate::inspect::Scope::Client(c),
-                    value @ (Value::Int(_)
-                    | Value::Bool(_)
-                    | Value::Str(_)
-                    | Value::List(_)
-                    | Value::App(_)) => crate::inspect::Scope::Target(target(&value)?),
-                };
+                let scope = observation_scope(&next()?)?;
                 let text = string(&next()?)?;
                 let from = if text.is_empty() {
                     None
