@@ -4610,7 +4610,12 @@ mod tests {
     fn refused_client_capture_returns_an_error() -> Result<(), Box<dyn std::error::Error>> {
         let (mut session, client) = attached(10, 40)?;
         fux_vt::refuse_next(1);
-        let result = session.client(Some(client), &ClientAction::Capture, Here::Cli(None, None));
+        let result = session.client(
+            Some(client),
+            &ClientAction::Capture,
+            Here::Cli(None, None),
+            Instant::now(),
+        );
         let error = result.err().ok_or("capture succeeded")?;
         assert_eq!(error.code(), Code::Memory);
         Ok(())
