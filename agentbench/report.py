@@ -12,7 +12,7 @@ import json
 from collections import defaultdict
 
 CATS = ["start", "shell", "wait", "tui", "read", "input", "agents", "size", "cleanup",
-        "panes", "signals", "sessions", "many", "scripting"]
+        "panes", "signals", "sessions", "many", "scripting", "published"]
 
 
 def load(path):
@@ -29,7 +29,8 @@ def scripted_table(results, label):
            "mean seconds slept per run.", "",
            "| category | " + " | ".join(tools) + " |", "| --- |" + " --- |" * len(tools)]
     totals = defaultdict(lambda: [0, 0, 0.0, 0.0, 0])
-    for cat in CATS:
+    categories = CATS + sorted({cat for _, cat, _ in by} - set(CATS))
+    for cat in categories:
         row = [cat]
         for tool in tools:
             tasks = {k: v for k, v in by.items() if k[0] == tool and k[1] == cat}

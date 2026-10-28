@@ -95,19 +95,19 @@ Driving programs from a script or an agent: `fux help agents`; one word:
     out.push_str(
         "
 
-Below, x is a pane, tab, workspace or client (an action's answer is its
-pane), a request on one, or opts; target, subject and place a pane (or a
-tab, workspace or client) or a request on one; handle a pane, tab or
-workspace; scope a handle or all; ref a name or a handle; text a string,
-number or boolean. pane-builder is a pane or pane request; capture-source
-maps one of those to capture, and a client to client-capture; sized is a
-handle or headless client. replayable is a pane, tab or workspace, a
-request on one, or all without a cursor; from on all leaves an
-events-request, which only events takes.
+Effects read `inputs -- outputs`; `a>b` maps input kind a to output kind b.
+Alternative kinds retain their distinctions; requests must reach an action.
 wait and send-keys leave an answer for a pane, and answers for a tab or
 workspace (send-keys: or a client), which no word that wants a pane takes.
 ",
     );
+    let names = crate::script::NAMES
+        .iter()
+        .map(|(name, _, said)| format!("{name}: {said}."))
+        .collect::<Vec<_>>()
+        .join(" ");
+    out.push_str(&wrapped(names.split(' ').map(str::to_owned), "\n", 74));
+    out.push('\n');
     let mut rows: Vec<_> = Word::ALL.iter().map(|w| w.row()).collect();
     rows.sort_by_key(|row| row.group);
     let mut group = None;
@@ -286,7 +286,6 @@ fn bounds() -> Vec<(Amount, &'static str, Said)> {
         (Count(crate::capture::OUTPUT_CELLS), "additional capture cells for synthesized output, beside twice history-bytes and the live screen", &[]),
         (Bytes(crate::protocol::MAX_FRAME), "a message between client and server", &[("README", "length-prefixed and at most {}")]),
         (Bytes(crate::session::LAUNCH_BYTES), "saved launch inputs in one session, including pending replacements", &[]),
-        (Bytes(crate::session::DUMP_BYTES), "a dump recipe", &[]),
         (Count(crate::command::EnvPatch::MAX_NAMES), "environment names selected or patched in one launch", &[]),
         (Bytes(server::OUT_MAX), "what may wait unsent for a client before the copies, programs and keys sent it are refused", &[]),
         (Bytes(server::TALK_MAX), "what may wait unsent for a client before it is detached", &[]),
@@ -409,10 +408,16 @@ mod tests {
                 "{topic}"
             );
         }
-        let quoted: Vec<_> = topics.iter().map(|t| format!("`{t}`")).collect();
-        let listed = format!("whole guide): {}.", quoted.join(", "));
-        let guide = AGENTS.split_whitespace().collect::<Vec<_>>().join(" ");
-        assert!(guide.contains(&listed), "agents.md: {listed}");
+        let first = explain("agents").unwrap_or_default();
+        let advertised = first.split_once("More:").map_or("", |(_, links)| links);
+        for topic in topics.iter().chain(&["guide"]) {
+            let link = format!("`{topic}`");
+            let command = format!("`fux help {topic}`");
+            assert!(
+                advertised.contains(&link) || advertised.contains(&command),
+                "topic links omit {topic}"
+            );
+        }
     }
 
     /// Every word, and every word of the library, has its help; examples

@@ -80,6 +80,91 @@ fn with_stdlib() -> Compiler<Ticket> {
     compiler
 }
 
+#[test]
+fn source_quoting_inverts_tokenization_and_refuses_expansion() -> Result<(), Error> {
+    for text in [
+        "",
+        "ordinary",
+        "'",
+        "\\",
+        "line\nnext\r\ttab",
+        "# comment",
+        "'\\\"雪😀",
+        "str evil drop\n# injected source",
+    ] {
+        let mut compiler = with_stdlib();
+        compiler.add(&token::arguments(&["str", text, "quote"]))?;
+        let mut machine = Machine::new(compiler.finish()?, Limits::default());
+        assert_eq!(
+            machine.run(&mut Toy { asked: Vec::new() }, 100_000)?,
+            Outcome::Finished
+        );
+        let [Value::Str(source)] = machine.stack() else {
+            return Err(Error::new(Code::Type, "quote did not return text", None));
+        };
+        let tokens = token::source("quoted", source)?;
+        assert_eq!(tokens.len(), 1);
+        assert_eq!(tokens.first().map(|t| t.text.as_ref()), Some(text));
+    }
+    let text: String =
+        std::iter::repeat_n(char::from(39), LONGEST.checked_div(4).unwrap_or(0)).collect();
+    let mut compiler = with_stdlib();
+    compiler.add(&token::arguments(&["str", &text, "quote"]))?;
+    let mut machine = Machine::new(compiler.finish()?, Limits::default());
+    let result = machine.run(&mut Toy { asked: Vec::new() }, 30_000_000);
+    assert_eq!(result.map_err(|e| e.code), Err(Code::TooLong));
+    Ok(())
+}
+
+#[test]
+fn declared_library_inputs_hold_before_calls_and_on_uncertain_values() -> Result<(), Error> {
+    let mut library = with_stdlib();
+    library.add(&token::source(
+        "library",
+        "define checked drop end define produce 7 end",
+    )?)?;
+    assert!(library.inputs("checked", "missing-kind").is_err());
+    library.inputs("checked", "integer")?;
+    library.inputs("produce", "integer")?;
+    assert!(library.inputs("checked", "integer").is_err());
+    library.prepare();
+
+    for (source, code) in [
+        ("true checked", Code::Type),
+        ("checked", Code::StackUnderflow),
+        ("define caller produce end caller", Code::StackUnderflow),
+    ] {
+        let mut compiler = library.clone();
+        compiler.add(&token::source("caller", source)?)?;
+        assert_eq!(compiler.finish().map_err(|e| e.code).err(), Some(code));
+    }
+    let mut compiler = library.clone();
+    compiler.add(&token::source("caller", "7 checked")?)?;
+    let mut machine = Machine::new(compiler.finish()?, Limits::default());
+    assert_eq!(
+        machine.run(&mut Toy { asked: Vec::new() }, 100)?,
+        Outcome::Finished
+    );
+    assert!(machine.stack().is_empty());
+
+    let mut compiler = library;
+    compiler.add(&token::source("caller", "0 ask checked")?)?;
+    let mut machine = Machine::new(compiler.finish()?, Limits::default());
+    let mut host = Toy { asked: Vec::new() };
+    assert_eq!(machine.run(&mut host, 100)?, Outcome::Suspended(0));
+    machine.import(Value::Bool(false))?;
+    assert_eq!(
+        machine.run(&mut host, 100).map_err(|e| e.code),
+        Err(Code::Type)
+    );
+    assert_eq!(
+        machine.stack(),
+        &[Value::Bool(false)],
+        "the body ran before its input check"
+    );
+    Ok(())
+}
+
 fn vocabulary() -> Vocabulary {
     let mut words = Vocabulary::default();
     let added = (words.kind("ticket", "a ticket"))

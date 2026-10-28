@@ -498,7 +498,7 @@ fn an_absent_selection_unsets_the_server_value() -> Outcome {
     let pane = answer.trim().split(':').next().ok_or("pane")?;
     server.exits(pane)?;
     assert_eq!(server.ok(&[pane, "capture"])?.trim(), "unset");
-    assert!(server.ok(&["all", "dump"])?.contains("str ENV unset-env"));
+    assert!(server.ok(&["all", "dump"])?.contains("str 'ENV' unset-env"));
     Ok(())
 }
 
@@ -580,10 +580,11 @@ fn copy_environment_takes_the_clients_variables_or_none() -> Outcome {
     // od spaces its bytes as each system likes.
     let bytes = stdout.split_whitespace().collect::<Vec<_>>().join(" ");
     assert!(bytes.contains("63 61 66 e9"), "{stdout}");
+    let dump = server.ok(&["all", "dump"])?;
     assert!(
-        server
-            .ok(&["all", "dump"])?
-            .contains("environment FUXT_BYTES is not UTF-8 text")
+        dump.contains("str 'FUXT_BYTES' drop # ")
+            && dump.contains(": environment is not UTF-8 text; its saved value is omitted"),
+        "{dump}"
     );
     Ok(())
 }
@@ -896,13 +897,16 @@ fn launches_save_the_callers_argv_role_and_environment() -> Outcome {
     assert_eq!(server.ok(&[pane, "capture"])?.trim(), "saved|unset");
     let dump = server.ok(&["all", "dump"])?;
     assert!(dump.contains("list end copy-environment"), "{dump}");
-    assert!(dump.contains("str ENV unset-env"), "{dump}");
-    assert!(dump.contains("str F4_VALUE str saved env"), "{dump}");
+    assert!(dump.contains("str 'ENV' unset-env"), "{dump}");
+    assert!(dump.contains("str 'F4_VALUE' str 'saved' env"), "{dump}");
     // Changing local selection before replay cannot add a new selected name.
     let replay = format!("str copy-environment list str F4_LEAK end set\n{dump}");
     let _ = server.ok(&[&replay])?;
     assert_eq!(
-        server.ok(&["all", "dump"])?.matches("str F4_LEAK").count(),
+        server
+            .ok(&["all", "dump"])?
+            .matches("str 'F4_LEAK'")
+            .count(),
         0
     );
     Ok(())

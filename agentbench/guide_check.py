@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Check that `fux help agents` names the native/library words the driver uses.
+"""Check that `fux help guide` names the native/library words the driver uses.
 
     python3 -I agentbench/guide_check.py --fux-bin target/release/fux
 
@@ -58,11 +58,11 @@ def main():
 
     known = words_of_fux(help_for())
     used = driver_words((HERE / "drivers.py").read_text(), known)
-    missing = missing_words(used, help_for("agents"))
+    missing = missing_words(used, help_for("guide"))
     if missing:
-        print("the guide's first screen does not name:", " ".join(missing))
+        print("the full guide does not name:", " ".join(missing))
         return 1
-    print(f"the guide's first screen names all {len(used)} words the driver uses "
+    print(f"the full guide names all {len(used)} words the driver uses "
           f"({len(known)} native/library words published)")
     return 0
 

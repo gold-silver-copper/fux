@@ -1,94 +1,70 @@
 # Driving programs with fux
 
-(`fux help agents`: this screen, enough for most work. A topic at length:
-`fux help TOPIC`, below; `fux help` lists every word, `fux help WORD`
-explains one.)
+Use your assigned private `FUX_SOCKET`. Beside a human, use a private
+socket, `XDG_RUNTIME_DIR` (mode 0700) and `XDG_CONFIG_HOME`; a workspace
+alone is not isolation. `fux start` starts an empty server.
 
-A fux command line is a fuxth program: words run left to right, each taking
-what the words before it left. `str WORD` pushes WORD as text. `%2` alone is
-a pane (`@2` a tab, `+1` a workspace). What is left is printed. The server is
-`FUX_SOCKET`'s; `fux start` starts one if none runs. It is reached through
-that Unix socket alone: inside a sandbox that denies `connect`, fux cannot
-be driven. **The word that acts
-comes last:** what it takes (keys, a wait's time, what to read) goes on the
-pane before it, and `json` after it. Only `run`, `new-tab`,
-`new-workspace` and `attach` start from
-`opts`; `all events` streams everything. Of the first three, only
-`run` takes a program (as `split` does): the other two start a shell. Their tab is laid out on
-`COLS ROWS size`, else on the caller's tab when `fux` runs in a pane (the
-smallest screen that sizes it, else its own size), never on the screen of
-a client that does not show it: run from outside fux, a size must be given, as fux makes none up:
-without one the request fails with code `size`.
+Words run left to right. `str WORD` pushes text; %2 is a pane, @2 a tab,
++1 a workspace. Options precede the action. Remaining values print.
+Outside fux, give new tabs a size. `run` requires a workspace;
+`agent-opts` supplies `opts str agent in`.
 
-**Every pane has a version, and a wait waits for it to change.** A version
-is one word, `%2:0.57.1.3.0:48211-1867a3f9c2b8e7d6`: its pane, its counts
-`RESPAWNS.SCREEN.BELLS.DONE.ENDED`, and the run of the server that gave it
-(a version from another server, or from before a restart, is refused). The
-counts only grow while one program runs (`respawn` starts all but the first
-afresh): how often its program was respawned, its screen's revision (the
-bytes of output read, plus one for each resize to another size and each
-change to its history: cleared, or rows evicted by `history-budget`; the same
-however the output was cut into reads), bells and notifications rung, shell
-commands ended (OSC 133 marks), and 1 once its program ended. Every action
-(`run`, `send-keys`, `paste-buffer`, `send-mouse`, `signal`, `split`,
-`new-tab`, `new-workspace`, `respawn`) acts at once and prints the version
-of its pane from just before it acted (a new pane's, or a respawned one's,
-as it starts, printed once it has taken over): wait from that one, and
-nothing its input brings is missed.
-fux never judges whether a program is done: which change means done is
-yours to say (recipes below).
+**Launch and wait for a prompt.** Run with `timeout 30 fux -` and this
+program on stdin; a banner alone is not the prompt:
 
-```sh
-A=$(fux agent-opts str web name 100 30 size str ./app program str --fast arg run)  # %2:0.0.0.0.0:RUN
-fux str "$A" changed wait                      # until it differs: %2:0.61.0.0.0:RUN screen
-A=$(fux %2 str y text str Enter key send-keys) # keys: the version from before them
-fux str "$A" changed 600 timeout wait          # 124 if unchanged in 600 s (else this client's wait-seconds)
-fux %2 str y text send-keys wait               # in one program: from the answer's version
-fux %2 str y text send-keys 5 quiet            # until nothing changes there for 5 s
-fux %2 wait                                    # until it differs from now's
-fux %2 str 'a long prompt' paste send-keys     # a paste, bracketed if the program asked
-fux %2 all-history capture                     # read the screen; also main-screen, last-output, styles
-fux %2 capture json                            # as JSON, with version and exited
-fux %2 version                                 # the live pane version; an answer or capture keeps its held version
-fux %2 str exited get                          # one field: exited, last_status, cwd
-fux %2 str C-c key send-keys                   # a key: Enter, C-c, Up, F5 (`fux key-names`)
-fux str "$V" expect str y text send-keys       # only if %2 is still at V, `capture json`'s version, else `stale`
-fux %2 str click 3 10 send-mouse               # a click at row 3, column 10, from 0
-fux %2 tab 80 24 resize; fux %2 50 percent str horizontal resize-pane; fux %2 str horizontal axis split
-fux %2 str TERM signal                         # signal what runs in its foreground
-fux %2 kill-first respawn                      # end its program and start it again
-fux str web pane                               # a pane by its given name (run's name)
-fux str logs pane                              # a pane by its given name (rename)
-fux str agent workspace panes                  # its panes, in layout order (tabs: its tabs)
-fux ls                                         # what there is: workspaces, tabs, panes
-fux str agent workspace str topology snapshot json # one flat metadata observation
-fux str agent workspace kill                   # at the end: everything run started
+```fux
+agent-opts 80 24 size str python3 program str -q arg run
+str '>>>' 5 shows let seen
+seen string print seen version print
 ```
 
-`run` needs `in`; `agent-opts` is `opts str agent in`.
-Use `opts str new-workspace in ... run` for a fresh unnamed workspace.
-`get name` is `null` for an unnamed thing, which shows a label instead;
-a label never finds anything. Use `panes` or `tabs` to choose a container's
-members: `get` reads only the object's own fields.
+**Run a command, read its output and actual exit status.**
+Run with `timeout 30 fux -` and this program on stdin:
 
-A wait answers its pane's version now and what changed:
-`%2:0.61.1.4.0:RUN screen bell done`, with `exited 3`, `killed by
-SIGTERM` (`killed by signal 64` for one POSIX does not name) or `ended, its
-status lost` if its program ended since, `respawned` once started again
-(its `RESPAWNS` grows, its other counts start afresh). Its first word is
-the version to wait from next.
-A wait from a version that already holds the end waits for something else,
-as any wait does; one from a version of a pane since closed answers
-`%2 closed`. On a tab or workspace a wait waits on the panes there as it
-begins, from each one's version then, answering those that changed.
-Status: 0 changed; 1 failed (`fux: CODE: MESSAGE` on stderr); 4 the pane
-closed (a shell pane closes when its shell exits); 124 nothing changed in
-time (`%2:0.61.1.4.0:RUN timeout`). In a program, `str timeout try … catch
-… end` goes on after a failure instead (`programs`). Clean up with `fux str
-agent workspace kill`; stop what you start by its pid, never `pkill -f`.
+```fux
+agent-opts 80 24 size str sh program str -c arg
+str 'echo result=42; exit 7' arg run
+10 until-ended let seen
+seen string print seen str exited get print
+```
 
-Topics (`fux help TOPIC`; `guide` for the whole guide): `recipes`,
-`keys`, `read`, `shells`, `programs`, `servers`.
+**Guard input against the screen you read.** Save this as `reply.fux` and
+run `timeout 30 fux --file reply.fux "$V"`, using the prompt version above:
+
+```fux
+args first expect str '6*7' text str Enter key send-keys
+str 42 5 shows let seen
+seen string print seen version print
+```
+
+**Cleanup:** `fux str agent workspace kill` closes only that workspace on
+your private socket. Stop any subscriber or server you start by its PID.
+
+`shows` checks text presence; old text and input echo can match. Use a
+reply-only result (42 is absent from 6*7), shell end marks, or a TUI-specific
+predicate. `quiet` returns its last capture after an explicit unchanged
+interval, which does not prove computation finished. `until-ended` checks
+ENDED before waiting, including an already-ended result, and follows the
+pane if respawned. Each wait timeout is **per change**; use shell `timeout`
+for a whole loop. A capture keeps screen, version and metadata together;
+`get` and `version` on it read locally. `observed` retains a pane capture
+or samples a pane/single answer; these helpers reject client captures.
+
+An action answers its version BEFORE acting; `changed ... wait` reports
+changes, never readiness. `counts` reads RESPAWNS SCREEN BELLS DONE ENDED.
+`grows` accepts a pane (sampled first), version text, answer or pane capture,
+count index 1..4, nonnegative growth and seconds; it fails across respawn.
+Exit status and signal are distinct; unknown status stays unknown.
+CLI status: 0 success; 1 failure (`fux: CODE: MESSAGE`); 4 closed;
+124 unchanged or outer timeout. A transport failure may leave input queued.
+
+For several programs, save an `ls` cursor BEFORE launch and replay journal
+exits; stop on `missed`. This gives first recorded exit, never OS chronology
+or group-wait order. The complete recipe is below.
+
+More: `fux help recipes`, `keys`, `read`, `shells`, `programs`, `servers`;
+`fux help guide` gives all topics, `fux help json` the full schema,
+`fux help WORD` a word's contract.
 
 ## recipes: Waiting for what you need
 
@@ -104,14 +80,20 @@ whole of it, run it under the shell's `timeout 600 fux --file FILE` (124
 too). `counts` gives five integers from a live pane or the version held by
 an answer, pane capture or canonical text. `A counts 3 at` is its `DONE`.
 
+A wait's text answer is its version, then what changed (`screen`, `bell`,
+`done`, `respawned`), then `exited N`, `killed by SIGNAME` (or `killed by
+signal N` for an unnamed signal), or `ended, its status lost` if the program
+ended. A closed pane answers `%2 closed`. A tab/workspace wait freezes its
+panes as it begins and answers changes in watch order, not exit chronology.
+
 - **Quiet for N seconds** (an agent's TUI done, or asking you something):
   `quiet` waits until nothing changes for N seconds (from a pane, an
-  answer, or `str "$A" changed`). A spinner or clock on the screen is a
+  answer, or pane capture). A spinner or clock on the screen is a
   change, so then wait for a text.
 
   ```fux
   %2 str 'fix the test' paste str Enter key send-keys 5 quiet
-  %2 all-history capture
+  string
   ```
 - **A text the reply writes:** count it before, act, and wait until there
   is one more. Choose a text only the reply holds: here the question holds
@@ -140,11 +122,9 @@ an answer, pane capture or canonical text. `A counts 3 at` is its `DONE`.
   tested in bash and zsh alone.)
 
   ```fux
-  %3 str 'make test' line let A
-  A counts 3 at let done
-  begin A 600 timeout wait let A  A counts 3 at done gt until
-  %3 str last_status get print
-  %3 last-output capture
+  %3 str 'make test' line 3 1 600 grows let finished
+  finished pane str last_status get print
+  finished pane last-output capture
   ```
 - **A shell command's end, without marks:** print a text only its end can
   show, quoted so the line you type does not hold it, and wait for it:
@@ -156,16 +136,39 @@ an answer, pane capture or canonical text. `A counts 3 at` is its `DONE`.
   begin 600 timeout wait %3 capture string str END-OF-RUN contains until
   drop %3 capture
   ```
-- **A program's exit:** its version's `ENDED` is 1. The loop waits before
-  it looks, so it wants an answer from before the end (`run`'s).
+- **A program's exit:** `until-ended` checks first, so an already-ended
+  observation succeeds immediately, including an unknown exit status.
 
   ```fux
   agent-opts 80 24 size str cargo program str test arg run
-  begin 600 timeout wait dup counts 4 at 1 eq until
-  str exited get
+  600 until-ended str exited get
   ```
 - **A bell or notification:** its version's `BELLS`, `counts 2 at`, grows,
   as for a command's end.
+- **A TUI's initial selection:** save as `selection.fux`; pass its pane
+  as the first file argument. Here reverse video identifies the app's
+  selection. That meaning belongs to this app, not to fux.
+
+  ```fux
+  args first pane
+  begin
+    wrapped marks capture dup string str '⟦Alpha⟧' contains
+    if true else changed 5 timeout wait false then
+  until
+  let seen seen string print seen version print
+  ```
+- **Change that TUI's selection:** save as `select-next.fux`; pass the
+  initial capture's version. This app uses Down to select Beta. Keep the
+  marked view in the loop; `shows` would use plain screens on later reads.
+
+  ```fux
+  args first expect str Down key send-keys
+  begin
+    wrapped marks capture dup string str '⟦Beta⟧' contains
+    if true else changed 5 timeout wait false then
+  until
+  let seen seen string print seen version print
+  ```
 - **What changes anywhere,** as it happens: `fux all events` streams a JSON
   line for each event (`fux help json` lists them). To read the session,
   then follow its events without missing one in between, start the stream
@@ -175,6 +178,60 @@ an answer, pane capture or canonical text. `A counts 3 at` is its `DONE`.
   ```sh
   C=$(fux ls json | jq -r .events)
   fux all str "$C" from events      # or: fux %3 str "$C" from events
+  ```
+- **First recorded exit across jobs:** save this as `first-exit.py` and
+  run `python3 -I first-exit.py` on the private socket. Take the cursor before
+  launching, even if jobs might finish before subscription. Replay order
+  is server-recorded order, not physical OS termination order. Loss is a
+  failure; resnapshotting cannot recover which missing exit was first.
+  Any of a, b or c may be recorded first: launch latency can change their
+  order. The result includes the cursor, pane/name map and first exit record
+  as an auditable result. The subscriber is
+  always terminated and reaped. No group wait is used.
+
+  ```python
+  def first_exit(fux):
+      import json
+      import subprocess
+      cursor = json.loads(fux("ls", "json"))["events"]
+      panes = {}
+      try:
+          for name, seconds in (("a", "0.3"), ("b", "0.05"), ("c", "0.15")):
+              answer = fux("agent-opts", "80", "24", "size", "str", "sh", "program",
+                           "str", "-c", "arg", "str", "sleep " + seconds, "arg", "run")
+              panes[answer.split(":")[0]] = name
+          stream = fux("all", "str", cursor, "from", "events", stream=True)
+          try:
+              for line in stream.stdout:
+                  event = json.loads(line)
+                  if event["event"] == "missed":
+                      raise RuntimeError("journal loss: first exit is unknown")
+                  if event["event"] == "exited" and event.get("pane") in panes:
+                      return {"cursor": cursor, "panes": panes, "first": event}
+              raise RuntimeError("event stream ended before an exit")
+          finally:
+              stream.terminate()
+              try:
+                  stream.wait(timeout=5)
+              except subprocess.TimeoutExpired:
+                  stream.kill()
+                  stream.wait()
+              stream.stdout.close()
+      finally:
+          for pane in panes:
+              fux("str", pane, "pane", "kill")
+
+
+  if __name__ == "__main__":
+      import json
+      import subprocess
+      def fux(*words, stream=False):
+          command = ["timeout", "30", "fux", *words]
+          if stream:
+              return subprocess.Popen(command, stdout=subprocess.PIPE, text=True)
+          return subprocess.run(command, check=True, capture_output=True,
+                                text=True, timeout=30).stdout
+      print(json.dumps(first_exit(fux)))
   ```
 - **A deadline, a fallback, a retry:** `try` catches the failures it names
   (`programs`). A key, and C-c if nothing came of it in 10 s:
@@ -375,7 +432,7 @@ is of another kind, `answers`, which no such word takes, however many panes
 it has: name the tab again, `@1 wait`), and to
 `wait`, the version it holds too (`T str y text send-keys wait` waits from
 before the keys; a name keeps that version, so `T wait` later waits from
-when `T` was made, and `T str version get changed wait` from now).
+when `T` was made, and `T str version get changed wait` from the same held version).
 
 Modifiers retain whether a request names a pane, tab, workspace or client.
 `changed` makes a `changed-request`, consumed only by `wait`; `expect`
@@ -386,7 +443,10 @@ it can name its pane (which is gone), but supplies no version to `changed`
 or `expect`. A handler may also receive an ordinary message string, so
 uncertain values still need runtime checks.
 
-`string` makes it text (`%2 capture string str error contains`). The
+`string` converts a completed value to text (`%2 capture string str error
+contains`). A request with unused options must first reach its action; converting
+it with `string` does not complete it. Unknown words fail with the fixed hint
+`text is str WORD`; fux does not infer an executable name or a correction. The
 standard library, written in fuxth, does the rest (`fux help` lists it). A
 mistake every run would make (too few values, a string given to `add` or
 `if`, a request nothing acts on: its error names the word to end it with)
@@ -468,3 +528,7 @@ read-file`. `X warn` prints on stderr:
   that makes it again; `opts 100 30 size attach` is a client with no
   terminal (`str c2 client … send-keys` types at it, `capture`
   shows it): how to drive fux's own screens.
+
+A split needs an explicit axis: `%2 str horizontal axis split`; resize
+with `%2 50 percent str horizontal resize-pane`. `panes` and `tabs`
+read ordered membership; `ls` reads one facts snapshot.

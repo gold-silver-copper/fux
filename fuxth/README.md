@@ -93,11 +93,20 @@ The standard library adds, among others: `dup swap over rot nip -rot
 2dup 2drop`, `true false not and or`, `gt le ge ne min max`, `mod negate abs
 even pow`, `is-int is-string is-list`, `empty cat glue first last pop
 shift remove range reverse index-of contains count sum largest smallest
-merge sort pack unpack`, `number join split-on words lines trim starts-with
+merge sort pack unpack`, `quote number join split-on words lines trim starts-with
 is-space is-digit is-upper is-lower is-letter upper lower copies pad`.
 
 Files are split as a shell splits a line: quotes, backslashes, and `#`
-comments at a word's start.
+comments at a word's start. `quote (s -- s)` builds one source token that
+reads back unchanged, including empty text and embedded newlines. Its
+expansion uses the same string, construction and step bounds as other
+library words.
+
+Hosts can constrain a library definition's inputs before compiling its
+callers: `compiler.inputs("dump", "scope")?`. The names use the host
+vocabulary, deepest input first. Known disjoint kinds fail preflight;
+uncertain inputs are checked before the definition's body runs. Outputs
+continue to use the checker's inferred summary. This adds no parsing word.
 
 `require shared/words.fux` inserts the file at that position before the
 whole program is checked. Quote paths with spaces: `require 'shared keys.fux'`.

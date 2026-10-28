@@ -32,6 +32,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 pub(crate) use words::INPUT_MAX;
+pub(crate) use words::NAMES;
 pub use words::{Act, After, Group, Keys, Opt, Row, Screen, Takes, Word, from_opts, usage};
 
 /// The frozen source image whose definitions a client's bindings and prompt see.
@@ -914,6 +915,7 @@ pub fn libraries() -> Result<(Compiler<Fux>, Rc<[fuxth::Doc]>), Failed> {
         .library("stdlib.fux", fuxth::STDLIB)
         .map_err(told)?;
     docs.extend(compiler.library("library.fux", LIBRARY).map_err(told)?);
+    compiler.inputs("dump", "scope").map_err(told)?;
     compiler.prepare();
     Ok((compiler, docs.into()))
 }
@@ -2574,7 +2576,7 @@ mod tests {
         }
         for code in [
             "%1 all-history capture expect str x text send-keys wait capture drop".to_owned(),
-            "%1 str x text send-keys 0 quiet %1 capture drop".to_owned(),
+            "%1 str x text send-keys 0 quiet drop %1 capture drop".to_owned(),
             format!("str {version} changed 0 timeout wait capture drop"),
             "str c1 client capture json drop".to_owned(),
         ] {

@@ -286,6 +286,16 @@ impl Vocabulary {
         self.words.get(id)
     }
 
+    pub(crate) fn inputs(&self, kinds: &str) -> Result<Vec<(Kinds, String)>, Error> {
+        kinds
+            .split_whitespace()
+            .map(|kind| {
+                self.lookup(kind, true)
+                    .map(|(map, said)| (taken(&map), said))
+            })
+            .collect()
+    }
+
     /// The words' names, by id.
     pub(crate) fn names(&self) -> impl Iterator<Item = &str> {
         self.words.iter().map(|w| w.name.as_str())
