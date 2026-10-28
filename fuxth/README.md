@@ -102,6 +102,12 @@ reads back unchanged, including empty text and embedded newlines. Its
 expansion uses the same string, construction and step bounds as other
 library words.
 
+Hosts can constrain a library definition's inputs before compiling its
+callers: `compiler.inputs("dump", "scope")?`. The names use the host
+vocabulary, deepest input first. Known disjoint kinds fail preflight;
+uncertain inputs are checked before the definition's body runs. Outputs
+continue to use the checker's inferred summary. This adds no parsing word.
+
 `require shared/words.fux` inserts the file at that position before the
 whole program is checked. Quote paths with spaces: `require 'shared keys.fux'`.
 Canonical paths are included once per image, including symlink spellings;

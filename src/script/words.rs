@@ -2467,6 +2467,7 @@ mod tests {
         for (suffix, code) in [
             ("", fuxth::Code::Unused),
             ("info drop", fuxth::Code::Type),
+            ("dump drop", fuxth::Code::Type),
             ("str hello notify", fuxth::Code::Type),
             ("str 0:1-2 from events", fuxth::Code::Type),
         ] {
@@ -2480,12 +2481,16 @@ mod tests {
     }
 
     #[test]
-    fn library_dump_refuses_an_event_cursor_at_runtime() -> Result<(), String> {
-        let mut session = crate::session::testing::started()?;
-        let error = crate::session::testing::output(&mut session, "all str 0:1-2 from dump")
-            .err()
-            .ok_or("dump accepted an event cursor")?;
-        assert!(error.starts_with("type:"), "{error}");
+    fn library_dump_checks_its_scope_before_effects() -> Result<(), Box<dyn std::error::Error>> {
+        for prefix in ["str SIDE-EFFECT print", "%1 str renamed rename"] {
+            for scope in ["1", "all str 0:1-2 from"] {
+                let source = format!("{prefix} {scope} dump drop");
+                let failure = super::super::compile(&fuxth::token::source("dump", &source)?)
+                    .err()
+                    .ok_or_else(|| format!("accepted {source}"))?;
+                assert_eq!(failure.code, Code::from(Raise::Type), "{source}: {failure}");
+            }
+        }
         Ok(())
     }
 

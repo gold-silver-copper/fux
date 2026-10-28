@@ -493,12 +493,28 @@ impl<A: AppValue> Machine<A> {
                     }
                 }
                 Op::Call(id) => {
+                    let tail = returns_from(&code.ops, frame.step);
+                    let caller = frame.via.unwrap_or((frame.code, frame.step));
+                    if let Some(inputs) =
+                        program.words.get(*id).and_then(|body| body.inputs.as_ref())
+                    {
+                        let from = self.depth(inputs.len())?;
+                        self.cost(inputs.len());
+                        for (value, (kinds, said)) in self.stack.iter().skip(from).zip(inputs) {
+                            if !program.vocabulary.kind_of(value).may_be(*kinds) {
+                                return Err(self.fail(
+                                    Code::Type,
+                                    format!("takes {said}, not {}", value.kind()),
+                                ));
+                            }
+                        }
+                    }
                     // A call that is its caller's last step replaces it:
                     // the caller has nothing left to do, so a loop written
                     // as recursion runs in one frame.
                     let mut via = None;
-                    if returns_from(&code.ops, frame.step) {
-                        via = Some(frame.via.unwrap_or((frame.code, frame.step)));
+                    if tail {
+                        via = Some(caller);
                         self.leave();
                     } else if self.frames.len() > self.limits.calls {
                         return Err(self.too_deep());

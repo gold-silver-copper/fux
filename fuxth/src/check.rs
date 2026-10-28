@@ -816,6 +816,30 @@ impl<'a, A> Unit<'a, A> {
                 }
             }
             Op::Call(id) => {
+                if let Some(inputs) = self
+                    .program
+                    .words
+                    .get(*id)
+                    .and_then(|body| body.inputs.as_ref())
+                {
+                    let mut arguments = state.clone();
+                    let taken = arguments.pop(inputs.len())?;
+                    state.used = state.used.max(arguments.used);
+                    let below = inputs.len().saturating_sub(taken.len());
+                    for (i, (wants, said)) in inputs.iter().enumerate() {
+                        let got = i
+                            .checked_sub(below)
+                            .and_then(|i| taken.get(i))
+                            .copied()
+                            .unwrap_or(ANY);
+                        if !got.may_be(*wants) {
+                            return Err(Failing::Type(format!(
+                                "takes {said}, not {}",
+                                placed(self.words().describe(got), i, inputs.len())
+                            )));
+                        }
+                    }
+                }
                 let Some(Some(summary)) = self.known.summaries.get(*id) else {
                     // Nothing known of it yet: a call to itself, the first
                     // time through.
