@@ -188,7 +188,7 @@ define dump-recipe
   end glue
 end
 # scope -- text : a tab, workspace or all, as one bounded recipe making new processes; the complete source is built before output
-define dump str recipe snapshot dump-recipe end
+define dump str recipe snapshot dump-recipe string end
 
 # way -- way : a checked layout axis, independent of how many panes there are
 define layout-axis

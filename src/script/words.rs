@@ -2495,6 +2495,19 @@ mod tests {
     }
 
     #[test]
+    fn library_dump_checks_its_string_result_before_effects()
+    -> Result<(), Box<dyn std::error::Error>> {
+        for prefix in ["str SIDE-EFFECT print", "%1 str renamed rename"] {
+            let source = format!("{prefix} all dump 1 push drop");
+            let failure = super::super::compile(&fuxth::token::source("dump", &source)?)
+                .err()
+                .ok_or_else(|| format!("accepted {source}"))?;
+            assert_eq!(failure.code, Code::from(Raise::Type), "{source}: {failure}");
+        }
+        Ok(())
+    }
+
+    #[test]
     fn bad_cursors_report_the_given_text_and_their_format() -> Result<(), Box<dyn std::error::Error>>
     {
         for scope in [Fux::All(None), Fux::Pane(PaneId::of(1), None)] {
