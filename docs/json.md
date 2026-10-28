@@ -104,7 +104,10 @@ palette numbers or `"#rrggbb"`.
 Finite observations have hard limits: 32 MiB of wire bytes and a 128 MiB
 allocation grant for construction, decoding, or client rendering. Client JSON
 serialization charges the retained input and output together, and writes capture
-runs directly without constructing a second JSON object graph.
+runs directly without constructing a second JSON object graph. Plain text uses
+one grant for the entire value too: nested lists stream their captures and other
+answers into one admitted output, including formatter workspace and text imports.
+Shared references are conservatively charged at each occurrence.
 Builders charge capacity before reserving, including the old and new
 blocks during growth. Captures admit selected cell work before traversal,
 then charge text, runs and wire bytes as they build. Ordinary trimmed

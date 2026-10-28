@@ -502,7 +502,14 @@ fn json_text(value: &Value<Fux>, limit: usize) -> Result<String, Failure> {
                 budget.slots::<super::Answer>(1)?;
                 answer.charge(budget)
             }
-            Value::App(_) => Ok(()),
+            Value::App(Fux::Opts(opts)) => budget.charge(opts.heap_bytes()),
+            Value::App(
+                Fux::Pane(..)
+                | Fux::Tab(..)
+                | Fux::Workspace(..)
+                | Fux::Client(..)
+                | Fux::Extent(_),
+            ) => Ok(()),
         }
     }
     fn write(value: &Value<Fux>, out: &mut dyn std::fmt::Write) -> std::fmt::Result {
@@ -2007,46 +2014,108 @@ mod tests {
 
     #[test]
     fn nested_plain_text_shares_one_allocation_grant() -> Result<(), Box<dyn std::error::Error>> {
+        std::thread_local! {
+            static WRITES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+        }
         #[derive(Clone, PartialEq)]
         struct Limited(Fux);
         impl fuxth::AppValue for Limited {
             const TEXT_LIMIT: usize = 64 << 10;
-            fn kind(&self) -> &'static str { "a bounded answer" }
-            fn text(&self) -> Result<String, Failure> { fuxth::AppValue::text(&self.0) }
+            fn kind(&self) -> &'static str {
+                "a bounded answer"
+            }
+            fn text_bytes(&self) -> usize {
+                fuxth::AppValue::text_bytes(&self.0)
+            }
+            fn write_text(&self, out: &mut dyn std::fmt::Write) -> Result<(), Failure> {
+                WRITES.with(|writes| writes.set(writes.get().saturating_add(1)));
+                fuxth::AppValue::write_text(&self.0, out)
+            }
         }
         let allocator = fux_vt_peak::ThreadPeak;
         let base = allocator.live();
         let captured = crate::capture::Captured {
             of: crate::capture::Of::Client(crate::id::ClientId::of(1)),
             screen_rows: 1,
-            screen_cols: 4096,
+            screen_cols: 256,
             screen_cursor: None,
-            lines: vec![vec![crate::capture::Cut {
-                text: std::iter::repeat_n('界', 4096).collect(),
-                cells: 4096,
-                style: fux_vt::Attributes::default(),
-            }]],
-            styles: false,
+            lines: vec![
+                (0..128u8)
+                    .map(|n| crate::capture::Cut {
+                        text: "界".into(),
+                        cells: 2,
+                        style: fux_vt::Attributes::new(
+                            fux_vt::Color::Rgb(fux_vt::Rgb {
+                                r: 255,
+                                g: 254,
+                                b: n,
+                            }),
+                            fux_vt::Color::Rgb(fux_vt::Rgb {
+                                r: 252,
+                                g: 251,
+                                b: 250,
+                            }),
+                        )
+                        .with_underline_color(fux_vt::Color::Rgb(fux_vt::Rgb {
+                            r: 128,
+                            g: 127,
+                            b: 126,
+                        }))
+                        .with_bold(true)
+                        .with_dim(true)
+                        .with_italic(true)
+                        .with_inverse(true)
+                        .with_hidden(true)
+                        .with_strikeout(true)
+                        .with_underline_style(fux_vt::UnderlineStyle::Curly)
+                        .with_blink(fux_vt::Blink::Rapid),
+                    })
+                    .collect(),
+            ],
+            styles: true,
             marks: false,
         };
         let held = fuxth::List::new(vec![Value::App(Limited(Fux::Answer(
-            Box::new(super::super::Answer::Capture(Box::new(captured))), None,
-        ))) ]).ok_or("held list")?;
+            Box::new(super::super::Answer::Capture(Box::new(captured))),
+            None,
+        )))])
+        .ok_or("held list")?;
         let held = std::rc::Rc::new(held);
-        let list = fuxth::List::new(std::iter::repeat_n(Value::List(std::rc::Rc::clone(&held)), 6).collect())
-            .ok_or("outer list")?;
+        let one = Value::List(std::rc::Rc::clone(&held))
+            .text()
+            .map_err(|f| f.message)?;
+        assert!(one.len().saturating_mul(8) > 64 << 10);
+        drop(one);
+        let list = fuxth::List::new(
+            std::iter::repeat_n(Value::List(std::rc::Rc::clone(&held)), 8).collect(),
+        )
+        .ok_or("outer list")?;
         let value = Value::List(std::rc::Rc::new(list));
-        assert_eq!(value.weight(), 13);
+        assert_eq!(value.weight(), 17);
+        WRITES.set(0);
         allocator.reset_peak();
-        assert!(value.text().is_err(), "shared captures must not bypass aggregate text admission");
+        assert!(
+            value.text().is_err(),
+            "shared captures must not bypass aggregate text admission"
+        );
+        assert!(
+            WRITES.get() > 0,
+            "input fits; aggregate output counting must refuse it"
+        );
         assert!(value.text_upto(usize::MAX).is_err());
-        assert!(allocator.peak().saturating_sub(base) <= 64 << 10,
-            "retained input, conversion and output must share the grant");
-        let list = fuxth::List::new(vec![Value::List(std::rc::Rc::clone(&held)); 2]).ok_or("small list")?;
+        assert!(
+            allocator.peak().saturating_sub(base) <= 64 << 10,
+            "retained input, conversion and output must share the grant"
+        );
+        let list = fuxth::List::new(vec![Value::List(std::rc::Rc::clone(&held)); 2])
+            .ok_or("small list")?;
         let small = Value::List(std::rc::Rc::new(list));
         allocator.reset_peak();
-        let text = small.text_upto(usize::MAX).map_err(|f| f.message)?.ok_or("text")?;
-        assert_eq!(text.chars_len(), 8193);
+        let text = small
+            .text_upto(usize::MAX)
+            .map_err(|f| f.message)?
+            .ok_or("text")?;
+        assert_eq!(text.matches('界').count(), 256);
         assert!(allocator.peak().saturating_sub(base) <= 64 << 10);
         Ok(())
     }

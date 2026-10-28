@@ -836,20 +836,28 @@ impl Captured {
         budget: &mut crate::wire::Budget,
     ) -> Result<String, crate::session::Error> {
         self.charge(budget)?;
-        // All SGR flags and three RGB colours occupy fewer than 128 bytes.
-        // Reserve once; each run reuses it, including the counting pass.
-        let mut sgr = budget.vector::<u8>(if self.styles { 128 } else { 0 })?;
-        let text = crate::json::render(budget, |out| {
-            for (i, line) in self.lines.iter().enumerate() {
-                if i > 0 {
-                    out.write_char('\n')?;
-                }
-                write_line(out, line, self.marks, self.styles, &mut sgr)?;
-            }
-            Ok(())
-        })?;
+        budget.charge(self.text_scratch())?;
+        let text = crate::json::render(budget, |out| self.write_text(out))?;
         budget.text_value(&text)?;
         Ok(text)
+    }
+
+    pub(crate) fn text_scratch(&self) -> usize {
+        if self.styles { 128 } else { 0 }
+    }
+
+    pub(crate) fn write_text(&self, out: &mut dyn std::fmt::Write) -> std::fmt::Result {
+        // All flags and three RGB colours fit in the declared scratch space.
+        let mut sgr = Vec::new();
+        sgr.try_reserve_exact(self.text_scratch())
+            .map_err(|_| std::fmt::Error)?;
+        for (i, line) in self.lines.iter().enumerate() {
+            if i > 0 {
+                out.write_char('\n')?;
+            }
+            write_line(out, line, self.marks, self.styles, &mut sgr)?;
+        }
+        Ok(())
     }
 
     /// JSON directly from the capture: no second graph of owned run objects.

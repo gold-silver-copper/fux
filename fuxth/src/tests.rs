@@ -15,14 +15,15 @@ impl AppValue for Ticket {
     fn kind(&self) -> &'static str {
         "a ticket"
     }
-    fn text(&self) -> Result<String, Failure> {
+    fn write_text(&self, out: &mut dyn std::fmt::Write) -> Result<(), Failure> {
         if self.0 == i64::MIN {
             return Err(Failure::new(
                 Code::TooLong,
                 "the host refused text conversion",
             ));
         }
-        Ok(self.kind().to_owned())
+        out.write_str(self.kind())
+            .map_err(|_| Failure::new(Code::TooLong, "text limit"))
     }
 }
 

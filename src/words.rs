@@ -11,11 +11,13 @@ pub fn listed(names: &[&str], last: &str) -> String {
 }
 
 /// An id and its display label, without repeating an identical label.
-pub(crate) struct Labelled<'a>(pub &'a str, pub &'a str);
-impl std::fmt::Display for Labelled<'_> {
+pub(crate) struct Labelled<I, L>(pub I, pub L);
+impl<I: std::fmt::Display + PartialEq<L>, L: std::fmt::Display> std::fmt::Display
+    for Labelled<I, L>
+{
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(self.0)?;
-        if self.1 != self.0 {
+        write!(f, "{}", self.0)?;
+        if self.0 != self.1 {
             write!(f, " {}", self.1)?;
         }
         Ok(())

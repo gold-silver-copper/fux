@@ -1312,6 +1312,6 @@ builtins! { m host;
             )));
         };
         m.build(text.chars_len())?;
-        Err(m.fail(Code::Fail, text.to_string()))
+        Err(m.fail(Code::Fail, text.into_string()))
     }
 }

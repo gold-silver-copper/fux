@@ -87,17 +87,48 @@ impl AppValue for Fux {
         }
     }
 
-    fn text(&self) -> Result<String, fuxth::Failure> {
-        Ok(match self {
-            Fux::Pane(p, _) => p.to_string(),
-            Fux::Tab(t, _) => t.to_string(),
-            Fux::Workspace(w, _) => w.to_string(),
-            Fux::Client(c, _) => c.to_string(),
-            Fux::Answer(answer, _) => return answer.text().map_err(words::observation_failure),
-            Fux::Extent(Extent::Cells(n)) => n.to_string(),
-            Fux::Extent(Extent::Percent(n)) => format!("{}%", n.get()),
-            Fux::Opts(_) => format!("({})", self.kind()),
-        })
+    const TEXT_LIMIT: usize = crate::wire::MAX_ALLOCATED;
+
+    fn text_bytes(&self) -> usize {
+        if let Fux::Answer(answer, _) = self {
+            let mut budget = crate::wire::Budget::with_limit(usize::MAX);
+            if budget
+                .slots::<Answer>(1)
+                .and_then(|()| answer.charge(&mut budget))
+                .is_err()
+            {
+                return usize::MAX;
+            }
+            let scratch = match &**answer {
+                Answer::Capture(c) => c.text_scratch(),
+                Answer::Pane(_)
+                | Answer::Panes(_)
+                | Answer::Listing { .. }
+                | Answer::Json(_)
+                | Answer::Status(_) => 0,
+            };
+            usize::MAX
+                .saturating_sub(budget.remaining())
+                .saturating_add(scratch)
+        } else if let Fux::Opts(opts) = self {
+            opts.heap_bytes()
+        } else {
+            0
+        }
+    }
+
+    fn write_text(&self, out: &mut dyn std::fmt::Write) -> Result<(), fuxth::Failure> {
+        match self {
+            Fux::Pane(p, _) => write!(out, "{p}"),
+            Fux::Tab(t, _) => write!(out, "{t}"),
+            Fux::Workspace(w, _) => write!(out, "{w}"),
+            Fux::Client(c, _) => write!(out, "{c}"),
+            Fux::Answer(answer, _) => answer.write_text(out),
+            Fux::Extent(Extent::Cells(n)) => write!(out, "{n}"),
+            Fux::Extent(Extent::Percent(n)) => write!(out, "{}%", n.get()),
+            Fux::Opts(_) => write!(out, "({})", self.kind()),
+        }
+        .map_err(|_| words::observation_failure(crate::wire::Budget::exceeded()))
     }
 }
 
@@ -156,6 +187,44 @@ pub struct Opts {
     /// The words given, for the word they go on to refuse any it would not
     /// use.
     pub given: Vec<words::Opt>,
+}
+
+impl Opts {
+    fn heap_bytes(&self) -> usize {
+        let mut bytes = std::mem::size_of::<Opts>()
+            .saturating_add(self.name.as_ref().map_or(0, String::capacity))
+            .saturating_add(self.cwd.as_ref().map_or(0, std::path::PathBuf::capacity))
+            .saturating_add(self.env.heap_bytes())
+            .saturating_add(
+                self.argv
+                    .capacity()
+                    .saturating_mul(std::mem::size_of::<String>()),
+            )
+            .saturating_add(
+                self.inputs
+                    .capacity()
+                    .saturating_mul(std::mem::size_of::<Input>()),
+            )
+            .saturating_add(
+                self.given
+                    .capacity()
+                    .saturating_mul(std::mem::size_of::<words::Opt>()),
+            );
+        for arg in &self.argv {
+            bytes = bytes.saturating_add(arg.capacity());
+        }
+        if let Some(WsRef::Name(name)) = &self.place {
+            bytes = bytes.saturating_add(name.capacity());
+        }
+        for input in &self.inputs {
+            bytes = bytes.saturating_add(match input {
+                Input::Key(_) => 0,
+                Input::Text(text) | Input::Paste(text) => text.capacity(),
+                Input::Bytes(bytes) => bytes.capacity(),
+            });
+        }
+        bytes
+    }
 }
 
 /// What a request is on.
@@ -228,32 +297,23 @@ impl Answer {
         }
     }
 
-    /// As it is printed.
-    pub fn text(&self) -> Result<String, crate::session::Error> {
-        Ok(match self {
-            Answer::Pane(answer) => answer.text(),
+    fn write_text(&self, out: &mut dyn std::fmt::Write) -> std::fmt::Result {
+        match self {
+            Answer::Pane(answer) => answer.write_text(out),
             Answer::Panes(answers) => {
-                let lines: Vec<String> = answers.iter().map(PaneAnswer::text).collect();
-                lines.join("\n")
+                for (i, answer) in answers.iter().enumerate() {
+                    if i > 0 {
+                        out.write_char('\n')?;
+                    }
+                    answer.write_text(out)?;
+                }
+                Ok(())
             }
-            Answer::Capture(captured) => {
-                let mut budget = crate::wire::Budget::new();
-                budget.slots::<Answer>(1)?;
-                budget.slots::<crate::capture::Captured>(1)?;
-                return captured.text_with(&mut budget);
-            }
-            Answer::Listing { of, listing } => {
-                let text = crate::answer::listing_text(*of, listing);
-                text.trim_end_matches('\n').to_owned()
-            }
-            Answer::Json(json) => {
-                let mut budget = crate::wire::Budget::new();
-                budget.slots::<Answer>(1)?;
-                json.charge(&mut budget)?;
-                return crate::json::render(&mut budget, |out| json.write(out));
-            }
-            Answer::Status(status) => status_text(status),
-        })
+            Answer::Capture(captured) => captured.write_text(out),
+            Answer::Listing { of, listing } => crate::answer::write_listing(*of, listing, out),
+            Answer::Json(json) => json.write(out),
+            Answer::Status(status) => write_status(status, out),
+        }
     }
 
     fn charge(&self, budget: &mut crate::wire::Budget) -> Result<(), crate::session::Error> {
@@ -333,22 +393,24 @@ impl Answer {
 
 /// `status`'s text: the server's version and socket, and if it speaks
 /// another protocol, how to stop it.
-fn status_text(status: &Json) -> String {
-    let field = |key| match status.get(key) {
-        Some(Json::String(s)) => s.clone(),
-        Some(json) => json.render(),
-        None => String::new(),
-    };
-    let mut text = format!("fux {} at {}", field("server_version"), field("socket"));
+fn write_status(status: &Json, out: &mut dyn std::fmt::Write) -> std::fmt::Result {
+    let field = |key| crate::answer::Field(status.get(key), "");
+    write!(
+        out,
+        "fux {} at {}",
+        field("server_version"),
+        field("socket")
+    )?;
     if status.get("compatible") == Some(&Json::Bool(false)) {
-        text.push_str(&format!(
+        write!(
+            out,
             " speaks protocol {}, not this fux's ({}, fux {}): `fux force-kill-server` stops it",
             field("server_protocol"),
             field("protocol"),
             field("version")
-        ));
+        )?;
     }
-    text
+    Ok(())
 }
 
 /// What an application word asks while the program waits.

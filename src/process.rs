@@ -228,13 +228,20 @@ pub fn reaped(pid: Pid) -> bool {
 /// How an end is told: `exited 3`, `killed by SIGSEGV` (`killed by
 /// signal 64` for one POSIX does not name), or `ended, its status lost`.
 pub fn told(ended: Ended) -> String {
-    match ended {
-        Ended::Lost => "ended, its status lost".to_owned(),
-        Ended::Exited(code) => format!("exited {code}"),
-        Ended::Signalled(raw) => match Signal::from_raw(raw) {
-            Some(signal) => format!("killed by SIG{}", signal.name()),
-            None => format!("killed by signal {raw}"),
-        },
+    Told(ended).to_string()
+}
+
+pub(crate) struct Told(pub Ended);
+impl std::fmt::Display for Told {
+    fn fmt(&self, out: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.0 {
+            Ended::Lost => out.write_str("ended, its status lost"),
+            Ended::Exited(code) => write!(out, "exited {code}"),
+            Ended::Signalled(raw) => match Signal::from_raw(raw) {
+                Some(signal) => write!(out, "killed by SIG{}", signal.name()),
+                None => write!(out, "killed by signal {raw}"),
+            },
+        }
     }
 }
 

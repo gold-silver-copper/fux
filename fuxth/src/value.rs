@@ -1,6 +1,6 @@
 //! Values on the stack: integers, booleans, strings, lists, and the
 //! application's own.
-use crate::error::Failure;
+use crate::error::{Code, Failure};
 use std::rc::Rc;
 
 /// How deep lists may nest: a list of lists of … at most this many. Every
@@ -12,6 +12,7 @@ pub const NESTING: u8 = 64;
 /// reads as text.
 pub trait AppValue: Clone + PartialEq {
     /// A host's allocation grant for one complete text conversion.
+    /// The default adds no host limit to the language's own bounds.
     const TEXT_LIMIT: usize = usize::MAX;
 
     /// What kind it is, as an error says it: "a pane".
@@ -21,10 +22,18 @@ pub trait AppValue: Clone + PartialEq {
     fn name(&self) -> &'static str {
         bare(self.kind())
     }
-    /// How `string` and `print` show it, or why conversion is refused.
-    /// Text words propagate this failure to the running program.
-    fn text(&self) -> Result<String, Failure> {
-        Ok(self.kind().to_owned())
+    /// Retained payload and temporary workspace used by its text writer.
+    /// A list charges each reference, conservatively including shared values.
+    fn text_bytes(&self) -> usize {
+        0
+    }
+
+    /// Streams the application's text into the aggregate conversion's sink.
+    /// Writers propagate sink failure and allocate only the workspace declared
+    /// by `text_bytes`, rather than building an intermediate String.
+    /// Admission and output call it separately; both must describe the same text.
+    fn write_text(&self, out: &mut dyn std::fmt::Write) -> Result<(), Failure> {
+        out.write_str(self.kind()).map_err(|_| text_limit())
     }
 }
 
@@ -164,6 +173,32 @@ impl Text {
         text.push_str(&other.text);
         text.push_str(self.part(i.saturating_add(1), self.chars));
         *self = Text::new(text);
+    }
+
+    /// Space for an Rc<Text> and the peak character-index replacement,
+    /// excluding the String moved into it. `None` if the size overflows.
+    pub fn import_bytes(chars: usize, ascii: bool) -> Option<usize> {
+        let marks = if ascii {
+            0
+        } else {
+            chars.saturating_sub(1) / STRIDE
+        };
+        let index = if marks == 0 {
+            0
+        } else {
+            let capacity = marks.checked_next_power_of_two()?.max(4);
+            capacity
+                .checked_add(capacity / 2)?
+                .checked_mul(std::mem::size_of::<usize>())?
+        };
+        index
+            .checked_add(std::mem::size_of::<Text>())?
+            .checked_add(std::mem::size_of::<usize>().checked_mul(2)?)
+    }
+
+    /// Moves out the String, dropping its character index without a copy.
+    pub fn into_string(self) -> String {
+        self.text
     }
 
     /// Bytes retained in the text and its character index.
@@ -335,56 +370,121 @@ impl<A: AppValue> Value<A> {
         }
     }
 
-    /// The value as text, as `string` and `print` show it: digits, `true`
-    /// or `false`, a string as it is, a list's values' text with a space
-    /// between, the application's text.
+    /// The value as text, with one admission for retained inputs, formatter
+    /// workspace and the entire output, including nested application values.
     pub fn text(&self) -> Result<String, Failure> {
-        if let Self::App(app) = self {
-            return app.text();
-        }
-        let mut out = String::new();
-        self.write_text(&mut out, usize::MAX)?;
-        Ok(out)
+        self.render_text(usize::MAX, false)?.ok_or_else(text_limit)
     }
 
-    /// The text, if it is at most `most` characters long.
+    /// The text, if it is at most `most` characters long. The character
+    /// index is admitted before the output String or index is allocated.
     pub fn text_upto(&self, most: usize) -> Result<Option<Text>, Failure> {
-        if let Self::App(app) = self {
-            let out = app.text()?;
-            return Ok((out.chars().count() <= most).then(|| Text::new(out)));
-        }
-        let mut out = String::new();
-        // A character is at most 4 bytes: past that many, it is too long.
-        let bytes = most.saturating_mul(4);
-        if !self.write_text(&mut out, bytes)? {
-            return Ok(None);
-        }
-        let text = Text::new(out);
-        Ok((text.chars_len() <= most).then_some(text))
+        Ok(self.render_text(most, true)?.map(Text::new))
     }
 
-    /// Writes the text, stopping once `out` is past `bytes` long: whether
-    /// it wasn't.
-    fn write_text(&self, out: &mut String, bytes: usize) -> Result<bool, Failure> {
+    fn charge_text(&self, left: &mut usize) -> Result<(), Failure> {
+        let bytes = match self {
+            Self::Int(_) | Self::Bool(_) => 0,
+            Self::Str(text) => std::mem::size_of::<Text>()
+                .saturating_add(std::mem::size_of::<usize>().saturating_mul(2))
+                .saturating_add(text.heap_bytes()),
+            Self::List(list) => std::mem::size_of::<List<A>>()
+                .saturating_add(std::mem::size_of::<usize>().saturating_mul(2))
+                .saturating_add(list.heap_bytes()),
+            Self::App(app) => app.text_bytes(),
+        };
+        *left = left.checked_sub(bytes).ok_or_else(text_limit)?;
+        if let Self::List(list) = self {
+            for item in &list.items {
+                item.charge_text(left)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn render_text(&self, most: usize, indexed: bool) -> Result<Option<String>, Failure> {
+        struct Count {
+            left: usize,
+            bytes: usize,
+            chars: usize,
+            ascii: bool,
+            most: usize,
+            long: bool,
+        }
+        impl std::fmt::Write for Count {
+            fn write_str(&mut self, text: &str) -> std::fmt::Result {
+                self.chars = self
+                    .chars
+                    .checked_add(text.chars().count())
+                    .ok_or(std::fmt::Error)?;
+                if self.chars > self.most {
+                    self.long = true;
+                    return Err(std::fmt::Error);
+                }
+                self.left = self.left.checked_sub(text.len()).ok_or(std::fmt::Error)?;
+                self.bytes = self.bytes.checked_add(text.len()).ok_or(std::fmt::Error)?;
+                self.ascii &= text.is_ascii();
+                Ok(())
+            }
+        }
+        let mut left = A::TEXT_LIMIT;
+        self.charge_text(&mut left)?;
+        let mut count = Count {
+            left,
+            bytes: 0,
+            chars: 0,
+            ascii: true,
+            most,
+            long: false,
+        };
+        if let Err(failure) = self.write_text(&mut count) {
+            return if count.long { Ok(None) } else { Err(failure) };
+        }
+        if indexed && Text::import_bytes(count.chars, count.ascii).is_none_or(|n| n > count.left) {
+            return Err(text_limit());
+        }
+        let mut text = String::new();
+        text.try_reserve_exact(count.bytes)
+            .map_err(|_| text_limit())?;
+        struct Output<'a> {
+            text: &'a mut String,
+            left: usize,
+        }
+        impl std::fmt::Write for Output<'_> {
+            fn write_str(&mut self, text: &str) -> std::fmt::Result {
+                self.left = self.left.checked_sub(text.len()).ok_or(std::fmt::Error)?;
+                self.text.push_str(text);
+                Ok(())
+            }
+        }
+        self.write_text(&mut Output {
+            text: &mut text,
+            left: count.bytes,
+        })?;
+        Ok(Some(text))
+    }
+
+    fn write_text(&self, out: &mut dyn std::fmt::Write) -> Result<(), Failure> {
         match self {
-            Self::Int(n) => out.push_str(&n.to_string()),
-            Self::Bool(b) => out.push_str(if *b { "true" } else { "false" }),
-            Self::Str(s) => out.push_str(s),
-            // As deep as lists nest, at most `NESTING`.
+            Self::Int(n) => write!(out, "{n}").map_err(|_| text_limit()),
+            Self::Bool(b) => write!(out, "{b}").map_err(|_| text_limit()),
+            Self::Str(text) => out.write_str(text).map_err(|_| text_limit()),
             Self::List(list) => {
                 for (i, item) in list.items.iter().enumerate() {
                     if i > 0 {
-                        out.push(' ');
+                        out.write_char(' ').map_err(|_| text_limit())?;
                     }
-                    if !item.write_text(out, bytes)? {
-                        return Ok(false);
-                    }
+                    item.write_text(out)?;
                 }
+                Ok(())
             }
-            Self::App(a) => out.push_str(&a.text()?),
+            Self::App(app) => app.write_text(out),
         }
-        Ok(out.len() <= bytes)
     }
+}
+
+fn text_limit() -> Failure {
+    Failure::new(Code::TooLong, "the text exceeds its allocation limit")
 }
 
 impl<A> Value<A> {
