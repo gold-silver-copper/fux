@@ -18,13 +18,20 @@ fux                               # attach, starting a server if none runs
 
 ## Using it
 
-`fux` alone attaches this terminal (it runs `default-attach`, which supplies
-`opts str main name attach`), starting a server in the background if none
-answers; `fux opts str work in attach` attaches to workspace `work`, and `fux opts watch attach` only watches
-(keys do nothing but `C-b d`, which detaches). A new server holds
-nothing: bare `fux` starts workspace `main`, with one tab and a shell, on
-its screen. An explicit `fux opts attach` starts an unnamed workspace, `+1`.
-One that watches starts nothing: with no server, or one holding nothing, it is refused. `C-b d`
+`fux` alone runs `default-attach` (`opts attach`), starting a server in the
+background if none answers. `fux opts str work in attach` attaches to workspace
+`work`; `fux @2 attach` shows a tab's first pane in layout order, and
+`fux %3 attach` focuses that pane. Explicit targets must exist.
+`fux opts watch attach` only watches (keys do nothing but `C-b d`, which
+detaches), and never starts a server or creates a workspace.
+
+With no target, attach uses the first stored workspace. An empty server replies
+that it needs initial inputs; the client then resolves its launch and directory
+and retries one conditional creation. Concurrent retries create only one
+workspace. Existing sessions do not depend on unused creation inputs.
+The bundled `opts str main name attach-defaults` names the first workspace
+`main`, for both bare `fux` and `opts attach`. `opts attach-defaults` clears that
+name and any preferred target, giving an unnamed first workspace. `C-b d`
 detaches, and the shells keep running. Inside a fux pane, `fux` refuses to attach.
 
 The server runs until `fux kill-server` (refused while a person's terminal
@@ -377,8 +384,16 @@ starts in the invoking client's directory, independently of HOME.
 Dump records saved argv, role and environment patches. Programs keep their
 saved launch cwd, even if they have since changed directories; shells use
 their current directory when it is known.
-Creation options on attach require an untargeted writable invocation; `in` and
-`watch` refuse those options instead of ignoring them.
+Creation options on attach require an untargeted writable invocation; explicit
+subjects, `in` and `watch` refuse those options instead of ignoring them.
+
+`opts str work in attach-defaults` sets this client's preferred workspace and
+retains its first-workspace name as unused data. A typed tab or pane can also
+be given to `attach-defaults` in an action script. Configs use workspace names
+without querying the server. Target and name in one call conflict; a name-only
+or empty call clears the preferred target. Explicit attach targets override
+preferences, and an explicit `name` chooses untargeted creation instead of a
+preferred target. `in` remains workspace-only on all creation words.
 
 XTVERSION (`CSI > q`) answers `fux` and its version, secondary device
 attributes (`CSI > c`) the version, and primary ones (`CSI c`) a
@@ -426,7 +441,7 @@ and permissions. Bell, titles and terminal clipboard delivery belong to each
 view and arrive in its attach request after local commit. Later key or prompt
 changes use a connection-bound action, fenced before following requests.
 
-Client defaults load when `set`, `list-keys`, `attach`, a launch or an
+Client defaults load when `set`, `attach-defaults`, `list-keys`, `attach`, a launch or an
 observation wait without `timeout` needs them; ordinary queries and server
 controls do not load them. Bundled
 `client-defaults.fux` reads this client's `$SHELL` once and chooses `/bin/sh`

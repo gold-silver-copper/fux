@@ -177,7 +177,7 @@ impl Opt {
 }
 
 /// The words that start from opts, as the table says: `run, new-tab,
-/// new-workspace, events-of and attach`, `last` before the last.
+/// new-workspace, events-of, attach and attach-defaults`, `last` before the last.
 pub fn from_opts(last: &str) -> String {
     let opts = |act: &&Act| (act.takes()).is_some_and(|t| t.after != After::Pane);
     let names: Vec<&str> = (Act::ALL.iter().filter(opts))
@@ -197,7 +197,7 @@ pub const KINDS: [(&str, &str, Option<&str>); 19] = [
     ("client-capture", "a client's capture", None),
     ("answers", "an answer of a tab's or workspace's panes", None), ("capture", "a capture", None),
     ("listing", "a listing", None), ("json", "a JSON value", None),
-    ("opts", "options (from opts, for run, new-tab, new-workspace, events-of and attach; a pane's words take theirs on the pane: `%2 all-history capture`)", Some("nothing takes these options")),
+    ("opts", "options (from opts, for run, new-tab, new-workspace, events-of, attach and attach-defaults; a pane's words take theirs on the pane: `%2 all-history capture`)", Some("nothing takes these options")),
     ("pane-request", "a pane request", Some("nothing acts on this request")),
     ("tab-request", "a tab request", Some("nothing acts on this request")),
     ("workspace-request", "a workspace request", Some("nothing acts on this request")),
@@ -259,7 +259,7 @@ words! {
         Finding Panes "panes" "handle -- list" "the panes of a pane (itself), a tab or a workspace, in layout order" "fux str agent workspace panes each capture print end" [];
         Finding Tabs "tabs" "handle -- list" "the tabs of a pane or tab (its own) or a workspace, in the workspace's order" "fux str agent workspace tabs each str name get print end" [];
         Finding Focused "focused" "client -- pane" "the pane a client focuses" "fux str c1 client focused capture" [];
-        Starting Opts "opts" "-- opts" "empty options, for run, new-tab, new-workspace, events-of and attach (the other words take them on the pane)" "fux opts str agent in 80 24 size str ./app program run" [];
+        Starting Opts "opts" "-- opts" "empty options, for run, new-tab, new-workspace, events-of, attach and attach-defaults (the other words take them on the pane)" "fux opts str agent in 80 24 size str ./app program run" [];
         Starting Run "run" "opts -- answer" "start a program in a tab of its own; in is required, name names its pane; its pane stays once it exits" "fux agent-opts str web name 120 40 size str ./app program str --flag arg run" [Opts: Name Size Cwd Env UnsetEnv CopyEnvironment HistoryBytes ProgramClipboard Program Arg In];
         Starting Split "split" "subject -- answer" "split a pane: a shell, or the program given" "fux %3 vertical split" [Pane: Horizontal Vertical Shares Cwd Env UnsetEnv CopyEnvironment HistoryBytes ProgramClipboard Program ShellProgram Arg];
         Starting NewTab "new-tab" "opts -- answer" "a tab with the client's shell or explicit launch" "fux opts str logs name 80 24 size str agent in new-tab" [Opts: Name Size Cwd Env UnsetEnv CopyEnvironment HistoryBytes ProgramClipboard Program ShellProgram Arg In];
@@ -298,7 +298,7 @@ words! {
         Changing Buffers "buffers" "-- json" "paste buffer metadata, newest first: id, bytes and preview" "fux buffers" [];
         Changing Buffer "buffer" "id -- text" "exact paste buffer text by id or newest" "fux newest buffer" [];
         Changing PasteBuffer "paste-buffer" "pane id -- answer" "paste a buffer by id or newest into a pane; answers as send-keys does" "fux %3 newest paste-buffer" [];
-        Clients Attach "attach" "opts --" "show the server in this terminal (bare fux uses default-attach); with a size, be a client of no terminal instead; in and watch refuse creation options" "fux opts str work in attach" [Opts: In Size Watch Cwd Env UnsetEnv CopyEnvironment HistoryBytes ProgramClipboard Program ShellProgram Arg Name];
+        Clients Attach "attach" "watched --" "show the server in this terminal (bare fux uses default-attach); with a size, be a client of no terminal instead; explicit targets and watch refuse creation options" "fux @2 attach" [Either: In Size Watch Cwd Env UnsetEnv CopyEnvironment HistoryBytes ProgramClipboard Program ShellProgram Arg Name];
         Clients Focus "focus" "client way --" "left right up down next previous or last pane" "fux str c1 client str left focus" [];
         Clients FocusPane "focus-pane" "client pane --" "focus a pane" "fux str c1 client %3 focus-pane" [];
         Clients ShowTab "show-tab" "client tab --" "show a tab" "fux str c1 client @2 show-tab" [];
@@ -315,6 +315,7 @@ words! {
         Server Status "status" "-- record" "the server that answers, and its version; with none, fails no_server" "fux status || fux start" [];
         Server KillServer "kill-server" "--" "stop the server: not from its own panes, nor with people attached" "fux str test server kill-server" [];
         Server ForceKillServer "force-kill-server" "--" "stop it anyway, whatever fux version it is" "fux str test server force-kill-server" [];
+        Config AttachDefaults "attach-defaults" "watched --" "replace this client's preferred attach place; target-only retains the first name, name-only or empty clears the target; target and name conflict" "opts str main name attach-defaults" [Either: In Name];
         Config Set "set" "setting new --" "a preference for this client only: `fux help set` lists their effects" "fux str history-bytes 16777216 set" [];
         Server Version "version" "-- text" "this fux's version (a pane's version is `str version get` on the pane)" "fux version" [];
         Shell Args "args" "-- list" "the strings after fux --file FILE (none for any other program)" "fux args len" [];
@@ -344,7 +345,7 @@ words! {
         Starting Horizontal "horizontal" "x -- x" "split side by side" "fux %3 horizontal split";
         Starting Vertical "vertical" "x -- x" "split stacked" "fux %3 vertical split";
         Starting Shares "shares" "x n n -- x" "split: how the pane and the new one divide the pane's room, A to B (default: halved)" "fux %3 horizontal 2 1 shares split";
-        Starting In "in" "x workspace -- x" "the workspace for run, new-tab or attach; run and new-tab create a missing name, or a fresh unnamed workspace with str new-workspace in" "fux opts str agent in 80 24 size new-tab";
+        Starting In "in" "x workspace -- x" "the workspace for run, new-tab, attach or attach-defaults; run and new-tab create a missing name, or a fresh unnamed workspace with str new-workspace in" "fux opts str agent in 80 24 size new-tab";
         Starting Watch "watch" "x -- x" "attach without typing: keys do nothing but the prefix, then d, which detaches" "fux opts watch attach";
         Starting KillFirst "kill-first" "x -- x" "respawn: end the program first if it still runs" "fux %3 kill-first respawn";
         Waiting Changed "changed" "seen -- changed-request" "a wait from this version (%2:0.57.0.3.0:RUN, as an action, a wait or `str version get` gives it; or an answer or capture, its version) of the pane it names, not from now" "A=$(fux %3 str y text send-keys); fux str \"$A\" changed 60 timeout wait";
@@ -999,6 +1000,67 @@ fn finished(word: Act, value: Value<Fux>) -> Result<Opts, Failure> {
     }
 }
 
+/// Attach alone accepts typed places through the ordinary request subject.
+fn attach_options(
+    word: Act,
+    value: Value<Fux>,
+) -> Result<(Option<crate::command::AttachTarget>, Opts), Failure> {
+    use crate::command::AttachTarget as T;
+    let built = *modifying(value)?;
+    unused(word, &built)?;
+    if built.given.iter().filter(|o| **o == Opt::In).count() > 1 {
+        return Err(fail(Raise::BadValue, "attach takes only one in target"));
+    }
+    let target = match (&built.on, &built.place) {
+        (None, place) => place.clone().map(T::Workspace),
+        (Some(On::Target(target)), None) => Some(match target {
+            AnyRef::Workspace(ws) => T::Workspace(WsRef::Id(*ws)),
+            AnyRef::Tab(tab) => T::Tab(*tab),
+            AnyRef::Pane(pane) => T::Pane(*pane),
+        }),
+        (Some(_), Some(_)) => {
+            return Err(fail(Raise::BadValue, "attach takes no in with a subject"));
+        }
+        (Some(_), None) => {
+            return Err(fail(
+                Raise::Type,
+                "attach needs a workspace, tab, pane or opts",
+            ));
+        }
+    };
+    Ok((target, built))
+}
+
+pub(super) fn check_attach_creation(
+    built: &Opts,
+    targeted: bool,
+    watch: bool,
+) -> Result<(), Failure> {
+    if (targeted || watch)
+        && let Some(option) = built.given.iter().find(|option| {
+            matches!(
+                option,
+                Opt::Name
+                    | Opt::Cwd
+                    | Opt::Env
+                    | Opt::UnsetEnv
+                    | Opt::CopyEnvironment
+                    | Opt::HistoryBytes
+                    | Opt::ProgramClipboard
+                    | Opt::Program
+                    | Opt::ShellProgram
+                    | Opt::Arg
+            )
+        })
+    {
+        return Err(fail(
+            Raise::Unused,
+            format!("takes no {option} with a target or watch"),
+        ));
+    }
+    Ok(())
+}
+
 /// The words that take `word`'s options, listed: an option's takers;
 /// every word that takes options, for any other word.
 pub(super) fn takers(word: Option<Word>) -> String {
@@ -1248,14 +1310,14 @@ impl fuxth::Host for Host<'_> {
                 of: super::same_run(of, used)?,
             })),
             Done::Later(Ask::Local(Local::Attach {
-                workspace,
+                target,
                 read_only,
                 size,
                 creation,
                 ..
             })) => local(Local::Attach {
                 of,
-                workspace,
+                target,
                 read_only,
                 size,
                 creation,
@@ -1721,32 +1783,11 @@ impl Host<'_> {
             }
             // ----------------------------------------------------- clients
             Act::Attach => {
-                let built = finished(act, next()?)?;
-                if (built.place.is_some() || built.watch)
-                    && let Some(option) = built.given.iter().find(|option| {
-                        matches!(
-                            option,
-                            Opt::Name
-                                | Opt::Cwd
-                                | Opt::Env
-                                | Opt::UnsetEnv
-                                | Opt::CopyEnvironment
-                                | Opt::HistoryBytes
-                                | Opt::ProgramClipboard
-                                | Opt::Program
-                                | Opt::ShellProgram
-                                | Opt::Arg
-                        )
-                    })
-                {
-                    return Err(fail(
-                        Raise::Unused,
-                        format!("takes no {option} with in or watch"),
-                    ));
-                }
+                let (target, built) = attach_options(act, next()?)?;
+                check_attach_creation(&built, target.is_some(), built.watch)?;
                 local(Local::Attach {
                     of: None,
-                    workspace: built.place.clone(),
+                    target,
                     read_only: built.watch,
                     size: built.size.map(|screen| screen.size()),
                     creation: Box::new(built),
@@ -1800,6 +1841,32 @@ impl Host<'_> {
             Act::Status => local(Local::Status),
             Act::KillServer => tell(Command::KillServer),
             Act::ForceKillServer => local(Local::ForceKill),
+            Act::AttachDefaults => {
+                self.prepare()
+                    .map_err(|why| fail(Raise::Config, why.to_string()))?;
+                let value = next()?;
+                let of = super::scope(&value);
+                let (target, built) = attach_options(act, value)?;
+                if target.is_some() && built.given.contains(&Opt::Name) {
+                    return Err(fail(
+                        Raise::BadValue,
+                        "attach-defaults takes no name with a target",
+                    ));
+                }
+                let state = self.state.as_deref_mut().ok_or_else(|| {
+                    fail(
+                        Raise::NotConfig,
+                        "attach-defaults needs this client's local state",
+                    )
+                })?;
+                let name = if target.is_some() {
+                    state.attach.as_ref().and_then(|a| a.name.clone())
+                } else {
+                    built.name
+                };
+                state.attach = Some(crate::client_state::AttachDefaults { of, target, name });
+                Ok(Done::Now)
+            }
             Act::Set => {
                 self.prepare()
                     .map_err(|failed| fail(Raise::Config, failed.to_string()))?;
@@ -2108,7 +2175,7 @@ mod tests {
                 ))
             }
         }
-        for selector in ["str main in", "watch"] {
+        for selector in ["opts str main in", "opts watch"] {
             for option in [
                 "str x name",
                 "str / cwd",
@@ -2121,7 +2188,7 @@ mod tests {
                 "list str /bin/sh end shell-program",
                 "str /bin/sh program str -l arg",
             ] {
-                let code = format!("str bell false set opts {selector} {option} 80 24 size attach");
+                let code = format!("str bell false set {selector} {option} 80 24 size attach");
                 let tokens = fuxth::token::source("attach", &code)?;
                 let mut machine = crate::script::compile(&tokens).map_err(|f| f.to_string())?;
                 let mut state = crate::script::default_state()
@@ -2158,6 +2225,52 @@ mod tests {
 
     /// No word's name needs quoting in a shell. (That no two share one,
     /// nor any the language's, the vocabulary checks as it is made.)
+    #[test]
+    fn attach_subjects_and_defaults_retain_their_typed_target_and_run() -> Result<(), String> {
+        use super::*;
+        use crate::command::AttachTarget;
+        let run = "1-2".parse().map_err(|()| "run")?;
+        let mut draft = crate::script::default_state()
+            .map_err(|e| e.to_string())?
+            .draft();
+        for (value, target) in [
+            (
+                Fux::Tab(crate::id::TabId::of(2), Some(run)),
+                AttachTarget::Tab(crate::id::TabId::of(2)),
+            ),
+            (
+                Fux::Pane(PaneId::of(3), Some(run)),
+                AttachTarget::Pane(PaneId::of(3)),
+            ),
+        ] {
+            let mut sink = Vec::new();
+            let mut host = Host::new(
+                crate::protocol::Context::default(),
+                Some(&mut draft),
+                &mut sink,
+            );
+            let mut values = vec![Value::App(value.clone())].into_iter();
+            let mut next = || {
+                values
+                    .next()
+                    .ok_or_else(|| fail(Raise::StackUnderflow, "subject"))
+            };
+            assert!(matches!(
+                host.dispatch(Word::Act(Act::AttachDefaults), &mut next, &mut Vec::new())
+                    .map_err(|e| e.message)?,
+                Done::Now
+            ));
+            let (attached, _) =
+                attach_options(Act::Attach, Value::App(value)).map_err(|e| e.message)?;
+            assert_eq!(attached, Some(target.clone()));
+            let defaults = draft.attach.as_ref().ok_or("defaults")?;
+            assert_eq!(defaults.target, Some(target));
+            assert_eq!(defaults.of, Some(run));
+            assert_eq!(defaults.name.as_deref(), Some("main"));
+        }
+        Ok(())
+    }
+
     #[test]
     fn every_name_is_a_shell_word() {
         for name in Word::ALL.iter().map(|w| w.row().name) {

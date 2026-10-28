@@ -12,3 +12,4 @@ str terminal-clipboard true set
 str bell true set
 str titles false set
 str copy-environment list end set
+opts str main name attach-defaults

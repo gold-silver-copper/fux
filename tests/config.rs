@@ -259,6 +259,7 @@ fn an_imported_failure_keeps_the_whole_bundled_state() -> Outcome {
     std::fs::write(
         directory.join("shared.fux"),
         "str C-a prefix str wait-seconds 0 set str titles true set \
+         opts str missing in attach-defaults \
          define only-in-failed-config 41 end \
          %1 horizontal split drop",
     )

@@ -827,7 +827,8 @@ mod tests {
                 Outgoing::To(_, ToAttached::Paint(bytes)) => Some(bytes.into_owned()),
                 Outgoing::To(
                     _,
-                    ToAttached::Welcome(..)
+                    ToAttached::NeedsInitial
+                    | ToAttached::Welcome(..)
                     | ToAttached::Exit(_)
                     | ToAttached::Ended(_)
                     | ToAttached::Run(_)

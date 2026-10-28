@@ -464,7 +464,9 @@ impl Run {
             }
             Outgoing::To(client, ToAttached::Exit(_)) => self.detach(client),
             // Sent only as a client attaches, by the server.
-            Outgoing::To(_, ToAttached::Welcome(..)) => panic!("a welcome from the session"),
+            Outgoing::To(_, ToAttached::NeedsInitial | ToAttached::Welcome(..)) => {
+                panic!("an attachment reply from the session")
+            }
             Outgoing::Shutdown { .. } => self.shut = true,
             Outgoing::To(client, ToAttached::Run(code)) => self.run_as(client, &code.into()),
             Outgoing::To(client, ToAttached::Ended(opening)) => {

@@ -10,6 +10,7 @@ pub struct ClientState {
     pub keys: Keymap,
     pub config: Option<Config>,
     pub preferences: Preferences,
+    pub attach: AttachDefaults,
 }
 
 impl ClientState {
@@ -18,8 +19,17 @@ impl ClientState {
             keys: self.keys.clone(),
             config: self.config.clone(),
             preferences: self.preferences.clone().into(),
+            attach: Some(self.attach.clone()),
         }
     }
+}
+
+/// A preferred place and the name used only for the first workspace.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AttachDefaults {
+    pub of: Option<crate::command::Run>,
+    pub target: Option<crate::command::AttachTarget>,
+    pub name: Option<String>,
 }
 
 /// Initialization may leave fields missing; a live client may not.
@@ -28,6 +38,7 @@ pub struct Draft {
     pub keys: Keymap,
     pub config: Option<Config>,
     pub preferences: PreferenceDraft,
+    pub attach: Option<AttachDefaults>,
 }
 
 impl Draft {
@@ -43,6 +54,9 @@ impl Draft {
             keys: self.keys,
             config: self.config,
             preferences: self.preferences.finish()?,
+            attach: self
+                .attach
+                .ok_or("bundled initialization did not set attach-defaults")?,
         })
     }
 }
@@ -186,6 +200,9 @@ mod tests {
         let state = crate::script::default_state().map_err(|e| e.to_string())?;
         let mut draft = state.draft();
         draft.preferences.wait = None;
+        assert!(draft.finish().is_err());
+        let mut draft = state.draft();
+        draft.attach = None;
         assert!(draft.finish().is_err());
         assert_eq!(state.preferences.history_bytes.get(), 8 << 20);
         assert_eq!(state.preferences.wait.seconds(), 30);

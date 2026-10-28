@@ -358,7 +358,7 @@ impl Fixture {
         let attach = Attach {
             of: None,
             size,
-            workspace: None,
+            target: None,
             read_only: false,
             initial: None,
             presentation: fux::script::default_state()

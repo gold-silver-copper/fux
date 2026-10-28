@@ -899,6 +899,16 @@ wire! {
 }
 
 wire! {
+    /// The explicit place an attachment shows, never created by attachment.
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    pub enum AttachTarget {
+        Workspace(workspace: WsRef),
+        Tab(tab: TabId),
+        Pane(pane: PaneId),
+    }
+}
+
+wire! {
     /// Conditional first-pane inputs, used only by an empty writable attach.
     #[derive(Clone, Debug, PartialEq, Eq)]
     pub struct InitialWorkspace {

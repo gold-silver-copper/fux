@@ -432,6 +432,14 @@ read-file`. `X warn` prints on stderr:
 - fux is controlled through its Unix socket alone: a sandbox that denies
   `connect` to it (Codex's denies every `connect`) cannot drive fux. Run
   fux commands outside such a sandbox, or allow the socket.
+- `@2 attach` shows that tab's first pane; `%3 attach` focuses that pane.
+  `opts str work in attach` requires that workspace to exist. Without a target,
+  attach uses the first stored workspace; only a writable empty attach retries
+  with conditional initial creation, serialized by the server. One viewport
+  supplies the pane size after subtracting the bar. Watchers never create.
+  `opts str work in attach-defaults` is a local preference; explicit attach
+  operands win. A fresh typing client loads config edits; existing clients
+  keep their frozen configuration.
 - A tab no client shows, or only clients that watch, is laid out on its
   `size`; `TAB 40 12 resize` changes it, `resize-auto` gives it back to a
   client's screen, `PANE 95 percent resize-x` sizes a pane in its tab. A

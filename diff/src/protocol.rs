@@ -248,7 +248,7 @@ fn encode(spec: &Spec) -> Result<Vec<u8>, String> {
         Spec::Attach(rows, cols, read_only) => Attach {
             of: None,
             size: crate::size(rows, cols),
-            workspace: None,
+            target: None,
             read_only,
             initial: None,
             presentation: fux::view::Presentation {

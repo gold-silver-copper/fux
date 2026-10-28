@@ -90,7 +90,7 @@ fn a_connection_that_ends_takes_its_client_with_it() -> Outcome {
     let attach = Attach {
         of: None,
         size: sized(5, 20)?,
-        workspace: None,
+        target: None,
         read_only: false,
         initial: None,
         presentation: server.state.preferences.presentation(),
@@ -1240,5 +1240,179 @@ fn an_oversized_local_shell_is_refused_before_headless_attach() -> Outcome {
         "the original failure was lost: {output}"
     );
     assert!(!server.ok(&["ls"])?.contains("client "));
+    Ok(())
+}
+
+#[test]
+fn empty_attach_retries_are_typed_and_create_only_once() -> Outcome {
+    use fux::protocol::{Attach, Decoder, Frame, Greeting, Hello, Role, ToAttached};
+    use std::io::{Read, Write};
+    use std::os::unix::net::UnixStream;
+
+    fn wire(stream: &mut UnixStream) -> Result<Vec<u8>, String> {
+        let mut header = [0u8; 4];
+        stream.read_exact(&mut header).map_err(e)?;
+        let len = usize::try_from(u32::from_be_bytes(header)).map_err(e)?;
+        if len > fux::protocol::MAX_FRAME {
+            return Err("oversized reply".into());
+        }
+        let mut bytes = vec![0; len];
+        stream.read_exact(&mut bytes).map_err(e)?;
+        Ok([header.as_slice(), &bytes].concat())
+    }
+    fn connect(server: &Server, attach: &Attach) -> Result<UnixStream, String> {
+        let mut stream = UnixStream::connect(&server.socket).map_err(e)?;
+        stream.set_read_timeout(Some(PATIENCE)).map_err(e)?;
+        stream
+            .write_all(&Hello::ours(Role::Headless).encode().map_err(e)?)
+            .map_err(e)?;
+        let mut decoder = Decoder::default();
+        decoder.push(&wire(&mut stream)?);
+        assert!(matches!(
+            decoder.frame::<Greeting>().map_err(e)?,
+            Some(Greeting::Hello(_))
+        ));
+        stream.write_all(&attach.encode().map_err(e)?).map_err(e)?;
+        Ok(stream)
+    }
+
+    let server = Server::empty()?;
+    let attach = Attach::of(sized(10, 40)?, server.state.preferences.presentation());
+    let mut watch = attach.clone();
+    watch.read_only = true;
+    let mut watcher = connect(&server, &watch)?;
+    let mut decoder = Decoder::default();
+    decoder.push(&wire(&mut watcher)?);
+    assert!(matches!(
+        decoder.frame::<ToAttached>().map_err(e)?,
+        Some(ToAttached::Exit(_))
+    ));
+    // Both callers first learn emptiness, without a view, child or ID.
+    let mut first = connect(&server, &attach)?;
+    let mut second = connect(&server, &attach)?;
+    for stream in [&mut first, &mut second] {
+        assert_eq!(wire(stream)?, ToAttached::NeedsInitial.encode().map_err(e)?);
+        assert_eq!(
+            stream.read(&mut [0]).map_err(e)?,
+            0,
+            "unadmitted connection closes"
+        );
+    }
+    let empty = server.ok(&["ls"])?;
+    assert!(
+        !empty.contains("%1") && !empty.contains("client "),
+        "{empty}"
+    );
+    let mut conditional = attach.clone();
+    conditional.initial = Some(fux::command::InitialWorkspace {
+        name: Some("first".into()),
+        start: fux::command::Start::Program(fux::config::Program::new(
+            "/bin/cat".into(),
+            Vec::new(),
+        )?),
+        options: server.state.preferences.pane_options(),
+        cwd: server.dir.clone(),
+        env: fux::command::EnvPatch::default(),
+    });
+    let mut first = connect(&server, &conditional)?;
+    // The second branch would fail if used, but the stored workspace wins.
+    let initial = conditional.initial.as_mut().ok_or("initial")?;
+    initial.name = Some("unused".into());
+    initial.cwd = "unknown".into();
+    let mut second = connect(&server, &conditional)?;
+    for (stream, id) in [(&mut first, "c1"), (&mut second, "c2")] {
+        let mut decoder = Decoder::default();
+        decoder.push(&wire(stream)?);
+        assert!(
+            matches!(decoder.frame::<ToAttached>().map_err(e)?, Some(ToAttached::Welcome(client, _)) if client.to_string() == id)
+        );
+    }
+    let listed = server.ok(&["ls"])?;
+    assert!(
+        listed.contains("first") && !listed.contains("unused"),
+        "{listed}"
+    );
+    assert!(
+        listed.contains("cat 40x9") && !listed.contains("%2"),
+        "{listed}"
+    );
+    assert!(
+        listed.contains("client c1") && listed.contains("client c2"),
+        "{listed}"
+    );
+    Ok(())
+}
+
+#[test]
+fn existing_attach_does_not_resolve_unused_launch_environment() -> Outcome {
+    use std::ffi::OsString;
+    use std::os::unix::ffi::OsStringExt;
+    let server = Server::start("")?;
+    let mut terminal = Terminal::start(
+        10,
+        40,
+        &[
+            fux(),
+            "str",
+            "copy-environment",
+            "list",
+            "str",
+            "ATTACH_UNUSED",
+            "end",
+            "set",
+            "opts",
+            "str",
+            "/no/such/program",
+            "program",
+            "str",
+            "/no/such/directory",
+            "cwd",
+            "attach",
+        ],
+        |command| {
+            command
+                .env("FUX_SOCKET", &server.socket)
+                .env("SHELL", "/bin/sh")
+                .env("XDG_CONFIG_HOME", server.dir.join("config"))
+                .env("ATTACH_UNUSED", OsString::from_vec(vec![0xff]));
+        },
+    )?;
+    terminal.wait_for("%1")?;
+    terminal.type_bytes(b"\x02d")?;
+    assert!(terminal.wait_exit()?.success());
+    assert!(!server.ok(&["ls"])?.contains("%2"));
+    Ok(())
+}
+
+#[test]
+fn attach_preferences_apply_before_explicit_operands() -> Outcome {
+    let server = Server::start("opts str second in attach-defaults")?;
+    server.ok(&[
+        "opts",
+        "str",
+        "second",
+        "name",
+        "80",
+        "24",
+        "size",
+        "new-workspace",
+        "drop",
+    ])?;
+    for (args, expected) in [(&[][..], "%2"), (&["%1", "attach"][..], "%1")] {
+        let mut terminal = Terminal::attach(&server, 10, 40, args)?;
+        terminal.wait_for(expected)?;
+        let listed = server.ok(&["ls"])?;
+        assert!(
+            listed
+                .lines()
+                .any(|line| line.starts_with("client ") && line.ends_with(expected)),
+            "{listed}"
+        );
+        terminal.type_bytes(b"\x02d")?;
+        terminal.wait_exit()?;
+        eventually("the detached view", || {
+            Ok(!server.ok(&["ls"])?.contains("client "))
+        })?;
+    }
     Ok(())
 }
