@@ -521,6 +521,21 @@ impl Grid {
     pub fn get(&self, y: u16, x: u16) -> Option<CellRef<'_>> {
         self.index(y, x).and_then(|i| self.cells.get(i))
     }
+    /// Whether painting this grid clears the previous screen, including pictures.
+    pub(crate) fn clears(&self, shown: &Grid) -> bool {
+        (
+            self.rows,
+            self.cols,
+            self.underline_styles,
+            self.cell_placement,
+        ) != (
+            shown.rows,
+            shown.cols,
+            shown.underline_styles,
+            shown.cell_placement,
+        )
+    }
+
     /// Whether the cells of `area` (top row, first column, rows, columns)
     /// are the same as `other`'s.
     pub fn same_in(&self, other: &Grid, (row, col, rows, cols): (u16, u16, u16, u16)) -> bool {
@@ -1669,10 +1684,7 @@ pub(crate) fn paint(old: Option<&Grid>, new: &Grid) -> Vec<u8> {
 /// `out`; false, appending nothing, if the client shows `new` already.
 /// Each row is compared once.
 pub fn paint_into(shown: &Grid, known: bool, new: &Grid, out: &mut Vec<u8>) -> bool {
-    let full = !known
-        || shown.cell_placement != new.cell_placement
-        || (shown.rows, shown.cols, shown.underline_styles)
-            != (new.rows, new.cols, new.underline_styles);
+    let full = !known || new.clears(shown);
     let before = (!full).then_some(shown);
     let rows = differing_rows(before, new);
     if !full && rows.is_empty() && (shown.cursor, shown.modes) == (new.cursor, new.modes) {
