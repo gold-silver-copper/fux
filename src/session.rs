@@ -3163,7 +3163,6 @@ impl Session {
     fn pane_json<'a>(
         &'a self,
         p: &'a Pane,
-        now: Instant,
         budget: &mut crate::wire::Budget,
     ) -> Result<Fields, Error> {
         let pid = |c: &Child| Json::Int(i64::from(c.leader.pid().as_raw()));
@@ -3184,7 +3183,7 @@ impl Session {
         ];
         let mut fields = budget.vector(values.len())?;
         fields.extend(values);
-        let state = crate::capture::state(p, now, self.copying(p.id()), budget)?;
+        let state = crate::capture::state(p, self.copying(p.id()), budget)?;
         budget.reserve(&mut fields, state.len())?;
         let bytes = state
             .capacity()
@@ -3198,14 +3197,13 @@ impl Session {
     fn tab_json<'a>(
         &'a self,
         tab: &'a Tab,
-        now: Instant,
         budget: &mut crate::wire::Budget,
     ) -> Result<Fields, Error> {
         let ids = self.panes_of(AnyRef::Tab(tab.id()), budget)?;
         let mut panes = budget.vector(ids.len())?;
         for id in ids {
             if let Some(pane) = self.parts.panes().get(&id) {
-                let fields = self.pane_json(pane, now, budget)?;
+                let fields = self.pane_json(pane, budget)?;
                 panes.push(Json::Object(budget.fields(fields)?));
             }
         }
@@ -3239,12 +3237,11 @@ impl Session {
     fn ws_json<'a>(
         &'a self,
         ws: &'a Workspace,
-        now: Instant,
         budget: &mut crate::wire::Budget,
     ) -> Result<Fields, Error> {
         let mut tabs = budget.vector(ws.tabs().len())?;
         for tab in ws.tabs() {
-            let fields = self.tab_json(tab, now, budget)?;
+            let fields = self.tab_json(tab, budget)?;
             tabs.push(Json::Object(budget.fields(fields)?));
         }
         let values = [
@@ -3265,7 +3262,6 @@ impl Session {
     /// of its JSON (`get`), a string's text as it is. `target` is there
     /// (`there`, by its caller).
     fn ls_one(&mut self, target: AnyRef, get: Option<&str>) -> Result<Body, Error> {
-        let now = Instant::now();
         let budget = &mut crate::wire::Budget::new();
         let fields = match (target, get) {
             // A pane's version alone, which the recipes read after every
@@ -3281,9 +3277,9 @@ impl Session {
                 .parts
                 .panes()
                 .get(&id)
-                .map(|p| self.pane_json(p, now, budget)),
-            (AnyRef::Tab(id), _) => self.tab(id).map(|t| self.tab_json(t, now, budget)),
-            (AnyRef::Workspace(id), _) => self.workspace(id).map(|w| self.ws_json(w, now, budget)),
+                .map(|p| self.pane_json(p, budget)),
+            (AnyRef::Tab(id), _) => self.tab(id).map(|t| self.tab_json(t, budget)),
+            (AnyRef::Workspace(id), _) => self.workspace(id).map(|w| self.ws_json(w, budget)),
         }
         .transpose()?
         .unwrap_or_default();
@@ -3331,10 +3327,9 @@ impl Session {
     /// `ls json`: everything, and `events`, where a stream reads from.
     fn ls_json(&self, events: crate::events::Cursor) -> Result<Json, Error> {
         let budget = &mut crate::wire::Budget::new();
-        let now = Instant::now();
         let mut workspaces = budget.vector(self.parts.workspaces().len())?;
         for ws in self.parts.workspaces() {
-            let fields = self.ws_json(ws, now, budget)?;
+            let fields = self.ws_json(ws, budget)?;
             workspaces.push(Json::Object(budget.fields(fields)?));
         }
         let mut clients = budget.vector(self.views.len())?;
@@ -3984,7 +3979,10 @@ mod tests {
     #[test]
     fn arrange_refuses_invalid_or_stale_proposals_without_a_commit() -> Result<(), String> {
         let (mut s, client) = attached(24, 80)?;
-        run(&mut s, "%1 horizontal split drop %2 vertical split drop")?;
+        run(
+            &mut s,
+            "%1 str horizontal axis split drop %2 str vertical axis split drop",
+        )?;
         let tab = TabId::of(1);
         let revision = s
             .tab(tab)
@@ -4125,7 +4123,7 @@ mod tests {
         let mut s = started()?;
         run(
             &mut s,
-            "%1 horizontal split let b @1 dup str layout_revision get list %1 b end str vertical even-of arrange",
+            "%1 str horizontal axis split let b @1 dup str layout_revision get list %1 b end str vertical even-of arrange",
         )?;
         assert_eq!(
             s.root(TabId::of(1)).map(Tree::panes),
@@ -4140,7 +4138,7 @@ mod tests {
         let mut s = started()?;
         run(
             &mut s,
-            "@1 7 40 resize %1 vertical split drop %2 vertical split drop",
+            "@1 7 40 resize %1 str vertical axis split drop %2 str vertical axis split drop",
         )?;
         let propose =
             "@1 dup str layout_revision get list %1 %2 %3 end str horizontal even-of arrange";
@@ -4165,7 +4163,7 @@ mod tests {
         let mut s = started()?;
         run(
             &mut s,
-            "@1 120 40 resize %1 horizontal split drop %2 horizontal split drop %3 horizontal split drop",
+            "@1 120 40 resize %1 str horizontal axis split drop %2 str horizontal axis split drop %3 str horizontal axis split drop",
         )?;
         let tab = TabId::of(1);
         let prefix = "@1 dup str layout_revision get list %1 %2 %3 %4 end";
@@ -4264,7 +4262,7 @@ mod tests {
         let (mut s, incumbent) = attached(24, 80)?;
         run(
             &mut s,
-            "%1 horizontal split drop opts str second name 80 24 size new-workspace drop",
+            "%1 str horizontal axis split drop opts str second name 80 24 size new-workspace drop",
         )?;
         run(&mut s, "str c1 client %2 show")?;
         let presentation = crate::script::default_state()
@@ -4374,7 +4372,7 @@ mod tests {
     fn an_unknown_nearby_directory_refuses_creation() -> Result<(), String> {
         let (mut s, client) = attached(24, 80)?;
         let before = s.parts.panes().len();
-        let failure = output_as(&mut s, Some(client), "%1 split")
+        let failure = output_as(&mut s, Some(client), "%1 str horizontal axis split")
             .err()
             .ok_or("unknown cwd accepted")?;
         assert!(
@@ -4382,7 +4380,11 @@ mod tests {
             "{failure}"
         );
         assert_eq!(s.parts.panes().len(), before);
-        output_as(&mut s, Some(client), "%1 str / cwd split drop")?;
+        output_as(
+            &mut s,
+            Some(client),
+            "%1 str horizontal axis str / cwd split drop",
+        )?;
         assert_eq!(s.parts.panes().len(), before + 1);
         Ok(())
     }
@@ -4426,7 +4428,10 @@ mod tests {
             for (rows, cols) in sizes {
                 s.attach(rows, cols, None).map_err(|e| e.to_string())?;
             }
-            run(&mut s, "%1 horizontal split drop %1 20 resize-x")?;
+            run(
+                &mut s,
+                "%1 str horizontal axis split drop %1 20 str horizontal resize-pane",
+            )?;
             assert_eq!(
                 s.parts.panes().get(&PaneId::of(1)).map(Pane::size),
                 Some(sized(19, 20)?)
@@ -4459,7 +4464,7 @@ mod tests {
         watch(&mut s, 10, 3)?;
         let pane = s.parts.panes().get(&PaneId::of(1)).map(Pane::size);
         assert_eq!(pane, Some(sized(24, 80)?));
-        run(&mut s, "%1 split drop")
+        run(&mut s, "%1 str horizontal axis split drop")
     }
 
     /// A tab only a watcher shows is laid out on its own size: a resize
@@ -4471,7 +4476,7 @@ mod tests {
         run(&mut s, "str @1 tab 100 10 resize")?;
         let size = |s: &Session, id| s.parts.panes().get(&PaneId::of(id)).map(Pane::size);
         assert_eq!(size(&s, 1), Some(sized(10, 100)?));
-        run(&mut s, "%1 split drop")?;
+        run(&mut s, "%1 str horizontal axis split drop")?;
         assert_eq!(size(&s, 1), Some(sized(10, 50)?));
         Ok(())
     }
@@ -4755,7 +4760,7 @@ mod tests {
             let (mut session, client) = attached(10, 40)?;
             let id = PaneId::of(1);
             if !last {
-                run(&mut session, "%1 horizontal split")?;
+                run(&mut session, "%1 str horizontal axis split")?;
             }
             if explicit {
                 let runs = Runs::Explicit(pane::Launch {
@@ -4867,7 +4872,7 @@ mod tests {
     #[test]
     fn a_small_screen_names_the_panes_it_cuts_and_hides() -> Result<(), String> {
         let (mut s, _) = attached(25, 80)?;
-        run(&mut s, "str %1 pane vertical split drop")?;
+        run(&mut s, "str %1 pane str vertical axis split drop")?;
         let bar = |s: &mut Session, rows, cols| {
             let grid = watch(s, rows, cols).map(|c| crate::render::compose(s, c));
             Ok::<_, String>(grid?.map(|g| g.row_text(g.rows.saturating_sub(1))))
@@ -4953,10 +4958,14 @@ mod tests {
     #[test]
     fn a_split_elsewhere_leaves_the_splitters_zoom() -> Result<(), String> {
         let (mut s, c) = attached(24, 80)?;
-        run(&mut s, "%1 str / cwd split drop")?;
+        run(&mut s, "%1 str horizontal axis str / cwd split drop")?;
         run(&mut s, &format!("str {c} client zoom"))?;
         run(&mut s, "opts 80 24 size str other name new-workspace drop")?;
-        output_as(&mut s, Some(c), "%3 str / cwd split drop")?;
+        output_as(
+            &mut s,
+            Some(c),
+            "%3 str horizontal axis str / cwd split drop",
+        )?;
         assert!(s.views.get(&c).is_some_and(|v| v.zoom), "still zoomed");
         Ok(())
     }
@@ -4966,7 +4975,7 @@ mod tests {
     fn a_zoom_ends_with_its_pane() -> Result<(), String> {
         let (mut s, c1) = attached(24, 80)?;
         let c2 = s.attach(24, 80, None).map_err(|e| e.to_string())?;
-        run(&mut s, "%1 split drop")?;
+        run(&mut s, "%1 str horizontal axis split drop")?;
         run(
             &mut s,
             &format!(
@@ -4994,7 +5003,7 @@ mod tests {
         let sizes =
             |s: &Session| [1, 2].map(|p| s.parts.panes().get(&PaneId::of(p)).map(Pane::size));
         let (mut s, c) = attached(24, 80)?;
-        run(&mut s, "%1 split drop")?;
+        run(&mut s, "%1 str horizontal axis split drop")?;
         run(&mut s, &format!("str {c} client zoom"))?;
         let zoomed = sizes(&s);
         s.detach(c);
@@ -5680,7 +5689,7 @@ mod tests {
     #[test]
     fn json_of_several_panes_is_one_array() -> Result<(), Box<dyn std::error::Error>> {
         let mut s = started()?;
-        run(&mut s, "%1 split")?;
+        run(&mut s, "%1 str horizontal axis split")?;
         let alone = output(&mut s, "@1 str x text send-keys json")?;
         assert!(alone.starts_with(r#"[{"pane":"%1","#), "{alone}");
         assert_eq!(alone.lines().count(), 1, "{alone}");
@@ -5859,7 +5868,7 @@ mod tests {
     #[test]
     fn keys_for_several_panes_go_to_all_or_none() -> Result<(), String> {
         let mut s = started()?;
-        run(&mut s, "%1 split drop")?;
+        run(&mut s, "%1 str horizontal axis split drop")?;
         let mut second = s.parts.pane_mut(PaneId::of(2)).ok_or("no %2")?;
         // Its program reads nothing, and its queue is full.
         let full = vec![0; crate::pane::INPUT_BYTES];
@@ -5934,7 +5943,7 @@ mod tests {
         };
         assert!(history(&s) > Some(2));
         // Two rows of four cells: 24 bytes a row and 8 a cell.
-        run(&mut s, "%1 horizontal 4096 history-bytes split")?;
+        run(&mut s, "%1 str horizontal axis 4096 history-bytes split")?;
         let other = s
             .pane(PaneId::of(2))
             .map_err(|e| e.to_string())?
@@ -6035,7 +6044,10 @@ mod tests {
             "{json}"
         );
         s.outbox.clear();
-        run(&mut s, "%1 horizontal false program-clipboard split")?;
+        run(
+            &mut s,
+            "%1 str horizontal axis false program-clipboard split",
+        )?;
         s.outbox.clear();
         s.output(PaneId::of(3), b"\x1b]52;c;YmFy\x07");
         assert!(!sent(&s) && s.outbox.is_empty());
@@ -6158,7 +6170,10 @@ mod tests {
                 ..presentation
             })],
         );
-        run(&mut s, "%1 horizontal false program-clipboard split")?;
+        run(
+            &mut s,
+            "%1 str horizontal axis false program-clipboard split",
+        )?;
         if let Some(view) = s.views.get_mut(&b) {
             view.zoom = true;
             view.read_only = true;
@@ -6238,7 +6253,7 @@ mod tests {
         run(&mut s, "str c1 client str @1 tab show")?;
         let size = |s: &Session, p| s.parts.panes().get(&PaneId::of(p)).map(Pane::size);
         assert_eq!(size(&s, 2), Some(sized(10, 40)?));
-        run(&mut s, "str %2 pane vertical str / cwd split")?;
+        run(&mut s, "str %2 pane str vertical axis str / cwd split")?;
         let (top, bottom) = (size(&s, 2), size(&s, 3));
         let rows = top
             .zip(bottom)
@@ -6253,7 +6268,7 @@ mod tests {
         // Nor does a swap or a move in another tab.
         run(
             &mut s,
-            "%1 str / cwd split drop %1 %4 swap-with %4 str new-tab move",
+            "%1 str horizontal axis str / cwd split drop %1 %4 swap-with %4 str new-tab move",
         )?;
         assert_eq!(size(&s, 2), Some(sized(10, 40)?));
         Ok(())
@@ -6290,7 +6305,7 @@ mod tests {
         // client is attached.
         let refused = run(&mut s, "opts str +1 workspace in new-tab").err();
         assert!(refused.is_some_and(|r| r.starts_with("size: ")));
-        run(&mut s, "str %1 pane vertical split")?;
+        run(&mut s, "str %1 pane str vertical axis split")?;
         s.detach(c);
         run(&mut s, "%2 kill")?;
         assert_eq!(
@@ -6313,7 +6328,7 @@ mod tests {
     fn ls_of_a_target_lists_what_is_in_it() -> Result<(), String> {
         let (mut s, _) = attached(11, 40)?;
         run(&mut s, "opts 40 10 size str +1 workspace in new-tab")?;
-        run(&mut s, "str %2 pane vertical split")?;
+        run(&mut s, "str %2 pane str vertical axis split")?;
         let mut ids = |only| {
             let ls = Command::Ls {
                 target: Some(only),
@@ -6336,7 +6351,7 @@ mod tests {
     fn the_json_help_names_every_pane_field() -> Result<(), Box<dyn std::error::Error>> {
         let (s, _) = attached(4, 30)?;
         let pane = s.parts.panes().values().next().ok_or("no pane")?;
-        for (name, _) in s.pane_json(pane, Instant::now(), &mut crate::wire::Budget::new())? {
+        for (name, _) in s.pane_json(pane, &mut crate::wire::Budget::new())? {
             let named = crate::help::JSON.contains(&format!("`{name}`"));
             assert!(named, "docs/json.md does not name a pane's {name:?}");
         }
@@ -6348,7 +6363,7 @@ mod tests {
     #[test]
     fn json_escapes_what_it_says() -> Result<(), Box<dyn std::error::Error>> {
         let (mut s, _) = attached(4, 30)?;
-        run(&mut s, "str %1 pane horizontal split")?;
+        run(&mut s, "str %1 pane str horizontal axis split")?;
         run(&mut s, r#"str %1 pane str 'say "hi" \ 界' rename"#)?;
         s.output(PaneId::of(2), "a\tb 界\x1b]2;tab\\title\x07".as_bytes());
         let ls = output(&mut s, "ls json")?;
@@ -6378,7 +6393,7 @@ mod tests {
                 .map(|n| n.text.clone())
         };
         // Two panes: the tab stays.
-        run(&mut s, "str %1 pane horizontal split")?;
+        run(&mut s, "str %1 pane str horizontal axis split")?;
         s.exited(PaneId::of(2), crate::process::Ended::Exited(3));
         assert_eq!(notice(&s).as_deref(), Some("%2 exited with status 3"));
         // A second tab, shown; its only pane exits, and the tab with it.
@@ -6396,7 +6411,7 @@ mod tests {
     fn a_pane_moved_beside_another_stays_out_of_empty_tabs()
     -> Result<(), Box<dyn std::error::Error>> {
         let (mut s, _) = attached(10, 40)?;
-        run(&mut s, "str %1 pane horizontal split")?;
+        run(&mut s, "str %1 pane str horizontal axis split")?;
         run(&mut s, "opts 40 9 size str +1 workspace in new-tab")?;
         run(&mut s, "str %3 pane str @1 tab move")?;
         run(&mut s, "str %1 pane str right move")?;
@@ -6417,7 +6432,7 @@ mod tests {
     fn a_wait_begun_answers_the_change_and_the_close_after_it()
     -> Result<(), Box<dyn std::error::Error>> {
         let mut s = started()?;
-        run(&mut s, "str %1 pane horizontal split")?;
+        run(&mut s, "str %1 pane str horizontal axis split")?;
         let origin = Origin::Cli(Caller::default());
         let timeout = command::Limit::read(30)?;
         let wait = |target| {
@@ -6471,31 +6486,24 @@ mod tests {
         Ok(())
     }
 
-    /// A rendered client screen has no pane counts, even when its text
-    /// starts with a valid version. Pane answers and version text keep theirs.
+    /// Counts use the live or held pane version, never rendered screen text.
     #[test]
-    fn counts_refuses_capture_text_as_a_version() -> Result<(), String> {
+    fn counts_use_the_pane_version() -> Result<(), String> {
         let (mut s, client) = attached(24, 80)?;
         let shown = "%2:0.57.1.3.0:48211-1867a3f9c2b8e7d6";
         s.output(PaneId::of(1), shown.as_bytes());
         let capture = format!("str {client} client capture");
         let text = output(&mut s, &format!("{capture} string"))?;
         assert_eq!(text.split_whitespace().next(), Some(shown));
-        let refused = output(&mut s, &format!("{capture} counts"))
-            .err()
-            .ok_or("client capture text supplied invented counts")?;
-        assert!(
-            refused.starts_with("fail: ")
-                && refused.contains("a client capture has no pane version"),
-            "{refused}"
-        );
-        let refused = output(&mut s, "%1 capture counts")
-            .err()
-            .ok_or("pane capture text supplied invented counts")?;
-        assert!(
-            refused.starts_with("fail: ") && refused.contains("not a capture"),
-            "{refused}"
-        );
+        for source in [
+            format!("{capture} counts"),
+            format!("list {capture} end first counts"),
+        ] {
+            let refused = output(&mut s, &source)
+                .err()
+                .ok_or("client capture text supplied invented counts")?;
+            assert!(refused.starts_with("type: "), "{refused}");
+        }
         assert_eq!(
             output(&mut s, &format!("str {shown} counts json"))?.trim(),
             "[0,57,1,3,0]"
@@ -6509,10 +6517,23 @@ mod tests {
             counts.done,
             u8::from(counts.ended)
         );
-        assert_eq!(
-            output(&mut s, "%1 str x text send-keys counts json")?.trim(),
-            expected
+        let baseline = output(&mut s, "%1 version")?;
+        for source in [
+            "%1 counts json",
+            "%1 capture counts json",
+            "%1 str x text send-keys counts json",
+            "%1 capture let sample %1 kill sample counts json",
+        ] {
+            assert_eq!(output(&mut s, source)?.trim(), expected, "{source}");
+        }
+        let closed = format!(
+            "str closed try str {} changed wait catch drop end counts",
+            baseline.trim()
         );
+        let refused = output(&mut s, &closed)
+            .err()
+            .ok_or("closed answer supplied invented counts")?;
+        assert!(refused.starts_with("type: "), "{refused}");
         Ok(())
     }
 
@@ -6539,7 +6560,7 @@ mod tests {
     #[test]
     fn a_closed_panes_answer_names_its_pane() -> Result<(), String> {
         let mut s = started()?;
-        let version = output(&mut s, "%1 vertical split")?;
+        let version = output(&mut s, "%1 str vertical axis split")?;
         run(&mut s, "%2 kill")?;
         let caught = format!(
             "str closed try str {} changed wait catch drop end",
@@ -6569,7 +6590,7 @@ mod tests {
     #[test]
     fn a_version_names_its_pane_and_its_server_run() -> Result<(), Box<dyn std::error::Error>> {
         let mut s = started()?;
-        run(&mut s, "str %1 pane horizontal split")?;
+        run(&mut s, "str %1 pane str horizontal axis split")?;
         let failed = |s: &mut Session, code: &str| output(s, code).err().unwrap_or_default();
         let of = |s: &Session, pane| s.pane(PaneId::of(pane)).map(|p| p.version(s.run));
         let (one, two) = (of(&s, 1)?, of(&s, 2)?);
@@ -6743,7 +6764,7 @@ mod tests {
             !dirty(&s, one) && !dirty(&s, two),
             "a failure repaints no one"
         );
-        run(&mut s, "str %1 pane horizontal split")?;
+        run(&mut s, "str %1 pane str horizontal axis split")?;
         assert!(
             dirty(&s, one) && dirty(&s, two),
             "a split repaints every client"
@@ -6956,7 +6977,7 @@ mod tests {
             output(&mut s, "str web pane dup tab str name get")?,
             "%2\nnull\n"
         );
-        run(&mut s, "%2 horizontal split drop")?;
+        run(&mut s, "%2 str horizontal axis split drop")?;
         assert_eq!(output(&mut s, "str web pane")?, "%2\n");
         s.output(PaneId::of(2), b"\x1b]2;spool\x07");
         assert!(output(&mut s, "str spool pane").is_err());
@@ -6973,13 +6994,169 @@ mod tests {
         let mut s = started()?;
         for split in [false, true] {
             if split {
-                run(&mut s, "%1 split drop")?;
+                run(&mut s, "%1 str horizontal axis split drop")?;
             }
             for lookup in ["@1 pane", "+1 pane", "+1 tab", "@1 str rows get"] {
                 assert!(output(&mut s, lookup).is_err(), "{lookup}");
             }
             assert_eq!(output(&mut s, "%1 tab workspace")?, "+1\n");
         }
+        Ok(())
+    }
+
+    /// A direction is required and validated before split can start a process.
+    #[test]
+    fn split_requires_an_explicit_axis() -> Result<(), String> {
+        let (mut s, _) = attached(10, 40)?;
+        let ids = s.ids.clone();
+        for code in ["%1 split", "%1 str diagonal axis split"] {
+            assert!(output(&mut s, code).is_err(), "{code}");
+            assert_eq!(s.ids, ids);
+        }
+        run(&mut s, "%1 str vertical axis split drop")?;
+        assert_eq!(s.parts.panes().len(), 2);
+        Ok(())
+    }
+
+    /// Scalar options, including aliases for one slot, never overwrite a value.
+    #[test]
+    fn scalar_request_slots_are_given_once() -> Result<(), String> {
+        let (mut s, _) = attached(10, 40)?;
+        let ids = s.ids.clone();
+        for (base, first, second, action) in [
+            ("opts", "str a name", "str b name", "new-tab"),
+            ("opts", "40 10 size", "40 10 size", "new-tab"),
+            ("opts", "str / cwd", "str / cwd", "new-tab"),
+            ("opts", "str a in", "str b in", "new-tab"),
+            ("opts", "str cat program", "str sh program", "new-tab"),
+            (
+                "opts",
+                "str cat program",
+                "list str sh end shell-program",
+                "new-tab",
+            ),
+            (
+                "opts",
+                "list str sh end shell-program",
+                "str cat program",
+                "new-tab",
+            ),
+            (
+                "opts",
+                "list end copy-environment",
+                "list end copy-environment",
+                "new-tab",
+            ),
+            ("opts", "0 history-bytes", "1 history-bytes", "new-tab"),
+            ("opts", "false reflow", "true reflow", "new-tab"),
+            (
+                "opts",
+                "0 alternate-scroll-lines",
+                "1 alternate-scroll-lines",
+                "new-tab",
+            ),
+            ("opts", "0 picture-bytes", "1 picture-bytes", "new-tab"),
+            (
+                "opts",
+                "false program-clipboard",
+                "true program-clipboard",
+                "new-tab",
+            ),
+            ("opts", "watch", "watch", "attach"),
+            ("%1", "str horizontal axis", "str vertical axis", "split"),
+            ("%1", "1 2 shares", "2 1 shares", "split"),
+            ("%1", "kill-first", "kill-first", "respawn"),
+            ("%1", "0 timeout", "1 timeout", "wait"),
+            ("%1", "0 history", "all-history", "capture"),
+            ("%1", "all-history", "0 history", "capture"),
+            ("%1", "0 1 rows", "0 2 rows", "capture"),
+            ("%1", "0 1 cols", "0 2 cols", "capture"),
+        ] {
+            let code = format!("{base} {first} {second} {action}");
+            let error = output(&mut s, &code)
+                .err()
+                .ok_or_else(|| format!("ran {code}"))?;
+            assert!(error.starts_with("unused: "), "{code}: {error}");
+            if second == "all-history" {
+                assert!(
+                    error.contains("all-history: history is already given"),
+                    "{error}"
+                );
+            }
+            assert_eq!(s.ids, ids);
+        }
+        let replay = format!("%1 str 0:{} from str 0:{} from events", s.run, s.run);
+        let error = output(&mut s, &replay).err().ok_or("repeated cursor ran")?;
+        assert!(error.starts_with("unused: "), "{error}");
+        for first in [
+            "wrapped",
+            "full",
+            "styles",
+            "marks",
+            "main-screen",
+            "alt-screen",
+            "last-output",
+        ] {
+            let seconds: &[&str] = if matches!(first, "main-screen" | "alt-screen" | "last-output")
+            {
+                &["main-screen", "alt-screen", "last-output"]
+            } else {
+                &[first]
+            };
+            for second in seconds {
+                let code = format!("%1 {first} {second} capture");
+                let error = output(&mut s, &code)
+                    .err()
+                    .ok_or_else(|| format!("ran {code}"))?;
+                assert!(error.starts_with("unused: "), "{code}: {error}");
+            }
+        }
+        Ok(())
+    }
+
+    /// A live pane reads its cheap projection; held observations survive closure.
+    #[test]
+    fn versions_keep_the_observation_they_name() -> Result<(), String> {
+        let (mut s, _) = attached(10, 40)?;
+        let initial = s
+            .pane(PaneId::of(1))
+            .map_err(|e| e.to_string())?
+            .version(s.run)
+            .to_string();
+        assert_eq!(output(&mut s, "%1 version")?, format!("{initial}\n"));
+        assert_eq!(
+            output(&mut s, &format!("str {initial} version"))?,
+            format!("{initial}\n")
+        );
+        assert!(output(&mut s, "str 1.2.3 version").is_err());
+        assert!(output(&mut s, "%1 str idle_ms get").is_err());
+        assert!(!output(&mut s, "%1 capture json")?.contains("idle_ms"));
+        let held = output(
+            &mut s,
+            "%1 str x text send-keys let action %1 capture let sample %1 kill action version sample version",
+        )?;
+        assert_eq!(held, format!("{initial}\n{initial}\n"));
+        Ok(())
+    }
+
+    /// Structural mistakes and missing client context retain catchable recovery.
+    #[test]
+    fn structural_and_context_recovery_codes_are_shared() -> Result<(), String> {
+        let (mut s, _) = attached(10, 40)?;
+        for source in ["opts run", "opts str x arg new-tab", "%1 send-keys"] {
+            let caught = output(
+                &mut s,
+                &format!("str usage try {source} drop catch 2drop str recovered end"),
+            )?;
+            assert_eq!(caught, "recovered\n", "{source}");
+        }
+        assert_eq!(
+            output(
+                &mut s,
+                "str not_here try me drop catch 2drop str recovered end"
+            )?,
+            "recovered\n"
+        );
         Ok(())
     }
 
@@ -7117,7 +7294,7 @@ mod tests {
             timeout.contains("-1 is out of range: from 0 (use: "),
             "{timeout}"
         );
-        let mouse = failed(&mut s, "%1 str click -1 0 mouse send-mouse");
+        let mouse = failed(&mut s, "%1 str click -1 0 send-mouse");
         assert!(mouse.contains("out of range: 0 to 65535 (use: "), "{mouse}");
         // The core's words say how they are used too; a library word by
         // its own name.
@@ -7236,7 +7413,7 @@ mod tests {
     #[test]
     fn events_are_told_in_the_order_they_happened() -> Result<(), String> {
         let mut s = started()?;
-        run(&mut s, "%1 split drop")?;
+        run(&mut s, "%1 str horizontal axis split drop")?;
         let mut ran = Ok(());
         let lines = told(&mut s, |s| {
             s.output(PaneId::of(2), b"\x07");
@@ -7261,7 +7438,7 @@ mod tests {
     #[test]
     fn a_shell_panes_exit_is_told_before_its_close() -> Result<(), String> {
         let mut s = started()?;
-        run(&mut s, "%1 split drop")?;
+        run(&mut s, "%1 str horizontal axis split drop")?;
         let lines = told(&mut s, |s| s.exited(PaneId::of(2), Ended::Signalled(9)));
         let said = concat!(
             r#"{"event":"exited","pane":"%2","tab":"@1","workspace":"+1","signal":9}"#,
@@ -7280,7 +7457,7 @@ mod tests {
     #[test]
     fn a_shells_last_output_is_told_before_its_exit() -> Result<(), String> {
         let mut s = started()?;
-        run(&mut s, "%1 split drop")?;
+        run(&mut s, "%1 str horizontal axis split drop")?;
         let lines = told(&mut s, |s| {
             s.output(PaneId::of(2), b"\x1b[?2026h\x07\x1b]2;bye\x07");
             s.exited(PaneId::of(2), Ended::Exited(0));
@@ -7321,7 +7498,7 @@ mod tests {
             &mut source,
             "+1 str workspace-2 rename @1 str main rename %1 str sh rename",
         )?;
-        run(&mut source, "%1 split drop")?;
+        run(&mut source, "%1 str horizontal axis split drop")?;
         run(
             &mut source,
             "opts +1 in 80 24 size str cat name str /bin/cat program run str new-workspace move",
@@ -7456,7 +7633,10 @@ mod tests {
     #[test]
     fn a_dump_is_made_again_however_its_tab_was_shown() -> Result<(), String> {
         let (mut s, c) = attached(11, 40)?;
-        run(&mut s, "%1 split drop %1 vertical split drop")?;
+        run(
+            &mut s,
+            "%1 str horizontal axis split drop %1 str vertical axis split drop",
+        )?;
         run(&mut s, "str c1 client %1 show str c1 client zoom")?;
         let replays = |s: &Session| {
             let dump = s.dump_layout(None).map_err(|e| e.to_string())?;
@@ -7508,9 +7688,9 @@ mod tests {
         // Four panes stacked take their 2 rows each and 3 separators.
         run(
             &mut s,
-            "%2 vertical split drop %2 vertical split drop %2 vertical split drop",
+            "%2 str vertical axis split drop %2 str vertical axis split drop %2 str vertical axis split drop",
         )?;
-        let refused = run(&mut s, "%2 vertical split drop")
+        let refused = run(&mut s, "%2 str vertical axis split drop")
             .err()
             .unwrap_or_default();
         assert!(
@@ -7533,9 +7713,11 @@ mod tests {
         watch(&mut s, 50, 8)?;
         // Ten panes side by side take their 2 columns each and 9 separators.
         for _ in 1..10 {
-            run(&mut s, "%1 split drop")?;
+            run(&mut s, "%1 str horizontal axis split drop")?;
         }
-        let refused = run(&mut s, "%1 split drop").err().unwrap_or_default();
+        let refused = run(&mut s, "%1 str horizontal axis split drop")
+            .err()
+            .unwrap_or_default();
         assert!(
             refused.starts_with("size: ") && refused.contains("30x"),
             "{refused}"
@@ -7551,7 +7733,7 @@ mod tests {
     fn a_dump_makes_its_panes_again_where_they_were() -> Result<(), String> {
         let mut s = started()?;
         let tab = "opts 100 10 size str +1 workspace in new-tab drop";
-        let splits = "%2 80 18 shares split drop %3 10 8 shares split drop";
+        let splits = "%2 str horizontal axis 80 18 shares split drop %3 str horizontal axis 10 8 shares split drop";
         run(&mut s, &format!("{tab} {splits}"))?;
         let tab: TabId = "@2".parse().map_err(|_| "@2")?;
         let widths: Vec<u16> = rects(&s, tab).iter().map(Rect::w).collect();
@@ -7567,7 +7749,7 @@ mod tests {
         let mut s = started()?;
         run(&mut s, "opts 100 10 size str +1 workspace in new-tab drop")?;
         let lines = told(&mut s, |s| {
-            let _ = run(s, "%2 80 18 shares split drop");
+            let _ = run(s, "%2 str horizontal axis 80 18 shares split drop");
         });
         assert!(lines.contains(r#""created","pane":"%3""#), "{lines}");
         assert!(!lines.contains(r#""resized","pane":"%3""#), "{lines}");
@@ -7589,7 +7771,7 @@ mod tests {
         // The narrow one, zoomed, follows the split unzoomed.
         run(&mut s, "str c2 client zoom")?;
         let lines = told(&mut s, |s| {
-            let _ = run(s, "%1 str / cwd split drop");
+            let _ = run(s, "%1 str horizontal axis str / cwd split drop");
         });
         assert!(
             lines.contains(r#""created","pane":"%2""#)
@@ -7630,7 +7812,7 @@ mod tests {
         assert_eq!(size, Some(sized(10, 40)?));
         let small = s.attach(5, 6, None).map_err(|e| e.to_string())?;
         let made = "opts 100 10 size str +1 workspace in str / cwd new-tab \
-                    dup str / cwd split drop dup str / cwd split drop str / cwd split drop";
+                    dup str horizontal axis str / cwd split drop dup str horizontal axis str / cwd split drop str horizontal axis str / cwd split drop";
         run(&mut s, made)?;
         let refused = output_as(&mut s, Some(small), "%2 str @3 tab move").err();
         let refused = refused.unwrap_or_default();
@@ -7648,7 +7830,10 @@ mod tests {
     fn a_screen_with_no_room_refuses_nothing() -> Result<(), String> {
         let (mut s, _) = attached(11, 40)?;
         let tiny = s.attach(1, 40, None).map_err(|e| e.to_string())?;
-        run(&mut s, "%1 split drop %1 split drop")?;
+        run(
+            &mut s,
+            "%1 str horizontal axis split drop %1 str horizontal axis split drop",
+        )?;
         for (pane, to) in [("%1", "new-tab"), ("%2", "new-workspace")] {
             let lines = told(&mut s, |s| {
                 let moved = output_as(s, Some(tiny), &format!("{pane} str {to} move"));
@@ -7668,7 +7853,10 @@ mod tests {
     #[test]
     fn no_border_moves_where_a_pane_is_hidden() -> Result<(), String> {
         let (mut s, c) = attached(11, 40)?;
-        run(&mut s, "%1 split drop %2 split drop")?;
+        run(
+            &mut s,
+            "%1 str horizontal axis split drop %2 str horizontal axis split drop",
+        )?;
         s.resize(c, 11, 6).map_err(|e| e.to_string())?;
         let refused = run(&mut s, "%1 str right 1 move-border").err();
         let refused = refused.unwrap_or_default();
@@ -7689,16 +7877,21 @@ mod tests {
         let made = "opts 101 10 size str +1 workspace in new-tab drop";
         for halved in ["", "1 1 shares"] {
             let mut s = started()?;
-            let split = format!("%2 {halved} split drop %3 2 1 shares split drop");
+            let split = format!(
+                "%2 str horizontal axis {halved} split drop %3 str horizontal axis 2 1 shares split drop"
+            );
             run(&mut s, &format!("{made} {split}"))?;
             assert_eq!(widths(&s), [50, 33, 16], "{halved}");
             assert_eq!(replayed(&s, tab)?, rects(&s, tab));
         }
         let mut s = started()?;
-        run(&mut s, &format!("{made} %2 4294967294 1 shares split drop"))?;
+        run(
+            &mut s,
+            &format!("{made} %2 str horizontal axis 4294967294 1 shares split drop"),
+        )?;
         for split in [
-            "%3 split drop",
-            "%3 vertical 4294967295 1 shares split drop",
+            "%3 str horizontal axis split drop",
+            "%3 str vertical axis 4294967295 1 shares split drop",
         ] {
             run(&mut s, split)?;
             assert_eq!(replayed(&s, tab)?, rects(&s, tab), "{split}");
@@ -7721,14 +7914,14 @@ mod tests {
             Rect::screen(70, 250),
         ];
         for change in [
-            "%2 3 2 shares split drop",
-            "%4 vertical 1 2 shares split drop",
-            "%5 split drop",
-            "%5 vertical split drop",
-            "%2 37 resize-x",
-            "%5 7 resize-y",
+            "%2 str horizontal axis 3 2 shares split drop",
+            "%4 str vertical axis 1 2 shares split drop",
+            "%5 str horizontal axis split drop",
+            "%5 str vertical axis split drop",
+            "%2 37 str horizontal resize-pane",
+            "%5 7 str vertical resize-pane",
             "%6 str left 3 move-border",
-            "%2 30 percent resize-x",
+            "%2 30 percent str horizontal resize-pane",
             "%2 %6 swap-with",
             "%4 str left move",
             "%5 kill",
@@ -7766,7 +7959,8 @@ mod tests {
     #[test]
     fn a_pane_is_not_moved_where_it_would_be_hidden() -> Result<(), String> {
         let mut s = started()?;
-        let split = "opts 5 4 size str +1 workspace in new-tab drop %2 split drop";
+        let split =
+            "opts 5 4 size str +1 workspace in new-tab drop %2 str horizontal axis split drop";
         run(&mut s, split)?;
         let refused = run(&mut s, "%1 str @2 tab move").err();
         let refused = refused.unwrap_or_default();

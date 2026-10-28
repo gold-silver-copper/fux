@@ -137,14 +137,14 @@ pub(crate) fn status(socket: &socket::SocketPath, probe: &client::Probe) -> Resu
             ));
         }
         client::Probe::Server { protocol, version } => vec![
-            ("server_version", Json::str(version.as_str())),
+            ("server_release", Json::str(version.as_str())),
             ("server_protocol", Json::int(*protocol)),
             ("compatible", Json::Bool(*protocol == protocol::PROTOCOL)),
         ],
     };
     let mut fields = vec![
         ("socket", Json::str(&path)),
-        ("version", Json::str(ours)),
+        ("release", Json::str(ours)),
         ("protocol", Json::int(protocol::PROTOCOL)),
     ];
     fields.extend(theirs);

@@ -170,6 +170,18 @@ impl Act {
 }
 
 impl Opt {
+    fn slot(self) -> Self {
+        if self == Opt::AllHistory {
+            Opt::History
+        } else if matches!(self, Opt::AltScreen | Opt::LastOutput) {
+            Opt::MainScreen
+        } else if self == Opt::ShellProgram {
+            Opt::Program
+        } else {
+            self
+        }
+    }
+
     /// The words that take it.
     pub fn takers(self) -> Vec<Act> {
         let takes = |act: &Act| act.options().contains(&self);
@@ -249,8 +261,8 @@ pub const NAMES: &[(&str, &str, &str)] = &[
         "a value (options and requests are none: what acts on them gives one)"),
     ("seen", "string answer capture", "a version: an action's or wait's answer, a pane's capture, or its text"),
     ("record", "listing", "a listing"),
-    ("width", "integer size", "cells, or a percent"),
-    ("height", "integer size", "cells, or a percent"),
+    ("extent", "integer size", "cells, or a percent"),
+    ("pane-or-seen", "pane string answer capture", "a pane, an action's or wait's answer, a pane capture, or version text"),
     ("counterpart", "pane answer closed-answer string", "a pane or a direction"),
     ("sized", "pane tab workspace answer closed-answer client", "a pane, tab, workspace or headless client"),
     ("where", "tab workspace string", "a tab, a workspace, new-tab, new-workspace or a direction"),
@@ -274,17 +286,17 @@ words! {
         Finding Focused "focused" "client -- pane" "the pane a client focuses" "fux str c1 client focused capture" [];
         Starting Opts "opts" "-- opts" "empty options, for run, new-tab, new-workspace, attach and attach-defaults (the other words take them on the pane)" "fux opts str agent in 80 24 size str ./app program run" [];
         Starting Run "run" "opts -- answer" "start a program in a tab of its own; in is required, name names its pane; its pane stays once it exits" "fux agent-opts str web name 120 40 size str ./app program str --flag arg run" [Opts: Name Size Cwd Env UnsetEnv CopyEnvironment HistoryBytes Reflow AlternateScrollLines PictureBytes ProgramClipboard Program Arg In];
-        Starting Split "split" "subject -- answer" "split a pane: a shell, or the program given" "fux %3 vertical split" [Pane: Horizontal Vertical Shares Cwd Env UnsetEnv CopyEnvironment HistoryBytes Reflow AlternateScrollLines PictureBytes ProgramClipboard Program ShellProgram Arg];
+        Starting Split "split" "subject -- answer" "split a pane along its required axis: a shell, or the program given" "fux %3 str vertical axis split" [Pane: Axis Shares Cwd Env UnsetEnv CopyEnvironment HistoryBytes Reflow AlternateScrollLines PictureBytes ProgramClipboard Program ShellProgram Arg];
         Starting NewTab "new-tab" "opts -- answer" "a tab with the client's shell or explicit launch" "fux opts str logs name 80 24 size str agent in new-tab" [Opts: Name Size Cwd Env UnsetEnv CopyEnvironment HistoryBytes Reflow AlternateScrollLines PictureBytes ProgramClipboard Program ShellProgram Arg In];
         Starting NewWorkspace "new-workspace" "opts -- answer" "a workspace with a tab and the client's shell or explicit launch" "fux opts str work name 80 24 size new-workspace" [Opts: Name Size Cwd Env UnsetEnv CopyEnvironment HistoryBytes Reflow AlternateScrollLines PictureBytes ProgramClipboard Program ShellProgram Arg];
         Starting Respawn "respawn" "subject -- answer" "start again in its pane the program it was given (run, split), or the one given now" "fux %3 kill-first respawn" [Pane: KillFirst Env UnsetEnv Program Arg];
         Waiting Wait "wait" "place -- place" "wait until the pane's version differs from the one changed gives, else an action's answer's (%2 str y text send-keys wait), else now's, or the pane closes; a tab or workspace: any of the panes there as it begins" "A=$(fux %3 str y text send-keys); fux str \"$A\" changed 60 timeout wait" [Pane: Changed Timeout];
         Input SendKeys "send-keys" "target -- target" "send the keys on it to a pane, every pane of a tab, or a client as typed at its terminal; 900 KiB at most in all" "fux %3 str 'ls -l' text str Enter key send-keys" [Pane: Text Key Paste Bytes Expect];
-        Input SendMouse "send-mouse" "subject -- answer" "send the mouse event on it" "fux %3 str click 2 10 mouse send-mouse" [Pane: Mouse];
+        Input SendMouse "send-mouse" "pane action row col -- answer" "click right middle press release wheel-up wheel-down or move, at a cell from 0" "fux %3 str click 2 10 send-mouse" [];
         Input Signal "signal" "subject name -- answer" "TERM KILL INT HUP QUIT USR1 USR2 STOP CONT TSTP WINCH ILL ABRT FPE SEGV PIPE ALRM BUS TRAP SYS XCPU XFSZ VTALRM PROF TTIN TTOU URG CHLD, to the pane's foreground" "fux %3 str TERM signal" [];
         Reading Capture "capture" "capture-source -- capture-source" "a pane screen with its options, or what a client terminal shows (without pane options or a version)" "fux %3 100 history capture" [Pane: History AllHistory Wrapped Full Styles Marks MainScreen AltScreen LastOutput Rows Cols];
         Reading Info "info" "scope -- record" "a pane, tab, workspace or all of the session" "fux all info json" [];
-        Reading Get "get" "handle field -- value" "one field of a pane, tab or workspace: version, exited, last_status, idle_ms, cwd" "fux %3 str exited get" [];
+        Reading Get "get" "handle field -- value" "one field of a pane, tab or workspace: version, exited, last_status, cwd" "fux %3 str exited get" [];
         Reading Json "json" "value -- string" "value as JSON (an answer as its JSON); a failed wait's answer is the message try's handler gets" "fux ls json" [];
         Reading Events "events" "watched --" "what happens in a pane, tab, workspace or all, a JSON line each" "fux all events" [Pane: From];
         Reading Dump "dump" "scope -- text" "a tab, workspace or all, as a program that makes it again (new processes, nothing typed into them)" "fux all dump > all.fux; fux start && fux --file all.fux" [];
@@ -293,9 +305,8 @@ words! {
         Changing Notify "notify" "scope text --" "a notice on the clients showing it, or every client with all" "fux all str done notify" [];
         Changing Resize "resize" "sized cols rows --" "a tab layout or headless client size, 1 to 4,096 each; a pane selects its tab" "fux @2 120 40 resize" [];
         Changing ResizeAuto "resize-auto" "handle --" "a tab laid out on a client's screen again (at its size until one shows it)" "fux @2 resize-auto" [];
-        Changing ResizeX "resize-x" "pane width --" "a pane's width: cells, or a percent" "fux %3 30 percent resize-x" [];
-        Changing ResizeY "resize-y" "pane height --" "a pane's height: cells, or a percent" "fux %3 10 resize-y" [];
-        Changing Percent "percent" "n -- size" "n percent of the tab, for resize-x and resize-y" "fux %3 30 percent resize-x" [];
+        Changing ResizePane "resize-pane" "pane extent way --" "a pane's horizontal or vertical extent: cells, or a percent" "fux %3 30 percent str horizontal resize-pane" [];
+        Changing Percent "percent" "n -- size" "n percent of the tab, for resize-pane" "fux %3 30 percent str horizontal resize-pane" [];
         Changing Arrange "arrange" "tab revision tree --" "replace the whole layout at a run-qualified structural revision" "fux @2 str REVISION list %3 end arrange" [];
         Changing MoveBorder "move-border" "pane way cells --" "move the pane's nearest border: left right up down" "fux %3 str left 5 move-border" [];
         Changing Move "move" "pane where --" "move a pane to a tab, workspace, new-tab, new-workspace, or beside its neighbour: left right up down" "fux %3 str new-tab move" [];
@@ -321,7 +332,7 @@ words! {
         Server ForceKillServer "force-kill-server" "--" "stop it anyway, whatever fux version it is" "fux str test server force-kill-server" [];
         Config AttachDefaults "attach-defaults" "attachable --" "replace this client's preferred attach place; target-only retains the first name, name-only or empty clears the target; target and name conflict" "opts str main name attach-defaults" [Either: In Name];
         Config Set "set" "setting new --" "a preference for this client only: `fux help set` lists their effects" "fux str history-bytes 16777216 set" [];
-        Server Version "version" "-- text" "this fux's version (a pane's version is `str version get` on the pane)" "fux version" [];
+        Reading Version "version" "pane-or-seen -- string" "a pane's current version, or the version an answer, pane capture or canonical text holds" "fux %3 capture version" [];
         Shell Args "args" "-- list" "the strings after fux --file FILE (none for any other program)" "fux args len" [];
         Shell Input "input" "-- string" "the rest of stdin, as UTF-8 text, 16 MiB at most; not when the program came from stdin" "ls | fux input lines len" [];
         Shell ReadFile "read-file" "path -- string" "a file's text, as UTF-8, 16 MiB at most" "fux str notes.txt read-file lines len" [];
@@ -349,9 +360,8 @@ words! {
         Starting CopyEnvironment "copy-environment" "x list -- x" "replace the client selection for this creation; empty selects nothing; selected values are saved and exported by dump" "fux agent-opts list str LANG end copy-environment str /bin/cat program run";
         Starting UnsetEnv "unset-env" "x name -- x" "explicitly remove this environment name from the child" "fux agent-opts str OLD unset-env str /bin/cat program run";
         Starting Arg "arg" "x text -- x" "an argument for the program" "fux agent-opts 80 24 size str ./app program str -v arg run";
-        Starting Horizontal "horizontal" "x -- x" "split side by side" "fux %3 horizontal split";
-        Starting Vertical "vertical" "x -- x" "split stacked" "fux %3 vertical split";
-        Starting Shares "shares" "x n n -- x" "split: how the pane and the new one divide the pane's room, A to B (default: halved)" "fux %3 horizontal 2 1 shares split";
+        Starting Axis "axis" "x way -- x" "horizontal (side by side) or vertical (stacked); split requires it" "fux %3 str horizontal axis split";
+        Starting Shares "shares" "x n n -- x" "split: how the pane and the new one divide the pane's room, A to B (default: halved)" "fux %3 str horizontal axis 2 1 shares split";
         Starting In "in" "x workspace -- x" "the workspace for run, new-tab, attach or attach-defaults; run and new-tab create a missing name, or a fresh unnamed workspace with str new-workspace in" "fux opts str agent in 80 24 size new-tab";
         Starting Watch "watch" "x -- x" "attach without typing: keys do nothing but the prefix, then d, which detaches" "fux opts watch attach";
         Starting KillFirst "kill-first" "x -- x" "respawn: end the program first if it still runs" "fux %3 kill-first respawn";
@@ -362,7 +372,6 @@ words! {
         Input Key "key" "x key -- x" "a key by its name: Enter, C-c, Up, F5" "fux %3 str C-c key send-keys";
         Input Paste "paste" "x text -- x" "text as a paste, bracketed if the program turned that on (an end mark, ESC [201~, in it then dropped); else as it is" "fux %3 str 'a long prompt' paste str Enter key send-keys";
         Input Bytes "bytes" "x hex -- x" "bytes as they are, in hex (1b5b41, c3): part of a key's sequence or of a character" "fux %3 str 1b5b41 bytes send-keys";
-        Input Mouse "mouse" "x action row col -- x" "click right middle press release wheel-up wheel-down or move, at a cell from 0" "fux %3 str click 2 10 mouse send-mouse";
         Reading From "from" "replayable cursor -- replayable" "events: after this cursor (SEQ:RUN, as ls and ready give it), reporting missed entries" "C=$(fux ls json | jq -r .events); fux all str \"$C\" from events";
         Reading History "history" "pane-builder lines -- pane-builder" "capture: lines of history first" "fux %3 100 history capture";
         Reading AllHistory "all-history" "pane-builder -- pane-builder" "capture: all the history first" "fux %3 all-history capture";
@@ -373,8 +382,8 @@ words! {
         Reading MainScreen "main-screen" "pane-builder -- pane-builder" "capture: what was printed before a program took the screen" "fux %3 main-screen capture";
         Reading AltScreen "alt-screen" "pane-builder -- pane-builder" "capture: the full screen a program drew last" "fux %3 alt-screen capture";
         Reading LastOutput "last-output" "pane-builder -- pane-builder" "capture: the last shell command's output, or the running one's so far (a full-screen one's: its screen to the cursor); fails no_marks where no command was marked (OSC 133); one of main-screen, alt-screen and last-output at most" "fux %3 last-output capture";
-        Reading Rows "rows" "pane-builder from to -- pane-builder" "capture: those rows only, from 0, each line they touch whole (with wrapped, those rows alone)" "fux %3 0 4 rows capture";
-        Reading Cols "cols" "pane-builder from to -- pane-builder" "capture: those columns only, from 0" "fux %3 0 39 cols capture";
+        Reading Rows "rows" "pane-builder from to -- pane-builder" "capture: half-open from..to, clipped to available rows; joined lines touched whole (with wrapped, those rows alone)" "fux %3 0 4 rows capture";
+        Reading Cols "cols" "pane-builder from to -- pane-builder" "capture: half-open from..to columns, clipped to available cells" "fux %3 0 40 cols capture";
     }
     Screen {
         Clients ChooseTab "choose-tab" "client --" "a list of tabs to go to" "fux str c1 client choose-tab";
@@ -389,10 +398,10 @@ words! {
     }
     Keys {
         Config Prefix "prefix" "key --" "this client's prefix (config)" "str C-a prefix";
-        Config Bind "bind" "keys code --" "keys after the prefix run fuxth (config)" "str 'g v' str 'me focused horizontal split drop' bind";
+        Config Bind "bind" "keys code --" "keys after the prefix run fuxth (config)" "str 'g v' str 'me focused str horizontal axis split drop' bind";
         Config BindRoot "bind-root" "key code --" "a key without the prefix runs fuxth (config)" "str M-n str 'me str next step-tab' bind-root";
-        Config Label "label" "text --" "what the column says the last binding does, or a screen's hints the last key bound in it (keys of one label shown together)" "str 'g v' str 'me focused horizontal split drop' bind str 'split right' label";
-        Config Group "group" "name --" "the column's heading for the last binding" "str 'g v' str 'me focused horizontal split drop' bind str panes group";
+        Config Label "label" "text --" "what the column says the last binding does, or a screen's hints the last key bound in it (keys of one label shown together)" "str 'g v' str 'me focused str horizontal axis split drop' bind str 'split right' label";
+        Config Group "group" "name --" "the column's heading for the last binding" "str 'g v' str 'me focused str horizontal axis split drop' bind str panes group";
         Config Repeat "repeat" "--" "the last binding's layer repeats until Esc" "str H str 'me focused str left 2 move-border' bind repeat";
         Config Unbind "unbind" "keys --" "keys after the prefix run nothing" "str 'g v' unbind";
         Config UnbindRoot "unbind-root" "key --" "a key without the prefix runs nothing" "str M-n unbind-root";
@@ -742,7 +751,7 @@ fn held(value: &Value<Fux>) -> Option<crate::command::Version> {
     match value {
         Value::App(Fux::Answer(answer, _)) => match &**answer {
             super::Answer::Pane(answer) => answer.version(),
-            // A capture's is for `expect` and `changed` alone (`version`).
+            // Captures become request baselines only through `expect` or `changed`.
             super::Answer::Panes(_)
             | super::Answer::Capture(_)
             | super::Answer::Listing { .. }
@@ -800,7 +809,18 @@ fn modifying(value: Value<Fux>) -> Result<Box<Opts>, Failure> {
     Ok(built)
 }
 
-/// What `mouse` takes, by name.
+/// The closed choice of split or resize axis.
+fn axis(value: &Value<Fux>) -> Result<Axis, Failure> {
+    one_of(
+        value,
+        &[
+            ("horizontal", Axis::Horizontal),
+            ("vertical", Axis::Vertical),
+        ],
+    )
+}
+
+/// What `send-mouse` takes, by name.
 const MICE: [(&str, Mouse); 8] = [
     ("click", Mouse::Click(Button::Left)),
     ("right", Mouse::Click(Button::Right)),
@@ -812,9 +832,8 @@ const MICE: [(&str, Mouse); 8] = [
     ("move", Mouse::Move),
 ];
 
-/// The options or request a word of a request's (an option, a wait, keys,
-/// a mouse event) makes of what it goes on, `next` giving the values it
-/// takes: `changed` and `expect` make a request, on its version's pane.
+/// The options or request an option makes of what it goes on, `next`
+/// giving its values: `changed` and `expect` make a request on a version's pane.
 fn modify(
     opt: Opt,
     next: &mut dyn FnMut() -> Result<Value<Fux>, Failure>,
@@ -825,6 +844,16 @@ fn modify(
         true => Box::default(),
         false => modifying(next()?)?,
     };
+    if !matches!(
+        opt,
+        Opt::Arg | Opt::Env | Opt::UnsetEnv | Opt::Text | Opt::Key | Opt::Paste | Opt::Bytes
+    ) && built.given.iter().any(|given| given.slot() == opt.slot())
+    {
+        return Err(fail(
+            Raise::Unused,
+            format!("{opt}: {} is already given", opt.slot()),
+        ));
+    }
     built.given.push(opt);
     match opt {
         Opt::Changed => built.on = Some(On::Changed(version(&next()?)?)),
@@ -859,8 +888,7 @@ fn modify(
         Opt::History => built.history = Some(within(&next()?, COUNT)?),
         Opt::AllHistory => built.history = Some(usize::MAX),
         Opt::Size => built.size = Some(laid_out(&next()?, &next()?)?),
-        Opt::Horizontal => built.axis = Some(Axis::Horizontal),
-        Opt::Vertical => built.axis = Some(Axis::Vertical),
+        Opt::Axis => built.axis = Some(axis(&next()?)?),
         Opt::Shares => built.shares = Some((share(&next()?)?, share(&next()?)?)),
         Opt::KillFirst => built.kill = true,
         Opt::Watch => built.watch = true,
@@ -878,9 +906,6 @@ fn modify(
         Opt::Bytes => built.inputs.push(Input::Bytes(hex(&string(&next()?)?)?)),
         Opt::Program | Opt::ShellProgram => {
             let shell = opt == Opt::ShellProgram;
-            if built.shell.is_some_and(|was| was != shell) {
-                return Err(fail(Raise::BadValue, "program and shell-program conflict"));
-            }
             built.shell = Some(shell);
             if shell {
                 built.argv = Program::read(&next()?)
@@ -888,16 +913,12 @@ fn modify(
                     .argv();
                 return Ok(built);
             }
-            let program = string(&next()?)?;
-            match built.argv.first_mut() {
-                Some(first) => *first = program,
-                None => built.argv.push(program),
-            }
+            built.argv.push(string(&next()?)?);
         }
         Opt::Arg => {
             let arg = text(&next()?)?;
             if built.argv.is_empty() {
-                return Err(fail(Raise::NoProgram, "comes after program"));
+                return Err(fail(Raise::Usage, "comes after program"));
             }
             built.argv.push(arg);
         }
@@ -925,9 +946,9 @@ fn modify(
             built.copy_environment =
                 Some(Vec::<EnvName>::read(&next()?).map_err(|why| fail(Raise::BadValue, why))?);
         }
-        Opt::MainScreen => built.view.source = screen(&built, Source::Main)?,
-        Opt::AltScreen => built.view.source = screen(&built, Source::Alternate)?,
-        Opt::LastOutput => built.view.source = screen(&built, Source::LastOutput)?,
+        Opt::MainScreen => built.view.source = Source::Main,
+        Opt::AltScreen => built.view.source = Source::Alternate,
+        Opt::LastOutput => built.view.source = Source::LastOutput,
         Opt::Rows => built.view.rows = Some(span(opt, next)?),
         Opt::Cols => built.view.cols = Some(span(opt, next)?),
         Opt::Key => {
@@ -940,34 +961,19 @@ fn modify(
             })?;
             built.inputs.push(Input::Key(press));
         }
-        Opt::Mouse => {
-            let mouse = one_of(&next()?, &MICE)?;
-            built.mouse = Some((mouse, within(&next()?, CELL)?, within(&next()?, CELL)?));
-        }
     }
     Ok(built)
 }
 
-/// The screen a capture reads, `source`: refused if one is given.
-fn screen(built: &Opts, source: Source) -> Result<Source, Failure> {
-    match built.view.source {
-        Source::Shown => Ok(source),
-        Source::Main | Source::Alternate | Source::LastOutput => {
-            let why = "a capture reads one screen, and one is given";
-            Err(fail(Raise::Unused, why))
-        }
-    }
-}
-
 /// The rows or columns a capture reads, from `next`: the first, then the
-/// last, from 0.
+/// exclusive end, from 0.
 fn span(
     opt: Opt,
     next: &mut dyn FnMut() -> Result<Value<Fux>, Failure>,
 ) -> Result<(u16, u16), Failure> {
     let (from, to) = (within(&next()?, CELL)?, within(&next()?, CELL)?);
     if from > to {
-        let why = format!("{from} {to}: the first {opt} before the last");
+        let why = format!("{from} {to}: the first {opt} must not exceed the exclusive end");
         return Err(fail(Raise::Range, why));
     }
     Ok((from, to))
@@ -991,7 +997,7 @@ fn request(word: Act, value: Value<Fux>) -> Result<(On, Opts), Failure> {
     let Some(on) = built.on.take() else {
         let why = format!(
             "takes a pane, not options: what opts gives is for {}; the rest go on the pane \
-             (`%2 all-history capture`, `%2 vertical split`)",
+             (`%2 all-history capture`, `%2 str vertical axis split`)",
             from_opts("and")
         );
         return Err(fail(Raise::Type, why));
@@ -1042,9 +1048,6 @@ fn attach_options(
     use crate::command::AttachTarget as T;
     let built = *modifying(value)?;
     unused(word, &built)?;
-    if built.given.iter().filter(|o| **o == Opt::In).count() > 1 {
-        return Err(fail(Raise::BadValue, "attach takes only one in target"));
-    }
     let target = match (&built.on, &built.place) {
         (None, place) => place.clone().map(T::Workspace),
         (Some(On::Target(target)), None) => Some(match target {
@@ -1172,12 +1175,8 @@ fn fits(inputs: &[Input]) -> Result<(), Failure> {
     }
 }
 
-/// `resize-x` or `resize-y`: a pane's width or height, from `next`, cells
-/// or a percent.
-fn resize_to(
-    axis: Axis,
-    next: &mut dyn FnMut() -> Result<Value<Fux>, Failure>,
-) -> Result<Done<Ask>, Failure> {
+/// `resize-pane`: an explicit axis and extent, cells or a percent.
+fn resize_to(next: &mut dyn FnMut() -> Result<Value<Fux>, Failure>) -> Result<Done<Ask>, Failure> {
     let target = pane(&next()?)?;
     let extent = match next()? {
         Value::App(Fux::Extent(e)) => e,
@@ -1186,7 +1185,7 @@ fn resize_to(
             return Err(wrong("cells or a percent", &other));
         }
     };
-    let by = PaneResize::To(axis, extent);
+    let by = PaneResize::To(axis(&next()?)?, extent);
     tell(Command::ResizePane { target, by })
 }
 
@@ -1448,7 +1447,7 @@ impl Host<'_> {
             Act::Me => match self.context.client {
                 Some(c) => now(out, Value::App(Fux::Client(c, self.context.of))),
                 None => Err(fail(
-                    Raise::NotAClient,
+                    Raise::NotHere,
                     "the client whose key or prompt runs this: this runs from the command line",
                 )),
             },
@@ -1469,7 +1468,7 @@ impl Host<'_> {
                 let built = finished(act, next()?)?;
                 if built.argv.is_empty() {
                     return Err(fail(
-                        Raise::NoProgram,
+                        Raise::Usage,
                         "needs a program: agent-opts str ./app program run",
                     ));
                 }
@@ -1524,9 +1523,15 @@ impl Host<'_> {
             }
             Act::Split => {
                 let (p, built) = request_pane(act, next()?)?;
+                let axis = built.axis.ok_or_else(|| {
+                    fail(
+                        Raise::Usage,
+                        "split requires a direction: %2 str horizontal axis split",
+                    )
+                })?;
                 let (start, env, options) = self.launch(&built)?;
                 let split = Command::Split {
-                    axis: built.axis.unwrap_or(Axis::Horizontal),
+                    axis,
                     target: p,
                     start,
                     cwd: built.cwd,
@@ -1586,7 +1591,7 @@ impl Host<'_> {
                 let (on, built) = request(act, next()?)?;
                 if built.inputs.is_empty() {
                     return Err(fail(
-                        Raise::NoKeys,
+                        Raise::Usage,
                         "needs keys: %2 str hello text send-keys",
                     ));
                 }
@@ -1623,13 +1628,10 @@ impl Host<'_> {
                 later(ask(keys))
             }
             Act::SendMouse => {
-                let (p, built) = request_pane(act, next()?)?;
-                let Some((mouse, row, col)) = built.mouse else {
-                    return Err(fail(
-                        Raise::NoKeys,
-                        "needs a mouse event: %2 str click 3 10 mouse send-mouse",
-                    ));
-                };
+                let p = pane(&next()?)?;
+                let mouse = one_of(&next()?, &MICE)?;
+                let row = within(&next()?, CELL)?;
+                let col = within(&next()?, CELL)?;
                 let mouse = Command::SendMouse {
                     target: p,
                     mouse,
@@ -1733,8 +1735,7 @@ impl Host<'_> {
                 tell(Command::Resize(resized))
             }
             Act::ResizeAuto => tell(Command::Resize(Resized::Tabs(target(&next()?)?, None))),
-            Act::ResizeX => resize_to(Axis::Horizontal, &mut next),
-            Act::ResizeY => resize_to(Axis::Vertical, &mut next),
+            Act::ResizePane => resize_to(&mut next),
             Act::Percent => {
                 let n = within(&next()?, Percent::SHARES)?;
                 let share = Percent::new(n).ok_or_else(|| fail(Raise::Range, "no share"))?;
@@ -1966,7 +1967,17 @@ impl Host<'_> {
                     .map_err(|why| fail(Raise::Config, why))?;
                 Ok(Done::Now)
             }
-            Act::Version => now(out, Value::str(env!("CARGO_PKG_VERSION"))),
+            Act::Version => {
+                let value = next()?;
+                if let Value::App(Fux::Pane(p, _)) = value {
+                    later(ask(Command::Ls {
+                        target: Some(AnyRef::Pane(p)),
+                        get: Some("version".into()),
+                    }))
+                } else {
+                    now(out, Value::str(version(&value)?.to_string()))
+                }
+            }
             // ------------------------------------------------------- shell
             Act::Args => local(Local::Shell(Shell::Args)),
             Act::Input => local(Local::Shell(Shell::Input)),
@@ -2459,6 +2470,54 @@ mod tests {
         Ok(())
     }
 
+    #[test]
+    fn accumulating_options_preserve_order() -> Result<(), Box<dyn std::error::Error>> {
+        let mut value = Value::App(Fux::Opts(Box::default()));
+        for (opt, values) in [
+            (Opt::Program, vec![Value::str("cat")]),
+            (Opt::Arg, vec![Value::str("a")]),
+            (Opt::Arg, vec![Value::str("b")]),
+            (Opt::Env, vec![Value::str("X"), Value::str("first")]),
+            (Opt::UnsetEnv, vec![Value::str("Y")]),
+            (Opt::Env, vec![Value::str("Z"), Value::str("last")]),
+            (Opt::Text, vec![Value::str("a")]),
+            (Opt::Key, vec![Value::str("Enter")]),
+            (Opt::Paste, vec![Value::str("b")]),
+            (Opt::Bytes, vec![Value::str("63")]),
+        ] {
+            let mut args = std::iter::once(value).chain(values);
+            value = Value::App(Fux::Opts(
+                modify(opt, &mut || {
+                    args.next()
+                        .ok_or_else(|| fail(Raise::StackUnderflow, "test argument"))
+                })
+                .map_err(|f| f.message)?,
+            ));
+        }
+        let built = modifying(value).map_err(|f| f.message)?;
+        assert_eq!(built.argv, ["cat", "a", "b"]);
+        assert_eq!(
+            built.inputs,
+            [
+                Input::Text("a".into()),
+                Input::Key("Enter".parse()?),
+                Input::Paste("b".into()),
+                Input::Bytes(vec![b'c'])
+            ]
+        );
+        let env = built
+            .env
+            .as_slice()
+            .iter()
+            .map(|(k, v)| (k.as_str(), v.as_ref().and_then(|v| v.to_str())))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            env,
+            [("X", Some("first")), ("Y", None), ("Z", Some("last"))]
+        );
+        Ok(())
+    }
+
     /// No word's name needs quoting in a shell. (That no two share one,
     /// nor any the language's, the vocabulary checks as it is made.)
     #[test]
@@ -2518,7 +2577,7 @@ mod tests {
         assert_eq!(compiles("opts 80 24 size new-tab clear-history"), Ok(()));
         for wrong in [
             "str nope kill",
-            "str nope horizontal split",
+            "str nope str horizontal axis split",
             "str nope info",
         ] {
             let refused = compiles(wrong).err().unwrap_or_default();
@@ -2845,11 +2904,9 @@ mod tests {
                     Opt::Timeout | Opt::History => vec![Value::Int(0)],
                     Opt::Key => vec![Value::str("Enter")],
                     Opt::Bytes => vec![Value::str("61")],
-                    Opt::Mouse => vec![Value::str("click"), Value::Int(0), Value::Int(0)],
+                    Opt::Axis => vec![Value::str("horizontal")],
                     Opt::From => vec![Value::str("0:48211-1867a3f9c2b8e7d6")],
-                    Opt::Horizontal
-                    | Opt::Vertical
-                    | Opt::Watch
+                    Opt::Watch
                     | Opt::KillFirst
                     | Opt::AllHistory
                     | Opt::Wrapped

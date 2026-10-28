@@ -29,7 +29,6 @@ for `id`, `name`, `label` and `pid` (it says `pane`):
 | `read_error` | an unexpected PTY read failure as errno text, or `null`: a failed reader is no longer polled and refuses keys; the cause stays after exit until respawn |
 | `exited` | the status its program exited with (a pane whose program is no shell: `run`'s, or a `split` with a program), else `null` |
 | `signal` | the signal that killed it (its number), else `null`; both `null` for a program that ended (its version's ENDED is 1) whose status was lost |
-| `idle_ms` | how long since fux last read output from its program (or it started) |
 | `alt_screen` | its program holds the full screen |
 | `mouse` | its program asked for mouse reports |
 | `mouse_mode` | which: `"press"`, `"press_release"`, `"button_motion"`, `"any_motion"`, `"highlight"`, or `null` |
@@ -105,6 +104,14 @@ plain: `{"col":0,"len":3,"fg":1,"bg":"#1e1e20","bold":true,"inverse":true,
 "hidden":true,"dim":true,"italic":true,"strikeout":true,"underline":true,
 "blink":true}`, each attribute only when set; colours are
 palette numbers or `"#rrggbb"`.
+
+`rows` and `cols` select half-open ranges, `start..end`, just like `slice`.
+Equal endpoints select nothing; ranges past available rows or columns are
+clipped to the available data. Negative, reversed, or endpoints past 65535
+fail with `range`. Rows count from the top of the requested
+screen and history; joined captures expand nonempty row ranges to whole
+logical lines. `wrapped` keeps only the physical rows selected. Cutting a
+wide glyph at either column boundary leaves a blank in the selected half.
 
 `CLIENT capture json`:
 `{"client":"c1","screen_rows":24,"screen_cols":80,"screen_cursor":[ROW,COL],"lines":["…"]}`.
@@ -228,7 +235,7 @@ wait's own (above). CODE stays; every one fux gives
 - how a wait ends: `timeout` (124), `closed` (4), `gone` (4);
 - a program of words: `steps`, `cancelled`, `not_here`, `not_config`,
   `config`, `bad_binding`, `check`, `read`, `unset_var`, `output`, `nested`,
-  `not_a_key`, `no_program`, `no_keys`, `not_a_client`;
+  `not_a_key`;
 - the language's own: `require`, `open_quote`, `unknown_word`, `missing_token`,
   `bad_name`, `not_top_level`, `unmatched`, `unclosed`, `stack_underflow`,
   `stack_overflow`, `call_depth`, `type`, `div_by_zero`, `overflow`,
@@ -242,8 +249,8 @@ they run, so a `try` may name them too.
 ## `status json`
 
 ```json
-{"socket":"/run/user/1000/fux/server.sock","version":"0.36.0","protocol":41,
- "server_version":"0.36.0","server_protocol":41,"compatible":true}
+{"socket":"/run/user/1000/fux/server.sock","release":"0.36.0","protocol":42,
+ "server_release":"0.36.0","server_protocol":42,"compatible":true}
 ```
 
 With no server, `status` fails (`no_server`), saying the socket and whether

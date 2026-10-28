@@ -141,7 +141,7 @@ fn metadata(o: &Options, seed: u64) -> String {
         .map(|out| String::from_utf8_lossy(&out.stdout).trim().to_owned())
         .unwrap_or_default();
     let version = std::process::Command::new(&o.fux)
-        .arg("version")
+        .arg("--version")
         .output()
         .map(|out| String::from_utf8_lossy(&out.stdout).trim().to_owned())
         .unwrap_or_default();
