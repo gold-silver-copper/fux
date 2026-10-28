@@ -138,8 +138,8 @@ impl AppValue for Fux {
 }
 
 /// The server run a value was returned by, retained through request options.
-fn scope(value: &Value<Fux>) -> Option<Run> {
-    match value {
+fn scope(value: &Value<Fux>) -> Result<Option<Run>, fuxth::Failure> {
+    Ok(match value {
         Value::App(
             Fux::Pane(_, run)
             | Fux::Tab(_, run)
@@ -148,8 +148,15 @@ fn scope(value: &Value<Fux>) -> Option<Run> {
             | Fux::Answer(_, run),
         ) => *run,
         Value::App(Fux::Opts(opts)) => opts.of,
-        Value::Int(_) | Value::Bool(_) | Value::Str(_) | Value::List(_) | Value::App(_) => None,
-    }
+        Value::List(list) => {
+            let mut run = None;
+            for item in list.items() {
+                run = same_run(run, scope(item)?)?;
+            }
+            run
+        }
+        Value::Int(_) | Value::Bool(_) | Value::Str(_) | Value::App(_) => None,
+    })
 }
 
 fn same_run(a: Option<Run>, b: Option<Run>) -> Result<Option<Run>, fuxth::Failure> {
@@ -1901,6 +1908,24 @@ mod tests {
                 assert_eq!(record.0, [limit], "{subject} {option}");
             }
         }
+        Ok(())
+    }
+
+    #[test]
+    fn layout_lists_retain_pane_run_identity() -> Result<(), String> {
+        use super::{Fux, PaneId, Rc, Run, Value, scope};
+        let ours: Run = "1-0".parse().map_err(|()| "run")?;
+        let other: Run = "2-0".parse().map_err(|()| "run")?;
+        let leaf = |run| Value::App(Fux::Pane(PaneId::of(1), Some(run)));
+        let list = |items| {
+            fuxth::List::new(items)
+                .map(|l| Value::List(Rc::new(l)))
+                .ok_or("list")
+        };
+        let tree = list(vec![list(vec![leaf(ours)])?])?;
+        assert_eq!(scope(&tree).map_err(|f| f.message)?, Some(ours));
+        let tree = list(vec![tree, leaf(other)])?;
+        assert!(scope(&tree).is_err());
         Ok(())
     }
 

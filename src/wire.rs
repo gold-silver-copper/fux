@@ -604,6 +604,7 @@ text_wire!(crate::id::BufferId, "buffer id");
 text_wire!(KeyPress, "key");
 text_wire!(crate::code::Code, "code");
 text_wire!(crate::command::Version, "version");
+text_wire!(crate::command::LayoutRevision, "layout revision");
 text_wire!(crate::command::Run, "server run");
 text_wire!(crate::events::Cursor, "cursor");
 

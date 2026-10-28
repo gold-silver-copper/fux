@@ -221,6 +221,8 @@ pub const TAKEN_AS: [(&str, &str); 3] = [
 /// of an integer.
 #[rustfmt::skip]
 pub const NAMES: &[(&str, &str, &str)] = &[
+    ("revision", "string", "a run-qualified layout revision"),
+    ("tree", "list", "a flat layout node list"),
     ("closed-outcome", "closed-answer answers", "a closed pane or collection answer"),
     ("outcome", "answer answers", "an action's or wait's answer: a pane's, or a tab's or workspace's panes'"),
     ("x", "opts pane>pane-request answer>pane-request closed-answer>pane-request tab>tab-request workspace>workspace-request client>client-request pane-request tab-request workspace-request client-request changed-request expected-request",
@@ -288,6 +290,7 @@ words! {
         Changing ResizeX "resize-x" "pane width --" "a pane's width: cells, or a percent" "fux %3 30 percent resize-x" [];
         Changing ResizeY "resize-y" "pane height --" "a pane's height: cells, or a percent" "fux %3 10 resize-y" [];
         Changing Percent "percent" "n -- size" "n percent of the tab, for resize-x and resize-y" "fux %3 30 percent resize-x" [];
+        Changing Arrange "arrange" "tab revision tree --" "replace the whole layout at a run-qualified structural revision" "fux @2 str REVISION list %3 end arrange" [];
         Changing MoveBorder "move-border" "pane way cells --" "move the pane's nearest border: left right up down" "fux %3 str left 5 move-border" [];
         Changing MoveTo "move-to" "pane where --" "move a pane to a tab, a workspace, new-tab or new-workspace" "fux %3 str new-tab move-to" [];
         Changing MoveBeside "move-beside" "pane way --" "move a pane beside its neighbour: left right up down" "fux %3 str right move-beside" [];
@@ -1267,7 +1270,7 @@ impl fuxth::Host for Host<'_> {
                     format!("too few values: {}", word.row().effect),
                 )
             })?;
-            of = super::same_run(of, super::scope(&value))?;
+            of = super::same_run(of, super::scope(&value)?)?;
             Ok(value)
         };
         let from = out.len();
@@ -1705,6 +1708,72 @@ impl Host<'_> {
                 let share = Percent::new(n).ok_or_else(|| fail(Raise::Range, "no share"))?;
                 now(out, Value::App(Fux::Extent(Extent::Percent(share))))
             }
+            Act::Arrange => {
+                let tab = next()?;
+                let Value::App(Fux::Tab(target, _)) = tab else {
+                    return Err(wrong("a tab", &tab));
+                };
+                let revision = string(&next()?)?
+                    .parse()
+                    .map_err(|()| fail(Raise::BadValue, "a layout revision is TAB:REVISION:RUN"))?;
+                let tree = next()?;
+                let Value::List(list) = &tree else {
+                    return Err(wrong("a flat layout list", &tree));
+                };
+                if list.items().is_empty() || list.items().len() > crate::layout::NODES_MAX {
+                    return Err(fail(Raise::TooLong, "a layout needs 1..2047 nodes"));
+                }
+                let mut nodes = Vec::with_capacity(list.items().len());
+                for node in list.items() {
+                    let node = match node {
+                        Value::App(Fux::Pane(pane, _)) => crate::layout::Node::Pane(*pane),
+                        Value::List(fields) => {
+                            let mut fields = fields.items().iter();
+                            let mut field = || {
+                                fields.next().ok_or_else(|| {
+                                    fail(
+                                        Raise::BadValue,
+                                        "a split is list AXIS SHARE SHARE FIRST SECOND end",
+                                    )
+                                })
+                            };
+                            let axis = one_of(
+                                field()?,
+                                &[
+                                    ("horizontal", Axis::Horizontal),
+                                    ("vertical", Axis::Vertical),
+                                ],
+                            )?;
+                            let first_share = share(field()?)?;
+                            let second_share = share(field()?)?;
+                            let first = within(field()?, 0..=i64::from(u32::MAX))?;
+                            let second = within(field()?, 0..=i64::from(u32::MAX))?;
+                            if fields.next().is_some() {
+                                return Err(fail(
+                                    Raise::BadValue,
+                                    "a split has exactly five fields",
+                                ));
+                            }
+                            crate::layout::Node::Split {
+                                axis,
+                                first_share,
+                                second_share,
+                                first,
+                                second,
+                            }
+                        }
+                        Value::Int(_) | Value::Bool(_) | Value::Str(_) | Value::App(_) => {
+                            return Err(wrong("a pane or split list", node));
+                        }
+                    };
+                    nodes.push(node);
+                }
+                later(ask(Command::Arrange {
+                    target,
+                    revision,
+                    nodes,
+                }))
+            }
             Act::MoveBorder => {
                 let p = pane(&next()?)?;
                 let way = direction(&next()?)?;
@@ -1837,7 +1906,7 @@ impl Host<'_> {
                 self.prepare()
                     .map_err(|why| fail(Raise::Config, why.to_string()))?;
                 let value = next()?;
-                let of = super::scope(&value);
+                let of = super::scope(&value)?;
                 let (target, built) = attach_options(act, value)?;
                 if target.is_some() && built.given.contains(&Opt::Name) {
                     return Err(fail(

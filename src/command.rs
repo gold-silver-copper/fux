@@ -480,6 +480,36 @@ impl std::str::FromStr for Run {
     }
 }
 
+/// A tab's structural revision, qualified by its server run and tab.
+/// Written `TAB:REVISION:RUN`; screen output does not change it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LayoutRevision {
+    pub tab: TabId,
+    pub serial: u64,
+    pub run: Run,
+}
+
+impl std::fmt::Display for LayoutRevision {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}:{}:{}", self.tab, self.serial, self.run)
+    }
+}
+
+impl std::str::FromStr for LayoutRevision {
+    type Err = ();
+    fn from_str(text: &str) -> Result<Self, ()> {
+        let mut parts = text.split(':');
+        let revision = Self {
+            tab: parts.next().ok_or(())?.parse().map_err(drop)?,
+            serial: crate::id::number(parts.next().ok_or(())?).ok_or(())?,
+            run: parts.next().ok_or(())?.parse()?,
+        };
+        (parts.next().is_none() && revision.to_string() == text)
+            .then_some(revision)
+            .ok_or(())
+    }
+}
+
 /// What only grows while one program runs in a pane (a respawn starts all
 /// but `respawns` afresh): how often its program was respawned, its screen's
 /// revision (fux-vt's: the bytes of output read, plus one for each resize
@@ -782,6 +812,12 @@ wire! {
         SwapPane {
             target: PaneId,
             with: SwapWith,
+        },
+        /// Replace one existing tab's complete layout after checking its revision.
+        Arrange {
+            target: TabId,
+            revision: LayoutRevision,
+            nodes: Vec<crate::layout::Node>,
         },
         ResizePane {
             target: PaneId,
@@ -1113,6 +1149,7 @@ impl Command {
             | C::Rename { .. }
             | C::MovePane { .. }
             | C::SwapPane { .. }
+            | C::Arrange { .. }
             | C::ResizePane { .. }
             | C::ClearHistory { .. }
             | C::HistoryBudget { .. }

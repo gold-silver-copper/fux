@@ -65,13 +65,16 @@ gives next, and the server's run, read with the listing. A stream from it
 those the journal let go first: then read `ls` again. `ls` ends with it
 too, as `events CURSOR`.
 
-`X info json` gives that pane, tab (`{"id","name","label","panes"}`) or workspace
+`X info json` gives that pane, tab (`{"id","name","label","layout_revision","panes"}`) or workspace
 (`{"id","name","label","tabs"}`) alone; `X str FIELD get` leaves one of its fields:
 a number or boolean as itself, a string as text, `null` as an answer that
 prints `null` (`string` makes it the text). A tab or workspace has an optional
 given `name` (`null` when absent) and a derived display `label`. A tab's
 label is its given name or its first pane's label; a workspace's is its
 given name or id. `get` reads only the object's own fields.
+A tab's `layout_revision` is `TAB:REVISION:RUN`, the guard for `arrange`.
+It changes on layout edits and fit changes, independently of pane output.
+A successful replacement emits one `arranged` event with its tab and workspace.
 
 ## `PANE capture json`
 
@@ -193,6 +196,7 @@ even a stream that reads at once, of another pane, miss some, which
 | `created` | `name`, for a tab or workspace, `null` when unnamed |
 | `renamed` | `name`: a pane's, tab's or workspace's new name |
 | `closed`, `bell` | |
+| `arranged` | one complete tab layout replacement; `tab`, `workspace`; pane resizes follow |
 | `respawned` | at every respawn. Its fields, only when the program it ran over had not ended (a `kill-first` respawn), as one that ended said them with its `exited`: `truncated` (`true`) if it left more than 1 MiB on its terminal: the rest was not read; `input_unread`, if any: bytes of input fux queued for it and had not yet written to its terminal, let go |
 | `moved` | `from_tab`, `from_workspace`: where the pane was; `events-of` either place tells it |
 | `exited` | `exited`, its status (`null` if it was lost), or `signal`: its program's end, as a pane's JSON and a wait say it; `truncated` (`true`) if it left more than 1 MiB on its terminal as it ended: the rest was not read; `input_unread`, if any: bytes of input fux queued for it and had not yet written to its terminal, let go (as a pane's `input_unread`); a shell's pane then closes (`closed`) |
@@ -235,8 +239,8 @@ they run, so a `try` may name them too.
 ## `status json`
 
 ```json
-{"socket":"/run/user/1000/fux/server.sock","version":"0.36.0","protocol":40,
- "server_version":"0.36.0","server_protocol":40,"compatible":true}
+{"socket":"/run/user/1000/fux/server.sock","version":"0.36.0","protocol":41,
+ "server_version":"0.36.0","server_protocol":41,"compatible":true}
 ```
 
 With no server, `status` fails (`no_server`), saying the socket and whether

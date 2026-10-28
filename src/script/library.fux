@@ -50,3 +50,33 @@ end
 
 # -- id : choose the newest paste buffer when the request runs
 define newest str newest end
+
+# Empty input is an error; list/step/weight bounds apply before arrange submits anything.
+# panes way alternate base -- tree : balanced flat nodes with absolute child indices; leaves share room by pane count
+define layout-of
+  let base let alternate let way let ps
+  ps len let n
+  n 0 eq if str 'a layout needs at least one pane' fail then
+  n 1 eq if list ps first end else
+    n 2 div let a n a sub let b
+    alternate if
+      way str horizontal eq if str vertical else str horizontal then
+    else way then let next-way
+    list list way a b base 1 add base a 2 mul add end end
+    ps 0 a slice next-way alternate base 1 add layout-of cat
+    ps a n slice next-way alternate base a 2 mul add layout-of cat
+  then
+end
+# panes way -- tree : balanced equal-share row or column, rejecting empty input
+define even-of false 0 layout-of end
+# panes way cross -- tree : first pane takes two shares, the rest one, evenly along cross
+define main-of
+  let cross let way let ps
+  ps len 0 eq if str 'a layout needs at least one pane' fail then
+  ps len 1 eq if list ps first end else
+    list list way 2 1 1 2 end ps first end
+    ps 1 ps len slice cross false 2 layout-of cat
+  then
+end
+# panes -- tree : balanced tiles, alternating axes, room shared by pane count
+define tiled-of str horizontal true 0 layout-of end

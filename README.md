@@ -550,6 +550,36 @@ fux dump > ~/session.fux              # save when you choose
 fux start && fux --file ~/session.fux # replay on a fresh server
 ```
 
+`arrange` replaces an existing tab's whole layout in one guarded commit:
+
+```fux
+@2 dup str layout_revision get
+list %3 %4 %5 end str horizontal even-of arrange
+```
+
+The list must name every current pane of that tab exactly once. The revision
+is `TAB:REVISION:RUN`, tied to the tab and server run. Layout edits and changes
+to the tab's fit invalidate it, even if a border is moved back. A stale or
+invalid proposal changes nothing. Pane focus stays with the same pane.
+Every background and sizing-client screen must show every pane; watchers do
+not constrain it. Success journals one `arranged` invalidation, then sizes
+panes through the normal settle path, which reports PTY resize failures.
+
+The tree is a flat list, rooted at index zero. Each node is a typed pane or
+`list str horizontal|vertical FIRST-SHARE SECOND-SHARE FIRST-INDEX SECOND-INDEX end`.
+Every index must be reached once; shares are nonzero u32 values. A proposal
+has at most 2,047 nodes and depth 64. Revision exhaustion refuses further
+guarded edits rather than reusing a token.
+
+The library's pure builders accept pane lists: `PANES str horizontal even-of`
+(or `str vertical`) uses balanced splits weighted by pane count;
+`PANES str horizontal str vertical main-of` gives the first pane two shares
+beside an evenly stacked remainder's one (swap the axes for a main pane
+above); `PANES tiled-of` alternates horizontal and vertical splits, weighted
+by pane count. Empty lists fail; the language's list, weight and execution
+budgets also apply. These builders read no session state and submit nothing
+until `arrange`.
+
 A dump makes the layouts and launches again: each shell starts afresh in
 its directory, each program `run` started starts again. It never brings
 back what a process held: its screen, its history, what ran in a shell. A
