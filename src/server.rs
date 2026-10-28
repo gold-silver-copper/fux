@@ -1677,6 +1677,95 @@ mod tests {
     }
 
     #[test]
+    fn feedback_restores_complete_pictures_while_the_frame_stays_held()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (mut server, _peer) = server()?;
+        let client = *server.session.views.keys().next().ok_or("client")?;
+        let pane = *server.session.parts.panes().keys().next().ok_or("pane")?;
+        crate::session::testing::output_as(
+            &mut server.session,
+            Some(client),
+            "str bar list str off list end list end false end set",
+        )?;
+        let view = server.session.views.get_mut(&client).ok_or("view")?;
+        view.terminal.sixel = true;
+        view.terminal.cell = fux_vt::CellSize::new(12, 12);
+        server.session.settle();
+        server.paint(0, Instant::now());
+        let picture = std::sync::Arc::new(
+            fux_vt::sixel::Picture::new(12, 24, vec![255; 12 * 24 * 4]).ok_or("picture")?,
+        );
+        let full = vec![
+            render::Visible {
+                pane,
+                area: (8, 0, 2, 1),
+                crop: (0, 0, 12, 24),
+                picture: std::sync::Arc::clone(&picture),
+            },
+            render::Visible {
+                pane,
+                area: (9, 1, 1, 1),
+                crop: (0, 0, 12, 12),
+                picture,
+            },
+        ];
+        server
+            .conns
+            .first_mut()
+            .and_then(Conn::attached)
+            .ok_or("attached")?
+            .pictures = full.clone();
+        let mut frame = b"\x1b[?2026h".to_vec();
+        frame.extend(std::iter::repeat_n(b"X\x1b[65535b", 4000).flatten());
+        frame.extend_from_slice(b"\x1b[?2026l");
+        server.session.output(pane, &frame);
+        assert!(
+            server
+                .session
+                .parts
+                .panes()
+                .get(&pane)
+                .is_some_and(Pane::mid_frame)
+        );
+        server.session.notify_to(client, "feedback", true);
+        server.paint(0, Instant::now());
+        let covered = &server
+            .conns
+            .first_mut()
+            .and_then(Conn::attached)
+            .ok_or("attached")?
+            .pictures;
+        assert_eq!(covered.len(), 1);
+        assert_eq!(covered.first().map(|p| p.crop.3), Some(12));
+        server.session.views.get_mut(&client).ok_or("view")?.notice = None;
+        server.paint(0, Instant::now());
+        assert!(
+            server
+                .session
+                .parts
+                .panes()
+                .get(&pane)
+                .is_some_and(Pane::mid_frame)
+        );
+        let restored = &server
+            .conns
+            .first_mut()
+            .and_then(Conn::attached)
+            .ok_or("attached")?
+            .pictures;
+        assert!(
+            restored == &full,
+            "the complete picture crops were not restored"
+        );
+        let (sent, _) = sent(server.conns.first().ok_or("connection")?);
+        assert!(
+            sent.windows(2).any(|bytes| bytes == b"\x1bP"),
+            "restored pixels were not sent"
+        );
+        Ok(())
+    }
+
+    #[test]
     fn a_live_read_failure_is_told_without_another_event() -> Result<(), Box<dyn std::error::Error>>
     {
         let (mut server, _peer) = server()?;

@@ -2968,6 +2968,78 @@ mod tests {
     }
 
     #[test]
+    fn top_bar_changes_are_painted_with_unchanged_pane_rows() -> Result<(), String> {
+        use crate::session::testing::{attached, output_as};
+        let (mut session, client) = attached(4, 80)?;
+        output_as(
+            &mut session,
+            Some(client),
+            "str bar list str top list list str slot 0 end end list str pane end false end set",
+        )?;
+        let mut shown = Grid::default();
+        assert!(compose_into(
+            &session,
+            client,
+            &mut shown,
+            &mut Placement::default()
+        ));
+        for change in ["notice", "slot", "title"] {
+            if let Some(view) = session.views.get_mut(&client) {
+                view.notice = None;
+            }
+            match change {
+                "notice" => session.notify_to(client, "top error", true),
+                "slot" => {
+                    output_as(
+                        &mut session,
+                        Some(client),
+                        "str bar-slots list list 0 str updated end end set",
+                    )?;
+                }
+                _ => session.output(PaneId::of(1), b"\x1b]2;new title\x07"),
+            }
+            let mut next = Grid::default();
+            assert!(compose_into(
+                &session,
+                client,
+                &mut next,
+                &mut Placement::default()
+            ));
+            assert!(SameFrame::of(&shown, &next).is_some());
+            assert_ne!(shown.row_text(0), next.row_text(0));
+            let mut bytes = Vec::new();
+            assert!(
+                paint_into(&shown, true, &next, &mut bytes),
+                "{change} was suppressed"
+            );
+            assert!(rows_written(&bytes).contains(&0), "{change}: {bytes:?}");
+            shown = next;
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn zoom_with_bar_off_keeps_the_bottom_pane_row_and_cursor() -> Result<(), String> {
+        use crate::session::testing::{attached, output_as};
+        let (mut session, client) = attached(4, 40)?;
+        output_as(
+            &mut session,
+            Some(client),
+            "str bar list str off list end list end false end set",
+        )?;
+        session.output(PaneId::of(1), b"\x1b[4;1Hbottom prompt");
+        let before = compose(&session, client).ok_or("before")?;
+        output_as(&mut session, Some(client), "me zoom")?;
+        let zoomed = compose(&session, client).ok_or("zoomed")?;
+        assert!(zoomed.row_text(3).contains("bottom prompt"));
+        assert_eq!(zoomed.cursor, before.cursor);
+        assert!(zoomed.memo.is_some());
+        let view = session.views.get(&client).ok_or("view")?;
+        assert!(!bar_overlay(&session, view, &session.placement(view)));
+        Ok(())
+    }
+
+    #[test]
     fn bar_off_feedback_overlays_and_restores_the_pane_without_resizing() -> Result<(), String> {
         use crate::session::testing::{attached, output_as};
         let (mut session, client) = attached(4, 40)?;
@@ -3030,10 +3102,14 @@ mod tests {
             PaneId::of(1),
             b"\x1b[4;1H\x1b]8;;https://example.test/\x1b\\old pane row\x1b]8;;\x1b\\",
         );
+        session.output(PaneId::of(1), b"\x1b[5 q\x1b]12;#123456\x07");
         let before = compose(&session, client).ok_or("before")?;
+        assert!(before.cursor.is_some_and(|(row, _)| row == 3));
         let view = session.views.get(&client).ok_or("view")?;
         let panes = session.placement(view).panes;
-        session.output(PaneId::of(1), &frame_past_a_budget());
+        let mut frame = b"\x1b[?2026h\x1b[2 q\x1b]12;#ffffff\x07".to_vec();
+        frame.extend(frame_past_a_budget());
+        session.output(PaneId::of(1), &frame);
         assert!(
             session
                 .parts
@@ -3059,12 +3135,16 @@ mod tests {
         session.notify_to(client, "feedback", true);
         let covered = held(&session, &before)?;
         assert!(covered.row_text(3).contains("feedback"));
+        assert_eq!(covered.cursor, None);
         if let Some(view) = session.views.get_mut(&client) {
             view.notice = None;
         }
         let restored = held(&session, &covered)?;
         assert!(restored.row_text(3).contains("old pane row"));
         assert!(!restored.row_text(3).contains('X'));
+        assert_eq!(restored.cursor, before.cursor);
+        assert_eq!(restored.modes.cursor_shape, before.modes.cursor_shape);
+        assert_eq!(restored.modes.cursor_colour, before.modes.cursor_colour);
         assert_eq!(
             restored.link(3, 0).map(|(_, link)| link.uri()),
             Some("https://example.test/")
