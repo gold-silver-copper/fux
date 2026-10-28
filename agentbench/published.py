@@ -102,6 +102,7 @@ def first_exit(driver, args, fx):
     # Keep the private server/journal alive after the recipe cleans its jobs.
     keeper = driver.spawn(["cat"])
     try:
+        cursor = driver.events_cursor()
         path = Path(driver.work) / "first-exit.py"
         path.write_text(block("**First recorded exit across jobs:**", "python"))
         output = driver.run(["python3", "-I", "first-exit.py"], timeout=35).stdout
@@ -111,7 +112,7 @@ def first_exit(driver, args, fx):
         # Replay independently: sleep lengths and launch latency are not an oracle.
         names = receipt["panes"]
         panes = {name: pane for pane, name in names.items()}
-        recorded = driver.wait_first_exit(panes, receipt["cursor"])
+        recorded = driver.wait_first_exit(panes, cursor)
         if receipt["first"]["event"] != "exited" or names[receipt["first"]["pane"]] != recorded:
             raise RuntimeError("published result differs from the first journal exit")
         return "recorded"

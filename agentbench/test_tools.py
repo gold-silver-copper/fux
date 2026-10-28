@@ -118,22 +118,39 @@ class Tools(unittest.TestCase):
         results[0]["ok"] = False
         self.assertIn("| **all** | **3/4**", report.scripted_table(results, "guide"))
 
-    def test_published_first_exit_is_checked_against_journal_replay(self):
-        receipt = {"cursor": "0:RUN", "panes": {"%1": "a", "%2": "b"},
+    def test_published_first_exit_uses_an_independent_prelaunch_cursor(self):
+        receipt = {"cursor": "9:RUN", "panes": {"%1": "a", "%2": "b"},
                    "first": {"event": "exited", "pane": "%1"}}
         with tempfile.TemporaryDirectory() as work:
             (Path(work) / "fux-calls").write_text(".\n" * 8)
+            calls = []
+
+            def cursor():
+                calls.append("cursor")
+                return "0:RUN"
+
+            def script(*args, **kwargs):
+                calls.append("recipe")
+                return SimpleNamespace(stdout=json.dumps(receipt))
+
             driver = SimpleNamespace(name="fux", work=work, calls=0,
                                      spawn=lambda *a: "%0", kill=lambda *a: None,
-                                     run=lambda *a, **k: SimpleNamespace(stdout=json.dumps(receipt)))
+                                     events_cursor=cursor, run=script)
             for recorded in ("a", "b"):
                 with self.subTest(recorded=recorded):
-                    driver.wait_first_exit = lambda *a: recorded
+                    calls.clear()
+
+                    def replay(panes, since):
+                        self.assertEqual(since, "0:RUN")
+                        return recorded
+
+                    driver.wait_first_exit = replay
                     if recorded == "a":
                         self.assertEqual(published.first_exit(driver, {}, ""), "recorded")
                     else:
                         with self.assertRaisesRegex(RuntimeError, "differs from"):
                             published.first_exit(driver, {}, "")
+                    self.assertEqual(calls, ["cursor", "recipe"])
 
     def test_title_lookup_uses_one_topology_observation(self):
         driver = drivers.Fux.__new__(drivers.Fux)
