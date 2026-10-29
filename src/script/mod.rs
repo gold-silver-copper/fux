@@ -836,13 +836,27 @@ thread_local! {
 /// cache; the bench counts this initialization cold. Its mistake is told
 /// without a word's usage, which would read `READY` as it is made.
 pub fn libraries() -> Result<(Compiler<Fux>, Rc<[fuxth::Doc]>), Failed> {
+    libraries_in(vocabulary().map_err(|error| told(error, false))?)
+}
+
+/// `libraries`, over `vocabulary`.
+fn libraries_in(
+    vocabulary: fuxth::Vocabulary,
+) -> Result<(Compiler<Fux>, Rc<[fuxth::Doc]>), Failed> {
     let told = |error| told(error, false);
-    let mut compiler = Compiler::new(vocabulary().map_err(told)?);
+    let mut compiler = Compiler::new(vocabulary);
     let mut docs = compiler
         .library("stdlib.fux", fuxth::STDLIB)
         .map_err(told)?;
     docs.extend(compiler.library("library.fux", LIBRARY).map_err(told)?);
-    compiler.inputs("dump", "scope").map_err(told)?;
+    for (word, kinds) in [
+        ("dump", "scope"),
+        ("info", "scope"),
+        ("version", "pane-or-seen"),
+        ("all-history", "pane-builder"),
+    ] {
+        compiler.inputs(word, kinds).map_err(told)?;
+    }
     for word in [
         "layout-current",
         "even-h",
