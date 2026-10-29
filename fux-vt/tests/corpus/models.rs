@@ -273,6 +273,7 @@ pub const STYLES: [Attributes; 3] = [
 /// and attributes. Missing destinations refuse.
 pub fn stored(cells: &Cells, i: usize, source: CellRef<'_>, whole: bool) {
     let Some(got) = cells.get(i) else {
+        assert!(i >= cells.len());
         assert!(!whole);
         return;
     };

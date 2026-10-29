@@ -322,8 +322,8 @@ fn cells_set_and_borrowed_copy_keep_text_shape_and_report_truncation() -> Result
                 let borrowed = other.get(3).ok_or("source")?;
                 cells.fill(0..2, CellRef::default());
                 assert!(cells.set(0, borrowed));
-                assert_eq!(cells.get(0), Some(borrowed));
                 assert!(!cells.set(2, borrowed));
+                assert_eq!(cells.get(0), Some(borrowed));
             }
         }
     }
@@ -350,21 +350,24 @@ fn cell_attributes_preserve_text_shape_and_other_cells() -> Result {
         assert!(cells.set(i, CellRef::new(text, true, attributes)));
     }
     cells.set(3, CellRef::wide_continuation());
-    for i in 0..=cells.len() {
+    for i in 0..cells.len() {
         for attributes in models::STYLES {
             let before = cells.clone();
             cells.set_attributes(i, attributes);
             models::unchanged(&cells, &before, i..i.saturating_add(1));
-            if let (Some(old), Some(got)) = (before.get(i), cells.get(i)) {
-                assert_eq!(got.contents(), old.contents());
-                assert_eq!(
-                    (got.is_wide(), got.is_wide_continuation()),
-                    (old.is_wide(), old.is_wide_continuation())
-                );
-                assert_eq!(got.attributes(), attributes);
-            }
+            let old = before.get(i).ok_or("original cell")?;
+            let got = cells.get(i).ok_or("restyled cell")?;
+            assert_eq!(got.contents(), old.contents());
+            assert_eq!(
+                (got.is_wide(), got.is_wide_continuation()),
+                (old.is_wide(), old.is_wide_continuation())
+            );
+            assert_eq!(got.attributes(), attributes);
         }
     }
+    let before = cells.clone();
+    cells.set_attributes(cells.len(), attributes);
+    assert_eq!(cells, before);
     Ok(())
 }
 
@@ -399,9 +402,11 @@ fn cell_resize_preserves_prefix_fills_growth_trims_in_order_and_refuses_atomical
     let before = cells.clone();
     let fill = CellRef::new("z", false, other_attributes);
     cells.resize(10, fill)?;
+    assert_eq!(cells.len(), 10);
     assert!(cells.range(0..8).eq(before.iter()));
     assert!(cells.range(8..10).all(|got| got == fill));
     cells.resize(3, fill)?;
+    assert_eq!(cells.len(), 3);
     for (i, kept) in [128, 17, 17].into_iter().enumerate() {
         assert_eq!(
             cells.get(i),
