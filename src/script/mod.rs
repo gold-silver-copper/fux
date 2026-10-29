@@ -679,28 +679,7 @@ impl From<fuxth::Error> for Failed {
 /// `error` as fux tells it, with how its word is used where it was given
 /// too few values, the wrong kind, or one out of its range.
 fn telling(error: fuxth::Error) -> Failed {
-    let usage = match error.code {
-        Lang::StackUnderflow | Lang::Type | Lang::Range => true,
-        Lang::Require
-        | Lang::OpenQuote
-        | Lang::UnknownWord
-        | Lang::MissingToken
-        | Lang::BadName
-        | Lang::NotTopLevel
-        | Lang::Unmatched
-        | Lang::Unclosed
-        | Lang::StackOverflow
-        | Lang::CallDepth
-        | Lang::DivByZero
-        | Lang::Overflow
-        | Lang::Unset
-        | Lang::Unused
-        | Lang::BadCodes
-        | Lang::Fail
-        | Lang::TooLong
-        | Lang::Contract
-        | Lang::Host(_) => false,
-    };
+    let usage = matches!(error.code, Lang::StackUnderflow | Lang::Type | Lang::Range);
     told(error, usage)
 }
 
