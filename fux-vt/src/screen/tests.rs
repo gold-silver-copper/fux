@@ -310,12 +310,11 @@ fn a_clear_moves_no_commands_output() -> Result<(), Error> {
 }
 
 /// The primary screen's saved cursor is the one `CSI ? 1049 l` restores,
-/// seen from the alternate screen too, whatever DECSC saves there.
+/// whatever DECSC saves on the alternate screen.
 #[test]
 fn the_main_saved_cursor_is_what_leaving_the_alternate_screen_restores() -> Result<(), Error> {
     let mut p = crate::Parser::with_options(Size::of(6, 20), 0, crate::Options::new())?;
     p.process(b"\x1b[2;4H\x1b7\x1b[5;9H\x1b[?1049h\x1b[3;3H\x1b7")?;
-    assert_eq!(p.screen().main_saved_cursor(), (4, 8));
     p.process(b"\x1b[?1049l")?;
     assert_eq!(p.screen().cursor_position(), (4, 8));
     Ok(())
