@@ -367,8 +367,12 @@ fn count(n: usize) -> i64 {
 }
 
 /// Checks `program`: the first step that surely fails, if one does.
-pub(crate) fn check<A>(program: &Program<A>, mut known: Known) -> Result<(), Error> {
-    definitions(program, &mut known);
+pub(crate) fn check<A>(
+    program: &Program<A>,
+    mut known: Known,
+    library: usize,
+) -> Result<(), Error> {
+    definitions(program, &mut known, library);
     let first = known.first.take();
     let main = Unit::new(program, &program.main, State::start(true), &known, None);
     if let Some(error) = earliest(first, main.first_error()) {
@@ -417,25 +421,40 @@ pub(crate) fn check<A>(program: &Program<A>, mut known: Known) -> Result<(), Err
 #[derive(Clone, Debug, Default)]
 pub(crate) struct Known {
     summaries: Vec<Option<Rc<Summary>>>,
+    checked: BTreeSet<usize>,
     first: Option<Error>,
 }
 
-/// Works out what each of `program`'s definitions does, from the first
-/// `known` doesn't know yet.
-pub(crate) fn definitions<A>(program: &Program<A>, known: &mut Known) {
-    let from = known.summaries.len();
+/// Checks every user definition and the library words reached from them
+/// or the top level. A reserved summary slot need not have been checked.
+pub(crate) fn definitions<A>(program: &Program<A>, known: &mut Known, library: usize) {
+    let mut pending: BTreeSet<_> = (library..program.words.len()).collect();
+    pending.extend(calls(&program.main));
+    let mut needed = BTreeSet::new();
+    while let Some(id) = pending.pop_first() {
+        if known.checked.contains(&id) || !needed.insert(id) {
+            continue;
+        }
+        if let Some(code) = program.words.get(id) {
+            pending.extend(calls(code));
+        }
+    }
+    if needed.is_empty() {
+        return;
+    }
     known.summaries.resize(program.words.len(), None);
     // A definition calling one written after it: the new ones are gone
     // over together until no summary changes, as a word calling itself is.
-    let forward = (program.words.iter().enumerate().skip(from)).any(|(id, code)| {
-        code.ops
+    let codes = || {
+        needed
             .iter()
-            .any(|op| matches!(op, Op::Call(c) if *c > id))
-    });
+            .filter_map(|id| program.words.get(*id).map(|code| (*id, &**code)))
+    };
+    let forward = codes().any(|(id, code)| calls(code).any(|c| c > id));
     let passes = if forward { RECURSION_ROUNDS } else { 0 };
     for pass in 0..=passes {
         let mut changed = false;
-        for (id, code) in program.words.iter().enumerate().skip(from) {
+        for (id, code) in codes() {
             let before = known.summaries.get(id).cloned().flatten();
             summarise(program, known, id, code);
             if forward
@@ -450,11 +469,19 @@ pub(crate) fn definitions<A>(program: &Program<A>, known: &mut Known) {
             break;
         }
     }
-    for (id, code) in program.words.iter().enumerate().skip(from) {
+    for (id, code) in codes() {
         let unit = Unit::new(program, code, State::start(false), known, Some(id));
         let error = unit.first_error();
         known.first = earliest(known.first.take(), error);
     }
+    known.checked.extend(needed);
+}
+
+fn calls<A>(code: &Steps<A>) -> impl Iterator<Item = usize> + '_ {
+    code.ops.iter().filter_map(|op| {
+        let Op::Call(id) = op else { return None };
+        Some(*id)
+    })
 }
 
 /// Definition `id`'s summary, gone over until it stays the same, from what
@@ -462,10 +489,7 @@ pub(crate) fn definitions<A>(program: &Program<A>, known: &mut Known) {
 fn summarise<A>(program: &Program<A>, known: &mut Known, id: usize, code: &Steps<A>) {
     // A call to this word or a later one can change as summaries grow.
     // Earlier words are already known: one pass has their complete input.
-    let recursive = code
-        .ops
-        .iter()
-        .any(|op| matches!(op, Op::Call(c) if *c >= id));
+    let recursive = calls(code).any(|c| c >= id);
     let rounds = if recursive { RECURSION_ROUNDS } else { 0 };
     for round in 0..=rounds {
         let unit = Unit::new(program, code, State::start(false), known, Some(id));
@@ -1030,4 +1054,43 @@ fn builtin_step(words: &Vocabulary, builtin: Builtin, state: &mut State) -> Resu
         Builtin::Char | Builtin::Kind | Builtin::String => state.push(STR),
     }
     Ok(Flow::Go)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn skipped_library_words_are_checked_when_later_reached() -> Result<(), Error> {
+        let mut compiler = crate::Compiler::<()>::new(Vocabulary::default());
+        compiler.library(
+            "library",
+            "# -- n : a forward call\ndefine first second end\n\
+             # -- n : an integer\ndefine second 1 2 add end\n\
+             # -- : a mistake\ndefine broken list drop end end",
+        )?;
+        let mut program = compiler.finish()?;
+        let library = program.words.len();
+        let mut known = Known::default();
+        definitions(&program, &mut known, library);
+        assert!(known.checked.is_empty());
+
+        program.main.ops.push(Op::Call(0));
+        definitions(&program, &mut known, library);
+        assert_eq!(known.checked, BTreeSet::from([0, 1]));
+        assert!(known.first.is_none());
+        program.main.ops.push(Op::Builtin(Builtin::Add));
+        assert_eq!(
+            check(&program, known.clone(), library).map_err(|e| e.code),
+            Err(Code::StackUnderflow)
+        );
+
+        program.main.ops.clear();
+        program.main.ops.push(Op::Call(2));
+        assert_eq!(
+            check(&program, known, library).map_err(|e| e.code),
+            Err(Code::StackUnderflow)
+        );
+        Ok(())
+    }
 }

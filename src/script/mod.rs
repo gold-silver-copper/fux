@@ -1859,6 +1859,37 @@ pub(crate) mod tests {
     use crate::session::testing::TestResult;
     impl std::error::Error for super::Failed {}
 
+    #[test]
+    fn bundled_libraries_and_unused_user_definitions_are_checked() -> TestResult {
+        let (ready, docs) = super::libraries()?;
+        let mut full = ready.clone();
+        for doc in docs.iter() {
+            let name = format!("check-{}", doc.name);
+            full.add(&fuxth::token::arguments(&[
+                "define", &name, &doc.name, "end",
+            ]))?;
+        }
+        full.finish()?;
+
+        for config in [false, true] {
+            let mut compiler = ready.clone();
+            compiler.add(&fuxth::token::source(
+                "unused",
+                "define unused list line end end",
+            )?)?;
+            if config {
+                compiler = compiler.definitions();
+            }
+            let error = compiler
+                .finish()
+                .err()
+                .ok_or("unchecked unused definition")?;
+            assert_eq!(error.code, fuxth::Code::StackUnderflow);
+            assert_eq!(error.word.as_deref(), Some("line"));
+        }
+        Ok(())
+    }
+
     pub(crate) fn evaluate(
         code: &str,
         state: Option<&mut super::Draft>,

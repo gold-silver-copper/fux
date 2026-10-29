@@ -293,14 +293,15 @@ struct Current<A> {
 /// Compiles programs: sources added in order, all into one, then finished.
 /// A library's definitions first, then a script, say. A compiler with a
 /// library in, [`prepare`](Compiler::prepare)d, can be cloned for each
-/// program: the library is compiled and checked once, and its definitions
-/// and what the checker knows of them are shared, not copied.
+/// program: its definitions and their checked summaries are shared, not
+/// copied. Library definitions are checked only when a program reaches them.
 #[derive(Clone)]
 pub struct Compiler<A> {
     vocabulary: Rc<Vocabulary>,
     names: HashMap<Rc<str>, Entry>,
     main: Steps<A>,
     words: Vec<Rc<Steps<A>>>,
+    library: usize,
     globals: usize,
     open: Vec<Open>,
     current: Option<Current<A>>,
@@ -374,6 +375,7 @@ impl<A: Clone> Compiler<A> {
             names,
             main: Steps::new(),
             words: Vec::new(),
+            library: 0,
             globals: 0,
             open: Vec::new(),
             current: None,
@@ -757,12 +759,14 @@ impl<A: Clone> Compiler<A> {
         });
         if docs.is_err() {
             *self = before;
+        } else {
+            self.library = self.words.len();
         }
         docs
     }
 
-    /// Checks the definitions compiled so far, once, so that clones of
-    /// this compiler don't check them again: call it after a library.
+    /// Checks user definitions and the library words they reach, once,
+    /// so that clones of this compiler don't check them again.
     pub fn prepare(&mut self) {
         if self.current.is_some() || !self.open.is_empty() {
             return;
@@ -774,7 +778,7 @@ impl<A: Clone> Compiler<A> {
             globals: self.globals,
             vocabulary: Rc::clone(&self.vocabulary),
         };
-        crate::check::definitions(&program, &mut self.known);
+        crate::check::definitions(&program, &mut self.known, self.library);
     }
 
     /// A compiler for a program of its own that sees these definitions:
@@ -830,7 +834,7 @@ impl<A: Clone> Compiler<A> {
             globals: self.globals,
             vocabulary: self.vocabulary,
         };
-        crate::check::check(&program, self.known)?;
+        crate::check::check(&program, self.known, self.library)?;
         Ok(program)
     }
 
