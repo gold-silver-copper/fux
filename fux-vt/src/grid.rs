@@ -1166,10 +1166,10 @@ impl Grid {
         }
     }
 
-    /// ED (`display`) or EL of `part` from the cursor, ending a pending
-    /// wrap. `erase` erases each span and returns whether a whole line may
-    /// become single width. Whole rows ED erases lose their prompt marks;
-    /// EL and the cursor's row keep them (a shell redrawing its prompt).
+    /// ED (`display`) or EL of `part`, ending a pending wrap. `erase` erases
+    /// each span and returns whether a whole line may become single width.
+    /// Whole rows ED erases lose their prompt marks, as in Ghostty; EL and
+    /// the cursor's row keep them (a shell redrawing its prompt).
     #[inline]
     pub fn erase_in(
         &mut self,

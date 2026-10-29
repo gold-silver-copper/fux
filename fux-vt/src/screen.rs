@@ -2619,7 +2619,7 @@ impl Screen {
         // glyph of.
         self.grid_mut()
             .erase_in(display, part, version, |g, y, start, end| {
-                if private {
+                let reset = if private {
                     g.erase_to_spaces(y, (start, end), None, version);
                     if end >= cols {
                         g.wrap(y, false, version);
@@ -2627,13 +2627,18 @@ impl Screen {
                     false
                 } else {
                     g.erase_unprotected(y, start, end, blank, version);
-                    let styles = g.styles();
-                    let spared = || {
+                    !(display && g.rendition(y).is_double() && {
                         spend!(cells, cols);
+                        let styles = g.styles();
                         g.live_cells(y).iter().any(|c| styles.guarded(c.style()))
-                    };
-                    !(display && g.rendition(y).is_double() && spared())
+                    })
+                };
+                let whole = display && start == 0 && end >= g.row_end(y);
+                if !reset && whole && g.rendition(y).is_double() {
+                    // A kept doubled line still loses its tail style and wrap.
+                    g.erase(y, g.row_end(y), cols, 0, version);
                 }
+                reset
             });
     }
 
