@@ -438,16 +438,16 @@ pub fn usage(word: &str) -> Option<String> {
         },
     };
     let (takes, leaves) = effect.split_once("--").unwrap_or((effect, ""));
-    // What a request's word goes on: the pane, opts, or either, as the
-    // words that take it do.
+    // What an option's word goes on: the pane, opts, or either, as the
+    // words that take it do. Any other word's `x` is any value.
     let takes = takes.trim().to_uppercase();
-    let request = takes
-        .strip_prefix("PANE-BUILDER")
-        .or_else(|| takes.strip_prefix('X'));
-    let takers = match fuxs {
-        Some(Word::Opt(opt)) => opt.takers(),
-        Some(Word::Act(_) | Word::Screen(_) | Word::Keys(_)) | None => Vec::new(),
+    let (option, takers) = match fuxs {
+        Some(Word::Opt(opt)) => (true, opt.takers()),
+        Some(Word::Act(_) | Word::Screen(_) | Word::Keys(_)) | None => (false, Vec::new()),
     };
+    let request = (takes.strip_prefix("PANE-BUILDER"))
+        .or_else(|| takes.strip_prefix('X'))
+        .filter(|_| option);
     // A word whose options go on either counts for both.
     let has = |after| {
         let on = |t: &Takes| t.after == after || t.after == After::Either;
@@ -464,7 +464,9 @@ pub fn usage(word: &str) -> Option<String> {
     };
     let leaves = match leaves.trim() {
         "" => String::new(),
-        "x" | "pane-builder" => format!(", which leaves {left} for the word that acts"),
+        "x" | "pane-builder" if option => {
+            format!(", which leaves {left} for the word that acts")
+        }
         leaves => format!(", which leaves {leaves}"),
     };
     let example = fuxs.map_or_else(String::new, |w| format!("; e.g. {}", w.row().example));
@@ -2654,6 +2656,17 @@ mod tests {
         named.sort_unstable();
         all.sort_unstable();
         assert_eq!(named, all);
+    }
+
+    #[test]
+    fn only_an_option_word_goes_on_a_request() {
+        let pad = usage("pad");
+        assert_eq!(
+            pad.as_deref(),
+            Some("use: X WIDTH FILL pad, which leaves s")
+        );
+        let name = usage("name").unwrap_or_default();
+        assert!(name.starts_with("use: PANE-OR-OPTS NAME name"), "{name}");
     }
 
     #[test]
