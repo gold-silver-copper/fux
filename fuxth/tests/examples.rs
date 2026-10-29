@@ -2,46 +2,9 @@
 //! it leaves (`# expect: …`), the error it fails with as it runs
 //! (`# fails: CODE`), or the error that refuses it before it runs
 //! (`# refused: CODE at LINE`).
-use fuxth::{
-    AppValue, Args, Compiler, Done, Error, Failure, Host, Limits, Machine, Outcome, Place, STDLIB,
-    Value, Vocabulary, token,
-};
-
-#[derive(Clone, Debug, PartialEq)]
-struct Nothing;
-
-impl AppValue for Nothing {
-    fn kind(&self) -> &'static str {
-        "nothing"
-    }
-}
-
-/// A host with no words.
-#[derive(Default)]
-struct Bare {
-    printed: Vec<String>,
-}
-
-impl Host for Bare {
-    type Value = Nothing;
-    type Request = ();
-    fn call(
-        &mut self,
-        _word: usize,
-        _args: Args<'_, Nothing>,
-        _out: &mut Vec<Value<Nothing>>,
-    ) -> Result<Done<()>, Failure> {
-        Err(Failure::new(
-            fuxth::Code::Host("no_words"),
-            "this host has no words",
-        ))
-    }
-
-    fn print(&mut self, line: &str) -> Result<(), Failure> {
-        self.printed.push(line.to_owned());
-        Ok(())
-    }
-}
+mod common;
+use common::Toy;
+use fuxth::{Compiler, Error, Limits, Machine, Outcome, Place, STDLIB, Vocabulary, token};
 
 /// How a program ended.
 #[derive(Debug, PartialEq)]
@@ -49,16 +12,6 @@ enum Ended {
     Left(String),
     Failed(String),
     Refused(String, u32),
-}
-
-fn shown(value: &Value<Nothing>) -> String {
-    match value {
-        Value::Int(n) => n.to_string(),
-        Value::Bool(b) => b.to_string(),
-        Value::Str(_) | Value::List(_) | Value::App(_) => {
-            value.text().unwrap_or_else(|f| f.message)
-        }
-    }
 }
 
 fn run(name: &str, text: &str) -> Ended {
@@ -80,15 +33,20 @@ fn run(name: &str, text: &str) -> Ended {
         Err(e) => return refused(e),
     };
     let mut machine = Machine::new(program, Limits::default());
-    let mut host = Bare::default();
+    let mut host = Toy::default();
     match machine.run(&mut host, 50_000_000) {
         Ok(Outcome::Finished) => {
             let left: Vec<String> = (host.printed.iter().cloned())
-                .chain(machine.stack().iter().map(shown))
+                .chain(
+                    machine
+                        .stack()
+                        .iter()
+                        .map(|v| v.text().unwrap_or_else(|f| f.message)),
+                )
                 .collect();
             Ended::Left(left.join(" "))
         }
-        Ok(Outcome::Paused | Outcome::Suspended(())) => Ended::Failed("steps".to_owned()),
+        Ok(Outcome::Paused | Outcome::Suspended(_)) => Ended::Failed("steps".to_owned()),
         Err(e) => Ended::Failed(e.code.name().to_owned()),
     }
 }
@@ -118,22 +76,13 @@ fn every_example_ends_as_its_header_says() -> std::io::Result<()> {
         .collect();
     names.sort();
     assert!(names.len() >= 20, "{} examples", names.len());
-    let mut wrong = Vec::new();
     for path in &names {
         let text = std::fs::read_to_string(path)?;
         let name = path
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_default();
-        let Some(expected) = expected(&text) else {
-            wrong.push(format!("{name}: no expect, fails or refused line"));
-            continue;
-        };
-        let ended = run(&name, &text);
-        if ended != expected {
-            wrong.push(format!("{name}: expected {expected:?}, got {ended:?}"));
-        }
+        assert_eq!(Some(run(&name, &text)), expected(&text), "{name}");
     }
-    assert!(wrong.is_empty(), "\n{}", wrong.join("\n"));
     Ok(())
 }

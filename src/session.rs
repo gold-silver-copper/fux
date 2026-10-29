@@ -3618,6 +3618,8 @@ impl crate::script::Asks for InProcess<'_> {
 /// and a command line run in it.
 #[cfg(test)]
 pub(crate) mod testing {
+    pub(crate) type TestResult = Result<(), Box<dyn std::error::Error>>;
+
     use super::{InProcess, Reply, Session};
     use crate::command::{self, Command, Request};
     use crate::id::ClientId;
@@ -4093,6 +4095,7 @@ fn bytes(p: &Pane, inputs: &[Input]) -> Vec<u8> {
 
 #[cfg(test)]
 mod tests {
+    use crate::session::testing::TestResult;
     /// `rows` by `cols`.
     fn sized(rows: u16, cols: u16) -> Result<fux_vt::Size, String> {
         fux_vt::Size::new(rows, cols).map_err(|e| e.to_string())
@@ -4102,8 +4105,16 @@ mod tests {
     use super::*;
     use crate::pane::Left;
 
+    fn reap(s: &mut Session) {
+        for dying in std::mem::take(&mut s.dying) {
+            if let Some(pid) = dying.kill() {
+                process::reaped(pid);
+            }
+        }
+    }
+
     #[test]
-    fn plain_listings_report_a_lost_exit_status() -> Result<(), String> {
+    fn plain_listings_report_a_lost_exit_status() -> TestResult {
         let (mut s, _) = attached(12, 50)?;
         run(
             &mut s,
@@ -4118,36 +4129,7 @@ mod tests {
     }
 
     #[test]
-    fn recipe_wire_bytes_do_not_spend_entity_nodes() -> Result<(), String> {
-        use crate::inspect::{Projection, Scope};
-        let (s, _) = attached(12, 50)?;
-        let Body::Snapshot(mut snapshot) = s
-            .inspect(Scope::All, Projection::Recipe)
-            .map_err(|e| e.to_string())?
-        else {
-            return Err("snapshot".into());
-        };
-        let recipe = snapshot
-            .panes
-            .first_mut()
-            .and_then(|p| p.recipe.as_mut())
-            .ok_or("recipe")?;
-        let raw = vec![255; 70_000];
-        recipe
-            .env
-            .push(("RAW".into(), Some(crate::inspect::Path::Bytes(raw))));
-        let bytes = crate::wire::encode(&*snapshot).map_err(|e| e.to_string())?;
-        assert_eq!(
-            crate::wire::Reader::new(&bytes)
-                .whole::<crate::inspect::Snapshot>()
-                .map_err(|e| e.to_string())?,
-            *snapshot
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn held_fields_survive_the_source_pane_closing() -> Result<(), String> {
+    fn held_fields_survive_the_source_pane_closing() -> TestResult {
         let (mut s, _) = attached(12, 50)?;
         assert_eq!(
             output(
@@ -4171,8 +4153,7 @@ mod tests {
     }
 
     #[test]
-    fn scoped_topology_keeps_full_membership_and_the_shared_layout_revision() -> Result<(), String>
-    {
+    fn scoped_topology_keeps_full_membership_and_the_shared_layout_revision() -> TestResult {
         use crate::inspect::{Projection, Scope};
         let (mut s, _) = attached(12, 80)?;
         run(
@@ -4183,13 +4164,10 @@ mod tests {
             Scope::Target(AnyRef::Tab("@2".parse().map_err(|_| "tab")?)),
             Scope::Target(AnyRef::Pane(PaneId::of(2))),
         ] {
-            let Body::Snapshot(snapshot) = s
-                .inspect(scope, Projection::Topology)
-                .map_err(|e| e.to_string())?
-            else {
+            let Body::Snapshot(snapshot) = s.inspect(scope, Projection::Topology)? else {
                 return Err("snapshot".into());
             };
-            snapshot.validate().map_err(|e| e.to_string())?;
+            snapshot.validate()?;
             let ws = snapshot.workspaces.first().ok_or("workspace")?;
             assert_eq!(ws.tabs.len(), 3);
             assert_eq!(snapshot.tabs.len(), 1);
@@ -4206,8 +4184,7 @@ mod tests {
             let held = crate::script::answered(Reply {
                 run: Some(s.run),
                 ..Body::Snapshot(snapshot).into()
-            })
-            .map_err(|e| e.to_string())?;
+            })?;
             assert!(!held.is_empty());
         }
         let before = s
@@ -4232,7 +4209,7 @@ mod tests {
     }
 
     #[test]
-    fn snapshot_is_one_turn_and_local_fields_keep_their_typed_run() -> Result<(), String> {
+    fn snapshot_is_one_turn_and_local_fields_keep_their_typed_run() -> TestResult {
         let (mut s, _) = attached(12, 50)?;
         struct Once(Option<Reply>);
         impl crate::script::Asks for Once {
@@ -4249,23 +4226,20 @@ mod tests {
                     .ok_or_else(|| crate::script::Failed::new(Code::Usage, "a second roundtrip"))
             }
         }
-        let body = s
-            .inspect(
-                crate::inspect::Scope::All,
-                crate::inspect::Projection::Topology,
-            )
-            .map_err(|e| e.to_string())?;
+        let body = s.inspect(
+            crate::inspect::Scope::All,
+            crate::inspect::Projection::Topology,
+        )?;
         let mut once = Once(Some(Reply {
             run: Some(s.run),
             ..body.into()
         }));
-        let tokens = fuxth::token::source("test", "all str topology snapshot let held held str panes get first str id get held str panes get first str name get kind").map_err(|e| e.to_string())?;
-        let mut machine = crate::script::compile(&tokens).map_err(|e| e.to_string())?;
-        let mut out = Vec::new();
-        let mut host =
-            crate::script::Host::new(crate::protocol::Context::default(), None, &mut out);
-        let values = crate::script::run_capped(&mut machine, &mut host, &mut once, None, None)
-            .map_err(|e| e.to_string())?;
+        let values = crate::script::tests::evaluate(
+            "all str topology snapshot let held held str panes get first str id get held str panes get first str name get kind",
+            None,
+            &mut once,
+            &mut Vec::new(),
+        )?;
         assert!(once.0.is_none());
         assert!(
             matches!(values.first(), Some(fuxth::Value::App(crate::script::Fux::Pane(p, Some(run)))) if *p == PaneId::of(1) && *run == s.run)
@@ -4282,8 +4256,7 @@ mod tests {
     }
 
     #[test]
-    fn last_places_follow_each_clients_visits_not_order() -> Result<(), Box<dyn std::error::Error>>
-    {
+    fn last_places_follow_each_clients_visits_not_order() -> TestResult {
         let (mut s, c) = attached(10, 40)?;
         let d = s.attach(10, 40, None)?;
         run(
@@ -4342,19 +4315,17 @@ mod tests {
     }
 
     #[test]
-    fn snapshot_projections_keep_order_tree_fit_launch_and_cursor() -> Result<(), String> {
+    fn snapshot_projections_keep_order_tree_fit_launch_and_cursor() -> TestResult {
         use crate::inspect::{Projection, Scope};
         use crate::layout::Node;
         let (mut s, c) = attached(12, 50)?;
         run(&mut s, "%1 str horizontal axis 2 3 shares split drop")?;
         for projection in [Projection::Facts, Projection::Topology, Projection::Recipe] {
-            let Body::Snapshot(snapshot) = s
-                .inspect(Scope::Client(c), projection.clone())
-                .map_err(|e| e.to_string())?
+            let Body::Snapshot(mut snapshot) = s.inspect(Scope::Client(c), projection.clone())?
             else {
                 return Err("no snapshot".into());
             };
-            snapshot.validate().map_err(|e| e.to_string())?;
+            snapshot.validate()?;
             assert_eq!(snapshot.events, s.parts.journal().end(s.run));
             assert_eq!(
                 snapshot.panes.iter().map(|p| p.id).collect::<Vec<_>>(),
@@ -4377,11 +4348,15 @@ mod tests {
                     assert!(!recipe.argv.is_empty());
                 }
             }
-            let bytes = crate::wire::encode(&*snapshot).map_err(|e| e.to_string())?;
+            if let Some(recipe) = snapshot.panes.first_mut().and_then(|p| p.recipe.as_mut()) {
+                recipe.env.push((
+                    "RAW".into(),
+                    Some(crate::inspect::Path::Bytes(vec![255; 70_000])),
+                ));
+            }
+            let bytes = crate::wire::encode(&*snapshot)?;
             assert_eq!(
-                crate::wire::Reader::new(&bytes)
-                    .whole::<crate::inspect::Snapshot>()
-                    .map_err(|e| e.to_string())?,
+                crate::wire::Reader::new(&bytes).whole::<crate::inspect::Snapshot>()?,
                 *snapshot
             );
             let mut malformed = *snapshot;
@@ -4390,7 +4365,7 @@ mod tests {
             {
                 *first = u32::MAX;
             }
-            let bytes = crate::wire::encode(&malformed).map_err(|e| e.to_string())?;
+            let bytes = crate::wire::encode(&malformed)?;
             assert!(
                 crate::wire::Reader::new(&bytes)
                     .whole::<crate::inspect::Snapshot>()
@@ -4401,8 +4376,7 @@ mod tests {
     }
 
     #[test]
-    fn last_places_forget_closed_targets_and_detached_clients()
-    -> Result<(), Box<dyn std::error::Error>> {
+    fn last_places_forget_closed_targets_and_detached_clients() -> TestResult {
         let (mut s, c) = attached(10, 40)?;
         output_as(&mut s, Some(c), "opts str / cwd +1 in new-tab drop")?;
         run(&mut s, "@1 kill")?;
@@ -4428,8 +4402,7 @@ mod tests {
     }
 
     #[test]
-    fn capability_facts_distinguish_reports_from_output_and_follow_one_host()
-    -> Result<(), Box<dyn std::error::Error>> {
+    fn capability_facts_distinguish_reports_from_output_and_follow_one_host() -> TestResult {
         fn facts(s: &Session, id: ClientId) -> Result<Json, Box<dyn std::error::Error>> {
             let Body::Snapshot(snapshot) = s.inspect(
                 crate::inspect::Scope::Client(id),
@@ -4573,7 +4546,7 @@ mod tests {
     }
 
     #[test]
-    fn arrange_refuses_invalid_or_stale_proposals_without_a_commit() -> Result<(), String> {
+    fn arrange_refuses_invalid_or_stale_proposals_without_a_commit() -> TestResult {
         let (mut s, client) = attached(24, 80)?;
         run(
             &mut s,
@@ -4717,7 +4690,7 @@ mod tests {
     }
 
     #[test]
-    fn arrange_accepts_the_split_answer_as_a_pane() -> Result<(), String> {
+    fn arrange_accepts_the_split_answer_as_a_pane() -> TestResult {
         let mut s = started()?;
         run(
             &mut s,
@@ -4731,8 +4704,7 @@ mod tests {
     }
 
     #[test]
-    fn arrange_checks_background_and_all_sizing_views_but_excludes_watchers() -> Result<(), String>
-    {
+    fn arrange_checks_background_and_all_sizing_views_but_excludes_watchers() -> TestResult {
         let mut s = started()?;
         run(
             &mut s,
@@ -4753,19 +4725,19 @@ mod tests {
         );
         assert_eq!(s.parts.journal().end(s.run), cursor);
         run(&mut s, "@1 80 40 resize")?;
-        let client = s.attach(40, 7, None).map_err(|e| e.to_string())?;
+        let client = s.attach(40, 7, None)?;
         watch(&mut s, 3, 3)?;
         let refused = run(&mut s, propose)
             .err()
             .ok_or("small sizing client accepted")?;
         assert!(refused.contains(&format!("{client}'s screen")), "{refused}");
-        s.size_client(client, 40, 80).map_err(|e| e.to_string())?;
+        s.size_client(client, 40, 80)?;
         run(&mut s, propose)?;
         Ok(())
     }
 
     #[test]
-    fn layout_presets_keep_membership_and_their_stated_shares() -> Result<(), String> {
+    fn layout_presets_keep_membership_and_their_stated_shares() -> TestResult {
         let mut s = started()?;
         run(
             &mut s,
@@ -4845,7 +4817,7 @@ mod tests {
     }
 
     #[test]
-    fn layout_presets_submit_one_observations_revision_without_retry() -> Result<(), String> {
+    fn layout_presets_submit_one_observations_revision_without_retry() -> TestResult {
         struct Guarded<'s> {
             session: &'s mut Session,
             reads: usize,
@@ -4891,9 +4863,8 @@ mod tests {
                 let mut s = started()?;
                 run(&mut s, "%1 str horizontal axis split drop")?;
                 let before = s.root(TabId::of(1)).cloned();
-                let tokens = fuxth::token::source("preset", &format!("@1 {recipe}"))
-                    .map_err(|e| e.to_string())?;
-                let mut machine = crate::script::compile(&tokens).map_err(|e| e.to_string())?;
+                let tokens = fuxth::token::source("preset", &format!("@1 {recipe}"))?;
+                let mut machine = crate::script::compile(&tokens)?;
                 let mut out = Vec::new();
                 let mut host =
                     crate::script::Host::new(crate::protocol::Context::default(), None, &mut out);
@@ -4910,7 +4881,7 @@ mod tests {
                     assert!(result.is_err_and(|e| e.code == Code::from(Raise::Stale)));
                     assert_eq!(s.root(TabId::of(1)), before.as_ref());
                 } else {
-                    assert!(result.map_err(|e| e.to_string())?.is_empty());
+                    assert!(result?.is_empty());
                 }
             }
         }
@@ -4918,7 +4889,7 @@ mod tests {
     }
 
     #[test]
-    fn retained_launches_refuse_their_resource_limit() -> Result<(), String> {
+    fn retained_launches_refuse_their_resource_limit() -> TestResult {
         let mut s = started()?;
         let mut env = command::EnvPatch::default();
         env.push(
@@ -4955,7 +4926,7 @@ mod tests {
     }
 
     #[test]
-    fn library_dump_refuses_source_expansion_before_emitting() -> Result<(), String> {
+    fn library_dump_refuses_source_expansion_before_emitting() -> TestResult {
         let mut s = started()?;
         let mut env = command::EnvPatch::default();
         env.push(
@@ -4976,15 +4947,13 @@ mod tests {
             argv: command::Program::new("/bin/cat".into(), Vec::new())?,
         };
         for _ in 0..3 {
-            s.execute(&command, &Origin::Cli(Caller::default()), Instant::now())
-                .map_err(|e| e.to_string())?;
+            s.execute(&command, &Origin::Cli(Caller::default()), Instant::now())?;
         }
         // This admits the recipe first, independently of the source expansion.
         s.inspect(
             crate::inspect::Scope::All,
             crate::inspect::Projection::Recipe,
-        )
-        .map_err(|e| e.to_string())?;
+        )?;
         let error = s
             .dump_recipe(None)
             .err()
@@ -4995,7 +4964,7 @@ mod tests {
     }
 
     #[test]
-    fn attach_targets_choose_the_exact_place_without_reusing_another_seat() -> Result<(), String> {
+    fn attach_targets_choose_the_exact_place_without_reusing_another_seat() -> TestResult {
         use command::AttachTarget as T;
         let (mut s, incumbent) = attached(24, 80)?;
         run(
@@ -5003,25 +4972,20 @@ mod tests {
             "%1 str horizontal axis split drop opts str second name 80 24 size new-workspace drop",
         )?;
         run(&mut s, "str c1 client %2 show")?;
-        let presentation = crate::script::default_state()
-            .map_err(|e| e.to_string())?
-            .preferences
-            .presentation();
+        let presentation = crate::script::default_state()?.preferences.presentation();
         for (target, pane) in [
             (T::Tab(TabId::of(1)), PaneId::of(1)),
             (T::Pane(PaneId::of(2)), PaneId::of(2)),
             (T::Workspace(WsRef::Name("second".into())), PaneId::of(3)),
         ] {
-            let client = s
-                .attach_client(
-                    ClientKind::Headless,
-                    Attach {
-                        of: Some(s.run),
-                        target: Some(target),
-                        ..Attach::of(sized(24, 80)?, presentation.clone())
-                    },
-                )
-                .map_err(|e| e.to_string())?;
+            let client = s.attach_client(
+                ClientKind::Headless,
+                Attach {
+                    of: Some(s.run),
+                    target: Some(target),
+                    ..Attach::of(sized(24, 80)?, presentation.clone())
+                },
+            )?;
             assert_eq!(s.focused(client), Some(pane));
             s.detach_client(client);
         }
@@ -5054,22 +5018,16 @@ mod tests {
     }
 
     #[test]
-    fn failed_attach_does_not_consume_a_client_id() -> Result<(), String> {
+    fn failed_attach_does_not_consume_a_client_id() -> TestResult {
         let mut s = Session::new(
             "/nonexistent/fux.sock".into(),
             false,
             command::Run::now().ok_or("clock")?,
         );
         let size = sized(24, 80)?;
-        let presentation = crate::script::default_state()
-            .map_err(|e| e.to_string())?
-            .preferences
-            .presentation();
+        let presentation = crate::script::default_state()?.preferences.presentation();
         let initial = command::InitialWorkspace {
-            options: crate::script::default_state()
-                .map_err(|e| e.to_string())?
-                .preferences
-                .pane_options(),
+            options: crate::script::default_state()?.preferences.pane_options(),
             name: None,
             start: command::Start::Shell(command::Program::new("/bin/sh".into(), Vec::new())?),
             cwd: "relative".into(),
@@ -5101,13 +5059,13 @@ mod tests {
             assert_eq!(s.ids, ids);
             assert!(s.views.is_empty() && s.parts.panes().is_empty());
         }
-        let client = s.attach(24, 80, None).map_err(|e| e.to_string())?;
+        let client = s.attach(24, 80, None)?;
         assert_eq!(client, ClientId::of(1));
         Ok(())
     }
 
     #[test]
-    fn an_unknown_nearby_directory_refuses_creation() -> Result<(), String> {
+    fn an_unknown_nearby_directory_refuses_creation() -> TestResult {
         let (mut s, client) = attached(24, 80)?;
         let before = s.parts.panes().len();
         let failure = output_as(&mut s, Some(client), "%1 str horizontal axis split")
@@ -5128,7 +5086,7 @@ mod tests {
     }
 
     #[test]
-    fn an_unknown_fux_path_is_not_taken_from_the_starter() -> Result<(), String> {
+    fn an_unknown_fux_path_is_not_taken_from_the_starter() -> TestResult {
         let mut s = started()?;
         s.launch = Some("/nonexistent/fux.sock".into());
         s.exe = None;
@@ -5141,8 +5099,7 @@ mod tests {
             env: command::EnvPatch::default(),
         };
         let child = s
-            .spawn(PaneId::of(2), 0, &launch, (sized(24, 80)?, None))
-            .map_err(|e| e.to_string())?
+            .spawn(PaneId::of(2), 0, &launch, (sized(24, 80)?, None))?
             .ok_or("a child")?;
         let deadline = Instant::now() + Duration::from_secs(3);
         let mut status = None;
@@ -5159,12 +5116,12 @@ mod tests {
     }
 
     #[test]
-    fn callerless_resize_uses_the_smallest_screen_in_either_attach_order() -> Result<(), String> {
+    fn callerless_resize_uses_the_smallest_screen_in_either_attach_order() -> TestResult {
         for sizes in [[(20, 100), (30, 60)], [(30, 60), (20, 100)]] {
             let mut s = started()?;
             watch(&mut s, 3, 5)?;
             for (rows, cols) in sizes {
-                s.attach(rows, cols, None).map_err(|e| e.to_string())?;
+                s.attach(rows, cols, None)?;
             }
             run(
                 &mut s,
@@ -5178,10 +5135,8 @@ mod tests {
         Ok(())
     }
 
-    /// A watcher's paste is told it only watches, as its client tells it:
-    /// the test's input is the client's (`Screen::input`).
     #[test]
-    fn a_watchers_paste_is_told_it_only_watches() -> Result<(), String> {
+    fn a_watchers_paste_is_told_it_only_watches() -> TestResult {
         let mut s = started()?;
         let c = watch(&mut s, 24, 80)?;
         s.input(c, b"\x1b[200~hi\x1b[201~");
@@ -5194,37 +5149,34 @@ mod tests {
         Ok(())
     }
 
-    /// A client that attaches only to watch sizes nothing from its first
-    /// moment: its screen, too narrow to split, is not the tab's size.
     #[test]
-    fn a_watcher_sizes_nothing_as_it_attaches() -> Result<(), String> {
-        let mut s = started()?;
-        watch(&mut s, 10, 3)?;
-        let pane = s.parts.panes().get(&PaneId::of(1)).map(Pane::size);
-        assert_eq!(pane, Some(sized(24, 80)?));
-        run(&mut s, "%1 str horizontal axis split drop")
-    }
-
-    /// A tab only a watcher shows is laid out on its own size: a resize
-    /// and a split are applied to its panes.
-    #[test]
-    fn a_tab_only_watched_is_laid_out_on_its_size() -> Result<(), String> {
-        let mut s = started()?;
-        watch(&mut s, 30, 120)?;
-        run(&mut s, "str @1 tab 100 10 resize")?;
-        let size = |s: &Session, id| s.parts.panes().get(&PaneId::of(id)).map(Pane::size);
-        assert_eq!(size(&s, 1), Some(sized(10, 100)?));
-        run(&mut s, "%1 str horizontal axis split drop")?;
-        assert_eq!(size(&s, 1), Some(sized(10, 50)?));
+    fn watchers_leave_tab_sizing_to_its_own_fit() -> TestResult {
+        for (rows, cols, resize) in [(10, 3, false), (30, 120, true)] {
+            let mut s = started()?;
+            watch(&mut s, rows, cols)?;
+            assert_eq!(s.pane(PaneId::of(1))?.size(), sized(24, 80)?);
+            if resize {
+                run(&mut s, "@1 100 10 resize")?;
+                assert_eq!(s.pane(PaneId::of(1))?.size(), sized(10, 100)?);
+            }
+            run(&mut s, "%1 str horizontal axis split drop")?;
+            assert_eq!(
+                s.pane(PaneId::of(1))?.size(),
+                if resize {
+                    sized(10, 50)?
+                } else {
+                    sized(24, 40)?
+                }
+            );
+        }
         Ok(())
     }
 
     #[test]
-    fn buffer_reads_keep_every_byte() -> Result<(), String> {
+    fn buffer_reads_keep_every_byte() -> TestResult {
         let mut s = started()?;
         for text in ["hello\n\n", "", "\n", "a\r\n\0界\n"] {
-            s.copied(text.into(), None, &[])
-                .map_err(|e| e.to_string())?;
+            s.copied(text.into(), None, &[])?;
             assert_eq!(
                 output(&mut s, "newest buffer len")?,
                 format!("{}\n", text.chars().count())
@@ -5235,10 +5187,9 @@ mod tests {
     }
 
     #[test]
-    fn buffer_ids_survive_copies_and_refuse_after_eviction() -> Result<(), String> {
+    fn buffer_ids_survive_copies_and_refuse_after_eviction() -> TestResult {
         let mut s = started()?;
-        s.copied("chosen\n\n".into(), None, &[])
-            .map_err(|e| e.to_string())?;
+        s.copied("chosen\n\n".into(), None, &[])?;
         let id = s.buffers.front().ok_or("no copy")?.0;
         // An unsolicited program copy also shifts the ring.
         s.out(PaneId::of(1), b"\x1b]52;c;bmV3\x07");
@@ -5253,8 +5204,7 @@ mod tests {
             b"chosen\r\r"
         );
         for _ in 0..16 {
-            s.copied("later".into(), None, &[])
-                .map_err(|e| e.to_string())?;
+            s.copied("later".into(), None, &[])?;
         }
         assert_eq!(s.buffers.len(), 16);
         for code in [
@@ -5274,16 +5224,13 @@ mod tests {
     }
 
     #[test]
-    fn buffer_ids_belong_to_one_server_run() -> Result<(), String> {
+    fn buffer_ids_belong_to_one_server_run() -> TestResult {
         let mut s = started()?;
-        s.copied("old".into(), None, &[])
-            .map_err(|e| e.to_string())?;
+        s.copied("old".into(), None, &[])?;
         let id = s.buffers.front().ok_or("no copy")?.0;
         let mut other = started()?;
         other.run = "0-0".parse().map_err(|()| "a run")?;
-        other
-            .copied("new".into(), None, &[])
-            .map_err(|e| e.to_string())?;
+        other.copied("new".into(), None, &[])?;
         for code in [
             format!("str {id} buffer"),
             format!("%1 str {id} paste-buffer"),
@@ -5297,11 +5244,10 @@ mod tests {
     }
 
     #[test]
-    fn buffer_metadata_is_bounded_and_has_the_exact_length() -> Result<(), String> {
+    fn buffer_metadata_is_bounded_and_has_the_exact_length() -> TestResult {
         let mut s = started()?;
         let text = std::iter::repeat_n("界\n", 100).collect::<String>();
-        s.copied(text.clone(), None, &[])
-            .map_err(|e| e.to_string())?;
+        s.copied(text.clone(), None, &[])?;
         let id = s.buffers.front().ok_or("no copy")?.0;
         let expected = Json::Array(vec![Json::object(vec![
             ("id", Json::str(id.to_string())),
@@ -5319,10 +5265,9 @@ mod tests {
     }
 
     #[test]
-    fn buffer_id_exhaustion_copies_nothing() -> Result<(), String> {
+    fn buffer_id_exhaustion_copies_nothing() -> TestResult {
         let (mut s, c) = attached(24, 80)?;
-        s.copied("kept".into(), None, &[])
-            .map_err(|e| e.to_string())?;
+        s.copied("kept".into(), None, &[])?;
         let before = s.buffers.clone();
         s.outbox.clear();
         s.ids.exhaust_buffers();
@@ -5336,7 +5281,7 @@ mod tests {
     }
 
     #[test]
-    fn buffer_paste_keeps_its_native_size_and_atomic_admission() -> Result<(), String> {
+    fn buffer_paste_keeps_its_native_size_and_atomic_admission() -> TestResult {
         let mut s = started()?;
         // Larger than script input, but still admitted as one native paste.
         s.out(PaneId::of(1), b"\x1b[?2004h");
@@ -5344,8 +5289,7 @@ mod tests {
             "{}\n\n",
             std::iter::repeat_n('x', crate::pane::INPUT_BYTES - 14).collect::<String>()
         );
-        s.copied(text.clone(), None, &[])
-            .map_err(|e| e.to_string())?;
+        s.copied(text.clone(), None, &[])?;
         run(&mut s, "%1 newest paste-buffer drop")?;
         let queued = s
             .parts
@@ -5356,8 +5300,7 @@ mod tests {
         assert_eq!(queued.len(), crate::pane::INPUT_BYTES);
         assert!(queued == expected.as_bytes(), "the whole encoded paste");
         let mut pane = s.parts.pane_mut(PaneId::of(1)).ok_or("no pane")?;
-        pane.push(vec![b'y'; crate::pane::INPUT_BYTES - 1])
-            .map_err(|e| e.to_string())?;
+        pane.push(vec![b'y'; crate::pane::INPUT_BYTES - 1])?;
         assert!(run(&mut s, "%1 newest paste-buffer").is_err_and(|e| e.starts_with("input_full:")));
         let queued = s
             .parts
@@ -5372,23 +5315,19 @@ mod tests {
         Ok(())
     }
 
-    /// A paste into a pane whose program exited is refused, as keys are.
     #[test]
-    fn a_paste_into_an_exited_pane_is_refused() -> Result<(), String> {
+    fn a_paste_into_an_exited_pane_is_refused() -> TestResult {
         let mut s = started()?;
         run(&mut s, "agent-opts 80 24 size str /bin/cat program run")?;
         s.end_program(PaneId::of(2), crate::process::Ended::Exited(3));
-        s.copied("x".into(), None, &[]).map_err(|e| e.to_string())?;
+        s.copied("x".into(), None, &[])?;
         let pasted = run(&mut s, "%2 newest paste-buffer");
         assert!(pasted.is_err_and(|e| e.contains("exited")), "refused");
         Ok(())
     }
 
-    /// A pane whose program ended asks its client's terminal for no mouse
-    /// or focus reports, which nothing would read: a click or a focus
-    /// change is not refused, while a key still is.
     #[test]
-    fn an_ended_pane_asks_for_no_reports_and_refuses_keys() -> Result<(), String> {
+    fn an_ended_pane_asks_for_no_reports_and_refuses_keys() -> TestResult {
         let (mut s, c) = attached(24, 80)?;
         run(&mut s, "agent-opts 80 23 size str /bin/cat program run")?;
         run(&mut s, &format!("str {c} client str +2 workspace show"))?;
@@ -5410,19 +5349,12 @@ mod tests {
         assert_eq!(notice(&mut s, b"\x1b[I").map(|n| n.text), None);
         let key = notice(&mut s, b"x").map(|n| n.text).unwrap_or_default();
         assert!(key.contains("was killed by SIGKILL"), "{key}");
-        for dying in std::mem::take(&mut s.dying) {
-            if let Some(pid) = dying.kill() {
-                process::reaped(pid);
-            }
-        }
+        reap(&mut s);
         Ok(())
     }
 
-    /// A program respawned over (`kill-first`) has what it wrote read
-    /// first, a frame it held too, and an exit waiting on that told before
-    /// the respawn: none of it is lost with the old screen.
     #[test]
-    fn a_respawn_reads_what_the_old_program_left() -> Result<(), String> {
+    fn a_respawn_reads_what_the_old_program_left() -> TestResult {
         let mut s = started()?;
         run(&mut s, "agent-opts 80 24 size str /bin/cat program run")?;
         let id = PaneId::of(2);
@@ -5443,21 +5375,18 @@ mod tests {
         Ok(())
     }
 
-    /// What a program left is read up to `LEFT_MAX`, and more past it is
-    /// said: a file of zeros holds more, one of nothing none.
     #[test]
-    fn what_is_left_past_the_most_read_is_said() -> Result<(), String> {
-        let zeros = std::fs::File::open("/dev/zero").map_err(|e| e.to_string())?;
+    fn what_is_left_past_the_most_read_is_said() -> TestResult {
+        let zeros = std::fs::File::open("/dev/zero")?;
         let (left, more) = left_on(&zeros);
         assert_eq!((left.len(), more), (LEFT_MAX, DrainEnd::Cut));
-        let null = std::fs::File::open("/dev/null").map_err(|e| e.to_string())?;
+        let null = std::fs::File::open("/dev/null")?;
         assert_eq!(left_on(&null), (Vec::new(), DrainEnd::Empty));
         Ok(())
     }
 
     #[test]
-    fn unexpected_terminal_read_errors_are_not_empty_output()
-    -> Result<(), Box<dyn std::error::Error>> {
+    fn unexpected_terminal_read_errors_are_not_empty_output() -> TestResult {
         let mut reads = [Ok(1), Err(fuxix::Errno::INTR), Err(fuxix::Errno::INVAL)].into_iter();
         let (left, end) = drain_terminal(|bytes| {
             if let Some(first) = bytes.first_mut() {
@@ -5494,7 +5423,7 @@ mod tests {
     }
 
     #[test]
-    fn a_final_read_failure_survives_the_exit_notice() -> Result<(), Box<dyn std::error::Error>> {
+    fn a_final_read_failure_survives_the_exit_notice() -> TestResult {
         for (explicit, last, live) in [
             (true, false, true),
             (false, false, true),
@@ -5573,7 +5502,7 @@ mod tests {
 
     #[cfg(feature = "checks")]
     #[test]
-    fn refused_client_capture_returns_an_error() -> Result<(), Box<dyn std::error::Error>> {
+    fn refused_client_capture_returns_an_error() -> TestResult {
         let (mut session, client) = attached(10, 40)?;
         fux_vt::refuse_next(1);
         let result = session.client(
@@ -5587,25 +5516,20 @@ mod tests {
         Ok(())
     }
 
-    /// A frame held as its pane is resized is read as every output is:
-    /// its copy copied and its bell rung, not left for a later read.
     #[test]
-    fn a_frame_a_resize_reads_is_read_whole() -> Result<(), String> {
+    fn a_frame_a_resize_reads_is_read_whole() -> TestResult {
         let (mut s, c) = attached(24, 80)?;
         let id = PaneId::of(1);
         s.out(id, b"\x1b[?2026h\x07\x1b]52;c;aGk=\x07");
         assert!(s.buffers.is_empty(), "held");
-        s.size_client(c, 30, 100).map_err(|e| e.to_string())?;
+        s.size_client(c, 30, 100)?;
         assert_eq!(s.buffers.front().map(|(_, text)| text.as_str()), Some("hi"));
-        assert!(!s.pane(id).map_err(|e| e.to_string())?.bell, "rung");
+        assert!(!s.pane(id)?.bell, "rung");
         Ok(())
     }
 
-    /// A tab with a size of its own is laid out on it again once no client
-    /// sizes it, though the one that did still shows it: grown one row
-    /// high, it sizes nothing.
     #[test]
-    fn a_fixed_tab_no_client_sizes_is_laid_out_on_its_size() -> Result<(), String> {
+    fn a_fixed_tab_no_client_sizes_is_laid_out_on_its_size() -> TestResult {
         let (mut s, c) = attached(24, 80)?;
         run(&mut s, "opts 40 12 size str +1 workspace in new-tab drop")?;
         run(&mut s, &format!("str {c} client str @2 tab show"))?;
@@ -5614,15 +5538,13 @@ mod tests {
                 .map(|p| (p.size().cols(), p.size().rows()))
         };
         assert_eq!(size(&s).ok(), Some((80, 23)), "sized by the client");
-        s.size_client(c, 1, 80).map_err(|e| e.to_string())?;
+        s.size_client(c, 1, 80)?;
         assert_eq!(size(&s).ok(), Some((40, 12)), "on its own size");
         Ok(())
     }
 
-    /// A screen smaller than its tab names in its bar the panes it cuts
-    /// off and those it has no room for.
     #[test]
-    fn a_small_screen_names_the_panes_it_cuts_and_hides() -> Result<(), String> {
+    fn a_small_screen_names_the_panes_it_cuts_and_hides() -> TestResult {
         let (mut s, _) = attached(25, 80)?;
         run(&mut s, "str %1 pane str vertical axis split drop")?;
         let bar = |s: &mut Session, rows, cols| {
@@ -5641,11 +5563,8 @@ mod tests {
         Ok(())
     }
 
-    /// A tab made from the command line in a pane is laid out on the
-    /// smallest screen of the clients sizing that pane's tab, not of
-    /// whichever client attached first.
     #[test]
-    fn a_new_tab_takes_the_screen_of_the_callers_tab() -> Result<(), Box<dyn std::error::Error>> {
+    fn a_new_tab_takes_the_screen_of_the_callers_tab() -> TestResult {
         let (mut s, _small) = attached(24, 80)?;
         let big = s.attach(50, 200, None)?;
         run(&mut s, "opts 100 30 size str other name new-workspace drop")?;
@@ -5659,10 +5578,7 @@ mod tests {
             ..Caller::default()
         };
         let new_tab = Command::NewTab {
-            options: crate::script::default_state()
-                .map_err(|e| e.to_string())?
-                .preferences
-                .pane_options(),
+            options: crate::script::default_state()?.preferences.pane_options(),
             start: command::Start::Shell(command::Program::new("/bin/sh".into(), Vec::new())?),
             target: None,
             name: None,
@@ -5677,38 +5593,30 @@ mod tests {
         Ok(())
     }
 
-    /// A wait on a pane part way through a frame is answered in process as
-    /// a server answers it: once the frame is read whole, its screen
-    /// changed, not as an empty success.
     #[test]
-    fn a_wait_in_process_answers_a_frame_whole() -> Result<(), String> {
-        let mut s = started()?;
-        let mut frame = b"\x1b[?2026h".to_vec();
-        frame.extend(crate::pane::tests::spends_the_budget(24, 80));
-        frame.extend_from_slice(b"DONE\x1b[?2026l");
-        s.out(PaneId::of(1), &frame);
-        assert!(s.pane(PaneId::of(1)).is_ok_and(Pane::mid_frame));
-        let answer = output(&mut s, "%1 0 timeout wait")?;
-        assert!(answer.ends_with(" screen\n"), "{answer}");
+    fn in_process_waits_answer_only_after_the_frame_is_released() -> TestResult {
+        for (budgeted, timeout) in [(true, 0), (false, 2)] {
+            let mut s = started()?;
+            let mut frame = b"\x1b[?2026h".to_vec();
+            if budgeted {
+                frame.extend(crate::pane::tests::spends_the_budget(24, 80));
+            }
+            frame.extend_from_slice(b"DONE");
+            if budgeted {
+                frame.extend_from_slice(b"\x1b[?2026l");
+            }
+            s.out(PaneId::of(1), &frame);
+            if budgeted {
+                assert!(s.pane(PaneId::of(1)).is_ok_and(Pane::mid_frame));
+            }
+            let answer = output(&mut s, &format!("%1 {timeout} timeout wait"))?;
+            assert!(answer.ends_with(" screen\n"), "{answer}");
+        }
         Ok(())
     }
 
-    /// A wait on a pane holding a frame that its time releases before the
-    /// wait's is answered in process as a server answers it: the frame
-    /// shown, its screen changed, not timed out.
     #[test]
-    fn a_wait_in_process_sees_a_frame_released_before_its_time() -> Result<(), String> {
-        let mut s = started()?;
-        s.out(PaneId::of(1), b"\x1b[?2026hHELLO");
-        let answer = output(&mut s, "%1 2 timeout wait")?;
-        assert!(answer.ends_with(" screen\n"), "{answer}");
-        Ok(())
-    }
-
-    /// A client splitting a pane of a tab it does not show stays as it is:
-    /// its own tab keeps its zoom.
-    #[test]
-    fn a_split_elsewhere_leaves_the_splitters_zoom() -> Result<(), String> {
+    fn a_split_elsewhere_leaves_the_splitters_zoom() -> TestResult {
         let (mut s, c) = attached(24, 80)?;
         run(&mut s, "%1 str horizontal axis str / cwd split drop")?;
         run(&mut s, &format!("str {c} client zoom"))?;
@@ -5722,11 +5630,10 @@ mod tests {
         Ok(())
     }
 
-    /// Closing the focused pane ends only the zooms that showed that pane.
     #[test]
-    fn a_zoom_ends_with_its_pane() -> Result<(), String> {
+    fn a_zoom_ends_with_its_pane() -> TestResult {
         let (mut s, c1) = attached(24, 80)?;
-        let c2 = s.attach(24, 80, None).map_err(|e| e.to_string())?;
+        let c2 = s.attach(24, 80, None)?;
         run(&mut s, "%1 str horizontal axis split drop")?;
         run(
             &mut s,
@@ -5748,10 +5655,8 @@ mod tests {
         Ok(())
     }
 
-    /// A client detaching from a zoomed tab that fits clients resizes
-    /// nothing, as showing another does not: its panes keep their size.
     #[test]
-    fn a_zoomed_tab_its_client_detaches_from_keeps_its_sizes() -> Result<(), String> {
+    fn a_zoomed_tab_its_client_detaches_from_keeps_its_sizes() -> TestResult {
         let sizes =
             |s: &Session| [1, 2].map(|p| s.parts.panes().get(&PaneId::of(p)).map(Pane::size));
         let (mut s, c) = attached(24, 80)?;
@@ -5763,12 +5668,8 @@ mod tests {
         Ok(())
     }
 
-    /// A program that left more on its terminal than is read says so with
-    /// its end, where no later notice hides it: in `exited`, its pane's
-    /// JSON and the exit's notice; and one respawned over while it ran, in
-    /// `respawned` and the respawn's notice.
     #[test]
-    fn output_cut_at_an_end_is_told_with_the_end() -> Result<(), String> {
+    fn output_cut_at_an_end_is_told_with_the_end() -> TestResult {
         let (mut s, c) = attached(24, 80)?;
         run(&mut s, "agent-opts 80 23 size str /bin/cat program run")?;
         run(&mut s, &format!("str {c} client str +2 workspace show"))?;
@@ -5816,19 +5717,12 @@ mod tests {
             said.contains("respawned; the program it ran left more"),
             "{said}"
         );
-        for dying in std::mem::take(&mut s.dying) {
-            if let Some(pid) = dying.kill() {
-                process::reaped(pid);
-            }
-        }
+        reap(&mut s);
         Ok(())
     }
 
-    /// A `kill-first` respawn whose program does not start leaves the one
-    /// there running and unread: what it left (a frame it holds here) is
-    /// read, and a cut said, only once another started.
     #[test]
-    fn a_respawn_refused_reads_nothing_of_the_old_program() -> Result<(), String> {
+    fn a_respawn_refused_reads_nothing_of_the_old_program() -> TestResult {
         let mut s = started()?;
         run(&mut s, "agent-opts 80 24 size str /bin/cat program run")?;
         let id = PaneId::of(2);
@@ -5842,7 +5736,7 @@ mod tests {
         });
         assert!(refused.contains("/no/such/bin"), "{refused}");
         assert!(lines.is_empty(), "{lines}");
-        let pane = s.pane(id).map_err(|e| e.to_string())?;
+        let pane = s.pane(id)?;
         assert!(pane.frame_deadline().is_some() && pane.left == Left::default());
         s.launch = None;
         let lines = told(&mut s, |s| _ = run(s, "%2 kill-first respawn"));
@@ -5886,7 +5780,7 @@ mod tests {
     }
 
     #[test]
-    fn a_replacements_caller_is_current_while_old_output_drains() -> Result<(), String> {
+    fn a_replacements_caller_is_current_while_old_output_drains() -> TestResult {
         let mut s = started()?;
         run(&mut s, "agent-opts 80 24 size str /bin/cat program run")?;
         let id = PaneId::of(2);
@@ -5940,12 +5834,8 @@ mod tests {
         Ok(())
     }
 
-    /// A respawn over output the parser has yet to read reads it in the
-    /// turns any pane's output is read in, its answer waiting till then,
-    /// another respawn refused: the old program's bell is told before
-    /// `respawned`, and the answer is a version the pane has.
     #[test]
-    fn a_respawn_reads_what_was_left_in_turns() -> Result<(), String> {
+    fn a_respawn_reads_what_was_left_in_turns() -> TestResult {
         let mut s = started()?;
         run(
             &mut s,
@@ -5979,7 +5869,7 @@ mod tests {
         let (answer, turns) = turns(&mut s, id, &waiting)?;
         assert!(turns > 1, "read in {turns} turns");
         assert_eq!(answer.end(), crate::protocol::End::Done);
-        let pane = s.pane(id).map_err(|e| e.to_string())?;
+        let pane = s.pane(id)?;
         assert_eq!(answer, acted(pane.version(s.run)));
         assert_eq!(pane.history_bytes(), 128);
         assert_eq!(pane.options().history_bytes.get(), 128);
@@ -6000,11 +5890,8 @@ mod tests {
         Ok(())
     }
 
-    /// A pane closed while respawning abandons the respawn: the program
-    /// started for it is ended, its answer says the pane closed, and the
-    /// clients that showed it are told.
     #[test]
-    fn a_pane_closed_while_respawning_abandons_it() -> Result<(), String> {
+    fn a_pane_closed_while_respawning_abandons_it() -> TestResult {
         let (mut s, c) = attached(24, 80)?;
         run(&mut s, "agent-opts 80 23 size str /bin/cat program run")?;
         run(&mut s, &format!("str {c} client str +2 workspace show"))?;
@@ -6032,20 +5919,12 @@ mod tests {
         let said = said.unwrap_or_default();
         assert!(said.starts_with("%2 closed while respawning"), "{said}");
         assert_eq!(s.dying.len(), 1, "the program started for it, ended");
-        for dying in std::mem::take(&mut s.dying) {
-            if let Some(pid) = dying.kill() {
-                process::reaped(pid);
-            }
-        }
+        reap(&mut s);
         Ok(())
     }
 
-    /// A program respawned over is taken from its pane as the respawn
-    /// begins, whether it runs (`kill-first`) or its exit waits on what it
-    /// left: while that is read the pane is no program's, so input is
-    /// refused, none queued to be lost, and nothing is signalled.
     #[test]
-    fn input_is_refused_while_respawning() -> Result<(), String> {
+    fn input_is_refused_while_respawning() -> TestResult {
         for (kill, exiting) in [(true, None), (false, Some(Ended::Exited(0)))] {
             let mut s = started()?;
             run(&mut s, "agent-opts 80 24 size str /bin/cat program run")?;
@@ -6083,19 +5962,13 @@ mod tests {
             let lines = stream.lines(s.parts.journal(), |t| s.holder(t)).0;
             assert!(lines.contains(r#""respawned","pane":"%2""#), "{lines}");
             assert!(!lines.contains("input_unread"), "{lines}");
-            for dying in std::mem::take(&mut s.dying) {
-                if let Some(pid) = dying.kill() {
-                    process::reaped(pid);
-                }
-            }
+            reap(&mut s);
         }
         Ok(())
     }
 
-    /// A frame a respawned-over program holds is read by a turn of the
-    /// respawn's, the one timer of its pane: no other reads in that round.
     #[test]
-    fn a_held_frame_is_a_turn_of_the_respawn() -> Result<(), String> {
+    fn a_held_frame_is_a_turn_of_the_respawn() -> TestResult {
         let mut s = started()?;
         run(&mut s, "agent-opts 80 24 size str /bin/cat program run")?;
         let id = PaneId::of(2);
@@ -6111,10 +5984,8 @@ mod tests {
         Ok(())
     }
 
-    /// A pane resized while respawning, in a tab no client shows, keeps
-    /// that size once its new program takes over.
     #[test]
-    fn a_resize_while_respawning_is_kept() -> Result<(), String> {
+    fn a_resize_while_respawning_is_kept() -> TestResult {
         let mut s = started()?;
         run(&mut s, "agent-opts 80 24 size str /bin/cat program run")?;
         let id = PaneId::of(2);
@@ -6125,16 +5996,13 @@ mod tests {
         };
         run(&mut s, "%2 tab 100 30 resize")?;
         turns(&mut s, id, &waiting)?;
-        let pane = s.pane(id).map_err(|e| e.to_string())?;
+        let pane = s.pane(id)?;
         assert_eq!((pane.respawns, pane.size()), (1, sized(30, 100)?));
         Ok(())
     }
 
-    /// A program started for a respawn that exits before it takes over is
-    /// told exited as it does: the server looked for exits as they were
-    /// signalled, when it was no pane's.
     #[test]
-    fn a_respawned_program_that_ends_first_is_told_exited() -> Result<(), String> {
+    fn a_respawned_program_that_ends_first_is_told_exited() -> TestResult {
         let mut s = started()?;
         run(&mut s, "agent-opts 80 24 size str /bin/cat program run")?;
         let id = PaneId::of(2);
@@ -6176,19 +6044,12 @@ mod tests {
             lines.contains(r#""exited","pane":"%2","tab":"@2","workspace":"+2","exited":0"#),
             "{lines}"
         );
-        for dying in std::mem::take(&mut s.dying) {
-            if let Some(pid) = dying.kill() {
-                process::reaped(pid);
-            }
-        }
+        reap(&mut s);
         Ok(())
     }
 
-    /// A program started in a tab a terminal draws starts in that
-    /// terminal's cell, its terminal sized in pixels before it can ask
-    /// (here a respawn's, before the session settles).
     #[test]
-    fn a_program_starts_in_the_cell_of_the_terminal_drawing_it() -> Result<(), String> {
+    fn a_program_starts_in_the_cell_of_the_terminal_drawing_it() -> TestResult {
         let (mut s, c) = attached(24, 80)?;
         run(&mut s, "agent-opts 80 23 size str /bin/cat program run")?;
         run(&mut s, &format!("str {c} client str +2 workspace show"))?;
@@ -6201,8 +6062,7 @@ mod tests {
             &command::EnvPatch::default(),
             None,
             Instant::now(),
-        ))
-        .map_err(|e| e.to_string())?;
+        ))?;
         let mut pane = s.parts.pane_mut(id).ok_or("the pane")?;
         let size = pane.size();
         let child = pane.set_process(Process::Absent);
@@ -6219,15 +6079,12 @@ mod tests {
         Ok(())
     }
 
-    /// A new tab or workspace its client follows starts its program in
-    /// the cell that client's terminal said, as it will draw it; one no
-    /// client follows (`run`'s), in none.
     #[test]
-    fn a_tab_its_client_follows_starts_in_its_terminals_cell() -> Result<(), String> {
+    fn a_tab_its_client_follows_starts_in_its_terminals_cell() -> TestResult {
         let (mut s, c) = attached(24, 80)?;
         s.input(c, b"\x1b[6;20;10t");
         let origin = Origin::Client(c);
-        let here = s.here(&origin).map_err(|e| e.to_string())?;
+        let here = s.here(&origin)?;
         let mut cell = |follows: bool| {
             let opening = s.opening((Some(Path::new("/")), None), (here, follows));
             opening
@@ -6239,14 +6096,11 @@ mod tests {
         Ok(())
     }
 
-    /// A pane resized as the cell its terminal draws it in changes has its
-    /// terminal sized once, for both: not first for the cell at its old
-    /// size, which would signal its program (SIGWINCH) twice.
     #[test]
-    fn a_resize_and_a_new_cell_size_a_panes_terminal_once() -> Result<(), String> {
+    fn a_resize_and_a_new_cell_size_a_panes_terminal_once() -> TestResult {
         let (mut s, c) = attached(24, 80)?;
         let id = PaneId::of(1);
-        let size = s.pane(id).map_err(|e| e.to_string())?.size();
+        let size = s.pane(id)?.size();
         let argv = ["/bin/cat".to_owned()];
         let child = process::spawn(&argv, Path::new("/"), (&[], &[]), (size, None))?;
         (s.parts.pane_mut(id).ok_or("the pane")?).set_process(Process::Reading(child));
@@ -6268,7 +6122,7 @@ mod tests {
             now,
         );
         assert_eq!(between, None, "not sized before the resize");
-        let pane = s.pane(id).map_err(|e| e.to_string())?;
+        let pane = s.pane(id)?;
         assert_eq!(pixels(pane), Some((400, 200)));
         let mut pane = s.parts.pane_mut(id).ok_or("the pane")?;
         if let Process::Reading(child) = pane.set_process(Process::Absent) {
@@ -6280,14 +6134,11 @@ mod tests {
         Ok(())
     }
 
-    /// A program in a tab with no host is told it has no cell: its client
-    /// shown another tab, or detached, its terminal has no size in pixels;
-    /// shown it again, the cell its terminal said.
     #[test]
-    fn a_tab_with_no_host_tells_its_programs_no_cell() -> Result<(), String> {
+    fn a_tab_with_no_host_tells_its_programs_no_cell() -> TestResult {
         let (mut s, c) = attached(24, 80)?;
         let id = PaneId::of(1);
-        let size = s.pane(id).map_err(|e| e.to_string())?.size();
+        let size = s.pane(id)?.size();
         let argv = ["/bin/cat".to_owned()];
         let child = process::spawn(&argv, Path::new("/"), (&[], &[]), (size, None))?;
         (s.parts.pane_mut(id).ok_or("the pane")?).set_process(Process::Reading(child));
@@ -6317,10 +6168,8 @@ mod tests {
         Ok(())
     }
 
-    /// A program respawned in a tab with no host is told no cell, though
-    /// the program before it was told one.
     #[test]
-    fn a_respawn_with_no_host_is_told_no_cell() -> Result<(), String> {
+    fn a_respawn_with_no_host_is_told_no_cell() -> TestResult {
         let (mut s, c) = attached(24, 80)?;
         run(&mut s, "agent-opts 80 23 size str /bin/cat program run")?;
         run(&mut s, &format!("str {c} client str +2 workspace show"))?;
@@ -6333,11 +6182,8 @@ mod tests {
         Ok(())
     }
 
-    /// Input queued for a program that ends without reading it is let go,
-    /// and told with its end, whoever watches: at its exit, in `exited` and
-    /// its pane's JSON, or at a respawn over it, in `respawned`.
     #[test]
-    fn input_an_ended_program_never_read_is_told() -> Result<(), String> {
+    fn input_an_ended_program_never_read_is_told() -> TestResult {
         let (mut s, c) = attached(24, 80)?;
         run(&mut s, "agent-opts 80 23 size str /bin/cat program run")?;
         run(&mut s, &format!("str {c} client str +2 workspace show"))?;
@@ -6378,18 +6224,12 @@ mod tests {
         assert!(said.starts_with("%2 respawned; 2 bytes of input"), "{said}");
         let json = output(&mut s, "%2 capture json")?;
         assert!(json.contains(r#""input_unread":0"#), "{json}");
-        for dying in std::mem::take(&mut s.dying) {
-            if let Some(pid) = dying.kill() {
-                process::reaped(pid);
-            }
-        }
+        reap(&mut s);
         Ok(())
     }
 
-    /// A program that ended is queued no report it asked for (in-band
-    /// resize, colour scheme): the one respawned there reads none.
     #[test]
-    fn a_respawned_program_reads_no_report_the_ended_one_asked_for() -> Result<(), String> {
+    fn a_respawned_program_reads_no_report_the_ended_one_asked_for() -> TestResult {
         let (mut s, c) = attached(24, 80)?;
         run(&mut s, "agent-opts 80 23 size str /bin/cat program run")?;
         run(&mut s, &format!("str {c} client str +2 workspace show"))?;
@@ -6409,10 +6249,8 @@ mod tests {
         Ok(())
     }
 
-    /// A program whose exit was told, respawned, is told exited once: its
-    /// exit is not told again before `respawned`.
     #[test]
-    fn an_exit_told_is_not_told_again_at_a_respawn() -> Result<(), String> {
+    fn an_exit_told_is_not_told_again_at_a_respawn() -> TestResult {
         let mut s = started()?;
         run(&mut s, "agent-opts 80 24 size str /bin/cat program run")?;
         let lines = told(&mut s, |s| {
@@ -6424,10 +6262,8 @@ mod tests {
         Ok(())
     }
 
-    /// A pane respawned twice within its program's grace has both programs
-    /// before dying: the second end never drops the first one's kill.
     #[test]
-    fn a_pane_respawned_twice_in_its_grace_kills_both() -> Result<(), String> {
+    fn a_pane_respawned_twice_in_its_grace_kills_both() -> TestResult {
         let mut s = started()?;
         run(&mut s, "agent-opts 80 24 size str /bin/cat program run")?;
         // A test's session starts no program: each is put in the pane.
@@ -6449,78 +6285,103 @@ mod tests {
         Ok(())
     }
 
-    /// `json` of an answer of several panes is one array, as it is in a
-    /// list: one shape for one answer.
     #[test]
-    fn json_of_several_panes_is_one_array() -> Result<(), Box<dyn std::error::Error>> {
+    fn json_of_several_panes_is_one_array() -> TestResult {
         let mut s = started()?;
-        run(&mut s, "%1 str horizontal axis split")?;
-        let alone = output(&mut s, "@1 str x text send-keys json")?;
-        assert!(alone.starts_with(r#"[{"pane":"%1","#), "{alone}");
-        assert_eq!(alone.lines().count(), 1, "{alone}");
-        let listed = output(&mut s, "list @1 str x text send-keys end json")?;
-        assert_eq!(listed, format!("[{}]\n", alone.trim_end()));
+        for split in [false, true] {
+            if split {
+                run(&mut s, "%1 str horizontal axis split")?;
+            }
+            let alone = output(&mut s, "@1 str x text send-keys json")?;
+            let mut expected = Vec::new();
+            for id in s.root(TabId::of(1)).ok_or("layout")?.panes() {
+                expected.push(format!(
+                    r#"{{"pane":"{id}","version":"{}","status":0}}"#,
+                    s.pane(id)?.version(s.run)
+                ));
+            }
+            assert_eq!(alone, format!("[{}]\n", expected.join(",")));
+            let listed = output(&mut s, "list @1 str x text send-keys end json")?;
+            assert_eq!(listed, format!("[{}]\n", alone.trim_end()));
+        }
         Ok(())
     }
 
-    /// A program that exits with output past a read budget still unread
-    /// (`Pane::has_unread`) is at work until it is read, and exited only
-    /// then, its last screen whole: a wait is never told it exited on a
-    /// screen of before. Each REP is spent as 65,535 copies: 2,000 of them
-    /// spend a budget.
     #[test]
-    fn a_program_exits_once_its_output_is_read() -> Result<(), String> {
-        let mut s = started()?;
-        run(&mut s, "agent-opts 80 24 size str /bin/true program run")?;
-        let id = PaneId::of(2);
-        // /bin/sh, which macOS has where it has no /bin/true.
-        let argv = ["/bin/sh", "-c", "exit 0"].map(str::to_owned);
-        let child = process::spawn(&argv, Path::new("/"), (&[], &[]), (sized(4, 20)?, None))?;
-        (s.parts.pane_mut(id).ok_or("the pane")?).set_process(Process::Reading(child));
-        let exited = |s: &Session| {
-            (s.parts.panes().get(&id))
-                .and_then(|p| p.process().child()?.leader.exited())
-                .is_some()
-        };
-        let until = crate::after(Instant::now(), Duration::from_secs(10));
-        while !exited(&s) && Instant::now() < until {
-            std::thread::sleep(Duration::from_millis(10));
+    fn exit_waits_for_the_last_screen_including_held_frames() -> TestResult {
+        for (held, budgeted) in [(false, true), (true, false), (true, true)] {
+            let mut s = started()?;
+            run(&mut s, "agent-opts 80 24 size str /bin/true program run")?;
+            let id = PaneId::of(2);
+            if !held {
+                let argv = ["/bin/sh", "-c", "exit 0"].map(str::to_owned);
+                let child =
+                    process::spawn(&argv, Path::new("/"), (&[], &[]), (sized(4, 20)?, None))?;
+                (s.parts.pane_mut(id).ok_or("the pane")?).set_process(Process::Reading(child));
+                let exited = |s: &Session| {
+                    s.parts
+                        .panes()
+                        .get(&id)
+                        .and_then(|p| p.process().child()?.leader.exited())
+                        .is_some()
+                };
+                let until = crate::after(Instant::now(), Duration::from_secs(10));
+                while !exited(&s) && Instant::now() < until {
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                assert!(exited(&s), "the child did not exit");
+            }
+            let mut out = Vec::new();
+            if budgeted {
+                out.extend(
+                    std::iter::repeat_n(b"X\x1b[65535b", 2000)
+                        .flatten()
+                        .copied(),
+                );
+                out.extend_from_slice(b"\x1b[2J\x1b[H");
+            }
+            if held {
+                out.extend_from_slice(b"\x1b[?2026h");
+            }
+            out.extend_from_slice(b"DONE");
+            s.out(id, &out);
+            s.end_program(id, Ended::Exited(0));
+            if budgeted {
+                let pane = s.parts.panes().get(&id).ok_or("the pane")?;
+                assert!(pane.has_unread(), "the budget stopped no call");
+                assert!(
+                    pane.process().exit_status().is_none(),
+                    "exited with output unread"
+                );
+            }
+            let mut turns = 0u32;
+            while s
+                .parts
+                .panes()
+                .get(&id)
+                .is_some_and(|p| p.process().exit_status().is_none())
+                && turns < 100
+            {
+                s.fire_now(crate::session::Timer::Unread(id));
+                turns = turns.saturating_add(1);
+            }
+            let pane = s.parts.panes().get(&id).ok_or("the pane")?;
+            assert_eq!(pane.process().exit_status(), Some(Ended::Exited(0)));
+            let text = pane
+                .screen()
+                .rows()
+                .map(|r| r.cells_text())
+                .collect::<String>();
+            assert!(
+                text.contains("DONE"),
+                "held={held}, budgeted={budgeted}: {text:?}"
+            );
         }
-        let mut flood: Vec<u8> = std::iter::repeat_n(b"X\x1b[65535b", 2000)
-            .flatten()
-            .copied()
-            .collect();
-        flood.extend_from_slice(b"\x1b[2J\x1b[HDONE");
-        s.out(id, &flood);
-        s.end_program(id, Ended::Exited(0));
-        let pane = s.parts.panes().get(&id).ok_or("the pane")?;
-        assert!(pane.has_unread(), "the budget stopped no call");
-        assert!(
-            pane.process().exit_status().is_none(),
-            "exited with output unread"
-        );
-        let mut turns = 0u32;
-        while s.parts.panes().get(&id).is_some_and(Pane::has_unread) && turns < 100 {
-            s.fire_now(crate::session::Timer::Unread(id));
-            turns = turns.saturating_add(1);
-        }
-        let pane = s.parts.panes().get(&id).ok_or("the pane")?;
-        assert_eq!(pane.process().exit_status(), Some(Ended::Exited(0)));
-        let text = pane
-            .screen()
-            .rows()
-            .map(|r| r.cells_text())
-            .collect::<String>();
-        assert!(text.contains("DONE"), "{text:?}");
         Ok(())
     }
 
-    /// A program that exits while what it left behind writes on (a
-    /// background loop) is told exited once what was on its terminal as it
-    /// exited is read: its terminal is drained once, not again at each
-    /// later reap, so its exit is not put off for ever.
     #[test]
-    fn a_program_whose_terminal_is_written_on_still_exits() -> Result<(), String> {
+    fn a_program_whose_terminal_is_written_on_still_exits() -> TestResult {
         // A large screen, where each ED is spent as 40,000 cells.
         let (mut s, _) = super::testing::attached(201, 200)?;
         run(&mut s, "agent-opts 200 200 size str /bin/true program run")?;
@@ -6546,11 +6407,7 @@ mod tests {
             turns = turns.saturating_add(1);
         }
         let told = exited(&s);
-        for dying in std::mem::take(&mut s.dying) {
-            if let Some(pid) = dying.kill() {
-                process::reaped(pid);
-            }
-        }
+        reap(&mut s);
         if let Some(child) =
             s.parts
                 .pane_mut(id)
@@ -6568,76 +6425,14 @@ mod tests {
         Ok(())
     }
 
-    /// A frame of synchronized output held as its program exits is read
-    /// before the exit is told: its last screen is whole.
     #[test]
-    fn a_frame_held_at_exit_is_on_the_last_screen() -> Result<(), String> {
-        let mut s = started()?;
-        run(&mut s, "agent-opts 80 24 size str /bin/true program run")?;
-        let id = PaneId::of(2);
-        s.out(id, b"\x1b[?2026hHELD");
-        s.end_program(id, Ended::Exited(0));
-        let pane = s.parts.panes().get(&id).ok_or("the pane")?;
-        assert_eq!(pane.process().exit_status(), Some(Ended::Exited(0)));
-        let text = pane
-            .screen()
-            .rows()
-            .map(|r| r.cells_text())
-            .collect::<String>();
-        assert!(text.contains("HELD"), "{text:?}");
-        Ok(())
-    }
-
-    /// A frame begun in output read after the exit, past a read budget, is
-    /// read too before the exit is told.
-    #[test]
-    fn a_frame_begun_after_the_exit_is_on_the_last_screen() -> Result<(), String> {
-        let mut s = started()?;
-        run(&mut s, "agent-opts 80 24 size str /bin/true program run")?;
-        let id = PaneId::of(2);
-        let mut out: Vec<u8> = std::iter::repeat_n(b"X\x1b[65535b", 2000)
-            .flatten()
-            .copied()
-            .collect();
-        out.extend_from_slice(b"\x1b[2J\x1b[H\x1b[?2026hHELD");
-        s.out(id, &out);
-        s.end_program(id, Ended::Exited(0));
-        let mut turns = 0u32;
-        while s
-            .parts
-            .panes()
-            .get(&id)
-            .is_some_and(|p| p.process().exit_status().is_none())
-            && turns < 100
-        {
-            s.fire_now(crate::session::Timer::Unread(id));
-            turns = turns.saturating_add(1);
-        }
-        let pane = s.parts.panes().get(&id).ok_or("the pane")?;
-        assert_eq!(pane.process().exit_status(), Some(Ended::Exited(0)));
-        let text = pane
-            .screen()
-            .rows()
-            .map(|r| r.cells_text())
-            .collect::<String>();
-        assert!(
-            text.contains("HELD"),
-            "no HELD in {} characters",
-            text.len()
-        );
-        Ok(())
-    }
-
-    /// Keys sent to a tab's panes go to every one of them or to none: a
-    /// pane that has no room for them refuses them before any is sent.
-    #[test]
-    fn keys_for_several_panes_go_to_all_or_none() -> Result<(), String> {
+    fn keys_for_several_panes_go_to_all_or_none() -> TestResult {
         let mut s = started()?;
         run(&mut s, "%1 str horizontal axis split drop")?;
         let mut second = s.parts.pane_mut(PaneId::of(2)).ok_or("no %2")?;
         // Its program reads nothing, and its queue is full.
         let full = vec![0; crate::pane::INPUT_BYTES];
-        second.push(full).map_err(|e| e.to_string())?;
+        second.push(full)?;
         let sent = run(&mut s, "@1 str x text send-keys");
         assert!(sent.is_err_and(|e| e.contains("input_full")), "refused");
         let first = s.parts.panes().get(&PaneId::of(1)).ok_or("no %1")?;
@@ -6646,7 +6441,7 @@ mod tests {
         // after them, until the program reads: none lands past a hole.
         let mut pane = s.parts.pane_mut(PaneId::of(1)).ok_or("no %1")?;
         let room = pane.input().room();
-        (pane.push(vec![0; room.saturating_sub(4)])).map_err(|e| e.to_string())?;
+        (pane.push(vec![0; room.saturating_sub(4)]))?;
         assert!(run(&mut s, "%1 str 12345678 text send-keys").is_err());
         assert!(
             run(&mut s, "%1 str x text send-keys").is_err(),
@@ -6655,20 +6450,14 @@ mod tests {
         Ok(())
     }
 
-    /// Keys sent at a version seen go only while their pane is still at
-    /// it: a capture holds its pane's version as it was read; once the
-    /// pane read more, none is sent, refused `stale`.
     #[test]
-    fn keys_at_a_version_go_only_while_the_pane_is_at_it() -> Result<(), String> {
+    fn keys_at_a_version_go_only_while_the_pane_is_at_it() -> TestResult {
         let mut s = started()?;
         let queued =
             |s: &mut Session| (s.parts.pane_mut(PaneId::of(1))).map(|mut p| p.drain_input());
         run(&mut s, "%1 capture expect str x text send-keys")?;
         assert_eq!(queued(&mut s), Some(b"x".to_vec()));
-        let seen = s
-            .pane(PaneId::of(1))
-            .map_err(|e| e.to_string())?
-            .version(s.run);
+        let seen = s.pane(PaneId::of(1))?.version(s.run);
         s.out(PaneId::of(1), b"E");
         let stale = output(&mut s, &format!("str {seen} expect str x text send-keys"));
         let stale = stale.err().unwrap_or_default();
@@ -6679,10 +6468,7 @@ mod tests {
         assert_eq!(queued(&mut s), Some(Vec::new()), "nothing sent");
         // A program's end is a change too: stale, not `not_running`.
         run(&mut s, "agent-opts 80 24 size str /bin/cat program run")?;
-        let seen = s
-            .pane(PaneId::of(2))
-            .map_err(|e| e.to_string())?
-            .version(s.run);
+        let seen = s.pane(PaneId::of(2))?.version(s.run);
         s.end_program(PaneId::of(2), crate::process::Ended::Exited(0));
         let ended = output(&mut s, &format!("str {seen} expect str x text send-keys"));
         let ended = ended.err().unwrap_or_default();
@@ -6690,9 +6476,8 @@ mod tests {
         Ok(())
     }
 
-    /// A budget change evicts rows only in its named pane.
     #[test]
-    fn history_budget_only_changes_its_target() -> Result<(), String> {
+    fn history_budget_only_changes_its_target() -> TestResult {
         let (mut s, client) = attached(5, 20)?;
         s.out(
             PaneId::of(1),
@@ -6709,10 +6494,7 @@ mod tests {
         assert!(history(&s) > Some(2));
         // Two rows of four cells: 24 bytes a row and 8 a cell.
         run(&mut s, "%1 str horizontal axis 4096 history-bytes split")?;
-        let other = s
-            .pane(PaneId::of(2))
-            .map_err(|e| e.to_string())?
-            .history_bytes();
+        let other = s.pane(PaneId::of(2))?.history_bytes();
         run(&mut s, "str history-bytes 0 set")?;
         assert!(history(&s) > Some(2));
         run(&mut s, "str c1 client %1 show str c1 client copy-mode")?;
@@ -6734,21 +6516,13 @@ mod tests {
                 .and_then(|v| v.notice.as_ref())
                 .is_some_and(|n| n.text.contains("dropped the rows"))
         );
-        assert_eq!(
-            s.pane(PaneId::of(2))
-                .map_err(|e| e.to_string())?
-                .history_bytes(),
-            other
-        );
+        assert_eq!(s.pane(PaneId::of(2))?.history_bytes(), other);
         assert_eq!(history(&s), Some(2));
         Ok(())
     }
 
-    /// A program's OSC 52 write is a copy: to the paste buffers and the
-    /// clipboard of eligible clients showing its tab;
-    /// one it cannot be is told them.
     #[test]
-    fn a_programs_clipboard_write_is_a_copy() -> Result<(), String> {
+    fn a_programs_clipboard_write_is_a_copy() -> TestResult {
         let (mut s, client) = attached(5, 20)?;
         s.outbox.clear();
         s.out(PaneId::of(1), b"\x1b]52;c;Zm9v\x07");
@@ -6821,7 +6595,7 @@ mod tests {
     }
 
     #[test]
-    fn invalid_presentation_data_discards_the_entire_local_draft() -> Result<(), String> {
+    fn invalid_presentation_data_discards_the_entire_local_draft() -> TestResult {
         let (mut session, client) = attached(8, 80)?;
         let before = session
             .views
@@ -6862,24 +6636,19 @@ mod tests {
     }
 
     #[test]
-    fn attach_supplies_presentation_before_any_program_output() -> Result<(), String> {
+    fn attach_supplies_presentation_before_any_program_output() -> TestResult {
         let mut s = started()?;
         let presentation = crate::view::Presentation {
             bell: true,
             titles: true,
             terminal_clipboard: true,
             cell_placement: false,
-            ..crate::script::default_state()
-                .map_err(|e| e.to_string())?
-                .preferences
-                .presentation()
+            ..crate::script::default_state()?.preferences.presentation()
         };
-        let client = s
-            .attach_client(
-                ClientKind::Terminal,
-                Attach::of(sized(8, 40)?, presentation.clone()),
-            )
-            .map_err(|e| e.to_string())?;
+        let client = s.attach_client(
+            ClientKind::Terminal,
+            Attach::of(sized(8, 40)?, presentation.clone()),
+        )?;
         assert_eq!(
             s.views.get(&client).map(|v| v.presentation.clone()),
             Some(presentation)
@@ -6897,9 +6666,9 @@ mod tests {
     }
 
     #[test]
-    fn in_process_clients_keep_their_own_presentation() -> Result<(), String> {
+    fn in_process_clients_keep_their_own_presentation() -> TestResult {
         let (mut s, a) = attached(8, 40)?;
-        let b = s.attach(8, 40, None).map_err(|e| e.to_string())?;
+        let b = s.attach(8, 40, None)?;
         output_as(
             &mut s,
             Some(a),
@@ -6917,10 +6686,7 @@ mod tests {
                     bell,
                     terminal_clipboard,
                     cell_placement: false,
-                    ..crate::script::default_state()
-                        .map_err(|e| e.to_string())?
-                        .preferences
-                        .presentation()
+                    ..crate::script::default_state()?.preferences.presentation()
                 })
             );
         }
@@ -6928,10 +6694,10 @@ mod tests {
     }
 
     #[test]
-    fn in_process_commits_publish_presentation_at_each_checkpoint() -> Result<(), String> {
+    fn in_process_commits_publish_presentation_at_each_checkpoint() -> TestResult {
         use crate::script::{AsClient, Asks, Host};
         let (mut s, client) = attached(8, 40)?;
-        let mut state = crate::script::default_state().map_err(|e| e.to_string())?;
+        let mut state = crate::script::default_state()?;
         for (code, committed) in [
             ("str titles true set %999 capture", true),
             ("str titles false set str Nope prefix", false),
@@ -6953,8 +6719,8 @@ mod tests {
                 opened: None,
                 on_commit: Some(&mut publish),
             };
-            let tokens = fuxth::token::source("commit", code).map_err(|e| e.to_string())?;
-            let mut machine = crate::script::compile(&tokens).map_err(|e| e.to_string())?;
+            let tokens = fuxth::token::source("commit", code)?;
+            let mut machine = crate::script::compile(&tokens)?;
             let mut output = Vec::new();
             let mut host = Host::new(context.clone(), Some(&mut draft), &mut output);
             let result = crate::script::run_capped(&mut machine, &mut host, &mut asks, None, None)
@@ -6968,14 +6734,11 @@ mod tests {
     }
 
     #[test]
-    fn clipboard_permission_and_delivery_have_separate_owners() -> Result<(), String> {
+    fn clipboard_permission_and_delivery_have_separate_owners() -> TestResult {
         use crate::act::Act;
         let (mut s, a) = attached(8, 40)?;
-        let b = s.attach(8, 40, None).map_err(|e| e.to_string())?;
-        let presentation = crate::script::default_state()
-            .map_err(|e| e.to_string())?
-            .preferences
-            .presentation();
+        let b = s.attach(8, 40, None)?;
+        let presentation = crate::script::default_state()?.preferences.presentation();
         s.apply(
             a,
             vec![Act::Presentation(crate::view::Presentation {
@@ -7010,22 +6773,17 @@ mod tests {
         assert_eq!(s.buffers.len(), 1);
         assert!(copies(&s).is_empty());
         // Manual copying always stores; it targets only the copying client.
-        s.copied("manual".into(), None, &[a])
-            .map_err(|e| e.to_string())?;
+        s.copied("manual".into(), None, &[a])?;
         assert_eq!(s.buffers.len(), 2);
         assert!(copies(&s).is_empty());
         s.apply(a, vec![Act::Presentation(presentation)]);
-        s.copied("mine".into(), None, &[a])
-            .map_err(|e| e.to_string())?;
+        s.copied("mine".into(), None, &[a])?;
         assert_eq!(copies(&s), [a]);
         Ok(())
     }
 
-    /// Replies dropped past what one read queues are counted in the
-    /// pane's JSON, with no client to tell: those of one read that the
-    /// full queue refuses too, and a resize report it refuses.
     #[test]
-    fn replies_dropped_are_counted_in_a_panes_json() -> Result<(), String> {
+    fn replies_dropped_are_counted_in_a_panes_json() -> TestResult {
         let (mut s, c) = attached(5, 20)?;
         s.detach_client(c);
         let id = PaneId::of(1);
@@ -7040,7 +6798,7 @@ mod tests {
         assert!(json.contains(r#""replies":1,"#), "{json}");
         let mut pane = s.parts.pane_mut(id).ok_or("the pane")?;
         let room = pane.input().room();
-        pane.push(vec![b'x'; room]).map_err(|e| e.to_string())?;
+        pane.push(vec![b'x'; room])?;
         s.out(id, b"\x1b[6n\x1b[6n");
         let json = output(&mut s, "%1 capture json")?;
         assert!(json.contains(r#""replies":3,"#), "{json}");
@@ -7055,11 +6813,8 @@ mod tests {
         Ok(())
     }
 
-    /// A tab no client shows is laid out on a client's screen, so its
-    /// programs see the size they will be shown at, not the size they
-    /// started at.
     #[test]
-    fn a_tab_no_client_shows_is_sized_as_on_a_clients_screen() -> Result<(), String> {
+    fn a_tab_no_client_shows_is_sized_as_on_a_clients_screen() -> TestResult {
         let (mut s, c) = attached(11, 40)?;
         output_as(
             &mut s,
@@ -7090,19 +6845,11 @@ mod tests {
         Ok(())
     }
 
-    /// A pane is made only at a size known: with no size given, from a
-    /// caller with no screen or tab, there is none, whatever client is
-    /// attached, and the request is refused; the first
-    /// client to attach to an empty session starts its shell on its screen,
-    /// unless it only watches;
-    /// a tab that fits clients keeps the last screen's size once none does.
     #[test]
-    fn a_pane_is_made_only_at_a_size_known() -> Result<(), String> {
+    fn a_pane_is_made_only_at_a_size_known() -> TestResult {
         let run_id = crate::command::Run::now().ok_or("no clock")?;
         let mut s = Session::new("/nonexistent/fux.sock".into(), false, run_id);
-        s.test_keymap = crate::script::default_state()
-            .map_err(|e| e.to_string())?
-            .draft();
+        s.test_keymap = crate::script::default_state()?.draft();
         let refused = run(&mut s, "opts new-workspace").err().unwrap_or_default();
         assert!(
             refused.starts_with("size: ") && refused.contains("give a size"),
@@ -7115,7 +6862,7 @@ mod tests {
         assert!(watch(&mut s, 11, 40).is_err());
         assert!(s.parts.panes().is_empty());
         let size = |s: &Session, p| s.parts.panes().get(&PaneId::of(p)).map(|p| p.size().into());
-        let c = s.attach(11, 40, None).map_err(|e| e.to_string())?;
+        let c = s.attach(11, 40, None)?;
         assert_eq!(size(&s, 1), Some((10, 40)));
         // Nor from a caller with no screen or tab of its own, whatever
         // client is attached.
@@ -7138,10 +6885,8 @@ mod tests {
         Ok(())
     }
 
-    /// `ls` of a workspace lists it whole; of a tab, that tab; of a pane,
-    /// that pane.
     #[test]
-    fn ls_of_a_target_lists_what_is_in_it() -> Result<(), String> {
+    fn ls_of_a_target_lists_what_is_in_it() -> TestResult {
         let (mut s, _) = attached(11, 40)?;
         run(&mut s, "opts 40 10 size str +1 workspace in new-tab")?;
         run(&mut s, "str %2 pane str vertical axis split")?;
@@ -7158,17 +6903,16 @@ mod tests {
             let words = text.lines().filter_map(|l| l.split_whitespace().next());
             words.map(str::to_owned).collect::<Vec<_>>().join(" ")
         };
-        let ws = "+1".parse::<WsId>().map_err(|e| e.to_string())?;
-        let tab = "@2".parse::<TabId>().map_err(|e| e.to_string())?;
+        let ws = "+1".parse::<WsId>()?;
+        let tab = "@2".parse::<TabId>()?;
         assert_eq!(ids(AnyRef::Workspace(ws)), "+1 @1 %1 @2 %2 %3");
         assert_eq!(ids(AnyRef::Tab(tab)), "@2 %2 %3");
         assert_eq!(ids(AnyRef::Pane(PaneId::of(3))), "%3");
         Ok(())
     }
 
-    /// docs/json.md names every field of a pane's `json`.
     #[test]
-    fn the_json_help_names_every_pane_field() -> Result<(), Box<dyn std::error::Error>> {
+    fn the_json_help_names_every_pane_field() -> TestResult {
         let (s, _) = attached(4, 30)?;
         let pane = s.parts.panes().values().next().ok_or("no pane")?;
         for (name, _) in s.pane_json(pane, &mut crate::wire::Budget::new())? {
@@ -7178,10 +6922,8 @@ mod tests {
         Ok(())
     }
 
-    /// Names and titles are escaped in JSON, and a capture's lines read as
-    /// the screen does.
     #[test]
-    fn json_escapes_what_it_says() -> Result<(), Box<dyn std::error::Error>> {
+    fn json_escapes_what_it_says() -> TestResult {
         let (mut s, _) = attached(4, 30)?;
         run(&mut s, "str %1 pane str horizontal axis split")?;
         run(&mut s, r#"str %1 pane str 'say "hi" \ 界' rename"#)?;
@@ -7201,10 +6943,8 @@ mod tests {
         Ok(())
     }
 
-    /// A pane's exit status reaches those who saw it, whether or not its
-    /// tab closes with it.
     #[test]
-    fn an_exit_is_told_even_when_it_closes_the_tab() -> Result<(), Box<dyn std::error::Error>> {
+    fn an_exit_is_told_even_when_it_closes_the_tab() -> TestResult {
         let (mut s, client) = attached(10, 40)?;
         let notice = |s: &Session| {
             s.views
@@ -7224,12 +6964,8 @@ mod tests {
         Ok(())
     }
 
-    /// A pane moved beside another moves within its own tab: a tab emptied
-    /// by an earlier move takes no copy of it, so none is left naming it
-    /// once it closes.
     #[test]
-    fn a_pane_moved_beside_another_stays_out_of_empty_tabs()
-    -> Result<(), Box<dyn std::error::Error>> {
+    fn a_pane_moved_beside_another_stays_out_of_empty_tabs() -> TestResult {
         let (mut s, _) = attached(10, 40)?;
         run(&mut s, "str %1 pane str horizontal axis split")?;
         run(&mut s, "opts 40 9 size str +1 workspace in new-tab")?;
@@ -7245,12 +6981,8 @@ mod tests {
         Ok(())
     }
 
-    /// A wait begun answers what comes after it, in order: output in one
-    /// of a workspace's panes, that pane alone; its pane's close, `closed`
-    /// (4). Begun first here, it cannot miss what it waits for.
     #[test]
-    fn a_wait_begun_answers_the_change_and_the_close_after_it()
-    -> Result<(), Box<dyn std::error::Error>> {
+    fn a_wait_begun_answers_the_change_and_the_close_after_it() -> TestResult {
         let mut s = started()?;
         run(&mut s, "str %1 pane str horizontal axis split")?;
         let origin = Origin::Cli(Caller::default());
@@ -7285,11 +7017,8 @@ mod tests {
         Ok(())
     }
 
-    /// A wait that failed answered too: a `try` that catches it gets that
-    /// answer, with its version and status, in place of the message; a
-    /// wait on it waits again from the version it is still at.
     #[test]
-    fn a_failed_wait_keeps_its_answer() -> Result<(), String> {
+    fn a_failed_wait_keeps_its_answer() -> TestResult {
         let mut s = started()?;
         let caught = "str timeout try %1 1 timeout wait catch drop end";
         let json = output(&mut s, &format!("{caught} json"))?;
@@ -7307,9 +7036,8 @@ mod tests {
         Ok(())
     }
 
-    /// Counts use the live or held pane version, never rendered screen text.
     #[test]
-    fn counts_use_the_pane_version() -> Result<(), String> {
+    fn counts_use_the_pane_version() -> TestResult {
         let (mut s, client) = attached(24, 80)?;
         let shown = "%2:0.57.1.3.0:48211-1867a3f9c2b8e7d6";
         s.out(PaneId::of(1), shown.as_bytes());
@@ -7329,7 +7057,7 @@ mod tests {
             output(&mut s, &format!("str {shown} counts json"))?.trim(),
             "[0,57,1,3,0]"
         );
-        let counts = s.pane(PaneId::of(1)).map_err(|e| e.to_string())?.counts();
+        let counts = s.pane(PaneId::of(1))?.counts();
         let expected = format!(
             "[{},{},{},{},{}]",
             counts.respawns,
@@ -7358,10 +7086,8 @@ mod tests {
         Ok(())
     }
 
-    /// Pane captures, guarded input, a caught wait and the bundled quiet
-    /// loop compose without losing the pane or its version.
     #[test]
-    fn capture_and_quiet_keep_the_pane_recipe() -> Result<(), String> {
+    fn capture_and_quiet_keep_the_pane_recipe() -> TestResult {
         let mut s = started()?;
         let json = output(
             &mut s,
@@ -7376,10 +7102,8 @@ mod tests {
         Ok(())
     }
 
-    /// A closed pane's answer is still its pane's: caught, a word that
-    /// wants a pane finds that pane gone, rather than refusing the kind.
     #[test]
-    fn a_closed_panes_answer_names_its_pane() -> Result<(), String> {
+    fn a_closed_panes_answer_names_its_pane() -> TestResult {
         let mut s = started()?;
         let version = output(&mut s, "%1 str vertical axis split")?;
         run(&mut s, "%2 kill")?;
@@ -7403,13 +7127,8 @@ mod tests {
         Ok(())
     }
 
-    /// A version names its pane and its server run: a wait from it waits
-    /// in that pane, one from another run is refused, as is one its pane
-    /// never had, and one of a pane since closed answers `closed`. A
-    /// pane part way through a frame at the limit has changed: its answer
-    /// waits for the frame, never says it is unchanged.
     #[test]
-    fn a_version_names_its_pane_and_its_server_run() -> Result<(), Box<dyn std::error::Error>> {
+    fn a_version_names_its_pane_and_its_server_run() -> TestResult {
         let mut s = started()?;
         run(&mut s, "str %1 pane str horizontal axis split")?;
         let failed = |s: &mut Session, code: &str| output(s, code).err().unwrap_or_default();
@@ -7472,11 +7191,8 @@ mod tests {
         Ok(())
     }
 
-    /// Given workspace names are unique; unnamed workspaces stay unnamed.
-    /// A failed creation uses no ids.
     #[test]
-    fn workspace_names_stay_unique_and_failures_use_no_ids()
-    -> Result<(), Box<dyn std::error::Error>> {
+    fn workspace_names_stay_unique_and_failures_use_no_ids() -> TestResult {
         let mut s = started()?;
         assert!(run(&mut s, "opts 80 24 size str +1 name new-workspace").is_err());
         assert_eq!(
@@ -7497,10 +7213,8 @@ mod tests {
         Ok(())
     }
 
-    /// A hidden tab's effective label invalidates its workspace's bar;
-    /// ordinary hidden output, or a title hidden by a given name, does not.
     #[test]
-    fn a_hidden_tabs_label_change_repaints_its_workspace() -> Result<(), String> {
+    fn a_hidden_tabs_label_change_repaints_its_workspace() -> TestResult {
         let (mut s, client) = attached(10, 80)?;
         run(&mut s, "opts +1 in 80 24 size new-tab drop")?;
         let pane = PaneId::of(2);
@@ -7532,13 +7246,8 @@ mod tests {
         Ok(())
     }
 
-    /// Only screens that may have changed are repainted: keys typed into a
-    /// pane repaint the typist's screen alone (the program's output
-    /// repaints its viewers when it comes), commands that only read repaint
-    /// none, and a command that changes the layout repaints every client.
     #[test]
-    fn only_screens_that_may_change_are_marked_for_painting()
-    -> Result<(), Box<dyn std::error::Error>> {
+    fn only_screens_that_may_change_are_marked_for_painting() -> TestResult {
         let (mut s, one) = attached(10, 40)?;
         let two = s.attach(10, 40, None)?;
         let clean = |s: &mut Session| {
@@ -7600,10 +7309,8 @@ mod tests {
         Ok(())
     }
 
-    /// A replacement parser reuses row ids, but owns none of the old
-    /// program's selection. Respawning ends that copy mode visibly.
     #[test]
-    fn a_copy_selection_cannot_cross_a_respawn() -> Result<(), String> {
+    fn a_copy_selection_cannot_cross_a_respawn() -> TestResult {
         use crate::act::{Act, CopyAct, ScreenAct};
         let (mut s, c) = attached(24, 80)?;
         output_as(
@@ -7653,55 +7360,34 @@ mod tests {
         Ok(())
     }
 
-    /// Output can drop history rows a copy mode holds: the settle that
-    /// follows it ends copy mode when they go.
     #[test]
-    fn output_that_drops_a_copy_modes_rows_ends_it() -> Result<(), Box<dyn std::error::Error>> {
-        // Two rows of a cell or none, never three: 24 bytes a row, 8 a cell.
-        let mut s = started()?;
-        run(&mut s, "%1 64 history-budget")?;
-        let client = s.attach(6, 20, None)?;
-        s.out(PaneId::of(1), b"a\r\nb\r\nc\r\nd\r\ne\r\nf\r\n");
-        run(&mut s, "str c1 client copy-mode")?;
-        // To the oldest row, which the next lines of output push out.
-        s.input(client, b"g");
-        s.out(PaneId::of(1), b"g\r\nh\r\ni\r\nj\r\n");
-        s.hold_copies();
-        let view = s.views.get(&client).ok_or("the view")?;
-        assert!(matches!(view.mode, Mode::Normal), "copy mode ended");
-        assert!(
-            view.notice
-                .as_ref()
-                .is_some_and(|n| n.text.contains("dropped the rows")),
-            "and said why"
-        );
+    fn copy_mode_ends_when_its_retained_rows_disappear() -> TestResult {
+        for resize in [false, true] {
+            let mut s = started()?;
+            run(&mut s, "%1 64 history-budget")?;
+            let client = s.attach(6, 20, None)?;
+            s.out(PaneId::of(1), b"a\r\nb\r\nc\r\nd\r\ne\r\nf\r\n");
+            run(&mut s, "str c1 client copy-mode")?;
+            s.input(client, b"g");
+            if resize {
+                s.size_client(client, 3, 20)?;
+            } else {
+                s.out(PaneId::of(1), b"g\r\nh\r\ni\r\nj\r\n");
+                s.hold_copies();
+            }
+            let view = s.views.get(&client).ok_or("the view")?;
+            assert!(view.mode.is_normal());
+            assert!(
+                view.notice
+                    .as_ref()
+                    .is_some_and(|n| n.text.contains("dropped the rows"))
+            );
+        }
         Ok(())
     }
 
-    /// A client shrinking the pane pushes rows into its history, which may
-    /// drop the ones copy mode holds: copy mode ends in the same settle, so
-    /// no paint shows it without them.
     #[test]
-    fn copy_mode_ends_when_sizing_its_pane_drops_its_rows() -> Result<(), Box<dyn std::error::Error>>
-    {
-        // Two rows of a cell or none, never three: 24 bytes a row, 8 a cell.
-        let mut s = started()?;
-        run(&mut s, "%1 64 history-budget")?;
-        let client = s.attach(6, 20, None)?;
-        s.out(PaneId::of(1), b"a\r\nb\r\nc\r\nd\r\ne\r\nf\r\n");
-        run(&mut s, "str c1 client copy-mode")?;
-        s.input(client, b"g");
-        s.size_client(client, 3, 20)?;
-        let view = s.views.get(&client).ok_or("the view")?;
-        assert!(matches!(view.mode, Mode::Normal), "copy mode ended");
-        Ok(())
-    }
-
-    /// A client's size is at most `view::MOST` each way, and only a size
-    /// that changes it resizes and repaints it: the same size again changes
-    /// nothing, and one past the bound, or of no rows, is refused.
-    #[test]
-    fn only_a_size_that_changes_a_client_resizes_it() -> Result<(), Box<dyn std::error::Error>> {
+    fn only_a_size_that_changes_a_client_resizes_it() -> TestResult {
         let (mut s, c) = attached(10, 40)?;
         let past = view::MOST.saturating_add(1);
         for (rows, changes) in [
@@ -7727,10 +7413,8 @@ mod tests {
         Ok(())
     }
 
-    /// What no command may do is refused: a name a target would read as
-    /// an id, or blank, or too long, or taken; a move with nowhere to go.
     #[test]
-    fn what_cannot_be_done_is_refused() -> Result<(), Box<dyn std::error::Error>> {
+    fn what_cannot_be_done_is_refused() -> TestResult {
         let (mut s, _) = attached(10, 40)?;
         let long = format!(
             "str %1 pane str {} rename",
@@ -7751,10 +7435,8 @@ mod tests {
         Ok(())
     }
 
-    /// A client's screen asked for from elsewhere is relayed to the client,
-    /// which opens it, or shows why it cannot.
     #[test]
-    fn a_screen_asked_from_elsewhere_is_the_clients() -> Result<(), Box<dyn std::error::Error>> {
+    fn a_screen_asked_from_elsewhere_is_the_clients() -> TestResult {
         let (mut s, c) = attached(10, 40)?;
         run(
             &mut s,
@@ -7779,9 +7461,8 @@ mod tests {
         Ok(())
     }
 
-    /// Names are given; ids and display labels never manufacture one.
     #[test]
-    fn only_given_names_are_resolved() -> Result<(), Box<dyn std::error::Error>> {
+    fn only_given_names_are_resolved() -> TestResult {
         let (mut s, _) = attached(10, 40)?;
         assert_eq!(
             output(&mut s, "%1 str name get @1 str name get +1 str name get")?,
@@ -7814,9 +7495,8 @@ mod tests {
         Ok(())
     }
 
-    /// A container has its own fields and never stands for its only member.
     #[test]
-    fn lookups_do_not_depend_on_layout_shape() -> Result<(), String> {
+    fn lookups_do_not_depend_on_layout_shape() -> TestResult {
         let mut s = started()?;
         for split in [false, true] {
             if split {
@@ -7830,9 +7510,8 @@ mod tests {
         Ok(())
     }
 
-    /// A direction is required and validated before split can start a process.
     #[test]
-    fn split_requires_an_explicit_axis() -> Result<(), String> {
+    fn split_requires_an_explicit_axis() -> TestResult {
         let (mut s, _) = attached(10, 40)?;
         let ids = s.ids.clone();
         for code in ["%1 split", "%1 str diagonal axis split"] {
@@ -7844,9 +7523,8 @@ mod tests {
         Ok(())
     }
 
-    /// Scalar options, including aliases for one slot, never overwrite a value.
     #[test]
-    fn scalar_request_slots_are_given_once() -> Result<(), String> {
+    fn scalar_request_slots_are_given_once() -> TestResult {
         let (mut s, _) = attached(10, 40)?;
         let ids = s.ids.clone();
         for (base, first, second, action) in [
@@ -7937,15 +7615,10 @@ mod tests {
         Ok(())
     }
 
-    /// A live pane reads its cheap projection; held observations survive closure.
     #[test]
-    fn versions_keep_the_observation_they_name() -> Result<(), String> {
+    fn versions_keep_the_observation_they_name() -> TestResult {
         let (mut s, _) = attached(10, 40)?;
-        let initial = s
-            .pane(PaneId::of(1))
-            .map_err(|e| e.to_string())?
-            .version(s.run)
-            .to_string();
+        let initial = s.pane(PaneId::of(1))?.version(s.run).to_string();
         assert_eq!(output(&mut s, "%1 version")?, format!("{initial}\n"));
         assert_eq!(
             output(&mut s, &format!("str {initial} version"))?,
@@ -7962,9 +7635,8 @@ mod tests {
         Ok(())
     }
 
-    /// Structural mistakes and missing client context retain catchable recovery.
     #[test]
-    fn structural_and_context_recovery_codes_are_shared() -> Result<(), String> {
+    fn structural_and_context_recovery_codes_are_shared() -> TestResult {
         let (mut s, _) = attached(10, 40)?;
         for source in ["opts run", "opts str x arg new-tab", "%1 send-keys"] {
             let caught = output(
@@ -7983,9 +7655,8 @@ mod tests {
         Ok(())
     }
 
-    /// A launch without a workspace is refused before anything is made.
     #[test]
-    fn run_requires_an_explicit_workspace() -> Result<(), String> {
+    fn run_requires_an_explicit_workspace() -> TestResult {
         let mut s = started()?;
         let ids = s.ids.clone();
         let error = output(&mut s, "opts 80 24 size str /bin/cat program run")
@@ -8001,10 +7672,8 @@ mod tests {
         Ok(())
     }
 
-    /// A given name identical to a former generated name remains given;
-    /// renaming another tab never changes it or an unnamed neighbour.
     #[test]
-    fn names_are_not_reassigned_to_other_tabs() -> Result<(), String> {
+    fn names_are_not_reassigned_to_other_tabs() -> TestResult {
         let mut s = started()?;
         run(&mut s, "opts 80 24 size +1 in new-tab drop")?;
         run(&mut s, "@1 str tab-2 rename")?;
@@ -8014,20 +7683,12 @@ mod tests {
             output(&mut s, "@1 str name get @2 str name get")?,
             "given\ntab-2\n"
         );
-        assert!(
-            s.dump_recipe(None)
-                .map_err(|e| e.to_string())?
-                .contains("str 'tab-2' rename")
-        );
+        assert!(s.dump_recipe(None)?.contains("str 'tab-2' rename"));
         Ok(())
     }
 
-    /// A capture's cursor is the screen's row and column, as answers and
-    /// a mouse event count them, whatever its lines join or take: on a
-    /// blank row trimmed away too; none while hidden, or on the screen not
-    /// captured.
     #[test]
-    fn a_captures_cursor_is_the_screens() -> Result<(), Box<dyn std::error::Error>> {
+    fn a_captures_cursor_is_the_screens() -> TestResult {
         let (mut s, _) = attached(10, 40)?;
         let cursor = |s: &mut Session, read: &str| -> Result<String, String> {
             let json = output(s, &format!("%1 {read} capture json"))?;
@@ -8079,12 +7740,8 @@ mod tests {
         Ok(())
     }
 
-    /// An action's answer is its pane, to every word that wants a pane:
-    /// `pane`, `tab` and `workspace` too; and `json` gives it as it gives
-    /// it alone, in a list too.
     #[test]
-    fn an_actions_answer_keeps_held_fields_and_targets_its_pane()
-    -> Result<(), Box<dyn std::error::Error>> {
+    fn an_actions_answer_keeps_held_fields_and_targets_its_pane() -> TestResult {
         let (mut s, _) = attached(10, 40)?;
         let act = "%1 str x text send-keys";
         assert!(
@@ -8109,11 +7766,8 @@ mod tests {
         Ok(())
     }
 
-    /// A failure is one line, says what a word takes and how it is used,
-    /// and is of the kind it is: a string counted is a type error, a file
-    /// not there says so.
     #[test]
-    fn failures_say_what_a_word_takes() -> Result<(), Box<dyn std::error::Error>> {
+    fn failures_say_what_a_word_takes() -> TestResult {
         let (mut s, _) = attached(10, 40)?;
         let failed = |s: &mut Session, code: &str| match output(s, code) {
             Ok(out) => format!("ran: {out}"),
@@ -8190,10 +7844,8 @@ mod tests {
         stream.lines(s.parts.journal(), |t| s.holder(t)).0
     }
 
-    /// A rename and its undo in one request are both told, in order: what
-    /// changed and changed back is not lost.
     #[test]
-    fn a_rename_and_its_undo_are_both_told() -> Result<(), String> {
+    fn a_rename_and_its_undo_are_both_told() -> TestResult {
         let mut s = started()?;
         let mut ran = Ok(());
         let lines = told(&mut s, |s| {
@@ -8215,10 +7867,8 @@ mod tests {
         Ok(())
     }
 
-    /// A tab made with a name is told made with it, not with another
-    /// and then renamed.
     #[test]
-    fn a_tab_made_with_a_name_is_told_made_with_it() -> Result<(), String> {
+    fn a_tab_made_with_a_name_is_told_made_with_it() -> TestResult {
         let mut s = started()?;
         let mut ran = Ok(());
         let lines = told(&mut s, |s| {
@@ -8238,10 +7888,8 @@ mod tests {
         Ok(())
     }
 
-    /// Changes to two panes and a tab are told in the order they happened,
-    /// not by where they happened.
     #[test]
-    fn events_are_told_in_the_order_they_happened() -> Result<(), String> {
+    fn events_are_told_in_the_order_they_happened() -> TestResult {
         let mut s = started()?;
         run(&mut s, "%1 str horizontal axis split drop")?;
         let mut ran = Ok(());
@@ -8263,54 +7911,44 @@ mod tests {
         Ok(())
     }
 
-    /// A shell pane's exit is told, its status with it, then its close
-    /// (and the pane that takes its room).
     #[test]
-    fn a_shell_panes_exit_is_told_before_its_close() -> Result<(), String> {
-        let mut s = started()?;
-        run(&mut s, "%1 str horizontal axis split drop")?;
-        let lines = told(&mut s, |s| {
-            s.end_program(PaneId::of(2), Ended::Signalled(9))
-        });
-        let said = concat!(
-            r#"{"event":"exited","pane":"%2","tab":"@1","workspace":"+1","signal":9}"#,
-            "\n",
-            r#"{"event":"closed","pane":"%2","tab":"@1","workspace":"+1"}"#,
-            "\n",
-            r#"{"event":"resized","pane":"%1","tab":"@1","workspace":"+1","cols":80,"rows":24}"#,
-            "\n"
-        );
-        assert_eq!(lines, said);
+    fn final_output_precedes_exit_close_and_sibling_resize() -> TestResult {
+        for (ended, status, output) in [
+            (Ended::Signalled(9), "\"signal\":9", false),
+            (Ended::Exited(0), "\"exited\":0", true),
+        ] {
+            let mut s = started()?;
+            run(&mut s, "%1 str horizontal axis split drop")?;
+            let lines = told(&mut s, |s| {
+                if output {
+                    s.out(PaneId::of(2), b"\x1b[?2026h\x07\x1b]2;bye\x07");
+                }
+                s.end_program(PaneId::of(2), ended);
+            });
+            let prefix = if output {
+                concat!(
+                    r#"{"event":"bell","pane":"%2","tab":"@1","workspace":"+1"}"#,
+                    "\n",
+                    r#"{"event":"title","pane":"%2","tab":"@1","workspace":"+1","title":"bye"}"#,
+                    "\n"
+                )
+            } else {
+                ""
+            };
+            assert_eq!(
+                lines,
+                format!(
+                    "{prefix}{{\"event\":\"exited\",\"pane\":\"%2\",\"tab\":\"@1\",\"workspace\":\"+1\",{status}}}\n{}\n{}\n",
+                    r#"{"event":"closed","pane":"%2","tab":"@1","workspace":"+1"}"#,
+                    r#"{"event":"resized","pane":"%1","tab":"@1","workspace":"+1","cols":80,"rows":24}"#
+                )
+            );
+        }
         Ok(())
     }
 
-    /// What a shell wrote as it exited, a frame it held too, is read
-    /// before its exit is told: its bell and title are not lost.
     #[test]
-    fn a_shells_last_output_is_told_before_its_exit() -> Result<(), String> {
-        let mut s = started()?;
-        run(&mut s, "%1 str horizontal axis split drop")?;
-        let lines = told(&mut s, |s| {
-            s.out(PaneId::of(2), b"\x1b[?2026h\x07\x1b]2;bye\x07");
-            s.end_program(PaneId::of(2), Ended::Exited(0));
-        });
-        let said = concat!(
-            r#"{"event":"bell","pane":"%2","tab":"@1","workspace":"+1"}"#,
-            "\n",
-            r#"{"event":"title","pane":"%2","tab":"@1","workspace":"+1","title":"bye"}"#,
-            "\n",
-            r#"{"event":"exited","pane":"%2","tab":"@1","workspace":"+1","exited":0}"#,
-            "\n",
-            r#"{"event":"closed","pane":"%2","tab":"@1","workspace":"+1"}"#,
-            "\n"
-        );
-        assert!(lines.starts_with(said), "{lines}");
-        Ok(())
-    }
-
-    /// One scoped recipe retains exact shares, roles, argv, env and text paths.
-    #[test]
-    fn library_dump_replays_exact_shares_and_launch_inputs_in_its_scope() -> Result<(), String> {
+    fn library_dump_replays_exact_shares_and_launch_inputs_in_its_scope() -> TestResult {
         let mut source = started()?;
         let value = "apostrophe' backslash\\\nstr INJECTED print\n# 雪";
         let directory = format!("/saved/{value}");
@@ -8381,23 +8019,8 @@ mod tests {
         Ok(())
     }
 
-    /// A dump names only tabs given a name, regardless of their order.
     #[test]
-    fn a_dump_names_only_the_tabs_given_a_name() -> Result<(), String> {
-        let mut s = started()?;
-        let tab = "opts 80 24 size str +1 workspace in new-tab drop";
-        run(&mut s, &format!("{tab} {tab} str @2 tab kill"))?;
-        run(&mut s, &format!("{tab} str @4 tab str given rename"))?;
-        let dump = s.dump_recipe(None).map_err(|e| e.to_string())?;
-        assert!(!dump.contains("tab-3"), "{dump}");
-        assert!(dump.contains("given"), "{dump}");
-        Ok(())
-    }
-
-    /// Dump preserves given names, including old automatic spellings,
-    /// and never promotes a label to a name.
-    #[test]
-    fn a_dump_preserves_given_and_absent_names() -> Result<(), String> {
+    fn a_dump_preserves_given_and_absent_names() -> TestResult {
         let mut source = started()?;
         run(
             &mut source,
@@ -8408,10 +8031,14 @@ mod tests {
             &mut source,
             "opts +1 in 80 24 size str cat name str /bin/cat program run str new-workspace move",
         )?;
-        run(&mut source, "opts +2 in 80 24 size new-tab drop")?;
+        run(
+            &mut source,
+            "opts +2 in 80 24 size new-tab drop opts +2 in 80 24 size new-tab drop @3 kill opts +2 in 80 24 size new-tab str given rename",
+        )?;
         run(&mut source, "str shell list str /bin/other end set")?;
-        let dump = source.dump_recipe(None).map_err(|e| e.to_string())?;
+        let dump = source.dump_recipe(None)?;
         assert!(!dump.contains("str other rename"), "{dump}");
+        assert!(dump.contains("given"), "{dump}");
         let mut again = started()?;
         run(&mut again, &dump).map_err(|error| format!("{error}\n{dump}"))?;
         let names = |s: &Session| {
@@ -8447,14 +8074,13 @@ mod tests {
         Ok(())
     }
 
-    /// A shell with no readable current directory keeps its saved launch cwd.
     #[test]
-    fn a_dump_keeps_the_saved_shell_directory() -> Result<(), String> {
+    fn a_dump_keeps_the_saved_shell_directory() -> TestResult {
         let s = started()?;
-        let dump = s.dump_recipe(None).map_err(|e| e.to_string())?;
-        let cwd = std::env::current_dir().map_err(|e| e.to_string())?;
+        let dump = s.dump_recipe(None)?;
+        let cwd = std::env::current_dir()?;
         let cwd = cwd.to_str().ok_or("cwd text")?;
-        let tokens = fuxth::token::source("dump", &dump).map_err(|e| e.to_string())?;
+        let tokens = fuxth::token::source("dump", &dump)?;
         assert!(
             tokens
                 .iter()
@@ -8473,23 +8099,16 @@ mod tests {
         Ok(())
     }
 
-    /// A pane whose directory is not UTF-8 text, which a fuxth string
-    /// cannot hold, is dumped without it, never with a changed path: a
-    /// comment names the pane. Linux only: macOS's file systems refuse a
-    /// name that is not UTF-8.
     #[cfg(target_os = "linux")]
     #[test]
-    fn a_dump_leaves_out_a_directory_that_is_not_text() -> Result<(), Box<dyn std::error::Error>> {
+    fn a_dump_leaves_out_a_directory_that_is_not_text() -> TestResult {
         use std::os::unix::ffi::OsStrExt;
         let dir = (fuxix::file::scratch()?.join(format!("fux-dump-{}", std::process::id())))
             .join(std::ffi::OsStr::from_bytes(b"caf\xe9"));
         std::fs::create_dir_all(&dir)?;
         let mut s = started()?;
         let program = Command::Run {
-            options: crate::script::default_state()
-                .map_err(|e| e.to_string())?
-                .preferences
-                .pane_options(),
+            options: crate::script::default_state()?.preferences.pane_options(),
             workspace: WsRef::Name("agent".into()),
             name: None,
             size: Some(crate::view::Screen::new(24, 80)?),
@@ -8498,7 +8117,7 @@ mod tests {
             argv: command::Program::new("cat".into(), Vec::new())?,
         };
         s.execute(&program, &Origin::Cli(Caller::default()), Instant::now())?;
-        let dump = s.dump_recipe(None).map_err(|e| e.to_string())?;
+        let dump = s.dump_recipe(None)?;
         let _ = dir.parent().map(std::fs::remove_dir_all);
         let told = dump.contains("# %2: directory bytes (hex) ") && dump.contains("636166e9");
         let written = dump
@@ -8511,57 +8130,38 @@ mod tests {
         Ok(())
     }
 
-    /// A dump makes a tab that fits clients' screens at the size it has,
-    /// and it fits them again; a tab given a size keeps it.
     #[test]
-    fn a_dump_keeps_which_tabs_fit_clients() -> Result<(), String> {
-        let (mut s, _) = attached(11, 40)?;
-        run(&mut s, "opts 60 20 size str +1 workspace in new-tab drop")?;
-        let dump = s.dump_recipe(None).map_err(|e| e.to_string())?;
-        let mut again = started()?;
-        run(&mut again, &dump)?;
-        let tabs = (again.parts.workspaces().iter()).flat_map(|w| w.tabs());
-        let fits: Vec<_> = tabs.map(|t| matches!(t.fit(), Fit::Clients(_))).collect();
-        assert!(fits.ends_with(&[true, false]), "{dump}");
-        Ok(())
-    }
-
-    /// A tab as big as a client's screen may be, which a tab that fits
-    /// clients takes, is made again from its dump.
-    #[test]
-    fn a_dump_makes_a_tab_as_big_as_a_screen_again() -> Result<(), String> {
-        let mut s = started()?;
-        run(&mut s, "opts 600 40 size str +1 workspace in new-tab drop")?;
-        let mut again = started()?;
-        run(&mut again, &s.dump_recipe(None).map_err(|e| e.to_string())?)?;
-        let tabs = (again.parts.workspaces().iter()).flat_map(|w| w.tabs());
-        let mut sizes = tabs.map(|t| t.fit().size());
-        let wide = sizes.any(|s| (s.cols(), s.rows()) == (600, 40));
-        assert!(wide, "{}", s.dump_recipe(None).map_err(|e| e.to_string())?);
-        Ok(())
-    }
-
-    /// A dump of a tab is made again however its clients showed it: a
-    /// pane zoomed, which has the whole screen; a screen too small for
-    /// every pane, whose size the tab does not take.
-    #[test]
-    fn a_dump_is_made_again_however_its_tab_was_shown() -> Result<(), String> {
+    fn dumps_preserve_tab_sizing_independently_of_client_views() -> TestResult {
         let (mut s, c) = attached(11, 40)?;
+        run(&mut s, "opts 600 40 size +1 in new-tab drop")?;
         run(
             &mut s,
             "%1 str horizontal axis split drop %1 str vertical axis split drop",
         )?;
         run(&mut s, "str c1 client %1 show str c1 client zoom")?;
-        let replays = |s: &Session| {
-            let dump = s.dump_recipe(None).map_err(|e| e.to_string())?;
+        for tiny in [false, true] {
+            if tiny {
+                run(&mut s, "str c1 client zoom")?;
+                s.size_client(c, 2, 2)?;
+            }
+            let dump = s.dump_recipe(None)?;
             let mut again = started()?;
             run(&mut again, &dump).map_err(|e| format!("{e}\n{dump}"))?;
-            Ok::<_, String>(again.parts.panes().len())
-        };
-        assert_eq!(replays(&s)?, 4);
-        run(&mut s, "str c1 client zoom")?;
-        s.size_client(c, 2, 2).map_err(|e| e.to_string())?;
-        assert_eq!(replays(&s)?, 4);
+            let tabs = again
+                .parts
+                .workspaces()
+                .iter()
+                .flat_map(|w| w.tabs())
+                .collect::<Vec<_>>();
+            let fits = tabs
+                .iter()
+                .map(|t| matches!(t.fit(), Fit::Clients(_)))
+                .collect::<Vec<_>>();
+            assert!(fits.ends_with(&[true, false]), "{dump}");
+            assert_eq!(tabs.last().map(|t| t.fit().size()), Some(sized(40, 600)?));
+            assert_eq!(again.parts.panes().len(), s.parts.panes().len() + 1);
+            assert_eq!(replayed(&s, TabId::of(1))?, rects(&s, TabId::of(1)));
+        }
         Ok(())
     }
 
@@ -8591,11 +8191,8 @@ mod tests {
         Ok(made.map(|t| rects(&again, t.id())).unwrap_or_default())
     }
 
-    /// A tab given a size is split only while that size shows every pane,
-    /// though a bigger screen shows it: no pane is hidden once that screen
-    /// goes, and its dump makes it again.
     #[test]
-    fn a_tab_given_a_size_splits_only_while_it_shows_every_pane() -> Result<(), String> {
+    fn a_tab_given_a_size_splits_only_while_it_shows_every_pane() -> TestResult {
         let (mut s, _) = attached(50, 200)?;
         let tab = "opts 40 12 size str +1 workspace in new-tab drop";
         run(&mut s, &format!("{tab} str c1 client str @2 tab show"))?;
@@ -8616,14 +8213,10 @@ mod tests {
         Ok(())
     }
 
-    /// A tab that fits clients is split only while every screen showing it
-    /// shows every pane, but one that only watches: the size it keeps,
-    /// which its dump makes it at, shows them all.
     #[test]
-    fn a_tab_fitting_clients_splits_only_while_each_screen_shows_every_pane() -> Result<(), String>
-    {
+    fn a_tab_fitting_clients_splits_only_while_each_screen_shows_every_pane() -> TestResult {
         let (mut s, _) = attached(50, 200)?;
-        s.attach(50, 30, None).map_err(|e| e.to_string())?;
+        s.attach(50, 30, None)?;
         watch(&mut s, 50, 8)?;
         // Ten panes side by side take their 2 columns each and 9 separators.
         for _ in 1..10 {
@@ -8641,25 +8234,8 @@ mod tests {
         Ok(())
     }
 
-    /// Panes are made again at the places they had: 81, 9 and 8 of 100
-    /// columns, each split's nearest to its shares.
     #[test]
-    fn a_dump_makes_its_panes_again_where_they_were() -> Result<(), String> {
-        let mut s = started()?;
-        let tab = "opts 100 10 size str +1 workspace in new-tab drop";
-        let splits = "%2 str horizontal axis 80 18 shares split drop %3 str horizontal axis 10 8 shares split drop";
-        run(&mut s, &format!("{tab} {splits}"))?;
-        let tab: TabId = "@2".parse().map_err(|_| "@2")?;
-        let widths: Vec<u16> = rects(&s, tab).iter().map(Rect::w).collect();
-        assert_eq!(widths, [81, 9, 8]);
-        assert_eq!(replayed(&s, tab)?, rects(&s, tab));
-        Ok(())
-    }
-
-    /// A pane split with shares starts at the size its share gives it,
-    /// not resized to it after its program starts.
-    #[test]
-    fn a_split_with_shares_starts_at_its_share() -> Result<(), String> {
+    fn a_split_with_shares_starts_at_its_share() -> TestResult {
         let mut s = started()?;
         run(&mut s, "opts 100 10 size str +1 workspace in new-tab drop")?;
         let lines = told(&mut s, |s| {
@@ -8672,15 +8248,11 @@ mod tests {
         Ok(())
     }
 
-    /// A pane starts at the size settling gives it, however many clients
-    /// show its tab: a split's, the smallest of the screens showing it, a
-    /// client zoomed that follows it unzoomed; a tab's its client follows,
-    /// that client's screen, not the size given for while none shows it.
     #[test]
-    fn a_pane_starts_at_the_size_its_screens_give_it() -> Result<(), String> {
+    fn a_pane_starts_at_the_size_its_screens_give_it() -> TestResult {
         let mut s = started()?;
-        let wide = s.attach(11, 101, None).map_err(|e| e.to_string())?;
-        s.attach(11, 81, None).map_err(|e| e.to_string())?;
+        let wide = s.attach(11, 101, None)?;
+        s.attach(11, 81, None)?;
         let size = |s: &Session, id| s.parts.panes().get(&PaneId::of(id)).map(Pane::size);
         // The narrow one, zoomed, follows the split unzoomed.
         run(&mut s, "str c2 client zoom")?;
@@ -8705,17 +8277,14 @@ mod tests {
         Ok(())
     }
 
-    /// A client with no room for a pane sizes no new tab it makes: its
-    /// tab does; nor is a pane moved where the client following it would
-    /// hide one.
     #[test]
-    fn a_screen_with_no_room_sizes_no_pane() -> Result<(), String> {
+    fn a_screen_with_no_room_sizes_no_pane() -> TestResult {
         let mut s = started()?;
-        let small = s.attach(5, 6, None).map_err(|e| e.to_string())?;
+        let small = s.attach(5, 6, None)?;
         // A client of one row has no room: its tab, which the other
         // client's screen sizes, sizes the tab it makes.
-        let one = s.attach(1, 40, None).map_err(|e| e.to_string())?;
-        s.attach(11, 40, None).map_err(|e| e.to_string())?;
+        let one = s.attach(1, 40, None)?;
+        s.attach(11, 40, None)?;
         s.detach_client(small);
         output_as(
             &mut s,
@@ -8724,7 +8293,7 @@ mod tests {
         )?;
         let size = s.parts.panes().get(&PaneId::of(2)).map(Pane::size);
         assert_eq!(size, Some(sized(10, 40)?));
-        let small = s.attach(5, 6, None).map_err(|e| e.to_string())?;
+        let small = s.attach(5, 6, None)?;
         let made = "opts 100 10 size str +1 workspace in str / cwd new-tab \
                     dup str horizontal axis str / cwd split drop dup str horizontal axis str / cwd split drop str horizontal axis str / cwd split drop";
         run(&mut s, made)?;
@@ -8737,13 +8306,10 @@ mod tests {
         Ok(())
     }
 
-    /// A screen with no room below its bar shows no layout and sizes
-    /// nothing: it refuses no split of the tab it shows, and a pane it
-    /// moves to a tab made for it is in that tab, never leaving one empty.
     #[test]
-    fn a_screen_with_no_room_refuses_nothing() -> Result<(), String> {
+    fn a_screen_with_no_room_refuses_nothing() -> TestResult {
         let (mut s, _) = attached(11, 40)?;
-        let tiny = s.attach(1, 40, None).map_err(|e| e.to_string())?;
+        let tiny = s.attach(1, 40, None)?;
         run(
             &mut s,
             "%1 str horizontal axis split drop %1 str horizontal axis split drop",
@@ -8762,16 +8328,14 @@ mod tests {
         Ok(())
     }
 
-    /// No border moves on a screen too small to show every pane: a hidden
-    /// pane has no place to move one from.
     #[test]
-    fn no_border_moves_where_a_pane_is_hidden() -> Result<(), String> {
+    fn no_border_moves_where_a_pane_is_hidden() -> TestResult {
         let (mut s, c) = attached(11, 40)?;
         run(
             &mut s,
             "%1 str horizontal axis split drop %2 str horizontal axis split drop",
         )?;
-        s.size_client(c, 11, 6).map_err(|e| e.to_string())?;
+        s.size_client(c, 11, 6)?;
         let refused = run(&mut s, "%1 str right 1 move-border").err();
         let refused = refused.unwrap_or_default();
         assert!(
@@ -8781,21 +8345,34 @@ mod tests {
         Ok(())
     }
 
-    /// Shares divide the room of the pane split, whatever is beside it,
-    /// exactly: the others keep theirs, and a dump makes the split again,
-    /// whatever the shares.
     #[test]
-    fn shares_divide_the_split_panes_room() -> Result<(), String> {
+    fn shares_divide_the_split_panes_room() -> TestResult {
         let tab: TabId = "@2".parse().map_err(|_| "@2")?;
         let widths = |s: &Session| rects(s, tab).iter().map(Rect::w).collect::<Vec<u16>>();
-        let made = "opts 101 10 size str +1 workspace in new-tab drop";
-        for halved in ["", "1 1 shares"] {
+        let made = "opts 101 10 size +1 in new-tab drop";
+        for (cols, split, expected) in [
+            (
+                100,
+                "%2 str horizontal axis 80 18 shares split drop %3 str horizontal axis 10 8 shares split drop",
+                [81, 9, 8],
+            ),
+            (
+                101,
+                "%2 str horizontal axis split drop %3 str horizontal axis 2 1 shares split drop",
+                [50, 33, 16],
+            ),
+            (
+                101,
+                "%2 str horizontal axis 1 1 shares split drop %3 str horizontal axis 2 1 shares split drop",
+                [50, 33, 16],
+            ),
+        ] {
             let mut s = started()?;
-            let split = format!(
-                "%2 str horizontal axis {halved} split drop %3 str horizontal axis 2 1 shares split drop"
-            );
-            run(&mut s, &format!("{made} {split}"))?;
-            assert_eq!(widths(&s), [50, 33, 16], "{halved}");
+            run(
+                &mut s,
+                &format!("opts {cols} 10 size +1 in new-tab drop {split}"),
+            )?;
+            assert_eq!(widths(&s), expected, "{split}");
             assert_eq!(replayed(&s, tab)?, rects(&s, tab));
         }
         let mut s = started()?;
@@ -8813,10 +8390,8 @@ mod tests {
         Ok(())
     }
 
-    /// Whatever changes a layout, a dump makes it again: each pane where
-    /// it was, at every size.
     #[test]
-    fn every_layout_change_dumps_as_it_is() -> Result<(), String> {
+    fn every_layout_change_dumps_as_it_is() -> TestResult {
         let mut s = started()?;
         let made = "opts 100 30 size str +1 workspace in new-tab drop \
                     opts 100 30 size str +1 workspace in new-tab drop";
@@ -8843,16 +8418,14 @@ mod tests {
             "%6 kill",
         ] {
             run(&mut s, change)?;
-            let dump = s
-                .dump_recipe(Some(AnyRef::Tab(tab)))
-                .map_err(|e| e.to_string())?;
+            let dump = s.dump_recipe(Some(AnyRef::Tab(tab)))?;
             let mut again = started()?;
             run(&mut again, &dump).map_err(|e| format!("{change}: {e}\n{dump}"))?;
             let made = (again.parts.workspaces().iter())
                 .flat_map(|w| w.tabs())
                 .last();
             let (Some(root), Some(made)) = (s.root(tab), made.map(Tab::root)) else {
-                return Err(format!("{change}: no layout"));
+                return Err(format!("{change}: no layout").into());
             };
             for area in areas {
                 let places = |root: &Tree| {
@@ -8868,10 +8441,8 @@ mod tests {
         Ok(())
     }
 
-    /// A pane is not moved where its tab cannot show it, as one is not
-    /// split there: it would be hidden, and its dump not made again.
     #[test]
-    fn a_pane_is_not_moved_where_it_would_be_hidden() -> Result<(), String> {
+    fn a_pane_is_not_moved_where_it_would_be_hidden() -> TestResult {
         let mut s = started()?;
         let split =
             "opts 5 4 size str +1 workspace in new-tab drop %2 str horizontal axis split drop";
@@ -8887,9 +8458,8 @@ mod tests {
         Ok(())
     }
 
-    /// What a caller tells apart, it tells by variant.
     #[test]
-    fn failures_are_told_apart_by_kind() -> Result<(), Box<dyn std::error::Error>> {
+    fn failures_are_told_apart_by_kind() -> TestResult {
         let (mut s, c) = attached(10, 40)?;
         let origin = Origin::Client(c);
         let mut run =
@@ -8928,6 +8498,7 @@ mod journal_tests {
     use super::*;
     use crate::events::{Actor, Batch, Reader};
     use crate::inspect::Scope;
+    use crate::session::testing::TestResult;
     use testing::{output, run, started};
 
     fn batch(s: &Session, from: crate::events::Cursor) -> Result<Batch, String> {
@@ -8942,7 +8513,7 @@ mod journal_tests {
     }
 
     #[test]
-    fn discrete_layout_and_view_changes_invalidate_in_the_same_turn() -> Result<(), String> {
+    fn discrete_layout_and_view_changes_invalidate_in_the_same_turn() -> TestResult {
         let (mut s, client) = testing::attached(24, 80)?;
         run(
             &mut s,
@@ -8981,7 +8552,7 @@ mod journal_tests {
     }
 
     #[test]
-    fn origins_distinguish_supplied_context_and_deferred_respawn() -> Result<(), String> {
+    fn origins_distinguish_supplied_context_and_deferred_respawn() -> TestResult {
         let (mut s, client) = testing::attached(24, 80)?;
         run(
             &mut s,
@@ -9063,7 +8634,7 @@ mod journal_tests {
     }
 
     #[test]
-    fn copies_reference_only_the_admitted_stable_buffer() -> Result<(), String> {
+    fn copies_reference_only_the_admitted_stable_buffer() -> TestResult {
         let mut s = started()?;
         let from = s.parts.journal().end(s.run);
         s.output(PaneId::of(1), b"\x1b]52;c;aGVsbG8=\x07", Instant::now());
@@ -9094,7 +8665,7 @@ mod journal_tests {
     }
 
     #[test]
-    fn library_streams_checkpoint_and_fail_before_effects_on_loss() -> Result<(), String> {
+    fn library_streams_checkpoint_and_fail_before_effects_on_loss() -> TestResult {
         let mut s = started()?;
         let from = s.parts.journal().end(s.run);
         run(&mut s, "%1 str hello rename")?;
@@ -9124,7 +8695,7 @@ mod journal_tests {
         Ok(())
     }
     #[test]
-    fn client_departures_invalidate_former_tabs_and_workspaces() -> Result<(), String> {
+    fn client_departures_invalidate_former_tabs_and_workspaces() -> TestResult {
         for target in ["@2", "str +2 workspace"] {
             let (mut s, client) = testing::attached(24, 80)?;
             run(
@@ -9151,9 +8722,9 @@ mod journal_tests {
     }
 
     #[test]
-    fn typing_invalidates_a_changed_host_once() -> Result<(), String> {
+    fn typing_invalidates_a_changed_host_once() -> TestResult {
         let (mut s, first) = testing::attached(24, 80)?;
-        let second = s.attach(24, 80, None).map_err(|e| e.to_string())?;
+        let second = s.attach(24, 80, None)?;
         let tab = TabId::of(1);
         assert_eq!(s.host(Some(tab)), Some(first));
         let from = s.parts.journal().end(s.run);
@@ -9179,7 +8750,7 @@ mod journal_tests {
     }
 
     #[test]
-    fn paste_invalidates_notice_dismissal() -> Result<(), String> {
+    fn paste_invalidates_notice_dismissal() -> TestResult {
         let (mut s, client) = testing::attached(24, 80)?;
         s.typed(client);
         s.notify_to(client, "notice", false);
@@ -9197,7 +8768,7 @@ mod journal_tests {
         Ok(())
     }
     #[test]
-    fn copy_motion_only_invalidates_notice_changes() -> Result<(), String> {
+    fn copy_motion_only_invalidates_notice_changes() -> TestResult {
         let (mut s, client) = testing::attached(24, 80)?;
         run(&mut s, &format!("str {client} client copy-mode"))?;
         let from = s.parts.journal().end(s.run);

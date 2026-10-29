@@ -177,6 +177,7 @@ mod tests {
         );
         assert_eq!(texts("dup # a comment\nx#y '#z'")?, ["dup", "x#y", "#z"]);
         assert_eq!(texts("Dup DUP")?, ["Dup", "DUP"], "nothing is lowercased");
+        assert_eq!(texts("1 \\\n 2 add")?, ["1", "2", "add"]);
         Ok(())
     }
 
@@ -197,8 +198,6 @@ mod tests {
         Ok(())
     }
 
-    /// In double quotes, a backslash escapes only `"` and itself; and a
-    /// newline inside them counts toward the next token's line.
     #[test]
     fn double_quotes_escape_little_and_count_lines() -> Result<(), Error> {
         assert_eq!(texts(r#""a\"b" "c\\d" "e\x""#)?, [r#"a"b"#, r"c\d", r"e\x"]);

@@ -235,11 +235,12 @@ impl Preferences {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::session::testing::TestResult;
 
     #[test]
-    fn initialization_requires_every_preference_and_the_prefix() -> Result<(), String> {
+    fn initialization_requires_every_preference_and_the_prefix() -> TestResult {
         assert!(Draft::default().finish().is_err());
-        let state = crate::script::default_state().map_err(|e| e.to_string())?;
+        let state = crate::script::default_state()?;
         let mut draft = state.draft();
         draft.preferences.wait = None;
         assert!(draft.finish().is_err());
@@ -268,7 +269,7 @@ mod tests {
     }
 
     #[test]
-    fn local_settings_keep_the_checked_value_union_and_inner_validators() -> Result<(), String> {
+    fn local_settings_keep_the_checked_value_union_and_inner_validators() -> TestResult {
         let list = |words: &[&str]| {
             fuxth::List::new(words.iter().map(|w| Value::str(*w)).collect())
                 .map(|l| Value::List(fuxth::Shared::new(l)))
@@ -316,11 +317,9 @@ mod tests {
         ] {
             assert!(draft.set(name, &value).is_err(), "{name}: {value:?}");
         }
-        let tokens =
-            fuxth::token::source("test", "str bell str off set").map_err(|e| e.to_string())?;
+        let tokens = fuxth::token::source("test", "str bell str off set")?;
         assert!(crate::script::compile(&tokens).is_err());
-        let tokens =
-            fuxth::token::source("test", "false show-column").map_err(|e| e.to_string())?;
+        let tokens = fuxth::token::source("test", "false show-column")?;
         assert!(crate::script::compile(&tokens).is_err());
         Ok(())
     }
