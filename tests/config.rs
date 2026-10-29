@@ -150,15 +150,7 @@ fn launch_preferences_apply_only_to_new_requests() -> Outcome {
     // Three rows of two cells or more: 24 bytes a row and 8 a cell.
     let server = Server::start("str history-bytes 120 set")?;
     // History bytes apply to new panes.
-    let pane = server.ok(&[
-        "%1",
-        "str",
-        "vertical",
-        "axis",
-        "120",
-        "history-bytes",
-        "split",
-    ])?;
+    let pane = server.words("%1 str vertical axis 120 history-bytes split")?;
     let pane = pane.split(':').next().unwrap_or_default();
     server.type_line(
         pane,
@@ -194,24 +186,7 @@ fn launch_preferences_apply_only_to_new_requests() -> Outcome {
     ])?;
     assert_eq!(failed.status, 1);
     // A new shell program applies to new panes.
-    let custom = server.ok(&[
-        "str",
-        "shell",
-        "list",
-        "str",
-        "/usr/bin/env",
-        "str",
-        "PS1=custom$",
-        "str",
-        "/bin/sh",
-        "end",
-        "set",
-        "%1",
-        "str",
-        "horizontal",
-        "axis",
-        "split",
-    ])?;
+    let custom = server.words("str shell list str /usr/bin/env str PS1=custom$ str /bin/sh end set %1 str horizontal axis split")?;
 
     eventually("the custom prompt", || {
         Ok(server
@@ -946,16 +921,7 @@ fn pane_creation_overrides_preserve_zero_and_false_and_dump_replays_them() -> Ou
             .trim(),
         "false"
     );
-    server.ok(&[
-        "str",
-        "history-bytes",
-        "1024",
-        "set",
-        "str",
-        "program-clipboard",
-        "true",
-        "set",
-    ])?;
+    server.words("str history-bytes 1024 set str program-clipboard true set")?;
     assert_eq!(
         server.ok(&[pane, "str", "history_bytes", "get"])?.trim(),
         "0"

@@ -170,7 +170,6 @@ fn history_ids_survive_scrolling_and_recycled_slots_do_not_alias() -> Result {
     assert_eq!(row.cell(0).ok_or(Error::InvalidRange)?.contents(), "o");
     assert!(p.screen().full_refresh_since(mark));
     assert_eq!(p.screen().dirty_rows_since(mark).count(), 5);
-    assert_eq!(p.screen().dirty_rows_since(mark).count(), 5);
     assert_eq!(
         p.screen()
             .rows()

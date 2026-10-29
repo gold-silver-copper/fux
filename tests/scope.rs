@@ -13,16 +13,7 @@ fn held_handles_refuse_another_server_before_mutating_it() -> Outcome {
     let a = Server::start("")?;
     let b = Server::start("")?;
     for server in [&a, &b] {
-        server.ok(&[
-            "agent-opts",
-            "80",
-            "24",
-            "size",
-            "str",
-            "cat",
-            "program",
-            "run",
-        ])?;
+        server.words("agent-opts 80 24 size str cat program run")?;
     }
     // A scoped attach must refuse the foreign run without changing b.
     std::fs::write(
@@ -200,15 +191,7 @@ fn reserved_environment_names_are_refused_before_spawning() -> Outcome {
         assert_eq!(server.panes()?.len(), 1);
     }
     // The reservation is the exact identity set, not a prefix rule.
-    server.ok(&[
-        "str",
-        "copy-environment",
-        "list",
-        "str",
-        "FUX_EXTRA",
-        "end",
-        "set",
-    ])?;
+    server.words("str copy-environment list str FUX_EXTRA end set")?;
     server.ok(&[
         "agent-opts",
         "str",

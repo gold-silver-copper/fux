@@ -379,26 +379,13 @@ pub fn checksum(screen: &Snapshot, params: &[u16]) -> Option<String> {
 }
 
 #[cfg(test)]
+#[path = "../../tests/corpus/checksums.rs"]
+mod checksums;
+
+#[cfg(test)]
 mod tests {
     use super::{Answering, Found, Request, find};
     use crate::engine::{ENGINES, Setup};
-    use crate::rng::Rng;
-
-    /// fux-vt answering DECRQCRA itself, as esctest's direct run sets it
-    /// up: the oracle for the checksum read from a snapshot.
-    fn fux_vt(rows: u16, cols: u16) -> Result<fux_vt::Parser, String> {
-        fux_vt::Parser::with_options(crate::vt_size(rows, cols)?, 0, crate::esctest::options())
-            .map_err(|e| e.to_string())
-    }
-
-    #[derive(Default)]
-    struct Replies(Vec<u8>);
-
-    impl fux_vt::Sink for Replies {
-        fn reply(&mut self, bytes: &[u8]) {
-            self.0.extend_from_slice(bytes);
-        }
-    }
 
     /// fux-vt as an engine, which does not answer DECRQCRA: every
     /// checksum then comes from its snapshot.
@@ -412,152 +399,38 @@ mod tests {
         Ok(Answering::new(engine, true))
     }
 
-    /// Both answers to `bytes`, fed `chunk` bytes at a time to the
-    /// snapshot's side.
-    fn both(
-        rows: u16,
-        cols: u16,
-        bytes: &[u8],
-        chunk: usize,
-    ) -> Result<(Vec<u8>, Vec<u8>), String> {
-        let mut oracle = fux_vt(rows, cols)?;
-        let mut sink = Replies::default();
-        oracle
-            .process_with(bytes, &mut sink)
-            .map_err(|e| e.to_string())?;
-        let mut terminal = answering(rows, cols)?;
-        let mut got = Vec::new();
-        let mut rest = bytes;
-        while !rest.is_empty() {
-            let (now, later) = rest
-                .split_at_checked(chunk.min(rest.len()))
-                .unwrap_or((rest, &[]));
-            got.extend(terminal.take(now)?);
-            rest = later;
-        }
-        Ok((sink.0, got))
-    }
-
-    /// A DECRQCRA of every cell, one at a time as esctest asks, then of the
-    /// whole screen, of each row, of a rectangle past the screen's edge and
-    /// of an empty one.
-    fn reads(rows: u16, cols: u16) -> Vec<u8> {
-        let mut out = String::new();
-        let mut id = 1u32;
-        for y in 1..=rows {
-            for x in 1..=cols {
-                out.push_str(&format!("\x1b[{id};0;{y};{x};{y};{x}*y"));
-                id = id.saturating_add(1);
-            }
-            out.push_str(&format!("\x1b[{id};0;{y};1;{y};{cols}*y"));
-        }
-        out.push_str("\x1b[7*y\x1b[8;0;0;0;0;0*y\x1b[9;1;2;3;999;999*y\x1b[10;0;3;3;2;2*y");
-        out.into_bytes()
-    }
-
-    /// Screens to read: attributes (each of the five counted, and colours,
-    /// which are not), wide glyphs (bold too), combining marks, Special
-    /// Graphics, Latin-1 and past it, erasing with a pen, a wide glyph cut
-    /// at the right edge, and the cursor's own reports beside the
-    /// checksums.
-    const SCREENS: &[&str] = &[
-        "abc",
-        "\x1b[1ma\x1b[4mb\x1b[5mc\x1b[7md\x1b[8me\x1b[0m\x1b[31;42mf\x1b[2;3;9mg\x1b[0m",
-        "\x1b[1m漢字\x1b[0mx\x1b[7m字",
-        "e\u{301}\u{302}a\u{20dd}",
-        "\x1b(0`abjklmnqtuvwx~_\x1b(Bq",
-        "\x1b(%5W]wA($\x1b(B",
-        "é£ÿ€\u{1F600}\u{0100}",
-        "abcdef\x1b[1;3H\x1b[1;7m\x1b[K\x1b[2;1H\x1b[4mxyz\x1b[2J",
-        "abcdefg漢",
-        "\x1b[2;3Hx\x1b[6n\x1b[5n",
-    ];
-
-    /// The checksum read from fux-vt's snapshot is fux-vt's own DECRQCRA
-    /// reply, byte for byte, on every screen, whatever the chunks the bytes
-    /// arrive in: so an engine's checksum is fux-vt's sum of the engine's
-    /// screen.
+    /// The adapter and terminal pin the same checksum contributions, including
+    /// wide tails and rendition bits, over chunked and clipped requests.
     #[test]
-    fn checksums_from_a_snapshot_are_fux_vts() -> Result<(), String> {
-        let (rows, cols) = (3u16, 8u16);
-        for screen in SCREENS {
-            let mut bytes = screen.as_bytes().to_vec();
-            bytes.extend(reads(rows, cols));
+    fn checksums_follow_the_dec_character_and_rendition_sums() -> Result<(), String> {
+        // DEC checksum contributions: colours are ignored; only the five
+        // VT100 attributes contribute, and a wide tail contributes ESC.
+        for &(output, first, second) in super::checksums::CELLS {
+            let bytes = [output.as_bytes(), super::checksums::QUERY].concat();
+            let expected = format!(
+                "\x1bP7!~{:04X}\x1b\\\x1bP8!~{:04X}\x1b\\",
+                first.wrapping_neg(),
+                second.wrapping_neg()
+            );
             for chunk in [1, 2, 3, 7, bytes.len()] {
-                let (want, got) = both(rows, cols, &bytes, chunk)?;
-                assert!(!want.is_empty());
+                let mut terminal = answering(1, 2)?;
+                let mut got = Vec::new();
+                let mut rest = bytes.as_slice();
+                while !rest.is_empty() {
+                    let (head, tail) = rest.split_at_checked(chunk).unwrap_or((rest, &[]));
+                    got.extend(terminal.take(head)?);
+                    rest = tail;
+                }
                 assert_eq!(
                     String::from_utf8_lossy(&got),
-                    String::from_utf8_lossy(&want),
-                    "{screen:?} in chunks of {chunk}"
+                    expected,
+                    "{output:?}, chunk {chunk}"
                 );
             }
         }
-        Ok(())
-    }
-
-    /// The same on random screens: printable text, wide glyphs, marks,
-    /// Special Graphics, the five attributes on and off, cursor moves and
-    /// erases.
-    #[test]
-    fn checksums_from_a_snapshot_are_fux_vts_at_random() -> Result<(), String> {
-        const PIECES: &[&str] = &[
-            "a",
-            "Z",
-            " ",
-            "~",
-            "é",
-            "ÿ",
-            "漢",
-            "\u{1F600}",
-            "\u{301}",
-            "\u{FE0F}",
-            "\x1b(0",
-            "\x1b(B",
-            "\x1b(%5",
-            "W",
-            "q",
-            "`",
-            "\x1b[1m",
-            "\x1b[4m",
-            "\x1b[5m",
-            "\x1b[7m",
-            "\x1b[8m",
-            "\x1b[0m",
-            "\x1b[22m",
-            "\x1b[24m",
-            "\x1b[27m",
-            "\x1b[H",
-            "\x1b[2;5H",
-            "\x1b[K",
-            "\x1b[1K",
-            "\x1b[2X",
-            "\x1b[P",
-            "\x1b[@",
-            "\r\n",
-            "\x08",
-            "\x1b[J",
-            "\x1b[3;1H",
-        ];
-        let (rows, cols) = (4u16, 6u16);
-        let mut rng = Rng::new(7);
-        for _ in 0..300 {
-            let mut bytes = Vec::new();
-            for _ in 0..rng.below(40) {
-                if let Some(piece) = rng.pick(PIECES) {
-                    bytes.extend_from_slice(piece.as_bytes());
-                }
-            }
-            bytes.extend(reads(rows, cols));
-            let chunk = rng.below(9).saturating_add(1);
-            let (want, got) = both(rows, cols, &bytes, chunk)?;
-            assert_eq!(
-                String::from_utf8_lossy(&got),
-                String::from_utf8_lossy(&want),
-                "{:?} in chunks of {chunk}",
-                String::from_utf8_lossy(&bytes)
-            );
-        }
+        let mut terminal = answering(2, 3)?;
+        assert_eq!(terminal.take(b"abc\r\ndef\x1b[7*y\x1b[8;0;0;0;0;0*y\x1b[9;1;2;2;999;999*y\x1b[10;0;2;3;1;2*y\x1b[6n")?,
+            b"\x1bP7!~FDAB\x1b\\\x1bP8!~FDAB\x1b\\\x1bP9!~FF35\x1b\\\x1b[2;3R");
         Ok(())
     }
 

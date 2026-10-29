@@ -115,7 +115,7 @@ Every control function ECMA-48 (5th edition, 8.3), DEC STD 070 (its function pag
 | 8.3.100 | PU1 (PRIVATE USE ONE) | not applicable |  | private use (8.3.100): fux-vt gives it no meaning |
 | 8.3.101 | PU2 (PRIVATE USE TWO) | not applicable |  | private use (8.3.101): fux-vt gives it no meaning |
 | 8.3.102 | QUAD (QUAD) | not applicable |  | a presentation control function (8.2.5): fux-vt presents one font at one size, left to right and top to bottom, and leaves the drawing to the host |
-| 8.3.103 | REP (REPEAT) | implemented | `conformance::rep_repeats_the_preceding_graphic_character`, `margins::rep_wraps_and_scrolls_between_the_margins`, `conformance::rep_writes_what_printing_again_writes`, `bounds::a_rep_inside_margins_stops_at_the_budget_and_goes_on`, `bounds::rep_spends_a_copy_by_its_width` |  |
+| 8.3.103 | REP (REPEAT) | implemented | `conformance::rep_repeats_the_preceding_graphic_character`, `margins::rep_wraps_and_scrolls_between_the_margins`, `bounds::a_rep_inside_margins_stops_at_the_budget_and_goes_on`, `bounds::rep_spends_a_copy_by_its_width` |  |
 | 8.3.104 | RI (REVERSE LINE FEED) | implemented | `margins::index_scrolls_between_the_margins` |  |
 | 8.3.105 | RIS (RESET TO INITIAL STATE) | implemented | `semantics::regions_origin_and_reset_have_explicit_history_semantics` |  |
 | 8.3.106 | RM (RESET MODE) | implemented | `conformance::insert_mode_moves_what_is_there`, `modes::lnm_makes_a_line_feed_a_new_line` | IRM and LNM; the other ECMA-48 modes have one state fux-vt keeps (DECRQM reports them) |
@@ -607,7 +607,7 @@ Every control function ECMA-48 (5th edition, 8.3), DEC STD 070 (its function pag
 | DECSET 1048 | Save cursor (Save cursor as in DECSC) | implemented | `conformance::modes_1047_and_1048` |  |
 | DECSET 1049 | Alternate screen, cursor saved (Save the cursor, switch and clear) | implemented | `semantics::alternate_mouse_modes_saved_cursor_and_replies` |  |
 | DECSET 2004 | Bracketed paste (Set bracketed paste mode) | implemented | `keys::encode::tests::a_bracketed_paste_cannot_end_itself_early` | the host passes it to `encode::paste` |
-| DECSET 2026 | Synchronized output (A frame the host is to hold) | implemented | `opt_in::synchronized_output_is_tracked_and_ended`, `opt_in::process_until_stop_stops_after_the_sequence_that_sets_2026` |  |
+| DECSET 2026 | Synchronized output (A frame the host is to hold) | implemented | `opt_in::synchronized_output_is_tracked_and_ended`, `opt_in::process_until_stop_stops_at_frame_boundaries` |  |
 | DECSET 2027 | Grapheme clustering (Clusters take their width) | implemented | `modes::grapheme_clustering_is_permanently_set` | permanently set; a departure: a cluster takes its string width as characters join it, so a flag or an emoji modifier sequence becomes two columns wide with no VS16, where the spec moves the cursor on a join only for VS16 (README, "One departure from the standards remains") |
 | DECSET 2031 | Colour-scheme updates (Reports of the colour scheme) | implemented | `opt_in::colour_scheme_updates_are_tracked` | with `Feature::ColorSchemeUpdates`; the host sends the reports |
 | DECSET 2048 | In-band resize (Size reports at each resize) | implemented | `opt_in::in_band_resize_reports_the_size` | with `Feature::InBandResize` |

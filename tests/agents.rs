@@ -467,19 +467,7 @@ while not seen.endswith(b"q"):
 #[test]
 fn sizes_are_set_as_asked() -> Outcome {
     let server = Server::start("")?;
-    let made = server.ok(&[
-        "opts",
-        "str",
-        "+1",
-        "workspace",
-        "in",
-        "100",
-        "20",
-        "size",
-        "new-tab",
-        "dup",
-        "tab",
-    ])?;
+    let made = server.words("opts str +1 workspace in 100 20 size new-tab dup tab")?;
     let (left, tab) = made.trim().split_once('\n').ok_or("a pane and its tab")?;
     let left = id(left);
     let left = left.as_str();
@@ -573,16 +561,7 @@ fn a_headless_client_is_sized_from_the_command_line() -> Outcome {
     ];
     server.ok(&keys)?;
     eventually("copy mode", || Ok(server.ok(&capture)?.contains("COPY")))?;
-    server.ok(&[
-        "str",
-        "c1",
-        "client",
-        "str",
-        "q",
-        "text",
-        "send-keys",
-        "drop",
-    ])?;
+    server.words("str c1 client str q text send-keys drop")?;
     let mut terminal = server.attach(10, 40)?;
     terminal.ready()?;
     let refused = server.fux(&["str", "c2", "client", "60", "12", "resize"])?;
@@ -730,9 +709,7 @@ fn names_clicks_and_signals_are_checked() -> Outcome {
         server.fux(&run(&["str", "@1", "name"], &["cat"]))?.status,
         1
     );
-    server.ok(&[
-        "opts", "80", "24", "size", "str", "+1", "in", "str", "ed", "name", "new-tab",
-    ])?;
+    server.words("opts 80 24 size str +1 in str ed name new-tab")?;
     assert_eq!(server.ok(&["str", "ed", "pane"])?, "%2\n");
     assert_eq!(server.ok(&["str", "ed", "tab"])?, "@3\n");
     // A common spelling is a key's name too; an unknown name is refused with the vocabulary hint.

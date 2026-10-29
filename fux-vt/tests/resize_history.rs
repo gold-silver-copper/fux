@@ -55,44 +55,37 @@ fn filled(reflow: bool) -> Result<Parser, Box<dyn std::error::Error>> {
     Ok(parser)
 }
 
-/// Resizes `parser` to each of `sizes`: each row history held before is
-/// as it was.
-fn keeps_history(
-    mut parser: Parser,
-    sizes: &[(u16, u16)],
-) -> Result<(), Box<dyn std::error::Error>> {
-    for &size in sizes {
-        let before: Vec<(fux_vt::RowId, String)> = (parser.screen().rows())
-            .map(|r| (r.id(), fingerprint(&r)))
-            .collect();
-        let held = parser.screen().history_len();
-        parser.resize(Size::new(size.0, size.1)?)?;
-        let screen = parser.screen();
-        let history: Vec<Row<'_>> = screen.rows().take(screen.history_len()).collect();
-        assert!(!history.is_empty());
-        for row in history {
-            let was = before.iter().position(|(id, _)| *id == row.id());
-            if parser.options().has(Feature::Reflow) && was.is_none_or(|at| at >= held) {
-                continue;
+#[test]
+fn resizing_keeps_history_rows_that_need_no_reflow() -> Result<(), Box<dyn std::error::Error>> {
+    for (reflow, sizes) in [
+        (
+            false,
+            &[(4, 20), (9, 20), (6, 12), (3, 31), (6, 20), (2, 7)][..],
+        ),
+        (true, &[(4, 20), (9, 20), (2, 20), (6, 20)][..]),
+    ] {
+        let mut parser = filled(reflow)?;
+        for &size in sizes {
+            let before: Vec<(fux_vt::RowId, String)> = (parser.screen().rows())
+                .map(|r| (r.id(), fingerprint(&r)))
+                .collect();
+            let held = parser.screen().history_len();
+            parser.resize(Size::new(size.0, size.1)?)?;
+            let screen = parser.screen();
+            let history: Vec<Row<'_>> = screen.rows().take(screen.history_len()).collect();
+            assert!(!history.is_empty());
+            for row in history {
+                let was = before.iter().position(|(id, _)| *id == row.id());
+                if parser.options().has(Feature::Reflow) && was.is_none_or(|at| at >= held) {
+                    continue;
+                }
+                assert_eq!(
+                    was.and_then(|at| before.get(at)).map(|(_, f)| f.as_str()),
+                    Some(fingerprint(&row).as_str()),
+                    "{size:?}"
+                );
             }
-            assert_eq!(
-                was.and_then(|at| before.get(at)).map(|(_, f)| f.as_str()),
-                Some(fingerprint(&row).as_str()),
-                "{size:?}"
-            );
         }
     }
     Ok(())
-}
-
-#[test]
-fn a_resize_without_reflow_keeps_each_row_it_puts_in_history()
--> Result<(), Box<dyn std::error::Error>> {
-    let sizes = [(4, 20), (9, 20), (6, 12), (3, 31), (6, 20), (2, 7)];
-    keeps_history(filled(false)?, &sizes)
-}
-
-#[test]
-fn a_reflow_that_keeps_the_width_keeps_history_s_rows() -> Result<(), Box<dyn std::error::Error>> {
-    keeps_history(filled(true)?, &[(4, 20), (9, 20), (2, 20), (6, 20)])
 }

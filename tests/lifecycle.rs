@@ -12,27 +12,6 @@ use std::process::{Command, Output, Stdio};
 use std::time::Duration;
 use support::*;
 
-/// Types a line into a pane once its shell shows a prompt, answering at
-/// once.
-fn type_now(server: &Server, pane: &str, line: &str) -> Outcome {
-    eventually(&format!("a prompt in {pane}"), || {
-        Ok(server.ok(&["str", pane, "pane", "capture"])?.contains('$'))
-    })?;
-    server.ok(&[
-        "str",
-        pane,
-        "pane",
-        "str",
-        line,
-        "text",
-        "str",
-        "Enter",
-        "key",
-        "send-keys",
-    ])?;
-    Ok(())
-}
-
 /// SIGTERM, SIGINT and SIGHUP each stop a server: every attached client is
 /// told why, and the socket is removed.
 #[test]
@@ -287,8 +266,7 @@ fn a_client_that_stops_reading_catches_up_when_it_reads_again() -> Outcome {
     client.wait_for("$")?;
     // Every frame different, and the whole screen: far more paint than a
     // client may have waiting.
-    type_now(
-        &server,
+    server.type_line(
         "%1",
         "i=0; while :; do i=$((i+1)); printf '%0199d\\n' $i; done",
     )?;

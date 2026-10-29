@@ -4,23 +4,6 @@ mod support;
 use std::os::fd::AsFd;
 use support::*;
 
-#[test]
-fn a_client_sees_the_shell_and_types_into_it() -> Outcome {
-    let server = Server::start("")?;
-    let mut client = server.attach(10, 40)?;
-    client.wait_for("$")?;
-    client.keys("echo one-two\r")?;
-    client.wait("the echo's output", |t| t.lines().any(|l| l == "one-two"))?;
-    let bar = client.bar();
-    assert!(bar.contains("main"), "{bar}");
-    assert!(bar.contains("%1") && !bar.contains("%1 %1"), "{bar}");
-    // The pane is the client's size, less the bar.
-    let ls = server.ok(&["ls"])?;
-    assert!(ls.contains("%1 40x9"), "{ls}");
-    assert!(ls.contains("client c1 40x10 +1 @1 %1"), "{ls}");
-    Ok(())
-}
-
 /// A client that only watches sees the screen, but its keys reach no
 /// pane and open nothing: a key says it only watches, and the prefix and
 /// the detach key detach it.
@@ -52,6 +35,12 @@ fn detach_and_reattach_keep_the_shell_and_its_screen() -> Outcome {
     let server = Server::start("")?;
     let mut client = server.attach(10, 40)?;
     client.wait_for("$")?;
+    let bar = client.bar();
+    assert!(bar.contains("main"), "{bar}");
+    assert!(bar.contains("%1") && !bar.contains("%1 %1"), "{bar}");
+    let ls = server.ok(&["ls"])?;
+    assert!(ls.contains("%1 40x9"), "{ls}");
+    assert!(ls.contains("client c1 40x10 +1 @1 %1"), "{ls}");
     client.keys("echo before-detach\r")?;
     client.wait("output", |t| t.lines().any(|l| l == "before-detach"))?;
     client.keys("\x02d")?;
@@ -1391,17 +1380,7 @@ fn existing_attach_does_not_resolve_unused_launch_inputs() -> Outcome {
 #[test]
 fn attach_preferences_apply_before_explicit_operands() -> Outcome {
     let server = Server::start("opts str second in attach-defaults")?;
-    server.ok(&[
-        "opts",
-        "str",
-        "second",
-        "name",
-        "80",
-        "24",
-        "size",
-        "new-workspace",
-        "drop",
-    ])?;
+    server.words("opts str second name 80 24 size new-workspace drop")?;
     for (args, expected) in [(&[][..], "%2"), (&["%1", "attach"][..], "%1")] {
         let mut terminal = Terminal::attach(&server, 10, 40, args)?;
         terminal.wait_for(expected)?;

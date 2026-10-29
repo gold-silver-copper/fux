@@ -67,16 +67,7 @@ fn rename_move_swap_reorder_and_kill() -> Outcome {
         ls.contains("+1 work2") && ls.contains("@1 code") && ls.contains("%1 editor"),
         "{ls}"
     );
-    server.ok(&[
-        "opts",
-        "80",
-        "24",
-        "size",
-        "str",
-        "other",
-        "name",
-        "new-workspace",
-    ])?;
+    server.words("opts 80 24 size str other name new-workspace")?;
     let clash = server.fux(&["str", "other", "workspace", "str", "work2", "rename"])?;
     assert!(
         clash.stderr.contains("a workspace is named"),
@@ -134,16 +125,7 @@ fn rename_move_swap_reorder_and_kill() -> Outcome {
     server.ok(&["str", "work2", "workspace", "kill"])?;
     let ls = server.ok(&["ls"])?;
     assert!(!ls.contains("work2") && ls.contains("other"), "{ls}");
-    server.ok(&[
-        "opts",
-        "80",
-        "24",
-        "size",
-        "str",
-        "third",
-        "name",
-        "new-workspace",
-    ])?;
+    server.words("opts 80 24 size str third name new-workspace")?;
     server.ok(&["str", "@2", "tab", "kill"])?;
     let ls = server.ok(&["ls"])?;
     assert!(!ls.contains("other") && ls.contains("third"), "{ls}");
@@ -362,10 +344,7 @@ fn mistakes_name_what_the_program_wrote() -> Outcome {
         "{inside}"
     );
     // Caught, it is only why: no place, no bundled step, no usage.
-    let caught = server.ok(&[
-        "str", "type", "try", "list", "1", "end", "0", "at", "str", "x", "type", "catch", "drop",
-        "end",
-    ])?;
+    let caught = server.words("str type try list 1 end 0 at str x type catch drop end")?;
     assert_eq!(
         caught,
         "takes a pane, tab, workspace or client, or options, not an integer\n"

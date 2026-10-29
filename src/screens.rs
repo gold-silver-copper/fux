@@ -703,11 +703,7 @@ mod tests {
             given: Some(vec![Data::Text("it's -x' drop".into())]),
             screen: None,
         };
-        assert_eq!(
-            ran,
-            [Effect::Screen(ScreenAct::Hide), Effect::Run(job.clone())]
-        );
-        assert_eq!(job.given, Some(vec![Data::Text("it's -x' drop".into())]));
+        assert_eq!(ran, [Effect::Screen(ScreenAct::Hide), Effect::Run(job)]);
         Ok(())
     }
 

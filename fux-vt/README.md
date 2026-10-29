@@ -245,10 +245,11 @@ doing exactly what it would:
   its own;
 - an OSC payload is taken up to its terminator in one pass.
 
-`parser::tests::fast_paths_equal_the_general_path*` and
-`ascii_run_path_equals_scalar_dispatch_*` check them against the general
-path, and the fuzz target `terminal` compares whole, chunked and
-byte-at-a-time processing.
+On every push, `parser::tests::text_runs_keep_their_printing_context` checks
+non-ASCII runs in contexts that change printing, including links and protection;
+`properties::*`, `clusters::*` and `conformance::*` check segmentation and sequence
+semantics. The `terminal` fuzz target compares whole, chunked and byte-at-a-time
+processing nightly and on request.
 
 ## Cells
 

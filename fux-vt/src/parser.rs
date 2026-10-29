@@ -8,10 +8,6 @@ use crate::{
     screen::{Dispatch, Setting},
 };
 
-#[cfg(test)]
-#[path = "../tests/corpus/mod.rs"]
-pub(crate) mod test_corpus;
-
 #[derive(Clone, Debug)]
 pub(crate) struct Parameters {
     values: [u16; 32],

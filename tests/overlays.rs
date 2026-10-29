@@ -144,34 +144,8 @@ fn choosers_select_rename_and_close() -> Outcome {
     let server = Server::start("")?;
     let mut client = server.attach(30, 100)?;
     client.wait_for("$")?;
-    server.ok(&[
-        "opts",
-        "100",
-        "29",
-        "size",
-        "str",
-        "+1",
-        "workspace",
-        "in",
-        "str",
-        "second",
-        "name",
-        "new-tab",
-    ])?;
-    server.ok(&[
-        "opts",
-        "100",
-        "29",
-        "size",
-        "str",
-        "+1",
-        "workspace",
-        "in",
-        "str",
-        "third",
-        "name",
-        "new-tab",
-    ])?;
+    server.words("opts 100 29 size str +1 workspace in str second name new-tab")?;
+    server.words("opts 100 29 size str +1 workspace in str third name new-tab")?;
     client.keys(&format!("{PREFIX}tg"))?;
     client.wait("the tab chooser, current marked", |t| {
         t.contains("* @1 %1") && t.contains("@3 third")
@@ -199,16 +173,7 @@ fn choosers_select_rename_and_close() -> Outcome {
         Ok(!server.ok(&["ls"])?.contains("@3"))
     })?;
     // The workspace chooser lists every workspace with its panes.
-    server.ok(&[
-        "opts",
-        "100",
-        "29",
-        "size",
-        "str",
-        "elsewhere",
-        "name",
-        "new-workspace",
-    ])?;
+    server.words("opts 100 29 size str elsewhere name new-workspace")?;
     client.keys(&format!("{PREFIX}wg"))?;
     client.wait("the workspace chooser", |t| {
         t.contains("+2 elsewhere") && t.contains("* +1 main")

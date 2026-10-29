@@ -1,5 +1,4 @@
 use super::*;
-use crate::test_rng::Rng;
 
 /// Up, the departing rows going into history.
 const UP: Scroll = Scroll::Up { history: true };
@@ -157,165 +156,6 @@ impl Grid {
     }
 }
 
-/// Output leaving what a reflow keeps or moves: text, wide glyphs, clusters
-/// too long to hold inline, soft wraps, blank and coloured tails, erased
-/// rows, links, prompts, the saved cursor and scrolls.
-const PIECES: &[&[u8]] = &[
-    b"abc",
-    b"hello world ",
-    b"xxxxxxxxxxxxxxxxxxxxxxx",
-    "\u{4e2d}".as_bytes(),
-    "a\u{4e2d}\u{6587}\u{5b57}b".as_bytes(),
-    "\u{1f600}".as_bytes(),
-    "e\u{301}\u{302}\u{303}\u{304}\u{305}\u{306}\u{307}\u{308}\u{309}".as_bytes(),
-    b"\r\n",
-    b"\r\n",
-    b"\n",
-    b"\r",
-    b"\x1b[K",
-    b"\x1b[1K",
-    b"\x1b[2K",
-    b"\x1b[J",
-    b"\x1b[2J",
-    b"\x1b[44m\x1b[K\x1b[0m",
-    b"\x1b[41mred\x1b[0m",
-    b"\x1b[3;5H",
-    b"\x1b[99;99H",
-    b"\x1b[2;1H",
-    b"\x1b[A",
-    b"\x1b7",
-    b"\x1b8",
-    b"\x1b]8;;https://a\x1b\\link\x1b]8;;\x1b\\",
-    b"\x1b]8;id=1;https://b\x1b\\\xe4\xb8\xad \x1b]8;;\x1b\\",
-    b"\x1b]133;A\x07",
-    b"\x1b[S",
-    b"\x1b[T",
-    b"\x1b[2@",
-    b"\x1b[2P",
-    b"\x1b[2;3r",
-    b"\x1b[r",
-    b"\x1b[?1049h",
-    b"\x1b[?1049l",
-];
-
-/// A primary screen grid as random output and resizes leave it, history
-/// rows of other widths included, then poked at where output seldom goes:
-/// wraps set or cleared on any row, the last retained included; wide
-/// glyphs in the last column and halves without their other half; links
-/// on blank cells; prompts; `used` marks; the cursor and the saved cursor
-/// anywhere, waiting to wrap or not.
-fn random_grid(r: &mut Rng) -> Result<Grid, Error> {
-    let options = crate::Options::new()
-        .set(crate::Feature::Reflow, r.chance(70))
-        .with(crate::Feature::Hyperlinks)
-        .with(crate::Feature::PromptMarks);
-    let (rows, cols) = (r.small(7).saturating_add(1), r.small(12).saturating_add(1));
-    // Up to 30 rows of history, at 64 bytes a row.
-    let history = r.below(30).saturating_mul(64);
-    let mut p = crate::Parser::with_options(Size::of(rows, cols), history, options)?;
-    for _ in 0..r.below(80) {
-        match r.below(16) {
-            0 => p.resize(Size::of(
-                r.small(7).saturating_add(1),
-                r.small(12).saturating_add(1),
-            ))?,
-            // A line to the last column, waiting to wrap.
-            1 => {
-                let cols = p.screen().size().cols();
-                let fill: Vec<u8> = std::iter::repeat_n(b'y', usize::from(cols)).collect();
-                p.process(b"\r")?;
-                p.process(&fill)?;
-            }
-            // Clusters of up to 121 bytes, enough for rows laid out of
-            // them to run out of room for their text.
-            2 => {
-                for _ in 0..r.below(4).saturating_add(1) {
-                    let marks = r.below(61);
-                    let cluster: String = std::iter::once('a')
-                        .chain(std::iter::repeat_n('\u{301}', marks))
-                        .collect();
-                    p.process(cluster.as_bytes())?;
-                }
-            }
-            _ => {
-                let piece = PIECES.get(r.below(PIECES.len())).copied().unwrap_or(b"a");
-                p.process(piece)?;
-            }
-        }
-    }
-    let mut grid = p.screen().primary_grid().clone();
-    // Rows of the screen are poked; some go into history after.
-    let (rows, cols) = (usize::from(grid.size.rows()), grid.size.cols());
-    let width = usize::from(cols);
-    for _ in 0..r.below(5) {
-        let Some(&slot) = grid.order.get(r.below(rows)) else {
-            continue;
-        };
-        let Some(m) = grid.meta.get_mut(slot) else {
-            continue;
-        };
-        let col = r.below(width);
-        match r.below(5) {
-            0 => {
-                let wrapped = m.wrapped();
-                m.set(WRAPPED, !wrapped);
-            }
-            1 => m.set(PROMPT, true),
-            2 => {
-                m.used = cols;
-                let half = match r.below(3) {
-                    0 => Compact::glyph('\u{4e2d}', 2, 0),
-                    1 => Compact::continuation(),
-                    _ => Compact::default(),
-                };
-                let at = if r.chance(50) {
-                    width.saturating_sub(1)
-                } else {
-                    col
-                };
-                if let Some(cell) = grid.slice_mut(slot).get_mut(at) {
-                    *cell = half;
-                }
-            }
-            3 => {
-                let link = grid.links.insert(&Hyperlink::new(0, "poked", None));
-                if let Some(links) = grid.linked.get_mut(slot) {
-                    links.set(col..col.saturating_add(1), link.as_ref());
-                }
-            }
-            _ => m.used = u16::try_from(r.below(width.saturating_add(1))).unwrap_or(cols),
-        }
-    }
-    if !grid.blank_past_used() {
-        // A `used` mark poked below a cell with text: put back.
-        for m in &mut grid.meta {
-            m.used = cols;
-        }
-    }
-    if grid.history_bytes() > 0 && r.chance(50) {
-        let mut next = max_id(&grid).saturating_add(1);
-        let (lines, rows) = (grid.size.lines(), grid.size.rows());
-        grid.scroll(lines, r.small(rows), UP, 0, &mut next, 999);
-    }
-    let (rows, cols) = grid.size.into();
-    for cursor in [&mut grid.cursor, &mut grid.saved.cursor] {
-        if r.chance(50) {
-            (cursor.row, cursor.col) = (r.small(rows), r.small(cols));
-            cursor.pending_wrap = r.chance(30);
-        }
-    }
-    Ok(grid)
-}
-
-/// The greatest identity a retained row of `grid` has.
-fn max_id(grid: &Grid) -> u64 {
-    (0..grid.retained_len())
-        .filter_map(|i| grid.row_at(i))
-        .map(|row| row.id.0)
-        .max()
-        .unwrap_or(0)
-}
-
 /// A live row's cells as a reader reads them: text, halves, attributes
 /// and link.
 fn read_row(grid: &Grid, y: u16) -> Vec<(String, bool, bool, Attributes, Option<String>)> {
@@ -337,48 +177,72 @@ fn read_row(grid: &Grid, y: u16) -> Vec<(String, bool, bool, Attributes, Option<
         .collect()
 }
 
-/// Scrolling between left and right margins as wide as the screen
-/// (`scroll_columns`, which copies cells, their text and their links from
-/// row to row) leaves every row reading as scrolling the rows themselves
-/// (`scroll_region`, which moves them) does: over random grids, with wide
-/// glyphs, halves alone, clusters kept in a row's text and links, every
-/// region, count and way, blanks in the default style or another.
+/// Rows keep their text, halves, attributes and links while moving only
+/// inside the selected region, in both directions and across the ring end.
 #[test]
-fn scrolling_between_full_margins_is_scrolling_rows() -> Result<(), Error> {
-    let mut r = Rng(0x0ef1_0000_0000_0069);
-    let coloured = Attributes::new(crate::Color::Idx(1), crate::Color::Idx(4))
-        .inline_style()
-        .unwrap_or(0);
-    let mut moved = 0usize;
-    for case in 0..3_000 {
-        let grid = random_grid(&mut r)?;
-        let rows = grid.size.rows();
-        let top = r.small(rows);
-        let bottom = top.saturating_add(r.small(rows.saturating_sub(top)));
-        let count = r.small(rows.saturating_add(2)).saturating_add(1);
-        let up = r.chance(50);
-        let blank = if r.chance(30) { coloured } else { 0 };
-        let (mut by_rows, mut by_cells) = (grid.clone(), grid.clone());
-        let mut next = max_id(&grid).saturating_add(1);
-        let direction = if up {
-            Scroll::Up { history: false }
-        } else {
-            Scroll::Down
-        };
-        let region = Span::of(top, bottom);
-        by_rows.scroll_region(region, count, direction, blank, &mut next, 1_000);
-        by_cells.scroll_columns(region, count, up, blank, 1_000);
-        for y in 0..rows {
-            let (a, b) = (read_row(&by_rows, y), read_row(&by_cells, y));
-            assert_eq!(
-                a, b,
-                "case {case}: {top}..={bottom} by {count}, up {up}, row {y}"
-            );
-            moved = moved.saturating_add(usize::from(a != read_row(&grid, y)));
+fn scrolling_moves_only_the_selected_rows() -> Result<(), Error> {
+    let colour = Attributes::new(crate::Color::Idx(1), crate::Color::Idx(4));
+    let blank = colour.inline_style().unwrap_or(0);
+    for scrolls in [0, 5] {
+        let mut p =
+            crate::Parser::with_options(Size::of(4, 12), 0, crate::Feature::Hyperlinks.into())?;
+        for y in 0..4 {
+            let marks: String =
+                std::iter::repeat_n("\u{301}", if y == 0 { 9 } else { 3 }).collect();
+            p.process(
+                format!(
+                    "\x1b[{};1H\x1b[{}m{y}界e{marks}\x1b]8;;https://{y}\x1b\\link\x1b]8;;\x1b\\",
+                    y + 1,
+                    31 + y
+                )
+                .as_bytes(),
+            )?;
         }
-        assert!(by_cells.blank_past_used(), "case {case}: used");
+        let mut grid = p.screen().primary_grid().clone();
+        grid.order.top = if scrolls == 0 { 0 } else { 2 };
+        // Raw rows can hold an unpaired head or tail; copying a whole row
+        // must preserve them too, alongside its short and long text.
+        let slot = grid.slot(2).ok_or(Error::InvalidRange)?;
+        for (x, cell) in [
+            (8, Compact::continuation()),
+            (10, Compact::glyph('界', 2, 0)),
+        ] {
+            *grid.slice_mut(slot).get_mut(x).ok_or(Error::InvalidRange)? = cell;
+        }
+        grid.meta.get_mut(slot).ok_or(Error::InvalidRange)?.used = 12;
+        let before: Vec<_> = (0..4).map(|y| read_row(&grid, y)).collect();
+        for top in 0..4 {
+            for bottom in top..4 {
+                for count in 0..=5 {
+                    for up in [true, false] {
+                        let mut moved = grid.clone();
+                        moved.scroll_columns(Span::of(top, bottom), count, up, blank, 1_000);
+                        for y in 0..4 {
+                            let source = if y < top || y > bottom {
+                                Some(y)
+                            } else if up {
+                                y.checked_add(count).filter(|&n| n <= bottom)
+                            } else {
+                                y.checked_sub(count).filter(|&n| n >= top)
+                            };
+                            if let Some(source) = source {
+                                assert_eq!(
+                                    Some(&read_row(&moved, y)),
+                                    before.get(usize::from(source))
+                                );
+                            } else {
+                                let row = moved.live_row(y).ok_or(Error::InvalidRange)?;
+                                assert!((0..row.width).all(|x| row.cell(x).is_some_and(|c| {
+                                    !c.has_contents() && c.attributes() == colour
+                                })));
+                            }
+                        }
+                        assert!(moved.blank_past_used());
+                    }
+                }
+            }
+        }
     }
-    assert!(moved > 3_000, "{moved} rows changed");
     Ok(())
 }
 

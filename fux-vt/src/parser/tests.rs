@@ -1,6 +1,9 @@
 use super::*;
 use crate::test_rng::Rng;
 
+struct Deaf;
+impl Sink for Deaf {}
+
 /// B20: the OSC buffer has room for the limit the features set and the
 /// byte that marks a string overflowed, and no more, however a string is
 /// split: 65 bytes with prompt marks alone, 1 with no feature reading OSC.
@@ -20,83 +23,187 @@ fn the_osc_buffer_has_room_for_its_limit_alone() -> Result<(), Error> {
     Ok(())
 }
 
-/// The ASCII run path writes cells without asking about grapheme clusters.
-/// That is only right because no ASCII character continues a cluster (fux-vt
-/// never joins after a Prepend), and because the run leaves its last cell
-/// for a following mark or selector to join. Both paths must agree on text
-/// that mixes ASCII with every kind of cluster, at every wrap position.
+/// Non-ASCII runs keep the printing context on every glyph, including the
+/// glyphs after the first that take Screen::run. Dots below are blank cells;
+/// 界 and a Prepend joined to Ж each occupy two columns. DECSCA is checked
+/// by selective erase.
 #[test]
-fn ascii_run_path_equals_scalar_dispatch_around_grapheme_clusters() -> Result<(), Error> {
-    let text = "ab1\u{fe0f}\u{20e3}x\u{2764}\u{fe0f}y#\u{fe0f}\u{20e3}e\u{301}\u{302}z\
-        \u{1f1ef}\u{1f1f5}q\u{1f469}\u{200d}\u{1f52c}w\u{928}\u{93f}v\u{600}5\u{200d}k\
-        \u{1f468}\u{200d}\u{1f469}\u{200d}\u{1f467}\u{200d}\u{1f466}!\r\n\x1b[1mA\u{301}\x1b[0m";
-    for cols in 1..=12 {
-        let mut fast = Parser::new(Size::of(6, cols), 8)?;
-        let mut slow = fast.clone();
-        fast.process(text.as_bytes())?;
-        scalar(&mut slow, text.as_bytes(), false, &mut Log::default())?;
-        let difference = first_difference(&format!("{fast:?}"), &format!("{slow:?}"));
-        assert_eq!(difference, None, "{cols} columns");
-    }
-    // A run over a row that holds a wide glyph: written up to it.
-    for cols in 2..=12 {
-        let mut fast = Parser::new(Size::of(3, cols), 8)?;
-        let mut slow = fast.clone();
-        let text = wide_glyph_rows(3, cols);
-        fast.process(&text)?;
-        scalar(&mut slow, &text, false, &mut Log::default())?;
-        let difference = first_difference(&format!("{fast:?}"), &format!("{slow:?}"));
-        assert_eq!(difference, None, "{cols} columns, a wide glyph");
-    }
-    Ok(())
-}
-
-/// The run path for text past ASCII (`Screen::text`) writes glyphs a row
-/// at a time without asking what `print` asks of each. It must do what
-/// `print` does, character by character, in every context that changes
-/// a glyph's printing: margins, origin mode, double-width rows, wide
-/// glyphs overwritten at either half or whole, a pending wrap, autowrap off,
-/// protection, both screens, insert mode, an open link, a Prepend left by
-/// the call before, DEC Special Graphics, and glyphs
-/// already there between ones that change.
-#[test]
-fn the_text_run_path_equals_scalar_dispatch_in_context() -> Result<(), Error> {
-    let text = "界全角─│ЖéﾊШ한";
-    let contexts: &[&str] = &[
-        "",
-        "\x1b[?69h\x1b[3;8s\x1b[1;5H",
-        "\x1b[?69h\x1b[3;8s\x1b[?6h",
-        "\x1b#6",
-        "\x1b[2;3H界界界界\x1b[2;3H",
-        "\x1b[2;3H界a界界\x1b[2;3H",
-        "\x1b[2;3H界界界界\x1b[2;4H",
-        "\x1b[2;3H界界界界\x1b[2;3Hx",
-        "\x1b[1;11Hx",
-        "\x1b[?7l\x1b[1;9H",
-        "\x1b[1\"q",
-        "\x1b[?1049h",
-        "abcdefghij\r\x1b[4h",
-        "\x1b]8;id=1;http://x\x1b\\",
-        "\u{600}",
-        "\x1b(0",
-        "\x1b[2;3r\x1b[3;1H",
-        "AAШA\r",
-        "\x1b]8;id=1;http://x\x1b\\AAШA\r",
+fn text_runs_keep_their_printing_context() -> Result<(), Error> {
+    type Case<'a> = (&'a str, &'a [&'a str], (u16, u16), bool, bool, bool);
+    let cases: &[Case<'_>] = &[
+        ("", &["Ж Ш 界"], (0, 4), false, false, false),
+        (
+            "\x1b[?69h\x1b[3;8s\x1b[1;5H",
+            &["· · · · Ж Ш 界"],
+            (0, 7),
+            true,
+            false,
+            false,
+        ),
+        (
+            "\x1b[?69h\x1b[3;8s\x1b[?6h",
+            &["· · Ж Ш 界"],
+            (0, 6),
+            false,
+            false,
+            false,
+        ),
+        ("\x1b#6", &["Ж Ш 界"], (0, 4), false, false, false),
+        (
+            "\x1b[2;3H界界界界\x1b[2;3H",
+            &["", "· · Ж Ш 界 界 界"],
+            (1, 6),
+            false,
+            false,
+            false,
+        ),
+        (
+            "\x1b[2;3H界a界界\x1b[2;3H",
+            &["", "· · Ж Ш 界 · 界"],
+            (1, 6),
+            false,
+            false,
+            false,
+        ),
+        (
+            "\x1b[2;3H界界界界\x1b[2;4H",
+            &["", "· · · Ж Ш 界 · 界"],
+            (1, 7),
+            false,
+            false,
+            false,
+        ),
+        (
+            "\x1b[2;3H界界界界\x1b[2;3Hx",
+            &["", "· · x Ж Ш 界 · 界"],
+            (1, 7),
+            false,
+            false,
+            false,
+        ),
+        (
+            "\x1b[1;11Hx",
+            &["· · · · · · · · · · x Ж", "Ш 界"],
+            (1, 3),
+            false,
+            false,
+            false,
+        ),
+        (
+            "\x1b[?7l\x1b[1;9H",
+            &["· · · · · · · · Ж Ш 界"],
+            (0, 11),
+            false,
+            false,
+            false,
+        ),
+        ("\x1b[1\"q", &["Ж Ш 界"], (0, 4), false, false, true),
+        ("\x1b[?1049h", &["Ж Ш 界"], (0, 4), false, false, false),
+        (
+            "abcdefghij\r\x1b[4h",
+            &["Ж Ш 界 a b c d e f g h"],
+            (0, 4),
+            false,
+            false,
+            false,
+        ),
+        (
+            "\x1b]8;id=1;http://x\x1b\\",
+            &["Ж Ш 界"],
+            (0, 4),
+            false,
+            true,
+            false,
+        ),
+        ("\u{600}", &["\u{600}Ж Ш 界"], (0, 5), false, false, false),
+        ("\x1b(0", &["Ж Ш 界"], (0, 4), false, false, false),
+        (
+            "\x1b[2;3r\x1b[3;1H",
+            &["", "", "Ж Ш 界"],
+            (2, 4),
+            false,
+            false,
+            false,
+        ),
+        ("AAШA\r", &["Ж Ш 界"], (0, 4), false, false, false),
+        (
+            "\x1b]8;id=1;http://x\x1b\\AAШA\r",
+            &["Ж Ш 界"],
+            (0, 4),
+            false,
+            true,
+            false,
+        ),
     ];
-    let long = format!("{text}{text}\u{301}{text}");
-    for (n, context) in contexts.iter().enumerate() {
-        let inputs = [long.as_str(), "ЖШ界", "Ж界", "ЖШШШ"];
-        for input in inputs {
-            let every = Feature::ALL.into_iter().collect::<Options>();
-            let mut fast = Parser::with_options(Size::of(4, 12), 8, every)?;
-            let mut slow = fast.clone();
-            for piece in [context.as_bytes(), input.as_bytes()] {
-                fast.process(piece)?;
-                scalar(&mut slow, piece, false, &mut Log::default())?;
+    for &(setup, rows, cursor, pending, linked, protected) in cases {
+        let mut parser =
+            Parser::with_options(Size::of(4, 12), 1024, Feature::ALL.into_iter().collect())?;
+        parser.process(setup.as_bytes())?;
+        parser.process("ЖШ界".as_bytes())?;
+        let check_cells = |p: &Parser| {
+            for y in 0..4u16 {
+                let mut expected = Vec::new();
+                for text in rows.get(usize::from(y)).unwrap_or(&"").split_whitespace() {
+                    let wide = matches!(text, "界" | "\u{600}Ж");
+                    expected.push((if text == "·" { "" } else { text }, wide, false));
+                    if wide {
+                        expected.push(("", false, true));
+                    }
+                }
+                expected.resize(12, ("", false, false));
+                for (x, &(text, wide, tail)) in (0..12).zip(&expected) {
+                    let cell = p.screen().cell(y, x);
+                    assert_eq!(
+                        cell.map(|c| (c.contents(), c.is_wide(), c.is_wide_continuation())),
+                        Some((text, wide, tail)),
+                        "{setup:?}: ({y},{x})"
+                    );
+                    assert_eq!(
+                        cell.map(|c| c.attributes()),
+                        Some(crate::Attributes::default()),
+                        "{setup:?}: ({y},{x})"
+                    );
+                    let link =
+                        (linked && (!text.is_empty() || tail)).then_some(("http://x", Some("1")));
+                    assert_eq!(
+                        p.screen().link(y, x).map(|l| (l.uri(), l.id())),
+                        link,
+                        "{setup:?}: ({y},{x})"
+                    );
+                }
             }
-            let difference = first_difference(&format!("{fast:?}"), &format!("{slow:?}"));
-            assert_eq!(difference, None, "context {n}, {input}");
+        };
+        check_cells(&parser);
+        assert_eq!(
+            (
+                parser.screen().cursor_position(),
+                parser.screen().pending_wrap()
+            ),
+            (cursor, pending),
+            "{setup:?}"
+        );
+        if protected {
+            parser.process(b"\x1b[0\"q\x1b[H\x1b[?2K")?;
+            check_cells(&parser);
         }
+    }
+    // A glyph already equal to the middle of a run must not stop updates
+    // after it, or the link coverage of the whole run.
+    for link in ["", "\x1b]8;id=1;http://x\x1b\\"] {
+        let mut parser =
+            Parser::with_options(Size::of(4, 12), 1024, Feature::ALL.into_iter().collect())?;
+        parser.process(format!("{link}AAШA\r").as_bytes())?;
+        parser.process("ЖШШШ".as_bytes())?;
+        for (x, text) in ["Ж", "Ш", "Ш", "Ш"].into_iter().enumerate() {
+            let x = u16::try_from(x).map_err(|_| Error::InvalidRange)?;
+            assert_eq!(parser.screen().cell(0, x).map(|c| c.contents()), Some(text));
+            assert_eq!(
+                parser.screen().link(0, x).map(|l| l.uri()),
+                (!link.is_empty()).then_some("http://x")
+            );
+        }
+        assert_eq!(parser.screen().cursor_position(), (0, 4));
+        assert!(!parser.screen().pending_wrap());
     }
     Ok(())
 }
@@ -130,315 +237,6 @@ fn a_run_over_a_wide_glyph_costs_its_length() -> Result<(), Error> {
     Ok(())
 }
 
-/// The final bytes of the CSIs programs send most, and of some they do
-/// not, with modes and queries among them.
-const FINALS: &[u8] = b"HABCDEFGJKdfmrsuhlbXLMPST@`aenctqpgxyzIZ~";
-
-/// One parameter: empty, small, a few digits, or too large for a `u16`.
-fn parameter(r: &mut Rng, out: &mut Vec<u8>) {
-    match r.below(10) {
-        0 => {}
-        1 => out.extend_from_slice(b"0"),
-        2 => out.extend_from_slice(b"99999999"),
-        3 => out.extend_from_slice(b"65535"),
-        4 => out.extend_from_slice(b"2026"),
-        5 => out.extend_from_slice(b"1049"),
-        _ => out.extend_from_slice(r.below(300).to_string().as_bytes()),
-    }
-}
-
-/// A CSI, mostly well formed: a private marker now and then, up to three
-/// parameters mostly and past the 32 a sequence holds sometimes,
-/// subparameters, intermediates, a control or a stray byte inside, or cut
-/// short.
-fn csi(r: &mut Rng, out: &mut Vec<u8>) {
-    out.extend_from_slice(b"\x1b[");
-    if r.chance(25) {
-        out.push(r.byte_in(0x3c, 0x3f));
-    }
-    let count = if r.chance(5) {
-        r.below(8).saturating_add(29)
-    } else {
-        r.below(4)
-    };
-    for i in 0..count {
-        if i > 0 {
-            out.push(if r.chance(15) { b':' } else { b';' });
-        }
-        parameter(r, out);
-        if r.chance(2) {
-            out.push(
-                r.pick(b"\x00\x07\x08\x0a\x0d\x18\x1a\x1b\x7f\x3c\x3f\x80\xc3")
-                    .unwrap_or(0),
-            );
-        }
-    }
-    if r.chance(10) {
-        for _ in 0..=r.below(3) {
-            out.push(r.byte_in(0x20, 0x2f));
-        }
-    }
-    if r.chance(95) {
-        out.push(if r.chance(80) {
-            r.pick(FINALS).unwrap_or(b'H')
-        } else {
-            r.byte_in(0x40, 0x7e)
-        });
-    }
-}
-
-/// Bytes that exercise the parser everywhere: sequences of every kind
-/// mostly, text, controls, strings, and bytes at random; with `long`,
-/// OSC strings of about the most bytes kept of one now and then.
-fn sequences(r: &mut Rng, fragments: usize, long: bool) -> Vec<u8> {
-    let mut out = Vec::new();
-    for _ in 0..fragments {
-        match r.below(23) {
-            0..=6 => csi(r, &mut out),
-            7 | 8 => {
-                out.push(0x1b);
-                for _ in 0..r.below(4) {
-                    out.push(r.byte_in(0x20, 0x2f));
-                }
-                if r.chance(90) {
-                    out.push(r.byte_in(0x30, 0x7e));
-                }
-            }
-            9 => out.extend_from_slice(
-                r.pick(&[
-                    &b"\x1b]0;title\x07"[..],
-                    b"\x1b]2;name\x1b\\",
-                    b"\x1b]8;id=1;http://x\x1b\\",
-                    b"\x1b]8;;\x07",
-                    b"\x1b]133;A\x07",
-                    b"\x1b]10;?\x07",
-                    b"\x1b]4;1;rgb:00/ff/00\x07",
-                ])
-                .unwrap_or_default(),
-            ),
-            10 => out.extend_from_slice(
-                r.pick(&[
-                    &b"\x1bP$qm\x1b\\"[..],
-                    b"\x1bP$q q\x1b\\",
-                    b"\x1bP1;2|xyz\x1b\\",
-                    b"\x1b_apc\x1b\\",
-                    b"\x1bXsos\x07",
-                ])
-                .unwrap_or_default(),
-            ),
-            11 => out.extend_from_slice(
-                r.pick(&[
-                    &b"\x1b[?2026h"[..],
-                    b"\x1b[?2026l",
-                    b"\x1b[?2026s",
-                    b"\x1b[?2026r",
-                    b"\x1b[?1049h",
-                    b"\x1b[?1049l",
-                    b"\x1b[?7l",
-                    b"\x1b[?6h",
-                    b"\x1b[4h",
-                    b"\x1b[3b",
-                    b"\x1b(0",
-                    b"\x1b(B",
-                    b"\x1b7",
-                    b"\x1b8",
-                    b"\x1b(((B",
-                    // A frame begun by XTRESTORE, which goes on, then an
-                    // `h` in a string or ending an escape.
-                    b"\x1b[?2026h\x1b[?2026s\x1b[?2026r\x1b]2;high\x07",
-                    b"\x1b[?2026h\x1b[?2026s\x1b[?2026rk\x1bhk",
-                ])
-                .unwrap_or_default(),
-            ),
-            12..=15 => {
-                for _ in 0..=r.below(12) {
-                    out.push(r.byte_in(0x20, 0x7e));
-                }
-            }
-            // Text past ASCII, alone or a run of it (`Screen::text`'s):
-            // narrow and wide glyphs, box drawing, marks, joiners, a
-            // Prepend, Hangul jamo, emoji and their modifiers and flags.
-            16 => {
-                for _ in 0..=r.below(3).saturating_mul(r.below(8)) {
-                    let text = r.pick(&[
-                        "é", "界", "\u{301}", "👍", "🇺🇸", "\u{fe0f}", "Ж", "─", "│", "全",
-                        "\u{600}", "\u{1100}", "\u{1161}", "한", "ष", "\u{94d}", "\u{200d}", "🏽",
-                        "\u{17d8}", "ﾊ",
-                    ]);
-                    out.extend_from_slice(text.unwrap_or_default().as_bytes());
-                }
-            }
-            17 | 18 => out.push(
-                r.pick(b"\r\n\x08\t\x07\x18\x1a\x00\x0e\x0f\x0b")
-                    .unwrap_or(b'\n'),
-            ),
-            19 => {
-                for _ in 0..=r.below(3) {
-                    out.push(r.byte_in(0, 0xff));
-                }
-            }
-            20 if r.chance(70) => out.push(0x1b),
-            // An OSC string at and around the bytes kept of one: 16 with
-            // prompt marks alone, `OSC_PAYLOAD_LIMIT` with events, links
-            // or the palette.
-            20 => {
-                out.extend_from_slice(
-                    r.pick(&[&b"\x1b]2;"[..], b"\x1b]133;A;"])
-                        .unwrap_or_default(),
-                );
-                let length = if long && r.chance(20) {
-                    OSC_PAYLOAD_LIMIT
-                        .saturating_sub(4)
-                        .saturating_add(r.below(8))
-                } else {
-                    r.below(24)
-                };
-                out.extend(std::iter::repeat_n(b'k', length));
-                out.extend_from_slice(
-                    r.pick(&[&b"\x07"[..], b"\x1b\\", b"\x18"])
-                        .unwrap_or_default(),
-                );
-            }
-            // A string of every kind, of any length, its data any bytes
-            // but mostly printable, ended or not: taken in bulk where it
-            // begins, and where a call goes on inside it.
-            21 => {
-                out.extend_from_slice(
-                    r.pick(&[
-                        &b"\x1b_"[..],
-                        b"\x1bX",
-                        b"\x1b^",
-                        b"\x1bP1;2|",
-                        b"\x1bP+q",
-                        b"\x1bP$q",
-                        b"\x1bP0;1q",
-                        b"\x1b]2;",
-                        b"\x1b]8;;",
-                    ])
-                    .unwrap_or_default(),
-                );
-                for _ in 0..r.below(if long { 3000 } else { 60 }) {
-                    out.push(match r.below(40) {
-                        0 => r.byte_in(0, 0x1f),
-                        1 => 0x7f,
-                        2 => r.byte_in(0x80, 0xff),
-                        _ => r.byte_in(0x20, 0x7e),
-                    });
-                }
-                if r.chance(80) {
-                    out.extend_from_slice(r.pick(&[&b"\x1b\\"[..], b"\x07"]).unwrap_or_default());
-                }
-            }
-            _ => {
-                out.extend_from_slice(b"\x1b[");
-                parameter(r, &mut out);
-            }
-        }
-    }
-    out
-}
-
-/// What a sink was given, each thing as its `Debug` shows it.
-#[derive(Default)]
-struct Log(Vec<String>);
-
-impl Sink for Log {
-    fn reply(&mut self, bytes: &[u8]) {
-        self.0.push(format!("reply {bytes:?}"));
-    }
-    fn event(&mut self, event: Event<'_>) {
-        self.0.push(format!("event {event:?}"));
-    }
-    fn unhandled(&mut self, sequence: Unhandled<'_>) {
-        self.0.push(format!("unhandled {sequence:?}"));
-    }
-}
-
-/// `Parser::run` with every byte through `byte`, the general path every
-/// fast path keeps, the budget's stops included.
-fn scalar(
-    parser: &mut Parser,
-    bytes: &[u8],
-    until_stop: bool,
-    sink: &mut impl Sink,
-) -> Result<Option<(usize, Stop)>, Error> {
-    let ran = scalar_on(parser, bytes, until_stop, sink);
-    // Every byte is read but those after a stop, as `Parser::run` counts.
-    let read = match ran {
-        Ok(Some((taken, _))) => taken,
-        Ok(None) | Err(_) => bytes.len(),
-    };
-    parser.screen.read(read);
-    ran
-}
-
-/// `scalar`, but for counting the bytes read.
-fn scalar_on(
-    parser: &mut Parser,
-    bytes: &[u8],
-    until_stop: bool,
-    sink: &mut impl Sink,
-) -> Result<Option<(usize, Stop)>, Error> {
-    if bytes.is_empty() {
-        return Ok(None);
-    }
-    parser.screen.begin();
-    let (start, refused) = (crate::budget::spent(), parser.refused);
-    let degrades = crate::degrades();
-    parser.end = match until_stop {
-        true => start.saturating_add(crate::budget::LIMIT.saturating_sub(parser.spent)),
-        false => u64::MAX,
-    };
-    (parser.screen.stop_at, parser.screen.stopped) = (parser.end, false);
-    if parser.screen.repeating() && parser.resume::<true>() && until_stop {
-        (parser.screen.stop_at, parser.screen.stopped) = (u64::MAX, false);
-        parser.spend_since(start, Stop::Budget);
-        parser.count_degrades(degrades);
-        return Ok(Some((0, Stop::Budget)));
-    }
-    for (i, &byte) in bytes.iter().enumerate() {
-        let before = parser.state;
-        let framed = parser.byte(byte, sink);
-        // `run` looks at the budget where a sequence or a string ended,
-        // and after a line feed carried out: in text, or among the bytes
-        // of an escape sequence or a CSI, not in a string or a DCS.
-        let ended =
-            parser.state == State::Ground && !matches!(before, State::Ground | State::Utf8(_));
-        let in_string = matches!(
-            before,
-            State::Dcs(_)
-                | State::IgnoreString
-                | State::Sixel
-                | State::Request(_)
-                | State::Osc { .. }
-        );
-        let fed = (0x0a..=0x0c).contains(&byte) && !in_string;
-        // And after a printed glyph whose wrap scrolled inside margins
-        // past the budget.
-        let wrapped = std::mem::take(&mut parser.screen.stopped);
-        let framed = framed.or_else(|| {
-            (ended || fed || wrapped)
-                .then(|| parser.over::<true>())
-                .flatten()
-        });
-        if until_stop && let Some(stop) = framed {
-            (parser.screen.stop_at, parser.screen.stopped) = (u64::MAX, false);
-            parser.spend_since(start, stop);
-            parser.count_degrades(degrades);
-            return Ok(Some((i.saturating_add(1), stop)));
-        }
-    }
-    if until_stop {
-        (parser.screen.stop_at, parser.screen.stopped) = (u64::MAX, false);
-        parser.spend_since(start, Stop::Ended);
-    }
-    parser.count_degrades(degrades);
-    match parser.refused == refused {
-        true => Ok(None),
-        false => Err(Error::Capacity),
-    }
-}
-
 /// A line feed carried out in text is a place `process_until_stop` looks
 /// at the budget, as its scroll can move a row's text into history: with
 /// the budget spent, a run of LF, VT or FF stops
@@ -448,246 +246,42 @@ fn a_line_feed_stops_at_a_spent_budget() -> Result<(), Error> {
     let mut parser = Parser::new(Size::of(2, 4), 8)?;
     for feeds in [b"\n\n\n", b"\x0b\x0b\x0b", b"\x0c\x0c\x0c"] {
         parser.spent = crate::budget::LIMIT;
-        let stop = parser.process_until_stop(feeds, &mut Log::default())?;
+        let stop = parser.process_until_stop(feeds, &mut Deaf)?;
         assert_eq!(stop, Some((1, Stop::Budget)), "{}", feeds.escape_ascii());
     }
     parser.spent = crate::budget::LIMIT;
-    assert_eq!(
-        parser.process_until_stop(b"\r\r\r", &mut Log::default())?,
-        None
-    );
+    assert_eq!(parser.process_until_stop(b"\r\r\r", &mut Deaf)?, None);
     Ok(())
 }
 
-/// A screen-wide sequence that would take a call that spent already past
-/// U is left for the next call, which carries it out first: at 1000x1000
-/// one such sequence may spend more than U (`budget::sequence_most`), so
-/// after one ED 2 the second is held, its bytes taken, and a budget stop
-/// made; the screen after the next call is the one `process_with` makes.
-/// In context: text before, between and after, the cursor where the text
-/// left it.
+/// A sequence whose work exceeds the remaining budget waits for the next
+/// call, even when that call has no bytes, and runs before any new text.
 #[test]
 fn a_screen_wide_sequence_past_the_ceiling_waits_for_the_next_call() -> Result<(), Error> {
     let size = Size::of(1000, 1000);
     assert!(crate::budget::sequence_most(size) > crate::budget::CEILING);
     let first = b"a\x1b[2Jb\x1b[2J";
-    let mut parser = Parser::new(size, 0)?;
-    let stop = parser.process_until_stop(first, &mut Log::default())?;
-    assert_eq!(stop, Some((first.len(), Stop::Budget)));
-    let shown = |p: &Parser, col: u16| p.screen().cell(0, col).map(|c| c.contents().to_owned());
-    assert_eq!(shown(&parser, 1).as_deref(), Some("b"));
-    assert_eq!(parser.process_until_stop(b"c", &mut Log::default())?, None);
-    let mut whole = Parser::new(size, 0)?;
-    whole.process_with(b"a\x1b[2Jb\x1b[2Jc", &mut Log::default())?;
-    for col in 0..4 {
-        assert_eq!(shown(&parser, col), shown(&whole, col), "column {col}");
-    }
-    assert_eq!(shown(&parser, 2).as_deref(), Some("c"));
-    assert_eq!(
-        parser.screen().cursor_position(),
-        whole.screen().cursor_position()
-    );
-    Ok(())
-}
-
-/// Random options, each on or off.
-fn options(r: &mut Rng) -> Options {
-    let features = Feature::ALL.into_iter().filter(|_| r.chance(50));
-    features
-        .collect::<Options>()
-        .with_identity(r.chance(50).then_some(Identity {
-            name: "fux",
-            version: "1.2.3",
-        }))
-}
-
-/// Every fast path of `Parser::run` (printable runs, UTF-8 text, and
-/// escape sequences read in a loop of their own) does exactly what the
-/// general path, every byte through `byte`, does: random bytes, mostly
-/// escape sequences of every shape, in random pieces, at random sizes and
-/// options, through `process_with` and `process_until_stop`; after every
-/// piece the two parsers' whole state, as `Debug` shows it, everything
-/// their sinks were given, and what each call returned are the same.
-#[test]
-fn fast_paths_equal_the_general_path() -> Result<(), Error> {
-    equal_to_the_general_path(0..3000, false)
-}
-
-/// As `fast_paths_equal_the_general_path`, on the permanent corpus: the
-/// adversarial operations and the terminal-edge streams.
-#[test]
-fn fast_paths_equal_the_general_path_on_the_permanent_corpus() -> Result<(), Error> {
-    for (rows, cols) in [(1, 1), (4, 12), (24, 80)] {
-        for seed in 0..6 {
-            let mut fast = Parser::new(Size::of(rows, cols), 8)?;
-            let mut slow = fast.clone();
-            let corpus = test_corpus::operations(seed, 4096).into_iter();
-            for operation in corpus.chain(test_corpus::terminal_edge()) {
-                let (mut a, mut b) = (Log::default(), Log::default());
-                fast.process_with(&operation, &mut a)?;
-                scalar(&mut slow, &operation, false, &mut b)?;
-                assert_eq!(a.0, b.0, "{rows}x{cols} seed {seed}");
-                let difference = first_difference(&format!("{fast:?}"), &format!("{slow:?}"));
-                assert_eq!(difference, None, "{rows}x{cols} seed {seed}");
-            }
+    for following in ["", "c"] {
+        let mut parser = Parser::new(size, 0)?;
+        let stop = parser.process_until_stop(first, &mut Deaf)?;
+        assert_eq!(stop, Some((first.len(), Stop::Budget)));
+        assert!(parser.has_work_left());
+        let shown = |p: &Parser, col: u16| p.screen().cell(0, col).map(|c| c.contents().to_owned());
+        assert_eq!(shown(&parser, 1).as_deref(), Some("b"));
+        assert_eq!(
+            parser.process_until_stop(following.as_bytes(), &mut Deaf)?,
+            None
+        );
+        assert!(!parser.has_work_left());
+        for (col, text) in [(0, ""), (1, ""), (2, following), (3, "")] {
+            assert_eq!(shown(&parser, col).as_deref(), Some(text), "column {col}");
         }
-    }
-    Ok(())
-}
-
-/// As `fast_paths_equal_the_general_path`, with OSC strings at and past
-/// the most bytes kept of one, in larger pieces.
-#[test]
-fn fast_paths_equal_the_general_path_on_long_strings() -> Result<(), Error> {
-    equal_to_the_general_path(0..40, true)
-}
-
-fn equal_to_the_general_path(cases: std::ops::Range<u64>, long: bool) -> Result<(), Error> {
-    let mut budget_stops = 0u32;
-    for case in cases {
-        let mut r = Rng(case);
-        let rows = u16::try_from(r.below(6)).unwrap_or(0).saturating_add(1);
-        let cols = u16::try_from(r.below(12)).unwrap_or(0).saturating_add(1);
-        let mut fast = Parser::with_options(Size::of(rows, cols), r.below(8), options(&mut r))?;
-        let mut slow = fast.clone();
-        let fragments = r.below(80).saturating_add(1);
-        let input = sequences(&mut r, fragments, long);
-        let mut rest = &input[..];
-        while !rest.is_empty() {
-            let size = if r.chance(50) {
-                r.below(8)
-            } else if long {
-                r.below(40_000)
-            } else {
-                r.below(400)
-            };
-            let (piece, tail) = rest
-                .split_at_checked(size.saturating_add(1))
-                .unwrap_or((rest, &[]));
-            rest = tail;
-            let until_frame = r.chance(30);
-            let (mut a, mut b) = (Log::default(), Log::default());
-            let mut piece_left = piece;
-            loop {
-                // Now and then the budget is all but spent, so that the
-                // call stops at the first place it looks.
-                if until_frame && r.chance(20) {
-                    let spent = crate::budget::LIMIT.saturating_sub(u64::from(r.chance(50)));
-                    (fast.spent, slow.spent) = (spent, spent);
-                }
-                let (got, want) = if until_frame {
-                    (
-                        fast.process_until_stop(piece_left, &mut a),
-                        scalar(&mut slow, piece_left, true, &mut b),
-                    )
-                } else {
-                    (
-                        fast.process_with(piece_left, &mut a).map(|()| None),
-                        scalar(&mut slow, piece_left, false, &mut b),
-                    )
-                };
-                assert_eq!(got, want, "case {case}: {}", input.escape_ascii());
-                if matches!(got, Ok(Some((_, Stop::Budget)))) {
-                    budget_stops = budget_stops.saturating_add(1);
-                }
-                match got {
-                    Ok(Some((n, _))) => piece_left = piece_left.get(n..).unwrap_or_default(),
-                    Ok(None) | Err(_) => break,
-                }
-            }
-            let shown = input.escape_ascii().to_string();
-            assert_eq!(a.0, b.0, "case {case}: {shown}");
-            let difference = first_difference(&format!("{fast:?}"), &format!("{slow:?}"));
-            assert_eq!(difference, None, "case {case}: {shown}");
-        }
-    }
-    assert!(budget_stops > 0, "no call stopped at its budget");
-    Ok(())
-}
-
-/// Where `a` and `b` first differ, with some of each around it.
-fn first_difference(a: &str, b: &str) -> Option<String> {
-    let at = a
-        .bytes()
-        .zip(b.bytes())
-        .position(|(x, y)| x != y)
-        .or_else(|| (a.len() != b.len()).then(|| a.len().min(b.len())))?;
-    let around = |s: &str| {
-        let start = at.saturating_sub(300);
-        let end = at.saturating_add(200);
-        s.bytes()
-            .skip(start)
-            .take(end.saturating_sub(start))
-            .map(char::from)
-            .collect::<String>()
-    };
-    Some(format!(
-        "at {at}:\n  fast: …{}…\n  slow: …{}…",
-        around(a),
-        around(b)
-    ))
-}
-
-/// Output that shows, leaves, clears and resets the alternate screen.
-const SCREENS: &[&[u8]] = &[
-    b"\x1b[?47h",
-    b"\x1b[?47l",
-    b"\x1b[?1047h",
-    b"\x1b[?1047l",
-    b"\x1b[?1049h",
-    b"\x1b[?1049l",
-    b"\x1b[?1049s",
-    b"\x1b[?1049r",
-    b"\x1b[?6h\x1b[2;3r",
-    b"\x1b[!p",
-    b"\x1bc",
-    b"\x1b7",
-];
-
-/// The alternate screen, made when a program first shows it, is the
-/// screen made at once: random output, resizes (with reflow and without),
-/// RIS, DECSTR and every way of showing and leaving it, beside a parser
-/// whose alternate screen was made as it was made; after every step the
-/// lazy parser, its alternate screen made then, is the eager one in all
-/// its state as `Debug` shows it, and holds no more cells than it.
-#[test]
-fn the_alternate_screen_made_late_is_the_one_made_at_once() -> Result<(), Error> {
-    for case in 0..1500u64 {
-        let mut r = Rng(case.wrapping_add(1 << 32));
-        let rows = u16::try_from(r.below(6)).unwrap_or(0).saturating_add(1);
-        let cols = u16::try_from(r.below(12)).unwrap_or(0).saturating_add(1);
-        let mut lazy = Parser::with_options(Size::of(rows, cols), r.below(8), options(&mut r))?;
-        let mut eager = lazy.clone();
-        eager.screen_mut().make_alternate()?;
-        for step in 0..r.below(40) {
-            let resize = r.chance(15).then(|| {
-                let rows = u16::try_from(r.below(7)).unwrap_or(0).saturating_add(1);
-                let cols = u16::try_from(r.below(13)).unwrap_or(0).saturating_add(1);
-                Size::of(rows, cols)
-            });
-            let output = if r.chance(40) {
-                r.pick(SCREENS).unwrap_or_default().to_vec()
-            } else {
-                let fragments = r.below(6).saturating_add(1);
-                sequences(&mut r, fragments, false)
-            };
-            let (a, b) = match resize {
-                Some(size) => (lazy.resize(size), eager.resize(size)),
-                None => (lazy.process(&output), eager.process(&output)),
-            };
-            assert_eq!(a, b, "case {case} step {step}");
-            assert!(
-                lazy.screen().storage_cells() <= eager.screen().storage_cells(),
-                "case {case} step {step}"
-            );
-            // As before the lazy screen, the eager one's is always made:
-            // RIS leaves it unmade again (`Grid::unmade`).
-            eager.screen_mut().make_alternate()?;
-            let mut made = lazy.clone();
-            made.screen_mut().make_alternate()?;
-            let difference = first_difference(&format!("{made:?}"), &format!("{eager:?}"));
-            assert_eq!(difference, None, "case {case} step {step}");
-        }
+        assert_eq!(
+            parser.screen().cursor_position(),
+            (0, if following.is_empty() { 2 } else { 3 })
+        );
+        assert_eq!(parser.process_until_stop(&[], &mut Deaf)?, None);
+        assert!(!parser.has_work_left());
     }
     Ok(())
 }
@@ -767,84 +361,87 @@ fn printable_runs_are_found_a_word_at_a_time_as_a_byte_at_a_time() {
     }
 }
 
-/// A frame ends, as `FrameScan` finds it, at the byte after which the
-/// parser carrying the bytes out has synchronized output reset: random
-/// bytes after a BSU, most escape sequences, with RM of several modes,
-/// RIS, DECSTR and DECSCL (of a level fux-vt has, and one it has not)
-/// among them, and XTSAVE holding the mode either way,
-/// held a random piece more at a time and carried out a byte at a time;
-/// and `process_until_stop`, reading them in random pieces as they come,
-/// says `Stop::Ended` there.
+/// A scan and a streamed read stop at the first reset, not a later reset in
+/// the same input. Saving 2026 while a frame is held changes what restore
+/// means; cancelled sequences and ESC-terminated strings keep their rules.
 #[test]
-fn a_frame_scan_ends_where_the_parser_ends_the_frame() -> Result<(), Error> {
-    for case in 0..3000 {
-        let mut r = Rng(case);
-        let mut parser = Parser::with_options(Size::of(4, 10), 8, options(&mut r))?;
-        if r.chance(50) {
-            parser.process(b"\x1b[?2026h\x1b[?2026s\x1b[?2026l")?;
-        }
-        assert_eq!(
-            parser.process_until_stop(b"\x1b[?2026h", &mut Log::default()),
-            Ok(Some((8, Stop::Begun)))
-        );
-        let fragments = r.below(40).saturating_add(1);
-        let mut input = sequences(&mut r, fragments, false);
-        for _ in 0..r.below(3) {
-            let at = r.below(input.len().saturating_add(1));
-            let end = r.pick(&[
-                &b"\x1b[?25;2026l"[..],
-                b"\x1bc",
-                b"\x1b[!p",
-                b"\x1b[?2026r",
-                b"\x1b[61;1\"p",
-                b"\x1b[63\"p",
-            ]);
-            let (head, tail) = input.split_at_checked(at).unwrap_or((&input, &[]));
-            input = [head, end.unwrap_or_default(), tail].concat();
-        }
-        let mut scan = parser.frame_scan();
-        let (mut held, mut found) = (0usize, None);
-        while found.is_none() && held < input.len() {
-            held = held
-                .saturating_add(r.below(8))
-                .saturating_add(1)
-                .min(input.len());
-            found = scan.end(input.get(..held).unwrap_or_default());
-        }
-        // Read as it comes, in random pieces: where `process_until_stop`
-        // first says the frame ended.
-        let (mut streamed, mut read, mut told) = (parser.clone(), 0usize, None);
-        while told.is_none() && read < input.len() {
-            let piece = r.below(8).saturating_add(1);
-            let end = read.saturating_add(piece).min(input.len());
-            let mut at = read;
-            while let Some(rest) = input.get(at..end)
-                && let Some((taken, frame)) =
-                    streamed.process_until_stop(rest, &mut Log::default())?
-            {
-                at = at.saturating_add(taken);
-                if frame == Stop::Ended {
-                    told = Some(at);
-                    break;
+fn a_frame_scan_stops_at_the_first_synchronized_output_reset() -> Result<(), Error> {
+    for saved in [false, true] {
+        for (end, ends) in [
+            (&b"\x1b[?2026l"[..], true),
+            (b"\x1b[?25;2026l", true),
+            (b"\x1b[?20\r26l", true),
+            (b"\x1bc", true),
+            (b"\x1b[!p", true),
+            (b"\x1b[61;1\"p", true),
+            (b"\x1b[62\"p", true),
+            (b"\x1b[63\"p", false),
+            (b"\x1b]2;\x1b[?2026l", true),
+            (b"\x1bP1;2|x\x1b[?2026l", true),
+            (b"\x1bPq#0~\x1b[?2026l", true),
+            (b"\x1b_x\x1b[?2026l", true),
+            (b"\x1b[?2026r", !saved),
+            (b"\x1b[?2026s\x1b[?2026r", false),
+            (b"\x1b[?25;2026s\x1b[?2026r", false),
+            (b"\x1b[?25s\x1b[?2026r", !saved),
+            (b"\x1b[?20\x1826l", false),
+            (b"\x1b[?2026:1l", false),
+            (b"\x1b[?2026h", false),
+            (b"\x1b]2;hello h\x07", false),
+            (b"\x1b[?2026", false),
+        ] {
+            let mut parser = Parser::new(Size::of(4, 10), 8)?;
+            if saved {
+                parser.process(b"\x1b[?2026h")?;
+            }
+            parser.process(b"\x1b[?2026s\x1b[?2026h")?;
+            for suffix in [b"".as_slice(), b"x\x1b[?2026l"] {
+                let input = [b"ab".as_slice(), end, suffix].concat();
+                let expected = if ends {
+                    Some(2 + end.len())
+                } else {
+                    (!suffix.is_empty()).then_some(input.len())
+                };
+                for chunk in [1, 2, input.len()] {
+                    let mut scan = parser.frame_scan();
+                    let (mut held, mut found) = (0usize, None);
+                    while held < input.len() && found.is_none() {
+                        held = (held + chunk).min(input.len());
+                        found = scan.end(input.get(..held).ok_or(Error::InvalidRange)?);
+                        assert_eq!(
+                            found,
+                            expected.filter(|&at| at <= held),
+                            "{end:?}, saved {saved}, held {held}"
+                        );
+                    }
+                    assert_eq!(found, expected);
+                    let mut streamed = parser.clone();
+                    let (mut offset, mut first) = (0, None);
+                    let mut rest = input.as_slice();
+                    while !rest.is_empty() {
+                        let (mut piece, tail) = rest.split_at_checked(chunk).unwrap_or((rest, &[]));
+                        rest = tail;
+                        while !piece.is_empty() {
+                            let taken = match streamed.process_until_stop(piece, &mut Deaf)? {
+                                Some((taken, stop)) => {
+                                    first.get_or_insert((offset + taken, stop));
+                                    taken
+                                }
+                                None => piece.len(),
+                            };
+                            assert!(taken > 0, "a small frame must make progress");
+                            piece = piece.get(taken..).ok_or(Error::InvalidRange)?;
+                            offset += taken;
+                        }
+                    }
+                    assert_eq!(
+                        first,
+                        expected.map(|at| (at, Stop::Ended)),
+                        "{end:?}, saved {saved}, chunk {chunk}"
+                    );
                 }
             }
-            read = end;
         }
-        let mut ended = None;
-        for (i, byte) in input.iter().enumerate() {
-            parser.process(std::slice::from_ref(byte))?;
-            if !parser.screen().mode(Mode::SynchronizedOutput) {
-                ended = Some(i.saturating_add(1));
-                break;
-            }
-        }
-        assert_eq!(found, ended, "case {case}: {}", input.escape_ascii());
-        assert_eq!(
-            told,
-            ended,
-            "streamed, case {case}: {}",
-            input.escape_ascii()
-        );
     }
     Ok(())
 }
@@ -904,32 +501,9 @@ fn a_region_scroll_spends_its_slots_once() -> Result<(), Error> {
         .copied()
         .collect();
     let start = crate::budget::spent();
-    assert_eq!(
-        parser.process_until_stop(&bytes, &mut Log::default())?,
-        None
-    );
+    assert_eq!(parser.process_until_stop(&bytes, &mut Deaf)?, None);
     let spent = crate::budget::spent().saturating_sub(start);
     let each = 8_190 * (crate::budget::weight::cells + crate::budget::weight::slots);
     assert!(spent <= 100 * each, "{spent}");
-    Ok(())
-}
-
-/// A call of no bytes does what the call before left, as one of bytes
-/// does first: a screen-wide sequence held back for the next call
-/// (`Screen::holds_back`) is carried out in a call of nothing; then
-/// `has_work_left` is false and a call of no bytes does nothing.
-#[test]
-fn a_call_of_no_bytes_does_what_the_last_left() -> Result<(), Error> {
-    let size = Size::of(1000, 1000);
-    let input = b"a\x1b[2Jb\x1b[2J";
-    let mut parser = Parser::new(size, 0)?;
-    let stop = parser.process_until_stop(input, &mut Log::default())?;
-    assert_eq!(stop, Some((input.len(), Stop::Budget)));
-    assert!(parser.has_work_left());
-    assert_eq!(parser.process_until_stop(&[], &mut Log::default())?, None);
-    assert!(!parser.has_work_left());
-    let shown = |p: &Parser| p.screen().cell(0, 1).map(|c| c.contents().to_owned());
-    assert_eq!(shown(&parser).as_deref(), Some(""));
-    assert_eq!(parser.process_until_stop(&[], &mut Log::default())?, None);
     Ok(())
 }

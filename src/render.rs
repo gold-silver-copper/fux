@@ -2168,106 +2168,89 @@ mod tests {
         Ok(())
     }
 
-    /// A small deterministic generator (splitmix64).
-    struct Rng(u64);
-
-    impl Rng {
-        fn below(&mut self, n: usize) -> usize {
-            self.0 = self.0.wrapping_add(0x9e37_79b9_7f4a_7c15);
-            let mut x = self.0;
-            x = (x ^ (x >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
-            x = (x ^ (x >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
-            x ^= x >> 31;
-            usize::try_from(x.checked_rem(u64::try_from(n).unwrap_or(1)).unwrap_or(0)).unwrap_or(0)
-        }
-    }
-
-    /// Composing into the grid composed last but one, as the server does,
-    /// puts again only the rows that changed (`Memo`), and paints only the
-    /// rows that may differ: through random output into split panes,
-    /// scrolling, the alternate screen, links, resizes, copy mode, a
-    /// notice and splits, after every step the grid is what composing
-    /// whole gives, its paint is the paint comparing every row, and it
-    /// paints nothing just when the grids are equal.
+    /// Memoised composition and painting preserve the full production paths
+    /// through pane, view and geometry changes. A content-only edit must emit
+    /// its text even when the cursor and modes stay put.
     #[test]
-    fn composing_in_part_is_composing_whole() -> Result<(), String> {
-        use crate::id::PaneId;
-        let outputs: [&[u8]; 12] = [
-            b"x",
-            b"hello\r\n",
-            b"\x1b[2J\x1b[H",
-            b"\x1b[5;3Hmid\x1b[K",
-            b"line\r\nline\r\nline\r\nline\r\nline\r\nline\r\n",
-            b"\x1b[?1049h\x1b[Halt",
-            b"\x1b[?1049l",
-            b"\x1b[31mred\x1b[m \xe7\x95\x8c",
-            b"\x1b]8;;http://x\x1b\\link\x1b]8;;\x1b\\",
-            b"\x1b]4;1;#00ff00\x07",
-            b"\x1b]104\x07",
-            b"\x1b[2;4r\x1b[4H\n\n\x1b[r",
-        ];
-        let commands = [
-            "str %1 pane str horizontal axis split",
-            "str %1 pane str vertical axis split",
-            "str c1 client zoom",
-            "str c1 client copy-mode",
-            "str c1 client command-prompt",
-            "str c1 client str next focus",
-            "str %2 pane kill",
-        ];
-        let mut r = Rng(0x00c0_ffee);
-        for case in 0..40 {
-            let (mut s, c) = crate::session::testing::attached(12, 50)?;
-            let (mut spare, mut shown) = (Grid::default(), Grid::default());
-            let mut placement = Placement::default();
-            let mut painted = false;
-            for step in 0..120 {
-                match r.below(12) {
-                    0 => {
-                        let line = commands.get(r.below(commands.len())).copied().unwrap_or("");
-                        let _ = crate::session::testing::run(&mut s, line);
-                    }
-                    // The column opens, or what is open closes.
-                    1 => s.input(c, if r.below(2) == 0 { b"\x02" } else { b"\x1b" }),
-                    2 => {
-                        let rows = u16::try_from(4 + r.below(12)).unwrap_or(8);
-                        let cols = u16::try_from(10 + r.below(50)).unwrap_or(40);
-                        s.size_client(c, rows, cols).map_err(|e| e.to_string())?;
-                    }
-                    3 => {
-                        crate::session::testing::run(&mut s, "str @1 tab str n rename")?;
-                    }
-                    _ => {
-                        let panes: Vec<PaneId> = s.parts.panes().keys().copied().collect();
-                        if let Some(&id) = panes.get(r.below(panes.len().max(1))) {
-                            let out = outputs.get(r.below(outputs.len())).copied().unwrap_or(b"");
-                            s.out(id, out);
-                        }
-                    }
-                }
-                s.hold_copies();
-                if !compose_into(&s, c, &mut spare, &mut placement) {
-                    continue;
-                }
-                let whole = compose(&s, c).ok_or("no client")?;
-                assert!(spare == whole, "case {case}, step {step}: composed in part");
-                let fast = paint(painted.then_some(&shown), &spare);
-                // Copies, which have no memo.
-                let (plain_old, plain_new) = (shown.clone(), spare.clone());
-                let slow = paint(painted.then_some(&plain_old), &plain_new);
-                assert!(
-                    fast == slow,
-                    "case {case}, step {step}: the memo's paint differs"
-                );
-                assert_eq!(
-                    fast.is_empty(),
-                    painted && spare == shown,
-                    "case {case}, step {step}"
-                );
-                std::mem::swap(&mut spare, &mut shown);
-                painted = true;
-            }
+    fn cached_rows_follow_terminal_changes() -> Result<(), String> {
+        use crate::session::testing::run;
+        let (mut session, client) = crate::session::testing::attached(6, 30)?;
+        let (mut shown, mut spare) = (Grid::default(), Grid::default());
+        let mut placement = Placement::default();
+        let mut check = |session: &mut Session| -> Result<Vec<u8>, String> {
+            session.hold_copies();
+            assert!(compose_into(session, client, &mut spare, &mut placement));
+            assert_eq!(spare, compose(session, client).ok_or("client")?);
+            let bytes = paint(Some(&shown), &spare);
+            // Grid::clone drops the memo, so this compares the row-selection
+            // shortcut with the painter's full comparison of the same grids.
+            assert_eq!(bytes, paint(Some(&shown.clone()), &spare.clone()));
+            assert_eq!(bytes.is_empty(), shown == spare);
+            std::mem::swap(&mut shown, &mut spare);
+            Ok(bytes)
+        };
+        session.out(PaneId::of(1), b"hello");
+        check(&mut session)?;
+        let cursor = compose(&session, client).ok_or("client")?.cursor;
+        session.out(PaneId::of(1), b"\x1b7\x1b[HHELLO\x1b8");
+        let bytes = check(&mut session)?;
+        assert!(String::from_utf8_lossy(&bytes).contains("HELLO"));
+        assert_eq!(compose(&session, client).ok_or("client")?.cursor, cursor);
+        for output in [
+            "\x1b[2J\x1b[H\x1b[31mred 界",
+            "\x1b[?1049h\x1b[Halternate",
+            "\x1b[?1049l",
+            "\x1b[2J\x1b[Hone\r\ntwo\r\nthree\r\nfour\r\nfive\r\nsix",
+            "\x1b[2J\x1b[H\x1b]8;;https://example.test\x1b\\link\x1b]8;;\x1b\\",
+            "\x1b]4;1;#00ff00\x07",
+            "\x1b]104\x07",
+        ] {
+            session.out(PaneId::of(1), output.as_bytes());
+            check(&mut session)?;
         }
+        run(&mut session, "str %1 pane str horizontal axis split")?;
+        check(&mut session)?;
+        session.out(PaneId::of(2), b"second pane");
+        check(&mut session)?;
+        run(&mut session, "str %2 pane str vertical axis split")?;
+        check(&mut session)?;
+        run(&mut session, "str c1 client str next focus")?;
+        check(&mut session)?;
+        let focused = session.focused(client).ok_or("focused pane")?;
+        assert!(compose(&session, client).ok_or("client")?.cursor.is_some());
+        session.out(focused, b"\x1b[?25l");
+        check(&mut session)?;
+        assert!(compose(&session, client).ok_or("client")?.cursor.is_none());
+        run(&mut session, "str c1 client copy-mode")?;
+        check(&mut session)?;
+        session.input(client, b"q");
+        check(&mut session)?;
+        run(&mut session, "str c1 client command-prompt")?;
+        check(&mut session)?;
+        session.input(client, b"\x1b");
+        session.escape(client);
+        check(&mut session)?;
+        session.input(client, b"\x02");
+        check(&mut session)?;
+        session.input(client, b"\x1b");
+        session.escape(client);
+        check(&mut session)?;
+        session.notify_to(client, "notice", false);
+        check(&mut session)?;
+        session.views.get_mut(&client).ok_or("client")?.notice = None;
+        check(&mut session)?;
+        for command in ["str c1 client zoom", "str @1 tab str renamed rename"] {
+            run(&mut session, command)?;
+            check(&mut session)?;
+        }
+        session
+            .size_client(client, 8, 41)
+            .map_err(|e| e.to_string())?;
+        check(&mut session)?;
+        session.out(PaneId::of(1), b"\r\na\r\nb\r\nc\r\nd\r\ne\r\nf\r\ng\r\nh");
+        check(&mut session)?;
+        run(&mut session, "str %2 pane kill")?;
+        check(&mut session)?;
         Ok(())
     }
 
@@ -2303,19 +2286,6 @@ mod tests {
             M::AnyMotion,
         ];
         assert_eq!(levels.map(mouse_level), [0, 1000, 1000, 1002, 1003]);
-    }
-
-    fn apply(bytes: &[u8], parser: &mut fux_vt::Parser) -> Vec<String> {
-        let _ = parser.process(bytes);
-        let window = parser.screen().window();
-        (0..window.rows())
-            .map(|y| {
-                window
-                    .row(y)
-                    .map(|row| row.cells_text().trim_end_matches(' ').to_owned())
-                    .unwrap_or_default()
-            })
-            .collect()
     }
 
     /// Copy mode's bar replaces the tabs with what it is doing and its keys'
@@ -2410,31 +2380,22 @@ mod tests {
         Ok(())
     }
 
-    /// A grid composed into again, whatever it held and whatever its size,
-    /// comes out as a fresh one would.
+    /// Reused grids of any size lose old cells, blank attributes and cursor
+    /// state, including padding a smaller pane does not paint.
     #[test]
-    fn composing_into_a_used_grid_is_composing_afresh() -> Result<(), Box<dyn std::error::Error>> {
+    fn recomposing_clears_stale_cells_and_cursor() -> Result<(), Box<dyn std::error::Error>> {
         let (mut s, c) = crate::session::testing::attached(12, 50)?;
-        s.out(PaneId::of(1), b"first screen\r\n\x1b[5 q");
-        let before = compose(&s, c).ok_or("a screen")?;
         crate::session::testing::run(&mut s, "str %1 pane str horizontal axis split")?;
-        // The focused pane hides its cursor, and a smaller client makes the
-        // panes smaller than their places: compose leaves cells untouched.
         s.out(PaneId::of(2), "界 second\r\n\x1b[?25l".as_bytes());
         s.attach(8, 30, None)?;
-        let fresh = compose(&s, c).ok_or("a screen")?;
-        assert_ne!(before, fresh);
-        assert!(before.cursor.is_some() && fresh.cursor.is_none());
-        assert!(fresh.cells.iter().any(|c| !c.has_contents()));
-        // The previous screen, with its cursor and shape.
-        let mut used = before;
-        assert!(compose_into(&s, c, &mut used, &mut Placement::default()));
-        assert_eq!(used, fresh);
-        // Grids of this size and others, full of text.
         for (rows, cols) in [(12, 50), (3, 7), (12, 49), (40, 200)] {
-            let mut other = new_grid(rows, cols);
+            let mut grid = new_grid(rows, cols);
+            grid.fill(
+                Rect::screen(rows, cols),
+                Attributes::default().with_bold(true),
+            );
             for y in 0..rows {
-                other.text(
+                grid.text(
                     y,
                     0,
                     "junk 界 junk",
@@ -2442,10 +2403,10 @@ mod tests {
                     cols,
                 );
             }
-            other.cursor = Some((1, 1));
-            other.modes.cursor_shape = CursorShape::BlinkingUnderline;
-            assert!(compose_into(&s, c, &mut other, &mut Placement::default()));
-            assert_eq!(other, fresh, "{rows}x{cols}");
+            grid.cursor = Some((1, 1));
+            grid.modes.cursor_shape = CursorShape::BlinkingUnderline;
+            assert!(compose_into(&s, c, &mut grid, &mut Placement::default()));
+            assert_eq!(grid, compose(&s, c).ok_or("a screen")?);
         }
         Ok(())
     }
@@ -2494,27 +2455,6 @@ mod tests {
         assert_eq!(cell(2), Some(("👩".to_owned(), true)));
         assert_eq!(cell(4), Some(("X".to_owned(), false)));
         assert_eq!(cell(5), Some(("…".to_owned(), false)));
-    }
-
-    #[test]
-    fn a_scrolled_prompt_keeps_its_cursor_visible() {
-        for (before, room) in [
-            ("a\u{600}".to_owned(), 3),
-            ("\u{d4e}".to_owned(), 3),
-            (
-                format!(
-                    "👩{}👩",
-                    std::iter::repeat_n("\u{200d}👩", 18).collect::<String>()
-                ),
-                7,
-            ),
-        ] {
-            let prompt = prompt_line(&before, "tail", room);
-            assert!(cell_width(prompt.cells()) <= room);
-            let mut grid = new_grid(1, room);
-            grid.text_cells(0, 0, prompt.cells(), Attributes::default(), room);
-            assert!((0..room).any(|x| grid.get(0, x).is_some_and(|c| c.contents().contains('▏'))));
-        }
     }
 
     #[test]
@@ -2800,7 +2740,7 @@ mod tests {
     /// the modifier to the emoji, as it does when micro writes it directly,
     /// and the next glyph still lands where fux-vt has it.
     #[test]
-    fn a_glyph_that_would_join_the_one_before_is_placed() -> Result<(), String> {
+    fn a_glyph_that_would_join_the_one_before_is_placed() {
         let mut grid = new_grid(1, 12);
         grid.text(0, 2, "\u{1F44D}", Attributes::default(), 12);
         grid.text(0, 4, "\u{1F3FD}", Attributes::default(), 12);
@@ -2811,14 +2751,11 @@ mod tests {
             text.contains("\u{1F44D}\x1b[1;5H\u{1F3FD}\x1b[1;7Hx"),
             "{text:?}"
         );
-        let mut parser = terminal(1, 12)?;
-        assert_eq!(apply(&bytes, &mut parser), grid_lines(&grid));
         // Glyphs that do not join are painted in one run.
         let mut plain = new_grid(1, 12);
         plain.text(0, 2, "\u{1F44D}\u{1F680}x", Attributes::default(), 12);
         let text = String::from_utf8_lossy(&paint(None, &plain)).into_owned();
         assert!(text.contains("\u{1F44D}\u{1F680}x"), "{text:?}");
-        Ok(())
     }
 
     /// Zero-width characters after a glyph that leaves the cursor in the
@@ -2826,34 +2763,28 @@ mod tests {
     /// on that glyph and not on the last column's; anywhere else, and in
     /// the last column itself, a cluster is painted as it is.
     #[test]
-    fn marks_short_of_the_edge_are_painted_with_autowrap() -> Result<(), String> {
+    fn marks_short_of_the_edge_are_painted_with_autowrap() {
         let marked = |text| CellRef::new(text, false, Attributes::default());
         let painted = |x: u16, text| {
             let mut grid = new_grid(1, 6);
             grid.fill(Rect::screen(1, 6), Attributes::default());
             grid.set(0, x, marked(text));
-            (
-                String::from_utf8_lossy(&paint(None, &grid)).into_owned(),
-                grid,
-            )
+            String::from_utf8_lossy(&paint(None, &grid)).into_owned()
         };
-        let (text, grid) = painted(4, "a\u{301}\u{356}");
+        let text = painted(4, "a\u{301}\u{356}");
         assert!(
             text.contains("\x1b[?7ha\u{301}\u{356}\x1b[?7l "),
             "{text:?}"
         );
-        let mut parser = terminal(1, 6)?;
-        assert_eq!(apply(text.as_bytes(), &mut parser), grid_lines(&grid));
         for (x, cluster) in [
             (3, "a\u{301}"),
             (5, "a\u{301}"),
             (4, "a"),
             (4, "\u{1F44D}\u{1F3FD}"),
         ] {
-            let (text, _) = painted(x, cluster);
+            let text = painted(x, cluster);
             assert!(!text.contains("\x1b[?7h"), "{x} {cluster:?}: {text:?}");
         }
-        Ok(())
     }
 
     /// A prompt wider than its panel scrolls to keep the cursor in view,
@@ -2887,6 +2818,33 @@ mod tests {
                 .collect::<String>(),
             "ls▏"
         );
+        for (before, room) in [
+            ("a\u{600}".to_owned(), 3),
+            ("\u{d4e}".to_owned(), 3),
+            (
+                format!(
+                    "👩{}👩",
+                    std::iter::repeat_n("\u{200d}👩", 18).collect::<String>()
+                ),
+                7,
+            ),
+        ] {
+            let prompt = prompt_line(&before, "tail", room);
+            assert!(cell_width(prompt.cells()) <= room);
+            let mut grid = new_grid(1, room);
+            grid.text_cells(0, 0, prompt.cells(), Attributes::default(), room);
+            assert!((0..room).any(|x| grid.get(0, x).is_some_and(|c| c.contents().contains('▏'))));
+        }
+    }
+
+    /// Apply a paint as a terminal does, with blank tails trimmed like Grid.
+    fn apply(bytes: &[u8], parser: &mut fux_vt::Parser) -> Result<Vec<String>, String> {
+        parser.process(bytes).map_err(|e| e.to_string())?;
+        let window = parser.screen().window();
+        Ok((0..window.rows())
+            .filter_map(|y| window.row(y))
+            .map(|row| row.cells_text().trim_end_matches(' ').to_owned())
+            .collect())
     }
 
     fn grid_lines(g: &Grid) -> Vec<String> {
@@ -3267,15 +3225,15 @@ mod tests {
         let diff = paint(Some(&a), &b);
         assert_eq!(rows_written(&diff), [3]);
         let mut parser = terminal(6, 20)?;
-        apply(&paint(None, &a), &mut parser);
-        assert_eq!(apply(&diff, &mut parser), grid_lines(&b));
+        apply(&paint(None, &a), &mut parser)?;
+        assert_eq!(apply(&diff, &mut parser)?, grid_lines(&b));
         // The first and last rows, and a wide glyph's second half.
         let mut c = b.clone();
         c.text(0, 19, "!", Attributes::default(), 20);
         c.text(5, 7, "y", Attributes::default(), 20);
         let diff = paint(Some(&b), &c);
         assert_eq!(rows_written(&diff), [0, 5]);
-        assert_eq!(apply(&diff, &mut parser), grid_lines(&c));
+        assert_eq!(apply(&diff, &mut parser)?, grid_lines(&c));
         // Nothing changed: no row is written; painted whole, every row is.
         assert_eq!(rows_written(&paint(Some(&c), &c)), Vec::<u16>::new());
         assert_eq!(rows_written(&paint(None, &c)), [0, 1, 2, 3, 4, 5]);

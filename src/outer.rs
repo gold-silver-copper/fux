@@ -726,6 +726,8 @@ mod tests {
             let (_, pixels) = fuxix::terminal::window_size(&pane.process().child()?.master)?;
             pixels.map(|p| (p.width.get(), p.height.get()))
         };
+        s.input(c, b"\x1b[6;0;0t");
+        assert!(s.views.get(&c).is_some_and(|v| v.notice.is_none()));
         assert_eq!(pixels(&s), None, "no cell said");
         s.input(c, b"\x1b[6;20;10t");
         let whole = |w: u16, h: u16| {
@@ -739,7 +741,8 @@ mod tests {
         assert_eq!(pixels(&s), whole(12, 24));
         let notice = |s: &mut Session| (s.views.get_mut(&c)).and_then(|v| v.notice.take());
         s.input(c, b"\x1b[6;5;1t");
-        assert!(notice(&mut s).is_some(), "refused, told");
+        assert!(notice(&mut s).is_some_and(|n| n.text.contains("1x5")));
+        assert!(s.views.get(&c).is_some_and(|v| v.terminal.cell.is_none()));
         assert_eq!(pixels(&s), None, "no cell told");
         s.input(c, b"\x1b[6;5;1t");
         assert!(notice(&mut s).is_none(), "told once");
@@ -790,20 +793,6 @@ mod tests {
         run(&mut s, "opts 80 24 size str other name new-workspace")?;
         run(&mut s, "str c1 client str other workspace show")?;
         assert_eq!(refused(&mut s), Some(1));
-        Ok(())
-    }
-
-    /// A cell said 0 wide or high is no size said, which is no fault; one
-    /// under a sixel band (`CellSize::LEAST`) is refused, and told.
-    #[test]
-    fn a_cell_of_0_is_no_size_and_a_small_one_is_refused() -> Outcome {
-        let (mut s, c) = session()?;
-        let notice = |s: &mut Session| (s.views.get_mut(&c)).and_then(|v| v.notice.take());
-        s.input(c, b"\x1b[6;0;0t\x1b[?62c");
-        assert!(notice(&mut s).is_none());
-        s.input(c, b"\x1b[6;5;1t\x1b[?62c");
-        assert!(notice(&mut s).is_some_and(|n| n.text.contains("1x5")));
-        assert!(s.views.get(&c).is_some_and(|v| v.terminal.cell.is_none()));
         Ok(())
     }
 

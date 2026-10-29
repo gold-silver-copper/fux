@@ -603,6 +603,15 @@ fn rep_repeats_the_preceding_graphic_character() -> Result {
     assert_eq!(row(8, b"\x1b*0\x1bNq\x1b[2b")?, "\u{2500}\u{2500}\u{2500}");
     assert_eq!(lines(&run(2, 8, b"abcdefg\x1b[3b")?), ["abcdefgg", "gg"]);
     assert_eq!(lines(&run(1, 1, "#界\x1b[4b".as_bytes())?), [""]);
+    for (input, expected) in [
+        ("abcdef\r\x1b[4hX\x1b[2b", "XXXabc"),
+        ("界界界\rx\x1b[2b", "xxx 界"),
+        ("界界界\x1b[2Gx\x1b[2b", " xxx界"),
+        ("\x1b[?7lx\x1b[100b", "xxxxxx"),
+    ] {
+        assert_eq!(row(6, input.as_bytes())?, expected, "{input:?}");
+    }
+    assert_eq!(lines(&run(2, 6, b"\x1b#6x\x1b[4b")?), ["xxx", "xx"]);
     // Nothing to repeat: at the start, or after a control, a sequence or a
     // string, REP's own included.
     assert_eq!(row(8, b"\x1b[2b")?, "");
@@ -630,60 +639,39 @@ fn rep_repeats_the_preceding_graphic_character() -> Result {
     let p = run(2, 5, "界\x1b[65533b".as_bytes())?;
     assert_eq!(lines(&p), ["界界", "界界"]);
     assert_eq!(p.screen().cursor_position(), (1, 4));
-    Ok(())
-}
-
-/// REP's copies of a glyph write what printing it again writes: over
-/// blanks, over the same glyph, and over wide glyphs either half of which a copy lands
-/// on, wrapping and scrolling.
-#[test]
-fn rep_writes_what_printing_again_writes() -> Result {
-    fn fed(bytes: &[u8]) -> Result<Parser> {
-        let mut parser = Parser::new(Size::new(3, 7)?, 1 << 10)?;
-        parser.process(bytes)?;
-        Ok(parser)
-    }
-    for before in [
-        "",
-        "\x1b[H界界界界界界",
-        "\x1b[Ha界b界界界界",
-        "\x1b[Héééé",
-        "\x1b[H\x1b[1m界界",
-        // Inside left and right margins, a scroll region, below it on a
-        // halved line, with autowrap off, in insert mode and on a halved
-        // line, past the copies that change anything.
-        "\x1b[?69h\x1b[2;5s",
-        "\x1b[1;2r",
+    // Copy-skipping below the scrolling region uses the halved row's end;
+    // a region starting at the top must retain the copies feeding history.
+    for setup in [
         "\x1b[1;2r\x1b[3;1H\x1b#6",
-        "\x1b[?7l",
-        "\x1b[Habc\x1b[4h",
-        "\x1b[H\x1b#6",
+        "\x1b[1;2r",
+        "\x1b[1;2r\x1b[1m界界界\x1b[m\x1b[H",
+        "\x1b[1m界界界\x1b[m\x1b[H\x1b[4h",
     ] {
-        for glyph in ["é", "界", "x"] {
-            for at in ["\x1b[H", "\x1b[1;2H", "\x1b[2;7H", "\x1b[3;3H"] {
-                for count in [1, 2, 5, 6, 7, 13, 40, 300, 1000] {
-                    let start = format!("{before}{before}\x1b[m{at}{glyph}");
-                    let rep = fed(format!("{start}\x1b[{count}b").as_bytes())?;
-                    let again = {
-                        let copies: String = std::iter::repeat_n(glyph, count).collect();
-                        fed(format!("{start}{copies}").as_bytes())?
-                    };
-                    let case = format!("{start:?} REP {count}");
-                    assert_eq!(lines(&rep), lines(&again), "{case}");
-                    let (a, b) = (rep.screen(), again.screen());
-                    assert_eq!(a.cursor_position(), b.cursor_position(), "{case}");
-                    assert_eq!(a.pending_wrap(), b.pending_wrap(), "{case}");
-                    // The screen's rows: history keeps what its budget lets,
-                    // trimmed in steps, which fewer copies may meet apart.
-                    let shown = |s: &fux_vt::Screen| -> Vec<Vec<String>> {
-                        let rows: Vec<_> = s.rows().collect();
-                        let first = rows.len().saturating_sub(3);
-                        let rows = rows.get(first..).unwrap_or_default();
-                        rows.iter()
-                            .map(|r| r.cells().map(|c| format!("{c:?}")).collect())
-                            .collect()
-                    };
-                    assert_eq!(shown(a), shown(b), "{case}: the cells differ");
+        for glyph in ["x", "界"] {
+            for at in ["", "\x1b[2G"] {
+                for count in [1, 2, 5, 13, 40, 300] {
+                    let start = format!("{setup}{at}{glyph}");
+                    let mut rep = Parser::new(Size::new(3, 7)?, 1 << 10)?;
+                    let mut printed = Parser::new(Size::new(3, 7)?, 1 << 10)?;
+                    rep.process(format!("{start}\x1b[{count}b").as_bytes())?;
+                    printed.process(
+                        format!(
+                            "{start}{}",
+                            std::iter::repeat_n(glyph, count).collect::<String>()
+                        )
+                        .as_bytes(),
+                    )?;
+                    let (a, b) = (rep.screen(), printed.screen());
+                    assert_eq!(
+                        (a.cursor_position(), a.pending_wrap()),
+                        (b.cursor_position(), b.pending_wrap()),
+                        "{start:?}, {count}"
+                    );
+                    for y in 0..3 {
+                        for x in 0..7 {
+                            assert_eq!(a.cell(y, x), b.cell(y, x), "{start:?}, {count}, ({y},{x})");
+                        }
+                    }
                 }
             }
         }

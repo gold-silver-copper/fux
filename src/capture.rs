@@ -942,11 +942,9 @@ fn describe(out: &mut dyn std::fmt::Write, a: Attributes) -> std::fmt::Result {
 #[cfg(test)]
 mod tests {
     use crate::command::{CaptureView, Program};
-    use crate::id::PaneId;
-    use crate::pane::tests::Lone;
-    use crate::pane::{Pane, Runs};
+    use crate::pane::Runs;
+    use crate::pane::tests::pane;
     use fuxix::Allocation;
-    use std::time::Instant;
 
     #[test]
     fn argument_observation_peak_stays_within_shared_grant()
@@ -998,14 +996,7 @@ mod tests {
             .preferences
             .history_bytes
             .get();
-        let mut pane = Lone::new(Pane::new(
-            PaneId::of(1),
-            None,
-            crate::pane::tests::shell()?,
-            fux_vt::Size::new(3, 200)?,
-            crate::pane::tests::options(history)?,
-            Instant::now(),
-        )?);
+        let mut pane = pane(3, 200, history)?;
         let output: Vec<u8> = std::iter::repeat_n(b"x\r\n".as_slice(), 150_000)
             .flatten()
             .copied()
@@ -1038,45 +1029,8 @@ mod tests {
     }
 
     #[test]
-    fn last_output_ignores_unselected_history() -> Result<(), Box<dyn std::error::Error>> {
-        let mut pane = Lone::new(Pane::new(
-            PaneId::of(1),
-            None,
-            crate::pane::tests::shell()?,
-            fux_vt::Size::new(3, 4)?,
-            crate::pane::tests::options(1 << 20)?,
-            Instant::now(),
-        )?);
-        for _ in 0..10 {
-            pane.output(b"x\r\n");
-        }
-        pane.output(b"\x1b]133;C\x07hi\x1b]133;D;0\x07");
-        let view = CaptureView {
-            source: crate::command::Source::LastOutput,
-            ..CaptureView::default()
-        };
-        let capture = super::pane_with(
-            &pane,
-            crate::command::Run::now().ok_or("clock")?,
-            None,
-            view,
-            false,
-            2,
-        )?;
-        assert_eq!(capture.text()?, "hi");
-        Ok(())
-    }
-
-    #[test]
     fn joined_prefix_costs_metadata_only() -> Result<(), Box<dyn std::error::Error>> {
-        let mut pane = Lone::new(Pane::new(
-            PaneId::of(1),
-            None,
-            crate::pane::tests::shell()?,
-            fux_vt::Size::new(1, 200)?,
-            crate::pane::tests::options(0)?,
-            Instant::now(),
-        )?);
+        let mut pane = pane(1, 200, 0)?;
         pane.output(b"x");
         let row = pane.screen().rows().next().ok_or("row")?;
         let read = Box::new(std::iter::repeat_n((row, 0..usize::MAX), 100));
@@ -1094,14 +1048,7 @@ mod tests {
 
     #[test]
     fn short_lines_charge_allocated_capacity() -> Result<(), Box<dyn std::error::Error>> {
-        let mut pane = Lone::new(Pane::new(
-            PaneId::of(1),
-            None,
-            crate::pane::tests::shell()?,
-            fux_vt::Size::new(1, 2)?,
-            crate::pane::tests::options(0)?,
-            Instant::now(),
-        )?);
+        let mut pane = pane(1, 2, 0)?;
         pane.output(b"x");
         let row = pane.screen().rows().next().ok_or("row")?;
         let read = std::iter::repeat_n((row, 0..usize::MAX), 100);
@@ -1138,14 +1085,7 @@ mod tests {
     /// beyond the cap. A narrower physical read remains available.
     #[test]
     fn over_budget_capture_refuses_without_clipping() -> Result<(), Box<dyn std::error::Error>> {
-        let mut pane = Lone::new(Pane::new(
-            PaneId::of(1),
-            None,
-            crate::pane::tests::shell()?,
-            fux_vt::Size::new(3, 80)?,
-            crate::pane::tests::options(1 << 20)?,
-            Instant::now(),
-        )?);
+        let mut pane = pane(3, 80, 1 << 20)?;
         pane.output(b"\x1b[41m \x1b[400b");
         for _ in 0..10 {
             pane.output(b"\r\n");
@@ -1202,15 +1142,7 @@ mod tests {
     -> Result<(), Box<dyn std::error::Error>> {
         let join = CaptureView::default();
         let captured = |output: &str| -> Result<String, Box<dyn std::error::Error>> {
-            let size = fux_vt::Size::new(3, 5)?;
-            let mut pane = Lone::new(Pane::new(
-                PaneId::of(1),
-                None,
-                crate::pane::tests::shell()?,
-                size,
-                crate::pane::tests::options(0)?,
-                Instant::now(),
-            )?);
+            let mut pane = pane(3, 5, 0)?;
             pane.output(output.as_bytes());
             Ok(super::pane(
                 &pane,
@@ -1237,15 +1169,7 @@ mod tests {
     /// `wrapped`, they take the rows asked alone.
     #[test]
     fn rows_inside_a_wrapped_line_take_it_whole() -> Result<(), Box<dyn std::error::Error>> {
-        let size = fux_vt::Size::new(6, 5)?;
-        let mut pane = Lone::new(Pane::new(
-            PaneId::of(1),
-            None,
-            crate::pane::tests::shell()?,
-            size,
-            crate::pane::tests::options(0)?,
-            Instant::now(),
-        )?);
+        let mut pane = pane(6, 5, 0)?;
         pane.output(b"top\r\nabcdefghijklm\r\nend");
         let run = crate::command::Run::now().ok_or("a clock")?;
         let capture = |rows, wrapped| -> Result<String, Box<dyn std::error::Error>> {
@@ -1279,15 +1203,7 @@ mod tests {
             cols: Some((0, 3)),
             ..CaptureView::default()
         };
-        let size = fux_vt::Size::new(3, 5)?;
-        let mut pane = Lone::new(Pane::new(
-            PaneId::of(1),
-            None,
-            crate::pane::tests::shell()?,
-            size,
-            crate::pane::tests::options(0)?,
-            Instant::now(),
-        )?);
+        let mut pane = pane(3, 5, 0)?;
         // 世 at col 4 does not fit and wraps on, leaving the spacer there.
         pane.output("abcd\x1b[5G世".as_bytes());
         let text = super::pane(
@@ -1306,14 +1222,7 @@ mod tests {
     /// and trim only blanks whose style the requested view cannot show.
     #[test]
     fn mixed_views_keep_cells_runs_and_visible_blanks() -> Result<(), Box<dyn std::error::Error>> {
-        let mut pane = Lone::new(Pane::new(
-            PaneId::of(1),
-            None,
-            crate::pane::tests::shell()?,
-            fux_vt::Size::new(5, 5)?,
-            crate::pane::tests::options(0)?,
-            Instant::now(),
-        )?);
+        let mut pane = pane(5, 5, 0)?;
         pane.output(
             "\x1b[31mabcde世\x1b[m\r\nx\x1b[4m  \x1b[m\r\ny\x1b[41m  \x1b[31;49m  \x1b[m"
                 .as_bytes(),
@@ -1390,14 +1299,7 @@ mod tests {
     #[test]
     fn a_space_inside_a_cluster_is_not_a_trailing_blank() -> Result<(), Box<dyn std::error::Error>>
     {
-        let mut pane = Lone::new(Pane::new(
-            PaneId::of(1),
-            None,
-            crate::pane::tests::shell()?,
-            fux_vt::Size::new(2, 10)?,
-            crate::pane::tests::options(0)?,
-            Instant::now(),
-        )?);
+        let mut pane = pane(2, 10, 0)?;
         pane.output("x\u{0600}  ".as_bytes());
         let got = super::pane(
             &pane,
@@ -1451,14 +1353,7 @@ mod tests {
     /// without walking the unrelated rows that follow it.
     #[test]
     fn a_joined_range_stops_at_its_last_logical_line() -> Result<(), Box<dyn std::error::Error>> {
-        let mut pane = Lone::new(Pane::new(
-            PaneId::of(1),
-            None,
-            crate::pane::tests::shell()?,
-            fux_vt::Size::new(6, 5)?,
-            crate::pane::tests::options(0)?,
-            Instant::now(),
-        )?);
+        let mut pane = pane(6, 5, 0)?;
         pane.output(b"abcdefghijklm\r\nlater");
         let visits = std::cell::Cell::new(0usize);
         let read = Box::new(pane.screen().rows().map(|row| {
@@ -1484,15 +1379,7 @@ mod tests {
     fn a_capture_reads_back_as_written() -> Result<(), Box<dyn std::error::Error>> {
         use crate::json::Json;
         use crate::wire::{Reader, encode};
-        let size = fux_vt::Size::new(3, 20)?;
-        let mut pane = Lone::new(Pane::new(
-            PaneId::of(1),
-            None,
-            crate::pane::tests::shell()?,
-            size,
-            crate::pane::tests::options(0)?,
-            Instant::now(),
-        )?);
+        let mut pane = pane(3, 20, 0)?;
         pane.output(b"\x1b[1;4:3;5;38;2;1;2;3;48;5;9;58;5;2mstyled\x1b[m plain");
         let view = CaptureView {
             styles: true,
@@ -1523,22 +1410,19 @@ mod tests {
             source: crate::command::Source::LastOutput,
             ..CaptureView::default()
         };
-        let size = fux_vt::Size::new(3, 20)?;
-        let mut pane = Lone::new(Pane::new(
-            PaneId::of(1),
-            None,
-            crate::pane::tests::shell()?,
-            size,
-            crate::pane::tests::options(0)?,
-            Instant::now(),
-        )?);
+        let mut pane = pane(3, 20, 1 << 20)?;
+        for _ in 0..10 {
+            pane.output(b"old\r\n");
+        }
+        assert!(pane.screen().history_len() > 0);
         pane.output(b"$ \x1b]133;C\x07hello\x1b]133;D;0\x07PROMPT> ");
-        let text = super::pane(
+        let text = super::pane_with(
             &pane,
             crate::command::Run::now().ok_or("a clock")?,
             None,
             view,
             false,
+            5,
         )?
         .text()?;
         assert_eq!(text, "hello");

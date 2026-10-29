@@ -21,47 +21,32 @@ const XTERM: &[u8] = b"\x1bP0+r536d756c78\x1b\\\x1bP1$r0m\x1b\\\x1b[?64;1;2c";
 const CURLY: &str = "printf '\\033[4:3;58:2::255:0:0mcur''ly\\033[0m\\n'\r";
 
 #[test]
-fn a_terminal_that_draws_styles_is_painted_curly_underlines() -> Outcome {
-    let server = Server::start("")?;
-    let mut client = server.attach(10, 100)?;
-    client.wait_for("$")?;
-    // The server asked: XTGETTCAP for Smulx, and the pen after a curly
-    // underline, before DA1, the pen reset after.
-    wait_painted(
-        &mut client,
-        "\x1bP+q536d756c78\x1b\\\x1b[0m\x1b[4:3m\x1bP$qm\x1b\\\x1b[0m\x1b[16t\x1b[?u\x1b[c",
-        1,
-    )?;
-    client.send(GHOSTTY)?;
-    // Learning it repaints the screen whole.
-    wait_painted(&mut client, "\x1b[2J", 2)?;
-    client.keys(CURLY)?;
-    wait_painted(&mut client, "\x1b[0;4:3;58:2::255:0:0mcurly", 1)?;
-    // The answers were never keys.
-    client.keys("echo typed-after\r")?;
-    client.wait_for("typed-after\n")?;
-    Ok(())
-}
-
-#[test]
-fn a_terminal_that_draws_no_styles_is_painted_plain_underlines() -> Outcome {
-    let server = Server::start("")?;
-    let mut client = server.attach(10, 100)?;
-    client.wait_for("$")?;
-    wait_painted(&mut client, "\x1b[c", 1)?;
-    client.send(XTERM)?;
-    client.keys(CURLY)?;
-    wait_painted(&mut client, "\x1b[0;4;58:2::255:0:0mcurly", 1)?;
-    assert!(
-        !painted(&client).contains("\x1b[0;4:3"),
-        "{:?}",
-        painted(&client)
-    );
-    // A terminal that answers nothing at all is painted plain too.
-    let mut quiet = server.attach(10, 100)?;
-    quiet.keys(CURLY)?;
-    wait_painted(&mut quiet, "\x1b[0;4;58:2::255:0:0mcurly", 1)?;
-    assert!(!painted(&quiet).contains("\x1b[0;4:3"));
+fn underline_styles_follow_terminal_capabilities() -> Outcome {
+    for (answer, style) in [(GHOSTTY, "4:3"), (XTERM, "4"), (&b""[..], "4")] {
+        let server = Server::start("")?;
+        let mut client = server.attach(10, 100)?;
+        client.wait_for("$")?;
+        wait_painted(
+            &mut client,
+            "\x1bP+q536d756c78\x1b\\\x1b[0m\x1b[4:3m\x1bP$qm\x1b\\\x1b[0m\x1b[16t\x1b[?u\x1b[c",
+            1,
+        )?;
+        client.send(answer)?;
+        if style == "4:3" {
+            wait_painted(&mut client, "\x1b[2J", 2)?;
+        }
+        client.keys(CURLY)?;
+        wait_painted(
+            &mut client,
+            &format!("\x1b[0;{style};58:2::255:0:0mcurly"),
+            1,
+        )?;
+        if style == "4" {
+            assert!(!painted(&client).contains("\x1b[0;4:3"));
+        }
+        client.keys("echo typed-after\r")?;
+        client.wait_for("typed-after\n")?;
+    }
     Ok(())
 }
 
