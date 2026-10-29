@@ -1707,11 +1707,7 @@ pub fn main(args: &[String], out: &mut dyn Write) -> Result<u8, Failed> {
         return Ok(0);
     }
     let (tokens, from) = program(args)?;
-    // Only words can be a file mistaken for a program.
-    let mut machine = compiled(None, &tokens).map_err(|e| match from {
-        Given::Words => Failed::from(a_file(e, args)),
-        Given::Stdin | Given::File(_) => Failed::from(e),
-    })?;
+    let mut machine = compiled(None, &tokens)?;
     let mut state = Draft::default();
     let mut host = Host::cli(client::context(), &mut state, out);
     let mut cli = Cli {
@@ -1748,22 +1744,6 @@ pub fn main(args: &[String], out: &mut dyn Write) -> Result<u8, Failed> {
     ran?;
     printed?;
     Ok(cli.status.unwrap_or(0))
-}
-
-/// `error`, an unknown word that is a file's path, as the first argument or
-/// in the only one (`fux ./job.fux`, `fux 'my job.fux'`), saying how to run
-/// it: never run, as no argument is guessed to be a file.
-fn a_file(mut error: fuxth::Error, args: &[String]) -> fuxth::Error {
-    let word = error.word.as_deref();
-    if error.code == Lang::UnknownWord
-        && let Some(file) = (args.first())
-            .filter(|a| args.len() == 1 || word == Some(a.as_str()))
-            .filter(|a| std::path::Path::new(a).is_file())
-    {
-        let file = crate::words::quote(file);
-        error.message += &format!("; {file} is a file, which `fux --file {file}` runs");
-    }
-    error
 }
 
 /// The program `args` give, and where it came from: none attaches; `-` is
