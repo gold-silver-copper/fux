@@ -95,6 +95,7 @@ mod screen;
 pub mod sixel;
 mod style;
 #[cfg(test)]
+#[expect(dead_code, reason = "each test uses different generator helpers")]
 mod test_rng;
 mod unicode;
 #[cfg(feature = "checks")]

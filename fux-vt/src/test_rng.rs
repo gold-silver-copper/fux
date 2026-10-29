@@ -15,6 +15,13 @@ impl Rng {
         let n = u64::try_from(n).unwrap_or(u64::MAX);
         usize::try_from(self.next().checked_rem(n).unwrap_or(0)).unwrap_or(0)
     }
+    /// From 1 to `n`.
+    pub(crate) fn upto(&mut self, n: usize) -> usize {
+        self.below(n).saturating_add(1)
+    }
+    pub(crate) fn pick<T: Copy>(&mut self, items: &[T]) -> Option<T> {
+        items.get(self.below(items.len())).copied()
+    }
     pub(crate) fn chance(&mut self, percent: usize) -> bool {
         self.below(100) < percent
     }
