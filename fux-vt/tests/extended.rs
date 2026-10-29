@@ -1090,6 +1090,59 @@ fn a_sixel_picture_scrolled_inside_left_and_right_margins_is_where_its_cells_are
     Ok(())
 }
 
+/// Lost margin bands are refused; copied bands stay blank, unmoved
+/// bands keep their placeholders, and out-of-column new lines only move
+/// the cursor. Below the region, bands stack at the screen's bottom.
+#[test]
+fn margin_placement_preserves_refusal_and_unmoved_bands() -> Result {
+    for (at, col, rows, trailing, refused, shown, kept) in [
+        (4_u16, 2_u16, 5_usize, 0, 1, 0, vec![3]),
+        (4, 2, 5, 1, 1, 0, vec![]),
+        (1, 2, 5, 0, 1, 0, vec![0, 3]),
+        (4, 1, 2, 0, 1, 0, vec![3]),
+        (4, 1, 1, 1, 0, 1, vec![3]),
+        (6, 2, 3, 0, 0, 0, vec![5]),
+    ] {
+        let mut p = Parser::with_options(Size::new(6, 6)?, 1024, PICTURES)?;
+        p.set_host_graphics(fux_vt::Graphics::Sixel(
+            fux_vt::CellSize::new(2, 6).ok_or("cell size")?,
+        ));
+        p.process(format!("\x1b[?69h\x1b[2;5s\x1b[2;4r\x1b[{at};{col}H").as_bytes())?;
+        let bands: String = std::iter::repeat_n("~-", rows.saturating_sub(1)).collect();
+        let tail: String = std::iter::repeat_n('-', trailing).collect();
+        let picture = format!("\x1bPq\"1;1{bands}~{tail}\x1b\\");
+        p.process(picture.as_bytes())?;
+        assert_eq!(
+            p.pictures_refused(),
+            refused,
+            "{at}/{col}/{rows}/{trailing}"
+        );
+        assert_eq!(p.screen().pictures().count(), shown);
+        let placeholders: Vec<_> = (0..6)
+            .filter(|y| {
+                p.screen()
+                    .cell(*y, col.saturating_sub(1))
+                    .is_some_and(|c| c.contents() == fux_vt::PLACEHOLDER)
+            })
+            .collect();
+        assert_eq!(placeholders, kept, "{at}/{col}/{rows}/{trailing}");
+        for y in 1..=3 {
+            let c = cell(&p, y, col.saturating_sub(1))?;
+            assert!(!c.has_contents() || c.contents() == fux_vt::PLACEHOLDER);
+        }
+        assert_eq!(
+            p.screen().cursor_position(),
+            (at.max(4).saturating_sub(1), col.saturating_sub(1))
+        );
+        #[cfg(feature = "checks")]
+        {
+            let report = p.check();
+            assert!(report.is_clean(), "{report}");
+        }
+    }
+    Ok(())
+}
+
 /// A picture taller than a screen that keeps no history scrolls its top
 /// off, which is cropped, the rest shown (DEC STD 070-9, 11.2.4), and the
 /// checker reads it so too.
