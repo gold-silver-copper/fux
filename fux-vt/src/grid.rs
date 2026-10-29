@@ -1167,19 +1167,20 @@ impl Grid {
     }
 
     /// ED (`display`) or EL of `part` from the cursor, ending a pending
-    /// wrap; `erase` erases each row's span. A row ED erases whole loses
-    /// its prompt mark, as in Ghostty; EL and the cursor's row keep it (a
-    /// shell redrawing its prompt erases from it).
+    /// wrap. `erase` erases each span and returns whether a whole line may
+    /// become single width. Whole rows ED erases lose their prompt marks;
+    /// EL and the cursor's row keep them (a shell redrawing its prompt).
     #[inline]
     pub fn erase_in(
         &mut self,
         display: bool,
         part: Erase,
         version: u64,
-        mut erase: impl FnMut(&mut Self, u16, u16, u16),
+        mut erase: impl FnMut(&mut Self, u16, u16, u16) -> bool,
     ) {
         self.cursor.pending_wrap = false;
         let ((row, col), cols) = (self.cursor.at(), self.size.cols());
+        let mut kept = false;
         if display {
             // ED spends the screen's cells (`budget`); EL nothing.
             crate::budget::spend(
@@ -1193,9 +1194,10 @@ impl Grid {
                     Erase::All => true,
                 };
                 if whole {
-                    erase(self, y, 0, cols);
+                    let reset = erase(self, y, 0, cols);
+                    kept |= !reset;
                     self.set_prompt(y, false, version);
-                    if self.doubled() {
+                    if reset && self.doubled() {
                         self.set_rendition(y, LineRendition::Single, version);
                     }
                 }
@@ -1206,12 +1208,12 @@ impl Grid {
             Erase::Above => (0, col.saturating_add(1).min(cols)),
             Erase::All => (0, cols),
         };
-        erase(self, row, start, end);
+        let reset = erase(self, row, start, end);
         // ED makes a line it erases whole single width (DEC STD 070, ED,
         // note 1, and its algorithm); EL leaves it as it is.
-        if display && self.doubled() && start == 0 && end >= self.row_end(row) {
+        if display && reset && self.doubled() && start == 0 && end >= self.row_end(row) {
             self.set_rendition(row, LineRendition::Single, version);
-            if part == Erase::All {
+            if part == Erase::All && !kept {
                 self.narrow &= !DOUBLED;
             }
         }

@@ -2617,15 +2617,6 @@ impl Screen {
         // DECSED leaves every line's rendition (DEC STD 070, DECSED, note
         // 3); ED makes single width (ED, note 1) each line it spared no
         // glyph of.
-        let g = self.grid();
-        let renditions: Vec<(u16, LineRendition)> = match display && g.doubled() {
-            true => (0..g.size().rows())
-                .inspect(|_| spend!(rows, 1))
-                .filter_map(|y| Some((y, g.live_row(y)?.rendition())))
-                .filter(|(_, r)| r.is_double())
-                .collect(),
-            false => Vec::new(),
-        };
         self.grid_mut()
             .erase_in(display, part, version, |g, y, start, end| {
                 if private {
@@ -2633,21 +2624,17 @@ impl Screen {
                     if end >= cols {
                         g.wrap(y, false, version);
                     }
+                    false
                 } else {
                     g.erase_unprotected(y, start, end, blank, version);
+                    let styles = g.styles();
+                    let spared = || {
+                        spend!(cells, cols);
+                        g.live_cells(y).iter().any(|c| styles.guarded(c.style()))
+                    };
+                    !(display && g.rendition(y).is_double() && spared())
                 }
             });
-        let g = self.grid_mut();
-        for (y, rendition) in renditions {
-            let styles = g.styles();
-            let spared = || {
-                spend!(cells, cols);
-                g.live_cells(y).iter().any(|c| styles.guarded(c.style()))
-            };
-            if private || spared() {
-                g.set_rendition(y, rendition, version);
-            }
-        }
     }
 
     /// DECALN (`ESC # 8`; DEC STD 070, Appendix D, Screen Alignment; VT520
@@ -3463,6 +3450,7 @@ impl Screen {
                         self.with_grid(|g, _, v| {
                             g.erase_in(byte == b'J', part, v, |g, y, start, end| {
                                 g.erase(y, start, end, a, v);
+                                true
                             });
                         });
                     }
