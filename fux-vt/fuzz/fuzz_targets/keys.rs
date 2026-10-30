@@ -17,16 +17,12 @@ use fux_vt::{MouseProtocolEncoding, MouseProtocolMode};
 use libfuzzer_sys::fuzz_target;
 use std::num::NonZeroUsize;
 use std::time::{Duration, Instant};
-#[cfg(feature = "checks")]
-#[path = "../../tests/corpus/known.rs"]
-mod known;
 
-/// Fails on a fault the decoder's checker finds, but those known to fail
-/// at BASE.
+/// Fails on any fault the decoder's checker finds.
 #[cfg(feature = "checks")]
 fn checked(decoder: &Decoder) {
     let report = decoder.check();
-    assert!(known::unknown(&report).is_empty(), "{report}");
+    assert!(report.is_clean(), "{report}");
 }
 
 /// `bytes` in pieces of `size`, the last one maybe shorter.

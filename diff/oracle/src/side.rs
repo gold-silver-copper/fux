@@ -14,13 +14,11 @@
 /// cells, rows, events and errors) through fux-vt's public API, with
 /// `NAME` `"work"` naming the side in a report. With `checked` after the
 /// name, `side!(work, fux_vt, "work", checked)`, its `Side::faults` are
-/// what `Parser::check` finds, but for the checks known to fail at BASE
-/// (`fux-vt/tests/corpus/known.rs`): the side's fux-vt has the checker.
+/// what `Parser::check` finds: the side's fux-vt has the checker.
 macro_rules! side {
     (@faults checked, $terminal:expr) => {{
         let report = $terminal.parser.check();
-        let unknown = crate::known::unknown(&report);
-        (!unknown.is_empty()).then(|| report.to_string())
+        (!report.is_clean()).then(|| report.to_string())
     }};
     (@faults, $terminal:expr) => {{
         let _ = $terminal;

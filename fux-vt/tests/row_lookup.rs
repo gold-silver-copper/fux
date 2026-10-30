@@ -8,27 +8,15 @@
 use fux_vt::{Parser, RowId, Size};
 type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
 
-/// A small deterministic generator (splitmix64), so a failure names its case.
-struct Rng(u64);
-
-impl Rng {
-    fn next(&mut self) -> u64 {
-        self.0 = self.0.wrapping_add(0x9e37_79b9_7f4a_7c15);
-        let mut x = self.0;
-        x = (x ^ (x >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
-        x = (x ^ (x >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
-        x ^ (x >> 31)
-    }
-    /// From 1 to `n`.
-    fn upto(&mut self, n: u64) -> u64 {
-        self.next().checked_rem(n).unwrap_or(0).saturating_add(1)
-    }
-}
+#[expect(dead_code, reason = "each test uses different generator helpers")]
+#[path = "../src/test_rng.rs"]
+mod test_rng;
+use test_rng::Rng;
 
 /// One random step: mostly lines and line feeds, with every kind of
 /// scroll, margins, erasing and now and then a resize.
 fn step(r: &mut Rng, p: &mut Parser) -> Result {
-    let rows = u64::from(p.screen().size().rows());
+    let rows = usize::from(p.screen().size().rows());
     let bytes = match r.upto(20) {
         1..=6 => format!("line {}\r\n", r.next() % 1000),
         7 => format!("\x1b[{};{}r", r.upto(rows), r.upto(rows)),

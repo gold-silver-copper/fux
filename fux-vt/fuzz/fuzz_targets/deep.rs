@@ -43,9 +43,6 @@ use common::{
 mod graphemes;
 #[path = "../../tests/corpus/invariants.rs"]
 mod invariants;
-#[cfg(feature = "checks")]
-#[path = "../../tests/corpus/known.rs"]
-mod known;
 
 /// History budgets: none, a few rows, some blocks, many, and fux's.
 const BUDGETS: [usize; 5] = [0, 1 << 10, 64 << 10, 1 << 20, 8 << 20];

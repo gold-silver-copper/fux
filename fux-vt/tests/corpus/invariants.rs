@@ -10,12 +10,10 @@ use std::collections::HashSet;
 /// (`Parser::check`, with the `checks` feature), then those read through
 /// the public API.
 pub fn check(p: &Parser) {
-    // The known-at-BASE list is `known.rs`'s, a module beside this one in
-    // each crate that has it.
     #[cfg(feature = "checks")]
     {
         let report = p.check();
-        assert!(super::known::unknown(&report).is_empty(), "{report}");
+        assert!(report.is_clean(), "{report}");
     }
     let s = p.screen();
     let (rows, cols) = s.size().into();

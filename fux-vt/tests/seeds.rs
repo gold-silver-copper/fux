@@ -4,8 +4,7 @@
 //! past that target's 4 KiB runs in `deep`'s, if one of its runs holds
 //! it), and replayed to check that it reaches the limit it is for. The
 //! seed exercises the limit; whether fux-vt stays within it is the bounds
-//! suite's row (`tests/bounds.rs`), and `bounds/known-failing.txt` names
-//! the rows that fail.
+//! suite's row (`tests/bounds.rs`).
 //!
 //! A row whose reproducer is a host call (a clone, a picture built or
 //! encoded, a size, a refused allocation, an encoder) has its seed's host

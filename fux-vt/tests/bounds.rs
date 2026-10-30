@@ -135,77 +135,16 @@ mod rows;
 
 use probe::Scale;
 
-/// The rows known to fail at BASE (`bounds/known-failing.txt`): a line
-/// each, the row and the scale (`B19 10x`), then why. A fix takes its
-/// rows off; a row on the list that passes fails, so that it does.
-const KNOWN_FAILING: &str = include_str!("bounds/known-failing.txt");
-
-/// What row `row` at `scale` is known to fail with, if it is on the
-/// known-failing list: the part of its error the line quotes in backticks.
-fn known_failing(row: &str, scale: Scale) -> Option<&'static str> {
-    (KNOWN_FAILING.lines())
-        .filter(|line| !line.starts_with('#'))
-        .find(|line| {
-            let mut words = line.split_whitespace();
-            words.next() == Some(row) && words.next() == Some(scale.name())
-        })
-        .map(|line| line.split('`').nth(1).unwrap_or_default())
-}
-
-/// Whether `found`, a row's failures one a chunking, are as `known` says:
-/// at every chunking, each saying it.
-fn fails_as_known(found: &[String], known: &str) -> bool {
-    !known.is_empty()
-        && found.len() == probe::CHUNKS.len()
-        && found.iter().all(|f| f.contains(known))
-}
-
-/// A row known to fail fails so at every chunking, each on its own: one
-/// chunking's error saying it four times, the others failing otherwise,
-/// or passing, is not as known.
-#[test]
-fn a_known_failure_is_matched_at_each_chunking() {
-    let known = "past its bound";
-    let each: Vec<String> = probe::CHUNKS
-        .iter()
-        .map(|c| format!("at {c}: {known} 9"))
-        .collect();
-    assert!(fails_as_known(&each, known));
-    let once = [format!("at 1: {known} {known} {known} {known}")];
-    assert!(!fails_as_known(&once, known));
-    let mut other = each.clone();
-    if let Some(last) = other.last_mut() {
-        *last = "whole: a heap peak of 9".to_string();
-    }
-    assert!(!fails_as_known(&other, known));
-}
-
 /// Runs row `row` at `scale` at every chunking: it passes within its
-/// bound, or fails as the known-failing list says it does.
+/// bound; every violation fails the case.
 fn judge(row: &str, scale: Scale) -> Result {
     let _one = one_at_a_time();
     let probe = (rows::ROWS.iter())
         .find(|(name, _)| *name == row)
         .map(|(_, probe)| *probe)
         .ok_or(format!("no row {row}"))?;
-    match (rows::run(probe, scale), known_failing(row, scale)) {
-        (Ok(()), None) => Ok(()),
-        (Err(found), Some(known)) if fails_as_known(&found, known) => Ok(()),
-        (Err(found), Some(known)) => Err(format!(
-            "{row} at {} fails otherwise than known (`{known}`): {}",
-            scale.name(),
-            found.join("; ")
-        )
-        .into()),
-        (Err(found), None) => {
-            Err(format!("{row} at {}: {}", scale.name(), found.join("; ")).into())
-        }
-        (Ok(()), Some(_)) => Err(format!(
-            "{row} at {} is within its bound now: take it off tests/bounds/known-failing.txt",
-            scale.name()
-        )
-        .into()),
-    }
+    rows::run(probe, scale)
+        .map_err(|found| format!("{row} at {}: {}", scale.name(), found.join("; ")).into())
 }
 
 /// A bound naming a counter there is none of fails, rather than passing
@@ -222,29 +161,6 @@ fn a_bound_naming_no_counter_fails() -> Result {
     let fed = probe.feed(b"x");
     assert!(fed.is_err_and(|e| e.contains("no counter is named cell")));
     Ok(())
-}
-
-/// The list names rows that exist, at scales that exist.
-#[test]
-fn the_known_failing_list_names_rows_and_scales() {
-    for line in KNOWN_FAILING
-        .lines()
-        .filter(|l| !l.starts_with('#') && !l.is_empty())
-    {
-        let mut words = line.split_whitespace();
-        let (row, scale) = (words.next(), words.next());
-        assert!(
-            rows::ROWS.iter().any(|(name, _)| Some(*name) == row),
-            "{line}"
-        );
-        assert!(matches!(scale, Some("1x" | "10x" | "100x")), "{line}");
-        assert!(
-            line.split('`')
-                .nth(1)
-                .is_some_and(|known| !known.is_empty()),
-            "{line}"
-        );
-    }
 }
 
 /// `THREATS.md`'s table of bounds (section 2) lists exactly the suite's
