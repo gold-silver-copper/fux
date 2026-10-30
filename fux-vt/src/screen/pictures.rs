@@ -234,7 +234,7 @@ impl Screen {
         } else {
             self.size().rows().saturating_sub(1)
         });
-        let narrow = |row: u32| u16::try_from(row.min(limit)).ok();
+        let narrow = |row: u32| u16::try_from(row.min(limit)).unwrap_or(u16::MAX);
         let steps = bands.saturating_add(extra);
         let room = limit.saturating_sub(start);
         let scrolls = if inside && g.in_columns() {
@@ -244,17 +244,15 @@ impl Screen {
         };
         let lifted = scrolls > 0 || (inside && bands > room);
         if scrolls > 0 {
-            let Ok(count) = u16::try_from(scrolls.min(u32::from(region.len()))) else {
-                return false;
-            };
             self.let_go_scrolled();
+            let count = u16::try_from(scrolls).unwrap_or(u16::MAX);
             self.scroll_columns(region, count, crate::grid::Scroll::Up { history: true });
         }
         let placed_top = if lifted {
             start
                 .checked_sub(scrolls)
                 .filter(|first| scrolls > 0 && *first >= u32::from(region.first()))
-                .and_then(narrow)
+                .map(narrow)
                 .and_then(|first| self.grid().live_row(first).map(|r| r.id()))
         } else {
             Some(top)
@@ -264,15 +262,11 @@ impl Screen {
         for row in 0..u32::from(rows) {
             let logical = start.saturating_add(row);
             let moved = scrolls > 0 && logical >= u32::from(region.first());
-            let at = if margin {
-                if moved {
-                    logical
-                        .checked_sub(scrolls)
-                        .filter(|y| *y >= u32::from(region.first()))
-                } else {
-                    Some(logical)
-                }
-            } else if display.is_some() {
+            let at = if moved {
+                logical
+                    .checked_sub(scrolls)
+                    .filter(|y| *y >= u32::from(region.first()))
+            } else if margin || display.is_some() {
                 Some(logical)
             } else {
                 if row > 0 {
@@ -280,15 +274,12 @@ impl Screen {
                 }
                 Some(u32::from(self.grid().cursor.row()))
             };
-            let Some(y) = at.and_then(narrow) else {
+            let Some(y) = at.map(narrow) else {
                 continue;
             };
             // A refused placement keeps copied bands blank and only its
             // unmoved bands as placeholders. Rows above the region stay.
             let whole = !moved || placed_top.is_some() || (row == bands && tail_scrolls == 0);
-            if display.is_some() {
-                self.grid_mut().set_row(y);
-            }
             self.grid_mut().set_col(col);
             self.grid_mut().cursor.pending_wrap = false;
             self.with_grid(|g, _, v| {
@@ -304,10 +295,7 @@ impl Screen {
             self.grid_mut().cursor = cursor;
         } else {
             if margin {
-                let Some(row) = narrow(start.saturating_add(steps)) else {
-                    return false;
-                };
-                self.grid_mut().set_row(row);
+                self.grid_mut().set_row(narrow(start.saturating_add(steps)));
                 self.grid_mut().cursor.pending_wrap = false;
             } else {
                 // Ordinary line feeds retain every intermediate history row.
