@@ -227,12 +227,13 @@ answers into one admitted output, including formatter workspace and text imports
 Shared references are conservatively charged at each occurrence.
 Builders charge capacity before reserving, including the old and new
 blocks during growth. Captures admit selected cell work before traversal,
-then charge text, runs and wire bytes as they build. Ordinary trimmed
+then read each line once into reused room and charge the exact copy kept
+of it, its runs, the styles they name and the wire bytes. Ordinary trimmed
 captures skip synthesized trailing blanks; full captures keep them.
 The cell allowance is twice `history-bytes`, the live screen, and twice
 the wire allowance for synthesized output cells. A joined range's prefix
 costs row metadata, and `last-output` charges only its selected rows.
-These caps admit the measured 21.9 MB default-history styled capture.
+These caps admit the measured 13.0 MB default-history styled capture.
 A larger observation fails explicitly; it is never clipped. Request fewer
 history rows or a narrower row range to reduce a capture. A malformed or
 oversized reply ends that request's connection.
@@ -419,8 +420,8 @@ they run, so a `try` may name them too.
 ## `status`
 
 ```json
-{"socket":"/run/user/1000/fux/server.sock","release":"0.36.0","protocol":52,
- "server_release":"0.36.0","server_protocol":52,"compatible":true}
+{"socket":"/run/user/1000/fux/server.sock","release":"0.36.0","protocol":53,
+ "server_release":"0.36.0","server_protocol":53,"compatible":true}
 ```
 
 `status` returns an ordinary record with these locally readable fields. Plain

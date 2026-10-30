@@ -149,8 +149,12 @@ impl AppValue for Fux {
                             .fold(1u64, u64::saturating_add),
                         crate::capture::Of::Client(_) => 1,
                     };
-                    c.lines.iter().flatten().fold(state, |n, cut| {
-                        n.saturating_add(cut.text.len() as u64).saturating_add(1)
+                    // A line counts one, an empty one too, beside its text
+                    // and runs.
+                    c.lines.iter().fold(state, |n, line| {
+                        n.saturating_add(line.text.len() as u64)
+                            .saturating_add(line.runs.len() as u64)
+                            .saturating_add(1)
                     })
                 }
                 Answer::Pane(_) | Answer::Panes(_) => {
@@ -1873,6 +1877,20 @@ pub(crate) mod tests {
         Ok(())
     }
 
+    /// Comparing or walking a capture is charged for every line it holds,
+    /// a blank one too.
+    #[test]
+    fn blank_capture_lines_weigh_one_each() -> TestResult {
+        let rows = 1000;
+        let grid = crate::render::Grid::new(rows, 80)?;
+        let capture = crate::capture::client(crate::id::ClientId::of(1), &grid)?;
+        assert!(capture.lines.iter().all(|line| line.text.is_empty()));
+        let answer = super::Answer::Capture(Box::new(capture));
+        let value = super::Fux::Answer(fuxth::Shared::new(answer), None);
+        assert!(fuxth::AppValue::weight(&value) > u64::from(rows));
+        Ok(())
+    }
+
     fn large_plain(version: super::Version) -> crate::capture::Captured {
         crate::capture::Captured {
             of: crate::capture::Of::Pane {
@@ -1883,12 +1901,12 @@ pub(crate) mod tests {
             screen_rows: 24,
             screen_cols: 80,
             screen_cursor: None,
-            lines: vec![vec![crate::capture::Cut {
+            lines: vec![crate::capture::Line {
                 text: std::iter::repeat_n('x', 17_000_000).collect(),
-                cells: 17_000_000,
-                style: fux_vt::Attributes::default(),
-            }]],
-            styles: false,
+                runs: Vec::new(),
+            }],
+            styles: Vec::new(),
+            styled: false,
             marks: false,
         }
     }
@@ -1984,7 +2002,8 @@ pub(crate) mod tests {
             screen_cols: 80,
             screen_cursor: None,
             lines: Vec::new(),
-            styles: false,
+            styles: Vec::new(),
+            styled: false,
             marks: false,
         };
         let reply = Reply {
@@ -2013,12 +2032,19 @@ pub(crate) mod tests {
             screen_rows: 24,
             screen_cols: 80,
             screen_cursor: Some((7, 3)),
-            lines: vec![vec![crate::capture::Cut {
+            lines: vec![crate::capture::Line {
                 text: "x".into(),
-                cells: 1,
-                style: fux_vt::Attributes::new(fux_vt::Color::Idx(1), fux_vt::Color::Default),
-            }]],
-            styles: true,
+                runs: vec![crate::capture::Run {
+                    bytes: 1,
+                    cells: 1,
+                    style: 0,
+                }],
+            }],
+            styles: vec![fux_vt::Attributes::new(
+                fux_vt::Color::Idx(1),
+                fux_vt::Color::Default,
+            )],
+            styled: true,
             marks: false,
         };
         let reply = Reply {

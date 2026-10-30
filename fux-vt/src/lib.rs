@@ -119,6 +119,7 @@ pub use screen::{
     CellSize, CommandMark, Commands, CursorShape, Graphics, MouseProtocolEncoding,
     MouseProtocolMode, PICTURE_BYTES, PLACEHOLDER, Screen, Shown,
 };
+pub use style::Keyed;
 pub use unicode::{UNICODE_VERSION, char_width, clusters, continues_cluster, str_width};
 #[cfg(feature = "checks")]
 pub use work::Work;
