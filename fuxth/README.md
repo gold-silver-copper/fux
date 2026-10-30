@@ -47,13 +47,15 @@ line, the deepest first; `print` prints a value at once.
   lets the host check for Ctrl-C in a loop that never pauses, and
   `Machine::steps` counts every step taken, through every pause, for a host
   that caps a run.
-- **Bounded.** 1,000,000 values on the stack, and as many `let` names in
-  all the calls nested, 10,000 nested calls; a string or list built holds at
-  most 1,000,000 elements, a run builds at most 16,000,000 in all, and a list
-  holds at most 16,000,000 in all, counting
-  through the lists and strings in it; long steps cost a step per 64
-  elements; `push` and `put` grow a string or list in place when nothing
-  else holds it. String literals are not built, so they are exempt.
+- **Bounded.** A run holds at most its `Grant`: every string and list it
+  makes, and the room its stack, calls, `let` names and blocks take, is
+  reserved before it is allocated and given back when it drops, so a loop
+  that drops what it makes runs on, and one that keeps it is refused
+  (`too_long`) at the word that asked. A list holds at most 16,000,000 in
+  all, counting through the lists and strings in it, and nests at most 64
+  deep; long steps cost a step per 64 elements; `push` and `put` grow a
+  string or list in place when nothing else holds it. String literals are
+  the program's, bounded by its source.
 - **Errors** carry a stable code, a message, and the file, line and word.
 
 ## The core
@@ -118,7 +120,8 @@ There is no search path, extension inference, network loader or namespace.
 ## Embedding
 
 ```rust
-use fuxth::{Code, Compiler, Done, Failure, Host, Limits, Machine, Outcome, STDLIB, Value, Vocabulary, token};
+use fuxth::{Code, Compiler, Done, Failure, Grant, Host, Machine, Outcome, STDLIB, Value, Vocabulary, token};
+use std::rc::Rc;
 
 let mut words = Vocabulary::default();
 words.kind("ticket", "a ticket")?;               // a kind of the application's values
@@ -129,7 +132,7 @@ words.carries(Code::Host("refused"), "ticket")?; // which a handler may get as a
 let mut compiler = Compiler::new(words);
 compiler.add(&token::source("stdlib.fux", STDLIB)?)?;
 compiler.add(&token::source("script.fux", "3 ask")?)?;
-let mut machine = Machine::new(compiler.finish()?, Limits::default());
+let mut machine = Machine::new(compiler.finish()?, Rc::new(Grant::new(128 << 20)))?;
 loop {
     match machine.run(&mut my_host, 10_000)? {
         Outcome::Finished => break,
@@ -159,32 +162,23 @@ the core's, and refuses only what surely fails.
 
 Application values report expanded traversal `weight` and nesting `depth`;
 opaque records cannot hide their children from list and work limits.
-`Machine::import` bounds each incoming value and charges its traversal work
-before retaining a suspended result. Immediate host results use that
-same admission automatically, and host argument traversal is charged too.
-`AppValue::IMPORT_LIMIT` fixes the aggregate grant for live imported storage
-(default 128 MiB), including ordinary strings and lists. Heap-owning application
-values implement `retain(&Imports)` with `Shared<T>` storage, as the language's
-strings and lists do. The machine's opaque import grant can only be charged or
-refunded through those reservations. The wrapper keeps its reservation when the value is edited;
-copying the storage starts a fresh reservation. Values whose ownership leaves a
-shared wrapper carry an `ImportLease` with the owned data instead. Shared children reserve themselves;
-clones do not reserve their allocation twice. The last reference's drop refunds
-its reservation, so polling does not consume a lifetime allowance.
+`Machine::import` charges each incoming value's traversal work and bounds
+its nesting. Immediate host results use that same admission automatically,
+and host argument traversal is charged too.
 
-Native byte payloads can report `AppValue::import_bytes` to use the native grant
-instead of the per-value language weight ceiling. Their full weight still charges
-traversal and inclusion in lists. All other host values continue to obey the
-ordinary string, nesting and list limits. Language construction retains its
-existing cumulative build allowance.
+One `Grant` pays for everything a run holds. A `Shared<T>` value is born
+holding the `Reservation` taken, before its payload was allocated, for
+`Shared::<T>::bytes` of it; clones share it, and the last one to drop gives
+it back. A host makes its strings with `Value::str(grant, text)`, its lists
+with `Items`, and its own heap values the same way, from `args.grant()` (or
+`machine.grant()` for a suspended word's answer); a value grown in place
+grows its reservation first (`Shared::get_mut`, `Reservation::grow`).
+`written(grant, write)` counts text, reserves it, then writes it into exactly
+that capacity, as `string`, `print` and `fail` do.
 
-Application values stream their text through `AppValue::write_text` and declare
-retained data and formatter workspace with `text_bytes`. `TEXT_LIMIT` lets a host
-bound one whole conversion: nested lists share it, rather than giving each member
-its own limit. Admission counts the output before reserving its exact capacity;
-`string` and `fail` also admit the character index. Shared references are charged
-conservatively at each occurrence. Text writers describe the same immutable text
-on the admission and output passes, and propagate a sink failure.
+Application values stream their text through `AppValue::write_text`: it
+writes the same text on the counting pass and the writing pass, and
+propagates a sink failure.
 
 The host implements [`Host`]: `call(word, args, out)` gets the word's values
 (an iterator, the deepest first) and pushes its results, and answers

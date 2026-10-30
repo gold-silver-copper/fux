@@ -517,7 +517,7 @@ VT220-class terminal.
 `json` on what a word left gives its JSON: `ls json`, `X info json`,
 `pane capture json`, `client capture json`, an action's or a
 wait's answer (`… wait json`), `status json`; `all events` and `X events`
-stream NDJSON events and checkpoints for at most 256 batches. `SCOPE str CURSOR SECONDS next-events`
+stream NDJSON events and checkpoints until the stream ends. `SCOPE str CURSOR SECONDS next-events`
 returns one bounded record with `events`, exact `next`, `missed` and `status`. These shapes are part of fux's interface; `fux
 help json` lists every one ([docs/json.md](docs/json.md)).
 
@@ -696,11 +696,9 @@ strings. The library's `quote` word returns one source token; `str` followed
 by that token reads the original text back. Quoted newlines stay inside
 string literals, including in omission annotations.
 
-Dump admission follows the existing fuxth bounds: at most 1,000,000
-characters in a string, 16,000,000 elements of construction work, and the
-calling program's step budget. Intermediate lists and quoting expansion
-also count. This accepts fewer large recipes than the former 16 MiB native
-serializer; an oversized recipe fails explicitly with no partial source.
+Dump admission follows the run's bounds: the 128 MiB a run may hold, and
+the calling program's step budget. Intermediate lists and quoting expansion
+also count. An oversized recipe fails explicitly with no partial source.
 Dump a smaller scope when a complete session exceeds those bounds.
 
 Nothing is saved automatically. To recreate a layout after its server ends

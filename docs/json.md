@@ -1,14 +1,13 @@
 # What `json` gives
 
 (`fux help json`.) `json` turns the value on top of the stack into JSON.
-Small results are ordinary strings. Beyond 1,000,000 characters it returns shared text of kind
-`rendered`: `print` and implicit command output emit it under the existing
-128 MiB finite-observation grant. Explicit `string` conversion still obeys
-the language string limit. All live imported storage shares one 128 MiB grant: captures, rendered output,
-records, strings, lists and options. Reservations follow shared allocations;
-clones and projected children keep their reservation without double charging.
-Dropping the last reference refunds its bytes, so polling and discarding results
-can continue. Per-value limits and traversal charges still apply.
+It gives an ordinary string, however long, within what the run may hold.
+A program's run holds at most 128 MiB: captures and other answers as they
+are decoded, records, strings, lists, options, and its stack and calls.
+Each is reserved before it is made; clones and projected children keep
+their reservation without charging it twice, and dropping the last
+reference gives its bytes back, so polling and discarding results can go on.
+Past the grant the word that asked fails `too_long`.
 
 The JSON represents what a word left, as below; a string as a JSON string; a number or boolean
 as itself; a list as an array of these, each answer in it as `json` gives
@@ -149,11 +148,10 @@ inventory as construction; raw OS bytes, argv items and JSON members consume
 the byte/allocation grant rather than one entity node per byte or item. Client projection separately admits at most
 8 MiB and 65,536 values/fields, with record nesting at most 32. It retains
 the native schema for plain rendering and shares immutable records on clone.
-The tighter language limits still apply, including 1,000,000 characters per
-string and 16,000,000 expanded elements per list/run. Opaque values charge
-expanded traversal; imports also share the live-storage grant above. Constructed strings
-and lists charge the run’s construction grant; repeated shared values count again. A too-large observation fails `too_long`, never truncates or
-combines multiple turns. Narrower scopes are separate observations.
+A list still holds at most 16,000,000 expanded elements. Opaque values charge
+expanded traversal, and what a run makes shares the run's grant above. A
+too-large observation fails `too_long`, never truncates or combines
+multiple turns. Narrower scopes are separate observations.
 
 A tab's `host` is the terminal client supplying its panes' capability answers,
 or `null`. Of terminals showing it, the last typist wins, else the first
@@ -371,10 +369,10 @@ into layout/view invalidations. The finite coverage schema is:
 | `resized` | pane `cols`, `rows` |
 | `ready`, `missed` | library stream markers only: armed cursor, or explicit lost-entry count |
 
-`all events` is a library program: up to 256 batches, waiting at most 30 seconds
-each, with the interpreter's total step/weight limits still enforced.
-`SCOPE str CURSOR SECONDS BATCHES events-since` accepts 1 to 256 batches and
-returns its final cursor. The initial immediate arming/replay read counts
+`all events` is a library program: it streams until the stream ends, waiting
+at most 30 seconds each, within the interpreter's step limits.
+`SCOPE str CURSOR SECONDS BATCHES events-since` streams that many batches
+(0: till the stream ends) and returns its final cursor. The initial immediate arming/replay read counts
 toward that bound; SECONDS applies to later waits. It prints NDJSON: an armed `ready` with `from`,
 then events and a checkpoint marker after every batch (its status as `event`,
 `next`, `reason`). Loss prints `missed` with its count/cursor and fails before
@@ -409,7 +407,7 @@ wait's own (above). CODE stays; every one fux gives
   `not_a_key`;
 - the language's own: `require`, `open_quote`, `unknown_word`, `missing_token`,
   `bad_name`, `not_top_level`, `unmatched`, `unclosed`, `stack_underflow`,
-  `stack_overflow`, `call_depth`, `type`, `div_by_zero`, `overflow`,
+  `type`, `div_by_zero`, `overflow`,
   `unset`, `unused`, `range`, `fail`, `too_long`, `bad_codes`, `contract`.
 
 A program catches the failures its words give, by code, with `try` (`fux
