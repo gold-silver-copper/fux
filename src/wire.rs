@@ -665,10 +665,10 @@ macro_rules! wire_enum {
 pub(crate) use wire_enum;
 
 /// `wire_struct!(Ty { a, b })` expands to `impl Wire for Ty`: its fields,
-/// one at least, one after another, in the order listed. For a type
+/// one at least, in order, by name or tuple index (`Ty { 0 }`). For a type
 /// declared elsewhere; one declared here says its fields once, in `wire!`.
 macro_rules! wire_struct {
-    ($ty:path { $($f:ident),+ $(,)? }) => {
+    ($ty:path { $($f:tt),+ $(,)? }) => {
         impl $crate::wire::Wire for $ty {
             fn put(&self, out: &mut impl crate::wire::Sink) {
                 $($crate::wire::Wire::put(&self.$f, out);)*

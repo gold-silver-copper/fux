@@ -17,15 +17,7 @@ pub const BATCH_BYTES: usize = 256 << 10;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Seq(u64);
-
-impl crate::wire::Wire for Seq {
-    fn put(&self, out: &mut impl crate::wire::Sink) {
-        self.0.put(out);
-    }
-    fn get(r: &mut crate::wire::Reader<'_>) -> Result<Self, crate::wire::Error> {
-        u64::get(r).map(Self)
-    }
-}
+crate::wire::wire_struct!(Seq { 0 });
 
 /// The next entry to consume, in exactly one server run.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
