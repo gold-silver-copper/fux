@@ -1329,6 +1329,8 @@ impl Screen {
     /// its blanks in the pen's colours.
     #[inline(never)]
     fn scroll_columns(&mut self, region: Span, count: u16, direction: Scroll) {
+        #[cfg(test)]
+        pictures::placement_test::SCROLLS.with(|n| n.set(n.get().saturating_add(1)));
         let blank = self.blank_style();
         let up = direction != Scroll::Down;
         self.with_grid(|g, _, version| g.scroll_columns(region, count, up, blank, version));
