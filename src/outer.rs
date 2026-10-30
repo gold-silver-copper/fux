@@ -862,7 +862,6 @@ mod tests {
                     | ToAttached::Open(_)
                     | ToAttached::Keys(_),
                 )
-                | Outgoing::Copy(..)
                 | Outgoing::Shutdown { .. } => None,
             })
             .collect()

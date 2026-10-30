@@ -463,9 +463,8 @@ impl Run {
                     outer::BELL,
                 ]
                 .contains(&&*bytes) => {}
-            Outgoing::To(_, ToAttached::Paint(bytes)) => panic!("not a question: {bytes:?}"),
             // A copy: OSC 52, with at most MAX_CLIPBOARD bytes of base64.
-            Outgoing::Copy(_, bytes) => {
+            Outgoing::To(_, ToAttached::Paint(bytes)) if bytes.starts_with(b"\x1b]52;c;") => {
                 let payload = bytes
                     .strip_prefix(b"\x1b]52;c;")
                     .and_then(|b| b.strip_suffix(b"\x07"))
@@ -477,6 +476,7 @@ impl Run {
                         .all(|b| b.is_ascii_alphanumeric() || b"+/=".contains(b))
                 );
             }
+            Outgoing::To(_, ToAttached::Paint(bytes)) => panic!("not a question: {bytes:?}"),
             Outgoing::To(client, ToAttached::Exit(_)) => self.detach(client),
             // Sent only as a client attaches, by the server.
             Outgoing::To(_, ToAttached::NeedsInitial | ToAttached::Welcome(..)) => {
