@@ -202,9 +202,9 @@ pub fn b04(scale: Scale, chunk: usize) -> Found {
 // and its placement is a row fill: each of its rows (⌈2160 ÷ the cell's
 // height⌉, or ⌈4096 ÷ it⌉ portrait) filled across the 200 columns, at a
 // 10×20 cell and at the smallest, 2×6 (THREATS.md 1.2), with P2 0, 1 and
-// 2. Each row costs its width and the picture's across up front (C +
-// across, at most 2C), its fill (erase and fill, at most 2C) and its line
-// feed into history (B18's C + 5): 5C + 5, 1,005. Each lies on the last
+// 2. Each row costs a unit up front, its fill (erase and fill, at most
+// 2C) and its line feed into history (B18's C + 5): 3C + 6, 606. Each lies
+// on the last
 // cell row of the one before, whose 20 rows of 2,000 pixels it covers
 // (B46): at most 9,492 units, and 70,656 bytes for each of 64 pictures.
 pub fn b05(scale: Scale, chunk: usize) -> Found {
@@ -218,7 +218,7 @@ pub fn b05(scale: Scale, chunk: usize) -> Found {
         ("\x1bPq\"1;1;2160;4096\x1b\\", ((2, 6), 683)),
     ] {
         let input = repeat(&repeat(picture.as_bytes(), 215), scale.times());
-        let each = 1005u64.saturating_mul(rows).saturating_add(9492);
+        let each = 606u64.saturating_mul(rows).saturating_add(9492);
         let bound = Bound {
             work: Some((0, 0, each.saturating_mul(215))),
             heap: steady(&setup).saturating_add(64 * 70_656),
@@ -1316,10 +1316,10 @@ fn cluster(marks: usize) -> Vec<u8> {
 // B30: a cell keeps at most 128 bytes of text.
 pub fn b30(scale: Scale, chunk: usize) -> Found {
     let setup = Setup::defaults();
-    // The join reads the cell's cluster, at most 128 bytes, for each mark
-    // of two: at most 256 units a byte.
+    // Each mark, two bytes, reads the cell's cluster, at most 128 bytes,
+    // and writes it back: at most 128 units a byte.
     const BOUND: Bound = Bound {
-        work: Some((256, 0, 0)),
+        work: Some((128, 0, 0)),
         heap: 0,
     };
     let bound = Bound {
@@ -1337,9 +1337,9 @@ pub fn b30(scale: Scale, chunk: usize) -> Found {
 // takes nothing once it has dropped a character.
 pub fn b31(scale: Scale, chunk: usize) -> Found {
     let setup = Setup::defaults().sized(1, 200).history(0);
-    // Each ZWSP, three bytes, rescans the row's text once, at most 49C +
-    // 128 bytes over the 200 cells' clusters here, 771: at most 257 units
-    // a byte.
+    // A ZWSP, three bytes, is dropped: it reads the cell printed last, at
+    // most 128 bytes, a few times over, never the row's text: at most 257
+    // units a byte.
     const BOUND: Bound = Bound {
         work: Some((257, 0, 0)),
         heap: 0,
@@ -1449,7 +1449,10 @@ pub fn b33(scale: Scale, chunk: usize) -> Found {
 // and their 656 rows go into history at 205: 265,550 a REP. Between
 // 2-column margins, 51 rows of a copy, 102 cells, and 51 wraps at B33's
 // 500: 25,602 a REP. On a 2×10 screen with 1 KiB of history, 35 rows of 5
-// copies, 350 cells, and the 35 rows into history at 15: 875 a REP.
+// copies, 350 cells, and the 35 rows into history at 15: 875 a REP. On
+// 4,096 rows of 3, between 2-column margins at the bottom, 4,097 copies,
+// each two cells and a wrap scrolling the region's rows at 10R, 40,960:
+// 167,821,314 a REP, made over many calls.
 pub fn b34(scale: Scale, chunk: usize) -> Found {
     let setup = Setup::defaults();
     let heap = steady(&setup);
@@ -1485,7 +1488,17 @@ pub fn b34(scale: Scale, chunk: usize) -> Found {
         copies,
         &repeat("一\x1b[65535b".as_bytes(), copies),
         |p| p.at_least(20),
-    )
+    )?;
+    let tall = Setup::defaults().sized(4096, 3).history(0);
+    let scrolls = Bound {
+        work: Some((0, 0, 4097 * 40_962)),
+        heap: steady(&tall),
+    };
+    let mut input = b("\x1b[?69h\x1b[1;2s\x1b[4096;1H");
+    input.extend(repeat("一\x1b[65535b".as_bytes(), copies));
+    fed(&tall, scrolls, chunk, copies, &input, |p| {
+        p.at_least(4097 * 4096)
+    })
 }
 
 // B34a: REP of a glyph that joins itself skips the copies that change
@@ -1661,6 +1674,26 @@ pub fn b35(scale: Scale, chunk: usize) -> Found {
                 .map_err(|e| format!("{name} at {rows}x{cols}: {e}"))?;
         }
     }
+    // CUB under extended reverse wraparound (1045) between 2-column
+    // margins goes round the region, a row stepped for each 2 of its
+    // count: at most a unit for each, 65,535 a CUB.
+    let setup = Setup::defaults();
+    let cubs = scale.times().min(10).saturating_mul(4096 / 8);
+    let around = Bound {
+        work: Some((
+            0,
+            0,
+            u64::try_from(cubs)
+                .unwrap_or(u64::MAX)
+                .saturating_mul(65_535),
+        )),
+        heap: steady(&setup),
+    };
+    let mut input = b("\x1b[?45h\x1b[?1045h\x1b[?69h\x1b[1;2s\x1b[1;1H");
+    input.extend(repeat(b"\x1b[65535D", cubs));
+    fed(&setup, around, chunk, 1, &input, |p| {
+        p.at_least(u64::try_from(cubs).unwrap_or(0).saturating_mul(32_000))
+    })?;
     Ok(())
 }
 

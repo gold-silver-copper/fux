@@ -534,8 +534,8 @@ formulas are in [`THREATS.md`](https://github.com/gold-silver-copper/fux/blob/ma
   such stop, over as many calls as that took (THREATS.md 4). A unit is an
   element visited: a cell, a row, a row slot, a text byte, a pixel, a
   style or link entry; every loop the input reaches spends what it visits.
-  It looks where a sequence or a string ends, after a run of text or a
-  character read alone, after a line feed, after each sixel byte, at each
+  It looks where a sequence or a string ends, after a run of text, a
+  character read alone or a control, after each sixel byte, at each
   wrap, and after each glyph inserted (IRM) or printed one at a time; a
   call that ends a frame past the quota leaves its stop to the next, made
   before any byte. So between two budget stops it spends at most the

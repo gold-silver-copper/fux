@@ -109,16 +109,21 @@ pub fn feed(recording: &Recording) -> Result<Worst, String> {
             let (read, later) = reads.split_at_checked(READ).unwrap_or((reads, &[]));
             reads = later;
             let (mut taken, mut idle) = (0usize, 0u32);
-            while let Some(rest) = read.get(taken..).filter(|r| !r.is_empty()) {
+            // The read, then calls of no bytes while work is left, as a
+            // pane makes them, each one weighed.
+            while let Some(rest) = read
+                .get(taken..)
+                .filter(|r| !r.is_empty() || parser.has_work_left())
+            {
                 let (stop, done, took) = cost(|| parser.process_until_stop(rest, &mut Deaf));
                 worst.longest = worst.longest.max(took);
                 let at = format!("{} at byte {}", recording.name, fed.saturating_add(taken));
                 weigh(&mut worst, done, parser.screen().size(), at)?;
                 // Stopped at a frame's edge or its budget, it is given the
-                // rest, again after a budget stop that took no byte (the rows
-                // a checksum left took the call); else all of it was taken,
-                // or refused (an allocation past its limits, which a pane
-                // takes and goes on from).
+                // rest, again after a budget stop that took no byte (REP's
+                // copies, or the stop a frame's boundary owed); else all of
+                // it was taken, or refused (an allocation past its limits,
+                // which a pane takes and goes on from).
                 match stop {
                     Ok(Some((n, _))) if n > 0 => (taken, idle) = (taken.saturating_add(n), 0),
                     Ok(Some((0, Stop::Budget))) if idle < 10_000 => idle = idle.saturating_add(1),

@@ -359,7 +359,7 @@ impl Probe {
                 _ => 0,
             };
             let paid = done > 0 || budget && owed;
-            if taken == 0 && (!paid || idle > idle_most(&self.setup)) {
+            if taken == 0 && (!paid || idle > IDLE_MOST) {
                 return Err(format!(
                     "a call stopped before any byte, {idle} in a row, spending {done}: {stop:?}"
                 ));
@@ -506,11 +506,7 @@ impl Drop for Probe {
 }
 
 /// The most calls in a row that may stop at the budget before taking a
-/// byte at a parser of `setup`: those that make the copies a REP left,
-/// each spending the quota, and one owed by a frame's boundary. A REP makes
-/// at most 65,535 copies, each at most a glyph's cells, a row's edit
-/// under IRM, and a row into history at B18's C + 5: 2C + 16 units.
-pub fn idle_most(setup: &Setup) -> u64 {
-    let copy = u64::from(setup.cols).saturating_mul(2).saturating_add(16);
-    (copy.saturating_mul(65_535) / LIMIT).saturating_add(2)
-}
+/// byte: those that make the copies a REP left, each at least one of at
+/// most 65,535, then the one that finishes them and the stop a frame's
+/// boundary owed.
+pub const IDLE_MOST: u64 = 65_535 + 2;
