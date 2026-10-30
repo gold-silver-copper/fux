@@ -650,7 +650,8 @@ impl History {
         Ok(())
     }
 
-    /// Appends `row`, its cells already `trimmed`. Fails, with nothing
+    /// Appends `row`, its cells already `trimmed`; the caller spends the
+    /// row (its cells, trimmed or not, and one). Fails, with nothing
     /// changed, only when out of memory. Inlined: it is the hot path of
     /// `Grid::scroll_into_history`.
     #[inline(always)]
@@ -659,7 +660,6 @@ impl History {
         if !self.rows.has_room() || !self.fits(len) {
             self.make_room(len)?;
         }
-        crate::budget::spend(len.saturating_add(1));
         let start = u16::try_from(self.newest.len()).unwrap_or(0);
         // One cell, common for short lines, is stored without a copy call.
         match row.cells {

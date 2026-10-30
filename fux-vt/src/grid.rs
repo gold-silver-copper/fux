@@ -90,7 +90,8 @@ fn take_row(
         .get_mut(start..start.wrapping_add(usize::from(m.used)))
         .unwrap_or_default();
     let len = trimmed(row).len();
-    crate::budget::spend(row.len().saturating_sub(len));
+    // The row's cells, those trimmed too, and the row: once.
+    crate::budget::spend(row.len().saturating_add(1));
     let kept = row.get_mut(..len).unwrap_or_default();
     history.push(m.arriving(kept, width))?;
     // Blanked now, while the cells are at hand.
@@ -529,6 +530,7 @@ impl Grid {
         }
         let width = u16::try_from(cells.len()).map_err(|_| Error::Capacity)?;
         let kept = trimmed(cells.get(..written).unwrap_or(cells));
+        crate::budget::spend(kept.len().saturating_add(1));
         self.history.push(meta.arriving(kept, width))?;
         let text = text.filter(|text| !text.is_empty());
         let links = links.and_then(|mut links| KeptLinks::take(&mut links));
@@ -550,9 +552,12 @@ impl Grid {
     ) {
         let slot = self.meta.len();
         let cols = usize::from(self.size.cols());
-        crate::budget::spend(1);
+        crate::budget::spend(if self.unmade {
+            1
+        } else {
+            cols.saturating_add(1)
+        });
         if !self.unmade {
-            crate::budget::spend(cols);
             let start = self.cells.len();
             self.cells
                 .extend_from_slice(cells.get(..cells.len().min(cols)).unwrap_or_default());
@@ -1817,7 +1822,7 @@ impl Grid {
         let start = slot.saturating_mul(usize::from(self.size.cols()));
         let used = start.saturating_add(usize::from(m.used));
         let cells = trimmed(self.cells.get(start..used).unwrap_or_default());
-        crate::budget::spend(usize::from(m.used).saturating_sub(cells.len()));
+        crate::budget::spend(usize::from(m.used).saturating_add(1));
         self.history.push(m.arriving(cells, self.size.cols()))?;
         // A copy of the text, and the links themselves, the slot keeping
         // their list's memory for its next row.

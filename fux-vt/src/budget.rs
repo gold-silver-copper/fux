@@ -23,10 +23,12 @@ thread_local! {
 /// operation that crossed it (THREATS.md 4).
 pub(crate) const LIMIT: u64 = 1_000_000;
 
-/// Spends `n` units; past `u64`, as many as there are.
+/// Spends `n` units. The count wraps rather than saturates, so a spend is
+/// one add: a thread visits fewer than 2^64 elements in centuries.
+#[inline(always)]
 pub(crate) fn spend(n: impl TryInto<u64>) {
     let n = n.try_into().unwrap_or(u64::MAX);
-    SPENT.with(|spent| spent.set(spent.get().saturating_add(n)));
+    SPENT.with(|spent| spent.set(spent.get().wrapping_add(n)));
 }
 
 pub(crate) fn spent() -> u64 {
