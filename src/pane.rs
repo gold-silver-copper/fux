@@ -728,6 +728,9 @@ pub struct Pane {
     /// How many of the unread bytes are the rest of a frame being read
     /// (`Pane::mid_frame`).
     frame_left: usize,
+    /// A size asked while a frame drawn for the old one was still being
+    /// read: taken once it is (`Pane::read_unread`).
+    resize_to: Option<Size>,
     /// How much more output this turn may give the parser ([`SLICE`]).
     slice_left: usize,
     /// How its program exited, from when fux hears of it till that is
@@ -1115,6 +1118,7 @@ impl Pane {
                 since: now,
             },
             frame_left: 0,
+            resize_to: None,
             slice_left: SLICE,
             exiting: None,
             colours: Colours::default(),
@@ -1209,6 +1213,13 @@ impl Pane {
             return;
         }
         self.reading.framed |= at > 0;
+        // The frame is read: a resize it held up comes before what follows.
+        if let Some(size) = self.resize_to.take() {
+            self.judge_read();
+            self.take_size(size, tell);
+            self.wait_unread(bytes, start.saturating_add(at), now);
+            return;
+        }
         if let Some(taken) = self.read(after, now, tell) {
             self.wait_unread(bytes, start.saturating_add(at).saturating_add(taken), now);
         }
@@ -1402,14 +1413,27 @@ impl Pane {
     }
 
     /// Resizes the screen and the PTY. A held frame is read first: it was
-    /// drawn for the old size.
+    /// drawn for the old size. One longer than this turn's slice is read
+    /// on at later turns, and the resize waits for its end (`resize_to`).
     fn resize(&mut self, size: Size, now: Instant, tell: &mut Teller<'_>) {
+        // The size asked last is the one taken.
+        self.resize_to = None;
         if self.size() == size {
             return;
         }
         self.release_frame(now, tell);
         // The frame read now ends its read, before the resize's own losses.
         self.read_done();
+        if self.mid_frame() {
+            self.resize_to = Some(size);
+            return;
+        }
+        self.take_size(size, tell);
+    }
+
+    /// The screen and the PTY made `size`, the frame drawn for the old
+    /// size read.
+    fn take_size(&mut self, size: Size, tell: &mut Teller<'_>) {
         let refused = self.parser.refused();
         let resized = self.parser.resize(size);
         // A size refused is asked again as the session settles: counted
@@ -1764,6 +1788,7 @@ impl Pane {
             frame: fresh.frame,
             unread: fresh.unread,
             frame_left: fresh.frame_left,
+            resize_to: fresh.resize_to,
             slice_left: fresh.slice_left,
             exiting: fresh.exiting,
             scheme_told: fresh.scheme_told,
@@ -2248,6 +2273,52 @@ pub(crate) mod tests {
             first_row(&pane),
             std::iter::repeat_n('x', 4001).collect::<String>()
         );
+        Ok(())
+    }
+
+    /// A frame's boundary is no way past the budget: frames begun and
+    /// ended in the sequence that clears the alternate screen in a
+    /// background, each clear the budget's worth, are read over many
+    /// turns, the pane yielding after each, not in the one turn they came.
+    #[test]
+    fn frame_boundaries_yield_at_the_budget() -> Result<(), Box<dyn std::error::Error>> {
+        let mut pane = pane(1000, 1000, 0)?;
+        let mut output = b"\x1b[41m".to_vec();
+        for _ in 0..40 {
+            output.extend_from_slice(b"\x1b[?1049;2026h\x1b[?1049;2026l");
+        }
+        pane.output(&output);
+        assert!(pane.has_unread(), "the clears were read in one turn");
+        let mut turns = 1u32;
+        while pane.has_unread() && turns < 1000 {
+            pane.read_unread();
+            turns = turns.saturating_add(1);
+        }
+        assert!(turns >= 20, "{turns} turns");
+        assert!(!pane.has_unread() && !pane.screen().mode(fux_vt::Mode::AlternateScreenSaveCursor));
+        Ok(())
+    }
+
+    /// A resize waits for a held frame longer than a turn's slice: the
+    /// frame's rest, and a reply it asks for, is read at the size it was
+    /// drawn for, a slice a turn, and the size is taken after it.
+    #[test]
+    fn a_resize_waits_for_the_held_frame_it_follows() -> Result<(), Box<dyn std::error::Error>> {
+        let mut pane = pane(3, 30, 1 << 10)?;
+        let mut frame = b"\x1b[?2026h".to_vec();
+        frame.extend(std::iter::repeat_n(0u8, 2 * SLICE));
+        frame.extend_from_slice(b"\x1b[999G\x1b[6n");
+        pane.output(&frame);
+        pane.resize(size(3, 20));
+        assert_eq!(<(u16, u16)>::from(pane.size()), (3, 30), "taken mid-frame");
+        let mut turns = 0u32;
+        while pane.has_unread() && turns < 100 {
+            pane.read_unread();
+            turns = turns.saturating_add(1);
+        }
+        assert!(turns >= 2, "{turns} turns");
+        assert_eq!(pane.input.drain_all(), b"\x1b[1;30R");
+        assert_eq!(<(u16, u16)>::from(pane.size()), (3, 20));
         Ok(())
     }
 

@@ -1127,10 +1127,12 @@ impl Parser {
     /// a unit an element visited: a cell, a row, a text byte, a pixel. It
     /// runs over calls, from one budget stop to the next, so a host that
     /// cuts its reads small is stopped as well. It is looked at after each
-    /// sequence or string, each line feed, each sixel byte, each wrap,
-    /// each glyph inserted and each glyph that joins or does not fit a run,
-    /// so a call overruns it by at most the one indivisible operation that
-    /// crossed it (THREATS.md 4).
+    /// sequence or string, each run of text, each character read alone, each
+    /// line feed, each sixel byte, each wrap, each glyph inserted and each
+    /// glyph that joins or does not fit a run, so a call overruns it by at
+    /// most the one indivisible operation that crossed it (THREATS.md 4). A
+    /// call that ends a frame ([`Stop::Begun`], [`Stop::Ended`]) past the
+    /// budget leaves its stop to the next, which makes it before any byte.
     ///
     /// As in [`Parser::process_with`], a refusal of room is counted
     /// ([`Parser::refused`]) and the rest read; `Err(Error::Capacity)` says
@@ -1191,6 +1193,13 @@ impl Parser {
         let degrades = crate::degrades();
         // Every call leaves `end` and `stop_at` at u64::MAX: no budget.
         if UNTIL_STOP {
+            // A call that ended a frame past the budget owes its stop: this
+            // one makes it before anything, so a frame's boundary is no way
+            // past the budget.
+            if self.spent >= crate::budget::LIMIT {
+                self.spent = 0;
+                return Ok(Some((0, Stop::Budget)));
+            }
             self.end = start.saturating_add(crate::budget::LIMIT.saturating_sub(self.spent));
             (self.screen.stop_at, self.screen.stopped) = (self.end, false);
         }
@@ -1222,7 +1231,8 @@ impl Parser {
                     self.screen.stopped = false;
                     Some(Stop::Budget)
                 } else {
-                    None
+                    // A run that ends before the margin printed too.
+                    self.over::<UNTIL_STOP>()
                 }
             } else if ground && byte < 0x20 && byte != 0x1b {
                 // CR LF, which ends most lines, as one.
@@ -1246,7 +1256,8 @@ impl Parser {
                 && let Some(length) = self.text(remaining)
             {
                 remaining = remaining.get(length..).unwrap_or_default();
-                (UNTIL_STOP && std::mem::take(&mut self.screen.stopped)).then_some(Stop::Budget)
+                self.screen.stopped = false;
+                self.over::<UNTIL_STOP>()
             } else if ground && byte == 0x1b && remaining.get(1) == Some(&b'[') {
                 self.screen.cancel_single_shift();
                 let (length, framed) = self.csi_sequence(remaining, sink);
@@ -1257,10 +1268,11 @@ impl Parser {
                 None
             } else {
                 remaining = tail;
-                let sequence = !ground && !matches!(self.state, State::Utf8(_));
                 let fed = matches!(byte, 0x0a..=0x0c) && !self.in_string();
                 let framed = self.byte(byte, sink);
-                framed.or_else(|| self.over_after::<UNTIL_STOP>(sequence, fed))
+                // Whatever left the parser in ground: a sequence's end, a
+                // character completed or printed alone.
+                framed.or_else(|| self.over_after::<UNTIL_STOP>(true, fed))
             };
             if UNTIL_STOP && let Some(stop) = framed {
                 (self.screen.stop_at, self.screen.stopped) = (u64::MAX, false);
@@ -1305,9 +1317,9 @@ impl Parser {
             }
         };
     }
-    /// `over`, only where a sequence or string ended (`sequence`, and the
-    /// parser back in ground), a line feed was carried out (`fed`), a sixel
-    /// byte was read, or printing found the budget spent
+    /// `over`, only where the parser came back to ground after a byte it
+    /// read alone or a sequence (`sequence`), a line feed was carried out
+    /// (`fed`), a sixel byte was read, or printing found the budget spent
     /// (`Screen::check_budget`): where the work a few bytes can multiply is
     /// done. A rule of states, so the fast paths look where `byte` alone
     /// would.

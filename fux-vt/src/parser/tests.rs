@@ -239,17 +239,18 @@ fn a_run_over_a_wide_glyph_costs_its_length() -> Result<(), Error> {
 
 /// A line feed carried out in text is a place `process_until_stop` looks
 /// at the budget, as its scroll can move a row's text into history: with
-/// the budget spent, a run of LF, VT or FF stops
+/// the budget all but spent, a run of LF, VT or FF at the bottom stops
 /// after the first, and one of CR, which moves no row, does not stop.
 #[test]
 fn a_line_feed_stops_at_a_spent_budget() -> Result<(), Error> {
     let mut parser = Parser::new(Size::of(2, 4), 8)?;
+    parser.process(b"\x1b[2;1H")?;
     for feeds in [b"\n\n\n", b"\x0b\x0b\x0b", b"\x0c\x0c\x0c"] {
-        parser.spent = crate::budget::LIMIT;
+        parser.spent = crate::budget::LIMIT - 1;
         let stop = parser.process_until_stop(feeds, &mut Deaf)?;
         assert_eq!(stop, Some((1, Stop::Budget)), "{}", feeds.escape_ascii());
     }
-    parser.spent = crate::budget::LIMIT;
+    parser.spent = crate::budget::LIMIT - 1;
     assert_eq!(parser.process_until_stop(b"\r\r\r", &mut Deaf)?, None);
     Ok(())
 }
@@ -290,6 +291,63 @@ fn copies_left_at_the_budget_are_made_before_later_text() -> Result<(), Error> {
         let row = |p: &Parser| p.screen().window().text((0, 0), (0, 4095), 4096, 4096);
         assert_eq!(row(&parser)?, row(&whole)?);
         assert_eq!(parser.process_until_stop(&[], &mut Deaf)?, None);
+    }
+    Ok(())
+}
+
+/// Printing that never wraps is a place the budget is looked at too: `x`
+/// and CR over and over on a 2×2 screen, whole or two bytes a call, and
+/// zero-width spaces after a row of long clusters, a byte a call (each
+/// completed in the parser's UTF-8 state), stop at the budget, spending
+/// little past it between stops.
+#[test]
+fn printing_that_never_wraps_stops_at_the_budget() -> Result<(), Error> {
+    let crs: Vec<u8> = std::iter::repeat_n(&b"x\r"[..], 1_100_000)
+        .flatten()
+        .copied()
+        .collect();
+    // B31's row: its long text full, each mark rescans it.
+    let cluster = |marks| {
+        format!(
+            "e{}",
+            std::iter::repeat_n("\u{301}", marks).collect::<String>()
+        )
+    };
+    let mut row = (std::iter::repeat_n(cluster(50), 64).chain([cluster(22), cluster(8)]))
+        .collect::<String>()
+        .into_bytes();
+    row.push(0x08);
+    let marks: Vec<u8> = std::iter::repeat_n("\u{200b}", 100_000)
+        .collect::<String>()
+        .into_bytes();
+    for (size, setup, input, piece) in [
+        (Size::of(2, 2), &b""[..], &crs, crs.len()),
+        (Size::of(2, 2), &b""[..], &crs, 2),
+        (Size::of(1, 200), &row[..], &marks, 1),
+    ] {
+        let mut parser = Parser::new(size, 0)?;
+        parser.process(setup)?;
+        let (mut stops, mut since) = (0, 0u64);
+        let mut left = &input[..];
+        while let Some((mut rest, after)) =
+            (!left.is_empty()).then(|| left.split_at_checked(piece).unwrap_or((left, &[])))
+        {
+            left = after;
+            while !rest.is_empty() || parser.has_work_left() {
+                let before = crate::budget::spent();
+                let stop = parser.process_until_stop(rest, &mut Deaf)?;
+                since = since.saturating_add(crate::budget::spent().saturating_sub(before));
+                assert!(
+                    since <= crate::budget::LIMIT + 10_000,
+                    "{since} between stops"
+                );
+                let Some((taken, stop)) = stop else { break };
+                assert_eq!(stop, Stop::Budget);
+                (stops, since) = (stops + 1, 0);
+                rest = rest.get(taken..).unwrap_or_default();
+            }
+        }
+        assert!(stops >= 1, "no stop at {size:?}, {piece} bytes a call");
     }
     Ok(())
 }
