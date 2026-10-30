@@ -16,6 +16,14 @@ macro_rules! id {
         $(#[$doc])*
         #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
         pub struct $name(u32);
+        impl crate::wire::Wire for $name {
+            fn put(&self, out: &mut impl crate::wire::Sink) {
+                self.0.put(out);
+            }
+            fn get(r: &mut crate::wire::Reader<'_>) -> Result<Self, crate::wire::Error> {
+                u32::get(r).map(Self)
+            }
+        }
         impl fmt::Display for $name {
             fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
                 write!(f, concat!($sigil, "{}"), self.0)
@@ -59,6 +67,18 @@ id!(
 pub struct BufferId {
     run: Run,
     number: u64,
+}
+
+impl crate::wire::Wire for BufferId {
+    fn put(&self, out: &mut impl crate::wire::Sink) {
+        (self.run, self.number).put(out);
+    }
+    fn get(r: &mut crate::wire::Reader<'_>) -> Result<Self, crate::wire::Error> {
+        let (run, number) = (Run::get(r)?, u64::get(r)?);
+        (number > 0)
+            .then_some(Self { run, number })
+            .ok_or(crate::wire::Error::Bad("buffer id"))
+    }
 }
 
 impl BufferId {
