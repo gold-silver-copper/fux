@@ -52,7 +52,7 @@ pub use compile::{Compiler, Doc, Parsing, Program, Read, Vocabulary};
 pub use error::{Code, Error, Failure};
 pub use grant::{Grant, Render};
 pub use import::{ImportLease, Imports, Shared};
-pub use machine::{Args, BUILT, Builtin, Done, Host, LONGEST, Limits, Machine, Outcome};
+pub use machine::{Args, Builtin, Done, Host, LONGEST, Limits, Machine, Outcome};
 pub use source::{Loader, SOURCE_MAX, Source, SourceImage, SourceLimits};
 pub use token::{Place, Token};
 pub use value::{AppValue, List, NESTING, TOTAL, Text, Value};

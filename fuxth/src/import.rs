@@ -1,15 +1,24 @@
-//! Reservations follow shared imported storage, not stack slots or run totals.
+//! Reservations follow shared storage, imported or built, not stack slots.
 use crate::{Code, Failure, Grant};
 use std::cell::RefCell;
 use std::rc::{Rc, Weak};
 
-/// One machine's fixed allowance for live imported storage. Only leases can
-/// reserve or refund it; hosts cannot change the counter directly.
+/// One machine's fixed allowance for the live storage of every string and
+/// list it builds or imports. Only leases can reserve or refund it; hosts
+/// cannot change the counter directly.
 #[derive(Debug)]
 pub struct Imports(Rc<Grant>);
 impl Imports {
     pub fn new(limit: usize) -> Self {
         Self(Rc::new(Grant::new(limit)))
+    }
+
+    /// `bytes` reserved before what they pay for is made: shared storage
+    /// born holding it ([`Shared::leased`]) gives them back when it drops.
+    pub fn lease(&self, bytes: usize) -> Result<ImportLease, Failure> {
+        let lease = ImportLease::default();
+        lease.reserve(self, bytes)?;
+        Ok(lease)
     }
 }
 
@@ -70,7 +79,7 @@ impl ImportLease {
 fn full() -> Failure {
     Failure::new(
         Code::TooLong,
-        "live imported storage exceeds its allocation grant",
+        "the strings and lists a run holds exceed its allocation grant",
     )
 }
 
@@ -79,7 +88,7 @@ fn full() -> Failure {
 #[derive(Debug, PartialEq)]
 pub struct Shared<T>(Rc<Storage<T>>);
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Debug, PartialEq)]
 struct Storage<T> {
     value: T,
     lease: ImportLease,
@@ -92,23 +101,20 @@ impl<T> Clone for Shared<T> {
 }
 
 impl<T> Shared<T> {
+    /// `value`, holding nothing until it is retained: a program's literal,
+    /// or a host's value before the machine imports it.
     pub fn new(value: T) -> Self {
-        Self(Rc::new(Storage {
-            value,
-            lease: ImportLease::default(),
-        }))
+        Self::leased(value, ImportLease::default())
+    }
+
+    /// `value`, born holding `lease`: reserved, before `value` was made,
+    /// for [`Shared::bytes`] of its payload.
+    pub fn leased(value: T, lease: ImportLease) -> Self {
+        Self(Rc::new(Storage { value, lease }))
     }
 
     pub fn get_mut(this: &mut Self) -> Option<&mut T> {
         Rc::get_mut(&mut this.0).map(|storage| &mut storage.value)
-    }
-
-    pub(crate) fn copied(&self, elements: usize) -> usize {
-        if Rc::strong_count(&self.0) > 1 {
-            elements
-        } else {
-            0
-        }
     }
 
     /// Payload allocation bytes, plus this shared allocation's wrapper.
@@ -120,12 +126,6 @@ impl<T> Shared<T> {
 
     pub fn reserve(&self, imports: &Imports, bytes: usize) -> Result<(), Failure> {
         self.0.lease.reserve(imports, bytes)
-    }
-}
-
-impl<T: Clone> Shared<T> {
-    pub fn make_mut(this: &mut Self) -> &mut T {
-        &mut Rc::make_mut(&mut this.0).value
     }
 }
 

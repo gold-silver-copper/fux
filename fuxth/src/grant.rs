@@ -49,10 +49,6 @@ impl Render {
         self.bytes
     }
 
-    pub fn remaining(&self) -> usize {
-        self.grant.remaining()
-    }
-
     pub fn finish<E>(
         mut self,
         write: impl FnOnce(&mut dyn fmt::Write) -> Result<(), E>,

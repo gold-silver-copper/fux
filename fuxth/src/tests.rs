@@ -618,9 +618,10 @@ fn a_strings_characters_are_found_from_its_marks() -> Result<(), Error> {
         grown.append(&Text::new(piece.as_str()));
         check(&grown);
     }
-    let mut put = Text::new(pieces.concat());
-    put.replace(100, &Text::new("ü"));
-    check(&put);
+    match run(&format!("str {} 100 str ü put", pieces.concat()))?.as_slice() {
+        [Value::Str(put)] => check(put),
+        _ => return Err(Error::new(Code::Type, "put did not give a string", None)),
+    }
     let steps = |text: &str| -> Result<u64, Error> {
         let mut machine = Machine::new(compile(text)?, Limits::default());
         machine.run(&mut Toy::default(), u64::MAX)?;
@@ -810,10 +811,16 @@ fn the_core_at_its_edges() -> Result<(), Error> {
 
 #[test]
 fn concat_refuses_before_allocating_the_joined_value() -> Result<(), Error> {
+    // As many lists of a million as the grant holds, then a copy of one.
+    let held = Ticket::IMPORT_LIMIT / List::<Ticket>::size(1_000_000);
+    let full: String = (1..held)
+        .map(|i| format!("list l0 end concat let l{i} "))
+        .collect();
+    let full = format!("0 1000000 range let l0 {full}");
     for source in [
         "str x 1000 copies let s list 0 1001 range each drop s end end",
         "0 1000000 range let l list l l l l l l l l l l end",
-        "str x 1000 copies let s 0 begin s string drop 1 add dup 15900 eq until drop list 0 200 range each drop s end end",
+        &format!("{full} list l0 end"),
     ] {
         let mut machine = Machine::new(
             compile(&format!("{source} 0 ask drop concat"))?,
@@ -886,10 +893,6 @@ fn constructed_values_obey_length_depth_and_work_limits() -> Result<(), Error> {
         "list end let l 0 begin list end l push let l 1 add dup 70 eq until",
         "list 0 end let l 0 begin list 0 end 0 l put let l 1 add dup 70 eq until",
         "list 1 2 3 4 5 6 7 8 end let x 0 begin list x x end let x 1 add dup 40 eq until",
-        "str x 1000 copies let s 0 begin s str y push drop 1 add dup 17000 eq until",
-        "str x 1000 copies let s 0 begin s 0 str y put drop 1 add dup 17000 eq until",
-        "0 1000 range let s 0 begin s 7 push drop 1 add dup 17000 eq until",
-        "0 1000 range let s 0 begin s 0 7 put drop 1 add dup 17000 eq until",
     ] {
         let mut machine = Machine::new(compile(source)?, Limits::default());
         assert_eq!(
@@ -900,7 +903,14 @@ fn constructed_values_obey_length_depth_and_work_limits() -> Result<(), Error> {
             "{source}"
         );
     }
+    // What a run builds and drops it gives back: it builds on till its
+    // steps run out.
     for source in [
+        "str x 1000 copies let s 0 begin s str y push drop 1 add dup 17000 eq until",
+        "str x 1000 copies let s 0 begin s 0 str y put drop 1 add dup 17000 eq until",
+        "0 1000 range let s 0 begin s 7 push drop 1 add dup 17000 eq until",
+        "0 1000 range let s 0 begin s 0 7 put drop 1 add dup 17000 eq until",
+        "str x 2000 copies let cap 0 begin cap string drop 1 add dup 100000 eq until",
         "list end let l 0 begin list l end let l 1 add dup 60 eq until",
         "list 1 2 end let x 0 begin list x x end let x 1 add dup 10 eq until x x eq",
     ] {
@@ -1701,7 +1711,7 @@ fn refused_carried_storage_enters_the_resource_failure_handler() -> Result<(), E
     #[derive(Clone, Debug, PartialEq)]
     struct Payload(Shared<Vec<u8>>);
     impl AppValue for Payload {
-        const IMPORT_LIMIT: usize = 1024;
+        const IMPORT_LIMIT: usize = 2048;
         fn kind(&self) -> &'static str {
             "payload"
         }
@@ -1755,7 +1765,7 @@ fn refused_carried_storage_enters_the_resource_failure_handler() -> Result<(), E
     ));
     machine.raise_with(
         Failure::new(timeout, "timed out"),
-        Value::App(Payload(Shared::new(vec![0; 400]))),
+        Value::App(Payload(Shared::new(vec![0; 1300]))),
     )?;
     assert!(matches!(machine.run(&mut host, 1000)?, Outcome::Finished));
     assert_eq!(machine.stack(), [Value::str("too_long"), Value::Int(7)]);
@@ -1781,7 +1791,7 @@ fn host_imports_bound_each_value_and_opaque_depth() -> Result<(), Error> {
     vocabulary.kind("weighted", "weighted")?;
     let compiler = Compiler::<Weighted>::new(vocabulary);
     let mut machine = Machine::new(compiler.finish()?, Limits::default());
-    let value = Value::App(Weighted(BUILT / 2, 0));
+    let value = Value::App(Weighted(TOTAL / 2, 0));
     machine.import(value.clone())?;
     machine.import(value.clone())?;
     machine.import(value.clone())?;
@@ -1857,7 +1867,8 @@ fn imported_strings_and_lists_hold_and_release_their_storage() -> Result<(), Fai
     let Value::Str(mut storage) = held else {
         return Err(Failure::new(Code::Type, "test string"));
     };
-    Shared::make_mut(&mut storage).replace(0, &Text::new("y"));
+    // Changed in place, it keeps what it holds.
+    Shared::get_mut(&mut storage).map(|text| text.append(&Text::new("y")));
     assert_eq!(
         text().retain(&grant).map_err(|e| e.code),
         Err(Code::TooLong)

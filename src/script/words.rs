@@ -2815,7 +2815,7 @@ mod tests {
             "conversion must refuse before allocating beyond the grant"
         );
         assert!(
-            json_text(&value, 32 << 10).is_err(),
+            json_text(&value, 30 << 10).is_err(),
             "retained input and output must share admission"
         );
         let list = fuxth::List::new(vec![value]).ok_or("list")?;
