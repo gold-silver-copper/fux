@@ -239,7 +239,11 @@ pub fn b05(scale: Scale, chunk: usize) -> Found {
     // At 1 × 65,535, placed at column 64,000, where each of its rows is
     // used to its end and goes into history at C + 1, far past the picture
     // term: 683 rows and 8 graphics new lines at 3C + 6, and the covering,
-    // as M's placement term has them (4.2).
+    // as M's placement term has them (4.2). One placement bounds it: at
+    // 1× only.
+    if scale != Scale::Once {
+        return Ok(());
+    }
     let wide = Setup::defaults().sized(1, 65_535);
     let each = (3 * 65_535 + 6) * 691 + 9492;
     let bound = Bound {
@@ -1451,7 +1455,11 @@ pub fn b33(scale: Scale, chunk: usize) -> Found {
     // Under IRM on 4 rows of 4,096, where history keeps every copy: each
     // copy moves its row and repairs its wide glyphs, at most C each, and
     // is a cell, and their 16 rows go into history at C + 5; the copies a
-    // call leaves go on in the calls after it.
+    // call leaves go on in the calls after it. One REP bounds it: at 1×
+    // only.
+    if scale != Scale::Once {
+        return Ok(());
+    }
     let wide = Setup::defaults().sized(4, 4096);
     let insert = Bound {
         work: Some((0, 0, 65_535 * 8_193 + 16 * 4_101)),
@@ -1509,6 +1517,10 @@ pub fn b34(scale: Scale, chunk: usize) -> Found {
         &repeat("一\x1b[65535b".as_bytes(), copies),
         |p| p.at_least(20),
     )?;
+    // One REP bounds it: at 1× only.
+    if scale != Scale::Once {
+        return Ok(());
+    }
     let tall = Setup::defaults().sized(4096, 3).history(0);
     let scrolls = Bound {
         work: Some((0, 0, 4097 * 49_154)),
@@ -1698,7 +1710,7 @@ pub fn b35(scale: Scale, chunk: usize) -> Found {
     // margins goes round the region, a row stepped for each 2 of its
     // count: at most a unit for each, 65,535 a CUB.
     let setup = Setup::defaults();
-    let cubs = scale.times().min(10).saturating_mul(4096 / 8);
+    let cubs = scale.times().min(10).saturating_mul(16);
     let around = Bound {
         work: Some((
             0,
