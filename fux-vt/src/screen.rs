@@ -2624,7 +2624,7 @@ impl Screen {
                     if end >= cols {
                         g.wrap(y, false, version);
                     }
-                    false
+                    !g.rendition(y).is_double()
                 } else {
                     g.erase_unprotected(y, start, end, blank, version);
                     !(display && g.rendition(y).is_double() && {
