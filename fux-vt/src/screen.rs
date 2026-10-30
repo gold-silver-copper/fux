@@ -433,6 +433,8 @@ impl TabStops {
     fn set(&mut self, col: u16, stop: bool) {
         let (col, beyond) = (usize::from(col), self.beyond);
         let made = self.stops.len()..=col;
+        // Each stop made: TBC 3 then HTS far right makes the row's again.
+        crate::budget::spend(col.saturating_add(1).saturating_sub(self.stops.len()));
         (self.stops).extend(made.map(|at| beyond && at.is_multiple_of(8)));
         if let Some(slot) = self.stops.get_mut(col) {
             *slot = stop;
@@ -1402,7 +1404,8 @@ impl Screen {
     }
     /// Notes whether the call under way has spent its budget, as printing
     /// does at each wrap, each glyph inserted and each glyph text prints
-    /// one at a time, and SUB and a tab do: printing then stops after the
+    /// one at a time, and SUB, a tab and a BS that wraps back do: printing
+    /// then stops after the
     /// glyph it is on (`stopped`), and the parser at that byte.
     #[inline]
     pub(crate) fn check_budget(&mut self) {
@@ -2328,6 +2331,8 @@ impl Screen {
             g.fit_cursor();
             count = count.saturating_sub(1);
         }
+        // BS is a control, which looks only where it spends.
+        self.check_budget();
     }
 
     /// DECSC, into the grid shown (`Saved`).
@@ -2535,6 +2540,8 @@ impl Screen {
     fn shift_columns(&mut self, from: u16, count: u16, right: bool) {
         let blank = self.blank_style();
         self.with_grid(|g, _, version| {
+            // A unit a row, as a double-width one it leaves is still read.
+            crate::budget::spend(g.lines.len());
             for y in g.lines.first()..=g.lines.last() {
                 g.edit_row(y, from, count, right, blank, version);
             }
@@ -2750,6 +2757,7 @@ impl Screen {
         let id = p.first(0, 0);
         let g = self.grid();
         let mut sum = 0u16;
+        crate::budget::spend(lines.len());
         for y in lines.each() {
             // A double-width line holds half the columns (DEC STD 070,
             // 5.6.1): the rectangle stops at its end.
@@ -2923,6 +2931,7 @@ impl Screen {
             new
         };
         self.with_grid(|g, _, v| {
+            crate::budget::spend(lines.len());
             for y in lines.each() {
                 let (start, end) = span(y);
                 let end = end.min(g.row_end(y)).max(start);
@@ -2935,6 +2944,7 @@ impl Screen {
     /// rectangular area operation changes none (DEC STD 070, 5.12.1).
     fn each_row(&mut self, lines: Span, mut f: impl FnMut(&mut Grid, u16, u64)) {
         self.with_grid(|g, _, v| {
+            crate::budget::spend(lines.len());
             for y in lines.each() {
                 let wrapped = g.live_wrapped(y);
                 f(g, y, v);

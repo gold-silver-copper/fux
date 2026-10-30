@@ -253,6 +253,7 @@ impl RowLinks {
     /// Replaces each run in place by the up to three pieces `parts` gives;
     /// extra pieces are appended, unsorted, for `tidy`.
     fn remake(&mut self, parts: impl Fn(&Run) -> [(u16, u16); 3]) {
+        crate::budget::spend(self.0.len());
         for i in 0..self.0.len() {
             let Some(run) = self.0.get_mut(i) else {
                 break;
@@ -273,6 +274,9 @@ impl RowLinks {
     }
     /// Restores order: drops empty runs, merges touching runs of one link.
     fn tidy(&mut self) {
+        // A pass, a sort and a pass over the runs.
+        let log = usize::try_from(self.0.len().checked_ilog2().unwrap_or(0)).unwrap_or(0);
+        crate::budget::spend(self.0.len().saturating_mul(log.saturating_add(2)));
         self.0.retain(|run| run.start < run.end);
         self.0.sort_unstable_by_key(|run| run.start);
         self.0.dedup_by(|next, kept| {

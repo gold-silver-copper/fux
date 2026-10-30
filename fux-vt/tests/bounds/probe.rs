@@ -196,7 +196,7 @@ pub fn most_at(rows: u16, cols: u16, history: usize) -> u64 {
 
 /// The largest [`most`], at fux's largest pane, 4,096 × 4,096, and its
 /// largest history, 1 GiB (`THREATS.md` 1.2 and 4.2).
-pub const LARGEST: u64 = 1_870_334_208;
+pub const LARGEST: u64 = 1_878_829_362;
 
 /// A bound a probe holds to (`THREATS.md` section 2): the most work it
 /// spends a byte, a call and a copy of the reproducer, for a row that

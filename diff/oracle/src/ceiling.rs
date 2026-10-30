@@ -20,6 +20,9 @@ use crate::model::Setup;
 use fux_vt::{Parser, Size, Stop};
 use std::time::{Duration, Instant};
 
+/// The most calls in a row that take no byte: a REP's copies, at most
+/// 65,535, one at least each, the one that ends them and an owed stop.
+const IDLE_MOST: u32 = 65_535 + 2;
 /// A read of a pane's output, as fux takes it from the PTY.
 const READ: usize = 4096;
 /// The history the resize is given, full: a pane's.
@@ -118,16 +121,22 @@ pub fn feed(recording: &Recording) -> Result<Worst, String> {
                 let (stop, done, took) = cost(|| parser.process_until_stop(rest, &mut Deaf));
                 worst.longest = worst.longest.max(took);
                 let at = format!("{} at byte {}", recording.name, fed.saturating_add(taken));
-                weigh(&mut worst, done, parser.screen().size(), at)?;
+                weigh(&mut worst, done, parser.screen().size(), at.clone())?;
                 // Stopped at a frame's edge or its budget, it is given the
                 // rest, again after a budget stop that took no byte (REP's
                 // copies, or the stop a frame's boundary owed); else all of
                 // it was taken, or refused (an allocation past its limits,
                 // which a pane takes and goes on from).
+                // Calls that take no byte make a REP's copies, at least one
+                // each, or the stop a frame's boundary owed: past those, the
+                // parser makes no progress, which is an error.
                 match stop {
                     Ok(Some((n, _))) if n > 0 => (taken, idle) = (taken.saturating_add(n), 0),
-                    Ok(Some((0, Stop::Budget))) if idle < 10_000 => idle = idle.saturating_add(1),
-                    Ok(_) | Err(_) => break,
+                    Ok(Some((0, Stop::Budget))) if idle < IDLE_MOST => idle = idle.saturating_add(1),
+                    Ok(Some((_, stop))) => {
+                        return Err(format!("{at}: {idle} calls took no byte, then {stop:?}"));
+                    }
+                    Ok(None) | Err(_) => break,
                 }
             }
             fed = fed.saturating_add(read.len());

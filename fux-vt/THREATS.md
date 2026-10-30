@@ -172,8 +172,8 @@ B26 and B41 bound host-side objects or host calls.
 | B30 | Cluster text | A cluster ≤ 128 B (`CLUSTER_CAPACITY`); a row's long text ≤ 32C + 128, short ≤ 17C; work ≤ 128 a byte (a mark of two reads and writes its cluster) | Cut at 128 B; a row with no room drops what would join | `e` + 64 × U+0301 | `b30`; `a_long_cluster_that_ends_at_the_limit_does_not_compact` |
 | B31 | A zero-width character after a full row | A dropped character reads the cell printed last (≤ 128 B) a few times over, never the row's text: ≤ 257 a byte | Dropped | 1,000 × U+200B after a full 1×200 row and a BS | `b31` |
 | B32 | Glyph width | Every glyph ≤ 2 columns; U+17D8 is 1 | — | `XYZW\r` U+17D8 on 1×10 | `b32`; `every_character_is_as_wide_as_the_width_rule_says` |
-| B33 | ASCII REP | Copies past what the screen and history can show are skipped: a REP ≤ 132,775 at the defaults (65,535 copies, 328 rows into history at B18's C + 5), 25,602 between 2-column margins (102 copies, 51 scrolls of the region at 10R), 875 on 2×10 with 1 KiB of history (350 copies, 35 rows at 15); under IRM each copy moves its row; the copies made stop at the quota between glyphs | Skipped, same result | 455 × `X ESC[65535b` in 4 KiB | `b33`; `repeat_makes_its_ascii_copies_and_returns` |
-| B34 | Non-ASCII REP | As B33, a copy two cells: ≤ 265,550 a REP at the defaults, 25,602 between 2-column margins, 875 on 2×10 with 1 KiB of history, 167,821,314 between 2-column margins on 4,096 rows of 3 (4,097 copies, each a scroll of the region at 10R), made over many calls | As B33 | 372 × `一 ESC[65535b` | `b34`; `repetition_stops_at_the_quota_and_goes_on` |
+| B33 | ASCII REP | Copies past what the screen and history can show are skipped: a REP ≤ 132,775 at the defaults (65,535 copies, 328 rows into history at B18's C + 5), 30,702 between 2-column margins (102 copies, 51 scrolls of the region at 12R), 875 on 2×10 with 1 KiB of history (350 copies, 35 rows at 15); under IRM each copy moves its row; the copies made stop at the quota between glyphs | Skipped, same result | 455 × `X ESC[65535b` in 4 KiB | `b33`; `repeat_makes_its_ascii_copies_and_returns` |
+| B34 | Non-ASCII REP | As B33, a copy two cells: ≤ 265,550 a REP at the defaults, 30,702 between 2-column margins, 875 on 2×10 with 1 KiB of history, 201,383,938 between 2-column margins on 4,096 rows of 3 (4,097 copies, each a scroll of the region at 12R), made over many calls | As B33 | 372 × `一 ESC[65535b` | `b34`; `repetition_stops_at_the_quota_and_goes_on` |
 | B34a | REP of a glyph that joins itself | ≤ 24 a byte + 2,752 to fill the cluster once | Copies joining a full cluster are skipped | 372 × U+1100 `ESC[65535b` | `b34a` |
 | B35 | Screen-wide functions | Each one indivisible operation of ≤ 4N + 2R × (49C + 128) (4.2); every call within the quota and one of them, which stops it and goes on in the next; CUB under 1045 between 2-column margins ≤ 65,535 a CUB, a unit a row it steps | — | 4 KiB each of DECRQCRA, DECCRA, DECFRA, DECERA, DECSERA, DECCARA, DECRARA, DECALN, ED 2, 1049, DECIC, DECDC, SL, SR; margin LF, SU and wrapping text | `b35` at 50×200, 500×500, 4095×4096; `bounds.rs` `quota` tests |
 | B36 | Scrolls inside a region | The region's slots turned once a sequence, the count clamped to the region; across the ring's end ≤ 4 an IL of two rows | — | `ESC[4095L` at 4095×1; IL across the ring's end | `b36` |
@@ -273,10 +273,10 @@ not counted, as the call's length bounds what each costs. With the
 1,000,000 units are spent since its last budget stop, over as many calls
 as that took, so a host that cuts its reads small is stopped as well. It
 looks at the count after each sequence or string, each run of text, each
-character read alone, each control (a line feed, a tab, SUB), each sixel
-byte, each wrap, and
-each glyph printed one at a time (inserted under IRM, a mark, one that
-does not fit a run): never inside an indivisible operation. A call that
+character read alone, each control that spends (a line feed, a tab,
+SUB, a BS that wraps back), each sixel byte, each wrap, and each glyph
+printed one at a time (inserted under IRM, a mark, one that does not
+fit a run): never inside an indivisible operation. A call that
 ends a frame (`Begun`, `Ended`) past the quota still says so, and the
 next call makes the stop it owes before any byte, so a frame's boundary
 is no way past the quota. Nothing is lost: it stopped between two bytes,
@@ -296,7 +296,8 @@ is `LIMIT` + M):
 
 | Term | Units | What it bounds |
 |---|---|---|
-| A picture | 2 × `MAX_PIXELS` + `COVER_WORDS` = 21,694,720 | a sixel byte's growth, at most twice the final buffer (B03); a placement's covering (B46) and its rows (B05) |
+| A picture | 2 × `MAX_PIXELS` + `COVER_WORDS` = 21,694,720 | a sixel byte's growth, at most twice the final buffer (B03); a placement's covering (B46) |
+| A placement's rows | 691 × (3C + 6) | at most 683 rows and 8 graphics new lines, each its fill and its line feed into history (B05) |
 | The screen | 4N + 2R × (49C + 128) | a screen-wide function: each cell visited up to four times, and each row's text, at most 49C + 128 bytes (B30), twice (DECRQCRA, DECCRA, a scroll inside margins) |
 | History | 2 × min(H ÷ 8, `MAX_CELLS`) + min(H ÷ 24, `MAX_ROWS`) | the style sweep, each kept cell (8 B at least) read twice; the link sweep, each row (24 B at least) |
 | Links | 2^20 | the link sweep's runs, ids and sorts (B16) |
@@ -307,8 +308,8 @@ the sweeps inside one operation cost at most 32 units for each cell it
 restyles. A rectangle restyle copies no text, so they fit the screen's
 text term, which it leaves unused.
 
-At fux's defaults M is about 26 M; at its largest pane, 4,096 × 4,096
-with 1 GiB of history, M = 1,870,334,208, the screen's text most of it.
+At fux's defaults M is about 27 M; at its largest pane, 4,096 × 4,096
+with 1 GiB of history, M = 1,878,829,362, the screen's text most of it.
 The bounds suite asserts for every probe that it spends at most
 `LIMIT` + M at its setup between two budget stops, that a budget stop comes only once `LIMIT`
 is spent, and that a call taking no byte spends some; most also assert
@@ -318,7 +319,7 @@ goes unspent shows. `bounds.rs`
 split and whole, to the same screen and replies. The `deep` fuzz target
 and the oracle's ceiling part hold every call to `LIMIT` + M at its size
 and history (`fux_vt::call_most`), which is at most 1,000,000 +
-1,870,334,208.
+1,878,829,362.
 
 fux reads no more of a pane after a budget stop or at the end of a
 16 KiB slice (1.2): the rest waits for the pane's next turn, after the

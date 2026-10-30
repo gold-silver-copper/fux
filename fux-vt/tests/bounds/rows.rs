@@ -236,6 +236,26 @@ pub fn b05(scale: Scale, chunk: usize) -> Found {
         probe.at_least(placed)?;
         probe.finish()?;
     }
+    // At 1 × 65,535, placed at column 64,000, where each of its rows is
+    // used to its end and goes into history at C + 1, far past the picture
+    // term: 683 rows and 8 graphics new lines at 3C + 6, and the covering,
+    // as M's placement term has them (4.2).
+    let wide = Setup::defaults().sized(1, 65_535);
+    let each = (3 * 65_535 + 6) * 691 + 9492;
+    let bound = Bound {
+        work: Some((0, 0, each)),
+        heap: steady(&wide).saturating_add(64 * 70_656),
+    };
+    let mut probe = Probe::new(&wide, bound, chunk, scale.times())?;
+    probe.set_host_graphics(fux_vt::CellSize::new(2, 6).map_or(Graphics::Text, Graphics::Sixel));
+    let right = b"\x1b[1;64000H\x1bPq\"1;1;2160;4096\x1b\\";
+    probe.feed(&repeat(right, scale.times()))?;
+    probe.at_least(
+        u64::try_from(scale.times())
+            .unwrap_or(0)
+            .saturating_mul(682 * 64_000),
+    )?;
+    probe.finish()?;
     Ok(())
 }
 
@@ -1390,8 +1410,8 @@ pub fn b32(scale: Scale, chunk: usize) -> Found {
 // their 328 rows go into history at B18's C + 5, 205: 132,775 a REP.
 // Between 2-column margins nothing reaches history: 51 rows of 2 copies,
 // 102, and 51 wraps, each scrolling the region's 50 rows, every span of
-// 2 read, compared and written and blanked (8 a row) and the edges
-// repaired (2 a row), 500: 25,602 a REP. On a 2×10 screen with 1 KiB of
+// 2 copied out, read, compared and written and blanked (10 a row) and the
+// edges repaired (2 a row), 600: 30,702 a REP. On a 2×10 screen with 1 KiB of
 // history the copies fill its 2 rows and the 32 history keeps, and a row
 // more, 350, and their 35 rows go into history at 15: 875 a REP.
 pub fn b33(scale: Scale, chunk: usize) -> Found {
@@ -1406,7 +1426,7 @@ pub fn b33(scale: Scale, chunk: usize) -> Found {
         p.at_least(10_000)
     })?;
     let margins = Bound {
-        work: Some((0, 0, 455 * 25_602)),
+        work: Some((0, 0, 455 * 30_702)),
         heap,
     };
     let inside = [b("\x1b[?69h\x1b[1;2s\x1b[1;1H"), input.clone()].concat();
@@ -1429,12 +1449,12 @@ pub fn b33(scale: Scale, chunk: usize) -> Found {
         |p| p.at_least(20),
     )?;
     // Under IRM on 4 rows of 4,096, where history keeps every copy: each
-    // copy moves its row, at most C, and is a cell, and their 16 rows go
-    // into history at C + 5; the copies a call leaves go on in the calls
-    // after it.
+    // copy moves its row and repairs its wide glyphs, at most C each, and
+    // is a cell, and their 16 rows go into history at C + 5; the copies a
+    // call leaves go on in the calls after it.
     let wide = Setup::defaults().sized(4, 4096);
     let insert = Bound {
-        work: Some((0, 0, 65_535 * 4_097 + 16 * 4_101)),
+        work: Some((0, 0, 65_535 * 8_193 + 16 * 4_101)),
         heap: steady(&wide),
     };
     let input = repeat(b"\x1b[4hx\x1b[65535b\x1b[4l\r", scale.times());
@@ -1448,11 +1468,11 @@ pub fn b33(scale: Scale, chunk: usize) -> Found {
 // At the defaults all 65,535 copies of `一` fit history, two cells each,
 // and their 656 rows go into history at 205: 265,550 a REP. Between
 // 2-column margins, 51 rows of a copy, 102 cells, and 51 wraps at B33's
-// 500: 25,602 a REP. On a 2×10 screen with 1 KiB of history, 35 rows of 5
+// 600: 30,702 a REP. On a 2×10 screen with 1 KiB of history, 35 rows of 5
 // copies, 350 cells, and the 35 rows into history at 15: 875 a REP. On
 // 4,096 rows of 3, between 2-column margins at the bottom, 4,097 copies,
-// each two cells and a wrap scrolling the region's rows at 10R, 40,960:
-// 167,821,314 a REP, made over many calls.
+// each two cells and a wrap scrolling the region's rows at 12R, 49,152:
+// 201,383,938 a REP, made over many calls.
 pub fn b34(scale: Scale, chunk: usize) -> Found {
     let setup = Setup::defaults();
     let heap = steady(&setup);
@@ -1468,7 +1488,7 @@ pub fn b34(scale: Scale, chunk: usize) -> Found {
         p.at_least(20_000)
     })?;
     let margins = Bound {
-        work: Some((0, 0, 372 * 25_602)),
+        work: Some((0, 0, 372 * 30_702)),
         heap,
     };
     let inside = [b("\x1b[?69h\x1b[1;2s\x1b[1;1H"), input.clone()].concat();
@@ -1491,7 +1511,7 @@ pub fn b34(scale: Scale, chunk: usize) -> Found {
     )?;
     let tall = Setup::defaults().sized(4096, 3).history(0);
     let scrolls = Bound {
-        work: Some((0, 0, 4097 * 40_962)),
+        work: Some((0, 0, 4097 * 49_154)),
         heap: steady(&tall),
     };
     let mut input = b("\x1b[?69h\x1b[1;2s\x1b[4096;1H");
@@ -1925,7 +1945,9 @@ pub fn b41(scale: Scale, _: usize) -> Found {
     Ok(())
 }
 
-// B42: small fixed state: tab stops at most a byte a column.
+// B42: small fixed state: tab stops at most a byte a column; making them
+// spends a unit a stop made, so TBC 3 and an HTS at the last column,
+// repeated, spend the row's 200 stops a pair, and the quota sees them.
 pub fn b42(scale: Scale, chunk: usize) -> Found {
     let setup = Setup::defaults();
     let input = repeat(b"\x1bH\x1b[C", 200usize.saturating_mul(scale.times()));
@@ -1939,7 +1961,17 @@ pub fn b42(scale: Scale, chunk: usize) -> Found {
         scale.times(),
         &input,
         |_| Ok(()),
-    )
+    )?;
+    let pairs = 2000usize.saturating_mul(scale.times());
+    let again = Bound {
+        work: Some((0, 0, 2000 * 201)),
+        heap: stops.saturating_add(stops / 2),
+    };
+    let mut input = b("\x1b[1;200H");
+    input.extend(repeat(b"\x1b[3g\x1bH", pairs));
+    fed(&setup, again, chunk, scale.times(), &input, |p| {
+        p.at_least(u64::try_from(pairs).unwrap_or(0).saturating_mul(200))
+    })
 }
 
 // B43: events go straight to the host: fux-vt keeps none.

@@ -299,8 +299,9 @@ fn copies_left_at_the_budget_are_made_before_later_text() -> Result<(), Error> {
 /// looked at too: `x` and CR over and over on a 2×2 screen, whole or two
 /// bytes a call; zero-width spaces after a row of long clusters, a byte a
 /// call (each completed in the parser's UTF-8 state); SUB under IRM and a
-/// tab after TBC 3, each before a CR, at 4,096 columns: all stop at the
-/// budget, spending little past it between stops.
+/// tab after TBC 3, each before a CR, at 4,096 columns; SUB alone; BS
+/// under extended reverse wraparound, alone or before a CR: all stop at
+/// the budget, spending little past it between stops.
 #[test]
 fn printing_that_never_wraps_stops_at_the_budget() -> Result<(), Error> {
     let crs: Vec<u8> = std::iter::repeat_n(&b"x\r"[..], 1_100_000)
@@ -331,6 +332,12 @@ fn printing_that_never_wraps_stops_at_the_budget() -> Result<(), Error> {
         .flatten()
         .copied()
         .collect();
+    // A BS under extended reverse wraparound, which wraps back a row.
+    let bss = vec![0x08; 1_100_000];
+    let bs_crs: Vec<u8> = std::iter::repeat_n(&b"\x08\r"[..], 1_100_000)
+        .flatten()
+        .copied()
+        .collect();
     let tabs: Vec<u8> = std::iter::repeat_n(&b"\t\r"[..], 8190)
         .flatten()
         .copied()
@@ -341,6 +348,9 @@ fn printing_that_never_wraps_stops_at_the_budget() -> Result<(), Error> {
         (Size::of(1, 200), &row[..], &marks, 1),
         (Size::of(1, 4096), &b"\x1b[4h"[..], &subs, subs.len()),
         (Size::of(2, 2), &b""[..], &plain, plain.len()),
+        (Size::of(1, 1), &b"\x1b[?1045h"[..], &bss, bss.len()),
+        (Size::of(1, 1), &b"\x1b[?1045h"[..], &bss, 3),
+        (Size::of(1, 2), &b"\x1b[?1045h"[..], &bs_crs, bs_crs.len()),
         (Size::of(1, 4096), &b"\x1b[3g"[..], &tabs, tabs.len()),
     ] {
         let mut parser = Parser::new(size, 0)?;

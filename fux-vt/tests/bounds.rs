@@ -178,7 +178,7 @@ fn the_threats_table_lists_the_suites_rows() -> Result {
 fn the_largest_operation_is_the_formula_s_at_the_largest_pane() -> Result {
     assert_eq!(probe::most_at(4096, 4096, 1 << 30), probe::LARGEST);
     let text = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/THREATS.md"))?;
-    assert!(text.contains("1,870,334,208"), "THREATS.md names another");
+    assert!(text.contains("1,878,829,362"), "THREATS.md names another");
     Ok(())
 }
 

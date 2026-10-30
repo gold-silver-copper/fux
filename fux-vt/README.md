@@ -540,7 +540,7 @@ formulas are in [`THREATS.md`](https://github.com/gold-silver-copper/fux/blob/ma
   call that ends a frame past the quota leaves its stop to the next, made
   before any byte. So between two budget stops it spends at most the
   quota and the one indivisible operation that crossed it: a screen-wide function, a sweep
-  of history, a picture's growth or placement; at most 1,870,334,208 units
+  of history, a picture's growth or placement; at most 1,878,829,362 units
   at a 4096 by 4096 pane with 1 GiB of history (THREATS.md 4.2). A count
   is not a time: at the largest panes one such operation alone can take
   far longer than a frame (THREATS.md 4.3). The host gives the rest of the

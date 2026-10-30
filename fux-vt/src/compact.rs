@@ -642,6 +642,7 @@ impl<C: AsRef<Compact> + AsMut<Compact>> Line<'_, C> {
             .split_at_mut_checked(skip.start.min(self.cells.len()))
             .unwrap_or_default();
         let tail = rest.get_mut(skip.len()..).unwrap_or_default();
+        crate::budget::spend(head.len().saturating_add(tail.len()));
         for cell in head.iter_mut().chain(tail).map(AsMut::as_mut) {
             let Some(range) = cell.spilled(long) else {
                 continue;

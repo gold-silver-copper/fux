@@ -944,8 +944,12 @@ impl Grid {
     #[cold]
     #[inline(never)]
     pub(crate) fn sweep(&mut self) {
-        // Every cell is read twice: to mark its style, then to renumber it.
-        let cells = self.cells.len().saturating_add(self.history.kept_cells());
+        // Every cell and history row is read twice: to mark its style, then
+        // to renumber it; and each style kept or let go, twice.
+        let cells = (self.cells.len())
+            .saturating_add(self.history.kept_cells())
+            .saturating_add(self.history.len())
+            .saturating_add(self.styles.len());
         crate::budget::spend(cells.saturating_mul(2));
         let mut used = vec![false; self.styles.len()];
         let mut mark = |cell: &Compact| {
@@ -978,6 +982,7 @@ impl Grid {
 
     /// Forgets every link: RIS.
     pub fn reset_links(&mut self) {
+        crate::budget::spend(self.linked.len());
         self.linked.iter_mut().for_each(RowLinks::clear);
         self.history.reset_links();
         self.links = Links::default();
@@ -1017,6 +1022,8 @@ impl Grid {
             let screen = (order.iter()).filter_map(|slot| Some((None, linked.get(*slot)?.runs())));
             history.chain(screen)
         };
+        // The screen's rows, walked twice; history's charge themselves.
+        crate::budget::spend(self.order.len().saturating_mul(2));
         let lose = self.links.sweep(rows, self.history.len());
         for index in 0..lose {
             self.history.unlink(index, version);
@@ -1399,6 +1406,8 @@ impl Grid {
         version: u64,
     ) {
         let mut cells = self.slice(source).get(span).unwrap_or_default().to_vec();
+        // The source's cells, however few of them land.
+        crate::budget::spend(cells.len());
         if cuts {
             cut(&mut cells);
         }
@@ -2055,6 +2064,8 @@ impl Grid {
     /// Blanks every row of a recyclable grid with new identities, top to
     /// bottom, and resets cursors, margins and keyboard stack.
     fn renew(&mut self, next: &mut u64, version: u64) {
+        // Each row renewed and its links cleared, blank or not.
+        crate::budget::spend(self.order.len().saturating_add(self.linked.len()));
         for index in 0..self.order.len() {
             let id = next_id(next);
             if let Some(&slot) = self.order.get(index) {
@@ -2209,6 +2220,7 @@ impl Grid {
         if !self.doubled() {
             return;
         }
+        crate::budget::spend(self.size.rows());
         for row in 0..self.size.rows() {
             self.set_rendition(row, LineRendition::Single, version);
         }
@@ -2499,6 +2511,7 @@ pub(crate) fn put(cells: &mut [Compact], i: usize, glyph: Compact, width: u16) -
 }
 
 pub(crate) fn repair_wide(cells: &mut [Compact]) {
+    crate::budget::spend(cells.len());
     for i in 0..cells.len() {
         let invalid = cells.get(i).is_some_and(|c| {
             c.is_wide()
