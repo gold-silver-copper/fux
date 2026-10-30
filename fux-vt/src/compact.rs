@@ -344,7 +344,7 @@ impl Text {
     }
     /// A copy, in no more memory than it needs: what history keeps.
     pub(crate) fn exact(&self) -> Text {
-        spend!(text, self.bytes());
+        crate::budget::spend(self.bytes());
         Text {
             long: self.long.as_slice().to_vec(),
             short: self.short.as_slice().to_vec(),
@@ -439,7 +439,7 @@ impl<C: AsRef<Compact> + AsMut<Compact>> Line<'_, C> {
             return false;
         };
         // The cluster is read and joined again whole.
-        work!(text, end);
+        crate::budget::spend(end);
         if let Some(joined) = cell.inline_with(c)
             && let Some(slot) = self.cells.get_mut(i).map(AsMut::as_mut)
         {
@@ -532,7 +532,7 @@ impl<C: AsRef<Compact> + AsMut<Compact>> Line<'_, C> {
         let room = long.len().saturating_add(text.len()) <= limit;
         match self.cells.get_mut(i).map(AsMut::as_mut) {
             Some(slot) if room => {
-                work!(text, text.len());
+                crate::budget::spend(text.len());
                 long.extend_from_slice(text);
                 *slot = cell.with_spilled(start, len);
                 true
@@ -578,7 +578,7 @@ impl<C: AsRef<Compact> + AsMut<Compact>> Line<'_, C> {
             // A row with one short cluster usually has more.
             short.reserve(FIRST_SHORT.min(limit));
         }
-        work!(text, text.len());
+        crate::budget::spend(text.len());
         short.extend_from_slice(text);
         *slot = cell.with_spilled(start, len);
         true
@@ -586,7 +586,7 @@ impl<C: AsRef<Compact> + AsMut<Compact>> Line<'_, C> {
 
     /// The bytes of long text the cells hold: what `compact(true)` keeps.
     fn live_long(&self) -> usize {
-        work!(cells, self.cells.len());
+        crate::budget::spend(self.cells.len());
         (self.cells.iter())
             .filter_map(|cell| cell.as_ref().spilled(true))
             .map(|range| range.len())
@@ -614,7 +614,7 @@ impl<C: AsRef<Compact> + AsMut<Compact>> Line<'_, C> {
             && held.len() == text.len()
             && let Some(slot) = self.cells.get_mut(i).map(AsMut::as_mut)
         {
-            work!(text, text.len());
+            crate::budget::spend(text.len());
             held.copy_from_slice(text.as_bytes());
             *slot = cell.with_spilled(at, n);
         }
@@ -655,7 +655,7 @@ impl<C: AsRef<Compact> + AsMut<Compact>> Line<'_, C> {
             *cell = cell.with_spilled(start, len);
         }
         // What it copied: the text the cells hold.
-        spend!(text, store.len());
+        crate::budget::spend(store.len());
     }
 
     /// `cells`' text from `old`, stored again within budget; `cells` are

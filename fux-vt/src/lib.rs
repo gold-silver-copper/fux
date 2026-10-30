@@ -55,28 +55,6 @@ macro_rules! reply {
     };
 }
 
-/// Counts `n` units of work of the kind `counter` names (THREATS.md 4.1),
-/// with the `checks` feature; without it, nothing at all.
-macro_rules! work {
-    ($counter:ident, $n:expr) => {
-        #[cfg(feature = "checks")]
-        $crate::work::add(|w| {
-            w.$counter = w.$counter.saturating_add($crate::budget::units($n));
-        });
-    };
-}
-
-/// Counts work as `work!` does and spends it from the call's budget
-/// (THREATS.md 4.4), with or without `checks`: for work one sequence can
-/// multiply.
-macro_rules! spend {
-    ($counter:ident, $n:expr) => {{
-        let n = $crate::budget::units($n);
-        $crate::budget::spend(n, $crate::budget::weight::$counter);
-        work!($counter, n);
-    }};
-}
-
 mod budget;
 pub mod bytes;
 mod cell;
@@ -98,8 +76,6 @@ mod style;
 #[expect(dead_code, reason = "each test uses different generator helpers")]
 mod test_rng;
 mod unicode;
-#[cfg(feature = "checks")]
-mod work;
 
 use std::{fmt, ops::Range};
 
@@ -120,8 +96,14 @@ pub use screen::{
     MouseProtocolMode, PICTURE_BYTES, PLACEHOLDER, Screen, Shown,
 };
 pub use unicode::{UNICODE_VERSION, char_width, clusters, continues_cluster, str_width};
+
+/// The work this thread's calls into fux-vt have spent so far, in the
+/// budget's units (THREATS.md 4), for the bounds tests and fuzz targets to
+/// difference; with the `checks` feature.
 #[cfg(feature = "checks")]
-pub use work::Work;
+pub fn work_spent() -> u64 {
+    budget::spent()
+}
 
 /// `slice::copy_from_slice`, checked: it panics when the lengths differ, so
 /// fux-vt calls it only here (fux's clippy.toml).

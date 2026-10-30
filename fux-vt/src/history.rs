@@ -567,12 +567,12 @@ impl History {
     /// row read (`THREATS.md` B40).
     pub(crate) fn position(&self, id: RowId) -> Option<usize> {
         let index = self.index_of_number(self.spans.number_of(id.0)?)?;
-        spend!(rows, 1);
+        crate::budget::spend(1);
         (self.rows.get(index)?.id == id).then_some(index)
     }
     /// The links of each row that has any, with its index, oldest first.
     pub(crate) fn links(&self) -> impl Iterator<Item = (usize, Runs<'_>)> {
-        spend!(links, self.rows.len());
+        crate::budget::spend(self.rows.len());
         let linked = self.rows.iter().enumerate();
         linked
             .filter(|(_, kept)| kept.flags() & LINKED != 0)
@@ -659,8 +659,7 @@ impl History {
         if !self.rows.has_room() || !self.fits(len) {
             self.make_room(len)?;
         }
-        work!(rows, 1);
-        work!(cells, len);
+        crate::budget::spend(len.saturating_add(1));
         let start = u16::try_from(self.newest.len()).unwrap_or(0);
         // One cell, common for short lines, is stored without a copy call.
         match row.cells {
@@ -777,7 +776,7 @@ impl History {
             self.pop();
             return;
         }
-        work!(rows, n);
+        crate::budget::spend(n);
         self.first_row = self
             .first_row
             .wrapping_add(u64::try_from(n).unwrap_or(u64::MAX));
@@ -800,7 +799,7 @@ impl History {
         let Some((gone, freed)) = self.rows.pop_front() else {
             return;
         };
-        work!(rows, 1);
+        crate::budget::spend(1);
         let number = self.first_row;
         self.first_row = self.first_row.wrapping_add(1);
         self.cells = self.cells.saturating_sub(gone.len());
@@ -833,7 +832,7 @@ impl History {
                 return;
             };
             let number = self.number(self.rows.len()).unwrap_or(u64::MAX);
-            work!(rows, 1);
+            crate::budget::spend(1);
             self.cells = self.cells.saturating_sub(gone.len());
             if gone.flags() & (TEXT | LINKED) != 0 {
                 self.forget(number, gone.flags());

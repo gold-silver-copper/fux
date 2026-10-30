@@ -451,12 +451,11 @@ impl Links {
         // runs ÷ 16 each (THREATS.md B16).
         let log = usize::try_from(seen.len().checked_ilog2().unwrap_or(0)).unwrap_or(0);
         let sort = log.saturating_add(1).saturating_mul(seen.len()) / 16;
-        spend!(
-            links,
+        crate::budget::spend(
             seen.len()
                 .saturating_add(len)
                 .saturating_add(self.ids.len())
-                .saturating_add(sort.saturating_mul(2))
+                .saturating_add(sort.saturating_mul(2)),
         );
         seen.sort_unstable();
         seen.dedup_by(|next, kept| {

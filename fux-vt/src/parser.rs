@@ -412,15 +412,15 @@ impl FrameScan {
             if self.pending == Pending::Ground {
                 let rest = held.get(self.from..)?;
                 let Some(esc) = esc_in(rest) else {
-                    work!(scanned, rest.len());
+                    crate::budget::spend(rest.len());
                     self.from = held.len();
                     return None;
                 };
-                work!(scanned, esc);
+                crate::budget::spend(esc);
                 self.from = self.from.checked_add(esc)?;
             }
             let &byte = held.get(self.from)?;
-            work!(scanned, 1);
+            crate::budget::spend(1);
             self.from = self.from.checked_add(1)?;
             if self.step(byte) {
                 return Some(self.from);
@@ -699,7 +699,7 @@ pub enum Stop {
     /// It reset the mode while it was set (ESU, `CSI ? 2026 l`, XTRESTORE,
     /// DECSTR or RIS): the frame ends.
     Ended,
-    /// The call did as much work as one call may (THREATS.md 4.4). Nothing
+    /// The call did as much work as one call may (THREATS.md 4). Nothing
     /// is lost: the parser stopped between two bytes, and goes on from the
     /// next byte when it is given it, later or at once as the host likes.
     Budget,
@@ -1121,16 +1121,16 @@ impl Parser {
     /// [`Parser::frame_scan`] finds its end. After a [`Stop::Budget`], the
     /// rest is given again in a later call, made even if no byte is left
     /// while [`Parser::has_work_left`]: the next call finishes what the
-    /// last left (a DECRQCRA checksum, a screen-wide sequence, REP's copies)
-    /// before reading on; replies keep their order.
+    /// last left (REP's copies) before reading on; replies keep their order.
     ///
-    /// The budget (THREATS.md 4.4) is spent by the work a few bytes can
-    /// multiply: a rectangle or a column edit, a scroll, REP, a search of
-    /// history. It runs over calls, from one budget stop to the next, so a
-    /// host that cuts its reads small is stopped as well. It is looked at
-    /// after each sequence or string, each line feed, and each glyph whose
-    /// wrap scrolled inside left and right margins, so a call overruns it
-    /// by at most what crossed it and the text before (THREATS.md 4.4).
+    /// The budget (THREATS.md 4) is spent by the work the bytes ask for,
+    /// a unit an element visited: a cell, a row, a text byte, a pixel. It
+    /// runs over calls, from one budget stop to the next, so a host that
+    /// cuts its reads small is stopped as well. It is looked at after each
+    /// sequence or string, each line feed, each sixel byte, each wrap,
+    /// each glyph inserted and each glyph that joins or does not fit a run,
+    /// so a call overruns it by at most the one indivisible operation that
+    /// crossed it (THREATS.md 4).
     ///
     /// As in [`Parser::process_with`], a refusal of room is counted
     /// ([`Parser::refused`]) and the rest read; `Err(Error::Capacity)` says
@@ -1195,7 +1195,7 @@ impl Parser {
             (self.screen.stop_at, self.screen.stopped) = (self.end, false);
         }
         // What the last call left at its budget goes first.
-        if self.screen.left_over() && self.resumed::<UNTIL_STOP>(sink) {
+        if self.screen.left_over() && self.resume::<UNTIL_STOP>() {
             (self.screen.stop_at, self.screen.stopped) = (u64::MAX, false);
             self.spend_since(start, Stop::Budget);
             self.count_degrades(degrades);
@@ -1267,7 +1267,6 @@ impl Parser {
                 self.spend_since(start, stop);
                 self.count_degrades(degrades);
                 let taken = bytes.len().saturating_sub(remaining.len());
-                work!(bytes, taken);
                 return Ok(Some((taken, stop)));
             }
         }
@@ -1275,7 +1274,6 @@ impl Parser {
             (self.screen.stop_at, self.screen.stopped) = (u64::MAX, false);
             self.spend_since(start, Stop::Ended);
         }
-        work!(bytes, bytes.len());
         self.count_degrades(degrades);
         match self.refused == refused {
             true => Ok(None),
@@ -1308,13 +1306,16 @@ impl Parser {
         };
     }
     /// `over`, only where a sequence or string ended (`sequence`, and the
-    /// parser back in ground) or a line feed was carried out (`fed`): where
-    /// the work a few bytes can multiply is done (`budget.rs`). A rule of
-    /// states, so the fast paths look where `byte` alone would.
+    /// parser back in ground), a line feed was carried out (`fed`), a sixel
+    /// byte was read, or printing found the budget spent
+    /// (`Screen::check_budget`): where the work a few bytes can multiply is
+    /// done. A rule of states, so the fast paths look where `byte` alone
+    /// would.
     #[inline]
-    fn over_after<const UNTIL_STOP: bool>(&self, sequence: bool, fed: bool) -> Option<Stop> {
-        self.over::<UNTIL_STOP>()
-            .filter(|_| fed || sequence && matches!(self.state, State::Ground))
+    fn over_after<const UNTIL_STOP: bool>(&mut self, sequence: bool, fed: bool) -> Option<Stop> {
+        let printed = std::mem::take(&mut self.screen.stopped);
+        let at = fed || printed || sequence && matches!(self.state, State::Ground | State::Sixel);
+        at.then(|| self.over::<UNTIL_STOP>()).flatten()
     }
     /// Whether the parser is in a string or a DCS, where a C0 control is
     /// not carried out.
@@ -1329,7 +1330,7 @@ impl Parser {
         )
     }
     /// Makes the copies a REP the last call stopped in left; whether the
-    /// call stops at once, its budget spent again by a wrap's margin scroll.
+    /// call stops at once, its budget spent again (`Screen::check_budget`).
     #[cold]
     #[inline(never)]
     pub(super) fn resume<const UNTIL_STOP: bool>(&mut self) -> bool {
@@ -1774,18 +1775,6 @@ impl Parser {
         framed
     }
 
-    /// Carries out what the last call stopped at the budget left: the
-    /// screen-wide CSI it held back (`Screen::holds_back`), then a REP's
-    /// copies; whether they stopped this call too.
-    #[inline(never)]
-    fn resumed<const UNTIL_STOP: bool>(&mut self, sink: &mut impl Sink) -> bool {
-        if let Some((read, len, byte)) = self.screen.held_csi() {
-            self.csi_dispatch(read.get(..len).unwrap_or_default(), byte, sink);
-            self.screen.forget_repeat();
-        }
-        self.screen.repeating() && self.resume::<UNTIL_STOP>()
-    }
-
     /// Carries out an escape sequence; whether it ended a frame (RIS).
     fn escape_dispatch(
         &mut self,
@@ -1808,9 +1797,7 @@ impl Parser {
         ended.then_some(Stop::Ended)
     }
 
-    /// Carries out a CSI sequence; whether it began or ended a frame, or,
-    /// for a screen-wide one left for the next call (`Screen::holds_back`),
-    /// a budget stop.
+    /// Carries out a CSI sequence; whether it began or ended a frame.
     fn csi_dispatch(
         &mut self,
         intermediates: &[u8],
@@ -1832,17 +1819,13 @@ impl Parser {
         };
         match dispatch {
             Dispatch::Done => {}
-            Dispatch::Held => {
-                self.screen.hold(intermediates, byte);
-                return Some(Stop::Budget);
-            }
             Dispatch::Reply(reply) => sink.reply(reply.as_bytes()),
             Dispatch::Unhandled => {
                 match self
                     .screen
                     .other_csi(&self.params, intermediates, byte, &self.options)
                 {
-                    Some(Dispatch::Done | Dispatch::Held) => {}
+                    Some(Dispatch::Done) => {}
                     Some(Dispatch::Reply(reply)) => sink.reply(reply.as_bytes()),
                     Some(Dispatch::Unhandled) | None => sink.unhandled(Unhandled::Csi {
                         params: Params(&self.params),
@@ -2051,10 +2034,10 @@ mod faults {
     fn the_checker_is_no_work() -> Result<(), Error> {
         let mut parser = parser()?;
         parser.process(b"hello\r\nworld")?;
-        let before = crate::Work::now();
+        let before = crate::budget::spent();
         let report = parser.check();
         assert!(report.is_clean(), "{report}");
-        assert_eq!(crate::Work::now(), before);
+        assert_eq!(crate::budget::spent(), before);
         Ok(())
     }
 

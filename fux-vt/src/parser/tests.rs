@@ -254,34 +254,42 @@ fn a_line_feed_stops_at_a_spent_budget() -> Result<(), Error> {
     Ok(())
 }
 
-/// A sequence whose work exceeds the remaining budget waits for the next
-/// call, even when that call has no bytes, and runs before any new text.
+/// REP's copies a budget stop left after the last byte are made by the
+/// next call, even one of no bytes, before any later text: here in insert
+/// mode, where each copy moves the row, so a call stops between copies,
+/// and each call that takes no byte still makes some.
 #[test]
-fn a_screen_wide_sequence_past_the_ceiling_waits_for_the_next_call() -> Result<(), Error> {
-    let size = Size::of(1000, 1000);
-    assert!(crate::budget::sequence_most(size) > crate::budget::CEILING);
-    let first = b"a\x1b[2Jb\x1b[2J";
+fn copies_left_at_the_budget_are_made_before_later_text() -> Result<(), Error> {
+    let size = Size::of(1, 4096);
+    let first = b"\x1b[4hx\x1b[65535b";
     for following in ["", "c"] {
+        let mut whole = Parser::new(size, 0)?;
+        whole.process(first)?;
+        whole.process(following.as_bytes())?;
         let mut parser = Parser::new(size, 0)?;
         let stop = parser.process_until_stop(first, &mut Deaf)?;
         assert_eq!(stop, Some((first.len(), Stop::Budget)));
         assert!(parser.has_work_left());
-        let shown = |p: &Parser, col: u16| p.screen().cell(0, col).map(|c| c.contents().to_owned());
-        assert_eq!(shown(&parser, 1).as_deref(), Some("b"));
-        assert_eq!(
-            parser.process_until_stop(following.as_bytes(), &mut Deaf)?,
-            None
-        );
-        assert!(!parser.has_work_left());
-        for (col, text) in [(0, ""), (1, ""), (2, following), (3, "")] {
-            assert_eq!(shown(&parser, col).as_deref(), Some(text), "column {col}");
+        let (mut rest, mut calls) = (following.as_bytes(), 0);
+        loop {
+            let before = crate::budget::spent();
+            let Some((taken, stop)) = parser.process_until_stop(rest, &mut Deaf)? else {
+                break;
+            };
+            assert_eq!(stop, Stop::Budget);
+            assert!(taken > 0 || crate::budget::spent() > before, "no progress");
+            rest = rest.get(taken..).unwrap_or_default();
+            calls += 1;
         }
+        assert!(calls >= 2, "{calls} calls");
+        assert!(!parser.has_work_left());
         assert_eq!(
             parser.screen().cursor_position(),
-            (0, if following.is_empty() { 2 } else { 3 })
+            whole.screen().cursor_position()
         );
+        let row = |p: &Parser| p.screen().window().text((0, 0), (0, 4095), 4096, 4096);
+        assert_eq!(row(&parser)?, row(&whole)?);
         assert_eq!(parser.process_until_stop(&[], &mut Deaf)?, None);
-        assert!(!parser.has_work_left());
     }
     Ok(())
 }
@@ -488,11 +496,9 @@ fn the_string_scans_find_what_a_byte_at_a_time_finds() {
 }
 
 /// A scroll of many rows inside a region spends what it does: the region's
-/// slots turned once, not once a row, and the rows brought in. At
-/// 4,095 rows of one column, 100 IL 4095s are 8,190 cells and 8,190 slots
-/// each, about 11 M units in all, under the budget's 16 M, so the call
-/// takes them without a stop; charged a slot a row a row, each was 16.8 M
-/// slots, and the first stopped it.
+/// slots turned once, not once a row, and the rows brought in. At 4,095
+/// rows of one column an IL 4095 is linear in the region, at most 8 units
+/// a row; charged a slot a row a row, each was 16.8 M.
 #[test]
 fn a_region_scroll_spends_its_slots_once() -> Result<(), Error> {
     let mut parser = Parser::new(Size::of(4095, 1), 0)?;
@@ -501,9 +507,8 @@ fn a_region_scroll_spends_its_slots_once() -> Result<(), Error> {
         .copied()
         .collect();
     let start = crate::budget::spent();
-    assert_eq!(parser.process_until_stop(&bytes, &mut Deaf)?, None);
+    parser.process(&bytes)?;
     let spent = crate::budget::spent().saturating_sub(start);
-    let each = 8_190 * (crate::budget::weight::cells + crate::budget::weight::slots);
-    assert!(spent <= 100 * each, "{spent}");
+    assert!(spent <= 100 * 8 * 4095, "{spent}");
     Ok(())
 }

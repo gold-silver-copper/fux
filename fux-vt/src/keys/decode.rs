@@ -259,7 +259,7 @@ fn drop_to_end(
 ) -> Result<(bool, &[u8]), bool> {
     // Every byte is looked at, at most: those after the end are decoded
     // again, and counted again there.
-    work!(keys, bytes.len());
+    crate::budget::spend(bytes.len());
     // A CSI past its window ends with its final byte, as one read whole does
     // (`csi_end`); any other byte begins what comes next.
     if csi {
@@ -318,14 +318,14 @@ fn paste<'a>(
             .map(|at| (text.len(), at, at.saturating_add(marker))),
     };
     // The bytes searched: to the marker's end, or all of them.
-    work!(keys, found.map_or(bytes.len(), |(_, _, rest)| rest));
+    crate::budget::spend(found.map_or(bytes.len(), |(_, _, rest)| rest));
     let Some((kept, taken, rest)) = found else {
         // No end yet: the paste keeps its bytes while it may still be
         // within its limit, else only the end that may begin the marker.
         let total = text.len().saturating_add(bytes.len());
         let tail = total.saturating_sub(marker.saturating_sub(1));
         if !too_long && tail <= limit {
-            work!(keys, bytes.len());
+            crate::budget::spend(bytes.len());
             // Grown by doubling, as a `Vec` grows, but never past what the
             // paste may keep: its limit and the end that may begin the
             // marker (B23).
@@ -358,7 +358,7 @@ fn paste<'a>(
             out.push(Input::PasteTooLong);
         } else {
             text.truncate(kept);
-            work!(keys, taken);
+            crate::budget::spend(taken);
             text.extend_from_slice(bytes.get(..taken).unwrap_or_default());
             out.push(finished(text, limit));
         }
@@ -522,7 +522,7 @@ impl Decoder {
                     // is read where it lies (THREATS.md B24).
                     let room = (HELD.saturating_add(1)).saturating_sub(held.len());
                     let (piece, rest) = bytes.split_at_checked(room).unwrap_or((bytes, &[]));
-                    work!(keys, piece.len());
+                    crate::budget::spend(piece.len());
                     held.extend_from_slice(piece);
                     let state = self.run(&held, since, flush && rest.is_empty(), out);
                     if rest.is_empty() {
@@ -609,13 +609,10 @@ impl Decoder {
         while !bytes.is_empty() {
             let step = decode(bytes, flush, self.expecting.is_some());
             // What the step read: all the bytes, unless it ended within them.
-            work!(
-                keys,
-                match step {
-                    Step::Done(n, _) | Step::PasteStart(n) => n,
-                    Step::Overlong { .. } | Step::Incomplete => bytes.len(),
-                }
-            );
+            crate::budget::spend(match step {
+                Step::Done(n, _) | Step::PasteStart(n) => n,
+                Step::Overlong { .. } | Step::Incomplete => bytes.len(),
+            });
             let rest = match step {
                 Step::Done(n, input) => {
                     if matches!(input, Some(Input::Reply(Reply::Attributes { .. }))) {
@@ -648,7 +645,7 @@ impl Decoder {
                     };
                 }
                 Step::Incomplete => {
-                    work!(keys, bytes.len());
+                    crate::budget::spend(bytes.len());
                     let held = bytes.to_vec();
                     return State::Pending { held, since };
                 }

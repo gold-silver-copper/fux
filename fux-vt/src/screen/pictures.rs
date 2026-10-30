@@ -215,10 +215,7 @@ impl Screen {
         // Charge the placement's rows, including ordinary history copies.
         let width = usize::from(self.size().cols());
         crate::budget::spend(
-            crate::budget::units(
-                usize::from(rows).saturating_mul(width.saturating_add(usize::from(across))),
-            ),
-            crate::budget::weight::cells,
+            usize::from(rows).saturating_mul(width.saturating_add(usize::from(across))),
         );
         // Graphics new lines may take the cursor below the last band, by
         // at most eight rows (DEC STD 070-9, 11.3; THREATS.md B05).
@@ -436,7 +433,7 @@ impl Screen {
                 gone.push(at);
             }
         }
-        spend!(pixels, words);
+        crate::budget::spend(words);
         // A row of its pixels read once for each row of the grid it was
         // drawn in, on the rows some picture under it has, and laid on
         // each picture with that row: those under it in the order their
@@ -609,7 +606,7 @@ impl Screen {
         }
         wanted.sort_unstable();
         for number in from..next {
-            work!(rows, 1);
+            crate::budget::spend(1);
             let Some(id) = self.primary.id_of_number(number) else {
                 continue;
             };
@@ -690,7 +687,7 @@ impl Screen {
             if !unsure && since.is_some_and(|since| row.version() <= since) {
                 continue;
             }
-            work!(cells, across);
+            crate::budget::spend(across);
             let whole = (placement.col..placement.col.saturating_add(across)).all(|c| {
                 row.cell(usize::from(c))
                     .is_some_and(|cell| cell.contents() == PLACEHOLDER)
