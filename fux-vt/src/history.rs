@@ -484,6 +484,7 @@ impl History {
     pub(crate) fn take(&mut self, old: &Self) -> Result<(), Error> {
         for found in (0..old.len()).filter_map(|index| old.get(index)) {
             let kept = found.kept;
+            crate::budget::spend(found.cells.len().saturating_add(1));
             self.push(Arriving {
                 id: kept.id,
                 version: kept.version,

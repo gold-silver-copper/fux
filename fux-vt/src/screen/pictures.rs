@@ -212,11 +212,9 @@ impl Screen {
         self.break_cluster();
         let placeholder = PLACEHOLDER.chars().next().unwrap_or(' ');
         let span = (col, col.saturating_add(across));
-        // Charge the placement's rows, including ordinary history copies.
-        let width = usize::from(self.size().cols());
-        crate::budget::spend(
-            usize::from(rows).saturating_mul(width.saturating_add(usize::from(across))),
-        );
+        // A unit a row placed: its fill, scrolls and history copies spend
+        // as they go.
+        crate::budget::spend(rows);
         // Graphics new lines may take the cursor below the last band, by
         // at most eight rows (DEC STD 070-9, 11.3; THREATS.md B05).
         let down = picture.ended().checked_div(u32::from(cell.1)).unwrap_or(0);
