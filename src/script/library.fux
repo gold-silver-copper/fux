@@ -101,16 +101,14 @@ define ls all info end
 define listing
   let s s str scope get kind let sk
   s str projection get str facts eq let facts
-  s str workspaces get let workspaces s str tabs get let tabs
-  s str panes get let panes s str clients get let attached
-  s str cursor get let cursor
+  s str tabs get let tabs s str panes get let panes
   sk str all eq sk str client eq or let clients
   clients sk str workspace eq or let whole
   sk str pane eq let one
   whole if str '    ' else one if str '' else str '  ' then then let indent
   0 let ti 0 let pi
   list
-    workspaces each let w w str id get let wid
+    s str workspaces get each let w w str id get let wid
       whole if w chooser-row last then
       begin
         ti tabs len lt if
@@ -142,14 +140,14 @@ define listing
       until
     end
     clients if
-      attached each let c
+      s str clients get each let c
         list str 'client ' c str id get string str ' ' c str cols get string str x c str rows get string str ' '
           list list str workspace str tab str pane end each
             c swap get dup kind str null eq if drop str - then string
           end end str ' ' join
         end glue
       end
-      list str 'cursor ' cursor end glue
+      list str 'cursor ' s str cursor get end glue
     then
   end 10 char join
 end

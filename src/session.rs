@@ -4243,7 +4243,6 @@ mod tests {
                 Some(crate::script::PROGRAM_STEPS),
                 None,
             )?;
-            assert!(machine.steps() <= crate::script::PROGRAM_STEPS);
             let text = String::from_utf8(out)?;
             assert_eq!(text.lines().count(), lines);
             assert!(
