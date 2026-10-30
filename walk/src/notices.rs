@@ -18,7 +18,6 @@ const SOURCES: &[&str] = &[
     include_str!("../../fux-vt/src/keys.rs"),
     include_str!("../../src/layout.rs"),
     include_str!("../../src/lib.rs"),
-    include_str!("../../src/overlay.rs"),
     include_str!("../../src/pane.rs"),
     include_str!("../../src/process.rs"),
     include_str!("../../src/protocol.rs"),

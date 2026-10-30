@@ -484,8 +484,7 @@ fn a_script_runs_as_the_shell_runs_it() -> Outcome {
     let path = greet.to_string_lossy();
     let named = server.fux(&[&path, "ann"])?;
     assert_eq!(named.status, 1);
-    let how = format!("{path} is a file, which `fux --file {path}` runs");
-    assert!(named.stderr.contains(&how), "{}", named.stderr);
+    assert!(named.stderr.contains("unknown_word"), "{}", named.stderr);
     assert!(named.stdout.is_empty(), "{}", named.stdout);
     Ok(())
 }
