@@ -378,8 +378,9 @@ define copy-notices
   batches 1 lt if str 'copy-notices takes 1 batch or more' fail then
   seconds 0 lt seconds 86400 gt or if str 'copy-notices takes 0 to 86400 seconds' fail then
   false let ended
-  0 batches range each drop
-    ended not if
+  0 let taken
+  begin
+    ended taken batches eq or dup not if
       all cursor seconds next-events events-checked let batch
       batch str events get each
         let event
@@ -391,8 +392,9 @@ define copy-notices
       end
       batch str next get let cursor
       batch str status get dup str gone eq swap str stopped eq or let ended
+      taken 1 add let taken
     then
-  end
+  until
   cursor
 end
 

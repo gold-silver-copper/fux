@@ -186,38 +186,41 @@ impl Text {
             .saturating_add(capacity)
     }
 
-    /// Grown in place to hold `other` added at the end: when its text lacks
-    /// room ([`grown`]), or it first holds more than ASCII, its `lease` is
-    /// swapped first for `held`'s of [`Text::bound`]; its marks fill that bound.
-    pub(crate) fn grow<E>(
+    /// `other` added at the end, in place: how many characters before it
+    /// were marked, all of them the first time it holds more than ASCII.
+    /// When its text lacks room ([`grown`]), or its marks do, `held`'s lease
+    /// of the grown storage's [`Text::bound`] is taken first, and held beside
+    /// `lease` till both have grown; then it replaces `lease`.
+    pub(crate) fn append<E>(
         &mut self,
         other: &Text,
         lease: &mut ImportLease,
         held: impl FnOnce(usize) -> Result<ImportLease, E>,
-    ) -> Result<(), E> {
-        let (text, marks) = (&mut self.text, &mut self.marks);
-        let bytes = text.len().saturating_add(other.text.len());
-        let chars = self.chars.saturating_add(other.chars);
-        let capacity = grown(bytes, text.len(), text.capacity());
-        if capacity != text.capacity() || (self.chars == text.len() && bytes != chars) {
-            let new = held(Shared::<Text>::bytes(Self::bound(capacity, bytes == chars)))?;
-            text.reserve_exact(capacity.saturating_sub(text.len()));
+    ) -> Result<usize, E> {
+        let (bytes, chars, ascii) = (self.text.len(), self.chars, self.is_ascii());
+        let (all, count) = (
+            bytes.saturating_add(other.text.len()),
+            chars.saturating_add(other.chars),
+        );
+        let capacity = grown(all, bytes, self.text.capacity());
+        let marks = if all == count {
+            0
+        } else {
+            count.saturating_sub(1) / STRIDE
+        };
+        if capacity != self.text.capacity() || marks > self.marks.capacity() {
+            let new = held(Shared::<Text>::bytes(Self::bound(capacity, all == count)))?;
+            self.text.reserve_exact(capacity.saturating_sub(bytes));
+            if all != count {
+                let room = (capacity / STRIDE).saturating_sub(self.marks.len());
+                self.marks.reserve_exact(room);
+            }
             *lease = new;
         }
-        if bytes != chars {
-            marks.reserve_exact((text.capacity() / STRIDE).saturating_sub(marks.len()));
-        }
-        Ok(())
-    }
-
-    /// `other` added at the end: how many characters before it were
-    /// marked, all of them the first time it holds more than ASCII.
-    pub fn append(&mut self, other: &Text) -> usize {
-        let (bytes, chars, ascii) = (self.text.len(), self.chars, self.is_ascii());
         self.text.push_str(&other.text);
         self.chars = chars.saturating_add(other.chars);
         if self.is_ascii() {
-            return 0;
+            return Ok(0);
         }
         let marked = if ascii {
             let marks = (1..chars.div_ceil(STRIDE)).map(|k| k.saturating_mul(STRIDE));
@@ -227,26 +230,20 @@ impl Text {
             0
         };
         self.marks.extend(starts(&other.text, chars, bytes));
-        marked
+        Ok(marked)
     }
 
-    /// Space for shared Text storage and the peak character-index replacement,
-    /// excluding the String moved into it. `None` if the size overflows.
+    /// Space for shared Text storage and its character index, excluding the
+    /// String moved into it. `None` if the size overflows.
     pub fn import_bytes(chars: usize, ascii: bool) -> Option<usize> {
         let marks = if ascii {
             0
         } else {
             chars.saturating_sub(1) / STRIDE
         };
-        let index = if marks == 0 {
-            0
-        } else {
-            let capacity = marks.checked_next_power_of_two()?.max(4);
-            capacity
-                .checked_add(capacity / 2)?
-                .checked_mul(std::mem::size_of::<usize>())?
-        };
-        index.checked_add(Shared::<Text>::bytes(0))
+        marks
+            .checked_mul(size_of::<usize>())?
+            .checked_add(Shared::<Text>::bytes(0))
     }
 
     /// Moves out the String, dropping its character index without a copy.

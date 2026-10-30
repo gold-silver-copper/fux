@@ -121,11 +121,7 @@ impl AppValue for Fux {
             Fux::Record(record) => record::Record::retain(record, imports),
             Fux::Answer(answer, _) => answer.reserve(imports, answer.retained_bytes()),
             Fux::Rendered(text) => text.reserve(imports, self.text_bytes()),
-            Fux::Opts(opts) => opts.lease.reserve(
-                imports,
-                opts.heap_bytes()
-                    .saturating_add(std::mem::size_of::<[usize; 2]>()),
-            ),
+            Fux::Opts(opts) => opts.lease.reserve(imports, opts.bytes()),
             Fux::Null
             | Fux::Pane(..)
             | Fux::Tab(..)
@@ -335,6 +331,12 @@ impl Opts {
             crate::command::Start::Shell(argv)
         };
         Ok((start, env))
+    }
+
+    /// Bytes its shared allocation holds, its counts' included.
+    fn bytes(&self) -> usize {
+        self.heap_bytes()
+            .saturating_add(std::mem::size_of::<[usize; 2]>())
     }
 
     fn heap_bytes(&self) -> usize {
@@ -1911,8 +1913,9 @@ pub(crate) mod tests {
         }
     }
 
-    /// A pane that answers every capture with the default-history styled
-    /// capture of `lines` lines, and each wait with a change till `turns`
+    /// A pane that answers every capture with `lines` lines of 100 cells,
+    /// each cell its own style when `styled` (the default-history styled
+    /// capture at 9,931 lines), and each wait with a change till `turns`
     /// waits, then with a timeout. What the run's grant has left is
     /// recorded at each wait.
     struct Styled {
@@ -1924,11 +1927,11 @@ pub(crate) mod tests {
     }
 
     impl Styled {
-        fn new(turns: usize, lines: usize) -> Result<Self, String> {
+        fn new(turns: usize, lines: usize, styled: bool) -> Result<Self, String> {
             let version: super::Version = "%1:0.0.0.0.0:1-1".parse().map_err(|()| "version")?;
             let line = crate::capture::Line {
                 text: std::iter::repeat_n('x', 100).collect(),
-                runs: (0..100)
+                runs: (0..if styled { 100 } else { 0 })
                     .map(|style| crate::capture::Run {
                         bytes: 1,
                         cells: 1,
@@ -1946,10 +1949,10 @@ pub(crate) mod tests {
                 screen_cols: 120,
                 screen_cursor: None,
                 lines: std::iter::repeat_n(line, lines).collect(),
-                styles: (0u8..100)
+                styles: (0u8..if styled { 100 } else { 0 })
                     .map(|n| fux_vt::Attributes::new(fux_vt::Color::Idx(n), fux_vt::Color::Default))
                     .collect(),
-                styled: true,
+                styled,
                 marks: false,
             };
             Ok(Self {
@@ -1997,51 +2000,59 @@ pub(crate) mod tests {
         }
     }
 
-    /// What a run allocates past its grant, at most: one answer decoded
-    /// and not yet imported, or one text conversion, each within its own
-    /// `MAX_ALLOCATED` grant, and 1 MiB of the machine's own (its stack,
-    /// frames and `let` names, which these programs keep small).
-    const OVERHEAD: usize = crate::wire::MAX_ALLOCATED + (1 << 20);
+    /// What a run allocates past its grant, by what allocates it: the
+    /// machine's own stack, frames and `let` names, which these programs
+    /// keep within 1 MiB.
+    const MACHINE: usize = 1 << 20;
+    /// And one answer decoded and not yet imported, or one text conversion,
+    /// each within its own `MAX_ALLOCATED` grant, never at once; and a record
+    /// projection (`counts`), within `inspect::BYTES`.
+    const ANSWERED: usize = crate::wire::MAX_ALLOCATED + crate::inspect::BYTES + MACHINE;
 
     #[test]
     fn a_run_holds_no_more_than_its_grant_and_a_fixed_overhead() -> TestResult {
         use super::*;
         let hits = "define hits 1000 history capture string lines 0 swap each str 42 contains if 1 add then end end";
-        for (code, lines, ended) in [
+        let hits = format!(
+            "{hits} begin %1 hits drop %1 capture changed 10 timeout wait drop false until"
+        );
+        let timeout = Err(Raise::Timeout);
+        // A program, the capture's lines, how it ends, what it may allocate
+        // past the grant, and how many waits it makes.
+        for (code, lines, ended, overhead, waits) in [
             // Distinct strings, built till the grant refuses one.
             (
                 "str x 1000 copies let k list begin k 100 copies false until end",
                 0,
                 Err(Raise::TooLong),
+                MACHINE,
+                0,
             ),
             // What a loop builds and drops it gives back.
             (
                 "str x 2000 copies let cap 0 begin cap string drop 1 add dup 100000 eq until drop",
                 0,
                 Ok(()),
+                MACHINE,
+                0,
             ),
             (
                 "%1 all-history styles capture let h h json print",
                 9931,
                 Ok(()),
+                ANSWERED,
+                0,
             ),
-            // Polling a pane: a styled capture's text, which `string` makes,
-            // is longer than a string may be past a few thousand lines, so
-            // the words that make one see 200 (a screen's and some history).
-            ("%1 10 quiet drop", 200, Ok(())),
-            ("%1 str needle 10 shows drop", 200, Err(Raise::Timeout)),
-            ("%1 10 until-ended drop", 200, Err(Raise::Timeout)),
-            ("%1 1 1000000 10 grows drop", 200, Err(Raise::Timeout)),
-            (
-                &format!(
-                    "{hits} 0 begin %1 hits drop %1 capture changed 10 timeout wait drop 1 add dup 4 eq until drop"
-                ),
-                200,
-                Ok(()),
-            ),
+            // Polling a screen of 40 lines, as `capture` gives it, through 200
+            // waits, the last timing out.
+            ("%1 10 quiet drop", 40, Ok(()), ANSWERED, 200),
+            ("%1 str needle 10 shows drop", 40, timeout, ANSWERED, 200),
+            ("%1 10 until-ended drop", 40, timeout, ANSWERED, 200),
+            ("%1 1 1000000 10 grows drop", 40, timeout, ANSWERED, 200),
+            (&hits, 40, timeout, ANSWERED, 200),
         ] {
             let mut machine = compile(&token::source("peak", code)?)?;
-            let mut asks = Styled::new(5, lines)?;
+            let mut asks = Styled::new(200, lines, lines > 40)?;
             asks.imports = Some(machine.imports().clone());
             let mut sink = io::sink();
             let mut host = Host::new(Context::default(), None, &mut sink);
@@ -2056,16 +2067,15 @@ pub(crate) mod tests {
                 ended.map_err(Code::from),
                 "{code}: {ran:?}"
             );
-            assert!(peak <= Fux::IMPORT_LIMIT + OVERHEAD, "{code}: {peak}");
+            assert!(peak <= Fux::IMPORT_LIMIT + overhead, "{code}: {peak}");
             // Polling holds what one turn holds: each wait finds the same
             // grant left.
-            if let [first, rest @ ..] = asks.left.as_slice() {
-                assert!(
-                    rest.iter().all(|left| left == first),
-                    "{code}: {:?}",
-                    asks.left
-                );
-            }
+            let left = &asks.left;
+            assert_eq!(left.len(), waits, "{code}");
+            assert!(
+                left.iter().all(|n| Some(n) == left.first()),
+                "{code}: {left:?}"
+            );
         }
         Ok(())
     }

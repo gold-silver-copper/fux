@@ -194,6 +194,9 @@ pub struct Machine<A> {
     imports: Imports,
     /// The one-character ASCII strings made so far, by code.
     chars: Vec<Option<Value<A>>>,
+    /// The names of the codes caught so far: a closed set, so made once a
+    /// run, holding nothing, as a literal does.
+    codes: Vec<(Code, Value<A>)>,
     /// The step taken last: how many frames there were, its code, and its
     /// place in it.
     last: Option<(usize, Option<usize>, usize)>,
@@ -223,6 +226,7 @@ impl<A: AppValue> Machine<A> {
             steps: 0,
             imports: Imports::new(A::IMPORT_LIMIT),
             chars: Vec::new(),
+            codes: Vec::new(),
             last: None,
         }
     }
@@ -356,16 +360,24 @@ impl<A: AppValue> Machine<A> {
             self.stack.truncate(depth);
             self.iters.truncate(iters);
             self.jump(handler);
-            // A message longer than a string may be, or a stack full to
-            // its limit, fails again, for a `try` further out to catch.
+            // A message longer than a string may be, or than the grant has
+            // room for, or a stack full to its limit, fails again, for a
+            // `try` further out to catch.
             let message = match carried.take() {
                 Some(value) => Ok(value),
                 None => self.text(&error.message),
             };
-            let pushed = message
-                .and_then(|value| self.push(value))
-                .and_then(|()| self.text(error.code.name()))
-                .and_then(|code| self.push(code));
+            let made = self.codes.iter().find(|(code, _)| *code == error.code);
+            let code = match made.map(|(_, name)| name.clone()) {
+                Some(name) => name,
+                None => {
+                    let name = Value::str(error.code.name());
+                    self.codes.push((error.code, name.clone()));
+                    name
+                }
+            };
+            let pushed = message.and_then(|value| self.push(value));
+            let pushed = pushed.and_then(|()| self.push(code));
             match pushed {
                 Ok(()) => return Ok(()),
                 Err(again) => error = again,
@@ -857,17 +869,17 @@ impl<A: AppValue> Machine<A> {
 
     /// `text` as a new string, reserved before it is made.
     fn text(&mut self, text: &str) -> Result<Value<A>, Error> {
-        self.joined(std::iter::once(text))
+        self.joined(text.chars().count(), std::iter::once(text))
     }
 
-    /// The string of `parts` joined, reserved before it is made.
+    /// The string of `parts` joined, `chars` characters, reserved before it
+    /// is made.
     fn joined<'p>(
         &mut self,
+        chars: usize,
         parts: impl Iterator<Item = &'p str> + Clone,
     ) -> Result<Value<A>, Error> {
         let bytes = parts.clone().map(str::len).fold(0, usize::saturating_add);
-        let chars = parts.clone().map(|part| part.chars().count());
-        let chars = chars.fold(0, usize::saturating_add);
         let lease = self.build(chars, Text::size(bytes, chars))?;
         let mut text = String::with_capacity(bytes);
         text.extend(parts);
@@ -971,10 +983,13 @@ impl<A: AppValue> Machine<A> {
         }
         if strings {
             let strings = list.items().iter();
-            return self.joined(strings.filter_map(|item| match item {
-                Value::Str(s) => Some::<&str>(s),
-                Value::Int(_) | Value::Bool(_) | Value::List(_) | Value::App(_) => None,
-            }));
+            return self.joined(
+                n,
+                strings.filter_map(|item| match item {
+                    Value::Str(s) => Some::<&str>(s),
+                    Value::Int(_) | Value::Bool(_) | Value::List(_) | Value::App(_) => None,
+                }),
+            );
         }
         let lease = self.build(n, List::<A>::size(n))?;
         let mut items = Vec::with_capacity(n);
@@ -1022,11 +1037,10 @@ impl<A: AppValue> Machine<A> {
                 self.fits(chars)?;
                 let copy = Text::size(s.len(), len);
                 let (text, lease) = self.own(&mut s, len, copy)?;
-                text.grow(&x, lease, |bytes| self.build(len, bytes))?;
-                // Marking an ASCII string writes a mark per 64 of its characters:
-                // charged as a walk over them.
-                let marked = text.append(&x);
-                self.cost(marked);
+                let marked = text.append(&x, lease, |bytes| self.build(len, bytes))?;
+                // What it adds, and the marks an ASCII string gets once, a
+                // mark per 64 of its characters: charged as a walk over them.
+                self.cost(marked.saturating_add(x.chars_len()));
                 Ok(Value::Str(s))
             }
             (Sequence::Str(_), x) => {
@@ -1059,7 +1073,11 @@ impl<A: AppValue> Machine<A> {
             (Sequence::Str(s), Value::Str(x)) => {
                 // One character replaced by x's: the string is made anew.
                 let (head, tail) = (s.part(0, i), s.part(i.saturating_add(1), s.chars_len()));
-                self.joined([head, &**x, tail].into_iter())
+                let chars = s
+                    .chars_len()
+                    .saturating_sub(1)
+                    .saturating_add(x.chars_len());
+                self.joined(chars, [head, &**x, tail].into_iter())
             }
             (Sequence::Str(_), x) => {
                 let app = matches!(x, Value::App(_));

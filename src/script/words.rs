@@ -824,9 +824,11 @@ const MICE: [(&str, Mouse); 8] = [
 ];
 
 /// The options or request an option makes of what it goes on, `next`
-/// giving its values: `changed` and `expect` make a request on a version's pane.
+/// giving its values: `changed` and `expect` make a request on a version's
+/// pane. A copy, and the vectors it grows, are reserved from `imports` first.
 fn modify(
     opt: Opt,
+    imports: &fuxth::Imports,
     next: &mut dyn FnMut() -> Result<Value<Fux>, Failure>,
 ) -> Result<std::rc::Rc<Opts>, Failure> {
     // `changed` and `expect` make a request; every other option goes on
@@ -835,7 +837,18 @@ fn modify(
         true => std::rc::Rc::default(),
         false => modifying(next()?)?,
     };
+    if std::rc::Rc::strong_count(&shared) > 1 {
+        let lease = imports.lease(shared.bytes())?;
+        std::rc::Rc::make_mut(&mut shared).lease = lease;
+    }
     let built = std::rc::Rc::make_mut(&mut shared);
+    room(&built.lease, imports, built.bytes(), &mut built.given)?;
+    if matches!(opt, Opt::Program | Opt::Arg) {
+        room(&built.lease, imports, built.bytes(), &mut built.argv)?;
+    }
+    if matches!(opt, Opt::Text | Opt::Paste | Opt::Bytes | Opt::Key) {
+        room(&built.lease, imports, built.bytes(), &mut built.inputs)?;
+    }
     if !matches!(
         opt,
         Opt::Arg | Opt::Env | Opt::UnsetEnv | Opt::Text | Opt::Key | Opt::Paste | Opt::Bytes
@@ -953,6 +966,26 @@ fn modify(
         }
     }
     Ok(shared)
+}
+
+/// Room in `items`, of options holding `bytes`, for one more: grown by
+/// doubling, `lease` holding first the rest, and the old and grown vectors.
+fn room<T>(
+    lease: &fuxth::ImportLease,
+    imports: &fuxth::Imports,
+    bytes: usize,
+    items: &mut Vec<T>,
+) -> Result<(), Failure> {
+    if items.len() < items.capacity() {
+        return Ok(());
+    }
+    let room = items.len().saturating_mul(2).max(4);
+    lease.reserve(
+        imports,
+        room.saturating_mul(size_of::<T>()).saturating_add(bytes),
+    )?;
+    items.reserve_exact(room.saturating_sub(items.len()));
+    Ok(())
 }
 
 /// The rows or columns a capture reads, from `next`: the first, then the
@@ -1292,6 +1325,7 @@ impl fuxth::Host for Host<'_> {
             ));
         };
         let mut of = self.context.of;
+        let imports = args.imports().clone();
         let mut args = args;
         let mut next = || {
             let value = args.next().ok_or_else(|| {
@@ -1304,7 +1338,7 @@ impl fuxth::Host for Host<'_> {
             Ok(value)
         };
         let from = out.len();
-        let result = self.dispatch(word, &mut next, out)?;
+        let result = self.dispatch(word, &imports, &mut next, out)?;
         for value in out.iter_mut().skip(from) {
             match value {
                 Value::App(Fux::Opts(opts)) => {
@@ -1396,6 +1430,7 @@ impl Host<'_> {
     fn dispatch(
         &mut self,
         word: Word,
+        imports: &fuxth::Imports,
         mut next: &mut dyn FnMut() -> Result<Value<Fux>, Failure>,
         out: &mut Vec<Value<Fux>>,
     ) -> Result<Done<Ask>, Failure> {
@@ -1406,7 +1441,9 @@ impl Host<'_> {
         let later = |ask: Ask| Ok(Done::Later(ask));
         let act = match word {
             Word::Act(act) => act,
-            Word::Opt(opt) => return now(out, Value::App(Fux::Opts(modify(opt, &mut next)?))),
+            Word::Opt(opt) => {
+                return now(out, Value::App(Fux::Opts(modify(opt, imports, &mut next)?)));
+            }
             Word::Screen(screen) => return self.open(screen, &mut next),
             Word::Keys(keys) => return self.configure(keys, &mut next),
         };
@@ -2421,6 +2458,7 @@ mod tests {
 
     #[test]
     fn attach_subjects_and_defaults_retain_their_typed_target_and_run() -> TestResult {
+        let grant = fuxth::Imports::new(usize::MAX);
         use super::*;
         use crate::command::AttachTarget;
         let run = "1-2".parse().map_err(|()| "run")?;
@@ -2448,8 +2486,13 @@ mod tests {
                     .ok_or_else(|| fail(Raise::StackUnderflow, "subject"))
             };
             assert!(matches!(
-                host.dispatch(Word::Act(Act::AttachDefaults), &mut next, &mut Vec::new())
-                    .map_err(|e| e.message)?,
+                host.dispatch(
+                    Word::Act(Act::AttachDefaults),
+                    &grant,
+                    &mut next,
+                    &mut Vec::new()
+                )
+                .map_err(|e| e.message)?,
                 Done::Now
             ));
             let (attached, _) =
@@ -2581,7 +2624,30 @@ mod tests {
     }
 
     #[test]
+    fn a_shared_options_copy_is_refused_before_it_is_made() -> TestResult {
+        let allocator = fux_vt_peak::ThreadPeak;
+        let held = std::rc::Rc::new(Opts {
+            argv: vec![std::iter::repeat_n('x', 1 << 20).collect(); 8],
+            ..Opts::default()
+        });
+        // 8 MiB of options, held twice, and a grant of 1 MiB.
+        let grant = fuxth::Imports::new(1 << 20);
+        let mut values = [Value::App(Fux::Opts(held.clone())), Value::str("x")].into_iter();
+        let base = allocator.live();
+        allocator.reset_peak();
+        let arg = modify(Opt::Arg, &grant, &mut || {
+            values
+                .next()
+                .ok_or_else(|| fail(Raise::StackUnderflow, "test argument"))
+        });
+        assert_eq!(arg.err().map(|f| f.code), Some(fuxth::Code::TooLong));
+        assert!(allocator.peak().saturating_sub(base) < 64 << 10);
+        Ok(())
+    }
+
+    #[test]
     fn accumulating_options_preserve_order() -> TestResult {
+        let grant = fuxth::Imports::new(usize::MAX);
         let mut value = Value::App(Fux::Opts(std::rc::Rc::default()));
         for (opt, values) in [
             (Opt::Program, vec![Value::str("cat")]),
@@ -2597,7 +2663,7 @@ mod tests {
         ] {
             let mut args = std::iter::once(value).chain(values);
             value = Value::App(Fux::Opts(
-                modify(opt, &mut || {
+                modify(opt, &grant, &mut || {
                     args.next()
                         .ok_or_else(|| fail(Raise::StackUnderflow, "test argument"))
                 })
@@ -2815,7 +2881,7 @@ mod tests {
             "conversion must refuse before allocating beyond the grant"
         );
         assert!(
-            json_text(&value, 32 << 10).is_err(),
+            json_text(&value, 31 << 10).is_err(),
             "retained input and output must share admission"
         );
         let list = fuxth::List::new(vec![value]).ok_or("list")?;
@@ -2853,6 +2919,7 @@ mod tests {
 
     #[test]
     fn modifiers_keep_the_target_and_baseline() -> TestResult {
+        let grant = fuxth::Imports::new(usize::MAX);
         let version: crate::command::Version = "%2:0.0.0.0.0:48211-1867a3f9c2b8e7d6"
             .parse()
             .map_err(|()| "version")?;
@@ -2961,7 +3028,7 @@ mod tests {
                     target.clone()
                 };
                 let mut values = std::iter::once(Value::App(initial)).chain(args.clone());
-                let actual = modify(opt, &mut || {
+                let actual = modify(opt, &grant, &mut || {
                     values
                         .next()
                         .ok_or_else(|| fail(Raise::StackUnderflow, "test argument"))
