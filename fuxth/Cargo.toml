@@ -12,5 +12,8 @@ categories = ["compilers", "command-line-interface"]
 
 [dependencies]
 
+[dev-dependencies]
+fux-vt-peak = { path = "../fux-vt/peak" }
+
 [lints]
 workspace = true

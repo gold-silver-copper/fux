@@ -890,18 +890,18 @@ impl<A: AppValue> Machine<A> {
     }
 
     fn concat(&mut self, list: &List<A>) -> Result<Value<A>, Error> {
-        let mut text = String::new();
-        let mut items = Vec::new();
+        let (mut n, mut bytes) = (0usize, 0usize);
         let (mut strings, mut lists) = (false, false);
         for item in list.items() {
             match item {
                 Value::Str(s) => {
                     strings = true;
-                    text.push_str(s);
+                    n = n.saturating_add(s.chars_len());
+                    bytes = bytes.saturating_add(s.len());
                 }
                 Value::List(l) => {
                     lists = true;
-                    items.extend(l.items().iter().cloned());
+                    n = n.saturating_add(l.items().len());
                 }
                 Value::Int(_) | Value::Bool(_) | Value::App(_) => {
                     return Err(self.fail(
@@ -920,12 +920,22 @@ impl<A: AppValue> Machine<A> {
                 ));
             }
         }
+        self.build(n)?;
+        let mut text = String::with_capacity(bytes);
+        let mut items = Vec::with_capacity(if lists { n } else { 0 });
+        for item in list.items() {
+            match item {
+                Value::Str(s) => text.push_str(s),
+                Value::List(l) => items.extend(l.items().iter().cloned()),
+                Value::Int(_) | Value::Bool(_) | Value::App(_) => {}
+            }
+        }
         if strings {
-            let text = Text::new(text);
-            self.build(text.chars_len())?;
-            Ok(Value::Str(crate::Shared::new(text)))
+            Ok(Value::str(text))
         } else {
-            self.list(items)
+            List::new(items)
+                .map(|list| Value::List(crate::Shared::new(list)))
+                .ok_or_else(|| self.nested())
         }
     }
 

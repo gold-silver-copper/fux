@@ -2,6 +2,9 @@
 //! end, through every suspension.
 use crate::*;
 
+#[global_allocator]
+static ALLOCATOR: fux_vt_peak::ThreadPeak = fux_vt_peak::ThreadPeak;
+
 /// A host with one value of its own, a ticket, and four words: `ticket`
 /// (-- t), which hands one out at once; `ask` (n -- n*10), which suspends
 /// for the host to answer (with a failure, `negative`, for n below 0);
@@ -806,9 +809,79 @@ fn the_core_at_its_edges() -> Result<(), Error> {
 }
 
 #[test]
+fn concat_refuses_before_allocating_the_joined_value() -> Result<(), Error> {
+    for source in [
+        "str x 1000 copies let s list 0 1001 range each drop s end end",
+        "0 1000000 range let l list l l l l l l l l l l end",
+        "str x 1000 copies let s 0 begin s string drop 1 add dup 15900 eq until drop list 0 200 range each drop s end end",
+    ] {
+        let mut machine = Machine::new(
+            compile(&format!("{source} 0 ask drop concat"))?,
+            Limits::default(),
+        );
+        let mut host = Toy::default();
+        assert_eq!(machine.run(&mut host, u64::MAX)?, Outcome::Suspended(0));
+        machine.import(Value::Int(0))?;
+        let before = ALLOCATOR.live();
+        ALLOCATOR.reset_peak();
+        let result = machine.run(&mut host, u64::MAX);
+        let allocated = ALLOCATOR.peak().saturating_sub(before);
+        assert_eq!(result.map_err(|e| e.code), Err(Code::TooLong));
+        assert!(
+            allocated < 4096,
+            "concat allocated {allocated} bytes: {source}"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn concat_checks_kinds_before_length_in_input_order() -> Result<(), Error> {
+    for (parts, message) in [
+        ("s list end 0", "not both"),
+        ("list end s 0", "not both"),
+        ("s 0 list end", "this one holds an integer"),
+    ] {
+        let source =
+            format!("str x 1000 copies let s list 0 1001 range each drop s end {parts} end concat");
+        let mut machine = Machine::new(compile(&source)?, Limits::default());
+        let error = machine.run(&mut Toy::default(), u64::MAX).err();
+        assert!(error.is_some_and(|e| e.code == Code::Type && e.message.ends_with(message)));
+    }
+    Ok(())
+}
+
+#[test]
+fn concat_charges_the_length_once() -> Result<(), Error> {
+    for (parts, expected, n) in [
+        ("list end", "list end", 0),
+        ("list str '' end", "str ''", 0),
+        ("list str ab str cd end", "str abcd", 4),
+        (
+            "list str é 64 copies str 𝄞 end",
+            "str é 64 copies str 𝄞 push",
+            65,
+        ),
+        ("list 0 32 range 32 64 range end", "0 64 range", 64),
+    ] {
+        let mut machine = Machine::new(
+            compile(&format!("{parts} 0 ask drop concat 0 ask"))?,
+            Limits::default(),
+        );
+        let mut host = Toy::default();
+        assert_eq!(machine.run(&mut host, u64::MAX)?, Outcome::Suspended(0));
+        machine.import(Value::Int(0))?;
+        let before = machine.steps();
+        assert_eq!(machine.run(&mut host, u64::MAX)?, Outcome::Suspended(0));
+        assert_eq!(machine.steps().saturating_sub(before), 4 + n / 64);
+        assert_eq!(machine.stack(), run(expected)?);
+    }
+    Ok(())
+}
+
+#[test]
 fn constructed_values_obey_length_depth_and_work_limits() -> Result<(), Error> {
     for source in [
-        "str x 1000 copies let s list 0 1001 range each drop s end end concat",
         "list end let l 0 begin list l end let l 1 add dup 70 eq until",
         "list end let l 0 begin list end l push let l 1 add dup 70 eq until",
         "list 0 end let l 0 begin list 0 end 0 l put let l 1 add dup 70 eq until",
