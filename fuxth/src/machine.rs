@@ -323,6 +323,7 @@ impl<A: AppValue> Machine<A> {
 
     /// An application word's failure, said at the word, or the word it
     /// names.
+    #[cold]
     fn failed(&self, failure: Failure) -> Error {
         let mut error = self.fail(failure.code, failure.message);
         error.word = failure.word.or(error.word);
@@ -434,6 +435,7 @@ impl<A: AppValue> Machine<A> {
         self.program.token(code, step.checked_sub(1)?).cloned()
     }
 
+    #[cold]
     fn fail(&self, code: Code, message: impl Into<String>) -> Error {
         Error::new(code, message, self.at().as_ref())
     }
@@ -642,7 +644,10 @@ impl<A: AppValue> Machine<A> {
     }
 
     /// Application word `id` run on the stack's top values: the request
-    /// to wait for, if it suspends.
+    /// to wait for, if it suspends. Kept out of `run`'s loop, with the
+    /// failures below: inlined there, the host's code made every step of a
+    /// program that calls none slower (fux's pure loop, +1.2% instructions).
+    #[inline(never)]
     fn app<H: Host<Value = A>>(
         &mut self,
         id: usize,
@@ -908,6 +913,7 @@ impl<A: AppValue> Machine<A> {
         }
     }
 
+    #[cold]
     fn nested(&self) -> Error {
         self.fail(Code::TooLong, format!(
             "lists nest at most {} deep, and hold at most {} in all, through the lists and strings in them",
