@@ -286,11 +286,8 @@ impl Screen {
             self.grid_mut().cursor.pending_wrap = false;
             self.with_grid(|g, _, v| {
                 let wrapped = g.live_wrapped(y);
-                if whole {
-                    g.fill(y, span, placeholder, 0, v);
-                } else {
-                    g.erase(y, span.0, span.1, 0, v);
-                }
+                // NUL fills empty cells, clearing links and keeping the used mark.
+                g.fill(y, span, if whole { placeholder } else { '\0' }, 0, v);
                 g.wrap(y, wrapped, v);
             });
             bottom = self.grid().live_row(y).map_or(top, |r| r.id());

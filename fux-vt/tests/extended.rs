@@ -1095,18 +1095,24 @@ fn a_sixel_picture_scrolled_inside_left_and_right_margins_is_where_its_cells_are
 /// the cursor. Below the region, bands stack at the screen's bottom.
 #[test]
 fn margin_placement_preserves_refusal_and_unmoved_bands() -> Result {
-    for (at, col, rows, trailing, refused, shown, kept) in [
-        (4_u16, 2_u16, 5_usize, 0, 1, 0, vec![3]),
-        (4, 2, 5, 1, 1, 0, vec![]),
-        (1, 2, 5, 0, 1, 0, vec![0, 3]),
-        (4, 1, 2, 0, 1, 0, vec![3]),
-        (4, 1, 1, 1, 0, 1, vec![3]),
-        (6, 2, 3, 0, 0, 0, vec![5]),
+    for (at, col, rows, trailing, refused, shown, kept, blank) in [
+        (4_u16, 2_u16, 5_usize, 0, 1, 0, vec![3], vec![1, 2]),
+        (4, 2, 5, 1, 1, 0, vec![], vec![1, 2, 3]),
+        (1, 2, 5, 0, 1, 0, vec![0, 3], vec![1, 2]),
+        (4, 1, 2, 0, 1, 0, vec![3], vec![]),
+        (4, 1, 1, 1, 0, 1, vec![3], vec![]),
+        (6, 2, 3, 0, 0, 0, vec![5], vec![]),
     ] {
-        let mut p = Parser::with_options(Size::new(6, 6)?, 1024, PICTURES)?;
+        let mut p =
+            Parser::with_options(Size::new(6, 6)?, 1024, PICTURES.with(Feature::Hyperlinks))?;
         p.set_host_graphics(fux_vt::Graphics::Sixel(
             fux_vt::CellSize::new(2, 6).ok_or("cell size")?,
         ));
+        p.process(b"\x1b]8;;https://example.test\x1b\\")?;
+        for y in 1..=6 {
+            p.process(format!("\x1b[{y};{col}Ha").as_bytes())?;
+        }
+        p.process(b"\x1b]8;;\x1b\\")?;
         p.process(format!("\x1b[?69h\x1b[2;5s\x1b[2;4r\x1b[{at};{col}H").as_bytes())?;
         let bands: String = std::iter::repeat_n("~-", rows.saturating_sub(1)).collect();
         let tail: String = std::iter::repeat_n('-', trailing).collect();
@@ -1118,17 +1124,31 @@ fn margin_placement_preserves_refusal_and_unmoved_bands() -> Result {
             "{at}/{col}/{rows}/{trailing}"
         );
         assert_eq!(p.screen().pictures().count(), shown);
-        let placeholders: Vec<_> = (0..6)
-            .filter(|y| {
-                p.screen()
-                    .cell(*y, col.saturating_sub(1))
-                    .is_some_and(|c| c.contents() == fux_vt::PLACEHOLDER)
-            })
-            .collect();
-        assert_eq!(placeholders, kept, "{at}/{col}/{rows}/{trailing}");
-        for y in 1..=3 {
+        for y in 0..6 {
+            let expected = if kept.contains(&y) {
+                fux_vt::PLACEHOLDER
+            } else if blank.contains(&y) {
+                ""
+            } else {
+                "a"
+            };
             let c = cell(&p, y, col.saturating_sub(1))?;
-            assert!(!c.has_contents() || c.contents() == fux_vt::PLACEHOLDER);
+            assert_eq!(
+                c.contents(),
+                expected,
+                "{at}/{col}/{rows}/{trailing}, row {y}"
+            );
+            let row = p.screen().window().row(y).ok_or("row")?;
+            assert_eq!(
+                row.has_links(),
+                expected == "a",
+                "no retained links on a filled band"
+            );
+            assert_eq!(
+                row.link(usize::from(col.saturating_sub(1))).is_some(),
+                expected == "a",
+                "only untouched text keeps its link: {at}/{col}/{rows}/{trailing}, row {y}"
+            );
         }
         assert_eq!(
             p.screen().cursor_position(),
