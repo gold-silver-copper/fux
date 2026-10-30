@@ -418,13 +418,20 @@ pub(crate) fn check<A>(
 
 /// What the checker knows of a program's definitions so far: what each
 /// does, and the first mistake among them. Reached library words are
-/// checked before user words, and successful summaries are shared by clones.
+/// checked by dependency component before user words; successful components
+/// are shared by clones and give the same summaries with a cold or warm cache.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct Known {
     summaries: Vec<Option<Rc<Summary>>>,
     checked: BTreeSet<usize>,
     first: Option<Error>,
-    library: Rc<RefCell<BTreeMap<usize, Option<Rc<Summary>>>>>,
+    library: Rc<RefCell<Library>>,
+}
+
+#[derive(Debug, Default)]
+struct Library {
+    components: Option<Rc<Vec<Vec<usize>>>>,
+    summaries: BTreeMap<usize, Option<Rc<Summary>>>,
 }
 
 impl Known {
@@ -433,7 +440,7 @@ impl Known {
             .get(id)
             .cloned()
             .flatten()
-            .or_else(|| self.library.borrow().get(&id).cloned().flatten())
+            .or_else(|| self.library.borrow().summaries.get(&id).cloned().flatten())
     }
 
     /// Appending library code may give different clones different words
@@ -452,7 +459,7 @@ pub(crate) fn definitions<A>(program: &Program<A>, known: &mut Known, library: u
     let cached = known.library.borrow();
     while let Some(id) = pending.pop_first() {
         if known.checked.contains(&id)
-            || (id < library && cached.contains_key(&id))
+            || (id < library && cached.summaries.contains_key(&id))
             || !needed.insert(id)
         {
             continue;
@@ -466,20 +473,100 @@ pub(crate) fn definitions<A>(program: &Program<A>, known: &mut Known, library: u
     }
     known.summaries.resize(program.words.len(), None);
     drop(cached);
-    let libraries = needed.range(..library);
-    let error = summarise_all(program, known, libraries.clone().copied());
-    if error.is_none() && known.first.is_none() {
-        // A successful closure has no hidden diagnostic to replay. Never
-        // let a failed library check poison an unrelated later program.
-        let mut cached = known.library.borrow_mut();
-        for id in libraries {
-            cached.insert(*id, known.summaries.get(*id).cloned().flatten());
+    if needed.range(..library).next().is_some() {
+        let groups = {
+            let mut cached = known.library.borrow_mut();
+            Rc::clone(
+                cached
+                    .components
+                    .get_or_insert_with(|| Rc::new(library_components(program, library))),
+            )
+        };
+        for ids in groups
+            .iter()
+            .filter(|ids| ids.iter().any(|id| needed.contains(id)))
+        {
+            // Every member starts unknown, against completed callees only.
+            for id in ids {
+                if let Some(slot) = known.summaries.get_mut(*id) {
+                    *slot = None;
+                }
+            }
+            let error = summarise_all(program, known, ids.iter().copied());
+            if error.is_none() && known.first.is_none() {
+                // Publish a whole component only when no dependency has
+                // an earlier diagnostic that a cache hit would hide.
+                let mut cached = known.library.borrow_mut();
+                for id in ids {
+                    cached
+                        .summaries
+                        .insert(*id, known.summaries.get(*id).cloned().flatten());
+                }
+            }
+            known.first = earliest(known.first.take(), error);
+            known.checked.extend(ids);
         }
     }
-    known.first = earliest(known.first.take(), error);
     let error = summarise_all(program, known, needed.range(library..).copied());
     known.first = earliest(known.first.take(), error);
     known.checked.extend(needed);
+}
+
+/// Kosaraju's two walks, without recursion on Rust's stack. Finishing the
+/// transposed graph first puts callee components before callers. Both
+/// walks depend only on the library; each component keeps definition order.
+fn library_components<A>(program: &Program<A>, library: usize) -> Vec<Vec<usize>> {
+    let mut reverse = vec![Vec::new(); library];
+    for (id, code) in program.words.iter().take(library).enumerate() {
+        for called in calls(code) {
+            if let Some(callers) = reverse.get_mut(called) {
+                callers.push(id);
+            }
+        }
+    }
+    let mut seen = BTreeSet::new();
+    let mut order = Vec::new();
+    let mut pending = Vec::new();
+    for root in 0..library {
+        pending.push((root, false));
+        while let Some((id, exit)) = pending.pop() {
+            if exit {
+                order.push(id);
+            } else if seen.insert(id) {
+                pending.push((id, true));
+                pending.extend(
+                    reverse
+                        .get(id)
+                        .into_iter()
+                        .flatten()
+                        .rev()
+                        .map(|id| (*id, false)),
+                );
+            }
+        }
+    }
+    seen.clear();
+    let mut groups = Vec::new();
+    let mut pending = Vec::new();
+    for root in order.into_iter().rev() {
+        if seen.contains(&root) {
+            continue;
+        }
+        let mut group = Vec::new();
+        pending.push(root);
+        while let Some(id) = pending.pop() {
+            if !seen.insert(id) {
+                continue;
+            }
+            group.push(id);
+            if let Some(code) = program.words.get(id) {
+                pending.extend(calls(code).filter(|id| *id < library));
+            }
+        }
+        group.sort_unstable();
+        groups.push(group);
+    }
+    groups
 }
 
 fn summarise_all<A>(
@@ -1103,6 +1190,110 @@ fn builtin_step(words: &Vocabulary, builtin: Builtin, state: &mut State) -> Resu
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn library_components_keep_cycles_together_and_callees_first() -> Result<(), Error> {
+        let mut compiler = crate::Compiler::<()>::new(Vocabulary::default());
+        compiler.library(
+            "graph",
+            concat!(
+                "# -- : start\ndefine start left end\n",
+                "# -- : left\ndefine left right end\n",
+                "# -- : right\ndefine right left leaf end\n",
+                "# -- n : leaf\ndefine leaf 1 2 add end\n",
+                "# -- n : unused\ndefine unused 9 end",
+            ),
+        )?;
+        let program = compiler.finish()?;
+        let groups = library_components(&program, program.words.len());
+        let mut partition = groups.clone();
+        partition.sort();
+        assert_eq!(partition, [vec![0], vec![1, 2], vec![3], vec![4]]);
+        let at = |id| groups.iter().position(|ids| ids.contains(&id));
+        assert!(at(3) < at(1) && at(1) < at(0));
+        Ok(())
+    }
+
+    #[test]
+    fn library_preflight_is_the_same_with_fresh_and_warm_caches() -> Result<(), Error> {
+        let mut chain = String::new();
+        for i in 0usize..10 {
+            let body = if i == 9 {
+                "1".to_owned()
+            } else {
+                format!("a{}", i.saturating_add(1))
+            };
+            chain.push_str(&format!("# -- n : forward chain\ndefine a{i} {body} end\n"));
+        }
+        chain.push_str("# x y -- : consume both\ndefine pair drop drop end");
+        for (source, prime, target, keep_call) in [
+            (
+                chain.as_str(),
+                "0 0 pair a0 drop",
+                "str EFFECT print list pair end",
+                None,
+            ),
+            (
+                "# x -- : consume one\ndefine consume produce drop drop end\n\
+              # -- n : produce one\ndefine produce 1 2 add end",
+                "produce drop",
+                "str EFFECT print list consume end",
+                None,
+            ),
+            (
+                "# x -- n : a forward call\ndefine l m add end\n\
+              # -- n : one\ndefine m 1 end",
+                "m drop",
+                "str x print l",
+                Some("m"),
+            ),
+        ] {
+            let mut decisions = Vec::new();
+            for warm in [false, true] {
+                let mut ready = crate::Compiler::<()>::new(Vocabulary::default());
+                ready.library("library", source)?;
+                if let Some(word) = keep_call {
+                    // Keep the one-step m as a call, so priming it uses the cache.
+                    ready.inputs(word, "")?;
+                }
+                if warm {
+                    let mut compiler = ready.clone();
+                    compiler.add(&crate::token::source("prime", prime)?)?;
+                    compiler.finish()?;
+                }
+                let mut compiler = ready.clone();
+                compiler.add(&crate::token::source("caller", target)?)?;
+                decisions.push(compiler.finish().map(drop).map_err(|e| e.code));
+            }
+            assert_eq!(
+                decisions,
+                [Err(Code::StackUnderflow), Err(Code::StackUnderflow)],
+                "{target}"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn a_later_library_cannot_demote_user_definitions() -> Result<(), Error> {
+        let mut compiler = crate::Compiler::<()>::new(Vocabulary::default());
+        compiler.add(&crate::token::source(
+            "user",
+            "define bad list drop end end",
+        )?)?;
+        assert_eq!(
+            compiler
+                .library("later", "# -- n : one\ndefine one 1 end")
+                .map(drop)
+                .map_err(|e| e.code),
+            Err(Code::Contract)
+        );
+        assert_eq!(
+            compiler.finish().map(drop).map_err(|e| e.code),
+            Err(Code::StackUnderflow)
+        );
+        Ok(())
+    }
 
     #[test]
     fn library_caches_isolate_failures_and_changed_definitions() -> Result<(), Error> {
