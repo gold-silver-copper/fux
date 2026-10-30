@@ -558,7 +558,7 @@ class Fux(Driver):
 
     def events_cursor(self):
         """Save before launch, so even exits before subscription are replayed."""
-        return json.loads(self.fux("ls", "json").stdout)["events"]
+        return json.loads(self.fux("ls", "json").stdout)["cursor"]
 
     def wait_first_exit(self, panes, cursor, timeout=15):
         """First matching journal exit after a pre-launch cursor; refuse loss."""

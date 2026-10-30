@@ -97,6 +97,61 @@ define newest str newest end
 # -- record : one facts observation of all workspaces, tabs, panes and clients
 define ls all info end
 
+# record -- string : a held snapshot hierarchy; facts include process outcomes
+define listing
+  let s s str scope get kind let sk
+  s str projection get str facts eq let facts
+  s str tabs get let tabs s str panes get let panes
+  sk str all eq sk str client eq or let clients
+  clients sk str workspace eq or let whole
+  sk str pane eq let one
+  whole if str '    ' else one if str '' else str '  ' then then let indent
+  0 let ti 0 let pi
+  list
+    s str workspaces get each let w w str id get let wid
+      whole if w chooser-row last then
+      begin
+        ti tabs len lt if
+          tabs ti at let t
+          t str workspace get wid eq if
+            t str id get let tid
+            one not if list whole if str '  ' then t chooser-row last end glue then
+            begin
+              pi panes len lt if
+                panes pi at let p
+                p str tab get tid eq if
+                  list indent p chooser-row last str ' '
+                    p str cols get string str x p str rows get string
+                    p str pid get kind str null ne if str ' pid ' p str pid get string else
+                      facts if p str state get let st
+                        st str exited get kind str null ne if str ' exited ' st str exited get string else
+                        st str signal get kind str null ne if str ' signal ' st str signal get string else
+                        str ' ended, its status lost' then then
+                      then
+                    then
+                  end glue
+                  pi 1 add let pi false
+                else true then
+              else true then
+            until
+            ti 1 add let ti false
+          else true then
+        else true then
+      until
+    end
+    clients if
+      s str clients get each let c
+        list str 'client ' c str id get string str ' ' c str cols get string str x c str rows get string str ' '
+          list list str workspace str tab str pane end each
+            c swap get dup kind str null eq if drop str - then string
+          end end str ' ' join
+        end glue
+      end
+      list str 'cursor ' s str cursor get end glue
+    then
+  end 10 char join
+end
+
 # text -- source : a string literal, never executable data
 define dump-text let text list str 'str ' text quote str ' ' end glue end
 # handle -- source : a local replay binding, independent of the new server's ids

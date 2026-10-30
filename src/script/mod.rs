@@ -21,7 +21,6 @@ use crate::command::{
     WsRef,
 };
 use crate::id::{ClientId, PaneId, TabId, WsId};
-use crate::json::Json;
 use crate::layout::Axis;
 use crate::protocol::{Asked, Body, Context, End, Reply, Response};
 use crate::socket::{Choice, SocketPath};
@@ -69,7 +68,7 @@ pub enum Fux {
     Opts(Rc<Opts>),
     /// A width or height: cells, or a share of the tab.
     Extent(Extent),
-    /// What the server said: a capture, a listing, a wait's outcome.
+    /// What the server said: a capture or a wait's outcome.
     Answer(fuxth::Shared<Answer>, Option<Run>),
 }
 
@@ -157,7 +156,6 @@ impl AppValue for Fux {
                 Answer::Pane(_) | Answer::Panes(_) => {
                     u64::try_from(self.text_bytes()).unwrap_or(u64::MAX).max(1)
                 }
-                Answer::Status(listing) => listing.weight(),
             },
             Fux::All
             | Fux::Null
@@ -196,7 +194,7 @@ impl AppValue for Fux {
         if let Fux::Answer(answer, _) = self {
             let scratch = match &**answer {
                 Answer::Capture(c) => c.text_scratch(),
-                Answer::Pane(_) | Answer::Panes(_) | Answer::Status(_) => 0,
+                Answer::Pane(_) | Answer::Panes(_) => 0,
             };
             answer.retained_bytes().saturating_add(scratch)
         } else if let Fux::Opts(opts) = self {
@@ -209,7 +207,7 @@ impl AppValue for Fux {
     fn write_text(&self, out: &mut dyn std::fmt::Write) -> Result<(), fuxth::Failure> {
         match self {
             Fux::Null => out.write_str("null"),
-            Fux::Record(r) => r.write_text(out),
+            Fux::Record(r) => r.write(out),
             Fux::Rendered(text) => out.write_str(text),
             Fux::Pane(p, _) => write!(out, "{p}"),
             Fux::Tab(t, _) => write!(out, "{t}"),
@@ -379,15 +377,12 @@ pub enum Answer {
     /// answered, which is no one pane.
     Panes(Vec<PaneAnswer>),
     Capture(Box<crate::capture::Captured>),
-    /// `status`: the server that answers, and its version.
-    Status(Json),
 }
 
 impl Answer {
     fn retained_bytes(&self) -> usize {
         fuxth::Shared::<Self>::bytes(match self {
             Self::Capture(c) => crate::wire::retained(c),
-            Self::Status(s) => crate::wire::retained(s),
             Self::Pane(p) => crate::wire::retained(p),
             Self::Panes(p) => crate::wire::retained(p),
         })
@@ -402,7 +397,6 @@ impl Answer {
                 crate::capture::Of::Pane { .. } => ("capture", "a capture"),
                 crate::capture::Of::Client(_) => ("client-capture", "a client's capture"),
             },
-            Answer::Status(_) => ("listing", "a status"),
         }
     }
 
@@ -419,7 +413,6 @@ impl Answer {
                 Ok(())
             }
             Answer::Capture(captured) => captured.write_text(out),
-            Answer::Status(status) => write_status(status, out),
         }
     }
 
@@ -437,17 +430,16 @@ impl Answer {
                 out.write_char(']')
             }
             Answer::Capture(captured) => captured.write_json(out),
-            Answer::Status(json) => json.write(out),
         }
     }
 
     /// It says nothing printed: a capture of no lines, no pane's answers.
-    /// A capture of one blank line says that line; status always names the server.
+    /// A capture of one blank line says that line.
     fn is_empty(&self) -> bool {
         match self {
             Answer::Capture(captured) => captured.lines.is_empty(),
             Answer::Panes(answers) => answers.is_empty(),
-            Answer::Pane(_) | Answer::Status(_) => false,
+            Answer::Pane(_) => false,
         }
     }
 
@@ -461,50 +453,13 @@ impl Answer {
                 crate::capture::Of::Pane { version, .. } => Some(version),
                 crate::capture::Of::Client(_) => None,
             },
-            Answer::Panes(_) | Answer::Status(_) => None,
+            Answer::Panes(_) => None,
         }
-    }
-
-    /// An answer, as a value on the stack.
-    fn value(self) -> Value<Fux> {
-        self.in_run(None)
     }
 
     fn in_run(self, run: Option<Run>) -> Value<Fux> {
         Value::App(Fux::Answer(fuxth::Shared::new(self), run))
     }
-}
-
-/// `status`'s text: the server's version and socket, and if it speaks
-/// another protocol, how to stop it.
-fn write_status(status: &Json, out: &mut dyn std::fmt::Write) -> std::fmt::Result {
-    struct Field<'a>(Option<&'a Json>);
-    impl std::fmt::Display for Field<'_> {
-        fn fmt(&self, out: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-            match self.0 {
-                Some(Json::String(text)) => out.write_str(text),
-                Some(json) => json.write(out),
-                None => Ok(()),
-            }
-        }
-    }
-    let field = |key| Field(status.get(key));
-    write!(
-        out,
-        "fux {} at {}",
-        field("server_release"),
-        field("socket")
-    )?;
-    if status.get("compatible") == Some(&Json::Bool(false)) {
-        write!(
-            out,
-            " speaks protocol {}, not this fux's ({}, fux {}): `fux force-kill-server` stops it",
-            field("server_protocol"),
-            field("protocol"),
-            field("release")
-        )?;
-    }
-    Ok(())
 }
 
 /// What an application word asks while the program waits.
@@ -1269,22 +1224,6 @@ pub fn run_capped(
                     context,
                 };
                 match asks.ask(&asked) {
-                    Ok(reply)
-                        if !matches!(reply.response, Response::Failed { .. })
-                            && matches!(asked.request, Request::NextEvents { .. })
-                                != matches!(
-                                    reply.response,
-                                    Response::Returned(Body::Events(_))
-                                ) =>
-                    {
-                        pushed(
-                            machine,
-                            Err(Failed::new(
-                                Code::of(fuxth::Code::Contract),
-                                "reply does not match the event read continuation",
-                            )),
-                        )?;
-                    }
                     Ok(reply) => match reply.end() {
                         End::Failed { code, message } => raised(machine, (code, message), reply)?,
                         End::Done => pushed(machine, answered(reply))?,
@@ -1423,24 +1362,9 @@ pub fn answered(reply: Reply) -> Result<Vec<Value<Fux>>, Failed> {
         Body::Handles(ids) => handles(ids)?,
         Body::Capture(captured) => Answer::Capture(captured).in_run(run),
         Body::Snapshot(snapshot) => {
-            if run != Some(snapshot.run) {
-                return Err(Failed::new(
-                    Code::of(fuxth::Code::Contract),
-                    "snapshot run differs from reply",
-                ));
-            }
-            snapshot
-                .validate()
-                .map_err(|e| Failed::new(Code::of(fuxth::Code::Contract), e.to_string()))?;
             record::snapshot(*snapshot).map_err(|e| Failed::new(Code::of(e.code), e.message))?
         }
         Body::Events(batch) => {
-            if run != Some(batch.next.run) {
-                return Err(Failed::new(
-                    Code::of(fuxth::Code::Contract),
-                    "event batch run differs from reply",
-                ));
-            }
             record::events(*batch).map_err(|e| Failed::new(Code::of(e.code), e.message))?
         }
         Body::Field(json) => {
@@ -1547,7 +1471,9 @@ fn local(
             let probe = client::probe(&socket).map_err(client_failed)?;
             let status =
                 crate::status(&socket, &probe).map_err(|why| Failed::new(Code::NoServer, why))?;
-            return Ok(vec![Answer::Status(status).value()]);
+            return Ok(vec![
+                record::from_json(&status).map_err(|e| Failed::new(Code::of(e.code), e.message))?,
+            ]);
         }
     }
     Ok(Vec::new())
@@ -1819,6 +1745,7 @@ fn read_file(path: &std::path::Path) -> Result<String, Failed> {
 
 #[cfg(test)]
 pub(crate) mod tests {
+    use crate::json::Json;
     use crate::session::testing::TestResult;
     impl std::error::Error for super::Failed {}
 
@@ -1911,21 +1838,6 @@ pub(crate) mod tests {
             }
         }
         evaluate(code, None, &mut Once(Some(reply)), out)
-    }
-
-    #[test]
-    fn event_reads_reject_other_reply_families_before_resuming() -> TestResult {
-        let mut out = Vec::new();
-        let failure = held_reply(
-            "all str '' 0 next-events drop str EFFECT print",
-            crate::protocol::Body::Field(crate::json::Json::object(Vec::new())).into(),
-            &mut out,
-        )
-        .err()
-        .ok_or("resumed an event read with a field reply")?;
-        assert_eq!(failure.code, crate::code::Code::of(fuxth::Code::Contract));
-        assert!(out.is_empty());
-        Ok(())
     }
 
     #[test]
@@ -2332,14 +2244,14 @@ pub(crate) mod tests {
                     .0
                     .pop_front()
                     .ok_or_else(|| Failed::new(Code::Usage, "run"))?;
-                let events = format!("0:{run}")
+                let cursor = format!("0:{run}")
                     .parse()
                     .map_err(|()| Failed::new(Code::Usage, "cursor"))?;
                 Ok(Reply {
                     run: Some(run),
                     ..Body::Snapshot(Box::new(crate::inspect::Snapshot {
                         run,
-                        events,
+                        cursor,
                         scope: crate::inspect::Scope::All,
                         projection: crate::inspect::Projection::Facts,
                         workspaces: Vec::new(),

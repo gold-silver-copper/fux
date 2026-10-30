@@ -107,7 +107,7 @@ A fux command line is a program: words run left to right, each taking its
 values from a stack and leaving its own.
 
 ```sh
-fux ls                                            # what there is
+fux ls listing                                    # what there is
 A=$(fux agent-opts 80 24 size str htop program run)     # start htop: %3:0.0.0.0.0:RUN, its version
 fux str "$A" changed wait                         # until it differs: %3:0.412.0.0.0:RUN screen
 fux %3 capture                                    # its screen
@@ -118,7 +118,7 @@ fux %3 str q text send-keys                       # press q: its version from be
   workspace; any other bare word is a word to run. `str WORD` pushes WORD as
   text, whatever it looks like: `str 'two words'`.
 - What is left at the end is printed, a value a line: a pane as `%3`, a tab
-  `@2`, a workspace `+1`, a client `c1`, a capture or listing as its text.
+  `@2`, a workspace `+1`, a client `c1`, a capture as its text, a record as JSON.
   `all str topology snapshot` holds one immutable hierarchy observation;
   `str panes get` on it reads locally and returns a list of records with typed IDs.
   `json` turns a value into JSON: `fux ls json`, `fux str %3 pane info json`.
