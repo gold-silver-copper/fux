@@ -18,7 +18,7 @@ use crate::error::{Code, Error, Floor, Wants, underflow};
 use crate::machine::Builtin;
 use crate::value::Kind;
 use crate::vocabulary::{Vocabulary, through};
-use std::cell::RefCell;
+use std::cell::{Ref, RefCell};
 use std::collections::{BTreeMap, BTreeSet};
 use std::mem::take;
 use std::rc::Rc;
@@ -435,14 +435,6 @@ struct Library {
 }
 
 impl Known {
-    fn summary(&self, id: usize) -> Option<Rc<Summary>> {
-        self.summaries
-            .get(id)
-            .cloned()
-            .flatten()
-            .or_else(|| self.library.borrow().summaries.get(&id).cloned().flatten())
-    }
-
     /// Appending library code may give different clones different words
     /// at the same index. Their shared caches must separate first.
     pub(crate) fn separate_library(&mut self) {
@@ -453,10 +445,14 @@ impl Known {
 /// Checks every user definition and the library words reached from them
 /// or the top level. A reserved summary slot need not have been checked.
 pub(crate) fn definitions<A>(program: &Program<A>, known: &mut Known, library: usize) {
-    let mut pending: BTreeSet<_> = (library..program.words.len()).collect();
-    pending.extend(calls(&program.main));
-    let mut needed = BTreeSet::new();
     let cached = known.library.borrow();
+    let mut pending: BTreeSet<_> = (library..program.words.len())
+        .chain(calls(&program.main))
+        .filter(|id| {
+            !known.checked.contains(id) && !(*id < library && cached.summaries.contains_key(id))
+        })
+        .collect();
+    let mut needed = BTreeSet::new();
     while let Some(id) = pending.pop_first() {
         if known.checked.contains(&id)
             || (id < library && cached.summaries.contains_key(&id))
@@ -625,6 +621,7 @@ fn summarise<A>(program: &Program<A>, known: &mut Known, id: usize, code: &Steps
     for round in 0..=rounds {
         let unit = Unit::new(program, code, State::start(false), known, Some(id));
         let new = unit.run();
+        drop(unit);
         let current = known.summaries.get(id).cloned().flatten();
         let next = match (&current, new) {
             (_, None) => current.clone(),
@@ -686,6 +683,7 @@ struct Unit<'a, A> {
     start: State,
     /// What each definition does, worked out so far.
     known: &'a Known,
+    library: Ref<'a, Library>,
     /// The definition it is, if one: a call to itself uses its summary.
     /// None is the top level, whose `let` names it follows.
     own: Option<usize>,
@@ -695,6 +693,14 @@ struct Unit<'a, A> {
 }
 
 impl<'a, A> Unit<'a, A> {
+    fn summary(&self, id: usize) -> Option<&Summary> {
+        self.known
+            .summaries
+            .get(id)
+            .and_then(Option::as_deref)
+            .or_else(|| self.library.summaries.get(&id).and_then(Option::as_deref))
+    }
+
     fn words(&self) -> &'a Vocabulary {
         &self.program.vocabulary
     }
@@ -723,6 +729,7 @@ impl<'a, A> Unit<'a, A> {
             code,
             start,
             known,
+            library: known.library.borrow(),
             own,
             starts,
         }
@@ -981,7 +988,7 @@ impl<'a, A> Unit<'a, A> {
                     state.used = state.used.max(arguments.used);
                     check_inputs(self.words(), inputs, &taken)?;
                 }
-                let Some(summary) = self.known.summary(*id) else {
+                let Some(summary) = self.summary(*id) else {
                     // Nothing known of it yet: a call to itself, the first
                     // time through.
                     return Ok(Flow::Diverge);
