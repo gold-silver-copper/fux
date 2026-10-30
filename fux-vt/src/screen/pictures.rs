@@ -163,15 +163,10 @@ impl Screen {
         self.graphics = graphics;
     }
 
-    /// Places `picture` at the cursor, in the host's cells (none without
-    /// a cell size, which nothing can stand in for): its cells take the placeholder, a
-    /// row at a time down from the cursor's (scrolling at the bottom, as a
-    /// terminal scrolls a sixel picture), clipped at the right edge; the
-    /// cursor ends on the row its last band ends in, in its first column. It
-    /// covers what it lies on of the pictures of this screen, and those
-    /// this screen no longer shows go (`cover`). Says whether it was
-    /// placed: not without a cell size, nor when it lost bands as it was
-    /// placed.
+    /// Places a picture's clipped placeholder rectangle and leaves the
+    /// cursor in its first column, on the last band or graphics new line.
+    /// Covers older pictures and drops those no longer shown. Refuses
+    /// without a cell size or when margin scrolling loses bands.
     pub(crate) fn place_picture(&mut self, picture: Arc<Picture>) -> bool {
         let Some(cell) = self.graphics.cell() else {
             return false;
@@ -184,8 +179,7 @@ impl Screen {
         }
         let cell = (cell.width(), cell.height());
         self.track_pictures();
-        // Those of this screen no longer shown go before its cells are
-        // filled, which would read as theirs again.
+        // Drop hidden pictures before new placeholders can look like theirs.
         let alternate = self.alternate_active;
         self.let_go_hidden();
         let cells = |pixels: u32, per: u16| {
@@ -197,9 +191,7 @@ impl Screen {
             cells(picture.width(), cell.0),
             cells(picture.height(), cell.1),
         );
-        // DECSDM set: at the top left, clipped at the bottom, scrolling
-        // nothing, the cursor put back where it was (ctlseqs; xterm 411's
-        // `graphics_sixel.c`).
+        // DECSDM: top left, clipped at the bottom, with the cursor restored.
         let display = self
             .mode(crate::Mode::SixelDisplay)
             .then(|| self.grid().cursor);
@@ -211,122 +203,109 @@ impl Screen {
             rows = rows.min(self.size().rows());
         }
         let col = self.grid().cursor.col();
-        // Clipped at the right margin, or the screen's edge past it (DEC STD
-        // 070-9, 11.2.2: sixels "printed past the right margin are not
-        // printed"), as the line a glyph printed there would end at.
+        // Clip as text would at this column (DEC STD 070-9, 11.2.2).
         let across = cols.min(self.grid().line_end().saturating_sub(col));
         let Some(top) = self.cursor_mark().map(|mark| mark.row) else {
             return false;
         };
-        // Each row's cells take the placeholder as a fill, not as text: no
-        // pen, mode, cluster or print reaches them (DEC STD 070-9, 11.1).
+        // Fill independently of text modes and the pen (DEC STD 070-9, 11.1).
         self.break_cluster();
         let placeholder = PLACEHOLDER.chars().next().unwrap_or(' ');
         let span = (col, col.saturating_add(across));
-        // A line feed on the bottom margin between left and right margins
-        // scrolls their cells, not the rows (`Grid::scroll_columns`); one
-        // outside them does nothing. Either way the rows keep their
-        // identities while the bands move or stack.
-        let (mut lifted, mut stacked) = (false, false);
-        // Each band's row filled, and the line feed before it copying a
-        // row into history at the bottom: a picture's few bytes ask for
-        // its rows' cells, which the budget counts here (B05, decision
-        // 950), the cells' own counts aside.
-        let cols = usize::from(self.size().cols());
+        // Charge the placement's rows, including ordinary history copies.
+        let width = usize::from(self.size().cols());
         crate::budget::spend(
             crate::budget::units(
-                usize::from(rows).saturating_mul(cols.saturating_add(usize::from(across))),
+                usize::from(rows).saturating_mul(width.saturating_add(usize::from(across))),
             ),
             crate::budget::weight::cells,
         );
-        for row in 0..rows {
-            if row > 0 && display.is_some() {
-                let g = self.grid_mut();
-                g.set_row(g.cursor.row().saturating_add(1));
-            } else if row > 0 {
-                let g = self.grid();
-                let at_bottom = g.lr() && g.cursor.row() == g.lines.last();
-                if at_bottom && g.in_columns() && !lifted {
-                    self.let_go_scrolled();
+        // Graphics new lines may take the cursor below the last band, by
+        // at most eight rows (DEC STD 070-9, 11.3; THREATS.md B05).
+        let down = picture.ended().checked_div(u32::from(cell.1)).unwrap_or(0);
+        let bands = u32::from(rows.saturating_sub(1));
+        let extra = down.saturating_sub(bands).min(8);
+        let g = self.grid();
+        let (start, region) = (u32::from(g.cursor.row()), g.lines);
+        let margin = display.is_none() && g.lr();
+        let inside = margin && start <= u32::from(region.last());
+        let limit = u32::from(if inside {
+            region.last()
+        } else {
+            self.size().rows().saturating_sub(1)
+        });
+        let narrow = |row: u32| u16::try_from(row.min(limit)).unwrap_or(u16::MAX);
+        let steps = bands.saturating_add(extra);
+        let room = limit.saturating_sub(start);
+        let scrolls = if inside && g.in_columns() {
+            steps.saturating_sub(room)
+        } else {
+            0
+        };
+        let lifted = scrolls > 0 || (inside && bands > room);
+        if scrolls > 0 {
+            self.let_go_scrolled();
+            let count = u16::try_from(scrolls).unwrap_or(u16::MAX);
+            self.scroll_columns(region, count, crate::grid::Scroll::Up { history: true });
+        }
+        let placed_top = if lifted {
+            start
+                .checked_sub(scrolls)
+                .filter(|first| scrolls > 0 && *first >= u32::from(region.first()))
+                .map(narrow)
+                .and_then(|first| self.grid().live_row(first).map(|r| r.id()))
+        } else {
+            Some(top)
+        };
+        let tail_scrolls = extra.saturating_sub(room.saturating_sub(bands));
+        let mut bottom = top;
+        for row in 0..u32::from(rows) {
+            let logical = start.saturating_add(row);
+            let moved = scrolls > 0 && logical >= u32::from(region.first());
+            let at = if moved {
+                logical
+                    .checked_sub(scrolls)
+                    .filter(|y| *y >= u32::from(region.first()))
+            } else if margin || display.is_some() {
+                Some(logical)
+            } else {
+                if row > 0 {
+                    self.linefeed();
                 }
-                let g = self.grid();
-                lifted |= at_bottom;
-                stacked |= at_bottom && !g.in_columns();
-                self.linefeed();
-            }
+                Some(u32::from(self.grid().cursor.row()))
+            };
+            let Some(y) = at.map(narrow) else {
+                continue;
+            };
+            // A refused placement keeps copied bands blank and only its
+            // unmoved bands as placeholders. Rows above the region stay.
+            let whole = !moved || placed_top.is_some() || (row == bands && tail_scrolls == 0);
             self.grid_mut().set_col(col);
             self.grid_mut().cursor.pending_wrap = false;
             self.with_grid(|g, _, v| {
-                let y = g.cursor.row();
                 let wrapped = g.live_wrapped(y);
-                g.fill(y, span, placeholder, 0, v);
+                // NUL fills empty cells, clearing links and keeping the used mark.
+                g.fill(y, span, if whole { placeholder } else { '\0' }, 0, v);
                 g.wrap(y, wrapped, v);
             });
+            bottom = self.grid().live_row(y).map_or(top, |r| r.id());
         }
-        // "The ANSI text vertical position is updated to reflect the
-        // vertical motion commands executed" (DEC STD 070-9, 11.3): the
-        // cursor goes down to the row the last band ends in when that is
-        // below the picture, a graphics new line having come last, as
-        // encoders end; else it stays on the picture's last row, where
-        // xterm 411 puts it, as "conforming software will not assume any
-        // exact alignment of the ANSI text vertical position" (11.3) and
-        // xterm decides what the standard leaves. Its column is where it
-        // was.
-        let down = picture.ended().checked_div(u32::from(cell.1)).unwrap_or(0);
-        let down = u16::try_from(down).unwrap_or(u16::MAX);
-        // The screen row of its last band, and that row.
-        let mut last = Some(self.grid().cursor.row());
-        let mut bottom = self.cursor_mark().map_or(top, |mark| mark.row);
-        // At most 8 rows below it: a new line goes down as many rows as the
-        // aspect ratio makes six pixel rows, so a few bytes could otherwise
-        // ask for any number of line feeds (B05). Each that scrolls the
-        // cells between left and right margins lifts its bands with them.
+        // DEC STD 070-9 (11.3) leaves the row open; follow xterm 411's last band.
         if let Some(cursor) = display {
             self.grid_mut().cursor = cursor;
         } else {
-            for _ in 0..down.saturating_sub(rows.saturating_sub(1)).min(8) {
-                let g = self.grid();
-                if g.lr() && g.in_columns() && g.cursor.row() == g.lines.last() {
-                    if !lifted {
-                        self.let_go_scrolled();
-                    }
-                    lifted = true;
-                    last = last.and_then(|last| last.checked_sub(1));
-                    let row = last.and_then(|last| self.grid().live_row(last));
-                    bottom = row.map_or(bottom, |row| row.id());
+            if margin {
+                self.grid_mut().set_row(narrow(start.saturating_add(steps)));
+                self.grid_mut().cursor.pending_wrap = false;
+            } else {
+                // Ordinary line feeds retain every intermediate history row.
+                for _ in 0..extra {
+                    self.linefeed();
                 }
-                self.linefeed();
             }
             self.grid_mut().set_col(col);
         }
-        // Moved with the cells, the picture's rows are the last `rows`
-        // down to its last band's, if they lie inside the region; else it
-        // lost bands, and is not placed.
-        let top = match lifted {
-            false => Some(top),
-            true => {
-                let g = self.grid();
-                let first = (last.and_then(|last| last.checked_sub(rows.saturating_sub(1))))
-                    .filter(|first| !stacked && *first >= g.lines.first());
-                let top = first
-                    .and_then(|first| g.live_row(first))
-                    .map(|row| row.id());
-                // The scrolls that lifted its bands moved their cells,
-                // which leaves them blank (`grid::unpicture`): its rows
-                // take the placeholder again.
-                if let Some((first, last)) = first.zip(last).filter(|_| top.is_some()) {
-                    self.with_grid(|g, _, v| {
-                        for y in first..=last {
-                            let wrapped = g.live_wrapped(y);
-                            g.fill(y, span, placeholder, 0, v);
-                            g.wrap(y, wrapped, v);
-                        }
-                    });
-                }
-                top
-            }
-        };
-        let Some(top) = top else {
+        let Some(top) = placed_top else {
             return false;
         };
         self.picture_ids = self.picture_ids.wrapping_add(1);
@@ -346,9 +325,7 @@ impl Screen {
         });
         // Its rows, and others', may have gone into history.
         self.track_pictures();
-        // Its own line feeds scrolled the rows they took off the region
-        // before it was kept for `crop_pictures` to crop.
-        let region = self.grid().lines;
+        // Crop rows lost before this placement was kept for `crop_pictures`.
         if !self.keeps_rows(region)
             && let Some(lost) = (self.pictures.back()).and_then(|p| self.lost_off(p, region))
             && let Some(p) = self.pictures.back_mut()
@@ -356,8 +333,7 @@ impl Screen {
             p.cropped = lost;
         }
         self.cover();
-        // Those of this screen kept are whole now, and this one is: what
-        // changes them from here on takes a newer version.
+        // Later changes take a newer version than these whole pictures.
         let whole_at = self.version;
         (self.pictures.iter_mut())
             .filter(|p| p.alternate == alternate)
@@ -1005,6 +981,91 @@ mod faults {
         small.picture_budget = 0;
         assert!(small.check_picture_bytes(0).is_ok());
         assert!(small.check_picture_bytes(1).is_err(), "the drawing past it");
+        Ok(())
+    }
+}
+
+/// A private observer of actual margin-scroll calls, including those that
+/// clear the whole region and copy no spans.
+#[cfg(test)]
+pub(super) mod placement_test {
+    use crate::{CellSize, Feature, Graphics, Parser, Size};
+    use std::cell::Cell;
+
+    thread_local! {
+        pub(in crate::screen) static SCROLLS: Cell<u16> = const { Cell::new(0) };
+    }
+
+    #[test]
+    fn one_picture_placement_scrolls_a_margin_region_at_most_once()
+    -> Result<(), Box<dyn std::error::Error>> {
+        for (rows, trailing, scrolls) in
+            [(1_usize, 0, 0), (2, 0, 1), (4, 0, 1), (2, 2, 1), (12, 0, 1)]
+        {
+            let mut p =
+                Parser::with_options(Size::new(8, 6)?, 1024, Feature::ALL.into_iter().collect())?;
+            p.set_host_graphics(Graphics::Sixel(CellSize::new(2, 6).ok_or("cell size")?));
+            p.process(b"\x1b]8;;https://example.test\x1b\\")?;
+            for y in 1..=8 {
+                p.process(format!("\x1b[{y};1H一ab一").as_bytes())?;
+                if y < 8 {
+                    p.process(b"x")?;
+                }
+            }
+            p.process(b"\x1b]8;;\x1b\\\x1b[?69h\x1b[2;5s\x1b[8;2H")?;
+            let ids: Vec<_> = (0..8)
+                .filter_map(|y| {
+                    p.screen()
+                        .window()
+                        .row(y)
+                        .map(|row| (row.id(), row.wrapped()))
+                })
+                .collect();
+            let bands: String = std::iter::repeat_n("~-", rows.saturating_sub(1)).collect();
+            let tail: String = std::iter::repeat_n('-', trailing).collect();
+            SCROLLS.set(0);
+            p.process(format!("\x1bPq\"1;1{bands}~{tail}\x1b\\").as_bytes())?;
+            assert_eq!(SCROLLS.get(), scrolls, "{rows} bands, {trailing} new lines");
+            let after: Vec<_> = (0..8)
+                .filter_map(|y| {
+                    p.screen()
+                        .window()
+                        .row(y)
+                        .map(|row| (row.id(), row.wrapped()))
+                })
+                .collect();
+            assert_eq!(
+                after, ids,
+                "margin scrolls preserve row identities and soft wraps"
+            );
+            for y in 0..8 {
+                let row = p.screen().window().row(y).ok_or("row")?;
+                if row
+                    .cell(1)
+                    .is_some_and(|c| c.contents() == crate::PLACEHOLDER)
+                {
+                    assert!(row.link(1).is_none(), "a placeholder clears its link");
+                }
+            }
+            assert_eq!(p.screen().history_len(), 0);
+            #[cfg(feature = "checks")]
+            {
+                let report = p.check();
+                assert!(report.is_clean(), "{report}");
+            }
+        }
+        for region in ["", "\x1b[65533;65535r"] {
+            let mut p = Parser::with_options(
+                Size::new(u16::MAX, 3)?,
+                0,
+                Feature::ALL.into_iter().collect(),
+            )?;
+            p.set_host_graphics(Graphics::Sixel(CellSize::new(2, 6).ok_or("cell size")?));
+            p.process(format!("\x1b[?69h\x1b[1;2s{region}\x1b[65535;1H").as_bytes())?;
+            SCROLLS.set(0);
+            p.process(b"\x1bPq\"1;1~-~-~\x1b\\")?;
+            assert_eq!(SCROLLS.get(), 1, "one scroll at the row limit");
+        }
         Ok(())
     }
 }
