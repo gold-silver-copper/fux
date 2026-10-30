@@ -381,9 +381,6 @@ impl Through {
                 Outgoing::To(client, ToAttached::Paint(bytes)) if client == self.client => {
                     self.terminal.process(&bytes)?;
                 }
-                Outgoing::Copy(client, bytes) if client == self.client => {
-                    self.terminal.process(&bytes)?;
-                }
                 Outgoing::To(client, ToAttached::Exit(reason)) if client == self.client => {
                     return Err(format!("fux detached the client: {reason}"));
                 }
@@ -397,8 +394,7 @@ impl Through {
                     | ToAttached::Open(_)
                     | ToAttached::Keys(_)
                     | ToAttached::Ended(_),
-                )
-                | Outgoing::Copy(..) => {}
+                ) => {}
             }
         }
         let view = self.session.views.get(&self.client);
