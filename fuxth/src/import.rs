@@ -21,12 +21,9 @@ impl Imports {
     /// `bytes` reserved before what they pay for is made: shared storage
     /// born holding it ([`Shared::leased`]) gives them back when it drops.
     pub fn lease(&self, bytes: usize) -> Result<ImportLease, Failure> {
-        self.0.charge(bytes).map_err(|_| full())?;
-        let grant = Rc::clone(&self.0);
-        Ok(ImportLease(RefCell::new(Some(Reservation {
-            grant,
-            bytes,
-        }))))
+        let lease = ImportLease::default();
+        lease.reserve(self, bytes)?;
+        Ok(lease)
     }
 }
 
