@@ -15,10 +15,6 @@ define agent-opts opts str agent in end
 define shell agent-opts new-tab end
 # scope -- record : the facts of a pane, tab, workspace or all of the session
 define info str facts snapshot end
-# pane-or-seen -- string : a pane's current version, or the version an answer, pane capture or canonical text holds
-define version
-  dup kind str string eq if let s s changed drop s else str version get then
-end
 # pane-builder -- pane-builder : capture: all the history first
 define all-history 9223372036854775807 history end
 # pane-or-seen -- list : the five counts of a pane or held version: respawns screen bells done ended

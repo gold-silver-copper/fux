@@ -335,6 +335,7 @@ words! {
         Server ForceKillServer "force-kill-server" "--" "stop it anyway, whatever fux version it is" "fux str test server force-kill-server" [];
         Config AttachDefaults "attach-defaults" "attachable --" "replace this client's preferred attach place; target-only retains the first name, name-only or empty clears the target; target and name conflict" "opts str main name attach-defaults" [Either: In Name];
         Config Set "set" "setting new --" "a preference for this client only: `fux help set` lists their effects" "fux str history-bytes 16777216 set" [];
+        Reading Version "version" "pane-or-seen -- string" "a pane's current version, or the version an answer, pane capture or canonical text holds" "fux %3 capture version" [];
         Shell Args "args" "-- list" "the strings after fux --file FILE (none for any other program)" "fux args len" [];
         Shell Input "input" "-- string" "the rest of stdin, as UTF-8 text, 16 MiB at most; not when the program came from stdin" "ls | fux input lines len" [];
         Shell ReadFile "read-file" "path -- string" "a file's text, as UTF-8, 16 MiB at most" "fux str notes.txt read-file lines len" [];
@@ -374,7 +375,7 @@ words! {
         Input Key "key" "x key -- x" "a key by its name: Enter, C-c, Up, F5" "fux %3 str C-c key send-keys";
         Input Paste "paste" "x text -- x" "text as a paste, bracketed if the program turned that on (an end mark, ESC [201~, in it then dropped); else as it is" "fux %3 str 'a long prompt' paste str Enter key send-keys";
         Input Bytes "bytes" "x hex -- x" "bytes as they are, in hex (1b5b41, c3): part of a key's sequence or of a character" "fux %3 str 1b5b41 bytes send-keys";
-        Reading History "history" "pane-builder lines -- pane-builder" "capture: lines of history first" "fux %3 100 history capture";
+        Reading History "history" "pane-builder lines -- pane-builder" "capture: lines of history first (all-history: all of it)" "fux %3 100 history capture";
         Reading Wrapped "wrapped" "pane-builder -- pane-builder" "capture: each screen row a line, as wrapped at the pane's width (the cells a mouse event counts), not joined into the lines printed" "fux %3 wrapped 0 2 rows capture";
         Reading Full "full" "pane-builder -- pane-builder" "capture: every row and cell, untrimmed" "fux %3 full capture";
         Reading Styles "styles" "pane-builder -- pane-builder" "capture: colours and attributes" "fux %3 styles capture";
@@ -1976,6 +1977,17 @@ impl Host<'_> {
                     .map_err(|why| fail(Raise::Config, why))?;
                 Ok(Done::Now)
             }
+            Act::Version => {
+                let value = next()?;
+                if let Value::App(Fux::Pane(p, _)) = value {
+                    later(ask(Command::Inspect {
+                        scope: crate::inspect::Scope::Target(AnyRef::Pane(p)),
+                        projection: crate::inspect::Projection::Field("version".into()),
+                    }))
+                } else {
+                    now(out, Value::str(version(&value)?.to_string()))
+                }
+            }
             // ------------------------------------------------------- shell
             Act::Args => local(Local::Shell(Shell::Args)),
             Act::Input => local(Local::Shell(Shell::Input)),
@@ -2468,6 +2480,10 @@ mod tests {
             "str x kill".to_owned(),
             "str nope str horizontal axis split".to_owned(),
             "str nope info".to_owned(),
+            // What a word leaves is known too: none of these is a number.
+            format!("str {version} version 1 add"),
+            "all info 1 add".to_owned(),
+            "%1 all-history 1 add".to_owned(),
             "@1 wait capture".to_owned(),
             "@1 0 timeout wait capture".to_owned(),
             "@1 str x text send-keys capture".to_owned(),
@@ -2552,7 +2568,7 @@ mod tests {
             for suffix in ["changed drop", "expect drop", "version drop"] {
                 let mut vocabulary = super::super::vocabulary()?;
                 vocabulary.add("held", &format!("-- {kind}"))?;
-                let (mut compiler, _) = super::super::libraries_in(vocabulary)?;
+                let mut compiler = fuxth::Compiler::<Fux>::new(vocabulary);
                 let source = format!("held str SIDE-EFFECT print {suffix}");
                 let error = compiler
                     .add(&fuxth::token::source("versionless", &source)?)
