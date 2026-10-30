@@ -1911,6 +1911,165 @@ pub(crate) mod tests {
         }
     }
 
+    /// A pane that answers every capture with the default-history styled
+    /// capture of `lines` lines, and each wait with a change till `turns`
+    /// waits, then with a timeout. What the run's grant has left is
+    /// recorded at each wait.
+    struct Styled {
+        capture: super::Reply,
+        version: super::Version,
+        turns: usize,
+        imports: Option<fuxth::Imports>,
+        left: Vec<usize>,
+    }
+
+    impl Styled {
+        fn new(turns: usize, lines: usize) -> Result<Self, String> {
+            let version: super::Version = "%1:0.0.0.0.0:1-1".parse().map_err(|()| "version")?;
+            let line = crate::capture::Line {
+                text: std::iter::repeat_n('x', 100).collect(),
+                runs: (0..100)
+                    .map(|style| crate::capture::Run {
+                        bytes: 1,
+                        cells: 1,
+                        style,
+                    })
+                    .collect(),
+            };
+            let capture = crate::capture::Captured {
+                of: crate::capture::Of::Pane {
+                    version,
+                    wrap_pending: false,
+                    state: Vec::new(),
+                },
+                screen_rows: 40,
+                screen_cols: 120,
+                screen_cursor: None,
+                lines: std::iter::repeat_n(line, lines).collect(),
+                styles: (0u8..100)
+                    .map(|n| fux_vt::Attributes::new(fux_vt::Color::Idx(n), fux_vt::Color::Default))
+                    .collect(),
+                styled: true,
+                marks: false,
+            };
+            Ok(Self {
+                capture: super::Reply {
+                    run: Some(version.run),
+                    ..super::Body::Capture(Box::new(capture)).into()
+                },
+                version,
+                turns,
+                imports: None,
+                left: Vec::new(),
+            })
+        }
+    }
+
+    impl super::Asks for Styled {
+        fn ask(&mut self, asked: &crate::protocol::Asked) -> Result<super::Reply, super::Failed> {
+            use super::{AnyRef, Body, PaneAnswer, PaneResults, Reply, Request};
+            let answer = match &asked.request {
+                Request::Do(crate::command::Command::Resolve { .. }) => {
+                    Body::Found(AnyRef::Pane(self.version.pane)).into()
+                }
+                Request::Wait(_) => {
+                    self.left
+                        .extend(self.imports.as_ref().map(fuxth::Imports::remaining));
+                    let answer = match self.left.len() < self.turns {
+                        true => PaneAnswer::Changed {
+                            version: self.version,
+                            changed: Vec::new(),
+                            ended: None,
+                        },
+                        false => PaneAnswer::TimedOut {
+                            since: self.version,
+                            limit: std::time::Duration::from_secs(1),
+                        },
+                    };
+                    PaneResults::One(answer).into()
+                }
+                Request::Do(_) | Request::NextEvents { .. } => return Ok(self.capture.clone()),
+            };
+            Ok(Reply {
+                run: Some(self.version.run),
+                ..answer
+            })
+        }
+    }
+
+    /// What a run allocates past its grant, at most: one answer decoded
+    /// and not yet imported, or one text conversion, each within its own
+    /// `MAX_ALLOCATED` grant, and 1 MiB of the machine's own (its stack,
+    /// frames and `let` names, which these programs keep small).
+    const OVERHEAD: usize = crate::wire::MAX_ALLOCATED + (1 << 20);
+
+    #[test]
+    fn a_run_holds_no_more_than_its_grant_and_a_fixed_overhead() -> TestResult {
+        use super::*;
+        let hits = "define hits 1000 history capture string lines 0 swap each str 42 contains if 1 add then end end";
+        for (code, lines, ended) in [
+            // Distinct strings, built till the grant refuses one.
+            (
+                "str x 1000 copies let k list begin k 100 copies false until end",
+                0,
+                Err(Raise::TooLong),
+            ),
+            // What a loop builds and drops it gives back.
+            (
+                "str x 2000 copies let cap 0 begin cap string drop 1 add dup 100000 eq until drop",
+                0,
+                Ok(()),
+            ),
+            (
+                "%1 all-history styles capture let h h json print",
+                9931,
+                Ok(()),
+            ),
+            // Polling a pane: a styled capture's text, which `string` makes,
+            // is longer than a string may be past a few thousand lines, so
+            // the words that make one see 200 (a screen's and some history).
+            ("%1 10 quiet drop", 200, Ok(())),
+            ("%1 str needle 10 shows drop", 200, Err(Raise::Timeout)),
+            ("%1 10 until-ended drop", 200, Err(Raise::Timeout)),
+            ("%1 1 1000000 10 grows drop", 200, Err(Raise::Timeout)),
+            (
+                &format!(
+                    "{hits} 0 begin %1 hits drop %1 capture changed 10 timeout wait drop 1 add dup 4 eq until drop"
+                ),
+                200,
+                Ok(()),
+            ),
+        ] {
+            let mut machine = compile(&token::source("peak", code)?)?;
+            let mut asks = Styled::new(5, lines)?;
+            asks.imports = Some(machine.imports().clone());
+            let mut sink = io::sink();
+            let mut host = Host::new(Context::default(), None, &mut sink);
+            let allocator = fux_vt_peak::ThreadPeak;
+            let base = allocator.live();
+            allocator.reset_peak();
+            let ran = run_capped(&mut machine, &mut host, &mut asks, None, None);
+            let peak = allocator.peak().saturating_sub(base);
+            let ran = ran.map(drop);
+            assert_eq!(
+                ran.as_ref().copied().map_err(|failed| failed.code),
+                ended.map_err(Code::from),
+                "{code}: {ran:?}"
+            );
+            assert!(peak <= Fux::IMPORT_LIMIT + OVERHEAD, "{code}: {peak}");
+            // Polling holds what one turn holds: each wait finds the same
+            // grant left.
+            if let [first, rest @ ..] = asks.left.as_slice() {
+                assert!(
+                    rest.iter().all(|left| left == first),
+                    "{code}: {:?}",
+                    asks.left
+                );
+            }
+        }
+        Ok(())
+    }
+
     #[test]
     fn retained_captures_exhaust_the_grant_but_polling_releases_it() -> TestResult {
         use super::*;

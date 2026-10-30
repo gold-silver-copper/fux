@@ -165,13 +165,9 @@ impl Text {
             };
         }
         let chars = text.chars().count();
-        let mut index = Vec::with_capacity(marked(text.len(), chars));
-        index.extend(marks(&text, 0, 0));
-        Text {
-            text,
-            chars,
-            marks: index,
-        }
+        let mut marks = Vec::with_capacity(marked(text.len(), chars));
+        marks.extend(starts(&text, 0, 0));
+        Text { text, chars, marks }
     }
 
     /// Bytes shared storage for a string `bytes` long, of `chars`
@@ -181,32 +177,38 @@ impl Text {
     }
 
     /// Bytes shared storage with `room` for bytes and marks holds.
-    pub(crate) fn held((bytes, marks): (usize, usize)) -> usize {
-        Shared::<Text>::bytes(marks.saturating_mul(size_of::<usize>()).saturating_add(bytes))
+    fn held((bytes, marks): (usize, usize)) -> usize {
+        Shared::<Text>::bytes(
+            marks
+                .saturating_mul(size_of::<usize>())
+                .saturating_add(bytes),
+        )
     }
 
-    /// The room, for bytes and marks, `other` added at the end needs.
-    pub(crate) fn room(&self, other: &Text) -> (usize, usize) {
-        let bytes = self.text.len().saturating_add(other.text.len());
-        (bytes, marked(bytes, self.chars.saturating_add(other.chars)))
-    }
-
-    /// Whether it has `room` without growing.
-    pub(crate) fn holds(&self, (bytes, marks): (usize, usize)) -> bool {
-        self.text.capacity() >= bytes && self.marks.capacity() >= marks
-    }
-
-    /// A copy in `room`, which [`Text::size`] of its bytes reserves.
-    pub(crate) fn copy(&self, (bytes, marks): (usize, usize)) -> Text {
-        let mut text = String::with_capacity(bytes);
-        text.push_str(&self.text);
-        let mut index = Vec::with_capacity(marks);
-        index.extend_from_slice(&self.marks);
-        Text {
-            text,
-            chars: self.chars,
-            marks: index,
+    /// Grown in place, if it lacks room for `other` added at the end
+    /// ([`grown`]), its `lease` swapped first for `held`'s of what the grown
+    /// storage holds.
+    pub(crate) fn grow<E>(
+        &mut self,
+        other: &Text,
+        lease: &mut ImportLease,
+        held: impl FnOnce(usize) -> Result<ImportLease, E>,
+    ) -> Result<(), E> {
+        let (text, marks) = (&mut self.text, &mut self.marks);
+        let bytes = text.len().saturating_add(other.text.len());
+        let index = marked(bytes, self.chars.saturating_add(other.chars));
+        let has = (text.capacity(), marks.capacity());
+        let room = (
+            grown(bytes, text.len(), has.0),
+            grown(index, marks.len(), has.1),
+        );
+        if room != has {
+            let new = held(Self::held(room))?;
+            text.reserve_exact(room.0.saturating_sub(text.len()));
+            marks.reserve_exact(room.1.saturating_sub(marks.len()));
+            *lease = new;
         }
+        Ok(())
     }
 
     /// `other` added at the end: how many characters before it were
@@ -225,15 +227,27 @@ impl Text {
         } else {
             0
         };
-        self.marks.extend(marks(&other.text, chars, bytes));
+        self.marks.extend(starts(&other.text, chars, bytes));
         marked
     }
 
-    /// Space for shared Text storage and its character index, excluding the
-    /// String moved into it.
+    /// Space for shared Text storage and the peak character-index replacement,
+    /// excluding the String moved into it. `None` if the size overflows.
     pub fn import_bytes(chars: usize, ascii: bool) -> Option<usize> {
-        let marks = if ascii { 0 } else { chars.saturating_sub(1) / STRIDE };
-        Some(Self::held((0, marks)))
+        let marks = if ascii {
+            0
+        } else {
+            chars.saturating_sub(1) / STRIDE
+        };
+        let index = if marks == 0 {
+            0
+        } else {
+            let capacity = marks.checked_next_power_of_two()?.max(4);
+            capacity
+                .checked_add(capacity / 2)?
+                .checked_mul(std::mem::size_of::<usize>())?
+        };
+        index.checked_add(Shared::<Text>::bytes(0))
     }
 
     /// Moves out the String, dropping its character index without a copy.
@@ -284,6 +298,17 @@ impl Text {
     }
 }
 
+/// The capacity that holds `need`, from `len` in `capacity`: the same if it
+/// does, else at least twice `len`, as `Vec` grows, so pushes cost amortized
+/// constant time.
+fn grown(need: usize, len: usize, capacity: usize) -> usize {
+    if need <= capacity {
+        capacity
+    } else {
+        need.max(len.saturating_mul(2))
+    }
+}
+
 /// How many marks a string `bytes` long, of `chars` characters, has.
 fn marked(bytes: usize, chars: usize) -> usize {
     if bytes == chars {
@@ -295,7 +320,7 @@ fn marked(bytes: usize, chars: usize) -> usize {
 
 /// The marks in `text` when its first character is character `first`,
 /// and its first byte byte `byte`, of a string.
-fn marks(text: &str, first: usize, byte: usize) -> impl Iterator<Item = usize> {
+fn starts(text: &str, first: usize, byte: usize) -> impl Iterator<Item = usize> {
     (text.char_indices().zip(first..))
         .filter(|(_, i)| *i != 0 && i % STRIDE == 0)
         .map(move |((at, _), _)| byte.saturating_add(at))
@@ -355,22 +380,21 @@ impl<A> List<A> {
         Shared::<Self>::bytes(capacity.saturating_mul(std::mem::size_of::<Value<A>>()))
     }
 
-    /// Room for `more` items without growing.
-    pub(crate) fn holds(&self, more: usize) -> bool {
-        self.items.capacity().saturating_sub(self.items.len()) >= more
-    }
-}
-
-impl<A: Clone> List<A> {
-    /// A copy with room for `capacity` items.
-    pub(crate) fn copy(&self, capacity: usize) -> Self {
-        let mut items = Vec::with_capacity(capacity);
-        items.extend_from_slice(&self.items);
-        Self {
-            items,
-            depth: self.depth,
-            weight: self.weight,
+    /// Grown in place, if it lacks room for one more item ([`grown`]), its
+    /// `lease` swapped first for `held`'s of what the grown storage holds.
+    pub(crate) fn grow<E>(
+        &mut self,
+        lease: &mut ImportLease,
+        held: impl FnOnce(usize) -> Result<ImportLease, E>,
+    ) -> Result<(), E> {
+        let (len, has) = (self.items.len(), self.items.capacity());
+        let room = grown(len.saturating_add(1), len, has);
+        if room != has {
+            let new = held(Self::size(room))?;
+            self.items.reserve_exact(room.saturating_sub(len));
+            *lease = new;
         }
+        Ok(())
     }
 }
 
@@ -448,20 +472,20 @@ impl<A: AppValue> Value<A> {
     /// The value as text, with one admission for retained inputs, formatter
     /// workspace and the entire output, including nested application values.
     pub fn text(&self) -> Result<String, Failure> {
-        let text = self.render_text(usize::MAX, None)?;
-        text.map(|(text, _)| text).ok_or_else(text_limit)
+        self.render_text(usize::MAX, None)?.ok_or_else(text_limit)
     }
 
     /// The text, if it is at most `most` characters long.
     pub fn text_upto(&self, most: usize) -> Result<Option<Text>, Failure> {
-        Ok(self.render_text(most, None)?.map(|(text, _)| Text::new(text)))
+        Ok(self.render_text(most, None)?.map(Text::new))
     }
 
     /// `text_upto` as a string whose storage is reserved from `imports`
     /// once the text is counted, before it is made.
     pub fn string_upto(&self, most: usize, imports: &Imports) -> Result<Option<Self>, Failure> {
-        let text = self.render_text(most, Some(imports))?;
-        Ok(text.map(|(text, lease)| Self::Str(Shared::leased(Text::new(text), lease))))
+        let lease = ImportLease::default();
+        let text = self.render_text(most, Some((imports, &lease)))?;
+        Ok(text.map(|text| Self::Str(Shared::leased(Text::new(text), lease))))
     }
 
     fn own_bytes(&self) -> usize {
@@ -484,11 +508,13 @@ impl<A: AppValue> Value<A> {
         }
     }
 
+    /// The text, if it is at most `most` characters long, `held` reserved
+    /// for it once it is counted, before it is made.
     fn render_text(
         &self,
         most: usize,
-        imports: Option<&Imports>,
-    ) -> Result<Option<(String, ImportLease)>, Failure> {
+        held: Option<(&Imports, &ImportLease)>,
+    ) -> Result<Option<String>, Failure> {
         struct Count {
             output: crate::Render,
             chars: usize,
@@ -523,12 +549,13 @@ impl<A: AppValue> Value<A> {
         if let Err(failure) = self.write_text(&mut count) {
             return if count.long { Ok(None) } else { Err(failure) };
         }
-        let lease = match imports {
-            Some(imports) => imports.lease(Text::size(count.output.bytes(), count.chars))?,
-            None => ImportLease::default(),
-        };
-        let text = count.output.finish(|out| self.write_text(out), text_limit)?;
-        Ok(Some((text, lease)))
+        if let Some((imports, lease)) = held {
+            lease.reserve(imports, Text::size(count.output.bytes(), count.chars))?;
+        }
+        count
+            .output
+            .finish(|out| self.write_text(out), text_limit)
+            .map(Some)
     }
 
     fn write_text(&self, out: &mut dyn std::fmt::Write) -> Result<(), Failure> {

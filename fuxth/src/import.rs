@@ -1,38 +1,44 @@
 //! Reservations follow shared storage, imported or built, not stack slots.
 use crate::{Code, Failure, Grant};
 use std::cell::RefCell;
-use std::rc::{Rc, Weak};
+use std::rc::Rc;
 
 /// One machine's fixed allowance for the live storage of every string and
 /// list it builds or imports. Only leases can reserve or refund it; hosts
-/// cannot change the counter directly.
-#[derive(Debug)]
+/// cannot change the counter directly; a clone is the same grant.
+#[derive(Clone, Debug)]
 pub struct Imports(Rc<Grant>);
 impl Imports {
     pub fn new(limit: usize) -> Self {
         Self(Rc::new(Grant::new(limit)))
     }
 
+    /// Bytes not yet reserved.
+    pub fn remaining(&self) -> usize {
+        self.0.remaining()
+    }
+
     /// `bytes` reserved before what they pay for is made: shared storage
     /// born holding it ([`Shared::leased`]) gives them back when it drops.
     pub fn lease(&self, bytes: usize) -> Result<ImportLease, Failure> {
-        let lease = ImportLease::default();
-        lease.reserve(self, bytes)?;
-        Ok(lease)
+        self.0.charge(bytes).map_err(|_| full())?;
+        let grant = Rc::clone(&self.0);
+        Ok(ImportLease(RefCell::new(Some(Reservation {
+            grant,
+            bytes,
+        }))))
     }
 }
 
 #[derive(Debug)]
 struct Reservation {
-    grant: Weak<Grant>,
+    grant: Rc<Grant>,
     bytes: usize,
 }
 
 impl Drop for Reservation {
     fn drop(&mut self) {
-        if let Some(grant) = self.grant.upgrade() {
-            let _ = grant.release(self.bytes);
-        }
+        let _ = self.grant.release(self.bytes);
     }
 }
 
@@ -55,8 +61,7 @@ impl ImportLease {
             .0
             .try_borrow_mut()
             .map_err(|_| Failure::new(Code::Contract, "recursive storage admission"))?;
-        let owner = Rc::downgrade(&imports.0);
-        let same = held.as_mut().filter(|r| r.grant.ptr_eq(&owner));
+        let same = held.as_mut().filter(|r| Rc::ptr_eq(&r.grant, &imports.0));
         let old = same.as_ref().map_or(0, |r| r.bytes);
         if bytes >= old {
             imports.0.charge(bytes.saturating_sub(old))
@@ -68,7 +73,7 @@ impl ImportLease {
             reservation.bytes = bytes;
         } else {
             *held = Some(Reservation {
-                grant: owner,
+                grant: Rc::clone(&imports.0),
                 bytes,
             });
         }
@@ -88,7 +93,7 @@ fn full() -> Failure {
 #[derive(Debug, PartialEq)]
 pub struct Shared<T>(Rc<Storage<T>>);
 
-#[derive(Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 struct Storage<T> {
     value: T,
     lease: ImportLease,
@@ -101,8 +106,6 @@ impl<T> Clone for Shared<T> {
 }
 
 impl<T> Shared<T> {
-    /// `value`, holding nothing until it is retained: a program's literal,
-    /// or a host's value before the machine imports it.
     pub fn new(value: T) -> Self {
         Self::leased(value, ImportLease::default())
     }
@@ -126,6 +129,15 @@ impl<T> Shared<T> {
 
     pub fn reserve(&self, imports: &Imports, bytes: usize) -> Result<(), Failure> {
         self.0.lease.reserve(imports, bytes)
+    }
+}
+
+impl<T: Clone> Shared<T> {
+    /// Its value and lease, to change in place: copied first, holding
+    /// nothing, when something else holds it.
+    pub(crate) fn make_mut(this: &mut Self) -> (&mut T, &mut ImportLease) {
+        let storage = Rc::make_mut(&mut this.0);
+        (&mut storage.value, &mut storage.lease)
     }
 }
 
