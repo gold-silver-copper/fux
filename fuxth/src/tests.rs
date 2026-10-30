@@ -810,6 +810,31 @@ fn the_core_at_its_edges() -> Result<(), Error> {
 }
 
 #[test]
+fn a_string_grown_in_place_holds_no_more_than_it_was_charged() -> Result<(), Error> {
+    // ASCII first, then more than ASCII from its last push, in place.
+    for n in [1, 63, 64, 65, 200, 1000, 5000] {
+        let source = format!(
+            "str a 0 begin swap str b push swap 1 add dup 100 eq until drop \
+             0 begin swap str é push swap 1 add dup {n} eq until drop"
+        );
+        let mut machine = Machine::new(compile(&source)?, Limits::default());
+        machine.run(&mut Toy::default(), u64::MAX)?;
+        let imports = machine.imports().clone();
+        let charged = Ticket::IMPORT_LIMIT.saturating_sub(imports.remaining());
+        let string = machine.stack().first().cloned();
+        drop(machine);
+        let held = ALLOCATOR.live();
+        drop(string);
+        let held = held.saturating_sub(ALLOCATOR.live());
+        assert!(
+            held > 0 && held <= charged,
+            "{n}: holds {held}, charged {charged}"
+        );
+    }
+    Ok(())
+}
+
+#[test]
 fn concat_refuses_before_allocating_the_joined_value() -> Result<(), Error> {
     // As many lists of a million as the grant holds, then a copy of one.
     let held = Ticket::IMPORT_LIMIT / List::<Ticket>::size(1_000_000);

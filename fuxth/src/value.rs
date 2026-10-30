@@ -165,29 +165,30 @@ impl Text {
             };
         }
         let chars = text.chars().count();
-        let mut marks = Vec::with_capacity(marked(text.len(), chars));
+        let mut marks = Vec::with_capacity(chars.saturating_sub(1) / STRIDE);
         marks.extend(starts(&text, 0, 0));
         Text { text, chars, marks }
     }
 
     /// Bytes shared storage for a string `bytes` long, of `chars`
-    /// characters, holds: what is reserved before it is made.
+    /// characters, holds at most: what is reserved before it is made.
     pub fn size(bytes: usize, chars: usize) -> usize {
-        Self::held((bytes, marked(bytes, chars)))
+        Shared::<Text>::bytes(Self::bound(bytes, bytes == chars))
     }
 
-    /// Bytes shared storage with `room` for bytes and marks holds.
-    fn held((bytes, marks): (usize, usize)) -> usize {
-        Shared::<Text>::bytes(
-            marks
-                .saturating_mul(size_of::<usize>())
-                .saturating_add(bytes),
-        )
+    /// Bytes a string's text of `capacity` and its marks hold at most. The
+    /// marks of an ASCII string hold nothing, and of any other at most one
+    /// mark per `STRIDE` bytes of its text's capacity, in every state.
+    fn bound(capacity: usize, ascii: bool) -> usize {
+        let marks = if ascii { 0 } else { capacity / STRIDE };
+        marks
+            .saturating_mul(size_of::<usize>())
+            .saturating_add(capacity)
     }
 
-    /// Grown in place, if it lacks room for `other` added at the end
-    /// ([`grown`]), its `lease` swapped first for `held`'s of what the grown
-    /// storage holds.
+    /// Grown in place to hold `other` added at the end: when its text lacks
+    /// room ([`grown`]), or it first holds more than ASCII, its `lease` is
+    /// swapped first for `held`'s of [`Text::bound`]; its marks fill that bound.
     pub(crate) fn grow<E>(
         &mut self,
         other: &Text,
@@ -196,17 +197,15 @@ impl Text {
     ) -> Result<(), E> {
         let (text, marks) = (&mut self.text, &mut self.marks);
         let bytes = text.len().saturating_add(other.text.len());
-        let index = marked(bytes, self.chars.saturating_add(other.chars));
-        let has = (text.capacity(), marks.capacity());
-        let room = (
-            grown(bytes, text.len(), has.0),
-            grown(index, marks.len(), has.1),
-        );
-        if room != has {
-            let new = held(Self::held(room))?;
-            text.reserve_exact(room.0.saturating_sub(text.len()));
-            marks.reserve_exact(room.1.saturating_sub(marks.len()));
+        let chars = self.chars.saturating_add(other.chars);
+        let capacity = grown(bytes, text.len(), text.capacity());
+        if capacity != text.capacity() || (self.chars == text.len() && bytes != chars) {
+            let new = held(Shared::<Text>::bytes(Self::bound(capacity, bytes == chars)))?;
+            text.reserve_exact(capacity.saturating_sub(text.len()));
             *lease = new;
+        }
+        if bytes != chars {
+            marks.reserve_exact((text.capacity() / STRIDE).saturating_sub(marks.len()));
         }
         Ok(())
     }
@@ -255,13 +254,10 @@ impl Text {
         self.text
     }
 
-    /// Bytes retained in the text and its character index.
+    /// Bytes retained in the text and its character index, at most
+    /// ([`Text::bound`]): what a string born holding a lease was charged.
     pub fn heap_bytes(&self) -> usize {
-        self.text.capacity().saturating_add(
-            self.marks
-                .capacity()
-                .saturating_mul(std::mem::size_of::<usize>()),
-        )
+        Self::bound(self.text.capacity(), self.is_ascii())
     }
 
     /// How many characters it has.
@@ -306,15 +302,6 @@ fn grown(need: usize, len: usize, capacity: usize) -> usize {
         capacity
     } else {
         need.max(len.saturating_mul(2))
-    }
-}
-
-/// How many marks a string `bytes` long, of `chars` characters, has.
-fn marked(bytes: usize, chars: usize) -> usize {
-    if bytes == chars {
-        0
-    } else {
-        chars.saturating_sub(1) / STRIDE
     }
 }
 
