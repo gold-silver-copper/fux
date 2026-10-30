@@ -132,7 +132,9 @@ pub fn feed(recording: &Recording) -> Result<Worst, String> {
                 // parser makes no progress, which is an error.
                 match stop {
                     Ok(Some((n, _))) if n > 0 => (taken, idle) = (taken.saturating_add(n), 0),
-                    Ok(Some((0, Stop::Budget))) if idle < IDLE_MOST => idle = idle.saturating_add(1),
+                    Ok(Some((0, Stop::Budget))) if idle < IDLE_MOST => {
+                        idle = idle.saturating_add(1)
+                    }
                     Ok(Some((_, stop))) => {
                         return Err(format!("{at}: {idle} calls took no byte, then {stop:?}"));
                     }
