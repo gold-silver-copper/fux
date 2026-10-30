@@ -1,21 +1,22 @@
 //! The IDs of panes, tabs, workspaces, clients and copies. A new one comes only from
 //! the session's counters, [`Ids`]; any other is read from what a person
-//! typed (`%3`, `@2`, `+1`, `c1`) by `FromStr`, and the session looks it up
-//! before acting on it. No code can make one from a number.
+//! typed (`%3`, `@2`, `+1`, `c1`) by `FromStr`, or decoded from a frame as
+//! its number. The session looks it up before acting on it.
 use crate::command::{Kind, Run, Usage};
 use crate::session::Error;
 use std::fmt;
 use std::str::FromStr;
 
 /// `id!(Name, '%', Kind::Pane)` expands to `pub struct Name(u32)`, its
-/// `Display` (`%N`), its `number()`, and a `FromStr` that reads `%N` back
-/// or fails with `Usage::Not(Kind::Pane, …)`. Without a kind there is no
+/// `Display` (`%N`), `number()`, `Wire` (the `u32`), and a `FromStr` that
+/// reads `%N` or fails with `Usage::Not(Kind::Pane, …)`. Without a kind there is no
 /// `FromStr`: the id reads its own.
 macro_rules! id {
     ($(#[$doc:meta])* $name:ident, $sigil:literal $(, $kind:expr)?) => {
         $(#[$doc])*
         #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
         pub struct $name(u32);
+        crate::wire::wire_struct!($name { 0 });
         impl fmt::Display for $name {
             fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
                 write!(f, concat!($sigil, "{}"), self.0)
@@ -59,6 +60,18 @@ id!(
 pub struct BufferId {
     run: Run,
     number: u64,
+}
+
+impl crate::wire::Wire for BufferId {
+    fn put(&self, out: &mut impl crate::wire::Sink) {
+        (self.run, self.number).put(out);
+    }
+    fn get(r: &mut crate::wire::Reader<'_>) -> Result<Self, crate::wire::Error> {
+        let (run, number) = (Run::get(r)?, u64::get(r)?);
+        (number > 0)
+            .then_some(Self { run, number })
+            .ok_or(crate::wire::Error::Bad("buffer id"))
+    }
 }
 
 impl BufferId {

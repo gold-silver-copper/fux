@@ -3,7 +3,6 @@
 //! built, and never reads words itself. Big-endian numbers; a string or a
 //! list is its length then its items; an option or an enum its tag first.
 use crate::command::{EnvPatch, Limit, Percent};
-use crate::id::{ClientId, PaneId, TabId, WsId};
 use crate::keys::mouse::MouseButton;
 use crate::keys::{Direction, KeyPress};
 use fuxix::Allocation;
@@ -540,37 +539,16 @@ macro_rules! tuple_wire {
 }
 tuple_wire!((A: 0, B: 1), (A: 0, B: 1, C: 2));
 
-/// Formatting never needs an owned spelling: count into stack state,
-/// then write the same Display directly to the wire sink.
-fn put_text(value: &impl std::fmt::Display, out: &mut impl Sink) {
-    if out.storage(0) {
-        return;
-    }
-    struct Output<'a, S>(&'a mut S);
-    impl<S: Sink> std::fmt::Write for Output<'_, S> {
-        fn write_str(&mut self, text: &str) -> std::fmt::Result {
-            self.0.extend_from_slice(text.as_bytes());
-            if self.0.full() {
-                Err(std::fmt::Error)
-            } else {
-                Ok(())
-            }
-        }
-    }
-    let mut count = fuxth::Render::new(usize::MAX);
-    // Display may fail only if its formatter fails; Count never does.
-    let _ = std::fmt::write(&mut count, format_args!("{value}"));
-    u32::try_from(count.bytes()).unwrap_or(u32::MAX).put(out);
-    let _ = std::fmt::write(&mut Output(out), format_args!("{value}"));
-}
-
 /// `text_wire!(Ty, "what")` expands to `impl Wire for Ty`: its text
-/// (`%3`, `C-a`), read back through `FromStr` (else `Error::Bad("what")`).
+/// (`C-a`, `closed`), read back through `FromStr` (else `Error::Bad("what")`).
 macro_rules! text_wire {
     ($ty:ty, $sigil:literal) => {
         impl Wire for $ty {
             fn put(&self, out: &mut impl crate::wire::Sink) {
-                put_text(self, out);
+                // A spelling is temporary, not retained storage.
+                if !out.storage(0) {
+                    self.to_string().put(out);
+                }
             }
             /// Only the text `put` writes for the value: another
             /// spelling of it (`S-.` for `.`) would decode to a value
@@ -578,26 +556,15 @@ macro_rules! text_wire {
             fn get(r: &mut Reader<'_>) -> Result<Self, Error> {
                 let text = String::get(r)?;
                 let value: Self = text.parse().map_err(|_| Error::Bad($sigil))?;
-                if crate::words::writes_exactly(&text, |out| write!(out, "{value}")) {
-                    Ok(value)
-                } else {
-                    Err(Error::Bad($sigil))
-                }
+                crate::words::writes_exactly(&text, |out| write!(out, "{value}"))
+                    .then_some(value)
+                    .ok_or(Error::Bad($sigil))
             }
         }
     };
 }
-text_wire!(PaneId, "pane id");
-text_wire!(TabId, "tab id");
-text_wire!(WsId, "workspace id");
-text_wire!(ClientId, "client id");
-text_wire!(crate::id::BufferId, "buffer id");
 text_wire!(KeyPress, "key");
 text_wire!(crate::code::Code, "code");
-text_wire!(crate::command::Version, "version");
-text_wire!(crate::command::LayoutRevision, "layout revision");
-text_wire!(crate::command::Run, "server run");
-text_wire!(crate::events::Cursor, "cursor");
 
 /// Its seconds, read back only if a wait may wait that long.
 impl Wire for Limit {
@@ -698,10 +665,10 @@ macro_rules! wire_enum {
 pub(crate) use wire_enum;
 
 /// `wire_struct!(Ty { a, b })` expands to `impl Wire for Ty`: its fields,
-/// one at least, one after another, in the order listed. For a type
+/// one at least, in order, by name or tuple index (`Ty { 0 }`). For a type
 /// declared elsewhere; one declared here says its fields once, in `wire!`.
 macro_rules! wire_struct {
-    ($ty:path { $($f:ident),+ $(,)? }) => {
+    ($ty:path { $($f:tt),+ $(,)? }) => {
         impl $crate::wire::Wire for $ty {
             fn put(&self, out: &mut impl crate::wire::Sink) {
                 $($crate::wire::Wire::put(&self.$f, out);)*
@@ -922,6 +889,65 @@ mod tests {
         assert!(KeyPress::get(&mut Reader::new(&text("S-."))).is_err());
         let dot = KeyPress::get(&mut Reader::new(&text("."))).ok();
         assert_eq!(dot.map(|k| encode(&k).unwrap_or_default()), Some(text(".")));
+    }
+
+    #[test]
+    fn numeric_tokens_round_trip_without_a_decode_allocation() -> TestResult {
+        fn token<T: Wire + std::str::FromStr + std::fmt::Debug + PartialEq>(
+            text: &str,
+            size: usize,
+        ) -> TestResult {
+            let value: T = text.parse().map_err(|_| "token")?;
+            let bytes = encode(&value)?;
+            assert_eq!(bytes.len(), size);
+            let mut reader = Reader::new(&bytes);
+            reader.1 = fuxth::Grant::new(0);
+            assert_eq!(reader.whole::<T>()?, value);
+            Ok(())
+        }
+        token::<crate::id::PaneId>("%4294967295", 4)?;
+        token::<crate::id::TabId>("@4294967295", 4)?;
+        token::<crate::id::WsId>("+4294967295", 4)?;
+        token::<crate::id::ClientId>("c4294967295", 4)?;
+        token::<crate::command::Run>("4294967295-ffffffffffffffff", 12)?;
+        token::<crate::command::Version>(
+            "%4294967295:18446744073709551615.18446744073709551615.18446744073709551615.18446744073709551615.1:4294967295-ffffffffffffffff",
+            49,
+        )?;
+        token::<crate::command::LayoutRevision>(
+            "@4294967295:18446744073709551615:4294967295-ffffffffffffffff",
+            24,
+        )?;
+        token::<crate::id::BufferId>("b18446744073709551615:4294967295-ffffffffffffffff", 20)?;
+        token::<crate::events::Cursor>("18446744073709551615:4294967295-ffffffffffffffff", 20)
+    }
+
+    #[test]
+    fn numeric_tokens_keep_their_value_checks() -> TestResult {
+        let run = "1-2".parse::<crate::command::Run>().map_err(|()| "run")?;
+        assert_eq!(
+            Reader::new(&encode(&(run, 0u64))?).whole::<crate::id::BufferId>(),
+            Err(Error::Bad("buffer id"))
+        );
+        let mut counts = encode(&crate::command::Counts::default())?;
+        *counts.last_mut().ok_or("ended byte")? = 2;
+        assert_eq!(
+            Reader::new(&counts).whole::<crate::command::Counts>(),
+            Err(Error::Tag("flag", 2))
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn storage_counts_retained_allocations_without_temporary_spellings() -> TestResult {
+        let key = "C-a".parse::<KeyPress>()?;
+        let code = crate::code::Code::Closed;
+        let text = String::with_capacity(37);
+        let capacity = text.capacity();
+        assert_eq!(retained(&(key, code, text)), capacity);
+        assert_eq!(encode(&key)?, encode(&"C-a".to_owned())?);
+        assert_eq!(encode(&code)?, encode(&"closed".to_owned())?);
+        Ok(())
     }
 
     #[test]
