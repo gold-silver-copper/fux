@@ -62,19 +62,13 @@ const ACCEPTS: usize = 64;
 /// What a connection's buffers keep once they empty; beyond it, the memory
 /// a large frame or paint took is given back.
 const CONN_KEEP: usize = 64 * 1024;
-/// What may wait unwritten for an attached client, its paint aside
-/// (`Conn::backlog`), before what others send it in any number is refused,
-/// and said to be (`Refused`): a copy, a program, keys. A paint is made
-/// only once all that waited is written (`Conn::paint_due`), so none is
-/// ever refused, nor the state it shows moved on without it.
+/// What may wait unwritten for an attached client, its generated paint
+/// aside, before the next addition detaches it. Checked before each
+/// complete addition, including every frame of a split clipboard copy:
+/// the queue holds one paint plus `OUT_MAX` plus one complete addition
+/// and its framing, then the final cursor restore and Exit. Closing
+/// accepts nothing more. A paint is made only once the queue empties.
 pub(crate) const OUT_MAX: usize = 4 << 20;
-/// How far behind the client's own conversation with the server may go:
-/// questions for its terminal, the bell, its screen ended. Each is small,
-/// and one refused would leave the session and the terminal disagreeing,
-/// so a client this far behind is detached instead, told why. One frame of
-/// theirs, `MAX_FRAME` at most, may take the backlog past `OUT_MAX`; a
-/// frame's room more is the conversation's.
-pub(crate) const TALK_MAX: usize = OUT_MAX + 2 * crate::protocol::MAX_FRAME;
 /// How long a stopping server waits for its clients and processes.
 const STOP_WAIT: Duration = Duration::from_millis(500);
 /// A condition that persists is logged once, then at most this often.
@@ -275,35 +269,19 @@ impl PaintClock {
     }
 }
 
-/// What others send an attached client in any number, which `OUT_MAX`
-/// bounds.
-#[derive(Clone, Copy)]
-enum Theirs {
-    /// A copy for its clipboard, a pane's OSC 52 or copy mode's.
-    Copy,
-    /// A screen to open on the receiving client.
-    Open,
-    /// Keys to take as typed (`send-keys` to it).
-    Keys,
-}
-
-/// What a client was not sent, as `waiting` bytes waited unwritten for
-/// it: told it, and to the request that sent it, if one did.
-struct Refused {
+/// A client detached because `waiting` bytes waited unwritten for it.
+struct Behind {
     client: ClientId,
-    theirs: Theirs,
     waiting: usize,
 }
 
-impl std::fmt::Display for Refused {
+impl std::fmt::Display for Behind {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let what = match self.theirs {
-            Theirs::Copy => "a copy (OSC 52) was not sent to its clipboard",
-            Theirs::Open => "the program was not sent it",
-            Theirs::Keys => "the keys were not sent it",
-        };
         let (client, waiting) = (self.client, self.waiting);
-        write!(f, "{client} is behind, {waiting} bytes unwritten: {what}")
+        write!(
+            f,
+            "{client} was detached: {waiting} bytes waited unwritten for it"
+        )
     }
 }
 
@@ -515,35 +493,23 @@ impl Conn {
     }
 
     /// Sends the client attached here `frame`, an `Exit` as its last
-    /// frame; refused if it is `theirs` and `OUT_MAX` waits. A client
-    /// `TALK_MAX` behind is detached.
+    /// frame. A client `OUT_MAX` behind is detached and told why.
     fn tell(
         &mut self,
         session: &mut Session,
         frame: &ToAttached,
-        theirs: Option<Theirs>,
         now: Instant,
-    ) -> Result<(), Refused> {
+    ) -> Result<(), Behind> {
         let Some(client) = self.attached().map(|a| a.client) else {
             return Ok(());
         };
         let waiting = self.backlog();
-        match theirs {
-            Some(theirs) if waiting >= OUT_MAX => {
-                return Err(Refused {
-                    client,
-                    theirs,
-                    waiting,
-                });
-            }
-            // A last frame lets the queue grow no more: it keeps its reason.
-            None if waiting >= TALK_MAX && !matches!(frame, ToAttached::Exit(_)) => {
-                log!("{client} detached: {waiting} bytes waited unwritten for it");
-                let why = format!("detached: {waiting} bytes waited unwritten for this terminal");
-                self.end(session, &ToAttached::Exit(&why), now);
-                return Ok(());
-            }
-            Some(_) | None => {}
+        // A last frame lets the queue grow no more: it keeps its reason.
+        if waiting >= OUT_MAX && !matches!(frame, ToAttached::Exit(_)) {
+            let behind = Behind { client, waiting };
+            log!("{behind}");
+            self.end(session, &ToAttached::Exit(&behind.to_string()), now);
+            return Err(behind);
         }
         match frame {
             ToAttached::Paint(bytes) => Attached::paint(&mut self.out, bytes),
@@ -987,11 +953,9 @@ impl Server {
     }
 
     /// Does what the session asks outside itself: sends its frames,
-    /// telling each client what it was refused, then stops if it asks.
+    /// then stops if it asks.
     fn deliver(&mut self, now: Instant) {
-        for refused in self.send_frames(now) {
-            (self.session).notify_to(refused.client, refused.to_string(), true);
-        }
+        let _ = self.send_frames(now);
         let (stops, rest) = (mem::take(&mut self.session.outbox).into_iter())
             .partition(|o| matches!(o, Outgoing::Shutdown(_)));
         self.session.outbox = rest;
@@ -1005,32 +969,18 @@ impl Server {
     /// Sends the clients the frames the session has for them, and says
     /// what it could not send one too far behind. A stop it asks for
     /// stays, for `deliver`: the answer that asked for it goes first.
-    fn send_frames(&mut self, now: Instant) -> Vec<Refused> {
+    fn send_frames(&mut self, now: Instant) -> Vec<Behind> {
         let mut refused = Vec::new();
         for outgoing in mem::take(&mut self.session.outbox) {
-            let (client, frame, theirs) = match outgoing {
+            let (client, frame) = match outgoing {
                 Outgoing::Shutdown(_) => {
                     self.session.outbox.push(outgoing);
                     continue;
                 }
-                Outgoing::Copy(client, osc) => {
-                    (client, ToAttached::Paint(osc.into()), Some(Theirs::Copy))
-                }
-                Outgoing::To(client, frame) => {
-                    let theirs = match frame {
-                        ToAttached::Open(_) => Some(Theirs::Open),
-                        ToAttached::Keys(_) => Some(Theirs::Keys),
-                        ToAttached::Paint(_)
-                        | ToAttached::Exit(_)
-                        | ToAttached::NeedsInitial
-                        | ToAttached::Welcome(..)
-                        | ToAttached::Ended(_) => None,
-                    };
-                    (client, frame, theirs)
-                }
+                Outgoing::To(client, frame) => (client, frame),
             };
             if let Some(conn) = self.conns.iter_mut().find(|c| c.serves(client))
-                && let Err(no) = conn.tell(&mut self.session, &frame, theirs, now)
+                && let Err(no) = conn.tell(&mut self.session, &frame, now)
             {
                 refused.push(no);
             }
@@ -1532,25 +1482,21 @@ impl Server {
             None => cli,
         };
         let begun = session.begin(request, &origin, now);
-        // What it sends a client goes now: a program or keys refused are
-        // its answer. Nothing else sends either.
+        // What it sends a client goes now: detaching one too far behind
+        // fails the request that sent it the frame.
         let refused = self.send_frames(now);
         let session = &mut self.session;
         let Some(conn) = self.conns.get_mut(index) else {
             return;
         };
-        let theirs = |r: &&Refused| matches!(r.theirs, Theirs::Open | Theirs::Keys);
         match begun {
-            Begun::Done(outcome) => match refused.iter().find(theirs) {
+            Begun::Done(outcome) => match refused.first() {
                 Some(no) => {
-                    conn.answer(session, Reply::failed(Code::InputFull, no.to_string()), now)
+                    conn.answer(session, Reply::failed(Code::NoClient, no.to_string()), now)
                 }
                 None => conn.answer(session, outcome, now),
             },
             Begun::Waiting(waiting) => conn.enter(session, Stage::Waiting(waiting), now),
-        }
-        for no in refused {
-            session.notify_to(no.client, no.to_string(), true);
         }
     }
 
@@ -2642,38 +2588,131 @@ mod tests {
         Ok(())
     }
 
-    /// A client too far behind is refused what others send it, a screen
-    /// to open, and told how far; its own conversation goes on past that,
-    /// until it is detached, told why.
     #[test]
-    fn a_client_behind_is_refused_what_others_send_it() -> Result<(), String> {
-        // A paint, however large, is no backlog: the client is not behind.
-        let (mut session, mut conn, _peer) = attached(Instant::now())?;
-        conn.out.push(&vec![0; 2 * TALK_MAX]);
+    fn a_client_behind_is_detached_and_its_sender_told() -> Result<(), Box<dyn std::error::Error>> {
+        use crate::command::{ClientAction, Command, Input};
+        for action in [
+            ClientAction::Open(crate::screens::Open::Copy),
+            ClientAction::Keys(vec![Input::Text("keys".into())]),
+        ] {
+            let (mut server, _peers, client) = ordered_fixture()?;
+            server.session.outbox.clear();
+            server
+                .conns
+                .get_mut(1)
+                .ok_or("client")?
+                .out
+                .push(&vec![0; OUT_MAX]);
+            server.request(
+                0,
+                Command::Client {
+                    client: Some(client),
+                    action,
+                }
+                .into(),
+                Context::default(),
+                None,
+                Instant::now(),
+            );
+            let why = format!("{client} was detached: {OUT_MAX} bytes waited unwritten for it");
+            assert!(!server.session.views.contains_key(&client));
+            let receiver = server.conns.get_mut(1).ok_or("client")?;
+            assert!(matches!(receiver.stage, Stage::Closing));
+            receiver.out.take(OUT_MAX);
+            assert_eq!(receiver.out.len(), ToAttached::Exit(&why).encode()?.len());
+            assert_eq!(sent(receiver), (Vec::new(), Some(why.clone())));
+            let mut decoder = Decoder::default();
+            decoder.push(server.conns.first().ok_or("sender")?.out.as_slice());
+            let Some(ToCommand::Part(part)) = decoder.frame()? else {
+                return Err("sender was not answered".into());
+            };
+            let reply = crate::wire::Reader::new(&part).whole::<Reply>()?;
+            assert_eq!(reply.response, Reply::failed(Code::NoClient, why).response);
+            assert_eq!(decoder.frame()?, Some(ToCommand::PartsEnd));
+            assert!(decoder.frame::<ToCommand>()?.is_none());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn clipboard_backlog_counts_every_split_frame_but_excludes_the_generated_paint()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let now = Instant::now();
+        let (mut server, _peer) = server()?;
+        server.session.outbox.clear();
+        let conn = server.conns.first_mut().ok_or("connection")?;
+        let attached = conn.attached().ok_or("attached")?;
+        let client = attached.client;
+        attached.shown.modes.cursor_colour = Some([0, 255, 0].into());
+        // Only this generated screen paint is left out of the backlog.
+        Attached::paint(&mut conn.out, &vec![0; 2 * OUT_MAX]);
         conn.paint = (0, conn.out.len());
+        assert_eq!(conn.backlog(), 0);
         let bell = ToAttached::Paint(crate::outer::BELL.into());
-        assert!(conn.tell(&mut session, &bell, None, Instant::now()).is_ok());
-        assert!(matches!(conn.stage, Stage::Attached(_)), "detached");
+        assert!(conn.tell(&mut server.session, &bell, now).is_ok());
+        assert_eq!(conn.backlog(), crate::outer::BELL.len() + 5);
+        conn.out.push(&vec![0; OUT_MAX - 1 - conn.backlog()]);
+        let before = conn.out.len();
+        let mut osc = b"\x1b]52;c;".to_vec();
+        osc.extend(std::iter::repeat_n(b'A', crate::copy::MAX_CLIPBOARD));
+        osc.push(7);
+        server
+            .session
+            .outbox
+            .push(Outgoing::To(client, ToAttached::Paint(osc.clone().into())));
+        assert!(server.send_frames(now).is_empty());
+        let conn = server.conns.first_mut().ok_or("connection")?;
+        assert!(matches!(conn.stage, Stage::Attached(_)));
+        let waiting = OUT_MAX - 1 + osc.len() + 2 * 5;
+        assert_eq!(conn.backlog(), waiting, "both frames count in full");
+        let mut decoder = Decoder::default();
+        decoder.push(conn.out.as_slice().get(before..).ok_or("copy frames")?);
+        let mut copied = Vec::new();
+        let mut frames = 0;
+        while let Some(ToAttached::Paint(bytes)) = decoder.frame()? {
+            copied.extend_from_slice(&bytes);
+            frames += 1;
+        }
+        assert_eq!(copied, osc, "a complete addition is never dropped");
+        assert_eq!(frames, 2);
+        let before = conn.out.len();
+        let refused = conn
+            .tell(&mut server.session, &bell, now)
+            .err()
+            .ok_or("not detached")?;
+        assert_eq!((refused.client, refused.waiting), (client, waiting));
+        assert!(matches!(conn.stage, Stage::Closing));
+        assert!(!server.session.views.contains_key(&client));
+        let why = refused.to_string();
+        let restore = b"\x1b]112\x1b\\";
+        let exit = ToAttached::Exit(&why);
+        assert_eq!(
+            conn.out.len(),
+            before + restore.len() + 5 + exit.encode()?.len()
+        );
+        conn.out.take(before);
+        assert_eq!(sent(conn), (restore.to_vec(), Some(why)));
+        let closing = conn.out.len();
+        for frame in [
+            bell,
+            ToAttached::Paint(osc.into()),
+            ToAttached::Exit("another reason"),
+        ] {
+            assert!(conn.tell(&mut server.session, &frame, now).is_ok());
+        }
+        assert_eq!(conn.out.len(), closing, "closing accepts nothing more");
+        Ok(())
+    }
+
+    #[test]
+    fn a_last_frame_keeps_its_reason_even_when_the_client_is_behind() -> Result<(), String> {
         let (mut session, mut conn, _peer) = attached(Instant::now())?;
         conn.out.push(&vec![0; OUT_MAX]);
-        let run = ToAttached::Open(crate::screens::Open::Copy);
-        let refused = conn
-            .tell(&mut session, &run, Some(Theirs::Open), Instant::now())
-            .err();
-        assert_eq!(refused.map(|r| r.waiting), Some(OUT_MAX));
-        assert!(conn.tell(&mut session, &bell, None, Instant::now()).is_ok());
-        assert!(conn.out.len() > OUT_MAX, "the bell was sent");
-        conn.out.push(&vec![0; TALK_MAX - OUT_MAX]);
-        let before = conn.out.len();
-        assert!(conn.tell(&mut session, &bell, None, Instant::now()).is_ok());
+        let exit = ToAttached::Exit("the reason");
+        assert!(conn.tell(&mut session, &exit, Instant::now()).is_ok());
         assert!(matches!(conn.stage, Stage::Closing));
-        let mut decoder = Decoder::default();
-        decoder.push(conn.out.as_slice().get(before..).unwrap_or_default());
-        let exit = decoder.frame::<ToAttached>().ok().flatten();
-        assert!(
-            matches!(exit, Some(ToAttached::Exit(why)) if why.starts_with("detached: ")),
-            "{exit:?}"
-        );
+        conn.out.take(OUT_MAX);
+        assert_eq!(sent(&conn), (Vec::new(), Some("the reason".into())));
         Ok(())
     }
 
