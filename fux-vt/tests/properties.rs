@@ -336,6 +336,26 @@ fn cells_set_and_borrowed_copy_keep_text_shape_and_report_truncation() -> Result
     models::stored(&cells, 1, source, false);
     assert_eq!(cells.get(1).ok_or("partial")?.contents(), repeated('界', 5));
     assert_eq!(cells, Cells::try_from_iter(cells.iter())?);
+
+    // Live long text admits exactly the row limit after compaction; a
+    // cluster one byte past it is cut, with or without overwritten text.
+    let limit = Cells::text_limit(2);
+    let over = repeated('c', limit.saturating_sub(127));
+    for overwritten in [false, true] {
+        let mut cells = Cells::new(2)?;
+        if overwritten {
+            for c in ['b', 'a'] {
+                let text = repeated(c, limit.saturating_sub(128));
+                assert!(cells.set(0, CellRef::new(&text, false, attributes)));
+            }
+        }
+        assert!(cells.set(1, CellRef::new(&repeated('a', 128), false, attributes)));
+        if overwritten {
+            assert_eq!(cells.text_len(), limit);
+        }
+        assert!(!cells.set(0, CellRef::new(&over, false, attributes)));
+        assert_eq!(cells.get(0).ok_or("cut")?.contents(), repeated('c', 17));
+    }
     Ok(())
 }
 
@@ -355,14 +375,7 @@ fn cell_attributes_preserve_text_shape_and_other_cells() -> Result {
             let before = cells.clone();
             cells.set_attributes(i, attributes);
             models::unchanged(&cells, &before, i..i.saturating_add(1));
-            let old = before.get(i).ok_or("original cell")?;
-            let got = cells.get(i).ok_or("restyled cell")?;
-            assert_eq!(got.contents(), old.contents());
-            assert_eq!(
-                (got.is_wide(), got.is_wide_continuation()),
-                (old.is_wide(), old.is_wide_continuation())
-            );
-            assert_eq!(got.attributes(), attributes);
+            models::restyled(&cells, &before, i, attributes);
         }
     }
     let before = cells.clone();

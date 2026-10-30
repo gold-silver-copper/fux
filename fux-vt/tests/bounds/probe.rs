@@ -42,7 +42,7 @@ impl Scale {
             Self::Hundred => 100,
         }
     }
-    /// Its name in the known-failing list: `1x`, `10x` or `100x`.
+    /// Its name in a failure: `1x`, `10x` or `100x`.
     pub fn name(self) -> &'static str {
         match self {
             Self::Once => "1x",

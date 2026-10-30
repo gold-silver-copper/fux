@@ -133,8 +133,6 @@ Conventions for every row:
 - Seeds: every row's reproducer is a frozen seed in `tests/seeds.rs`
   (written to `fuzz/seeds/`), replayed by
   `every_seed_reaches_its_limit` to check it reaches its limit.
-- `tests/bounds/known-failing.txt` lists rows known to fail, with their
-  error; a listed row that passes fails the suite. It is empty now.
 
 In the test column, `bNN` is the probe of that name in
 `tests/bounds/rows.rs`, run by

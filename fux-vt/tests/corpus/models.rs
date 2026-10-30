@@ -298,6 +298,20 @@ pub fn stored(cells: &Cells, i: usize, source: CellRef<'_>, whole: bool) {
     assert_eq!(got.attributes(), source.attributes());
 }
 
+/// Restyling keeps a cell's text and halves and sets its attributes.
+pub fn restyled(cells: &Cells, before: &Cells, i: usize, attributes: Attributes) {
+    let (Some(old), Some(got)) = (before.get(i), cells.get(i)) else {
+        assert!(i >= before.len() && i >= cells.len());
+        return;
+    };
+    assert_eq!(got.contents(), old.contents());
+    assert_eq!(
+        (got.is_wide(), got.is_wide_continuation()),
+        (old.is_wide(), old.is_wide_continuation())
+    );
+    assert_eq!(got.attributes(), attributes);
+}
+
 /// An edit leaves every cell outside its range untouched.
 pub fn unchanged(cells: &Cells, before: &Cells, range: std::ops::Range<usize>) {
     assert!(cells.range(0..range.start).eq(before.range(0..range.start)));

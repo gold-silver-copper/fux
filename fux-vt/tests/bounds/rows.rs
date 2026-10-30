@@ -2323,8 +2323,7 @@ pub const ROWS: &[(&str, Row)] = &[
 /// Runs row `name` at `scale`, at every chunking, until one finds it past
 /// its bound.
 pub fn run(row: Row, scale: Scale) -> Result<(), Vec<String>> {
-    // Every chunking is run, and what each found is told apart, so that a
-    // row known to fail is seen to fail as it is known to at each.
+    // Every chunking is run, so that the error names every chunking that fails.
     let found: Vec<String> = (CHUNKS.into_iter())
         .filter_map(|chunk| {
             row(scale, chunk).err().map(|e| match chunk {

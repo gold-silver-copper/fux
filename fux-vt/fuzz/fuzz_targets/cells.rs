@@ -84,14 +84,7 @@ fuzz_target!(|input: (u8, Vec<Op>)| {
             Op::SetAttributes(i, s) => {
                 let i = usize::from(*i % 10);
                 cells.set_attributes(i, style(s));
-                if let (Some(old), Some(got)) = (before.get(i), cells.get(i)) {
-                    assert_eq!(got.contents(), old.contents());
-                    assert_eq!(
-                        (got.is_wide(), got.is_wide_continuation()),
-                        (old.is_wide(), old.is_wide_continuation())
-                    );
-                    assert_eq!(got.attributes(), style(s));
-                }
+                models::restyled(&cells, &before, i, style(s));
                 Some(i..i.saturating_add(1))
             }
             Op::Fill(a, b, continuation, s) => {

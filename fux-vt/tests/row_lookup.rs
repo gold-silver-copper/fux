@@ -13,35 +13,28 @@ type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
 mod test_rng;
 use test_rng::Rng;
 
-impl Rng {
-    /// Preserve row lookup's u64 remainder before adding one.
-    fn upto64(&mut self, n: u64) -> u64 {
-        self.next().checked_rem(n).unwrap_or(0).saturating_add(1)
-    }
-}
-
 /// One random step: mostly lines and line feeds, with every kind of
 /// scroll, margins, erasing and now and then a resize.
 fn step(r: &mut Rng, p: &mut Parser) -> Result {
-    let rows = u64::from(p.screen().size().rows());
-    let bytes = match r.upto64(20) {
+    let rows = usize::from(p.screen().size().rows());
+    let bytes = match r.upto(20) {
         1..=6 => format!("line {}\r\n", r.next() % 1000),
-        7 => format!("\x1b[{};{}r", r.upto64(rows), r.upto64(rows)),
+        7 => format!("\x1b[{};{}r", r.upto(rows), r.upto(rows)),
         8 => "\x1b[r".to_owned(),
-        9 => format!("\x1b[{}H\x1bM", r.upto64(rows)),
-        10 => format!("\x1b[{}H\x1b[{}L", r.upto64(rows), r.upto64(3)),
-        11 => format!("\x1b[{}H\x1b[{}M", r.upto64(rows), r.upto64(3)),
-        12 => format!("\x1b[{}S", r.upto64(3)),
-        13 => format!("\x1b[{}T", r.upto64(3)),
-        14 => format!("\x1b[{}H\n\n", r.upto64(rows)),
+        9 => format!("\x1b[{}H\x1bM", r.upto(rows)),
+        10 => format!("\x1b[{}H\x1b[{}L", r.upto(rows), r.upto(3)),
+        11 => format!("\x1b[{}H\x1b[{}M", r.upto(rows), r.upto(3)),
+        12 => format!("\x1b[{}S", r.upto(3)),
+        13 => format!("\x1b[{}T", r.upto(3)),
+        14 => format!("\x1b[{}H\n\n", r.upto(rows)),
         15 => "\x1b[2J".to_owned(),
         16 => "\x1b[?1049h\x1bM\x1b[L\x1b[?1049l".to_owned(),
         17 => {
-            let size = Size::new(u16::try_from(r.upto64(10).saturating_add(2))?, 12)?;
+            let size = Size::new(u16::try_from(r.upto(10).saturating_add(2))?, 12)?;
             p.resize(size)?;
             return Ok(());
         }
-        _ => format!("\x1b[{}Hx\x1b[{}D", r.upto64(rows), r.upto64(5)),
+        _ => format!("\x1b[{}Hx\x1b[{}D", r.upto(rows), r.upto(5)),
     };
     p.process(bytes.as_bytes())?;
     Ok(())
