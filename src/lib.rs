@@ -34,7 +34,6 @@ pub mod json;
 pub mod keymap;
 pub mod layout;
 pub mod outer;
-mod overlay;
 pub mod pane;
 pub mod presentation;
 pub mod process;

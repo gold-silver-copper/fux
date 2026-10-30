@@ -98,7 +98,8 @@ pub enum Outcome<R> {
     Paused,
 }
 
-/// How far a program may go: values on the stack, calls nested.
+/// How far a program may go: values on the stack and `let` names of the
+/// calls nested, each up to `stack`; calls nested.
 #[derive(Clone, Copy, Debug)]
 pub struct Limits {
     pub stack: usize,
@@ -515,9 +516,15 @@ impl<A: AppValue> Machine<A> {
                     } else if self.frames.len() > self.limits.calls {
                         return Err(self.too_deep());
                     }
-                    let base = self.locals.len();
+                    // Each call's names count against the stack's limit,
+                    // before they are made.
                     let slots = program.words.get(*id).map_or(0, |w| w.locals);
-                    self.locals.resize(base.saturating_add(slots), None);
+                    let base = self.locals.len();
+                    let end = base.saturating_add(slots);
+                    if end > self.limits.stack {
+                        return Err(self.fail(Code::StackOverflow, "let names fill the stack"));
+                    }
+                    self.locals.resize(end, None);
                     self.frames.push(Frame {
                         code: Some(*id),
                         step: 0,

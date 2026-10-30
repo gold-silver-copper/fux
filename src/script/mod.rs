@@ -679,28 +679,7 @@ impl From<fuxth::Error> for Failed {
 /// `error` as fux tells it, with how its word is used where it was given
 /// too few values, the wrong kind, or one out of its range.
 fn telling(error: fuxth::Error) -> Failed {
-    let usage = match error.code {
-        Lang::StackUnderflow | Lang::Type | Lang::Range => true,
-        Lang::Require
-        | Lang::OpenQuote
-        | Lang::UnknownWord
-        | Lang::MissingToken
-        | Lang::BadName
-        | Lang::NotTopLevel
-        | Lang::Unmatched
-        | Lang::Unclosed
-        | Lang::StackOverflow
-        | Lang::CallDepth
-        | Lang::DivByZero
-        | Lang::Overflow
-        | Lang::Unset
-        | Lang::Unused
-        | Lang::BadCodes
-        | Lang::Fail
-        | Lang::TooLong
-        | Lang::Contract
-        | Lang::Host(_) => false,
-    };
+    let usage = matches!(error.code, Lang::StackUnderflow | Lang::Type | Lang::Range);
     told(error, usage)
 }
 
@@ -863,7 +842,13 @@ pub fn libraries() -> Result<(Compiler<Fux>, Rc<[fuxth::Doc]>), Failed> {
         .library("stdlib.fux", fuxth::STDLIB)
         .map_err(told)?;
     docs.extend(compiler.library("library.fux", LIBRARY).map_err(told)?);
-    compiler.inputs("dump", "scope").map_err(told)?;
+    for (word, kinds) in [
+        ("dump", "scope"),
+        ("info", "scope"),
+        ("all-history", "pane-builder"),
+    ] {
+        compiler.inputs(word, kinds).map_err(told)?;
+    }
     for word in [
         "layout-current",
         "even-h",
@@ -1728,11 +1713,7 @@ pub fn main(args: &[String], out: &mut dyn Write) -> Result<u8, Failed> {
         return Ok(0);
     }
     let (tokens, from) = program(args)?;
-    // Only words can be a file mistaken for a program.
-    let mut machine = compiled(None, &tokens).map_err(|e| match from {
-        Given::Words => Failed::from(a_file(e, args)),
-        Given::Stdin | Given::File(_) => Failed::from(e),
-    })?;
+    let mut machine = compiled(None, &tokens)?;
     let mut state = Draft::default();
     let mut host = Host::cli(client::context(), &mut state, out);
     let mut cli = Cli {
@@ -1769,22 +1750,6 @@ pub fn main(args: &[String], out: &mut dyn Write) -> Result<u8, Failed> {
     ran?;
     printed?;
     Ok(cli.status.unwrap_or(0))
-}
-
-/// `error`, an unknown word that is a file's path, as the first argument or
-/// in the only one (`fux ./job.fux`, `fux 'my job.fux'`), saying how to run
-/// it: never run, as no argument is guessed to be a file.
-fn a_file(mut error: fuxth::Error, args: &[String]) -> fuxth::Error {
-    let word = error.word.as_deref();
-    if error.code == Lang::UnknownWord
-        && let Some(file) = (args.first())
-            .filter(|a| args.len() == 1 || word == Some(a.as_str()))
-            .filter(|a| std::path::Path::new(a).is_file())
-    {
-        let file = crate::words::quote(file);
-        error.message += &format!("; {file} is a file, which `fux --file {file}` runs");
-    }
-    error
 }
 
 /// The program `args` give, and where it came from: none attaches; `-` is
@@ -2118,6 +2083,33 @@ pub(crate) mod tests {
                 Value::Int(1)
             ]
         );
+        Ok(())
+    }
+
+    #[test]
+    fn version_text_from_another_run_is_read_without_asking() -> TestResult {
+        use super::*;
+        // A key's program runs on its server's run; the version is another's.
+        let context = Context {
+            of: Some("2-0".parse().map_err(|()| "a run")?),
+            ..Context::default()
+        };
+        let other = "%1:0.0.0.0.0:1-0";
+        let code = format!("str {other} version str {other} counts");
+        let mut machine = compile(&fuxth::token::source("key", &code)?)?;
+        let mut out = Vec::new();
+        let mut host = Host::new(context, None, &mut out);
+        let left = run_capped(
+            &mut machine,
+            &mut host,
+            &mut ConfigOnly::default(),
+            None,
+            None,
+        )?;
+        let text: Vec<String> = (left.iter().map(Value::text))
+            .collect::<Result<_, _>>()
+            .map_err(|f| f.message)?;
+        assert_eq!(text, [other, "0 0 0 0 0"]);
         Ok(())
     }
 
