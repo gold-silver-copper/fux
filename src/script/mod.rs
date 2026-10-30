@@ -2087,6 +2087,33 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn version_text_from_another_run_is_read_without_asking() -> TestResult {
+        use super::*;
+        // A key's program runs on its server's run; the version is another's.
+        let context = Context {
+            of: Some("2-0".parse().map_err(|()| "a run")?),
+            ..Context::default()
+        };
+        let other = "%1:0.0.0.0.0:1-0";
+        let code = format!("str {other} version str {other} counts");
+        let mut machine = compile(&fuxth::token::source("key", &code)?)?;
+        let mut out = Vec::new();
+        let mut host = Host::new(context, None, &mut out);
+        let left = run_capped(
+            &mut machine,
+            &mut host,
+            &mut ConfigOnly::default(),
+            None,
+            None,
+        )?;
+        let text: Vec<String> = (left.iter().map(Value::text))
+            .collect::<Result<_, _>>()
+            .map_err(|f| f.message)?;
+        assert_eq!(text, [other, "0 0 0 0 0"]);
+        Ok(())
+    }
+
+    #[test]
     fn attach_words_accept_compiled_action_answers_and_keep_their_run() -> TestResult {
         use super::*;
         use crate::command::{AttachTarget, Command, Request};

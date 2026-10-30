@@ -7149,9 +7149,6 @@ mod tests {
         };
         let refused = failed(&mut s, &format!("str {other} changed wait"));
         assert!(refused.contains("from another server run"), "{refused}");
-        // Its text alone asks no server: version and counts read it here.
-        let local = output(&mut s, &format!("str {other} version str {other} counts"))?;
-        assert!(local.starts_with(&format!("{other}\n")), "{local}");
         let never = command::Version {
             counts: command::Counts {
                 bells: 9,
