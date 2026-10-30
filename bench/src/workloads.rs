@@ -201,11 +201,12 @@ const WAITED: usize = 4 << 20;
 /// Command lines compiled, this many.
 const COMPILES: usize = 2_000;
 /// Command lines an agent sends, as `docs/agents.md` shows them.
-const LINES: [&str; 4] = [
+const LINES: [&str; 5] = [
     "agent-opts str app name str ./app program str --fast arg run",
     "%2 str y text str Enter key send-keys",
     "str %2:0.57.0.3.0:48211-1867a3f9c2b8e7d6 changed wait",
     "define twice dup add end list 1 2 3 end each twice end len drop %2 all-history capture",
+    "str c1 client choose-tab",
 ];
 /// The bytes of a pane's history fux keeps by default.
 const HISTORY: usize = 8 << 20;
@@ -350,7 +351,7 @@ pub fn list(recordings: &[Recording]) -> Vec<Spec> {
         ),
         (
             "script/compile",
-            "fuxth's checker and compiler on four agent command lines, 2000 times",
+            "fuxth's checker and compiler on five command lines, including a bound action, 2000 times",
         ),
     ] {
         out.push(spec(name.into(), about.into()));
