@@ -30,14 +30,12 @@ use std::time::{Duration, Instant};
 #[derive(Debug, PartialEq, Eq)]
 pub enum Outgoing {
     /// A frame for a client: bytes for its terminal outside any paint
-    /// (questions for the terminal; the bell; the keyboard flags pushed),
+    /// (questions for the terminal; the bell; the keyboard flags pushed;
+    /// clipboard copies),
     /// fuxth to run as its own, keys to take as typed at its terminal
     /// (`send-keys` to a client), its screen ended by the server, or its
     /// detach, saying why.
     To(ClientId, ToAttached<'static>),
-    /// A copy for a client's clipboard, its OSC 52: refused, and said to
-    /// be, to a client too far behind (`server::OUT_MAX`).
-    Copy(ClientId, Vec<u8>),
     /// Stop the server, saying why.
     Shutdown(String),
 }
@@ -2258,8 +2256,10 @@ impl Session {
             fits = encoded.len() <= crate::copy::MAX_CLIPBOARD;
             if fits {
                 let osc = format!("\x1b]52;c;{encoded}\x07").into_bytes();
-                self.outbox
-                    .extend(recipients.map(|client| Outgoing::Copy(client, osc.clone())));
+                self.outbox.extend(
+                    recipients
+                        .map(|client| Outgoing::To(client, ToAttached::Paint(osc.clone().into()))),
+                );
             }
         }
         let at = pane.and_then(|p| self.locate(p).map(|at| (at, p)));
@@ -3919,7 +3919,6 @@ pub(crate) mod testing {
                     | ToAttached::NeedsInitial
                     | ToAttached::Welcome(..),
                 )
-                | super::Outgoing::Copy(..)
                 | super::Outgoing::Shutdown { .. }) => {
                     kept.push(other);
                 }
@@ -6699,7 +6698,7 @@ mod tests {
         let sent = |s: &Session| {
             s.outbox
                 .iter()
-                .any(|o| matches!(o, Outgoing::Copy(c, b) if *c == client && **b == *b"\x1b]52;c;Zm9v\x07"))
+                .any(|o| matches!(o, Outgoing::To(c, ToAttached::Paint(b)) if *c == client && **b == *b"\x1b]52;c;Zm9v\x07"))
         };
         assert!(sent(&s));
         // One longer than fux-vt keeps of a string copies nothing, said.
@@ -6828,7 +6827,7 @@ mod tests {
         assert!(
             s.outbox
                 .iter()
-                .any(|out| matches!(out, Outgoing::Copy(c, _) if *c == client))
+                .any(|out| matches!(out, Outgoing::To(c, ToAttached::Paint(b)) if *c == client && b.starts_with(b"\x1b]52;c;")))
         );
         assert!(s.outbox.iter().any(|out| matches!(out, Outgoing::To(c, ToAttached::Paint(bytes)) if *c == client && bytes.as_ref() == crate::outer::BELL)));
         assert_eq!(s.before_paint(client), b"\x1b]2;initial\x1b\\");
@@ -6932,7 +6931,9 @@ mod tests {
             s.outbox
                 .iter()
                 .filter_map(|o| match o {
-                    Outgoing::Copy(c, _) => Some(*c),
+                    Outgoing::To(c, ToAttached::Paint(b)) if b.starts_with(b"\x1b]52;c;") => {
+                        Some(*c)
+                    }
                     Outgoing::To(..) | Outgoing::Shutdown(_) => None,
                 })
                 .collect::<Vec<_>>()
