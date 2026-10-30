@@ -1183,8 +1183,8 @@ impl Grid {
         let ((row, col), cols) = (self.cursor.at(), self.size.cols());
         let mut kept = false;
         if display {
-            // ED spends the screen's cells (`budget`); EL nothing.
-            crate::budget::spend(self.size.cells());
+            // ED spends a unit a row; each row's erase, its cells.
+            crate::budget::spend(self.size.rows());
             for y in 0..self.size.rows() {
                 let whole = match part {
                     Erase::Below => y > row,
