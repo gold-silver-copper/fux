@@ -287,7 +287,7 @@ impl Run {
         code: &str,
     ) -> (Result<String, String>, Option<Screen>) {
         let mut opened = None;
-        let said = self.program_opening(client, &code.into(), &mut opened);
+        let said = self.program_opening(client, &code.into(), &mut opened, BUDGET);
         (said, opened)
     }
 
@@ -296,6 +296,7 @@ impl Run {
         client: Option<ClientId>,
         job: &Job,
         opened: &mut Option<Screen>,
+        steps: u64,
     ) -> Result<String, String> {
         let told = |failed: fux::script::Failed| match client {
             Some(_) => failed.notice(),
@@ -328,7 +329,7 @@ impl Run {
             on_commit: Some(&mut publish),
         };
         let ended =
-            run_capped(&mut machine, &mut host, &mut asks, Some(BUDGET), None).and_then(|stack| {
+            run_capped(&mut machine, &mut host, &mut asks, Some(steps), None).and_then(|stack| {
                 fux::script::Asks::commit(&mut asks, &mut keymap, context)?;
                 Ok(stack)
             });
@@ -403,7 +404,7 @@ impl Run {
     /// does with its bindings' and its prompt's programs.
     fn run_as(&mut self, client: ClientId, job: &Job) {
         let mut opened = None;
-        let said = self.program_opening(Some(client), job, &mut opened);
+        let said = self.program_opening(Some(client), job, &mut opened, BUDGET);
         if let Some(screen) = opened {
             self.open(client, screen);
         }
@@ -734,7 +735,16 @@ impl Run {
 
     /// What anyone can tell apart, as `State` lists it.
     fn state(&mut self) -> State {
-        let ls = self.program(None, "ls listing").0.unwrap_or_else(|e| e);
+        // Formatting the observation uses the client budget; arbitrary side
+        // and key programs retain BUDGET. Large states must remain observable.
+        let ls = self
+            .program_opening(
+                None,
+                &"ls listing".into(),
+                &mut None,
+                fux::script::PROGRAM_STEPS,
+            )
+            .unwrap_or_else(|e| e);
         let screens = self
             .s
             .views
