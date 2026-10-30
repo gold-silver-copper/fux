@@ -6,7 +6,6 @@ use crate::act::{List, Panel};
 use crate::id::ClientId;
 use crate::id::PaneId;
 use crate::layout::{Axis, Placement, Rect};
-use crate::overlay;
 use crate::session::Session;
 use crate::view::{Mode, View};
 use fux_vt::clusters;
@@ -1630,6 +1629,26 @@ impl From<String> for Text<'_> {
     }
 }
 
+/// Rows a scrolled panel has for its entries on a screen of `rows`: the
+/// rows above the bar, less `fixed` lines of its own (a title, a help line)
+/// and the two lines that say how many entries lie above and below; at
+/// least one.
+fn panel_room(rows: u16, fixed: usize) -> usize {
+    usize::from(rows.saturating_sub(1))
+        .saturating_sub(fixed.saturating_add(2))
+        .max(1)
+}
+
+/// The first of `len` entries a panel with `room` rows for them shows, so
+/// that `selected` is in view: the window ends at the selection, or at the
+/// last entry.
+fn window_start(len: usize, selected: usize, room: usize) -> usize {
+    selected
+        .saturating_add(1)
+        .saturating_sub(room)
+        .min(len.saturating_sub(room))
+}
+
 /// Adds the `entries` that fit `room`, the `selected` one among them, to a
 /// panel's `lines`, with how many more there are above and below them.
 fn windowed<'a>(
@@ -1640,7 +1659,7 @@ fn windowed<'a>(
     panel: Attributes,
 ) {
     let total = entries.len();
-    let start = overlay::window_start(total, selected, room);
+    let start = window_start(total, selected, room);
     if start > 0 {
         lines.push((format!("▲ {start} more").into(), panel.with_dim(true)));
     }
@@ -1699,7 +1718,7 @@ fn list_panel(grid: &mut Grid, view: &View, list: &List) {
     let panel = view.presentation.styles.panel.attributes();
     let mut lines: Vec<Line<'_>> = vec![(list.title.as_str().into(), panel.with_bold(true))];
     // Its items' rows: it has a title and a help line.
-    let capacity = overlay::panel_room(view.rows, 2);
+    let capacity = panel_room(view.rows, 2);
     let entries = list.items.iter().enumerate().map(|(i, item)| {
         let marker = if list.current == Some(i) { "*" } else { " " };
         let attrs = panel.with_inverse(i == list.selected);
@@ -1742,7 +1761,7 @@ fn column(grid: &mut Grid, view: &View, column: &crate::act::Column) {
     }
     // A heading, if there is room for it, then the entries.
     let heading = view.rows.saturating_sub(1) >= 4;
-    let body_room = overlay::panel_room(view.rows, usize::from(heading));
+    let body_room = panel_room(view.rows, usize::from(heading));
     let mut lines: Vec<Line<'_>> = Vec::new();
     if heading {
         lines.push((column.title.as_str().into(), panel.with_bold(true)));

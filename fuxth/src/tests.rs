@@ -728,6 +728,13 @@ fn the_stack_fills_to_its_limit_exactly() -> Result<(), Error> {
 }
 
 #[test]
+fn the_names_of_nested_calls_count_against_the_stack() {
+    let names: String = (0..20).map(|n| format!("0 let x{n} ")).collect();
+    let failed = run(&format!("define recur recur {names}end recur"));
+    assert_eq!(failed.err().map(|e| e.code.name()), Some("stack_overflow"));
+}
+
+#[test]
 fn every_core_word_documents_its_effect_and_meaning() {
     for builtin in Builtin::ALL {
         assert!(builtin.about().len() > 8, "{}", builtin.name());
