@@ -24,36 +24,6 @@ fn times(text: &str, n: usize) -> String {
     std::iter::repeat_n(text, n).collect()
 }
 
-/// B35: a call stops once it has spent half the ceiling, and not before.
-/// What fux-vt's counters charge a DECALN of
-/// the whole 50x200 screen (`Work::cost`) is at least what the budget
-/// spends on it, so the stop comes after ceil(`CEILING` / 2 / that) of
-/// them, or later. The ceiling U (THREATS.md 4.4), in cells.
-#[cfg(feature = "checks")]
-const CEILING: u64 = 32_000_000;
-
-#[cfg(feature = "checks")]
-#[test]
-fn a_call_stops_at_half_the_ceiling_and_not_before() -> Result {
-    let align = b"\x1b#8";
-    let size = Size::new(50, 200)?;
-    let mut p = Parser::new(size, 0)?;
-    let before = fux_vt::Work::now();
-    p.process(align)?;
-    let cost = fux_vt::Work::now().since(before).cost().max(1);
-    let least = (CEILING / 2).div_ceil(cost);
-    let input = times_bytes(align, usize::try_from(least.saturating_mul(4))?);
-    let mut p = Parser::new(size, 0)?;
-    match p.process_until_stop(&input, &mut Deaf)? {
-        Some((taken, Stop::Budget)) => {
-            let done = u64::try_from(taken.checked_div(align.len()).unwrap_or(0))?;
-            assert!(done >= least, "stopped after {done} of at least {least}");
-        }
-        other => return Err(format!("stopped as {other:?}").into()),
-    }
-    Ok(())
-}
-
 /// A cell holding `text`, narrow, in the default style.
 fn cell(text: &str) -> CellRef<'_> {
     CellRef::new(text, false, Attributes::default())
@@ -312,21 +282,12 @@ fn backgrounds(red: u8, styles: Range<u32>) -> Vec<u8> {
     out
 }
 
-/// The cells style sweeps visited (`Work`'s `styles`) since `before`.
-#[cfg(feature = "checks")]
-fn swept_since(before: fux_vt::Work) -> u64 {
-    let done = fux_vt::Work::now().since(before);
-    (done.counters().into_iter())
-        .find(|(name, _)| *name == "styles")
-        .map_or(0, |(_, n)| n)
-}
-
-/// The cells style sweeps visited while `p` read `input`.
+/// How many style sweeps `p` made while it read `input`.
 #[cfg(feature = "checks")]
 fn sweeping(p: &mut Parser, input: &[u8]) -> Result<u64> {
-    let before = fux_vt::Work::now();
+    let before = p.screen().style_sweeps();
     p.process(input)?;
-    Ok(swept_since(before))
+    Ok(p.screen().style_sweeps().wrapping_sub(before))
 }
 
 /// B11: a table grown 86,016 bytes past the screen's share takes that much of history's room.
@@ -387,10 +348,8 @@ fn a_sweep_charges_history_for_the_table_it_leaves() -> Result {
     assert_eq!(sweeping(&mut p, &backgrounds(0, 0..7300))?, 0);
     // A budget under what the table takes lets history's rows go, and the
     // floor with them: the next new style sweeps.
-    let before = fux_vt::Work::now();
     p.set_history_bytes(100_000);
-    p.process(&backgrounds(1, 0..1))?;
-    assert!(swept_since(before) > 0);
+    assert!(sweeping(&mut p, &backgrounds(1, 0..1))? > 0);
     let report = p.check();
     assert!(
         report.faults_of("history.budget").next().is_none(),
@@ -538,17 +497,17 @@ fn a_long_read_gives_what_is_held_259_bytes_and_returns() -> Result {
         // An Escape held, then a read of 1,000 `a`s.
         let mut d = Decoder::new(fux_vt::keys::decode::Timing::new(35, 5000));
         d.bytes(b"\x1b", &mut out);
-        let before = fux_vt::Work::now();
+        let before = fux_vt::work_spent();
         d.bytes(&[b'a'; 1000], &mut out);
-        let held = fux_vt::Work::now().since(before).keys;
+        let held = fux_vt::work_spent().saturating_sub(before);
         // Nothing held, then 516 `a`s and an Escape: 258 bytes are left
         // after the first 259, and they leave the Escape held.
         let mut d = Decoder::new(fux_vt::keys::decode::Timing::new(35, 5000));
         let mut read = vec![b'a'; 516];
         read.push(0x1b);
-        let before = fux_vt::Work::now();
+        let before = fux_vt::work_spent();
         d.bytes(&read, &mut out);
-        let idle = fux_vt::Work::now().since(before).keys;
+        let idle = fux_vt::work_spent().saturating_sub(before);
         Ok((held, idle))
     })?;
     // Each byte decoded once, after the 258 copied once behind the Escape.
@@ -571,9 +530,9 @@ fn a_sequence_begun_in_the_bytes_given_the_held_is_read_where_it_lies() -> Resul
         let mut out = Vec::new();
         let mut d = Decoder::new(fux_vt::keys::decode::Timing::new(35, 5000));
         d.bytes(b"\x1b", &mut out);
-        let before = fux_vt::Work::now();
+        let before = fux_vt::work_spent();
         d.bytes(&read, &mut out);
-        Ok((fux_vt::Work::now().since(before).keys, out))
+        Ok((fux_vt::work_spent().saturating_sub(before), out))
     })?;
     assert_eq!(keys, 1 + 1260 + 258 + 2 * 8);
     let mut short = Vec::new();
@@ -626,9 +585,9 @@ fn a_long_read_while_a_string_is_dropped_is_read_whole() {
     let mut read = vec![b'a'; 10];
     read.push(0x07);
     read.extend([b'b'; 289]);
-    let before = fux_vt::Work::now();
+    let before = fux_vt::work_spent();
     d.bytes(&read, &mut out);
-    let keys = fux_vt::Work::now().since(before).keys;
+    let keys = fux_vt::work_spent().saturating_sub(before);
     assert_eq!(out.len(), 289);
     assert_eq!(keys, 300 + 289);
 }
@@ -812,7 +771,7 @@ fn times_bytes(bytes: &[u8], n: usize) -> Vec<u8> {
 /// B33 and B34: REP of a glyph wider than the screen makes no copy and spends none of the call's budget.
 #[test]
 fn a_repeat_with_no_copy_to_a_row_spends_nothing() -> Result {
-    // 2,000 REPs of 65,535 copies would spend 262 M cells, past the 16 M a
+    // 2,000 REPs of 65,535 copies would spend 262 M units, past the 1 M a
     // call may.
     let mut p = Parser::new(Size::new(2, 1)?, 0)?;
     let input = times("\u{4e00}\x1b[65535b", 2000);
@@ -919,14 +878,14 @@ fn a_frame_in_two_reads_is_scanned_as_in_one() -> Result {
     let p = Parser::new(Size::new(2, 10)?, 0)?;
     let frame = b"\x1b[1?l\x1b[?2026l";
     let mut whole = p.frame_scan();
-    let before = fux_vt::Work::now();
+    let before = fux_vt::work_spent();
     assert_eq!(whole.end(frame), Some(frame.len()));
-    let once = fux_vt::Work::now().since(before).scanned;
+    let once = fux_vt::work_spent().saturating_sub(before);
     let mut split = p.frame_scan();
-    let before = fux_vt::Work::now();
+    let before = fux_vt::work_spent();
     assert_eq!(split.end(frame.get(..5).unwrap_or_default()), None);
     assert_eq!(split.end(frame), Some(frame.len()));
-    let twice = fux_vt::Work::now().since(before).scanned;
+    let twice = fux_vt::work_spent().saturating_sub(before);
     assert_eq!(twice, once);
     Ok(())
 }
@@ -954,9 +913,9 @@ fn an_osc_answer_at_its_limit_is_held_whole() {
     let mut out = Vec::new();
     let mut read = b"\x1b]".to_vec();
     read.extend([b'1'; 128]);
-    let before = fux_vt::Work::now();
+    let before = fux_vt::work_spent();
     d.bytes(&read, &mut out);
-    let keys = fux_vt::Work::now().since(before).keys;
+    let keys = fux_vt::work_spent().saturating_sub(before);
     assert!(out.is_empty());
     assert_eq!(keys, 2 * 130);
 }
@@ -971,32 +930,31 @@ fn a_read_of_258_bytes_behind_an_escape_is_fed_once() {
     d.bytes(b"\x1b", &mut out);
     let mut read = vec![b'a'; 257];
     read.push(0x1b);
-    let before = fux_vt::Work::now();
+    let before = fux_vt::work_spent();
     d.bytes(&read, &mut out);
-    let keys = fux_vt::Work::now().since(before).keys;
+    let keys = fux_vt::work_spent().saturating_sub(before);
     assert_eq!(out.len(), 257);
     assert_eq!(keys, 2 * 259);
 }
 
 /// B33: REP where no copy fits a row (a wide glyph on a double-width
-/// row of a 3-column screen, below the scroll region) still makes its
-/// one copy, and spends it: a call of such REPs, each after a DECALN that
-/// spends the same, stops at the budget sooner than one without them.
+/// row of a 3-column screen, below the scroll region) still tries its one
+/// copy, and spends it: two units, not none, nor 65,535 copies' worth.
+#[cfg(feature = "checks")]
 #[test]
 fn a_repeat_with_no_room_for_a_copy_spends_its_one_copy() -> Result {
-    let size = Size::new(1000, 3)?;
     let round = "\x1b#8\x1b[1;2r\x1b[3;1H\x1b#6\u{4e2d}";
-    let stop_after = |rep: &str| -> Result<usize> {
-        let one = format!("{round}{rep}");
-        let input = times(&one, 100_000);
-        let mut p = Parser::new(size, 0)?;
-        match p.process_until_stop(input.as_bytes(), &mut Deaf)? {
-            Some((taken, Stop::Budget)) => Ok(taken.checked_div(one.len()).unwrap_or(0)),
-            other => Err(format!("stopped as {other:?}").into()),
-        }
+    let spent = |rep: &str| -> Result<u64> {
+        let mut p = Parser::new(Size::new(1000, 3)?, 0)?;
+        let before = fux_vt::work_spent();
+        p.process(format!("{round}{rep}").as_bytes())?;
+        Ok(fux_vt::work_spent().saturating_sub(before))
     };
-    let with = stop_after("\x1b[b")?;
-    let without = stop_after("")?;
-    assert!(with < without, "{with} rounds with REP, {without} without");
+    let (with, without) = (spent("\x1b[65535b")?, spent("")?);
+    assert_eq!(
+        with.checked_sub(without),
+        Some(2),
+        "{with} with REP, {without} without"
+    );
     Ok(())
 }

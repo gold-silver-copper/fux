@@ -115,7 +115,7 @@ Every control function ECMA-48 (5th edition, 8.3), DEC STD 070 (its function pag
 | 8.3.100 | PU1 (PRIVATE USE ONE) | not applicable |  | private use (8.3.100): fux-vt gives it no meaning |
 | 8.3.101 | PU2 (PRIVATE USE TWO) | not applicable |  | private use (8.3.101): fux-vt gives it no meaning |
 | 8.3.102 | QUAD (QUAD) | not applicable |  | a presentation control function (8.2.5): fux-vt presents one font at one size, left to right and top to bottom, and leaves the drawing to the host |
-| 8.3.103 | REP (REPEAT) | implemented | `conformance::rep_repeats_the_preceding_graphic_character`, `margins::rep_wraps_and_scrolls_between_the_margins`, `bounds::a_rep_inside_margins_stops_at_the_budget_and_goes_on`, `bounds::rep_spends_a_copy_by_its_width` |  |
+| 8.3.103 | REP (REPEAT) | implemented | `conformance::rep_repeats_the_preceding_graphic_character`, `margins::rep_wraps_and_scrolls_between_the_margins`, `bounds::a_rep_inside_margins_stops_at_the_quota_and_goes_on`, `bounds::repetition_stops_at_the_quota_and_goes_on` |  |
 | 8.3.104 | RI (REVERSE LINE FEED) | implemented | `margins::index_scrolls_between_the_margins` |  |
 | 8.3.105 | RIS (RESET TO INITIAL STATE) | implemented | `semantics::regions_origin_and_reset_have_explicit_history_semantics` |  |
 | 8.3.106 | RM (RESET MODE) | implemented | `conformance::insert_mode_moves_what_is_there`, `modes::lnm_makes_a_line_feed_a_new_line` | IRM and LNM; the other ECMA-48 modes have one state fux-vt keeps (DECRQM reports them) |

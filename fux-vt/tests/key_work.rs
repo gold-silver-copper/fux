@@ -4,7 +4,6 @@
 //! sequence's length, each answer a piece's end cuts decoded again.
 #![cfg(feature = "checks")]
 
-use fux_vt::Work;
 use fux_vt::keys::decode::Decoder;
 
 #[test]
@@ -17,9 +16,9 @@ fn each_read_decodes_once_except_for_its_held_prefix() {
         let mut rest = input.as_slice();
         while !rest.is_empty() {
             let (read, tail) = rest.split_at_checked(chunk).unwrap_or((rest, &[]));
-            let before = Work::now();
+            let before = fux_vt::work_spent();
             decoder.bytes(read, &mut out);
-            let keys = Work::now().since(before).keys;
+            let keys = fux_vt::work_spent().saturating_sub(before);
             let bytes = u64::try_from(read.len()).unwrap_or(u64::MAX);
             if chunk == input.len() {
                 assert_eq!(keys, bytes, "idle read");

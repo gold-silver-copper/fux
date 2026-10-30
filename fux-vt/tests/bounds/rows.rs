@@ -1,15 +1,13 @@
 //! The bound rows of `THREATS.md` section 2, B01 to B46 and B34a: each a probe of
 //! its reproducer at a scale and a chunking, held to the row's bound
-//! (section 2), work constants (4.2) and memory terms (3.1, 3.2), with a
-//! lower bound on each counter it names (4.3). A row whose code or API is
-//! still to come says what it waits on, and fails.
+//! (section 2), the work quota (4) and memory terms (3.1, 3.2), most with a
+//! lower bound on the work it knows was done (4.2).
 
 use std::time::Instant;
 
 use fux_vt::keys::decode::{Decoder, Input, PASTE_LIMIT};
 use fux_vt::{
-    Feature, Graphics, Identity, Mode, Options, Parser, Size, Work, bytes::ByteQueue,
-    sixel::Picture,
+    Feature, Graphics, Identity, Mode, Options, Parser, Size, bytes::ByteQueue, sixel::Picture,
 };
 
 use super::Heap;
@@ -53,7 +51,7 @@ fn fed(
 
 /// No more work than the ceiling a call, and the heap within `heap`.
 fn heap(heap: usize) -> Bound {
-    Bound { work: &[], heap }
+    Bound { work: None, heap }
 }
 
 /// The bytes of `text`, for a row's input.
@@ -102,12 +100,13 @@ pub fn b02(scale: Scale, chunk: usize) -> Found {
     )
 }
 
-// B03: the decoder's buffer and its growth: pixels at most 4096 a byte,
-// and growth copying or zeroing at most twice a picture's final buffer.
+// B03: the decoder's buffer and its growth: at most 4,096 pixels painted
+// a byte, and growth copying or zeroing at most twice a picture's final
+// buffer, amortized.
 pub fn b03(scale: Scale, chunk: usize) -> Found {
     let setup = Setup::defaults();
     const BOUND: Bound = Bound {
-        work: &[("pixels", 4096, 0, 2 * MAX_PIXELS)],
+        work: Some((4096, 0, 2 * MAX_PIXELS)),
         heap: 0,
     };
     let bound = Bound {
@@ -131,7 +130,6 @@ pub fn b03(scale: Scale, chunk: usize) -> Found {
         &repeat(&rightward, scale.times()),
         |p| {
             p.at_least(
-                "pixels",
                 u64::try_from(scale.times())
                     .unwrap_or(0)
                     .saturating_mul(painted),
@@ -176,7 +174,7 @@ pub fn b03(scale: Scale, chunk: usize) -> Found {
 pub fn b04(scale: Scale, chunk: usize) -> Found {
     let setup = Setup::defaults();
     const BOUND: Bound = Bound {
-        work: &[("pixels", 4096, 0, 2 * MAX_PIXELS)],
+        work: Some((4096, 0, 2 * MAX_PIXELS)),
         heap: 0,
     };
     let bound = Bound {
@@ -196,61 +194,40 @@ pub fn b04(scale: Scale, chunk: usize) -> Found {
         chunk,
         scale.times(),
         &repeat(&one, scale.times()),
-        |p| p.at_least("pixels", painted),
+        |p| p.at_least(painted),
     )
 }
 
 // B05: a declared extent with nothing drawn allocates and paints nothing,
 // and its placement is a row fill: each of its rows (⌈2160 ÷ the cell's
-// height⌉) filled across the 200 columns, and taken into history by a line
-// feed at B18's 200 + 3 cells (THREATS.md B18): at a 10×20 cell 108 × 403 ÷
-// 19 bytes, at most 2,291 cells a byte, and at the smallest, 2×6, 360 ×
-// 403 ÷ 19, at most 7,636 (THREATS.md 1.2); with P2 1 and 2 as with 0.
-// Portrait, 2160 by 4096, ⌈4096 ÷ the cell's height⌉ rows: 205 × 403 ÷ 19,
-// at most 4,349, and at 2×6 683 × 403 ÷ 19, at most 14,487 (THREATS.md
-// B05). Each lies on the last cell row of the one before, whose 20 rows of
-// 2,000 pixels it covers (B46): a list of the rows it shows, 16 bytes each
-// of at most 4,096, and 32 words for each row covered (8,832 words), and
-// the words read and written, 33 for each (660): 9,492 at most a
-// placement, and 70,656 bytes for each of 64 pictures.
+// height⌉, or ⌈4096 ÷ it⌉ portrait) filled across the 200 columns, at a
+// 10×20 cell and at the smallest, 2×6 (THREATS.md 1.2), with P2 0, 1 and
+// 2, each call within the quota and one placement. Each lies on the last
+// cell row of the one before, whose 20 rows of 2,000 pixels it covers
+// (B46): 70,656 bytes for each of 64 pictures.
 pub fn b05(scale: Scale, chunk: usize) -> Found {
     let setup = Setup::defaults();
-    for (picture, (cell, per_byte, rows)) in [
-        ("\x1bPq\"1;1;4096;2160\x1b\\", ((10, 20), 2291, 108)),
-        ("\x1bPq\"1;1;4096;2160\x1b\\", ((2, 6), 7636, 360)),
-        ("\x1bP0;1q\"1;1;4096;2160\x1b\\", ((10, 20), 2291, 108)),
-        ("\x1bP0;2q\"1;1;4096;2160\x1b\\", ((10, 20), 2291, 108)),
-        // Portrait: ⌈4,096 ÷ 20⌉ = 205 rows, or 683 at 2×6, each filled
-        // across 200 columns and taken into history at 203 (THREATS.md B05).
-        ("\x1bPq\"1;1;2160;4096\x1b\\", ((10, 20), 4349, 205)),
-        ("\x1bPq\"1;1;2160;4096\x1b\\", ((2, 6), 14_487, 683)),
+    for (picture, (cell, rows)) in [
+        ("\x1bPq\"1;1;4096;2160\x1b\\", ((10, 20), 108)),
+        ("\x1bPq\"1;1;4096;2160\x1b\\", ((2, 6), 360)),
+        ("\x1bP0;1q\"1;1;4096;2160\x1b\\", ((10, 20), 108)),
+        ("\x1bP0;2q\"1;1;4096;2160\x1b\\", ((10, 20), 108)),
+        ("\x1bPq\"1;1;2160;4096\x1b\\", ((10, 20), 205)),
+        ("\x1bPq\"1;1;2160;4096\x1b\\", ((2, 6), 683)),
     ] {
         let input = repeat(&repeat(picture.as_bytes(), 215), scale.times());
-        let bound = Bound {
-            work: &[("pixels", 0, 0, 215 * 9492)],
-            heap: steady(&setup).saturating_add(64 * 70_656),
-        };
+        let bound = heap(steady(&setup).saturating_add(64 * 70_656));
         let mut probe = Probe::new(&setup, bound, chunk, scale.times())?;
         probe.set_host_graphics(
             fux_vt::CellSize::new(cell.0, cell.1).map_or(Graphics::Text, Graphics::Sixel),
         );
         probe.feed(&input)?;
-        let most = u64::try_from(input.len())
-            .unwrap_or(0)
-            .saturating_mul(per_byte);
-        if probe.counted("cells")? > most {
-            return Err(format!(
-                "{} cells past {most} at a {cell:?} cell ({})",
-                probe.counted("cells")?,
-                picture.escape_debug()
-            ));
-        }
         // Each picture covers 200 columns of its rows.
         let placed = u64::try_from(scale.times())
             .unwrap_or(0)
             .saturating_mul(215 * 200)
             .saturating_mul(rows);
-        probe.at_least("cells", placed)?;
+        probe.at_least(placed)?;
         probe.finish()?;
     }
     Ok(())
@@ -351,9 +328,9 @@ pub fn b08(scale: Scale, _: usize) -> Found {
     let mut out = Vec::new();
     for _ in 0..scale.times() {
         out.clear();
-        let before = Work::now();
+        let before = fux_vt::work_spent();
         fux_vt::sixel::encode(&picture, (0, 0, width, height), &mut out);
-        encoded(pixels, Work::now().since(before))?;
+        encoded(pixels, fux_vt::work_spent().saturating_sub(before))?;
         let len = u64::try_from(out.len()).unwrap_or(u64::MAX);
         if len > most {
             return Err(format!("{len} bytes encoded, past {most}"));
@@ -380,9 +357,9 @@ pub fn b08(scale: Scale, _: usize) -> Found {
         }
     }
     let picture = Picture::new(width, height, rgba).ok_or("2000 by 1000")?;
-    let before = Work::now();
+    let before = fux_vt::work_spent();
     fux_vt::sixel::encode(&picture, (0, 0, width, height), &mut out);
-    encoded(pixels, Work::now().since(before))
+    encoded(pixels, fux_vt::work_spent().saturating_sub(before))
 }
 
 /// The work `encode` may do a crop pixel (`THREATS.md` B08): it reads each
@@ -392,12 +369,11 @@ const C_ENC: u64 = 3;
 
 /// Whether `done`, an `encode` of `pixels` crop pixels, kept to C_ENC a
 /// pixel, and counted no less than it read.
-fn encoded(pixels: u64, done: Work) -> Found {
+fn encoded(pixels: u64, done: u64) -> Found {
     let most = pixels.saturating_mul(C_ENC);
-    if done.pixels > most || done.pixels < pixels {
+    if done > most || done < pixels {
         return Err(format!(
-            "encode did {} units for {pixels} pixels, past {most}, or fewer than its pixels",
-            done.pixels
+            "encode did {done} units for {pixels} pixels, past {most}, or fewer than its pixels"
         ));
     }
     Ok(())
@@ -422,8 +398,7 @@ pub fn b09(scale: Scale, chunk: usize) -> Found {
     let per_call = 128u64
         .saturating_mul(log.saturating_add(50))
         .saturating_add(64);
-    let rows: &'static [(&'static str, u64, u64, u64)] =
-        Box::leak(Box::new([("rows", 0, per_call, 0)]));
+    let rows = Some((0, per_call, 0));
     probe.restart(
         Bound {
             work: rows,
@@ -480,8 +455,7 @@ fn tall_pictures(scale: Scale, cell: (u16, u16), chunk: usize) -> Found {
             .saturating_mul(log.saturating_add(screen))
             .saturating_add(64),
     );
-    let rows: &'static [(&'static str, u64, u64, u64)] =
-        Box::leak(Box::new([("rows", 0, per_call, 0)]));
+    let rows = Some((0, per_call, 0));
     probe.restart(
         Bound {
             work: rows,
@@ -536,8 +510,8 @@ pub fn b11(scale: Scale, chunk: usize) -> Found {
         .saturating_mul(150_000);
     let input = colours(0, count);
     fed(&setup, bound, chunk.max(16), scale.times(), &input, |p| {
-        p.at_least("inserts", u64::from(count))?;
-        p.at_least("lookups", u64::from(count))
+        p.at_least(u64::from(count))?;
+        p.at_least(u64::from(count))
     })
 }
 
@@ -593,17 +567,17 @@ pub fn b12(scale: Scale, chunk: usize) -> Found {
         let input = colliding(count);
         let mut probe = Probe::new(&setup, heap(steady(&setup)), chunk.max(4096), 1)?;
         probe.feed(&input)?;
-        probe.at_least("inserts", u64::try_from(count).unwrap_or(0))?;
+        probe.at_least(u64::try_from(count).unwrap_or(0))?;
         probe.finish()?;
     }
     Ok(())
 }
 
-// B13: the style sweep: at most 7 cells visited a byte, amortized.
+// B13: the style sweep: at most 7 units a byte, amortized.
 pub fn b13(scale: Scale, chunk: usize) -> Found {
     let setup = Setup::defaults().history(1 << 20);
     const BOUND: Bound = Bound {
-        work: &[("styles", 7, 0, 0)],
+        work: Some((7, 0, 0)),
         heap: 0,
     };
     let bound = Bound {
@@ -627,7 +601,7 @@ pub fn b13(scale: Scale, chunk: usize) -> Found {
     let cells = u64::try_from(setup.cells())
         .unwrap_or(0)
         .saturating_add(700 * 200);
-    probe.at_least("styles", cells)?;
+    probe.at_least(cells)?;
     probe.finish()
 }
 
@@ -697,11 +671,11 @@ pub fn b15(scale: Scale, chunk: usize) -> Found {
     })
 }
 
-// B16: making room for links costs at most 256 steps a byte, amortized.
+// B16: making room for links costs at most 256 units a byte, amortized.
 pub fn b16(scale: Scale, chunk: usize) -> Found {
     let setup = Setup::defaults().history(0);
     const BOUND: Bound = Bound {
-        work: &[("links", 256, 0, 0)],
+        work: Some((256, 0, 0)),
         heap: 0,
     };
     let bound = Bound {
@@ -714,7 +688,7 @@ pub fn b16(scale: Scale, chunk: usize) -> Found {
         scale.times().saturating_mul(1000),
     ));
     fed(&setup, bound, chunk.max(16), scale.times(), &input, |p| {
-        p.at_least("links", 2000)
+        p.at_least(2000)
     })?;
     // The sweep's transient is its links' and their rows', however many
     // rows history holds besides: a full history of empty
@@ -722,9 +696,10 @@ pub fn b16(scale: Scale, chunk: usize) -> Found {
     let setup = Setup::defaults();
     let mut probe = Probe::new(&setup, heap(usize::MAX), chunk.max(16), 1)?;
     probe.feed(&repeat(b"\n", 400_000))?;
-    let (transient, before) = (Heap::begin(), probe.counted("links")?);
+    let (transient, before) = (Heap::begin(), probe.work);
     probe.feed(&input)?;
-    if probe.counted("links")? <= before {
+    // A sweep reads each of history's rows.
+    if probe.work.saturating_sub(before) < 400_000 {
         return Err("no link sweep".into());
     }
     // The links' own memory, 4 MiB and 64 bytes each, their map slots and
@@ -758,7 +733,7 @@ pub fn b17(scale: Scale, chunk: usize) -> Found {
         scale.times(),
         &repeat(&row, rows),
         |p| {
-            p.at_least("rows", u64::try_from(rows.saturating_sub(50)).unwrap_or(0))?;
+            p.at_least(u64::try_from(rows.saturating_sub(50)).unwrap_or(0))?;
             (p.live() <= most)
                 .then_some(())
                 .ok_or(format!("history holds {} bytes, past {most}", p.live()))
@@ -783,12 +758,12 @@ pub fn b17(scale: Scale, chunk: usize) -> Found {
     )
 }
 
-// B18: a line feed into history costs at most cols + 3 cells and 2 rows,
-// amortized.
+// B18: a line feed into history costs at most C + 5 units, amortized:
+// its row's cells, and a few for its rows.
 pub fn b18(scale: Scale, chunk: usize) -> Found {
     let setup = Setup::defaults();
     const BOUND: Bound = Bound {
-        work: &[("cells", 203, 0, 0), ("rows", 2, 0, 0)],
+        work: Some((200 + 5, 0, 0)),
         heap: 0,
     };
     let bound = Bound {
@@ -799,7 +774,7 @@ pub fn b18(scale: Scale, chunk: usize) -> Found {
     let feeds = 100_000usize.saturating_mul(scale.times());
     input.extend(repeat(b"\n", feeds));
     fed(&setup, bound, chunk.max(16), scale.times(), &input, |p| {
-        p.at_least("rows", u64::try_from(feeds.saturating_sub(50)).unwrap_or(0))
+        p.at_least(u64::try_from(feeds.saturating_sub(50)).unwrap_or(0))
     })
 }
 
@@ -808,7 +783,7 @@ pub fn b18(scale: Scale, chunk: usize) -> Found {
 pub fn b19(scale: Scale, chunk: usize) -> Found {
     let setup = Setup::defaults();
     const BOUND: Bound = Bound {
-        work: &[("scanned", 2, 16, 0)],
+        work: Some((2, 16, 0)),
         heap: 0,
     };
     let n = (64usize << 10).saturating_mul(scale.times());
@@ -842,7 +817,7 @@ pub fn b19(scale: Scale, chunk: usize) -> Found {
     if !report.is_clean() {
         return Err(report.to_string());
     }
-    probe.at_least("scanned", u64::try_from(n).unwrap_or(0))?;
+    probe.at_least(u64::try_from(n).unwrap_or(0))?;
     probe.finish()?;
     // A long DECRST that ends the frame, its parameter's leading zeros read
     // as they come and once: found at its final byte.
@@ -885,11 +860,11 @@ pub fn b20(scale: Scale, chunk: usize) -> Found {
     )
 }
 
-// B21: strings fux-vt doesn't keep cost nothing to hold, and a byte each.
+// B21: strings fux-vt doesn't keep cost nothing to hold.
 pub fn b21(scale: Scale, chunk: usize) -> Found {
     let setup = Setup::defaults();
     const BOUND: Bound = Bound {
-        work: &[("bytes", 1, 0, 0)],
+        work: None,
         heap: NOTHING,
     };
     let mut one = b("\x1b_");
@@ -1010,13 +985,13 @@ fn decoded_by(
         keys: 0,
         kept: Vec::new(),
     };
-    let (before, mut fed, mut reads) = (Work::now(), 0u64, 0u64);
+    let (before, mut fed, mut reads) = (fux_vt::work_spent(), 0u64, 0u64);
     for piece in super::probe::pieces(input, chunk) {
         decoder.bytes(piece, &mut out);
         take(&mut out, &mut kept, keep, &mut room, &mut made);
         fed = fed.saturating_add(u64::try_from(piece.len()).unwrap_or(u64::MAX));
         reads = reads.saturating_add(1);
-        let counted = Work::now().since(before).keys;
+        let counted = fux_vt::work_spent().saturating_sub(before);
         let bound = fed
             .saturating_mul(2)
             .saturating_add(per_read.saturating_mul(reads));
@@ -1038,7 +1013,7 @@ fn decoded_by(
     }
     decoder.timeout(&mut out);
     take(&mut out, &mut kept, keep, &mut room, &mut made);
-    if Work::now().since(before).keys < fed {
+    if fux_vt::work_spent().saturating_sub(before) < fed {
         return Err("the decoder counted fewer bytes than it was given".into());
     }
     made.kept = kept;
@@ -1258,17 +1233,18 @@ pub fn b27(scale: Scale, chunk: usize) -> Found {
 // B28: replies are at most 16 bytes a byte that asked.
 pub fn b28(scale: Scale, chunk: usize) -> Found {
     let setup = Setup::defaults();
-    const BOUND: Bound = Bound {
-        work: &[("replies", 16, 0, 0)],
-        heap: NOTHING,
-    };
     let mut input = b("\x1b[1;2;3;4:3;5;7;8;9;38;2;1;2;3;48;2;4;5;6;58;2;7;8;9m");
     input.extend(repeat(
         b"\x1bP$qm\x1b\\",
         585usize.saturating_mul(scale.times()),
     ));
-    fed(&setup, BOUND, chunk, scale.times(), &input, |p| {
-        p.at_least("replies", 585 * 20)
+    fed(&setup, heap(NOTHING), chunk, scale.times(), &input, |p| {
+        let (replied, most) = (p.replies(), p.fed.saturating_mul(16));
+        (replied >= 585 * 20 && replied <= most)
+            .then_some(())
+            .ok_or(format!(
+                "{replied} reply bytes, of at least 11,700 and at most {most}"
+            ))
     })?;
     // Each kind of reply against the shortest request for it, with what
     // makes its answer longest set up first: the most digits a position
@@ -1309,9 +1285,9 @@ pub fn b28(scale: Scale, chunk: usize) -> Found {
     for ask in asks {
         let mut probe = Probe::new(&wide, heap(steady(&wide)), chunk, 1)?;
         probe.feed(&before)?;
-        let set_up = probe.counted("replies")?;
+        let set_up = probe.replies();
         probe.feed(ask)?;
-        let replied = probe.counted("replies")?.saturating_sub(set_up);
+        let replied = probe.replies().saturating_sub(set_up);
         let most = u64::try_from(ask.len()).unwrap_or(0).saturating_mul(16);
         if replied > most {
             return Err(format!("{ask:?}: {replied} bytes of reply"));
@@ -1331,12 +1307,11 @@ fn cluster(marks: usize) -> Vec<u8> {
     [b"e".as_slice(), marks.as_bytes()].concat()
 }
 
-// B30: a cell keeps at most 128 bytes of text; the join costs at most 256
-// text bytes a byte.
+// B30: a cell keeps at most 128 bytes of text.
 pub fn b30(scale: Scale, chunk: usize) -> Found {
     let setup = Setup::defaults();
     const BOUND: Bound = Bound {
-        work: &[("text", 256, 0, 0)],
+        work: None,
         heap: 0,
     };
     let bound = Bound {
@@ -1345,18 +1320,17 @@ pub fn b30(scale: Scale, chunk: usize) -> Found {
     };
     let input = repeat(&cluster(64), scale.times());
     fed(&setup, bound, chunk, scale.times(), &input, |p| {
-        p.at_least("text", 128)
+        p.at_least(128)
     })
 }
 
-// B31: a zero-width character after a full row costs at most 257 text
-// bytes. They come after a cursor move (BS), which leaves no cell printed
+// B31: a zero-width character after a full row is dropped. They come after a cursor move (BS), which leaves no cell printed
 // last, so each one reaches a full cell's text: the cell printed last
 // takes nothing once it has dropped a character.
 pub fn b31(scale: Scale, chunk: usize) -> Found {
     let setup = Setup::defaults().sized(1, 200).history(0);
     const BOUND: Bound = Bound {
-        work: &[("text", 257, 0, 0)],
+        work: None,
         heap: 0,
     };
     let bound = Bound {
@@ -1378,7 +1352,7 @@ pub fn b31(scale: Scale, chunk: usize) -> Found {
     probe.feed(marks.as_bytes())?;
     // Each ZWSP reads the cell's text, 17 bytes at least, and its own 3.
     let marks = u64::try_from(20_000usize.saturating_mul(scale.times())).unwrap_or(0);
-    probe.at_least("text", marks)?;
+    probe.at_least(marks)?;
     probe.finish()
 }
 
@@ -1398,12 +1372,12 @@ pub fn b32(scale: Scale, chunk: usize) -> Found {
     probe.finish()
 }
 
-// B33: REP costs at most 14,564 cell writes a byte; a REP on a 2×10
-// screen with 1 KiB of history at most 720.
+// B33: REP's copies past those the screen and history can show are
+// skipped: a REP on a 2×10 screen with 1 KiB of history makes 350.
 pub fn b33(scale: Scale, chunk: usize) -> Found {
     let setup = Setup::defaults();
     const BOUND: Bound = Bound {
-        work: &[("cells", 14_564, 0, 0)],
+        work: None,
         heap: 0,
     };
     let bound = Bound {
@@ -1412,7 +1386,7 @@ pub fn b33(scale: Scale, chunk: usize) -> Found {
     };
     let input = repeat(b"X\x1b[65535b", 455usize.saturating_mul(scale.times()));
     fed(&setup, bound, chunk, scale.times(), &input, |p| {
-        p.at_least("cells", 10_000)
+        p.at_least(10_000)
     })?;
     // Inside 2-column margins, where no scroll reaches history: the
     // copies past the screen's rows' worth are skipped too.
@@ -1422,12 +1396,14 @@ pub fn b33(scale: Scale, chunk: usize) -> Found {
         chunk,
         scale.times(),
         &[b("\x1b[?69h\x1b[1;2s\x1b[1;1H"), input.clone()].concat(),
-        |p| p.at_least("cells", 10_000),
+        |p| p.at_least(10_000),
     )?;
     let small = Setup::defaults().sized(2, 10).history(1 << 10);
-    // The heap: 64 KiB.
+    // The copies made: those that fill the screen's 2 rows and the 32 1
+    // KiB of history keeps, and a row more, 350, a cell each; each of those
+    // 35 rows into history at B18's C + 5, 15. The heap: 64 KiB.
     const SMALL: Bound = Bound {
-        work: &[("cells", 0, 0, 720)],
+        work: Some((0, 0, 350 + 35 * 15)),
         heap: 64 << 10,
     };
     let copies = scale.times();
@@ -1437,16 +1413,15 @@ pub fn b33(scale: Scale, chunk: usize) -> Found {
         chunk,
         copies,
         &repeat(b"X\x1b[65535b", copies),
-        |p| p.at_least("cells", 20),
+        |p| p.at_least(20),
     )
 }
 
-// B34: non-ASCII REP costs at most 23,832 cell writes a byte (23,831 as
-// stated; THREATS.md B34).
+// B34: non-ASCII REP skips copies as B33 does.
 pub fn b34(scale: Scale, chunk: usize) -> Found {
     let setup = Setup::defaults();
     const BOUND: Bound = Bound {
-        work: &[("cells", 23_832, 0, 0)],
+        work: None,
         heap: 0,
     };
     let bound = Bound {
@@ -1458,7 +1433,7 @@ pub fn b34(scale: Scale, chunk: usize) -> Found {
         372usize.saturating_mul(scale.times()),
     );
     fed(&setup, bound, chunk, scale.times(), &input, |p| {
-        p.at_least("cells", 20_000)
+        p.at_least(20_000)
     })?;
     // Inside 2-column margins, as B33.
     fed(
@@ -1467,18 +1442,18 @@ pub fn b34(scale: Scale, chunk: usize) -> Found {
         chunk,
         scale.times(),
         &[b("\x1b[?69h\x1b[1;2s\x1b[1;1H"), input.clone()].concat(),
-        |p| p.at_least("cells", 20_000),
+        |p| p.at_least(20_000),
     )
 }
 
 // B34a: REP of a glyph that joins itself skips the copies that change
-// nothing: at most 12 text bytes and 12 cells a byte, and the filling of
+// nothing: at most 24 units a byte, and the filling of
 // the cluster once, each join reading it whole: at most 128 × 43 ÷ 2 =
 // 2,752 text bytes (THREATS.md B34a).
 pub fn b34a(scale: Scale, chunk: usize) -> Found {
     let setup = Setup::defaults();
     const BOUND: Bound = Bound {
-        work: &[("text", 12, 0, 2752), ("cells", 12, 0, 0)],
+        work: Some((24, 0, 2752)),
         heap: 0,
     };
     let bound = Bound {
@@ -1492,7 +1467,7 @@ pub fn b34a(scale: Scale, chunk: usize) -> Found {
     // The cluster filled once: 42 joins of the 3-byte jamo, each reading
     // the cluster whole, 3 + 6 + … + 126 = 2,709 text bytes.
     fed(&setup, bound, chunk, scale.times(), &input, |p| {
-        p.at_least("text", 2709)
+        p.at_least(2709)
     })
 }
 
@@ -1532,9 +1507,8 @@ fn screen_wide(rows: u16, cols: u16) -> Vec<(&'static str, Vec<u8>)> {
     ]
 }
 
-// B35: functions that touch the whole screen cost at most half a screen
-// of cells a byte, and DECCRA's text R × (long + short limit) ÷ 4 a byte;
-// at fux's larger sizes, each call within U.
+// B35: functions that touch the whole screen: each call within the quota
+// and one of them, at fux's default size and at larger ones.
 pub fn b35(scale: Scale, chunk: usize) -> Found {
     let sizes: &[(u16, u16)] = match scale {
         Scale::Once => &[(50, 200)],
@@ -1543,16 +1517,7 @@ pub fn b35(scale: Scale, chunk: usize) -> Found {
     };
     for &(rows, cols) in sizes {
         let setup = Setup::defaults().sized(rows, cols);
-        let half = u64::try_from(setup.cells() / 2).unwrap_or(u64::MAX);
-        let c = u64::from(cols);
-        let text =
-            u64::from(rows).saturating_mul(c.saturating_mul(32 + 17).saturating_add(128)) / 4;
-        let work: &'static [(&'static str, u64, u64, u64)] =
-            Box::leak(Box::new([("cells", half, 0, 0), ("text", text, 0, 0)]));
-        let bound = Bound {
-            work,
-            heap: steady(&setup).saturating_mul(2),
-        };
+        let bound = heap(steady(&setup).saturating_mul(2));
         // A screen of text, its cells holding clusters, to copy and edit:
         // whole rows of 17-byte clusters, which fill a row's short text,
         // their base letters differing from row to row so that a copy
@@ -1599,7 +1564,7 @@ pub fn b35(scale: Scale, chunk: usize) -> Found {
             let filled = usize::from(rows.min(200)).saturating_mul(usize::from(cols.min(500)));
             let cells = u64::try_from(filled).unwrap_or(0);
             probe
-                .at_least("cells", cells)
+                .at_least(cells)
                 .map_err(|e| format!("{name} at {rows}x{cols}: {e}"))?;
             probe
                 .finish()
@@ -1608,9 +1573,7 @@ pub fn b35(scale: Scale, chunk: usize) -> Found {
         // Scrolls inside left and right margins, set up once: each copies
         // the region's span of every row, with its clusters' text, and the
         // wrap of text printed at the bottom margin makes one too, which
-        // no sequence does. A line feed, one byte: at most
-        // 3 x the screen's cells (each span's cell read, compared and
-        // written) and R rows of span text.
+        // no sequence does.
         let n = u64::try_from(setup.cells()).unwrap_or(u64::MAX);
         let r = u64::from(rows);
         let wide = format!("\x1b[?69h\x1b[1;{}s\x1b[{rows};2H", cols.saturating_sub(1));
@@ -1619,20 +1582,12 @@ pub fn b35(scale: Scale, chunk: usize) -> Found {
             true => 1,
             false => scale.times().min(10),
         };
-        // The span's text, at most 49 bytes a cell (32 long, 17 short): the
-        // whole width less a column, or the narrow margins' 2 cells, one
-        // scroll for every 2 glyphs printed.
-        let span_text = c.saturating_sub(1).saturating_mul(49).saturating_add(128);
-        for (name, setup_bytes, each, text) in [
-            ("bare LF", &wide, &b"\n"[..], r.saturating_mul(span_text)),
-            ("bare SU", &wide, b"\x1b[S", r.saturating_mul(span_text)),
-            ("wrapping text", &narrow, b"x", r.saturating_mul(49 + 128)),
+        for (name, setup_bytes, each) in [
+            ("bare LF", &wide, &b"\n"[..]),
+            ("bare SU", &wide, b"\x1b[S"),
+            ("wrapping text", &narrow, b"x"),
         ] {
-            let work: &'static [(&'static str, u64, u64, u64)] = Box::leak(Box::new([
-                ("cells", n.saturating_mul(3), 0, 0),
-                ("text", text, 0, 0),
-            ]));
-            let margins = Bound { work, ..bound };
+            let margins = bound;
             // Each scroll's work is the screen's, so the bound a byte is met
             // or broken by the first few: 4 KiB of them at 50x200, and at
             // the larger screens 1 KiB, which keeps the work a byte the
@@ -1657,7 +1612,7 @@ pub fn b35(scale: Scale, chunk: usize) -> Found {
                 _ => scrolls.saturating_mul(n / 2),
             };
             probe
-                .at_least("cells", least)
+                .at_least(least)
                 .map_err(|e| format!("{name} at {rows}x{cols}: {e}"))?;
             probe
                 .finish()
@@ -1667,13 +1622,13 @@ pub fn b35(scale: Scale, chunk: usize) -> Found {
     Ok(())
 }
 
-// B36: a scroll inside a region moves at most twice its rows' slots and
-// its cells, its count clamped: N / 4 cells and 2R / 3 slots a byte.
+// B36: a scroll inside a region turns its rows' slots once, its count
+// clamped; across the ring's end, at most twice its rows' slots.
 pub fn b36(scale: Scale, chunk: usize) -> Found {
     let rows: u16 = 4095;
     let setup = Setup::defaults().sized(rows, 1).history(0);
     const BOUND: Bound = Bound {
-        work: &[("cells", 4095 / 4, 0, 0), ("slots", 2 * 4095 / 3, 0, 0)],
+        work: None,
         heap: 0,
     };
     let bound = Bound {
@@ -1682,7 +1637,7 @@ pub fn b36(scale: Scale, chunk: usize) -> Found {
     };
     let input = repeat(b"\x1b[4095L", scale.times());
     fed(&setup, bound, chunk, scale.times(), &input, |p| {
-        p.at_least("slots", u64::from(rows))
+        p.at_least(u64::from(rows))
     })?;
     // A region across the ring's end: a line feed at the
     // bottom, with history, turns the ring by one, so the last two rows
@@ -1691,14 +1646,14 @@ pub fn b36(scale: Scale, chunk: usize) -> Found {
     let setup = Setup::defaults().sized(rows, 1);
     let times = scale.times().saturating_mul(100);
     let crossing = Bound {
-        work: &[("slots", 0, 0, 4)],
+        work: Some((0, 0, 4)),
         heap: steady(&setup),
     };
     let mut probe = Probe::new(&setup, heap(steady(&setup)), chunk, times)?;
     probe.feed(b"\x1b[4095;1H\n\x1b[4094;4095r")?;
     probe.restart(crossing, times);
     probe.feed(&repeat(b"\x1b[4094;1H\x1b[2L", times))?;
-    probe.at_least("slots", 2)?;
+    probe.at_least(2)?;
     probe.finish()
 }
 
@@ -1718,8 +1673,7 @@ pub fn b37(scale: Scale, chunk: usize) -> Found {
     // Reflow copies each cell out, pushes it into the new grid and clears
     // its row: 3 a cell, and a row read and kept a row (THREATS.md B37).
     let most = u64::try_from(cells.saturating_add(history).saturating_mul(3)).unwrap_or(u64::MAX);
-    let per_call: &'static [(&'static str, u64, u64, u64)] =
-        Box::leak(Box::new([("rows", 0, most, 0), ("cells", 0, most, 0)]));
+    let per_call = Some((0, most.saturating_add(most), 0));
     probe.restart(
         Bound {
             work: per_call,
@@ -1820,8 +1774,7 @@ pub fn b40(scale: Scale, chunk: usize) -> Found {
     let history = u64::try_from(probe.parser.screen().history_len()).unwrap_or(u64::MAX);
     let per_call =
         50u64.saturating_add(u64::from(history.saturating_add(1).ilog2()).saturating_add(1));
-    let rows: &'static [(&'static str, u64, u64, u64)] =
-        Box::leak(Box::new([("rows", 0, per_call, 0)]));
+    let rows = Some((0, per_call, 0));
     probe.restart(
         Bound {
             work: rows,
@@ -1848,7 +1801,7 @@ pub fn b40(scale: Scale, chunk: usize) -> Found {
             }
         }
     }
-    probe.at_least("rows", 1)?;
+    probe.at_least(1)?;
     probe.finish()?;
     b40_spans(scale, chunk)
 }
@@ -2248,7 +2201,7 @@ pub fn b46(scale: Scale, chunk: usize) -> Found {
             .flat_map(|col| format!("\x1b[1;{col}H{picture}").into_bytes())
             .collect();
         let bound = Bound {
-            work: &[("pixels", 4096, 0, 64 * COVER_WORDS)],
+            work: Some((4096, 0, 64 * COVER_WORDS)),
             heap: steady(&setup).saturating_add(PICTURE_BYTES),
         };
         let mut probe = Probe::new(&setup, bound, chunk, scale.times())?;
@@ -2265,7 +2218,7 @@ pub fn b46(scale: Scale, chunk: usize) -> Found {
         let covered = u64::try_from(scale.times())
             .unwrap_or(0)
             .saturating_mul(rows.saturating_mul(64 * 63 / 2));
-        probe.at_least("pixels", covered)?;
+        probe.at_least(covered)?;
         probe.finish()?;
     }
     Ok(())

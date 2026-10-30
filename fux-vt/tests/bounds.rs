@@ -1,8 +1,8 @@
 //! The bounds suite (`THREATS.md` sections 2 to 4): each bound row's
-//! reproducer fed at 1×, 10× and 100× and at several chunkings, its work
-//! counted by fux-vt's counters ([`fux_vt::Work`], the `checks` feature)
-//! and its memory by a counting allocator, independent of fux-vt's own
-//! figures.
+//! reproducer fed at 1×, 10× and (with `FUX_VT_BOUND_STRESS=1`) 100× and
+//! at several chunkings, its work counted by fux-vt's one counter
+//! ([`fux_vt::work_spent`], the `checks` feature) and its memory by a
+//! counting allocator, independent of fux-vt's own figures.
 //!
 //! The allocator is `fux-vt-peak`'s, this binary's `#[global_allocator]`:
 //! it keeps the live bytes and their peak, which a probe resets, for each
@@ -135,31 +135,23 @@ mod rows;
 
 use probe::Scale;
 
-/// Runs row `row` at `scale` at every chunking: it passes within its
-/// bound; every violation fails the case.
-fn judge(row: &str, scale: Scale) -> Result {
+/// Runs row `row` at every scale but 100×, unless `FUX_VT_BOUND_STRESS`
+/// is 1, and at every chunking: it passes within its bound; every
+/// violation fails it.
+fn judge(row: &str) -> Result {
     let _one = one_at_a_time();
     let probe = (rows::ROWS.iter())
         .find(|(name, _)| *name == row)
         .map(|(_, probe)| *probe)
         .ok_or(format!("no row {row}"))?;
-    rows::run(probe, scale)
-        .map_err(|found| format!("{row} at {}: {}", scale.name(), found.join("; ")).into())
-}
-
-/// A bound naming a counter there is none of fails, rather than passing
-/// for counting nothing.
-#[test]
-fn a_bound_naming_no_counter_fails() -> Result {
-    let _one = one_at_a_time();
-    let setup = probe::Setup::defaults().sized(2, 2).history(0);
-    let bound = probe::Bound {
-        work: &[("cell", 1, 0, 0)],
-        heap: usize::MAX,
-    };
-    let mut probe = probe::Probe::new(&setup, bound, 1, 1)?;
-    let fed = probe.feed(b"x");
-    assert!(fed.is_err_and(|e| e.contains("no counter is named cell")));
+    let stress = std::env::var_os("FUX_VT_BOUND_STRESS").is_some_and(|v| v == "1");
+    for scale in [Scale::Once, Scale::Ten, Scale::Hundred] {
+        if scale == Scale::Hundred && !stress {
+            continue;
+        }
+        rows::run(probe, scale)
+            .map_err(|found| format!("{row} at {}: {}", scale.name(), found.join("; ")))?;
+    }
     Ok(())
 }
 
@@ -180,181 +172,114 @@ fn the_threats_table_lists_the_suites_rows() -> Result {
     Ok(())
 }
 
-/// The tests of one bound row: `bound!(b01, "B01", b01_1x, b01_10x,
-/// b01_100x)` expands to three tests, `b01_1x` and `b01_10x`, which
-/// `judge("B01", Scale::Once)` and `Scale::Ten`, and `b01_100x`, at
-/// `Scale::Hundred`, ignored but at release.
+/// The largest indivisible operation (`THREATS.md` 4.2) is the formula's
+/// at fux's largest pane and history, and `THREATS.md` names it.
+#[test]
+fn the_largest_operation_is_the_formula_s_at_the_largest_pane() -> Result {
+    assert_eq!(probe::most_at(4096, 4096, 1 << 30), probe::LARGEST);
+    let text = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/THREATS.md"))?;
+    assert!(text.contains("1,870,334,208"), "THREATS.md names another");
+    Ok(())
+}
+
+/// The test of one bound row, named for its property: `bound!(name,
+/// "B01")` is a test `name` that runs `judge("B01")`.
 macro_rules! bound {
-    ($row:literal, $once:ident, $ten:ident, $hundred:ident) => {
+    ($name:ident, $row:literal) => {
         #[test]
-        fn $once() -> Result {
-            judge($row, Scale::Once)
-        }
-        #[test]
-        fn $ten() -> Result {
-            judge($row, Scale::Ten)
-        }
-        #[test]
-        #[ignore = "100x: at release, under a 2 GiB memory cap"]
-        fn $hundred() -> Result {
-            judge($row, Scale::Hundred)
+        fn $name() -> Result {
+            judge($row)
         }
     };
 }
 
-bound!("B01", b01_1x, b01_10x, b01_100x);
-bound!("B02", b02_1x, b02_10x, b02_100x);
-bound!("B03", b03_1x, b03_10x, b03_100x);
-bound!("B04", b04_1x, b04_10x, b04_100x);
-bound!("B05", b05_1x, b05_10x, b05_100x);
-bound!("B06", b06_1x, b06_10x, b06_100x);
-bound!("B07", b07_1x, b07_10x, b07_100x);
-bound!("B08", b08_1x, b08_10x, b08_100x);
-bound!("B09", b09_1x, b09_10x, b09_100x);
-bound!("B11", b11_1x, b11_10x, b11_100x);
-bound!("B12", b12_1x, b12_10x, b12_100x);
-bound!("B13", b13_1x, b13_10x, b13_100x);
-bound!("B14", b14_1x, b14_10x, b14_100x);
-bound!("B15", b15_1x, b15_10x, b15_100x);
-bound!("B16", b16_1x, b16_10x, b16_100x);
-bound!("B17", b17_1x, b17_10x, b17_100x);
-bound!("B18", b18_1x, b18_10x, b18_100x);
-bound!("B19", b19_1x, b19_10x, b19_100x);
-bound!("B20", b20_1x, b20_10x, b20_100x);
-bound!("B21", b21_1x, b21_10x, b21_100x);
-bound!("B22", b22_1x, b22_10x, b22_100x);
-bound!("B23", b23_1x, b23_10x, b23_100x);
-bound!("B24", b24_1x, b24_10x, b24_100x);
-bound!("B25", b25_1x, b25_10x, b25_100x);
-bound!("B26", b26_1x, b26_10x, b26_100x);
-bound!("B27", b27_1x, b27_10x, b27_100x);
-bound!("B28", b28_1x, b28_10x, b28_100x);
-bound!("B30", b30_1x, b30_10x, b30_100x);
-bound!("B31", b31_1x, b31_10x, b31_100x);
-bound!("B32", b32_1x, b32_10x, b32_100x);
-bound!("B33", b33_1x, b33_10x, b33_100x);
-bound!("B34", b34_1x, b34_10x, b34_100x);
-bound!("B34a", b34a_1x, b34a_10x, b34a_100x);
-bound!("B35", b35_1x, b35_10x, b35_100x);
-bound!("B36", b36_1x, b36_10x, b36_100x);
-bound!("B37", b37_1x, b37_10x, b37_100x);
-bound!("B38", b38_1x, b38_10x, b38_100x);
-bound!("B39", b39_1x, b39_10x, b39_100x);
-bound!("B40", b40_1x, b40_10x, b40_100x);
-bound!("B41", b41_1x, b41_10x, b41_100x);
-bound!("B42", b42_1x, b42_10x, b42_100x);
-bound!("B43", b43_1x, b43_10x, b43_100x);
-bound!("B44", b44_1x, b44_10x, b44_100x);
-bound!("B45", b45_1x, b45_10x, b45_100x);
-bound!("B46", b46_1x, b46_10x, b46_100x);
+bound!(pictures_fit_the_memory_cap, "B01");
+bound!(placements_fit_the_count_cap, "B02");
+bound!(sixel_growth_has_bounded_work_and_memory, "B03");
+bound!(sixel_aspects_have_bounded_work, "B04");
+bound!(raster_extents_and_overlaps_remain_bounded, "B05");
+bound!(cloning_a_picture_has_bounded_peak_memory, "B06");
+bound!(pictures_validate_their_pixel_count, "B07");
+bound!(sixel_encoding_has_bounded_work_and_output, "B08");
+bound!(picture_lookup_has_bounded_work, "B09");
+bound!(styles_fit_the_history_allowance, "B11");
+bound!(chosen_style_collisions_have_bounded_work, "B12");
+bound!(style_sweeps_have_bounded_work, "B13");
+bound!(links_fit_the_grid_allowance, "B14");
+bound!(history_accounts_for_link_runs, "B15");
+bound!(link_sweeps_have_bounded_work_and_peak, "B16");
+bound!(history_fits_its_memory_allowance, "B17");
+bound!(line_feeds_have_bounded_work, "B18");
+bound!(frame_scanning_has_linear_work, "B19");
+bound!(osc_storage_is_bounded, "B20");
+bound!(discarded_strings_keep_no_storage, "B21");
+bound!(parameters_have_a_fixed_capacity, "B22");
+bound!(pastes_fit_their_storage_allowance, "B23");
+bound!(unfinished_keys_keep_a_bounded_prefix, "B24");
+bound!(oversized_answers_are_dropped_whole, "B25");
+bound!(input_events_are_bounded_by_input_bytes, "B26");
+bound!(keyboard_stacks_have_a_fixed_capacity, "B27");
+bound!(replies_are_bounded_by_request_bytes, "B28");
+bound!(clusters_have_bounded_text_and_join_work, "B30");
+bound!(zero_width_suffixes_have_bounded_join_work, "B31");
+bound!(glyphs_take_at_most_two_cells, "B32");
+bound!(ascii_repetition_has_bounded_work, "B33");
+bound!(non_ascii_repetition_has_bounded_work, "B34");
+bound!(self_joining_repetition_has_bounded_work, "B34a");
+bound!(screen_operations_have_bounded_work, "B35");
+bound!(region_scrolls_have_bounded_work, "B36");
+bound!(resize_has_bounded_work_and_peak_memory, "B37");
+bound!(screens_refuse_excess_cells, "B38");
+bound!(cell_vectors_refuse_excess_cells, "B39");
+bound!(row_lookup_has_bounded_work, "B40");
+bound!(queue_append_cannot_remove_existing_bytes, "B41");
+bound!(tab_stops_have_bounded_storage, "B42");
+bound!(events_are_delivered_without_retention, "B43");
+bound!(allocation_refusal_preserves_parser_recovery, "B44");
+bound!(encoded_keys_and_mouse_fit_the_output_cap, "B45");
+bound!(picture_covering_has_bounded_work_and_memory, "B46");
 
-/// The per-call work budget (`THREATS.md` 4.4): at fux's
-/// largest pane, 4095×4096, each class of screen-wide function stops a
-/// call at the budget, no call does more than its ceiling (U, or one such
-/// function alone, `Work::ceiling`), and the
-/// screen after every call equals that of one call given it all.
-mod budget {
-    use fux_vt::{Parser, Size, Stop, Work};
+/// The work quota (`THREATS.md` 4) at fux's largest pane, 4095×4096,
+/// where one screen-wide function moves or fills millions of cells for a
+/// few bytes: every call spends at most the quota and one indivisible
+/// operation, each kind stops a call at the quota and goes on in the next,
+/// and the screen and the replies after the last call are those of one
+/// call given it all.
+mod quota {
+    use fux_vt::{Parser, Size, Stop};
 
-    use super::{Result, one_at_a_time};
+    use super::{Result, one_at_a_time, probe};
 
-    /// A host that hears nothing.
-    struct Deaf;
-    impl fux_vt::Sink for Deaf {}
-
-    /// The screen filled with `X`, then `each` 24 times: each one moves or
-    /// fills millions of cells, a few bytes apiece.
-    fn input(each: &str) -> Vec<u8> {
-        let mut input = b"\x1b[88;1;1;4095;4096$x".to_vec();
-        for _ in 0..24 {
-            input.extend_from_slice(each.as_bytes());
+    /// A host that keeps its replies, in order.
+    #[derive(Default)]
+    struct Replies(Vec<Vec<u8>>);
+    impl fux_vt::Sink for Replies {
+        fn reply(&mut self, bytes: &[u8]) {
+            self.0.push(bytes.to_vec());
         }
-        input
     }
 
     /// Feeds `input` whole to one parser, and to another by
-    /// `process_until_stop`, given the rest again after each stop: each
-    /// call under U, the budget stopping some, and the two screens alike.
-    /// A stop may come before a byte is taken, when the work a call before
-    /// left took the call, spending as it goes.
-    fn budgeted(each: &str) -> Result {
+    /// `process_until_stop`, given the rest again after each stop and
+    /// called again while work is left: each call within the quota and one
+    /// operation, the quota stopping it at least twice, and the two alike
+    /// at the end, screen, cursor and replies.
+    fn split_and_whole_agree(input: &[u8]) -> Result {
         let _one = one_at_a_time();
-        let input = input(each);
         let size = Size::new(4095, 4096)?;
-        let mut whole = Parser::new(size, 0)?;
-        whole.process(&input)?;
-        let mut parser = Parser::new(size, 0)?;
-        let (mut rest, mut stops, mut idle) = (&input[..], 0u32, 0u32);
-        while !rest.is_empty() {
-            let before = Work::now();
-            let stop = parser.process_until_stop(rest, &mut Deaf)?;
-            let done = Work::now().since(before);
-            assert!(
-                done.cost() <= Work::ceiling(size),
-                "{each:?}: a call did {} units, past its ceiling: {done:?}",
-                done.cost()
-            );
+        let setup = probe::Setup::defaults().sized(4095, 4096).history(0);
+        let most = probe::LIMIT.saturating_add(probe::most(&setup));
+        let (mut whole, mut alone) = (Parser::new(size, 0)?, Replies::default());
+        whole.process_with(input, &mut alone)?;
+        let (mut parser, mut replies) = (Parser::new(size, 0)?, Replies::default());
+        let (mut rest, mut stops) = (input, 0u32);
+        while !rest.is_empty() || parser.has_work_left() {
+            let before = fux_vt::work_spent();
+            let stop = parser.process_until_stop(rest, &mut replies)?;
+            let done = fux_vt::work_spent().saturating_sub(before);
+            assert!(done <= most, "a call spent {done}, past {most}");
             match stop {
-                None => break,
-                // A call may take no byte, doing what the call before left
-                // (`Parser::resumed`), spending as it goes, no more often
-                // in a row than one sequence's most work allows.
-                Some((taken, Stop::Budget)) => {
-                    stops = stops.saturating_add(1);
-                    rest = rest.get(taken..).unwrap_or_default();
-                    idle = if taken == 0 {
-                        idle.saturating_add(1)
-                    } else {
-                        0
-                    };
-                    assert!(
-                        idle <= crate::probe::idle_most(size) && (taken > 0 || done.cost() > 0),
-                        "{each:?}: {idle} calls in a row took no byte, the last doing {}",
-                        done.cost()
-                    );
-                }
-                Some(other) => return Err(format!("{each:?}: stopped as {other:?}").into()),
-            }
-        }
-        assert!(stops >= 2, "{each:?}: {stops} stops");
-        let (a, b) = (whole.screen(), parser.screen());
-        assert_eq!(a.cursor_position(), b.cursor_position(), "{each:?}");
-        assert!(
-            a.rows().zip(b.rows()).all(|(a, b)| a.cells().eq(b.cells())),
-            "{each:?}: the screens differ"
-        );
-        Ok(())
-    }
-
-    /// A REP inside left and right margins whose wraps scroll past the
-    /// budget stops where the budget is spent, its copies left made by
-    /// the next call, and text in DEC Special Graphics after it stops so
-    /// too: the screen is that of one call given it all.
-    #[test]
-    fn a_rep_inside_margins_stops_at_the_budget_and_goes_on() -> Result {
-        let _one = one_at_a_time();
-        let mut input = b"\x1b[88;1;1;4095;4096$x\x1b[?69h\x1b[1;4090s\x1b[4095;1H".to_vec();
-        for _ in 0..2 {
-            input.extend_from_slice(b"x\x1b[65535b\x1b(0");
-            input.extend(std::iter::repeat_n(b'q', 20_000));
-            input.extend_from_slice(b"\x1b(B");
-        }
-        let size = Size::new(4095, 4096)?;
-        let mut whole = Parser::new(size, 0)?;
-        whole.process(&input)?;
-        let mut parser = Parser::new(size, 0)?;
-        let (mut rest, mut stops) = (&input[..], 0u32);
-        while !rest.is_empty() {
-            let before = Work::now();
-            let stop = parser.process_until_stop(rest, &mut Deaf)?;
-            let done = Work::now().since(before);
-            assert!(
-                done.cost() <= Work::ceiling(size),
-                "a call did {} units, past its ceiling",
-                done.cost()
-            );
-            match stop {
-                None => break,
+                None => rest = &[],
                 Some((taken, Stop::Budget)) => {
                     stops = stops.saturating_add(1);
                     rest = rest.get(taken..).unwrap_or_default();
@@ -369,58 +294,71 @@ mod budget {
             a.rows().zip(b.rows()).all(|(a, b)| a.cells().eq(b.cells())),
             "the screens differ"
         );
+        assert_eq!(alone.0, replies.0, "the replies differ");
         Ok(())
     }
 
-    /// How many of the REPs of `glyph` in `input` a call carries out
-    /// before the budget stops it, on fux's default screen and history,
-    /// where none of a REP's copies is skipped: each is printed, and
-    /// spent.
-    fn reps_before_the_budget(glyph: &str) -> Result<usize> {
-        let each = format!("{glyph}\x1b[65535b");
-        let input: String = std::iter::repeat_n(each.as_str(), 4000).collect();
-        let mut parser = Parser::new(Size::new(50, 200)?, 8 << 20)?;
-        match parser.process_until_stop(input.as_bytes(), &mut Deaf)? {
-            Some((taken, Stop::Budget)) => Ok(taken.checked_div(each.len()).unwrap_or(0)),
-            other => Err(format!("{glyph}: stopped as {other:?}").into()),
+    /// The screen filled with `X`, then `each` 24 times, each followed by
+    /// a cursor report, whose replies say where each left the cursor.
+    fn each_of(each: &str) -> Vec<u8> {
+        let mut input = b"\x1b[88;1;1;4095;4096$x".to_vec();
+        for _ in 0..24 {
+            input.extend_from_slice(each.as_bytes());
+            input.extend_from_slice(b"\x1b[6n");
         }
-    }
-
-    /// A wide glyph's copy writes two cells, and REP spends it as two: the
-    /// budget stops a call after half as many REPs of it.
-    #[test]
-    fn rep_spends_a_copy_by_its_width() -> Result {
-        let _one = one_at_a_time();
-        let (narrow, wide) = (reps_before_the_budget("é")?, reps_before_the_budget("一")?);
-        assert!(
-            wide.abs_diff(narrow / 2) <= 1,
-            "{wide} REPs of a wide glyph before the budget, {narrow} of a narrow one"
-        );
-        Ok(())
+        input
     }
 
     #[test]
-    fn column_edits_stop_at_the_budget() -> Result {
+    fn column_edits_stop_at_the_quota_and_go_on() -> Result {
         for each in ["\x1b[9'}", "\x1b[9'~", "\x1b[9 @", "\x1b[9 A"] {
-            budgeted(each)?;
+            split_and_whole_agree(&each_of(each))?;
         }
         Ok(())
     }
 
     #[test]
-    fn rectangle_copies_stop_at_the_budget() -> Result {
-        budgeted("\x1b[1;1;4095;4090;1;1;7;1$v")
+    fn rectangle_copies_stop_at_the_quota_and_go_on() -> Result {
+        split_and_whole_agree(&each_of("\x1b[1;1;4095;4090;1;1;7;1$v"))
     }
 
     #[test]
-    fn rectangle_fills_and_erases_stop_at_the_budget() -> Result {
+    fn rectangle_fills_and_erases_stop_at_the_quota_and_go_on() -> Result {
         for each in [
             "\x1b[89;1;2;4095;4096$x",
             "\x1b[1;2;4095;4096$z",
             "\x1b[1;2;4095;4096${",
         ] {
-            budgeted(each)?;
+            split_and_whole_agree(&each_of(each))?;
         }
         Ok(())
+    }
+
+    /// REP of a narrow glyph and of a wide one, and in insert mode, where
+    /// each copy moves the row: the quota stops a call between copies.
+    #[test]
+    fn repetition_stops_at_the_quota_and_goes_on() -> Result {
+        for each in [
+            "\x1b[Hé\x1b[65535b",
+            "\x1b[H一\x1b[65535b",
+            "\x1b[4h\x1b[Hx\x1b[65535b\x1b[4l",
+        ] {
+            split_and_whole_agree(&each_of(each))?;
+        }
+        Ok(())
+    }
+
+    /// A REP inside left and right margins whose wraps scroll stops where
+    /// the quota is spent, its copies left made by the next call, and text
+    /// in DEC Special Graphics after it stops so too.
+    #[test]
+    fn a_rep_inside_margins_stops_at_the_quota_and_goes_on() -> Result {
+        let mut input = b"\x1b[88;1;1;4095;4096$x\x1b[?69h\x1b[1;4090s\x1b[4095;1H".to_vec();
+        for _ in 0..2 {
+            input.extend_from_slice(b"x\x1b[65535b\x1b(0");
+            input.extend(std::iter::repeat_n(b'q', 20_000));
+            input.extend_from_slice(b"\x1b(B\x1b[6n");
+        }
+        split_and_whole_agree(&input)
     }
 }
