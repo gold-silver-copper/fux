@@ -211,10 +211,7 @@ mod tests {
         assert!(worst.cost > 0 && worst.cost <= CEILING, "{worst:?}");
         assert!(worst.at.starts_with("zsh-resize "), "{worst:?}");
         let (to, from) = super::resize_history(1 << 20, 2 << 20)?;
-        assert!(
-            to > 0 && from > 0 && to.max(from) <= CEILING,
-            "{to} {from}"
-        );
+        assert!(to > 0 && from > 0 && to.max(from) <= CEILING, "{to} {from}");
         Ok(())
     }
 }
