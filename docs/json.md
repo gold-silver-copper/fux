@@ -420,8 +420,8 @@ they run, so a `try` may name them too.
 ## `status`
 
 ```json
-{"socket":"/run/user/1000/fux/server.sock","release":"0.36.0","protocol":52,
- "server_release":"0.36.0","server_protocol":52,"compatible":true}
+{"socket":"/run/user/1000/fux/server.sock","release":"0.36.0","protocol":53,
+ "server_release":"0.36.0","server_protocol":53,"compatible":true}
 ```
 
 `status` returns an ordinary record with these locally readable fields. Plain
