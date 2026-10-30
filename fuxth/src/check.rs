@@ -420,6 +420,7 @@ pub(crate) fn check<A>(
 /// does, and the first mistake among them. Reached library words are
 /// checked by dependency component before user words; successful components
 /// are shared by clones and give the same summaries with a cold or warm cache.
+/// Components are checked whole, so their members are never partly known.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct Known {
     summaries: Vec<Option<Rc<Summary>>>,
@@ -446,22 +447,19 @@ impl Known {
 /// or the top level. A reserved summary slot need not have been checked.
 pub(crate) fn definitions<A>(program: &Program<A>, known: &mut Known, library: usize) {
     let cached = known.library.borrow();
+    let done = |id: &usize| {
+        known.checked.contains(id) || (*id < library && cached.summaries.contains_key(id))
+    };
     let mut pending: BTreeSet<_> = (library..program.words.len())
         .chain(calls(&program.main))
-        .filter(|id| {
-            !known.checked.contains(id) && !(*id < library && cached.summaries.contains_key(id))
-        })
+        .filter(|id| !done(id))
         .collect();
     let mut needed = BTreeSet::new();
     while let Some(id) = pending.pop_first() {
-        if known.checked.contains(&id)
-            || (id < library && cached.summaries.contains_key(&id))
-            || !needed.insert(id)
+        if needed.insert(id)
+            && let Some(code) = program.words.get(id)
         {
-            continue;
-        }
-        if let Some(code) = program.words.get(id) {
-            pending.extend(calls(code));
+            pending.extend(calls(code).filter(|id| !done(id)));
         }
     }
     if needed.is_empty() {
@@ -482,12 +480,6 @@ pub(crate) fn definitions<A>(program: &Program<A>, known: &mut Known, library: u
             .iter()
             .filter(|ids| ids.iter().any(|id| needed.contains(id)))
         {
-            // Every member starts unknown, against completed callees only.
-            for id in ids {
-                if let Some(slot) = known.summaries.get_mut(*id) {
-                    *slot = None;
-                }
-            }
             let error = summarise_all(program, known, ids.iter().copied());
             if error.is_none() && known.first.is_none() {
                 // Publish a whole component only when no dependency has
