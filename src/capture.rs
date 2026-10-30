@@ -371,45 +371,13 @@ fn room(budget: &mut crate::wire::Budget, bytes: usize) -> Result<String, crate:
 }
 
 /// A capture's styles, in the order first used, and their places, found
-/// by a keyed hash so that a program can't choose styles that collide:
-/// each slot holds a style's place plus one, or 0 for none. At most half
-/// the slots are taken, so a search ends at an empty one.
+/// by fux-vt's keyed hash so that a program can't choose styles that
+/// collide: each slot holds a style's place plus one, or 0 for none. At
+/// most half the slots are taken, so a search ends at an empty one.
 #[derive(Default)]
 struct Table {
     styles: Vec<Attributes>,
     slots: Vec<u32>,
-    keys: Keys,
-}
-
-/// The table's hash keys, drawn from std's random ones, the second odd so
-/// that no word folds to nothing. A style's words are folded in by one
-/// 128-bit multiply each, as fux-vt's own style tables do.
-struct Keys(u64, u64);
-
-impl Default for Keys {
-    fn default() -> Self {
-        use std::hash::BuildHasher;
-        let random = std::hash::RandomState::new();
-        Keys(random.hash_one(0u64), random.hash_one(1u64) | 1)
-    }
-}
-
-impl std::hash::Hasher for Keys {
-    fn finish(&self) -> u64 {
-        self.0
-    }
-    fn write(&mut self, bytes: &[u8]) {
-        bytes
-            .iter()
-            .for_each(|byte| self.write_u128(u128::from(*byte)));
-    }
-    fn write_u128(&mut self, n: u128) {
-        let halves = |n: u128| [n >> 64, n & u128::from(u64::MAX)].map(u64::try_from);
-        let [high, low] = halves(n).map(|h| h.unwrap_or(0));
-        let folded = u128::from(high ^ self.0).wrapping_mul(u128::from(low ^ self.1));
-        let [high, low] = halves(folded).map(|h| h.unwrap_or(0));
-        self.0 = high ^ low;
-    }
 }
 
 impl Table {
@@ -452,12 +420,11 @@ impl Table {
 
     /// The slot that holds `style`, or the empty one it would take.
     fn slot(&self, style: Attributes) -> usize {
-        use std::hash::{Hash, Hasher};
-        let mut hash = Keys(self.keys.0, self.keys.1);
-        style.hash(&mut hash);
+        use std::hash::BuildHasher;
         let mask = self.slots.len().saturating_sub(1);
         // The hash's low bits, which the mask keeps below the slots' count.
-        let mut at = usize::try_from(hash.finish() & mask as u64).unwrap_or(mask);
+        let hash = fux_vt::Keyed.hash_one(style);
+        let mut at = usize::try_from(hash & mask as u64).unwrap_or(mask);
         for _ in 0..self.slots.len() {
             let place = self.slots.get(at).and_then(|taken| taken.checked_sub(1));
             if place.is_none_or(|place| self.styles.get(place as usize) == Some(&style)) {

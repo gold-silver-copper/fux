@@ -50,7 +50,7 @@ pub(crate) struct Styles {
 /// std's random keys, so a program sees neither them nor any hash. Each
 /// word is folded in by one 128-bit multiply by a key, as foldhash does.
 #[derive(Clone, Copy, Default)]
-pub(crate) struct Keyed;
+pub struct Keyed;
 
 /// The process's keys: the seed, and the key, odd so that no word folds
 /// to nothing.
@@ -70,7 +70,7 @@ impl BuildHasher for Keyed {
     }
 }
 
-pub(crate) struct KeyedHasher {
+pub struct KeyedHasher {
     state: u64,
     key: u64,
 }
