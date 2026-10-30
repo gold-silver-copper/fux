@@ -547,7 +547,7 @@ mod tests {
             s.input(c, b"\r");
             assert_eq!(notice(&s, c), "", "{open}");
             assert_eq!(mode(&s, c), "normal", "{open}");
-            let listed = output(&mut s, "ls")?;
+            let listed = output(&mut s, "ls listing")?;
             assert!(
                 listed.contains(&format!("{read} {name}")),
                 "{open}: {listed}"
@@ -613,7 +613,7 @@ mod tests {
             "me str sure? str '%1 str yes rename' confirm",
         )?;
         s.input(c, b"y");
-        assert!(output(&mut s, "ls")?.contains("%1 yes"));
+        assert!(output(&mut s, "ls listing")?.contains("%1 yes"));
         Ok(())
     }
 
@@ -795,7 +795,7 @@ mod tests {
 
     /// The panes of the client's tab, left to right.
     fn pane_order(s: &mut Session) -> Result<Vec<String>, String> {
-        let ls = output(s, "ls")?;
+        let ls = output(s, "ls listing")?;
         Ok(ls
             .lines()
             .filter_map(|l| l.trim_start().split(' ').next())
@@ -962,9 +962,9 @@ mod tests {
     fn state(s: &mut Session, c: ClientId) -> Result<String, String> {
         // Opening the prefix panel and leaving it are real journal events;
         // direct evaluation has a different history, with the same state.
-        let ls = output(s, "ls")?
+        let ls = output(s, "ls listing")?
             .lines()
-            .filter(|line| !line.starts_with("events "))
+            .filter(|line| !line.starts_with("cursor "))
             .collect::<Vec<_>>()
             .join("\n");
         Ok(format!(

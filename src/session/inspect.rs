@@ -44,7 +44,7 @@ impl Session {
         let empty = matches!(scope, Scope::Client(_)) && target.is_none();
         let mut snapshot = Snapshot {
             run: self.run,
-            events: self.parts.journal().end(self.run),
+            cursor: self.parts.journal().end(self.run),
             scope,
             projection: projection.clone(),
             workspaces: Vec::new(),

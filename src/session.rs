@@ -4114,16 +4114,141 @@ mod tests {
     }
 
     #[test]
-    fn plain_listings_report_a_lost_exit_status() -> TestResult {
+    fn listings_report_held_process_outcomes() -> TestResult {
+        use crate::inspect::{Projection, Scope};
         let (mut s, _) = attached(12, 50)?;
         run(
             &mut s,
             "opts str agent in 80 24 size str /bin/cat program run drop",
         )?;
         s.end_program(PaneId::of(2), Ended::Lost);
-        for code in ["ls", "%2 info"] {
+        for code in ["ls listing", "%2 info listing"] {
             let text = output(&mut s, code)?;
             assert!(text.contains("ended, its status lost"), "{text}");
+        }
+        for (pid, exited, signal, expected) in [
+            (Some(123), Json::Null, Json::Null, "pid 123"),
+            (None, Json::Int(7), Json::Null, "exited 7"),
+            (None, Json::Null, Json::Int(15), "signal 15"),
+            (None, Json::Null, Json::Null, "ended, its status lost"),
+        ] {
+            for (scope, code) in [
+                (Scope::All, "ls listing print"),
+                (
+                    Scope::Target(AnyRef::Pane(PaneId::of(2))),
+                    "%2 info listing print",
+                ),
+            ] {
+                let Body::Snapshot(mut snapshot) = s.inspect(scope, Projection::Facts)? else {
+                    return Err("snapshot".into());
+                };
+                let pane = snapshot
+                    .panes
+                    .iter_mut()
+                    .find(|p| p.id == PaneId::of(2))
+                    .ok_or("pane")?;
+                pane.pid = pid;
+                pane.state = Some(Json::Object(vec![
+                    ("exited".into(), exited.clone()),
+                    ("signal".into(), signal.clone()),
+                ]));
+                snapshot.validate()?;
+                let mut out = Vec::new();
+                crate::script::tests::held_reply(
+                    code,
+                    Reply {
+                        run: Some(s.run),
+                        ..Body::Snapshot(snapshot).into()
+                    },
+                    &mut out,
+                )?;
+                let text = String::from_utf8(out)?;
+                assert!(text.contains(expected), "{text}");
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn listing_walks_many_containers_within_the_client_step_budget() -> TestResult {
+        use crate::inspect::{Projection, Scope};
+        struct Once(Option<Reply>);
+        impl crate::script::Asks for Once {
+            fn ask(&mut self, _: &crate::protocol::Asked) -> Result<Reply, crate::script::Failed> {
+                self.0.take().ok_or_else(|| {
+                    crate::script::Failed::new(crate::code::Code::Usage, "held listing refreshed")
+                })
+            }
+        }
+        let (s, _) = attached(12, 80)?;
+        let Body::Snapshot(template) = s.inspect(Scope::All, Projection::Topology)? else {
+            return Err("snapshot".into());
+        };
+        let workspace = template.workspaces.first().ok_or("workspace")?;
+        let tab = template.tabs.first().ok_or("tab")?;
+        let pane = template.panes.first().ok_or("pane")?;
+        for (workspaces, tabs_per_workspace) in [(1, 1000), (1000, 1)] {
+            let mut snapshot = (*template).clone();
+            snapshot.workspaces.clear();
+            snapshot.tabs.clear();
+            snapshot.panes.clear();
+            snapshot.clients.clear();
+            for ws in 1..=workspaces {
+                let mut w = workspace.clone();
+                w.id = WsId::of(ws);
+                w.label = w.id.to_string();
+                w.tabs.clear();
+                for _ in 0..tabs_per_workspace {
+                    let id = u32::try_from(snapshot.panes.len())?.saturating_add(1);
+                    let mut t = tab.clone();
+                    let mut p = pane.clone();
+                    t.id = TabId::of(id);
+                    t.workspace = w.id;
+                    t.label = PaneId::of(id).to_string();
+                    t.host = None;
+                    t.revision = None;
+                    t.nodes = vec![crate::layout::Node::Pane(PaneId::of(id))];
+                    p.id = PaneId::of(id);
+                    p.tab = t.id;
+                    p.label = p.id.to_string();
+                    p.version.pane = p.id;
+                    w.tabs.push(t.id);
+                    snapshot.tabs.push(t);
+                    snapshot.panes.push(p);
+                }
+                snapshot.workspaces.push(w);
+            }
+            snapshot.validate()?;
+            let lines = snapshot
+                .workspaces
+                .len()
+                .saturating_add(snapshot.tabs.len())
+                .saturating_add(snapshot.panes.len())
+                .saturating_add(1);
+            let reply = Reply {
+                run: Some(s.run),
+                ..Body::Snapshot(Box::new(snapshot)).into()
+            };
+            let mut machine = crate::script::compile(&fuxth::token::source(
+                "many-tab-listing",
+                "all str topology snapshot listing print",
+            )?)?;
+            let mut out = Vec::new();
+            let mut host =
+                crate::script::Host::new(crate::protocol::Context::default(), None, &mut out);
+            crate::script::run_capped(
+                &mut machine,
+                &mut host,
+                &mut Once(Some(reply)),
+                Some(crate::script::PROGRAM_STEPS),
+                None,
+            )?;
+            let text = String::from_utf8(out)?;
+            assert_eq!(text.lines().count(), lines);
+            assert!(
+                text.lines()
+                    .any(|line| line.trim_start().starts_with("%1000 "))
+            );
         }
         Ok(())
     }
@@ -4326,7 +4451,7 @@ mod tests {
                 return Err("no snapshot".into());
             };
             snapshot.validate()?;
-            assert_eq!(snapshot.events, s.parts.journal().end(s.run));
+            assert_eq!(snapshot.cursor, s.parts.journal().end(s.run));
             assert_eq!(
                 snapshot.panes.iter().map(|p| p.id).collect::<Vec<_>>(),
                 [PaneId::of(1), PaneId::of(2)]
@@ -4365,12 +4490,7 @@ mod tests {
             {
                 *first = u32::MAX;
             }
-            let bytes = crate::wire::encode(&malformed)?;
-            assert!(
-                crate::wire::Reader::new(&bytes)
-                    .whole::<crate::inspect::Snapshot>()
-                    .is_err()
-            );
+            assert!(malformed.validate().is_err());
         }
         Ok(())
     }
@@ -6898,24 +7018,16 @@ mod tests {
         let (mut s, _) = attached(11, 40)?;
         run(&mut s, "opts 40 10 size str +1 workspace in new-tab")?;
         run(&mut s, "str %2 pane str vertical axis split")?;
-        let mut ids = |only| {
-            let ls = Command::Inspect {
-                scope: crate::inspect::Scope::Target(only),
-                projection: crate::inspect::Projection::Facts,
-            };
-            let mut reply = s.execute(&ls, &Origin::Cli(Caller::default()), Instant::now());
-            if let Ok(reply) = &mut reply {
-                reply.run = Some(s.run);
-            }
-            let text = said(&reply);
+        let mut ids = |only: AnyRef| -> Result<String, String> {
+            let text = output(&mut s, &format!("{only} info listing"))?;
             let words = text.lines().filter_map(|l| l.split_whitespace().next());
-            words.map(str::to_owned).collect::<Vec<_>>().join(" ")
+            Ok(words.map(str::to_owned).collect::<Vec<_>>().join(" "))
         };
         let ws = "+1".parse::<WsId>()?;
         let tab = "@2".parse::<TabId>()?;
-        assert_eq!(ids(AnyRef::Workspace(ws)), "+1 @1 %1 @2 %2 %3");
-        assert_eq!(ids(AnyRef::Tab(tab)), "@2 %2 %3");
-        assert_eq!(ids(AnyRef::Pane(PaneId::of(3))), "%3");
+        assert_eq!(ids(AnyRef::Workspace(ws))?, "+1 @1 %1 @2 %2 %3");
+        assert_eq!(ids(AnyRef::Tab(tab))?, "@2 %2 %3");
+        assert_eq!(ids(AnyRef::Pane(PaneId::of(3)))?, "%3");
         Ok(())
     }
 

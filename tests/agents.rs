@@ -166,7 +166,7 @@ fn a_run_program_keeps_its_pane_screen_and_status() -> Outcome {
         screen, "10 40\nstarted\n",
         "trimmed, and sized from the start"
     );
-    let ls = server.ok(&["ls"])?;
+    let ls = server.ok(&["ls", "listing"])?;
     assert!(ls.contains("+2 agent"), "{ls}");
     assert!(ls.contains(&format!("{pane} sh 40x10 exited 3")), "{ls}");
     let refused = server.fux(&["str", &pane, "pane", "str", "x", "text", "send-keys"])?;
@@ -537,9 +537,9 @@ fn a_headless_client_is_sized_from_the_command_line() -> Outcome {
     let mut lines = std::io::BufReader::new(stdout).lines();
     let id = lines.next().ok_or("its id")?.map_err(e)?;
     assert_eq!(id, "c1");
-    assert!(server.ok(&["ls"])?.contains("client c1 50x10"));
+    assert!(server.ok(&["ls", "listing"])?.contains("client c1 50x10"));
     server.ok(&["str", "c1", "client", "60", "12", "resize"])?;
-    assert!(server.ok(&["ls"])?.contains("client c1 60x12"));
+    assert!(server.ok(&["ls", "listing"])?.contains("client c1 60x12"));
     let capture = ["str", "c1", "client", "capture"];
     assert_eq!(
         server.ok(&[&capture[..], &["kind"]].concat())?.trim(),
@@ -723,7 +723,7 @@ fn names_clicks_and_signals_are_checked() -> Outcome {
     );
     server.ok(&["str", "ed", "pane", "tab", "40", "12", "resize"])?;
     assert!(
-        server.ok(&["ls"])?.contains(" 40x12"),
+        server.ok(&["ls", "listing"])?.contains(" 40x12"),
         "resized by the named pane's tab"
     );
     let clicks = "printf '\\033[?1000h\\033[?1006hready'; exec cat";
@@ -1012,7 +1012,7 @@ fn words_refuse_options_they_do_not_use() -> Outcome {
         );
     }
     // Nothing was made: the two panes, and no workspace "nowhere".
-    let ls = server.ok(&["ls"])?;
+    let ls = server.ok(&["ls", "listing"])?;
     assert!(!ls.contains("nowhere"), "{ls}");
     assert_eq!(
         ls.lines().filter(|line| line.starts_with("    %")).count(),

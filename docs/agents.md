@@ -202,7 +202,7 @@ panes as it begins and answers changes in watch order, not exit chronology.
   ```python
   def first_exit(fux):
       import json
-      cursor = json.loads(fux("ls", "json"))["events"]
+      cursor = json.loads(fux("ls", "json"))["cursor"]
       next_cursor = cursor
       panes = {}
       try:

@@ -855,10 +855,10 @@ pub fn pid_in(path: &Path) -> Result<i32, String> {
 }
 
 impl Server {
-    /// The panes `fux ls` lists, in order, with their shells' pids.
+    /// The panes `fux ls listing` lists, in order, with their shells' pids.
     pub fn panes(&self) -> Result<Vec<(String, i32)>, String> {
         Ok(self
-            .ok(&["ls"])?
+            .ok(&["ls", "listing"])?
             .lines()
             .filter_map(|line| {
                 let mut words = line.split_whitespace();
@@ -1088,9 +1088,9 @@ impl Drop for Terminal {
     }
 }
 
-/// The pane client c1 has in focus, as `fux ls` says.
+/// The pane client c1 has in focus, as `fux ls listing` says.
 pub fn focused(server: &Server) -> Result<String, String> {
-    let ls = server.ok(&["ls"])?;
+    let ls = server.ok(&["ls", "listing"])?;
     let client = ls
         .lines()
         .find(|l| l.starts_with("client c1"))

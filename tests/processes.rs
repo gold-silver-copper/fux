@@ -173,13 +173,13 @@ fn a_stopped_pane_stays_until_its_program_ends() -> Outcome {
             .trim_start()
             .starts_with('T'))
     })?;
-    server.ok(&["ls"])?;
-    server.ok(&["ls"])?;
+    server.ok(&["ls", "listing"])?;
+    server.ok(&["ls", "listing"])?;
     assert!(alive(leader), "the stopped shell is gone");
     assert!(
         server.panes()?.iter().any(|(id, _)| *id == pane),
         "the stopped pane closed: {}",
-        server.ok(&["ls"])?
+        server.ok(&["ls", "listing"])?
     );
     client.pump()?;
     assert!(!client.bar().contains("exited"), "{}", client.bar());

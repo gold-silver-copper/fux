@@ -278,7 +278,7 @@ fn a_scheme_report_refused_is_sent_as_its_program_reads_again() -> Outcome {
     };
     // Told as a request settles the session, once the mode is read.
     eventually("the scheme told", || {
-        server.ok(&["ls"])?;
+        server.ok(&["ls", "listing"])?;
         Ok(has("\x1b[?997;1n"))
     })?;
     signal(cat, fuxix::process::Signal::Stop);
@@ -319,7 +319,7 @@ fn a_program_that_closes_its_terminal_closes_its_pane_at_exit() -> Outcome {
     let line = "exec sleep 1 <&- >&- 2>&-";
     send_now(&server, "%2", &["str", line, "text", "str", "Enter", "key"])?;
     eventually("%2 to close when sleep exits", || {
-        Ok(!server.ok(&["ls"])?.contains("%2 "))
+        Ok(!server.ok(&["ls", "listing"])?.contains("%2 "))
     })?;
     assert_eq!(server.fux(&["ls"])?.status, 0);
     Ok(())

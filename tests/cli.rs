@@ -62,7 +62,7 @@ fn rename_move_swap_reorder_and_kill() -> Outcome {
     server.ok(&["str", "@1", "tab", "str", "code", "rename"])?;
     server.ok(&["str", "+1", "workspace", "str", "work", "rename"])?;
     server.ok(&["str", "work", "workspace", "str", "work2", "rename"])?;
-    let ls = server.ok(&["ls"])?;
+    let ls = server.ok(&["ls", "listing"])?;
     assert!(
         ls.contains("+1 work2") && ls.contains("@1 code") && ls.contains("%1 editor"),
         "{ls}"
@@ -82,7 +82,7 @@ fn rename_move_swap_reorder_and_kill() -> Outcome {
     );
     // Swap across workspaces.
     server.ok(&["str", "%1", "pane", "str", "%2", "pane", "swap-with"])?;
-    let ls = server.ok(&["ls"])?;
+    let ls = server.ok(&["ls", "listing"])?;
     let at = |needle: &str| ls.find(needle).unwrap_or(usize::MAX);
     assert!(at("%2") < at("+2") && at("%1") > at("+2"), "{ls}");
     // Swap toward a neighbour uses the same atomic backend as a counterpart.
@@ -105,29 +105,29 @@ fn rename_move_swap_reorder_and_kill() -> Outcome {
     // Move to a workspace, then to a new tab.
     server.ok(&["str", "%3", "pane", "str", "+2", "workspace", "move"])?;
     server.ok(&["str", "%3", "pane", "str", "new-tab", "move"])?;
-    let ls = server.ok(&["ls"])?;
+    let ls = server.ok(&["ls", "listing"])?;
     assert!(ls.contains("@3 %3"), "{ls}");
     // Reorder tabs and workspaces.
     server.ok(&["str", "@3", "tab", "str", "previous", "reorder"])?;
-    let ls = server.ok(&["ls"])?;
+    let ls = server.ok(&["ls", "listing"])?;
     assert!(
         ls.find("@3").unwrap_or(0) < ls.find("@2").unwrap_or(0),
         "{ls}"
     );
     server.ok(&["str", "+2", "workspace", "str", "previous", "reorder"])?;
-    assert!(server.ok(&["ls"])?.starts_with("+2 other"));
+    assert!(server.ok(&["ls", "listing"])?.starts_with("+2 other"));
     let end = server.fux(&["str", "+2", "workspace", "str", "previous", "reorder"])?;
     assert!(end.stderr.contains("already at that end"), "{}", end.stderr);
     // Kill a pane (its tab, now empty of panes, goes with it), a workspace,
     // and a tab (the workspace's last, so the workspace goes too).
     server.ok(&["str", "%3", "pane", "kill"])?;
-    assert!(!server.ok(&["ls"])?.contains("@3 "));
+    assert!(!server.ok(&["ls", "listing"])?.contains("@3 "));
     server.ok(&["str", "work2", "workspace", "kill"])?;
-    let ls = server.ok(&["ls"])?;
+    let ls = server.ok(&["ls", "listing"])?;
     assert!(!ls.contains("work2") && ls.contains("other"), "{ls}");
     server.words("opts 80 24 size str third name new-workspace")?;
     server.ok(&["str", "@2", "tab", "kill"])?;
-    let ls = server.ok(&["ls"])?;
+    let ls = server.ok(&["ls", "listing"])?;
     assert!(!ls.contains("other") && ls.contains("third"), "{ls}");
     Ok(())
 }
@@ -178,7 +178,10 @@ fn send_keys_signal_and_buffers() -> Outcome {
             == 0)
     })?;
     shows(&server, "%1", "after-sleep")?;
-    assert!(server.ok(&["ls"])?.contains("%1"), "the shell survives");
+    assert!(
+        server.ok(&["ls", "listing"])?.contains("%1"),
+        "the shell survives"
+    );
     // No buffers yet.
     assert_eq!(server.ok(&["buffers", "json"])?.trim(), "[]");
     assert_eq!(server.fux(&["newest", "buffer"])?.status, 1);
@@ -368,7 +371,10 @@ fn mistakes_name_what_the_program_wrote() -> Outcome {
         before.starts_with("fux: type: argument 12: add: "),
         "{before}"
     );
-    assert!(!server.ok(&["ls"])?.contains("agent"), "nothing ran");
+    assert!(
+        !server.ok(&["ls", "listing"])?.contains("agent"),
+        "nothing ran"
+    );
     // The language's own words say how they are written.
     for (words, usage) in [
         (
@@ -501,7 +507,7 @@ fn ls_json_list_keys_and_help() -> Outcome {
         "\"tab\":\"@1\"",
         "\"panes\":[{\"id\":\"%1\"",
         "\"rows\":9,\"cols\":50",
-        "\"events\":",
+        "\"cursor\":",
         r#""host":"c1""#,
         r#""terminal":{"sixel_reported":null,"cell_reported":null,"underline_styles_reported":null,"kitty_flags_reported":null}"#,
         r#""output":{"graphics":"text","underline_styles":false,"clipboard":"osc52","kitty_flags_requested":null}"#,
@@ -629,7 +635,7 @@ fn a_write_that_fails_stops_the_program() -> Outcome {
     assert_eq!(ran.status.code(), Some(1), "{said}");
     assert!(said.starts_with("fux: output: "), "{said}");
     assert!(
-        !server.ok(&["ls"])?.contains("%2"),
+        !server.ok(&["ls", "listing"])?.contains("%2"),
         "run ran after help failed"
     );
     let mut events = full()?.args(["all", "events"]).spawn().map_err(e)?;

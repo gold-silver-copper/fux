@@ -6,7 +6,7 @@ use support::*;
 const PREFIX: &str = "\x02";
 
 fn client_line(server: &Server, id: &str) -> Result<String, String> {
-    let ls = server.ok(&["ls"])?;
+    let ls = server.ok(&["ls", "listing"])?;
     ls.lines()
         .find(|l| l.starts_with(&format!("client {id} ")))
         .map(str::to_owned)
@@ -141,7 +141,7 @@ fn a_pty_is_the_smallest_rectangle_among_the_clients_showing_it() -> Outcome {
     let mut small = server.attach(10, 40)?;
     small.wait_for("$")?;
     eventually("the small size wins", || {
-        Ok(server.ok(&["ls"])?.contains("%1 40x9"))
+        Ok(server.ok(&["ls", "listing"])?.contains("%1 40x9"))
     })?;
     // The big client shows the pane at the top left, the rest blank.
     big.keys("stty size\r")?;
@@ -154,16 +154,16 @@ fn a_pty_is_the_smallest_rectangle_among_the_clients_showing_it() -> Outcome {
     // When the small client looks elsewhere, the pane grows.
     small.keys(&format!("{PREFIX}tn"))?;
     eventually("grown to the big client", || {
-        Ok(server.ok(&["ls"])?.contains("%1 100x29"))
+        Ok(server.ok(&["ls", "listing"])?.contains("%1 100x29"))
     })?;
     // And when it detaches, only the big client counts.
     small.keys(&format!("{PREFIX}b"))?;
     eventually("small again", || {
-        Ok(server.ok(&["ls"])?.contains("%1 40x9"))
+        Ok(server.ok(&["ls", "listing"])?.contains("%1 40x9"))
     })?;
     small.detach()?;
     eventually("the small client gone", || {
-        Ok(server.ok(&["ls"])?.contains("%1 100x29"))
+        Ok(server.ok(&["ls", "listing"])?.contains("%1 100x29"))
     })?;
     Ok(())
 }
@@ -178,7 +178,7 @@ fn moving_a_tabs_last_pane_out_closes_the_tab() -> Outcome {
     server.words("opts 80 19 size str +1 workspace in new-tab")?;
     server.ok(&["str", "c1", "client", "str", "@1", "tab", "show"])?;
     server.ok(&["str", "%1", "pane", "str", "@2", "tab", "move"])?;
-    let ls = server.ok(&["ls"])?;
+    let ls = server.ok(&["ls", "listing"])?;
     assert!(
         !ls.contains("@1 ") && ls.contains("client c1 80x20 +1 @2 "),
         "{ls}"
@@ -187,7 +187,7 @@ fn moving_a_tabs_last_pane_out_closes_the_tab() -> Outcome {
     // the workspace each leaves with nothing in them close.
     server.ok(&["str", "%2", "pane", "str", "new-tab", "move"])?;
     server.ok(&["str", "%1", "pane", "str", "new-workspace", "move"])?;
-    let ls = server.ok(&["ls"])?;
+    let ls = server.ok(&["ls", "listing"])?;
     assert!(ls.contains("+2") && !ls.contains("@2 "), "{ls}");
     Ok(())
 }
@@ -249,7 +249,11 @@ fn a_hidden_tab_goes_back_to_its_own_size() -> Outcome {
     ];
     let pane = server.ok(&run)?;
     let pane = pane.split(':').next().unwrap_or_default();
-    let sized = |size: &str| Ok(server.ok(&["ls"])?.contains(&format!("hid {size}")));
+    let sized = |size: &str| {
+        Ok(server
+            .ok(&["ls", "listing"])?
+            .contains(&format!("hid {size}")))
+    };
     eventually("its own size", || sized("100x40"))?;
     server.ok(&["str", "c1", "client", pane, "tab", "show"])?;
     eventually("the client's size", || sized("84x24"))?;
