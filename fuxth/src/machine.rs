@@ -98,7 +98,8 @@ pub enum Outcome<R> {
     Paused,
 }
 
-/// How far a program may go: values on the stack, calls nested.
+/// How far a program may go: values on the stack and `let` names of the
+/// calls nested, each up to `stack`; calls nested.
 #[derive(Clone, Copy, Debug)]
 pub struct Limits {
     pub stack: usize,
