@@ -27,6 +27,10 @@ pub const FRAME_TIMEOUT: Duration = Duration::from_secs(1);
 /// The most bytes a held frame keeps before it is shown anyway:
 /// alacritty's bound.
 pub const FRAME_LIMIT: usize = 2 << 20;
+/// The most output one turn of a pane gives its parser: a read's worth. A
+/// held frame or a program's last output, which can be more, is read a
+/// slice a turn, the rest waiting as after a budget stop (`Pane::unread`).
+pub const SLICE: usize = 16 << 10;
 
 /// Why input is not queued, or a pane cannot be made.
 #[derive(Debug)]
@@ -724,6 +728,8 @@ pub struct Pane {
     /// How many of the unread bytes are the rest of a frame being read
     /// (`Pane::mid_frame`).
     frame_left: usize,
+    /// How much more output this turn may give the parser ([`SLICE`]).
+    slice_left: usize,
     /// How its program exited, from when fux hears of it till that is
     /// told, while what it wrote is still being read (`Session::exited`).
     pub exiting: Option<Ended>,
@@ -1109,6 +1115,7 @@ impl Pane {
                 since: now,
             },
             frame_left: 0,
+            slice_left: SLICE,
             exiting: None,
             colours: Colours::default(),
             scheme_told: None,
@@ -1156,9 +1163,8 @@ impl Pane {
     /// Whether output waits to be read on the pane's next turn
     /// ([`Pane::read_unread`]), or the work of a sequence read already,
     /// which a call of the parser stopped at its budget before doing
-    /// (`fux_vt::Parser::has_work_left`: a screen-wide sequence it left
-    /// whole, REP's copies, a checksum's rows), any output read since
-    /// waiting behind it.
+    /// (`fux_vt::Parser::has_work_left`: REP's copies), any output read
+    /// since waiting behind it.
     pub fn has_unread(&self) -> bool {
         self.unread.at < self.unread.bytes.len() || self.parser.has_work_left()
     }
@@ -1290,8 +1296,8 @@ impl Pane {
     }
 
     /// Gives `bytes` to the screen, stopping after a BSU if `until_frame`,
-    /// and where a call of the parser did all the work one may
-    /// (`Stop::Budget`). Returns how many bytes were read if it stopped,
+    /// where a call of the parser did all the work one may, and at the end
+    /// of the turn's [`SLICE`] (`Stop::Budget`). Returns how many bytes were read if it stopped,
     /// and why (`Stop::Begun` or `Stop::Budget`). What they did (a bell, a
     /// title, a command's end) is journaled as it is read. Never inlined:
     /// the parser's loop compiles tighter on its own.
@@ -1322,9 +1328,11 @@ impl Pane {
         // in, the parser's loop is compiled once and its byte handling is
         // inlined into it, as it was before frames were held; with two it
         // was not, and escape-heavy output was a quarter slower. A call
-        // that did all the work one may stops the read for this turn.
+        // that did all the work one may stops the read for this turn, as
+        // does the end of the turn's slice with more to read.
+        let slice = bytes.get(..self.slice_left).unwrap_or(bytes);
         let (mut begun, mut read) = (None, 0usize);
-        while let Some(rest) = bytes.get(read..)
+        while let Some(rest) = slice.get(read..)
             && let Ok(Some((taken, stop))) = self.parser.process_until_stop(rest, &mut sink)
         {
             read = read.saturating_add(taken);
@@ -1332,6 +1340,11 @@ impl Pane {
                 begun = Some((read, stop));
                 break;
             }
+        }
+        let read = begun.map_or(slice.len(), |(read, _)| read);
+        self.slice_left = self.slice_left.saturating_sub(read);
+        if begun.is_none() && slice.len() < bytes.len() {
+            begun = Some((read, fux_vt::Stop::Budget));
         }
         // Queued as `push` queues; a full queue drops them, as replies past
         // the read's bound are.
@@ -1515,6 +1528,7 @@ impl Pane {
     /// dropped no reply while the queue takes input ends a run of
     /// replies; one that refused no memory, a run of refusals.
     fn read_done(&mut self) {
+        self.slice_left = SLICE;
         // Output held back (a frame) or left (a budget spent) is still
         // being read: what this read did so far is kept for its end.
         if self.frame.is_none() && !self.has_unread() {
@@ -1750,6 +1764,7 @@ impl Pane {
             frame: fresh.frame,
             unread: fresh.unread,
             frame_left: fresh.frame_left,
+            slice_left: fresh.slice_left,
             exiting: fresh.exiting,
             scheme_told: fresh.scheme_told,
             mouse_held: fresh.mouse_held,
@@ -2026,7 +2041,8 @@ pub(crate) mod tests {
             scheme: Some(Scheme::Light),
             ..Colours::default()
         };
-        let queries: Vec<u8> = std::iter::repeat_n(&b"\x1b[6n"[..], REPLIES_MAX)
+        // A read's worth of queries whose answers pass its replies.
+        let queries: Vec<u8> = std::iter::repeat_n(&b"\x1b[6n"[..], REPLIES_MAX / 4)
             .flatten()
             .copied()
             .chain(*b"\x1b[?996n")
@@ -2165,7 +2181,7 @@ pub(crate) mod tests {
     }
 
     /// A call of the parser that does all the work one may stops the read
-    /// (THREATS.md 4.4): the rest of the output, and output read after it,
+    /// (THREATS.md 4): the rest of the output, and output read after it,
     /// waits for the pane's next turn and is read in order.
     #[test]
     fn a_read_that_spends_its_budget_goes_on_at_the_next_turn()
@@ -2212,30 +2228,54 @@ pub(crate) mod tests {
         Ok(())
     }
 
-    /// A screen-wide sequence the parser left for its next call, as the
-    /// output's last, all its bytes read, is carried out at the pane's
-    /// next turn: the pane says output waits while it does, though no byte
-    /// does. At
-    /// 2000x2000, after DECALN's fill, ED 2 would take the call past U
-    /// (`Screen::holds_back`).
+    /// Work the parser left for its next call after the output's last
+    /// byte, REP's copies in insert mode, each moving the row, is carried
+    /// out at the pane's next turns: the pane says output waits while it
+    /// does, though no byte does.
     #[test]
-    fn a_sequence_left_past_the_budget_at_the_outputs_end_goes_on()
+    fn work_left_past_the_budget_at_the_outputs_end_goes_on()
     -> Result<(), Box<dyn std::error::Error>> {
-        let output = b"\x1b#8\x1b[2J";
-        let mut pane = pane(2000, 2000, 1 << 10)?;
-        pane.output(output);
-        assert!(pane.has_unread(), "the sequences were done in one call");
+        let mut pane = pane(1, 4096, 0)?;
+        pane.output(b"\x1b[4hx\x1b[4000b");
+        assert!(pane.has_unread(), "the copies were made in one call");
         let mut turns = 0u32;
         while pane.has_unread() && turns < 100 {
             pane.read_unread();
             turns = turns.saturating_add(1);
         }
         assert!(!pane.has_unread(), "{turns} turns");
-        assert!(
-            pane.screen()
-                .rows()
-                .all(|row| row.cells().all(|cell| !cell.has_contents()))
+        assert_eq!(
+            first_row(&pane),
+            std::iter::repeat_n('x', 4001).collect::<String>()
         );
+        Ok(())
+    }
+
+    /// Output longer than a read, held as a frame or not, is given the
+    /// parser a slice a turn ([`SLICE`]), the rest waiting for the next;
+    /// the frame is still painted whole, and what follows it after it.
+    #[test]
+    fn long_output_is_read_a_slice_a_turn() -> Result<(), Box<dyn std::error::Error>> {
+        let text = vec![b'x'; 3 * SLICE];
+        let mut frame = b"\x1b[?2026h".to_vec();
+        frame.extend_from_slice(&text);
+        frame.extend_from_slice(b"\x1b[HDONE\x1b[?2026lZ");
+        for (output, framed) in [(text.as_slice(), false), (frame.as_slice(), true)] {
+            let mut pane = pane(50, 200, 1 << 10)?;
+            pane.output(output);
+            let mut turns = 1u32;
+            while pane.has_unread() {
+                assert_eq!(pane.mid_frame(), framed);
+                let at = pane.unread.at;
+                pane.read_unread();
+                let read = pane.unread.at.saturating_sub(at);
+                assert!(pane.unread.bytes.is_empty() || read <= SLICE, "{read} read");
+                turns = turns.saturating_add(1);
+            }
+            assert!(turns >= 3, "{turns} turns");
+            assert!(!pane.mid_frame());
+            assert!(first_row(&pane).starts_with(if framed { "DONEZ" } else { "xxx" }));
+        }
         Ok(())
     }
 
@@ -2372,6 +2412,10 @@ pub(crate) mod tests {
         pane.output(b"z");
         assert!(first_row(&pane).ends_with('z'), "past it, read");
         assert_eq!(pane.frame_deadline(), None);
+        // Read a slice a turn, as the server does before it reads more.
+        while pane.has_unread() {
+            pane.read_unread();
+        }
         pane.output(b"\x1b[2J\x1b[H\x1b[?2026hw");
         pane.resize(size(3, 20));
         // The cursor's row: a reflow may bring history down above it, and
@@ -2486,7 +2530,7 @@ pub(crate) mod tests {
     #[test]
     fn a_clean_frame_between_ends_the_run() -> Result<(), Box<dyn std::error::Error>> {
         let mut pane = pane(3, 20, 1 << 10)?;
-        let queries: Vec<u8> = std::iter::repeat_n(&b"\x1b[6n"[..], REPLIES_MAX)
+        let queries: Vec<u8> = std::iter::repeat_n(&b"\x1b[6n"[..], REPLIES_MAX / 4)
             .flatten()
             .copied()
             .collect();
@@ -2684,6 +2728,9 @@ pub(crate) mod tests {
         );
         let huge = std::iter::repeat_n('x', fux_vt::OSC_PAYLOAD_LIMIT).collect::<String>();
         pane.output(format!("\x1b]2;{huge}\x07").as_bytes());
+        while pane.has_unread() {
+            pane.read_unread();
+        }
         assert_eq!(
             pane.title.as_str(),
             huge.get(..TITLE_MAX).unwrap_or_default()

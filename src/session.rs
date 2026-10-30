@@ -6360,7 +6360,7 @@ mod tests {
                 .panes()
                 .get(&id)
                 .is_some_and(|p| p.process().exit_status().is_none())
-                && turns < 100
+                && turns < 10_000
             {
                 s.fire_now(crate::session::Timer::Unread(id));
                 turns = turns.saturating_add(1);
@@ -6404,7 +6404,7 @@ mod tests {
         };
         let mut turns = 0u32;
         s.end_program(id, Ended::Exited(0));
-        while !exited(&s) && turns < 100 {
+        while !exited(&s) && turns < 10_000 {
             s.fire_now(crate::session::Timer::Unread(id));
             // As each reap of another child does.
             s.end_program(id, Ended::Exited(0));
@@ -6546,6 +6546,10 @@ mod tests {
             std::iter::repeat_n('A', fux_vt::OSC_PAYLOAD_LIMIT).collect::<String>()
         );
         s.out(PaneId::of(1), long.as_bytes());
+        // Read a slice a turn, as the server does before it reads more.
+        while s.pane(PaneId::of(1))?.has_unread() {
+            s.fire_now(crate::session::Timer::Unread(PaneId::of(1)));
+        }
         let notice = s.views.get(&client).and_then(|v| v.notice.clone());
         assert!(notice.is_some_and(|n| n.error && n.text.contains("copies (OSC 52) not made (1)")));
         assert_eq!(
