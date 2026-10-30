@@ -1313,9 +1313,13 @@ impl Parser {
     /// would.
     #[inline]
     fn over_after<const UNTIL_STOP: bool>(&mut self, sequence: bool, fed: bool) -> Option<Stop> {
-        let printed = std::mem::take(&mut self.screen.stopped);
+        let printed = self.screen.stopped;
         let at = fed || printed || sequence && matches!(self.state, State::Ground | State::Sixel);
-        at.then(|| self.over::<UNTIL_STOP>()).flatten()
+        if !UNTIL_STOP || !at {
+            return None;
+        }
+        self.screen.stopped = false;
+        self.over::<UNTIL_STOP>()
     }
     /// Whether the parser is in a string or a DCS, where a C0 control is
     /// not carried out.
