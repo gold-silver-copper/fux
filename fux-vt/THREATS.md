@@ -319,7 +319,11 @@ copied up front, and the stores with the compaction of what lies outside,
 which the row's text limit holds together, 2 × (49C + 128). That is
 11C + 2 + 2 × (49C + 128), inside its share of the screen term,
 12C + 2 × (49C + 128); DECCRA's links are one span set to none, at most
-2C, and its row edits 3C.
+2C, and its row edits 3C. DECIC, DECDC, SL and SR, and DECBI and DECFI
+at a margin, shift each row's links in one remake and one sort,
+(⌊log2(C + 2)⌋ + 2) × (C + 2) + C units, about 15C, with the row's edit
+and repair 2C; they copy no text, so like the restyles they fit the text
+term they leave unused.
 
 At fux's defaults M is about 27 M; at its largest pane, 4,096 × 4,096
 with 1 GiB of history, M = 2,013,047,090, the screen's text most of it.

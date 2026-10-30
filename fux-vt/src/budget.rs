@@ -36,7 +36,7 @@ pub(crate) fn spend(n: impl TryInto<u64>) {
 /// operation, every term summed (THREATS.md 4.2). A sixel picture's growth
 /// (twice `MAX_PIXELS`) and its covering (`COVER_WORDS`); a placement's
 /// rows, at most 683 and 8 graphics new lines, each 3C + 6 (B05); a screen-wide
-/// function, 12 units a cell (a copy's cells, its compaction and its links)
+/// function, 12 units a cell for a copy (its cells, compaction and links)
 /// and each row's text, at most 49C + 128 bytes, twice (copied up front and
 /// stored); a sweep of
 /// history, its cells, 8 bytes each, twice, and its rows, 24 bytes each;
