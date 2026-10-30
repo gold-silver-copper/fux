@@ -36,8 +36,6 @@ use fux_vt::{Feature, Options, Parser, Size};
 
 #[path = "corpus/invariants.rs"]
 mod invariants;
-#[path = "corpus/known.rs"]
-mod known;
 #[path = "corpus/pieces.rs"]
 mod pieces;
 

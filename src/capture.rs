@@ -1047,36 +1047,41 @@ mod tests {
     }
 
     #[test]
-    fn short_lines_charge_allocated_capacity() -> Result<(), Box<dyn std::error::Error>> {
+    fn short_capture_admits_within_limit_and_refuses_excess()
+    -> Result<(), Box<dyn std::error::Error>> {
         let mut pane = pane(1, 2, 0)?;
         pane.output(b"x");
         let row = pane.screen().rows().next().ok_or("row")?;
-        let read = std::iter::repeat_n((row, 0..usize::MAX), 100);
-        let mut budget = crate::wire::Budget::with_limit(8192);
-        if let Ok(captured) = super::build(
-            read,
-            super::Of::Client(crate::id::ClientId::of(1)),
-            ((100, 2), None),
-            CaptureView::default(),
-            &mut budget,
-        ) {
-            let mut allocated = captured
-                .lines
-                .capacity()
-                .saturating_mul(std::mem::size_of::<Vec<super::Cut>>());
-            for line in &captured.lines {
-                allocated = allocated.saturating_add(
-                    line.capacity()
-                        .saturating_mul(std::mem::size_of::<super::Cut>()),
-                );
-                for run in line {
-                    allocated = allocated.saturating_add(run.text.capacity());
-                }
-            }
-            assert!(
-                allocated <= 8192,
-                "retained {allocated} bytes for an 8192-byte grant"
+        for (count, admitted) in [(20, true), (100, false)] {
+            let read = std::iter::repeat_n((row, 0..usize::MAX), count);
+            let mut budget = crate::wire::Budget::with_limit(8192);
+            let built = super::build(
+                read,
+                super::Of::Client(crate::id::ClientId::of(1)),
+                ((u16::try_from(count)?, 2), None),
+                CaptureView::default(),
+                &mut budget,
             );
+            assert_eq!(built.is_ok(), admitted, "count={count}");
+            if let Ok(captured) = built {
+                let mut allocated = captured
+                    .lines
+                    .capacity()
+                    .saturating_mul(std::mem::size_of::<Vec<super::Cut>>());
+                for line in &captured.lines {
+                    allocated = allocated.saturating_add(
+                        line.capacity()
+                            .saturating_mul(std::mem::size_of::<super::Cut>()),
+                    );
+                    for run in line {
+                        allocated = allocated.saturating_add(run.text.capacity());
+                    }
+                }
+                assert!(
+                    allocated <= 8192,
+                    "retained {allocated} bytes for an 8192-byte grant"
+                );
+            }
         }
         Ok(())
     }

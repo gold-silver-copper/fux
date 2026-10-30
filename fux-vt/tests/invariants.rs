@@ -6,9 +6,6 @@ mod pieces;
 
 #[path = "corpus/invariants.rs"]
 mod invariants;
-#[cfg(feature = "checks")]
-#[path = "corpus/known.rs"]
-mod known;
 use fux_vt::{Feature, Identity, Mode, Options, Parser, Sink, Size};
 type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
 

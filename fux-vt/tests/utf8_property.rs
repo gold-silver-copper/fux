@@ -19,27 +19,10 @@ type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
 mod lines;
 use lines::lines;
 
-/// A small deterministic generator (splitmix64), so a failure names its case.
-struct Rng(u64);
-
-impl Rng {
-    fn next(&mut self) -> u64 {
-        self.0 = self.0.wrapping_add(0x9e37_79b9_7f4a_7c15);
-        let mut x = self.0;
-        x = (x ^ (x >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
-        x = (x ^ (x >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
-        x ^ (x >> 31)
-    }
-    /// Below `n`, or 0 for an `n` of 0.
-    fn below(&mut self, n: usize) -> usize {
-        let n = u64::try_from(n).unwrap_or(u64::MAX);
-        usize::try_from(self.next().checked_rem(n).unwrap_or(0)).unwrap_or(0)
-    }
-    fn byte(&mut self, low: u8, high: u8) -> u8 {
-        let span = usize::from(high.saturating_sub(low)).saturating_add(1);
-        low.saturating_add(u8::try_from(self.below(span)).unwrap_or(0))
-    }
-}
+#[expect(dead_code, reason = "each test uses different generator helpers")]
+#[path = "../src/test_rng.rs"]
+mod test_rng;
+use test_rng::Rng;
 
 /// Well-formed characters one column wide in every width rule (none of
 /// them East Asian ambiguous, wide or combining), of each encoded length.
@@ -64,9 +47,9 @@ const ILL_FORMED: &[&[u8]] = &[
 fn piece(r: &mut Rng, out: &mut Vec<u8>) {
     let mut buffer = [0; 4];
     match r.below(8) {
-        0 | 1 => out.push(r.byte(0x20, 0x7e)),
+        0 | 1 => out.push(r.byte_in(0x20, 0x7e)),
         2 => out.push(0x7f),
-        3 => out.extend_from_slice(&[0xc2, r.byte(0x80, 0x9f)]),
+        3 => out.extend_from_slice(&[0xc2, r.byte_in(0x80, 0x9f)]),
         4 => {
             let c = WIDE_ONE
                 .get(r.below(WIDE_ONE.len()))
@@ -89,7 +72,7 @@ fn piece(r: &mut Rng, out: &mut Vec<u8>) {
                 .copied()
                 .unwrap_or_default(),
         ),
-        _ => out.push(r.byte(0x80, 0xff)),
+        _ => out.push(r.byte_in(0x80, 0xff)),
     }
 }
 

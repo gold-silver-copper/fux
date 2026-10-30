@@ -6365,6 +6365,10 @@ mod tests {
                 s.fire_now(crate::session::Timer::Unread(id));
                 turns = turns.saturating_add(1);
             }
+            assert!(
+                budgeted || turns == 0,
+                "held={held}: exit was not immediate"
+            );
             let pane = s.parts.panes().get(&id).ok_or("the pane")?;
             assert_eq!(pane.process().exit_status(), Some(Ended::Exited(0)));
             let text = pane

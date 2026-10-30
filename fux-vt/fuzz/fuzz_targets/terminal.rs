@@ -15,9 +15,6 @@ use common::{
 mod graphemes;
 #[path = "../../tests/corpus/invariants.rs"]
 mod invariants;
-#[cfg(feature = "checks")]
-#[path = "../../tests/corpus/known.rs"]
-mod known;
 
 /// A size of 1 + r mod 16 rows by 1 + c mod 24 columns.
 fn size(r: u8, c: u8) -> Option<Size> {
