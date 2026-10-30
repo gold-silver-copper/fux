@@ -966,9 +966,9 @@ impl Server {
         }
     }
 
-    /// Sends the clients the frames the session has for them, and says
-    /// what it could not send one too far behind. A stop it asks for
-    /// stays, for `deliver`: the answer that asked for it goes first.
+    /// Sends the session's frames, detaching clients too far behind;
+    /// returns those an Open or Keys detached. A stop stays for `deliver`:
+    /// the answer that asked for it goes first.
     fn send_frames(&mut self, now: Instant) -> Vec<Behind> {
         let mut refused = Vec::new();
         for outgoing in mem::take(&mut self.session.outbox) {
@@ -981,6 +981,7 @@ impl Server {
             };
             if let Some(conn) = self.conns.iter_mut().find(|c| c.serves(client))
                 && let Err(no) = conn.tell(&mut self.session, &frame, now)
+                && matches!(frame, ToAttached::Open(_) | ToAttached::Keys(_))
             {
                 refused.push(no);
             }
@@ -1406,6 +1407,16 @@ impl Server {
     /// Begins only after the source's earlier attached frames were
     /// processed. No resolution, mutation or wait baseline precedes this.
     fn ordered_request(&mut self, index: usize, asked: Asked, now: Instant) {
+        // Send older output and any mode endings its detaches produce first.
+        // Each repeat requires another client to detach.
+        while self
+            .session
+            .outbox
+            .iter()
+            .any(|o| matches!(o, Outgoing::To(..)))
+        {
+            let _ = self.send_frames(now);
+        }
         match self.unprocessed(&asked) {
             Some(0) => self.request(
                 index,
@@ -1481,19 +1492,9 @@ impl Server {
             Some(client) => Origin::ClientContext { client, actor },
             None => cli,
         };
-        // Send older output and any mode endings its detaches produce first.
-        // Each repeat requires another client to detach.
-        while self
-            .session
-            .outbox
-            .iter()
-            .any(|o| matches!(o, Outgoing::To(..)))
-        {
-            let _ = self.send_frames(now);
-        }
         let begun = self.session.begin(request, &origin, now);
-        // What it sends a client goes now: detaching one too far behind
-        // fails the request that sent it the frame.
+        // A program or keys that detach their recipient fail the request;
+        // conversation sent while settling preserves its actual outcome.
         let refused = self.send_frames(now);
         let session = &mut self.session;
         let Some(conn) = self.conns.get_mut(index) else {
@@ -2643,7 +2644,115 @@ mod tests {
     }
 
     #[test]
-    fn a_waiting_request_is_refused_if_its_frame_detaches_a_client()
+    fn older_output_detaching_a_jobs_source_prevents_effects_on_another_client()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use crate::command::{ClientAction, Command};
+        for zoom in [true, false] {
+            let (mut server, _peers, source) = ordered_fixture()?;
+            let other = server.session.attach(10, 40, None)?;
+            server.conns.get_mut(2).ok_or("other")?.stage =
+                Stage::Attached(Box::new(Attached::new(other, Instant::now())));
+            server.session.outbox.clear();
+            server
+                .conns
+                .get_mut(1)
+                .ok_or("source")?
+                .out
+                .push(&vec![0; OUT_MAX]);
+            server.session.outbox.push(Outgoing::To(
+                source,
+                ToAttached::Paint(b"\x1b]52;c;YQ==\x07".as_slice().into()),
+            ));
+            let mut asked = key_request(server.session.run, source, 0);
+            asked.context.client = Some(other);
+            if zoom {
+                asked.request = Command::Client {
+                    client: Some(other),
+                    action: ClientAction::Zoom,
+                }
+                .into();
+            }
+            server.ordered_request(0, asked, Instant::now());
+            assert!(!server.session.views.contains_key(&source));
+            assert!(!server.session.views.get(&other).ok_or("other")?.zoom);
+            let pane = server
+                .session
+                .parts
+                .panes()
+                .get(&PaneId::of(1))
+                .ok_or("pane")?;
+            assert!(pane.input().is_empty());
+            let mut decoder = Decoder::default();
+            decoder.push(server.conns.first().ok_or("sender")?.out.as_slice());
+            let Some(ToCommand::Part(part)) = decoder.frame()? else {
+                return Err("sender was not answered".into());
+            };
+            let reply = crate::wire::Reader::new(&part).whole::<Reply>()?;
+            assert_eq!(reply.end().code(), Some(Code::NoClient));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn older_output_detaching_a_waits_context_is_refused_before_it_begins()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use crate::command::{AnyRef, Limit, Request, Since, Wait};
+        for events in [false, true] {
+            let (mut server, _peers, client) = ordered_fixture()?;
+            server.session.outbox.clear();
+            server
+                .conns
+                .get_mut(1)
+                .ok_or("client")?
+                .out
+                .push(&vec![0; OUT_MAX]);
+            server.session.outbox.push(Outgoing::To(
+                client,
+                ToAttached::Paint(b"\x1b]52;c;YQ==\x07".as_slice().into()),
+            ));
+            let timeout = Limit::read(30)?;
+            let request = if events {
+                Request::NextEvents {
+                    scope: crate::inspect::Scope::All,
+                    from: Some(server.session.parts.journal().end(server.session.run)),
+                    timeout,
+                }
+            } else {
+                Request::Wait(Wait {
+                    since: Since::Now(AnyRef::Pane(PaneId::of(1))),
+                    timeout,
+                })
+            };
+            server.ordered_request(
+                0,
+                Asked {
+                    after: None,
+                    context: Context {
+                        client: Some(client),
+                        ..Context::default()
+                    },
+                    request,
+                },
+                Instant::now(),
+            );
+            assert!(!server.session.views.contains_key(&client));
+            assert!(matches!(
+                server.conns.first().ok_or("sender")?.stage,
+                Stage::Command
+            ));
+            let mut decoder = Decoder::default();
+            decoder.push(server.conns.first().ok_or("sender")?.out.as_slice());
+            let Some(ToCommand::Part(part)) = decoder.frame()? else {
+                return Err("sender was not answered".into());
+            };
+            let reply = crate::wire::Reader::new(&part).whole::<Reply>()?;
+            assert_eq!(reply.end().code(), Some(Code::NoClient));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn a_respawn_keeps_its_answer_when_settle_detaches_a_viewer()
     -> Result<(), Box<dyn std::error::Error>> {
         let (mut server, _peers, client) = ordered_fixture()?;
         crate::session::testing::run(
@@ -2681,6 +2790,29 @@ mod tests {
         assert!(!server.session.views.contains_key(&client));
         assert!(matches!(
             server.conns.first().ok_or("sender")?.stage,
+            Stage::Waiting(_)
+        ));
+        assert!(server.conns.first().ok_or("sender")?.out.is_empty());
+        let receiver = server.conns.get_mut(1).ok_or("viewer")?;
+        assert!(matches!(receiver.stage, Stage::Closing));
+        receiver.out.take(OUT_MAX);
+        let why = format!("{client} was detached: {OUT_MAX} bytes waited unwritten for it");
+        assert_eq!(sent(receiver), (Vec::new(), Some(why)));
+        let later = after(now, crate::pane::FRAME_TIMEOUT);
+        server
+            .session
+            .fire(crate::session::Timer::Unread(pane), later);
+        assert!(server.answer_waits(later));
+        let version = server
+            .session
+            .parts
+            .panes()
+            .get(&pane)
+            .ok_or("respawned pane")?
+            .version(server.session.run);
+        assert_eq!(version.counts.respawns, 1);
+        assert!(matches!(
+            server.conns.first().ok_or("sender")?.stage,
             Stage::Command
         ));
         let mut decoder = Decoder::default();
@@ -2689,8 +2821,12 @@ mod tests {
             return Err("sender was not answered".into());
         };
         let reply = crate::wire::Reader::new(&part).whole::<Reply>()?;
-        let why = format!("{client} was detached: {OUT_MAX} bytes waited unwritten for it");
-        assert_eq!(reply.response, Reply::failed(Code::NoClient, why).response);
+        assert_eq!(
+            reply.response,
+            crate::protocol::Response::Answered(crate::answer::PaneResults::One(
+                crate::answer::PaneAnswer::Acted(version)
+            ))
+        );
         Ok(())
     }
 
@@ -2723,15 +2859,17 @@ mod tests {
                 client,
                 ToAttached::Paint(b"\x1b]52;c;YQ==\x07".as_slice().into()),
             ));
-            server.request(
+            server.ordered_request(
                 0,
-                crate::command::Command::Resolve {
-                    text: "%1".into(),
-                    kind: crate::command::Kind::Pane,
-                }
-                .into(),
-                Context::default(),
-                None,
+                Asked {
+                    after: None,
+                    request: crate::command::Command::Resolve {
+                        text: "%1".into(),
+                        kind: crate::command::Kind::Pane,
+                    }
+                    .into(),
+                    context: Context::default(),
+                },
                 Instant::now(),
             );
             assert!(!server.session.views.contains_key(&client));
