@@ -7583,7 +7583,7 @@ mod tests {
             assert!(error.starts_with("unused: "), "{code}: {error}");
             if second == "all-history" {
                 assert!(
-                    error.contains("all-history: history is already given"),
+                    error.contains("inside all-history") && error.contains("is already given"),
                     "{error}"
                 );
             }

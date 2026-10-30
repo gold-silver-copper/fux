@@ -172,9 +172,7 @@ impl Act {
 
 impl Opt {
     fn slot(self) -> Self {
-        if self == Opt::AllHistory {
-            Opt::History
-        } else if matches!(self, Opt::AltScreen | Opt::LastOutput) {
+        if matches!(self, Opt::AltScreen | Opt::LastOutput) {
             Opt::MainScreen
         } else if self == Opt::ShellProgram {
             Opt::Program
@@ -300,8 +298,7 @@ words! {
         Input SendKeys "send-keys" "target -- target" "send the keys on it to a pane, every pane of a tab, or a client as typed at its terminal; 900 KiB at most in all" "fux %3 str 'ls -l' text str Enter key send-keys" [Pane: Text Key Paste Bytes Expect];
         Input SendMouse "send-mouse" "pane action row col -- answer" "click right middle press release wheel-up wheel-down or move, at a cell from 0" "fux %3 str click 2 10 send-mouse" [];
         Input Signal "signal" "subject name -- answer" "TERM KILL INT HUP QUIT USR1 USR2 STOP CONT TSTP WINCH ILL ABRT FPE SEGV PIPE ALRM BUS TRAP SYS XCPU XFSZ VTALRM PROF TTIN TTOU URG CHLD, to the pane's foreground" "fux %3 str TERM signal" [];
-        Reading Capture "capture" "capture-source -- capture-source" "a pane screen with its options, or what a client terminal shows (without pane options or a version)" "fux %3 100 history capture" [Pane: History AllHistory Wrapped Full Styles Marks MainScreen AltScreen LastOutput Rows Cols];
-        Reading Info "info" "scope -- record" "a pane, tab, workspace or all of the session" "fux all info json" [];
+        Reading Capture "capture" "capture-source -- capture-source" "a pane screen with its options, or what a client terminal shows (without pane options or a version)" "fux %3 100 history capture" [Pane: History Wrapped Full Styles Marks MainScreen AltScreen LastOutput Rows Cols];
         Reading Snapshot "snapshot" "snapshot-scope projection -- record" "one bounded observation: facts, topology or recipe" "fux all str topology snapshot json" [];
         Reading Get "get" "readable field -- value" "a held answer, capture or record field, locally; or a live pane, tab or workspace field" "fux %3 str exited get" [];
         Reading Json "json" "value -- json-output" "value as JSON (an answer as its JSON); a failed wait's answer is the message try's handler gets" "fux ls json" [];
@@ -378,8 +375,7 @@ words! {
         Input Key "key" "x key -- x" "a key by its name: Enter, C-c, Up, F5" "fux %3 str C-c key send-keys";
         Input Paste "paste" "x text -- x" "text as a paste, bracketed if the program turned that on (an end mark, ESC [201~, in it then dropped); else as it is" "fux %3 str 'a long prompt' paste str Enter key send-keys";
         Input Bytes "bytes" "x hex -- x" "bytes as they are, in hex (1b5b41, c3): part of a key's sequence or of a character" "fux %3 str 1b5b41 bytes send-keys";
-        Reading History "history" "pane-builder lines -- pane-builder" "capture: lines of history first" "fux %3 100 history capture";
-        Reading AllHistory "all-history" "pane-builder -- pane-builder" "capture: all the history first" "fux %3 all-history capture";
+        Reading History "history" "pane-builder lines -- pane-builder" "capture: lines of history first (all-history: all of it)" "fux %3 100 history capture";
         Reading Wrapped "wrapped" "pane-builder -- pane-builder" "capture: each screen row a line, as wrapped at the pane's width (the cells a mouse event counts), not joined into the lines printed" "fux %3 wrapped 0 2 rows capture";
         Reading Full "full" "pane-builder -- pane-builder" "capture: every row and cell, untrimmed" "fux %3 full capture";
         Reading Styles "styles" "pane-builder -- pane-builder" "capture: colours and attributes" "fux %3 styles capture";
@@ -438,16 +434,16 @@ pub fn usage(word: &str) -> Option<String> {
         },
     };
     let (takes, leaves) = effect.split_once("--").unwrap_or((effect, ""));
-    // What a request's word goes on: the pane, opts, or either, as the
-    // words that take it do.
+    // What an option's word goes on: the pane, opts, or either, as the
+    // words that take it do. Any other word's `x` is any value.
     let takes = takes.trim().to_uppercase();
-    let request = takes
-        .strip_prefix("PANE-BUILDER")
-        .or_else(|| takes.strip_prefix('X'));
-    let takers = match fuxs {
-        Some(Word::Opt(opt)) => opt.takers(),
-        Some(Word::Act(_) | Word::Screen(_) | Word::Keys(_)) | None => Vec::new(),
+    let (option, takers) = match fuxs {
+        Some(Word::Opt(opt)) => (true, opt.takers()),
+        Some(Word::Act(_) | Word::Screen(_) | Word::Keys(_)) | None => (false, Vec::new()),
     };
+    let request = (takes.strip_prefix("PANE-BUILDER"))
+        .or_else(|| takes.strip_prefix('X'))
+        .filter(|_| option);
     // A word whose options go on either counts for both.
     let has = |after| {
         let on = |t: &Takes| t.after == after || t.after == After::Either;
@@ -464,7 +460,9 @@ pub fn usage(word: &str) -> Option<String> {
     };
     let leaves = match leaves.trim() {
         "" => String::new(),
-        "x" | "pane-builder" => format!(", which leaves {left} for the word that acts"),
+        "x" | "pane-builder" if option => {
+            format!(", which leaves {left} for the word that acts")
+        }
         leaves => format!(", which leaves {leaves}"),
     };
     let example = fuxs.map_or_else(String::new, |w| format!("; e.g. {}", w.row().example));
@@ -880,7 +878,6 @@ fn modify(
                 Some(bool::read(&next()?).map_err(|why| fail(Raise::BadValue, why))?);
         }
         Opt::History => built.history = Some(within(&next()?, COUNT)?),
-        Opt::AllHistory => built.history = Some(usize::MAX),
         Opt::Size => built.size = Some(laid_out(&next()?, &next()?)?),
         Opt::Axis => built.axis = Some(axis(&next()?)?),
         Opt::Shares => built.shares = Some((share(&next()?)?, share(&next()?)?)),
@@ -1643,11 +1640,6 @@ impl Host<'_> {
                     view: built.view,
                 }))
             }
-            Act::Info => later(ask(Command::Inspect {
-                scope: scope(&next()?)?
-                    .map_or(crate::inspect::Scope::All, crate::inspect::Scope::Target),
-                projection: crate::inspect::Projection::Facts,
-            })),
             Act::Snapshot => {
                 let scope = observation_scope(&next()?)?;
                 let projection = one_of(
@@ -2488,6 +2480,10 @@ mod tests {
             "str x kill".to_owned(),
             "str nope str horizontal axis split".to_owned(),
             "str nope info".to_owned(),
+            // What a word leaves is known too: none of these is a number.
+            format!("str {version} version 1 add"),
+            "all info 1 add".to_owned(),
+            "%1 all-history 1 add".to_owned(),
             "@1 wait capture".to_owned(),
             "@1 0 timeout wait capture".to_owned(),
             "@1 str x text send-keys capture".to_owned(),
@@ -2654,6 +2650,17 @@ mod tests {
         named.sort_unstable();
         all.sort_unstable();
         assert_eq!(named, all);
+    }
+
+    #[test]
+    fn only_an_option_word_goes_on_a_request() {
+        let pad = usage("pad");
+        assert_eq!(
+            pad.as_deref(),
+            Some("use: X WIDTH FILL pad, which leaves s")
+        );
+        let name = usage("name").unwrap_or_default();
+        assert!(name.starts_with("use: PANE-OR-OPTS NAME name"), "{name}");
     }
 
     #[test]
@@ -2923,7 +2930,6 @@ mod tests {
                     Opt::Axis => vec![Value::str("horizontal")],
                     Opt::Watch
                     | Opt::KillFirst
-                    | Opt::AllHistory
                     | Opt::Wrapped
                     | Opt::Full
                     | Opt::Styles

@@ -47,9 +47,10 @@ line, the deepest first; `print` prints a value at once.
   lets the host check for Ctrl-C in a loop that never pauses, and
   `Machine::steps` counts every step taken, through every pause, for a host
   that caps a run.
-- **Bounded.** 1,000,000 values on the stack, 10,000 nested calls; a string or
-  list built holds at most 1,000,000 elements, a run builds at most
-  16,000,000 in all, and a list holds at most 16,000,000 in all, counting
+- **Bounded.** 1,000,000 values on the stack, and as many `let` names in
+  all the calls nested, 10,000 nested calls; a string or list built holds at
+  most 1,000,000 elements, a run builds at most 16,000,000 in all, and a list
+  holds at most 16,000,000 in all, counting
   through the lists and strings in it; long steps cost a step per 64
   elements; `push` and `put` grow a string or list in place when nothing
   else holds it. String literals are not built, so they are exempt.
