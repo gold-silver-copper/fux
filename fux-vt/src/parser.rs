@@ -1128,7 +1128,7 @@ impl Parser {
     /// runs over calls, from one budget stop to the next, so a host that
     /// cuts its reads small is stopped as well. It is looked at after each
     /// sequence or string, each run of text, each character read alone, each
-    /// line feed, each sixel byte, each wrap, each glyph inserted and each
+    /// control, each sixel byte, each wrap, each glyph inserted and each
     /// glyph that joins or does not fit a run, so a call overruns it by at
     /// most the one indivisible operation that crossed it (THREATS.md 4). A
     /// call that ends a frame ([`Stop::Begun`], [`Stop::Ended`]) past the
@@ -1236,21 +1236,17 @@ impl Parser {
                 }
             } else if ground && byte < 0x20 && byte != 0x1b {
                 // CR LF, which ends most lines, as one.
-                let fed = if let [b'\r', b'\n', after @ ..] = remaining {
+                if let [b'\r', b'\n', after @ ..] = remaining {
                     self.screen.carriage_return_line_feed();
                     remaining = after;
-                    true
                 } else {
                     self.control(byte, sink);
                     remaining = tail;
-                    matches!(byte, 0x0a..=0x0c)
-                };
-                self.screen.forget_repeat();
-                // A line feed can move a row's text into history.
-                match fed {
-                    true => self.over::<UNTIL_STOP>(),
-                    false => None,
                 }
+                self.screen.forget_repeat();
+                // Each control is a place to look: a line feed can move a
+                // row's text into history, a SUB print, a tab look for stops.
+                self.over::<UNTIL_STOP>()
             } else if ground
                 && byte >= 0x80
                 && let Some(length) = self.text(remaining)

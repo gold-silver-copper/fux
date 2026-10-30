@@ -295,18 +295,19 @@ fn copies_left_at_the_budget_are_made_before_later_text() -> Result<(), Error> {
     Ok(())
 }
 
-/// Printing that never wraps is a place the budget is looked at too: `x`
-/// and CR over and over on a 2×2 screen, whole or two bytes a call, and
-/// zero-width spaces after a row of long clusters, a byte a call (each
-/// completed in the parser's UTF-8 state), stop at the budget, spending
-/// little past it between stops.
+/// Printing that never wraps, and each control, is a place the budget is
+/// looked at too: `x` and CR over and over on a 2×2 screen, whole or two
+/// bytes a call; zero-width spaces after a row of long clusters, a byte a
+/// call (each completed in the parser's UTF-8 state); SUB under IRM and a
+/// tab after TBC 3, each before a CR, at 4,096 columns: all stop at the
+/// budget, spending little past it between stops.
 #[test]
 fn printing_that_never_wraps_stops_at_the_budget() -> Result<(), Error> {
     let crs: Vec<u8> = std::iter::repeat_n(&b"x\r"[..], 1_100_000)
         .flatten()
         .copied()
         .collect();
-    // B31's row: its long text full, each mark rescans it.
+    // B31's row: the cell printed last a long cluster, each mark dropped.
     let cluster = |marks| {
         format!(
             "e{}",
@@ -320,10 +321,22 @@ fn printing_that_never_wraps_stops_at_the_budget() -> Result<(), Error> {
     let marks: Vec<u8> = std::iter::repeat_n("\u{200b}", 100_000)
         .collect::<String>()
         .into_bytes();
+    // A SUB under IRM, which prints and moves the row, and a tab after
+    // TBC 3, which looks for a stop across the row, each before a CR.
+    let subs: Vec<u8> = std::iter::repeat_n(&b"\x1a\r"[..], 8190)
+        .flatten()
+        .copied()
+        .collect();
+    let tabs: Vec<u8> = std::iter::repeat_n(&b"\t\r"[..], 8190)
+        .flatten()
+        .copied()
+        .collect();
     for (size, setup, input, piece) in [
         (Size::of(2, 2), &b""[..], &crs, crs.len()),
         (Size::of(2, 2), &b""[..], &crs, 2),
         (Size::of(1, 200), &row[..], &marks, 1),
+        (Size::of(1, 4096), &b"\x1b[4h"[..], &subs, subs.len()),
+        (Size::of(1, 4096), &b"\x1b[3g"[..], &tabs, tabs.len()),
     ] {
         let mut parser = Parser::new(size, 0)?;
         parser.process(setup)?;

@@ -2240,6 +2240,7 @@ impl Screen {
             last = g.size().columns().last();
         }
         let first = g.addressed().1.first();
+        let from = col;
         for _ in 0..count {
             let to = if forward {
                 self.terminal.tabs.next(col, last)
@@ -2251,6 +2252,8 @@ impl Screen {
             }
             col = to;
         }
+        // Each column the stops were looked for in.
+        crate::budget::spend(col.abs_diff(from));
         let g = self.grid_mut();
         g.set_col(col);
         g.fit_cursor();
@@ -2316,6 +2319,8 @@ impl Screen {
             let Some(before) = before else {
                 break;
             };
+            // A row stepped: under 1045 a CUB can go round the region.
+            crate::budget::spend(1);
             g.set_row(before);
             g.set_col(columns.last());
             g.fit_cursor();
