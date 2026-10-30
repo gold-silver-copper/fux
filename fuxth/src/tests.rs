@@ -297,7 +297,6 @@ fn the_calls_under_way_show_who_called() -> Result<(), Error> {
     assert_eq!(outcome, Outcome::Suspended(1));
     let calls: Vec<String> = machine
         .calls()
-        .iter()
         .map(|t| format!("{}:{}", t.place, t.text))
         .collect();
     assert_eq!(

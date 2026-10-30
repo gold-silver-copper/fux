@@ -833,15 +833,10 @@ fn modify(
 ) -> Result<std::rc::Rc<Opts>, Failure> {
     // `changed` and `expect` make a request; every other option goes on
     // one, or on options.
-    let mut shared = match matches!(opt, Opt::Changed | Opt::Expect) {
-        true => std::rc::Rc::default(),
-        false => modifying(next()?)?,
+    let mut built = match matches!(opt, Opt::Changed | Opt::Expect) {
+        true => Opts::default(),
+        false => owned(modifying(next()?)?, imports)?,
     };
-    if std::rc::Rc::strong_count(&shared) > 1 {
-        let lease = imports.lease(shared.bytes())?;
-        std::rc::Rc::make_mut(&mut shared).lease = lease;
-    }
-    let built = std::rc::Rc::make_mut(&mut shared);
     room(&built.lease, imports, built.bytes(), &mut built.given)?;
     if matches!(opt, Opt::Program | Opt::Arg) {
         room(&built.lease, imports, built.bytes(), &mut built.argv)?;
@@ -911,10 +906,9 @@ fn modify(
             let shell = opt == Opt::ShellProgram;
             built.shell = Some(shell);
             if shell {
-                built.argv = Program::read(&next()?)
-                    .map_err(|why| fail(Raise::BadValue, why))?
-                    .argv();
-                return Ok(shared);
+                let program = listed(&built, imports, &next()?, Program::read)?;
+                built.argv = program.into_argv();
+                return Ok(std::rc::Rc::new(built));
             }
             built.argv.push(string(&next()?)?);
         }
@@ -946,8 +940,8 @@ fn modify(
             .push(string(&next()?)?, None)
             .map_err(|why| fail(Raise::BadValue, why))?,
         Opt::CopyEnvironment => {
-            built.copy_environment =
-                Some(Vec::<EnvName>::read(&next()?).map_err(|why| fail(Raise::BadValue, why))?);
+            let names = listed(&built, imports, &next()?, Vec::<EnvName>::read)?;
+            built.copy_environment = Some(names);
         }
         Opt::MainScreen => built.view.source = Source::Main,
         Opt::AltScreen => built.view.source = Source::Alternate,
@@ -965,7 +959,34 @@ fn modify(
             built.inputs.push(Input::Key(press));
         }
     }
-    Ok(shared)
+    Ok(std::rc::Rc::new(built))
+}
+
+/// The options `shared` holds, owned: moved out when nothing else holds
+/// them, else copied, the copy reserved from `imports` first and held by it.
+fn owned(shared: std::rc::Rc<Opts>, imports: &fuxth::Imports) -> Result<Opts, Failure> {
+    let shared = match std::rc::Rc::try_unwrap(shared) {
+        Ok(built) => return Ok(built),
+        Err(shared) => shared,
+    };
+    let lease = imports.lease(shared.bytes())?;
+    Ok(Opts {
+        lease,
+        ..(*shared).clone()
+    })
+}
+
+/// A list of strings `value` holds, read: its size checked against a
+/// launch frame first, then reserved beside what `built` holds, then copied.
+fn listed<T>(
+    built: &Opts,
+    imports: &fuxth::Imports,
+    value: &Value<Fux>,
+    read: fn(&Value<Fux>) -> Result<T, String>,
+) -> Result<T, Failure> {
+    let bytes = super::settings::list_bytes(value).map_err(|why| fail(Raise::BadValue, why))?;
+    (built.lease).reserve(imports, built.bytes().saturating_add(bytes))?;
+    read(value).map_err(|why| fail(Raise::BadValue, why))
 }
 
 /// Room in `items`, of options holding `bytes`, for one more: grown by
@@ -1005,9 +1026,9 @@ fn span(
 /// What an action acts on, and what it was given: a request; or a pane,
 /// tab, workspace or client alone, given nothing. Refused if `word`
 /// leaves something given unused.
-fn request(word: Act, value: Value<Fux>) -> Result<(On, Opts), Failure> {
+fn request(word: Act, imports: &fuxth::Imports, value: Value<Fux>) -> Result<(On, Opts), Failure> {
     let mut built = match value {
-        Value::App(Fux::Opts(built)) => std::rc::Rc::unwrap_or_clone(built),
+        Value::App(Fux::Opts(built)) => owned(built, imports)?,
         other @ (Value::Int(_)
         | Value::Bool(_)
         | Value::Str(_)
@@ -1030,8 +1051,12 @@ fn request(word: Act, value: Value<Fux>) -> Result<(On, Opts), Failure> {
 }
 
 /// The pane an action acts on, and what it was given.
-fn request_pane(word: Act, value: Value<Fux>) -> Result<(PaneId, Opts), Failure> {
-    match request(word, value)? {
+fn request_pane(
+    word: Act,
+    imports: &fuxth::Imports,
+    value: Value<Fux>,
+) -> Result<(PaneId, Opts), Failure> {
+    match request(word, imports, value)? {
         (On::Target(AnyRef::Pane(p)), built) => Ok((p, built)),
         (On::Version(version), built) => Ok((version.pane, built)),
         // Refused, not acted on unchecked (`unused` refuses it first today).
@@ -1046,11 +1071,11 @@ fn request_pane(word: Act, value: Value<Fux>) -> Result<(PaneId, Opts), Failure>
 
 /// The options `value` holds, for `word`, which makes what they are for:
 /// refused if it leaves one unused.
-fn finished(word: Act, value: Value<Fux>) -> Result<Opts, Failure> {
+fn finished(word: Act, imports: &fuxth::Imports, value: Value<Fux>) -> Result<Opts, Failure> {
     match value {
         Value::App(Fux::Opts(built)) if built.on.is_none() => {
             unused(word, &built)?;
-            Ok(std::rc::Rc::unwrap_or_clone(built))
+            owned(built, imports)
         }
         other @ (Value::Int(_)
         | Value::Bool(_)
@@ -1066,10 +1091,11 @@ fn finished(word: Act, value: Value<Fux>) -> Result<Opts, Failure> {
 /// Attach alone accepts typed places through the ordinary request subject.
 fn attach_options(
     word: Act,
+    imports: &fuxth::Imports,
     value: Value<Fux>,
 ) -> Result<(Option<crate::command::AttachTarget>, Opts), Failure> {
     use crate::command::AttachTarget as T;
-    let built = std::rc::Rc::unwrap_or_clone(modifying(value)?);
+    let built = owned(modifying(value)?, imports)?;
     unused(word, &built)?;
     let target = match (&built.on, &built.place) {
         (None, place) => place.clone().map(T::Workspace),
@@ -1481,7 +1507,7 @@ impl Host<'_> {
             Act::All => now(out, Value::App(Fux::All)),
             Act::Opts => now(out, Value::App(Fux::Opts(std::rc::Rc::default()))),
             Act::Run => {
-                let built = finished(act, next()?)?;
+                let built = finished(act, imports, next()?)?;
                 if built.argv.is_empty() {
                     return Err(fail(
                         Raise::Usage,
@@ -1511,7 +1537,7 @@ impl Host<'_> {
                 later(ask(run))
             }
             Act::NewTab => {
-                let built = finished(act, next()?)?;
+                let built = finished(act, imports, next()?)?;
                 let (start, env, options) = self.launch(&built)?;
                 let tab = Command::NewTab {
                     target: built.place,
@@ -1525,7 +1551,7 @@ impl Host<'_> {
                 later(ask(tab))
             }
             Act::NewWorkspace => {
-                let built = finished(act, next()?)?;
+                let built = finished(act, imports, next()?)?;
                 let (start, env, options) = self.launch(&built)?;
                 let workspace = Command::NewWorkspace {
                     name: built.name,
@@ -1538,7 +1564,7 @@ impl Host<'_> {
                 later(ask(workspace))
             }
             Act::Split => {
-                let (p, built) = request_pane(act, next()?)?;
+                let (p, built) = request_pane(act, imports, next()?)?;
                 let axis = built.axis.ok_or_else(|| {
                     fail(
                         Raise::Usage,
@@ -1558,7 +1584,7 @@ impl Host<'_> {
                 later(ask(split))
             }
             Act::Respawn => {
-                let (p, built) = request_pane(act, next()?)?;
+                let (p, built) = request_pane(act, imports, next()?)?;
                 let respawn = Command::Respawn {
                     target: p,
                     kill: built.kill,
@@ -1573,7 +1599,7 @@ impl Host<'_> {
             }
             // ----------------------------------------------------- waiting
             Act::Wait => {
-                let (on, built) = request(act, next()?)?;
+                let (on, built) = request(act, imports, next()?)?;
                 // On a tab or workspace, in each of its panes.
                 let since = match on {
                     On::Version(version) | On::Changed(version) => Since::Version(version),
@@ -1604,7 +1630,7 @@ impl Host<'_> {
             }
             // ------------------------------------------------------- input
             Act::SendKeys => {
-                let (on, built) = request(act, next()?)?;
+                let (on, built) = request(act, imports, next()?)?;
                 if built.inputs.is_empty() {
                     return Err(fail(
                         Raise::Usage,
@@ -1657,7 +1683,7 @@ impl Host<'_> {
                 later(ask(mouse))
             }
             Act::Signal => {
-                let (p, _) = request_pane(act, next()?)?;
+                let (p, _) = request_pane(act, imports, next()?)?;
                 let signals = fuxix::process::Signal::ALL.map(|signal| (signal.name(), signal));
                 let signal = one_of(&next()?, &signals)?;
                 let signal = Command::Signal { target: p, signal };
@@ -1669,7 +1695,7 @@ impl Host<'_> {
                 if let Value::App(Fux::Client(c, _)) = value {
                     return later(on_client(c, ClientAction::Capture));
                 }
-                let (p, built) = request_pane(act, value)?;
+                let (p, built) = request_pane(act, imports, value)?;
                 later(ask(Command::CapturePane {
                     target: p,
                     history: built.history,
@@ -1924,7 +1950,7 @@ impl Host<'_> {
             }
             // ----------------------------------------------------- clients
             Act::Attach => {
-                let (target, built) = attach_options(act, next()?)?;
+                let (target, built) = attach_options(act, imports, next()?)?;
                 check_attach_creation(&built, target.is_some(), built.watch)?;
                 local(Local::Attach {
                     of: None,
@@ -1977,7 +2003,7 @@ impl Host<'_> {
                     .map_err(|why| fail(Raise::Config, why.to_string()))?;
                 let value = next()?;
                 let of = super::scope(&value);
-                let (target, built) = attach_options(act, value)?;
+                let (target, built) = attach_options(act, imports, value)?;
                 if target.is_some() && built.given.contains(&Opt::Name) {
                     return Err(fail(
                         Raise::BadValue,
@@ -2496,7 +2522,7 @@ mod tests {
                 Done::Now
             ));
             let (attached, _) =
-                attach_options(Act::Attach, Value::App(value)).map_err(|e| e.message)?;
+                attach_options(Act::Attach, &grant, Value::App(value)).map_err(|e| e.message)?;
             assert_eq!(attached, Some(target.clone()));
             let defaults = draft.attach.as_ref().ok_or("defaults")?;
             assert_eq!(defaults.target, Some(target));
@@ -2624,24 +2650,58 @@ mod tests {
     }
 
     #[test]
-    fn a_shared_options_copy_is_refused_before_it_is_made() -> TestResult {
+    fn options_are_refused_before_they_are_copied() -> TestResult {
         let allocator = fux_vt_peak::ThreadPeak;
+        let list = |item: &str, n| {
+            let list = fuxth::List::new(vec![Value::str(item); n]).ok_or("list");
+            list.map(|list| Value::List(fuxth::Shared::new(list)))
+        };
+        let text = |n| std::iter::repeat_n('x', n).collect::<String>();
+        let (big, small) = (text(1 << 20), text(32 << 10));
+        // 8 MiB of options on a pane, held twice; a list of the same 8 MiB,
+        // past a launch frame; a list of 512 KiB within one; a grant of 64 KiB.
         let held = std::rc::Rc::new(Opts {
-            argv: vec![std::iter::repeat_n('x', 1 << 20).collect(); 8],
+            on: Some(On::Target(AnyRef::Pane(crate::id::PaneId::of(1)))),
+            argv: vec![big.clone(); 8],
             ..Opts::default()
         });
-        // 8 MiB of options, held twice, and a grant of 1 MiB.
-        let grant = fuxth::Imports::new(1 << 20);
-        let mut values = [Value::App(Fux::Opts(held.clone())), Value::str("x")].into_iter();
-        let base = allocator.live();
-        allocator.reset_peak();
-        let arg = modify(Opt::Arg, &grant, &mut || {
-            values
-                .next()
-                .ok_or_else(|| fail(Raise::StackUnderflow, "test argument"))
-        });
-        assert_eq!(arg.err().map(|f| f.code), Some(fuxth::Code::TooLong));
-        assert!(allocator.peak().saturating_sub(base) < 64 << 10);
+        let shared = || Value::App(Fux::Opts(held.clone()));
+        let fresh = || Value::App(Fux::Opts(std::rc::Rc::default()));
+        for (opt, values, code) in [
+            (
+                Some(Opt::Arg),
+                vec![shared(), Value::str("x")],
+                fuxth::Code::TooLong,
+            ),
+            (None, vec![shared()], fuxth::Code::TooLong),
+            (
+                Some(Opt::ShellProgram),
+                vec![fresh(), list(&big, 8)?],
+                fail(Raise::BadValue, "").code,
+            ),
+            (
+                Some(Opt::ShellProgram),
+                vec![fresh(), list(&small, 16)?],
+                fuxth::Code::TooLong,
+            ),
+        ] {
+            let grant = fuxth::Imports::new(64 << 10);
+            let mut values = values.into_iter();
+            let mut next = || {
+                values
+                    .next()
+                    .ok_or_else(|| fail(Raise::StackUnderflow, "test argument"))
+            };
+            let base = allocator.live();
+            allocator.reset_peak();
+            let refused = match opt {
+                Some(opt) => modify(opt, &grant, &mut next).err(),
+                // Consumed by an action.
+                None => request(Act::SendKeys, &grant, next().map_err(|f| f.message)?).err(),
+            };
+            assert_eq!(refused.map(|f| f.code), Some(code), "{opt:?}");
+            assert!(allocator.peak().saturating_sub(base) < 64 << 10, "{opt:?}");
+        }
         Ok(())
     }
 

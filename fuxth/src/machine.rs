@@ -388,22 +388,20 @@ impl<A: AppValue> Machine<A> {
     /// The step each call under way is at, the outermost first: the word
     /// that called each definition, down to the word it ran last.
     /// A call in last place, which took its caller's frame, still shows
-    /// the call that began it.
-    pub fn calls(&self) -> Vec<Token> {
-        let mut calls: Vec<Token> = (self.frames.iter())
-            .flat_map(|frame| {
-                let via = frame.via.and_then(|(code, step)| self.before(code, step));
-                via.into_iter().chain(self.before(frame.code, frame.step))
-            })
-            .collect();
-        // The innermost: the step it really took last, a jump's too.
-        if let Some(last) = self.taken() {
-            if (self.frames.last()).is_some_and(|f| self.before(f.code, f.step).is_some()) {
-                calls.pop();
-            }
-            calls.push(last);
-        }
-        calls
+    /// the call that began it. Read from either end, it allocates nothing.
+    pub fn calls(&self) -> impl DoubleEndedIterator<Item = Token> + '_ {
+        let (innermost, last) = (self.frames.len().saturating_sub(1), self.taken());
+        self.frames.iter().enumerate().flat_map(move |(i, frame)| {
+            let via = frame.via.and_then(|(code, step)| self.before(code, step));
+            let before = self.before(frame.code, frame.step);
+            // The innermost: the step it really took last, a jump's too.
+            let at = if i == innermost {
+                last.clone().or(before)
+            } else {
+                before
+            };
+            via.into_iter().chain(at)
+        })
     }
 
     /// The token of the step the innermost frame took last: none for a
@@ -869,17 +867,17 @@ impl<A: AppValue> Machine<A> {
 
     /// `text` as a new string, reserved before it is made.
     fn text(&mut self, text: &str) -> Result<Value<A>, Error> {
-        self.joined(text.chars().count(), std::iter::once(text))
+        self.joined(text.chars().count(), text.len(), std::iter::once(text))
     }
 
-    /// The string of `parts` joined, `chars` characters, reserved before it
-    /// is made.
+    /// The string of `parts` joined, `chars` characters in `bytes`, reserved
+    /// before it is made.
     fn joined<'p>(
         &mut self,
         chars: usize,
-        parts: impl Iterator<Item = &'p str> + Clone,
+        bytes: usize,
+        parts: impl Iterator<Item = &'p str>,
     ) -> Result<Value<A>, Error> {
-        let bytes = parts.clone().map(str::len).fold(0, usize::saturating_add);
         let lease = self.build(chars, Text::size(bytes, chars))?;
         let mut text = String::with_capacity(bytes);
         text.extend(parts);
@@ -952,13 +950,14 @@ impl<A: AppValue> Machine<A> {
     }
 
     fn concat(&mut self, list: &List<A>) -> Result<Value<A>, Error> {
-        let mut n = 0usize;
+        let (mut n, mut bytes) = (0usize, 0usize);
         let (mut strings, mut lists) = (false, false);
         for item in list.items() {
             match item {
                 Value::Str(s) => {
                     strings = true;
                     n = n.saturating_add(s.chars_len());
+                    bytes = bytes.saturating_add(s.len());
                 }
                 Value::List(l) => {
                     lists = true;
@@ -985,6 +984,7 @@ impl<A: AppValue> Machine<A> {
             let strings = list.items().iter();
             return self.joined(
                 n,
+                bytes,
                 strings.filter_map(|item| match item {
                     Value::Str(s) => Some::<&str>(s),
                     Value::Int(_) | Value::Bool(_) | Value::List(_) | Value::App(_) => None,
@@ -1077,7 +1077,11 @@ impl<A: AppValue> Machine<A> {
                     .chars_len()
                     .saturating_sub(1)
                     .saturating_add(x.chars_len());
-                self.joined(chars, [head, &**x, tail].into_iter())
+                let bytes = head
+                    .len()
+                    .saturating_add(x.len())
+                    .saturating_add(tail.len());
+                self.joined(chars, bytes, [head, &**x, tail].into_iter())
             }
             (Sequence::Str(_), x) => {
                 let app = matches!(x, Value::App(_));

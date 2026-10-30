@@ -25,20 +25,40 @@ fn int(value: &Value<Fux>) -> Result<i64, String> {
     Ok(*n)
 }
 
-/// A list of strings, each as it is.
-fn strings(value: &Value<Fux>) -> Result<Vec<String>, String> {
+/// The bytes a list of strings takes as `Vec<String>` at most, its strings
+/// once and its vector twice (a `Program`'s argv is collected beside it),
+/// once it is found to fit a launch frame: checked before anything is copied.
+pub(crate) fn list_bytes(value: &Value<Fux>) -> Result<usize, String> {
     let takes = "a list of strings";
     let Value::List(list) = value else {
         return Err(wrong(takes, value));
     };
-    (list.items().iter())
-        .map(|item| {
-            let Value::Str(s) = item else {
-                return Err(wrong(takes, item));
-            };
-            Ok(s.to_string())
-        })
-        .collect()
+    let vectors = size_of::<String>().saturating_mul(2);
+    let (mut frame, mut bytes) = (4usize, vectors.saturating_mul(list.items().len()));
+    for item in list.items() {
+        let Value::Str(s) = item else {
+            return Err(wrong(takes, item));
+        };
+        frame = frame.saturating_add(4).saturating_add(s.len());
+        bytes = bytes.saturating_add(s.len());
+    }
+    if frame > crate::protocol::MAX_PAYLOAD {
+        return Err("the list of strings exceeds the launch frame limit".to_owned());
+    }
+    Ok(bytes)
+}
+
+/// A list of strings, each as it is, checked first ([`list_bytes`]).
+fn strings(value: &Value<Fux>) -> Result<Vec<String>, String> {
+    list_bytes(value)?;
+    let Value::List(list) = value else {
+        return Err(wrong("a list of strings", value));
+    };
+    let strings = list.items().iter().filter_map(|item| match item {
+        Value::Str(s) => Some(s.to_string()),
+        Value::Int(_) | Value::Bool(_) | Value::List(_) | Value::App(_) => None,
+    });
+    Ok(strings.collect())
 }
 
 impl<const MIN: usize, const MAX: usize> Reads for Number<MIN, MAX> {

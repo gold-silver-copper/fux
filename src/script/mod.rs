@@ -1322,13 +1322,8 @@ fn uncaught(machine: &Machine<Fux>, mut error: fuxth::Error) -> Failed {
         matches!(place, Some(fuxth::Place::Line { source, .. })
             if matches!(&**source, "stdlib.fux" | "library.fux"))
     };
-    let step = bundled(error.place.as_ref()).then(|| {
-        machine
-            .calls()
-            .into_iter()
-            .rev()
-            .find(|t| !bundled(Some(&t.place)))
-    });
+    let step = bundled(error.place.as_ref())
+        .then(|| machine.calls().rev().find(|t| !bundled(Some(&t.place))));
     let Some(step) = step.flatten() else {
         return telling(error);
     };
@@ -1915,11 +1910,13 @@ pub(crate) mod tests {
 
     /// A pane that answers every capture with `lines` lines of 100 cells,
     /// each cell its own style when `styled` (the default-history styled
-    /// capture at 9,931 lines), and each wait with a change till `turns`
-    /// waits, then with a timeout. What the run's grant has left is
-    /// recorded at each wait.
+    /// capture at 9,931 lines), after `history` lines of 10 cells when it
+    /// asks for history; and each wait with a change till `turns` waits,
+    /// then with a timeout. What the run's grant has left is recorded at
+    /// each wait.
     struct Styled {
         capture: super::Reply,
+        history: super::Reply,
         version: super::Version,
         turns: usize,
         imports: Option<fuxth::Imports>,
@@ -1927,7 +1924,7 @@ pub(crate) mod tests {
     }
 
     impl Styled {
-        fn new(turns: usize, lines: usize, styled: bool) -> Result<Self, String> {
+        fn new(turns: usize, lines: usize, styled: bool, history: usize) -> Result<Self, String> {
             let version: super::Version = "%1:0.0.0.0.0:1-1".parse().map_err(|()| "version")?;
             let line = crate::capture::Line {
                 text: std::iter::repeat_n('x', 100).collect(),
@@ -1939,27 +1936,36 @@ pub(crate) mod tests {
                     })
                     .collect(),
             };
-            let capture = crate::capture::Captured {
-                of: crate::capture::Of::Pane {
-                    version,
-                    wrap_pending: false,
-                    state: Vec::new(),
-                },
-                screen_rows: 40,
-                screen_cols: 120,
-                screen_cursor: None,
-                lines: std::iter::repeat_n(line, lines).collect(),
-                styles: (0u8..if styled { 100 } else { 0 })
-                    .map(|n| fux_vt::Attributes::new(fux_vt::Color::Idx(n), fux_vt::Color::Default))
-                    .collect(),
-                styled,
-                marks: false,
+            let reply = |lines: Vec<crate::capture::Line>| super::Reply {
+                run: Some(version.run),
+                ..super::Body::Capture(Box::new(crate::capture::Captured {
+                    of: crate::capture::Of::Pane {
+                        version,
+                        wrap_pending: false,
+                        state: Vec::new(),
+                    },
+                    screen_rows: 40,
+                    screen_cols: 120,
+                    screen_cursor: None,
+                    lines,
+                    styles: (0u8..if styled { 100 } else { 0 })
+                        .map(|n| {
+                            fux_vt::Attributes::new(fux_vt::Color::Idx(n), fux_vt::Color::Default)
+                        })
+                        .collect(),
+                    styled,
+                    marks: false,
+                }))
+                .into()
             };
+            let past = crate::capture::Line {
+                text: std::iter::repeat_n('y', 10).collect(),
+                runs: Vec::new(),
+            };
+            let screen = std::iter::repeat_n(line, lines);
             Ok(Self {
-                capture: super::Reply {
-                    run: Some(version.run),
-                    ..super::Body::Capture(Box::new(capture)).into()
-                },
+                capture: reply(screen.clone().collect()),
+                history: reply(std::iter::repeat_n(past, history).chain(screen).collect()),
                 version,
                 turns,
                 imports: None,
@@ -1991,6 +1997,9 @@ pub(crate) mod tests {
                     };
                     PaneResults::One(answer).into()
                 }
+                Request::Do(crate::command::Command::CapturePane {
+                    history: Some(_), ..
+                }) => return Ok(self.history.clone()),
                 Request::Do(_) | Request::NextEvents { .. } => return Ok(self.capture.clone()),
             };
             Ok(Reply {
@@ -2043,8 +2052,9 @@ pub(crate) mod tests {
                 ANSWERED,
                 0,
             ),
-            // Polling a screen of 40 lines, as `capture` gives it, through 200
-            // waits, the last timing out.
+            // Polling a screen of 40 lines, as `capture` gives it, and 1,000
+            // lines of history before it for `hits`, through 200 waits, the
+            // last timing out.
             ("%1 10 quiet drop", 40, Ok(()), ANSWERED, 200),
             ("%1 str needle 10 shows drop", 40, timeout, ANSWERED, 200),
             ("%1 10 until-ended drop", 40, timeout, ANSWERED, 200),
@@ -2052,7 +2062,9 @@ pub(crate) mod tests {
             (&hits, 40, timeout, ANSWERED, 200),
         ] {
             let mut machine = compile(&token::source("peak", code)?)?;
-            let mut asks = Styled::new(200, lines, lines > 40)?;
+            // The styled capture is styled, and all its lines are history.
+            let (styled, history) = (lines > 40, if lines > 40 { 0 } else { 1000 });
+            let mut asks = Styled::new(200, lines, styled, history)?;
             asks.imports = Some(machine.imports().clone());
             let mut sink = io::sink();
             let mut host = Host::new(Context::default(), None, &mut sink);
@@ -2077,6 +2089,35 @@ pub(crate) mod tests {
                 "{code}: {left:?}"
             );
         }
+        Ok(())
+    }
+
+    #[test]
+    fn telling_an_uncaught_failure_allocates_no_more_at_depth() -> TestResult {
+        use super::*;
+        let allocator = fux_vt_peak::ThreadPeak;
+        let mut told = Vec::new();
+        for depth in [10, 5000] {
+            let code = format!(
+                "define deep dup 0 eq if drop list end first else 1 sub deep 1 add then end {depth} deep"
+            );
+            let mut machine = compile(&token::source("deep", &code)?)?;
+            let mut sink = io::sink();
+            let mut host = Host::new(Context::default(), None, &mut sink);
+            let error = machine.run(&mut host, u64::MAX).err().ok_or("no failure")?;
+            let base = allocator.live();
+            allocator.reset_peak();
+            let failed = uncaught(&machine, error);
+            told.push((allocator.peak().saturating_sub(base), failed.message));
+        }
+        let [(shallow, said), (deep, again)] = told.as_slice() else {
+            return Err("two depths".into());
+        };
+        assert!(
+            said.contains("inside first") && said == again,
+            "{said} {again}"
+        );
+        assert_eq!(shallow, deep);
         Ok(())
     }
 

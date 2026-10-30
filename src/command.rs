@@ -145,6 +145,11 @@ impl Program {
         let all = std::iter::once(&self.program).chain(&self.args);
         all.cloned().collect()
     }
+
+    /// The program, then its arguments, moved out.
+    pub fn into_argv(self) -> Vec<String> {
+        std::iter::once(self.program).chain(self.args).collect()
+    }
 }
 
 /// Read back only checked argv.
