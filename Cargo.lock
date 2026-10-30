@@ -35,6 +35,9 @@ dependencies = [
 [[package]]
 name = "fuxth"
 version = "0.7.0"
+dependencies = [
+ "fux-vt-peak",
+]
 
 [[package]]
 name = "libc"
