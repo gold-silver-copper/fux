@@ -825,7 +825,8 @@ mod tests {
         let mut reader = Reader::new(&bytes);
         let reply = crate::protocol::Reply::get(&mut reader)?;
         let charged = MAX_ALLOCATED.saturating_sub(reader.1.remaining());
-        assert!(charged <= MAX_ALLOCATED, "{charged}");
+        // Three distinct copies of it fit the grant.
+        assert!(charged.saturating_mul(3) <= MAX_ALLOCATED, "{charged}");
         let mut out = Vec::new();
         let result = crate::script::tests::held_reply(
             "%1 all-history styles capture let h h json print list h h h h h h end json",

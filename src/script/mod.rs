@@ -150,9 +150,12 @@ impl AppValue for Fux {
                             .fold(1u64, u64::saturating_add),
                         crate::capture::Of::Client(_) => 1,
                     };
+                    // A line counts one, an empty one too, beside its text
+                    // and runs.
                     c.lines.iter().fold(state, |n, line| {
                         n.saturating_add(line.text.len() as u64)
                             .saturating_add(line.runs.len() as u64)
+                            .saturating_add(1)
                     })
                 }
                 Answer::Pane(_) | Answer::Panes(_) => {
@@ -1959,6 +1962,20 @@ pub(crate) mod tests {
             )?;
             assert_eq!(values, vec![exited, signal]);
         }
+        Ok(())
+    }
+
+    /// Comparing or walking a capture is charged for every line it holds,
+    /// a blank one too.
+    #[test]
+    fn blank_capture_lines_weigh_one_each() -> TestResult {
+        let rows = 1000;
+        let grid = crate::render::Grid::new(rows, 80)?;
+        let capture = crate::capture::client(crate::id::ClientId::of(1), &grid)?;
+        assert!(capture.lines.iter().all(|line| line.text.is_empty()));
+        let answer = super::Answer::Capture(Box::new(capture));
+        let value = super::Fux::Answer(fuxth::Shared::new(answer), None);
+        assert!(fuxth::AppValue::weight(&value) > u64::from(rows));
         Ok(())
     }
 

@@ -327,7 +327,7 @@ fn cells_of<'a>(
     row: Row<'a>,
     span: std::ops::Range<usize>,
     view: CaptureView,
-) -> impl Iterator<Item = (&'a str, Attributes)> + Clone + 'a {
+) -> impl Iterator<Item = (&'a str, Attributes)> + 'a {
     let source_start = span.start;
     let source_end = columns(row, span.clone(), CaptureView { cols: None, ..view }).end;
     let span = columns(row, span, view);
@@ -382,14 +382,19 @@ struct Table {
 
 impl Table {
     /// The place of `style`, added if new: its bytes on the wire counted,
-    /// the room for it and its slots admitted before they grow.
+    /// the room for it and, if a new style needs them, more slots
+    /// admitted before they grow.
     fn place(
         &mut self,
         style: Attributes,
         budget: &mut crate::wire::Budget,
         wire: &mut crate::wire::Writer,
     ) -> Result<u32, crate::session::Error> {
-        if self.styles.len().saturating_mul(2) >= self.slots.len() {
+        let mut at = self.slot(style);
+        if let Some(place) = self.slots.get(at).and_then(|taken| taken.checked_sub(1)) {
+            return Ok(place);
+        }
+        if self.styles.len().saturating_add(1).saturating_mul(2) > self.slots.len() {
             let size = self.slots.len().saturating_mul(2).max(16);
             let old = std::mem::replace(&mut self.slots, budget.vector(size)?);
             self.slots.resize(size, 0);
@@ -402,10 +407,7 @@ impl Table {
             let bytes = old.capacity().saturating_mul(std::mem::size_of::<u32>());
             drop(old);
             budget.release(bytes)?;
-        }
-        let at = self.slot(style);
-        if let Some(place) = self.slots.get(at).and_then(|taken| taken.checked_sub(1)) {
-            return Ok(place);
+            at = self.slot(style);
         }
         crate::wire::Wire::put(&style, wire);
         wire.check_ref().map_err(|_| too_large())?;
@@ -1452,6 +1454,33 @@ mod tests {
                 .map(|run| run.cells),
             Some(3)
         );
+        Ok(())
+    }
+
+    /// A capture lists each style once, numbered in the order first used,
+    /// past the index's growth; a style only trimmed blanks had is not
+    /// listed.
+    #[test]
+    fn styles_are_listed_once_in_first_use_order() -> Result<(), Box<dyn std::error::Error>> {
+        let mut pane = pane(2, 50, 0)?;
+        let mut output = String::new();
+        for colour in (0..20).chain(0..20) {
+            output.push_str(&format!("\x1b[38;5;{colour}mx"));
+        }
+        output.push_str("\x1b[38;5;20m \x1b[m");
+        pane.output(output.as_bytes());
+        let marks = CaptureView {
+            marks: true,
+            ..CaptureView::default()
+        };
+        let run = crate::command::Run::now().ok_or("a clock")?;
+        let got = super::pane(&pane, run, None, marks, false)?;
+        let colour = |n| fux_vt::Attributes::new(fux_vt::Color::Idx(n), fux_vt::Color::Default);
+        assert_eq!(got.styles, (0..20).map(colour).collect::<Vec<_>>());
+        let line = got.lines.first().ok_or("a line")?;
+        let places: Vec<u32> = line.runs.iter().map(|run| run.style).collect();
+        assert_eq!(places, (0..20).chain(0..20).collect::<Vec<_>>());
+        assert_eq!(line.text.len(), 40);
         Ok(())
     }
 
