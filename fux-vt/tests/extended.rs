@@ -1087,6 +1087,26 @@ fn a_sixel_picture_scrolled_inside_left_and_right_margins_is_where_its_cells_are
             assert!(report.is_clean(), "{report}");
         }
     }
+    // Library screens may reach the u16 row limit even when the final
+    // picture fits wholly inside the scroll region.
+    for region in ["", "\x1b[65533;65535r"] {
+        let mut p = Parser::with_options(Size::new(u16::MAX, 3)?, 0, PICTURES)?;
+        p.set_host_graphics(fux_vt::Graphics::Sixel(
+            fux_vt::CellSize::new(2, 6).ok_or("cell size")?,
+        ));
+        p.process(format!("\x1b[?69h\x1b[1;2s{region}\x1b[65535;1H").as_bytes())?;
+        p.process(b"\x1bPq\"1;1~-~-~\x1b\\")?;
+        let shown: Vec<_> = p
+            .screen()
+            .pictures()
+            .map(|s| (s.row, s.col, s.cols, s.rows))
+            .collect();
+        assert_eq!(shown, [(65532, 0, 1, 3)]);
+        for row in 65532..=65534 {
+            assert_eq!(cell(&p, row, 0)?.contents(), fux_vt::PLACEHOLDER);
+        }
+        assert_eq!(p.screen().cursor_position(), (65534, 0));
+    }
     Ok(())
 }
 

@@ -223,65 +223,72 @@ impl Screen {
         // Graphics new lines may take the cursor below the last band, by
         // at most eight rows (DEC STD 070-9, 11.3; THREATS.md B05).
         let down = picture.ended().checked_div(u32::from(cell.1)).unwrap_or(0);
-        let down = u16::try_from(down).unwrap_or(u16::MAX);
-        let bands = rows.saturating_sub(1);
+        let bands = u32::from(rows.saturating_sub(1));
         let extra = down.saturating_sub(bands).min(8);
         let g = self.grid();
-        let (start, region) = (g.cursor.row(), g.lines);
+        let (start, region) = (u32::from(g.cursor.row()), g.lines);
         let margin = display.is_none() && g.lr();
-        let limit = if margin && start <= region.last() {
+        let inside = margin && start <= u32::from(region.last());
+        let limit = u32::from(if inside {
             region.last()
         } else {
             self.size().rows().saturating_sub(1)
-        };
+        });
+        let narrow = |row: u32| u16::try_from(row.min(limit)).ok();
         let steps = bands.saturating_add(extra);
         let room = limit.saturating_sub(start);
-        let lifted =
-            margin && start <= region.last() && (bands > room || (g.in_columns() && steps > room));
-        let scrolls = if lifted && g.in_columns() {
+        let scrolls = if inside && g.in_columns() {
             steps.saturating_sub(room)
         } else {
             0
         };
+        let lifted = scrolls > 0 || (inside && bands > room);
         if scrolls > 0 {
+            let Ok(count) = u16::try_from(scrolls.min(u32::from(region.len()))) else {
+                return false;
+            };
             self.let_go_scrolled();
-            self.scroll_columns(region, scrolls, crate::grid::Scroll::Up { history: true });
+            self.scroll_columns(region, count, crate::grid::Scroll::Up { history: true });
         }
         let placed_top = if lifted {
             start
                 .checked_sub(scrolls)
-                .filter(|first| scrolls > 0 && *first >= region.first())
+                .filter(|first| scrolls > 0 && *first >= u32::from(region.first()))
+                .and_then(narrow)
                 .and_then(|first| self.grid().live_row(first).map(|r| r.id()))
         } else {
             Some(top)
         };
         let tail_scrolls = extra.saturating_sub(room.saturating_sub(bands));
         let mut bottom = top;
-        for row in 0..rows {
+        for row in 0..u32::from(rows) {
             let logical = start.saturating_add(row);
-            let moved = scrolls > 0 && logical >= region.first();
+            let moved = scrolls > 0 && logical >= u32::from(region.first());
             let at = if margin {
                 if moved {
                     logical
                         .checked_sub(scrolls)
-                        .filter(|y| *y >= region.first())
+                        .filter(|y| *y >= u32::from(region.first()))
                 } else {
-                    Some(logical.min(limit))
+                    Some(logical)
                 }
+            } else if display.is_some() {
+                Some(logical)
             } else {
                 if row > 0 {
-                    if display.is_some() {
-                        self.grid_mut().set_row(logical);
-                    } else {
-                        self.linefeed();
-                    }
+                    self.linefeed();
                 }
-                Some(self.grid().cursor.row())
+                Some(u32::from(self.grid().cursor.row()))
             };
-            let Some(y) = at else { continue };
+            let Some(y) = at.and_then(narrow) else {
+                continue;
+            };
             // A refused placement keeps copied bands blank and only its
             // unmoved bands as placeholders. Rows above the region stay.
             let whole = !moved || placed_top.is_some() || (row == bands && tail_scrolls == 0);
+            if display.is_some() {
+                self.grid_mut().set_row(y);
+            }
             self.grid_mut().set_col(col);
             self.grid_mut().cursor.pending_wrap = false;
             self.with_grid(|g, _, v| {
@@ -292,12 +299,15 @@ impl Screen {
             });
             bottom = self.grid().live_row(y).map_or(top, |r| r.id());
         }
+        // DEC STD 070-9 (11.3) leaves the row open; follow xterm 411's last band.
         if let Some(cursor) = display {
             self.grid_mut().cursor = cursor;
         } else {
             if margin {
-                self.grid_mut()
-                    .set_row(start.saturating_add(steps).min(limit));
+                let Some(row) = narrow(start.saturating_add(steps)) else {
+                    return false;
+                };
+                self.grid_mut().set_row(row);
                 self.grid_mut().cursor.pending_wrap = false;
             } else {
                 // Ordinary line feeds retain every intermediate history row.
@@ -1055,6 +1065,18 @@ pub(super) mod placement_test {
                 let report = p.check();
                 assert!(report.is_clean(), "{report}");
             }
+        }
+        for region in ["", "\x1b[65533;65535r"] {
+            let mut p = Parser::with_options(
+                Size::new(u16::MAX, 3)?,
+                0,
+                Feature::ALL.into_iter().collect(),
+            )?;
+            p.set_host_graphics(Graphics::Sixel(CellSize::new(2, 6).ok_or("cell size")?));
+            p.process(format!("\x1b[?69h\x1b[1;2s{region}\x1b[65535;1H").as_bytes())?;
+            SCROLLS.set(0);
+            p.process(b"\x1bPq\"1;1~-~-~\x1b\\")?;
+            assert_eq!(SCROLLS.get(), 1, "one scroll at the row limit");
         }
         Ok(())
     }
