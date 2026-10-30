@@ -128,13 +128,13 @@ pub trait Wire: Sized {
     fn get(r: &mut Reader<'_>) -> Result<Self, Error>;
 }
 
-/// The default-history styled capture measured 21.9 MB. The next binary
-/// power admits that observation, while bounding unfinished Part streams.
+/// The default-history styled capture measures 13.0 MB. The cap admits
+/// that observation, while bounding unfinished Part streams.
 pub const MAX_REPLY: usize = 32 << 20;
 /// Shared construction, decoding and rendering grant. The default styled
-/// capture peaked at 69,599,591 construction bytes, charged 48,902,720 on
-/// decode, and peaked at 76,561,543 during client rendering including its
-/// retained input. The next binary power admits all three phases.
+/// capture peaks at 13,381,430 construction bytes, is charged 13,388,567
+/// on decode, and peaks at 25,528,285 during client rendering including
+/// its retained input. The grant admits all three phases.
 pub const MAX_ALLOCATED: usize = 128 << 20;
 
 /// Retained construction space, charged before cloning data or growing lists.
@@ -824,13 +824,16 @@ mod tests {
     #[test]
     fn default_styled_capture_fits_wire_and_script_grants() -> TestResult {
         let version = "%1:0.0.0.0.0:1-1".parse().map_err(|()| "version")?;
-        let line: Vec<_> = (0u8..100)
-            .map(|color| crate::capture::Cut {
-                text: "x".into(),
-                cells: 1,
-                style: fux_vt::Attributes::new(fux_vt::Color::Idx(color), fux_vt::Color::Default),
-            })
-            .collect();
+        let line = crate::capture::Line {
+            text: std::iter::repeat_n('x', 100).collect(),
+            runs: (0..100)
+                .map(|style| crate::capture::Run {
+                    bytes: 1,
+                    cells: 1,
+                    style,
+                })
+                .collect(),
+        };
         let capture = crate::capture::Captured {
             of: crate::capture::Of::Pane {
                 version,
@@ -841,7 +844,10 @@ mod tests {
             screen_cols: 120,
             screen_cursor: None,
             lines: std::iter::repeat_n(line, 9931).collect(),
-            styles: true,
+            styles: (0u8..100)
+                .map(|n| fux_vt::Attributes::new(fux_vt::Color::Idx(n), fux_vt::Color::Default))
+                .collect(),
+            styled: true,
             marks: false,
         };
         let reply = crate::protocol::Reply {
@@ -852,10 +858,10 @@ mod tests {
         let mut reader = Reader::new(&bytes);
         let reply = crate::protocol::Reply::get(&mut reader)?;
         let charged = MAX_ALLOCATED.saturating_sub(reader.1.remaining());
-        assert!(charged > 32 << 20 && charged <= MAX_ALLOCATED, "{charged}");
+        assert!(charged <= MAX_ALLOCATED, "{charged}");
         let mut out = Vec::new();
         let result = crate::script::tests::held_reply(
-            "%1 all-history styles capture let h h json print list h h h end json",
+            "%1 all-history styles capture let h h json print list h h h h h h end json",
             reply,
             &mut out,
         );

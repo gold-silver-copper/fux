@@ -2698,40 +2698,46 @@ mod tests {
             screen_rows: 1,
             screen_cols: 256,
             screen_cursor: None,
-            lines: vec![
-                (0..128u8)
-                    .map(|n| crate::capture::Cut {
-                        text: "界".into(),
+            lines: vec![crate::capture::Line {
+                text: std::iter::repeat_n('界', 128).collect(),
+                runs: (0..128)
+                    .map(|style| crate::capture::Run {
+                        bytes: 3,
                         cells: 2,
-                        style: fux_vt::Attributes::new(
-                            fux_vt::Color::Rgb(fux_vt::Rgb {
-                                r: 255,
-                                g: 254,
-                                b: n,
-                            }),
-                            fux_vt::Color::Rgb(fux_vt::Rgb {
-                                r: 252,
-                                g: 251,
-                                b: 250,
-                            }),
-                        )
-                        .with_underline_color(fux_vt::Color::Rgb(fux_vt::Rgb {
-                            r: 128,
-                            g: 127,
-                            b: 126,
-                        }))
-                        .with_bold(true)
-                        .with_dim(true)
-                        .with_italic(true)
-                        .with_inverse(true)
-                        .with_hidden(true)
-                        .with_strikeout(true)
-                        .with_underline_style(fux_vt::UnderlineStyle::Curly)
-                        .with_blink(fux_vt::Blink::Rapid),
+                        style,
                     })
                     .collect(),
-            ],
-            styles: true,
+            }],
+            styles: (0..128u8)
+                .map(|n| {
+                    fux_vt::Attributes::new(
+                        fux_vt::Color::Rgb(fux_vt::Rgb {
+                            r: 255,
+                            g: 254,
+                            b: n,
+                        }),
+                        fux_vt::Color::Rgb(fux_vt::Rgb {
+                            r: 252,
+                            g: 251,
+                            b: 250,
+                        }),
+                    )
+                    .with_underline_color(fux_vt::Color::Rgb(fux_vt::Rgb {
+                        r: 128,
+                        g: 127,
+                        b: 126,
+                    }))
+                    .with_bold(true)
+                    .with_dim(true)
+                    .with_italic(true)
+                    .with_inverse(true)
+                    .with_hidden(true)
+                    .with_strikeout(true)
+                    .with_underline_style(fux_vt::UnderlineStyle::Curly)
+                    .with_blink(fux_vt::Blink::Rapid)
+                })
+                .collect(),
+            styled: true,
             marks: false,
         };
         let held = fuxth::List::new(vec![Value::App(Limited(Fux::Answer(
@@ -2778,20 +2784,27 @@ mod tests {
     fn capture_conversion_and_rendering_share_one_grant() -> TestResult {
         let allocator = fux_vt_peak::ThreadPeak;
         let base = allocator.live();
-        let cuts = (0..512)
-            .map(|_| crate::capture::Cut {
-                text: "x\"\\\n界".into(),
-                cells: 1,
-                style: fux_vt::Attributes::new(fux_vt::Color::Idx(1), fux_vt::Color::Default),
-            })
-            .collect();
+        let line = crate::capture::Line {
+            text: std::iter::repeat_n("x\"\\\n界", 512).collect(),
+            runs: (0..512)
+                .map(|_| crate::capture::Run {
+                    bytes: 7,
+                    cells: 1,
+                    style: 0,
+                })
+                .collect(),
+        };
         let capture = crate::capture::Captured {
             of: crate::capture::Of::Client(crate::id::ClientId::of(1)),
             screen_rows: 1,
             screen_cols: 512,
             screen_cursor: None,
-            lines: vec![cuts],
-            styles: true,
+            lines: vec![line],
+            styles: vec![fux_vt::Attributes::new(
+                fux_vt::Color::Idx(1),
+                fux_vt::Color::Default,
+            )],
+            styled: true,
             marks: false,
         };
         let value = Value::App(Fux::Answer(

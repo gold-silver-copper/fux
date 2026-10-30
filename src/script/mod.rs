@@ -150,8 +150,9 @@ impl AppValue for Fux {
                             .fold(1u64, u64::saturating_add),
                         crate::capture::Of::Client(_) => 1,
                     };
-                    c.lines.iter().flatten().fold(state, |n, cut| {
-                        n.saturating_add(cut.text.len() as u64).saturating_add(1)
+                    c.lines.iter().fold(state, |n, line| {
+                        n.saturating_add(line.text.len() as u64)
+                            .saturating_add(line.runs.len() as u64)
                     })
                 }
                 Answer::Pane(_) | Answer::Panes(_) => {
@@ -1971,12 +1972,12 @@ pub(crate) mod tests {
             screen_rows: 24,
             screen_cols: 80,
             screen_cursor: None,
-            lines: vec![vec![crate::capture::Cut {
+            lines: vec![crate::capture::Line {
                 text: std::iter::repeat_n('x', 17_000_000).collect(),
-                cells: 17_000_000,
-                style: fux_vt::Attributes::default(),
-            }]],
-            styles: false,
+                runs: Vec::new(),
+            }],
+            styles: Vec::new(),
+            styled: false,
             marks: false,
         }
     }
@@ -2072,7 +2073,8 @@ pub(crate) mod tests {
             screen_cols: 80,
             screen_cursor: None,
             lines: Vec::new(),
-            styles: false,
+            styles: Vec::new(),
+            styled: false,
             marks: false,
         };
         let reply = Reply {
@@ -2101,12 +2103,19 @@ pub(crate) mod tests {
             screen_rows: 24,
             screen_cols: 80,
             screen_cursor: Some((7, 3)),
-            lines: vec![vec![crate::capture::Cut {
+            lines: vec![crate::capture::Line {
                 text: "x".into(),
-                cells: 1,
-                style: fux_vt::Attributes::new(fux_vt::Color::Idx(1), fux_vt::Color::Default),
-            }]],
-            styles: true,
+                runs: vec![crate::capture::Run {
+                    bytes: 1,
+                    cells: 1,
+                    style: 0,
+                }],
+            }],
+            styles: vec![fux_vt::Attributes::new(
+                fux_vt::Color::Idx(1),
+                fux_vt::Color::Default,
+            )],
+            styled: true,
             marks: false,
         };
         let reply = Reply {

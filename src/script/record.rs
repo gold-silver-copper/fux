@@ -471,28 +471,28 @@ pub(super) fn answer_field(
                 "lines" => {
                     return b.list(&c.lines, |b, line| {
                         let text = crate::json::render(b.budget, |out| {
-                            crate::capture::write_line(out, line, c.marks, false, &mut Vec::new())
+                            c.write_line(out, line, false, &mut Vec::new())
                         })?;
                         b.text(&text)
                     });
                 }
-                "styles" if c.styles => {
+                "styles" if c.styled => {
                     return b.list(&c.lines, |b, line| {
-                        let mut values = b.budget.vector(
-                            line.iter()
-                                .filter(|cut| cut.style != fux_vt::Attributes::default())
-                                .count(),
-                        )?;
+                        let styled = |run: &Option<(&str, u32, fux_vt::Attributes)>| {
+                            run.is_some_and(|(_, _, style)| style != fux_vt::Attributes::default())
+                        };
+                        let mut values = b.budget.vector(c.runs(line).filter(styled).count())?;
                         let mut col = 0u32;
-                        for cut in line {
-                            if cut.style != fux_vt::Attributes::default() {
+                        for run in c.runs(line) {
+                            let (_, cells, style) = run.ok_or_else(fail)?;
+                            if style != fux_vt::Attributes::default() {
                                 let mut fields = b.budget.vector(2)?;
                                 for (name, value) in
-                                    [("col", number(col)?), ("len", number(cut.cells)?)]
+                                    [("col", number(col)?), ("len", number(cells)?)]
                                 {
                                     fields.push((b.budget.string(name)?, value));
                                 }
-                                for (name, value) in crate::capture::style_fields(cut.style) {
+                                for (name, value) in crate::capture::style_fields(style) {
                                     let value = match value {
                                         crate::capture::StyleValue::Flag => Value::Bool(true),
                                         crate::capture::StyleValue::Index(n) => number(n)?,
@@ -508,7 +508,7 @@ pub(super) fn answer_field(
                                 b.nodes(fields.len().saturating_add(1))?;
                                 values.push(b.finish(fields)?);
                             }
-                            col = col.checked_add(cut.cells).ok_or_else(fail)?;
+                            col = col.checked_add(cells).ok_or_else(fail)?;
                         }
                         b.nodes(values.len())?;
                         b.budget.charge(fuxth::Shared::<List<Fux>>::bytes(0))?;
