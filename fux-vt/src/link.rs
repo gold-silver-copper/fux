@@ -190,9 +190,9 @@ impl RowLinks {
         crate::budget::spend(self.0.len());
         self.0.clear();
     }
-    /// Sets the links of cells `span` to `runs`, each inside it, in order:
-    /// a margin scroll's span copied, in one remake and one sort however
-    /// many cells change. Whether any cell's link changed.
+    /// Sets the links of cells `span` to `runs`, each inside it, in order
+    /// and apart: a margin scroll's span copied, in one splice however many
+    /// cells change. Whether any cell's link changed.
     #[inline(never)]
     pub(crate) fn replace(
         &mut self,
@@ -202,26 +202,102 @@ impl RowLinks {
         let (Ok(start), Ok(end)) = (u16::try_from(span.start), u16::try_from(span.end)) else {
             return false;
         };
-        // A pass to see whether the span's links are those already.
-        crate::budget::spend(self.0.len().saturating_add(runs.len()));
-        let at = |n: usize| n.saturating_add(span.start);
-        let held = (self.runs().within(span.clone()))
-            .map(|(cells, link)| (at(cells.start)..at(cells.end), link));
-        if held.eq(runs.iter().map(|(cells, link)| (cells.clone(), link))) {
+        let (first, last) = self.overlapping(start, end);
+        let held = self.0.get(first..last).unwrap_or_default();
+        crate::budget::spend(held.len().saturating_add(runs.len()));
+        let clipped = held.iter().map(|run| {
+            let cells = usize::from(run.start.max(start))..usize::from(run.end.min(end));
+            (cells, &run.link)
+        });
+        if clipped.eq(runs.iter().map(|(cells, link)| (cells.clone(), link))) {
             return false;
         }
-        self.remake(|run| {
-            let before = (run.start, run.end.min(start));
-            [before, (run.start.max(end), run.end), (0, 0)]
+        let runs = runs.iter().filter_map(|(cells, link)| {
+            let (start, end) = (
+                u16::try_from(cells.start).ok()?,
+                u16::try_from(cells.end).ok()?,
+            );
+            Some(Run {
+                start,
+                end,
+                link: link.clone(),
+            })
         });
-        for (cells, link) in runs {
-            if let (Ok(start), Ok(end)) = (u16::try_from(cells.start), u16::try_from(cells.end)) {
-                let link = link.clone();
-                self.0.push(Run { start, end, link });
-            }
-        }
-        self.tidy();
+        self.splice(start, end, runs);
         true
+    }
+    /// The runs that reach into cells `start..end`, as a range of indices:
+    /// the runs are in order and apart.
+    fn overlapping(&self, start: u16, end: u16) -> (usize, usize) {
+        let first = self.0.partition_point(|run| run.end <= start);
+        let last = self.0.partition_point(|run| run.start < end).max(first);
+        (first, last)
+    }
+    /// Puts `runs`, in order and apart within cells `start..end`, in place
+    /// of what links those cells had: the runs reaching in are cut at the
+    /// span's edges, and the new runs merged with those beside them, in one
+    /// splice. Spends the runs looked at and those moved past it.
+    fn splice(&mut self, start: u16, end: u16, runs: impl Iterator<Item = Run>) {
+        let (first, last) = self.overlapping(start, end);
+        // The runs beside, which may merge with what goes in.
+        let (from, to) = (
+            first.saturating_sub(1),
+            last.saturating_add(1).min(self.0.len()),
+        );
+        let mut pieces: Vec<Run> = Vec::new();
+        let mut put = |run: Run| match pieces.last_mut() {
+            _ if run.start >= run.end => {}
+            Some(kept) if kept.end == run.start && kept.link == run.link => kept.end = run.end,
+            Some(_) | None => pieces.push(run),
+        };
+        if let Some(before) = self.0.get(from).filter(|_| from < first) {
+            put(before.clone());
+        }
+        if let Some(run) = self.0.get(first).filter(|_| first < last) {
+            put(Run {
+                end: start,
+                ..run.clone()
+            });
+        }
+        runs.for_each(&mut put);
+        if let Some(run) = last
+            .checked_sub(1)
+            .and_then(|i| self.0.get(i))
+            .filter(|_| first < last)
+        {
+            put(Run {
+                start: end,
+                ..run.clone()
+            });
+        }
+        if let Some(after) = self.0.get(last).filter(|_| last < to) {
+            put(after.clone());
+        }
+        let moved = self.0.len().saturating_sub(to);
+        crate::budget::spend(
+            (to.saturating_sub(from))
+                .saturating_add(pieces.len())
+                .saturating_add(moved),
+        );
+        // `pieces` in place of `from..to`: written over it, then the rest
+        // rotated in after it, or the surplus rotated past the tail and cut.
+        let (old, new) = (to.saturating_sub(from), pieces.len());
+        let mut pieces = pieces.into_iter();
+        for (slot, piece) in self.0.iter_mut().skip(from).take(old).zip(&mut pieces) {
+            *slot = piece;
+        }
+        let kept = from.saturating_add(old.min(new));
+        if new > old {
+            self.0.extend(pieces);
+            if let Some(tail) = self.0.get_mut(kept..) {
+                tail.rotate_right(new.saturating_sub(old).min(tail.len()));
+            }
+        } else if let Some(tail) = self.0.get_mut(kept..) {
+            let surplus = old.saturating_sub(new).min(tail.len());
+            tail.rotate_left(surplus);
+            let len = self.0.len().saturating_sub(surplus);
+            self.0.truncate(len);
+        }
     }
     /// Sets the link of cells `span`; returns whether any cell's link
     /// changed. A span past what a row holds changes nothing. The left-to-right append
@@ -250,15 +326,12 @@ impl RowLinks {
             return false;
         }
         let Range { start, end } = span;
-        self.remake(|run| {
-            let before = (run.start, run.end.min(start));
-            [before, (run.start.max(end), run.end), (0, 0)]
+        let link = link.map(|link| Run {
+            start,
+            end,
+            link: link.clone(),
         });
-        if let Some(link) = link {
-            let link = link.clone();
-            self.0.push(Run { start, end, link });
-        }
-        self.tidy();
+        self.splice(start, end, link.into_iter());
         true
     }
     /// Whether every cell of `span` has `link`.

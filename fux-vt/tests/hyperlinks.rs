@@ -180,6 +180,30 @@ fn links_scroll_with_their_rows() -> Result {
     Ok(())
 }
 
+/// A scroll inside left and right margins moves the span's text and links
+/// and nothing outside it, the runs crossing either margin cut there: the
+/// rows' own outside, the vacated span blank and unlinked.
+#[test]
+fn a_margin_scroll_cuts_the_runs_at_the_margins() -> Result {
+    // Columns 3 to 8 of 10; p over 1-4 and q over 5-10 on the first row,
+    // r over 2-3 and s over 7-9 on the second.
+    let p = parser(
+        2,
+        10,
+        0,
+        b"\x1b]8;;p\x07abcd\x1b]8;;q\x07efghij\x1b]8;;\x07\r\n\
+          A\x1b]8;;r\x07BC\x1b]8;;\x07DEF\x1b]8;;s\x07GHI\x1b]8;;\x07J\
+          \x1b[?69h\x1b[3;8s\x1b[2;3H\n",
+    )?;
+    let text = |y| p.screen().window().row(y).map(|r| r.cells_text());
+    assert_eq!(text(0).as_deref(), Some("abCDEFGHij"));
+    assert_eq!(text(1).as_deref(), Some("AB      IJ"));
+    let cells = |s: &str| expected(&s.split(' ').collect::<Vec<_>>());
+    assert_eq!(uris_at(&p, 0), cells("p p r - - - s s q q"));
+    assert_eq!(uris_at(&p, 1), cells("- r - - - - - - s -"));
+    Ok(())
+}
+
 /// Erasing blanks cells, which have no link; what is printed over a link
 /// takes the link open then, or none.
 #[test]

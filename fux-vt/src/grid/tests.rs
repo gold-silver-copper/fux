@@ -278,3 +278,43 @@ fn a_rotation_across_the_rings_end_turns_only_its_rows() {
         }
     }
 }
+
+/// Copying the span of a row that holds the most text a row holds, 1,033
+/// clusters of 127 bytes and 3,063 of 17, each cell its own link of two
+/// alternating ids, over a row of other text and links, spends no more
+/// than the row's share of the screen term (`THREATS.md` 4.2),
+/// 12C + 2 × (49C + 128): its cells, its links and its text twice, and the
+/// compaction when the clusters' lengths don't line up.
+#[test]
+fn copying_a_full_linked_row_spends_at_most_its_share() -> Result<(), Error> {
+    const C: u16 = 4096;
+    let c = u64::from(C);
+    let share = 12 * c + 2 * (49 * c + 128);
+    // The destination's long clusters where the source's are, or at its end.
+    for long_from in [0, C - 1_033] {
+        let mut p =
+            crate::Parser::with_options(Size::of(2, C), 0, crate::Feature::Hyperlinks.into())?;
+        for (row, base, ids, long) in [
+            (1, 'e', ["a", "b"], long_from..long_from + 1_033),
+            (2, 'f', ["c", "d"], 0..1_033),
+        ] {
+            let mut line = format!("\x1b[{row};1H");
+            for col in 0..C {
+                let id = ids.get(usize::from(col % 2)).ok_or(Error::InvalidRange)?;
+                let marks = if long.contains(&col) { 63 } else { 8 };
+                line.push_str(&format!("\x1b]8;id={id};u{id}\x1b\\{base}"));
+                line.extend(std::iter::repeat_n('\u{301}', marks));
+            }
+            p.process(line.as_bytes())?;
+        }
+        let mut grid = p.screen().primary_grid().clone();
+        let before = crate::budget::spent();
+        grid.copy_span(1, 0, 1..usize::from(C - 1), 1_000);
+        let spent = crate::budget::spent().wrapping_sub(before);
+        assert!(spent <= share, "long from {long_from}: {spent} > {share}");
+        let row = grid.live_row(0).ok_or(Error::InvalidRange)?;
+        let text = |x| row.cell(x).map(|c| c.contents().len());
+        assert_eq!([text(1), text(4094)], [Some(127), Some(17)]);
+    }
+    Ok(())
+}

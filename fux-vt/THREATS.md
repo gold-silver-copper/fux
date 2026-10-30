@@ -175,7 +175,7 @@ B26 and B41 bound host-side objects or host calls.
 | B33 | ASCII REP | Copies past what the screen and history can show are skipped: a REP ≤ 132,775 at the defaults (65,535 copies, 328 rows into history at B18's C + 5), 30,702 between 2-column margins (102 copies, 51 scrolls of the region at 12R), 875 on 2×10 with 1 KiB of history (350 copies, 35 rows at 15); under IRM each copy moves its row; the copies made stop at the quota between glyphs | Skipped, same result | 455 × `X ESC[65535b` in 4 KiB | `b33`; `repeat_makes_its_ascii_copies_and_returns` |
 | B34 | Non-ASCII REP | As B33, a copy two cells: ≤ 265,550 a REP at the defaults, 30,702 between 2-column margins, 875 on 2×10 with 1 KiB of history, 201,383,938 between 2-column margins on 4,096 rows of 3 (4,097 copies, each a scroll of the region at 12R), made over many calls | As B33 | 372 × `一 ESC[65535b` | `b34`; `repetition_stops_at_the_quota_and_goes_on` |
 | B34a | REP of a glyph that joins itself | ≤ 24 a byte + 2,752 to fill the cluster once | Copies joining a full cluster are skipped | 372 × U+1100 `ESC[65535b` | `b34a` |
-| B35 | Screen-wide functions | Each one indivisible operation of ≤ 4N + 2R × (49C + 128) (4.2); every call within the quota and one of them, which stops it and goes on in the next; CUB under 1045 between 2-column margins ≤ 65,535 a CUB, a unit a row it steps | — | 4 KiB each of DECRQCRA, DECCRA, DECFRA, DECERA, DECSERA, DECCARA, DECRARA, DECALN, ED 2, 1049, DECIC, DECDC, SL, SR; margin LF, SU and wrapping text | `b35` at 50×200, 500×500, 4095×4096; `bounds.rs` `quota` tests |
+| B35 | Screen-wide functions | Each one indivisible operation of ≤ 12N + 2R × (49C + 128) (4.2); every call within the quota and one of them, which stops it and goes on in the next; CUB under 1045 between 2-column margins ≤ 65,535 a CUB, a unit a row it steps | — | 4 KiB each of DECRQCRA, DECCRA, DECFRA, DECERA, DECSERA, DECCARA, DECRARA, DECALN, ED 2, 1049, DECIC, DECDC, SL, SR; margin LF, SU and wrapping text | `b35` at 50×200, 500×500, 4095×4096; `bounds.rs` `quota` tests |
 | B36 | Scrolls inside a region | The region's slots turned once a sequence, the count clamped to the region; across the ring's end ≤ 4 an IL of two rows | — | `ESC[4095L` at 4095×1; IL across the ring's end | `b36` |
 | B37 | `resize` and reflow (host call) | Heap ≤ steady + another history term; work ≤ 6 × (history cells + screen cells + history rows) a call | A rejected resize changes nothing, synchronized output and the cluster being printed included | Full history, 200 → 199 → 200 columns; 65535×65535 | `b37`; `a_rejected_resize_leaves_synchronized_output_on`, `a_rejected_resize_leaves_a_grapheme_open` |
 | B38 | The screen's size | Rows × columns ≤ `MAX_CELLS` = 67,108,864; history ≤ `MAX_ROWS` rows | `Err(Capacity)`, nothing changed | 65535×65535 | `b38` |
@@ -298,7 +298,7 @@ is `LIMIT` + M):
 |---|---|---|
 | A picture | 2 × `MAX_PIXELS` + `COVER_WORDS` = 21,694,720 | a sixel byte's growth, at most twice the final buffer (B03); a placement's covering (B46) |
 | A placement's rows | 691 × (3C + 6) | at most 683 rows and 8 graphics new lines, each its fill and its line feed into history (B05) |
-| The screen | 4N + 2R × (49C + 128) | a screen-wide function: each cell visited up to four times, and each row's text, at most 49C + 128 bytes (B30), twice (DECRQCRA, DECCRA, a scroll inside margins) |
+| The screen | 12N + 2R × (49C + 128) | a screen-wide function: 12 units a cell, and each row's text, at most 49C + 128 bytes (B30), twice (below) |
 | History | 2 × min(H ÷ 8, `MAX_CELLS`) + min(H ÷ 24, `MAX_ROWS`) | the style sweep, each kept cell (8 B at least) read twice; the link sweep, each row (24 B at least) |
 | Links | 2^20 | the link sweep's runs, ids and sorts (B16) |
 
@@ -308,14 +308,21 @@ the sweeps inside one operation cost at most 32 units for each cell it
 restyles. A rectangle restyle copies no text, so they fit the screen's
 text term, which it leaves unused.
 
-An operation also rewrites each row's link runs once at most, in one
-remake and one sort, (log2 C + 5) × C units, and copies a row's text into
-room compacted once (a failed store doesn't compact again): with the row's
-text copied, 49C + 128, a row costs at most about 75C + 128, inside the
-screen term's 4C + 2 × (49C + 128).
+The costliest row is one a scroll inside margins or DECCRA copies, by
+the charges as they are: its cells, 4C (`copy_span` reads, compares and
+writes them, `copy_cells` copies the source's); the compaction that makes
+room, 2C (`clear_for` walks the row for long text and for short, once:
+a store that fails doesn't compact again); its links, at most 5C (the
+source's runs scanned, the span's compared, then one splice, its pieces and
+the runs moved past it); its edges, 2; and its text twice: the source's
+copied up front, and the stores with the compaction of what lies outside,
+which the row's text limit holds together, 2 × (49C + 128). That is
+11C + 2 + 2 × (49C + 128), inside its share of the screen term,
+12C + 2 × (49C + 128); DECCRA's links are one span set to none, at most
+2C, and its row edits 3C.
 
 At fux's defaults M is about 27 M; at its largest pane, 4,096 × 4,096
-with 1 GiB of history, M = 1,878,829,362, the screen's text most of it.
+with 1 GiB of history, M = 2,013,047,090, the screen's text most of it.
 The bounds suite asserts for every probe that it spends at most
 `LIMIT` + M at its setup between two budget stops, that a budget stop comes only once `LIMIT`
 is spent, and that a call taking no byte spends some; most also assert
@@ -325,7 +332,7 @@ goes unspent shows. `bounds.rs`
 split and whole, to the same screen and replies. The `deep` fuzz target
 and the oracle's ceiling part hold every call to `LIMIT` + M at its size
 and history (`fux_vt::call_most`), which is at most 1,000,000 +
-1,878,829,362.
+2,013,047,090.
 
 fux reads no more of a pane after a budget stop or at the end of a
 16 KiB slice (1.2): the rest waits for the pane's next turn, after the

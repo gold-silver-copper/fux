@@ -178,7 +178,7 @@ fn the_threats_table_lists_the_suites_rows() -> Result {
 fn the_largest_operation_is_the_formula_s_at_the_largest_pane() -> Result {
     assert_eq!(probe::most_at(4096, 4096, 1 << 30), probe::LARGEST);
     let text = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/THREATS.md"))?;
-    assert!(text.contains("1,878,829,362"), "THREATS.md names another");
+    assert!(text.contains("2,013,047,090"), "THREATS.md names another");
     Ok(())
 }
 
@@ -352,14 +352,63 @@ mod quota {
     /// A scroll inside left and right margins over rows of alternating
     /// links copies each row's span of them in one go, not a cell at a
     /// time: within the quota and one operation, its links and the cells
-    /// outside the margins as one call leaves them.
+    /// outside the margins as one call leaves them. After the first LF
+    /// the top row's span holds the second's links, the last column each
+    /// row's own, and the second row's span is blank and unlinked.
     #[test]
     fn a_linked_margin_scroll_is_one_operation() -> Result {
         let mut setup = linked_row(1, 4096, ["a", "b"]);
         setup.extend(linked_row(2, 4096, ["c", "d"]));
         setup.extend_from_slice(b"\x1b[?69h\x1b[1;4095s\x1b[2;1H");
+        let size = fux_vt::Size::new(2, 4096)?;
+        let mut parser = Parser::with_options(size, 0, fux_vt::Feature::Hyperlinks.into())?;
+        parser.process(&setup)?;
+        parser.process(b"\n")?;
+        let s = parser.screen();
+        let id = |row, col| s.link(row, col).and_then(|l| l.id());
+        let even =
+            |col: u16, [a, b]: [&'static str; 2]| Some(if col.is_multiple_of(2) { a } else { b });
+        assert!((0..4095).all(|col| id(0, col) == even(col, ["c", "d"])));
+        assert!((0..4095).all(|col| id(1, col).is_none()));
+        assert_eq!([id(0, 4095), id(1, 4095)], [Some("b"), Some("d")]);
+        let text = |y| s.window().row(y).map(|r| r.cells_text());
+        let row = |cells: &[(char, usize)]| {
+            cells
+                .iter()
+                .flat_map(|&(c, n)| std::iter::repeat_n(c, n))
+                .collect::<String>()
+        };
+        assert_eq!(text(0), Some(row(&[('x', 4096)])));
+        assert_eq!(text(1), Some(row(&[(' ', 4095), ('x', 1)])));
         let input = vec![b'\n'; 64];
         agree((2, 4096), &setup, &input, usize::MAX, 1)
+    }
+
+    /// A scroll inside left and right margins over rows holding the most
+    /// text a row holds, 1,033 clusters of 127 bytes and 3,063 of 17,
+    /// each cell its own link, the rows' text and links differing: one LF
+    /// at 512×4096 copies every row's text and links, and spends at most
+    /// the quota and one operation (`THREATS.md` 4.2).
+    #[test]
+    fn a_linked_scroll_of_full_text_is_one_operation() -> Result {
+        let mut setup = Vec::new();
+        for row in 1..=512u16 {
+            let (base, ids) = if row % 2 == 0 {
+                ('f', ["c", "d"])
+            } else {
+                ('e', ["a", "b"])
+            };
+            setup.extend(format!("\x1b[{row};1H").bytes());
+            for col in 0..4096 {
+                let [even, odd] = ids;
+                let id = if col % 2 == 0 { even } else { odd };
+                let marks = if col < 1_033 { 63 } else { 8 };
+                setup.extend(format!("\x1b]8;id={id};u{id}\x1b\\{base}").bytes());
+                setup.extend(std::iter::repeat_n("\u{301}", marks).flat_map(str::bytes));
+            }
+        }
+        setup.extend_from_slice(b"\x1b]8;;\x1b\\\x1b[?69h\x1b[1;4095s\x1b[512;1H");
+        agree((512, 4096), &setup, b"\n", usize::MAX, 1)
     }
 
     /// DECCRA into a row whose long text is all but full copies what fits

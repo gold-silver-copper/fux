@@ -36,8 +36,9 @@ pub(crate) fn spend(n: impl TryInto<u64>) {
 /// operation, every term summed (THREATS.md 4.2). A sixel picture's growth
 /// (twice `MAX_PIXELS`) and its covering (`COVER_WORDS`); a placement's
 /// rows, at most 683 and 8 graphics new lines, each 3C + 6 (B05); a screen-wide
-/// function, four visits a cell and each row's text, at most 49C + 128
-/// bytes, twice (a checksum, a copy, a scroll inside margins); a sweep of
+/// function, 12 units a cell (a copy's cells, its compaction and its links)
+/// and each row's text, at most 49C + 128 bytes, twice (copied up front and
+/// stored); a sweep of
 /// history, its cells, 8 bytes each, twice, and its rows, 24 bytes each;
 /// the link sweep's runs, `ids` and sorts, 2^20.
 #[cfg(feature = "checks")]
@@ -47,7 +48,7 @@ pub(crate) fn call_most(size: crate::Size, history: usize) -> u64 {
     let picture = 2 * 4096 * 2160 + 4_000_000;
     let placement = c.saturating_mul(3).saturating_add(6).saturating_mul(691);
     let text = r.saturating_mul(c.saturating_mul(49).saturating_add(128));
-    let screen = (r.saturating_mul(c).saturating_mul(4)).saturating_add(text.saturating_mul(2));
+    let screen = (r.saturating_mul(c).saturating_mul(12)).saturating_add(text.saturating_mul(2));
     let cells = (h / 8).min(1 << 26).saturating_mul(2);
     [
         LIMIT,

@@ -59,7 +59,7 @@ harness=$(git -C "$root" log -1 --format=%H -- "${measures[@]}")$(dirty "${measu
 
 # Each 4 KiB probe's time: timed again without the counters if it was
 # kept (the first file), else its counted time.
-ceiling=$((1000000 + 1878829362))
+ceiling=$((1000000 + 2013047090))
 awk -v ceiling="$ceiling" -v head="$head" -v harness="$harness" -v suite="$suite" -v corpus="$corpus" -v calls="$calls" '
   FILENAME == ARGV[1] { again[$1] = $4 + 0; timed++; next }
   $2 == 4096 {
