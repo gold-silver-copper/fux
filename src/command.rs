@@ -5,7 +5,7 @@ use crate::id::{BufferId, ClientId, PaneId, TabId, WsId};
 use crate::keys::mouse::MouseButton;
 use crate::keys::{Direction, KeyPress};
 use crate::layout::Axis;
-use crate::wire::{Error, Reader, Wire, wire};
+use crate::wire::{Error, Reader, Wire, wire, wire_struct};
 use std::num::NonZeroU32;
 use std::path::PathBuf;
 use std::time::Duration;
@@ -458,6 +458,7 @@ pub struct Run {
     pid: u32,
     since: u64,
 }
+wire_struct!(Run { pid, since });
 
 impl Run {
     /// This process's run, started now: none on a clock before 1970 or
@@ -502,6 +503,7 @@ pub struct LayoutRevision {
     pub serial: u64,
     pub run: Run,
 }
+wire_struct!(LayoutRevision { tab, serial, run });
 
 impl std::fmt::Display for LayoutRevision {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -545,6 +547,13 @@ pub struct Counts {
     pub done: u64,
     pub ended: bool,
 }
+wire_struct!(Counts {
+    respawns,
+    screen,
+    bells,
+    done,
+    ended
+});
 
 impl Counts {
     /// Whether a pane now at `self` can ever have been at `then`: an
@@ -603,6 +612,7 @@ pub struct Version {
     pub counts: Counts,
     pub run: Run,
 }
+wire_struct!(Version { pane, counts, run });
 
 impl std::fmt::Display for Version {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

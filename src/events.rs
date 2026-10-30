@@ -17,6 +17,7 @@ pub const BATCH_BYTES: usize = 256 << 10;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Seq(u64);
+crate::wire::wire_struct!(Seq { 0 });
 
 /// The next entry to consume, in exactly one server run.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -24,6 +25,7 @@ pub struct Cursor {
     pub seq: Seq,
     pub run: Run,
 }
+crate::wire::wire_struct!(Cursor { seq, run });
 impl std::fmt::Display for Cursor {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}:{}", self.seq.0, self.run)
