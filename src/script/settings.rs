@@ -25,40 +25,34 @@ fn int(value: &Value<Fux>) -> Result<i64, String> {
     Ok(*n)
 }
 
-/// The bytes a list of strings takes as `Vec<String>` at most, its strings
-/// once and its vector twice (a `Program`'s argv is collected beside it),
-/// once it is found to fit a launch frame: checked before anything is copied.
-pub(crate) fn list_bytes(value: &Value<Fux>) -> Result<usize, String> {
+/// The strings a list holds, borrowed, and how many: checked to be all
+/// strings, fitting a launch frame, before any is copied.
+fn checked(value: &Value<Fux>) -> Result<(usize, impl Iterator<Item = &str>), String> {
     let takes = "a list of strings";
     let Value::List(list) = value else {
         return Err(wrong(takes, value));
     };
-    let vectors = size_of::<String>().saturating_mul(2);
-    let (mut frame, mut bytes) = (4usize, vectors.saturating_mul(list.items().len()));
-    for item in list.items() {
-        let Value::Str(s) = item else {
-            return Err(wrong(takes, item));
-        };
-        frame = frame.saturating_add(4).saturating_add(s.len());
-        bytes = bytes.saturating_add(s.len());
+    let words = || {
+        list.items().iter().filter_map(|item| match item {
+            Value::Str(s) => Some(&***s),
+            Value::Int(_) | Value::Bool(_) | Value::List(_) | Value::App(_) => None,
+        })
+    };
+    if let Some(item) = list.items().iter().find(|i| !matches!(i, Value::Str(_))) {
+        return Err(wrong(takes, item));
     }
-    if frame > crate::protocol::MAX_PAYLOAD {
+    if !Program::fits(words()) {
         return Err("the list of strings exceeds the launch frame limit".to_owned());
     }
-    Ok(bytes)
+    Ok((list.items().len(), words()))
 }
 
-/// A list of strings, each as it is, checked first ([`list_bytes`]).
+/// A list of strings, each as it is, in a vector of exactly their number.
 fn strings(value: &Value<Fux>) -> Result<Vec<String>, String> {
-    list_bytes(value)?;
-    let Value::List(list) = value else {
-        return Err(wrong("a list of strings", value));
-    };
-    let strings = list.items().iter().filter_map(|item| match item {
-        Value::Str(s) => Some(s.to_string()),
-        Value::Int(_) | Value::Bool(_) | Value::List(_) | Value::App(_) => None,
-    });
-    Ok(strings.collect())
+    let (n, words) = checked(value)?;
+    let mut strings = Vec::with_capacity(n);
+    strings.extend(words.map(str::to_owned));
+    Ok(strings)
 }
 
 impl<const MIN: usize, const MAX: usize> Reads for Number<MIN, MAX> {
@@ -103,9 +97,7 @@ impl Reads for Program {
         "a list of strings: a program, then its arguments".to_owned()
     }
     fn read(value: &Value<Fux>) -> Result<Program, String> {
-        let mut words = strings(value)?.into_iter();
-        let program = words.next().ok_or("a program is needed")?;
-        Program::new(program, words.collect())
+        Program::from_argv(strings(value)?)
     }
 }
 
@@ -115,13 +107,13 @@ impl Reads for Vec<EnvName> {
         "a list of variables' names".to_owned()
     }
     fn read(value: &Value<Fux>) -> Result<Vec<EnvName>, String> {
-        let names = strings(value)?;
-        if names.len() > crate::command::EnvPatch::MAX_NAMES {
+        let (n, names) = checked(value)?;
+        if n > crate::command::EnvPatch::MAX_NAMES {
             return Err("environment selection exceeds 1024 names".to_owned());
         }
+        // Each name parsed from the list's own string: copied once.
         let mut seen = std::collections::BTreeSet::new();
         names
-            .iter()
             .map(|name| {
                 if !seen.insert(name) {
                     return Err(format!("{name}: repeated environment name"));

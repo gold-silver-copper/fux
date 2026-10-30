@@ -906,7 +906,7 @@ fn modify(
             let shell = opt == Opt::ShellProgram;
             built.shell = Some(shell);
             if shell {
-                let program = listed(&built, imports, &next()?, Program::read)?;
+                let program = Program::read(&next()?).map_err(|why| fail(Raise::BadValue, why))?;
                 built.argv = program.into_argv();
                 return Ok(std::rc::Rc::new(built));
             }
@@ -940,8 +940,8 @@ fn modify(
             .push(string(&next()?)?, None)
             .map_err(|why| fail(Raise::BadValue, why))?,
         Opt::CopyEnvironment => {
-            let names = listed(&built, imports, &next()?, Vec::<EnvName>::read)?;
-            built.copy_environment = Some(names);
+            built.copy_environment =
+                Some(Vec::<EnvName>::read(&next()?).map_err(|why| fail(Raise::BadValue, why))?);
         }
         Opt::MainScreen => built.view.source = Source::Main,
         Opt::AltScreen => built.view.source = Source::Alternate,
@@ -974,19 +974,6 @@ fn owned(shared: std::rc::Rc<Opts>, imports: &fuxth::Imports) -> Result<Opts, Fa
         lease,
         ..(*shared).clone()
     })
-}
-
-/// A list of strings `value` holds, read: its size checked against a
-/// launch frame first, then reserved beside what `built` holds, then copied.
-fn listed<T>(
-    built: &Opts,
-    imports: &fuxth::Imports,
-    value: &Value<Fux>,
-    read: fn(&Value<Fux>) -> Result<T, String>,
-) -> Result<T, Failure> {
-    let bytes = super::settings::list_bytes(value).map_err(|why| fail(Raise::BadValue, why))?;
-    (built.lease).reserve(imports, built.bytes().saturating_add(bytes))?;
-    read(value).map_err(|why| fail(Raise::BadValue, why))
 }
 
 /// Room in `items`, of options holding `bytes`, for one more: grown by
@@ -1584,7 +1571,7 @@ impl Host<'_> {
                 later(ask(split))
             }
             Act::Respawn => {
-                let (p, built) = request_pane(act, imports, next()?)?;
+                let (p, mut built) = request_pane(act, imports, next()?)?;
                 let respawn = Command::Respawn {
                     target: p,
                     kill: built.kill,
@@ -2656,34 +2643,31 @@ mod tests {
             let list = fuxth::List::new(vec![Value::str(item); n]).ok_or("list");
             list.map(|list| Value::List(fuxth::Shared::new(list)))
         };
-        let text = |n| std::iter::repeat_n('x', n).collect::<String>();
-        let (big, small) = (text(1 << 20), text(32 << 10));
-        // 8 MiB of options on a pane, held twice; a list of the same 8 MiB,
-        // past a launch frame; a list of 512 KiB within one; a grant of 64 KiB.
-        let held = std::rc::Rc::new(Opts {
+        let big = std::iter::repeat_n('x', 1 << 20).collect::<String>();
+        // 8 MiB of options on a pane, held twice, or once; a list of the same
+        // 8 MiB, past a launch frame; and a grant of 64 KiB.
+        let request_of = |argv| Opts {
             on: Some(On::Target(AnyRef::Pane(crate::id::PaneId::of(1)))),
-            argv: vec![big.clone(); 8],
+            argv,
             ..Opts::default()
-        });
+        };
+        let held = std::rc::Rc::new(request_of(vec![big.clone(); 8]));
         let shared = || Value::App(Fux::Opts(held.clone()));
+        let unique = || {
+            Value::App(Fux::Opts(std::rc::Rc::new(request_of(vec![
+                big.clone();
+                8
+            ]))))
+        };
         let fresh = || Value::App(Fux::Opts(std::rc::Rc::default()));
-        for (opt, values, code) in [
-            (
-                Some(Opt::Arg),
-                vec![shared(), Value::str("x")],
-                fuxth::Code::TooLong,
-            ),
-            (None, vec![shared()], fuxth::Code::TooLong),
-            (
-                Some(Opt::ShellProgram),
-                vec![fresh(), list(&big, 8)?],
-                fail(Raise::BadValue, "").code,
-            ),
-            (
-                Some(Opt::ShellProgram),
-                vec![fresh(), list(&small, 16)?],
-                fuxth::Code::TooLong,
-            ),
+        let (too_long, bad) = (fuxth::Code::TooLong, fail(Raise::BadValue, "").code);
+        // An option on what `values` give, or an action consuming them.
+        for (step, values, code) in [
+            (Ok(Opt::Arg), vec![shared(), Value::str("x")], too_long),
+            (Ok(Opt::ShellProgram), vec![fresh(), list(&big, 8)?], bad),
+            (Ok(Opt::CopyEnvironment), vec![fresh(), list(&big, 8)?], bad),
+            (Err(Act::SendKeys), vec![shared()], too_long),
+            (Err(Act::Respawn), vec![unique()], bad),
         ] {
             let grant = fuxth::Imports::new(64 << 10);
             let mut values = values.into_iter();
@@ -2692,15 +2676,23 @@ mod tests {
                     .next()
                     .ok_or_else(|| fail(Raise::StackUnderflow, "test argument"))
             };
+            let mut sink = Vec::new();
+            let mut host = Host::new(crate::protocol::Context::default(), None, &mut sink);
             let base = allocator.live();
             allocator.reset_peak();
-            let refused = match opt {
-                Some(opt) => modify(opt, &grant, &mut next).err(),
-                // Consumed by an action.
-                None => request(Act::SendKeys, &grant, next().map_err(|f| f.message)?).err(),
+            let refused = match step {
+                Ok(opt) => modify(opt, &grant, &mut next).err(),
+                Err(Act::SendKeys) => {
+                    request(Act::SendKeys, &grant, next().map_err(|f| f.message)?).err()
+                }
+                Err(act) => {
+                    let word = Word::Act(act);
+                    host.dispatch(word, &grant, &mut next, &mut Vec::new())
+                        .err()
+                }
             };
-            assert_eq!(refused.map(|f| f.code), Some(code), "{opt:?}");
-            assert!(allocator.peak().saturating_sub(base) < 64 << 10, "{opt:?}");
+            assert_eq!(refused.map(|f| f.code), Some(code), "{step:?}");
+            assert!(allocator.peak().saturating_sub(base) < 64 << 10, "{step:?}");
         }
         Ok(())
     }

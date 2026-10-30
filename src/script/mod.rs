@@ -306,9 +306,9 @@ impl Opts {
         }
     }
 
-    pub(crate) fn program(&self) -> Result<Program, String> {
-        let mut words = self.argv.iter().cloned();
-        Program::new(words.next().unwrap_or_default(), words.collect())
+    /// Its program and arguments, moved out: nothing copied.
+    pub(crate) fn program(&mut self) -> Result<Program, String> {
+        Program::from_argv(std::mem::take(&mut self.argv))
     }
 
     pub(crate) fn launch(
@@ -316,10 +316,13 @@ impl Opts {
         shell: &Program,
         selection: &[EnvName],
     ) -> Result<(crate::command::Start, crate::command::EnvPatch), String> {
+        // Checked while borrowed: the copy is one launch frame's scratch.
         let argv = if self.argv.is_empty() {
             shell.clone()
+        } else if Program::fits(self.argv.iter().map(String::as_str)) {
+            Program::from_argv(self.argv.clone())?
         } else {
-            self.program()?
+            return Err("program argv exceeds the launch frame limit".to_owned());
         };
         let mut env = crate::command::EnvPatch::selected(
             self.copy_environment.as_deref().unwrap_or(selection),

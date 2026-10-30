@@ -103,19 +103,28 @@ impl Program {
         {
             return Err(format!("{word:?}: a program's word holds no NUL"));
         }
-        let checked = Program { program, args };
-        if checked.encoded_len() > crate::protocol::MAX_PAYLOAD {
+        if !Self::fits(std::iter::once(&program).chain(&args).map(String::as_str)) {
             return Err("program argv exceeds the launch frame limit".to_owned());
         }
-        Ok(checked)
+        Ok(Program { program, args })
     }
 
-    pub(crate) fn encoded_len(&self) -> usize {
-        std::iter::once(&self.program)
-            .chain(&self.args)
-            .fold(4usize, |bytes, word| {
-                bytes.saturating_add(4).saturating_add(word.len())
-            })
+    /// `argv`, the program first, as a program: split in its own vector,
+    /// nothing copied.
+    pub fn from_argv(mut argv: Vec<String>) -> Result<Program, String> {
+        let first = argv.len().min(1);
+        argv.rotate_left(first);
+        let program = argv.pop().unwrap_or_default();
+        Program::new(program, argv)
+    }
+
+    /// Whether `words` fit a launch frame: checked while they are borrowed,
+    /// before any is copied.
+    pub(crate) fn fits<'a>(words: impl Iterator<Item = &'a str>) -> bool {
+        let frame = words.fold(4usize, |n, word| {
+            n.saturating_add(4).saturating_add(word.len())
+        });
+        frame <= crate::protocol::MAX_PAYLOAD
     }
 
     pub(crate) fn heap_bytes(&self) -> usize {
@@ -146,9 +155,13 @@ impl Program {
         all.cloned().collect()
     }
 
-    /// The program, then its arguments, moved out.
+    /// The program, then its arguments, moved out, in its arguments' vector
+    /// (which `from_argv` left room in).
     pub fn into_argv(self) -> Vec<String> {
-        std::iter::once(self.program).chain(self.args).collect()
+        let mut argv = self.args;
+        argv.push(self.program);
+        argv.rotate_right(1);
+        argv
     }
 }
 
