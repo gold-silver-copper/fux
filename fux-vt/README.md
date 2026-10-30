@@ -379,7 +379,7 @@ What a program's bytes can make fux-vt hold or do, whatever they are and
 however they are split, under what the host promises. Each line is a row
 of the bounds suite (`tests/bounds.rs`), which feeds its reproducer below,
 at and past the limit, at 1-byte, 16-byte and 4 KiB pieces, and checks
-fux-vt's work counters and a counting allocator against it. The threat
+fux-vt's work counter and a counting allocator against it. The threat
 model, every row with its limit, input and test, and the memory and work
 formulas are in [`THREATS.md`](https://github.com/gold-silver-copper/fux/blob/master/fux-vt/THREATS.md).
 
@@ -529,40 +529,21 @@ formulas are in [`THREATS.md`](https://github.com/gold-silver-copper/fux/blob/ma
   bytes, read to its end however long; its buffer holds at most 65,537
   (65 with only `PromptMarks`, 1 with no feature that reads OSC), and
   81,921 while it grows.
-- **The work of one call**: `Parser::process_until_stop` stops
-  as `Stop::Budget`, once 16 M weighted units of work (`budget::LIMIT`,
-  half of U; THREATS.md 4.4) are spent since its last such stop, over as
-  many calls as that took.
-  It looks where a sequence or a string ends, after a line feed (LF,
-  VT, FF) carried out, in text or inside a sequence, and after a glyph
-  whose wrap scrolled inside left and right margins, never elsewhere
-  inside a sequence, whichever path read its bytes (THREATS.md 4.4).
-  What is spent is the work a few bytes can multiply: ED,
-  rectangle fills, erases and copies, column edits, scrolls of more
-  than a line and scrolls inside margins, a line feed's copy of the row
-  it scrolls into history, REP, the alignment pattern, checksums,
-  history's searches and sweeps. With what the sequence, line feed or
-  wrap that crosses it does, a call stays under the 32 M cells of work a
-  4 KiB call may do (THREATS.md 4.4, the weights); at a pane where one
-  screen-wide sequence (ED, IL, DL, SU, SD, SL, SR, DECIC, DECDC,
-  DECCRA, DECFRA, DECERA, DECSERA, DECCARA, DECRARA, DECRQCRA) may cost
-  more than U, the screen leaves it for the next call, which carries it
-  out alone (`Work::ceiling`); DECRQCRA's checksum is one such sequence,
-  summed whole in its call. The host gives the rest of the input later,
-  and calls again while `Parser::has_work_left`, even with no byte left.
-  `process_with` doesn't stop: its work is bounded by its bytes alone.
-- **The time of one call**: on an i5-9600K, a
-  4 KiB call takes at most 50 ms at sizes up to 1000 by 500, and at most
-  250 ms at 4095 by 4096, a client's largest pane (a tab given its size
-  may be 4096 by 4096). No program can enlarge a pane. Measured over every
-  bounds reproducer, every corpus recording, and every screen-wide
-  sequence on pages written whole (DEC graphics, CJK, styled text,
-  clusters of every length, protected text): the worst up to 1000 by 500
-  is 15.8 ms (a bounds reproducer; 14.0 ms on pages written whole,
-  DECRQCRA over 31-byte clusters); at 4095 by 4096 it is 217.8 ms (a
-  scroll inside left and right margins over clusters of mixed lengths),
-  with DECCARA and DECRARA over styled mixed wide text up to 180 ms and
-  DECCRA over clusters up to 166 ms. The corpus's worst is 0.04 ms.
+- **The work of one call**: `Parser::process_until_stop` stops as
+  `Stop::Budget` once it has spent 1,000,000 units of work since its last
+  such stop, over as many calls as that took (THREATS.md 4). A unit is an
+  element visited: a cell, a row, a row slot, a text byte, a pixel, a
+  style or link entry; every loop the input reaches spends what it visits.
+  It looks where a sequence or a string ends, after a line feed, after
+  each sixel byte, at each wrap, and after each glyph inserted (IRM) or
+  printed one at a time, so a call spends at most the quota and the one
+  indivisible operation that crossed it: a screen-wide function, a sweep
+  of history, a picture's growth or placement; at most 1,870,334,208 units
+  at a 4096 by 4096 pane with 1 GiB of history (THREATS.md 4.2). A count
+  is not a time: at the largest panes one such operation alone can take
+  far longer than a frame (THREATS.md 4.3). The host gives the rest of the
+  input later, and calls again while `Parser::has_work_left` (REP's
+  copies left), even with no byte left. `process_with` doesn't stop.
 - **A host's picture** (B07): `sixel::Picture::new` checks the size
   against the pixels, each side at most 4096, so `sixel::encode` works on
   the pixels a picture has.
@@ -587,10 +568,10 @@ formulas are in [`THREATS.md`](https://github.com/gold-silver-copper/fux/blob/ma
   from the references or xterm, never from fux-vt, and each test cites its
   source.
 - **The `checks` feature**, off by default and for tests and fuzzing
-  only: `Work`, deterministic counters of the work fux-vt
-  does (cells written, rows walked, bytes scanned and the rest), which the
-  bounds suite (`tests/bounds.rs`) holds to each bound's constant per
-  input byte; and `Parser::check`, one invariant checker over the parser,
+  only: `work_spent`, the budget's own deterministic count of the work
+  fux-vt does, which the bounds suite (`tests/bounds.rs`) holds each call
+  to the quota and one indivisible operation, and each rate a bound
+  states to its constant; and `Parser::check`, one invariant checker over the parser,
   both screens, their history, styles, links and pictures, which
   says which checks ran and what each found. The invariant tests, the
   oracle (`diff/`) and the fuzz targets call it after every operation.

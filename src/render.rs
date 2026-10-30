@@ -959,7 +959,7 @@ impl Painted<'_> {
 /// showed it where it is still in the same place, else blank, so a client
 /// is never painted half a frame; the rest of the screen, fux's bar and
 /// panels over it too, as it is, so one pane holds up no other
-/// (fux-vt/THREATS.md 4.4). Its cursor, if focused, is the one painted
+/// (fux-vt/THREATS.md 4). Its cursor, if focused, is the one painted
 /// there, if any.
 pub fn compose_held(
     session: &Session,

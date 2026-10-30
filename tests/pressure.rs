@@ -396,7 +396,7 @@ fn a_client_flooding_a_pane_that_does_not_read_holds_up_no_one() -> Outcome {
     Ok(())
 }
 
-/// Output that spends a parser call's work budget (THREATS.md 4.4) is read
+/// Output that spends a parser call's work budget (THREATS.md 4) is read
 /// on the pane's next turns, to its end. A program that prints past a read
 /// budget and exits at once is told exited with all it printed on its
 /// screen: its last line is there as the exit is told. 4,000 REPs of
