@@ -95,6 +95,7 @@ pub use screen::{
     CellSize, CommandMark, Commands, CursorShape, Graphics, MouseProtocolEncoding,
     MouseProtocolMode, PICTURE_BYTES, PLACEHOLDER, Screen, Shown,
 };
+pub use style::Keyed;
 pub use unicode::{UNICODE_VERSION, char_width, clusters, continues_cluster, str_width};
 
 /// The work this thread's calls into fux-vt have spent so far, in the

@@ -2,7 +2,7 @@
 //! sliced and joined as asked, with its colours and attributes and its
 //! pane's state, as data (`Captured`) that the client renders as text or
 //! as JSON.
-use crate::command::{CaptureView, Run, Source, Version};
+use crate::command::{CaptureView, Source, Version};
 use crate::id::ClientId;
 use crate::json::Json;
 use crate::pane::{Pane, Process, Runs};
@@ -18,17 +18,20 @@ pub(crate) const OUTPUT_CELLS: usize = 2 * crate::wire::MAX_REPLY;
 
 wire! {
     /// A capture, read once: what it read, its screen's size and cursor
-    /// (its row and column, if it shows on the screen read), and its
-    /// lines, trimmed as its view asked, each a run of cells for each
-    /// change of style; and whether its text shows styles (SGR) and marks.
+    /// (its row and column, if it shows on the screen read), its lines,
+    /// trimmed as its view asked, and the styles their runs name; and
+    /// whether it was read with styles (its text shows them as SGR, its
+    /// JSON lists them) and marks.
     #[derive(Clone, Debug, PartialEq, Eq)]
     pub struct Captured {
         pub of: Of,
         pub screen_rows: u16,
         pub screen_cols: u16,
         pub screen_cursor: Option<(u16, u16)>,
-        pub lines: Vec<Vec<Cut>>,
-        pub styles: bool,
+        pub lines: Vec<Line>,
+        /// The styles runs name, in the order first used.
+        pub styles: Vec<Attributes>,
+        pub styled: bool,
         pub marks: bool,
     }
 }
@@ -50,13 +53,25 @@ wire! {
 }
 
 wire! {
-    /// A run of a line's cells of one style: their glyphs, and how many
-    /// cells they fill.
-    #[derive(Clone, Debug, PartialEq, Eq)]
-    pub struct Cut {
+    /// A line's text, and a run for each change of style along it. Text
+    /// past its runs is in the default style: a plain capture's lines
+    /// have none.
+    #[derive(Clone, Debug, Default, PartialEq, Eq)]
+    pub struct Line {
         pub text: String,
+        pub runs: Vec<Run>,
+    }
+}
+
+wire! {
+    /// A run of a line's cells of one style: the bytes of its text and
+    /// the cells they fill, and its style's place in the capture's
+    /// `styles`.
+    #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+    pub struct Run {
+        pub bytes: u32,
         pub cells: u32,
-        pub style: Attributes,
+        pub style: u32,
     }
 }
 
@@ -109,7 +124,7 @@ impl crate::wire::Wire for Attributes {
 /// is in copy mode on it (`state`).
 pub fn pane(
     pane: &Pane,
-    run: Run,
+    run: crate::command::Run,
     history: Option<usize>,
     view: CaptureView,
     copy_mode: bool,
@@ -120,7 +135,7 @@ pub fn pane(
 
 fn pane_with(
     pane: &Pane,
-    run: Run,
+    run: crate::command::Run,
     history: Option<usize>,
     view: CaptureView,
     copy_mode: bool,
@@ -159,106 +174,268 @@ fn pane_with(
 }
 
 fn build<'a>(
-    read: impl Iterator<Item = (Row<'a>, std::ops::Range<usize>)>,
+    read: impl Iterator<Item = (Row<'a>, std::ops::Range<usize>)> + Clone,
     of: Of,
     (size, cursor): ((u16, u16), Option<(u16, u16)>),
     view: CaptureView,
     budget: &mut crate::wire::Budget,
 ) -> Result<Captured, crate::session::Error> {
-    let mut lines: Vec<Vec<Cut>> = Vec::new();
-    let mut wraps = false;
-    let mut blanks = 0usize;
-    use crate::wire::{Sink, Wire};
-    let mut wire = crate::wire::Writer::counting(crate::wire::MAX_REPLY.saturating_sub(64));
-    of.put(&mut wire);
-    wire.check_ref().map_err(|_| too_large())?;
+    // A row starts a line unless the row before it continues on it.
+    let joined = move |row: &Row<'_>| !view.wrapped && row.continues();
+    let count = read
+        .clone()
+        .scan(false, |into, (row, _)| {
+            Some(!std::mem::replace(into, joined(&row)))
+        })
+        .filter(|starts| *starts)
+        .count();
+    let mut built = Builder::new(budget.vector(count)?, &of)?;
+    let (mut open, mut into) = (false, false);
     for (row, span) in read {
-        let source_start = span.start;
-        let source_end = columns(row, span.clone(), CaptureView { cols: None, ..view }).end;
-        let span = columns(row, span, view);
-        let count = span.len();
-        let mut lead = if span.start > source_start {
-            row.cell(span.start.saturating_sub(1))
-                .map_or(Attributes::default(), |cell| cell.attributes())
-        } else {
-            Attributes::default()
-        };
-        let mut cells = row
-            .cells()
-            .skip(span.start)
-            .take(source_end.saturating_sub(span.start))
-            .map(move |cell| {
-                if cell.is_wide_continuation() {
-                    ("", lead)
-                } else {
-                    lead = cell.attributes();
-                    (cell.shown(), lead)
-                }
-            })
-            .peekable();
-        if !wraps || lines.is_empty() {
-            trim_line(&mut lines, blanks, budget)?;
-            blanks = 0;
-            0u32.put(&mut wire);
-            wire.check_ref().map_err(|_| too_large())?;
-            budget.reserve(&mut lines, 1).map_err(|_| too_large())?;
-            lines.push(Vec::new());
+        if open && !into {
+            built.finish(budget)?;
         }
-        if let Some(line) = lines.last_mut() {
-            for col in 0..count {
-                let Some((mut text, style)) = cells.next() else {
-                    break;
-                };
-                // A wide glyph cut in two shows a blank in the half taken.
-                if view.cols.is_some()
-                    && ((col == 0 && text.is_empty())
-                        || (col.saturating_add(1) == count
-                            && cells.peek().is_some_and(|(t, _)| t.is_empty())))
-                {
-                    text = " ";
-                }
-                // Trim trailing blanks unless highlighted with marks or
-                // painted with styles, alike in SGR and JSON runs. Plain
-                // text trims them all; full keeps them all. Only whole
-                // blank cells count: a cluster may contain a space as
-                // part of its text (Unicode Prepend).
-                blanks = if !view.full
-                    && text == " "
-                    && !(view.marks && highlighted(&style) || view.styles && painted(&style))
-                {
-                    blanks.saturating_add(1)
-                } else {
-                    0
-                };
-                let style = if view.styles || view.marks {
-                    style
-                } else {
-                    Attributes::default()
-                };
-                if !line.last().is_some_and(|last| last.style == style) {
-                    0u32.put(&mut wire);
-                    0u32.put(&mut wire);
-                    style.put(&mut wire);
-                    wire.check_ref().map_err(|_| too_large())?;
-                    budget.reserve(line, 1).map_err(|_| too_large())?;
-                    line.push(Cut {
-                        text: String::new(),
-                        cells: 0,
-                        style,
-                    });
-                }
-                if let Some(last) = line.last_mut() {
-                    wire.extend_from_slice(text.as_bytes());
-                    wire.check_ref().map_err(|_| too_large())?;
-                    budget.text(&mut last.text, text).map_err(|_| too_large())?;
-                    last.cells = last.cells.checked_add(1).ok_or_else(too_large)?;
-                }
+        (open, into) = (true, joined(&row));
+        for (text, style) in cells_of(row, span, view) {
+            built.add(text, style, view, budget)?;
+        }
+    }
+    if open {
+        built.finish(budget)?;
+    }
+    for _ in 0..if view.full { built.empty } else { 0 } {
+        built.push(Line::default(), budget)?;
+    }
+    let (lines, styles) = (built.lines, built.table.styles);
+    captured(of, size, cursor, lines, styles, view, budget)
+}
+
+/// A capture being built: its lines, the styles they name, its empty
+/// lines held back (dropped at the end unless `full`) and the reply's
+/// bytes left; and the line being read, in room reused from line to line:
+/// its text, its runs with their styles, and what trimming keeps of it,
+/// if any: its bytes, its runs, and its last run as kept.
+struct Builder {
+    lines: Vec<Line>,
+    table: Table,
+    empty: usize,
+    wire: crate::wire::Writer,
+    text: String,
+    runs: Vec<(Attributes, Run)>,
+    kept: Option<(usize, usize, Run)>,
+}
+
+impl Builder {
+    fn new(lines: Vec<Line>, of: &Of) -> Result<Self, crate::session::Error> {
+        let mut wire = crate::wire::Writer::counting(crate::wire::MAX_REPLY.saturating_sub(64));
+        crate::wire::Wire::put(of, &mut wire);
+        wire.check_ref().map_err(|_| too_large())?;
+        Ok(Builder {
+            lines,
+            table: Table::default(),
+            empty: 0,
+            wire,
+            text: String::new(),
+            runs: Vec::new(),
+            kept: None,
+        })
+    }
+
+    /// Add `line`, its bytes on the wire counted against the reply's.
+    fn push(
+        &mut self,
+        line: Line,
+        budget: &mut crate::wire::Budget,
+    ) -> Result<(), crate::session::Error> {
+        crate::wire::Wire::put(&line, &mut self.wire);
+        self.wire.check_ref().map_err(|_| too_large())?;
+        budget.reserve(&mut self.lines, 1)?;
+        self.lines.push(line);
+        Ok(())
+    }
+
+    /// Add a cell's text in `style` to the line, in a new run if the style
+    /// changes and `view` shows styles or marks. Trimming keeps all but
+    /// the trailing blanks that neither marks nor styles show, alike in
+    /// SGR and JSON runs. Plain text trims them all; full keeps them all.
+    /// Only whole blank cells count: a cluster may contain a space as part
+    /// of its text (Unicode Prepend).
+    #[inline]
+    fn add(
+        &mut self,
+        text: &str,
+        style: Attributes,
+        view: CaptureView,
+        budget: &mut crate::wire::Budget,
+    ) -> Result<(), crate::session::Error> {
+        budget.text(&mut self.text, text)?;
+        if view.styles || view.marks {
+            if self.runs.last().is_none_or(|(last, _)| *last != style) {
+                budget.reserve(&mut self.runs, 1)?;
+                self.runs.push((style, Run::default()));
+            }
+            if let Some((_, run)) = self.runs.last_mut() {
+                let more = u32::try_from(text.len()).map_err(|_| too_large())?;
+                run.bytes = run.bytes.checked_add(more).ok_or_else(too_large)?;
+                run.cells = run.cells.checked_add(1).ok_or_else(too_large)?;
             }
         }
-        wraps = !view.wrapped && row.continues();
+        let blank = !view.full
+            && text == " "
+            && !(view.marks && highlighted(&style) || view.styles && painted(&style));
+        if !blank {
+            let last = self.runs.last().map_or(Run::default(), |(_, run)| *run);
+            self.kept = Some((self.text.len(), self.runs.len(), last));
+        }
+        Ok(())
     }
-    trim_line(&mut lines, blanks, budget)?;
-    captured(of, size, cursor, lines, view, budget)
+
+    /// Copy what trimming keeps of the line into exactly its room, then
+    /// empty it for the next.
+    fn finish(&mut self, budget: &mut crate::wire::Budget) -> Result<(), crate::session::Error> {
+        if let Some((bytes, runs, last)) = self.kept.take() {
+            for _ in 0..std::mem::take(&mut self.empty) {
+                self.push(Line::default(), budget)?;
+            }
+            let mut kept = Line {
+                text: room(budget, bytes)?,
+                runs: budget.vector(runs)?,
+            };
+            kept.text
+                .push_str(self.text.get(..bytes).ok_or_else(too_large)?);
+            for (style, run) in self.runs.iter().take(runs) {
+                let style = self.table.place(*style, budget, &mut self.wire)?;
+                kept.runs.push(Run { style, ..*run });
+            }
+            if let Some(run) = kept.runs.last_mut() {
+                (run.bytes, run.cells) = (last.bytes, last.cells);
+            }
+            self.push(kept, budget)?;
+        } else {
+            self.empty = self.empty.saturating_add(1);
+        }
+        self.text.clear();
+        self.runs.clear();
+        Ok(())
+    }
+}
+
+/// A row's cells in `span`, cut to the columns `view` takes, each its
+/// glyph's text and style: a wide glyph's second cell has no text and its
+/// first cell's style, and one cut in two shows a blank in the half taken.
+fn cells_of<'a>(
+    row: Row<'a>,
+    span: std::ops::Range<usize>,
+    view: CaptureView,
+) -> impl Iterator<Item = (&'a str, Attributes)> + 'a {
+    let source_start = span.start;
+    let source_end = columns(row, span.clone(), CaptureView { cols: None, ..view }).end;
+    let span = columns(row, span, view);
+    let (first, count) = (span.start, span.len());
+    let mut lead = if first > source_start {
+        row.cell(first.saturating_sub(1))
+            .map_or(Attributes::default(), |cell| cell.attributes())
+    } else {
+        Attributes::default()
+    };
+    // The cell past the last one taken, if it is the second half of a
+    // wide glyph the last one begins.
+    let split = view.cols.is_some()
+        && first.saturating_add(count) < source_end
+        && row
+            .cell(first.saturating_add(count))
+            .is_some_and(|cell| cell.is_wide_continuation());
+    row.cells()
+        .skip(first)
+        .take(count)
+        .enumerate()
+        .map(move |(col, cell)| {
+            let text = if cell.is_wide_continuation() {
+                ""
+            } else {
+                lead = cell.attributes();
+                cell.shown()
+            };
+            let cut = view.cols.is_some()
+                && ((col == 0 && text.is_empty()) || (col.saturating_add(1) == count && split));
+            (if cut { " " } else { text }, lead)
+        })
+}
+
+/// Room for exactly `bytes` of text, admitted first.
+fn room(budget: &mut crate::wire::Budget, bytes: usize) -> Result<String, crate::session::Error> {
+    budget.charge(bytes)?;
+    let mut text = String::new();
+    text.try_reserve_exact(bytes).map_err(|_| too_large())?;
+    Ok(text)
+}
+
+/// A capture's styles, in the order first used, and their places, found
+/// by fux-vt's keyed hash so that a program can't choose styles that
+/// collide: each slot holds a style's place plus one, or 0 for none. At
+/// most half the slots are taken, so a search ends at an empty one.
+#[derive(Default)]
+struct Table {
+    styles: Vec<Attributes>,
+    slots: Vec<u32>,
+}
+
+impl Table {
+    /// The place of `style`, added if new: its bytes on the wire counted,
+    /// the room for it and, if a new style needs them, more slots
+    /// admitted before they grow.
+    fn place(
+        &mut self,
+        style: Attributes,
+        budget: &mut crate::wire::Budget,
+        wire: &mut crate::wire::Writer,
+    ) -> Result<u32, crate::session::Error> {
+        let mut at = self.slot(style);
+        if let Some(place) = self.slots.get(at).and_then(|taken| taken.checked_sub(1)) {
+            return Ok(place);
+        }
+        if self.styles.len().saturating_add(1).saturating_mul(2) > self.slots.len() {
+            let size = self.slots.len().saturating_mul(2).max(16);
+            let old = std::mem::replace(&mut self.slots, budget.vector(size)?);
+            self.slots.resize(size, 0);
+            for (place, style) in (1..).zip(&self.styles) {
+                let at = self.slot(*style);
+                if let Some(slot) = self.slots.get_mut(at) {
+                    *slot = place;
+                }
+            }
+            let bytes = old.capacity().saturating_mul(std::mem::size_of::<u32>());
+            drop(old);
+            budget.release(bytes)?;
+            at = self.slot(style);
+        }
+        crate::wire::Wire::put(&style, wire);
+        wire.check_ref().map_err(|_| too_large())?;
+        budget.reserve(&mut self.styles, 1)?;
+        self.styles.push(style);
+        let place = u32::try_from(self.styles.len()).map_err(|_| too_large())?;
+        if let Some(slot) = self.slots.get_mut(at) {
+            *slot = place;
+        }
+        Ok(place.saturating_sub(1))
+    }
+
+    /// The slot that holds `style`, or the empty one it would take.
+    fn slot(&self, style: Attributes) -> usize {
+        use std::hash::BuildHasher;
+        let mask = self.slots.len().saturating_sub(1);
+        // The hash's low bits, which the mask keeps below the slots' count.
+        let hash = fux_vt::Keyed.hash_one(style);
+        let mut at = usize::try_from(hash & mask as u64).unwrap_or(mask);
+        for _ in 0..self.slots.len() {
+            let place = self.slots.get(at).and_then(|taken| taken.checked_sub(1));
+            if place.is_none_or(|place| self.styles.get(place as usize) == Some(&style)) {
+                break;
+            }
+            at = at.saturating_add(1) & mask;
+        }
+        at
+    }
 }
 
 /// Select physical rows, widening a joined range to the logical lines
@@ -369,7 +546,7 @@ fn rows_of(
     history: Option<usize>,
     view: CaptureView,
 ) -> (
-    impl Iterator<Item = (Row<'_>, std::ops::Range<usize>)>,
+    impl Iterator<Item = (Row<'_>, std::ops::Range<usize>)> + Clone,
     Option<usize>,
 ) {
     let rows = match view.source {
@@ -435,46 +612,38 @@ pub fn client(
     client: ClientId,
     grid: &crate::render::Grid,
 ) -> Result<Captured, crate::session::Error> {
-    use crate::wire::{Sink, Wire};
     let mut budget = crate::wire::Budget::new();
-    let mut wire = crate::wire::Writer::counting(crate::wire::MAX_REPLY.saturating_sub(64));
     let of = Of::Client(client);
-    of.put(&mut wire);
-    let mut lines = budget.vector(usize::from(grid.rows))?;
+    let mut built = Builder::new(budget.vector(usize::from(grid.rows))?, &of)?;
     for y in 0..grid.rows {
-        0u32.put(&mut wire);
-        0u32.put(&mut wire);
-        0u32.put(&mut wire);
-        Attributes::default().put(&mut wire);
-        wire.check_ref().map_err(|_| too_large())?;
-        let mut text = String::new();
-        for cell in grid.row(y).filter(|cell| !cell.is_wide_continuation()) {
-            wire.extend_from_slice(cell.shown().as_bytes());
-            wire.check_ref().map_err(|_| too_large())?;
-            budget
-                .text(&mut text, cell.shown())
-                .map_err(|_| too_large())?;
-        }
+        let glyphs = || {
+            grid.row(y)
+                .filter(|cell| !cell.is_wide_continuation())
+                .map(|cell| cell.shown())
+        };
+        let bytes = glyphs().try_fold(0usize, |n, text| n.checked_add(text.len()));
+        let mut text = room(&mut budget, bytes.ok_or_else(too_large)?)?;
+        glyphs().for_each(|glyph| text.push_str(glyph));
         while text.chars().next_back().is_some_and(char::is_whitespace) {
             text.pop();
         }
-        let mut line = budget.vector(1)?;
-        line.push(Cut {
+        let line = Line {
             text,
-            cells: 1,
-            style: Attributes::default(),
-        });
-        lines.push(line);
+            runs: Vec::new(),
+        };
+        built.push(line, &mut budget)?;
     }
     let view = CaptureView {
         full: true,
         ..CaptureView::default()
     };
+    let size = (grid.rows, grid.cols);
     captured(
-        Of::Client(client),
-        (grid.rows, grid.cols),
+        of,
+        size,
         grid.cursor,
-        lines,
+        built.lines,
+        Vec::new(),
         view,
         &mut budget,
     )
@@ -696,59 +865,25 @@ fn picture(
     ])
 }
 
-/// Remove the last line's unshown trailing blank cells, counted while
-/// reading them rather than inferred from the run's cluster text.
-fn trim_line(
-    lines: &mut [Vec<Cut>],
-    blanks: usize,
-    budget: &mut crate::wire::Budget,
-) -> Result<(), crate::session::Error> {
-    if let Some(line) = lines.last_mut() {
-        for _ in 0..blanks {
-            if let Some(last) = line.last_mut() {
-                last.text.pop();
-                last.cells = last.cells.saturating_sub(1);
-                if last.cells == 0 {
-                    budget.release(last.text.capacity())?;
-                    line.pop();
-                }
-            }
-        }
-    }
-    Ok(())
-}
-
-/// A capture of `lines`, its empty last lines dropped unless `full`.
+/// The capture of `lines`, with the styles their runs name.
 fn captured(
     of: Of,
     (screen_rows, screen_cols): (u16, u16),
     screen_cursor: Option<(u16, u16)>,
-    mut lines: Vec<Vec<Cut>>,
+    lines: Vec<Line>,
+    styles: Vec<Attributes>,
     view: CaptureView,
     budget: &mut crate::wire::Budget,
 ) -> Result<Captured, crate::session::Error> {
-    if !view.full {
-        while lines.last().is_some_and(Vec::is_empty) {
-            if let Some(line) = lines.pop() {
-                budget.release(
-                    line.capacity()
-                        .checked_mul(std::mem::size_of::<Cut>())
-                        .ok_or_else(too_large)?,
-                )?;
-            }
-        }
-    }
-    let captured = budget
-        .map(lines, |line, budget| budget.map(line, |cut, _| Ok(cut)))
-        .map_err(|_| too_large())?;
     budget.slots::<Captured>(1)?;
     Ok(Captured {
         of,
         screen_rows,
         screen_cols,
         screen_cursor,
-        lines: captured,
-        styles: view.styles,
+        lines,
+        styles,
+        styled: view.styles,
         marks: view.marks,
     })
 }
@@ -778,7 +913,7 @@ impl Captured {
     }
 
     pub(crate) fn text_scratch(&self) -> usize {
-        if self.styles { 128 } else { 0 }
+        if self.styled { 128 } else { 0 }
     }
 
     pub(crate) fn write_text(&self, out: &mut dyn std::fmt::Write) -> std::fmt::Result {
@@ -790,7 +925,7 @@ impl Captured {
             if i > 0 {
                 out.write_char('\n')?;
             }
-            write_line(out, line, self.marks, self.styles, &mut sgr)?;
+            self.write_line(out, line, self.styled, &mut sgr)?;
         }
         Ok(())
     }
@@ -822,14 +957,14 @@ impl Captured {
                 out.write_char(',')?;
             }
             out.write_char('"')?;
-            write_line(&mut Escaped(out), line, self.marks, false, &mut Vec::new())?;
+            self.write_line(&mut Escaped(out), line, false, &mut Vec::new())?;
             out.write_char('"')?;
         }
         out.write_char(']')?;
         if let Of::Pane { wrap_pending, .. } = &self.of {
             write!(out, ",\"wrap_pending\":{wrap_pending}")?;
         }
-        if self.styles {
+        if self.styled {
             out.write_str(",\"styles\":[")?;
             for (i, line) in self.lines.iter().enumerate() {
                 if i > 0 {
@@ -838,17 +973,18 @@ impl Captured {
                 out.write_char('[')?;
                 let mut start = 0u32;
                 let mut first = true;
-                for cut in line {
-                    if cut.style != Attributes::default() {
+                for run in self.runs(line) {
+                    let (_, cells, style) = run.ok_or(std::fmt::Error)?;
+                    if style != Attributes::default() {
                         if !first {
                             out.write_char(',')?;
                         }
                         first = false;
-                        write!(out, "{{\"col\":{start},\"len\":{}", cut.cells)?;
-                        describe(out, cut.style)?;
+                        write!(out, "{{\"col\":{start},\"len\":{cells}")?;
+                        describe(out, style)?;
                         out.write_char('}')?;
                     }
-                    start = start.saturating_add(cut.cells);
+                    start = start.saturating_add(cells);
                 }
                 out.write_char(']')?;
             }
@@ -865,42 +1001,61 @@ impl Captured {
         }
         out.write_char('}')
     }
-}
 
-/// Write a line without allocating its plain or escaped intermediate text.
-pub(crate) fn write_line(
-    out: &mut dyn std::fmt::Write,
-    line: &[Cut],
-    marks: bool,
-    styles: bool,
-    sgr: &mut Vec<u8>,
-) -> std::fmt::Result {
-    let mut pen = Attributes::default();
-    let mut on = false;
-    for cut in line {
-        let lit = marks && highlighted(&cut.style);
-        if lit && !on {
-            out.write_str("⟦")?;
+    /// A line's runs, each its text, cells and style: `None` for one past
+    /// the line's text or the capture's styles.
+    pub(crate) fn runs<'a>(
+        &'a self,
+        line: &'a Line,
+    ) -> impl Iterator<Item = Option<(&'a str, u32, Attributes)>> + 'a {
+        let mut rest = line.text.as_str();
+        line.runs.iter().map(move |run| {
+            let (text, after) = rest.split_at_checked(usize::try_from(run.bytes).ok()?)?;
+            rest = after;
+            let style = self.styles.get(usize::try_from(run.style).ok()?)?;
+            Some((text, run.cells, *style))
+        })
+    }
+
+    /// Write a line without allocating its plain or escaped intermediate
+    /// text; with `sgr`, its styles as SGR.
+    pub(crate) fn write_line(
+        &self,
+        out: &mut dyn std::fmt::Write,
+        line: &Line,
+        sgr: bool,
+        scratch: &mut Vec<u8>,
+    ) -> std::fmt::Result {
+        let mut pen = Attributes::default();
+        let mut on = false;
+        let mut taken = 0usize;
+        for run in self.runs(line) {
+            let (text, _, style) = run.ok_or(std::fmt::Error)?;
+            taken = taken.saturating_add(text.len());
+            let lit = self.marks && highlighted(&style);
+            if lit && !on {
+                out.write_str("⟦")?;
+            }
+            if sgr && style != pen {
+                scratch.clear();
+                crate::render::sgr(scratch, style, true);
+                out.write_str(std::str::from_utf8(scratch).map_err(|_| std::fmt::Error)?)?;
+                pen = style;
+            }
+            if on && !lit {
+                out.write_str("⟧")?;
+            }
+            on = lit;
+            out.write_str(text)?;
         }
-        if styles && cut.style != pen {
-            sgr.clear();
-            crate::render::sgr(sgr, cut.style, true);
-            out.write_str(std::str::from_utf8(sgr).map_err(|_| std::fmt::Error)?)?;
-            pen = cut.style;
+        if pen != Attributes::default() {
+            out.write_str("\x1b[0m")?;
         }
-        if on && !lit {
+        if on {
             out.write_str("⟧")?;
         }
-        on = lit;
-        out.write_str(&cut.text)?;
+        out.write_str(line.text.get(taken..).ok_or(std::fmt::Error)?)
     }
-    if pen != Attributes::default() {
-        out.write_str("\x1b[0m")?;
-    }
-    if on {
-        out.write_str("⟧")?;
-    }
-    Ok(())
 }
 
 /// The shared vocabulary for styled capture runs, streamed or projected locally.
@@ -1052,7 +1207,7 @@ mod tests {
         let mut pane = pane(1, 2, 0)?;
         pane.output(b"x");
         let row = pane.screen().rows().next().ok_or("row")?;
-        for (count, admitted) in [(20, true), (100, false)] {
+        for (count, admitted) in [(100, true), (200, false)] {
             let read = std::iter::repeat_n((row, 0..usize::MAX), count);
             let mut budget = crate::wire::Budget::with_limit(8192);
             let built = super::build(
@@ -1064,19 +1219,7 @@ mod tests {
             );
             assert_eq!(built.is_ok(), admitted, "count={count}");
             if let Ok(captured) = built {
-                let mut allocated = captured
-                    .lines
-                    .capacity()
-                    .saturating_mul(std::mem::size_of::<Vec<super::Cut>>());
-                for line in &captured.lines {
-                    allocated = allocated.saturating_add(
-                        line.capacity()
-                            .saturating_mul(std::mem::size_of::<super::Cut>()),
-                    );
-                    for run in line {
-                        allocated = allocated.saturating_add(run.text.capacity());
-                    }
-                }
+                let allocated = crate::wire::retained(&captured);
                 assert!(
                     allocated <= 8192,
                     "retained {allocated} bytes for an 8192-byte grant"
@@ -1118,10 +1261,7 @@ mod tests {
         };
         let read = super::pane(&pane, run, Some(usize::MAX), view, false)?;
         assert_eq!(read.lines.len(), 1);
-        assert_eq!(
-            read.lines.first().and_then(|l| l.first()).map(|r| r.cells),
-            Some(80)
-        );
+        assert_eq!(read.lines.first().map(|l| l.text.len()), Some(80));
         let limits = 80;
         let read = Box::new(pane.screen().rows().map(|row| (row, 0..usize::MAX)));
         assert!(
@@ -1242,15 +1382,11 @@ mod tests {
                 ..CaptureView::default()
             };
             let got = super::pane(&pane, run, None, view, false)?;
+            let styled = view.styles || view.marks;
             let actual: Vec<(String, u32)> = got
                 .lines
                 .iter()
-                .map(|line| {
-                    (
-                        line.iter().map(|cut| cut.text.as_str()).collect(),
-                        line.iter().map(|cut| cut.cells).sum(),
-                    )
-                })
+                .map(|line| (line.text.clone(), line.runs.iter().map(|r| r.cells).sum()))
                 .collect();
             let mut want = if view.wrapped {
                 vec![
@@ -1277,23 +1413,21 @@ mod tests {
             if view.full {
                 want.push(("     ", 5));
             }
+            // A plain capture's lines have no runs to count cells in.
             let want: Vec<_> = want
                 .into_iter()
-                .map(|(text, cells)| (text.to_owned(), cells))
+                .map(|(text, cells)| (text.to_owned(), if styled { cells } else { 0 }))
                 .collect();
             assert_eq!(actual, want, "{view:?}");
             for line in &got.lines {
+                let styles: Vec<_> = got.runs(line).collect::<Option<_>>().ok_or("run")?;
                 assert!(
-                    line.iter()
-                        .zip(line.iter().skip(1))
-                        .all(|(a, b)| a.style != b.style)
+                    styles
+                        .iter()
+                        .zip(styles.iter().skip(1))
+                        .all(|(a, b)| a.2 != b.2)
                 );
-                if !view.styles && !view.marks {
-                    assert!(
-                        line.iter()
-                            .all(|cut| cut.style == fux_vt::Attributes::default())
-                    );
-                }
+                assert_eq!(styled, !line.runs.is_empty());
             }
         }
         Ok(())
@@ -1306,51 +1440,47 @@ mod tests {
     {
         let mut pane = pane(2, 10, 0)?;
         pane.output("x\u{0600}  ".as_bytes());
-        let got = super::pane(
-            &pane,
-            crate::command::Run::now().ok_or("a clock")?,
-            None,
-            CaptureView::default(),
-            false,
-        )?;
+        let marks = CaptureView {
+            marks: true,
+            ..CaptureView::default()
+        };
+        let run = crate::command::Run::now().ok_or("a clock")?;
+        let got = super::pane(&pane, run, None, marks, false)?;
         assert_eq!(got.text()?, "x\u{0600} ");
         assert_eq!(
             got.lines
                 .first()
-                .and_then(|line| line.first())
-                .map(|cut| cut.cells),
+                .and_then(|line| line.runs.first())
+                .map(|run| run.cells),
             Some(3)
         );
         Ok(())
     }
 
-    /// Trimming changes the cell count as well as the text. The builder's
-    /// checked u32 count cannot represent a value that needs clamping.
+    /// A capture lists each style once, numbered in the order first used,
+    /// past the index's growth; a style only trimmed blanks had is not
+    /// listed.
     #[test]
-    fn trimming_keeps_the_exact_cell_count() -> Result<(), Box<dyn std::error::Error>> {
-        let max = u32::MAX;
-        let mut lines = vec![vec![super::Cut {
-            text: "x  ".into(),
-            cells: max,
-            style: fux_vt::Attributes::default(),
-        }]];
-        super::trim_line(&mut lines, 2, &mut crate::wire::Budget::new())?;
-        let got = super::captured(
-            super::Of::Client(crate::id::ClientId::of(1)),
-            (1, 3),
-            None,
-            lines,
-            CaptureView::default(),
-            &mut crate::wire::Budget::new(),
-        )?;
-        assert_eq!(got.text()?, "x");
-        assert_eq!(
-            got.lines
-                .first()
-                .and_then(|line| line.first())
-                .map(|run| run.cells),
-            Some(max.saturating_sub(2))
-        );
+    fn styles_are_listed_once_in_first_use_order() -> Result<(), Box<dyn std::error::Error>> {
+        let mut pane = pane(2, 50, 0)?;
+        let mut output = String::new();
+        for colour in (0..20).chain(0..20) {
+            output.push_str(&format!("\x1b[38;5;{colour}mx"));
+        }
+        output.push_str("\x1b[38;5;20m \x1b[m");
+        pane.output(output.as_bytes());
+        let marks = CaptureView {
+            marks: true,
+            ..CaptureView::default()
+        };
+        let run = crate::command::Run::now().ok_or("a clock")?;
+        let got = super::pane(&pane, run, None, marks, false)?;
+        let colour = |n| fux_vt::Attributes::new(fux_vt::Color::Idx(n), fux_vt::Color::Default);
+        assert_eq!(got.styles, (0..20).map(colour).collect::<Vec<_>>());
+        let line = got.lines.first().ok_or("a line")?;
+        let places: Vec<u32> = line.runs.iter().map(|run| run.style).collect();
+        assert_eq!(places, (0..20).chain(0..20).collect::<Vec<_>>());
+        assert_eq!(line.text.len(), 40);
         Ok(())
     }
 
