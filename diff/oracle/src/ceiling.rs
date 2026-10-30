@@ -1,6 +1,7 @@
 //! The work one call does, in fux-vt's own units (`fux_vt::work_spent`,
 //! the `checks` feature: an element visited a unit), against the most one
-//! call spends, `CEILING` (fux-vt/THREATS.md 4.2). The working tree's
+//! call spends at its size and history (`fux_vt::call_most`,
+//! fux-vt/THREATS.md 4.2). The working tree's
 //! fux-vt alone, set up as fux sets up a pane (`Setup::pane`, 8 MiB of
 //! history):
 //!
@@ -9,7 +10,7 @@
 //!   taken or a call stops at its budget: the call that did the most;
 //! - a resize with its history full at 50x200, to 80 columns, and back.
 //!
-//! Each is held to `CEILING`: past it, the part fails. Each call is timed too
+//! Each is held to that most: past it, the part fails. Each call is timed too
 //! (in this build, with the counters on); with `FUX_VT_WORST_FEED=FILE`,
 //! each recording and each resize appends its costliest call and its
 //! longest to FILE, as the bounds suite's probes do (`TEST CHUNK UNITS
@@ -19,9 +20,6 @@ use crate::model::Setup;
 use fux_vt::{Parser, Size, Stop};
 use std::time::{Duration, Instant};
 
-/// The most one call spends: the quota, 1,000,000, and the largest
-/// indivisible operation, 1,870,334,208 (fux-vt/THREATS.md 4.2).
-const CEILING: u64 = 1_000_000 + 1_870_334_208;
 /// A read of a pane's output, as fux takes it from the PTY.
 const READ: usize = 4096;
 /// The history the resize is given, full: a pane's.
@@ -30,10 +28,12 @@ const HISTORY: usize = inputs::PANE_HISTORY_BYTES;
 /// history holds at 200 columns.
 const FILL: usize = 8 << 20;
 
-/// The most one call did, and where; and the longest a call took.
+/// The most one call did, the most a call may do where it did, and
+/// where; and the longest a call took.
 #[derive(Debug)]
 pub struct Worst {
     pub cost: u64,
+    pub most: u64,
     pub at: String,
     pub longest: Duration,
 }
@@ -87,6 +87,7 @@ pub fn feed(recording: &Recording) -> Result<Worst, String> {
     .map_err(|e| e.to_string())?;
     let mut worst = Worst {
         cost: 0,
+        most: 1,
         at: String::new(),
         longest: Duration::ZERO,
     };
@@ -100,10 +101,8 @@ pub fn feed(recording: &Recording) -> Result<Worst, String> {
             });
             resized?;
             worst.longest = worst.longest.max(took);
-            if done > worst.cost {
-                worst.cost = done;
-                worst.at = format!("{} resized to {rows}x{cols}", recording.name);
-            }
+            let at = format!("{} resized to {rows}x{cols}", recording.name);
+            weigh(&mut worst, done, parser.screen().size(), at)?;
         }
         let mut reads = output.as_slice();
         while !reads.is_empty() {
@@ -113,10 +112,8 @@ pub fn feed(recording: &Recording) -> Result<Worst, String> {
             while let Some(rest) = read.get(taken..).filter(|r| !r.is_empty()) {
                 let (stop, done, took) = cost(|| parser.process_until_stop(rest, &mut Deaf));
                 worst.longest = worst.longest.max(took);
-                if done > worst.cost {
-                    worst.cost = done;
-                    worst.at = format!("{} at byte {}", recording.name, fed.saturating_add(taken));
-                }
+                let at = format!("{} at byte {}", recording.name, fed.saturating_add(taken));
+                weigh(&mut worst, done, parser.screen().size(), at)?;
                 // Stopped at a frame's edge or its budget, it is given the
                 // rest, again after a budget stop that took no byte (the rows
                 // a checksum left took the call); else all of it was taken,
@@ -137,6 +134,19 @@ pub fn feed(recording: &Recording) -> Result<Worst, String> {
         worst.longest,
     )?;
     Ok(worst)
+}
+
+/// Keeps `done`, a call's work at a screen of `size` and a pane's history,
+/// if it is the most so far; an error past the most such a call may do.
+fn weigh(worst: &mut Worst, done: u64, size: Size, at: String) -> Result<(), String> {
+    let most = fux_vt::call_most(size, HISTORY);
+    if done > most {
+        return Err(format!("{at}: a call did {done}, past {most}"));
+    }
+    if done > worst.cost {
+        (worst.cost, worst.most, worst.at) = (done, most, at);
+    }
+    Ok(())
 }
 
 /// A resize with `history` bytes of history, filled by `fill` bytes of
@@ -162,10 +172,11 @@ pub fn resize_history(history: usize, fill: usize) -> Result<(u64, u64), String>
     Ok((to, from))
 }
 
-/// Both, as the oracle's part prints it, or why one went past `CEILING`.
+/// Both, as the oracle's part prints it, or why one went past its most.
 pub fn check() -> Result<String, String> {
     let mut worst = Worst {
         cost: 0,
+        most: 1,
         at: String::new(),
         longest: Duration::ZERO,
     };
@@ -178,28 +189,30 @@ pub fn check() -> Result<String, String> {
         worst.longest = longest;
     }
     let (to, from) = resize_history(HISTORY, FILL)?;
-    let share = |cost: u64| cost as f64 / CEILING as f64 * 100.0;
+    let (narrow, wide) = (
+        fux_vt::call_most(size(50, 80)?, HISTORY),
+        fux_vt::call_most(size(50, 200)?, HISTORY),
+    );
+    let share = |cost: u64, most: u64| cost as f64 / most as f64 * 100.0;
     let summary = format!(
-        "the worst 4 KiB read's call {:.2}% of the ceiling ({}), the longest {:.2} ms; a full history \
+        "the worst 4 KiB read's call {:.2}% of its most ({}), the longest {:.2} ms; a full history \
          resized 200 to 80 columns {:.2}%, and back {:.2}%",
-        share(worst.cost),
+        share(worst.cost, worst.most),
         worst.at,
         worst.longest.as_secs_f64() * 1e3,
-        share(to),
-        share(from),
+        share(to, narrow),
+        share(from, wide),
     );
-    match [worst.cost, to, from].iter().any(|&c| c > CEILING) {
-        true => Err(format!("past the ceiling: {summary}")),
+    match to > narrow || from > wide {
+        true => Err(format!("past its most: {summary}")),
         false => Ok(summary),
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::CEILING;
-
     /// A recording's worst call is found and named, and a full history
-    /// resized either way does work, under the ceiling.
+    /// resized either way does work, under the most a call may.
     #[test]
     fn the_worst_call_and_a_full_resize_are_weighed() -> Result<(), String> {
         let corpus = crate::inputs::corpus()?;
@@ -208,10 +221,11 @@ mod tests {
             .find(|r| r.name == "zsh-resize")
             .ok_or("no zsh-resize")?;
         let worst = super::feed(zsh)?;
-        assert!(worst.cost > 0 && worst.cost <= CEILING, "{worst:?}");
+        assert!(worst.cost > 0 && worst.cost <= worst.most, "{worst:?}");
         assert!(worst.at.starts_with("zsh-resize "), "{worst:?}");
         let (to, from) = super::resize_history(1 << 20, 2 << 20)?;
-        assert!(to > 0 && from > 0 && to.max(from) <= CEILING, "{to} {from}");
+        let most = fux_vt::call_most(super::size(50, 80)?, 1 << 20);
+        assert!(to > 0 && from > 0 && to.max(from) <= most, "{to} {from}");
         Ok(())
     }
 }

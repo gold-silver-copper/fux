@@ -202,9 +202,11 @@ pub fn b04(scale: Scale, chunk: usize) -> Found {
 // and its placement is a row fill: each of its rows (⌈2160 ÷ the cell's
 // height⌉, or ⌈4096 ÷ it⌉ portrait) filled across the 200 columns, at a
 // 10×20 cell and at the smallest, 2×6 (THREATS.md 1.2), with P2 0, 1 and
-// 2, each call within the quota and one placement. Each lies on the last
+// 2. Each row costs its width and the picture's across up front (C +
+// across, at most 2C), its fill (erase and fill, at most 2C) and its line
+// feed into history (B18's C + 5): 5C + 5, 1,005. Each lies on the last
 // cell row of the one before, whose 20 rows of 2,000 pixels it covers
-// (B46): 70,656 bytes for each of 64 pictures.
+// (B46): at most 9,492 units, and 70,656 bytes for each of 64 pictures.
 pub fn b05(scale: Scale, chunk: usize) -> Found {
     let setup = Setup::defaults();
     for (picture, (cell, rows)) in [
@@ -216,7 +218,11 @@ pub fn b05(scale: Scale, chunk: usize) -> Found {
         ("\x1bPq\"1;1;2160;4096\x1b\\", ((2, 6), 683)),
     ] {
         let input = repeat(&repeat(picture.as_bytes(), 215), scale.times());
-        let bound = heap(steady(&setup).saturating_add(64 * 70_656));
+        let each = 1005u64.saturating_mul(rows).saturating_add(9492);
+        let bound = Bound {
+            work: Some((0, 0, each.saturating_mul(215))),
+            heap: steady(&setup).saturating_add(64 * 70_656),
+        };
         let mut probe = Probe::new(&setup, bound, chunk, scale.times())?;
         probe.set_host_graphics(
             fux_vt::CellSize::new(cell.0, cell.1).map_or(Graphics::Text, Graphics::Sixel),
@@ -510,8 +516,8 @@ pub fn b11(scale: Scale, chunk: usize) -> Found {
         .saturating_mul(150_000);
     let input = colours(0, count);
     fed(&setup, bound, chunk.max(16), scale.times(), &input, |p| {
-        p.at_least(u64::from(count))?;
-        p.at_least(u64::from(count))
+        // A find and an insert for each new style.
+        p.at_least(2 * u64::from(count))
     })
 }
 
@@ -1310,8 +1316,10 @@ fn cluster(marks: usize) -> Vec<u8> {
 // B30: a cell keeps at most 128 bytes of text.
 pub fn b30(scale: Scale, chunk: usize) -> Found {
     let setup = Setup::defaults();
+    // The join reads the cell's cluster, at most 128 bytes, for each mark
+    // of two: at most 256 units a byte.
     const BOUND: Bound = Bound {
-        work: None,
+        work: Some((256, 0, 0)),
         heap: 0,
     };
     let bound = Bound {
@@ -1329,8 +1337,11 @@ pub fn b30(scale: Scale, chunk: usize) -> Found {
 // takes nothing once it has dropped a character.
 pub fn b31(scale: Scale, chunk: usize) -> Found {
     let setup = Setup::defaults().sized(1, 200).history(0);
+    // Each ZWSP, three bytes, rescans the row's text once, at most 49C +
+    // 128 bytes over the 200 cells' clusters here, 771: at most 257 units
+    // a byte.
     const BOUND: Bound = Bound {
-        work: None,
+        work: Some((257, 0, 0)),
         heap: 0,
     };
     let bound = Bound {
@@ -1373,37 +1384,39 @@ pub fn b32(scale: Scale, chunk: usize) -> Found {
 }
 
 // B33: REP's copies past those the screen and history can show are
-// skipped: a REP on a 2×10 screen with 1 KiB of history makes 350.
+// skipped, and each copy made costs its cells and its share of a row.
+//
+// At the defaults all 65,535 copies of `X` fit history, a cell each, and
+// their 328 rows go into history at B18's C + 5, 205: 132,775 a REP.
+// Between 2-column margins nothing reaches history: 51 rows of 2 copies,
+// 102, and 51 wraps, each scrolling the region's 50 rows, every span of
+// 2 read, compared and written and blanked (8 a row) and the edges
+// repaired (2 a row), 500: 25,602 a REP. On a 2×10 screen with 1 KiB of
+// history the copies fill its 2 rows and the 32 history keeps, and a row
+// more, 350, and their 35 rows go into history at 15: 875 a REP.
 pub fn b33(scale: Scale, chunk: usize) -> Found {
     let setup = Setup::defaults();
-    const BOUND: Bound = Bound {
-        work: None,
-        heap: 0,
-    };
-    let bound = Bound {
-        heap: steady(&setup),
-        ..BOUND
-    };
+    let heap = steady(&setup);
     let input = repeat(b"X\x1b[65535b", 455usize.saturating_mul(scale.times()));
-    fed(&setup, bound, chunk, scale.times(), &input, |p| {
+    let all = Bound {
+        work: Some((0, 0, 455 * 132_775)),
+        heap,
+    };
+    fed(&setup, all, chunk, scale.times(), &input, |p| {
         p.at_least(10_000)
     })?;
-    // Inside 2-column margins, where no scroll reaches history: the
-    // copies past the screen's rows' worth are skipped too.
-    fed(
-        &setup,
-        bound,
-        chunk,
-        scale.times(),
-        &[b("\x1b[?69h\x1b[1;2s\x1b[1;1H"), input.clone()].concat(),
-        |p| p.at_least(10_000),
-    )?;
+    let margins = Bound {
+        work: Some((0, 0, 455 * 25_602)),
+        heap,
+    };
+    let inside = [b("\x1b[?69h\x1b[1;2s\x1b[1;1H"), input.clone()].concat();
+    fed(&setup, margins, chunk, scale.times(), &inside, |p| {
+        p.at_least(10_000)
+    })?;
     let small = Setup::defaults().sized(2, 10).history(1 << 10);
-    // The copies made: those that fill the screen's 2 rows and the 32 1
-    // KiB of history keeps, and a row more, 350, a cell each; each of those
-    // 35 rows into history at B18's C + 5, 15. The heap: 64 KiB.
+    // The heap: 64 KiB.
     const SMALL: Bound = Bound {
-        work: Some((0, 0, 350 + 35 * 15)),
+        work: Some((0, 0, 875)),
         heap: 64 << 10,
     };
     let copies = scale.times();
@@ -1414,35 +1427,64 @@ pub fn b33(scale: Scale, chunk: usize) -> Found {
         copies,
         &repeat(b"X\x1b[65535b", copies),
         |p| p.at_least(20),
-    )
+    )?;
+    // Under IRM on 4 rows of 4,096, where history keeps every copy: each
+    // copy moves its row, at most C, and is a cell, and their 16 rows go
+    // into history at C + 5; the copies a call leaves go on in the calls
+    // after it.
+    let wide = Setup::defaults().sized(4, 4096);
+    let insert = Bound {
+        work: Some((0, 0, 65_535 * 4_097 + 16 * 4_101)),
+        heap: steady(&wide),
+    };
+    let input = repeat(b"\x1b[4hx\x1b[65535b\x1b[4l\r", scale.times());
+    fed(&wide, insert, chunk, scale.times(), &input, |p| {
+        p.at_least(65_535 * 2_048)
+    })
 }
 
-// B34: non-ASCII REP skips copies as B33 does.
+// B34: non-ASCII REP skips copies as B33 does, a copy two cells.
+//
+// At the defaults all 65,535 copies of `一` fit history, two cells each,
+// and their 656 rows go into history at 205: 265,550 a REP. Between
+// 2-column margins, 51 rows of a copy, 102 cells, and 51 wraps at B33's
+// 500: 25,602 a REP. On a 2×10 screen with 1 KiB of history, 35 rows of 5
+// copies, 350 cells, and the 35 rows into history at 15: 875 a REP.
 pub fn b34(scale: Scale, chunk: usize) -> Found {
     let setup = Setup::defaults();
-    const BOUND: Bound = Bound {
-        work: None,
-        heap: 0,
-    };
-    let bound = Bound {
-        heap: steady(&setup),
-        ..BOUND
-    };
+    let heap = steady(&setup);
     let input = repeat(
         "一\x1b[65535b".as_bytes(),
         372usize.saturating_mul(scale.times()),
     );
-    fed(&setup, bound, chunk, scale.times(), &input, |p| {
+    let all = Bound {
+        work: Some((0, 0, 372 * 265_550)),
+        heap,
+    };
+    fed(&setup, all, chunk, scale.times(), &input, |p| {
         p.at_least(20_000)
     })?;
-    // Inside 2-column margins, as B33.
+    let margins = Bound {
+        work: Some((0, 0, 372 * 25_602)),
+        heap,
+    };
+    let inside = [b("\x1b[?69h\x1b[1;2s\x1b[1;1H"), input.clone()].concat();
+    fed(&setup, margins, chunk, scale.times(), &inside, |p| {
+        p.at_least(20_000)
+    })?;
+    let small = Setup::defaults().sized(2, 10).history(1 << 10);
+    const SMALL: Bound = Bound {
+        work: Some((0, 0, 875)),
+        heap: 64 << 10,
+    };
+    let copies = scale.times();
     fed(
-        &setup,
-        bound,
+        &small,
+        SMALL,
         chunk,
-        scale.times(),
-        &[b("\x1b[?69h\x1b[1;2s\x1b[1;1H"), input.clone()].concat(),
-        |p| p.at_least(20_000),
+        copies,
+        &repeat("一\x1b[65535b".as_bytes(), copies),
+        |p| p.at_least(20),
     )
 }
 

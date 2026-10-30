@@ -123,9 +123,10 @@ Conventions for every row:
   and 10× in CI; with `FUX_VT_BOUND_STRESS=1` it runs 100× too, at
   release under a 2 GiB memory cap.
 - Each probe asserts, after every call: the heap's peak against the
-  row's bound (from section 3); the call's work within the quota and one
-  indivisible operation, a budget stop no sooner than the quota, and
-  some work in a call that takes no byte (4.2); and, for a row that
+  row's bound (from section 3); the work between two budget stops, frame
+  boundaries between, within the quota and one indivisible operation, a
+  budget stop no sooner than the quota, and some work in a call that
+  takes no byte but the stop a frame's boundary owed (4.2); and, for a row that
   states a rate in units, the work so far against it. Most also assert
   a lower bound on the work they know was done (4.2). At the end, the
   invariant checker is clean (section 6).
@@ -145,7 +146,7 @@ B26 and B41 bound host-side objects or host calls.
 | B02 | Placements, by count | ≤ 64 on both screens together (`MAX_PICTURES`) | The 65th lets one go, as B01 picks | 65 × `ESC P q @ ESC \` | `b02`; `a_screen_keeps_64_pictures_and_the_65th_lets_the_oldest_go` |
 | B03 | The sixel decoder's buffer and growth | Buffer ≤ `MAX_PIXELS` × 4 = 35,389,440 B; each side doubles, clamped to `MAX_SIDE` = 4096 and `MAX_PIXELS` = 4096 × 2160; growth copies or zeroes ≤ 2 × the final buffer (≤ 4,096 units a byte + 2 × `MAX_PIXELS` a picture), doubling even beside pictures that fill P, which it lets go for the room, while P holds twice the picture (always at the default P; a host's lower P may make it grow just to what it needs). Raster attributes grow nothing | Sixels past the limits or P aren't painted; the picture keeps what fits | A picture growing a column at a time over 340 bands; width and raster ladders `"1;1;w;2160` | `b03`; `a_kept_picture_holds_just_its_pixels` |
 | B04 | Sixel decode work | ≤ 4,096 units per input byte; pixels are kept at grid resolution, the aspect applied when shown; a repeat past 4,096 counts 4,096 | — | `ESC P q "360;1` + `!4096~$` × 600 | `b04` |
-| B05 | A declared extent, and placement | An extent with nothing drawn allocates and paints nothing; covering the last cell row of the extent before, as each does, is B46's (70,656 B a picture at a 10×20 cell). Placement is one indivisible operation (4.2): its rows filled, ⌈height ÷ the cell's⌉, at most 683, and between margins one scroll of them; a host cell under 2×6 refused (`CellSize::new`) | — | 215 × `ESC P q "1;1;4096;2160 ESC \` in 4 KiB, P2 = 0, 1, 2; and portrait | `b05`; `a_declared_extent_keeps_no_pixels`, `a_picture_needs_a_host_cell_of_a_sixel_band_or_more` |
+| B05 | A declared extent, and placement | An extent with nothing drawn allocates and paints nothing; covering the last cell row of the extent before, as each does, is B46's (70,656 B a picture at a 10×20 cell). Placement is one indivisible operation (4.2): its rows filled, ⌈height ÷ the cell's⌉, at most 683, each ≤ 5C + 5 (its width up front, its fill, its line feed into history), ≤ 9,492 to cover the one before, and between margins one scroll of them; a host cell under 2×6 refused (`CellSize::new`) | — | 215 × `ESC P q "1;1;4096;2160 ESC \` in 4 KiB, P2 = 0, 1, 2; and portrait | `b05`; `a_declared_extent_keeps_no_pixels`, `a_picture_needs_a_host_cell_of_a_sixel_band_or_more` |
 | B06 | Pictures the host retains (host side) | An `Arc<Picture>` outlives eviction, outside the budget; a clone mid-picture ≤ steady + 2 × 53,084,160 B | — | A clone mid-picture; a lowered budget while the host holds one | `b06` |
 | B07 | `Picture::new` (host call) | `None` unless `rgba.len()` = w × h × 4 with no overflow and both sides ≤ 4096 | `None` | `u32::MAX` square with no pixels | `b07` |
 | B08 | `sixel::encode` (host call) | Output ≤ 12 B a crop pixel + 6 B a colour a band + colour definitions; work ≤ 3 a crop pixel. fux caches encodings per client, ≤ 16 MiB (`SIXEL_BYTES`) | — | A 2000×1000 256-colour checkerboard | `b08` |
@@ -168,11 +169,11 @@ B26 and B41 bound host-side objects or host calls.
 | B26 | The key decoder's output (host side) | ≤ one `Input` per input byte | — | 64 KiB of single keys | `b26` |
 | B27 | The kitty keyboard stack | ≤ 32 entries a screen | The oldest goes | 33 × `CSI > 1 u` | `b27` |
 | B28 | Replies | ≤ 16 reply bytes per input byte; each `Reply` ≤ 64 B | — | 585 × DECRQSS `m` with every rendition; each request's longest answer | `b28` |
-| B30 | Cluster text | A cluster ≤ 128 B (`CLUSTER_CAPACITY`); a row's long text ≤ 32C + 128, short ≤ 17C | Cut at 128 B; a row with no room drops what would join | `e` + 64 × U+0301 | `b30`; `a_long_cluster_that_ends_at_the_limit_does_not_compact` |
-| B31 | A zero-width character after a full row | A row's text rescanned at most once a character, which the quota sees (4.1) | Dropped | 1,000 × U+200B after a full 1×200 row and a BS | `b31` |
+| B30 | Cluster text | A cluster ≤ 128 B (`CLUSTER_CAPACITY`); a row's long text ≤ 32C + 128, short ≤ 17C; work ≤ 256 a byte | Cut at 128 B; a row with no room drops what would join | `e` + 64 × U+0301 | `b30`; `a_long_cluster_that_ends_at_the_limit_does_not_compact` |
+| B31 | A zero-width character after a full row | A row's text rescanned at most once a character, ≤ 257 a byte | Dropped | 1,000 × U+200B after a full 1×200 row and a BS | `b31` |
 | B32 | Glyph width | Every glyph ≤ 2 columns; U+17D8 is 1 | — | `XYZW\r` U+17D8 on 1×10 | `b32`; `every_character_is_as_wide_as_the_width_rule_says` |
-| B33 | ASCII REP | Copies past what the screen and history can show are skipped (≤ 875 a REP on 2×10 with 1 KiB of history: 350 copies, 35 rows into history at B18's C + 5); the copies made stop at the quota between glyphs | Skipped, same result | 455 × `X ESC[65535b` in 4 KiB | `b33`; `repeat_makes_its_ascii_copies_and_returns` |
-| B34 | Non-ASCII REP | As B33 | As B33 | 372 × `一 ESC[65535b` | `b34`; `repetition_stops_at_the_quota_and_goes_on` |
+| B33 | ASCII REP | Copies past what the screen and history can show are skipped: a REP ≤ 132,775 at the defaults (65,535 copies, 328 rows into history at B18's C + 5), 25,602 between 2-column margins (102 copies, 51 scrolls of the region at 10R), 875 on 2×10 with 1 KiB of history (350 copies, 35 rows at 15); under IRM each copy moves its row; the copies made stop at the quota between glyphs | Skipped, same result | 455 × `X ESC[65535b` in 4 KiB | `b33`; `repeat_makes_its_ascii_copies_and_returns` |
+| B34 | Non-ASCII REP | As B33, a copy two cells: ≤ 265,550 a REP at the defaults, 25,602 between 2-column margins, 875 on 2×10 with 1 KiB of history | As B33 | 372 × `一 ESC[65535b` | `b34`; `repetition_stops_at_the_quota_and_goes_on` |
 | B34a | REP of a glyph that joins itself | ≤ 24 a byte + 2,752 to fill the cluster once | Copies joining a full cluster are skipped | 372 × U+1100 `ESC[65535b` | `b34a` |
 | B35 | Screen-wide functions | Each one indivisible operation of ≤ 4N + 2R × (49C + 128) (4.2); every call within the quota and one of them, which stops it and goes on in the next | — | 4 KiB each of DECRQCRA, DECCRA, DECFRA, DECERA, DECSERA, DECCARA, DECRARA, DECALN, ED 2, 1049, DECIC, DECDC, SL, SR; margin LF, SU and wrapping text | `b35` at 50×200, 500×500, 4095×4096; `bounds.rs` `quota` tests |
 | B36 | Scrolls inside a region | The region's slots turned once a sequence, the count clamped to the region; across the ring's end ≤ 4 an IL of two rows | — | `ESC[4095L` at 4095×1; IL across the ring's end | `b36` |
@@ -271,11 +272,14 @@ not counted, as the call's length bounds what each costs. With the
 `Parser::process_until_stop` stops as `Stop::Budget` once `LIMIT` =
 1,000,000 units are spent since its last budget stop, over as many calls
 as that took, so a host that cuts its reads small is stopped as well. It
-looks at the count after each sequence or string, each line feed, each
-sixel byte, each wrap, and each glyph printed one at a time (inserted
-under IRM, a mark, one that does not fit a run): never inside an
-indivisible operation. Nothing is lost: it stopped between two bytes, and
-the host gives it the rest later. The one operation that goes on past a
+looks at the count after each sequence or string, each run of text, each
+character read alone, each line feed, each sixel byte, each wrap, and
+each glyph printed one at a time (inserted under IRM, a mark, one that
+does not fit a run): never inside an indivisible operation. A call that
+ends a frame (`Begun`, `Ended`) past the quota still says so, and the
+next call makes the stop it owes before any byte, so a frame's boundary
+is no way past the quota. Nothing is lost: it stopped between two bytes,
+and the host gives it the rest later. The one operation that goes on past a
 stop is REP, whose copies stop between glyphs: the next call, made while
 `has_work_left` even with no byte left, makes them before any later
 byte, so replies and the screen are as one call would leave them.
@@ -283,7 +287,8 @@ byte, so replies and the screen are as one call would leave them.
 ### 4.2 Why that bounds a call
 
 Between two places it looks, the parser does at most one indivisible
-operation, so a call spends at most `LIMIT` and that operation. At a
+operation, so between two budget stops it spends at most `LIMIT` and that
+operation. At a
 screen of R rows, C columns and N cells, with H bytes of history, the
 largest is at most M, its terms summed (`tests/bounds/probe.rs`
 `most_at`):
@@ -295,16 +300,24 @@ largest is at most M, its terms summed (`tests/bounds/probe.rs`
 | History | 2 × min(H ÷ 8, `MAX_CELLS`) + min(H ÷ 24, `MAX_ROWS`) | the style sweep, each kept cell (8 B at least) read twice; the link sweep, each row (24 B at least) |
 | Links | 2^20 | the link sweep's runs, ids and sorts (B16) |
 
+An operation may also sweep the style table as it adds styles (DECCARA,
+DECRARA): a sweep needs N ÷ 16 new styles since the last (`style.rs`), so
+the sweeps inside one operation cost at most 32 units for each cell it
+restyles. A rectangle restyle copies no text, so they fit the screen's
+text term, which it leaves unused.
+
 At fux's defaults M is about 26 M; at its largest pane, 4,096 × 4,096
 with 1 GiB of history, M = 1,870,334,208, the screen's text most of it.
-The bounds suite asserts for every call of every probe that it spends at
-most `LIMIT` + M at its setup, that a budget stop comes only once `LIMIT`
+The bounds suite asserts for every probe that it spends at most
+`LIMIT` + M at its setup between two budget stops, that a budget stop comes only once `LIMIT`
 is spent, and that a call taking no byte spends some; most also assert
 that the work counted is at least what they know was done, so work that
 goes unspent shows. `bounds.rs`
 `quota` feeds each kind of screen-wide function and REP at 4,095 × 4,096,
 split and whole, to the same screen and replies. The `deep` fuzz target
-and the oracle's ceiling part hold every call to `LIMIT` + 1,870,334,208.
+and the oracle's ceiling part hold every call to `LIMIT` + M at its size
+and history (`fux_vt::call_most`), which is at most 1,000,000 +
+1,870,334,208.
 
 fux reads no more of a pane after a budget stop or at the end of a
 16 KiB slice (1.2): the rest waits for the pane's next turn, after the

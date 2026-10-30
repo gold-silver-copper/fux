@@ -534,10 +534,12 @@ formulas are in [`THREATS.md`](https://github.com/gold-silver-copper/fux/blob/ma
   such stop, over as many calls as that took (THREATS.md 4). A unit is an
   element visited: a cell, a row, a row slot, a text byte, a pixel, a
   style or link entry; every loop the input reaches spends what it visits.
-  It looks where a sequence or a string ends, after a line feed, after
-  each sixel byte, at each wrap, and after each glyph inserted (IRM) or
-  printed one at a time, so a call spends at most the quota and the one
-  indivisible operation that crossed it: a screen-wide function, a sweep
+  It looks where a sequence or a string ends, after a run of text or a
+  character read alone, after a line feed, after each sixel byte, at each
+  wrap, and after each glyph inserted (IRM) or printed one at a time; a
+  call that ends a frame past the quota leaves its stop to the next, made
+  before any byte. So between two budget stops it spends at most the
+  quota and the one indivisible operation that crossed it: a screen-wide function, a sweep
   of history, a picture's growth or placement; at most 1,870,334,208 units
   at a 4096 by 4096 pane with 1 GiB of history (THREATS.md 4.2). A count
   is not a time: at the largest panes one such operation alone can take

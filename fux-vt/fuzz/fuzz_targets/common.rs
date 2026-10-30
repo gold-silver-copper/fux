@@ -285,7 +285,9 @@ pub fn until_stops(p: &mut Parser, piece: &[u8], sink: &mut Record, mut each: im
             return;
         };
         each(taken);
-        assert!(taken > 0 && taken <= left.len());
+        // A budget stop may take no byte: the one a frame's boundary owed,
+        // or REP's copies made.
+        assert!(taken <= left.len() && (taken > 0 || why == Stop::Budget));
         left = left.get(taken..).unwrap_or_default();
         if let Some((end, read)) = &mut frame {
             *read = read.saturating_add(taken);

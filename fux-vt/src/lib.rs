@@ -105,6 +105,14 @@ pub fn work_spent() -> u64 {
     budget::spent()
 }
 
+/// The most one call of [`Parser::process_until_stop`] spends at a screen
+/// of `size` with `history` bytes of history: the quota and the largest
+/// indivisible operation (THREATS.md 4.2); with the `checks` feature.
+#[cfg(feature = "checks")]
+pub fn call_most(size: Size, history: usize) -> u64 {
+    budget::call_most(size, history)
+}
+
 /// `slice::copy_from_slice`, checked: it panics when the lengths differ, so
 /// fux-vt calls it only here (fux's clippy.toml).
 pub(crate) fn copy_from<T: Copy>(dst: &mut [T], src: &[T]) -> Option<()> {

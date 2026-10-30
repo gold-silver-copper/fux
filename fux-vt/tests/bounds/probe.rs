@@ -187,22 +187,11 @@ pub fn most(setup: &Setup) -> u64 {
 }
 
 /// [`most`] at a screen of `rows` by `cols` and `history` bytes of
-/// history, every term summed: a sixel picture's growth (twice
-/// `MAX_PIXELS`) and its covering (`COVER_WORDS`); a screen-wide function,
-/// four visits a cell and each row's text, at most 49C + 128 bytes, twice
-/// (a checksum, a copy, a scroll inside margins); a sweep of history,
-/// its cells, 8 bytes each, twice, and its rows, 24 bytes each; the link
-/// sweep's runs, `ids` and sorts, 2^20.
+/// history (`fux_vt::call_most`, less the quota).
 pub fn most_at(rows: u16, cols: u16, history: usize) -> u64 {
-    let (r, c) = (u64::from(rows), u64::from(cols));
-    let h = u64::try_from(history).unwrap_or(u64::MAX);
-    let picture = 2 * 4096 * 2160 + 4_000_000;
-    let text = r.saturating_mul(c.saturating_mul(49).saturating_add(128));
-    let screen = (r.saturating_mul(c).saturating_mul(4)).saturating_add(text.saturating_mul(2));
-    let cells = (h / 8).min(1 << 26).saturating_mul(2);
-    [picture, screen, cells, (h / 24).min(1 << 20), 1 << 20]
-        .into_iter()
-        .fold(0, u64::saturating_add)
+    Size::new(rows, cols).map_or(u64::MAX, |size| {
+        fux_vt::call_most(size, history).saturating_sub(LIMIT)
+    })
 }
 
 /// The largest [`most`], at fux's largest pane, 4,096 × 4,096, and its
@@ -344,21 +333,33 @@ impl Probe {
                 ));
             }
             // A budget stop comes once the quota is spent since the last,
-            // over as many calls as that took, and no sooner.
+            // over as many calls as that took, frame boundaries between,
+            // and no sooner; between two, at most the quota and one
+            // operation are spent.
+            let owed = self.since_stop >= LIMIT;
             self.since_stop = self.since_stop.saturating_add(done);
-            if matches!(stop, Some((_, Stop::Budget))) {
+            if self.since_stop > most {
+                return Err(format!(
+                    "{} spent since the last budget stop, past {most}",
+                    self.since_stop
+                ));
+            }
+            let budget = matches!(stop, Some((_, Stop::Budget)));
+            if budget {
                 if self.since_stop < LIMIT {
                     return Err(format!("a budget stop after {} spent", self.since_stop));
                 }
                 self.since_stop = 0;
             }
             // A call that takes no byte goes on with what the last left,
-            // spending, no more often in a row than one operation allows.
+            // spending, no more often in a row than a REP's copies allow,
+            // or makes the stop a frame's boundary owed.
             idle = match taken {
                 0 => idle.saturating_add(1),
                 _ => 0,
             };
-            if taken == 0 && (done == 0 || idle > idle_most(&self.setup)) {
+            let paid = done > 0 || budget && owed;
+            if taken == 0 && (!paid || idle > idle_most(&self.setup)) {
                 return Err(format!(
                     "a call stopped before any byte, {idle} in a row, spending {done}: {stop:?}"
                 ));
@@ -506,8 +507,10 @@ impl Drop for Probe {
 
 /// The most calls in a row that may stop at the budget before taking a
 /// byte at a parser of `setup`: those that make the copies a REP left,
-/// each spending the quota, so no more than one operation's most allows,
-/// and one more.
+/// each spending the quota, and one owed by a frame's boundary. A REP makes
+/// at most 65,535 copies, each at most a glyph's cells, a row's edit
+/// under IRM, and a row into history at B18's C + 5: 2C + 16 units.
 pub fn idle_most(setup: &Setup) -> u64 {
-    (most(setup) / LIMIT).saturating_add(1)
+    let copy = u64::from(setup.cols).saturating_mul(2).saturating_add(16);
+    (copy.saturating_mul(65_535) / LIMIT).saturating_add(2)
 }

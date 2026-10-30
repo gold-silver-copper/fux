@@ -261,9 +261,10 @@ mod quota {
 
     /// Feeds `input` whole to one parser, and to another by
     /// `process_until_stop`, given the rest again after each stop and
-    /// called again while work is left: each call within the quota and one
-    /// operation, the quota stopping it at least twice, and the two alike
-    /// at the end, screen, cursor and replies.
+    /// called again while work is left: between two budget stops, frame
+    /// boundaries between, at most the quota and one operation spent, the
+    /// quota stopping it at least twice, and the two alike at the end,
+    /// screen, cursor and replies.
     fn split_and_whole_agree(input: &[u8]) -> Result {
         let _one = one_at_a_time();
         let size = Size::new(4095, 4096)?;
@@ -272,19 +273,23 @@ mod quota {
         let (mut whole, mut alone) = (Parser::new(size, 0)?, Replies::default());
         whole.process_with(input, &mut alone)?;
         let (mut parser, mut replies) = (Parser::new(size, 0)?, Replies::default());
-        let (mut rest, mut stops) = (input, 0u32);
+        let (mut rest, mut stops, mut since) = (input, 0u32, 0u64);
         while !rest.is_empty() || parser.has_work_left() {
             let before = fux_vt::work_spent();
             let stop = parser.process_until_stop(rest, &mut replies)?;
-            let done = fux_vt::work_spent().saturating_sub(before);
-            assert!(done <= most, "a call spent {done}, past {most}");
+            since = since.saturating_add(fux_vt::work_spent().saturating_sub(before));
+            assert!(
+                since <= most,
+                "{since} spent between budget stops, past {most}"
+            );
             match stop {
                 None => rest = &[],
-                Some((taken, Stop::Budget)) => {
-                    stops = stops.saturating_add(1);
+                Some((taken, stop)) => {
+                    if stop == Stop::Budget {
+                        (stops, since) = (stops.saturating_add(1), 0);
+                    }
                     rest = rest.get(taken..).unwrap_or_default();
                 }
-                Some(other) => return Err(format!("stopped as {other:?}").into()),
             }
         }
         assert!(stops >= 2, "{stops} stops");
@@ -346,6 +351,18 @@ mod quota {
             split_and_whole_agree(&each_of(each))?;
         }
         Ok(())
+    }
+
+    /// Frames begun and ended in the same sequence that clears the
+    /// alternate screen, in a background: the clear spends the quota, and
+    /// the stop it owes comes in the call after the frame's boundary.
+    #[test]
+    fn frame_boundaries_stop_at_the_quota_too() -> Result {
+        let mut input = b"\x1b[41m".to_vec();
+        for _ in 0..12 {
+            input.extend_from_slice(b"\x1b[?1049;2026h\x1b[?1049;2026l\x1b[6n");
+        }
+        split_and_whole_agree(&input)
     }
 
     /// A REP inside left and right margins whose wraps scroll stops where

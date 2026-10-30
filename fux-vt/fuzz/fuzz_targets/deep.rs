@@ -4,7 +4,7 @@
 //! `Feature` and pictures drawn, fed up to 1 MiB of output a run by
 //! `process_until_stop` in 4 KiB pieces, with each
 //! call's work held to the quota and the largest indivisible operation
-//! (4.2, `CALL_MOST`); a second parser fed a
+//! at its size and history (4.2, `fux_vt::call_most`); a second parser fed a
 //! byte at a time, its row versions checked after every byte while it
 //! holds few enough rows; and between the outputs the host's calls:
 //! resizes, history budgets, palettes, pictures
@@ -50,10 +50,6 @@ const BUDGETS: [usize; 5] = [0, 1 << 10, 64 << 10, 1 << 20, 8 << 20];
 
 /// Picture budgets: none, one small picture, a large one, fux's.
 const PICTURES: [usize; 4] = [0, 64 << 10, 36 << 20, fux_vt::PICTURE_BYTES];
-
-/// The most work one call spends (`THREATS.md` 4.2): the quota, 1,000,000,
-/// and the largest indivisible operation, 1,870,334,208.
-const CALL_MOST: u64 = 1_000_000 + 1_870_334_208;
 
 /// The most output fed in one run, so a run takes seconds.
 const MOST: usize = 1 << 20;
@@ -106,7 +102,7 @@ struct Run {
 
 impl Run {
     /// Feeds `bytes` to both: `whole` in reads of 4 KiB by
-    /// `process_until_stop`, each call within `CALL_MOST`; `split` a byte at
+    /// `process_until_stop`, each call within `fux_vt::call_most`; `split` a byte at
     /// a time, its versions checked after each, until it has had `SPLIT`
     /// bytes, and the two compared after; then neither is fed again.
     fn feed(&mut self, bytes: &[u8]) {
@@ -117,6 +113,7 @@ impl Run {
         let (mut a, mut b) = (Record::default(), Record::default());
         let (at, mark) = (Rows::of(&self.whole), self.whole.screen().mark());
         let mut last = fux_vt::work_spent();
+        let most = fux_vt::call_most(self.whole.screen().size(), self.whole.history_bytes());
         let mut rest = bytes;
         while !rest.is_empty() {
             let (piece, after) = rest.split_at_checked(4096).unwrap_or((rest, &[]));
@@ -125,7 +122,7 @@ impl Run {
                 let now = fux_vt::work_spent();
                 let done = now.saturating_sub(last);
                 last = now;
-                assert!(done <= CALL_MOST, "a call spent {done}, past {CALL_MOST}");
+                assert!(done <= most, "a call spent {done}, past {most}");
             });
         }
         marks_sound(&at, mark, &self.whole, &Rows::of(&self.whole));
