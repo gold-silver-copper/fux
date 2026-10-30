@@ -4170,6 +4170,91 @@ mod tests {
     }
 
     #[test]
+    fn listing_walks_many_containers_within_the_client_step_budget() -> TestResult {
+        use crate::inspect::{Projection, Scope};
+        struct Once(Option<Reply>);
+        impl crate::script::Asks for Once {
+            fn ask(&mut self, _: &crate::protocol::Asked) -> Result<Reply, crate::script::Failed> {
+                self.0.take().ok_or_else(|| {
+                    crate::script::Failed::new(crate::code::Code::Usage, "held listing refreshed")
+                })
+            }
+        }
+        let (s, _) = attached(12, 80)?;
+        let Body::Snapshot(template) = s.inspect(Scope::All, Projection::Topology)? else {
+            return Err("snapshot".into());
+        };
+        let workspace = template.workspaces.first().ok_or("workspace")?;
+        let tab = template.tabs.first().ok_or("tab")?;
+        let pane = template.panes.first().ok_or("pane")?;
+        for (workspaces, tabs_per_workspace) in [(1, 1000), (1000, 1)] {
+            let mut snapshot = (*template).clone();
+            snapshot.workspaces.clear();
+            snapshot.tabs.clear();
+            snapshot.panes.clear();
+            snapshot.clients.clear();
+            for ws in 1..=workspaces {
+                let mut w = workspace.clone();
+                w.id = WsId::of(ws);
+                w.label = w.id.to_string();
+                w.tabs.clear();
+                for _ in 0..tabs_per_workspace {
+                    let id = u32::try_from(snapshot.panes.len())?.saturating_add(1);
+                    let mut t = tab.clone();
+                    let mut p = pane.clone();
+                    t.id = TabId::of(id);
+                    t.workspace = w.id;
+                    t.label = PaneId::of(id).to_string();
+                    t.host = None;
+                    t.revision = None;
+                    t.nodes = vec![crate::layout::Node::Pane(PaneId::of(id))];
+                    p.id = PaneId::of(id);
+                    p.tab = t.id;
+                    p.label = p.id.to_string();
+                    p.version.pane = p.id;
+                    w.tabs.push(t.id);
+                    snapshot.tabs.push(t);
+                    snapshot.panes.push(p);
+                }
+                snapshot.workspaces.push(w);
+            }
+            snapshot.validate()?;
+            let lines = snapshot
+                .workspaces
+                .len()
+                .saturating_add(snapshot.tabs.len())
+                .saturating_add(snapshot.panes.len())
+                .saturating_add(1);
+            let reply = Reply {
+                run: Some(s.run),
+                ..Body::Snapshot(Box::new(snapshot)).into()
+            };
+            let mut machine = crate::script::compile(&fuxth::token::source(
+                "many-tab-listing",
+                "all str topology snapshot listing print",
+            )?)?;
+            let mut out = Vec::new();
+            let mut host =
+                crate::script::Host::new(crate::protocol::Context::default(), None, &mut out);
+            crate::script::run_capped(
+                &mut machine,
+                &mut host,
+                &mut Once(Some(reply)),
+                Some(crate::script::PROGRAM_STEPS),
+                None,
+            )?;
+            assert!(machine.steps() <= crate::script::PROGRAM_STEPS);
+            let text = String::from_utf8(out)?;
+            assert_eq!(text.lines().count(), lines);
+            assert!(
+                text.lines()
+                    .any(|line| line.trim_start().starts_with("%1000 "))
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
     fn held_fields_survive_the_source_pane_closing() -> TestResult {
         let (mut s, _) = attached(12, 50)?;
         assert_eq!(

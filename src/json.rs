@@ -1,5 +1,5 @@
 //! A JSON value: what `json` gives, and what a reply carries of what has
-//! no type of its own (a pane's state, a listing, a field), rendered at
+//! no type of its own (a pane's state, a field), rendered at
 //! the client. fux never reads JSON text.
 use crate::wire::{Error, Reader, Wire};
 use fuxix::Allocation;

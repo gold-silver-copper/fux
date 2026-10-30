@@ -734,7 +734,7 @@ impl Run {
 
     /// What anyone can tell apart, as `State` lists it.
     fn state(&mut self) -> State {
-        let ls = self.program(None, "ls").0.unwrap_or_else(|e| e);
+        let ls = self.program(None, "ls listing").0.unwrap_or_else(|e| e);
         let screens = self
             .s
             .views
@@ -818,7 +818,7 @@ fuzz_target!(|data: &[u8]| {
     let (rows, cols) = size(input.next(), input.next());
     // `given` gets each client's bytes as the input splits them; `bytewise`
     // one at a time. However the bytes arrive, the same result.
-    // One server run for both: what they list (`ls`'s cursor) names it.
+    // One server run for both: the listing's cursor names it.
     let run = fux::command::Run::now().expect("a clock after 1970");
     let now = std::time::Instant::now();
     let mut given = Run::new(rows, cols, run, now);

@@ -100,42 +100,56 @@ define ls all info end
 # record -- string : a held snapshot hierarchy; facts include process outcomes
 define listing
   let s s str scope get kind let sk
+  s str projection get str facts eq let facts
+  s str workspaces get let workspaces s str tabs get let tabs
+  s str panes get let panes s str clients get let attached
+  s str cursor get let cursor
   sk str all eq sk str client eq or let clients
   clients sk str workspace eq or let whole
   sk str pane eq let one
   whole if str '    ' else one if str '' else str '  ' then then let indent
+  0 let ti 0 let pi
   list
-    s str workspaces get each let w
+    workspaces each let w w str id get let wid
       whole if w chooser-row last then
-      s str tabs get each let t
-        t str workspace get w str id get eq if
-          one not if list whole if str '  ' then t chooser-row last end glue then
-          s str panes get each let p
-            p str tab get t str id get eq if
-              list indent p chooser-row last str ' '
-                p str cols get string str x p str rows get string
-                p str pid get kind str null ne if str ' pid ' p str pid get string else
-                  s str projection get str facts eq if
-                    p str state get let st
-                    st str exited get kind str null ne if str ' exited ' st str exited get string else
-                    st str signal get kind str null ne if str ' signal ' st str signal get string else
-                    str ' ended, its status lost' then then
-                  then
-                then
-              end glue
-            then
-          end
-        then
-      end
+      begin
+        ti tabs len lt if
+          tabs ti at let t
+          t str workspace get wid eq if
+            t str id get let tid
+            one not if list whole if str '  ' then t chooser-row last end glue then
+            begin
+              pi panes len lt if
+                panes pi at let p
+                p str tab get tid eq if
+                  list indent p chooser-row last str ' '
+                    p str cols get string str x p str rows get string
+                    p str pid get kind str null ne if str ' pid ' p str pid get string else
+                      facts if p str state get let st
+                        st str exited get kind str null ne if str ' exited ' st str exited get string else
+                        st str signal get kind str null ne if str ' signal ' st str signal get string else
+                        str ' ended, its status lost' then then
+                      then
+                    then
+                  end glue
+                  pi 1 add let pi false
+                else true then
+              else true then
+            until
+            ti 1 add let ti false
+          else true then
+        else true then
+      until
     end
     clients if
-      s str clients get each let c
+      attached each let c
         list str 'client ' c str id get string str ' ' c str cols get string str x c str rows get string str ' '
-          c str workspace get dup kind str null eq if drop str - then string str ' '
-          c str tab get dup kind str null eq if drop str - then string str ' '
-          c str pane get dup kind str null eq if drop str - then string end glue
+          list list str workspace str tab str pane end each
+            c swap get dup kind str null eq if drop str - then string
+          end end str ' ' join
+        end glue
       end
-      list str 'cursor ' s str cursor get end glue
+      list str 'cursor ' cursor end glue
     then
   end 10 char join
 end

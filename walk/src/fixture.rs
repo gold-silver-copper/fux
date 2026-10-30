@@ -287,14 +287,14 @@ impl Fixture {
         ])
     }
 
-    /// The client ids `ls` lists.
+    /// Client ids projected from the held snapshot record.
     pub fn listed_clients(&self) -> Result<Vec<String>, String> {
         Ok(self
-            .fux(&["ls"])?
+            .fux(&[
+                "ls", "str", "clients", "get", "each", "str", "id", "get", "print", "end",
+            ])?
             .stdout
             .lines()
-            .filter_map(|l| l.strip_prefix("client "))
-            .filter_map(|l| l.split_whitespace().next())
             .map(str::to_owned)
             .collect())
     }
