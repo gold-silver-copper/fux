@@ -120,7 +120,7 @@ impl Picture {
         }
         // A grid position read each, which a few bytes may ask for again
         // on each placement (B46).
-        spend!(pixels, self.across);
+        crate::budget::spend(self.across);
         for x in (0..self.across).take_while(|x| shown_at(self.aspect, *x, 0).0 < right) {
             let alpha =
                 offset(x, row, self.across).and_then(|at| self.rgba.get(at.checked_add(3)?));
@@ -632,7 +632,7 @@ impl Decoder {
                 if bits & (1 << bit) == 0 || y >= down {
                     continue;
                 }
-                work!(pixels, run);
+                crate::budget::spend(run);
                 let at = offset(left, y, self.room.0).unwrap_or(usize::MAX);
                 let span = at.saturating_add(run.saturating_mul(4));
                 if let Some(row) = self.pixels.get_mut(at..span) {
@@ -703,7 +703,7 @@ impl Decoder {
             usize::try_from(cols).unwrap_or(0).saturating_mul(4),
         );
         let drawn = usize::try_from(self.down).unwrap_or(0);
-        work!(pixels, pixels.saturating_add(drawn.saturating_mul(old) / 4));
+        crate::budget::spend(pixels.saturating_add(drawn.saturating_mul(old) / 4));
         let stride = usize::try_from(self.room.0).unwrap_or(0).saturating_mul(4);
         for row in 0..drawn {
             let (from, to) = (row.saturating_mul(stride), row.saturating_mul(new));
@@ -818,7 +818,7 @@ impl Decoder {
         let rows = usize::try_from(self.down).ok()?;
         let mut rgba = Vec::new();
         rgba.try_reserve_exact(row.checked_mul(rows)?).ok()?;
-        work!(pixels, row.saturating_mul(rows) / 4);
+        crate::budget::spend(row.saturating_mul(rows) / 4);
         for y in 0..rows {
             let from = y.checked_mul(stride)?;
             rgba.extend_from_slice(self.pixels.get(from..from.checked_add(row)?)?);
@@ -945,7 +945,7 @@ pub fn encode(picture: &Picture, (x, y, width, height): (u32, u32, u32, u32), ou
         }
     }
     // Read at most once each.
-    work!(pixels, u64::from(width).saturating_mul(u64::from(height)));
+    crate::budget::spend(u64::from(width).saturating_mul(u64::from(height)));
     let (reds, greens, blues) = CUBE;
     let steps = |c: u8, of: usize| usize::from(c).saturating_mul(of) >> 8;
     let cube = |[r, g, b]: [u8; 3]| {
@@ -1019,7 +1019,7 @@ pub fn encode(picture: &Picture, (x, y, width, height): (u32, u32, u32, u32), ou
                 }
             }
         }
-        work!(pixels, u64::from(width).saturating_mul(u64::from(rows)));
+        crate::budget::spend(u64::from(width).saturating_mul(u64::from(rows)));
         // Each colour of the band in turn, from its left, `$` between: its
         // sixels, the blanks between them run together, and the blanks to
         // the band's right.
@@ -1028,7 +1028,7 @@ pub fn encode(picture: &Picture, (x, y, width, height): (u32, u32, u32, u32), ou
             let Some(columns) = sixels.get_mut(colour) else {
                 continue;
             };
-            work!(pixels, columns.len());
+            crate::budget::spend(columns.len());
             if n > 0 {
                 out.push(b'$');
             }

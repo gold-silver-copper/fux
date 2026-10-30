@@ -299,21 +299,20 @@ fn fed(p: &mut Parser, bytes: &[u8], cuts: &[usize]) -> Result<usize> {
     Ok(left)
 }
 
-/// A flood of screen-wide sequences, each call stopping at the budget with
-/// the next left over, moves the revision on with each call.
+/// REPs in insert mode, where each copy moves its row, so that calls stop
+/// at the budget with copies left over: the revision moves on with each
+/// call that reads output.
 #[test]
 fn the_revision_moves_on_through_work_left_over() -> Result {
-    let mut bytes = Vec::new();
-    bytes.extend(std::iter::repeat_n(&b"\x1b#8\x1b[2J"[..], 50).flatten());
-    // So large that one sequence passes what a call that spent any work
-    // has left (`holds_back`).
-    let mut p = Parser::new(Size::new(1000, 1000)?, 0)?;
+    let mut bytes = b"\x1b[4h".to_vec();
+    bytes.extend(std::iter::repeat_n(&b"\rx\x1b[4000b"[..], 4).flatten());
+    let mut p = Parser::new(Size::new(1, 4096)?, 0)?;
     let (mut piece, mut left, mut revision) = (&bytes[..], 0usize, 0);
     while let Some((taken, _)) = p.process_until_stop(piece, &mut Deaf)? {
         piece = piece.get(taken..).ok_or("taken")?;
         left = left.saturating_add(usize::from(p.has_work_left()));
         assert!(
-            p.screen().revision() > revision,
+            taken == 0 || p.screen().revision() > revision,
             "{} bytes left",
             piece.len()
         );
@@ -325,13 +324,15 @@ fn the_revision_moves_on_through_work_left_over() -> Result {
 
 /// The revision counts the bytes read and the resizes to another size,
 /// however the output is cut: whole, a byte at a time, at random, and past
-/// the work budget, where a screen-wide sequence is left for the next call
+/// the work budget, where a REP's copies are left for the next call
 /// (`Parser::has_work_left`).
 #[test]
 fn the_revision_is_the_same_however_output_is_cut() -> Result {
     let mut bytes = b"\x1b[?2026hframe\x1b[?2026l\xe2\x9d\xa4\xef\xb8\x8f\x1b[65535b".to_vec();
     bytes.extend(std::iter::repeat_n(&b"\x1b#8\x1b[2J\x1b[3J"[..], 100).flatten());
-    // So large that one ED may pass what a call has left (`holds_back`).
+    // In insert mode each copy moves its row: past the budget, copies are
+    // left over.
+    bytes.extend(b"\x1b[4hx\x1b[65535b\x1b[4l");
     let size = Size::new(500, 500)?;
     let count = |cuts: &[usize]| -> Result<u64> {
         let mut p = Parser::new(size, 1 << 12)?;

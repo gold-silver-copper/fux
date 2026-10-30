@@ -143,6 +143,7 @@ const _: () = assert!(size_of::<Run>() == 32 && size_of::<KeptLinks>() == 32);
 impl KeptLinks {
     /// Moves the links out of `links`, which keeps its memory.
     pub(crate) fn take(links: &mut RowLinks) -> Option<Self> {
+        crate::budget::spend(links.0.len());
         match links.0.len() {
             0 => None,
             1 => links.0.pop().map(Self::One),
@@ -186,7 +187,117 @@ impl RowLinks {
     }
     /// Drops every link, keeping the memory for the slot's next row.
     pub(crate) fn clear(&mut self) {
+        crate::budget::spend(self.0.len());
         self.0.clear();
+    }
+    /// Sets the links of cells `span` to `runs`, each inside it, in order
+    /// and apart: a margin scroll's span copied, in one splice however many
+    /// cells change. Whether any cell's link changed.
+    #[inline(never)]
+    pub(crate) fn replace(
+        &mut self,
+        span: Range<usize>,
+        runs: &[(Range<usize>, Hyperlink)],
+    ) -> bool {
+        let (Ok(start), Ok(end)) = (u16::try_from(span.start), u16::try_from(span.end)) else {
+            return false;
+        };
+        let (first, last) = self.overlapping(start, end);
+        let held = self.0.get(first..last).unwrap_or_default();
+        crate::budget::spend(held.len().saturating_add(runs.len()));
+        let clipped = held.iter().map(|run| {
+            let cells = usize::from(run.start.max(start))..usize::from(run.end.min(end));
+            (cells, &run.link)
+        });
+        if clipped.eq(runs.iter().map(|(cells, link)| (cells.clone(), link))) {
+            return false;
+        }
+        let runs = runs.iter().filter_map(|(cells, link)| {
+            let (start, end) = (
+                u16::try_from(cells.start).ok()?,
+                u16::try_from(cells.end).ok()?,
+            );
+            Some(Run {
+                start,
+                end,
+                link: link.clone(),
+            })
+        });
+        self.splice(start, end, runs);
+        true
+    }
+    /// The runs that reach into cells `start..end`, as a range of indices:
+    /// the runs are in order and apart.
+    fn overlapping(&self, start: u16, end: u16) -> (usize, usize) {
+        let first = self.0.partition_point(|run| run.end <= start);
+        let last = self.0.partition_point(|run| run.start < end).max(first);
+        (first, last)
+    }
+    /// Puts `runs`, in order and apart within cells `start..end`, in place
+    /// of what links those cells had: the runs reaching in are cut at the
+    /// span's edges, and the new runs merged with those beside them, in one
+    /// splice. Spends the runs looked at and those moved past it.
+    fn splice(&mut self, start: u16, end: u16, runs: impl Iterator<Item = Run>) {
+        let (first, last) = self.overlapping(start, end);
+        // The runs beside, which may merge with what goes in.
+        let (from, to) = (
+            first.saturating_sub(1),
+            last.saturating_add(1).min(self.0.len()),
+        );
+        let mut pieces: Vec<Run> = Vec::new();
+        let mut put = |run: Run| match pieces.last_mut() {
+            _ if run.start >= run.end => {}
+            Some(kept) if kept.end == run.start && kept.link == run.link => kept.end = run.end,
+            Some(_) | None => pieces.push(run),
+        };
+        if let Some(before) = self.0.get(from).filter(|_| from < first) {
+            put(before.clone());
+        }
+        if let Some(run) = self.0.get(first).filter(|_| first < last) {
+            put(Run {
+                end: start,
+                ..run.clone()
+            });
+        }
+        runs.for_each(&mut put);
+        if let Some(run) = last
+            .checked_sub(1)
+            .and_then(|i| self.0.get(i))
+            .filter(|_| first < last)
+        {
+            put(Run {
+                start: end,
+                ..run.clone()
+            });
+        }
+        if let Some(after) = self.0.get(last).filter(|_| last < to) {
+            put(after.clone());
+        }
+        let moved = self.0.len().saturating_sub(to);
+        crate::budget::spend(
+            (to.saturating_sub(from))
+                .saturating_add(pieces.len())
+                .saturating_add(moved),
+        );
+        // `pieces` in place of `from..to`: written over it, then the rest
+        // rotated in after it, or the surplus rotated past the tail and cut.
+        let (old, new) = (to.saturating_sub(from), pieces.len());
+        let mut pieces = pieces.into_iter();
+        for (slot, piece) in self.0.iter_mut().skip(from).take(old).zip(&mut pieces) {
+            *slot = piece;
+        }
+        let kept = from.saturating_add(old.min(new));
+        if new > old {
+            self.0.extend(pieces);
+            if let Some(tail) = self.0.get_mut(kept..) {
+                tail.rotate_right(new.saturating_sub(old).min(tail.len()));
+            }
+        } else if let Some(tail) = self.0.get_mut(kept..) {
+            let surplus = old.saturating_sub(new).min(tail.len());
+            tail.rotate_left(surplus);
+            let len = self.0.len().saturating_sub(surplus);
+            self.0.truncate(len);
+        }
     }
     /// Sets the link of cells `span`; returns whether any cell's link
     /// changed. A span past what a row holds changes nothing. The left-to-right append
@@ -215,15 +326,12 @@ impl RowLinks {
             return false;
         }
         let Range { start, end } = span;
-        self.remake(|run| {
-            let before = (run.start, run.end.min(start));
-            [before, (run.start.max(end), run.end), (0, 0)]
+        let link = link.map(|link| Run {
+            start,
+            end,
+            link: link.clone(),
         });
-        if let Some(link) = link {
-            let link = link.clone();
-            self.0.push(Run { start, end, link });
-        }
-        self.tidy();
+        self.splice(start, end, link.into_iter());
         true
     }
     /// Whether every cell of `span` has `link`.
@@ -253,6 +361,7 @@ impl RowLinks {
     /// Replaces each run in place by the up to three pieces `parts` gives;
     /// extra pieces are appended, unsorted, for `tidy`.
     fn remake(&mut self, parts: impl Fn(&Run) -> [(u16, u16); 3]) {
+        crate::budget::spend(self.0.len());
         for i in 0..self.0.len() {
             let Some(run) = self.0.get_mut(i) else {
                 break;
@@ -273,6 +382,9 @@ impl RowLinks {
     }
     /// Restores order: drops empty runs, merges touching runs of one link.
     fn tidy(&mut self) {
+        // A pass, a sort and a pass over the runs.
+        let log = usize::try_from(self.0.len().checked_ilog2().unwrap_or(0)).unwrap_or(0);
+        crate::budget::spend(self.0.len().saturating_mul(log.saturating_add(2)));
         self.0.retain(|run| run.start < run.end);
         self.0.sort_unstable_by_key(|run| run.start);
         self.0.dedup_by(|next, kept| {
@@ -311,6 +423,9 @@ impl RowLinks {
 }
 
 impl<'a> Runs<'a> {
+    pub(crate) fn len(self) -> usize {
+        self.0.len()
+    }
     pub(crate) fn get(self, col: usize) -> Option<&'a Hyperlink> {
         let col = u16::try_from(col).ok()?;
         let at = self.0.partition_point(|run| run.end <= col);
@@ -451,12 +566,11 @@ impl Links {
         // runs ÷ 16 each (THREATS.md B16).
         let log = usize::try_from(seen.len().checked_ilog2().unwrap_or(0)).unwrap_or(0);
         let sort = log.saturating_add(1).saturating_mul(seen.len()) / 16;
-        spend!(
-            links,
+        crate::budget::spend(
             seen.len()
                 .saturating_add(len)
                 .saturating_add(self.ids.len())
-                .saturating_add(sort.saturating_mul(2))
+                .saturating_add(sort.saturating_mul(2)),
         );
         seen.sort_unstable();
         seen.dedup_by(|next, kept| {

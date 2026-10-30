@@ -433,6 +433,8 @@ impl TabStops {
     fn set(&mut self, col: u16, stop: bool) {
         let (col, beyond) = (usize::from(col), self.beyond);
         let made = self.stops.len()..=col;
+        // Each stop made: TBC 3 then HTS far right makes the row's again.
+        crate::budget::spend(col.saturating_add(1).saturating_sub(self.stops.len()));
         (self.stops).extend(made.map(|at| beyond && at.is_multiple_of(8)));
         if let Some(slot) = self.stops.get_mut(col) {
             *slot = stop;
@@ -481,20 +483,6 @@ pub(crate) enum Dispatch {
     Reply(Reply),
     /// Not a sequence the screen implements.
     Unhandled,
-    /// Screen-wide, and left for the next call: it would take the call
-    /// past U (`holds_back`).
-    Held,
-}
-
-/// What a call stopped at the budget left for the next (`Parser::run`).
-#[derive(Clone, Copy, Debug)]
-enum Left {
-    /// A REP's character and the copies of it left when a margin scroll
-    /// stopped it at the budget (`resume_repeat`).
-    Copies(char, usize),
-    /// A screen-wide CSI not carried out (`holds_back`): its intermediates,
-    /// how many, and its final byte; the parser keeps its parameters.
-    Csi([u8; 2], usize, u8),
 }
 
 /// What DSR 75 reports of the data integrity flag (DEC STD 070, DSR):
@@ -555,14 +543,14 @@ pub struct Screen {
     primary: Grid,
     alternate: Grid,
     /// Where the call under way stops at its budget (`Parser::run`'s
-    /// `end`; `u64::MAX` for none), and whether a scroll inside left and
-    /// right margins found it spent: printing stops after that glyph, and
-    /// a REP keeps the copies it has left in `left`.
+    /// `end`; `u64::MAX` for none), and whether printing found it spent
+    /// (`check_budget`): printing stops after the glyph it is on, and a REP
+    /// keeps the copies it has left in `left`.
     pub(crate) stop_at: u64,
     pub(crate) stopped: bool,
-    /// What a call stopped at the budget left, done first by the next
-    /// call: a REP's copies or a screen-wide CSI (`holds_back`).
-    left: Option<Left>,
+    /// The character and the copies of it a REP stopped at the budget
+    /// left, made first by the next call (`resume_repeat`).
+    left: Option<(char, usize)>,
     /// Pictures placed on either grid (`pictures`), the last one's number,
     /// and what the host's terminal draws.
     pictures: VecDeque<pictures::Placement>,
@@ -1247,6 +1235,12 @@ impl Screen {
             .storage_cells()
             .saturating_add(self.alternate.storage_cells())
     }
+    /// How many style sweeps both grids have made, with the `checks`
+    /// feature: for the bounds tests.
+    #[cfg(feature = "checks")]
+    pub fn style_sweeps(&self) -> u64 {
+        (self.primary.sweeps()).wrapping_add(self.alternate.sweeps())
+    }
 
     pub(crate) fn resize(&mut self, size: Size, reflow: bool) -> Result<(), Error> {
         // A frame drawn for the old size is no frame for the new one: as in
@@ -1334,8 +1328,6 @@ impl Screen {
         let blank = self.blank_style();
         let up = direction != Scroll::Down;
         self.with_grid(|g, _, version| g.scroll_columns(region, count, up, blank, version));
-        // It copies the region's cells, which a few bytes can ask for.
-        self.stopped |= crate::budget::spent() >= self.stop_at;
     }
     /// IND, and LF, VT and FF: down a line, scrolling at the bottom margin;
     /// with left and right margins only while the cursor is between them,
@@ -1406,7 +1398,18 @@ impl Screen {
         if !g.cursor.pending_wrap && g.cursor.col() <= room {
             return Some(end);
         }
-        self.wrap(end, room, width)
+        let line = self.wrap(end, room, width);
+        self.check_budget();
+        line
+    }
+    /// Notes whether the call under way has spent its budget, as printing
+    /// does at each wrap, each glyph inserted and each glyph text prints
+    /// one at a time, and SUB, a tab and a BS that wraps back do: printing
+    /// then stops after the
+    /// glyph it is on (`stopped`), and the parser at that byte.
+    #[inline]
+    pub(crate) fn check_budget(&mut self) {
+        self.stopped |= crate::budget::spent() >= self.stop_at;
     }
     /// `wrap_for` for a glyph wider than the line: printed between margins
     /// narrower than it, but not on a halved line (DEC STD 070, 5.6.1); a
@@ -1489,6 +1492,7 @@ impl Screen {
     #[inline(never)]
     pub(crate) fn substitute(&mut self) {
         self.print_as('\u{2426}', Properties::of('\u{2426}'));
+        self.check_budget();
     }
 
     /// Cancels a pending single shift, as a function other than a graphic
@@ -1588,13 +1592,15 @@ impl Screen {
         }
         // What REP repeats: the last glyph printed, not a mark.
         self.repeat = Some(c);
+        // Spent whether or not it fits: REP may try many that do not.
+        crate::budget::spend(width);
         let Some(end) = self.wrap_for(width) else {
             return;
         };
-        work!(cells, width);
         if self.mode(Mode::Insert) {
             let blank = self.blank_style();
             self.with_grid(|g, _, v| g.edit_cells(width, true, blank, v));
+            self.check_budget();
         }
         let (row, col) = self.grid().cursor.at();
         let glyph = Compact::glyph(c, usize::from(width), self.pen_style() | self.protect);
@@ -1634,7 +1640,9 @@ impl Screen {
                     None => continue,
                 }
             }
+            // A mark can rewrite its row's text, a few bytes asking for it.
             self.print_as(c, properties);
+            self.check_budget();
         }
     }
 
@@ -1680,7 +1688,7 @@ impl Screen {
             });
             g.advance_within(col, end);
         });
-        work!(cells, col.saturating_sub(start));
+        crate::budget::spend(col.saturating_sub(start));
         if self.links_seen {
             self.link_cells(row, usize::from(start)..usize::from(col), true);
         }
@@ -1735,7 +1743,7 @@ impl Screen {
             });
             g.advance_within(at(made), end);
         });
-        work!(cells, at(made).saturating_sub(start));
+        crate::budget::spend(at(made).saturating_sub(start));
         if self.links_seen {
             self.link_cells(row, usize::from(start)..usize::from(at(made)), true);
         }
@@ -1823,7 +1831,7 @@ impl Screen {
         }
         let at = usize::from(anchor_col);
         let cursor = usize::from(col);
-        work!(cells, 2);
+        crate::budget::spend(2);
         let fits = col < g.line_end();
         // Whether the text is one column, summed, before `c`; and whether
         // it is a lone regional indicator, which a second makes a flag.
@@ -1918,7 +1926,7 @@ impl Screen {
             }
         });
         let end = self.wrap_for(2)?;
-        work!(cells, 2);
+        crate::budget::spend(2);
         if self.mode(Mode::Insert) {
             let blank = self.blank_style();
             self.with_grid(|g, _, v| g.edit_cells(2, true, blank, v));
@@ -2003,13 +2011,6 @@ impl Screen {
             return;
         };
         let count = self.copies_needed(c, usize::from(count));
-        // The copies skipped cost nothing (THREATS.md B33); each made is
-        // spent as printing counts it, two units a cell.
-        let width = crate::char_width(c).unwrap_or(1).max(1);
-        crate::budget::spend(
-            crate::budget::units(count.saturating_mul(width).saturating_mul(2)),
-            crate::budget::weight::cells,
-        );
         self.copies(c, count)
     }
 
@@ -2056,53 +2057,17 @@ impl Screen {
     /// The copies a REP stopped at the budget left, made first by the
     /// call after it.
     pub(crate) fn resume_repeat(&mut self) {
-        if let Some(Left::Copies(c, count)) = self.left {
+        if let Some((c, count)) = self.left {
             self.left = None;
             self.copies(c, count);
         }
     }
 
-    /// Whether a REP stopped at the budget left copies to make.
-    pub(crate) fn repeating(&self) -> bool {
-        matches!(self.left, Some(Left::Copies(..)))
-    }
-
-    /// Whether the last call stopped at the budget left anything.
+    /// Whether a REP stopped at the budget left copies to make: another
+    /// call is owed.
     #[inline]
     pub(crate) fn left_over(&self) -> bool {
         self.left.is_some()
-    }
-
-    /// Whether to leave a screen-wide sequence for the next call
-    /// (THREATS.md 4.4): if what the call spent since its last budget stop
-    /// and the most one such sequence spends (`budget::sequence_most`)
-    /// would pass the ceiling U. So a call does at most U, or one such
-    /// sequence.
-    #[inline(never)]
-    pub(crate) fn holds_back(&self) -> bool {
-        // The spent since the last budget stop: `stop_at` is where it ends.
-        let spent = (crate::budget::spent())
-            .saturating_add(crate::budget::LIMIT)
-            .saturating_sub(self.stop_at);
-        let most = crate::budget::sequence_most(self.size());
-        self.stop_at != u64::MAX && spent > 0 && spent.saturating_add(most) > crate::budget::CEILING
-    }
-
-    /// Keeps the CSI of `intermediates` and final `byte` that `holds_back`
-    /// left, for the next call.
-    pub(crate) fn hold(&mut self, intermediates: &[u8], byte: u8) {
-        let read = [intermediates.first(), intermediates.get(1)].map(|b| b.copied().unwrap_or(0));
-        self.left = Some(Left::Csi(read, intermediates.len().min(2), byte));
-    }
-
-    /// The CSI a call left, taken: its intermediates, how many, and its
-    /// final byte.
-    pub(crate) fn held_csi(&mut self) -> Option<([u8; 2], usize, u8)> {
-        let Some(Left::Csi(read, len, byte)) = self.left else {
-            return None;
-        };
-        self.left = None;
-        Some((read, len, byte))
     }
 
     /// Prints `count` copies of `c`, REP's, stopping where a wrap scrolled
@@ -2116,7 +2081,7 @@ impl Screen {
             let run = [byte; RUN];
             while count > 0 {
                 if self.stopped {
-                    self.left = Some(Left::Copies(c, count));
+                    self.left = Some((c, count));
                     return;
                 }
                 let n = count.min(RUN);
@@ -2132,7 +2097,7 @@ impl Screen {
         let insert = self.mode(Mode::Insert);
         while count > 0 {
             if self.stopped {
-                self.left = Some(Left::Copies(c, count));
+                self.left = Some((c, count));
                 return;
             }
             // In insert mode each copy moves what is there, as `print` does.
@@ -2159,13 +2124,15 @@ impl Screen {
     /// margin itself (`wrap_for`).
     pub(crate) fn ascii(&mut self, mut bytes: &[u8]) -> usize {
         let all = bytes.len();
-        // Character sets and insert mode take `print`, a glyph at a time.
+        // Character sets and insert mode take `print`, a glyph at a time,
+        // each a place to look: a glyph can clear a linked cell.
         if self.single.is_some() || self.charsets.graphics() || self.mode(Mode::Insert) {
             for (i, &byte) in bytes.iter().enumerate() {
                 if self.stopped {
                     return i;
                 }
                 self.print(char::from(byte));
+                self.check_budget();
             }
             return all;
         }
@@ -2279,6 +2246,7 @@ impl Screen {
             last = g.size().columns().last();
         }
         let first = g.addressed().1.first();
+        let from = col;
         for _ in 0..count {
             let to = if forward {
                 self.terminal.tabs.next(col, last)
@@ -2290,6 +2258,9 @@ impl Screen {
             }
             col = to;
         }
+        // Each column the stops were looked for in.
+        crate::budget::spend(col.abs_diff(from));
+        self.check_budget();
         let g = self.grid_mut();
         g.set_col(col);
         g.fit_cursor();
@@ -2355,11 +2326,15 @@ impl Screen {
             let Some(before) = before else {
                 break;
             };
+            // A row stepped: under 1045 a CUB can go round the region.
+            crate::budget::spend(1);
             g.set_row(before);
             g.set_col(columns.last());
             g.fit_cursor();
             count = count.saturating_sub(1);
         }
+        // BS is a control, which looks only where it spends.
+        self.check_budget();
     }
 
     /// DECSC, into the grid shown (`Saved`).
@@ -2567,10 +2542,8 @@ impl Screen {
     fn shift_columns(&mut self, from: u16, count: u16, right: bool) {
         let blank = self.blank_style();
         self.with_grid(|g, _, version| {
-            // Every line of the region, a row each (`budget`): ICH and DCH,
-            // a row's edit, spend nothing.
-            let cells = usize::from(g.lines.len()).saturating_mul(usize::from(g.size().cols()));
-            crate::budget::spend(crate::budget::units(cells), crate::budget::weight::cells);
+            // A unit a row, as a double-width one it leaves is still read.
+            crate::budget::spend(g.lines.len());
             for y in g.lines.first()..=g.lines.last() {
                 g.edit_row(y, from, count, right, blank, version);
             }
@@ -2625,7 +2598,7 @@ impl Screen {
                 } else {
                     g.erase_unprotected(y, start, end, blank, version);
                     !(display && g.rendition(y).is_double() && {
-                        spend!(cells, cols);
+                        crate::budget::spend(cols);
                         let styles = g.styles();
                         g.live_cells(y).iter().any(|c| styles.guarded(c.style()))
                     })
@@ -2661,7 +2634,7 @@ impl Screen {
         for y in 0..g.size().rows() {
             let filled = !g.live_row(y).is_some_and(|r| r.has_links())
                 && g.live_cells(y).iter().all(|c| c.is_ascii(b'E', plain));
-            spend!(cells, cols);
+            crate::budget::spend(cols);
             if !filled {
                 // Erased first, so its clusters' text and links go.
                 g.erase(y, 0, cols, plain, version);
@@ -2786,15 +2759,15 @@ impl Screen {
         let id = p.first(0, 0);
         let g = self.grid();
         let mut sum = 0u16;
+        crate::budget::spend(lines.len());
         for y in lines.each() {
             // A double-width line holds half the columns (DEC STD 070,
             // 5.6.1): the rectangle stops at its end.
             let row = columns.each().take_while(|x| *x < g.row_end(y));
             let cells: Vec<CellRef<'_>> = row.filter_map(|x| g.cell(y, x)).collect();
-            spend!(cells, cells.len());
-            spend!(sums, cells.len());
+            crate::budget::spend(cells.len());
             let read = cells.iter().map(|cell| cell.contents().len());
-            spend!(text, read.fold(0usize, usize::saturating_add));
+            crate::budget::spend(read.fold(0usize, usize::saturating_add));
             for cell in cells {
                 let mut chars = cell.contents().chars();
                 let base = match chars.next() {
@@ -2864,13 +2837,6 @@ impl Screen {
             let end = columns.end().min(g.row_end(y)).max(columns.first());
             (columns.first(), end)
         };
-        // Twice the rectangle's cells (`budget`); DECCRA spends as it goes.
-        if byte != b'v' {
-            let cells = usize::from(lines.len()).saturating_mul(usize::from(columns.len()));
-            spend!(edits, cells);
-            let cells = cells.saturating_mul(2);
-            crate::budget::spend(crate::budget::units(cells), crate::budget::weight::cells);
-        }
         match byte {
             // DECFRA: Pch 32 to 126 in GL's set, 160 to 255 Latin-1;
             // another is ignored.
@@ -2945,13 +2911,6 @@ impl Screen {
                 if y == bottom { columns.end() } else { cols },
             ),
         };
-        let cells = (lines.each()).map(|y| {
-            let (start, end) = span(y);
-            usize::from(end.saturating_sub(start))
-        });
-        let cells = cells.fold(0usize, usize::saturating_add);
-        crate::budget::spend(crate::budget::units(cells), crate::budget::weight::cells);
-        spend!(edits, cells);
         // The last few styles mapped; a sweep renumbers styles, so it ends.
         let mut memo = [(0u32, 0u32); 16];
         let (mut kept, mut sweeps) = (0usize, None);
@@ -2974,6 +2933,7 @@ impl Screen {
             new
         };
         self.with_grid(|g, _, v| {
+            crate::budget::spend(lines.len());
             for y in lines.each() {
                 let (start, end) = span(y);
                 let end = end.min(g.row_end(y)).max(start);
@@ -2986,6 +2946,7 @@ impl Screen {
     /// rectangular area operation changes none (DEC STD 070, 5.12.1).
     fn each_row(&mut self, lines: Span, mut f: impl FnMut(&mut Grid, u16, u64)) {
         self.with_grid(|g, _, v| {
+            crate::budget::spend(lines.len());
             for y in lines.each() {
                 let wrapped = g.live_wrapped(y);
                 f(g, y, v);
@@ -3281,17 +3242,6 @@ impl Screen {
         byte: u8,
         options: &Options,
     ) -> Option<Dispatch> {
-        // Screen-wide sequences may be left for the next call (`holds_back`).
-        let wide = matches!(
-            (intermediates, byte),
-            (b" ", b'@' | b'A')
-                | (b"'", b'}' | b'~')
-                | (b"$", b'v' | b'x' | b'z' | b'{' | b'r' | b't')
-                | (b"*", b'y')
-        );
-        if wide && self.holds_back() {
-            return Some(Dispatch::Held);
-        }
         if intermediates == b" " && byte == b'q' {
             let ps = p.first(0, 0);
             if let Some(&shape) = CursorShape::ALL.iter().find(|s| s.number() == ps) {
@@ -3427,9 +3377,6 @@ impl Screen {
             // (DEC STD 070, chapter 5's revision note 12).
             b'J' | b'K' => {
                 // ED is screen-wide: it may be left for the next call.
-                if byte == b'J' && self.holds_back() {
-                    return Dispatch::Held;
-                }
                 let mut known = false;
                 for group in p.groups() {
                     let mode = group.first().copied().unwrap_or(0);
@@ -3464,9 +3411,6 @@ impl Screen {
             // IL and DL, ignored outside the margins, leave the cursor at
             // the left margin (DEC STD 070, IL and DL, note 2).
             b'L' | b'M' => {
-                if self.holds_back() {
-                    return Dispatch::Held;
-                }
                 let g = self.grid_mut();
                 if let Some(region) = g.lines.starting_at(row)
                     && g.in_columns()
@@ -3477,22 +3421,17 @@ impl Screen {
                         b'M' => Scroll::Up { history: false },
                         _ => Scroll::Down,
                     };
-                    spend_scroll(region, n, self.size());
                     self.scroll(region, n, direction);
                 }
             }
             // Five parameters: XTHIMOUSE (ctlseqs), ignored, not SD.
             b'T' if p.groups().nth(4).is_some() => {}
             b'S' | b'T' => {
-                if self.holds_back() {
-                    return Dispatch::Held;
-                }
                 let lines = self.grid().lines;
                 let direction = match byte {
                     b'S' => Scroll::Up { history: true },
                     _ => Scroll::Down,
                 };
-                spend_scroll(lines, n, self.size());
                 self.scroll(lines, n, direction);
                 // A double-width line moved under the cursor holds it.
                 self.grid_mut().fit_cursor();
@@ -3870,21 +3809,6 @@ impl Screen {
         }
         colour_of(&values)
     }
-}
-
-/// What IL, DL, SU or SD of `count` lines of `region` spends (`budget`):
-/// each row it brings in, and the slots it turns, once whatever the count
-/// (`Order::rotate`). A line feed spends nothing: it does at most a row's
-/// work.
-fn spend_scroll(region: Span, count: u16, size: Size) {
-    let rows = usize::from(count.min(region.len()));
-    let cells = rows
-        .saturating_mul(usize::from(size.cols()))
-        .saturating_mul(2);
-    let turned = usize::from(region.len()).saturating_add(usize::from(size.rows()));
-    let slots = rows.min(1).saturating_mul(turned);
-    crate::budget::spend(crate::budget::units(cells), crate::budget::weight::cells);
-    crate::budget::spend(crate::budget::units(slots), crate::budget::weight::slots);
 }
 
 /// The screen's checks, each shown a screen with its one fault.

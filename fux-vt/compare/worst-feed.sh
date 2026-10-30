@@ -4,20 +4,22 @@
 # 1x, 10x and 100x, each at its chunkings) and every corpus recording read
 # 4 KiB at a time as fux reads a pane (diff/oracle's `ceiling` part, which
 # also resizes a full history both ways). Both run in a release build with
-# fux-vt's work counters on (`checks`), which weighs each call's work in
+# fux-vt's work counter on (`checks`), which counts each call's work in
 # units, and times it: an upper bound on fux's own build, as counting only
 # adds time. A bounds probe whose call took over 25 ms so leaves its input,
 # and `fux-bench calls` feeds it again in fux's build, without the
-# counters, to time it as fux would. The safety bar: no 4 KiB call past
+# checks, to time it as fux would. The safety bar: no 4 KiB call past
 # 50 ms. About 11 minutes on box2, 18 on desk (the bounds suite, one test
 # at a time).
 #
 # OUT.json: worst_ms over the 4 KiB calls, each probe timed without the
 # counters where it was kept, else with them (an upper bound), and its
-# input; worst_counted_ms, the same all with the counters on; worst_units
-# (twentieths, as Work::cost) and its input; chunk_bytes 4096; inputs, how
-# many were measured at 4 KiB; timed_again, how many of them were kept and
-# timed without the counters; bar_ms; head and harness (the last commit
+# input; worst_counted_ms, the same all with the checks on; worst_units
+# (as fux_vt::work_spent counts them) and its input; ceiling_units, the
+# quota and the largest indivisible operation (THREATS.md 4.2);
+# chunk_bytes 4096; inputs, how many were measured at 4 KiB; timed_again,
+# how many of them were kept and timed without the checks; bar_ms; head
+# and harness (the last commit
 # that changed what measures, -dirty if the tree differs); and whether the
 # bounds suite passed, the oracle's part ran (it builds against HEAD,
 # which a clone that got the commit by another ref may not fetch: then
@@ -40,8 +42,8 @@ export FUX_VT_WORST_FEED=$lines FUX_VT_WORST_FEED_INPUTS=$kept
 
 suite=passed
 jobs=${CARGO_BUILD_JOBS:-4}
-cargo test --release --locked -j "$jobs" --features checks --manifest-path "$root/fux-vt/Cargo.toml" \
-  --test bounds -- --include-ignored --test-threads=1 >"$here/target/worst-feed-bounds.log" 2>&1 ||
+FUX_VT_BOUND_STRESS=1 cargo test --release --locked -j "$jobs" --features checks \
+  --manifest-path "$root/fux-vt/Cargo.toml" --test bounds -- --test-threads=1 >"$here/target/worst-feed-bounds.log" 2>&1 ||
   suite=failed
 corpus=passed
 "$root/diff/oracle.sh" HEAD --cases 0 --streams 0 --cells 0 >"$here/target/worst-feed-oracle.log" 2>&1 ||
@@ -57,7 +59,8 @@ harness=$(git -C "$root" log -1 --format=%H -- "${measures[@]}")$(dirty "${measu
 
 # Each 4 KiB probe's time: timed again without the counters if it was
 # kept (the first file), else its counted time.
-awk -v head="$head" -v harness="$harness" -v suite="$suite" -v corpus="$corpus" -v calls="$calls" '
+ceiling=$((1000000 + 2013047090))
+awk -v ceiling="$ceiling" -v head="$head" -v harness="$harness" -v suite="$suite" -v corpus="$corpus" -v calls="$calls" '
   FILENAME == ARGV[1] { again[$1] = $4 + 0; timed++; next }
   $2 == 4096 {
     n++
@@ -70,13 +73,13 @@ awk -v head="$head" -v harness="$harness" -v suite="$suite" -v corpus="$corpus" 
     printf "{\n  \"worst_ms\": %.3f,\n  \"worst_ms_input\": \"%s\",\n", ns / 1e6, slow
     printf "  \"worst_counted_ms\": %.3f,\n  \"worst_counted_ms_input\": \"%s\",\n", counted / 1e6, slowest
     printf "  \"worst_units\": %d,\n  \"worst_units_input\": \"%s\",\n", units, costly
-    printf "  \"ceiling_units\": %d,\n  \"chunk_bytes\": 4096,\n  \"inputs\": %d,\n", 50000000 * 20, n
+    printf "  \"ceiling_units\": %d,\n  \"chunk_bytes\": 4096,\n  \"inputs\": %d,\n", ceiling, n
     printf "  \"timed_again\": %d,\n  \"bar_ms\": 50,\n", timed
     printf "  \"bounds_suite\": \"%s\",\n  \"corpus\": \"%s\",\n  \"timed_again_run\": \"%s\",\n", suite, corpus, calls
     printf "  \"head\": \"%s\",\n  \"harness\": \"%s\"\n}\n", head, harness
     # Past the bar, past the ceiling, nothing measured, or a part that
     # failed: the JSON says which.
-    exit (ns > 50e6 || units > 50000000 * 20 || n == 0 || suite != "passed" ||
+    exit (ns > 50e6 || units > ceiling + 0 || n == 0 || suite != "passed" ||
       corpus != "passed" || calls != "passed")
   }' "$again" "$lines" >"$out" || past=1
 cat "$out"

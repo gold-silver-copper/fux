@@ -19,7 +19,7 @@ use std::path::{Path, PathBuf};
 
 use fux_vt::keys::decode::{Decoder, Input};
 use fux_vt::sixel::Picture;
-use fux_vt::{Event, Feature, Options, Parser, Sink, Size, Work};
+use fux_vt::{Event, Feature, Options, Parser, Sink, Size};
 
 type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
 
@@ -59,7 +59,8 @@ enum Fuzz {
 /// replies and the events it sent, or the key decoder's inputs.
 struct Replayed {
     parser: Parser,
-    work: Work,
+    /// The work it spent (`fux_vt::work_spent`).
+    work: u64,
     events: usize,
     replies: Vec<Vec<u8>>,
     inputs: Vec<Input>,
@@ -108,6 +109,11 @@ fn text_shows(r: &Replayed, text: &str) -> std::result::Result<(), String> {
     ensure(shown.contains(text), || {
         format!("{text:?} not on the screen")
     })
+}
+
+/// Whether a style sweep came.
+fn swept(r: &Replayed) -> bool {
+    r.parser.screen().style_sweeps() > 0
 }
 
 /// The widest picture shown, and the tallest.
@@ -236,8 +242,8 @@ fn seeds() -> Vec<Seed> {
             // Pictures of nothing drawn, placed: their cells written.
             reaches: |r| {
                 let (_, _, count) = shown(r);
-                ensure(count >= 1 && r.work.cells >= 200 * 108, || {
-                    format!("{count} shown, {} cells", r.work.cells)
+                ensure(count >= 1 && r.work >= 200 * 108, || {
+                    format!("{count} shown, {} units", r.work)
                 })
             },
             fuzz: Fuzz::Terminal,
@@ -271,12 +277,8 @@ fn seeds() -> Vec<Seed> {
                 }
                 out
             },
-            // Past the table's floor of 4,096 styles.
-            reaches: |r| {
-                ensure(r.work.inserts > 4096, || {
-                    format!("{} styles", r.work.inserts)
-                })
-            },
+            // Past the table's floor of 4,096 styles: a sweep came.
+            reaches: |r| ensure(swept(r), || "no sweep".to_owned()),
             fuzz: Fuzz::Terminal,
         },
         Seed {
@@ -287,9 +289,13 @@ fn seeds() -> Vec<Seed> {
             bytes: || colliding(2000),
             // Each a style of its own in the table.
             reaches: |r| {
-                ensure(r.work.inserts >= 2000, || {
-                    format!("{} styles", r.work.inserts)
-                })
+                let mut styles = Vec::new();
+                for cell in r.parser.screen().main_rows().flat_map(|row| row.cells()) {
+                    if cell.contents() == "x" && !styles.contains(&cell.attributes()) {
+                        styles.push(cell.attributes());
+                    }
+                }
+                ensure(styles.len() >= 2000, || format!("{} styles", styles.len()))
             },
             fuzz: Fuzz::None,
         },
@@ -536,11 +542,7 @@ fn seeds() -> Vec<Seed> {
             prefix: Prefix::None,
             bytes: || repeat("一\x1b[65535b".as_bytes(), 372),
             // Every copy of a wide glyph printed or skipped.
-            reaches: |r| {
-                ensure(r.work.cells >= 65_535 * 2, || {
-                    format!("{} cells", r.work.cells)
-                })
-            },
+            reaches: |r| ensure(r.work >= 65_535 * 2, || format!("{} units", r.work)),
             fuzz: Fuzz::Terminal,
         },
         Seed {
@@ -602,7 +604,7 @@ fn seeds() -> Vec<Seed> {
             prefix: Prefix::None,
             bytes: || b"\x1b[4095L".to_vec(),
             // The region's rows moved.
-            reaches: |r| ensure(r.work.slots >= 4095, || format!("{} slots", r.work.slots)),
+            reaches: |r| ensure(r.work >= 4095, || format!("{} units", r.work)),
             fuzz: Fuzz::Terminal,
         },
         Seed {
@@ -750,9 +752,9 @@ fn seeds() -> Vec<Seed> {
                 let shown = r.parser.screen().pictures().next().ok_or("no picture")?;
                 let (w, h) = (shown.picture.width(), shown.picture.height());
                 let mut out = Vec::new();
-                let before = Work::now();
+                let before = fux_vt::work_spent();
                 fux_vt::sixel::encode(shown.picture, (0, 0, w, h), &mut out);
-                let done = Work::now().since(before);
+                let done = fux_vt::work_spent().saturating_sub(before);
                 let pixels = u64::from(w).saturating_mul(u64::from(h));
                 let bands = u64::from(h.div_ceil(6));
                 let most = (pixels.saturating_mul(12))
@@ -760,8 +762,8 @@ fn seeds() -> Vec<Seed> {
                     .saturating_add(256 * 20 + 64);
                 let len = u64::try_from(out.len()).unwrap_or(u64::MAX);
                 ensure(
-                    w >= 256 && len > 0 && len <= most && done.pixels <= pixels.saturating_mul(3),
-                    || format!("{w}x{h}: {len} bytes, {} units", done.pixels),
+                    w >= 256 && len > 0 && len <= most && done <= pixels.saturating_mul(3),
+                    || format!("{w}x{h}: {len} bytes, {done} units"),
                 )
             },
             fuzz: Fuzz::Deep(&[0xf6]),
@@ -781,11 +783,7 @@ fn seeds() -> Vec<Seed> {
             },
             // Past the table's floor with one cell live: a sweep came. Once
             // past its heap bound at 10x.
-            reaches: |r| {
-                ensure(r.work.inserts > 4096 && r.work.styles > 0, || {
-                    format!("{} styles, {} swept", r.work.inserts, r.work.styles)
-                })
-            },
+            reaches: |r| ensure(swept(r), || "no sweep".to_owned()),
             fuzz: Fuzz::Terminal,
         },
         Seed {
@@ -797,8 +795,8 @@ fn seeds() -> Vec<Seed> {
             // With 4 MiB of links held, new links make room by a sweep.
             // A guard: no defect. The prefix is no fuzz input.
             reaches: |r| {
-                ensure(r.work.links >= 1000, || {
-                    format!("{} link steps", r.work.links)
+                ensure(r.parser.screen().link(4, 199).is_some(), || {
+                    "the last link not kept".to_owned()
                 })
             },
             fuzz: Fuzz::None,
@@ -811,7 +809,10 @@ fn seeds() -> Vec<Seed> {
             bytes: || repeat(b"\n", 5_000),
             // Each line feed at the bottom a row into history. A guard: no
             // defect.
-            reaches: |r| ensure(r.work.rows >= 4_950, || format!("{} rows", r.work.rows)),
+            reaches: |r| {
+                let rows = r.parser.screen().history_len();
+                ensure(rows >= 4_950, || format!("{rows} history rows"))
+            },
             fuzz: Fuzz::Terminal,
         },
         Seed {
@@ -1156,7 +1157,7 @@ fn replay(seed: &Seed) -> Result<Replayed> {
         fux_vt::refuse_next(n);
     }
     let bytes = (seed.bytes)();
-    let (before, mut events, mut inputs) = (Work::now(), Events::default(), Vec::new());
+    let (before, mut events, mut inputs) = (fux_vt::work_spent(), Events::default(), Vec::new());
     if seed.fuzz == Fuzz::Keys {
         let mut decoder = Decoder::new(fux_vt::keys::decode::Timing::new(35, 5000));
         for piece in pieces(&bytes) {
@@ -1174,7 +1175,7 @@ fn replay(seed: &Seed) -> Result<Replayed> {
     fux_vt::refuse_next(0);
     Ok(Replayed {
         parser,
-        work: Work::now().since(before),
+        work: fux_vt::work_spent().saturating_sub(before),
         events: events.0,
         replies: events.1,
         inputs,

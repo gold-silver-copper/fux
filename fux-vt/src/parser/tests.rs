@@ -239,49 +239,143 @@ fn a_run_over_a_wide_glyph_costs_its_length() -> Result<(), Error> {
 
 /// A line feed carried out in text is a place `process_until_stop` looks
 /// at the budget, as its scroll can move a row's text into history: with
-/// the budget spent, a run of LF, VT or FF stops
+/// the budget all but spent, a run of LF, VT or FF at the bottom stops
 /// after the first, and one of CR, which moves no row, does not stop.
 #[test]
 fn a_line_feed_stops_at_a_spent_budget() -> Result<(), Error> {
     let mut parser = Parser::new(Size::of(2, 4), 8)?;
+    parser.process(b"\x1b[2;1H")?;
     for feeds in [b"\n\n\n", b"\x0b\x0b\x0b", b"\x0c\x0c\x0c"] {
-        parser.spent = crate::budget::LIMIT;
+        parser.spent = crate::budget::LIMIT - 1;
         let stop = parser.process_until_stop(feeds, &mut Deaf)?;
         assert_eq!(stop, Some((1, Stop::Budget)), "{}", feeds.escape_ascii());
     }
-    parser.spent = crate::budget::LIMIT;
+    parser.spent = crate::budget::LIMIT - 1;
     assert_eq!(parser.process_until_stop(b"\r\r\r", &mut Deaf)?, None);
     Ok(())
 }
 
-/// A sequence whose work exceeds the remaining budget waits for the next
-/// call, even when that call has no bytes, and runs before any new text.
+/// REP's copies a budget stop left after the last byte are made by the
+/// next call, even one of no bytes, before any later text: here in insert
+/// mode, where each copy moves the row, so a call stops between copies,
+/// and each call that takes no byte still makes some.
 #[test]
-fn a_screen_wide_sequence_past_the_ceiling_waits_for_the_next_call() -> Result<(), Error> {
-    let size = Size::of(1000, 1000);
-    assert!(crate::budget::sequence_most(size) > crate::budget::CEILING);
-    let first = b"a\x1b[2Jb\x1b[2J";
+fn copies_left_at_the_budget_are_made_before_later_text() -> Result<(), Error> {
+    let size = Size::of(1, 4096);
+    let first = b"\x1b[4hx\x1b[65535b";
     for following in ["", "c"] {
+        let mut whole = Parser::new(size, 0)?;
+        whole.process(first)?;
+        whole.process(following.as_bytes())?;
         let mut parser = Parser::new(size, 0)?;
         let stop = parser.process_until_stop(first, &mut Deaf)?;
         assert_eq!(stop, Some((first.len(), Stop::Budget)));
         assert!(parser.has_work_left());
-        let shown = |p: &Parser, col: u16| p.screen().cell(0, col).map(|c| c.contents().to_owned());
-        assert_eq!(shown(&parser, 1).as_deref(), Some("b"));
-        assert_eq!(
-            parser.process_until_stop(following.as_bytes(), &mut Deaf)?,
-            None
-        );
-        assert!(!parser.has_work_left());
-        for (col, text) in [(0, ""), (1, ""), (2, following), (3, "")] {
-            assert_eq!(shown(&parser, col).as_deref(), Some(text), "column {col}");
+        let (mut rest, mut calls) = (following.as_bytes(), 0);
+        loop {
+            let before = crate::budget::spent();
+            let Some((taken, stop)) = parser.process_until_stop(rest, &mut Deaf)? else {
+                break;
+            };
+            assert_eq!(stop, Stop::Budget);
+            assert!(taken > 0 || crate::budget::spent() > before, "no progress");
+            rest = rest.get(taken..).unwrap_or_default();
+            calls += 1;
         }
+        assert!(calls >= 2, "{calls} calls");
+        assert!(!parser.has_work_left());
         assert_eq!(
             parser.screen().cursor_position(),
-            (0, if following.is_empty() { 2 } else { 3 })
+            whole.screen().cursor_position()
         );
+        let row = |p: &Parser| p.screen().window().text((0, 0), (0, 4095), 4096, 4096);
+        assert_eq!(row(&parser)?, row(&whole)?);
         assert_eq!(parser.process_until_stop(&[], &mut Deaf)?, None);
-        assert!(!parser.has_work_left());
+    }
+    Ok(())
+}
+
+/// Printing that never wraps, and each control, is a place the budget is
+/// looked at too: `x` and CR over and over on a 2×2 screen, whole or two
+/// bytes a call; zero-width spaces after a row of long clusters, a byte a
+/// call (each completed in the parser's UTF-8 state); SUB under IRM and a
+/// tab after TBC 3, each before a CR, at 4,096 columns; SUB alone; BS
+/// under extended reverse wraparound, alone or before a CR: all stop at
+/// the budget, spending little past it between stops.
+#[test]
+fn printing_that_never_wraps_stops_at_the_budget() -> Result<(), Error> {
+    let crs: Vec<u8> = std::iter::repeat_n(&b"x\r"[..], 1_100_000)
+        .flatten()
+        .copied()
+        .collect();
+    // B31's row: the cell printed last a long cluster, each mark dropped.
+    let cluster = |marks| {
+        format!(
+            "e{}",
+            std::iter::repeat_n("\u{301}", marks).collect::<String>()
+        )
+    };
+    let mut row = (std::iter::repeat_n(cluster(50), 64).chain([cluster(22), cluster(8)]))
+        .collect::<String>()
+        .into_bytes();
+    row.push(0x08);
+    let marks: Vec<u8> = std::iter::repeat_n("\u{200b}", 100_000)
+        .collect::<String>()
+        .into_bytes();
+    // A SUB under IRM, which prints and moves the row, and a tab after
+    // TBC 3, which looks for a stop across the row, each before a CR.
+    let subs: Vec<u8> = std::iter::repeat_n(&b"\x1a\r"[..], 8190)
+        .flatten()
+        .copied()
+        .collect();
+    let plain: Vec<u8> = std::iter::repeat_n(&b"\x1a\r"[..], 1_100_000)
+        .flatten()
+        .copied()
+        .collect();
+    // A BS under extended reverse wraparound, which wraps back a row.
+    let bss = vec![0x08; 1_100_000];
+    let bs_crs: Vec<u8> = std::iter::repeat_n(&b"\x08\r"[..], 1_100_000)
+        .flatten()
+        .copied()
+        .collect();
+    let tabs: Vec<u8> = std::iter::repeat_n(&b"\t\r"[..], 8190)
+        .flatten()
+        .copied()
+        .collect();
+    for (size, setup, input, piece) in [
+        (Size::of(2, 2), &b""[..], &crs, crs.len()),
+        (Size::of(2, 2), &b""[..], &crs, 2),
+        (Size::of(1, 200), &row[..], &marks, 1),
+        (Size::of(1, 4096), &b"\x1b[4h"[..], &subs, subs.len()),
+        (Size::of(2, 2), &b""[..], &plain, plain.len()),
+        (Size::of(1, 1), &b"\x1b[?1045h"[..], &bss, bss.len()),
+        (Size::of(1, 1), &b"\x1b[?1045h"[..], &bss, 3),
+        (Size::of(1, 2), &b"\x1b[?1045h"[..], &bs_crs, bs_crs.len()),
+        (Size::of(1, 4096), &b"\x1b[3g"[..], &tabs, tabs.len()),
+    ] {
+        let mut parser = Parser::new(size, 0)?;
+        parser.process(setup)?;
+        let (mut stops, mut since) = (0, 0u64);
+        let mut left = &input[..];
+        while let Some((mut rest, after)) =
+            (!left.is_empty()).then(|| left.split_at_checked(piece).unwrap_or((left, &[])))
+        {
+            left = after;
+            while !rest.is_empty() || parser.has_work_left() {
+                let before = crate::budget::spent();
+                let stop = parser.process_until_stop(rest, &mut Deaf)?;
+                since = since.saturating_add(crate::budget::spent().saturating_sub(before));
+                assert!(
+                    since <= crate::budget::LIMIT + 10_000,
+                    "{since} between stops"
+                );
+                let Some((taken, stop)) = stop else { break };
+                assert_eq!(stop, Stop::Budget);
+                (stops, since) = (stops + 1, 0);
+                rest = rest.get(taken..).unwrap_or_default();
+            }
+        }
+        assert!(stops >= 1, "no stop at {size:?}, {piece} bytes a call");
     }
     Ok(())
 }
@@ -488,11 +582,9 @@ fn the_string_scans_find_what_a_byte_at_a_time_finds() {
 }
 
 /// A scroll of many rows inside a region spends what it does: the region's
-/// slots turned once, not once a row, and the rows brought in. At
-/// 4,095 rows of one column, 100 IL 4095s are 8,190 cells and 8,190 slots
-/// each, about 11 M units in all, under the budget's 16 M, so the call
-/// takes them without a stop; charged a slot a row a row, each was 16.8 M
-/// slots, and the first stopped it.
+/// slots turned once, not once a row, and the rows brought in. At 4,095
+/// rows of one column an IL 4095 is linear in the region, at most 8 units
+/// a row; charged a slot a row a row, each was 16.8 M.
 #[test]
 fn a_region_scroll_spends_its_slots_once() -> Result<(), Error> {
     let mut parser = Parser::new(Size::of(4095, 1), 0)?;
@@ -501,9 +593,8 @@ fn a_region_scroll_spends_its_slots_once() -> Result<(), Error> {
         .copied()
         .collect();
     let start = crate::budget::spent();
-    assert_eq!(parser.process_until_stop(&bytes, &mut Deaf)?, None);
+    parser.process(&bytes)?;
     let spent = crate::budget::spent().saturating_sub(start);
-    let each = 8_190 * (crate::budget::weight::cells + crate::budget::weight::slots);
-    assert!(spent <= 100 * each, "{spent}");
+    assert!(spent <= 100 * 8 * 4095, "{spent}");
     Ok(())
 }

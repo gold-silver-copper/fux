@@ -1,18 +1,18 @@
 //! The bounds suite's driver: a parser set up as a row says, fed its input
-//! at one chunking, each call's work and the heap's peak checked as it
-//! goes against the row's bound, so that a row past its bound stops at the
-//! call that crossed it rather than running away.
+//! at one chunking, each call's work checked against the quota and the
+//! heap's peak against the row's bound as it goes, so that a row past its
+//! bound stops at the call that crossed it rather than running away.
 //!
 //! With `FUX_VT_WORST_FEED=FILE`, each probe also appends to FILE its
 //! costliest call and its longest, as a line `NAME CHUNK UNITS NANOSECONDS`
 //! (NAME the test, the thread's name, and the probe's number in the run;
-//! units weighted as `Work::cost`, in cells). With
+//! units as `fux_vt::work_spent` counts them). With
 //! `FUX_VT_WORST_FEED_INPUTS=DIR` too, a probe fed 4 KiB a call whose
 //! longest call took more than [`KEPT`] leaves what it fed in DIR
 //! (`NAME.bin`, each `feed` a record of its length, 8 bytes little-endian,
 //! and its bytes; and `NAME.setup`: rows, columns, history and the
 //! features' places in `Feature::ALL`), for fux-bench to time again
-//! without the counters (`fux-bench calls`). A probe that made a call of
+//! without the `checks` feature (`fux-bench calls`). A probe that made a call of
 //! another kind (`host`, `set_host_graphics`) leaves nothing to time
 //! again: its counted time stands. `fux-vt/compare/worst-feed.sh`
 //! gathers both.
@@ -20,7 +20,7 @@
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
-use fux_vt::{Feature, Options, Parser, Sink, Size, Stop, Work};
+use fux_vt::{Feature, Options, Parser, Sink, Size, Stop};
 
 use super::Heap;
 
@@ -176,18 +176,40 @@ pub fn steady(setup: &Setup) -> usize {
 /// The picture budget P (`THREATS.md` B01): 96 MiB.
 pub const PICTURE_BYTES: usize = 96 << 20;
 
-/// A bound a probe holds to (`THREATS.md` sections 2 and 4.2): for each
-/// counter it names, the most per input byte, per call and per copy of
-/// the reproducer; and the most bytes live above the parser as made.
-/// Every call also does at most the ceiling U of weighted work (4.4).
+/// What a call of `process_until_stop` may spend before it stops, over as
+/// many calls as that takes: the quota, `budget::LIMIT` (`THREATS.md` 4).
+pub const LIMIT: u64 = 1_000_000;
+
+/// The most one indivisible operation spends at a parser of `setup`
+/// (`THREATS.md` 4.2): what a call may spend past [`LIMIT`].
+pub fn most(setup: &Setup) -> u64 {
+    most_at(setup.rows, setup.cols, setup.history)
+}
+
+/// [`most`] at a screen of `rows` by `cols` and `history` bytes of
+/// history (`fux_vt::call_most`, less the quota).
+pub fn most_at(rows: u16, cols: u16, history: usize) -> u64 {
+    Size::new(rows, cols).map_or(u64::MAX, |size| {
+        fux_vt::call_most(size, history).saturating_sub(LIMIT)
+    })
+}
+
+/// The largest [`most`], at fux's largest pane, 4,096 × 4,096, and its
+/// largest history, 1 GiB (`THREATS.md` 1.2 and 4.2).
+pub const LARGEST: u64 = 2_013_047_090;
+
+/// A bound a probe holds to (`THREATS.md` section 2): the most work it
+/// spends a byte, a call and a copy of the reproducer, for a row that
+/// bounds a rate, amortized; and the most bytes live above the parser as
+/// made. Every call is held to the quota besides ([`most`]).
 #[derive(Clone, Copy, Debug)]
 pub struct Bound {
-    pub work: &'static [(&'static str, u64, u64, u64)],
+    pub work: Option<(u64, u64, u64)>,
     pub heap: usize,
 }
 
-/// What a probe counts beyond fux-vt's counters: the reply bytes it was
-/// sent (`THREATS.md` B28).
+/// What a probe counts beyond fux-vt's work: the reply bytes it was sent
+/// (`THREATS.md` B28).
 #[derive(Default)]
 struct Replies(u64);
 
@@ -206,15 +228,15 @@ pub struct Probe {
     bound: Bound,
     chunk: usize,
     copies: u64,
-    /// The bytes fed and taken by host calls, the calls made, and the
-    /// bytes fed to the parser alone.
+    /// The bytes fed and taken by host calls, and the calls made.
     pub fed: u64,
-    parsed: u64,
     pub calls: u64,
-    /// The work done since the parser was made.
-    pub work: Work,
+    /// The work done since the parser was made, and since the last budget
+    /// stop.
+    pub work: u64,
+    since_stop: u64,
     replies: Replies,
-    /// The costliest call so far, in weighted work, and the longest.
+    /// The costliest call so far and the longest.
     worst: (u64, Duration),
     /// Its name, its setup, and where what it is fed is kept, if it is.
     name: String,
@@ -248,9 +270,9 @@ impl Probe {
             chunk: chunk.max(1),
             copies: u64::try_from(copies).unwrap_or(u64::MAX),
             fed: 0,
-            parsed: 0,
             calls: 0,
-            work: Work::ZERO,
+            work: 0,
+            since_stop: 0,
             replies: Replies::default(),
             worst: (0, Duration::ZERO),
             name,
@@ -265,14 +287,16 @@ impl Probe {
     /// again, held to `bound` for `copies` copies; the heap's peak goes on.
     pub fn restart(&mut self, bound: Bound, copies: usize) {
         (self.bound, self.copies) = (bound, u64::try_from(copies).unwrap_or(u64::MAX));
-        (self.fed, self.parsed, self.calls, self.work) = (0, 0, 0, Work::ZERO);
+        (self.fed, self.calls, self.work) = (0, 0, 0);
     }
 
     /// Feeds `bytes`, `chunk` at a time, as fux does: each piece by
     /// `process_until_stop`, given again from where a call stopped until
-    /// none of it is left, each call its own. It checks after each call
-    /// that it stayed under the ceiling, and that the work so far and the
-    /// heap are within the bound.
+    /// none of it is left, each call its own; then calls of no bytes while
+    /// work is left. It checks after each call that it spent at most the
+    /// quota and one indivisible operation, that a budget stop came no
+    /// sooner than the quota, that a call of no byte did some work, and
+    /// that the work so far and the heap are within the bound.
     pub fn feed(&mut self, bytes: &[u8]) -> Result<(), String> {
         if let Some((_, file)) = &mut self.kept {
             let len = u64::try_from(bytes.len()).unwrap_or(u64::MAX).to_le_bytes();
@@ -280,40 +304,68 @@ impl Probe {
             std::io::Write::write_all(file, bytes).map_err(|e| e.to_string())?;
         }
         for piece in pieces(bytes, self.chunk) {
-            let (mut rest, mut idle) = (piece, 0u32);
-            while !rest.is_empty() {
-                let (before, started) = (Work::now(), Instant::now());
-                let stop = self
-                    .parser
-                    .process_until_stop(rest, &mut self.replies)
-                    .map_err(|e| format!("a call failed: {e}"));
-                let took = started.elapsed();
-                let done = Work::now().since(before);
-                self.worst = (self.worst.0.max(done.cost()), self.worst.1.max(took));
-                let stop = stop?;
-                let taken = stop.map_or(rest.len(), |(taken, _)| taken);
-                // A call may stop at the budget before any byte, doing the
-                // rows a checksum left (`Screen::resume_checksum`), spending
-                // as it goes, and no more often in a row than one sequence's
-                // most work allows (`idle_most`).
-                idle = match taken {
-                    0 => idle.saturating_add(1),
-                    _ => 0,
-                };
-                let size = self.parser.screen().size();
-                let working = matches!(stop, Some((_, Stop::Budget))) && done.cost() > 0;
-                if taken == 0 && (!working || idle > idle_most(size)) {
-                    return Err(format!(
-                        "a call stopped before any byte, {idle} in a row, doing {}: {stop:?}",
-                        done.cost()
-                    ));
-                }
-                self.parsed = self
-                    .parsed
-                    .saturating_add(u64::try_from(taken).unwrap_or(u64::MAX));
-                self.add(done, taken)?;
-                rest = rest.get(taken..).unwrap_or_default();
+            self.parse(piece)?;
+        }
+        self.parse(&[])
+    }
+
+    /// `feed`'s calls for one piece, and those of no bytes after it while
+    /// work is left.
+    fn parse(&mut self, piece: &[u8]) -> Result<(), String> {
+        let (mut rest, mut idle) = (piece, 0u64);
+        while !rest.is_empty() || self.parser.has_work_left() {
+            let (before, started) = (fux_vt::work_spent(), Instant::now());
+            let stop = self
+                .parser
+                .process_until_stop(rest, &mut self.replies)
+                .map_err(|e| format!("a call failed: {e}"));
+            let took = started.elapsed();
+            let done = fux_vt::work_spent().saturating_sub(before);
+            self.worst = (self.worst.0.max(done), self.worst.1.max(took));
+            let stop = stop?;
+            let taken = stop.map_or(rest.len(), |(taken, _)| taken);
+            let most = LIMIT.saturating_add(most(&self.setup));
+            if done > most {
+                return Err(format!(
+                    "a call of {} bytes spent {done}, past the quota and an indivisible \
+                     operation, {most}",
+                    rest.len()
+                ));
             }
+            // A budget stop comes once the quota is spent since the last,
+            // over as many calls as that took, frame boundaries between,
+            // and no sooner; between two, at most the quota and one
+            // operation are spent.
+            let owed = self.since_stop >= LIMIT;
+            self.since_stop = self.since_stop.saturating_add(done);
+            if self.since_stop > most {
+                return Err(format!(
+                    "{} spent since the last budget stop, past {most}",
+                    self.since_stop
+                ));
+            }
+            let budget = matches!(stop, Some((_, Stop::Budget)));
+            if budget {
+                if self.since_stop < LIMIT {
+                    return Err(format!("a budget stop after {} spent", self.since_stop));
+                }
+                self.since_stop = 0;
+            }
+            // A call that takes no byte goes on with what the last left,
+            // spending, no more often in a row than a REP's copies allow,
+            // or makes the stop a frame's boundary owed.
+            idle = match taken {
+                0 => idle.saturating_add(1),
+                _ => 0,
+            };
+            let paid = done > 0 || budget && owed;
+            if taken == 0 && (!paid || idle > IDLE_MOST) {
+                return Err(format!(
+                    "a call stopped before any byte, {idle} in a row, spending {done}: {stop:?}"
+                ));
+            }
+            self.add(done, taken)?;
+            rest = rest.get(taken..).unwrap_or_default();
         }
         Ok(())
     }
@@ -326,11 +378,11 @@ impl Probe {
         call: impl FnOnce(&mut Parser) -> T,
     ) -> Result<T, String> {
         self.hosted = true;
-        let (before, started) = (Work::now(), Instant::now());
+        let (before, started) = (fux_vt::work_spent(), Instant::now());
         let result = call(&mut self.parser);
         let took = started.elapsed();
-        let done = Work::now().since(before);
-        self.worst = (self.worst.0.max(done.cost()), self.worst.1.max(took));
+        let done = fux_vt::work_spent().saturating_sub(before);
+        self.worst = (self.worst.0.max(done), self.worst.1.max(took));
         self.add(done, bytes)?;
         Ok(result)
     }
@@ -342,50 +394,27 @@ impl Probe {
     }
 
     /// Adds a call's work, `done`, for `bytes` bytes, and checks it.
-    fn add(&mut self, done: Work, bytes: usize) -> Result<(), String> {
+    fn add(&mut self, done: u64, bytes: usize) -> Result<(), String> {
         self.calls = self.calls.saturating_add(1);
         self.fed = self
             .fed
             .saturating_add(u64::try_from(bytes).unwrap_or(u64::MAX));
-        // U is the ceiling of a call of 4 KiB (THREATS.md
-        // 4.4), or at a screen where one screen-wide sequence costs more,
-        // that sequence's most, which the parser leaves to a call of its
-        // own (`Work::ceiling`): a call given more, as
-        // `WHOLE` gives it, may do that for each 4 KiB, as that many calls
-        // would.
-        let cost = done.cost();
-        let pieces = u64::try_from(bytes.div_ceil(4096).max(1)).unwrap_or(u64::MAX);
-        let ceiling = Work::ceiling(self.parser.screen().size()).saturating_mul(pieces);
-        if cost > ceiling {
-            return Err(format!(
-                "a call of {} bytes did {} weighted units, past {pieces} U = {} ({:?})",
-                bytes,
-                cost,
-                ceiling,
-                nonzero(done)
-            ));
-        }
-        let mut sum = Work::ZERO;
-        for ((name, total), (_, now)) in self.work.counters().into_iter().zip(done.counters()) {
-            sum = with(sum, name, total.saturating_add(now))?;
-        }
-        self.work = sum;
+        self.work = self.work.saturating_add(done);
         self.within()
     }
 
     /// Whether the work so far and the heap's peak are within the bound.
     fn within(&self) -> Result<(), String> {
-        for &(name, per_byte, per_call, per_copy) in self.bound.work {
+        if let Some((per_byte, per_call, per_copy)) = self.bound.work {
             let most = per_byte
                 .saturating_mul(self.fed)
                 .saturating_add(per_call.saturating_mul(self.calls))
                 .saturating_add(per_copy.saturating_mul(self.copies));
-            let done = self.counted(name)?;
-            if done > most {
+            if self.work > most {
                 return Err(format!(
-                    "{name} {done} past its bound {most} ({per_byte} a byte, {per_call} a call, \
+                    "{} spent, past its bound {most} ({per_byte} a byte, {per_call} a call, \
                      {per_copy} a copy) after {} bytes in {} calls",
-                    self.fed, self.calls
+                    self.work, self.fed, self.calls
                 ));
             }
         }
@@ -399,27 +428,19 @@ impl Probe {
         Ok(())
     }
 
-    /// What counter `name` counted so far; `replies` the reply bytes sent.
-    /// A name no counter has is an error, so that a bound naming one
-    /// misspelled does not pass for counting nothing.
-    pub fn counted(&self, name: &str) -> Result<u64, String> {
-        if name == "replies" {
-            return Ok(self.replies.0);
-        }
-        (self.work.counters().into_iter())
-            .find(|(n, _)| *n == name)
-            .map(|(_, n)| n)
-            .ok_or_else(|| format!("no counter is named {name}"))
+    /// The reply bytes it was sent so far.
+    pub fn replies(&self) -> u64 {
+        self.replies.0
     }
 
-    /// Checks that counter `name` counted at least `least`: what the probe
-    /// knows was done (`THREATS.md` 4.3), so a counter that counts nothing
+    /// Checks that the probe spent at least `least` since it began: what
+    /// it knows was done (`THREATS.md` 4.2), so work that goes unspent
     /// shows.
-    pub fn at_least(&self, name: &str, least: u64) -> Result<(), String> {
-        let done = self.counted(name)?;
-        if done < least {
+    pub fn at_least(&self, least: u64) -> Result<(), String> {
+        if self.work < least {
             return Err(format!(
-                "{name} counted {done}, fewer than the {least} known done"
+                "{} spent, less than the {least} known done",
+                self.work
             ));
         }
         Ok(())
@@ -430,11 +451,10 @@ impl Probe {
         self.heap.live()
     }
 
-    /// Ends the probe: the work and the heap within the bound, at least one
-    /// input byte counted for each fed, and the invariant checker clean.
+    /// Ends the probe: the work and the heap within the bound, and the
+    /// invariant checker clean.
     pub fn finish(&self) -> Result<(), String> {
         self.within()?;
-        self.at_least("bytes", self.parsed)?;
         let report = self.parser.check();
         if !report.is_clean() {
             return Err(format!("the checker found: {report}"));
@@ -485,44 +505,8 @@ impl Drop for Probe {
     }
 }
 
-/// `work` with counter `name` set to `n`; an error for a counter this
-/// does not know, as one added to `Work` would be until it is.
-fn with(mut work: Work, name: &str, n: u64) -> Result<Work, String> {
-    let slot = match name {
-        "bytes" => &mut work.bytes,
-        "scanned" => &mut work.scanned,
-        "cells" => &mut work.cells,
-        "slots" => &mut work.slots,
-        "rows" => &mut work.rows,
-        "text" => &mut work.text,
-        "pixels" => &mut work.pixels,
-        "styles" => &mut work.styles,
-        "inserts" => &mut work.inserts,
-        "lookups" => &mut work.lookups,
-        "links" => &mut work.links,
-        "keys" => &mut work.keys,
-        "sums" => &mut work.sums,
-        "spans" => &mut work.spans,
-        "edits" => &mut work.edits,
-        _ => return Err(format!("no counter is named {name}")),
-    };
-    *slot = n;
-    Ok(work)
-}
-
-/// The counters of `work` that counted something.
-pub fn nonzero(work: Work) -> Vec<(&'static str, u64)> {
-    (work.counters().into_iter())
-        .filter(|(_, n)| *n > 0)
-        .collect()
-}
-
 /// The most calls in a row that may stop at the budget before taking a
-/// byte at a screen of `size`: those that do the rows a checksum left,
-/// each spending past the budget (`Work::CEILING` halved,
-/// `budget::LIMIT`), so no more than the most one such sequence costs
-/// (`Work::ceiling`) allows, and one more.
-pub fn idle_most(size: Size) -> u32 {
-    let calls = Work::ceiling(size) / (Work::CEILING / 2);
-    u32::try_from(calls).unwrap_or(u32::MAX).saturating_add(1)
-}
+/// byte: those that make the copies a REP left, each at least one of at
+/// most 65,535, then the one that finishes them and the stop a frame's
+/// boundary owed.
+pub const IDLE_MOST: u64 = 65_535 + 2;

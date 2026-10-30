@@ -111,8 +111,8 @@ pub(crate) fn ensure(holds: bool, detail: impl FnOnce() -> String) -> Result<(),
 
 /// Runs `check` without counting its work.
 pub(crate) fn unseen<T>(check: impl FnOnce() -> T) -> T {
-    let before = crate::Work::now();
+    let before = crate::budget::spent();
     let result = check();
-    crate::work::add(|w| *w = before);
+    crate::budget::rewind(before);
     result
 }

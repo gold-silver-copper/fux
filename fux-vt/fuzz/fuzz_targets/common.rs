@@ -268,11 +268,12 @@ pub fn marks_sound(before: &Rows, mark: fux_vt::Mark, after: &Parser, now: &Rows
 /// Feeds `piece` to `p` by `process_until_stop`, given again from each
 /// stop, as fux's pane does; at each frame begun, `FrameScan` must find
 /// the frame's end where the parser then ends it, if it ends in `piece`
-/// (THREATS.md B19). `each` is called after every call,
-/// with the bytes it took.
+/// (THREATS.md B19); then called with no bytes while work is left, as
+/// fux's pane is. `each` is called after every call, with the bytes it
+/// took.
 pub fn until_stops(p: &mut Parser, piece: &[u8], sink: &mut Record, mut each: impl FnMut(usize)) {
     let (mut left, mut frame) = (piece, None::<(Option<usize>, usize)>);
-    while !left.is_empty() {
+    while !left.is_empty() || p.has_work_left() {
         reached("call process_until_stop");
         let stop = p.process_until_stop(left, sink);
         assert!(stop.is_ok());
@@ -285,7 +286,9 @@ pub fn until_stops(p: &mut Parser, piece: &[u8], sink: &mut Record, mut each: im
             return;
         };
         each(taken);
-        assert!(taken > 0 && taken <= left.len());
+        // A budget stop may take no byte: the one a frame's boundary owed,
+        // or REP's copies made.
+        assert!(taken <= left.len() && (taken > 0 || why == Stop::Budget));
         left = left.get(taken..).unwrap_or_default();
         if let Some((end, read)) = &mut frame {
             *read = read.saturating_add(taken);

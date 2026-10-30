@@ -3,7 +3,8 @@
 //! and every host call. Up to 511 by 511 cells and 8 MiB of history, every
 //! `Feature` and pictures drawn, fed up to 1 MiB of output a run by
 //! `process_until_stop` in 4 KiB pieces, with each
-//! call's work held to the frozen ceiling U (4.4); a second parser fed a
+//! call's work held to the quota and the largest indivisible operation
+//! at its size and history (4.2, `fux_vt::call_most`); a second parser fed a
 //! byte at a time, its row versions checked after every byte while it
 //! holds few enough rows; and between the outputs the host's calls:
 //! resizes, history budgets, palettes, pictures
@@ -33,7 +34,7 @@
 //! - `f1 n` and n bytes: a character of `tests/corpus/graphemes.rs` for
 //!   each;
 //! - any other byte `k`: the next k + 1 bytes as output.
-use fux_vt::{Feature, Graphics, Identity, Options, Parser, Rgb, Size, Work};
+use fux_vt::{Feature, Graphics, Identity, Options, Parser, Rgb, Size};
 use libfuzzer_sys::fuzz_target;
 mod common;
 use common::{
@@ -101,7 +102,7 @@ struct Run {
 
 impl Run {
     /// Feeds `bytes` to both: `whole` in reads of 4 KiB by
-    /// `process_until_stop`, each call within the ceiling; `split` a byte at
+    /// `process_until_stop`, each call within `fux_vt::call_most`; `split` a byte at
     /// a time, its versions checked after each, until it has had `SPLIT`
     /// bytes, and the two compared after; then neither is fed again.
     fn feed(&mut self, bytes: &[u8]) {
@@ -111,20 +112,17 @@ impl Run {
         self.fed = self.fed.saturating_add(bytes.len());
         let (mut a, mut b) = (Record::default(), Record::default());
         let (at, mark) = (Rows::of(&self.whole), self.whole.screen().mark());
-        let mut last = Work::now();
+        let mut last = fux_vt::work_spent();
+        let most = fux_vt::call_most(self.whole.screen().size(), self.whole.history_bytes());
         let mut rest = bytes;
         while !rest.is_empty() {
             let (piece, after) = rest.split_at_checked(4096).unwrap_or((rest, &[]));
             rest = after;
             until_stops(&mut self.whole, piece, &mut a, |_| {
-                let now = Work::now();
-                let done = now.since(last);
+                let now = fux_vt::work_spent();
+                let done = now.saturating_sub(last);
                 last = now;
-                assert!(
-                    done.cost() <= Work::CEILING,
-                    "a call did {} units, past U: {done:?}",
-                    done.cost() / 20
-                );
+                assert!(done <= most, "a call spent {done}, past {most}");
             });
         }
         marks_sound(&at, mark, &self.whole, &Rows::of(&self.whole));
@@ -180,15 +178,15 @@ fn host_reads(p: &Parser) {
             (width / 2, height / 2, width, height),
         ] {
             let mut out = Vec::new();
-            let before = Work::now();
+            let before = fux_vt::work_spent();
             fux_vt::sixel::encode(shown.picture, crop, &mut out);
-            let done = Work::now().since(before);
+            let done = fux_vt::work_spent().saturating_sub(before);
             let (w, h) = (
                 u64::from(crop.2.min(width.saturating_sub(crop.0))),
                 u64::from(crop.3.min(height.saturating_sub(crop.1))),
             );
             let pixels = w.saturating_mul(h);
-            assert!(done.pixels <= pixels.saturating_mul(C_ENC), "{done:?}");
+            assert!(done <= pixels.saturating_mul(C_ENC), "{done} units");
             let bands = h.div_ceil(6);
             let most = pixels
                 .saturating_mul(12)

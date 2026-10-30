@@ -90,7 +90,8 @@ fn take_row(
         .get_mut(start..start.wrapping_add(usize::from(m.used)))
         .unwrap_or_default();
     let len = trimmed(row).len();
-    work!(cells, row.len().saturating_sub(len));
+    // The row's cells, those trimmed too, and the row: once.
+    crate::budget::spend(row.len().saturating_add(1));
     let kept = row.get_mut(..len).unwrap_or_default();
     history.push(m.arriving(kept, width))?;
     // Blanked now, while the cells are at hand.
@@ -208,7 +209,6 @@ impl Order {
     }
     fn push_back(&mut self, slot: usize) {
         if self.top != 0 {
-            spend!(slots, self.slots.len());
             if let Some(slots) = self.slots.get_mut(..) {
                 slots.rotate_left(self.top);
             }
@@ -226,7 +226,7 @@ impl Order {
         let (front, _) = self.as_mut_slices();
         if low < front.len() && high >= front.len() {
             // Across the ring's end: three reversals in place.
-            work!(slots, len.saturating_mul(2));
+            crate::budget::spend(len.saturating_mul(2));
             let by = if left { by } else { len.saturating_sub(by) };
             let (mid, end) = (low.saturating_add(by), high.saturating_add(1));
             self.reverse(low, mid);
@@ -241,7 +241,7 @@ impl Order {
             _ => front.get_mut(low..=high),
         };
         if let Some(run) = run {
-            work!(slots, run.len());
+            crate::budget::spend(run.len());
             if left {
                 run.rotate_left(by);
             } else {
@@ -436,7 +436,7 @@ impl Grid {
             return Ok(());
         }
         let size = self.size.cells();
-        spend!(cells, size);
+        crate::budget::spend(size);
         reserve(&mut self.cells, size)?;
         self.cells.resize(size, BLANK);
         self.unmade = false;
@@ -530,6 +530,7 @@ impl Grid {
         }
         let width = u16::try_from(cells.len()).map_err(|_| Error::Capacity)?;
         let kept = trimmed(cells.get(..written).unwrap_or(cells));
+        crate::budget::spend(kept.len().saturating_add(1));
         self.history.push(meta.arriving(kept, width))?;
         let text = text.filter(|text| !text.is_empty());
         let links = links.and_then(|mut links| KeptLinks::take(&mut links));
@@ -551,9 +552,12 @@ impl Grid {
     ) {
         let slot = self.meta.len();
         let cols = usize::from(self.size.cols());
-        spend!(rows, 1);
+        crate::budget::spend(if self.unmade {
+            1
+        } else {
+            cols.saturating_add(1)
+        });
         if !self.unmade {
-            spend!(cells, cols);
             let start = self.cells.len();
             self.cells
                 .extend_from_slice(cells.get(..cells.len().min(cols)).unwrap_or_default());
@@ -632,7 +636,7 @@ impl Grid {
         })
     }
     pub fn row_at(&self, index: usize) -> Option<Row<'_>> {
-        work!(rows, 1);
+        crate::budget::spend(1);
         let Some(row) = index.checked_sub(self.history.len()) else {
             let found = self.history.get(index)?;
             return Some(Row {
@@ -662,10 +666,7 @@ impl Grid {
     pub(crate) fn screen_index_of(&self, id: RowId) -> Option<usize> {
         let row =
             (self.order.iter()).position(|slot| self.meta.get(*slot).is_some_and(|m| m.id == id));
-        spend!(
-            rows,
-            row.map_or(self.order.len(), |row| row.saturating_add(1))
-        );
+        crate::budget::spend(row.map_or(self.order.len(), |row| row.saturating_add(1)));
         row.and_then(|row| row.checked_add(self.history.len()))
     }
     /// See `Screen::track_pictures`.
@@ -678,7 +679,7 @@ impl Grid {
     }
     /// The index of history row `number`, if it is kept and is row `id`.
     pub(crate) fn index_of_number(&self, number: u64, id: RowId) -> Option<usize> {
-        work!(rows, 1);
+        crate::budget::spend(1);
         let index = self.history.index_of_number(number)?;
         (self.history.kept(index)?.id == id).then_some(index)
     }
@@ -759,7 +760,7 @@ impl Grid {
         let Some(slot) = self.slot(row) else {
             return;
         };
-        work!(cells, run.len());
+        crate::budget::spend(run.len());
         let start = usize::from(col);
         let end = start.saturating_add(run.len());
         let Some(dst) = self.slice_mut(slot).get_mut(start..end) else {
@@ -884,11 +885,11 @@ impl Grid {
     /// where inlined.
     #[inline(never)]
     fn find_table_style(&mut self, attributes: Attributes, at: usize) -> u32 {
-        work!(lookups, 1);
+        crate::budget::spend(1);
         let id = match self.styles.find(attributes) {
             Some(id) => id,
             None => {
-                work!(inserts, 1);
+                crate::budget::spend(1);
                 let cells = self.cells.len().saturating_add(self.history.kept_cells());
                 let mut swept = self.styles.wants_sweep(cells);
                 if swept {
@@ -943,9 +944,13 @@ impl Grid {
     #[cold]
     #[inline(never)]
     pub(crate) fn sweep(&mut self) {
-        // Every cell is read twice: to mark its style, then to renumber it.
-        let cells = self.cells.len().saturating_add(self.history.kept_cells());
-        spend!(styles, cells.saturating_mul(2));
+        // Every cell and history row is read twice: to mark its style, then
+        // to renumber it; and each style kept or let go, twice.
+        let cells = (self.cells.len())
+            .saturating_add(self.history.kept_cells())
+            .saturating_add(self.history.len())
+            .saturating_add(self.styles.len());
+        crate::budget::spend(cells.saturating_mul(2));
         let mut used = vec![false; self.styles.len()];
         let mut mark = |cell: &Compact| {
             if let Some(mark) = Styles::place(cell.style()).and_then(|i| used.get_mut(i)) {
@@ -977,6 +982,7 @@ impl Grid {
 
     /// Forgets every link: RIS.
     pub fn reset_links(&mut self) {
+        crate::budget::spend(self.linked.len());
         self.linked.iter_mut().for_each(RowLinks::clear);
         self.history.reset_links();
         self.links = Links::default();
@@ -1016,6 +1022,8 @@ impl Grid {
             let screen = (order.iter()).filter_map(|slot| Some((None, linked.get(*slot)?.runs())));
             history.chain(screen)
         };
+        // The screen's rows, walked twice; history's charge themselves.
+        crate::budget::spend(self.order.len().saturating_mul(2));
         let lose = self.links.sweep(rows, self.history.len());
         for index in 0..lose {
             self.history.unlink(index, version);
@@ -1095,7 +1103,7 @@ impl Grid {
             span_end
         };
         let blank = Compact::blank(style);
-        work!(cells, reach.saturating_sub(first));
+        crate::budget::spend(reach.saturating_sub(first));
         let cells = self.slice_mut(slot);
         // Already all blank: the row is unchanged, and a blank is never
         // half a wide glyph, so nothing needs repair.
@@ -1182,11 +1190,8 @@ impl Grid {
         let ((row, col), cols) = (self.cursor.at(), self.size.cols());
         let mut kept = false;
         if display {
-            // ED spends the screen's cells (`budget`); EL nothing.
-            crate::budget::spend(
-                crate::budget::units(self.size.cells()),
-                crate::budget::weight::cells,
-            );
+            // ED spends a unit a row; each row's erase, its cells.
+            crate::budget::spend(self.size.rows());
             for y in 0..self.size.rows() {
                 let whole = match part {
                     Erase::Below => y > row,
@@ -1233,7 +1238,7 @@ impl Grid {
                     || c.is_wide_continuation() && cells.get(at.wrapping_sub(1)).is_some_and(kept)
             })
         };
-        work!(cells, end.saturating_sub(start));
+        crate::budget::spend(end.saturating_sub(start));
         let mut runs = Vec::new();
         let mut from = start;
         for col in start..end {
@@ -1258,7 +1263,7 @@ impl Grid {
     pub fn fill(&mut self, row: u16, (start, end): (u16, u16), c: char, style: u32, version: u64) {
         self.erase(row, start, end, style, version);
         let span = usize::from(start)..usize::from(end);
-        work!(cells, span.len());
+        crate::budget::spend(span.len());
         let glyph = Compact::glyph(c, 1, style);
         self.mutate_row(row, version, end, |cells| {
             cells
@@ -1283,7 +1288,7 @@ impl Grid {
         version: u64,
     ) {
         let span = usize::from(start)..usize::from(end);
-        work!(cells, span.len());
+        crate::budget::spend(span.len());
         self.mutate_row(row, version, end, |cells| {
             // A protected glyph just before keeps its second half.
             let before = span.start.checked_sub(1).and_then(|i| cells.get(i));
@@ -1328,7 +1333,7 @@ impl Grid {
             return;
         };
         let end = end.min(self.size.cols());
-        work!(cells, end.saturating_sub(start));
+        crate::budget::spend(end.saturating_sub(start));
         let mut changed = false;
         for col in usize::from(start)..usize::from(end) {
             let Some(&cell) = self.slice(slot).get(col) else {
@@ -1376,9 +1381,8 @@ impl Grid {
             // To a double-width line's end (DEC STD 070, 5.6.1).
             let end = end.min(self.row_end(y)).max(col);
             let to = usize::from(col)..usize::from(end);
-            // Each cell read, then written, and rewritten (`budget`).
-            spend!(cells, to.len().saturating_mul(2));
-            spend!(edits, to.len());
+            // Each cell read, then written.
+            crate::budget::spend(to.len().saturating_mul(2));
             if let (Some(source), Some(target)) = (self.slot(from), self.slot(y)) {
                 self.copy_cells((source, target), span.clone(), to.clone(), true, version);
             }
@@ -1402,6 +1406,8 @@ impl Grid {
         version: u64,
     ) {
         let mut cells = self.slice(source).get(span).unwrap_or_default().to_vec();
+        // The source's cells, however few of them land.
+        crate::budget::spend(cells.len());
         if cuts {
             cut(&mut cells);
         }
@@ -1418,9 +1424,8 @@ impl Grid {
             .iter()
             .map(String::len)
             .fold(0usize, usize::saturating_add);
-        // The text read, and as much written, spent here up front.
-        spend!(text, bytes);
-        crate::budget::spend(crate::budget::units(bytes), crate::budget::weight::text);
+        // The text copied, spent here up front.
+        crate::budget::spend(bytes);
         let columns = to.start..to.start.saturating_add(cells.len());
         let mut changed = false;
         if let Some(mut line) = self.line(target) {
@@ -1440,7 +1445,7 @@ impl Grid {
                 } else if in_place {
                     line.replace(at, *cell, text);
                 } else {
-                    line.set(at, *cell, text);
+                    line.set_compacted(at, *cell, text);
                 }
             }
             let edges = columns.start.saturating_sub(1)..columns.end.saturating_add(1);
@@ -1489,7 +1494,7 @@ impl Grid {
         }
         let cols = self.size.cols();
         let end = usize::from(end);
-        work!(cells, end.saturating_sub(usize::from(col)));
+        crate::budget::spend(end.saturating_sub(usize::from(col)));
         let blank = Compact::blank(blank);
         self.mutate_row(row, version, cols, |row_cells| {
             let col = usize::from(col);
@@ -1538,7 +1543,7 @@ impl Grid {
             used = usize::from(m.used);
             *m = Meta::new(id, version, false, 0);
         }
-        work!(cells, used);
+        crate::budget::spend(used);
         // A row taken into history leaves its slot blank (`take_row`).
         if used > 0 {
             let cells = self.slice_mut(slot);
@@ -1573,7 +1578,7 @@ impl Grid {
     /// loop.
     #[inline(never)]
     fn colour(&mut self, slot: usize, blank: u32) {
-        work!(cells, self.size.cols());
+        crate::budget::spend(self.size.cols());
         for cell in self.slice_mut(slot) {
             cell.set_style(blank);
         }
@@ -1634,7 +1639,7 @@ impl Grid {
         }
         let left = usize::from(self.columns.first());
         let end = usize::from(self.columns.end());
-        spend!(cells, usize::from(height).saturating_mul(2));
+        crate::budget::spend(usize::from(height).saturating_mul(2));
         for y in top..=bottom {
             self.mutate_row(y, version, 0, |cells| {
                 let mut changed = false;
@@ -1675,18 +1680,28 @@ impl Grid {
         let (Some(source), Some(target)) = (self.slot(from), self.slot(to)) else {
             return;
         };
-        // Each cell read, compared and written, plus a few buffers made
-        // (`budget`).
-        spend!(cells, span.len().saturating_mul(3));
-        spend!(spans, 1);
+        // Each cell read, compared and written.
+        crate::budget::spend(span.len().saturating_mul(3));
         self.copy_cells((source, target), span.clone(), span.clone(), false, version);
-        let links = self.linked.get(source).filter(|l| !l.is_empty()).cloned();
-        let linked = links.is_some() || self.linked.get(target).is_some_and(|l| !l.is_empty());
-        if linked {
-            for at in span {
-                let link = links.as_ref().and_then(|l| l.runs().get(at));
-                self.set_link(to, at..at.saturating_add(1), link, version);
-            }
+        // The source's links in the span, absolute, set in one go: the
+        // row's others stay where they are.
+        let runs: Vec<(Range<usize>, Hyperlink)> = (self.linked.get(source))
+            .map(|links| {
+                crate::budget::spend(links.runs().len());
+                (links.runs().within(span.clone()))
+                    .map(|(cells, link)| {
+                        let start = cells.start.saturating_add(span.start);
+                        (start..cells.end.saturating_add(span.start), link.clone())
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        if let Some(links) = self.linked.get_mut(target)
+            && (!runs.is_empty() || !links.is_empty())
+            && links.replace(span, &runs)
+            && let Some(m) = self.meta.get_mut(target)
+        {
+            m.version = version;
         }
     }
 
@@ -1695,7 +1710,7 @@ impl Grid {
     fn blank_span(&mut self, row: u16, span: Range<usize>, blank: u32, version: u64) {
         let cell = Compact::blank(blank);
         let end = u16::try_from(span.end).unwrap_or(u16::MAX);
-        spend!(cells, span.len());
+        crate::budget::spend(span.len());
         self.mutate_row(row, version, end, |cells| {
             let Some(run) = cells.get_mut(span.clone()) else {
                 return false;
@@ -1828,7 +1843,7 @@ impl Grid {
         let start = slot.saturating_mul(usize::from(self.size.cols()));
         let used = start.saturating_add(usize::from(m.used));
         let cells = trimmed(self.cells.get(start..used).unwrap_or_default());
-        work!(cells, usize::from(m.used).saturating_sub(cells.len()));
+        crate::budget::spend(usize::from(m.used).saturating_add(1));
         self.history.push(m.arriving(cells, self.size.cols()))?;
         // A copy of the text, and the links themselves, the slot keeping
         // their list's memory for its next row.
@@ -1848,7 +1863,7 @@ impl Grid {
         // Usually the rows lie in one of the ring's two slices: shift that
         // run by one.
         let (low, high) = (from.min(to), from.max(to));
-        work!(slots, high.saturating_sub(low).saturating_add(1));
+        crate::budget::spend(high.saturating_sub(low).saturating_add(1));
         let (front, back) = self.order.as_mut_slices();
         let split = front.len();
         let run = if high < split {
@@ -1963,7 +1978,7 @@ impl Grid {
             }
             row.clear();
             row.resize(usize::from(width), BLANK);
-            work!(cells, width);
+            crate::budget::spend(width);
             // The links that fit, to a double-width row's new end.
             let fits = match old.is_some_and(|r| r.rendition().is_double()) {
                 true => (width / 2).max(1),
@@ -2061,6 +2076,8 @@ impl Grid {
     /// Blanks every row of a recyclable grid with new identities, top to
     /// bottom, and resets cursors, margins and keyboard stack.
     fn renew(&mut self, next: &mut u64, version: u64) {
+        // Each row renewed and its links cleared, blank or not.
+        crate::budget::spend(self.order.len().saturating_add(self.linked.len()));
         for index in 0..self.order.len() {
             let id = next_id(next);
             if let Some(&slot) = self.order.get(index) {
@@ -2215,6 +2232,7 @@ impl Grid {
         if !self.doubled() {
             return;
         }
+        crate::budget::spend(self.size.rows());
         for row in 0..self.size.rows() {
             self.set_rendition(row, LineRendition::Single, version);
         }
@@ -2505,6 +2523,7 @@ pub(crate) fn put(cells: &mut [Compact], i: usize, glyph: Compact, width: u16) -
 }
 
 pub(crate) fn repair_wide(cells: &mut [Compact]) {
+    crate::budget::spend(cells.len());
     for i in 0..cells.len() {
         let invalid = cells.get(i).is_some_and(|c| {
             c.is_wide()

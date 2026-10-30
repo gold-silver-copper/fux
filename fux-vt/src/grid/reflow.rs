@@ -319,7 +319,7 @@ impl Grid {
             return None;
         }
         // As `row_at` counts it, without making the row.
-        work!(rows, 1);
+        crate::budget::spend(1);
         match index.checked_sub(self.history.len()) {
             None => self.history.kept(index).map(|kept| kept.id),
             Some(row) => self
@@ -506,7 +506,7 @@ impl Reflow for Fill<'_> {
             return;
         };
         self.written = self.written.max(col.saturating_add(cells.len()));
-        work!(cells, cells.len());
+        crate::budget::spend(cells.len());
         crate::copy_from(dst, cells);
         // Clusters held in the old row's text are stored again in the new.
         if !text.is_empty() {
@@ -552,7 +552,7 @@ impl Reflow for Fill<'_> {
         let history = row < self.screen;
         let cells = (self.cells.as_slice(), written);
         (self.grid).keep_row(meta, cells, (Some(text), links), history)?;
-        work!(cells, written);
+        crate::budget::spend(written);
         self.cells
             .get_mut(..written)
             .unwrap_or_default()
