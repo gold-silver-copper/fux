@@ -5,7 +5,7 @@
 //! alone, by hand and by a second reader who saw nothing but its pages.
 //! Columns and lines here count from 0, the standard's from 1.
 
-use fux_vt::{Feature, LineRendition, Options, Parser, Size};
+use fux_vt::{Color, Feature, LineRendition, Options, Parser, Size};
 type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
 
 #[path = "corpus/lines.rs"]
@@ -231,6 +231,74 @@ fn decsed_and_an_ed_sparing_guarded_glyphs_keep_the_renditions() -> Result {
         Some(Single),
         "ED of a line with no guarded glyph"
     );
+    // Preserving a doubled row still blanks its inaccessible tail in the
+    // default style, even when ED's pen or earlier EL blanks are colored.
+    for bytes in [
+        "\x1b#6\x1bVx\x1bW\x1b[44m\x1b[2J\x1b#5",
+        "\x1b#6\x1b[44m\x1b[2K\x1b[?2J\x1b#5",
+    ] {
+        let p = run(2, 10, bytes.as_bytes())?;
+        for col in 5..10 {
+            assert_eq!(
+                p.screen().cell(0, col).map(|c| c.bgcolor()),
+                Some(Color::Default),
+                "{bytes:?}, column {col}"
+            );
+        }
+    }
+    let p = run(2, 10, b"\x1b#6\x1bVabcdef\x1bW\x1b[1;5H\x1b[1J")?;
+    assert!(
+        !p.screen().row_wrapped(0),
+        "whole-line guarded ED ends wraps"
+    );
+    // A single erase decides each line independently, including when the
+    // cursor's line becomes single width while a guarded doubled one stays.
+    for (erase, expected, text) in [
+        (
+            "\x1b[2;1H\x1b[?2J",
+            [
+                DoubleWidth,
+                DoubleHeightTop,
+                DoubleHeightBottom,
+                DoubleWidth,
+            ],
+            ["", "d", "", ""],
+        ),
+        (
+            "\x1b[2;1H\x1b[2J",
+            [DoubleWidth, Single, Single, DoubleWidth],
+            ["g", "", "", "h"],
+        ),
+        (
+            "\x1b[2;1H\x1b[J",
+            [DoubleWidth, Single, Single, DoubleWidth],
+            ["g", "", "", "h"],
+        ),
+        (
+            "\x1b[3;5H\x1b[1J",
+            [DoubleWidth, Single, Single, DoubleWidth],
+            ["g", "", "", "h"],
+        ),
+    ] {
+        let mut p = run(
+            4,
+            10,
+            b"\x1b#6\x1bVg\x1bW\r\n\x1b#3\x1b[1\"qd\x1b[0\"q\r\n\x1b#4u\r\n\x1b#6\x1bVh\x1bW",
+        )?;
+        p.process(erase.as_bytes())?;
+        assert_eq!(renditions(&p), expected, "{erase:?}");
+        assert_eq!(lines(&p), text, "{erase:?}");
+        for (row, rendition) in (0u16..).zip(expected) {
+            p.process(format!("\x1b[{};10H", row.saturating_add(1)).as_bytes())?;
+            let end = if rendition.is_double() { 4 } else { 9 };
+            assert_eq!(p.screen().cursor_position(), (row, end), "{erase:?}");
+        }
+        #[cfg(feature = "checks")]
+        {
+            let report = p.check();
+            assert!(report.is_clean(), "{erase:?}: {report}");
+        }
+    }
     Ok(())
 }
 
