@@ -1,45 +1,21 @@
 //! Properties checked against independent models on random input:
 //! printed text is segmented into cells as UAX #29 has it; reflow keeps
-//! every line's text; `Cells` behaves as a plain list of cells; the kitty
+//! every line's text; `Cells` operations keep their contracts; the kitty
 //! keyboard flag stacks behave as plain stacks.
 
-use fux_vt::{Cells, Feature, Options, Parser, Size};
+use fux_vt::{CellRef, Cells, Feature, Options, Parser, Size};
 #[path = "corpus/graphemes.rs"]
 mod graphemes;
 #[path = "corpus/models.rs"]
 mod models;
-use models::{CellsOp, Model, cells_of, printable};
+use models::{cells_of, printable};
 
 type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
 
-/// A small deterministic generator (splitmix64), so a failure names its case.
-struct Rng(u64);
-
-impl Rng {
-    fn next(&mut self) -> u64 {
-        self.0 = self.0.wrapping_add(0x9e37_79b9_7f4a_7c15);
-        let mut x = self.0;
-        x = (x ^ (x >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
-        x = (x ^ (x >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
-        x ^ (x >> 31)
-    }
-    /// Below `n`, or 0 for an `n` of 0.
-    fn below(&mut self, n: usize) -> usize {
-        let n = u64::try_from(n).unwrap_or(u64::MAX);
-        let value = self.next().checked_rem(n).unwrap_or(0);
-        usize::try_from(value).unwrap_or(0)
-    }
-    /// From 1 to `n`.
-    fn upto(&mut self, n: usize) -> usize {
-        self.below(n).saturating_add(1)
-    }
-    fn chance(&mut self, percent: usize) -> bool {
-        self.below(100) < percent
-    }
-    fn pick<T: Copy>(&mut self, items: &[T]) -> Option<T> {
-        items.get(self.below(items.len())).copied()
-    }
-}
+#[expect(dead_code, reason = "each test uses different generator helpers")]
+#[path = "../src/test_rng.rs"]
+mod test_rng;
+use test_rng::Rng;
 
 // Printing and grapheme clusters.
 
@@ -314,52 +290,156 @@ fn reflow_narrower_and_back_keeps_every_line() -> Result {
 
 // Cells.
 
-/// Random edits to `Cells`, of every kind, on runs small enough that their
-/// text budget runs out, agree with a plain list of cells after each.
+fn repeated(c: char, n: usize) -> String {
+    std::iter::repeat_n(c, n).collect()
+}
+
 #[test]
-fn cells_agree_with_a_plain_list_of_cells() -> Result {
-    let texts = models::texts();
-    let mut r = Rng(0xce11_5000_0000_0003);
-    let mut edits = 0usize;
-    for _ in 0..1_500 {
-        let len = r.upto(6);
-        let mut cells = Cells::new(len).unwrap_or_default();
-        let mut model = vec![Model::blank(); len];
-        let mut other = Cells::new(4).unwrap_or_default();
-        for _ in 0..60 {
-            let i = r.below(model.len().saturating_add(1));
-            let text = texts.get(r.below(texts.len())).cloned().unwrap_or_default();
-            let wide = r.chance(30);
-            let attributes = r.pick(&models::STYLES).unwrap_or_default();
-            let op = match r.below(6) {
-                0 | 1 => CellsOp::SetText {
-                    i,
-                    text,
-                    wide,
-                    attributes,
-                },
-                2 => CellsOp::SetFrom {
-                    i,
-                    j: r.below(4),
-                    text,
-                    wide,
-                    attributes,
-                },
-                3 => CellsOp::SetAttributes { i, attributes },
-                4 => CellsOp::Fill {
-                    a: r.below(len.saturating_add(2)),
-                    b: r.below(len.saturating_add(2)),
-                    continuation: r.chance(50),
-                    attributes,
-                },
-                _ => CellsOp::Resize { len: r.below(8) },
-            };
-            models::apply(&mut cells, &mut other, &mut model, &op);
-            models::check(&cells, &model);
-            edits = edits.saturating_add(1);
+fn cells_set_and_borrowed_copy_keep_text_shape_and_report_truncation() -> Result {
+    let cases = [
+        ("".into(), "".into()),
+        ("a".into(), "a".into()),
+        ("界".into(), "界".into()),
+        ("e\u{301}".into(), "e\u{301}".into()),
+        (repeated('a', 17), repeated('a', 17)),
+        (repeated('a', 18), repeated('a', 18)),
+        (repeated('a', 128), repeated('a', 128)),
+        (repeated('a', 129), repeated('a', 128)),
+        (repeated('界', 43), repeated('界', 42)),
+    ];
+    for (text, kept) in cases {
+        for attributes in models::STYLES {
+            for wide in [false, true] {
+                let mut cells = Cells::new(2)?;
+                let mut other = Cells::new(4)?;
+                let source = CellRef::new(&text, wide, attributes);
+                let whole = cells.set(0, source);
+                models::stored(&cells, 0, source, whole);
+                assert_eq!(whole, text == kept);
+                assert_eq!(cells.get(0).ok_or("cell")?.contents(), kept);
+                other.set(0, CellRef::new("different locator", false, attributes));
+                other.set(3, source);
+                let borrowed = other.get(3).ok_or("source")?;
+                cells.fill(0..2, CellRef::default());
+                assert!(cells.set(0, borrowed));
+                assert!(!cells.set(2, borrowed));
+                assert_eq!(cells.get(0), Some(borrowed));
+            }
         }
     }
-    assert!(edits > 80_000, "{edits}");
+    let [_, attributes, other_attributes] = models::STYLES;
+    let mut cells = Cells::new(2)?;
+    let text = repeated('界', 42);
+    assert!(cells.set(0, CellRef::new(&text, true, attributes)));
+    let source = CellRef::new(&text, true, other_attributes);
+    assert!(!cells.set(1, source));
+    models::stored(&cells, 1, source, false);
+    assert_eq!(cells.get(1).ok_or("partial")?.contents(), repeated('界', 5));
+    assert_eq!(cells, Cells::try_from_iter(cells.iter())?);
+
+    // Live long text admits exactly the row limit after compaction; a
+    // cluster one byte past it is cut, with or without overwritten text.
+    let limit = Cells::text_limit(2);
+    let over = repeated('c', limit.saturating_sub(127));
+    for overwritten in [false, true] {
+        let mut cells = Cells::new(2)?;
+        if overwritten {
+            for c in ['b', 'a'] {
+                let text = repeated(c, limit.saturating_sub(128));
+                assert!(cells.set(0, CellRef::new(&text, false, attributes)));
+            }
+        }
+        assert!(cells.set(1, CellRef::new(&repeated('a', 128), false, attributes)));
+        if overwritten {
+            assert_eq!(cells.text_len(), limit);
+        }
+        assert!(!cells.set(0, CellRef::new(&over, false, attributes)));
+        assert_eq!(cells.get(0).ok_or("cut")?.contents(), repeated('c', 17));
+    }
+    Ok(())
+}
+
+#[test]
+fn cell_attributes_preserve_text_shape_and_other_cells() -> Result {
+    let [_, attributes, _] = models::STYLES;
+    let mut cells = Cells::new(4)?;
+    for (i, text) in ["a", "e\u{301}", &repeated('x', 128)]
+        .into_iter()
+        .enumerate()
+    {
+        assert!(cells.set(i, CellRef::new(text, true, attributes)));
+    }
+    cells.set(3, CellRef::wide_continuation());
+    for i in 0..cells.len() {
+        for attributes in models::STYLES {
+            let before = cells.clone();
+            cells.set_attributes(i, attributes);
+            models::unchanged(&cells, &before, i..i.saturating_add(1));
+            models::restyled(&cells, &before, i, attributes);
+        }
+    }
+    let before = cells.clone();
+    cells.set_attributes(cells.len(), attributes);
+    assert_eq!(cells, before);
+    Ok(())
+}
+
+#[test]
+fn cell_fill_clips_ranges_and_preserves_outside_cells() -> Result {
+    let [_, attributes, other_attributes] = models::STYLES;
+    for (start, end) in [(0, 0), (0, 4), (1, 3), (2, 8), (4, 8), (3, 1)] {
+        for fill in [
+            CellRef::new("z", true, attributes),
+            CellRef::wide_continuation(),
+        ] {
+            let mut cells = Cells::new(4)?;
+            cells.fill(0..4, CellRef::new("old", false, other_attributes));
+            let before = cells.clone();
+            cells.fill(start..end, fill);
+            models::unchanged(&cells, &before, start..end);
+            assert!(cells.range(start..end).all(|got| got == fill));
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn cell_resize_preserves_prefix_fills_growth_trims_in_order_and_refuses_atomically() -> Result {
+    let [_, attributes, other_attributes] = models::STYLES;
+    let mut cells = Cells::new(8)?;
+    let text = repeated('x', 128);
+    let source = CellRef::new(&text, true, attributes);
+    for i in 0..3 {
+        assert!(cells.set(i, source));
+    }
+    let before = cells.clone();
+    let fill = CellRef::new("z", false, other_attributes);
+    cells.resize(10, fill)?;
+    assert_eq!(cells.len(), 10);
+    assert!(cells.range(0..8).eq(before.iter()));
+    assert!(cells.range(8..10).all(|got| got == fill));
+    cells.resize(3, fill)?;
+    assert_eq!(cells.len(), 3);
+    for (i, kept) in [128, 17, 17].into_iter().enumerate() {
+        assert_eq!(
+            cells.get(i),
+            Some(CellRef::new(
+                text.get(..kept).ok_or("prefix")?,
+                true,
+                attributes
+            ))
+        );
+    }
+    for huge in [(64 << 20) + 1, usize::MAX] {
+        let before = cells.clone();
+        let text_len = cells.text_len();
+        assert!(cells.resize(huge, fill).is_err());
+        assert_eq!(cells, before);
+        assert_eq!(cells.text_len(), text_len);
+    }
+    cells.resize(0, fill)?;
+    assert!(cells.is_empty());
+    assert_eq!(cells.text_len(), 0);
     Ok(())
 }
 

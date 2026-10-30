@@ -1,15 +1,11 @@
 //! Independent models of what fux-vt should do, shared by the property
 //! tests and the fuzz targets: how printed text is segmented into cells
 //! (UAX #29 by unicode-segmentation, widths by unicode-width as fux-vt's
-//! written rule tailors it), and what a
-//! run of `Cells` holds after edits.
+//! written rule tailors it), plus cell-operation fixtures and contracts.
 #![allow(dead_code, reason = "each user takes the models it needs")]
 
 use fux_vt::{Attributes, CLUSTER_CAPACITY, CellRef, Cells, Color};
 
-/// The longest a short cluster is: what a long one `Cells` has no room
-/// for is cut to.
-const SHORT: usize = 17;
 use std::collections::VecDeque;
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
@@ -243,65 +239,6 @@ fn zero_prepend(c: char) -> bool {
     width(c) == Some(0) && clusters(&format!("{c}a")).len() == 1
 }
 
-/// A cell as the model keeps it.
-#[derive(Clone, Debug, PartialEq)]
-pub struct Model {
-    pub text: String,
-    pub wide: bool,
-    pub continuation: bool,
-    pub attributes: Attributes,
-}
-
-impl Model {
-    pub fn blank() -> Self {
-        Self {
-            text: String::new(),
-            wide: false,
-            continuation: false,
-            attributes: Attributes::default(),
-        }
-    }
-}
-
-/// The longest start of `text` of at most `max` bytes, in whole chars.
-pub fn floor(text: &str, max: usize) -> String {
-    let mut out = String::new();
-    for c in text.chars() {
-        if out.len().saturating_add(c.len_utf8()) > max {
-            break;
-        }
-        out.push(c);
-    }
-    out
-}
-
-/// The text `Cells` keeps of `text` stored at `i`, given the others:
-/// `CLUSTER_CAPACITY` bytes of it at most, in whole chars; and if what the
-/// others keep beyond their cells leaves no room, what fits inline.
-pub fn kept(model: &[Model], i: usize, text: &str) -> String {
-    let text = floor(text, CLUSTER_CAPACITY);
-    if text.len() <= SHORT {
-        return text;
-    }
-    let others = model
-        .iter()
-        .enumerate()
-        .filter(|(j, m)| *j != i && m.text.len() > SHORT)
-        .fold(0usize, |sum, (_, m)| sum.saturating_add(m.text.len()));
-    if others.saturating_add(text.len()) <= Cells::text_limit(model.len()) {
-        text
-    } else {
-        floor(&text, SHORT)
-    }
-}
-
-/// Sets model cell `i`, if there is one.
-pub fn put(model: &mut [Model], i: usize, cell: Model) {
-    if let Some(slot) = model.get_mut(i) {
-        *slot = cell;
-    }
-}
-
 /// Texts `Cells` operations store: inline, spilled, and past what a small
 /// run's budget holds.
 pub fn texts() -> Vec<String> {
@@ -332,155 +269,55 @@ pub const STYLES: [Attributes; 3] = [
     Attributes::new(Color::Default, Color::Default).with_underline_color(Color::Idx(9)),
 ];
 
-/// An edit to a run of `Cells`. Indices may be past its end.
-#[derive(Clone, Debug)]
-pub enum CellsOp {
-    SetText {
-        i: usize,
-        text: String,
-        wide: bool,
-        attributes: Attributes,
-    },
-    /// `set` from another run, which first takes the text at `j`.
-    SetFrom {
-        i: usize,
-        j: usize,
-        text: String,
-        wide: bool,
-        attributes: Attributes,
-    },
-    SetAttributes {
-        i: usize,
-        attributes: Attributes,
-    },
-    Fill {
-        a: usize,
-        b: usize,
-        continuation: bool,
-        attributes: Attributes,
-    },
-    Resize {
-        len: usize,
-    },
+/// A store reports exact text or a maximal UTF-8 prefix, keeping shape
+/// and attributes. Missing destinations refuse.
+pub fn stored(cells: &Cells, i: usize, source: CellRef<'_>, whole: bool) {
+    let Some(got) = cells.get(i) else {
+        assert!(i >= cells.len());
+        assert!(!whole);
+        return;
+    };
+    let text = got.contents();
+    assert!(source.contents().starts_with(text));
+    assert_eq!(whole, text == source.contents());
+    assert!(text.len() <= CLUSTER_CAPACITY);
+    if !whole {
+        let limit = if text.len() <= 17 {
+            17
+        } else {
+            CLUSTER_CAPACITY
+        };
+        let next = source
+            .contents()
+            .get(text.len()..)
+            .and_then(|s| s.chars().next());
+        assert!(next.is_some_and(|c| text.len().saturating_add(c.len_utf8()) > limit));
+    }
+    assert_eq!(got.is_wide(), source.is_wide());
+    assert_eq!(got.is_wide_continuation(), source.is_wide_continuation());
+    assert_eq!(got.attributes(), source.attributes());
 }
 
-/// Applies `op` to `cells` and to `model`, the plain list of cells it
-/// should equal, asserting what each operation reports. `other` is the
-/// run `SetFrom` copies from.
-pub fn apply(cells: &mut Cells, other: &mut Cells, model: &mut Vec<Model>, op: &CellsOp) {
-    match op {
-        CellsOp::SetText {
-            i,
-            text,
-            wide,
-            attributes,
-        } => {
-            let whole = cells.set(*i, CellRef::new(text, *wide, *attributes));
-            if *i < model.len() {
-                let keep = kept(model, *i, text);
-                assert_eq!(whole, keep == *text, "{text:?}");
-                let cell = Model {
-                    text: keep,
-                    wide: *wide,
-                    continuation: false,
-                    attributes: *attributes,
-                };
-                put(model, *i, cell);
-            }
-        }
-        CellsOp::SetFrom {
-            i,
-            j,
-            text,
-            wide,
-            attributes,
-        } => {
-            other.set(*j, CellRef::new(text, *wide, *attributes));
-            if let Some(from) = other.get(*j) {
-                let whole = cells.set(*i, from);
-                if *i < model.len() {
-                    let keep = kept(model, *i, from.contents());
-                    assert_eq!(whole, keep == from.contents());
-                    let cell = Model {
-                        text: keep,
-                        wide: from.is_wide(),
-                        continuation: false,
-                        attributes: from.attributes(),
-                    };
-                    put(model, *i, cell);
-                }
-            }
-        }
-        CellsOp::SetAttributes { i, attributes } => {
-            cells.set_attributes(*i, *attributes);
-            if let Some(m) = model.get_mut(*i) {
-                m.attributes = *attributes;
-            }
-        }
-        CellsOp::Fill {
-            a,
-            b,
-            continuation,
-            attributes,
-        } => {
-            let (a, b) = ((*a).min(*b), (*a).max(*b));
-            let cell = if *continuation {
-                CellRef::wide_continuation()
-            } else {
-                CellRef::new("z", false, *attributes)
-            };
-            cells.fill(a..b, cell);
-            for m in model.iter_mut().take(b).skip(a) {
-                *m = if *continuation {
-                    Model {
-                        continuation: true,
-                        ..Model::blank()
-                    }
-                } else {
-                    Model {
-                        text: "z".into(),
-                        wide: false,
-                        continuation: false,
-                        attributes: *attributes,
-                    }
-                };
-            }
-        }
-        CellsOp::Resize { len } => {
-            assert!(
-                cells.resize(*len, CellRef::default()).is_ok(),
-                "{len} cells"
-            );
-            model.resize(*len, Model::blank());
-            // A shorter run keeps a shorter run's budget: cells whose text
-            // no longer fits, left to right, keep what fits inline.
-            let whole = model.clone();
-            for (i, m) in whole.iter().enumerate() {
-                let mut prefix = model.clone();
-                for later in prefix.iter_mut().skip(i) {
-                    *later = Model::blank();
-                }
-                if let Some(slot) = model.get_mut(i) {
-                    slot.text = kept(&prefix, i, &m.text);
-                }
-            }
-        }
-    }
+/// Restyling keeps a cell's text and halves and sets its attributes.
+pub fn restyled(cells: &Cells, before: &Cells, i: usize, attributes: Attributes) {
+    let (Some(old), Some(got)) = (before.get(i), cells.get(i)) else {
+        assert!(i >= before.len() && i >= cells.len());
+        return;
+    };
+    assert_eq!(got.contents(), old.contents());
+    assert_eq!(
+        (got.is_wide(), got.is_wide_continuation()),
+        (old.is_wide(), old.is_wide_continuation())
+    );
+    assert_eq!(got.attributes(), attributes);
 }
 
-/// Asserts `cells` hold what `model` does, within their text budget, and
-/// that collecting them copies them exactly.
-pub fn check(cells: &Cells, model: &[Model]) {
-    assert_eq!(cells.len(), model.len());
-    for (i, m) in model.iter().enumerate() {
-        let got = cells.get(i).map(|cell| Model {
-            text: cell.contents().to_owned(),
-            wide: cell.is_wide(),
-            continuation: cell.is_wide_continuation(),
-            attributes: cell.attributes(),
-        });
-        assert_eq!(got.as_ref(), Some(m), "cell {i} of {model:?}");
-    }
-    assert!(cells.text_len() <= Cells::text_limit(cells.len()));
-    assert!(Cells::try_from_iter(cells.iter()).is_ok_and(|copy| copy == *cells));
+/// An edit leaves every cell outside its range untouched.
+pub fn unchanged(cells: &Cells, before: &Cells, range: std::ops::Range<usize>) {
+    assert!(cells.range(0..range.start).eq(before.range(0..range.start)));
+    assert!(
+        cells
+            .range(range.end..usize::MAX)
+            .eq(before.range(range.end..usize::MAX))
+    );
 }

@@ -1,46 +1,21 @@
-//! `Cells` against a plain list of cells.
-//!
-//! The input is structured (`arbitrary`): a run's length and edits of every
-//! kind to it -- texts inline, spilled and past its budget, copies from
-//! another run, attribute changes, fills and resizes. After each, every
-//! cell must hold what the model says, the run's text must stay within its
-//! budget, and collecting it must copy it exactly.
+//! Native `Cells` operations keep their contracts: exact or reported
+//! partial text, copied shapes and styles, untouched cells outside edits,
+//! clipped fills, preserved resize prefixes, bounded text and exact copies.
+//! Structured input includes tiny runs, spilling and huge-size refusals.
 #![no_main]
-use fux_vt::Cells;
+use fux_vt::{CellRef, Cells};
 use libfuzzer_sys::arbitrary::{self, Arbitrary};
 use libfuzzer_sys::fuzz_target;
 #[path = "../../tests/corpus/models.rs"]
 mod models;
-use models::{CellsOp, Model};
 
 #[derive(Arbitrary, Debug)]
 enum Op {
-    SetText {
-        i: u8,
-        text: u8,
-        wide: bool,
-        style: u8,
-    },
-    SetFrom {
-        i: u8,
-        j: u8,
-        text: u8,
-        wide: bool,
-        style: u8,
-    },
-    SetAttributes {
-        i: u8,
-        style: u8,
-    },
-    Fill {
-        a: u8,
-        b: u8,
-        continuation: bool,
-        style: u8,
-    },
-    Resize {
-        len: u8,
-    },
+    SetText(u8, u8, bool, u8),
+    SetFrom(u8, u8, u8, bool, u8),
+    SetAttributes(u8, u8),
+    Fill(u8, u8, bool, u8),
+    Resize(u8),
 }
 
 /// Lengths past the most cells a run holds: one past it, a large one, the
@@ -70,9 +45,15 @@ fuzz_target!(|input: (u8, Vec<Op>)| {
     {
         assert!(Cells::new(*huge).is_err(), "{huge} cells made");
         if let Ok(mut small) = Cells::new(3) {
-            let blank = fux_vt::CellRef::new(" ", false, fux_vt::Attributes::default());
+            let blank = CellRef::new(
+                "retained",
+                true,
+                models::STYLES.first().copied().unwrap_or_default(),
+            );
+            small.set(1, blank);
+            let before = small.clone();
             assert!(small.resize(*huge, blank).is_err(), "{huge} cells made");
-            assert_eq!(small.len(), 3);
+            assert_eq!(small, before);
         }
     }
     // Small runs, so their text budget runs out.
@@ -80,53 +61,68 @@ fuzz_target!(|input: (u8, Vec<Op>)| {
     let (Ok(mut cells), Ok(mut other)) = (Cells::new(len), Cells::new(4)) else {
         return;
     };
-    let mut model = vec![Model::blank(); len];
     for op in ops.iter().take(200) {
-        let op = match op {
-            Op::SetText {
-                i,
-                text: t,
-                wide,
-                style: s,
-            } => CellsOp::SetText {
-                i: usize::from(*i % 10),
-                text: text(t),
-                wide: *wide,
-                attributes: style(s),
-            },
-            Op::SetFrom {
-                i,
-                j,
-                text: t,
-                wide,
-                style: s,
-            } => CellsOp::SetFrom {
-                i: usize::from(*i % 10),
-                j: usize::from(*j % 4),
-                text: text(t),
-                wide: *wide,
-                attributes: style(s),
-            },
-            Op::SetAttributes { i, style: s } => CellsOp::SetAttributes {
-                i: usize::from(*i % 10),
-                attributes: style(s),
-            },
-            Op::Fill {
-                a,
-                b,
-                continuation,
-                style: s,
-            } => CellsOp::Fill {
-                a: usize::from(*a % 11),
-                b: usize::from(*b % 11),
-                continuation: *continuation,
-                attributes: style(s),
-            },
-            Op::Resize { len } => CellsOp::Resize {
-                len: usize::from(*len % 9),
-            },
+        let before = cells.clone();
+        let range = match op {
+            Op::SetText(i, t, wide, s) => {
+                let i = usize::from(*i % 10);
+                let text = text(t);
+                let source = CellRef::new(&text, *wide, style(s));
+                let whole = cells.set(i, source);
+                models::stored(&cells, i, source, whole);
+                Some(i..i.saturating_add(1))
+            }
+            Op::SetFrom(i, j, t, wide, s) => {
+                let (i, j) = (usize::from(*i % 10), usize::from(*j % 4));
+                other.set(j, CellRef::new(&text(t), *wide, style(s)));
+                if let Some(source) = other.get(j) {
+                    let whole = cells.set(i, source);
+                    models::stored(&cells, i, source, whole);
+                }
+                Some(i..i.saturating_add(1))
+            }
+            Op::SetAttributes(i, s) => {
+                let i = usize::from(*i % 10);
+                cells.set_attributes(i, style(s));
+                models::restyled(&cells, &before, i, style(s));
+                Some(i..i.saturating_add(1))
+            }
+            Op::Fill(a, b, continuation, s) => {
+                let (a, b) = (usize::from(*a % 11), usize::from(*b % 11));
+                let range = a.min(b)..a.max(b);
+                let fill = if *continuation {
+                    CellRef::wide_continuation()
+                } else {
+                    CellRef::new("z", false, style(s))
+                };
+                cells.fill(range.clone(), fill);
+                assert!(cells.range(range.clone()).all(|got| got == fill));
+                Some(range)
+            }
+            Op::Resize(len) => {
+                let len = usize::from(*len % 9);
+                assert!(cells.resize(len, CellRef::default()).is_ok());
+                assert_eq!(cells.len(), len);
+                if len >= before.len() {
+                    assert!(cells.range(0..before.len()).eq(before.iter()));
+                }
+                for (i, source) in before.iter().take(len).enumerate() {
+                    let whole = cells.get(i).is_some_and(|got| got == source);
+                    models::stored(&cells, i, source, whole);
+                }
+                assert!(
+                    cells
+                        .range(before.len()..len)
+                        .all(|got| got == CellRef::default())
+                );
+                None
+            }
         };
-        models::apply(&mut cells, &mut other, &mut model, &op);
-        models::check(&cells, &model);
+        if let Some(range) = range {
+            assert_eq!(cells.len(), before.len());
+            models::unchanged(&cells, &before, range);
+        }
+        assert!(cells.text_len() <= Cells::text_limit(cells.len()));
+        assert!(Cells::try_from_iter(cells.iter()).is_ok_and(|copy| copy == cells));
     }
 });
