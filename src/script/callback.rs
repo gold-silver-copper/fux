@@ -15,15 +15,13 @@ fn runs(v: &Data, of: &mut Option<crate::command::Run>) -> Result<(), Failure> {
                 runs(v, of)?;
             }
         }
-        Data::Record(v) => {
-            for (_, v) in v {
+        Data::Record { of: run, fields } => {
+            *of = super::same_run(*of, *run)?;
+            for (_, v) in fields {
                 runs(v, of)?;
             }
         }
-        Data::Snapshot(s) => {
-            *of = super::same_run(*of, Some(s.run))?;
-        }
-        Data::Int(_) | Data::Bool(_) | Data::Text(_) | Data::Null => {}
+        Data::Int(_) | Data::Bool(_) | Data::Text(_) | Data::Null | Data::All => {}
     }
     Ok(())
 }
@@ -51,16 +49,13 @@ pub(super) fn data(v: &Value<Fux>, b: &mut Budget) -> Result<Data, Failure> {
             Data::List(out)
         }
         Value::App(Fux::Record(r)) => {
-            if let Some(snapshot) = &r.snapshot {
-                b.charge(snapshot.heap_bytes()?)?;
-                return Ok(Data::Snapshot(Box::new(snapshot.clone())));
-            }
             let mut fields = b.vector(r.fields.len())?;
             for (key, v) in &r.fields {
                 fields.push((b.string(key)?, data(v, b)?));
             }
-            Data::Record(fields)
+            Data::Record { of: r.of, fields }
         }
+        Value::App(Fux::All) => Data::All,
         Value::App(Fux::Null) => Data::Null,
         Value::App(Fux::Pane(p, run)) => Data::Handle(crate::command::AnyRef::Pane(*p), *run),
         Value::App(Fux::Tab(t, run)) => Data::Handle(crate::command::AnyRef::Tab(*t), *run),
@@ -68,9 +63,9 @@ pub(super) fn data(v: &Value<Fux>, b: &mut Budget) -> Result<Data, Failure> {
             Data::Handle(crate::command::AnyRef::Workspace(*w), *run)
         }
         Value::App(Fux::Client(c, run)) => Data::Client(*c, *run),
-        Value::App(
-            Fux::Rendered(_) | Fux::All | Fux::Opts(_) | Fux::Extent(_) | Fux::Answer(..),
-        ) => return Err(fail()),
+        Value::App(Fux::Rendered(_) | Fux::Opts(_) | Fux::Extent(_) | Fux::Answer(..)) => {
+            return Err(fail());
+        }
     })
 }
 
@@ -94,17 +89,17 @@ pub(super) fn value(v: &Data, b: &mut Budget) -> Result<Value<Fux>, Failure> {
             b.charge(fuxth::Shared::<fuxth::List<Fux>>::bytes(0))?;
             Value::List(fuxth::Shared::new(fuxth::List::new(out).ok_or_else(fail)?))
         }
-        Data::Record(v) => {
-            let mut fields = b.vector(v.len())?;
-            for (key, v) in v {
+        Data::Record {
+            of,
+            fields: entries,
+        } => {
+            let mut fields = b.vector(entries.len())?;
+            for (key, v) in entries {
                 fields.push((b.string(key)?, value(v, b)?));
             }
-            record::from_fields(fields, b)?
+            record::from_fields(fields, *of, b)?
         }
-        Data::Snapshot(s) => {
-            b.charge(s.heap_bytes()?)?;
-            record::snapshot_in((**s).clone(), b)?
-        }
+        Data::All => Value::App(Fux::All),
         Data::Null => Value::App(Fux::Null),
         Data::Handle(id, run) => Value::App(super::handle(*id, *run)),
         Data::Client(c, run) => Value::App(Fux::Client(*c, *run)),
@@ -300,16 +295,19 @@ mod tests {
     fn callbacks_use_the_receiving_dictionary_and_preserve_nested_typed_data() -> TestResult {
         let context = context()?;
         let handle = Data::Handle("%3".parse().map_err(|()| "pane")?, context.of);
-        let payload = Data::Record(vec![(
-            "value".into(),
-            Data::List(vec![
-                handle,
-                Data::Null,
-                Data::Bool(true),
-                Data::Int(-3),
-                Data::Text("' drop %1 kill".into()),
-            ]),
-        )]);
+        let payload = Data::Record {
+            of: context.of,
+            fields: vec![(
+                "value".into(),
+                Data::List(vec![
+                    handle,
+                    Data::Null,
+                    Data::Bool(true),
+                    Data::Int(-3),
+                    Data::Text("' drop %1 kill".into()),
+                ]),
+            )],
+        };
         let mut state = crate::script::default_state()?.draft();
         state.config = Some(std::sync::Arc::new(crate::script::source::text(
             "receiver",
@@ -362,7 +360,7 @@ mod tests {
     }
 
     #[test]
-    fn callback_records_keep_their_held_snapshot_presentation() -> TestResult {
+    fn callback_snapshots_keep_all_scope_and_children_after_the_source_closes() -> TestResult {
         let (mut session, _) = crate::session::testing::attached(8, 30)?;
         let reply = crate::session::InProcess(&mut session).ask(&Asked {
             after: None,
@@ -373,12 +371,116 @@ mod tests {
             }
             .into(),
         })?;
-        let values = crate::script::answered(reply)?;
-        let record = values.first().ok_or("snapshot")?;
-        let data = data(record, &mut Budget::new()).map_err(|e| e.message)?;
-        let text = run(&Callback::from("print").job([data]))?;
-        assert!(text.starts_with("+1\n"), "{text}");
-        assert!(text.contains("client c1"), "{text}");
+        let mut values = crate::script::answered(reply)?;
+        let root = values.pop().ok_or("snapshot")?;
+        let grant = fuxth::Imports::new(crate::inspect::BYTES);
+        root.retain(&grant).map_err(|e| e.message)?;
+        let payload = data(&root, &mut Budget::new()).map_err(|e| e.message)?;
+        let bytes = crate::wire::encode(&payload)?;
+        let payload: Data = crate::wire::Reader::new(&bytes).whole()?;
+        let restored = value(&payload, &mut Budget::new()).map_err(|e| e.message)?;
+        assert_eq!(
+            data(&restored, &mut Budget::new()).map_err(|e| e.message)?,
+            payload
+        );
+        assert_eq!(restored, root);
+        let Value::App(Fux::Record(record)) = restored else {
+            return Err("record".into());
+        };
+        assert_eq!(record.of, Some(session.run));
+        assert_eq!(
+            record.get("scope").map_err(|e| e.message)?,
+            Value::App(Fux::All)
+        );
+        let Value::List(panes) = record.get("panes").map_err(|e| e.message)? else {
+            return Err("panes".into());
+        };
+        let child = panes.items().first().ok_or("pane")?.clone();
+        child.retain(&grant).map_err(|e| e.message)?;
+        drop(panes);
+        drop(record);
+        drop(root);
+        crate::session::testing::run(&mut session, "%1 kill")?;
+        let context = Context {
+            of: Some(session.run),
+            ..context()?
+        };
+        let Screen::List(screen) =
+            list(payload, "nip str scope get kind print").admit(None, &context)?
+        else {
+            return Err("list".into());
+        };
+        let payload = screen.items.first().ok_or("row")?.payload.clone();
+        assert_eq!(run(&screen.action.job([screen.client, payload]))?, "all\n");
+        let child = data(&child, &mut Budget::new()).map_err(|e| e.message)?;
+        let text = run(&Callback::from("str id get kind print").job([child]))?;
+        assert_eq!(text, "pane\n");
+        Ok(())
+    }
+
+    #[test]
+    fn callbacks_check_empty_snapshot_provenance_and_mixed_nested_handles() -> TestResult {
+        let context = context()?;
+        let run = context.of.ok_or("run")?;
+        let snapshot = crate::inspect::Snapshot {
+            run,
+            cursor: format!("0:{run}").parse().map_err(|()| "cursor")?,
+            scope: crate::inspect::Scope::All,
+            projection: crate::inspect::Projection::Topology,
+            workspaces: Vec::new(),
+            tabs: Vec::new(),
+            panes: Vec::new(),
+            clients: Vec::new(),
+        };
+        let record = record::snapshot(snapshot).map_err(|e| e.message)?;
+        let original = data(&record, &mut Budget::new()).map_err(|e| e.message)?;
+        let bytes = crate::wire::encode(&original)?;
+        let decoded = crate::wire::Reader::new(&bytes).whole()?;
+        let restored = value(&decoded, &mut Budget::new()).map_err(|e| e.message)?;
+        let payload = data(&restored, &mut Budget::new()).map_err(|e| e.message)?;
+        assert_eq!(payload, original);
+        assert!(list(payload.clone(), "2drop").admit(None, &context).is_ok());
+        let other = "3-4".parse().map_err(|()| "run")?;
+        let stale = Context {
+            of: Some(other),
+            ..context.clone()
+        };
+        assert!(list(payload.clone(), "2drop").admit(None, &stale).is_err());
+        let mut inferred = None;
+        runs(&payload, &mut inferred).map_err(|e| e.message)?;
+        assert_eq!(inferred, Some(run));
+        let nested = Data::Record {
+            of: None,
+            fields: vec![(
+                "nested".into(),
+                Data::List(vec![
+                    payload,
+                    Data::Handle(
+                        crate::command::AnyRef::Pane(crate::id::PaneId::of(7)),
+                        Some(run),
+                    ),
+                    Data::Client(crate::id::ClientId::of(2), Some(run)),
+                    Data::All,
+                ]),
+            )],
+        };
+        assert!(list(nested.clone(), "2drop").admit(None, &context).is_ok());
+        assert!(list(nested.clone(), "2drop").admit(None, &stale).is_err());
+        let mixed = Data::List(vec![
+            nested,
+            Data::Client(crate::id::ClientId::of(2), Some(other)),
+        ]);
+        assert!(
+            list(mixed, "2drop")
+                .admit(
+                    None,
+                    &Context {
+                        of: None,
+                        ..context
+                    }
+                )
+                .is_err()
+        );
         Ok(())
     }
 

@@ -71,7 +71,7 @@ class Tools(unittest.TestCase):
             def fux(*words):
                 calls.append(words)
                 if words == ("ls", "json"):
-                    return '{"events":"0:RUN"}'
+                    return '{"cursor":"0:RUN"}'
                 if words[-1] == "run":
                     return f"%{sum(c[-1] == 'run' for c in calls)}:0:RUN"
                 if "next-events" in words:
@@ -102,7 +102,7 @@ class Tools(unittest.TestCase):
         ])
         launched = []
         def fux(*words):
-            if words == ("ls", "json"): return '{"events":"0:RUN"}'
+            if words == ("ls", "json"): return '{"cursor":"0:RUN"}'
             if words[-1] == "run":
                 launched.append(words)
                 return f"%{len(launched)}:0:RUN"

@@ -558,15 +558,11 @@ fn start(
                 }
             }
             if programs.len() > 1 {
-                let client = session.command(place, &["ls"])?;
-                let id = client
-                    .split_whitespace()
-                    .find(|w| {
-                        w.starts_with('c') && w.get(1..).is_some_and(|n| n.parse::<u32>().is_ok())
-                    })
-                    .ok_or(format!("fux: no client in {client:?}"))?
-                    .to_owned();
-                session.command(place, &["str", &id, "client", &last, "show"])?;
+                let id = session.command(
+                    place,
+                    &["ls", "str", "clients", "get", "first", "str", "id", "get"],
+                )?;
+                session.command(place, &["str", id.trim(), "client", &last, "show"])?;
             }
             Ok(session)
         }

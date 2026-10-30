@@ -134,7 +134,7 @@ fn servers_are_named_and_kills_are_guarded() -> Outcome {
         c.contains("own_server:") && c.contains("status=1")
     })?;
     assert!(
-        server.ok(&["ls"])?.contains("+1 main"),
+        server.ok(&["ls", "listing"])?.contains("+1 main"),
         "the server still runs"
     );
     assert_eq!(server.fux(&["force-kill-server"])?.status, 0);
@@ -271,7 +271,7 @@ fn events_tell_what_happens() -> Outcome {
 fn a_stream_from_ls_misses_nothing() -> Outcome {
     let server = Server::start("")?;
     let listing = server.ok(&["ls", "json"])?;
-    let cursor = (listing.split(r#""events":""#).nth(1))
+    let cursor = (listing.split(r#""cursor":""#).nth(1))
         .and_then(|rest| rest.split('"').next())
         .ok_or(format!("no cursor in {listing}"))?;
     server.words("opts str w name 80 24 size new-workspace")?;
@@ -550,7 +550,7 @@ fn a_dump_makes_its_workspace_again() -> Outcome {
     ])?;
     let dump = server.ok(&["str", "build", "workspace", "dump"])?;
     server.ok(&["str", "build", "workspace", "kill"])?;
-    assert!(!server.ok(&["ls"])?.contains("build"));
+    assert!(!server.ok(&["ls", "listing"])?.contains("build"));
     // A script: made runnable, it runs as it is.
     let file = server.dir.join("build.fux");
     std::fs::write(&file, &dump).map_err(e)?;
@@ -558,7 +558,7 @@ fn a_dump_makes_its_workspace_again() -> Outcome {
     std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o700)).map_err(e)?;
     let ran = server.piped(&file, &[], "")?;
     assert_eq!(ran.status, 0, "{}", ran.stderr);
-    let ls = server.ok(&["ls"])?;
+    let ls = server.ok(&["ls", "listing"])?;
     assert!(
         ls.contains(" build\n") && ls.contains(" worker "),
         "{ls}\nfrom\n{dump}"
@@ -576,7 +576,7 @@ fn a_dump_makes_its_workspace_again() -> Outcome {
     server.ok(&["str", "jobs", "workspace", "kill"])?;
     std::fs::write(&file, &dump).map_err(e)?;
     server.ok(&["--file", &file.to_string_lossy()])?;
-    let ls = server.ok(&["ls"])?;
+    let ls = server.ok(&["ls", "listing"])?;
     assert!(
         ls.contains(" jobs\n") && ls.contains(" job "),
         "{ls}\nfrom\n{dump}"
@@ -604,7 +604,7 @@ fn a_dump_runs_on_a_new_server_whatever_its_tabs_are_named() -> Outcome {
     );
     let held = server.ok(&["str", "workspace-2", "workspace", "panes", "len"])?;
     assert_eq!(held, "1\n");
-    let ls = server.ok(&["ls"])?;
+    let ls = server.ok(&["ls", "listing"])?;
     assert!(
         ls.contains(&format!("{} tab-2 ", first_word(&named))),
         "{named}\n{ls}\nfrom\n{dump}"
@@ -667,7 +667,7 @@ fn a_dump_opens_its_workspace_with_the_first_tab_written() -> Outcome {
     let file = server.dir.join("moved.fux");
     std::fs::write(&file, &dump).map_err(e)?;
     server.ok(&["--file", &file.to_string_lossy()])?;
-    let ls = server.ok(&["ls"])?;
+    let ls = server.ok(&["ls", "listing"])?;
     assert!(
         ls.contains(" moved\n") && ls.contains(" sleep "),
         "{ls}\nfrom\n{dump}"

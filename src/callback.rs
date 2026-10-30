@@ -10,8 +10,11 @@ pub enum Data {
     Bool(bool),
     Text(String),
     List(Vec<Data>),
-    Record(Vec<(String, Data)>),
-    Snapshot(Box<crate::inspect::Snapshot>),
+    Record {
+        of: Option<Run>,
+        fields: Vec<(String, Data)>,
+    },
+    All,
     Null,
     Handle(AnyRef, Option<Run>),
     Client(ClientId, Option<Run>),
@@ -25,16 +28,19 @@ impl Data {
             1 => Self::Bool(bool::get(r)?),
             2 => Self::Text(r.bounded_text(fuxth::LONGEST.saturating_mul(4))?),
             3 => Self::List(r.bounded_list(fuxth::LONGEST, |r| Self::read(r, depth))?),
-            4 => Self::Record(r.bounded_list(crate::inspect::NODES, |r| {
-                Ok((
-                    r.bounded_text(fuxth::LONGEST.saturating_mul(4))?,
-                    Self::read(r, depth)?,
-                ))
-            })?),
+            4 => Self::Record {
+                of: Option::get(r)?,
+                fields: r.bounded_list(crate::inspect::NODES, |r| {
+                    Ok((
+                        r.bounded_text(fuxth::LONGEST.saturating_mul(4))?,
+                        Self::read(r, depth)?,
+                    ))
+                })?,
+            },
             5 => Self::Null,
             6 => Self::Handle(AnyRef::get(r)?, Option::get(r)?),
             7 => Self::Client(ClientId::get(r)?, Option::get(r)?),
-            8 => Self::Snapshot(Box::get(r)?),
+            8 => Self::All,
             tag => return Err(Error::Tag("callback value", tag)),
         })
     }
@@ -43,17 +49,22 @@ impl Data {
     pub fn bytes(&self) -> usize {
         std::mem::size_of::<Self>().saturating_add(match self {
             Self::Text(s) => s.capacity(),
-            Self::Snapshot(s) => s.heap_bytes().unwrap_or(usize::MAX),
             Self::List(v) => v.iter().fold(
                 v.capacity().saturating_mul(std::mem::size_of::<Data>()),
                 |n, v| n.saturating_add(v.bytes()),
             ),
-            Self::Record(v) => v.iter().fold(
-                v.capacity()
+            Self::Record { fields, .. } => fields.iter().fold(
+                fields
+                    .capacity()
                     .saturating_mul(std::mem::size_of::<(String, Data)>()),
                 |n, (k, v)| n.saturating_add(k.capacity()).saturating_add(v.bytes()),
             ),
-            Self::Int(_) | Self::Bool(_) | Self::Null | Self::Handle(..) | Self::Client(..) => 0,
+            Self::Int(_)
+            | Self::Bool(_)
+            | Self::Null
+            | Self::All
+            | Self::Handle(..)
+            | Self::Client(..) => 0,
         })
     }
 }
@@ -77,14 +88,12 @@ impl Wire for Data {
                 out.push(3);
                 v.put(out);
             }
-            Self::Record(v) => {
+            Self::Record { of, fields } => {
                 out.push(4);
-                v.put(out);
+                of.put(out);
+                fields.put(out);
             }
-            Self::Snapshot(v) => {
-                out.push(8);
-                v.put(out);
-            }
+            Self::All => out.push(8),
             Self::Null => out.push(5),
             Self::Handle(v, run) => {
                 out.push(6);

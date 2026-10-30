@@ -4114,16 +4114,57 @@ mod tests {
     }
 
     #[test]
-    fn plain_listings_report_a_lost_exit_status() -> TestResult {
+    fn listings_report_held_process_outcomes() -> TestResult {
+        use crate::inspect::{Projection, Scope};
         let (mut s, _) = attached(12, 50)?;
         run(
             &mut s,
             "opts str agent in 80 24 size str /bin/cat program run drop",
         )?;
         s.end_program(PaneId::of(2), Ended::Lost);
-        for code in ["ls", "%2 info"] {
+        for code in ["ls listing", "%2 info listing"] {
             let text = output(&mut s, code)?;
             assert!(text.contains("ended, its status lost"), "{text}");
+        }
+        for (pid, exited, signal, expected) in [
+            (Some(123), Json::Null, Json::Null, "pid 123"),
+            (None, Json::Int(7), Json::Null, "exited 7"),
+            (None, Json::Null, Json::Int(15), "signal 15"),
+            (None, Json::Null, Json::Null, "ended, its status lost"),
+        ] {
+            for (scope, code) in [
+                (Scope::All, "ls listing print"),
+                (
+                    Scope::Target(AnyRef::Pane(PaneId::of(2))),
+                    "%2 info listing print",
+                ),
+            ] {
+                let Body::Snapshot(mut snapshot) = s.inspect(scope, Projection::Facts)? else {
+                    return Err("snapshot".into());
+                };
+                let pane = snapshot
+                    .panes
+                    .iter_mut()
+                    .find(|p| p.id == PaneId::of(2))
+                    .ok_or("pane")?;
+                pane.pid = pid;
+                pane.state = Some(Json::Object(vec![
+                    ("exited".into(), exited.clone()),
+                    ("signal".into(), signal.clone()),
+                ]));
+                snapshot.validate()?;
+                let mut out = Vec::new();
+                crate::script::tests::held_reply(
+                    code,
+                    Reply {
+                        run: Some(s.run),
+                        ..Body::Snapshot(snapshot).into()
+                    },
+                    &mut out,
+                )?;
+                let text = String::from_utf8(out)?;
+                assert!(text.contains(expected), "{text}");
+            }
         }
         Ok(())
     }
@@ -4326,7 +4367,7 @@ mod tests {
                 return Err("no snapshot".into());
             };
             snapshot.validate()?;
-            assert_eq!(snapshot.events, s.parts.journal().end(s.run));
+            assert_eq!(snapshot.cursor, s.parts.journal().end(s.run));
             assert_eq!(
                 snapshot.panes.iter().map(|p| p.id).collect::<Vec<_>>(),
                 [PaneId::of(1), PaneId::of(2)]
@@ -4365,12 +4406,7 @@ mod tests {
             {
                 *first = u32::MAX;
             }
-            let bytes = crate::wire::encode(&malformed)?;
-            assert!(
-                crate::wire::Reader::new(&bytes)
-                    .whole::<crate::inspect::Snapshot>()
-                    .is_err()
-            );
+            assert!(malformed.validate().is_err());
         }
         Ok(())
     }
