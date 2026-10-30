@@ -1481,7 +1481,17 @@ impl Server {
             Some(client) => Origin::ClientContext { client, actor },
             None => cli,
         };
-        let begun = session.begin(request, &origin, now);
+        // Send older output and any mode endings its detaches produce first.
+        // Each repeat requires another client to detach.
+        while self
+            .session
+            .outbox
+            .iter()
+            .any(|o| matches!(o, Outgoing::To(..)))
+        {
+            let _ = self.send_frames(now);
+        }
+        let begun = self.session.begin(request, &origin, now);
         // What it sends a client goes now: detaching one too far behind
         // fails the request that sent it the frame.
         let refused = self.send_frames(now);
@@ -2630,6 +2640,63 @@ mod tests {
             assert_eq!(reply.response, Reply::failed(Code::NoClient, why).response);
             assert_eq!(decoder.frame()?, Some(ToCommand::PartsEnd));
             assert!(decoder.frame::<ToCommand>()?.is_none());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn earlier_clipboard_output_cannot_fail_an_unrelated_request()
+    -> Result<(), Box<dyn std::error::Error>> {
+        for cascade in [false, true] {
+            let (mut server, _peers, client) = ordered_fixture()?;
+            if cascade {
+                let other = server.session.attach(10, 40, None)?;
+                let conn = server.conns.get_mut(2).ok_or("other client")?;
+                conn.stage = Stage::Attached(Box::new(Attached::new(other, Instant::now())));
+                conn.out.push(&vec![0; OUT_MAX]);
+                // Detaching the first client settles a prior screen ending;
+                // that ending must not be attributed to the new request either.
+                server.session.views.get_mut(&other).ok_or("view")?.mode =
+                    crate::view::Mode::Panel(crate::act::Panel::List(crate::act::List {
+                        about: Some(crate::command::AnyRef::Pane(PaneId::of(99))),
+                        ..Default::default()
+                    }));
+            }
+            server.session.outbox.clear();
+            server
+                .conns
+                .get_mut(1)
+                .ok_or("client")?
+                .out
+                .push(&vec![0; OUT_MAX]);
+            server.session.outbox.push(Outgoing::To(
+                client,
+                ToAttached::Paint(b"\x1b]52;c;YQ==\x07".as_slice().into()),
+            ));
+            server.request(
+                0,
+                crate::command::Command::Resolve {
+                    text: "%1".into(),
+                    kind: crate::command::Kind::Pane,
+                }
+                .into(),
+                Context::default(),
+                None,
+                Instant::now(),
+            );
+            assert!(!server.session.views.contains_key(&client));
+            let mut decoder = Decoder::default();
+            decoder.push(server.conns.first().ok_or("sender")?.out.as_slice());
+            let Some(ToCommand::Part(part)) = decoder.frame()? else {
+                return Err("sender was not answered".into());
+            };
+            let reply = crate::wire::Reader::new(&part).whole::<Reply>()?;
+            assert_eq!(
+                reply.response,
+                crate::protocol::Response::Returned(crate::protocol::Body::Found(
+                    crate::command::AnyRef::Pane(PaneId::of(1)),
+                ))
+            );
         }
         Ok(())
     }
