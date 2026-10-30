@@ -468,7 +468,7 @@ pub(crate) fn definitions<A>(program: &Program<A>, known: &mut Known, library: u
     drop(cached);
     let libraries = needed.range(..library);
     let error = summarise_all(program, known, libraries.clone().copied());
-    if error.is_none() {
+    if error.is_none() && known.first.is_none() {
         // A successful closure has no hidden diagnostic to replay. Never
         // let a failed library check poison an unrelated later program.
         let mut cached = known.library.borrow_mut();
@@ -1111,7 +1111,8 @@ mod tests {
             "library",
             "# -- n : an integer\ndefine value 1 2 add end\n\
              # -- : a mistake\ndefine broken list drop end end\n\
-             # -- n : a call\ndefine forward value end",
+             # -- n : a call\ndefine forward value end\n\
+             # -- : a bad call\ndefine through-broken broken end",
         )?;
         let compile = |mut compiler: crate::Compiler<()>, source| {
             compiler.add(&crate::token::source("caller", source)?)?;
@@ -1123,6 +1124,14 @@ mod tests {
                 Err(Code::StackUnderflow)
             );
             compile(library.clone(), "forward 1 add")?;
+        }
+        let mut invalid = library.clone();
+        invalid.add(&crate::token::source("config", "define unused broken end")?)?;
+        for compiler in [invalid.definitions(), library.clone()] {
+            assert_eq!(
+                compile(compiler, "through-broken").map_err(|e| e.code),
+                Err(Code::StackUnderflow)
+            );
         }
         let mut constrained = library.clone();
         constrained.inputs("value", "integer")?;
