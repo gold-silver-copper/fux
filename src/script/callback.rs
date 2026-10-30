@@ -3,7 +3,8 @@ use super::{Fux, Value, record};
 use crate::callback::Data;
 use crate::wire::Budget;
 use fuxix::Allocation;
-use fuxth::Failure;
+use fuxth::{Failure, Grant};
+use std::rc::Rc;
 
 fn runs(v: &Data, of: &mut Option<crate::command::Run>) -> Result<(), Failure> {
     match v {
@@ -63,41 +64,34 @@ pub(super) fn data(v: &Value<Fux>, b: &mut Budget) -> Result<Data, Failure> {
             Data::Handle(crate::command::AnyRef::Workspace(*w), *run)
         }
         Value::App(Fux::Client(c, run)) => Data::Client(*c, *run),
-        Value::App(Fux::Rendered(_) | Fux::Opts(_) | Fux::Extent(_) | Fux::Answer(..)) => {
+        Value::App(Fux::Opts(_) | Fux::Extent(_) | Fux::Answer(..)) => {
             return Err(fail());
         }
     })
 }
 
-pub(super) fn value(v: &Data, b: &mut Budget) -> Result<Value<Fux>, Failure> {
-    b.slots::<Value<Fux>>(1)?;
+/// `v` as a run's value, reserved from its `grant` as it is made.
+pub(super) fn value(v: &Data, grant: &Rc<Grant>) -> Result<Value<Fux>, Failure> {
     Ok(match v {
         Data::Int(v) => Value::Int(*v),
         Data::Bool(v) => Value::Bool(*v),
-        Data::Text(v) => {
-            if v.chars().count() > fuxth::LONGEST {
-                return Err(fail());
-            }
-            b.text_value(v)?;
-            Value::str(b.string(v)?)
-        }
+        Data::Text(v) => Value::str(grant, v)?,
         Data::List(v) => {
-            let mut out = b.vector(v.len())?;
+            let mut out = fuxth::Items::new(grant, v.len())?;
             for v in v {
-                out.push(value(v, b)?);
+                out.push(value(v, grant)?)?;
             }
-            b.charge(fuxth::Shared::<fuxth::List<Fux>>::bytes(0))?;
-            Value::List(fuxth::Shared::new(fuxth::List::new(out).ok_or_else(fail)?))
+            out.finish().ok_or_else(fail)?
         }
         Data::Record {
             of,
             fields: entries,
         } => {
-            let mut fields = b.vector(entries.len())?;
+            let mut fields = record::Fields::new(grant, entries.len())?;
             for (key, v) in entries {
-                fields.push((b.string(key)?, value(v, b)?));
+                fields.push(key, value(v, grant)?)?;
             }
-            record::from_fields(fields, *of, b)?
+            record::from_fields(fields, *of, grant)?
         }
         Data::All => Value::App(Fux::All),
         Data::Null => Value::App(Fux::Null),
@@ -208,11 +202,11 @@ impl crate::screens::Open {
                     super::same_run(context.of, run).map_err(super::callback_failed)?;
                 }
                 let mut kinds = std::collections::HashSet::new();
-                let mut budget = Budget::with_limit(crate::client::JOB_BYTES);
+                let grant = Rc::new(Grant::new(crate::client::JOB_BYTES));
                 for item in &mut l.items {
                     let mut of = context.of;
                     runs(&item.payload, &mut of).map_err(super::callback_failed)?;
-                    let v = value(&item.payload, &mut budget).map_err(super::callback_failed)?;
+                    let v = value(&item.payload, &grant).map_err(super::callback_failed)?;
                     if kinds.insert(v.kind_name()) {
                         let args = vec![l.client.clone(), item.payload.clone()];
                         check(&l.action, args)?;
@@ -241,14 +235,14 @@ impl crate::screens::Open {
 mod tests {
     use super::*;
     use crate::callback::Callback;
-    use crate::protocol::{Asked, Context, Reply};
+    use crate::protocol::{Asked, Context};
     use crate::screens::{Item, ListScreen, Open, Screen};
     use crate::script::{Asks, Failed, Host};
     use crate::session::testing::TestResult;
 
     struct NoRequests;
     impl Asks for NoRequests {
-        fn ask(&mut self, _: &Asked) -> Result<Reply, Failed> {
+        fn ask(&mut self, _: &Asked) -> Result<Vec<u8>, Failed> {
             Err(Failed::new(
                 crate::code::Code::Client,
                 "unexpected server effect",
@@ -332,7 +326,7 @@ mod tests {
                 .any(|i| i.label.contains(char::is_control))
         );
         let item = screen.items.first().ok_or("row")?;
-        let value = value(&item.payload, &mut Budget::new()).map_err(|e| e.message)?;
+        let value = value(&item.payload, &crate::script::run_grant()).map_err(|e| e.message)?;
         let Value::App(Fux::Record(record)) = value else {
             return Err("record".into());
         };
@@ -371,14 +365,12 @@ mod tests {
             }
             .into(),
         })?;
-        let mut values = crate::script::answered(reply)?;
+        let mut values = crate::script::tests::answers(&reply)?;
         let root = values.pop().ok_or("snapshot")?;
-        let grant = fuxth::Imports::new(crate::inspect::BYTES);
-        root.retain(&grant).map_err(|e| e.message)?;
         let payload = data(&root, &mut Budget::new()).map_err(|e| e.message)?;
         let bytes = crate::wire::encode(&payload)?;
         let payload: Data = crate::wire::Reader::new(&bytes).whole()?;
-        let restored = value(&payload, &mut Budget::new()).map_err(|e| e.message)?;
+        let restored = value(&payload, &crate::script::run_grant()).map_err(|e| e.message)?;
         assert_eq!(
             data(&restored, &mut Budget::new()).map_err(|e| e.message)?,
             payload
@@ -396,7 +388,6 @@ mod tests {
             return Err("panes".into());
         };
         let child = panes.items().first().ok_or("pane")?.clone();
-        child.retain(&grant).map_err(|e| e.message)?;
         drop(panes);
         drop(record);
         drop(root);
@@ -432,11 +423,12 @@ mod tests {
             panes: Vec::new(),
             clients: Vec::new(),
         };
-        let record = record::snapshot(snapshot).map_err(|e| e.message)?;
+        let record =
+            record::snapshot(snapshot, &crate::script::run_grant()).map_err(|e| e.message)?;
         let original = data(&record, &mut Budget::new()).map_err(|e| e.message)?;
         let bytes = crate::wire::encode(&original)?;
         let decoded = crate::wire::Reader::new(&bytes).whole()?;
-        let restored = value(&decoded, &mut Budget::new()).map_err(|e| e.message)?;
+        let restored = value(&decoded, &crate::script::run_grant()).map_err(|e| e.message)?;
         let payload = data(&restored, &mut Budget::new()).map_err(|e| e.message)?;
         assert_eq!(payload, original);
         assert!(list(payload.clone(), "2drop").admit(None, &context).is_ok());
@@ -535,7 +527,10 @@ mod tests {
         let mut budget = Budget::new();
         assert!(
             data(
-                &Value::App(Fux::Opts(std::rc::Rc::new(Default::default()))),
+                &Value::App(Fux::Opts(fuxth::Shared::new(
+                    Default::default(),
+                    crate::script::tests::held()
+                ))),
                 &mut budget
             )
             .is_err()

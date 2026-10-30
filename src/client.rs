@@ -11,7 +11,7 @@ use crate::decode::Input;
 use crate::keys::{Key, KeyPress, Modifiers};
 use crate::protocol::{
     Asked, Attach, AttachedFrame, Context, Decoder, Frame, Greeting, Hello, Mismatch, PROTOCOL,
-    Reply, Role, ToAttached, ToCommand,
+    Role, ToAttached, ToCommand,
 };
 use crate::screens::{Dispatch, Display, Job, Screen};
 use crate::script;
@@ -281,9 +281,10 @@ impl Requests {
         Ok(Requests { stream, decoder })
     }
 
-    /// Sends one request and reads its bounded reply in pieces. Launch
+    /// Sends one request and reads its bounded reply in pieces: its bytes,
+    /// for the run that asked to decode against its own grant. Launch
     /// requests already contain their selected environment patch.
-    pub fn ask(&mut self, asked: &Asked) -> Result<Reply, Error> {
+    pub fn ask(&mut self, asked: &Asked) -> Result<Vec<u8>, Error> {
         wait_at_most(&self.stream, None);
 
         send(&mut self.stream, asked)?;
@@ -295,10 +296,7 @@ impl Requests {
                         crate::wire::append(&mut parts, &bytes)
                             .map_err(crate::protocol::Error::Wire)?;
                     }
-                    ToCommand::PartsEnd => {
-                        let reply = crate::wire::Reader::new(&parts).whole::<Reply>();
-                        return Ok(reply.map_err(crate::protocol::Error::Wire)?);
-                    }
+                    ToCommand::PartsEnd => return Ok(parts),
                     ToCommand::Exit(reason) => return Err(Error::Refused(reason.to_owned())),
                 }
             }
@@ -1573,6 +1571,7 @@ fn last_frames(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::protocol::Reply;
 
     /// No end marker is needed to detect an oversized reply. Its owner
     /// drops the failed request connection, as script::Server does.
@@ -1980,9 +1979,14 @@ mod tests {
     fn presentation_commits_whole_and_survives_a_later_failure()
     -> Result<(), Box<dyn std::error::Error>> {
         struct Refuse;
-        impl script::Asks for Refuse {
-            fn ask(&mut self, _: &Asked) -> Result<Reply, script::Failed> {
+        impl Refuse {
+            fn reply(&mut self, _: &Asked) -> Result<Reply, script::Failed> {
                 Err(script::Failed::new(Code::NotConfig, "operation refused"))
+            }
+        }
+        impl script::Asks for Refuse {
+            fn ask(&mut self, asked: &crate::protocol::Asked) -> Result<Vec<u8>, script::Failed> {
+                crate::script::encoded(&self.reply(asked)?)
             }
         }
         let state = Mutex::new(script::default_state().map_err(|e| e.to_string())?);

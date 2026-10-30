@@ -4,9 +4,8 @@ use crate::code::{Code, Raise};
 use crate::command::{AnyRef, Run};
 use crate::inspect::{self, Projection, Scope};
 use crate::json::Json;
-use crate::wire::Budget;
-use fuxix::Allocation;
-use fuxth::{AppValue, Failure, List, Value};
+use fuxth::{Failure, Grant, Items, Reservation, Value};
+use std::rc::Rc;
 
 type V = Value<Fux>;
 
@@ -15,7 +14,6 @@ pub struct Record {
     pub(super) fields: Vec<(String, V)>,
     weight: u64,
     depth: u8,
-    bytes: usize,
     pub(super) of: Option<Run>,
 }
 
@@ -26,29 +24,6 @@ impl PartialEq for Record {
 }
 
 impl Record {
-    pub(super) fn retain(
-        this: &fuxth::Shared<Self>,
-        imports: &fuxth::Imports,
-    ) -> Result<(), Failure> {
-        let own = Self::own_bytes(&this.fields);
-        this.reserve(imports, own)?;
-        for (_, value) in &this.fields {
-            value.retain(imports)?;
-        }
-        Ok(())
-    }
-
-    fn own_bytes(fields: &Vec<(String, V)>) -> usize {
-        fields.iter().fold(
-            fuxth::Shared::<Record>::bytes(0).saturating_add(
-                fields
-                    .capacity()
-                    .saturating_mul(std::mem::size_of::<(String, V)>()),
-            ),
-            |n, (key, _)| n.saturating_add(key.capacity()),
-        )
-    }
-
     pub(super) fn get(&self, field: &str) -> Result<V, Failure> {
         self.fields
             .iter()
@@ -67,9 +42,6 @@ impl Record {
     pub(super) fn depth(&self) -> u8 {
         self.depth
     }
-    pub(super) fn bytes(&self) -> usize {
-        self.bytes
-    }
     pub(super) fn write(&self, out: &mut dyn std::fmt::Write) -> std::fmt::Result {
         out.write_char('{')?;
         for (i, (key, value)) in self.fields.iter().enumerate() {
@@ -81,6 +53,41 @@ impl Record {
             super::words::write_json_value(value, out)?;
         }
         out.write_char('}')
+    }
+}
+
+/// A record's fields being made: their room, and their keys', reserved
+/// before each is allocated.
+pub(super) struct Fields {
+    fields: Vec<(String, V)>,
+    held: Reservation,
+}
+
+impl Fields {
+    /// Room for `n` fields, reserved from `grant` first.
+    pub(super) fn new(grant: &Rc<Grant>, n: usize) -> Result<Self, Failure> {
+        let room = n.checked_mul(std::mem::size_of::<(String, V)>());
+        let room = room.ok_or_else(|| grant.full())?;
+        let held = Reservation::take(grant, fuxth::Shared::<Record>::bytes(room))?;
+        let mut fields = Vec::new();
+        fields.try_reserve_exact(n).map_err(|_| grant.full())?;
+        Ok(Self { fields, held })
+    }
+
+    /// Field `key` added, its room and its key's reserved first.
+    pub(super) fn push(&mut self, key: &str, value: V) -> Result<(), Failure> {
+        self.held.grow(&mut self.fields, 1)?;
+        self.held
+            .resize(self.held.bytes().saturating_add(key.len()))?;
+        let mut owned = String::new();
+        owned.try_reserve_exact(key.len()).map_err(|_| fail())?;
+        owned.push_str(key);
+        self.fields.push((owned, value));
+        Ok(())
+    }
+
+    fn len(&self) -> usize {
+        self.fields.len()
     }
 }
 
@@ -106,12 +113,12 @@ fn id(id: AnyRef, run: Run) -> V {
 }
 
 struct Builder<'a> {
-    budget: &'a mut Budget,
+    grant: &'a Rc<Grant>,
     nodes: usize,
 }
 impl<'a> Builder<'a> {
-    fn new(budget: &'a mut Budget) -> Self {
-        Self { budget, nodes: 0 }
+    fn new(grant: &'a Rc<Grant>) -> Self {
+        Self { grant, nodes: 0 }
     }
     fn nodes(&mut self, n: usize) -> Result<(), Failure> {
         self.nodes = self
@@ -122,11 +129,15 @@ impl<'a> Builder<'a> {
         Ok(())
     }
     fn text(&mut self, text: &str) -> Result<V, Failure> {
-        if text.chars().count() > fuxth::LONGEST {
-            return Err(fail());
-        }
-        self.budget.text_value(text)?;
-        Ok(Value::str(self.budget.string(text)?))
+        Value::str(self.grant, text)
+    }
+    /// A string of what `write` writes, reserved before it is made.
+    fn written(
+        &mut self,
+        mut write: impl FnMut(&mut dyn std::fmt::Write) -> std::fmt::Result,
+    ) -> Result<V, Failure> {
+        let (text, held) = fuxth::written(self.grant, |out| write(out).map_err(|_| fail()))?;
+        fuxth::Text::adopt(text, held).map(Value::Str)
     }
     fn optional(&mut self, text: Option<&str>) -> Result<V, Failure> {
         text.map(|s| self.text(s)).unwrap_or_else(|| Ok(null()))
@@ -137,35 +148,31 @@ impl<'a> Builder<'a> {
         mut value: impl FnMut(&mut Self, &T) -> Result<V, Failure>,
     ) -> Result<V, Failure> {
         self.nodes(items.len())?;
-        let mut out = self.budget.vector(items.len())?;
+        let mut out = Items::new(self.grant, items.len())?;
         for item in items {
-            out.push(value(self, item)?);
+            out.push(value(self, item)?)?;
         }
-        self.budget.charge(fuxth::Shared::<List<Fux>>::bytes(0))?;
-        let list = List::new(out).ok_or_else(fail)?;
-        Ok(Value::List(fuxth::Shared::new(list)))
+        out.finish().ok_or_else(fail)
+    }
+    fn fields(&mut self, n: usize) -> Result<Fields, Failure> {
+        Fields::new(self.grant, n)
     }
     fn record<const N: usize>(&mut self, fields: [(&str, V); N]) -> Result<V, Failure> {
         self.nodes(N.saturating_add(1))?;
-        let mut out = self.budget.vector(N)?;
+        let mut out = self.fields(N)?;
         for (key, value) in fields {
-            out.push((self.budget.string(key)?, value));
+            out.push(key, value)?;
         }
         self.finish(out, None)
     }
-    fn finish(&mut self, fields: Vec<(String, V)>, of: Option<Run>) -> Result<V, Failure> {
-        let (mut depth, mut weight, mut bytes) = (0u8, 1u64, Record::own_bytes(&fields));
-        for (key, value) in &fields {
+    fn finish(&mut self, fields: Fields, of: Option<Run>) -> Result<V, Failure> {
+        let (mut depth, mut weight) = (0u8, 1u64);
+        for (key, value) in &fields.fields {
             depth = depth.max(value.depth());
             weight = weight
                 .checked_add(key.len() as u64)
                 .and_then(|n| n.checked_add(value.weight()))
                 .ok_or_else(fail)?;
-            bytes = bytes.saturating_add(
-                value
-                    .storage_bytes(AppValue::text_bytes)
-                    .unwrap_or(usize::MAX),
-            );
         }
         let depth = depth
             .checked_add(1)
@@ -174,14 +181,16 @@ impl<'a> Builder<'a> {
         if weight > fuxth::TOTAL {
             return Err(fail());
         }
-        self.budget.charge(fuxth::Shared::<Record>::bytes(0))?;
-        Ok(Value::App(Fux::Record(fuxth::Shared::new(Record {
-            fields,
+        let record = Record {
+            fields: fields.fields,
             depth,
             weight,
-            bytes,
             of,
-        }))))
+        };
+        Ok(Value::App(Fux::Record(fuxth::Shared::new(
+            record,
+            fields.held,
+        ))))
     }
     fn json(&mut self, value: &Json, depth: u8) -> Result<V, Failure> {
         if depth >= inspect::DEPTH {
@@ -196,11 +205,10 @@ impl<'a> Builder<'a> {
             Json::String(s) => self.text(s),
             Json::Array(items) => self.list(items, |b, v| b.json(v, depth.saturating_add(1))),
             Json::Object(fields) => {
-                let mut out = self.budget.vector(fields.len())?;
+                let mut out = self.fields(fields.len())?;
                 for (key, value) in fields {
-                    let key = self.budget.string(key)?;
                     let value = self.json(value, depth.saturating_add(1))?;
-                    out.push((key, value));
+                    out.push(key, value)?;
                 }
                 self.finish(out, None)
             }
@@ -210,11 +218,9 @@ impl<'a> Builder<'a> {
         let (encoding, text) = match path {
             inspect::Path::Utf8(text) => ("utf8", self.text(text)?),
             inspect::Path::Bytes(bytes) => {
-                let mut text = String::new();
-                for byte in bytes {
-                    self.budget.write(&mut text, format_args!("{byte:02x}"))?;
-                }
-                ("hex", self.text(&text)?)
+                let hex = self
+                    .written(|out| bytes.iter().try_for_each(|byte| write!(out, "{byte:02x}")))?;
+                ("hex", hex)
             }
         };
         let encoding = self.text(encoding)?;
@@ -223,26 +229,25 @@ impl<'a> Builder<'a> {
 }
 
 pub(super) fn from_fields(
-    fields: Vec<(String, V)>,
+    fields: Fields,
     of: Option<Run>,
-    budget: &mut Budget,
+    grant: &Rc<Grant>,
 ) -> Result<V, Failure> {
-    let mut b = Builder::new(budget);
+    let mut b = Builder::new(grant);
     b.nodes(fields.len())?;
     b.finish(fields, of)
 }
 
-pub(super) fn from_json(value: &Json) -> Result<V, Failure> {
-    Builder::new(&mut Budget::with_limit(inspect::BYTES)).json(value, 0)
+pub(super) fn from_json(value: &Json, grant: &Rc<Grant>) -> Result<V, Failure> {
+    Builder::new(grant).json(value, 0)
 }
 
-pub(super) fn events(batch: crate::events::Batch) -> Result<V, Failure> {
+pub(super) fn events(batch: crate::events::Batch, grant: &Rc<Grant>) -> Result<V, Failure> {
     let run = batch.next.run;
     if batch.events.len() > crate::events::BATCH_EVENTS {
         return Err(fail());
     }
-    let mut budget = Budget::with_limit(inspect::BYTES);
-    let mut b = Builder::new(&mut budget);
+    let mut b = Builder::new(grant);
     let mut previous = None;
     let events = b.list(&batch.events, |b, item| {
         if item.next.run != run
@@ -259,7 +264,7 @@ pub(super) fn events(batch: crate::events::Batch) -> Result<V, Failure> {
         let Json::Object(fields) = &json else {
             return Err(fail());
         };
-        let mut out = b.budget.vector(fields.len().saturating_add(2))?;
+        let mut out = b.fields(fields.len().saturating_add(2))?;
         for (key, value) in fields
             .iter()
             .filter(|(key, _)| key != "origin" && key != "next")
@@ -278,7 +283,7 @@ pub(super) fn events(batch: crate::events::Batch) -> Result<V, Failure> {
                 Some(value) => value,
                 None => b.json(value, 0)?,
             };
-            out.push((b.budget.string(key)?, value));
+            out.push(key, value)?;
         }
         use crate::events::Actor;
         let kind = b.text(item.origin.kind())?;
@@ -295,8 +300,9 @@ pub(super) fn events(batch: crate::events::Batch) -> Result<V, Failure> {
             Actor::Server | Actor::Unknown => b.record([("kind", kind)])?,
         };
         b.nodes(2)?;
-        out.push((b.budget.string("origin")?, origin));
-        out.push(("next".into(), b.text(&item.next.to_string())?));
+        out.push("origin", origin)?;
+        let next = b.text(&item.next.to_string())?;
+        out.push("next", next)?;
         b.finish(out, None)
     })?;
     let next = b.text(&batch.next.to_string())?;
@@ -323,9 +329,8 @@ macro_rules! record {
     }};
 }
 
-pub(super) fn snapshot(s: inspect::Snapshot) -> Result<V, Failure> {
-    let budget = &mut Budget::with_limit(inspect::BYTES);
-    let b = &mut Builder::new(budget);
+pub(super) fn snapshot(s: inspect::Snapshot, grant: &Rc<Grant>) -> Result<V, Failure> {
+    let b = &mut Builder::new(grant);
     let run = s.run;
     let workspaces = b.list(&s.workspaces, |b,w| record! { b;
         "id" => id(AnyRef::Workspace(w.id), run), "name" => b.optional(w.name.as_deref())?,
@@ -353,9 +358,9 @@ pub(super) fn snapshot(s: inspect::Snapshot) -> Result<V, Failure> {
             ("pid", p.pid.map(number).unwrap_or_else(|| Ok(null()))?),
             ("rows", number(p.rows)?), ("cols", number(p.cols)?), ("version", b.text(&p.version.to_string())?),
         ];
-        let mut fields = b.budget.vector(base.len().saturating_add(2))?;
-        for (key, value) in base { fields.push((b.budget.string(key)?, value)); }
-        if let Some(state) = &p.state { fields.push((b.budget.string("state")?, b.json(state, 0)?)); }
+        let mut fields = b.fields(base.len().saturating_add(2))?;
+        for (key, value) in base { fields.push(key, value)?; }
+        if let Some(state) = &p.state { let state = b.json(state, 0)?; fields.push("state", state)?; }
         if let Some(r) = &p.recipe {
             let env = b.list(&r.env, |b,(key,value)| record! { b; "name" => b.text(key)?, "value" => value.as_ref().map(|p| b.path(p)).unwrap_or_else(|| Ok(null()))? })?;
             let recipe = record! { b; "choice" => b.text(if r.shell { "shell" } else { "program" })?,
@@ -368,7 +373,7 @@ pub(super) fn snapshot(s: inspect::Snapshot) -> Result<V, Failure> {
                 "history_bytes" => number(r.options.history_bytes.get())?, "program_clipboard" => Value::Bool(r.options.program_clipboard),
                 "reflow" => Value::Bool(r.options.reflow), "alternate_scroll_lines" => number(r.options.alternate_scroll_lines.get())?, "picture_bytes" => number(r.options.picture_bytes.get())?
             }?;
-            fields.push((b.budget.string("launch")?, recipe));
+            fields.push("launch", recipe)?;
         }
         b.nodes(fields.len())?;
         b.finish(fields, None)
@@ -394,7 +399,7 @@ pub(super) fn snapshot(s: inspect::Snapshot) -> Result<V, Failure> {
     let Value::App(Fux::Record(mut record)) = value else {
         return Err(fail());
     };
-    fuxth::Shared::get_mut(&mut record).ok_or_else(fail)?.of = Some(run);
+    fuxth::Shared::get_mut(&mut record).ok_or_else(fail)?.0.of = Some(run);
     Ok(Value::App(Fux::Record(record)))
 }
 
@@ -403,10 +408,10 @@ pub(super) fn answer_field(
     answer: &super::Answer,
     run: Option<Run>,
     field: &str,
+    grant: &Rc<Grant>,
 ) -> Result<V, Failure> {
     use crate::answer::PaneAnswer;
-    let mut budget = Budget::with_limit(inspect::BYTES);
-    let b = &mut Builder::new(&mut budget);
+    let b = &mut Builder::new(grant);
     let absent = || {
         Failure::new(
             Code::from(Raise::NoField).into(),
@@ -449,10 +454,7 @@ pub(super) fn answer_field(
                 }
                 "lines" => {
                     return b.list(&c.lines, |b, line| {
-                        let text = crate::json::render(b.budget, |out| {
-                            c.write_line(out, line, false, &mut Vec::new())
-                        })?;
-                        b.text(&text)
+                        b.written(|out| c.write_line(out, line, false, &mut Vec::new()))
                     });
                 }
                 "styles" if c.styled => {
@@ -460,17 +462,16 @@ pub(super) fn answer_field(
                         let styled = |run: &Option<(&str, u32, fux_vt::Attributes)>| {
                             run.is_some_and(|(_, _, style)| style != fux_vt::Attributes::default())
                         };
-                        let mut values = b.budget.vector(c.runs(line).filter(styled).count())?;
+                        let n = c.runs(line).filter(styled).count();
+                        b.nodes(n)?;
+                        let mut values = Items::new(b.grant, n)?;
                         let mut col = 0u32;
                         for run in c.runs(line) {
                             let (_, cells, style) = run.ok_or_else(fail)?;
                             if style != fux_vt::Attributes::default() {
-                                let mut fields = b.budget.vector(2)?;
-                                for (name, value) in
-                                    [("col", number(col)?), ("len", number(cells)?)]
-                                {
-                                    fields.push((b.budget.string(name)?, value));
-                                }
+                                let mut fields = b.fields(2)?;
+                                fields.push("col", number(col)?)?;
+                                fields.push("len", number(cells)?)?;
                                 for (name, value) in crate::capture::style_fields(style) {
                                     let value = match value {
                                         crate::capture::StyleValue::Flag => Value::Bool(true),
@@ -481,19 +482,14 @@ pub(super) fn answer_field(
                                             b: blue,
                                         }) => b.text(&format!("#{r:02x}{g:02x}{blue:02x}"))?,
                                     };
-                                    b.budget.reserve(&mut fields, 1)?;
-                                    fields.push((b.budget.string(name)?, value));
+                                    fields.push(name, value)?;
                                 }
                                 b.nodes(fields.len().saturating_add(1))?;
-                                values.push(b.finish(fields, None)?);
+                                values.push(b.finish(fields, None)?)?;
                             }
                             col = col.checked_add(cells).ok_or_else(fail)?;
                         }
-                        b.nodes(values.len())?;
-                        b.budget.charge(fuxth::Shared::<List<Fux>>::bytes(0))?;
-                        Ok(Value::List(fuxth::Shared::new(
-                            List::new(values).ok_or_else(fail)?,
-                        )))
+                        values.finish().ok_or_else(fail)
                     });
                 }
                 _ => {}
@@ -530,19 +526,27 @@ pub(super) fn answer_field(
 mod tests {
     use super::*;
 
+    fn grant(bytes: usize) -> Rc<Grant> {
+        Rc::new(Grant::new(bytes))
+    }
+
     #[test]
     fn local_fields_preserve_null_lists_and_scalar_types() -> Result<(), Failure> {
-        let value = from_json(&Json::Object(vec![
-            ("empty".into(), Json::Null),
-            (
-                "items".into(),
-                Json::Array(vec![
-                    Json::String("%7".into()),
-                    Json::Bool(false),
-                    Json::Int(-9),
-                ]),
-            ),
-        ]))?;
+        let grant = grant(1 << 20);
+        let value = from_json(
+            &Json::Object(vec![
+                ("empty".into(), Json::Null),
+                (
+                    "items".into(),
+                    Json::Array(vec![
+                        Json::String("%7".into()),
+                        Json::Bool(false),
+                        Json::Int(-9),
+                    ]),
+                ),
+            ]),
+            &grant,
+        )?;
         let Value::App(Fux::Record(r)) = value else {
             return Err(fail());
         };
@@ -556,10 +560,14 @@ mod tests {
         };
         assert_eq!(
             items.items(),
-            &[Value::str("%7"), Value::Bool(false), Value::Int(-9)]
+            &[
+                Value::str(&grant, "%7")?,
+                Value::Bool(false),
+                Value::Int(-9)
+            ]
         );
         assert_eq!(
-            from_json(&Json::Uint(u64::MAX)).map_err(|e| e.code),
+            from_json(&Json::Uint(u64::MAX), &grant).map_err(|e| e.code),
             Err(fuxth::Code::Range)
         );
         assert_eq!(r.get("items")?, Value::List(items));
@@ -568,49 +576,45 @@ mod tests {
 
     #[test]
     fn projected_children_keep_only_their_shared_storage_reserved() -> Result<(), Failure> {
-        let grant = fuxth::Imports::new(2048);
+        let grant = grant(2048);
         let make = || {
-            from_json(&Json::Object(vec![(
-                "text".into(),
-                Json::String(std::iter::repeat_n('x', 1000).collect()),
-            )]))
+            let text = Json::String(std::iter::repeat_n('x', 1000).collect());
+            from_json(&Json::Object(vec![("text".into(), text)]), &grant)
         };
         let root = make()?;
-        root.retain(&grant)?;
         let Value::App(Fux::Record(record)) = &root else {
             return Err(fail());
         };
         let child = record.get("text")?;
-        child.retain(&grant)?;
-        for _ in 0..10 {
-            root.clone().retain(&grant)?;
-            child.clone().retain(&grant)?;
-        }
-        assert!(make()?.retain(&grant).is_err());
+        let held = grant.remaining();
+        let copies: Vec<_> = (0..10)
+            .flat_map(|_| [root.clone(), child.clone()])
+            .collect();
+        assert_eq!(grant.remaining(), held, "copies hold nothing more");
+        drop(copies);
+        assert!(make().is_err());
         drop(root);
-        assert!(make()?.retain(&grant).is_err());
+        assert!(make().is_err(), "the child keeps its own storage");
         drop(child);
         for _ in 0..100 {
-            make()?.retain(&grant)?;
+            make()?;
         }
         Ok(())
     }
 
     #[test]
     fn records_refuse_depth_nodes_and_bytes_before_retention() {
+        let big = grant(1 << 20);
         let mut deep = Json::Null;
         for _ in 0..inspect::DEPTH {
             deep = Json::Array(vec![deep]);
         }
-        assert!(from_json(&deep).is_err());
-        assert!(from_json(&Json::Array(vec![Json::Bool(false); inspect::NODES])).is_err());
-        let text = std::iter::repeat_n('a', fuxth::LONGEST).collect::<String>();
-        assert!(from_json(&Json::Array(vec![Json::String(text); 9])).is_err());
-        let mut budget = Budget::with_limit(inspect::BYTES);
-        let mut b = Builder::new(&mut budget);
-        assert!(
-            b.text(&std::iter::repeat_n('a', fuxth::LONGEST.saturating_add(1)).collect::<String>())
-                .is_err()
-        );
+        assert!(from_json(&deep, &big).is_err());
+        let wide = Json::Array(vec![Json::Bool(false); inspect::NODES]);
+        assert!(from_json(&wide, &big).is_err());
+        let text = std::iter::repeat_n('a', 1000).collect::<String>();
+        let texts = Json::Array(vec![Json::String(text); 9]);
+        assert!(from_json(&texts, &grant(8192)).is_err());
+        assert!(from_json(&texts, &grant(16384)).is_ok());
     }
 }

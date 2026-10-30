@@ -25,7 +25,10 @@ use crate::layout::Axis;
 use crate::protocol::{Asked, Body, Context, End, Reply, Response};
 use crate::socket::{Choice, SocketPath};
 use fuxix::Allocation;
-use fuxth::{AppValue, Code as Lang, Compiler, Limits, Machine, Outcome, Token, Value, token};
+use fuxth::{
+    AppValue, Code as Lang, Compiler, Failure, Grant, Machine, Outcome, Reservation, Token, Value,
+    token,
+};
 use std::io::{self, Read, Write};
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -53,8 +56,6 @@ pub(crate) const DEFAULTS: &str = include_str!("client-defaults.fux");
 pub enum Fux {
     Null,
     Record(fuxth::Shared<record::Record>),
-    /// Rendered observations exceeding ordinary language string limits.
-    Rendered(fuxth::Shared<String>),
     Pane(PaneId, Option<Run>),
     Tab(TabId, Option<Run>),
     Workspace(WsId, Option<Run>),
@@ -65,7 +66,7 @@ pub enum Fux {
     /// request: a pane, tab, workspace or client given options, keys or a
     /// wait, for the word that acts on it after
     /// (`%2 str ls text str Enter key send-keys`).
-    Opts(Rc<Opts>),
+    Opts(fuxth::Shared<Opts>),
     /// A width or height: cells, or a share of the tab.
     Extent(Extent),
     /// What the server said: a capture or a wait's outcome.
@@ -85,7 +86,6 @@ impl AppValue for Fux {
         match self {
             Fux::Null => "null",
             Fux::Record(_) => "record",
-            Fux::Rendered(_) => "rendered",
             Fux::Pane(_, _) => "pane",
             Fux::Tab(_, _) => "tab",
             Fux::Workspace(_, _) => "workspace",
@@ -105,41 +105,9 @@ impl AppValue for Fux {
         }
     }
 
-    const TEXT_LIMIT: usize = crate::wire::MAX_ALLOCATED;
-    const IMPORT_LIMIT: usize = crate::wire::MAX_ALLOCATED;
-    fn import_bytes(&self) -> Option<usize> {
-        if let Fux::Answer(answer, _) = self
-            && matches!(&**answer, Answer::Capture(_))
-        {
-            return Some(answer.retained_bytes());
-        }
-        matches!(self, Fux::Rendered(_)).then(|| self.text_bytes())
-    }
-
-    fn retain(&self, imports: &fuxth::Imports) -> Result<(), fuxth::Failure> {
-        match self {
-            Fux::Record(record) => record::Record::retain(record, imports),
-            Fux::Answer(answer, _) => answer.reserve(imports, answer.retained_bytes()),
-            Fux::Rendered(text) => text.reserve(imports, self.text_bytes()),
-            Fux::Opts(opts) => opts.lease.reserve(
-                imports,
-                opts.heap_bytes()
-                    .saturating_add(std::mem::size_of::<[usize; 2]>()),
-            ),
-            Fux::Null
-            | Fux::Pane(..)
-            | Fux::Tab(..)
-            | Fux::Workspace(..)
-            | Fux::Client(..)
-            | Fux::All
-            | Fux::Extent(_) => Ok(()),
-        }
-    }
-
     fn weight(&self) -> u64 {
         match self {
             Fux::Record(r) => r.weight(),
-            Fux::Rendered(text) => text.len() as u64,
             Fux::Answer(a, _) => match &**a {
                 Answer::Capture(c) => {
                     let state = match &c.of {
@@ -157,25 +125,24 @@ impl AppValue for Fux {
                             .saturating_add(1)
                     })
                 }
-                Answer::Pane(_) | Answer::Panes(_) => {
-                    u64::try_from(self.text_bytes()).unwrap_or(u64::MAX).max(1)
-                }
-            },
+                Answer::Pane(p) => crate::wire::retained(p) as u64,
+                Answer::Panes(p) => crate::wire::retained(p) as u64,
+            }
+            .max(1),
+            Fux::Opts(opts) => (opts.heap_bytes() as u64).max(1),
             Fux::All
             | Fux::Null
             | Fux::Pane(..)
             | Fux::Tab(..)
             | Fux::Workspace(..)
             | Fux::Client(..)
-            | Fux::Opts(_)
-            | Fux::Extent(_) => u64::try_from(self.text_bytes()).unwrap_or(u64::MAX).max(1),
+            | Fux::Extent(_) => 1,
         }
     }
     fn depth(&self) -> u8 {
         match self {
             Fux::Record(r) => r.depth(),
-            Fux::Rendered(_)
-            | Fux::All
+            Fux::All
             | Fux::Null
             | Fux::Pane(..)
             | Fux::Tab(..)
@@ -187,32 +154,10 @@ impl AppValue for Fux {
         }
     }
 
-    fn text_bytes(&self) -> usize {
-        if let Fux::Rendered(text) = self {
-            return fuxth::Shared::<String>::bytes(text.capacity());
-        }
-
-        if let Fux::Record(r) = self {
-            return r.bytes();
-        }
-        if let Fux::Answer(answer, _) = self {
-            let scratch = match &**answer {
-                Answer::Capture(c) => c.text_scratch(),
-                Answer::Pane(_) | Answer::Panes(_) => 0,
-            };
-            answer.retained_bytes().saturating_add(scratch)
-        } else if let Fux::Opts(opts) = self {
-            opts.heap_bytes()
-        } else {
-            0
-        }
-    }
-
     fn write_text(&self, out: &mut dyn std::fmt::Write) -> Result<(), fuxth::Failure> {
         match self {
             Fux::Null => out.write_str("null"),
             Fux::Record(r) => r.write(out),
-            Fux::Rendered(text) => out.write_str(text),
             Fux::Pane(p, _) => write!(out, "{p}"),
             Fux::Tab(t, _) => write!(out, "{t}"),
             Fux::Workspace(w, _) => write!(out, "{w}"),
@@ -262,7 +207,6 @@ fn same_run(a: Option<Run>, b: Option<Run>) -> Result<Option<Run>, fuxth::Failur
 /// they are on: nothing, for `run`, `new-tab` and `new-workspace`.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Opts {
-    lease: fuxth::ImportLease,
     pub on: Option<On>,
     pub of: Option<Run>,
     pub name: Option<String>,
@@ -337,7 +281,8 @@ impl Opts {
         Ok((start, env))
     }
 
-    fn heap_bytes(&self) -> usize {
+    /// What it holds: itself, and what its fields allocate.
+    pub(crate) fn heap_bytes(&self) -> usize {
         [
             crate::wire::retained(&self.name),
             crate::wire::retained(&self.cwd),
@@ -384,14 +329,6 @@ pub enum Answer {
 }
 
 impl Answer {
-    fn retained_bytes(&self) -> usize {
-        fuxth::Shared::<Self>::bytes(match self {
-            Self::Capture(c) => crate::wire::retained(c),
-            Self::Pane(p) => crate::wire::retained(p),
-            Self::Panes(p) => crate::wire::retained(p),
-        })
-    }
-
     fn names(&self) -> (&'static str, &'static str) {
         match self {
             Answer::Pane(PaneAnswer::Closed(_)) => ("closed-answer", "a closed pane's answer"),
@@ -461,8 +398,11 @@ impl Answer {
         }
     }
 
-    fn in_run(self, run: Option<Run>) -> Value<Fux> {
-        Value::App(Fux::Answer(fuxth::Shared::new(self), run))
+    /// It, held by `held`: what decoding it reserved, and its wrapper,
+    /// reserved before it is made.
+    fn in_run(self, run: Option<Run>, mut held: Reservation) -> Result<Value<Fux>, Failure> {
+        held.resize(fuxth::Shared::<Self>::bytes(held.bytes()))?;
+        Ok(Value::App(Fux::Answer(fuxth::Shared::new(self, held), run)))
     }
 }
 
@@ -730,7 +670,15 @@ pub(crate) fn compiled(
 ) -> Result<Machine<Fux>, fuxth::Error> {
     let mut compiler = base(config)?;
     compiler.add(&handles(tokens)?)?;
-    Ok(Machine::new(compiler.finish()?, Limits::default()))
+    Machine::new(compiler.finish()?, run_grant())
+}
+
+/// What one run may hold: every value it makes or is answered, and the
+/// room it runs in, reserved before it is allocated.
+pub const RUN_BYTES: usize = 128 << 20;
+
+pub(crate) fn run_grant() -> Rc<Grant> {
+    Rc::new(Grant::new(RUN_BYTES))
 }
 
 fn callback_failed(f: fuxth::Failure) -> Failed {
@@ -754,12 +702,13 @@ pub(crate) fn callback_machine(
         return compiled(config, tokens).map_err(Failed::from);
     };
     let mut compiler = base(config)?;
-    let mut budget = crate::wire::Budget::with_limit(crate::client::JOB_BYTES);
+    // Its arguments are the run's values, held from its grant.
+    let grant = run_grant();
     for arg in args {
-        compiler.argument(callback::value(arg, &mut budget).map_err(callback_failed)?);
+        compiler.argument(callback::value(arg, &grant).map_err(callback_failed)?);
     }
     compiler.add(&handles(tokens)?)?;
-    Ok(Machine::new(compiler.finish_callback()?, Limits::default()))
+    Ok(Machine::new(compiler.finish_callback()?, grant)?)
 }
 
 /// Config definitions, checked eagerly and cached for this thread's last
@@ -972,8 +921,9 @@ fn client_failed(error: client::Error) -> Failed {
 /// itself: a server (`Server`), the command line's (`Cli`), or in tests a
 /// session itself.
 pub trait Asks {
-    /// Asks one bounded request and returns its typed reply.
-    fn ask(&mut self, asked: &Asked) -> Result<Reply, Failed>;
+    /// Asks one bounded request and returns its reply, encoded, for the
+    /// run to decode against its own grant.
+    fn ask(&mut self, asked: &Asked) -> Result<Vec<u8>, Failed>;
     /// Publish a complete local state at a commit boundary, if it is shared.
     fn published(&mut self, _state: &ClientState, _context: &Context) {}
 
@@ -996,12 +946,14 @@ pub trait Asks {
         Ok(())
     }
 
-    /// Does what the client does itself: by default, nothing, refused.
+    /// Does what the client does itself, what it gives reserved from
+    /// `grant`: by default, nothing, refused.
     fn local(
         &mut self,
         what: &Local,
         _state: Option<&mut Draft>,
         _out: &mut dyn Write,
+        _grant: &Rc<Grant>,
     ) -> Result<Vec<Value<Fux>>, Failed> {
         refuse_local(what)
     }
@@ -1010,7 +962,7 @@ pub trait Asks {
 /// The server's: each request asked on one connection, opened at the
 /// first.
 impl Asks for Server {
-    fn ask(&mut self, asked: &Asked) -> Result<Reply, Failed> {
+    fn ask(&mut self, asked: &Asked) -> Result<Vec<u8>, Failed> {
         let fenced = self.after.as_ref().map(|after| Asked {
             after: Some(after.get()),
             ..asked.clone()
@@ -1067,7 +1019,7 @@ enum Given {
 }
 
 impl Asks for Cli {
-    fn ask(&mut self, asked: &Asked) -> Result<Reply, Failed> {
+    fn ask(&mut self, asked: &Asked) -> Result<Vec<u8>, Failed> {
         self.server.ask(asked)
     }
     fn local(
@@ -1075,20 +1027,29 @@ impl Asks for Cli {
         what: &Local,
         state: Option<&mut Draft>,
         _out: &mut dyn Write,
+        grant: &Rc<Grant>,
     ) -> Result<Vec<Value<Fux>>, Failed> {
         let Local::Shell(shell) = what else {
-            return local(what, &mut self.server, state);
+            return local(what, &mut self.server, state, grant);
         };
-        let string = |s: &str| vec![Value::str(s)];
+        let string = |s: &str| Ok::<_, Failed>(vec![Value::str(grant, s).map_err(lang)?]);
         Ok(match shell {
             Shell::Args => {
                 let args = match &self.from {
-                    Given::File(args) => args.iter().map(|a| Value::str(a.as_str())).collect(),
-                    Given::Words | Given::Stdin => Vec::new(),
+                    Given::File(args) => args.as_slice(),
+                    Given::Words | Given::Stdin => &[],
                 };
-                let list = fuxth::List::new(args)
-                    .ok_or_else(|| Failed::new(Code::Usage, "more arguments than a list holds"))?;
-                vec![Value::List(fuxth::Shared::new(list))]
+                let mut list = fuxth::Items::new(grant, args.len()).map_err(lang)?;
+                for arg in args {
+                    list.push(Value::str(grant, arg).map_err(lang)?)
+                        .map_err(lang)?;
+                }
+                let list = list.finish();
+                vec![
+                    list.ok_or_else(|| {
+                        Failed::new(Code::Usage, "more arguments than a list holds")
+                    })?,
+                ]
             }
             Shell::Input => match self.from {
                 Given::Stdin => {
@@ -1096,11 +1057,11 @@ impl Asks for Cli {
                     return Err(Failed::new(Code::Read, why));
                 }
                 Given::Words | Given::File(_) => {
-                    string(&read_text("stdin", io::stdin(), SOURCE_MAX)?)
+                    string(&read_text("stdin", io::stdin(), SOURCE_MAX)?)?
                 }
             },
-            Shell::ReadFile(path) => string(&read_file(path.as_ref())?),
-            Shell::Getenv(name) => string(&getenv(name)?),
+            Shell::ReadFile(path) => string(&read_file(path.as_ref())?)?,
+            Shell::Getenv(name) => string(&getenv(name)?)?,
             Shell::Warn(line) => {
                 writeln!(io::stderr(), "{line}")
                     .map_err(|e| Failed::new(Code::Output, format!("writing to stderr: {e}")))?;
@@ -1161,7 +1122,7 @@ impl Asks for AsClient<'_> {
         }
         self.asks.published(state, context);
     }
-    fn ask(&mut self, asked: &Asked) -> Result<Reply, Failed> {
+    fn ask(&mut self, asked: &Asked) -> Result<Vec<u8>, Failed> {
         self.asks.ask(asked)
     }
     fn local(
@@ -1169,9 +1130,10 @@ impl Asks for AsClient<'_> {
         what: &Local,
         state: Option<&mut Draft>,
         out: &mut dyn Write,
+        grant: &Rc<Grant>,
     ) -> Result<Vec<Value<Fux>>, Failed> {
         let Local::Open(open) = what else {
-            return self.asks.local(what, state, out);
+            return self.asks.local(what, state, out, grant);
         };
         let screen = open.clone().admit(state.as_deref(), &self.context)?;
         self.opened = Some(screen);
@@ -1227,10 +1189,19 @@ pub fn run_capped(
                     request: *request,
                     context,
                 };
-                match asks.ask(&asked) {
-                    Ok(reply) => match reply.end() {
-                        End::Failed { code, message } => raised(machine, (code, message), reply)?,
-                        End::Done => pushed(machine, answered(reply))?,
+                let bytes = asks.ask(&asked);
+                // Let go of before its reply is decoded into the room what
+                // it was made from held.
+                drop(asked);
+                match bytes.and_then(|bytes| decoded(&bytes, machine.grant())) {
+                    Ok((reply, held)) => match reply.end() {
+                        End::Failed { code, message } => {
+                            raised(machine, (code, message), reply, held)?;
+                        }
+                        End::Done => {
+                            let values = answered(reply, held, machine.grant());
+                            pushed(machine, values)?;
+                        }
                     },
                     Err(failed) => pushed(machine, Err(failed))?,
                 }
@@ -1249,7 +1220,8 @@ pub fn run_capped(
                     pushed(machine, Err(failed))?;
                     continue;
                 }
-                let values = asks.local(&what, host.state.as_deref_mut(), host.out);
+                let grant = machine.grant();
+                let values = asks.local(&what, host.state.as_deref_mut(), host.out, grant);
                 // An exit the host took ends the run here, as it stands.
                 if let (Local::Shell(Shell::Exit(_)), Ok(_)) = (&what, &values) {
                     return Ok(machine.stack().to_vec());
@@ -1268,8 +1240,9 @@ fn raised(
     machine: &mut Machine<Fux>,
     (code, message): (Code, String),
     reply: Reply,
+    held: Reservation,
 ) -> Result<(), Failed> {
-    let answer = answered(reply);
+    let answer = answered(reply, held, machine.grant());
     let Ok(Some(answer)) =
         answer.map(|mut a| a.pop().filter(|_| PaneAnswer::FAILURES.contains(&code)))
     else {
@@ -1311,6 +1284,36 @@ fn pushed(
     Ok(())
 }
 
+/// `reply` as the server sends it, for an in-process `Asks`.
+#[cfg(any(test, feature = "in-process"))]
+pub(crate) fn encoded(reply: &Reply) -> Result<Vec<u8>, Failed> {
+    crate::wire::encode(reply)
+        .map_err(|error| client_failed(crate::protocol::Error::Wire(error).into()))
+}
+
+/// A reply's bytes decoded, what it holds reserved from `grant` as it is
+/// made.
+fn decoded(bytes: &[u8], grant: &Rc<Grant>) -> Result<(Reply, Reservation), Failed> {
+    crate::wire::Reader::charging(bytes, grant)
+        .held()
+        .map_err(|error| match error {
+            crate::wire::Error::Full(why) => Failed::new(Raise::TooLong, why),
+            other @ (crate::wire::Error::Limit
+            | crate::wire::Error::Truncated
+            | crate::wire::Error::Tag(..)
+            | crate::wire::Error::NotUtf8
+            | crate::wire::Error::Bad(_)
+            | crate::wire::Error::Trailing) => {
+                client_failed(crate::protocol::Error::Wire(other).into())
+            }
+        })
+}
+
+/// A language failure, as fux tells it.
+fn lang(failure: Failure) -> Failed {
+    Failed::new(Code::of(failure.code), failure.message)
+}
+
 /// A failure no `try` caught, as fux tells it, from `machine` where it
 /// failed: one inside a word of the prelude's or library's is placed at
 /// the program's step that called it, with the bundled word's own step in
@@ -1320,13 +1323,8 @@ fn uncaught(machine: &Machine<Fux>, mut error: fuxth::Error) -> Failed {
         matches!(place, Some(fuxth::Place::Line { source, .. })
             if matches!(&**source, "stdlib.fux" | "library.fux"))
     };
-    let step = bundled(error.place.as_ref()).then(|| {
-        machine
-            .calls()
-            .into_iter()
-            .rev()
-            .find(|t| !bundled(Some(&t.place)))
-    });
+    let step = bundled(error.place.as_ref())
+        .then(|| machine.calls().rev().find(|t| !bundled(Some(&t.place))));
     let Some(step) = step.flatten() else {
         return telling(error);
     };
@@ -1338,42 +1336,42 @@ fn uncaught(machine: &Machine<Fux>, mut error: fuxth::Error) -> Failed {
 }
 
 /// What a reply's answer puts on the stack: nothing, a string, handles, or
-/// an answer of fux's; a field's value as fuxth's own where it is one.
-pub fn answered(reply: Reply) -> Result<Vec<Value<Fux>>, Failed> {
+/// an answer of fux's; a field's value as fuxth's own where it is one. An
+/// answer keeps what decoding it reserved (`held`); what is made from the
+/// reply is reserved from `grant` while the reply is held too.
+pub fn answered(
+    reply: Reply,
+    held: Reservation,
+    grant: &Rc<Grant>,
+) -> Result<Vec<Value<Fux>>, Failed> {
     let run = reply.run;
     let body = match reply.response {
         Response::Answered(PaneResults::One(answer)) => {
-            return Ok(vec![Answer::Pane(answer).in_run(run)]);
+            return Ok(vec![Answer::Pane(answer).in_run(run, held).map_err(lang)?]);
         }
         Response::Answered(PaneResults::Many(answers)) => {
-            return Ok(vec![Answer::Panes(answers).in_run(run)]);
+            return Ok(vec![
+                Answer::Panes(answers).in_run(run, held).map_err(lang)?,
+            ]);
         }
         Response::Returned(body) => body,
         Response::Failed { .. } => return Ok(Vec::new()),
     };
-    let handles = |ids: Vec<AnyRef>| {
-        let ids = ids
-            .into_iter()
-            .map(|id| Value::App(handle(id, run)))
-            .collect();
-        let list = fuxth::List::new(ids)
-            .ok_or_else(|| Failed::new(Code::from(Raise::TooLong), "more ids than a list holds"))?;
-        Ok::<_, Failed>(Value::List(fuxth::Shared::new(list)))
-    };
     Ok(vec![match body {
         Body::Empty => return Ok(Vec::new()),
         Body::Found(id) => Value::App(handle(id, run)),
-        Body::Handles(ids) => handles(ids)?,
-        Body::Capture(captured) => Answer::Capture(captured).in_run(run),
-        Body::Snapshot(snapshot) => {
-            record::snapshot(*snapshot).map_err(|e| Failed::new(Code::of(e.code), e.message))?
+        Body::Handles(ids) => {
+            let mut list = fuxth::Items::new(grant, ids.len()).map_err(lang)?;
+            let handles = ids.into_iter().map(|id| Value::App(handle(id, run)));
+            list.extend(handles).map_err(lang)?;
+            list.finish().ok_or_else(|| {
+                Failed::new(Code::from(Raise::TooLong), "more ids than a list holds")
+            })?
         }
-        Body::Events(batch) => {
-            record::events(*batch).map_err(|e| Failed::new(Code::of(e.code), e.message))?
-        }
-        Body::Field(json) => {
-            record::from_json(&json).map_err(|e| Failed::new(Code::of(e.code), e.message))?
-        }
+        Body::Capture(captured) => Answer::Capture(captured).in_run(run, held).map_err(lang)?,
+        Body::Snapshot(snapshot) => record::snapshot(*snapshot, grant).map_err(lang)?,
+        Body::Events(batch) => record::events(*batch, grant).map_err(lang)?,
+        Body::Field(json) => record::from_json(&json, grant).map_err(lang)?,
     }])
 }
 
@@ -1392,6 +1390,7 @@ fn local(
     what: &Local,
     server: &mut Server,
     draft: Option<&mut Draft>,
+    grant: &Rc<Grant>,
 ) -> Result<Vec<Value<Fux>>, Failed> {
     match what {
         Local::Server(chosen) => server.choose(chosen.clone()),
@@ -1475,9 +1474,7 @@ fn local(
             let probe = client::probe(&socket).map_err(client_failed)?;
             let status =
                 crate::status(&socket, &probe).map_err(|why| Failed::new(Code::NoServer, why))?;
-            return Ok(vec![
-                record::from_json(&status).map_err(|e| Failed::new(Code::of(e.code), e.message))?,
-            ]);
+            return Ok(vec![record::from_json(&status, grant).map_err(lang)?]);
         }
     }
     Ok(Vec::new())
@@ -1581,7 +1578,7 @@ impl Asks for ConfigOnly {
     fn checkpoint(&mut self, _: &mut Draft, _: Context) -> Result<(), Failed> {
         Ok(())
     }
-    fn ask(&mut self, _: &Asked) -> Result<Reply, Failed> {
+    fn ask(&mut self, _: &Asked) -> Result<Vec<u8>, Failed> {
         Err(Failed::new(
             Code::NotConfig,
             "a config changes only its own client state",
@@ -1592,9 +1589,12 @@ impl Asks for ConfigOnly {
         what: &Local,
         _: Option<&mut Draft>,
         _: &mut dyn Write,
+        grant: &Rc<Grant>,
     ) -> Result<Vec<Value<Fux>>, Failed> {
         match what {
-            Local::Shell(Shell::Getenv(name)) => Ok(vec![Value::str(getenv(name)?)]),
+            Local::Shell(Shell::Getenv(name)) => {
+                Ok(vec![Value::str(grant, &getenv(name)?).map_err(lang)?])
+            }
             Local::Shell(Shell::Warn(line)) if self.diagnostics => {
                 writeln!(io::stderr(), "{line}")
                     .map_err(|e| Failed::new(Code::Output, format!("writing to stderr: {e}")))?;
@@ -1656,6 +1656,7 @@ pub fn main(args: &[String], out: &mut dyn Write) -> Result<u8, Failed> {
         Ok(stack) => stack.as_slice(),
         Err(_) => machine.stack(),
     };
+    let mut out = io::BufWriter::with_capacity(OUT_BUFFER, &mut *host.out);
     let printed = (stack.iter())
         // Empty pane outcomes and captures print no blank line;
         // options or a request, nothing.
@@ -1663,18 +1664,8 @@ pub fn main(args: &[String], out: &mut dyn Write) -> Result<u8, Failed> {
             !matches!(value, Value::App(Fux::Answer(a, _)) if a.is_empty())
                 && !matches!(value, Value::App(Fux::Opts(_)))
         })
-        .try_for_each(|value| {
-            let text = value
-                .text()
-                .map_err(|f| Failed::new(Code::of(f.code), f.message))?;
-            writeln!(host.out, "{text}")
-                .map_err(|e| Failed::new(Code::Output, format!("writing the output: {e}")))
-        })
-        .and_then(|()| {
-            host.out
-                .flush()
-                .map_err(|e| Failed::new(Code::Output, format!("writing the output: {e}")))
-        });
+        .try_for_each(|value| written(&mut out, value))
+        .and_then(|()| out.flush().map_err(output_failed));
     ran?;
     printed?;
     Ok(cli.status.unwrap_or(0))
@@ -1685,6 +1676,34 @@ pub fn main(args: &[String], out: &mut dyn Write) -> Result<u8, Failed> {
 /// (`#!/usr/bin/env -S fux --file`); help as other programs give it; any
 /// other one argument a whole program, as a shell passes `fux 'ls json'`,
 /// never a file, whatever it holds; else each is a word.
+/// What the command line's output gathers before it writes.
+const OUT_BUFFER: usize = 64 << 10;
+
+fn output_failed(error: io::Error) -> Failed {
+    Failed::new(Code::Output, format!("writing the output: {error}"))
+}
+
+/// `value`'s text written to `out`, a line, as it is made: none of it is
+/// held.
+fn written(out: &mut dyn Write, value: &Value<Fux>) -> Result<(), Failed> {
+    struct Out<'a>(&'a mut dyn Write, Option<io::Error>);
+    impl std::fmt::Write for Out<'_> {
+        fn write_str(&mut self, text: &str) -> std::fmt::Result {
+            self.0.write_all(text.as_bytes()).map_err(|error| {
+                self.1 = Some(error);
+                std::fmt::Error
+            })
+        }
+    }
+    let mut stream = Out(out, None);
+    let wrote = value.write_text(&mut stream);
+    if let Some(error) = stream.1 {
+        return Err(output_failed(error));
+    }
+    wrote.map_err(lang)?;
+    writeln!(out).map_err(output_failed)
+}
+
 fn program(args: &[String]) -> Result<(Vec<Token>, Given), Failed> {
     let words = match args {
         [] => token::arguments(&["default-attach"]),
@@ -1802,6 +1821,62 @@ pub(crate) mod tests {
         Ok(())
     }
 
+    /// `tokens` compiled to run within a grant of `bytes`.
+    pub(crate) fn compile_within(
+        tokens: &[fuxth::Token],
+        bytes: usize,
+    ) -> Result<fuxth::Machine<super::Fux>, super::Failed> {
+        let mut compiler = super::base(None)?;
+        compiler.add(&super::handles(tokens)?)?;
+        let grant = std::rc::Rc::new(fuxth::Grant::new(bytes));
+        Ok(fuxth::Machine::new(compiler.finish()?, grant)?)
+    }
+
+    /// A string, held by a grant of its own.
+    pub(crate) fn text(text: &str) -> Result<fuxth::Value<super::Fux>, String> {
+        fuxth::Value::str(&super::run_grant(), text).map_err(|f| f.message)
+    }
+
+    /// A value's text, as `print` shows it.
+    pub(crate) fn shown(value: &fuxth::Value<super::Fux>) -> String {
+        value
+            .text_upto(usize::MAX)
+            .ok()
+            .flatten()
+            .unwrap_or_default()
+    }
+
+    /// `bytes`, a reply, decoded.
+    pub(crate) fn reply(bytes: &[u8]) -> Result<super::Reply, super::Failed> {
+        crate::wire::Reader::new(bytes)
+            .whole()
+            .map_err(|e| super::Failed::new(super::Code::Usage, e.to_string()))
+    }
+
+    /// Nothing held yet, from a grant of its own.
+    pub(crate) fn held() -> fuxth::Reservation {
+        fuxth::Reservation::empty(&super::run_grant())
+    }
+
+    /// A list of `values`, held by a grant of its own.
+    pub(crate) fn list(
+        values: Vec<fuxth::Value<super::Fux>>,
+    ) -> Result<fuxth::Value<super::Fux>, String> {
+        let grant = super::run_grant();
+        let mut items = fuxth::Items::new(&grant, values.len()).map_err(|f| f.message)?;
+        items.extend(values.into_iter()).map_err(|f| f.message)?;
+        items
+            .finish()
+            .ok_or_else(|| "a list nested too deep".to_owned())
+    }
+
+    /// What `bytes`, a reply, puts on a run's stack.
+    pub(crate) fn answers(bytes: &[u8]) -> Result<Vec<fuxth::Value<super::Fux>>, super::Failed> {
+        let grant = super::run_grant();
+        let (reply, held) = super::decoded(bytes, &grant)?;
+        super::answered(reply, held, &grant)
+    }
+
     pub(crate) fn evaluate(
         code: &str,
         state: Option<&mut super::Draft>,
@@ -1819,8 +1894,8 @@ pub(crate) mod tests {
         out: &mut Vec<u8>,
     ) -> Result<Vec<fuxth::Value<super::Fux>>, super::Failed> {
         struct Once(Option<super::Reply>);
-        impl super::Asks for Once {
-            fn ask(
+        impl Once {
+            fn reply(
                 &mut self,
                 asked: &crate::protocol::Asked,
             ) -> Result<super::Reply, super::Failed> {
@@ -1839,6 +1914,11 @@ pub(crate) mod tests {
                 self.0.take().ok_or_else(|| {
                     super::Failed::new(crate::code::Code::Usage, "held field made another request")
                 })
+            }
+        }
+        impl super::Asks for Once {
+            fn ask(&mut self, asked: &crate::protocol::Asked) -> Result<Vec<u8>, super::Failed> {
+                crate::script::encoded(&self.reply(asked)?)
             }
         }
         evaluate(code, None, &mut Once(Some(reply)), out)
@@ -1886,7 +1966,10 @@ pub(crate) mod tests {
         let capture = crate::capture::client(crate::id::ClientId::of(1), &grid)?;
         assert!(capture.lines.iter().all(|line| line.text.is_empty()));
         let answer = super::Answer::Capture(Box::new(capture));
-        let value = super::Fux::Answer(fuxth::Shared::new(answer), None);
+        let value = super::Fux::Answer(
+            fuxth::Shared::new(answer, crate::script::tests::held()),
+            None,
+        );
         assert!(fuxth::AppValue::weight(&value) > u64::from(rows));
         Ok(())
     }
@@ -1917,8 +2000,8 @@ pub(crate) mod tests {
         struct Captures {
             count: usize,
         }
-        impl Asks for Captures {
-            fn ask(&mut self, asked: &crate::protocol::Asked) -> Result<Reply, Failed> {
+        impl Captures {
+            fn reply(&mut self, asked: &crate::protocol::Asked) -> Result<Reply, Failed> {
                 let version: Version = "%1:0.7.0.0.0:1-1"
                     .parse()
                     .map_err(|()| Failed::new(Code::Usage, "version"))?;
@@ -1939,6 +2022,11 @@ pub(crate) mod tests {
                 })
             }
         }
+        impl Asks for Captures {
+            fn ask(&mut self, asked: &crate::protocol::Asked) -> Result<Vec<u8>, Failed> {
+                crate::script::encoded(&self.reply(asked)?)
+            }
+        }
         for retain in [false, true] {
             let source = if retain {
                 std::iter::repeat_n("%1 all-history capture ", 9).collect::<String>()
@@ -1956,6 +2044,123 @@ pub(crate) mod tests {
             } else {
                 assert!(result?.is_empty());
                 assert_eq!(asks.count, 20);
+            }
+        }
+        // Refused at the capture that asked, which a `try` catches.
+        let nine = std::iter::repeat_n("%1 all-history capture ", 9).collect::<String>();
+        let caught = format!("str too_long try {nine}catch nip end");
+        let caught = evaluate(&caught, None, &mut Captures { count: 0 }, &mut Vec::new())?;
+        assert_eq!(caught, [crate::script::tests::text("too_long")?]);
+        Ok(())
+    }
+
+    /// A pane that answers every capture with the default-history styled
+    /// capture, and every wait with a change, until `turns` waits, then
+    /// with a timeout. What the run's grant has left is recorded at each
+    /// wait.
+    struct Styled {
+        capture: Vec<u8>,
+        version: super::Version,
+        turns: usize,
+        grant: Option<std::rc::Rc<fuxth::Grant>>,
+        left: Vec<usize>,
+    }
+
+    impl Styled {
+        fn new(turns: usize) -> Result<Self, String> {
+            let version: super::Version = "%1:0.0.0.0.0:1-1".parse().map_err(|()| "version")?;
+            let capture = crate::wire::tests::styled_capture(version);
+            let reply = super::Reply {
+                run: Some(version.run),
+                ..super::Body::Capture(Box::new(capture)).into()
+            };
+            let capture = super::encoded(&reply).map_err(|f| f.message)?;
+            Ok(Self {
+                capture,
+                version,
+                turns,
+                grant: None,
+                left: Vec::new(),
+            })
+        }
+    }
+
+    impl super::Asks for Styled {
+        fn ask(&mut self, asked: &crate::protocol::Asked) -> Result<Vec<u8>, super::Failed> {
+            use super::{AnyRef, Body, PaneAnswer, PaneResults, Reply, Request};
+            let answer = match &asked.request {
+                Request::Do(crate::command::Command::Resolve { .. }) => {
+                    Body::Found(AnyRef::Pane(self.version.pane)).into()
+                }
+                Request::Wait(_) => {
+                    self.left.extend(self.grant.as_ref().map(|g| g.remaining()));
+                    let answer = match self.left.len() < self.turns {
+                        true => PaneAnswer::Changed {
+                            version: self.version,
+                            changed: Vec::new(),
+                            ended: None,
+                        },
+                        false => PaneAnswer::TimedOut {
+                            since: self.version,
+                            limit: std::time::Duration::from_secs(1),
+                        },
+                    };
+                    PaneResults::One(answer).into()
+                }
+                Request::Do(_) | Request::NextEvents { .. } => return Ok(self.capture.clone()),
+            };
+            super::encoded(&Reply {
+                run: Some(self.version.run),
+                ..answer
+            })
+        }
+    }
+
+    /// What a run allocates past what the grant counts, at most: a reply's
+    /// bytes while they are decoded (`MAX_REPLY`), and the host's fixed
+    /// scratch (a capture's style workspace, formatting).
+    const OVERHEAD: usize = crate::wire::MAX_REPLY + (64 << 10);
+
+    #[test]
+    fn a_run_holds_no_more_than_its_grant_and_a_fixed_overhead() -> TestResult {
+        use super::*;
+        let names: String = (0..10_000).map(|n| format!("0 let x{n} ")).collect();
+        let s1 = format!("define recur recur {names}end recur");
+        for (code, ended) in [
+            (s1.as_str(), Err(Raise::TooLong)),
+            ("begin 1 0 1 eq until", Err(Raise::TooLong)),
+            (
+                "0 1000000 range let l list l l l l l l l l l l end concat",
+                Err(Raise::TooLong),
+            ),
+            ("%1 all-history styles capture let h h json print", Ok(())),
+            ("%1 100 quiet drop", Ok(())),
+            (
+                "define deep dup 0 gt drop 1 add deep 1 add end 0 deep",
+                Err(Raise::TooLong),
+            ),
+        ] {
+            let mut machine = compile(&token::source("peak", code)?)?;
+            let mut asks = Styled::new(100)?;
+            asks.grant = Some(Rc::clone(machine.grant()));
+            let mut sink = io::sink();
+            let mut host = Host::new(Context::default(), None, &mut sink);
+            let allocator = fux_vt_peak::ThreadPeak;
+            let base = allocator.live();
+            allocator.reset_peak();
+            let ran = run_capped(&mut machine, &mut host, &mut asks, None, None);
+            let peak = allocator.peak().saturating_sub(base);
+            let code_of = |failed: Failed| failed.code;
+            assert_eq!(
+                ran.map(drop).map_err(code_of),
+                ended.map_err(Code::from),
+                "{code}"
+            );
+            assert!(peak <= RUN_BYTES + OVERHEAD, "{code}: {peak}");
+            // Polling holds what one turn holds: each wait finds the same
+            // grant left.
+            if let [first, rest @ ..] = asks.left.as_slice() {
+                assert!(rest.iter().all(|left| left == first), "{code}");
             }
         }
         Ok(())
@@ -1990,7 +2195,7 @@ pub(crate) mod tests {
                 reply,
                 &mut Vec::new()
             )?,
-            vec![Value::str(version.to_string())]
+            vec![crate::script::tests::text(&version.to_string())?]
         );
         let capture = crate::capture::Captured {
             of: crate::capture::Of::Pane {
@@ -2061,10 +2266,8 @@ pub(crate) mod tests {
             values,
             vec![
                 Value::App(Fux::Client(client, Some(version.run))),
-                Value::List(fuxth::Shared::new(
-                    fuxth::List::new(vec![Value::Int(7), Value::Int(3)]).ok_or("cursor")?
-                )),
-                Value::str("x"),
+                crate::script::tests::list(vec![Value::Int(7), Value::Int(3)])?,
+                crate::script::tests::text("x")?,
                 Value::Int(1)
             ]
         );
@@ -2091,7 +2294,8 @@ pub(crate) mod tests {
             None,
             None,
         )?;
-        let text: Vec<String> = (left.iter().map(Value::text))
+        let text: Vec<String> = (left.iter())
+            .map(|v| v.text_upto(usize::MAX).map(Option::unwrap_or_default))
             .collect::<Result<_, _>>()
             .map_err(|f| f.message)?;
         assert_eq!(text, [other, "0 0 0 0 0"]);
@@ -2107,8 +2311,8 @@ pub(crate) mod tests {
             sent: usize,
             attached: Option<(Option<Run>, Option<AttachTarget>, Option<fux_vt::Size>)>,
         }
-        impl Asks for Record {
-            fn ask(&mut self, asked: &Asked) -> Result<Reply, Failed> {
+        impl Record {
+            fn reply(&mut self, asked: &Asked) -> Result<Reply, Failed> {
                 let mut reply: Reply = if matches!(
                     asked.request,
                     Request::Do(crate::command::Command::Resolve { .. })
@@ -2123,11 +2327,17 @@ pub(crate) mod tests {
                 reply.run = Some(self.version.run);
                 Ok(reply)
             }
+        }
+        impl Asks for Record {
+            fn ask(&mut self, asked: &crate::protocol::Asked) -> Result<Vec<u8>, Failed> {
+                crate::script::encoded(&self.reply(asked)?)
+            }
             fn local(
                 &mut self,
                 what: &Local,
                 _: Option<&mut Draft>,
                 _: &mut dyn Write,
+                _: &Rc<Grant>,
             ) -> Result<Vec<Value<Fux>>, Failed> {
                 let Local::Attach {
                     of, target, size, ..
@@ -2203,8 +2413,8 @@ pub(crate) mod tests {
         use crate::command::{AnyRef, Command, Request};
         use crate::wire::Reader;
         struct Record(Vec<u32>);
-        impl Asks for Record {
-            fn ask(&mut self, asked: &Asked) -> Result<Reply, Failed> {
+        impl Record {
+            fn reply(&mut self, asked: &Asked) -> Result<Reply, Failed> {
                 let bytes = crate::wire::encode(asked)
                     .map_err(|e| Failed::new(Code::Usage, e.to_string()))?;
                 let decoded: Asked = Reader::new(&bytes)
@@ -2228,6 +2438,11 @@ pub(crate) mod tests {
                 } else {
                     Err(Failed::new(Code::Usage, "unexpected request"))
                 }
+            }
+        }
+        impl Asks for Record {
+            fn ask(&mut self, asked: &crate::protocol::Asked) -> Result<Vec<u8>, Failed> {
+                crate::script::encoded(&self.reply(asked)?)
             }
         }
         let bundled = default_state()?;
@@ -2264,8 +2479,8 @@ pub(crate) mod tests {
     fn local_json_accepts_observations_from_different_runs() -> TestResult {
         use super::*;
         struct Reports(std::collections::VecDeque<Run>);
-        impl Asks for Reports {
-            fn ask(&mut self, _: &Asked) -> Result<Reply, Failed> {
+        impl Reports {
+            fn reply(&mut self, _: &Asked) -> Result<Reply, Failed> {
                 let run = self
                     .0
                     .pop_front()
@@ -2287,6 +2502,11 @@ pub(crate) mod tests {
                     }))
                     .into()
                 })
+            }
+        }
+        impl Asks for Reports {
+            fn ask(&mut self, asked: &crate::protocol::Asked) -> Result<Vec<u8>, Failed> {
+                crate::script::encoded(&self.reply(asked)?)
             }
         }
         let runs = ["1-0", "2-0"].map(|s| s.parse().map_err(|()| "run"));
@@ -2315,8 +2535,8 @@ pub(crate) mod tests {
             runs: std::collections::VecDeque<Run>,
             submitted: Vec<Option<Run>>,
         }
-        impl Asks for Leaves {
-            fn ask(&mut self, asked: &Asked) -> Result<Reply, Failed> {
+        impl Leaves {
+            fn reply(&mut self, asked: &Asked) -> Result<Reply, Failed> {
                 let mut run = None;
                 let body = match asked.request {
                     Request::Do(crate::command::Command::Resolve { .. }) => {
@@ -2335,6 +2555,11 @@ pub(crate) mod tests {
                     }
                 };
                 Ok(Reply { run, ..body.into() })
+            }
+        }
+        impl Asks for Leaves {
+            fn ask(&mut self, asked: &crate::protocol::Asked) -> Result<Vec<u8>, Failed> {
+                crate::script::encoded(&self.reply(asked)?)
             }
         }
         let ours: Run = "1-0".parse().map_err(|()| "run")?;
@@ -2366,18 +2591,24 @@ pub(crate) mod tests {
     fn layout_scalar_refusals_do_not_copy_retained_strings() -> TestResult {
         use super::*;
         struct NoRequests;
-        impl Asks for NoRequests {
-            fn ask(&mut self, _: &Asked) -> Result<Reply, Failed> {
+        impl NoRequests {
+            fn reply(&mut self, _: &Asked) -> Result<Reply, Failed> {
                 Err(Failed::new(
                     Code::Usage,
                     "invalid scalars must not submit a request",
                 ))
             }
         }
+        impl Asks for NoRequests {
+            fn ask(&mut self, asked: &crate::protocol::Asked) -> Result<Vec<u8>, Failed> {
+                crate::script::encoded(&self.reply(asked)?)
+            }
+        }
         let longest = "@4294967295:18446744073709551615:4294967295-ffffffffffffffff";
         assert!(longest.parse::<crate::command::LayoutRevision>().is_ok());
         let allocator = fux_vt_peak::ThreadPeak;
-        let bad = Value::str(std::iter::repeat_n('x', fuxth::LONGEST / 2).collect::<String>());
+        let bad =
+            crate::script::tests::text(&std::iter::repeat_n('x', 500_000).collect::<String>())?;
         let mut peaks = Vec::new();
         for proposal in [
             "t bad list end arrange",

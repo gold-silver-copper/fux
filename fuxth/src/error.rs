@@ -71,10 +71,6 @@ codes! {
     Unclosed "unclosed" [found],
     /// A word given fewer values than it takes.
     StackUnderflow "stack_underflow",
-    /// The stack grew past its limit.
-    StackOverflow "stack_overflow",
-    /// Calls nested past their limit: recursion too deep.
-    CallDepth "call_depth",
     /// A value of the wrong type for a word.
     Type "type",
     /// Division or remainder by zero.
@@ -150,6 +146,18 @@ impl std::fmt::Display for Error {
 }
 
 impl std::error::Error for Error {}
+
+/// A failure said nowhere: at no place, at its word if it names one.
+impl From<Failure> for Error {
+    fn from(failure: Failure) -> Self {
+        Self {
+            code: failure.code,
+            message: failure.message,
+            place: None,
+            word: failure.word,
+        }
+    }
+}
 
 /// What a step takes, as a value of another kind is told it: the same
 /// words whether the checker finds it before the run or the machine during

@@ -271,9 +271,8 @@ mod tests {
     #[test]
     fn local_settings_keep_the_checked_value_union_and_inner_validators() -> TestResult {
         let list = |words: &[&str]| {
-            fuxth::List::new(words.iter().map(|w| Value::str(*w)).collect())
-                .map(|l| Value::List(fuxth::Shared::new(l)))
-                .ok_or_else(|| "list".to_owned())
+            let words = words.iter().map(|w| crate::script::tests::text(w));
+            crate::script::tests::list(words.collect::<Result<_, _>>()?)
         };
         let mut draft = PreferenceDraft::default();
         for (name, value) in [
@@ -295,17 +294,17 @@ mod tests {
             ("picture-bytes", Value::Int(100663297)),
             ("escape-delay-ms", Value::Int(-1)),
             ("paste-timeout-ms", Value::Int(65536)),
-            ("cell-placement", Value::str("cells")),
+            ("cell-placement", crate::script::tests::text("cells")?),
             ("history-bytes", Value::Int(-1)),
             ("history-bytes", Value::Int((1 << 30) + 1)),
             ("wait-seconds", Value::Int(86_401)),
             ("wait-seconds", Value::Int(-1)),
             ("bell", Value::Int(0)),
-            ("bell", Value::str("off")),
+            ("bell", crate::script::tests::text("off")?),
             ("shell", list(&[])?),
             ("shell", list(&[""])?),
             ("shell", list(&["/bin/sh", "a\0b"])?),
-            ("shell", Value::str("/bin/sh")),
+            ("shell", crate::script::tests::text("/bin/sh")?),
             ("copy-environment", list(&["BAD-NAME"])?),
             ("copy-environment", list(&["FUX_PANE"])?),
             ("copy-environment", list(&["FUX_SOCKET"])?),

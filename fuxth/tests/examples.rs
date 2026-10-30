@@ -4,7 +4,7 @@
 //! (`# refused: CODE at LINE`).
 mod common;
 use common::Toy;
-use fuxth::{Compiler, Error, Limits, Machine, Outcome, Place, STDLIB, Vocabulary, token};
+use fuxth::{Compiler, Error, Grant, Machine, Outcome, Place, STDLIB, Vocabulary, token};
 
 /// How a program ended.
 #[derive(Debug, PartialEq)]
@@ -32,7 +32,10 @@ fn run(name: &str, text: &str) -> Ended {
         Ok(program) => program,
         Err(e) => return refused(e),
     };
-    let mut machine = Machine::new(program, Limits::default());
+    let mut machine = match Machine::new(program, std::rc::Rc::new(Grant::new(128 << 20))) {
+        Ok(machine) => machine,
+        Err(e) => return Ended::Failed(e.code.name().to_owned()),
+    };
     let mut host = Toy::default();
     match machine.run(&mut host, 50_000_000) {
         Ok(Outcome::Finished) => {
@@ -41,7 +44,10 @@ fn run(name: &str, text: &str) -> Ended {
                     machine
                         .stack()
                         .iter()
-                        .map(|v| v.text().unwrap_or_else(|f| f.message)),
+                        .map(|v| match v.text(machine.grant()) {
+                            Ok((text, _)) => text,
+                            Err(f) => f.message,
+                        }),
                 )
                 .collect();
             Ended::Left(left.join(" "))

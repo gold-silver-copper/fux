@@ -3574,7 +3574,7 @@ impl crate::script::Asks for InProcess<'_> {
             );
         }
     }
-    fn ask(&mut self, asked: &crate::protocol::Asked) -> Result<Reply, crate::script::Failed> {
+    fn ask(&mut self, asked: &crate::protocol::Asked) -> Result<Vec<u8>, crate::script::Failed> {
         let session = &mut *self.0;
         let origin = match asked.context.client {
             Some(client) if session.views.contains_key(&client) => Origin::Client(client),
@@ -3607,7 +3607,7 @@ impl crate::script::Asks for InProcess<'_> {
                 session.fire(timer, now);
             },
         };
-        Ok(Reply {
+        crate::script::encoded(&Reply {
             run: Some(session.run),
             ..outcome
         })
@@ -3630,25 +3630,37 @@ pub(crate) mod testing {
             &self,
             only: Option<command::AnyRef>,
         ) -> Result<String, crate::script::Failed> {
+            self.dump_within(only, crate::script::RUN_BYTES)
+        }
+
+        /// `dump_recipe`, its run holding at most `bytes`.
+        pub(super) fn dump_within(
+            &self,
+            only: Option<command::AnyRef>,
+            bytes: usize,
+        ) -> Result<String, crate::script::Failed> {
             struct Once(Option<Reply>);
             impl crate::script::Asks for Once {
                 fn ask(
                     &mut self,
                     asked: &crate::protocol::Asked,
-                ) -> Result<Reply, crate::script::Failed> {
-                    assert!(matches!(
-                        asked.request,
-                        Request::Do(Command::Inspect {
-                            projection: crate::inspect::Projection::Recipe,
-                            ..
+                ) -> Result<Vec<u8>, crate::script::Failed> {
+                    let mut reply = || -> Result<Reply, crate::script::Failed> {
+                        assert!(matches!(
+                            asked.request,
+                            Request::Do(Command::Inspect {
+                                projection: crate::inspect::Projection::Recipe,
+                                ..
+                            })
+                        ));
+                        self.0.take().ok_or_else(|| {
+                            crate::script::Failed::new(
+                                crate::code::Code::Usage,
+                                "dump made more than one request",
+                            )
                         })
-                    ));
-                    self.0.take().ok_or_else(|| {
-                        crate::script::Failed::new(
-                            crate::code::Code::Usage,
-                            "dump made more than one request",
-                        )
-                    })
+                    };
+                    crate::script::encoded(&reply()?)
                 }
             }
             let scope = only.map_or(crate::inspect::Scope::All, crate::inspect::Scope::Target);
@@ -3657,7 +3669,7 @@ pub(crate) mod testing {
                 .map_err(|e| crate::script::Failed::new(e.code(), e.to_string()))?;
             let tokens =
                 fuxth::token::source("dump", "all dump").map_err(crate::script::Failed::from)?;
-            let mut machine = crate::script::compile(&tokens)?;
+            let mut machine = crate::script::tests::compile_within(&tokens, bytes)?;
             let mut out = Vec::new();
             let mut host =
                 crate::script::Host::new(crate::protocol::Context::default(), None, &mut out);
@@ -3809,7 +3821,7 @@ pub(crate) mod testing {
         })?;
         let mut text = String::from_utf8_lossy(&out).into_owned();
         for value in &ended {
-            text.push_str(&value.text().map_err(|f| f.message)?);
+            text.push_str(&crate::script::tests::shown(value));
             text.push('\n');
         }
         Ok(text)
@@ -3920,16 +3932,16 @@ pub(crate) mod testing {
     /// What a reply's answer prints, a value a line, or why it failed.
     pub(crate) fn said(reply: &Result<Reply, super::Error>) -> String {
         let values = match reply {
-            Ok(reply) => crate::script::answered(reply.clone()).map_err(|f| f.to_string()),
+            Ok(reply) => crate::script::encoded(reply)
+                .and_then(|bytes| crate::script::tests::answers(&bytes))
+                .map_err(|f| f.to_string()),
             Err(error) => Err(error.to_string()),
         };
         match values {
-            Ok(values) => values
-                .iter()
-                .map(fuxth::Value::text)
-                .collect::<Result<Vec<_>, _>>()
-                .map(|lines| lines.join("\n"))
-                .unwrap_or_else(|f| f.message),
+            Ok(values) => (values.iter())
+                .map(crate::script::tests::shown)
+                .collect::<Vec<_>>()
+                .join("\n"),
             Err(why) => why,
         }
     }
@@ -3958,19 +3970,24 @@ pub(crate) mod testing {
             fn ask(
                 &mut self,
                 asked: &crate::protocol::Asked,
-            ) -> Result<Reply, crate::script::Failed> {
-                let recorded = match &asked.request {
-                    Request::Do(Command::Client { action, .. }) => Command::Client {
-                        client: None,
-                        action: action.clone(),
-                    },
-                    Request::Do(Command::Resolve { .. })
-                    | Request::Wait(..)
-                    | Request::NextEvents { .. } => return self.0.ask(asked),
-                    Request::Do(command) => command.clone(),
+            ) -> Result<Vec<u8>, crate::script::Failed> {
+                let mut reply = || -> Result<Reply, crate::script::Failed> {
+                    let recorded = match &asked.request {
+                        Request::Do(Command::Client { action, .. }) => Command::Client {
+                            client: None,
+                            action: action.clone(),
+                        },
+                        Request::Do(Command::Resolve { .. })
+                        | Request::Wait(..)
+                        | Request::NextEvents { .. } => {
+                            return crate::script::tests::reply(&self.0.ask(asked)?);
+                        }
+                        Request::Do(command) => command.clone(),
+                    };
+                    self.1.push(recorded);
+                    Ok(Reply::default())
                 };
-                self.1.push(recorded);
-                Ok(Reply::default())
+                crate::script::encoded(&reply()?)
             }
         }
         let tokens = fuxth::token::source("test", code).map_err(|e| e.to_string())?;
@@ -4174,10 +4191,19 @@ mod tests {
         use crate::inspect::{Projection, Scope};
         struct Once(Option<Reply>);
         impl crate::script::Asks for Once {
-            fn ask(&mut self, _: &crate::protocol::Asked) -> Result<Reply, crate::script::Failed> {
-                self.0.take().ok_or_else(|| {
-                    crate::script::Failed::new(crate::code::Code::Usage, "held listing refreshed")
-                })
+            fn ask(
+                &mut self,
+                _: &crate::protocol::Asked,
+            ) -> Result<Vec<u8>, crate::script::Failed> {
+                let mut reply = || -> Result<Reply, crate::script::Failed> {
+                    self.0.take().ok_or_else(|| {
+                        crate::script::Failed::new(
+                            crate::code::Code::Usage,
+                            "held listing refreshed",
+                        )
+                    })
+                };
+                crate::script::encoded(&reply()?)
             }
         }
         let (s, _) = attached(12, 80)?;
@@ -4306,10 +4332,10 @@ mod tests {
                     ..
                 })
             ));
-            let held = crate::script::answered(Reply {
+            let held = crate::script::tests::answers(&crate::script::encoded(&Reply {
                 run: Some(s.run),
                 ..Body::Snapshot(snapshot).into()
-            })?;
+            })?)?;
             assert!(!held.is_empty());
         }
         let before = s
@@ -4341,14 +4367,17 @@ mod tests {
             fn ask(
                 &mut self,
                 asked: &crate::protocol::Asked,
-            ) -> Result<Reply, crate::script::Failed> {
-                assert!(matches!(
-                    asked.request,
-                    Request::Do(Command::Inspect { .. })
-                ));
-                self.0
-                    .take()
-                    .ok_or_else(|| crate::script::Failed::new(Code::Usage, "a second roundtrip"))
+            ) -> Result<Vec<u8>, crate::script::Failed> {
+                let mut reply = || -> Result<Reply, crate::script::Failed> {
+                    assert!(matches!(
+                        asked.request,
+                        Request::Do(Command::Inspect { .. })
+                    ));
+                    self.0.take().ok_or_else(|| {
+                        crate::script::Failed::new(Code::Usage, "a second roundtrip")
+                    })
+                };
+                crate::script::encoded(&reply()?)
             }
         }
         let body = s.inspect(
@@ -4369,7 +4398,7 @@ mod tests {
         assert!(
             matches!(values.first(), Some(fuxth::Value::App(crate::script::Fux::Pane(p, Some(run)))) if *p == PaneId::of(1) && *run == s.run)
         );
-        assert_eq!(values.last(), Some(&fuxth::Value::str("null")));
+        assert_eq!(values.last(), Some(&crate::script::tests::text("null")?));
         assert_eq!(
             output(
                 &mut s,
@@ -4944,8 +4973,8 @@ mod tests {
             commits: usize,
             resize: bool,
         }
-        impl crate::script::Asks for Guarded<'_> {
-            fn ask(
+        impl Guarded<'_> {
+            fn reply(
                 &mut self,
                 asked: &crate::protocol::Asked,
             ) -> Result<Reply, crate::script::Failed> {
@@ -4971,11 +5000,20 @@ mod tests {
                     }
                 }
                 let reply = crate::script::Asks::ask(&mut InProcess(self.session), asked)?;
+                let reply = crate::script::tests::reply(&reply)?;
                 if self.resize && matches!(asked.request, Request::Do(Command::Inspect { .. })) {
                     run(self.session, "@1 121 40 resize")
                         .map_err(|e| crate::script::Failed::new(Code::Usage, e))?;
                 }
                 Ok(reply)
+            }
+        }
+        impl crate::script::Asks for Guarded<'_> {
+            fn ask(
+                &mut self,
+                asked: &crate::protocol::Asked,
+            ) -> Result<Vec<u8>, crate::script::Failed> {
+                crate::script::encoded(&self.reply(asked)?)
             }
         }
         for recipe in ["even-h", "even-v", "main-h", "main-v", "tiled"] {
@@ -5074,12 +5112,16 @@ mod tests {
             crate::inspect::Scope::All,
             crate::inspect::Projection::Recipe,
         )?;
+        // Its source made is past what this run may hold.
         let error = s
-            .dump_recipe(None)
+            .dump_within(None, 1 << 20)
             .err()
             .ok_or("dump admitted oversized source")?;
         assert_eq!(error.code, Code::from(Raise::TooLong));
-        assert!(error.to_string().contains("concat"), "{error}");
+        assert!(error.to_string().contains("inside dump"), "{error}");
+        // Within a run's whole grant, it is made.
+        let dumped = s.dump_recipe(None).map_err(|e| e.to_string());
+        assert!(dumped.is_ok_and(|dump| dump.len() > 1 << 20));
         Ok(())
     }
 
@@ -7916,10 +7958,6 @@ mod tests {
             caught.as_deref(),
             Ok("each walks a string or a list, not an integer\n")
         );
-        // A server word's answer that overflows the stack fails at the
-        // word, as an immediate word's would: a `try` catches it.
-        let full = "str stack_overflow try 0 1000000 range each end ls catch 2drop str caught end";
-        assert_eq!(output(&mut s, full).as_deref(), Ok("caught\n"));
         // A wait's limit is a day at most: its deadline a time there is.
         let long = failed(&mut s, "%1 9223372036854775807 timeout wait");
         assert!(

@@ -908,7 +908,6 @@ impl Captured {
         budget.charge(crate::wire::retained(self))?;
         budget.charge(self.text_scratch())?;
         let text = crate::json::render(&mut budget, |out| self.write_text(out))?;
-        budget.text_value(&text)?;
         Ok(text)
     }
 

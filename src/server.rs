@@ -2588,6 +2588,9 @@ mod tests {
                     .into(),
                 };
                 let first = asks.ask(&probe).map_err(|e| e.to_string())?;
+                let first: crate::protocol::Reply = crate::wire::Reader::new(&first)
+                    .whole()
+                    .map_err(|e| e.to_string())?;
                 if rejected {
                     assert!(matches!(
                         first.end(),
@@ -2600,7 +2603,10 @@ mod tests {
                     assert!(matches!(first.end(), crate::protocol::End::Done));
                     assert!(asks.ask(&probe).is_err());
                 }
-                asks.ask(&mutation).map_err(|e| e.to_string())
+                let reply = asks.ask(&mutation).map_err(|e| e.to_string())?;
+                crate::wire::Reader::new(&reply)
+                    .whole::<crate::protocol::Reply>()
+                    .map_err(|e| e.to_string())
             })();
             let input = peer.join().map_err(|_| "server thread panicked")?;
             fs::remove_dir_all(&dir)?;

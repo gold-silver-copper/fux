@@ -26,15 +26,12 @@ impl Data {
         Ok(match u8::get(r)? {
             0 => Self::Int(i64::get(r)?),
             1 => Self::Bool(bool::get(r)?),
-            2 => Self::Text(r.bounded_text(fuxth::LONGEST.saturating_mul(4))?),
-            3 => Self::List(r.bounded_list(fuxth::LONGEST, |r| Self::read(r, depth))?),
+            2 => Self::Text(String::get(r)?),
+            3 => Self::List(r.list(|r| Self::read(r, depth))?),
             4 => Self::Record {
                 of: Option::get(r)?,
                 fields: r.bounded_list(crate::inspect::NODES, |r| {
-                    Ok((
-                        r.bounded_text(fuxth::LONGEST.saturating_mul(4))?,
-                        Self::read(r, depth)?,
-                    ))
+                    Ok((String::get(r)?, Self::read(r, depth)?))
                 })?,
             },
             5 => Self::Null,

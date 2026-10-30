@@ -1030,7 +1030,7 @@ mod tests {
             fn ask(
                 &mut self,
                 asked: &crate::protocol::Asked,
-            ) -> Result<crate::protocol::Reply, crate::script::Failed> {
+            ) -> Result<Vec<u8>, crate::script::Failed> {
                 if let crate::command::Request::Do(command) = &asked.request
                     && !matches!(command, Command::Resolve { .. })
                 {

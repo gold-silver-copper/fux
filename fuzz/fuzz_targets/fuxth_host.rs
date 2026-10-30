@@ -6,7 +6,7 @@
 //! (n -- [n]), defined after the standard library, gives n back only above
 //! 0, a value given only sometimes.
 use fuxth::{
-    AppValue, Args, Compiler, Done, Error, Failure, Host, Limits, Machine, Outcome, Place, Value,
+    AppValue, Args, Compiler, Done, Error, Failure, Grant, Host, Machine, Outcome, Place, Value,
     Vocabulary, token,
 };
 
@@ -45,11 +45,8 @@ impl Host for Toy {
     }
 }
 
-/// Small limits, so a fuzzed program meets them quickly.
-pub const LIMITS: Limits = Limits {
-    stack: 1000,
-    calls: 100,
-};
+/// A small grant, so a fuzzed program meets it quickly.
+pub const BYTES: usize = 64 << 10;
 
 /// Steps a run may take in all.
 pub const STEPS: u64 = 100_000;
@@ -85,7 +82,10 @@ pub fn run(
     program: fuxth::Program<Nothing>,
     budget: u64,
 ) -> Option<Result<Vec<Value<Nothing>>, Error>> {
-    let mut machine = Machine::new(program, LIMITS);
+    let mut machine = match Machine::new(program, std::rc::Rc::new(Grant::new(BYTES))) {
+        Ok(machine) => machine,
+        Err(error) => return Some(Err(error)),
+    };
     let budget = budget.clamp(1, STEPS);
     let mut taken = 0u64;
     while taken < STEPS {

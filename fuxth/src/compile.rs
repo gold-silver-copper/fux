@@ -472,7 +472,8 @@ impl<A: Clone> Compiler<A> {
                 }
                 Some(Parsing::Str) => {
                     let next = tokens.next().ok_or_else(|| missing(token, "a string"))?;
-                    self.code().push(Op::Push(Value::str(&*next.text)), token);
+                    self.code()
+                        .push(Op::Push(Value::literal(&next.text)), token);
                     self.literal = true;
                 }
                 Some(Parsing::Define) => {

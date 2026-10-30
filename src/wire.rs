@@ -8,12 +8,15 @@ use crate::keys::{Direction, KeyPress};
 use fuxix::Allocation;
 use fuxix::process::Signal;
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
+use std::rc::Rc;
 
 /// Why bytes are not the value they should be.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Error {
     /// A finite value exceeds its byte or allocation budget.
     Limit,
+    /// A run's value past what the run may hold.
+    Full(String),
     /// The bytes end before the value does.
     Truncated,
     /// A tag no variant has.
@@ -30,6 +33,7 @@ impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Error::Limit => f.write_str("finite reply exceeds its byte or allocation limit"),
+            Error::Full(why) => f.write_str(why),
             Error::Truncated => f.write_str("the bytes end early"),
             Error::Tag(what, tag) => write!(f, "no {what} has tag {tag}"),
             Error::NotUtf8 => f.write_str("a text that is not UTF-8"),
@@ -41,34 +45,60 @@ impl std::fmt::Display for Error {
 
 impl std::error::Error for Error {}
 
-/// Bytes being read.
-pub struct Reader<'a>(&'a [u8], fuxth::Grant);
+/// Bytes being read: what they decode to is reserved, before it is made,
+/// from the grant of whoever will hold it.
+pub struct Reader<'a> {
+    bytes: &'a [u8],
+    held: fuxth::Reservation,
+    /// What the part being read may still take (`limited`).
+    room: usize,
+    /// Whether it decodes for a run, which its refusal names.
+    run: bool,
+}
 
 impl<'a> Reader<'a> {
+    /// A frame decoded outside a run, against a grant of its own.
     pub fn new(bytes: &'a [u8]) -> Reader<'a> {
-        Reader(bytes, fuxth::Grant::new(MAX_ALLOCATED))
+        Reader {
+            run: false,
+            ..Self::charging(bytes, &Rc::new(fuxth::Grant::new(MAX_ALLOCATED)))
+        }
+    }
+    /// A reply decoded for a run, against the run's grant.
+    pub fn charging(bytes: &'a [u8], grant: &Rc<fuxth::Grant>) -> Reader<'a> {
+        Reader {
+            bytes,
+            held: fuxth::Reservation::empty(grant),
+            room: usize::MAX,
+            run: true,
+        }
     }
     pub(crate) fn limited<T>(
         &mut self,
         bytes: usize,
         read: impl FnOnce(&mut Self) -> Result<T, Error>,
     ) -> Result<T, Error> {
-        let before = self.1.remaining();
+        let before = self.room;
         let limit = before.min(bytes);
-        self.1 = fuxth::Grant::new(limit);
+        self.room = limit;
         let result = read(self);
-        self.1 = fuxth::Grant::new(before.saturating_sub(limit.saturating_sub(self.1.remaining())));
+        self.room = before.saturating_sub(limit.saturating_sub(self.room));
         result
     }
     pub(crate) fn charge(&mut self, bytes: usize) -> Result<(), Error> {
-        self.1.charge(bytes).map_err(|_| Error::Limit)
+        self.room = self.room.checked_sub(bytes).ok_or(Error::Limit)?;
+        let held = self.held.bytes().checked_add(bytes).ok_or(Error::Limit)?;
+        self.held.resize(held).map_err(|full| match self.run {
+            true => Error::Full(full.message),
+            false => Error::Limit,
+        })
     }
     pub(crate) fn list<T>(
         &mut self,
         mut read: impl FnMut(&mut Self) -> Result<T, Error>,
     ) -> Result<Vec<T>, Error> {
         let count = u32::get(self)? as usize;
-        if count > self.0.len() {
+        if count > self.bytes.len() {
             return Err(Error::Truncated);
         }
         self.charge(
@@ -88,36 +118,46 @@ impl<'a> Reader<'a> {
         max: usize,
         read: impl FnMut(&mut Self) -> Result<T, Error>,
     ) -> Result<Vec<T>, Error> {
-        let count = u32::get(&mut Reader::new(self.0))? as usize;
-        if count > max {
+        if self.count()? > max {
             return Err(Error::Bad("list length"));
         }
         self.list(read)
     }
     pub(crate) fn bounded_text(&mut self, max: usize) -> Result<String, Error> {
-        let count = u32::get(&mut Reader::new(self.0))? as usize;
-        if count > max {
+        if self.count()? > max {
             return Err(Error::Bad("text length"));
         }
         String::get(self)
     }
+    /// The length a string or list next says it has, not yet read.
+    fn count(&self) -> Result<usize, Error> {
+        let (head, _) = self.bytes.split_first_chunk().ok_or(Error::Truncated)?;
+        Ok(u32::from_be_bytes(*head) as usize)
+    }
     fn take<const N: usize>(&mut self) -> Result<[u8; N], Error> {
-        let (head, rest) = self.0.split_first_chunk().ok_or(Error::Truncated)?;
-        self.0 = rest;
+        let (head, rest) = self.bytes.split_first_chunk().ok_or(Error::Truncated)?;
+        self.bytes = rest;
         Ok(*head)
     }
     fn bytes(&mut self, len: usize) -> Result<&'a [u8], Error> {
-        let (head, rest) = self.0.split_at_checked(len).ok_or(Error::Truncated)?;
-        self.0 = rest;
+        let (head, rest) = self.bytes.split_at_checked(len).ok_or(Error::Truncated)?;
+        self.bytes = rest;
         Ok(head)
     }
     /// The whole value: no bytes may follow.
-    pub fn whole<T: Wire>(mut self) -> Result<T, Error> {
-        if self.0.len() > MAX_REPLY {
+    pub fn whole<T: Wire>(self) -> Result<T, Error> {
+        self.held().map(|(value, _)| value)
+    }
+    /// The whole value, and what it holds of the grant.
+    pub fn held<T: Wire>(mut self) -> Result<(T, fuxth::Reservation), Error> {
+        if self.bytes.len() > MAX_REPLY {
             return Err(Error::Limit);
         }
         let value = T::get(&mut self)?;
-        self.0.is_empty().then_some(value).ok_or(Error::Trailing)
+        match self.bytes.is_empty() {
+            true => Ok((value, self.held)),
+            false => Err(Error::Trailing),
+        }
     }
 }
 
@@ -130,10 +170,9 @@ pub trait Wire: Sized {
 /// The default-history styled capture measures 13.0 MB. The cap admits
 /// that observation, while bounding unfinished Part streams.
 pub const MAX_REPLY: usize = 32 << 20;
-/// Shared construction, decoding and rendering grant. The default styled
-/// capture peaks at 13,381,430 construction bytes, is charged 13,388,567
-/// on decode, and peaks at 25,528,285 during client rendering including
-/// its retained input. The grant admits all three phases.
+/// The grant of a server request's construction and decoding, and of a
+/// frame decoded outside a run. The default styled capture peaks at
+/// 13,381,430 construction bytes and is charged 13,388,548 on decode.
 pub const MAX_ALLOCATED: usize = 128 << 20;
 
 /// Retained construction space, charged before cloning data or growing lists.
@@ -153,15 +192,6 @@ impl Budget {
         self.write(&mut out, args)?;
         Ok(out)
     }
-    /// Text imported into fuxth retains its String and builds an Rc and a
-    /// non-ASCII character index. The String was already charged by render.
-    pub(crate) fn text_value(&mut self, text: &str) -> Result<(), crate::session::Error> {
-        self.charge(
-            fuxth::Text::import_bytes(text.chars().count(), text.is_ascii())
-                .ok_or_else(Self::exceeded)?,
-        )
-    }
-
     pub(crate) fn optional_text(
         &mut self,
         text: Option<&str>,
@@ -749,7 +779,7 @@ impl Wire for Percent {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::command::{Command, Extent, Program};
     use crate::session::testing::TestResult;
@@ -778,19 +808,24 @@ mod tests {
         let slots = 2usize
             .saturating_mul(std::mem::size_of::<Vec<String>>())
             .saturating_add(2usize.saturating_mul(std::mem::size_of::<String>()));
-        let mut reader = Reader::new(&bytes);
-        reader.1 = fuxth::Grant::new(slots.saturating_add(5));
-        assert_eq!(reader.whole::<Vec<Vec<String>>>(), Err(Error::Limit));
+        let grant = |bytes| Rc::new(fuxth::Grant::new(bytes));
+        let reader = Reader::charging(&bytes, &grant(slots.saturating_add(5)));
+        assert!(matches!(
+            reader.whole::<Vec<Vec<String>>>(),
+            Err(Error::Full(_))
+        ));
         let bytes = [5, 0, 0, 0, 4, 0, 0, 0, 0]; // four JSON nulls
-        let mut reader = Reader::new(&bytes);
-        reader.1 = fuxth::Grant::new(std::mem::size_of::<crate::json::Json>());
-        assert_eq!(reader.whole::<crate::json::Json>(), Err(Error::Limit));
+        let reader = Reader::charging(&bytes, &grant(std::mem::size_of::<crate::json::Json>()));
+        assert!(matches!(
+            reader.whole::<crate::json::Json>(),
+            Err(Error::Full(_))
+        ));
         Ok(())
     }
 
-    #[test]
-    fn default_styled_capture_fits_wire_and_script_grants() -> TestResult {
-        let version = "%1:0.0.0.0.0:1-1".parse().map_err(|()| "version")?;
+    /// The default-history styled capture: 9,931 lines of 100 cells, each
+    /// a style of its own.
+    pub(crate) fn styled_capture(version: crate::command::Version) -> crate::capture::Captured {
         let line = crate::capture::Line {
             text: std::iter::repeat_n('x', 100).collect(),
             runs: (0..100)
@@ -801,7 +836,7 @@ mod tests {
                 })
                 .collect(),
         };
-        let capture = crate::capture::Captured {
+        crate::capture::Captured {
             of: crate::capture::Of::Pane {
                 version,
                 wrap_pending: false,
@@ -816,17 +851,25 @@ mod tests {
                 .collect(),
             styled: true,
             marks: false,
-        };
+        }
+    }
+
+    #[test]
+    fn default_styled_capture_fits_wire_and_script_grants() -> TestResult {
+        let version: crate::command::Version =
+            "%1:0.0.0.0.0:1-1".parse().map_err(|()| "version")?;
         let reply = crate::protocol::Reply {
             run: Some(version.run),
-            ..crate::protocol::Body::Capture(Box::new(capture)).into()
+            ..crate::protocol::Body::Capture(Box::new(styled_capture(version))).into()
         };
         let bytes = encode(&reply)?;
-        let mut reader = Reader::new(&bytes);
-        let reply = crate::protocol::Reply::get(&mut reader)?;
-        let charged = MAX_ALLOCATED.saturating_sub(reader.1.remaining());
+        let grant = Rc::new(fuxth::Grant::new(MAX_ALLOCATED));
+        let (reply, held) = Reader::charging(&bytes, &grant).held::<crate::protocol::Reply>()?;
+        let charged = held.bytes();
+        assert_eq!(charged, MAX_ALLOCATED.saturating_sub(grant.remaining()));
         // Three distinct copies of it fit the grant.
         assert!(charged.saturating_mul(3) <= MAX_ALLOCATED, "{charged}");
+        drop(held);
         let mut out = Vec::new();
         let result = crate::script::tests::held_reply(
             "%1 all-history styles capture let h h json print list h h h h h h end json",
@@ -907,8 +950,7 @@ mod tests {
             let value: T = text.parse().map_err(|_| "token")?;
             let bytes = encode(&value)?;
             assert_eq!(bytes.len(), size);
-            let mut reader = Reader::new(&bytes);
-            reader.1 = fuxth::Grant::new(0);
+            let reader = Reader::charging(&bytes, &Rc::new(fuxth::Grant::new(0)));
             assert_eq!(reader.whole::<T>()?, value);
             Ok(())
         }
