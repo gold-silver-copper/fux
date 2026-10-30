@@ -6,7 +6,7 @@ use support::*;
 #[test]
 fn a_server_answers_ls_and_stops_on_kill_server() -> Outcome {
     let mut server = Server::start("")?;
-    let ls = server.ok(&["ls"])?;
+    let ls = server.ok(&["ls", "listing"])?;
     assert!(ls.contains("+1 main"), "{ls}");
     assert!(ls.contains("@1 %1"), "{ls}");
     assert!(ls.contains("%1"), "{ls}");
@@ -47,7 +47,7 @@ fn a_second_server_on_the_same_socket_is_refused() -> Outcome {
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(stderr.contains("another fux server"), "{stderr}");
     assert_eq!(
-        server.ok(&["ls"])?.lines().count(),
+        server.ok(&["ls", "listing"])?.lines().count(),
         4,
         "the first server is untouched"
     );

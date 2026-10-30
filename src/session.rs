@@ -6930,24 +6930,16 @@ mod tests {
         let (mut s, _) = attached(11, 40)?;
         run(&mut s, "opts 40 10 size str +1 workspace in new-tab")?;
         run(&mut s, "str %2 pane str vertical axis split")?;
-        let mut ids = |only| {
-            let ls = Command::Inspect {
-                scope: crate::inspect::Scope::Target(only),
-                projection: crate::inspect::Projection::Facts,
-            };
-            let mut reply = s.execute(&ls, &Origin::Cli(Caller::default()), Instant::now());
-            if let Ok(reply) = &mut reply {
-                reply.run = Some(s.run);
-            }
-            let text = said(&reply);
+        let mut ids = |only: AnyRef| -> Result<String, String> {
+            let text = output(&mut s, &format!("{only} info listing"))?;
             let words = text.lines().filter_map(|l| l.split_whitespace().next());
-            words.map(str::to_owned).collect::<Vec<_>>().join(" ")
+            Ok(words.map(str::to_owned).collect::<Vec<_>>().join(" "))
         };
         let ws = "+1".parse::<WsId>()?;
         let tab = "@2".parse::<TabId>()?;
-        assert_eq!(ids(AnyRef::Workspace(ws)), "+1 @1 %1 @2 %2 %3");
-        assert_eq!(ids(AnyRef::Tab(tab)), "@2 %2 %3");
-        assert_eq!(ids(AnyRef::Pane(PaneId::of(3))), "%3");
+        assert_eq!(ids(AnyRef::Workspace(ws))?, "+1 @1 %1 @2 %2 %3");
+        assert_eq!(ids(AnyRef::Tab(tab))?, "@2 %2 %3");
+        assert_eq!(ids(AnyRef::Pane(PaneId::of(3)))?, "%3");
         Ok(())
     }
 
