@@ -308,6 +308,12 @@ the sweeps inside one operation cost at most 32 units for each cell it
 restyles. A rectangle restyle copies no text, so they fit the screen's
 text term, which it leaves unused.
 
+An operation also rewrites each row's link runs once at most, in one
+remake and one sort, (log2 C + 5) × C units, and copies a row's text into
+room compacted once (a failed store doesn't compact again): with the row's
+text copied, 49C + 128, a row costs at most about 75C + 128, inside the
+screen term's 4C + 2 × (49C + 128).
+
 At fux's defaults M is about 27 M; at its largest pane, 4,096 × 4,096
 with 1 GiB of history, M = 1,878,829,362, the screen's text most of it.
 The bounds suite asserts for every probe that it spends at most

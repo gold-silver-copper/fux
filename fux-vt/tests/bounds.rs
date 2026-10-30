@@ -264,43 +264,134 @@ mod quota {
     /// called again while work is left: between two budget stops, frame
     /// boundaries between, at most the quota and one operation spent, the
     /// quota stopping it at least twice, and the two alike at the end,
-    /// screen, cursor and replies.
+    /// screen, cursor and replies. At fux's largest pane, 4095×4096.
     fn split_and_whole_agree(input: &[u8]) -> Result {
+        agree((4095, 4096), b"", input, usize::MAX, 2)
+    }
+
+    /// `split_and_whole_agree` at a screen of `size`, both parsers first
+    /// given `setup` whole, the input given `piece` bytes at a time, the
+    /// quota stopping it at least `stops_least` times; their links alike
+    /// too.
+    fn agree(
+        (rows, cols): (u16, u16),
+        setup: &[u8],
+        input: &[u8],
+        piece: usize,
+        stops_least: u32,
+    ) -> Result {
         let _one = one_at_a_time();
-        let size = Size::new(4095, 4096)?;
-        let setup = probe::Setup::defaults().sized(4095, 4096).history(0);
-        let most = probe::LIMIT.saturating_add(probe::most(&setup));
-        let (mut whole, mut alone) = (Parser::new(size, 0)?, Replies::default());
+        let size = Size::new(rows, cols)?;
+        let options: fux_vt::Options = fux_vt::Feature::ALL.into_iter().collect();
+        let most = probe::LIMIT.saturating_add(probe::most_at(rows, cols, 0));
+        let (mut whole, mut alone) = (Parser::with_options(size, 0, options)?, Replies::default());
+        whole.process(setup)?;
         whole.process_with(input, &mut alone)?;
-        let (mut parser, mut replies) = (Parser::new(size, 0)?, Replies::default());
-        let (mut rest, mut stops, mut since) = (input, 0u32, 0u64);
-        while !rest.is_empty() || parser.has_work_left() {
-            let before = fux_vt::work_spent();
-            let stop = parser.process_until_stop(rest, &mut replies)?;
-            since = since.saturating_add(fux_vt::work_spent().saturating_sub(before));
-            assert!(
-                since <= most,
-                "{since} spent between budget stops, past {most}"
-            );
-            match stop {
-                None => rest = &[],
-                Some((taken, stop)) => {
-                    if stop == Stop::Budget {
-                        (stops, since) = (stops.saturating_add(1), 0);
+        let (mut parser, mut replies) =
+            (Parser::with_options(size, 0, options)?, Replies::default());
+        parser.process(setup)?;
+        let (mut stops, mut since) = (0u32, 0u64);
+        let mut left = input;
+        while !left.is_empty() || parser.has_work_left() {
+            let (mut rest, after) = left.split_at_checked(piece).unwrap_or((left, &[]));
+            left = after;
+            loop {
+                let before = fux_vt::work_spent();
+                let stop = parser.process_until_stop(rest, &mut replies)?;
+                since = since.saturating_add(fux_vt::work_spent().saturating_sub(before));
+                assert!(
+                    since <= most,
+                    "{since} spent between budget stops, past {most}"
+                );
+                match stop {
+                    None => break,
+                    Some((taken, stop)) => {
+                        if stop == Stop::Budget {
+                            (stops, since) = (stops.saturating_add(1), 0);
+                        }
+                        rest = rest.get(taken..).unwrap_or_default();
                     }
-                    rest = rest.get(taken..).unwrap_or_default();
+                }
+                if rest.is_empty() && !parser.has_work_left() {
+                    break;
                 }
             }
         }
-        assert!(stops >= 2, "{stops} stops");
+        assert!(stops >= stops_least, "{stops} stops");
         let (a, b) = (whole.screen(), parser.screen());
         assert_eq!(a.cursor_position(), b.cursor_position());
         assert!(
             a.rows().zip(b.rows()).all(|(a, b)| a.cells().eq(b.cells())),
             "the screens differ"
         );
+        for row in 0..rows {
+            for col in 0..cols {
+                assert!(
+                    a.link(row, col) == b.link(row, col),
+                    "the links differ at {row};{col}"
+                );
+            }
+        }
         assert_eq!(alone.0, replies.0, "the replies differ");
         Ok(())
+    }
+
+    /// A row of `cols` cells, each its own link of two alternating ids
+    /// `ids`, on row `row`, the link closed after.
+    fn linked_row(row: u16, cols: u16, ids: [&str; 2]) -> Vec<u8> {
+        let mut out = format!("\x1b[{row};1H").into_bytes();
+        for col in 0..cols {
+            let [even, odd] = ids;
+            let id = if col % 2 == 0 { even } else { odd };
+            out.extend(format!("\x1b]8;id={id};u{id}\x1b\\x").bytes());
+        }
+        out.extend_from_slice(b"\x1b]8;;\x1b\\");
+        out
+    }
+
+    /// A scroll inside left and right margins over rows of alternating
+    /// links copies each row's span of them in one go, not a cell at a
+    /// time: within the quota and one operation, its links and the cells
+    /// outside the margins as one call leaves them.
+    #[test]
+    fn a_linked_margin_scroll_is_one_operation() -> Result {
+        let mut setup = linked_row(1, 4096, ["a", "b"]);
+        setup.extend(linked_row(2, 4096, ["c", "d"]));
+        setup.extend_from_slice(b"\x1b[?69h\x1b[1;4095s\x1b[2;1H");
+        let input = vec![b'\n'; 64];
+        agree((2, 4096), &setup, &input, usize::MAX, 1)
+    }
+
+    /// DECCRA into a row whose long text is all but full copies what fits
+    /// and cuts the rest, reading the row once, not once a cluster: 16
+    /// rows of 1,025 clusters of 127 bytes, copied right, over and over.
+    #[test]
+    fn a_rectangle_copy_into_full_long_text_is_one_operation() -> Result {
+        let cluster: String = std::iter::once('e')
+            .chain(std::iter::repeat_n('\u{301}', 63))
+            .collect();
+        let mut setup = Vec::new();
+        for row in 1..=16 {
+            setup.extend(format!("\x1b[{row};1H").bytes());
+            setup.extend(std::iter::repeat_n(cluster.as_str(), 1025).flat_map(str::bytes));
+        }
+        let input: Vec<u8> = std::iter::repeat_n(&b"\x1b[1;1;16;1025;1;1;2049;1$v"[..], 8)
+            .flatten()
+            .copied()
+            .collect();
+        agree((16, 4096), &setup, &input, usize::MAX, 2)
+    }
+
+    /// DEC Special Graphics over a row of alternating links, each glyph
+    /// clearing a linked cell: a place to look after each, whole or a
+    /// byte at a time.
+    #[test]
+    fn dec_graphics_over_links_stop_at_the_quota() -> Result {
+        let mut setup = linked_row(1, 4096, ["a", "b"]);
+        setup.extend_from_slice(b"\x1b[H\x1b(0");
+        let input = vec![b'q'; 2048];
+        agree((1, 4096), &setup, &input, usize::MAX, 2)?;
+        agree((1, 4096), &setup, &input, 1, 2)
     }
 
     /// The screen filled with `X`, then `each` 24 times, each followed by

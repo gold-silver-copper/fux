@@ -2124,13 +2124,15 @@ impl Screen {
     /// margin itself (`wrap_for`).
     pub(crate) fn ascii(&mut self, mut bytes: &[u8]) -> usize {
         let all = bytes.len();
-        // Character sets and insert mode take `print`, a glyph at a time.
+        // Character sets and insert mode take `print`, a glyph at a time,
+        // each a place to look: a glyph can clear a linked cell.
         if self.single.is_some() || self.charsets.graphics() || self.mode(Mode::Insert) {
             for (i, &byte) in bytes.iter().enumerate() {
                 if self.stopped {
                     return i;
                 }
                 self.print(char::from(byte));
+                self.check_budget();
             }
             return all;
         }

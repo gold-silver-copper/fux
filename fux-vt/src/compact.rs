@@ -475,7 +475,7 @@ impl<C: AsRef<Compact> + AsMut<Compact>> Line<'_, C> {
             let Some(joined) = join(&mut buffer, current, encoded) else {
                 return false;
             };
-            return self.store_short(i, cell, joined);
+            return self.store_short(i, cell, joined, false);
         }
         let mut buffer = [0u8; CLUSTER_CAPACITY];
         let Some(joined) = join(&mut buffer, current, encoded) else {
@@ -483,7 +483,7 @@ impl<C: AsRef<Compact> + AsMut<Compact>> Line<'_, C> {
         };
         // Unlike `set`, the cell keeps what it has if the row has no room,
         // even compacted: an append never loses text.
-        self.store_long(i, cell, joined, false)
+        self.store_long(i, cell, joined, false, false)
     }
 
     /// Sets cell `i` to `cell`'s halves and style holding `text`. A cluster
@@ -492,27 +492,42 @@ impl<C: AsRef<Compact> + AsMut<Compact>> Line<'_, C> {
     /// text was kept whole.
     pub(crate) fn set(&mut self, i: usize, cell: Compact, text: &str) -> bool {
         let kept = floor(text, CLUSTER_CAPACITY);
-        self.store(i, cell, kept) && kept.len() == text.len()
+        self.store(i, cell, kept, false) && kept.len() == text.len()
     }
 
-    fn store(&mut self, i: usize, cell: Compact, text: &str) -> bool {
+    /// `set` on a row `clear_for` compacted, as a bulk copy fills it: a
+    /// cluster with no room is cut at once, as compacting again frees
+    /// nothing, so a copy of many reads the row once, not once a cluster.
+    pub(crate) fn set_compacted(&mut self, i: usize, cell: Compact, text: &str) -> bool {
+        let kept = floor(text, CLUSTER_CAPACITY);
+        self.store(i, cell, kept, true) && kept.len() == text.len()
+    }
+
+    fn store(&mut self, i: usize, cell: Compact, text: &str, compacted: bool) -> bool {
         if i >= self.cells.len() {
             return false;
         }
         if text.len() <= SHORT {
-            return self.store_short(i, cell, text.as_bytes());
+            return self.store_short(i, cell, text.as_bytes(), compacted);
         }
-        if self.store_long(i, cell, text.as_bytes(), true) {
+        if self.store_long(i, cell, text.as_bytes(), true, compacted) {
             return true;
         }
-        let _ = self.store_short(i, cell, floor(text, SHORT).as_bytes());
+        let _ = self.store_short(i, cell, floor(text, SHORT).as_bytes(), compacted);
         false
     }
 
     /// Stores long cluster `text` in cell `i`, compacting first if out of
-    /// room. If `replace`, the cell's old text goes first. Whether the row
-    /// had room.
-    fn store_long(&mut self, i: usize, cell: Compact, text: &[u8], replace: bool) -> bool {
+    /// room, unless `compacted` says the text is already. If `replace`, the
+    /// cell's old text goes first. Whether the row had room.
+    fn store_long(
+        &mut self,
+        i: usize,
+        cell: Compact,
+        text: &[u8],
+        replace: bool,
+        compacted: bool,
+    ) -> bool {
         let limit = Text::long_limit(self.cells.len());
         if self.text.long.len().saturating_add(text.len()) > limit {
             if replace && let Some(slot) = self.cells.get_mut(i).map(AsMut::as_mut) {
@@ -521,7 +536,7 @@ impl<C: AsRef<Compact> + AsMut<Compact>> Line<'_, C> {
             // Compacted, the text is what the cells hold, end to end: if
             // that leaves no room either, compacting would copy it all for
             // nothing (THREATS.md B31).
-            if self.live_long().saturating_add(text.len()) <= limit {
+            if !compacted && self.live_long().saturating_add(text.len()) <= limit {
                 self.compact(true, 0..0);
             }
         }
@@ -544,8 +559,9 @@ impl<C: AsRef<Compact> + AsMut<Compact>> Line<'_, C> {
     /// Stores `text`, whole UTF-8 of at most [`SHORT`] bytes, in cell `i`:
     /// inline, or in the short text, compacted first if out of room.
     /// Whether it had room: a row wider than a locator reaches may not,
-    /// and the cell keeps what of `text` fits inline.
-    fn store_short(&mut self, i: usize, cell: Compact, text: &[u8]) -> bool {
+    /// and the cell keeps what of `text` fits inline. `compacted`: as
+    /// `store_long`'s.
+    fn store_short(&mut self, i: usize, cell: Compact, text: &[u8], compacted: bool) -> bool {
         if let Some(inline) = cell.holding(text) {
             if let Some(slot) = self.cells.get_mut(i).map(AsMut::as_mut) {
                 *slot = inline;
@@ -558,7 +574,9 @@ impl<C: AsRef<Compact> + AsMut<Compact>> Line<'_, C> {
             if let Some(slot) = self.cells.get_mut(i).map(AsMut::as_mut) {
                 *slot = slot.blanked();
             }
-            self.compact(false, 0..0);
+            if !compacted {
+                self.compact(false, 0..0);
+            }
         }
         let short = &mut self.text.short;
         let Some(slot) = self.cells.get_mut(i).map(AsMut::as_mut) else {

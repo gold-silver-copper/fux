@@ -143,6 +143,7 @@ const _: () = assert!(size_of::<Run>() == 32 && size_of::<KeptLinks>() == 32);
 impl KeptLinks {
     /// Moves the links out of `links`, which keeps its memory.
     pub(crate) fn take(links: &mut RowLinks) -> Option<Self> {
+        crate::budget::spend(links.0.len());
         match links.0.len() {
             0 => None,
             1 => links.0.pop().map(Self::One),
@@ -186,7 +187,41 @@ impl RowLinks {
     }
     /// Drops every link, keeping the memory for the slot's next row.
     pub(crate) fn clear(&mut self) {
+        crate::budget::spend(self.0.len());
         self.0.clear();
+    }
+    /// Sets the links of cells `span` to `runs`, each inside it, in order:
+    /// a margin scroll's span copied, in one remake and one sort however
+    /// many cells change. Whether any cell's link changed.
+    #[inline(never)]
+    pub(crate) fn replace(
+        &mut self,
+        span: Range<usize>,
+        runs: &[(Range<usize>, Hyperlink)],
+    ) -> bool {
+        let (Ok(start), Ok(end)) = (u16::try_from(span.start), u16::try_from(span.end)) else {
+            return false;
+        };
+        // A pass to see whether the span's links are those already.
+        crate::budget::spend(self.0.len().saturating_add(runs.len()));
+        let at = |n: usize| n.saturating_add(span.start);
+        let held = (self.runs().within(span.clone()))
+            .map(|(cells, link)| (at(cells.start)..at(cells.end), link));
+        if held.eq(runs.iter().map(|(cells, link)| (cells.clone(), link))) {
+            return false;
+        }
+        self.remake(|run| {
+            let before = (run.start, run.end.min(start));
+            [before, (run.start.max(end), run.end), (0, 0)]
+        });
+        for (cells, link) in runs {
+            if let (Ok(start), Ok(end)) = (u16::try_from(cells.start), u16::try_from(cells.end)) {
+                let link = link.clone();
+                self.0.push(Run { start, end, link });
+            }
+        }
+        self.tidy();
+        true
     }
     /// Sets the link of cells `span`; returns whether any cell's link
     /// changed. A span past what a row holds changes nothing. The left-to-right append
@@ -315,6 +350,9 @@ impl RowLinks {
 }
 
 impl<'a> Runs<'a> {
+    pub(crate) fn len(self) -> usize {
+        self.0.len()
+    }
     pub(crate) fn get(self, col: usize) -> Option<&'a Hyperlink> {
         let col = u16::try_from(col).ok()?;
         let at = self.0.partition_point(|run| run.end <= col);

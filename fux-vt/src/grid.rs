@@ -1445,7 +1445,7 @@ impl Grid {
                 } else if in_place {
                     line.replace(at, *cell, text);
                 } else {
-                    line.set(at, *cell, text);
+                    line.set_compacted(at, *cell, text);
                 }
             }
             let edges = columns.start.saturating_sub(1)..columns.end.saturating_add(1);
@@ -1683,13 +1683,25 @@ impl Grid {
         // Each cell read, compared and written.
         crate::budget::spend(span.len().saturating_mul(3));
         self.copy_cells((source, target), span.clone(), span.clone(), false, version);
-        let links = self.linked.get(source).filter(|l| !l.is_empty()).cloned();
-        let linked = links.is_some() || self.linked.get(target).is_some_and(|l| !l.is_empty());
-        if linked {
-            for at in span {
-                let link = links.as_ref().and_then(|l| l.runs().get(at));
-                self.set_link(to, at..at.saturating_add(1), link, version);
-            }
+        // The source's links in the span, absolute, set in one go: the
+        // row's others stay where they are.
+        let runs: Vec<(Range<usize>, Hyperlink)> = (self.linked.get(source))
+            .map(|links| {
+                crate::budget::spend(links.runs().len());
+                (links.runs().within(span.clone()))
+                    .map(|(cells, link)| {
+                        let start = cells.start.saturating_add(span.start);
+                        (start..cells.end.saturating_add(span.start), link.clone())
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        if let Some(links) = self.linked.get_mut(target)
+            && (!runs.is_empty() || !links.is_empty())
+            && links.replace(span, &runs)
+            && let Some(m) = self.meta.get_mut(target)
+        {
+            m.version = version;
         }
     }
 
