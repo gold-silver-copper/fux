@@ -1236,17 +1236,19 @@ impl Parser {
                 }
             } else if ground && byte < 0x20 && byte != 0x1b {
                 // CR LF, which ends most lines, as one.
-                if let [b'\r', b'\n', after @ ..] = remaining {
+                let fed = if let [b'\r', b'\n', after @ ..] = remaining {
                     self.screen.carriage_return_line_feed();
                     remaining = after;
+                    true
                 } else {
                     self.control(byte, sink);
                     remaining = tail;
-                }
+                    matches!(byte, 0x0a..=0x0c)
+                };
                 self.screen.forget_repeat();
-                // Each control is a place to look: a line feed can move a
-                // row's text into history, a SUB print, a tab look for stops.
-                self.over::<UNTIL_STOP>()
+                // A line feed can move a row's text into history; a SUB
+                // prints and a tab looks for stops, which look themselves.
+                self.over_after::<UNTIL_STOP>(false, fed)
             } else if ground
                 && byte >= 0x80
                 && let Some(length) = self.text(remaining)
@@ -1315,8 +1317,8 @@ impl Parser {
     }
     /// `over`, only where the parser came back to ground after a byte it
     /// read alone or a sequence (`sequence`), a line feed was carried out
-    /// (`fed`), a sixel byte was read, or printing found the budget spent
-    /// (`Screen::check_budget`): where the work a few bytes can multiply is
+    /// (`fed`), a sixel byte was read, or printing, SUB or a tab found the
+    /// budget spent (`Screen::check_budget`): where the work a few bytes can multiply is
     /// done. A rule of states, so the fast paths look where `byte` alone
     /// would.
     #[inline]

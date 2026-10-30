@@ -327,6 +327,10 @@ fn printing_that_never_wraps_stops_at_the_budget() -> Result<(), Error> {
         .flatten()
         .copied()
         .collect();
+    let plain: Vec<u8> = std::iter::repeat_n(&b"\x1a\r"[..], 1_100_000)
+        .flatten()
+        .copied()
+        .collect();
     let tabs: Vec<u8> = std::iter::repeat_n(&b"\t\r"[..], 8190)
         .flatten()
         .copied()
@@ -336,6 +340,7 @@ fn printing_that_never_wraps_stops_at_the_budget() -> Result<(), Error> {
         (Size::of(2, 2), &b""[..], &crs, 2),
         (Size::of(1, 200), &row[..], &marks, 1),
         (Size::of(1, 4096), &b"\x1b[4h"[..], &subs, subs.len()),
+        (Size::of(2, 2), &b""[..], &plain, plain.len()),
         (Size::of(1, 4096), &b"\x1b[3g"[..], &tabs, tabs.len()),
     ] {
         let mut parser = Parser::new(size, 0)?;

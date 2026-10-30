@@ -1402,8 +1402,8 @@ impl Screen {
     }
     /// Notes whether the call under way has spent its budget, as printing
     /// does at each wrap, each glyph inserted and each glyph text prints
-    /// one at a time: printing then stops after the glyph it is on
-    /// (`stopped`), and the parser at that byte.
+    /// one at a time, and SUB and a tab do: printing then stops after the
+    /// glyph it is on (`stopped`), and the parser at that byte.
     #[inline]
     pub(crate) fn check_budget(&mut self) {
         self.stopped |= crate::budget::spent() >= self.stop_at;
@@ -1489,6 +1489,7 @@ impl Screen {
     #[inline(never)]
     pub(crate) fn substitute(&mut self) {
         self.print_as('\u{2426}', Properties::of('\u{2426}'));
+        self.check_budget();
     }
 
     /// Cancels a pending single shift, as a function other than a graphic
@@ -2254,6 +2255,7 @@ impl Screen {
         }
         // Each column the stops were looked for in.
         crate::budget::spend(col.abs_diff(from));
+        self.check_budget();
         let g = self.grid_mut();
         g.set_col(col);
         g.fit_cursor();
