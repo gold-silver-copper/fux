@@ -761,6 +761,7 @@ impl<A: Clone> Compiler<A> {
             *self = before;
         } else {
             self.library = self.words.len();
+            self.known.separate_library();
         }
         docs
     }

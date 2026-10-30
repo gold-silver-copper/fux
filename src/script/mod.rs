@@ -824,9 +824,8 @@ pub(crate) fn callback_machine(
     Ok(Machine::new(compiler.finish_callback()?, Limits::default()))
 }
 
-/// The libraries and `config`'s definitions, compiled and checked once a
-/// thread for each config: a config's bindings, each checked as it binds,
-/// and every key's program after.
+/// Config definitions, checked eagerly and cached for this thread's last
+/// config. Library summaries are shared with `READY` as words are reached.
 fn configured_compiler(
     config: &Config,
     mut compiler: Compiler<Fux>,
@@ -845,16 +844,16 @@ fn configured_compiler(
 }
 
 thread_local! {
-    /// The standard library and fux's, compiled and checked once a thread,
-    /// for every program after; and their words' help.
+    /// The libraries, compiled once a thread, and their help. Clones share
+    /// library summaries checked on demand by programs and bound actions.
     static READY: Result<(Compiler<Fux>, Rc<[fuxth::Doc]>), Failed> = libraries();
     /// The last config's, as `configured_compiler` made it.
     static CONFIGURED: std::cell::RefCell<Option<(Config, Compiler<Fux>)>> =
         const { std::cell::RefCell::new(None) };
 }
 
-/// The client's libraries, compiled and checked without the thread-local
-/// cache; the bench counts this initialization cold. Its mistake is told
+/// The client's libraries, compiled with an empty shared summary cache;
+/// the bench counts this initialization cold. Its mistake is told
 /// without a word's usage, which would read `READY` as it is made.
 pub fn libraries() -> Result<(Compiler<Fux>, Rc<[fuxth::Doc]>), Failed> {
     let told = |error| told(error, false);
@@ -874,7 +873,6 @@ pub fn libraries() -> Result<(Compiler<Fux>, Rc<[fuxth::Doc]>), Failed> {
     ] {
         compiler.inputs(word, "tab").map_err(told)?;
     }
-    compiler.prepare();
     Ok((compiler, docs.into()))
 }
 
@@ -1871,21 +1869,39 @@ pub(crate) mod tests {
         }
         full.finish()?;
 
-        for config in [false, true] {
-            let mut compiler = ready.clone();
-            compiler.add(&fuxth::token::source(
-                "unused",
-                "define unused list line end end",
-            )?)?;
-            if config {
-                compiler = compiler.definitions();
+        for (definitions, main, word) in [
+            ("define unused list line end end", "", "line"),
+            (
+                "define f dump-warnings drop drop end",
+                "str ran print 0 f",
+                "f",
+            ),
+            (
+                concat!(
+                    "define a0 a1 end define a1 a2 end define a2 a3 end ",
+                    "define a3 a4 end define a4 a5 end define a5 a6 end ",
+                    "define a6 a7 end define a7 a8 end define a8 a9 end ",
+                    "define a9 1 end define unused list line end end",
+                ),
+                "str EFFECT print",
+                "line",
+            ),
+        ] {
+            for config in [false, true] {
+                let (ready, _) = super::libraries()?;
+                // Both a cold library and one cached by the failed program.
+                for _ in 0..2 {
+                    let mut compiler = ready.clone();
+                    compiler.add(&fuxth::token::source("definitions", definitions)?)?;
+                    if config {
+                        compiler = compiler.definitions();
+                    }
+                    compiler.add(&fuxth::token::source("caller", main)?)?;
+                    let error = compiler.finish().err().ok_or("unchecked definition")?;
+                    assert_eq!(error.code, fuxth::Code::StackUnderflow);
+                    assert_eq!(error.word.as_deref(), Some(word));
+                }
             }
-            let error = compiler
-                .finish()
-                .err()
-                .ok_or("unchecked unused definition")?;
-            assert_eq!(error.code, fuxth::Code::StackUnderflow);
-            assert_eq!(error.word.as_deref(), Some("line"));
         }
         Ok(())
     }
