@@ -728,8 +728,11 @@ pub struct Pane {
     /// How many of the unread bytes are the rest of a frame being read
     /// (`Pane::mid_frame`).
     frame_left: usize,
+    /// The frame's bytes are read, but the parser has work they left
+    /// (REP's copies): the frame is not done till it is.
+    frame_work: bool,
     /// A size asked while a frame drawn for the old one was still being
-    /// read: taken once it is (`Pane::read_unread`).
+    /// read: taken once it is (`Pane::frame_read`).
     resize_to: Option<Size>,
     /// How much more output this turn may give the parser ([`SLICE`]).
     slice_left: usize,
@@ -1118,6 +1121,7 @@ impl Pane {
                 since: now,
             },
             frame_left: 0,
+            frame_work: false,
             resize_to: None,
             slice_left: SLICE,
             exiting: None,
@@ -1187,7 +1191,22 @@ impl Pane {
     /// `references/modern/mode_2026_synchronized_output.md`), and the rest
     /// of its screen as it is (`render::Grid::keep_area`).
     pub fn mid_frame(&self) -> bool {
-        self.frame_left > 0
+        self.frame_left > 0 || self.frame_work
+    }
+
+    /// A frame's bytes read but `left`, the work they leave counted in:
+    /// once neither is left, the frame is done and a resize it held up is
+    /// taken, its read ended first. Whether one was.
+    fn frame_read(&mut self, left: usize, tell: &mut Teller<'_>) -> bool {
+        self.frame_left = left;
+        self.frame_work = left == 0 && self.parser.has_work_left();
+        let Some(size) = self.resize_to.filter(|_| !self.mid_frame()) else {
+            return false;
+        };
+        self.resize_to = None;
+        self.judge_read();
+        self.take_size(size, tell);
+        true
     }
 
     /// Reads the output waiting since a call of the parser did all the work
@@ -1197,29 +1216,20 @@ impl Pane {
         let bytes = std::mem::take(&mut self.unread.bytes);
         let start = std::mem::take(&mut self.unread.at);
         let unread = bytes.get(start..).unwrap_or_default();
-        // A sequence can have work left even after all its bytes were read.
-        if unread.is_empty() {
-            if self.parse(&[], false, tell).is_some() {
-                self.wait_unread(bytes, start, now);
-            }
-            return;
-        }
-        let frame_left = std::mem::take(&mut self.frame_left);
-        let at = frame_left.min(unread.len());
+        // The rest of a frame first, or the work a call left, even after
+        // all its bytes were read.
+        let framed = self.mid_frame();
+        let at = self.frame_left.min(unread.len());
         let (frame, after) = unread.split_at_checked(at).unwrap_or((unread, &[]));
-        if let Some((taken, _)) = self.parse(frame, false, tell) {
-            self.frame_left = frame.len().saturating_sub(taken);
+        let stopped = self.parse(frame, false, tell);
+        let taken = stopped.map_or(frame.len(), |(taken, _)| taken);
+        // A resize the frame held up comes before what follows it.
+        let resized = framed && self.frame_read(frame.len().saturating_sub(taken), tell);
+        if stopped.is_some() || resized {
             self.wait_unread(bytes, start.saturating_add(taken), now);
             return;
         }
         self.reading.framed |= at > 0;
-        // The frame is read: a resize it held up comes before what follows.
-        if let Some(size) = self.resize_to.take() {
-            self.judge_read();
-            self.take_size(size, tell);
-            self.wait_unread(bytes, start.saturating_add(at), now);
-            return;
-        }
         if let Some(taken) = self.read(after, now, tell) {
             self.wait_unread(bytes, start.saturating_add(at).saturating_add(taken), now);
         }
@@ -1260,7 +1270,7 @@ impl Pane {
                 if let Some((taken, _)) =
                     self.parse(frame.get(..end).unwrap_or_default(), false, tell)
                 {
-                    self.frame_left = end.saturating_sub(taken);
+                    self.frame_read(end.saturating_sub(taken), tell);
                     self.wait_unread(frame, taken, now);
                     return None;
                 }
@@ -1298,7 +1308,7 @@ impl Pane {
         match self.parse(&held, false, tell) {
             // No output waits while a frame is held: it is the first.
             Some((taken, _)) => {
-                self.frame_left = held.len().saturating_sub(taken);
+                self.frame_read(held.len().saturating_sub(taken), tell);
                 self.wait_unread(held, taken, now);
             }
             // A frame read whole: the read ends at the next frame.
@@ -1481,7 +1491,7 @@ impl Pane {
     /// It is asked the size it has: a size refused before, asked again,
     /// is a new refusal, counted.
     fn keeps_size(&mut self) {
-        self.refused_size = None;
+        (self.refused_size, self.resize_to) = (None, None);
     }
 
     /// Its input queue, to read.
@@ -1788,6 +1798,7 @@ impl Pane {
             frame: fresh.frame,
             unread: fresh.unread,
             frame_left: fresh.frame_left,
+            frame_work: fresh.frame_work,
             resize_to: fresh.resize_to,
             slice_left: fresh.slice_left,
             exiting: fresh.exiting,
@@ -2319,6 +2330,55 @@ pub(crate) mod tests {
         assert!(turns >= 2, "{turns} turns");
         assert_eq!(pane.input.drain_all(), b"\x1b[1;30R");
         assert_eq!(<(u16, u16)>::from(pane.size()), (3, 20));
+        Ok(())
+    }
+
+    /// A resize waits for a held frame till its bytes and the work they
+    /// leave are done, however it ends: past a turn's slice, in an
+    /// operation that spends the budget (DECALN), or in REP's copies under
+    /// IRM, after a long prefix or not; and a size asked back before the
+    /// frame is done cancels the one that waited.
+    #[test]
+    fn a_resize_waits_for_the_held_frame_s_work() -> Result<(), Box<dyn std::error::Error>> {
+        let long = |tail: &[u8]| -> Vec<u8> {
+            let mut frame = b"\x1b[?2026h".to_vec();
+            frame.extend(std::iter::repeat_n(0u8, 2 * SLICE));
+            frame.extend_from_slice(tail);
+            frame
+        };
+        let decaln = long(b"\x1b#8");
+        let rep = b"\x1b[?2026h\x1b[4hx\x1b[4000b".to_vec();
+        let long_rep = long(b"\x1b[4hx\x1b[4000b");
+        for (rows, cols, frame, to, back) in [
+            (1000, 1000, &decaln, (1000, 900), false),
+            (1, 4096, &rep, (1, 20), false),
+            (1, 4096, &long_rep, (1, 2048), false),
+            (1, 4096, &long_rep, (1, 2048), true),
+        ] {
+            let mut pane = pane(rows, cols, 0)?;
+            pane.output(frame);
+            pane.resize(size(to.0, to.1));
+            assert_eq!(
+                <(u16, u16)>::from(pane.size()),
+                (rows, cols),
+                "taken mid-frame"
+            );
+            if back {
+                pane.placed().keeps_size();
+            }
+            let mut turns = 0u32;
+            while pane.has_unread() && turns < 1000 {
+                pane.read_unread();
+                turns = turns.saturating_add(1);
+            }
+            assert!(!pane.has_unread() && !pane.mid_frame(), "{turns} turns");
+            let now = if back { (rows, cols) } else { to };
+            assert_eq!(
+                <(u16, u16)>::from(pane.size()),
+                now,
+                "{rows}x{cols} to {to:?}"
+            );
+        }
         Ok(())
     }
 
