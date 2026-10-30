@@ -16,7 +16,7 @@ pub struct Record {
     weight: u64,
     depth: u8,
     bytes: usize,
-    pub(super) snapshot: Option<inspect::Snapshot>,
+    pub(super) of: Option<Run>,
 }
 
 impl PartialEq for Record {
@@ -31,14 +31,7 @@ impl Record {
         imports: &fuxth::Imports,
     ) -> Result<(), Failure> {
         let own = Self::own_bytes(&this.fields);
-        let snapshot = this
-            .snapshot
-            .as_ref()
-            .map(|s| s.heap_bytes())
-            .transpose()?
-            .map(|bytes| bytes.saturating_sub(std::mem::size_of::<inspect::Snapshot>()))
-            .unwrap_or(0);
-        this.reserve(imports, own.saturating_add(snapshot))?;
+        this.reserve(imports, own)?;
         for (_, value) in &this.fields {
             value.retain(imports)?;
         }
@@ -76,12 +69,6 @@ impl Record {
     }
     pub(super) fn bytes(&self) -> usize {
         self.bytes
-    }
-    pub(super) fn write_text(&self, out: &mut dyn std::fmt::Write) -> std::fmt::Result {
-        match &self.snapshot {
-            Some(s) => s.write_text(out),
-            None => self.write(out),
-        }
     }
     pub(super) fn write(&self, out: &mut dyn std::fmt::Write) -> std::fmt::Result {
         out.write_char('{')?;
@@ -164,9 +151,9 @@ impl<'a> Builder<'a> {
         for (key, value) in fields {
             out.push((self.budget.string(key)?, value));
         }
-        self.finish(out)
+        self.finish(out, None)
     }
-    fn finish(&mut self, fields: Vec<(String, V)>) -> Result<V, Failure> {
+    fn finish(&mut self, fields: Vec<(String, V)>, of: Option<Run>) -> Result<V, Failure> {
         let (mut depth, mut weight, mut bytes) = (0u8, 1u64, Record::own_bytes(&fields));
         for (key, value) in &fields {
             depth = depth.max(value.depth());
@@ -193,7 +180,7 @@ impl<'a> Builder<'a> {
             depth,
             weight,
             bytes,
-            snapshot: None,
+            of,
         }))))
     }
     fn json(&mut self, value: &Json, depth: u8) -> Result<V, Failure> {
@@ -215,7 +202,7 @@ impl<'a> Builder<'a> {
                     let value = self.json(value, depth.saturating_add(1))?;
                     out.push((key, value));
                 }
-                self.finish(out)
+                self.finish(out, None)
             }
         }
     }
@@ -235,10 +222,14 @@ impl<'a> Builder<'a> {
     }
 }
 
-pub(super) fn from_fields(fields: Vec<(String, V)>, budget: &mut Budget) -> Result<V, Failure> {
+pub(super) fn from_fields(
+    fields: Vec<(String, V)>,
+    of: Option<Run>,
+    budget: &mut Budget,
+) -> Result<V, Failure> {
     let mut b = Builder::new(budget);
     b.nodes(fields.len())?;
-    b.finish(fields)
+    b.finish(fields, of)
 }
 
 pub(super) fn from_json(value: &Json) -> Result<V, Failure> {
@@ -306,7 +297,7 @@ pub(super) fn events(batch: crate::events::Batch) -> Result<V, Failure> {
         b.nodes(2)?;
         out.push((b.budget.string("origin")?, origin));
         out.push(("next".into(), b.text(&item.next.to_string())?));
-        b.finish(out)
+        b.finish(out, None)
     })?;
     let next = b.text(&batch.next.to_string())?;
     let status = b.text(batch.status.name())?;
@@ -333,11 +324,7 @@ macro_rules! record {
 }
 
 pub(super) fn snapshot(s: inspect::Snapshot) -> Result<V, Failure> {
-    snapshot_in(s, &mut Budget::with_limit(inspect::BYTES))
-}
-
-pub(super) fn snapshot_in(s: inspect::Snapshot, budget: &mut Budget) -> Result<V, Failure> {
-    let retained = s.heap_bytes()?;
+    let budget = &mut Budget::with_limit(inspect::BYTES);
     let b = &mut Builder::new(budget);
     let run = s.run;
     let workspaces = b.list(&s.workspaces, |b,w| record! { b;
@@ -384,7 +371,7 @@ pub(super) fn snapshot_in(s: inspect::Snapshot, budget: &mut Budget) -> Result<V
             fields.push((b.budget.string("launch")?, recipe));
         }
         b.nodes(fields.len())?;
-        b.finish(fields)
+        b.finish(fields, None)
     })?;
     let clients = b.list(&s.clients, |b,c| record! { b;
         "id" => Value::App(Fux::Client(c.id,Some(run))), "kind" => b.text(if c.terminal { "terminal" } else { "headless" })?,
@@ -400,22 +387,14 @@ pub(super) fn snapshot_in(s: inspect::Snapshot, budget: &mut Budget) -> Result<V
         Scope::Target(t) => id(t, run),
         Scope::Client(c) => Value::App(Fux::Client(c, Some(run))),
     };
-    let value = record! { b; "run" => b.text(&run.to_string())?, "events" => b.text(&s.events.to_string())?, "scope" => scope,
+    let value = record! { b; "run" => b.text(&run.to_string())?, "cursor" => b.text(&s.cursor.to_string())?, "scope" => scope,
         "projection" => b.text(match &s.projection { Projection::Facts => "facts", Projection::Topology => "topology", Projection::Recipe => "recipe", Projection::Field(_) => return Err(fail()) })?,
         "workspaces" => workspaces, "tabs" => tabs, "panes" => panes, "clients" => clients
     }?;
     let Value::App(Fux::Record(mut record)) = value else {
         return Err(fail());
     };
-    let record_mut = fuxth::Shared::get_mut(&mut record).ok_or_else(fail)?;
-    record_mut.bytes = record_mut.bytes.checked_add(retained).ok_or_else(fail)?;
-    // Plain output traverses the retained schema; JSON and get use local values.
-    record_mut.weight = record_mut
-        .weight
-        .checked_mul(2)
-        .filter(|n| *n <= fuxth::TOTAL)
-        .ok_or_else(fail)?;
-    record_mut.snapshot = Some(s);
+    fuxth::Shared::get_mut(&mut record).ok_or_else(fail)?.of = Some(run);
     Ok(Value::App(Fux::Record(record)))
 }
 
@@ -506,7 +485,7 @@ pub(super) fn answer_field(
                                     fields.push((b.budget.string(name)?, value));
                                 }
                                 b.nodes(fields.len().saturating_add(1))?;
-                                values.push(b.finish(fields)?);
+                                values.push(b.finish(fields, None)?);
                             }
                             col = col.checked_add(cells).ok_or_else(fail)?;
                         }
@@ -543,10 +522,6 @@ pub(super) fn answer_field(
                 }
             }
         }
-        super::Answer::Status(status) => status
-            .get(field)
-            .map(|v| b.json(v, 0))
-            .unwrap_or_else(|| Err(absent())),
         super::Answer::Panes(_) => Err(absent()),
     }
 }

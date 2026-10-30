@@ -12,7 +12,7 @@ can continue. Per-value limits and traversal charges still apply.
 
 The JSON represents what a word left, as below; a string as a JSON string; a number or boolean
 as itself; a list as an array of these, each answer in it as `json` gives
-it alone (a capture's, a listing's or an action's object; one of several
+it alone (a capture's, a record's or an action's object; one of several
 panes an array of their objects). Rows and columns count from 0; times are milliseconds; ids are strings (`"%3"`,
 `"@2"`, `"+1"`, `"c1"`).
 
@@ -66,9 +66,11 @@ for `id`, `name`, `label` and `pid` (it says `pane`):
 `SCOPE str PROJECTION snapshot` returns one immutable record. `SCOPE` is
 `all`, a pane, tab, workspace or client. `PROJECTION` is `facts`, `topology`
 or `recipe`. `ls` takes a facts snapshot of all scopes; `X info` takes one
-of X. Plain output lists the hierarchy; `json` renders the same observation.
+of X. Plain output is JSON; `ls listing` renders the hierarchy from the held
+record. Signal termination reads `signal NUMBER`; an unknown outcome is
+reported as lost. `ls` still returns a record, so `ls json` works.
 
-Every scope has the same envelope: `run`, `events`, `scope`, `projection`,
+Every scope has the same envelope: `run`, `cursor`, `scope`, `projection`,
 `workspaces`, `tabs`, `panes`, and `clients`. The four collections are flat,
 in hierarchy order. Workspace `tabs` is an ordered list of tab handles;
 a tab's `workspace` and a pane's `tab` identify their parents. IDs in fuxth
@@ -135,7 +137,7 @@ Pane facts includes only that pane's facts, with its tab topology and relevant
 views; pane topology/recipe includes its whole tab. Client includes that
 client and its current workspace closure. Missing explicit scopes fail.
 
-`events` is the journal cursor `SEQ:RUN`, gathered with the hierarchy in one
+`cursor` is the journal cursor `SEQ:RUN`, gathered with the hierarchy in one
 server turn. A batch from it (`all str CURSOR 0 next-events`) starts after
 that observation; a missed journal prefix requires another snapshot. OS
 observations happen during the turn but are not simultaneous OS snapshots.
@@ -293,7 +295,7 @@ status naming the whole.
 
 The scope is a pane, tab, workspace, client, or `all`. An empty cursor starts
 at the journal's current end; otherwise use `SEQ:RUN`, from a snapshot's
-`events` field or a previous batch's `next`. Other runs, future positions,
+`cursor` field or a previous batch's `next`. Other runs, future positions,
 and scope IDs this server never issued are refused (`bad_value`). Closed
 issued scopes may be replayed from a saved cursor. A pane moving between
 tabs is reported to both its old and new scopes. A client scope reports
@@ -415,12 +417,15 @@ help try`); a code no running word gives is refused before it runs. Of the
 language's own, fux's words give `unused`, `unknown_word` and `bad_name` as
 they run, so a `try` may name them too.
 
-## `status json`
+## `status`
 
 ```json
 {"socket":"/run/user/1000/fux/server.sock","release":"0.36.0","protocol":52,
  "server_release":"0.36.0","server_protocol":52,"compatible":true}
 ```
+
+`status` returns an ordinary record with these locally readable fields. Plain
+output is JSON, including `compatible:false` for a protocol mismatch.
 
 With no server, `status` fails (`no_server`), saying the socket and whether
 a server that stopped left it there. Every server in fux's directory:

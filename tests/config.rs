@@ -62,7 +62,7 @@ fn only_a_typing_terminal_loads_the_user_config() -> Outcome {
         let mut id = String::new();
         eventually("the attached client", || {
             id = server
-                .ok(&["ls"])?
+                .ok(&["ls", "listing"])?
                 .lines()
                 .find_map(|line| line.strip_prefix("client "))
                 .and_then(|line| line.split_whitespace().next())
@@ -219,7 +219,7 @@ fn an_imported_failure_keeps_the_whole_bundled_state() -> Outcome {
     let mut b = server.attach(8, 80)?;
     a.wait_for("$")?;
     b.wait_for("$")?;
-    let before = server.ok(&["ls"])?;
+    let before = server.ok(&["ls", "listing"])?;
     std::fs::write(directory.join("config.fux"), "require shared.fux").map_err(e)?;
     std::fs::write(
         directory.join("shared.fux"),
@@ -236,7 +236,7 @@ fn an_imported_failure_keeps_the_whole_bundled_state() -> Outcome {
         "config",
         "check",
     ])?;
-    assert_eq!(server.ok(&["ls"])?, before);
+    assert_eq!(server.ok(&["ls", "listing"])?, before);
     a.pump()?;
     b.pump()?;
     assert!(!String::from_utf8_lossy(&a.painted).contains("\x1b]2;"));
@@ -249,13 +249,13 @@ fn an_imported_failure_keeps_the_whole_bundled_state() -> Outcome {
          %1 str horizontal axis split drop",
     )
     .map_err(e)?;
-    let before = server.ok(&["ls"])?;
+    let before = server.ok(&["ls", "listing"])?;
     let failed = fux::script::run_file(&directory.join("config.fux"))
         .err()
         .ok_or("config acted on the server")?;
     assert_eq!(failed.code, fux::code::Code::NotConfig);
     assert!(failed.notice().contains("shared.fux"));
-    assert_eq!(server.ok(&["ls"])?, before);
+    assert_eq!(server.ok(&["ls", "listing"])?, before);
     let mut terminal = Terminal::attach(&server, 10, 100, &[])?;
     terminal.wait_for("a config changes only its own client state")?;
     terminal.type_bytes(b"\x02")?;

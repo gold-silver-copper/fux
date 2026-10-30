@@ -5,9 +5,9 @@ use support::*;
 
 const PREFIX: &str = "\x02";
 
-/// `%N` and its size, from `fux ls`.
+/// `%N` and its size, from `fux ls listing`.
 fn size(server: &Server, pane: &str) -> Result<(u16, u16), String> {
-    let ls = server.ok(&["ls"])?;
+    let ls = server.ok(&["ls", "listing"])?;
     let line = ls
         .lines()
         .find(|l| l.trim_start().starts_with(&format!("{pane} ")))
@@ -205,7 +205,7 @@ fn moving_a_pane_by_direction_nests_it_beside_its_neighbour() -> Outcome {
     // Still in move mode: left puts 2 beside 1 on the left, 2 | 1.
     client.keys("h\r")?;
     eventually("swapped places", || {
-        let ls = server.ok(&["ls"])?;
+        let ls = server.ok(&["ls", "listing"])?;
         let order: Vec<&str> = ls
             .lines()
             .filter_map(|l| l.trim_start().split(' ').next())

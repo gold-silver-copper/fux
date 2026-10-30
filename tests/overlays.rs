@@ -12,7 +12,7 @@ const CLEAR: &str = "\x7f\x7f\x7f\x7f\x7f\x7f\x7f\x7f\x7f\x7f\x7f\x7f\x7f\x7f\x7
 
 fn panes(server: &Server) -> Result<Vec<String>, String> {
     Ok(server
-        .ok(&["ls"])?
+        .ok(&["ls", "listing"])?
         .lines()
         .filter_map(|l| l.trim_start().split(' ').next())
         .filter(|w| w.starts_with('%'))
@@ -134,7 +134,7 @@ fn pane_actions_are_bindings_a_config_extends() -> Outcome {
     client.wait_for("greet")?;
     client.keys("n")?;
     pumped(&mut client, "%2 in a new tab", || {
-        Ok(server.ok(&["ls"])?.contains("@2 %2\n    %2"))
+        Ok(server.ok(&["ls", "listing"])?.contains("@2 %2\n    %2"))
     })?;
     Ok(())
 }
@@ -152,7 +152,9 @@ fn choosers_select_rename_and_close() -> Outcome {
     })?;
     client.keys(&format!("{DOWN}\r"))?;
     pumped(&mut client, "on @2", || {
-        Ok(server.ok(&["ls"])?.contains("client c1 100x30 +1 @2"))
+        Ok(server
+            .ok(&["ls", "listing"])?
+            .contains("client c1 100x30 +1 @2"))
     })?;
     // r renames the selected tab.
     client.keys(&format!("{PREFIX}tg"))?;
@@ -161,7 +163,7 @@ fn choosers_select_rename_and_close() -> Outcome {
     client.wait_for("rename tab @3")?;
     client.keys(&format!("{CLEAR}renamed\r"))?;
     pumped(&mut client, "renamed", || {
-        Ok(server.ok(&["ls"])?.contains("@3 renamed"))
+        Ok(server.ok(&["ls", "listing"])?.contains("@3 renamed"))
     })?;
     // x closes it, after asking.
     client.keys(&format!("{PREFIX}tg"))?;
@@ -170,7 +172,7 @@ fn choosers_select_rename_and_close() -> Outcome {
     client.wait_for("close tab @3 renamed?")?;
     client.keys("y")?;
     pumped(&mut client, "closed", || {
-        Ok(!server.ok(&["ls"])?.contains("@3"))
+        Ok(!server.ok(&["ls", "listing"])?.contains("@3"))
     })?;
     // The workspace chooser lists every workspace with its panes.
     server.words("opts 100 29 size str elsewhere name new-workspace")?;
@@ -187,7 +189,7 @@ fn choosers_select_rename_and_close() -> Outcome {
     // The chooser starts on the current workspace; +1 is above it.
     client.keys(&format!("{UP}\r"))?;
     pumped(&mut client, "%5 moved to +1", || {
-        let ls = server.ok(&["ls"])?;
+        let ls = server.ok(&["ls", "listing"])?;
         Ok(ls.find("%5").unwrap_or(usize::MAX) < ls.find("+2").unwrap_or(0))
     })?;
     Ok(())
@@ -209,7 +211,7 @@ fn the_prompt_runs_commands_and_shows_their_output_or_error() -> Outcome {
     client.wait_for("Enter accept")?;
     client.keys("str %1 pane str left rename\r")?;
     pumped(&mut client, "renamed", || {
-        Ok(server.ok(&["ls"])?.contains("%1 left"))
+        Ok(server.ok(&["ls", "listing"])?.contains("%1 left"))
     })?;
     client.keys(&format!("{PREFIX}e"))?;
     client.wait_for("Enter accept")?;
@@ -229,7 +231,7 @@ fn the_prompt_runs_commands_and_shows_their_output_or_error() -> Outcome {
         "opts str / cwd str edited nameX\x7f new-tab\x1b[D\x1b[D\x1b[D\x1b[D\x1b[D\x1b[D\x1b[H\x1b[F\r",
     )?;
     pumped(&mut client, "the edited command ran", || {
-        Ok(server.ok(&["ls"])?.contains("edited"))
+        Ok(server.ok(&["ls", "listing"])?.contains("edited"))
     })?;
     // A paste of more lines than one is refused whole, and said; one line
     // goes into the prompt, its line end left out, never run by itself.
@@ -239,10 +241,13 @@ fn the_prompt_runs_commands_and_shows_their_output_or_error() -> Outcome {
     client.wait_for("nothing was typed")?;
     client.keys("\x1b[200~str %1 pane str pasted rename\n\x1b[201~")?;
     client.wait_for("str %1 pane str pasted rename▏")?;
-    assert!(server.ok(&["ls"])?.contains("%1 left"), "nothing ran yet");
+    assert!(
+        server.ok(&["ls", "listing"])?.contains("%1 left"),
+        "nothing ran yet"
+    );
     client.keys("\r")?;
     pumped(&mut client, "renamed by the pasted line", || {
-        Ok(server.ok(&["ls"])?.contains("%1 pasted"))
+        Ok(server.ok(&["ls", "listing"])?.contains("%1 pasted"))
     })?;
     Ok(())
 }
@@ -258,7 +263,7 @@ fn rename_prompts_start_from_the_current_name() -> Outcome {
     client.wait_for("▏")?;
     client.keys("shell\r")?;
     pumped(&mut client, "renamed", || {
-        Ok(server.ok(&["ls"])?.contains("%1 shell"))
+        Ok(server.ok(&["ls", "listing"])?.contains("%1 shell"))
     })?;
     // An empty name is refused, and says so.
     server.ok(&["str", "c1", "client", "str", "%1", "pane", "rename-prompt"])?;
@@ -286,7 +291,7 @@ fn detaching_with_an_overlay_open_is_safe() -> Outcome {
     other.keys(&format!("{PREFIX}tg"))?;
     other.wait_for("* @1")?;
     other.detach()?;
-    assert!(server.ok(&["ls"])?.contains("%1"));
+    assert!(server.ok(&["ls", "listing"])?.contains("%1"));
     Ok(())
 }
 
@@ -301,6 +306,6 @@ fn a_remote_custom_chooser_delivers_inert_payload_to_the_receiving_dictionary() 
     client.wait_for("Hosts")?;
     client.keys("\r")?;
     client.wait_for("%1 kill")?;
-    assert!(server.ok(&["ls"])?.contains("%1"));
+    assert!(server.ok(&["ls", "listing"])?.contains("%1"));
     Ok(())
 }

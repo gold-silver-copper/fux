@@ -201,7 +201,7 @@ pub fn from_opts(last: &str) -> String {
 /// fux's kinds of value, each as its values' `name` says it, as an error
 /// says it, and, for one that must be used, what one left over is told.
 #[rustfmt::skip]
-pub const KINDS: [(&str, &str, Option<&str>); 22] = [
+pub const KINDS: [(&str, &str, Option<&str>); 21] = [
     ("pane", "a pane", None), ("tab", "a tab", None), ("workspace", "a workspace", None),
     ("all", "the whole session", None),
     ("client", "a client", None), ("size", "a size (from percent)", None),
@@ -211,7 +211,6 @@ pub const KINDS: [(&str, &str, Option<&str>); 22] = [
     ("answers", "an answer of a tab's or workspace's panes", None), ("capture", "a capture", None),
     ("rendered", "rendered observation text", None),
     ("record", "a record", None), ("null", "null", None),
-    ("listing", "a listing", None),
     ("opts", "options (from opts, for run, new-tab, new-workspace, attach and attach-defaults; a pane's words take theirs on the pane: `%2 all-history capture`)", Some("nothing takes these options")),
     ("pane-request", "a pane request", Some("nothing acts on this request")),
     ("tab-request", "a tab request", Some("nothing acts on this request")),
@@ -259,11 +258,11 @@ pub const NAMES: &[(&str, &str, &str)] = &[
     ("text", "string integer boolean", "a string, a number or a boolean"),
     ("new", "integer boolean list", "a setting's value: a number, true or false, or a list (fux help set)"),
     ("var", "string integer boolean pane tab workspace answer closed-answer", "a string, a number, a boolean, or a pane, tab or workspace"),
-    ("value", "integer boolean string list pane tab workspace client size answer closed-answer answers capture client-capture listing record rendered null all",
+    ("value", "integer boolean string list pane tab workspace client size answer closed-answer answers capture client-capture record rendered null all",
         "a value (options and requests are none: what acts on them gives one)"),
     ("seen", "string answer capture", "a version: an action's or wait's answer, a pane's capture, or its text"),
     ("json-output", "string rendered", "JSON text"),
-    ("readable", "pane tab workspace answer closed-answer capture client-capture listing record", "a handle or held observation"),
+    ("readable", "pane tab workspace answer closed-answer capture client-capture record", "a handle or held observation"),
     ("snapshot-scope", "all pane tab workspace client answer closed-answer", "a snapshot scope"),
     ("extent", "integer size", "cells, or a percent"),
     ("pane-or-seen", "pane string answer capture", "a pane, an action's or wait's answer, a pane capture, or version text"),
@@ -330,7 +329,7 @@ words! {
         Server Server "server" "name --" "the server named so (NAME.sock in fux's directory), for what follows" "fux str test server start agent-opts 80 24 size str ./app program run" [];
         Server Socket "socket" "path --" "the server on this socket, for what follows" "fux str ./test.sock socket status" [];
         Server Start "start" "--" "start the server in the background, if none answers" "fux start" [];
-        Server Status "status" "-- listing" "the server that answers, and its version; with none, fails no_server" "fux status || fux start" [];
+        Server Status "status" "-- record" "the server that answers, and its version; with none, fails no_server" "fux status || fux start" [];
         Server KillServer "kill-server" "--" "stop the server: not from its own panes, nor with people attached" "fux str test server kill-server" [];
         Server ForceKillServer "force-kill-server" "--" "stop it anyway, whatever fux version it is" "fux str test server force-kill-server" [];
         Config AttachDefaults "attach-defaults" "attachable --" "replace this client's preferred attach place; target-only retains the first name, name-only or empty clears the target; target and name conflict" "opts str main name attach-defaults" [Either: In Name];
@@ -747,7 +746,7 @@ fn held(value: &Value<Fux>) -> Option<crate::command::Version> {
         Value::App(Fux::Answer(answer, _)) => match &**answer {
             super::Answer::Pane(answer) => answer.version(),
             // A capture's is for `expect` and `changed` alone (`version`).
-            super::Answer::Panes(_) | super::Answer::Capture(_) | super::Answer::Status(_) => None,
+            super::Answer::Panes(_) | super::Answer::Capture(_) => None,
         },
         Value::Int(_) | Value::Bool(_) | Value::Str(_) | Value::List(_) | Value::App(_) => None,
     }
