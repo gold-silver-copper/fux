@@ -768,7 +768,10 @@ fn drive(
         ));
     }
     let run = snapshots.first().map(|s| s.run.clone()).unwrap_or_default();
-    let events = journal(ctx, place, &run)?;
+    let events = journal(ctx, place, &run).unwrap_or_else(|why| {
+        problems.push(why);
+        Vec::new()
+    });
     Ok(Replay {
         steps: ran,
         snapshots,
@@ -1211,6 +1214,7 @@ impl Snapshot {
 struct Call {
     words: Vec<String>,
     status: i64,
+    out: String,
     err: String,
 }
 
@@ -1237,6 +1241,7 @@ impl Call {
             status: text("status")
                 .parse()
                 .map_err(|_| format!("a call's status: {line}"))?,
+            out: text("out"),
             err: text("err"),
         })
     }
@@ -1371,18 +1376,16 @@ fn monitor(replay: &Replay, problems: &mut Vec<String>) -> BTreeSet<Promise> {
             }
         }
     }
-    // What a step printed it saw before the next fresh observation, which
-    // must have had it, in this run.
-    for ((ran, now), step) in replay
-        .steps
-        .iter()
-        .zip(replay.snapshots.iter().skip(1))
-        .zip(1usize..)
-    {
-        for v in versions(&ran.out).into_iter().chain(versions(&ran.err)) {
+    // What fux answered in a step it saw before the next fresh
+    // observation, which must have had it, in this run.
+    for (step, call) in &replay.calls {
+        let Some(now) = replay.snapshots.get(*step) else {
+            continue;
+        };
+        for v in versions(&call.out) {
             if v.run != run {
                 problems.push(format!(
-                    "step {step} printed a version of another server run: {}",
+                    "step {step}: fux answered a version of another server run: {}",
                     v.run
                 ));
             } else if now
@@ -1390,7 +1393,7 @@ fn monitor(replay: &Replay, problems: &mut Vec<String>) -> BTreeSet<Promise> {
                 .is_some_and(|p| !p.version.counts.had(v.counts))
             {
                 problems.push(format!(
-                    "versions-grow: step {step} printed {}:{}, which {} had not reached after it",
+                    "versions-grow: step {step}: fux answered {}:{}, which {} had not reached after it",
                     v.pane,
                     v.counts.show(),
                     v.pane
@@ -1633,7 +1636,7 @@ fn check(cassette: &Cassette, replay: &Replay, dir: &str) -> Checked {
                 });
                 if !found {
                     problems.push(format!(
-                        "journal: no event after the previous check is `= {check}`"
+                        "@journal: no event after the previous check is `= {check}`"
                     ));
                     break;
                 }
