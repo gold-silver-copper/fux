@@ -405,7 +405,8 @@ wait's own (above). CODE stays; every one fux gives
 
 fux sets no limits of its own: memory, time and steps are the user's and
 the OS's to bound (`ulimit`, cgroups, `timeout`), and a program that loops
-is stopped as any program is. What nests too deep (lists past 64, records
+is stopped as any program is. Lists nest as deep as memory lets them;
+what nests too deep to cross the wire (a callback's lists past 64, records
 past 32, a layout past 64) fails `too_long`, whether the word or the server
 refuses it; a size no screen can have, past what a grid holds, fails
 `size`; what one frame (1 MiB) cannot carry is refused. When the OS refuses

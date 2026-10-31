@@ -23,7 +23,7 @@ line, the deepest first; `print` prints a value at once.
 - **Values:** integers (64-bit, checked: no overflow, no division by zero;
   `div` truncates toward zero), booleans (never integers), strings (their
   elements are one-character strings), lists (of any values, lists included,
-  nested at most 64 deep), and the application's own.
+  nested however deep), and the application's own.
 - **Checked before it runs.** The whole program is compiled first. An unknown
   word or an unclosed block is an error before anything happens (told with
   a word in scope spelt nearly so, or `str WORD` for text); so is a step
@@ -47,9 +47,10 @@ line, the deepest first; `print` prints a value at once.
   lets the host check for Ctrl-C in a loop that never pauses.
 - **No limits of its own.** The stack, the calls nested, strings and lists
   grow as far as memory lets them: the user and the OS bound a run
-  (Ctrl-C, `timeout`, `ulimit`). Lists nest at most 64 deep, so no walk
-  over a value overflows the Rust stack. `push` and `put` grow a string or
-  list in place when nothing else holds it.
+  (Ctrl-C, `timeout`, `ulimit`). Lists nest as deep as memory lets them:
+  no walk over a value (comparing, writing, dropping) is a Rust recursion.
+  `push` and `put` grow a string or list in place when nothing else holds
+  it.
 - **Errors** carry a stable code, a message, and the file, line and word.
 
 ## The core

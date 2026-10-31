@@ -28,8 +28,8 @@ events.events[][created]: event tab workspace name origin next
 events.events[][created]: event workspace name origin next
 events.events[][detached]: event pane tab workspace client origin next
 events.events[][done]: event pane tab workspace status origin next
-events.events[][exited]: event pane tab workspace exited truncated input_unread origin next
-events.events[][exited]: event pane tab workspace signal truncated input_unread origin next
+events.events[][exited]: event pane tab workspace exited input_unread origin next
+events.events[][exited]: event pane tab workspace signal input_unread origin next
 events.events[][focused]: event pane tab workspace client origin next
 events.events[][history_budget]: event pane tab workspace history_bytes origin next
 events.events[][history_cleared]: event pane tab workspace origin next
@@ -42,7 +42,7 @@ events.events[][renamed]: event workspace name origin next
 events.events[][reordered]: event tab workspace origin next
 events.events[][reordered]: event workspace origin next
 events.events[][resized]: event pane tab workspace cols rows origin next
-events.events[][respawned]: event pane tab workspace truncated input_unread origin next
+events.events[][respawned]: event pane tab workspace input_unread origin next
 events.events[][screen]: event pane tab workspace client origin next
 events.events[][shown]: event pane tab workspace client origin next
 events.events[][title]: event pane tab workspace title truncated origin next

@@ -290,8 +290,7 @@ impl Reads for fux_wire::presentation::Bar {
 
 impl Reads for fux_wire::presentation::Slots {
     fn takes() -> String {
-        "up to 16 [slot-number text] rows; 0..15, 256 bytes each, no controls; replaces all slots"
-            .to_owned()
+        "up to 16 [slot-number text] rows; 0..15, no controls; replaces all slots".to_owned()
     }
     fn read(value: &Value<Fux>) -> Result<Self, String> {
         let rows = items(value)?;

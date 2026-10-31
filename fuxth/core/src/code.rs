@@ -89,7 +89,7 @@ codes! {
     /// A `try`'s codes not a string written just before it, or naming a
     /// code no word raises.
     BadCodes "bad_codes" [found],
-    /// Lists nested deeper than they may be.
+    /// A value nested deeper than its application carries it (its wire).
     TooLong "too_long",
     /// An application word gave more or fewer values than its vocabulary
     /// says: a mistake in the application, not the program.
