@@ -99,6 +99,7 @@ Proposals: `~/code/notes/projects/fux/live/findings.md` F-7 to F-14.
 | D-53 (S3-5) | **Text captures rejoin soft-wrapped lines** into logical lines by default and state the width once; the raw grid is available on request | 10–0 | — |
 | D-54 (S3-6.2) | **Captures mark what only styling carries** (faint, as reverse already is, and what the program drew as a selection), on request through `marks`. A mark says "rendered faint", never "placeholder" | round 2: 9–1 | — |
 | D-55 (S3-6) | **Wait for residents' findings:** compact default answers (F-11, 7–3), a facts header on captures (F-13, round 2: 8–2), text stand-ins for pictures (F-14, 7–2–1) | as listed | three each wanted F-11 now; two wanted F-13 now |
+| D-56 | **Correction to D-51 and D-53: both already exist on master.** Prompt marks: `last-output` captures the last command's output and `str last_status get` its exit status, from OSC 133. Joined lines: text captures join wrapped rows by default (`wrapped` gives the raw rows). The proposals were written from the installed 26 October binary. M1b verifies and documents them, and builds only D-49, D-52 and D-54. Any proposal now gets checked against master's `fux help` before it goes to a panel | the steward's mistake, found when writing M1b's page | steward, 2026-10-31 |
 
 ## Recorded disagreements (for later evidence, not to reopen now)
 
