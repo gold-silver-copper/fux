@@ -50,6 +50,19 @@ styled capture, a big paste, a flood beside an interactive pane), nothing
 is slower, and a new store's boundedness is visible from its type. Page:
 `~/code/notes/projects/fux/live/milestones/M0b.md`.
 
+## M1b. What agents see (D-49 to D-54)
+
+**Scenario.** An agent runs a command in a shell pane and asks fux for that
+command's output and exit status, answered from the shell's own prompt marks
+(OSC 133). It watches a busy pane and receives only the rows that changed
+since its last version. It reads a long wrapped line as one line. A capture
+shows which text was rendered faint. Meanwhile a person attaches, and the
+bar draws over the panes only while the prefix is in use, so no pane ever
+resizes for it. Page: `~/code/notes/projects/fux/live/milestones/M1b.md`.
+Runs after M0b. The panel left its order against M1's other tasks to the
+roadmap: it lands before M1's resident week, so before the interface
+freezes.
+
 ## M1. Ten tabs, no accidents
 
 **Scenario.** The coordinator gives four agents a workspace each in one fux
