@@ -347,8 +347,10 @@ mod runner {
             assert_eq!(names.line("%1"), "%b");
         }
 
-        /// An ended program's SCREEN may grow by one revision for each resize
-        /// or history change, and no more.
+        /// An ended program's SCREEN may grow while its terminal is read on
+        /// (D-90); once it is drained (two observations with no output
+        /// between them), by one revision for each resize or history change,
+        /// and no more.
         #[test]
         fn a_resize_excuses_one_revision_of_an_ended_screen() -> Result<(), String> {
             let events = [
@@ -366,8 +368,15 @@ mod runner {
             ];
             let events: Vec<&str> = events.iter().map(String::as_str).collect();
             let at = |screen: u64| format!("%1:0.{screen}.0.0.1:{R1}");
-            for (screen, broken) in [(11, false), (110, true)] {
-                let snapshots = vec![ls(4, &[&at(10)])?, ls(5, &[&at(screen)])?];
+            let still = |n| ls(n, &[&at(10)]);
+            for (drained, screen, broken) in
+                [(true, 11, false), (true, 110, true), (false, 110, false)]
+            {
+                let mut snapshots = vec![still(4)?];
+                if drained {
+                    snapshots.push(still(4)?);
+                }
+                snapshots.push(ls(5, &[&at(screen)])?);
                 let (problems, exercised) = monitored(&replay(snapshots, Vec::new(), &events)?);
                 assert!(exercised.contains(&Promise::EndedFrozen));
                 assert_eq!(

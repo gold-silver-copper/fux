@@ -136,7 +136,10 @@ panes as it begins and answers changes in watch order, not exit chronology.
   drop %3 capture
   ```
 - **A program's exit:** `until-ended` checks first, so an already-ended
-  observation succeeds immediately, including an unknown exit status.
+  observation succeeds immediately, including an unknown exit status. The
+  exit is told as the program is reaped, even while something it left goes
+  on writing; what its terminal holds is read on, and an ended pane is
+  frozen once its terminal is drained.
 
   ```fux
   agent-opts 80 24 size str cargo program str test arg new-tab

@@ -247,7 +247,9 @@ grew), or `respawned` (the program started again: its counts but
 are present, with inapplicable values `null`. `exited` is the program's status
 if it ended since (`null` if it was signalled or its status was lost),
 `signal` the signal that killed it; a wait from a version that already holds its end waits for
-something else.
+something else. The exit is told as the program is reaped; what its terminal
+holds is read on, so `screen` and `bell` can still grow, and an ended pane is
+frozen once its terminal is drained.
 
 A wait that fails (124 nothing changed, 4 its pane closed) answers too,
 with its status: `{"pane":"%3","version":"%3:0.57.0.3.0:RUN","status":124}`,

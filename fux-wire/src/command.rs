@@ -597,7 +597,9 @@ impl std::str::FromStr for LayoutRevision {
 /// into reads),
 /// bells and notifications rung, shell commands ended (OSC 133 `D`), and
 /// whether its program ended. Written
-/// `RESPAWNS.SCREEN.BELLS.DONE.ENDED`, `ENDED` 0 or 1.
+/// `RESPAWNS.SCREEN.BELLS.DONE.ENDED`, `ENDED` 0 or 1. Once `ENDED`, the
+/// screen and bells grow only while its terminal is read on: an ended
+/// pane is frozen once its terminal is drained.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Counts {
     pub respawns: u64,

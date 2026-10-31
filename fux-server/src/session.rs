@@ -305,6 +305,9 @@ pub struct Session {
     pub dying: Vec<Dying>,
     /// Each respawn under way, by its pane: one at a time in a pane.
     respawning: BTreeMap<PaneId, Replacement>,
+    /// Programs whose exit is told, their terminal still read till it is
+    /// empty or closed (`read_left`); then their pane is frozen (D-90).
+    leftover: BTreeMap<PaneId, Child>,
     /// Where `size_panes` gathers the rectangles each pane is shown in, and
     /// lays out each view to find them; reused by every settle.
     shown_sizes: Vec<(PaneId, (u16, u16))>,
@@ -404,6 +407,7 @@ impl Session {
             outbox: Vec::new(),
             dying: Vec::new(),
             respawning: BTreeMap::new(),
+            leftover: BTreeMap::new(),
             shown_sizes: Vec::new(),
             placed: Placement::default(),
             sized: Vec::new(),
@@ -667,7 +671,8 @@ impl Session {
         // with is let go.
         let draining = self.pane(id).is_ok_and(|p| p.draining);
         let mut old = None;
-        if let Some(mut child) = self.pane_mut(id).ok().and_then(|mut p| p.let_go()) {
+        let taken = self.pane_mut(id).ok().and_then(|mut p| p.let_go());
+        if let Some(mut child) = taken.or_else(|| self.leftover.remove(&id)) {
             if exiting.is_none() {
                 child.leader.closed();
                 child.leader.hang_up();
@@ -706,13 +711,16 @@ impl Session {
     /// too, by a turn of its own (`fire`).
     fn after_turn(&mut self, id: PaneId, now: Instant) {
         let respawning = self.respawning.contains_key(&id);
-        let waits =
-            |p: &&Pane| p.has_unread() || p.draining || respawning && p.frame_deadline().is_some();
+        let waits = |p: &&Pane| p.has_unread() || respawning && p.frame_deadline().is_some();
         let Some(pane) = self.parts.panes().get(&id).filter(|p| !waits(p)) else {
             return;
         };
         if let Some(ended) = pane.exiting {
             self.exited(id, ended, now);
+        }
+        // A respawn takes its place once what the old program left is read.
+        if self.parts.panes().get(&id).is_some_and(|p| p.draining) {
+            return;
         }
         let Some(mut new) = self.respawning.remove(&id) else {
             return;
@@ -1741,7 +1749,8 @@ impl Session {
         let panes = (self.parts.panes().values()).filter_map(|p| p.process().child());
         let replacements = (self.respawning.values())
             .flat_map(|r| (r.process.child().into_iter()).chain(r.old.as_ref()));
-        (panes.chain(replacements)).chain(self.dying.iter().map(|d| &d.child))
+        (panes.chain(replacements).chain(self.leftover.values()))
+            .chain(self.dying.iter().map(|d| &d.child))
     }
 
     /// Removes a pane and its process. A tab its closing empties closes too,
@@ -1800,6 +1809,9 @@ impl Session {
     fn end_pane(&mut self, pane: Pane, closed: bool, viewers: &[ClientId], now: Instant) {
         let id = pane.id();
         self.end(pane.into_process(), closed, now);
+        if let Some(child) = self.leftover.remove(&id) {
+            self.end(Process::Reading(child), closed, now);
+        }
         let Some(abandoned) = self.respawning.remove(&id) else {
             return;
         };
@@ -1848,13 +1860,19 @@ impl Session {
     }
 
     fn program_exited(&mut self, id: PaneId, ended: Ended, now: Instant) {
-        let Some(first) = self.parts.panes().get(&id).map(|p| p.exiting.is_none()) else {
+        let Some(pane) = self.parts.panes().get(&id) else {
             return;
         };
-        // Once, at the first word of the exit, its terminal drained (what
-        // it left writing there is not waited for), and the status kept
-        // till the last of it is read; at each, a frame it holds read, one
-        // begun in output read since too.
+        // Told once.
+        if pane.exiting.is_none() && pane.process().exit_status().is_some() {
+            return;
+        }
+        let first = pane.exiting.is_none();
+        // Once, at the first word of the exit, a turn's worth of its
+        // terminal read, and the status kept till what is read is on its
+        // screen; at each, a frame it holds read, one begun in output read
+        // since too. Its terminal is read on after its exit is told, a turn
+        // at a time, till it is empty or closed (D-90).
         if first {
             if let Some(mut pane) = self.parts.pane_mut(id) {
                 pane.exiting(ended);
@@ -1867,9 +1885,10 @@ impl Session {
         let Some(mut pane) = self.parts.pane_mut(id) else {
             return;
         };
-        if pane.has_unread() || pane.draining {
+        if pane.has_unread() {
             return;
         }
+        let draining = pane.draining;
         match pane.runs {
             Runs::Shell(_) => {
                 let left = pane.ended(ended).left.told();
@@ -1891,8 +1910,13 @@ impl Session {
                 | Process::HungUp(child)
                 | Process::ReadFailed(child, _) = gone
                 {
-                    let deadline = now;
-                    self.dying.push(Dying { child, deadline });
+                    match draining {
+                        true => _ = self.leftover.insert(id, child),
+                        false => self.dying.push(Dying {
+                            child,
+                            deadline: now,
+                        }),
+                    }
                 }
                 let status = format!("{id} {}{}", answer::told(end.ended), end.left.told());
                 let left = end.left != pane::Left::default() || !errors.is_empty();
@@ -1928,7 +1952,8 @@ impl Session {
             }
         }
         let old = self.respawning.get(&id).and_then(|r| r.old.as_ref());
-        let respawned = old.is_some();
+        let old = old.or(self.leftover.get(&id));
+        let own = old.is_none();
         let child = old.or_else(|| self.pane(id).ok().and_then(|p| p.process().child()));
         let (left, drain) = child.map_or((Vec::new(), Drain::Done), |child| {
             left_turn(|bytes| fuxix::io::read(&child.master, bytes))
@@ -1940,7 +1965,7 @@ impl Session {
             Drain::More => return,
             Drain::Done => {}
             Drain::Failed(error) => {
-                if !respawned && let Ok(mut pane) = self.pane_mut(id) {
+                if own && let Ok(mut pane) = self.pane_mut(id) {
                     pane.read_failed(error);
                 }
             }
@@ -1952,6 +1977,10 @@ impl Session {
             && let Some(child) = r.old.take()
         {
             let deadline = r.grace.unwrap_or(now);
+            self.dying.push(Dying { child, deadline });
+        }
+        if let Some(child) = self.leftover.remove(&id) {
+            let deadline = now;
             self.dying.push(Dying { child, deadline });
         }
     }
@@ -6285,7 +6314,7 @@ mod tests {
     }
 
     #[test]
-    fn a_program_whose_terminal_is_written_on_exits_once_the_writing_stops() -> TestResult {
+    fn a_program_whose_terminal_is_written_on_still_exits() -> TestResult {
         // A large screen, where each ED is spent as 40,000 cells.
         let (mut s, _) = super::testing::attached(201, 200)?;
         run(
@@ -6306,40 +6335,52 @@ mod tests {
                 .get(&id)
                 .is_some_and(|p| p.process().exit_status().is_some())
         };
-        // Told exited, as each reap of another child does: while what it
-        // left writing goes on, it is read a turn at a time; once that
-        // stops, the exit is told.
-        s.end_program(id, Ended::Exited(0));
-        for _ in 0..20 {
-            s.fire_now(crate::session::Timer::Unread(id));
-            s.end_program(id, Ended::Exited(0));
-            // Between its turns, others are served.
-            run(&mut s, "%1 str x text send-keys")?;
-        }
-        assert!(!exited(&s), "told exited while its terminal is written on");
-        let _ = fuxix::process::kill_group(writer, fuxix::process::Signal::Kill);
+        // Told exited, as each reap of another child does, while what it
+        // left goes on writing: the exit is told as its leader is reaped,
+        // once what was read is on its screen (D-90).
         let mut turns = 0u32;
+        s.end_program(id, Ended::Exited(3));
         while !exited(&s) && turns < 10_000 {
             s.fire_now(crate::session::Timer::Unread(id));
-            s.end_program(id, Ended::Exited(0));
+            // As each reap of another child does.
+            s.end_program(id, Ended::Exited(3));
             turns = turns.saturating_add(1);
         }
         let told = exited(&s);
-        reap(&mut s);
-        if let Some(child) =
-            s.parts
-                .pane_mut(id)
-                .and_then(|mut p| match p.set_process(Process::Absent) {
-                    Process::Reading(child)
-                    | Process::HungUp(child)
-                    | Process::ReadFailed(child, _) => Some(child),
-                    Process::Absent | Process::Exited(_) | Process::Respawning => None,
-                })
-        {
-            drop(child.master);
-            let _ = child.leader.finish();
+        let writing = matches!(fuxix::process::ended(writer), Ok(None));
+        let status = output(&mut s, "%2 1 until-ended str exited get");
+        // Its terminal is read on, a turn at a time, others served between.
+        for _ in 0..20 {
+            s.fire_now(crate::session::Timer::Unread(id));
+            run(&mut s, "%1 str x text send-keys")?;
         }
+        let read_on = s.leftover.contains_key(&id);
+        // Once the writing stops, its terminal drained, the pane is frozen.
+        let _ = fuxix::process::kill_group(writer, fuxix::process::Signal::Kill);
+        let mut drained = 0u32;
+        while s.leftover.contains_key(&id) && drained < 10_000 {
+            s.fire_now(crate::session::Timer::Unread(id));
+            drained = drained.saturating_add(1);
+        }
+        let frozen = !s.leftover.contains_key(&id);
+        if let Some(child) = s.leftover.remove(&id) {
+            s.dying.push(Dying {
+                child,
+                deadline: Instant::now(),
+            });
+        }
+        reap(&mut s);
         assert!(told, "not told exited in {turns} turns");
+        assert!(
+            writing,
+            "the writer it left had stopped as the exit was told"
+        );
+        assert_eq!(status?.trim(), "3");
+        assert!(read_on, "its terminal no longer read while written on");
+        assert!(
+            frozen,
+            "still read in {drained} turns once the writing stopped"
+        );
         Ok(())
     }
 

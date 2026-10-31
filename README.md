@@ -125,7 +125,9 @@ fux %3 str q text send-keys                       # press q: its version from be
   `json` turns a value into JSON: `fux ls json`, `fux str %3 pane info json`.
 - Every pane has a **version**, one word that names the pane, counts what
   only grows while its program runs (respawns, its screen's revision, bells,
-  shell commands ended, its end) and names the server's run. An action
+  shell commands ended, its end) and names the server's run. A program's
+  exit is told as it is reaped; what its terminal still holds is read on,
+  and an ended pane is frozen once its terminal is drained. An action
   (`new-tab`, `send-keys`, `signal` …) acts at once and answers its pane's
   version from just before it acted; `str V changed wait` waits in V's pane
   until its version differs from V, and answers what changed. fux never

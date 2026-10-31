@@ -339,8 +339,8 @@ fn a_run_answers_an_exit_with_the_last_of_the_output() -> Outcome {
 /// A program that exits leaving a writer on its terminal, in a group of its
 /// own that ignores the hangup and never stops, holds up no one: what it
 /// leaves is read a turn at a time, as long as it writes, and other panes
-/// and commands are served meanwhile. Its exit is told once the writing
-/// stops.
+/// and commands are served meanwhile. Its exit is told as its leader is
+/// reaped, the writer still writing (D-90).
 #[test]
 fn a_writer_left_on_a_terminal_holds_up_no_one() -> Outcome {
     let server = Server::start("")?;
@@ -375,8 +375,9 @@ fn a_writer_left_on_a_terminal_holds_up_no_one() -> Outcome {
         let out = server.fux(&["ls"])?;
         assert_eq!(out.status, 0, "{}", out.stderr);
     }
-    drop(reap);
-    eventually("the exit told once the writing stops", || {
+    eventually("the exit told, the writer still writing", || {
         Ok(server.ok(&["ls", "listing"])?.contains("exited 0"))
-    })
+    })?;
+    drop(reap);
+    Ok(())
 }
