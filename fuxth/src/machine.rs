@@ -7,11 +7,11 @@
 //! stack, and stopping is just dropping it.
 use crate::Code;
 use crate::Failure;
+use crate::NESTING;
 use crate::check::{ANY, INT, Kinds, LIST, SEQ, STR};
 use crate::compile::{Op, Program};
 use crate::error::{Error, Floor, Wants, underflow};
 use crate::token::Token;
-use crate::NESTING;
 use crate::value::{AppValue, List, Text, Value};
 use crate::vocabulary::through;
 use std::cmp::Ordering;

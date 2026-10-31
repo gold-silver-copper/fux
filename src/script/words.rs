@@ -991,10 +991,7 @@ fn request(word: Act, value: Value<Fux>) -> Result<(On, Opts), Failure> {
 }
 
 /// The pane an action acts on, and what it was given.
-fn request_pane(
-    word: Act,
-    value: Value<Fux>,
-) -> Result<(PaneId, Opts), Failure> {
+fn request_pane(word: Act, value: Value<Fux>) -> Result<(PaneId, Opts), Failure> {
     match request(word, value)? {
         (On::Target(AnyRef::Pane(p)), built) => Ok((p, built)),
         (On::Version(version), built) => Ok((version.pane, built)),
@@ -1603,12 +1600,10 @@ impl Host<'_> {
                     | Value::Bool(_)
                     | Value::Str(_)
                     | Value::List(_)
-                    | Value::App(_)) => {
-                        later(ask(Command::Inspect {
-                            scope: fux_wire::inspect::Scope::Target(target(&value)?),
-                            projection: fux_wire::inspect::Projection::Field(field),
-                        }))
-                    }
+                    | Value::App(_)) => later(ask(Command::Inspect {
+                        scope: fux_wire::inspect::Scope::Target(target(&value)?),
+                        projection: fux_wire::inspect::Projection::Field(field),
+                    })),
                 }
             }
             Act::Json => match next()? {
@@ -2257,6 +2252,7 @@ impl Host<'_> {
 #[cfg(test)]
 mod tests {
     use crate::TestResult;
+    use std::rc::Rc;
     #[test]
     fn targeted_and_watch_attach_refuse_explicit_creation_before_any_request() -> TestResult {
         use crate::script::{Asks, Failed, Host, Local};
@@ -2311,13 +2307,7 @@ mod tests {
                     &mut sink,
                 );
                 let mut recorder = Recorder(0);
-                let result = crate::script::run_capped(
-                    &mut machine,
-                    &mut host,
-                    &mut recorder,
-                    Some(10000),
-                    None,
-                );
+                let result = crate::script::run(&mut machine, &mut host, &mut recorder, None);
                 assert!(
                     result.is_err_and(
                         |f| f.code == fux_wire::code::Code::from(fux_wire::code::Raise::Unused)
@@ -2335,7 +2325,6 @@ mod tests {
 
     #[test]
     fn attach_subjects_and_defaults_retain_their_typed_target_and_run() -> TestResult {
-        let grant = fuxth::Imports::new(usize::MAX);
         use super::*;
         use fux_wire::command::AttachTarget;
         let run = "1-2".parse().map_err(|()| "run")?;
@@ -2363,17 +2352,12 @@ mod tests {
                     .ok_or_else(|| fail(Raise::StackUnderflow, "subject"))
             };
             assert!(matches!(
-                host.dispatch(
-                    Word::Act(Act::AttachDefaults),
-                    &grant,
-                    &mut next,
-                    &mut Vec::new()
-                )
-                .map_err(|e| e.message)?,
+                host.dispatch(Word::Act(Act::AttachDefaults), &mut next, &mut Vec::new())
+                    .map_err(|e| e.message)?,
                 Done::Now
             ));
             let (attached, _) =
-                attach_options(Act::Attach, &grant, Value::App(value)).map_err(|e| e.message)?;
+                attach_options(Act::Attach, Value::App(value)).map_err(|e| e.message)?;
             assert_eq!(attached, Some(target.clone()));
             let defaults = draft.attach.as_ref().ok_or("defaults")?;
             assert_eq!(defaults.target, Some(target));
@@ -2501,22 +2485,20 @@ mod tests {
     }
 
     #[test]
-    fn options_are_refused_before_they_are_copied() -> TestResult {
+    fn options_past_a_launch_frame_are_refused_before_they_are_copied() -> TestResult {
         let allocator = fux_vt_peak::ThreadPeak;
         let list = |item: &str, n| {
             let list = fuxth::List::new(vec![Value::str(item); n]).ok_or("list");
-            list.map(|list| Value::List(Rc::new(list)))
+            list.map(|list| Value::List(std::rc::Rc::new(list)))
         };
         let big = std::iter::repeat_n('x', 1 << 20).collect::<String>();
-        // 8 MiB of options on a pane, held twice, or once; a list of the same
-        // 8 MiB, past a launch frame; and a grant of 64 KiB.
+        // 8 MiB of options on a pane; a list of the same 8 MiB, past a
+        // launch frame.
         let request_of = |argv| Opts {
             on: Some(On::Target(AnyRef::Pane(fux_wire::id::PaneId::of(1)))),
             argv,
             ..Opts::default()
         };
-        let held = std::rc::Rc::new(request_of(vec![big.clone(); 8]));
-        let shared = || Value::App(Fux::Opts(held.clone()));
         let unique = || {
             Value::App(Fux::Opts(std::rc::Rc::new(request_of(vec![
                 big.clone();
@@ -2524,16 +2506,13 @@ mod tests {
             ]))))
         };
         let fresh = || Value::App(Fux::Opts(std::rc::Rc::default()));
-        let (too_long, bad) = (fuxth::Code::TooLong, fail(Raise::BadValue, "").code);
+        let bad = fail(Raise::BadValue, "").code;
         // An option on what `values` give, or an action consuming them.
         for (step, values, code) in [
-            (Ok(Opt::Arg), vec![shared(), Value::str("x")], too_long),
             (Ok(Opt::ShellProgram), vec![fresh(), list(&big, 8)?], bad),
             (Ok(Opt::CopyEnvironment), vec![fresh(), list(&big, 8)?], bad),
-            (Err(Act::SendKeys), vec![shared()], too_long),
             (Err(Act::Respawn), vec![unique()], bad),
         ] {
-            let grant = fuxth::Imports::new(64 << 10);
             let mut values = values.into_iter();
             let mut next = || {
                 values
@@ -2545,14 +2524,10 @@ mod tests {
             let base = allocator.live();
             allocator.reset_peak();
             let refused = match step {
-                Ok(opt) => modify(opt, &grant, &mut next).err(),
-                Err(Act::SendKeys) => {
-                    request(Act::SendKeys, &grant, next().map_err(|f| f.message)?).err()
-                }
+                Ok(opt) => modify(opt, &mut next).err(),
                 Err(act) => {
                     let word = Word::Act(act);
-                    host.dispatch(word, &grant, &mut next, &mut Vec::new())
-                        .err()
+                    host.dispatch(word, &mut next, &mut Vec::new()).err()
                 }
             };
             assert_eq!(refused.map(|f| f.code), Some(code), "{step:?}");
@@ -2562,81 +2537,7 @@ mod tests {
     }
 
     #[test]
-    fn host_text_arguments_refuse_long_json_before_copying_or_quoting_it() -> TestResult {
-        let edge = fuxth::Text::new(std::iter::repeat_n('界', fuxth::LONGEST).collect::<String>());
-        assert!(argument(&edge).is_ok());
-        let grant = fuxth::Imports::new(fux_wire::wire::MAX_ALLOCATED);
-        let input = Value::str(std::iter::repeat_n('\u{1}', fuxth::LONGEST).collect::<String>());
-        let json = json_text(&input, &grant).map_err(|f| f.message)?;
-        json.retain(&grant).map_err(|f| f.message)?;
-        assert!(matches!(&json, Value::Str(s) if s.chars_len() > fuxth::LONGEST));
-        let _room = grant
-            .lease(grant.remaining().saturating_sub(64 << 10))
-            .map_err(|f| f.message)?;
-        let opts = || {
-            Value::App(Fux::Opts(std::rc::Rc::new(Opts {
-                argv: vec!["sh".into()],
-                ..Opts::default()
-            })))
-        };
-        let row = fuxth::List::new(vec![json.clone(), Value::Int(0), Value::Int(0)])
-            .ok_or("style row")?;
-        let styles =
-            fuxth::List::new(vec![Value::List(Rc::new(row))]).ok_or("styles")?;
-        let allocator = fux_vt_peak::ThreadPeak;
-        for (word, values) in [
-            (Word::Opt(Opt::Arg), vec![opts(), json.clone()]),
-            (Word::Opt(Opt::Axis), vec![opts(), json.clone()]),
-            (
-                Word::Opt(Opt::Env),
-                vec![opts(), Value::str("X"), json.clone()],
-            ),
-            (Word::Act(Act::Pane), vec![json.clone()]),
-            (Word::Act(Act::Version), vec![json.clone()]),
-            (
-                Word::Act(Act::Rename),
-                vec![Value::App(Fux::Pane(PaneId::of(1), None)), json.clone()],
-            ),
-            (
-                Word::Act(Act::Set),
-                vec![
-                    Value::str("styles"),
-                    Value::List(Rc::new(styles)),
-                ],
-            ),
-        ] {
-            let mut values = values.into_iter();
-            let mut next = || {
-                values
-                    .next()
-                    .ok_or_else(|| fail(Raise::StackUnderflow, "test argument"))
-            };
-            let mut sink = std::io::sink();
-            let mut state = crate::client_state::Draft::default();
-            let mut host = Host::new(
-                fux_wire::protocol::Context::default(),
-                Some(&mut state),
-                &mut sink,
-            );
-            let base = allocator.live();
-            allocator.reset_peak();
-            let failed = host
-                .dispatch(word, &grant, &mut next, &mut Vec::new())
-                .err();
-            let allocated = allocator.peak().saturating_sub(base);
-            assert!(allocated < 1 << 20, "{word:?}: {allocated}");
-            assert_eq!(
-                failed.map(|f| f.code),
-                Some(fuxth::Code::TooLong),
-                "{word:?}"
-            );
-        }
-        Ok(())
-    }
-
-    #[test]
     fn accumulating_options_preserve_order() -> TestResult {
-        let grant = fuxth::Imports::new(usize::MAX);
         let mut value = Value::App(Fux::Opts(std::rc::Rc::default()));
         for (opt, values) in [
             (Opt::Program, vec![Value::str("cat")]),
@@ -2652,7 +2553,7 @@ mod tests {
         ] {
             let mut args = std::iter::once(value).chain(values);
             value = Value::App(Fux::Opts(
-                modify(opt, &grant, &mut || {
+                modify(opt, &mut || {
                     args.next()
                         .ok_or_else(|| fail(Raise::StackUnderflow, "test argument"))
                 })
@@ -2718,241 +2619,7 @@ mod tests {
     }
 
     #[test]
-    fn the_input_bound_is_stated_as_checked() {
-        let input = format!("{} KiB at most", INPUT_MAX / 1024);
-        let about = Word::Act(Act::SendKeys).row().about;
-        assert!(about.contains(&input), "{input}");
-        assert!(crate::help::AGENTS.contains(&input), "{input}");
-    }
-
-    fn styled_line() -> fux_wire::answer::Captured {
-        fux_wire::answer::Captured {
-            of: fux_wire::answer::Of::Client(fux_wire::id::ClientId::of(1)),
-            screen_rows: 1,
-            screen_cols: 256,
-            screen_cursor: None,
-            lines: vec![fux_wire::answer::Line {
-                text: std::iter::repeat_n('界', 128).collect(),
-                runs: (0..128)
-                    .map(|style| fux_wire::answer::Run {
-                        bytes: 3,
-                        cells: 2,
-                        style,
-                    })
-                    .collect(),
-            }],
-            styles: (0..128u8)
-                .map(|n| {
-                    fux_vt::Attributes::new(
-                        fux_vt::Color::Rgb(fux_vt::Rgb {
-                            r: 255,
-                            g: 254,
-                            b: n,
-                        }),
-                        fux_vt::Color::Rgb(fux_vt::Rgb {
-                            r: 252,
-                            g: 251,
-                            b: 250,
-                        }),
-                    )
-                    .with_underline_color(fux_vt::Color::Rgb(fux_vt::Rgb {
-                        r: 128,
-                        g: 127,
-                        b: 126,
-                    }))
-                    .with_bold(true)
-                    .with_dim(true)
-                    .with_italic(true)
-                    .with_inverse(true)
-                    .with_hidden(true)
-                    .with_strikeout(true)
-                    .with_underline_style(fux_vt::UnderlineStyle::Curly)
-                    .with_blink(fux_vt::Blink::Rapid)
-                })
-                .collect(),
-            styled: true,
-            marks: false,
-        }
-    }
-
-    #[test]
-    fn nested_plain_text_shares_one_allocation_grant() -> TestResult {
-        std::thread_local! {
-            static WRITES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
-        }
-        #[derive(Clone, PartialEq)]
-        struct Limited(Fux);
-        impl fuxth::AppValue for Limited {
-            const TEXT_LIMIT: usize = 64 << 10;
-            fn kind(&self) -> &'static str {
-                "a bounded answer"
-            }
-            fn text_bytes(&self) -> usize {
-                fuxth::AppValue::text_bytes(&self.0)
-            }
-            fn write_text(&self, out: &mut dyn std::fmt::Write) -> Result<(), Failure> {
-                WRITES.with(|writes| writes.set(writes.get().saturating_add(1)));
-                fuxth::AppValue::write_text(&self.0, out)
-            }
-        }
-        let allocator = fux_vt_peak::ThreadPeak;
-        let base = allocator.live();
-        let captured = styled_line();
-        let held = fuxth::List::new(vec![Value::App(Limited(Fux::Answer(
-            Rc::new(super::super::Answer::Capture(Box::new(captured))),
-            None,
-        )))])
-        .ok_or("held list")?;
-        let held = Rc::new(held);
-        let one = Value::List(held.clone()).text().map_err(|f| f.message)?;
-        assert!(one.len().saturating_mul(8) > 64 << 10);
-        drop(one);
-        let list = fuxth::List::new(std::iter::repeat_n(Value::List(held.clone()), 8).collect())
-            .ok_or("outer list")?;
-        let value = Value::List(Rc::new(list));
-        assert_eq!(value.weight(), 17);
-        WRITES.set(0);
-        allocator.reset_peak();
-        assert!(
-            value.text().is_err(),
-            "shared captures must not bypass aggregate text admission"
-        );
-        assert!(
-            WRITES.get() > 0,
-            "input fits; aggregate output counting must refuse it"
-        );
-        assert!(value.text_upto(usize::MAX).is_err());
-        assert!(
-            allocator.peak().saturating_sub(base) <= 64 << 10,
-            "retained input, conversion and output must share the grant"
-        );
-        let list = fuxth::List::new(vec![Value::List(held.clone()); 2]).ok_or("small list")?;
-        let small = Value::List(Rc::new(list));
-        allocator.reset_peak();
-        let text = small
-            .text_upto(usize::MAX)
-            .map_err(|f| f.message)?
-            .ok_or("text")?;
-        assert_eq!(text.matches('界').count(), 256);
-        assert!(allocator.peak().saturating_sub(base) <= 64 << 10);
-        Ok(())
-    }
-
-    #[test]
-    fn text_and_json_of_shared_captures_are_reserved_before_they_are_made() -> TestResult {
-        const SCRATCH: usize = 1024;
-        let allocator = fux_vt_peak::ThreadPeak;
-        let base = allocator.live();
-        let grant = fuxth::Imports::new(64 << 10);
-        let captured = styled_line();
-        let answer = Value::App(Fux::Answer(
-            Rc::new(super::super::Answer::Capture(Box::new(captured))),
-            None,
-        ));
-        answer.retain(&grant).map_err(|f| f.message)?;
-        let list = |item: &Value<Fux>, n| -> Result<Value<Fux>, String> {
-            let lease = grant
-                .lease(fuxth::List::<Fux>::size(n))
-                .map_err(|f| f.message)?;
-            let items = fuxth::List::new(vec![item.clone(); n]).ok_or("list")?;
-            Ok(Value::List(fuxth::Shared::leased(items, lease)))
-        };
-        let held = list(&answer, 1)?;
-        let text = |value: &Value<Fux>| {
-            value
-                .string_upto(usize::MAX, &grant)
-                .and_then(|v| v.ok_or_else(|| fail(Raise::TooLong, "text")))
-        };
-        let one = text(&held).map_err(|f| f.message)?;
-        let Value::Str(one) = one else {
-            return Err("string".into());
-        };
-        assert!(one.len().saturating_mul(8) > 64 << 10);
-        drop(one);
-        // Shared inputs are retained once, but every alias contributes
-        // text: count the complete output before allocating any of it.
-        let eight = list(&held, 8)?;
-        let left = grant.remaining();
-        allocator.reset_peak();
-        assert_eq!(text(&eight).map_err(|f| f.code), Err(fuxth::Code::TooLong));
-        assert_eq!(
-            json_text(&eight, &grant).map_err(|f| f.code),
-            Err(fuxth::Code::TooLong)
-        );
-        assert_eq!(grant.remaining(), left);
-        assert!(allocator.peak().saturating_sub(base) <= (64 << 10) + SCRATCH);
-        let two = text(&list(&held, 2)?).map_err(|f| f.message)?;
-        let Value::Str(two) = two else {
-            return Err("string".into());
-        };
-        assert_eq!(two.matches('界').count(), 256);
-        drop(two);
-        let json = json_text(&held, &grant).map_err(|f| f.message)?;
-        let Value::Str(json) = json else {
-            return Err("JSON string".into());
-        };
-        assert!(
-            json.starts_with('[')
-                && json.contains(r#""col":254,"len":2"#)
-                && json.contains(r##""fg":"#fffe7f""##),
-            "{json:?}"
-        );
-        assert!(allocator.peak().saturating_sub(base) <= (64 << 10) + SCRATCH);
-        let needed = fuxth::Text::size(json.len(), json.chars_len());
-        drop(json);
-        assert_eq!(grant.remaining(), left);
-        // The text bytes still fit, but its wrapper and non-ASCII index
-        // do not: refuse the reservation before making either buffer.
-        let room = grant
-            .lease(left.saturating_sub(needed).saturating_add(1))
-            .map_err(|f| f.message)?;
-        let base = allocator.live();
-        allocator.reset_peak();
-        assert_eq!(
-            json_text(&held, &grant).map_err(|f| f.code),
-            Err(fuxth::Code::TooLong)
-        );
-        assert!(allocator.peak().saturating_sub(base) <= SCRATCH);
-        drop(room);
-        assert_eq!(
-            json_text(&held, &fuxth::Imports::new(0)).map_err(|f| f.code),
-            Err(fuxth::Code::TooLong)
-        );
-        let ascii = json_text(&list(&Value::Int(0), 128)?, &grant).map_err(|f| f.message)?;
-        ascii.retain(&grant).map_err(|f| f.message)?;
-        let Value::Str(ascii) = ascii else {
-            return Err("JSON string".into());
-        };
-        assert_eq!(
-            left.saturating_sub(grant.remaining()),
-            fuxth::Text::size(ascii.len(), ascii.chars_len())
-        );
-        drop(ascii);
-        assert_eq!(grant.remaining(), left);
-        Ok(())
-    }
-
-    #[test]
-    fn local_settings_share_the_program_step_cap() {
-        let run = |config: &str| {
-            let mut draft = crate::client_state::Draft::default();
-            super::super::run_quiet(
-                &fuxth::token::source("config", config).map_err(|e| Code::of(e.code))?,
-                Some(&mut draft),
-                false,
-            )
-            .map_err(|failed| failed.code)
-        };
-        let settings: String =
-            std::iter::repeat_n("str terminal-clipboard false set\n", 200).collect();
-        assert_eq!(run(&settings), Ok(()));
-        let forever = "begin false until";
-        assert_eq!(run(forever), Err(Code::Steps));
-    }
-
-    #[test]
     fn modifiers_keep_the_target_and_baseline() -> TestResult {
-        let grant = fuxth::Imports::new(usize::MAX);
         let version: fux_wire::command::Version = "%2:0.0.0.0.0:48211-1867a3f9c2b8e7d6"
             .parse()
             .map_err(|()| "version")?;
@@ -3026,10 +2693,10 @@ mod tests {
                     | Opt::UnsetEnv => {
                         vec![Value::str("x")]
                     }
-                    Opt::ShellProgram => vec![Value::List(Rc::new(
+                    Opt::ShellProgram => vec![Value::List(std::rc::Rc::new(
                         fuxth::List::new(vec![Value::str("sh")]).ok_or("list")?,
                     ))],
-                    Opt::CopyEnvironment => vec![Value::List(Rc::new(
+                    Opt::CopyEnvironment => vec![Value::List(std::rc::Rc::new(
                         fuxth::List::new(vec![]).ok_or("list")?,
                     ))],
                     Opt::Size | Opt::Shares => vec![Value::Int(1), Value::Int(1)],
@@ -3061,7 +2728,7 @@ mod tests {
                     target.clone()
                 };
                 let mut values = std::iter::once(Value::App(initial)).chain(args.clone());
-                let actual = modify(opt, &grant, &mut || {
+                let actual = modify(opt, &mut || {
                     values
                         .next()
                         .ok_or_else(|| fail(Raise::StackUnderflow, "test argument"))

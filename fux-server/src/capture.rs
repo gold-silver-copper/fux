@@ -119,12 +119,7 @@ impl Builder {
     /// Only whole blank cells count: a cluster may contain a space as part
     /// of its text (Unicode Prepend).
     #[inline]
-    fn add(
-        &mut self,
-        text: &str,
-        style: Attributes,
-        view: CaptureView,
-    ) {
+    fn add(&mut self, text: &str, style: Attributes, view: CaptureView) {
         self.text.push_str(text);
         if view.styles || view.marks {
             if self.runs.last().is_none_or(|(last, _)| *last != style) {
@@ -400,14 +395,13 @@ pub fn client(client: ClientId, grid: &crate::render::Grid) -> Captured {
     let of = Of::Client(client);
     let mut lines = Vec::with_capacity(usize::from(grid.rows));
     for y in 0..grid.rows {
-        let mut text: String = grid
+        let text: String = grid
             .row(y)
             .filter(|cell| !cell.is_wide_continuation())
             .map(|cell| cell.shown())
             .collect();
-        text.truncate(text.trim_end().len());
         lines.push(Line {
-            text,
+            text: text.trim_end().to_owned(),
             runs: Vec::new(),
         });
     }
@@ -489,7 +483,10 @@ pub(crate) fn state(
         ]),
         None => Json::Null,
     };
-    let read_error = pane.read_error().map(|e| e.message(&mut Memory)).transpose()?;
+    let read_error = pane
+        .read_error()
+        .map(|e| e.message(&mut Memory))
+        .transpose()?;
     let values = [
         ("title", Json::str(pane.title().as_str())),
         ("program", program.map_or(Json::Null, Json::str)),
@@ -622,10 +619,8 @@ fn painted(a: &Attributes) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use crate::pane::Runs;
     use crate::pane::tests::pane;
-    use fux_wire::command::{CaptureView, Program};
-    use fuxix::Allocation;
+    use fux_wire::command::CaptureView;
 
     /// A capture as printed.
     trait Printed {
@@ -639,45 +634,15 @@ mod tests {
         }
     }
 
+    /// A program's observed words read as text, a byte no UTF-8 holds
+    /// replaced, beside the words it was launched with.
     #[test]
-    fn argument_observation_peak_stays_within_shared_grant()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let allocator = fux_vt_peak::ThreadPeak;
-        let launch = Runs::Explicit(crate::pane::Launch {
-            argv: Program::new(std::iter::repeat_n('l', 6000).collect(), Vec::new())?,
-            cwd: "/".into(),
-            env: fux_wire::command::EnvPatch::default(),
-        });
-        let mut peak = 0;
-        for (len, byte) in [(2500, b'a'), (5000, b'a'), (2500, 0xff)] {
-            let mut raw: Vec<u8> = std::iter::repeat_n(byte, len).collect();
-            raw.push(0);
-            let baseline = allocator.live();
-            allocator.reset_peak();
-            let result = super::arguments(
-                &launch,
-                &mut fux_wire::wire::Budget::with_limit(8192),
-                |budget| fuxix::process::argv_read(raw.as_slice(), budget),
-            );
-            assert!(result.is_err());
-            peak = peak.max(allocator.peak().saturating_sub(baseline));
-        }
-        assert!(
-            peak <= 8192,
-            "argument observation allocated {peak} bytes under an 8192-byte grant"
-        );
+    fn observed_arguments_read_as_text() -> Result<(), Box<dyn std::error::Error>> {
         let raw = b"a\0\xff\0\0";
         let shell = crate::pane::tests::shell()?;
-        let mut budget = fux_wire::wire::Budget::with_limit(8192);
-        let baseline = allocator.live();
-        allocator.reset_peak();
-        let (saved, observed) = super::arguments(&shell, &mut budget, |budget| {
-            fuxix::process::argv_read(raw.as_slice(), budget)
-        })?;
-        let retained = allocator.live().saturating_sub(baseline);
-        assert_eq!(retained, 8192usize.saturating_sub(budget.remaining()));
-        assert!(allocator.peak().saturating_sub(baseline) <= 8192);
-        assert_eq!(observed.render(), "[\"a\",\"�\",\"\"]");
+        let observed = fuxix::process::argv_read(raw.as_slice(), &mut fux_wire::wire::Memory)?;
+        let (saved, observed) = super::arguments(&shell, observed);
+        assert_eq!(observed.render(), "[\"a\",\"\u{fffd}\",\"\"]");
         assert_eq!(saved.render(), "[\"/bin/sh\"]");
         Ok(())
     }
@@ -733,86 +698,8 @@ mod tests {
                 rows: Some((90, 96)),
                 ..CaptureView::default()
             },
-            1200,
-        )?;
+        );
         assert_eq!((selection.start, selection.len()), (90, 6));
-        Ok(())
-    }
-
-    #[test]
-    fn short_capture_admits_within_limit_and_refuses_excess()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let mut pane = pane(1, 2, 0)?;
-        pane.output(b"x");
-        let row = pane.screen().rows().next().ok_or("row")?;
-        for (count, admitted) in [(100, true), (200, false)] {
-            let read = std::iter::repeat_n((row, 0..usize::MAX), count);
-            let mut budget = fux_wire::wire::Budget::with_limit(8192);
-            let built = super::build(
-                read,
-                super::Of::Client(fux_wire::id::ClientId::of(1)),
-                ((u16::try_from(count)?, 2), None),
-                CaptureView::default(),
-                &mut budget,
-            );
-            assert_eq!(built.is_ok(), admitted, "count={count}");
-            if let Ok(captured) = built {
-                let allocated = fux_wire::wire::retained(&captured);
-                assert!(
-                    allocated <= 8192,
-                    "retained {allocated} bytes for an 8192-byte grant"
-                );
-            }
-        }
-        Ok(())
-    }
-
-    /// Blanks still cost work, and a single joined row range can expand
-    /// beyond the cap. A narrower physical read remains available.
-    #[test]
-    fn over_budget_capture_refuses_without_clipping() -> Result<(), Box<dyn std::error::Error>> {
-        let mut pane = pane(3, 80, 1 << 20)?;
-        pane.output(b"\x1b[41m \x1b[400b");
-        for _ in 0..10 {
-            pane.output(b"\r\n");
-        }
-        let run = fux_wire::command::Run::now().ok_or("a clock")?;
-        let refusal = super::pane_with(
-            &pane,
-            run,
-            Some(usize::MAX),
-            CaptureView::default(),
-            false,
-            240,
-        );
-        assert!(refusal.is_err());
-        assert!(
-            refusal
-                .err()
-                .is_some_and(|e| e.to_string().contains("request fewer history"))
-        );
-        let view = CaptureView {
-            wrapped: true,
-            rows: Some((0, 1)),
-            full: true,
-            ..CaptureView::default()
-        };
-        let read = super::pane(&pane, run, Some(usize::MAX), view, false)?;
-        assert_eq!(read.lines.len(), 1);
-        assert_eq!(read.lines.first().map(|l| l.text.len()), Some(80));
-        let limits = 80;
-        let read = Box::new(pane.screen().rows().map(|row| (row, 0..usize::MAX)));
-        assert!(
-            super::selected_rows(
-                read,
-                CaptureView {
-                    rows: Some((0, 1)),
-                    ..CaptureView::default()
-                },
-                limits
-            )
-            .is_err()
-        );
         Ok(())
     }
 
@@ -1039,8 +926,7 @@ mod tests {
                 rows: Some((1, 2)),
                 ..CaptureView::default()
             },
-            super::cell_limit(8 << 20, (6, 5))?,
-        )?;
+        );
         assert_eq!(selection.len(), 3);
         assert_eq!(visits.get(), 3);
         Ok(())
@@ -1067,11 +953,7 @@ mod tests {
             body
         );
         let deep = (0..40).fold(Json::Null, |inner, _| Json::Array(vec![inner]));
-        assert!(
-            Reader::new(&encode(&deep))
-                .whole::<Json>()
-                .is_err()
-        );
+        assert!(Reader::new(&encode(&deep)).whole::<Json>().is_err());
         Ok(())
     }
 
@@ -1090,13 +972,12 @@ mod tests {
         }
         assert!(pane.screen().history_len() > 0);
         pane.output(b"$ \x1b]133;C\x07hello\x1b]133;D;0\x07PROMPT> ");
-        let text = super::pane_with(
+        let text = super::pane(
             &pane,
             fux_wire::command::Run::now().ok_or("a clock")?,
             None,
             view,
             false,
-            5,
         )?
         .text()?;
         assert_eq!(text, "hello");

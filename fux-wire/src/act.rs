@@ -290,8 +290,7 @@ impl Line {
                 if text.contains(['\n', '\r']) {
                     return Err("a line holds one line of text: nothing was typed".to_owned());
                 }
-                self.before
-                    .extend(text.chars().filter(|c| !c.is_control()));
+                self.before.extend(text.chars().filter(|c| !c.is_control()));
             }
             Edit::Backspace => drop(self.before.pop()),
             Edit::Delete => self.after = self.after.chars().skip(1).collect(),

@@ -5,8 +5,8 @@
 //! fuxth source, as fuxth does.
 #![allow(dead_code, reason = "each test file uses its own part")]
 use fuxth::{
-    AppValue, Args, Compiler, Done, Error, Failure, Host, Machine, Outcome, Place, STDLIB,
-    Token, Value, Vocabulary, token,
+    AppValue, Args, Compiler, Done, Error, Failure, Host, Machine, Outcome, Place, STDLIB, Token,
+    Value, Vocabulary, token,
 };
 use std::collections::{HashMap, HashSet};
 

@@ -1365,11 +1365,7 @@ impl Call {
         match rest {
             ["changed", "wait"] => Some(Operation::Wait(version)),
             ["changed", secs, "timeout", "wait"]
-                if secs
-                    .parse()
-                    .ok()
-                    .and_then(fux_wire::command::Limit::secs)
-                    .is_some() =>
+                if secs.parse::<u32>().is_ok() =>
             {
                 Some(Operation::Wait(version))
             }

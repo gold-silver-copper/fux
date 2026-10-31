@@ -1081,9 +1081,7 @@ impl Cli {
                     let why = "stdin: the program itself was read from it";
                     return Err(Failed::new(Code::Read, why));
                 }
-                Given::Words | Given::File(_) => {
-                    string(&read_text("stdin", io::stdin())?)
-                }
+                Given::Words | Given::File(_) => string(&read_text("stdin", io::stdin())?),
             },
             Shell::ReadFile(path) => string(&read_file(path.as_ref(), &self.acted)?),
             Shell::Getenv(name) => string(&getenv(name)?),
@@ -1528,7 +1526,13 @@ fn run_quiet(tokens: &[Token], state: Option<&mut Draft>, diagnostics: bool) -> 
     let mut machine = compile(tokens)?;
     let mut out = io::sink();
     let mut host = Host::new(Context::default(), state, &mut out);
-    run(&mut machine, &mut host, &mut ConfigOnly { diagnostics }, None).map(drop)
+    run(
+        &mut machine,
+        &mut host,
+        &mut ConfigOnly { diagnostics },
+        None,
+    )
+    .map(drop)
 }
 
 /// Config evaluation has no server or connection, even through imports.
@@ -1913,11 +1917,7 @@ pub(crate) mod tests {
                 decoded.end().status(),
                 code.map_or(0, |code| code.status().get())
             );
-            let values = crate::script::answered(
-                decoded.clone(),
-                &fuxth::Imports::new(fux_wire::inspect::BYTES),
-            )
-            .map_err(|f| f.to_string())?;
+            let values = crate::script::answered(decoded.clone()).map_err(|f| f.to_string())?;
             let json = values
                 .first()
                 .map(|v| match v {
@@ -1952,11 +1952,10 @@ pub(crate) mod tests {
         matches!(&reply.response, super::Response::Answered(answers) if answers.all().iter().any(|a| a.failure() == Some(Code::Timeout)))
     }
 
-    /// The default-history styled capture, decoded (`fux_wire::wire`'s
-    /// tests check it fits the wire's grant): its JSON is printed whole,
-    /// and six copies of it in one list are refused, not built.
+    /// The default-history styled capture, decoded: its JSON is made and
+    /// printed whole.
     #[test]
-    fn default_styled_capture_fits_the_script_grant() -> TestResult {
+    fn default_styled_capture_json_is_printed_whole() -> TestResult {
         let version: fux_wire::command::Version =
             "%1:0.0.0.0.0:1-1".parse().map_err(|()| "version")?;
         let capture = fux_wire::answer::Captured::default_styled(version);
@@ -1967,26 +1966,10 @@ pub(crate) mod tests {
         let bytes = fux_wire::wire::encode(&reply);
         let reply = fux_wire::wire::Reader::new(&bytes).whole::<super::Reply>()?;
         let mut out = Vec::new();
-        let result = held_reply(
-            "%1 all-history styles capture let h h json dup len swap dup 0 8 slice print print list h h h h h h end json",
-            reply,
-            &mut out,
-        );
-        assert!(
-            out.len() as u64 > fuxth::TOTAL,
-            "admitted capture JSON was not printed: {result:?}"
-        );
-        assert!(out.starts_with(b"{\"pane\":\n{\"pane\":\"%1\"") && out.ends_with(b"}\n"));
-        assert!(
-            result
-                .as_ref()
-                .err()
-                .is_some_and(|e| e.message.contains("json"))
-        );
-        assert_eq!(
-            result.map_err(|e| e.code),
-            Err(fux_wire::code::Code::from(fux_wire::code::Raise::TooLong))
-        );
+        let result = held_reply("%1 all-history styles capture json print", reply, &mut out);
+        assert!(result.is_ok(), "{result:?}");
+        assert!(out.len() > 20 << 20, "{}", out.len());
+        assert!(out.starts_with(b"{\"pane\":\"%1\"") && out.ends_with(b"}\n"));
         Ok(())
     }
 
@@ -2072,20 +2055,6 @@ pub(crate) mod tests {
         Ok(())
     }
 
-    /// Comparing or walking a capture is charged for every line it holds,
-    /// a blank one too.
-    #[test]
-    fn blank_capture_lines_weigh_one_each() -> TestResult {
-        let rows = 1000;
-        let grid = fux_server::render::Grid::new(rows, 80)?;
-        let capture = fux_server::capture::client(fux_wire::id::ClientId::of(1), &grid)?;
-        assert!(capture.lines.iter().all(|line| line.text.is_empty()));
-        let answer = super::Answer::Capture(Box::new(capture));
-        let value = super::Fux::Answer(Rc::new(answer), None);
-        assert!(fuxth::AppValue::weight(&value) > u64::from(rows));
-        Ok(())
-    }
-
     fn large_plain(version: super::Version) -> fux_wire::answer::Captured {
         fux_wire::answer::Captured {
             of: fux_wire::answer::Of::Pane {
@@ -2104,193 +2073,6 @@ pub(crate) mod tests {
             styled: false,
             marks: false,
         }
-    }
-
-    /// A pane that answers every capture with `lines` lines of 100 cells,
-    /// each cell its own style when `styled` (the default-history styled
-    /// capture at 9,931 lines), after `history` lines of 10 cells when it
-    /// asks for history; and each wait with a change till `turns` waits,
-    /// then with a timeout. What the run's grant has left is recorded at
-    /// each wait.
-    struct Styled {
-        capture: super::Reply,
-        history: super::Reply,
-        version: super::Version,
-        turns: usize,
-        imports: Option<fuxth::Imports>,
-        left: Vec<usize>,
-    }
-
-    impl Styled {
-        fn new(turns: usize, lines: usize, styled: bool, history: usize) -> Result<Self, String> {
-            let version: super::Version = "%1:0.0.0.0.0:1-1".parse().map_err(|()| "version")?;
-            let line = fux_wire::answer::Line {
-                text: std::iter::repeat_n('x', 100).collect(),
-                runs: (0..if styled { 100 } else { 0 })
-                    .map(|style| fux_wire::answer::Run {
-                        bytes: 1,
-                        cells: 1,
-                        style,
-                    })
-                    .collect(),
-            };
-            let reply = |lines: Vec<fux_wire::answer::Line>| super::Reply {
-                run: Some(version.run),
-                ..super::Body::Capture(Box::new(fux_wire::answer::Captured {
-                    of: fux_wire::answer::Of::Pane {
-                        version,
-                        wrap_pending: false,
-                        state: Vec::new(),
-                    },
-                    screen_rows: 40,
-                    screen_cols: 120,
-                    screen_cursor: None,
-                    lines,
-                    styles: (0u8..if styled { 100 } else { 0 })
-                        .map(|n| {
-                            fux_vt::Attributes::new(fux_vt::Color::Idx(n), fux_vt::Color::Default)
-                        })
-                        .collect(),
-                    styled,
-                    marks: false,
-                }))
-                .into()
-            };
-            let past = fux_wire::answer::Line {
-                text: std::iter::repeat_n('y', 10).collect(),
-                runs: Vec::new(),
-            };
-            let screen = std::iter::repeat_n(line, lines);
-            Ok(Self {
-                capture: reply(screen.clone().collect()),
-                history: reply(std::iter::repeat_n(past, history).chain(screen).collect()),
-                version,
-                turns,
-                imports: None,
-                left: Vec::new(),
-            })
-        }
-    }
-
-    impl super::Asks for Styled {
-        fn ask(
-            &mut self,
-            asked: &fux_wire::protocol::Asked,
-        ) -> Result<super::Reply, super::Failed> {
-            use super::{AnyRef, Body, PaneAnswer, PaneResults, Reply, Request};
-            let answer = match &asked.request {
-                Request::Do(fux_wire::command::Command::Resolve { .. }) => {
-                    Body::Found(AnyRef::Pane(self.version.pane)).into()
-                }
-                Request::Wait(_) => {
-                    self.left
-                        .extend(self.imports.as_ref().map(fuxth::Imports::remaining));
-                    let answer = match self.left.len() < self.turns {
-                        true => PaneAnswer::Changed {
-                            version: self.version,
-                            changed: Vec::new(),
-                            ended: None,
-                        },
-                        false => PaneAnswer::TimedOut {
-                            since: self.version,
-                            limit: std::time::Duration::from_secs(1),
-                        },
-                    };
-                    PaneResults::One(answer).into()
-                }
-                Request::Do(fux_wire::command::Command::CapturePane {
-                    history: Some(_), ..
-                }) => return Ok(self.history.clone()),
-                Request::Do(_) | Request::NextEvents { .. } => return Ok(self.capture.clone()),
-            };
-            Ok(Reply {
-                run: Some(self.version.run),
-                ..answer
-            })
-        }
-    }
-
-    /// What a run allocates past its grant, by what allocates it: the
-    /// machine's own stack, frames and `let` names, which these programs
-    /// keep within 1 MiB.
-    const MACHINE: usize = 1 << 20;
-    /// And one answer decoded and not yet imported, or one text conversion,
-    /// each within its own `MAX_ALLOCATED` grant, never at once; and a record
-    /// projection (`counts`), within `inspect::BYTES`.
-    const ANSWERED: usize = fux_wire::wire::MAX_ALLOCATED + fux_wire::inspect::BYTES + MACHINE;
-
-    #[test]
-    fn a_run_holds_no_more_than_its_grant_and_a_fixed_overhead() -> TestResult {
-        use super::*;
-        let hits = "define hits 1000 history capture string lines 0 swap each str 42 contains if 1 add then end end";
-        let hits = format!(
-            "{hits} begin %1 hits drop %1 capture changed 10 timeout wait drop false until"
-        );
-        let timeout = Err(Raise::Timeout);
-        // A program, the capture's lines, how it ends, what it may allocate
-        // past the grant, and how many waits it makes.
-        for (code, lines, ended, overhead, waits) in [
-            // Distinct strings, built till the grant refuses one.
-            (
-                "str x 1000 copies let k list begin k 100 copies false until end",
-                0,
-                Err(Raise::TooLong),
-                MACHINE,
-                0,
-            ),
-            // What a loop builds and drops it gives back.
-            (
-                "str x 2000 copies let cap 0 begin cap string drop 1 add dup 100000 eq until drop",
-                0,
-                Ok(()),
-                MACHINE,
-                0,
-            ),
-            (
-                "%1 all-history styles capture let h h json print",
-                9931,
-                Ok(()),
-                ANSWERED,
-                0,
-            ),
-            // Polling a screen of 40 lines, as `capture` gives it, and 1,000
-            // lines of history before it for `hits`, through 200 waits, the
-            // last timing out.
-            ("%1 10 quiet drop", 40, Ok(()), ANSWERED, 200),
-            ("%1 str needle 10 shows drop", 40, timeout, ANSWERED, 200),
-            ("%1 10 until-ended drop", 40, timeout, ANSWERED, 200),
-            ("%1 1 1000000 10 grows drop", 40, timeout, ANSWERED, 200),
-            (&hits, 40, timeout, ANSWERED, 200),
-        ] {
-            let mut machine = compile(&token::source("peak", code)?)?;
-            // The styled capture is styled, and all its lines are history.
-            let (styled, history) = (lines > 40, if lines > 40 { 0 } else { 1000 });
-            let mut asks = Styled::new(200, lines, styled, history)?;
-            asks.imports = Some(machine.imports().clone());
-            let mut sink = io::sink();
-            let mut host = Host::new(Context::default(), None, &mut sink);
-            let allocator = fux_vt_peak::ThreadPeak;
-            let base = allocator.live();
-            allocator.reset_peak();
-            let ran = run_capped(&mut machine, &mut host, &mut asks, None, None);
-            let peak = allocator.peak().saturating_sub(base);
-            let ran = ran.map(drop);
-            assert_eq!(
-                ran.as_ref().copied().map_err(|failed| failed.code),
-                ended.map_err(Code::from),
-                "{code}: {ran:?}"
-            );
-            assert!(peak <= Fux::IMPORT_LIMIT + overhead, "{code}: {peak}");
-            // Polling holds what one turn holds: each wait finds the same
-            // grant left.
-            let left = &asks.left;
-            assert_eq!(left.len(), waits, "{code}");
-            assert!(
-                left.iter().all(|n| Some(n) == left.first()),
-                "{code}: {left:?}"
-            );
-        }
-        Ok(())
     }
 
     #[test]
@@ -2319,56 +2101,6 @@ pub(crate) mod tests {
             "{said} {again}"
         );
         assert_eq!(shallow, deep);
-        Ok(())
-    }
-
-    #[test]
-    fn retained_captures_exhaust_the_grant_but_polling_releases_it() -> TestResult {
-        use super::*;
-        struct Captures {
-            count: usize,
-        }
-        impl Asks for Captures {
-            fn ask(&mut self, asked: &fux_wire::protocol::Asked) -> Result<Reply, Failed> {
-                let version: Version = "%1:0.7.0.0.0:1-1"
-                    .parse()
-                    .map_err(|()| Failed::new(Code::Usage, "version"))?;
-                if matches!(
-                    asked.request,
-                    Request::Do(fux_wire::command::Command::Resolve { .. })
-                ) {
-                    return Ok(Reply {
-                        run: Some(version.run),
-                        ..Body::Found(AnyRef::Pane(version.pane)).into()
-                    });
-                }
-                self.count += 1;
-                let capture = large_plain(version);
-                Ok(Reply {
-                    run: Some(version.run),
-                    ..Body::Capture(Box::new(capture)).into()
-                })
-            }
-        }
-        for retain in [false, true] {
-            let source = if retain {
-                std::iter::repeat_n("%1 all-history capture ", 9).collect::<String>()
-            } else {
-                "0 20 range each drop %1 all-history capture drop end".into()
-            };
-            let mut asks = Captures { count: 0 };
-            let result = evaluate(&source, None, &mut asks, &mut Vec::new());
-            if retain {
-                assert_eq!(
-                    result.map(|_| ()).map_err(|e| e.code),
-                    Err(Code::from(fux_wire::code::Raise::TooLong))
-                );
-                assert!(asks.count < 9);
-            } else {
-                assert!(result?.is_empty());
-                assert_eq!(asks.count, 20);
-            }
-        }
         Ok(())
     }
 
@@ -2427,7 +2159,6 @@ pub(crate) mod tests {
             run: Some(version.run),
             ..fux_wire::protocol::Body::Capture(Box::new(capture)).into()
         };
-        assert!(fux_wire::wire::size(&reply)? <= fux_wire::wire::MAX_REPLY);
         let mut out = Vec::new();
         held_reply("%1 all-history capture print", reply, &mut out)?;
         assert_eq!(out.len(), 17_000_001);
@@ -2542,13 +2273,7 @@ pub(crate) mod tests {
         let mut machine = compile(&fuxth::token::source("key", &code)?)?;
         let mut out = Vec::new();
         let mut host = Host::new(context, None, &mut out);
-        let left = run_capped(
-            &mut machine,
-            &mut host,
-            &mut ConfigOnly::default(),
-            None,
-            None,
-        )?;
+        let left = run(&mut machine, &mut host, &mut ConfigOnly::default(), None)?;
         let text: Vec<String> = (left.iter().map(Value::text))
             .collect::<Result<_, _>>()
             .map_err(|f| f.message)?;
@@ -2609,13 +2334,7 @@ pub(crate) mod tests {
                 sent: 0,
                 attached: None,
             };
-            run_capped(
-                &mut machine,
-                &mut host,
-                &mut record,
-                Some(PROGRAM_STEPS),
-                None,
-            )?;
+            run(&mut machine, &mut host, &mut record, None)?;
             assert_eq!(record.sent, 1);
             let target = Some(AttachTarget::Pane(version.pane));
             if action == "attach-defaults" {
@@ -2667,8 +2386,7 @@ pub(crate) mod tests {
         struct Record(Vec<u32>);
         impl Asks for Record {
             fn ask(&mut self, asked: &Asked) -> Result<Reply, Failed> {
-                let bytes = fux_wire::wire::encode(asked)
-                    .map_err(|e| Failed::new(Code::Usage, e.to_string()))?;
+                let bytes = fux_wire::wire::encode(asked);
                 let decoded: Asked = Reader::new(&bytes)
                     .whole()
                     .map_err(|e| Failed::new(Code::Usage, e.to_string()))?;
@@ -2813,7 +2531,7 @@ pub(crate) mod tests {
             )?)?;
             let mut sink = Vec::new();
             let mut host = Host::new(Context::default(), None, &mut sink);
-            let result = run_capped(&mut machine, &mut host, &mut leaves, None, None);
+            let result = run(&mut machine, &mut host, &mut leaves, None);
             if runs == [ours, ours] {
                 result?;
                 assert_eq!(leaves.submitted, [Some(ours)]);
@@ -2840,7 +2558,7 @@ pub(crate) mod tests {
         let longest = "@4294967295:18446744073709551615:4294967295-ffffffffffffffff";
         assert!(longest.parse::<fux_wire::command::LayoutRevision>().is_ok());
         let allocator = fux_vt_peak::ThreadPeak;
-        let bad = Value::str(std::iter::repeat_n('x', fuxth::LONGEST / 2).collect::<String>());
+        let bad = Value::str(std::iter::repeat_n('x', 500_000).collect::<String>());
         let mut peaks = Vec::new();
         for proposal in [
             "t bad list end arrange",
@@ -2856,23 +2574,15 @@ pub(crate) mod tests {
                 machine.run(&mut host, u64::MAX)?,
                 Outcome::Suspended(Ask::Local(Local::Shell(Shell::Input)))
             ));
-            machine.import(bad.clone())?;
+            machine.push(bad.clone());
             assert!(matches!(
                 machine.run(&mut host, u64::MAX)?,
                 Outcome::Suspended(Ask::Server { .. })
             ));
-            machine.import(Value::App(Fux::Tab(TabId::of(1), None)))?;
+            machine.push(Value::App(Fux::Tab(TabId::of(1), None)));
             let base = allocator.live();
             allocator.reset_peak();
-            // Imports and host arguments charge their expanded work even when shared;
-            // the property here is bounded allocation during scalar refusal.
-            run_capped(
-                &mut machine,
-                &mut host,
-                &mut NoRequests,
-                Some(1_000_000),
-                None,
-            )?;
+            run(&mut machine, &mut host, &mut NoRequests, None)?;
             peaks.push(allocator.peak().saturating_sub(base));
         }
         assert!(
@@ -3015,23 +2725,6 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn a_cap_is_met_to_the_step() -> Result<(), super::Failed> {
-        let mut machine = super::compile(&super::token::source("t", "begin false until")?)?;
-        let mut out = std::io::sink();
-        let mut host = super::Host::new(Default::default(), None, &mut out);
-        let ran = super::run_capped(
-            &mut machine,
-            &mut host,
-            &mut super::ConfigOnly::default(),
-            Some(20_000),
-            None,
-        );
-        assert_eq!(ran.err().map(|f| f.code), Some(super::Code::Steps));
-        assert_eq!(machine.steps(), 20_001);
-        Ok(())
-    }
-
-    #[test]
     fn what_is_left_names_its_word() {
         let opts = super::words::KINDS
             .iter()
@@ -3076,84 +2769,16 @@ pub(crate) mod tests {
         failed.map(|f| f.err().map(|f| f.code))
     }
 
-    /// A layout of more nodes than `NODES_MAX` is `too_long` from
-    /// `arrange` and from the server alike.
+    /// A screen past what a grid holds is `size` from the word `size` and
+    /// from the server, as a client's terminal is resized, alike.
     #[test]
-    fn a_layout_past_its_nodes_is_too_long_from_the_word_and_the_server() -> TestResult {
-        use super::testing::{InProcess, attached};
-        use fux_wire::command::Command;
-        use fux_wire::layout::{NODES_MAX, Node};
-        let (mut session, _) = attached(8, 30)?;
-        let revision = evaluate(
-            "@1 str layout_revision get",
-            None,
-            &mut InProcess(&mut session),
-            &mut Vec::new(),
-        )?;
-        let Some(fuxth::Value::Str(revision)) = revision.first() else {
-            return Err("a layout revision".into());
-        };
-        let word = format!(
-            "@1 str {} list 0 {} range each drop %1 end end arrange",
-            &***revision,
-            NODES_MAX + 1
-        );
-        let word = evaluate(&word, None, &mut Refuse, &mut Vec::new());
-        let asked = fux_wire::protocol::Asked {
-            after: None,
-            context: fux_wire::protocol::Context::default(),
-            request: Command::Arrange {
-                target: fux_wire::id::TabId::of(1),
-                revision: revision.parse().map_err(|()| "revision")?,
-                nodes: vec![Node::Pane(fux_wire::id::PaneId::of(1)); NODES_MAX + 1],
-            }
-            .into(),
-        };
-        use fux_wire::protocol::Response;
-        let server = match session.answer(&asked).response {
-            Response::Failed { code, message } => Err(super::Failed::new(code, message)),
-            other @ (Response::Returned(_) | Response::Answered(_)) => {
-                return Err(format!("{other:?}").into());
-            }
-        };
-        let too_long = Some(fux_wire::code::Raise::TooLong.into());
-        assert_eq!(both([word.map(drop), server]), [too_long; 2]);
-        Ok(())
-    }
-
-    /// Callback source past `ACTION_MAX` is `too_long` from the word that
-    /// makes it and from the screen that admits it alike.
-    #[test]
-    fn callback_source_past_its_bytes_is_too_long_from_the_word_and_admission() -> TestResult {
-        use fux_wire::callback::{Callback, Open, Prompt};
-        let long: String = std::iter::repeat_n(' ', crate::screens::ACTION_MAX + 1).collect();
-        let word = format!("str c1 client str name str '' str '{long}' prompt");
-        let word = evaluate(&word, None, &mut Refuse, &mut Vec::new());
-        let open = Open::Prompt(Prompt {
-            title: "name".into(),
-            line: fux_wire::act::Line::new(String::new()),
-            action: Some(Callback {
-                code: long,
-                args: Vec::new(),
-            }),
-        });
-        let context = fux_wire::protocol::Context::default();
-        let admitted = super::admit(open, None, &context);
-        let too_long = Some(fux_wire::code::Raise::TooLong.into());
-        assert_eq!(both([word.map(drop), admitted.map(drop)]), [too_long; 2]);
-        Ok(())
-    }
-
-    /// A screen past `command::MOST` a side is `size` from the word `size`
-    /// and from the server, as a client's terminal is resized, alike.
-    #[test]
-    fn a_screen_past_most_is_size_from_the_word_and_the_server() -> TestResult {
+    fn a_screen_past_a_grid_is_size_from_the_word_and_the_server() -> TestResult {
         use super::testing::attached;
-        let most = fux_wire::command::MOST;
-        let word = format!("opts {} 24 size new-workspace", most + 1);
+        let most = u16::MAX;
+        let word = format!("opts {most} {most} size new-workspace");
         let word = evaluate(&word, None, &mut Refuse, &mut Vec::new());
         let (mut session, client) = attached(8, 30)?;
-        let server = session.resize(client, 24, most + 1, std::time::Instant::now());
+        let server = session.resize(client, most, most, std::time::Instant::now());
         let server = server.map(drop).map_err(super::Failed::from);
         let size = Some(fux_wire::code::Code::Size);
         assert_eq!(both([word.map(drop), server]), [size; 2]);

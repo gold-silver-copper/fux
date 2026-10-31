@@ -163,8 +163,11 @@ impl Session {
                 fux_vt::Graphics::Sixel(_) => "sixel",
             };
             let graphics = Json::str(graphics);
-            let clipboard =
-                view.presentation.terminal_clipboard.then_some("osc52").map_or(Json::Null, Json::str);
+            let clipboard = view
+                .presentation
+                .terminal_clipboard
+                .then_some("osc52")
+                .map_or(Json::Null, Json::str);
             let output = Json::object(vec![
                 ("graphics", graphics),
                 (

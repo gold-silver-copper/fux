@@ -1,8 +1,6 @@
 //! How fast fuxth compiles and runs: a few programs, each timed over several runs.
 //! `cargo run --release -p fuxth --example bench`
-use fuxth::{
-    AppValue, Compiler, Done, Failure, Host, Machine, Outcome, STDLIB, Value, Vocabulary,
-};
+use fuxth::{AppValue, Compiler, Done, Failure, Host, Machine, Outcome, STDLIB, Value, Vocabulary};
 use std::time::Instant;
 
 #[derive(Clone, Debug, PartialEq)]

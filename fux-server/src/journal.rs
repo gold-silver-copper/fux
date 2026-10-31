@@ -642,10 +642,14 @@ impl Read {
         reason: &str,
     ) -> fux_wire::protocol::Reply {
         let mut reader = self.reader;
-        reply(reader.batch(session.parts.journal(), true).map(|mut batch| {
-            batch.status = Status::Stopped(reason.to_owned());
-            batch
-        }))
+        reply(
+            reader
+                .batch(session.parts.journal(), true)
+                .map(|mut batch| {
+                    batch.status = Status::Stopped(reason.to_owned());
+                    batch
+                }),
+        )
     }
 }
 
@@ -673,11 +677,10 @@ mod tests {
             (WsId::of(u32::MAX), TabId::of(u32::MAX)),
             PaneId::of(u32::MAX),
         );
-        let name: String = std::iter::repeat_n("\"\\", crate::session::NAME_MAX / 2).collect();
+        let name: String = std::iter::repeat_n("\"\\", 128).collect();
         let mut session = started()?;
-        // Exercise the real producer: its bounded Said is cloned compactly
-        // into the journal, even when collection itself grew geometrically.
-        let sent: String = std::iter::repeat_n(ch, NOTIFICATION_MAX + 1).collect();
+        // Exercise the real producer: its Said is cloned into the journal.
+        let sent: String = std::iter::repeat_n(ch, 501).collect();
         session.output(
             PaneId::of(1),
             format!("\x1b]2;{sent}\x07\x1b]9;{sent}\x07").as_bytes(),
@@ -809,87 +812,8 @@ mod tests {
     }
 
     #[test]
-    fn maximum_batches_fit_256_kib_with_their_envelope() -> TestResult {
-        let run: Run = "4294967295-ffffffffffffffff".parse().map_err(|()| "run")?;
-        let mut largest = 0;
-        // Four-byte text bounds retained storage; separators, quotes and
-        // backslashes bound escaped JSON. All variants share this fixture.
-        for ch in ['𐀀', '\u{2028}', '\u{2029}', '"', '\\'] {
-            for event in maximum_events(ch)? {
-                let mut journal = Journal {
-                    next: Seq(u64::MAX - 64),
-                    ..Journal::default()
-                };
-                let mut reader = Reader::new(Scope::All, &journal, run, None)?;
-                for _ in 0..BATCH_EVENTS {
-                    journal.push_from(
-                        event.clone(),
-                        Actor::Program(PaneId::of(u32::MAX), u64::MAX),
-                    );
-                }
-                let mut batch = reader.batch(&journal, true)?;
-                assert_eq!(batch.events.len(), BATCH_EVENTS);
-                assert_eq!(batch.next.seq, Seq(u64::MAX));
-                batch.missed = u64::MAX;
-                batch.status = Status::Stopped("server stopped".into());
-                let json = batch.json();
-                let Some(Json::Array(events)) = json.get("events") else {
-                    return Err("event array".into());
-                };
-                largest = largest.max(events.first().ok_or("event")?.render().len());
-                assert!(batch.json().render().len() < 256 << 10, "{event:?}");
-            }
-        }
-        // Truncated adds 17 bytes to the audit's 3,242-byte notification.
-        assert_eq!(largest, 3_242 + 17);
-        Ok(())
-    }
-
-    #[test]
-    fn compact_payloads_keep_the_full_count_window_without_growing_a_full_ring() -> TestResult {
+    fn a_full_ring_keeps_its_count_window_without_growing() -> TestResult {
         let events = maximum_events('𐀀')?;
-        for event in &events {
-            let (capacity, limit) = match event {
-                Event::Tab(_, Change::Created(name))
-                | Event::Workspace(_, Change::Created(name)) => (
-                    name.as_ref().map_or(0, String::capacity),
-                    crate::session::NAME_MAX,
-                ),
-                Event::Tab(_, Change::Renamed(name))
-                | Event::Workspace(_, Change::Renamed(name))
-                | Event::Pane(_, PaneEvent::Told(Told::Renamed(name))) => {
-                    (name.capacity(), crate::session::NAME_MAX)
-                }
-                Event::Pane(_, PaneEvent::Told(Told::Notification(text))) => {
-                    (text.retained_bytes(), NOTIFICATION_MAX * 4)
-                }
-                Event::Pane(_, PaneEvent::Told(Told::Title(text))) => {
-                    (text.retained_bytes(), TITLE_MAX * 4)
-                }
-                Event::Pane(
-                    _,
-                    PaneEvent::Created
-                    | PaneEvent::Closed
-                    | PaneEvent::Moved(_)
-                    | PaneEvent::Told(
-                        Told::Respawned(_)
-                        | Told::Bell
-                        | Told::Done(_)
-                        | Told::Resized(_)
-                        | Told::HistoryBudget(_)
-                        | Told::HistoryCleared
-                        | Told::Exited(_),
-                    ),
-                )
-                | Event::Tab(_, Change::Closed | Change::Reordered)
-                | Event::Workspace(_, Change::Closed | Change::Reordered)
-                | Event::Layout(_)
-                | Event::Arranged(_)
-                | Event::View { .. }
-                | Event::Copied { .. } => (0, 0),
-            };
-            assert!(capacity <= limit, "{event:?}: {capacity} > {limit}");
-        }
         let maximum = events
             .iter()
             .find(|e| matches!(e, Event::Pane(_, PaneEvent::Told(Told::Notification(_)))))
@@ -931,7 +855,7 @@ mod tests {
     }
 
     #[test]
-    fn scoped_reads_wait_through_unrelated_entries_without_rescanning() -> TestResult {
+    fn scoped_reads_wait_through_unrelated_entries() -> TestResult {
         let mut session = started()?;
         let now = Instant::now();
         let request = Request::NextEvents {
@@ -944,7 +868,7 @@ mod tests {
         else {
             return Err("did not wait".into());
         };
-        for _ in 0..BATCH_SCAN / 2 {
+        for _ in 0..1000 {
             session
                 .parts
                 .journal_mut()
@@ -956,21 +880,6 @@ mod tests {
                 "unrelated entries ended the wait"
             );
         }
-        for _ in 0..BATCH_SCAN / 2 {
-            session
-                .parts
-                .journal_mut()
-                .push(Event::Workspace(WsId::of(2), Change::Reordered));
-        }
-        let reply = waiting
-            .answer(&session, now)
-            .ok_or("scan limit did not return progress")?;
-        let Response::Returned(Body::Events(batch)) = reply.response else {
-            return Err("batch".into());
-        };
-        assert!(batch.events.is_empty());
-        assert_eq!(batch.status, Status::Continuing);
-        assert_eq!(batch.next, session.parts.journal().end(session.run));
         Ok(())
     }
 
@@ -978,12 +887,15 @@ mod tests {
     fn batches_resume_at_the_exact_consumed_prefix() -> TestResult {
         let mut journal = Journal::default();
         let mut reader = Reader::new(Scope::All, &journal, run()?, None)?;
-        for _ in 0..BATCH_EVENTS.saturating_add(3) {
+        for _ in 0..1000 {
             journal.push(bell(1));
         }
         let first = reader.batch(&journal, true)?;
-        assert_eq!(first.events.len(), BATCH_EVENTS);
+        assert_eq!(first.events.len(), 1000);
         assert_eq!(first.events.last().map(|e| e.next), Some(first.next));
+        for _ in 0..3 {
+            journal.push(bell(1));
+        }
         let second =
             Reader::new(Scope::All, &journal, run()?, Some(first.next))?.batch(&journal, true)?;
         assert_eq!(second.events.len(), 3);
@@ -992,7 +904,7 @@ mod tests {
     }
 
     #[test]
-    fn filtered_entries_spend_the_scan_budget_and_advance_the_cursor() -> TestResult {
+    fn filtered_entries_advance_the_cursor() -> TestResult {
         let mut journal = Journal::default();
         let mut reader = Reader::new(
             Scope::Target(AnyRef::Pane(PaneId::of(2))),
@@ -1000,14 +912,14 @@ mod tests {
             run()?,
             None,
         )?;
-        for _ in 0..BATCH_SCAN.saturating_add(1) {
+        for _ in 0..1000 {
             journal.push(bell(1));
         }
-        journal.push(bell(2));
         let empty = reader.batch(&journal, true)?;
         assert!(empty.events.is_empty());
-        assert_eq!(empty.next.seq, Seq(u64::try_from(BATCH_SCAN)?));
+        assert_eq!(empty.next, journal.end(run()?));
         assert_eq!(empty.status, Status::Continuing);
+        journal.push(bell(2));
         let matching = reader.batch(&journal, true)?;
         assert_eq!(matching.events.len(), 1);
         assert_eq!(matching.next, journal.end(run()?));

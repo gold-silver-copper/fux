@@ -236,6 +236,7 @@ impl Preferences {
 mod tests {
     use super::*;
     use crate::TestResult;
+    use std::rc::Rc;
 
     #[test]
     fn initialization_requires_every_preference_and_the_prefix() -> TestResult {

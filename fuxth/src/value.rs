@@ -1,7 +1,7 @@
 //! Values on the stack: integers, booleans, strings, lists, and the
 //! application's own.
 use crate::Failure;
-use crate::NESTING;
+use crate::{Code, NESTING};
 use std::rc::Rc;
 
 /// An application's own values: what it puts on the stack (a handle, a
@@ -20,10 +20,9 @@ pub trait AppValue: Clone + PartialEq {
         0
     }
 
-    /// Writes how it reads as text.
-    fn write_text(&self, out: &mut String) -> Result<(), Failure> {
-        out.push_str(self.kind());
-        Ok(())
+    /// Streams how it reads as text into `out`, propagating its failure.
+    fn write_text(&self, out: &mut dyn std::fmt::Write) -> Result<(), Failure> {
+        out.write_str(self.kind()).map_err(|_| unwritten())
     }
 }
 
@@ -283,25 +282,29 @@ impl<A: AppValue> Value<A> {
         Ok(out)
     }
 
-    /// Writes its text at the end of `out`.
-    pub fn write_text(&self, out: &mut String) -> Result<(), Failure> {
-        use std::fmt::Write;
+    /// Streams its text into `out`, without a whole rendered copy.
+    pub fn write_text(&self, out: &mut dyn std::fmt::Write) -> Result<(), Failure> {
         match self {
-            Self::Int(n) => _ = write!(out, "{n}"),
-            Self::Bool(b) => _ = write!(out, "{b}"),
-            Self::Str(text) => out.push_str(text),
+            Self::Int(n) => write!(out, "{n}").map_err(|_| unwritten()),
+            Self::Bool(b) => write!(out, "{b}").map_err(|_| unwritten()),
+            Self::Str(text) => out.write_str(text).map_err(|_| unwritten()),
             Self::List(list) => {
                 for (i, item) in list.items.iter().enumerate() {
                     if i > 0 {
-                        out.push(' ');
+                        out.write_char(' ').map_err(|_| unwritten())?;
                     }
                     item.write_text(out)?;
                 }
+                Ok(())
             }
-            Self::App(app) => app.write_text(out)?,
+            Self::App(app) => app.write_text(out),
         }
-        Ok(())
     }
+}
+
+/// A text its sink refused.
+fn unwritten() -> Failure {
+    Failure::new(Code::Host("output"), "the text could not be written")
 }
 
 impl<A> Value<A> {

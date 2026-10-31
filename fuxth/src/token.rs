@@ -187,7 +187,6 @@ mod tests {
         Ok(())
     }
 
-
     #[test]
     fn arguments_stay_whole() {
         let tokens = arguments(&["str", "hello world", "# not a comment"]);

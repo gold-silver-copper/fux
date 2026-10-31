@@ -10,10 +10,10 @@ use crate::keymap::{Held, Keymap, Modes};
 use crate::script;
 use fux_vt::keys::decode::Input;
 use fux_vt::keys::{KeyPress, Keystroke};
-use fux_wire::protocol::MAX_FRAME;
 use fux_wire::act::Line;
 use fux_wire::act::{Act, CopyAct, LineAct, List, ListAct, Panel, ScreenAct, Seek};
 use fux_wire::callback::{Callback, Data, ListScreen, Open, Prompt};
+use fux_wire::protocol::MAX_FRAME;
 
 /// One of a client's screens, or none: its keys then go through its
 /// bindings, in the middle of what `Held` says. So nothing is held for the
@@ -71,7 +71,8 @@ impl Display {
             return Vec::new();
         };
         if !fits(&act) {
-            let text = format!("a screen past {MAX_FRAME} bytes, too large to show, was not opened");
+            let text =
+                format!("a screen past {MAX_FRAME} bytes, too large to show, was not opened");
             return vec![Act::Notice { text, error: true }];
         }
         self.opening = opening;
@@ -409,11 +410,7 @@ impl Screen {
         Vec::from_iter(act.map(|act| Effect::Screen(ScreenAct::Copy(act))))
     }
 
-    fn copy_search(
-        &mut self,
-        (seek, mut line): (Seek, Line),
-        act: LineAct,
-    ) -> Vec<Effect> {
+    fn copy_search(&mut self, (seek, mut line): (Seek, Line), act: LineAct) -> Vec<Effect> {
         let sent = match act {
             LineAct::Cancel => CopyAct::Typing(None),
             LineAct::Submit => CopyAct::Find {
@@ -423,7 +420,8 @@ impl Screen {
             LineAct::Edit(edit) => {
                 let before = line.clone();
                 let mut refused = line.edit(&edit).err();
-                let typing = |line: &Line| (seek, line.before().to_owned(), line.after().to_owned());
+                let typing =
+                    |line: &Line| (seek, line.before().to_owned(), line.after().to_owned());
                 let mut shown = ScreenAct::Copy(CopyAct::Typing(Some(typing(&line))));
                 if !fits(&shown) {
                     line = before;
@@ -621,10 +619,10 @@ mod tests {
         assert!(screen.opened(&modes).is_some_and(|act| fits(&act)));
         let typed = std::iter::repeat_n('x', 4096).collect();
         let edit = LineAct::Edit(fux_wire::act::Edit::Insert(typed));
-        let prompt = match &screen {
-            Screen::Prompt(prompt) => prompt.clone(),
-            _ => return Err("not a prompt".into()),
+        let Screen::Prompt(prompt) = &screen else {
+            return Err("not a prompt".into());
         };
+        let prompt = prompt.clone();
         let effects = screen.prompt(&modes, prompt, edit);
         assert!(effects.contains(&refusal(past_a_frame())), "{effects:?}");
         assert!(matches!(&screen, Screen::Prompt(p) if p.line.before().is_empty()));

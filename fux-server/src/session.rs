@@ -2083,7 +2083,8 @@ impl Session {
             let encoded = fux_wire::json::base64(text.as_bytes());
             let osc = format!("\x1b]52;c;{encoded}\x07").into_bytes();
             self.outbox.extend(
-                recipients.map(|client| Outgoing::To(client, ToAttached::Paint(osc.clone().into()))),
+                recipients
+                    .map(|client| Outgoing::To(client, ToAttached::Paint(osc.clone().into()))),
             );
         }
         let at = pane.and_then(|p| self.locate(p).map(|at| (at, p)));
@@ -2170,11 +2171,9 @@ impl Session {
         let watches = match wait.since {
             command::Since::Now(AnyRef::Pane(id)) => Watches::Pane((id, self.pane(id)?.counts())),
             command::Since::Now(target) => Watches::Panes(
-                (self
-                    .panes_of(target)?
-                    .into_iter())
-                .map(|id| Ok((id, self.pane(id)?.counts())))
-                .collect::<Result<Vec<_>, Error>>()?,
+                (self.panes_of(target)?.into_iter())
+                    .map(|id| Ok((id, self.pane(id)?.counts())))
+                    .collect::<Result<Vec<_>, Error>>()?,
             ),
             command::Since::Version(since) => {
                 Watches::Pane((since.pane, self.counts_since(since)?))
@@ -3097,17 +3096,11 @@ impl Session {
         let values = [
             ("id", Json::str(format!("{}", p.id()))),
             ("name", p.name().map_or(Json::Null, Json::str)),
-            (
-                "label",
-                Json::str(format!("{}", p.display_label())),
-            ),
+            ("label", Json::str(format!("{}", p.display_label()))),
             ("rows", Json::int(p.size().rows())),
             ("cols", Json::int(p.size().cols())),
             ("pid", p.process().child().map_or(Json::Null, pid)),
-            (
-                "version",
-                Json::str(format!("{}", p.version(self.run))),
-            ),
+            ("version", Json::str(format!("{}", p.version(self.run)))),
         ];
         let mut fields = Vec::with_capacity(values.len());
         fields.extend(values);
@@ -3138,9 +3131,7 @@ impl Session {
                         .process()
                         .child()
                         .map_or(Json::Null, |c| Json::int(c.leader.pid().as_raw())),
-                    "version" => {
-                        Json::str(format!("{}", pane.version(self.run)))
-                    }
+                    "version" => Json::str(format!("{}", pane.version(self.run))),
                     _ => self
                         .pane_json(pane)?
                         .into_iter()
@@ -3156,14 +3147,12 @@ impl Session {
                         .host(Some(id))
                         .map_or(Json::Null, |c| Json::str(c.to_string())),
                     "layout_revision" => Json::str(format!(
-                            "{}",
-                            tab.revision(self.run)
-                                .ok_or_else(|| fail(Raise::Range, "layout revision exhausted"))?
-                        )),
+                        "{}",
+                        tab.revision(self.run)
+                            .ok_or_else(|| fail(Raise::Range, "layout revision exhausted"))?
+                    )),
                     "name" => tab.name().map_or(Json::Null, Json::str),
-                    "label" => Json::str(
-                        format!("{}", tab.display_label(self.parts.panes())),
-                    ),
+                    "label" => Json::str(format!("{}", tab.display_label(self.parts.panes()))),
                     _ => return Err(no_field()),
                 }
             }
@@ -3458,13 +3447,7 @@ pub(crate) mod testing {
                 run: Some(self.run),
                 ..body.into()
             };
-            let stack = fux::script::run_capped(
-                &mut machine,
-                &mut host,
-                &mut Once(Some(reply)),
-                Some(fux::script::PROGRAM_STEPS),
-                None,
-            );
+            let stack = fux::script::run(&mut machine, &mut host, &mut Once(Some(reply)), None);
             assert!(
                 out.is_empty(),
                 "dump emitted before returning its complete source"
@@ -3646,11 +3629,10 @@ pub(crate) mod testing {
             opened: None,
             on_commit: None,
         };
-        let ended = fux::script::run_capped(&mut machine, &mut host, &mut asks, None, None)
-            .and_then(|stack| {
-                fux::script::Asks::commit(&mut asks, &mut keymap, context)?;
-                Ok(stack)
-            });
+        let ended = fux::script::run(&mut machine, &mut host, &mut asks, None).and_then(|stack| {
+            fux::script::Asks::commit(&mut asks, &mut keymap, context)?;
+            Ok(stack)
+        });
         let opened = asks.opened;
         if let (Some(client), Some(screen), true) = (client, opened, ended.is_ok()) {
             session.open_screen(client, screen);
@@ -3714,11 +3696,7 @@ pub(crate) mod testing {
     /// What a reply's answer prints, a value a line, or why it failed.
     pub(crate) fn said(reply: &Result<Reply, super::Error>) -> String {
         let values = match reply {
-            Ok(reply) => fux::script::answered(
-                reply.clone(),
-                &fuxth::Imports::new(fux_wire::inspect::BYTES),
-            )
-            .map_err(|f| f.to_string()),
+            Ok(reply) => fux::script::answered(reply.clone()).map_err(|f| f.to_string()),
             Err(error) => Err(error.to_string()),
         };
         match values {
@@ -3780,7 +3758,7 @@ pub(crate) mod testing {
         };
         let mut host = fux::script::Host::new(context, None, &mut out);
         let mut recorder = Recorder(InProcess(s), Vec::new());
-        fux::script::run_capped(&mut machine, &mut host, &mut recorder, None, None)
+        fux::script::run(&mut machine, &mut host, &mut recorder, None)
             .map_err(|e| e.to_string())?;
         Ok(recorder.1)
     }
@@ -4041,13 +4019,7 @@ mod tests {
             let mut out = Vec::new();
             let mut host =
                 fux::script::Host::new(fux_wire::protocol::Context::default(), None, &mut out);
-            fux::script::run_capped(
-                &mut machine,
-                &mut host,
-                &mut Once(Some(reply)),
-                Some(fux::script::PROGRAM_STEPS),
-                None,
-            )?;
+            fux::script::run(&mut machine, &mut host, &mut Once(Some(reply)), None)?;
             let text = String::from_utf8(out)?;
             assert_eq!(text.lines().count(), lines);
             assert!(
@@ -4111,13 +4083,10 @@ mod tests {
                     ..
                 })
             ));
-            let held = fux::script::answered(
-                Reply {
-                    run: Some(s.run),
-                    ..Body::Snapshot(snapshot).into()
-                },
-                &fuxth::Imports::new(fux_wire::inspect::BYTES),
-            )?;
+            let held = fux::script::answered(Reply {
+                run: Some(s.run),
+                ..Body::Snapshot(snapshot).into()
+            })?;
             assert!(!held.is_empty());
         }
         let before = s
@@ -4802,8 +4771,7 @@ mod tests {
                     commits: 0,
                     resize,
                 };
-                let result =
-                    fux::script::run_capped(&mut machine, &mut host, &mut guarded, None, None);
+                let result = fux::script::run(&mut machine, &mut host, &mut guarded, None);
                 assert_eq!((guarded.reads, guarded.commits), (1, 1));
                 if resize {
                     assert!(result.is_err_and(|e| e.code == Code::from(Raise::Stale)));
@@ -5207,13 +5175,12 @@ mod tests {
     }
 
     #[test]
-    fn buffer_paste_keeps_its_native_size_and_atomic_admission() -> TestResult {
+    fn a_buffer_paste_goes_in_whole_as_one_native_paste() -> TestResult {
         let mut s = started()?;
-        // Larger than script input, but still admitted as one native paste.
         s.out(PaneId::of(1), b"\x1b[?2004h");
         let text = format!(
             "{}\n\n",
-            std::iter::repeat_n('x', crate::pane::INPUT_BYTES - 14).collect::<String>()
+            std::iter::repeat_n('x', 2 << 20).collect::<String>()
         );
         s.copied(text.clone(), None, &[])?;
         run(&mut s, "%1 newest paste-buffer drop")?;
@@ -5223,21 +5190,7 @@ mod tests {
             .ok_or("no pane")?
             .drain_input();
         let expected = format!("\x1b[200~{}\x1b[201~", text.replace('\n', "\r"));
-        assert_eq!(queued.len(), crate::pane::INPUT_BYTES);
         assert!(queued == expected.as_bytes(), "the whole encoded paste");
-        let mut pane = s.parts.pane_mut(PaneId::of(1)).ok_or("no pane")?;
-        pane.push(vec![b'y'; crate::pane::INPUT_BYTES - 1])?;
-        assert!(run(&mut s, "%1 newest paste-buffer").is_err_and(|e| e.starts_with("input_full:")));
-        let queued = s
-            .parts
-            .pane_mut(PaneId::of(1))
-            .ok_or("no pane")?
-            .drain_input();
-        assert_eq!(queued.len(), crate::pane::INPUT_BYTES - 1);
-        assert!(
-            queued.iter().all(|b| *b == b'y'),
-            "the refused paste added nothing"
-        );
         Ok(())
     }
 
@@ -6128,7 +6081,8 @@ mod tests {
         let notice = |s: &Session| s.views.get(&c).and_then(|v| v.notice.clone());
         let queue = |s: &mut Session, bytes: &[u8]| {
             let mut pane = s.parts.pane_mut(id).ok_or("the pane")?;
-            pane.push(bytes).map_err(|e| e.to_string())
+            pane.push(bytes);
+            Ok::<_, String>(())
         };
         queue(&mut s, b"abc")?;
         let lines = told(&mut s, |s| s.end_program(id, Ended::Exited(0)));
@@ -6376,24 +6330,12 @@ mod tests {
     fn keys_for_several_panes_go_to_all_or_none() -> TestResult {
         let mut s = started()?;
         run(&mut s, "%1 str horizontal axis split drop")?;
-        let mut second = s.parts.pane_mut(PaneId::of(2)).ok_or("no %2")?;
-        // Its program reads nothing, and its queue is full.
-        let full = vec![0; crate::pane::INPUT_BYTES];
-        second.push(full)?;
+        // Its program has ended: nothing takes input there.
+        s.end_program(PaneId::of(2), fux_wire::answer::Ended::Exited(0));
         let sent = run(&mut s, "@1 str x text send-keys");
-        assert!(sent.is_err_and(|e| e.contains("input_full")), "refused");
+        assert!(sent.is_err(), "refused");
         let first = s.parts.panes().get(&PaneId::of(1)).ok_or("no %1")?;
         assert_eq!(first.input().len(), 0, "the first pane got none");
-        // Keys too many for the room left are refused, and so is a key
-        // after them, until the program reads: none lands past a hole.
-        let mut pane = s.parts.pane_mut(PaneId::of(1)).ok_or("no %1")?;
-        let room = pane.input().room();
-        (pane.push(vec![0; room.saturating_sub(4)]))?;
-        assert!(run(&mut s, "%1 str 12345678 text send-keys").is_err());
-        assert!(
-            run(&mut s, "%1 str x text send-keys").is_err(),
-            "a key after a refusal"
-        );
         Ok(())
     }
 
@@ -6674,7 +6616,7 @@ mod tests {
             let mut machine = fux::script::compile(&tokens)?;
             let mut output = Vec::new();
             let mut host = Host::new(context.clone(), Some(&mut draft), &mut output);
-            let result = fux::script::run_capped(&mut machine, &mut host, &mut asks, None, None)
+            let result = fux::script::run(&mut machine, &mut host, &mut asks, None)
                 .and_then(|_| asks.commit(&mut draft, context));
             assert!(result.is_err());
             assert_eq!(published, committed);
@@ -6736,37 +6678,6 @@ mod tests {
     }
 
     #[test]
-    fn replies_dropped_are_counted_in_a_panes_json() -> TestResult {
-        let (mut s, c) = attached(5, 20)?;
-        s.detach_client(c);
-        let id = PaneId::of(1);
-        // `ESC [ 1 ; 1 R` each: as many as fit a read's replies, and one more.
-        let fit = crate::pane::REPLIES_MAX / b"\x1b[1;1R".len();
-        let queries: Vec<u8> = std::iter::repeat_n(&b"\x1b[6n"[..], fit + 1)
-            .flatten()
-            .copied()
-            .collect();
-        s.out(id, &queries);
-        let json = output(&mut s, "%1 capture json")?;
-        assert!(json.contains(r#""replies":1,"#), "{json}");
-        let mut pane = s.parts.pane_mut(id).ok_or("the pane")?;
-        let room = pane.input().room();
-        pane.push(vec![b'x'; room])?;
-        s.out(id, b"\x1b[6n\x1b[6n");
-        let json = output(&mut s, "%1 capture json")?;
-        assert!(json.contains(r#""replies":3,"#), "{json}");
-        // In-band resize reports the full queue refuses are counted: the
-        // one setting mode 2048 answers, and the one a resize sends.
-        s.out(id, b"\x1b[?2048h");
-        let json = output(&mut s, "%1 capture json")?;
-        assert!(json.contains(r#""replies":4,"#), "{json}");
-        run(&mut s, "@1 30 6 resize")?;
-        let json = output(&mut s, "%1 capture json")?;
-        assert!(json.contains(r#""replies":5,"#), "{json}");
-        Ok(())
-    }
-
-    #[test]
     fn a_tab_no_client_shows_is_sized_as_on_a_clients_screen() -> TestResult {
         let (mut s, c) = attached(11, 40)?;
         output_as(
@@ -6811,10 +6722,7 @@ mod tests {
         assert!(s.parts.panes().is_empty());
         // A client of a size no view has starts nothing, nor does one that
         // only watches: there is nothing to watch.
-        assert!(
-            s.attach(fux_wire::command::MOST.saturating_add(1), 40, None)
-                .is_err()
-        );
+        assert!(s.attach(u16::MAX, u16::MAX, None).is_err());
         assert!(watch(&mut s, 11, 40).is_err());
         assert!(s.parts.panes().is_empty());
         let size = |s: &Session, p| s.parts.panes().get(&PaneId::of(p)).map(|p| p.size().into());
@@ -6882,7 +6790,7 @@ mod tests {
         assert!(ls.contains(r#""truncated":[]"#), "{ls}");
         let long = format!(
             "\x1b]2;{}\x07",
-            std::iter::repeat_n('t', crate::pane::TITLE_MAX + 1).collect::<String>()
+            std::iter::repeat_n('t', fux_vt::OSC_PAYLOAD_LIMIT).collect::<String>()
         );
         s.out(PaneId::of(2), long.as_bytes());
         let capture = output(&mut s, "str %2 pane capture json")?;
@@ -7337,12 +7245,10 @@ mod tests {
     #[test]
     fn only_a_size_that_changes_a_client_resizes_it() -> TestResult {
         let (mut s, c) = attached(10, 40)?;
-        let past = fux_wire::command::MOST.saturating_add(1);
         for (rows, changes) in [
             (10, Some(false)),
-            (fux_wire::command::MOST, Some(true)),
-            (fux_wire::command::MOST, Some(false)),
-            (past, None),
+            (4096, Some(true)),
+            (4096, Some(false)),
             (0, None),
             (3, Some(true)),
         ] {
@@ -7357,23 +7263,18 @@ mod tests {
                 "{rows} rows"
             );
         }
-        assert!(s.attach(past, 40, None).is_err());
+        assert!(s.attach(u16::MAX, u16::MAX, None).is_err());
         Ok(())
     }
 
     #[test]
     fn what_cannot_be_done_is_refused() -> TestResult {
         let (mut s, _) = attached(10, 40)?;
-        let long = format!(
-            "str %1 pane str {} rename",
-            std::iter::repeat_n("x", NAME_MAX.saturating_add(1)).collect::<String>()
-        );
         for code in [
             "opts str %3 name new-workspace",
             "str +1 workspace str +2 rename",
             "str +1 workspace str @2 rename",
             "str %1 pane str '' rename",
-            long.as_str(),
             "str %1 pane str up 1 move-border",
             "str c1 client str last focus",
             "str @1 tab str next reorder",

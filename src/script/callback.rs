@@ -1,8 +1,8 @@
 //! One bridge between language values and owned screen arguments.
-use std::rc::Rc;
 use super::{Fux, Value, record};
 use fux_wire::callback::{Data, Open};
 use fuxth::Failure;
+use std::rc::Rc;
 
 fn runs(v: &Data, of: &mut Option<fux_wire::command::Run>) -> Result<(), Failure> {
     match v {
@@ -90,7 +90,10 @@ pub fn admit(
     let refused = |why| super::Failed::new(fux_wire::code::Code::BadValue, why);
     // It goes to its client in one frame.
     if fux_wire::wire::encode(&open).len() > fux_wire::protocol::MAX_FRAME.saturating_sub(128) {
-        let past = super::Failed::new(fux_wire::code::Raise::TooLong, "screen data is past a frame");
+        let past = super::Failed::new(
+            fux_wire::code::Raise::TooLong,
+            "screen data is past a frame",
+        );
         return Err(past);
     }
     let config = state.and_then(|s| s.config.as_ref());
@@ -200,13 +203,7 @@ mod tests {
         let mut machine = job.machine(None)?;
         let mut out = Vec::new();
         let mut host = Host::new(Context::default(), None, &mut out);
-        crate::script::run_capped(
-            &mut machine,
-            &mut host,
-            &mut NoRequests,
-            Some(100_000),
-            None,
-        )?;
+        crate::script::run(&mut machine, &mut host, &mut NoRequests, None)?;
         Ok(String::from_utf8_lossy(&out).into_owned())
     }
 
@@ -270,13 +267,7 @@ mod tests {
         let mut machine = job.machine(state.config.as_ref())?;
         let mut out = Vec::new();
         let mut host = Host::new(context, None, &mut out);
-        crate::script::run_capped(
-            &mut machine,
-            &mut host,
-            &mut NoRequests,
-            Some(100_000),
-            None,
-        )?;
+        crate::script::run(&mut machine, &mut host, &mut NoRequests, None)?;
         assert!(String::from_utf8_lossy(&out).contains("[\"%3\",null,true,-3,\"' drop %1 kill\"]"));
         Ok(())
     }
@@ -293,19 +284,13 @@ mod tests {
             }
             .into(),
         })?;
-        let mut values =
-            crate::script::answered(reply, &fuxth::Imports::new(fux_wire::inspect::BYTES))?;
+        let mut values = crate::script::answered(reply)?;
         let root = values.pop().ok_or("snapshot")?;
-        let grant = fuxth::Imports::new(fux_wire::inspect::BYTES);
-        root.retain(&grant).map_err(|e| e.message)?;
         let payload = data(&root).map_err(|e| e.message)?;
         let bytes = fux_wire::wire::encode(&payload);
         let payload: Data = fux_wire::wire::Reader::new(&bytes).whole()?;
         let restored = value(&payload).map_err(|e| e.message)?;
-        assert_eq!(
-            data(&restored).map_err(|e| e.message)?,
-            payload
-        );
+        assert_eq!(data(&restored).map_err(|e| e.message)?, payload);
         assert_eq!(restored, root);
         let Value::App(Fux::Record(record)) = restored else {
             return Err("record".into());
@@ -319,7 +304,6 @@ mod tests {
             return Err("panes".into());
         };
         let child = panes.items().first().ok_or("pane")?.clone();
-        child.retain(&grant).map_err(|e| e.message)?;
         drop(panes);
         drop(record);
         drop(root);
@@ -473,19 +457,7 @@ mod tests {
             "2drop",
         );
         assert!(admit(huge, None, &context).is_err());
-        let huge = list(
-            Data::Int(0),
-            &std::iter::repeat_n(' ', crate::screens::ACTION_MAX + 1).collect::<String>(),
-        );
-        assert!(admit(huge, None, &context).is_err());
-        let mut budget = Budget::new();
-        assert!(
-            data(
-                &Value::App(Fux::Opts(std::rc::Rc::new(Default::default()))),
-                &mut budget
-            )
-            .is_err()
-        );
+        assert!(data(&Value::App(Fux::Opts(std::rc::Rc::new(Default::default())))).is_err());
         Ok(())
     }
 }

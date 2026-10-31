@@ -90,10 +90,7 @@ pub(super) fn text(name: &str, text: &str) -> Result<SourceImage, Failed> {
 }
 
 pub(super) fn arguments(tokens: &[Token]) -> Result<SourceImage, Failed> {
-    Ok(SourceImage::arguments(
-        tokens,
-        &mut Files::new(),
-    )?)
+    Ok(SourceImage::arguments(tokens, &mut Files::new())?)
 }
 
 #[cfg(test)]

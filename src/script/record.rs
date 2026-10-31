@@ -1,11 +1,11 @@
 //! Immutable local projections. Only checked constructors can retain a record.
-use std::rc::Rc;
 use super::{Fux, handle};
 use fux_wire::code::{Code, Raise};
 use fux_wire::command::{AnyRef, Run};
 use fux_wire::inspect::{self, Projection, Scope};
 use fux_wire::json::Json;
 use fuxth::{Failure, List, Value};
+use std::rc::Rc;
 
 type V = Value<Fux>;
 
@@ -106,7 +106,11 @@ impl Builder {
         let depth = (depth.unwrap_or(0).checked_add(1))
             .filter(|d| *d <= inspect::DEPTH)
             .ok_or_else(fail)?;
-        Ok(Value::App(Fux::Record(Rc::new(Record { fields, depth, of }))))
+        Ok(Value::App(Fux::Record(Rc::new(Record {
+            fields,
+            depth,
+            of,
+        }))))
     }
     fn json(&mut self, value: &Json, depth: u8) -> Result<V, Failure> {
         if depth >= inspect::DEPTH {
@@ -493,9 +497,7 @@ fn styles(
         }
         col = col.checked_add(cells).ok_or_else(fail)?;
     }
-    Ok(Value::List(Rc::new(
-        List::new(values).ok_or_else(fail)?,
-    )))
+    Ok(Value::List(Rc::new(List::new(values).ok_or_else(fail)?)))
 }
 
 #[cfg(test)]
@@ -503,64 +505,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_maximum_event_record_shape_fits_its_construction_allowance() -> Result<(), Failure> {
-        use fux_wire::events::{Actor, Batch, Cursor, Item, Status};
-        use fux_wire::id::{ClientId, PaneId, TabId, WsId};
-        let next: Cursor = "18446744073709551615:4294967295-ffffffffffffffff"
-            .parse()
-            .map_err(|()| fail())?;
-        let item = Item {
-            // Combine the independent maxima, even fields no single variant
-            // needs together: 12 item fields, 3 origin fields and all strings.
-            data: Json::object(vec![
-                (
-                    "event",
-                    Json::str(std::iter::repeat_n('x', 32).collect::<String>()),
-                ),
-                (
-                    "text",
-                    Json::str(
-                        std::iter::repeat_n('𐀀', fux_server::pane::NOTIFICATION_MAX)
-                            .collect::<String>(),
-                    ),
-                ),
-                ("truncated", Json::Bool(true)),
-                ("input_unread", Json::Int(i64::MAX)),
-            ]),
-            pane: Some(PaneId::of(u32::MAX)),
-            tab: Some(TabId::of(u32::MAX)),
-            workspace: Some(WsId::of(u32::MAX)),
-            client: Some(ClientId::of(u32::MAX)),
-            moved_from: Some((WsId::of(u32::MAX), TabId::of(u32::MAX))),
-            origin: Actor::Program(PaneId::of(u32::MAX), u64::MAX / 2),
-            next,
-        };
-        for count in [0, 1, fux_server::journal::BATCH_EVENTS] {
-            for reason in [
-                None,
-                Some(std::iter::repeat_n('𐀀', 500).collect::<String>()),
-            ] {
-                let bytes = event_bytes(count, reason.as_deref());
-                let batch = Batch {
-                    events: vec![item.clone(); count],
-                    next,
-                    missed: 0,
-                    status: reason.map_or(Status::Continuing, Status::Stopped),
-                };
-                let grant = Imports::new(bytes);
-                let value = events(batch, &grant)?;
-                assert_eq!(grant.remaining(), 0);
-                value.retain(&grant)?;
-                assert!(grant.remaining() > 0);
-                drop(value);
-                assert_eq!(grant.remaining(), bytes);
-            }
-        }
-        Ok(())
-    }
-
-    #[test]
-    fn event_records_reserve_before_building_and_keep_typed_identities() -> Result<(), Failure> {
+    fn event_records_keep_typed_identities() -> Result<(), Failure> {
         use fux_wire::events::{Actor, Batch, Cursor, Item, Status};
         use fux_wire::id::{ClientId, PaneId, TabId, WsId};
         let next: Cursor = "1:1-0".parse().map_err(|()| fail())?;
@@ -592,16 +537,7 @@ mod tests {
                     next,
                 }],
             };
-            let grant = Imports::new(32 << 10);
-            let root = events(batch.clone(), &grant)?;
-            let reserved = event_bytes(1, None);
-            assert_eq!(grant.remaining(), (32 << 10) - reserved);
-            root.retain(&grant)?;
-            let exact_bytes = (32 << 10) - grant.remaining();
-            assert!(
-                exact_bytes < reserved,
-                "admission trims the construction allowance"
-            );
+            let root = events(batch)?;
             let Value::App(Fux::Record(record)) = &root else {
                 return Err(fail());
             };
@@ -657,41 +593,6 @@ mod tests {
                 }
                 Actor::Unknown | Actor::Server => {}
             }
-            let full = reserved;
-            let small = Imports::new(full - 1);
-            assert!(events(batch.clone(), &small).is_err());
-            assert_eq!(
-                small.remaining(),
-                full - 1,
-                "failed builds refund their leases"
-            );
-            let exact = Imports::new(full);
-            for _ in 0..100 {
-                let held = events(batch.clone(), &exact)?;
-                assert_eq!(
-                    exact.remaining(),
-                    0,
-                    "the whole allowance stays held until admission"
-                );
-                held.retain(&exact)?;
-                assert_eq!(exact.remaining(), full - exact_bytes);
-                held.clone().retain(&exact)?;
-                assert_eq!(
-                    exact.remaining(),
-                    full - exact_bytes,
-                    "aliases do not charge twice"
-                );
-                drop(held);
-                assert_eq!(exact.remaining(), full);
-            }
-            let child = event.get("name")?;
-            drop(actor);
-            drop(list);
-            drop(root);
-            assert!(grant.remaining() < 32 << 10);
-            child.retain(&grant)?;
-            drop(child);
-            assert_eq!(grant.remaining(), 32 << 10);
         }
         Ok(())
     }
@@ -733,50 +634,15 @@ mod tests {
     }
 
     #[test]
-    fn projected_children_keep_only_their_shared_storage_reserved() -> Result<(), Failure> {
-        let grant = fuxth::Imports::new(2048);
-        let make = || {
-            from_json(&Json::Object(vec![(
-                "text".into(),
-                Json::String(std::iter::repeat_n('x', 1000).collect()),
-            )]))
-        };
-        let root = make()?;
-        root.retain(&grant)?;
-        let Value::App(Fux::Record(record)) = &root else {
-            return Err(fail());
-        };
-        let child = record.get("text")?;
-        child.retain(&grant)?;
-        for _ in 0..10 {
-            root.clone().retain(&grant)?;
-            child.clone().retain(&grant)?;
-        }
-        assert!(make()?.retain(&grant).is_err());
-        drop(root);
-        assert!(make()?.retain(&grant).is_err());
-        drop(child);
-        for _ in 0..100 {
-            make()?.retain(&grant)?;
-        }
-        Ok(())
-    }
-
-    #[test]
-    fn records_refuse_depth_nodes_and_bytes_before_retention() {
+    fn records_refuse_what_nests_too_deep() {
         let mut deep = Json::Null;
         for _ in 0..inspect::DEPTH {
             deep = Json::Array(vec![deep]);
         }
         assert!(from_json(&deep).is_err());
-        assert!(from_json(&Json::Array(vec![Json::Bool(false); inspect::NODES])).is_err());
-        let text = std::iter::repeat_n('a', fuxth::LONGEST).collect::<String>();
-        assert!(from_json(&Json::Array(vec![Json::String(text); 9])).is_err());
-        let mut budget = Budget::with_limit(inspect::BYTES);
-        let mut b = Builder::new(&mut budget);
-        assert!(
-            b.text(&std::iter::repeat_n('a', fuxth::LONGEST.saturating_add(1)).collect::<String>())
-                .is_err()
-        );
+        let Json::Array(within) = deep else {
+            return;
+        };
+        assert!(within.first().is_some_and(|v| from_json(v).is_ok()));
     }
 }

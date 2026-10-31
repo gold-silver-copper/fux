@@ -1016,9 +1016,6 @@ mod tests {
     fn a_percent_past_100_is_refused() {
         let read = |n: u8| Extent::get(&mut Reader::new(&[1, n])).ok();
         assert!(read(250).is_none() && read(0).is_none());
-        assert_eq!(
-            read(100).map(|e| encode(&e)),
-            Some(vec![1, 100])
-        );
+        assert_eq!(read(100).map(|e| encode(&e)), Some(vec![1, 100]));
     }
 }

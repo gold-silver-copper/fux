@@ -1606,62 +1606,6 @@ fn last_frames(
 mod tests {
     use super::*;
 
-    /// No end marker is needed to detect an oversized reply. Its owner
-    /// drops the failed request connection, as script::Server does.
-    #[test]
-    fn oversized_unfinished_reply_is_refused() -> Result<(), Box<dyn std::error::Error>> {
-        let (stream, mut peer) = UnixStream::pair()?;
-        peer.set_read_timeout(Some(Duration::from_secs(5)))?;
-        peer.set_write_timeout(Some(Duration::from_secs(5)))?;
-        let writer = std::thread::spawn(move || -> io::Result<bool> {
-            let mut header = [0; 4];
-            peer.read_exact(&mut header)?;
-            let mut request = vec![0; u32::from_be_bytes(header) as usize];
-            peer.read_exact(&mut request)?;
-            let part = vec![0; fux_wire::protocol::MAX_PAYLOAD];
-            let frame = ToCommand::Part(std::borrow::Cow::Borrowed(&part))
-                .encode()
-                .map_err(io::Error::other)?;
-            for _ in 0..=fux_wire::wire::MAX_REPLY.div_ceil(part.len()) {
-                if peer.write_all(&frame).is_err() {
-                    break;
-                }
-            }
-            Ok(match peer.read(&mut [0]) {
-                Ok(0) => true,
-                Err(error) => matches!(
-                    error.kind(),
-                    ErrorKind::ConnectionReset
-                        | ErrorKind::ConnectionAborted
-                        | ErrorKind::BrokenPipe
-                ),
-                Ok(_) => false,
-            })
-        });
-        let mut requests = Requests {
-            stream,
-            decoder: Decoder::default(),
-        };
-        let asked = Asked {
-            after: None,
-            context: Context::default(),
-            request: Request::Do(Command::Inspect {
-                scope: fux_wire::inspect::Scope::All,
-                projection: fux_wire::inspect::Projection::Facts,
-            }),
-        };
-        let result = requests.ask(&asked);
-        assert!(matches!(
-            result,
-            Err(Error::Protocol(fux_wire::protocol::Error::Wire(
-                fux_wire::wire::Error::Limit
-            )))
-        ));
-        drop(requests);
-        assert!(writer.join().map_err(|_| "writer stopped")??);
-        Ok(())
-    }
-
     fn new_keyboard(
         socket: &SocketPath,
         state: ClientState,
@@ -1900,7 +1844,7 @@ mod tests {
                     .all(|out| matches!(out, Dispatch::Send(Act::Key(_))))
             );
             assert!(matches!(outputs.last(), Some(Dispatch::Run(_))));
-            assert_eq!(keyboard.running.len(), 1);
+            assert_eq!(keyboard.running, 1);
             assert_eq!(keyboard.waiting.len(), 1);
             assert!(matches!(
                 keyboard.told.try_recv(),
@@ -2217,61 +2161,23 @@ mod tests {
         Ok(())
     }
 
-    /// While a program runs, what waits for it is bounded: the inputs past
-    /// `HELD` and the programs past `JOBS` are refused, and said to be;
-    /// the prefix, then Esc, still stops it.
+    /// What a program prints and leaves is its notice; one longer than
+    /// the frame it is sent in is said not to be shown.
     #[test]
-    fn what_waits_for_a_program_is_bounded() -> Result<(), Box<dyn std::error::Error>> {
-        let mut keyboard = keyboard(false)?;
-        let forever = || Job::from("begin false until");
-        for _ in 0..JOBS {
-            assert!(program(&mut keyboard, forever()).is_empty());
-        }
-        let notice = |acts: &[Act], says: &str| matches!(acts, [Act::Notice { text, error: true }] if text.starts_with(says));
-        let more = program(&mut keyboard, forever());
-        assert!(
-            notice(&more, "a program was not run: 64 already"),
-            "{more:?}"
-        );
-        let typed = vec![b'x'; HELD + 2];
-        let held = bytes(&mut keyboard, &typed, Instant::now());
-        assert!(
-            notice(&held, "2 inputs not taken: 1024 already"),
-            "{held:?}"
-        );
-        let mut stopping = bytes(&mut keyboard, b"\x02\x1b", Instant::now());
-        stopping.extend(timeout(&mut keyboard));
-        assert!(
-            matches!(stopping.as_slice(), [Act::Notice { text, error: false }] if text == "stopping…"),
-            "{stopping:?}"
-        );
-        let after = all_ran(&mut keyboard)?;
-        let keys = after.iter().filter(|a| matches!(a, Act::Key(_))).count();
-        assert_eq!(keys, HELD);
-        Ok(())
-    }
-
-    /// A program that prints more than a notice holds fails, said; one
-    /// that leaves more is said not to be shown. Neither is kept.
-    #[test]
-    fn a_notice_is_bounded() -> Result<(), Box<dyn std::error::Error>> {
+    fn a_notice_past_its_frame_is_said_not_shown() -> Result<(), Box<dyn std::error::Error>> {
         let mut keyboard = keyboard(false)?;
         let line: String = std::iter::repeat_n('x', 1000).collect();
-        let code = format!("0 begin str {line} print 1 add 0 pick 100 eq until drop");
+        let code = format!("0 begin str {line} print 1 add 0 pick 1100 eq until drop");
         assert!(program(&mut keyboard, Job::from(code)).is_empty());
         let acts = all_ran(&mut keyboard)?;
-        let failed = matches!(acts.as_slice(),
-            [Act::Notice { text, error: true }] if text.contains("prints 65536 bytes at most"));
-        assert!(failed, "{acts:?}");
-        // What it leaves, the same string thrice, is made no further than
-        // a notice holds.
-        let long: String = std::iter::repeat_n('x', 30_000).collect();
-        let left = format!("str {long} 0 pick 0 pick");
-        assert!(program(&mut keyboard, Job::from(left)).is_empty());
+        let said = matches!(acts.as_slice(),
+            [Act::Notice { text, error: true }] if text.contains("was not shown"));
+        assert!(said, "{acts:?}");
+        assert!(program(&mut keyboard, Job::from(format!("str {line}"))).is_empty());
         let acts = all_ran(&mut keyboard)?;
-        let refused = matches!(acts.as_slice(),
-            [Act::Notice { text, error: true }] if text.starts_with("what the program left"));
-        assert!(refused, "{acts:?}");
+        let shown =
+            matches!(acts.as_slice(), [Act::Notice { text, error: false }] if *text == line);
+        assert!(shown, "{acts:?}");
         Ok(())
     }
 

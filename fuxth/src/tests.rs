@@ -15,15 +15,15 @@ impl AppValue for Ticket {
     fn kind(&self) -> &'static str {
         "a ticket"
     }
-    fn write_text(&self, out: &mut String) -> Result<(), Failure> {
+    fn write_text(&self, out: &mut dyn std::fmt::Write) -> Result<(), Failure> {
         if self.0 == i64::MIN {
             return Err(Failure::new(
                 Code::Host("refused"),
                 "the host refused text conversion",
             ));
         }
-        out.push_str(self.kind());
-        Ok(())
+        out.write_str(self.kind())
+            .map_err(|_| Failure::new(Code::Host("refused"), "unwritten"))
     }
 }
 
@@ -1251,4 +1251,3 @@ fn an_opaque_values_depth_counts_toward_nesting() {
     assert!(List::new(vec![Value::App(Deep(NESTING.saturating_sub(1)))]).is_some());
     assert!(List::new(vec![Value::App(Deep(NESTING))]).is_none());
 }
-

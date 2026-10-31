@@ -226,8 +226,7 @@ fn records_list_is_current() -> Result<(), Box<dyn std::error::Error>> {
         &mut lines,
     );
     let batch = fux_server::journal::every_kind_read(run)?;
-    let imports = fuxth::Imports::new(fux_wire::inspect::BYTES);
-    let events = record::events(batch, &imports).map_err(|e| e.message)?;
+    let events = record::events(batch).map_err(|e| e.message)?;
     records("events", &events, &mut lines);
     lines.sort();
     let head = format!(

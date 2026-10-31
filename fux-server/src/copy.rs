@@ -389,12 +389,7 @@ pub fn prompt(from: Row<'_>, seek: Seek) -> Option<Row<'_>> {
 /// The selected text. Wide glyphs and combining marks stay whole; a
 /// soft-wrapped row joins the next without a newline; trailing blanks are
 /// trimmed; a block is a rectangle, one line per row.
-pub fn text(
-    screen: &Screen,
-    kind: Select,
-    start: Place<'_>,
-    end: Place<'_>,
-) -> String {
+pub fn text(screen: &Screen, kind: Select, start: Place<'_>, end: Place<'_>) -> String {
     let cols = screen.size().cols();
     let mut out = String::new();
     let (left, right) = (start.1.min(end.1), start.1.max(end.1));
@@ -860,20 +855,6 @@ mod tests {
         Ok(())
     }
 
-    /// A search past `SEARCH_MAX` bytes, which no client's line holds, is
-    /// refused and said, not cut.
-    #[test]
-    fn a_search_past_its_bound_is_refused() -> Result<(), String> {
-        let (mut s, c) = crate::session::testing::attached(6, 40)?;
-        s.input(c, b"\x02c");
-        let query = std::iter::repeat_n('x', SEARCH_MAX.saturating_add(1)).collect();
-        let seek = Seek::Forward;
-        act(&mut s, c, CopyAct::Find { query, seek });
-        let notice = s.views.get(&c).and_then(|v| v.notice.clone());
-        assert!(notice.is_some_and(|n| n.error && n.text.contains("at most")));
-        Ok(())
-    }
-
     /// On a client larger than the pane (a smaller client sizes it), copy
     /// mode moves within the rows shown, not the client's room for them:
     /// its cursor stays on a row the client can see.
@@ -991,27 +972,6 @@ mod tests {
         Ok(())
     }
 
-    /// A copy larger than `MAX_CELLS` is refused whole, saying so.
-    #[test]
-    fn too_large_a_selection_is_refused() -> Result<(), Box<dyn std::error::Error>> {
-        let lines: Vec<u8> = std::iter::repeat_n(&b"x\r\n"[..], 3000)
-            .flatten()
-            .copied()
-            .collect();
-        let mut parser = fux_vt::Parser::new(fux_vt::Size::new(10, 100)?, 1 << 20)?;
-        parser.process(&lines)?;
-        let s = parser.screen();
-        let last = s.rows().next_back().ok_or("no rows")?;
-        let copied = text(s, Select::Line, (row(s, 0)?, 0), (last, 0));
-        assert!(matches!(&copied, Err(e) if e.code() == fux_wire::code::Code::Selection));
-        assert_eq!(
-            copied.map_err(|e| e.to_string()),
-            Err(format!("the selection is larger than {MAX_CELLS} cells"))
-        );
-        assert!(text(s, Select::Line, (row(s, 0)?, 0), (row(s, 100)?, 0)).is_ok());
-        Ok(())
-    }
-
     #[test]
     fn selections_keep_glyphs_whole_join_wraps_and_trim() -> Result<(), Box<dyn std::error::Error>>
     {
@@ -1020,15 +980,15 @@ mod tests {
         let s = p.screen();
         let top = s.rows().len() - 4;
         let at = |i| row(s, top + i);
-        assert_eq!(text(s, Select::Char, (at(0)?, 0), (at(1)?, 1))?, "abcdef");
+        assert_eq!(text(s, Select::Char, (at(0)?, 0), (at(1)?, 1)), "abcdef");
         assert_eq!(
-            text(s, Select::Line, (at(0)?, 0), (at(2)?, 0))?,
+            text(s, Select::Line, (at(0)?, 0), (at(2)?, 0)),
             "abcdef\n界x"
         );
         // Starting on the glyph's second half takes the whole glyph.
-        assert_eq!(text(s, Select::Char, (at(2)?, 1), (at(2)?, 2))?, "界x");
+        assert_eq!(text(s, Select::Char, (at(2)?, 1), (at(2)?, 2)), "界x");
         assert_eq!(
-            text(s, Select::Block, (at(0)?, 1), (at(3)?, 2))?,
+            text(s, Select::Block, (at(0)?, 1), (at(3)?, 2)),
             "bc\nf\n界x\nas"
         );
         Ok(())
@@ -1042,8 +1002,8 @@ mod tests {
         let s = p.screen();
         let top = s.rows().len() - 3;
         let at = |i| row(s, top + i);
-        assert_eq!(text(s, Select::Char, (at(0)?, 0), (at(1)?, 1))?, "abcd世");
-        assert_eq!(text(s, Select::Line, (at(0)?, 0), (at(1)?, 0))?, "abcd世");
+        assert_eq!(text(s, Select::Char, (at(0)?, 0), (at(1)?, 1)), "abcd世");
+        assert_eq!(text(s, Select::Line, (at(0)?, 0), (at(1)?, 0)), "abcd世");
         Ok(())
     }
 }

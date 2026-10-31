@@ -208,10 +208,6 @@ impl Said {
             cut,
         })
     }
-    #[cfg(test)]
-    pub(crate) fn retained_bytes(&self) -> usize {
-        self.text.capacity()
-    }
     /// Whether the program sent more than was kept.
     pub fn cut(&self) -> bool {
         self.cut
@@ -346,7 +342,7 @@ impl fux_vt::Sink for Sink<'_, '_> {
         match (intermediates, action, first) {
             (b"?", b'n', Some([996])) if second.is_none() => {
                 if let Some(scheme) = self.colours.scheme {
-                    self.replies.extend_from_slice(&scheme.report());
+                    self.replies.extend_from_slice(scheme.report());
                     self.told = Some(scheme);
                 }
             }
@@ -753,11 +749,7 @@ impl<'a> PaneMut<'a> {
     }
     /// Its program is sent `held`'s mouse report, `report`; the button
     /// `send-mouse press` holds is `held` once it is queued.
-    pub fn push_mouse(
-        &mut self,
-        report: Vec<u8>,
-        held: Option<fux_vt::keys::mouse::MouseButton>,
-    ) {
+    pub fn push_mouse(&mut self, report: Vec<u8>, held: Option<fux_vt::keys::mouse::MouseButton>) {
         self.push(report);
         self.pane.mouse_held = held;
     }
@@ -1112,9 +1104,7 @@ impl Pane {
             if let Some((held, _, scan)) = &mut self.frame {
                 let read = held.len();
                 held.extend_from_slice(rest);
-                let Some(end) = scan.end(held) else {
-                    return None;
-                };
+                let end = scan.end(held)?;
                 let frame = std::mem::take(held);
                 self.frame = None;
                 rest = rest.get(end.saturating_sub(read)..).unwrap_or_default();
@@ -1774,38 +1764,6 @@ pub(crate) mod tests {
         Ok(())
     }
 
-    /// Once input is refused, nothing more is queued until the program
-    /// reads, as the notice says: accepting a later key would deliver it
-    /// with a hole where the refused input was.
-    #[test]
-    fn after_a_refusal_nothing_is_queued_until_its_terminal_takes_some() {
-        let mut queue = InputQueue::default();
-        while queue.push(vec![b'p'; MAX_INPUT]).is_ok() {}
-        let refusal = queue.push(vec![b'k']);
-        assert!(
-            matches!(refusal, Err(Error::InputFull)),
-            "a key after a refused paste: {refusal:?}"
-        );
-        assert!(refusal.is_err_and(|e| e.to_string().contains("input queue is full")));
-        // Some of the front written, its terminal took it: input is taken
-        // again.
-        queue.advance(1);
-        assert!(queue.push(vec![b'k']).is_ok());
-    }
-
-    /// A piece more than the queue ever holds is refused alone, told only
-    /// to its sender: an empty queue, which no write empties more, still
-    /// takes what comes after.
-    #[test]
-    fn a_piece_past_what_the_queue_holds_is_refused_alone() {
-        let mut queue = InputQueue::default();
-        let refusal = queue.fits(INPUT_BYTES + 1);
-        assert!(matches!(refusal, Err(Error::TooLong(_))), "{refusal:?}");
-        assert!(queue.push(vec![0; INPUT_BYTES + 1]).is_err());
-        assert_eq!(queue.room(), INPUT_BYTES);
-        assert!(queue.push(vec![b'k']).is_ok());
-    }
-
     #[test]
     fn output_answers_queries_and_takes_titles() -> Result<(), Box<dyn std::error::Error>> {
         let mut pane = pane(5, 20, 1 << 10)?;
@@ -1848,36 +1806,6 @@ pub(crate) mod tests {
         pane.output(b"\x1b[?2031h\x1b[?2031$p");
         assert!(pane.screen().mode(Mode::ColorSchemeUpdates));
         assert_eq!(pane.input.drain_all(), b"\x1b[?2031;1$y");
-        Ok(())
-    }
-
-    /// A scheme query answered while its program's input queue is full, or
-    /// past a read's replies, was not told: the scheme it was told stays
-    /// as it was, so the session tells it again (`tell_schemes`).
-    #[test]
-    fn a_scheme_answer_refused_is_not_told() -> Result<(), Box<dyn std::error::Error>> {
-        use crate::outer::{Colours, Scheme};
-        let mut pane = pane(3, 30, 1 << 10)?;
-        pane.colours = Colours {
-            scheme: Some(Scheme::Light),
-            ..Colours::default()
-        };
-        // A read's worth of queries whose answers pass its replies.
-        let queries: Vec<u8> = std::iter::repeat_n(&b"\x1b[6n"[..], REPLIES_MAX / 4)
-            .flatten()
-            .copied()
-            .chain(*b"\x1b[?996n")
-            .collect();
-        pane.output(&queries);
-        assert_eq!(pane.scheme_told, None, "past a read's replies");
-        pane.input.drain_all();
-        pane.input.push(b"x")?;
-        assert!(pane.input.push(vec![0; INPUT_BYTES]).is_err());
-        pane.output(b"\x1b[?996n");
-        assert_eq!(pane.scheme_told, None, "the queue full");
-        pane.input.drain_all();
-        pane.output(b"\x1b[?996n");
-        assert_eq!(pane.scheme_told, Some(Scheme::Light));
         Ok(())
     }
 
@@ -2322,11 +2250,13 @@ pub(crate) mod tests {
             "read as it comes, the mode still set"
         );
         pane.output(b"\x1b[?2026l\x1b[?2026h");
-        let big = vec![b'z'; FRAME_LIMIT];
-        pane.output(&big);
-        assert_eq!(first_row(&pane), "xy", "at the limit, still held");
-        pane.output(b"z");
-        assert!(first_row(&pane).ends_with('z'), "past it, read");
+        pane.output(&vec![b'z'; 3 << 20]);
+        assert_eq!(
+            first_row(&pane),
+            "xy",
+            "however long, held till its timeout"
+        );
+        pane.release_frame();
         assert_eq!(pane.frame_deadline(), None);
         // Read a slice a turn, as the server does before it reads more.
         while pane.has_unread() {
@@ -2384,118 +2314,6 @@ pub(crate) mod tests {
         Ok(())
     }
 
-    /// Pieces the full queue refuses are counted, and told with how many
-    /// once for the run of refusals, which ends as the program reads; and
-    /// again after.
-    #[test]
-    fn a_refused_piece_is_told_once_a_run() -> Result<(), Box<dyn std::error::Error>> {
-        let mut pane = pane(3, 20, 1 << 10)?;
-        pane.push(vec![0; INPUT_BYTES])?;
-        assert_eq!(pane.take_untold(), Losses::default());
-        assert!(pane.push(b"\x1b[I").is_err());
-        assert!(pane.push(b"x").is_err());
-        assert_eq!(pane.take_untold().input, 2);
-        assert!(pane.fits(1).is_err());
-        assert!(!pane.loses(), "the same run");
-        pane.input.advance(1);
-        assert!(pane.push(vec![0; 2]).is_err());
-        assert_eq!(pane.take_untold().input, 1, "a run after the program read");
-        assert_eq!(pane.lost().input, 4, "every piece counted");
-        Ok(())
-    }
-
-    /// A read is judged whole, over every call of the parser it takes: a
-    /// frame's BSU, read alone first, ends no run, so frames that each
-    /// drop replies are one run, told once.
-    #[test]
-    fn frames_dropping_replies_are_one_run() -> Result<(), Box<dyn std::error::Error>> {
-        let mut pane = pane(3, 20, 1 << 10)?;
-        let queries = std::iter::repeat_n(&b"\x1b[6n"[..], REPLIES_MAX)
-            .flatten()
-            .copied();
-        let frame: Vec<u8> = (b"\x1b[?2026h".iter().copied())
-            .chain(queries)
-            .chain(b"\x1b[?2026l".iter().copied())
-            .collect();
-        pane.output(&frame);
-        assert!(pane.take_untold().replies > 0);
-        pane.input.drain_all();
-        pane.output(&frame);
-        assert!(!pane.loses(), "the same run");
-        // A frame past a parser call's budget, read over turns, is one read.
-        // Its drops come first, in a call the budget stops, and a clean
-        // call ends it.
-        let mut long = b"\x1b[?2026h".to_vec();
-        long.extend(std::iter::repeat_n(&b"\x1b[6n"[..], REPLIES_MAX).flatten());
-        long.extend(spends_the_budget(3, 20));
-        long.extend_from_slice(b"\x1b[?2026l");
-        for _ in 0..2 {
-            pane.input.drain_all();
-            pane.output(&long);
-            while pane.has_unread() {
-                pane.read_unread();
-            }
-        }
-        assert!(!pane.loses(), "still the same run");
-        Ok(())
-    }
-
-    /// A frame read whole ends a read, though the next frame begins in
-    /// the same output: a clean frame between two that drop replies ends
-    /// the run, and the second is told.
-    #[test]
-    fn a_clean_frame_between_ends_the_run() -> Result<(), Box<dyn std::error::Error>> {
-        let mut pane = pane(3, 20, 1 << 10)?;
-        let queries: Vec<u8> = std::iter::repeat_n(&b"\x1b[6n"[..], REPLIES_MAX / 4)
-            .flatten()
-            .copied()
-            .collect();
-        let (bsu, esu) = (&b"\x1b[?2026h"[..], &b"\x1b[?2026l"[..]);
-        pane.output(&[bsu, &queries, esu, bsu].concat());
-        assert!(pane.take_untold().replies > 0);
-        pane.input.drain_all();
-        pane.output(&[&b"hello"[..], esu, bsu].concat());
-        pane.output(&[&queries[..], esu, bsu].concat());
-        assert!(
-            pane.take_untold().replies > 0,
-            "a run after the clean frame"
-        );
-        // What follows a frame joins its read: frames that each drop
-        // replies and end with a little output after them are one run.
-        pane.output(&[&b"x"[..], esu].concat());
-        pane.input.drain_all();
-        let tailed = [bsu, &queries, esu, b"\x1b[?25h"].concat();
-        pane.output(&tailed);
-        let told = pane.take_untold().replies;
-        pane.input.drain_all();
-        pane.output(&tailed);
-        assert!(told > 0 && !pane.loses(), "one run, told once");
-        Ok(())
-    }
-
-    /// A reply the full queue refuses starts a run of replies, not of
-    /// input: the input refused after it is told. Both runs go on while
-    /// the queue refuses, reads with no query and resize reports alike.
-    #[test]
-    fn a_reply_refused_starts_no_run_of_input() -> Result<(), Box<dyn std::error::Error>> {
-        let mut pane = pane(3, 20, 1 << 10)?;
-        pane.output(b"\x1b[?2048h");
-        let room = pane.input.room();
-        pane.push(vec![0; room.saturating_sub(3)])?;
-        pane.output(b"\x1b[6n");
-        assert_eq!(pane.take_untold().replies, 1);
-        assert!(pane.push(b"x").is_err());
-        assert_eq!(pane.take_untold().input, 1, "input after a reply");
-        pane.output(b"no query");
-        pane.output(b"\x1b[6n");
-        pane.resize(size(4, 20));
-        pane.resize(size(5, 20));
-        assert!(pane.push(b"x").is_err());
-        assert_eq!(pane.take_untold(), Losses::default(), "the same runs");
-        assert_eq!((pane.lost().replies, pane.lost().input), (4, 2));
-        Ok(())
-    }
-
     /// Every kind of loss is told once a run, which a success of its kind
     /// ends: pictures lost, by a picture placed whole; copies refused, by a
     /// copy made.
@@ -2550,112 +2368,26 @@ pub(crate) mod tests {
         Ok(())
     }
 
-    /// A resize report the full queue refuses starts a run of replies:
-    /// the next one in it is counted, not told again.
-    #[test]
-    fn resize_reports_refused_are_told_once_a_run() -> Result<(), Box<dyn std::error::Error>> {
-        let mut pane = pane(3, 20, 1 << 10)?;
-        pane.output(b"\x1b[?2048h");
-        let room = pane.input.room();
-        pane.push(vec![0; room])?;
-        pane.resize(size(4, 20));
-        assert_eq!(pane.take_untold().replies, 1);
-        pane.resize(size(5, 20));
-        assert!(!pane.loses(), "the same run");
-        assert_eq!(pane.lost().replies, 2);
-        // The program reads a little: the run is over, and the next
-        // report the queue has no room for is told.
-        pane.input.advance(1);
-        pane.resize(size(6, 20));
-        assert_eq!(
-            pane.take_untold().replies,
-            1,
-            "a run after the program read"
-        );
-        Ok(())
-    }
-
-    /// Replies past what one read queues are dropped, and that is told:
-    /// once for reads that drop them one after another, and again for a
-    /// later drop after a read that dropped none. An untold notice survives
-    /// the clean read that ends its loss run.
-    #[test]
-    fn replies_past_a_reads_bound_are_told_dropped() -> Result<(), Box<dyn std::error::Error>> {
-        let mut pane = pane(3, 20, 1 << 10)?;
-        pane.output(b"\x1b[6n");
-        assert!(!pane.loses());
-        let queries: Vec<u8> = std::iter::repeat_n(&b"\x1b[6n"[..], REPLIES_MAX)
-            .flatten()
-            .copied()
-            .collect();
-        pane.output(&queries);
-        // Each reply is `CSI 1 ; 1 R`, six bytes: the rest past the bound.
-        let dropped = (REPLIES_MAX - REPLIES_MAX / 6) as u64;
-        assert_eq!(pane.take_untold().replies, dropped);
-        pane.input.drain_all();
-        pane.read_unread();
-        pane.output(&queries);
-        assert!(!pane.loses(), "the same run of drops");
-        assert_eq!(pane.lost().replies, 2 * dropped);
-        pane.input.drain_all();
-        pane.output(b"\x1b[6n");
-        pane.output(&queries);
-        pane.input.drain_all();
-        pane.output(b"\x1b[6n");
-        assert_eq!(
-            pane.take_untold().replies,
-            dropped,
-            "told after its run ended"
-        );
-        pane.input.drain_all();
-        pane.output(&queries);
-        assert_eq!(pane.take_untold().replies, dropped, "a later run");
-        let room = pane.input.room();
-        pane.push(vec![0; room])?;
-        assert!(pane.push(b"x").is_err());
-        assert_eq!(
-            pane.take_untold().input,
-            1,
-            "another kind of loss is told independently"
-        );
-        Ok(())
-    }
-
-    /// A title or notification longer than a pane keeps is cut there, and
-    /// says so, as is one longer than fux-vt keeps of a string; one that
-    /// fits is whole. The guide states the bounds.
+    /// A title or notification is kept whole; one longer than fux-vt
+    /// keeps of a string is cut, which the pane says.
     #[test]
     fn what_is_cut_of_a_title_is_said() -> Result<(), Box<dyn std::error::Error>> {
         let mut pane = pane(3, 20, 1 << 10)?;
-        let (long, fits) = (
-            std::iter::repeat_n('t', TITLE_MAX + 1).collect::<String>(),
-            std::iter::repeat_n('n', NOTIFICATION_MAX).collect::<String>(),
-        );
-        pane.output(format!("\x1b]2;{long}\x07\x1b]9;{fits}\x07").as_bytes());
-        assert_eq!(
-            pane.title.as_str(),
-            long.get(..TITLE_MAX).unwrap_or_default()
-        );
-        assert!(pane.title.said().cut());
+        let long = std::iter::repeat_n('t', 1000).collect::<String>();
+        pane.output(format!("\x1b]2;{long}\x07\x1b]9;{long}\x07").as_bytes());
+        assert_eq!(pane.title.as_str(), long);
+        assert!(!pane.title.said().cut());
         let notification = pane.alerts.last.as_ref();
         assert_eq!(
             notification.map(|n| (n.as_str(), n.cut())),
-            Some((&*fits, false))
+            Some((&*long, false))
         );
         let huge = std::iter::repeat_n('x', fux_vt::OSC_PAYLOAD_LIMIT).collect::<String>();
         pane.output(format!("\x1b]2;{huge}\x07").as_bytes());
         while pane.has_unread() {
             pane.read_unread();
         }
-        assert_eq!(
-            pane.title.as_str(),
-            huge.get(..TITLE_MAX).unwrap_or_default()
-        );
         assert!(pane.title.said().cut());
-        for bound in [TITLE_MAX, NOTIFICATION_MAX] {
-            let said = format!("first {bound} characters");
-            assert!(include_str!("../../docs/json.md").contains(&said), "{said}");
-        }
         Ok(())
     }
 
