@@ -3549,7 +3549,7 @@ pub(crate) mod testing {
     }
 
     /// What the server sent clients, taken as their clients take it: a
-    /// program to run, keys typed, copy mode ended. The rest is left.
+    /// program to run, keys typed, a screen ended. The rest is left.
     pub(crate) fn deliver(session: &mut Session) {
         use fux_wire::protocol::ToAttached;
         let outbox = std::mem::take(&mut session.outbox);

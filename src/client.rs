@@ -297,8 +297,7 @@ impl Requests {
         Ok(Requests { stream, decoder })
     }
 
-    /// Sends one request and reads its reply in pieces. Launch
-    /// requests already contain their selected environment patch.
+    /// Sends one request and reads its reply in pieces.
     pub fn ask(&mut self, asked: &Asked) -> Result<Reply, Error> {
         wait_at_most(&self.stream, None);
 
@@ -843,7 +842,7 @@ impl Keyboard {
         acts
     }
 
-    /// A frame from the server: copy mode it ended, a program to run (a
+    /// A frame from the server: a screen it ended, a program to run (a
     /// screen asked of it from elsewhere), keys to take as typed
     /// (`send-keys` to it), the prefix then Esc among them stopping a
     /// program as typed ones do. Handle returned effects in order, as
@@ -918,7 +917,7 @@ impl Keyboard {
     /// watches opens none: it says why.
     fn open(&mut self, screen: Screen, acts: &mut Vec<Dispatch>) {
         if self.read_only {
-            let text = "watching only: no choosers, prompts or copy mode here".to_owned();
+            let text = "watching only: no choosers or prompts here".to_owned();
             acts.push(Dispatch::Send(Act::Notice { text, error: true }));
             return;
         }

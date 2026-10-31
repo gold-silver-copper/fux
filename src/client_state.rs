@@ -140,7 +140,7 @@ preferences! {
     paste_timeout "paste-timeout-ms": DecodeMillis;
     /// Position after each non-ASCII glyph; bounds drift, not glyph footprints.
     cell_placement "cell-placement": bool;
-    /// Whether newly created panes may copy program output to paste buffers.
+    /// Whether newly created panes' programs may copy to the terminals' clipboards (OSC 52).
     program_clipboard "program-clipboard": bool;
     /// Whether copies are delivered to this client's terminal clipboard.
     terminal_clipboard "terminal-clipboard": bool;

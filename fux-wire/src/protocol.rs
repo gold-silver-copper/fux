@@ -588,10 +588,8 @@ frames! {
         /// questions for the terminal). Every paint comes so.
         Paint(bytes: Cow<'a, [u8]>) = 7,
         Exit(reason: &'a str) = EXIT,
-        /// The server ended its screen opening by itself (copy mode
-        /// whose rows dropped from history, whose pane went or is no longer
-        /// focused, or with no pane to copy; a chooser or prompt whose
-        /// subject closed), the mode being the client's.
+        /// The server ended its screen opening by itself (a chooser or
+        /// prompt whose subject closed), the mode being the client's.
         Ended(opening: u64) = 14,
         /// Owned screen data; callbacks are checked by the receiving client.
         Open(screen: crate::callback::Open) = 15,
