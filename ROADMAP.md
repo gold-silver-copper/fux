@@ -2,7 +2,7 @@
 
 Each milestone is a **scenario that agents carry out**, never the owner. A
 milestone is done when:
-- a script checks its end state in CI;
+- a script checks its end state in the local gate (D-39);
 - the residents (`~/code/notes/projects/fux/vision/SYSTEM.md`) have worked with it for three days with no
   blocking obstacle.
 
@@ -110,7 +110,7 @@ keep their versions. An edit sent against an old buffer revision is
 refused. A crash of the editor loses no saved work.
 
 **What it needs:**
-- **`fed` (package `fux-fed`, D-33), version 0:** one buffer kind (a list of lines), named
+- **`fuxed` (D-38), version 0:** one buffer kind (a list of lines), named
   commands, `describe-key`, `apropos` and `doc`, undo, save by writing a
   temporary file and renaming it, and keymaps that hold names.
 - **A precise interface for agents** (D-29): fuxth units sent to the
