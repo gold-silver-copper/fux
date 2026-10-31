@@ -450,6 +450,15 @@ pub fn usage(word: &str) -> Option<String> {
     Some(format!("use: {kind}{takes} {word}{leaves}{example}"))
 }
 
+/// A value read as `T`: one of a kind `T` doesn't take fails `type`, and one
+/// of its kind that `T` refuses fails `code`.
+fn read<T: Reads>(value: &Value<Fux>, code: Raise) -> Result<T, Failure> {
+    T::read(value).map_err(|unread| match unread {
+        super::settings::Unread::Kind(why) => fail(Raise::Type, why),
+        super::settings::Unread::Value(why) => fail(code, why),
+    })
+}
+
 fn wrong(wanted: &str, got: &Value<Fux>) -> Failure {
     fail(Raise::Type, format!("takes {wanted}, not {}", got.kind()))
 }
@@ -836,27 +845,23 @@ fn modify(
         Opt::Cwd => built.cwd = Some(string(&next()?)?.into()),
         Opt::In => built.place = Some(workspace(&next()?)?),
         Opt::HistoryBytes => {
-            built.history_bytes =
-                Some(HistoryBytes::read(&next()?).map_err(|why| fail(Raise::Range, why))?);
+            built.history_bytes = Some(read::<HistoryBytes>(&next()?, Raise::Range)?);
         }
-        Opt::Reflow => {
-            built.reflow = Some(bool::read(&next()?).map_err(|why| fail(Raise::BadValue, why))?)
-        }
+        Opt::Reflow => built.reflow = Some(read::<bool>(&next()?, Raise::BadValue)?),
         Opt::AlternateScrollLines => {
-            built.alternate_scroll_lines = Some(
-                fux_wire::command::ScrollLines::read(&next()?)
-                    .map_err(|why| fail(Raise::Range, why))?,
-            )
+            built.alternate_scroll_lines = Some(read::<fux_wire::command::ScrollLines>(
+                &next()?,
+                Raise::Range,
+            )?)
         }
         Opt::PictureBytes => {
-            built.picture_bytes = Some(
-                fux_wire::command::PictureBytes::read(&next()?)
-                    .map_err(|why| fail(Raise::Range, why))?,
-            )
+            built.picture_bytes = Some(read::<fux_wire::command::PictureBytes>(
+                &next()?,
+                Raise::Range,
+            )?)
         }
         Opt::ProgramClipboard => {
-            built.program_clipboard =
-                Some(bool::read(&next()?).map_err(|why| fail(Raise::BadValue, why))?);
+            built.program_clipboard = Some(read::<bool>(&next()?, Raise::BadValue)?);
         }
         Opt::History => built.history = Some(within(&next()?, COUNT)?),
         Opt::Size => built.size = Some(laid_out(&next()?, &next()?)?),
@@ -880,7 +885,7 @@ fn modify(
             let shell = opt == Opt::ShellProgram;
             built.shell = Some(shell);
             if shell {
-                let program = Program::read(&next()?).map_err(|why| fail(Raise::BadValue, why))?;
+                let program = read::<Program>(&next()?, Raise::BadValue)?;
                 built.argv = program.into_argv();
                 return Ok(std::rc::Rc::new(built));
             }
@@ -917,8 +922,7 @@ fn modify(
             .push(string(&next()?)?, None)
             .map_err(|why| fail(Raise::BadValue, why))?,
         Opt::CopyEnvironment => {
-            built.copy_environment =
-                Some(Vec::<EnvName>::read(&next()?).map_err(|why| fail(Raise::BadValue, why))?);
+            built.copy_environment = Some(read::<Vec<EnvName>>(&next()?, Raise::BadValue)?);
         }
         Opt::MainScreen => built.view.source = Source::Main,
         Opt::AltScreen => built.view.source = Source::Alternate,
@@ -1786,7 +1790,7 @@ impl Host<'_> {
             }
             Act::HistoryBudget => {
                 let target = pane(&next()?)?;
-                let bytes = HistoryBytes::read(&next()?).map_err(|why| fail(Raise::Range, why))?;
+                let bytes = read::<HistoryBytes>(&next()?, Raise::Range)?;
                 tell(Command::HistoryBudget { target, bytes })
             }
             Act::ClearHistory => tell(Command::ClearHistory {
@@ -2400,10 +2404,7 @@ mod tests {
                 "unused",
                 format!("str {version} changed str x text send-keys"),
             ),
-            (
-                "unused",
-                format!("str {version} changed all-history capture"),
-            ),
+            ("fail", format!("str {version} changed all-history capture")),
             (
                 "type",
                 format!("str {version} changed str '' 0 next-events"),
@@ -2412,7 +2413,13 @@ mod tests {
             ("fail", "str c1 client info".to_owned()),
             ("fail", "1 dump".to_owned()),
             ("fail", "str c1 client dump".to_owned()),
+            // An element of a list of the wrong kind is a list it refuses.
+            ("bad_value", "opts list 1 end copy-environment".to_owned()),
         ];
+        // all-history's guard, whatever comes after it.
+        for target in ["opts", "@1", "+1", "str c1 client", "1"] {
+            cases.push(("fail", format!("{target} all-history drop")));
+        }
         for suffix in [
             "kill",
             "capture",
@@ -2428,7 +2435,6 @@ mod tests {
         }
         for suffix in [
             "full capture drop",
-            "all-history capture drop",
             "0 1 rows capture drop",
             "main-screen capture drop",
         ] {
@@ -2448,7 +2454,7 @@ mod tests {
         }
         let mut wrong = Vec::new();
         for (code, program) in cases {
-            let source = format!("str SIDE-EFFECT print {program}");
+            let source = format!("str SIDE-EFFECT print {program} str AFTER print");
             let (failed, asked, printed) = offline(&source)?;
             let failed = failed.map(|f| f.to_string()).unwrap_or_default();
             if !failed.starts_with(&format!("{code}:")) || asked != 0 || printed != "SIDE-EFFECT\n"
@@ -2456,6 +2462,47 @@ mod tests {
                 wrong.push(format!(
                     "{source}: {failed}, {asked} asked, printed {printed:?}"
                 ));
+            }
+        }
+        assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+        Ok(())
+    }
+
+    /// A value read as a number, a boolean or a list, given one of another
+    /// kind, fails `type`, which a `type` handler catches, as the core's
+    /// words' do; one of its kind out of range keeps its own code.
+    #[test]
+    fn a_reader_given_another_kind_fails_type() -> TestResult {
+        let mut wrong = Vec::new();
+        for program in [
+            "opts str nope history-bytes",
+            "opts true alternate-scroll-lines",
+            "opts str nope picture-bytes",
+            "opts str nope reflow",
+            "opts 1 program-clipboard",
+            "opts str sh shell-program",
+            "opts str HOME copy-environment",
+            "%1 str nope history-budget",
+        ] {
+            let source = format!("str type try {program} drop catch 2drop str caught print end");
+            let (failed, asked, printed) = offline(&source)?;
+            if failed.is_some() || asked != 0 || printed != "caught\n" {
+                let failed = failed.map(|f| f.to_string()).unwrap_or_default();
+                wrong.push(format!(
+                    "{source}: {failed}, {asked} asked, printed {printed:?}"
+                ));
+            }
+        }
+        for (code, program) in [
+            ("range", "opts -1 history-bytes drop"),
+            ("bad_value", "opts list end shell-program drop"),
+        ] {
+            let failed = offline(program)?
+                .0
+                .map(|f| f.to_string())
+                .unwrap_or_default();
+            if !failed.starts_with(&format!("{code}:")) {
+                wrong.push(format!("{program}: {failed}"));
             }
         }
         assert!(wrong.is_empty(), "{}", wrong.join("\n"));
