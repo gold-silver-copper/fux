@@ -1,6 +1,6 @@
 //! Checked fuxth values for local preferences and request options.
 use super::Fux;
-use fux_wire::command::{EnvName, Limit, MAX_WAIT, Number, Program};
+use fux_wire::command::{EnvName, Limit, Number, Program};
 use fuxth::Value;
 
 /// A local setting's type, read once as `set` is given it.
@@ -69,7 +69,7 @@ impl<const MIN: usize, const MAX: usize> Reads for Number<MIN, MAX> {
 /// A wait's limit, in seconds.
 impl Reads for Limit {
     fn takes() -> String {
-        format!("seconds, 0 to {MAX_WAIT}")
+        format!("seconds, 0 to {}", u32::MAX)
     }
     fn read(value: &Value<Fux>) -> Result<Limit, String> {
         let n = int(value)?;
@@ -107,10 +107,7 @@ impl Reads for Vec<EnvName> {
         "a list of variables' names".to_owned()
     }
     fn read(value: &Value<Fux>) -> Result<Vec<EnvName>, String> {
-        let (n, names) = checked(value)?;
-        if n > fux_wire::command::EnvPatch::MAX_NAMES {
-            return Err("environment selection exceeds 1024 names".to_owned());
-        }
+        let (_, names) = checked(value)?;
         // Each name parsed from the list's own string: copied once.
         let mut seen = std::collections::BTreeSet::new();
         names
@@ -255,11 +252,7 @@ impl Reads for fux_wire::presentation::Bar {
             _ => return Err("bar position is top, bottom, or off".to_owned()),
         };
         let fields = |value| -> Result<Vec<Field>, String> {
-            let values = items(value)?;
-            if values.len() > Self::MAX_FIELDS {
-                return Err("a bar has at most 16 fields".to_owned());
-            }
-            values
+            items(value)?
                 .iter()
                 .map(|value| match value {
                     Value::Str(_) => match word(value)? {

@@ -27,15 +27,13 @@ use fux_wire::id::{ClientId, PaneId, TabId, WsId};
 use fux_wire::layout::Axis;
 use fux_wire::protocol::Choice;
 use fux_wire::protocol::{Asked, Body, Context, End, Reply, Response};
-use fuxix::Allocation;
-use fuxth::{AppValue, Code as Lang, Compiler, Limits, Machine, Outcome, Token, Value, token};
+use fuxth::{AppValue, Code as Lang, Compiler, Machine, Outcome, Token, Value, token};
 use std::io::{self, Read, Write};
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 pub use callback::admit;
-pub(crate) use words::INPUT_MAX;
 pub(crate) use words::NAMES;
 pub use words::{Act, After, Group, Keys, Opt, Row, Screen, Takes, Word, from_opts, usage};
 
@@ -56,7 +54,7 @@ pub(crate) const DEFAULTS: &str = include_str!("client-defaults.fux");
 #[derive(Clone, Debug, PartialEq)]
 pub enum Fux {
     Null,
-    Record(fuxth::Shared<record::Record>),
+    Record(Rc<record::Record>),
     Pane(PaneId, Option<Run>),
     Tab(TabId, Option<Run>),
     Workspace(WsId, Option<Run>),
@@ -71,7 +69,7 @@ pub enum Fux {
     /// A width or height: cells, or a share of the tab.
     Extent(Extent),
     /// What the server said: a capture or a wait's outcome.
-    Answer(fuxth::Shared<Answer>, Option<Run>),
+    Answer(Rc<Answer>, Option<Run>),
 }
 
 impl AppValue for Fux {
@@ -106,66 +104,6 @@ impl AppValue for Fux {
         }
     }
 
-    const TEXT_LIMIT: usize = fux_wire::wire::MAX_ALLOCATED;
-    const IMPORT_LIMIT: usize = fux_wire::wire::MAX_ALLOCATED;
-    fn import_bytes(&self) -> Option<usize> {
-        if let Fux::Answer(answer, _) = self
-            && matches!(&**answer, Answer::Capture(_))
-        {
-            return Some(answer.retained_bytes());
-        }
-        None
-    }
-
-    fn retain(&self, imports: &fuxth::Imports) -> Result<(), fuxth::Failure> {
-        match self {
-            Fux::Record(record) => record::Record::retain(record, imports),
-            Fux::Answer(answer, _) => answer.reserve(imports, answer.retained_bytes()),
-            Fux::Opts(opts) => opts.lease.reserve(imports, opts.bytes()),
-            Fux::Null
-            | Fux::Pane(..)
-            | Fux::Tab(..)
-            | Fux::Workspace(..)
-            | Fux::Client(..)
-            | Fux::All
-            | Fux::Extent(_) => Ok(()),
-        }
-    }
-
-    fn weight(&self) -> u64 {
-        match self {
-            Fux::Record(r) => r.weight(),
-            Fux::Answer(a, _) => match &**a {
-                Answer::Capture(c) => {
-                    let state = match &c.of {
-                        fux_wire::answer::Of::Pane { state, .. } => state
-                            .iter()
-                            .map(|(k, v)| (k.len() as u64).saturating_add(v.weight()))
-                            .fold(1u64, u64::saturating_add),
-                        fux_wire::answer::Of::Client(_) => 1,
-                    };
-                    // A line counts one, an empty one too, beside its text
-                    // and runs.
-                    c.lines.iter().fold(state, |n, line| {
-                        n.saturating_add(line.text.len() as u64)
-                            .saturating_add(line.runs.len() as u64)
-                            .saturating_add(1)
-                    })
-                }
-                Answer::Pane(_) | Answer::Panes(_) => {
-                    u64::try_from(self.text_bytes()).unwrap_or(u64::MAX).max(1)
-                }
-            },
-            Fux::All
-            | Fux::Null
-            | Fux::Pane(..)
-            | Fux::Tab(..)
-            | Fux::Workspace(..)
-            | Fux::Client(..)
-            | Fux::Opts(_)
-            | Fux::Extent(_) => u64::try_from(self.text_bytes()).unwrap_or(u64::MAX).max(1),
-        }
-    }
     fn depth(&self) -> u8 {
         match self {
             Fux::Record(r) => r.depth(),
@@ -178,23 +116,6 @@ impl AppValue for Fux {
             | Fux::Opts(_)
             | Fux::Extent(_)
             | Fux::Answer(..) => 0,
-        }
-    }
-
-    fn text_bytes(&self) -> usize {
-        if let Fux::Record(r) = self {
-            return r.bytes();
-        }
-        if let Fux::Answer(answer, _) = self {
-            let scratch = match &**answer {
-                Answer::Capture(c) => c.text_scratch(),
-                Answer::Pane(_) | Answer::Panes(_) => 0,
-            };
-            answer.retained_bytes().saturating_add(scratch)
-        } else if let Fux::Opts(opts) = self {
-            opts.heap_bytes()
-        } else {
-            0
         }
     }
 
@@ -212,7 +133,7 @@ impl AppValue for Fux {
             Fux::All => write!(out, "all"),
             Fux::Opts(_) => write!(out, "({})", self.kind()),
         }
-        .map_err(|_| fuxth::Failure::from(fux_wire::wire::Budget::exceeded()))
+        .map_err(|_| fuxth::Failure::new(Code::Output.into(), "the text could not be written"))
     }
 }
 
@@ -245,7 +166,6 @@ fn same_run(a: Option<Run>, b: Option<Run>) -> Result<Option<Run>, fuxth::Failur
 /// they are on: nothing, for `new-tab` and `new-workspace`.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Opts {
-    lease: fuxth::ImportLease,
     pub on: Option<On>,
     pub of: Option<Run>,
     pub name: Option<String>,
@@ -322,29 +242,6 @@ impl Opts {
         };
         Ok((start, env))
     }
-
-    /// Bytes its shared allocation holds, its counts' included.
-    fn bytes(&self) -> usize {
-        self.heap_bytes()
-            .saturating_add(std::mem::size_of::<[usize; 2]>())
-    }
-
-    fn heap_bytes(&self) -> usize {
-        [
-            fux_wire::wire::retained(&self.name),
-            fux_wire::wire::retained(&self.cwd),
-            fux_wire::wire::retained(&self.env),
-            fux_wire::wire::retained(&self.argv),
-            fux_wire::wire::retained(&self.inputs),
-            fux_wire::wire::retained(&self.copy_environment),
-            fux_wire::wire::retained(&self.place),
-            self.given
-                .capacity()
-                .saturating_mul(std::mem::size_of::<words::Opt>()),
-        ]
-        .into_iter()
-        .fold(std::mem::size_of::<Self>(), usize::saturating_add)
-    }
 }
 
 /// What a request is on.
@@ -376,14 +273,6 @@ pub enum Answer {
 }
 
 impl Answer {
-    fn retained_bytes(&self) -> usize {
-        fuxth::Shared::<Self>::bytes(match self {
-            Self::Capture(c) => fux_wire::wire::retained(c),
-            Self::Pane(p) => fux_wire::wire::retained(p),
-            Self::Panes(p) => fux_wire::wire::retained(p),
-        })
-    }
-
     fn names(&self) -> (&'static str, &'static str) {
         match self {
             Answer::Pane(PaneAnswer::Closed(_)) => ("closed-answer", "a closed pane's answer"),
@@ -454,7 +343,7 @@ impl Answer {
     }
 
     fn in_run(self, run: Option<Run>) -> Value<Fux> {
-        Value::App(Fux::Answer(fuxth::Shared::new(self), run))
+        Value::App(Fux::Answer(Rc::new(self), run))
     }
 }
 
@@ -730,7 +619,7 @@ pub(crate) fn compiled(
 ) -> Result<Machine<Fux>, fuxth::Error> {
     let mut compiler = base(config)?;
     compiler.add(&handles(tokens)?)?;
-    Ok(Machine::new(compiler.finish()?, Limits::default()))
+    Ok(Machine::new(compiler.finish()?))
 }
 
 fn callback_failed(f: fuxth::Failure) -> Failed {
@@ -754,12 +643,11 @@ pub(crate) fn callback_machine(
         return compiled(config, tokens).map_err(Failed::from);
     };
     let mut compiler = base(config)?;
-    let mut budget = fux_wire::wire::Budget::with_limit(fux_wire::callback::JOB_BYTES);
     for arg in args {
-        compiler.argument(callback::value(arg, &mut budget).map_err(callback_failed)?);
+        compiler.argument(callback::value(arg).map_err(callback_failed)?);
     }
     compiler.add(&handles(tokens)?)?;
-    Ok(Machine::new(compiler.finish_callback()?, Limits::default()))
+    Ok(Machine::new(compiler.finish_callback()?))
 }
 
 /// Config definitions, checked eagerly and cached for this thread's last
@@ -1186,7 +1074,7 @@ impl Cli {
                 };
                 let list = fuxth::List::new(args)
                     .ok_or_else(|| Failed::new(Code::Usage, "more arguments than a list holds"))?;
-                vec![Value::List(fuxth::Shared::new(list))]
+                vec![Value::List(Rc::new(list))]
             }
             Shell::Input => match self.from {
                 Given::Stdin => {
@@ -1194,7 +1082,7 @@ impl Cli {
                     return Err(Failed::new(Code::Read, why));
                 }
                 Given::Words | Given::File(_) => {
-                    string(&read_text("stdin", io::stdin(), SOURCE_MAX)?)
+                    string(&read_text("stdin", io::stdin())?)
                 }
             },
             Shell::ReadFile(path) => string(&read_file(path.as_ref(), &self.acted)?),
@@ -1277,33 +1165,23 @@ impl Asks for AsClient<'_> {
     }
 }
 
-/// The steps a run takes between looks at its budget.
+/// The steps a run takes between looks at `stop`.
 const SLICE: u64 = 100_000;
 
 /// Runs `machine` to its end, asking `asks` what its words ask; its stack
-/// at the end. It fails once it has taken more than `steps` steps, if
-/// given, or once `stop` is.
-pub fn run_capped(
+/// at the end. It fails once `stop` is, if given; else it runs till it
+/// ends, or till the user or the OS stops it.
+pub fn run(
     machine: &mut Machine<Fux>,
     host: &mut Host<'_>,
     asks: &mut dyn Asks,
-    steps: Option<u64>,
     stop: Option<&Stop>,
 ) -> Result<Vec<Value<Fux>>, Failed> {
     loop {
         if let Some(stop) = stop {
             stop.check()?;
         }
-        if let Some(steps) = steps.filter(|steps| machine.steps() > *steps) {
-            // No try may name it: it ends the run, said at the step reached.
-            let failed = Failed::new(Code::Steps, format!("ran more than {steps} steps"));
-            pushed(machine, Err(failed))?;
-        }
-        // A slice ends one step past the budget, never later.
-        let slice = steps.map_or(SLICE, |steps| {
-            SLICE.min(steps.saturating_sub(machine.steps()).saturating_add(1))
-        });
-        match machine.run(host, slice).map_err(|e| uncaught(machine, e))? {
+        match machine.run(host, SLICE).map_err(|e| uncaught(machine, e))? {
             Outcome::Finished => return Ok(machine.stack().to_vec()),
             Outcome::Paused => {}
             Outcome::Suspended(Ask::Server {
@@ -1328,7 +1206,7 @@ pub fn run_capped(
                 match asks.ask(&asked) {
                     Ok(reply) => match reply.end() {
                         End::Failed { code, message } => raised(machine, (code, message), reply)?,
-                        End::Done => pushed(machine, answered(reply, machine.imports()))?,
+                        End::Done => pushed(machine, answered(reply))?,
                     },
                     Err(failed) => pushed(machine, Err(failed))?,
                 }
@@ -1367,7 +1245,7 @@ fn raised(
     (code, message): (Code, String),
     reply: Reply,
 ) -> Result<(), Failed> {
-    let answer = answered(reply, machine.imports());
+    let answer = answered(reply);
     let Ok(Some(answer)) =
         answer.map(|mut a| a.pop().filter(|_| PaneAnswer::FAILURES.contains(&code)))
     else {
@@ -1377,9 +1255,8 @@ fn raised(
         Ok(()) => Ok(()),
         Err(error) => {
             // Only the original uncaught wait failure prints its answer.
-            // Admission or recovery refusals must not import it again.
             if error.code == code.into() {
-                drop(machine.import(answer));
+                machine.push(answer);
             }
             Err(uncaught(machine, error))
         }
@@ -1400,11 +1277,8 @@ fn pushed(
         Ok(values) => values,
         Err(failed) => return raise(machine, failed.code.into(), failed.located()),
     };
-    // A stack too full for them is the word's failure too, for a `try`.
     for value in values {
-        if let Err(full) = machine.import(value) {
-            return raise(machine, full.code, full.message);
-        }
+        machine.push(value);
     }
     Ok(())
 }
@@ -1432,7 +1306,7 @@ fn uncaught(machine: &Machine<Fux>, mut error: fuxth::Error) -> Failed {
 
 /// What a reply's answer puts on the stack: nothing, a string, handles, or
 /// an answer of fux's; a field's value as fuxth's own where it is one.
-pub fn answered(reply: Reply, imports: &fuxth::Imports) -> Result<Vec<Value<Fux>>, Failed> {
+pub fn answered(reply: Reply) -> Result<Vec<Value<Fux>>, Failed> {
     let run = reply.run;
     let body = match reply.response {
         Response::Answered(PaneResults::One(answer)) => {
@@ -1451,7 +1325,7 @@ pub fn answered(reply: Reply, imports: &fuxth::Imports) -> Result<Vec<Value<Fux>
             .collect();
         let list = fuxth::List::new(ids)
             .ok_or_else(|| Failed::new(Code::from(Raise::TooLong), "more ids than a list holds"))?;
-        Ok::<_, Failed>(Value::List(fuxth::Shared::new(list)))
+        Ok::<_, Failed>(Value::List(Rc::new(list)))
     };
     Ok(vec![match body {
         Body::Empty => return Ok(Vec::new()),
@@ -1462,7 +1336,7 @@ pub fn answered(reply: Reply, imports: &fuxth::Imports) -> Result<Vec<Value<Fux>
             record::snapshot(*snapshot).map_err(|e| Failed::new(Code::of(e.code), e.message))?
         }
         Body::Events(batch) => {
-            record::events(*batch, imports).map_err(|e| Failed::new(Code::of(e.code), e.message))?
+            record::events(*batch).map_err(|e| Failed::new(Code::of(e.code), e.message))?
         }
         Body::Field(json) => {
             record::from_json(&json).map_err(|e| Failed::new(Code::of(e.code), e.message))?
@@ -1649,19 +1523,12 @@ fn run_config_on(image: fuxth::SourceImage, defaults: &ClientState) -> Result<Cl
     draft.finish().map_err(|why| Failed::new(Code::Config, why))
 }
 
-/// Runs bounded config code with only local reads and draft mutations.
+/// Runs config code with only local reads and draft mutations.
 fn run_quiet(tokens: &[Token], state: Option<&mut Draft>, diagnostics: bool) -> Result<(), Failed> {
     let mut machine = compile(tokens)?;
     let mut out = io::sink();
     let mut host = Host::new(Context::default(), state, &mut out);
-    run_capped(
-        &mut machine,
-        &mut host,
-        &mut ConfigOnly { diagnostics },
-        Some(PROGRAM_STEPS),
-        None,
-    )
-    .map(drop)
+    run(&mut machine, &mut host, &mut ConfigOnly { diagnostics }, None).map(drop)
 }
 
 /// Config evaluation has no server or connection, even through imports.
@@ -1719,11 +1586,6 @@ fn refuse_local(what: &Local) -> Result<Vec<Value<Fux>>, Failed> {
     Err(Failed::new(Code::NotHere, why))
 }
 
-/// The most steps a program the client runs takes (a config, a key's or a
-/// screen's): one that loops without end fails rather
-/// than spinning the client.
-pub const PROGRAM_STEPS: u64 = 10_000_000;
-
 /// The `fux` binary's words: attaches with none, runs `-` (stdin) or a file,
 /// or runs the words given. What is left on the stack is printed, a value a
 /// line. Its exit status (0, or what `exit` gave), or why it failed. With
@@ -1764,7 +1626,7 @@ pub fn main(
         status: None,
         acted,
     };
-    let ran = run_capped(&mut machine, &mut host, &mut cli, Some(LINE_STEPS), None);
+    let ran = run(&mut machine, &mut host, &mut cli, None);
     // What the words before a failure left is printed too: their answers.
     // The run's failure, if it failed, came first, and is the one told.
     let stack = match &ran {
@@ -1844,9 +1706,9 @@ fn written(out: &mut dyn Write, value: &Value<Fux>) -> Result<(), Failed> {
 fn program(args: &[String]) -> Result<(Vec<Token>, Given, Option<String>), Failed> {
     let words = match args {
         [] => token::arguments(&["default-attach"]),
-        // A program read whole, at most `SOURCE_MAX` of it.
+        // A program read whole.
         [dash] if dash == "-" => {
-            let text = read_text("stdin", io::stdin(), SOURCE_MAX)?;
+            let text = read_text("stdin", io::stdin())?;
             let tokens = source::text("stdin", &text)?.tokens();
             return Ok((tokens, Given::Stdin, Some(text)));
         }
@@ -1873,30 +1735,14 @@ fn program(args: &[String]) -> Result<(Vec<Token>, Given, Option<String>), Faile
     Ok((source::arguments(&words)?.tokens(), Given::Words, None))
 }
 
-/// The most steps a command line's program takes: one that loops without
-/// end fails rather than spinning.
-pub(crate) const LINE_STEPS: u64 = 1_000_000_000;
-
-/// The most text read from a file or stdin may be: a program, or what
-/// `read-file` and `input` read.
-pub(crate) use fuxth::SOURCE_MAX;
-
 fn read_failed(name: &str, why: &str) -> Failed {
     Failed::new(Code::Read, format!("{why} ({name})"))
 }
 
-/// The text read from `from`, which `name` names and which may be anything
-/// (`/dev/zero`): at most `limit` bytes of UTF-8.
-fn read_text(name: &str, from: impl Read, limit: usize) -> Result<String, Failed> {
+/// The UTF-8 text read from `from`, which `name` names, to its end.
+fn read_text(name: &str, mut from: impl Read) -> Result<String, Failed> {
     let mut bytes = Vec::new();
-    let most = u64::try_from(limit).unwrap_or(u64::MAX);
-    (from.take(most.saturating_add(1)))
-        .read_to_end(&mut bytes)
-        .map_err(|e| read_failed(name, &e.to_string()))?;
-    if bytes.len() > limit {
-        let why = format!("more than {limit} bytes, the most fux reads");
-        return Err(read_failed(name, &why));
-    }
+    (from.read_to_end(&mut bytes)).map_err(|e| read_failed(name, &e.to_string()))?;
     String::from_utf8(bytes).map_err(|_| read_failed(name, "not UTF-8 text"))
 }
 
@@ -1909,7 +1755,7 @@ fn read_file(path: &std::path::Path, acted: &Acted) -> Result<String, Failed> {
     if !file.metadata().is_ok_and(|m| m.is_file()) {
         acted.mark();
     }
-    read_text(&name, file, SOURCE_MAX)
+    read_text(&name, file)
 }
 
 /// A session asked in-process, and programs run against one held reply:
@@ -1974,7 +1820,7 @@ pub mod testing {
     ) -> Result<Vec<fuxth::Value<super::Fux>>, super::Failed> {
         let mut machine = super::compile(&fuxth::token::source("test", code)?)?;
         let mut host = super::Host::new(fux_wire::protocol::Context::default(), state, out);
-        super::run_capped(&mut machine, &mut host, asks, None, None)
+        super::run(&mut machine, &mut host, asks, None)
     }
 
     pub fn held_reply(
@@ -2059,7 +1905,7 @@ pub(crate) mod tests {
                 run: Some(version.run),
                 ..results.into()
             };
-            let bytes = fux_wire::wire::encode(&reply)?;
+            let bytes = fux_wire::wire::encode(&reply);
             let decoded = fux_wire::wire::Reader::new(&bytes).whole::<Reply>()?;
             assert_eq!(decoded, reply);
             assert_eq!(decoded.end().code(), code);
@@ -2118,7 +1964,7 @@ pub(crate) mod tests {
             run: Some(version.run),
             ..super::Body::Capture(Box::new(capture)).into()
         };
-        let bytes = fux_wire::wire::encode(&reply)?;
+        let bytes = fux_wire::wire::encode(&reply);
         let reply = fux_wire::wire::Reader::new(&bytes).whole::<super::Reply>()?;
         let mut out = Vec::new();
         let result = held_reply(
@@ -2235,7 +2081,7 @@ pub(crate) mod tests {
         let capture = fux_server::capture::client(fux_wire::id::ClientId::of(1), &grid)?;
         assert!(capture.lines.iter().all(|line| line.text.is_empty()));
         let answer = super::Answer::Capture(Box::new(capture));
-        let value = super::Fux::Answer(fuxth::Shared::new(answer), None);
+        let value = super::Fux::Answer(Rc::new(answer), None);
         assert!(fuxth::AppValue::weight(&value) > u64::from(rows));
         Ok(())
     }
@@ -2663,7 +2509,7 @@ pub(crate) mod tests {
             run: Some(version.run),
             ..Body::Capture(Box::new(capture)).into()
         };
-        let reply = fux_wire::wire::Reader::new(&fux_wire::wire::encode(&reply)?).whole()?;
+        let reply = fux_wire::wire::Reader::new(&fux_wire::wire::encode(&reply)).whole()?;
         let values = held_reply(
             "str c1 client capture let held held str client get held str screen_cursor get held str lines get first held str styles get first first str fg get",
             reply,
@@ -2673,7 +2519,7 @@ pub(crate) mod tests {
             values,
             vec![
                 Value::App(Fux::Client(client, Some(version.run))),
-                Value::List(fuxth::Shared::new(
+                Value::List(Rc::new(
                     fuxth::List::new(vec![Value::Int(7), Value::Int(3)]).ok_or("cursor")?
                 )),
                 Value::str("x"),

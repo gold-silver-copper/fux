@@ -1,8 +1,7 @@
-//! One bounded bridge between language values and owned screen arguments.
+//! One bridge between language values and owned screen arguments.
+use std::rc::Rc;
 use super::{Fux, Value, record};
 use fux_wire::callback::{Data, Open};
-use fux_wire::wire::Budget;
-use fuxix::Allocation;
 use fuxth::Failure;
 
 fn runs(v: &Data, of: &mut Option<fux_wire::command::Run>) -> Result<(), Failure> {
@@ -32,28 +31,18 @@ fn fail() -> Failure {
         "a callback argument must be an immutable value: scalar, handle, record, null or list",
     )
 }
-pub(super) fn data(v: &Value<Fux>, b: &mut Budget) -> Result<Data, Failure> {
-    if v.depth() > fuxth::NESTING || v.weight() > fuxth::TOTAL {
-        return Err(fail());
-    }
-    b.slots::<Data>(1)?;
+pub(super) fn data(v: &Value<Fux>) -> Result<Data, Failure> {
     Ok(match v {
         Value::Int(v) => Data::Int(*v),
         Value::Bool(v) => Data::Bool(*v),
-        Value::Str(v) => Data::Text(b.string(v.as_ref())?),
-        Value::List(v) => {
-            let mut out = b.vector(v.items().len())?;
-            for v in v.items() {
-                out.push(data(v, b)?);
-            }
-            Data::List(out)
-        }
+        Value::Str(v) => Data::Text(v.to_string()),
+        Value::List(v) => Data::List(v.items().iter().map(data).collect::<Result<_, _>>()?),
         Value::App(Fux::Record(r)) => {
-            let mut fields = b.vector(r.fields.len())?;
-            for (key, v) in &r.fields {
-                fields.push((b.string(key)?, data(v, b)?));
+            let fields = r.fields.iter().map(|(key, v)| Ok((key.clone(), data(v)?)));
+            Data::Record {
+                of: r.of,
+                fields: fields.collect::<Result<_, Failure>>()?,
             }
-            Data::Record { of: r.of, fields }
         }
         Value::App(Fux::All) => Data::All,
         Value::App(Fux::Null) => Data::Null,
@@ -69,35 +58,21 @@ pub(super) fn data(v: &Value<Fux>, b: &mut Budget) -> Result<Data, Failure> {
     })
 }
 
-pub(super) fn value(v: &Data, b: &mut Budget) -> Result<Value<Fux>, Failure> {
-    b.slots::<Value<Fux>>(1)?;
+pub(super) fn value(v: &Data) -> Result<Value<Fux>, Failure> {
     Ok(match v {
         Data::Int(v) => Value::Int(*v),
         Data::Bool(v) => Value::Bool(*v),
-        Data::Text(v) => {
-            if v.chars().count() > fuxth::LONGEST {
-                return Err(fail());
-            }
-            record::imported(b, v)?;
-            Value::str(b.string(v)?)
-        }
+        Data::Text(v) => Value::str(v.as_str()),
         Data::List(v) => {
-            let mut out = b.vector(v.len())?;
-            for v in v {
-                out.push(value(v, b)?);
-            }
-            b.charge(fuxth::Shared::<fuxth::List<Fux>>::bytes(0))?;
-            Value::List(fuxth::Shared::new(fuxth::List::new(out).ok_or_else(fail)?))
+            let out = v.iter().map(value).collect::<Result<_, _>>()?;
+            Value::List(Rc::new(fuxth::List::new(out).ok_or_else(fail)?))
         }
         Data::Record {
             of,
             fields: entries,
         } => {
-            let mut fields = b.vector(entries.len())?;
-            for (key, v) in entries {
-                fields.push((b.string(key)?, value(v, b)?));
-            }
-            record::from_fields(fields, *of, b)?
+            let fields = entries.iter().map(|(key, v)| Ok((key.clone(), value(v)?)));
+            record::from_fields(fields.collect::<Result<_, Failure>>()?, *of)?
         }
         Data::All => Value::App(Fux::All),
         Data::Null => Value::App(Fux::Null),
@@ -112,31 +87,16 @@ pub fn admit(
     state: Option<&crate::client_state::Draft>,
     context: &fux_wire::protocol::Context,
 ) -> Result<crate::screens::Screen, super::Failed> {
-    use fux_wire::wire::Wire;
     let refused = |why| super::Failed::new(fux_wire::code::Code::BadValue, why);
-    let past = |why| super::Failed::new(fux_wire::code::Raise::TooLong, why);
-    let most = fux_wire::callback::JOB_BYTES;
-    if open.bytes() > most {
-        return Err(past(format!(
-            "screen retained data is past a job's {most} bytes"
-        )));
+    // It goes to its client in one frame.
+    if fux_wire::wire::encode(&open).len() > fux_wire::protocol::MAX_FRAME.saturating_sub(128) {
+        let past = super::Failed::new(fux_wire::code::Raise::TooLong, "screen data is past a frame");
+        return Err(past);
     }
-    let mut encoded =
-        fux_wire::wire::Writer::counting(fux_wire::protocol::MAX_FRAME.saturating_sub(128));
-    open.put(&mut encoded);
-    encoded
-        .check()
-        .map_err(|_| past("screen data is past a frame".to_owned()))?;
     let config = state.and_then(|s| s.config.as_ref());
     let check =
         |action: &fux_wire::callback::Callback, args: Vec<Data>| -> Result<(), super::Failed> {
-            crate::screens::admit_source(&action.code)?;
             let job = crate::screens::Job::call(action, args);
-            if job.bytes() > most {
-                return Err(past(format!(
-                    "callback arguments are past a job's {most} bytes"
-                )));
-            }
             let mut of = context.of;
             for v in job.given.iter().flatten() {
                 runs(v, &mut of).map_err(super::callback_failed)?;
@@ -154,7 +114,6 @@ pub fn admit(
                 return Err(refused("a list needs its receiving client"));
             };
             l.client = Data::Client(client, context.of);
-            crate::screens::admit_source(&l.action.code)?;
             let tokens = fuxth::token::source("callback", &l.action.code)?;
             super::callback_source(config, &tokens)?;
             let mut of = context.of;
@@ -174,11 +133,10 @@ pub fn admit(
                 super::same_run(context.of, run).map_err(super::callback_failed)?;
             }
             let mut kinds = std::collections::HashSet::new();
-            let mut budget = Budget::with_limit(fux_wire::callback::JOB_BYTES);
             for item in &mut l.items {
                 let mut of = context.of;
                 runs(&item.payload, &mut of).map_err(super::callback_failed)?;
-                let v = value(&item.payload, &mut budget).map_err(super::callback_failed)?;
+                let v = value(&item.payload).map_err(super::callback_failed)?;
                 if kinds.insert(v.kind_name()) {
                     let args = vec![l.client.clone(), item.payload.clone()];
                     check(&l.action, args)?;
@@ -293,7 +251,7 @@ mod tests {
                 .any(|i| i.label.contains(char::is_control))
         );
         let item = screen.items.first().ok_or("row")?;
-        let value = value(&item.payload, &mut Budget::new()).map_err(|e| e.message)?;
+        let value = value(&item.payload).map_err(|e| e.message)?;
         let Value::App(Fux::Record(record)) = value else {
             return Err("record".into());
         };
@@ -340,12 +298,12 @@ mod tests {
         let root = values.pop().ok_or("snapshot")?;
         let grant = fuxth::Imports::new(fux_wire::inspect::BYTES);
         root.retain(&grant).map_err(|e| e.message)?;
-        let payload = data(&root, &mut Budget::new()).map_err(|e| e.message)?;
-        let bytes = fux_wire::wire::encode(&payload)?;
+        let payload = data(&root).map_err(|e| e.message)?;
+        let bytes = fux_wire::wire::encode(&payload);
         let payload: Data = fux_wire::wire::Reader::new(&bytes).whole()?;
-        let restored = value(&payload, &mut Budget::new()).map_err(|e| e.message)?;
+        let restored = value(&payload).map_err(|e| e.message)?;
         assert_eq!(
-            data(&restored, &mut Budget::new()).map_err(|e| e.message)?,
+            data(&restored).map_err(|e| e.message)?,
             payload
         );
         assert_eq!(restored, root);
@@ -388,7 +346,7 @@ mod tests {
             run(&Job::call(&screen.action, [screen.client, payload]))?,
             "all\n"
         );
-        let child = data(&child, &mut Budget::new()).map_err(|e| e.message)?;
+        let child = data(&child).map_err(|e| e.message)?;
         let text = run(&Job::call(
             &Callback::from("str id get kind print"),
             [child],
@@ -412,11 +370,11 @@ mod tests {
             clients: Vec::new(),
         };
         let record = record::snapshot(snapshot).map_err(|e| e.message)?;
-        let original = data(&record, &mut Budget::new()).map_err(|e| e.message)?;
-        let bytes = fux_wire::wire::encode(&original)?;
+        let original = data(&record).map_err(|e| e.message)?;
+        let bytes = fux_wire::wire::encode(&original);
         let decoded = fux_wire::wire::Reader::new(&bytes).whole()?;
-        let restored = value(&decoded, &mut Budget::new()).map_err(|e| e.message)?;
-        let payload = data(&restored, &mut Budget::new()).map_err(|e| e.message)?;
+        let restored = value(&decoded).map_err(|e| e.message)?;
+        let payload = data(&restored).map_err(|e| e.message)?;
         assert_eq!(payload, original);
         assert!(admit(list(payload.clone(), "2drop"), None, &context).is_ok());
         let other = "3-4".parse().map_err(|()| "run")?;

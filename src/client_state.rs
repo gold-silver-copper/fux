@@ -272,7 +272,7 @@ mod tests {
     fn local_settings_keep_the_checked_value_union_and_inner_validators() -> TestResult {
         let list = |words: &[&str]| {
             fuxth::List::new(words.iter().map(|w| Value::str(*w)).collect())
-                .map(|l| Value::List(fuxth::Shared::new(l)))
+                .map(|l| Value::List(Rc::new(l)))
                 .ok_or_else(|| "list".to_owned())
         };
         let mut draft = PreferenceDraft::default();

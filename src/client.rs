@@ -9,7 +9,6 @@ use fux_server::socket::{self, SocketPath};
 use fux_vt::keys::decode::Input;
 use fux_vt::keys::{Key, KeyPress, Modifiers};
 use fux_wire::act::Act;
-use fux_wire::callback::JOB_BYTES;
 use fux_wire::code::Code;
 #[cfg(test)]
 use fux_wire::command::{Command, Request};
@@ -298,7 +297,7 @@ impl Requests {
         Ok(Requests { stream, decoder })
     }
 
-    /// Sends one request and reads its bounded reply in pieces. Launch
+    /// Sends one request and reads its reply in pieces. Launch
     /// requests already contain their selected environment patch.
     pub fn ask(&mut self, asked: &Asked) -> Result<Reply, Error> {
         wait_at_most(&self.stream, None);
@@ -308,10 +307,7 @@ impl Requests {
         loop {
             while let Some(frame) = self.decoder.frame()? {
                 match frame {
-                    ToCommand::Part(bytes) => {
-                        fux_wire::wire::append(&mut parts, &bytes)
-                            .map_err(fux_wire::protocol::Error::Wire)?;
-                    }
+                    ToCommand::Part(bytes) => parts.extend_from_slice(&bytes),
                     ToCommand::PartsEnd => {
                         let reply = fux_wire::wire::Reader::new(&parts).whole::<Reply>();
                         return Ok(reply.map_err(fux_wire::protocol::Error::Wire)?);
@@ -644,51 +640,9 @@ enum Update {
     Finished(Ran),
 }
 
-/// The longest a program's notice may be: what it prints past this fails
-/// its write, and a notice longer, made of what it left, is not shown but
-/// said not to be. Well within a frame (`protocol::MAX_FRAME`).
-pub(crate) const NOTICE_MAX: usize = 64 << 10;
-
-/// What a key's program prints, for its notice: `NOTICE_MAX` at most.
-#[derive(Default)]
-struct Said(Vec<u8>);
-
-impl Write for Said {
-    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-        if self.0.len().saturating_add(bytes.len()) > NOTICE_MAX {
-            let why = format!("a key's program prints {NOTICE_MAX} bytes at most");
-            return Err(io::Error::other(why));
-        }
-        self.0.extend_from_slice(bytes);
-        Ok(bytes.len())
-    }
-
-    fn flush(&mut self) -> io::Result<()> {
-        Ok(())
-    }
-}
-
-/// Programs that may wait for the worker, beside the bytes of their code
-/// (`JOB_BYTES`): one that would take them past either is not run, and said
-/// not to be.
-pub(crate) const JOBS: usize = 64;
-/// Inputs that may wait for a program, and the bytes of their pastes: those
-/// past either are not taken, and said not to be (`Keyboard::holds`).
-pub(crate) const HELD: usize = 1024;
-pub(crate) const HELD_BYTES: usize = 1 << 20;
-
-/// The bytes `input` holds beyond itself.
-fn pasted(input: &Input) -> usize {
-    match input {
-        Input::Paste(text) => text.len(),
-        Input::Key(_)
-        | Input::PasteTooLong
-        | Input::FocusIn
-        | Input::FocusOut
-        | Input::Mouse(_)
-        | Input::Reply(_) => 0,
-    }
-}
+/// The longest a program's notice may be: the frame it goes to the server
+/// in holds no more. One longer is not shown, but said not to be.
+const NOTICE_MAX: usize = fux_wire::protocol::MAX_PAYLOAD - 64;
 
 /// The state the worker and the client share. A program changes a copy,
 /// put in its place whole (`run_job`), so one that panicked holding it
@@ -724,17 +678,14 @@ pub struct Keyboard {
     told: std::sync::mpsc::Receiver<Update>,
     receipt: Option<std::sync::mpsc::SyncSender<u64>>,
     wake: io::PipeReader,
-    /// The weights of admitted programs not yet done, in order:
-    /// `JOBS` and `JOB_BYTES` at most.
-    running: VecDeque<usize>,
+    /// How many admitted programs are not yet done.
+    running: usize,
     /// Admitted jobs dispatched after the running job's screen effects.
     pending: VecDeque<Job>,
     /// What stops the program the worker runs (the prefix, then Esc).
     stop: script::Stop,
-    /// What was typed while a program ran, in order, and the bytes of its
-    /// pastes: `HELD` and `HELD_BYTES` at most.
+    /// What was typed while a program ran, in order.
     waiting: VecDeque<Input>,
-    held: usize,
 }
 
 /// Ending an attachment stops its outstanding program rather than leaving
@@ -817,17 +768,16 @@ impl Keyboard {
             told,
             receipt: None,
             wake,
-            running: VecDeque::new(),
+            running: 0,
             pending: VecDeque::new(),
             stop,
             waiting: VecDeque::new(),
-            held: 0,
         })
     }
 
     /// Whether nothing waits: no program running, no keys held for one.
     pub fn idle(&self) -> bool {
-        self.running.is_empty() && self.waiting.is_empty()
+        self.running == 0 && self.waiting.is_empty()
     }
 
     /// Readable when a program it ran is done (`Keyboard::ran`).
@@ -865,29 +815,17 @@ impl Keyboard {
     /// terminal's reads split them, they come to the same.
     fn inputs(&mut self, inputs: impl IntoIterator<Item = Input>) -> Vec<Dispatch> {
         let mut acts = Vec::new();
-        let mut refused = 0usize;
         for input in inputs {
-            let running = !self.running.is_empty();
             // The prefix, then Esc, typed while a program runs, stops it.
-            if running && self.stops(&input) {
+            if self.running > 0 && self.stops(&input) {
                 self.waiting.pop_back();
                 self.stop.stop();
                 let text = "stopping…".to_owned();
                 acts.push(Dispatch::Send(Act::Notice { text, error: false }));
-            } else if !running || self.holds(&input) {
-                self.held = self.held.saturating_add(pasted(&input));
-                self.waiting.push_back(input);
             } else {
-                refused = refused.saturating_add(1);
+                self.waiting.push_back(input);
             }
             acts.extend(self.release());
-        }
-        if refused > 0 {
-            let (held, bytes) = (self.waiting.len(), self.held);
-            let text = format!(
-                "{refused} inputs not taken: {held} already wait for a program ({bytes} bytes pasted)"
-            );
-            acts.push(Dispatch::Send(Act::Notice { text, error: true }));
         }
         acts
     }
@@ -903,22 +841,13 @@ impl Keyboard {
                 .is_some_and(|prefix| is(self.waiting.back(), prefix))
     }
 
-    /// Whether `input` may wait for a program: the prefix has one place
-    /// more, so that Esc after it still stops it.
-    fn holds(&self, input: &Input) -> bool {
-        let prefix = matches!(input, Input::Key(stroke) if Some(stroke.press) == lock(&self.state).keys.prefix);
-        let room = HELD.saturating_add(usize::from(prefix));
-        self.waiting.len() < room && self.held.saturating_add(pasted(input)) <= HELD_BYTES
-    }
-
     /// What waits, taken unless a program runs.
     fn release(&mut self) -> Vec<Dispatch> {
         let mut acts = Vec::new();
-        while self.running.is_empty() {
+        while self.running == 0 {
             let Some(input) = self.waiting.pop_front() else {
                 break;
             };
-            self.held = self.held.saturating_sub(pasted(&input));
             self.input(input, &mut acts);
         }
         acts
@@ -948,10 +877,7 @@ impl Keyboard {
     pub fn ran(&mut self) -> Vec<Dispatch> {
         fux_server::drain(&self.wake);
         let mut acts = Vec::new();
-        for _ in 0..JOBS {
-            let Ok(update) = self.told.try_recv() else {
-                break;
-            };
+        while let Ok(update) = self.told.try_recv() {
             let ran = match update {
                 Update::Presentation(presentation, sent) => {
                     self.receipt = Some(sent);
@@ -961,7 +887,7 @@ impl Keyboard {
                 }
                 Update::Finished(ran) => ran,
             };
-            self.running.pop_front();
+            self.running = self.running.saturating_sub(1);
             let mut notice = ran.notice;
             // The screen showing hints at keys that changed: it closes,
             // rather than say what its keys no longer do, and says so with
@@ -1014,23 +940,15 @@ impl Keyboard {
         );
     }
 
-    /// Reserves `job` in local output order, unless as many programs, or as much
-    /// code, as it may hold wait for it. Each emitted `Dispatch::Run` owns
-    /// that reservation and must reach `Self::dispatch` in transport order.
+    /// Queues `job` in local output order. Each emitted `Dispatch::Run`
+    /// must reach `Self::dispatch` in transport order.
     fn run(&mut self, job: Job, acts: &mut Vec<Dispatch>) {
         // A stop stops the programs queued with the one it was typed for.
-        if self.running.is_empty() {
+        if self.running == 0 {
             self.stop.reset();
         }
-        let (waiting, bytes) = (self.running.len(), self.running.iter().sum::<usize>());
-        let len = job.bytes();
-        if waiting >= JOBS || bytes.saturating_add(len) > JOB_BYTES {
-            let text = format!(
-                "a program was not run: {waiting} already wait to run ({bytes} bytes of code)"
-            );
-            return acts.push(Dispatch::Send(Act::Notice { text, error: true }));
-        }
-        self.running.push_back(len);
+        let waiting = self.running;
+        self.running = self.running.saturating_add(1);
         if waiting == 0 {
             acts.push(Dispatch::Run(job));
         } else {
@@ -1094,7 +1012,7 @@ fn run_job(
 ) -> Ran {
     let mut changed = lock(state).draft();
     let config = changed.config.clone();
-    let mut out = Said::default();
+    let mut out = Vec::new();
     let mut context = context();
     context.client = Some(me.0);
     context.of = Some(me.1);
@@ -1127,13 +1045,7 @@ fn run_job(
         }
         let mut machine = job.machine(config.as_ref())?;
         let mut host = script::Host::new(context.clone(), Some(&mut changed), &mut out);
-        script::run_capped(
-            &mut machine,
-            &mut host,
-            &mut asks,
-            Some(script::PROGRAM_STEPS),
-            Some(stop),
-        )
+        script::run(&mut machine, &mut host, &mut asks, Some(stop))
     })();
     if result.is_ok()
         && let Err(failed) = stop
@@ -1147,7 +1059,7 @@ fn run_job(
         // Stopped as asked (the prefix, then Esc): no failure of its own.
         Err(_) if stop.stopped() => Some(("stopped".to_owned(), false)),
         Err(failed) => Some((failed.notice(), true)),
-        Ok(stack) => said(String::from_utf8_lossy(&out.0).into_owned(), &stack),
+        Ok(stack) => said(String::from_utf8_lossy(&out).into_owned(), &stack),
     };
     let notice = notice.map(|(text, error)| match text.len() {
         0..=NOTICE_MAX => (text, error),
@@ -1164,24 +1076,13 @@ fn run_job(
 }
 
 /// The notice a program that ended makes: what it printed, then what it
-/// left, each line that is not blank. Made only as far as `NOTICE_MAX`:
-/// one longer is said not to be shown.
+/// left, each line that is not blank.
 fn said(mut said: String, stack: &[fuxth::Value<script::Fux>]) -> Option<(String, bool)> {
     for value in stack {
-        let room = NOTICE_MAX.saturating_sub(said.len());
-        match value.text_upto(room) {
-            Ok(Some(text)) if text.len() < room => {
-                said.push_str(&text);
-                said.push('\n');
-            }
-            Err(failure) => return Some((failure.message, true)),
-            Ok(_) => {
-                let text = format!(
-                    "what the program left is longer than a notice ({NOTICE_MAX} bytes): not shown"
-                );
-                return Some((text, true));
-            }
+        if let Err(failure) = value.write_text(&mut said) {
+            return Some((failure.message, true));
         }
+        said.push('\n');
     }
     let said: Vec<&str> = said.lines().filter(|l| !l.trim().is_empty()).collect();
     (!said.is_empty()).then(|| (said.join("  "), false))
@@ -1267,12 +1168,12 @@ pub fn attach(
     Ok(())
 }
 
-/// Whether `attach` fits one frame: counted, before it is encoded.
+/// Whether `attach` fits the one frame it is sent in.
 fn fits(attach: &Attach) -> Result<(), String> {
     let limit = fux_wire::protocol::MAX_PAYLOAD;
-    let mut count = fux_wire::wire::Writer::counting(limit);
-    fux_wire::wire::Wire::put(attach, &mut count);
-    (count.check()).map_err(|_| format!("the attach request exceeds one frame ({limit} bytes)"))
+    (fux_wire::wire::encode(attach).len() <= limit)
+        .then_some(())
+        .ok_or_else(|| format!("the attach request exceeds one frame ({limit} bytes)"))
 }
 
 /// Why a client detached when a signal told it to.
@@ -1333,8 +1234,9 @@ impl Drop for Raw {
 }
 
 /// What may wait unwritten for the terminal before the server's frames
-/// are read no more: what the server sends meanwhile waits there, within
-/// its bound.
+/// are read no more, till it takes some: flow control, which refuses and
+/// drops nothing. What the server sends meanwhile waits there, and the
+/// server paints again only once its queue empties.
 pub(crate) const OUTPUT_MAX: usize = 1 << 20;
 
 /// The paints the server relays, for the terminal: handed to a thread
@@ -1928,7 +1830,7 @@ mod tests {
             run: asked.after.map(|f| f.run),
             ..fux_wire::protocol::Body::Found(fux_wire::command::AnyRef::Pane("%1".parse()?)).into()
         };
-        let bytes = fux_wire::wire::encode(&reply)?;
+        let bytes = fux_wire::wire::encode(&reply);
         send(&mut peer, &ToCommand::Part(bytes.into()))?;
         send(&mut peer, &ToCommand::PartsEnd)?;
         let next: Asked = read_frame(&mut peer, &mut decoder, Some(ANSWER))?.ok_or("send-keys")?;

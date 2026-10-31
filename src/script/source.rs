@@ -1,7 +1,7 @@
 //! Filesystem admission for compile-time sources. Every image has its own
 //! loader and captured cwd; replay needs neither.
-use super::{Failed, SOURCE_MAX, read_failed, read_text};
-use fuxth::{Loader, Source, SourceImage, SourceLimits, Token};
+use super::{Failed, read_failed, read_text};
+use fuxth::{Loader, Source, SourceImage, Token};
 use std::io;
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
@@ -36,13 +36,9 @@ impl Loader for Files {
         full.canonicalize().map_err(|e| e.to_string())
     }
 
-    fn read(&mut self, path: &Path, remaining: usize) -> Result<String, String> {
-        read_text(
-            &path.display().to_string(),
-            open(path).map_err(|e| e.to_string())?,
-            remaining,
-        )
-        .map_err(|f| f.to_string())
+    fn read(&mut self, path: &Path) -> Result<String, String> {
+        let file = open(path).map_err(|e| e.to_string())?;
+        read_text(&path.display().to_string(), file).map_err(|f| f.to_string())
     }
 }
 
@@ -71,7 +67,7 @@ pub(super) fn file(path: &Path) -> Result<SourceImage, Failed> {
 
 pub(super) fn opened_file(path: PathBuf, file: std::fs::File) -> Result<SourceImage, Failed> {
     let name = path.display().to_string();
-    let text = read_text(&name, file, SOURCE_MAX)?;
+    let text = read_text(&name, file)?;
     Ok(SourceImage::load(
         Source {
             name,
@@ -79,7 +75,6 @@ pub(super) fn opened_file(path: PathBuf, file: std::fs::File) -> Result<SourceIm
             path: Some(path),
         },
         &mut Files::new(),
-        SourceLimits::default(),
     )?)
 }
 
@@ -91,7 +86,6 @@ pub(super) fn text(name: &str, text: &str) -> Result<SourceImage, Failed> {
             path: None,
         },
         &mut Files::new(),
-        SourceLimits::default(),
     )?)
 }
 
@@ -99,7 +93,6 @@ pub(super) fn arguments(tokens: &[Token]) -> Result<SourceImage, Failed> {
     Ok(SourceImage::arguments(
         tokens,
         &mut Files::new(),
-        SourceLimits::default(),
     )?)
 }
 
@@ -193,35 +186,6 @@ mod tests {
                 .to_string();
             assert!(error.contains("main.fux:2 ->"), "{error}");
             assert!(error.contains("child.fux:2"), "{error}");
-        }
-        Ok(())
-    }
-
-    #[test]
-    fn aggregate_limits_include_the_root_and_refuse_before_growth() -> TestResult {
-        let f = Fixture::new()?;
-        let root = f.write("main.fux", "require child.fux")?;
-        f.write("child.fux", "1 2")?;
-        let source = Source {
-            name: root.display().to_string(),
-            text: "require child.fux".into(),
-            path: Some(root.canonicalize()?),
-        };
-        let exact = SourceLimits {
-            bytes: 20,
-            files: 2,
-            depth: 1,
-            tokens: 4,
-        };
-        // The source text is 17 + 3 bytes, and all four input tokens count.
-        assert!(SourceImage::load(source.clone(), &mut Files::new(), exact).is_ok());
-        for limits in [
-            SourceLimits { bytes: 19, ..exact },
-            SourceLimits { files: 1, ..exact },
-            SourceLimits { depth: 0, ..exact },
-            SourceLimits { tokens: 3, ..exact },
-        ] {
-            assert!(SourceImage::load(source.clone(), &mut Files::new(), limits).is_err());
         }
         Ok(())
     }
