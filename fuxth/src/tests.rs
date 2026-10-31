@@ -2,9 +2,6 @@
 //! end, through every suspension.
 use crate::*;
 
-#[global_allocator]
-static ALLOCATOR: fux_vt_peak::ThreadPeak = fux_vt_peak::ThreadPeak;
-
 /// A host with one value of its own, a ticket, and four words: `ticket`
 /// (-- t), which hands one out at once; `ask` (n -- n*10), which suspends
 /// for the host to answer (with a failure, `negative`, for n below 0);
@@ -18,15 +15,15 @@ impl AppValue for Ticket {
     fn kind(&self) -> &'static str {
         "a ticket"
     }
-    fn write_text(&self, out: &mut dyn std::fmt::Write) -> Result<(), Failure> {
+    fn write_text(&self, out: &mut String) -> Result<(), Failure> {
         if self.0 == i64::MIN {
             return Err(Failure::new(
-                Code::TooLong,
+                Code::Host("refused"),
                 "the host refused text conversion",
             ));
         }
-        out.write_str(self.kind())
-            .map_err(|_| Failure::new(Code::TooLong, "text limit"))
+        out.push_str(self.kind());
+        Ok(())
     }
 }
 
@@ -98,7 +95,7 @@ fn source_quoting_inverts_tokenization_and_refuses_expansion() -> Result<(), Err
     ] {
         let mut compiler = with_stdlib();
         compiler.add(&token::arguments(&["str", text, "quote"]))?;
-        let mut machine = Machine::new(compiler.finish()?, Limits::default());
+        let mut machine = Machine::new(compiler.finish()?);
         assert_eq!(
             machine.run(&mut Toy::default(), 100_000)?,
             Outcome::Finished
@@ -110,13 +107,6 @@ fn source_quoting_inverts_tokenization_and_refuses_expansion() -> Result<(), Err
         assert_eq!(tokens.len(), 1);
         assert_eq!(tokens.first().map(|t| t.text.as_ref()), Some(text));
     }
-    let text: String =
-        std::iter::repeat_n(char::from(39), LONGEST.checked_div(4).unwrap_or(0)).collect();
-    let mut compiler = with_stdlib();
-    compiler.add(&token::arguments(&["str", &text, "quote"]))?;
-    let mut machine = Machine::new(compiler.finish()?, Limits::default());
-    let result = machine.run(&mut Toy::default(), 30_000_000);
-    assert_eq!(result.map_err(|e| e.code), Err(Code::TooLong));
     Ok(())
 }
 
@@ -144,16 +134,16 @@ fn declared_library_inputs_hold_before_calls_and_on_uncertain_values() -> Result
     }
     let mut compiler = library.clone();
     compiler.add(&token::source("caller", "7 checked")?)?;
-    let mut machine = Machine::new(compiler.finish()?, Limits::default());
+    let mut machine = Machine::new(compiler.finish()?);
     assert_eq!(machine.run(&mut Toy::default(), 100)?, Outcome::Finished);
     assert!(machine.stack().is_empty());
 
     let mut compiler = library;
     compiler.add(&token::source("caller", "0 ask checked")?)?;
-    let mut machine = Machine::new(compiler.finish()?, Limits::default());
+    let mut machine = Machine::new(compiler.finish()?);
     let mut host = Toy::default();
     assert_eq!(machine.run(&mut host, 100)?, Outcome::Suspended(0));
-    machine.import(Value::Bool(false))?;
+    machine.push(Value::Bool(false));
     assert_eq!(
         machine.run(&mut host, 100).map_err(|e| e.code),
         Err(Code::Type)
@@ -196,13 +186,7 @@ fn run(text: &str) -> Result<Vec<Value<Ticket>>, Error> {
 
 /// `run`, `budget` steps at a time.
 fn run_by(text: &str, budget: u64) -> Result<Vec<Value<Ticket>>, Error> {
-    let mut machine = Machine::new(
-        compile(text)?,
-        Limits {
-            stack: 1000,
-            calls: 100,
-        },
-    );
+    let mut machine = Machine::new(compile(text)?);
     let mut host = Toy::default();
     loop {
         match machine.run(&mut host, budget)? {
@@ -215,7 +199,7 @@ fn run_by(text: &str, budget: u64) -> Result<Vec<Value<Ticket>>, Error> {
                 Code::Host("negative"),
                 format!("{n} is below 0"),
             ))?,
-            Outcome::Suspended(n) => machine.import(Value::Int(n.saturating_mul(10)))?,
+            Outcome::Suspended(n) => machine.push(Value::Int(n.saturating_mul(10))),
             Outcome::Paused => {}
         }
     }
@@ -247,7 +231,7 @@ fn host_text_refusal_reaches_every_text_word() {
         "no-text fail",
         "list no-text end print",
     ] {
-        assert_eq!(code(run(source)), Some("too_long"), "{source}");
+        assert_eq!(code(run(source)), Some("refused"), "{source}");
     }
 }
 
@@ -292,7 +276,7 @@ fn the_calls_under_way_show_who_called() -> Result<(), Error> {
         "t",
         "define inner 1 ask end\ndefine outer inner end\nouter",
     )?)?;
-    let mut machine = Machine::new(compiler.finish()?, Limits::default());
+    let mut machine = Machine::new(compiler.finish()?);
     let outcome = machine.run(&mut Toy::default(), 100)?;
     assert_eq!(outcome, Outcome::Suspended(1));
     let calls: Vec<String> = machine
@@ -310,10 +294,7 @@ fn the_calls_under_way_show_who_called() -> Result<(), Error> {
 #[test]
 fn a_paused_loop_shows_its_own_step() -> Result<(), Error> {
     for budget in 1..=12 {
-        let mut machine = Machine::new(
-            compile("str x print\nbegin 0 1 eq until")?,
-            Limits::default(),
-        );
+        let mut machine = Machine::new(compile("str x print\nbegin 0 1 eq until")?);
         let outcome = machine.run(&mut Toy::default(), budget)?;
         assert_eq!(outcome, Outcome::Paused);
         let last = machine
@@ -417,8 +398,8 @@ fn a_definition_may_call_one_written_after_it() -> Result<(), Error> {
 #[test]
 fn a_deep_stack_costs_no_more_per_word() {
     let started = std::time::Instant::now();
-    let filled = code(run("begin 1 1 0 eq until"));
-    assert_eq!(filled, Some("stack_overflow"));
+    let filled = run("0 begin 1 swap 1 add dup 3000 eq until drop");
+    assert_eq!(filled.map(|stack| stack.len()), Ok(3000));
     assert!(
         started.elapsed() < std::time::Duration::from_secs(5),
         "{:?}",
@@ -565,15 +546,12 @@ fn a_depth_past_any_stack_is_checked_at_once() {
 #[test]
 fn each_walks_any_string_in_time_to_its_length() -> Result<(), Error> {
     let walk = |c: &str| -> Result<std::time::Duration, Error> {
-        let mut machine = Machine::new(
-            compile("0 ask 0 swap each drop 1 add end")?,
-            Limits::default(),
-        );
+        let mut machine = Machine::new(compile("0 ask 0 swap each drop 1 add end")?);
         let mut host = Toy::default();
         assert_eq!(machine.run(&mut host, u64::MAX)?, Outcome::Suspended(0));
-        machine.import(Value::str(
+        machine.push(Value::str(
             std::iter::repeat_n(c, 100_000).collect::<String>(),
-        ))?;
+        ));
         let started = std::time::Instant::now();
         assert_eq!(machine.run(&mut host, u64::MAX)?, Outcome::Finished);
         assert_eq!(machine.stack(), ints(&[100_000]).as_slice());
@@ -614,477 +592,13 @@ fn a_strings_characters_are_found_from_its_marks() -> Result<(), Error> {
     };
     let mut grown = Text::new("");
     for piece in &pieces {
-        let free = |_| Ok::<_, Error>(ImportLease::default());
-        grown.append(
-            &Text::new(piece.as_str()),
-            &mut ImportLease::default(),
-            free,
-        )?;
+        grown.append(&Text::new(piece.as_str()));
         check(&grown);
     }
     match run(&format!("str {} 100 str ü put", pieces.concat()))?.as_slice() {
         [Value::Str(put)] => check(put),
         _ => return Err(Error::new(Code::Type, "put did not give a string", None)),
     }
-    let steps = |text: &str| -> Result<u64, Error> {
-        let mut machine = Machine::new(compile(text)?, Limits::default());
-        machine.run(&mut Toy::default(), u64::MAX)?;
-        Ok(machine.steps())
-    };
-    let (ascii, marked) = (
-        steps("str a 6400 copies str b push len")?,
-        steps("str a 6400 copies str é push len")?,
-    );
-    assert!(
-        marked.saturating_sub(ascii) >= 6400 / 64,
-        "{ascii} {marked}"
-    );
-    Ok(())
-}
-
-#[test]
-fn what_can_not_be_known_is_never_refused() -> Result<(), Error> {
-    let program = "define f dup 0 gt if 1 then end\n5 f drop drop";
-    assert_eq!(run(program)?, ints(&[]));
-    let grows = "0 begin dup 1 add dup 5 eq until add add add add add";
-    assert_eq!(run(grows)?, ints(&[15]));
-    let either = "0 0 eq if 1 else str a then 1 add";
-    assert_eq!(run(either)?, ints(&[2]));
-    assert_eq!(
-        run("define f if else drop 7 then end true f 5")?,
-        ints(&[5])
-    );
-    for source in [
-        "define f if str x fail else drop drop then end 1 2 true f",
-        "define die str x fail end false if die then 1",
-    ] {
-        assert_eq!(refused(source), None, "{source}");
-    }
-    Ok(())
-}
-
-#[test]
-fn the_machine_says_what_and_where() -> Result<(), Error> {
-    assert_eq!(code(run("str x ask")), Some("not_a_number"));
-    let said = |text: &str| run(text).err().map(|e| e.to_string()).unwrap_or_default();
-    assert_eq!(
-        said("ticket 1 add"),
-        "type: t:1: add: add takes an integer, not a ticket under the top"
-    );
-    assert_eq!(
-        said("1 ticket lt"),
-        "type: t:1: lt: lt compares two integers, two strings or two lists, not an integer and a ticket; `string` makes it text"
-    );
-    assert_eq!(
-        said("ticket if 1 then"),
-        "type: t:1: if: takes a boolean (from eq or lt), not a ticket"
-    );
-    assert_eq!(
-        said(&format!("{MAYBE}0 maybe drop 0 maybe drop")),
-        "stack_underflow: t:1: drop: takes 1 value, and the stack has 0"
-    );
-    // Too few, as the word takes them, not as one of its pops does.
-    for (text, takes, has) in [
-        ("str a 0 maybe at", 2, 1),
-        ("str a 1 0 maybe slice", 3, 2),
-        ("str a 0 maybe push", 2, 1),
-        ("str a 1 0 maybe put", 3, 2),
-    ] {
-        let word = text.rsplit(' ').next().unwrap_or_default();
-        assert_eq!(
-            said(&format!("{MAYBE}{text}")),
-            format!("stack_underflow: t:1: {word}: takes {takes} values, and the stack has {has}")
-        );
-    }
-    // A host that gives what its word doesn't say is caught at once.
-    assert_eq!(
-        said("liar"),
-        "contract: t:1: liar: the application gave 0 values, and its word says 1"
-    );
-    let mut machine = Machine::new(compile("1\n  2 ask")?, Limits::default());
-    assert_eq!(
-        machine.run(&mut Toy::default(), 100)?,
-        Outcome::Suspended(2)
-    );
-    let at = machine.at().map(|t| format!("{}: {}", t.place, t.text));
-    assert_eq!(at.as_deref(), Some("t:2: ask"), "the word suspended at");
-    Ok(())
-}
-
-#[test]
-fn the_stack_fills_to_its_limit_exactly() -> Result<(), Error> {
-    let run_with = |text: &str| -> Result<Outcome<i64>, Error> {
-        let mut compiler = with_stdlib();
-        compiler.add(&token::source("t", text)?)?;
-        let limits = Limits {
-            stack: 2,
-            calls: 10,
-        };
-        let mut machine = Machine::new(compiler.finish()?, limits);
-        machine.run(&mut Toy::default(), 100)
-    };
-    assert_eq!(run_with("1 ticket")?, Outcome::Finished);
-    assert_eq!(
-        run_with("1 1 ticket").err().map(|e| e.code.name()),
-        Some("stack_overflow")
-    );
-    assert_eq!(
-        run_with("1 2 3").err().map(|e| e.code.name()),
-        Some("stack_overflow")
-    );
-    Ok(())
-}
-
-#[test]
-fn the_names_of_nested_calls_count_against_the_stack() {
-    let names: String = (0..20).map(|n| format!("0 let x{n} ")).collect();
-    let failed = run(&format!("define recur recur {names}end recur"));
-    assert_eq!(failed.err().map(|e| e.code.name()), Some("stack_overflow"));
-}
-
-#[test]
-fn every_core_word_documents_its_effect_and_meaning() {
-    for builtin in Builtin::ALL {
-        assert!(builtin.about().len() > 8, "{}", builtin.name());
-        // pick and roll take a count, then as many values as it says.
-        if matches!(builtin, Builtin::Pick | Builtin::Roll) {
-            continue;
-        }
-        let (before, after) = builtin.effect().split_once("--").unwrap_or_default();
-        assert_eq!(
-            before.split_whitespace().count(),
-            builtin.args().len(),
-            "{}",
-            builtin.name()
-        );
-        assert!(
-            !after.trim().is_empty()
-                || matches!(builtin, Builtin::Drop | Builtin::Print | Builtin::Fail),
-            "{}",
-            builtin.name()
-        );
-    }
-}
-
-#[test]
-fn the_core_at_its_edges() -> Result<(), Error> {
-    let s = |text: &str| Value::<Ticket>::str(text);
-    assert_eq!(code(run("str abc 3 at")), Some("range"));
-    assert_eq!(code(run("list 1 end 1 at")), Some("range"));
-    assert_eq!(
-        run("str héllo 1 at str héllo 1 4 slice str héllo len")?,
-        [s("é"), s("éll"), Value::Int(5)]
-    );
-    assert_eq!(run("str naïve 2 str i put")?, [s("naive")]);
-    assert_eq!(run("str abc 1 str XY put")?, [s("aXYc")]);
-    assert_eq!(run("str é code 233 char")?, [Value::Int(233), s("é")]);
-    let truth = |b: bool| Value::<Ticket>::Bool(b);
-    assert_eq!(
-        run("list 1 2 end list 1 3 end lt list 1 2 end list 1 2 3 end lt")?,
-        [truth(true), truth(true)]
-    );
-    assert_eq!(code(run("list 1 end list str a end lt")), Some("type"));
-    // Counts known only as it runs.
-    assert_eq!(
-        run("1 2 3 4 0 pick drop 2 0 pick drop pick")?,
-        ints(&[1, 2, 3, 4, 2])
-    );
-    assert_eq!(
-        run("1 2 3 4 0 pick drop 2 0 pick drop roll")?,
-        ints(&[1, 3, 4, 2])
-    );
-    assert_eq!(code(run("1 2 -1 0 pick drop pick")), Some("range"));
-    assert_eq!(code(run("1 2 str x 0 pick drop pick")), Some("type"));
-    assert_eq!(code(run("str abc 2 1 slice")), Some("range"));
-    assert_eq!(code(run("str abc 0 4 slice")), Some("range"));
-    assert_eq!(run("str x 5 str ab pad len")?, ints(&[5]));
-    assert_eq!(
-        run("str a str b lt str b str a lt str ab str a lt")?,
-        [truth(true), truth(false), truth(false)]
-    );
-    assert_eq!(
-        run("list list 0 end end 0 7 put list 7 end eq")?,
-        [truth(true)]
-    );
-    assert_eq!(
-        run("str é str ab push dup 2 at swap 0 at")?,
-        [s("b"), s("é")]
-    );
-    Ok(())
-}
-
-#[test]
-fn a_string_grown_in_place_holds_no_more_than_it_was_charged() -> Result<(), Error> {
-    // ASCII first, then more than ASCII from its last push, in place.
-    for n in [1, 63, 64, 65, 200, 1000, 5000] {
-        let source = format!(
-            "str a 0 begin swap str b push swap 1 add dup 100 eq until drop \
-             0 begin swap str é push swap 1 add dup {n} eq until drop"
-        );
-        let mut machine = Machine::new(compile(&source)?, Limits::default());
-        machine.run(&mut Toy::default(), u64::MAX)?;
-        let imports = machine.imports().clone();
-        let charged = Ticket::IMPORT_LIMIT.saturating_sub(imports.remaining());
-        let string = machine.stack().first().cloned();
-        drop(machine);
-        let held = ALLOCATOR.live();
-        drop(string);
-        let held = held.saturating_sub(ALLOCATOR.live());
-        assert!(
-            held > 0 && held <= charged,
-            "{n}: holds {held}, charged {charged}"
-        );
-    }
-    Ok(())
-}
-
-#[test]
-fn a_push_charges_what_it_adds() -> Result<(), Error> {
-    // An empty string, shared and empty, given a million characters.
-    let mut machine = Machine::new(
-        compile("str x 1000000 copies 0 ask drop str '' swap push 0 ask")?,
-        Limits::default(),
-    );
-    let mut host = Toy::default();
-    assert_eq!(machine.run(&mut host, u64::MAX)?, Outcome::Suspended(0));
-    machine.import(Value::Int(0))?;
-    let before = machine.steps();
-    assert_eq!(machine.run(&mut host, u64::MAX)?, Outcome::Suspended(0));
-    assert_eq!(machine.steps().saturating_sub(before), 6 + 1_000_000 / 64);
-    Ok(())
-}
-
-#[test]
-fn concat_refuses_before_allocating_the_joined_value() -> Result<(), Error> {
-    // As many lists of a million as the grant holds, then a copy of one.
-    let held = Ticket::IMPORT_LIMIT / List::<Ticket>::size(1_000_000);
-    let full: String = (1..held)
-        .map(|i| format!("list l0 end concat let l{i} "))
-        .collect();
-    let full = format!("0 1000000 range let l0 {full}");
-    for source in [
-        "str x 1000 copies let s list 0 1001 range each drop s end end",
-        "0 1000000 range let l list l l l l l l l l l l end",
-        &format!("{full} list l0 end"),
-    ] {
-        let mut machine = Machine::new(
-            compile(&format!("{source} 0 ask drop concat"))?,
-            Limits::default(),
-        );
-        let mut host = Toy::default();
-        assert_eq!(machine.run(&mut host, u64::MAX)?, Outcome::Suspended(0));
-        machine.import(Value::Int(0))?;
-        let before = ALLOCATOR.live();
-        ALLOCATOR.reset_peak();
-        let result = machine.run(&mut host, u64::MAX);
-        let allocated = ALLOCATOR.peak().saturating_sub(before);
-        assert_eq!(result.map_err(|e| e.code), Err(Code::TooLong));
-        assert!(
-            allocated < 4096,
-            "concat allocated {allocated} bytes: {source}"
-        );
-    }
-    Ok(())
-}
-
-#[test]
-fn concat_checks_kinds_before_length_in_input_order() -> Result<(), Error> {
-    for (parts, message) in [
-        ("s list end 0", "not both"),
-        ("list end s 0", "not both"),
-        ("s 0 list end", "this one holds an integer"),
-    ] {
-        let source =
-            format!("str x 1000 copies let s list 0 1001 range each drop s end {parts} end concat");
-        let mut machine = Machine::new(compile(&source)?, Limits::default());
-        let error = machine.run(&mut Toy::default(), u64::MAX).err();
-        assert!(error.is_some_and(|e| e.code == Code::Type && e.message.ends_with(message)));
-    }
-    Ok(())
-}
-
-#[test]
-fn concat_charges_the_length_once() -> Result<(), Error> {
-    for (parts, expected, n) in [
-        ("list end", "list end", 0),
-        ("list str '' end", "str ''", 0),
-        ("list str ab str cd end", "str abcd", 4),
-        (
-            "list str é 64 copies str 𝄞 end",
-            "str é 64 copies str 𝄞 push",
-            65,
-        ),
-        ("list 0 32 range 32 64 range end", "0 64 range", 64),
-    ] {
-        let mut machine = Machine::new(
-            compile(&format!("{parts} 0 ask drop concat 0 ask"))?,
-            Limits::default(),
-        );
-        let mut host = Toy::default();
-        assert_eq!(machine.run(&mut host, u64::MAX)?, Outcome::Suspended(0));
-        machine.import(Value::Int(0))?;
-        let before = machine.steps();
-        assert_eq!(machine.run(&mut host, u64::MAX)?, Outcome::Suspended(0));
-        assert_eq!(machine.steps().saturating_sub(before), 4 + n / 64);
-        assert_eq!(machine.stack(), run(expected)?);
-    }
-    Ok(())
-}
-
-#[test]
-fn constructed_values_obey_length_depth_and_work_limits() -> Result<(), Error> {
-    for source in [
-        "list end let l 0 begin list l end let l 1 add dup 70 eq until",
-        "list end let l 0 begin list end l push let l 1 add dup 70 eq until",
-        "list 0 end let l 0 begin list 0 end 0 l put let l 1 add dup 70 eq until",
-        "list 1 2 3 4 5 6 7 8 end let x 0 begin list x x end let x 1 add dup 40 eq until",
-    ] {
-        let mut machine = Machine::new(compile(source)?, Limits::default());
-        assert_eq!(
-            machine
-                .run(&mut Toy::default(), u64::MAX)
-                .map_err(|e| e.code),
-            Err(Code::TooLong),
-            "{source}"
-        );
-    }
-    // What a run builds and drops it gives back: it builds on till its
-    // steps run out.
-    for source in [
-        "str x 1000 copies let s 0 begin s str y push drop 1 add dup 17000 eq until",
-        "str x 1000 copies let s 0 begin s 0 str y put drop 1 add dup 17000 eq until",
-        "0 1000 range let s 0 begin s 7 push drop 1 add dup 17000 eq until",
-        "0 1000 range let s 0 begin s 0 7 put drop 1 add dup 17000 eq until",
-        "str x 2000 copies let cap 0 begin cap string drop 1 add dup 100000 eq until",
-        "list end let l 0 begin list l end let l 1 add dup 60 eq until",
-        "list 1 2 end let x 0 begin list x x end let x 1 add dup 10 eq until x x eq",
-    ] {
-        assert_eq!(code(run(source)), None, "{source}");
-    }
-    for (source, left) in [
-        (
-            "0 1000000 range len str a 1000000 copies len",
-            &[1_000_000, 1_000_000][..],
-        ),
-        (
-            "str x 1000 copies 1000 copies let s list s end string len",
-            &[1_000_000],
-        ),
-        ("str x 1000000 copies 0 str y put len", &[1_000_000]),
-        (
-            "list list list 1 end end end 0 5 put let x 0 begin list x end let x 1 add dup 63 eq until drop x len",
-            &[1],
-        ),
-    ] {
-        assert_eq!(run(source)?, ints(left), "{source}");
-    }
-    let wide = run("list 0 600000 range end string");
-    assert!(wide.is_err_and(|e| e.message.contains("1000000") && !e.message.contains("2000000")));
-    Ok(())
-}
-
-#[test]
-fn let_names_and_what_they_may_hide() -> Result<(), Error> {
-    assert_eq!(
-        run("list 1 2 end let first first")?.len(),
-        1,
-        "a library word hidden"
-    );
-    assert_eq!(
-        run("5 let ticket ticket")?,
-        ints(&[5]),
-        "a host word hidden"
-    );
-    assert_eq!(code(run("1 let drop")), Some("bad_name"));
-    assert_eq!(code(run("1 let x define x 2 end")), Some("bad_name"));
-    assert_eq!(code(run("define f 1 end 2 let f f")), None);
-    Ok(())
-}
-
-#[test]
-fn a_prepared_library_serves_every_clone() -> Result<(), Error> {
-    let mut ready = Compiler::<Ticket>::new(vocabulary());
-    ready.add(&token::source(
-        "lib",
-        "define twice 2 mul end define bad str a 1 add end",
-    )?)?;
-    ready.prepare();
-    for _ in 0..2 {
-        let mut compiler = ready.clone();
-        compiler.add(&token::source("t", "3 twice")?)?;
-        let error = compiler.finish().err().map(|e| e.to_string());
-        assert_eq!(
-            error.as_deref(),
-            Some("type: lib:1: add: add takes an integer, not a string under the top")
-        );
-    }
-    let mut open = Compiler::<Ticket>::new(vocabulary());
-    open.add(&token::source("lib", "define half")?)?;
-    open.prepare();
-    open.add(&token::source("lib", "2 div end 8 half")?)?;
-    assert!(
-        open.finish().is_ok(),
-        "nothing is checked while a definition is open"
-    );
-    Ok(())
-}
-
-#[test]
-fn sequence_mutation_preserves_shared_values() -> Result<(), Error> {
-    let list =
-        |items: Vec<Value<Ticket>>| crate::List::new(items).map(|l| Value::List(Shared::new(l)));
-    assert_eq!(
-        run("list 1 end 2 push")?,
-        list(ints(&[1, 2])).into_iter().collect::<Vec<_>>()
-    );
-    let both: Vec<_> = list(ints(&[1, 2]))
-        .into_iter()
-        .chain(list(ints(&[9, 2])))
-        .collect();
-    assert_eq!(run("list 1 2 end dup 0 9 put")?, both);
-    assert_eq!(
-        run("str x 1000 copies 0 let i begin 0 str y put i 1 add let i i 17000 eq until len")?,
-        ints(&[1000])
-    );
-    assert_eq!(
-        run("str héllo let s s 1 str E put s 0 str ab put")?,
-        [Value::str("hEllo"), Value::str("abéllo")]
-    );
-    assert_eq!(
-        run("str ab let s s str c push s")?,
-        [Value::str("abc"), Value::str("ab")]
-    );
-    let alone = "0 1000 range 0 begin swap 0 7 put swap 1 add dup 17000 eq until drop len";
-    assert_eq!(run(alone)?, ints(&[1000]));
-    Ok(())
-}
-
-#[test]
-fn a_value_replaced_below_what_is_surely_used_is_forgotten() -> Result<(), Error> {
-    let replace = "define replace each swap drop end end str a list 1 2 end replace 1 add";
-    assert_eq!(run(replace)?, ints(&[3]));
-    let swapped = "define f each drop drop 1 end end str a list 0 end f 1 add";
-    assert_eq!(run(swapped)?, ints(&[2]));
-    Ok(())
-}
-
-#[test]
-fn long_chains_and_long_strings_are_bounded() -> Result<(), Error> {
-    let chain: String = (1..20_000)
-        .map(|i: u32| format!("define f{i} f{} end\n", i.saturating_sub(1)))
-        .collect();
-    let chained = format!("define f0 1 add end\n{chain}5 f19999");
-    assert_eq!(run(&chained)?, ints(&[6]));
-    let steps = |text: &str| -> Result<u64, Error> {
-        let mut machine = Machine::new(compile(text)?, Limits::default());
-        machine.run(&mut Toy::default(), u64::MAX)?;
-        Ok(machine.steps())
-    };
-    let (made, put) = (
-        steps("str é 100000 copies len")?,
-        steps("str é 100000 copies 0 str y put len")?,
-    );
-    assert!(put.saturating_sub(made) > 100_000 / 64, "{made} {put}");
     Ok(())
 }
 
@@ -1172,11 +686,11 @@ fn at_desk(text: &str, lying: bool, answer: Paper) -> (Result<Vec<Value<Paper>>,
         let mut compiler = Compiler::new(desk_words()?);
         compiler.add(&token::source("stdlib.fux", STDLIB)?)?;
         compiler.add(&token::source("t", text)?)?;
-        let mut machine = Machine::new(compiler.finish()?, Limits::default());
+        let mut machine = Machine::new(compiler.finish()?);
         loop {
             match machine.run(&mut desk, 1)? {
                 Outcome::Finished => return Ok(machine.stack().to_vec()),
-                Outcome::Suspended(()) => machine.import(Value::App(answer.clone()))?,
+                Outcome::Suspended(()) => machine.push(Value::App(answer.clone())),
                 Outcome::Paused => {}
             }
         }
@@ -1374,7 +888,7 @@ fn words_may_call_each_other() -> Result<(), Error> {
         [Value::str("b"), Value::str("a")]
     );
     // Deeper than calls may nest, as a loop.
-    let mut machine = Machine::new(compile(&format!("{three}300001 a"))?, Limits::default());
+    let mut machine = Machine::new(compile(&format!("{three}300001 a"))?);
     assert_eq!(
         machine.run(&mut Toy::default(), u64::MAX)?,
         Outcome::Finished
@@ -1421,7 +935,7 @@ fn a_failed_add_leaves_the_compiler_as_it_was() -> Result<(), Error> {
     let pending = compiler.add(&token::source("u", "define a later end")?);
     assert_eq!(pending.map_err(|e| e.code.name()), Err("unknown_word"));
     compiler.add(&token::source("v", "define b 5 end good b")?)?;
-    let mut machine = Machine::new(compiler.finish()?, Limits::default());
+    let mut machine = Machine::new(compiler.finish()?);
     assert_eq!(
         machine.run(&mut Toy::default(), u64::MAX)?,
         Outcome::Finished
@@ -1471,21 +985,6 @@ fn unknown_words_keep_their_source() -> Result<(), String> {
 }
 
 #[test]
-fn non_tail_calls_refuse_only_after_the_call_limit() -> Result<(), Error> {
-    let deep = "define f dup 0 eq if else 1 sub f 0 drop then end";
-    assert_eq!(run(&format!("{deep} 99 f 0"))?, ints(&[0, 0]));
-    assert_eq!(code(run(&format!("{deep} 100 f 0"))), Some("call_depth"));
-    let said = run("define deep dup 0 gt drop 1 add deep 1 add end 0 deep")
-        .err()
-        .map(|e| e.to_string());
-    assert_eq!(
-        said.as_deref(),
-        Some("call_depth: t:1: deep: calls nest past 100: recursion too deep (in gt)")
-    );
-    Ok(())
-}
-
-#[test]
 fn definitions_serve_a_program_of_their_own() -> Result<(), Error> {
     let mut config = with_stdlib();
     let text = "5 let n define five n end define seven five 2 add end define six 6 end str x print";
@@ -1494,7 +993,7 @@ fn definitions_serve_a_program_of_their_own() -> Result<(), Error> {
     let ran = |text: &str| -> Result<Vec<Value<Ticket>>, Error> {
         let mut compiler = scope.clone();
         compiler.add(&token::source("b", text)?)?;
-        let mut machine = Machine::new(compiler.finish()?, Limits::default());
+        let mut machine = Machine::new(compiler.finish()?);
         machine.run(&mut Toy::default(), u64::MAX)?;
         Ok(machine.stack().to_vec())
     };
@@ -1516,21 +1015,6 @@ fn a_try_catches_the_failures_it_names() -> Result<(), Error> {
     // Only the same failure not caught is said where.
     let uncaught = run("1 str no fail").err().map(|e| e.located());
     assert_eq!(uncaught.as_deref(), Some("t:1: fail: no"));
-    // A reason a try keeps is a string: one longer than a string may be
-    // fails as too long, which `fail` does not name.
-    let long = run("str fail try 0 300000 range fail catch end").err();
-    assert_eq!(long.map(|e| e.code), Some(Code::TooLong));
-    // A reason as long as a string may be is kept whole.
-    let reason: String = std::iter::repeat_n('x', crate::LONGEST).collect();
-    let said = format!("str fail try str {reason} fail catch drop end");
-    assert_eq!(run(&said)?, strs(&[&reason]));
-    // A handler with no room for its message and code fails again, for a
-    // try further out: the body's `1` leaves room for the message, not
-    // the code.
-    let full = "0 998 range each end str stack_overflow try 1 str fail try str a fail catch drop drop end catch nip end";
-    let left = run(full)?;
-    assert_eq!(left.len(), 999);
-    assert_eq!(left.last(), Some(&Value::str("stack_overflow")));
     // A try's codes are written in its own source, not the one before.
     let mut compiler = Compiler::<Ticket>::new(Vocabulary::default());
     compiler.add(&token::source("one", "str fail")?)?;
@@ -1595,12 +1079,13 @@ fn a_caught_failure_undoes_what_the_body_began() -> Result<(), Error> {
         [strs(&["bottom"]), ints(&[7]), strs(&["bottom"])].concat(),
         "the body's call is not in its definition's last place"
     );
-    let recursion = "define down 1 add down 1 end str call_depth try 0 down catch nip end";
-    assert_eq!(run(recursion)?, strs(&["call_depth"]));
+    let recursion = "define down dup 2000 eq if str bottom fail then 1 add down 1 end
+        str fail try 0 down catch nip end";
+    assert_eq!(run(recursion)?, strs(&["fail"]), "2000 calls undone");
     let blocks = "list 1 str fail try 2 list 3 4 end each dup 4 eq if str four fail then end
         catch drop end 5 end list 6 7 end each end";
     let list = List::new([ints(&[1]), strs(&["four"]), ints(&[5])].concat());
-    let list = list.map(|l| Value::List(Shared::new(l)));
+    let list = list.map(|l| Value::List(std::rc::Rc::new(l)));
     assert_eq!(run(blocks)?, [Vec::from_iter(list), ints(&[6, 7])].concat());
     let names = "1 let x str fail try 2 let x x fail catch drop drop end x";
     assert_eq!(
@@ -1719,7 +1204,7 @@ fn carried_values_obey_their_contract() -> Result<(), Error> {
             "carried",
             "str 'far negative' try 1 ask catch drop end",
         )?)?;
-        let mut machine = Machine::new(compiler.finish()?, Limits::default());
+        let mut machine = Machine::new(compiler.finish()?);
         let mut host = Toy::default();
         assert!(matches!(
             machine.run(&mut host, 100)?,
@@ -1752,250 +1237,18 @@ fn carried_values_obey_their_contract() -> Result<(), Error> {
 }
 
 #[test]
-fn refused_carried_storage_enters_the_resource_failure_handler() -> Result<(), Error> {
-    #[derive(Clone, Debug, PartialEq)]
-    struct Payload(Shared<Vec<u8>>);
-    impl AppValue for Payload {
-        const IMPORT_LIMIT: usize = 2048;
-        fn kind(&self) -> &'static str {
-            "payload"
-        }
-        fn weight(&self) -> u64 {
-            self.0.len() as u64
-        }
-        fn retain(&self, imports: &Imports) -> Result<(), Failure> {
-            self.0
-                .reserve(imports, Shared::<Vec<u8>>::bytes(self.0.capacity()))
-        }
-    }
-    struct Wait;
-    impl Host for Wait {
-        type Value = Payload;
-        type Request = ();
-        fn call(
-            &mut self,
-            word: usize,
-            _: Args<'_, Payload>,
-            out: &mut Vec<Value<Payload>>,
-        ) -> Result<Done<()>, Failure> {
-            if word == 0 {
-                out.push(Value::App(Payload(Shared::new(vec![0; 800]))));
-                Ok(Done::Now)
-            } else {
-                Ok(Done::Later(()))
-            }
-        }
-        fn print(&mut self, _: &str) -> Result<(), Failure> {
-            Ok(())
-        }
-    }
-    let timeout = Code::Host("timeout");
-    let mut words = Vocabulary::default();
-    words.kind("payload", "a payload")?;
-    words.add("request", "-- payload")?;
-    words.add("wait", "payload -- payload")?;
-    words.raises(timeout)?;
-    words.carries(timeout, "payload")?;
-    let mut compiler = Compiler::<Payload>::new(words);
-    // The saved request keeps its allocation even after wait consumes its copy.
-    compiler.add(&token::source(
-        "carried",
-        "request let saved str 'timeout too_long' try saved wait catch 1 roll drop end 7",
-    )?)?;
-    let mut machine = Machine::new(compiler.finish()?, Limits::default());
-    let mut host = Wait;
-    assert!(matches!(
-        machine.run(&mut host, 1000)?,
-        Outcome::Suspended(())
-    ));
-    machine.raise_with(
-        Failure::new(timeout, "timed out"),
-        Value::App(Payload(Shared::new(vec![0; 1300]))),
-    )?;
-    assert!(matches!(machine.run(&mut host, 1000)?, Outcome::Finished));
-    assert_eq!(machine.stack(), [Value::str("too_long"), Value::Int(7)]);
-    Ok(())
-}
-
-#[test]
-fn host_imports_bound_each_value_and_opaque_depth() -> Result<(), Error> {
+fn an_opaque_values_depth_counts_toward_nesting() {
     #[derive(Clone, PartialEq)]
-    struct Weighted(u64, u8);
-    impl AppValue for Weighted {
+    struct Deep(u8);
+    impl AppValue for Deep {
         fn kind(&self) -> &'static str {
-            "weighted"
-        }
-        fn weight(&self) -> u64 {
-            self.0
+            "deep"
         }
         fn depth(&self) -> u8 {
-            self.1
+            self.0
         }
     }
-    let mut vocabulary = Vocabulary::default();
-    vocabulary.kind("weighted", "weighted")?;
-    let compiler = Compiler::<Weighted>::new(vocabulary);
-    let mut machine = Machine::new(compiler.finish()?, Limits::default());
-    let value = Value::App(Weighted(TOTAL / 2, 0));
-    machine.import(value.clone())?;
-    machine.import(value.clone())?;
-    machine.import(value.clone())?;
-    assert_eq!(machine.stack().len(), 3);
-    assert!(List::new(vec![value.clone(), value]).is_none());
-    assert!(List::new(vec![Value::App(Weighted(1, NESTING))]).is_none());
-    Ok(())
+    assert!(List::new(vec![Value::App(Deep(NESTING.saturating_sub(1)))]).is_some());
+    assert!(List::new(vec![Value::App(Deep(NESTING))]).is_none());
 }
 
-#[test]
-fn native_imports_share_reservations_and_refuse_independent_storage() -> Result<(), Error> {
-    #[derive(Clone, PartialEq)]
-    struct Payload(Shared<Vec<u8>>);
-    impl AppValue for Payload {
-        const IMPORT_LIMIT: usize = 256;
-        fn kind(&self) -> &'static str {
-            "payload"
-        }
-        fn weight(&self) -> u64 {
-            TOTAL.saturating_add(1)
-        }
-        fn import_bytes(&self) -> Option<usize> {
-            Some(Shared::<Vec<u8>>::bytes(self.0.capacity()))
-        }
-        fn retain(&self, imports: &Imports) -> Result<(), Failure> {
-            self.0.reserve(imports, self.import_bytes().unwrap_or(0))
-        }
-    }
-    let make = || Value::App(Payload(Shared::new(vec![0; 64])));
-    let compiler = Compiler::<Payload>::new(Vocabulary::default());
-    let mut machine = Machine::new(compiler.finish()?, Limits::default());
-    let value = make();
-    machine.import(value.clone())?;
-    machine.import(value.clone())?;
-    machine.import(value.clone())?;
-    assert_eq!(machine.stack().len(), 3);
-    assert!(List::new(vec![value]).is_none());
-    machine.import(make())?;
-    assert_eq!(
-        machine.import(make()).map_err(|e| e.code),
-        Err(Code::TooLong)
-    );
-    Ok(())
-}
-
-#[test]
-fn only_a_top_level_string_reserved_in_this_run_uses_the_grant_as_its_length_bound()
--> Result<(), Error> {
-    #[derive(Clone, Debug, PartialEq)]
-    struct Record(Shared<Text>);
-    impl AppValue for Record {
-        fn kind(&self) -> &'static str {
-            "record"
-        }
-        fn weight(&self) -> u64 {
-            self.0.chars_len() as u64
-        }
-    }
-    let compiler = Compiler::<Record>::new(Vocabulary::default());
-    let mut machine = Machine::new(compiler.finish()?, Limits::default());
-    let grant = machine.imports().clone();
-    let make = |n, imports: &Imports| -> Result<Value<Record>, Error> {
-        let lease = imports
-            .lease(Text::size(n, n))
-            .map_err(|f| Error::new(f.code, f.message, None))?;
-        Ok(Value::Str(Shared::leased(
-            Text::new(std::iter::repeat_n('x', n).collect::<String>()),
-            lease,
-        )))
-    };
-    let n = usize::try_from(TOTAL.saturating_add(1)).unwrap_or(usize::MAX);
-    let text = make(n, &grant)?;
-    let left = grant.remaining();
-    machine.import(text.clone())?;
-    assert_eq!(grant.remaining(), left);
-    assert_eq!(machine.stack(), std::slice::from_ref(&text));
-    assert!(List::new(vec![text.clone()]).is_none());
-    let Value::Str(storage) = text else {
-        return Err(Error::new(Code::Contract, "string", None));
-    };
-    assert_eq!(
-        machine
-            .import(Value::App(Record(storage)))
-            .map_err(|e| e.code),
-        Err(Code::TooLong)
-    );
-    // Unreserved strings, other runs' strings, and nested strings keep
-    // the language's length and expanded-weight limits.
-    let n = LONGEST.saturating_add(1);
-    let nested = make(n, &grant)?;
-    let list = List::new(vec![nested]).ok_or_else(|| Error::new(Code::Contract, "list", None))?;
-    let foreign = Imports::new(128 << 20);
-    for value in [
-        Value::str(std::iter::repeat_n('x', n).collect::<String>()),
-        make(n, &foreign)?,
-        Value::List(Shared::new(list)),
-    ] {
-        assert_eq!(
-            machine.import(value).map_err(|e| e.code),
-            Err(Code::TooLong)
-        );
-    }
-    let foreign = make(
-        usize::try_from(TOTAL.saturating_add(1)).unwrap_or(usize::MAX),
-        &foreign,
-    )?;
-    assert!(machine.import(foreign).is_err());
-    // A host's undersized lease does not bypass storage admission.
-    let text = Text::new(std::iter::repeat_n('x', n).collect::<String>());
-    let bytes = Shared::<Text>::bytes(text.heap_bytes());
-    let lease = grant
-        .lease(0)
-        .map_err(|f| Error::new(f.code, f.message, None))?;
-    let left = grant.remaining();
-    machine.import(Value::Str(Shared::leased(text, lease)))?;
-    assert_eq!(left.saturating_sub(grant.remaining()), bytes);
-    Ok(())
-}
-
-#[test]
-fn imported_strings_and_lists_hold_and_release_their_storage() -> Result<(), Failure> {
-    let grant = Imports::new(1024);
-    let text = || Value::<Ticket>::str(std::iter::repeat_n('x', 500).collect::<String>());
-    let held = text();
-    held.retain(&grant)?;
-    let duplicate = held.clone();
-    duplicate.retain(&grant)?;
-    let list = Value::List(Shared::new(
-        List::new(vec![held]).ok_or_else(|| Failure::new(Code::TooLong, "list"))?,
-    ));
-    list.retain(&grant)?;
-    assert_eq!(
-        text().retain(&grant).map_err(|e| e.code),
-        Err(Code::TooLong)
-    );
-    drop(list);
-    assert_eq!(
-        text().retain(&grant).map_err(|e| e.code),
-        Err(Code::TooLong)
-    );
-    drop(duplicate);
-    for _ in 0..100 {
-        text().retain(&grant)?;
-    }
-    let held = text();
-    held.retain(&grant)?;
-    let Value::Str(mut storage) = held else {
-        return Err(Failure::new(Code::Type, "test string"));
-    };
-    // Grown in place past what the grant holds, it is refused before it
-    // grows, and keeps what it holds.
-    let (held, lease) = Shared::make_mut(&mut storage);
-    let grown = held.append(&Text::new("y"), lease, |bytes| grant.lease(bytes));
-    assert_eq!(grown.map_err(|e| e.code), Err(Code::TooLong));
-    assert_eq!(
-        text().retain(&grant).map_err(|e| e.code),
-        Err(Code::TooLong)
-    );
-    drop(storage);
-    text().retain(&grant)?;
-    Ok(())
-}

@@ -49,20 +49,15 @@ pub fn arguments<S: AsRef<str>>(args: &[S]) -> Vec<Token> {
 /// `#` at a token's start a comment to the end of its line. A quote may
 /// span lines; one left open is an error at the line it opened on.
 pub fn source(source: &str, text: &str) -> Result<Vec<Token>, Error> {
-    source_limited(source, text, usize::MAX)
+    Ok(spans(source, text)?
+        .into_iter()
+        .map(|(token, _)| token)
+        .collect())
 }
 
 /// `source`'s tokens, each with the bytes of `text` it is written in:
 /// between two tokens is only whitespace and comments.
 pub(crate) fn spans(source: &str, text: &str) -> Result<Vec<(Token, Range<usize>)>, Error> {
-    spans_limited(source, text, usize::MAX)
-}
-
-fn spans_limited(
-    source: &str,
-    text: &str,
-    limit: usize,
-) -> Result<Vec<(Token, Range<usize>)>, Error> {
     let source: Arc<str> = Arc::from(source);
     let place = |line: u32| Place::Line {
         source: Arc::clone(&source),
@@ -75,16 +70,8 @@ fn spans_limited(
                 text: Rc::from(text),
                 place: place(at),
             };
-            if tokens.len() >= limit {
-                return Err(Error::new(
-                    Code::TooLong,
-                    "source token limit exceeded",
-                    Some(&token),
-                ));
-            }
             tokens.push((token, from..to));
         }
-        Ok(())
     };
     let mut chars = text.char_indices().peekable();
     let mut line = 1u32;
@@ -95,7 +82,7 @@ fn spans_limited(
     while let Some((at, c)) = chars.next() {
         match c {
             '\n' | ' ' | '\t' | '\r' => {
-                push(word.take(), at)?;
+                push(word.take(), at);
                 if c == '\n' {
                     line = next_line(line);
                 }
@@ -138,7 +125,7 @@ fn spans_limited(
             }
         }
     }
-    push(word, text.len())?;
+    push(word, text.len());
     Ok(tokens)
 }
 
@@ -149,14 +136,6 @@ fn open_quote(place: Place, quote: char) -> Error {
         place: Some(place),
         word: None,
     }
-}
-
-/// Tokenizes while retaining at most `limit` tokens.
-pub fn source_limited(source: &str, text: &str, limit: usize) -> Result<Vec<Token>, Error> {
-    Ok(spans_limited(source, text, limit)?
-        .into_iter()
-        .map(|(token, _)| token)
-        .collect())
 }
 
 #[cfg(test)]
@@ -208,30 +187,6 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn the_limit_counts_emitted_tokens() -> Result<(), Error> {
-        for text in [
-            "1 2",
-            "1 2 # comment\n",
-            "1 2 \\\n # comment",
-            "'one two' ''",
-        ] {
-            assert_eq!(source_limited("t", text, 2)?.len(), 2);
-        }
-        for text in ["1\n2", "1\n2 ", "1\n'2 3'"] {
-            let error = source_limited("t", text, 1).err();
-            assert!(matches!(
-                error,
-                Some(Error {
-                    code: Code::TooLong,
-                    place: Some(Place::Line { line: 2, .. }),
-                    ..
-                })
-            ));
-        }
-        assert!(source_limited("t", "''", 0).is_err());
-        Ok(())
-    }
 
     #[test]
     fn arguments_stay_whole() {

@@ -35,9 +35,6 @@ fn fuxth_ends_as_the_naive_interpreter_does() {
         let text = program(&mut rng, seed);
         let ran = fuxth(&text, u64::MAX);
         let (naive, trace) = Naive::run(&text);
-        // A limit each meets in its own place (a call in last place takes
-        // no room in fuxth), and runs that never end, are compared no more.
-        let limit = |e: &Ended| matches!(e, Ended::Failed(c, _) if c == "call_depth" || c == "stack_overflow");
         match (&ran, &naive) {
             (Ended::Refused(code, line), naive) => {
                 seen.refused = seen.refused.saturating_add(1);
@@ -59,9 +56,6 @@ fn fuxth_ends_as_the_naive_interpreter_does() {
                 }
             }
             (Ended::Endless, _) | (_, Ended::Endless) => {
-                seen.endless = seen.endless.saturating_add(1);
-            }
-            (ran, naive) if limit(ran) || limit(naive) => {
                 seen.endless = seen.endless.saturating_add(1);
             }
             (ran, naive) => {

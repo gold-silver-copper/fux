@@ -16,7 +16,7 @@
 "str fail try "
 "str 'fail negative' try "
 "str 'div_by_zero overflow type range' try "
-"str call_depth try "
+"str fail try "
 " negative"
 " not_a_number"
 " dup"

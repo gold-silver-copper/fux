@@ -1,5 +1,4 @@
-# Ackermann's function: deep recursion that isn't in last place, well
-# inside the call limit.
+# Ackermann's function: deep recursion that isn't in last place.
 # expect: 1 3 9 61
 
 # m n -- A(m, n)

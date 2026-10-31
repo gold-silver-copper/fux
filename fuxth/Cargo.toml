@@ -13,8 +13,5 @@ categories = ["compilers", "command-line-interface"]
 [dependencies]
 fuxth-core = { path = "core", version = "0.7.0" }
 
-[dev-dependencies]
-fux-vt-peak = { path = "../fux-vt/peak" }
-
 [lints]
 workspace = true

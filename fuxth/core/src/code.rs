@@ -69,10 +69,6 @@ codes! {
     Unclosed "unclosed" [found],
     /// A word given fewer values than it takes.
     StackUnderflow "stack_underflow",
-    /// The stack grew past its limit.
-    StackOverflow "stack_overflow",
-    /// Calls nested past their limit: recursion too deep.
-    CallDepth "call_depth",
     /// A value of the wrong type for a word.
     Type "type",
     /// Division or remainder by zero.
@@ -93,8 +89,7 @@ codes! {
     /// A `try`'s codes not a string written just before it, or naming a
     /// code no word raises.
     BadCodes "bad_codes" [found],
-    /// A string or list past the length or nesting allowed, or a run that
-    /// built more than its share.
+    /// Lists nested deeper than they may be.
     TooLong "too_long",
     /// An application word gave more or fewer values than its vocabulary
     /// says: a mistake in the application, not the program.

@@ -1,33 +1,13 @@
 //! Values on the stack: integers, booleans, strings, lists, and the
 //! application's own.
 use crate::Failure;
-use crate::{Code, NESTING};
-use crate::{ImportLease, Imports, Shared};
+use crate::NESTING;
+use std::rc::Rc;
 
 /// An application's own values: what it puts on the stack (a handle, a
 /// request being built). Each says what kind it is, for errors, and how it
 /// reads as text.
 pub trait AppValue: Clone + PartialEq {
-    /// A host's allocation grant for one complete text conversion.
-    /// The default adds no host limit to the language's own bounds.
-    const TEXT_LIMIT: usize = usize::MAX;
-
-    /// Aggregate grant for live imported storage, including strings and lists.
-    const IMPORT_LIMIT: usize = 128 * 1024 * 1024;
-
-    /// Reserve each owned allocation, recursively visiting shared children.
-    /// Heap-owning values reserve Shared storage here, or carry an ImportLease
-    /// when ownership leaves a shared wrapper. Inline values need no reservation.
-    fn retain(&self, _imports: &Imports) -> Result<(), Failure> {
-        Ok(())
-    }
-
-    /// The allocation retained by a native byte payload, including its wrapper.
-    /// Its traversal weight still charges work and bounds inclusion in lists.
-    fn import_bytes(&self) -> Option<usize> {
-        None
-    }
-
     /// What kind it is, as an error says it: "a pane".
     fn kind(&self) -> &'static str;
     /// What kind it is, as `kind` says it: "pane". By default its
@@ -35,28 +15,15 @@ pub trait AppValue: Clone + PartialEq {
     fn name(&self) -> &'static str {
         bare(self.kind())
     }
-    /// Retained payload and temporary workspace used by its text writer.
-    /// A list charges each reference, conservatively including shared values.
-    fn text_bytes(&self) -> usize {
-        0
-    }
-
-    /// Expanded work of traversing this value, including shared children.
-    fn weight(&self) -> u64 {
-        1
-    }
-
     /// Nesting below this value, including opaque records.
     fn depth(&self) -> u8 {
         0
     }
 
-    /// Streams the application's text into the aggregate conversion's sink.
-    /// Writers propagate sink failure and allocate only the workspace declared
-    /// by `text_bytes`, rather than building an intermediate String.
-    /// Admission and output call it separately; both must describe the same text.
-    fn write_text(&self, out: &mut dyn std::fmt::Write) -> Result<(), Failure> {
-        out.write_str(self.kind()).map_err(|_| text_limit())
+    /// Writes how it reads as text.
+    fn write_text(&self, out: &mut String) -> Result<(), Failure> {
+        out.push_str(self.kind());
+        Ok(())
     }
 }
 
@@ -122,8 +89,8 @@ kinds! {
 pub enum Value<A> {
     Int(i64),
     Bool(bool),
-    Str(Shared<Text>),
-    List(Shared<List<A>>),
+    Str(Rc<Text>),
+    List(Rc<List<A>>),
     App(A),
 }
 
@@ -167,91 +134,19 @@ impl Text {
         Text { text, chars, marks }
     }
 
-    /// Bytes shared storage for a string `bytes` long, of `chars`
-    /// characters, holds at most: what is reserved before it is made.
-    pub fn size(bytes: usize, chars: usize) -> usize {
-        Shared::<Text>::bytes(Self::bound(bytes, bytes == chars))
-    }
-
-    /// Bytes a string's text of `capacity` and its marks hold at most. The
-    /// marks of an ASCII string hold nothing, and of any other at most one
-    /// mark per `STRIDE` bytes of its text's capacity, in every state.
-    fn bound(capacity: usize, ascii: bool) -> usize {
-        let marks = if ascii { 0 } else { capacity / STRIDE };
-        marks
-            .saturating_mul(size_of::<usize>())
-            .saturating_add(capacity)
-    }
-
-    /// `other` added at the end, in place: how many characters before it
-    /// were marked, all of them the first time it holds more than ASCII.
-    /// When its text lacks room ([`grown`]), or its marks do, `held`'s lease
-    /// of the grown storage's [`Text::bound`] is taken first, and held beside
-    /// `lease` till both have grown; then it replaces `lease`.
-    pub(crate) fn append<E>(
-        &mut self,
-        other: &Text,
-        lease: &mut ImportLease,
-        held: impl FnOnce(usize) -> Result<ImportLease, E>,
-    ) -> Result<usize, E> {
+    /// `other` added at the end, in place.
+    pub(crate) fn append(&mut self, other: &Text) {
         let (bytes, chars, ascii) = (self.text.len(), self.chars, self.is_ascii());
-        let (all, count) = (
-            bytes.saturating_add(other.text.len()),
-            chars.saturating_add(other.chars),
-        );
-        let capacity = grown(all, bytes, self.text.capacity());
-        let marks = if all == count {
-            0
-        } else {
-            count.saturating_sub(1) / STRIDE
-        };
-        if capacity != self.text.capacity() || marks > self.marks.capacity() {
-            let new = held(Shared::<Text>::bytes(Self::bound(capacity, all == count)))?;
-            self.text.reserve_exact(capacity.saturating_sub(bytes));
-            if all != count {
-                let room = (capacity / STRIDE).saturating_sub(self.marks.len());
-                self.marks.reserve_exact(room);
-            }
-            *lease = new;
-        }
         self.text.push_str(&other.text);
         self.chars = chars.saturating_add(other.chars);
         if self.is_ascii() {
-            return Ok(0);
+            return;
         }
-        let marked = if ascii {
+        if ascii {
             let marks = (1..chars.div_ceil(STRIDE)).map(|k| k.saturating_mul(STRIDE));
             self.marks.extend(marks);
-            chars
-        } else {
-            0
-        };
+        }
         self.marks.extend(starts(&other.text, chars, bytes));
-        Ok(marked)
-    }
-
-    /// Space for shared Text storage and its character index, excluding the
-    /// String moved into it. `None` if the size overflows.
-    pub fn import_bytes(chars: usize, ascii: bool) -> Option<usize> {
-        let marks = if ascii {
-            0
-        } else {
-            chars.saturating_sub(1) / STRIDE
-        };
-        marks
-            .checked_mul(size_of::<usize>())?
-            .checked_add(Shared::<Text>::bytes(0))
-    }
-
-    /// Moves out the String, dropping its character index without a copy.
-    pub fn into_string(self) -> String {
-        self.text
-    }
-
-    /// Bytes retained in the text and its character index, at most
-    /// ([`Text::bound`]): what a string born holding a lease was charged.
-    pub fn heap_bytes(&self) -> usize {
-        Self::bound(self.text.capacity(), self.is_ascii())
     }
 
     /// How many characters it has.
@@ -288,17 +183,6 @@ impl Text {
     }
 }
 
-/// The capacity that holds `need`, from `len` in `capacity`: the same if it
-/// does, else at least twice `len`, as `Vec` grows, so pushes cost amortized
-/// constant time.
-fn grown(need: usize, len: usize, capacity: usize) -> usize {
-    if need <= capacity {
-        capacity
-    } else {
-        need.max(len.saturating_mul(2))
-    }
-}
-
 /// The marks in `text` when its first character is character `first`,
 /// and its first byte byte `byte`, of a string.
 fn starts(text: &str, first: usize, byte: usize) -> impl Iterator<Item = usize> {
@@ -320,18 +204,11 @@ impl std::fmt::Display for Text {
     }
 }
 
-/// The most a list may hold in all, counting through the lists and strings
-/// in it (a list held twice counts twice): what bounds every walk over a
-/// value, comparing or printing it.
-pub const TOTAL: u64 = 16_000_000;
-
-/// A list's values, how deep it nests (1 for a list of no lists), and how
-/// much it holds in all ([`Value::weight`]).
+/// A list's values, and how deep it nests (1 for a list of no lists).
 #[derive(Clone, Debug)]
 pub struct List<A> {
     items: Vec<Value<A>>,
     depth: u8,
-    weight: u64,
 }
 
 /// Two lists are equal when their values are.
@@ -343,92 +220,41 @@ impl<A: PartialEq> PartialEq for List<A> {
 
 impl<A> List<A> {
     /// Its values. Only `List`'s own ways change them, so how deep it
-    /// nests and how much it holds stay true.
+    /// nests stays true.
     pub fn items(&self) -> &[Value<A>] {
         &self.items
-    }
-
-    /// Bytes retained in the item vector, excluding the values' own storage.
-    pub fn heap_bytes(&self) -> usize {
-        self.items
-            .capacity()
-            .saturating_mul(std::mem::size_of::<Value<A>>())
-    }
-
-    /// Bytes shared storage for a list with room for `capacity` items holds:
-    /// what is reserved before it is made.
-    pub fn size(capacity: usize) -> usize {
-        Shared::<Self>::bytes(capacity.saturating_mul(std::mem::size_of::<Value<A>>()))
-    }
-
-    /// Grown in place, if it lacks room for one more item ([`grown`]), its
-    /// `lease` swapped first for `held`'s of what the grown storage holds.
-    pub(crate) fn grow<E>(
-        &mut self,
-        lease: &mut ImportLease,
-        held: impl FnOnce(usize) -> Result<ImportLease, E>,
-    ) -> Result<(), E> {
-        let (len, has) = (self.items.len(), self.items.capacity());
-        let room = grown(len.saturating_add(1), len, has);
-        if room != has {
-            let new = held(Self::size(room))?;
-            self.items.reserve_exact(room.saturating_sub(len));
-            *lease = new;
-        }
-        Ok(())
     }
 }
 
 impl<A: AppValue> List<A> {
-    /// A list of `items`; `None` if it would nest deeper than [`NESTING`]
-    /// or hold more than [`TOTAL`] in all.
+    /// A list of `items`; `None` if it would nest deeper than [`NESTING`].
     pub fn new(items: Vec<Value<A>>) -> Option<Self> {
         let inner = items.iter().map(Value::depth).max().unwrap_or(0);
         let depth = inner.checked_add(1).filter(|d| *d <= NESTING)?;
-        let weight = items
-            .iter()
-            .try_fold(0u64, |all, item| all.checked_add(item.weight()))?;
-        let weight = weight.checked_add(1).filter(|w| *w <= TOTAL)?;
-        Some(Self {
-            items,
-            depth,
-            weight,
-        })
+        Some(Self { items, depth })
     }
 
-    /// `value` added at the end; `None` past the limits.
+    /// `value` added at the end; `None` past [`NESTING`].
     pub fn push(&mut self, value: Value<A>) -> Option<()> {
         let depth = value.depth().checked_add(1).filter(|d| *d <= NESTING)?;
-        let weight = self
-            .weight
-            .checked_add(value.weight())
-            .filter(|w| *w <= TOTAL)?;
         self.depth = self.depth.max(depth);
-        self.weight = weight;
         self.items.push(value);
         Some(())
     }
 
-    /// Item `at` replaced by `value`: how many items it looked through
-    /// for how deep it nests now; `None` past the limits or the end.
-    pub fn put(&mut self, at: usize, value: Value<A>) -> Option<usize> {
+    /// Item `at` replaced by `value`; `None` past [`NESTING`] or the end.
+    pub fn put(&mut self, at: usize, value: Value<A>) -> Option<()> {
         let depth = value.depth().checked_add(1).filter(|d| *d <= NESTING)?;
-        let old = self.items.get(at)?;
-        let (old_depth, old_weight) = (old.depth(), old.weight());
-        let weight = (self.weight.saturating_sub(old_weight))
-            .checked_add(value.weight())
-            .filter(|w| *w <= TOTAL)?;
         let slot = self.items.get_mut(at)?;
-        *slot = value;
-        self.weight = weight;
+        let old_depth = std::mem::replace(slot, value).depth();
         // The deepest item may be the one replaced: then look again.
         if old_depth.saturating_add(1) >= self.depth && depth < self.depth {
             let inner = self.items.iter().map(Value::depth).max().unwrap_or(0);
             self.depth = inner.saturating_add(1);
-            return Some(self.items.len());
+            return Some(());
         }
         self.depth = self.depth.max(depth);
-        Some(0)
+        Some(())
     }
 }
 
@@ -450,155 +276,41 @@ impl<A: AppValue> Value<A> {
         }
     }
 
-    /// The value as text, with one admission for retained inputs, formatter
-    /// workspace and the entire output, including nested application values.
+    /// The value as text.
     pub fn text(&self) -> Result<String, Failure> {
-        self.render_text(usize::MAX, None)?.ok_or_else(text_limit)
+        let mut out = String::new();
+        self.write_text(&mut out)?;
+        Ok(out)
     }
 
-    /// The text, if it is at most `most` characters long.
-    pub fn text_upto(&self, most: usize) -> Result<Option<Text>, Failure> {
-        Ok(self.render_text(most, None)?.map(Text::new))
-    }
-
-    /// `text_upto` as a string whose storage is reserved from `imports`
-    /// once the text is counted, before it is made.
-    pub fn string_upto(&self, most: usize, imports: &Imports) -> Result<Option<Self>, Failure> {
-        let lease = ImportLease::default();
-        let text = self.render_text(most, Some((imports, &lease)))?;
-        Ok(text.map(|text| Self::Str(Shared::leased(Text::new(text), lease))))
-    }
-
-    fn own_bytes(&self) -> usize {
+    /// Writes its text at the end of `out`.
+    pub fn write_text(&self, out: &mut String) -> Result<(), Failure> {
+        use std::fmt::Write;
         match self {
-            Self::Str(text) => Shared::<Text>::bytes(text.heap_bytes()),
-            Self::List(list) => Shared::<List<A>>::bytes(list.heap_bytes()),
-            Self::Int(_) | Self::Bool(_) | Self::App(_) => 0,
-        }
-    }
-
-    /// Retained storage, counting each reference, with the application's own
-    /// payload or formatter workspace. `None` when the aggregate overflows.
-    pub fn storage_bytes(&self, app: impl Fn(&A) -> usize + Copy) -> Option<usize> {
-        match self {
-            Self::List(list) => list.items.iter().try_fold(self.own_bytes(), |n, item| {
-                n.checked_add(item.storage_bytes(app)?)
-            }),
-            Self::App(value) => Some(app(value)),
-            Self::Int(_) | Self::Bool(_) | Self::Str(_) => Some(self.own_bytes()),
-        }
-    }
-
-    /// The text, if it is at most `most` characters long, `held` reserved
-    /// for it once it is counted, before it is made.
-    fn render_text(
-        &self,
-        most: usize,
-        held: Option<(&Imports, &ImportLease)>,
-    ) -> Result<Option<String>, Failure> {
-        struct Count {
-            output: crate::Render,
-            chars: usize,
-            most: usize,
-            long: bool,
-        }
-        impl std::fmt::Write for Count {
-            fn write_str(&mut self, text: &str) -> std::fmt::Result {
-                self.chars = self
-                    .chars
-                    .checked_add(text.chars().count())
-                    .ok_or(std::fmt::Error)?;
-                if self.chars > self.most {
-                    self.long = true;
-                    return Err(std::fmt::Error);
-                }
-                self.output.write_str(text)
-            }
-        }
-        let left = A::TEXT_LIMIT
-            .checked_sub(
-                self.storage_bytes(AppValue::text_bytes)
-                    .ok_or_else(text_limit)?,
-            )
-            .ok_or_else(text_limit)?;
-        let mut count = Count {
-            output: crate::Render::new(left),
-            chars: 0,
-            most,
-            long: false,
-        };
-        if let Err(failure) = self.write_text(&mut count) {
-            return if count.long { Ok(None) } else { Err(failure) };
-        }
-        if let Some((imports, lease)) = held {
-            lease.reserve(imports, Text::size(count.output.bytes(), count.chars))?;
-        }
-        count
-            .output
-            .finish(|out| self.write_text(out), text_limit)
-            .map(Some)
-    }
-
-    /// Streams the text without allocating a whole rendered copy.
-    pub fn write_text(&self, out: &mut dyn std::fmt::Write) -> Result<(), Failure> {
-        match self {
-            Self::Int(n) => write!(out, "{n}").map_err(|_| text_limit()),
-            Self::Bool(b) => write!(out, "{b}").map_err(|_| text_limit()),
-            Self::Str(text) => out.write_str(text).map_err(|_| text_limit()),
+            Self::Int(n) => _ = write!(out, "{n}"),
+            Self::Bool(b) => _ = write!(out, "{b}"),
+            Self::Str(text) => out.push_str(text),
             Self::List(list) => {
                 for (i, item) in list.items.iter().enumerate() {
                     if i > 0 {
-                        out.write_char(' ').map_err(|_| text_limit())?;
+                        out.push(' ');
                     }
                     item.write_text(out)?;
                 }
-                Ok(())
             }
-            Self::App(app) => app.write_text(out),
+            Self::App(app) => app.write_text(out)?,
         }
+        Ok(())
     }
-}
-
-fn text_limit() -> Failure {
-    Failure::new(Code::TooLong, "the text exceeds its allocation limit")
 }
 
 impl<A> Value<A> {
     pub fn str(text: impl Into<String>) -> Self {
-        Self::Str(Shared::new(Text::new(text)))
+        Self::Str(Rc::new(Text::new(text)))
     }
 }
 
 impl<A: AppValue> Value<A> {
-    /// Reserve live shared storage once per machine. Projected children retain
-    /// their own leases even after a parent list or record has been dropped.
-    pub fn retain(&self, imports: &Imports) -> Result<(), Failure> {
-        match self {
-            Self::Int(_) | Self::Bool(_) => Ok(()),
-            Self::Str(text) => text.reserve(imports, self.own_bytes()),
-            Self::List(list) => {
-                list.reserve(imports, self.own_bytes())?;
-                for value in list.items() {
-                    value.retain(imports)?;
-                }
-                Ok(())
-            }
-            Self::App(app) => app.retain(imports),
-        }
-    }
-
-    /// How much it holds in all: a list counts its values' weights and
-    /// itself, a string its characters, anything else 1. A walk over the
-    /// value goes through about this many things.
-    pub fn weight(&self) -> u64 {
-        match self {
-            Self::List(list) => list.weight,
-            Self::Str(s) => u64::try_from(s.chars_len()).unwrap_or(u64::MAX).max(1),
-            Self::App(app) => app.weight(),
-            Self::Int(_) | Self::Bool(_) => 1,
-        }
-    }
-
     /// How deep it nests: 0 for anything but a list.
     pub fn depth(&self) -> u8 {
         match self {

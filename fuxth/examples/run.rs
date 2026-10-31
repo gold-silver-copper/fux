@@ -3,8 +3,8 @@
 //! value a line; an error is printed as `fuxth: CODE: MESSAGE` and the
 //! status is 1. `cargo run --release -p fuxth --example run -- FILE`
 use fuxth::{
-    AppValue, Args, Compiler, Done, Failure, Host, Limits, Machine, Outcome, STDLIB, Value,
-    Vocabulary, token,
+    AppValue, Args, Compiler, Done, Failure, Host, Machine, Outcome, STDLIB, Value, Vocabulary,
+    token,
 };
 use std::io::Write;
 
@@ -41,9 +41,6 @@ impl Host for Bare {
     }
 }
 
-/// Steps a program may take before it counts as endless.
-const STEPS: u64 = 100_000_000;
-
 fn shown(value: &Value<Nothing>) -> String {
     match value {
         Value::Int(n) => n.to_string(),
@@ -64,19 +61,14 @@ fn run(path: &str) -> Result<Vec<String>, String> {
         .and_then(|t| compiler.add(&t))
         .and_then(|()| compiler.finish());
     let program = compiled.map_err(|e| e.to_string())?;
-    let mut machine = Machine::new(program, Limits::default());
-    match machine.run(&mut Bare, STEPS) {
-        Ok(Outcome::Finished) => Ok(machine.stack().iter().map(shown).collect()),
-        Ok(Outcome::Paused | Outcome::Suspended(())) => {
-            // The innermost step of the program's own, not the library's.
-            let ours = machine
-                .calls()
-                .rev()
-                .find(|t| !t.place.to_string().starts_with("stdlib.fux"));
-            let place = ours.map_or_else(String::new, |t| format!("{}: {}: ", t.place, t.text));
-            Err(format!("steps: {place}ran more than {STEPS} steps"))
+    let mut machine = Machine::new(program);
+    // A program that never ends is stopped as any program is: Ctrl-C.
+    loop {
+        match machine.run(&mut Bare, u64::MAX) {
+            Ok(Outcome::Finished) => return Ok(machine.stack().iter().map(shown).collect()),
+            Ok(Outcome::Paused | Outcome::Suspended(())) => {}
+            Err(e) => return Err(e.to_string()),
         }
-        Err(e) => Err(e.to_string()),
     }
 }
 
