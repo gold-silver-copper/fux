@@ -496,7 +496,9 @@ read-file`. `X warn` prints on stderr:
   who wants your panes apart from theirs gives you a server of your own
   (`FUX_SOCKET=PATH fux start`), which they watch by attaching to it.
   `kill-server` from inside its own server is refused;
-  `kill "$(fux status str server_pid get)"` stops it. A command line against a server of another
+  `kill` on its process stops it: `kill "$(fux status str server_pid get)"`,
+  or on macOS, which says no `server_pid`, the pid `lsof -t SOCKET` gives.
+  A command line against a server of another
   fux protocol runs again with that server's own binary, saying so in one
   line on stderr; where that cannot be, it fails with `mismatch`, saying why.
 - Nothing is saved on its own: a server that stops, or crashes, takes its
