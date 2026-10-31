@@ -305,11 +305,8 @@ impl<A: AppValue> Machine<A> {
                 ));
             }
         }
-        // Another region's strings and lists come into this run's: what a
-        // run holds is its region's.
-        let value = value
-            .homed(&self.region)
-            .map_err(|refused| self.full(refused))?;
+        // What a run holds is its region's: another region's strings and
+        // lists are held here too, before it keeps them.
         value
             .retain(&self.region)
             .map_err(|failure| self.failed(failure))?;

@@ -249,6 +249,12 @@ impl Text {
         self.text.parted()
     }
 
+    /// Bytes it holds in its region, its box with it.
+    fn held(&self) -> usize {
+        let marks = self.marks.as_ref().map_or(0, BoundedVec::held);
+        (self.text.held().saturating_add(marks)).saturating_add(Shared::<Text>::BOX)
+    }
+
     /// The room its text and marks have, in all: what moves as it grows.
     pub(crate) fn capacity(&self) -> usize {
         let marks = self.marks.as_ref().map_or(0, BoundedVec::capacity);
@@ -417,6 +423,11 @@ impl<A> List<A> {
     /// The region its values' store is in.
     pub fn region(&self) -> &Region {
         self.items.region()
+    }
+
+    /// Bytes it holds in its region, its box with it, not its values'.
+    fn held(&self) -> usize {
+        self.items.held().saturating_add(Shared::<Self>::BOX)
     }
 
     /// The values it has room for.
@@ -614,61 +625,21 @@ impl<A> Value<A> {
 }
 
 impl<A: AppValue> Value<A> {
-    /// It, with its strings and lists in `region`: one another region holds
-    /// is copied there, reserved whole before any of it is made, through
-    /// the lists it holds. What `region` holds already is shared.
-    pub(crate) fn homed(self, region: &Region) -> Result<Self, Refused> {
-        if self.home(region) {
-            return Ok(self);
-        }
-        match self {
-            Self::Str(text) => {
-                region.admits(Text::bound(text.len(), text.chars_len()))?;
-                text.copy(region)?.value()
-            }
-            Self::List(list) => {
-                let n = list.items().len();
-                region.admits(List::<A>::size(n))?;
-                // Its box and its values' store first: what it holds is
-                // copied after, each checked whole as it is.
-                let boxed = region.reserve(Shared::<List<A>>::BOX)?;
-                let mut items = BoundedVec::with_capacity(region, n)?;
-                for item in list.items() {
-                    items.push(item.clone().homed(region)?)?;
-                }
-                // Copied, it nests and holds as much as it did.
-                let (depth, weight) = (list.depth, list.weight);
-                let copy = List {
-                    items,
-                    depth,
-                    weight,
-                };
-                Ok(Self::List(Shared::holding(copy, boxed)))
-            }
-            Self::Int(_) | Self::Bool(_) | Self::App(_) => Ok(self),
-        }
-    }
-
-    /// Whether all its strings and lists are `region`'s.
-    fn home(&self, region: &Region) -> bool {
-        match self {
-            Self::Str(text) => text.region().same(region),
-            Self::List(list) => {
-                list.region().same(region) && list.items().iter().all(|item| item.home(region))
-            }
-            Self::Int(_) | Self::Bool(_) | Self::App(_) => true,
-        }
-    }
-
-    /// Held in `region` as it is admitted into a run: the box of a string
-    /// or list a host made without one (their stores are their region's),
-    /// the values in a list, and an application value's own bytes.
+    /// Held in `region` as it is admitted into a run, before the run keeps
+    /// it: a string's or list's box, unless some region holds it, when its
+    /// stores are `region`'s; all it holds, box and stores, when they are
+    /// another region's (its box's lease moves to `region`, nothing is
+    /// copied); the values in a list; and an application value's own bytes.
     pub fn retain(&self, region: &Region) -> Result<(), Failure> {
         match self {
             Self::Int(_) | Self::Bool(_) => Ok(()),
-            Self::Str(text) => text.boxed(region),
+            Self::Str(text) if text.region().same(region) => text.boxed(region),
+            Self::Str(text) => text.reserve(region, text.held()),
             Self::List(list) => {
-                list.boxed(region)?;
+                match list.region().same(region) {
+                    true => list.boxed(region)?,
+                    false => list.reserve(region, list.held())?,
+                }
                 for value in list.items() {
                     value.retain(region)?;
                 }

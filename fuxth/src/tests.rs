@@ -1918,18 +1918,63 @@ fn another_regions_strings_and_lists_are_charged_to_the_run_that_admits_them() -
     let refused = machine.import(foreign).err().map(|e| e.code);
     assert_eq!(refused, Some(Code::TooLong), "500,000 bytes into 32 KiB");
     assert_eq!(room.remaining(), left, "the region is as it was");
-    // One that fits is copied in, charged, and given back as it drops;
-    // a list of it, the same.
+    // One that fits is charged to the run, nothing copied, and given back
+    // as it drops; a list of it, the list's own too, the string once.
     let fits = std::iter::repeat_n('x', 1000).collect::<String>();
     let short = Value::<Ticket>::str(&host, &fits)?;
     machine.import(short.clone())?;
-    let mut items = BoundedVec::new(&host);
+    let mut items = BoundedVec::with_capacity(&host, 1)?;
     items.push(short)?;
     let list = List::new(items).ok_or_else(|| Error::new(Code::TooLong, "list", None))?;
     machine.import(list.value()?)?;
     drop(host);
     let held = left.saturating_sub(room.remaining());
-    assert!(held >= 2 * Text::size(&fits), "{held} bytes held");
+    let stack = 4 * size_of::<Value<Ticket>>();
+    let list = List::<Ticket>::size(1);
+    assert_eq!(held, Text::size(&fits) + list + stack, "{held} bytes held");
+    drop(machine);
+    assert_eq!(room.remaining(), room.budget());
+    Ok(())
+}
+
+#[test]
+fn a_foreign_lists_application_values_are_refused_before_their_heap_is_made() -> Result<(), Error> {
+    #[derive(Clone, Debug, PartialEq)]
+    struct Payload(Vec<u8>, Lease);
+    impl AppValue for Payload {
+        fn kind(&self) -> &'static str {
+            "payload"
+        }
+        fn weight(&self) -> u64 {
+            self.0.len() as u64
+        }
+        fn retain(&self, region: &Region) -> Result<(), Failure> {
+            self.1.reserve(region, self.0.capacity())
+        }
+    }
+    let host = Region::new(1 << 20);
+    let payload = Value::App(Payload(vec![7; 500_000], Lease::default()));
+    payload
+        .retain(&host)
+        .map_err(|f| Error::new(f.code, f.message, None))?;
+    let mut items = BoundedVec::new(&host);
+    items.push(payload)?;
+    let list = List::new(items).ok_or_else(|| Error::new(Code::TooLong, "list", None))?;
+    let list = list.value()?;
+    let room = Region::new(32 << 10);
+    let compiler = Compiler::<Payload>::new(Vocabulary::default(), &room);
+    let mut machine = Machine::new(compiler.finish()?, Limits::default())?;
+    let left = room.remaining();
+    let before = ALLOCATOR.live();
+    ALLOCATOR.reset_peak();
+    let refused = machine.import(list).err().map(|e| e.code);
+    let allocated = ALLOCATOR.peak().saturating_sub(before);
+    assert_eq!(refused, Some(Code::TooLong));
+    assert!(
+        allocated < 4096,
+        "{allocated} bytes made before the refusal"
+    );
+    assert_eq!(room.remaining(), left, "the region is as it was");
     drop(machine);
     assert_eq!(room.remaining(), room.budget());
     Ok(())
