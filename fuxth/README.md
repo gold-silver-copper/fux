@@ -23,7 +23,7 @@ line, the deepest first; `print` prints a value at once.
 - **Values:** integers (64-bit, checked: no overflow, no division by zero;
   `div` truncates toward zero), booleans (never integers), strings (their
   elements are one-character strings), lists (of any values, lists included,
-  nested at most 64 deep), and the application's own.
+  nested however deep), and the application's own.
 - **Checked before it runs.** The whole program is compiled first. An unknown
   word or an unclosed block is an error before anything happens (told with
   a word in scope spelt nearly so, or `str WORD` for text); so is a step
@@ -44,17 +44,13 @@ line, the deepest first; `print` prints a value at once.
   application does something (asks a server); the run goes on once it has the
   answer. All of a run's state is data: no threads, no blocking, no Rust
   recursion in running a program, and dropping it stops it. A budget of steps
-  lets the host check for Ctrl-C in a loop that never pauses, and
-  `Machine::steps` counts every step taken, through every pause, for a host
-  that caps a run.
-- **Bounded.** 1,000,000 values on the stack, and as many `let` names in
-  all the calls nested, 10,000 nested calls; a string or list built holds at
-  most 1,000,000 elements, and a list holds at most 16,000,000 in all,
-  counting through the lists and strings in it; every string and list a run
-  builds or imports is reserved, before it is made, from one grant (128 MiB by
-  default), and gives it back once dropped; long steps cost a step per 64
-  elements; `push` and `put` grow a string or list in place when nothing
-  else holds it. String literals are not built, so they are exempt.
+  lets the host check for Ctrl-C in a loop that never pauses.
+- **No limits of its own.** The stack, the calls nested, strings and lists
+  grow as far as memory lets them: the user and the OS bound a run
+  (Ctrl-C, `timeout`, `ulimit`). Lists nest as deep as memory lets them:
+  no walk over a value (comparing, writing, dropping) is a Rust recursion.
+  `push` and `put` grow a string or list in place when nothing else holds
+  it.
 - **Errors** carry a stable code, a message, and the file, line and word.
 
 ## The core
@@ -69,7 +65,7 @@ line, the deepest first; `print` prints a value at once.
 | `begin … FLAG until` | the body, until FLAG is true |
 | `list … end` | a list of the values its body leaves; the body starts with an empty stack (values from outside come in by name) |
 | `SEQ each … end` | the body once per element of a string or list, the element pushed; the body sees the whole stack |
-| `CODES try … catch … end` | the body, from an empty stack (values from outside come in by name), its values left. If it fails with one of CODES (a string written just before `try`: `str 'timeout closed' try`), what it began is undone (its calls, blocks and values) and the handler runs instead, on the stack as it was at `try` and the failure's message and code, both strings, the code on top; a failure of a code the application declares with `carries` may carry a value instead of the message (`Machine::raise_with`). A carried value must match the explicit declaration for its registered code; an undeclared or wrong payload is an uncatchable `contract` failure before recovery. Duplicate `carries` declarations are refused. The message is the failure's own, as its word or `fail` gave it (`Error::message`), with no place, word or host's telling added: only a failure that ends the program is said where, by its host (`Error::located`); one longer than a string may be fails with `too_long` instead, for a `try` further out, not cut. A failure of another code goes through untouched, as does one in the handler. A code no running word raises (a typo, `unknown_word`) is refused before the program runs, unless the application's words raise it as they run; one found compiling is never caught. Checked as `if … else … then`: the two ways join after `end` |
+| `CODES try … catch … end` | the body, from an empty stack (values from outside come in by name), its values left. If it fails with one of CODES (a string written just before `try`: `str 'timeout closed' try`), what it began is undone (its calls, blocks and values) and the handler runs instead, on the stack as it was at `try` and the failure's message and code, both strings, the code on top; a failure of a code the application declares with `carries` may carry a value instead of the message (`Machine::raise_with`). A carried value must match the explicit declaration for its registered code; an undeclared or wrong payload is an uncatchable `contract` failure before recovery. Duplicate `carries` declarations are refused. The message is the failure's own, as its word or `fail` gave it (`Error::message`), with no place, word or host's telling added: only a failure that ends the program is said where, by its host (`Error::located`). A failure of another code goes through untouched, as does one in the handler. A code no running word raises (a typo, `unknown_word`) is refused before the program runs, unless the application's words raise it as they run; one found compiling is never caught. Checked as `if … else … then`: the two ways join after `end` |
 
 | Word | Stack | |
 |---|---|---|
@@ -100,9 +96,7 @@ is-space is-digit is-upper is-lower is-letter upper lower copies pad`.
 
 Files are split as a shell splits a line: quotes, backslashes, and `#`
 comments at a word's start. `quote (s -- s)` builds one source token that
-reads back unchanged, including empty text and embedded newlines. Its
-expansion uses the same string, construction and step bounds as other
-library words.
+reads back unchanged, including empty text and embedded newlines.
 
 Hosts can constrain a library definition's inputs before compiling its
 callers: `compiler.inputs("dump", "scope")?`. The names use the host
@@ -119,7 +113,7 @@ There is no search path, extension inference, network loader or namespace.
 ## Embedding
 
 ```rust
-use fuxth::{Code, Compiler, Done, Failure, Host, Limits, Machine, Outcome, STDLIB, Value, Vocabulary, token};
+use fuxth::{Code, Compiler, Done, Failure, Host, Machine, Outcome, STDLIB, Value, Vocabulary, token};
 
 let mut words = Vocabulary::default();
 words.kind("ticket", "a ticket")?;               // a kind of the application's values
@@ -130,11 +124,11 @@ words.carries(Code::Host("refused"), "ticket")?; // which a handler may get as a
 let mut compiler = Compiler::new(words);
 compiler.add(&token::source("stdlib.fux", STDLIB)?)?;
 compiler.add(&token::source("script.fux", "3 ask")?)?;
-let mut machine = Machine::new(compiler.finish()?, Limits::default());
+let mut machine = Machine::new(compiler.finish()?);
 loop {
     match machine.run(&mut my_host, 10_000)? {
         Outcome::Finished => break,
-        Outcome::Suspended(request) => { /* do it, then */ machine.import(answer)?; }
+        Outcome::Suspended(request) => { /* do it, then */ machine.push(answer); }
         // or, if doing it failed: machine.raise(failure)?;
         // or, carrying a value for a try's handler: machine.raise_with(failure, value)?;
         Outcome::Paused => { /* check for Ctrl-C */ }
@@ -158,48 +152,14 @@ a code declared twice is refused (`contract`), so a host adds each once
 and keeps the id `add` gave. The checker follows those kinds, as it does
 the core's, and refuses only what surely fails.
 
-Application values report expanded traversal `weight` and nesting `depth`;
-opaque records cannot hide their children from list and work limits.
-`Machine::import` bounds each incoming value and charges its traversal work
-before retaining a suspended result. Immediate host results use that
-same admission automatically, and host argument traversal is charged too.
-A run is held by one `Region`, a byte budget its host gives the compiler
-(`Compiler::new(vocabulary, &region)`, or `make_in` for a compiler cloned
-from a library's): the program's literals are made in it, and its machine
-runs in it. Every string and list is a store of the region (`BoundedString`,
-`BoundedVec`), reserved before it is allocated and given back as it drops,
-and so are the machine's stack, calls, `let` names and the rest of its state:
-their types say so, and `bounded_only!` at the top of those modules refuses
-std's stores there. A host word makes its values in the run's region too
-(`Args::region`, `Value::str`, `List::value`). What a region refuses is
-`too_long`, before anything is made. Heap-owning application values
-implement `retain(&Region)`, holding their `Shared<T>` storage (or a `Lease`
-they carry) there as they are admitted; a string or list a host boxed with
-`Shared::new` has its box held the same way. The wrapper keeps its
-reservation when the value is edited; copying the storage starts a fresh
-one. Shared children hold their own; clones hold nothing twice. The last
-reference's drop gives it all back, so polling does not consume a lifetime
-allowance.
-
-Native byte payloads say `AppValue::native` to be bounded by the region
-instead of the per-value language weight ceiling. Their full weight still
-charges traversal and inclusion in lists. All other host values continue to
-obey the ordinary string, nesting and list limits; only a top-level string
-held in the run's region already is bounded by the region instead.
-
-Application values stream their text through `AppValue::write_text` and
-declare the workspace their writer allocates with `scratch`. A conversion
-counts its whole output first, then is made in exactly its room in the run's
-region, beside that workspace: nested lists share the one region, rather than
-giving each member its own limit, and one the region can't hold is refused
-before any of it is made. Shared references count at each occurrence. Text
-writers describe the same immutable text on the counting and output passes,
-and propagate a sink failure.
+Application values report their nesting `depth`, so an opaque record can't
+hide its children from the nesting bound, and write their text with
+`AppValue::write_text`.
 
 The host implements [`Host`]: `call(word, args, out)` gets the word's values
 (an iterator, the deepest first) and pushes its results, and answers
 `Done::Now` or `Done::Later(request)`; a suspended word's results are what the
-host imports before running the machine again, or its failure is what the
+host pushes before running the machine again, or its failure is what the
 host raises there (`machine.raise(failure)`), caught by a `try` as one at
 once would be; `machine.at()` is the token of the word it stopped at. The
 codes of its words' failures are the vocabulary's (`raises`), for a `try` to
@@ -218,16 +178,14 @@ there (`unset`).
 Expand imports before compiling:
 
 ```rust,ignore
-let image = SourceImage::load(source, &mut loader, limits)?;
+let image = SourceImage::load(source, &mut loader)?;
 compiler.add(&image.tokens())?;
 ```
 
 A host can adapt the expanded tokens before `add`. It supplies canonical
-path resolution and bounded reads of regular files opened nonblocking. Relative paths use the
+path resolution and reads of regular files opened nonblocking. Relative paths use the
 requiring file; command-line/stdin roots use the host's captured cwd and fail
-when it is unknown. Default limits, including the root, are `SOURCE_MAX`
-(16 MiB), 256 units,
-32 active require edges and 1,000,000 input tokens. The image retains the
+when it is unknown. The image retains the
 expanded tokens and their source chains and can cross threads; `tokens()`
 replays it without IO. Save it for later definitions-only compilations.
 
@@ -243,7 +201,7 @@ compiles a library as `add` does and gives each definition's [`Doc`]: the
 comment on the line just above its `define`, `# EFFECT : ABOUT`, and its
 code as written; a definition without that comment is refused, and so is
 a block open as the library begins or ends. A list's values are
-`List::items()`, read only, so its nesting and size limits hold.
+`List::items()`, read only, so its nesting bound holds.
 
 ## Tested
 

@@ -1,8 +1,6 @@
 //! How fast fuxth compiles and runs: a few programs, each timed over several runs.
 //! `cargo run --release -p fuxth --example bench`
-use fuxth::{
-    AppValue, Compiler, Done, Failure, Host, Limits, Machine, Outcome, STDLIB, Value, Vocabulary,
-};
+use fuxth::{AppValue, Compiler, Done, Failure, Host, Machine, Outcome, STDLIB, Value, Vocabulary};
 use std::time::Instant;
 
 #[derive(Clone, Debug, PartialEq)]
@@ -24,9 +22,9 @@ impl Host for Ticks {
         &mut self,
         _word: usize,
         _args: fuxth::Args<'_, Nothing>,
-        out: &mut fuxth::BoundedVec<Value<Nothing>>,
+        out: &mut Vec<Value<Nothing>>,
     ) -> Result<Done<()>, Failure> {
-        out.push(Value::Int(1))?;
+        out.push(Value::Int(1));
         Ok(Done::Now)
     }
 
@@ -76,10 +74,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let compiling = Instant::now();
             let mut words = Vocabulary::default();
             words.add("tick", "-- integer")?;
-            let mut compiler = Compiler::new(words, &fuxth::Region::new(128 << 20));
+            let mut compiler = Compiler::new(words);
             compiler.add(&fuxth::token::source("stdlib.fux", STDLIB)?)?;
             compiler.add(&fuxth::token::source("bench", text)?)?;
-            let mut machine = Machine::new(compiler.finish()?, Limits::default())?;
+            let mut machine = Machine::new(compiler.finish()?);
             let compiled = compiling.elapsed();
             let started = Instant::now();
             while machine.run(&mut Ticks, u64::MAX)? != Outcome::Finished {}

@@ -1365,11 +1365,7 @@ impl Call {
         match rest {
             ["changed", "wait"] => Some(Operation::Wait(version)),
             ["changed", secs, "timeout", "wait"]
-                if secs
-                    .parse()
-                    .ok()
-                    .and_then(fux_wire::command::Limit::secs)
-                    .is_some() =>
+                if secs.parse::<u32>().is_ok() =>
             {
                 Some(Operation::Wait(version))
             }
@@ -1431,7 +1427,7 @@ impl Promise {
                 "a version \"counts what only grows while its program runs\": per server run and program generation, between fresh observations; exercised when a count grew"
             }
             Promise::EndedFrozen => {
-                "an exited program's output and ENDED count are frozen, while its pane may still be resized, have its history cleared or be renamed; exercised when an ended pane was observed twice"
+                "an exited program's status and ENDED count never change, and its output is frozen once its terminal is drained, while its pane may still be resized, have its history cleared or be renamed; a replay takes the terminal as drained from the first two observations with no output between them; exercised when an ended pane was observed twice"
             }
             Promise::StaleExpect => {
                 "send-keys \"sends only if the pane is still at version SEEN as they are queued; else it sends none and fails stale\"; exercised by an expect at a version the pane had already moved past"
@@ -1460,6 +1456,9 @@ fn monitor(
         return exercised;
     };
     journal_monitor(&replay.events, run, problems, &mut exercised);
+    // Ended panes, by program generation, seen with no output between two
+    // observations: their terminal drained, their output is frozen.
+    let mut drained = BTreeSet::new();
     let after = (replay.snapshots.iter())
         .zip(replay.snapshots.iter().skip(1))
         .zip(1usize..);
@@ -1505,12 +1504,14 @@ fn monitor(
                 })
                 .count();
             let grew = b.screen.saturating_sub(a.screen);
-            if b.bells != a.bells
+            let spoke = b.bells != a.bells
                 || b.done != a.done
-                || !b.ended
-                || pane.end != was.end
-                || u64::try_from(explicit).is_ok_and(|explicit| grew > explicit)
-            {
+                || u64::try_from(explicit).is_ok_and(|explicit| grew > explicit);
+            let frozen = drained.contains(&(id, a.respawns));
+            if !spoke {
+                drained.insert((id, a.respawns));
+            }
+            if !b.ended || pane.end != was.end || spoke && frozen {
                 problems.push(format!(
                     "ended-frozen: in step {step}, {id}'s ended program went from {a} ({}) to {b} ({}), with {explicit} resize or history events",
                     was.end, pane.end
@@ -1678,9 +1679,8 @@ fn journal_monitor(
             "respawned" => {
                 ended.remove(&pane);
             }
-            "bell" | "notification" | "title" | "done" if ended.contains(&pane) => {
-                fail(format!("{pane}'s program spoke after it ended"), ev);
-            }
+            // What its terminal held is read on after its exit (D-90): the
+            // snapshots check that it is frozen once that is drained.
             _ => {}
         }
     }

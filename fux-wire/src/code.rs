@@ -116,8 +116,6 @@ codes! {
     // What only the loop running a program gives, never a word: no `try`
     // catches it.
     run_loop [
-        /// A run of more steps than allowed.
-        Steps "steps",
         /// A run the prefix, then Esc, stopped.
         Cancelled "cancelled",
     ];
@@ -148,7 +146,7 @@ codes! {
     NoField "no_field",
     /// No pane, tab or workspace that way, or before or after it.
     NothingThere "nothing_there",
-    /// A copy-mode selection with no rows, or too large.
+    /// A copy-mode selection with no rows.
     Selection "selection",
     /// A name taken by another pane, tab or workspace.
     NameTaken "name_taken",
@@ -169,8 +167,6 @@ codes! {
     NotRun "not_run",
     /// The pane only has its shell, which `signal` does not signal.
     OnlyShell "only_shell",
-    /// A pane's input queue is full: its terminal took none of it since.
-    InputFull "input_full",
     /// A pane or tab no longer at the version or layout revision given:
     /// it changed since it was seen, and nothing was sent or arranged.
     Stale "stale",
@@ -179,8 +175,8 @@ codes! {
     NoMarks "no_marks",
     /// A program that could not start.
     Start "start",
-    /// A size no pane or tab can have: a screen past 4096
-    /// (`command::MOST`) a side (`attach`, its terminal resized, the word
+    /// A size no pane or tab can have: a screen of no rows or columns, or
+    /// past what a grid holds (`attach`, its terminal resized, the word
     /// `size`), or with
     /// no room for a pane below its bar as it starts a server's first
     /// shell; a new tab or workspace given none, whose caller has no
@@ -188,7 +184,7 @@ codes! {
     /// `resize-pane` the layout cannot give; a tab resized, a
     /// split or a pane moved where its tab's panes would not all show.
     Size "size",
-    /// Memory for a client capture's render grid was refused.
+    /// The OS refused memory for what was asked.
     Memory "memory",
     /// A mouse event the pane's program does not ask for.
     Mouse "mouse",

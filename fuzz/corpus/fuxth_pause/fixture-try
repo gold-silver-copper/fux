@@ -4,7 +4,7 @@ define safe let n str fail try n deep catch drop end end
 define down 1 add down 1 end
 define asked let n str 'fail negative' try n ask n 0 eq if str z fail then catch nip end end
 list 1 str fail try 2 list 3 4 end each dup 4 eq if str four fail then end catch drop end 5 end
-5 safe str call_depth try 0 down catch nip end
+5 safe str fail try 0 down catch nip end
 list -1 asked 0 asked 2 asked end
 str div_by_zero try str fail try 1 0 div catch drop drop 5 end catch nip end
 str fail try str fail try str a fail catch drop drop str b fail end catch drop end

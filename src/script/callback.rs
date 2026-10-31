@@ -1,9 +1,8 @@
-//! One bounded bridge between language values and owned screen arguments.
+//! One bridge between language values and owned screen arguments.
 use super::{Fux, Value, record};
 use fux_wire::callback::{Data, Open};
-use fux_wire::wire::Budget;
-use fuxix::Allocation;
 use fuxth::Failure;
+use std::rc::Rc;
 
 fn runs(v: &Data, of: &mut Option<fux_wire::command::Run>) -> Result<(), Failure> {
     match v {
@@ -32,28 +31,32 @@ fn fail() -> Failure {
         "a callback argument must be an immutable value: scalar, handle, record, null or list",
     )
 }
-pub(super) fn data(v: &Value<Fux>, b: &mut Budget) -> Result<Data, Failure> {
-    if v.depth() > fuxth::NESTING || v.weight() > fuxth::TOTAL {
-        return Err(fail());
-    }
-    b.slots::<Data>(1)?;
+/// `v` as a callback's argument goes on the wire: refused if its lists and
+/// records nest deeper than the wire carries (`callback::DEPTH`).
+pub(super) fn data(v: &Value<Fux>) -> Result<Data, Failure> {
+    data_within(v, fux_wire::callback::DEPTH.saturating_add(1))
+}
+
+fn data_within(v: &Value<Fux>, depth: u8) -> Result<Data, Failure> {
+    let depth = depth.checked_sub(1).ok_or_else(|| {
+        let why = "a callback argument nests deeper than the wire carries";
+        Failure::new(
+            fux_wire::code::Code::from(fux_wire::code::Raise::TooLong).into(),
+            why,
+        )
+    })?;
+    let data = |v| data_within(v, depth);
     Ok(match v {
         Value::Int(v) => Data::Int(*v),
         Value::Bool(v) => Data::Bool(*v),
-        Value::Str(v) => Data::Text(b.string(v.as_ref())?),
-        Value::List(v) => {
-            let mut out = b.vector(v.items().len())?;
-            for v in v.items() {
-                out.push(data(v, b)?);
-            }
-            Data::List(out)
-        }
+        Value::Str(v) => Data::Text(v.to_string()),
+        Value::List(v) => Data::List(v.items().iter().map(data).collect::<Result<_, _>>()?),
         Value::App(Fux::Record(r)) => {
-            let mut fields = b.vector(r.fields.len())?;
-            for (key, v) in &r.fields {
-                fields.push((b.string(key)?, data(v, b)?));
+            let fields = r.fields.iter().map(|(key, v)| Ok((key.clone(), data(v)?)));
+            Data::Record {
+                of: r.of,
+                fields: fields.collect::<Result<_, Failure>>()?,
             }
-            Data::Record { of: r.of, fields }
         }
         Value::App(Fux::All) => Data::All,
         Value::App(Fux::Null) => Data::Null,
@@ -69,40 +72,21 @@ pub(super) fn data(v: &Value<Fux>, b: &mut Budget) -> Result<Data, Failure> {
     })
 }
 
-/// `v` as a value made in `region`, `b` charged first for each part.
-pub(super) fn value(
-    v: &Data,
-    b: &mut Budget,
-    region: &fuxth::Region,
-) -> Result<Value<Fux>, Failure> {
-    b.slots::<Value<Fux>>(1)?;
+pub(super) fn value(v: &Data) -> Result<Value<Fux>, Failure> {
     Ok(match v {
         Data::Int(v) => Value::Int(*v),
         Data::Bool(v) => Value::Bool(*v),
-        Data::Text(v) => {
-            if v.chars().count() > fuxth::LONGEST {
-                return Err(fail());
-            }
-            b.charge(fuxth::Text::size(v))?;
-            Value::str(region, v)?
-        }
+        Data::Text(v) => Value::str(v.as_str()),
         Data::List(v) => {
-            b.charge(fuxth::List::<Fux>::size(v.len()))?;
-            let mut out = fuxth::BoundedVec::with_capacity(region, v.len())?;
-            for v in v {
-                out.push(value(v, b, region)?)?;
-            }
-            fuxth::List::new(out).ok_or_else(fail)?.value()?
+            let out = v.iter().map(value).collect::<Result<_, _>>()?;
+            Value::List(Rc::new(fuxth::List::new(out)))
         }
         Data::Record {
             of,
             fields: entries,
         } => {
-            let mut fields = b.vector(entries.len())?;
-            for (key, v) in entries {
-                fields.push((b.string(key)?, value(v, b, region)?));
-            }
-            record::from_fields(fields, *of, b, region)?
+            let fields = entries.iter().map(|(key, v)| Ok((key.clone(), value(v)?)));
+            record::from_fields(fields.collect::<Result<_, Failure>>()?, *of)?
         }
         Data::All => Value::App(Fux::All),
         Data::Null => Value::App(Fux::Null),
@@ -117,31 +101,19 @@ pub fn admit(
     state: Option<&crate::client_state::Draft>,
     context: &fux_wire::protocol::Context,
 ) -> Result<crate::screens::Screen, super::Failed> {
-    use fux_wire::wire::Wire;
     let refused = |why| super::Failed::new(fux_wire::code::Code::BadValue, why);
-    let past = |why| super::Failed::new(fux_wire::code::Raise::TooLong, why);
-    let most = fux_wire::callback::JOB_BYTES;
-    if open.bytes() > most {
-        return Err(past(format!(
-            "screen retained data is past a job's {most} bytes"
-        )));
+    // It goes to its client in one frame.
+    if fux_wire::wire::encode(&open).len() > fux_wire::protocol::MAX_FRAME.saturating_sub(128) {
+        let past = super::Failed::new(
+            fux_wire::code::Raise::TooLong,
+            "screen data is past a frame",
+        );
+        return Err(past);
     }
-    let mut encoded =
-        fux_wire::wire::Writer::counting(fux_wire::protocol::MAX_FRAME.saturating_sub(128));
-    open.put(&mut encoded);
-    encoded
-        .check()
-        .map_err(|_| past("screen data is past a frame".to_owned()))?;
     let config = state.and_then(|s| s.config.as_ref());
     let check =
         |action: &fux_wire::callback::Callback, args: Vec<Data>| -> Result<(), super::Failed> {
-            crate::screens::admit_source(&action.code)?;
             let job = crate::screens::Job::call(action, args);
-            if job.bytes() > most {
-                return Err(past(format!(
-                    "callback arguments are past a job's {most} bytes"
-                )));
-            }
             let mut of = context.of;
             for v in job.given.iter().flatten() {
                 runs(v, &mut of).map_err(super::callback_failed)?;
@@ -159,7 +131,6 @@ pub fn admit(
                 return Err(refused("a list needs its receiving client"));
             };
             l.client = Data::Client(client, context.of);
-            crate::screens::admit_source(&l.action.code)?;
             let tokens = fuxth::token::source("callback", &l.action.code)?;
             super::callback_source(config, &tokens)?;
             let mut of = context.of;
@@ -179,14 +150,10 @@ pub fn admit(
                 super::same_run(context.of, run).map_err(super::callback_failed)?;
             }
             let mut kinds = std::collections::HashSet::new();
-            let mut budget = Budget::with_limit(fux_wire::callback::JOB_BYTES);
-            // Each payload is made to be told its kind, then dropped.
-            let region = fuxth::Region::new(fux_wire::callback::JOB_BYTES);
             for item in &mut l.items {
                 let mut of = context.of;
                 runs(&item.payload, &mut of).map_err(super::callback_failed)?;
-                let v =
-                    value(&item.payload, &mut budget, &region).map_err(super::callback_failed)?;
+                let v = value(&item.payload).map_err(super::callback_failed)?;
                 if kinds.insert(v.kind_name()) {
                     let args = vec![l.client.clone(), item.payload.clone()];
                     check(&l.action, args)?;
@@ -250,13 +217,7 @@ mod tests {
         let mut machine = job.machine(None)?;
         let mut out = Vec::new();
         let mut host = Host::new(Context::default(), None, &mut out);
-        crate::script::run_capped(
-            &mut machine,
-            &mut host,
-            &mut NoRequests,
-            Some(100_000),
-            None,
-        )?;
+        crate::script::run(&mut machine, &mut host, &mut NoRequests, None)?;
         Ok(String::from_utf8_lossy(&out).into_owned())
     }
 
@@ -301,12 +262,7 @@ mod tests {
                 .any(|i| i.label.contains(char::is_control))
         );
         let item = screen.items.first().ok_or("row")?;
-        let value = value(
-            &item.payload,
-            &mut Budget::with_limit(fux_wire::wire::MAX_ALLOCATED),
-            &fuxth::Region::new(usize::MAX),
-        )
-        .map_err(|e| e.message)?;
+        let value = value(&item.payload).map_err(|e| e.message)?;
         let Value::App(Fux::Record(record)) = value else {
             return Err("record".into());
         };
@@ -325,13 +281,7 @@ mod tests {
         let mut machine = job.machine(state.config.as_ref())?;
         let mut out = Vec::new();
         let mut host = Host::new(context, None, &mut out);
-        crate::script::run_capped(
-            &mut machine,
-            &mut host,
-            &mut NoRequests,
-            Some(100_000),
-            None,
-        )?;
+        crate::script::run(&mut machine, &mut host, &mut NoRequests, None)?;
         assert!(String::from_utf8_lossy(&out).contains("[\"%3\",null,true,-3,\"' drop %1 kill\"]"));
         Ok(())
     }
@@ -348,32 +298,13 @@ mod tests {
             }
             .into(),
         })?;
-        let mut values =
-            crate::script::answered(reply, &fuxth::Region::new(fux_wire::inspect::BYTES))?;
+        let mut values = crate::script::answered(reply)?;
         let root = values.pop().ok_or("snapshot")?;
-        let grant = fuxth::Region::new(fux_wire::inspect::BYTES);
-        root.retain(&grant).map_err(|e| e.message)?;
-        let payload = data(
-            &root,
-            &mut Budget::with_limit(fux_wire::wire::MAX_ALLOCATED),
-        )
-        .map_err(|e| e.message)?;
-        let bytes = fux_wire::wire::encode(&payload)?;
-        let payload: Data = fux_wire::wire::decode(&bytes)?;
-        let restored = value(
-            &payload,
-            &mut Budget::with_limit(fux_wire::wire::MAX_ALLOCATED),
-            &fuxth::Region::new(usize::MAX),
-        )
-        .map_err(|e| e.message)?;
-        assert_eq!(
-            data(
-                &restored,
-                &mut Budget::with_limit(fux_wire::wire::MAX_ALLOCATED)
-            )
-            .map_err(|e| e.message)?,
-            payload
-        );
+        let payload = data(&root).map_err(|e| e.message)?;
+        let bytes = fux_wire::wire::encode(&payload);
+        let payload: Data = fux_wire::wire::Reader::new(&bytes).whole()?;
+        let restored = value(&payload).map_err(|e| e.message)?;
+        assert_eq!(data(&restored).map_err(|e| e.message)?, payload);
         assert_eq!(restored, root);
         let Value::App(Fux::Record(record)) = restored else {
             return Err("record".into());
@@ -387,7 +318,6 @@ mod tests {
             return Err("panes".into());
         };
         let child = panes.items().first().ok_or("pane")?.clone();
-        child.retain(&grant).map_err(|e| e.message)?;
         drop(panes);
         drop(record);
         drop(root);
@@ -414,11 +344,7 @@ mod tests {
             run(&Job::call(&screen.action, [screen.client, payload]))?,
             "all\n"
         );
-        let child = data(
-            &child,
-            &mut Budget::with_limit(fux_wire::wire::MAX_ALLOCATED),
-        )
-        .map_err(|e| e.message)?;
+        let child = data(&child).map_err(|e| e.message)?;
         let text = run(&Job::call(
             &Callback::from("str id get kind print"),
             [child],
@@ -441,26 +367,12 @@ mod tests {
             panes: Vec::new(),
             clients: Vec::new(),
         };
-        let record =
-            record::snapshot(snapshot, &fuxth::Region::new(usize::MAX)).map_err(|e| e.message)?;
-        let original = data(
-            &record,
-            &mut Budget::with_limit(fux_wire::wire::MAX_ALLOCATED),
-        )
-        .map_err(|e| e.message)?;
-        let bytes = fux_wire::wire::encode(&original)?;
-        let decoded = fux_wire::wire::decode(&bytes)?;
-        let restored = value(
-            &decoded,
-            &mut Budget::with_limit(fux_wire::wire::MAX_ALLOCATED),
-            &fuxth::Region::new(usize::MAX),
-        )
-        .map_err(|e| e.message)?;
-        let payload = data(
-            &restored,
-            &mut Budget::with_limit(fux_wire::wire::MAX_ALLOCATED),
-        )
-        .map_err(|e| e.message)?;
+        let record = record::snapshot(snapshot).map_err(|e| e.message)?;
+        let original = data(&record).map_err(|e| e.message)?;
+        let bytes = fux_wire::wire::encode(&original);
+        let decoded = fux_wire::wire::Reader::new(&bytes).whole()?;
+        let restored = value(&decoded).map_err(|e| e.message)?;
+        let payload = data(&restored).map_err(|e| e.message)?;
         assert_eq!(payload, original);
         assert!(admit(list(payload.clone(), "2drop"), None, &context).is_ok());
         let other = "3-4".parse().map_err(|()| "run")?;
@@ -559,19 +471,7 @@ mod tests {
             "2drop",
         );
         assert!(admit(huge, None, &context).is_err());
-        let huge = list(
-            Data::Int(0),
-            &std::iter::repeat_n(' ', crate::screens::ACTION_MAX + 1).collect::<String>(),
-        );
-        assert!(admit(huge, None, &context).is_err());
-        let mut budget = Budget::with_limit(fux_wire::wire::MAX_ALLOCATED);
-        assert!(
-            data(
-                &Value::App(Fux::Opts(std::rc::Rc::new(Default::default()))),
-                &mut budget
-            )
-            .is_err()
-        );
+        assert!(data(&Value::App(Fux::Opts(std::rc::Rc::new(Default::default())))).is_err());
         Ok(())
     }
 }

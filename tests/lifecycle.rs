@@ -288,10 +288,10 @@ fn a_client_that_stops_reading_catches_up_when_it_reads_again() -> Outcome {
     Ok(())
 }
 
-/// A copy goes to the client's clipboard as OSC 52 unless it is over 1 MiB
-/// encoded; then only to the paste buffer, saying so.
+/// A copy goes to the client's clipboard as OSC 52, however large, and to
+/// the paste buffer.
 #[test]
-fn the_clipboard_takes_a_copy_up_to_a_mebibyte() -> Outcome {
+fn the_clipboard_takes_a_copy_however_large() -> Outcome {
     let server = Server::start("")?;
     let mut client = server.attach(20, 120)?;
     client.wait_for("$")?;
@@ -315,7 +315,7 @@ fn the_clipboard_takes_a_copy_up_to_a_mebibyte() -> Outcome {
     assert!(painted.contains("\x1b]52;c;"), "an OSC 52 write");
     let before = client.painted.len();
     // Large: 1200 lines of 50 family emoji, 25 bytes each, about 2 MiB
-    // encoded, in fewer cells than a copy may take.
+    // encoded.
     // Build the row once, without spawning seq for every output line.
     server.type_line("%1", "clear")?;
     server.type_line(
@@ -325,13 +325,18 @@ fn the_clipboard_takes_a_copy_up_to_a_mebibyte() -> Outcome {
     client.wait("the output", |t| t.lines().any(|l| l == "done-printing"))?;
     copy_all(&mut client)?;
     client.wait("the copy", |t| {
-        t.lines()
-            .last()
-            .is_some_and(|b| b.contains("too large for the clipboard"))
+        t.lines().last().is_some_and(|b| b.contains("copied"))
     })?;
-    let after =
-        String::from_utf8_lossy(client.painted.get(before..).unwrap_or_default()).into_owned();
-    assert!(!after.contains("\x1b]52;"), "no OSC 52 write for it");
+    let after = client.painted.get(before..).unwrap_or_default();
+    let osc = (0..after.len())
+        .filter(|at| {
+            after
+                .get(*at..)
+                .is_some_and(|b| b.starts_with(b"\x1b]52;c;"))
+        })
+        .count();
+    assert_eq!(osc, 1, "one OSC 52 write for it");
+    assert!(after.len() > 2_000_000, "all of it: {} bytes", after.len());
     let buffer = server.ok(&["newest", "buffer"])?;
     assert!(
         buffer.len() > 1 << 20,

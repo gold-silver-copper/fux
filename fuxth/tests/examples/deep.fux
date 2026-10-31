@@ -1,4 +1,5 @@
-# Recursion that isn't in last place, 20000 deep: past the call limit.
-# fails: call_depth
+# Recursion that isn't in last place, 20000 deep: calls are the machine's
+# data, never Rust's stack, so it goes as deep as memory lets it.
+# expect: 20000
 define deep dup 0 eq if else 1 sub deep 1 add then end
 20000 deep

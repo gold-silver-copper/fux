@@ -239,12 +239,11 @@ mod tests {
             "bundled initialization did not set shell",
             "only one pane",
             "nothing selected: start a selection before copying",
-            "the pane's input queue is full; nothing more is queued until its terminal takes some",
             "C-b t q is not bound",
             "bad_binding: nonsense: no such word; text is `str WORD`, in the binding for x (/w/config/fux/config.fux:3)",
             "unknown_word: nonsense: no such word; text is `str WORD` (prompt:1)",
             "unknown_word: nonsense: no such word; text is `str WO…",
-            "the pane's input queue is full; nothing…",
+            "nothing selected: start a selection befo…",
         ] {
             assert!(notices.known(known), "{known}");
         }

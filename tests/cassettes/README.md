@@ -71,7 +71,7 @@ it: keep a workspace of its own (`examples.cassette`).
    | Promise | Checked | Exercised by |
    |---|---|---|
    | `versions-grow` | per server run and program generation, each fresh observation of a pane had the one before (fux's `had`); every version a step printed is of this run, and one its pane had reached by the next observation | a count that grew |
-   | `ended-frozen` | an exited program's BELLS, DONE, ENDED, status and signal never change until it is respawned, and SCREEN grows only by a `resized` or history event; no `bell`, `notification`, `title`, `done` or second `exited` in the journal | an ended pane observed twice |
+   | `ended-frozen` | an exited program's ENDED, status and signal never change until it is respawned; once its terminal is drained (from the first two observations with no output between them), its BELLS and DONE never change and SCREEN grows only by a `resized` or history event; no second `exited` in the journal | an ended pane observed twice |
    | `stale-expect` | a call with `expect` at a version the pane had already moved past is refused `stale`; a `stale` refusal names a version the pane did move past | such a call |
    | `wait-across-change` | a `changed … wait` from a version the pane had already moved past answers (status 0), never `timeout` | such a call |
    | `journal` | every event once, in order, none `missed`; nothing named before its `created` or after its `closed`; one `exited` per program | any event |

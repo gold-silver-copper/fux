@@ -41,10 +41,8 @@ fn a_corpus_ends_the_same_every_way() -> std::io::Result<()> {
             }
         }
         let (naive, trace) = Naive::run(&text);
-        let limit = |e: &Ended| matches!(e, Ended::Failed(c, _) if c == "call_depth" || c == "stack_overflow");
         match (&whole, &naive) {
             (Ended::Endless, _) | (_, Ended::Endless) => {}
-            (a, b) if limit(a) || limit(b) => {}
             (Ended::Refused(code, line), naive) => {
                 let failed = trace.fails_at(*line);
                 if trace.reached.contains(line) && !failed {

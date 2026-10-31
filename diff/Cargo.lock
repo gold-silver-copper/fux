@@ -86,7 +86,6 @@ dependencies = [
  "fux-vt 0.15.0",
  "fux-wire",
  "fuxix 0.8.0",
- "fuxth-core",
 ]
 
 [[package]]

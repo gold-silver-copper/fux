@@ -5,22 +5,18 @@
 //! fuxth source, as fuxth does.
 #![allow(dead_code, reason = "each test file uses its own part")]
 use fuxth::{
-    AppValue, Args, Compiler, Done, Error, Failure, Host, Limits, Machine, Outcome, Place, STDLIB,
-    Token, Value, Vocabulary, token,
+    AppValue, Args, Compiler, Done, Error, Failure, Host, Machine, Outcome, Place, STDLIB, Token,
+    Value, Vocabulary, token,
 };
 use std::collections::{HashMap, HashSet};
 
 /// Steps either interpreter takes before a run counts as endless.
 pub const STEPS: u64 = 50_000;
 
-/// The bytes a run may hold.
-pub const RUN: usize = 128 << 20;
-
-/// The limits both keep to.
-pub const LIMITS: Limits = Limits {
-    stack: 10_000,
-    calls: 300,
-};
+/// How far the naive interpreter goes, which calls as Rust recursion:
+/// past either, a run is compared no more, as an endless one.
+const STACK: usize = 10_000;
+const CALLS: usize = 300;
 
 /// A small random number generator (xorshift), seeded, so a failure names
 /// the seed that makes it again.
@@ -81,7 +77,7 @@ impl Host for Toy {
         &mut self,
         word: usize,
         args: Args<'_, Nothing>,
-        _out: &mut fuxth::BoundedVec<Value<Nothing>>,
+        _out: &mut Vec<Value<Nothing>>,
     ) -> Result<Done<i64>, Failure> {
         let args: Vec<_> = args.collect();
         match (word, args.as_slice()) {
@@ -161,7 +157,6 @@ fn value(v: &Value<Nothing>) -> V {
 /// Compiles `text` after the standard library.
 pub fn compile(text: &str) -> Result<fuxth::Program<Nothing>, Error> {
     let mut compiler = READY.with(Clone::clone)?;
-    compiler.make_in(&fuxth::Region::new(RUN));
     compiler.add(&token::source("program", text)?)?;
     compiler.finish()
 }
@@ -172,7 +167,7 @@ thread_local! {
 }
 
 fn library() -> Result<Compiler<Nothing>, Error> {
-    let mut compiler = Compiler::new(vocabulary(), &fuxth::Region::new(RUN));
+    let mut compiler = Compiler::new(vocabulary());
     compiler.add(&token::source("stdlib.fux", STDLIB)?)?;
     compiler.add(&token::source("maybe.fux", MAYBE)?)?;
     compiler.prepare();
@@ -185,9 +180,7 @@ pub fn fuxth(text: &str, budget: u64) -> Ended {
         Ok(program) => program,
         Err(e) => return Ended::Refused(e.code.name().to_owned(), line(e.place.as_ref())),
     };
-    let Ok(mut machine) = Machine::new(program, LIMITS) else {
-        return Ended::Failed("too_long".to_owned(), 0);
-    };
+    let mut machine = Machine::new(program);
     let mut host = Toy::default();
     let budget = budget.min(STEPS);
     let mut taken = 0u64;
@@ -204,11 +197,7 @@ pub fn fuxth(text: &str, budget: u64) -> Ended {
             }
             Ok(Outcome::Paused) => {}
             Ok(Outcome::Suspended(n)) => match n.checked_mul(10) {
-                Some(answer) => {
-                    if let Err(e) = machine.import(Value::Int(answer)) {
-                        return failed(e);
-                    }
-                }
+                Some(answer) => machine.push(Value::Int(answer)),
                 None => {
                     let failure = Failure::new(fuxth::Code::Overflow, "past an integer");
                     if let Err(e) = machine.raise(failure) {
@@ -397,9 +386,7 @@ impl Naive {
         failing.append(&mut naive.caught);
         let ended = match ran {
             Ok(()) => Ended::Left(naive.printed.clone(), naive.stack.clone()),
-            Err((code, _)) if code == "steps" => Ended::Endless,
-            Err((code, line)) if code == "calls" => Ended::Failed("call_depth".to_owned(), line),
-            Err((code, line)) if code == "full" => Ended::Failed("stack_overflow".to_owned(), line),
+            Err((code, _)) if ["steps", "calls", "full"].contains(&code.as_str()) => Ended::Endless,
             Err((code, line)) => Ended::Failed(code, line),
         };
         let trace = Trace {
@@ -427,7 +414,7 @@ impl Naive {
     }
 
     fn push(&mut self, v: V) -> Result<(), Stop> {
-        if self.stack.len() >= LIMITS.stack {
+        if self.stack.len() >= STACK {
             return Err(err("full", 0));
         }
         self.stack.push(v);
@@ -650,7 +637,7 @@ impl Naive {
                 .get(id)
                 .map(|d| d.body.clone())
                 .unwrap_or_default();
-            if self.frames.len() >= LIMITS.calls {
+            if self.frames.len() >= CALLS {
                 return Err(err("calls", at));
             }
             self.frames.push(HashMap::new());

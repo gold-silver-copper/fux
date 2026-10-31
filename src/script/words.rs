@@ -15,7 +15,6 @@ use fux_wire::command::{
 };
 use fux_wire::id::{ClientId, PaneId};
 use fux_wire::layout::Axis;
-use fuxix::Allocation;
 use fuxth::{Done, Failure, Value};
 use std::num::NonZeroU32;
 use std::ops::RangeInclusive;
@@ -291,7 +290,7 @@ words! {
         Starting NewWorkspace "new-workspace" "opts -- answer" "a workspace with a tab and the client's shell or explicit launch" "fux opts str work name 80 24 size new-workspace" [Opts: Name Size Cwd Env UnsetEnv CopyEnvironment HistoryBytes Reflow AlternateScrollLines PictureBytes ProgramClipboard Program ShellProgram Arg];
         Starting Respawn "respawn" "subject -- answer" "start again in its pane the program it was given (new-tab, new-workspace, split), or the one given now" "fux %3 kill-first respawn" [Pane: KillFirst Env UnsetEnv Program Arg];
         Waiting Wait "wait" "place -- place" "wait until the pane's version differs from the one changed gives, else an action's answer's (%2 str y text send-keys wait), else now's, or the pane closes; a tab or workspace: any of the panes there as it begins" "A=$(fux %3 str y text send-keys); fux str \"$A\" changed 60 timeout wait" [Pane: Changed Timeout];
-        Input SendKeys "send-keys" "target -- target" "send the keys on it to a pane, every pane of a tab, or a client as typed at its terminal; 900 KiB at most in all" "fux %3 str 'ls -l' text str Enter key send-keys" [Pane: Text Key Paste Bytes Expect];
+        Input SendKeys "send-keys" "target -- target" "send the keys on it to a pane, every pane of a tab, or a client as typed at its terminal; as much as one request (1 MiB) carries" "fux %3 str 'ls -l' text str Enter key send-keys" [Pane: Text Key Paste Bytes Expect];
         Input SendMouse "send-mouse" "pane action row col -- answer" "click right middle press release wheel-up wheel-down or move, at a cell from 0" "fux %3 str click 2 10 send-mouse" [];
         Input Signal "signal" "subject name -- answer" "TERM KILL INT HUP QUIT USR1 USR2 STOP CONT TSTP WINCH ILL ABRT FPE SEGV PIPE ALRM BUS TRAP SYS XCPU XFSZ VTALRM PROF TTIN TTOU URG CHLD, to the pane's foreground" "fux %3 str TERM signal" [];
         Reading Capture "capture" "capture-source -- capture-source" "a pane screen with its options, or what a client terminal shows (without pane options or a version)" "fux %3 100 history capture" [Pane: History Wrapped Full Styles Marks MainScreen AltScreen LastOutput Rows Cols];
@@ -302,7 +301,7 @@ words! {
         Changing Kill "kill" "handle --" "close a pane, tab or workspace, without asking" "fux %3 kill" [];
         Changing Rename "rename" "handle text --" "rename a pane, tab or workspace" "fux %3 str editor rename" [];
         Changing Notify "notify" "scope text --" "a notice on the clients showing it, or every client with all" "fux all str done notify" [];
-        Changing Resize "resize" "sized cols rows --" "a tab layout or headless client size, 1 to 4,096 each; a pane selects its tab" "fux @2 120 40 resize" [];
+        Changing Resize "resize" "sized cols rows --" "a tab layout or headless client size, each at least 1, as large as a screen's grid holds; a pane selects its tab" "fux @2 120 40 resize" [];
         Changing ResizeAuto "resize-auto" "handle --" "a tab laid out on a client's screen again (at its size until one shows it)" "fux @2 resize-auto" [];
         Changing ResizePane "resize-pane" "pane extent way --" "a pane's horizontal or vertical extent: cells, or a percent" "fux %3 30 percent str horizontal resize-pane" [];
         Changing Percent "percent" "n -- size" "n percent of the tab, for resize-pane" "fux %3 30 percent str horizontal resize-pane" [];
@@ -333,20 +332,20 @@ words! {
         Config Set "set" "setting new --" "a preference for this client only: `fux help set` lists their effects" "fux str history-bytes 16777216 set" [];
         Reading Version "version" "pane-or-seen -- string" "a pane's current version, or the version an answer, pane capture or canonical text holds" "fux %3 capture version" [];
         Shell Args "args" "-- list" "the strings after fux --file FILE (none for any other program)" "fux args len" [];
-        Shell Input "input" "-- string" "the rest of stdin, as UTF-8 text, 16 MiB at most; not when the program came from stdin" "ls | fux input lines len" [];
-        Shell ReadFile "read-file" "path -- string" "a file's text, as UTF-8, 16 MiB at most" "fux str notes.txt read-file lines len" [];
+        Shell Input "input" "-- string" "the rest of stdin, as UTF-8 text; not when the program came from stdin" "ls | fux input lines len" [];
+        Shell ReadFile "read-file" "path -- string" "a file's text, as UTF-8" "fux str notes.txt read-file lines len" [];
         Shell Getenv "getenv" "name -- string" "an environment variable's value; one not set fails unset_var" "fux str HOME getenv" [];
         Shell Warn "warn" "value --" "print a value on stderr, a line" "fux str 'no tests found' warn 2 exit" [];
         Shell Exit "exit" "n --" "end the program now, what is left printed, with exit status n, 0 to 255" "fux str 'no tests found' warn 2 exit" [];
         Config ListKeys "list-keys" "--" "this client's keys (the bundled keys from the CLI), as config lines that make them" "fux list-keys" [];
         Config KeyNames "key-names" "--" "the names keys go by" "fux key-names" [];
         Help Help "help" "--" "the words, under their headings" "fux help" [];
-        Help Explain "explain" "word --" "one word at length (json's says what json gives); or the guide to driving programs from a script or an agent: agents, its first screen, enough for most work; a topic of it (recipes keys read shells programs servers); guide, all of it; or limits, the bounds fux keeps" "fux str capture explain" [];
+        Help Explain "explain" "word --" "one word at length (json's says what json gives); or the guide to driving programs from a script or an agent: agents, its first screen, enough for most work; a topic of it (recipes keys read shells programs servers); or guide, all of it" "fux str capture explain" [];
         Help Check "check" "file mode --" "check a file as program (compile only) or config (also run dry)" "fux str config.fux str config check" [];
     }
     Opt {
         Starting Name "name" "x name -- x" "the given name: new-tab's tab, or new-workspace's workspace" "fux agent-opts str web name 80 24 size str ./app program new-tab";
-        Starting Size "size" "x cols rows -- x" "what its tab is laid out on while no client shows it, 1 to 4,096 each; needed from outside fux, else the caller's own screen or tab, as fux makes no size up; attach: be a client with no terminal, of this size, which prints its id and runs until signalled" "fux agent-opts 80 24 size str ./app program new-tab";
+        Starting Size "size" "x cols rows -- x" "what its tab is laid out on while no client shows it, each at least 1, as large as a screen's grid holds; needed from outside fux, else the caller's own screen or tab, as fux makes no size up; attach: be a client with no terminal, of this size, which prints its id and runs until signalled" "fux agent-opts 80 24 size str ./app program new-tab";
         Starting Cwd "cwd" "x dir -- x" "where it starts" "fux agent-opts str /srv cwd 80 24 size str ./app program new-tab";
         Starting Env "env" "x key var -- x" "a variable for it: text, or a pane, tab or workspace as its id (%3; an action's answer, its pane)" "fux agent-opts str PORT 8080 env 80 24 size str ./app program new-tab";
         Starting Program "program" "x path -- x" "the program to start, in place of a shell; its pane stays once it exits" "fux agent-opts 80 24 size str ./app program new-tab";
@@ -473,28 +472,11 @@ fn wrong(wanted: &str, got: &Value<Fux>) -> Failure {
     fail(Raise::Type, format!("takes {wanted}, not {}", got.kind()))
 }
 
-/// Host arguments are bounded while borrowed, before copying or quoting.
-fn argument(text: &fuxth::Text) -> Result<&str, Failure> {
-    if text.chars_len() > fuxth::LONGEST {
-        let why = format!("string argument exceeds {} characters", fuxth::LONGEST);
-        return Err(fail(Raise::TooLong, why));
-    }
-    Ok(text)
-}
-
-fn arguments(value: &Value<Fux>) -> Result<(), Failure> {
-    match value {
-        Value::Str(text) => argument(text).map(drop),
-        Value::List(list) => list.items().iter().try_for_each(arguments),
-        Value::Int(_) | Value::Bool(_) | Value::App(_) => Ok(()),
-    }
-}
-
 fn string(value: &Value<Fux>) -> Result<String, Failure> {
     let Value::Str(s) = value else {
         return Err(wrong("a string", value));
     };
-    Ok(argument(s)?.to_owned())
+    Ok(s.to_string())
 }
 
 /// A value as words that take text read it: a string, or a number.
@@ -509,44 +491,59 @@ fn text(value: &Value<Fux>) -> Result<String, Failure> {
     }
 }
 
-/// JSON counted, then written into exactly the room reserved for it.
-fn json_text(value: &Value<Fux>, region: &fuxth::Region) -> Result<Value<Fux>, Failure> {
-    let exceeded = |_| fail(Raise::TooLong, "JSON exceeds what the run's region holds");
-    let text = fuxth::Text::written(region, usize::MAX, |out| write_json_value(value, out));
-    Ok(text.map_err(exceeded)?.value()?)
+/// A value's JSON, as a string.
+fn json_text(value: &Value<Fux>) -> Value<Fux> {
+    let mut text = String::new();
+    // Writing to a `String` can't fail.
+    _ = write_json_value(value, &mut text);
+    Value::str(text)
 }
 
+/// `value` as JSON: a list's items walked with a stack of the lists under
+/// way, not as a recursion, so lists nested however deep are written.
 pub(super) fn write_json_value(
     value: &Value<Fux>,
     out: &mut dyn std::fmt::Write,
 ) -> std::fmt::Result {
-    match value {
-        Value::Int(n) => write!(out, "{n}"),
-        Value::Bool(b) => write!(out, "{b}"),
-        Value::Str(s) => fux_wire::json::write_str(out, s),
-        Value::List(list) => {
-            out.write_char('[')?;
-            for (i, item) in list.items().iter().enumerate() {
-                if i > 0 {
+    let mut lists: Vec<(std::slice::Iter<'_, Value<Fux>>, bool)> = Vec::new();
+    let mut value = value;
+    loop {
+        match value {
+            Value::Int(n) => write!(out, "{n}")?,
+            Value::Bool(b) => write!(out, "{b}")?,
+            Value::Str(s) => fux_wire::json::write_str(out, s)?,
+            Value::List(list) => {
+                out.write_char('[')?;
+                lists.push((list.items().iter(), false));
+            }
+            Value::App(app) => match app {
+                Fux::Null => out.write_str("null"),
+                Fux::All => out.write_str("\"all\""),
+                Fux::Record(r) => r.write(out),
+                Fux::Answer(answer, _) => answer.write_json(out),
+                Fux::Pane(pane, _) => write!(out, "\"{pane}\""),
+                Fux::Tab(tab, _) => write!(out, "\"{tab}\""),
+                Fux::Workspace(workspace, _) => write!(out, "\"{workspace}\""),
+                Fux::Client(client, _) => write!(out, "\"{client}\""),
+                Fux::Extent(Extent::Cells(n)) => write!(out, "\"{n}\""),
+                Fux::Extent(Extent::Percent(n)) => write!(out, "\"{}%\"", n.get()),
+                Fux::Opts(_) => write!(out, "\"({})\"", fuxth::AppValue::kind(app)),
+            }?,
+        }
+        // The next item of the innermost list under way.
+        value = loop {
+            let Some((items, started)) = lists.last_mut() else {
+                return Ok(());
+            };
+            if let Some(item) = items.next() {
+                if std::mem::replace(started, true) {
                     out.write_char(',')?;
                 }
-                write_json_value(item, out)?;
+                break item;
             }
-            out.write_char(']')
-        }
-        Value::App(app) => match app {
-            Fux::Null => out.write_str("null"),
-            Fux::All => out.write_str("\"all\""),
-            Fux::Record(r) => r.write(out),
-            Fux::Answer(answer, _) => answer.write_json(out),
-            Fux::Pane(pane, _) => write!(out, "\"{pane}\""),
-            Fux::Tab(tab, _) => write!(out, "\"{tab}\""),
-            Fux::Workspace(workspace, _) => write!(out, "\"{workspace}\""),
-            Fux::Client(client, _) => write!(out, "\"{client}\""),
-            Fux::Extent(Extent::Cells(n)) => write!(out, "\"{n}\""),
-            Fux::Extent(Extent::Percent(n)) => write!(out, "\"{}%\"", n.get()),
-            Fux::Opts(_) => write!(out, "\"({})\"", fuxth::AppValue::kind(app)),
-        },
+            lists.pop();
+            out.write_char(']')?;
+        };
     }
 }
 
@@ -702,7 +699,8 @@ fn observation_scope(value: &Value<Fux>) -> Result<fux_wire::inspect::Scope, Fai
     })
 }
 
-fn cursor(text: &str) -> Result<fux_wire::events::Cursor, Failure> {
+fn cursor(value: &Value<Fux>) -> Result<fux_wire::events::Cursor, Failure> {
+    let text = string(value)?;
     text.parse().map_err(|()| {
         fail(
             Raise::BadValue,
@@ -762,11 +760,11 @@ const EXPECTED: &str = "takes no request expect made: only send-keys checks a ve
 /// The version `value` holds (`Answer::version`), or is as text.
 fn version(value: &Value<Fux>) -> Result<fux_wire::command::Version, Failure> {
     let wanted = "a version: an action's or wait's answer, a pane's capture, or its text";
-    let text = match value {
+    let text: &str = match value {
         Value::App(Fux::Answer(answer, _)) => {
             return answer.version().ok_or_else(|| wrong(wanted, value));
         }
-        Value::Str(text) => argument(text)?,
+        Value::Str(text) => text,
         other @ (Value::Int(_) | Value::Bool(_) | Value::List(_) | Value::App(_)) => {
             return Err(wrong(wanted, other));
         }
@@ -827,25 +825,17 @@ const MICE: [(&str, Mouse); 8] = [
 
 /// The options or request an option makes of what it goes on, `next`
 /// giving its values: `changed` and `expect` make a request on a version's
-/// pane. A copy, and the vectors it grows, are reserved from `region` first.
+/// pane.
 fn modify(
     opt: Opt,
-    region: &fuxth::Region,
     next: &mut dyn FnMut() -> Result<Value<Fux>, Failure>,
 ) -> Result<std::rc::Rc<Opts>, Failure> {
     // `changed` and `expect` make a request; every other option goes on
     // one, or on options.
     let mut built = match matches!(opt, Opt::Changed | Opt::Expect) {
         true => Opts::default(),
-        false => owned(modifying(next()?)?, region)?,
+        false => owned(modifying(next()?)?),
     };
-    room(&built.lease, region, built.bytes(), &mut built.given)?;
-    if matches!(opt, Opt::Program | Opt::Arg) {
-        room(&built.lease, region, built.bytes(), &mut built.argv)?;
-    }
-    if matches!(opt, Opt::Text | Opt::Paste | Opt::Bytes | Opt::Key) {
-        room(&built.lease, region, built.bytes(), &mut built.inputs)?;
-    }
     if !matches!(
         opt,
         Opt::Arg | Opt::Env | Opt::UnsetEnv | Opt::Text | Opt::Key | Opt::Paste | Opt::Bytes
@@ -968,37 +958,9 @@ fn modify(
 }
 
 /// The options `shared` holds, owned: moved out when nothing else holds
-/// them, else copied, the copy reserved from `region` first and held by it.
-fn owned(shared: std::rc::Rc<Opts>, region: &fuxth::Region) -> Result<Opts, Failure> {
-    let shared = match std::rc::Rc::try_unwrap(shared) {
-        Ok(built) => return Ok(built),
-        Err(shared) => shared,
-    };
-    let lease = fuxth::Lease::of(region, shared.bytes())?;
-    Ok(Opts {
-        lease,
-        ..(*shared).clone()
-    })
-}
-
-/// Room in `items`, of options holding `bytes`, for one more: grown by
-/// doubling, `lease` holding first the rest, and the old and grown vectors.
-fn room<T>(
-    lease: &fuxth::Lease,
-    region: &fuxth::Region,
-    bytes: usize,
-    items: &mut Vec<T>,
-) -> Result<(), Failure> {
-    if items.len() < items.capacity() {
-        return Ok(());
-    }
-    let room = items.len().saturating_mul(2).max(4);
-    lease.reserve(
-        region,
-        room.saturating_mul(size_of::<T>()).saturating_add(bytes),
-    )?;
-    items.reserve_exact(room.saturating_sub(items.len()));
-    Ok(())
+/// them, else copied.
+fn owned(shared: std::rc::Rc<Opts>) -> Opts {
+    std::rc::Rc::unwrap_or_clone(shared)
 }
 
 /// The rows or columns a capture reads, from `next`: the first, then the
@@ -1018,9 +980,9 @@ fn span(
 /// What an action acts on, and what it was given: a request; or a pane,
 /// tab, workspace or client alone, given nothing. Refused if `word`
 /// leaves something given unused.
-fn request(word: Act, region: &fuxth::Region, value: Value<Fux>) -> Result<(On, Opts), Failure> {
+fn request(word: Act, value: Value<Fux>) -> Result<(On, Opts), Failure> {
     let mut built = match value {
-        Value::App(Fux::Opts(built)) => owned(built, region)?,
+        Value::App(Fux::Opts(built)) => owned(built),
         other @ (Value::Int(_)
         | Value::Bool(_)
         | Value::Str(_)
@@ -1043,12 +1005,8 @@ fn request(word: Act, region: &fuxth::Region, value: Value<Fux>) -> Result<(On, 
 }
 
 /// The pane an action acts on, and what it was given.
-fn request_pane(
-    word: Act,
-    region: &fuxth::Region,
-    value: Value<Fux>,
-) -> Result<(PaneId, Opts), Failure> {
-    match request(word, region, value)? {
+fn request_pane(word: Act, value: Value<Fux>) -> Result<(PaneId, Opts), Failure> {
+    match request(word, value)? {
         (On::Target(AnyRef::Pane(p)), built) => Ok((p, built)),
         (On::Version(version), built) => Ok((version.pane, built)),
         // Refused, not acted on unchecked (`unused` refuses it first today).
@@ -1063,11 +1021,11 @@ fn request_pane(
 
 /// The options `value` holds, for `word`, which makes what they are for:
 /// refused if it leaves one unused.
-fn finished(word: Act, region: &fuxth::Region, value: Value<Fux>) -> Result<Opts, Failure> {
+fn finished(word: Act, value: Value<Fux>) -> Result<Opts, Failure> {
     match value {
         Value::App(Fux::Opts(built)) if built.on.is_none() => {
             unused(word, &built)?;
-            owned(built, region)
+            Ok(owned(built))
         }
         other @ (Value::Int(_)
         | Value::Bool(_)
@@ -1083,11 +1041,10 @@ fn finished(word: Act, region: &fuxth::Region, value: Value<Fux>) -> Result<Opts
 /// Attach alone accepts typed places through the ordinary request subject.
 fn attach_options(
     word: Act,
-    region: &fuxth::Region,
     value: Value<Fux>,
 ) -> Result<(Option<fux_wire::command::AttachTarget>, Opts), Failure> {
     use fux_wire::command::AttachTarget as T;
-    let built = owned(modifying(value)?, region)?;
+    let built = owned(modifying(value)?);
     unused(word, &built)?;
     let target = match (&built.on, &built.place) {
         (None, place) => place.clone().map(T::Workspace),
@@ -1182,40 +1139,6 @@ fn hex(hex: &str) -> Result<Vec<u8>, Failure> {
     (!bytes.is_empty()).then_some(bytes).ok_or_else(bad)
 }
 
-/// The most input one send-keys sends: a request holds it whole.
-pub(crate) const INPUT_MAX: usize = 900 * 1024;
-// A frame holds it, with room for the rest of its request; and an empty
-// input queue its text and bytes, which go in as they are (`Pane::input`).
-const _: () = assert!(INPUT_MAX < fux_wire::protocol::MAX_PAYLOAD);
-const _: () = assert!(INPUT_MAX <= fux_server::pane::INPUT_BYTES);
-
-/// `inputs`, refused past what one send-keys sends. What they take is
-/// what the request carries, which must fit in one frame: text and pastes
-/// their bytes, keys their names' (`C-M-F12` 7), and each input after the
-/// first 5 bytes more.
-fn fits(inputs: &[Input]) -> Result<(), Failure> {
-    let typed = (inputs.iter())
-        .map(|input| match input {
-            Input::Text(text) | Input::Paste(text) => text.len(),
-            Input::Key(key) => key.to_string().len(),
-            Input::Bytes(bytes) => bytes.len(),
-        })
-        .fold(0usize, usize::saturating_add)
-        .saturating_add(inputs.len().saturating_sub(1).saturating_mul(5));
-    match typed > INPUT_MAX {
-        true => Err(fail(
-            Raise::TooLong,
-            format!(
-                "{typed} bytes, more than {} KiB, the most it sends at once \
-                 (text and pastes count their bytes, keys their names', each input \
-                 after the first 5 more)",
-                INPUT_MAX / 1024
-            ),
-        )),
-        false => Ok(()),
-    }
-}
-
 /// `resize-pane`: an explicit axis and extent, cells or a percent.
 fn resize_to(next: &mut dyn FnMut() -> Result<Value<Fux>, Failure>) -> Result<Done<Ask>, Failure> {
     let target = pane(&next()?)?;
@@ -1238,21 +1161,17 @@ fn resolve(text: String, kind: Kind) -> Result<Done<Ask>, Failure> {
 /// What `pane`, `tab` or `workspace` finds of `kind`, named by `found`: a
 /// handle (an action's answer is its pane) of the kind is itself; another
 /// kind's is looked for by its id.
-fn find(
-    kind: Kind,
-    found: Value<Fux>,
-    out: &mut fuxth::BoundedVec<Value<Fux>>,
-) -> Result<Done<Ask>, Failure> {
+fn find(kind: Kind, found: Value<Fux>, out: &mut Vec<Value<Fux>>) -> Result<Done<Ask>, Failure> {
     if let Ok(id) = target(&found) {
         if id.kind() != kind {
             return resolve(id.to_string(), kind);
         }
-        out.push(Value::App(super::handle(id, None)))?;
+        out.push(Value::App(super::handle(id, None)));
         return Ok(Done::Now);
     }
     match found {
         Value::Str(s) => {
-            let text = argument(&s)?;
+            let text: &str = &s;
             // An empty name never names the caller's pane, which `here` is.
             if text.trim().is_empty() {
                 return Err(fail(
@@ -1342,7 +1261,7 @@ impl fuxth::Host for Host<'_> {
         &mut self,
         id: usize,
         args: fuxth::Args<'_, Fux>,
-        out: &mut fuxth::BoundedVec<Value<Fux>>,
+        out: &mut Vec<Value<Fux>>,
     ) -> Result<Done<Ask>, Failure> {
         let Some(&word) = Word::ALL.get(id) else {
             return Err(Failure::new(
@@ -1351,7 +1270,6 @@ impl fuxth::Host for Host<'_> {
             ));
         };
         let mut of = self.context.of;
-        let region = args.region().clone();
         let mut args = args;
         let mut next = || {
             let value = args.next().ok_or_else(|| {
@@ -1364,7 +1282,7 @@ impl fuxth::Host for Host<'_> {
             Ok(value)
         };
         let from = out.len();
-        let result = self.dispatch(word, &region, &mut next, out)?;
+        let result = self.dispatch(word, &mut next, out)?;
         for value in out.iter_mut().skip(from) {
             match value {
                 Value::App(Fux::Opts(opts)) => {
@@ -1456,21 +1374,18 @@ impl Host<'_> {
     fn dispatch(
         &mut self,
         word: Word,
-        region: &fuxth::Region,
         mut next: &mut dyn FnMut() -> Result<Value<Fux>, Failure>,
-        out: &mut fuxth::BoundedVec<Value<Fux>>,
+        out: &mut Vec<Value<Fux>>,
     ) -> Result<Done<Ask>, Failure> {
-        let now = |out: &mut fuxth::BoundedVec<Value<Fux>>,
-                   value: Value<Fux>|
-         -> Result<Done<Ask>, Failure> {
-            out.push(value)?;
+        let now = |out: &mut Vec<Value<Fux>>, value: Value<Fux>| {
+            out.push(value);
             Ok(Done::Now)
         };
         let later = |ask: Ask| Ok(Done::Later(ask));
         let act = match word {
             Word::Act(act) => act,
             Word::Opt(opt) => {
-                return now(out, Value::App(Fux::Opts(modify(opt, region, &mut next)?)));
+                return now(out, Value::App(Fux::Opts(modify(opt, &mut next)?)));
             }
             Word::Screen(screen) => return self.open(screen, &mut next),
             Word::Keys(keys) => return self.configure(keys, &mut next),
@@ -1509,7 +1424,7 @@ impl Host<'_> {
             Act::All => now(out, Value::App(Fux::All)),
             Act::Opts => now(out, Value::App(Fux::Opts(std::rc::Rc::default()))),
             Act::NewTab => {
-                let built = finished(act, region, next()?)?;
+                let built = finished(act, next()?)?;
                 let (start, env, options) = self.launch(&built)?;
                 let tab = Command::NewTab {
                     target: built.place,
@@ -1523,7 +1438,7 @@ impl Host<'_> {
                 later(ask(tab))
             }
             Act::NewWorkspace => {
-                let built = finished(act, region, next()?)?;
+                let built = finished(act, next()?)?;
                 let (start, env, options) = self.launch(&built)?;
                 let workspace = Command::NewWorkspace {
                     name: built.name,
@@ -1536,7 +1451,7 @@ impl Host<'_> {
                 later(ask(workspace))
             }
             Act::Split => {
-                let (p, built) = request_pane(act, region, next()?)?;
+                let (p, built) = request_pane(act, next()?)?;
                 let axis = built.axis.ok_or_else(|| {
                     fail(
                         Raise::Usage,
@@ -1556,7 +1471,7 @@ impl Host<'_> {
                 later(ask(split))
             }
             Act::Respawn => {
-                let (p, mut built) = request_pane(act, region, next()?)?;
+                let (p, mut built) = request_pane(act, next()?)?;
                 let respawn = Command::Respawn {
                     target: p,
                     kill: built.kill,
@@ -1571,7 +1486,7 @@ impl Host<'_> {
             }
             // ----------------------------------------------------- waiting
             Act::Wait => {
-                let (on, built) = request(act, region, next()?)?;
+                let (on, built) = request(act, next()?)?;
                 // On a tab or workspace, in each of its panes.
                 let since = match on {
                     On::Version(version) | On::Changed(version) => Since::Version(version),
@@ -1602,14 +1517,13 @@ impl Host<'_> {
             }
             // ------------------------------------------------------- input
             Act::SendKeys => {
-                let (on, built) = request(act, region, next()?)?;
+                let (on, built) = request(act, next()?)?;
                 if built.inputs.is_empty() {
                     return Err(fail(
                         Raise::Usage,
                         "needs keys: %2 str hello text send-keys",
                     ));
                 }
-                fits(&built.inputs)?;
                 let to = match on {
                     On::Target(target) => To::Now(target),
                     On::Version(version) => To::Now(AnyRef::Pane(version.pane)),
@@ -1655,7 +1569,7 @@ impl Host<'_> {
                 later(ask(mouse))
             }
             Act::Signal => {
-                let (p, _) = request_pane(act, region, next()?)?;
+                let (p, _) = request_pane(act, next()?)?;
                 let signals = fuxix::process::Signal::ALL.map(|signal| (signal.name(), signal));
                 let signal = one_of(&next()?, &signals)?;
                 let signal = Command::Signal { target: p, signal };
@@ -1667,7 +1581,7 @@ impl Host<'_> {
                 if let Value::App(Fux::Client(c, _)) = value {
                     return later(on_client(c, ClientAction::Capture));
                 }
-                let (p, built) = request_pane(act, region, value)?;
+                let (p, built) = request_pane(act, value)?;
                 later(ask(Command::CapturePane {
                     target: p,
                     history: built.history,
@@ -1693,23 +1607,17 @@ impl Host<'_> {
                 let field = string(&next()?)?;
                 match value {
                     Value::App(Fux::Record(record)) => now(out, record.get(&field)?),
-                    Value::App(Fux::Answer(answer, run)) => now(
-                        out,
-                        super::record::answer_field(&answer, run, &field, region)?,
-                    ),
+                    Value::App(Fux::Answer(answer, run)) => {
+                        now(out, super::record::answer_field(&answer, run, &field)?)
+                    }
                     value @ (Value::Int(_)
                     | Value::Bool(_)
                     | Value::Str(_)
                     | Value::List(_)
-                    | Value::App(_)) => {
-                        if field.len() > fux_server::session::NAME_MAX {
-                            return Err(fail(Raise::TooLong, "field name is too long"));
-                        }
-                        later(ask(Command::Inspect {
-                            scope: fux_wire::inspect::Scope::Target(target(&value)?),
-                            projection: fux_wire::inspect::Projection::Field(field),
-                        }))
-                    }
+                    | Value::App(_)) => later(ask(Command::Inspect {
+                        scope: fux_wire::inspect::Scope::Target(target(&value)?),
+                        projection: fux_wire::inspect::Projection::Field(field),
+                    })),
                 }
             }
             Act::Json => match next()? {
@@ -1723,7 +1631,7 @@ impl Host<'_> {
                 | Value::Bool(_)
                 | Value::Str(_)
                 | Value::List(_)
-                | Value::App(_)) => now(out, json_text(&other, region)?),
+                | Value::App(_)) => now(out, json_text(&other)),
             },
             Act::NextEvents => {
                 let scope = observation_scope(&next()?)?;
@@ -1731,9 +1639,9 @@ impl Host<'_> {
                 let from = if text.is_empty() {
                     None
                 } else {
-                    Some(cursor(&text)?)
+                    Some(cursor(&Value::str(text))?)
                 };
-                let timeout = Limit::read(within(&next()?, 0..=86400)?)
+                let timeout = Limit::read(within(&next()?, 0..=i64::from(u32::MAX))?)
                     .map_err(|why| fail(Raise::Range, why))?;
                 tell(Request::NextEvents {
                     scope,
@@ -1913,7 +1821,7 @@ impl Host<'_> {
             }
             // ----------------------------------------------------- clients
             Act::Attach => {
-                let (target, built) = attach_options(act, region, next()?)?;
+                let (target, built) = attach_options(act, next()?)?;
                 check_attach_creation(&built, target.is_some(), built.watch)?;
                 local(Local::Attach {
                     of: None,
@@ -1966,7 +1874,7 @@ impl Host<'_> {
                     .map_err(|why| fail(Raise::Config, why.to_string()))?;
                 let value = next()?;
                 let of = super::scope(&value);
-                let (target, built) = attach_options(act, region, value)?;
+                let (target, built) = attach_options(act, value)?;
                 if target.is_some() && built.given.contains(&Opt::Name) {
                     return Err(fail(
                         Raise::BadValue,
@@ -1992,7 +1900,6 @@ impl Host<'_> {
                     .map_err(|failed| fail(Raise::Config, failed.to_string()))?;
                 let name = string(&next()?)?;
                 let value = next()?;
-                arguments(&value)?;
                 let state = self
                     .state
                     .as_deref_mut()
@@ -2011,7 +1918,7 @@ impl Host<'_> {
                         projection: fux_wire::inspect::Projection::Field("version".into()),
                     }))
                 } else {
-                    now(out, Value::str(region, &version(&value)?.to_string())?)
+                    now(out, Value::str(version(&value)?.to_string()))
                 }
             }
             // ------------------------------------------------------- shell
@@ -2023,7 +1930,7 @@ impl Host<'_> {
                 let name = name.map_err(|why: String| fail(Raise::BadValue, why))?;
                 local(Local::Shell(Shell::Getenv(name)))
             }
-            Act::Warn => local(Local::Shell(Shell::Warn(next()?.text(region)?.to_string()))),
+            Act::Warn => local(Local::Shell(Shell::Warn(next()?.text()?))),
             Act::Exit => local(Local::Shell(Shell::Exit(within(&next()?, 0..=255)?))),
             // ------------------------------------------------------ config
             // A client's own; else the bundled keys, without a user config.
@@ -2146,8 +2053,7 @@ impl Host<'_> {
                 let Value::List(rows) = rows else {
                     return Err(wrong("rows", &rows));
                 };
-                let mut budget = fux_wire::wire::Budget::with_limit(fux_wire::callback::JOB_BYTES);
-                let mut items = budget.vector(rows.items().len())?;
+                let mut items = Vec::with_capacity(rows.items().len());
                 for row in rows.items() {
                     let Value::List(row) = row else {
                         return Err(wrong("[payload,label]", row));
@@ -2155,9 +2061,8 @@ impl Host<'_> {
                     let [payload, label] = row.items() else {
                         return Err(fail(Raise::BadValue, "a row is [payload,label]"));
                     };
-                    let payload = super::callback::data(payload, &mut budget)?;
+                    let payload = super::callback::data(payload)?;
                     let label = string(label)?;
-                    budget.charge(label.capacity())?;
                     items.push(fux_wire::callback::Item { payload, label });
                 }
                 let index = |v: Value<Fux>| -> Result<Option<usize>, Failure> {
@@ -2228,14 +2133,13 @@ impl Host<'_> {
 
     /// Source is explicit; captured values never pass through a tokenizer.
     fn action(value: &Value<Fux>) -> Result<fux_wire::callback::Callback, Failure> {
-        let mut budget = fux_wire::wire::Budget::with_limit(fux_wire::callback::JOB_BYTES);
         let (code, args) = match value {
             Value::Str(_) => (string(value)?, Vec::new()),
             Value::List(v) => match v.items() {
                 [Value::List(args), code] => {
-                    let mut out = budget.vector(args.items().len())?;
+                    let mut out = Vec::with_capacity(args.items().len());
                     for arg in args.items() {
-                        out.push(super::callback::data(arg, &mut budget)?);
+                        out.push(super::callback::data(arg)?);
                     }
                     (string(code)?, out)
                 }
@@ -2250,15 +2154,6 @@ impl Host<'_> {
                 return Err(wrong("a callback", value));
             }
         };
-        Self::callback(code, args)
-    }
-
-    /// `code`, given `args`, as a callback: its source admitted first.
-    fn callback(
-        code: String,
-        args: Vec<fux_wire::callback::Data>,
-    ) -> Result<fux_wire::callback::Callback, Failure> {
-        crate::screens::admit_source(&code)?;
         Ok(fux_wire::callback::Callback { code, args })
     }
 
@@ -2317,7 +2212,8 @@ impl Host<'_> {
             }
             Keys::BindAction => {
                 let key = crate::keymap::key(&string(&next()?)?).map_err(refused)?;
-                let action = Self::callback(string(&next()?)?, Vec::new())?;
+                let code = string(&next()?)?;
+                let action = Self::action(&Value::str(code))?;
                 let tokens = fuxth::token::source("list action", &action.code)
                     .map_err(|e| refused(e.message))?;
                 super::callback_source(state.config.as_ref(), &tokens)
@@ -2370,6 +2266,7 @@ impl Host<'_> {
 #[cfg(test)]
 mod tests {
     use crate::TestResult;
+    use std::rc::Rc;
     #[test]
     fn targeted_and_watch_attach_refuse_explicit_creation_before_any_request() -> TestResult {
         use crate::script::{Asks, Failed, Host, Local};
@@ -2390,7 +2287,6 @@ mod tests {
                 _: &Local,
                 _: Option<&mut crate::client_state::Draft>,
                 _: &mut dyn std::io::Write,
-                _: &fuxth::Region,
             ) -> Result<Vec<fuxth::Value<crate::script::Fux>>, Failed> {
                 self.0 += 1;
                 Err(Failed::new(
@@ -2425,13 +2321,7 @@ mod tests {
                     &mut sink,
                 );
                 let mut recorder = Recorder(0);
-                let result = crate::script::run_capped(
-                    &mut machine,
-                    &mut host,
-                    &mut recorder,
-                    Some(10000),
-                    None,
-                );
+                let result = crate::script::run(&mut machine, &mut host, &mut recorder, None);
                 assert!(
                     result.is_err_and(
                         |f| f.code == fux_wire::code::Code::from(fux_wire::code::Raise::Unused)
@@ -2449,7 +2339,6 @@ mod tests {
 
     #[test]
     fn attach_subjects_and_defaults_retain_their_typed_target_and_run() -> TestResult {
-        let grant = fuxth::Region::new(usize::MAX);
         use super::*;
         use fux_wire::command::AttachTarget;
         let run = "1-2".parse().map_err(|()| "run")?;
@@ -2477,17 +2366,12 @@ mod tests {
                     .ok_or_else(|| fail(Raise::StackUnderflow, "subject"))
             };
             assert!(matches!(
-                host.dispatch(
-                    Word::Act(Act::AttachDefaults),
-                    &grant,
-                    &mut next,
-                    &mut fuxth::BoundedVec::new(&grant)
-                )
-                .map_err(|e| e.message)?,
+                host.dispatch(Word::Act(Act::AttachDefaults), &mut next, &mut Vec::new())
+                    .map_err(|e| e.message)?,
                 Done::Now
             ));
             let (attached, _) =
-                attach_options(Act::Attach, &grant, Value::App(value)).map_err(|e| e.message)?;
+                attach_options(Act::Attach, Value::App(value)).map_err(|e| e.message)?;
             assert_eq!(attached, Some(target.clone()));
             let defaults = draft.attach.as_ref().ok_or("defaults")?;
             assert_eq!(defaults.target, Some(target));
@@ -2601,8 +2485,7 @@ mod tests {
             for suffix in ["changed drop", "expect drop", "version drop"] {
                 let mut vocabulary = super::super::vocabulary()?;
                 vocabulary.add("held", &format!("-- {kind}"))?;
-                let mut compiler =
-                    fuxth::Compiler::<Fux>::new(vocabulary, &fuxth::Region::new(1 << 20));
+                let mut compiler = fuxth::Compiler::<Fux>::new(vocabulary);
                 let source = format!("held str SIDE-EFFECT print {suffix}");
                 let error = compiler
                     .add(&fuxth::token::source("versionless", &source)?)
@@ -2616,23 +2499,20 @@ mod tests {
     }
 
     #[test]
-    fn options_are_refused_before_they_are_copied() -> TestResult {
+    fn options_past_a_launch_frame_are_refused_before_they_are_copied() -> TestResult {
         let allocator = fux_vt_peak::ThreadPeak;
         let list = |item: &str, n| {
-            let list =
-                crate::script::test_list(vec![crate::script::test_str(item); n]).ok_or("list");
-            list.map(|list| Value::List(fuxth::Shared::new(list)))
+            let list = fuxth::List::new(vec![Value::str(item); n]);
+            Ok::<_, String>(Value::List(std::rc::Rc::new(list)))
         };
         let big = std::iter::repeat_n('x', 1 << 20).collect::<String>();
-        // 8 MiB of options on a pane, held twice, or once; a list of the same
-        // 8 MiB, past a launch frame; and a grant of 64 KiB.
+        // 8 MiB of options on a pane; a list of the same 8 MiB, past a
+        // launch frame.
         let request_of = |argv| Opts {
             on: Some(On::Target(AnyRef::Pane(fux_wire::id::PaneId::of(1)))),
             argv,
             ..Opts::default()
         };
-        let held = std::rc::Rc::new(request_of(vec![big.clone(); 8]));
-        let shared = || Value::App(Fux::Opts(held.clone()));
         let unique = || {
             Value::App(Fux::Opts(std::rc::Rc::new(request_of(vec![
                 big.clone();
@@ -2640,20 +2520,13 @@ mod tests {
             ]))))
         };
         let fresh = || Value::App(Fux::Opts(std::rc::Rc::default()));
-        let (too_long, bad) = (fuxth::Code::TooLong, fail(Raise::BadValue, "").code);
+        let bad = fail(Raise::BadValue, "").code;
         // An option on what `values` give, or an action consuming them.
         for (step, values, code) in [
-            (
-                Ok(Opt::Arg),
-                vec![shared(), crate::script::test_str("x")],
-                too_long,
-            ),
             (Ok(Opt::ShellProgram), vec![fresh(), list(&big, 8)?], bad),
             (Ok(Opt::CopyEnvironment), vec![fresh(), list(&big, 8)?], bad),
-            (Err(Act::SendKeys), vec![shared()], too_long),
             (Err(Act::Respawn), vec![unique()], bad),
         ] {
-            let grant = fuxth::Region::new(64 << 10);
             let mut values = values.into_iter();
             let mut next = || {
                 values
@@ -2665,14 +2538,10 @@ mod tests {
             let base = allocator.live();
             allocator.reset_peak();
             let refused = match step {
-                Ok(opt) => modify(opt, &grant, &mut next).err(),
-                Err(Act::SendKeys) => {
-                    request(Act::SendKeys, &grant, next().map_err(|f| f.message)?).err()
-                }
+                Ok(opt) => modify(opt, &mut next).err(),
                 Err(act) => {
                     let word = Word::Act(act);
-                    host.dispatch(word, &grant, &mut next, &mut fuxth::BoundedVec::new(&grant))
-                        .err()
+                    host.dispatch(word, &mut next, &mut Vec::new()).err()
                 }
             };
             assert_eq!(refused.map(|f| f.code), Some(code), "{step:?}");
@@ -2682,111 +2551,23 @@ mod tests {
     }
 
     #[test]
-    fn host_text_arguments_refuse_long_json_before_copying_or_quoting_it() -> TestResult {
-        let grant = fuxth::Region::new(fux_wire::wire::MAX_ALLOCATED);
-        let edge = std::iter::repeat_n('界', fuxth::LONGEST).collect::<String>();
-        assert!(argument(&fuxth::Text::new(&grant, &edge)?).is_ok());
-        drop(edge);
-        let input = crate::script::test_str(
-            std::iter::repeat_n('\u{1}', fuxth::LONGEST).collect::<String>(),
-        );
-        let json = json_text(&input, &grant).map_err(|f| f.message)?;
-        json.retain(&grant).map_err(|f| f.message)?;
-        assert!(matches!(&json, Value::Str(s) if s.chars_len() > fuxth::LONGEST));
-        let _room = fuxth::Lease::of(&grant, grant.remaining().saturating_sub(64 << 10))
-            .map_err(|f| f.message)?;
-        let opts = || {
-            Value::App(Fux::Opts(std::rc::Rc::new(Opts {
-                argv: vec!["sh".into()],
-                ..Opts::default()
-            })))
-        };
-        let row = crate::script::test_list(vec![json.clone(), Value::Int(0), Value::Int(0)])
-            .ok_or("style row")?;
-        let styles =
-            crate::script::test_list(vec![Value::List(fuxth::Shared::new(row))]).ok_or("styles")?;
-        let allocator = fux_vt_peak::ThreadPeak;
-        for (word, values) in [
-            (Word::Opt(Opt::Arg), vec![opts(), json.clone()]),
-            (Word::Opt(Opt::Axis), vec![opts(), json.clone()]),
-            (
-                Word::Opt(Opt::Env),
-                vec![opts(), crate::script::test_str("X"), json.clone()],
-            ),
-            (Word::Act(Act::Pane), vec![json.clone()]),
-            (Word::Act(Act::Version), vec![json.clone()]),
-            (
-                Word::Act(Act::Rename),
-                vec![Value::App(Fux::Pane(PaneId::of(1), None)), json.clone()],
-            ),
-            (
-                Word::Act(Act::Set),
-                vec![
-                    crate::script::test_str("styles"),
-                    Value::List(fuxth::Shared::new(styles)),
-                ],
-            ),
-        ] {
-            let mut values = values.into_iter();
-            let mut next = || {
-                values
-                    .next()
-                    .ok_or_else(|| fail(Raise::StackUnderflow, "test argument"))
-            };
-            let mut sink = std::io::sink();
-            let mut state = crate::client_state::Draft::default();
-            let mut host = Host::new(
-                fux_wire::protocol::Context::default(),
-                Some(&mut state),
-                &mut sink,
-            );
-            let base = allocator.live();
-            allocator.reset_peak();
-            let failed = host
-                .dispatch(word, &grant, &mut next, &mut fuxth::BoundedVec::new(&grant))
-                .err();
-            let allocated = allocator.peak().saturating_sub(base);
-            assert!(allocated < 1 << 20, "{word:?}: {allocated}");
-            assert_eq!(
-                failed.map(|f| f.code),
-                Some(fuxth::Code::TooLong),
-                "{word:?}"
-            );
-        }
-        Ok(())
-    }
-
-    #[test]
     fn accumulating_options_preserve_order() -> TestResult {
-        let grant = fuxth::Region::new(usize::MAX);
         let mut value = Value::App(Fux::Opts(std::rc::Rc::default()));
         for (opt, values) in [
-            (Opt::Program, vec![crate::script::test_str("cat")]),
-            (Opt::Arg, vec![crate::script::test_str("a")]),
-            (Opt::Arg, vec![crate::script::test_str("b")]),
-            (
-                Opt::Env,
-                vec![
-                    crate::script::test_str("X"),
-                    crate::script::test_str("first"),
-                ],
-            ),
-            (Opt::UnsetEnv, vec![crate::script::test_str("Y")]),
-            (
-                Opt::Env,
-                vec![
-                    crate::script::test_str("Z"),
-                    crate::script::test_str("last"),
-                ],
-            ),
-            (Opt::Text, vec![crate::script::test_str("a")]),
-            (Opt::Key, vec![crate::script::test_str("Enter")]),
-            (Opt::Paste, vec![crate::script::test_str("b")]),
-            (Opt::Bytes, vec![crate::script::test_str("63")]),
+            (Opt::Program, vec![Value::str("cat")]),
+            (Opt::Arg, vec![Value::str("a")]),
+            (Opt::Arg, vec![Value::str("b")]),
+            (Opt::Env, vec![Value::str("X"), Value::str("first")]),
+            (Opt::UnsetEnv, vec![Value::str("Y")]),
+            (Opt::Env, vec![Value::str("Z"), Value::str("last")]),
+            (Opt::Text, vec![Value::str("a")]),
+            (Opt::Key, vec![Value::str("Enter")]),
+            (Opt::Paste, vec![Value::str("b")]),
+            (Opt::Bytes, vec![Value::str("63")]),
         ] {
             let mut args = std::iter::once(value).chain(values);
             value = Value::App(Fux::Opts(
-                modify(opt, &grant, &mut || {
+                modify(opt, &mut || {
                     args.next()
                         .ok_or_else(|| fail(Raise::StackUnderflow, "test argument"))
                 })
@@ -2852,252 +2633,7 @@ mod tests {
     }
 
     #[test]
-    fn the_input_bound_is_stated_as_checked() {
-        let input = format!("{} KiB at most", INPUT_MAX / 1024);
-        let about = Word::Act(Act::SendKeys).row().about;
-        assert!(about.contains(&input), "{input}");
-        assert!(crate::help::AGENTS.contains(&input), "{input}");
-    }
-
-    fn styled_line() -> fux_wire::answer::Captured {
-        fux_wire::answer::Captured {
-            of: fux_wire::answer::Of::Client(fux_wire::id::ClientId::of(1)),
-            screen_rows: 1,
-            screen_cols: 256,
-            screen_cursor: None,
-            lines: vec![fux_wire::answer::Line {
-                text: std::iter::repeat_n('界', 128).collect(),
-                runs: (0..128)
-                    .map(|style| fux_wire::answer::Run {
-                        bytes: 3,
-                        cells: 2,
-                        style,
-                    })
-                    .collect(),
-            }],
-            styles: (0..128u8)
-                .map(|n| {
-                    fux_vt::Attributes::new(
-                        fux_vt::Color::Rgb(fux_vt::Rgb {
-                            r: 255,
-                            g: 254,
-                            b: n,
-                        }),
-                        fux_vt::Color::Rgb(fux_vt::Rgb {
-                            r: 252,
-                            g: 251,
-                            b: 250,
-                        }),
-                    )
-                    .with_underline_color(fux_vt::Color::Rgb(fux_vt::Rgb {
-                        r: 128,
-                        g: 127,
-                        b: 126,
-                    }))
-                    .with_bold(true)
-                    .with_dim(true)
-                    .with_italic(true)
-                    .with_inverse(true)
-                    .with_hidden(true)
-                    .with_strikeout(true)
-                    .with_underline_style(fux_vt::UnderlineStyle::Curly)
-                    .with_blink(fux_vt::Blink::Rapid)
-                })
-                .collect(),
-            styled: true,
-            marks: false,
-        }
-    }
-
-    /// A list of `items`, made in `region`.
-    fn list_in<A: fuxth::AppValue>(
-        region: &fuxth::Region,
-        items: Vec<Value<A>>,
-    ) -> Result<Value<A>, String> {
-        let told = |refused: fuxth::Refused| refused.to_string();
-        let mut store = fuxth::BoundedVec::with_capacity(region, items.len()).map_err(told)?;
-        store.extend(items).map_err(told)?;
-        fuxth::List::new(store).ok_or("list")?.value().map_err(told)
-    }
-
-    #[test]
-    fn nested_plain_text_shares_one_region() -> TestResult {
-        std::thread_local! {
-            static WRITES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
-        }
-        #[derive(Clone, PartialEq)]
-        struct Limited(Fux);
-        impl fuxth::AppValue for Limited {
-            fn kind(&self) -> &'static str {
-                "a bounded answer"
-            }
-            fn retain(&self, region: &fuxth::Region) -> Result<(), Failure> {
-                fuxth::AppValue::retain(&self.0, region)
-            }
-            fn scratch(&self) -> usize {
-                fuxth::AppValue::scratch(&self.0)
-            }
-            fn write_text(&self, out: &mut dyn std::fmt::Write) -> Result<(), Failure> {
-                WRITES.with(|writes| writes.set(writes.get().saturating_add(1)));
-                fuxth::AppValue::write_text(&self.0, out)
-            }
-        }
-        let allocator = fux_vt_peak::ThreadPeak;
-        let base = allocator.live();
-        let region = fuxth::Region::new(64 << 10);
-        let answer = Value::App(Limited(Fux::Answer(
-            fuxth::Shared::new(super::super::Answer::Capture(Box::new(styled_line()))),
-            None,
-        )));
-        answer.retain(&region).map_err(|f| f.message)?;
-        let held = list_in(&region, vec![answer])?;
-        let one = held.text(&region).map_err(|f| f.message)?;
-        assert!(one.len().saturating_mul(8) > 64 << 10);
-        drop(one);
-        let value = list_in(&region, vec![held.clone(); 8])?;
-        assert_eq!(value.weight(), 17);
-        WRITES.set(0);
-        allocator.reset_peak();
-        assert!(
-            value.text(&region).is_err(),
-            "shared captures must not bypass the region's counting of all their text"
-        );
-        assert!(
-            WRITES.get() > 0,
-            "input fits; counting all the output must refuse it"
-        );
-        assert!(value.text_upto(usize::MAX, &region).is_err());
-        assert!(
-            allocator.peak().saturating_sub(base) <= 64 << 10,
-            "retained input, conversion and output must share the region"
-        );
-        let small = list_in(&region, vec![held; 2])?;
-        allocator.reset_peak();
-        let text = small
-            .text_upto(usize::MAX, &region)
-            .map_err(|f| f.message)?
-            .ok_or("text")?;
-        assert_eq!(text.matches('界').count(), 256);
-        assert!(allocator.peak().saturating_sub(base) <= 64 << 10);
-        Ok(())
-    }
-
-    #[test]
-    fn text_and_json_of_shared_captures_are_reserved_before_they_are_made() -> TestResult {
-        const SCRATCH: usize = 1024;
-        let allocator = fux_vt_peak::ThreadPeak;
-        let base = allocator.live();
-        let grant = fuxth::Region::new(64 << 10);
-        let captured = styled_line();
-        let answer = Value::App(Fux::Answer(
-            fuxth::Shared::new(super::super::Answer::Capture(Box::new(captured))),
-            None,
-        ));
-        answer.retain(&grant).map_err(|f| f.message)?;
-        let list = |item: &Value<Fux>, n| list_in(&grant, vec![item.clone(); n]);
-        let held = list(&answer, 1)?;
-        let text = |value: &Value<Fux>| {
-            value
-                .string_upto(usize::MAX, &grant)
-                .and_then(|v| v.ok_or_else(|| fail(Raise::TooLong, "text")))
-        };
-        let one = text(&held).map_err(|f| f.message)?;
-        let Value::Str(one) = one else {
-            return Err("string".into());
-        };
-        assert!(one.len().saturating_mul(8) > 64 << 10);
-        let one_size = fuxth::Text::size(&one);
-        drop(one);
-        // Shared inputs are retained once, but every alias contributes
-        // text: count the complete output before allocating any of it.
-        let eight = list(&held, 8)?;
-        let left = grant.remaining();
-        allocator.reset_peak();
-        assert_eq!(text(&eight).map_err(|f| f.code), Err(fuxth::Code::TooLong));
-        assert_eq!(
-            json_text(&eight, &grant).map_err(|f| f.code),
-            Err(fuxth::Code::TooLong)
-        );
-        assert_eq!(grant.remaining(), left);
-        assert!(allocator.peak().saturating_sub(base) <= (64 << 10) + SCRATCH);
-        let two = text(&list(&held, 2)?).map_err(|f| f.message)?;
-        let Value::Str(two) = two else {
-            return Err("string".into());
-        };
-        assert_eq!(two.matches('界').count(), 256);
-        drop(two);
-        let json = json_text(&held, &grant).map_err(|f| f.message)?;
-        let Value::Str(json) = json else {
-            return Err("JSON string".into());
-        };
-        assert!(
-            json.starts_with('[')
-                && json.contains(r#""col":254,"len":2"#)
-                && json.contains(r##""fg":"#fffe7f""##),
-            "{json:?}"
-        );
-        assert!(allocator.peak().saturating_sub(base) <= (64 << 10) + SCRATCH);
-        let needed = fuxth::Text::size(&json);
-        drop(json);
-        assert_eq!(grant.remaining(), left);
-        // The text bytes still fit, but its box and non-ASCII marks do
-        // not: refused before either buffer is made.
-        let room = fuxth::Lease::of(&grant, left.saturating_sub(needed).saturating_add(1))
-            .map_err(|f| f.message)?;
-        let base = allocator.live();
-        allocator.reset_peak();
-        assert_eq!(
-            json_text(&held, &grant).map_err(|f| f.code),
-            Err(fuxth::Code::TooLong)
-        );
-        assert!(allocator.peak().saturating_sub(base) <= SCRATCH);
-        drop(room);
-        // So is a string of its text.
-        let room = fuxth::Lease::of(&grant, left.saturating_sub(one_size).saturating_add(1))
-            .map_err(|f| f.message)?;
-        allocator.reset_peak();
-        assert_eq!(text(&held).map_err(|f| f.code), Err(fuxth::Code::TooLong));
-        assert!(allocator.peak().saturating_sub(base) <= SCRATCH);
-        drop(room);
-        assert_eq!(
-            json_text(&held, &fuxth::Region::new(0)).map_err(|f| f.code),
-            Err(fuxth::Code::TooLong)
-        );
-        let ascii = json_text(&list(&Value::Int(0), 128)?, &grant).map_err(|f| f.message)?;
-        ascii.retain(&grant).map_err(|f| f.message)?;
-        let Value::Str(ascii) = ascii else {
-            return Err("JSON string".into());
-        };
-        assert_eq!(
-            left.saturating_sub(grant.remaining()),
-            fuxth::Text::size(&ascii)
-        );
-        drop(ascii);
-        assert_eq!(grant.remaining(), left);
-        Ok(())
-    }
-
-    #[test]
-    fn local_settings_share_the_program_step_cap() {
-        let run = |config: &str| {
-            let mut draft = crate::client_state::Draft::default();
-            super::super::run_quiet(
-                &fuxth::token::source("config", config).map_err(|e| Code::of(e.code))?,
-                Some(&mut draft),
-                false,
-            )
-            .map_err(|failed| failed.code)
-        };
-        let settings: String =
-            std::iter::repeat_n("str terminal-clipboard false set\n", 200).collect();
-        assert_eq!(run(&settings), Ok(()));
-        let forever = "begin false until";
-        assert_eq!(run(forever), Err(Code::Steps));
-    }
-
-    #[test]
     fn modifiers_keep_the_target_and_baseline() -> TestResult {
-        let grant = fuxth::Region::new(usize::MAX);
         let version: fux_wire::command::Version = "%2:0.0.0.0.0:48211-1867a3f9c2b8e7d6"
             .parse()
             .map_err(|()| "version")?;
@@ -3121,13 +2657,13 @@ mod tests {
             workspace,
             client,
             Fux::Answer(
-                fuxth::Shared::new(super::super::Answer::Pane(
+                Rc::new(super::super::Answer::Pane(
                     fux_wire::answer::PaneAnswer::Acted(version),
                 )),
                 Some(version.run),
             ),
             Fux::Answer(
-                fuxth::Shared::new(super::super::Answer::Pane(
+                Rc::new(super::super::Answer::Pane(
                     fux_wire::answer::PaneAnswer::Closed(version.pane),
                 )),
                 Some(version.run),
@@ -3169,23 +2705,24 @@ mod tests {
                     | Opt::Text
                     | Opt::Paste
                     | Opt::UnsetEnv => {
-                        vec![crate::script::test_str("x")]
+                        vec![Value::str("x")]
                     }
-                    Opt::ShellProgram => vec![Value::List(fuxth::Shared::new(
-                        crate::script::test_list(vec![crate::script::test_str("sh")])
-                            .ok_or("list")?,
-                    ))],
-                    Opt::CopyEnvironment => vec![Value::List(fuxth::Shared::new(
-                        crate::script::test_list(vec![]).ok_or("list")?,
-                    ))],
+                    Opt::ShellProgram => {
+                        vec![Value::List(std::rc::Rc::new(fuxth::List::new(vec![
+                            Value::str("sh"),
+                        ])))]
+                    }
+                    Opt::CopyEnvironment => {
+                        vec![Value::List(std::rc::Rc::new(fuxth::List::new(vec![])))]
+                    }
                     Opt::Size | Opt::Shares => vec![Value::Int(1), Value::Int(1)],
                     Opt::Rows | Opt::Cols => vec![Value::Int(0), Value::Int(1)],
-                    Opt::Env => vec![crate::script::test_str("X"), Value::Int(1)],
-                    Opt::In => vec![crate::script::test_str("+1")],
+                    Opt::Env => vec![Value::str("X"), Value::Int(1)],
+                    Opt::In => vec![Value::str("+1")],
                     Opt::Timeout | Opt::History => vec![Value::Int(0)],
-                    Opt::Key => vec![crate::script::test_str("Enter")],
-                    Opt::Bytes => vec![crate::script::test_str("61")],
-                    Opt::Axis => vec![crate::script::test_str("horizontal")],
+                    Opt::Key => vec![Value::str("Enter")],
+                    Opt::Bytes => vec![Value::str("61")],
+                    Opt::Axis => vec![Value::str("horizontal")],
                     Opt::Watch
                     | Opt::KillFirst
                     | Opt::Wrapped
@@ -3207,7 +2744,7 @@ mod tests {
                     target.clone()
                 };
                 let mut values = std::iter::once(Value::App(initial)).chain(args.clone());
-                let actual = modify(opt, &grant, &mut || {
+                let actual = modify(opt, &mut || {
                     values
                         .next()
                         .ok_or_else(|| fail(Raise::StackUnderflow, "test argument"))
@@ -3215,23 +2752,24 @@ mod tests {
                 .map_err(|f| f.message)?;
                 assert_eq!(actual.on, expected.on, "{target:?} {opt}");
                 assert_eq!(Fux::Opts(actual).name(), kind, "{target:?} {opt}");
-                let text = |v: &Value<Fux>| {
-                    let region = fuxth::Region::new(usize::MAX);
-                    v.text(&region).map(|t| t.to_string()).unwrap_or_default()
-                };
                 let args = args
                     .iter()
                     .map(|v| match v {
-                        Value::Str(s) => format!("str {}", &***s),
+                        Value::Str(s) => format!("str {}", **s),
                         Value::List(list) => format!(
                             "list {} end",
                             list.items()
                                 .iter()
-                                .map(|v| format!("str {}", fux_wire::words::quote(&text(v))))
+                                .map(|v| format!(
+                                    "str {}",
+                                    fux_wire::words::quote(&v.text().unwrap_or_default())
+                                ))
                                 .collect::<Vec<_>>()
                                 .join(" ")
                         ),
-                        Value::Int(_) | Value::Bool(_) | Value::App(_) => text(v),
+                        Value::Int(_) | Value::Bool(_) | Value::App(_) => {
+                            v.text().unwrap_or_default()
+                        }
                     })
                     .collect::<Vec<_>>()
                     .join(" ");
@@ -3240,8 +2778,7 @@ mod tests {
                     vocabulary.add("false", "-- boolean")?;
                     vocabulary.add("held", &format!("-- {}", target.name()))?;
                     vocabulary.add("take-kind", &format!("{candidate} --"))?;
-                    let mut compiler =
-                        fuxth::Compiler::<Fux>::new(vocabulary, &fuxth::Region::new(1 << 20));
+                    let mut compiler = fuxth::Compiler::<Fux>::new(vocabulary);
                     let source = format!("held {args} {opt} take-kind");
                     let checked = compiler
                         .add(&fuxth::token::source("modifier", &source)?)

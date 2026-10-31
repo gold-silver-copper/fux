@@ -150,19 +150,15 @@ pub struct Terminal {
 
 impl Terminal {
     /// Reports retain unknowns and even cell sizes refused for graphics.
-    pub(crate) fn facts(
-        &self,
-        budget: &mut fux_wire::wire::Budget,
-    ) -> Result<fux_wire::json::Json, fux_wire::code::Error> {
+    pub(crate) fn facts(&self) -> fux_wire::json::Json {
         use fux_wire::json::Json;
-        let cell = self
-            .said_cell
-            .map(|(width, height)| {
-                budget.object([("width", Json::int(width)), ("height", Json::int(height))])
-            })
-            .transpose()?
-            .unwrap_or(Json::Null);
-        budget.object([
+        let cell = self.said_cell.map_or(Json::Null, |(width, height)| {
+            Json::object(vec![
+                ("width", Json::int(width)),
+                ("height", Json::int(height)),
+            ])
+        });
+        Json::object(vec![
             ("sixel_reported", self.sixel.map_or(Json::Null, Json::Bool)),
             ("cell_reported", cell),
             (
@@ -820,26 +816,6 @@ mod tests {
         assert_eq!(answered(&mut s, 2), "");
         run(&mut s, "str c1 client str other workspace show")?;
         assert_eq!(answered(&mut s, 2), "\x1b[?997;2n");
-        Ok(())
-    }
-
-    /// A scheme report a full input queue refuses is not taken as told: it
-    /// is sent once the program reads, late, and nothing is lost.
-    #[test]
-    fn a_scheme_report_refused_is_sent_once_the_queue_takes_it() -> Outcome {
-        let (mut s, c) = session()?;
-        s.out(PaneId::of(1), b"\x1b[?2031h");
-        s.input(c, b"\x1b[?997;1n");
-        assert_eq!(answered(&mut s, 1), "\x1b[?997;1n");
-        let full = vec![0; crate::pane::INPUT_BYTES];
-        let mut p = s.parts.pane_mut(PaneId::of(1)).ok_or("no %1")?;
-        p.push(full).map_err(|e| e.to_string())?;
-        s.input(c, b"\x1b[?997;2n");
-        let notice = (s.views.get_mut(&c)).and_then(|v| v.notice.take());
-        assert!(notice.is_none(), "nothing is lost: {notice:?}");
-        assert_eq!(answered(&mut s, 1).len(), crate::pane::INPUT_BYTES);
-        s.settled();
-        assert_eq!(answered(&mut s, 1), "\x1b[?997;2n");
         Ok(())
     }
 
