@@ -2,7 +2,7 @@
 # guards: json of a capture past 1,000,000 characters is an ordinary string,
 #   which len and slice take
 # fix: #313
-$ V=$(fux agent-opts 120 40 size 33554432 history-bytes str sh program str -c arg str 'seq 1 200000' arg run)
+$ V=$(fux agent-opts 120 40 size 33554432 history-bytes str sh program str -c arg str 'seq 1 200000' arg new-tab)
 $ fux "${V%%:*}" 20 until-ended drop
 $ fux "${V%%:*}" all-history capture json len 1000000 gt
   = true
