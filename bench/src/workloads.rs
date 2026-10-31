@@ -830,7 +830,7 @@ fn pane(loads: &[Load], baseline: bool) -> Result<Done, String> {
         });
     }
     // What it tells goes in a journal of its own, as in a session.
-    let mut journal = fux::events::Journal::default();
+    let mut journal = fux::journal::Journal::default();
     let at = (
         "+1".parse().map_err(|_| "+1")?,
         "@1".parse().map_err(|_| "@1")?,

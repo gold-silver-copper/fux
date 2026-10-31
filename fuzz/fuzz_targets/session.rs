@@ -489,7 +489,7 @@ impl Run {
                     of: Some(self.s.run),
                     ..Default::default()
                 };
-                match open.admit(Some(&self.keymap.draft()), &context) {
+                match fux::script::admit(open, Some(&self.keymap.draft()), &context) {
                     Ok(screen) => self.open(client, screen),
                     Err(failed) => {
                         self.s.acts(

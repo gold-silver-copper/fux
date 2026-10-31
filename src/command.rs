@@ -1,5 +1,5 @@
 //! The requests a client sends the server: typed actions, each built by
-//! fuxth words in a client (`crate::script`) and carried whole over the
+//! fuxth words in a client (its `script`) and carried whole over the
 //! socket (`crate::wire`). The server never reads words.
 use crate::id::{BufferId, ClientId, PaneId, TabId, WsId};
 use crate::keys::mouse::MouseButton;

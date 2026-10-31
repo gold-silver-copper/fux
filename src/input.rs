@@ -116,7 +116,7 @@ impl Session {
                         .get(&client)
                         .is_some_and(|view| view.mode.is_normal())
                 {
-                    self.view_event(client, crate::events::ViewChange::Screen);
+                    self.view_event(client, crate::journal::ViewChange::Screen);
                 }
             }
             Act::Notice { text, error } => self.notify_to(client, text, error),
@@ -146,7 +146,7 @@ impl Session {
         };
         view.dirty |= shown;
         if ended {
-            self.view_event(client, crate::events::ViewChange::Screen);
+            self.view_event(client, crate::journal::ViewChange::Screen);
         }
         // Encoded as its program asked.
         let refused = self.type_in(client, |screen, out| {
@@ -399,8 +399,9 @@ mod tests {
 
     #[test]
     fn openings_replacements_closes_and_copy_endings_invalidate_from_the_prior_cursor() -> Outcome {
-        use crate::events::{Actor, Reader};
+        use crate::events::Actor;
         use crate::inspect::Scope;
+        use crate::journal::Reader;
         let (mut s, c) = session()?;
         s.out(PaneId::of(1), b"first\r\nlast");
         for (opening, act, normal) in [
@@ -511,8 +512,8 @@ mod tests {
 
     #[test]
     fn a_presentation_edit_that_resizes_a_pane_still_journals_the_resize() -> Outcome {
-        use crate::events::Reader;
         use crate::inspect::Scope;
+        use crate::journal::Reader;
         let (mut s, c) = session()?;
         let mut presentation = s.views.get(&c).ok_or("view")?.presentation.clone();
         presentation.bar = crate::presentation::Bar::new(

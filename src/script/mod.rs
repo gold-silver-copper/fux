@@ -31,7 +31,7 @@ use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
-pub(crate) use callback::admit;
+pub use callback::admit;
 pub(crate) use words::INPUT_MAX;
 pub(crate) use words::NAMES;
 pub use words::{Act, After, Group, Keys, Opt, Row, Screen, Takes, Word, from_opts, usage};

@@ -382,7 +382,7 @@ impl Screen {
             return vec![
                 HIDE,
                 Effect::Run(Job::call(
-                    &action,
+                    action,
                     [list.client.clone(), item.payload.clone()],
                 )),
             ];

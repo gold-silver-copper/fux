@@ -180,7 +180,7 @@ codes! {
     /// A program that could not start.
     Start "start",
     /// A size no pane or tab can have: a client's screen past 4096
-    /// (`crate::command::MOST`) a side (`attach`, its terminal resized), or with
+    /// (`command::MOST`) a side (`attach`, its terminal resized), or with
     /// no room for a pane below its bar as it starts a server's first
     /// shell; a new tab or workspace given none, whose caller has no
     /// screen that sizes panes and no tab; a pane's

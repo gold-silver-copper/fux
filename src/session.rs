@@ -1360,7 +1360,7 @@ impl Session {
         self.views.insert(id, view);
         self.parts.attach(id);
         self.parts.show(id, ws, spot);
-        self.view_event(id, crate::events::ViewChange::Attached);
+        self.view_event(id, crate::journal::ViewChange::Attached);
         self.ask(id, crate::outer::QUERIES);
         self.settle(now);
         Ok(id)
@@ -1368,7 +1368,7 @@ impl Session {
 
     pub fn detach(&mut self, id: ClientId, now: Instant) {
         if self.views.contains_key(&id) {
-            self.view_event(id, crate::events::ViewChange::Detached);
+            self.view_event(id, crate::journal::ViewChange::Detached);
         }
         self.views.remove(&id);
         self.parts.forget(id);
@@ -1397,7 +1397,7 @@ impl Session {
 
     /// A client's terminal is `rows` by `cols`: its view takes the size
     /// and settles if that changes it, and says whether it did; a size no
-    /// view has (`crate::command::size`) is refused, and the view kept.
+    /// view has (`command::size`) is refused, and the view kept.
     pub fn resize(
         &mut self,
         id: ClientId,
@@ -1410,7 +1410,7 @@ impl Session {
         let Some(view) = view else { return Ok(false) };
         (view.rows, view.cols) = size;
         view.dirty = true;
-        self.view_event(id, crate::events::ViewChange::Resized);
+        self.view_event(id, crate::journal::ViewChange::Resized);
         self.settle(now);
         Ok(true)
     }
@@ -1527,7 +1527,7 @@ impl Session {
         self.views = views;
         for ended in &ended {
             if let Outgoing::To(client, _) = ended {
-                self.view_event(*client, crate::events::ViewChange::Screen);
+                self.view_event(*client, crate::journal::ViewChange::Screen);
             }
         }
         self.outbox.extend(ended);
@@ -1598,10 +1598,10 @@ impl Session {
                 self.outbox.push(Outgoing::To(view.id, ended));
                 let id = pane.id();
                 let at = self.parts.locate(id).map(|at| (at, id));
-                self.parts.journal_mut().push(crate::events::Event::View {
+                self.parts.journal_mut().push(crate::journal::Event::View {
                     client: view.id,
                     at,
-                    change: crate::events::ViewChange::Screen,
+                    change: crate::journal::ViewChange::Screen,
                 });
             }
         }
@@ -2147,7 +2147,7 @@ impl Session {
         self.buffers.push_front((id, text));
         self.parts
             .journal_mut()
-            .push(crate::events::Event::Copied { buffer: id, at });
+            .push(crate::journal::Event::Copied { buffer: id, at });
         self.buffers.truncate(BUFFER_LIMIT);
         Ok(fits)
     }
@@ -2218,9 +2218,9 @@ impl Session {
                     ));
                 }
                 let reader =
-                    crate::events::Reader::new(scope, self.parts.journal(), self.run, from)
+                    crate::journal::Reader::new(scope, self.parts.journal(), self.run, from)
                         .map_err(|why| fail(Raise::BadValue, why))?;
-                let read = crate::events::Read::new(reader, crate::after(now, timeout.duration()));
+                let read = crate::journal::Read::new(reader, crate::after(now, timeout.duration()));
                 return Ok(self.answered(Waiting::Events(read), now));
             }
         };
@@ -2332,15 +2332,15 @@ impl Session {
     fn zoom_to(&mut self, client: ClientId, zoom: bool) {
         if let Some(view) = self.views.get_mut(&client).filter(|v| v.zoom != zoom) {
             view.zoom = zoom;
-            self.view_event(client, crate::events::ViewChange::Zoomed);
+            self.view_event(client, crate::journal::ViewChange::Zoomed);
         }
     }
 
-    pub(crate) fn view_event(&mut self, client: ClientId, change: crate::events::ViewChange) {
+    pub(crate) fn view_event(&mut self, client: ClientId, change: crate::journal::ViewChange) {
         let at = self.place(client).map(|p| ((p.ws, p.tab), p.pane));
         self.parts
             .journal_mut()
-            .push(crate::events::Event::View { client, at, change });
+            .push(crate::journal::Event::View { client, at, change });
     }
 
     /// How many commands have run that may change what clients show.
@@ -5844,8 +5844,12 @@ mod tests {
             "agent-opts 80 24 size 4096 history-bytes false reflow 3 alternate-scroll-lines 1024 picture-bytes false program-clipboard str /bin/cat program run",
         )?;
         let (id, origin) = (PaneId::of(2), Origin::Cli(Caller::default()));
-        let mut stream =
-            crate::events::Reader::new(crate::inspect::Scope::All, s.parts.journal(), s.run, None)?;
+        let mut stream = crate::journal::Reader::new(
+            crate::inspect::Scope::All,
+            s.parts.journal(),
+            s.run,
+            None,
+        )?;
         let spends = crate::pane::tests::spends_the_budget(24, 80);
         let mut left: Vec<u8> = std::iter::repeat_n(spends, 4).flatten().collect();
         left.push(0x07);
@@ -5940,7 +5944,7 @@ mod tests {
                 pane.exiting(ended);
             }
             s.out(id, &crate::pane::tests::spends_the_budget(24, 80));
-            let mut stream = crate::events::Reader::new(
+            let mut stream = crate::journal::Reader::new(
                 crate::inspect::Scope::All,
                 s.parts.journal(),
                 s.run,
@@ -6009,8 +6013,12 @@ mod tests {
         run(&mut s, "agent-opts 80 24 size str /bin/cat program run")?;
         let id = PaneId::of(2);
         s.out(id, &crate::pane::tests::spends_the_budget(24, 80));
-        let mut stream =
-            crate::events::Reader::new(crate::inspect::Scope::All, s.parts.journal(), s.run, None)?;
+        let mut stream = crate::journal::Reader::new(
+            crate::inspect::Scope::All,
+            s.parts.journal(),
+            s.run,
+            None,
+        )?;
         // Programs are started, as a server starts them.
         s.launch = Some("/nonexistent/fux.sock".into());
         let begun = s.begin_now(
@@ -7840,7 +7848,7 @@ mod tests {
     /// does to `s`.
     fn told(s: &mut Session, change: impl FnOnce(&mut Session)) -> String {
         let stream =
-            crate::events::Reader::new(crate::inspect::Scope::All, s.parts.journal(), s.run, None);
+            crate::journal::Reader::new(crate::inspect::Scope::All, s.parts.journal(), s.run, None);
         // From now is never refused; if it were, the caller's comparison
         // shows why.
         let mut stream = match stream {
@@ -8503,8 +8511,9 @@ mod tests {
 #[cfg(test)]
 mod journal_tests {
     use super::*;
-    use crate::events::{Actor, Batch, Reader};
+    use crate::events::{Actor, Batch};
     use crate::inspect::Scope;
+    use crate::journal::Reader;
     use crate::session::testing::TestResult;
     use testing::{output, run, started};
 
@@ -8688,7 +8697,7 @@ mod journal_tests {
             &format!("all str {from} 0 next-events str events get first str pane get kind"),
         )?;
         assert_eq!(kind, "pane\n");
-        for _ in 0..crate::events::KEPT.saturating_add(1) {
+        for _ in 0..crate::journal::KEPT.saturating_add(1) {
             s.output(PaneId::of(1), b"\x07", Instant::now());
         }
         let failed = output(&mut s, &format!("all str {from} 0 1 events-since drop"));

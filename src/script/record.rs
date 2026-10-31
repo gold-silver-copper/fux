@@ -581,7 +581,7 @@ mod tests {
             origin: Actor::Program(PaneId::of(u32::MAX), u64::MAX / 2),
             next,
         };
-        for count in [0, 1, crate::events::BATCH_EVENTS] {
+        for count in [0, 1, crate::journal::BATCH_EVENTS] {
             for reason in [
                 None,
                 Some(std::iter::repeat_n('𐀀', 500).collect::<String>()),

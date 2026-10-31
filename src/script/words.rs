@@ -638,7 +638,7 @@ fn one_of<T: Clone>(value: &Value<Fux>, all: &[(&str, T)]) -> Result<T, Failure>
     })
 }
 
-/// A size: columns and rows each 1 to `crate::command::MOST`, as a client's screen,
+/// A size: columns and rows each 1 to `command::MOST`, as a client's screen,
 /// and so a tab that fits clients, may be.
 fn laid_out(cols: &Value<Fux>, rows: &Value<Fux>) -> Result<crate::command::Screen, Failure> {
     let cells = 1..=i64::from(crate::command::MOST);

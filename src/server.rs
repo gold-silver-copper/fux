@@ -1638,14 +1638,14 @@ mod tests {
         let now = Instant::now();
         server.phase = Phase::Stopping(after(now, Duration::from_secs(60)));
         server.session.outbox.clear();
-        let reader = crate::events::Reader::new(
+        let reader = crate::journal::Reader::new(
             crate::inspect::Scope::Client(client),
             server.session.parts.journal(),
             server.session.run,
             None,
         )?;
         server.conns.first_mut().ok_or("worker")?.stage =
-            Stage::Waiting(Box::new(Waiting::Events(crate::events::Read::new(
+            Stage::Waiting(Box::new(Waiting::Events(crate::journal::Read::new(
                 reader,
                 after(now, Duration::from_secs(30)),
             ))));
