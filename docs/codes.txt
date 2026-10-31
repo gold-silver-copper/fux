@@ -20,7 +20,6 @@ not_running 1 try
 still_running 1 try
 not_run 1 try
 only_shell 1 try
-input_full 1 try
 stale 1 try
 no_marks 1 try
 start 1 try
@@ -43,7 +42,6 @@ unset_var 1 try
 output 1 try
 nested 1 try
 not_a_key 1 try
-steps 1 uncaught
 cancelled 1 uncaught
 require 1 uncaught
 open_quote 1 uncaught
@@ -54,8 +52,6 @@ not_top_level 1 uncaught
 unmatched 1 uncaught
 unclosed 1 uncaught
 stack_underflow 1 try
-stack_overflow 1 try
-call_depth 1 try
 type 1 try
 div_by_zero 1 try
 overflow 1 try

@@ -32,7 +32,7 @@ fn guide(topic: &str) -> Option<String> {
 /// topics, as the guide's headings name them.
 pub fn unknown(name: &str) -> String {
     let topics = topics().join(" ");
-    format!("no word or topic {name:?}; the topics: agents {topics} guide limits")
+    format!("no word or topic {name:?}; the topics: agents {topics} guide")
 }
 
 /// The guide's topics, as its headings name them.
@@ -157,10 +157,9 @@ fn wrapped(words: impl Iterator<Item = String>, start: &str, width: usize) -> St
     out + &line
 }
 
-/// One word at length, a topic of the guide, or `limits`.
+/// One word at length, or a topic of the guide.
 pub fn explain(name: &str) -> Option<String> {
-    let limits = (name == "limits").then(limits);
-    limits.or_else(|| guide(name)).or_else(|| word(name))
+    guide(name).or_else(|| word(name))
 }
 
 /// One word at length: its stack effect, what it does, and an example.
@@ -221,134 +220,9 @@ fn settings() -> String {
         ));
     }
     out.push_str(&format!("\nShell, copy-environment, history-bytes, program-clipboard, reflow,\nalternate-scroll-lines and picture-bytes supply this client's future launches.\nUse PANE BYTES history-budget to change one pane.\nBell, titles, terminal-clipboard, cell-placement, styles, bar, bar-slots\nand show-column affect only this client's view: supplied with attach, then updated after local commits\nbefore following requests.\nWait-seconds supplies this client's observation wait limits.\nEscape-delay-ms and paste-timeout-ms change at an idle decoder boundary.\nSetters and config evaluation send no requests. Shared paste buffers\nretain the newest {} copies.\n", fux_server::session::BUFFER_LIMIT));
-    out.push_str("\nStyles rows: [role foreground background flags...]; roles: bar tab keys\nnotice error panel border border-focus. Colours: 0..255, default, #rrggbb.\nFlags: bold dim italic underline. A subset changes only its supplied roles.\nBar: [top/bottom/off [left fields] [right fields] tab-numbers?].\nFields: workspace tabs pane [slot 0..15]; at most 16, each once.\nNative notices, copy/prefix/repeat/zoom hints and clipping remain authoritative.\nOff overlays native feedback on the bottom pane row without resizing PTYs.\nBar-slots replaces all slots: up to 16 [0..15 text] rows, 256 bytes per\ntext, no controls. Text is inert. No paint-time programs or added timers.\nstr show-column false set hides the body, retaining dispatch, Escape and feedback.\n");
+    out.push_str("\nStyles rows: [role foreground background flags...]; roles: bar tab keys\nnotice error panel border border-focus. Colours: 0..255, default, #rrggbb.\nFlags: bold dim italic underline. A subset changes only its supplied roles.\nBar: [top/bottom/off [left fields] [right fields] tab-numbers?].\nFields: workspace tabs pane [slot 0..15]; each once.\nNative notices, copy/prefix/repeat/zoom hints and clipping remain authoritative.\nOff overlays native feedback on the bottom pane row without resizing PTYs.\nBar-slots replaces all slots: [0..15 text] rows, each slot once, text\nwith no controls. Text is inert. No paint-time programs or added timers.\nstr show-column false set hides the body, retaining dispatch, Escape and feedback.\n");
     out.push_str("\nBundled initialization (client-defaults.fux):\n");
     out.push_str(crate::script::DEFAULTS);
-    out
-}
-
-/// How much a bound is, as the docs write it.
-#[derive(Clone, Copy, Debug)]
-enum Amount {
-    /// Grouped by commas: `262,144`.
-    Count(usize),
-    /// A count kept as a `u64`, grouped the same.
-    Whole(u64),
-    /// In MiB or KiB when a whole number of them, else in bytes.
-    Bytes(usize),
-    Time(std::time::Duration),
-    /// A cell's width and height.
-    Pixels((u16, u16)),
-}
-
-impl std::fmt::Display for Amount {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let grouped = |digits: String| {
-            let mut out = String::new();
-            for (i, digit) in digits.chars().enumerate() {
-                if i > 0 && digits.len().saturating_sub(i).is_multiple_of(3) {
-                    out.push(',');
-                }
-                out.push(digit);
-            }
-            out
-        };
-        match *self {
-            Amount::Count(n) => f.write_str(&grouped(n.to_string())),
-            Amount::Whole(n) => f.write_str(&grouped(n.to_string())),
-            Amount::Bytes(n) if n > 0 && n.is_multiple_of(1 << 20) => write!(f, "{} MiB", n >> 20),
-            Amount::Bytes(n) if n > 0 && n.is_multiple_of(1 << 10) => write!(f, "{} KiB", n >> 10),
-            Amount::Bytes(n) => write!(f, "{} bytes", grouped(n.to_string())),
-            Amount::Time(t) if t.subsec_nanos() == 0 => write!(f, "{} s", t.as_secs()),
-            Amount::Time(t) if t.subsec_nanos().is_multiple_of(1_000_000) => {
-                write!(f, "{} ms", t.as_millis())
-            }
-            Amount::Time(t) => write!(f, "{} ns", t.as_nanos()),
-            Amount::Pixels((width, height)) => write!(f, "{width} by {height} pixels"),
-        }
-    }
-}
-
-/// Where the docs state a bound, and in what words: `(place, words)`.
-type Said = &'static [(&'static str, &'static str)];
-
-// Documentation matching is test data, not part of the limits help.
-macro_rules! said {
-    ($($entry:tt)*) => {{
-        #[cfg(test)]
-        { &[$($entry)*] }
-        #[cfg(not(test))]
-        { &[] }
-    }};
-}
-
-/// The bounds fux keeps, each from the constant its check uses: how much,
-/// what it bounds, and where the docs state it (`README`, `agents`, `json`
-/// or a word's name) in what words, `{}` for how much, which the docs test
-/// finds there.
-#[rustfmt::skip]
-fn bounds() -> Vec<(Amount, &'static str, Said)> {
-    use Amount::{Bytes, Count, Pixels, Time, Whole};
-    use crate::{client, script};
-    use fux_server::{copy, pane, server};
-    vec![
-        (Bytes(fux_wire::wire::MAX_REPLY), "a finite reply's encoded bytes, including all its parts", said![]),
-        (Bytes(fux_server::request::REQUEST_BYTES), "what the server holds for one request: its decoded frame, what its answer builds and the answer's bytes; and what a client makes decoding one reply", said![]),
-        (Count(fux_server::capture::OUTPUT_CELLS), "additional capture cells for synthesized output, beside twice history-bytes and the live screen", said![]),
-        (Bytes(fux_wire::protocol::MAX_FRAME), "a message between client and server", said![("README", "length-prefixed and at most {}")]),
-        (Bytes(fux_server::session::LAUNCH_BYTES), "saved launch inputs in one session, including pending replacements", said![]),
-        (Count(fux_wire::command::EnvPatch::MAX_NAMES), "environment names selected or patched in one launch", said![]),
-        (Bytes(server::OUT_MAX), "what may wait unsent for a client, its generated paint aside, before the next addition detaches it (one complete addition and its framing may exceed this)", said![]),
-        (Bytes(client::OUTPUT_MAX), "what a client holds unwritten for its terminal before it reads the server no more", said![]),
-        (Count(client::JOBS), "programs waiting for a client to run them", said![]),
-        (Bytes(fux_wire::callback::JOB_BYTES), "the code of the programs waiting for a client", said![]),
-        (Count(client::HELD), "inputs a client holds while a program runs, and the prefix key one more", said![]),
-        (Bytes(client::HELD_BYTES), "the pastes of the inputs a client holds", said![]),
-        (Bytes(client::NOTICE_MAX), "a program's notice", said![]),
-        (Count(fux_server::journal::BATCH_EVENTS), "events returned in one next-events batch", said![]),
-        (Count(fux_server::journal::BATCH_SCAN), "entries scanned by one next-events read, including nonmatches", said![]),
-        (Count(fux_server::journal::KEPT), "complete events the journal keeps; up to 32.5 MiB live entries on 64-bit, plus overhead (docs/json.md); a reader further behind gets missed", said![]),
-        (Bytes(pane::INPUT_BYTES), "input waiting for a pane's program", said![("agents", "({} its program has not read)")]),
-        (Bytes(crate::script::INPUT_MAX), "keys one send-keys sends", said![("agents", "{} at most in all"), ("send-keys", "{} at most in all")]),
-        (Bytes(fux_vt::keys::decode::PASTE_LIMIT), "a paste from a client's terminal", said![]),
-        (Bytes(pane::REPLIES_MAX), "replies to one read of a program's output", said![("json", "past {} of replies")]),
-        (Bytes(fux_server::session::LEFT_MAX), "what is read of what a program left on its terminal as it ended", said![("json", "more than {} on its terminal")]),
-        (Time(pane::FRAME_TIMEOUT), "how long a frame of synchronized output is held", said![("README", "held frames are released after {}")]),
-        (Bytes(pane::FRAME_LIMIT), "a frame of synchronized output held", said![("README", "or past {}")]),
-        (Count(pane::TITLE_MAX), "characters of a title kept", said![("json", "| `title` | what the program set (OSC 0 or 2), else `\"\"`: its first {} characters")]),
-        (Count(pane::TITLE_STACK), "titles a program may push", said![]),
-        (Count(pane::NOTIFICATION_MAX), "characters of a notification kept", said![("json", "| `notification` | the last notification's text, else `null`: its first {} characters")]),
-        (Bytes(fux_server::session::NAME_MAX), "a name", said![]),
-        (Count(copy::MAX_CELLS), "cells a copy takes", said![("README", "at most {} cells")]),
-        (Bytes(copy::MAX_CLIPBOARD), "a copy to your clipboard, encoded", said![("README", "to {} encoded")]),
-        (Bytes(copy::SEARCH_MAX), "a search in copy mode", said![]),
-        (Bytes(fux_wire::act::LINE_MAX), "a line typed at a prompt", said![]),
-        (Bytes(fux_vt::OSC_PAYLOAD_LIMIT), "a string a program sends, as its copy (OSC 52)", said![("README", "up to {} encoded"), ("json", "the {} a string may be")]),
-        (Whole(u64::from(fux_vt::sixel::MAX_SIDE)), "pixels a side of a sixel picture", said![("json", "{} pixels a side")]),
-        (Count(fux_vt::sixel::MAX_PIXELS), "pixels of a sixel picture in all", said![("json", "{} pixels in all")]),
-        (Pixels(fux_vt::CellSize::LEAST), "the least cell a terminal may say", said![("README", "{}")]),
-        (Time(fux_server::outer::BELL_GAP), "between two bells told", said![("README", "at most once every {}")]),
-        (Count(fux_server::session::BUFFER_LIMIT), "paste buffers kept", said![("README", "the newest {}")]),
-        (Count(fux_server::session::PREVIEW_MAX), "characters of a paste buffer's preview", said![("README", "at most {} characters"), ("json", "at most {} characters")]),
-        (Count(fux_wire::command::MAX_WAIT), "seconds a wait may be given", said![]),
-        (Whole(script::PROGRAM_STEPS), "steps of a program a client runs (a config, a key's)", said![]),
-        (Whole(script::LINE_STEPS), "steps of a command line's program", said![]),
-        (Bytes(script::RUN_BYTES), "what a fuxth run holds: its values, its stack, its calls and its program's literals", said![]),
-        (Count(fuxth::LONGEST), "characters of a string fuxth builds", said![("agents", "at most {} characters")]),
-        (Whole(fuxth::TOTAL), "elements a fuxth list holds, through the lists in it", said![]),
-        (Bytes(script::SOURCE_MAX), "what read-file and input read", said![("input", "{} at most"), ("read-file", "{} at most")]),
-        (Count(usize::from(fux_wire::command::MOST)), "columns or rows of a size", said![("resize", "1 to {} each"), ("size", "1 to {} each")]),
-        (Count(fuxix::process::TREE_MAX), "processes a pane's teardown looks through for its session (Linux)", said![]),
-    ]
-}
-
-/// `fux help limits`: the bounds fux keeps.
-fn limits() -> String {
-    let mut out = String::from("The bounds fux keeps, each as its check has it:\n");
-    for (amount, about, _) in bounds() {
-        let about = about.split_whitespace().map(str::to_owned);
-        out.push_str(&format!("  {amount}:{}\n", wrapped(about, "\n      ", 78)));
-    }
     out
 }
 
@@ -357,27 +231,10 @@ mod tests {
     use super::*;
     use crate::script::Opt;
 
-    /// Where the docs and words' help state a bound, they state it as the
-    /// table of bounds has it, from the constant its check uses; the JSON
-    /// they show is this protocol's.
+    /// The JSON guide shows this protocol's JSON, and names the language's
+    /// codes fux's words raise.
     #[test]
-    fn the_docs_state_each_bound_as_its_check_has_it() {
-        // Each place's words, a blank between each, as its lines wrap them.
-        let place = |at: &str| {
-            let text = match at {
-                "README" => include_str!("../README.md"),
-                "agents" => AGENTS,
-                "json" => JSON,
-                word => Word::named(word).map_or("", |w| w.row().about),
-            };
-            text.split_whitespace().collect::<Vec<_>>().join(" ")
-        };
-        for (amount, about, said) in bounds() {
-            for (at, words) in said {
-                let words = words.replace("{}", &amount.to_string());
-                assert!(place(at).contains(&words), "{about}: {at}: {words}");
-            }
-        }
+    fn the_json_guide_states_this_protocol_and_its_codes() {
         let protocol = fux_wire::protocol::PROTOCOL;
         for said in [
             format!("\"protocol\":{protocol},"),
@@ -393,13 +250,6 @@ mod tests {
             },
         ] {
             assert!(JSON.contains(&said), "json.md: {said}");
-        }
-        // `fux help limits` lists them all, written exactly.
-        let limits = explain("limits").unwrap_or_default();
-        let amounts = limits.lines().filter(|line| !line.starts_with("    "));
-        assert_eq!(amounts.count(), bounds().len() + 1);
-        for amount in ["  1 MiB:", "  1,048,768 bytes:", "  250 ms:", "  4,096:"] {
-            assert!(limits.contains(amount), "{limits}");
         }
     }
 

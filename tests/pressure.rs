@@ -124,24 +124,6 @@ fn a_bound_program_follows_the_keys_before_it() -> Outcome {
     received(&out, &expected)
 }
 
-/// F5 runs a program that only asks: its request waits for every frame
-/// its client sent before it (`fux_wire::protocol::Fence`).
-const FENCE: &str = "str F5 str 'ls drop' bind-root";
-
-/// Waits until a server started with [`FENCE`] has handled every frame
-/// `client` sent: `send` waits for the program F5 runs.
-fn handled(client: &mut Client) -> Outcome {
-    client.send(b"\x1b[15~")
-}
-
-/// How many pieces of input pane %1's full queue refused: its `lost`.
-fn refused(server: &Server) -> Result<usize, String> {
-    let lost = [
-        "str", "%1", "pane", "str", "lost", "get", "str", "input", "get",
-    ];
-    server.ok(&lost)?.trim().parse().map_err(e)
-}
-
 /// Stops `pid` and waits until it has stopped, so it reads nothing more.
 fn stop(pid: i32) -> Outcome {
     signal(pid, fuxix::process::Signal::Stop);
@@ -171,13 +153,9 @@ fn pasted(i: usize, len: usize) -> Vec<u8> {
 /// Input for a program that has stopped reading waits for it rather than
 /// being lost: thousands of single keys, from a client and from
 /// `send-keys`, and many pastes, all arrive in order once it reads again.
-/// Past the queue's bound, input is refused whole with the documented
-/// notice and counted in the pane's `lost`, and, as it says, nothing more
-/// is queued until its terminal takes some: what arrives is exactly what
-/// was not counted.
 #[test]
-fn input_waits_while_the_queue_is_full() -> Outcome {
-    let server = Server::start(FENCE)?;
+fn input_waits_while_its_program_does_not_read() -> Outcome {
+    let server = Server::start("")?;
     let mut client = server.attach(20, 100)?;
     client.ready()?;
     let (cat, out) = recorder(&server, "")?;
@@ -196,8 +174,6 @@ fn input_waits_while_the_queue_is_full() -> Outcome {
         send_now(&server, "%1", &["str", &key.to_string(), "text"])?;
         expected.extend(key.to_string().bytes());
     }
-    client.pump()?;
-    assert!(!client.bar().contains("not reading"), "{}", client.bar());
     signal(cat, fuxix::process::Signal::Cont);
     received(&out, &expected)?;
 
@@ -209,43 +185,7 @@ fn input_waits_while_the_queue_is_full() -> Outcome {
         expected.extend(text);
     }
     signal(cat, fuxix::process::Signal::Cont);
-    received(&out, &expected)?;
-
-    // Past the bound: pastes of 60,000 bytes, more than fit, sent once
-    // `cat` reads nothing.
-    stop(cat)?;
-    let mut pastes = Vec::new();
-    for i in 0..20 {
-        let text = pasted(i, 60_000);
-        client.send(&paste(&text))?;
-        pastes.push(text);
-    }
-    client.wait("the notice", |t| {
-        t.lines()
-            .last()
-            .is_some_and(|b| b.contains("input queue was full"))
-    })?;
-    // Nothing more is queued until its terminal takes some: not even a key.
-    client.send(b"Z")?;
-    handled(&mut client)?;
-    // Each piece refused is counted, the key among them: those not
-    // counted were accepted, the pastes before the first refused.
-    let accepted = (pastes.len() + 1)
-        .checked_sub(refused(&server)?)
-        .ok_or("more pieces refused than were sent")?;
-    assert!(
-        accepted < 20,
-        "every paste fitted: the bound was never reached"
-    );
-    signal(cat, fuxix::process::Signal::Cont);
-    // What arrives is exactly the pastes accepted, whole and in order.
-    expected.extend(pastes.iter().take(accepted).flatten());
-    received(&out, &expected)?;
-    // Reading again, input is accepted again.
-    client.send(b"Y")?;
-    expected.push(b'Y');
-    received(&out, &expected)?;
-    Ok(())
+    received(&out, &expected)
 }
 
 /// Frames a client sends faster than a tick handles them wait for its
@@ -268,45 +208,6 @@ fn frames_past_a_turn_wait_for_the_next() -> Outcome {
     }
     client.write(&frames)?;
     received(&out, &expected)
-}
-
-/// A scheme report (mode 2031) a full input queue refused is sent once its
-/// program reads again, with nothing else happening in the session.
-#[test]
-fn a_scheme_report_refused_is_sent_as_its_program_reads_again() -> Outcome {
-    let server = Server::start(FENCE)?;
-    let mut client = server.attach(20, 100)?;
-    client.ready()?;
-    // The terminal's scheme is dark; the program takes reports.
-    client.send(b"\x1b[?997;1n")?;
-    let (cat, out) = recorder(&server, "\\033[?2031h")?;
-    let _reap = Reap(vec![cat]);
-    let has = |what: &str| {
-        String::from_utf8_lossy(&std::fs::read(&out).unwrap_or_default()).contains(what)
-    };
-    // Told as a request settles the session, once the mode is read.
-    eventually("the scheme told", || {
-        server.ok(&["ls", "listing"])?;
-        Ok(has("\x1b[?997;1n"))
-    })?;
-    stop(cat)?;
-    for i in 0..20 {
-        client.send(&paste(&pasted(i, 60_000)))?;
-    }
-    client.wait("the notice", |t| {
-        t.lines()
-            .last()
-            .is_some_and(|b| b.contains("input queue was full"))
-    })?;
-    // Light now: refused, as the queue refuses everything.
-    client.send(b"\x1b[?997;2n")?;
-    handled(&mut client)?;
-    signal(cat, fuxix::process::Signal::Cont);
-    eventually("the refused report sent", || {
-        Ok(std::fs::read(&out)
-            .unwrap_or_default()
-            .ends_with(b"\x1b[?997;2n"))
-    })
 }
 
 /// A program that closes its terminal but keeps running leaves its PTY
@@ -334,19 +235,16 @@ fn a_program_that_closes_its_terminal_closes_its_pane_at_exit() -> Outcome {
 }
 
 /// One client flooding a pane whose program does not read its input holds
-/// up no one: the server reads at most a bounded amount from it per tick,
-/// drops what the full queue refuses, and
-/// gives back the memory the flood took. Other commands are served
-/// meanwhile, and the server's memory stays small.
+/// up no one: the server reads a bounded amount from it per tick, and other
+/// commands are served meanwhile.
 #[test]
 fn a_client_flooding_a_pane_that_does_not_read_holds_up_no_one() -> Outcome {
     use fux_wire::act::Act;
     use fux_wire::protocol::{Attach, AttachedFrame, Frame, Hello, PROTOCOL, Role};
     use std::io::Write;
     let server = Server::start("")?;
-    let pid = server.pid().ok_or("the server's pid")?;
-    // sleep reads nothing, so the terminal's buffer and then the pane's
-    // input queue fill. A sleeping program never settles: the keys wait
+    // sleep reads nothing, so the terminal's buffer fills, and the pane's
+    // input queue grows: memory is the user's and the OS's to bound. A sleeping program never settles: the keys wait
     // for what the shell prints just before it starts sleep, computed so
     // the echo never matches.
     server.ok(&[
@@ -399,8 +297,6 @@ fn a_client_flooding_a_pane_that_does_not_read_holds_up_no_one() -> Outcome {
         let out = server.fux(&["ls"])?;
         assert_eq!(out.status, 0, "{}", out.stderr);
     }
-    let memory = resident_mib(pid)?;
-    assert!(memory < 64.0, "{memory:.0} MiB resident while flooded");
     Ok(())
 }
 
@@ -437,5 +333,51 @@ fn a_run_answers_an_exit_with_the_last_of_the_output() -> Outcome {
         "no DONE on its screen: {}",
         out.stdout
     );
+    Ok(())
+}
+
+/// A program that exits leaving a writer on its terminal, in a group of its
+/// own that ignores the hangup and never stops, holds up no one: what it
+/// leaves is read a turn at a time, as long as it writes, and other panes
+/// and commands are served meanwhile. Its exit is told as its leader is
+/// reaped, the writer still writing (D-90).
+#[test]
+fn a_writer_left_on_a_terminal_holds_up_no_one() -> Outcome {
+    let server = Server::start("")?;
+    eventually("a prompt", || Ok(screen(&server, "%1")?.contains('$')))?;
+    let pid_file = server.dir.join("writer.pid");
+    let code = format!(
+        "set -m; trap '' HUP; while :; do printf '\\033[2J'; done & echo $! > '{}'; sleep 1; exit",
+        pid_file.display()
+    );
+    let words = ["agent-opts", "80", "24", "size", "str", "sh", "program"];
+    let words = words
+        .into_iter()
+        .chain(["str", "-c", "arg", "str", &code, "arg", "new-tab"]);
+    server.ok(&words.collect::<Vec<_>>())?;
+    let reap = Reap(vec![pid_in(&pid_file)?]);
+    // The program's own second, then its exit, the writer still writing.
+    std::thread::sleep(Duration::from_millis(1500));
+    server.ok(&[
+        "str",
+        "%1",
+        "pane",
+        "str",
+        "echo rea''dy",
+        "text",
+        "str",
+        "Enter",
+        "key",
+        "send-keys",
+    ])?;
+    server.shows("%1", "ready")?;
+    for _ in 0..5 {
+        let out = server.fux(&["ls"])?;
+        assert_eq!(out.status, 0, "{}", out.stderr);
+    }
+    eventually("the exit told, the writer still writing", || {
+        Ok(server.ok(&["ls", "listing"])?.contains("exited 0"))
+    })?;
+    drop(reap);
     Ok(())
 }

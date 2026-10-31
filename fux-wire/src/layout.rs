@@ -60,21 +60,17 @@ wire! {
     }
 }
 
-/// Admission limits for complete layout replacement. These bound traversal,
-/// allocations and the depth of the resulting recursive native tree.
-pub const NODES_MAX: usize = 2047;
+/// How deep a layout's native tree, which is walked as a recursion, may
+/// nest.
 pub const DEPTH_MAX: usize = 64;
 
 /// Whether a flat layout of `len` nodes may be given: none is no layout
-/// (`bad_value`), more than `NODES_MAX` too many (`too_long`), from the
-/// word or the server alike.
+/// (`bad_value`), from the word or the server alike.
 pub fn admit_nodes(len: usize) -> Result<(), crate::code::Error> {
-    use crate::code::{Raise, fail};
     match len {
-        0 => Err(fail(Raise::BadValue, "a layout needs a node")),
-        len if len > NODES_MAX => Err(fail(
-            Raise::TooLong,
-            format!("a layout of {len} nodes is past its {NODES_MAX}"),
+        0 => Err(crate::code::fail(
+            crate::code::Raise::BadValue,
+            "a layout needs a node",
         )),
         _ => Ok(()),
     }
@@ -82,7 +78,7 @@ pub fn admit_nodes(len: usize) -> Result<(), crate::code::Error> {
 
 /// Validates a flat layout before constructing its native tree. Pane
 /// membership is checked separately against the tab at the commit boundary.
-/// A layout past a limit is `too_long`; one that is no tree, `bad_value`.
+/// A layout deeper than `DEPTH_MAX` is `too_long`; one that is no tree, `bad_value`.
 pub fn from_nodes(nodes: &[Node]) -> Result<Tree, crate::code::Error> {
     use crate::code::{Raise, fail};
     admit_nodes(nodes.len())?;
@@ -885,7 +881,6 @@ mod tests {
             (vec![branch(1, 1), leaf.clone()], bad),
             (vec![branch(1, 3), leaf.clone(), leaf.clone()], bad),
             (vec![leaf.clone(), leaf.clone()], bad),
-            (vec![leaf.clone(); NODES_MAX.saturating_add(1)], past),
         ] {
             assert_eq!(
                 from_nodes(&nodes).map(drop).map_err(|e| e.code()),

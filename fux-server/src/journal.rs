@@ -1,7 +1,7 @@
 //! Bounded journal invalidations, read as finite cursor batches
 //! (`fux_wire::events`). A later snapshot may see newer state; events do not
 //! replicate live OS facts.
-use crate::pane::{End, Left, NOTIFICATION_MAX, Said, TITLE_MAX};
+use crate::pane::{End, Left, Said};
 use fux_wire::command::{AnyRef, Run};
 use fux_wire::events::{Actor, Batch, Cursor, Item, Seq, Status};
 use fux_wire::id::{BufferId, ClientId, PaneId, TabId, WsId};
@@ -9,13 +9,9 @@ use fux_wire::inspect::Scope;
 use fux_wire::json::Json;
 use std::collections::VecDeque;
 
+/// The events the journal keeps: a reader further behind is told how many
+/// it missed.
 pub const KEPT: usize = 1 << 14;
-pub const BATCH_EVENTS: usize = 64;
-pub const BATCH_SCAN: usize = 256;
-/// What one event's item may hold, charged to the request's budget before
-/// it is made. The largest, a notification of `NOTIFICATION_MAX` four-byte
-/// characters, holds 2,198 (`an_event_holds_no_more_than_it_is_charged`).
-pub const EVENT_BYTES: usize = 4096;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ViewChange {
@@ -74,9 +70,7 @@ impl Journal {
         };
         let seq = self.next;
         self.next = Seq(next);
-        // Payloads are compact clones: names <= 256 bytes, titles <= 256
-        // chars, notifications <= 500 chars (2,000 UTF-8 bytes). Evict first
-        // so a full ring never grows. See docs/json.md for storage overhead.
+        // Evict first so a full ring never grows.
         if self.entries.len() == KEPT {
             self.entries.pop_front();
         }
@@ -193,8 +187,8 @@ pub enum Told {
     /// that one left.
     Respawned(Left),
     Bell,
-    Notification(Said<NOTIFICATION_MAX>),
-    Title(Said<TITLE_MAX>),
+    Notification(Said),
+    Title(Said),
     /// A shell command ended, with its status if it is known.
     Done(Option<i32>),
     Resized(fux_vt::Size),
@@ -413,10 +407,7 @@ pub fn every_kind_read(run: Run) -> Result<Batch, String> {
         Told::Title(Said::sent("title", true)),
         Told::Notification(Said::sent("text", true)),
     ];
-    let left = Left {
-        output: crate::pane::Output::Cut,
-        input: 1,
-    };
+    let left = Left { input: 1 };
     let buffer = format!("b1:{run}").parse().map_err(|()| "buffer")?;
     let actors = [
         Actor::Client(ClientId::of(1)),
@@ -491,23 +482,9 @@ impl Reader {
             }
         }
     }
-    /// One batch, made in a budget of its own.
-    #[cfg(any(test, feature = "in-process"))]
+    /// Every event it wants from its cursor to the journal's end, or to
+    /// the event that ends what it reads.
     pub fn batch(&mut self, journal: &Journal, exists: bool) -> Result<Batch, String> {
-        let budget = &mut fux_wire::wire::Budget::with_limit(fux_wire::wire::MAX_ALLOCATED);
-        self.scan(journal, exists, BATCH_SCAN, budget)
-            .map(|(batch, _)| batch)
-    }
-    /// What it makes is charged to `budget` first: the batch's room for
-    /// one more item, and `EVENT_BYTES` for it.
-    fn scan(
-        &mut self,
-        journal: &Journal,
-        exists: bool,
-        limit: usize,
-        budget: &mut fux_wire::wire::Budget,
-    ) -> Result<(Batch, usize), String> {
-        use fuxix::Allocation;
         if journal.exhausted {
             return Err("journal cursor IDs exhausted".into());
         }
@@ -516,11 +493,7 @@ impl Reader {
         let mut events = Vec::new();
         let mut gone = false;
         let mut entries = entries;
-        let mut scanned = 0usize;
-        for _ in 0..limit {
-            if events.len() == BATCH_EVENTS {
-                break;
-            }
+        loop {
             let Some(entry) = entries.next() else {
                 missed = missed.saturating_add(journal.next.0.saturating_sub(self.next.seq.0));
                 self.next.seq = journal.next;
@@ -530,10 +503,6 @@ impl Reader {
             self.next.seq = entry.seq;
             let mut value = None;
             if self.wants(&entry.event) {
-                let charged = budget.reserve(&mut events, 1);
-                charged
-                    .and_then(|()| budget.charge(EVENT_BYTES))
-                    .map_err(|e| e.to_string())?;
                 let next = Cursor {
                     seq: Seq(entry.seq.0.saturating_add(1)),
                     run: self.next.run,
@@ -566,7 +535,6 @@ impl Reader {
                 value = Some(item);
             }
             self.next.seq = Seq(entry.seq.0.saturating_add(1));
-            scanned = scanned.saturating_add(1);
             events.extend(value);
             if self.ends(&entry.event) {
                 gone = true;
@@ -574,19 +542,16 @@ impl Reader {
             }
         }
         let caught_up = self.next == journal.end(self.next.run);
-        Ok((
-            Batch {
-                events,
-                next: self.next,
-                missed,
-                status: if gone || caught_up && !exists {
-                    Status::Gone
-                } else {
-                    Status::Continuing
-                },
+        Ok(Batch {
+            events,
+            next: self.next,
+            missed,
+            status: if gone || caught_up && !exists {
+                Status::Gone
+            } else {
+                Status::Continuing
             },
-            scanned,
-        ))
+        })
     }
     #[cfg(test)]
     pub(crate) fn lines(
@@ -621,33 +586,23 @@ impl Reader {
 /// A pending finite read, owned by its requesting connection.
 pub struct Read {
     reader: Reader,
-    scanned: usize,
     pub deadline: std::time::Instant,
 }
 
 fn reply(batch: Result<Batch, String>) -> fux_wire::protocol::Reply {
     match batch {
         Ok(batch) => fux_wire::protocol::Body::Events(Box::new(batch)).into(),
-        Err(why) => fux_wire::protocol::Reply::failed(
-            fux_wire::code::Code::from(fux_wire::code::Raise::TooLong),
-            why,
-        ),
+        Err(why) => fux_wire::protocol::Reply::failed(fux_wire::code::Code::IdsExhausted, why),
     }
 }
 
 impl Read {
     pub fn new(reader: Reader, deadline: std::time::Instant) -> Self {
-        Self {
-            reader,
-            scanned: 0,
-            deadline,
-        }
+        Self { reader, deadline }
     }
-    /// Its answer, if it has one at `now`, made in `budget`.
     pub fn answer(
         &mut self,
         session: &crate::session::Session,
-        budget: &mut fux_wire::wire::Budget,
         now: std::time::Instant,
     ) -> Option<fux_wire::protocol::Reply> {
         let reader = &mut self.reader;
@@ -666,22 +621,15 @@ impl Read {
         if reader.next == journal.end(session.run) && exists && now < self.deadline {
             return None;
         }
-        let (mut batch, scanned) = match reader.scan(
-            journal,
-            exists,
-            BATCH_SCAN.saturating_sub(self.scanned),
-            budget,
-        ) {
+        let mut batch = match reader.batch(journal, exists) {
             Ok(batch) => batch,
             Err(why) => return Some(reply(Err(why))),
         };
-        self.scanned = self.scanned.saturating_add(scanned);
         if batch.events.is_empty() && batch.missed == 0 && batch.status == Status::Continuing {
-            if now >= self.deadline {
-                batch.status = Status::Timeout;
-            } else if self.scanned < BATCH_SCAN {
+            if now < self.deadline {
                 return None;
             }
+            batch.status = Status::Timeout;
         }
         Some(reply(Ok(batch)))
     }
@@ -689,19 +637,15 @@ impl Read {
         &self,
         session: &crate::session::Session,
         reason: &str,
-        budget: &mut fux_wire::wire::Budget,
     ) -> fux_wire::protocol::Reply {
-        use fuxix::Allocation;
         let mut reader = self.reader;
-        let left = BATCH_SCAN.saturating_sub(self.scanned);
         reply(
-            (reader.scan(session.parts.journal(), true, left, budget)).and_then(
-                |(mut batch, _)| {
-                    let reason = budget.string(reason).map_err(|e| e.to_string())?;
-                    batch.status = Status::Stopped(reason);
-                    Ok(batch)
-                },
-            ),
+            reader
+                .batch(session.parts.journal(), true)
+                .map(|mut batch| {
+                    batch.status = Status::Stopped(reason.to_owned());
+                    batch
+                }),
         )
     }
 }
@@ -730,11 +674,10 @@ mod tests {
             (WsId::of(u32::MAX), TabId::of(u32::MAX)),
             PaneId::of(u32::MAX),
         );
-        let name: String = std::iter::repeat_n("\"\\", crate::session::NAME_MAX / 2).collect();
+        let name: String = std::iter::repeat_n("\"\\", 128).collect();
         let mut session = started()?;
-        // Exercise the real producer: its bounded Said is cloned compactly
-        // into the journal, even when collection itself grew geometrically.
-        let sent: String = std::iter::repeat_n(ch, NOTIFICATION_MAX + 1).collect();
+        // Exercise the real producer: its Said is cloned into the journal.
+        let sent: String = std::iter::repeat_n(ch, 501).collect();
         session.output(
             PaneId::of(1),
             format!("\x1b]2;{sent}\x07\x1b]9;{sent}\x07").as_bytes(),
@@ -759,10 +702,7 @@ mod tests {
             });
         let title = texts.next().ok_or("title event")?;
         let notification = texts.next().ok_or("notification event")?;
-        let left = Left {
-            output: crate::pane::Output::Cut,
-            input: usize::MAX,
-        };
+        let left = Left { input: usize::MAX };
         let buffer = "b18446744073709551615:4294967295-ffffffffffffffff"
             .parse()
             .map_err(|()| "buffer")?;
@@ -775,33 +715,6 @@ mod tests {
             buffer,
             size,
         ))
-    }
-
-    /// The largest event of each kind, as a batch's item, holds no more
-    /// than a batch charges for it.
-    #[test]
-    fn an_event_holds_no_more_than_it_is_charged() -> TestResult {
-        let next = Cursor {
-            seq: Seq(0),
-            run: run()?,
-        };
-        for ch in ['a', '𐀀'] {
-            for event in maximum_events(ch)? {
-                let item = Item {
-                    data: event.json(),
-                    pane: None,
-                    tab: None,
-                    workspace: None,
-                    client: None,
-                    moved_from: None,
-                    origin: Actor::Unknown,
-                    next,
-                };
-                let held = fux_wire::wire::retained(&item);
-                assert!(held <= EVENT_BYTES, "{event:?}: {held}");
-            }
-        }
-        Ok(())
     }
 
     #[test]
@@ -893,87 +806,8 @@ mod tests {
     }
 
     #[test]
-    fn maximum_batches_fit_256_kib_with_their_envelope() -> TestResult {
-        let run: Run = "4294967295-ffffffffffffffff".parse().map_err(|()| "run")?;
-        let mut largest = 0;
-        // Four-byte text bounds retained storage; separators, quotes and
-        // backslashes bound escaped JSON. All variants share this fixture.
-        for ch in ['𐀀', '\u{2028}', '\u{2029}', '"', '\\'] {
-            for event in maximum_events(ch)? {
-                let mut journal = Journal {
-                    next: Seq(u64::MAX - 64),
-                    ..Journal::default()
-                };
-                let mut reader = Reader::new(Scope::All, &journal, run, None)?;
-                for _ in 0..BATCH_EVENTS {
-                    journal.push_from(
-                        event.clone(),
-                        Actor::Program(PaneId::of(u32::MAX), u64::MAX),
-                    );
-                }
-                let mut batch = reader.batch(&journal, true)?;
-                assert_eq!(batch.events.len(), BATCH_EVENTS);
-                assert_eq!(batch.next.seq, Seq(u64::MAX));
-                batch.missed = u64::MAX;
-                batch.status = Status::Stopped("server stopped".into());
-                let json = batch.json();
-                let Some(Json::Array(events)) = json.get("events") else {
-                    return Err("event array".into());
-                };
-                largest = largest.max(events.first().ok_or("event")?.render().len());
-                assert!(batch.json().render().len() < 256 << 10, "{event:?}");
-            }
-        }
-        // Truncated adds 17 bytes to the audit's 3,242-byte notification.
-        assert_eq!(largest, 3_242 + 17);
-        Ok(())
-    }
-
-    #[test]
-    fn compact_payloads_keep_the_full_count_window_without_growing_a_full_ring() -> TestResult {
+    fn a_full_ring_keeps_its_count_window_without_growing() -> TestResult {
         let events = maximum_events('𐀀')?;
-        for event in &events {
-            let (capacity, limit) = match event {
-                Event::Tab(_, Change::Created(name))
-                | Event::Workspace(_, Change::Created(name)) => (
-                    name.as_ref().map_or(0, String::capacity),
-                    crate::session::NAME_MAX,
-                ),
-                Event::Tab(_, Change::Renamed(name))
-                | Event::Workspace(_, Change::Renamed(name))
-                | Event::Pane(_, PaneEvent::Told(Told::Renamed(name))) => {
-                    (name.capacity(), crate::session::NAME_MAX)
-                }
-                Event::Pane(_, PaneEvent::Told(Told::Notification(text))) => {
-                    (text.retained_bytes(), NOTIFICATION_MAX * 4)
-                }
-                Event::Pane(_, PaneEvent::Told(Told::Title(text))) => {
-                    (text.retained_bytes(), TITLE_MAX * 4)
-                }
-                Event::Pane(
-                    _,
-                    PaneEvent::Created
-                    | PaneEvent::Closed
-                    | PaneEvent::Moved(_)
-                    | PaneEvent::Told(
-                        Told::Respawned(_)
-                        | Told::Bell
-                        | Told::Done(_)
-                        | Told::Resized(_)
-                        | Told::HistoryBudget(_)
-                        | Told::HistoryCleared
-                        | Told::Exited(_),
-                    ),
-                )
-                | Event::Tab(_, Change::Closed | Change::Reordered)
-                | Event::Workspace(_, Change::Closed | Change::Reordered)
-                | Event::Layout(_)
-                | Event::Arranged(_)
-                | Event::View { .. }
-                | Event::Copied { .. } => (0, 0),
-            };
-            assert!(capacity <= limit, "{event:?}: {capacity} > {limit}");
-        }
         let maximum = events
             .iter()
             .find(|e| matches!(e, Event::Pane(_, PaneEvent::Told(Told::Notification(_)))))
@@ -1015,7 +849,7 @@ mod tests {
     }
 
     #[test]
-    fn scoped_reads_wait_through_unrelated_entries_without_rescanning() -> TestResult {
+    fn scoped_reads_wait_through_unrelated_entries() -> TestResult {
         let mut session = started()?;
         let now = Instant::now();
         let request = Request::NextEvents {
@@ -1023,15 +857,12 @@ mod tests {
             from: None,
             timeout: Limit::read(5)?,
         };
-        let Begun::Waiting(mut waiting) = session.begin(
-            request,
-            &Origin::Cli(Caller::default()),
-            &mut session.budget(),
-            now,
-        ) else {
+        let Begun::Waiting(mut waiting) =
+            session.begin(request, &Origin::Cli(Caller::default()), now)
+        else {
             return Err("did not wait".into());
         };
-        for _ in 0..BATCH_SCAN / 2 {
+        for _ in 0..1000 {
             session
                 .parts
                 .journal_mut()
@@ -1039,27 +870,10 @@ mod tests {
         }
         for _ in 0..3 {
             assert!(
-                waiting
-                    .answer(&session, &mut session.budget(), now)
-                    .is_none(),
+                waiting.answer(&session, now).is_none(),
                 "unrelated entries ended the wait"
             );
         }
-        for _ in 0..BATCH_SCAN / 2 {
-            session
-                .parts
-                .journal_mut()
-                .push(Event::Workspace(WsId::of(2), Change::Reordered));
-        }
-        let reply = waiting
-            .answer(&session, &mut session.budget(), now)
-            .ok_or("scan limit did not return progress")?;
-        let Response::Returned(Body::Events(batch)) = reply.response else {
-            return Err("batch".into());
-        };
-        assert!(batch.events.is_empty());
-        assert_eq!(batch.status, Status::Continuing);
-        assert_eq!(batch.next, session.parts.journal().end(session.run));
         Ok(())
     }
 
@@ -1067,12 +881,15 @@ mod tests {
     fn batches_resume_at_the_exact_consumed_prefix() -> TestResult {
         let mut journal = Journal::default();
         let mut reader = Reader::new(Scope::All, &journal, run()?, None)?;
-        for _ in 0..BATCH_EVENTS.saturating_add(3) {
+        for _ in 0..1000 {
             journal.push(bell(1));
         }
         let first = reader.batch(&journal, true)?;
-        assert_eq!(first.events.len(), BATCH_EVENTS);
+        assert_eq!(first.events.len(), 1000);
         assert_eq!(first.events.last().map(|e| e.next), Some(first.next));
+        for _ in 0..3 {
+            journal.push(bell(1));
+        }
         let second =
             Reader::new(Scope::All, &journal, run()?, Some(first.next))?.batch(&journal, true)?;
         assert_eq!(second.events.len(), 3);
@@ -1081,7 +898,7 @@ mod tests {
     }
 
     #[test]
-    fn filtered_entries_spend_the_scan_budget_and_advance_the_cursor() -> TestResult {
+    fn filtered_entries_advance_the_cursor() -> TestResult {
         let mut journal = Journal::default();
         let mut reader = Reader::new(
             Scope::Target(AnyRef::Pane(PaneId::of(2))),
@@ -1089,14 +906,14 @@ mod tests {
             run()?,
             None,
         )?;
-        for _ in 0..BATCH_SCAN.saturating_add(1) {
+        for _ in 0..1000 {
             journal.push(bell(1));
         }
-        journal.push(bell(2));
         let empty = reader.batch(&journal, true)?;
         assert!(empty.events.is_empty());
-        assert_eq!(empty.next.seq, Seq(u64::try_from(BATCH_SCAN)?));
+        assert_eq!(empty.next, journal.end(run()?));
         assert_eq!(empty.status, Status::Continuing);
+        journal.push(bell(2));
         let matching = reader.batch(&journal, true)?;
         assert_eq!(matching.events.len(), 1);
         assert_eq!(matching.next, journal.end(run()?));
@@ -1176,29 +993,18 @@ mod tests {
             from: None,
             timeout: Limit::read(5)?,
         };
-        let Begun::Waiting(mut waiting) = session.begin(
-            request,
-            &Origin::Cli(Caller::default()),
-            &mut session.budget(),
-            now,
-        ) else {
+        let Begun::Waiting(mut waiting) =
+            session.begin(request, &Origin::Cli(Caller::default()), now)
+        else {
             return Err("did not wait".into());
         };
         assert_eq!(
             waiting.due(),
             Some(crate::after(now, Duration::from_secs(5)))
         );
-        assert!(
-            waiting
-                .answer(&session, &mut session.budget(), now)
-                .is_none()
-        );
+        assert!(waiting.answer(&session, now).is_none());
         let answer = waiting
-            .answer(
-                &session,
-                &mut session.budget(),
-                crate::after(now, Duration::from_secs(5)),
-            )
+            .answer(&session, crate::after(now, Duration::from_secs(5)))
             .ok_or("timeout")?;
         let Response::Returned(Body::Events(batch)) = answer.response else {
             return Err("batch".into());
@@ -1208,9 +1014,7 @@ mod tests {
         let crate::wait::Waiting::Events(read) = &*waiting else {
             return Err("event read".into());
         };
-        let Response::Returned(Body::Events(stopped)) = read
-            .stopped(&session, "test", &mut session.budget())
-            .response
+        let Response::Returned(Body::Events(stopped)) = read.stopped(&session, "test").response
         else {
             return Err("stopped batch".into());
         };
@@ -1226,7 +1030,6 @@ mod tests {
                     timeout: Limit::read(0)?
                 },
                 &Origin::Cli(Caller::default()),
-                &mut session.budget(),
                 now
             ),
             Begun::Done(_)

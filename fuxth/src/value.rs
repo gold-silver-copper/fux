@@ -1,30 +1,13 @@
 //! Values on the stack: integers, booleans, strings, lists, and the
-//! application's own. A string's and a list's stores are a region's, so
-//! what a program builds is held by its run's region before it is made.
-use crate::{BoundedString, BoundedVec, Code, Failure, NESTING, Refused, Region, Shared};
-
-fuxth_core::bounded_only!();
+//! application's own.
+use crate::Code;
+use crate::Failure;
+use std::rc::Rc;
 
 /// An application's own values: what it puts on the stack (a handle, a
 /// request being built). Each says what kind it is, for errors, and how it
 /// reads as text.
 pub trait AppValue: Clone + PartialEq {
-    /// Holds what it keeps on the heap in `region`, as it is admitted into
-    /// a run: a value in shared storage reserves it there
-    /// ([`Shared::reserve`], or a [`Lease`](crate::Lease) it carries), visiting the
-    /// values it holds. A value that holds nothing on the heap holds
-    /// nothing.
-    fn retain(&self, _region: &Region) -> Result<(), Failure> {
-        Ok(())
-    }
-
-    /// Whether it is a native byte payload (a capture), which the run's
-    /// region bounds once it holds it, rather than [`TOTAL`]. Its weight
-    /// still charges work and bounds its place in lists.
-    fn native(&self) -> bool {
-        false
-    }
-
     /// What kind it is, as an error says it: "a pane".
     fn kind(&self) -> &'static str;
     /// What kind it is, as `kind` says it: "pane". By default its
@@ -32,30 +15,9 @@ pub trait AppValue: Clone + PartialEq {
     fn name(&self) -> &'static str {
         bare(self.kind())
     }
-
-    /// The workspace its text writer allocates while it writes, reserved
-    /// from the run's region beside the text before it is written.
-    fn scratch(&self) -> usize {
-        0
-    }
-
-    /// Expanded work of traversing this value, including shared children.
-    fn weight(&self) -> u64 {
-        1
-    }
-
-    /// Nesting below this value, including opaque records.
-    fn depth(&self) -> u8 {
-        0
-    }
-
-    /// Streams the application's text into the conversion's sink. Writers
-    /// propagate the sink's failure and allocate only the workspace
-    /// [`scratch`](AppValue::scratch) says, rather than building an
-    /// intermediate String. Counting and writing call it separately; both
-    /// must describe the same text.
+    /// Streams how it reads as text into `out`, propagating its failure.
     fn write_text(&self, out: &mut dyn std::fmt::Write) -> Result<(), Failure> {
-        out.write_str(self.kind()).map_err(|_| text_limit())
+        out.write_str(self.kind()).map_err(|_| unwritten())
     }
 }
 
@@ -117,12 +79,12 @@ kinds! {
     App "an application value",
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug)]
 pub enum Value<A> {
     Int(i64),
     Bool(bool),
-    Str(Shared<Text>),
-    List(Shared<List<A>>),
+    Str(Rc<Text>),
+    List(Rc<List<A>>),
     App(A),
 }
 
@@ -132,139 +94,53 @@ const STRIDE: usize = 64;
 /// A string's text, with how many characters it has and, unless they are
 /// all ASCII (then character `i` starts at byte `i`), its marks: where
 /// characters `STRIDE`, 2 × `STRIDE`, … start, so a character is found
-/// from the mark before it, or the start. Both are stores of its region.
-#[derive(Debug)]
+/// from the mark before it, or the start.
+#[derive(Clone, Debug)]
 pub struct Text {
-    text: BoundedString,
+    text: String,
     chars: usize,
-    marks: Option<BoundedVec<usize>>,
+    marks: Vec<usize>,
 }
 
 /// Two strings are equal when their text is: the rest follows from it.
 impl PartialEq for Text {
     fn eq(&self, other: &Self) -> bool {
-        *self.text == *other.text
+        self.text == other.text
     }
 }
 
 impl Eq for Text {}
 
 impl Text {
-    /// `text`, made in `region`.
-    pub fn new(region: &Region, text: &str) -> Result<Text, Refused> {
-        Self::made(BoundedString::of(region, text)?)
-    }
-
-    /// `text`, its characters counted and, unless all ASCII, marked, in
-    /// its region.
-    pub fn made(text: BoundedString) -> Result<Text, Refused> {
+    pub fn new(text: impl Into<String>) -> Text {
+        let text = text.into();
         if text.is_ascii() {
             let chars = text.len();
-            return Ok(Text {
+            return Text {
                 text,
                 chars,
-                marks: None,
-            });
+                marks: Vec::new(),
+            };
         }
         let chars = text.chars().count();
-        let room = chars.saturating_sub(1) / STRIDE;
-        let mut marks = BoundedVec::with_capacity(text.region(), room)?;
-        marks.extend(starts(&text, 0, 0))?;
-        Ok(Text {
-            text,
-            chars,
-            marks: Some(marks),
-        })
+        let mut marks = Vec::with_capacity(chars.saturating_sub(1) / STRIDE);
+        marks.extend(starts(&text, 0, 0));
+        Text { text, chars, marks }
     }
 
-    /// Bytes a string of `text` holds in its region, its shared box with
-    /// it: what its host's own budget is charged before it is made.
-    pub fn size(text: &str) -> usize {
-        let chars = match text.is_ascii() {
-            true => text.len(),
-            false => text.chars().count(),
-        };
-        Self::bound(text.len(), chars)
-    }
-
-    /// Bytes a string `bytes` long, of `chars` characters, holds in its
-    /// region, its shared box with it.
-    pub(crate) fn bound(bytes: usize, chars: usize) -> usize {
-        let marks = match bytes == chars {
-            true => 0,
-            false => chars.saturating_sub(1) / STRIDE,
-        };
-        (marks.saturating_mul(size_of::<usize>()))
-            .saturating_add(bytes)
-            .saturating_add(Shared::<Text>::BOX)
-    }
-
-    /// The same text, in stores of its own in `region`.
-    pub(crate) fn copy(&self, region: &Region) -> Result<Text, Refused> {
-        let marks = self.marks.as_ref().map(|marks| marks.copy(region));
-        Ok(Text {
-            text: self.text.copy(region)?,
-            chars: self.chars,
-            marks: marks.transpose()?,
-        })
-    }
-
-    /// `other` added at the end, in place: how many characters before it
-    /// were marked, all of them the first time it holds more than ASCII.
-    /// Its text and its marks grow as a vector does, reserved first;
-    /// refused, it holds what it held.
-    pub(crate) fn append(&mut self, other: &Text) -> Result<usize, Refused> {
+    /// `other` added at the end, in place.
+    pub(crate) fn append(&mut self, other: &Text) {
         let (bytes, chars, ascii) = (self.text.len(), self.chars, self.is_ascii());
-        let count = chars.saturating_add(other.chars);
-        let all = bytes.saturating_add(other.text.len());
-        if all != count {
-            let region = self.text.region();
-            let marks = (self.marks).get_or_insert_with(|| BoundedVec::new(region));
-            let need = count.saturating_sub(1) / STRIDE;
-            marks.reserve(need.saturating_sub(marks.len()))?;
+        self.text.push_str(&other.text);
+        self.chars = chars.saturating_add(other.chars);
+        if self.is_ascii() {
+            return;
         }
-        self.text.push_str(&other.text)?;
-        self.chars = count;
-        let Some(marks) = self.marks.as_mut().filter(|_| all != count) else {
-            return Ok(0);
-        };
-        let marked = if ascii {
-            marks.extend((1..chars.div_ceil(STRIDE)).map(|k| k.saturating_mul(STRIDE)))?;
-            chars
-        } else {
-            0
-        };
-        marks.extend(starts(&other.text, chars, bytes))?;
-        Ok(marked)
-    }
-
-    /// The region its stores are in.
-    pub fn region(&self) -> &Region {
-        self.text.region()
-    }
-
-    /// Its text and what its region holds for it, its marks given back:
-    /// moved, uncopied, into a failure's message.
-    pub(crate) fn parted(self) -> (std::string::String, crate::Reservation) {
-        self.text.parted()
-    }
-
-    /// Bytes it holds in its region, its box with it.
-    fn held(&self) -> usize {
-        let marks = self.marks.as_ref().map_or(0, BoundedVec::held);
-        (self.text.held().saturating_add(marks)).saturating_add(Shared::<Text>::BOX)
-    }
-
-    /// The room its text and marks have, in all: what moves as it grows.
-    pub(crate) fn capacity(&self) -> usize {
-        let marks = self.marks.as_ref().map_or(0, BoundedVec::capacity);
-        self.text.capacity().saturating_add(marks)
-    }
-
-    /// In shared storage reserved from its region: a string value.
-    pub fn value<A>(self) -> Result<Value<A>, Refused> {
-        let held = self.region().reserve(Shared::<Text>::BOX)?;
-        Ok(Value::Str(Shared::holding(self, held)))
+        if ascii {
+            let marks = (1..chars.div_ceil(STRIDE)).map(|k| k.saturating_mul(STRIDE));
+            self.marks.extend(marks);
+        }
+        self.marks.extend(starts(&other.text, chars, bytes));
     }
 
     /// How many characters it has.
@@ -290,7 +166,7 @@ impl Text {
         }
         let mark = match (i / STRIDE).checked_sub(1) {
             None => 0,
-            Some(k) => match self.marks.as_deref().and_then(|marks| marks.get(k)) {
+            Some(k) => match self.marks.get(k) {
                 Some(&mark) => mark,
                 None => return len,
             },
@@ -298,75 +174,6 @@ impl Text {
         let rest = self.text.get(mark..).unwrap_or_default();
         let found = rest.char_indices().nth(i % STRIDE);
         found.map_or(len, |(at, _)| mark.saturating_add(at))
-    }
-}
-
-impl Text {
-    /// What `write` writes, at most `most` bytes, made in `region`: counted
-    /// first, then written into exactly the room reserved for it. Past
-    /// `most`, or a writer that fails, is `too_long`.
-    pub fn written(
-        region: &Region,
-        most: usize,
-        mut write: impl FnMut(&mut dyn std::fmt::Write) -> std::fmt::Result,
-    ) -> Result<Text, Failure> {
-        let mut count = Count::new(usize::MAX, most.min(region.remaining()));
-        write(&mut count).map_err(|_| text_limit())?;
-        count.fits(region, Text::bound)?;
-        let mut text = BoundedString::with_capacity(region, count.bytes)?;
-        write(&mut text).map_err(|_| text_limit())?;
-        Ok(Text::made(text)?)
-    }
-}
-
-/// What a writer writes, counted, not kept: refused past `most`
-/// characters (then `long`), or `left` bytes.
-struct Count {
-    bytes: usize,
-    left: usize,
-    chars: usize,
-    most: usize,
-    long: bool,
-}
-
-impl Count {
-    fn new(most: usize, left: usize) -> Self {
-        Self {
-            bytes: 0,
-            left,
-            chars: 0,
-            most,
-            long: false,
-        }
-    }
-
-    /// Refused, with nothing made, unless `region` holds what `holds` says
-    /// the text counted takes.
-    fn fits(&self, region: &Region, holds: fn(usize, usize) -> usize) -> Result<(), Refused> {
-        let (asked, left) = (holds(self.bytes, self.chars), region.remaining());
-        if asked > left {
-            let budget = region.budget();
-            return Err(Refused::Full {
-                asked,
-                left,
-                budget,
-            });
-        }
-        Ok(())
-    }
-}
-
-impl std::fmt::Write for Count {
-    fn write_str(&mut self, text: &str) -> std::fmt::Result {
-        self.chars = (self.chars.checked_add(text.chars().count())).ok_or(std::fmt::Error)?;
-        if self.chars > self.most {
-            self.long = true;
-            return Err(std::fmt::Error);
-        }
-        self.bytes = (self.bytes.checked_add(text.len()))
-            .filter(|bytes| *bytes <= self.left)
-            .ok_or(std::fmt::Error)?;
-        Ok(())
     }
 }
 
@@ -391,131 +198,78 @@ impl std::fmt::Display for Text {
     }
 }
 
-/// The most a list may hold in all, counting through the lists and strings
-/// in it (a list held twice counts twice): what bounds every walk over a
-/// value, comparing or printing it.
-pub const TOTAL: u64 = 16_000_000;
-
-/// A list's values, how deep it nests (1 for a list of no lists), and how
-/// much it holds in all ([`Value::weight`]). Its values are a store of its
-/// region.
-#[derive(Debug)]
+/// A list's values.
+#[derive(Clone, Debug)]
 pub struct List<A> {
-    items: BoundedVec<Value<A>>,
-    depth: u8,
-    weight: u64,
+    items: Vec<Value<A>>,
 }
 
 /// Two lists are equal when their values are.
 impl<A: PartialEq> PartialEq for List<A> {
     fn eq(&self, other: &Self) -> bool {
-        *self.items == *other.items
+        self.items == other.items
+    }
+}
+
+/// The lists in it are let go one after another, not as a recursion, so a
+/// list nested however deep never overflows the stack.
+impl<A> Drop for List<A> {
+    fn drop(&mut self) {
+        let mut items = std::mem::take(&mut self.items);
+        while let Some(item) = items.pop() {
+            if let Value::List(list) = item
+                && let Ok(mut list) = Rc::try_unwrap(list)
+            {
+                items.append(&mut list.items);
+            }
+        }
     }
 }
 
 impl<A> List<A> {
-    /// Its values. Only `List`'s own ways change them, so how deep it
-    /// nests and how much it holds stay true.
+    pub fn new(items: Vec<Value<A>>) -> Self {
+        Self { items }
+    }
+
     pub fn items(&self) -> &[Value<A>] {
         &self.items
     }
 
-    /// The region its values' store is in.
-    pub fn region(&self) -> &Region {
-        self.items.region()
+    /// `value` added at the end.
+    pub fn push(&mut self, value: Value<A>) {
+        self.items.push(value);
     }
 
-    /// Bytes it holds in its region, its box with it, not its values'.
-    fn held(&self) -> usize {
-        self.items.held().saturating_add(Shared::<Self>::BOX)
-    }
-
-    /// The values it has room for.
-    pub(crate) fn capacity(&self) -> usize {
-        self.items.capacity()
-    }
-
-    /// Bytes a list of `n` values holds in its region, its shared box with
-    /// it: what its host's own budget is charged before it is made.
-    pub fn size(n: usize) -> usize {
-        (n.saturating_mul(size_of::<Value<A>>())).saturating_add(Shared::<Self>::BOX)
-    }
-
-    /// Room for `more` values past its last, reserved first: it grows as
-    /// a vector does.
-    pub(crate) fn reserve(&mut self, more: usize) -> Result<(), Refused> {
-        self.items.reserve(more)
-    }
-
-    /// In shared storage reserved from its region: a list value.
-    pub fn value(self) -> Result<Value<A>, Refused> {
-        let held = self.region().reserve(Shared::<Self>::BOX)?;
-        Ok(Value::List(Shared::holding(self, held)))
-    }
-}
-
-impl<A: Clone> List<A> {
-    /// The same values, in a store of its own in `region`.
-    pub(crate) fn copy(&self, region: &Region) -> Result<Self, Refused> {
-        Ok(Self {
-            items: self.items.copy(region)?,
-            depth: self.depth,
-            weight: self.weight,
-        })
-    }
-}
-
-impl<A: AppValue> List<A> {
-    /// A list of `items`; `None` if it would nest deeper than [`NESTING`]
-    /// or hold more than [`TOTAL`] in all.
-    pub fn new(items: BoundedVec<Value<A>>) -> Option<Self> {
-        let inner = items.iter().map(Value::depth).max().unwrap_or(0);
-        let depth = inner.checked_add(1).filter(|d| *d <= NESTING)?;
-        let weight = items
-            .iter()
-            .try_fold(0u64, |all, item| all.checked_add(item.weight()))?;
-        let weight = weight.checked_add(1).filter(|w| *w <= TOTAL)?;
-        Some(Self {
-            items,
-            depth,
-            weight,
-        })
-    }
-
-    /// `value` added at the end, in room [`reserve`](List::reserve)d for
-    /// it; `None` past the limits.
-    pub(crate) fn push(&mut self, value: Value<A>) -> Option<()> {
-        let depth = value.depth().checked_add(1).filter(|d| *d <= NESTING)?;
-        let weight = self
-            .weight
-            .checked_add(value.weight())
-            .filter(|w| *w <= TOTAL)?;
-        self.items.push(value).ok()?;
-        self.depth = self.depth.max(depth);
-        self.weight = weight;
+    /// Item `at` replaced by `value`; `None` past the end.
+    pub fn put(&mut self, at: usize, value: Value<A>) -> Option<()> {
+        *self.items.get_mut(at)? = value;
         Some(())
     }
+}
 
-    /// Item `at` replaced by `value`: how many items it looked through
-    /// for how deep it nests now; `None` past the limits or the end.
-    pub(crate) fn put(&mut self, at: usize, value: Value<A>) -> Option<usize> {
-        let depth = value.depth().checked_add(1).filter(|d| *d <= NESTING)?;
-        let old = self.items.get(at)?;
-        let (old_depth, old_weight) = (old.depth(), old.weight());
-        let weight = (self.weight.saturating_sub(old_weight))
-            .checked_add(value.weight())
-            .filter(|w| *w <= TOTAL)?;
-        let slot = self.items.get_mut(at)?;
-        *slot = value;
-        self.weight = weight;
-        // The deepest item may be the one replaced: then look again.
-        if old_depth.saturating_add(1) >= self.depth && depth < self.depth {
-            let inner = self.items.iter().map(Value::depth).max().unwrap_or(0);
-            self.depth = inner.saturating_add(1);
-            return Some(self.items.len());
+/// Two values are equal when they are of one kind and hold the same: lists
+/// element by element, walked with a stack of their own, not as a
+/// recursion, so lists nested however deep compare.
+impl<A: PartialEq> PartialEq for Value<A> {
+    fn eq(&self, other: &Self) -> bool {
+        let mut pairs = vec![(self, other)];
+        while let Some(pair) = pairs.pop() {
+            match pair {
+                (Self::List(a), Self::List(b)) if a.items.len() == b.items.len() => {
+                    if !Rc::ptr_eq(a, b) {
+                        pairs.extend(a.items.iter().zip(&b.items));
+                    }
+                }
+                (Self::Int(a), Self::Int(b)) if a == b => {}
+                (Self::Bool(a), Self::Bool(b)) if a == b => {}
+                (Self::Str(a), Self::Str(b)) if a == b => {}
+                (Self::App(a), Self::App(b)) if a == b => {}
+                (Self::Int(_) | Self::Bool(_) | Self::Str(_) | Self::List(_) | Self::App(_), _) => {
+                    return false;
+                }
+            }
         }
-        self.depth = self.depth.max(depth);
-        Some(0)
+        true
     }
 }
 
@@ -537,136 +291,51 @@ impl<A: AppValue> Value<A> {
         }
     }
 
-    /// The value as text, made in `region`: counted first, so its room
-    /// and its writers' workspace are reserved before either is made.
-    pub fn text(&self, region: &Region) -> Result<BoundedString, Failure> {
-        let bytes = |bytes, _| bytes;
-        self.render(usize::MAX, region, bytes)?
-            .ok_or_else(text_limit)
+    /// The value as text.
+    pub fn text(&self) -> Result<String, Failure> {
+        let mut out = String::new();
+        self.write_text(&mut out)?;
+        Ok(out)
     }
 
-    /// The text, if it is at most `most` characters long, made in `region`:
-    /// refused before any of it is made unless the region holds all of it,
-    /// a string's box included.
-    pub fn text_upto(&self, most: usize, region: &Region) -> Result<Option<Text>, Failure> {
-        let text = self.render(most, region, Text::bound)?;
-        Ok(text.map(Text::made).transpose()?)
-    }
-
-    /// `text_upto` as a string value.
-    pub fn string_upto(&self, most: usize, region: &Region) -> Result<Option<Self>, Failure> {
-        let text = self.text_upto(most, region)?;
-        Ok(text.map(Text::value).transpose()?)
-    }
-
-    /// The text, if it is at most `most` characters long: counted, then
-    /// written into exactly the room reserved for it, beside the workspace
-    /// its writers take, which is held while they count and write. Unless
-    /// the region holds what `holds` says a text so long takes, it is
-    /// refused before any of it is made.
-    fn render(
-        &self,
-        most: usize,
-        region: &Region,
-        holds: fn(usize, usize) -> usize,
-    ) -> Result<Option<BoundedString>, Failure> {
-        let workspace = region.reserve(self.scratch())?;
-        let mut count = Count::new(most, region.remaining());
-        if let Err(failure) = self.write_text(&mut count) {
-            return if count.long { Ok(None) } else { Err(failure) };
-        }
-        count.fits(region, holds)?;
-        let mut text = BoundedString::with_capacity(region, count.bytes)?;
-        self.write_text(&mut text)?;
-        drop(workspace);
-        Ok(Some(text))
-    }
-
-    /// The most workspace one of its application values' writers takes:
-    /// they write one at a time.
-    fn scratch(&self) -> usize {
-        match self {
-            Self::List(list) => list.items.iter().map(Self::scratch).max().unwrap_or(0),
-            Self::App(app) => app.scratch(),
-            Self::Int(_) | Self::Bool(_) | Self::Str(_) => 0,
-        }
-    }
-
-    /// Streams the text without allocating a whole rendered copy.
+    /// Streams its text into `out`, without a whole rendered copy: a
+    /// list's items a space apart, walked with a stack of the lists under
+    /// way, not as a recursion, so lists nested however deep are written.
     pub fn write_text(&self, out: &mut dyn std::fmt::Write) -> Result<(), Failure> {
-        match self {
-            Self::Int(n) => write!(out, "{n}").map_err(|_| text_limit()),
-            Self::Bool(b) => write!(out, "{b}").map_err(|_| text_limit()),
-            Self::Str(text) => out.write_str(text).map_err(|_| text_limit()),
-            Self::List(list) => {
-                for (i, item) in list.items.iter().enumerate() {
-                    if i > 0 {
-                        out.write_char(' ').map_err(|_| text_limit())?;
-                    }
-                    item.write_text(out)?;
-                }
-                Ok(())
+        let mut lists: Vec<(std::slice::Iter<'_, Self>, bool)> = Vec::new();
+        let mut value = self;
+        loop {
+            match value {
+                Self::Int(n) => write!(out, "{n}").map_err(|_| unwritten())?,
+                Self::Bool(b) => write!(out, "{b}").map_err(|_| unwritten())?,
+                Self::Str(text) => out.write_str(text).map_err(|_| unwritten())?,
+                Self::List(list) => lists.push((list.items.iter(), false)),
+                Self::App(app) => app.write_text(out)?,
             }
-            Self::App(app) => app.write_text(out),
+            // The next item of the innermost list under way.
+            value = loop {
+                let Some((items, started)) = lists.last_mut() else {
+                    return Ok(());
+                };
+                if let Some(item) = items.next() {
+                    if std::mem::replace(started, true) {
+                        out.write_char(' ').map_err(|_| unwritten())?;
+                    }
+                    break item;
+                }
+                lists.pop();
+            };
         }
     }
 }
 
-#[cold]
-fn text_limit() -> Failure {
-    Failure::new(Code::TooLong, "the text exceeds its allocation limit")
+/// A text its sink refused.
+fn unwritten() -> Failure {
+    Failure::new(Code::Host("output"), "the text could not be written")
 }
 
 impl<A> Value<A> {
-    /// `text` as a string value, made in `region`.
-    pub fn str(region: &Region, text: &str) -> Result<Self, Refused> {
-        Text::new(region, text)?.value()
-    }
-}
-
-impl<A: AppValue> Value<A> {
-    /// Held in `region` as it is admitted into a run, before the run keeps
-    /// it: a string's or list's box, unless some region holds it, when its
-    /// stores are `region`'s; all it holds, box and stores, when they are
-    /// another region's (its box's lease moves to `region`, nothing is
-    /// copied); the values in a list; and an application value's own bytes.
-    pub fn retain(&self, region: &Region) -> Result<(), Failure> {
-        match self {
-            Self::Int(_) | Self::Bool(_) => Ok(()),
-            Self::Str(text) if text.region().same(region) => text.boxed(region),
-            Self::Str(text) => text.reserve(region, text.held()),
-            Self::List(list) => {
-                match list.region().same(region) {
-                    true => list.boxed(region)?,
-                    false => list.reserve(region, list.held())?,
-                }
-                for value in list.items() {
-                    value.retain(region)?;
-                }
-                Ok(())
-            }
-            Self::App(app) => app.retain(region),
-        }
-    }
-
-    /// How much it holds in all: a list counts its values' weights and
-    /// itself, a string its characters, anything else 1. A walk over the
-    /// value goes through about this many things.
-    pub fn weight(&self) -> u64 {
-        match self {
-            Self::List(list) => list.weight,
-            Self::Str(s) => u64::try_from(s.chars_len()).unwrap_or(u64::MAX).max(1),
-            Self::App(app) => app.weight(),
-            Self::Int(_) | Self::Bool(_) => 1,
-        }
-    }
-
-    /// How deep it nests: 0 for anything but a list.
-    pub fn depth(&self) -> u8 {
-        match self {
-            Self::List(list) => list.depth,
-            Self::App(app) => app.depth(),
-            Self::Int(_) | Self::Bool(_) | Self::Str(_) => 0,
-        }
+    pub fn str(text: impl Into<String>) -> Self {
+        Self::Str(Rc::new(Text::new(text)))
     }
 }

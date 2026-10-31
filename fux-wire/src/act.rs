@@ -245,21 +245,17 @@ pub enum Edit {
     End,
 }
 
-/// The most bytes a prompt's line holds.
-pub const LINE_MAX: usize = 4096;
-
-/// A line of text being typed, of at most `MAX` bytes, split at its
-/// cursor: the cursor is always between two chars, or at an end, and every
-/// edit is a whole char.
+/// A line of text being typed, split at its cursor: the cursor is always
+/// between two chars, or at an end, and every edit is a whole char.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Line<const MAX: usize = LINE_MAX> {
+pub struct Line {
     before: String,
     after: String,
 }
 
-impl<const MAX: usize> Line<MAX> {
+impl Line {
     /// `text`, the cursor after it.
-    pub fn new(text: String) -> Line<MAX> {
+    pub fn new(text: String) -> Line {
         Line {
             before: text,
             after: String::new(),
@@ -283,8 +279,7 @@ impl<const MAX: usize> Line<MAX> {
 
     /// An edit of the line: typed text (its control characters, and the
     /// line end a pasted line ends in, left out), or a move or a deletion.
-    /// Text of more than one line, or that would take the line past `MAX`
-    /// bytes, is refused whole, saying why.
+    /// Text of more than one line is refused whole, saying why.
     pub fn edit(&mut self, edit: &Edit) -> Result<(), String> {
         match edit {
             Edit::Insert(text) => {
@@ -295,12 +290,7 @@ impl<const MAX: usize> Line<MAX> {
                 if text.contains(['\n', '\r']) {
                     return Err("a line holds one line of text: nothing was typed".to_owned());
                 }
-                let typed: String = text.chars().filter(|c| !c.is_control()).collect();
-                let len = self.before.len().saturating_add(self.after.len());
-                if len.saturating_add(typed.len()) > MAX {
-                    return Err(format!("a line holds {MAX} bytes: nothing was typed"));
-                }
-                self.before.push_str(&typed);
+                self.before.extend(text.chars().filter(|c| !c.is_control()));
             }
             Edit::Backspace => drop(self.before.pop()),
             Edit::Delete => self.after = self.after.chars().skip(1).collect(),

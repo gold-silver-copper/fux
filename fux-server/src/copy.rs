@@ -8,13 +8,8 @@ use crate::session::{self, Session};
 use crate::view::{Mode, Notice};
 use fux_vt::{Row, RowId, Screen};
 use fux_wire::act::{CopyAct, Hint, Seek};
-use fux_wire::code::{Code, Error};
+use fux_wire::code::Error;
 use fux_wire::id::{ClientId, PaneId};
-
-/// The most cells one copy takes.
-pub const MAX_CELLS: usize = 262_144;
-/// The largest OSC 52 payload, encoded.
-pub const MAX_CLIPBOARD: usize = 1 << 20;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Select {
@@ -161,10 +156,6 @@ impl Copy {
         }
     }
 }
-
-/// The most bytes a search holds: the line its client types it in
-/// (`screens`) holds no more, and one longer is refused.
-pub const SEARCH_MAX: usize = 1024;
 
 /// What copy mode's bar says it is doing: a label, or the search being
 /// typed after its prompt, which the bar scrolls as a prompt's line.
@@ -398,15 +389,9 @@ pub fn prompt(from: Row<'_>, seek: Seek) -> Option<Row<'_>> {
 /// The selected text. Wide glyphs and combining marks stay whole; a
 /// soft-wrapped row joins the next without a newline; trailing blanks are
 /// trimmed; a block is a rectangle, one line per row.
-pub fn text(
-    screen: &Screen,
-    kind: Select,
-    start: Place<'_>,
-    end: Place<'_>,
-) -> Result<String, Error> {
+pub fn text(screen: &Screen, kind: Select, start: Place<'_>, end: Place<'_>) -> String {
     let cols = screen.size().cols();
     let mut out = String::new();
-    let mut cells = 0usize;
     let (left, right) = (start.1.min(end.1), start.1.max(end.1));
     let (first, last) = (start.0.index(), end.0.index());
     let rows = std::iter::successors(Some(start.0), Row::below);
@@ -424,14 +409,6 @@ pub fn text(
             Select::Line => (0, cols.saturating_sub(1)),
             Select::Block => (left, right),
         };
-        // Refused long before it could saturate.
-        cells = cells.saturating_add(usize::from(to.saturating_sub(from)).saturating_add(1));
-        if cells > MAX_CELLS {
-            return Err(Error::Failed {
-                code: Code::Selection,
-                message: format!("the selection is larger than {MAX_CELLS} cells"),
-            });
-        }
         let copied = row.copied(usize::from(from), usize::from(to));
         let line: String = copied.map(|(_, glyph)| glyph).collect();
         let joined = kind != Select::Block && row.continues() && index < last;
@@ -444,7 +421,7 @@ pub fn text(
             }
         }
     }
-    Ok(out)
+    out
 }
 
 // ------------------------------------------------------------------- keys
@@ -514,11 +491,9 @@ fn leave(session: &mut Session, client: ClientId) {
     }
 }
 
-/// `text` as a search: no control characters; none past `SEARCH_MAX`
-/// bytes, which no client's line holds.
-fn clean(text: &str) -> Option<String> {
-    let text: String = text.chars().filter(|c| !c.is_control()).collect();
-    (text.len() <= SEARCH_MAX).then_some(text)
+/// `text` as a search: no control characters.
+fn clean(text: &str) -> String {
+    text.chars().filter(|c| !c.is_control()).collect()
 }
 
 /// An action in copy mode, its keys the client's (`keymap::Modes::copy`).
@@ -570,19 +545,12 @@ pub fn act(session: &mut Session, client: ClientId, act: CopyAct) {
         CopyAct::Enter { .. } => return,
         // The search line the client types, shown; the search it asks for.
         CopyAct::Typing(line) => {
-            copy.typing = line.and_then(|(seek, before, after)| {
-                let (before, after) = (clean(&before)?, clean(&after)?);
-                (before.len().saturating_add(after.len()) <= SEARCH_MAX)
-                    .then_some((seek, before, after))
-            });
+            copy.typing = line.map(|(seek, before, after)| (seek, clean(&before), clean(&after)));
             return;
         }
         CopyAct::Find { query, seek } => {
             copy.typing = None;
-            let Some(query) = clean(&query) else {
-                view.notify(format!("a search is at most {SEARCH_MAX} bytes"), true);
-                return;
-            };
+            let query = clean(&query);
             if !query.is_empty() {
                 let search = Search { query, seek };
                 jump(copy, screen, height, at, &search, &mut view.notice);
@@ -663,9 +631,7 @@ pub fn act(session: &mut Session, client: ClientId, act: CopyAct) {
         }
         CopyAct::Yank => {
             let copied = match at.ends() {
-                Some((kind, start, end)) => {
-                    text(screen, kind, start, end).map_err(|e| e.to_string())
-                }
+                Some((kind, start, end)) => Ok(text(screen, kind, start, end)),
                 None => Err("nothing selected: start a selection before copying".to_owned()),
             };
             yank(session, client, copied);
@@ -751,7 +717,7 @@ fn yank(session: &mut Session, client: ClientId, copied: Result<String, String>)
         }
     };
     let characters = copied.chars().count();
-    let mut note = format!(
+    let note = format!(
         "copied {characters} character{}",
         if characters == 1 { "" } else { "s" }
     );
@@ -765,12 +731,7 @@ fn yank(session: &mut Session, client: ClientId, copied: Result<String, String>)
     let result = session.copied(copied, pane, &[client]);
     leave(session, client);
     match result {
-        Ok(fits) => {
-            if !fits {
-                note.push_str(" to a paste buffer; too large for the clipboard");
-            }
-            session.notify_to(client, note, false);
-        }
+        Ok(()) => session.notify_to(client, note, false),
         Err(why) => session.notify_to(client, why.to_string(), true),
     }
 }
@@ -894,20 +855,6 @@ mod tests {
         Ok(())
     }
 
-    /// A search past `SEARCH_MAX` bytes, which no client's line holds, is
-    /// refused and said, not cut.
-    #[test]
-    fn a_search_past_its_bound_is_refused() -> Result<(), String> {
-        let (mut s, c) = crate::session::testing::attached(6, 40)?;
-        s.input(c, b"\x02c");
-        let query = std::iter::repeat_n('x', SEARCH_MAX.saturating_add(1)).collect();
-        let seek = Seek::Forward;
-        act(&mut s, c, CopyAct::Find { query, seek });
-        let notice = s.views.get(&c).and_then(|v| v.notice.clone());
-        assert!(notice.is_some_and(|n| n.error && n.text.contains("at most")));
-        Ok(())
-    }
-
     /// On a client larger than the pane (a smaller client sizes it), copy
     /// mode moves within the rows shown, not the client's room for them:
     /// its cursor stays on a row the client can see.
@@ -1025,27 +972,6 @@ mod tests {
         Ok(())
     }
 
-    /// A copy larger than `MAX_CELLS` is refused whole, saying so.
-    #[test]
-    fn too_large_a_selection_is_refused() -> Result<(), Box<dyn std::error::Error>> {
-        let lines: Vec<u8> = std::iter::repeat_n(&b"x\r\n"[..], 3000)
-            .flatten()
-            .copied()
-            .collect();
-        let mut parser = fux_vt::Parser::new(fux_vt::Size::new(10, 100)?, 1 << 20)?;
-        parser.process(&lines)?;
-        let s = parser.screen();
-        let last = s.rows().next_back().ok_or("no rows")?;
-        let copied = text(s, Select::Line, (row(s, 0)?, 0), (last, 0));
-        assert!(matches!(&copied, Err(e) if e.code() == fux_wire::code::Code::Selection));
-        assert_eq!(
-            copied.map_err(|e| e.to_string()),
-            Err(format!("the selection is larger than {MAX_CELLS} cells"))
-        );
-        assert!(text(s, Select::Line, (row(s, 0)?, 0), (row(s, 100)?, 0)).is_ok());
-        Ok(())
-    }
-
     #[test]
     fn selections_keep_glyphs_whole_join_wraps_and_trim() -> Result<(), Box<dyn std::error::Error>>
     {
@@ -1054,15 +980,15 @@ mod tests {
         let s = p.screen();
         let top = s.rows().len() - 4;
         let at = |i| row(s, top + i);
-        assert_eq!(text(s, Select::Char, (at(0)?, 0), (at(1)?, 1))?, "abcdef");
+        assert_eq!(text(s, Select::Char, (at(0)?, 0), (at(1)?, 1)), "abcdef");
         assert_eq!(
-            text(s, Select::Line, (at(0)?, 0), (at(2)?, 0))?,
+            text(s, Select::Line, (at(0)?, 0), (at(2)?, 0)),
             "abcdef\n界x"
         );
         // Starting on the glyph's second half takes the whole glyph.
-        assert_eq!(text(s, Select::Char, (at(2)?, 1), (at(2)?, 2))?, "界x");
+        assert_eq!(text(s, Select::Char, (at(2)?, 1), (at(2)?, 2)), "界x");
         assert_eq!(
-            text(s, Select::Block, (at(0)?, 1), (at(3)?, 2))?,
+            text(s, Select::Block, (at(0)?, 1), (at(3)?, 2)),
             "bc\nf\n界x\nas"
         );
         Ok(())
@@ -1076,8 +1002,8 @@ mod tests {
         let s = p.screen();
         let top = s.rows().len() - 3;
         let at = |i| row(s, top + i);
-        assert_eq!(text(s, Select::Char, (at(0)?, 0), (at(1)?, 1))?, "abcd世");
-        assert_eq!(text(s, Select::Line, (at(0)?, 0), (at(1)?, 0))?, "abcd世");
+        assert_eq!(text(s, Select::Char, (at(0)?, 0), (at(1)?, 1)), "abcd世");
+        assert_eq!(text(s, Select::Line, (at(0)?, 0), (at(1)?, 0)), "abcd世");
         Ok(())
     }
 }

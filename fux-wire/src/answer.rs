@@ -350,9 +350,6 @@ impl crate::wire::Reach for Attributes {
 /// the vocabulary of `Attributes` gives and takes them.
 impl crate::wire::Wire for Attributes {
     fn put(&self, out: &mut impl crate::wire::Sink) {
-        if out.storage(0) {
-            return;
-        }
         let a = *self;
         [a.foreground(), a.background(), a.underline_color()]
             .iter()

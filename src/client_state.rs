@@ -236,6 +236,7 @@ impl Preferences {
 mod tests {
     use super::*;
     use crate::TestResult;
+    use std::rc::Rc;
 
     #[test]
     fn initialization_requires_every_preference_and_the_prefix() -> TestResult {
@@ -271,9 +272,8 @@ mod tests {
     #[test]
     fn local_settings_keep_the_checked_value_union_and_inner_validators() -> TestResult {
         let list = |words: &[&str]| {
-            crate::script::test_list(words.iter().map(|w| crate::script::test_str(*w)).collect())
-                .map(|l| Value::List(fuxth::Shared::new(l)))
-                .ok_or_else(|| "list".to_owned())
+            let list = fuxth::List::new(words.iter().map(|w| Value::str(*w)).collect());
+            Ok::<_, String>(Value::List(Rc::new(list)))
         };
         let mut draft = PreferenceDraft::default();
         for (name, value) in [
@@ -295,17 +295,17 @@ mod tests {
             ("picture-bytes", Value::Int(100663297)),
             ("escape-delay-ms", Value::Int(-1)),
             ("paste-timeout-ms", Value::Int(65536)),
-            ("cell-placement", crate::script::test_str("cells")),
+            ("cell-placement", Value::str("cells")),
             ("history-bytes", Value::Int(-1)),
             ("history-bytes", Value::Int((1 << 30) + 1)),
-            ("wait-seconds", Value::Int(86_401)),
+            ("wait-seconds", Value::Int(1 << 32)),
             ("wait-seconds", Value::Int(-1)),
             ("bell", Value::Int(0)),
-            ("bell", crate::script::test_str("off")),
+            ("bell", Value::str("off")),
             ("shell", list(&[])?),
             ("shell", list(&[""])?),
             ("shell", list(&["/bin/sh", "a\0b"])?),
-            ("shell", crate::script::test_str("/bin/sh")),
+            ("shell", Value::str("/bin/sh")),
             ("copy-environment", list(&["BAD-NAME"])?),
             ("copy-environment", list(&["FUX_PANE"])?),
             ("copy-environment", list(&["FUX_SOCKET"])?),

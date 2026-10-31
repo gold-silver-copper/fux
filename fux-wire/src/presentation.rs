@@ -56,7 +56,7 @@ wire! {
     pub enum Field { Workspace, Tabs, Pane, Slot(index: u8), }
 }
 
-/// At most sixteen fields across both sides, with no recursive formatting.
+/// Each field once across both sides, with no recursive formatting.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Bar {
     position: BarPosition,
@@ -65,16 +65,12 @@ pub struct Bar {
     tab_numbers: bool,
 }
 impl Bar {
-    pub const MAX_FIELDS: usize = 16;
     pub fn new(
         position: BarPosition,
         left: Vec<Field>,
         right: Vec<Field>,
         tab_numbers: bool,
     ) -> Result<Self, String> {
-        if left.len().saturating_add(right.len()) > Self::MAX_FIELDS {
-            return Err("a bar has at most 16 fields".to_owned());
-        }
         let mut seen = Vec::new();
         for field in left.iter().chain(&right) {
             if seen.contains(field) {
@@ -122,8 +118,7 @@ impl Wire for Bar {
     }
     fn get(r: &mut Reader<'_>) -> Result<Self, Error> {
         let position = BarPosition::get(r)?;
-        let left = r.bounded_list(Self::MAX_FIELDS, Field::get)?;
-        let right = r.bounded_list(Self::MAX_FIELDS.saturating_sub(left.len()), Field::get)?;
+        let (left, right) = (Vec::get(r)?, Vec::get(r)?);
         Self::new(position, left, right, bool::get(r)?).map_err(|_| Error::Bad("bar description"))
     }
 }
@@ -132,14 +127,11 @@ impl Wire for Bar {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Slots(Vec<(u8, String)>);
 impl Slots {
+    /// How many slots there are: 0 to 15.
     pub const MAX: usize = 16;
-    pub const TEXT_MAX: usize = 256;
     pub fn new<'a, T: Into<std::borrow::Cow<'a, str>>>(
         values: Vec<(u8, T)>,
     ) -> Result<Self, String> {
-        if values.len() > Self::MAX {
-            return Err("at most 16 bar slots".to_owned());
-        }
         let mut out = Vec::new();
         for (id, text) in values {
             let text = text.into();
@@ -149,10 +141,8 @@ impl Slots {
             if out.iter().any(|(held, _)| *held == id) {
                 return Err(format!("bar slot {id} occurs more than once"));
             }
-            if text.len() > Self::TEXT_MAX || text.chars().any(char::is_control) {
-                return Err(
-                    "bar slot text is at most 256 bytes with no control characters".to_owned(),
-                );
+            if text.chars().any(char::is_control) {
+                return Err("bar slot text has no control characters".to_owned());
             }
             out.push((id, text.into_owned()));
         }
@@ -171,12 +161,7 @@ impl Wire for Slots {
         self.0.put(out);
     }
     fn get(r: &mut Reader<'_>) -> Result<Self, Error> {
-        let values = r.bounded_list(Self::MAX, |r| {
-            let id = u8::get(r)?;
-            let text = r.bounded_text(Self::TEXT_MAX)?;
-            Ok((id, text))
-        })?;
-        Self::new(values).map_err(|_| Error::Bad("bar slots"))
+        Self::new(Vec::<(u8, String)>::get(r)?).map_err(|_| Error::Bad("bar slots"))
     }
 }
 
@@ -232,33 +217,36 @@ pub(crate) fn sample() -> Result<Presentation, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::wire::decode;
 
     #[test]
-    fn presentation_transport_refuses_excess_fields_and_slot_text() -> Result<(), String> {
+    fn presentation_transport_refuses_what_no_bar_has() -> Result<(), String> {
         let p = sample()?;
         let mut bytes = Vec::new();
         p.put(&mut bytes);
         assert_eq!(
-            decode::<crate::presentation::Presentation>(&bytes).map_err(|e| e.to_string())?,
+            Reader::new(&bytes)
+                .whole::<crate::presentation::Presentation>()
+                .map_err(|e| e.to_string())?,
             p
         );
         bytes.clear();
         BarPosition::Bottom.put(&mut bytes);
-        17u32.put(&mut bytes);
+        vec![Field::Pane, Field::Pane].put(&mut bytes);
+        Vec::<Field>::new().put(&mut bytes);
+        false.put(&mut bytes);
         assert!(matches!(
-            decode::<Bar>(&bytes),
-            Err(Error::Bad("list length"))
+            Reader::new(&bytes).whole::<Bar>(),
+            Err(Error::Bad("bar description"))
         ));
         bytes.clear();
-        vec![(0u8, std::iter::repeat_n('x', 257).collect::<String>())].put(&mut bytes);
+        vec![(16u8, "x".to_owned())].put(&mut bytes);
         assert!(matches!(
-            decode::<Slots>(&bytes),
-            Err(Error::Bad("text length"))
+            Reader::new(&bytes).whole::<Slots>(),
+            Err(Error::Bad("bar slots"))
         ));
         bytes.clear();
         vec![(0u8, "escape\x1b".to_owned())].put(&mut bytes);
-        assert!(decode::<Slots>(&bytes).is_err());
+        assert!(Reader::new(&bytes).whole::<Slots>().is_err());
         Ok(())
     }
 }

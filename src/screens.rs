@@ -8,12 +8,12 @@
 //! What a screen's entry does is fuxth, run as the client runs a binding.
 use crate::keymap::{Held, Keymap, Modes};
 use crate::script;
-use fux_server::copy::SEARCH_MAX;
 use fux_vt::keys::decode::Input;
 use fux_vt::keys::{KeyPress, Keystroke};
 use fux_wire::act::Line;
 use fux_wire::act::{Act, CopyAct, LineAct, List, ListAct, Panel, ScreenAct, Seek};
 use fux_wire::callback::{Callback, Data, ListScreen, Open, Prompt};
+use fux_wire::protocol::MAX_FRAME;
 
 /// One of a client's screens, or none: its keys then go through its
 /// bindings, in the middle of what `Held` says. So nothing is held for the
@@ -24,7 +24,7 @@ pub enum Screen {
     List(ListScreen),
     Prompt(Prompt),
     /// Copy mode, and the search line being typed in it, forward or back.
-    Copy(Option<(Seek, Line<SEARCH_MAX>)>),
+    Copy(Option<(Seek, Line)>),
 }
 
 /// What a key leads to, in a screen or through the bindings: an action for
@@ -61,25 +61,20 @@ impl Display {
             .ok_or_else(|| "screen opening ids exhausted".into())
     }
 
-    /// Open a new instance, admitted with room for its longest edit.
+    /// Open a new instance, if it fits the frame it is shown in.
     pub fn open(&mut self, screen: Screen, modes: &Modes) -> Vec<Act> {
-        use fux_wire::protocol::{AttachedFrame, Frame, MAX_FRAME};
         let opening = match self.next() {
             Ok(opening) => opening,
             Err(text) => return vec![Act::Notice { text, error: true }],
         };
-        if screen.largest(modes).is_some_and(|act| {
-            AttachedFrame::Act(Box::new(Act::Screen { opening, act }))
-                .encode()
-                .is_err()
-        }) {
+        let Some(act) = screen.opened(modes) else {
+            return Vec::new();
+        };
+        if !fits(&act) {
             let text =
                 format!("a screen past {MAX_FRAME} bytes, too large to show, was not opened");
             return vec![Act::Notice { text, error: true }];
         }
-        let Some(act) = screen.opened(modes) else {
-            return Vec::new();
-        };
         self.opening = opening;
         self.screen = screen;
         vec![Act::Screen { opening, act }]
@@ -195,41 +190,11 @@ impl Job {
         }
     }
 
-    pub fn bytes(&self) -> usize {
-        let retained = self.screen.as_ref().map_or(0, Open::bytes);
-        self.given
-            .iter()
-            .flatten()
-            .fold(self.code.capacity().saturating_add(retained), |n, v| {
-                n.saturating_add(v.bytes())
-            })
-    }
-
     pub fn machine(
         &self,
         config: Option<&script::Config>,
     ) -> Result<fuxth::Machine<script::Fux>, script::Failed> {
         script::callback_machine(config, &self.tokens()?, self.given.as_deref())
-    }
-}
-
-/// The most bytes of fuxth a prompt or a chooser holds to run: the
-/// client keeps it, outside any frame, so it has a bound of its own.
-pub const ACTION_MAX: usize = 1 << 16;
-
-/// Whether `code` may be a callback's source: at most `ACTION_MAX` bytes,
-/// else `too_long`, from the word that makes it or the screen that admits
-/// it alike.
-pub fn admit_source(code: &str) -> Result<(), fux_wire::code::Error> {
-    match code.len() > ACTION_MAX {
-        true => Err(fux_wire::code::fail(
-            fux_wire::code::Raise::TooLong,
-            format!(
-                "callback source of {} bytes is past its {ACTION_MAX}",
-                code.len()
-            ),
-        )),
-        false => Ok(()),
     }
 }
 
@@ -269,16 +234,6 @@ impl Screen {
                 self.panel(modes).map(ScreenAct::Show)
             }
         }
-    }
-
-    /// What `opened` sends at its largest, its line, if it has one, as long
-    /// as a line may be: if this fits a frame, so does every edit's.
-    pub fn largest(&self, modes: &Modes) -> Option<ScreenAct> {
-        let mut largest = self.clone();
-        if let Self::Prompt(prompt) = &mut largest {
-            prompt.line = Line::new(std::iter::repeat_n('x', fux_wire::act::LINE_MAX).collect());
-        }
-        largest.opened(modes)
     }
 
     /// What the server draws of it, with the hints of `modes`.
@@ -411,11 +366,18 @@ impl Screen {
                 std::iter::once(HIDE).chain(job.map(Effect::Run)).collect()
             }
             LineAct::Edit(edit) => {
-                let refused = prompt.line.edit(&edit).err();
+                let before = prompt.line.clone();
+                let mut refused = prompt.line.edit(&edit).err();
                 *self = Self::Prompt(prompt);
-                let shown = self
-                    .panel(modes)
-                    .map(|p| Effect::Screen(ScreenAct::Show(p)));
+                let mut shown = self.panel(modes).map(ScreenAct::Show);
+                if shown.as_ref().is_some_and(|act| !fits(act)) {
+                    if let Self::Prompt(prompt) = self {
+                        prompt.line = before;
+                    }
+                    shown = self.panel(modes).map(ScreenAct::Show);
+                    refused = Some(past_a_frame());
+                }
+                let shown = shown.map(Effect::Screen);
                 shown.into_iter().chain(refused.map(refusal)).collect()
             }
         }
@@ -424,7 +386,7 @@ impl Screen {
     fn copy(
         &mut self,
         modes: &Modes,
-        search: Option<(Seek, Line<SEARCH_MAX>)>,
+        search: Option<(Seek, Line)>,
         press: KeyPress,
     ) -> Vec<Effect> {
         if let Some(search) = search {
@@ -448,11 +410,7 @@ impl Screen {
         Vec::from_iter(act.map(|act| Effect::Screen(ScreenAct::Copy(act))))
     }
 
-    fn copy_search(
-        &mut self,
-        (seek, mut line): (Seek, Line<SEARCH_MAX>),
-        act: LineAct,
-    ) -> Vec<Effect> {
+    fn copy_search(&mut self, (seek, mut line): (Seek, Line), act: LineAct) -> Vec<Effect> {
         let sent = match act {
             LineAct::Cancel => CopyAct::Typing(None),
             LineAct::Submit => CopyAct::Find {
@@ -460,10 +418,18 @@ impl Screen {
                 seek,
             },
             LineAct::Edit(edit) => {
-                let refused = line.edit(&edit).err();
-                let typing = (seek, line.before().to_owned(), line.after().to_owned());
+                let before = line.clone();
+                let mut refused = line.edit(&edit).err();
+                let typing =
+                    |line: &Line| (seek, line.before().to_owned(), line.after().to_owned());
+                let mut shown = ScreenAct::Copy(CopyAct::Typing(Some(typing(&line))));
+                if !fits(&shown) {
+                    line = before;
+                    shown = ScreenAct::Copy(CopyAct::Typing(Some(typing(&line))));
+                    refused = Some(past_a_frame());
+                }
                 *self = Self::Copy(Some((seek, line)));
-                let shown = Effect::Screen(ScreenAct::Copy(CopyAct::Typing(Some(typing))));
+                let shown = Effect::Screen(shown);
                 return std::iter::once(shown).chain(refused.map(refusal)).collect();
             }
         };
@@ -475,6 +441,19 @@ impl Screen {
 /// A line's refusal of an edit, told as an error's notice.
 fn refusal(text: String) -> Effect {
     Effect::Send(Act::Notice { text, error: true })
+}
+
+/// Whether `act` fits the one frame it is sent to the server in.
+fn fits(act: &ScreenAct) -> bool {
+    use fux_wire::protocol::{AttachedFrame, Frame};
+    let act = act.clone();
+    let frame = AttachedFrame::Act(Box::new(Act::Screen { opening: 0, act }));
+    frame.encode().is_ok()
+}
+
+/// Why an edit that would take a line past its frame was refused.
+fn past_a_frame() -> String {
+    format!("a line holds what one frame ({MAX_FRAME} bytes) does: nothing was typed")
 }
 
 #[cfg(test)]
@@ -622,32 +601,31 @@ mod tests {
         Ok(())
     }
 
-    /// A prompt opens only if its line, grown as long as a line may be,
-    /// still fits a frame: an edit never makes a display too large to send.
+    /// An edit that would take a prompt's line past the frame it is
+    /// shown in is refused, the line as it was: a display is never too
+    /// large to send.
     #[test]
-    fn a_prompt_fits_a_frame_at_its_largest() -> Result<(), String> {
+    fn an_edit_past_a_frame_is_refused() -> Result<(), String> {
         let modes = crate::script::default_state()
             .map(|state| state.keys)
             .map_err(|e| e.to_string())?
             .modes;
-        let fits = |act: Option<ScreenAct>| {
-            act.is_some_and(|act| {
-                use fux_wire::protocol::Frame;
-                let frame = fux_wire::protocol::AttachedFrame::Act(Box::new(Act::Screen {
-                    opening: 1,
-                    act,
-                }));
-                frame.encode().is_ok()
-            })
-        };
         let title = std::iter::repeat_n('t', fux_wire::protocol::MAX_FRAME - 2048).collect();
-        let screen = Screen::Prompt(Prompt {
+        let mut screen = Screen::Prompt(Prompt {
             title,
             line: Line::new(String::new()),
             action: None,
         });
-        assert!(fits(screen.opened(&modes)));
-        assert!(!fits(screen.largest(&modes)));
+        assert!(screen.opened(&modes).is_some_and(|act| fits(&act)));
+        let typed = std::iter::repeat_n('x', 4096).collect();
+        let edit = LineAct::Edit(fux_wire::act::Edit::Insert(typed));
+        let Screen::Prompt(prompt) = &screen else {
+            return Err("not a prompt".into());
+        };
+        let prompt = prompt.clone();
+        let effects = screen.prompt(&modes, prompt, edit);
+        assert!(effects.contains(&refusal(past_a_frame())), "{effects:?}");
+        assert!(matches!(&screen, Screen::Prompt(p) if p.line.before().is_empty()));
         Ok(())
     }
 

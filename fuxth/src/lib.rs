@@ -41,7 +41,6 @@ mod check;
 mod compile;
 mod error;
 mod machine;
-mod shared;
 mod source;
 pub mod token;
 mod value;
@@ -49,15 +48,11 @@ mod vocabulary;
 
 pub use compile::{Compiler, Doc, Parsing, Program, Read, Vocabulary};
 pub use error::Error;
-pub use fuxth_core::{
-    Bounded, BoundedString, BoundedVec, Code, Failure, Grant, LONGEST, NESTING, Refused, Region,
-    Reservation, Unbounded, bounded_only,
-};
-pub use machine::{Args, Builtin, Done, Host, Limits, Machine, Outcome};
-pub use shared::{Lease, Shared};
-pub use source::{Loader, SOURCE_MAX, Source, SourceImage, SourceLimits};
+pub use fuxth_core::{Code, Failure};
+pub use machine::{Args, Builtin, Done, Host, Machine, Outcome};
+pub use source::{Loader, Source, SourceImage};
 pub use token::{Place, Token};
-pub use value::{AppValue, List, TOTAL, Text, Value};
+pub use value::{AppValue, List, Text, Value};
 
 /// fuxth's standard library, written in fuxth: every word beyond the core
 /// (`dup swap over rot`, booleans, comparing, sequences, text …). An

@@ -177,10 +177,10 @@ pub fn take(fixture: &mut Fixture, step: &Step, at: usize) -> Result<(), End> {
             let after = fixture
                 .listed_clients()
                 .map_err(|e| fail(at, "listing", e))?;
-            if !refused.contains(&fux_wire::command::MOST.to_string()) || before != after {
+            if !refused.contains("no screen is that size") || before != after {
                 return Err(fail(
                     at,
-                    "a size past crate::command::MOST is refused, and no client attached",
+                    "a size past what a grid holds is refused, and no client attached",
                     format!("9000 by 9000: {refused:?}; clients {before:?}, then {after:?}"),
                 ));
             }

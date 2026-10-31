@@ -10,36 +10,20 @@ use fux_wire::id::{PaneId, TabId, WsId};
 use std::collections::{BTreeSet, VecDeque};
 use std::time::{Duration, Instant};
 
-/// The largest piece a client's typing gives: a whole paste and its
-/// envelope. `send-keys` gives more in one, up to `INPUT_MAX`
-/// (`script::words`) as it is sent, which the queue holds
-/// ([`INPUT_BYTES`]); encoded for its program (kitty keys, a paste's
-/// envelope), it may be more, refused whole (`Error::TooLong`).
-pub const MAX_INPUT: usize = fux_vt::keys::decode::PASTE_LIMIT + 12;
-/// Input may wait for the program up to this many bytes, however many
-/// pieces it came in.
-pub const INPUT_BYTES: usize = 16 * MAX_INPUT;
 /// How long a frame drawn in synchronized output is held before it is
 /// shown anyway: Ghostty's choice. Long enough for a frame sent in pieces
 /// over a slow link; a program that dies mid-frame freezes its pane this
 /// long, once. The spec leaves it open
 /// (`references/modern/mode_2026_synchronized_output.md`, "Timeout").
 pub const FRAME_TIMEOUT: Duration = Duration::from_secs(1);
-/// The most bytes a held frame keeps before it is shown anyway:
-/// alacritty's bound.
-pub const FRAME_LIMIT: usize = 2 << 20;
 /// The most output one turn of a pane gives its parser: a read's worth. A
 /// held frame or a program's last output, which can be more, is read a
 /// slice a turn, the rest waiting as after a budget stop (`Pane::unread`).
 pub const SLICE: usize = 16 << 10;
 
-/// Why input is not queued, or a pane cannot be made.
+/// Why a pane cannot be made.
 #[derive(Debug)]
 pub enum Error {
-    /// The queue is full, or refusing until its terminal takes some.
-    InputFull,
-    /// A piece of this many bytes, more than the queue ever holds.
-    TooLong(usize),
     /// No terminal of this size.
     Terminal { size: Size, source: fux_vt::Error },
 }
@@ -47,13 +31,6 @@ pub enum Error {
 impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Error::InputFull => f.write_str(
-                "the pane's input queue is full; nothing more is queued until its terminal takes some",
-            ),
-            Error::TooLong(len) => write!(
-                f,
-                "{len} bytes of input, more than the {INPUT_BYTES} a pane's input queue holds"
-            ),
             Error::Terminal { size, source } => {
                 write!(f, "a {}x{} terminal: {source}", size.cols(), size.rows())
             }
@@ -64,33 +41,14 @@ impl std::fmt::Display for Error {
 impl std::error::Error for Error {}
 
 /// Input and terminal replies waiting for the pane's program to read them,
-/// end to end, to be written together: at most [`INPUT_BYTES`] of them,
-/// however many pieces they came in.
+/// end to end, to be written together, however many pieces they came in.
 #[derive(Default)]
 pub struct InputQueue {
     bytes: ByteQueue,
     touched: bool,
-    /// Whether it refuses, and its run of input lost, which goes on only
-    /// while it refuses.
-    refusing: Refusing,
-    /// Its run of replies dropped (`Run`): over at a read that drops none
-    /// while it takes input, or as it stops refusing.
-    replies: Run,
 }
 
-/// Whether the queue refuses: input was refused, and the program has not
-/// read since, so everything is refused and none arrives with a hole
-/// before it; with its run of input lost (`Run`), begun by input refused,
-/// not by a reply refused, and over as it stops refusing.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-enum Refusing {
-    #[default]
-    No,
-    Yes(Run),
-}
-
-/// A pane's runs of losses but input's and replies' (`InputQueue`), each
-/// over at a success of its kind: a copy made, a picture placed whole, a
+/// A pane's runs of losses, each over at a success of its kind: a copy made, a picture placed whole, a
 /// read that refused no memory.
 #[derive(Clone, Copy, Debug, Default)]
 struct LossRuns {
@@ -101,11 +59,10 @@ struct LossRuns {
 }
 
 /// What a read of output did over its calls of the parser: whether it
-/// parsed any, dropped a reply, or was refused memory.
+/// parsed any, or was refused memory.
 #[derive(Clone, Copy, Debug, Default)]
 struct Reading {
     parsed: bool,
-    dropped: bool,
     refused: bool,
     /// A frame was read whole: the read ends where the next frame begins,
     /// or where nothing is left, what follows the frame joining it.
@@ -139,64 +96,24 @@ impl Run {
 }
 
 impl InputQueue {
-    /// Queues `bytes` as a piece, or refuses them whole if the queue is
-    /// full, and then everything until its terminal takes some. Only the
-    /// pane queues, which counts what is refused (`Pane::push`).
-    fn push(&mut self, bytes: impl AsRef<[u8]>) -> Result<(), Error> {
+    /// Queues `bytes` as a piece. Only the pane queues (`Pane::push`).
+    fn push(&mut self, bytes: impl AsRef<[u8]>) {
         let bytes = bytes.as_ref();
-        self.fits(bytes.len())?;
         self.bytes.push(bytes);
         self.touched |= !bytes.is_empty();
-        Ok(())
     }
-    /// Queues what `write` appends to its vector as a piece, in place, or
-    /// takes it back and refuses it whole, as `push` does.
-    fn push_with(&mut self, write: impl FnOnce(&mut Vec<u8>)) -> Result<(), Error> {
-        let room = self.room();
+    /// Queues what `write` appends to its vector as a piece, in place.
+    fn push_with(&mut self, write: impl FnOnce(&mut Vec<u8>)) {
         let len = self.bytes.push_with(|out| {
             let start = out.len();
             write(out);
-            let len = out.len().saturating_sub(start);
-            if len > room {
-                out.truncate(start);
-            }
-            len
+            out.len().saturating_sub(start)
         });
-        self.refuse(len, room)?;
         self.touched |= len > 0;
-        Ok(())
     }
     /// How many bytes it holds, not yet written to the program.
     pub fn len(&self) -> usize {
         self.bytes.len()
-    }
-    /// Whether `len` bytes more fit now: if not, they are refused, and so
-    /// is everything after them until its terminal takes some, as `push`
-    /// refuses.
-    fn fits(&mut self, len: usize) -> Result<(), Error> {
-        self.refuse(len, self.room())
-    }
-    /// Refuses a piece of `len` bytes past `room`, a drop, and input from
-    /// then on till its terminal takes some; one more than the queue ever
-    /// holds, which no wait makes room for, alone, to its sender only.
-    fn refuse(&mut self, len: usize, room: usize) -> Result<(), Error> {
-        if len <= room {
-            return Ok(());
-        }
-        if len > INPUT_BYTES {
-            return Err(Error::TooLong(len));
-        }
-        if self.refusing == Refusing::No {
-            self.refusing = Refusing::Yes(Run::Over);
-        }
-        Err(Error::InputFull)
-    }
-    /// How many bytes more it takes now.
-    pub fn room(&self) -> usize {
-        match self.refusing {
-            Refusing::Yes(_) => 0,
-            Refusing::No => INPUT_BYTES.saturating_sub(self.len()),
-        }
     }
     pub fn is_empty(&self) -> bool {
         self.bytes.is_empty()
@@ -207,17 +124,13 @@ impl InputQueue {
     }
     /// `n` bytes of the front were written: its terminal took them.
     fn advance(&mut self, n: usize) {
-        if n > 0 && std::mem::take(&mut self.refusing) != Refusing::No {
-            self.replies = Run::Over;
-        }
         self.bytes.take(n);
     }
     /// Lets everything queued go, as its program ends unread: how many
-    /// bytes, which its ender tells. Its run of refusals ends with it.
+    /// bytes, which its ender tells.
     fn discard(&mut self) -> usize {
         let queued = self.len();
         self.advance(queued);
-        (self.refusing, self.replies) = (Refusing::No, Run::Over);
         queued
     }
     /// Everything queued, for tests and the harnesses.
@@ -263,32 +176,26 @@ pub const OPTIONS: fux_vt::Options = fux_vt::Options::new()
     .with(Feature::Palette)
     .with_identity(Some(IDENTITY));
 
-/// The most bytes of replies one read of a program's output queues: the
-/// rest are dropped, and told as a reply dropped for a full queue is.
-pub const REPLIES_MAX: usize = 4096;
-/// The most titles a pane's program can push (`CSI 22 t`): xterm's bound.
+/// The most titles a pane's program can push (`CSI 22 t`): xterm's stack.
 pub const TITLE_STACK: usize = 10;
-/// The most characters of a title kept.
-pub const TITLE_MAX: usize = 256;
-/// The most characters of a notification kept.
-pub const NOTIFICATION_MAX: usize = 500;
 
 /// Text a program sent (a title, a notification), as it is kept: without
-/// control characters, at most `MAX` characters, and `cut` if it held more
-/// (or was longer than fux-vt keeps of a string), the rest dropped.
+/// control characters, and `cut` if it was longer than fux-vt keeps of a
+/// string.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct Said<const MAX: usize> {
+pub struct Said {
     text: String,
     cut: bool,
 }
 
-impl<const MAX: usize> Said<MAX> {
+impl Said {
     fn new(sent: fux_vt::Kept<'_>) -> Self {
         let text = String::from_utf8_lossy(sent.bytes);
-        let mut chars = text.chars().filter(|c| !c.is_control());
-        let text = chars.by_ref().take(MAX).collect();
-        let cut = sent.cut || chars.next().is_some();
-        Self { text, cut }
+        let text = text.chars().filter(|c| !c.is_control()).collect();
+        Self {
+            text,
+            cut: sent.cut,
+        }
     }
     pub fn as_str(&self) -> &str {
         &self.text
@@ -301,10 +208,6 @@ impl<const MAX: usize> Said<MAX> {
             cut,
         })
     }
-    #[cfg(test)]
-    pub(crate) fn retained_bytes(&self) -> usize {
-        self.text.capacity()
-    }
     /// Whether the program sent more than was kept.
     pub fn cut(&self) -> bool {
         self.cut
@@ -316,19 +219,19 @@ impl<const MAX: usize> Said<MAX> {
 /// past them forgets the oldest.
 #[derive(Default)]
 pub struct Title {
-    now: Said<TITLE_MAX>,
-    pushed: VecDeque<Said<TITLE_MAX>>,
+    now: Said,
+    pushed: VecDeque<Said>,
 }
 
 impl Title {
     pub fn as_str(&self) -> &str {
         self.now.as_str()
     }
-    pub fn said(&self) -> &Said<TITLE_MAX> {
+    pub fn said(&self) -> &Said {
         &self.now
     }
     /// Sets it to `title`; whether it changed.
-    fn set(&mut self, title: Said<TITLE_MAX>) -> bool {
+    fn set(&mut self, title: Said) -> bool {
         let changed = title != self.now;
         self.now = title;
         changed
@@ -348,12 +251,8 @@ impl Title {
 
 /// Replies (DSR, DA) and events the parser produces while reading output.
 struct Sink<'a, 't> {
-    /// The replies to one read, queued together after it: at most
-    /// `REPLIES_MAX` bytes, `kept` of them; how many were dropped past
-    /// them.
+    /// The replies to one read, queued together after it.
     replies: Vec<u8>,
-    kept: u64,
-    dropped: u64,
     /// Where its bells, notifications, titles and commands' ends go: the
     /// session's journal, in order.
     tell: &'a mut Teller<'t>,
@@ -373,20 +272,6 @@ struct Sink<'a, 't> {
 }
 
 impl Sink<'_, '_> {
-    /// Keeps `bytes` among the replies if they fit `REPLIES_MAX`, and
-    /// whether they did; else one is dropped.
-    fn keep(&mut self, bytes: &[u8]) -> bool {
-        let fits = self.replies.len().saturating_add(bytes.len()) <= REPLIES_MAX;
-        match fits {
-            true => {
-                self.replies.extend_from_slice(bytes);
-                self.kept = self.kept.saturating_add(1);
-            }
-            false => self.dropped = self.dropped.saturating_add(1),
-        }
-        fits
-    }
-
     /// The title changed: the journal is told.
     fn titled(&mut self) {
         let title = self.title.said().clone();
@@ -396,7 +281,7 @@ impl Sink<'_, '_> {
 
 impl fux_vt::Sink for Sink<'_, '_> {
     fn reply(&mut self, bytes: &[u8]) {
-        self.keep(bytes);
+        self.replies.extend_from_slice(bytes);
     }
     /// A colour query (OSC 10, 11) is answered if the colour is known.
     fn event(&mut self, event: Event<'_>) {
@@ -456,9 +341,8 @@ impl fux_vt::Sink for Sink<'_, '_> {
         let title = matches!(second, None | Some([] | [0] | [2]));
         match (intermediates, action, first) {
             (b"?", b'n', Some([996])) if second.is_none() => {
-                if let Some(scheme) = self.colours.scheme
-                    && self.keep(scheme.report())
-                {
+                if let Some(scheme) = self.colours.scheme {
+                    self.replies.extend_from_slice(scheme.report());
                     self.told = Some(scheme);
                 }
             }
@@ -543,15 +427,6 @@ pub struct Launch {
     pub env: fux_wire::command::EnvPatch,
 }
 
-impl Launch {
-    pub(crate) fn bytes(&self) -> usize {
-        std::mem::size_of::<Self>()
-            .saturating_add(self.argv.heap_bytes())
-            .saturating_add(self.env.heap_bytes())
-            .saturating_add(self.cwd.capacity())
-    }
-}
-
 impl Runs {
     /// The concrete inputs saved for this pane, whichever role it has.
     pub fn launch(&self) -> &Launch {
@@ -575,7 +450,7 @@ fn basename(program: &str) -> &str {
 pub struct Alerts {
     /// Bells and notifications together, as a pane's version counts them.
     pub rung: u64,
-    pub last: Option<Said<NOTIFICATION_MAX>>,
+    pub last: Option<Said>,
 }
 
 /// What fux let go of a pane's program's, of each kind, counted: since
@@ -583,14 +458,6 @@ pub struct Alerts {
 /// showing it was told (`Pane::untold`).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Losses {
-    /// Pieces of input (keys, a paste, `send-keys`) its full queue
-    /// refused.
-    pub input: u64,
-    /// Replies to its queries, and in-band resize reports, dropped: past
-    /// a read's `REPLIES_MAX`, or for a full queue. A colour-scheme report
-    /// sent unasked (mode 2031) and refused is sent again (`Pane::offer`),
-    /// not lost.
-    pub replies: u64,
     /// Its copies (OSC 52) that copied nothing, by why (`Uncopied`).
     pub copies_cut: u64,
     pub copies_not_text: u64,
@@ -607,16 +474,12 @@ impl Losses {
     fn add(&mut self, more: Losses) {
         // Every kind named: one more does not compile till it is added.
         let Losses {
-            input,
-            replies,
             copies_cut,
             copies_not_text,
             pictures,
             memory,
         } = more;
         let add = |a: &mut u64, b| *a = a.saturating_add(b);
-        add(&mut self.input, input);
-        add(&mut self.replies, replies);
         add(&mut self.copies_cut, copies_cut);
         add(&mut self.copies_not_text, copies_not_text);
         add(&mut self.pictures, pictures);
@@ -624,20 +487,13 @@ impl Losses {
     }
 
     /// What a notice says of them, of pane `id`: for each kind it lost
-    /// any of, what, how many, and why (`%1: input dropped (2): …`).
+    /// any of, what, how many, and why (`%1: memory refused (2): …`).
     pub fn told(self, id: PaneId, runs: bool) -> Vec<String> {
-        let replies = format!(
-            "one read of its output asked for more than {REPLIES_MAX} bytes of them, or its \
-             input queue was full"
-        );
-        let input = "its input queue was full, and takes nothing until its program reads";
         let (cut, not_text) = (Uncopied::Cut, Uncopied::NotText);
         let (cut, not_text) = (format!("each {cut}"), format!("each {not_text}"));
         let pictures = "`fux help json` says why one may not be";
         let (copies, memory) = ("copies (OSC 52) not made", "each lost only what it was for");
         let Losses {
-            input: n,
-            replies: r,
             copies_cut: c,
             copies_not_text: t,
             pictures: p,
@@ -645,14 +501,7 @@ impl Losses {
         } = self;
         // Each kind: how many, what, why, and what ends its run, till which
         // more are counted, not told (`Run`).
-        let each: [(u64, &str, &str, &str); 6] = [
-            (n, "input dropped", input, "its program reads"),
-            (
-                r,
-                "replies to its program dropped",
-                &replies,
-                "a read of its output drops none",
-            ),
+        let each: [(u64, &str, &str, &str); 4] = [
             (c, copies, &cut, "a copy is made"),
             (t, copies, &not_text, "a copy is made"),
             (
@@ -749,6 +598,9 @@ pub struct Pane {
     /// How its program exited, from when fux hears of it till that is
     /// told, while what it wrote is still being read (`Session::exited`).
     pub exiting: Option<Ended>,
+    /// What its program left on its terminal as it ended is still being
+    /// read, a turn at a time (`Session::read_left`).
+    pub draining: bool,
     /// What the program's colour queries are answered with, as the session
     /// finds them before each read of output (`outer`).
     pub colours: Colours,
@@ -890,36 +742,24 @@ impl<'a> PaneMut<'a> {
     pub fn write_input(&mut self) -> bool {
         self.pane.write_input()
     }
-    pub fn push(&mut self, bytes: impl AsRef<[u8]>) -> Result<(), Error> {
-        let result = self.pane.push(bytes);
+    pub fn push(&mut self, bytes: impl AsRef<[u8]>) {
+        self.pane.push(bytes);
         self.queued();
-        result
     }
-    pub fn push_with(&mut self, write: impl FnOnce(&Screen, &mut Vec<u8>)) -> Result<(), Error> {
-        let result = self.pane.push_with(write);
+    pub fn push_with(&mut self, write: impl FnOnce(&Screen, &mut Vec<u8>)) {
+        self.pane.push_with(write);
         self.queued();
-        result
-    }
-    pub fn fits(&mut self, len: usize) -> Result<(), Error> {
-        self.pane.fits(len)
     }
     /// Its program is sent `held`'s mouse report, `report`; the button
     /// `send-mouse press` holds is `held` once it is queued.
-    pub fn push_mouse(
-        &mut self,
-        report: Vec<u8>,
-        held: Option<fux_vt::keys::mouse::MouseButton>,
-    ) -> Result<(), Error> {
-        self.push(report)?;
+    pub fn push_mouse(&mut self, report: Vec<u8>, held: Option<fux_vt::keys::mouse::MouseButton>) {
+        self.push(report);
         self.pane.mouse_held = held;
-        Ok(())
     }
-    /// Its program is told the scheme is `scheme`, if the queue takes the
-    /// report; one refused is sent again (`Session::tell_schemes`).
+    /// Its program is told the scheme is `scheme`.
     pub fn offer_scheme(&mut self, scheme: Scheme) {
-        if self.pane.offer(scheme.report()) {
-            self.pane.scheme_told = Some(scheme);
-        }
+        self.pane.push(scheme.report());
+        self.pane.scheme_told = Some(scheme);
         self.queued();
     }
     #[must_use]
@@ -980,9 +820,10 @@ impl<'a> PaneMut<'a> {
             }
         }
     }
-    /// Its program left more on its terminal than is read.
-    pub fn left_cut(&mut self) {
-        self.pane.left.output = Output::Cut;
+    /// Whether more of what its program left on its terminal is to be read
+    /// (`Session::read_left`).
+    pub fn drain(&mut self, more: bool) {
+        self.pane.draining = more;
     }
     pub fn clear_history(&mut self) {
         self.pane.clear_history();
@@ -1028,8 +869,6 @@ impl std::ops::Deref for PaneMut<'_> {
 /// and in the notice of its end.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Left {
-    /// What it wrote to its terminal.
-    pub output: Output,
     /// Bytes of input queued for it and not yet written to its terminal,
     /// let go (`InputQueue::discard`): what was written and not read is
     /// not known.
@@ -1037,37 +876,22 @@ pub struct Left {
 }
 
 impl Left {
-    /// What an event says of it: `truncated` (`true`) if it left more on
-    /// its terminal than is read (`Output::Cut`), and `input_unread`, the
-    /// bytes of input queued for it not yet written to its terminal, if
-    /// any.
+    /// What an event says of it: `input_unread`, the bytes of input queued
+    /// for it not yet written to its terminal, if any.
     pub fn fields(self) -> impl Iterator<Item = (&'static str, fux_wire::json::Json)> {
-        use fux_wire::json::Json;
-        let cut = match self.output {
-            Output::Read => None,
-            Output::Cut => Some(("truncated", Json::Bool(true))),
-        };
-        let input = (self.input > 0).then(|| ("input_unread", Json::count(self.input)));
-        cut.into_iter().chain(input)
+        let input = self.input;
+        (input > 0)
+            .then(|| ("input_unread", fux_wire::json::Json::count(input)))
+            .into_iter()
     }
 
-    /// What a notice says of it, after the end's own words, of a program
-    /// `who`: nothing, if it left neither.
-    pub fn told(self, who: &str) -> String {
-        let mib = crate::session::LEFT_MIB;
-        let mut told = match self.output {
-            Output::Read => String::new(),
-            Output::Cut => {
-                format!("; {who} left more than {mib} MiB on its terminal: the rest was not read")
-            }
-        };
-        if self.input > 0 {
-            told.push_str(&format!(
-                "; {} bytes of input queued for it were never written to it",
-                self.input
-            ));
+    /// What a notice says of it, after the end's own words: nothing, if it
+    /// left no input unwritten.
+    pub fn told(self) -> String {
+        match self.input {
+            0 => String::new(),
+            input => format!("; {input} bytes of input queued for it were never written to it"),
         }
-        told
     }
 }
 
@@ -1077,15 +901,6 @@ impl Left {
 pub struct End {
     pub ended: Ended,
     pub left: Left,
-}
-
-/// What a program left on its terminal as it ended: read whole, or cut at
-/// the most that is read (`Session::read_left`), the rest not read.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum Output {
-    #[default]
-    Read,
-    Cut,
 }
 
 /// What is said of a pane where no shell command was ever marked.
@@ -1135,6 +950,7 @@ impl Pane {
             resize_to: None,
             slice_left: SLICE,
             exiting: None,
+            draining: false,
             colours: Colours::default(),
             scheme_told: None,
             bell: false,
@@ -1163,8 +979,7 @@ impl Pane {
     /// parser call's budget) is painted as the client last saw the pane
     /// till it is whole (`Pane::mid_frame`). A
     /// frame is read anyway once [`FRAME_TIMEOUT`] passes
-    /// ([`Pane::release_frame`]) or it grows past [`FRAME_LIMIT`]; after
-    /// that the program's output is read as it comes until its next BSU.
+    /// ([`Pane::release_frame`]); after that the program's output is read as it comes until its next BSU.
     /// Each call of the parser does at most a stated amount of work; at it,
     /// the rest of the output waits, unread, for the pane's next turn
     /// ([`Pane::read_unread`]).
@@ -1191,7 +1006,7 @@ impl Pane {
     /// waits: since it began to wait, so that it is due on the server's
     /// next turn, whenever that reads the clock.
     pub fn unread_due(&self) -> Option<Instant> {
-        self.has_unread().then_some(self.unread.since)
+        (self.has_unread() || self.draining).then_some(self.unread.since)
     }
 
     /// Whether the screen is part way through a frame drawn in
@@ -1268,12 +1083,7 @@ impl Pane {
             if let Some((held, _, scan)) = &mut self.frame {
                 let read = held.len();
                 held.extend_from_slice(rest);
-                let Some(end) = scan.end(held) else {
-                    if held.len() > FRAME_LIMIT {
-                        self.release_frame(now, tell);
-                    }
-                    return None;
-                };
+                let end = scan.end(held)?;
                 let frame = std::mem::take(held);
                 self.frame = None;
                 rest = rest.get(end.saturating_sub(read)..).unwrap_or_default();
@@ -1342,8 +1152,6 @@ impl Pane {
         let refused = self.parser.refused();
         let mut sink = Sink {
             replies: Vec::new(),
-            kept: 0,
-            dropped: 0,
             pictures: Vec::new(),
             tell,
             title: &mut self.title,
@@ -1377,20 +1185,14 @@ impl Pane {
         if begun.is_none() && slice.len() < bytes.len() {
             begun = Some((read, fux_vt::Stop::Budget));
         }
-        // Queued as `push` queues; a full queue drops them, as replies past
-        // the read's bound are.
-        let full = !sink.replies.is_empty() && self.input.push(&sink.replies).is_err();
-        let replies = match full {
-            true => sink.dropped.saturating_add(sink.kept),
-            false => sink.dropped,
-        };
-        if let Some(scheme) = sink.told.filter(|_| !full) {
+        if !sink.replies.is_empty() {
+            self.input.push(&sink.replies);
+        }
+        if let Some(scheme) = sink.told {
             self.scheme_told = Some(scheme);
         }
         let pictures = sink.pictures;
         self.reading.parsed |= !bytes.is_empty();
-        self.reading.dropped |= replies > 0;
-        self.lose_replies(replies);
         // Each picture as it ended, in order: one placed whole ends a run
         // of pictures lost.
         for placed in pictures {
@@ -1480,13 +1282,10 @@ impl Pane {
         }
         // In-band resize: the report follows the PTY's new size, never
         // precedes it (references/modern/mode_2048_in_band_resize.md). A
-        // program that does not read its input loses it, counted; one
-        // that takes none is sent none.
+        // program that takes no input is sent none.
         let takes = crate::session::refuses_input(self).is_none();
-        if let Some(report) = self.parser.resize_report().filter(|_| takes)
-            && self.input.push(report).is_err()
-        {
-            self.lose_replies(1);
+        if let Some(report) = self.parser.resize_report().filter(|_| takes) {
+            self.input.push(report);
         }
     }
 
@@ -1529,18 +1328,11 @@ impl Pane {
             }
         };
         let Losses {
-            input,
-            replies,
             copies_cut,
             copies_not_text,
             pictures,
             memory,
         } = &mut losses;
-        // Input is refused only while the queue refuses, its run with it.
-        if let Refusing::Yes(run) = &mut self.input.refusing {
-            gate(input, run);
-        }
-        gate(replies, &mut self.input.replies);
         let runs = &mut self.loss_runs;
         gate(copies_cut, &mut runs.copies_cut);
         gate(copies_not_text, &mut runs.copies_not_text);
@@ -1568,9 +1360,8 @@ impl Pane {
     /// turns it took (a frame begun, a budget spent), and only then does
     /// what it lost end runs. A frame read whole ends a read where the
     /// next frame begins, so frames drawn back to back are read one by
-    /// one, what follows each joining it. One that read output and
-    /// dropped no reply while the queue takes input ends a run of
-    /// replies; one that refused no memory, a run of refusals.
+    /// one, what follows each joining it. One that refused no memory ends
+    /// a run of refusals.
     fn read_done(&mut self) {
         self.slice_left = SLICE;
         // Output held back (a frame) or left (a budget spent) is still
@@ -1584,20 +1375,9 @@ impl Pane {
     /// nothing is held back or left.
     fn judge_read(&mut self) {
         let read = std::mem::take(&mut self.reading);
-        if read.parsed && !read.dropped && self.input.refusing == Refusing::No {
-            self.input.replies = Run::Over;
-        }
         if read.parsed && !read.refused {
             self.loss_runs.memory = Run::Over;
         }
-    }
-
-    /// `n` replies were dropped, in a run of them.
-    fn lose_replies(&mut self, n: u64) {
-        self.lose(Losses {
-            replies: n,
-            ..Losses::default()
-        });
     }
 
     /// Whether it let go of anything not yet told.
@@ -1608,10 +1388,6 @@ impl Pane {
     /// What it let go of and has not told, which it then has: the rest of
     /// each run of drops going on is not told (`Run`).
     fn take_untold(&mut self) -> Losses {
-        if let Refusing::Yes(run) = &mut self.input.refusing {
-            run.told();
-        }
-        self.input.replies.told();
         // Every run named: one more does not compile till it is told.
         let LossRuns {
             copies_cut,
@@ -1625,48 +1401,15 @@ impl Pane {
         std::mem::take(&mut self.untold)
     }
 
-    /// Queues `bytes` of input for its program, as `InputQueue::push`
-    /// does; a piece refused is lost.
-    fn push(&mut self, bytes: impl AsRef<[u8]>) -> Result<(), Error> {
-        let pushed = self.input.push(bytes);
-        self.refused(pushed)
+    /// Queues `bytes` of input for its program.
+    fn push(&mut self, bytes: impl AsRef<[u8]>) {
+        self.input.push(bytes);
     }
 
-    /// Queues for its program what `write` makes for its screen, as
-    /// `InputQueue::push_with` does; a piece refused is lost.
-    fn push_with(&mut self, write: impl FnOnce(&Screen, &mut Vec<u8>)) -> Result<(), Error> {
+    /// Queues for its program what `write` makes for its screen.
+    fn push_with(&mut self, write: impl FnOnce(&Screen, &mut Vec<u8>)) {
         let screen = self.parser.screen();
-        let pushed = self.input.push_with(|out| write(screen, out));
-        self.refused(pushed)
-    }
-
-    /// Whether `len` bytes of input fit now, as `InputQueue::fits` says;
-    /// a piece refused is lost.
-    fn fits(&mut self, len: usize) -> Result<(), Error> {
-        let fits = self.input.fits(len);
-        self.refused(fits)
-    }
-
-    /// `pushed`, a piece of input queued or refused: one the full queue
-    /// refused is lost.
-    fn refused(&mut self, pushed: Result<(), Error>) -> Result<(), Error> {
-        if let Err(Error::InputFull) = pushed {
-            self.lose(Losses {
-                input: 1,
-                ..Losses::default()
-            });
-        }
-        pushed
-    }
-
-    /// Queues `report`, which fux sends its program again till it is
-    /// queued (its colour scheme, `Session::tell_schemes`): whether it
-    /// was. One refused is late, not lost.
-    fn offer(&mut self, report: impl AsRef<[u8]>) -> bool {
-        // One that does not fit waits, leaving the queue to take input: it
-        // is sent again, so no hole is left before what comes after it.
-        let report = report.as_ref();
-        report.len() <= self.input.room() && self.input.push(report).is_ok()
+        self.input.push_with(|out| write(screen, out));
     }
 
     /// Its program's queries are answered with `colours` and `palette`
@@ -1786,7 +1529,7 @@ impl Pane {
         let input = self.input.discard();
         let over = match self.process.exit_status() {
             Some(_) => Left::default(),
-            None => Left { input, ..self.left },
+            None => Left { input },
         };
         tell.tell(Told::Respawned(over));
         // Every field is explicit so additions require a respawn decision.
@@ -1812,6 +1555,7 @@ impl Pane {
             resize_to: fresh.resize_to,
             slice_left: fresh.slice_left,
             exiting: fresh.exiting,
+            draining: fresh.draining,
             scheme_told: fresh.scheme_told,
             mouse_held: fresh.mouse_held,
             left: fresh.left,
@@ -1903,7 +1647,7 @@ impl Pane {
         std::mem::replace(&mut self.process, process)
     }
 
-    pub fn title(&self) -> &Said<TITLE_MAX> {
+    pub fn title(&self) -> &Said {
         self.title.said()
     }
 
@@ -2000,38 +1744,6 @@ pub(crate) mod tests {
         Ok(())
     }
 
-    /// Once input is refused, nothing more is queued until the program
-    /// reads, as the notice says: accepting a later key would deliver it
-    /// with a hole where the refused input was.
-    #[test]
-    fn after_a_refusal_nothing_is_queued_until_its_terminal_takes_some() {
-        let mut queue = InputQueue::default();
-        while queue.push(vec![b'p'; MAX_INPUT]).is_ok() {}
-        let refusal = queue.push(vec![b'k']);
-        assert!(
-            matches!(refusal, Err(Error::InputFull)),
-            "a key after a refused paste: {refusal:?}"
-        );
-        assert!(refusal.is_err_and(|e| e.to_string().contains("input queue is full")));
-        // Some of the front written, its terminal took it: input is taken
-        // again.
-        queue.advance(1);
-        assert!(queue.push(vec![b'k']).is_ok());
-    }
-
-    /// A piece more than the queue ever holds is refused alone, told only
-    /// to its sender: an empty queue, which no write empties more, still
-    /// takes what comes after.
-    #[test]
-    fn a_piece_past_what_the_queue_holds_is_refused_alone() {
-        let mut queue = InputQueue::default();
-        let refusal = queue.fits(INPUT_BYTES + 1);
-        assert!(matches!(refusal, Err(Error::TooLong(_))), "{refusal:?}");
-        assert!(queue.push(vec![0; INPUT_BYTES + 1]).is_err());
-        assert_eq!(queue.room(), INPUT_BYTES);
-        assert!(queue.push(vec![b'k']).is_ok());
-    }
-
     #[test]
     fn output_answers_queries_and_takes_titles() -> Result<(), Box<dyn std::error::Error>> {
         let mut pane = pane(5, 20, 1 << 10)?;
@@ -2074,36 +1786,6 @@ pub(crate) mod tests {
         pane.output(b"\x1b[?2031h\x1b[?2031$p");
         assert!(pane.screen().mode(Mode::ColorSchemeUpdates));
         assert_eq!(pane.input.drain_all(), b"\x1b[?2031;1$y");
-        Ok(())
-    }
-
-    /// A scheme query answered while its program's input queue is full, or
-    /// past a read's replies, was not told: the scheme it was told stays
-    /// as it was, so the session tells it again (`tell_schemes`).
-    #[test]
-    fn a_scheme_answer_refused_is_not_told() -> Result<(), Box<dyn std::error::Error>> {
-        use crate::outer::{Colours, Scheme};
-        let mut pane = pane(3, 30, 1 << 10)?;
-        pane.colours = Colours {
-            scheme: Some(Scheme::Light),
-            ..Colours::default()
-        };
-        // A read's worth of queries whose answers pass its replies.
-        let queries: Vec<u8> = std::iter::repeat_n(&b"\x1b[6n"[..], REPLIES_MAX / 4)
-            .flatten()
-            .copied()
-            .chain(*b"\x1b[?996n")
-            .collect();
-        pane.output(&queries);
-        assert_eq!(pane.scheme_told, None, "past a read's replies");
-        pane.input.drain_all();
-        pane.input.push(b"x")?;
-        assert!(pane.input.push(vec![0; INPUT_BYTES]).is_err());
-        pane.output(b"\x1b[?996n");
-        assert_eq!(pane.scheme_told, None, "the queue full");
-        pane.input.drain_all();
-        pane.output(b"\x1b[?996n");
-        assert_eq!(pane.scheme_told, Some(Scheme::Light));
         Ok(())
     }
 
@@ -2548,11 +2230,13 @@ pub(crate) mod tests {
             "read as it comes, the mode still set"
         );
         pane.output(b"\x1b[?2026l\x1b[?2026h");
-        let big = vec![b'z'; FRAME_LIMIT];
-        pane.output(&big);
-        assert_eq!(first_row(&pane), "xy", "at the limit, still held");
-        pane.output(b"z");
-        assert!(first_row(&pane).ends_with('z'), "past it, read");
+        pane.output(&vec![b'z'; 3 << 20]);
+        assert_eq!(
+            first_row(&pane),
+            "xy",
+            "however long, held till its timeout"
+        );
+        pane.release_frame();
         assert_eq!(pane.frame_deadline(), None);
         // Read a slice a turn, as the server does before it reads more.
         while pane.has_unread() {
@@ -2610,118 +2294,6 @@ pub(crate) mod tests {
         Ok(())
     }
 
-    /// Pieces the full queue refuses are counted, and told with how many
-    /// once for the run of refusals, which ends as the program reads; and
-    /// again after.
-    #[test]
-    fn a_refused_piece_is_told_once_a_run() -> Result<(), Box<dyn std::error::Error>> {
-        let mut pane = pane(3, 20, 1 << 10)?;
-        pane.push(vec![0; INPUT_BYTES])?;
-        assert_eq!(pane.take_untold(), Losses::default());
-        assert!(pane.push(b"\x1b[I").is_err());
-        assert!(pane.push(b"x").is_err());
-        assert_eq!(pane.take_untold().input, 2);
-        assert!(pane.fits(1).is_err());
-        assert!(!pane.loses(), "the same run");
-        pane.input.advance(1);
-        assert!(pane.push(vec![0; 2]).is_err());
-        assert_eq!(pane.take_untold().input, 1, "a run after the program read");
-        assert_eq!(pane.lost().input, 4, "every piece counted");
-        Ok(())
-    }
-
-    /// A read is judged whole, over every call of the parser it takes: a
-    /// frame's BSU, read alone first, ends no run, so frames that each
-    /// drop replies are one run, told once.
-    #[test]
-    fn frames_dropping_replies_are_one_run() -> Result<(), Box<dyn std::error::Error>> {
-        let mut pane = pane(3, 20, 1 << 10)?;
-        let queries = std::iter::repeat_n(&b"\x1b[6n"[..], REPLIES_MAX)
-            .flatten()
-            .copied();
-        let frame: Vec<u8> = (b"\x1b[?2026h".iter().copied())
-            .chain(queries)
-            .chain(b"\x1b[?2026l".iter().copied())
-            .collect();
-        pane.output(&frame);
-        assert!(pane.take_untold().replies > 0);
-        pane.input.drain_all();
-        pane.output(&frame);
-        assert!(!pane.loses(), "the same run");
-        // A frame past a parser call's budget, read over turns, is one read.
-        // Its drops come first, in a call the budget stops, and a clean
-        // call ends it.
-        let mut long = b"\x1b[?2026h".to_vec();
-        long.extend(std::iter::repeat_n(&b"\x1b[6n"[..], REPLIES_MAX).flatten());
-        long.extend(spends_the_budget(3, 20));
-        long.extend_from_slice(b"\x1b[?2026l");
-        for _ in 0..2 {
-            pane.input.drain_all();
-            pane.output(&long);
-            while pane.has_unread() {
-                pane.read_unread();
-            }
-        }
-        assert!(!pane.loses(), "still the same run");
-        Ok(())
-    }
-
-    /// A frame read whole ends a read, though the next frame begins in
-    /// the same output: a clean frame between two that drop replies ends
-    /// the run, and the second is told.
-    #[test]
-    fn a_clean_frame_between_ends_the_run() -> Result<(), Box<dyn std::error::Error>> {
-        let mut pane = pane(3, 20, 1 << 10)?;
-        let queries: Vec<u8> = std::iter::repeat_n(&b"\x1b[6n"[..], REPLIES_MAX / 4)
-            .flatten()
-            .copied()
-            .collect();
-        let (bsu, esu) = (&b"\x1b[?2026h"[..], &b"\x1b[?2026l"[..]);
-        pane.output(&[bsu, &queries, esu, bsu].concat());
-        assert!(pane.take_untold().replies > 0);
-        pane.input.drain_all();
-        pane.output(&[&b"hello"[..], esu, bsu].concat());
-        pane.output(&[&queries[..], esu, bsu].concat());
-        assert!(
-            pane.take_untold().replies > 0,
-            "a run after the clean frame"
-        );
-        // What follows a frame joins its read: frames that each drop
-        // replies and end with a little output after them are one run.
-        pane.output(&[&b"x"[..], esu].concat());
-        pane.input.drain_all();
-        let tailed = [bsu, &queries, esu, b"\x1b[?25h"].concat();
-        pane.output(&tailed);
-        let told = pane.take_untold().replies;
-        pane.input.drain_all();
-        pane.output(&tailed);
-        assert!(told > 0 && !pane.loses(), "one run, told once");
-        Ok(())
-    }
-
-    /// A reply the full queue refuses starts a run of replies, not of
-    /// input: the input refused after it is told. Both runs go on while
-    /// the queue refuses, reads with no query and resize reports alike.
-    #[test]
-    fn a_reply_refused_starts_no_run_of_input() -> Result<(), Box<dyn std::error::Error>> {
-        let mut pane = pane(3, 20, 1 << 10)?;
-        pane.output(b"\x1b[?2048h");
-        let room = pane.input.room();
-        pane.push(vec![0; room.saturating_sub(3)])?;
-        pane.output(b"\x1b[6n");
-        assert_eq!(pane.take_untold().replies, 1);
-        assert!(pane.push(b"x").is_err());
-        assert_eq!(pane.take_untold().input, 1, "input after a reply");
-        pane.output(b"no query");
-        pane.output(b"\x1b[6n");
-        pane.resize(size(4, 20));
-        pane.resize(size(5, 20));
-        assert!(pane.push(b"x").is_err());
-        assert_eq!(pane.take_untold(), Losses::default(), "the same runs");
-        assert_eq!((pane.lost().replies, pane.lost().input), (4, 2));
-        Ok(())
-    }
-
     /// Every kind of loss is told once a run, which a success of its kind
     /// ends: pictures lost, by a picture placed whole; copies refused, by a
     /// copy made.
@@ -2776,112 +2348,26 @@ pub(crate) mod tests {
         Ok(())
     }
 
-    /// A resize report the full queue refuses starts a run of replies:
-    /// the next one in it is counted, not told again.
-    #[test]
-    fn resize_reports_refused_are_told_once_a_run() -> Result<(), Box<dyn std::error::Error>> {
-        let mut pane = pane(3, 20, 1 << 10)?;
-        pane.output(b"\x1b[?2048h");
-        let room = pane.input.room();
-        pane.push(vec![0; room])?;
-        pane.resize(size(4, 20));
-        assert_eq!(pane.take_untold().replies, 1);
-        pane.resize(size(5, 20));
-        assert!(!pane.loses(), "the same run");
-        assert_eq!(pane.lost().replies, 2);
-        // The program reads a little: the run is over, and the next
-        // report the queue has no room for is told.
-        pane.input.advance(1);
-        pane.resize(size(6, 20));
-        assert_eq!(
-            pane.take_untold().replies,
-            1,
-            "a run after the program read"
-        );
-        Ok(())
-    }
-
-    /// Replies past what one read queues are dropped, and that is told:
-    /// once for reads that drop them one after another, and again for a
-    /// later drop after a read that dropped none. An untold notice survives
-    /// the clean read that ends its loss run.
-    #[test]
-    fn replies_past_a_reads_bound_are_told_dropped() -> Result<(), Box<dyn std::error::Error>> {
-        let mut pane = pane(3, 20, 1 << 10)?;
-        pane.output(b"\x1b[6n");
-        assert!(!pane.loses());
-        let queries: Vec<u8> = std::iter::repeat_n(&b"\x1b[6n"[..], REPLIES_MAX)
-            .flatten()
-            .copied()
-            .collect();
-        pane.output(&queries);
-        // Each reply is `CSI 1 ; 1 R`, six bytes: the rest past the bound.
-        let dropped = (REPLIES_MAX - REPLIES_MAX / 6) as u64;
-        assert_eq!(pane.take_untold().replies, dropped);
-        pane.input.drain_all();
-        pane.read_unread();
-        pane.output(&queries);
-        assert!(!pane.loses(), "the same run of drops");
-        assert_eq!(pane.lost().replies, 2 * dropped);
-        pane.input.drain_all();
-        pane.output(b"\x1b[6n");
-        pane.output(&queries);
-        pane.input.drain_all();
-        pane.output(b"\x1b[6n");
-        assert_eq!(
-            pane.take_untold().replies,
-            dropped,
-            "told after its run ended"
-        );
-        pane.input.drain_all();
-        pane.output(&queries);
-        assert_eq!(pane.take_untold().replies, dropped, "a later run");
-        let room = pane.input.room();
-        pane.push(vec![0; room])?;
-        assert!(pane.push(b"x").is_err());
-        assert_eq!(
-            pane.take_untold().input,
-            1,
-            "another kind of loss is told independently"
-        );
-        Ok(())
-    }
-
-    /// A title or notification longer than a pane keeps is cut there, and
-    /// says so, as is one longer than fux-vt keeps of a string; one that
-    /// fits is whole. The guide states the bounds.
+    /// A title or notification is kept whole; one longer than fux-vt
+    /// keeps of a string is cut, which the pane says.
     #[test]
     fn what_is_cut_of_a_title_is_said() -> Result<(), Box<dyn std::error::Error>> {
         let mut pane = pane(3, 20, 1 << 10)?;
-        let (long, fits) = (
-            std::iter::repeat_n('t', TITLE_MAX + 1).collect::<String>(),
-            std::iter::repeat_n('n', NOTIFICATION_MAX).collect::<String>(),
-        );
-        pane.output(format!("\x1b]2;{long}\x07\x1b]9;{fits}\x07").as_bytes());
-        assert_eq!(
-            pane.title.as_str(),
-            long.get(..TITLE_MAX).unwrap_or_default()
-        );
-        assert!(pane.title.said().cut());
+        let long = std::iter::repeat_n('t', 1000).collect::<String>();
+        pane.output(format!("\x1b]2;{long}\x07\x1b]9;{long}\x07").as_bytes());
+        assert_eq!(pane.title.as_str(), long);
+        assert!(!pane.title.said().cut());
         let notification = pane.alerts.last.as_ref();
         assert_eq!(
             notification.map(|n| (n.as_str(), n.cut())),
-            Some((&*fits, false))
+            Some((&*long, false))
         );
         let huge = std::iter::repeat_n('x', fux_vt::OSC_PAYLOAD_LIMIT).collect::<String>();
         pane.output(format!("\x1b]2;{huge}\x07").as_bytes());
         while pane.has_unread() {
             pane.read_unread();
         }
-        assert_eq!(
-            pane.title.as_str(),
-            huge.get(..TITLE_MAX).unwrap_or_default()
-        );
         assert!(pane.title.said().cut());
-        for bound in [TITLE_MAX, NOTIFICATION_MAX] {
-            let said = format!("first {bound} characters");
-            assert!(include_str!("../../docs/json.md").contains(&said), "{said}");
-        }
         Ok(())
     }
 

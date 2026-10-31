@@ -84,12 +84,12 @@ repeated roles/flags and malformed colours refuse the draft.
 `bar` is `[position [left fields] [right fields] tab-numbers?]`. Position is
 `top`, `bottom` or `off`; the boolean numbers tabs from 1 in workspace order.
 Fields are `workspace`, `tabs`, `pane` and `[slot N]`, in the order
-given, at most 16 in total, each occurring once. There are no substitutions
+given, each occurring once. There are no substitutions
 or executable fields. Native notices, copy hints, prefix/repeat/zoom feedback and
 hidden/cut pane indicators take precedence over the right-side fields.
 
-`bar-slots` replaces this client's slot texts with up to 16 `[N text]` rows:
-N is 0–15, each text at most 256 UTF-8 bytes with no control characters.
+`bar-slots` replaces this client's slot texts with `[N text]` rows:
+N is 0–15, each once, its text with no control characters.
 Omitted slots are empty. Slot text stays inert even when it spells fuxth.
 A program supplies any changing text explicitly; fux adds no clock or polling
 timer and never evaluates a program during paint.
@@ -125,7 +125,9 @@ fux %3 str q text send-keys                       # press q: its version from be
   `json` turns a value into JSON: `fux ls json`, `fux str %3 pane info json`.
 - Every pane has a **version**, one word that names the pane, counts what
   only grows while its program runs (respawns, its screen's revision, bells,
-  shell commands ended, its end) and names the server's run. An action
+  shell commands ended, its end) and names the server's run. A program's
+  exit is told as it is reaped; what its terminal still holds is read on,
+  and an ended pane is frozen once its terminal is drained. An action
   (`new-tab`, `send-keys`, `signal` …) acts at once and answers its pane's
   version from just before it acted; `str V changed wait` waits in V's pane
   until its version differs from V, and answers what changed. fux never
@@ -158,8 +160,8 @@ its options and an example;
 `fux help agents` is the recipe for scripts and agents, its first screen
 enough for most work and `fux help TOPIC` the rest
 ([docs/agents.md](docs/agents.md)), `fux help json` what `json` gives
-([docs/json.md](docs/json.md)), and `fux help limits` the bounds fux
-keeps.
+([docs/json.md](docs/json.md)). fux sets no limits of its own on memory,
+time or steps: `ulimit`, cgroups and `timeout` do.
 
 What a word that acts takes (**options**, a wait, keys) goes
 on the pane before it, in any order: the pane given them becomes a request,
@@ -207,8 +209,8 @@ fux agent-opts 80 24 size str sh program str -c arg str 'echo hello; sleep 1' ar
 ```
 
 A script plays well with the shell. `args` gives the arguments after
-`--file FILE`, `input` the rest of stdin, `read-file` a file's text (UTF-8,
-16 MiB at most), `getenv` a variable (one not set fails `unset_var`, never
+`--file FILE`, `input` the rest of stdin, `read-file` a file's text (UTF-8),
+`getenv` a variable (one not set fails `unset_var`, never
 an empty string); `warn` prints on stderr, and `N exit` ends the program
 with exit status N:
 
@@ -361,9 +363,8 @@ For example, bind `str 't q' str 'me str last step-tab' bind` in your config.
   captured values, then `client payload`; list key actions receive only
   `client payload`. The move/swap choosers capture their source once, and
   every row carries its destination handle. Immutable scalars,
-  typed handles, records, null and bounded lists are admitted; unfinished
-  requests are refused. Source is limited to 64 KiB, the whole screen must
-  fit one 1 MiB frame, and retained screen/job data is limited to 4 MiB.
+  typed handles, records, null and lists are admitted; unfinished
+  requests are refused. The whole screen must fit one 1 MiB frame.
   The receiver checks its own dictionary and each actual payload kind;
   runtime checks cover dynamic fields and require an empty result stack.
   Stale handles refuse rather than selecting a replacement with the same label.
@@ -427,8 +428,7 @@ and the brackets; the arrows, PageUp/PageDown, Home, End, Enter and Esc also wor
 
 Search is literal and case-sensitive over the whole history. `[` and `]`
 find prompts marked with `OSC 133 ; A` (see [Shell marks](#shell-marks)). A copy keeps wide
-characters whole, joins soft-wrapped lines, and trims trailing blanks. One
-copy is at most 262,144 cells.
+characters whole, joins soft-wrapped lines, and trims trailing blanks.
 
 `buffers` returns JSON metadata, newest first: `id`, `bytes`, and a preview
 of at most 50 characters. An id such as `b7:48211-1867a3f9c2b8e7d6` names
@@ -439,8 +439,7 @@ never change what that id names; eviction or a different server returns
 the newest copy when the request runs.
 
 **Clipboards.** A copy goes to fux's shared paste buffers (the newest 16);
-`C-b p` pastes the newest, bracketed if the program asked for bracketed paste. It is also sent to your terminal's clipboard as OSC 52, up
-to 1 MiB encoded, unless this client sets `str terminal-clipboard false set`; your terminal must
+`C-b p` pastes the newest, bracketed if the program asked for bracketed paste. It is also sent to your terminal's clipboard as OSC 52, unless this client sets `str terminal-clipboard false set`; your terminal must
 allow OSC 52 writes. A program in a pane that copies with OSC 52, as Neovim
 and Helix do, copies the same way, up to 64 KiB encoded, but only while
 its creation supplied `program-clipboard true` (the bundled default).
@@ -491,8 +490,7 @@ from that client is explicitly unset. The library selection is empty. An
 operation's `list end copy-environment` replaces that selection with an empty
 one; `env` and `unset-env` override selected entries. Repeated explicit names
 and changes to the four identity names above are refused. Values keep their
-original bytes; selection and a resulting patch are limited to 1,024 distinct
-names. The concrete patch is saved for respawn and exported by
+original bytes; a launch's argv and patch must fit its one frame. The concrete patch is saved for respawn and exported by
 `dump`, so selected values remain available after the client detaches.
 
 Every launch carries checked argv and a role. `program` chooses program role;
@@ -524,8 +522,8 @@ VT220-class terminal.
 `json` on what a word left gives its JSON: `ls json`, `X info json`,
 `pane capture json`, `client capture json`, an action's or a
 wait's answer (`… wait json`), `status json`; `all events` and `X events`
-stream NDJSON events and checkpoints for at most 256 batches. `SCOPE str CURSOR SECONDS next-events`
-returns one bounded record with `events`, exact `next`, `missed` and `status`. These shapes are part of fux's interface; `fux
+stream NDJSON events and checkpoints, batch after batch. `SCOPE str CURSOR SECONDS next-events`
+returns one record with `events`, exact `next`, `missed` and `status`. These shapes are part of fux's interface; `fux
 help json` lists every one ([docs/json.md](docs/json.md)).
 
 ## Configuration
@@ -539,9 +537,7 @@ reattach to read edits. Keys and prompts use the saved definitions and cannot
 load new files with `require`.
 
 The entire import graph is checked before any of it runs. Cycles fail with
-the source chain, file and line. Root plus imports are limited to 16 MiB,
-256 files, 32 active require levels and 1,000,000 tokens. Sources must be
-regular files, opened nonblocking; explicit stdin remains available with `-`.
+the source chain, file and line. Sources must be regular files, opened nonblocking; explicit stdin remains available with `-`.
 
 The optional config is `$XDG_CONFIG_HOME/fux/config.fux`, else
 `~/.config/fux/config.fux`: fuxth, which a typing terminal runs as it attaches.
@@ -579,7 +575,7 @@ The three pane settings also have typed creation options, for example
 They survive terminal reset and respawn, and dump preserves them.
 Decoder changes take effect when reading begins idle, keeping an unfinished
 Escape or paste's existing timing. Zero waits for the next explicit timeout
-event; input and paste byte limits remain fixed.
+event.
 
 `str cell-placement true set` forces a redraw of that client's screen.
 The compact default assumes the outer terminal shares fux's Unicode 17
@@ -703,11 +699,7 @@ strings. The library's `quote` word returns one source token; `str` followed
 by that token reads the original text back. Quoted newlines stay inside
 string literals, including in omission annotations.
 
-Dump admission follows the existing fuxth bounds: at most 1,000,000
-characters in a string, 16,000,000 elements of construction work, and the
-calling program's step budget. Intermediate lists and quoting expansion
-also count. This accepts fewer large recipes than the former 16 MiB native
-serializer; an oversized recipe fails explicitly with no partial source.
+A recipe is made whole, never as partial source.
 Dump a smaller scope when a complete session exceeds those bounds.
 
 Nothing is saved automatically. To recreate a layout after its server ends
@@ -772,8 +764,8 @@ The tree is a flat list, rooted at index zero. Each leaf accepts a typed pane
 or its action/wait answer; all retained pane runs must agree. A split is
 `list str horizontal|vertical FIRST-SHARE SECOND-SHARE FIRST-INDEX SECOND-INDEX end`.
 Every index must be reached once; shares are nonzero u32 values. A proposal
-has at most 2,047 nodes and depth 64; past either it fails `too_long`, as
-`arrange` checks or the server. Revision exhaustion refuses further
+nests at most 64 deep; past that it fails `too_long`, as `arrange` checks or
+the server. Revision exhaustion refuses further
 guarded edits rather than reusing a token.
 
 The library's pure builders accept pane lists: `PANES str horizontal even-of`
@@ -781,8 +773,7 @@ The library's pure builders accept pane lists: `PANES str horizontal even-of`
 `PANES str horizontal str vertical main-of` gives the first pane two shares
 beside an evenly stacked remainder's one (swap the axes for a main pane
 above); `PANES tiled-of` alternates horizontal and vertical splits, weighted
-by pane count. Empty lists fail; the language's list, weight and execution
-budgets also apply. These builders read no session state and submit nothing
+by pane count. Empty lists fail. These builders read no session state and submit nothing
 until `arrange`.
 
 For an existing tab, `@2 even-h`, `@2 even-v`, `@2 main-h`, `@2 main-v`,
@@ -841,7 +832,7 @@ and width implementations.
   fux-vt's (`fux_vt::keys`), so other hosts of fux-vt can use them.
 - **Synchronized output** (mode 2026): fux brackets output frames for
   terminals supporting it. Pane programs' held frames are released after
-  1 s or past 2 MiB even if the program does not end the frame.
+  1 s even if the program does not end the frame.
 - **One terminal answers for a tab.** With several terminals attached,
   a tab's panes are answered (colours, scheme, sixel, cell size) by one
   terminal, the tab's host: of those showing the tab, the one that last
@@ -958,8 +949,8 @@ to `fux.log` beside it.
   file makes one server its owner.
 - Every peer must run as the server's own user (`SO_PEERCRED` on Linux,
   `getpeereid` on macOS); others, root included, are refused.
-- Messages are length-prefixed and at most 1 MiB. Saved launch inputs, including pending
-  respawns, are limited to 16 MiB per session; dumps use the fuxth bounds above.
+- Messages are length-prefixed and at most 1 MiB, checked before anything
+  is made for one.
 
 Anyone who can open the socket can run anything as you (`new-tab`,
 `send-keys`). As with tmux, the socket's permissions are the access

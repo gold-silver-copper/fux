@@ -965,8 +965,7 @@ mod tests {
             .parts
             .pane_mut(two)
             .ok_or("pane")?
-            .push_with(|_, bytes| bytes.extend_from_slice(b"key"))
-            .map_err(|e| e.to_string())?;
+            .push_with(|_, bytes| bytes.extend_from_slice(b"key"));
         assert_eq!(session.parts.input, BTreeSet::from([two]));
         session.parts.close_pane(two).ok_or("pane")?;
         assert!(

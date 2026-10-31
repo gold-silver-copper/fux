@@ -21,51 +21,27 @@ pub enum Data {
     Client(ClientId, Option<Run>),
 }
 
+/// How deep a callback's lists and records may nest on the wire: decoding
+/// one, or making one, is a recursion that goes no deeper.
+pub const DEPTH: u8 = 64;
+
 impl Data {
     fn read(r: &mut Reader<'_>, depth: u8) -> Result<Self, Error> {
         let depth = depth.checked_sub(1).ok_or(Error::Bad("callback depth"))?;
         Ok(match u8::get(r)? {
             0 => Self::Int(i64::get(r)?),
             1 => Self::Bool(bool::get(r)?),
-            2 => Self::Text(r.bounded_text(fuxth_core::LONGEST.saturating_mul(4))?),
-            3 => Self::List(r.bounded_list(fuxth_core::LONGEST, |r| Self::read(r, depth))?),
+            2 => Self::Text(String::get(r)?),
+            3 => Self::List(r.list(|r| Self::read(r, depth))?),
             4 => Self::Record {
                 of: Option::get(r)?,
-                fields: r.bounded_list(crate::inspect::NODES, |r| {
-                    Ok((
-                        r.bounded_text(fuxth_core::LONGEST.saturating_mul(4))?,
-                        Self::read(r, depth)?,
-                    ))
-                })?,
+                fields: r.list(|r| Ok((String::get(r)?, Self::read(r, depth)?)))?,
             },
             5 => Self::Null,
             6 => Self::Handle(AnyRef::get(r)?, Option::get(r)?),
             7 => Self::Client(ClientId::get(r)?, Option::get(r)?),
             8 => Self::All,
             tag => return Err(Error::Tag("callback value", tag)),
-        })
-    }
-
-    /// Retained bytes, including owned containers, used before queuing a job.
-    pub fn bytes(&self) -> usize {
-        std::mem::size_of::<Self>().saturating_add(match self {
-            Self::Text(s) => s.capacity(),
-            Self::List(v) => v.iter().fold(
-                v.capacity().saturating_mul(std::mem::size_of::<Data>()),
-                |n, v| n.saturating_add(v.bytes()),
-            ),
-            Self::Record { fields, .. } => fields.iter().fold(
-                fields
-                    .capacity()
-                    .saturating_mul(std::mem::size_of::<(String, Data)>()),
-                |n, (k, v)| n.saturating_add(k.capacity()).saturating_add(v.bytes()),
-            ),
-            Self::Int(_)
-            | Self::Bool(_)
-            | Self::Null
-            | Self::All
-            | Self::Handle(..)
-            | Self::Client(..) => 0,
         })
     }
 }
@@ -122,7 +98,7 @@ impl Wire for Data {
         }
     }
     fn get(r: &mut Reader<'_>) -> Result<Self, Error> {
-        Self::read(r, fuxth_core::NESTING.saturating_add(1))
+        Self::read(r, DEPTH.saturating_add(1))
     }
 }
 
@@ -148,10 +124,6 @@ impl From<&str> for Callback {
         code.to_owned().into()
     }
 }
-
-/// The most bytes of code the programs waiting for a client hold, and of
-/// what a screen it is sent retains.
-pub const JOB_BYTES: usize = 4 << 20;
 
 /// A typed screen request; only Callback.code is executable source.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -182,13 +154,11 @@ impl Wire for Open {
         }
     }
     fn get(r: &mut crate::wire::Reader<'_>) -> Result<Self, crate::wire::Error> {
-        r.limited(JOB_BYTES, |r| {
-            Ok(match u8::get(r)? {
-                0 => Self::List(ListScreen::get(r)?),
-                1 => Self::Prompt(Prompt::get(r)?),
-                2 => Self::Copy,
-                tag => return Err(crate::wire::Error::Tag("screen", tag)),
-            })
+        Ok(match u8::get(r)? {
+            0 => Self::List(ListScreen::get(r)?),
+            1 => Self::Prompt(Prompt::get(r)?),
+            2 => Self::Copy,
+            tag => return Err(crate::wire::Error::Tag("screen", tag)),
         })
     }
 }
@@ -242,7 +212,7 @@ impl Wire for Prompt {
     }
     fn get(r: &mut crate::wire::Reader<'_>) -> Result<Self, crate::wire::Error> {
         let title = String::get(r)?;
-        let text = r.bounded_text(crate::act::LINE_MAX)?;
+        let text = String::get(r)?;
         let mut line = Line::new(String::new());
         if text.contains(char::is_control) {
             return Err(crate::wire::Error::Bad("prompt text"));
@@ -253,40 +223,6 @@ impl Wire for Prompt {
             title,
             line,
             action: Option::get(r)?,
-        })
-    }
-}
-
-impl Open {
-    /// Aggregate retained storage, including callback code and row arguments.
-    pub fn bytes(&self) -> usize {
-        let callback = |c: &Callback| {
-            c.args
-                .iter()
-                .fold(c.code.capacity(), |n, a| n.saturating_add(a.bytes()))
-        };
-        std::mem::size_of::<Self>().saturating_add(match self {
-            Open::List(l) => l.items.iter().fold(
-                l.items
-                    .capacity()
-                    .saturating_mul(std::mem::size_of::<Item>())
-                    .saturating_add(
-                        l.title
-                            .capacity()
-                            .saturating_add(callback(&l.action))
-                            .saturating_add(l.client.bytes()),
-                    ),
-                |n, i| {
-                    n.saturating_add(i.label.capacity())
-                        .saturating_add(i.payload.bytes())
-                },
-            ),
-            Open::Prompt(p) => p
-                .title
-                .capacity()
-                .saturating_add(p.line.before().len().saturating_add(p.line.after().len()))
-                .saturating_add(p.action.as_ref().map_or(0, callback)),
-            Open::Copy => 0,
         })
     }
 }

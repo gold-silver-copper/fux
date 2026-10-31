@@ -181,15 +181,7 @@ impl Session {
         write: impl FnOnce(&fux_vt::Screen, &mut Vec<u8>),
     ) -> bool {
         let why = match self.live_pane_mut(pane).map(|mut p| p.push_with(write)) {
-            Ok(Ok(())) => return false,
-            Ok(Err(crate::pane::Error::InputFull)) => {
-                let input = crate::pane::Losses {
-                    input: 1,
-                    ..Default::default()
-                };
-                input.told(pane, false).join("; ")
-            }
-            Ok(Err(refused)) => refused.to_string(),
+            Ok(()) => return false,
             Err(refused) => refused.to_string(),
         };
         self.notify_to(client, why, true);
@@ -736,15 +728,12 @@ mod tests {
     }
 
     /// A question's or a prompt's action is checked as it opens: one with
-    /// a mistake, or past `ACTION_MAX`, opens nothing.
+    /// a mistake opens nothing.
     #[test]
     fn an_action_is_checked_as_its_screen_opens() -> Outcome {
         let (mut s, c) = session()?;
-        let long: String =
-            std::iter::repeat_n("1 drop ", fux::screens::ACTION_MAX / 7 + 1).collect();
         for (action, said) in [
             ("str nosuch".to_owned(), "no such word"),
-            (format!("str '{long}'"), "too_long"),
             (
                 "list empty str drop str drop end".to_owned(),
                 "a callback is",
@@ -1243,14 +1232,8 @@ mod tests {
             .map_err(|e| e.to_string())?;
             let mut out = Vec::new();
             let mut host = Host::new(context, Some(&mut state), &mut out);
-            fux::script::run_capped(
-                &mut machine,
-                &mut host,
-                &mut asks,
-                Some(fux::script::PROGRAM_STEPS),
-                None,
-            )
-            .map_err(|e| e.to_string())?;
+            fux::script::run(&mut machine, &mut host, &mut asks, None)
+                .map_err(|e| e.to_string())?;
             let Some(Screen::List(list)) = asks.opened else {
                 return Err(format!("{code}: no list"));
             };
@@ -1517,99 +1500,6 @@ mod tests {
                 .and_then(|t| t.seat(c))
                 .is_some_and(|seat| !seat.held)
         );
-        Ok(())
-    }
-
-    #[test]
-    fn a_wheel_expansion_is_admitted_or_refused_whole() -> Outcome {
-        let expected: Vec<u8> = std::iter::repeat_n(b"\x1b[A", 50)
-            .flatten()
-            .copied()
-            .collect();
-        for room in [0, 100, expected.len()] {
-            let (mut s, c) = crate::session::testing::attached(101, 20)?;
-            let id = PaneId::of(1);
-            s.out(id, b"\x1b[?1049h\x1b[?1007h\x1b[?1h\x1b[>1u");
-            let filled = crate::pane::INPUT_BYTES.saturating_sub(room);
-            s.parts
-                .pane_mut(id)
-                .ok_or("no %1")?
-                .push(vec![0; filled])
-                .map_err(|e| e.to_string())?;
-            s.input(c, b"\x1b[<80;1;1M");
-            let refused = room < expected.len();
-            let lost = s.parts.panes().get(&id).ok_or("no %1")?.lost();
-            assert_eq!(lost.input, u64::from(refused), "room for {room} bytes");
-            if refused {
-                assert!(notice(&s, c).starts_with("%1: input dropped (1):"));
-            } else {
-                assert_eq!(notice(&s, c), "");
-            }
-            let input = queued(&mut s, 1);
-            assert!(
-                input
-                    .get(..filled)
-                    .is_some_and(|b| b.iter().all(|b| *b == 0))
-            );
-            let arrows = input.get(filled..).ok_or("the queued prefix")?;
-            assert_eq!(arrows, if refused { &[] } else { expected.as_slice() });
-        }
-        Ok(())
-    }
-
-    /// A mouse report a full input queue refuses is told, and so is each
-    /// key, paste, report and focus change refused after it, the notice
-    /// cleared by a key shown again.
-    #[test]
-    fn a_report_a_full_queue_refuses_is_told_once() -> Outcome {
-        let (mut s, c) = session()?;
-        s.out(PaneId::of(1), b"\x1b[?1000h\x1b[?1006h\x1b[?1004h");
-        let full = vec![0; crate::pane::INPUT_BYTES];
-        let mut p = s.parts.pane_mut(PaneId::of(1)).ok_or("no %1")?;
-        p.push(full).map_err(|e| e.to_string())?;
-        let notice = |s: &mut Session| {
-            let view = s.views.get_mut(&c);
-            view.and_then(|v| v.notice.take()).map(|n| n.text)
-        };
-        s.input(c, b"\x1b[<0;3;2M");
-        assert!(notice(&mut s).is_some_and(|n| n.contains("%1: input dropped (1)")));
-        let typed = [
-            b"x".as_slice(),
-            b"y",
-            b"\x1b[200~z\x1b[201~",
-            b"\x1b[<0;3;2M",
-            b"\x1b[I",
-        ];
-        for typed in typed {
-            s.input(c, typed);
-            let told = notice(&mut s);
-            assert!(
-                told.is_some_and(|n| n.contains("%1: input dropped (1)")),
-                "{typed:?}"
-            );
-        }
-        Ok(())
-    }
-
-    /// The first key a full queue refuses is told, though a run of drops
-    /// before it, of replies, was told already.
-    #[test]
-    fn the_first_key_refused_is_told() -> Outcome {
-        let (mut s, c) = session()?;
-        let queries: Vec<u8> = std::iter::repeat_n(*b"\x1b[6n", crate::pane::REPLIES_MAX)
-            .flatten()
-            .collect();
-        s.out(PaneId::of(1), &queries);
-        let mut p = s.parts.pane_mut(PaneId::of(1)).ok_or("no %1")?;
-        let room = p.input().room();
-        p.push(vec![0; room]).map_err(|e| e.to_string())?;
-        let notice = |s: &mut Session| {
-            let view = s.views.get_mut(&c);
-            view.and_then(|v| v.notice.take()).map(|n| n.text)
-        };
-        assert!(notice(&mut s).is_some_and(|n| n.contains("%1: replies to its program dropped")));
-        s.input(c, b"x");
-        assert!(notice(&mut s).is_some_and(|n| n.contains("%1: input dropped (1)")));
         Ok(())
     }
 
