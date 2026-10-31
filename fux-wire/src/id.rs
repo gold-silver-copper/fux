@@ -62,12 +62,19 @@ pub struct BufferId {
     number: u64,
 }
 
+crate::wire::shaped!(
+    codec struct BufferId {
+        run: Run,
+        number: u64,
+    }
+);
+
 impl crate::wire::Wire for BufferId {
     fn put(&self, out: &mut impl crate::wire::Sink) {
-        (self.run, self.number).put(out);
+        self.put_fields(out);
     }
     fn get(r: &mut crate::wire::Reader<'_>) -> Result<Self, crate::wire::Error> {
-        let (run, number) = (Run::get(r)?, u64::get(r)?);
+        let (run, number) = Self::get_fields(r)?;
         (number > 0)
             .then_some(Self { run, number })
             .ok_or(crate::wire::Error::Bad("buffer id"))

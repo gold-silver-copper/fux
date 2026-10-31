@@ -114,24 +114,28 @@ pub fn admit(
 ) -> Result<crate::screens::Screen, super::Failed> {
     use fux_wire::wire::Wire;
     let refused = |why| super::Failed::new(fux_wire::code::Code::BadValue, why);
-    if open.bytes() > fux_wire::callback::JOB_BYTES {
-        return Err(refused("screen retained data exceeds the job byte limit"));
+    let past = |why| super::Failed::new(fux_wire::code::Raise::TooLong, why);
+    let most = fux_wire::callback::JOB_BYTES;
+    if open.bytes() > most {
+        return Err(past(format!(
+            "screen retained data is past a job's {most} bytes"
+        )));
     }
     let mut encoded =
         fux_wire::wire::Writer::counting(fux_wire::protocol::MAX_FRAME.saturating_sub(128));
     open.put(&mut encoded);
     encoded
         .check()
-        .map_err(|_| refused("screen data exceeds a frame"))?;
+        .map_err(|_| past("screen data is past a frame".to_owned()))?;
     let config = state.and_then(|s| s.config.as_ref());
     let check =
         |action: &fux_wire::callback::Callback, args: Vec<Data>| -> Result<(), super::Failed> {
-            if action.code.len() > crate::screens::ACTION_MAX {
-                return Err(refused("callback source exceeds its byte limit"));
-            }
+            crate::screens::admit_source(&action.code)?;
             let job = crate::screens::Job::call(action, args);
-            if job.bytes() > fux_wire::callback::JOB_BYTES {
-                return Err(refused("callback arguments exceed the job byte limit"));
+            if job.bytes() > most {
+                return Err(past(format!(
+                    "callback arguments are past a job's {most} bytes"
+                )));
             }
             let mut of = context.of;
             for v in job.given.iter().flatten() {
@@ -150,9 +154,7 @@ pub fn admit(
                 return Err(refused("a list needs its receiving client"));
             };
             l.client = Data::Client(client, context.of);
-            if l.action.code.len() > crate::screens::ACTION_MAX {
-                return Err(refused("callback source exceeds its byte limit"));
-            }
+            crate::screens::admit_source(&l.action.code)?;
             let tokens = fuxth::token::source("callback", &l.action.code)?;
             super::callback_source(config, &tokens)?;
             let mut of = context.of;

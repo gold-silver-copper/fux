@@ -166,14 +166,20 @@ impl Program {
     }
 }
 
+crate::wire::shaped!(
+    codec struct Program {
+        program: String,
+        args: Vec<String>,
+    }
+);
+
 /// Read back only checked argv.
 impl Wire for Program {
     fn put(&self, out: &mut impl crate::wire::Sink) {
-        self.program.put(out);
-        self.args.put(out);
+        self.put_fields(out);
     }
     fn get(r: &mut Reader<'_>) -> Result<Self, Error> {
-        let (program, args) = (String::get(r)?, Vec::get(r)?);
+        let (program, args) = Self::get_fields(r)?;
         Program::new(program, args).map_err(|_| Error::Bad("program"))
     }
 }
@@ -354,14 +360,17 @@ wire! {
 /// The most rows, and columns, a client's view has.
 pub const MOST: u16 = 4096;
 
-/// `rows` by `cols`, if a client's view can be that size: 1 to `MOST`
-/// each way; else why not.
-pub fn size(rows: u16, cols: u16) -> Result<(u16, u16), String> {
-    let fits = |n: u16| (1..=MOST).contains(&n);
-    match fits(rows) && fits(cols) {
-        true => Ok((rows, cols)),
-        false => Err(format!(
-            "{cols} columns by {rows} rows: a client is 1 to {MOST} each way"
+/// `rows` by `cols`, if a client's view, and so a screen a tab is laid out
+/// on, can be that size: 1 to `MOST` each way; else `size`, from the word
+/// that gives one or the server alike.
+pub fn size(rows: impl Into<i64>, cols: impl Into<i64>) -> Result<(u16, u16), crate::code::Error> {
+    let (rows, cols) = (rows.into(), cols.into());
+    let fits = |n: i64| u16::try_from(n).ok().filter(|n| (1..=MOST).contains(n));
+    match (fits(rows), fits(cols)) {
+        (Some(rows), Some(cols)) => Ok((rows, cols)),
+        (None, _) | (_, None) => Err(crate::code::fail(
+            crate::code::Raise::Size,
+            format!("{cols} columns by {rows} rows: a screen is 1 to {MOST} each way"),
         )),
     }
 }
@@ -371,14 +380,15 @@ pub fn size(rows: u16, cols: u16) -> Result<(u16, u16), String> {
 /// holds is one a dump writes (`COLS ROWS size`) and makes again.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Screen(fux_vt::Size);
+crate::wire::shaped!(struct Screen(size: fux_vt::Size));
 
 impl Screen {
     /// `rows` by `cols`, if a screen can be that size; else why not.
-    pub fn new(rows: u16, cols: u16) -> Result<Screen, String> {
+    pub fn new(rows: impl Into<i64>, cols: impl Into<i64>) -> Result<Screen, crate::code::Error> {
         let (rows, cols) = size(rows, cols)?;
         fux_vt::Size::new(rows, cols)
             .map(Screen)
-            .map_err(|e| e.to_string())
+            .map_err(|e| crate::code::fail(crate::code::Raise::Size, e.to_string()))
     }
     pub fn size(self) -> fux_vt::Size {
         self.0
@@ -512,6 +522,12 @@ pub struct Run {
     since: u64,
 }
 wire_struct!(Run { pid, since });
+crate::wire::shaped!(
+    struct Run {
+        pid: u32,
+        since: u64,
+    }
+);
 
 impl Run {
     /// This process's run, started now: none on a clock before 1970 or
@@ -557,6 +573,13 @@ pub struct LayoutRevision {
     pub run: Run,
 }
 wire_struct!(LayoutRevision { tab, serial, run });
+crate::wire::shaped!(
+    struct LayoutRevision {
+        tab: TabId,
+        serial: u64,
+        run: Run,
+    }
+);
 
 impl std::fmt::Display for LayoutRevision {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -607,6 +630,15 @@ wire_struct!(Counts {
     done,
     ended
 });
+crate::wire::shaped!(
+    struct Counts {
+        respawns: u64,
+        screen: u64,
+        bells: u64,
+        done: u64,
+        ended: bool,
+    }
+);
 
 impl Counts {
     /// Whether a pane now at `self` can ever have been at `then`: an
@@ -666,6 +698,13 @@ pub struct Version {
     pub run: Run,
 }
 wire_struct!(Version { pane, counts, run });
+crate::wire::shaped!(
+    struct Version {
+        pane: PaneId,
+        counts: Counts,
+        run: Run,
+    }
+);
 
 impl std::fmt::Display for Version {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -1037,6 +1076,7 @@ fn pane_var(name: &str) -> Result<(), String> {
 /// identity, checked from words and the wire alike.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct EnvPatch(Vec<(String, Option<std::ffi::OsString>)>);
+crate::wire::shaped!(struct EnvPatch(entries: Vec<(String, Option<std::ffi::OsString>)>));
 
 impl EnvPatch {
     /// The most distinct selected or explicit environment names in one launch.

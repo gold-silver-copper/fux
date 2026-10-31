@@ -425,13 +425,66 @@ pub(super) fn snapshot(s: inspect::Snapshot) -> Result<V, Failure> {
     Ok(Value::App(Fux::Record(record)))
 }
 
+/// `fields!(Ty { Variant "name", … })`: the fields `get` reads of a held
+/// value of one kind, an enum, and `Ty::ALL`, each with its name: what
+/// `get` reads by, and what `docs/records.txt` lists.
+macro_rules! fields {
+    ($(#[$doc:meta])* $ty:ident { $($var:ident $name:literal),+ $(,)? }) => {
+        $(#[$doc])*
+        #[derive(Clone, Copy)]
+        pub(super) enum $ty {
+            $($var),+
+        }
+        impl $ty {
+            pub(super) const ALL: &[($ty, &str)] = &[$(($ty::$var, $name)),+];
+            fn named(field: &str) -> Option<$ty> {
+                Self::ALL.iter().find(|(_, name)| *name == field).map(|(f, _)| *f)
+            }
+        }
+    };
+}
+
+fields!(
+    /// A held action's or wait's answer on one pane: `changed`, and
+    /// `exited` or `signal` as its program ended, only of a wait that saw
+    /// a change.
+    AnswerField {
+        Pane "pane",
+        Version "version",
+        Status "status",
+        Changed "changed",
+        Exited "exited",
+        Signal "signal",
+    }
+);
+fields!(
+    /// A capture's own: `styles` only of one read with styles.
+    CaptureField {
+        ScreenRows "screen_rows",
+        ScreenCols "screen_cols",
+        ScreenCursor "screen_cursor",
+        Lines "lines",
+        Styles "styles",
+    }
+);
+fields!(
+    /// What a capture read: a pane's (and then its state's fields), or a
+    /// client's.
+    CapturedField {
+        Pane "pane",
+        Version "version",
+        WrapPending "wrap_pending",
+        Client "client",
+    }
+);
+
 /// Project held native observations directly; never resolve their source again.
 pub(super) fn answer_field(
     answer: &super::Answer,
     run: Option<Run>,
     field: &str,
 ) -> Result<V, Failure> {
-    use fux_wire::answer::PaneAnswer;
+    use fux_wire::answer::{Ended, Of, PaneAnswer};
     let mut budget = Budget::with_limit(inspect::BYTES);
     let b = &mut Builder::new(&mut budget);
     let absent = || {
@@ -442,115 +495,134 @@ pub(super) fn answer_field(
     };
     match answer {
         super::Answer::Pane(answer) => {
+            let field = AnswerField::named(field).ok_or_else(absent)?;
+            let (changed, ended) = match answer {
+                PaneAnswer::Changed { changed, ended, .. } => (Some(changed), *ended),
+                PaneAnswer::Acted(_) | PaneAnswer::Closed(_) | PaneAnswer::TimedOut { .. } => {
+                    (None, None)
+                }
+            };
             match field {
-                "pane" => return Ok(Value::App(Fux::Pane(answer.pane(), run))),
-                "version" => {
-                    return answer
-                        .version()
-                        .map(|v| b.text(&v.to_string()))
-                        .unwrap_or_else(|| Err(absent()));
+                AnswerField::Pane => Ok(Value::App(Fux::Pane(answer.pane(), run))),
+                AnswerField::Version => answer
+                    .version()
+                    .map(|v| b.text(&v.to_string()))
+                    .unwrap_or_else(|| Err(absent())),
+                AnswerField::Status => number(answer.failure().map_or(0, |c| c.status().get())),
+                AnswerField::Changed => {
+                    let changed = changed.ok_or_else(absent)?;
+                    b.list(changed, |b, c| b.text(c.name()))
                 }
-                "status" => return number(answer.failure().map_or(0, |c| c.status().get())),
-                _ => {}
-            }
-            if let PaneAnswer::Changed { changed, ended, .. } = answer {
-                match (field, ended) {
-                    ("changed", _) => return b.list(changed, |b, c| b.text(c.name())),
-                    ("exited", Some(fux_wire::answer::Ended::Exited(n))) => return number(*n),
-                    ("signal", Some(fux_wire::answer::Ended::Signalled(n))) => return number(*n),
-                    ("exited" | "signal", Some(_)) => return Ok(null()),
-                    _ => {}
-                }
-            }
-            Err(absent())
-        }
-        super::Answer::Capture(c) => {
-            match field {
-                "screen_rows" => return number(c.screen_rows),
-                "screen_cols" => return number(c.screen_cols),
-                "screen_cursor" => {
-                    return match c.screen_cursor {
-                        Some((row, col)) => b.list(&[row, col], |_, n| number(*n)),
-                        None => Ok(null()),
-                    };
-                }
-                "lines" => {
-                    return b.list(&c.lines, |b, line| {
-                        let text = fux_wire::json::render(b.budget, |out| {
-                            c.write_line(out, line, false, &mut Vec::new())
-                        })?;
-                        b.text(&text)
-                    });
-                }
-                "styles" if c.styled => {
-                    return b.list(&c.lines, |b, line| {
-                        let styled = |run: &Option<(&str, u32, fux_vt::Attributes)>| {
-                            run.is_some_and(|(_, _, style)| style != fux_vt::Attributes::default())
-                        };
-                        let mut values = b.budget.vector(c.runs(line).filter(styled).count())?;
-                        let mut col = 0u32;
-                        for run in c.runs(line) {
-                            let (_, cells, style) = run.ok_or_else(fail)?;
-                            if style != fux_vt::Attributes::default() {
-                                let mut fields = b.budget.vector(2)?;
-                                for (name, value) in
-                                    [("col", number(col)?), ("len", number(cells)?)]
-                                {
-                                    fields.push((b.budget.string(name)?, value));
-                                }
-                                for (name, value) in fux_wire::answer::style_fields(style) {
-                                    let value = match value {
-                                        fux_wire::answer::StyleValue::Flag => Value::Bool(true),
-                                        fux_wire::answer::StyleValue::Index(n) => number(n)?,
-                                        fux_wire::answer::StyleValue::Rgb(fux_vt::Rgb {
-                                            r,
-                                            g,
-                                            b: blue,
-                                        }) => b.text(&format!("#{r:02x}{g:02x}{blue:02x}"))?,
-                                    };
-                                    b.budget.reserve(&mut fields, 1)?;
-                                    fields.push((b.budget.string(name)?, value));
-                                }
-                                b.nodes(fields.len().saturating_add(1))?;
-                                values.push(b.finish(fields, None)?);
-                            }
-                            col = col.checked_add(cells).ok_or_else(fail)?;
-                        }
-                        b.nodes(values.len())?;
-                        b.budget.charge(fuxth::Shared::<List<Fux>>::bytes(0))?;
-                        Ok(Value::List(fuxth::Shared::new(
-                            List::new(values).ok_or_else(fail)?,
-                        )))
-                    });
-                }
-                _ => {}
-            }
-            match &c.of {
-                fux_wire::answer::Of::Pane {
-                    version,
-                    wrap_pending,
-                    state,
-                } => match field {
-                    "pane" => Ok(Value::App(Fux::Pane(version.pane, Some(version.run)))),
-                    "version" => b.text(&version.to_string()),
-                    "wrap_pending" => Ok(Value::Bool(*wrap_pending)),
-                    field => state
-                        .iter()
-                        .find(|(name, _)| name == field)
-                        .map(|(_, v)| b.json(v, 0))
-                        .unwrap_or_else(|| Err(absent())),
-                },
-                fux_wire::answer::Of::Client(client) => {
-                    if field == "client" {
-                        Ok(Value::App(Fux::Client(*client, run)))
-                    } else {
-                        Err(absent())
+                AnswerField::Exited | AnswerField::Signal => {
+                    changed.ok_or_else(absent)?;
+                    match (field, ended) {
+                        (AnswerField::Exited, Some(Ended::Exited(n)))
+                        | (AnswerField::Signal, Some(Ended::Signalled(n))) => number(n),
+                        (_, Some(_)) => Ok(null()),
+                        (_, None) => Err(absent()),
                     }
                 }
             }
         }
+        super::Answer::Capture(c) => {
+            if let Some(own) = CaptureField::named(field) {
+                return capture_field(b, c, own).unwrap_or_else(|| Err(absent()));
+            }
+            let named = CapturedField::named(field);
+            match (&c.of, named) {
+                (Of::Pane { version, .. }, Some(CapturedField::Pane)) => {
+                    Ok(Value::App(Fux::Pane(version.pane, Some(version.run))))
+                }
+                (Of::Pane { version, .. }, Some(CapturedField::Version)) => {
+                    b.text(&version.to_string())
+                }
+                (Of::Pane { wrap_pending, .. }, Some(CapturedField::WrapPending)) => {
+                    Ok(Value::Bool(*wrap_pending))
+                }
+                (Of::Pane { state, .. }, None) => state
+                    .iter()
+                    .find(|(name, _)| name == field)
+                    .map(|(_, v)| b.json(v, 0))
+                    .unwrap_or_else(|| Err(absent())),
+                (Of::Client(client), Some(CapturedField::Client)) => {
+                    Ok(Value::App(Fux::Client(*client, run)))
+                }
+                (Of::Pane { .. }, Some(CapturedField::Client))
+                | (
+                    Of::Client(_),
+                    None
+                    | Some(CapturedField::Pane | CapturedField::Version | CapturedField::WrapPending),
+                ) => Err(absent()),
+            }
+        }
         super::Answer::Panes(_) => Err(absent()),
     }
+}
+
+/// A capture's own field, if it has it: `styles` only if read with them.
+fn capture_field(
+    b: &mut Builder<'_>,
+    c: &fux_wire::answer::Captured,
+    field: CaptureField,
+) -> Option<Result<V, Failure>> {
+    Some(match field {
+        CaptureField::ScreenRows => number(c.screen_rows),
+        CaptureField::ScreenCols => number(c.screen_cols),
+        CaptureField::ScreenCursor => match c.screen_cursor {
+            Some((row, col)) => b.list(&[row, col], |_, n| number(*n)),
+            None => Ok(null()),
+        },
+        CaptureField::Lines => b.list(&c.lines, |b, line| {
+            let text = fux_wire::json::render(b.budget, |out| {
+                c.write_line(out, line, false, &mut Vec::new())
+            })?;
+            b.text(&text)
+        }),
+        CaptureField::Styles if !c.styled => return None,
+        CaptureField::Styles => b.list(&c.lines, |b, line| styles(b, c, line)),
+    })
+}
+
+/// A captured line's styled runs, a record each: where it starts and how
+/// long it is, then what its style sets.
+fn styles(
+    b: &mut Builder<'_>,
+    c: &fux_wire::answer::Captured,
+    line: &fux_wire::answer::Line,
+) -> Result<V, Failure> {
+    let styled = |run: &Option<(&str, u32, fux_vt::Attributes)>| {
+        run.is_some_and(|(_, _, style)| style != fux_vt::Attributes::default())
+    };
+    let mut values = b.budget.vector(c.runs(line).filter(styled).count())?;
+    let mut col = 0u32;
+    for run in c.runs(line) {
+        let (_, cells, style) = run.ok_or_else(fail)?;
+        if style != fux_vt::Attributes::default() {
+            let mut fields = b.budget.vector(2)?;
+            for (name, value) in [("col", number(col)?), ("len", number(cells)?)] {
+                fields.push((b.budget.string(name)?, value));
+            }
+            for (name, value) in fux_wire::answer::style_fields(style) {
+                let value = match value {
+                    fux_wire::answer::StyleValue::Flag => Value::Bool(true),
+                    fux_wire::answer::StyleValue::Index(n) => number(n)?,
+                    fux_wire::answer::StyleValue::Rgb(fux_vt::Rgb { r, g, b: blue }) => {
+                        b.text(&format!("#{r:02x}{g:02x}{blue:02x}"))?
+                    }
+                };
+                b.budget.reserve(&mut fields, 1)?;
+                fields.push((b.budget.string(name)?, value));
+            }
+            b.nodes(fields.len().saturating_add(1))?;
+            values.push(b.finish(fields, None)?);
+        }
+        col = col.checked_add(cells).ok_or_else(fail)?;
+    }
+    b.nodes(values.len())?;
+    b.budget.charge(fuxth::Shared::<List<Fux>>::bytes(0))?;
+    Ok(Value::List(fuxth::Shared::new(
+        List::new(values).ok_or_else(fail)?,
+    )))
 }
 
 #[cfg(test)]

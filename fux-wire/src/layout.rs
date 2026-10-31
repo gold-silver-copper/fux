@@ -65,33 +65,55 @@ wire! {
 pub const NODES_MAX: usize = 2047;
 pub const DEPTH_MAX: usize = 64;
 
+/// Whether a flat layout of `len` nodes may be given: none is no layout
+/// (`bad_value`), more than `NODES_MAX` too many (`too_long`), from the
+/// word or the server alike.
+pub fn admit_nodes(len: usize) -> Result<(), crate::code::Error> {
+    use crate::code::{Raise, fail};
+    match len {
+        0 => Err(fail(Raise::BadValue, "a layout needs a node")),
+        len if len > NODES_MAX => Err(fail(
+            Raise::TooLong,
+            format!("a layout of {len} nodes is past its {NODES_MAX}"),
+        )),
+        _ => Ok(()),
+    }
+}
+
 /// Validates a flat layout before constructing its native tree. Pane
 /// membership is checked separately against the tab at the commit boundary.
-pub fn from_nodes(nodes: &[Node]) -> Result<Tree, &'static str> {
-    if nodes.is_empty() || nodes.len() > NODES_MAX {
-        return Err("a layout needs 1..2047 nodes");
-    }
+/// A layout past a limit is `too_long`; one that is no tree, `bad_value`.
+pub fn from_nodes(nodes: &[Node]) -> Result<Tree, crate::code::Error> {
+    use crate::code::{Raise, fail};
+    admit_nodes(nodes.len())?;
+    let deep = || {
+        fail(
+            Raise::TooLong,
+            format!("a layout is past its depth of {DEPTH_MAX}"),
+        )
+    };
+    let bad = |why: &str| fail(Raise::BadValue, why);
     let mut seen = vec![false; nodes.len()];
     let mut pending = vec![(0usize, 0usize)];
     while let Some((at, depth)) = pending.pop() {
         if depth > DEPTH_MAX {
-            return Err("layout depth exceeds 64");
+            return Err(deep());
         }
         let visited = seen
             .get_mut(at)
-            .ok_or("layout child index is out of range")?;
+            .ok_or_else(|| bad("layout child index is out of range"))?;
         if *visited {
-            return Err("layout nodes must be reached exactly once");
+            return Err(bad("layout nodes must be reached exactly once"));
         }
         *visited = true;
         if let Some(Node::Split { first, second, .. }) = nodes.get(at) {
-            let depth = depth.checked_add(1).ok_or("layout depth exceeds 64")?;
+            let depth = depth.checked_add(1).ok_or_else(deep)?;
             pending.push((*second as usize, depth));
             pending.push((*first as usize, depth));
         }
     }
     if seen.iter().any(|v| !v) {
-        return Err("layout contains unreachable nodes");
+        return Err(bad("layout contains unreachable nodes"));
     }
     // The graph above is a bounded tree, so construction cannot cycle.
     fn build(nodes: &[Node], at: usize) -> Result<Tree, &'static str> {
@@ -111,7 +133,7 @@ pub fn from_nodes(nodes: &[Node]) -> Result<Tree, &'static str> {
             }))),
         }
     }
-    build(nodes, 0)
+    build(nodes, 0).map_err(bad)
 }
 
 /// Two trees side by side along `axis`, a separator between, sharing what
@@ -846,7 +868,8 @@ mod tests {
     }
 
     #[test]
-    fn flat_layouts_require_one_bounded_reachable_tree() -> Result<(), &'static str> {
+    fn flat_layouts_require_one_bounded_reachable_tree() -> Result<(), crate::code::Error> {
+        use crate::code::{Code, Raise};
         let branch = |first, second| Node::Split {
             axis: Axis::Horizontal,
             first_share: NonZeroU32::MIN,
@@ -855,15 +878,19 @@ mod tests {
             second,
         };
         let leaf = Node::Pane(p(1));
-        for nodes in [
-            vec![],
-            vec![branch(0, 1), leaf.clone()],
-            vec![branch(1, 1), leaf.clone()],
-            vec![branch(1, 3), leaf.clone(), leaf.clone()],
-            vec![leaf.clone(), leaf.clone()],
-            vec![leaf.clone(); NODES_MAX.saturating_add(1)],
+        let (bad, past) = (Code::BadValue, Code::from(Raise::TooLong));
+        for (nodes, code) in [
+            (vec![], bad),
+            (vec![branch(0, 1), leaf.clone()], bad),
+            (vec![branch(1, 1), leaf.clone()], bad),
+            (vec![branch(1, 3), leaf.clone(), leaf.clone()], bad),
+            (vec![leaf.clone(), leaf.clone()], bad),
+            (vec![leaf.clone(); NODES_MAX.saturating_add(1)], past),
         ] {
-            assert!(from_nodes(&nodes).is_err());
+            assert_eq!(
+                from_nodes(&nodes).map(drop).map_err(|e| e.code()),
+                Err(code)
+            );
         }
         let chain = |depth: u32| {
             let mut nodes = Vec::new();
@@ -875,7 +902,10 @@ mod tests {
             nodes
         };
         assert_eq!(from_nodes(&chain(64))?.panes().len(), 65);
-        assert!(from_nodes(&chain(65)).is_err());
+        assert_eq!(
+            from_nodes(&chain(65)).map(drop).map_err(|e| e.code()),
+            Err(past)
+        );
         let shares = Shares::new(NonZeroU32::MIN, NonZeroU32::MAX);
         let nodes = vec![
             Node::Split {

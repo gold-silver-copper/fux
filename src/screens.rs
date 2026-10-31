@@ -218,6 +218,22 @@ impl Job {
 /// client keeps it, outside any frame, so it has a bound of its own.
 pub const ACTION_MAX: usize = 1 << 16;
 
+/// Whether `code` may be a callback's source: at most `ACTION_MAX` bytes,
+/// else `too_long`, from the word that makes it or the screen that admits
+/// it alike.
+pub fn admit_source(code: &str) -> Result<(), fux_wire::code::Error> {
+    match code.len() > ACTION_MAX {
+        true => Err(fux_wire::code::fail(
+            fux_wire::code::Raise::TooLong,
+            format!(
+                "callback source of {} bytes is past its {ACTION_MAX}",
+                code.len()
+            ),
+        )),
+        false => Ok(()),
+    }
+}
+
 /// The effect that hides the screen showing.
 pub const HIDE: Effect = Effect::Screen(ScreenAct::Hide);
 

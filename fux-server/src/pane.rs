@@ -293,6 +293,14 @@ impl<const MAX: usize> Said<MAX> {
     pub fn as_str(&self) -> &str {
         &self.text
     }
+    /// `text` as a program sent it, `cut` if it sent more.
+    #[cfg(feature = "in-process")]
+    pub fn sent(text: &str, cut: bool) -> Self {
+        Self::new(fux_vt::Kept {
+            bytes: text.as_bytes(),
+            cut,
+        })
+    }
     #[cfg(test)]
     pub(crate) fn retained_bytes(&self) -> usize {
         self.text.capacity()

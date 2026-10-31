@@ -79,6 +79,7 @@ impl Change {
 
 closed_wire!(Change, "change");
 wire_enum!(Ended { Exited(code), Signalled(signal), Lost });
+crate::wire::shaped!(enum Ended { Exited(code: i32), Signalled(signal: i32), Lost });
 
 impl PaneAnswer {
     pub fn pane(&self) -> PaneId {
@@ -315,6 +316,35 @@ wire! {
 
 wire_enum!(Color { Default, Idx(n), Rgb(rgb) });
 wire_enum!(Blink { None, Slow, Rapid });
+
+crate::wire::shaped!(enum Color { Default, Idx(n: u8), Rgb(rgb: fux_vt::Rgb) });
+crate::wire::shaped!(struct fux_vt::Rgb { r: u8, g: u8, b: u8 });
+crate::wire::shaped!(
+    enum Blink {
+        None,
+        Slow,
+        Rapid,
+    }
+);
+
+/// As its `Wire` writes it; its fields are fux-vt's own.
+#[cfg(test)]
+impl crate::wire::Reach for Attributes {
+    fn reach(out: &mut crate::wire::Shapes) {
+        let flags = ["bold", "dim", "italic", "inverse", "hidden", "strikeout"];
+        let mut fields = vec![
+            ("foreground", "Color"),
+            ("background", "Color"),
+            ("underline_color", "Color"),
+        ];
+        fields.extend(flags.map(|flag| (flag, "bool")));
+        fields.extend([("underline_style", "u16"), ("blink", "Blink")]);
+        if out.first::<Self>("Attributes", &[("Attributes", &fields)]) {
+            Color::reach(out);
+            Blink::reach(out);
+        }
+    }
+}
 
 /// The style's colours, its flags and its underline's style and blink, as
 /// the vocabulary of `Attributes` gives and takes them.

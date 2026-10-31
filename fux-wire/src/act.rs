@@ -336,6 +336,51 @@ wire_enum!(MouseAction {
 });
 closed_wire!(ModeStatus, "mode status"; Scheme, "scheme");
 wire_struct!(Modifiers { ctrl, alt, shift });
+crate::wire::shaped!(
+    struct Modifiers {
+        ctrl: bool,
+        alt: bool,
+        shift: bool,
+    }
+);
+crate::wire::shaped!(
+    struct Kitty {
+        code: Option<u32>,
+        shifted: Option<u32>,
+        base: Option<u32>,
+        mods: u8,
+    }
+);
+crate::wire::shaped!(
+    struct Keystroke {
+        press: KeyPress,
+        kitty: Option<Kitty>,
+    }
+);
+crate::wire::shaped!(enum MouseAction {
+    Press(button: fux_vt::keys::mouse::MouseButton),
+    Release(button: Option<fux_vt::keys::mouse::MouseButton>),
+    Motion(button: Option<fux_vt::keys::mouse::MouseButton>),
+});
+crate::wire::shaped!(
+    struct MouseEvent {
+        action: MouseAction,
+        mods: Modifiers,
+        row: u16,
+        col: u16,
+    }
+);
+crate::wire::shaped!(enum Reply {
+    Foreground(rgb: fux_vt::Rgb),
+    Background(rgb: fux_vt::Rgb),
+    Palette { index: u8, rgb: fux_vt::Rgb },
+    Scheme(scheme: Scheme),
+    Mode { mode: u16, status: ModeStatus },
+    KittyFlags(flags: u8),
+    Attributes { sixel: bool },
+    CellSize { width: u16, height: u16 },
+    UnderlineStyles,
+});
 wire_struct!(Kitty {
     code,
     shifted,
