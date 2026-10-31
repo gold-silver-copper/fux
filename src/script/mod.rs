@@ -2154,7 +2154,7 @@ pub(crate) mod tests {
     /// tests check it fits the wire's grant): its JSON is printed whole,
     /// and six copies of it in one list are refused, not built.
     #[test]
-    fn default_styled_capture_fits_the_script_grant() -> TestResult {
+    fn default_styled_capture_fits_a_run() -> TestResult {
         let version: fux_wire::command::Version =
             "%1:0.0.0.0.0:1-1".parse().map_err(|()| "version")?;
         let capture = fux_wire::answer::Captured::default_styled(version);
@@ -2308,7 +2308,7 @@ pub(crate) mod tests {
     /// each cell its own style when `styled` (the default-history styled
     /// capture at 9,931 lines), after `history` lines of 10 cells when it
     /// asks for history; and each wait with a change till `turns` waits,
-    /// then with a timeout. What the run's grant has left is recorded at
+    /// then with a timeout. What the run's region has left is recorded at
     /// each wait.
     struct Styled {
         capture: super::Reply,
@@ -2408,17 +2408,18 @@ pub(crate) mod tests {
         }
     }
 
-    /// What a run allocates past its grant, by what allocates it: the
-    /// machine's own stack, frames and `let` names, which these programs
-    /// keep within 1 MiB.
-    const MACHINE: usize = 1 << 20;
-    /// And one answer decoded and not yet imported, or one text conversion,
-    /// each within its own `MAX_ALLOCATED` grant, never at once; and a record
-    /// projection (`counts`), within `inspect::BYTES`.
+    /// What a run allocates past its region, by what allocates it: a
+    /// failure's message, and its words' own data before it is admitted
+    /// (the region holds the stack, calls, `let` names and every value).
+    /// Measured: none past the region for any of these programs.
+    const MACHINE: usize = 64 << 10;
+    /// And one answer decoded and not yet imported, within its own
+    /// `MAX_ALLOCATED` grant; and a record projection's fields (`counts`),
+    /// within `inspect::BYTES`, before it is admitted.
     const ANSWERED: usize = fux_wire::wire::MAX_ALLOCATED + fux_wire::inspect::BYTES + MACHINE;
 
     #[test]
-    fn a_run_holds_no_more_than_its_grant_and_a_fixed_overhead() -> TestResult {
+    fn a_run_holds_no_more_than_its_region_and_a_fixed_overhead() -> TestResult {
         use super::*;
         let hits = "define hits 1000 history capture string lines 0 swap each str 42 contains if 1 add then end end";
         let hits = format!(
@@ -2426,9 +2427,9 @@ pub(crate) mod tests {
         );
         let timeout = Err(Raise::Timeout);
         // A program, the capture's lines, how it ends, what it may allocate
-        // past the grant, and how many waits it makes.
+        // past the region, and how many waits it makes.
         for (code, lines, ended, overhead, waits) in [
-            // Distinct strings, built till the grant refuses one.
+            // Distinct strings, built till the region refuses one.
             (
                 "str x 1000 copies let k list begin k 100 copies false until end",
                 0,
@@ -2480,7 +2481,7 @@ pub(crate) mod tests {
             );
             assert!(peak <= RUN_BYTES + overhead, "{code}: {peak}");
             // Polling holds what one turn holds: each wait finds the same
-            // grant left.
+            // region left.
             let left = &asks.left;
             assert_eq!(left.len(), waits, "{code}");
             assert!(
@@ -2521,7 +2522,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn retained_captures_exhaust_the_grant_but_polling_releases_it() -> TestResult {
+    fn retained_captures_exhaust_the_region_but_polling_releases_it() -> TestResult {
         use super::*;
         struct Captures {
             count: usize,
