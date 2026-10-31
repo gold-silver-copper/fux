@@ -1,16 +1,22 @@
 //! Stores made in a region: every growth is reserved from it before the
 //! store allocates, and refused when the region can't hold it.
 use crate::region::{Refused, Region, Reservation};
-use std::borrow::Borrow;
-use std::collections::btree_map::Entry;
-use std::collections::{BTreeMap, TryReserveError};
+use std::collections::TryReserveError;
 use std::fmt;
-use std::mem::{align_of, size_of};
+use std::mem::size_of;
 use std::ops::{Deref, DerefMut};
 
 /// A store whose memory its region holds: what it has allocated, and while
 /// it grows, both its old and its new block. It derefs only to what can't
 /// grow (a slice, a `str`), so it grows through its own fallible methods.
+///
+/// Only a vector or a string can be one, as only their empty forms are
+/// known to allocate nothing:
+///
+/// ```compile_fail,E0599
+/// let region = fuxth_core::Region::new(0);
+/// let boxed = fuxth_core::Bounded::<Box<[u64; 32]>>::new(&region);
+/// ```
 #[derive(Debug)]
 pub struct Bounded<S> {
     store: S,
@@ -21,19 +27,6 @@ pub struct Bounded<S> {
 pub type BoundedVec<T> = Bounded<Vec<T>>;
 /// A string in a region.
 pub type BoundedString = Bounded<String>;
-/// An ordered map in a region. Its keys' and values' own heap is theirs to
-/// reserve: the map holds its nodes.
-pub type BoundedMap<K, V> = Bounded<BTreeMap<K, V>>;
-
-impl<S: Default> Bounded<S> {
-    /// Empty, holding nothing yet.
-    pub fn new(region: &Region) -> Self {
-        Self {
-            store: S::default(),
-            held: region.nothing(),
-        }
-    }
-}
 
 impl<S> Bounded<S> {
     /// The bytes its region holds for it.
@@ -46,7 +39,8 @@ impl<S> Bounded<S> {
     }
 }
 
-/// A vector's or a string's buffer, which grows by moving to a larger one.
+/// A vector's or a string's buffer, which grows by moving to a larger one,
+/// and whose empty form allocates nothing.
 trait Room: Default {
     /// Bytes an element takes.
     const SIZE: usize;
@@ -93,6 +87,14 @@ impl Room for String {
     reason = "Room is how a vector and a string grow alike"
 )]
 impl<S: Room> Bounded<S> {
+    /// Empty, holding nothing yet.
+    pub fn new(region: &Region) -> Self {
+        Self {
+            store: S::default(),
+            held: region.nothing(),
+        }
+    }
+
     /// Empty, with room for exactly `capacity` elements, reserved first.
     pub fn with_capacity(region: &Region, capacity: usize) -> Result<Self, Refused> {
         let mut made = Self::new(region);
@@ -125,19 +127,21 @@ impl<S: Room> Bounded<S> {
 
     /// Moves to a buffer with room for `more`: its bytes are reserved
     /// beside the old buffer's before it is allocated, and the old's given
-    /// back once it is freed. A size past `usize` asks for all of it, which
-    /// no region has left.
+    /// back once it is freed. A length or size past `usize` is refused
+    /// before anything changes.
     #[cold]
     fn regrow(&mut self, more: usize, double: bool) -> Result<(), Refused> {
         let len = self.len();
-        let needed = len.saturating_add(more);
+        let needed = len.checked_add(more).ok_or(Refused::Overflow)?;
+        let doubled = self.capacity().checked_mul(2).unwrap_or(needed);
         let capacity = match double {
-            true => needed.max(self.capacity().saturating_mul(2)).max(S::LEAST),
+            true => needed.max(doubled).max(S::LEAST),
             false => needed,
         };
         let before = self.held.bytes();
-        let new = capacity.saturating_mul(S::SIZE);
-        self.held.resize(before.saturating_add(new))?;
+        let new = capacity.checked_mul(S::SIZE).ok_or(Refused::Overflow)?;
+        let moving = before.checked_add(new).ok_or(Refused::Overflow)?;
+        self.held.resize(moving)?;
         if self
             .store
             .try_reserve_exact(capacity.saturating_sub(len))
@@ -146,7 +150,8 @@ impl<S: Room> Bounded<S> {
             self.held.resize(before)?;
             return Err(Refused::Alloc { bytes: new });
         }
-        self.held.resize(self.capacity().saturating_mul(S::SIZE))
+        let now = self.capacity().checked_mul(S::SIZE);
+        self.held.resize(now.ok_or(Refused::Overflow)?)
     }
 }
 
@@ -228,85 +233,28 @@ impl fmt::Write for Bounded<String> {
     }
 }
 
-/// The most bytes a map of `len` entries holds, from std's B-tree: every
-/// node but the root keeps 5 to 11 entries, so `len` entries take at most
-/// `len / 5 + 1` nodes, none larger than an internal one (11 keys, 11
-/// values, 12 edges, a parent and two counts, and their padding). A node
-/// is made, never freed, as an entry goes in, so this bounds its peak too.
-fn map_bytes<K, V>(len: usize) -> usize {
-    let align = align_of::<K>()
-        .max(align_of::<V>())
-        .max(align_of::<usize>());
-    let node = size_of::<[K; 11]>()
-        .saturating_add(size_of::<[V; 11]>())
-        .saturating_add(size_of::<[usize; 13]>())
-        .saturating_add(size_of::<[u16; 2]>())
-        .saturating_add(align.saturating_mul(3));
-    (len / 5).saturating_add(1).saturating_mul(node)
-}
+#[cfg(test)]
+mod tests {
+    use super::BoundedVec;
+    use crate::{Refused, Region};
 
-impl<K: Ord, V> Bounded<BTreeMap<K, V>> {
-    pub fn len(&self) -> usize {
-        self.store.len()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.store.is_empty()
-    }
-
-    /// Puts `value` at `key`, giving back the value it replaces. A new key
-    /// reserves its room first.
-    pub fn insert(&mut self, key: K, value: V) -> Result<Option<V>, Refused> {
-        let grown = map_bytes::<K, V>(self.store.len().saturating_add(1));
-        match self.store.entry(key) {
-            Entry::Occupied(mut at) => Ok(Some(at.insert(value))),
-            Entry::Vacant(at) => {
-                if grown > self.held.bytes() {
-                    self.held.resize(grown)?;
-                }
-                at.insert(value);
-                Ok(None)
-            }
-        }
-    }
-
-    pub fn remove<Q: Ord + ?Sized>(&mut self, key: &Q) -> Option<V>
-    where
-        K: Borrow<Q>,
-    {
-        let removed = self.store.remove(key)?;
-        // Smaller is always admitted.
-        let _ = self.held.resize(map_bytes::<K, V>(self.store.len()));
-        Some(removed)
-    }
-
-    pub fn get<Q: Ord + ?Sized>(&self, key: &Q) -> Option<&V>
-    where
-        K: Borrow<Q>,
-    {
-        self.store.get(key)
-    }
-
-    pub fn get_mut<Q: Ord + ?Sized>(&mut self, key: &Q) -> Option<&mut V>
-    where
-        K: Borrow<Q>,
-    {
-        self.store.get_mut(key)
-    }
-
-    pub fn contains_key<Q: Ord + ?Sized>(&self, key: &Q) -> bool
-    where
-        K: Borrow<Q>,
-    {
-        self.store.contains_key(key)
-    }
-
-    pub fn iter(&self) -> std::collections::btree_map::Iter<'_, K, V> {
-        self.store.iter()
-    }
-
-    pub fn clear(&mut self) {
-        self.store.clear();
-        let _ = self.held.resize(0);
+    #[test]
+    fn lengths_past_usize_and_what_the_system_refuses_change_nothing() {
+        let none = Region::new(0);
+        let mut units = BoundedVec::<()>::new(&none);
+        assert_eq!(units.push(()), Ok(()));
+        assert_eq!(units.reserve(usize::MAX), Err(Refused::Overflow));
+        let mut full = BoundedVec::<()>::new(&none);
+        assert_eq!(full.extend_from_slice(&[(); usize::MAX]), Ok(()));
+        assert_eq!(full.push(()), Err(Refused::Overflow));
+        assert_eq!((units.len(), full.len()), (1, usize::MAX));
+        // A region as large as memory admits it; the system can't.
+        let all = Region::new(usize::MAX);
+        let mut words = BoundedVec::<u64>::new(&all);
+        assert!(matches!(
+            words.reserve(usize::MAX / 8),
+            Err(Refused::Alloc { .. })
+        ));
+        assert_eq!((words.held(), all.remaining()), (0, usize::MAX));
     }
 }

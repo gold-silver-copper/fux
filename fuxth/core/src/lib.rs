@@ -9,7 +9,7 @@ mod code;
 mod grant;
 mod region;
 
-pub use bounded::{Bounded, BoundedMap, BoundedString, BoundedVec};
+pub use bounded::{Bounded, BoundedString, BoundedVec};
 pub use code::{Code, Failure};
 pub use grant::{Grant, Render};
 pub use region::{Refused, Region, Reservation};
@@ -23,7 +23,7 @@ pub const NESTING: u8 = 64;
 
 /// What `bounded_only!` makes std's growable stores in its module: a type
 /// nothing can be made of, so a store there can only be one of a region's
-/// ([`BoundedVec`], [`BoundedString`], [`BoundedMap`]).
+/// ([`BoundedVec`], [`BoundedString`]).
 pub struct Unbounded<T: ?Sized>(std::marker::PhantomData<T>);
 
 /// Written at the top of an owner's module, refuses std's growable stores

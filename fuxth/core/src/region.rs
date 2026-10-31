@@ -7,23 +7,44 @@ use std::rc::Rc;
 /// allocated, and given back when the store drops. A clone is the same
 /// budget. A child is carved from its parent whole, so a request's region
 /// comes out of its server's, and gives it back when the last of it drops.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct Region(Rc<Pool>);
 
-#[derive(Debug)]
 struct Pool {
     left: Grant,
     budget: usize,
     /// What this region holds of its parent's, if it was carved from one:
     /// given back as the region drops.
-    _carved: Option<Reservation>,
+    carved: Option<Reservation>,
+}
+
+impl Drop for Pool {
+    /// Gives back what each ancestor it alone keeps alive carved, in a loop:
+    /// a chain of children, however long, drops in constant stack.
+    fn drop(&mut self) {
+        let mut carved = self.carved.take();
+        while let Some(mut held) = carved {
+            // The parent's own carving, taken out when this is the last of
+            // the parent, so the parent drops holding nothing more.
+            carved = Rc::get_mut(&mut held.region.0).and_then(|parent| parent.carved.take());
+        }
+    }
+}
+
+/// Its own budget only: a parent's is its parent's to tell.
+impl fmt::Debug for Region {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Region")
+            .field("budget", &self.budget())
+            .field("remaining", &self.remaining())
+            .finish()
+    }
 }
 
 impl Region {
     /// What a region takes on the heap beside its budget, charged to the
     /// parent when it carves a child.
-    pub const OVERHEAD: usize =
-        std::mem::size_of::<Pool>().saturating_add(std::mem::size_of::<[usize; 2]>());
+    pub const OVERHEAD: usize = std::mem::size_of::<([usize; 2], Pool)>();
 
     pub fn new(budget: usize) -> Self {
         Self::of(budget, None)
@@ -33,13 +54,14 @@ impl Region {
         Self(Rc::new(Pool {
             left: Grant::new(budget),
             budget,
-            _carved: carved,
+            carved,
         }))
     }
 
     /// A region of `budget` bytes taken from this one, before it is made.
     pub fn child(&self, budget: usize) -> Result<Region, Refused> {
-        let carved = self.reserve(budget.saturating_add(Self::OVERHEAD))?;
+        let whole = budget.checked_add(Self::OVERHEAD);
+        let carved = self.reserve(whole.ok_or(Refused::Overflow)?)?;
         Ok(Self::of(budget, Some(carved)))
     }
 
@@ -125,6 +147,8 @@ pub enum Refused {
     },
     /// The system had no memory for what the region admitted.
     Alloc { bytes: usize },
+    /// A length or a size past what a `usize` holds.
+    Overflow,
 }
 
 impl fmt::Display for Refused {
@@ -139,6 +163,7 @@ impl fmt::Display for Refused {
                 "{asked} bytes more than the {left} left of a {budget}-byte budget"
             ),
             Refused::Alloc { bytes } => write!(f, "the system refused {bytes} bytes"),
+            Refused::Overflow => f.write_str("a size past what a usize holds"),
         }
     }
 }
@@ -180,6 +205,26 @@ mod tests {
         assert_eq!(parent.remaining(), 0, "the reservation keeps its region");
         drop(held);
         assert_eq!(parent.remaining(), 100 + Region::OVERHEAD);
+        assert_eq!(
+            Region::new(usize::MAX).child(usize::MAX).err(),
+            Some(Refused::Overflow)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_deep_child_whose_ancestors_it_alone_keeps_drops_in_constant_stack() -> Result<(), Refused>
+    {
+        const DEPTH: usize = 100_000;
+        let root = Region::new(DEPTH * Region::OVERHEAD);
+        let mut deepest = root.child(root.budget() - Region::OVERHEAD)?;
+        for _ in 1..DEPTH {
+            deepest = deepest.child(deepest.budget() - Region::OVERHEAD)?;
+        }
+        assert_eq!(deepest.budget(), 0);
+        assert_eq!(format!("{deepest:?}"), "Region { budget: 0, remaining: 0 }");
+        drop(deepest);
+        assert_eq!(root.remaining(), DEPTH * Region::OVERHEAD);
         Ok(())
     }
 }

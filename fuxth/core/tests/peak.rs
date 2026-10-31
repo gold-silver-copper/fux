@@ -2,7 +2,7 @@
 //! growth included, and give all of it back when they drop: counted by
 //! fux-vt's counting allocator, on the thread that does the work.
 use fux_vt_peak::ThreadPeak;
-use fuxth_core::{BoundedMap, BoundedString, BoundedVec, Refused, Region};
+use fuxth_core::{BoundedString, BoundedVec, Refused, Region};
 
 #[global_allocator]
 static HEAP: ThreadPeak = ThreadPeak;
@@ -48,16 +48,7 @@ fn each_store_holds_no_more_than_its_region_and_gives_it_all_back() -> Result<()
         assert!(text.held() <= BUDGET);
         Ok(())
     })?;
-    let map = peak_of(|region| {
-        let mut names = BoundedMap::<u64, [u64; 4]>::new(region);
-        assert!(full((0..).find_map(|i| names.insert(i, [i; 4]).err())));
-        let len = names.len() as u64;
-        // Taking out gives back room that putting in uses again.
-        (0..len / 2).for_each(|i| assert!(names.remove(&(i * 2)).is_some()));
-        assert!(full((len..).find_map(|i| names.insert(i, [i; 4]).err())));
-        Ok(())
-    })?;
-    for peak in [vec, string, map] {
+    for peak in [vec, string] {
         assert!(peak <= BUDGET + OVERHEAD, "{peak} bytes at the peak");
         assert!(peak >= BUDGET / 4, "the budget is used: {peak} bytes");
     }
@@ -69,12 +60,12 @@ fn a_child_region_bounds_its_stores_within_its_parent() -> Result<(), Refused> {
     let peak = peak_of(|server| {
         let request = server.child(BUDGET / 2)?;
         let mut reply = BoundedVec::<u8>::new(&request);
-        let mut names = BoundedMap::<u64, u64>::new(server);
+        let mut words = BoundedVec::<u64>::new(server);
         let mut log = BoundedString::new(server);
         let mut refused = [false; 3];
         for i in 0u64.. {
             refused[0] |= full(reply.extend_from_slice(&[7; 1000]).err());
-            refused[1] |= full(names.insert(i, i).err());
+            refused[1] |= full(words.push(i).err());
             refused[2] |= full(log.push('ü').err());
             if refused == [true; 3] {
                 break;
