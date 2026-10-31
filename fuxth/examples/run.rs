@@ -51,9 +51,9 @@ fn shown(value: &Value<Nothing>, region: &fuxth::Region) -> String {
     match value {
         Value::Int(n) => n.to_string(),
         Value::Bool(b) => b.to_string(),
-        Value::Str(_) | Value::List(_) | Value::App(_) => {
-            value.text(region).map_or_else(|f| f.message, |text| text.to_string())
-        }
+        Value::Str(_) | Value::List(_) | Value::App(_) => value
+            .text(region)
+            .map_or_else(|f| f.message, |text| text.to_string()),
     }
 }
 
@@ -69,7 +69,11 @@ fn run(path: &str) -> Result<Vec<String>, String> {
     let program = compiled.map_err(|e| e.to_string())?;
     let mut machine = Machine::new(program, Limits::default()).map_err(|e| e.to_string())?;
     match machine.run(&mut Bare, STEPS) {
-        Ok(Outcome::Finished) => Ok(machine.stack().iter().map(|v| shown(v, machine.region())).collect()),
+        Ok(Outcome::Finished) => Ok(machine
+            .stack()
+            .iter()
+            .map(|v| shown(v, machine.region()))
+            .collect()),
         Ok(Outcome::Paused | Outcome::Suspended(())) => {
             // The innermost step of the program's own, not the library's.
             let ours = machine

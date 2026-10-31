@@ -177,6 +177,28 @@ impl Text {
         })
     }
 
+    /// Bytes a string of `text` holds in its region, its shared box with
+    /// it: what its host's own budget is charged before it is made.
+    pub fn size(text: &str) -> usize {
+        let chars = match text.is_ascii() {
+            true => text.len(),
+            false => text.chars().count(),
+        };
+        Self::bound(text.len(), chars)
+    }
+
+    /// Bytes a string `bytes` long, of `chars` characters, holds in its
+    /// region, its shared box with it.
+    fn bound(bytes: usize, chars: usize) -> usize {
+        let marks = match bytes == chars {
+            true => 0,
+            false => chars.saturating_sub(1) / STRIDE,
+        };
+        (marks.saturating_mul(size_of::<usize>()))
+            .saturating_add(bytes)
+            .saturating_add(Shared::<Text>::BOX)
+    }
+
     /// The same text, in stores of its own in the same region.
     pub(crate) fn copy(&self) -> Result<Text, Refused> {
         Ok(Text {
@@ -266,6 +288,75 @@ impl Text {
     }
 }
 
+impl Text {
+    /// What `write` writes, at most `most` bytes, made in `region`: counted
+    /// first, then written into exactly the room reserved for it. Past
+    /// `most`, or a writer that fails, is `too_long`.
+    pub fn written(
+        region: &Region,
+        most: usize,
+        mut write: impl FnMut(&mut dyn std::fmt::Write) -> std::fmt::Result,
+    ) -> Result<Text, Failure> {
+        let mut count = Count::new(usize::MAX, most.min(region.remaining()));
+        write(&mut count).map_err(|_| text_limit())?;
+        count.fits(region, Text::bound)?;
+        let mut text = BoundedString::with_capacity(region, count.bytes)?;
+        write(&mut text).map_err(|_| text_limit())?;
+        Ok(Text::made(text)?)
+    }
+}
+
+/// What a writer writes, counted, not kept: refused past `most`
+/// characters (then `long`), or `left` bytes.
+struct Count {
+    bytes: usize,
+    left: usize,
+    chars: usize,
+    most: usize,
+    long: bool,
+}
+
+impl Count {
+    fn new(most: usize, left: usize) -> Self {
+        Self {
+            bytes: 0,
+            left,
+            chars: 0,
+            most,
+            long: false,
+        }
+    }
+
+    /// Refused, with nothing made, unless `region` holds what `holds` says
+    /// the text counted takes.
+    fn fits(&self, region: &Region, holds: fn(usize, usize) -> usize) -> Result<(), Refused> {
+        let (asked, left) = (holds(self.bytes, self.chars), region.remaining());
+        if asked > left {
+            let budget = region.budget();
+            return Err(Refused::Full {
+                asked,
+                left,
+                budget,
+            });
+        }
+        Ok(())
+    }
+}
+
+impl std::fmt::Write for Count {
+    fn write_str(&mut self, text: &str) -> std::fmt::Result {
+        self.chars = (self.chars.checked_add(text.chars().count())).ok_or(std::fmt::Error)?;
+        if self.chars > self.most {
+            self.long = true;
+            return Err(std::fmt::Error);
+        }
+        self.bytes = (self.bytes.checked_add(text.len()))
+            .filter(|bytes| *bytes <= self.left)
+            .ok_or(std::fmt::Error)?;
+        Ok(())
+    }
+}
+
 /// The marks in `text` when its first character is character `first`,
 /// and its first byte byte `byte`, of a string.
 fn starts(text: &str, first: usize, byte: usize) -> impl Iterator<Item = usize> {
@@ -324,6 +415,12 @@ impl<A> List<A> {
     /// The values it has room for.
     pub(crate) fn capacity(&self) -> usize {
         self.items.capacity()
+    }
+
+    /// Bytes a list of `n` values holds in its region, its shared box with
+    /// it: what its host's own budget is charged before it is made.
+    pub fn size(n: usize) -> usize {
+        (n.saturating_mul(size_of::<Value<A>>())).saturating_add(Shared::<Self>::BOX)
     }
 
     /// Room for `more` values past its last, reserved first: it grows as
@@ -425,12 +522,16 @@ impl<A: AppValue> Value<A> {
     /// The value as text, made in `region`: counted first, so its room
     /// and its writers' workspace are reserved before either is made.
     pub fn text(&self, region: &Region) -> Result<BoundedString, Failure> {
-        self.render(usize::MAX, region)?.ok_or_else(text_limit)
+        let bytes = |bytes, _| bytes;
+        self.render(usize::MAX, region, bytes)?
+            .ok_or_else(text_limit)
     }
 
-    /// The text, if it is at most `most` characters long, made in `region`.
+    /// The text, if it is at most `most` characters long, made in `region`:
+    /// refused before any of it is made unless the region holds all of it,
+    /// a string's box included.
     pub fn text_upto(&self, most: usize, region: &Region) -> Result<Option<Text>, Failure> {
-        let text = self.render(most, region)?;
+        let text = self.render(most, region, Text::bound)?;
         Ok(text.map(Text::made).transpose()?)
     }
 
@@ -442,42 +543,21 @@ impl<A: AppValue> Value<A> {
 
     /// The text, if it is at most `most` characters long: counted, then
     /// written into exactly the room reserved for it, beside the workspace
-    /// its writers take, which is held while they count and write.
-    fn render(&self, most: usize, region: &Region) -> Result<Option<BoundedString>, Failure> {
-        struct Count {
-            bytes: usize,
-            left: usize,
-            chars: usize,
-            most: usize,
-            long: bool,
-        }
-        impl std::fmt::Write for Count {
-            fn write_str(&mut self, text: &str) -> std::fmt::Result {
-                self.chars = self
-                    .chars
-                    .checked_add(text.chars().count())
-                    .ok_or(std::fmt::Error)?;
-                if self.chars > self.most {
-                    self.long = true;
-                    return Err(std::fmt::Error);
-                }
-                self.bytes = (self.bytes.checked_add(text.len()))
-                    .filter(|bytes| *bytes <= self.left)
-                    .ok_or(std::fmt::Error)?;
-                Ok(())
-            }
-        }
+    /// its writers take, which is held while they count and write. Unless
+    /// the region holds what `holds` says a text so long takes, it is
+    /// refused before any of it is made.
+    fn render(
+        &self,
+        most: usize,
+        region: &Region,
+        holds: fn(usize, usize) -> usize,
+    ) -> Result<Option<BoundedString>, Failure> {
         let workspace = region.reserve(self.scratch())?;
-        let mut count = Count {
-            bytes: 0,
-            left: region.remaining(),
-            chars: 0,
-            most,
-            long: false,
-        };
+        let mut count = Count::new(most, region.remaining());
         if let Err(failure) = self.write_text(&mut count) {
             return if count.long { Ok(None) } else { Err(failure) };
         }
+        count.fits(region, holds)?;
         let mut text = BoundedString::with_capacity(region, count.bytes)?;
         self.write_text(&mut text)?;
         drop(workspace);

@@ -26,6 +26,11 @@ impl PartialEq for Lease {
 }
 
 impl Lease {
+    /// `bytes` of `region`, held before what they pay for is made.
+    pub fn of(region: &Region, bytes: usize) -> Result<Self, Failure> {
+        Ok(Self(RefCell::new(Some(region.reserve(bytes)?))))
+    }
+
     /// Holds `bytes` of `region`: more taken first, or refused with nothing
     /// changed; less given back. What it held of another region it gives
     /// back once this one holds them.

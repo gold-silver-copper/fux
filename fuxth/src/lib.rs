@@ -51,10 +51,10 @@ pub use compile::{Compiler, Doc, Parsing, Program, Read, Vocabulary};
 pub use error::Error;
 pub use fuxth_core::{
     Bounded, BoundedString, BoundedVec, Code, Failure, Grant, LONGEST, NESTING, Refused, Region,
-    Render, Reservation, Unbounded, bounded_only,
+    Reservation, Unbounded, bounded_only,
 };
-pub use shared::{Lease, Shared};
 pub use machine::{Args, Builtin, Done, Host, Limits, Machine, Outcome};
+pub use shared::{Lease, Shared};
 pub use source::{Loader, SOURCE_MAX, Source, SourceImage, SourceLimits};
 pub use token::{Place, Token};
 pub use value::{AppValue, List, TOTAL, Text, Value};

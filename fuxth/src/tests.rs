@@ -594,9 +594,7 @@ fn each_walks_any_string_in_time_to_its_length() -> Result<(), Error> {
         )?;
         let mut host = Toy::default();
         assert_eq!(machine.run(&mut host, u64::MAX)?, Outcome::Suspended(0));
-        machine.import(string(
-            std::iter::repeat_n(c, 100_000).collect::<String>(),
-        ))?;
+        machine.import(string(std::iter::repeat_n(c, 100_000).collect::<String>()))?;
         let started = std::time::Instant::now();
         assert_eq!(machine.run(&mut host, u64::MAX)?, Outcome::Finished);
         assert_eq!(machine.stack(), ints(&[100_000]).as_slice());
@@ -889,14 +887,19 @@ fn concat_refuses_before_allocating_the_joined_value() -> Result<(), Error> {
         Ok(machine)
     };
     let room = Region::new(usize::MAX);
-    let used = room.budget().saturating_sub(ready(copy, &room)?.region().remaining());
+    let used = room
+        .budget()
+        .saturating_sub(ready(copy, &room)?.region().remaining());
     let copied = 1_000_000 * size_of::<Value<Ticket>>() - 4096;
     for (source, region) in [
         (
             "str x 1000 copies let s list 0 1001 range each drop s end end",
             region(),
         ),
-        ("0 1000000 range let l list l l l l l l l l l l end", region()),
+        (
+            "0 1000000 range let l list l l l l l l l l l l end",
+            region(),
+        ),
         (copy, Region::new(used.saturating_add(copied))),
     ] {
         let mut machine = ready(source, &region)?;
@@ -1057,8 +1060,7 @@ fn a_prepared_library_serves_every_clone() -> Result<(), Error> {
 
 #[test]
 fn sequence_mutation_preserves_shared_values() -> Result<(), Error> {
-    let list =
-        |items: Vec<Value<Ticket>>| list_of(items).map(|l| Value::List(Shared::new(l)));
+    let list = |items: Vec<Value<Ticket>>| list_of(items).map(|l| Value::List(Shared::new(l)));
     assert_eq!(
         run("list 1 end 2 push")?,
         list(ints(&[1, 2])).into_iter().collect::<Vec<_>>()
@@ -1395,10 +1397,7 @@ fn words_may_call_each_other() -> Result<(), Error> {
     let three = "define a dup 0 eq if drop str a else 1 sub b then end\n\
         define b dup 0 eq if drop str b else 1 sub c then end\n\
         define c dup 0 eq if drop str c else 1 sub a then end\n";
-    assert_eq!(
-        run(&format!("{three}7 a 9 a"))?,
-        [string("b"), string("a")]
-    );
+    assert_eq!(run(&format!("{three}7 a 9 a"))?, [string("b"), string("a")]);
     // Deeper than calls may nest, as a loop.
     let mut machine = Machine::new(compile(&format!("{three}300001 a"))?, Limits::default())?;
     assert_eq!(
@@ -1732,11 +1731,7 @@ fn carried_values_obey_their_contract() -> Result<(), Error> {
     for (code, value, admitted) in [
         (far, Value::Int(7), true),
         (far, Value::Bool(false), false),
-        (
-            far,
-            string("a message is not an integer payload"),
-            false,
-        ),
+        (far, string("a message is not an integer payload"), false),
         (Code::Host("negative"), Value::Int(7), false),
         (Code::Host("unknown"), Value::Int(7), false),
     ] {
@@ -1838,7 +1833,9 @@ fn refused_carried_storage_enters_the_resource_failure_handler() -> Result<(), E
     // As it waits, the run has room for 1,000 bytes more: its handler's
     // message and code, and not the payload carried.
     let room = Region::new(usize::MAX);
-    let used = room.budget().saturating_sub(waiting(&room)?.region().remaining());
+    let used = room
+        .budget()
+        .saturating_sub(waiting(&room)?.region().remaining());
     let mut machine = waiting(&Region::new(used.saturating_add(1000)))?;
     machine.raise_with(
         Failure::new(timeout, "timed out"),
@@ -1904,7 +1901,9 @@ fn native_imports_share_reservations_and_refuse_independent_storage() -> Result<
     };
     // Room for the stack's first values and two payloads, not three.
     let room = Region::new(usize::MAX);
-    let used = room.budget().saturating_sub(machine(&room)?.region().remaining());
+    let used = room
+        .budget()
+        .saturating_sub(machine(&room)?.region().remaining());
     let payload = Shared::<Vec<u8>>::BOX.saturating_add(64);
     let stack = 4 * size_of::<Value<Payload>>();
     let mut machine = machine(&Region::new(used + stack + 2 * payload + payload / 2))?;
@@ -2013,7 +2012,8 @@ fn strings_and_lists_hold_their_storage_in_their_region_till_they_drop() -> Resu
     let Value::Str(mut storage) = Value::<Ticket>::str(&region, &x)? else {
         return Err(Error::new(Code::Type, "test string", None));
     };
-    let text = Shared::get_mut(&mut storage).ok_or_else(|| Error::new(Code::Type, "shared", None))?;
+    let text =
+        Shared::get_mut(&mut storage).ok_or_else(|| Error::new(Code::Type, "shared", None))?;
     let more = Text::new(&Region::new(usize::MAX), &x)?;
     assert!(matches!(text.append(&more), Err(Refused::Full { .. })));
     assert_eq!(&**text, x.as_str());

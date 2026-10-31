@@ -10,11 +10,11 @@
 //! its open blocks kept on a compile-time stack. Every other word takes and
 //! gives values on the stack, and nothing else.
 use crate::error::Error;
-use crate::{Code, Region};
 use crate::machine::Builtin;
 use crate::token::Token;
 use crate::value::Value;
 pub use crate::vocabulary::Vocabulary;
+use crate::{Code, Region};
 use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 use std::rc::Rc;
@@ -497,7 +497,11 @@ impl<A: Clone> Compiler<A> {
                     let next = tokens.next().ok_or_else(|| missing(token, "a string"))?;
                     let made = Value::str(&self.region, &next.text);
                     let text = made.map_err(|refused| {
-                        Error::new(Code::TooLong, crate::Failure::from(refused).message, Some(next))
+                        Error::new(
+                            Code::TooLong,
+                            crate::Failure::from(refused).message,
+                            Some(next),
+                        )
                     })?;
                     self.code().push(Op::Push(text), token);
                     self.literal = true;

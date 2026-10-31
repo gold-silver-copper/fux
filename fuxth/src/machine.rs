@@ -602,7 +602,9 @@ impl<A: AppValue> Machine<A> {
                 }
                 Op::Mark => {
                     let mark = (self.stack.len(), Body::List);
-                    self.marks.push(mark).map_err(|refused| self.full(refused))?;
+                    self.marks
+                        .push(mark)
+                        .map_err(|refused| self.full(refused))?;
                 }
                 Op::Gather => {
                     let from = self
@@ -653,7 +655,9 @@ impl<A: AppValue> Machine<A> {
                         iters: self.iters.len(),
                     };
                     let mark = (self.stack.len(), body);
-                    self.marks.push(mark).map_err(|refused| self.full(refused))?;
+                    self.marks
+                        .push(mark)
+                        .map_err(|refused| self.full(refused))?;
                 }
                 Op::Tried(out) => {
                     self.marks.pop();

@@ -1193,7 +1193,8 @@ mod tests {
 
     #[test]
     fn library_components_keep_cycles_together_and_callees_first() -> Result<(), Error> {
-        let mut compiler = crate::Compiler::<()>::new(Vocabulary::default(), &crate::Region::new(1 << 20));
+        let mut compiler =
+            crate::Compiler::<()>::new(Vocabulary::default(), &crate::Region::new(1 << 20));
         compiler.library(
             "graph",
             concat!(
@@ -1250,7 +1251,8 @@ mod tests {
         ] {
             let mut decisions = Vec::new();
             for warm in [false, true] {
-                let mut ready = crate::Compiler::<()>::new(Vocabulary::default(), &crate::Region::new(1 << 20));
+                let mut ready =
+                    crate::Compiler::<()>::new(Vocabulary::default(), &crate::Region::new(1 << 20));
                 ready.library("library", source)?;
                 if let Some(word) = keep_call {
                     // Keep the one-step m as a call, so priming it uses the cache.
@@ -1276,7 +1278,8 @@ mod tests {
 
     #[test]
     fn a_later_library_cannot_demote_user_definitions() -> Result<(), Error> {
-        let mut compiler = crate::Compiler::<()>::new(Vocabulary::default(), &crate::Region::new(1 << 20));
+        let mut compiler =
+            crate::Compiler::<()>::new(Vocabulary::default(), &crate::Region::new(1 << 20));
         compiler.add(&crate::token::source(
             "user",
             "define bad list drop end end",
@@ -1297,7 +1300,8 @@ mod tests {
 
     #[test]
     fn library_caches_isolate_failures_and_changed_definitions() -> Result<(), Error> {
-        let mut library = crate::Compiler::<()>::new(Vocabulary::default(), &crate::Region::new(1 << 20));
+        let mut library =
+            crate::Compiler::<()>::new(Vocabulary::default(), &crate::Region::new(1 << 20));
         library.library(
             "library",
             "# -- n : an integer\ndefine value 1 2 add end\n\
@@ -1349,7 +1353,8 @@ mod tests {
 
     #[test]
     fn skipped_library_words_are_checked_when_later_reached() -> Result<(), Error> {
-        let mut compiler = crate::Compiler::<()>::new(Vocabulary::default(), &crate::Region::new(1 << 20));
+        let mut compiler =
+            crate::Compiler::<()>::new(Vocabulary::default(), &crate::Region::new(1 << 20));
         compiler.library(
             "library",
             "# -- n : a forward call\ndefine first second end\n\

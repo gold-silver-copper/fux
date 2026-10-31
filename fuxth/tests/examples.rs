@@ -39,12 +39,9 @@ fn run(name: &str, text: &str) -> Ended {
     match machine.run(&mut host, 50_000_000) {
         Ok(Outcome::Finished) => {
             let left: Vec<String> = (host.printed.iter().cloned())
-                .chain(
-                    machine
-                        .stack()
-                        .iter()
-                        .map(|v| (v.text(machine.region())).map_or_else(|f| f.message, |t| t.to_string())),
-                )
+                .chain(machine.stack().iter().map(|v| {
+                    (v.text(machine.region())).map_or_else(|f| f.message, |t| t.to_string())
+                }))
                 .collect();
             Ended::Left(left.join(" "))
         }
