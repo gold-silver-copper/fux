@@ -161,19 +161,26 @@ fn a_program_read_from_stdin_follows() -> Outcome {
 }
 
 /// A program that did something outside fux's process before it met the
-/// server is refused, saying why and what to do, rather than run twice.
+/// server, on stderr or stdout, is refused, saying why and what to do,
+/// rather than run twice.
 fn a_program_that_acted_is_not_followed() -> Outcome {
-    let ran = against_another_protocol("acted", &["str", "hi", "warn", "ls"], "")?;
-    check(ran.status == Some(1) && ran.stdout.is_empty(), &ran)?;
-    check(
-        ran.stderr.starts_with("hi\nfux: mismatch: ")
-            && ran
-                .stderr
-                .contains("the server speaks protocol 999 (fux 9.9.9)")
-            && ran.stderr.contains("fux force-kill-server")
-            && ran.stderr.contains("running it again would do twice"),
-        &ran,
-    )
+    for (args, stdout, stderr) in [
+        (["str", "hi", "warn", "ls"], "", "hi\nfux: mismatch: "),
+        (["str", "hi", "print", "ls"], "hi\n", "fux: mismatch: "),
+    ] {
+        let ran = against_another_protocol("acted", &args, "")?;
+        check(ran.status == Some(1) && ran.stdout == stdout, &ran)?;
+        check(
+            ran.stderr.starts_with(stderr)
+                && ran
+                    .stderr
+                    .contains("the server speaks protocol 999 (fux 9.9.9)")
+                && ran.stderr.contains("fux force-kill-server")
+                && ran.stderr.contains("running it again would do twice"),
+            &ran,
+        )?;
+    }
+    Ok(())
 }
 
 fn check(holds: bool, ran: &Ran) -> Outcome {

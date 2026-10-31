@@ -887,11 +887,45 @@ enum Follow {
     /// stays.
     #[default]
     Never,
-    /// A command line's, before it did anything outside the process: with
-    /// its program, if it read that from stdin.
-    Before(Option<String>),
-    /// A command line's once it did: run again, it would do it twice.
-    After,
+    /// A command line's, until it has acted: with its program, if it read
+    /// that from stdin.
+    Command {
+        program: Option<String>,
+        acted: Acted,
+    },
+}
+
+/// Whether a command line's program did anything outside its process yet,
+/// which running it again would do twice. Everything it does outside goes
+/// through one of two places, which mark it: its requests and local actions
+/// (`Cli`'s `Asks`), each once done, so that the connection that met another
+/// protocol is not one; and its stdout (`Watched`), before each write.
+#[derive(Clone, Default)]
+struct Acted(Rc<std::cell::Cell<bool>>);
+
+impl Acted {
+    fn mark(&self) {
+        self.0.set(true);
+    }
+    fn marked(&self) -> bool {
+        self.0.get()
+    }
+}
+
+/// A command line's stdout, which marks its program acted.
+struct Watched<'a> {
+    out: &'a mut dyn Write,
+    acted: Acted,
+}
+
+impl Write for Watched<'_> {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        self.acted.mark();
+        self.out.write(bytes)
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        self.out.flush()
+    }
 }
 
 /// What stops a run from another thread (the prefix then Esc, for a key's
@@ -971,16 +1005,20 @@ impl Server {
     /// followed first, if this run follows one.
     fn failed(&self, error: client::Error) -> Failed {
         client_failed(match (&self.follow, error) {
-            (Follow::Before(program), client::Error::Mismatch { said, server }) => {
+            (Follow::Command { program, acted }, client::Error::Mismatch { said, server })
+                if !acted.marked() =>
+            {
                 client::follow(said, server, program.as_deref())
             }
-            (Follow::After, client::Error::Mismatch { said, .. }) => client::Error::Unfollowed {
-                said,
-                why: "the program already did something outside fux's own process (asked \
-                      a server, started or stopped one, warned, or read stdin), which \
-                      running it again would do twice"
-                    .to_owned(),
-            },
+            (Follow::Command { .. }, client::Error::Mismatch { said, .. }) => {
+                client::Error::Unfollowed {
+                    said,
+                    why: "the program already did something outside fux's own process \
+                          (printed, warned, asked a server, started or stopped one, or read \
+                          stdin), which running it again would do twice"
+                        .to_owned(),
+                }
+            }
             (_, error) => error,
         })
     }
@@ -1075,11 +1113,12 @@ impl Asks for Server {
 }
 
 /// The command line's: a server, the client's own words, where the program
-/// came from, and the status `exit` gave, once it has.
+/// came from, the status `exit` gave, once it has, and whether it acted.
 pub struct Cli {
     server: Server,
     from: Given,
     status: Option<u8>,
+    acted: Acted,
 }
 
 /// Where a command line's program came from.
@@ -1096,7 +1135,7 @@ enum Given {
 impl Asks for Cli {
     fn ask(&mut self, asked: &Asked) -> Result<Reply, Failed> {
         let reply = self.server.ask(asked);
-        self.server.follow = Follow::After;
+        self.acted.mark();
         reply
     }
     fn local(
@@ -1114,7 +1153,7 @@ impl Asks for Cli {
                 | Local::Shell(Shell::Args | Shell::ReadFile(_) | Shell::Getenv(_))
         );
         if !reads {
-            self.server.follow = Follow::After;
+            self.acted.mark();
         }
         values
     }
@@ -1686,17 +1725,26 @@ pub fn main(args: &[String], out: &mut dyn Write) -> Result<u8, Failed> {
         writeln!(out, "{}", env!("CARGO_PKG_VERSION")).map_err(output_failed)?;
         return Ok(0);
     }
-    let (tokens, from, stdin) = program(args)?;
+    let (tokens, from, program) = program(args)?;
     let mut machine = compiled(None, &tokens)?;
     let mut state = Draft::default();
-    let mut host = Host::cli(client::context(), &mut state, out);
+    let acted = Acted::default();
+    let mut out = Watched {
+        out,
+        acted: acted.clone(),
+    };
+    let mut host = Host::cli(client::context(), &mut state, &mut out);
     let mut cli = Cli {
         server: Server {
-            follow: Follow::Before(stdin),
+            follow: Follow::Command {
+                program,
+                acted: acted.clone(),
+            },
             ..Server::default()
         },
         from,
         status: None,
+        acted,
     };
     let ran = run_capped(&mut machine, &mut host, &mut cli, Some(LINE_STEPS), None);
     // What the words before a failure left is printed too: their answers.
