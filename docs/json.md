@@ -449,6 +449,11 @@ wait's own (above). CODE stays; every one fux gives
   `stack_overflow`, `call_depth`, `type`, `div_by_zero`, `overflow`,
   `unset`, `unused`, `range`, `fail`, `too_long`, `bad_codes`, `contract`.
 
+A bound crossed fails `too_long` (ask for less) whether the word or the
+server refuses it, a size no screen can have `size`: a layout past its
+nodes or depth, callback source past its bytes, a screen past 4096 a side.
+`docs/codes.txt` lists every code with its exit status.
+
 A program catches the failures its words give, by code, with `try` (`fux
 help try`); a code no running word gives is refused before it runs. Of the
 language's own, fux's words give `unused`, `unknown_word` and `bad_name` as

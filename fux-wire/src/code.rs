@@ -179,8 +179,9 @@ codes! {
     NoMarks "no_marks",
     /// A program that could not start.
     Start "start",
-    /// A size no pane or tab can have: a client's screen past 4096
-    /// (`command::MOST`) a side (`attach`, its terminal resized), or with
+    /// A size no pane or tab can have: a screen past 4096
+    /// (`command::MOST`) a side (`attach`, its terminal resized, the word
+    /// `size`), or with
     /// no room for a pane below its bar as it starts a server's first
     /// shell; a new tab or workspace given none, whose caller has no
     /// screen that sizes panes and no tab; a pane's

@@ -622,6 +622,12 @@ impl std::fmt::Display for Failed {
     }
 }
 
+impl From<fux_wire::code::Error> for Failed {
+    fn from(error: fux_wire::code::Error) -> Failed {
+        Failed::new(error.code(), error.to_string())
+    }
+}
+
 impl From<fuxth::Error> for Failed {
     /// A mistake compiling, told as fux tells it.
     fn from(error: fuxth::Error) -> Failed {
@@ -3041,5 +3047,109 @@ pub(crate) mod tests {
                 "{code}: {error}"
             );
         }
+    }
+
+    /// A server that finds what an id names, and refuses anything else a
+    /// word would ask of it.
+    struct Refuse;
+    impl super::Asks for Refuse {
+        fn ask(&mut self, asked: &super::Asked) -> Result<super::Reply, super::Failed> {
+            use fux_wire::command::{Command, Request};
+            let refused = || super::Failed::new(super::Code::Usage, "the word asked");
+            let Request::Do(Command::Resolve { text, .. }) = &asked.request else {
+                return Err(refused());
+            };
+            let id = text.parse().map_err(|()| refused())?;
+            Ok(super::Body::Found(id).into())
+        }
+    }
+
+    /// A bound gives one code whichever side refuses first: `failed`'s
+    /// codes, the word's then the server's (or the screen's admission).
+    fn both(failed: [Result<(), super::Failed>; 2]) -> [Option<fux_wire::code::Code>; 2] {
+        failed.map(|f| f.err().map(|f| f.code))
+    }
+
+    /// A layout of more nodes than `NODES_MAX` is `too_long` from
+    /// `arrange` and from the server alike.
+    #[test]
+    fn a_layout_past_its_nodes_is_too_long_from_the_word_and_the_server() -> TestResult {
+        use super::testing::{InProcess, attached};
+        use fux_wire::command::Command;
+        use fux_wire::layout::{NODES_MAX, Node};
+        let (mut session, _) = attached(8, 30)?;
+        let revision = evaluate(
+            "@1 str layout_revision get",
+            None,
+            &mut InProcess(&mut session),
+            &mut Vec::new(),
+        )?;
+        let Some(fuxth::Value::Str(revision)) = revision.first() else {
+            return Err("a layout revision".into());
+        };
+        let word = format!(
+            "@1 str {} list 0 {} range each drop %1 end end arrange",
+            &***revision,
+            NODES_MAX + 1
+        );
+        let word = evaluate(&word, None, &mut Refuse, &mut Vec::new());
+        let asked = fux_wire::protocol::Asked {
+            after: None,
+            context: fux_wire::protocol::Context::default(),
+            request: Command::Arrange {
+                target: fux_wire::id::TabId::of(1),
+                revision: revision.parse().map_err(|()| "revision")?,
+                nodes: vec![Node::Pane(fux_wire::id::PaneId::of(1)); NODES_MAX + 1],
+            }
+            .into(),
+        };
+        use fux_wire::protocol::Response;
+        let server = match session.answer(&asked).response {
+            Response::Failed { code, message } => Err(super::Failed::new(code, message)),
+            other @ (Response::Returned(_) | Response::Answered(_)) => {
+                return Err(format!("{other:?}").into());
+            }
+        };
+        let too_long = Some(fux_wire::code::Raise::TooLong.into());
+        assert_eq!(both([word.map(drop), server]), [too_long; 2]);
+        Ok(())
+    }
+
+    /// Callback source past `ACTION_MAX` is `too_long` from the word that
+    /// makes it and from the screen that admits it alike.
+    #[test]
+    fn callback_source_past_its_bytes_is_too_long_from_the_word_and_admission() -> TestResult {
+        use fux_wire::callback::{Callback, Confirm, Open};
+        let long: String = std::iter::repeat_n(' ', crate::screens::ACTION_MAX + 1).collect();
+        let word = format!("str c1 client str sure? str '{long}' confirm");
+        let word = evaluate(&word, None, &mut Refuse, &mut Vec::new());
+        let open = Open::Confirm(Confirm {
+            question: "sure?".into(),
+            action: Callback {
+                code: long,
+                args: Vec::new(),
+            },
+        });
+        let context = fux_wire::protocol::Context::default();
+        let admitted = super::admit(open, None, &context);
+        let too_long = Some(fux_wire::code::Raise::TooLong.into());
+        assert_eq!(both([word.map(drop), admitted.map(drop)]), [too_long; 2]);
+        Ok(())
+    }
+
+    /// A screen past `command::MOST` a side is `size` from the word `size`
+    /// and from the server, as a client's terminal is resized, alike.
+    #[test]
+    fn a_screen_past_most_is_size_from_the_word_and_the_server() -> TestResult {
+        use super::testing::attached;
+        let most = fux_wire::command::MOST;
+        let word = format!("opts {} 24 size new-workspace", most + 1);
+        let word = evaluate(&word, None, &mut Refuse, &mut Vec::new());
+        let (mut session, client) = attached(8, 30)?;
+        let server = session.resize(client, 24, most + 1, std::time::Instant::now());
+        let server = server.map(drop).map_err(super::Failed::from);
+        let size = Some(fux_wire::code::Code::Size);
+        assert_eq!(both([word.map(drop), server]), [size; 2]);
+        Ok(())
     }
 }

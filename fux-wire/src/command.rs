@@ -354,14 +354,17 @@ wire! {
 /// The most rows, and columns, a client's view has.
 pub const MOST: u16 = 4096;
 
-/// `rows` by `cols`, if a client's view can be that size: 1 to `MOST`
-/// each way; else why not.
-pub fn size(rows: u16, cols: u16) -> Result<(u16, u16), String> {
-    let fits = |n: u16| (1..=MOST).contains(&n);
-    match fits(rows) && fits(cols) {
-        true => Ok((rows, cols)),
-        false => Err(format!(
-            "{cols} columns by {rows} rows: a client is 1 to {MOST} each way"
+/// `rows` by `cols`, if a client's view, and so a screen a tab is laid out
+/// on, can be that size: 1 to `MOST` each way; else `size`, from the word
+/// that gives one or the server alike.
+pub fn size(rows: impl Into<i64>, cols: impl Into<i64>) -> Result<(u16, u16), crate::code::Error> {
+    let (rows, cols) = (rows.into(), cols.into());
+    let fits = |n: i64| u16::try_from(n).ok().filter(|n| (1..=MOST).contains(n));
+    match (fits(rows), fits(cols)) {
+        (Some(rows), Some(cols)) => Ok((rows, cols)),
+        (None, _) | (_, None) => Err(crate::code::fail(
+            crate::code::Raise::Size,
+            format!("{cols} columns by {rows} rows: a screen is 1 to {MOST} each way"),
         )),
     }
 }
@@ -374,11 +377,11 @@ pub struct Screen(fux_vt::Size);
 
 impl Screen {
     /// `rows` by `cols`, if a screen can be that size; else why not.
-    pub fn new(rows: u16, cols: u16) -> Result<Screen, String> {
+    pub fn new(rows: impl Into<i64>, cols: impl Into<i64>) -> Result<Screen, crate::code::Error> {
         let (rows, cols) = size(rows, cols)?;
         fux_vt::Size::new(rows, cols)
             .map(Screen)
-            .map_err(|e| e.to_string())
+            .map_err(|e| crate::code::fail(crate::code::Raise::Size, e.to_string()))
     }
     pub fn size(self) -> fux_vt::Size {
         self.0

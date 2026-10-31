@@ -516,7 +516,8 @@ read-file`. `X warn` prints on stderr:
 - A tab no client shows, or only clients that watch, is laid out on its
   `size`; `TAB 40 12 resize` changes it, `resize-auto` gives it back to a
   client's screen, `PANE 95 percent str horizontal resize-pane` sizes a pane in its tab. A
-  size that cannot be had is refused, and nothing changes; so is a split
+  size that cannot be had is refused (`size`, as is a screen past 4096 a
+  side, from `COLS ROWS size` or the server), and nothing changes; so is a split
   or a move that would hide a pane on the tab's own size or on a screen
   showing it (but one that sizes nothing: that only watches, or has no
   room below its bar).

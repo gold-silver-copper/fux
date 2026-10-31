@@ -743,7 +743,10 @@ mod tests {
         let (mut s, c) = session()?;
         let long: String =
             std::iter::repeat_n("1 drop ", fux::screens::ACTION_MAX / 7 + 1).collect();
-        for (code, said) in [("nosuch", "no such word"), (long.as_str(), "exceeds")] {
+        for (code, said) in [
+            ("nosuch", "no such word"),
+            (long.as_str(), "too_long: confirm: callback source"),
+        ] {
             let open = format!("me str sure? str '{code}' confirm");
             let refused = output_as(&mut s, Some(c), &open).err().unwrap_or_default();
             assert!(refused.contains(said), "{refused}");
