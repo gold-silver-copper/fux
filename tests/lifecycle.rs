@@ -96,7 +96,7 @@ impl Bare {
 
 impl Drop for Bare {
     fn drop(&mut self) {
-        let _ = self.fux(&["force-kill-server"]);
+        let _ = self.fux(&["kill-server"]);
         let _ = std::fs::remove_dir_all(&self.dir);
     }
 }
@@ -243,10 +243,7 @@ fn a_pane_runs_the_clients_shell_else_bin_sh() -> Outcome {
                         .any(|line| line == expected))
             })
         })();
-        let _ = Command::new(FUX)
-            .args(["force-kill-server"])
-            .env("FUX_SOCKET", &socket)
-            .output();
+        stop_server(&socket);
         let _ = child.wait();
         let _ = std::fs::remove_dir_all(&dir);
         shown?;

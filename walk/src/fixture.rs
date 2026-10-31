@@ -359,6 +359,7 @@ impl Fixture {
         let size = fux_vt::Size::new(9000, 9000).map_err(|e| e.to_string())?;
         let attach = Attach {
             of: None,
+            headless: false,
             size,
             target: None,
             read_only: false,
@@ -417,8 +418,11 @@ impl Fixture {
         let pids: Vec<i32> = crate::world::World::read(self)
             .map(|w| w.panes().map(|p| p.pid).collect())
             .unwrap_or_default();
-        let _ = self.fux(&["force-kill-server"]);
         if let Some(mut server) = self.server.take() {
+            // Stopped as a person stops it: `kill` on its process.
+            if let Some(pid) = i32::try_from(server.id()).ok().and_then(fuxix::process::Pid::from_raw) {
+                let _ = fuxix::process::kill(pid, fuxix::process::Signal::Term);
+            }
             let deadline = after(Duration::from_secs(5));
             while server.try_wait().ok().flatten().is_none() && Instant::now() < deadline {
                 std::thread::sleep(Duration::from_millis(10));

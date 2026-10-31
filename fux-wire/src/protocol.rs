@@ -69,8 +69,8 @@ impl std::fmt::Display for Error {
 impl std::error::Error for Error {}
 
 /// A client and a server of different protocols, which understand each
-/// other's `Hello` and nothing after it but `Kill`: what both sides say of
-/// it, the server's protocol and version.
+/// other's `Hello` and nothing after it: what both sides say of it, the
+/// server's protocol and version.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Mismatch {
     pub protocol: u32,
@@ -81,7 +81,7 @@ impl Mismatch {
     /// Whether a client that said `client` can go on with a server that
     /// said `server`: either may ask, holding both.
     pub fn between(client: &Hello, server: &Hello) -> Result<(), Self> {
-        if client.role == Role::Kill || client.protocol == server.protocol {
+        if client.protocol == server.protocol {
             return Ok(());
         }
         Err(Self {
@@ -99,7 +99,7 @@ impl std::fmt::Display for Mismatch {
         };
         write!(
             f,
-            "the server runs {theirs}; use a matching client to keep its panes running. `fux force-kill-server` stops it and its panes; a new server does not resume them",
+            "the server runs {theirs}; use a matching client to keep its panes running. `kill` on the `server_pid` `fux status` gives stops it and its panes; a new server does not resume them",
         )
     }
 }
@@ -134,17 +134,10 @@ wire! {
     /// payload.
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
     pub enum Role {
-        /// An interactive client: `Attach`, then input.
+        /// A client that shows the server: `Attach`, then input.
         Attach,
         /// One command, then its output.
         Command,
-        /// Stop the server. Accepted whatever the protocol version, so that
-        /// `fux force-kill-server` can always stop a server from another fux version:
-        /// for that, a `Hello`'s frame and payload never change.
-        Kill,
-        /// A client with no terminal (`opts COLS ROWS size attach`): `Attach`, then
-        /// nothing but its end; the server sizes it (`resize`).
-        Headless,
     }
 }
 
@@ -308,7 +301,8 @@ macro_rules! frames {
 wire! {
     /// Both ways, the first frame from each side: a client's says what it is
     /// for, the server's answer the role it took. Its fields go in the order
-    /// declared, which never changes, nor do they (`Role::Kill`).
+    /// declared, which never changes, nor do they: a server of any protocol
+    /// reads it, to say which one it speaks.
     #[derive(Clone, Debug, PartialEq, Eq)]
     pub struct Hello {
         pub protocol: u32,
@@ -338,10 +332,13 @@ impl OneKind for Hello {
 }
 
 wire! {
-    /// An attaching client and its optional conditional first launch.
+    /// An attaching client and its optional conditional first launch. A
+    /// headless one has no terminal (`opts COLS ROWS size attach`): nothing
+    /// but its end follows, and the server sizes it (`resize`).
     #[derive(Clone, Debug, PartialEq, Eq)]
     pub struct Attach {
         pub of: Option<crate::command::Run>,
+        pub headless: bool,
         pub size: fux_vt::Size,
         pub target: Option<crate::command::AttachTarget>,
         pub read_only: bool,
@@ -359,6 +356,7 @@ impl Attach {
     pub fn of(size: fux_vt::Size, presentation: crate::presentation::Presentation) -> Attach {
         Attach {
             of: None,
+            headless: false,
             size,
             target: None,
             read_only: false,
@@ -555,14 +553,12 @@ impl From<crate::answer::PaneResults> for Reply {
 frames! {
     /// The server's first frames to a client: its `Hello`, the answer to
     /// the client's; or, before or after it, an `Exit` saying why it goes no
-    /// further; and to a `Kill`, `Done` as it stops. A client of any version
-    /// reads these, so their kinds and payloads never change.
+    /// further. A client of any version reads these, so their kinds and
+    /// payloads never change.
     #[derive(Clone, Debug, PartialEq, Eq)]
     pub enum Greeting<'a> {
         Hello(hello: Hello) = HELLO,
         Exit(reason: &'a str) = EXIT,
-        /// The kill's answer, with its status: 0.
-        Done(status: u8) = 11,
     }
 }
 
@@ -733,7 +729,7 @@ mod tests {
     /// release; with one of another, it is told the server's protocol and
     /// release; a kill goes on with any.
     #[test]
-    fn only_the_protocol_decides_a_mismatch_and_a_kill_has_none() {
+    fn only_the_protocol_decides_a_mismatch() {
         let hello = |protocol, version: &str, role| Hello {
             protocol,
             version: version.into(),
@@ -751,9 +747,6 @@ mod tests {
         assert_eq!(other, Err(theirs(55, "0.36.0")));
         let both = between(&hello(23, "0.37.0", Role::Command));
         assert_eq!(both, Err(theirs(23, "0.37.0")));
-        let kill = hello(54, "0.36.0", Role::Kill);
-        let server = hello(23, "0.37.0", Role::Kill);
-        assert_eq!(Mismatch::between(&kill, &server), Ok(()));
     }
 
     /// A frame decodes only from the bytes it encodes to: an `Act` whose
@@ -802,7 +795,7 @@ mod tests {
             role,
         };
         round_trip!(Hello, 1, hello(Role::Attach));
-        round_trip!(Greeting, 1, Greeting::Hello(hello(Role::Kill)));
+        round_trip!(Greeting, 1, Greeting::Hello(hello(Role::Command)));
         let size = fux_vt::Size::from((std::num::NonZeroU16::MIN, std::num::NonZeroU16::MAX));
         let presentation = crate::presentation::sample()?;
         let workspace = Some(crate::command::WsRef::Name("main".to_owned()));
@@ -811,6 +804,7 @@ mod tests {
             2,
             Attach {
                 of: None,
+                headless: false,
                 size,
                 target: workspace.map(crate::command::AttachTarget::Workspace),
                 read_only: false,
@@ -824,6 +818,7 @@ mod tests {
             2,
             Attach {
                 of: None,
+                headless: true,
                 size,
                 target: workspace.map(crate::command::AttachTarget::Workspace),
                 read_only: true,
@@ -887,7 +882,6 @@ mod tests {
         round_trip!(Greeting, 8, Greeting::Exit("refused"));
         round_trip!(ToCommand, 8, ToCommand::Exit("stopped"));
         round_trip!(ToAttached, 8, ToAttached::Exit("detached"));
-        round_trip!(Greeting, 11, Greeting::Done(2));
         round_trip!(ToAttached, 12, ToAttached::Welcome(ClientId::of(2), run));
         round_trip!(ToAttached, 14, ToAttached::Ended(7));
         round_trip!(
@@ -911,28 +905,20 @@ mod tests {
         }
         round_trip!(ToCommand, 17, ToCommand::Part(Cow::Borrowed(b"reply")));
         round_trip!(ToCommand, 18, ToCommand::PartsEnd);
-        // A Hello's bytes never change, so that `Kill` reaches a server of
-        // any version: the length, the kind, the protocol, the role, then
-        // the version's length and bytes.
-        let kill = Hello {
+        // A Hello's bytes never change, so that a server of any version
+        // reads it: the length, the kind, the protocol, the role, then the
+        // version's length and bytes.
+        let command = Hello {
             protocol: 9,
             version: "0.13.0".into(),
-            role: Role::Kill,
+            role: Role::Command,
         };
-        let head = [0, 0, 0, 16, 1, 0, 0, 0, 9, 2, 0, 0, 0, 6];
-        assert_eq!(kill.encode(), Ok([&head[..], b"0.13.0"].concat()));
-        // Nor do the kill's answer's, which a client of any version reads
-        // after it: the length, the kind, and its status, 0.
-        let done = Greeting::Done(0);
-        assert_eq!(done.encode(), Ok(vec![0, 0, 0, 2, 11, 0]));
+        let head = [0, 0, 0, 16, 1, 0, 0, 0, 9, 1, 0, 0, 0, 6];
+        assert_eq!(command.encode(), Ok([&head[..], b"0.13.0"].concat()));
         // Each role's byte is the wire format's too: after the length, the
-        // kind and the protocol's four bytes.
-        for (role, byte) in [
-            (Role::Attach, 0),
-            (Role::Command, 1),
-            (Role::Kill, 2),
-            (Role::Headless, 3),
-        ] {
+        // kind and the protocol's four bytes. Byte 2 was a kill's, which an
+        // older server takes whatever the protocol, so no role has it.
+        for (role, byte) in [(Role::Attach, 0), (Role::Command, 1)] {
             let encoded = hello(role).encode().unwrap_or_default();
             assert_eq!(encoded.get(9), Some(&byte), "{role:?}");
         }

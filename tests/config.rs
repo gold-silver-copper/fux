@@ -50,7 +50,7 @@ fn only_a_typing_terminal_loads_the_user_config() -> Outcome {
         }
         Ok(())
     })();
-    let _ = server.fux_env(&["force-kill-server"], &env);
+    stop_server(std::path::Path::new(socket));
     started?;
     assert!(server.ok(&["list-keys"])?.contains("str C-b prefix"));
     for args in [

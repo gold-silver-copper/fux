@@ -55,7 +55,7 @@ def jobs(bin_, tag):
     line = "x = 'the quick brown fox jumps over 42'"
     line = line + " " * (40 - len(line))
     out["40-char line + Enter, python REPL (raw)"] = ms(lambda: run(bin_, e, py, "str", line, "text", "str", "Enter", "key", "send-keys"))
-    run(bin_, e, "force-kill-server")
+    subprocess.run(["sh", "-c", 'pid=$("$0" status str server_pid get) && kill "$pid"', bin_], env=e, capture_output=True)
     return out
 
 

@@ -439,12 +439,9 @@ impl Drop for Server {
             self.log()
         );
         if let Some(mut child) = self.child.take() {
-            let _ = Command::new(fux())
-                .args(["force-kill-server"])
-                .env("FUX_SOCKET", &self.socket)
-                .env_remove("FUX_PANE")
-                .env_remove("FUX_SERVER")
-                .output();
+            if let Ok(pid) = i32::try_from(child.id()) {
+                signal(pid, fuxix::process::Signal::Term);
+            }
             let deadline = after(Duration::from_secs(3));
             while child.try_wait().ok().flatten().is_none() && Instant::now() < deadline {
                 std::thread::sleep(Duration::from_millis(10));
@@ -499,6 +496,7 @@ impl Client {
         stream.write_all(&hello.encode().map_err(e)?).map_err(e)?;
         let attach = Attach {
             of: None,
+            headless: false,
             size: sized(rows, cols)?,
             target: workspace.map(|name| {
                 fux_wire::command::AttachTarget::Workspace(fux_wire::command::WsRef::Name(
@@ -642,7 +640,7 @@ impl Client {
             match self.decoder.frame::<Greeting>().map_err(e)? {
                 Some(Greeting::Hello(_)) => self.greeted = true,
                 Some(Greeting::Exit(reason)) => self.exit = Some(reason.to_owned()),
-                Some(Greeting::Done(_)) | None => break,
+                None => break,
             }
         }
         while self.greeted
@@ -830,6 +828,24 @@ pub fn alive(pid: i32) -> bool {
 pub fn signal(pid: i32, signal: fuxix::process::Signal) {
     if let Some(p) = fuxix::process::Pid::from_raw(pid) {
         let _ = fuxix::process::kill(p, signal);
+    }
+}
+
+/// Stops the server on `socket` as a person does: `kill` on its process
+/// (`status`'s `server_pid`); where the system names no process (macOS),
+/// `kill-server`.
+pub fn stop_server(socket: &Path) {
+    let peer = UnixStream::connect(socket).and_then(|s| Ok(fuxix::socket::peer(&s)?));
+    match peer.ok().and_then(|peer| peer.pid) {
+        Some(pid) => drop(fuxix::process::kill(pid, fuxix::process::Signal::Term)),
+        None => drop(
+            Command::new(fux())
+                .arg("kill-server")
+                .env("FUX_SOCKET", socket)
+                .env_remove("FUX_PANE")
+                .env_remove("FUX_SERVER")
+                .output(),
+        ),
     }
 }
 

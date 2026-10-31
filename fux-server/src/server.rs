@@ -7,7 +7,6 @@ use crate::process::Pid;
 use crate::render::{self, Grid};
 use crate::session::{Begun, Caller, Dying, Origin, Outgoing, Session, Timer, Within};
 use crate::socket::{Endpoint, SocketPath};
-use crate::view::ClientKind;
 use crate::wait::Waiting;
 use fux_vt::bytes::ByteQueue;
 use fux_wire::code::Code;
@@ -147,9 +146,8 @@ enum Stage {
     /// Its first frame is to be a `Hello`. A client need not wait for the
     /// answer to send its `Attach`.
     Hello,
-    /// It said hello as `fux opts attach`: its `Attach` is next, and the kind
-    /// of client it is.
-    Attaching(ClientKind),
+    /// It said hello as `fux opts attach`: its `Attach` is next.
+    Attaching,
     /// Its client is attached: its input, resizes and detach come next.
     Attached(Box<Attached>),
     /// It said hello as a command client: its requests come next, each
@@ -177,7 +175,7 @@ impl Stage {
     fn reads(&self) -> bool {
         match self {
             Stage::Hello
-            | Stage::Attaching(_)
+            | Stage::Attaching
             | Stage::Attached(_)
             | Stage::Command
             | Stage::Waiting(_)
@@ -191,7 +189,7 @@ impl Stage {
         match self {
             Stage::Blocked(_) | Stage::Waiting(_) => true,
             Stage::Hello
-            | Stage::Attaching(_)
+            | Stage::Attaching
             | Stage::Attached(_)
             | Stage::Command
             | Stage::Closing
@@ -399,8 +397,8 @@ impl Conn {
 
     /// Its client attaches as `attach` says: it is told its id before
     /// anything is painted; or why it cannot attach.
-    fn attach(&mut self, session: &mut Session, kind: ClientKind, attach: Attach, now: Instant) {
-        match session.attach_as(kind, attach, now) {
+    fn attach(&mut self, session: &mut Session, attach: Attach, now: Instant) {
+        match session.attach_as(attach, now) {
             Ok(client) => {
                 let attached = Attached::new(client, now);
                 self.enter(session, Stage::Attached(Box::new(attached)), now);
@@ -885,7 +883,7 @@ impl Server {
             let session = &mut self.session;
             match conn.stage {
                 Stage::Hello => conn.end(session, &Greeting::Exit(&exit), now),
-                Stage::Attaching(_) | Stage::Attached(_) => {
+                Stage::Attaching | Stage::Attached(_) => {
                     conn.end(session, &ToAttached::Exit(&exit), now);
                 }
                 Stage::Command | Stage::Blocked(_) | Stage::Waiting(_) => {
@@ -1244,24 +1242,15 @@ impl Server {
                     (Err(mismatch), _) => {
                         conn.end(session, &Greeting::Exit(&mismatch.to_string()), now);
                     }
-                    (Ok(()), Role::Kill) => {
-                        conn.end(session, &Greeting::Done(0), now);
-                        self.stop("stopped by fux force-kill-server".into(), now);
-                    }
-                    (Ok(()), Role::Attach) => {
-                        conn.enter(session, Stage::Attaching(ClientKind::Terminal), now);
-                    }
-                    (Ok(()), Role::Headless) => {
-                        conn.enter(session, Stage::Attaching(ClientKind::Headless), now);
-                    }
+                    (Ok(()), Role::Attach) => conn.enter(session, Stage::Attaching, now),
                     (Ok(()), Role::Command) => conn.enter(session, Stage::Command, now),
                 }
             }
-            &mut Stage::Attaching(kind) => {
+            Stage::Attaching => {
                 let Some(attach) = decoder.frame::<Attach>()? else {
                     return Ok(false);
                 };
-                conn.attach(session, kind, attach, now);
+                conn.attach(session, attach, now);
             }
             Stage::Attached(attached) => {
                 match decoder.frame()? {

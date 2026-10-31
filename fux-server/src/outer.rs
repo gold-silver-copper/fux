@@ -658,14 +658,17 @@ mod tests {
         assert_eq!(shown_on_c(&s), 0, "kept, not shown");
         // A headless client, with no terminal, types: d still answers.
         let size = fux_vt::Size::new(24, 80).map_err(|e| e.to_string())?;
-        let attach = fux_wire::protocol::Attach::of(
-            size,
-            fux::script::default_state()
-                .map_err(|e| e.to_string())?
-                .preferences
-                .presentation(),
-        );
-        let headless = s.attach_client(ClientKind::Headless, attach);
+        let attach = fux_wire::protocol::Attach {
+            headless: true,
+            ..fux_wire::protocol::Attach::of(
+                size,
+                fux::script::default_state()
+                    .map_err(|e| e.to_string())?
+                    .preferences
+                    .presentation(),
+            )
+        };
+        let headless = s.attach_client(attach);
         s.input(headless.map_err(|e| e.to_string())?, b"x");
         assert_eq!(s.graphics(PaneId::of(1)), Graphics::Cell(cell(8, 16)?));
         assert_eq!(background(&mut s), "");

@@ -227,7 +227,7 @@ fn greeted(
             sent.map(|()| theirs.version.to_owned())
         }
         (_, Err(error)) | (Err(error), Ok(())) => Err(error),
-        (Ok(Some(Greeting::Done(_)) | None), Ok(())) => Err(no_answer()),
+        (Ok(None), Ok(())) => Err(no_answer()),
     }
 }
 
@@ -339,17 +339,6 @@ pub fn context() -> Context {
         server: var("FUX_SERVER"),
         client: None,
         of: None,
-    }
-}
-
-/// Stops the server, whatever fux version it is.
-pub fn kill_server(socket: &SocketPath) -> Result<(), Error> {
-    let (mut stream, mut decoder, _) = connect(socket, Role::Kill)?;
-    loop {
-        match read_frame(&mut stream, &mut decoder, Some(ANSWER))? {
-            Some(Greeting::Done(_)) | None => return Ok(()),
-            Some(Greeting::Hello(_) | Greeting::Exit(_)) => {}
-        }
     }
 }
 
@@ -1104,11 +1093,6 @@ pub fn attach(
     // A terminal's signals are caught once connected, so that ^C while
     // connecting still ends fux, and before it goes raw.
     let early = (!terminal).then(Signals::new).transpose()?;
-    let role = if terminal {
-        Role::Attach
-    } else {
-        Role::Headless
-    };
     // An untargeted writable attach carries the launch an empty server starts.
     // One unmade, or past the frame, is left out, said only on a refusal.
     let creates = attaching.target.is_none() && !attaching.read_only;
@@ -1116,11 +1100,12 @@ pub fn attach(
         Ok(initial) => (initial, None),
         Err(why) => (None, Some(why)),
     };
-    let (mut stream, mut decoder, _) = connect(socket, role)?;
+    let (mut stream, mut decoder, _) = connect(socket, Role::Attach)?;
     let signals = early.map_or_else(Signals::new, Ok)?;
     let size = size.or_else(window_size).ok_or(Error::NoSize)?;
     let mut attach = Attach {
         of: attaching.of,
+        headless: !terminal,
         size,
         target: attaching.target.clone(),
         read_only: attaching.read_only,

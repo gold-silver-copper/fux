@@ -245,7 +245,7 @@ fn a_program_that_acted_is_not_followed() -> Outcome {
                 && ran
                     .stderr
                     .contains("the server runs fux 9.9.9 (protocol 999)")
-                && ran.stderr.contains("fux force-kill-server")
+                && ran.stderr.contains("`kill` on the `server_pid`")
                 && ran.stderr.contains("running it again would do twice"),
             &ran,
         )?;

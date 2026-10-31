@@ -735,9 +735,9 @@ status are then that binary's. Where that cannot be, the command fails with
 the server runs this same binary, or the program already did something
 outside fux's process (asked a server, started or stopped one, warned or
 read stdin), which running it again would do twice. A key's or a config's
-program never follows. The frozen Hello/Kill exchange lets
-`fux force-kill-server` explicitly stop an incompatible server and its
-panes; starting another does not resume them.
+program never follows. `kill "$(fux status str server_pid get)"` stops an
+incompatible server and its panes, as it stops any; starting another does
+not resume them.
 A lost command reply leaves its outcome unknown: the server may already have
 created a process, killed a target or queued input. Repeating that request is
 not a safe way to discover whether the first one ran.
@@ -961,8 +961,8 @@ Against mistakes, rather than against a program of yours that means harm:
 
 - `kill-server` from one of the server's own panes, or while a person's
   terminal is attached (headless clients do not count), is refused:
-  `force-kill-server` stops it anyway. `kill` takes a handle, never a
-  default, so an empty variable closes nothing.
+  `kill "$(fux status str server_pid get)"` stops it anyway. `kill` takes a
+  handle, never a default, so an empty variable closes nothing.
 - To keep an agent to panes of its own, give it a server of its own, a
   session apart from yours:
 

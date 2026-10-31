@@ -1220,7 +1220,6 @@ impl Session {
         let workspace = workspace.map_err(bad_value)?;
         let state = fux::script::default_state().map_err(|e| fail(Raise::Config, e.to_string()))?;
         self.attach_as(
-            ClientKind::Terminal,
             Attach {
                 initial: workspace.is_none().then(|| command::InitialWorkspace {
                     name: None,
@@ -1236,27 +1235,17 @@ impl Session {
         )
     }
 
-    /// A client of `kind` attaches as `attach` says: one that only watches
-    /// is one from the start, and sizes nothing.
-    pub fn attach_as(
-        &mut self,
-        kind: ClientKind,
-        attach: Attach,
-        now: Instant,
-    ) -> Result<ClientId, Error> {
+    /// A client attaches as `attach` says: one that only watches is one
+    /// from the start, and sizes nothing.
+    pub fn attach_as(&mut self, attach: Attach, now: Instant) -> Result<ClientId, Error> {
         let client = self.ids.clone().client()?;
         let previous = self.parts.actor(fux_wire::events::Actor::Client(client));
-        let result = self.attach_checked(kind, attach, now);
+        let result = self.attach_checked(attach, now);
         self.parts.actor(previous);
         result
     }
 
-    fn attach_checked(
-        &mut self,
-        kind: ClientKind,
-        attach: Attach,
-        now: Instant,
-    ) -> Result<ClientId, Error> {
+    fn attach_checked(&mut self, attach: Attach, now: Instant) -> Result<ClientId, Error> {
         self.check_run(attach.of)?;
         if attach.initial.is_some() && (attach.target.is_some() || attach.read_only) {
             return Err(fail(
@@ -1330,7 +1319,11 @@ impl Session {
         };
         let id = self.ids.client()?;
         let mut view = View::new(id, rows, cols, attach.presentation);
-        (view.kind, view.read_only) = (kind, attach.read_only);
+        view.kind = match attach.headless {
+            true => ClientKind::Headless,
+            false => ClientKind::Terminal,
+        };
+        view.read_only = attach.read_only;
         self.views.insert(id, view);
         self.parts.attach(id);
         self.parts.show(id, ws, spot);
@@ -2648,7 +2641,7 @@ impl Session {
                 let pane = pane.map_or_else(String::new, |p| format!(" {p},"));
                 let message = format!(
                     "this runs in{pane} a pane of the server it would stop, with everything \
-                     else in it; force-kill-server stops it anyway"
+                     else in it; `kill` on status's server_pid stops it anyway"
                 );
                 return Err(fail(Raise::OwnServer, message));
             }
@@ -2660,8 +2653,9 @@ impl Session {
                     1 => "a person is".to_owned(),
                     n => format!("{n} people are"),
                 };
-                let message =
-                    format!("{who} attached to this server; force-kill-server stops it anyway");
+                let message = format!(
+                    "{who} attached to this server; `kill` on status's server_pid stops it anyway"
+                );
                 return Err(fail(Raise::PeopleAttached, message));
             }
         }
@@ -3567,10 +3561,9 @@ pub(crate) mod testing {
         }
         pub(crate) fn attach_client(
             &mut self,
-            kind: crate::view::ClientKind,
             attach: fux_wire::protocol::Attach,
         ) -> Result<ClientId, super::Error> {
-            self.attach_as(kind, attach, Instant::now())
+            self.attach_as(attach, Instant::now())
         }
         pub(crate) fn close_now(&mut self, id: fux_wire::id::PaneId, why: Option<String>) {
             self.close_pane(id, why, Instant::now())
@@ -4511,7 +4504,7 @@ mod tests {
                     .presentation(),
             )
         };
-        s.attach_client(ClientKind::Terminal, attach)
+        s.attach_client(attach)
             .map_err(|e| e.to_string())
     }
 
@@ -4872,10 +4865,9 @@ mod tests {
             (T::Pane(PaneId::of(2)), PaneId::of(2)),
             (T::Workspace(WsRef::Name("second".into())), PaneId::of(3)),
         ] {
-            let client = s.attach_client(
-                ClientKind::Headless,
-                Attach {
+            let client = s.attach_client(Attach {
                     of: Some(s.run),
+                    headless: true,
                     target: Some(target),
                     ..Attach::of(sized(24, 80)?, presentation.clone())
                 },
@@ -4895,10 +4887,9 @@ mod tests {
             ),
         ] {
             assert!(
-                s.attach_client(
-                    ClientKind::Headless,
-                    Attach {
+                s.attach_client(Attach {
                         of,
+                        headless: true,
                         target: Some(target),
                         ..Attach::of(sized(24, 80)?, presentation.clone())
                     }
@@ -4928,7 +4919,10 @@ mod tests {
             env: command::EnvPatch::default(),
         };
         let ids = s.ids.clone();
-        let refused = s.attach_client(ClientKind::Headless, Attach::of(size, presentation.clone()));
+        let refused = s.attach_client(Attach {
+            headless: true,
+            ..Attach::of(size, presentation.clone())
+        });
         assert!(refused.is_err_and(|why| why.code() == Code::Start));
         for attach in [
             Attach {
@@ -4947,7 +4941,7 @@ mod tests {
                 ..Attach::of(size, presentation.clone())
             },
         ] {
-            assert!(s.attach_client(ClientKind::Terminal, attach).is_err());
+            assert!(s.attach_client(attach).is_err());
             assert_eq!(s.ids, ids);
             assert!(s.views.is_empty() && s.parts.panes().is_empty());
         }
@@ -6656,10 +6650,7 @@ mod tests {
             cell_placement: false,
             ..fux::script::default_state()?.preferences.presentation()
         };
-        let client = s.attach_client(
-            ClientKind::Terminal,
-            Attach::of(sized(8, 40)?, presentation.clone()),
-        )?;
+        let client = s.attach_client(Attach::of(sized(8, 40)?, presentation.clone()))?;
         assert_eq!(
             s.views.get(&client).map(|v| v.presentation.clone()),
             Some(presentation)

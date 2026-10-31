@@ -81,6 +81,7 @@ fn a_connection_that_ends_takes_its_client_with_it() -> Outcome {
     keep.wait_for("$")?;
     let attach = Attach {
         of: None,
+        headless: false,
         size: sized(5, 20)?,
         target: None,
         read_only: false,
@@ -368,10 +369,7 @@ fn attach_starts_a_server_when_none_answers() -> Outcome {
         Ok(String::from_utf8_lossy(&out.stdout).contains("client c1"))
     });
     let log = std::fs::read_to_string(dir.join("s").join("fux.log"));
-    let _ = std::process::Command::new(FUX)
-        .arg("force-kill-server")
-        .env("FUX_SOCKET", &socket)
-        .output();
+    stop_server(&socket);
     let _ = child.wait();
     drop(master);
     let _ = std::fs::remove_dir_all(&dir);
@@ -479,7 +477,7 @@ fn focus_events_reach_a_pane_that_asked_and_cursor_shapes_pass_through() -> Outc
 }
 
 #[test]
-fn a_protocol_mismatch_refuses_attach_but_accepts_force_kill() -> Outcome {
+fn a_protocol_mismatch_refuses_attach() -> Outcome {
     use fux_wire::protocol::{Frame, Greeting, Hello};
     use std::io::{Read, Write};
     let server = Server::start("")?;
@@ -516,20 +514,11 @@ fn a_protocol_mismatch_refuses_attach_but_accepts_force_kill() -> Outcome {
     assert!(
         reason.contains(&format!("protocol {}", fux_wire::protocol::PROTOCOL))
             && reason.contains("use a matching client")
-            && reason.contains("fux force-kill-server")
+            && reason.contains("`kill` on the `server_pid` `fux status` gives")
             && reason.contains("stops it and its panes")
             && reason.contains("a new server does not resume them"),
         "{reason}"
     );
-    // The frozen Kill greeting works even with that same wrong version.
-    let mut client = server.attach(10, 40)?;
-    let mut stream = std::os::unix::net::UnixStream::connect(&server.socket).map_err(e)?;
-    let kill = Hello {
-        role: fux_wire::protocol::Role::Kill,
-        ..hello
-    };
-    stream.write_all(&kill.encode().map_err(e)?).map_err(e)?;
-    assert!(client.wait_exit()?.contains("force-kill-server"));
     Ok(())
 }
 
@@ -901,10 +890,7 @@ fn a_server_a_client_started_outlives_the_clients_terminal() -> Outcome {
         let out = ls()?;
         Ok(out.status.success() && !String::from_utf8_lossy(&out.stdout).contains("client c1"))
     });
-    let _ = std::process::Command::new(FUX)
-        .arg("force-kill-server")
-        .env("FUX_SOCKET", &socket)
-        .output();
+    stop_server(&socket);
     drop(terminal);
     let _ = std::fs::remove_dir_all(&dir);
     started?;
@@ -946,10 +932,7 @@ fn a_first_shell_starts_in_the_invocation_directory() -> Outcome {
         terminal.wait_for("%1")?;
         terminal.type_bytes(format!("pwd > '{}'; exit\r", marker.display()).as_bytes())?;
         let status = terminal.wait_exit();
-        let _ = std::process::Command::new(FUX)
-            .arg("force-kill-server")
-            .env("FUX_SOCKET", &socket)
-            .output();
+        stop_server(&socket);
         assert!(status?.success());
         assert_eq!(
             std::fs::read_to_string(&marker).map_err(e)?.trim(),
@@ -1228,7 +1211,7 @@ fn concurrent_empty_attaches_create_one_workspace() -> Outcome {
         let mut stream = UnixStream::connect(&server.socket).map_err(e)?;
         stream.set_read_timeout(Some(PATIENCE)).map_err(e)?;
         stream
-            .write_all(&Hello::ours(Role::Headless).encode().map_err(e)?)
+            .write_all(&Hello::ours(Role::Attach).encode().map_err(e)?)
             .map_err(e)?;
         let mut decoder = Decoder::default();
         decoder.push(&wire(&mut stream)?);
@@ -1241,7 +1224,10 @@ fn concurrent_empty_attaches_create_one_workspace() -> Outcome {
     }
 
     let server = Server::empty()?;
-    let attach = Attach::of(sized(10, 40)?, server.state.preferences.presentation());
+    let attach = Attach {
+        headless: true,
+        ..Attach::of(sized(10, 40)?, server.state.preferences.presentation())
+    };
     let mut watch = attach.clone();
     watch.read_only = true;
     let mut watcher = connect(&server, &watch)?;

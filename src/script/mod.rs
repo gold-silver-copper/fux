@@ -372,8 +372,6 @@ pub enum Local {
     Server(Choice),
     Start,
     Status,
-    /// Stop the server, whatever its version.
-    ForceKill,
     /// Open one of the client's own screens: a client running its keys'
     /// programs does (`client::Keyboard`); nothing else has one.
     Open(fux_wire::callback::Open),
@@ -1416,7 +1414,6 @@ fn local(
         Local::Start => {
             started(server)?;
         }
-        Local::ForceKill => client::kill_server(&server.socket()?).map_err(client_failed)?,
         Local::Open(_) | Local::Shell(_) => return refuse_local(what),
         Local::Status => {
             let socket = server.socket()?;
@@ -1551,7 +1548,6 @@ impl Asks for ConfigOnly {
             | Local::Server(_)
             | Local::Start
             | Local::Status
-            | Local::ForceKill
             | Local::Open(_)
             | Local::Shell(_) => refuse_local(what),
         }
@@ -1567,7 +1563,6 @@ fn refuse_local(what: &Local) -> Result<Vec<Value<Fux>>, Failed> {
         | Local::Server(_)
         | Local::Start
         | Local::Status
-        | Local::ForceKill
         | Local::Shell(_) => "runs from the command line only",
     };
     Err(Failed::new(Code::NotHere, why))
@@ -1793,8 +1788,7 @@ pub mod testing {
             }),
             ..fux_wire::protocol::Attach::of(size, preferences.presentation())
         };
-        let kind = fux_server::view::ClientKind::Terminal;
-        let client = (session.attach_as(kind, attach, std::time::Instant::now()))
+        let client = (session.attach_as(attach, std::time::Instant::now()))
             .map_err(|e| e.to_string())?;
         Ok((session, client))
     }

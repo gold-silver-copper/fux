@@ -146,8 +146,12 @@ fn servers_are_named_and_kills_are_guarded() -> Outcome {
         server.ok(&["ls", "listing"])?.contains("+1 main"),
         "the server still runs"
     );
-    assert_eq!(server.fux(&["force-kill-server"])?.status, 0);
-    assert!(client.wait_exit()?.contains("force-kill-server"));
+    // `kill` on its process stops it anyway.
+    signal(
+        i32::try_from(server.pid().ok_or("the server's pid")?).map_err(e)?,
+        fuxix::process::Signal::Term,
+    );
+    assert!(client.wait_exit()?.contains("stopped by a signal"));
     assert_eq!(
         named(&rt, &["str", "t", "server", "kill-server"], &[])?.status,
         0
@@ -188,7 +192,7 @@ fn a_started_server_keeps_nothing_of_its_client() -> Outcome {
     let holds = (fds.filter_map(Result::ok))
         .filter_map(|fd| std::fs::read_link(fd.path()).ok())
         .any(|target| target == held);
-    let _ = named(&rt, &["str", "d", "server", "force-kill-server"], &[]);
+    signal(pid, fuxix::process::Signal::Term);
     assert_eq!(cwd, std::path::Path::new("/"), "the server's directory");
     assert!(!holds, "the server holds its client's descriptor");
     Ok(())
