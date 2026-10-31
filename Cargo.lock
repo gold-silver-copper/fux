@@ -24,7 +24,6 @@ dependencies = [
  "fux-wire",
  "fuxix",
  "fuxth",
- "fuxth-core",
 ]
 
 [[package]]

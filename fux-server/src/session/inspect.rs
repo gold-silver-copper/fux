@@ -1,8 +1,3 @@
-//! A snapshot of the session, `inspect`'s answer: a reply's values, each
-//! `std::vec::Vec` and `std::string::String` written here grown only
-//! through the request's `Budget`, which charges its region first.
-fuxth_core::bounded_only!();
-
 use super::{Error, Session};
 use crate::view::{ClientKind, Mode};
 use crate::workspace::Fit;
@@ -15,14 +10,7 @@ use fux_wire::wire::Budget;
 use fuxix::Allocation;
 
 impl Session {
-    /// What it makes is charged to `budget`, the request's; a snapshot
-    /// also within `inspect::BYTES`, which a client decodes it within.
-    pub(super) fn inspect(
-        &self,
-        scope: Scope,
-        projection: Projection,
-        budget: &mut Budget,
-    ) -> Result<Body, Error> {
+    pub(super) fn inspect(&self, scope: Scope, projection: Projection) -> Result<Body, Error> {
         if let Projection::Field(field) = &projection {
             let Scope::Target(target) = scope else {
                 return Err(super::fail(
@@ -36,19 +24,9 @@ impl Session {
                     "field name is too long",
                 ));
             }
-            return self.field(self.there(target)?, field, budget);
+            return self.field(self.there(target)?, field);
         }
-        budget.limited(inspect::BYTES, |budget| {
-            self.snapshot(scope, projection, budget)
-        })
-    }
-
-    fn snapshot(
-        &self,
-        scope: Scope,
-        projection: Projection,
-        budget: &mut Budget,
-    ) -> Result<Body, Error> {
+        let budget = &mut Budget::with_limit(inspect::BYTES);
         let target = match scope {
             Scope::All => None,
             Scope::Target(target) => Some(self.there(target)?),
@@ -69,10 +47,10 @@ impl Session {
             cursor: self.parts.journal().end(self.run),
             scope,
             projection: projection.clone(),
-            workspaces: std::vec::Vec::new(),
-            tabs: std::vec::Vec::new(),
-            panes: std::vec::Vec::new(),
-            clients: std::vec::Vec::new(),
+            workspaces: Vec::new(),
+            tabs: Vec::new(),
+            panes: Vec::new(),
+            clients: Vec::new(),
         };
         let mut nodes = 0usize;
         for ws in self.parts.workspaces().iter().filter(|_| !empty) {
@@ -89,7 +67,7 @@ impl Session {
             if !ws.tabs().iter().any(|tab| selected(&tab)) {
                 continue;
             }
-            let mut tabs = std::vec::Vec::new();
+            let mut tabs = Vec::new();
             for tab in ws.tabs() {
                 add(&mut tabs, tab.id(), budget, &mut nodes)?;
             }
@@ -249,7 +227,7 @@ impl Session {
     }
 }
 
-fn optional(text: Option<&str>, budget: &mut Budget) -> Result<Option<std::string::String>, Error> {
+fn optional(text: Option<&str>, budget: &mut Budget) -> Result<Option<String>, Error> {
     text.map(|s| budget.string(s)).transpose()
 }
 
@@ -265,12 +243,7 @@ fn path(value: &std::ffi::OsStr, budget: &mut Budget) -> Result<inspect::Path, E
     })
 }
 
-fn add<T>(
-    out: &mut std::vec::Vec<T>,
-    value: T,
-    budget: &mut Budget,
-    nodes: &mut usize,
-) -> Result<(), Error> {
+fn add<T>(out: &mut Vec<T>, value: T, budget: &mut Budget, nodes: &mut usize) -> Result<(), Error> {
     *nodes = nodes
         .checked_add(1)
         .filter(|n| *n <= inspect::NODES)
@@ -281,14 +254,10 @@ fn add<T>(
 }
 
 /// Preorder nodes share arrange's schema and fixed root index zero.
-fn flatten(
-    root: &Tree,
-    budget: &mut Budget,
-    count: &mut usize,
-) -> Result<std::vec::Vec<Node>, Error> {
+fn flatten(root: &Tree, budget: &mut Budget, count: &mut usize) -> Result<Vec<Node>, Error> {
     let mut work = budget.vector(1)?;
     work.push((root, None));
-    let mut nodes = std::vec::Vec::new();
+    let mut nodes = Vec::new();
     while let Some((tree, parent)) = work.pop() {
         let at = u32::try_from(nodes.len()).map_err(|_| Budget::exceeded())?;
         if let Some((index, second_child)) = parent {
@@ -342,8 +311,7 @@ mod tests {
         );
         assert!(flatten(&tree, &mut Budget::with_limit(0), &mut 0).is_err());
         let mut exhausted = inspect::NODES;
-        let budget = &mut Budget::with_limit(fux_wire::wire::MAX_ALLOCATED);
-        assert!(flatten(&tree, budget, &mut exhausted).is_err());
+        assert!(flatten(&tree, &mut Budget::new(), &mut exhausted).is_err());
         Ok(())
     }
 
@@ -352,7 +320,7 @@ mod tests {
         use std::os::unix::ffi::OsStrExt;
         let raw = std::ffi::OsStr::from_bytes(b"/a\xff/b");
         assert_eq!(
-            path(raw, &mut Budget::with_limit(raw.len()))?,
+            path(raw, &mut Budget::new())?,
             inspect::Path::Bytes(b"/a\xff/b".to_vec())
         );
         Ok(())

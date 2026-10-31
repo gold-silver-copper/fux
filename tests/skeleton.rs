@@ -120,7 +120,9 @@ fn a_client_that_shuts_its_side_still_gets_its_answer() -> Outcome {
     while let Some(frame) = decoder.frame::<ToCommand>().map_err(e)? {
         match frame {
             ToCommand::Part(bytes) => parts.extend_from_slice(&bytes),
-            ToCommand::PartsEnd => reply = Some(fux_wire::wire::decode::<Reply>(&parts)),
+            ToCommand::PartsEnd => {
+                reply = Some(fux_wire::wire::Reader::new(&parts).whole::<Reply>())
+            }
             ToCommand::Exit(_) => {}
         }
     }

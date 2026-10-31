@@ -1075,45 +1075,26 @@ impl EnvPatch {
     pub const MAX_NAMES: usize = 1024;
     /// A distinct checked name, either set to bytes or explicitly unset.
     pub fn push(&mut self, name: String, value: Option<std::ffi::OsString>) -> Result<(), String> {
-        Self::admits(&self.0, self.encoded_len(), &name, &value)?;
-        self.0.push((name, value));
-        Ok(())
-    }
-
-    /// `entries`, each checked as `push` checks it against those before it,
-    /// kept where they are: a decoded patch is not made again.
-    pub fn adopt(entries: Vec<(String, Option<std::ffi::OsString>)>) -> Result<Self, String> {
-        let mut encoded = 4usize;
-        for (at, (name, value)) in entries.iter().enumerate() {
-            encoded = Self::admits(entries.get(..at).unwrap_or_default(), encoded, name, value)?;
-        }
-        Ok(Self(entries))
-    }
-
-    /// Whether `name` and `value` may follow `before`, `encoded` bytes on
-    /// the wire: the bytes with them.
-    fn admits(
-        before: &[(String, Option<std::ffi::OsString>)],
-        encoded: usize,
-        name: &str,
-        value: &Option<std::ffi::OsString>,
-    ) -> Result<usize, String> {
         use std::os::unix::ffi::OsStrExt;
-        pane_var(name)?;
-        if before.len() >= Self::MAX_NAMES {
+        pane_var(&name)?;
+        if self.0.len() >= Self::MAX_NAMES {
             return Err("environment patch exceeds 1024 names".to_owned());
         }
-        if before.iter().any(|(key, _)| key == name) {
+        if self.0.iter().any(|(key, _)| key == &name) {
             return Err(format!("{name}: repeated environment name"));
         }
         if value.as_ref().is_some_and(|v| v.as_bytes().contains(&0)) {
             return Err(format!("{name}: an environment value holds no NUL"));
         }
-        let encoded = encoded.saturating_add(Self::entry_len(name, value));
-        if encoded > crate::protocol::MAX_PAYLOAD {
+        if self
+            .encoded_len()
+            .saturating_add(Self::entry_len(&name, &value))
+            > crate::protocol::MAX_PAYLOAD
+        {
             return Err("environment patch exceeds the launch frame limit".to_owned());
         }
-        Ok(encoded)
+        self.0.push((name, value));
+        Ok(())
     }
     pub fn heap_bytes(&self) -> usize {
         self.0.iter().fold(
