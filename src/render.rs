@@ -3,6 +3,7 @@
 //! send only the changed runs, inside synchronized output. Every paint leaves
 //! the terminal's attributes at their default, which the next one assumes.
 use crate::act::{List, Panel};
+use crate::answer::sgr;
 use crate::id::ClientId;
 use crate::id::PaneId;
 use crate::layout::{Axis, Placement, Rect};
@@ -889,7 +890,7 @@ fn cells(c: char) -> u16 {
 pub fn width(text: &str) -> u16 {
     u16::try_from(fux_vt::str_width(text))
         .unwrap_or(u16::MAX)
-        .min(crate::view::MOST)
+        .min(crate::command::MOST)
 }
 
 /// Cuts `text` to `cols` cells, preserving their measured boundaries.
@@ -1780,15 +1781,6 @@ fn column(grid: &mut Grid, view: &View, column: &crate::act::Column) {
 }
 
 // ------------------------------------------------------------------ paint
-
-/// The SGR that sets `a` from nothing, as painted (`SgrForm::Paint`), with
-/// underline styles if the client's terminal draws them (`styles`,
-/// `outer::styles!`).
-pub(crate) fn sgr(out: &mut Vec<u8>, a: Attributes, styles: bool) {
-    out.extend_from_slice(b"\x1b[0");
-    a.write_sgr(out, fux_vt::SgrForm::Paint { styles });
-    out.push(b'm');
-}
 
 /// OSC 8: opens `link` in the client's terminal, or closes the open link.
 /// Its `id` is the pane's and the link's key there, so that no two panes'
@@ -2813,7 +2805,7 @@ mod tests {
         let text = "split -v -- echo aaaaaaaaaaaaaaaaaaaaTAIL";
         // The line with its cursor `left` chars from the end.
         let line = |text: &str, left: usize| {
-            let mut line: crate::view::Line = crate::view::Line::new(text.into());
+            let mut line: crate::act::Line = crate::act::Line::new(text.into());
             (0..left).for_each(|_| drop(line.edit(&crate::act::Edit::Left)));
             line
         };

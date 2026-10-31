@@ -148,14 +148,14 @@ impl Budget {
     pub(crate) fn format(
         &mut self,
         args: std::fmt::Arguments<'_>,
-    ) -> Result<String, crate::session::Error> {
+    ) -> Result<String, crate::code::Error> {
         let mut out = String::new();
         self.write(&mut out, args)?;
         Ok(out)
     }
     /// Text imported into fuxth retains its String and builds an Rc and a
     /// non-ASCII character index. The String was already charged by render.
-    pub(crate) fn text_value(&mut self, text: &str) -> Result<(), crate::session::Error> {
+    pub(crate) fn text_value(&mut self, text: &str) -> Result<(), crate::code::Error> {
         self.charge(
             fuxth::Text::import_bytes(text.chars().count(), text.is_ascii())
                 .ok_or_else(Self::exceeded)?,
@@ -165,7 +165,7 @@ impl Budget {
     pub(crate) fn optional_text(
         &mut self,
         text: Option<&str>,
-    ) -> Result<crate::json::Json, crate::session::Error> {
+    ) -> Result<crate::json::Json, crate::code::Error> {
         match text {
             Some(text) => self.string(text).map(crate::json::Json::str),
             None => Ok(crate::json::Json::Null),
@@ -175,8 +175,8 @@ impl Budget {
     pub(crate) fn map<T, U>(
         &mut self,
         input: Vec<T>,
-        mut map: impl FnMut(T, &mut Self) -> Result<U, crate::session::Error>,
-    ) -> Result<Vec<U>, crate::session::Error> {
+        mut map: impl FnMut(T, &mut Self) -> Result<U, crate::code::Error>,
+    ) -> Result<Vec<U>, crate::code::Error> {
         let old = input
             .capacity()
             .checked_mul(std::mem::size_of::<T>())
@@ -192,7 +192,7 @@ impl Budget {
     pub(crate) fn object<const N: usize>(
         &mut self,
         fields: [(&'static str, crate::json::Json); N],
-    ) -> Result<crate::json::Json, crate::session::Error> {
+    ) -> Result<crate::json::Json, crate::code::Error> {
         let mut out = self.vector(N)?;
         for (key, value) in fields {
             out.push((self.string(key)?, value));
@@ -202,12 +202,12 @@ impl Budget {
     pub(crate) fn fields(
         &mut self,
         fields: crate::json::Fields,
-    ) -> Result<Vec<(String, crate::json::Json)>, crate::session::Error> {
+    ) -> Result<Vec<(String, crate::json::Json)>, crate::code::Error> {
         self.map(fields, |(key, value), budget| {
             Ok((budget.string(key)?, value))
         })
     }
-    pub(crate) fn slots<T>(&mut self, count: usize) -> Result<(), crate::session::Error> {
+    pub(crate) fn slots<T>(&mut self, count: usize) -> Result<(), crate::code::Error> {
         self.charge(
             count
                 .checked_mul(std::mem::size_of::<T>())
@@ -217,7 +217,7 @@ impl Budget {
 }
 
 impl fuxix::Allocation for Budget {
-    type Error = crate::session::Error;
+    type Error = crate::code::Error;
     fn remaining(&self) -> usize {
         self.0.remaining()
     }
@@ -228,7 +228,7 @@ impl fuxix::Allocation for Budget {
         self.0.release(bytes).map_err(|_| Self::exceeded())
     }
     fn exceeded() -> Self::Error {
-        crate::session::fail(
+        crate::code::fail(
             crate::code::Raise::TooLong,
             "finite reply exceeds its byte or allocation limit; request a smaller scope",
         )
@@ -612,13 +612,13 @@ impl Wire for fux_vt::Size {
     }
 }
 
-impl Wire for crate::view::Screen {
+impl Wire for crate::command::Screen {
     fn put(&self, out: &mut impl crate::wire::Sink) {
         self.size().put(out);
     }
     fn get(r: &mut Reader<'_>) -> Result<Self, Error> {
         let size = fux_vt::Size::get(r)?;
-        crate::view::Screen::new(size.rows(), size.cols()).map_err(|_| Error::Bad("size"))
+        crate::command::Screen::new(size.rows(), size.cols()).map_err(|_| Error::Bad("size"))
     }
 }
 
@@ -791,18 +791,18 @@ mod tests {
     #[test]
     fn default_styled_capture_fits_wire_and_script_grants() -> TestResult {
         let version = "%1:0.0.0.0.0:1-1".parse().map_err(|()| "version")?;
-        let line = crate::capture::Line {
+        let line = crate::answer::Line {
             text: std::iter::repeat_n('x', 100).collect(),
             runs: (0..100)
-                .map(|style| crate::capture::Run {
+                .map(|style| crate::answer::Run {
                     bytes: 1,
                     cells: 1,
                     style,
                 })
                 .collect(),
         };
-        let capture = crate::capture::Captured {
-            of: crate::capture::Of::Pane {
+        let capture = crate::answer::Captured {
+            of: crate::answer::Of::Pane {
                 version,
                 wrap_pending: false,
                 state: Vec::new(),
@@ -869,7 +869,7 @@ mod tests {
 
     #[test]
     fn a_size_past_a_screens_is_refused_as_it_is_read() -> TestResult {
-        use crate::view::{MOST, Screen};
+        use crate::command::{MOST, Screen};
         let most = Screen::new(MOST, MOST)?;
         assert_eq!(
             Screen::get(&mut Reader::new(&encode(&most).unwrap_or_default())).ok(),

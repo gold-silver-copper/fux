@@ -817,7 +817,7 @@ mod tests {
             Told::HistoryBudget(usize::MAX),
             Told::HistoryCleared,
             Told::Exited(End {
-                ended: crate::process::Ended::Lost,
+                ended: crate::answer::Ended::Lost,
                 left,
             }),
         ] {
@@ -839,8 +839,8 @@ mod tests {
             });
         }
         for ended in [
-            crate::process::Ended::Exited(i32::MIN),
-            crate::process::Ended::Signalled(i32::MIN),
+            crate::answer::Ended::Exited(i32::MIN),
+            crate::answer::Ended::Signalled(i32::MIN),
         ] {
             events.push(Event::Pane(
                 at,

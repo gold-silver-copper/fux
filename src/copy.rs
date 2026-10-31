@@ -5,8 +5,9 @@
 //! clients see the pane live. The mode ends if the pane closes or its history
 //! drops the rows it holds.
 use crate::act::{CopyAct, Hint, Seek};
+use crate::code::{Code, Error};
 use crate::id::{ClientId, PaneId};
-use crate::session::{self, Error, Session};
+use crate::session::{self, Session};
 use crate::view::{Mode, Notice};
 use fux_vt::{Row, RowId, Screen};
 
@@ -426,7 +427,10 @@ pub fn text(
         // Refused long before it could saturate.
         cells = cells.saturating_add(usize::from(to.saturating_sub(from)).saturating_add(1));
         if cells > MAX_CELLS {
-            return Err(Error::SelectionTooLarge);
+            return Err(Error::Failed {
+                code: Code::Selection,
+                message: format!("the selection is larger than {MAX_CELLS} cells"),
+            });
         }
         let copied = row.copied(usize::from(from), usize::from(to));
         let line: String = copied.map(|(_, glyph)| glyph).collect();
@@ -1033,7 +1037,7 @@ mod tests {
         let s = parser.screen();
         let last = s.rows().next_back().ok_or("no rows")?;
         let copied = text(s, Select::Line, (row(s, 0)?, 0), (last, 0));
-        assert!(matches!(copied, Err(Error::SelectionTooLarge)));
+        assert!(matches!(&copied, Err(e) if e.code() == crate::code::Code::Selection));
         assert_eq!(
             copied.map_err(|e| e.to_string()),
             Err(format!("the selection is larger than {MAX_CELLS} cells"))

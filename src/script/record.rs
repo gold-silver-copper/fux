@@ -448,8 +448,8 @@ pub(super) fn answer_field(
             if let PaneAnswer::Changed { changed, ended, .. } = answer {
                 match (field, ended) {
                     ("changed", _) => return b.list(changed, |b, c| b.text(c.name())),
-                    ("exited", Some(crate::process::Ended::Exited(n))) => return number(*n),
-                    ("signal", Some(crate::process::Ended::Signalled(n))) => return number(*n),
+                    ("exited", Some(crate::answer::Ended::Exited(n))) => return number(*n),
+                    ("signal", Some(crate::answer::Ended::Signalled(n))) => return number(*n),
                     ("exited" | "signal", Some(_)) => return Ok(null()),
                     _ => {}
                 }
@@ -490,11 +490,11 @@ pub(super) fn answer_field(
                                 {
                                     fields.push((b.budget.string(name)?, value));
                                 }
-                                for (name, value) in crate::capture::style_fields(style) {
+                                for (name, value) in crate::answer::style_fields(style) {
                                     let value = match value {
-                                        crate::capture::StyleValue::Flag => Value::Bool(true),
-                                        crate::capture::StyleValue::Index(n) => number(n)?,
-                                        crate::capture::StyleValue::Rgb(fux_vt::Rgb {
+                                        crate::answer::StyleValue::Flag => Value::Bool(true),
+                                        crate::answer::StyleValue::Index(n) => number(n)?,
+                                        crate::answer::StyleValue::Rgb(fux_vt::Rgb {
                                             r,
                                             g,
                                             b: blue,
@@ -518,7 +518,7 @@ pub(super) fn answer_field(
                 _ => {}
             }
             match &c.of {
-                crate::capture::Of::Pane {
+                crate::answer::Of::Pane {
                     version,
                     wrap_pending,
                     state,
@@ -532,7 +532,7 @@ pub(super) fn answer_field(
                         .map(|(_, v)| b.json(v, 0))
                         .unwrap_or_else(|| Err(absent())),
                 },
-                crate::capture::Of::Client(client) => {
+                crate::answer::Of::Client(client) => {
                     if field == "client" {
                         Ok(Value::App(Fux::Client(*client, run)))
                     } else {

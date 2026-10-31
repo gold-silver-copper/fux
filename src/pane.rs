@@ -1,10 +1,11 @@
 //! A pane: its terminal emulator, its process, and the input waiting for it.
 use crate::after;
+use crate::answer::Ended;
 use crate::bytes::ByteQueue;
 use crate::events::{Journal, Teller, Told};
 use crate::id::{PaneId, TabId, WsId};
 use crate::outer::{Colours, Scheme};
-use crate::process::{Child, Ended, Pid};
+use crate::process::{Child, Pid};
 use fux_vt::{Event, Feature, Screen, Size};
 use std::collections::{BTreeSet, VecDeque};
 use std::time::{Duration, Instant};

@@ -10,6 +10,15 @@ pub fn listed(names: &[&str], last: &str) -> String {
     }
 }
 
+/// `items`, each as it displays, with `between` between them.
+pub(crate) fn joined<T: std::fmt::Display>(
+    items: impl IntoIterator<Item = T>,
+    between: &str,
+) -> String {
+    let items: Vec<String> = items.into_iter().map(|item| item.to_string()).collect();
+    items.join(between)
+}
+
 /// Whether `write` produces exactly `text`, without allocating.
 pub(crate) fn writes_exactly(
     text: &str,

@@ -19,7 +19,7 @@ wire! {
     #[derive(Clone, Debug, PartialEq)]
     pub enum Act {
         /// This connection's committed presentation preferences.
-        Presentation(presentation: crate::view::Presentation),
+        Presentation(presentation: crate::presentation::Presentation),
         /// A key typed, as literal input to the focused pane.
         Key(stroke: Keystroke),
         /// Pasted text, for the focused pane.
@@ -246,6 +246,87 @@ pub enum Edit {
     Right,
     Home,
     End,
+}
+
+/// The most bytes a prompt's line holds.
+pub const LINE_MAX: usize = 4096;
+
+/// A line of text being typed, of at most `MAX` bytes, split at its
+/// cursor: the cursor is always between two chars, or at an end, and every
+/// edit is a whole char.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Line<const MAX: usize = LINE_MAX> {
+    before: String,
+    after: String,
+}
+
+impl<const MAX: usize> Line<MAX> {
+    /// `text`, the cursor after it.
+    pub fn new(text: String) -> Line<MAX> {
+        Line {
+            before: text,
+            after: String::new(),
+        }
+    }
+
+    /// The text before the cursor.
+    pub fn before(&self) -> &str {
+        &self.before
+    }
+
+    /// The text after the cursor.
+    pub fn after(&self) -> &str {
+        &self.after
+    }
+
+    /// The whole text.
+    pub fn text(self) -> String {
+        self.before + &self.after
+    }
+
+    /// An edit of the line: typed text (its control characters, and the
+    /// line end a pasted line ends in, left out), or a move or a deletion.
+    /// Text of more than one line, or that would take the line past `MAX`
+    /// bytes, is refused whole, saying why.
+    pub fn edit(&mut self, edit: &Edit) -> Result<(), String> {
+        match edit {
+            Edit::Insert(text) => {
+                let text = (text
+                    .strip_suffix("\r\n")
+                    .or_else(|| text.strip_suffix(['\n', '\r'])))
+                .unwrap_or(text);
+                if text.contains(['\n', '\r']) {
+                    return Err("a line holds one line of text: nothing was typed".to_owned());
+                }
+                let typed: String = text.chars().filter(|c| !c.is_control()).collect();
+                let len = self.before.len().saturating_add(self.after.len());
+                if len.saturating_add(typed.len()) > MAX {
+                    return Err(format!("a line holds {MAX} bytes: nothing was typed"));
+                }
+                self.before.push_str(&typed);
+            }
+            Edit::Backspace => drop(self.before.pop()),
+            Edit::Delete => self.after = self.after.chars().skip(1).collect(),
+            Edit::Left => {
+                if let Some(c) = self.before.pop() {
+                    self.after = std::iter::once(c).chain(self.after.chars()).collect();
+                }
+            }
+            Edit::Right => {
+                let mut chars = self.after.chars();
+                if let Some(c) = chars.next() {
+                    self.before.push(c);
+                    self.after = chars.as_str().to_owned();
+                }
+            }
+            Edit::Home => {
+                self.before.push_str(&self.after);
+                self.after = std::mem::take(&mut self.before);
+            }
+            Edit::End => self.before.push_str(&std::mem::take(&mut self.after)),
+        }
+        Ok(())
+    }
 }
 
 wire_enum!(MouseAction {

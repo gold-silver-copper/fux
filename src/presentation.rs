@@ -171,6 +171,21 @@ impl Wire for Slots {
     }
 }
 
+wire! {
+    /// Optional output requested by this attached client.
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    pub struct Presentation {
+        pub bell: bool,
+        pub titles: bool,
+        pub terminal_clipboard: bool,
+        pub cell_placement: bool,
+        pub styles: Styles,
+        pub bar: Bar,
+        pub slots: Slots,
+        pub show_column: bool,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -185,7 +200,7 @@ mod tests {
         p.put(&mut bytes);
         assert_eq!(
             Reader::new(&bytes)
-                .whole::<crate::view::Presentation>()
+                .whole::<crate::presentation::Presentation>()
                 .map_err(|e| e.to_string())?,
             p
         );

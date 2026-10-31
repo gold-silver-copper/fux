@@ -2,6 +2,10 @@
 //! for a script to tell failures apart by (`fux: CODE: MESSAGE`). Every
 //! code fux gives is here, the language's own among them as fuxth names
 //! them; `docs/json.md` lists them all.
+use crate::command::{self, AnyRef, Kind};
+use crate::id::{ClientId, PaneId, TabId, WsId};
+use crate::keys::Direction;
+use crate::words::joined;
 use std::num::NonZeroU8;
 
 /// The exit statuses, a meaning each, besides 0: what was asked came.
@@ -176,7 +180,7 @@ codes! {
     /// A program that could not start.
     Start "start",
     /// A size no pane or tab can have: a client's screen past 4096
-    /// (`view::MOST`) a side (`attach`, its terminal resized), or with
+    /// (`crate::command::MOST`) a side (`attach`, its terminal resized), or with
     /// no room for a pane below its bar as it starts a server's first
     /// shell; a new tab or workspace given none, whose caller has no
     /// screen that sizes panes and no tab; a pane's
@@ -265,6 +269,108 @@ impl Code {
         (code.name().parse()).unwrap_or(Code::Lang(LangCode(fuxth::Code::Fail)))
     }
 }
+
+/// Why a command, or attaching a client, failed: exit status 1.
+#[derive(Debug)]
+pub enum Error {
+    // What a command names, or its context gives, that is not there.
+    NoWorkspace(WsId),
+    NoPaneGiven,
+    NoPane(PaneId),
+    NoTab(TabId),
+    NoWorkspaceGiven,
+    NoClient(ClientId),
+    NoBuffer(command::Buffer),
+    /// A pane, tab or workspace alone of its kind, with nothing to move to.
+    OnlyOne(Kind),
+    AtEnd(Kind),
+    NoNeighbor {
+        from: PaneId,
+        direction: Direction,
+    },
+    // What copy mode cannot do.
+    NoRows,
+    // A name that cannot be given.
+    NameTaken(String),
+    /// A tab has the name: those tabs, then their panes.
+    TabNameTaken(String, Vec<TabId>, Vec<PaneId>),
+    /// A name reserved for target syntax.
+    NameReadAsTarget(String),
+    /// Any other failure, made in one place and told apart by its code
+    /// alone: its code, and why.
+    Failed {
+        code: Code,
+        message: String,
+    },
+}
+
+/// A failure of kind `code` (see [`Error::Failed`]).
+pub(crate) fn fail(code: Raise, message: impl Into<String>) -> Error {
+    Error::Failed {
+        code: code.into(),
+        message: message.into(),
+    }
+}
+
+impl Error {
+    /// What kind of failure it is, its code: stable, for a
+    /// script to tell failures apart by.
+    pub fn code(&self) -> Code {
+        match self {
+            Self::NoWorkspace(_) => Code::NoWorkspace,
+            Self::NoPane(_) => Code::NoPane,
+            Self::NoTab(_) => Code::NoTab,
+            Self::NoPaneGiven | Self::NoWorkspaceGiven => Code::NoTarget,
+            Self::NoClient(_) => Code::NoClient,
+            Self::NoBuffer(_) => Code::NoBuffer,
+            Self::OnlyOne(_) | Self::AtEnd(_) | Self::NoNeighbor { .. } => Code::NothingThere,
+            Self::NoRows => Code::Selection,
+            Self::NameReadAsTarget(_) => Raise::BadName.into(),
+            Self::NameTaken(_) | Self::TabNameTaken(..) => Code::NameTaken,
+            Self::Failed { code, .. } => *code,
+        }
+    }
+}
+
+impl std::fmt::Display for Error {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NoWorkspace(id) => write!(f, "no workspace {id}"),
+            Self::NoPaneGiven => f.write_str("no pane given: name one (`str %N pane`)"),
+            Self::NoPane(id) => write!(f, "no pane {id}"),
+            Self::NoTab(id) => write!(f, "no tab {id}"),
+            Self::NoWorkspaceGiven => f.write_str(
+                "no workspace given: name one (`str NAME workspace`; for new-tab, the \
+                     option `str NAME in`)",
+            ),
+            Self::NoClient(id) => write!(f, "no client {id}"),
+            Self::NoBuffer(index) => write!(f, "no buffer {index}"),
+            Self::OnlyOne(kind) => write!(f, "only one {}", kind.name()),
+            Self::AtEnd(kind) => write!(f, "the {} is already at that end", kind.name()),
+            Self::NoNeighbor { from, direction } => {
+                write!(f, "no pane {} of {from}", direction.name())
+            }
+            Self::NoRows => f.write_str("the pane has no rows"),
+            Self::NameTaken(name) => write!(f, "a workspace is named {name:?}"),
+            Self::TabNameTaken(name, tabs, panes) => {
+                let ids = (tabs.iter().map(|t| AnyRef::Tab(*t)))
+                    .chain(panes.iter().map(|p| AnyRef::Pane(*p)));
+                let ids = joined(ids, " ");
+                let kills = joined(tabs, " tab kill`, `fux str ");
+                write!(
+                    f,
+                    "a tab is named {name:?} already ({ids}); close it (`fux str {kills} tab kill`) or choose another name"
+                )
+            }
+            Self::NameReadAsTarget(name) => write!(
+                f,
+                "{name:?} cannot be a name: it is reserved for target syntax"
+            ),
+            Self::Failed { message, .. } => f.write_str(message),
+        }
+    }
+}
+impl std::error::Error for Error {}
 
 #[cfg(test)]
 mod tests {

@@ -2,8 +2,8 @@
 //! the session's counters, [`Ids`]; any other is read from what a person
 //! typed (`%3`, `@2`, `+1`, `c1`) by `FromStr`, or decoded from a frame as
 //! its number. The session looks it up before acting on it.
+use crate::code::Error;
 use crate::command::{Kind, Run, Usage};
-use crate::session::Error;
 use std::fmt;
 use std::str::FromStr;
 
@@ -137,7 +137,7 @@ pub(crate) struct Ids {
 impl Ids {
     pub(crate) fn buffer(&mut self, run: Run) -> Result<BufferId, Error> {
         self.buffer = self.buffer.checked_add(1).ok_or_else(|| {
-            crate::session::fail(crate::code::Raise::IdsExhausted, "no buffer IDs are left")
+            crate::code::fail(crate::code::Raise::IdsExhausted, "no buffer IDs are left")
         })?;
         Ok(BufferId {
             run,
@@ -178,7 +178,7 @@ impl Ids {
 
 fn take(counter: &mut u32, what: &'static str) -> Result<u32, Error> {
     *counter = (counter.checked_add(1)).ok_or_else(|| {
-        crate::session::fail(
+        crate::code::fail(
             crate::code::Raise::IdsExhausted,
             format!("no {what} IDs are left"),
         )

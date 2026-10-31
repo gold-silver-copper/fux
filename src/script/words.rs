@@ -4,6 +4,7 @@
 //! takes; and what each does, run by the program's [`Host`].
 use super::settings::Reads;
 use super::{Ask, Bound, Fux, Host, Local, On, Opts, Shell};
+use crate::callback::Open;
 use crate::code::{Code, Raise};
 use crate::command::{
     AnyRef, Buffer, Button, ClientAction, Command, EnvName, Extent, HistoryBytes, Input, Kind,
@@ -14,7 +15,6 @@ use crate::help;
 use crate::id::{ClientId, PaneId};
 use crate::keys::Direction;
 use crate::layout::Axis;
-use crate::screens::Open;
 use fuxix::Allocation;
 use fuxth::{Done, Failure, Value};
 use std::num::NonZeroU32;
@@ -638,12 +638,12 @@ fn one_of<T: Clone>(value: &Value<Fux>, all: &[(&str, T)]) -> Result<T, Failure>
     })
 }
 
-/// A size: columns and rows each 1 to `view::MOST`, as a client's screen,
+/// A size: columns and rows each 1 to `crate::command::MOST`, as a client's screen,
 /// and so a tab that fits clients, may be.
-fn laid_out(cols: &Value<Fux>, rows: &Value<Fux>) -> Result<crate::view::Screen, Failure> {
-    let cells = 1..=i64::from(crate::view::MOST);
+fn laid_out(cols: &Value<Fux>, rows: &Value<Fux>) -> Result<crate::command::Screen, Failure> {
+    let cells = 1..=i64::from(crate::command::MOST);
     let (cols, rows) = (within(cols, cells.clone())?, within(rows, cells)?);
-    crate::view::Screen::new(rows, cols).map_err(|e| fail(Raise::Range, e))
+    crate::command::Screen::new(rows, cols).map_err(|e| fail(Raise::Range, e))
 }
 
 /// The pane a value is: a pane, or an action's or wait's answer of one
@@ -2183,7 +2183,7 @@ impl Host<'_> {
                 let Value::List(rows) = rows else {
                     return Err(wrong("rows", &rows));
                 };
-                let mut budget = crate::wire::Budget::with_limit(crate::client::JOB_BYTES);
+                let mut budget = crate::wire::Budget::with_limit(crate::callback::JOB_BYTES);
                 let mut items = budget.vector(rows.items().len())?;
                 for row in rows.items() {
                     let Value::List(row) = row else {
@@ -2195,7 +2195,7 @@ impl Host<'_> {
                     let payload = super::callback::data(payload, &mut budget)?;
                     let label = string(label)?;
                     budget.charge(label.capacity())?;
-                    items.push(crate::screens::Item { payload, label });
+                    items.push(crate::callback::Item { payload, label });
                 }
                 let index = |v: Value<Fux>| -> Result<Option<usize>, Failure> {
                     let Value::List(list) = &v else {
@@ -2222,7 +2222,7 @@ impl Host<'_> {
                     return Err(fail(Raise::BadValue, "nonempty rows need a selected index"));
                 }
                 let action = Self::action(&next()?)?;
-                Open::List(crate::screens::ListScreen {
+                Open::List(crate::callback::ListScreen {
                     title,
                     items,
                     current,
@@ -2233,9 +2233,9 @@ impl Host<'_> {
                 })
             }
             Screen::CopyMode => Open::Copy,
-            Screen::CommandPrompt => Open::Prompt(crate::screens::Prompt {
+            Screen::CommandPrompt => Open::Prompt(crate::callback::Prompt {
                 title: ":".to_owned(),
-                line: crate::view::Line::new(String::new()),
+                line: crate::act::Line::new(String::new()),
                 action: None,
             }),
             Screen::Prompt => {
@@ -2243,14 +2243,14 @@ impl Host<'_> {
                 // Its start typed, so the line holds no more, nor any other,
                 // than one typed: text alone, refused whole if it is not.
                 let start = text(&next()?)?;
-                let mut line = crate::view::Line::new(String::new());
+                let mut line = crate::act::Line::new(String::new());
                 let typed = match start.contains(char::is_control) {
                     true => Err("a line holds text alone, no control characters".to_owned()),
                     false => line.edit(&crate::act::Edit::Insert(start)),
                 };
                 typed.map_err(|why| fail(Raise::BadValue, why))?;
                 let action = Some(Self::action(&next()?)?);
-                Open::Prompt(crate::screens::Prompt {
+                Open::Prompt(crate::callback::Prompt {
                     title,
                     line,
                     action,
@@ -2259,7 +2259,7 @@ impl Host<'_> {
             Screen::Confirm => {
                 let question = text(&next()?)?;
                 let action = Self::action(&next()?)?;
-                Open::Confirm(crate::screens::Confirm { question, action })
+                Open::Confirm(crate::callback::Confirm { question, action })
             }
         };
         match here {
@@ -2270,7 +2270,7 @@ impl Host<'_> {
 
     /// Source is explicit; captured values never pass through a tokenizer.
     fn action(value: &Value<Fux>) -> Result<crate::callback::Callback, Failure> {
-        let mut budget = crate::wire::Budget::with_limit(crate::client::JOB_BYTES);
+        let mut budget = crate::wire::Budget::with_limit(crate::callback::JOB_BYTES);
         let (code, args) = match value {
             Value::Str(_) => (string(value)?, Vec::new()),
             Value::List(v) => match v.items() {
@@ -2875,16 +2875,16 @@ mod tests {
         assert!(crate::help::AGENTS.contains(&input), "{input}");
     }
 
-    fn styled_line() -> crate::capture::Captured {
-        crate::capture::Captured {
-            of: crate::capture::Of::Client(crate::id::ClientId::of(1)),
+    fn styled_line() -> crate::answer::Captured {
+        crate::answer::Captured {
+            of: crate::answer::Of::Client(crate::id::ClientId::of(1)),
             screen_rows: 1,
             screen_cols: 256,
             screen_cursor: None,
-            lines: vec![crate::capture::Line {
+            lines: vec![crate::answer::Line {
                 text: std::iter::repeat_n('界', 128).collect(),
                 runs: (0..128)
-                    .map(|style| crate::capture::Run {
+                    .map(|style| crate::answer::Run {
                         bytes: 3,
                         cells: 2,
                         style,

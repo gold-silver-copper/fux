@@ -1,7 +1,8 @@
 //! A pane's process: its PTY, how it starts, how its exit is noticed, and how
 //! it and its session are ended.
+use crate::answer::Ended;
 pub use fuxix::process::Pid;
-use fuxix::process::{Scan, Signal, Status};
+use fuxix::process::{Scan, Signal};
 use fuxix::pty::Master;
 use std::path::Path;
 
@@ -81,48 +82,6 @@ pub fn pixels(
         width: side(size.cols(), cell.width())?,
         height: side(size.rows(), cell.height())?,
     })
-}
-
-/// How a pane's program ended: as the system says, or with its status
-/// lost (its leader no unreaped child whose status can be read), which is
-/// no exit code and no signal, and is said as unknown.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum Ended {
-    Exited(i32),
-    Signalled(i32),
-    Lost,
-}
-
-impl Ended {
-    /// How a wait or an event says it: `exited`, its code, `null` if it
-    /// was lost, or `signal`, the signal that killed it.
-    pub fn field(self) -> (&'static str, crate::json::Json) {
-        use crate::json::Json;
-        match self {
-            Ended::Exited(code) => ("exited", Json::int(code)),
-            Ended::Signalled(signal) => ("signal", Json::int(signal)),
-            Ended::Lost => ("exited", Json::Null),
-        }
-    }
-}
-
-impl From<Status> for Ended {
-    fn from(status: Status) -> Self {
-        match status {
-            Status::Exited(code) => Ended::Exited(code),
-            Status::Signalled(signal) => Ended::Signalled(signal),
-        }
-    }
-}
-
-/// The status a shell reports for a process: its exit code, or 128 plus the
-/// signal that killed it, whose numbers are small; none for a status lost.
-pub fn shell_status(ended: Ended) -> Option<i32> {
-    match ended {
-        Ended::Exited(code) => Some(code),
-        Ended::Signalled(signal) => Some(128i32.saturating_add(signal)),
-        Ended::Lost => None,
-    }
 }
 
 impl Leader {
@@ -223,26 +182,6 @@ impl Leader {
 /// whether it is gone.
 pub fn reaped(pid: Pid) -> bool {
     !matches!(fuxix::process::reap(pid), Ok(None))
-}
-
-/// How an end is told: `exited 3`, `killed by SIGSEGV` (`killed by
-/// signal 64` for one POSIX does not name), or `ended, its status lost`.
-pub fn told(ended: Ended) -> String {
-    Told(ended).to_string()
-}
-
-pub(crate) struct Told(pub Ended);
-impl std::fmt::Display for Told {
-    fn fmt(&self, out: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self.0 {
-            Ended::Lost => out.write_str("ended, its status lost"),
-            Ended::Exited(code) => write!(out, "exited {code}"),
-            Ended::Signalled(raw) => match Signal::from_raw(raw) {
-                Some(signal) => write!(out, "killed by SIG{}", signal.name()),
-                None => write!(out, "killed by signal {raw}"),
-            },
-        }
-    }
 }
 
 #[cfg(test)]

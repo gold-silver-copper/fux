@@ -1,6 +1,6 @@
 //! One bounded bridge between language values and owned screen arguments.
 use super::{Fux, Value, record};
-use crate::callback::Data;
+use crate::callback::{Data, Open};
 use crate::wire::Budget;
 use fuxix::Allocation;
 use fuxth::Failure;
@@ -106,143 +106,105 @@ pub(super) fn value(v: &Data, b: &mut Budget) -> Result<Value<Fux>, Failure> {
     })
 }
 
-impl crate::screens::Open {
-    /// Aggregate retained storage, including callback code and row arguments.
-    pub fn bytes(&self) -> usize {
-        use crate::screens::Open;
-        let callback = |c: &crate::callback::Callback| {
-            c.args
-                .iter()
-                .fold(c.code.capacity(), |n, a| n.saturating_add(a.bytes()))
+/// The receiving dictionary checks actual arguments before publishing a screen.
+pub fn admit(
+    mut open: Open,
+    state: Option<&crate::client_state::Draft>,
+    context: &crate::protocol::Context,
+) -> Result<crate::screens::Screen, super::Failed> {
+    use crate::wire::Wire;
+    let refused = |why| super::Failed::new(crate::code::Code::BadValue, why);
+    if open.bytes() > crate::callback::JOB_BYTES {
+        return Err(refused("screen retained data exceeds the job byte limit"));
+    }
+    let mut encoded = crate::wire::Writer::counting(crate::protocol::MAX_FRAME.saturating_sub(128));
+    open.put(&mut encoded);
+    encoded
+        .check()
+        .map_err(|_| refused("screen data exceeds a frame"))?;
+    let config = state.and_then(|s| s.config.as_ref());
+    let check =
+        |action: &crate::callback::Callback, args: Vec<Data>| -> Result<(), super::Failed> {
+            if action.code.len() > crate::screens::ACTION_MAX {
+                return Err(refused("callback source exceeds its byte limit"));
+            }
+            let job = crate::screens::Job::call(action, args);
+            if job.bytes() > crate::callback::JOB_BYTES {
+                return Err(refused("callback arguments exceed the job byte limit"));
+            }
+            let mut of = context.of;
+            for v in job.given.iter().flatten() {
+                runs(v, &mut of).map_err(super::callback_failed)?;
+            }
+            job.machine(config).map(drop).map_err(|e| {
+                super::Failed::new(
+                    crate::code::Code::BadValue,
+                    format!("{}, in the callback", e.located()),
+                )
+            })
         };
-        std::mem::size_of::<Self>().saturating_add(match self {
-            Open::List(l) => l.items.iter().fold(
-                l.items
-                    .capacity()
-                    .saturating_mul(std::mem::size_of::<crate::screens::Item>())
-                    .saturating_add(
-                        l.title
-                            .capacity()
-                            .saturating_add(callback(&l.action))
-                            .saturating_add(l.client.bytes()),
-                    ),
-                |n, i| {
-                    n.saturating_add(i.label.capacity())
-                        .saturating_add(i.payload.bytes())
-                },
-            ),
-            Open::Prompt(p) => p
-                .title
-                .capacity()
-                .saturating_add(p.line.before().len().saturating_add(p.line.after().len()))
-                .saturating_add(p.action.as_ref().map_or(0, callback)),
-            Open::Confirm(c) => c.question.capacity().saturating_add(callback(&c.action)),
-            Open::Copy => 0,
-        })
-    }
-
-    /// The receiving dictionary checks actual arguments before publishing a screen.
-    pub fn admit(
-        mut self,
-        state: Option<&crate::client_state::Draft>,
-        context: &crate::protocol::Context,
-    ) -> Result<crate::screens::Screen, super::Failed> {
-        use crate::screens::Open;
-        use crate::wire::Wire;
-        let refused = |why| super::Failed::new(crate::code::Code::BadValue, why);
-        if self.bytes() > crate::client::JOB_BYTES {
-            return Err(refused("screen retained data exceeds the job byte limit"));
-        }
-        let mut encoded =
-            crate::wire::Writer::counting(crate::protocol::MAX_FRAME.saturating_sub(128));
-        self.put(&mut encoded);
-        encoded
-            .check()
-            .map_err(|_| refused("screen data exceeds a frame"))?;
-        let config = state.and_then(|s| s.config.as_ref());
-        let check =
-            |action: &crate::callback::Callback, args: Vec<Data>| -> Result<(), super::Failed> {
-                if action.code.len() > crate::screens::ACTION_MAX {
-                    return Err(refused("callback source exceeds its byte limit"));
-                }
-                let job = action.job(args);
-                if job.bytes() > crate::client::JOB_BYTES {
-                    return Err(refused("callback arguments exceed the job byte limit"));
-                }
-                let mut of = context.of;
-                for v in job.given.iter().flatten() {
-                    runs(v, &mut of).map_err(super::callback_failed)?;
-                }
-                job.machine(config).map(drop).map_err(|e| {
-                    super::Failed::new(
-                        crate::code::Code::BadValue,
-                        format!("{}, in the callback", e.located()),
-                    )
-                })
+    match &mut open {
+        Open::List(l) => {
+            let Some(client) = context.client else {
+                return Err(refused("a list needs its receiving client"));
             };
-        match &mut self {
-            Open::List(l) => {
-                let Some(client) = context.client else {
-                    return Err(refused("a list needs its receiving client"));
-                };
-                l.client = Data::Client(client, context.of);
-                if l.action.code.len() > crate::screens::ACTION_MAX {
-                    return Err(refused("callback source exceeds its byte limit"));
-                }
-                let tokens = fuxth::token::source("callback", &l.action.code)?;
-                super::callback_source(config, &tokens)?;
-                let mut of = context.of;
-                for arg in &l.action.args {
-                    runs(arg, &mut of).map_err(super::callback_failed)?;
-                }
+            l.client = Data::Client(client, context.of);
+            if l.action.code.len() > crate::screens::ACTION_MAX {
+                return Err(refused("callback source exceeds its byte limit"));
+            }
+            let tokens = fuxth::token::source("callback", &l.action.code)?;
+            super::callback_source(config, &tokens)?;
+            let mut of = context.of;
+            for arg in &l.action.args {
+                runs(arg, &mut of).map_err(super::callback_failed)?;
+            }
 
-                if l.current.is_some_and(|n| n >= l.items.len())
-                    || (!l.items.is_empty() && l.selected >= l.items.len())
-                    || (l.items.is_empty() && l.selected != 0)
-                {
-                    return Err(refused(
-                        "list current or selected index is outside its rows",
-                    ));
-                }
-                if let Some((_, run)) = l.about {
-                    super::same_run(context.of, run).map_err(super::callback_failed)?;
-                }
-                let mut kinds = std::collections::HashSet::new();
-                let mut budget = Budget::with_limit(crate::client::JOB_BYTES);
-                for item in &mut l.items {
-                    let mut of = context.of;
-                    runs(&item.payload, &mut of).map_err(super::callback_failed)?;
-                    let v = value(&item.payload, &mut budget).map_err(super::callback_failed)?;
-                    if kinds.insert(v.kind_name()) {
-                        let args = vec![l.client.clone(), item.payload.clone()];
-                        check(&l.action, args)?;
-                    }
-                    item.label = crate::words::clean(&item.label);
-                }
-                l.title = crate::words::clean(&l.title);
+            if l.current.is_some_and(|n| n >= l.items.len())
+                || (!l.items.is_empty() && l.selected >= l.items.len())
+                || (l.items.is_empty() && l.selected != 0)
+            {
+                return Err(refused(
+                    "list current or selected index is outside its rows",
+                ));
             }
-            Open::Prompt(p) => {
-                if let Some(action) = &p.action {
-                    check(action, vec![Data::Text(String::new())])?;
+            if let Some((_, run)) = l.about {
+                super::same_run(context.of, run).map_err(super::callback_failed)?;
+            }
+            let mut kinds = std::collections::HashSet::new();
+            let mut budget = Budget::with_limit(crate::callback::JOB_BYTES);
+            for item in &mut l.items {
+                let mut of = context.of;
+                runs(&item.payload, &mut of).map_err(super::callback_failed)?;
+                let v = value(&item.payload, &mut budget).map_err(super::callback_failed)?;
+                if kinds.insert(v.kind_name()) {
+                    let args = vec![l.client.clone(), item.payload.clone()];
+                    check(&l.action, args)?;
                 }
-                p.title = crate::words::clean(&p.title);
+                item.label = crate::words::clean(&item.label);
             }
-            Open::Confirm(c) => {
-                check(&c.action, Vec::new())?;
-                c.question = crate::words::clean(&c.question);
-            }
-            Open::Copy => {}
+            l.title = crate::words::clean(&l.title);
         }
-        Ok(self.build())
+        Open::Prompt(p) => {
+            if let Some(action) = &p.action {
+                check(action, vec![Data::Text(String::new())])?;
+            }
+            p.title = crate::words::clean(&p.title);
+        }
+        Open::Confirm(c) => {
+            check(&c.action, Vec::new())?;
+            c.question = crate::words::clean(&c.question);
+        }
+        Open::Copy => {}
     }
+    Ok(open.into())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::callback::Callback;
+    use crate::callback::{Callback, Item, ListScreen};
     use crate::protocol::{Asked, Context, Reply};
-    use crate::screens::{Item, ListScreen, Open, Screen};
+    use crate::screens::{Job, Screen};
     use crate::script::{Asks, Failed, Host};
     use crate::session::testing::TestResult;
 
@@ -321,8 +283,8 @@ mod tests {
         let Some(ToAttached::Open(spec)) = decoder.frame::<ToAttached>()? else {
             return Err("typed screen relay".into());
         };
-        assert!(spec.clone().admit(None, &context).is_err());
-        let Screen::List(screen) = spec.admit(Some(&state), &context)? else {
+        assert!(admit(spec.clone(), None, &context).is_err());
+        let Screen::List(screen) = admit(spec, Some(&state), &context)? else {
             return Err("list".into());
         };
         assert!(
@@ -344,7 +306,7 @@ mod tests {
             Some(&Value::App(Fux::Pane(crate::id::PaneId::of(3), context.of)))
         );
         assert_eq!(values.items().get(1), Some(&Value::App(Fux::Null)));
-        let job = screen.action.job([screen.client, item.payload.clone()]);
+        let job = Job::call(&screen.action, [screen.client, item.payload.clone()]);
         let mut machine = job.machine(state.config.as_ref())?;
         let mut out = Vec::new();
         let mut host = Host::new(context, None, &mut out);
@@ -406,15 +368,24 @@ mod tests {
             of: Some(session.run),
             ..context()?
         };
-        let Screen::List(screen) =
-            list(payload, "nip str scope get kind print").admit(None, &context)?
+        let Screen::List(screen) = admit(
+            list(payload, "nip str scope get kind print"),
+            None,
+            &context,
+        )?
         else {
             return Err("list".into());
         };
         let payload = screen.items.first().ok_or("row")?.payload.clone();
-        assert_eq!(run(&screen.action.job([screen.client, payload]))?, "all\n");
+        assert_eq!(
+            run(&Job::call(&screen.action, [screen.client, payload]))?,
+            "all\n"
+        );
         let child = data(&child, &mut Budget::new()).map_err(|e| e.message)?;
-        let text = run(&Callback::from("str id get kind print").job([child]))?;
+        let text = run(&Job::call(
+            &Callback::from("str id get kind print"),
+            [child],
+        ))?;
         assert_eq!(text, "pane\n");
         Ok(())
     }
@@ -440,13 +411,13 @@ mod tests {
         let restored = value(&decoded, &mut Budget::new()).map_err(|e| e.message)?;
         let payload = data(&restored, &mut Budget::new()).map_err(|e| e.message)?;
         assert_eq!(payload, original);
-        assert!(list(payload.clone(), "2drop").admit(None, &context).is_ok());
+        assert!(admit(list(payload.clone(), "2drop"), None, &context).is_ok());
         let other = "3-4".parse().map_err(|()| "run")?;
         let stale = Context {
             of: Some(other),
             ..context.clone()
         };
-        assert!(list(payload.clone(), "2drop").admit(None, &stale).is_err());
+        assert!(admit(list(payload.clone(), "2drop"), None, &stale).is_err());
         let mut inferred = None;
         runs(&payload, &mut inferred).map_err(|e| e.message)?;
         assert_eq!(inferred, Some(run));
@@ -465,22 +436,22 @@ mod tests {
                 ]),
             )],
         };
-        assert!(list(nested.clone(), "2drop").admit(None, &context).is_ok());
-        assert!(list(nested.clone(), "2drop").admit(None, &stale).is_err());
+        assert!(admit(list(nested.clone(), "2drop"), None, &context).is_ok());
+        assert!(admit(list(nested.clone(), "2drop"), None, &stale).is_err());
         let mixed = Data::List(vec![
             nested,
             Data::Client(crate::id::ClientId::of(2), Some(other)),
         ]);
         assert!(
-            list(mixed, "2drop")
-                .admit(
-                    None,
-                    &Context {
-                        of: None,
-                        ..context
-                    }
-                )
-                .is_err()
+            admit(
+                list(mixed, "2drop"),
+                None,
+                &Context {
+                    of: None,
+                    ..context
+                }
+            )
+            .is_err()
         );
         Ok(())
     }
@@ -492,14 +463,23 @@ mod tests {
             (Data::Text("host".into()), "1 roll drop 1 add drop"),
             (Data::Int(1), "2drop 7"),
         ] {
-            assert!(list(payload, code).admit(None, &context).is_err(), "{code}");
+            assert!(
+                admit(list(payload, code), None, &context).is_err(),
+                "{code}"
+            );
         }
         // The checker deliberately cannot know a list's elements or loop count.
         let callback = Callback::from("nip first 1 add drop");
-        let job = callback.job([Data::Null, Data::List(vec![Data::Text("inert".into())])]);
+        let job = Job::call(
+            &callback,
+            [Data::Null, Data::List(vec![Data::Text("inert".into())])],
+        );
         assert!(job.machine(None).is_ok());
         assert!(run(&job).is_err());
-        let job = Callback::from("2drop list 7 end each end").job([Data::Null, Data::Int(1)]);
+        let job = Job::call(
+            &Callback::from("2drop list 7 end each end"),
+            [Data::Null, Data::Int(1)],
+        );
         assert!(job.machine(None).is_ok());
         assert!(run(&job).is_err_and(|e| e.message.contains("empty stack")));
         Ok(())
@@ -522,17 +502,17 @@ mod tests {
                 Some("3-4".parse().map_err(|()| "run")?),
             ),
         });
-        assert!(spec.admit(None, &context).is_err());
+        assert!(admit(spec, None, &context).is_err());
         let huge = list(
             Data::Text(std::iter::repeat_n('x', crate::protocol::MAX_FRAME).collect()),
             "2drop",
         );
-        assert!(huge.admit(None, &context).is_err());
+        assert!(admit(huge, None, &context).is_err());
         let huge = list(
             Data::Int(0),
             &std::iter::repeat_n(' ', crate::screens::ACTION_MAX + 1).collect::<String>(),
         );
-        assert!(huge.admit(None, &context).is_err());
+        assert!(admit(huge, None, &context).is_err());
         let mut budget = Budget::new();
         assert!(
             data(

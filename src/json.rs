@@ -192,7 +192,7 @@ pub(crate) fn escaped(out: &mut dyn std::fmt::Write, text: &str) -> std::fmt::Re
 pub(crate) fn render(
     budget: &mut crate::wire::Budget,
     mut write: impl FnMut(&mut dyn std::fmt::Write) -> std::fmt::Result,
-) -> Result<String, crate::session::Error> {
+) -> Result<String, crate::code::Error> {
     let mut count = fuxth::Render::new(budget.remaining());
     write(&mut count).map_err(|_| crate::wire::Budget::exceeded())?;
     budget.charge(count.bytes())?;

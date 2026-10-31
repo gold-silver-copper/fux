@@ -1588,7 +1588,7 @@ mod tests {
         let (mut s, c) = session()?;
         run(&mut s, "agent-opts 80 24 size str /bin/cat program run")?;
         run(&mut s, "str c1 client str %2 pane show")?;
-        s.end_program(PaneId::of(2), crate::process::Ended::Exited(3));
+        s.end_program(PaneId::of(2), crate::answer::Ended::Exited(3));
         for typed in [b"x".as_slice(), b"\x1b[200~z\x1b[201~"] {
             s.input(c, typed);
             let notice = s.views.get_mut(&c).and_then(|v| v.notice.take());

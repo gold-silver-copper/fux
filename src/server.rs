@@ -1598,7 +1598,7 @@ impl Server {
             .chain(self.killed.iter().copied())
             .collect();
         fuxix::process::reap_orphans(|pid| leaders.contains(&pid));
-        let exited: Vec<(PaneId, crate::process::Ended)> = (self.session.parts.panes().iter())
+        let exited: Vec<(PaneId, crate::answer::Ended)> = (self.session.parts.panes().iter())
             .filter_map(|(id, pane)| Some((*id, pane.process().child()?.leader.exited()?)))
             .collect();
         for (id, status) in exited {
@@ -2087,7 +2087,7 @@ mod tests {
         let info = crate::session::testing::output(&mut server.session, "%1 info json");
         server
             .session
-            .end_program(id, crate::process::Ended::Exited(0));
+            .end_program(id, crate::answer::Ended::Exited(0));
         server.finish();
         let notice = notice.ok_or("read failure was not delivered")?;
         assert!(
@@ -2596,7 +2596,7 @@ mod tests {
     fn a_client_behind_is_detached_and_its_sender_told() -> Result<(), Box<dyn std::error::Error>> {
         use crate::command::{ClientAction, Command, Input};
         for action in [
-            ClientAction::Open(crate::screens::Open::Copy),
+            ClientAction::Open(crate::callback::Open::Copy),
             ClientAction::Keys(vec![Input::Text("keys".into())]),
         ] {
             let (mut server, _peers, client) = ordered_fixture()?;

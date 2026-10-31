@@ -1,128 +1,14 @@
 //! One attached client's own view of the shared state.
-use crate::act::{Edit, Panel};
+use crate::act::Panel;
 use crate::copy::Copy;
 use crate::id::{ClientId, TabId, WsId};
 use crate::layout::Rect;
+use crate::presentation::Presentation;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Notice {
     pub text: String,
     pub error: bool,
-}
-
-/// The most rows, and columns, a client's view has.
-pub const MOST: u16 = 4096;
-
-/// `rows` by `cols`, if a client's view can be that size: 1 to `MOST`
-/// each way; else why not.
-pub fn size(rows: u16, cols: u16) -> Result<(u16, u16), String> {
-    let fits = |n: u16| (1..=MOST).contains(&n);
-    match fits(rows) && fits(cols) {
-        true => Ok((rows, cols)),
-        false => Err(format!(
-            "{cols} columns by {rows} rows: a client is 1 to {MOST} each way"
-        )),
-    }
-}
-
-/// A size a client's screen, and so a tab, may be: 1 to `MOST` rows and
-/// columns. Every size a request gives is one, so each size the server
-/// holds is one a dump writes (`COLS ROWS size`) and makes again.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Screen(fux_vt::Size);
-
-impl Screen {
-    /// `rows` by `cols`, if a screen can be that size; else why not.
-    pub fn new(rows: u16, cols: u16) -> Result<Screen, String> {
-        let (rows, cols) = size(rows, cols)?;
-        fux_vt::Size::new(rows, cols)
-            .map(Screen)
-            .map_err(|e| e.to_string())
-    }
-    pub fn size(self) -> fux_vt::Size {
-        self.0
-    }
-}
-
-/// The most bytes a prompt's line holds.
-pub const LINE_MAX: usize = 4096;
-
-/// A line of text being typed, of at most `MAX` bytes, split at its
-/// cursor: the cursor is always between two chars, or at an end, and every
-/// edit is a whole char.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Line<const MAX: usize = LINE_MAX> {
-    before: String,
-    after: String,
-}
-
-impl<const MAX: usize> Line<MAX> {
-    /// `text`, the cursor after it.
-    pub fn new(text: String) -> Line<MAX> {
-        Line {
-            before: text,
-            after: String::new(),
-        }
-    }
-
-    /// The text before the cursor.
-    pub fn before(&self) -> &str {
-        &self.before
-    }
-
-    /// The text after the cursor.
-    pub fn after(&self) -> &str {
-        &self.after
-    }
-
-    /// The whole text.
-    pub fn text(self) -> String {
-        self.before + &self.after
-    }
-
-    /// An edit of the line: typed text (its control characters, and the
-    /// line end a pasted line ends in, left out), or a move or a deletion.
-    /// Text of more than one line, or that would take the line past `MAX`
-    /// bytes, is refused whole, saying why.
-    pub fn edit(&mut self, edit: &Edit) -> Result<(), String> {
-        match edit {
-            Edit::Insert(text) => {
-                let text = (text
-                    .strip_suffix("\r\n")
-                    .or_else(|| text.strip_suffix(['\n', '\r'])))
-                .unwrap_or(text);
-                if text.contains(['\n', '\r']) {
-                    return Err("a line holds one line of text: nothing was typed".to_owned());
-                }
-                let typed: String = text.chars().filter(|c| !c.is_control()).collect();
-                let len = self.before.len().saturating_add(self.after.len());
-                if len.saturating_add(typed.len()) > MAX {
-                    return Err(format!("a line holds {MAX} bytes: nothing was typed"));
-                }
-                self.before.push_str(&typed);
-            }
-            Edit::Backspace => drop(self.before.pop()),
-            Edit::Delete => self.after = self.after.chars().skip(1).collect(),
-            Edit::Left => {
-                if let Some(c) = self.before.pop() {
-                    self.after = std::iter::once(c).chain(self.after.chars()).collect();
-                }
-            }
-            Edit::Right => {
-                let mut chars = self.after.chars();
-                if let Some(c) = chars.next() {
-                    self.before.push(c);
-                    self.after = chars.as_str().to_owned();
-                }
-            }
-            Edit::Home => {
-                self.before.push_str(&self.after);
-                self.after = std::mem::take(&mut self.before);
-            }
-            Edit::End => self.before.push_str(&std::mem::take(&mut self.after)),
-        }
-        Ok(())
-    }
 }
 
 /// What a view shows over its panes: nothing, one of its client's
@@ -154,21 +40,6 @@ pub enum ClientKind {
     /// Nowhere a person sees (`opts COLS ROWS size attach`): its size is set by
     /// `resize`, and it sends no keys.
     Headless,
-}
-
-crate::wire::wire! {
-    /// Optional output requested by this attached client.
-    #[derive(Clone, Debug, PartialEq, Eq)]
-    pub struct Presentation {
-        pub bell: bool,
-        pub titles: bool,
-        pub terminal_clipboard: bool,
-        pub cell_placement: bool,
-        pub styles: crate::presentation::Styles,
-        pub bar: crate::presentation::Bar,
-        pub slots: crate::presentation::Slots,
-        pub show_column: bool,
-    }
 }
 
 pub struct View {

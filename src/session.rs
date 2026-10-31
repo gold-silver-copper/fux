@@ -1,22 +1,22 @@
 //! The server's state: workspaces, tabs, panes and the clients' views, and
 //! every command that changes them.
-use crate::answer::{PaneAnswer, PaneResults};
-use crate::code::{Code, Raise};
+use crate::answer::{self, Ended, PaneAnswer, PaneResults};
+use crate::code::{Error, Raise, fail};
 use crate::command::Start;
 use crate::command::{
     self, AnyRef, ClientAction, Command, Extent, Input, Kind, Members, Mouse, MoveTo, PanePick,
     PaneResize, Pick, Request, Resized, Sibling, SwapWith, WsRef,
 };
-use crate::copy::MAX_CELLS;
 use crate::id::{BufferId, ClientId, Ids, PaneId, TabId, WsId};
 use crate::json::{Fields, Json};
 use crate::keys::Direction;
 use crate::layout::{self, Axis, NoPane, Placement, Rect, Shares, Tree};
 use crate::pane::{self, Pane, PaneMut, Process, Runs};
-use crate::process::{self, Child, Ended};
+use crate::process::{self, Child};
 use crate::protocol::{Attach, Body, Reply, Response, ToAttached};
-use crate::view::{self, ClientKind, Mode, View};
+use crate::view::{ClientKind, Mode, View};
 use crate::wait::{Waiting, Watches};
+use crate::words::joined;
 use crate::workspace::{Destination, Fit, Parts, Seat, Split, Tab, Workspace};
 use fux_vt::Size;
 use fuxix::Allocation;
@@ -213,111 +213,6 @@ impl Here<'_> {
     }
 }
 
-/// Why a command, or attaching a client, failed: exit status 1.
-#[derive(Debug)]
-pub enum Error {
-    // What a command names, or its context gives, that is not there.
-    NoWorkspace(WsId),
-    NoPaneGiven,
-    NoPane(PaneId),
-    NoTab(TabId),
-    NoWorkspaceGiven,
-    NoClient(ClientId),
-    NoBuffer(command::Buffer),
-    /// A pane, tab or workspace alone of its kind, with nothing to move to.
-    OnlyOne(Kind),
-    AtEnd(Kind),
-    NoNeighbor {
-        from: PaneId,
-        direction: Direction,
-    },
-    // What copy mode cannot do.
-    NoRows,
-    /// A selection of more than `MAX_CELLS` cells.
-    SelectionTooLarge,
-    // A name that cannot be given.
-    NameTaken(String),
-    /// A tab has the name: those tabs, then their panes.
-    TabNameTaken(String, Vec<TabId>, Vec<PaneId>),
-    /// A name reserved for target syntax.
-    NameReadAsTarget(String),
-    /// Any other failure, made in one place and told apart by its code
-    /// alone: its code, and why.
-    Failed {
-        code: Code,
-        message: String,
-    },
-}
-
-/// A failure of kind `code` (see [`Error::Failed`]).
-pub(crate) fn fail(code: Raise, message: impl Into<String>) -> Error {
-    Error::Failed {
-        code: code.into(),
-        message: message.into(),
-    }
-}
-
-impl Error {
-    /// What kind of failure it is, its code: stable, for a
-    /// script to tell failures apart by.
-    pub fn code(&self) -> Code {
-        match self {
-            Self::NoWorkspace(_) => Code::NoWorkspace,
-            Self::NoPane(_) => Code::NoPane,
-            Self::NoTab(_) => Code::NoTab,
-            Self::NoPaneGiven | Self::NoWorkspaceGiven => Code::NoTarget,
-            Self::NoClient(_) => Code::NoClient,
-            Self::NoBuffer(_) => Code::NoBuffer,
-            Self::OnlyOne(_) | Self::AtEnd(_) | Self::NoNeighbor { .. } => Code::NothingThere,
-            Self::NoRows | Self::SelectionTooLarge => Code::Selection,
-            Self::NameReadAsTarget(_) => Raise::BadName.into(),
-            Self::NameTaken(_) | Self::TabNameTaken(..) => Code::NameTaken,
-            Self::Failed { code, .. } => *code,
-        }
-    }
-}
-
-impl std::fmt::Display for Error {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::NoWorkspace(id) => write!(f, "no workspace {id}"),
-            Self::NoPaneGiven => f.write_str("no pane given: name one (`str %N pane`)"),
-            Self::NoPane(id) => write!(f, "no pane {id}"),
-            Self::NoTab(id) => write!(f, "no tab {id}"),
-            Self::NoWorkspaceGiven => f.write_str(
-                "no workspace given: name one (`str NAME workspace`; for new-tab, the \
-                     option `str NAME in`)",
-            ),
-            Self::NoClient(id) => write!(f, "no client {id}"),
-            Self::NoBuffer(index) => write!(f, "no buffer {index}"),
-            Self::OnlyOne(kind) => write!(f, "only one {}", kind.name()),
-            Self::AtEnd(kind) => write!(f, "the {} is already at that end", kind.name()),
-            Self::NoNeighbor { from, direction } => {
-                write!(f, "no pane {} of {from}", direction.name())
-            }
-            Self::NoRows => f.write_str("the pane has no rows"),
-            Self::SelectionTooLarge => write!(f, "the selection is larger than {MAX_CELLS} cells"),
-            Self::NameTaken(name) => write!(f, "a workspace is named {name:?}"),
-            Self::TabNameTaken(name, tabs, panes) => {
-                let ids = (tabs.iter().map(|t| AnyRef::Tab(*t)))
-                    .chain(panes.iter().map(|p| AnyRef::Pane(*p)));
-                let ids = joined(ids, " ");
-                let kills = joined(tabs, " tab kill`, `fux str ");
-                write!(
-                    f,
-                    "a tab is named {name:?} already ({ids}); close it (`fux str {kills} tab kill`) or choose another name"
-                )
-            }
-            Self::NameReadAsTarget(name) => write!(
-                f,
-                "{name:?} cannot be a name: it is reserved for target syntax"
-            ),
-            Self::Failed { message, .. } => f.write_str(message),
-        }
-    }
-}
-impl std::error::Error for Error {}
-
 impl From<pane::Error> for Error {
     fn from(error: pane::Error) -> Self {
         let code = match error {
@@ -358,7 +253,7 @@ fn ended(pane: PaneId, status: Ended) -> Error {
         Ended::Exited(_) | Ended::Lost => "",
         Ended::Signalled(_) => "was ",
     };
-    let told = format!("the program in {pane} {was}{}", process::told(status));
+    let told = format!("the program in {pane} {was}{}", answer::told(status));
     fail(Raise::NotRunning, told)
 }
 
@@ -439,12 +334,6 @@ fn one<T: Copy + std::fmt::Display>(
         [item] => Ok(*item),
         items => Err(fail(Raise::NoTarget, many(items.len(), joined(items, " ")))),
     }
-}
-
-/// `items`, each as it displays, with `between` between them.
-fn joined<T: std::fmt::Display>(items: impl IntoIterator<Item = T>, between: &str) -> String {
-    let items: Vec<String> = items.into_iter().map(|item| item.to_string()).collect();
-    items.join(between)
 }
 
 /// A value a command can't take, as `Usage` says why.
@@ -1403,7 +1292,7 @@ impl Session {
         // A size no view has is refused before anything starts on it.
         let (rows, cols) = attach.size.nonzero();
         let (rows, cols) =
-            view::size(rows.get(), cols.get()).map_err(|why| fail(Raise::Size, why))?;
+            crate::command::size(rows.get(), cols.get()).map_err(|why| fail(Raise::Size, why))?;
         let (ws, spot) = match &attach.target {
             Some(command::AttachTarget::Workspace(workspace)) => {
                 (self.resolve_ws(workspace)?, None)
@@ -1508,7 +1397,7 @@ impl Session {
 
     /// A client's terminal is `rows` by `cols`: its view takes the size
     /// and settles if that changes it, and says whether it did; a size no
-    /// view has (`view::size`) is refused, and the view kept.
+    /// view has (`crate::command::size`) is refused, and the view kept.
     pub fn resize(
         &mut self,
         id: ClientId,
@@ -1516,7 +1405,7 @@ impl Session {
         cols: u16,
         now: Instant,
     ) -> Result<bool, Error> {
-        let size = view::size(rows, cols).map_err(|why| fail(Raise::Size, why))?;
+        let size = crate::command::size(rows, cols).map_err(|why| fail(Raise::Size, why))?;
         let view = self.views.get_mut(&id).filter(|v| (v.rows, v.cols) != size);
         let Some(view) = view else { return Ok(false) };
         (view.rows, view.cols) = size;
@@ -2012,8 +1901,8 @@ impl Session {
         match pane.runs {
             Runs::Shell(_) => {
                 let left = pane.ended(ended).left.told("it");
-                let why = process::shell_status(ended).map_or_else(
-                    || process::told(ended),
+                let why = answer::shell_status(ended).map_or_else(
+                    || answer::told(ended),
                     |s| format!("exited with status {s}"),
                 );
                 self.close_pane(id, Some(format!("{why}{left}")), now);
@@ -2033,7 +1922,7 @@ impl Session {
                     let deadline = now;
                     self.dying.push(Dying { child, deadline });
                 }
-                let status = format!("{id} {}{}", process::told(end.ended), end.left.told("it"));
+                let status = format!("{id} {}{}", answer::told(end.ended), end.left.told("it"));
                 let left = end.left != pane::Left::default() || !errors.is_empty();
                 let told = std::iter::once(status)
                     .chain(errors)
@@ -2783,7 +2672,7 @@ impl Session {
     /// their clients' screens. A size that would hide one of a tab's
     /// panes, as a split that would is, is refused.
     fn resize_tabs(&mut self, target: AnyRef, size: command::Size) -> Result<(), Error> {
-        let size = size.map(view::Screen::size);
+        let size = size.map(crate::command::Screen::size);
         let tabs: Vec<_> = self.tabs_of(target)?.collect();
         if let Some(size) = size {
             let area = Fit::Fixed(size).area();
@@ -3594,7 +3483,7 @@ impl crate::script::Asks for InProcess<'_> {
                 }
                 let Some((_, timer)) = soonest else {
                     let why = "a wait nothing due answers is answered by a real server only";
-                    break Reply::failed(Code::NotHere, why);
+                    break Reply::failed(crate::code::Code::NotHere, why);
                 };
                 session.fire(timer, now);
             },
@@ -3695,7 +3584,7 @@ pub(crate) mod testing {
         ) -> Result<bool, super::Error> {
             self.resize(client, rows, cols, Instant::now())
         }
-        pub(crate) fn end_program(&mut self, id: crate::id::PaneId, status: crate::process::Ended) {
+        pub(crate) fn end_program(&mut self, id: crate::id::PaneId, status: crate::answer::Ended) {
             self.exited(id, status, Instant::now())
         }
         pub(crate) fn settled(&mut self) {
@@ -3867,7 +3756,7 @@ pub(crate) mod testing {
                         of: Some(session.run),
                         ..Default::default()
                     };
-                    match open.admit(Some(&session.test_keymap), &context) {
+                    match crate::script::admit(open, Some(&session.test_keymap), &context) {
                         Ok(screen) => session.open_screen(client, screen),
                         Err(failed) => {
                             session.notify_to(client, failed.notice(), true);
@@ -4094,6 +3983,7 @@ mod tests {
 
     use super::testing::{attached, output, output_as, requests, run, said, started};
     use super::*;
+    use crate::code::Code;
     use crate::pane::Left;
 
     fn reap(s: &mut Session) {
@@ -5018,7 +4908,7 @@ mod tests {
             options: crate::pane::tests::options(0)?,
             workspace: command::WsRef::New,
             name: None,
-            size: Some(crate::view::Screen::new(24, 80)?),
+            size: Some(crate::command::Screen::new(24, 80)?),
             cwd: Some("/".into()),
             env,
             argv: command::Program::new("/bin/cat".into(), Vec::new())?,
@@ -5055,7 +4945,7 @@ mod tests {
             options: crate::pane::tests::options(0)?,
             workspace: command::WsRef::Name("quoted".into()),
             name: None,
-            size: Some(crate::view::Screen::new(24, 80)?),
+            size: Some(crate::command::Screen::new(24, 80)?),
             cwd: Some("/".into()),
             env,
             argv: command::Program::new("/bin/cat".into(), Vec::new())?,
@@ -5431,7 +5321,7 @@ mod tests {
     fn a_paste_into_an_exited_pane_is_refused() -> TestResult {
         let mut s = started()?;
         run(&mut s, "agent-opts 80 24 size str /bin/cat program run")?;
-        s.end_program(PaneId::of(2), crate::process::Ended::Exited(3));
+        s.end_program(PaneId::of(2), crate::answer::Ended::Exited(3));
         s.copied("x".into(), None, &[])?;
         let pasted = run(&mut s, "%2 newest paste-buffer");
         assert!(pasted.is_err_and(|e| e.contains("exited")), "refused");
@@ -5472,7 +5362,7 @@ mod tests {
         let id = PaneId::of(2);
         s.out(id, b"\x1b[?2026h\x1b]2;old\x07\x07");
         let mut pane = s.parts.pane_mut(id).ok_or("the pane")?;
-        pane.exiting(crate::process::Ended::Exited(3));
+        pane.exiting(crate::answer::Ended::Exited(3));
         let lines = told(&mut s, |s| {
             let _ = run(s, "%2 kill-first respawn");
         });
@@ -6366,7 +6256,7 @@ mod tests {
         let mut s = started()?;
         run(&mut s, "agent-opts 80 24 size str /bin/cat program run")?;
         let lines = told(&mut s, |s| {
-            s.end_program(PaneId::of(2), crate::process::Ended::Exited(3));
+            s.end_program(PaneId::of(2), crate::answer::Ended::Exited(3));
             let _ = run(s, "%2 respawn");
         });
         let said: Vec<&str> = lines.lines().filter_map(|l| l.split('"').nth(3)).collect();
@@ -6585,7 +6475,7 @@ mod tests {
         // A program's end is a change too: stale, not `not_running`.
         run(&mut s, "agent-opts 80 24 size str /bin/cat program run")?;
         let seen = s.pane(PaneId::of(2))?.version(s.run);
-        s.end_program(PaneId::of(2), crate::process::Ended::Exited(0));
+        s.end_program(PaneId::of(2), crate::answer::Ended::Exited(0));
         let ended = output(&mut s, &format!("str {seen} expect str x text send-keys"));
         let ended = ended.err().unwrap_or_default();
         assert!(ended.starts_with("stale: "), "{ended}");
@@ -6758,7 +6648,7 @@ mod tests {
     #[test]
     fn attach_supplies_presentation_before_any_program_output() -> TestResult {
         let mut s = started()?;
-        let presentation = crate::view::Presentation {
+        let presentation = crate::presentation::Presentation {
             bell: true,
             titles: true,
             terminal_clipboard: true,
@@ -6801,7 +6691,7 @@ mod tests {
         {
             assert_eq!(
                 s.views.get(&client).map(|v| v.presentation.clone()),
-                Some(crate::view::Presentation {
+                Some(crate::presentation::Presentation {
                     titles,
                     bell,
                     terminal_clipboard,
@@ -6861,7 +6751,7 @@ mod tests {
         let presentation = crate::script::default_state()?.preferences.presentation();
         s.apply(
             a,
-            vec![Act::Presentation(crate::view::Presentation {
+            vec![Act::Presentation(crate::presentation::Presentation {
                 terminal_clipboard: false,
                 cell_placement: false,
                 ..presentation.clone()
@@ -6980,7 +6870,10 @@ mod tests {
         assert!(s.parts.panes().is_empty());
         // A client of a size no view has starts nothing, nor does one that
         // only watches: there is nothing to watch.
-        assert!(s.attach(view::MOST.saturating_add(1), 40, None).is_err());
+        assert!(
+            s.attach(crate::command::MOST.saturating_add(1), 40, None)
+                .is_err()
+        );
         assert!(watch(&mut s, 11, 40).is_err());
         assert!(s.parts.panes().is_empty());
         let size = |s: &Session, p| s.parts.panes().get(&PaneId::of(p)).map(|p| p.size().into());
@@ -7068,12 +6961,12 @@ mod tests {
         };
         // Two panes: the tab stays.
         run(&mut s, "str %1 pane str horizontal axis split")?;
-        s.end_program(PaneId::of(2), crate::process::Ended::Exited(3));
+        s.end_program(PaneId::of(2), crate::answer::Ended::Exited(3));
         assert_eq!(notice(&s).as_deref(), Some("%2 exited with status 3"));
         // A second tab, shown; its only pane exits, and the tab with it.
         run(&mut s, "opts 40 9 size str +1 workspace in new-tab")?;
         run(&mut s, "str c1 client str @2 tab show")?;
-        s.end_program(PaneId::of(3), crate::process::Ended::Exited(7));
+        s.end_program(PaneId::of(3), crate::answer::Ended::Exited(7));
         assert_eq!(notice(&s).as_deref(), Some("%3 exited with status 7"));
         Ok(())
     }
@@ -7503,11 +7396,11 @@ mod tests {
     #[test]
     fn only_a_size_that_changes_a_client_resizes_it() -> TestResult {
         let (mut s, c) = attached(10, 40)?;
-        let past = view::MOST.saturating_add(1);
+        let past = crate::command::MOST.saturating_add(1);
         for (rows, changes) in [
             (10, Some(false)),
-            (view::MOST, Some(true)),
-            (view::MOST, Some(false)),
+            (crate::command::MOST, Some(true)),
+            (crate::command::MOST, Some(false)),
             (past, None),
             (0, None),
             (3, Some(true)),
@@ -8225,7 +8118,7 @@ mod tests {
             options: crate::script::default_state()?.preferences.pane_options(),
             workspace: WsRef::Name("agent".into()),
             name: None,
-            size: Some(crate::view::Screen::new(24, 80)?),
+            size: Some(crate::command::Screen::new(24, 80)?),
             cwd: Some(dir.clone()),
             env: crate::command::EnvPatch::default(),
             argv: command::Program::new("cat".into(), Vec::new())?,

@@ -1147,7 +1147,7 @@ fn encode(
     })
 }
 
-fn presentation() -> Result<fux::view::Presentation, String> {
+fn presentation() -> Result<fux::presentation::Presentation, String> {
     fux::script::default_state()
         .map(|s| s.preferences.presentation())
         .map_err(|e| e.to_string())

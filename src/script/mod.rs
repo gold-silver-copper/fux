@@ -31,6 +31,7 @@ use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
+pub(crate) use callback::admit;
 pub(crate) use words::INPUT_MAX;
 pub(crate) use words::NAMES;
 pub use words::{Act, After, Group, Keys, Opt, Row, Screen, Takes, Word, from_opts, usage};
@@ -134,11 +135,11 @@ impl AppValue for Fux {
             Fux::Answer(a, _) => match &**a {
                 Answer::Capture(c) => {
                     let state = match &c.of {
-                        crate::capture::Of::Pane { state, .. } => state
+                        crate::answer::Of::Pane { state, .. } => state
                             .iter()
                             .map(|(k, v)| (k.len() as u64).saturating_add(v.weight()))
                             .fold(1u64, u64::saturating_add),
-                        crate::capture::Of::Client(_) => 1,
+                        crate::answer::Of::Client(_) => 1,
                     };
                     // A line counts one, an empty one too, beside its text
                     // and runs.
@@ -212,8 +213,8 @@ impl AppValue for Fux {
     }
 }
 
-impl From<crate::session::Error> for fuxth::Failure {
-    fn from(error: crate::session::Error) -> Self {
+impl From<crate::code::Error> for fuxth::Failure {
+    fn from(error: crate::code::Error) -> Self {
         Self::new(error.code().into(), error.to_string())
     }
 }
@@ -374,7 +375,7 @@ pub enum Answer {
     /// An action's or wait's on a tab or workspace: each pane's that
     /// answered, which is no one pane.
     Panes(Vec<PaneAnswer>),
-    Capture(Box<crate::capture::Captured>),
+    Capture(Box<crate::answer::Captured>),
 }
 
 impl Answer {
@@ -392,8 +393,8 @@ impl Answer {
             Answer::Pane(_) => ("answer", "an action's answer"),
             Answer::Panes(_) => ("answers", "an answer of a tab's or workspace's panes"),
             Answer::Capture(c) => match c.of {
-                crate::capture::Of::Pane { .. } => ("capture", "a capture"),
-                crate::capture::Of::Client(_) => ("client-capture", "a client's capture"),
+                crate::answer::Of::Pane { .. } => ("capture", "a capture"),
+                crate::answer::Of::Client(_) => ("client-capture", "a client's capture"),
             },
         }
     }
@@ -448,8 +449,8 @@ impl Answer {
         match self {
             Answer::Pane(answer) => answer.version(),
             Answer::Capture(captured) => match captured.of {
-                crate::capture::Of::Pane { version, .. } => Some(version),
-                crate::capture::Of::Client(_) => None,
+                crate::answer::Of::Pane { version, .. } => Some(version),
+                crate::answer::Of::Client(_) => None,
             },
             Answer::Panes(_) => None,
         }
@@ -504,7 +505,7 @@ pub enum Local {
     ForceKill,
     /// Open one of the client's own screens: a client running its keys'
     /// programs does (`client::Keyboard`); nothing else has one.
-    Open(crate::screens::Open),
+    Open(crate::callback::Open),
     /// What the command line's program asks of its process.
     Shell(Shell),
 }
@@ -748,7 +749,7 @@ pub(crate) fn callback_machine(
         return compiled(config, tokens).map_err(Failed::from);
     };
     let mut compiler = base(config)?;
-    let mut budget = crate::wire::Budget::with_limit(crate::client::JOB_BYTES);
+    let mut budget = crate::wire::Budget::with_limit(crate::callback::JOB_BYTES);
     for arg in args {
         compiler.argument(callback::value(arg, &mut budget).map_err(callback_failed)?);
     }
@@ -1167,7 +1168,7 @@ impl Asks for AsClient<'_> {
         let Local::Open(open) = what else {
             return self.asks.local(what, state, out);
         };
-        let screen = open.clone().admit(state.as_deref(), &self.context)?;
+        let screen = admit(open.clone(), state.as_deref(), &self.context)?;
         self.opened = Some(screen);
         Ok(Vec::new())
     }
@@ -1850,7 +1851,7 @@ pub(crate) mod tests {
     #[test]
     fn ended_answers_expose_both_exit_fields() -> TestResult {
         use super::*;
-        use crate::process::Ended;
+        use crate::answer::Ended;
         let version: Version = "%1:0.7.0.0.0:1-1".parse().map_err(|()| "version")?;
         for (ended, exited, signal) in [
             (Ended::Exited(7), Value::Int(7), Value::App(Fux::Null)),
@@ -1894,9 +1895,9 @@ pub(crate) mod tests {
         Ok(())
     }
 
-    fn large_plain(version: super::Version) -> crate::capture::Captured {
-        crate::capture::Captured {
-            of: crate::capture::Of::Pane {
+    fn large_plain(version: super::Version) -> crate::answer::Captured {
+        crate::answer::Captured {
+            of: crate::answer::Of::Pane {
                 version,
                 wrap_pending: false,
                 state: Vec::new(),
@@ -1904,7 +1905,7 @@ pub(crate) mod tests {
             screen_rows: 24,
             screen_cols: 80,
             screen_cursor: None,
-            lines: vec![crate::capture::Line {
+            lines: vec![crate::answer::Line {
                 text: std::iter::repeat_n('x', 17_000_000).collect(),
                 runs: Vec::new(),
             }],
@@ -1932,20 +1933,20 @@ pub(crate) mod tests {
     impl Styled {
         fn new(turns: usize, lines: usize, styled: bool, history: usize) -> Result<Self, String> {
             let version: super::Version = "%1:0.0.0.0.0:1-1".parse().map_err(|()| "version")?;
-            let line = crate::capture::Line {
+            let line = crate::answer::Line {
                 text: std::iter::repeat_n('x', 100).collect(),
                 runs: (0..if styled { 100 } else { 0 })
-                    .map(|style| crate::capture::Run {
+                    .map(|style| crate::answer::Run {
                         bytes: 1,
                         cells: 1,
                         style,
                     })
                     .collect(),
             };
-            let reply = |lines: Vec<crate::capture::Line>| super::Reply {
+            let reply = |lines: Vec<crate::answer::Line>| super::Reply {
                 run: Some(version.run),
-                ..super::Body::Capture(Box::new(crate::capture::Captured {
-                    of: crate::capture::Of::Pane {
+                ..super::Body::Capture(Box::new(crate::answer::Captured {
+                    of: crate::answer::Of::Pane {
                         version,
                         wrap_pending: false,
                         state: Vec::new(),
@@ -1964,7 +1965,7 @@ pub(crate) mod tests {
                 }))
                 .into()
             };
-            let past = crate::capture::Line {
+            let past = crate::answer::Line {
                 text: std::iter::repeat_n('y', 10).collect(),
                 runs: Vec::new(),
             };
@@ -2253,8 +2254,8 @@ pub(crate) mod tests {
             )?,
             vec![Value::str(version.to_string())]
         );
-        let capture = crate::capture::Captured {
-            of: crate::capture::Of::Pane {
+        let capture = crate::answer::Captured {
+            of: crate::answer::Of::Pane {
                 version,
                 wrap_pending: false,
                 state: vec![("last_status".into(), Json::Int(7))],
@@ -2288,14 +2289,14 @@ pub(crate) mod tests {
             vec![Value::App(Fux::Pane(version.pane, Some(version.run)))]
         );
         let client = crate::id::ClientId::of(1);
-        let capture = crate::capture::Captured {
-            of: crate::capture::Of::Client(client),
+        let capture = crate::answer::Captured {
+            of: crate::answer::Of::Client(client),
             screen_rows: 24,
             screen_cols: 80,
             screen_cursor: Some((7, 3)),
-            lines: vec![crate::capture::Line {
+            lines: vec![crate::answer::Line {
                 text: "x".into(),
-                runs: vec![crate::capture::Run {
+                runs: vec![crate::answer::Run {
                     bytes: 1,
                     cells: 1,
                     style: 0,

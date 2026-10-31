@@ -2,122 +2,16 @@
 //! sliced and joined as asked, with its colours and attributes and its
 //! pane's state, as data (`Captured`) that the client renders as text or
 //! as JSON.
-use crate::command::{CaptureView, Source, Version};
+use crate::answer::{Captured, Line, Of, Run, highlighted};
+use crate::command::{CaptureView, Source};
 use crate::id::ClientId;
 use crate::json::Json;
 use crate::pane::{Pane, Process, Runs};
-use crate::wire::{wire, wire_enum};
-use fux_vt::{
-    Attributes, Blink, Color, CommandMark, Mode, MouseProtocolMode, Rgb, Row, Screen,
-    UnderlineStyle,
-};
+use fux_vt::{Attributes, CommandMark, Mode, MouseProtocolMode, Row, Screen};
 use fuxix::Allocation;
 
 /// Synthesized output work: at most two cells per admitted wire byte.
 pub(crate) const OUTPUT_CELLS: usize = 2 * crate::wire::MAX_REPLY;
-
-wire! {
-    /// A capture, read once: what it read, its screen's size and cursor
-    /// (its row and column, if it shows on the screen read), its lines,
-    /// trimmed as its view asked, and the styles their runs name; and
-    /// whether it was read with styles (its text shows them as SGR, its
-    /// JSON lists them) and marks.
-    #[derive(Clone, Debug, PartialEq, Eq)]
-    pub struct Captured {
-        pub of: Of,
-        pub screen_rows: u16,
-        pub screen_cols: u16,
-        pub screen_cursor: Option<(u16, u16)>,
-        pub lines: Vec<Line>,
-        /// The styles runs name, in the order first used.
-        pub styles: Vec<Attributes>,
-        pub styled: bool,
-        pub marks: bool,
-    }
-}
-
-wire! {
-    /// What a capture read: a pane, at its version, read with it, its
-    /// pending wrap and its state (`state`); or a client's terminal.
-    #[derive(Clone, Debug, PartialEq, Eq)]
-    pub enum Of {
-        Pane {
-            version: Version,
-            /// A glyph went into the last column: the next one goes on the
-            /// next line, though the cursor shows on this one's last cell.
-            wrap_pending: bool,
-            state: Vec<(String, Json)>,
-        },
-        Client(client: ClientId),
-    }
-}
-
-wire! {
-    /// A line's text, and a run for each change of style along it. Text
-    /// past its runs is in the default style: a plain capture's lines
-    /// have none.
-    #[derive(Clone, Debug, Default, PartialEq, Eq)]
-    pub struct Line {
-        pub text: String,
-        pub runs: Vec<Run>,
-    }
-}
-
-wire! {
-    /// A run of a line's cells of one style: the bytes of its text and
-    /// the cells they fill, and its style's place in the capture's
-    /// `styles`.
-    #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-    pub struct Run {
-        pub bytes: u32,
-        pub cells: u32,
-        pub style: u32,
-    }
-}
-
-wire_enum!(Color { Default, Idx(n), Rgb(rgb) });
-wire_enum!(Blink { None, Slow, Rapid });
-
-/// The style's colours, its flags and its underline's style and blink, as
-/// the vocabulary of `Attributes` gives and takes them.
-impl crate::wire::Wire for Attributes {
-    fn put(&self, out: &mut impl crate::wire::Sink) {
-        if out.storage(0) {
-            return;
-        }
-        let a = *self;
-        [a.foreground(), a.background(), a.underline_color()]
-            .iter()
-            .for_each(|c| c.put(out));
-        [
-            a.bold(),
-            a.dim(),
-            a.italic(),
-            a.inverse(),
-            a.hidden(),
-            a.strikeout(),
-        ]
-        .iter()
-        .for_each(|f| f.put(out));
-        a.underline_style().number().put(out);
-        a.blink().put(out);
-    }
-    fn get(r: &mut crate::wire::Reader<'_>) -> Result<Self, crate::wire::Error> {
-        let [fg, bg, under] = [Color::get(r)?, Color::get(r)?, Color::get(r)?];
-        let mut flag = || bool::get(r);
-        let a = Attributes::new(fg, bg)
-            .with_underline_color(under)
-            .with_bold(flag()?)
-            .with_dim(flag()?)
-            .with_italic(flag()?)
-            .with_inverse(flag()?)
-            .with_hidden(flag()?)
-            .with_strikeout(flag()?);
-        let style = UnderlineStyle::from_number(u16::get(r)?);
-        let style = style.ok_or(crate::wire::Error::Bad("underline style"))?;
-        Ok(a.with_underline_style(style).with_blink(Blink::get(r)?))
-    }
-}
 
 /// A pane's screen, and `history` rows before it, as `view` asks, read
 /// once with its version and state; with `copy_mode`, that says a client
@@ -128,7 +22,7 @@ pub fn pane(
     history: Option<usize>,
     view: CaptureView,
     copy_mode: bool,
-) -> Result<Captured, crate::session::Error> {
+) -> Result<Captured, crate::code::Error> {
     let limits = cell_limit(pane.history_bytes(), pane.screen().size().into())?;
     pane_with(pane, run, history, view, copy_mode, limits)
 }
@@ -140,7 +34,7 @@ fn pane_with(
     view: CaptureView,
     copy_mode: bool,
     limits: usize,
-) -> Result<Captured, crate::session::Error> {
+) -> Result<Captured, crate::code::Error> {
     let screen = pane.screen();
     let (read, above) = rows_of(screen, history, view);
     // The cursor's row and column, if it shows on the screen captured: the
@@ -179,7 +73,7 @@ fn build<'a>(
     (size, cursor): ((u16, u16), Option<(u16, u16)>),
     view: CaptureView,
     budget: &mut crate::wire::Budget,
-) -> Result<Captured, crate::session::Error> {
+) -> Result<Captured, crate::code::Error> {
     // A row starts a line unless the row before it continues on it.
     let joined = move |row: &Row<'_>| !view.wrapped && row.continues();
     let count = read
@@ -226,7 +120,7 @@ struct Builder {
 }
 
 impl Builder {
-    fn new(lines: Vec<Line>, of: &Of) -> Result<Self, crate::session::Error> {
+    fn new(lines: Vec<Line>, of: &Of) -> Result<Self, crate::code::Error> {
         let mut wire = crate::wire::Writer::counting(crate::wire::MAX_REPLY.saturating_sub(64));
         crate::wire::Wire::put(of, &mut wire);
         wire.check_ref().map_err(|_| too_large())?;
@@ -246,7 +140,7 @@ impl Builder {
         &mut self,
         line: Line,
         budget: &mut crate::wire::Budget,
-    ) -> Result<(), crate::session::Error> {
+    ) -> Result<(), crate::code::Error> {
         crate::wire::Wire::put(&line, &mut self.wire);
         self.wire.check_ref().map_err(|_| too_large())?;
         budget.reserve(&mut self.lines, 1)?;
@@ -267,7 +161,7 @@ impl Builder {
         style: Attributes,
         view: CaptureView,
         budget: &mut crate::wire::Budget,
-    ) -> Result<(), crate::session::Error> {
+    ) -> Result<(), crate::code::Error> {
         budget.text(&mut self.text, text)?;
         if view.styles || view.marks {
             if self.runs.last().is_none_or(|(last, _)| *last != style) {
@@ -292,7 +186,7 @@ impl Builder {
 
     /// Copy what trimming keeps of the line into exactly its room, then
     /// empty it for the next.
-    fn finish(&mut self, budget: &mut crate::wire::Budget) -> Result<(), crate::session::Error> {
+    fn finish(&mut self, budget: &mut crate::wire::Budget) -> Result<(), crate::code::Error> {
         if let Some((bytes, runs, last)) = self.kept.take() {
             for _ in 0..std::mem::take(&mut self.empty) {
                 self.push(Line::default(), budget)?;
@@ -363,7 +257,7 @@ fn cells_of<'a>(
 }
 
 /// Room for exactly `bytes` of text, admitted first.
-fn room(budget: &mut crate::wire::Budget, bytes: usize) -> Result<String, crate::session::Error> {
+fn room(budget: &mut crate::wire::Budget, bytes: usize) -> Result<String, crate::code::Error> {
     budget.charge(bytes)?;
     let mut text = String::new();
     text.try_reserve_exact(bytes).map_err(|_| too_large())?;
@@ -389,7 +283,7 @@ impl Table {
         style: Attributes,
         budget: &mut crate::wire::Budget,
         wire: &mut crate::wire::Writer,
-    ) -> Result<u32, crate::session::Error> {
+    ) -> Result<u32, crate::code::Error> {
         let mut at = self.slot(style);
         if let Some(place) = self.slots.get(at).and_then(|taken| taken.checked_sub(1)) {
             return Ok(place);
@@ -444,7 +338,7 @@ fn selected_rows<'a>(
     read: impl Iterator<Item = (Row<'a>, std::ops::Range<usize>)>,
     view: CaptureView,
     limits: usize,
-) -> Result<std::ops::Range<usize>, crate::session::Error> {
+) -> Result<std::ops::Range<usize>, crate::code::Error> {
     let (first, end) = view
         .rows
         .map_or((0, usize::MAX), |(a, b)| (usize::from(a), usize::from(b)));
@@ -497,10 +391,7 @@ fn selected_rows<'a>(
 /// Stored history work follows its byte budget; live cells follow the
 /// screen. Synthesized blanks explicitly kept by full or joined views
 /// have at most two cells per output byte. All terms are admitted here.
-fn cell_limit(
-    history_bytes: usize,
-    (rows, cols): (u16, u16),
-) -> Result<usize, crate::session::Error> {
+fn cell_limit(history_bytes: usize, (rows, cols): (u16, u16)) -> Result<usize, crate::code::Error> {
     usize::from(rows)
         .checked_mul(usize::from(cols))
         .and_then(|live| history_bytes.checked_mul(2)?.checked_add(live))
@@ -530,8 +421,8 @@ fn columns(
     first..first.saturating_add(count).min(end)
 }
 
-fn too_large() -> crate::session::Error {
-    crate::session::fail(
+fn too_large() -> crate::code::Error {
+    crate::code::fail(
         crate::code::Raise::TooLong,
         "capture exceeds its cell, byte or allocation limit; request fewer history rows or a narrower wrapped range",
     )
@@ -611,7 +502,7 @@ fn last_output(screen: &Screen) -> Option<(std::ops::Range<usize>, std::ops::Ran
 pub fn client(
     client: ClientId,
     grid: &crate::render::Grid,
-) -> Result<Captured, crate::session::Error> {
+) -> Result<Captured, crate::code::Error> {
     let mut budget = crate::wire::Budget::new();
     let of = Of::Client(client);
     let mut built = Builder::new(budget.vector(usize::from(grid.rows))?, &of)?;
@@ -658,7 +549,7 @@ pub(crate) fn state(
     pane: &Pane,
     copy_mode: bool,
     budget: &mut crate::wire::Budget,
-) -> Result<Vec<(&'static str, Json)>, crate::session::Error> {
+) -> Result<Vec<(&'static str, Json)>, crate::code::Error> {
     let screen = pane.screen();
     let cell = screen.graphics().cell();
     // The terminal reports a group, whose leader may already have exited.
@@ -696,9 +587,9 @@ pub(crate) fn state(
     let last_status = screen.commands().last_status;
 
     let (exited, signal) = match pane.process().exit_status() {
-        Some(crate::process::Ended::Exited(code)) => (Json::int(code), Json::Null),
-        Some(crate::process::Ended::Signalled(signal)) => (Json::Null, Json::int(signal)),
-        Some(crate::process::Ended::Lost) | None => (Json::Null, Json::Null),
+        Some(crate::answer::Ended::Exited(code)) => (Json::int(code), Json::Null),
+        Some(crate::answer::Ended::Signalled(signal)) => (Json::Null, Json::int(signal)),
+        Some(crate::answer::Ended::Lost) | None => (Json::Null, Json::Null),
     };
     let hung_up = matches!(pane.process(), Process::HungUp(_));
     let mouse = screen.mouse_protocol_mode();
@@ -818,8 +709,8 @@ fn arguments(
     budget: &mut crate::wire::Budget,
     observe: impl FnOnce(
         &mut crate::wire::Budget,
-    ) -> Result<Option<Vec<std::ffi::OsString>>, crate::session::Error>,
-) -> Result<(Json, Json), crate::session::Error> {
+    ) -> Result<Option<Vec<std::ffi::OsString>>, crate::code::Error>,
+) -> Result<(Json, Json), crate::code::Error> {
     let argv = match observe(budget)? {
         Some(words) => {
             let bytes = crate::wire::retained(&words);
@@ -853,7 +744,7 @@ fn arguments(
 fn picture(
     shown: fux_vt::Shown<'_>,
     budget: &mut crate::wire::Budget,
-) -> Result<Json, crate::session::Error> {
+) -> Result<Json, crate::code::Error> {
     budget.object([
         ("row", Json::Int(shown.row)),
         ("col", Json::int(shown.col)),
@@ -874,7 +765,7 @@ fn captured(
     styles: Vec<Attributes>,
     view: CaptureView,
     budget: &mut crate::wire::Budget,
-) -> Result<Captured, crate::session::Error> {
+) -> Result<Captured, crate::code::Error> {
     budget.slots::<Captured>(1)?;
     Ok(Captured {
         of,
@@ -888,210 +779,11 @@ fn captured(
     })
 }
 
-/// Highlighted: reverse video, or a background colour.
-fn highlighted(a: &Attributes) -> bool {
-    a.inverse() || a.background() != Color::Default
-}
-
 /// A blank's style shows on the screen: a background colour, reverse
 /// video, a line under or through it. One bold or coloured in front shows
 /// none.
 fn painted(a: &Attributes) -> bool {
     highlighted(a) || a.underline() || a.strikeout()
-}
-
-impl Captured {
-    /// As printed, admitted beside the retained capture before allocation.
-    pub fn text(&self) -> Result<String, crate::session::Error> {
-        let mut budget = crate::wire::Budget::new();
-        budget.slots::<Captured>(1)?;
-        budget.charge(crate::wire::retained(self))?;
-        budget.charge(self.text_scratch())?;
-        let text = crate::json::render(&mut budget, |out| self.write_text(out))?;
-        budget.text_value(&text)?;
-        Ok(text)
-    }
-
-    pub(crate) fn text_scratch(&self) -> usize {
-        if self.styled { 128 } else { 0 }
-    }
-
-    pub(crate) fn write_text(&self, out: &mut dyn std::fmt::Write) -> std::fmt::Result {
-        // All flags and three RGB colours fit in the declared scratch space.
-        let mut sgr = Vec::new();
-        sgr.try_reserve_exact(self.text_scratch())
-            .map_err(|_| std::fmt::Error)?;
-        for (i, line) in self.lines.iter().enumerate() {
-            if i > 0 {
-                out.write_char('\n')?;
-            }
-            self.write_line(out, line, self.styled, &mut sgr)?;
-        }
-        Ok(())
-    }
-
-    /// JSON directly from the capture: no second graph of owned run objects.
-    pub(crate) fn write_json(&self, out: &mut dyn std::fmt::Write) -> std::fmt::Result {
-        match &self.of {
-            Of::Pane { version, .. } => write!(out, "{{\"pane\":\"{}\"", version.pane)?,
-            Of::Client(client) => write!(out, "{{\"client\":\"{client}\"")?,
-        }
-        write!(
-            out,
-            ",\"screen_rows\":{},\"screen_cols\":{},\"screen_cursor\":",
-            self.screen_rows, self.screen_cols
-        )?;
-        match self.screen_cursor {
-            Some((y, x)) => write!(out, "[{y},{x}]")?,
-            None => out.write_str("null")?,
-        }
-        out.write_str(",\"lines\":[")?;
-        struct Escaped<'a>(&'a mut dyn std::fmt::Write);
-        impl std::fmt::Write for Escaped<'_> {
-            fn write_str(&mut self, text: &str) -> std::fmt::Result {
-                crate::json::escaped(self.0, text)
-            }
-        }
-        for (i, line) in self.lines.iter().enumerate() {
-            if i > 0 {
-                out.write_char(',')?;
-            }
-            out.write_char('"')?;
-            self.write_line(&mut Escaped(out), line, false, &mut Vec::new())?;
-            out.write_char('"')?;
-        }
-        out.write_char(']')?;
-        if let Of::Pane { wrap_pending, .. } = &self.of {
-            write!(out, ",\"wrap_pending\":{wrap_pending}")?;
-        }
-        if self.styled {
-            out.write_str(",\"styles\":[")?;
-            for (i, line) in self.lines.iter().enumerate() {
-                if i > 0 {
-                    out.write_char(',')?;
-                }
-                out.write_char('[')?;
-                let mut start = 0u32;
-                let mut first = true;
-                for run in self.runs(line) {
-                    let (_, cells, style) = run.ok_or(std::fmt::Error)?;
-                    if style != Attributes::default() {
-                        if !first {
-                            out.write_char(',')?;
-                        }
-                        first = false;
-                        write!(out, "{{\"col\":{start},\"len\":{cells}")?;
-                        describe(out, style)?;
-                        out.write_char('}')?;
-                    }
-                    start = start.saturating_add(cells);
-                }
-                out.write_char(']')?;
-            }
-            out.write_char(']')?;
-        }
-        if let Of::Pane { version, state, .. } = &self.of {
-            write!(out, ",\"version\":\"{version}\"")?;
-            for (key, value) in state {
-                out.write_char(',')?;
-                crate::json::write_str(out, key)?;
-                out.write_char(':')?;
-                value.write(out)?;
-            }
-        }
-        out.write_char('}')
-    }
-
-    /// A line's runs, each its text, cells and style: `None` for one past
-    /// the line's text or the capture's styles.
-    pub(crate) fn runs<'a>(
-        &'a self,
-        line: &'a Line,
-    ) -> impl Iterator<Item = Option<(&'a str, u32, Attributes)>> + 'a {
-        let mut rest = line.text.as_str();
-        line.runs.iter().map(move |run| {
-            let (text, after) = rest.split_at_checked(usize::try_from(run.bytes).ok()?)?;
-            rest = after;
-            let style = self.styles.get(usize::try_from(run.style).ok()?)?;
-            Some((text, run.cells, *style))
-        })
-    }
-
-    /// Write a line without allocating its plain or escaped intermediate
-    /// text; with `sgr`, its styles as SGR.
-    pub(crate) fn write_line(
-        &self,
-        out: &mut dyn std::fmt::Write,
-        line: &Line,
-        sgr: bool,
-        scratch: &mut Vec<u8>,
-    ) -> std::fmt::Result {
-        let mut pen = Attributes::default();
-        let mut on = false;
-        let mut taken = 0usize;
-        for run in self.runs(line) {
-            let (text, _, style) = run.ok_or(std::fmt::Error)?;
-            taken = taken.saturating_add(text.len());
-            let lit = self.marks && highlighted(&style);
-            if lit && !on {
-                out.write_str("⟦")?;
-            }
-            if sgr && style != pen {
-                scratch.clear();
-                crate::render::sgr(scratch, style, true);
-                out.write_str(std::str::from_utf8(scratch).map_err(|_| std::fmt::Error)?)?;
-                pen = style;
-            }
-            if on && !lit {
-                out.write_str("⟧")?;
-            }
-            on = lit;
-            out.write_str(text)?;
-        }
-        if pen != Attributes::default() {
-            out.write_str("\x1b[0m")?;
-        }
-        if on {
-            out.write_str("⟧")?;
-        }
-        out.write_str(line.text.get(taken..).ok_or(std::fmt::Error)?)
-    }
-}
-
-/// The shared vocabulary for styled capture runs, streamed or projected locally.
-pub(crate) enum StyleValue {
-    Index(u8),
-    Rgb(Rgb),
-    Flag,
-}
-pub(crate) fn style_fields(a: Attributes) -> impl Iterator<Item = (&'static str, StyleValue)> {
-    let colors = [("fg", a.foreground()), ("bg", a.background())]
-        .into_iter()
-        .filter_map(|(key, color)| match color {
-            Color::Default => None,
-            Color::Idx(n) => Some((key, StyleValue::Index(n))),
-            Color::Rgb(rgb) => Some((key, StyleValue::Rgb(rgb))),
-        });
-    let flags = a
-        .sgr_flags()
-        .map(|(_, name)| name)
-        .chain(a.underline().then_some("underline"))
-        .chain((a.blink() != fux_vt::Blink::None).then_some("blink"))
-        .map(|name| (name, StyleValue::Flag));
-    colors.chain(flags)
-}
-
-fn describe(out: &mut dyn std::fmt::Write, a: Attributes) -> std::fmt::Result {
-    for (name, value) in style_fields(a) {
-        match value {
-            StyleValue::Index(n) => write!(out, ",\"{name}\":{n}")?,
-            StyleValue::Rgb(Rgb { r, g, b }) => {
-                write!(out, ",\"{name}\":\"#{r:02x}{g:02x}{b:02x}\"")?
-            }
-            StyleValue::Flag => write!(out, ",\"{name}\":true")?,
-        }
-    }
-    Ok(())
 }
 
 #[cfg(test)]
