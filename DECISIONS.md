@@ -67,6 +67,7 @@ Ballots: `~/code/notes/projects/fux/vision/panel/ballot-1.md` and `~/code/notes/
 | D-36 (Q-18) | **The fuxth prompt is cut to M2's scope:** waves 1–2 and the runner, plus `SEMANTICS.md`, `while … repeat` and `char-code`. Code values, maps, immediate words and `defer` wait for residents' findings | 9–1 | computer scientist: include code values and fux callbacks as code in M2 |
 | D-37 (Q-19) | **M1 starts right after the simplification pass's remaining work** under D-35 | 7–3 | AI researcher, Lisp expert, strategist: start M1 now (the Lisp expert: at least its resident harness, which lives outside fux) |
 | D-38 | **The editor is `fuxed`,** for both the program and the package (free on crates.io, checked 2026-10-30), a crate in this repository beside `fuxth/`, depending only on `fuxth`, the runner, `fux-vt` and `fuxix`. Supersedes D-33's `fed`/`fux-fed` | owner's choice, the Forth expert's and semanticist's round-2 vote: one name for one thing | owner, 2026-10-30 |
+| D-39 | **The local test suite is the merge gate, not CI.** Before merging, run `~/code/notes/projects/fux/live/gate.sh` in the PR's worktree (CI's checks for what the branch changed, parallelism capped); merge when it passes. Nobody waits on CI; it still runs after merging, as a backstop, and a failure there becomes a fix-forward task. No long benchmarks or campaigns as part of the gate | Work fast; CI waits held merges for tens of minutes | owner, 2026-10-30 |
 
 ## Recorded disagreements (for later evidence, not to reopen now)
 
