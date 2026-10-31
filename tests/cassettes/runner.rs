@@ -49,8 +49,8 @@ const ITEMS: usize = 256;
 const DEFAULT_SECS: u64 = 10;
 const MOST_SECS: u64 = 60;
 const ALL_SECS: u64 = 60;
-/// Seconds the journal's read may take after the steps, and stopping the
-/// server: each bounded apart from the cassette's own time.
+/// Seconds stopping the server may take: cleanup, bounded apart from the
+/// replay's own time.
 const AFTER_SECS: u64 = 10;
 /// Cassettes replayed at once, at most.
 const THREADS: usize = 4;
@@ -517,8 +517,6 @@ struct Ran {
 }
 
 static COUNT: AtomicUsize = AtomicUsize::new(0);
-/// Names the files of the runner's own fux calls.
-static CALLED: AtomicUsize = AtomicUsize::new(0);
 
 /// Its directory (`$DIR`), the runner's own place in it, its socket.
 struct Place {
@@ -555,32 +553,81 @@ impl Place {
     }
 
     /// fux itself, not through the shim, on this server: killed, with
-    /// whatever it started, if it has not answered by `deadline`.
+    /// whatever it started, if it has not answered by `deadline`, or as
+    /// soon as it prints past `OUTPUT_BYTES` on either stream.
     fn fux(&self, ctx: &Ctx, args: &[&str], deadline: Instant) -> Result<String, String> {
-        let n = CALLED.fetch_add(1, Ordering::SeqCst);
-        let (out, err) = (
-            self.own.join(format!("{n}.out")),
-            self.own.join(format!("{n}.err")),
-        );
         let mut child = Command::new(&ctx.fux)
             .args(args)
             .env_clear()
             .envs(self.env(ctx))
             .process_group(0)
             .stdin(Stdio::null())
-            .stdout(std::fs::File::create(&out).map_err(e)?)
-            .stderr(std::fs::File::create(&err).map_err(e)?)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
             .spawn()
             .map_err(e)?;
         let shown = || format!("fux {}", args.join(" "));
-        let status = finish(&mut child, deadline)
-            .ok_or_else(|| format!("{}: no answer in time, so killed", shown()))?;
-        if !status.success() {
-            let said = read_file(&err, OUTPUT_BYTES, "an error")?;
-            return Err(format!("{}: {status}: {}", shown(), said.trim()));
+        // Each stream read on a thread of its own, which stops at the bound.
+        let (sent, read) = std::sync::mpsc::channel();
+        let pipes: [Option<Box<dyn Read + Send>>; 2] = [
+            child
+                .stdout
+                .take()
+                .map(|p| Box::new(p) as Box<dyn Read + Send>),
+            child
+                .stderr
+                .take()
+                .map(|p| Box::new(p) as Box<dyn Read + Send>),
+        ];
+        for (n, pipe) in pipes.into_iter().enumerate() {
+            let pipe = pipe.ok_or("its output")?;
+            let sent = sent.clone();
+            std::thread::spawn(move || sent.send((n, bounded(pipe, OUTPUT_BYTES, "its output"))));
         }
-        read_file(&out, OUTPUT_BYTES, "an answer")
+        drop(sent);
+        let mut got: [Option<Result<String, String>>; 2] = [None, None];
+        let mut status = None;
+        let failed = loop {
+            if status.is_none() {
+                status = child.try_wait().ok().flatten();
+            }
+            if status.is_some() && got.iter().all(Option::is_some) {
+                break None;
+            }
+            if got.iter().any(|g| matches!(g, Some(Err(_)))) {
+                break Some(format!("printed past {OUTPUT_BYTES} bytes, so killed"));
+            }
+            if Instant::now() >= deadline {
+                break Some("no answer in time, so killed".to_owned());
+            }
+            if let Ok((n, text)) = read.recv_timeout(Duration::from_millis(5))
+                && let Some(slot) = got.get_mut(n)
+            {
+                *slot = Some(text);
+            }
+        };
+        if let Some(why) = failed {
+            stop_group(&mut child);
+            return Err(format!("{}: {why}", shown()));
+        }
+        let [Some(Ok(out)), Some(Ok(err))] = got else {
+            return Err(format!("{}: its output unread", shown()));
+        };
+        match status {
+            Some(status) if status.success() => Ok(out),
+            Some(status) => Err(format!("{}: {status}: {}", shown(), err.trim())),
+            None => Err(format!("{}: no status", shown())),
+        }
     }
+}
+
+/// Kills `child`'s process group, and it, and reaps it.
+fn stop_group(child: &mut Child) {
+    if let Some(group) = fuxix::process::Pid::of(child) {
+        let _ = fuxix::process::kill_group(group, fuxix::process::Signal::Kill);
+    }
+    let _ = child.kill();
+    let _ = child.wait();
 }
 
 /// Waits for `child` until `deadline`; past it, kills its process group
@@ -591,11 +638,7 @@ fn finish(child: &mut Child, deadline: Instant) -> Option<std::process::ExitStat
             Ok(Some(status)) => return Some(status),
             Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(5)),
             Ok(None) | Err(_) => {
-                if let Some(group) = fuxix::process::Pid::of(child) {
-                    let _ = fuxix::process::kill_group(group, fuxix::process::Signal::Kill);
-                }
-                let _ = child.kill();
-                let _ = child.wait();
+                stop_group(child);
                 return None;
             }
         }
@@ -621,8 +664,8 @@ fn read_file(path: &Path, most: u64, what: &str) -> Result<String, String> {
     )
 }
 
-/// One replay, its steps ending by `deadline`; the journal's read and the
-/// server's stop are bounded apart (`AFTER_SECS`).
+/// One replay: its server's start, its steps and the journal's read all end
+/// by `deadline`; only the server's stop is bounded apart (`AFTER_SECS`).
 fn replay(cassette: &Cassette, ctx: &Ctx, keep: bool, deadline: Instant) -> Result<Replay, String> {
     let started = Instant::now();
     let dir = ctx.scratch.join(format!(
@@ -800,11 +843,10 @@ fn drive(
         .first()
         .map(|s| s.run.to_string())
         .unwrap_or_default();
-    let events =
-        journal(ctx, place, &run, after(Duration::from_secs(AFTER_SECS))).unwrap_or_else(|why| {
-            problems.push(why);
-            Vec::new()
-        });
+    let events = journal(ctx, place, &run, deadline).unwrap_or_else(|why| {
+        problems.push(why);
+        Vec::new()
+    });
     Ok(Replay {
         steps: ran,
         snapshots,
@@ -846,6 +888,9 @@ fn journal(ctx: &Ctx, place: &Place, run: &str, deadline: Instant) -> Result<Vec
     let mut cursor = format!("0:{run}");
     let mut events = Vec::new();
     loop {
+        if Instant::now() >= deadline {
+            return Err("the journal not read whole: the replay's time had passed".to_owned());
+        }
         let args = ["all", "str", &cursor, "0", "next-events", "json"];
         let batch = Json::read(&place.fux(ctx, &args, deadline)?, ITEMS)?;
         if batch.get("missed").map(Json::text).as_deref() != Some("0") {
@@ -1184,26 +1229,25 @@ fn code(err: &str) -> Option<String> {
 // fux-wire's own parsers: one spelling each, so nothing malformed passes.
 
 /// Every version in `text`, in order. A word that bears one (`%N:` and a
-/// second `:`) but is not one is an error, never skipped. `cut`: the text
-/// was cut at the shim's 4,000 characters, so its last word may be part of
-/// one.
-fn versions(text: &str, cut: bool) -> Result<Vec<Version>, String> {
-    let mut words: Vec<&str> = text
-        .split(|c: char| c.is_whitespace() || "\"',[]{}()".contains(c))
-        .filter(|w| !w.is_empty())
-        .collect();
-    if cut {
-        words.pop();
-    }
-    let bears = |w: &&str| {
-        w.strip_prefix('%').is_some_and(|rest| {
-            rest.starts_with(|c: char| c.is_ascii_digit()) && rest.matches(':').count() >= 2
-        })
+/// second `:`) but is not one is an error, never skipped. `cut`: the shim
+/// cut the text at 4,000 characters; then a last word that no delimiter
+/// ends may be part of one, and is answered apart, unchecked, if it may.
+fn versions(text: &str, cut: bool) -> Result<(Vec<Version>, Option<String>), String> {
+    let delimiter = |c: char| c.is_whitespace() || "\"',[]{}()".contains(c);
+    let mut words: Vec<&str> = text.split(delimiter).filter(|w| !w.is_empty()).collect();
+    let part = (cut && !text.ends_with(delimiter))
+        .then(|| words.pop())
+        .flatten();
+    let may = |w: &str| {
+        w.strip_prefix('%')
+            .is_some_and(|rest| rest.starts_with(|c: char| c.is_ascii_digit()))
     };
-    (words.into_iter().filter(bears))
+    let bears = |w: &&str| may(w) && w.matches(':').count() >= 2;
+    let seen = (words.into_iter().filter(bears))
         .map(|w| w.trim_end_matches([':', '.']))
         .map(|w| w.parse().map_err(|()| format!("a malformed version {w:?}")))
-        .collect()
+        .collect::<Result<_, _>>()?;
+    Ok((seen, part.filter(|w| may(w)).map(str::to_owned)))
 }
 
 /// An `ls`: a fresh, whole observation of every pane, and the journal's
@@ -1271,6 +1315,9 @@ struct Call {
     status: i64,
     out: String,
     err: String,
+    /// The shim kept only the first 4,000 characters.
+    out_cut: bool,
+    err_cut: bool,
 }
 
 /// What a call did, when its words establish it: one `expect`ed
@@ -1297,6 +1344,8 @@ impl Call {
                 .map_err(|_| format!("a call's status: {line}"))?,
             out: text("out"),
             err: text("err"),
+            out_cut: text("out_cut") == "true",
+            err_cut: text("err_cut") == "true",
         })
     }
 
@@ -1315,15 +1364,29 @@ impl Call {
         let version: Version = version.parse().ok()?;
         match rest {
             ["changed", "wait"] => Some(Operation::Wait(version)),
-            ["changed", secs, "timeout", "wait"] if secs.parse::<u64>().is_ok() => {
+            ["changed", secs, "timeout", "wait"]
+                if secs
+                    .parse()
+                    .ok()
+                    .and_then(fux_wire::command::Limit::secs)
+                    .is_some() =>
+            {
                 Some(Operation::Wait(version))
             }
+            // Keys fux takes, so it reaches the send: some text, or a key's
+            // name.
             ["expect", keys @ .., "send-keys"] => {
                 let (groups, left) = keys.as_chunks::<3>();
-                let keys = groups
-                    .iter()
-                    .all(|[s, _, kind]| *s == "str" && ["text", "key"].contains(kind));
-                (keys && left.is_empty()).then_some(Operation::Expect(version))
+                let input = |[s, value, kind]: &[&str; 3]| {
+                    *s == "str"
+                        && match *kind {
+                            "text" => !value.is_empty(),
+                            "key" => value.parse::<fux_vt::keys::KeyPress>().is_ok(),
+                            _ => false,
+                        }
+                };
+                let sent = !groups.is_empty() && groups.iter().all(input) && left.is_empty();
+                sent.then_some(Operation::Expect(version))
             }
             _ => None,
         }
@@ -1385,7 +1448,13 @@ impl Promise {
 
 /// Checks fux's promises on the raw replay, before any normalization;
 /// returns the promises it exercised.
-fn monitor(replay: &Replay, problems: &mut Vec<String>) -> BTreeSet<Promise> {
+/// What the monitor could not check goes in `unchecked`: never a pass,
+/// never a failure.
+fn monitor(
+    replay: &Replay,
+    problems: &mut Vec<String>,
+    unchecked: &mut Vec<String>,
+) -> BTreeSet<Promise> {
     let mut exercised = BTreeSet::new();
     let Some(run) = replay.snapshots.first().map(|s| s.run) else {
         return exercised;
@@ -1453,10 +1522,17 @@ fn monitor(replay: &Replay, problems: &mut Vec<String>) -> BTreeSet<Promise> {
         let shown = call.argv.join(" ");
         // What fux answered in a step it saw before the next fresh
         // observation, which must have had it, in this run.
-        let cut = call.out.chars().count() >= 4000;
-        match (versions(&call.out, cut), replay.snapshots.get(*step)) {
+        match (
+            versions(&call.out, call.out_cut),
+            replay.snapshots.get(*step),
+        ) {
             (Err(why), _) => problems.push(format!("step {step}: `fux {shown}` answered {why}")),
-            (Ok(seen), Some(now)) => {
+            (Ok((seen, part)), Some(now)) => {
+                if let Some(part) = part {
+                    unchecked.push(format!(
+                        "step {step}: `fux {shown}` answered more than the shim keeps, ending in {part:?}, which may be part of a version"
+                    ));
+                }
                 for v in seen {
                     if v.run != run {
                         problems.push(format!(
@@ -1473,7 +1549,9 @@ fn monitor(replay: &Replay, problems: &mut Vec<String>) -> BTreeSet<Promise> {
                     }
                 }
             }
-            (Ok(_), None) => {}
+            (Ok(_), None) => unchecked.push(format!(
+                "step {step}: `fux {shown}`: no fresh observation after it to check its answer by"
+            )),
         }
         let code = code(&call.err);
         match (call.status, &code) {
@@ -1489,7 +1567,7 @@ fn monitor(replay: &Replay, problems: &mut Vec<String>) -> BTreeSet<Promise> {
                 )),
             },
             // The shim keeps 4,000 characters of stderr.
-            (1 | 4 | 124, None) if call.err.chars().count() >= 4000 => {}
+            (1 | 4 | 124, None) if call.err_cut => {}
             (status, _) => problems.push(format!(
                 "step {step}: `fux {shown}` ended {status} without `fux: CODE:`"
             )),
@@ -1521,7 +1599,9 @@ fn monitor(replay: &Replay, problems: &mut Vec<String>) -> BTreeSet<Promise> {
         match operation {
             Operation::Expect(_) => {
                 exercised.insert(Promise::StaleExpect);
-                let stale = versions(&call.err, false).unwrap_or_default();
+                let stale = versions(&call.err, call.err_cut)
+                    .map(|(v, _)| v)
+                    .unwrap_or_default();
                 let named = matches!(stale.as_slice(), [was, now, ..]
                     if was.pane == now.pane && was.counts != now.counts && now.counts.had(was.counts));
                 if call.status != 1 || code.as_deref() != Some("stale") || !named {
@@ -1615,12 +1695,15 @@ struct Checked {
     steps: Vec<Vec<Seen>>,
     journal: Vec<Seen>,
     exercised: BTreeSet<Promise>,
+    /// What the monitor could not check: never a pass, never a failure.
+    unchecked: Vec<String>,
 }
 
 fn check(cassette: &Cassette, replay: &Replay, dir: &str) -> Checked {
     let mut problems = lint(cassette);
     problems.extend(replay.problems.iter().cloned());
-    let exercised = monitor(replay, &mut problems);
+    let mut unchecked = Vec::new();
+    let exercised = monitor(replay, &mut problems, &mut unchecked);
     for promise in &cassette.exercises {
         if !exercised.contains(promise) {
             problems.push(format!(
@@ -1721,6 +1804,7 @@ fn check(cassette: &Cassette, replay: &Replay, dir: &str) -> Checked {
         steps,
         journal: seen(&lines, JOURNAL_SEEN),
         exercised,
+        unchecked,
     }
 }
 
@@ -1764,6 +1848,7 @@ struct Report {
     problems: Vec<String>,
     drift: Vec<String>,
     exercised: BTreeSet<Promise>,
+    unchecked: Vec<String>,
     took: Duration,
 }
 
@@ -1794,6 +1879,12 @@ impl Report {
         );
         for why in &self.problems {
             out.push_str(&format!("\n  {why}"));
+        }
+        if !self.unchecked.is_empty() {
+            out.push_str(&format!(
+                "\n  unchecked:\n  {}",
+                self.unchecked.join("\n  ")
+            ));
         }
         if !self.drift.is_empty() {
             out.push_str(&format!(
@@ -1834,6 +1925,7 @@ fn report(cassette: &Cassette, ctx: &Ctx, keep: bool, suite: Instant) -> Report 
         problems: vec![why],
         drift: Vec::new(),
         exercised: BTreeSet::new(),
+        unchecked: Vec::new(),
         took: started.elapsed(),
     };
     if started >= suite {
@@ -1851,6 +1943,7 @@ fn report(cassette: &Cassette, ctx: &Ctx, keep: bool, suite: Instant) -> Report 
         drift: drift(cassette, &checked),
         problems: checked.problems,
         exercised: checked.exercised,
+        unchecked: checked.unchecked,
         took: replay.took,
     }
 }

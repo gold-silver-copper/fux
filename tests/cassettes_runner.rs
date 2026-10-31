@@ -33,6 +33,8 @@ mod runner {
                 status,
                 out: String::new(),
                 err: err.to_owned(),
+                out_cut: false,
+                err_cut: false,
             }
         }
 
@@ -57,8 +59,96 @@ mod runner {
 
         fn monitored(replay: &Replay) -> (Vec<String>, BTreeSet<Promise>) {
             let mut problems = Vec::new();
-            let exercised = monitor(replay, &mut problems);
+            let exercised = monitor(replay, &mut problems, &mut Vec::new());
             (problems, exercised)
+        }
+
+        /// A fux, made of `script`, that writes its pid to `pid` first; and
+        /// its directory, with a place in it to replay from.
+        fn fake(name: &str, script: &str) -> Result<(PathBuf, Place, PathBuf), String> {
+            let dir = fuxix::file::scratch()
+                .map_err(e)?
+                .join(format!("cassette-{name}-{}", std::process::id()));
+            let own = dir.join(".cassette");
+            std::fs::create_dir_all(&own).map_err(e)?;
+            let fux = dir.join("fux");
+            let pid = dir.join("pid");
+            let text = format!("#!/bin/sh\necho $$ >'{}'\n{script}\n", pid.display());
+            std::fs::write(&fux, text).map_err(e)?;
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&fux, std::fs::Permissions::from_mode(0o700)).map_err(e)?;
+            let place = Place {
+                socket: own.join("fux.sock"),
+                dir: dir.clone(),
+                own,
+            };
+            Ok((fux, place, pid))
+        }
+
+        /// Whether the process whose pid `file` holds is still there.
+        fn left(file: &Path) -> Result<bool, String> {
+            let pid: i32 = std::fs::read_to_string(file)
+                .map_err(e)?
+                .trim()
+                .parse()
+                .map_err(e)?;
+            Ok(fuxix::process::Pid::from_raw(pid).is_some_and(fuxix::process::exists))
+        }
+
+        /// A fux that prints past the bound and then hangs is killed at the
+        /// bound, not at the deadline, with nothing of it left running.
+        #[test]
+        fn a_request_that_prints_past_the_bound_is_killed_at_it() -> Result<(), String> {
+            let (fux, place, pid) = fake("noisy", "head -c 2000000 /dev/zero\nexec sleep 600")?;
+            let mut ctx = Ctx::new()?;
+            ctx.fux = fux;
+            let started = Instant::now();
+            let asked = place.fux(&ctx, &["ls"], after(Duration::from_secs(30)));
+            let took = started.elapsed();
+            let still = left(&pid)?;
+            let _ = std::fs::remove_dir_all(&place.dir);
+            assert!(asked.is_err_and(|why| why.contains("printed past")));
+            assert!(took < Duration::from_secs(5), "{took:?}");
+            assert!(!still, "it is still there");
+            Ok(())
+        }
+
+        /// A replay's journal is read within the replay's own time: a
+        /// server whose `next-events` never answers holds it no longer.
+        #[test]
+        fn the_journal_is_read_within_the_replays_time() -> Result<(), String> {
+            let real = Ctx::new()?.fux;
+            let wrap = format!(
+                "case \" $* \" in *\" next-events \"*) exec sleep 600;; esac\nexec '{}' \"$@\"",
+                real.display()
+            );
+            let (fux, _, pid) = fake("journal", &wrap)?;
+            let mut ctx = Ctx::new()?;
+            ctx.fux = fux;
+            let cassette = parse(
+                "quick".to_owned(),
+                "# fux cassette 1\n# guards: x\n$ true\n",
+            )?;
+            let started = Instant::now();
+            let replayed = super::replay(&cassette, &ctx, false, after(Duration::from_secs(3)));
+            let took = started.elapsed();
+            let still = left(&pid)?;
+            let _ = std::fs::remove_dir_all(pid.parent().ok_or("its directory")?);
+            let problems = replayed?.problems;
+            for kept in problems
+                .iter()
+                .filter_map(|p| p.strip_prefix("its files: "))
+            {
+                let _ = std::fs::remove_dir_all(kept);
+            }
+            assert!(
+                problems.iter().any(|p| p.contains("no answer in time")),
+                "{problems:?}"
+            );
+            // 3 s, and the stop; never a further 10 s for the journal.
+            assert!(took < Duration::from_secs(6), "{took:?}");
+            assert!(!still, "the hung request is still there");
+            Ok(())
         }
 
         /// A fux whose request never answers (one that hangs, as a server that
@@ -66,40 +156,17 @@ mod runner {
         /// the deadline, with nothing of it left running.
         #[test]
         fn a_request_that_never_answers_ends_at_its_deadline() -> Result<(), String> {
-            let dir = fuxix::file::scratch()
-                .map_err(e)?
-                .join(format!("cassette-hang-{}", std::process::id()));
-            let own = dir.join(".cassette");
-            std::fs::create_dir_all(&own).map_err(e)?;
-            let fake = dir.join("fux");
-            let pid = dir.join("pid");
-            std::fs::write(
-                &fake,
-                format!("#!/bin/sh\necho $$ >'{}'\nexec sleep 600\n", pid.display()),
-            )
-            .map_err(e)?;
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o700)).map_err(e)?;
+            let (fux, place, pid) = fake("hang", "exec sleep 600")?;
             let mut ctx = Ctx::new()?;
-            ctx.fux = fake;
-            let place = Place {
-                socket: own.join("fux.sock"),
-                dir: dir.clone(),
-                own,
-            };
+            ctx.fux = fux;
             let started = Instant::now();
             let read = journal(&ctx, &place, R1, after(Duration::from_secs(1)));
             let took = started.elapsed();
-            let hung: i32 = std::fs::read_to_string(&pid)
-                .map_err(e)?
-                .trim()
-                .parse()
-                .map_err(e)?;
-            let left = fuxix::process::Pid::from_raw(hung).is_some_and(fuxix::process::exists);
-            let _ = std::fs::remove_dir_all(&dir);
+            let left = left(&pid)?;
+            let _ = std::fs::remove_dir_all(&place.dir);
             assert!(read.is_err_and(|why| why.contains("no answer in time")));
             assert!(took < Duration::from_secs(5), "{took:?}");
-            assert!(!left, "its process {hung} is still there");
+            assert!(!left, "it is still there");
             Ok(())
         }
 
@@ -155,6 +222,26 @@ mod runner {
                 "",
             );
             assert_eq!((printed.operation(), caught.operation()), (None, None));
+            // Refused before the operation: past a wait's longest limit, no
+            // key of that name, no keys at all.
+            let refused = [
+                call(
+                    &["str", &v, "changed", "86401", "timeout", "wait"],
+                    1,
+                    "fux: range: timeout",
+                ),
+                call(
+                    &["str", &v, "expect", "str", "Nope", "key", "send-keys"],
+                    1,
+                    "fux: not_a_key: key",
+                ),
+                call(
+                    &["str", &v, "expect", "send-keys"],
+                    1,
+                    "fux: usage: send-keys",
+                ),
+            ];
+            assert!(refused.iter().all(|c| c.operation().is_none()));
             // The pane had moved past v before either ran.
             let moved = || -> Result<Vec<Snapshot>, String> {
                 Ok(vec![
@@ -162,8 +249,9 @@ mod runner {
                     ls(1, &[&format!("%1:0.3.0.0.0:{R1}")])?,
                 ])
             };
-            let (problems, exercised) =
-                monitored(&replay(moved()?, vec![(1, printed), (1, caught)], &[])?);
+            let mut calls = vec![(1, printed), (1, caught)];
+            calls.extend(refused.into_iter().map(|c| (1, c)));
+            let (problems, exercised) = monitored(&replay(moved()?, calls, &[])?);
             assert!(problems.is_empty(), "{problems:?}");
             assert!(
                 !exercised.contains(&Promise::StaleExpect)
@@ -190,8 +278,40 @@ mod runner {
             let bad = format!("%1:0.x.0.0.0:{R1} screen");
             assert!(versions(&bad, false).is_err());
             assert_eq!(
-                versions(&format!("%1:0.1.0.0.0:{R1} screen"), false)?.len(),
+                versions(&format!("%1:0.1.0.0.0:{R1} screen"), false)?
+                    .0
+                    .len(),
                 1
+            );
+            // A whole word at the shim's 4,000 characters is still checked,
+            // cut or not; only a cut one no delimiter ends is not, and it is
+            // answered apart, as unchecked.
+            let whole = format!("%1:0.x.0.0.0:{R1}\n");
+            let padded = format!(
+                "{}{whole}",
+                std::iter::repeat_n(' ', 4000_usize.saturating_sub(whole.len()))
+                    .collect::<String>()
+            );
+            assert_eq!(padded.chars().count(), 4000);
+            assert!(versions(&padded, false).is_err() && versions(&padded, true).is_err());
+            let part = format!("%1:0.1.0.0.0:{R1}\n%2:0.1.0.0.0:1-11");
+            let (seen, unchecked) = versions(&part, true)?;
+            assert_eq!(
+                (seen.len(), unchecked.as_deref()),
+                (1, Some("%2:0.1.0.0.0:1-11"))
+            );
+            let mut cut = call(&["str", "x", "changed", "wait"], 0, "");
+            (cut.out, cut.out_cut) = (part, true);
+            let mut left = Vec::new();
+            let snapshots = vec![ls(0, &[])?, ls(0, &[])?];
+            monitor(
+                &replay(snapshots, vec![(1, cut)], &[])?,
+                &mut Vec::new(),
+                &mut left,
+            );
+            assert!(
+                left.iter().any(|l| l.contains("may be part of a version")),
+                "{left:?}"
             );
             let mut answered = call(&["str", "x", "changed", "wait"], 0, "");
             answered.out = bad;

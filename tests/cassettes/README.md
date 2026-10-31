@@ -79,18 +79,24 @@ it: keep a workspace of its own (`examples.cassette`).
    A promise a replay never exercised is reported **uncovered**, never as
    held; the summary says which cassettes exercised each. Only a call whose
    arguments are one operation and nothing else tells that operation's
-   result by its status: `fux str V expect` with `str X text` or `str X key`
-   pairs, then `send-keys`; or `fux str V changed wait`, with `N timeout` or
-   not. A program on stdin, a file, a `try` or a word that only pushes
-   `expect` as text establishes nothing, so it exercises no promise. Every
+   result by its status, and only if fux takes its arguments, so it reaches
+   the operation: `fux str V expect` with at least one `str X text` (X not
+   empty) or `str X key` (X a key's name), then `send-keys`; or
+   `fux str V changed wait`, with `N timeout` (N at most 86,400) or not. A
+   program on stdin, a file, a `try`, a word that only pushes `expect` as
+   text, or arguments fux refuses establish nothing, so they exercise no
+   promise. Every
    version fux answers is read with fux-wire's own parser before anything is
    normalized: a word that bears one (`%N:` and a second `:`) but is not one
-   is a failure, never skipped.
+   is a failure, never skipped. Only a last word the shim cut (it keeps
+   4,000 characters, and says when it cut) goes unchecked, and the report
+   lists it under `unchecked`, never as checked.
 5. **Bounded time:** each cassette within its timeout, all within 60 s: past
-   that, no further cassette starts, and each left is a failure. Reading the
-   journal and stopping the server are bounded apart, 10 s each; a fux call
-   of the runner's own that has not answered by then is killed with what it
-   started.
+   that, no further cassette starts, and each left is a failure. The
+   journal is read within the cassette's own time; only stopping the server
+   is bounded apart, 10 s. A fux call of the runner's own that has not
+   answered by its deadline, or prints past 1 MiB on either stream, is
+   killed at once with what it started.
 
 ## Normalization
 
@@ -120,12 +126,12 @@ Each refused out loud, never cut silently:
 |---|---|
 | a cassette | 64 KiB, 64 steps |
 | all cassettes | 32, 2 MiB |
-| a step's stdout or stderr, a snapshot, a batch | 1 MiB (files a step writes: 2 MiB, `ulimit -f`) |
+| a step's stdout or stderr, a snapshot, a batch, each stream of the runner's own fux calls | 1 MiB (files a step writes: 2 MiB, `ulimit -f`) |
 | the call log | 2 MiB, 1,024 calls; each call's fields cut to 4,000 characters |
 | the journal | 4,096 events |
 | any JSON array or object the runner reads | 256 entries: so 256 panes in a snapshot, 256 arguments in a call |
 | `~` lines | 40 a step, 200 characters each; 256 journal events |
-| time | 10 s a cassette by default, at most 60; 60 s all together; 10 s each for the journal's read and the server's stop |
+| time | 10 s a cassette by default, at most 60, the journal's read included; 60 s all together; 10 s for the server's stop |
 
 ## Recording one
 
@@ -169,6 +175,6 @@ nothing else checks. Otherwise it stays with the PR's review notes.
 
 `runner.rs` is the runner, included by `tests/cassettes.rs` (which replays)
 and by `tests/cassettes_runner.rs` (its own tests: the bounds, the deadlines,
-what establishes an operation, raw versions, names per run, a resize after an
-exit). `cargo fmt` doesn't reach an included file: format it with
+a request that never answers or prints past its bound, what establishes an
+operation, raw versions, names per run, a resize after an exit). `cargo fmt` doesn't reach an included file: format it with
 `rustfmt --edition 2024 tests/cassettes/runner.rs`.
