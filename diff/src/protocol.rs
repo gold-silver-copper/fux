@@ -187,8 +187,8 @@ decoded!(base, baseline::protocol::Decoder, |d, kind| {
     }
 });
 
-decoded!(cur, fux::protocol::Decoder, |d, kind| {
-    use fux::protocol::{AttachedFrame, Frame, Greeting, Hello, ToAttached, ToCommand};
+decoded!(cur, fux_wire::protocol::Decoder, |d, kind| {
+    use fux_wire::protocol::{AttachedFrame, Frame, Greeting, Hello, ToAttached, ToCommand};
     fn again<'a>(frame: Option<impl Frame<'a>>) -> Result<Option<Vec<u8>>, String> {
         frame
             .map(|f| f.encode().map_err(|e| format!("{e:?}")))
@@ -209,13 +209,13 @@ decoded!(cur, fux::protocol::Decoder, |d, kind| {
 /// What each stream writes for `payload`, after other bytes: the
 /// baseline's, then the current fux's.
 fn streamed(payload: &[u8]) -> (Vec<u8>, Vec<u8>) {
-    use fux::protocol::{ToAttached, ToCommand, split_into};
+    use fux_wire::protocol::{ToAttached, ToCommand, split_into};
     let mut a = baseline::bytes::ByteQueue::default();
     a.push(b"before");
     baseline::protocol::split_into(payload, baseline::protocol::ToAttached::Paint, &mut a);
     a.push(b"before");
     baseline::protocol::split_into(payload, baseline::protocol::ToCommand::Part, &mut a);
-    let mut b = fux::bytes::ByteQueue::default();
+    let mut b = fux_vt::bytes::ByteQueue::default();
     b.push(b"before");
     split_into(payload, ToAttached::Paint, &mut b);
     b.push(b"before");
@@ -225,7 +225,7 @@ fn streamed(payload: &[u8]) -> (Vec<u8>, Vec<u8>) {
 
 /// `spec`, encoded by the current fux's frame types.
 fn encode(spec: &Spec) -> Result<Vec<u8>, String> {
-    use fux::protocol::{
+    use fux_wire::protocol::{
         Attach, AttachedFrame, Frame, Greeting, Hello, Role, ToAttached, ToCommand,
     };
     use std::borrow::Cow;

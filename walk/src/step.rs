@@ -1,7 +1,7 @@
 //! A step of a walk, as it was taken: concrete ids and bytes, never the
 //! choices that produced it, so a trace replays the same steps whatever the
 //! seed. Each is one line of a trace, read as fuxth reads a file.
-use fux::words;
+use fux_wire::words;
 
 /// What a pane's program does of its own accord, through the fixture's
 /// script (`act.sh`), which prints a marker when it is done.

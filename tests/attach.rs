@@ -68,7 +68,7 @@ fn detach_and_reattach_keep_the_shell_and_its_screen() -> Outcome {
 /// is one that detaches and attaches again in one batch.
 #[test]
 fn a_connection_that_ends_takes_its_client_with_it() -> Outcome {
-    use fux::protocol::{Attach, Frame, Hello, PROTOCOL, Role};
+    use fux_wire::protocol::{Attach, Frame, Hello, PROTOCOL, Role};
     let server = Server::start("")?;
     let clients = || -> Result<usize, String> {
         Ok(server
@@ -103,7 +103,9 @@ fn a_connection_that_ends_takes_its_client_with_it() -> Outcome {
     // end. (Two writes race the server closing the connection.)
     let mut client = server.attach(5, 20)?;
     client.wait_for("$")?;
-    let detach = fux::protocol::AttachedFrame::Detach.encode().map_err(e)?;
+    let detach = fux_wire::protocol::AttachedFrame::Detach
+        .encode()
+        .map_err(e)?;
     client.write(&[detach, attach.encode().map_err(e)?].concat())?;
     assert_eq!(client.wait_exit()?, "detached");
     eventually("only the first client", || Ok(clients()? == 1))?;
@@ -208,8 +210,8 @@ fn the_real_client_gets_titles_and_bells_and_its_title_back() -> Outcome {
     let status = terminal.wait_exit()?;
     assert!(status.success(), "{status}");
     let output = String::from_utf8_lossy(&terminal.output).into_owned();
-    let push = String::from_utf8_lossy(fux::outer::TITLE_PUSH).into_owned();
-    let pop = String::from_utf8_lossy(fux::outer::TITLE_POP).into_owned();
+    let push = String::from_utf8_lossy(fux_server::outer::TITLE_PUSH).into_owned();
+    let pop = String::from_utf8_lossy(fux_server::outer::TITLE_POP).into_owned();
     let (pushed, popped) = (output.find(&push), output.rfind(&pop));
     assert!(
         pushed.is_some() && popped > pushed && output.matches(&push).count() == 1,
@@ -253,7 +255,7 @@ fn the_real_client_attaches_restores_its_terminal_and_reattaches() -> Outcome {
     assert!(
         output
             .get(on..leave)
-            .is_some_and(|o| o.contains(fux::render::MOUSE_OFF)),
+            .is_some_and(|o| o.contains(fux_server::render::MOUSE_OFF)),
         "{output:?}"
     );
     assert!(output.contains("[detached]"), "{output:?}");
@@ -477,7 +479,7 @@ fn focus_events_reach_a_pane_that_asked_and_cursor_shapes_pass_through() -> Outc
 
 #[test]
 fn a_protocol_mismatch_refuses_attach_but_accepts_force_kill() -> Outcome {
-    use fux::protocol::{Frame, Greeting, Hello};
+    use fux_wire::protocol::{Frame, Greeting, Hello};
     use std::io::{Read, Write};
     let server = Server::start("")?;
     let mut stream = std::os::unix::net::UnixStream::connect(&server.socket).map_err(e)?;
@@ -487,10 +489,10 @@ fn a_protocol_mismatch_refuses_attach_but_accepts_force_kill() -> Outcome {
     let hello = Hello {
         protocol: 999,
         version: "0.0.0".into(),
-        role: fux::protocol::Role::Attach,
+        role: fux_wire::protocol::Role::Attach,
     };
     stream.write_all(&hello.encode().map_err(e)?).map_err(e)?;
-    let mut decoder = fux::protocol::Decoder::default();
+    let mut decoder = fux_wire::protocol::Decoder::default();
     let mut buffer = [0u8; 4096];
     let mut exit = None;
     loop {
@@ -511,7 +513,7 @@ fn a_protocol_mismatch_refuses_attach_but_accepts_force_kill() -> Outcome {
     }
     let reason = exit.ok_or("no Exit frame")?;
     assert!(
-        reason.contains(&format!("protocol {}", fux::protocol::PROTOCOL))
+        reason.contains(&format!("protocol {}", fux_wire::protocol::PROTOCOL))
             && reason.contains("use a matching client")
             && reason.contains("fux force-kill-server")
             && reason.contains("stops it and its panes")
@@ -522,7 +524,7 @@ fn a_protocol_mismatch_refuses_attach_but_accepts_force_kill() -> Outcome {
     let mut client = server.attach(10, 40)?;
     let mut stream = std::os::unix::net::UnixStream::connect(&server.socket).map_err(e)?;
     let kill = Hello {
-        role: fux::protocol::Role::Kill,
+        role: fux_wire::protocol::Role::Kill,
         ..hello
     };
     stream.write_all(&kill.encode().map_err(e)?).map_err(e)?;
@@ -550,7 +552,7 @@ fn fake_server(
 /// even when that server hangs up as soon as it has said so.
 #[test]
 fn a_server_of_another_protocol_is_named_by_the_client() -> Outcome {
-    use fux::protocol::{Frame, Greeting, Hello, Role};
+    use fux_wire::protocol::{Frame, Greeting, Hello, Role};
     let (dir, listener) = fake_server("mismatch")?;
     let server = std::thread::spawn(move || -> Outcome {
         let (mut stream, _) = listener.accept().map_err(e)?;
@@ -588,7 +590,7 @@ fn a_server_of_another_protocol_is_named_by_the_client() -> Outcome {
 /// terminal back.
 #[test]
 fn a_signal_detaches_a_client_waiting_on_a_stalled_server() -> Outcome {
-    use fux::protocol::{Frame, Greeting, Hello, PROTOCOL, Role};
+    use fux_wire::protocol::{Frame, Greeting, Hello, PROTOCOL, Role};
     let (dir, listener) = fake_server("stalled")?;
     let server = std::thread::spawn(move || -> Result<std::os::unix::net::UnixStream, String> {
         // `fux opts attach` first connects only to see that a server answers: the
@@ -635,7 +637,7 @@ fn a_signal_detaches_a_client_waiting_on_a_stalled_server() -> Outcome {
 /// lands on the shell after (a mouse mode turned on again, say).
 #[test]
 fn a_signal_detached_client_writes_the_last_paint_before_leaving() -> Outcome {
-    use fux::protocol::{Frame, Greeting, Hello, PROTOCOL, Role, ToAttached};
+    use fux_wire::protocol::{Frame, Greeting, Hello, PROTOCOL, Role, ToAttached};
     use std::io::{Read, Write};
     let (dir, listener) = fake_server("last-paint")?;
     let server = std::thread::spawn(move || -> Outcome {
@@ -1206,7 +1208,7 @@ fn foreground(stat: &str) -> bool {
 fn an_oversized_local_shell_is_refused_before_headless_attach() -> Outcome {
     let server = Server::start("")?;
     let payload = server.dir.join("oversize-argument");
-    std::fs::write(&payload, vec![b'x'; fux::protocol::MAX_FRAME / 2]).map_err(e)?;
+    std::fs::write(&payload, vec![b'x'; fux_wire::protocol::MAX_FRAME / 2]).map_err(e)?;
     let mut terminal = Terminal::attach(
         &server,
         10,
@@ -1243,7 +1245,7 @@ fn an_oversized_local_shell_is_refused_before_headless_attach() -> Outcome {
 
 #[test]
 fn concurrent_empty_attaches_create_one_workspace() -> Outcome {
-    use fux::protocol::{Attach, Decoder, Frame, Greeting, Hello, Role, ToAttached};
+    use fux_wire::protocol::{Attach, Decoder, Frame, Greeting, Hello, Role, ToAttached};
     use std::io::{Read, Write};
     use std::os::unix::net::UnixStream;
 
@@ -1251,7 +1253,7 @@ fn concurrent_empty_attaches_create_one_workspace() -> Outcome {
         let mut header = [0u8; 4];
         stream.read_exact(&mut header).map_err(e)?;
         let len = usize::try_from(u32::from_be_bytes(header)).map_err(e)?;
-        if len > fux::protocol::MAX_FRAME {
+        if len > fux_wire::protocol::MAX_FRAME {
             return Err("oversized reply".into());
         }
         let mut bytes = vec![0; len];
@@ -1304,15 +1306,15 @@ fn concurrent_empty_attaches_create_one_workspace() -> Outcome {
         "{empty}"
     );
     let mut conditional = attach.clone();
-    conditional.initial = Some(fux::command::InitialWorkspace {
+    conditional.initial = Some(fux_wire::command::InitialWorkspace {
         name: Some("first".into()),
-        start: fux::command::Start::Program(fux::command::Program::new(
+        start: fux_wire::command::Start::Program(fux_wire::command::Program::new(
             "/bin/cat".into(),
             Vec::new(),
         )?),
         options: server.state.preferences.pane_options(),
         cwd: server.dir.clone(),
-        env: fux::command::EnvPatch::default(),
+        env: fux_wire::command::EnvPatch::default(),
     });
     let mut first = connect(&server, &conditional)?;
     // The second branch would fail if used, but the stored workspace wins.
@@ -1394,7 +1396,7 @@ fn an_unusable_launch_is_left_out_and_said_only_on_refusal() -> Outcome {
     let existing = Server::start("")?;
     let empty = Server::empty()?;
     let half = existing.dir.join("half-frame");
-    std::fs::write(&half, vec![b'x'; fux::protocol::MAX_FRAME / 2]).map_err(e)?;
+    std::fs::write(&half, vec![b'x'; fux_wire::protocol::MAX_FRAME / 2]).map_err(e)?;
     let half = half.to_string_lossy();
     let malformed = ["str", "", "program"];
     // Each fits a frame alone; together they do not.
@@ -1573,7 +1575,7 @@ fn attach_creation_refusals_keep_unused_for_inherited_targets() -> Outcome {
 /// admitted, before a key job that fences the connection.
 #[test]
 fn a_resize_before_welcome_is_sent_after_it_before_a_fenced_job() -> Outcome {
-    use fux::protocol::{Attach, Decoder};
+    use fux_wire::protocol::{Attach, Decoder};
     use std::io::{Read, Write};
     use std::os::unix::net::{UnixListener, UnixStream};
 

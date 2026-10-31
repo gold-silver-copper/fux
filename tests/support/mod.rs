@@ -4,13 +4,13 @@
     dead_code,
     reason = "each test binary uses a different part of this module"
 )]
-use fux::act::Act;
 use fux::client::Keyboard;
 use fux::client_state::ClientState;
-use fux::protocol::{
+use fux::screens::Dispatch;
+use fux_wire::act::Act;
+use fux_wire::protocol::{
     Attach, AttachedFrame, Decoder, Frame, Greeting, Hello, PROTOCOL, Role, ToAttached,
 };
-use fux::screens::Dispatch;
 use std::io::{Read, Write};
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::UnixStream;
@@ -232,8 +232,9 @@ impl Server {
     }
 
     /// Its socket, as fux takes it.
-    pub fn socket_path(&self) -> Result<fux::socket::SocketPath, String> {
-        fux::socket::socket_path(&fux::socket::Choice::Path(self.socket.clone())).map_err(e)
+    pub fn socket_path(&self) -> Result<fux_server::socket::SocketPath, String> {
+        fux_server::socket::socket_path(&fux_wire::protocol::Choice::Path(self.socket.clone()))
+            .map_err(e)
     }
 
     /// The server's process id, while it runs.
@@ -461,7 +462,7 @@ impl Drop for Server {
 pub struct Client {
     stream: UnixStream,
     decoder: Decoder,
-    socket: fux::socket::SocketPath,
+    socket: fux_server::socket::SocketPath,
     state: ClientState,
     read_only: bool,
     /// Whether the server's Hello has come.
@@ -500,16 +501,20 @@ impl Client {
             of: None,
             size: sized(rows, cols)?,
             target: workspace.map(|name| {
-                fux::command::AttachTarget::Workspace(fux::command::WsRef::Name(name.to_owned()))
+                fux_wire::command::AttachTarget::Workspace(fux_wire::command::WsRef::Name(
+                    name.to_owned(),
+                ))
             }),
             read_only,
             presentation: server.state.preferences.presentation(),
-            initial: (workspace.is_none() && !read_only).then(|| fux::command::InitialWorkspace {
-                options: server.state.preferences.pane_options(),
-                name: None,
-                start: fux::command::Start::Shell(server.state.preferences.shell.clone()),
-                cwd: server.dir.clone(),
-                env: fux::command::EnvPatch::default(),
+            initial: (workspace.is_none() && !read_only).then(|| {
+                fux_wire::command::InitialWorkspace {
+                    options: server.state.preferences.pane_options(),
+                    name: None,
+                    start: fux_wire::command::Start::Shell(server.state.preferences.shell.clone()),
+                    cwd: server.dir.clone(),
+                    env: fux_wire::command::EnvPatch::default(),
+                }
             }),
         };
         stream.write_all(&attach.encode().map_err(e)?).map_err(e)?;

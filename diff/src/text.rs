@@ -14,8 +14,8 @@ const PIECES: &[&str] = &[
 macro_rules! stack {
     ($name:ident, $fux:ident) => {
         mod $name {
-            use $fux::keys::KeyPress;
-            use $fux::words;
+            use crate::sides::$fux::keys::KeyPress;
+            use crate::sides::$fux::words;
 
             pub fn quote(word: &str) -> String {
                 words::quote(word)
@@ -33,25 +33,32 @@ macro_rules! stack {
             }
 
             pub fn names() -> Vec<String> {
-                $fux::keys::all_names()
+                crate::sides::$fux::keys::all_names()
             }
 
             pub fn json(text: &str) -> String {
-                let json = $fux::json::Json::Array(vec![
-                    $fux::json::Json::str(text),
-                    $fux::json::Json::int(-3i64),
-                    $fux::json::Json::Null,
-                    $fux::json::Json::Bool(true),
-                    $fux::json::Json::Object(vec![("key".into(), $fux::json::Json::str(text))]),
+                let json = crate::sides::$fux::json::Json::Array(vec![
+                    crate::sides::$fux::json::Json::str(text),
+                    crate::sides::$fux::json::Json::int(-3i64),
+                    crate::sides::$fux::json::Json::Null,
+                    crate::sides::$fux::json::Json::Bool(true),
+                    crate::sides::$fux::json::Json::Object(vec![(
+                        "key".into(),
+                        crate::sides::$fux::json::Json::str(text),
+                    )]),
                 ]);
-                format!("{} {}", json.render(), $fux::json::base64(text.as_bytes()))
+                format!(
+                    "{} {}",
+                    json.render(),
+                    crate::sides::$fux::json::base64(text.as_bytes())
+                )
             }
         }
     };
 }
 
 stack!(base, baseline);
-stack!(cur, fux);
+stack!(cur, current);
 
 pub fn run(r: &mut Rng, scale: usize) -> Outcome {
     let mut lines = 0u64;

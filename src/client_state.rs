@@ -1,10 +1,10 @@
 //! The keys, frozen definitions and checked preferences owned by one client.
-use crate::command::{
-    DecodeMillis, EnvName, HistoryBytes, Limit, PictureBytes, Program, ScrollLines,
-};
 use crate::keymap::Keymap;
 use crate::script::settings::Reads;
 use crate::script::{Config, Fux};
+use fux_wire::command::{
+    DecodeMillis, EnvName, HistoryBytes, Limit, PictureBytes, Program, ScrollLines,
+};
 use fuxth::Value;
 
 /// A complete client state. A program changes a draft and commits it whole.
@@ -30,8 +30,8 @@ impl ClientState {
 /// A preferred place and the name used only for the first workspace.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AttachDefaults {
-    pub of: Option<crate::command::Run>,
-    pub target: Option<crate::command::AttachTarget>,
+    pub of: Option<fux_wire::command::Run>,
+    pub target: Option<fux_wire::command::AttachTarget>,
     pub name: Option<String>,
 }
 
@@ -85,7 +85,7 @@ macro_rules! preferences {
                         self.changed = true;
                     },)*
                     other => return Err(format!("no setting {other:?}; the settings are {}",
-                        crate::words::listed(NAMES, "and"))),
+                        fux_wire::words::listed(NAMES, "and"))),
                 }
                 Ok(())
             }
@@ -149,11 +149,11 @@ preferences! {
     /// Whether this client's terminal title follows its focused pane.
     titles "titles": bool;
     /// Painter roles; changes may supply a subset of the initialized roles.
-    styles "styles": crate::presentation::Styles;
+    styles "styles": fux_wire::presentation::Styles;
     /// Position, ordered left and right fields, and tab numbering.
-    bar "bar": crate::presentation::Bar;
+    bar "bar": fux_wire::presentation::Bar;
     /// Inert text supplied explicitly by this client, never evaluated on paint.
-    slots "bar-slots": crate::presentation::Slots;
+    slots "bar-slots": fux_wire::presentation::Slots;
     /// Whether the prefix column is drawn; dispatch and bar feedback stay active.
     show_column "show-column": bool;
     /// Names selected from this client for new launches. Their concrete
@@ -167,8 +167,8 @@ fn required<T>(value: Option<T>, name: &str) -> Result<T, String> {
 }
 
 impl PreferenceDraft {
-    pub(crate) fn pane_options(&self) -> Result<crate::command::PaneOptions, String> {
-        Ok(crate::command::PaneOptions {
+    pub(crate) fn pane_options(&self) -> Result<fux_wire::command::PaneOptions, String> {
+        Ok(fux_wire::command::PaneOptions {
             reflow: required(self.reflow, "reflow")?,
             alternate_scroll_lines: required(
                 self.alternate_scroll_lines,
@@ -183,7 +183,7 @@ impl PreferenceDraft {
         required(self.wait, "wait-seconds")
     }
     /// Seed an in-process client draft from its own view.
-    pub fn presentation(&mut self, p: crate::presentation::Presentation) {
+    pub fn presentation(&mut self, p: fux_wire::presentation::Presentation) {
         self.styles = Some(p.styles);
         self.bar = Some(p.bar);
         self.slots = Some(p.slots);
@@ -202,15 +202,15 @@ impl PreferenceDraft {
 }
 
 impl Preferences {
-    pub fn decode_timing(&self) -> crate::decode::Timing {
-        crate::decode::Timing::new(
+    pub fn decode_timing(&self) -> fux_vt::keys::decode::Timing {
+        fux_vt::keys::decode::Timing::new(
             u16::try_from(self.escape_delay.get()).unwrap_or(u16::MAX),
             u16::try_from(self.paste_timeout.get()).unwrap_or(u16::MAX),
         )
     }
 
-    pub fn pane_options(&self) -> crate::command::PaneOptions {
-        crate::command::PaneOptions {
+    pub fn pane_options(&self) -> fux_wire::command::PaneOptions {
+        fux_wire::command::PaneOptions {
             history_bytes: self.history_bytes,
             program_clipboard: self.program_clipboard,
             reflow: self.reflow,
@@ -218,8 +218,8 @@ impl Preferences {
             picture_bytes: self.picture_bytes,
         }
     }
-    pub fn presentation(&self) -> crate::presentation::Presentation {
-        crate::presentation::Presentation {
+    pub fn presentation(&self) -> fux_wire::presentation::Presentation {
+        fux_wire::presentation::Presentation {
             styles: self.styles,
             bar: self.bar.clone(),
             slots: self.slots.clone(),
@@ -235,7 +235,7 @@ impl Preferences {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::session::testing::TestResult;
+    use crate::TestResult;
 
     #[test]
     fn initialization_requires_every_preference_and_the_prefix() -> TestResult {

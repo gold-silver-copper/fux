@@ -4,17 +4,17 @@
 //! takes; and what each does, run by the program's [`Host`].
 use super::settings::Reads;
 use super::{Ask, Bound, Fux, Host, Local, On, Opts, Shell};
-use crate::callback::Open;
-use crate::code::{Code, Raise};
-use crate::command::{
+use crate::help;
+use fux_vt::keys::Direction;
+use fux_wire::callback::Open;
+use fux_wire::code::{Code, Raise};
+use fux_wire::command::{
     AnyRef, Buffer, Button, ClientAction, Command, EnvName, Extent, HistoryBytes, Input, Kind,
     Limit, Members, Mouse, MoveTo, PanePick, PaneResize, Percent, Pick, Program, Request, Resized,
     Sibling, Since, Source, SwapWith, To, Usage, Wait, Wheel, WsRef,
 };
-use crate::help;
-use crate::id::{ClientId, PaneId};
-use crate::keys::Direction;
-use crate::layout::Axis;
+use fux_wire::id::{ClientId, PaneId};
+use fux_wire::layout::Axis;
 use fuxix::Allocation;
 use fuxth::{Done, Failure, Value};
 use std::num::NonZeroU32;
@@ -195,7 +195,7 @@ pub fn from_opts(last: &str) -> String {
     let names: Vec<&str> = (Act::ALL.iter().filter(opts))
         .map(|act| Word::Act(*act).row().name)
         .collect();
-    crate::words::listed(&names, last)
+    fux_wire::words::listed(&names, last)
 }
 
 /// fux's kinds of value, each as its values' `name` says it, as an error
@@ -536,7 +536,7 @@ pub(super) fn write_json_value(
     match value {
         Value::Int(n) => write!(out, "{n}"),
         Value::Bool(b) => write!(out, "{b}"),
-        Value::Str(s) => crate::json::write_str(out, s),
+        Value::Str(s) => fux_wire::json::write_str(out, s),
         Value::List(list) => {
             out.write_char('[')?;
             for (i, item) in list.items().iter().enumerate() {
@@ -633,17 +633,17 @@ fn one_of<T: Clone>(value: &Value<Fux>, all: &[(&str, T)]) -> Result<T, Failure>
     let found = all.iter().find(|(name, _)| *name == given);
     found.map(|(_, t)| t.clone()).ok_or_else(|| {
         let names: Vec<&str> = all.iter().map(|(name, _)| *name).collect();
-        let names = crate::words::listed(&names, "or");
+        let names = fux_wire::words::listed(&names, "or");
         fail(Raise::BadValue, format!("{given:?} is not {names}"))
     })
 }
 
 /// A size: columns and rows each 1 to `command::MOST`, as a client's screen,
 /// and so a tab that fits clients, may be.
-fn laid_out(cols: &Value<Fux>, rows: &Value<Fux>) -> Result<crate::command::Screen, Failure> {
-    let cells = 1..=i64::from(crate::command::MOST);
+fn laid_out(cols: &Value<Fux>, rows: &Value<Fux>) -> Result<fux_wire::command::Screen, Failure> {
+    let cells = 1..=i64::from(fux_wire::command::MOST);
     let (cols, rows) = (within(cols, cells.clone())?, within(rows, cells)?);
-    crate::command::Screen::new(rows, cols).map_err(|e| fail(Raise::Range, e))
+    fux_wire::command::Screen::new(rows, cols).map_err(|e| fail(Raise::Range, e))
 }
 
 /// The pane a value is: a pane, or an action's or wait's answer of one
@@ -689,7 +689,7 @@ fn workspace(value: &Value<Fux>) -> Result<WsRef, Failure> {
     if let Value::App(Fux::Workspace(w, _)) = value {
         return Ok(WsRef::Id(*w));
     }
-    crate::command::parse_workspace(&string(value)?)
+    fux_wire::command::parse_workspace(&string(value)?)
         .map_err(|e| fail(Raise::BadValue, e.to_string()))
 }
 
@@ -705,15 +705,19 @@ fn scope(value: &Value<Fux>) -> Result<Option<AnyRef>, Failure> {
 }
 
 /// A snapshot or journal scope: the session, a client, or a target.
-fn observation_scope(value: &Value<Fux>) -> Result<crate::inspect::Scope, Failure> {
+fn observation_scope(value: &Value<Fux>) -> Result<fux_wire::inspect::Scope, Failure> {
     if let Value::App(Fux::Client(c, _)) = value {
-        return Ok(crate::inspect::Scope::Client(*c));
+        return Ok(fux_wire::inspect::Scope::Client(*c));
     }
-    scope(value)
-        .map(|target| target.map_or(crate::inspect::Scope::All, crate::inspect::Scope::Target))
+    scope(value).map(|target| {
+        target.map_or(
+            fux_wire::inspect::Scope::All,
+            fux_wire::inspect::Scope::Target,
+        )
+    })
 }
 
-fn cursor(value: &Value<Fux>) -> Result<crate::events::Cursor, Failure> {
+fn cursor(value: &Value<Fux>) -> Result<fux_wire::events::Cursor, Failure> {
     let text = string(value)?;
     text.parse().map_err(|()| {
         fail(
@@ -755,7 +759,7 @@ fn on(value: &Value<Fux>) -> Result<On, Failure> {
 /// The version an action's answer, or a wait's, holds: its pane's from
 /// before what it did. A wait on it waits from there, so nothing that came
 /// between is missed.
-fn held(value: &Value<Fux>) -> Option<crate::command::Version> {
+fn held(value: &Value<Fux>) -> Option<fux_wire::command::Version> {
     match value {
         Value::App(Fux::Answer(answer, _)) => match &**answer {
             super::Answer::Pane(answer) => answer.version(),
@@ -772,7 +776,7 @@ const CHANGED: &str = "takes no request changed made: only wait uses its baselin
 const EXPECTED: &str = "takes no request expect made: only send-keys checks a version";
 
 /// The version `value` holds (`Answer::version`), or is as text.
-fn version(value: &Value<Fux>) -> Result<crate::command::Version, Failure> {
+fn version(value: &Value<Fux>) -> Result<fux_wire::command::Version, Failure> {
     let wanted = "a version: an action's or wait's answer, a pane's capture, or its text";
     let text = match value {
         Value::App(Fux::Answer(answer, _)) => {
@@ -884,13 +888,13 @@ fn modify(
         }
         Opt::AlternateScrollLines => {
             built.alternate_scroll_lines = Some(
-                crate::command::ScrollLines::read(&next()?)
+                fux_wire::command::ScrollLines::read(&next()?)
                     .map_err(|why| fail(Raise::Range, why))?,
             )
         }
         Opt::PictureBytes => {
             built.picture_bytes = Some(
-                crate::command::PictureBytes::read(&next()?)
+                fux_wire::command::PictureBytes::read(&next()?)
                     .map_err(|why| fail(Raise::Range, why))?,
             )
         }
@@ -1097,8 +1101,8 @@ fn attach_options(
     word: Act,
     imports: &fuxth::Imports,
     value: Value<Fux>,
-) -> Result<(Option<crate::command::AttachTarget>, Opts), Failure> {
-    use crate::command::AttachTarget as T;
+) -> Result<(Option<fux_wire::command::AttachTarget>, Opts), Failure> {
+    use fux_wire::command::AttachTarget as T;
     let built = owned(modifying(value)?, imports)?;
     unused(word, &built)?;
     let target = match (&built.on, &built.place) {
@@ -1168,7 +1172,7 @@ pub(super) fn takers(word: Option<Word>) -> String {
         .into_iter()
         .map(|act| Word::Act(act).row().name)
         .collect();
-    crate::words::listed(&names, "or")
+    fux_wire::words::listed(&names, "or")
 }
 
 /// The bytes `hex` spells, two digits each (`1b5b41`, `c3 a9`; blanks
@@ -1198,8 +1202,8 @@ fn hex(hex: &str) -> Result<Vec<u8>, Failure> {
 pub(crate) const INPUT_MAX: usize = 900 * 1024;
 // A frame holds it, with room for the rest of its request; and an empty
 // input queue its text and bytes, which go in as they are (`Pane::input`).
-const _: () = assert!(INPUT_MAX < crate::protocol::MAX_PAYLOAD);
-const _: () = assert!(INPUT_MAX <= crate::pane::INPUT_BYTES);
+const _: () = assert!(INPUT_MAX < fux_wire::protocol::MAX_PAYLOAD);
+const _: () = assert!(INPUT_MAX <= fux_server::pane::INPUT_BYTES);
 
 /// `inputs`, refused past what one send-keys sends. What they take is
 /// what the request carries, which must fit in one frame: text and pastes
@@ -1428,9 +1432,9 @@ impl Host<'_> {
         built: &Opts,
     ) -> Result<
         (
-            crate::command::Start,
-            crate::command::EnvPatch,
-            crate::command::PaneOptions,
+            fux_wire::command::Start,
+            fux_wire::command::EnvPatch,
+            fux_wire::command::PaneOptions,
         ),
         Failure,
     > {
@@ -1524,9 +1528,8 @@ impl Host<'_> {
                 }
                 let (start, env, options) = self.launch(&built)?;
                 let argv = match start {
-                    crate::command::Start::Shell(argv) | crate::command::Start::Program(argv) => {
-                        argv
-                    }
+                    fux_wire::command::Start::Shell(argv)
+                    | fux_wire::command::Start::Program(argv) => argv,
                 };
                 let run = Command::Run {
                     workspace: built.place.ok_or_else(|| {
@@ -1715,9 +1718,9 @@ impl Host<'_> {
                 let projection = one_of(
                     &next()?,
                     &[
-                        ("facts", crate::inspect::Projection::Facts),
-                        ("topology", crate::inspect::Projection::Topology),
-                        ("recipe", crate::inspect::Projection::Recipe),
+                        ("facts", fux_wire::inspect::Projection::Facts),
+                        ("topology", fux_wire::inspect::Projection::Topology),
+                        ("recipe", fux_wire::inspect::Projection::Recipe),
                     ],
                 )?;
                 later(ask(Command::Inspect { scope, projection }))
@@ -1737,12 +1740,12 @@ impl Host<'_> {
                     | Value::Str(_)
                     | Value::List(_)
                     | Value::App(_)) => {
-                        if field.len() > crate::session::NAME_MAX {
+                        if field.len() > fux_server::session::NAME_MAX {
                             return Err(fail(Raise::TooLong, "field name is too long"));
                         }
                         later(ask(Command::Inspect {
-                            scope: crate::inspect::Scope::Target(target(&value)?),
-                            projection: crate::inspect::Projection::Field(field),
+                            scope: fux_wire::inspect::Scope::Target(target(&value)?),
+                            projection: fux_wire::inspect::Projection::Field(field),
                         }))
                     }
                 }
@@ -1826,7 +1829,7 @@ impl Host<'_> {
                 let Value::List(list) = &tree else {
                     return Err(wrong("a flat layout list", &tree));
                 };
-                if list.items().is_empty() || list.items().len() > crate::layout::NODES_MAX {
+                if list.items().is_empty() || list.items().len() > fux_wire::layout::NODES_MAX {
                     return Err(fail(Raise::TooLong, "a layout needs 1..2047 nodes"));
                 }
                 let mut nodes = Vec::with_capacity(list.items().len());
@@ -1834,7 +1837,7 @@ impl Host<'_> {
                 for node in list.items() {
                     let node = if let Some(pane) = as_pane(node) {
                         of = super::same_run(of, super::scope(node))?;
-                        crate::layout::Node::Pane(pane)
+                        fux_wire::layout::Node::Pane(pane)
                     } else if let Value::List(fields) = node {
                         let [axis, first_share, second_share, first, second] = fields.items()
                         else {
@@ -1856,7 +1859,7 @@ impl Host<'_> {
                                 ));
                             }
                         };
-                        crate::layout::Node::Split {
+                        fux_wire::layout::Node::Split {
                             axis,
                             first_share: share(first_share)?,
                             second_share: share(second_share)?,
@@ -1988,10 +1991,10 @@ impl Host<'_> {
             Act::Zoom => order(client(&next()?)?, ClientAction::Zoom),
             Act::Detach => order(client(&next()?)?, ClientAction::Detach),
             // ------------------------------------------------------ server
-            Act::Server => local(Local::Server(crate::socket::Choice::Name(
-                string(&next()?)?,
-            ))),
-            Act::Socket => local(Local::Server(crate::socket::Choice::Path(
+            Act::Server => local(Local::Server(fux_wire::protocol::Choice::Name(string(
+                &next()?,
+            )?))),
+            Act::Socket => local(Local::Server(fux_wire::protocol::Choice::Path(
                 string(&next()?)?.into(),
             ))),
             Act::Start => local(Local::Start),
@@ -2044,8 +2047,8 @@ impl Host<'_> {
                 let value = next()?;
                 if let Value::App(Fux::Pane(p, _)) = value {
                     later(ask(Command::Inspect {
-                        scope: crate::inspect::Scope::Target(AnyRef::Pane(p)),
-                        projection: crate::inspect::Projection::Field("version".into()),
+                        scope: fux_wire::inspect::Scope::Target(AnyRef::Pane(p)),
+                        projection: fux_wire::inspect::Projection::Field("version".into()),
                     }))
                 } else {
                     now(out, Value::str(version(&value)?.to_string()))
@@ -2076,7 +2079,7 @@ impl Host<'_> {
                 };
                 self.show(&text)
             }
-            Act::KeyNames => self.show(&format!("{}\n", crate::keys::all_names().join(" "))),
+            Act::KeyNames => self.show(&format!("{}\n", fux_vt::keys::all_names().join(" "))),
             // -------------------------------------------------------- help
             Act::Help => self.show(&help::overview()),
             Act::Explain => {
@@ -2183,7 +2186,7 @@ impl Host<'_> {
                 let Value::List(rows) = rows else {
                     return Err(wrong("rows", &rows));
                 };
-                let mut budget = crate::wire::Budget::with_limit(crate::callback::JOB_BYTES);
+                let mut budget = fux_wire::wire::Budget::with_limit(fux_wire::callback::JOB_BYTES);
                 let mut items = budget.vector(rows.items().len())?;
                 for row in rows.items() {
                     let Value::List(row) = row else {
@@ -2195,7 +2198,7 @@ impl Host<'_> {
                     let payload = super::callback::data(payload, &mut budget)?;
                     let label = string(label)?;
                     budget.charge(label.capacity())?;
-                    items.push(crate::callback::Item { payload, label });
+                    items.push(fux_wire::callback::Item { payload, label });
                 }
                 let index = |v: Value<Fux>| -> Result<Option<usize>, Failure> {
                     let Value::List(list) = &v else {
@@ -2222,20 +2225,20 @@ impl Host<'_> {
                     return Err(fail(Raise::BadValue, "nonempty rows need a selected index"));
                 }
                 let action = Self::action(&next()?)?;
-                Open::List(crate::callback::ListScreen {
+                Open::List(fux_wire::callback::ListScreen {
                     title,
                     items,
                     current,
                     selected: selected.unwrap_or(0),
                     about,
                     action,
-                    client: crate::callback::Data::Client(c, self.context.of),
+                    client: fux_wire::callback::Data::Client(c, self.context.of),
                 })
             }
             Screen::CopyMode => Open::Copy,
-            Screen::CommandPrompt => Open::Prompt(crate::callback::Prompt {
+            Screen::CommandPrompt => Open::Prompt(fux_wire::callback::Prompt {
                 title: ":".to_owned(),
-                line: crate::act::Line::new(String::new()),
+                line: fux_wire::act::Line::new(String::new()),
                 action: None,
             }),
             Screen::Prompt => {
@@ -2243,14 +2246,14 @@ impl Host<'_> {
                 // Its start typed, so the line holds no more, nor any other,
                 // than one typed: text alone, refused whole if it is not.
                 let start = text(&next()?)?;
-                let mut line = crate::act::Line::new(String::new());
+                let mut line = fux_wire::act::Line::new(String::new());
                 let typed = match start.contains(char::is_control) {
                     true => Err("a line holds text alone, no control characters".to_owned()),
-                    false => line.edit(&crate::act::Edit::Insert(start)),
+                    false => line.edit(&fux_wire::act::Edit::Insert(start)),
                 };
                 typed.map_err(|why| fail(Raise::BadValue, why))?;
                 let action = Some(Self::action(&next()?)?);
-                Open::Prompt(crate::callback::Prompt {
+                Open::Prompt(fux_wire::callback::Prompt {
                     title,
                     line,
                     action,
@@ -2259,7 +2262,7 @@ impl Host<'_> {
             Screen::Confirm => {
                 let question = text(&next()?)?;
                 let action = Self::action(&next()?)?;
-                Open::Confirm(crate::callback::Confirm { question, action })
+                Open::Confirm(fux_wire::callback::Confirm { question, action })
             }
         };
         match here {
@@ -2269,8 +2272,8 @@ impl Host<'_> {
     }
 
     /// Source is explicit; captured values never pass through a tokenizer.
-    fn action(value: &Value<Fux>) -> Result<crate::callback::Callback, Failure> {
-        let mut budget = crate::wire::Budget::with_limit(crate::callback::JOB_BYTES);
+    fn action(value: &Value<Fux>) -> Result<fux_wire::callback::Callback, Failure> {
+        let mut budget = fux_wire::wire::Budget::with_limit(fux_wire::callback::JOB_BYTES);
         let (code, args) = match value {
             Value::Str(_) => (string(value)?, Vec::new()),
             Value::List(v) => match v.items() {
@@ -2298,7 +2301,7 @@ impl Host<'_> {
                 "callback source exceeds its byte limit",
             ));
         }
-        Ok(crate::callback::Callback { code, args })
+        Ok(fux_wire::callback::Callback { code, args })
     }
 
     /// A config's word: it changes the client's keymap.
@@ -2409,7 +2412,7 @@ impl Host<'_> {
 
 #[cfg(test)]
 mod tests {
-    use crate::session::testing::TestResult;
+    use crate::TestResult;
     #[test]
     fn targeted_and_watch_attach_refuse_explicit_creation_before_any_request() -> TestResult {
         use crate::script::{Asks, Failed, Host, Local};
@@ -2417,10 +2420,13 @@ mod tests {
         impl Asks for Recorder {
             fn ask(
                 &mut self,
-                _: &crate::protocol::Asked,
-            ) -> Result<crate::protocol::Reply, Failed> {
+                _: &fux_wire::protocol::Asked,
+            ) -> Result<fux_wire::protocol::Reply, Failed> {
                 self.0 += 1;
-                Err(Failed::new(crate::code::Code::Client, "unexpected request"))
+                Err(Failed::new(
+                    fux_wire::code::Code::Client,
+                    "unexpected request",
+                ))
             }
             fn local(
                 &mut self,
@@ -2430,7 +2436,7 @@ mod tests {
             ) -> Result<Vec<fuxth::Value<crate::script::Fux>>, Failed> {
                 self.0 += 1;
                 Err(Failed::new(
-                    crate::code::Code::Client,
+                    fux_wire::code::Code::Client,
                     "unexpected local operation",
                 ))
             }
@@ -2456,7 +2462,7 @@ mod tests {
                     .draft();
                 let mut sink = Vec::new();
                 let mut host = Host::new(
-                    crate::protocol::Context::default(),
+                    fux_wire::protocol::Context::default(),
                     Some(&mut state),
                     &mut sink,
                 );
@@ -2470,7 +2476,7 @@ mod tests {
                 );
                 assert!(
                     result.is_err_and(
-                        |f| f.code == crate::code::Code::from(crate::code::Raise::Unused)
+                        |f| f.code == fux_wire::code::Code::from(fux_wire::code::Raise::Unused)
                     ),
                     "{code}"
                 );
@@ -2487,13 +2493,13 @@ mod tests {
     fn attach_subjects_and_defaults_retain_their_typed_target_and_run() -> TestResult {
         let grant = fuxth::Imports::new(usize::MAX);
         use super::*;
-        use crate::command::AttachTarget;
+        use fux_wire::command::AttachTarget;
         let run = "1-2".parse().map_err(|()| "run")?;
         let mut draft = crate::script::default_state()?.draft();
         for (value, target) in [
             (
-                Fux::Tab(crate::id::TabId::of(2), Some(run)),
-                AttachTarget::Tab(crate::id::TabId::of(2)),
+                Fux::Tab(fux_wire::id::TabId::of(2), Some(run)),
+                AttachTarget::Tab(fux_wire::id::TabId::of(2)),
             ),
             (
                 Fux::Pane(PaneId::of(3), Some(run)),
@@ -2502,7 +2508,7 @@ mod tests {
         ] {
             let mut sink = Vec::new();
             let mut host = Host::new(
-                crate::protocol::Context::default(),
+                fux_wire::protocol::Context::default(),
                 Some(&mut draft),
                 &mut sink,
             );
@@ -2661,7 +2667,7 @@ mod tests {
         // 8 MiB of options on a pane, held twice, or once; a list of the same
         // 8 MiB, past a launch frame; and a grant of 64 KiB.
         let request_of = |argv| Opts {
-            on: Some(On::Target(AnyRef::Pane(crate::id::PaneId::of(1)))),
+            on: Some(On::Target(AnyRef::Pane(fux_wire::id::PaneId::of(1)))),
             argv,
             ..Opts::default()
         };
@@ -2691,7 +2697,7 @@ mod tests {
                     .ok_or_else(|| fail(Raise::StackUnderflow, "test argument"))
             };
             let mut sink = Vec::new();
-            let mut host = Host::new(crate::protocol::Context::default(), None, &mut sink);
+            let mut host = Host::new(fux_wire::protocol::Context::default(), None, &mut sink);
             let base = allocator.live();
             allocator.reset_peak();
             let refused = match step {
@@ -2715,7 +2721,7 @@ mod tests {
     fn host_text_arguments_refuse_long_json_before_copying_or_quoting_it() -> TestResult {
         let edge = fuxth::Text::new(std::iter::repeat_n('界', fuxth::LONGEST).collect::<String>());
         assert!(argument(&edge).is_ok());
-        let grant = fuxth::Imports::new(crate::wire::MAX_ALLOCATED);
+        let grant = fuxth::Imports::new(fux_wire::wire::MAX_ALLOCATED);
         let input = Value::str(std::iter::repeat_n('\u{1}', fuxth::LONGEST).collect::<String>());
         let json = json_text(&input, &grant).map_err(|f| f.message)?;
         json.retain(&grant).map_err(|f| f.message)?;
@@ -2764,7 +2770,7 @@ mod tests {
             let mut sink = std::io::sink();
             let mut state = crate::client_state::Draft::default();
             let mut host = Host::new(
-                crate::protocol::Context::default(),
+                fux_wire::protocol::Context::default(),
                 Some(&mut state),
                 &mut sink,
             );
@@ -2875,16 +2881,16 @@ mod tests {
         assert!(crate::help::AGENTS.contains(&input), "{input}");
     }
 
-    fn styled_line() -> crate::answer::Captured {
-        crate::answer::Captured {
-            of: crate::answer::Of::Client(crate::id::ClientId::of(1)),
+    fn styled_line() -> fux_wire::answer::Captured {
+        fux_wire::answer::Captured {
+            of: fux_wire::answer::Of::Client(fux_wire::id::ClientId::of(1)),
             screen_rows: 1,
             screen_cols: 256,
             screen_cursor: None,
-            lines: vec![crate::answer::Line {
+            lines: vec![fux_wire::answer::Line {
                 text: std::iter::repeat_n('界', 128).collect(),
                 runs: (0..128)
-                    .map(|style| crate::answer::Run {
+                    .map(|style| fux_wire::answer::Run {
                         bytes: 3,
                         cells: 2,
                         style,
@@ -3103,19 +3109,19 @@ mod tests {
     #[test]
     fn modifiers_keep_the_target_and_baseline() -> TestResult {
         let grant = fuxth::Imports::new(usize::MAX);
-        let version: crate::command::Version = "%2:0.0.0.0.0:48211-1867a3f9c2b8e7d6"
+        let version: fux_wire::command::Version = "%2:0.0.0.0.0:48211-1867a3f9c2b8e7d6"
             .parse()
             .map_err(|()| "version")?;
         let pane = Fux::Pane(version.pane, Some(version.run));
-        let tab = Fux::Tab(crate::id::TabId::of(1), Some(version.run));
-        let workspace = Fux::Workspace(crate::id::WsId::of(1), Some(version.run));
-        let client = Fux::Client(crate::id::ClientId::of(1), Some(version.run));
+        let tab = Fux::Tab(fux_wire::id::TabId::of(1), Some(version.run));
+        let workspace = Fux::Workspace(fux_wire::id::WsId::of(1), Some(version.run));
+        let client = Fux::Client(fux_wire::id::ClientId::of(1), Some(version.run));
         let on = [
             None,
             Some(On::Target(AnyRef::Pane(version.pane))),
-            Some(On::Target(AnyRef::Tab(crate::id::TabId::of(1)))),
-            Some(On::Target(AnyRef::Workspace(crate::id::WsId::of(1)))),
-            Some(On::Client(crate::id::ClientId::of(1))),
+            Some(On::Target(AnyRef::Tab(fux_wire::id::TabId::of(1)))),
+            Some(On::Target(AnyRef::Workspace(fux_wire::id::WsId::of(1)))),
+            Some(On::Client(fux_wire::id::ClientId::of(1))),
             Some(On::Version(version)),
             Some(On::Changed(version)),
             Some(On::Seen(version)),
@@ -3127,13 +3133,13 @@ mod tests {
             client,
             Fux::Answer(
                 fuxth::Shared::new(super::super::Answer::Pane(
-                    crate::answer::PaneAnswer::Acted(version),
+                    fux_wire::answer::PaneAnswer::Acted(version),
                 )),
                 Some(version.run),
             ),
             Fux::Answer(
                 fuxth::Shared::new(super::super::Answer::Pane(
-                    crate::answer::PaneAnswer::Closed(version.pane),
+                    fux_wire::answer::PaneAnswer::Closed(version.pane),
                 )),
                 Some(version.run),
             ),
@@ -3229,7 +3235,7 @@ mod tests {
                                 .iter()
                                 .map(|v| format!(
                                     "str {}",
-                                    crate::words::quote(&v.text().unwrap_or_default())
+                                    fux_wire::words::quote(&v.text().unwrap_or_default())
                                 ))
                                 .collect::<Vec<_>>()
                                 .join(" ")

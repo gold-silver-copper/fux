@@ -2,9 +2,9 @@
 //! Input: four bytes for the area's width and height (a high byte below 0x80
 //! is a small size, `lo % 64`; ff is u16::MAX), the splits that grow a tree
 //! from one pane, then two-byte resizes.
-use fux::id::PaneId;
-use fux::keys::Direction;
-use fux::layout::{self, Axis, MIN, Placement, Rect, Shares, Side, Tree};
+use fux_vt::keys::Direction;
+use fux_wire::id::PaneId;
+use fux_wire::layout::{self, Axis, MIN, Placement, Rect, Shares, Side, Tree};
 use libfuzzer_sys::fuzz_target;
 
 struct Bytes<'a> {

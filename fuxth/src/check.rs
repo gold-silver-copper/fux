@@ -13,8 +13,9 @@
 //! where the stack was when it was called, which isn't known; each
 //! definition is summed up by how many of its caller's values it surely
 //! uses and what it leaves, and a call applies that summary.
+use crate::Code;
 use crate::compile::{Op, Program, Steps};
-use crate::error::{Code, Error, Floor, Wants, underflow};
+use crate::error::{Error, Floor, Wants, underflow};
 use crate::machine::Builtin;
 use crate::value::Kind;
 use crate::vocabulary::{Vocabulary, through};

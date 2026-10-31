@@ -16,7 +16,9 @@ bench = false
 
 [dependencies]
 fux = { path = ".." }
+fux-server = { path = "../fux-server" }
 fux-vt = { path = "../fux-vt" }
+fux-wire = { path = "../fux-wire" }
 fuxix = { path = "../fuxix" }
 # Reads a trace line back as fuxth reads a file.
 fuxth = { path = "../fuxth" }

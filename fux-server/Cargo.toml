@@ -1,0 +1,36 @@
+[package]
+name = "fux-server"
+version.workspace = true
+edition = "2024"
+rust-version = "1.95"
+license = "MIT"
+description = "fux's server: sessions, workspaces, tabs and panes, their programs, and the loop that serves clients"
+repository = "https://github.com/gold-silver-copper/fux"
+
+[features]
+# `Session::answer` and `present`, a session answered in-process as the tests
+# ask it, and `PaneMut::drain_input` and `wrote_input`, which empty a
+# pane's input as if written: for the fuzz targets, fux-diff, fux-bench
+# and fux-vt-compare.
+in-process = []
+# Allocation refusal tests, enabled explicitly so workspace tests do not
+# also run fux-vt's large bounds suites.
+checks = ["fux-vt/checks"]
+
+# No fuxth here: the server never runs the interpreter (D-2).
+# `tests/no_interpreter.rs` checks the whole tree.
+[dependencies]
+fux-vt = { path = "../fux-vt", version = "0.15.0" }
+fux-wire = { path = "../fux-wire", version = "0.36.0" }
+fuxix = { path = "../fuxix", version = "0.8.0" }
+
+# The tests run programs against a session as its clients do: through
+# fux's own fuxth vocabulary, which only a test build links.
+[dev-dependencies]
+fux = { path = "..", features = ["in-process"] }
+fux-wire = { path = "../fux-wire", features = ["testing"] }
+fux-vt-peak = { path = "../fux-vt/peak" }
+fuxth = { path = "../fuxth" }
+
+[lints]
+workspace = true

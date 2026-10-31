@@ -1,11 +1,8 @@
 //! Values on the stack: integers, booleans, strings, lists, and the
 //! application's own.
-use crate::error::{Code, Failure};
+use crate::Failure;
+use crate::{Code, NESTING};
 use crate::{ImportLease, Imports, Shared};
-
-/// How deep lists may nest: a list of lists of … at most this many. Every
-/// walk over a value (comparing, printing, dropping it) goes no deeper.
-pub const NESTING: u8 = 64;
 
 /// An application's own values: what it puts on the stack (a handle, a
 /// request being built). Each says what kind it is, for errors, and how it

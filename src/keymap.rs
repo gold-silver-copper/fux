@@ -7,13 +7,13 @@
 //! each time its keys are typed, the client itself its `me`. The default
 //! bindings are a config too, `script/keys.fux`, run on `Keymap::default`
 //! before the user's.
-use crate::act::ScreenAct;
-use crate::act::{
+use crate::screens::{Effect, HIDE};
+use fux_vt::keys::{Key, KeyPress, Keystroke, Modifiers};
+use fux_wire::act::ScreenAct;
+use fux_wire::act::{
     Act, Column, ColumnEntry, CopyAct, Edit, Hint, LineAct, ListAct, Move, Panel, Seek,
 };
-use crate::keys::{Key, KeyPress, Keystroke, Modifiers};
-use crate::screens::{Effect, HIDE};
-use crate::words::quote;
+use fux_wire::words::quote;
 
 /// What a key runs: fuxth code, what the column says it does, and the
 /// group the column lists it under.
@@ -749,7 +749,7 @@ impl Table<ListAct> {
     pub fn bind_action(
         &mut self,
         key: KeyPress,
-        action: crate::callback::Callback,
+        action: fux_wire::callback::Callback,
     ) -> Result<(), String> {
         if key.key == Key::Escape {
             return Err("Escape leaves every screen of fux's own; it cannot be bound".to_owned());
@@ -783,7 +783,7 @@ impl<A: Named> Bindable for Table<A> {
             let names: Vec<&str> = A::NAMES.iter().map(|(n, _)| *n).collect();
             return Err(format!(
                 "{name:?} is not {}",
-                crate::words::listed(&names, "or")
+                fux_wire::words::listed(&names, "or")
             ));
         };
         // A key bound again keeps its place, as a binding's does.
@@ -901,13 +901,13 @@ mod tests {
         let stroke = super::KeyPress::new(super::Key::Char('b'), super::Modifiers::CTRL).into();
         assert!(matches!(
             held.press(&keys, stroke, false).as_slice(),
-            [crate::screens::Effect::Send(crate::act::Act::Key(_))]
+            [crate::screens::Effect::Send(fux_wire::act::Act::Key(_))]
         ));
         assert_eq!(held, super::Held::Normal);
     }
 
     use super::*;
-    use crate::act::PAGE;
+    use fux_wire::act::PAGE;
 
     fn defaults() -> Result<Keymap, String> {
         crate::script::default_state()

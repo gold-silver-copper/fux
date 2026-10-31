@@ -224,7 +224,7 @@ mod tests {
         let mut vt = fux_vt::Parser::with_options(
             size,
             0,
-            fux::pane::OPTIONS
+            fux_server::pane::OPTIONS
                 .with(fux_vt::Feature::Reflow)
                 .with(fux_vt::Feature::Pictures),
         )

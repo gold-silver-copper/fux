@@ -15,28 +15,34 @@
 use std::collections::BTreeMap;
 use std::num::NonZeroUsize;
 
-use fux::act::Act;
-use fux::act::Panel;
 use fux::client_state::ClientState;
-use fux::copy::MAX_CLIPBOARD;
-use fux::decode::{Decoder, Input};
-use fux::id::{ClientId, PaneId};
 use fux::keymap::Held;
-use fux::keys::{Key, Keystroke};
-use fux::outer;
-use fux::protocol::{Context, ToAttached};
-use fux::render::{Grid, compose_view, paint_into};
 use fux::screens::{Dispatch, Job, Screen};
+use fux::script::testing::InProcess;
 use fux::script::{AsClient, Host, run_capped};
-use fux::session::{InProcess, Outgoing, Session};
-use fux::view::Mode;
+use fux_server::copy::MAX_CLIPBOARD;
+use fux_server::outer;
+use fux_server::render::{Grid, compose_view, paint_into};
+use fux_server::session::{Outgoing, Session};
+use fux_server::view::Mode;
+use fux_vt::keys::decode::{Decoder, Input};
+use fux_vt::keys::{Key, Keystroke};
+use fux_wire::act::Act;
+use fux_wire::act::Panel;
+use fux_wire::id::{ClientId, PaneId};
+use fux_wire::protocol::{Context, ToAttached};
 use libfuzzer_sys::fuzz_target;
 
 /// The client's screen as it should look now, in a grid of its own.
 fn compose(s: &Session, c: ClientId) -> Option<Grid> {
     let view = s.views.get(&c)?;
     let mut grid = Grid::default();
-    let result = compose_view(s, view, &mut grid, &mut fux::layout::Placement::default());
+    let result = compose_view(
+        s,
+        view,
+        &mut grid,
+        &mut fux_wire::layout::Placement::default(),
+    );
     assert!(result.is_ok(), "{result:?}");
     Some(grid)
 }
@@ -183,7 +189,7 @@ const BUDGET: u64 = 20_000;
 type State = (
     String,
     Vec<(ClientId, String, Option<Grid>)>,
-    Vec<(fux::id::BufferId, String)>,
+    Vec<(fux_wire::id::BufferId, String)>,
     ClientState,
     Vec<(ClientId, fux::screens::Display)>,
 );
@@ -213,7 +219,7 @@ struct Run {
     keys: BTreeMap<ClientId, Keys>,
     /// Each client's grids as the server keeps them: composed into the
     /// spare, painted against the shown, swapped.
-    grids: BTreeMap<ClientId, (Grid, Grid, fux::layout::Placement, bool)>,
+    grids: BTreeMap<ClientId, (Grid, Grid, fux_wire::layout::Placement, bool)>,
     shut: bool,
 }
 
@@ -224,7 +230,7 @@ fn defaults() -> &'static ClientState {
 }
 
 impl Run {
-    fn new(rows: u16, cols: u16, run: fux::command::Run, now: std::time::Instant) -> Run {
+    fn new(rows: u16, cols: u16, run: fux_wire::command::Run, now: std::time::Instant) -> Run {
         let s = Session::new("/nonexistent/fux.sock".into(), false, run);
         // The client attaching starts its first shell, on its screen.
         let mut run = Run {
@@ -240,19 +246,21 @@ impl Run {
     }
 
     fn attach(&mut self, rows: u16, cols: u16) {
-        let kind = fux::view::ClientKind::Terminal;
+        let kind = fux_server::view::ClientKind::Terminal;
         if let Ok(size) = fux_vt::Size::new(rows, cols)
             && let Ok(id) = self.s.attach_as(
                 kind,
-                fux::protocol::Attach {
-                    initial: Some(fux::command::InitialWorkspace {
+                fux_wire::protocol::Attach {
+                    initial: Some(fux_wire::command::InitialWorkspace {
                         options: defaults().preferences.pane_options(),
                         name: None,
-                        start: fux::command::Start::Shell(defaults().preferences.shell.clone()),
+                        start: fux_wire::command::Start::Shell(
+                            defaults().preferences.shell.clone(),
+                        ),
                         cwd: std::env::current_dir().unwrap_or_default(),
-                        env: fux::command::EnvPatch::default(),
+                        env: fux_wire::command::EnvPatch::default(),
                     }),
-                    ..fux::protocol::Attach::of(size, defaults().preferences.presentation())
+                    ..fux_wire::protocol::Attach::of(size, defaults().preferences.presentation())
                 },
                 self.now,
             )
@@ -511,17 +519,17 @@ impl Run {
             Outgoing::To(client, ToAttached::Keys(typed)) => {
                 for input in typed {
                     match input {
-                        fux::command::Input::Key(press) => self.press(client, press.into()),
-                        fux::command::Input::Text(text) => {
+                        fux_wire::command::Input::Key(press) => self.press(client, press.into()),
+                        fux_wire::command::Input::Text(text) => {
                             for c in text.chars() {
-                                self.press(client, fux::keys::KeyPress::char(c).into());
+                                self.press(client, fux_vt::keys::KeyPress::char(c).into());
                             }
                         }
-                        fux::command::Input::Paste(text) => {
+                        fux_wire::command::Input::Paste(text) => {
                             self.inputs(client, vec![Input::Paste(text)]);
                         }
                         // A pane's alone: send-keys refuses them for a client.
-                        fux::command::Input::Bytes(_) => {}
+                        fux_wire::command::Input::Bytes(_) => {}
                     }
                 }
             }
@@ -540,7 +548,7 @@ impl Run {
                 (
                     Grid::default(),
                     Grid::default(),
-                    fux::layout::Placement::default(),
+                    fux_wire::layout::Placement::default(),
                     false,
                 )
             });
@@ -722,7 +730,7 @@ impl Run {
         self.s.parts.each_pane_mut(|pane| drop(pane.drain_input()));
     }
 
-    fn assert_no_pane_input(&mut self, key: fux::keys::KeyPress) {
+    fn assert_no_pane_input(&mut self, key: fux_vt::keys::KeyPress) {
         self.s.parts.each_pane_mut(|pane| {
             let queued = pane.drain_input();
             let id = pane.id();
@@ -829,7 +837,7 @@ fuzz_target!(|data: &[u8]| {
     // `given` gets each client's bytes as the input splits them; `bytewise`
     // one at a time. However the bytes arrive, the same result.
     // One server run for both: the listing's cursor names it.
-    let run = fux::command::Run::now().expect("a clock after 1970");
+    let run = fux_wire::command::Run::now().expect("a clock after 1970");
     let now = std::time::Instant::now();
     let mut given = Run::new(rows, cols, run, now);
     let mut bytewise = Run::new(rows, cols, run, now);
@@ -911,8 +919,10 @@ fuzz_target!(|data: &[u8]| {
             _ => {
                 let pick = input.next();
                 if let Some(p) = given.pane(pick) {
-                    given.s.exited(p, fux::answer::Ended::Exited(0), now);
-                    bytewise.s.exited(p, fux::answer::Ended::Exited(0), now);
+                    given.s.exited(p, fux_wire::answer::Ended::Exited(0), now);
+                    bytewise
+                        .s
+                        .exited(p, fux_wire::answer::Ended::Exited(0), now);
                 }
             }
         }

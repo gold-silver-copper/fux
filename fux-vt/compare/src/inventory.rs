@@ -26,7 +26,7 @@ fn keeps_mode(n: u16) -> bool {
     let Ok(mut parser) = fux_vt::Parser::with_options(
         size,
         0,
-        fux::pane::OPTIONS
+        fux_server::pane::OPTIONS
             .with(fux_vt::Feature::Reflow)
             .with(fux_vt::Feature::Pictures),
     ) else {
@@ -783,7 +783,7 @@ fn tally(recordings: &[Recording]) -> Result<BTreeMap<String, Row>, String> {
     let mut rows: BTreeMap<String, Row> = BTreeMap::new();
     for r in recordings {
         // As fux's panes are set up.
-        let options = fux::pane::OPTIONS
+        let options = fux_server::pane::OPTIONS
             .with(fux_vt::Feature::Reflow)
             .with(fux_vt::Feature::Pictures);
         let mut parser =

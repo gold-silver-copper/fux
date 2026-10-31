@@ -5,13 +5,16 @@
 //! an application word that needs its host to do something first. It never
 //! runs a program as Rust recursion, so no program can overflow the Rust
 //! stack, and stopping is just dropping it.
+use crate::Code;
+use crate::Failure;
 use crate::check::{ANY, INT, Kinds, LIST, SEQ, STR};
 use crate::compile::{Op, Program};
-use crate::error::{Code, Error, Failure, Floor, Wants, underflow};
+use crate::error::{Error, Floor, Wants, underflow};
 use crate::token::Token;
-use crate::value::{AppValue, List, NESTING, TOTAL, Text, Value};
+use crate::value::{AppValue, List, TOTAL, Text, Value};
 use crate::vocabulary::through;
 use crate::{ImportLease, Imports, Shared};
+use crate::{LONGEST, NESTING};
 use std::cmp::Ordering;
 use std::rc::Rc;
 
@@ -125,9 +128,6 @@ impl Default for Limits {
         }
     }
 }
-
-/// The most elements one string or list a program builds may hold.
-pub const LONGEST: usize = 1_000_000;
 
 /// Elements a long step goes through for each step it costs.
 const PER_STEP: u64 = 64;

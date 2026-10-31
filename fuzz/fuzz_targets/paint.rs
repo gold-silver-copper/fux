@@ -4,7 +4,7 @@
 //! writes. Bit 2 of the flags gives the new grid its own size, in the next two
 //! bytes, so that the paint is a full one. Bit 3 paints for a terminal that
 //! draws underline styles, and bit 4 says the old grid was painted for one.
-use fux::render::{Grid, paint_into};
+use fux_server::render::{Grid, paint_into};
 use fux_vt::{Attributes, CellRef, Color, Mode, Parser, UnderlineStyle};
 use libfuzzer_sys::fuzz_target;
 

@@ -1,7 +1,7 @@
 //! The mouse: passed through to a program that asked for it, and to no
 //! other; fux has no mouse actions of its own.
 mod support;
-use fux::render::MOUSE_OFF;
+use fux_server::render::MOUSE_OFF;
 use support::*;
 
 fn painted(client: &Client, from: usize) -> String {

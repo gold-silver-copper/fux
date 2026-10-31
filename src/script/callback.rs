@@ -1,11 +1,11 @@
 //! One bounded bridge between language values and owned screen arguments.
 use super::{Fux, Value, record};
-use crate::callback::{Data, Open};
-use crate::wire::Budget;
+use fux_wire::callback::{Data, Open};
+use fux_wire::wire::Budget;
 use fuxix::Allocation;
 use fuxth::Failure;
 
-fn runs(v: &Data, of: &mut Option<crate::command::Run>) -> Result<(), Failure> {
+fn runs(v: &Data, of: &mut Option<fux_wire::command::Run>) -> Result<(), Failure> {
     match v {
         Data::Handle(_, r) | Data::Client(_, r) => {
             *of = super::same_run(*of, *r)?;
@@ -28,7 +28,7 @@ fn runs(v: &Data, of: &mut Option<crate::command::Run>) -> Result<(), Failure> {
 
 fn fail() -> Failure {
     Failure::new(
-        crate::code::Code::BadValue.into(),
+        fux_wire::code::Code::BadValue.into(),
         "a callback argument must be an immutable value: scalar, handle, record, null or list",
     )
 }
@@ -57,10 +57,10 @@ pub(super) fn data(v: &Value<Fux>, b: &mut Budget) -> Result<Data, Failure> {
         }
         Value::App(Fux::All) => Data::All,
         Value::App(Fux::Null) => Data::Null,
-        Value::App(Fux::Pane(p, run)) => Data::Handle(crate::command::AnyRef::Pane(*p), *run),
-        Value::App(Fux::Tab(t, run)) => Data::Handle(crate::command::AnyRef::Tab(*t), *run),
+        Value::App(Fux::Pane(p, run)) => Data::Handle(fux_wire::command::AnyRef::Pane(*p), *run),
+        Value::App(Fux::Tab(t, run)) => Data::Handle(fux_wire::command::AnyRef::Tab(*t), *run),
         Value::App(Fux::Workspace(w, run)) => {
-            Data::Handle(crate::command::AnyRef::Workspace(*w), *run)
+            Data::Handle(fux_wire::command::AnyRef::Workspace(*w), *run)
         }
         Value::App(Fux::Client(c, run)) => Data::Client(*c, *run),
         Value::App(Fux::Opts(_) | Fux::Extent(_) | Fux::Answer(..)) => {
@@ -78,7 +78,7 @@ pub(super) fn value(v: &Data, b: &mut Budget) -> Result<Value<Fux>, Failure> {
             if v.chars().count() > fuxth::LONGEST {
                 return Err(fail());
             }
-            b.text_value(v)?;
+            record::imported(b, v)?;
             Value::str(b.string(v)?)
         }
         Data::List(v) => {
@@ -110,26 +110,27 @@ pub(super) fn value(v: &Data, b: &mut Budget) -> Result<Value<Fux>, Failure> {
 pub fn admit(
     mut open: Open,
     state: Option<&crate::client_state::Draft>,
-    context: &crate::protocol::Context,
+    context: &fux_wire::protocol::Context,
 ) -> Result<crate::screens::Screen, super::Failed> {
-    use crate::wire::Wire;
-    let refused = |why| super::Failed::new(crate::code::Code::BadValue, why);
-    if open.bytes() > crate::callback::JOB_BYTES {
+    use fux_wire::wire::Wire;
+    let refused = |why| super::Failed::new(fux_wire::code::Code::BadValue, why);
+    if open.bytes() > fux_wire::callback::JOB_BYTES {
         return Err(refused("screen retained data exceeds the job byte limit"));
     }
-    let mut encoded = crate::wire::Writer::counting(crate::protocol::MAX_FRAME.saturating_sub(128));
+    let mut encoded =
+        fux_wire::wire::Writer::counting(fux_wire::protocol::MAX_FRAME.saturating_sub(128));
     open.put(&mut encoded);
     encoded
         .check()
         .map_err(|_| refused("screen data exceeds a frame"))?;
     let config = state.and_then(|s| s.config.as_ref());
     let check =
-        |action: &crate::callback::Callback, args: Vec<Data>| -> Result<(), super::Failed> {
+        |action: &fux_wire::callback::Callback, args: Vec<Data>| -> Result<(), super::Failed> {
             if action.code.len() > crate::screens::ACTION_MAX {
                 return Err(refused("callback source exceeds its byte limit"));
             }
             let job = crate::screens::Job::call(action, args);
-            if job.bytes() > crate::callback::JOB_BYTES {
+            if job.bytes() > fux_wire::callback::JOB_BYTES {
                 return Err(refused("callback arguments exceed the job byte limit"));
             }
             let mut of = context.of;
@@ -138,7 +139,7 @@ pub fn admit(
             }
             job.machine(config).map(drop).map_err(|e| {
                 super::Failed::new(
-                    crate::code::Code::BadValue,
+                    fux_wire::code::Code::BadValue,
                     format!("{}, in the callback", e.located()),
                 )
             })
@@ -171,7 +172,7 @@ pub fn admit(
                 super::same_run(context.of, run).map_err(super::callback_failed)?;
             }
             let mut kinds = std::collections::HashSet::new();
-            let mut budget = Budget::with_limit(crate::callback::JOB_BYTES);
+            let mut budget = Budget::with_limit(fux_wire::callback::JOB_BYTES);
             for item in &mut l.items {
                 let mut of = context.of;
                 runs(&item.payload, &mut of).map_err(super::callback_failed)?;
@@ -180,19 +181,19 @@ pub fn admit(
                     let args = vec![l.client.clone(), item.payload.clone()];
                     check(&l.action, args)?;
                 }
-                item.label = crate::words::clean(&item.label);
+                item.label = fux_wire::words::clean(&item.label);
             }
-            l.title = crate::words::clean(&l.title);
+            l.title = fux_wire::words::clean(&l.title);
         }
         Open::Prompt(p) => {
             if let Some(action) = &p.action {
                 check(action, vec![Data::Text(String::new())])?;
             }
-            p.title = crate::words::clean(&p.title);
+            p.title = fux_wire::words::clean(&p.title);
         }
         Open::Confirm(c) => {
             check(&c.action, Vec::new())?;
-            c.question = crate::words::clean(&c.question);
+            c.question = fux_wire::words::clean(&c.question);
         }
         Open::Copy => {}
     }
@@ -202,17 +203,17 @@ pub fn admit(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::callback::{Callback, Item, ListScreen};
-    use crate::protocol::{Asked, Context, Reply};
+    use crate::TestResult;
     use crate::screens::{Job, Screen};
     use crate::script::{Asks, Failed, Host};
-    use crate::session::testing::TestResult;
+    use fux_wire::callback::{Callback, Item, ListScreen};
+    use fux_wire::protocol::{Asked, Context, Reply};
 
     struct NoRequests;
     impl Asks for NoRequests {
         fn ask(&mut self, _: &Asked) -> Result<Reply, Failed> {
             Err(Failed::new(
-                crate::code::Code::Client,
+                fux_wire::code::Code::Client,
                 "unexpected server effect",
             ))
         }
@@ -276,7 +277,7 @@ mod tests {
             "define receiver-only nip str value get json print end",
         )?));
         let spec = list(payload, "receiver-only");
-        use crate::protocol::{Decoder, Frame, ToAttached};
+        use fux_wire::protocol::{Decoder, Frame, ToAttached};
         let encoded = ToAttached::Open(spec).encode()?;
         let mut decoder = Decoder::default();
         decoder.push(&encoded);
@@ -303,7 +304,10 @@ mod tests {
         };
         assert_eq!(
             values.items().first(),
-            Some(&Value::App(Fux::Pane(crate::id::PaneId::of(3), context.of)))
+            Some(&Value::App(Fux::Pane(
+                fux_wire::id::PaneId::of(3),
+                context.of
+            )))
         );
         assert_eq!(values.items().get(1), Some(&Value::App(Fux::Null)));
         let job = Job::call(&screen.action, [screen.client, item.payload.clone()]);
@@ -323,24 +327,24 @@ mod tests {
 
     #[test]
     fn callback_snapshots_keep_all_scope_and_children_after_the_source_closes() -> TestResult {
-        let (mut session, _) = crate::session::testing::attached(8, 30)?;
-        let reply = crate::session::InProcess(&mut session).ask(&Asked {
+        let (mut session, _) = crate::script::testing::attached(8, 30)?;
+        let reply = crate::script::testing::InProcess(&mut session).ask(&Asked {
             after: None,
             context: Context::default(),
-            request: crate::command::Command::Inspect {
-                scope: crate::inspect::Scope::All,
-                projection: crate::inspect::Projection::Topology,
+            request: fux_wire::command::Command::Inspect {
+                scope: fux_wire::inspect::Scope::All,
+                projection: fux_wire::inspect::Projection::Topology,
             }
             .into(),
         })?;
         let mut values =
-            crate::script::answered(reply, &fuxth::Imports::new(crate::inspect::BYTES))?;
+            crate::script::answered(reply, &fuxth::Imports::new(fux_wire::inspect::BYTES))?;
         let root = values.pop().ok_or("snapshot")?;
-        let grant = fuxth::Imports::new(crate::inspect::BYTES);
+        let grant = fuxth::Imports::new(fux_wire::inspect::BYTES);
         root.retain(&grant).map_err(|e| e.message)?;
         let payload = data(&root, &mut Budget::new()).map_err(|e| e.message)?;
-        let bytes = crate::wire::encode(&payload)?;
-        let payload: Data = crate::wire::Reader::new(&bytes).whole()?;
+        let bytes = fux_wire::wire::encode(&payload)?;
+        let payload: Data = fux_wire::wire::Reader::new(&bytes).whole()?;
         let restored = value(&payload, &mut Budget::new()).map_err(|e| e.message)?;
         assert_eq!(
             data(&restored, &mut Budget::new()).map_err(|e| e.message)?,
@@ -363,7 +367,12 @@ mod tests {
         drop(panes);
         drop(record);
         drop(root);
-        crate::session::testing::run(&mut session, "%1 kill")?;
+        crate::script::testing::evaluate(
+            "%1 kill",
+            None,
+            &mut crate::script::testing::InProcess(&mut session),
+            &mut Vec::new(),
+        )?;
         let context = Context {
             of: Some(session.run),
             ..context()?
@@ -394,11 +403,11 @@ mod tests {
     fn callbacks_check_empty_snapshot_provenance_and_mixed_nested_handles() -> TestResult {
         let context = context()?;
         let run = context.of.ok_or("run")?;
-        let snapshot = crate::inspect::Snapshot {
+        let snapshot = fux_wire::inspect::Snapshot {
             run,
             cursor: format!("0:{run}").parse().map_err(|()| "cursor")?,
-            scope: crate::inspect::Scope::All,
-            projection: crate::inspect::Projection::Topology,
+            scope: fux_wire::inspect::Scope::All,
+            projection: fux_wire::inspect::Projection::Topology,
             workspaces: Vec::new(),
             tabs: Vec::new(),
             panes: Vec::new(),
@@ -406,8 +415,8 @@ mod tests {
         };
         let record = record::snapshot(snapshot).map_err(|e| e.message)?;
         let original = data(&record, &mut Budget::new()).map_err(|e| e.message)?;
-        let bytes = crate::wire::encode(&original)?;
-        let decoded = crate::wire::Reader::new(&bytes).whole()?;
+        let bytes = fux_wire::wire::encode(&original)?;
+        let decoded = fux_wire::wire::Reader::new(&bytes).whole()?;
         let restored = value(&decoded, &mut Budget::new()).map_err(|e| e.message)?;
         let payload = data(&restored, &mut Budget::new()).map_err(|e| e.message)?;
         assert_eq!(payload, original);
@@ -428,10 +437,10 @@ mod tests {
                 Data::List(vec![
                     payload,
                     Data::Handle(
-                        crate::command::AnyRef::Pane(crate::id::PaneId::of(7)),
+                        fux_wire::command::AnyRef::Pane(fux_wire::id::PaneId::of(7)),
                         Some(run),
                     ),
-                    Data::Client(crate::id::ClientId::of(2), Some(run)),
+                    Data::Client(fux_wire::id::ClientId::of(2), Some(run)),
                     Data::All,
                 ]),
             )],
@@ -440,7 +449,7 @@ mod tests {
         assert!(admit(list(nested.clone(), "2drop"), None, &stale).is_err());
         let mixed = Data::List(vec![
             nested,
-            Data::Client(crate::id::ClientId::of(2), Some(other)),
+            Data::Client(fux_wire::id::ClientId::of(2), Some(other)),
         ]);
         assert!(
             admit(
@@ -504,7 +513,7 @@ mod tests {
         });
         assert!(admit(spec, None, &context).is_err());
         let huge = list(
-            Data::Text(std::iter::repeat_n('x', crate::protocol::MAX_FRAME).collect()),
+            Data::Text(std::iter::repeat_n('x', fux_wire::protocol::MAX_FRAME).collect()),
             "2drop",
         );
         assert!(admit(huge, None, &context).is_err());

@@ -42,12 +42,12 @@ use crate::corpus::{self, Recording};
 use crate::engine::{Can, ENGINES, Engine, Kind, Setup};
 use crate::engines::pane;
 use crate::snapshot::{self, Diff, Field, Line, Snapshot};
-use fux::id::{ClientId, PaneId};
-use fux::layout::{Placement, Rect};
-use fux::protocol::ToAttached;
-use fux::render::{self, Grid};
-use fux::session::{Outgoing, Session};
-use fux::view::ClientKind;
+use fux_server::render::{self, Grid};
+use fux_server::session::{Outgoing, Session};
+use fux_server::view::ClientKind;
+use fux_wire::id::{ClientId, PaneId};
+use fux_wire::layout::{Placement, Rect};
+use fux_wire::protocol::ToAttached;
 use std::fmt::Write as _;
 use std::fs::File;
 use std::io::{Read, Write};
@@ -248,7 +248,7 @@ impl Through {
         let mut session = Session::new(
             PathBuf::from("/nonexistent/fux-vt-compare.sock"),
             false,
-            fux::command::Run::now().ok_or("the clock is before 1970")?,
+            fux_wire::command::Run::now().ok_or("the clock is before 1970")?,
         );
         // The client attaching starts its first shell, on its screen.
         let client_rows = rows.checked_add(1).ok_or("too many rows for the bar")?;
@@ -259,18 +259,18 @@ impl Through {
         let client = session
             .attach_as(
                 ClientKind::Terminal,
-                fux::protocol::Attach {
-                    initial: Some(fux::command::InitialWorkspace {
+                fux_wire::protocol::Attach {
+                    initial: Some(fux_wire::command::InitialWorkspace {
                         options: preferences.pane_options(),
                         name: None,
-                        start: fux::command::Start::Shell(fux::command::Program::new(
+                        start: fux_wire::command::Start::Shell(fux_wire::command::Program::new(
                             "/bin/sh".into(),
                             Vec::new(),
                         )?),
                         cwd: std::env::current_dir().map_err(|e| e.to_string())?,
-                        env: fux::command::EnvPatch::default(),
+                        env: fux_wire::command::EnvPatch::default(),
                     }),
-                    ..fux::protocol::Attach::of(size, preferences.presentation())
+                    ..fux_wire::protocol::Attach::of(size, preferences.presentation())
                 },
                 std::time::Instant::now(),
             )
@@ -362,7 +362,7 @@ impl Through {
     /// Releases a held frame, as the server does once its timeout passes.
     pub fn release(&mut self) {
         self.session.fire(
-            fux::session::Timer::Frame(self.pane),
+            fux_server::session::Timer::Frame(self.pane),
             std::time::Instant::now(),
         );
     }
@@ -977,7 +977,7 @@ pub fn run(argv: &[String]) -> Result<bool, String> {
             &serde_json::json!({
                 "check": "transparency",
                 "multiplexer": "fux",
-                "version": fux::pane::IDENTITY.version,
+                "version": fux_server::pane::IDENTITY.version,
                 "chunk": options.chunk,
                 "seconds": seconds,
                 "ok": ok,
@@ -1517,7 +1517,7 @@ fn multiplexers(options: &Options) -> Result<bool, String> {
         let seconds = started.elapsed().as_secs_f64();
         println!(
             "fux {} (in process): {same} of {} recordings identical ({}%), {steps_same} of {steps} steps ({}%), {seconds:.1}s",
-            fux::pane::IDENTITY.version,
+            fux_server::pane::IDENTITY.version,
             recordings.len(),
             percent(same, recordings.len()),
             percent(steps_same, steps),
@@ -1525,7 +1525,7 @@ fn multiplexers(options: &Options) -> Result<bool, String> {
         results.push(serde_json::json!({
             "engine": kind.name,
             "multiplexer": "fux",
-            "version": fux::pane::IDENTITY.version,
+            "version": fux_server::pane::IDENTITY.version,
             "recordings": recordings.len(),
             "recordings_identical": same,
             "steps": steps,
@@ -1644,7 +1644,7 @@ mod tests {
     use super::{Through, compare, crop, points};
     use crate::engine::{ENGINES, Kind};
     use crate::snapshot::{Cell, Diff, Field, Line, Snapshot, Style, Width};
-    use fux::layout::Rect;
+    use fux_wire::layout::Rect;
 
     fn ghostty() -> Result<&'static Kind, String> {
         crate::engine::find("ghostty")

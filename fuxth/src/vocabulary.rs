@@ -2,8 +2,9 @@
 //! what it takes and gives as a stack effect in the names of kinds (`pane
 //! text -- answer`), read strictly: the checker follows those kinds, and
 //! the machine holds what the application gives to them.
+use crate::Code;
 use crate::check::{ANY, Kinds};
-use crate::error::{Code, Error};
+use crate::error::Error;
 use crate::value::{AppValue, Kind, Value};
 
 /// A name's kinds, each with what a value of it is once the name passes

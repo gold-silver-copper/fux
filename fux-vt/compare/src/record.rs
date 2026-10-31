@@ -204,7 +204,7 @@ pub fn replies_now(recording: &crate::corpus::Recording) -> Result<Vec<u8>, Stri
     let mut parser = fux_vt::Parser::with_options(
         crate::vt_size(recording.rows, recording.cols)?,
         8 << 20,
-        fux::pane::OPTIONS
+        fux_server::pane::OPTIONS
             .with(fux_vt::Feature::Reflow)
             .with(fux_vt::Feature::Pictures),
     )
@@ -377,7 +377,8 @@ fn end(child: &mut Child, session: &mut Session) {
 /// the key mode `screen` is in: decoded by fux's decoder, the Escape
 /// deadline passing at the end, and encoded by its encoder.
 fn typed(keys: &[u8], screen: &fux_vt::Screen) -> Vec<u8> {
-    let mut decoder = fux::decode::Decoder::new(fux::decode::Timing::new(35, 5000));
+    let mut decoder =
+        fux_vt::keys::decode::Decoder::new(fux_vt::keys::decode::Timing::new(35, 5000));
     let mut inputs = Vec::new();
     decoder.bytes(keys, &mut inputs);
     decoder.timeout(&mut inputs);
@@ -385,15 +386,21 @@ fn typed(keys: &[u8], screen: &fux_vt::Screen) -> Vec<u8> {
     let mut out = Vec::with_capacity(keys.len());
     for input in inputs {
         match input {
-            fux::decode::Input::Key(stroke) => fux::encode::key_bytes(stroke, mode, &mut out),
-            fux::decode::Input::Paste(text) => {
-                fux::encode::paste(&text, screen.mode(fux_vt::Mode::BracketedPaste), &mut out);
+            fux_vt::keys::decode::Input::Key(stroke) => {
+                fux_vt::keys::encode::key_bytes(stroke, mode, &mut out)
             }
-            fux::decode::Input::PasteTooLong
-            | fux::decode::Input::FocusIn
-            | fux::decode::Input::FocusOut
-            | fux::decode::Input::Mouse(_)
-            | fux::decode::Input::Reply(_) => {}
+            fux_vt::keys::decode::Input::Paste(text) => {
+                fux_vt::keys::encode::paste(
+                    &text,
+                    screen.mode(fux_vt::Mode::BracketedPaste),
+                    &mut out,
+                );
+            }
+            fux_vt::keys::decode::Input::PasteTooLong
+            | fux_vt::keys::decode::Input::FocusIn
+            | fux_vt::keys::decode::Input::FocusOut
+            | fux_vt::keys::decode::Input::Mouse(_)
+            | fux_vt::keys::decode::Input::Reply(_) => {}
         }
     }
     out
@@ -405,7 +412,7 @@ pub fn record(request: &Request) -> Result<Recorded, String> {
         .map_err(|e| format!("{}: {e}", request.keys.display()))?;
     let (start, steps) = steps(&text)?;
     // As fux's panes are set up.
-    let options = fux::pane::OPTIONS
+    let options = fux_server::pane::OPTIONS
         .with(fux_vt::Feature::Reflow)
         .with(fux_vt::Feature::Pictures);
     let parser = fux_vt::Parser::with_options(

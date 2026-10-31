@@ -1,76 +1,30 @@
 //! fux: a terminal multiplexer. One server holds workspaces, tabs and split
 //! panes; `fux` shows them in a terminal; `fux WORDS…`, a fuxth program,
 //! drives them.
-pub use fux_vt::bytes;
-pub use fux_vt::keys;
-pub use fux_vt::keys::{decode, encode};
-/// Writes to the server's log, its stderr: `log!("…", args)` writes the
-/// line after `fux server: `. A log that cannot be written, a full disk,
-/// say, loses the line and stops nothing.
-macro_rules! log {
-    ($($arg:tt)*) => {{
-        let _ = std::io::Write::write_fmt(
-            &mut std::io::stderr(),
-            format_args!("fux server: {}\n", format_args!($($arg)*)),
-        );
-    }};
-}
-
-pub mod act;
-pub mod answer;
-pub mod callback;
-pub mod capture;
+//!
+//! This crate is the client: the terminal it shows, fux's fuxth vocabulary,
+//! and the `fux` binary, which also runs the server (`fux __serve`). The
+//! server is `fux-server`, and what the two say to each other is
+//! `fux-wire`.
 pub mod client;
 pub mod client_state;
-pub mod code;
-pub mod command;
-pub mod copy;
-pub mod events;
 mod help;
-pub mod id;
-mod input;
-pub mod inspect;
-pub mod journal;
-pub mod json;
 pub mod keymap;
-pub mod layout;
-pub mod outer;
-pub mod pane;
-pub mod presentation;
-pub mod process;
-pub mod protocol;
-pub mod render;
 pub mod screens;
 pub mod script;
-pub mod server;
-pub mod session;
-pub mod socket;
-pub mod view;
-pub mod wait;
-pub mod wire;
-pub mod words;
-pub mod workspace;
 
-use fuxix::process::Signal;
-use json::Json;
-use std::io::{PipeReader, Read, Write};
+use fux_server::{server, socket};
+use fux_wire::{code, json::Json, protocol};
+use std::io::Write;
 use std::process::ExitCode;
-use std::time::{Duration, Instant};
 
-/// `wait` after `from`. A time too far off for an `Instant` is taken as
-/// `from`, so that a deadline fires at once rather than never.
-pub(crate) fn after(from: Instant, wait: Duration) -> Instant {
-    from.checked_add(wait).unwrap_or(from)
-}
+#[cfg(test)]
+type TestResult = Result<(), Box<dyn std::error::Error>>;
 
-/// The signals that stop a server and detach a client.
-pub(crate) const STOPS: [Signal; 3] = [Signal::Term, Signal::Int, Signal::Hup];
-
-/// Reads whatever a pipe holds.
-pub(crate) fn drain(mut pipe: &PipeReader) {
-    let mut buffer = [0u8; 256];
-    while matches!(pipe.read(&mut buffer), Ok(n) if n > 0) {}
-}
+// The tests measure their own allocations' peak (`fux_vt_peak`).
+#[cfg(test)]
+#[global_allocator]
+static ALLOCATOR: fux_vt_peak::ThreadPeak = fux_vt_peak::ThreadPeak;
 
 /// The command line of the `fux` binary: no words attaches; `-` runs the
 /// fuxth on stdin; `--file FILE ARGS…` runs a file; any other words are a

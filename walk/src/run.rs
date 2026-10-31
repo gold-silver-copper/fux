@@ -178,7 +178,7 @@ pub fn take(fixture: &mut Fixture, step: &Step, at: usize) -> Result<(), End> {
             let after = fixture
                 .listed_clients()
                 .map_err(|e| fail(at, "listing", e))?;
-            if !refused.contains(&fux::command::MOST.to_string()) || before != after {
+            if !refused.contains(&fux_wire::command::MOST.to_string()) || before != after {
                 return Err(fail(
                     at,
                     "a size past crate::command::MOST is refused, and no client attached",
@@ -278,7 +278,7 @@ impl Checker {
     }
 
     /// Ids are unique. (A client's workspace, tab and pane belong together
-    /// by fux's types: `fux::workspace`.)
+    /// by fux's types: `fux_server::workspace`.)
     fn structure(&self, world: &World, at: usize) -> Result<(), End> {
         let mut seen = std::collections::BTreeSet::new();
         for id in world
@@ -445,7 +445,10 @@ impl Checker {
                 format!("{id} has {} rows, and {} captured", client.rows, rows.len()),
             ));
         }
-        if let Some(wide) = rows.iter().find(|r| fux::render::width(r) > client.cols) {
+        if let Some(wide) = rows
+            .iter()
+            .find(|r| fux_server::render::width(r) > client.cols)
+        {
             return Err(fail(
                 at,
                 "nothing paints outside the screen",

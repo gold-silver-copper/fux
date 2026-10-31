@@ -86,8 +86,8 @@ jobs:
           cargo test -p fux-vt --features checks --lib --locked 2>&1 | tee -a "$CI_LOGS/test.log"
           # Render allocation refusals, without enabling the large VT suites
           # in the ordinary workspace test run.
-          cargo clippy -p fux --features checks --all-targets --locked -- -D warnings 2>&1 | tee -a "$CI_LOGS/clippy.log"
-          cargo test -p fux --features checks --lib refused_ --locked 2>&1 | tee -a "$CI_LOGS/test.log"
+          cargo clippy -p fux-server --features checks --all-targets --locked -- -D warnings 2>&1 | tee -a "$CI_LOGS/clippy.log"
+          cargo test -p fux-server --features checks --lib refused_ --locked 2>&1 | tee -a "$CI_LOGS/test.log"
 
       # fux-vt's bounds suite and its frozen seeds (the `checks` feature),
       # in release, as debug is too slow for the step's 5 minutes; built in
@@ -227,7 +227,7 @@ jobs:
         run: |
           set -euo pipefail
           df -T "${TMPDIR:-$HOME}" 2>/dev/null || df "${TMPDIR:-$HOME}"
-          cargo test --locked --lib socket::tests::cleanup_leaves_a_socket_that_replaced_ours_where_inodes_are_reused -- --exact --nocapture
+          cargo test -p fux-server --locked --lib socket::tests::cleanup_leaves_a_socket_that_replaced_ours_where_inodes_are_reused -- --exact --nocapture
 
       - name: Packaging
         # fux depends on the fux-vt beside it, so the two are packaged
