@@ -71,6 +71,7 @@ Ballots: `~/code/notes/projects/fux/vision/panel/ballot-1.md` and `~/code/notes/
 | D-40 | **All code is written by Claude Opus.** Implementers, fix-ups and any agent that edits code are Opus. Sol, Astra and Fable review, research and sit on the decision panel. D-21's "a reviewer of another model" therefore means a non-Opus reviewer | Opus is the stronger coder | owner, 2026-10-30 |
 | D-48 | **Every fix is checked agentically, with its own build of fux.** Before a PR merges, a verifier agent builds the PR's binary in its own target dir, starts a private server with it, and exercises the change's behaviour through fux itself (driving panes, programs and the words the PR changed), as an agent would use it. It writes a short transcript of what it ran and saw into the PR's review notes. Tests and the local gate (D-39) still run; this is in addition. The verifier is any model, since it writes no code (D-40) | Fixes must be shown working in the real tool, not only in tests | owner, 2026-10-31 |
 | D-63 | **Fable is not used** as a reviewer, verifier or panelist. Code stays Opus (D-40); reviews and panels use Sol, Astra and Opus; the D-48 verifier is Opus, in a fresh session that is never the implementer's. Amends D-40's list of reviewers | The owner's rule | owner, 2026-10-31 |
+| D-81 | **No confinement or sandboxing is built into fux.** There is no scope: any client may act anywhere on its server. Agents that must not touch each other's work use separate servers or OS isolation. This withdraws D-70, removes gap task 31 and the ontology's `scope` facts, and drops D-23's "once scope exists" condition | A confinement inside fux is a mini sandbox that is easy to break, and it promises safety it can't give | owner, 2026-10-31 |
 
 ## Settled by the decision panel, sitting 2 (2026-10-30): how fux gets finished
 
@@ -121,7 +122,7 @@ The plan: `~/code/notes/projects/fux/testing-2026-10-31/PLAN.md`.
 Ballot, votes and reasons: `~/code/notes/projects/fux/live/panel/2026-10-31-s5/`. Inputs: the ontology
 (`~/code/notes/projects/fux/ontology-2026-10-31/ontologist/ONTOLOGY.md`) and the gap check against master
 `04f4bd38` (`~/code/notes/projects/fux/ontology-2026-10-31/gaps/GAPS.md`). D-64 to D-66 change `VISION.md`, so they are
-**proposals to the owner** and take effect only on the owner's yes. D-67 to D-79 are settled now; D-80 waits
+**proposals to the owner**. **The owner approved them on 2026-10-31,** with D-81 replacing D-70, so D-80 is in effect too. D-67 to D-79 are settled now; D-80 waits
 for D-64 to D-66.
 
 | Id | Decision | Vote | Strongest dissent |
@@ -132,7 +133,7 @@ for D-64 to D-66.
 | D-67 (S5-4) | **Every terminal-state fact stays readable** (styles, OSC 8 links, sixel pictures, notifications, OSC 133 marks, the alternate screen, input modes): they are what the program drew, and fux-vt is frozen (D-42) | 10–0 | — |
 | D-68 (S5-5) | **Removals, all as 1.0 work:** buffers become clips and `unknown` becomes `outside`; `arranged` merges into `laid_out`; zoom has one owner; internal helpers become private; optional client-library policy leaves the public vocabulary; source-string callbacks become code values or word names; duplicate representations are derived | 10–0 | — |
 | D-69 (S5-6) | **One namespace for workspace, tab and pane names;** a taken name is refused (`name_taken`) | 10–0 | — |
-| D-70 (S5-7) | **Scope is a list of workspaces (or all)** carried by a pane: fixed when the pane is created, and inherited by its splits and programs. An attached client carries its own, and an outside caller is unconfined. An act outside scope is refused with its own code. **Confinement is in 1.0.** Reads and journal visibility stay global, as ROADMAP's M1 says | 8–2 | Architect, strategist: the same, stated as "every mutation enforced centrally" |
+| D-70 (S5-7) | *Withdrawn by D-81.* **Scope is a list of workspaces (or all)** carried by a pane: fixed when the pane is created, and inherited by its splits and programs. An attached client carries its own, and an outside caller is unconfined. An act outside scope is refused with its own code. **Confinement is in 1.0.** Reads and journal visibility stay global, as ROADMAP's M1 says | 8–2 | Architect, strategist: the same, stated as "every mutation enforced centrally" |
 | D-71 (S5-8) | **The journal records `input` and `signalled` for requests:** the pane, the kind and the byte count, never the text. Typing at a terminal stays out | 10–0 | — |
 | D-72 (S5-9) | **Zoom is a fact of the tab** | 10–0 | — |
 | D-73 (S5-10) | **One layout event, `laid_out`** | 10–0 | — |
