@@ -30,17 +30,14 @@ pub struct SourceImage(Vec<(Arc<str>, Place)>);
 
 impl SourceImage {
     pub fn load(source: Source, loader: &mut impl Loader) -> Result<Self, Error> {
-        let mut expansion = Expansion::new(loader);
-        expansion.unit(source, None)?;
-        Ok(Self(expansion.tokens))
+        let tokens = token::source(&source.name, &source.text)?;
+        Expansion::new(loader).expand(Unit::new(tokens, source.path))
     }
 
     /// An already split command line, whose relative imports the host
     /// resolves against its captured invocation directory.
     pub fn arguments(tokens: &[Token], loader: &mut impl Loader) -> Result<Self, Error> {
-        let mut expansion = Expansion::new(loader);
-        expansion.expand(tokens, None)?;
-        Ok(Self(expansion.tokens))
+        Expansion::new(loader).expand(Unit::new(tokens.to_vec(), None))
     }
 
     pub fn tokens(&self) -> Vec<Token> {
@@ -54,11 +51,34 @@ impl SourceImage {
     }
 }
 
+/// A source being expanded: its tokens, the next one, and its file.
+struct Unit {
+    tokens: Vec<Token>,
+    next: usize,
+    path: Option<PathBuf>,
+}
+
+impl Unit {
+    fn new(tokens: Vec<Token>, path: Option<PathBuf>) -> Self {
+        Self {
+            tokens,
+            next: 0,
+            path,
+        }
+    }
+
+    /// Its next token, taken.
+    fn take(&mut self) -> Option<Token> {
+        let token = self.tokens.get(self.next).cloned()?;
+        self.next = self.next.saturating_add(1);
+        Some(token)
+    }
+}
+
 struct Expansion<'a, L> {
     loader: &'a mut L,
     // false while loading, true once loaded; local to this image only.
     paths: HashMap<PathBuf, bool>,
-    tokens: Vec<(Arc<str>, Place)>,
 }
 
 impl<'a, L: Loader> Expansion<'a, L> {
@@ -66,35 +86,33 @@ impl<'a, L: Loader> Expansion<'a, L> {
         Self {
             loader,
             paths: HashMap::new(),
-            tokens: Vec::new(),
         }
     }
 
-    fn unit(&mut self, source: Source, at: Option<&Token>) -> Result<(), Error> {
-        let name = at.map_or(source.name.clone(), |at| {
-            format!("{} -> {}", at.place, source.name)
-        });
-        let tokens = token::source(&name, &source.text)?;
-        if let Some(path) = &source.path {
+    /// `root`'s tokens, each `require` replaced by its file's, in order.
+    /// The sources being expanded are a stack of their own, the innermost
+    /// last, not a recursion, so a chain of requires however long expands.
+    fn expand(&mut self, root: Unit) -> Result<SourceImage, Error> {
+        let mut out = Vec::new();
+        if let Some(path) = &root.path {
             self.paths.insert(path.clone(), false);
         }
-        self.expand(&tokens, source.path.as_deref())?;
-        if let Some(path) = source.path {
-            self.paths.insert(path, true);
-        }
-        Ok(())
-    }
-
-    fn expand(&mut self, all: &[Token], from: Option<&Path>) -> Result<(), Error> {
-        let mut tokens = all.iter();
-        while let Some(token) = tokens.next() {
+        let mut units = vec![root];
+        while let Some(unit) = units.last_mut() {
+            let Some(token) = unit.take() else {
+                if let Some(path) = units.pop().and_then(|unit| unit.path) {
+                    self.paths.insert(path, true);
+                }
+                continue;
+            };
             let parsing = Parsing::named(&token.text);
             if parsing == Some(Parsing::Require) {
-                let path = tokens.next().ok_or_else(|| {
-                    Error::new(Code::MissingToken, "require needs a path", Some(token))
+                let path = unit.take().ok_or_else(|| {
+                    Error::new(Code::MissingToken, "require needs a path", Some(&token))
                 })?;
                 let failed =
-                    |why| Error::new(Code::Require, format!("{}: {why}", path.text), Some(token));
+                    |why| Error::new(Code::Require, format!("{}: {why}", path.text), Some(&token));
+                let from = unit.path.as_deref();
                 let canonical = self.loader.resolve(&path.text, from).map_err(failed)?;
                 match self.paths.get(&canonical) {
                     Some(true) => continue,
@@ -107,32 +125,26 @@ impl<'a, L: Loader> Expansion<'a, L> {
                     None => {}
                 }
                 let text = self.loader.read(&canonical).map_err(failed)?;
-                self.unit(
-                    Source {
-                        name: canonical.display().to_string(),
-                        text: text.into(),
-                        path: Some(canonical),
-                    },
-                    Some(token),
-                )?;
+                let name = format!("{} -> {}", token.place, canonical.display());
+                let tokens = token::source(&name, &text)?;
+                self.paths.insert(canonical.clone(), false);
+                units.push(Unit::new(tokens, Some(canonical)));
             } else {
-                self.tokens
-                    .push((Arc::from(&*token.text), token.place.clone()));
+                out.push((Arc::from(&*token.text), token.place.clone()));
                 // str, define and let operands are literal, even `require`.
                 if parsing.and_then(Parsing::reads).is_some() {
-                    let next = tokens.next().ok_or_else(|| {
+                    let next = unit.take().ok_or_else(|| {
                         Error::new(
                             Code::MissingToken,
                             "parsing word needs its literal operand",
-                            Some(token),
+                            Some(&token),
                         )
                     })?;
-                    self.tokens
-                        .push((Arc::from(&*next.text), next.place.clone()));
+                    out.push((Arc::from(&*next.text), next.place));
                 }
             }
         }
-        Ok(())
+        Ok(SourceImage(out))
     }
 }
 

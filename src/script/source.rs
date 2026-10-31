@@ -160,6 +160,26 @@ mod tests {
         Ok(())
     }
 
+    /// A chain of requires, each file requiring the next, expands in order
+    /// on a thread whose stack holds a few dozen calls: the expansion is
+    /// no recursion, so no chain overflows the stack.
+    #[test]
+    fn a_long_chain_of_requires_expands_on_a_small_stack() -> TestResult {
+        let f = Fixture::new()?;
+        let root = f.write("f0.fux", "str first print require f1.fux")?;
+        for i in 1..1000 {
+            f.write(&format!("f{i}.fux"), &format!("require f{}.fux", i + 1))?;
+        }
+        f.write("f1000.fux", "str last print")?;
+        let image = std::thread::Builder::new()
+            .stack_size(128 << 10)
+            .spawn(move || file(&root).map_err(|e| e.to_string()))?
+            .join()
+            .map_err(|_| "the expansion overflowed its stack")??;
+        assert_eq!(run(&image)?, "first\nlast\n");
+        Ok(())
+    }
+
     #[test]
     fn import_failures_name_the_chain_before_any_effect() -> TestResult {
         let f = Fixture::new()?;
