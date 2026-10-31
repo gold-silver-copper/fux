@@ -6,8 +6,10 @@
 const SOURCES: &[&str] = &[
     include_str!("../../fux-vt/src/bytes.rs"),
     include_str!("../../src/act.rs"),
+    include_str!("../../src/answer.rs"),
     include_str!("../../src/client.rs"),
     include_str!("../../src/client_state.rs"),
+    include_str!("../../src/code.rs"),
     include_str!("../../src/command.rs"),
     include_str!("../../src/copy.rs"),
     include_str!("../../fux-vt/src/keys/decode.rs"),
