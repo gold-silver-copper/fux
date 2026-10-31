@@ -51,7 +51,6 @@ reference.
 | pane | a terminal that outlives its programs | `%N` plus run; a name or none | until killed |
 | program | one run of a process in a pane; a respawn is the next generation | pane plus generation | start to exit |
 | client | an attached terminal, or a headless stand-in | `cN` plus run | attach to detach |
-| clip | saved text | `bN` plus run | until pushed out |
 | journal | the numbered, bounded events of one run | the run | the run's |
 | dictionary | the words one fuxth run can call | one per run | the run's |
 | word | a named fuxth definition | its name plus which definition | its dictionary's |
@@ -104,16 +103,30 @@ reference.
 9. **Independent programs.** fux, fuxth and fuxed each build and run alone.
    fux doesn't know the editor exists, and fuxth knows neither. A project
    contains no code specific to another tool.
-10. **Lean on the OS (the Unix philosophy).** What the operating system
-    already does, fux uses or reports instead of rebuilding:
-    - processes, signals and exit statuses;
-    - files and permissions;
-    - users, isolation and resource limits;
-    - logging and scheduling.
+10. **The Unix philosophy** (D-82, D-91, D-92). fux, fuxth and fuxed each
+    do one thing well, and work with other programs instead of growing.
+    - **Lean on the OS.** What the OS or an ordinary program already does,
+      they use or report, never rebuild:
+      - processes, signals and exit statuses;
+      - files, permissions and the environment;
+      - users, isolation and limits;
+      - logging and scheduling;
+      - clipboards, paging and search.
 
-    fux composes with other programs through arguments, stdin, stdout, exit
-    codes and files. A feature the OS or an ordinary program already
-    provides is not added to fux.
+      Every feature and review asks whether the OS or an ordinary program
+      already does it.
+    - **Text streams.** stdout carries only data: an item per line, or a
+      record as one JSON object per line. Diagnostics go to stderr, and the
+      exit status says how it ended. Nothing that runs without a terminal
+      prompts or chats.
+    - **Silence.** A command with nothing to say prints nothing.
+    - **Visible state.** Whatever they keep that a person may want to read
+      is readable with ordinary tools.
+    - **Policy outside the mechanism.** Optional recipes are files a user
+      loads, not part of every program.
+
+    They compose through arguments, stdin, stdout, stderr, exit codes and
+    files.
 11. **Finished parts stay finished.** A part marked frozen changes only for
     a bug or an owner decision, never because an audit had an idea.
 
