@@ -69,6 +69,7 @@ Ballots: `~/code/notes/projects/fux/vision/panel/ballot-1.md` and `~/code/notes/
 | D-38 | **The editor is `fuxed`,** for both the program and the package (free on crates.io, checked 2026-10-30), a crate in this repository beside `fuxth/`, depending only on `fuxth`, the runner, `fux-vt` and `fuxix`. Supersedes D-33's `fed`/`fux-fed` | owner's choice, the Forth expert's and semanticist's round-2 vote: one name for one thing | owner, 2026-10-30 |
 | D-39 | **The local test suite is the merge gate, not CI.** Before merging, run `~/code/notes/projects/fux/live/gate.sh` in the PR's worktree (CI's checks for what the branch changed, parallelism capped); merge when it passes. Nobody waits on CI; it still runs after merging, as a backstop, and a failure there becomes a fix-forward task. No long benchmarks or campaigns as part of the gate | Work fast; CI waits held merges for tens of minutes | owner, 2026-10-30 |
 | D-40 | **All code is written by Claude Opus.** Implementers, fix-ups and any agent that edits code are Opus. Sol, Astra and Fable review, research and sit on the decision panel. D-21's "a reviewer of another model" therefore means a non-Opus reviewer | Opus is the stronger coder | owner, 2026-10-30 |
+| D-48 | **Every fix is checked agentically, with its own build of fux.** Before a PR merges, a verifier agent builds the PR's binary in its own target dir, starts a private server with it, and exercises the change's behaviour through fux itself (driving panes, programs and the words the PR changed), as an agent would use it. It writes a short transcript of what it ran and saw into the PR's review notes. Tests and the local gate (D-39) still run; this is in addition. The verifier is any model, since it writes no code (D-40) | Fixes must be shown working in the real tool, not only in tests | owner, 2026-10-31 |
 
 ## Settled by the decision panel, sitting 2 (2026-10-30): how fux gets finished
 
@@ -83,6 +84,22 @@ Ballot, votes and reasons: `~/code/notes/projects/fux/live/panel/2026-10-30-s2/`
 | D-45 (S2-5) | **M0c first, then M0b:** the split gives M0b clean lanes and smaller PRs | 8–1–1 | strategist: the mechanical split first, then M0b, then the rest of M0c |
 | D-46 (S2-6) | **Line count is a gate only for pure cleanup tasks;** correctness and bounds work is judged by its tests and by "nothing slower". Each PR still reports its counts | 10–0 | — |
 | D-47 (S2-7) | **fux 1.0:** the panel declares it after M0c, M0b and M1 pass and the residents work a week with nothing blocking. It freezes D-34's list for fux. After it, fux takes only bug fixes and reproduced findings, and new work goes to fuxth and fuxed, which have their own 1.0 later | 7–3 | AI researcher: only after a week of all ten residents |
+
+## Settled by the decision panel, sitting 3 (2026-10-31): fux's display, and how agents see fux
+
+Ballot, votes and reasons: `~/code/notes/projects/fux/live/panel/2026-10-31-s3/`.
+Proposals: `~/code/notes/projects/fux/live/findings.md` F-7 to F-14.
+
+| Id | Decision | Vote | Strongest dissent |
+|---|---|---|---|
+| D-49 (S3-1) | **The bar is hidden by default.** The bar, tab list and notices draw over the panes while the prefix is in use, then the covered rows are repainted. A bell or notification shows a brief corner notice that takes no layout space. Pane sizes never change because of fux's own UI. The default lives in the fuxth library; `bar on` restores today's row | 9–1 | power user: the notice should stay as a corner badge naming the tabs with unseen bells until this client views them, rather than fade |
+| D-50 (S3-2) | **Milestone M1b, after M0b and before M1's resident week:** prompt marks (D-51), changed rows (D-52) and joined lines (D-53), so they land before the interface freezes (D-44). Styling marks (D-54) join it. The other representation proposals wait for residents' findings | 8–1–1 | ontologist: include the facts header (F-13) too |
+| D-51 (S3-3) | **Shell prompt marks (OSC 133) are recorded as facts.** fux records the marks a program sends and answers from them (the last command's output and exit status). It never infers a prompt itself | 10–0 | — |
+| D-52 (S3-4) | **"What changed since version V" answers only the changed rows,** bounded like any capture | 10–0 | — |
+| D-53 (S3-5) | **Text captures rejoin soft-wrapped lines** into logical lines by default and state the width once; the raw grid is available on request | 10–0 | — |
+| D-54 (S3-6.2) | **Captures mark what only styling carries** (faint, as reverse already is, and what the program drew as a selection), on request through `marks`. A mark says "rendered faint", never "placeholder" | round 2: 9–1 | — |
+| D-55 (S3-6) | **Wait for residents' findings:** compact default answers (F-11, 7–3), a facts header on captures (F-13, round 2: 8–2), text stand-ins for pictures (F-14, 7–2–1) | as listed | three each wanted F-11 now; two wanted F-13 now |
+| D-56 | **Correction to D-51 and D-53: both already exist on master.** Prompt marks: `last-output` captures the last command's output and `str last_status get` its exit status, from OSC 133. Joined lines: text captures join wrapped rows by default (`wrapped` gives the raw rows). The proposals were written from the installed 26 October binary. M1b verifies and documents them, and builds only D-49, D-52 and D-54. Any proposal now gets checked against master's `fux help` before it goes to a panel | the steward's mistake, found when writing M1b's page | steward, 2026-10-31 |
 
 ## Recorded disagreements (for later evidence, not to reopen now)
 
