@@ -1168,7 +1168,7 @@ impl Server {
                 }
             };
             let euid = fuxix::process::geteuid();
-            match fuxix::socket::peer_uid(&stream) {
+            match fuxix::socket::peer(&stream).map(|peer| peer.uid) {
                 Ok(uid) if uid == euid => {}
                 Ok(uid) => {
                     log!(
