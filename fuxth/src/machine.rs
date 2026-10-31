@@ -360,7 +360,11 @@ impl<A: AppValue> Machine<A> {
             self.last = Some((depth, frame.code, frame.step));
             frame.step = frame.step.saturating_add(1);
             match op {
-                Op::Push(value) => self.push(value.clone()),
+                // Cloned straight into the stack: through `push`, the value
+                // is written to a temporary in parts and read back whole,
+                // which the CPU can't forward (counting to a million: +7%
+                // cycles on fewer instructions).
+                Op::Push(value) => self.stack.extend_from_slice(std::slice::from_ref(value)),
                 Op::Builtin(builtin) => self.builtin(*builtin, host)?,
                 Op::PickN(n) => self.pick(*n)?,
                 Op::RollN(n) => self.roll(*n)?,

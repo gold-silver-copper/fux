@@ -87,8 +87,8 @@ Driving programs from a script or an agent: `fux help agents`; one word:
     let core = fuxth::Builtin::ALL.map(fuxth::Builtin::name).join(" ");
     let language = format!(
         "The language: {}; the core's words {core}; and the libraries below, written in \
-         fuxth. Each word checks its values as it runs: one given too few, or one of a \
-         kind it doesn't take, fails there, after the words before it have acted.",
+         fuxth. Each word checks its values as it runs, and fails there if it has too \
+         few or one of a kind it doesn't take; the words before it have already acted.",
         shapes.join(", ")
     );
     let words = language.split(' ').map(|w| w.replace('\u{a0}', " "));
