@@ -1236,12 +1236,18 @@ impl Server {
                 let ours = Hello::ours(hello.role);
                 let between = Mismatch::between(&hello, &ours);
                 conn.send(session, &Greeting::Hello(ours), now);
+                // A mismatch is answered whatever the role: a client of
+                // another protocol may say one this protocol has not.
                 match (between, hello.role) {
                     (Err(mismatch), _) => {
                         conn.end(session, &Greeting::Exit(&mismatch.to_string()), now);
                     }
                     (Ok(()), Role::Attach) => conn.enter(session, Stage::Attaching, now),
                     (Ok(()), Role::Command) => conn.enter(session, Stage::Command, now),
+                    (Ok(()), Role::Unknown(byte)) => {
+                        let why = format!("role {byte} is none of this protocol's");
+                        conn.end(session, &Greeting::Exit(&why), now);
+                    }
                 }
             }
             Stage::Attaching => {

@@ -99,7 +99,7 @@ impl std::fmt::Display for Mismatch {
         };
         write!(
             f,
-            "the server runs {theirs}; use a matching client to keep its panes running. `kill` on the `server_pid` `fux status` gives stops it and its panes; a new server does not resume them",
+            "the server runs {theirs}; use a matching client to keep its panes running. `kill` on its process stops it and its panes (`fux status` gives its `server_pid`, where the system says it); a new server does not resume them",
         )
     }
 }
@@ -129,17 +129,40 @@ impl std::fmt::Display for Build<'_> {
 
 impl std::error::Error for Mismatch {}
 
-wire! {
-    /// What a connecting client is for; its tag is its byte in a `Hello`'s
-    /// payload.
-    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-    pub enum Role {
-        /// A client that shows the server: `Attach`, then input.
-        Attach,
-        /// One command, then its output.
-        Command,
+/// What a connecting client is for, as the byte in its `Hello`'s payload
+/// says. A server of any protocol reads that byte, so one this protocol
+/// has no role for is kept as it came (`Unknown`): its client, of another
+/// protocol, is answered its mismatch, and never served.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Role {
+    /// A client that shows the server: `Attach`, then input.
+    Attach,
+    /// One command, then its output.
+    Command,
+    /// Another protocol's byte: 2 was a kill's, 3 a headless attach's.
+    Unknown(u8),
+}
+
+impl Wire for Role {
+    fn put(&self, out: &mut impl crate::wire::Sink) {
+        out.push(match self {
+            Role::Attach => 0,
+            Role::Command => 1,
+            Role::Unknown(byte) => *byte,
+        });
+    }
+    fn get(r: &mut crate::wire::Reader<'_>) -> Result<Self, crate::wire::Error> {
+        Ok(match <u8 as Wire>::get(r)? {
+            0 => Role::Attach,
+            1 => Role::Command,
+            byte => Role::Unknown(byte),
+        })
     }
 }
+
+// Its shape is its byte's.
+#[cfg(test)]
+impl crate::wire::Reach for Role {}
 
 /// The frames one side expects at one point of a connection, decoded from
 /// a kind and a payload lent for `'a`, and encoded.
@@ -914,10 +937,14 @@ mod tests {
         assert_eq!(command.encode(), Ok([&head[..], b"0.13.0"].concat()));
         // Each role's byte is the wire format's too: after the length, the
         // kind and the protocol's four bytes. Byte 2 was a kill's, which an
-        // older server takes whatever the protocol, so no role has it.
-        for (role, byte) in [(Role::Attach, 0), (Role::Command, 1)] {
+        // older server takes whatever the protocol, so no role of this
+        // protocol's has it; another protocol's byte decodes as it came.
+        for (role, byte) in [(Role::Attach, 0), (Role::Command, 1), (Role::Unknown(3), 3)] {
             let encoded = hello(role).encode().unwrap_or_default();
             assert_eq!(encoded.get(9), Some(&byte), "{role:?}");
+            let mut decoder = Decoder::default();
+            decoder.push(&encoded);
+            assert_eq!(decoder.frame::<Hello>()?.map(|h| h.role), Some(role));
         }
         Ok(())
     }
@@ -1024,7 +1051,7 @@ mod tests {
             (
                 hello,
                 vec![0, 0, 0, 6, 1, 0, 0, 0, 1, 7],
-                "a frame's payload: no Role has tag 7",
+                "a frame's payload: the bytes end early",
             ),
             (
                 attach,
