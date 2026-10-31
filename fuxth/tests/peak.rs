@@ -85,12 +85,14 @@ fn code(base: usize, region: &Region) -> usize {
 fn a_run_building_and_dropping_values_holds_no_more_than_its_region() -> Result<(), Error> {
     let library = library()?;
     // Strings and lists, grown in place and joined, in calls, made and
-    // dropped 2,000 times; and every 400th time, a string grown till the
-    // region refuses it, which a `try` catches.
+    // dropped 2,000 times; and every 1,000th time, strings twice as long
+    // each, grown from the library's empty string (`copies`), till the
+    // region refuses one, which a `try` catches.
     let source = "define build let n str x n copies let s 0 n range n push len drop
         list s s end concat len drop end
-        define fill str too_long try str x begin str y push false until catch drop drop end end
-        0 begin dup 100 mod 50 add build dup 400 mod 0 eq if fill then
+        define fill str too_long try 1 begin 2 mul str x over copies drop false until
+        catch drop drop end end
+        0 begin dup 100 mod 50 add build dup 1000 mod 0 eq if fill then
         list 1 2 3 end 4 push drop 1 add dup 2000 eq until drop";
     // The library's words this program reaches are checked once, for
     // every program after it: not this run's.

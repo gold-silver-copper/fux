@@ -1035,17 +1035,21 @@ impl<A: AppValue> Machine<A> {
     }
 
     /// `shared`'s value, to change in place: when something else holds it,
-    /// a copy, `n` elements long, reserved before it is made.
+    /// or another region (a literal's, a host's), a copy in this run's,
+    /// `n` elements long, reserved before it is made. What a run grows is
+    /// its region's.
     fn own<'s, T>(
         &mut self,
         shared: &'s mut Shared<T>,
         n: usize,
-        copy: impl FnOnce(&T) -> Result<T, Refused>,
+        region: fn(&T) -> &Region,
+        copy: fn(&T, &Region) -> Result<T, Refused>,
     ) -> Result<&'s mut T, Error> {
-        if Shared::get_mut(shared).is_none() {
+        if Shared::get_mut(shared).is_none() || !region(shared).same(&self.region) {
             self.fits(n)?;
             self.cost(n);
-            let copied = copy(shared).and_then(|copy| Shared::made(&self.region, copy));
+            let copied = copy(shared, &self.region);
+            let copied = copied.and_then(|copy| Shared::made(&self.region, copy));
             *shared = copied.map_err(|refused| self.full(refused))?;
         }
         Shared::get_mut(shared).ok_or_else(|| self.fail(Code::Contract, "a copy still shared"))
@@ -1059,7 +1063,7 @@ impl<A: AppValue> Machine<A> {
             (Sequence::List(mut list), x) => {
                 let len = list.items().len();
                 self.fits(len.saturating_add(1))?;
-                let items = self.own(&mut list, len, List::copy)?;
+                let items = self.own(&mut list, len, List::region, List::copy)?;
                 let moves = len == items.capacity();
                 let grown = items.reserve(1);
                 if moves {
@@ -1074,7 +1078,7 @@ impl<A: AppValue> Machine<A> {
             (Sequence::Str(mut s), Value::Str(x)) => {
                 let (len, chars) = (s.chars_len(), s.chars_len().saturating_add(x.chars_len()));
                 self.fits(chars)?;
-                let text = self.own(&mut s, len, Text::copy)?;
+                let text = self.own(&mut s, len, Text::region, Text::copy)?;
                 let before = text.capacity();
                 let marked = text.append(&x);
                 if text.capacity() != before {
@@ -1108,7 +1112,7 @@ impl<A: AppValue> Machine<A> {
         match (seq, x) {
             (Sequence::List(mut list), x) => {
                 let len = list.items().len();
-                let items = self.own(&mut list, len, List::copy)?;
+                let items = self.own(&mut list, len, List::region, List::copy)?;
                 let looked = items.put(i, x).ok_or_else(|| self.nested())?;
                 self.cost(looked);
                 Ok(Value::List(list))

@@ -215,12 +215,12 @@ impl<T> Bounded<Vec<T>> {
         Ok(())
     }
 
-    /// A copy in the same region, exactly as long as it.
-    pub fn copy(&self) -> Result<Self, Refused>
+    /// A copy in `region`, exactly as long as it.
+    pub fn copy(&self, region: &Region) -> Result<Self, Refused>
     where
         T: Clone,
     {
-        let mut copy = Self::with_capacity(self.region(), self.len())?;
+        let mut copy = Self::with_capacity(region, self.len())?;
         copy.store.extend_from_slice(&self.store);
         Ok(copy)
     }
@@ -264,9 +264,9 @@ impl Bounded<String> {
         Ok(made)
     }
 
-    /// A copy in the same region, in exactly its room.
-    pub fn copy(&self) -> Result<Self, Refused> {
-        Self::of(self.region(), self)
+    /// A copy in `region`, in exactly its room.
+    pub fn copy(&self, region: &Region) -> Result<Self, Refused> {
+        Self::of(region, self)
     }
 
     pub fn push(&mut self, c: char) -> Result<(), Refused> {

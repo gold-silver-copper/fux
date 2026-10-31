@@ -199,12 +199,13 @@ impl Text {
             .saturating_add(Shared::<Text>::BOX)
     }
 
-    /// The same text, in stores of its own in the same region.
-    pub(crate) fn copy(&self) -> Result<Text, Refused> {
+    /// The same text, in stores of its own in `region`.
+    pub(crate) fn copy(&self, region: &Region) -> Result<Text, Refused> {
+        let marks = self.marks.as_ref().map(|marks| marks.copy(region));
         Ok(Text {
-            text: self.text.copy()?,
+            text: self.text.copy(region)?,
             chars: self.chars,
-            marks: self.marks.as_ref().map(BoundedVec::copy).transpose()?,
+            marks: marks.transpose()?,
         })
     }
 
@@ -437,10 +438,10 @@ impl<A> List<A> {
 }
 
 impl<A: Clone> List<A> {
-    /// The same values, in a store of its own in the same region.
-    pub(crate) fn copy(&self) -> Result<Self, Refused> {
+    /// The same values, in a store of its own in `region`.
+    pub(crate) fn copy(&self, region: &Region) -> Result<Self, Refused> {
         Ok(Self {
-            items: self.items.copy()?,
+            items: self.items.copy(region)?,
             depth: self.depth,
             weight: self.weight,
         })
