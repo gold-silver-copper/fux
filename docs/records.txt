@@ -84,4 +84,4 @@ snapshot.topology.panes[]: id tab name label title pid rows cols version
 snapshot.topology.tabs[]: id workspace name label fit cols rows host nodes layout_revision
 snapshot.topology.workspaces[]: id name label tabs
 snapshot.topology: run cursor scope projection workspaces tabs panes clients
-status: socket release protocol server_release server_protocol compatible
+status: socket release protocol server_release server_protocol server_pid compatible

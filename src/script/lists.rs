@@ -217,6 +217,7 @@ fn records_list_is_current() -> Result<(), Box<dyn std::error::Error>> {
     let probe = crate::client::Probe::Server {
         protocol: fux_wire::protocol::PROTOCOL,
         version: env!("CARGO_PKG_VERSION").to_owned(),
+        pid: fuxix::process::Pid::from_raw(1),
     };
     let status = crate::status(&socket, &probe)?;
     records(
