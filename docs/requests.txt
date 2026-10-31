@@ -1,0 +1,42 @@
+# The requests a client sends its server, each with its fields in their order on the wire (fux-wire's codec). Generated: FUX_BLESS=1 cargo test -p fux-wire lists
+Request::Do command: Command
+Request::Wait wait: Wait
+Request::NextEvents scope: inspect::Scope, from: Option<events::Cursor>, timeout: Limit
+Command::Inspect scope: inspect::Scope, projection: inspect::Projection
+Command::KillServer
+Command::NewWorkspace name: Option<String>, size: Size, cwd: Option<PathBuf>, env: EnvPatch, start: Start, options: PaneOptions
+Command::NewTab target: Option<WsRef>, name: Option<String>, size: Size, cwd: Option<PathBuf>, env: EnvPatch, start: Start, options: PaneOptions
+Command::Split axis: Axis, target: PaneId, start: Start, cwd: Option<PathBuf>, env: EnvPatch, shares: Option<(NonZeroU32, NonZeroU32)>, options: PaneOptions
+Command::Run workspace: WsRef, name: Option<String>, size: Size, cwd: Option<PathBuf>, env: EnvPatch, argv: Program, options: PaneOptions
+Command::Respawn target: PaneId, kill: bool, env: EnvPatch, argv: Option<Program>
+Command::Notify target: Option<AnyRef>, text: String
+Command::Resize what: Resized
+Command::SendMouse target: PaneId, mouse: Mouse, row: u16, col: u16
+Command::Kill target: AnyRef
+Command::Signal target: PaneId, signal: fuxix::process::Signal
+Command::Rename target: AnyRef, name: String
+Command::MovePane target: PaneId, to: MoveTo
+Command::SwapPane target: PaneId, with: SwapWith
+Command::Arrange target: TabId, revision: LayoutRevision, nodes: Vec<layout::Node>
+Command::ResizePane target: PaneId, by: PaneResize
+Command::SendKeys to: To, inputs: Vec<Input>
+Command::HistoryBudget target: PaneId, bytes: HistoryBytes
+Command::ClearHistory target: PaneId
+Command::CapturePane target: PaneId, history: Option<usize>, view: CaptureView
+Command::Reorder target: AnyRef, toward: Sibling
+Command::Resolve text: String, kind: Kind
+Command::Members target: AnyRef, members: Members
+Command::ListBuffers
+Command::ShowBuffer buffer: Buffer
+Command::PasteBuffer buffer: Buffer, target: PaneId
+Command::Client client: Option<ClientId>, action: ClientAction
+ClientAction::Detach
+ClientAction::Capture
+ClientAction::Open screen: callback::Open
+ClientAction::Keys inputs: Vec<Input>
+ClientAction::Zoom
+ClientAction::SelectPane pick: PanePick
+ClientAction::SelectTab pick: Pick<TabId>
+ClientAction::SelectWorkspace pick: Pick<WsRef>
+Wait since: Since, timeout: Limit
+Attach of: Option<command::Run>, size: fux_vt::Size, target: Option<command::AttachTarget>, read_only: bool, presentation: presentation::Presentation, initial: Option<command::InitialWorkspace>

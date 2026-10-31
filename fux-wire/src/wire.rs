@@ -694,7 +694,9 @@ pub(crate) use wire_struct;
 /// (`Tuple(A, B)`), and `wire_enum!(Ty { Unit, Tuple(a, b), Named { x } })`:
 /// `a` and `b` only name the fields, as a macro can't make up names. A
 /// struct expands to itself and `wire_struct!`. A variant's tag and a
-/// field's place on the wire are their places in the declaration.
+/// field's place on the wire are their places in the declaration. In a
+/// test build, each is also `Shape`: its variants (a struct's one, its
+/// own name) and their fields, as declared.
 macro_rules! wire {
     (
         $(#[$m:meta])*
@@ -717,6 +719,16 @@ macro_rules! wire {
         $crate::wire::wire_enum!($ty $(<$g>)? {
             $($var $(( $($p),+ ))? $({ $($f),* })?),*
         });
+        #[cfg(test)]
+        impl$(<$g>)? $crate::wire::Shape for $ty$(<$g>)? {
+            const SHAPE: &[(&str, &[(&str, &str)])] = &[$((
+                stringify!($var),
+                &[
+                    $($((stringify!($p), stringify!($pt)),)+)?
+                    $($((stringify!($f), stringify!($ft)),)*)?
+                ],
+            )),*];
+        }
     };
     (
         $(#[$m:meta])*
@@ -729,9 +741,21 @@ macro_rules! wire {
             $($(#[$fm])* $fvis $f: $ft),*
         }
         $crate::wire::wire_struct!($ty { $($f),+ });
+        #[cfg(test)]
+        impl $crate::wire::Shape for $ty {
+            const SHAPE: &[(&str, &[(&str, &str)])] =
+                &[(stringify!($ty), &[$((stringify!($f), stringify!($ft))),+])];
+        }
     };
 }
 pub(crate) use wire;
+
+/// A type `wire!` declared: each variant's name (a struct's own) and its
+/// fields' names and types, in their places on the wire.
+#[cfg(test)]
+pub(crate) trait Shape {
+    const SHAPE: &[(&str, &[(&str, &str)])];
+}
 
 impl Wire for Percent {
     fn put(&self, out: &mut impl crate::wire::Sink) {

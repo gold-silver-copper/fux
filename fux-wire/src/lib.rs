@@ -13,6 +13,8 @@ pub mod id;
 pub mod inspect;
 pub mod json;
 pub mod layout;
+#[cfg(any(test, feature = "testing"))]
+pub mod lists;
 pub mod presentation;
 pub mod protocol;
 pub mod wire;

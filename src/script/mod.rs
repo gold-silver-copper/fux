@@ -7,6 +7,8 @@
 //! Every run is fresh: its own stack and dictionary, the bundled library's
 //! words first (`library.fux`).
 mod callback;
+#[cfg(test)]
+mod lists;
 mod record;
 pub(crate) mod settings;
 mod source;
