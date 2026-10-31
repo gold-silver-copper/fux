@@ -52,6 +52,12 @@ impl std::fmt::Display for Unread {
     }
 }
 
+/// What an accepted list holds, read: a refusal of it is of a value, never
+/// of a kind, which only the list itself may be.
+fn held<T>(read: impl FnOnce() -> Result<T, Unread>) -> Result<T, Unread> {
+    read().map_err(|unread| Unread::Value(unread.to_string()))
+}
+
 /// `value` is of a kind the reader doesn't take.
 fn wrong(takes: &str, value: &Value<Fux>) -> Unread {
     Unread::Kind(format!("takes {takes}, not {}", value.kind()))
@@ -221,60 +227,62 @@ impl Reads for fux_wire::presentation::Styles {
     }
     fn update(value: &Value<Fux>, previous: Option<&Self>) -> Result<Self, Unread> {
         let rows = items(value)?;
-        if rows.len() > Self::NAMES.len() {
-            return Err("at most eight style roles".to_owned().into());
-        }
-        let mut changes = std::collections::BTreeMap::new();
-        for row in rows {
-            let [name, fg, bg, flags @ ..] = items(row)? else {
-                return Err(Self::takes().into());
-            };
-            let name = word(name)?;
-            if !Self::NAMES.contains(&name) {
-                return Err(format!(
-                    "no style role {name:?}; the roles are {}",
-                    Self::NAMES.join(" ")
-                )
-                .into());
+        held(|| {
+            if rows.len() > Self::NAMES.len() {
+                return Err("at most eight style roles".to_owned().into());
             }
-            let mut style = fux_wire::presentation::Style {
-                foreground: colour(fg)?,
-                background: colour(bg)?,
-                bold: false,
-                dim: false,
-                italic: false,
-                underline: false,
-            };
-            for flag in flags {
-                let flag = word(flag)?;
-                let field = match flag {
-                    "bold" => &mut style.bold,
-                    "dim" => &mut style.dim,
-                    "italic" => &mut style.italic,
-                    "underline" => &mut style.underline,
-                    _ => {
-                        return Err(format!(
-                            "no style flag {flag:?}; the flags are bold dim italic underline"
-                        )
-                        .into());
-                    }
+            let mut changes = std::collections::BTreeMap::new();
+            for row in rows {
+                let [name, fg, bg, flags @ ..] = items(row)? else {
+                    return Err(Self::takes().into());
                 };
-                if *field {
-                    return Err(format!("repeated style flag {flag}").into());
+                let name = word(name)?;
+                if !Self::NAMES.contains(&name) {
+                    return Err(format!(
+                        "no style role {name:?}; the roles are {}",
+                        Self::NAMES.join(" ")
+                    )
+                    .into());
                 }
-                *field = true;
+                let mut style = fux_wire::presentation::Style {
+                    foreground: colour(fg)?,
+                    background: colour(bg)?,
+                    bold: false,
+                    dim: false,
+                    italic: false,
+                    underline: false,
+                };
+                for flag in flags {
+                    let flag = word(flag)?;
+                    let field = match flag {
+                        "bold" => &mut style.bold,
+                        "dim" => &mut style.dim,
+                        "italic" => &mut style.italic,
+                        "underline" => &mut style.underline,
+                        _ => {
+                            return Err(format!(
+                                "no style flag {flag:?}; the flags are bold dim italic underline"
+                            )
+                            .into());
+                        }
+                    };
+                    if *field {
+                        return Err(format!("repeated style flag {flag}").into());
+                    }
+                    *field = true;
+                }
+                if changes.insert(name, style).is_some() {
+                    return Err(format!("repeated style role {name}").into());
+                }
             }
-            if changes.insert(name, style).is_some() {
-                return Err(format!("repeated style role {name}").into());
-            }
-        }
-        Ok(Self::read_roles(|name| {
-            changes
-                .get(name)
-                .copied()
-                .or_else(|| previous.and_then(|p| p.role(name)))
-                .ok_or_else(|| format!("bundled initialization did not set style {name}"))
-        })?)
+            Ok(Self::read_roles(|name| {
+                changes
+                    .get(name)
+                    .copied()
+                    .or_else(|| previous.and_then(|p| p.role(name)))
+                    .ok_or_else(|| format!("bundled initialization did not set style {name}"))
+            })?)
+        })
     }
 }
 
@@ -287,47 +295,50 @@ impl Reads for fux_wire::presentation::Bar {
         let [position, left, right, numbers] = items(value)? else {
             return Err(Self::takes().into());
         };
-        let position = match word(position)? {
-            "top" => BarPosition::Top,
-            "bottom" => BarPosition::Bottom,
-            "off" => BarPosition::Off,
-            _ => return Err("bar position is top, bottom, or off".to_owned().into()),
-        };
-        let fields = |value| -> Result<Vec<Field>, Unread> {
-            items(value)?
-                .iter()
-                .map(|value| match value {
-                    Value::Str(_) => match word(value)? {
-                        "workspace" => Ok(Field::Workspace),
-                        "tabs" => Ok(Field::Tabs),
-                        "pane" => Ok(Field::Pane),
-                        name => Err(format!(
-                            "no bar field {name:?}; fields are workspace tabs pane [slot 0..15]"
-                        )
-                        .into()),
-                    },
-                    Value::List(_) => {
-                        let [name, index] = items(value)? else {
-                            return Err("a slot field is [slot 0..15]".to_owned().into());
-                        };
-                        if word(name)? != "slot" {
-                            return Err("a slot field is [slot 0..15]".to_owned().into());
+        held(|| {
+            let position = match word(position)? {
+                "top" => BarPosition::Top,
+                "bottom" => BarPosition::Bottom,
+                "off" => BarPosition::Off,
+                _ => return Err("bar position is top, bottom, or off".to_owned().into()),
+            };
+            let fields = |value| -> Result<Vec<Field>, Unread> {
+                items(value)?
+                    .iter()
+                    .map(|value| match value {
+                        Value::Str(_) => match word(value)? {
+                            "workspace" => Ok(Field::Workspace),
+                            "tabs" => Ok(Field::Tabs),
+                            "pane" => Ok(Field::Pane),
+                            name => Err(format!(
+                                "no bar field {name:?}; fields are workspace tabs pane [slot 0..15]"
+                            )
+                            .into()),
+                        },
+                        Value::List(_) => {
+                            let [name, index] = items(value)? else {
+                                return Err("a slot field is [slot 0..15]".to_owned().into());
+                            };
+                            if word(name)? != "slot" {
+                                return Err("a slot field is [slot 0..15]".to_owned().into());
+                            }
+                            let id =
+                                u8::try_from(int(index)?).map_err(|_| "a bar slot is 0 to 15")?;
+                            Ok(Field::Slot(id))
                         }
-                        let id = u8::try_from(int(index)?).map_err(|_| "a bar slot is 0 to 15")?;
-                        Ok(Field::Slot(id))
-                    }
-                    Value::Int(_) | Value::Bool(_) | Value::App(_) => {
-                        Err("a bar field is a name or [slot 0..15]".to_owned().into())
-                    }
-                })
-                .collect()
-        };
-        Ok(Self::new(
-            position,
-            fields(left)?,
-            fields(right)?,
-            bool::read(numbers)?,
-        )?)
+                        Value::Int(_) | Value::Bool(_) | Value::App(_) => {
+                            Err("a bar field is a name or [slot 0..15]".to_owned().into())
+                        }
+                    })
+                    .collect()
+            };
+            Ok(Self::new(
+                position,
+                fields(left)?,
+                fields(right)?,
+                bool::read(numbers)?,
+            )?)
+        })
     }
 }
 
@@ -337,20 +348,22 @@ impl Reads for fux_wire::presentation::Slots {
     }
     fn read(value: &Value<Fux>) -> Result<Self, Unread> {
         let rows = items(value)?;
-        if rows.len() > Self::MAX {
-            return Err("at most 16 bar slots".to_owned().into());
-        }
-        let values = rows
-            .iter()
-            .map(|row| {
-                let [id, text] = items(row)? else {
-                    return Err(Self::takes().into());
-                };
-                let id = u8::try_from(int(id)?).map_err(|_| "a bar slot is 0 to 15")?;
-                let text = word(text)?;
-                Ok((id, text))
-            })
-            .collect::<Result<_, Unread>>()?;
-        Ok(Self::new(values)?)
+        held(|| {
+            if rows.len() > Self::MAX {
+                return Err("at most 16 bar slots".to_owned().into());
+            }
+            let values = rows
+                .iter()
+                .map(|row| {
+                    let [id, text] = items(row)? else {
+                        return Err(Self::takes().into());
+                    };
+                    let id = u8::try_from(int(id)?).map_err(|_| "a bar slot is 0 to 15")?;
+                    let text = word(text)?;
+                    Ok((id, text))
+                })
+                .collect::<Result<_, Unread>>()?;
+            Ok(Self::new(values)?)
+        })
     }
 }

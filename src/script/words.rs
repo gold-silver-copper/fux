@@ -453,8 +453,8 @@ pub fn usage(word: &str) -> Option<String> {
 /// `failure`, a value of a kind the word doesn't take, told as the word's
 /// effect names what it takes in that place (`taken`: the place and the
 /// value's kind), as help says it. Each word checks a value before it takes
-/// the next, so the value taken last is the one refused; a refusal of what
-/// a value holds (a list's element, of another kind) is left as it is.
+/// the next, so the value taken last is the one refused. A refusal of what
+/// a value holds never comes here: the word checks it through `Host::held`.
 fn described(word: Word, taken: Option<(usize, &'static str)>, mut failure: Failure) -> Failure {
     let Some((at, kind)) = taken else {
         return failure;
@@ -1310,9 +1310,12 @@ impl fuxth::Host for Host<'_> {
             Ok(value)
         };
         let from = out.len();
-        let result = self
-            .dispatch(word, &mut next, out)
-            .map_err(|failure| described(word, taken, failure))?;
+        let result = self.dispatch(word, &mut next, out);
+        let held = std::mem::take(&mut self.held);
+        let result = result.map_err(|failure| match held {
+            true => failure,
+            false => described(word, taken, failure),
+        })?;
         for value in out.iter_mut().skip(from) {
             match value {
                 Value::App(Fux::Opts(opts)) => {
@@ -1401,6 +1404,13 @@ impl Host<'_> {
 }
 
 impl Host<'_> {
+    /// `checked`, a check of what a value holds (a list's elements): its
+    /// failure is told as it is, not as what the word takes in that place.
+    fn held<T>(&mut self, checked: Result<T, Failure>) -> Result<T, Failure> {
+        self.held |= checked.is_err();
+        checked
+    }
+
     fn dispatch(
         &mut self,
         word: Word,
@@ -1748,43 +1758,47 @@ impl Host<'_> {
                 fux_wire::layout::admit_nodes(list.items().len())?;
                 let mut nodes = Vec::with_capacity(list.items().len());
                 let mut of = None;
-                for node in list.items() {
-                    let node = if let Some(pane) = as_pane(node) {
-                        of = super::same_run(of, super::scope(node))?;
-                        fux_wire::layout::Node::Pane(pane)
-                    } else if let Value::List(fields) = node {
-                        let [axis, first_share, second_share, first, second] = fields.items()
-                        else {
-                            return Err(fail(
-                                Raise::BadValue,
-                                "a split is list AXIS SHARE SHARE FIRST SECOND end",
-                            ));
-                        };
-                        let Value::Str(axis) = axis else {
-                            return Err(wrong("a string", axis));
-                        };
-                        let axis = match &***axis {
-                            "horizontal" => Axis::Horizontal,
-                            "vertical" => Axis::Vertical,
-                            _ => {
+                let read = (|| {
+                    for node in list.items() {
+                        let node = if let Some(pane) = as_pane(node) {
+                            of = super::same_run(of, super::scope(node))?;
+                            fux_wire::layout::Node::Pane(pane)
+                        } else if let Value::List(fields) = node {
+                            let [axis, first_share, second_share, first, second] = fields.items()
+                            else {
                                 return Err(fail(
                                     Raise::BadValue,
-                                    "layout axis must be horizontal or vertical",
+                                    "a split is list AXIS SHARE SHARE FIRST SECOND end",
                                 ));
+                            };
+                            let Value::Str(axis) = axis else {
+                                return Err(wrong("a string", axis));
+                            };
+                            let axis = match &***axis {
+                                "horizontal" => Axis::Horizontal,
+                                "vertical" => Axis::Vertical,
+                                _ => {
+                                    return Err(fail(
+                                        Raise::BadValue,
+                                        "layout axis must be horizontal or vertical",
+                                    ));
+                                }
+                            };
+                            fux_wire::layout::Node::Split {
+                                axis,
+                                first_share: share(first_share)?,
+                                second_share: share(second_share)?,
+                                first: within(first, 0..=i64::from(u32::MAX))?,
+                                second: within(second, 0..=i64::from(u32::MAX))?,
                             }
+                        } else {
+                            return Err(wrong("a pane or split list", node));
                         };
-                        fux_wire::layout::Node::Split {
-                            axis,
-                            first_share: share(first_share)?,
-                            second_share: share(second_share)?,
-                            first: within(first, 0..=i64::from(u32::MAX))?,
-                            second: within(second, 0..=i64::from(u32::MAX))?,
-                        }
-                    } else {
-                        return Err(wrong("a pane or split list", node));
-                    };
-                    nodes.push(node);
-                }
+                        nodes.push(node);
+                    }
+                    Ok(())
+                })();
+                self.held(read)?;
                 later(Ask::Server {
                     request: Box::new(
                         Command::Arrange {
@@ -2061,18 +2075,16 @@ impl Host<'_> {
                 let heading = next()?;
                 let (title, about) = match &heading {
                     Value::Str(_) => (string(&heading)?, None),
-                    Value::List(list) => match list.items() {
-                        [title, subject] => (
-                            string(title)?,
-                            Some((target(subject)?, super::scope(subject))),
-                        ),
-                        _ => {
-                            return Err(fail(
-                                Raise::BadValue,
-                                "title is text or [text,subject handle]",
-                            ));
-                        }
-                    },
+                    Value::List(list) => self.held(match list.items() {
+                        [title, subject] => (|| {
+                            let title = string(title)?;
+                            Ok((title, Some((target(subject)?, super::scope(subject)))))
+                        })(),
+                        _ => Err(fail(
+                            Raise::BadValue,
+                            "title is text or [text,subject handle]",
+                        )),
+                    })?,
                     Value::Int(_) | Value::Bool(_) | Value::App(_) => {
                         return Err(wrong("a title or [text,subject handle]", &heading));
                     }
@@ -2081,18 +2093,22 @@ impl Host<'_> {
                 let Value::List(rows) = rows else {
                     return Err(wrong("rows", &rows));
                 };
-                let mut items = Vec::with_capacity(rows.items().len());
-                for row in rows.items() {
-                    let Value::List(row) = row else {
-                        return Err(wrong("[payload,label]", row));
-                    };
-                    let [payload, label] = row.items() else {
-                        return Err(fail(Raise::BadValue, "a row is [payload,label]"));
-                    };
-                    let payload = super::callback::data(payload)?;
-                    let label = string(label)?;
-                    items.push(fux_wire::callback::Item { payload, label });
-                }
+                let read = (|| {
+                    let mut items = Vec::with_capacity(rows.items().len());
+                    for row in rows.items() {
+                        let Value::List(row) = row else {
+                            return Err(wrong("[payload,label]", row));
+                        };
+                        let [payload, label] = row.items() else {
+                            return Err(fail(Raise::BadValue, "a row is [payload,label]"));
+                        };
+                        let payload = super::callback::data(payload)?;
+                        let label = string(label)?;
+                        items.push(fux_wire::callback::Item { payload, label });
+                    }
+                    Ok(items)
+                })();
+                let items = self.held(read)?;
                 let index = |v: Value<Fux>| -> Result<Option<usize>, Failure> {
                     let Value::List(list) = &v else {
                         return Err(wrong("[] or [index]", &v));
@@ -2558,6 +2574,20 @@ mod tests {
                 wrong.push(format!("{program}: {failed} (help: {takes})"));
             }
         }
+        // What a value holds keeps its own requirement: a row's label, a
+        // split's axis.
+        for program in [
+            "str c1 client str Title list list str payload list end end end list end list 0 end str 2drop choose",
+            "@1 str @1:0:1-2 list list list end 1 1 1 2 end end arrange",
+        ] {
+            let failed = offline(program)?
+                .0
+                .map(|f| f.to_string())
+                .unwrap_or_default();
+            if !failed.starts_with("type:") || !failed.contains("takes a string, not a list") {
+                wrong.push(format!("{program}: {failed}"));
+            }
+        }
         assert!(wrong.is_empty(), "{}", wrong.join("\n"));
         Ok(())
     }
@@ -2585,6 +2615,23 @@ mod tests {
                 wrong.push(format!(
                     "{source}: {failed}, {asked} asked, printed {printed:?}"
                 ));
+            }
+        }
+        // A setting given a value of another kind fails type; one of its
+        // kind holding what it refuses, config.
+        for (code, program) in [
+            ("type", "str bell str off set"),
+            ("config", "str styles list 1 end set"),
+            ("config", "str styles list list 5 1 2 end end set"),
+            ("config", "str bar list 1 end set"),
+            ("config", "str bar-slots list 1 end set"),
+            ("config", "str shell list 1 end set"),
+        ] {
+            let source = format!("str {code} try {program} catch 2drop str caught print end");
+            let (failed, _, printed) = offline(&source)?;
+            if failed.is_some() || printed != "caught\n" {
+                let failed = failed.map(|f| f.to_string()).unwrap_or_default();
+                wrong.push(format!("{source}: {failed}, printed {printed:?}"));
             }
         }
         for (code, program) in [

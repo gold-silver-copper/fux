@@ -409,6 +409,9 @@ pub struct Host<'a> {
     pub last_bound: Option<Bound>,
     pub out: &'a mut dyn Write,
     cli: bool,
+    /// Whether the word running failed on what one of its values holds,
+    /// not on the value: told as the word said it (`words::described`).
+    held: bool,
 }
 
 impl<'a> Host<'a> {
@@ -419,6 +422,7 @@ impl<'a> Host<'a> {
             last_bound: None,
             out,
             cli: false,
+            held: false,
         }
     }
 
