@@ -524,6 +524,8 @@ pub fn start_server(socket: &SocketPath) -> Result<(), Error> {
     command
         .arg(crate::SERVE)
         .arg(socket.path())
+        // A follow's mark is this command's, not its panes' (`follow`).
+        .env_remove(FOLLOWED)
         .current_dir("/")
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())

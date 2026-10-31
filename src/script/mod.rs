@@ -1781,8 +1781,8 @@ pub fn main(
 /// A command line this fux cannot compile, `failed`, which the server's
 /// may: a server of another protocol on the socket chosen before the
 /// program (`FUX_SOCKET`, else `server.sock`) is followed (`client::follow`)
-/// with `rerun`, if given, as nothing of it has run. Else, or if it cannot
-/// be, why it failed.
+/// with `rerun`, if given, as nothing of it has run. Else why it failed; or,
+/// a mismatch found and not followed, the mismatch, with that as context.
 fn uncompiled(failed: Failed, rerun: Option<&client::Rerun>) -> Failed {
     let Some(rerun) = rerun else {
         return failed;
@@ -1793,10 +1793,13 @@ fn uncompiled(failed: Failed, rerun: Option<&client::Rerun>) -> Failed {
     let Ok(Err(client::Error::Mismatch { said, server })) = greeted else {
         return failed;
     };
-    let unfollowed = client::follow(said, server, rerun);
+    let unfollowed = client_failed(client::follow(said, server, rerun));
     Failed {
-        message: format!("{} ({unfollowed})", failed.message),
-        ..failed
+        message: format!(
+            "{}; this fux cannot compile it: {failed}",
+            unfollowed.message
+        ),
+        ..unfollowed
     }
 }
 

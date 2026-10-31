@@ -8,6 +8,7 @@
 //! own, not the test harness's.
 use std::io::{Read, Write};
 use std::process::{Command, ExitCode, Stdio};
+use std::time::{Duration, Instant};
 
 const FUX: &str = env!("CARGO_BIN_EXE_fux");
 /// The status the binary followed exits with, which fux's must be.
@@ -24,7 +25,7 @@ fn main() -> ExitCode {
     if std::env::args_os().next().is_some_and(|arg0| arg0 == FUX) {
         return followed();
     }
-    let tests: [(&str, Test); 5] = [
+    let tests: [(&str, Test); 6] = [
         ("a_command_follows_the_server", a_command_follows_the_server),
         (
             "a_program_read_from_stdin_follows",
@@ -39,6 +40,10 @@ fn main() -> ExitCode {
             a_program_that_acted_is_not_followed,
         ),
         ("a_command_follows_once", a_command_follows_once),
+        (
+            "a_program_file_that_is_a_pipe_is_not_followed",
+            a_program_file_that_is_a_pipe_is_not_followed,
+        ),
     ];
     let failed = (tests.iter())
         .filter(|(name, test)| {
@@ -73,6 +78,9 @@ fn followed() -> ExitCode {
     ExitCode::from(FOLLOWED)
 }
 
+/// How long the server waits for each connection.
+const PATIENCE: Duration = Duration::from_secs(10);
+
 /// Set for the binary followed to run fux again (`followed`).
 const AGAIN: &str = "FOLLOW_TEST_AGAIN";
 
@@ -85,7 +93,8 @@ struct Ran {
 
 /// Runs fux with `args`, `stdin` and `env` against a server of protocol
 /// 999, played in a socket of its own: it answers `connections` Hellos as
-/// servers do, hanging up after each.
+/// servers do, hanging up after each, and fails if they do not come within
+/// `PATIENCE`.
 fn against_another_protocol(
     name: &str,
     args: &[&str],
@@ -101,9 +110,23 @@ fn against_another_protocol(
     std::fs::create_dir_all(&dir).map_err(e)?;
     std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).map_err(e)?;
     let listener = std::os::unix::net::UnixListener::bind(dir.join("fux.sock")).map_err(e)?;
+    listener.set_nonblocking(true).map_err(e)?;
+    let deadline = Instant::now().checked_add(PATIENCE).ok_or("no deadline")?;
     let server = std::thread::spawn(move || -> Outcome {
         for _ in 0..connections {
-            let (mut stream, _) = listener.accept().map_err(e)?;
+            let (mut stream, _) = loop {
+                match listener.accept() {
+                    Ok(accepted) => break accepted,
+                    Err(error)
+                        if error.kind() == std::io::ErrorKind::WouldBlock
+                            && Instant::now() < deadline =>
+                    {
+                        std::thread::sleep(Duration::from_millis(10));
+                    }
+                    Err(error) => return Err(format!("waiting for fux to connect: {error}")),
+                }
+            };
+            stream.set_nonblocking(false).map_err(e)?;
             let hello = Greeting::Hello(Hello {
                 protocol: 999,
                 version: "9.9.9".into(),
@@ -160,6 +183,7 @@ fn follows(name: &str, args: &[&str], stdin: &str, stdout: &str) -> Outcome {
     if cfg!(target_os = "macos") {
         return check(
             ran.status == Some(1)
+                && ran.stderr.starts_with("fux: mismatch: ")
                 && ran.stderr.contains("fux 9.9.9 (protocol 999)")
                 && ran
                     .stderr
@@ -230,16 +254,33 @@ fn a_program_that_acted_is_not_followed() -> Outcome {
 }
 
 /// A command follows once: the binary followed, running fux again, meets
-/// the same server and is refused, rather than follow it for ever.
+/// the same server and is refused, with `mismatch`, rather than follow it
+/// for ever; so is a program this fux cannot compile.
 fn a_command_follows_once() -> Outcome {
     if cfg!(target_os = "macos") {
         return Ok(());
     }
-    let ran = against_another_protocol("once", &["ls"], "", &[(AGAIN, "1")], 2)?;
-    check(ran.status == Some(1), &ran)?;
-    let rest = ran.stderr.strip_prefix(&following()?).unwrap_or_default();
+    for args in ["ls", "a-word-only-the-server-knows"] {
+        let ran = against_another_protocol("once", &[args], "", &[(AGAIN, "1")], 2)?;
+        check(ran.status == Some(1), &ran)?;
+        let rest = ran.stderr.strip_prefix(&following()?).unwrap_or_default();
+        check(
+            rest.starts_with("fux: mismatch: ") && rest.contains("follows once"),
+            &ran,
+        )?;
+    }
+    Ok(())
+}
+
+/// A program file that may not read the same again (a pipe) is refused as
+/// a source before anything runs, so nothing is followed to run it empty.
+fn a_program_file_that_is_a_pipe_is_not_followed() -> Outcome {
+    let ran = against_another_protocol("pipe", &["--file", "/dev/stdin"], "ls\n", &[], 0)?;
     check(
-        rest.starts_with("fux: mismatch: ") && rest.contains("follows once"),
+        ran.status == Some(1)
+            && ran.stdout.is_empty()
+            && ran.stderr.starts_with("fux: read: ")
+            && !ran.stderr.contains("running the server's own binary"),
         &ran,
     )
 }
