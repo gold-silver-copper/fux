@@ -15,16 +15,17 @@ pub const OUTPUT_CELLS: usize = 2 * fux_wire::wire::MAX_REPLY;
 
 /// A pane's screen, and `history` rows before it, as `view` asks, read
 /// once with its version and state; with `copy_mode`, that says a client
-/// is in copy mode on it (`state`).
+/// is in copy mode on it (`state`). What it makes is charged to `budget`.
 pub fn pane(
     pane: &Pane,
     run: fux_wire::command::Run,
     history: Option<usize>,
     view: CaptureView,
     copy_mode: bool,
+    budget: &mut fux_wire::wire::Budget,
 ) -> Result<Captured, fux_wire::code::Error> {
     let limits = cell_limit(pane.history_bytes(), pane.screen().size().into())?;
-    pane_with(pane, run, history, view, copy_mode, limits)
+    pane_with(pane, run, history, view, copy_mode, limits, budget)
 }
 
 fn pane_with(
@@ -34,6 +35,7 @@ fn pane_with(
     view: CaptureView,
     copy_mode: bool,
     limits: usize,
+    budget: &mut fux_wire::wire::Budget,
 ) -> Result<Captured, fux_wire::code::Error> {
     let screen = pane.screen();
     let (read, above) = rows_of(screen, history, view);
@@ -54,8 +56,7 @@ fn pane_with(
         .0
         .skip(selection.start)
         .take(selection.len());
-    let mut budget = fux_wire::wire::Budget::new();
-    let mut state = state(pane, copy_mode, &mut budget)?;
+    let mut state = state(pane, copy_mode, budget)?;
     // The history rows kept above the first row read: history it was not
     // asked for (rows a range leaves out are not counted).
     state.push(("above", above.map_or(Json::Null, Json::count)));
@@ -64,7 +65,7 @@ fn pane_with(
         wrap_pending: cursor.is_some() && screen.pending_wrap(),
         state: budget.fields(state)?,
     };
-    build(read, of, (screen.size().into(), cursor), view, &mut budget)
+    build(read, of, (screen.size().into(), cursor), view, budget)
 }
 
 fn build<'a>(
@@ -505,12 +506,12 @@ fn last_output(screen: &Screen) -> Option<(std::ops::Range<usize>, std::ops::Ran
     ))
 }
 
-/// What a client's terminal shows, row by row.
+/// What a client's terminal shows, row by row, charged to `budget`.
 pub fn client(
     client: ClientId,
     grid: &crate::render::Grid,
+    budget: &mut fux_wire::wire::Budget,
 ) -> Result<Captured, fux_wire::code::Error> {
-    let mut budget = fux_wire::wire::Budget::new();
     let of = Of::Client(client);
     let mut built = Builder::new(budget.vector(usize::from(grid.rows))?, &of)?;
     for y in 0..grid.rows {
@@ -520,7 +521,7 @@ pub fn client(
                 .map(|cell| cell.shown())
         };
         let bytes = glyphs().try_fold(0usize, |n, text| n.checked_add(text.len()));
-        let mut text = room(&mut budget, bytes.ok_or_else(too_large)?)?;
+        let mut text = room(budget, bytes.ok_or_else(too_large)?)?;
         glyphs().for_each(|glyph| text.push_str(glyph));
         while text.chars().next_back().is_some_and(char::is_whitespace) {
             text.pop();
@@ -529,22 +530,14 @@ pub fn client(
             text,
             runs: Vec::new(),
         };
-        built.push(line, &mut budget)?;
+        built.push(line, budget)?;
     }
     let view = CaptureView {
         full: true,
         ..CaptureView::default()
     };
     let size = (grid.rows, grid.cols);
-    captured(
-        of,
-        size,
-        grid.cursor,
-        built.lines,
-        Vec::new(),
-        view,
-        &mut budget,
-    )
+    captured(of, size, grid.cursor, built.lines, Vec::new(), view, budget)
 }
 
 /// What is known of a pane's program, for `json`: its foreground program,
@@ -800,6 +793,11 @@ mod tests {
     use fux_wire::command::{CaptureView, Program};
     use fuxix::Allocation;
 
+    /// A budget as large as a request's region, of its own.
+    fn tested() -> fux_wire::wire::Budget {
+        fux_wire::wire::Budget::with_limit(fux_wire::wire::MAX_ALLOCATED)
+    }
+
     /// A capture as printed.
     trait Printed {
         fn text(&self) -> Result<String, std::fmt::Error>;
@@ -878,6 +876,7 @@ mod tests {
             Some(usize::MAX),
             CaptureView::default(),
             false,
+            &mut tested(),
         )?;
         assert!(capture.lines.len() > 80_000);
         let full = super::pane(
@@ -889,6 +888,7 @@ mod tests {
                 ..CaptureView::default()
             },
             false,
+            &mut tested(),
         )?;
         assert_eq!(full.lines.len(), 100_003);
         Ok(())
@@ -957,6 +957,7 @@ mod tests {
             CaptureView::default(),
             false,
             240,
+            &mut tested(),
         );
         assert!(refusal.is_err());
         assert!(
@@ -970,7 +971,7 @@ mod tests {
             full: true,
             ..CaptureView::default()
         };
-        let read = super::pane(&pane, run, Some(usize::MAX), view, false)?;
+        let read = super::pane(&pane, run, Some(usize::MAX), view, false, &mut tested())?;
         assert_eq!(read.lines.len(), 1);
         assert_eq!(read.lines.first().map(|l| l.text.len()), Some(80));
         let limits = 80;
@@ -1006,6 +1007,7 @@ mod tests {
                 None,
                 join,
                 false,
+                &mut tested(),
             )?
             .text()?)
         };
@@ -1034,7 +1036,7 @@ mod tests {
                 wrapped,
                 ..CaptureView::default()
             };
-            Ok(super::pane(&pane, run, None, view, false)?.text()?)
+            Ok(super::pane(&pane, run, None, view, false, &mut tested())?.text()?)
         };
         assert_eq!(capture((2, 3), false)?, "abcdefghijklm");
         assert_eq!(capture((0, 2), false)?, "top\nabcdefghijklm");
@@ -1068,6 +1070,7 @@ mod tests {
             None,
             view,
             false,
+            &mut tested(),
         )?
         .text()?;
         assert_eq!(text.lines().next(), Some("abc世"));
@@ -1092,7 +1095,7 @@ mod tests {
                 wrapped: flags & 8 != 0,
                 ..CaptureView::default()
             };
-            let got = super::pane(&pane, run, None, view, false)?;
+            let got = super::pane(&pane, run, None, view, false, &mut tested())?;
             let styled = view.styles || view.marks;
             let actual: Vec<(String, u32)> = got
                 .lines
@@ -1156,7 +1159,7 @@ mod tests {
             ..CaptureView::default()
         };
         let run = fux_wire::command::Run::now().ok_or("a clock")?;
-        let got = super::pane(&pane, run, None, marks, false)?;
+        let got = super::pane(&pane, run, None, marks, false, &mut tested())?;
         assert_eq!(got.text()?, "x\u{0600} ");
         assert_eq!(
             got.lines
@@ -1185,7 +1188,7 @@ mod tests {
             ..CaptureView::default()
         };
         let run = fux_wire::command::Run::now().ok_or("a clock")?;
-        let got = super::pane(&pane, run, None, marks, false)?;
+        let got = super::pane(&pane, run, None, marks, false, &mut tested())?;
         let colour = |n| fux_vt::Attributes::new(fux_vt::Color::Idx(n), fux_vt::Color::Default);
         assert_eq!(got.styles, (0..20).map(colour).collect::<Vec<_>>());
         let line = got.lines.first().ok_or("a line")?;
@@ -1224,7 +1227,7 @@ mod tests {
     #[test]
     fn a_capture_reads_back_as_written() -> Result<(), Box<dyn std::error::Error>> {
         use fux_wire::json::Json;
-        use fux_wire::wire::{Reader, encode};
+        use fux_wire::wire::{decode, encode};
         let mut pane = pane(3, 20, 0)?;
         pane.output(b"\x1b[1;4:3;5;38;2;1;2;3;48;5;9;58;5;2mstyled\x1b[m plain");
         let view = CaptureView {
@@ -1233,18 +1236,19 @@ mod tests {
         };
         let run = fux_wire::command::Run::now().ok_or("a clock")?;
         let body = fux_wire::protocol::Body::Capture(Box::new(super::pane(
-            &pane, run, None, view, false,
+            &pane,
+            run,
+            None,
+            view,
+            false,
+            &mut tested(),
         )?));
         assert_eq!(
-            Reader::new(&encode(&body).unwrap_or_default()).whole::<fux_wire::protocol::Body>()?,
+            decode::<fux_wire::protocol::Body>(&encode(&body).unwrap_or_default())?,
             body
         );
         let deep = (0..40).fold(Json::Null, |inner, _| Json::Array(vec![inner]));
-        assert!(
-            Reader::new(&encode(&deep).unwrap_or_default())
-                .whole::<Json>()
-                .is_err()
-        );
+        assert!(decode::<Json>(&encode(&deep).unwrap_or_default()).is_err());
         Ok(())
     }
 
@@ -1270,6 +1274,7 @@ mod tests {
             view,
             false,
             5,
+            &mut tested(),
         )?
         .text()?;
         assert_eq!(text, "hello");
@@ -1282,6 +1287,7 @@ mod tests {
             None,
             view,
             false,
+            &mut tested(),
         )?
         .text()?;
         assert_eq!(text, "step 1");

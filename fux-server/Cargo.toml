@@ -24,6 +24,7 @@ checks = ["fux-vt/checks"]
 fux-vt = { path = "../fux-vt", version = "0.15.0" }
 fux-wire = { path = "../fux-wire", version = "0.36.0" }
 fuxix = { path = "../fuxix", version = "0.8.0" }
+fuxth-core = { path = "../fuxth/core", version = "0.7.0" }
 
 # The tests run programs against a session as its clients do: through
 # fux's own fuxth vocabulary, which only a test build links.

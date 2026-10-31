@@ -15,7 +15,7 @@ use crate::code::Code;
 use crate::command::{AnyRef, Request};
 use crate::id::{ClientId, PaneId};
 use crate::json::Json;
-use crate::wire::{Wire, wire};
+use crate::wire::{Budget, Wire, wire};
 use fux_vt::bytes::ByteQueue;
 use std::borrow::Cow;
 
@@ -153,7 +153,8 @@ wire! {
 pub trait Frame<'a>: Sized {
     /// The frame that `kind` and `payload` make, or why they make none of
     /// these.
-    fn decode(kind: u8, payload: &'a [u8]) -> Result<Self, Error>;
+    /// What it makes is charged to `budget`.
+    fn decode(kind: u8, payload: &'a [u8], budget: &mut Budget) -> Result<Self, Error>;
 
     /// Writes the payload to `out`; the kind byte.
     fn write(&self, out: &mut Vec<u8>) -> u8;
@@ -202,16 +203,17 @@ fn put<'a>(frame: &impl Frame<'a>, out: &mut Vec<u8>) -> usize {
 trait Payload<'a>: Sized {
     /// Writes it as the frame's payload.
     fn put(&self, out: &mut Vec<u8>);
-    /// The value `payload` is, all of it.
-    fn get(payload: &'a [u8]) -> Result<Self, Error>;
+    /// The value `payload` is, all of it, what it makes charged to
+    /// `budget`.
+    fn get(payload: &'a [u8], budget: &mut Budget) -> Result<Self, Error>;
 }
 
 impl<T: Wire> Payload<'_> for T {
     fn put(&self, out: &mut Vec<u8>) {
         Wire::put(self, out);
     }
-    fn get(payload: &[u8]) -> Result<Self, Error> {
-        crate::wire::Reader::new(payload)
+    fn get(payload: &[u8], budget: &mut Budget) -> Result<Self, Error> {
+        crate::wire::Reader::new(payload, budget)
             .whole()
             .map_err(Error::Wire)
     }
@@ -221,7 +223,7 @@ impl<T: Wire> Payload<'_> for T {
 /// value on the wire is empty (`wire::Wire for Vec`).
 impl Payload<'_> for () {
     fn put(&self, _: &mut Vec<u8>) {}
-    fn get(payload: &[u8]) -> Result<Self, Error> {
+    fn get(payload: &[u8], _: &mut Budget) -> Result<Self, Error> {
         let trailing = Error::Wire(crate::wire::Error::Trailing);
         payload.is_empty().then_some(()).ok_or(trailing)
     }
@@ -231,7 +233,7 @@ impl<'a> Payload<'a> for Cow<'a, [u8]> {
     fn put(&self, out: &mut Vec<u8>) {
         out.extend_from_slice(self);
     }
-    fn get(payload: &'a [u8]) -> Result<Self, Error> {
+    fn get(payload: &'a [u8], _: &mut Budget) -> Result<Self, Error> {
         Ok(Cow::Borrowed(payload))
     }
 }
@@ -240,7 +242,7 @@ impl<'a> Payload<'a> for &'a str {
     fn put(&self, out: &mut Vec<u8>) {
         out.extend_from_slice(self.as_bytes());
     }
-    fn get(payload: &'a [u8]) -> Result<Self, Error> {
+    fn get(payload: &'a [u8], _: &mut Budget) -> Result<Self, Error> {
         std::str::from_utf8(payload).map_err(|_| Error::Wire(crate::wire::Error::NotUtf8))
     }
 }
@@ -251,8 +253,8 @@ impl<'a, T: Payload<'a>> Payload<'a> for (T,) {
     fn put(&self, out: &mut Vec<u8>) {
         self.0.put(out);
     }
-    fn get(payload: &'a [u8]) -> Result<Self, Error> {
-        T::get(payload).map(|field| (field,))
+    fn get(payload: &'a [u8], budget: &mut Budget) -> Result<Self, Error> {
+        T::get(payload, budget).map(|field| (field,))
     }
 }
 
@@ -283,10 +285,10 @@ macro_rules! frames {
 
         impl<'a> Frame<'a> for $ty $(<$a>)? {
             #[deny(unreachable_patterns)]
-            fn decode(kind: u8, payload: &'a [u8]) -> Result<Self, Error> {
+            fn decode(kind: u8, payload: &'a [u8], budget: &mut Budget) -> Result<Self, Error> {
                 match kind {
                     $($kind => {
-                        let ($($($p,)+)?): ($($($pt,)+)?) = Payload::get(payload)?;
+                        let ($($($p,)+)?): ($($($pt,)+)?) = Payload::get(payload, budget)?;
                         Ok(Self::$var $(($($p),+))?)
                     })*
                     other => Err(Error::UnexpectedKind(other)),
@@ -628,9 +630,9 @@ trait OneKind: Wire {
 }
 
 impl<T: OneKind> Frame<'_> for T {
-    fn decode(kind: u8, payload: &[u8]) -> Result<Self, Error> {
+    fn decode(kind: u8, payload: &[u8], budget: &mut Budget) -> Result<Self, Error> {
         match kind == T::KIND {
-            true => Payload::get(payload),
+            true => Payload::get(payload, budget),
             false => Err(Error::UnexpectedKind(kind)),
         }
     }
@@ -691,6 +693,23 @@ impl Decoder {
     /// frame that is oversized, malformed or not one of `F`, and the stream
     /// is then unusable.
     pub fn frame<'a, F: Frame<'a>>(&'a mut self) -> Result<Option<F>, Error> {
+        self.frame_in(&mut Budget::with_limit(crate::wire::MAX_ALLOCATED))
+    }
+
+    /// `frame`, what it makes charged to `budget`.
+    pub fn frame_in<'a, F: Frame<'a>>(
+        &'a mut self,
+        budget: &mut Budget,
+    ) -> Result<Option<F>, Error> {
+        match self.next()? {
+            Some((kind, payload)) => F::decode(kind, payload, budget).map(Some),
+            None => Ok(None),
+        }
+    }
+
+    /// The next whole frame's kind and payload, undecoded and lent from
+    /// the decoder; `Ok(None)` if more bytes are needed.
+    pub fn next(&mut self) -> Result<Option<(u8, &[u8])>, Error> {
         let Some(whole) = self.whole()? else {
             return Ok(None);
         };
@@ -700,7 +719,7 @@ impl Decoder {
             .get(4..)
             .and_then(<[u8]>::split_first)
             .unwrap_or((&0, &[]));
-        F::decode(*kind, payload).map(Some)
+        Ok(Some((*kind, payload)))
     }
 
     /// Bytes held: whole frames not yet taken, and a frame not yet
@@ -717,18 +736,18 @@ mod tests {
     #[test]
     fn observation_wait_requires_a_checked_limit() -> Result<(), Box<dyn std::error::Error>> {
         use crate::command::{AnyRef, Limit, Since, Wait};
-        use crate::wire::Reader;
+        use crate::wire::decode;
         let wait = Wait {
             since: Since::Now(AnyRef::Pane("%1".parse()?)),
             timeout: Limit::read(0)?,
         };
         let bytes = crate::wire::encode(&wait)?;
-        assert_eq!(Reader::new(&bytes).whole::<Wait>()?, wait);
+        assert_eq!(decode::<Wait>(&bytes)?, wait);
         let prefix = bytes.get(..bytes.len().saturating_sub(4)).ok_or("limit")?;
-        assert!(Reader::new(prefix).whole::<Wait>().is_err());
+        assert!(decode::<Wait>(prefix).is_err());
         let mut invalid = prefix.to_vec();
         invalid.extend_from_slice(&u32::MAX.to_be_bytes());
-        assert!(Reader::new(&invalid).whole::<Wait>().is_err());
+        assert!(decode::<Wait>(&invalid).is_err());
         Ok(())
     }
 

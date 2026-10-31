@@ -10,7 +10,14 @@ use fux_wire::wire::Budget;
 use fuxix::Allocation;
 
 impl Session {
-    pub(super) fn inspect(&self, scope: Scope, projection: Projection) -> Result<Body, Error> {
+    /// What it makes is charged to `budget`, the request's; a snapshot
+    /// also within `inspect::BYTES`, which a client decodes it within.
+    pub(super) fn inspect(
+        &self,
+        scope: Scope,
+        projection: Projection,
+        budget: &mut Budget,
+    ) -> Result<Body, Error> {
         if let Projection::Field(field) = &projection {
             let Scope::Target(target) = scope else {
                 return Err(super::fail(
@@ -24,9 +31,19 @@ impl Session {
                     "field name is too long",
                 ));
             }
-            return self.field(self.there(target)?, field);
+            return self.field(self.there(target)?, field, budget);
         }
-        let budget = &mut Budget::with_limit(inspect::BYTES);
+        budget.limited(inspect::BYTES, |budget| {
+            self.snapshot(scope, projection, budget)
+        })
+    }
+
+    fn snapshot(
+        &self,
+        scope: Scope,
+        projection: Projection,
+        budget: &mut Budget,
+    ) -> Result<Body, Error> {
         let target = match scope {
             Scope::All => None,
             Scope::Target(target) => Some(self.there(target)?),
@@ -311,7 +328,8 @@ mod tests {
         );
         assert!(flatten(&tree, &mut Budget::with_limit(0), &mut 0).is_err());
         let mut exhausted = inspect::NODES;
-        assert!(flatten(&tree, &mut Budget::new(), &mut exhausted).is_err());
+        let budget = &mut Budget::with_limit(fux_wire::wire::MAX_ALLOCATED);
+        assert!(flatten(&tree, budget, &mut exhausted).is_err());
         Ok(())
     }
 
@@ -320,7 +338,7 @@ mod tests {
         use std::os::unix::ffi::OsStrExt;
         let raw = std::ffi::OsStr::from_bytes(b"/a\xff/b");
         assert_eq!(
-            path(raw, &mut Budget::new())?,
+            path(raw, &mut Budget::with_limit(raw.len()))?,
             inspect::Path::Bytes(b"/a\xff/b".to_vec())
         );
         Ok(())

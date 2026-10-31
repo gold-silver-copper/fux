@@ -975,9 +975,12 @@ mod tests {
             from: None,
             timeout: Limit::read(5)?,
         };
-        let Begun::Waiting(mut waiting) =
-            session.begin(request, &Origin::Cli(Caller::default()), now)
-        else {
+        let Begun::Waiting(mut waiting) = session.begin(
+            request,
+            &Origin::Cli(Caller::default()),
+            &mut session.budget(),
+            now,
+        ) else {
             return Err("did not wait".into());
         };
         for _ in 0..BATCH_SCAN / 2 {
@@ -1123,9 +1126,12 @@ mod tests {
             from: None,
             timeout: Limit::read(5)?,
         };
-        let Begun::Waiting(mut waiting) =
-            session.begin(request, &Origin::Cli(Caller::default()), now)
-        else {
+        let Begun::Waiting(mut waiting) = session.begin(
+            request,
+            &Origin::Cli(Caller::default()),
+            &mut session.budget(),
+            now,
+        ) else {
             return Err("did not wait".into());
         };
         assert_eq!(
@@ -1160,6 +1166,7 @@ mod tests {
                     timeout: Limit::read(0)?
                 },
                 &Origin::Cli(Caller::default()),
+                &mut session.budget(),
                 now
             ),
             Begun::Done(_)

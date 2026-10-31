@@ -2104,7 +2104,7 @@ pub(crate) mod tests {
                 ..results.into()
             };
             let bytes = fux_wire::wire::encode(&reply)?;
-            let decoded = fux_wire::wire::Reader::new(&bytes).whole::<Reply>()?;
+            let decoded = fux_wire::wire::decode::<Reply>(&bytes)?;
             assert_eq!(decoded, reply);
             assert_eq!(decoded.end().code(), code);
             assert_eq!(
@@ -2163,7 +2163,7 @@ pub(crate) mod tests {
             ..super::Body::Capture(Box::new(capture)).into()
         };
         let bytes = fux_wire::wire::encode(&reply)?;
-        let reply = fux_wire::wire::Reader::new(&bytes).whole::<super::Reply>()?;
+        let reply = fux_wire::wire::decode::<super::Reply>(&bytes)?;
         let mut out = Vec::new();
         let result = held_reply(
             "%1 all-history styles capture let h h json dup len swap dup 0 8 slice print print list h h h h h h end json",
@@ -2276,7 +2276,8 @@ pub(crate) mod tests {
     fn blank_capture_lines_weigh_one_each() -> TestResult {
         let rows = 1000;
         let grid = fux_server::render::Grid::new(rows, 80)?;
-        let capture = fux_server::capture::client(fux_wire::id::ClientId::of(1), &grid)?;
+        let budget = &mut fux_wire::wire::Budget::with_limit(fux_wire::wire::MAX_ALLOCATED);
+        let capture = fux_server::capture::client(fux_wire::id::ClientId::of(1), &grid, budget)?;
         assert!(capture.lines.iter().all(|line| line.text.is_empty()));
         let answer = super::Answer::Capture(Box::new(capture));
         let value = super::Fux::Answer(fuxth::Shared::new(answer), None);
@@ -2707,7 +2708,7 @@ pub(crate) mod tests {
             run: Some(version.run),
             ..Body::Capture(Box::new(capture)).into()
         };
-        let reply = fux_wire::wire::Reader::new(&fux_wire::wire::encode(&reply)?).whole()?;
+        let reply = fux_wire::wire::decode(&fux_wire::wire::encode(&reply)?)?;
         let values = held_reply(
             "str c1 client capture let held held str client get held str screen_cursor get held str lines get first held str styles get first first str fg get",
             reply,
@@ -2863,15 +2864,14 @@ pub(crate) mod tests {
     fn every_observation_wait_encodes_its_clients_limit() -> TestResult {
         use super::*;
         use fux_wire::command::{AnyRef, Command, Request};
-        use fux_wire::wire::Reader;
+        use fux_wire::wire::decode;
         struct Record(Vec<u32>);
         impl Asks for Record {
             fn ask(&mut self, asked: &Asked) -> Result<Reply, Failed> {
                 let bytes = fux_wire::wire::encode(asked)
                     .map_err(|e| Failed::new(Code::Usage, e.to_string()))?;
-                let decoded: Asked = Reader::new(&bytes)
-                    .whole()
-                    .map_err(|e| Failed::new(Code::Usage, e.to_string()))?;
+                let decoded: Asked =
+                    decode(&bytes).map_err(|e| Failed::new(Code::Usage, e.to_string()))?;
                 if let Request::Wait(wait) = decoded.request {
                     self.0.push(wait.timeout.seconds());
                     Err(Failed::new(Code::NoServer, "recorded"))

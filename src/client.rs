@@ -313,7 +313,7 @@ impl Requests {
                             .map_err(fux_wire::protocol::Error::Wire)?;
                     }
                     ToCommand::PartsEnd => {
-                        let reply = fux_wire::wire::Reader::new(&parts).whole::<Reply>();
+                        let reply = fux_wire::wire::decode::<Reply>(&parts);
                         return Ok(reply.map_err(fux_wire::protocol::Error::Wire)?);
                     }
                     ToCommand::Exit(reason) => return Err(Error::Refused(reason.to_owned())),

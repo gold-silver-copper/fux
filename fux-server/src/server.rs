@@ -14,9 +14,10 @@ use fux_wire::code::Code;
 use fux_wire::id::{ClientId, PaneId};
 use fux_wire::layout::Placement;
 use fux_wire::protocol::{
-    Asked, Attach, AttachedFrame, Context, Decoder, Frame, Greeting, Hello, Mismatch, Reply, Role,
-    ToAttached, ToCommand, split_into,
+    Asked, Attach, AttachedFrame, Context, Decoder, Fence, Frame, Greeting, Hello, Mismatch, Reply,
+    Role, ToAttached, ToCommand, split_into,
 };
+use fux_wire::wire::Budget;
 use fuxix::Errno;
 use fuxix::poll::{Events as PollFlags, PollFd};
 use std::fs;
@@ -164,9 +165,10 @@ enum Stage {
     /// (`Conn::reads`): a client that never reads its answers is read no
     /// more, and holds no more memory than one answer.
     Command,
-    /// One decoded request awaiting its source attachment's sent prefix.
-    /// Bounded like a wait: one request per command connection.
-    Blocked(Box<Asked>),
+    /// A request awaiting its source attachment's sent prefix, kept as its
+    /// frame (`MAX_FRAME` at most), and decoded again once it runs: one
+    /// request per command connection.
+    Blocked(Box<Blocked>),
     /// Its request waits for its pane (`wait`, or a respawn under way): it
     /// is answered once the wait has an answer. It is read only to notice
     /// the client go.
@@ -177,6 +179,13 @@ enum Stage {
     Closing,
     /// It failed or hung up: it closes at the end of the tick.
     Dead,
+}
+
+/// A request's frame, kept till its source's earlier frames are processed.
+struct Blocked {
+    after: Fence,
+    kind: u8,
+    frame: Vec<u8>,
 }
 
 impl Stage {
@@ -438,9 +447,10 @@ impl Conn {
         }
     }
 
-    /// Answers a request with its outcome, encoded once and sent in pieces
-    /// as long as fit, then their end; and takes the next.
-    fn answer(&mut self, session: &mut Session, mut reply: Reply, now: Instant) {
+    /// Answers a request with its outcome, encoded once in the request's
+    /// region and sent in pieces as long as fit, then their end; and takes
+    /// the next.
+    fn answer(&mut self, session: &mut Session, mut reply: Reply, budget: &Budget, now: Instant) {
         reply.run = Some(session.run);
         const REFUSED: &str = "finite reply exceeds its byte or allocation limit";
         // Keep the fixed failure frame available before trying the reply.
@@ -452,10 +462,11 @@ impl Conn {
             self.enter(session, Stage::Dead, now);
             return;
         }
-        let Ok(bytes) = fux_wire::wire::encode(&reply) else {
+        let Ok(bytes) = crate::request::encoded(&reply, budget) else {
             self.end(session, &ToCommand::Exit(REFUSED), now);
             return;
         };
+        drop(reply);
         // Include every Part header and PartsEnd, before queuing any of it.
         let headers = bytes
             .len()
@@ -482,6 +493,18 @@ impl Conn {
         self.send(session, &ToCommand::PartsEnd, now);
         if self.stage.asked() {
             self.enter(session, Stage::Command, now);
+        }
+    }
+
+    /// Answers with `reply`, in a region of its own: a wait's answer, or
+    /// a refusal made before its request's region.
+    fn reply(&mut self, session: &mut Session, reply: Reply, now: Instant) {
+        match session.requests.open() {
+            Ok(budget) => self.answer(session, reply, &budget, now),
+            Err(refused) => {
+                let why = crate::request::refused(refused);
+                self.end(session, &ToCommand::Exit(&why), now);
+            }
         }
     }
 
@@ -534,6 +557,13 @@ impl Conn {
         let painted = written.saturating_sub(ahead);
         self.paint = (ahead.saturating_sub(written), paint.saturating_sub(painted));
     }
+}
+
+/// A budget for a frame being read, in a request's region carved for it;
+/// one the server can't carve is refused as too large to read.
+fn opened(session: &Session) -> Result<Budget, fux_wire::protocol::Error> {
+    (session.requests.open())
+        .map_err(|_| fux_wire::protocol::Error::Wire(fux_wire::wire::Error::Limit))
 }
 
 pub struct Server {
@@ -814,7 +844,7 @@ impl Server {
                 continue;
             };
             if let Some(outcome) = waiting.answer(&self.session, now) {
-                conn.answer(&mut self.session, outcome, now);
+                conn.reply(&mut self.session, outcome, now);
                 answered = true;
             }
         }
@@ -838,8 +868,8 @@ impl Server {
             .iter()
             .map(|conn| {
                 conn.frame_waits()
-                    || matches!(&conn.stage, Stage::Blocked(asked)
-                if !matches!(self.unprocessed(asked), Some(1..)))
+                    || matches!(&conn.stage, Stage::Blocked(blocked)
+                if !matches!(self.unprocessed(Some(&blocked.after)), Some(1..)))
             })
             .collect();
         let slots = &mut self.slots;
@@ -929,7 +959,7 @@ impl Server {
                 && let Waiting::Events(read) = &**waiting
             {
                 let reply = read.stopped(&self.session, &reason);
-                conn.answer(&mut self.session, reply, now);
+                conn.reply(&mut self.session, reply, now);
             }
         }
         self.session.shutdown(now);
@@ -1212,12 +1242,17 @@ impl Server {
             self.read_conn(index, now);
         }
         let eligible = self.conns.get(index).is_some_and(|conn| {
-            matches!(&conn.stage, Stage::Blocked(asked) if !matches!(self.unprocessed(asked), Some(1..)))
+            matches!(&conn.stage, Stage::Blocked(blocked) if !matches!(self.unprocessed(Some(&blocked.after)), Some(1..)))
         });
         if eligible && let Some(conn) = self.conns.get_mut(index) {
             let stage = mem::replace(&mut conn.stage, Stage::Command);
-            if let Stage::Blocked(asked) = stage {
-                self.ordered_request(index, *asked, now);
+            if let Stage::Blocked(blocked) = stage
+                && let Err(error) = self.command(index, blocked.kind, &blocked.frame, now)
+            {
+                log!("a blocked request no longer decodes: {error}");
+                if let Some(conn) = self.conns.get_mut(index) {
+                    conn.enter(&mut self.session, Stage::Dead, now);
+                }
             }
         }
     }
@@ -1295,7 +1330,7 @@ impl Server {
         };
         match &mut conn.stage {
             Stage::Hello => {
-                let Some(hello) = decoder.frame::<Hello>()? else {
+                let Some(hello) = decoder.frame_in::<Hello>(&mut opened(session)?)? else {
                     return Ok(false);
                 };
                 let ours = Hello::ours(hello.role);
@@ -1319,13 +1354,14 @@ impl Server {
                 }
             }
             &mut Stage::Attaching(kind) => {
-                let Some(attach) = decoder.frame::<Attach>()? else {
+                let budget = &mut opened(session)?;
+                let Some(attach) = decoder.frame_in::<Attach>(budget)? else {
                     return Ok(false);
                 };
                 conn.attach(session, kind, attach, now);
             }
             Stage::Attached(attached) => {
-                match decoder.frame()? {
+                match decoder.frame_in(&mut opened(session)?)? {
                     Some(AttachedFrame::Act(act)) => attached.act(session, *act, now),
                     // The client's terminal was resized, which may have moved
                     // what it shows even if the size it ends at is the same:
@@ -1368,10 +1404,10 @@ impl Server {
             // The last answer is still being written: the next request waits.
             Stage::Command if !conn.out.is_empty() => return Ok(false),
             Stage::Command => {
-                let Some(asked) = decoder.frame()? else {
+                let Some((kind, payload)) = decoder.next()? else {
                     return Ok(false);
                 };
-                self.ordered_request(index, asked, now);
+                self.command(index, kind, payload, now)?;
             }
             // Nothing more is asked of a waiting command. A
             // connection that is ending has had its last word: what came
@@ -1387,8 +1423,8 @@ impl Server {
 
     /// How many attached frames the source has yet to process: zero with
     /// no fence, or None if the source is not attached in this server run.
-    fn unprocessed(&self, asked: &Asked) -> Option<u64> {
-        let Some(fence) = &asked.after else {
+    fn unprocessed(&self, after: Option<&Fence>) -> Option<u64> {
+        let Some(fence) = after else {
             return Some(0);
         };
         if fence.run != self.session.run {
@@ -1403,9 +1439,51 @@ impl Server {
         })
     }
 
+    /// A command client's request, `kind` and `payload` its frame's:
+    /// decoded in a region carved for it, then begun in order
+    /// (`ordered_request`). One its region can't hold is refused, out loud;
+    /// a frame that is no request ends the connection.
+    fn command(
+        &mut self,
+        index: usize,
+        kind: u8,
+        payload: &[u8],
+        now: Instant,
+    ) -> Result<(), fux_wire::protocol::Error> {
+        let mut budget = opened(&self.session)?;
+        let asked = match Asked::decode(kind, payload, &mut budget) {
+            Err(fux_wire::protocol::Error::Wire(fux_wire::wire::Error::Limit)) => {
+                // Its answer is made in a region of its own, as what the
+                // decode made is held in this one till it drops.
+                drop(budget);
+                let each = self.session.requests.each();
+                let why = format!("the request exceeds the {each} bytes a request may hold");
+                if let Some(conn) = self.conns.get_mut(index) {
+                    conn.reply(
+                        &mut self.session,
+                        Reply::failed(Code::from(fux_wire::code::Raise::TooLong), why),
+                        now,
+                    );
+                }
+                return Ok(());
+            }
+            decoded => decoded?,
+        };
+        self.ordered_request(index, asked, (kind, payload), budget, now);
+        Ok(())
+    }
+
     /// Begins only after the source's earlier attached frames were
     /// processed. No resolution, mutation or wait baseline precedes this.
-    fn ordered_request(&mut self, index: usize, asked: Asked, now: Instant) {
+    /// One that waits for them keeps only its frame, `kind` and `payload`.
+    fn ordered_request(
+        &mut self,
+        index: usize,
+        asked: Asked,
+        (kind, payload): (u8, &[u8]),
+        budget: Budget,
+        now: Instant,
+    ) {
         // Send older output and any mode endings its detaches produce first.
         // Each repeat requires another client to detach.
         while self
@@ -1416,26 +1494,32 @@ impl Server {
         {
             let _ = self.send_frames(now);
         }
-        match self.unprocessed(&asked) {
-            Some(0) => self.request(
+        match (self.unprocessed(asked.after.as_ref()), asked.after) {
+            (Some(0), after) => self.request(
                 index,
                 asked.request,
                 asked.context,
-                asked.after.map(|fence| fence.client),
+                (after.map(|fence| fence.client), budget),
                 now,
             ),
-            Some(_) => {
+            (Some(_), Some(after)) => {
+                drop((asked, budget));
+                let blocked = Blocked {
+                    after,
+                    kind,
+                    frame: payload.to_vec(),
+                };
                 if let Some(conn) = self.conns.get_mut(index) {
-                    conn.enter(&mut self.session, Stage::Blocked(Box::new(asked)), now);
+                    conn.enter(&mut self.session, Stage::Blocked(Box::new(blocked)), now);
                 }
             }
-            None => {
+            (Some(_) | None, _) => {
                 if let Some(conn) = self.conns.get_mut(index) {
                     let reply = Reply::failed(
                         Code::NoClient,
                         "the job's source is not attached in this server run",
                     );
-                    conn.answer(&mut self.session, reply, now);
+                    conn.answer(&mut self.session, reply, &budget, now);
                 }
             }
         }
@@ -1447,7 +1531,7 @@ impl Server {
         index: usize,
         request: fux_wire::command::Request,
         context: Context,
-        source: Option<ClientId>,
+        (source, mut budget): (Option<ClientId>, Budget),
         now: Instant,
     ) {
         let session = &mut self.session;
@@ -1455,7 +1539,8 @@ impl Server {
             return;
         };
         if let Err(error) = session.check_run(context.of) {
-            conn.answer(session, Reply::failed(error.code(), error.to_string()), now);
+            let reply = Reply::failed(error.code(), error.to_string());
+            conn.answer(session, reply, &budget, now);
             return;
         }
         let Context {
@@ -1487,13 +1572,13 @@ impl Server {
         let origin = match client {
             Some(c) if !session.views.contains_key(&c) => {
                 let outcome = Reply::failed(Code::NoClient, format!("no client {c}"));
-                conn.answer(session, outcome, now);
+                conn.answer(session, outcome, &budget, now);
                 return;
             }
             Some(client) => Origin::ClientContext { client, actor },
             None => cli,
         };
-        let begun = self.session.begin(request, &origin, now);
+        let begun = self.session.begin(request, &origin, &mut budget, now);
         // A program or keys that detach their recipient fail the request;
         // conversation sent while settling preserves its actual outcome.
         let refused = self.send_frames(now);
@@ -1503,9 +1588,10 @@ impl Server {
         };
         match (refused.first(), begun) {
             (Some(no), _) => {
-                conn.answer(session, Reply::failed(Code::NoClient, no.to_string()), now)
+                let reply = Reply::failed(Code::NoClient, no.to_string());
+                conn.answer(session, reply, &budget, now)
             }
-            (None, Begun::Done(outcome)) => conn.answer(session, outcome, now),
+            (None, Begun::Done(outcome)) => conn.answer(session, outcome, &budget, now),
             (None, Begun::Waiting(waiting)) => conn.enter(session, Stage::Waiting(waiting), now),
         }
     }
@@ -1636,6 +1722,21 @@ impl Server {
 mod tests {
     use super::*;
 
+    impl Server {
+        /// `asked`, sent by connection `index` as its client sends it: a
+        /// request's frame, decoded in the region carved for it.
+        fn ask(&mut self, index: usize, asked: Asked, now: Instant) {
+            let frame = asked.encode().unwrap_or_default();
+            let (kind, payload) = frame
+                .get(4..)
+                .and_then(<[u8]>::split_first)
+                .unwrap_or((&0, &[]));
+            if let Err(error) = self.command(index, *kind, payload, now) {
+                log!("a test's request is no request: {error}");
+            }
+        }
+    }
+
     #[test]
     fn delivery_departures_answer_event_reads_in_the_same_turn()
     -> Result<(), Box<dyn std::error::Error>> {
@@ -1733,7 +1834,7 @@ mod tests {
         let Some(ToCommand::Part(part)) = decoder.frame()? else {
             return Err("wait was not answered".into());
         };
-        let reply = fux_wire::wire::Reader::new(&part).whole::<Reply>()?;
+        let reply = fux_wire::wire::decode::<Reply>(&part)?;
         assert!(
             matches!(
                 reply.response,
@@ -1780,7 +1881,7 @@ mod tests {
         let (mut session, mut conn, _peer) = attached(Instant::now())?;
         conn.stage = Stage::Command;
         let text: String = std::iter::repeat_n('x', fux_wire::wire::MAX_REPLY).collect();
-        conn.answer(
+        conn.reply(
             &mut session,
             fux_wire::protocol::Body::Field(fux_wire::json::Json::str(text)).into(),
             Instant::now(),
@@ -2290,7 +2391,7 @@ mod tests {
                     assert!(!server.conns.get(2).ok_or("unrelated")?.out.is_empty());
                 }
             }
-            while matches!(server.unprocessed(&asked), Some(1..)) {
+            while matches!(server.unprocessed(asked.after.as_ref()), Some(1..)) {
                 server.serve_conn(0, PollFlags::IN, Instant::now());
                 let before = server
                     .conns
@@ -2338,7 +2439,7 @@ mod tests {
     #[test]
     fn a_fence_only_names_its_original_server() -> Result<(), Box<dyn std::error::Error>> {
         let (mut server, _peers, client) = ordered_fixture()?;
-        server.ordered_request(
+        server.ask(
             0,
             key_request("1-2".parse().map_err(|()| "test run")?, client, 0),
             Instant::now(),
@@ -2365,7 +2466,7 @@ mod tests {
     fn a_blocked_job_ends_with_its_command_or_source() -> Result<(), Box<dyn std::error::Error>> {
         for ending in ["cancel", "eof", "detach"] {
             let (mut server, peers, client) = ordered_fixture()?;
-            server.ordered_request(
+            server.ask(
                 0,
                 key_request(server.session.run, client, 1000),
                 Instant::now(),
@@ -2411,7 +2512,7 @@ mod tests {
                 let Some(ToCommand::Part(part)) = decoder.frame()? else {
                     return Err("no refusal".into());
                 };
-                let reply = fux_wire::wire::Reader::new(&part).whole::<Reply>()?;
+                let reply = fux_wire::wire::decode::<Reply>(&part)?;
                 assert!(matches!(
                     reply.end(),
                     fux_wire::protocol::End::Failed {
@@ -2620,7 +2721,7 @@ mod tests {
                 }
                 .into(),
                 Context::default(),
-                None,
+                (None, server.session.budget()),
                 Instant::now(),
             );
             let why = format!("{client} was detached: {OUT_MAX} bytes waited unwritten for it");
@@ -2635,7 +2736,7 @@ mod tests {
             let Some(ToCommand::Part(part)) = decoder.frame()? else {
                 return Err("sender was not answered".into());
             };
-            let reply = fux_wire::wire::Reader::new(&part).whole::<Reply>()?;
+            let reply = fux_wire::wire::decode::<Reply>(&part)?;
             assert_eq!(reply.response, Reply::failed(Code::NoClient, why).response);
             assert_eq!(decoder.frame()?, Some(ToCommand::PartsEnd));
             assert!(decoder.frame::<ToCommand>()?.is_none());
@@ -2672,7 +2773,7 @@ mod tests {
                 }
                 .into();
             }
-            server.ordered_request(0, asked, Instant::now());
+            server.ask(0, asked, Instant::now());
             assert!(!server.session.views.contains_key(&source));
             assert!(!server.session.views.get(&other).ok_or("other")?.zoom);
             let pane = server
@@ -2687,7 +2788,7 @@ mod tests {
             let Some(ToCommand::Part(part)) = decoder.frame()? else {
                 return Err("sender was not answered".into());
             };
-            let reply = fux_wire::wire::Reader::new(&part).whole::<Reply>()?;
+            let reply = fux_wire::wire::decode::<Reply>(&part)?;
             assert_eq!(reply.end().code(), Some(Code::NoClient));
         }
         Ok(())
@@ -2723,7 +2824,7 @@ mod tests {
                     timeout,
                 })
             };
-            server.ordered_request(
+            server.ask(
                 0,
                 Asked {
                     after: None,
@@ -2745,7 +2846,7 @@ mod tests {
             let Some(ToCommand::Part(part)) = decoder.frame()? else {
                 return Err("sender was not answered".into());
             };
-            let reply = fux_wire::wire::Reader::new(&part).whole::<Reply>()?;
+            let reply = fux_wire::wire::decode::<Reply>(&part)?;
             assert_eq!(reply.end().code(), Some(Code::NoClient));
         }
         Ok(())
@@ -2784,7 +2885,7 @@ mod tests {
             }
             .into(),
             Context::default(),
-            None,
+            (None, server.session.budget()),
             now,
         );
         assert!(!server.session.views.contains_key(&client));
@@ -2820,7 +2921,7 @@ mod tests {
         let Some(ToCommand::Part(part)) = decoder.frame()? else {
             return Err("sender was not answered".into());
         };
-        let reply = fux_wire::wire::Reader::new(&part).whole::<Reply>()?;
+        let reply = fux_wire::wire::decode::<Reply>(&part)?;
         assert_eq!(
             reply.response,
             fux_wire::protocol::Response::Answered(fux_wire::answer::PaneResults::One(
@@ -2859,7 +2960,7 @@ mod tests {
                 client,
                 ToAttached::Paint(b"\x1b]52;c;YQ==\x07".as_slice().into()),
             ));
-            server.ordered_request(
+            server.ask(
                 0,
                 Asked {
                     after: None,
@@ -2878,7 +2979,7 @@ mod tests {
             let Some(ToCommand::Part(part)) = decoder.frame()? else {
                 return Err("sender was not answered".into());
             };
-            let reply = fux_wire::wire::Reader::new(&part).whole::<Reply>()?;
+            let reply = fux_wire::wire::decode::<Reply>(&part)?;
             assert_eq!(
                 reply.response,
                 fux_wire::protocol::Response::Returned(fux_wire::protocol::Body::Found(
