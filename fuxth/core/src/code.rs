@@ -121,3 +121,15 @@ impl Failure {
         }
     }
 }
+
+/// A region that can't hold what a run asks: `too_long`, as any bound a
+/// program reaches.
+impl From<crate::Refused> for Failure {
+    #[cold]
+    fn from(refused: crate::Refused) -> Self {
+        Self::new(
+            Code::TooLong,
+            format!("the run's memory is past its region: {refused}"),
+        )
+    }
+}

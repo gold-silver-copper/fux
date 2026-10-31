@@ -11,7 +11,7 @@ mod region;
 
 pub use bounded::{Bounded, BoundedString, BoundedVec};
 pub use code::{Code, Failure};
-pub use grant::{Grant, Render};
+pub use grant::Grant;
 pub use region::{Refused, Region, Reservation};
 
 /// The most elements one string or list a program builds may hold.

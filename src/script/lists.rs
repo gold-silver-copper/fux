@@ -67,7 +67,9 @@ fn records(path: &str, value: &Value<Fux>, out: &mut Vec<String>) {
             let fields: Vec<(String, Value<Fux>)> = held(answer)
                 .into_iter()
                 .filter_map(|name| {
-                    let value = record::answer_field(answer, *run, &name).ok()?;
+                    let value =
+                        record::answer_field(answer, *run, &name, &fuxth::Region::new(usize::MAX))
+                            .ok()?;
                     Some((name, value))
                 })
                 .collect();
@@ -172,7 +174,8 @@ fn records_list_is_current() -> Result<(), Box<dyn std::error::Error>> {
         for (recipe, observed) in recipes.zip(observed) {
             recipe.observed_cwd = observed;
         }
-        let snapshot = record::snapshot(*s).map_err(|e| e.message)?;
+        let snapshot =
+            record::snapshot(*s, &fuxth::Region::new(usize::MAX)).map_err(|e| e.message)?;
         records(&format!("snapshot.{name}"), &snapshot, &mut lines);
     }
     let held = [
@@ -222,11 +225,11 @@ fn records_list_is_current() -> Result<(), Box<dyn std::error::Error>> {
     let status = crate::status(&socket, &probe)?;
     records(
         "status",
-        &record::from_json(&status).map_err(|e| e.message)?,
+        &record::from_json(&status, &fuxth::Region::new(usize::MAX)).map_err(|e| e.message)?,
         &mut lines,
     );
     let batch = fux_server::journal::every_kind_read(run)?;
-    let imports = fuxth::Imports::new(fux_wire::inspect::BYTES);
+    let imports = fuxth::Region::new(fux_wire::inspect::BYTES);
     let events = record::events(batch, &imports).map_err(|e| e.message)?;
     records("events", &events, &mut lines);
     lines.sort();

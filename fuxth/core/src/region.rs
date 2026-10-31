@@ -69,16 +69,33 @@ impl Region {
         self.0.budget
     }
 
+    /// Whether `other` is this same budget: a clone of it, not one alike.
+    pub fn same(&self, other: &Region) -> bool {
+        Rc::ptr_eq(&self.0, &other.0)
+    }
+
     /// Bytes not yet reserved.
     pub fn remaining(&self) -> usize {
         self.0.left.remaining()
     }
 
+    /// Refused, with nothing reserved, unless it has `bytes` left: what a
+    /// value of several stores takes in all, checked before any is made.
+    pub fn admits(&self, bytes: usize) -> Result<(), Refused> {
+        match bytes <= self.remaining() {
+            true => Ok(()),
+            false => Err(self.full(bytes)),
+        }
+    }
+
     /// `bytes` held from this region until the reservation drops.
+    #[inline]
     pub fn reserve(&self, bytes: usize) -> Result<Reservation, Refused> {
-        let mut held = self.nothing();
-        held.resize(bytes)?;
-        Ok(held)
+        self.0.left.charge(bytes).map_err(|_| self.full(bytes))?;
+        Ok(Reservation {
+            region: self.clone(),
+            bytes,
+        })
     }
 
     /// A reservation holding nothing yet.
@@ -89,6 +106,7 @@ impl Region {
         }
     }
 
+    #[cold]
     fn full(&self, asked: usize) -> Refused {
         Refused::Full {
             asked,

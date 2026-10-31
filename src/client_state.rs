@@ -271,7 +271,7 @@ mod tests {
     #[test]
     fn local_settings_keep_the_checked_value_union_and_inner_validators() -> TestResult {
         let list = |words: &[&str]| {
-            fuxth::List::new(words.iter().map(|w| Value::str(*w)).collect())
+            crate::script::test_list(words.iter().map(|w| crate::script::test_str(*w)).collect())
                 .map(|l| Value::List(fuxth::Shared::new(l)))
                 .ok_or_else(|| "list".to_owned())
         };
@@ -295,17 +295,17 @@ mod tests {
             ("picture-bytes", Value::Int(100663297)),
             ("escape-delay-ms", Value::Int(-1)),
             ("paste-timeout-ms", Value::Int(65536)),
-            ("cell-placement", Value::str("cells")),
+            ("cell-placement", crate::script::test_str("cells")),
             ("history-bytes", Value::Int(-1)),
             ("history-bytes", Value::Int((1 << 30) + 1)),
             ("wait-seconds", Value::Int(86_401)),
             ("wait-seconds", Value::Int(-1)),
             ("bell", Value::Int(0)),
-            ("bell", Value::str("off")),
+            ("bell", crate::script::test_str("off")),
             ("shell", list(&[])?),
             ("shell", list(&[""])?),
             ("shell", list(&["/bin/sh", "a\0b"])?),
-            ("shell", Value::str("/bin/sh")),
+            ("shell", crate::script::test_str("/bin/sh")),
             ("copy-environment", list(&["BAD-NAME"])?),
             ("copy-environment", list(&["FUX_PANE"])?),
             ("copy-environment", list(&["FUX_SOCKET"])?),

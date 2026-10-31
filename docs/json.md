@@ -155,8 +155,9 @@ the byte/allocation grant rather than one entity node per byte or item. Client p
 the native schema for plain rendering and shares immutable records on clone.
 The tighter language limits still apply, including 1,000,000 characters per
 string and 16,000,000 expanded elements per list/run. Opaque values charge
-expanded traversal; imports also share the live-storage grant above. Constructed strings
-and lists charge the run’s construction grant; repeated shared values count again. A too-large observation fails `too_long`, never truncates or
+expanded traversal. Its strings and lists are made in the run's region (`fux help
+limits`), and its records hold their fields there as they are admitted; repeated shared
+values count again. A too-large observation fails `too_long`, never truncates or
 combines multiple turns. Narrower scopes are separate observations.
 
 A tab's `host` is the terminal client supplying its panes' capability answers,
@@ -223,11 +224,11 @@ wide glyph at either column boundary leaves a blank in the selected half.
 `{"client":"c1","screen_rows":24,"screen_cols":80,"screen_cursor":[ROW,COL],"lines":["…"]}`.
 
 Finite observations have hard limits: 32 MiB of wire bytes and a 128 MiB
-allocation grant for construction, decoding, or client rendering. Client JSON
-serialization charges the retained input and output together, and writes capture
-runs directly without constructing a second JSON object graph. Plain text uses
-one grant for the entire value too: nested lists stream their captures and other
-answers into one admitted output, including formatter workspace and text imports.
+allocation grant for construction or decoding. In the client, the run's region
+holds what renders one: its JSON and its plain text are counted, then made in
+exactly their room beside the retained input, and JSON writes capture runs
+directly without constructing a second JSON object graph. Nested lists stream
+their captures and other answers into one output, including formatter workspace.
 Shared references are conservatively charged at each occurrence.
 Builders charge capacity before reserving, including the old and new
 blocks during growth. Captures admit selected cell work before traversal,
@@ -313,11 +314,10 @@ is exactly the consumed journal prefix, including filtered entries. It can
 advance with no matching events. Each event also has its own continuation
 `next`. A count of matches is never a cursor. In fuxth, subject and origin
 handles retain their server run; JSON renders them as short IDs for display.
-The cursor and buffer ID remain run-qualified when exported as text. A run
-reserves a batch's record from its allocation grant before building it:
-1 KiB, plus 8 KiB per event, plus a `stopped` reason's text. Admission then
-trims the reservation to the record's exact storage, so a nearly full grant
-can refuse a batch whose exact record would still fit.
+The cursor and buffer ID remain run-qualified when exported as text. A batch's
+record is built within 1 KiB, plus 8 KiB per event, plus a `stopped` reason's
+text, and its strings and lists are made in the run's region as it is built:
+a region with room for the exact record admits it.
 
 `SECONDS` is an explicit 0 to 86,400 second timeout. With nothing to scan,
 the connection waits until a matching change, loss, closure, shutdown,
