@@ -701,7 +701,7 @@ fn drive(
         .process_group(0)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
+        .stderr(std::fs::File::create(place.own.join("sh.err")).map_err(e)?)
         .spawn()
         .map_err(e)?;
     let deadline = started.checked_add(cassette.timeout).unwrap_or(started);
@@ -737,12 +737,18 @@ fn drive(
             )
         };
         let Ok(status) = read("status") else {
-            if !finished {
-                problems.push(format!(
+            problems.push(if finished {
+                let said = read_file(&place.own.join("sh.err"), OUTPUT_BYTES, "sh's stderr");
+                format!(
+                    "its shell ended in step {n}: {}",
+                    said.unwrap_or_default().trim()
+                )
+            } else {
+                format!(
                     "timed out in step {n}, past its {}s",
                     cassette.timeout.as_secs()
-                ));
-            }
+                )
+            });
             break;
         };
         ran.push(Ran {
@@ -753,8 +759,13 @@ fn drive(
             out: read("out")?,
             err: read("err")?,
         });
-        snapshots
-            .push(Snapshot::read(&read("snap")?).map_err(|why| format!("after step {n}: {why}"))?);
+        match Snapshot::read(&read("snap")?) {
+            Ok(snapshot) => snapshots.push(snapshot),
+            Err(why) => {
+                problems.push(format!("after step {n}, no fresh observation: {why}"));
+                break;
+            }
+        }
         let to: usize = read("calls")?.trim().parse().map_err(e)?;
         for line in log.get(from..to).unwrap_or_default().lines() {
             calls.push((n, Call::read(line)?));
@@ -1168,7 +1179,8 @@ struct Pane {
 
 impl Snapshot {
     fn read(text: &str) -> Result<Snapshot, String> {
-        let json = Json::read(text)?;
+        let shown = || text.trim().chars().take(300).collect::<String>();
+        let json = Json::read(text).map_err(|why| format!("{why}: {}", shown()))?;
         let field = |key| {
             json.get(key)
                 .map(Json::text)
