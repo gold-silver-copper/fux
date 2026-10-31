@@ -167,7 +167,7 @@ fn choosers_select_rename_and_close() -> Outcome {
     })?;
     // x closes it, after asking.
     client.keys(&format!("{PREFIX}tg"))?;
-    client.wait_for("Enter select")?;
+    client.wait_for("Enter y select")?;
     client.keys(&format!("{DOWN}{DOWN}x"))?;
     client.wait_for("close tab @3 renamed?")?;
     client.keys("y")?;

@@ -193,10 +193,6 @@ pub fn admit(
             }
             p.title = fux_wire::words::clean(&p.title);
         }
-        Open::Confirm(c) => {
-            check(&c.action, Vec::new())?;
-            c.question = fux_wire::words::clean(&c.question);
-        }
         Open::Copy => {}
     }
     Ok(open.into())

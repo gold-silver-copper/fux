@@ -322,7 +322,6 @@ mod tests {
             Some(Mode::Panel(Panel::Prompt { before, after, .. })) => {
                 format!("prompt {before}|{after}")
             }
-            Some(Mode::Panel(Panel::Confirm { question, .. })) => format!("confirm {question}"),
             Some(Mode::Copy(_)) => "copy".into(),
             None => "gone".into(),
         }
@@ -743,11 +742,15 @@ mod tests {
         let (mut s, c) = session()?;
         let long: String =
             std::iter::repeat_n("1 drop ", fux::screens::ACTION_MAX / 7 + 1).collect();
-        for (code, said) in [
-            ("nosuch", "no such word"),
-            (long.as_str(), "too_long: confirm: callback source"),
+        for (action, said) in [
+            ("str nosuch".to_owned(), "no such word"),
+            (format!("str '{long}'"), "too_long"),
+            (
+                "list empty str drop str drop end".to_owned(),
+                "a callback is",
+            ),
         ] {
-            let open = format!("me str sure? str '{code}' confirm");
+            let open = format!("me str sure? {action} confirm");
             let refused = output_as(&mut s, Some(c), &open).err().unwrap_or_default();
             assert!(refused.contains(said), "{refused}");
             assert_eq!(mode(&s, c), "normal");
@@ -757,13 +760,37 @@ mod tests {
         let refused = output_as(&mut s, Some(c), open).err().unwrap_or_default();
         assert!(refused.contains("bad_value"), "{refused}");
         assert_eq!(mode(&s, c), "normal");
-        output_as(
-            &mut s,
-            Some(c),
-            "me str sure? str '%1 str yes rename' confirm",
-        )?;
-        s.input(c, b"y");
-        assert!(output(&mut s, "ls listing")?.contains("%1 yes"));
+        Ok(())
+    }
+
+    /// A confirmation's one row, Yes, chosen by `y` or Enter, runs its
+    /// callback on the pane it captured; `n` and Escape cancel, and the
+    /// list's row actions, `r` and `x`, refuse its row: it is no pane, tab
+    /// or workspace.
+    #[test]
+    fn a_confirmation_runs_its_callback_by_y_or_enter_alone() -> Outcome {
+        let (mut s, c) = session()?;
+        let ask = "me str sure? list list %1 end str 'str yes rename' end confirm";
+        for key in ["n", "Escape", "r", "x"] {
+            output_as(&mut s, Some(c), ask)?;
+            assert_eq!(mode(&s, c), "list sure? 0");
+            match key {
+                "Escape" => escape(&mut s, c),
+                key => s.input(c, key.as_bytes()),
+            }
+            assert_eq!(mode(&s, c), "normal", "{key}: {}", notice(&s, c));
+            if ["r", "x"].contains(&key) {
+                let said = notice(&s, c);
+                assert!(said.contains("not a boolean"), "{key}: {said}");
+            }
+            assert_eq!(output(&mut s, "%1 str name get")?, "null\n", "{key}");
+        }
+        for key in ["y", "\r"] {
+            run(&mut s, "%1 str no rename")?;
+            output_as(&mut s, Some(c), ask)?;
+            s.input(c, key.as_bytes());
+            assert_eq!(output(&mut s, "%1 str name get")?, "yes\n", "{key:?}");
+        }
         Ok(())
     }
 
@@ -819,7 +846,7 @@ mod tests {
         assert_eq!(list.selected, 30);
         let title = list.title.clone();
         let text = screen_text(&s, c)?;
-        for shown in [title.as_str(), "▲", "▼", "Enter select"] {
+        for shown in [title.as_str(), "▲", "▼", "Enter y select"] {
             assert!(text.contains(shown), "{shown:?} in\n{text}");
         }
         Ok(())
@@ -1316,7 +1343,7 @@ mod tests {
             s.input(c, b"x");
             assert_eq!(
                 mode(&s, c),
-                format!("confirm close {kind} {target} destination?"),
+                format!("list close {kind} {target} destination? 0"),
                 "{open}: {}",
                 notice(&s, c)
             );
@@ -1702,7 +1729,7 @@ mod tests {
         );
         run(&mut s, "str c1 client str new workspace confirm-close")?;
         run(&mut s, "str new workspace str again rename")?;
-        assert_eq!(mode(&s, c), "confirm close workspace +1 new?");
+        assert_eq!(mode(&s, c), "list close workspace +1 new? 0");
         s.input(c, b"y");
         assert!(
             s.parts

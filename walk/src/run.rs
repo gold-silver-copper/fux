@@ -42,9 +42,8 @@ const GRACE: Duration = Duration::from_secs(3);
 
 /// Text overlays show, to tell whether one is open.
 const OVERLAY_MARKS: &[&str] = &[
-    "Enter select",
+    "Enter y select",
     "Enter accept",
-    "y yes",
     "Commands",
     "C-b t:",
     "C-b w:",

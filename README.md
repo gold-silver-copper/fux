@@ -277,7 +277,7 @@ letter but `a W`: case counts, so `C-b T` is not `C-b t`. The keys are your clie
 each terminal attached has its own prefix and bindings, from its config, and
 the server knows none of them. A key that is not fux's reaches the focused
 pane as you typed it. So are fux's screens: the command column,
-choosers, prompts, confirmations and copy mode belong to your client, which
+choosers, prompts and copy mode belong to your client, which
 switches between them at the key that does it, so a key typed fast is never
 read in the wrong one; the server draws what your client shows, and keeps
 copy mode's cursor in the history only it holds.
@@ -300,7 +300,7 @@ prefix again sends it to the pane.
 | `h` `j` `k` `l` | `me str left focus` … | focus the pane that way |
 | `o` / `q` | `me str next focus` / `me str last focus` | focus the next / last pane |
 | `v` / `s` | `me focused str horizontal axis split drop` / `… str vertical axis …` | split side by side / stacked |
-| `x` | `me me focused confirm-close` | close the pane (asks `y`/`n`) |
+| `x` | `me me focused confirm-close` | close the pane (asks: `y` or Enter closes, `n` or Esc keeps it) |
 | `z` | `me zoom` | zoom the pane, or restore it |
 | `a`, then a key | `me me focused rename-prompt` … | pane actions: `r` rename, `x` close, `k` terminate the running command, `s` swap, `t`/`w` move to a tab/workspace, `n`/`W` move to a new one, `m h`/`m l` reorder |
 | `c` | `me copy-mode` | copy and select |
@@ -341,7 +341,7 @@ For example, bind `str 't q' str 'me str last step-tab' bind` in your config.
 - **Choosers** (`t g`, `w g`, `a s`, `a t`, `a w`) list tabs, workspaces
   or panes. A chooser acts on the item it was opened for, even once
   renamed, and closes if that item is gone.
-  Enter selects, `r` renames, `x` closes, Esc or `q` cancels; arrows,
+  Enter or `y` selects, `r` renames, `x` closes, Esc, `q` or `n` cancels; arrows,
   `j`/`k`, PageUp/PageDown and Home/End move.
   These five choosers are library words over one `choose` primitive. Each
   reads one topology snapshot for its rows, source and current marker.
@@ -373,14 +373,16 @@ For example, bind `str 't q' str 'me str last step-tab' bind` in your config.
   the arrows, Home, End, Backspace and Delete.
 - **Prompts and questions of your own:** `prompt` opens a line whose Enter
   runs your fuxth with the line on its stack, a string, and `confirm` a
-  question whose `y` runs it (`me str 'close it?' str '%3 kill' confirm`).
+  question, a chooser titled with it whose one row, Yes, runs it
+  (`me str 'close it?' str '%3 kill' confirm`); its row is no pane, tab or
+  workspace, so `r` and `x` refuse there.
   A callback may also be `[captured-arguments,source]`; captured arguments
   enter its stack before the submitted line, without becoming source:
   `me str Rename str '' list list %3 end str rename end prompt`.
   The rename prompts and close questions use this typed form in the library.
 - **These screens' keys are a config too**, as the bindings are: `bind-in`
-  gives a key of copy mode, a chooser, a line being typed or a question
-  one of that screen's actions, and `label` names it in the screen's hints
+  gives a key of copy mode, a chooser or a line being typed one of that
+  screen's actions, and `label` names it in the screen's hints
   (`str copy str g str top bind-in str top label`); `unbind-in` takes one
   away. `bind-in` accepts only native actions. Executable list keys use
   `str r str rename-prompt bind-action` and

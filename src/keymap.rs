@@ -638,7 +638,6 @@ pub struct Modes {
     pub copy: Table<CopyAct>,
     pub list: Table<ListAct>,
     pub line: Table<LineAct>,
-    pub confirm: Table<bool>,
 }
 
 /// One of fux's own screens, as `bind-in` names it.
@@ -647,7 +646,6 @@ pub enum Modal {
     Copy,
     List,
     Line,
-    Confirm,
 }
 
 impl Modal {
@@ -655,7 +653,6 @@ impl Modal {
         ("copy", Modal::Copy),
         ("list", Modal::List),
         ("line", Modal::Line),
-        ("confirm", Modal::Confirm),
     ];
 }
 
@@ -665,13 +662,12 @@ impl Modes {
             Modal::Copy => &mut self.copy,
             Modal::List => &mut self.list,
             Modal::Line => &mut self.line,
-            Modal::Confirm => &mut self.confirm,
         }
     }
 
     /// Every key, as config lines that bind it again.
     fn lines(&self) -> String {
-        let tables: [&dyn Bindable; 4] = [&self.copy, &self.list, &self.line, &self.confirm];
+        let tables: [&dyn Bindable; 3] = [&self.copy, &self.list, &self.line];
         (Modal::ALL.iter().zip(tables))
             .map(|((name, _), table)| table.lines(name))
             .collect()
@@ -874,12 +870,6 @@ impl Named for LineAct {
     const ESCAPE: Self = LineAct::Cancel;
 }
 
-/// A question's answer: yes or no.
-impl Named for bool {
-    const NAMES: &'static [(&'static str, Self)] = &[("yes", true), ("no", false)];
-    const ESCAPE: Self = false;
-}
-
 impl Table<LineAct> {
     /// What `press` does to a line being typed: its key's action; else the
     /// character it types (with Ctrl or Alt, a letter types none).
@@ -943,8 +933,7 @@ mod tests {
         }
         check::<CopyAct>("top", "bottom")?;
         check::<ListAct>("up", "down")?;
-        check::<LineAct>("home", "end")?;
-        check::<bool>("no", "yes")
+        check::<LineAct>("home", "end")
     }
 
     #[test]

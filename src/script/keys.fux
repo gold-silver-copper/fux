@@ -102,9 +102,11 @@ str copy str [ str prompt-back bind-in  str prompts label
 str copy str ] str prompt-forward bind-in  str prompts label
 
 str list str Enter str choose bind-in  str select label
+str list str y str choose bind-in  str select label
 str r str rename-prompt bind-action  str rename label
 str x str confirm-close bind-action  str close label
 str list str q str cancel bind-in  str cancel label
+str list str n str cancel bind-in  str cancel label
 str list str j str down bind-in
 str list str k str up bind-in
 str list str Down str down bind-in
@@ -121,7 +123,3 @@ str line str Home str home bind-in
 str line str End str end bind-in
 str line str Backspace str backspace bind-in
 str line str Delete str delete bind-in
-
-str confirm str y str yes bind-in  str yes label
-str confirm str n str no bind-in  str no label
-str confirm str q str no bind-in  str no label

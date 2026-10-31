@@ -1,5 +1,5 @@
 //! A client's own screens: choosers, the command prompt, rename
-//! prompts, confirmations and copy mode. They belong to the client, which
+//! prompts and copy mode. They belong to the client, which
 //! reads the keys: every change of mode happens here, at the key that
 //! causes it, so no key is ever read in another mode's table. The server
 //! draws what the client describes (`ScreenAct::Show`), and keeps copy mode's
@@ -13,7 +13,7 @@ use fux_vt::keys::decode::Input;
 use fux_vt::keys::{KeyPress, Keystroke};
 use fux_wire::act::Line;
 use fux_wire::act::{Act, CopyAct, LineAct, List, ListAct, Panel, ScreenAct, Seek};
-use fux_wire::callback::{Callback, Confirm, Data, ListScreen, Open, Prompt};
+use fux_wire::callback::{Callback, Data, ListScreen, Open, Prompt};
 
 /// One of a client's screens, or none: its keys then go through its
 /// bindings, in the middle of what `Held` says. So nothing is held for the
@@ -23,7 +23,6 @@ pub enum Screen {
     Keys(Held),
     List(ListScreen),
     Prompt(Prompt),
-    Confirm(Confirm),
     /// Copy mode, and the search line being typed in it, forward or back.
     Copy(Option<(Seek, Line<SEARCH_MAX>)>),
 }
@@ -214,7 +213,7 @@ impl Job {
     }
 }
 
-/// The most bytes of fuxth a prompt or a question holds to run: the
+/// The most bytes of fuxth a prompt or a chooser holds to run: the
 /// client keeps it, outside any frame, so it has a bound of its own.
 pub const ACTION_MAX: usize = 1 << 16;
 
@@ -242,7 +241,6 @@ impl From<Open> for Screen {
         match open {
             Open::List(list) => Screen::List(list),
             Open::Prompt(prompt) => Screen::Prompt(prompt),
-            Open::Confirm(confirm) => Screen::Confirm(confirm),
             Open::Copy => Screen::Copy(None),
         }
     }
@@ -267,7 +265,7 @@ impl Screen {
                 hints: modes.copy.hints(),
                 typing: modes.line.hints(),
             })),
-            Self::Keys(_) | Self::List(_) | Self::Prompt(_) | Self::Confirm(_) => {
+            Self::Keys(_) | Self::List(_) | Self::Prompt(_) => {
                 self.panel(modes).map(ScreenAct::Show)
             }
         }
@@ -300,10 +298,6 @@ impl Screen {
                 before: prompt.line.before().to_owned(),
                 after: prompt.line.after().to_owned(),
                 hints: modes.line.hints(),
-            }),
-            Self::Confirm(confirm) => Some(Panel::Confirm {
-                question: confirm.question.clone(),
-                hints: modes.confirm.hints(),
             }),
         }
     }
@@ -354,21 +348,13 @@ impl Screen {
                     Vec::new()
                 }
             },
-            Self::Confirm(confirm) => match modes.confirm.get(press) {
-                Some(true) => vec![HIDE, Effect::Run(Job::call(&confirm.action, []))],
-                Some(false) => vec![HIDE],
-                None => {
-                    *self = Self::Confirm(confirm);
-                    Vec::new()
-                }
-            },
             Self::Copy(search) => self.copy(modes, search, press),
         }
     }
 
     /// Text pasted: a line being typed takes it; with no screen open, the
-    /// pane does, and the column or a repeat mode ends; a list, a question
-    /// or copy mode takes none, and says so.
+    /// pane does, and the column or a repeat mode ends; a list or copy mode
+    /// takes none, and says so.
     pub fn paste(&mut self, modes: &Modes, text: &str) -> Vec<Effect> {
         let insert = LineAct::Edit(fux_wire::act::Edit::Insert(text.to_owned()));
         match std::mem::take(self) {
@@ -376,9 +362,9 @@ impl Screen {
             Self::Keys(_) => vec![HIDE, Effect::Send(Act::Paste(text.to_owned()))],
             Self::Prompt(prompt) => self.prompt(modes, prompt, insert),
             Self::Copy(Some(search)) => self.copy_search(search, insert),
-            other @ (Self::List(_) | Self::Confirm(_) | Self::Copy(_)) => {
+            other @ (Self::List(_) | Self::Copy(_)) => {
                 *self = other;
-                let why = "a list, a question or copy mode is open: nothing was pasted";
+                let why = "a list or copy mode is open: nothing was pasted";
                 vec![refusal(why.to_owned())]
             }
         }
@@ -603,7 +589,7 @@ mod tests {
     #[test]
     fn a_paste_no_screen_takes_is_told() {
         let told = vec![refusal(
-            "a list, a question or copy mode is open: nothing was pasted".into(),
+            "a list or copy mode is open: nothing was pasted".into(),
         )];
         for mut screen in [list(), Screen::Copy(None)] {
             let was = screen.clone();

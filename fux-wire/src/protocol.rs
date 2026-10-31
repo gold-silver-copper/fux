@@ -34,7 +34,7 @@ pub enum Choice {
 }
 
 /// Bumped on any change to the frames below.
-pub const PROTOCOL: u32 = 55;
+pub const PROTOCOL: u32 = 56;
 /// The largest frame, kind byte included.
 pub const MAX_FRAME: usize = 1 << 20;
 /// The largest payload one frame carries.
@@ -594,8 +594,8 @@ frames! {
         Exit(reason: &'a str) = EXIT,
         /// The server ended its screen opening by itself (copy mode
         /// whose rows dropped from history, whose pane went or is no longer
-        /// focused, or with no pane to copy; a chooser, prompt or
-        /// confirmation whose subject closed), the mode being the client's.
+        /// focused, or with no pane to copy; a chooser or prompt whose
+        /// subject closed), the mode being the client's.
         Ended(opening: u64) = 14,
         /// Owned screen data; callbacks are checked by the receiving client.
         Open(screen: crate::callback::Open) = 15,
