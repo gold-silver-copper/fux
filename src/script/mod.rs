@@ -1145,10 +1145,13 @@ impl Asks for Cli {
         _out: &mut dyn Write,
     ) -> Result<Vec<Value<Fux>>, Failed> {
         let values = self.local_act(what, state);
-        // What only reads leaves the program as it was to run again.
+        // What only reads leaves the program as it was to run again; so does
+        // a start, which starts nothing where a server answers. A file
+        // that may not read the same again marks it itself (`read_file`).
         let reads = matches!(
             what,
             Local::Server(_)
+                | Local::Start
                 | Local::Status
                 | Local::Shell(Shell::Args | Shell::ReadFile(_) | Shell::Getenv(_))
         );
@@ -1190,7 +1193,7 @@ impl Cli {
                     string(&read_text("stdin", io::stdin(), SOURCE_MAX)?)
                 }
             },
-            Shell::ReadFile(path) => string(&read_file(path.as_ref())?),
+            Shell::ReadFile(path) => string(&read_file(path.as_ref(), &self.acted)?),
             Shell::Getenv(name) => string(&getenv(name)?),
             Shell::Warn(line) => {
                 writeln!(io::stderr(), "{line}")
@@ -1726,7 +1729,10 @@ pub fn main(args: &[String], out: &mut dyn Write) -> Result<u8, Failed> {
         return Ok(0);
     }
     let (tokens, from, program) = program(args)?;
-    let mut machine = compiled(None, &tokens)?;
+    let mut machine = match compiled(None, &tokens) {
+        Ok(machine) => machine,
+        Err(error) => return Err(uncompiled(error.into(), program.as_deref())),
+    };
     let mut state = Draft::default();
     let acted = Acted::default();
     let mut out = Watched {
@@ -1766,6 +1772,25 @@ pub fn main(args: &[String], out: &mut dyn Write) -> Result<u8, Failed> {
     ran?;
     printed?;
     Ok(cli.status.unwrap_or(0))
+}
+
+/// A command line this fux cannot compile, `failed`, which the server's
+/// may: a server of another protocol on the socket chosen before the
+/// program (`FUX_SOCKET`, else `server.sock`) is followed (`client::follow`)
+/// with `program`, if it read that from stdin, and nothing of it has run.
+/// Else, or if it cannot be, why it failed.
+fn uncompiled(failed: Failed, program: Option<&str>) -> Failed {
+    let greeted = Server::default()
+        .socket()
+        .map(|socket| client::greet(&socket));
+    let Ok(Err(client::Error::Mismatch { said, server })) = greeted else {
+        return failed;
+    };
+    let unfollowed = client::follow(said, server, program);
+    Failed {
+        message: format!("{} ({unfollowed})", failed.message),
+        ..failed
+    }
 }
 
 fn output_failed(error: io::Error) -> Failed {
@@ -1857,10 +1882,15 @@ fn read_text(name: &str, from: impl Read, limit: usize) -> Result<String, Failed
     String::from_utf8(bytes).map_err(|_| read_failed(name, "not UTF-8 text"))
 }
 
-/// The text of the file at `path`, as `read_text` reads it.
-fn read_file(path: &std::path::Path) -> Result<String, Failed> {
+/// The text of the file at `path`, as `read_text` reads it. What is not a
+/// regular file (a pipe, a terminal, `/dev/stdin`) may not give the same
+/// again: reading it marks the program `acted`, before anything is read.
+fn read_file(path: &std::path::Path, acted: &Acted) -> Result<String, Failed> {
     let name = path.display().to_string();
     let file = std::fs::File::open(path).map_err(|e| read_failed(&name, &e.to_string()))?;
+    if !file.metadata().is_ok_and(|m| m.is_file()) {
+        acted.mark();
+    }
     read_text(&name, file, SOURCE_MAX)
 }
 

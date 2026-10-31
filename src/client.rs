@@ -401,8 +401,11 @@ pub fn probe(socket: &SocketPath) -> Result<Probe, Error> {
 /// even once that was replaced or removed. The same first argument,
 /// arguments, environment, stdout and stderr, and the same stdin, or
 /// `program` as stdin where the command line read its program from there;
-/// the binary's exit status is this command's. Said on stderr first.
-/// Returns only if it cannot be, saying why.
+/// the binary's exit status is this command's. Said on stderr first. A
+/// command follows once: the binary runs with `FUX_FOLLOWED` set to this
+/// process's ID, which an exec keeps, so a process that finds its own ID
+/// there followed already; a process it starts has another. Returns only
+/// if it cannot be, saying why.
 pub fn follow(said: Mismatch, server: Option<fuxix::process::Pid>, program: Option<&str>) -> Error {
     let Err(why) = followed(&said, server, program);
     Error::Unfollowed { said, why }
@@ -415,6 +418,8 @@ fn followed(
 ) -> Result<std::convert::Infallible, String> {
     use std::os::unix::fs::MetadataExt;
     use std::os::unix::process::CommandExt;
+    let us = std::process::id().to_string();
+    once(std::env::var_os(FOLLOWED).as_deref(), &us)?;
     let pid = server.ok_or("the system does not say which process the server is")?;
     let exe = PathBuf::from(format!("/proc/{pid}/exe"));
     let named = |e: io::Error| format!("{}: {e}", exe.display());
@@ -431,6 +436,7 @@ fn followed(
     let mut args = std::env::args_os();
     let mut command = std::process::Command::new(&exe);
     command.arg0(args.next().unwrap_or_default()).args(args);
+    command.env(FOLLOWED, us);
     if let Some(program) = program {
         let file = program_file(program).map_err(|e| format!("keeping the program: {e}"))?;
         command.stdin(file);
@@ -447,6 +453,20 @@ fn followed(
     Err(format!("running {}: {error}", path.display()))
 }
 
+/// The variable a followed command runs with: the ID of its process.
+const FOLLOWED: &str = "FUX_FOLLOWED";
+
+/// Whether this process, of ID `us`, may follow, `FOLLOWED` being `marked`:
+/// not once it has.
+fn once(marked: Option<&std::ffi::OsStr>, us: &str) -> Result<(), String> {
+    match marked.is_some_and(|marked| marked == us) {
+        true => Err(format!(
+            "this command already runs with another server's binary ({FOLLOWED}), and follows once"
+        )),
+        false => Ok(()),
+    }
+}
+
 /// A file holding `program`, open to read from its start: removed from its
 /// directory at once, it goes with its last descriptor.
 fn program_file(program: &str) -> io::Result<std::fs::File> {
@@ -461,6 +481,12 @@ fn program_file(program: &str) -> io::Result<std::fs::File> {
     file.write_all(program.as_bytes())?;
     file.rewind()?;
     Ok(file)
+}
+
+/// Whether the server at `socket` speaks this protocol: one Hello, then
+/// nothing; `Error::Mismatch` where it does not.
+pub fn greet(socket: &SocketPath) -> Result<(), Error> {
+    connect(socket, Role::Command).map(drop)
 }
 
 /// Whether a server answers on `socket`.
@@ -2455,6 +2481,17 @@ mod tests {
 
     fn write(peer: &mut UnixStream, frame: &Greeting) {
         let _ = frame.encode().map(|bytes| peer.write_all(&bytes));
+    }
+
+    /// A process follows once: not one that finds its own ID marked, which
+    /// an exec kept; a process it started, of another ID, still may.
+    #[test]
+    fn a_command_follows_once() {
+        let marked = std::ffi::OsStr::new("42");
+        assert!(once(None, "42").is_ok());
+        assert!(once(Some(marked), "43").is_ok());
+        let again = once(Some(marked), "42").err().unwrap_or_default();
+        assert!(again.contains("follows once"), "{again}");
     }
 
     /// A server whose process is not known, or which runs this same

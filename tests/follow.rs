@@ -24,16 +24,21 @@ fn main() -> ExitCode {
     if std::env::args_os().next().is_some_and(|arg0| arg0 == FUX) {
         return followed();
     }
-    let tests: [(&str, Test); 3] = [
+    let tests: [(&str, Test); 5] = [
         ("a_command_follows_the_server", a_command_follows_the_server),
         (
             "a_program_read_from_stdin_follows",
             a_program_read_from_stdin_follows,
         ),
         (
+            "a_program_this_fux_cannot_compile_follows",
+            a_program_this_fux_cannot_compile_follows,
+        ),
+        (
             "a_program_that_acted_is_not_followed",
             a_program_that_acted_is_not_followed,
         ),
+        ("a_command_follows_once", a_command_follows_once),
     ];
     let failed = (tests.iter())
         .filter(|(name, test)| {
@@ -50,14 +55,26 @@ fn main() -> ExitCode {
 }
 
 /// The binary followed: says its arguments and its stdin on stdout, and
-/// exits with `FOLLOWED`.
+/// exits with `FOLLOWED`; or, with `AGAIN` set, runs fux again as it was
+/// run, in this same process, as a binary that follows would.
 fn followed() -> ExitCode {
+    use std::os::unix::process::CommandExt;
+    if std::env::var_os(AGAIN).is_some() {
+        let mut args = std::env::args_os();
+        let mut fux = Command::new(FUX);
+        let error = fux.arg0(args.next().unwrap_or_default()).args(args).exec();
+        let _ = writeln!(std::io::stderr(), "running fux again: {error}");
+        return ExitCode::FAILURE;
+    }
     let args: Vec<_> = std::env::args().skip(1).collect();
     let mut stdin = String::new();
     let _ = std::io::stdin().read_to_string(&mut stdin);
     let _ = write!(std::io::stdout(), "{args:?}\n{stdin}");
     ExitCode::from(FOLLOWED)
 }
+
+/// Set for the binary followed to run fux again (`followed`).
+const AGAIN: &str = "FOLLOW_TEST_AGAIN";
 
 /// What a command said and its status.
 struct Ran {
@@ -66,10 +83,16 @@ struct Ran {
     stderr: String,
 }
 
-/// Runs fux with `args` and `stdin` against a server of protocol 999,
-/// played in a socket of its own: it answers one Hello as servers do, and
-/// hangs up.
-fn against_another_protocol(name: &str, args: &[&str], stdin: &str) -> Result<Ran, String> {
+/// Runs fux with `args`, `stdin` and `env` against a server of protocol
+/// 999, played in a socket of its own: it answers `connections` Hellos as
+/// servers do, hanging up after each.
+fn against_another_protocol(
+    name: &str,
+    args: &[&str],
+    stdin: &str,
+    env: &[(&str, &str)],
+    connections: usize,
+) -> Result<Ran, String> {
     use fux_wire::protocol::{Frame, Greeting, Hello, Role};
     use std::os::unix::fs::PermissionsExt;
     let dir = (fuxix::file::scratch().map_err(e)?)
@@ -79,20 +102,25 @@ fn against_another_protocol(name: &str, args: &[&str], stdin: &str) -> Result<Ra
     std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).map_err(e)?;
     let listener = std::os::unix::net::UnixListener::bind(dir.join("fux.sock")).map_err(e)?;
     let server = std::thread::spawn(move || -> Outcome {
-        let (mut stream, _) = listener.accept().map_err(e)?;
-        let hello = Greeting::Hello(Hello {
-            protocol: 999,
-            version: "9.9.9".into(),
-            role: Role::Command,
-        });
-        let exit = Greeting::Exit("the server speaks protocol 999");
-        // In one write: the client may hang up once it has read the Hello.
-        let mut said = hello.encode().map_err(e)?;
-        said.extend(exit.encode().map_err(e)?);
-        stream.write_all(&said).map_err(e)
+        for _ in 0..connections {
+            let (mut stream, _) = listener.accept().map_err(e)?;
+            let hello = Greeting::Hello(Hello {
+                protocol: 999,
+                version: "9.9.9".into(),
+                role: Role::Command,
+            });
+            let exit = Greeting::Exit("the server speaks protocol 999");
+            // In one write: the client may hang up once it has read the
+            // Hello.
+            let mut said = hello.encode().map_err(e)?;
+            said.extend(exit.encode().map_err(e)?);
+            stream.write_all(&said).map_err(e)?;
+        }
+        Ok(())
     });
     let mut child = Command::new(FUX)
         .args(args)
+        .envs(env.iter().copied())
         .env("FUX_SOCKET", dir.join("fux.sock"))
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -123,52 +151,70 @@ fn following() -> Result<String, String> {
     ))
 }
 
-/// Where the system does not say a socket's peer process (macOS), the
+/// Runs fux with `args` and `stdin` against a server of another protocol:
+/// it follows, and the binary followed gets them, saying `stdout`; or,
+/// where the system does not say a socket's peer process (macOS), the
 /// server's binary cannot be found, and fux says so.
-fn unfollowed(ran: &Ran) -> Outcome {
-    check(
-        ran.status == Some(1)
-            && ran.stderr.contains("protocol 999 (fux 9.9.9)")
-            && ran
-                .stderr
-                .contains("the system does not say which process the server is"),
-        ran,
-    )
+fn follows(name: &str, args: &[&str], stdin: &str, stdout: &str) -> Outcome {
+    let ran = against_another_protocol(name, args, stdin, &[], 1)?;
+    if cfg!(target_os = "macos") {
+        return check(
+            ran.status == Some(1)
+                && ran.stderr.contains("protocol 999 (fux 9.9.9)")
+                && ran
+                    .stderr
+                    .contains("the system does not say which process the server is"),
+            &ran,
+        );
+    }
+    check(ran.status == Some(FOLLOWED.into()), &ran)?;
+    check(ran.stdout == stdout, &ran)?;
+    check(ran.stderr == following()?, &ran)
 }
 
 /// A command runs with the server's binary: its arguments and stdin, and
 /// that binary's output and exit status, pass through, and fux says so in
-/// one line.
+/// one line. Reading a regular file first is no reason not to: it reads
+/// the same again.
 fn a_command_follows_the_server() -> Outcome {
-    let ran = against_another_protocol("command", &["ls"], "typed\n")?;
-    if cfg!(target_os = "macos") {
-        return unfollowed(&ran);
-    }
-    check(ran.status == Some(FOLLOWED.into()), &ran)?;
-    check(ran.stdout == "[\"ls\"]\ntyped\n", &ran)?;
-    check(ran.stderr == following()?, &ran)
+    follows("command", &["ls"], "typed\n", "[\"ls\"]\ntyped\n")?;
+    let file = concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.toml");
+    let args = ["str", file, "read-file", "drop", "ls"];
+    follows("file", &args, "", &format!("{args:?}\n"))
 }
 
 /// A program fux read from stdin is that binary's stdin.
 fn a_program_read_from_stdin_follows() -> Outcome {
-    let ran = against_another_protocol("stdin", &["-"], "ls\n")?;
-    if cfg!(target_os = "macos") {
-        return unfollowed(&ran);
-    }
-    check(ran.status == Some(FOLLOWED.into()), &ran)?;
-    check(ran.stdout == "[\"-\"]\nls\n", &ran)?;
-    check(ran.stderr == following()?, &ran)
+    follows("stdin", &["-"], "ls\n", "[\"-\"]\nls\n")
+}
+
+/// A program this fux cannot compile, a word of the server's vocabulary
+/// perhaps, is the server's binary's to compile.
+fn a_program_this_fux_cannot_compile_follows() -> Outcome {
+    let word = "a-word-only-the-server-knows";
+    follows("compile", &[word], "", &format!("[\"{word}\"]\n"))
 }
 
 /// A program that did something outside fux's process before it met the
-/// server, on stderr or stdout, is refused, saying why and what to do,
-/// rather than run twice.
+/// server, on stderr, stdout or stdin, is refused, saying why and what to
+/// do, rather than run twice.
 fn a_program_that_acted_is_not_followed() -> Outcome {
-    for (args, stdout, stderr) in [
-        (["str", "hi", "warn", "ls"], "", "hi\nfux: mismatch: "),
-        (["str", "hi", "print", "ls"], "hi\n", "fux: mismatch: "),
+    for (args, stdin, stdout, stderr) in [
+        (
+            &["str", "hi", "warn", "ls"][..],
+            "",
+            "",
+            "hi\nfux: mismatch: ",
+        ),
+        (&["str", "hi", "print", "ls"], "", "hi\n", "fux: mismatch: "),
+        (
+            &["str", "/dev/stdin", "read-file", "drop", "ls"],
+            "payload",
+            "",
+            "fux: mismatch: ",
+        ),
     ] {
-        let ran = against_another_protocol("acted", &args, "")?;
+        let ran = against_another_protocol("acted", args, stdin, &[], 1)?;
         check(ran.status == Some(1) && ran.stdout == stdout, &ran)?;
         check(
             ran.stderr.starts_with(stderr)
@@ -181,6 +227,21 @@ fn a_program_that_acted_is_not_followed() -> Outcome {
         )?;
     }
     Ok(())
+}
+
+/// A command follows once: the binary followed, running fux again, meets
+/// the same server and is refused, rather than follow it for ever.
+fn a_command_follows_once() -> Outcome {
+    if cfg!(target_os = "macos") {
+        return Ok(());
+    }
+    let ran = against_another_protocol("once", &["ls"], "", &[(AGAIN, "1")], 2)?;
+    check(ran.status == Some(1), &ran)?;
+    let rest = ran.stderr.strip_prefix(&following()?).unwrap_or_default();
+    check(
+        rest.starts_with("fux: mismatch: ") && rest.contains("follows once"),
+        &ran,
+    )
 }
 
 fn check(holds: bool, ran: &Ran) -> Outcome {
