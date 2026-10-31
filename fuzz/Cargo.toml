@@ -14,7 +14,9 @@ cargo-fuzz = true
 [dependencies]
 libfuzzer-sys = "0.4"
 fux = { path = "..", features = ["in-process"] }
+fux-server = { path = "../fux-server" }
 fux-vt = { path = "../fux-vt" }
+fux-wire = { path = "../fux-wire" }
 fuxth = { path = "../fuxth" }
 
 [[bin]]

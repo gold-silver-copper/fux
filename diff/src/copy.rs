@@ -34,8 +34,8 @@ macro_rules! stack {
         |$copied:ident, $kind:ident, $start:ident, $end:ident| $text:expr
     ) => {
         mod $name {
-            use $fux::$seek_in::Seek;
-            use $fux::copy::{self, Select};
+            use crate::sides::$fux::$seek_in::Seek;
+            use crate::sides::$fux::copy::{self, Select};
             use $vt::Parser;
 
             pub fn terminal(
@@ -116,7 +116,7 @@ stack! {
     }
 }
 stack! {
-    cur, fux, fux_vt, act,
+    cur, current, fux_vt, act,
     |r, c| [crate::size(r, c)],
     |s| s.rows().len(),
     |s, index| s.rows().nth(index).map(|row| (row.id(), Some(row.index()))),

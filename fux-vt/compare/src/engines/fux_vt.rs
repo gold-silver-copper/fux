@@ -6,7 +6,7 @@ use fux_vt::{Blink, CellRef, Event, Feature, Identity, Mode, Options, Parser, Si
 /// The comparison profile: fux's fixed facilities and pictures, with
 /// reflow and identity selected by the case.
 pub fn options(reflow: bool) -> Options {
-    fux::pane::OPTIONS
+    fux_server::pane::OPTIONS
         .with(Feature::Pictures)
         .set(Feature::Reflow, reflow)
         .with_identity(Some(if reflow {
@@ -15,7 +15,7 @@ pub fn options(reflow: bool) -> Options {
                 version: "0.0.0",
             }
         } else {
-            fux::pane::IDENTITY
+            fux_server::pane::IDENTITY
         }))
 }
 

@@ -17,8 +17,10 @@ bench = false
 [dependencies]
 # The code under test, by path: the working tree's, or REF's in the
 # worktree `--against` builds this crate in.
-fux = { path = "..", features = ["in-process"] }
+fux = { path = ".." }
+fux-server = { path = "../fux-server", features = ["in-process"] }
 fux-vt = { path = "../fux-vt" }
+fux-wire = { path = "../fux-wire" }
 fuxix = { path = "../fuxix" }
 fuxth = { path = "../fuxth" }
 # Reads the corpus's manifests, and writes the results.

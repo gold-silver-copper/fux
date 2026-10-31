@@ -1,6 +1,6 @@
 //! A bounded comparison of placement policies: a Unicode redraw and an
 //! ASCII key's changed cell. Times cover painting, not transport or display.
-use fux::render::{Grid, paint_into};
+use fux_server::render::{Grid, paint_into};
 use fux_vt::{Attributes, CellRef};
 use std::hint::black_box;
 use std::time::Instant;

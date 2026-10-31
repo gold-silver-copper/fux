@@ -599,9 +599,20 @@ dependencies = [
 name = "fux"
 version = "0.36.0"
 dependencies = [
+ "fux-server",
  "fux-vt",
+ "fux-wire",
  "fuxix",
  "fuxth",
+]
+
+[[package]]
+name = "fux-server"
+version = "0.36.0"
+dependencies = [
+ "fux-vt",
+ "fux-wire",
+ "fuxix",
 ]
 
 [[package]]
@@ -616,7 +627,9 @@ dependencies = [
  "avt",
  "cc",
  "fux",
+ "fux-server",
  "fux-vt",
+ "fux-wire",
  "fuxix",
  "libc",
  "libghostty-vt",
@@ -624,6 +637,15 @@ dependencies = [
  "unicode-width 0.2.2",
  "vt100",
  "wezterm-term",
+]
+
+[[package]]
+name = "fux-wire"
+version = "0.36.0"
+dependencies = [
+ "fux-vt",
+ "fuxix",
+ "fuxth-core",
 ]
 
 [[package]]
@@ -635,6 +657,13 @@ dependencies = [
 
 [[package]]
 name = "fuxth"
+version = "0.7.0"
+dependencies = [
+ "fuxth-core",
+]
+
+[[package]]
+name = "fuxth-core"
 version = "0.7.0"
 
 [[package]]

@@ -6,9 +6,20 @@ version = 4
 name = "fux"
 version = "0.36.0"
 dependencies = [
+ "fux-server",
  "fux-vt",
+ "fux-wire",
  "fuxix",
  "fuxth",
+]
+
+[[package]]
+name = "fux-server"
+version = "0.36.0"
+dependencies = [
+ "fux-vt",
+ "fux-wire",
+ "fuxix",
 ]
 
 [[package]]
@@ -20,10 +31,21 @@ name = "fux-walk"
 version = "0.0.0"
 dependencies = [
  "fux",
+ "fux-server",
  "fux-vt",
+ "fux-wire",
  "fuxix",
  "fuxth",
  "serde_json",
+]
+
+[[package]]
+name = "fux-wire"
+version = "0.36.0"
+dependencies = [
+ "fux-vt",
+ "fuxix",
+ "fuxth-core",
 ]
 
 [[package]]
@@ -35,6 +57,13 @@ dependencies = [
 
 [[package]]
 name = "fuxth"
+version = "0.7.0"
+dependencies = [
+ "fuxth-core",
+]
+
+[[package]]
+name = "fuxth-core"
 version = "0.7.0"
 
 [[package]]

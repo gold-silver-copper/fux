@@ -92,7 +92,7 @@ fn key(r: &mut Rng) -> String {
 /// in a cursor mode, and `$shown` shows a decoded input, each as each
 /// version takes them: the current fux's keys carry what
 /// a kitty-protocol terminal said beyond the press, and its encoder the
-/// pane's key mode. `stack!(cur, fux, |press, application, out| ..., |input|
+/// pane's key mode. `stack!(cur, current, |press, application, out| ..., |input|
 /// ...)` expands to `mod cur`: `Decoding`
 /// (each piece's inputs, shown, and the decoder's deadline), `key` (a
 /// named key's bytes in both cursor modes) and `paste`, all over the
@@ -100,9 +100,9 @@ fn key(r: &mut Rng) -> String {
 macro_rules! stack {
     ($name:ident, $fux:ident, $decoder:expr, $key_bytes:expr, $shown:expr) => {
         mod $name {
+            use crate::sides::$fux::decode::Decoder;
+            use crate::sides::$fux::keys::KeyPress;
             use std::time::Instant;
-            use $fux::decode::Decoder;
-            use $fux::keys::KeyPress;
 
             pub struct Decoding(Decoder);
 
@@ -128,8 +128,12 @@ macro_rules! stack {
                     self.waits(inputs, start)
                 }
 
-                fn waits(&self, inputs: Vec<$fux::decode::Input>, start: Instant) -> String {
-                    let shown: fn(&$fux::decode::Input) -> String = $shown;
+                fn waits(
+                    &self,
+                    inputs: Vec<crate::sides::$fux::decode::Input>,
+                    start: Instant,
+                ) -> String {
+                    let shown: fn(&crate::sides::$fux::decode::Input) -> String = $shown;
                     let inputs: Vec<String> = inputs.iter().map(shown).collect();
                     format!(
                         "[{}] until {:?}",
@@ -159,8 +163,8 @@ macro_rules! stack {
 
             pub fn paste(text: &str) -> (Vec<u8>, Vec<u8>) {
                 let (mut plain, mut bracketed) = (Vec::new(), Vec::new());
-                $fux::encode::paste(text, false, &mut plain);
-                $fux::encode::paste(text, true, &mut bracketed);
+                crate::sides::$fux::encode::paste(text, false, &mut plain);
+                crate::sides::$fux::encode::paste(text, true, &mut bracketed);
                 (plain, bracketed)
             }
         }
@@ -190,11 +194,11 @@ stack!(
 );
 stack!(
     cur,
-    fux,
-    fux::decode::Decoder::new(fux::decode::Timing::new(35, 5000)),
-    |press, application, out| fux::encode::key_bytes(
+    current,
+    fux_vt::keys::decode::Decoder::new(fux_vt::keys::decode::Timing::new(35, 5000)),
+    |press, application, out| fux_vt::keys::encode::key_bytes(
         press.into(),
-        fux::encode::KeyMode::Legacy {
+        fux_vt::keys::encode::KeyMode::Legacy {
             application,
             keypad: false,
             other_keys: None,
@@ -206,7 +210,7 @@ stack!(
         // A key shows as its press, as the baseline's: what a kitty-protocol
         // terminal said beyond the press, which no baseline key has, is
         // fux's own tests' to check (`decode::tests`).
-        if let fux::decode::Input::Key(stroke) = input {
+        if let fux_vt::keys::decode::Input::Key(stroke) = input {
             return format!("Key({:?})", stroke.press);
         }
         format!("{input:?}")
@@ -238,11 +242,11 @@ impl Queue for baseline::pane::InputQueue {
     }
 }
 
-impl Queue for fux::pane::PaneMut<'_> {
+impl Queue for fux_server::pane::PaneMut<'_> {
     fn push(&mut self, bytes: &[u8], with: bool) -> Result<(), String> {
         let result = match with {
             true => self.push_with(|_, out| out.extend_from_slice(bytes)),
-            false => fux::pane::PaneMut::push(self, bytes),
+            false => fux_server::pane::PaneMut::push(self, bytes),
         };
         result.map_err(|e| e.to_string())
     }
@@ -362,34 +366,35 @@ pub fn run(r: &mut Rng, scale: usize) -> Outcome {
         let mut a = baseline::pane::InputQueue::default();
         let (id, runs) = (
             "%1".parse().map_err(|_| "%1")?,
-            fux::pane::Runs::Shell(fux::pane::Launch {
-                argv: fux::command::Program::new("/bin/sh".into(), Vec::new())?,
+            fux_server::pane::Runs::Shell(fux_server::pane::Launch {
+                argv: fux_wire::command::Program::new("/bin/sh".into(), Vec::new())?,
                 cwd: "/".into(),
-                env: fux::command::EnvPatch::default(),
+                env: fux_wire::command::EnvPatch::default(),
             }),
         );
-        let b = fux::pane::Pane::new(
+        let b = fux_server::pane::Pane::new(
             id,
             None,
             runs,
             crate::size(24, 80),
-            fux::command::PaneOptions {
-                history_bytes: fux::command::HistoryBytes::new(0).ok_or("history budget")?,
+            fux_wire::command::PaneOptions {
+                history_bytes: fux_wire::command::HistoryBytes::new(0).ok_or("history budget")?,
                 program_clipboard: true,
                 reflow: true,
-                alternate_scroll_lines: fux::command::ScrollLines::new(5).ok_or("scroll lines")?,
-                picture_bytes: fux::command::PictureBytes::new(100663296).ok_or("pictures")?,
+                alternate_scroll_lines: fux_wire::command::ScrollLines::new(5)
+                    .ok_or("scroll lines")?,
+                picture_bytes: fux_wire::command::PictureBytes::new(100663296).ok_or("pictures")?,
             },
             std::time::Instant::now(),
         );
         let mut pane = b.map_err(|e| e.to_string())?;
-        let mut journal = fux::journal::Journal::default();
+        let mut journal = fux_server::journal::Journal::default();
         let at = (
             "+1".parse().map_err(|_| "+1")?,
             "@1".parse().map_err(|_| "@1")?,
         );
         let mut queued_input = std::collections::BTreeSet::new();
-        let mut b = fux::pane::PaneMut::new(&mut pane, at, &mut journal, &mut queued_input);
+        let mut b = fux_server::pane::PaneMut::new(&mut pane, at, &mut journal, &mut queued_input);
         let mut log = Vec::new();
         for _ in 0..r.below(60) {
             let next = match r.below(10) {

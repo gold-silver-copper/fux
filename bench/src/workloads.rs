@@ -23,9 +23,9 @@
 //!   `vt/sixel:256`) encoded as sixel whole, [`ENCODES`] times, as fux's
 //!   renderer encodes a picture it shows (`fux_vt::sixel::encode`); the
 //!   baseline decodes it alone.
-//! - `pane/NAME`: the same through `fux::pane::Pane::output`, 16 KiB at a
+//! - `pane/NAME`: the same through `fux_server::pane::Pane::output`, 16 KiB at a
 //!   time, as fux's server gives a pane what it reads.
-//! - `paint/corpus`: a session (`fux::session::Session`, without
+//! - `paint/corpus`: a session (`fux_server::session::Session`, without
 //!   processes) whose client shows one pane at each recording's size,
 //!   given every recording; after each read, the client's screen composed
 //!   (`render::compose_into`) and painted (`render::paint_into`) as the
@@ -36,12 +36,12 @@
 //!   client painted (`before_paint`, `compose_into`, `paint_into`): the
 //!   server's work for one keystroke, over and over.
 //! - `decode/legacy`, `decode/kitty`: fux's decoder of a client's
-//!   terminal (`fux::decode::Decoder`) on the keys typed in the recordings,
+//!   terminal (`fux_vt::keys::decode::Decoder`) on the keys typed in the recordings,
 //!   as a legacy terminal sends them and as a kitty-protocol terminal does
 //!   with the flags fux asks of it (5).
 //! - `encode/legacy`, `encode/kitty`: those keys encoded for a pane
-//!   (`fux::encode::key_bytes`), in legacy mode and in every kitty flag.
-//! - `wait/version`: waits for a version that never changes (`fux::wait::Waiting`),
+//!   (`fux_vt::keys::encode::key_bytes`), in legacy mode and in every kitty flag.
+//! - `wait/version`: waits for a version that never changes (`fux_server::wait::Waiting`),
 //!   8 armed one after another, on four panes of a session, each asked for
 //!   its answer and when it is due
 //!   after each 64 KiB tick (in 16 KiB reads) of the recordings: the server's
@@ -56,7 +56,7 @@
 use crate::census;
 use crate::corpus::{self, Recording};
 use crate::synthetic;
-use fux::command;
+use fux_wire::command;
 use std::hint::black_box;
 use std::path::Path;
 
@@ -371,9 +371,9 @@ pub fn fed(name: &str) -> String {
     } else if name == "encode/sixel" {
         format!("{NO_STREAM}: fux_vt::sixel::encode of the whole picture, {ENCODES} times")
     } else if name.starts_with("pane/") {
-        "fux::pane::Pane::output, 16384 bytes a call".into()
+        "fux_server::pane::Pane::output, 16384 bytes a call".into()
     } else if name.starts_with("paint/") || name == "wait/version" {
-        "fux::session::Session::output, 16384 bytes a call, 65536 a tick".into()
+        "fux_server::session::Session::output, 16384 bytes a call, 65536 a tick".into()
     } else {
         NO_STREAM.into()
     }
@@ -490,7 +490,7 @@ fn run_shrunk(
         ),
         "encode/legacy" => encode(
             &recordings,
-            fux::encode::KeyMode::Legacy {
+            fux_vt::keys::encode::KeyMode::Legacy {
                 application: false,
                 keypad: false,
                 other_keys: None,
@@ -634,7 +634,7 @@ fn vt(loads: &[Load], baseline: bool, chunk: usize) -> Result<Done, String> {
                 fux_vt::Parser::with_options(
                     size,
                     HISTORY,
-                    fux::pane::OPTIONS
+                    fux_server::pane::OPTIONS
                         .with(fux_vt::Feature::Reflow)
                         .with(fux_vt::Feature::Pictures),
                 )
@@ -680,7 +680,7 @@ fn pane_parser(history: usize, options: fux_vt::Options) -> Result<fux_vt::Parse
 fn moment(setup: &[u8], measured: &[u8], baseline: bool) -> Result<Done, String> {
     let mut parser = pane_parser(
         HISTORY,
-        fux::pane::OPTIONS
+        fux_server::pane::OPTIONS
             .with(fux_vt::Feature::Reflow)
             .with(fux_vt::Feature::Pictures),
     )?;
@@ -729,7 +729,7 @@ fn sixel_picture(payloads: &Path) -> Result<std::sync::Arc<fux_vt::sixel::Pictur
         fux_vt::Parser::with_options(
             size,
             HISTORY,
-            fux::pane::OPTIONS
+            fux_server::pane::OPTIONS
                 .with(fux_vt::Feature::Reflow)
                 .with(fux_vt::Feature::Pictures),
         )
@@ -774,7 +774,7 @@ fn resize_history(
     fill: usize,
     history: usize,
 ) -> Result<Done, String> {
-    let options = fux::pane::OPTIONS
+    let options = fux_server::pane::OPTIONS
         .set(fux_vt::Feature::Reflow, r.reflow)
         .with(fux_vt::Feature::Pictures);
     let mut parser = full_history(fill, history, options, r.short)?;
@@ -801,10 +801,11 @@ fn pane(loads: &[Load], baseline: bool) -> Result<Done, String> {
     let now = std::time::Instant::now();
     let units = loads.iter().map(|l| l.bytes.len()).sum();
     let first = loads.first().ok_or("no bytes")?;
-    let mut pane = fux::pane::Pane::new(
-        "%1".parse::<fux::id::PaneId>().map_err(|e| e.to_string())?,
+    let mut pane = fux_server::pane::Pane::new(
+        "%1".parse::<fux_wire::id::PaneId>()
+            .map_err(|e| e.to_string())?,
         None,
-        fux::pane::Runs::Shell(fux::pane::Launch {
+        fux_server::pane::Runs::Shell(fux_server::pane::Launch {
             argv: command::Program::new("/bin/sh".into(), Vec::new())?,
             cwd: "/".into(),
             env: command::EnvPatch::default(),
@@ -814,8 +815,8 @@ fn pane(loads: &[Load], baseline: bool) -> Result<Done, String> {
             history_bytes: command::HistoryBytes::new(HISTORY).ok_or("history budget")?,
             program_clipboard: true,
             reflow: true,
-            alternate_scroll_lines: fux::command::ScrollLines::new(5).ok_or("scroll lines")?,
-            picture_bytes: fux::command::PictureBytes::new(100663296).ok_or("pictures")?,
+            alternate_scroll_lines: fux_wire::command::ScrollLines::new(5).ok_or("scroll lines")?,
+            picture_bytes: fux_wire::command::PictureBytes::new(100663296).ok_or("pictures")?,
         },
         now,
     )
@@ -830,13 +831,13 @@ fn pane(loads: &[Load], baseline: bool) -> Result<Done, String> {
         });
     }
     // What it tells goes in a journal of its own, as in a session.
-    let mut journal = fux::journal::Journal::default();
+    let mut journal = fux_server::journal::Journal::default();
     let at = (
         "+1".parse().map_err(|_| "+1")?,
         "@1".parse().map_err(|_| "@1")?,
     );
     let mut queued_input = std::collections::BTreeSet::new();
-    let mut pane = fux::pane::PaneMut::new(&mut pane, at, &mut journal, &mut queued_input);
+    let mut pane = fux_server::pane::PaneMut::new(&mut pane, at, &mut journal, &mut queued_input);
     for load in loads {
         pane.resize(
             fux_vt::Size::new(load.rows, load.cols).map_err(|e| e.to_string())?,
@@ -867,17 +868,18 @@ fn pane(loads: &[Load], baseline: bool) -> Result<Done, String> {
 /// nothing: the run is the server's whole work for the keys.
 fn keystroke(recordings: &[Recording], baseline: bool, keys: usize) -> Result<Done, String> {
     let now = std::time::Instant::now();
-    let mut s = fux::session::Session::new("/nonexistent/fux.sock".into(), false, server_run()?);
+    let mut s =
+        fux_server::session::Session::new("/nonexistent/fux.sock".into(), false, server_run()?);
     // The client attaching starts its first shell, on its screen.
-    let attach = fux::protocol::Attach {
+    let attach = fux_wire::protocol::Attach {
         initial: Some(initial()?),
-        ..fux::protocol::Attach::of(
+        ..fux_wire::protocol::Attach::of(
             fux_vt::Size::new(41, 120).map_err(|e| e.to_string())?,
             presentation()?,
         )
     };
     let c = s
-        .attach_as(fux::view::ClientKind::Terminal, attach, now)
+        .attach_as(fux_server::view::ClientKind::Terminal, attach, now)
         .map_err(|e| e.to_string())?;
     let pane = s.parts.panes().keys().next().copied().ok_or("no pane")?;
     // A full screen, as a pane at work shows: the recordings' output.
@@ -888,9 +890,9 @@ fn keystroke(recordings: &[Recording], baseline: bool, keys: usize) -> Result<Do
         }
     }
     s.hold_copies();
-    let mut shown = fux::render::Grid::default();
-    let mut spare = fux::render::Grid::default();
-    let mut placement = fux::layout::Placement::default();
+    let mut shown = fux_server::render::Grid::default();
+    let mut spare = fux_server::render::Grid::default();
+    let mut placement = fux_wire::layout::Placement::default();
     let mut buffer = Vec::new();
     let mut have = false;
     let (mut painted, mut frames) = (0usize, 0usize);
@@ -902,8 +904,8 @@ fn keystroke(recordings: &[Recording], baseline: bool, keys: usize) -> Result<Do
         }
         let key = b'a'.saturating_add(u8::try_from(i % 26).unwrap_or(0));
         // As the client sends a key its bindings leave for the pane.
-        let press = fux::keys::KeyPress::char(char::from(key));
-        s.acts(c, vec![fux::act::Act::Key(press.into())], now);
+        let press = fux_vt::keys::KeyPress::char(char::from(key));
+        s.acts(c, vec![fux_wire::act::Act::Key(press.into())], now);
         // What the PTY would carry to the program, and its echo back.
         let typed = s
             .parts
@@ -922,11 +924,11 @@ fn keystroke(recordings: &[Recording], baseline: bool, keys: usize) -> Result<Do
         let Some(view) = s.views.get(&c) else {
             continue;
         };
-        fux::render::compose_view(&s, view, &mut spare, &mut placement)
+        fux_server::render::compose_view(&s, view, &mut spare, &mut placement)
             .map_err(|e| e.to_string())?;
         // Every key changes the screen: painted without asking whether it
         // did, as `paint_into` finds what changed.
-        fux::render::paint_into(&shown, have, &spare, &mut buffer);
+        fux_server::render::paint_into(&shown, have, &spare, &mut buffer);
         painted = painted.saturating_add(buffer.len());
         frames = frames.saturating_add(1);
         black_box(&buffer);
@@ -947,21 +949,22 @@ fn paint(
     total: usize,
 ) -> Result<Done, String> {
     let now = std::time::Instant::now();
-    let mut s = fux::session::Session::new("/nonexistent/fux.sock".into(), false, server_run()?);
+    let mut s =
+        fux_server::session::Session::new("/nonexistent/fux.sock".into(), false, server_run()?);
     let first = recordings.first().ok_or("no recordings")?;
     // The bar takes a row: the pane is the recording's size.
     let size = fux_vt::Size::new(first.rows.saturating_add(1), first.cols);
-    let attach = fux::protocol::Attach {
+    let attach = fux_wire::protocol::Attach {
         initial: Some(initial()?),
-        ..fux::protocol::Attach::of(size.map_err(|e| e.to_string())?, presentation()?)
+        ..fux_wire::protocol::Attach::of(size.map_err(|e| e.to_string())?, presentation()?)
     };
     let c = s
-        .attach_as(fux::view::ClientKind::Terminal, attach, now)
+        .attach_as(fux_server::view::ClientKind::Terminal, attach, now)
         .map_err(|e| e.to_string())?;
     if split {
         let split = command::Command::Split {
             options: pane_options(HISTORY)?,
-            axis: fux::layout::Axis::Horizontal,
+            axis: fux_wire::layout::Axis::Horizontal,
             target: *s.parts.panes().keys().next().ok_or("no pane")?,
             start: initial()?.start,
             cwd: Some(std::env::current_dir().map_err(|e| e.to_string())?),
@@ -970,14 +973,14 @@ fn paint(
         };
         s.run_command(
             &split,
-            &fux::session::Origin::Cli(fux::session::Caller::default()),
+            &fux_server::session::Origin::Cli(fux_server::session::Caller::default()),
             now,
         );
     }
     let panes: Vec<_> = s.parts.panes().keys().copied().collect();
-    let mut shown = fux::render::Grid::default();
-    let mut spare = fux::render::Grid::default();
-    let mut placement = fux::layout::Placement::default();
+    let mut shown = fux_server::render::Grid::default();
+    let mut spare = fux_server::render::Grid::default();
+    let mut placement = fux_wire::layout::Placement::default();
     let mut buffer = Vec::new();
     let (mut painted, mut frames, mut units, mut have) = (0usize, 0usize, 0usize, false);
     while units < total {
@@ -1004,13 +1007,13 @@ fn paint(
                     let Some(view) = s.views.get(&c) else {
                         continue;
                     };
-                    fux::render::compose_view(&s, view, &mut spare, &mut placement)
+                    fux_server::render::compose_view(&s, view, &mut spare, &mut placement)
                         .map_err(|e| e.to_string())?;
                     if have && spare == shown {
                         continue;
                     }
                     buffer.clear();
-                    fux::render::paint_into(&shown, have, &spare, &mut buffer);
+                    fux_server::render::paint_into(&shown, have, &spare, &mut buffer);
                     painted = painted.saturating_add(buffer.len());
                     frames = frames.saturating_add(1);
                     black_box(&buffer);
@@ -1028,12 +1031,12 @@ fn paint(
 }
 
 /// The key mode of a pane whose program pushed the kitty `flags`.
-fn kitty_mode(flags: u8) -> Result<fux::encode::KeyMode, String> {
+fn kitty_mode(flags: u8) -> Result<fux_vt::keys::encode::KeyMode, String> {
     let size = fux_vt::Size::new(1, 1).map_err(|e| e.to_string())?;
     let mut parser = fux_vt::Parser::with_options(
         size,
         0,
-        fux::pane::OPTIONS
+        fux_server::pane::OPTIONS
             .with(fux_vt::Feature::Reflow)
             .with(fux_vt::Feature::Pictures),
     )
@@ -1046,7 +1049,7 @@ fn kitty_mode(flags: u8) -> Result<fux::encode::KeyMode, String> {
 
 /// The keys of every step of every recording, as a legacy terminal sends
 /// them, or as a kitty-protocol terminal in `kitty` mode does.
-fn keys(recordings: &[Recording], kitty: Option<fux::encode::KeyMode>) -> Vec<Vec<u8>> {
+fn keys(recordings: &[Recording], kitty: Option<fux_vt::keys::encode::KeyMode>) -> Vec<Vec<u8>> {
     let legacy = recordings
         .iter()
         .flat_map(|r| r.steps.iter().map(|(keys, _)| keys.clone()))
@@ -1058,7 +1061,7 @@ fn keys(recordings: &[Recording], kitty: Option<fux::encode::KeyMode>) -> Vec<Ve
         .map(|keys| {
             let mut out = Vec::new();
             for stroke in strokes(&keys) {
-                fux::encode::key_bytes(stroke, mode, &mut out);
+                fux_vt::keys::encode::key_bytes(stroke, mode, &mut out);
             }
             out
         })
@@ -1067,15 +1070,16 @@ fn keys(recordings: &[Recording], kitty: Option<fux::encode::KeyMode>) -> Vec<Ve
 
 /// The keystrokes fux's decoder reads in `keys`, its Escape deadline passing
 /// at the end.
-fn strokes(keys: &[u8]) -> Vec<fux::keys::Keystroke> {
-    let mut decoder = fux::decode::Decoder::new(fux::decode::Timing::new(35, 5000));
+fn strokes(keys: &[u8]) -> Vec<fux_vt::keys::Keystroke> {
+    let mut decoder =
+        fux_vt::keys::decode::Decoder::new(fux_vt::keys::decode::Timing::new(35, 5000));
     let mut inputs = Vec::new();
     decoder.bytes(keys, &mut inputs);
     decoder.timeout(&mut inputs);
     inputs
         .into_iter()
         .filter_map(|input| {
-            if let fux::decode::Input::Key(stroke) = input {
+            if let fux_vt::keys::decode::Input::Key(stroke) = input {
                 Some(stroke)
             } else {
                 None
@@ -1090,7 +1094,8 @@ fn decode(steps: &[Vec<u8>], baseline: bool, total: usize) -> Result<Done, Strin
     }
     let mut units = 0usize;
     let mut inputs = Vec::new();
-    let mut decoder = fux::decode::Decoder::new(fux::decode::Timing::new(35, 5000));
+    let mut decoder =
+        fux_vt::keys::decode::Decoder::new(fux_vt::keys::decode::Timing::new(35, 5000));
     while units < total {
         for keys in steps {
             units = units.saturating_add(keys.len());
@@ -1115,11 +1120,11 @@ fn decode(steps: &[Vec<u8>], baseline: bool, total: usize) -> Result<Done, Strin
 
 fn encode(
     recordings: &[Recording],
-    mode: fux::encode::KeyMode,
+    mode: fux_vt::keys::encode::KeyMode,
     baseline: bool,
     total: usize,
 ) -> Result<Done, String> {
-    let all: Vec<fux::keys::Keystroke> = keys(recordings, None)
+    let all: Vec<fux_vt::keys::Keystroke> = keys(recordings, None)
         .iter()
         .flat_map(|keys| strokes(keys))
         .collect();
@@ -1135,7 +1140,7 @@ fn encode(
                 black_box(stroke);
                 continue;
             }
-            fux::encode::key_bytes(black_box(stroke), mode, &mut out);
+            fux_vt::keys::encode::key_bytes(black_box(stroke), mode, &mut out);
             black_box(&out);
             out.clear();
         }
@@ -1147,7 +1152,7 @@ fn encode(
     })
 }
 
-fn presentation() -> Result<fux::presentation::Presentation, String> {
+fn presentation() -> Result<fux_wire::presentation::Presentation, String> {
     fux::script::default_state()
         .map(|s| s.preferences.presentation())
         .map_err(|e| e.to_string())
@@ -1158,8 +1163,8 @@ fn pane_options(history: usize) -> Result<command::PaneOptions, String> {
         history_bytes: command::HistoryBytes::new(history).ok_or("history budget")?,
         program_clipboard: true,
         reflow: true,
-        alternate_scroll_lines: fux::command::ScrollLines::new(5).ok_or("scroll lines")?,
-        picture_bytes: fux::command::PictureBytes::new(100663296).ok_or("pictures")?,
+        alternate_scroll_lines: fux_wire::command::ScrollLines::new(5).ok_or("scroll lines")?,
+        picture_bytes: fux_wire::command::PictureBytes::new(100663296).ok_or("pictures")?,
     })
 }
 
@@ -1174,9 +1179,10 @@ fn initial() -> Result<command::InitialWorkspace, String> {
 }
 
 /// A session of `panes` panes, with output supplied by the workload.
-fn session(panes: usize) -> Result<fux::session::Session, String> {
+fn session(panes: usize) -> Result<fux_server::session::Session, String> {
     let now = std::time::Instant::now();
-    let mut s = fux::session::Session::new("/nonexistent/fux.sock".into(), false, server_run()?);
+    let mut s =
+        fux_server::session::Session::new("/nonexistent/fux.sock".into(), false, server_run()?);
     s.start(
         fux_vt::Size::new(24, 80).map_err(|e| e.to_string())?,
         &initial()?,
@@ -1186,7 +1192,7 @@ fn session(panes: usize) -> Result<fux::session::Session, String> {
     for _ in 1..panes {
         let split = command::Command::Split {
             options: pane_options(HISTORY)?,
-            axis: fux::layout::Axis::Horizontal,
+            axis: fux_wire::layout::Axis::Horizontal,
             target: *s.parts.panes().keys().next().ok_or("no pane")?,
             start: initial()?.start,
             cwd: Some(std::env::current_dir().map_err(|e| e.to_string())?),
@@ -1195,7 +1201,7 @@ fn session(panes: usize) -> Result<fux::session::Session, String> {
         };
         s.run_command(
             &split,
-            &fux::session::Origin::Cli(fux::session::Caller::default()),
+            &fux_server::session::Origin::Cli(fux_server::session::Caller::default()),
             now,
         );
     }
@@ -1217,12 +1223,12 @@ fn wait(recordings: &[Recording], baseline: bool, total: usize) -> Result<Done, 
     let mut s = session(4)?;
     let panes: Vec<_> = s.parts.panes().keys().copied().collect();
     let now = std::time::Instant::now();
-    let arm = |s: &fux::session::Session| {
+    let arm = |s: &fux_server::session::Session| {
         let watches = (panes.iter())
             .filter_map(|p| Some((*p, s.parts.panes().get(p)?.counts())))
             .collect();
-        let watches = fux::wait::Watches::Panes(watches);
-        fux::wait::Waiting::new(watches, s.run, now, std::time::Duration::from_secs(3600))
+        let watches = fux_server::wait::Watches::Panes(watches);
+        fux_server::wait::Waiting::new(watches, s.run, now, std::time::Duration::from_secs(3600))
     };
     let all: Vec<u8> = recordings.iter().flat_map(Recording::bytes).collect();
     let bytes = repeated(&all, total);
@@ -1274,7 +1280,8 @@ fn library(baseline: bool) -> Result<Done, String> {
 /// and wire encoding of one capture, including dropping its allocations.
 fn capture_history(baseline: bool, history: usize) -> Result<Done, String> {
     let now = std::time::Instant::now();
-    let mut s = fux::session::Session::new("/nonexistent/fux.sock".into(), false, server_run()?);
+    let mut s =
+        fux_server::session::Session::new("/nonexistent/fux.sock".into(), false, server_run()?);
     s.start(
         fux_vt::Size::new(40, 120).map_err(|e| e.to_string())?,
         &command::InitialWorkspace {
@@ -1301,7 +1308,7 @@ fn capture_history(baseline: bool, history: usize) -> Result<Done, String> {
     }
     if !baseline {
         let pane = s.parts.panes().get(&id).ok_or("no pane")?;
-        let capture = fux::capture::pane(
+        let capture = fux_server::capture::pane(
             pane,
             s.run,
             Some(usize::MAX),
@@ -1309,7 +1316,7 @@ fn capture_history(baseline: bool, history: usize) -> Result<Done, String> {
             false,
         )
         .map_err(|e| e.to_string())?;
-        black_box(fux::wire::encode(&capture).map_err(|e| e.to_string())?);
+        black_box(fux_wire::wire::encode(&capture).map_err(|e| e.to_string())?);
     }
     Ok(Done {
         units: 1,
@@ -1341,12 +1348,12 @@ fn compile(baseline: bool, compiles: usize) -> Result<Done, String> {
 
 /// Reads what every pane's output left waiting at its call's budget
 /// (`Pane::read_unread`), as the server's next turns do, until none waits.
-fn unread(s: &mut fux::session::Session) {
+fn unread(s: &mut fux_server::session::Session) {
     let now = std::time::Instant::now();
     loop {
         let waiting: Vec<_> = (s.timers())
             .filter_map(|(_, timer)| {
-                matches!(timer, fux::session::Timer::Unread(_)).then_some(timer)
+                matches!(timer, fux_server::session::Timer::Unread(_)).then_some(timer)
             })
             .collect();
         if waiting.is_empty() {
@@ -1462,7 +1469,7 @@ mod tests {
     #[test]
     fn the_history_resized_is_full() -> Result<(), String> {
         let (fill, history) = (super::FILL / 16, super::HISTORY / 16);
-        let pane = fux::pane::OPTIONS
+        let pane = fux_server::pane::OPTIONS
             .with(fux_vt::Feature::Reflow)
             .with(fux_vt::Feature::Pictures);
         let rows = super::full_history(fill, history, pane, false)?

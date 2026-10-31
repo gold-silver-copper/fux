@@ -1,8 +1,8 @@
 #![no_main]
 //! Input: one byte choosing a piece size (0 is the whole stream at once),
 //! then the bytes a peer sends on the socket.
-use fux::bytes::ByteQueue;
-use fux::protocol::{
+use fux_vt::bytes::ByteQueue;
+use fux_wire::protocol::{
     Asked, Attach, AttachedFrame, Decoder, Error, Frame, Greeting, Hello, MAX_FRAME, ToAttached,
     ToCommand, split_into,
 };

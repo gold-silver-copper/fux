@@ -14,6 +14,18 @@ mod system;
 mod terminal;
 mod text;
 
+/// The two sides, each as the baseline's one crate names its modules: the
+/// release (`baseline`), and the fux under test (`current`), whose modules
+/// now live in fux-wire, fux-server and fux-vt.
+mod sides {
+    pub use baseline;
+    pub mod current {
+        pub use fux_server::copy;
+        pub use fux_vt::keys::{self, decode, encode};
+        pub use fux_wire::{act, id, json, layout, words};
+    }
+}
+
 use rng::Rng;
 use std::process::ExitCode;
 use std::time::Instant;

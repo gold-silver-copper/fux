@@ -293,7 +293,7 @@ fn request(argv: &[String]) -> Result<Option<Request>, String> {
 /// The fixture selects reflow and pictures, as bundled client defaults do,
 /// and adds the reports esctest needs that panes leave off.
 pub fn options() -> fux_vt::Options {
-    fux::pane::OPTIONS
+    fux_server::pane::OPTIONS
         .with(fux_vt::Feature::Reflow)
         .with(fux_vt::Feature::Pictures)
         .with(fux_vt::Feature::RectangleChecksums)

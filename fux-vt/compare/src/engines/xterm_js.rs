@@ -473,7 +473,7 @@ impl XtermJs {
         let line = format!(
             r#"{{"op":"write","id":{},"data":"{}","ack":{ack}}}"#,
             self.id,
-            fux::json::base64(bytes)
+            fux_wire::json::base64(bytes)
         );
         if ack {
             node.ask(&line).map(drop)

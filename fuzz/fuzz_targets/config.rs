@@ -11,9 +11,9 @@
 //!   as a config for a bounded number of steps, up to its first request
 //!   for the server.
 use fux::keymap::{Binding, Held, Keymap, Layer, Node};
-use fux::keys::{KeyPress, Keystroke};
 use fux::screens::Effect;
 use fux::script::{Bound, Fux, Host};
+use fux_vt::keys::{KeyPress, Keystroke};
 use fuxth::{Machine, Outcome};
 use libfuzzer_sys::fuzz_target;
 
@@ -164,7 +164,8 @@ impl Models {
 
     /// Applies `statement`: whether it was accepted.
     fn apply(&mut self, statement: &Statement) -> bool {
-        let escape = |k: &KeyPress| k.key == fux::keys::Key::Escape && !k.mods.ctrl && !k.mods.alt;
+        let escape =
+            |k: &KeyPress| k.key == fux_vt::keys::Key::Escape && !k.mods.ctrl && !k.mods.alt;
         match statement {
             Statement::Bind { keys, code, root } => {
                 // The code is compiled as it is bound.
@@ -332,7 +333,8 @@ fn check_keymap(keymap: &Keymap) {
     }
     check_layer(keymap, &mut Vec::new(), &keymap.bindings);
     for (keys, _, _) in keymap.bindings.all() {
-        let escape = |k: &KeyPress| k.key == fux::keys::Key::Escape && !k.mods.ctrl && !k.mods.alt;
+        let escape =
+            |k: &KeyPress| k.key == fux_vt::keys::Key::Escape && !k.mods.ctrl && !k.mods.alt;
         assert!(!keys.iter().any(escape), "Escape bound: {keys:?}");
     }
     for (i, (key, _)) in keymap.root.iter().enumerate() {
@@ -365,7 +367,7 @@ fn run_config(
     let mut state = default_state().draft();
     state.keys = keymap.clone();
     let mut host = Host::new(
-        fux::protocol::Context::default(),
+        fux_wire::protocol::Context::default(),
         Some(&mut state),
         &mut out,
     );
@@ -410,13 +412,13 @@ impl Client {
             let root = self.keymap.root.iter().find(|(k, _)| *k == press);
             let expected = if Some(press) == self.keymap.prefix {
                 let column = self.keymap.column(&[], 0);
-                vec![Effect::Open(fux::act::Panel::Column(
+                vec![Effect::Open(fux_wire::act::Panel::Column(
                     column.unwrap_or_default(),
                 ))]
             } else if let Some((_, binding)) = root {
                 vec![Effect::Run(binding.code.clone().into())]
             } else {
-                vec![Effect::Send(fux::act::Act::Key(stroke))]
+                vec![Effect::Send(fux_wire::act::Act::Key(stroke))]
             };
             assert_eq!(steps, expected, "{press} typed");
         }

@@ -11,7 +11,7 @@ pub trait Shape {
     fn shape(&self) -> String;
 }
 
-impl Shape for fux::layout::Tree {
+impl Shape for fux_wire::layout::Tree {
     fn shape(&self) -> String {
         format!("{self:?}")
     }
@@ -60,9 +60,11 @@ macro_rules! stack {
     ) => {
         mod $name {
             use super::{Change, Shape};
-            use $fux::keys::Direction;
-            use $fux::layout::{self, Axis, Placement, Rect, Separator, Side, $tree as Tree};
-            use $fux::$ids::PaneId;
+            use crate::sides::$fux::keys::Direction;
+            use crate::sides::$fux::layout::{
+                self, Axis, Placement, Rect, Separator, Side, $tree as Tree,
+            };
+            use crate::sides::$fux::$ids::PaneId;
 
             fn axis(horizontal: bool) -> Axis {
                 if horizontal {
@@ -220,7 +222,7 @@ stack!(
 );
 stack!(
     cur,
-    fux,
+    current,
     id,
     Tree,
     |x: u16, y: u16, w: u16, h: u16| {
@@ -238,8 +240,12 @@ stack!(
     // A split needs a tree with a pane in it.
     |root: &mut Option<Tree>, target, new, axis, side| {
         root.as_mut().is_some_and(|r| {
-            r.split((target, new), (axis, side), fux::layout::Shares::HALVED)
-                .is_ok()
+            r.split(
+                (target, new),
+                (axis, side),
+                fux_wire::layout::Shares::HALVED,
+            )
+            .is_ok()
         })
     },
     // Removed, as the baseline's true; `None` once the last pane goes.

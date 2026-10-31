@@ -347,7 +347,9 @@ impl Fixture {
     /// A client that asks for 9000 by 9000, speaking the protocol: why
     /// the server refused it, or a failure if it was let in.
     pub fn too_big(&self) -> Result<String, String> {
-        use fux::protocol::{Attach, Decoder, Frame, Greeting, Hello, PROTOCOL, Role, ToAttached};
+        use fux_wire::protocol::{
+            Attach, Decoder, Frame, Greeting, Hello, PROTOCOL, Role, ToAttached,
+        };
         let mut stream = UnixStream::connect(&self.socket).map_err(|e| e.to_string())?;
         let hello = Hello {
             protocol: PROTOCOL,
