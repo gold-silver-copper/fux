@@ -1,3 +1,8 @@
+//! A snapshot of the session, `inspect`'s answer: a reply's values, each
+//! `std::vec::Vec` and `std::string::String` written here grown only
+//! through the request's `Budget`, which charges its region first.
+fuxth_core::bounded_only!();
+
 use super::{Error, Session};
 use crate::view::{ClientKind, Mode};
 use crate::workspace::Fit;
@@ -64,10 +69,10 @@ impl Session {
             cursor: self.parts.journal().end(self.run),
             scope,
             projection: projection.clone(),
-            workspaces: Vec::new(),
-            tabs: Vec::new(),
-            panes: Vec::new(),
-            clients: Vec::new(),
+            workspaces: std::vec::Vec::new(),
+            tabs: std::vec::Vec::new(),
+            panes: std::vec::Vec::new(),
+            clients: std::vec::Vec::new(),
         };
         let mut nodes = 0usize;
         for ws in self.parts.workspaces().iter().filter(|_| !empty) {
@@ -84,7 +89,7 @@ impl Session {
             if !ws.tabs().iter().any(|tab| selected(&tab)) {
                 continue;
             }
-            let mut tabs = Vec::new();
+            let mut tabs = std::vec::Vec::new();
             for tab in ws.tabs() {
                 add(&mut tabs, tab.id(), budget, &mut nodes)?;
             }
@@ -244,7 +249,7 @@ impl Session {
     }
 }
 
-fn optional(text: Option<&str>, budget: &mut Budget) -> Result<Option<String>, Error> {
+fn optional(text: Option<&str>, budget: &mut Budget) -> Result<Option<std::string::String>, Error> {
     text.map(|s| budget.string(s)).transpose()
 }
 
@@ -260,7 +265,12 @@ fn path(value: &std::ffi::OsStr, budget: &mut Budget) -> Result<inspect::Path, E
     })
 }
 
-fn add<T>(out: &mut Vec<T>, value: T, budget: &mut Budget, nodes: &mut usize) -> Result<(), Error> {
+fn add<T>(
+    out: &mut std::vec::Vec<T>,
+    value: T,
+    budget: &mut Budget,
+    nodes: &mut usize,
+) -> Result<(), Error> {
     *nodes = nodes
         .checked_add(1)
         .filter(|n| *n <= inspect::NODES)
@@ -271,10 +281,14 @@ fn add<T>(out: &mut Vec<T>, value: T, budget: &mut Budget, nodes: &mut usize) ->
 }
 
 /// Preorder nodes share arrange's schema and fixed root index zero.
-fn flatten(root: &Tree, budget: &mut Budget, count: &mut usize) -> Result<Vec<Node>, Error> {
+fn flatten(
+    root: &Tree,
+    budget: &mut Budget,
+    count: &mut usize,
+) -> Result<std::vec::Vec<Node>, Error> {
     let mut work = budget.vector(1)?;
     work.push((root, None));
-    let mut nodes = Vec::new();
+    let mut nodes = std::vec::Vec::new();
     while let Some((tree, parent)) = work.pop() {
         let at = u32::try_from(nodes.len()).map_err(|_| Budget::exceeded())?;
         if let Some((index, second_child)) = parent {

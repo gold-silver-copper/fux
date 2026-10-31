@@ -1255,7 +1255,8 @@ fn wait(recordings: &[Recording], baseline: bool, total: usize) -> Result<Done, 
             if baseline {
                 continue;
             }
-            black_box(waiting.answer(&s, now));
+            let budget = &mut s.requests.open().map_err(|e| e.to_string())?;
+            black_box(waiting.answer(&s, budget, now));
             black_box(waiting.due());
         }
     }

@@ -5593,6 +5593,7 @@ mod tests {
             Some(client),
             &ClientAction::Capture,
             Here::Cli(None, None),
+            &mut session.budget(),
             Instant::now(),
         );
         let error = result.err().ok_or("capture succeeded")?;

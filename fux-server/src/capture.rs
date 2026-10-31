@@ -2,6 +2,10 @@
 //! sliced and joined as asked, with its colours and attributes and its
 //! pane's state, as data (`Captured`) that the client renders as text or
 //! as JSON.
+// What a capture is built of are a reply's values: each `std::vec::Vec`
+// and `std::string::String` written here grows only through the request's
+// `Budget`, which charges its region first.
+fuxth_core::bounded_only!();
 use crate::pane::{Pane, Process, Runs};
 use fux_vt::{Attributes, CommandMark, Mode, MouseProtocolMode, Row, Screen};
 use fux_wire::answer::{Captured, Line, Of, Run, highlighted};
@@ -111,17 +115,17 @@ fn build<'a>(
 /// its text, its runs with their styles, and what trimming keeps of it,
 /// if any: its bytes, its runs, and its last run as kept.
 struct Builder {
-    lines: Vec<Line>,
+    lines: std::vec::Vec<Line>,
     table: Table,
     empty: usize,
     wire: fux_wire::wire::Writer,
-    text: String,
-    runs: Vec<(Attributes, Run)>,
+    text: std::string::String,
+    runs: std::vec::Vec<(Attributes, Run)>,
     kept: Option<(usize, usize, Run)>,
 }
 
 impl Builder {
-    fn new(lines: Vec<Line>, of: &Of) -> Result<Self, fux_wire::code::Error> {
+    fn new(lines: std::vec::Vec<Line>, of: &Of) -> Result<Self, fux_wire::code::Error> {
         let mut wire =
             fux_wire::wire::Writer::counting(fux_wire::wire::MAX_REPLY.saturating_sub(64));
         fux_wire::wire::Wire::put(of, &mut wire);
@@ -131,8 +135,8 @@ impl Builder {
             table: Table::default(),
             empty: 0,
             wire,
-            text: String::new(),
-            runs: Vec::new(),
+            text: std::string::String::new(),
+            runs: std::vec::Vec::new(),
             kept: None,
         })
     }
@@ -262,9 +266,9 @@ fn cells_of<'a>(
 fn room(
     budget: &mut fux_wire::wire::Budget,
     bytes: usize,
-) -> Result<String, fux_wire::code::Error> {
+) -> Result<std::string::String, fux_wire::code::Error> {
     budget.charge(bytes)?;
-    let mut text = String::new();
+    let mut text = std::string::String::new();
     text.try_reserve_exact(bytes).map_err(|_| too_large())?;
     Ok(text)
 }
@@ -275,8 +279,8 @@ fn room(
 /// most half the slots are taken, so a search ends at an empty one.
 #[derive(Default)]
 struct Table {
-    styles: Vec<Attributes>,
-    slots: Vec<u32>,
+    styles: std::vec::Vec<Attributes>,
+    slots: std::vec::Vec<u32>,
 }
 
 impl Table {
@@ -528,7 +532,7 @@ pub fn client(
         }
         let line = Line {
             text,
-            runs: Vec::new(),
+            runs: std::vec::Vec::new(),
         };
         built.push(line, budget)?;
     }
@@ -537,7 +541,15 @@ pub fn client(
         ..CaptureView::default()
     };
     let size = (grid.rows, grid.cols);
-    captured(of, size, grid.cursor, built.lines, Vec::new(), view, budget)
+    captured(
+        of,
+        size,
+        grid.cursor,
+        built.lines,
+        std::vec::Vec::new(),
+        view,
+        budget,
+    )
 }
 
 /// What is known of a pane's program, for `json`: its foreground program,
@@ -549,7 +561,7 @@ pub(crate) fn state(
     pane: &Pane,
     copy_mode: bool,
     budget: &mut fux_wire::wire::Budget,
-) -> Result<Vec<(&'static str, Json)>, fux_wire::code::Error> {
+) -> Result<std::vec::Vec<(&'static str, Json)>, fux_wire::code::Error> {
     let screen = pane.screen();
     let cell = screen.graphics().cell();
     // The terminal reports a group, whose leader may already have exited.
@@ -594,7 +606,7 @@ pub(crate) fn state(
     let hung_up = matches!(pane.process(), Process::HungUp(_));
     let mouse = screen.mouse_protocol_mode();
     let bracketed_paste = screen.mode(Mode::BracketedPaste);
-    let mut pictures = Vec::new();
+    let mut pictures = std::vec::Vec::new();
     for shown in screen.pictures() {
         budget.reserve(&mut pictures, 1)?;
         pictures.push(picture(shown, budget)?);
@@ -709,7 +721,8 @@ fn arguments(
     budget: &mut fux_wire::wire::Budget,
     observe: impl FnOnce(
         &mut fux_wire::wire::Budget,
-    ) -> Result<Option<Vec<std::ffi::OsString>>, fux_wire::code::Error>,
+    )
+        -> Result<Option<std::vec::Vec<std::ffi::OsString>>, fux_wire::code::Error>,
 ) -> Result<(Json, Json), fux_wire::code::Error> {
     let argv = match observe(budget)? {
         Some(words) => {
@@ -761,8 +774,8 @@ fn captured(
     of: Of,
     (screen_rows, screen_cols): (u16, u16),
     screen_cursor: Option<(u16, u16)>,
-    lines: Vec<Line>,
-    styles: Vec<Attributes>,
+    lines: std::vec::Vec<Line>,
+    styles: std::vec::Vec<Attributes>,
     view: CaptureView,
     budget: &mut fux_wire::wire::Budget,
 ) -> Result<Captured, fux_wire::code::Error> {

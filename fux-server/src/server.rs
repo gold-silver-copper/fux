@@ -1423,7 +1423,7 @@ impl Server {
             // The last answer is still being written: the next request waits.
             Stage::Command if !conn.out.is_empty() => return Ok(false),
             Stage::Command => {
-                let Some((kind, payload)) = decoder.next()? else {
+                let Some((kind, payload)) = decoder.undecoded()? else {
                     return Ok(false);
                 };
                 self.command(index, kind, payload, now)?;

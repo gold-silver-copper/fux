@@ -62,10 +62,6 @@ impl Default for Requests {
 /// made. One its region can't hold is refused, `too_long`, its reply to be
 /// made once that region is given back; a frame that is no request is an
 /// error.
-#[expect(
-    clippy::type_complexity,
-    reason = "a request, a refusal to answer, or a frame that is none"
-)]
 pub fn decoded(
     requests: &Requests,
     kind: u8,

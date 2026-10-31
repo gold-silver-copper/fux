@@ -701,7 +701,7 @@ impl Decoder {
         &'a mut self,
         budget: &mut Budget,
     ) -> Result<Option<F>, Error> {
-        match self.next()? {
+        match self.undecoded()? {
             Some((kind, payload)) => F::decode(kind, payload, budget).map(Some),
             None => Ok(None),
         }
@@ -709,7 +709,7 @@ impl Decoder {
 
     /// The next whole frame's kind and payload, undecoded and lent from
     /// the decoder; `Ok(None)` if more bytes are needed.
-    pub fn next(&mut self) -> Result<Option<(u8, &[u8])>, Error> {
+    pub fn undecoded(&mut self) -> Result<Option<(u8, &[u8])>, Error> {
         let Some(whole) = self.whole()? else {
             return Ok(None);
         };
