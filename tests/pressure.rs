@@ -124,6 +124,36 @@ fn a_bound_program_follows_the_keys_before_it() -> Outcome {
     received(&out, &expected)
 }
 
+/// F5 runs a program that only asks: its request waits for every frame
+/// its client sent before it (`fux_wire::protocol::Fence`).
+const FENCE: &str = "str F5 str 'ls drop' bind-root";
+
+/// Waits until a server started with [`FENCE`] has handled every frame
+/// `client` sent: `send` waits for the program F5 runs.
+fn handled(client: &mut Client) -> Outcome {
+    client.send(b"\x1b[15~")
+}
+
+/// How many pieces of input pane %1's full queue refused: its `lost`.
+fn refused(server: &Server) -> Result<usize, String> {
+    let lost = [
+        "str", "%1", "pane", "str", "lost", "get", "str", "input", "get",
+    ];
+    server.ok(&lost)?.trim().parse().map_err(e)
+}
+
+/// Stops `pid` and waits until it has stopped, so it reads nothing more.
+fn stop(pid: i32) -> Outcome {
+    signal(pid, fuxix::process::Signal::Stop);
+    eventually("stopped", || {
+        let out = std::process::Command::new("ps")
+            .args(["-o", "stat=", "-p", &pid.to_string()])
+            .output()
+            .map_err(e)?;
+        Ok(out.stdout.starts_with(b"T"))
+    })
+}
+
 /// A bracketed paste of `text`, as a terminal sends one.
 fn paste(text: &[u8]) -> Vec<u8> {
     [b"\x1b[200~".as_slice(), text, b"\x1b[201~"].concat()
@@ -142,11 +172,12 @@ fn pasted(i: usize, len: usize) -> Vec<u8> {
 /// being lost: thousands of single keys, from a client and from
 /// `send-keys`, and many pastes, all arrive in order once it reads again.
 /// Past the queue's bound, input is refused whole with the documented
-/// notice, and, as it says, nothing more is queued until its terminal takes some:
-/// what arrives is exactly what was accepted.
+/// notice and counted in the pane's `lost`, and, as it says, nothing more
+/// is queued until its terminal takes some: what arrives is exactly what
+/// was not counted.
 #[test]
 fn input_waits_while_the_queue_is_full() -> Outcome {
-    let server = Server::start("")?;
+    let server = Server::start(FENCE)?;
     let mut client = server.attach(20, 100)?;
     client.ready()?;
     let (cat, out) = recorder(&server, "")?;
@@ -154,7 +185,7 @@ fn input_waits_while_the_queue_is_full() -> Outcome {
     let mut expected = Vec::new();
 
     // Keys, one piece each.
-    signal(cat, fuxix::process::Signal::Stop);
+    stop(cat)?;
     for i in 0..3000u32 {
         let key = b'a'.saturating_add(u8::try_from(i % 26).map_err(e)?);
         client.send(&[key])?;
@@ -171,7 +202,7 @@ fn input_waits_while_the_queue_is_full() -> Outcome {
     received(&out, &expected)?;
 
     // Eighty pastes of 2000 bytes.
-    signal(cat, fuxix::process::Signal::Stop);
+    stop(cat)?;
     for i in 0..80 {
         let text = pasted(i, 2000);
         client.send(&paste(&text))?;
@@ -180,8 +211,9 @@ fn input_waits_while_the_queue_is_full() -> Outcome {
     signal(cat, fuxix::process::Signal::Cont);
     received(&out, &expected)?;
 
-    // Past the bound: pastes of 60,000 bytes, more than fit.
-    signal(cat, fuxix::process::Signal::Stop);
+    // Past the bound: pastes of 60,000 bytes, more than fit, sent once
+    // `cat` reads nothing.
+    stop(cat)?;
     let mut pastes = Vec::new();
     for i in 0..20 {
         let text = pasted(i, 60_000);
@@ -195,46 +227,22 @@ fn input_waits_while_the_queue_is_full() -> Outcome {
     })?;
     // Nothing more is queued until its terminal takes some: not even a key.
     client.send(b"Z")?;
-    std::thread::sleep(Duration::from_millis(200));
-    signal(cat, fuxix::process::Signal::Cont);
-    // What arrives is whole pastes, in order, and the key is not among them.
-    let before = expected.len();
-    // Until the file stops growing.
-    let mut last = 0;
-    eventually("the accepted pastes", || {
-        std::thread::sleep(Duration::from_millis(300));
-        let now = std::fs::metadata(&out).map(|m| m.len()).unwrap_or(0);
-        let settled = now == last && now > u64::try_from(before).map_err(e)?;
-        last = now;
-        Ok(settled)
-    })?;
-    let got = std::fs::read(&out).map_err(e)?;
-    let tail = got.get(before..).unwrap_or_default();
-    let whole = pastes
-        .iter()
-        .scan(Vec::new(), |sofar, p| {
-            sofar.extend_from_slice(p);
-            Some(sofar.clone())
-        })
-        .position(|sofar| sofar == tail);
-    let accepted = whole.ok_or_else(|| {
-        format!(
-            "{} bytes arrived after the stop, not a run of whole pastes{}",
-            tail.len(),
-            if tail.last() == Some(&b'Z') {
-                ", and the key refused by the notice arrived"
-            } else {
-                ""
-            }
-        )
-    })?;
+    handled(&mut client)?;
+    // Each piece refused is counted, the key among them: those not
+    // counted were accepted, the pastes before the first refused.
+    let accepted = (pastes.len() + 1)
+        .checked_sub(refused(&server)?)
+        .ok_or("more pieces refused than were sent")?;
     assert!(
-        accepted < 19,
+        accepted < 20,
         "every paste fitted: the bound was never reached"
     );
+    signal(cat, fuxix::process::Signal::Cont);
+    // What arrives is exactly the pastes accepted, whole and in order.
+    expected.extend(pastes.iter().take(accepted).flatten());
+    received(&out, &expected)?;
     // Reading again, input is accepted again.
     client.send(b"Y")?;
-    let mut expected = got;
     expected.push(b'Y');
     received(&out, &expected)?;
     Ok(())
@@ -266,7 +274,7 @@ fn frames_past_a_turn_wait_for_the_next() -> Outcome {
 /// program reads again, with nothing else happening in the session.
 #[test]
 fn a_scheme_report_refused_is_sent_as_its_program_reads_again() -> Outcome {
-    let server = Server::start("")?;
+    let server = Server::start(FENCE)?;
     let mut client = server.attach(20, 100)?;
     client.ready()?;
     // The terminal's scheme is dark; the program takes reports.
@@ -281,7 +289,7 @@ fn a_scheme_report_refused_is_sent_as_its_program_reads_again() -> Outcome {
         server.ok(&["ls", "listing"])?;
         Ok(has("\x1b[?997;1n"))
     })?;
-    signal(cat, fuxix::process::Signal::Stop);
+    stop(cat)?;
     for i in 0..20 {
         client.send(&paste(&pasted(i, 60_000)))?;
     }
@@ -292,7 +300,7 @@ fn a_scheme_report_refused_is_sent_as_its_program_reads_again() -> Outcome {
     })?;
     // Light now: refused, as the queue refuses everything.
     client.send(b"\x1b[?997;2n")?;
-    std::thread::sleep(Duration::from_millis(200));
+    handled(&mut client)?;
     signal(cat, fuxix::process::Signal::Cont);
     eventually("the refused report sent", || {
         Ok(std::fs::read(&out)
