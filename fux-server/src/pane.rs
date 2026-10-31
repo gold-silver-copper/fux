@@ -418,13 +418,11 @@ pub enum Runs {
     Explicit(Launch),
 }
 
-/// How a program was started: its words, where, and the variables set for
-/// it.
+/// How a program was started: its words, and where.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Launch {
     pub argv: fux_wire::command::Program,
     pub cwd: std::path::PathBuf,
-    pub env: fux_wire::command::EnvPatch,
 }
 
 impl Runs {
@@ -1690,7 +1688,6 @@ pub(crate) mod tests {
         Ok(Runs::Shell(Launch {
             argv: fux_wire::command::Program::new("/bin/sh".into(), Vec::new())?,
             cwd: "/".into(),
-            env: fux_wire::command::EnvPatch::default(),
         }))
     }
 

@@ -433,33 +433,6 @@ fn check_mode_is_explicit_and_independent_of_the_filename() -> Outcome {
     Ok(())
 }
 
-/// Selected absence is saved even when the patch has no present values.
-#[test]
-fn an_absent_selection_unsets_the_server_value() -> Outcome {
-    let server = Server::start("")?;
-    let code = "str copy-environment list str ENV end set agent-opts 80 24 size \
-        str /bin/sh program str -c arg str 'echo ${ENV-unset}' arg new-tab";
-    let out = std::process::Command::new(FUX)
-        .arg(code)
-        .env("FUX_SOCKET", &server.socket)
-        .env_remove("FUX_PANE")
-        .env_remove("FUX_SERVER")
-        .env_remove("ENV")
-        .output()
-        .map_err(e)?;
-    assert!(
-        out.status.success(),
-        "{}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    let answer = String::from_utf8(out.stdout).map_err(e)?;
-    let pane = answer.trim().split(':').next().ok_or("pane")?;
-    server.exits(pane)?;
-    assert_eq!(server.ok(&[pane, "capture"])?.trim(), "unset");
-    assert!(server.ok(&["all", "dump"])?.contains("str 'ENV' unset-env"));
-    Ok(())
-}
-
 /// The examples of the words a config uses check as a config: none binds
 /// after a key bound by default.
 #[test]
@@ -477,73 +450,6 @@ fn the_config_words_examples_check() -> Outcome {
         let checked = server.fux(&["str", &path, "str", "config", "check"])?;
         assert_eq!(checked.status, 0, "{example}: {}", checked.stderr);
     }
-    Ok(())
-}
-
-/// `copy-environment` names what a new pane takes from the client that
-/// made it: one the client has is passed on, as the bytes it is, UTF-8 or
-/// not; one it lacks is removed, even though the server has it (here
-/// `ENV`, which the test server is given).
-#[test]
-fn copy_environment_takes_the_clients_variables_or_none() -> Outcome {
-    use std::os::unix::ffi::OsStrExt;
-    let server =
-        Server::start("str copy-environment list str ENV str FUXT_GIVEN str FUXT_BYTES end set")?;
-    let shown = "echo \"[${ENV-unset}] [${FUXT_GIVEN-unset}]\"; \
-                 printf %s \"${FUXT_BYTES-unset}\" | od -An -tx1";
-    let out = std::process::Command::new(FUX)
-        .args([
-            "agent-opts",
-            "list",
-            "str",
-            "ENV",
-            "str",
-            "FUXT_GIVEN",
-            "str",
-            "FUXT_BYTES",
-            "end",
-            "copy-environment",
-            "80",
-            "24",
-            "size",
-            "str",
-            "sh",
-            "program",
-            "str",
-            "-c",
-            "arg",
-            "str",
-            shown,
-            "arg",
-            "str",
-            "FUXT_OTHER",
-            "str",
-            "x",
-            "env",
-            "new-tab",
-        ])
-        .env("FUX_SOCKET", &server.socket)
-        .env("XDG_CONFIG_HOME", server.dir.join("config"))
-        .env_remove("FUX_PANE")
-        .env_remove("ENV")
-        .env("FUXT_GIVEN", "yes")
-        .env("FUXT_BYTES", std::ffi::OsStr::from_bytes(b"caf\xe9"))
-        .output()
-        .map_err(e)?;
-    let pane = String::from_utf8_lossy(&out.stdout);
-    let pane = pane.split(':').next().ok_or("its pane")?;
-    server.exits(pane)?;
-    let stdout = server.ok(&["str", pane, "pane", "capture"])?;
-    assert!(stdout.contains("[unset] [yes]"), "{stdout}");
-    // od spaces its bytes as each system likes.
-    let bytes = stdout.split_whitespace().collect::<Vec<_>>().join(" ");
-    assert!(bytes.contains("63 61 66 e9"), "{stdout}");
-    let dump = server.ok(&["all", "dump"])?;
-    assert!(
-        dump.contains("str 'FUXT_BYTES' drop # ")
-            && dump.contains(": environment is not UTF-8 text; its saved value is omitted"),
-        "{dump}"
-    );
     Ok(())
 }
 
@@ -796,47 +702,6 @@ fn launches_save_the_callers_argv_role_and_environment() -> Outcome {
         );
         assert_eq!(server.panes()?.len(), before);
     }
-    let code = "str copy-environment list str F4_VALUE str ENV end set \
-        agent-opts 80 24 size str /bin/sh program str -c arg \
-        str 'printf \"%s|%s\" \"$F4_VALUE\" \"${ENV-unset}\"' arg new-tab";
-    let out = std::process::Command::new(FUX)
-        .arg(code)
-        .env("FUX_SOCKET", &server.socket)
-        .env_remove("FUX_PANE")
-        .env_remove("FUX_SERVER")
-        .env_remove("ENV")
-        .env("F4_VALUE", "saved")
-        .output()
-        .map_err(e)?;
-    assert!(
-        out.status.success(),
-        "{}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    let answer = String::from_utf8(out.stdout).map_err(e)?;
-    let pane = answer.trim().split(':').next().ok_or("program pane")?;
-    server.exits(pane)?;
-    assert_eq!(server.ok(&[pane, "capture"])?.trim(), "saved|unset");
-    // A new caller's selection never replaces the saved patch on respawn.
-    server.ok(&[&format!(
-        "str copy-environment list str HOME end set {pane} respawn drop"
-    )])?;
-    server.exits(pane)?;
-    assert_eq!(server.ok(&[pane, "capture"])?.trim(), "saved|unset");
-    let dump = server.ok(&["all", "dump"])?;
-    assert!(dump.contains("list end copy-environment"), "{dump}");
-    assert!(dump.contains("str 'ENV' unset-env"), "{dump}");
-    assert!(dump.contains("str 'F4_VALUE' str 'saved' env"), "{dump}");
-    // Changing local selection before replay cannot add a new selected name.
-    let replay = format!("str copy-environment list str F4_LEAK end set\n{dump}");
-    let _ = server.ok(&[&replay])?;
-    assert_eq!(
-        server
-            .ok(&["all", "dump"])?
-            .matches("str 'F4_LEAK'")
-            .count(),
-        0
-    );
     Ok(())
 }
 

@@ -81,13 +81,9 @@ impl Session {
                     let recipe = if projection == Projection::Recipe {
                         let launch = pane.runs.launch();
                         let argv = launch.argv.iter().map(str::to_owned).collect();
-                        let env = (launch.env.as_slice().iter())
-                            .map(|(name, value)| (name.to_owned(), value.as_deref().map(path)))
-                            .collect();
                         Some(inspect::Recipe {
                             shell: matches!(pane.runs, crate::pane::Runs::Shell(_)),
                             argv,
-                            env,
                             initial_cwd: path(launch.cwd.as_os_str()),
                             observed_cwd: match self.dir_with(*id, &mut Memory)? {
                                 Ok(Some(dir)) => inspect::Directory::Known(path(dir.as_os_str())),

@@ -44,7 +44,6 @@ use crate::engines::pane;
 use crate::snapshot::{self, Diff, Field, Line, Snapshot};
 use fux_server::render::{self, Grid};
 use fux_server::session::{Outgoing, Session};
-use fux_server::view::ClientKind;
 use fux_wire::id::{ClientId, PaneId};
 use fux_wire::layout::{Placement, Rect};
 use fux_wire::protocol::ToAttached;
@@ -258,7 +257,6 @@ impl Through {
             .preferences;
         let client = session
             .attach_as(
-                ClientKind::Terminal,
                 fux_wire::protocol::Attach {
                     initial: Some(fux_wire::command::InitialWorkspace {
                         options: preferences.pane_options(),
@@ -268,7 +266,6 @@ impl Through {
                             Vec::new(),
                         )?),
                         cwd: std::env::current_dir().map_err(|e| e.to_string())?,
-                        env: fux_wire::command::EnvPatch::default(),
                     }),
                     ..fux_wire::protocol::Attach::of(size, preferences.presentation())
                 },

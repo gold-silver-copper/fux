@@ -808,7 +808,6 @@ fn pane(loads: &[Load], baseline: bool) -> Result<Done, String> {
         fux_server::pane::Runs::Shell(fux_server::pane::Launch {
             argv: command::Program::new("/bin/sh".into(), Vec::new())?,
             cwd: "/".into(),
-            env: command::EnvPatch::default(),
         }),
         fux_vt::Size::new(first.rows, first.cols).map_err(|e| e.to_string())?,
         command::PaneOptions {
@@ -878,9 +877,7 @@ fn keystroke(recordings: &[Recording], baseline: bool, keys: usize) -> Result<Do
             presentation()?,
         )
     };
-    let c = s
-        .attach_as(fux_server::view::ClientKind::Terminal, attach, now)
-        .map_err(|e| e.to_string())?;
+    let c = s.attach_as(attach, now).map_err(|e| e.to_string())?;
     let pane = s.parts.panes().keys().next().copied().ok_or("no pane")?;
     // A full screen, as a pane at work shows: the recordings' output.
     for r in recordings.iter().take(8) {
@@ -958,9 +955,7 @@ fn paint(
         initial: Some(initial()?),
         ..fux_wire::protocol::Attach::of(size.map_err(|e| e.to_string())?, presentation()?)
     };
-    let c = s
-        .attach_as(fux_server::view::ClientKind::Terminal, attach, now)
-        .map_err(|e| e.to_string())?;
+    let c = s.attach_as(attach, now).map_err(|e| e.to_string())?;
     if split {
         let split = command::Command::Split {
             options: pane_options(HISTORY)?,
@@ -968,7 +963,6 @@ fn paint(
             target: *s.parts.panes().keys().next().ok_or("no pane")?,
             start: initial()?.start,
             cwd: Some(std::env::current_dir().map_err(|e| e.to_string())?),
-            env: command::EnvPatch::default(),
             shares: None,
         };
         s.run_command(
@@ -1174,7 +1168,6 @@ fn initial() -> Result<command::InitialWorkspace, String> {
         name: None,
         start: command::Start::Shell(command::Program::new("/bin/sh".into(), Vec::new())?),
         cwd: std::env::current_dir().map_err(|e| e.to_string())?,
-        env: command::EnvPatch::default(),
     })
 }
 
@@ -1196,7 +1189,6 @@ fn session(panes: usize) -> Result<fux_server::session::Session, String> {
             target: *s.parts.panes().keys().next().ok_or("no pane")?,
             start: initial()?.start,
             cwd: Some(std::env::current_dir().map_err(|e| e.to_string())?),
-            env: command::EnvPatch::default(),
             shares: None,
         };
         s.run_command(
@@ -1228,7 +1220,12 @@ fn wait(recordings: &[Recording], baseline: bool, total: usize) -> Result<Done, 
             .filter_map(|p| Some((*p, s.parts.panes().get(p)?.counts())))
             .collect();
         let watches = fux_server::wait::Watches::Panes(watches);
-        fux_server::wait::Waiting::new(watches, s.run, now, std::time::Duration::from_secs(3600))
+        fux_server::wait::Waiting::new(
+            watches,
+            s.run,
+            now,
+            Some(std::time::Duration::from_secs(3600)),
+        )
     };
     let all: Vec<u8> = recordings.iter().flat_map(Recording::bytes).collect();
     let bytes = repeated(&all, total);

@@ -1264,7 +1264,6 @@ fn concurrent_empty_attaches_create_one_workspace() -> Outcome {
         )?),
         options: server.state.preferences.pane_options(),
         cwd: server.dir.clone(),
-        env: fux_wire::command::EnvPatch::default(),
     });
     let mut first = connect(&server, &conditional)?;
     // The second branch would fail if used, but the stored workspace wins.
@@ -1297,21 +1296,12 @@ fn concurrent_empty_attaches_create_one_workspace() -> Outcome {
 
 #[test]
 fn existing_attach_ignores_unusable_optional_launch() -> Outcome {
-    use std::ffi::OsString;
-    use std::os::unix::ffi::OsStringExt;
     let server = Server::start("")?;
     let mut terminal = Terminal::start(
         10,
         40,
         &[
             fux(),
-            "str",
-            "copy-environment",
-            "list",
-            "str",
-            "ATTACH_UNUSED",
-            "end",
-            "set",
             "opts",
             "str",
             "",
@@ -1325,8 +1315,7 @@ fn existing_attach_ignores_unusable_optional_launch() -> Outcome {
             command
                 .env("FUX_SOCKET", &server.socket)
                 .env("SHELL", "/bin/sh")
-                .env("XDG_CONFIG_HOME", server.dir.join("config"))
-                .env("ATTACH_UNUSED", OsString::from_vec(vec![0xff]));
+                .env("XDG_CONFIG_HOME", server.dir.join("config"));
         },
     )?;
     terminal.wait_for("%1")?;
@@ -1359,11 +1348,9 @@ fn an_unusable_launch_is_left_out_and_said_only_on_refusal() -> Outcome {
         "read-file",
         "arg",
         "str",
-        "BIG",
-        "str",
         &half,
         "read-file",
-        "env",
+        "arg",
     ];
     for (launch, why) in [
         (&malformed[..], "a program is needed"),
@@ -1409,18 +1396,14 @@ fn an_unusable_launch_is_left_out_and_said_only_on_refusal() -> Outcome {
 #[test]
 fn a_targeted_attach_resolves_no_launch() -> Outcome {
     let server = Server::empty()?;
-    // A shell that fits a launch frame alone, and a small selected variable
-    // that takes the whole request past it.
-    let half: String = std::iter::repeat_n('x', 524_000).collect();
+    // A shell that fits a launch frame alone, which the rest of the attach
+    // request takes past it.
+    let half: String = std::iter::repeat_n('x', 524_250).collect();
     std::fs::write(
         server.dir.join("config/fux/config.fux"),
-        format!(
-            "str shell list str /bin/sh str {half} dup end set\n\
-             str copy-environment list str ATTACH_PAD end set\n"
-        ),
+        format!("str shell list str /bin/sh str {half} dup end set\n"),
     )
     .map_err(e)?;
-    let pad: String = std::iter::repeat_n('x', 4_000).collect();
     for (args, said) in [
         (&["opts", "attach"][..], true),
         (&["opts", "str", "work", "in", "attach"], false),
@@ -1429,8 +1412,7 @@ fn a_targeted_attach_resolves_no_launch() -> Outcome {
             Terminal::start(10, 40, &[[fux()].as_slice(), args].concat(), |command| {
                 command
                     .env("FUX_SOCKET", &server.socket)
-                    .env("XDG_CONFIG_HOME", server.dir.join("config"))
-                    .env("ATTACH_PAD", &pad);
+                    .env("XDG_CONFIG_HOME", server.dir.join("config"));
             })?;
         assert!(!terminal.wait_exit()?.success());
         let output = String::from_utf8_lossy(&terminal.output);

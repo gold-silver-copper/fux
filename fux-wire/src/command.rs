@@ -169,35 +169,6 @@ impl Wire for Program {
     }
 }
 
-/// A shell variable a caller may pass to a pane: letters, digits and `_`,
-/// not first a digit, excluding the pane's reserved identity names.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct EnvName(String);
-
-impl EnvName {
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
-impl std::str::FromStr for EnvName {
-    type Err = String;
-    fn from_str(name: &str) -> Result<EnvName, String> {
-        pane_var(name).map(|()| EnvName(name.to_owned()))
-    }
-}
-
-impl Wire for EnvName {
-    fn put(&self, out: &mut impl crate::wire::Sink) {
-        self.0.put(out);
-    }
-    fn get(r: &mut Reader<'_>) -> Result<Self, Error> {
-        String::get(r)?
-            .parse()
-            .map_err(|_| Error::Bad("variable name"))
-    }
-}
-
 wire! {
     /// A copy by its stable id, or the newest at the time of the request.
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -831,7 +802,6 @@ wire! {
             size: Size,
             /// Where its shell starts (default: the caller's directory).
             cwd: Option<PathBuf>,
-            env: EnvPatch,
             start: Start,
             options: PaneOptions,
         },
@@ -843,7 +813,6 @@ wire! {
             name: Option<String>,
             size: Size,
             cwd: Option<PathBuf>,
-            env: EnvPatch,
             start: Start,
             options: PaneOptions,
         },
@@ -855,7 +824,6 @@ wire! {
             /// Where its shell starts (default: the caller's directory; from a
             /// client, the split pane's).
             cwd: Option<PathBuf>,
-            env: EnvPatch,
             /// The shares of their split the split pane and the new one
             /// take (`shares`), if given; else the pane's is halved.
             shares: Option<(NonZeroU32, NonZeroU32)>,
@@ -866,7 +834,6 @@ wire! {
             target: PaneId,
             /// Ends it first if it still runs.
             kill: bool,
-            env: EnvPatch,
             /// Another program instead: the one it ran without.
             argv: Option<Program>,
         },
@@ -1028,98 +995,6 @@ pub fn parse_workspace(text: &str) -> Result<WsRef, Usage> {
     }
 }
 
-/// Refused, saying why, unless `name` is a variable's name a shell takes:
-/// letters, digits and `_`, not first a digit.
-fn var_name(name: &str) -> Result<(), String> {
-    let first = (name.chars().next()).is_some_and(|c| c.is_ascii_alphabetic() || c == '_');
-    match first && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
-        true => Ok(()),
-        false => Err(format!(
-            "{name:?} is no variable's name (letters, digits and _, not first a digit)"
-        )),
-    }
-}
-
-/// A variable a caller may give a pane, excluding its native identity.
-fn pane_var(name: &str) -> Result<(), String> {
-    var_name(name)?;
-    if matches!(name, "FUX" | "FUX_PANE" | "FUX_SOCKET" | "FUX_SERVER") {
-        return Err(format!("{name} is reserved for pane identity"));
-    }
-    Ok(())
-}
-
-/// Variables a pane's program is given: shell names other than its native
-/// identity, checked from words and the wire alike.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct EnvPatch(Vec<(String, Option<std::ffi::OsString>)>);
-crate::wire::shaped!(struct EnvPatch(entries: Vec<(String, Option<std::ffi::OsString>)>));
-
-impl EnvPatch {
-    /// A distinct checked name, either set to bytes or explicitly unset.
-    pub fn push(&mut self, name: String, value: Option<std::ffi::OsString>) -> Result<(), String> {
-        use std::os::unix::ffi::OsStrExt;
-        pane_var(&name)?;
-        if self.0.iter().any(|(key, _)| key == &name) {
-            return Err(format!("{name}: repeated environment name"));
-        }
-        if value.as_ref().is_some_and(|v| v.as_bytes().contains(&0)) {
-            return Err(format!("{name}: an environment value holds no NUL"));
-        }
-        if self
-            .encoded_len()
-            .saturating_add(Self::entry_len(&name, &value))
-            > crate::protocol::MAX_PAYLOAD
-        {
-            return Err("environment patch exceeds the launch frame limit".to_owned());
-        }
-        self.0.push((name, value));
-        Ok(())
-    }
-    pub fn as_slice(&self) -> &[(String, Option<std::ffi::OsString>)] {
-        &self.0
-    }
-
-    /// Explicit operation values replace selected or saved values.
-    pub fn overlay(&mut self, other: &Self) -> Result<(), String> {
-        let bytes = self
-            .0
-            .iter()
-            .filter(|(key, _)| !other.0.iter().any(|(k, _)| k == key))
-            .fold(other.encoded_len(), |bytes, (k, v)| {
-                bytes.saturating_add(Self::entry_len(k, v))
-            });
-        if bytes > crate::protocol::MAX_PAYLOAD {
-            return Err("environment patch exceeds the launch frame limit".to_owned());
-        }
-        for (name, value) in &other.0 {
-            self.0.retain(|(key, _)| key != name);
-            self.0.push((name.clone(), value.clone()));
-        }
-        Ok(())
-    }
-
-    fn entry_len(name: &str, value: &Option<std::ffi::OsString>) -> usize {
-        5usize
-            .saturating_add(name.len())
-            .saturating_add(value.as_ref().map_or(0, |v| 4usize.saturating_add(v.len())))
-    }
-    pub(crate) fn encoded_len(&self) -> usize {
-        self.0.iter().fold(4usize, |bytes, (k, v)| {
-            bytes.saturating_add(Self::entry_len(k, v))
-        })
-    }
-
-    /// Capture only the selected names, including explicit absence.
-    pub fn selected(names: &[EnvName]) -> Result<Self, String> {
-        let mut patch = Self::default();
-        for name in names {
-            patch.push(name.as_str().to_owned(), std::env::var_os(name.as_str()))?;
-        }
-        Ok(patch)
-    }
-}
-
 wire! {
     /// The role determines exit, signal and respawn semantics; argv is explicit.
     #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1167,7 +1042,6 @@ wire! {
         pub start: Start,
         pub options: PaneOptions,
         pub cwd: PathBuf,
-        pub env: EnvPatch,
     }
 }
 

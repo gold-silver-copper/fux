@@ -243,10 +243,8 @@ impl Run {
     }
 
     fn attach(&mut self, rows: u16, cols: u16) {
-        let kind = fux_server::view::ClientKind::Terminal;
         if let Ok(size) = fux_vt::Size::new(rows, cols)
             && let Ok(id) = self.s.attach_as(
-                kind,
                 fux_wire::protocol::Attach {
                     initial: Some(fux_wire::command::InitialWorkspace {
                         options: defaults().preferences.pane_options(),
@@ -255,7 +253,6 @@ impl Run {
                             defaults().preferences.shell.clone(),
                         ),
                         cwd: std::env::current_dir().unwrap_or_default(),
-                        env: fux_wire::command::EnvPatch::default(),
                     }),
                     ..fux_wire::protocol::Attach::of(size, defaults().preferences.presentation())
                 },

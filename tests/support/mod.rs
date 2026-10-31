@@ -511,7 +511,6 @@ impl Client {
                     name: None,
                     start: fux_wire::command::Start::Shell(server.state.preferences.shell.clone()),
                     cwd: server.dir.clone(),
-                    env: fux_wire::command::EnvPatch::default(),
                 }
             }),
         };

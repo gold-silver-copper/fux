@@ -255,9 +255,8 @@ pub(super) fn snapshot(s: inspect::Snapshot) -> Result<V, Failure> {
         for (key, value) in base { fields.push((key.to_owned(), value)); }
         if let Some(state) = &p.state { fields.push(("state".to_owned(), b.json(state, 0)?)); }
         if let Some(r) = &p.recipe {
-            let env = b.list(&r.env, |b,(key,value)| record! { b; "name" => b.text(key)?, "value" => value.as_ref().map(|p| b.path(p)).unwrap_or_else(|| Ok(null()))? })?;
             let recipe = record! { b; "choice" => b.text(if r.shell { "shell" } else { "program" })?,
-                "argv" => b.list(&r.argv, |b,s| b.text(s))?, "env" => env, "initial_cwd" => b.path(&r.initial_cwd)?,
+                "argv" => b.list(&r.argv, |b,s| b.text(s))?, "initial_cwd" => b.path(&r.initial_cwd)?,
                 "observed_cwd" => match &r.observed_cwd {
                     inspect::Directory::Known(path) => record! { b; "status" => b.text("known")?, "path" => b.path(path)? }?,
                     inspect::Directory::Unknown => null(),

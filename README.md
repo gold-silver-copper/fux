@@ -484,22 +484,17 @@ taken too. Unknown names are refused; `fux key-names` prints the vocabulary.
 | `FUX_SERVER` | which run of which server the pane is of, the run every version names. A fux command from a pane of another server, or of an earlier run of this one, or with `FUX_PANE` and no `FUX_SERVER`, has no `here` there (`stray_pane`); `kill-server` from one of the server's own panes is refused (`own_server`) |
 | `FUX` | the fux executable the server runs, unset if the server cannot name it: what a key's program or a script in a pane runs, as `"${FUX:-fux}"`, when `fux` may not be on its PATH (a server started from a desktop launcher or a systemd unit) |
 
-The rest is the server's environment when it started. A client's
-`copy-environment` selects names for each new launch; a selected name absent
-from that client is explicitly unset. The library selection is empty. An
-operation's `list end copy-environment` replaces that selection with an empty
-one; `env` and `unset-env` override selected entries. Repeated explicit names
-and changes to the four identity names above are refused. Values keep their
-original bytes; a launch's argv and patch must fit its one frame. The concrete patch is saved for respawn and exported by
-`dump`, so selected values remain available after the client detaches.
+The rest is the server's environment when it started. `env(1)` gives a
+program others: `str env program str PORT=8080 arg str ./app arg new-tab`;
+`env -u NAME` removes one. A launch's argv must fit its one frame.
 
 Every launch carries checked argv and a role. `program` chooses program role;
 `list str /bin/sh end shell-program` chooses shell role. Shell exit closes its
-pane; program exit retains it. Respawn uses the saved program launch and
-explicit overrides, without selecting the new caller's environment. An unknown
+pane; program exit retains it. Respawn uses the saved program launch, or
+the program given. An unknown
 nearby working directory is refused: give an absolute `cwd`. The first pane
 starts in the invoking client's directory, independently of HOME.
-Dump records saved argv, role and environment patches. Programs keep their
+Dump records saved argv and role. Programs keep their
 saved launch cwd, even if they have since changed directories; shells use
 their current directory when it is known.
 Creation options on attach require an untargeted writable invocation; explicit
@@ -550,7 +545,7 @@ diagnostic. Evaluation and local setters send no requests. A wait without
 `timeout` waits until something changes; `SECS timeout`, or coreutils
 `timeout`, bounds it.
 Shared paste buffers retain the newest 16 copies; retention is fixed.
-Shell argv, environment selection, `history-bytes`, `program-clipboard`,
+Shell argv, `history-bytes`, `program-clipboard`,
 `reflow`, `alternate-scroll-lines` and `picture-bytes`
 are local defaults for future creations. Explicit creation options override
 them, including zero and false. Existing panes retain their policy through
@@ -608,12 +603,6 @@ and bindings, regardless of the filename.
 str C-a prefix
 str shell list str /bin/zsh str -l end set       # a program, then its arguments, a string each
 str terminal-clipboard false set
-
-# Optional: take these from whoever starts a pane; the default list is empty.
-str copy-environment list
-  str DISPLAY str KRB5CCNAME str SSH_AGENT_PID str SSH_ASKPASS
-  str SSH_AUTH_SOCK str SSH_CONNECTION str WAYLAND_DISPLAY str XAUTHORITY
-end set
 
 unbind-all                                        # optional: no keys at all, the screens' too
 define split-right me focused str horizontal axis split drop end   # a word of the config's
@@ -688,7 +677,7 @@ out moves on: each split it moves takes the cells its two sides then have
 as its shares. A terminal's resize changes no share.
 
 A dump is executable launch intent. Replaying it starts new processes with
-new identities, using the saved launch arguments, environment patches,
+new identities, using the saved launch arguments,
 directories, names and layouts. It can repeat external side effects. It does
 not save process memory, terminal contents/history, paste buffers, client
 views or journal entries. Replay is a sequence of requests: if a later one

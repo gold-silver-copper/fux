@@ -157,67 +157,6 @@ fn a_background_descendant_cannot_be_here_after_respawn() -> Outcome {
     Ok(())
 }
 
-#[test]
-fn reserved_environment_names_are_refused_before_spawning() -> Outcome {
-    let server = Server::start("")?;
-    for name in ["FUX", "FUX_PANE", "FUX_SOCKET", "FUX_SERVER"] {
-        let inherited =
-            server.fux(&["str", "copy-environment", "list", "str", name, "end", "set"])?;
-        let explicit = server.fux(&[
-            "agent-opts",
-            "str",
-            name,
-            "str",
-            "forged",
-            "env",
-            "80",
-            "24",
-            "size",
-            "str",
-            "cat",
-            "program",
-            "new-tab",
-        ])?;
-        for (out, code) in [(inherited, "config:"), (explicit, "bad_value:")] {
-            assert_eq!(out.status, 1, "{name}: {}", out.stderr);
-            assert!(
-                out.stderr.contains(code)
-                    && out.stderr.contains(name)
-                    && out.stderr.contains("reserved"),
-                "{}",
-                out.stderr
-            );
-        }
-        assert_eq!(server.panes()?.len(), 1);
-    }
-    // The reservation is the exact identity set, not a prefix rule.
-    server.words("str copy-environment list str FUX_EXTRA end set")?;
-    server.ok(&[
-        "agent-opts",
-        "str",
-        "FUX_EXTRA",
-        "str",
-        "allowed",
-        "env",
-        "80",
-        "24",
-        "size",
-        "str",
-        "sh",
-        "program",
-        "str",
-        "-c",
-        "arg",
-        "str",
-        "echo \"$FUX_PANE $FUX_EXTRA\"",
-        "arg",
-        "new-tab",
-    ])?;
-    server.exits("%2")?;
-    assert_eq!(server.ok(&["%2", "capture"])?, "%2:0 allowed\n");
-    Ok(())
-}
-
 #[cfg(target_os = "linux")]
 #[test]
 fn foreground_metadata_observes_exec_and_keeps_launch_arguments_separate() -> Outcome {

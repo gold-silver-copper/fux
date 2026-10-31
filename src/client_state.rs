@@ -2,7 +2,7 @@
 use crate::keymap::Keymap;
 use crate::script::settings::Reads;
 use crate::script::{Config, Fux};
-use fux_wire::command::{DecodeMillis, EnvName, HistoryBytes, PictureBytes, Program, ScrollLines};
+use fux_wire::command::{DecodeMillis, HistoryBytes, PictureBytes, Program, ScrollLines};
 use fuxth::Value;
 
 /// A complete client state. A program changes a draft and commits it whole.
@@ -152,9 +152,6 @@ preferences! {
     slots "bar-slots": fux_wire::presentation::Slots;
     /// Whether the prefix column is drawn; dispatch and bar feedback stay active.
     show_column "show-column": bool;
-    /// Names selected from this client for new launches. Their concrete
-    /// values and unsets are saved for respawn and dump.
-    copy_environment "copy-environment": Vec<EnvName>;
 }
 
 /// An initialized preference, or the bundled setting that is missing.
@@ -188,9 +185,6 @@ impl PreferenceDraft {
     }
     pub(crate) fn shell(&self) -> Result<&Program, String> {
         required(self.shell.as_ref(), "shell")
-    }
-    pub(crate) fn copy_environment(&self) -> Result<&[EnvName], String> {
-        required(self.copy_environment.as_deref(), "copy-environment")
     }
 }
 
@@ -247,7 +241,6 @@ mod tests {
         assert!(!state.preferences.cell_placement);
         assert!(state.preferences.program_clipboard && state.preferences.terminal_clipboard);
         assert!(state.preferences.bell && !state.preferences.titles);
-        assert!(state.preferences.copy_environment.is_empty());
         assert!(state.preferences.show_column);
         let mut draft = state.draft();
         draft.preferences.styles = None;
@@ -271,7 +264,6 @@ mod tests {
             ("show-column", Value::Bool(false)),
             ("terminal-clipboard", Value::Bool(false)),
             ("shell", list(&["/bin/my shell", "a b", ""])?),
-            ("copy-environment", list(&["OK", "FUX_EXTRA"])?),
         ] {
             draft.set(name, &value)?;
         }
@@ -292,11 +284,6 @@ mod tests {
             ("shell", list(&[""])?),
             ("shell", list(&["/bin/sh", "a\0b"])?),
             ("shell", Value::str("/bin/sh")),
-            ("copy-environment", list(&["BAD-NAME"])?),
-            ("copy-environment", list(&["FUX_PANE"])?),
-            ("copy-environment", list(&["FUX_SOCKET"])?),
-            ("copy-environment", list(&["FUX_SERVER"])?),
-            ("copy-environment", list(&["FUX"])?),
             ("buffers", Value::Int(0)),
             ("buffers", Value::Int(16)),
             ("clipboard", Value::Bool(true)),

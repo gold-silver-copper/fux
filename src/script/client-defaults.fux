@@ -17,7 +17,6 @@ str terminal-clipboard true set
 str bell true set
 str titles false set
 str show-column true set
-str copy-environment list end set
 opts str main name attach-defaults
 
 # Painter roles, bar fields and text are inert per-client data.

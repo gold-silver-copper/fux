@@ -467,9 +467,9 @@ read-file`. `X warn` prints on stderr:
 
 ## servers: Servers, sizes and more
 
-- `FUX`, `FUX_PANE`, `FUX_SOCKET` and `FUX_SERVER` are reserved pane
-  identity. Requesting them is refused: `bad_value` in `env`, `config` in
-  `copy-environment`. Other names, including `FUX_EXTRA`, remain allowed.
+- A pane's program takes the server's environment, plus `FUX`,
+  `FUX_PANE`, `FUX_SOCKET` and `FUX_SERVER`. `env(1)` sets the rest:
+  `fux agent-opts 80 24 size str env program str PORT=8080 arg str ./app arg new-tab`.
 - Handle values returned by a server retain its run through lists, bindings,
   answers and request options; using one against another run is refused.
   A hand-written `%N`, `@N`, `+N` or `str cN client` means the selected server

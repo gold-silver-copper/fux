@@ -139,7 +139,7 @@ fn records_list_is_current() -> Result<(), Box<dyn std::error::Error>> {
     session.output(pane, shown.as_bytes(), now);
     let mut draft = super::default_state()?.draft();
     let dir = fux_wire::words::quote(env!("CARGO_MANIFEST_DIR"));
-    let split = format!("%1 str vertical axis str NAME str value env str {dir} cwd split");
+    let split = format!("%1 str vertical axis str {dir} cwd split");
     let asks = &mut InProcess(&mut session);
     evaluate(&split, Some(&mut draft), asks, &mut Vec::new())?;
     let mut lines = Vec::new();

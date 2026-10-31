@@ -146,13 +146,11 @@ pub(crate) struct Spot {
 /// starts in: none in a tab with no host yet (`Session::graphics`).
 type Starts = (Size, Option<fux_vt::CellSize>);
 
-/// A pane to make: what it starts, where, what it takes of its starter,
-/// and how it starts (`Starts`).
+/// A pane to make: what it starts, where, and how it starts (`Starts`).
 #[derive(Clone, Copy)]
 struct NewPane<'a> {
     start: &'a Start,
     cwd: &'a Path,
-    env: &'a command::EnvPatch,
     size: Size,
     cell: Option<fux_vt::CellSize>,
     options: command::PaneOptions,
@@ -162,14 +160,12 @@ impl<'a> NewPane<'a> {
     fn new(
         start: &'a Start,
         cwd: &'a Path,
-        env: &'a command::EnvPatch,
         options: command::PaneOptions,
         (size, cell): Starts,
     ) -> Self {
         Self {
             start,
             cwd,
-            env,
             options,
             size,
             cell,
@@ -434,13 +430,7 @@ impl Session {
                 "the caller's own directory is unknown; give an absolute cwd",
             ));
         }
-        let new = NewPane::new(
-            &initial.start,
-            &initial.cwd,
-            &initial.env,
-            initial.options,
-            (size, None),
-        );
+        let new = NewPane::new(&initial.start, &initial.cwd, initial.options, (size, None));
         self.create_workspace(initial.name.clone(), None, Fit::Clients(size), new, now)
             .map(drop)
     }
@@ -567,11 +557,11 @@ impl Session {
         self.parts.pane_mut(id).ok_or(Error::NoPane(id))
     }
 
-    /// Starts `argv` with `env` as pane `id`'s program, in `cwd` at `size`
-    /// in cells of `cell`, if panes start real processes: told of its
-    /// server (`FUX_PANE`, `FUX_SOCKET`, `FUX_SERVER`, and `FUX`, the fux
-    /// running it, unset if it cannot be had). The saved environment patch
-    /// applies first, and the server supplies authoritative identity last.
+    /// Starts `launch` as pane `id`'s program, in its `cwd` at `size` in
+    /// cells of `cell`, if panes start real processes: in the server's
+    /// environment, told of its server (`FUX_PANE`, `FUX_SOCKET`,
+    /// `FUX_SERVER`, and `FUX`, the fux running it, unset if it cannot be
+    /// had).
     fn spawn(
         &self,
         id: PaneId,
@@ -582,31 +572,24 @@ impl Session {
         let Some(socket) = &self.launch else {
             return Ok(None);
         };
-        let (argv, env) = (launch.argv.argv(), launch.env.as_slice());
-        let mut vars: Vec<_> = env
-            .iter()
-            .filter_map(|(k, v)| v.as_ref().map(|v| (k.as_str(), v.clone())))
-            .collect();
-        vars.extend([
+        let mut vars: Vec<(&str, std::ffi::OsString)> = vec![
             ("FUX_PANE", format!("{id}:{generation}").into()),
             ("FUX_SOCKET", socket.as_os_str().to_owned()),
             ("FUX_SERVER", self.run.to_string().into()),
-        ]);
+        ];
         vars.extend((self.exe.as_ref()).map(|exe| ("FUX", exe.as_os_str().to_owned())));
         // No `FUX` to give: not one the server was started with either.
-        let unset: Vec<String> = env
-            .iter()
-            .filter(|(_, v)| v.is_none())
-            .map(|(k, _)| k.clone())
-            .chain(self.exe.is_none().then(|| "FUX".to_owned()))
-            .collect();
-        let child = process::spawn(&argv, &launch.cwd, (&vars, &unset), size)
+        let unset: &[&str] = match self.exe {
+            Some(_) => &[],
+            None => &["FUX"],
+        };
+        let child = process::spawn(&launch.argv.argv(), &launch.cwd, (&vars, unset), size)
             .map_err(|m| fail(Raise::Start, m))?;
         Ok(Some(child))
     }
 
     /// Starts the program pane `id` ran again in it: its words, or `argv`
-    /// if given, where it ran, with what it was given and `env` set; first
+    /// if given, where it ran; first
     /// hanging up the one there with `kill`, else refused while it runs.
     /// What the old program left is read before the new one takes its
     /// place, its exit told if one waits on that, in as many turns as that
@@ -617,7 +600,6 @@ impl Session {
         &mut self,
         id: PaneId,
         kill: bool,
-        env: &command::EnvPatch,
         argv: Option<&command::Program>,
         now: Instant,
     ) -> Result<Reply, Error> {
@@ -641,10 +623,6 @@ impl Session {
         if let Some(argv) = argv {
             launch.argv = argv.clone();
         }
-        launch
-            .env
-            .overlay(env)
-            .map_err(|why| fail(Raise::Start, why))?;
         // The program it starts is told its host's cell.
         let graphics = self.graphics(id);
         let size = (pane.size(), graphics.cell());
@@ -1189,7 +1167,6 @@ impl Session {
         let launch = pane::Launch {
             argv: start.argv().clone(),
             cwd: new.cwd.to_path_buf(),
-            env: new.env.clone(),
         };
         let runs = match start {
             Start::Shell(..) => Runs::Shell(launch.clone()),
@@ -1226,7 +1203,6 @@ impl Session {
                     start: command::Start::Shell(state.preferences.shell.clone()),
                     options: state.preferences.pane_options(),
                     cwd: std::env::current_dir().unwrap_or_default(),
-                    env: command::EnvPatch::default(),
                 }),
                 target: workspace.map(command::AttachTarget::Workspace),
                 ..Attach::of(size, state.preferences.presentation())
@@ -2420,12 +2396,11 @@ impl Session {
                 name,
                 size,
                 cwd,
-                env,
                 start,
                 options,
             } => {
                 let (cwd, fit, sized) = self.opening((cwd.as_deref(), *size), here)?;
-                let new = NewPane::new(start, &cwd, env, *options, sized);
+                let new = NewPane::new(start, &cwd, *options, sized);
                 let made = self.create_workspace(name.clone(), None, fit, new, now)?;
                 self.follow(here, made.ws, None);
                 Ok(acted(self.pane(made.pane)?.version(self.run)))
@@ -2435,7 +2410,6 @@ impl Session {
                 name,
                 size,
                 cwd,
-                env,
                 start,
                 options,
             } => {
@@ -2443,7 +2417,7 @@ impl Session {
                 if let Some(name) = name {
                     self.check_tab_name(name, None)?;
                 }
-                let new = NewPane::new(start, &cwd, env, *options, sized);
+                let new = NewPane::new(start, &cwd, *options, sized);
                 // A workspace named that is not there is made, its first tab
                 // this one.
                 let made = self.create_tab(target.as_ref(), here, name.clone(), fit, new, now)?;
@@ -2457,9 +2431,8 @@ impl Session {
             &Command::Respawn {
                 target,
                 kill,
-                ref env,
                 ref argv,
-            } => self.respawn(target, kill, env, argv.as_ref(), now),
+            } => self.respawn(target, kill, argv.as_ref(), now),
             Command::Notify { target, text } => {
                 let to: Vec<ClientId> = match target {
                     None => self.views.keys().copied().collect(),
@@ -2503,13 +2476,12 @@ impl Session {
                 target,
                 ref start,
                 ref cwd,
-                ref env,
                 shares,
                 options,
             } => self.split(
                 target,
                 (axis, shares),
-                (start, env, options),
+                (start, options),
                 cwd.as_deref(),
                 origin,
                 now,
@@ -2800,7 +2772,7 @@ impl Session {
         &mut self,
         target: PaneId,
         (axis, shares): (Axis, Option<(NonZeroU32, NonZeroU32)>),
-        (start, env, options): (&Start, &command::EnvPatch, command::PaneOptions),
+        (start, options): (&Start, command::PaneOptions),
         dir: Option<&Path>,
         origin: &Origin,
         now: Instant,
@@ -2821,13 +2793,7 @@ impl Session {
         // nothing can then leave running.
         let (split, size) = self.split_size(target, (axis, shares), &followers)?;
         let mut ids = self.ids.clone();
-        let new = NewPane::new(
-            start,
-            &cwd,
-            env,
-            options,
-            (size, self.graphics(target).cell()),
-        );
+        let new = NewPane::new(start, &cwd, options, (size, self.graphics(target).cell()));
         let pane = self.new_pane(&mut ids, new, now)?;
         let new = pane.id();
         if let Err(pane) = self.parts.split(pane, split) {
@@ -3610,7 +3576,6 @@ pub(crate) mod testing {
                 Vec::new(),
             )?),
             cwd: std::env::current_dir().map_err(|e| e.to_string())?,
-            env: fux_wire::command::EnvPatch::default(),
         };
         session
             .start_now(size, &initial)
@@ -4317,10 +4282,7 @@ mod tests {
                 }
             }
             if let Some(recipe) = snapshot.panes.first_mut().and_then(|p| p.recipe.as_mut()) {
-                recipe.env.push((
-                    "RAW".into(),
-                    Some(fux_wire::inspect::Path::Bytes(vec![255; 70_000])),
-                ));
+                recipe.initial_cwd = fux_wire::inspect::Path::Bytes(vec![255; 70_000]);
             }
             let bytes = fux_wire::wire::encode(&*snapshot);
             assert_eq!(
@@ -4913,7 +4875,6 @@ mod tests {
             name: None,
             start: command::Start::Shell(command::Program::new("/bin/sh".into(), Vec::new())?),
             cwd: "relative".into(),
-            env: command::EnvPatch::default(),
         };
         let ids = s.ids.clone();
         let refused = s.attach_client(Attach {
@@ -4979,7 +4940,6 @@ mod tests {
                 vec!["-c".into(), "[ -z \"${FUX+x}\" ]".into()],
             )?,
             cwd: "/".into(),
-            env: command::EnvPatch::default(),
         };
         let child = s
             .spawn(PaneId::of(2), 0, &launch, (sized(24, 80)?, None))?
@@ -5340,7 +5300,6 @@ mod tests {
                 let runs = Runs::Explicit(pane::Launch {
                     argv: command::Program::new("/bin/sh".into(), Vec::new())?,
                     cwd: "/".into(),
-                    env: command::EnvPatch::default(),
                 });
                 let fresh = Pane::new(
                     id,
@@ -5483,7 +5442,6 @@ mod tests {
             name: None,
             size: None,
             cwd: Some("/".into()),
-            env: fux_wire::command::EnvPatch::default(),
         };
         s.execute(&new_tab, &Origin::Cli(caller), Instant::now())?;
         let tab = s.tab("@3".parse()?).ok_or("the new tab")?;
@@ -5601,7 +5559,6 @@ mod tests {
         Ok(Request::Do(Command::Respawn {
             target: id,
             kill: true,
-            env: command::EnvPatch::default(),
             argv: match argv.split_first() {
                 Some((p, args)) => Some(command::Program::new(
                     (*p).into(),
@@ -5875,7 +5832,6 @@ mod tests {
             let respawn = Request::Do(Command::Respawn {
                 target: id,
                 kill,
-                env: command::EnvPatch::default(),
                 argv: None,
             });
             let Begun::Waiting(mut waiting) = s.begin_now(respawn, &Origin::Cli(Caller::default()))
@@ -5988,13 +5944,7 @@ mod tests {
         s.input(c, b"\x1b[6;20;10t");
         let id = PaneId::of(2);
         s.launch = Some("/nonexistent/fux.sock".into());
-        (s.respawn(
-            id,
-            false,
-            &command::EnvPatch::default(),
-            None,
-            Instant::now(),
-        ))?;
+        (s.respawn(id, false, None, Instant::now()))?;
         let mut pane = s.parts.pane_mut(id).ok_or("the pane")?;
         let size = pane.size();
         let child = pane.set_process(Process::Absent);
@@ -7494,12 +7444,6 @@ mod tests {
                 "str cat program",
                 "new-tab",
             ),
-            (
-                "opts",
-                "list end copy-environment",
-                "list end copy-environment",
-                "new-tab",
-            ),
             ("opts", "0 history-bytes", "1 history-bytes", "new-tab"),
             ("opts", "false reflow", "true reflow", "new-tab"),
             (
@@ -7814,8 +7758,6 @@ mod tests {
             assert!(option.contains("(use: a capture option, PANE "), "{option}");
             assert!(option.contains(&format!("; e.g. {shown})")), "{option}");
         }
-        let env = failed(&mut s, "opts str 1bad str v env new-tab");
-        assert!(env.contains("not first a digit"), "{env}");
         let missing = failed(&mut s, "str /no/such/file.fux str program check");
         assert!(missing.contains("No such file"), "{missing}");
         let split = failed(&mut s, "str 'two\nlines' fail");
@@ -7955,9 +7897,8 @@ mod tests {
         run(
             &mut source,
             &format!(
-                "opts str new-workspace in 150 40 size str {} cwd str DATA str {} env str OLD unset-env str /bin/cat program str '' arg str {} arg new-tab drop",
+                "opts str new-workspace in 150 40 size str {} cwd str /bin/cat program str '' arg str {} arg new-tab drop",
                 fux_wire::words::quote(&directory),
-                fux_wire::words::quote(value),
                 fux_wire::words::quote(value)
             ),
         )?;
@@ -8112,7 +8053,6 @@ mod tests {
             name: None,
             size: Some(fux_wire::command::Screen::new(24, 80)?),
             cwd: Some(dir.clone()),
-            env: fux_wire::command::EnvPatch::default(),
             start: command::Start::Program(command::Program::new("cat".into(), Vec::new())?),
             options: fux::script::default_state()?.preferences.pane_options(),
         };
@@ -8585,7 +8525,6 @@ mod journal_tests {
         let replacement = Command::Respawn {
             target: id,
             kill: false,
-            env: command::EnvPatch::default(),
             argv: None,
         };
         let begun = s.begin(

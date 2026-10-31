@@ -1,6 +1,6 @@
 //! Checked fuxth values for local preferences and request options.
 use super::Fux;
-use fux_wire::command::{EnvName, Number, Program};
+use fux_wire::command::{Number, Program};
 use fuxth::Value;
 
 /// A local setting's type, read once as `set` is given it.
@@ -86,26 +86,6 @@ impl Reads for Program {
     }
     fn read(value: &Value<Fux>) -> Result<Program, String> {
         Program::from_argv(strings(value)?)
-    }
-}
-
-/// Variables' names: a list of strings.
-impl Reads for Vec<EnvName> {
-    fn takes() -> String {
-        "a list of variables' names".to_owned()
-    }
-    fn read(value: &Value<Fux>) -> Result<Vec<EnvName>, String> {
-        let (_, names) = checked(value)?;
-        // Each name parsed from the list's own string: copied once.
-        let mut seen = std::collections::BTreeSet::new();
-        names
-            .map(|name| {
-                if !seen.insert(name) {
-                    return Err(format!("{name}: repeated environment name"));
-                }
-                name.parse()
-            })
-            .collect()
     }
 }
 

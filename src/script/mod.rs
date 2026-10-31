@@ -20,8 +20,7 @@ use fux_server::socket::SocketPath;
 use fux_wire::answer::{PaneAnswer, PaneResults};
 use fux_wire::code::{Code, Raise};
 use fux_wire::command::{
-    AnyRef, EnvName, Extent, HistoryBytes, Input, Kind, Limit, Program, Request, Run, Version,
-    WsRef,
+    AnyRef, Extent, HistoryBytes, Input, Kind, Limit, Program, Request, Run, Version, WsRef,
 };
 use fux_wire::id::{ClientId, PaneId, TabId, WsId};
 use fux_wire::layout::Axis;
@@ -156,7 +155,6 @@ pub struct Opts {
     pub name: Option<String>,
     pub size: fux_wire::command::Size,
     pub cwd: Option<std::path::PathBuf>,
-    pub env: fux_wire::command::EnvPatch,
     pub argv: Vec<String>,
     pub shell: Option<bool>,
     pub history_bytes: Option<HistoryBytes>,
@@ -164,7 +162,6 @@ pub struct Opts {
     pub alternate_scroll_lines: Option<fux_wire::command::ScrollLines>,
     pub picture_bytes: Option<fux_wire::command::PictureBytes>,
     pub program_clipboard: Option<bool>,
-    pub copy_environment: Option<Vec<EnvName>>,
     pub axis: Option<Axis>,
     /// A split's shares (`shares`).
     pub shares: Option<(std::num::NonZeroU32, std::num::NonZeroU32)>,
@@ -203,11 +200,7 @@ impl Opts {
         Program::from_argv(std::mem::take(&mut self.argv))
     }
 
-    pub(crate) fn launch(
-        &self,
-        shell: &Program,
-        selection: &[EnvName],
-    ) -> Result<(fux_wire::command::Start, fux_wire::command::EnvPatch), String> {
+    pub(crate) fn launch(&self, shell: &Program) -> Result<fux_wire::command::Start, String> {
         // Checked while borrowed: the copy is one launch frame's scratch.
         let argv = if self.argv.is_empty() {
             shell.clone()
@@ -216,16 +209,10 @@ impl Opts {
         } else {
             return Err("program argv exceeds the launch frame limit".to_owned());
         };
-        let mut env = fux_wire::command::EnvPatch::selected(
-            self.copy_environment.as_deref().unwrap_or(selection),
-        )?;
-        env.overlay(&self.env)?;
-        let start = if self.shell == Some(false) {
-            fux_wire::command::Start::Program(argv)
-        } else {
-            fux_wire::command::Start::Shell(argv)
-        };
-        Ok((start, env))
+        Ok(match self.shell {
+            Some(false) => fux_wire::command::Start::Program(argv),
+            _ => fux_wire::command::Start::Shell(argv),
+        })
     }
 }
 
@@ -1770,7 +1757,7 @@ pub mod testing {
         rows: u16,
         cols: u16,
     ) -> Result<(fux_server::session::Session, fux_wire::id::ClientId), String> {
-        use fux_wire::command::{EnvPatch, InitialWorkspace, Run, Start};
+        use fux_wire::command::{InitialWorkspace, Run, Start};
         let run = Run::now().ok_or("no clock")?;
         let mut session =
             fux_server::session::Session::new("/nonexistent/fux.sock".into(), false, run);
@@ -1784,7 +1771,6 @@ pub mod testing {
                 start: Start::Shell(preferences.shell.clone()),
                 options: preferences.pane_options(),
                 cwd: std::env::current_dir().map_err(|e| e.to_string())?,
-                env: EnvPatch::default(),
             }),
             ..fux_wire::protocol::Attach::of(size, preferences.presentation())
         };

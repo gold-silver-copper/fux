@@ -176,7 +176,7 @@ define dump-first
   swap let nodes
   begin nodes swap at dup is-list if 3 at false else true then until
 end
-# pane-record -- source : warnings for unknown directories and omitted non-text launch inputs
+# pane-record -- source : warnings for unknown directories and non-text directories
 define dump-warnings
   let p p str launch get let launch
   list
@@ -185,13 +185,6 @@ define dump-warnings
       if drop true else str status get str known ne then
       if str '# ' p str id get string str ': its current directory is unknown, so it starts in its launch directory' 10 char then
     then
-    launch str env get each
-      let e e str value get let v
-      v kind str null ne if v str encoding get str utf8 ne if
-        e str name get dump-text str 'drop # ' p str id get string
-        str ': environment is not UTF-8 text; its saved value is omitted' 10 char
-      then then
-    end
     launch dump-cwd let cwd
     cwd str encoding get str utf8 ne if
       str '# ' p str id get string str ': directory bytes (hex) ' cwd str text get
@@ -220,17 +213,9 @@ define dump-create
     launch str reflow get string str ' reflow '
     launch str alternate_scroll_lines get string str ' alternate-scroll-lines '
     launch str picture_bytes get string str ' picture-bytes '
-    launch str program_clipboard get string str ' program-clipboard list end copy-environment '
+    launch str program_clipboard get string str ' program-clipboard '
     launch dump-cwd let cwd
     cwd str encoding get str utf8 eq if cwd str text get dump-text str 'cwd ' then
-    launch str env get each
-      let e e str value get let v
-      v kind str null eq if e str name get dump-text str 'unset-env ' else
-        v str encoding get str utf8 eq if
-          e str name get dump-text v str text get dump-text str 'env '
-        then
-      then
-    end
     launch str choice get str shell eq if
       str 'list ' launch str argv get each dump-text end str 'end shell-program '
     else
@@ -257,7 +242,7 @@ define dump-recipe
   list panes each str id get end end let ids
   list
     str '#!/usr/bin/env -S fux --file' 10 char
-    str '# fux: running this makes it again; environment patches apply to the server startup environment.' 10 char
+    str '# fux: running this makes it again; its programs take the environment of the server that runs them.' 10 char
     recipe str workspaces get each
       let ws true let opens
       recipe str tabs get each

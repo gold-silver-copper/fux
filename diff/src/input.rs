@@ -369,7 +369,6 @@ pub fn run(r: &mut Rng, scale: usize) -> Outcome {
             fux_server::pane::Runs::Shell(fux_server::pane::Launch {
                 argv: fux_wire::command::Program::new("/bin/sh".into(), Vec::new())?,
                 cwd: "/".into(),
-                env: fux_wire::command::EnvPatch::default(),
             }),
         );
         let b = fux_server::pane::Pane::new(

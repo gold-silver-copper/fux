@@ -590,10 +590,7 @@ pub struct Attaching {
 impl Attaching {
     fn initial(&self) -> Result<fux_wire::command::InitialWorkspace, String> {
         let creation = &self.creation;
-        let (start, env) = creation.launch(
-            &self.state.preferences.shell,
-            &self.state.preferences.copy_environment,
-        )?;
+        let start = creation.launch(&self.state.preferences.shell)?;
         Ok(fux_wire::command::InitialWorkspace {
             name: creation.name.clone(),
             start,
@@ -607,7 +604,6 @@ impl Attaching {
                     None => invocation,
                 }
             },
-            env,
         })
     }
 }
