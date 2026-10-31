@@ -99,7 +99,17 @@ reference.
 9. **Independent programs.** fux, fuxth and fuxed each build and run alone.
    fux doesn't know the editor exists, and fuxth knows neither. A project
    contains no code specific to another tool.
-10. **Finished parts stay finished.** A part marked frozen changes only for
+10. **Lean on the OS (the Unix philosophy).** What the operating system
+    already does, fux uses or reports instead of rebuilding:
+    - processes, signals and exit statuses;
+    - files and permissions;
+    - users, isolation and resource limits;
+    - logging and scheduling.
+
+    fux composes with other programs through arguments, stdin, stdout, exit
+    codes and files. A feature the OS or an ordinary program already
+    provides is not added to fux.
+11. **Finished parts stay finished.** A part marked frozen changes only for
     a bug or an owner decision, never because an audit had an idea.
 
 ## What it is not
