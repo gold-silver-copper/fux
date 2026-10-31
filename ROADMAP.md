@@ -32,6 +32,24 @@ and Forth expert agree; the original proposal had agents moving in at M4.)
   say `fux help-agents`, which fails (`unknown_word`); the command is
   `fux help agents`.
 
+## M0c. A finite interface (D-44, D-45)
+
+**Scenario.** An agent splits a change across the new crates (wire, server,
+client) without touching the others. A PR that changes a word, a record
+field, a request or an error code shows it as a diff in the generated lists.
+A client from a newer build runs a command against the owner's older
+running server, and it works by speaking the server's own vocabulary,
+without restarting anything. Page:
+`~/code/notes/projects/fux/live/milestones/M0c.md`.
+
+## M0b. Bounds by construction (D-42, D-43)
+
+**Scenario.** Every component's peak-memory test passes within its stated
+budget on the workloads that matter (a long fuxth run, the default-history
+styled capture, a big paste, a flood beside an interactive pane), nothing
+is slower, and a new store's boundedness is visible from its type. Page:
+`~/code/notes/projects/fux/live/milestones/M0b.md`.
+
 ## M1. Ten tabs, no accidents
 
 **Scenario.** The coordinator gives four agents a workspace each in one fux
@@ -70,8 +88,7 @@ a sentence in each prompt.
   included, the shared server in its own scope), admission 2 → 4. It lives
   outside fux.
 
-**Right after M1, one PR splits the fux crate** into wire, server and
-client crates (D-30), so residents can work in parallel lanes.
+The crate split (D-30) happens earlier, in M0c (D-44).
 
 ## M2. Agents write fuxth at a prompt, and nothing is silently half-done
 
@@ -137,7 +154,13 @@ and fuxth for repeated work. A separate checker verifies their artifacts.
 - every refusal is either correct or a finding with a reproduction;
 - the owner spends under 45 minutes a week on decisions.
 
-## 1.0
+## fux 1.0 (D-47)
+
+The panel declares it after M0c, M0b and M1 pass and the residents work a
+week with nothing blocking. After that, fux takes only bug fixes and
+reproduced findings; fuxth and fuxed keep moving toward their own 1.0.
+
+## 1.0 of the whole
 
 Freeze, by decision:
 - the things table;
