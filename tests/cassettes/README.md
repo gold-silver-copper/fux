@@ -77,10 +77,20 @@ it: keep a workspace of its own (`examples.cassette`).
    | `journal` | every event once, in order, none `missed`; nothing named before its `created` or after its `closed`; one `exited` per program | any event |
 
    A promise a replay never exercised is reported **uncovered**, never as
-   held; the summary says which cassettes exercised each. The calls the
-   promises read are found by their words (`expect`, `changed`, `wait`, and a
-   version) in a call's arguments and stdin, not in a `--file`.
-5. **Bounded time:** each cassette within its timeout, all within 60 s.
+   held; the summary says which cassettes exercised each. Only a call whose
+   arguments are one operation and nothing else tells that operation's
+   result by its status: `fux str V expect` with `str X text` or `str X key`
+   pairs, then `send-keys`; or `fux str V changed wait`, with `N timeout` or
+   not. A program on stdin, a file, a `try` or a word that only pushes
+   `expect` as text establishes nothing, so it exercises no promise. Every
+   version fux answers is read with fux-wire's own parser before anything is
+   normalized: a word that bears one (`%N:` and a second `:`) but is not one
+   is a failure, never skipped.
+5. **Bounded time:** each cassette within its timeout, all within 60 s: past
+   that, no further cassette starts, and each left is a failure. Reading the
+   journal and stopping the server are bounded apart, 10 s each; a fux call
+   of the runner's own that has not answered by then is killed with what it
+   started.
 
 ## Normalization
 
@@ -89,7 +99,7 @@ Before anything is compared, each line of output becomes:
 | What varies | Becomes |
 |---|---|
 | a server run `PID-HEX16` | `R1`, `R2`… in order of appearance |
-| `%3`, `@2`, `+1`, `c1` | `%a`, `@a`, `+a`, `ca`… by first appearance within their server run |
+| `%3`, `@2`, `+1`, `c1` | `%a`, `@a`, `+a`, `ca`… by first appearance within their server run: a version's own, else the one run its line names, else the last run printed |
 | a cursor or layout serial `N:R1` | `#:R1` |
 | `"pid":N`, `"foreground_group":N`, `"foreground_leader":N` | `<pid>` |
 | the cassette's directory, this repository | `$DIR`, `$REPO` |
@@ -112,9 +122,10 @@ Each refused out loud, never cut silently:
 | all cassettes | 32, 2 MiB |
 | a step's stdout or stderr, a snapshot, a batch | 1 MiB (files a step writes: 2 MiB, `ulimit -f`) |
 | the call log | 2 MiB, 1,024 calls; each call's fields cut to 4,000 characters |
-| the journal | 4,096 events; panes in a snapshot, 256 |
+| the journal | 4,096 events |
+| any JSON array or object the runner reads | 256 entries: so 256 panes in a snapshot, 256 arguments in a call |
 | `~` lines | 40 a step, 200 characters each; 256 journal events |
-| time | 10 s a cassette by default, at most 60; 60 s all together |
+| time | 10 s a cassette by default, at most 60; 60 s all together; 10 s each for the journal's read and the server's stop |
 
 ## Recording one
 
@@ -153,3 +164,11 @@ filter: it runs, passes five times on head, meets its evidence rule (a fix
 fails on base at its assertion and passes on head; preserved behaviour passes
 on both; a new feature shows its absence on base), and checks a property
 nothing else checks. Otherwise it stays with the PR's review notes.
+
+## The runner
+
+`runner.rs` is the runner, included by `tests/cassettes.rs` (which replays)
+and by `tests/cassettes_runner.rs` (its own tests: the bounds, the deadlines,
+what establishes an operation, raw versions, names per run, a resize after an
+exit). `cargo fmt` doesn't reach an included file: format it with
+`rustfmt --edition 2024 tests/cassettes/runner.rs`.
