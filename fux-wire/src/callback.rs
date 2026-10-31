@@ -149,6 +149,13 @@ pub enum Open {
     Copy,
 }
 
+crate::wire::shaped!(enum Open {
+    List(list: ListScreen),
+    Prompt(prompt: Prompt),
+    Confirm(confirm: Confirm),
+    Copy,
+});
+
 impl Wire for Open {
     fn put(&self, out: &mut impl crate::wire::Sink) {
         match self {
@@ -220,6 +227,15 @@ wire! {
         pub action: Callback,
     }
 }
+
+// Its line goes on the wire as its text.
+crate::wire::shaped!(
+    struct Prompt {
+        title: String,
+        line: String,
+        action: Option<Callback>,
+    }
+);
 
 impl Wire for Prompt {
     fn put(&self, out: &mut impl crate::wire::Sink) {

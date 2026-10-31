@@ -39,45 +39,24 @@ pub fn file(head: &str, lines: impl IntoIterator<Item = String>) -> String {
 #[cfg(test)]
 mod tests {
     use super::{check, file};
-    use crate::wire::Shape;
 
     const TEST: &str = "cargo test -p fux-wire lists";
 
-    /// `ty`'s variants (a struct's one), each a line: `TY::VARIANT` (a
-    /// struct, its own name) and its fields, `name: Type`, in their places
-    /// on the wire.
-    fn shapes<T: Shape>(ty: &str) -> impl Iterator<Item = String> {
-        T::SHAPE.iter().map(move |(variant, fields)| {
-            let fields: Vec<String> = fields
-                .iter()
-                .map(|(name, ty)| format!("{name}: {}", ty.replace("crate::", "")))
-                .collect();
-            let name = match *variant == ty {
-                true => ty.to_owned(),
-                false => format!("{ty}::{variant}"),
-            };
-            format!("{name} {}", fields.join(", "))
-                .trim_end()
-                .to_owned()
-        })
-    }
-
-    /// docs/requests.txt lists every request a client sends, each with its
-    /// fields, as the codec declares them.
+    /// docs/requests.txt lists every request a client sends and every
+    /// type it holds on the wire, each once, with its fields in their
+    /// places on the wire, as the codec declares them.
     #[test]
     fn requests_list_is_current() -> Result<(), String> {
-        use crate::command::{ClientAction, Command, Request, Wait};
-        use crate::protocol::Attach;
-        let lines = (shapes::<Request>("Request"))
-            .chain(shapes::<Command>("Command"))
-            .chain(shapes::<ClientAction>("ClientAction"))
-            .chain(shapes::<Wait>("Wait"))
-            .chain(shapes::<Attach>("Attach"));
+        use crate::wire::{Reach, Shapes};
+        let mut shapes = Shapes::default();
+        crate::command::Request::reach(&mut shapes);
+        crate::protocol::Attach::reach(&mut shapes);
         let head = format!(
-            "The requests a client sends its server, each with its fields in their order \
-             on the wire (fux-wire's codec). Generated: FUX_BLESS=1 {TEST}"
+            "The requests a client sends its server, and every type they hold, each once \
+             as first reached, with its fields in their order on the wire (fux-wire's \
+             codec). Generated: FUX_BLESS=1 {TEST}"
         );
-        check("requests.txt", &file(&head, lines), TEST)
+        check("requests.txt", &file(&head, shapes.lines), TEST)
     }
 
     /// docs/codes.txt lists every error code with its exit status, and

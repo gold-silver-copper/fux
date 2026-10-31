@@ -515,6 +515,12 @@ pub struct Run {
     since: u64,
 }
 wire_struct!(Run { pid, since });
+crate::wire::shaped!(
+    struct Run {
+        pid: u32,
+        since: u64,
+    }
+);
 
 impl Run {
     /// This process's run, started now: none on a clock before 1970 or
@@ -560,6 +566,13 @@ pub struct LayoutRevision {
     pub run: Run,
 }
 wire_struct!(LayoutRevision { tab, serial, run });
+crate::wire::shaped!(
+    struct LayoutRevision {
+        tab: TabId,
+        serial: u64,
+        run: Run,
+    }
+);
 
 impl std::fmt::Display for LayoutRevision {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -610,6 +623,15 @@ wire_struct!(Counts {
     done,
     ended
 });
+crate::wire::shaped!(
+    struct Counts {
+        respawns: u64,
+        screen: u64,
+        bells: u64,
+        done: u64,
+        ended: bool,
+    }
+);
 
 impl Counts {
     /// Whether a pane now at `self` can ever have been at `then`: an
@@ -669,6 +691,13 @@ pub struct Version {
     pub run: Run,
 }
 wire_struct!(Version { pane, counts, run });
+crate::wire::shaped!(
+    struct Version {
+        pane: PaneId,
+        counts: Counts,
+        run: Run,
+    }
+);
 
 impl std::fmt::Display for Version {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

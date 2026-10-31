@@ -1,4 +1,4 @@
-# The requests a client sends its server, each with its fields in their order on the wire (fux-wire's codec). Generated: FUX_BLESS=1 cargo test -p fux-wire lists
+# The requests a client sends its server, and every type they hold, each once as first reached, with its fields in their order on the wire (fux-wire's codec). Generated: FUX_BLESS=1 cargo test -p fux-wire lists
 Request::Do command: Command
 Request::Wait wait: Wait
 Request::NextEvents scope: inspect::Scope, from: Option<events::Cursor>, timeout: Limit
@@ -30,6 +30,77 @@ Command::ListBuffers
 Command::ShowBuffer buffer: Buffer
 Command::PasteBuffer buffer: Buffer, target: PaneId
 Command::Client client: Option<ClientId>, action: ClientAction
+Scope::All
+Scope::Target target: AnyRef
+Scope::Client client: ClientId
+AnyRef::Pane id: PaneId
+AnyRef::Tab id: TabId
+AnyRef::Workspace id: WsId
+Projection::Facts
+Projection::Topology
+Projection::Recipe
+Projection::Field field: String
+Start::Shell argv: Program
+Start::Program argv: Program
+PaneOptions history_bytes: HistoryBytes, program_clipboard: bool, reflow: bool, alternate_scroll_lines: ScrollLines, picture_bytes: PictureBytes
+WsRef::Id id: WsId
+WsRef::Name name: String
+WsRef::New
+Axis::Horizontal
+Axis::Vertical
+Resized::Tabs target: AnyRef, size: Size
+Resized::Client client: ClientId, size: command::Screen
+Mouse::Click button: Button
+Mouse::Press button: Button
+Mouse::Release button: Button
+Mouse::Wheel way: Wheel
+Mouse::Move
+Button::Left
+Button::Middle
+Button::Right
+Button::Back
+Button::Forward
+Wheel::Up
+Wheel::Down
+Wheel::Left
+Wheel::Right
+MoveTo::Tab id: TabId
+MoveTo::Workspace workspace: WsRef
+MoveTo::NewTab
+MoveTo::NewWorkspace
+MoveTo::Beside direction: Direction
+SwapWith::Pane id: PaneId
+SwapWith::Toward direction: Direction
+LayoutRevision tab: TabId, serial: u64, run: Run
+Run pid: u32, since: u64
+Node::Pane pane: PaneId
+Node::Split axis: Axis, first_share: NonZeroU32, second_share: NonZeroU32, first: u32, second: u32
+PaneResize::Border direction: Direction, cells: u16
+PaneResize::To axis: Axis, extent: Extent
+Extent::Cells cells: u16
+Extent::Percent percent: Percent
+To::Now target: AnyRef
+To::Seen version: Version
+Version pane: PaneId, counts: Counts, run: Run
+Counts respawns: u64, screen: u64, bells: u64, done: u64, ended: bool
+Input::Key key: KeyPress
+Input::Text text: String
+Input::Paste text: String
+Input::Bytes bytes: Vec<u8>
+CaptureView full: bool, wrapped: bool, styles: bool, source: Source, marks: bool, rows: Option<(u16, u16)>, cols: Option<(u16, u16)>
+Source::Shown
+Source::Main
+Source::Alternate
+Source::LastOutput
+Sibling::Next
+Sibling::Previous
+Kind::Pane
+Kind::Tab
+Kind::Workspace
+Members::Panes
+Members::Tabs
+Buffer::Newest
+Buffer::Id id: BufferId
 ClientAction::Detach
 ClientAction::Capture
 ClientAction::Open screen: callback::Open
@@ -38,5 +109,44 @@ ClientAction::Zoom
 ClientAction::SelectPane pick: PanePick
 ClientAction::SelectTab pick: Pick<TabId>
 ClientAction::SelectWorkspace pick: Pick<WsRef>
+Open::List list: ListScreen
+Open::Prompt prompt: Prompt
+Open::Confirm confirm: Confirm
+Open::Copy
+ListScreen title: String, items: Vec<Item>, current: Option<usize>, selected: usize, about: Option<(AnyRef, Option<command::Run>)>, action: Callback, client: Data
+Item label: String, payload: Data
+Callback code: String, args: Vec<Data>
+Prompt title: String, line: String, action: Option<Callback>
+Confirm question: String, action: Callback
+PanePick::Step step: Sibling
+PanePick::Id id: PaneId
+PanePick::Last
+PanePick::Toward direction: Direction
+Pick::Step step: Sibling
+Pick::Last
+Pick::Id id: T
 Wait since: Since, timeout: Limit
+Since::Now target: AnyRef
+Since::Version version: Version
+Cursor seq: Seq, run: Run
 Attach of: Option<command::Run>, size: fux_vt::Size, target: Option<command::AttachTarget>, read_only: bool, presentation: presentation::Presentation, initial: Option<command::InitialWorkspace>
+AttachTarget::Workspace workspace: WsRef
+AttachTarget::Tab tab: TabId
+AttachTarget::Pane pane: PaneId
+Presentation bell: bool, titles: bool, terminal_clipboard: bool, cell_placement: bool, styles: Styles, bar: Bar, slots: Slots, show_column: bool
+Styles bar: Style, tab: Style, keys: Style, notice: Style, error: Style, panel: Style, border: Style, border_focus: Style
+Style foreground: Color, background: Color, bold: bool, dim: bool, italic: bool, underline: bool
+Color::Default
+Color::Idx n: u8
+Color::Rgb rgb: fux_vt::Rgb
+Rgb r: u8, g: u8, b: u8
+Bar position: BarPosition, left: Vec<Field>, right: Vec<Field>, tab_numbers: bool
+BarPosition::Top
+BarPosition::Bottom
+BarPosition::Off
+Field::Workspace
+Field::Tabs
+Field::Pane
+Field::Slot index: u8
+Slots slots: Vec<(u8, String)>
+InitialWorkspace name: Option<String>, start: Start, options: PaneOptions, cwd: PathBuf, env: EnvPatch

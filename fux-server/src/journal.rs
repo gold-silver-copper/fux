@@ -370,6 +370,7 @@ pub fn every_kind(
         Told::Bell,
         notification,
         title,
+        Told::Done(None),
         Told::Done(Some(i32::MIN)),
         Told::Resized(size),
         // The most a pane's budget is (`command::HistoryBytes`).
@@ -745,9 +746,14 @@ mod tests {
             .parse()
             .map_err(|()| "buffer")?;
         let size = fux_vt::Size::new(4096, 4096)?;
-        let mut events = every_kind(at, &name, [title, notification], left, buffer, size);
-        events.push(Event::Pane(at, PaneEvent::Told(Told::Done(None))));
-        Ok(events)
+        Ok(every_kind(
+            at,
+            &name,
+            [title, notification],
+            left,
+            buffer,
+            size,
+        ))
     }
 
     #[test]

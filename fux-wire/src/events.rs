@@ -16,6 +16,12 @@ pub struct Cursor {
     pub run: Run,
 }
 crate::wire::wire_struct!(Cursor { seq, run });
+crate::wire::shaped!(
+    struct Cursor {
+        seq: Seq,
+        run: Run,
+    }
+);
 impl std::fmt::Display for Cursor {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}:{}", self.seq.0, self.run)
