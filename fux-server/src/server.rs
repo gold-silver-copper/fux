@@ -678,7 +678,6 @@ impl Server {
         self.wrote_input(wrote);
         // Only the deadline survives compaction, never connection indices.
         self.close_conns();
-        self.session.hold_copies();
         // Delivery can detach a client, resize its panes or start shutdown.
         changed |= !self.session.outbox.is_empty();
         self.deliver(now);
@@ -738,7 +737,6 @@ impl Server {
                 return ControlFlow::Break(());
             }
             Wake::Paint(index) => {
-                self.session.hold_copies();
                 self.deliver(now);
                 self.paint(index, now);
             }

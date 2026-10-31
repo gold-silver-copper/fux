@@ -9,9 +9,9 @@ use fux_vt::keys::Direction;
 use fux_wire::callback::Open;
 use fux_wire::code::{Code, Raise};
 use fux_wire::command::{
-    AnyRef, Buffer, Button, ClientAction, Command, Extent, HistoryBytes, Input, Kind, Limit,
-    Members, Mouse, MoveTo, PanePick, PaneResize, Percent, Pick, Program, Request, Resized,
-    Sibling, Since, Source, SwapWith, To, Usage, Wait, Wheel, WsRef,
+    AnyRef, Button, ClientAction, Command, Extent, HistoryBytes, Input, Kind, Limit, Members,
+    Mouse, MoveTo, PanePick, PaneResize, Percent, Pick, Program, Request, Resized, Sibling, Since,
+    Source, SwapWith, To, Usage, Wait, Wheel, WsRef,
 };
 use fux_wire::id::{ClientId, PaneId};
 use fux_wire::layout::Axis;
@@ -312,9 +312,6 @@ words! {
         Changing Reorder "reorder" "handle way --" "move one place: next or previous" "fux @2 str next reorder" [];
         Changing HistoryBudget "history-budget" "pane integer --" "change this pane's history budget in bytes (0 to 1 GiB); lowering evicts old rows" "fux %3 4194304 history-budget" [];
         Changing ClearHistory "clear-history" "pane --" "drop the pane's history" "fux %3 clear-history" [];
-        Changing Buffers "buffers" "-- list" "paste buffer metadata, newest first: id, bytes and preview" "fux buffers" [];
-        Changing Buffer "buffer" "id -- text" "exact paste buffer text by id or newest" "fux newest buffer" [];
-        Changing PasteBuffer "paste-buffer" "pane id -- answer" "paste a buffer by id or newest into a pane; answers as send-keys does" "fux %3 newest paste-buffer" [];
         Clients Attach "attach" "attachable --" "show the server in this terminal (bare fux uses default-attach); with a size, be a client of no terminal instead; explicit targets and watch refuse creation options" "fux @2 attach" [Either: In Size Watch Cwd HistoryBytes Reflow AlternateScrollLines PictureBytes ProgramClipboard Program ShellProgram Arg Name];
         Clients Focus "focus" "client way --" "left right up down next previous or last pane" "fux str c1 client str left focus" [];
         Clients Show "show" "client handle --" "show and follow a pane, tab or workspace" "fux str c1 client %3 show" [];
@@ -351,7 +348,7 @@ words! {
         Starting Reflow "reflow" "x boolean -- x" "whether the new pane rewraps primary-screen lines on resize" "fux agent-opts false reflow str /bin/cat program new-tab";
         Starting AlternateScrollLines "alternate-scroll-lines" "x integer -- x" "arrows per alternate-screen wheel action (0 to 32767)" "fux agent-opts 3 alternate-scroll-lines str /bin/cat program new-tab";
         Starting PictureBytes "picture-bytes" "x integer -- x" "picture budget for the new pane (0 to 96 MiB); zero disables pictures" "fux agent-opts 0 picture-bytes str /bin/cat program new-tab";
-        Starting ProgramClipboard "program-clipboard" "x boolean -- x" "whether the new pane's program may copy to paste buffers" "fux agent-opts false program-clipboard str /bin/cat program new-tab";
+        Starting ProgramClipboard "program-clipboard" "x boolean -- x" "whether the new pane's program may copy to the attached terminals' clipboards (OSC 52)" "fux agent-opts false program-clipboard str /bin/cat program new-tab";
         Starting ShellProgram "shell-program" "x list -- x" "the checked argv list to start with shell role; its exit closes the pane" "fux opts 80 24 size list str /bin/sh end shell-program new-tab";
         Starting Arg "arg" "x text -- x" "an argument for the program" "fux agent-opts 80 24 size str ./app program str -v arg new-tab";
         Starting Axis "axis" "x way -- x" "horizontal (side by side) or vertical (stacked); split requires it" "fux %3 str horizontal axis split";
@@ -380,7 +377,6 @@ words! {
     Screen {
         Clients Choose "choose" "client title list list list callback --" "a list of [payload,label] rows; current and selected are [] or [index]; callback receives captured arguments then client payload and leaves nothing" "fux str c1 client str hosts list list str host str Host end end list end list 0 end str 'drop drop' choose";
         Clients Prompt "prompt" "client name text callback --" "a line to type, titled name and starting as text: its submit key (Enter) runs code, the line on its stack" "fux str c1 client str 'rename tab' str logs str '@2 swap rename' prompt";
-        Clients CopyMode "copy-mode" "client --" "copy and select in the focused pane" "fux str c1 client copy-mode";
         Clients CommandPrompt "command-prompt" "client --" "a prompt for fuxth" "fux str c1 client command-prompt";
     }
     Keys {
@@ -393,8 +389,8 @@ words! {
         Config Unbind "unbind" "keys --" "keys after the prefix run nothing" "str 'g v' unbind";
         Config UnbindRoot "unbind-root" "key --" "a key without the prefix runs nothing" "str M-n unbind-root";
         Config BindAction "bind-action" "key code --" "an explicit executable list callback, receiving client payload; Escape cannot be bound" "str r str rename-prompt bind-action str rename label";
-        Config BindIn "bind-in" "screen key action --" "in one of fux's own screens (copy list line), a key does one of its actions, as the default keys bind each" "str copy str g str top bind-in str top label";
-        Config UnbindIn "unbind-in" "screen key --" "in that screen, the key does what it would unbound: in a line, a character types itself; a named key with modifiers does what it does alone" "str copy str g unbind-in";
+        Config BindIn "bind-in" "screen key action --" "in one of fux's own screens (list line), a key does one of its actions, as the default keys bind each" "str list str g str first bind-in str first label";
+        Config UnbindIn "unbind-in" "screen key --" "in that screen, the key does what it would unbound: in a line, a character types itself; a named key with modifiers does what it does alone" "str list str g unbind-in";
         Config UnbindAll "unbind-all" "--" "no bindings at all, nor keys in fux's screens (Escape still leaves them)" "unbind-all";
     }
 }
@@ -570,19 +566,6 @@ fn within<T: TryFrom<i64>>(value: &Value<Fux>, range: RangeInclusive<i64>) -> Re
             (from, to) => format!("{from} to {to}"),
         };
         fail(Raise::Range, format!("{n} is out of range: {said}"))
-    })
-}
-
-fn buffer(value: &Value<Fux>) -> Result<Buffer, Failure> {
-    let text = string(value)?;
-    if text == "newest" {
-        return Ok(Buffer::Newest);
-    }
-    text.parse().map(Buffer::Id).map_err(|()| {
-        fail(
-            Raise::BadValue,
-            format!("{text:?} is not a buffer id (bN:RUN) or newest"),
-        )
     })
 }
 
@@ -1162,25 +1145,10 @@ fn members_of(target: AnyRef, members: Members) -> Ask {
 }
 
 fn ask(request: impl Into<Request>) -> Ask {
-    let request = request.into();
-    let of = if let Request::Do(
-        Command::ShowBuffer {
-            buffer: Buffer::Id(id),
-        }
-        | Command::PasteBuffer {
-            buffer: Buffer::Id(id),
-            ..
-        },
-    ) = &request
-    {
-        Some(id.run())
-    } else {
-        None
-    };
     Ask::Server {
-        request: Box::new(request),
+        request: Box::new(request.into()),
         client: None,
-        of,
+        of: None,
     }
 }
 
@@ -1750,15 +1718,6 @@ impl Host<'_> {
             Act::ClearHistory => tell(Command::ClearHistory {
                 target: pane(&next()?)?,
             }),
-            Act::Buffers => later(ask(Command::ListBuffers)),
-            Act::Buffer => later(ask(Command::ShowBuffer {
-                buffer: buffer(&next()?)?,
-            })),
-            Act::PasteBuffer => {
-                let p = pane(&next()?)?;
-                let buffer = buffer(&next()?)?;
-                later(ask(Command::PasteBuffer { buffer, target: p }))
-            }
             // ----------------------------------------------------- clients
             Act::Attach => {
                 let (target, built) = attach_options(act, next()?)?;
@@ -2039,7 +1998,6 @@ impl Host<'_> {
                     client: fux_wire::callback::Data::Client(c, self.context.of),
                 })
             }
-            Screen::CopyMode => Open::Copy,
             Screen::CommandPrompt => Open::Prompt(fux_wire::callback::Prompt {
                 title: ":".to_owned(),
                 line: fux_wire::act::Line::new(String::new()),

@@ -34,7 +34,7 @@ pub enum Choice {
 }
 
 /// Bumped on any change to the frames below.
-pub const PROTOCOL: u32 = 57;
+pub const PROTOCOL: u32 = 58;
 /// The largest frame, kind byte included.
 pub const MAX_FRAME: usize = 1 << 20;
 /// The largest payload one frame carries.
@@ -831,11 +831,6 @@ mod tests {
         for act in [
             crate::act::ScreenAct::Show(crate::act::Panel::Repeat("resize".into())),
             crate::act::ScreenAct::Hide,
-            crate::act::ScreenAct::Copy(crate::act::CopyAct::Enter {
-                hints: vec![],
-                typing: vec![],
-            }),
-            crate::act::ScreenAct::Copy(crate::act::CopyAct::Yank),
         ] {
             let act = Act::Screen {
                 opening: u64::MAX,
@@ -887,7 +882,11 @@ mod tests {
         round_trip!(
             ToAttached,
             15,
-            ToAttached::Open(crate::callback::Open::Copy)
+            ToAttached::Open(crate::callback::Open::Prompt(crate::callback::Prompt {
+                title: "rename".into(),
+                line: crate::act::Line::new("main".into()),
+                action: None,
+            }))
         );
         round_trip!(ToAttached, 16, ToAttached::Keys(Vec::new()));
         for target in [

@@ -2029,11 +2029,16 @@ mod tests {
     #[test]
     fn a_screen_closes_when_its_keys_change() -> Result<(), Box<dyn std::error::Error>> {
         let mut keyboard = keyboard(false)?;
-        keyboard.open(Screen::Copy(None), &mut Vec::new());
+        let prompt = Screen::Prompt(fux_wire::callback::Prompt {
+            title: "rename".into(),
+            line: fux_wire::act::Line::new(String::new()),
+            action: None,
+        });
+        keyboard.open(prompt.clone(), &mut Vec::new());
         program(&mut keyboard, Job::from("str F5 str ls bind-root"));
         assert_eq!(all_ran(&mut keyboard)?, []);
-        assert_eq!(keyboard.screen.screen, Screen::Copy(None));
-        program(&mut keyboard, Job::from("str copy str g str top bind-in"));
+        assert_eq!(keyboard.screen.screen, prompt);
+        program(&mut keyboard, Job::from("str line str F2 str home bind-in"));
         let acts = all_ran(&mut keyboard)?;
         assert!(
             matches!(

@@ -130,13 +130,11 @@ impl From<&str> for Callback {
 pub enum Open {
     List(ListScreen),
     Prompt(Prompt),
-    Copy,
 }
 
 crate::wire::shaped!(enum Open {
     List(list: ListScreen),
     Prompt(prompt: Prompt),
-    Copy,
 });
 
 impl Wire for Open {
@@ -150,14 +148,12 @@ impl Wire for Open {
                 out.push(1);
                 prompt.put(out);
             }
-            Self::Copy => out.push(2),
         }
     }
     fn get(r: &mut crate::wire::Reader<'_>) -> Result<Self, crate::wire::Error> {
         Ok(match u8::get(r)? {
             0 => Self::List(ListScreen::get(r)?),
             1 => Self::Prompt(Prompt::get(r)?),
-            2 => Self::Copy,
             tag => return Err(crate::wire::Error::Tag("screen", tag)),
         })
     }

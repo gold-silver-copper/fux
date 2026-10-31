@@ -72,6 +72,15 @@ define grows
     then
   until
 end
+# client -- : its focused pane's history in $EDITOR (else vi), in a split closed when the editor exits; after a failure, Enter closes it. env(1) gives the program the pane's id, and "${FUX:-fux}" is the server's fux
+define edit-history
+  focused let p
+  p str vertical axis
+  str env program  list str FUX_TARGET= p string end glue arg
+  str sh arg  str -c arg
+  str 'f=$(mktemp) && "${FUX:-fux}" "$FUX_TARGET" all-history capture >"$f" && ${EDITOR:-vi} "$f" || read -r _; rm -f "$f"; "${FUX:-fux}" here kill' arg
+  split drop
+end
 # client handle -- : a prompt for its new name
 define rename-prompt
   dup kind str answer eq if pane then let it
@@ -102,9 +111,6 @@ define confirm-close
   list list it end str kill end
   confirm
 end
-
-# -- id : choose the newest paste buffer when the request runs
-define newest str newest end
 
 # -- record : one facts observation of all workspaces, tabs, panes and clients
 define ls all info end
@@ -367,33 +373,6 @@ end
 # For restartable consumers use events-since and retain its returned cursor.
 # event-scope -- : till the stream ends, 30 seconds per wait; every batch prints its checkpoint
 define events str '' 30 0 events-since drop end
-
-# One finite hook run. Trigger by event AND source; notification cannot trigger another copy.
-# cursor secs n -- string : notify views about admitted program copies, returning the next checkpoint
-define copy-notices
-  let batches let seconds let cursor
-  batches 1 lt if str 'copy-notices takes 1 batch or more' fail then
-  seconds 0 lt if str 'copy-notices takes 0 seconds or more' fail then
-  false let ended
-  0 let taken
-  begin
-    ended taken batches eq or dup not if
-      all cursor seconds next-events events-checked let batch
-      batch str events get each
-        let event
-        event str event get str copied eq if
-          event str origin get str kind get str program eq if
-            all str 'a program copied text' notify
-          then
-        then
-      end
-      batch str next get let cursor
-      batch str status get dup str gone eq swap str stopped eq or let ended
-      taken 1 add let taken
-    then
-  until
-  cursor
-end
 
 # tab -- tab revision list : one topology observation's tab, revision and panes in tree order
 define layout-current

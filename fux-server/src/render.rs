@@ -154,7 +154,7 @@ pub fn shows_pictures(session: &Session, id: PaneId) -> bool {
 /// The pictures client `client`'s panes, placed as `placement` has them,
 /// may show before transient bar feedback is clipped: none unless its
 /// terminal draws sixel and nothing
-/// covers its panes (an overlay, copy mode); of a pane, only while its
+/// covers its panes (an overlay); of a pane, only while its
 /// pictures show (`shows_pictures`), those laid out in this terminal's
 /// cell size. Each is clipped to its pane.
 pub fn pictures(session: &Session, client: ClientId, placement: &Placement) -> Vec<Visible> {
@@ -764,6 +764,7 @@ impl Grid {
 
     /// Writes `text` from (y, x), a cluster a cell (`clusters`), clipped at
     /// `limit`, wide glyphs whole; the column after it is returned.
+    #[cfg(test)]
     fn text(&mut self, y: u16, x: u16, text: &str, style: Attributes, limit: u16) -> u16 {
         self.text_cells(y, x, clusters(text), style, limit)
     }
@@ -971,14 +972,7 @@ pub fn compose_held(
     let placement = &*placement;
     let tab = session.shown_tab(view.id);
     let focus = tab.and_then(|t| t.focus(view.id));
-    // Copy mode and its positions, their rows found once for the paint.
-    let copy = if let Mode::Copy(copy) = &view.mode {
-        let at = (session.parts.panes().get(&copy.pane)).and_then(|p| copy.resolve(p));
-        at.map(|at| (copy.as_ref(), at))
-    } else {
-        None
-    };
-    put_panes(grid, session, view, placement, focus, copy)?;
+    put_panes(grid, session, view, placement, focus)?;
     grid.under_bar = None;
     grid.cell_placement = view.presentation.cell_placement;
     let held =
@@ -991,46 +985,27 @@ pub fn compose_held(
         }
         grid.memo = None;
     }
-    // The cursor: copy mode's in its pane, else the focused pane's, but only
-    // in normal mode: none under an overlay, nor in a repeat mode, whose
-    // keys are fux's.
+    // The cursor: the focused pane's, but only in normal mode: none under
+    // an overlay, nor in a repeat mode, whose keys are fux's.
     if let Some(focus) = focus
         && let Some(rect) = placement.rect(focus)
         && let Some(pane) = session.parts.panes().get(&focus)
     {
         let screen = pane.screen();
-        match copy.filter(|(c, _)| c.pane == focus) {
-            Some((_, at)) => {
-                // Within the rows shown, which a smaller client can make
-                // fewer than the rect; on a row drawn twice as wide, at its
-                // glyph's first half, as the normal cursor.
-                if let Some((y, x)) = at.cursor_in_view(rect.h().min(screen.size().rows()))
-                    && let doubled =
-                        (at.top.window().row(y)).is_some_and(|r| r.rendition().is_double())
-                    && let Some(at) = rect.at(y, if doubled { x.saturating_mul(2) } else { x })
-                {
-                    grid.cursor = Some(at);
-                    // The copy cursor is a block.
-                    grid.modes.cursor_shape = CursorShape::SteadyBlock;
-                }
-            }
-            None => {
-                let (y, x) = screen.cursor_position();
-                // On a row drawn twice as wide, at its glyph's first half.
-                let doubled = screen.line_rendition(y).is_double();
-                let x = if doubled { x.saturating_mul(2) } else { x };
-                if screen.mode(fux_vt::Mode::ShowCursor)
-                    && view.mode.is_normal()
-                    && let Some(at) = rect.at(y, x)
-                {
-                    grid.cursor = Some(at);
-                    grid.modes.cursor_shape = screen.cursor_shape();
-                    grid.modes.cursor_colour = screen.dynamic_color(12);
-                }
-            }
+        let (y, x) = screen.cursor_position();
+        // On a row drawn twice as wide, at its glyph's first half.
+        let doubled = screen.line_rendition(y).is_double();
+        let x = if doubled { x.saturating_mul(2) } else { x };
+        if screen.mode(fux_vt::Mode::ShowCursor)
+            && view.mode.is_normal()
+            && let Some(at) = rect.at(y, x)
+        {
+            grid.cursor = Some(at);
+            grid.modes.cursor_shape = screen.cursor_shape();
+            grid.modes.cursor_colour = screen.dynamic_color(12);
         }
         // Only where a pane's own cursor shows: in normal mode (none under
-        // an overlay, copy mode's its own).
+        // an overlay).
         if held(&focus) && view.mode.is_normal() {
             let (cursor, modes) =
                 kept(focus, rect).map_or((None, Modes::default()), |p| p.grid.pane_cursor());
@@ -1083,9 +1058,9 @@ pub fn compose_held(
             surface(grid, view, &lines);
         }
         // A repeat mode shows in the bar, leaving the layout in view.
-        Mode::Normal | Mode::Copy(_) | Mode::Panel(Panel::Repeat(_)) => {}
+        Mode::Normal | Mode::Panel(Panel::Repeat(_)) => {}
     }
-    bar(grid, session, view, placement, copy)?;
+    bar(grid, session, view, placement)?;
     Ok(())
 }
 
@@ -1099,7 +1074,6 @@ fn put_panes(
     view: &View,
     placement: &Placement,
     focus: Option<PaneId>,
-    copy: Option<(&crate::copy::Copy, crate::copy::Resolved)>,
 ) -> Result<(), fux_vt::Error> {
     grid.underline_styles = view.terminal.underline_styles;
     let frame = Frame::of(session, view, placement, focus);
@@ -1132,9 +1106,7 @@ fn put_panes(
         let screen = pane.screen();
         // A pane whose program changed its colours is drawn in them.
         let colours = own_colours(screen).then_some(screen);
-        let at = copy.filter(|(c, _)| c.pane == *id).map(|(_, at)| at);
-        let window = at.map_or_else(|| screen.window(), |at| at.top.window());
-        let width = rect.w().min(window.cols());
+        let window = screen.window();
         // What the pane's screen does not cover of its place, rows below
         // its window's included, is blank.
         let mut pane_keys = Vec::new();
@@ -1142,26 +1114,6 @@ fn put_panes(
             let row = window.row(y);
             pane_keys.push(row.map(|r| (r.id(), r.version())));
             draw_row(grid, *id, row, (line, window.cols()), colours);
-            let (Some(at), Some(row)) = (at, row) else {
-                continue;
-            };
-            // A row drawn twice as wide shows each cell in two columns.
-            let doubled = row.rendition().is_double();
-            for x in 0..width {
-                // A wide glyph is selected if either half is, as `y`
-                // copies it whole.
-                let col = if doubled { x / 2 } else { x };
-                if let Some(i) = line.at(0, x).and_then(|(gy, gx)| grid.index(gy, gx))
-                    && let Some(cell) = grid.cells.get(i)
-                    && !cell.is_wide_continuation()
-                    && (at.selected(&row, col)
-                        || cell.is_wide()
-                            && col.checked_add(1).is_some_and(|col| at.selected(&row, col)))
-                {
-                    let attrs = cell.attributes().with_inverse(!cell.inverse());
-                    grid.cells.set_attributes(i, attrs);
-                }
-            }
         }
         keys.push(pane_keys);
     }
@@ -1429,7 +1381,6 @@ fn bar(
     session: &Session,
     view: &View,
     placement: &Placement,
-    copy: Option<(&crate::copy::Copy, crate::copy::Resolved)>,
 ) -> Result<(), fux_vt::Error> {
     use fux_wire::presentation::BarPosition;
     let Some(bottom) = view.rows.checked_sub(1) else {
@@ -1442,11 +1393,8 @@ fn bar(
         bottom
     };
     let base = view.presentation.styles.bar.attributes();
-    let pane = |c: &crate::copy::Copy| session.parts.panes().get(&c.pane);
-    let copy_bar = copy.and_then(|(c, at)| pane(c).map(|p| c.bar(p.screen(), &at)));
     let unseen = unseen(session, view, placement);
-    let feedback =
-        view.notice.is_some() || copy_bar.is_some() || !view.mode.is_normal() || !unseen.is_empty();
+    let feedback = view.notice.is_some() || !view.mode.is_normal() || !unseen.is_empty();
     if position == BarPosition::Off && !feedback {
         return Ok(());
     }
@@ -1470,8 +1418,6 @@ fn bar(
             view.presentation.styles.notice
         };
         vec![(notice.text.clone(), style.attributes())]
-    } else if let Some(copy) = &copy_bar {
-        vec![(copy.position.clone(), base)]
     } else if let Mode::Panel(Panel::Column(column)) = &view.mode {
         vec![(
             format!("{} …", column.keys),
@@ -1506,47 +1452,11 @@ fn bar(
     let left_limit = view
         .cols
         .saturating_sub(right_width.saturating_add(u16::from(right_width > 0)));
-    let mut x = 0;
-    if let Some(copy) = &copy_bar {
-        // Copy mode's keys replace the tabs.
-        let badge = view.presentation.styles.keys.attributes();
-        match &copy.badge {
-            crate::copy::Badge::Label(label) => {
-                x = grid.text_cells(
-                    y,
-                    x,
-                    fit(&format!(" {label} "), left_limit),
-                    badge,
-                    left_limit,
-                );
-            }
-            crate::copy::Badge::Typing(prompt, before, after) => {
-                let room = left_limit.saturating_sub(width(prompt).saturating_add(2));
-                x = grid.text(y, x, &format!(" {prompt}"), badge, left_limit);
-                x = grid.text_cells(
-                    y,
-                    x,
-                    prompt_line(before, after, room).cells(),
-                    badge,
-                    left_limit,
-                );
-                x = grid.text(y, x, " ", badge, left_limit);
-            }
-        }
-        for fux_wire::act::Hint { keys: key, label } in copy.hints {
-            let hint = format!("  {key} {label}");
-            if x.saturating_add(width(&hint)) > left_limit {
-                break;
-            }
-            x = grid.text(y, x, "  ", base, left_limit);
-            x = grid.text(y, x, key, base.with_bold(true), left_limit);
-            x = grid.text(y, x, &format!(" {label}"), base, left_limit);
-        }
-    } else if position != BarPosition::Off {
+    if position != BarPosition::Off {
         bar_parts(
             grid,
             y,
-            x,
+            0,
             left_limit,
             &bar_fields(session, view, view.presentation.bar.left(), left_limit),
         );
@@ -2180,7 +2090,6 @@ mod tests {
         let (mut shown, mut spare) = (Grid::default(), Grid::default());
         let mut placement = Placement::default();
         let mut check = |session: &mut Session| -> Result<Vec<u8>, String> {
-            session.hold_copies();
             assert!(compose_into(session, client, &mut spare, &mut placement));
             assert_eq!(spare, compose(session, client).ok_or("client")?);
             let bytes = paint(Some(&shown), &spare);
@@ -2223,10 +2132,6 @@ mod tests {
         session.out(focused, b"\x1b[?25l");
         check(&mut session)?;
         assert!(compose(&session, client).ok_or("client")?.cursor.is_none());
-        run(&mut session, "str c1 client copy-mode")?;
-        check(&mut session)?;
-        session.input(client, b"q");
-        check(&mut session)?;
         run(&mut session, "str c1 client command-prompt")?;
         check(&mut session)?;
         session.input(client, b"\x1b");
@@ -2290,56 +2195,6 @@ mod tests {
         assert_eq!(levels.map(mouse_level), [0, 1000, 1000, 1002, 1003]);
     }
 
-    /// Copy mode's bar replaces the tabs with what it is doing and its keys'
-    /// hints; a narrow bar drops the last.
-    #[test]
-    fn copy_mode_replaces_the_tabs_with_its_keys() -> Result<(), Box<dyn std::error::Error>> {
-        let (mut s, c) = crate::session::testing::attached(10, 120)?;
-        let bar = |s: &Session| {
-            compose(s, c)
-                .map(|g| g.row_text(g.rows.saturating_sub(1)))
-                .unwrap_or_default()
-        };
-        assert!(bar(&s).starts_with(" +1  %1"), "{}", bar(&s));
-        s.input(c, b"\x02c");
-        let copying = bar(&s);
-        assert!(
-            copying.starts_with(
-                " COPY   v s x select  y copy  o other end  q Escape quit  f r search"
-            ),
-            "{copying}"
-        );
-        assert!(!copying.contains("+1"));
-        // Where the cursor is, on the right: its line of all the rows.
-        assert!(copying.ends_with("1/9"), "{copying}");
-        s.input(c, b"v");
-        let selecting = bar(&s);
-        assert!(
-            selecting.starts_with(" COPY select   v s x select  y copy"),
-            "{selecting}"
-        );
-        // s selects lines; C-v is no key's.
-        s.input(c, b"s\x16");
-        let lines = bar(&s);
-        assert!(
-            lines.starts_with(" COPY lines   v s x select  y copy"),
-            "{lines}"
-        );
-        s.input(c, b"fab");
-        assert!(
-            bar(&s).starts_with(" /ab▏   Enter accept  Escape cancel"),
-            "{}",
-            bar(&s)
-        );
-        s.input(c, b"\x1b");
-        s.escape(c);
-        s.size_client(c, 10, 36)?;
-        let narrow = bar(&s);
-        assert!(narrow.contains("v s x select"), "{narrow}");
-        assert!(!narrow.contains("quit"), "{narrow}");
-        Ok(())
-    }
-
     /// A line a program made double width (DECDWL) or double height
     /// (DECDHL) is drawn twice as wide, each cell over two columns, a wide
     /// glyph over four, and the cursor at its glyph's first half; a single
@@ -2359,26 +2214,6 @@ mod tests {
         // The blank beside x is in its colours.
         assert!(grid.get(1, 1).is_some_and(|cell| cell.inverse()));
         assert_eq!(grid.cursor, Some((0, 4)));
-        Ok(())
-    }
-
-    /// A block whose edge falls on a wide glyph's second half in one of its
-    /// rows highlights that glyph, as `y` copies it whole.
-    #[test]
-    fn a_block_highlights_the_wide_glyphs_it_copies() -> Result<(), Box<dyn std::error::Error>> {
-        let (mut s, c) = crate::session::testing::attached(10, 30)?;
-        s.out(PaneId::of(1), "xab\r\n界b".as_bytes());
-        // A block from `a` above to `b` below, its left edge on 界's second
-        // half.
-        s.input(c, b"\x02ckhhxjl");
-        let grid = compose(&s, c).ok_or("a screen")?;
-        let inverse = |y, x| grid.get(y, x).is_some_and(|cell| cell.inverse());
-        assert!(inverse(1, 0) && inverse(1, 2) && !inverse(0, 0));
-        s.input(c, b"y");
-        assert_eq!(
-            s.buffers.front().map(|(_, text)| text.as_str()),
-            Some("ab\n界b")
-        );
         Ok(())
     }
 
@@ -2490,30 +2325,6 @@ mod tests {
         assert!(paint(&session, &mut shown)?.contains("\x1b]12;#ff0000\x1b\\"));
         session.out(PaneId::of(1), b"\x1b]112\x07");
         assert!(paint(&session, &mut shown)?.contains("\x1b]112\x1b\\"));
-        Ok(())
-    }
-
-    /// On a line drawn twice as wide (DECDWL, DEC STD 070 5.6.1), copy
-    /// mode's cursor and selection take each cell's two columns, as the
-    /// normal cursor does: a cell at column 1 shows at columns 2 and 3.
-    #[test]
-    fn copy_mode_on_a_double_width_line_takes_two_columns_a_cell() -> Result<(), String> {
-        let (mut s, c) = crate::session::testing::attached(10, 40)?;
-        s.out(PaneId::of(1), b"\x1b[2J\x1b[H\x1b#6ABCD\x1b[H");
-        s.input(c, b"\x02cl");
-        let grid = compose(&s, c).ok_or("a screen")?;
-        assert_eq!(grid.cursor, Some((0, 2)), "on B's first column");
-        s.input(c, b"vl");
-        let grid = compose(&s, c).ok_or("a screen")?;
-        assert_eq!(grid.cursor, Some((0, 4)), "on C's first column");
-        let inverse: Vec<bool> = (0..8)
-            .map(|x| grid.get(0, x).is_some_and(|cell| cell.inverse()))
-            .collect();
-        assert_eq!(
-            inverse,
-            [false, false, true, true, true, true, false, false],
-            "B and C selected"
-        );
         Ok(())
     }
 

@@ -14,12 +14,12 @@ use fux_wire::command::{
     self, AnyRef, ClientAction, Command, Extent, Input, Kind, Members, Mouse, MoveTo, PanePick,
     PaneResize, Pick, Request, Resized, Sibling, SwapWith, WsRef,
 };
-use fux_wire::id::{BufferId, ClientId, Ids, PaneId, TabId, WsId};
+use fux_wire::id::{ClientId, Ids, PaneId, TabId, WsId};
 use fux_wire::json::{Fields, Json};
 use fux_wire::layout::{self, Axis, NoPane, Placement, Rect, Shares, Tree};
 use fux_wire::protocol::{Attach, Body, Reply, Response, ToAttached};
 use fux_wire::words::joined;
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::BTreeMap;
 use std::num::NonZeroU32;
 use std::path::{Path, PathBuf};
 mod inspect;
@@ -285,8 +285,6 @@ pub struct Session {
     /// them, which events read.
     pub parts: Parts,
     pub views: BTreeMap<ClientId, View>,
-    /// Paste buffers, newest first.
-    pub buffers: VecDeque<(BufferId, String)>,
     /// The socket a started pane is told to reach its server by, if panes
     /// start real processes; tests of the state alone start none.
     launch: Option<PathBuf>,
@@ -396,7 +394,6 @@ impl Session {
         Self {
             parts: Parts::default(),
             views: BTreeMap::new(),
-            buffers: VecDeque::new(),
             launch: launch.then_some(socket),
             exe: std::env::current_exe().ok(),
             run,
@@ -777,14 +774,6 @@ impl Session {
             return Err(Error::NameTaken(name.to_owned()));
         }
         no_tab_named(self.parts.workspaces(), name, except)
-    }
-
-    /// Whether a client is in copy mode on pane `pane`: keys typed there
-    /// go to copy mode, not the program.
-    pub(crate) fn copying(&self, pane: PaneId) -> bool {
-        self.views
-            .values()
-            .any(|v| matches!(&v.mode, Mode::Copy(copy) if copy.pane == pane))
     }
 
     /// What `id`, written `text`, stands for as a `kind`: itself; a pane's
@@ -1478,7 +1467,6 @@ impl Session {
         self.host_panes();
         self.tell_schemes();
         self.tell_lost();
-        self.hold_copies();
     }
 
     /// Each pane whose program was told other graphics than its host's
@@ -1507,52 +1495,8 @@ impl Session {
         }
     }
 
-    /// Output and sizing a pane can drop rows of its history: a copy mode
-    /// whose rows went ends. They are looked for only if the screen changed
-    /// since they were last found. Every change to workspaces, tabs, panes
-    /// and views does this as it is made; output, which changes none of
-    /// them, leaves it to the server's loop.
-    pub fn hold_copies(&mut self) {
-        for view in self.views.values_mut() {
-            let Mode::Copy(copy) = &mut view.mode else {
-                continue;
-            };
-            let Some(pane) = self.parts.panes().get(&copy.pane) else {
-                continue;
-            };
-            let screen = pane.screen();
-            let same = copy.respawns == pane.respawns;
-            if same && copy.held_at.is_some_and(|at| !screen.changed_since(at)) {
-                continue;
-            }
-            if copy.resolve(pane).is_some() {
-                copy.held_at = Some(screen.mark());
-            } else {
-                view.mode = Mode::Normal;
-                view.notify(
-                    if same {
-                        "copy mode ended: the history dropped the rows it held"
-                    } else {
-                        "copy mode ended: its pane respawned"
-                    },
-                    true,
-                );
-                let ended = ToAttached::Ended(view.opening);
-                self.outbox.push(Outgoing::To(view.id, ended));
-                let id = pane.id();
-                let at = self.parts.locate(id).map(|at| (at, id));
-                self.parts.journal_mut().push(crate::journal::Event::View {
-                    client: view.id,
-                    at,
-                    change: crate::journal::ViewChange::Screen,
-                });
-            }
-        }
-    }
-
-    /// Ends what a view shows if what it is about is gone: copy mode whose
-    /// pane closed or is no longer focused, a chooser about a pane, tab or
-    /// workspace that closed. Which opening it ended, if it did, which
+    /// Ends what a view shows if what it is about is gone: a chooser about
+    /// a pane, tab or workspace that closed. Which opening it ended, if it did, which
     /// its client is told (`ToAttached::Ended`), the mode being the client's.
     /// Forgets remembered places that closed or that a close made current.
     fn repair(&self, view: &mut View) -> Option<u64> {
@@ -1564,20 +1508,11 @@ impl Session {
         view.last_workspace = view
             .last_workspace
             .filter(|id| self.workspace(*id).is_some() && place.is_none_or(|at| at.ws != *id));
-        let focus = self.focused(view.id);
-        // Copy mode's rows are looked for once the panes are sized
-        // (`hold_copies`).
         let gone = match &view.mode {
-            Mode::Copy(copy) if !self.parts.panes().contains_key(&copy.pane) => {
-                "copy mode ended: its pane closed".to_owned()
-            }
-            Mode::Copy(copy) if Some(copy.pane) != focus => {
-                "copy mode ended: its pane is no longer focused".to_owned()
-            }
             Mode::Panel(Panel::List(List {
                 about: Some(about), ..
             })) if self.there(*about).is_err() => format!("closed: {} is gone", about),
-            Mode::Normal | Mode::Panel(_) | Mode::Copy(_) => return None,
+            Mode::Normal | Mode::Panel(_) => return None,
         };
         view.mode = Mode::Normal;
         view.notify(gone, true);
@@ -2041,25 +1976,13 @@ impl Session {
         // Program copies go to viewers of the tab, including zoomed views
         // and watchers, when this pane permits them. Invalid copies are
         // counted and reported.
-        let generation = pane.respawns;
         let (bell, copies) = pane.take_read();
         let changed_label = labelled.filter(|(was, _)| was != &*pane.label());
         if bell {
             self.ring(id, now);
         }
-        if !copies.is_empty() {
-            let previous = self
-                .parts
-                .actor(fux_wire::events::Actor::Program(id, generation));
-            for text in copies {
-                if let Err(why) = self.copied(text, Some(id), &viewers) {
-                    log!("{id}: copy refused: {why}");
-                    for &client in &viewers {
-                        self.notify_to(client, why.to_string(), true);
-                    }
-                }
-            }
-            self.parts.actor(previous);
+        for text in copies {
+            self.copied(&text, &viewers);
         }
         for view in self.views.values_mut() {
             if viewers.contains(&view.id)
@@ -2116,16 +2039,9 @@ impl Session {
         true
     }
 
-    /// `text`, copied, goes to the paste buffers and to each client in `to`
-    /// whose terminal delivery is on (OSC 52). An exhausted id counter
-    /// refuses the copy.
-    pub(crate) fn copied(
-        &mut self,
-        text: String,
-        pane: Option<PaneId>,
-        to: &[ClientId],
-    ) -> Result<(), Error> {
-        let id = self.ids.buffer(self.run)?;
+    /// `text`, copied, goes to each client in `to` whose terminal delivery
+    /// is on (OSC 52), and is kept nowhere.
+    pub(crate) fn copied(&mut self, text: &str, to: &[ClientId]) {
         let views = &self.views;
         let mut recipients = to
             .iter()
@@ -2136,7 +2052,7 @@ impl Session {
                     .is_some_and(|v| v.presentation.terminal_clipboard)
             })
             .peekable();
-        // Encoded once, before the text moves into the buffers.
+        // Encoded once, for every recipient.
         if recipients.peek().is_some() {
             let encoded = fux_wire::json::base64(text.as_bytes());
             let osc = format!("\x1b]52;c;{encoded}\x07").into_bytes();
@@ -2145,23 +2061,6 @@ impl Session {
                     .map(|client| Outgoing::To(client, ToAttached::Paint(osc.clone().into()))),
             );
         }
-        let at = pane.and_then(|p| self.locate(p).map(|at| (at, p)));
-        self.buffers.push_front((id, text));
-        self.parts
-            .journal_mut()
-            .push(crate::journal::Event::Copied { buffer: id, at });
-        self.buffers.truncate(BUFFER_LIMIT);
-        Ok(())
-    }
-
-    fn buffer(&self, buffer: command::Buffer) -> Result<&str, Error> {
-        let found = match buffer {
-            command::Buffer::Newest => self.buffers.front(),
-            command::Buffer::Id(id) => self.buffers.iter().find(|(held, _)| *held == id),
-        };
-        found
-            .map(|(_, text)| text.as_str())
-            .ok_or(Error::NoBuffer(buffer))
     }
 
     /// Everything the server shuts down: every pane is hung up.
@@ -2529,8 +2428,7 @@ impl Session {
                         format!("{target}: {}", pane::UNMARKED),
                     ));
                 }
-                let copying = self.copying(pane.id());
-                let captured = crate::capture::pane(pane, self.run, history, view, copying)?;
+                let captured = crate::capture::pane(pane, self.run, history, view)?;
                 Ok(Body::Capture(Box::new(captured)).into())
             }
             &Command::Reorder { ref target, toward } => {
@@ -2559,28 +2457,6 @@ impl Session {
                     }
                 };
                 Ok(Body::Handles(ids).into())
-            }
-            &Command::ListBuffers => {
-                let metadata = |(id, text): &(BufferId, String)| {
-                    let preview: String = (text.chars())
-                        .map(|c| if c.is_control() { ' ' } else { c })
-                        .take(PREVIEW_MAX)
-                        .collect();
-                    Json::object(vec![
-                        ("id", Json::str(id.to_string())),
-                        ("bytes", Json::count(text.len())),
-                        ("preview", Json::str(preview)),
-                    ])
-                };
-                let list = self.buffers.iter().map(metadata).collect();
-                Ok(Body::Field(Json::Array(list)).into())
-            }
-            &Command::ShowBuffer { buffer } => self
-                .buffer(buffer)
-                .map(|text| Body::Field(Json::str(text)).into()),
-            &Command::PasteBuffer { buffer, target } => {
-                let paste = Input::Paste(self.buffer(buffer)?.to_owned());
-                self.send_keys(command::To::Now(AnyRef::Pane(target)), &[paste])
             }
             &Command::Client { client, ref action } => self.client(client, action, here, now),
         }
@@ -3153,7 +3029,7 @@ impl Session {
         ];
         let mut fields = Vec::with_capacity(values.len());
         fields.extend(values);
-        fields.extend(crate::capture::state(p, self.copying(p.id()))?);
+        fields.extend(crate::capture::state(p)?);
         Ok(fields)
     }
 
@@ -3262,12 +3138,6 @@ fn left_turn(mut read: impl FnMut(&mut [u8]) -> Result<usize, fuxix::Errno>) -> 
         }
     }
 }
-
-/// The fixed number of shared paste buffers retained.
-pub const BUFFER_LIMIT: usize = 16;
-
-/// Characters kept in a paste buffer's metadata preview.
-pub const PREVIEW_MAX: usize = 50;
 
 fn check_name(name: &str) -> Result<(), Error> {
     if name.trim().is_empty() {
@@ -3530,9 +3400,6 @@ pub(crate) mod testing {
             attach: fux_wire::protocol::Attach,
         ) -> Result<ClientId, super::Error> {
             self.attach_as(attach, Instant::now())
-        }
-        pub(crate) fn close_now(&mut self, id: fux_wire::id::PaneId, why: Option<String>) {
-            self.close_pane(id, why, Instant::now())
         }
         pub(crate) fn begin_now(
             &mut self,
@@ -5016,123 +4883,15 @@ mod tests {
     }
 
     #[test]
-    fn buffer_reads_keep_every_byte() -> TestResult {
-        let mut s = started()?;
-        for text in ["hello\n\n", "", "\n", "a\r\n\0界\n"] {
-            s.copied(text.into(), None, &[])?;
-            assert_eq!(
-                output(&mut s, "newest buffer len")?,
-                format!("{}\n", text.chars().count())
-            );
-            assert_eq!(output(&mut s, "newest buffer")?, format!("{text}\n"));
-        }
-        Ok(())
-    }
-
-    #[test]
-    fn buffer_ids_survive_copies_and_refuse_after_eviction() -> TestResult {
-        let mut s = started()?;
-        s.copied("chosen\n\n".into(), None, &[])?;
-        let id = s.buffers.front().ok_or("no copy")?.0;
-        // An unsolicited program copy also shifts the ring.
-        s.out(PaneId::of(1), b"\x1b]52;c;bmV3\x07");
-        assert_eq!(output(&mut s, &format!("str {id} buffer"))?, "chosen\n\n\n");
-        assert_eq!(output(&mut s, "newest buffer")?, "new\n");
-        run(&mut s, &format!("%1 str {id} paste-buffer drop"))?;
-        assert_eq!(
-            s.parts
-                .pane_mut(PaneId::of(1))
-                .ok_or("no pane")?
-                .drain_input(),
-            b"chosen\r\r"
-        );
-        for _ in 0..16 {
-            s.copied("later".into(), None, &[])?;
-        }
-        assert_eq!(s.buffers.len(), 16);
-        for code in [
-            format!("str {id} buffer"),
-            format!("%1 str {id} paste-buffer"),
-        ] {
-            assert!(run(&mut s, &code).is_err_and(|e| e.starts_with("no_buffer:")));
-        }
-        assert!(
-            s.parts
-                .pane_mut(PaneId::of(1))
-                .ok_or("no pane")?
-                .drain_input()
-                .is_empty()
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn buffer_ids_belong_to_one_server_run() -> TestResult {
-        let mut s = started()?;
-        s.copied("old".into(), None, &[])?;
-        let id = s.buffers.front().ok_or("no copy")?.0;
-        let mut other = started()?;
-        other.run = "0-0".parse().map_err(|()| "a run")?;
-        other.copied("new".into(), None, &[])?;
-        for code in [
-            format!("str {id} buffer"),
-            format!("%1 str {id} paste-buffer"),
-        ] {
-            assert!(
-                run(&mut other, &code)
-                    .is_err_and(|e| e.starts_with("bad_value:") && e.contains("server run"))
-            );
-        }
-        Ok(())
-    }
-
-    #[test]
-    fn buffer_metadata_is_bounded_and_has_the_exact_length() -> TestResult {
-        let mut s = started()?;
-        let text = std::iter::repeat_n("界\n", 100).collect::<String>();
-        s.copied(text.clone(), None, &[])?;
-        let id = s.buffers.front().ok_or("no copy")?.0;
-        let expected = Json::Array(vec![Json::object(vec![
-            ("id", Json::str(id.to_string())),
-            ("bytes", Json::count(text.len())),
-            (
-                "preview",
-                Json::str(std::iter::repeat_n("界 ", 25).collect::<String>()),
-            ),
-        ])]);
-        assert_eq!(
-            output(&mut s, "buffers json")?,
-            format!("{}\n", expected.render())
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn buffer_id_exhaustion_copies_nothing() -> TestResult {
-        let (mut s, c) = attached(24, 80)?;
-        s.copied("kept".into(), None, &[])?;
-        let before = s.buffers.clone();
-        s.outbox.clear();
-        s.ids.exhaust_buffers();
-        assert!(
-            s.copied("refused".into(), None, &[c])
-                .is_err_and(|e| e.code() == Code::IdsExhausted)
-        );
-        assert_eq!(s.buffers, before);
-        assert!(s.outbox.is_empty());
-        Ok(())
-    }
-
-    #[test]
-    fn a_buffer_paste_goes_in_whole_as_one_native_paste() -> TestResult {
+    fn a_paste_goes_in_whole_as_one_native_paste() -> TestResult {
         let mut s = started()?;
         s.out(PaneId::of(1), b"\x1b[?2004h");
         let text = format!(
             "{}\n\n",
             std::iter::repeat_n('x', 2 << 20).collect::<String>()
         );
-        s.copied(text.clone(), None, &[])?;
-        run(&mut s, "%1 newest paste-buffer drop")?;
+        let to = command::To::Now(AnyRef::Pane(PaneId::of(1)));
+        s.send_keys(to, &[Input::Paste(text.clone())])?;
         let queued = s
             .parts
             .pane_mut(PaneId::of(1))
@@ -5148,8 +4907,7 @@ mod tests {
         let mut s = started()?;
         run(&mut s, "agent-opts 80 24 size str /bin/cat program new-tab")?;
         s.end_program(PaneId::of(2), fux_wire::answer::Ended::Exited(3));
-        s.copied("x".into(), None, &[])?;
-        let pasted = run(&mut s, "%2 newest paste-buffer");
+        let pasted = run(&mut s, "%2 str x paste send-keys");
         assert!(pasted.is_err_and(|e| e.contains("exited")), "refused");
         Ok(())
     }
@@ -5378,10 +5136,13 @@ mod tests {
     fn a_frame_a_resize_reads_is_read_whole() -> TestResult {
         let (mut s, c) = attached(24, 80)?;
         let id = PaneId::of(1);
+        let copied = |s: &Session| {
+            (s.outbox.iter()).any(|o| matches!(o, Outgoing::To(to, ToAttached::Paint(b)) if *to == c && **b == *b"\x1b]52;c;aGk=\x07"))
+        };
         s.out(id, b"\x1b[?2026h\x07\x1b]52;c;aGk=\x07");
-        assert!(s.buffers.is_empty(), "held");
+        assert!(!copied(&s), "held");
         s.size_client(c, 30, 100)?;
-        assert_eq!(s.buffers.front().map(|(_, text)| text.as_str()), Some("hi"));
+        assert!(copied(&s));
         assert!(!s.pane(id)?.bell, "rung");
         Ok(())
     }
@@ -6428,7 +6189,7 @@ mod tests {
 
     #[test]
     fn history_budget_only_changes_its_target() -> TestResult {
-        let (mut s, client) = attached(5, 20)?;
+        let (mut s, _) = attached(5, 20)?;
         s.out(
             PaneId::of(1),
             std::iter::repeat_n("line\r\n", 50)
@@ -6447,45 +6208,31 @@ mod tests {
         let other = s.pane(PaneId::of(2))?.history_bytes();
         run(&mut s, "str history-bytes 0 set")?;
         assert!(history(&s) > Some(2));
-        run(&mut s, "str c1 client %1 show str c1 client copy-mode")?;
-        s.input(client, b"t");
-        assert!(
-            s.views
-                .get(&client)
-                .is_some_and(|v| matches!(v.mode, Mode::Copy(_)))
-        );
         run(&mut s, "%1 112 history-budget")?;
-        assert!(
-            s.views
-                .get(&client)
-                .is_some_and(|v| matches!(v.mode, Mode::Normal))
-        );
-        assert!(
-            s.views
-                .get(&client)
-                .and_then(|v| v.notice.as_ref())
-                .is_some_and(|n| n.text.contains("dropped the rows"))
-        );
         assert_eq!(s.pane(PaneId::of(2))?.history_bytes(), other);
         assert_eq!(history(&s), Some(2));
         Ok(())
     }
 
     #[test]
-    fn a_programs_clipboard_write_is_a_copy() -> TestResult {
+    fn a_programs_clipboard_write_reaches_the_terminals() -> TestResult {
         let (mut s, client) = attached(5, 20)?;
         s.outbox.clear();
         s.out(PaneId::of(1), b"\x1b]52;c;Zm9v\x07");
-        assert_eq!(
-            s.buffers.front().map(|(_, text)| text.as_str()),
-            Some("foo")
-        );
-        let sent = |s: &Session| {
-            s.outbox
-                .iter()
-                .any(|o| matches!(o, Outgoing::To(c, ToAttached::Paint(b)) if *c == client && **b == *b"\x1b]52;c;Zm9v\x07"))
+        let copies = |s: &Session| {
+            (s.outbox.iter())
+                .filter_map(|o| match o {
+                    Outgoing::To(c, ToAttached::Paint(b))
+                        if *c == client && b.starts_with(b"\x1b]52;c;") =>
+                    {
+                        Some(b.to_vec())
+                    }
+                    Outgoing::To(..) | Outgoing::Shutdown(_) => None,
+                })
+                .collect::<Vec<_>>()
         };
-        assert!(sent(&s));
+        assert_eq!(copies(&s), [b"\x1b]52;c;Zm9v\x07"]);
+        s.outbox.clear();
         // One longer than fux-vt keeps of a string copies nothing, said.
         let long = format!(
             "\x1b]52;c;{}\x07",
@@ -6498,10 +6245,7 @@ mod tests {
         }
         let notice = s.views.get(&client).and_then(|v| v.notice.clone());
         assert!(notice.is_some_and(|n| n.error && n.text.contains("copies (OSC 52) not made (1)")));
-        assert_eq!(
-            s.buffers.front().map(|(_, text)| text.as_str()),
-            Some("foo")
-        );
+        assert!(copies(&s).is_empty());
         // In one read: each copy made, in order, and the refusal between them told.
         if let Some(view) = s.views.get_mut(&client) {
             view.notice = None;
@@ -6510,13 +6254,7 @@ mod tests {
             PaneId::of(1),
             b"\x1b]52;c;YQ==\x07\x1b]52;c;***\x07\x1b]52;c;Yg==\x07",
         );
-        let buffers: Vec<&str> = s
-            .buffers
-            .iter()
-            .take(3)
-            .map(|(_, text)| text.as_str())
-            .collect();
-        assert_eq!(buffers, ["b", "a", "foo"]);
+        assert_eq!(copies(&s), [b"\x1b]52;c;YQ==\x07", b"\x1b]52;c;Yg==\x07"]);
         let notice = s.views.get(&client).and_then(|v| v.notice.clone());
         assert!(notice.is_some_and(|n| n.text.contains("is not base64")));
         // One in a tab no client shows is told once one does.
@@ -6543,8 +6281,7 @@ mod tests {
         )?;
         s.outbox.clear();
         s.out(PaneId::of(3), b"\x1b]52;c;YmFy\x07");
-        assert!(!sent(&s) && s.outbox.is_empty());
-        assert_eq!(s.buffers.front().map(|(_, text)| text.as_str()), Some("b"));
+        assert!(s.outbox.is_empty());
         Ok(())
     }
 
@@ -6706,7 +6443,6 @@ mod tests {
         }
         s.outbox.clear();
         s.out(PaneId::of(1), b"\x1b]52;c;Zm9v\x07");
-        assert_eq!(s.buffers.len(), 1);
         let copies = |s: &Session| {
             s.outbox
                 .iter()
@@ -6721,14 +6457,12 @@ mod tests {
         assert_eq!(copies(&s), [b]);
         s.outbox.clear();
         s.out(PaneId::of(2), b"\x1b]52;c;YmFy\x07");
-        assert_eq!(s.buffers.len(), 1);
         assert!(copies(&s).is_empty());
-        // Manual copying always stores; it targets only the copying client.
-        s.copied("manual".into(), None, &[a])?;
-        assert_eq!(s.buffers.len(), 2);
+        // A copy goes only to a client whose terminal delivery is on.
+        s.copied("manual", &[a]);
         assert!(copies(&s).is_empty());
         s.apply(a, vec![Act::Presentation(presentation)]);
-        s.copied("mine".into(), None, &[a])?;
+        s.copied("mine", &[a]);
         assert_eq!(copies(&s), [a]);
         Ok(())
     }
@@ -7151,147 +6885,6 @@ mod tests {
         assert!(!dirty(&s), "a given pane name masks its title");
         Ok(())
     }
-
-    #[test]
-    fn only_screens_that_may_change_are_marked_for_painting() -> TestResult {
-        let (mut s, one) = attached(10, 40)?;
-        let two = s.attach(10, 40, None)?;
-        let clean = |s: &mut Session| {
-            for view in s.views.values_mut() {
-                view.dirty = false;
-            }
-        };
-        let dirty = |s: &Session, c: ClientId| s.views.get(&c).is_some_and(|v| v.dirty);
-        clean(&mut s);
-        // Keys for the pane's program show when it answers: its output
-        // marks every screen showing the pane.
-        s.input(one, b"ls");
-        assert!(
-            !dirty(&s, one) && !dirty(&s, two),
-            "typing into a pane repaints no one until the pane answers"
-        );
-        s.out(fux_wire::id::PaneId::of(1), b"ls");
-        assert!(dirty(&s, one) && dirty(&s, two), "its echo repaints both");
-        clean(&mut s);
-        // A key that changes the typist's own screen repaints it alone.
-        s.input(one, b"\x02");
-        assert!(
-            dirty(&s, one) && !dirty(&s, two),
-            "the prefix repaints the typist alone"
-        );
-        s.input(one, b"\x1b");
-        s.escape(one);
-        clean(&mut s);
-        for line in [
-            "ls",
-            "str %1 pane capture",
-            "list-keys",
-            "str %1 pane str x text send-keys",
-            "str c1 client str x text send-keys",
-        ] {
-            run(&mut s, line)?;
-        }
-        assert!(
-            !dirty(&s, one) && !dirty(&s, two),
-            "reading repaints no one"
-        );
-        assert!(run(&mut s, "str %9 pane kill").is_err());
-        assert!(
-            !dirty(&s, one) && !dirty(&s, two),
-            "a failure repaints no one"
-        );
-        run(&mut s, "str %1 pane str horizontal axis split")?;
-        assert!(
-            dirty(&s, one) && dirty(&s, two),
-            "a split repaints every client"
-        );
-        clean(&mut s);
-        // A binding that splits, typed by one client, repaints both.
-        s.input(one, b"\x02v");
-        assert!(
-            dirty(&s, one) && dirty(&s, two),
-            "a bound split repaints every client"
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn a_copy_selection_cannot_cross_a_respawn() -> TestResult {
-        use fux_wire::act::{Act, CopyAct, ScreenAct};
-        let (mut s, c) = attached(24, 80)?;
-        output_as(
-            &mut s,
-            Some(c),
-            "agent-opts str /bin/cat program str / cwd new-tab drop",
-        )?;
-        let pane = s.focused(c).ok_or("pane")?;
-        s.out(pane, b"old text");
-        s.input(c, b"\x02cv");
-        let view = s.views.get(&c).ok_or("view")?;
-        let opening = view.opening;
-        let Mode::Copy(copy) = &view.mode else {
-            return Err("copy mode".into());
-        };
-        let row = copy.cursor.0;
-        assert!(copy.selection.is_some());
-        run(&mut s, &format!("{pane} kill-first respawn"))?;
-        s.out(pane, b"new text");
-        assert!(
-            s.parts
-                .panes()
-                .get(&pane)
-                .ok_or("pane")?
-                .screen()
-                .row_by_id(row)
-                .is_some()
-        );
-        let view = s.views.get(&c).ok_or("view")?;
-        assert!(view.mode.is_normal());
-        assert!(
-            view.notice
-                .as_ref()
-                .is_some_and(|n| n.text.contains("respawned"))
-        );
-        s.apply(
-            c,
-            vec![Act::Screen {
-                opening,
-                act: ScreenAct::Copy(CopyAct::Yank),
-            }],
-        );
-        assert!(
-            s.buffers.is_empty(),
-            "the old selection cannot copy replacement text"
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn copy_mode_ends_when_its_retained_rows_disappear() -> TestResult {
-        for resize in [false, true] {
-            let mut s = started()?;
-            run(&mut s, "%1 64 history-budget")?;
-            let client = s.attach(6, 20, None)?;
-            s.out(PaneId::of(1), b"a\r\nb\r\nc\r\nd\r\ne\r\nf\r\n");
-            run(&mut s, "str c1 client copy-mode")?;
-            s.input(client, b"g");
-            if resize {
-                s.size_client(client, 3, 20)?;
-            } else {
-                s.out(PaneId::of(1), b"g\r\nh\r\ni\r\nj\r\n");
-                s.hold_copies();
-            }
-            let view = s.views.get(&client).ok_or("the view")?;
-            assert!(view.mode.is_normal());
-            assert!(
-                view.notice
-                    .as_ref()
-                    .is_some_and(|n| n.text.contains("dropped the rows"))
-            );
-        }
-        Ok(())
-    }
-
     #[test]
     fn only_a_size_that_changes_a_client_resizes_it() -> TestResult {
         let (mut s, c) = attached(10, 40)?;
@@ -8571,38 +8164,6 @@ mod journal_tests {
         assert_eq!(s.parts.journal().current_actor(), Actor::Server);
         Ok(())
     }
-
-    #[test]
-    fn copies_reference_only_the_admitted_stable_buffer() -> TestResult {
-        let mut s = started()?;
-        let from = s.parts.journal().end(s.run);
-        s.output(PaneId::of(1), b"\x1b]52;c;aGVsbG8=\x07", Instant::now());
-        let buffer = s.buffers.front().ok_or("buffer")?.0;
-        let b = batch(&s, from)?;
-        let copies = named(&b, "copied");
-        assert_eq!(copies.len(), 1);
-        let copied = copies.first().ok_or("copy event")?;
-        assert_eq!(
-            copied.data.get("buffer"),
-            Some(&Json::str(buffer.to_string()))
-        );
-        assert!(copied.data.get("text").is_none());
-        assert_eq!(copied.origin, Actor::Program(PaneId::of(1), 0));
-        assert_eq!(
-            output(&mut s, &format!("str {from} 0 1 copy-notices"))?,
-            format!("{}\n", b.next)
-        );
-        run(
-            &mut s,
-            "agent-opts 80 24 size false program-clipboard str /bin/cat program new-tab drop",
-        )?;
-        let from = s.parts.journal().end(s.run);
-        s.output(PaneId::of(2), b"\x1b]52;c;bm8=\x07", Instant::now());
-        assert!(named(&batch(&s, from)?, "copied").is_empty());
-        assert_eq!(s.buffers.front().map(|(id, _)| *id), Some(buffer));
-        Ok(())
-    }
-
     #[test]
     fn library_streams_checkpoint_and_fail_before_effects_on_loss() -> TestResult {
         let mut s = started()?;
@@ -8716,45 +8277,6 @@ mod journal_tests {
             assert!(view.dirty);
             assert_eq!(s.parts.journal().end(s.run), from);
         }
-        Ok(())
-    }
-
-    #[test]
-    fn copy_motion_and_notices_paint_without_invalidating_the_opening() -> TestResult {
-        let (mut s, client) = testing::attached(24, 80)?;
-        run(&mut s, &format!("str {client} client copy-mode"))?;
-        let from = s.parts.journal().end(s.run);
-        s.input(client, b"k");
-        assert!(
-            s.views
-                .get(&client)
-                .is_some_and(|view| matches!(view.mode, Mode::Copy(_)))
-        );
-        assert_eq!(s.parts.journal().end(s.run), from);
-        for (key, notice) in [
-            (b"n", Some(("no search yet", true))),
-            (b"n", Some(("no search yet", true))),
-            (b"k", None),
-        ] {
-            let from = s.parts.journal().end(s.run);
-            s.views.get_mut(&client).ok_or("view")?.dirty = false;
-            s.input(client, key);
-            let view = s.views.get(&client).ok_or("client")?;
-            assert!(matches!(view.mode, Mode::Copy(_)));
-            assert!(view.dirty);
-            assert_eq!(
-                view.notice.as_ref().map(|n| (n.text.as_str(), n.error)),
-                notice
-            );
-            for scope in [Scope::All, Scope::Client(client)] {
-                let b = Reader::new(scope, s.parts.journal(), s.run, Some(from))?
-                    .batch(s.parts.journal(), true)?;
-                assert!(b.events.is_empty(), "{notice:?}");
-            }
-        }
-        let from = s.parts.journal().end(s.run);
-        s.input(client, b"q");
-        assert_eq!(named(&batch(&s, from)?, "screen").len(), 1);
         Ok(())
     }
 }

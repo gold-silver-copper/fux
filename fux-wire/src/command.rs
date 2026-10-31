@@ -1,7 +1,7 @@
 //! The requests a client sends the server: typed actions, each built by
 //! fuxth words in a client (its `script`) and carried whole over the
 //! socket (`crate::wire`). The server never reads words.
-use crate::id::{BufferId, ClientId, PaneId, TabId, WsId};
+use crate::id::{ClientId, PaneId, TabId, WsId};
 use crate::layout::Axis;
 use crate::wire::{Error, Reader, Wire, wire, wire_struct};
 use fux_vt::keys::mouse::MouseButton;
@@ -166,24 +166,6 @@ impl Wire for Program {
     fn get(r: &mut Reader<'_>) -> Result<Self, Error> {
         let (program, args) = Self::get_fields(r)?;
         Program::new(program, args).map_err(|_| Error::Bad("program"))
-    }
-}
-
-wire! {
-    /// A copy by its stable id, or the newest at the time of the request.
-    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-    pub enum Buffer {
-        Newest,
-        Id(id: BufferId),
-    }
-}
-
-impl std::fmt::Display for Buffer {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Newest => f.write_str("newest"),
-            Self::Id(id) => id.fmt(f),
-        }
     }
 }
 
@@ -918,14 +900,6 @@ wire! {
             target: AnyRef,
             members: Members,
         },
-        ListBuffers,
-        ShowBuffer {
-            buffer: Buffer,
-        },
-        PasteBuffer {
-            buffer: Buffer,
-            target: PaneId,
-        },
         /// A command on one client's screen: the client named (`str c1 client`), or the one
         /// whose key, chooser or prompt ran it.
         Client {
@@ -1057,9 +1031,7 @@ impl Command {
             | C::CapturePane { .. }
             | C::SendKeys { .. }
             | C::SendMouse { .. }
-            | C::Signal { .. }
-            | C::ListBuffers
-            | C::ShowBuffer { .. } => true,
+            | C::Signal { .. } => true,
             C::NewWorkspace { .. }
             | C::NewTab { .. }
             | C::Split { .. }
@@ -1075,8 +1047,7 @@ impl Command {
             | C::ClearHistory { .. }
             | C::HistoryBudget { .. }
             | C::Reorder { .. }
-            | C::KillServer
-            | C::PasteBuffer { .. } => false,
+            | C::KillServer => false,
             C::Client { action, .. } => match action {
                 ClientAction::Capture | ClientAction::Keys(_) | ClientAction::Open(_) => true,
                 ClientAction::Detach

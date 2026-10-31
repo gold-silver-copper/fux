@@ -178,7 +178,6 @@ fn records_list_is_current() -> Result<(), Box<dyn std::error::Error>> {
     let held = [
         ("capture[pane]", "%1 styles capture".to_owned()),
         ("capture[client]", format!("str {client} client capture")),
-        ("buffers", "buffers".to_owned()),
     ];
     for (path, code) in held {
         for value in evaluate(&code, None, asks, &mut Vec::new())? {

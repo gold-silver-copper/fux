@@ -4,7 +4,7 @@
 use crate::pane::{End, Left, Said};
 use fux_wire::command::{AnyRef, Run};
 use fux_wire::events::{Actor, Batch, Cursor, Item, Seq, Status};
-use fux_wire::id::{BufferId, ClientId, PaneId, TabId, WsId};
+use fux_wire::id::{ClientId, PaneId, TabId, WsId};
 use fux_wire::inspect::Scope;
 use fux_wire::json::Json;
 use std::collections::VecDeque;
@@ -148,11 +148,6 @@ pub enum Event {
         at: Option<PaneAt>,
         change: ViewChange,
     },
-    /// An admitted retained copy; its bytes are held only in the buffer.
-    Copied {
-        buffer: BufferId,
-        at: Option<PaneAt>,
-    },
 }
 
 /// What happens to a tab or a workspace.
@@ -282,10 +277,9 @@ impl Event {
                 (None, Some(*tab), Some(*ws))
             }
             Event::Workspace(ws, _) => (None, None, Some(*ws)),
-            Event::View { at, .. } | Event::Copied { at, .. } => at
-                .map_or((None, None, None), |((ws, tab), pane)| {
-                    (Some(pane), Some(tab), Some(ws))
-                }),
+            Event::View { at, .. } => at.map_or((None, None, None), |((ws, tab), pane)| {
+                (Some(pane), Some(tab), Some(ws))
+            }),
         }
     }
 
@@ -300,8 +294,7 @@ impl Event {
             | Event::Workspace(..)
             | Event::Arranged(..)
             | Event::Layout(..)
-            | Event::View { .. }
-            | Event::Copied { .. } => None,
+            | Event::View { .. } => None,
         }
     }
 
@@ -311,9 +304,6 @@ impl Event {
             Event::Arranged(_) => ("arranged", Vec::new()),
             Event::Layout(_) => ("laid_out", Vec::new()),
             Event::View { change, .. } => (change.name(), Vec::new()),
-            Event::Copied { buffer, .. } => {
-                ("copied", vec![("buffer", Json::str(buffer.to_string()))])
-            }
             Event::Tab(_, change) | Event::Workspace(_, change) => change.said(),
         };
         Json::object(
@@ -326,7 +316,7 @@ impl Event {
 
 /// One event of every kind at `at`, each with every field it can say:
 /// `name` for what is named, `said` a title and a notification a pane
-/// told, `left` for what an end left, `buffer` copied, `size` resized to. The test
+/// told, `left` for what an end left, `size` resized to. The test
 /// `the_event_and_status_tables_match_the_finite_schema` does not compile
 /// while a kind is missing; fux's list of records (`docs/records.txt`)
 /// reads them all.
@@ -336,7 +326,6 @@ pub fn every_kind(
     name: &str,
     said: [Told; 2],
     left: Left,
-    buffer: BufferId,
     size: fux_vt::Size,
 ) -> Vec<Event> {
     let mut events = vec![
@@ -345,10 +334,6 @@ pub fn every_kind(
         Event::Pane(at, PaneEvent::Moved(at.0)),
         Event::Arranged(at.0),
         Event::Layout(at.0),
-        Event::Copied {
-            buffer,
-            at: Some(at),
-        },
     ];
     for change in [
         Change::Created(None),
@@ -408,7 +393,6 @@ pub fn every_kind_read(run: Run) -> Result<Batch, String> {
         Told::Notification(Said::sent("text", true)),
     ];
     let left = Left { input: 1 };
-    let buffer = format!("b1:{run}").parse().map_err(|()| "buffer")?;
     let actors = [
         Actor::Client(ClientId::of(1)),
         Actor::Pane(at.1, 1),
@@ -419,7 +403,7 @@ pub fn every_kind_read(run: Run) -> Result<Batch, String> {
     let mut journal = Journal::default();
     let mut reader = Reader::new(Scope::All, &journal, run, None)?;
     let size = fux_vt::Size::new(24, 80).map_err(|e| e.to_string())?;
-    let events = every_kind(at, "name", said, left, buffer, size);
+    let events = every_kind(at, "name", said, left, size);
     for (event, actor) in events.into_iter().zip(actors.into_iter().cycle()) {
         journal.push_from(event, actor);
     }
@@ -514,8 +498,7 @@ impl Reader {
                     | Event::Tab(..)
                     | Event::Arranged(_)
                     | Event::Workspace(..)
-                    | Event::Layout(_)
-                    | Event::Copied { .. } => None,
+                    | Event::Layout(_) => None,
                 };
                 let moved_from = if let Event::Pane(_, PaneEvent::Moved(from)) = entry.event {
                     Some(from)
@@ -697,24 +680,13 @@ mod tests {
                 | Event::Arranged(_)
                 | Event::Workspace(..)
                 | Event::Layout(_)
-                | Event::View { .. }
-                | Event::Copied { .. } => None,
+                | Event::View { .. } => None,
             });
         let title = texts.next().ok_or("title event")?;
         let notification = texts.next().ok_or("notification event")?;
         let left = Left { input: usize::MAX };
-        let buffer = "b18446744073709551615:4294967295-ffffffffffffffff"
-            .parse()
-            .map_err(|()| "buffer")?;
         let size = fux_vt::Size::new(4096, 4096)?;
-        Ok(every_kind(
-            at,
-            &name,
-            [title, notification],
-            left,
-            buffer,
-            size,
-        ))
+        Ok(every_kind(at, &name, [title, notification], left, size))
     }
 
     #[test]
@@ -763,8 +735,7 @@ mod tests {
                     ..
                 }
                 | Event::Arranged(_)
-                | Event::Layout(_)
-                | Event::Copied { .. } => {}
+                | Event::Layout(_) => {}
             }
             let json = event.json();
             let Some(Json::String(name)) = json.get("event") else {

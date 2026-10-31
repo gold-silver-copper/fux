@@ -886,7 +886,6 @@ fn keystroke(recordings: &[Recording], baseline: bool, keys: usize) -> Result<Do
             unread(&mut s);
         }
     }
-    s.hold_copies();
     let mut shown = fux_server::render::Grid::default();
     let mut spare = fux_server::render::Grid::default();
     let mut placement = fux_wire::layout::Placement::default();
@@ -912,7 +911,6 @@ fn keystroke(recordings: &[Recording], baseline: bool, keys: usize) -> Result<Do
         black_box(&typed);
         let glyph = char::from(key).encode_utf8(&mut echo);
         s.output(pane, glyph.as_bytes(), now);
-        s.hold_copies();
         buffer.clear();
         buffer.extend_from_slice(&s.before_paint(c));
         if let Some(view) = s.views.get_mut(&c) {
@@ -990,7 +988,6 @@ fn paint(
                         unread(&mut s);
                     }
                     units = units.saturating_add(read.len());
-                    s.hold_copies();
                     let dirty = s.views.get(&c).is_some_and(|v| v.dirty);
                     if let Some(view) = s.views.get_mut(&c) {
                         view.dirty = false;
@@ -1310,7 +1307,6 @@ fn capture_history(baseline: bool, history: usize) -> Result<Done, String> {
             s.run,
             Some(usize::MAX),
             command::CaptureView::default(),
-            false,
         )
         .map_err(|e| e.to_string())?;
         black_box(fux_wire::wire::encode(&capture));

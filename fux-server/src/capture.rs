@@ -11,14 +11,12 @@ use fux_wire::json::Json;
 use fux_wire::wire::Memory;
 
 /// A pane's screen, and `history` rows before it, as `view` asks, read
-/// once with its version and state; with `copy_mode`, that says a client
-/// is in copy mode on it (`state`).
+/// once with its version and state (`state`).
 pub fn pane(
     pane: &Pane,
     run: fux_wire::command::Run,
     history: Option<usize>,
     view: CaptureView,
-    copy_mode: bool,
 ) -> Result<Captured, fux_wire::code::Error> {
     let screen = pane.screen();
     let (read, above) = rows_of(screen, history, view);
@@ -39,7 +37,7 @@ pub fn pane(
         .0
         .skip(selection.start)
         .take(selection.len());
-    let mut state = state(pane, copy_mode)?;
+    let mut state = state(pane)?;
     // The history rows kept above the first row read: history it was not
     // asked for (rows a range leaves out are not counted).
     state.push(("above", above.map_or(Json::Null, Json::count)));
@@ -415,13 +413,9 @@ pub fn client(client: ClientId, grid: &crate::render::Grid) -> Captured {
 
 /// What is known of a pane's program, for `json`: its foreground program,
 /// the status it exited with, and the modes
-/// that say how it takes input; whether a client is in copy mode on it,
-/// and the cell its program is told, by its tab's host
-/// (`Session::host_panes`).
-pub(crate) fn state(
-    pane: &Pane,
-    copy_mode: bool,
-) -> Result<Vec<(&'static str, Json)>, fux_wire::code::Error> {
+/// that say how it takes input, and the cell its program is told, by its
+/// tab's host (`Session::host_panes`).
+pub(crate) fn state(pane: &Pane) -> Result<Vec<(&'static str, Json)>, fux_wire::code::Error> {
     let screen = pane.screen();
     let cell = screen.graphics().cell();
     // The terminal reports a group, whose leader may already have exited.
@@ -538,7 +532,6 @@ pub(crate) fn state(
             Json::count(pane.options().picture_bytes.get()),
         ),
         ("history_lines", Json::count(screen.history_len())),
-        ("copy_mode", Json::Bool(copy_mode)),
         ("command_running", Json::Bool(pane.command_running())),
         ("last_status", last_status.map_or(Json::Null, Json::int)),
         ("bells", Json::uint(pane.alerts.rung)),
@@ -668,7 +661,6 @@ mod tests {
             fux_wire::command::Run::now().ok_or("clock")?,
             Some(usize::MAX),
             CaptureView::default(),
-            false,
         )?;
         assert!(capture.lines.len() > 80_000);
         let full = super::pane(
@@ -679,7 +671,6 @@ mod tests {
                 full: true,
                 ..CaptureView::default()
             },
-            false,
         )?;
         assert_eq!(full.lines.len(), 100_003);
         Ok(())
@@ -718,7 +709,6 @@ mod tests {
                 fux_wire::command::Run::now().ok_or("a clock")?,
                 None,
                 join,
-                false,
             )?
             .text()?)
         };
@@ -747,7 +737,7 @@ mod tests {
                 wrapped,
                 ..CaptureView::default()
             };
-            Ok(super::pane(&pane, run, None, view, false)?.text()?)
+            Ok(super::pane(&pane, run, None, view)?.text()?)
         };
         assert_eq!(capture((2, 3), false)?, "abcdefghijklm");
         assert_eq!(capture((0, 2), false)?, "top\nabcdefghijklm");
@@ -780,7 +770,6 @@ mod tests {
             fux_wire::command::Run::now().ok_or("a clock")?,
             None,
             view,
-            false,
         )?
         .text()?;
         assert_eq!(text.lines().next(), Some("abc世"));
@@ -805,7 +794,7 @@ mod tests {
                 wrapped: flags & 8 != 0,
                 ..CaptureView::default()
             };
-            let got = super::pane(&pane, run, None, view, false)?;
+            let got = super::pane(&pane, run, None, view)?;
             let styled = view.styles || view.marks;
             let actual: Vec<(String, u32)> = got
                 .lines
@@ -869,7 +858,7 @@ mod tests {
             ..CaptureView::default()
         };
         let run = fux_wire::command::Run::now().ok_or("a clock")?;
-        let got = super::pane(&pane, run, None, marks, false)?;
+        let got = super::pane(&pane, run, None, marks)?;
         assert_eq!(got.text()?, "x\u{0600} ");
         assert_eq!(
             got.lines
@@ -898,7 +887,7 @@ mod tests {
             ..CaptureView::default()
         };
         let run = fux_wire::command::Run::now().ok_or("a clock")?;
-        let got = super::pane(&pane, run, None, marks, false)?;
+        let got = super::pane(&pane, run, None, marks)?;
         let colour = |n| fux_vt::Attributes::new(fux_vt::Color::Idx(n), fux_vt::Color::Default);
         assert_eq!(got.styles, (0..20).map(colour).collect::<Vec<_>>());
         let line = got.lines.first().ok_or("a line")?;
@@ -944,9 +933,8 @@ mod tests {
             ..CaptureView::default()
         };
         let run = fux_wire::command::Run::now().ok_or("a clock")?;
-        let body = fux_wire::protocol::Body::Capture(Box::new(super::pane(
-            &pane, run, None, view, false,
-        )?));
+        let body =
+            fux_wire::protocol::Body::Capture(Box::new(super::pane(&pane, run, None, view)?));
         assert_eq!(
             Reader::new(&encode(&body)).whole::<fux_wire::protocol::Body>()?,
             body
@@ -976,7 +964,6 @@ mod tests {
             fux_wire::command::Run::now().ok_or("a clock")?,
             None,
             view,
-            false,
         )?
         .text()?;
         assert_eq!(text, "hello");
@@ -988,7 +975,6 @@ mod tests {
             fux_wire::command::Run::now().ok_or("a clock")?,
             None,
             view,
-            false,
         )?
         .text()?;
         assert_eq!(text, "step 1");

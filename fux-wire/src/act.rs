@@ -1,10 +1,9 @@
 //! What an attached client sends the server about its terminal: typed
 //! actions, never keys to be read. The client reads its keyboard, runs its
 //! own bindings and owns every mode: the command column, repeat modes,
-//! choosers, prompts, copy mode and its search (the client's `screens`). The server is sent a key only as literal input to
-//! the pane the client focuses (`Act::Key`), what to draw of the client's
-//! screens (`ScreenAct::Show`), and the moves of copy mode, whose cursor is the
-//! server's as it alone holds the scrollback (`ScreenAct::Copy`).
+//! choosers and prompts (the client's `screens`). The server is sent a key
+//! only as literal input to the pane the client focuses (`Act::Key`), and
+//! what to draw of the client's screens (`ScreenAct::Show`).
 use crate::command::AnyRef;
 use crate::wire::{closed_wire, wire, wire_enum, wire_struct};
 use fux_vt::ModeStatus;
@@ -43,7 +42,6 @@ wire! {
     pub enum ScreenAct {
         Show(panel: Panel),
         Hide,
-        Copy(act: CopyAct),
     }
 }
 
@@ -119,73 +117,6 @@ wire! {
     }
 }
 
-wire! {
-    /// What moves, selects and copies in copy mode.
-    #[derive(Clone, Debug, PartialEq, Eq)]
-    pub enum CopyAct {
-        /// Copy mode starts, on the focused pane, with the hints its bar
-        /// shows of the client's keys, and those of its search line.
-        Enter {
-            hints: Vec<Hint>,
-            typing: Vec<Hint>,
-        },
-        Leave,
-        Left,
-        Right,
-        Up,
-        Down,
-        WordForward,
-        WordBack,
-        /// The first glyph of the line.
-        FirstInk,
-        /// The last glyph of the line.
-        LastInk,
-        LineStart,
-        Top,
-        Bottom,
-        HalfUp,
-        HalfDown,
-        PageUp,
-        PageDown,
-        Next,
-        Previous,
-        /// The cursor to the next shell prompt, or the one before.
-        Prompt(seek: Seek),
-        SelectChar,
-        SelectLine,
-        SelectBlock,
-        /// The other end of the selection.
-        OtherEnd,
-        /// Copy what is selected, and leave.
-        Yank,
-        /// The search line the client is typing, for the bar: forward or back,
-        /// and its text before and after the cursor; none once it is done.
-        Typing(line: Option<(Seek, String, String)>),
-        /// Find `query`, forward or back, from the cursor.
-        Find {
-            query: String,
-            seek: Seek,
-        },
-    }
-}
-
-wire! {
-    /// Which way a search goes: toward later rows, or earlier ones.
-    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-    pub enum Seek {
-        Forward,
-        Backward,
-    }
-}
-
-impl CopyAct {
-    /// Whether it ends copy mode: leaving and copying do, on the client as
-    /// on the server.
-    pub fn ends(&self) -> bool {
-        matches!(self, CopyAct::Leave | CopyAct::Yank)
-    }
-}
-
 /// What moves a chooser, made of the client's keys.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ListAct {
@@ -224,7 +155,7 @@ impl Move {
     }
 }
 
-/// What a line being typed (the prompt, a copy-mode search) is given, made
+/// What a line being typed (the prompt) is given, made
 /// of the client's keys: an edit, or Enter (`Submit`) or Esc (`Cancel`).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum LineAct {

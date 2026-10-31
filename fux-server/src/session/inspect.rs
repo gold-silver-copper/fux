@@ -72,7 +72,7 @@ impl Session {
                     }
                     let pane = self.parts.panes().get(id).ok_or(Error::NoPane(*id))?;
                     let state = if projection == Projection::Facts {
-                        let fields = crate::capture::state(pane, self.copying(*id))?;
+                        let fields = crate::capture::state(pane)?;
                         let fields = fields.into_iter().map(|(k, v)| (k.to_owned(), v));
                         Some(Json::Object(fields.collect()))
                     } else {
@@ -150,7 +150,6 @@ impl Session {
             let mode = match view.mode {
                 Mode::Normal => "normal",
                 Mode::Panel(_) => "panel",
-                Mode::Copy(_) => "copy",
             };
             let terminal = view.terminal.facts();
             let graphics = match view.terminal.graphics() {

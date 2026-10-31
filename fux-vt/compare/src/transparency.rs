@@ -372,7 +372,6 @@ impl Through {
     /// the grids swap. Paints are not spaced 16 ms apart, as the server
     /// spaces them: one is made at every point compared.
     pub fn paint(&mut self) -> Result<(), String> {
-        self.session.hold_copies();
         for outgoing in std::mem::take(&mut self.session.outbox) {
             match outgoing {
                 Outgoing::To(client, ToAttached::Paint(bytes)) if client == self.client => {

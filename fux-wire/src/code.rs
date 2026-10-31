@@ -2,7 +2,7 @@
 //! for a script to tell failures apart by (`fux: CODE: MESSAGE`). Every
 //! code fux gives is here, the language's own among them as fuxth names
 //! them; `docs/json.md` lists them all.
-use crate::command::{self, AnyRef, Kind};
+use crate::command::{AnyRef, Kind};
 use crate::id::{ClientId, PaneId, TabId, WsId};
 use crate::words::joined;
 use fux_vt::keys::Direction;
@@ -136,8 +136,6 @@ codes! {
     NoWorkspace "no_workspace",
     /// A client named is not there.
     NoClient "no_client",
-    /// A paste buffer named is not there.
-    NoBuffer "no_buffer",
     /// Nothing to act on was named, and the caller has none.
     NoTarget "no_target",
     /// `FUX_PANE` is another run's, has no `FUX_SERVER`, or names an old program generation.
@@ -146,8 +144,6 @@ codes! {
     NoField "no_field",
     /// No pane, tab or workspace that way, or before or after it.
     NothingThere "nothing_there",
-    /// A copy-mode selection with no rows.
-    Selection "selection",
     /// A name taken by another pane, tab or workspace.
     NameTaken "name_taken",
     /// Every id of a kind has been given.
@@ -279,7 +275,6 @@ pub enum Error {
     NoTab(TabId),
     NoWorkspaceGiven,
     NoClient(ClientId),
-    NoBuffer(command::Buffer),
     /// A pane, tab or workspace alone of its kind, with nothing to move to.
     OnlyOne(Kind),
     AtEnd(Kind),
@@ -287,8 +282,6 @@ pub enum Error {
         from: PaneId,
         direction: Direction,
     },
-    // What copy mode cannot do.
-    NoRows,
     // A name that cannot be given.
     NameTaken(String),
     /// A tab has the name: those tabs, then their panes.
@@ -321,9 +314,7 @@ impl Error {
             Self::NoTab(_) => Code::NoTab,
             Self::NoPaneGiven | Self::NoWorkspaceGiven => Code::NoTarget,
             Self::NoClient(_) => Code::NoClient,
-            Self::NoBuffer(_) => Code::NoBuffer,
             Self::OnlyOne(_) | Self::AtEnd(_) | Self::NoNeighbor { .. } => Code::NothingThere,
-            Self::NoRows => Code::Selection,
             Self::NameReadAsTarget(_) => Raise::BadName.into(),
             Self::NameTaken(_) | Self::TabNameTaken(..) => Code::NameTaken,
             Self::Failed { code, .. } => *code,
@@ -343,13 +334,11 @@ impl std::fmt::Display for Error {
                      option `str NAME in`)",
             ),
             Self::NoClient(id) => write!(f, "no client {id}"),
-            Self::NoBuffer(index) => write!(f, "no buffer {index}"),
             Self::OnlyOne(kind) => write!(f, "only one {}", kind.name()),
             Self::AtEnd(kind) => write!(f, "the {} is already at that end", kind.name()),
             Self::NoNeighbor { from, direction } => {
                 write!(f, "no pane {} of {from}", direction.name())
             }
-            Self::NoRows => f.write_str("the pane has no rows"),
             Self::NameTaken(name) => write!(f, "a workspace is named {name:?}"),
             Self::TabNameTaken(name, tabs, panes) => {
                 let ids = (tabs.iter().map(|t| AnyRef::Tab(*t)))

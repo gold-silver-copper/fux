@@ -10,9 +10,7 @@
 use crate::screens::{Effect, HIDE};
 use fux_vt::keys::{Key, KeyPress, Keystroke, Modifiers};
 use fux_wire::act::ScreenAct;
-use fux_wire::act::{
-    Act, Column, ColumnEntry, CopyAct, Edit, Hint, LineAct, ListAct, Move, Panel, Seek,
-};
+use fux_wire::act::{Act, Column, ColumnEntry, Edit, Hint, LineAct, ListAct, Move, Panel};
 use fux_wire::words::quote;
 
 /// What a key runs: fuxth code, what the column says it does, and the
@@ -635,7 +633,6 @@ pub fn watching(keymap: &Keymap) -> Act {
 /// that names it there.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Modes {
-    pub copy: Table<CopyAct>,
     pub list: Table<ListAct>,
     pub line: Table<LineAct>,
 }
@@ -643,23 +640,17 @@ pub struct Modes {
 /// One of fux's own screens, as `bind-in` names it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Modal {
-    Copy,
     List,
     Line,
 }
 
 impl Modal {
-    pub const ALL: &[(&str, Modal)] = &[
-        ("copy", Modal::Copy),
-        ("list", Modal::List),
-        ("line", Modal::Line),
-    ];
+    pub const ALL: &[(&str, Modal)] = &[("list", Modal::List), ("line", Modal::Line)];
 }
 
 impl Modes {
     pub fn table(&mut self, modal: Modal) -> &mut dyn Bindable {
         match modal {
-            Modal::Copy => &mut self.copy,
             Modal::List => &mut self.list,
             Modal::Line => &mut self.line,
         }
@@ -667,7 +658,7 @@ impl Modes {
 
     /// Every key, as config lines that bind it again.
     fn lines(&self) -> String {
-        let tables: [&dyn Bindable; 3] = [&self.copy, &self.list, &self.line];
+        let tables: [&dyn Bindable; 2] = [&self.list, &self.line];
         (Modal::ALL.iter().zip(tables))
             .map(|((name, _), table)| table.lines(name))
             .collect()
@@ -820,28 +811,6 @@ impl<A: Named> Bindable for Table<A> {
     }
 }
 
-/// A key in copy mode: an action for the server; the search line opening
-/// (`CopyAct::Typing`) the client's own too.
-impl Named for CopyAct {
-    #[rustfmt::skip]
-    const NAMES: &'static [(&'static str, Self)] = &[
-        ("left", CopyAct::Left), ("right", CopyAct::Right), ("up", CopyAct::Up),
-        ("down", CopyAct::Down), ("word-forward", CopyAct::WordForward),
-        ("word-back", CopyAct::WordBack), ("first-ink", CopyAct::FirstInk),
-        ("last-ink", CopyAct::LastInk), ("line-start", CopyAct::LineStart),
-        ("top", CopyAct::Top), ("bottom", CopyAct::Bottom), ("half-up", CopyAct::HalfUp),
-        ("half-down", CopyAct::HalfDown), ("page-up", CopyAct::PageUp),
-        ("page-down", CopyAct::PageDown), ("next", CopyAct::Next),
-        ("previous", CopyAct::Previous), ("prompt-back", CopyAct::Prompt(Seek::Backward)),
-        ("prompt-forward", CopyAct::Prompt(Seek::Forward)), ("select-char", CopyAct::SelectChar),
-        ("select-line", CopyAct::SelectLine), ("select-block", CopyAct::SelectBlock),
-        ("other-end", CopyAct::OtherEnd), ("yank", CopyAct::Yank), ("leave", CopyAct::Leave),
-        ("search-forward", CopyAct::Typing(Some((Seek::Forward, String::new(), String::new())))),
-        ("search-back", CopyAct::Typing(Some((Seek::Backward, String::new(), String::new())))),
-    ];
-    const ESCAPE: Self = CopyAct::Leave;
-}
-
 impl Named for ListAct {
     #[rustfmt::skip]
     const NAMES: &'static [(&'static str, Self)] = &[
@@ -931,7 +900,6 @@ mod tests {
             assert_eq!(table.get(key("G")?).map(|a| a.name()), Some(upper));
             Ok(())
         }
-        check::<CopyAct>("top", "bottom")?;
         check::<ListAct>("up", "down")?;
         check::<LineAct>("home", "end")
     }

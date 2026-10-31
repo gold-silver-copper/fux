@@ -843,17 +843,11 @@ mod tests {
             "@4294967295:18446744073709551615:4294967295-ffffffffffffffff",
             24,
         )?;
-        token::<crate::id::BufferId>("b18446744073709551615:4294967295-ffffffffffffffff", 20)?;
         token::<crate::events::Cursor>("18446744073709551615:4294967295-ffffffffffffffff", 20)
     }
 
     #[test]
     fn numeric_tokens_keep_their_value_checks() -> TestResult {
-        let run = "1-2".parse::<crate::command::Run>().map_err(|()| "run")?;
-        assert_eq!(
-            Reader::new(&encode(&(run, 0u64))).whole::<crate::id::BufferId>(),
-            Err(Error::Bad("buffer id"))
-        );
         let mut counts = encode(&crate::command::Counts::default());
         *counts.last_mut().ok_or("ended byte")? = 2;
         assert_eq!(

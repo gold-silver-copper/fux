@@ -1,5 +1,4 @@
 //! One attached client's own view of the shared state.
-use crate::copy::Copy;
 use fux_wire::act::Panel;
 use fux_wire::id::{ClientId, TabId, WsId};
 use fux_wire::layout::Rect;
@@ -11,13 +10,11 @@ pub struct Notice {
     pub error: bool,
 }
 
-/// What a view shows over its panes: nothing, one of its client's
-/// screens (the client owns it, and the server draws it), or copy mode,
-/// whose cursor the server keeps.
+/// What a view shows over its panes: nothing, or one of its client's
+/// screens (the client owns it, and the server draws it).
 pub enum Mode {
     Normal,
     Panel(Panel),
-    Copy(Box<Copy>),
 }
 
 impl Mode {
@@ -27,7 +24,7 @@ impl Mode {
     pub fn is_normal(&self) -> bool {
         match self {
             Mode::Normal => true,
-            Mode::Panel(_) | Mode::Copy(_) => false,
+            Mode::Panel(_) => false,
         }
     }
 }

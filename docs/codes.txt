@@ -6,12 +6,10 @@ no_pane 1 try
 no_tab 1 try
 no_workspace 1 try
 no_client 1 try
-no_buffer 1 try
 no_target 1 try
 stray_pane 1 try
 no_field 1 try
 nothing_there 1 try
-selection 1 try
 name_taken 1 try
 ids_exhausted 1 try
 bad_value 1 try
