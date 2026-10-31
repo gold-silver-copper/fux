@@ -216,8 +216,6 @@ impl Here<'_> {
 /// Why a command, or attaching a client, failed: exit status 1.
 #[derive(Debug)]
 pub enum Error {
-    /// Retry an empty writable attach with complete conditional creation inputs.
-    NeedsInitial,
     // What a command names, or its context gives, that is not there.
     NoWorkspace(WsId),
     NoPaneGiven,
@@ -264,7 +262,6 @@ impl Error {
     /// script to tell failures apart by.
     pub fn code(&self) -> Code {
         match self {
-            Self::NeedsInitial => Code::Start,
             Self::NoWorkspace(_) => Code::NoWorkspace,
             Self::NoPane(_) => Code::NoPane,
             Self::NoTab(_) => Code::NoTab,
@@ -283,7 +280,6 @@ impl Error {
 impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::NeedsInitial => f.write_str("an empty attach needs initial launch inputs"),
             Self::NoWorkspace(id) => write!(f, "no workspace {id}"),
             Self::NoPaneGiven => f.write_str("no pane given: name one (`str %N pane`)"),
             Self::NoPane(id) => write!(f, "no pane {id}"),
@@ -1455,7 +1451,11 @@ impl Session {
                             format!("a screen of {rows} rows has no room for a pane below its bar");
                         fail(Raise::Size, why)
                     })?;
-                    let initial = attach.initial.as_ref().ok_or(Error::NeedsInitial)?;
+                    let initial = attach.initial.as_ref().ok_or_else(|| {
+                        let why =
+                            "the server holds no workspace, and the attach no launch to start one";
+                        fail(Raise::Start, why)
+                    })?;
                     self.start(size, initial, now)?;
                 }
                 (
@@ -3902,10 +3902,7 @@ pub(crate) mod testing {
                 }
                 other @ (super::Outgoing::To(
                     _,
-                    ToAttached::Paint(_)
-                    | ToAttached::Exit(_)
-                    | ToAttached::NeedsInitial
-                    | ToAttached::Welcome(..),
+                    ToAttached::Paint(_) | ToAttached::Exit(_) | ToAttached::Welcome(..),
                 )
                 | super::Outgoing::Shutdown { .. }) => {
                     kept.push(other);
@@ -5153,10 +5150,8 @@ mod tests {
             env: command::EnvPatch::default(),
         };
         let ids = s.ids.clone();
-        assert!(matches!(
-            s.attach_client(ClientKind::Headless, Attach::of(size, presentation.clone())),
-            Err(Error::NeedsInitial)
-        ));
+        let refused = s.attach_client(ClientKind::Headless, Attach::of(size, presentation.clone()));
+        assert!(refused.is_err_and(|why| why.code() == Code::Start));
         for attach in [
             Attach {
                 target: Some(command::AttachTarget::Workspace(WsRef::Name(

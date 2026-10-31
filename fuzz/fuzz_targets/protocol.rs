@@ -92,8 +92,7 @@ fn to_attached(decoder: &mut Decoder) -> Result<Option<Vec<u8>>, Error> {
     let bytes = encoded(&frame);
     match &frame {
         ToAttached::Paint(p) => splits_back(&bytes, p, ToAttached::Paint),
-        ToAttached::NeedsInitial
-        | ToAttached::Welcome(..)
+        ToAttached::Welcome(..)
         | ToAttached::Exit(_)
         | ToAttached::Ended(_)
         | ToAttached::Open(_)

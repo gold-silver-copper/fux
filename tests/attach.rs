@@ -1242,7 +1242,7 @@ fn an_oversized_local_shell_is_refused_before_headless_attach() -> Outcome {
 }
 
 #[test]
-fn empty_attach_retries_are_typed_and_create_only_once() -> Outcome {
+fn concurrent_empty_attaches_create_one_workspace() -> Outcome {
     use fux::protocol::{Attach, Decoder, Frame, Greeting, Hello, Role, ToAttached};
     use std::io::{Read, Write};
     use std::os::unix::net::UnixStream;
@@ -1285,17 +1285,19 @@ fn empty_attach_retries_are_typed_and_create_only_once() -> Outcome {
         decoder.frame::<ToAttached>().map_err(e)?,
         Some(ToAttached::Exit(_))
     ));
-    // Both callers first learn emptiness, without a view, child or ID.
-    let mut first = connect(&server, &attach)?;
-    let mut second = connect(&server, &attach)?;
-    for stream in [&mut first, &mut second] {
-        assert_eq!(wire(stream)?, ToAttached::NeedsInitial.encode().map_err(e)?);
-        assert_eq!(
-            stream.read(&mut [0]).map_err(e)?,
-            0,
-            "unadmitted connection closes"
-        );
-    }
+    // One with no launch is refused, without a view, child or ID.
+    let mut bare = connect(&server, &attach)?;
+    let mut decoder = Decoder::default();
+    decoder.push(&wire(&mut bare)?);
+    assert!(matches!(
+        decoder.frame::<ToAttached>().map_err(e)?,
+        Some(ToAttached::Exit(why)) if why.contains("no launch")
+    ));
+    assert_eq!(
+        bare.read(&mut [0]).map_err(e)?,
+        0,
+        "unadmitted connection closes"
+    );
     let empty = server.ok(&["ls", "listing"])?;
     assert!(
         !empty.contains("%1") && !empty.contains("client "),
@@ -1342,7 +1344,7 @@ fn empty_attach_retries_are_typed_and_create_only_once() -> Outcome {
 }
 
 #[test]
-fn existing_attach_does_not_resolve_unused_launch_inputs() -> Outcome {
+fn existing_attach_ignores_unusable_optional_launch() -> Outcome {
     use std::ffi::OsString;
     use std::os::unix::ffi::OsStringExt;
     let server = Server::start("")?;
@@ -1378,7 +1380,114 @@ fn existing_attach_does_not_resolve_unused_launch_inputs() -> Outcome {
     terminal.wait_for("%1")?;
     terminal.type_bytes(b"\x02d")?;
     assert!(terminal.wait_exit()?.success());
+    let output = String::from_utf8_lossy(&terminal.output);
+    assert!(!output.contains("launch unavailable"), "{output}");
     assert!(!server.ok(&["ls", "listing"])?.contains("%2"));
+    Ok(())
+}
+
+/// A launch the client cannot make, or that does not fit the attach frame
+/// with the rest, is left out: an existing workspace still attaches, and an
+/// empty server refuses, saying its own reason and then the launch's.
+#[test]
+fn an_unusable_launch_is_left_out_and_said_only_on_refusal() -> Outcome {
+    let existing = Server::start("")?;
+    let empty = Server::empty()?;
+    let half = existing.dir.join("half-frame");
+    std::fs::write(&half, vec![b'x'; fux::protocol::MAX_FRAME / 2]).map_err(e)?;
+    let half = half.to_string_lossy();
+    let malformed = ["str", "", "program"];
+    // Each fits a frame alone; together they do not.
+    let oversized = [
+        "str",
+        "/bin/cat",
+        "program",
+        "str",
+        &half,
+        "read-file",
+        "arg",
+        "str",
+        "BIG",
+        "str",
+        &half,
+        "read-file",
+        "env",
+    ];
+    for (launch, why) in [
+        (&malformed[..], "a program is needed"),
+        (&oversized[..], "exceeds one frame"),
+    ] {
+        for (server, rows, refused) in [
+            (&existing, "10", None),
+            (&empty, "10", Some("no launch to start one")),
+            // The server's own reason stays first: a size that fits no pane.
+            (&empty, "1", Some("no room for a pane below its bar")),
+        ] {
+            let args: Vec<&str> = ["opts", "40", rows, "size"]
+                .into_iter()
+                .chain(launch.iter().copied())
+                .chain(["attach"])
+                .collect();
+            let panes = server.panes()?.len();
+            let mut terminal = Terminal::attach(server, 10, 80, &args)?;
+            match refused {
+                None => {
+                    eventually("the attached client", || {
+                        Ok(server.ok(&["ls", "listing"])?.contains("client "))
+                    })?;
+                }
+                Some(reason) => {
+                    assert!(!terminal.wait_exit()?.success());
+                    let output = String::from_utf8_lossy(&terminal.output);
+                    let said = format!("{reason}; local initial launch unavailable: ");
+                    assert!(output.contains(&said) && output.contains(why), "{output}");
+                }
+            }
+            drop(terminal);
+            assert_eq!(server.panes()?.len(), panes, "{why}: {args:?}");
+            eventually("the client gone", || {
+                Ok(!server.ok(&["ls", "listing"])?.contains("client "))
+            })?;
+        }
+    }
+    Ok(())
+}
+
+/// A targeted attach resolves no launch, so a refusal says nothing of one.
+#[test]
+fn a_targeted_attach_resolves_no_launch() -> Outcome {
+    let server = Server::empty()?;
+    std::fs::write(
+        server.dir.join("config/fux/config.fux"),
+        "str shell list str /bin/sh end set\n\
+         str copy-environment list str BIG0 str BIG1 str BIG2 str BIG3 str BIG4 \
+         str BIG5 str BIG6 str BIG7 str BIG8 end set\n",
+    )
+    .map_err(e)?;
+    // Nine values, each within a variable's limit, past the launch frame.
+    let value: String = std::iter::repeat_n('x', 120_000).collect();
+    for (args, said) in [
+        (&["opts", "attach"][..], true),
+        (&["opts", "str", "work", "in", "attach"], false),
+    ] {
+        let mut terminal =
+            Terminal::start(10, 40, &[[fux()].as_slice(), args].concat(), |command| {
+                command
+                    .env("FUX_SOCKET", &server.socket)
+                    .env("XDG_CONFIG_HOME", server.dir.join("config"));
+                for i in 0..9 {
+                    command.env(format!("BIG{i}"), &value);
+                }
+            })?;
+        assert!(!terminal.wait_exit()?.success());
+        let output = String::from_utf8_lossy(&terminal.output);
+        assert_eq!(
+            output.contains("local initial launch unavailable"),
+            said,
+            "{output}"
+        );
+    }
+    assert!(server.panes()?.is_empty());
     Ok(())
 }
 
@@ -1428,91 +1537,87 @@ fn attach_creation_refusals_keep_unused_for_inherited_targets() -> Outcome {
     Ok(())
 }
 
+/// A resize before the server's `Welcome` stays local, and is sent once
+/// admitted, before a key job that fences the connection.
 #[test]
-fn empty_attach_retry_keeps_resize_and_starts_a_new_frame_fence() -> Outcome {
-    use fux::protocol::{Attach, AttachedFrame, Decoder, Frame, Greeting, Hello, Role, ToAttached};
+fn a_resize_before_welcome_is_sent_after_it_before_a_fenced_job() -> Outcome {
+    use fux::protocol::{Attach, Decoder};
     use std::io::{Read, Write};
     use std::os::unix::net::{UnixListener, UnixStream};
 
-    fn read<F: for<'d> Frame<'d>>(stream: &mut UnixStream) -> Result<Option<F>, String> {
-        let mut decoder = Decoder::default();
-        let mut bytes = [0u8; 4096];
-        loop {
-            if let Some(frame) = decoder.frame::<F>().map_err(e)? {
-                return Ok(Some(frame));
-            }
-            let n = stream.read(&mut bytes).map_err(e)?;
-            if n == 0 {
-                return Ok(None);
-            }
-            decoder.push(bytes.get(..n).unwrap_or_default());
+    /// One frame's bytes, header and all; none once it has closed.
+    fn frame(stream: &mut UnixStream) -> Result<Option<Vec<u8>>, String> {
+        let mut header = [0u8; 4];
+        match stream.read_exact(&mut header) {
+            Err(err) if err.kind() == std::io::ErrorKind::UnexpectedEof => return Ok(None),
+            read => read.map_err(e)?,
         }
+        let mut bytes = vec![0; usize::try_from(u32::from_be_bytes(header)).map_err(e)?];
+        stream.read_exact(&mut bytes).map_err(e)?;
+        Ok(Some([header.as_slice(), &bytes].concat()))
     }
 
     let server = Server::empty()?;
-    let marker = server.dir.join("initial-size");
     std::fs::write(
         server.dir.join("config/fux/config.fux"),
-        format!(
-            "str shell list str /bin/sh str -c str 'stty size > {}; exec /bin/cat' end set\n\
+        "str shell list str /bin/cat end set\n\
          str F5 str 'ls drop str fence-complete' bind-root\n",
-            marker.display()
-        ),
     )
     .map_err(e)?;
-    // Intercept only the unadmitted probe; retries and all later requests
-    // go directly to the real server and its actual fence barrier.
+    // Hold the attach connection between the client and the real server
+    // until it has resized; every later connection goes straight there.
     let held = server.dir.join("held.sock");
     std::fs::rename(&server.socket, &held).map_err(e)?;
     let listener = UnixListener::bind(&server.socket).map_err(e)?;
     let mut terminal = Terminal::attach(&server, 10, 40, &["opts", "attach"])?;
-    let mut probe = loop {
+    let (mut client, hello) = loop {
         let (mut stream, _) = listener.accept().map_err(e)?;
         // macOS refuses a timeout on the already-closed readiness probe;
         // its read still returns EOF immediately, just as in wait_at_most.
         let _ = stream.set_read_timeout(Some(PATIENCE));
-        if read::<Hello>(&mut stream)?.is_some() {
-            break stream;
+        if let Some(hello) = frame(&mut stream)? {
+            break (stream, hello);
         }
     };
-    probe
-        .write_all(
-            &Greeting::Hello(Hello::ours(Role::Attach))
-                .encode()
-                .map_err(e)?,
-        )
-        .map_err(e)?;
-    let initial = read::<Attach>(&mut probe)?.ok_or("attach probe")?;
-    assert_eq!(initial.size, sized(10, 40)?);
-    terminal.wait_for("\x1b[?1049h")?;
-    terminal.resize(12, 50)?;
-    // Give the client its WINCH turn while NeedsInitial is withheld. The
-    // old client writes Resize here; the corrected client keeps it local.
-    let leaked = {
-        let mut ready = [fuxix::poll::PollFd::new(&probe, fuxix::poll::Events::IN)];
-        fuxix::poll::poll(&mut ready, Some(std::time::Duration::from_millis(250))).map_err(e)? > 0
-    };
-    if leaked {
-        assert!(matches!(
-            read::<AttachedFrame>(&mut probe)?,
-            Some(AttachedFrame::Resize(_))
-        ));
-    }
+    let mut upstream = UnixStream::connect(&held).map_err(e)?;
+    upstream.set_read_timeout(Some(PATIENCE)).map_err(e)?;
+    upstream.write_all(&hello).map_err(e)?;
+    let greeting = frame(&mut upstream)?.ok_or("greeting")?;
+    client.write_all(&greeting).map_err(e)?;
+    let request = frame(&mut client)?.ok_or("attach")?;
+    let mut decoder = Decoder::default();
+    decoder.push(&request);
+    let attach = decoder.frame::<Attach>().map_err(e)?.ok_or("attach")?;
+    assert_eq!(attach.size, sized(10, 40)?);
+    assert!(attach.initial.is_some(), "one attach carries its launch");
     drop(listener);
     std::fs::remove_file(&server.socket).map_err(e)?;
     std::fs::rename(&held, &server.socket).map_err(e)?;
-    probe
-        .write_all(&ToAttached::NeedsInitial.encode().map_err(e)?)
-        .map_err(e)?;
-    drop(probe);
+    terminal.wait_for("\x1b[?1049h")?;
+    terminal.resize(12, 50)?;
+    // Give the client its WINCH turn before its Welcome: it keeps the
+    // resize local.
+    let mut ready = [fuxix::poll::PollFd::new(&client, fuxix::poll::Events::IN)];
+    let leaked =
+        fuxix::poll::poll(&mut ready, Some(std::time::Duration::from_millis(250))).map_err(e)? > 0;
+    assert!(!leaked, "an unadmitted client sent a frame");
+    upstream.write_all(&request).map_err(e)?;
+    for (mut from, mut to) in [
+        (
+            upstream.try_clone().map_err(e)?,
+            client.try_clone().map_err(e)?,
+        ),
+        (client, upstream),
+    ] {
+        from.set_read_timeout(None).map_err(e)?;
+        std::thread::spawn(move || std::io::copy(&mut from, &mut to));
+    }
     terminal.wait_for("%1")?;
     terminal.type_bytes(b"\x1b[15~")?;
     terminal.wait_for("fence-complete")?;
-    assert!(!leaked, "an unadmitted connection received a resize");
-    eventually("the initial pane size", || {
-        Ok(std::fs::read_to_string(&marker).unwrap_or_default().trim() == "11 50")
+    eventually("the latest size", || {
+        Ok(server.ok(&["ls", "listing"])?.contains("50x11"))
     })?;
-    assert!(server.ok(&["ls", "listing"])?.contains("50x11"));
     terminal.type_bytes(b"\x02d")?;
     assert!(terminal.wait_exit()?.success());
     Ok(())

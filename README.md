@@ -25,10 +25,11 @@ background if none answers. `fux opts str work in attach` attaches to workspace
 `fux opts watch attach` only watches (keys do nothing but `C-b d`, which
 detaches), and never starts a server or creates a workspace.
 
-With no target, attach uses the first stored workspace. An empty server replies
-that it needs initial inputs; the client then resolves its launch and directory
-and retries one conditional creation. Concurrent retries create only one
-workspace. Existing sessions do not depend on unused creation inputs.
+With no target, attach uses the first stored workspace. A writable attach
+carries its launch and directory, which an empty server starts in the same turn,
+so concurrent attaches create only one workspace. A launch the client cannot
+make, or that does not fit the attach frame, is left out: an existing session
+still attaches, and an empty one refuses, saying why the launch was left out.
 The bundled `opts str main name attach-defaults` names the first workspace
 `main`, for both bare `fux` and `opts attach`. `opts attach-defaults` clears that
 name and any preferred target, giving an unnamed first workspace. `C-b d`

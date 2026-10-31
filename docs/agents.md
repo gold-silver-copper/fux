@@ -507,8 +507,8 @@ read-file`. `X warn` prints on stderr:
   fux commands outside such a sandbox, or allow the socket.
 - `@2 attach` shows that tab's first pane; `%3 attach` focuses that pane.
   `opts str work in attach` requires that workspace to exist. Without a target,
-  attach uses the first stored workspace; only a writable empty attach retries
-  with conditional initial creation, serialized by the server. One viewport
+  attach uses the first stored workspace; a writable attach carries its launch,
+  which only an empty server starts, serialized by the server. One viewport
   supplies the pane size after subtracting the bar. Watchers never create.
   `opts str work in attach-defaults` is a local preference; explicit attach
   operands win. A fresh typing client loads config edits; existing clients
