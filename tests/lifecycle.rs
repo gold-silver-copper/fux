@@ -328,7 +328,13 @@ fn the_clipboard_takes_a_copy_however_large() -> Outcome {
         t.lines().last().is_some_and(|b| b.contains("copied"))
     })?;
     let after = client.painted.get(before..).unwrap_or_default();
-    let osc = after.windows(7).filter(|w| *w == b"\x1b]52;c;").count();
+    let osc = (0..after.len())
+        .filter(|at| {
+            after
+                .get(*at..)
+                .is_some_and(|b| b.starts_with(b"\x1b]52;c;"))
+        })
+        .count();
     assert_eq!(osc, 1, "one OSC 52 write for it");
     assert!(after.len() > 2_000_000, "all of it: {} bytes", after.len());
     let buffer = server.ok(&["newest", "buffer"])?;

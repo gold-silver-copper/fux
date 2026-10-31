@@ -124,41 +124,6 @@ fn a_bound_program_follows_the_keys_before_it() -> Outcome {
     received(&out, &expected)
 }
 
-/// F5 runs a program that only asks: its request waits for every frame
-/// its client sent before it (`fux_wire::protocol::Fence`).
-const FENCE: &str = "str F5 str 'ls drop' bind-root";
-
-/// Waits until a server started with [`FENCE`] has handled every frame
-/// `client` sent: `send` waits for the program F5 runs.
-fn handled(client: &mut Client) -> Outcome {
-    client.send(b"\x1b[15~")
-}
-
-/// How many pieces of input pane %1's full queue refused: its `lost`.
-fn refused(server: &Server) -> Result<usize, String> {
-    let lost = [
-        "str", "%1", "pane", "str", "lost", "get", "str", "input", "get",
-    ];
-    server.ok(&lost)?.trim().parse().map_err(e)
-}
-
-/// Stops `pid` and waits until it has stopped, so it reads nothing more.
-fn stop(pid: i32) -> Outcome {
-    signal(pid, fuxix::process::Signal::Stop);
-    eventually("stopped", || {
-        let out = std::process::Command::new("ps")
-            .args(["-o", "stat=", "-p", &pid.to_string()])
-            .output()
-            .map_err(e)?;
-        Ok(out.stdout.starts_with(b"T"))
-    })
-}
-
-/// A bracketed paste of `text`, as a terminal sends one.
-fn paste(text: &[u8]) -> Vec<u8> {
-    [b"\x1b[200~".as_slice(), text, b"\x1b[201~"].concat()
-}
-
 /// Paste `i` of `len` bytes: letters that tell pastes and their order apart.
 fn pasted(i: usize, len: usize) -> Vec<u8> {
     (0..len)

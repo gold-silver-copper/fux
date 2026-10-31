@@ -244,11 +244,11 @@ impl Queue for baseline::pane::InputQueue {
 
 impl Queue for fux_server::pane::PaneMut<'_> {
     fn push(&mut self, bytes: &[u8], with: bool) -> Result<(), String> {
-        let result = match with {
+        match with {
             true => self.push_with(|_, out| out.extend_from_slice(bytes)),
             false => fux_server::pane::PaneMut::push(self, bytes),
-        };
-        result.map_err(|e| e.to_string())
+        }
+        Ok(())
     }
     fn advance(&mut self, n: usize) {
         self.wrote_input(n);

@@ -128,7 +128,7 @@ stack! {
     |s, kind, start, end| {
         let at = |(index, col): (usize, u16)| Some((s.rows().nth(index)?, col));
         match at(start).zip(at(end)) {
-            Some((start, end)) => copy::text(s, kind, start, end).map_err(|e| e.to_string()),
+            Some((start, end)) => Ok(copy::text(s, kind, start, end)),
             None => Err("no such row".to_owned()),
         }
     }
