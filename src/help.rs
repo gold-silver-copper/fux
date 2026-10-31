@@ -335,7 +335,6 @@ fn bounds() -> Vec<(Amount, &'static str, Said)> {
         (Whole(script::PROGRAM_STEPS), "steps of a program a client runs (a config, a key's)", said![]),
         (Whole(script::LINE_STEPS), "steps of a command line's program", said![]),
         (Count(fuxth::LONGEST), "characters of a string fuxth builds", said![("agents", "at most {} characters")]),
-        (Whole(fuxth::BUILT), "elements a fuxth run builds in all", said![]),
         (Whole(fuxth::TOTAL), "elements a fuxth list holds, through the lists in it", said![]),
         (Bytes(script::SOURCE_MAX), "what read-file and input read", said![("input", "{} at most"), ("read-file", "{} at most")]),
         (Count(usize::from(crate::view::MOST)), "columns or rows of a size", said![("resize", "1 to {} each"), ("size", "1 to {} each")]),

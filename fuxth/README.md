@@ -49,9 +49,10 @@ line, the deepest first; `print` prints a value at once.
   that caps a run.
 - **Bounded.** 1,000,000 values on the stack, and as many `let` names in
   all the calls nested, 10,000 nested calls; a string or list built holds at
-  most 1,000,000 elements, a run builds at most 16,000,000 in all, and a list
-  holds at most 16,000,000 in all, counting
-  through the lists and strings in it; long steps cost a step per 64
+  most 1,000,000 elements, and a list holds at most 16,000,000 in all,
+  counting through the lists and strings in it; every string and list a run
+  builds or imports is reserved, before it is made, from one grant (128 MiB by
+  default), and gives it back once dropped; long steps cost a step per 64
   elements; `push` and `put` grow a string or list in place when nothing
   else holds it. String literals are not built, so they are exempt.
 - **Errors** carry a stable code, a message, and the file, line and word.
@@ -162,8 +163,11 @@ opaque records cannot hide their children from list and work limits.
 `Machine::import` bounds each incoming value and charges its traversal work
 before retaining a suspended result. Immediate host results use that
 same admission automatically, and host argument traversal is charged too.
-`AppValue::IMPORT_LIMIT` fixes the aggregate grant for live imported storage
-(default 128 MiB), including ordinary strings and lists. Heap-owning application
+`AppValue::IMPORT_LIMIT` fixes the aggregate grant for the live storage of every
+string and list a run builds or imports (default 128 MiB). What the machine
+builds is born holding its reservation, taken before the payload is allocated;
+a host word does the same with `Args::imports`, `Imports::lease` and
+`Shared::leased`. Heap-owning application
 values implement `retain(&Imports)` with `Shared<T>` storage, as the language's
 strings and lists do. The machine's opaque import grant can only be charged or
 refunded through those reservations. The wrapper keeps its reservation when the value is edited;
@@ -175,14 +179,13 @@ its reservation, so polling does not consume a lifetime allowance.
 Native byte payloads can report `AppValue::import_bytes` to use the native grant
 instead of the per-value language weight ceiling. Their full weight still charges
 traversal and inclusion in lists. All other host values continue to obey the
-ordinary string, nesting and list limits. Language construction retains its
-existing cumulative build allowance.
+ordinary string, nesting and list limits.
 
 Application values stream their text through `AppValue::write_text` and declare
 retained data and formatter workspace with `text_bytes`. `TEXT_LIMIT` lets a host
 bound one whole conversion: nested lists share it, rather than giving each member
 its own limit. Admission counts the output before reserving its exact capacity;
-`string` and `fail` also admit the character index. Shared references are charged
+`string` reserves the string it makes from the run's grant. Shared references are charged
 conservatively at each occurrence. Text writers describe the same immutable text
 on the admission and output passes, and propagate a sink failure.
 

@@ -69,9 +69,8 @@ fn run(path: &str) -> Result<Vec<String>, String> {
         Ok(Outcome::Finished) => Ok(machine.stack().iter().map(shown).collect()),
         Ok(Outcome::Paused | Outcome::Suspended(())) => {
             // The innermost step of the program's own, not the library's.
-            let calls = machine.calls();
-            let ours = calls
-                .iter()
+            let ours = machine
+                .calls()
                 .rev()
                 .find(|t| !t.place.to_string().starts_with("stdlib.fux"));
             let place = ours.map_or_else(String::new, |t| format!("{}: {}: ", t.place, t.text));

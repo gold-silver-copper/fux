@@ -25,20 +25,34 @@ fn int(value: &Value<Fux>) -> Result<i64, String> {
     Ok(*n)
 }
 
-/// A list of strings, each as it is.
-fn strings(value: &Value<Fux>) -> Result<Vec<String>, String> {
+/// The strings a list holds, borrowed, and how many: checked to be all
+/// strings, fitting a launch frame, before any is copied.
+fn checked(value: &Value<Fux>) -> Result<(usize, impl Iterator<Item = &str>), String> {
     let takes = "a list of strings";
     let Value::List(list) = value else {
         return Err(wrong(takes, value));
     };
-    (list.items().iter())
-        .map(|item| {
-            let Value::Str(s) = item else {
-                return Err(wrong(takes, item));
-            };
-            Ok(s.to_string())
+    let words = || {
+        list.items().iter().filter_map(|item| match item {
+            Value::Str(s) => Some(&***s),
+            Value::Int(_) | Value::Bool(_) | Value::List(_) | Value::App(_) => None,
         })
-        .collect()
+    };
+    if let Some(item) = list.items().iter().find(|i| !matches!(i, Value::Str(_))) {
+        return Err(wrong(takes, item));
+    }
+    if !Program::fits(words()) {
+        return Err("the list of strings exceeds the launch frame limit".to_owned());
+    }
+    Ok((list.items().len(), words()))
+}
+
+/// A list of strings, each as it is, in a vector of exactly their number.
+fn strings(value: &Value<Fux>) -> Result<Vec<String>, String> {
+    let (n, words) = checked(value)?;
+    let mut strings = Vec::with_capacity(n);
+    strings.extend(words.map(str::to_owned));
+    Ok(strings)
 }
 
 impl<const MIN: usize, const MAX: usize> Reads for Number<MIN, MAX> {
@@ -83,9 +97,7 @@ impl Reads for Program {
         "a list of strings: a program, then its arguments".to_owned()
     }
     fn read(value: &Value<Fux>) -> Result<Program, String> {
-        let mut words = strings(value)?.into_iter();
-        let program = words.next().ok_or("a program is needed")?;
-        Program::new(program, words.collect())
+        Program::from_argv(strings(value)?)
     }
 }
 
@@ -95,13 +107,13 @@ impl Reads for Vec<EnvName> {
         "a list of variables' names".to_owned()
     }
     fn read(value: &Value<Fux>) -> Result<Vec<EnvName>, String> {
-        let names = strings(value)?;
-        if names.len() > crate::command::EnvPatch::MAX_NAMES {
+        let (n, names) = checked(value)?;
+        if n > crate::command::EnvPatch::MAX_NAMES {
             return Err("environment selection exceeds 1024 names".to_owned());
         }
+        // Each name parsed from the list's own string: copied once.
         let mut seen = std::collections::BTreeSet::new();
         names
-            .iter()
             .map(|name| {
                 if !seen.insert(name) {
                     return Err(format!("{name}: repeated environment name"));

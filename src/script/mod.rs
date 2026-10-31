@@ -121,11 +121,7 @@ impl AppValue for Fux {
             Fux::Record(record) => record::Record::retain(record, imports),
             Fux::Answer(answer, _) => answer.reserve(imports, answer.retained_bytes()),
             Fux::Rendered(text) => text.reserve(imports, self.text_bytes()),
-            Fux::Opts(opts) => opts.lease.reserve(
-                imports,
-                opts.heap_bytes()
-                    .saturating_add(std::mem::size_of::<[usize; 2]>()),
-            ),
+            Fux::Opts(opts) => opts.lease.reserve(imports, opts.bytes()),
             Fux::Null
             | Fux::Pane(..)
             | Fux::Tab(..)
@@ -310,9 +306,9 @@ impl Opts {
         }
     }
 
-    pub(crate) fn program(&self) -> Result<Program, String> {
-        let mut words = self.argv.iter().cloned();
-        Program::new(words.next().unwrap_or_default(), words.collect())
+    /// Its program and arguments, moved out: nothing copied.
+    pub(crate) fn program(&mut self) -> Result<Program, String> {
+        Program::from_argv(std::mem::take(&mut self.argv))
     }
 
     pub(crate) fn launch(
@@ -320,10 +316,13 @@ impl Opts {
         shell: &Program,
         selection: &[EnvName],
     ) -> Result<(crate::command::Start, crate::command::EnvPatch), String> {
+        // Checked while borrowed: the copy is one launch frame's scratch.
         let argv = if self.argv.is_empty() {
             shell.clone()
+        } else if Program::fits(self.argv.iter().map(String::as_str)) {
+            Program::from_argv(self.argv.clone())?
         } else {
-            self.program()?
+            return Err("program argv exceeds the launch frame limit".to_owned());
         };
         let mut env = crate::command::EnvPatch::selected(
             self.copy_environment.as_deref().unwrap_or(selection),
@@ -335,6 +334,12 @@ impl Opts {
             crate::command::Start::Shell(argv)
         };
         Ok((start, env))
+    }
+
+    /// Bytes its shared allocation holds, its counts' included.
+    fn bytes(&self) -> usize {
+        self.heap_bytes()
+            .saturating_add(std::mem::size_of::<[usize; 2]>())
     }
 
     fn heap_bytes(&self) -> usize {
@@ -1320,13 +1325,8 @@ fn uncaught(machine: &Machine<Fux>, mut error: fuxth::Error) -> Failed {
         matches!(place, Some(fuxth::Place::Line { source, .. })
             if matches!(&**source, "stdlib.fux" | "library.fux"))
     };
-    let step = bundled(error.place.as_ref()).then(|| {
-        machine
-            .calls()
-            .into_iter()
-            .rev()
-            .find(|t| !bundled(Some(&t.place)))
-    });
+    let step = bundled(error.place.as_ref())
+        .then(|| machine.calls().rev().find(|t| !bundled(Some(&t.place))));
     let Some(step) = step.flatten() else {
         return telling(error);
     };
@@ -1909,6 +1909,219 @@ pub(crate) mod tests {
             styled: false,
             marks: false,
         }
+    }
+
+    /// A pane that answers every capture with `lines` lines of 100 cells,
+    /// each cell its own style when `styled` (the default-history styled
+    /// capture at 9,931 lines), after `history` lines of 10 cells when it
+    /// asks for history; and each wait with a change till `turns` waits,
+    /// then with a timeout. What the run's grant has left is recorded at
+    /// each wait.
+    struct Styled {
+        capture: super::Reply,
+        history: super::Reply,
+        version: super::Version,
+        turns: usize,
+        imports: Option<fuxth::Imports>,
+        left: Vec<usize>,
+    }
+
+    impl Styled {
+        fn new(turns: usize, lines: usize, styled: bool, history: usize) -> Result<Self, String> {
+            let version: super::Version = "%1:0.0.0.0.0:1-1".parse().map_err(|()| "version")?;
+            let line = crate::capture::Line {
+                text: std::iter::repeat_n('x', 100).collect(),
+                runs: (0..if styled { 100 } else { 0 })
+                    .map(|style| crate::capture::Run {
+                        bytes: 1,
+                        cells: 1,
+                        style,
+                    })
+                    .collect(),
+            };
+            let reply = |lines: Vec<crate::capture::Line>| super::Reply {
+                run: Some(version.run),
+                ..super::Body::Capture(Box::new(crate::capture::Captured {
+                    of: crate::capture::Of::Pane {
+                        version,
+                        wrap_pending: false,
+                        state: Vec::new(),
+                    },
+                    screen_rows: 40,
+                    screen_cols: 120,
+                    screen_cursor: None,
+                    lines,
+                    styles: (0u8..if styled { 100 } else { 0 })
+                        .map(|n| {
+                            fux_vt::Attributes::new(fux_vt::Color::Idx(n), fux_vt::Color::Default)
+                        })
+                        .collect(),
+                    styled,
+                    marks: false,
+                }))
+                .into()
+            };
+            let past = crate::capture::Line {
+                text: std::iter::repeat_n('y', 10).collect(),
+                runs: Vec::new(),
+            };
+            let screen = std::iter::repeat_n(line, lines);
+            Ok(Self {
+                capture: reply(screen.clone().collect()),
+                history: reply(std::iter::repeat_n(past, history).chain(screen).collect()),
+                version,
+                turns,
+                imports: None,
+                left: Vec::new(),
+            })
+        }
+    }
+
+    impl super::Asks for Styled {
+        fn ask(&mut self, asked: &crate::protocol::Asked) -> Result<super::Reply, super::Failed> {
+            use super::{AnyRef, Body, PaneAnswer, PaneResults, Reply, Request};
+            let answer = match &asked.request {
+                Request::Do(crate::command::Command::Resolve { .. }) => {
+                    Body::Found(AnyRef::Pane(self.version.pane)).into()
+                }
+                Request::Wait(_) => {
+                    self.left
+                        .extend(self.imports.as_ref().map(fuxth::Imports::remaining));
+                    let answer = match self.left.len() < self.turns {
+                        true => PaneAnswer::Changed {
+                            version: self.version,
+                            changed: Vec::new(),
+                            ended: None,
+                        },
+                        false => PaneAnswer::TimedOut {
+                            since: self.version,
+                            limit: std::time::Duration::from_secs(1),
+                        },
+                    };
+                    PaneResults::One(answer).into()
+                }
+                Request::Do(crate::command::Command::CapturePane {
+                    history: Some(_), ..
+                }) => return Ok(self.history.clone()),
+                Request::Do(_) | Request::NextEvents { .. } => return Ok(self.capture.clone()),
+            };
+            Ok(Reply {
+                run: Some(self.version.run),
+                ..answer
+            })
+        }
+    }
+
+    /// What a run allocates past its grant, by what allocates it: the
+    /// machine's own stack, frames and `let` names, which these programs
+    /// keep within 1 MiB.
+    const MACHINE: usize = 1 << 20;
+    /// And one answer decoded and not yet imported, or one text conversion,
+    /// each within its own `MAX_ALLOCATED` grant, never at once; and a record
+    /// projection (`counts`), within `inspect::BYTES`.
+    const ANSWERED: usize = crate::wire::MAX_ALLOCATED + crate::inspect::BYTES + MACHINE;
+
+    #[test]
+    fn a_run_holds_no_more_than_its_grant_and_a_fixed_overhead() -> TestResult {
+        use super::*;
+        let hits = "define hits 1000 history capture string lines 0 swap each str 42 contains if 1 add then end end";
+        let hits = format!(
+            "{hits} begin %1 hits drop %1 capture changed 10 timeout wait drop false until"
+        );
+        let timeout = Err(Raise::Timeout);
+        // A program, the capture's lines, how it ends, what it may allocate
+        // past the grant, and how many waits it makes.
+        for (code, lines, ended, overhead, waits) in [
+            // Distinct strings, built till the grant refuses one.
+            (
+                "str x 1000 copies let k list begin k 100 copies false until end",
+                0,
+                Err(Raise::TooLong),
+                MACHINE,
+                0,
+            ),
+            // What a loop builds and drops it gives back.
+            (
+                "str x 2000 copies let cap 0 begin cap string drop 1 add dup 100000 eq until drop",
+                0,
+                Ok(()),
+                MACHINE,
+                0,
+            ),
+            (
+                "%1 all-history styles capture let h h json print",
+                9931,
+                Ok(()),
+                ANSWERED,
+                0,
+            ),
+            // Polling a screen of 40 lines, as `capture` gives it, and 1,000
+            // lines of history before it for `hits`, through 200 waits, the
+            // last timing out.
+            ("%1 10 quiet drop", 40, Ok(()), ANSWERED, 200),
+            ("%1 str needle 10 shows drop", 40, timeout, ANSWERED, 200),
+            ("%1 10 until-ended drop", 40, timeout, ANSWERED, 200),
+            ("%1 1 1000000 10 grows drop", 40, timeout, ANSWERED, 200),
+            (&hits, 40, timeout, ANSWERED, 200),
+        ] {
+            let mut machine = compile(&token::source("peak", code)?)?;
+            // The styled capture is styled, and all its lines are history.
+            let (styled, history) = (lines > 40, if lines > 40 { 0 } else { 1000 });
+            let mut asks = Styled::new(200, lines, styled, history)?;
+            asks.imports = Some(machine.imports().clone());
+            let mut sink = io::sink();
+            let mut host = Host::new(Context::default(), None, &mut sink);
+            let allocator = fux_vt_peak::ThreadPeak;
+            let base = allocator.live();
+            allocator.reset_peak();
+            let ran = run_capped(&mut machine, &mut host, &mut asks, None, None);
+            let peak = allocator.peak().saturating_sub(base);
+            let ran = ran.map(drop);
+            assert_eq!(
+                ran.as_ref().copied().map_err(|failed| failed.code),
+                ended.map_err(Code::from),
+                "{code}: {ran:?}"
+            );
+            assert!(peak <= Fux::IMPORT_LIMIT + overhead, "{code}: {peak}");
+            // Polling holds what one turn holds: each wait finds the same
+            // grant left.
+            let left = &asks.left;
+            assert_eq!(left.len(), waits, "{code}");
+            assert!(
+                left.iter().all(|n| Some(n) == left.first()),
+                "{code}: {left:?}"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn telling_an_uncaught_failure_allocates_no_more_at_depth() -> TestResult {
+        use super::*;
+        let allocator = fux_vt_peak::ThreadPeak;
+        let mut told = Vec::new();
+        for depth in [10, 5000] {
+            let code = format!(
+                "define deep dup 0 eq if drop list end first else 1 sub deep 1 add then end {depth} deep"
+            );
+            let mut machine = compile(&token::source("deep", &code)?)?;
+            let mut sink = io::sink();
+            let mut host = Host::new(Context::default(), None, &mut sink);
+            let error = machine.run(&mut host, u64::MAX).err().ok_or("no failure")?;
+            let base = allocator.live();
+            allocator.reset_peak();
+            let failed = uncaught(&machine, error);
+            told.push((allocator.peak().saturating_sub(base), failed.message));
+        }
+        let [(shallow, said), (deep, again)] = told.as_slice() else {
+            return Err("two depths".into());
+        };
+        assert!(
+            said.contains("inside first") && said == again,
+            "{said} {again}"
+        );
+        assert_eq!(shallow, deep);
+        Ok(())
     }
 
     #[test]

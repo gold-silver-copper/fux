@@ -11,6 +11,7 @@ use crate::error::{Code, Error, Failure, Floor, Wants, underflow};
 use crate::token::Token;
 use crate::value::{AppValue, List, NESTING, TOTAL, Text, Value};
 use crate::vocabulary::through;
+use crate::{ImportLease, Imports, Shared};
 use std::cmp::Ordering;
 use std::rc::Rc;
 
@@ -58,6 +59,14 @@ pub struct Args<'a, A> {
     /// Where the word's values start.
     from: usize,
     at: usize,
+    imports: &'a Imports,
+}
+
+impl<A> Args<'_, A> {
+    /// The run's grant, for what the word builds ([`Imports::lease`]).
+    pub fn imports(&self) -> &Imports {
+        self.imports
+    }
 }
 
 impl<A> Iterator for Args<'_, A> {
@@ -120,9 +129,6 @@ impl Default for Limits {
 /// The most elements one string or list a program builds may hold.
 pub const LONGEST: usize = 1_000_000;
 
-/// The most elements a run may build in all: what bounds its memory.
-pub const BUILT: u64 = 16_000_000;
-
 /// Elements a long step goes through for each step it costs.
 const PER_STEP: u64 = 64;
 
@@ -184,9 +190,13 @@ pub struct Machine<A> {
     extra: u64,
     /// Steps taken in all, through every run, long steps' costs counted.
     steps: u64,
-    /// Elements built so far.
-    built: u64,
-    imports: crate::Imports,
+    /// What every string and list the run holds is reserved from.
+    imports: Imports,
+    /// The one-character ASCII strings made so far, by code.
+    chars: Vec<Option<Value<A>>>,
+    /// The names of the codes caught so far: a closed set, so made once a
+    /// run, holding nothing, as a literal does.
+    codes: Vec<(Code, Value<A>)>,
     /// The step taken last: how many frames there were, its code, and its
     /// place in it.
     last: Option<(usize, Option<usize>, usize)>,
@@ -214,8 +224,9 @@ impl<A: AppValue> Machine<A> {
             pending: None,
             extra: 0,
             steps: 0,
-            built: 0,
-            imports: crate::Imports::new(A::IMPORT_LIMIT),
+            imports: Imports::new(A::IMPORT_LIMIT),
+            chars: Vec::new(),
+            codes: Vec::new(),
             last: None,
         }
     }
@@ -223,6 +234,11 @@ impl<A: AppValue> Machine<A> {
     /// The stack, deepest first.
     pub fn stack(&self) -> &[Value<A>] {
         &self.stack
+    }
+
+    /// The grant every string and list the run holds is reserved from.
+    pub fn imports(&self) -> &Imports {
+        &self.imports
     }
 
     /// Pushes an internal value, already admitted.
@@ -307,6 +323,7 @@ impl<A: AppValue> Machine<A> {
 
     /// An application word's failure, said at the word, or the word it
     /// names.
+    #[cold]
     fn failed(&self, failure: Failure) -> Error {
         let mut error = self.fail(failure.code, failure.message);
         error.word = failure.word.or(error.word);
@@ -344,14 +361,24 @@ impl<A: AppValue> Machine<A> {
             self.stack.truncate(depth);
             self.iters.truncate(iters);
             self.jump(handler);
-            // A message longer than a string may be, or a stack full to
-            // its limit, fails again, for a `try` further out to catch.
+            // A message longer than a string may be, or than the grant has
+            // room for, or a stack full to its limit, fails again, for a
+            // `try` further out to catch.
             let message = match carried.take() {
-                Some(value) => self.push(value),
-                None => (self.fits(error.message.chars().count()))
-                    .and_then(|()| self.push(Value::str(&*error.message))),
+                Some(value) => Ok(value),
+                None => self.text(&error.message),
             };
-            let pushed = message.and_then(|()| self.push(Value::str(error.code.name())));
+            let made = self.codes.iter().find(|(code, _)| *code == error.code);
+            let code = match made.map(|(_, name)| name.clone()) {
+                Some(name) => name,
+                None => {
+                    let name = Value::str(error.code.name());
+                    self.codes.push((error.code, name.clone()));
+                    name
+                }
+            };
+            let pushed = message.and_then(|value| self.push(value));
+            let pushed = pushed.and_then(|()| self.push(code));
             match pushed {
                 Ok(()) => return Ok(()),
                 Err(again) => error = again,
@@ -362,22 +389,20 @@ impl<A: AppValue> Machine<A> {
     /// The step each call under way is at, the outermost first: the word
     /// that called each definition, down to the word it ran last.
     /// A call in last place, which took its caller's frame, still shows
-    /// the call that began it.
-    pub fn calls(&self) -> Vec<Token> {
-        let mut calls: Vec<Token> = (self.frames.iter())
-            .flat_map(|frame| {
-                let via = frame.via.and_then(|(code, step)| self.before(code, step));
-                via.into_iter().chain(self.before(frame.code, frame.step))
-            })
-            .collect();
-        // The innermost: the step it really took last, a jump's too.
-        if let Some(last) = self.taken() {
-            if (self.frames.last()).is_some_and(|f| self.before(f.code, f.step).is_some()) {
-                calls.pop();
-            }
-            calls.push(last);
-        }
-        calls
+    /// the call that began it. Read from either end, it allocates nothing.
+    pub fn calls(&self) -> impl DoubleEndedIterator<Item = Token> + '_ {
+        let (innermost, last) = (self.frames.len().saturating_sub(1), self.taken());
+        self.frames.iter().enumerate().flat_map(move |(i, frame)| {
+            let via = frame.via.and_then(|(code, step)| self.before(code, step));
+            let before = self.before(frame.code, frame.step);
+            // The innermost: the step it really took last, a jump's too.
+            let at = if i == innermost {
+                last.clone().or(before)
+            } else {
+                before
+            };
+            via.into_iter().chain(at)
+        })
     }
 
     /// The token of the step the innermost frame took last: none for a
@@ -410,6 +435,7 @@ impl<A: AppValue> Machine<A> {
         self.program.token(code, step.checked_sub(1)?).cloned()
     }
 
+    #[cold]
     fn fail(&self, code: Code, message: impl Into<String>) -> Error {
         Error::new(code, message, self.at().as_ref())
     }
@@ -446,6 +472,7 @@ impl<A: AppValue> Machine<A> {
     }
 
     /// Runs until `until` steps are taken in all, or a step fails.
+    #[inline(never)]
     fn steps_until<H: Host<Value = A>>(
         &mut self,
         host: &mut H,
@@ -567,12 +594,14 @@ impl<A: AppValue> Machine<A> {
                         .pop()
                         .map_or(0, |(at, _)| at)
                         .min(self.stack.len());
-                    let mut items = Vec::with_capacity(self.stack.len().saturating_sub(from));
+                    let n = self.stack.len().saturating_sub(from);
+                    let lease = self.build(n, List::<A>::size(n))?;
+                    let mut items = Vec::with_capacity(n);
                     while self.stack.len() > from {
                         items.extend(self.stack.pop());
                     }
                     items.reverse();
-                    let list = self.list(items)?;
+                    let list = self.list(items, lease)?;
                     self.push(list)?;
                 }
                 Op::EachStart => {
@@ -586,7 +615,11 @@ impl<A: AppValue> Machine<A> {
                 Op::EachNext(out) => {
                     let next = (self.iters.last_mut()).and_then(|(seq, at)| next(seq, at));
                     match next {
-                        Some(item) => self.push(item)?,
+                        Some(Ok(item)) => self.push(item)?,
+                        Some(Err(c)) => {
+                            let c = self.char(c)?;
+                            self.push(c)?;
+                        }
                         None => {
                             self.iters.pop();
                             self.jump(*out);
@@ -611,7 +644,10 @@ impl<A: AppValue> Machine<A> {
     }
 
     /// Application word `id` run on the stack's top values: the request
-    /// to wait for, if it suspends.
+    /// to wait for, if it suspends. Kept out of `run`'s loop, with the
+    /// failures below: inlined there, the host's code made every step of a
+    /// program that calls none slower (fux's pure loop, +1.2% instructions).
+    #[inline(never)]
     fn app<H: Host<Value = A>>(
         &mut self,
         id: usize,
@@ -638,6 +674,7 @@ impl<A: AppValue> Machine<A> {
             stack: &mut self.stack,
             from,
             at: from,
+            imports: &self.imports,
         };
         let done = host.call(id, args, &mut out).map_err(|f| self.failed(f))?;
         let given = Given {
@@ -808,6 +845,7 @@ impl<A: AppValue> Machine<A> {
 
     /// A built-in's `N` values off the stack, the deepest first. Too few
     /// are said as the word takes them, before any is taken.
+    #[inline]
     fn take<const N: usize>(&mut self) -> Result<[Value<A>; N], Error> {
         self.depth(N)?;
         // The stack has them: none is the `false` put for one it lacks.
@@ -822,32 +860,60 @@ impl<A: AppValue> Machine<A> {
         self.extra = self.extra.saturating_add(n / PER_STEP);
     }
 
-    /// Counts `n` elements built: past what a run may build in all, or past
-    /// what one value may hold, a `too_long` error.
-    fn build(&mut self, n: usize) -> Result<(), Error> {
+    /// The lease of `bytes` for a string or list `n` elements long, taken
+    /// before it is made: past what one value or the run may hold, `too_long`.
+    fn build(&mut self, n: usize, bytes: usize) -> Result<ImportLease, Error> {
         self.fits(n)?;
         self.cost(n);
-        self.built = self
-            .built
-            .saturating_add(u64::try_from(n).unwrap_or(u64::MAX));
-        if self.built > BUILT {
-            return Err(self.fail(
-                Code::TooLong,
-                format!("built more than {BUILT} elements in all"),
-            ));
-        }
-        Ok(())
+        (self.imports)
+            .lease(bytes)
+            .map_err(|failure| self.failed(failure))
     }
 
-    /// A list of `items`, counted as built.
-    fn list(&mut self, items: Vec<Value<A>>) -> Result<Value<A>, Error> {
-        self.build(items.len())?;
+    /// `text` as a new string, reserved before it is made.
+    fn text(&mut self, text: &str) -> Result<Value<A>, Error> {
+        self.joined(text.chars().count(), text.len(), std::iter::once(text))
+    }
+
+    /// The string of `parts` joined, `chars` characters in `bytes`, reserved
+    /// before it is made.
+    fn joined<'p>(
+        &mut self,
+        chars: usize,
+        bytes: usize,
+        parts: impl Iterator<Item = &'p str>,
+    ) -> Result<Value<A>, Error> {
+        let lease = self.build(chars, Text::size(bytes, chars))?;
+        let mut text = String::with_capacity(bytes);
+        text.extend(parts);
+        Ok(Value::Str(Shared::leased(Text::new(text), lease)))
+    }
+
+    /// The string of `c`, an ASCII one made once a run.
+    fn char(&mut self, c: char) -> Result<Value<A>, Error> {
+        let code = usize::from(u8::try_from(c).unwrap_or(u8::MAX));
+        if let Some(Some(made)) = self.chars.get(code) {
+            return Ok(made.clone());
+        }
+        let made = self.text(c.encode_utf8(&mut [0; 4]))?;
+        if c.is_ascii() {
+            self.chars.resize(128, None);
+        }
+        if let Some(slot) = self.chars.get_mut(code) {
+            *slot = Some(made.clone());
+        }
+        Ok(made)
+    }
+
+    /// A list of `items`, holding `lease`.
+    fn list(&self, items: Vec<Value<A>>, lease: ImportLease) -> Result<Value<A>, Error> {
         match List::new(items) {
-            Some(list) => Ok(Value::List(crate::Shared::new(list))),
+            Some(list) => Ok(Value::List(Shared::leased(list, lease))),
             None => Err(self.nested()),
         }
     }
 
+    #[cold]
     fn nested(&self) -> Error {
         self.fail(Code::TooLong, format!(
             "lists nest at most {} deep, and hold at most {} in all, through the lists and strings in them",
@@ -920,43 +986,67 @@ impl<A: AppValue> Machine<A> {
                 ));
             }
         }
-        self.build(n)?;
-        let mut text = String::with_capacity(bytes);
-        let mut items = Vec::with_capacity(if lists { n } else { 0 });
+        if strings {
+            let strings = list.items().iter();
+            return self.joined(
+                n,
+                bytes,
+                strings.filter_map(|item| match item {
+                    Value::Str(s) => Some::<&str>(s),
+                    Value::Int(_) | Value::Bool(_) | Value::List(_) | Value::App(_) => None,
+                }),
+            );
+        }
+        let lease = self.build(n, List::<A>::size(n))?;
+        let mut items = Vec::with_capacity(n);
         for item in list.items() {
-            match item {
-                Value::Str(s) => text.push_str(s),
-                Value::List(l) => items.extend(l.items().iter().cloned()),
-                Value::Int(_) | Value::Bool(_) | Value::App(_) => {}
+            if let Value::List(l) = item {
+                items.extend_from_slice(l.items());
             }
         }
-        if strings {
-            Ok(Value::str(text))
-        } else {
-            List::new(items)
-                .map(|list| Value::List(crate::Shared::new(list)))
-                .ok_or_else(|| self.nested())
-        }
+        self.list(items, lease)
     }
 
+    /// `shared`'s value and lease, to change in place: when something else
+    /// holds it, a copy, `n` elements in `bytes`, reserved before it is made.
+    fn own<'s, T: Clone>(
+        &mut self,
+        shared: &'s mut Shared<T>,
+        n: usize,
+        bytes: usize,
+    ) -> Result<(&'s mut T, &'s mut ImportLease), Error> {
+        let copy = Shared::get_mut(shared).is_none();
+        let copy = copy.then(|| self.build(n, bytes)).transpose()?;
+        let (value, lease) = Shared::make_mut(shared);
+        if let Some(copy) = copy {
+            *lease = copy;
+        }
+        Ok((value, lease))
+    }
+
+    /// `x` added at the end, in place ([`Machine::own`]). Room it grows to
+    /// is reserved before it is made, and what it held given back after.
     fn pushed(&mut self, seq: Sequence<A>, x: Value<A>) -> Result<Value<A>, Error> {
         match (seq, x) {
             (Sequence::List(mut list), x) => {
-                self.fits(list.items().len().saturating_add(1))?;
-                self.build(list.copied(list.items().len()).saturating_add(1))?;
-                // In place when nothing else holds the list.
-                match crate::Shared::make_mut(&mut list).push(x) {
+                let len = list.items().len();
+                self.fits(len.saturating_add(1))?;
+                let (items, lease) = self.own(&mut list, len, List::<A>::size(len))?;
+                items.grow(lease, |bytes| self.build(len, bytes))?;
+                match items.push(x) {
                     Some(()) => Ok(Value::List(list)),
                     None => Err(self.nested()),
                 }
             }
             (Sequence::Str(mut s), Value::Str(x)) => {
-                self.fits(s.chars_len().saturating_add(x.chars_len()))?;
-                self.build(s.copied(s.chars_len()).saturating_add(x.chars_len()))?;
-                // Marking an ASCII string writes a mark per 64 of its characters:
-                // charged as a walk over them.
-                let marked = crate::Shared::make_mut(&mut s).append(&x);
-                self.cost(marked);
+                let (len, chars) = (s.chars_len(), s.chars_len().saturating_add(x.chars_len()));
+                self.fits(chars)?;
+                let copy = Text::size(s.len(), len);
+                let (text, lease) = self.own(&mut s, len, copy)?;
+                let marked = text.append(&x, lease, |bytes| self.build(len, bytes))?;
+                // What it adds, and the marks an ASCII string gets once, a
+                // mark per 64 of its characters: charged as a walk over them.
+                self.cost(marked.saturating_add(x.chars_len()));
                 Ok(Value::Str(s))
             }
             (Sequence::Str(_), x) => {
@@ -980,25 +1070,24 @@ impl<A: AppValue> Machine<A> {
     fn put(&mut self, seq: Sequence<A>, i: usize, x: Value<A>) -> Result<Value<A>, Error> {
         match (seq, x) {
             (Sequence::List(mut list), x) => {
-                let others = list.items().len().saturating_sub(1);
-                self.build(list.copied(others).saturating_add(1))?;
-                match crate::Shared::make_mut(&mut list).put(i, x) {
-                    Some(looked) => {
-                        self.cost(looked);
-                        Ok(Value::List(list))
-                    }
-                    None => Err(self.nested()),
-                }
+                let len = list.items().len();
+                let (items, _) = self.own(&mut list, len, List::<A>::size(len))?;
+                let looked = items.put(i, x).ok_or_else(|| self.nested())?;
+                self.cost(looked);
+                Ok(Value::List(list))
             }
-            (Sequence::Str(mut s), Value::Str(x)) => {
-                // One character replaced by x's: the string is made anew,
-                // in place or not.
-                let others = s.chars_len().saturating_sub(1);
-                self.fits(others.saturating_add(x.chars_len()))?;
-                self.build(s.copied(others).saturating_add(x.chars_len()))?;
-                self.cost(others);
-                crate::Shared::make_mut(&mut s).replace(i, &x);
-                Ok(Value::Str(s))
+            (Sequence::Str(s), Value::Str(x)) => {
+                // One character replaced by x's: the string is made anew.
+                let (head, tail) = (s.part(0, i), s.part(i.saturating_add(1), s.chars_len()));
+                let chars = s
+                    .chars_len()
+                    .saturating_sub(1)
+                    .saturating_add(x.chars_len());
+                let bytes = head
+                    .len()
+                    .saturating_add(x.len())
+                    .saturating_add(tail.len());
+                self.joined(chars, bytes, [head, &**x, tail].into_iter())
             }
             (Sequence::Str(_), x) => {
                 let app = matches!(x, Value::App(_));
@@ -1009,18 +1098,18 @@ impl<A: AppValue> Machine<A> {
 }
 
 /// The element of `seq` at `at` (a byte in a string, an index in a list),
-/// and `at` moved past it.
-fn next<A: Clone>(seq: &Sequence<A>, at: &mut usize) -> Option<Value<A>> {
+/// and `at` moved past it: a string's character for the machine to make.
+fn next<A: Clone>(seq: &Sequence<A>, at: &mut usize) -> Option<Result<Value<A>, char>> {
     match seq {
         Sequence::Str(s) => {
             let c = s.get(*at..).and_then(|rest| rest.chars().next());
             *at = at.saturating_add(c.map_or(1, char::len_utf8));
-            c.map(|c| Value::str(c.to_string()))
+            c.map(Err)
         }
         Sequence::List(list) => {
             let item = list.items().get(*at).cloned();
             *at = at.saturating_add(1);
-            item
+            item.map(Ok)
         }
     }
 }
@@ -1322,7 +1411,7 @@ builtins! { m host;
         let len = s.len();
         let i = m.index(i, len)?;
         let item = match &s {
-            Sequence::Str(s) => Some(Value::str(s.part(i, i.saturating_add(1)))),
+            Sequence::Str(s) => Some(m.text(s.part(i, i.saturating_add(1)))?),
             Sequence::List(list) => list.items().get(i).cloned(),
         };
         match item {
@@ -1339,13 +1428,11 @@ builtins! { m host;
         };
         let n = b.saturating_sub(a);
         let part = match &s {
-            Sequence::Str(s) => {
-                m.build(n)?;
-                Value::str(s.part(a, b))
-            }
+            Sequence::Str(s) => m.text(s.part(a, b))?,
             Sequence::List(list) => {
+                let lease = m.build(n, List::<A>::size(n))?;
                 let items = list.items().iter().skip(a).take(n).cloned().collect();
-                m.list(items)?
+                m.list(items, lease)?
             }
         };
         m.push(part)
@@ -1370,23 +1457,28 @@ builtins! { m host;
     }
     Char "char" (n: Int) "n -- c" "the one-character string with code n" {
         match u32::try_from(n).ok().and_then(char::from_u32) {
-            Some(c) => m.push(Value::str(c.to_string())),
+            Some(c) => {
+                let c = m.char(c)?;
+                m.push(c)
+            }
             None => Err(m.fail(Code::Range, format!("{n} is no character code"))),
         }
     }
     Kind "kind" (x: Any) "x -- name" "integer, boolean, string, list, or the host's kind" {
-        m.push(Value::str(x.kind_name()))
+        let kind = m.text(x.kind_name())?;
+        m.push(kind)
     }
     String "string" (x: Any) "x -- s" "x as text, as print shows it" {
         m.walk(&x);
         // Made only as far as a string may be long.
-        let Some(text) = x.text_upto(LONGEST).map_err(|f| m.fail(f.code, f.message))? else {
+        let text = x.string_upto(LONGEST, &m.imports).map_err(|f| m.failed(f))?;
+        let Some(text) = text else {
             return Err(m.fail(Code::TooLong, format!(
                 "the text is longer than a string may be ({LONGEST})"
             )));
         };
-        m.build(text.chars_len())?;
-        m.push(Value::Str(crate::Shared::new(text)))
+        m.cost(usize::try_from(text.weight()).unwrap_or(usize::MAX));
+        m.push(text)
     }
     Print "print" (x: Any) "x --" "print x now, a line" {
         m.walk(&x);
@@ -1401,7 +1493,7 @@ builtins! { m host;
                 "the reason is longer than a string may be ({LONGEST})"
             )));
         };
-        m.build(text.chars_len())?;
+        m.cost(text.chars_len());
         Err(m.fail(Code::Fail, text.into_string()))
     }
 }

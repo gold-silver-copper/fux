@@ -344,11 +344,10 @@ define events-print
   list str '{"event":' batch str status get json str ',"next":'
     batch str next get json str ',"reason":' batch str reason get json str '}' end glue print
 end
-# Interpreter step/weight limits remain in force across every batch and print.
-# event-scope cursor secs n -- string : a finite stream of 1 to 256 batches; empty cursor starts now
+# event-scope cursor secs n -- string : a stream of n batches, or (0) till it ends; empty cursor starts now
 define events-since
   let batches let seconds let cursor let scope
-  batches 1 lt batches 256 gt or if str 'events takes 1 to 256 batches' fail then
+  batches 0 lt if str 'events takes 0 batches or more' fail then
   seconds 0 lt seconds 86400 gt or if str 'events takes 0 to 86400 seconds' fail then
   scope cursor 0 next-events events-checked let batch
   cursor str '' eq if batch str next get let cursor then
@@ -356,29 +355,32 @@ define events-since
   batch events-print
   batch str next get let cursor
   batch str status get dup str gone eq swap str stopped eq or let ended
-  1 batches range each drop
-    ended not if
+  1 let taken
+  begin
+    ended taken batches eq or dup not if
       scope cursor seconds next-events events-checked let batch
       batch str next get let cursor
       batch events-print
       batch str status get dup str gone eq swap str stopped eq or let ended
+      taken 1 add let taken
     then
-  end
+  until
   cursor
 end
 # For restartable consumers use events-since and retain its returned cursor.
-# event-scope -- : up to 256 batches, 30 seconds per wait; every batch prints its checkpoint
-define events str '' 30 256 events-since drop end
+# event-scope -- : till the stream ends, 30 seconds per wait; every batch prints its checkpoint
+define events str '' 30 0 events-since drop end
 
 # One finite hook run. Trigger by event AND source; notification cannot trigger another copy.
 # cursor secs n -- string : notify views about admitted program copies, returning the next checkpoint
 define copy-notices
   let batches let seconds let cursor
-  batches 1 lt batches 256 gt or if str 'copy-notices takes 1 to 256 batches' fail then
+  batches 1 lt if str 'copy-notices takes 1 batch or more' fail then
   seconds 0 lt seconds 86400 gt or if str 'copy-notices takes 0 to 86400 seconds' fail then
   false let ended
-  0 batches range each drop
-    ended not if
+  0 let taken
+  begin
+    ended taken batches eq or dup not if
       all cursor seconds next-events events-checked let batch
       batch str events get each
         let event
@@ -390,8 +392,9 @@ define copy-notices
       end
       batch str next get let cursor
       batch str status get dup str gone eq swap str stopped eq or let ended
+      taken 1 add let taken
     then
-  end
+  until
   cursor
 end
 
