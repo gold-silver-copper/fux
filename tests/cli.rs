@@ -214,7 +214,7 @@ fn errors_statuses_and_what_is_left() -> Outcome {
         "str",
         "no\nsuch",
         "program",
-        "run",
+        "new-tab",
     ])?;
     assert!(
         path.stderr.starts_with("fux: start: ") && path.stderr.contains(r"starting no\nsuch in "),
@@ -239,7 +239,7 @@ fn errors_statuses_and_what_is_left() -> Outcome {
         "str",
         "30",
         "arg",
-        "run",
+        "new-tab",
         "1",
         "timeout",
         "wait",
@@ -352,7 +352,7 @@ fn mistakes_name_what_the_program_wrote() -> Outcome {
         caught,
         "takes a pane, tab, workspace or client, or options, not an integer\n"
     );
-    // Refused before `run` starts anything.
+    // Refused before `new-tab` starts anything.
     let before = said(&[
         "agent-opts",
         "80",
@@ -361,7 +361,7 @@ fn mistakes_name_what_the_program_wrote() -> Outcome {
         "str",
         "sh",
         "program",
-        "run",
+        "new-tab",
         "str",
         "a",
         "1",
@@ -565,7 +565,7 @@ fn a_directory_named_in_any_bytes_is_where_a_run_starts() -> Outcome {
             "str",
             "here",
             "arg",
-            "run",
+            "new-tab",
         ])
         .current_dir(&dir)
         .env("FUX_SOCKET", &server.socket)
@@ -627,7 +627,7 @@ fn a_write_that_fails_stops_the_program() -> Outcome {
             "str",
             "9",
             "arg",
-            "run",
+            "new-tab",
         ])
         .output()
         .map_err(e)?;
@@ -636,7 +636,7 @@ fn a_write_that_fails_stops_the_program() -> Outcome {
     assert!(said.starts_with("fux: output: "), "{said}");
     assert!(
         !server.ok(&["ls", "listing"])?.contains("%2"),
-        "run ran after help failed"
+        "new-tab ran after help failed"
     );
     let mut events = full()?.args(["all", "events"]).spawn().map_err(e)?;
     eventually("events to end", || {

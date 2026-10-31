@@ -123,7 +123,7 @@ fn servers_are_named_and_kills_are_guarded() -> Outcome {
         refused.stderr
     );
     // From one of its own panes, kill-server is refused as well.
-    let sh = server.words("agent-opts 80 24 size str sh name str sh program run")?;
+    let sh = server.words("agent-opts 80 24 size str sh program new-tab dup str sh rename")?;
     let sh = first_word(&sh);
     let line = format!("'{FUX}' kill-server; echo status=$?");
     let sent = server.ok(&[
@@ -254,7 +254,7 @@ fn events_tell_what_happens() -> Outcome {
             "str",
             "printf '\\a'; exit 7",
             "arg",
-            "run",
+            "new-tab",
         ])?;
         let pane = first_word(&pane);
         let created = next(r#""event":"created""#)?;
@@ -318,7 +318,7 @@ fn keys_to_a_tab_reach_each_pane() -> Outcome {
     let a = server.ok(&[
         &["agent-opts", "80", "24", "size", "str", "a", "name"][..],
         &bash,
-        &["run"],
+        &["new-tab"],
     ]
     .concat())?;
     let a = first_word(&a);
@@ -365,7 +365,7 @@ fn panes_and_tabs_are_lists_of_handles() -> Outcome {
         "str",
         "cat",
         "program",
-        "run",
+        "new-tab",
     ];
     let a = server.ok(&run)?;
     let a = first_word(&a);
@@ -578,9 +578,10 @@ fn a_dump_makes_its_workspace_again() -> Outcome {
             .ok(&["str", &made, "pane", "capture"])?
             .contains("built"))
     })?;
-    // A workspace `run` made: its dump takes the workspace from the answer
-    // `run` leaves.
-    server.words("opts 80 24 size str jobs in str job name str sleep program str 60 arg run")?;
+    // A workspace new-tab made: its dump takes the workspace from the answer
+    // new-tab leaves.
+    server
+        .words("opts 80 24 size str jobs in str sleep program str 60 arg new-tab str job rename")?;
     let dump = server.ok(&["str", "jobs", "workspace", "dump"])?;
     server.ok(&["str", "jobs", "workspace", "kill"])?;
     std::fs::write(&file, &dump).map_err(e)?;
@@ -598,7 +599,9 @@ fn a_dump_makes_its_workspace_again() -> Outcome {
 #[test]
 fn a_dump_runs_on_a_new_server_whatever_its_tabs_are_named() -> Outcome {
     let source = Server::start("")?;
-    source.words("opts 80 24 size str main in str tab-2 name str sleep program str 60 arg run")?;
+    source.words(
+        "opts 80 24 size str main in str sleep program str 60 arg new-tab str tab-2 rename",
+    )?;
     source.ok(&["str", "tab-2", "pane", "str", "new-workspace", "move"])?;
     let dump = source.ok(&["all", "dump"])?;
     let server = Server::start("")?;
@@ -626,11 +629,13 @@ fn a_dump_runs_on_a_new_server_whatever_its_tabs_are_named() -> Outcome {
 #[test]
 fn an_unnamed_workspace_replays_independently_of_the_default_shell() -> Outcome {
     let source = Server::start("")?;
-    source
-        .words("agent-opts 80 24 size str first name str cat program run str new-workspace move")?;
+    source.words(
+        "agent-opts 80 24 size str cat program new-tab dup str first rename str new-workspace move",
+    )?;
     source.words("str first pane str horizontal axis str cat program split str second rename")?;
-    source
-        .words("opts str first pane workspace in 80 24 size str third name str cat program run")?;
+    source.words(
+        "opts str first pane workspace in 80 24 size str cat program new-tab str third rename",
+    )?;
     let dump = source.ok(&["str", "first", "pane", "workspace", "dump"])?;
     for shell in [
         &["str", "/no/such/fux-shell"][..],
@@ -669,7 +674,7 @@ fn an_unnamed_workspace_replays_independently_of_the_default_shell() -> Outcome 
 #[test]
 fn a_dump_opens_its_workspace_with_the_first_tab_written() -> Outcome {
     let server = Server::start("")?;
-    let pane = server.words("opts 80 24 size str moved in str sleep program str 60 arg run")?;
+    let pane = server.words("opts 80 24 size str moved in str sleep program str 60 arg new-tab")?;
     server.ok(&["str", first_word(&pane), "pane", "str", "new-tab", "move"])?;
     let dump = server.ok(&["str", "moved", "workspace", "dump"])?;
     server.ok(&["str", "moved", "workspace", "kill"])?;
@@ -783,7 +788,9 @@ fn dump_replays_the_saved_launch_after_the_program_changes_directory() -> Outcom
         .map_err(e)?;
         std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).map_err(e)?;
         let cwd = fux_wire::words::quote(directory.to_str().ok_or("cwd text")?);
-        let answer = server.ok(&[&format!("agent-opts 80 24 size str {cwd} cwd {argv} run")])?;
+        let answer = server.ok(&[&format!(
+            "agent-opts 80 24 size str {cwd} cwd {argv} new-tab"
+        )])?;
         let pane = answer.trim().split(':').next().ok_or("pane")?;
         eventually("the program changed directory", || {
             Ok(server.ok(&[pane, "str", "cwd", "get"])?.trim()
@@ -866,7 +873,7 @@ fn the_copy_hook_recipe_consumes_a_real_program_copy() -> Outcome {
         "str",
         r"printf '\033]52;c;aGVsbG8=\007'",
         "arg",
-        "run",
+        "new-tab",
     ])?;
     server.ok(&[
         "str",

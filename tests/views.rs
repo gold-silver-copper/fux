@@ -236,16 +236,17 @@ fn a_hidden_tab_goes_back_to_its_own_size() -> Outcome {
     client.wait_for("$")?;
     let run = [
         "agent-opts",
-        "str",
-        "hid",
-        "name",
         "100",
         "40",
         "size",
         "str",
         "cat",
         "program",
-        "run",
+        "new-tab",
+        "dup",
+        "str",
+        "hid",
+        "rename",
     ];
     let pane = server.ok(&run)?;
     let pane = pane.split(':').next().unwrap_or_default();
@@ -257,7 +258,7 @@ fn a_hidden_tab_goes_back_to_its_own_size() -> Outcome {
     eventually("its own size", || sized("100x40"))?;
     server.ok(&["str", "c1", "client", pane, "tab", "show"])?;
     eventually("the client's size", || sized("84x24"))?;
-    let other = server.words("agent-opts 84 24 size str sleep program str 60 arg run")?;
+    let other = server.words("agent-opts 84 24 size str sleep program str 60 arg new-tab")?;
     let other = other.split(':').next().unwrap_or_default();
     server.ok(&["str", "c1", "client", other, "tab", "show"])?;
     eventually("its own size, another tab shown", || sized("100x40"))?;

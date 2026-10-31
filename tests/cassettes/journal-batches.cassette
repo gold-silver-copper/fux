@@ -4,7 +4,7 @@
 # fix: #320
 $ C=$(fux all str '' 0 next-events str next get)
 $ fux - <<'EOF'
-> agent-opts 80 24 size str sh program str -c arg str 'read x' arg run let p
+> agent-opts 80 24 size str sh program str -c arg str 'read x' arg new-tab let p
 > 0 begin p over string rename 1 add dup 70 eq until drop
 > EOF
 $ fux - <<EOF

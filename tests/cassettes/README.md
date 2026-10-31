@@ -25,7 +25,7 @@ about two builds.
 # guards: keys sent with expect at a version the pane has moved past are
 #   refused stale, and none of them reach the program
 # exercises: stale-expect
-$ V=$(fux agent-opts 80 24 size str sh program str -c arg str 'read x; read y; echo "second=$y"' arg run)
+$ V=$(fux agent-opts 80 24 size str sh program str -c arg str 'read x; read y; echo "second=$y"' arg new-tab)
 $ fux "${V%%:*}" str x text str Enter key send-keys
   ~ %a:0.0.0.0.0:R1
 $ fux str "$V" expect str y text str Enter key send-keys

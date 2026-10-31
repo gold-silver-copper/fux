@@ -593,8 +593,6 @@ class Fux(Driver):
 
     def spawn(self, argv, size=None, name=None):
         words = ["agent-opts"]
-        if name:
-            words += ["str", name, "name"]
         # fux makes no size up, and no client is attached here: with none
         # asked for, tmux's size for a session no client shows, 80 by 24.
         cols, rows = size or (80, 24)
@@ -602,7 +600,11 @@ class Fux(Driver):
         words += ["str", argv[0], "program"]
         for a in argv[1:]:
             words += ["str", a, "arg"]
-        return self.act(*words, "run")
+        words.append("new-tab")
+        if name:
+            # The pane's name, which `find` looks up; new-tab's names a tab.
+            words += ["dup", "str", name, "rename"]
+        return self.act(*words)
 
     def shell(self, size=None):
         return self.spawn(["bash"], size=size)
@@ -675,7 +677,7 @@ class Fux(Driver):
         return self.fux("str", name, "pane").stdout.strip()
 
     def find_title(self, title):
-        # Every pane `run` starts is in workspace agent.
+        # Every pane `spawn` starts is in workspace agent.
         snapshot = json.loads(self.fux("str", "agent", "workspace", "str", "topology",
                                        "snapshot", "json").stdout)
         return next(p["id"] for p in snapshot["panes"] if p["title"] == title)

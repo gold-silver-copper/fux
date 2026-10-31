@@ -1,7 +1,7 @@
 //! Driving programs from the command line, as a script or an agent does:
-//! `run` starts one out of every client's way and keeps its pane once it
-//! exits; an action acts at once and answers its pane's version from
-//! before it acted; a wait answers once that version differs (its
+//! `new-tab` from the command line starts one out of every client's way,
+//! and keeps its pane once it exits; an action acts at once and answers
+//! its pane's version from before it acted; a wait answers once that version differs (its
 //! program's end too) or the pane closes; `send-keys` and `send-mouse` send what a
 //! person would, sizes are set, and a headless client stands in for a
 //! terminal.
@@ -28,16 +28,28 @@ fn program<'a>(argv: &[&'a str]) -> Vec<&'a str> {
     words
 }
 
-/// `run`'s words: `opts`, then `before` (name, size, waits…), then the
-/// program, then `run`; at 80 by 24 unless `before` gives a size, as no
-/// client is attached to lay it out on.
-fn run<'a>(before: &[&'a str], argv: &[&'a str]) -> Vec<&'a str> {
+/// A program's tab: `agent-opts`, then `before` (size, env, waits…), then
+/// the program, then `new-tab`; at 80 by 24 unless `before` gives a size,
+/// as no client is attached to lay it out on.
+fn launch<'a>(before: &[&'a str], argv: &[&'a str]) -> Vec<&'a str> {
     let size: &[&str] = if before.contains(&"size") {
         &[]
     } else {
         &["80", "24", "size"]
     };
-    [&["agent-opts"][..], size, before, &program(argv), &["run"]].concat()
+    [
+        &["agent-opts"][..],
+        size,
+        before,
+        &program(argv),
+        &["new-tab"],
+    ]
+    .concat()
+}
+
+/// `launch`, its pane then named `name`, leaving its answer.
+fn named<'a>(name: &'a str, before: &[&'a str], argv: &[&'a str]) -> Vec<&'a str> {
+    [launch(before, argv), vec!["dup", "str", name, "rename"]].concat()
 }
 
 /// `send-keys` to `pane` typing `line`, then Enter.
@@ -120,7 +132,7 @@ fn marked_bash(server: &Server, name: &str) -> Result<(), String> {
     std::fs::write(&rc, format!("PS1='$ '\n{hook}{marks}")).map_err(e)?;
     let rc = rc.to_string_lossy().into_owned();
     let argv = ["bash", "--noprofile", "--rcfile", &rc, "-i"];
-    let made = server.ok(&run(&["str", name, "name"], &argv))?;
+    let made = server.ok(&named(name, &[], &argv))?;
     server.until(name, &version(&made), |c| c.ends_with("$\n"))?;
     Ok(())
 }
@@ -139,15 +151,15 @@ fn line_done(server: &Server, pane: &str, line: &str) -> Outcome {
     Ok(())
 }
 
-/// A program `run` starts keeps its pane once it exits: its last screen,
+/// A program `new-tab` starts keeps its pane once it exits: its last screen,
 /// and its status, which a wait and `ls` report (a signal's too); one that
 /// cannot start is refused. It takes no more input. The program starts at
 /// its `size`, in the `agent` workspace, which no client is moved to.
 #[test]
-fn a_run_program_keeps_its_pane_screen_and_status() -> Outcome {
+fn a_program_keeps_its_pane_screen_and_status() -> Outcome {
     let server = Server::start("")?;
     let script = "stty size; echo started; exit 3";
-    let started = server.ok(&run(&["40", "10", "size"], &["sh", "-c", script]))?;
+    let started = server.ok(&launch(&["40", "10", "size"], &["sh", "-c", script]))?;
     let pane = id(&started);
     assert_eq!(server.exits(&pane)?, "3");
     // Waited on from its start, it has exited: answered at once; from now,
@@ -176,7 +188,7 @@ fn a_run_program_keeps_its_pane_screen_and_status() -> Outcome {
         "{}",
         refused.stderr
     );
-    let missing = server.fux(&run(&[], &["/no/such/program"]))?;
+    let missing = server.fux(&launch(&[], &["/no/such/program"]))?;
     assert_eq!(missing.status, 1);
     assert!(
         missing.stderr.contains("No such file"),
@@ -184,7 +196,7 @@ fn a_run_program_keeps_its_pane_screen_and_status() -> Outcome {
         missing.stderr
     );
     // One a signal ends is said to be killed by it.
-    let started = server.ok(&run(&[], &["sleep", "30"]))?;
+    let started = server.ok(&launch(&[], &["sleep", "30"]))?;
     let pane = id(&started);
     server.ok(&["str", &pane, "pane", "str", "KILL", "signal"])?;
     server.exits(&pane)?;
@@ -207,7 +219,7 @@ fn a_run_program_keeps_its_pane_screen_and_status() -> Outcome {
 #[test]
 fn a_wait_from_an_action_s_version_misses_nothing() -> Outcome {
     let server = Server::start("")?;
-    let started = server.ok(&run(
+    let started = server.ok(&launch(
         &[],
         &["sh", "-c", "echo ready; read x; echo got; sleep 30"],
     ))?;
@@ -256,7 +268,7 @@ fn a_wait_from_an_action_s_version_misses_nothing() -> Outcome {
     // it holds, a timeout given between them too: asked again once the
     // change surely came, it answers at once, where one from now would
     // time out.
-    let echoes = id(&server.ok(&run(&[], &["sh", "-c", "read x; sleep 30"]))?);
+    let echoes = id(&server.ok(&launch(&[], &["sh", "-c", "read x; sleep 30"]))?);
     let twice = [
         "dup", "5", "timeout", "wait", "drop", "1", "timeout", "wait",
     ];
@@ -271,7 +283,7 @@ fn a_wait_from_an_action_s_version_misses_nothing() -> Outcome {
 fn bells_and_respawns_change_the_version() -> Outcome {
     let server = Server::start("")?;
     let script = r"read x; printf '\a'; exec cat";
-    let pane = id(&server.ok(&run(&[], &["sh", "-c", script]))?);
+    let pane = id(&server.ok(&launch(&[], &["sh", "-c", script]))?);
     let mut at = version(&server.ok(&typed(&pane, ""))?);
     loop {
         let waited = ["str", &at, "changed", "10", "timeout", "wait"];
@@ -375,18 +387,16 @@ fn shell_marks_count_commands_and_give_their_output() -> Outcome {
             "24",
             "size",
             "str",
-            shell,
-            "name",
-            "str",
             home,
             "str",
             &dir,
             "env",
         ];
-        server.ok(&[&words[..], &program(&[shell, "-i"]), &["run"]].concat())?;
+        let new = ["new-tab", "str", shell, "rename"];
+        server.ok(&[&words[..], &program(&[shell, "-i"]), &new].concat())?;
         check(shell)?;
     }
-    let plain = server.ok(&run(&[], &["sh"]))?;
+    let plain = server.ok(&launch(&[], &["sh"]))?;
     let refused = server.fux(&["str", &id(&plain), "pane", "last-output", "capture"])?;
     assert!(
         refused.stderr.starts_with("fux: no_marks: "),
@@ -419,7 +429,7 @@ while not seen.endswith(b"q"):
     let path = server.dir.join("reads.py");
     std::fs::write(&path, READS).map_err(e)?;
     let script = path.to_string_lossy().into_owned();
-    let started = server.ok(&run(&[], &["python3", "-I", &script]))?;
+    let started = server.ok(&launch(&[], &["python3", "-I", &script]))?;
     let pane = id(&started);
     shows_after(&server, &started, "ready")?;
     // All the program read so far, as it said it.
@@ -638,18 +648,16 @@ fn pictures_reach_a_terminal_that_draws_sixel() -> Outcome {
     Ok(())
 }
 
-/// `respawn` starts a run program again in its pane, found by its given
+/// `respawn` starts a pane's program again in it, found by its given
 /// name; `all-history` reads all history,
 /// `main-screen` what a full-screen program hides, `alt-screen` its last
 /// screen; a mistyped key name is refused.
 #[test]
-fn run_programs_are_restarted_and_read_whole() -> Outcome {
+fn programs_are_restarted_and_read_whole() -> Outcome {
     let server = Server::start("")?;
     let script = "echo before; seq 500; printf '\\033[?1049h'; echo \"full $V\"; read go";
-    let before = [
-        "str", "job", "name", "str", "V", "str", "a", "env", "40", "10", "size",
-    ];
-    let started = server.ok(&run(&before, &["sh", "-c", script]))?;
+    let before = ["str", "V", "str", "a", "env", "40", "10", "size"];
+    let started = server.ok(&named("job", &before, &["sh", "-c", script]))?;
     let pane = id(&started);
     shows_after(&server, &started, "full a")?;
     let main = [
@@ -685,7 +693,7 @@ fn run_programs_are_restarted_and_read_whole() -> Outcome {
     shows_after(&server, &again, "full b")?;
     // A full-screen program's last screen, after it left it and exited.
     let menu = r"printf '\033[?1049hpicked beta'; printf '\033[?1049l'";
-    let menu = id(&server.ok(&run(&[], &["sh", "-c", menu]))?);
+    let menu = id(&server.ok(&launch(&[], &["sh", "-c", menu]))?);
     server.exits(&menu)?;
     assert!(
         !server
@@ -704,9 +712,11 @@ fn run_programs_are_restarted_and_read_whole() -> Outcome {
 #[test]
 fn names_clicks_and_signals_are_checked() -> Outcome {
     let server = Server::start("")?;
-    server.ok(&run(&["str", "ed", "name"], &["cat"]))?;
+    server.ok(&named("ed", &[], &["cat"]))?;
     assert_eq!(
-        server.fux(&run(&["str", "@1", "name"], &["cat"]))?.status,
+        server
+            .fux(&launch(&["str", "@1", "name"], &["cat"]))?
+            .status,
         1
     );
     server.words("opts 80 24 size str +1 in str ed name new-tab")?;
@@ -727,10 +737,9 @@ fn names_clicks_and_signals_are_checked() -> Outcome {
         "resized by the named pane's tab"
     );
     let clicks = "printf '\\033[?1000h\\033[?1006hready'; exec cat";
-    let before = ["str", "m", "name", "20", "5", "size"];
     shows_after(
         &server,
-        &server.ok(&run(&before, &["sh", "-c", clicks]))?,
+        &server.ok(&named("m", &["20", "5", "size"], &["sh", "-c", clicks]))?,
         "ready",
     )?;
     let outside = ["str", "m", "pane", "str", "click", "5", "0", "send-mouse"];
@@ -755,7 +764,7 @@ fn names_clicks_and_signals_are_checked() -> Outcome {
 fn a_row_range_takes_joined_lines_whole() -> Outcome {
     let server = Server::start("")?;
     let long = "echo aaaaaaaaaaaaaaaaaaaaBBBBBBBBBBBBBBBBBBBBcc; echo next; exec cat";
-    let started = server.ok(&run(&["20", "6", "size"], &["sh", "-c", long]))?;
+    let started = server.ok(&launch(&["20", "6", "size"], &["sh", "-c", long]))?;
     let pane = id(&started);
     shows_after(&server, &started, "next")?;
     let line = server.ok(&["str", &pane, "pane", "1", "2", "rows", "capture"])?;
@@ -772,7 +781,7 @@ fn a_row_range_takes_joined_lines_whole() -> Outcome {
     );
     // A column range cuts a wide glyph to a blank, a column a cell.
     let wide = "printf 'A界BC              Z'; exec cat";
-    let wide = server.ok(&run(&["20", "6", "size"], &["sh", "-c", wide]))?;
+    let wide = server.ok(&launch(&["20", "6", "size"], &["sh", "-c", wide]))?;
     shows_after(&server, &wide, "Z")?;
     let wide = id(&wide);
     let cut = |first: &str, last: &str| {
@@ -802,8 +811,8 @@ fn a_row_range_takes_joined_lines_whole() -> Outcome {
 #[test]
 fn a_wait_on_a_workspace_answers_each_of_its_panes() -> Outcome {
     let server = Server::start("")?;
-    let one = id(&server.ok(&run(&[], &["sleep", "30"]))?);
-    let two = id(&server.ok(&run(&[], &["sleep", "30"]))?);
+    let one = id(&server.ok(&launch(&[], &["sleep", "30"]))?);
+    let two = id(&server.ok(&launch(&[], &["sleep", "30"]))?);
     let timed = server.fux(&["str", "agent", "workspace", "1", "timeout", "wait"])?;
     assert_eq!(timed.status, 124, "{}", timed.stderr);
     for pane in [&one, &two] {
@@ -836,7 +845,7 @@ fn a_wait_on_a_workspace_answers_each_of_its_panes() -> Outcome {
 fn an_answer_selects_its_pane_explicitly_for_live_fields() -> Outcome {
     let server = Server::start("")?;
     let script = "read x; echo '%13 fake'; exec cat";
-    let pane = id(&server.ok(&run(&[], &["sh", "-c", script]))?);
+    let pane = id(&server.ok(&launch(&[], &["sh", "-c", script]))?);
     let since = server.version(&pane)?;
     let sent = [&typed(&pane, "go")[..], &["pane", "str", "name", "get"]];
     assert_eq!(server.ok(&sent.concat())?.trim(), "null");
@@ -855,7 +864,7 @@ fn an_answer_selects_its_pane_explicitly_for_live_fields() -> Outcome {
 fn send_keys_takes_input_up_to_its_limit() -> Outcome {
     let server = Server::start("")?;
     let count = "stty -echo; head -c 921600 | wc -c; cat > /dev/null";
-    let sink = id(&server.ok(&run(&[], &["sh", "-c", count]))?);
+    let sink = id(&server.ok(&launch(&[], &["sh", "-c", count]))?);
     let line: String = std::iter::repeat_n('a', 99).chain(['\n']).collect();
     let text: String = std::iter::repeat_n(line, 9216).collect();
     let file = server.dir.join("paste.fux");
@@ -889,7 +898,7 @@ fn send_keys_takes_input_up_to_its_limit() -> Outcome {
 fn json_of_a_saved_capture_is_that_capture() -> Outcome {
     let server = Server::start("")?;
     let script = "echo BEFORE; read x; echo LA\"\"TER; read y";
-    let started = server.ok(&run(&[], &["sh", "-c", script]))?;
+    let started = server.ok(&launch(&[], &["sh", "-c", script]))?;
     let pane = id(&started);
     shows_after(&server, &started, "BEFORE")?;
     let json = server.ok(&[
@@ -922,7 +931,7 @@ fn json_of_a_saved_capture_is_that_capture() -> Outcome {
 #[test]
 fn an_answer_in_a_list_is_its_object() -> Outcome {
     let server = Server::start("")?;
-    let pane = id(&server.ok(&run(&[], &["sh", "-c", "read x"]))?);
+    let pane = id(&server.ok(&launch(&[], &["sh", "-c", "read x"]))?);
     let capture = ["str", &pane, "pane"];
     let json = server.ok(&[
         &["list"][..],
@@ -945,12 +954,12 @@ fn an_answer_in_a_list_is_its_object() -> Outcome {
 
 /// A word refuses options it would not use, and makes nothing: a capture
 /// waits for nothing, a wait starts and views nothing, a split takes its
-/// tab's place, a run splits nothing and views nothing, a respawn keeps
+/// tab's place, a new tab splits nothing, a respawn keeps
 /// its pane's name, size, place and ids.
 #[test]
 fn words_refuse_options_they_do_not_use() -> Outcome {
     let server = Server::start("")?;
-    let pane = id(&server.ok(&run(&[], &["sh", "-c", "read x"]))?);
+    let pane = id(&server.ok(&launch(&[], &["sh", "-c", "read x"]))?);
     let on = ["str", &pane, "pane"];
     let opts = ["opts"];
     let cat = ["str", "cat", "program"];
@@ -994,8 +1003,8 @@ fn words_refuse_options_they_do_not_use() -> Outcome {
         &["wrapped"],
         &["0", "5", "rows"],
     ] {
-        let refused = server.fux(&[&opts[..], unused, &cat, &["run"]].concat())?;
-        assert_eq!(refused.status, 1, "{unused:?} run: {}", refused.stdout);
+        let refused = server.fux(&[&opts[..], unused, &cat, &["new-tab"]].concat())?;
+        assert_eq!(refused.status, 1, "{unused:?} new-tab: {}", refused.stdout);
         assert!(
             refused.stderr.starts_with(
                 if matches!(
@@ -1007,7 +1016,7 @@ fn words_refuse_options_they_do_not_use() -> Outcome {
                     "fux: type: "
                 }
             ),
-            "{unused:?} run: {}",
+            "{unused:?} new-tab: {}",
             refused.stderr
         );
     }
@@ -1027,7 +1036,7 @@ fn words_refuse_options_they_do_not_use() -> Outcome {
 #[test]
 fn a_failed_wait_answers_as_text() -> Outcome {
     let server = Server::start("")?;
-    let pane = id(&server.ok(&run(&[], &["sleep", "30"]))?);
+    let pane = id(&server.ok(&launch(&[], &["sleep", "30"]))?);
     let p = ["str", pane.as_str(), "pane"];
     let out = server.fux(&[&p[..], &["1", "timeout", "wait", "json"]].concat())?;
     assert_eq!(out.status, 124, "{}", out.stderr);
@@ -1069,7 +1078,7 @@ fn last_output_is_the_running_command_s_so_far() -> Outcome {
 #[test]
 fn respawn_keeps_a_given_name_matching_the_old_program() -> Outcome {
     let server = Server::start("")?;
-    let pane = id(&server.ok(&run(&["str", "sh", "name"], &["sh", "-c", "exit 0"]))?);
+    let pane = id(&server.ok(&named("sh", &[], &["sh", "-c", "exit 0"]))?);
     server.exits(&pane)?;
     let ended = server.version(&pane)?;
     server.ok(&["str", &pane, "pane", "str", "true", "program", "respawn"])?;
@@ -1086,13 +1095,13 @@ fn respawn_keeps_a_given_name_matching_the_old_program() -> Outcome {
 #[test]
 fn env_takes_a_pane_tab_or_workspace() -> Outcome {
     let server = Server::start("")?;
-    let named = id(&server.ok(&run(&["str", "ed", "name"], &["sleep", "30"]))?);
+    let named = id(&server.ok(&named("ed", &[], &["sleep", "30"]))?);
     let before = [
         "str", "P", "%1", "env", "str", "T", "@1", "env", "str", "W", "+1", "env", "str", "N",
         "str", "ed", "pane", "env",
     ];
     let script = "echo \"$P $T $W $N\"";
-    let pane = id(&server.ok(&run(&before, &["sh", "-c", script]))?);
+    let pane = id(&server.ok(&launch(&before, &["sh", "-c", script]))?);
     server.exits(&pane)?;
     let capture = server.ok(&["str", &pane, "pane", "capture"])?;
     assert_eq!(capture, format!("%1 @1 +1 {named}\n"));
@@ -1106,7 +1115,7 @@ fn a_pane_gets_the_fux_running_it() -> Outcome {
     let server = Server::start("")?;
     let before = ["str", "WANT", "str", fux(), "env"];
     let script = "PATH=/nonexistent; \"$FUX\" here capture >/dev/null && [ \"$FUX\" -ef \"$WANT\" ] && echo same";
-    let pane = id(&server.ok(&run(&before, &["/bin/sh", "-c", script]))?);
+    let pane = id(&server.ok(&launch(&before, &["/bin/sh", "-c", script]))?);
     server.exits(&pane)?;
     let capture = server.ok(&["str", &pane, "pane", "capture"])?;
     assert_eq!(capture, "same\n");
@@ -1121,7 +1130,7 @@ fn a_pane_gets_the_fux_running_it() -> Outcome {
 fn the_docs_recipes_run_as_written() -> Outcome {
     let server = Server::start("")?;
     let pane = |script: &str| -> Result<String, String> {
-        Ok(id(&server.ok(&run(&[], &["sh", "-c", script]))?))
+        Ok(id(&server.ok(&launch(&[], &["sh", "-c", script]))?))
     };
     let recipe = |after: &str| block(after, "fux");
     let talks = pane("read x; echo one; sleep 0.3; echo two; sleep 30")?;
@@ -1182,7 +1191,7 @@ fn the_docs_recipes_run_as_written() -> Outcome {
 fn keys_to_a_program_that_closed_its_terminal_are_refused() -> Outcome {
     let server = Server::start("")?;
     let closes = "exec >/dev/null 2>&1 <&-; sleep 30";
-    let pane = id(&server.ok(&run(&[], &["sh", "-c", closes]))?);
+    let pane = id(&server.ok(&launch(&[], &["sh", "-c", closes]))?);
     eventually("the keys refused", || {
         let keys = server.fux(&["str", &pane, "pane", "str", "x", "text", "send-keys"])?;
         Ok(keys.stderr.starts_with("fux: not_running: "))
@@ -1197,7 +1206,7 @@ fn keys_to_a_program_that_closed_its_terminal_are_refused() -> Outcome {
 #[test]
 fn conditions_accept_panes_answers_and_pane_captures() -> Outcome {
     let server = Server::start("")?;
-    let started = server.ok(&run(
+    let started = server.ok(&launch(
         &[],
         &["sh", "-c", "echo BOOT; sleep 0.1; echo READY; read x"],
     ))?;
@@ -1224,7 +1233,7 @@ fn conditions_accept_panes_answers_and_pane_captures() -> Outcome {
 #[test]
 fn observed_retains_a_capture_without_refreshing_it() -> Outcome {
     let server = Server::start("")?;
-    let pane = id(&server.ok(&run(&[], &["sh", "-c", "echo READY; read x"]))?);
+    let pane = id(&server.ok(&launch(&[], &["sh", "-c", "echo READY; read x"]))?);
     let code = format!(
         "{pane} str READY 3 shows let seen {pane} kill seen observed str READY 1 shows string"
     );
@@ -1237,13 +1246,13 @@ fn observed_retains_a_capture_without_refreshing_it() -> Outcome {
 #[test]
 fn until_ended_checks_before_waiting_and_keeps_status() -> Outcome {
     let server = Server::start("")?;
-    let pane = id(&server.ok(&run(&[], &["sh", "-c", "exit 7"]))?);
+    let pane = id(&server.ok(&launch(&[], &["sh", "-c", "exit 7"]))?);
     server.exits(&pane)?;
     for source in [pane.clone(), format!("{pane} capture")] {
         let code = format!("{source} 1 until-ended 1 until-ended str exited get");
         assert_eq!(server.ok(&[&code])?, "7\n");
     }
-    let code = "agent-opts 80 24 size str sh program str -c arg str 'sleep 0.1; exit 7' arg run 1 timeout wait 1 until-ended str exited get";
+    let code = "agent-opts 80 24 size str sh program str -c arg str 'sleep 0.1; exit 7' arg new-tab 1 timeout wait 1 until-ended str exited get";
     assert_eq!(server.ok(&[code])?, "7\n");
     Ok(())
 }
@@ -1253,7 +1262,10 @@ fn until_ended_checks_before_waiting_and_keeps_status() -> Outcome {
 #[test]
 fn grows_validates_its_baseline_and_requested_growth() -> Outcome {
     let server = Server::start("")?;
-    let pane = id(&server.ok(&run(&[], &["sh", "-c", "read x; printf '\\007'; read y"]))?);
+    let pane = id(&server.ok(&launch(
+        &[],
+        &["sh", "-c", "read x; printf '\\007'; read y"],
+    ))?);
     for source in [
         pane.clone(),
         format!("{pane} capture"),
@@ -1285,7 +1297,7 @@ fn grows_validates_its_baseline_and_requested_growth() -> Outcome {
 #[test]
 fn quiet_propagates_closure_instead_of_reporting_stability() -> Outcome {
     let server = Server::start("")?;
-    let pane = id(&server.ok(&run(&[], &["sh", "-c", "echo READY; read x"]))?);
+    let pane = id(&server.ok(&launch(&[], &["sh", "-c", "echo READY; read x"]))?);
     let code = format!("{pane} str READY 3 shows let seen {pane} kill seen 1 quiet drop");
     let closed = server.fux(&[&code])?;
     assert_eq!(closed.status, 4, "{}", closed.stderr);

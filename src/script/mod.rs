@@ -1,5 +1,5 @@
 //! fux's command line, config, bindings and prompt: fuxth programs, run in
-//! a client. Words build typed requests (`opts … run`, `%2 … send-keys`)
+//! a client. Words build typed requests (`opts … new-tab`, `%2 … send-keys`)
 //! and execution words submit them: the program suspends while the server
 //! does what one asks, and goes on with what it answers, as typed values
 //! (a pane's handle, a capture), never text to be read back.
@@ -63,7 +63,7 @@ pub enum Fux {
     Client(ClientId, Option<Run>),
     /// The whole session.
     All,
-    /// Options for `run`, `new-tab` or `new-workspace` (from `opts`); or a
+    /// Options for `new-tab` or `new-workspace` (from `opts`); or a
     /// request: a pane, tab, workspace or client given options, keys or a
     /// wait, for the word that acts on it after
     /// (`%2 str ls text str Enter key send-keys`).
@@ -242,7 +242,7 @@ fn same_run(a: Option<Run>, b: Option<Run>) -> Result<Option<Run>, fuxth::Failur
 }
 
 /// Options, keys and waits, as words give them, and what
-/// they are on: nothing, for `run`, `new-tab` and `new-workspace`.
+/// they are on: nothing, for `new-tab` and `new-workspace`.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Opts {
     lease: fuxth::ImportLease,
@@ -3197,7 +3197,7 @@ pub(crate) mod tests {
         );
         for (code, end) in [
             ("%2 str hi paste", "send-keys"),
-            ("opts str x in", "run, new-tab, attach or attach-defaults"),
+            ("opts str x in", "new-tab, attach or attach-defaults"),
         ] {
             let tokens = super::program(&[code.to_owned()]).map(|(tokens, ..)| tokens);
             let compiled = super::compile(&tokens.unwrap_or_default());

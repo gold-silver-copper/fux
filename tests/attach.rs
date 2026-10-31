@@ -718,7 +718,7 @@ fn a_panes_program_has_the_pty_as_its_controlling_terminal() -> Outcome {
         "str",
         "echo $(tty) $(ps -o tty=,tpgid=,pgid= -p $$); echo checked; exec sleep 60",
         "arg",
-        "run",
+        "new-tab",
     ])?;
     let pane = pane.split(':').next().unwrap_or_default();
     let mut fields = Vec::new();

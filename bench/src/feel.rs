@@ -151,8 +151,8 @@ fn output(command: &mut Command) -> Result<String, String> {
 }
 
 /// A word quoted for `sh`.
-/// A program and its arguments as fuxth's options for `new-tab`, `split`
-/// and `run`: `str PROGRAM program str ARG arg`…
+/// A program and its arguments as fuxth's options for `new-tab` and
+/// `split`: `str PROGRAM program str ARG arg`…
 fn program_words(program: &[String]) -> Vec<&str> {
     let mut words = Vec::new();
     for (i, word) in program.iter().enumerate() {
@@ -240,9 +240,9 @@ impl Session {
         match self.mux {
             Mux::Direct => Err("no multiplexer".into()),
             Mux::Fux => {
-                // `new-tab` makes a tab with a shell; `run` one with a
-                // program; either at the size of the client's panes, as
-                // fux sizes no tab from a caller with no screen or tab.
+                // `new-tab` makes a tab with a shell, or with the program
+                // given, at the size of the client's panes, as fux sizes no
+                // tab from a caller with no screen or tab.
                 let (cols, rows) = (COLS.to_string(), ROWS.to_string());
                 let history = HISTORY_BYTES.to_string();
                 let mut args = vec![
@@ -257,16 +257,13 @@ impl Session {
                     "workspace",
                     "in",
                 ];
-                match program {
-                    Some([first, rest @ ..]) => {
-                        args.extend(["str", first.as_str(), "program"]);
-                        for word in rest {
-                            args.extend(["str", word.as_str(), "arg"]);
-                        }
-                        args.push("run");
+                if let Some([first, rest @ ..]) = program {
+                    args.extend(["str", first.as_str(), "program"]);
+                    for word in rest {
+                        args.extend(["str", word.as_str(), "arg"]);
                     }
-                    Some([]) | None => args.push("new-tab"),
                 }
+                args.push("new-tab");
                 self.command(place, &args).map(drop)
             }
             Mux::Tmux => {
