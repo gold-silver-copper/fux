@@ -1090,12 +1090,14 @@ pub fn attach(
         presentation: attaching.state.preferences.presentation(),
         initial,
     };
-    // The rest is bounded well within a frame; `send` refuses it past one.
-    if attach.initial.is_some()
-        && let Err(why) = fits(&attach)
-    {
-        attach.initial = None;
+    // Counted before it is encoded: past a frame, the launch is left out,
+    // and a request past one without it is refused.
+    if let Err(why) = fits(&attach) {
+        if attach.initial.take().is_none() {
+            return Err(Error::Failed(why));
+        }
         unusable = Some(why);
+        fits(&attach).map_err(Error::Failed)?;
     }
     let raw = terminal
         .then(|| Raw::enter_with(&stdin, &mut io::stdout()))

@@ -1457,15 +1457,18 @@ fn an_unusable_launch_is_left_out_and_said_only_on_refusal() -> Outcome {
 #[test]
 fn a_targeted_attach_resolves_no_launch() -> Outcome {
     let server = Server::empty()?;
+    // A shell that fits a launch frame alone, and a small selected variable
+    // that takes the whole request past it.
+    let half: String = std::iter::repeat_n('x', 524_000).collect();
     std::fs::write(
         server.dir.join("config/fux/config.fux"),
-        "str shell list str /bin/sh end set\n\
-         str copy-environment list str BIG0 str BIG1 str BIG2 str BIG3 str BIG4 \
-         str BIG5 str BIG6 str BIG7 str BIG8 end set\n",
+        format!(
+            "str shell list str /bin/sh str {half} dup end set\n\
+             str copy-environment list str ATTACH_PAD end set\n"
+        ),
     )
     .map_err(e)?;
-    // Nine values, each within a variable's limit, past the launch frame.
-    let value: String = std::iter::repeat_n('x', 120_000).collect();
+    let pad: String = std::iter::repeat_n('x', 4_000).collect();
     for (args, said) in [
         (&["opts", "attach"][..], true),
         (&["opts", "str", "work", "in", "attach"], false),
@@ -1474,20 +1477,49 @@ fn a_targeted_attach_resolves_no_launch() -> Outcome {
             Terminal::start(10, 40, &[[fux()].as_slice(), args].concat(), |command| {
                 command
                     .env("FUX_SOCKET", &server.socket)
-                    .env("XDG_CONFIG_HOME", server.dir.join("config"));
-                for i in 0..9 {
-                    command.env(format!("BIG{i}"), &value);
-                }
+                    .env("XDG_CONFIG_HOME", server.dir.join("config"))
+                    .env("ATTACH_PAD", &pad);
             })?;
         assert!(!terminal.wait_exit()?.success());
         let output = String::from_utf8_lossy(&terminal.output);
-        assert_eq!(
-            output.contains("local initial launch unavailable"),
-            said,
-            "{output}"
-        );
+        let unused = "local initial launch unavailable: the attach request exceeds one frame";
+        assert_eq!(output.contains(unused), said, "{output}");
+        assert_eq!(output.contains("launch unavailable"), said, "{output}");
     }
     assert!(server.panes()?.is_empty());
+    Ok(())
+}
+
+/// A request past one frame with no launch to leave out is refused before
+/// the terminal goes raw, and before it is encoded.
+#[test]
+fn an_attach_past_a_frame_is_refused_before_raw_mode() -> Outcome {
+    let server = Server::start("")?;
+    // Fewer characters than a script's text may hold, more bytes than a frame.
+    let name = server.dir.join("wide-name");
+    let wide: String = std::iter::repeat_n('\u{1F600}', 300_000).collect();
+    std::fs::write(&name, wide).map_err(e)?;
+    let mut terminal = Terminal::attach(
+        &server,
+        10,
+        40,
+        &[
+            "opts",
+            "str",
+            &name.to_string_lossy(),
+            "read-file",
+            "in",
+            "attach",
+        ],
+    )?;
+    assert!(!terminal.wait_exit()?.success());
+    let output = String::from_utf8_lossy(&terminal.output);
+    assert!(
+        output.contains("the attach request exceeds one frame"),
+        "{output}"
+    );
+    assert!(!output.contains("\x1b[?1049h"), "{output}");
+    assert!(!server.ok(&["ls", "listing"])?.contains("client "));
     Ok(())
 }
 
