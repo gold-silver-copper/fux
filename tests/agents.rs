@@ -996,16 +996,7 @@ fn words_refuse_options_they_do_not_use() -> Outcome {
         let refused = server.fux(&[&opts[..], unused, &cat, &["new-tab"]].concat())?;
         assert_eq!(refused.status, 1, "{unused:?} new-tab: {}", refused.stdout);
         assert!(
-            refused.stderr.starts_with(
-                if matches!(
-                    unused,
-                    ["str", "horizontal", "axis"] | ["str", "vertical", "axis"] | ["kill-first"]
-                ) {
-                    "fux: unused: "
-                } else {
-                    "fux: type: "
-                }
-            ),
+            refused.stderr.starts_with("fux: unused: "),
             "{unused:?} new-tab: {}",
             refused.stderr
         );
@@ -1163,11 +1154,11 @@ fn the_docs_recipes_run_as_written() -> Outcome {
     // C-c after nothing came of the key.
     server.exits(&deaf)?;
     let docs = include_str!("../docs/agents.md");
+    // The guide's programs compile: every word they name is fux's.
     for (i, program) in docs.split("```fux\n").skip(1).enumerate() {
         let program = program.split("```").next().unwrap_or_default();
-        let file = server.dir.join(format!("shown-{i}.fux"));
-        std::fs::write(&file, program).map_err(e)?;
-        server.ok(&["str", &file.to_string_lossy(), "str", "program", "check"])?;
+        let tokens = fuxth::token::source(&format!("shown-{i}"), program).map_err(e)?;
+        fux::script::compile(&tokens).map_err(e)?;
     }
     Ok(())
 }

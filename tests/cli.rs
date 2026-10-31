@@ -333,8 +333,9 @@ fn errors_statuses_and_what_is_left() -> Outcome {
 }
 
 /// A mistake is named by what the program wrote: a failure inside a
-/// bundled word by the step that called it; a mistake every run makes,
-/// before anything runs; a name that would always be a handle, refused.
+/// bundled word by the step that called it; a word given what it doesn't
+/// take, as it runs, after the words before it acted; a name that would
+/// always be a handle, refused.
 #[test]
 fn mistakes_name_what_the_program_wrote() -> Outcome {
     let server = Server::start("")?;
@@ -360,7 +361,7 @@ fn mistakes_name_what_the_program_wrote() -> Outcome {
         caught,
         "takes a pane, tab, workspace or client, or options, not an integer\n"
     );
-    // Refused before `new-tab` starts anything.
+    // `add` fails as it runs, after `new-tab` made its tab (D-25).
     let before = said(&[
         "agent-opts",
         "80",
@@ -380,8 +381,8 @@ fn mistakes_name_what_the_program_wrote() -> Outcome {
         "{before}"
     );
     assert!(
-        !server.ok(&["ls", "listing"])?.contains("agent"),
-        "nothing ran"
+        server.ok(&["ls", "listing"])?.contains("agent"),
+        "new-tab ran before add failed"
     );
     // The language's own words say how they are written.
     for (words, usage) in [

@@ -168,10 +168,7 @@ fn launch_preferences_apply_only_to_new_requests() -> Outcome {
         .lines()
         .count();
     assert!(rows <= screen + 3, "at most 3 lines of history: {history}");
-    // Checking a config and a failing local script leave launch policy alone.
-    let checked = server.dir.join("checked.fux");
-    std::fs::write(&checked, "str shell list str /no/such/check-shell end set").map_err(e)?;
-    server.ok(&["str", &checked.to_string_lossy(), "str", "config", "check"])?;
+    // A failing local script leaves launch policy alone.
     let failed = server.fux(&[
         "str",
         "shell",
@@ -229,13 +226,6 @@ fn an_imported_failure_keeps_the_whole_bundled_state() -> Outcome {
     let configured = fux::script::run_file(&directory.join("config.fux")).map_err(e)?;
     assert_eq!(configured.preferences.wait.seconds(), 2);
     assert!(configured.preferences.titles);
-    server.ok(&[
-        "str",
-        &directory.join("config.fux").to_string_lossy(),
-        "str",
-        "config",
-        "check",
-    ])?;
     assert_eq!(server.ok(&["ls", "listing"])?, before);
     a.pump()?;
     b.pump()?;
@@ -289,7 +279,8 @@ fn an_imported_failure_keeps_the_whole_bundled_state() -> Outcome {
 }
 
 /// A config that fails is reported to the client attaching with it, which
-/// keeps the default keys; `check` finds its mistakes without running it.
+/// keeps the default keys; running it locally, as attaching does, finds its
+/// mistakes.
 #[test]
 fn a_bad_config_is_reported() -> Outcome {
     let server = Server::start("")?;
@@ -305,36 +296,24 @@ fn a_bad_config_is_reported() -> Outcome {
     // An unknown word is found before anything runs, naming its line.
     std::fs::write(&config, "str history-bytes 5 set\nfrobnicate\n").map_err(e)?;
     let path = config.to_string_lossy().into_owned();
-    let checked = server.fux(&["str", &path, "str", "config", "check"])?;
-    assert_eq!(checked.status, 1);
+    let failed = fux::script::run_file(&config)
+        .err()
+        .ok_or("frobnicate ran")?;
     assert!(
-        checked.stderr.contains("config.fux:2: frobnicate"),
-        "{}",
-        checked.stderr
+        failed.to_string().contains("config.fux:2: frobnicate"),
+        "{failed}"
     );
     std::fs::write(&config, "str C-a prefix\n").map_err(e)?;
-    assert!(
-        server
-            .ok(&["str", &path, "str", "config", "check"])?
-            .ends_with(": ok\n")
-    );
+    fux::script::run_file(&config).map_err(e)?;
     // A binding sees the config's definitions, written anywhere in it; a
     // mistake in one, or in a binding, is said at its own line and word.
     let ok = "str v str sr bind\ndefine sr me focused str horizontal axis split drop end\n";
     std::fs::write(&config, ok).map_err(e)?;
-    assert!(
-        server
-            .ok(&["str", &path, "str", "config", "check"])?
-            .ends_with(": ok\n")
-    );
+    fux::script::run_file(&config).map_err(e)?;
     for (text, said) in [
         (
             "str C-a prefix\nstr v str sr bind\n",
             "config.fux:2: sr: no such word; text is `str WORD`, in the binding for v",
-        ),
-        (
-            "define go %2 capture str x text end\n",
-            "config.fux:1: text: takes the pane",
         ),
         (
             "5 let n\ndefine go n end\nstr v str go bind\n",
@@ -342,18 +321,12 @@ fn a_bad_config_is_reported() -> Outcome {
         ),
     ] {
         std::fs::write(&config, text).map_err(e)?;
-        let checked = server.fux(&["str", &path, "str", "config", "check"])?;
-        assert_eq!(checked.status, 1, "{text}");
-        let stderr = checked
-            .stderr
-            .strip_prefix("fux: check: ")
-            .unwrap_or_default();
-        assert!(
-            stderr.starts_with(&path.replace("config.fux", "")),
-            "{}",
-            checked.stderr
-        );
-        assert!(stderr.contains(said), "{}", checked.stderr);
+        let failed = fux::script::run_file(&config)
+            .err()
+            .ok_or(text)?
+            .to_string();
+        assert!(failed.contains(&path.replace("config.fux", "")), "{failed}");
+        assert!(failed.contains(said), "{failed}");
     }
     Ok(())
 }
@@ -422,34 +395,6 @@ fn config_notices_show_the_cause_once_before_the_path() -> Outcome {
     Ok(())
 }
 
-#[test]
-fn check_mode_is_explicit_and_independent_of_the_filename() -> Outcome {
-    let server = Server::start("")?;
-    for name in ["sample.fux", "config.fux", "arbitrary"] {
-        let path = server.dir.join(name);
-        std::fs::write(&path, "str no-such-setting true set").map_err(e)?;
-        let path = path.to_string_lossy();
-        assert!(
-            server
-                .ok(&["str", &path, "str", "program", "check"])?
-                .ends_with(": ok\n")
-        );
-        let checked = server.fux(&["str", &path, "str", "config", "check"])?;
-        assert_eq!(checked.status, 1);
-        assert!(checked.stderr.contains("no setting"), "{}", checked.stderr);
-        assert_eq!(
-            server.fux(&["str", &path, "str", "auto", "check"])?.status,
-            1
-        );
-        assert_eq!(server.fux(&["str", &path, "check"])?.status, 1);
-    }
-    let path = server.dir.join("dry.fux");
-    std::fs::write(&path, "str shell list str /not-a-program end set").map_err(e)?;
-    server.ok(&["str", &path.to_string_lossy(), "str", "config", "check"])?;
-    server.ok(&["%1", "str", "horizontal", "axis", "split", "drop"])?;
-    Ok(())
-}
-
 /// Selected absence is saved even when the patch has no present values.
 #[test]
 fn an_absent_selection_unsets_the_server_value() -> Outcome {
@@ -477,13 +422,12 @@ fn an_absent_selection_unsets_the_server_value() -> Outcome {
     Ok(())
 }
 
-/// The examples of the words a config uses check as a config: none binds
+/// The examples of the words a config uses run as a config: none binds
 /// after a key bound by default.
 #[test]
-fn the_config_words_examples_check() -> Outcome {
+fn the_config_words_examples_run_as_a_config() -> Outcome {
     let server = Server::start("")?;
     let config = server.dir.join("config.fux");
-    let path = config.to_string_lossy().into_owned();
     for word in ["bind", "bind-root", "prefix"] {
         let explained = server.ok(&["str", word, "explain"])?;
         let example = (explained.lines())
@@ -491,8 +435,7 @@ fn the_config_words_examples_check() -> Outcome {
             .map(|(_, example)| example)
             .ok_or(format!("no example: {explained}"))?;
         std::fs::write(&config, example).map_err(e)?;
-        let checked = server.fux(&["str", &path, "str", "config", "check"])?;
-        assert_eq!(checked.status, 0, "{example}: {}", checked.stderr);
+        fux::script::run_file(&config).map_err(|f| format!("{example}: {f}"))?;
     }
     Ok(())
 }

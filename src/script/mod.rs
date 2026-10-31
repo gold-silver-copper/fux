@@ -518,8 +518,7 @@ fn telling(error: fuxth::Error) -> Failed {
 
 /// `error` as fux tells it, with how its word is used if `usage`, and
 /// for options or a request left over, the words that would take them: a
-/// failure of its code, saying where and why it happened. What `check`
-/// read says where its mistake is: it is placed nowhere.
+/// failure of its code, saying where and why it happened.
 fn told(mut error: fuxth::Error, usage: bool) -> Failed {
     let left = words::KINDS
         .iter()
@@ -534,9 +533,6 @@ fn told(mut error: fuxth::Error, usage: bool) -> Failed {
     if error.code == Lang::UnknownWord {
         error.message.push_str(" (`fux help` lists every word)");
     }
-    if Code::of(error.code) == Code::Check {
-        (error.place, error.word) = (None, None);
-    }
     let place = error.place.take();
     Failed {
         code: Code::of(error.code),
@@ -545,27 +541,14 @@ fn told(mut error: fuxth::Error, usage: bool) -> Failed {
     }
 }
 
-/// The vocabulary fuxth compiles fux's programs with: fux's kinds, the
-/// names its words' effects use, the words, and the codes they raise.
+/// The vocabulary fuxth compiles fux's programs with: the kinds that must
+/// be used, the words, and the codes they raise.
 pub fn vocabulary() -> Result<fuxth::Vocabulary, fuxth::Error> {
     let mut vocabulary = fuxth::Vocabulary::default();
-    for (kind, said, unused) in words::KINDS {
-        vocabulary.kind(kind, said)?;
+    for (kind, _, unused) in words::KINDS {
         if let Some(why) = unused {
             vocabulary.must_use(kind, why)?;
         }
-    }
-    for (kind, also) in words::TAKEN_AS {
-        vocabulary.taken_as(kind, also)?;
-    }
-    let strings = words::STRINGS
-        .split_whitespace()
-        .map(|n| (n, "string", "a string"));
-    let integers = words::INTEGERS
-        .split_whitespace()
-        .map(|n| (n, "integer", "an integer"));
-    for (name, kinds, said) in strings.chain(integers).chain(words::NAMES.iter().copied()) {
-        vocabulary.name(name, kinds, said)?;
     }
     for word in Word::ALL {
         vocabulary.add(word.row().name, word.row().effect)?;
@@ -573,9 +556,6 @@ pub fn vocabulary() -> Result<fuxth::Vocabulary, fuxth::Error> {
     for code in Code::all().filter(|c| c.raised()) {
         vocabulary.raises(code.into())?;
     }
-    // A wait that failed answered too: its handler gets the answer.
-    vocabulary.carries(Code::Closed.into(), "closed-outcome")?;
-    vocabulary.carries(Code::Timeout.into(), "outcome")?;
     Ok(vocabulary)
 }
 
@@ -673,23 +653,6 @@ pub fn libraries() -> Result<(Compiler<Fux>, Rc<[fuxth::Doc]>), Failed> {
         .library("stdlib.fux", fuxth::STDLIB)
         .map_err(told)?;
     docs.extend(compiler.library("library.fux", LIBRARY).map_err(told)?);
-    for (word, kinds) in [
-        ("dump", "scope"),
-        ("info", "scope"),
-        ("all-history", "pane-builder"),
-    ] {
-        compiler.inputs(word, kinds).map_err(told)?;
-    }
-    for word in [
-        "layout-current",
-        "even-h",
-        "even-v",
-        "main-h",
-        "main-v",
-        "tiled",
-    ] {
-        compiler.inputs(word, "tab").map_err(told)?;
-    }
     Ok((compiler, docs.into()))
 }
 
@@ -1233,7 +1196,8 @@ fn raised(
     else {
         return pushed(machine, Err(Failed::new(code, message)));
     };
-    match machine.raise_with(fuxth::Failure::new(code.into(), message), answer.clone()) {
+    let failure = fuxth::Failure::new(code.into(), message);
+    match machine.raise(failure, Some(answer.clone())) {
         Ok(()) => Ok(()),
         Err(error) => {
             // Only the original uncaught wait failure prints its answer.
@@ -1253,7 +1217,9 @@ fn pushed(
 ) -> Result<(), Failed> {
     let raise = |machine: &mut Machine<Fux>, code: fuxth::Code, message: String| {
         let failure = fuxth::Failure::new(code, message);
-        machine.raise(failure).map_err(|e| uncaught(machine, e))
+        machine
+            .raise(failure, None)
+            .map_err(|e| uncaught(machine, e))
     };
     let values = match values {
         Ok(values) => values,
@@ -1957,55 +1923,6 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn bundled_libraries_and_unused_user_definitions_are_checked() -> TestResult {
-        let (ready, docs) = super::libraries()?;
-        let mut full = ready.clone();
-        for doc in docs.iter() {
-            let name = format!("check-{}", doc.name);
-            full.add(&fuxth::token::arguments(&[
-                "define", &name, &doc.name, "end",
-            ]))?;
-        }
-        full.finish()?;
-
-        for (definitions, main, word) in [
-            ("define unused list line end end", "", "line"),
-            (
-                "define f dump-warnings drop drop end",
-                "str ran print 0 f",
-                "f",
-            ),
-            (
-                concat!(
-                    "define a0 a1 end define a1 a2 end define a2 a3 end ",
-                    "define a3 a4 end define a4 a5 end define a5 a6 end ",
-                    "define a6 a7 end define a7 a8 end define a8 a9 end ",
-                    "define a9 1 end define unused list line end end",
-                ),
-                "str EFFECT print",
-                "line",
-            ),
-        ] {
-            for config in [false, true] {
-                let (ready, _) = super::libraries()?;
-                // Both a cold library and one cached by the failed program.
-                for _ in 0..2 {
-                    let mut compiler = ready.clone();
-                    compiler.add(&fuxth::token::source("definitions", definitions)?)?;
-                    if config {
-                        compiler = compiler.definitions();
-                    }
-                    compiler.add(&fuxth::token::source("caller", main)?)?;
-                    let error = compiler.finish().err().ok_or("unchecked definition")?;
-                    assert_eq!(error.code, fuxth::Code::StackUnderflow);
-                    assert_eq!(error.word.as_deref(), Some(word));
-                }
-            }
-        }
-        Ok(())
-    }
-
-    #[test]
     fn ended_answers_expose_both_exit_fields() -> TestResult {
         use super::*;
         use fux_wire::answer::Ended;
@@ -2332,13 +2249,24 @@ pub(crate) mod tests {
                 assert_eq!(record.attached, Some((Some(version.run), target, size)));
             }
         }
+        // A baseline is no target: the word refuses it before it attaches.
         for baseline in ["changed", "expect"] {
             for action in ["attach", "attach-defaults"] {
                 let code = format!("str {version} {baseline} {action}");
-                assert!(
-                    compile(&token::source("baseline", &code)?).is_err(),
-                    "{code}"
-                );
+                let mut machine = compile(&token::source("baseline", &code)?)?;
+                let mut draft = default_state()?.draft();
+                let defaults = draft.attach.clone();
+                let mut sink = io::sink();
+                let mut host = Host::new(Context::default(), Some(&mut draft), &mut sink);
+                let mut record = Record {
+                    version,
+                    sent: 0,
+                    attached: None,
+                };
+                let ran = run(&mut machine, &mut host, &mut record, None);
+                assert!(ran.is_err(), "{code}");
+                assert_eq!(record.attached, None, "{code}");
+                assert_eq!(draft.attach, defaults, "{code}");
             }
         }
         Ok(())
@@ -2722,9 +2650,8 @@ pub(crate) mod tests {
             ("%2 str hi paste", "send-keys"),
             ("opts str x in", "new-tab, attach or attach-defaults"),
         ] {
-            let tokens = super::program(&[code.to_owned()]).map(|(tokens, ..)| tokens);
-            let compiled = super::compile(&tokens.unwrap_or_default());
-            let error = compiled.err().map(|e| e.to_string()).unwrap_or_default();
+            let ran = evaluate(code, None, &mut Refuse, &mut Vec::new());
+            let error = ran.err().map(|e| e.to_string()).unwrap_or_default();
             assert!(
                 error.ends_with(&format!("end with {end}")),
                 "{code}: {error}"

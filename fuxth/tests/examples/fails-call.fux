@@ -1,0 +1,5 @@
+# A definition takes the values its words take: called with too few, the
+# word inside it that has too few fails.
+# fails: stack_underflow
+define sum3 add add end
+1 2 sum3

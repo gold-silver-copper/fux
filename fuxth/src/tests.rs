@@ -2,12 +2,12 @@
 //! end, through every suspension.
 use crate::*;
 
-/// A host with one value of its own, a ticket, and four words: `ticket`
+/// A host with one value of its own, a ticket, and its words: `ticket`
 /// (-- t), which hands one out at once; `ask` (n -- n*10), which suspends
 /// for the host to answer (with a failure, `negative`, for n below 0);
 /// `nope`, which fails with `unused`, a code of the language's it declares
-/// its words raise; and `liar`, which says it gives a value and gives
-/// none.
+/// its words raise; `quiet`, which gives nothing; and `no-text`, a ticket
+/// that refuses to be text. It keeps what was asked and printed.
 #[derive(Clone, Debug, PartialEq)]
 struct Ticket(i64);
 
@@ -30,6 +30,7 @@ impl AppValue for Ticket {
 #[derive(Default)]
 struct Toy {
     asked: Vec<i64>,
+    printed: Vec<String>,
 }
 
 impl Host for Toy {
@@ -67,7 +68,8 @@ impl Host for Toy {
         }
     }
 
-    fn print(&mut self, _line: &str) -> Result<(), Failure> {
+    fn print(&mut self, line: &str) -> Result<(), Failure> {
+        self.printed.push(line.to_owned());
         Ok(())
     }
 }
@@ -110,65 +112,17 @@ fn source_quoting_inverts_tokenization_and_refuses_expansion() -> Result<(), Err
     Ok(())
 }
 
-#[test]
-fn declared_library_inputs_hold_before_calls_and_on_uncertain_values() -> Result<(), Error> {
-    let mut library = with_stdlib();
-    library.add(&token::source(
-        "library",
-        "define checked drop end define produce 7 end",
-    )?)?;
-    assert!(library.inputs("checked", "missing-kind").is_err());
-    library.inputs("checked", "integer")?;
-    library.inputs("produce", "integer")?;
-    assert!(library.inputs("checked", "integer").is_err());
-    library.prepare();
-
-    for (source, code) in [
-        ("true checked", Code::Type),
-        ("checked", Code::StackUnderflow),
-        ("define caller produce end caller", Code::StackUnderflow),
-    ] {
-        let mut compiler = library.clone();
-        compiler.add(&token::source("caller", source)?)?;
-        assert_eq!(compiler.finish().map_err(|e| e.code).err(), Some(code));
-    }
-    let mut compiler = library.clone();
-    compiler.add(&token::source("caller", "7 checked")?)?;
-    let mut machine = Machine::new(compiler.finish()?);
-    assert_eq!(machine.run(&mut Toy::default(), 100)?, Outcome::Finished);
-    assert!(machine.stack().is_empty());
-
-    let mut compiler = library;
-    compiler.add(&token::source("caller", "0 ask checked")?)?;
-    let mut machine = Machine::new(compiler.finish()?);
-    let mut host = Toy::default();
-    assert_eq!(machine.run(&mut host, 100)?, Outcome::Suspended(0));
-    machine.push(Value::Bool(false));
-    assert_eq!(
-        machine.run(&mut host, 100).map_err(|e| e.code),
-        Err(Code::Type)
-    );
-    assert_eq!(
-        machine.stack(),
-        &[Value::Bool(false)],
-        "the body ran before its input check"
-    );
-    Ok(())
-}
-
 fn vocabulary() -> Vocabulary {
     let mut words = Vocabulary::default();
-    let added = (words.kind("ticket", "a ticket"))
-        .and_then(|()| words.add("ticket", "-- ticket"))
+    let added = (words.add("ticket", "-- ticket"))
         .and_then(|_| words.add("ask", "any -- any"))
         .and_then(|_| words.add("nope", "--"))
-        .and_then(|_| words.add("liar", "-- any"))
+        .and_then(|_| words.add("quiet", "--"))
         .and_then(|_| words.add("no-text", "-- ticket"))
         .and_then(|_| words.raises(Code::Host("not_a_number")))
         .and_then(|()| words.raises(Code::Host("refused")))
         .and_then(|()| words.raises(Code::Host("negative")))
         .and_then(|()| words.raises(Code::Host("far")))
-        .and_then(|()| words.carries(Code::Host("far"), "integer"))
         .and_then(|()| words.raises(Code::Unused));
     assert!(added.is_ok(), "{added:?}");
     words
@@ -186,19 +140,24 @@ fn run(text: &str) -> Result<Vec<Value<Ticket>>, Error> {
 
 /// `run`, `budget` steps at a time.
 fn run_by(text: &str, budget: u64) -> Result<Vec<Value<Ticket>>, Error> {
+    run_at(text, budget, &mut Toy::default())
+}
+
+/// `run_by`, at `host`, which keeps what it was asked and printed.
+fn run_at(text: &str, budget: u64, host: &mut Toy) -> Result<Vec<Value<Ticket>>, Error> {
     let mut machine = Machine::new(compile(text)?);
-    let mut host = Toy::default();
     loop {
-        match machine.run(&mut host, budget)? {
+        match machine.run(host, budget)? {
             Outcome::Finished => return Ok(machine.stack().to_vec()),
+            // A failure far below 0 carries its number, for a handler.
             Outcome::Suspended(n) if n <= -1000 => {
                 let failure = Failure::new(Code::Host("far"), format!("{n} is far below 0"));
-                machine.raise_with(failure, Value::Int(n))?;
+                machine.raise(failure, Some(Value::Int(n)))?;
             }
-            Outcome::Suspended(n) if n < 0 => machine.raise(Failure::new(
-                Code::Host("negative"),
-                format!("{n} is below 0"),
-            ))?,
+            Outcome::Suspended(n) if n < 0 => machine.raise(
+                Failure::new(Code::Host("negative"), format!("{n} is below 0")),
+                None,
+            )?,
             Outcome::Suspended(n) => machine.push(Value::Int(n.saturating_mul(10))),
             Outcome::Paused => {}
         }
@@ -251,22 +210,6 @@ fn strings_and_equality_preserve_value_kinds() -> Result<(), Error> {
         [Value::Bool(true), Value::Bool(false)]
     );
     Ok(())
-}
-
-#[test]
-fn a_way_that_never_returns_is_counted_too() {
-    let program = "define g dup 0 eq if drop 0 g else drop drop then end 0 g";
-    let mut compiler = with_stdlib();
-    let compiled = token::source("t", program)
-        .and_then(|tokens| compiler.add(&tokens))
-        .and_then(|()| compiler.finish().map(|_| ()));
-    assert_eq!(compiled, Ok(()));
-    assert_eq!(
-        code(run(
-            "define g dup 0 eq if drop 0 g else drop drop then end 1 g"
-        )),
-        Some("stack_underflow")
-    );
 }
 
 #[test]
@@ -338,7 +281,7 @@ fn an_application_word_suspends_and_resumes_deep_in_calls_and_loops() -> Result<
 }
 
 #[test]
-fn mistakes_are_found_before_anything_runs() {
+fn mistakes_compiling_are_found_before_anything_runs() {
     // `ask` would suspend: none of these gets that far.
     for (text, expected) in [
         ("1 ask frobnicate", "unknown_word"),
@@ -356,28 +299,47 @@ fn mistakes_are_found_before_anything_runs() {
         ("str", "missing_token"),
         ("99999999999999999999", "overflow"),
         ("'unclosed", "open_quote"),
-        ("str abc 0 at 1 add", "type"),
-        ("str abc str b at", "type"),
-        ("str m print str a 1 push", "type"),
-        ("str m print str a 0 1 put", "type"),
-        ("define f fail end str m print f", "stack_underflow"),
-        (
-            "define f if str x fail else drop drop then end true f",
-            "stack_underflow",
-        ),
-        ("str x 5 pad", "stack_underflow"),
-        ("true or", "stack_underflow"),
-        (
-            "define f begin dup true until end str m print f",
-            "stack_underflow",
-        ),
-        (
-            "define d dup drop list d end end str m print d",
-            "stack_underflow",
-        ),
     ] {
         assert_eq!(refused(text), Some(expected), "{text}");
     }
+}
+
+/// Each word checks its values as it runs: what ran before a wrong kind or
+/// too few values took effect (an application word was asked, a line
+/// printed), and the failure is the word's.
+#[test]
+fn a_step_fails_as_it_runs_after_what_came_before_took_effect() {
+    for (text, expected) in [
+        ("1 ask str abc 0 at 1 add", "type"),
+        ("1 ask str abc str b at", "type"),
+        ("1 ask str a 1 push", "type"),
+        ("1 ask str a 0 1 put", "type"),
+        ("1 ask drop define f fail end f", "stack_underflow"),
+        (
+            "define f if str x fail else drop drop then end 1 ask false f",
+            "stack_underflow",
+        ),
+        ("1 ask drop str x 5 pad", "stack_underflow"),
+        ("1 ask drop true or", "stack_underflow"),
+        (
+            "define f begin dup true until end 1 ask drop f",
+            "stack_underflow",
+        ),
+        (
+            "define d dup drop list d end end 1 ask drop d",
+            "stack_underflow",
+        ),
+        ("1 ask ticket ticket ticket 1 add", "type"),
+    ] {
+        let mut host = Toy::default();
+        let ended = run_at(text, u64::MAX, &mut host);
+        assert_eq!(code(ended), Some(expected), "{text}");
+        assert_eq!(host.asked, [1], "{text}: the word before it was asked");
+    }
+    let mut host = Toy::default();
+    let ended = run_at("str one print str a 1 add str two print", 1, &mut host);
+    assert_eq!(code(ended), Some("type"));
+    assert_eq!(host.printed, ["one"], "printed before, and nothing after");
 }
 
 #[test]
@@ -408,110 +370,6 @@ fn a_deep_stack_costs_no_more_per_word() {
 }
 
 #[test]
-fn the_checker_says_what_and_where() {
-    let refused = |text: &str| -> String {
-        compile(text)
-            .err()
-            .map(|e| e.to_string())
-            .unwrap_or_default()
-    };
-    let (maybe_drop, maybe_swap) = (
-        format!("{MAYBE}0 maybe drop drop"),
-        format!("{MAYBE}0 maybe swap"),
-    );
-    for (text, said) in [
-        (
-            "define f str x add end\n1 f",
-            "type: t:1: add: add takes an integer, not a string on top",
-        ),
-        (
-            "define nop end\nstr a 1 nop add",
-            "type: t:2: add: add takes an integer, not a string under the top",
-        ),
-        (
-            "define f str a 1 add end str b 1 sub",
-            "type: t:1: add: add takes an integer, not a string under the top",
-        ),
-        (
-            "drop",
-            "stack_underflow: t:1: drop: takes 1 value, and the stack has 0 here",
-        ),
-        (
-            "1 swap",
-            "stack_underflow: t:1: swap: takes 2 values, and the stack has 1 here",
-        ),
-        // maybe gives one value or none: then a drop leaves none for sure.
-        (
-            maybe_drop.as_str(),
-            "stack_underflow: t:1: drop: takes 1 value, and the stack has 0 here",
-        ),
-        (
-            maybe_swap.as_str(),
-            "stack_underflow: t:1: swap: takes 2 values, and the stack has at most 1 here",
-        ),
-        (
-            "define f add add end\n1 f",
-            "stack_underflow: t:2: f: needs at least 3 values, and the stack has 1 here",
-        ),
-        (
-            "str a 0 0 eq add",
-            "type: t:1: add: add takes an integer, not a string under the top",
-        ),
-        // Of several places, the one refused, by how far under the top.
-        (
-            "str a str b 1 slice",
-            "type: t:1: slice: slice takes an integer, not a string under the top",
-        ),
-        (
-            "1 2 3 slice",
-            "type: t:1: slice: slice takes a string or a list, not an integer 2 under the top",
-        ),
-        (
-            "1 0 0 eq lt",
-            "type: t:1: lt: lt compares two integers, two strings or two lists, not an integer and a boolean",
-        ),
-        (
-            "1 if 2 then",
-            "type: t:1: if: takes a boolean (from eq or lt), not an integer",
-        ),
-        // The first in the source, at the top level or in a definition.
-        (
-            "str a 1 add\ndefine f str b 1 sub end",
-            "type: t:1: add: add takes an integer, not a string under the top",
-        ),
-        (
-            "define f str b 1 sub end\nstr a 1 add",
-            "type: t:1: sub: sub takes an integer, not a string under the top",
-        ),
-        (
-            "0 0 eq if str a 1 add then\nstr b 2 mul",
-            "type: t:1: add: add takes an integer, not a string under the top",
-        ),
-    ] {
-        assert_eq!(refused(text), said, "{text}");
-    }
-    // Arguments: the first argument's mistake.
-    let mut compiler = with_stdlib();
-    let compiled = compiler
-        .add(&token::arguments(&["drop", "str", "a", "1", "add"]))
-        .and_then(|()| compiler.finish().map(|_| ()));
-    assert_eq!(
-        compiled.err().map(|e| e.to_string()).as_deref(),
-        Some("stack_underflow: argument 1: drop: takes 1 value, and the stack has 0 here")
-    );
-    let mut compiler = with_stdlib();
-    let compiled = compiler
-        .add(&token::arguments(&[
-            "define", "f", "str", "a", "1", "add", "end", "str", "b", "1", "sub",
-        ]))
-        .and_then(|()| compiler.finish());
-    assert_eq!(
-        compiled.err().map(|e| e.to_string()).as_deref(),
-        Some("type: argument 6: add: add takes an integer, not a string under the top")
-    );
-}
-
-#[test]
 fn a_depth_past_any_stack_is_checked_at_once() {
     let started = std::time::Instant::now();
     let far = "9223372036854775807";
@@ -532,9 +390,7 @@ fn a_depth_past_any_stack_is_checked_at_once() {
     let said = run(&format!("1 {far} roll")).err().map(|e| e.to_string());
     assert_eq!(
         said.as_deref(),
-        Some(
-            "stack_underflow: t:1: roll: takes 9223372036854775808 values, and the stack has 1 here"
-        )
+        Some("stack_underflow: t:1: roll: takes 9223372036854775808 values, and the stack has 1")
     );
     assert!(
         started.elapsed() < std::time::Duration::from_secs(5),
@@ -602,15 +458,12 @@ fn a_strings_characters_are_found_from_its_marks() -> Result<(), Error> {
     Ok(())
 }
 
-/// A host with kinds of its own: a ticket, and a draft (a ticket marked,
-/// which must be issued). `ticket` (-- ticket); `mark` (x -- x: a ticket
-/// becomes a draft, a draft stays one); `issue` (draft -- ticket); `later`
-/// (-- ticket), answered when the machine resumes.
+/// A host with kinds of its own: a ticket, and a draft, which must be
+/// used. `ticket` (-- ticket); `draft` (-- draft).
 #[derive(Clone, Debug, PartialEq)]
 enum Paper {
     Ticket,
     Draft,
-    Stamped,
 }
 
 impl AppValue for Paper {
@@ -618,24 +471,11 @@ impl AppValue for Paper {
         match self {
             Paper::Ticket => "a ticket",
             Paper::Draft => "a draft",
-            Paper::Stamped => "a stamped ticket",
-        }
-    }
-
-    fn name(&self) -> &'static str {
-        match self {
-            Paper::Stamped => "stamped",
-            Paper::Ticket | Paper::Draft => self.kind().trim_start_matches("a "),
         }
     }
 }
 
-/// The desk: how often it was called; and, if `lying`, `mark` gives a
-/// ticket, not the draft it says.
-struct Desk {
-    calls: usize,
-    lying: bool,
-}
+struct Desk;
 
 impl Host for Desk {
     type Value = Paper;
@@ -643,18 +483,13 @@ impl Host for Desk {
     fn call(
         &mut self,
         word: usize,
-        args: Args<'_, Paper>,
+        _args: Args<'_, Paper>,
         out: &mut Vec<Value<Paper>>,
     ) -> Result<Done<()>, Failure> {
-        drop(args);
-        self.calls = self.calls.saturating_add(1);
-        let given = match (word, self.lying) {
-            (1, false) => Paper::Draft,
-            (3, _) => return Ok(Done::Later(())),
-            (4, _) => Paper::Stamped,
-            _ => Paper::Ticket,
-        };
-        out.push(Value::App(given));
+        out.push(Value::App(match word {
+            0 => Paper::Ticket,
+            _ => Paper::Draft,
+        }));
         Ok(Done::Now)
     }
 
@@ -663,165 +498,57 @@ impl Host for Desk {
     }
 }
 
-fn desk_words() -> Result<Vocabulary, Error> {
+#[test]
+fn a_value_that_must_be_used_fails_the_end_it_is_left_at() -> Result<(), Error> {
     let mut words = Vocabulary::default();
-    words.kind("ticket", "a ticket")?;
-    words.kind("draft", "a draft")?;
-    words.must_use("draft", "a draft nothing issues: end it with issue")?;
-    words.name("x", "draft ticket>draft", "a ticket or a draft")?;
+    words.must_use("draft", "a draft nothing issues")?;
     words.add("ticket", "-- ticket")?;
-    words.add("mark", "x -- x")?;
-    words.add("issue", "draft -- ticket")?;
-    words.add("later", "-- ticket")?;
-    words.kind("stamped", "a stamped ticket")?;
-    words.add("stamp", "ticket -- stamped")?;
-    Ok(words)
-}
-
-/// `text` at the desk, a later word answered with `answer`: what it left,
-/// or its error; and how often the desk was called.
-fn at_desk(text: &str, lying: bool, answer: Paper) -> (Result<Vec<Value<Paper>>, Error>, usize) {
-    let mut desk = Desk { calls: 0, lying };
-    let ran = (|| {
-        let mut compiler = Compiler::new(desk_words()?);
-        compiler.add(&token::source("stdlib.fux", STDLIB)?)?;
+    words.add("draft", "-- draft")?;
+    let said = |text: &str| -> Result<String, Error> {
+        let mut compiler = Compiler::new(words.clone());
         compiler.add(&token::source("t", text)?)?;
         let mut machine = Machine::new(compiler.finish()?);
-        loop {
-            match machine.run(&mut desk, 1)? {
-                Outcome::Finished => return Ok(machine.stack().to_vec()),
-                Outcome::Suspended(()) => machine.push(Value::App(answer.clone())),
-                Outcome::Paused => {}
-            }
-        }
-    })();
-    (ran, desk.calls)
-}
-
-#[test]
-fn the_applications_kinds_are_checked_before_it_is_called() {
-    let said = |text: &str| {
-        let (ran, calls) = at_desk(text, false, Paper::Ticket);
-        (ran.err().map(|e| e.to_string()), calls)
+        let ran = machine.run(&mut Desk, u64::MAX);
+        Ok(ran.err().map(|e| e.to_string()).unwrap_or_default())
     };
+    assert_eq!(said("ticket")?, "");
+    assert_eq!(said("draft")?, "unused: t:1: draft: a draft nothing issues");
+    // Inside a list, as its value can be told only once it is there.
+    assert_eq!(said("list draft end")?, "");
     assert_eq!(
-        at_desk("ticket mark mark issue", false, Paper::Ticket).0,
-        Ok(vec![Value::App(Paper::Ticket)])
+        said("list draft end 0 at")?,
+        "unused: t:1: at: a draft nothing issues"
     );
-    assert_eq!(
-        said("ticket ticket issue"),
-        (
-            Some("type: t:1: issue: takes a draft, not a ticket".to_owned()),
-            0
-        )
-    );
-    assert_eq!(
-        said("ticket 1 mark"),
-        (
-            Some("type: t:1: mark: takes a ticket or a draft, not an integer".to_owned()),
-            0
-        )
-    );
-    assert_eq!(
-        said("ticket mark 1 2 add"),
-        (
-            Some("unused: t:1: mark: a draft nothing issues: end it with issue".to_owned()),
-            0
-        )
-    );
-    // A word that changed the kind is no pass: the value's maker is not
-    // named.
-    assert_eq!(
-        said("ticket mark stamp").0,
-        Some("type: t:1: stamp: takes a ticket, not a draft".to_owned())
-    );
-    // Through a definition, and a kind passed through a word.
-    assert_eq!(said("define go ticket issue end go").1, 0);
-    assert_eq!(said("define go mark mark end ticket go issue").0, None);
-    // What its kinds can't show (a list's element) passes, for the
-    // application to check as it runs; one left that must be used is
-    // found as the program ends.
-    let (ran, calls) = at_desk("list ticket end 0 at issue", false, Paper::Ticket);
-    assert_eq!((ran.map(|v| v.len()), calls), (Ok(1), 2));
-    let (ran, _) = at_desk("list ticket mark end 0 at", false, Paper::Ticket);
-    assert_eq!(
-        ran.map_err(|e| e.to_string()),
-        Err("unused: t:1: at: a draft nothing issues: end it with issue".to_owned())
-    );
+    Ok(())
 }
 
 #[test]
-fn a_kind_given_is_held_to_the_word() {
-    let (ran, _) = at_desk("ticket mark issue", true, Paper::Ticket);
-    assert_eq!(
-        ran.map_err(|e| e.to_string()),
-        Err(
-            "contract: t:1: mark: the application gave a ticket, and its word says a draft"
-                .to_owned()
-        )
-    );
-    let (ran, _) = at_desk("later", false, Paper::Draft);
-    assert_eq!(
-        ran.map_err(|e| e.to_string()),
-        Err(
-            "contract: t:1: later: the application gave a draft, and its word says a ticket"
-                .to_owned()
-        )
-    );
-    // An effect is read strictly: a name no kind has is refused.
+fn each_name_and_code_means_one_thing() {
     let mut words = Vocabulary::default();
-    assert_eq!(
-        words.add("odd", "pane -- ").map_err(|e| e.code.name()),
-        Err("contract")
-    );
-    assert_eq!(
-        words.add("odd", "pane").map_err(|e| e.code.name()),
-        Err("contract")
-    );
-    // Each name means one thing: a second meaning is refused, whichever
-    // came first.
-    let made = words
-        .kind("pane", "a pane")
-        .and_then(|()| words.add("w", "--"));
-    assert_eq!(made.map_err(|e| e.message), Ok(0));
-    let again = [
-        words.kind("pane", "a pane"),
-        words.name("pane", "integer", "an integer"),
-        words.kind("string", "a string"),
-        words.name("any", "integer", "an integer"),
+    assert_eq!(words.add("w", "--").map_err(|e| e.message), Ok(0));
+    let said: Vec<String> = [
+        words.add("odd", "pane").map(drop),
         words.add("w", "--").map(drop),
         words.add("drop", "--").map(drop),
         words.add("if", "--").map(drop),
         words.raises(Code::Host("refused")),
         words.raises(Code::Host("refused")),
-        words.taken_as("pane", "string"),
-    ];
-    let mut kinds = Vocabulary::default();
-    let made = kinds
-        .kind("a", "an a")
-        .and_then(|()| kinds.taken_as("a", "string"));
-    assert_eq!(made.map_err(|e| e.message), Ok(()));
-    for again in [("a", "string"), ("a", "a")] {
-        let said = kinds.taken_as(again.0, again.1).map_err(|e| e.message);
-        assert_eq!(said, Err("a: taken as that already".to_owned()));
-    }
-    let said: Vec<String> = again
-        .into_iter()
-        .filter_map(Result::err)
-        .map(|e| e.message)
-        .collect();
+        words.must_use("pane", "a pane"),
+        words.must_use("pane", "a pane"),
+    ]
+    .into_iter()
+    .filter_map(Result::err)
+    .map(|e| format!("{}: {}", e.code.name(), e.message))
+    .collect();
     assert_eq!(
         said,
         [
-            "pane: a kind or name already",
-            "pane: a kind or name already",
-            "string: a kind or name already",
-            "any: a kind or name already",
-            "w: a word already",
-            "drop: a word of the core",
-            "if: a word of the language",
-            "refused: declared already",
-            "pane: taken as more after a word was added",
+            "contract: odd: no -- in \"pane\"",
+            "contract: w: a word already",
+            "contract: drop: a word of the core",
+            "contract: if: a word of the language",
+            "contract: refused: declared already",
+            "contract: pane: must be used already",
         ]
     );
 }
@@ -914,7 +641,7 @@ fn words_may_call_each_other() -> Result<(), Error> {
         run(&format!("{descent}str 2*(3+4)+1 0 expr drop"))?,
         ints(&[15])
     );
-    // A kind mistake through the group is found before it runs.
+    // A kind mistake through the group fails as it runs.
     let wrong = format!("{parity}3 is-odd 1 add");
     assert_eq!(code(run(&wrong)), Some("type"));
     for text in [parity, three, descent] {
@@ -1133,15 +860,6 @@ fn a_try_is_checked_before_it_runs() {
             "str '' try 1 catch end",
             "bad_codes: t:1: try: names no code",
         ),
-        (
-            "1 str fail try drop catch end",
-            "stack_underflow: t:1: drop: takes 1 value, and the stack has 0 here (inside try … catch",
-        ),
-        (
-            "str fail try 1 catch drop drop end add",
-            "stack_underflow: t:1: add: takes 2 values, and the stack has at most 1",
-        ),
-        ("str fail try str a catch drop end 1 add", "type: t:1: add:"),
         ("catch", "unmatched: t:1: catch: no try is open"),
         (
             "str fail try 1 end",
@@ -1159,9 +877,22 @@ fn a_try_is_checked_before_it_runs() {
             .unwrap_or_default();
         assert!(error.starts_with(said), "{text}: {error}");
     }
-    // A handler's message is a string, as is its code; either way joins.
-    assert_eq!(refused("str fail try 1 catch drop drop 2 end 1 add"), None);
-    assert_eq!(refused("str fail try 1 catch drop end 1 add"), None);
+    // Its body starts with an empty stack, and the stack after it holds
+    // what the body or the handler left, as it runs.
+    for (text, said) in [
+        (
+            "1 str fail try drop catch end",
+            "stack_underflow: t:1: drop: takes 1 value, and the stack has 0 (inside try … catch",
+        ),
+        (
+            "str fail try 1 catch drop drop end add",
+            "stack_underflow: t:1: add: takes 2 values, and the stack has 1",
+        ),
+        ("str fail try str a catch drop end 1 add", "type: t:1: add:"),
+    ] {
+        let error = run(text).err().map(|e| e.to_string()).unwrap_or_default();
+        assert!(error.starts_with(said), "{text}: {error}");
+    }
     // One the host's words raise is caught, though plain fuxth's never is.
     assert_eq!(refused("str unused try 1 catch end"), None);
     let plain = token::source("t", "str unused try 1 catch end")
@@ -1173,104 +904,6 @@ fn a_try_is_checked_before_it_runs() {
         "the language's own"
     );
     assert!(words.raises(Code::Host("two words")).is_err());
-}
-
-#[test]
-fn carried_values_obey_their_contract() -> Result<(), Error> {
-    let far = Code::Host("far");
-    let mut words = vocabulary();
-    words.name("nothing", "", "no value")?;
-    for invalid in [
-        words.carries(Code::Host("negative"), "nothing"),
-        words.carries(far, "boolean"),
-        words.carries(Code::Host("unknown"), "integer"),
-        words.carries(Code::Host("negative"), "unknown"),
-    ] {
-        assert_eq!(invalid.err().map(|e| e.code), Some(Code::Contract));
-    }
-    for (code, value, admitted) in [
-        (far, Value::Int(7), true),
-        (far, Value::Bool(false), false),
-        (
-            far,
-            Value::str("a message is not an integer payload"),
-            false,
-        ),
-        (Code::Host("negative"), Value::Int(7), false),
-        (Code::Host("unknown"), Value::Int(7), false),
-    ] {
-        let mut compiler = Compiler::new(words.clone());
-        compiler.add(&token::source(
-            "carried",
-            "str 'far negative' try 1 ask catch drop end",
-        )?)?;
-        let mut machine = Machine::new(compiler.finish()?);
-        let mut host = Toy::default();
-        assert!(matches!(
-            machine.run(&mut host, 100)?,
-            Outcome::Suspended(1)
-        ));
-        let before = machine.stack().to_vec();
-        let raised = machine.raise_with(Failure::new(code, "refused"), value.clone());
-        if admitted {
-            raised?;
-            assert!(matches!(machine.run(&mut host, 100)?, Outcome::Finished));
-            assert_eq!(machine.stack(), [value]);
-        } else {
-            let error = raised
-                .err()
-                .ok_or_else(|| Error::new(Code::Contract, "admitted an invalid payload", None))?;
-            assert_eq!(error.code, Code::Contract);
-            assert_eq!(error.word.as_deref(), Some("ask"));
-            assert_eq!(machine.stack(), before);
-            // Refusal did not enter the handler or clear the pending word.
-            machine.raise_with(Failure::new(far, "refused"), Value::Int(8))?;
-            assert!(matches!(machine.run(&mut host, 100)?, Outcome::Finished));
-            assert_eq!(machine.stack(), [Value::Int(8)]);
-        }
-    }
-    assert_eq!(
-        run("str far try -1000 ask catch drop end")?,
-        [Value::Int(-1000)]
-    );
-    Ok(())
-}
-
-#[test]
-fn a_prepared_library_serves_every_clone() -> Result<(), Error> {
-    let mut ready = Compiler::<Ticket>::new(vocabulary());
-    ready.add(&token::source(
-        "lib",
-        "define twice 2 mul end define bad str a 1 add end",
-    )?)?;
-    ready.prepare();
-    for _ in 0..2 {
-        let mut compiler = ready.clone();
-        compiler.add(&token::source("t", "3 twice")?)?;
-        let error = compiler.finish().err().map(|e| e.to_string());
-        assert_eq!(
-            error.as_deref(),
-            Some("type: lib:1: add: add takes an integer, not a string under the top")
-        );
-    }
-    let mut open = Compiler::<Ticket>::new(vocabulary());
-    open.add(&token::source("lib", "define half")?)?;
-    open.prepare();
-    open.add(&token::source("lib", "2 div end 8 half")?)?;
-    assert!(
-        open.finish().is_ok(),
-        "nothing is checked while a definition is open"
-    );
-    Ok(())
-}
-
-#[test]
-fn a_value_replaced_below_what_is_surely_used_is_forgotten() -> Result<(), Error> {
-    let replace = "define replace each swap drop end end str a list 1 2 end replace 1 add";
-    assert_eq!(run(replace)?, ints(&[3]));
-    let swapped = "define f each drop drop 1 end end str a list 0 end f 1 add";
-    assert_eq!(run(swapped)?, ints(&[2]));
-    Ok(())
 }
 
 #[test]
@@ -1300,7 +933,7 @@ fn every_core_word_documents_its_effect_and_meaning() {
         let (before, after) = builtin.effect().split_once("--").unwrap_or_default();
         assert_eq!(
             before.split_whitespace().count(),
-            builtin.args().len(),
+            builtin.takes(),
             "{}",
             builtin.name()
         );
@@ -1407,7 +1040,25 @@ fn the_machine_says_what_and_where() -> Result<(), Error> {
     let said = |text: &str| run(text).err().map(|e| e.to_string()).unwrap_or_default();
     assert_eq!(
         said("ticket 1 add"),
-        "type: t:1: add: add takes an integer, not a ticket under the top"
+        "type: t:1: add: add takes an integer, not a ticket"
+    );
+    // Inside a definition, at its step; a place of several, by what it takes.
+    assert_eq!(
+        said("define f str x add end\n1 f"),
+        "type: t:1: add: add takes an integer, not a string"
+    );
+    assert_eq!(
+        said("1 2 3 slice"),
+        "type: t:1: slice: slice takes a string or a list, not an integer"
+    );
+    // Arguments are placed by their number.
+    let mut compiler = with_stdlib();
+    compiler.add(&token::arguments(&["str", "a", "1", "add"]))?;
+    let mut machine = Machine::new(compiler.finish()?);
+    let error = machine.run(&mut Toy::default(), u64::MAX).err();
+    assert_eq!(
+        error.map(|e| e.to_string()).as_deref(),
+        Some("type: argument 4: add: add takes an integer, not a string")
     );
     assert_eq!(
         said("1 ticket lt"),
@@ -1434,11 +1085,6 @@ fn the_machine_says_what_and_where() -> Result<(), Error> {
             format!("stack_underflow: t:1: {word}: takes {takes} values, and the stack has {has}")
         );
     }
-    // A host that gives what its word doesn't say is caught at once.
-    assert_eq!(
-        said("liar"),
-        "contract: t:1: liar: the application gave 0 values, and its word says 1"
-    );
     let mut machine = Machine::new(compile("1\n  2 ask")?);
     assert_eq!(
         machine.run(&mut Toy::default(), 100)?,
@@ -1446,27 +1092,6 @@ fn the_machine_says_what_and_where() -> Result<(), Error> {
     );
     let at = machine.at().map(|t| format!("{}: {}", t.place, t.text));
     assert_eq!(at.as_deref(), Some("t:2: ask"), "the word suspended at");
-    Ok(())
-}
-
-#[test]
-fn what_can_not_be_known_is_never_refused() -> Result<(), Error> {
-    let program = "define f dup 0 gt if 1 then end\n5 f drop drop";
-    assert_eq!(run(program)?, ints(&[]));
-    let grows = "0 begin dup 1 add dup 5 eq until add add add add add";
-    assert_eq!(run(grows)?, ints(&[15]));
-    let either = "0 0 eq if 1 else str a then 1 add";
-    assert_eq!(run(either)?, ints(&[2]));
-    assert_eq!(
-        run("define f if else drop 7 then end true f 5")?,
-        ints(&[5])
-    );
-    for source in [
-        "define f if str x fail else drop drop then end 1 2 true f",
-        "define die str x fail end false if die then 1",
-    ] {
-        assert_eq!(refused(source), None, "{source}");
-    }
     Ok(())
 }
 

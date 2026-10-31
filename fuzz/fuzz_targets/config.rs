@@ -513,10 +513,6 @@ fuzz_target!(|data: &[u8]| {
                         continue;
                     }
                 };
-                // Words that read files: a fuzzer finds /dev/zero.
-                if texts.contains(&"check") {
-                    continue;
-                }
                 let last = models.last.clone();
                 let (_, last) = run_config(&mut machine, &mut client.keymap, last);
                 models = Models::of(&client.keymap, last);

@@ -211,8 +211,6 @@ codes! {
     Config "config",
     /// A key binding that cannot be made.
     BadBinding "bad_binding",
-    /// A program that did not check (`check`).
-    Check "check",
     /// A file that could not be read, or stdin.
     Read "read",
     /// An environment variable `getenv` names that is not set.

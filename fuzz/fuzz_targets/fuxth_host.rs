@@ -58,7 +58,7 @@ pub fn compile(text: &str) -> Result<fuxth::Program<Nothing>, Error> {
 }
 
 thread_local! {
-    /// The standard library, compiled and checked once.
+    /// The standard library, compiled once.
     static READY: Result<Compiler<Nothing>, Error> = library();
 }
 
@@ -71,7 +71,6 @@ fn library() -> Result<Compiler<Nothing>, Error> {
     compiler.add(&token::source("stdlib.fux", fuxth::STDLIB)?)?;
     let maybe = "define maybe dup 0 gt if else drop then end";
     compiler.add(&token::source("maybe.fux", maybe)?)?;
-    compiler.prepare();
     Ok(compiler)
 }
 
@@ -91,7 +90,7 @@ pub fn run(
             Ok(Outcome::Suspended(n)) => {
                 if n < 0 {
                     let failure = Failure::new(fuxth::Code::Host("negative"), "below 0");
-                    if let Err(e) = machine.raise(failure) {
+                    if let Err(e) = machine.raise(failure, None) {
                         return Some(Err(e));
                     }
                 } else {

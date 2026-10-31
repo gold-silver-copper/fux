@@ -1,0 +1,4 @@
+# Taking more values than the stack holds fails as the word runs.
+# fails: stack_underflow
+1
+drop drop

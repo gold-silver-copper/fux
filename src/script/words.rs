@@ -218,57 +218,40 @@ pub const KINDS: [(&str, &str, Option<&str>); 20] = [
     ("expected-request", "an expected request", Some("nothing acts on this request")),
 ];
 
-/// Kinds taken where an effect names another: an action's answer is its
-/// pane, and a workspace may be given by its name.
-pub const TAKEN_AS: [(&str, &str); 3] = [
-    ("pane", "answer"),
-    ("pane", "closed-answer"),
-    ("workspace", "string"),
-];
-
-/// The names the words' effects use beyond the kinds' own, each with the
-/// kinds it stands for (`from>to`: what a kind is once the word passes it
-/// through), and how an error says them; then the names of a string, and
-/// of an integer.
+/// The names the words' effects use beyond the kinds' own, each with what
+/// it stands for, as help says it.
 #[rustfmt::skip]
-pub const NAMES: &[(&str, &str, &str)] = &[
-    ("title", "string list", "a title or [title,subject handle]"),
-    ("callback", "string list", "source text or [captured arguments,source text]"),
-
-    ("revision", "string", "a run-qualified layout revision"),
-    ("tree", "list", "a flat layout node list"),
-    ("closed-outcome", "closed-answer answers", "a closed pane or collection answer"),
-    ("outcome", "answer answers", "an action's or wait's answer: a pane's, or a tab's or workspace's panes'"),
-    ("x", "opts pane>pane-request answer>pane-request closed-answer>pane-request tab>tab-request workspace>workspace-request client>client-request pane-request tab-request workspace-request client-request changed-request expected-request",
-        "the pane it goes on, under its own values (or a tab, workspace, client, a request on one, or opts)"),
-    ("target", "pane>answer answer closed-answer>answer pane-request>answer expected-request>answer tab>answers tab-request>answers workspace>answers workspace-request>answers client>answers client-request>answers",
-        "a pane, tab, workspace or client, or a request on one"),
-    ("subject", "pane answer closed-answer pane-request", "a pane, or a request on one"),
-    ("place", "pane>answer answer closed-answer>answer pane-request>answer changed-request>answer tab>answers tab-request>answers workspace>answers workspace-request>answers",
-        "a pane, tab or workspace, or a request on one"),
-    ("handle", "pane tab workspace answer closed-answer", "a pane, tab or workspace"),
-    ("attachable", "opts pane tab workspace answer closed-answer pane-request tab-request workspace-request", "a pane, tab, workspace, a request on one, or opts"),
-    ("event-scope", "pane tab workspace client answer closed-answer all", "a pane, tab, workspace, client or all"),
-    ("scope", "pane tab workspace answer closed-answer all", "a pane, tab, workspace or all"),
-    ("capture-source", "pane>capture answer>capture closed-answer>capture pane-request>capture client>client-capture", "a pane, a request on one, or a client"),
-    ("pane-builder", "pane>pane-request answer>pane-request closed-answer>pane-request pane-request", "a pane or a request on one"),
-    ("ref", "string pane tab workspace answer closed-answer", "a name, or a pane, tab or workspace"),
-    ("text", "string integer boolean", "a string, a number or a boolean"),
-    ("new", "integer boolean list", "a setting's value: a number, true or false, or a list (fux help set)"),
-    ("var", "string integer boolean pane tab workspace answer closed-answer", "a string, a number, a boolean, or a pane, tab or workspace"),
-    ("value", "integer boolean string list pane tab workspace client size answer closed-answer answers capture client-capture record null all",
-        "a value (options and requests are none: what acts on them gives one)"),
-    ("seen", "string answer capture", "a version: an action's or wait's answer, a pane's capture, or its text"),
-    ("readable", "pane tab workspace answer closed-answer capture client-capture record", "a handle or held observation"),
-    ("snapshot-scope", "all pane tab workspace client answer closed-answer", "a snapshot scope"),
-    ("extent", "integer size", "cells, or a percent"),
-    ("pane-or-seen", "pane string answer capture", "a pane, an action's or wait's answer, a pane capture, or version text"),
-    ("counterpart", "pane answer closed-answer string", "a pane or a direction"),
-    ("sized", "pane tab workspace answer closed-answer client", "a pane, tab, workspace or headless client"),
-    ("where", "tab workspace string", "a tab, a workspace, new-tab, new-workspace or a direction"),
+pub const NAMES: &[(&str, &str)] = &[
+    ("title", "a title or [title,subject handle]"),
+    ("callback", "source text or [captured arguments,source text]"),
+    ("revision", "a run-qualified layout revision"),
+    ("tree", "a flat layout node list"),
+    ("closed-outcome", "a closed pane or collection answer"),
+    ("outcome", "an action's or wait's answer: a pane's, or a tab's or workspace's panes'"),
+    ("x", "the pane it goes on, under its own values (or a tab, workspace, client, a request on one, or opts)"),
+    ("target", "a pane, tab, workspace or client, or a request on one"),
+    ("subject", "a pane, or a request on one"),
+    ("place", "a pane, tab or workspace, or a request on one"),
+    ("handle", "a pane, tab or workspace"),
+    ("attachable", "a pane, tab, workspace, a request on one, or opts"),
+    ("event-scope", "a pane, tab, workspace, client or all"),
+    ("scope", "a pane, tab, workspace or all"),
+    ("capture-source", "a pane, a request on one, or a client"),
+    ("pane-builder", "a pane or a request on one"),
+    ("ref", "a name, or a pane, tab or workspace"),
+    ("text", "a string, a number or a boolean"),
+    ("new", "a setting's value: a number, true or false, or a list (fux help set)"),
+    ("var", "a string, a number, a boolean, or a pane, tab or workspace"),
+    ("value", "a value (options and requests are none: what acts on them gives one)"),
+    ("seen", "a version: an action's or wait's answer, a pane's capture, or its text"),
+    ("readable", "a handle or held observation"),
+    ("snapshot-scope", "a snapshot scope"),
+    ("extent", "cells, or a percent"),
+    ("pane-or-seen", "a pane, an action's or wait's answer, a pane capture, or version text"),
+    ("counterpart", "a pane or a direction"),
+    ("sized", "a pane, tab, workspace or headless client"),
+    ("where", "a tab, a workspace, new-tab, new-workspace or a direction"),
 ];
-pub const STRINGS: &str = "name dir key path line id file mode field setting socket way action code keys word hex version screen cursor projection";
-pub const INTEGERS: &str = "cols rows secs n row col lines from to cells";
 
 // Every word of fux's, by family; in help, under its heading.
 words! {
@@ -341,7 +324,6 @@ words! {
         Config KeyNames "key-names" "--" "the names keys go by" "fux key-names" [];
         Help Help "help" "--" "the words, under their headings" "fux help" [];
         Help Explain "explain" "word --" "one word at length (json's says what json gives); or the guide to driving programs from a script or an agent: agents, its first screen, enough for most work; a topic of it (recipes keys read shells programs servers); or guide, all of it" "fux str capture explain" [];
-        Help Check "check" "file mode --" "check a file as program (compile only) or config (also run dry)" "fux str config.fux str config check" [];
     }
     Opt {
         Starting Name "name" "x name -- x" "the given name: new-tab's tab, or new-workspace's workspace" "fux agent-opts str web name 80 24 size str ./app program new-tab";
@@ -1955,24 +1937,6 @@ impl Host<'_> {
                     .ok_or_else(|| fail(Raise::UnknownWord, help::unknown(&word)))?;
                 self.show(&text)
             }
-            Act::Check => {
-                let path = string(&next()?)?;
-                let config = one_of(&next()?, &[("program", false), ("config", true)])?;
-                let checked = |failed: super::Failed| fail(Raise::Check, failed.located());
-                let image = super::source::file(path.as_ref()).map_err(|f| {
-                    if f.code == Code::Read {
-                        fail(Raise::Read, f.located())
-                    } else {
-                        checked(f)
-                    }
-                })?;
-                if config {
-                    super::run_config(image).map_err(checked)?;
-                } else {
-                    super::compile(&image.tokens()).map_err(checked)?;
-                }
-                self.show(&format!("{path}: ok\n"))
-            }
         }
     }
 }
@@ -2266,35 +2230,64 @@ impl Host<'_> {
 #[cfg(test)]
 mod tests {
     use crate::TestResult;
+    use crate::script::{Asks, Failed, Host, Local};
     use std::rc::Rc;
+
+    /// Finds what an id names, and counts anything else a program asks of
+    /// the server, or locally, answering each with a failure.
+    struct Recorder(usize);
+
+    impl Asks for Recorder {
+        fn ask(
+            &mut self,
+            asked: &fux_wire::protocol::Asked,
+        ) -> Result<fux_wire::protocol::Reply, Failed> {
+            if let fux_wire::command::Request::Do(Command::Resolve { text, .. }) = &asked.request
+                && let Ok(id) = text.parse::<AnyRef>()
+            {
+                return Ok(fux_wire::protocol::Body::Found(id).into());
+            }
+            self.0 = self.0.saturating_add(1);
+            Err(Failed::new(
+                fux_wire::code::Code::Client,
+                "unexpected request",
+            ))
+        }
+        fn local(
+            &mut self,
+            _: &Local,
+            _: Option<&mut crate::client_state::Draft>,
+            _: &mut dyn std::io::Write,
+        ) -> Result<Vec<fuxth::Value<crate::script::Fux>>, Failed> {
+            self.0 = self.0.saturating_add(1);
+            Err(Failed::new(
+                fux_wire::code::Code::Client,
+                "unexpected local operation",
+            ))
+        }
+    }
+
+    /// Runs `code` with no server: its failure, how many requests it made,
+    /// and what it printed.
+    fn offline(code: &str) -> Result<(Option<Failed>, usize, String), Failed> {
+        let tokens = fuxth::token::source("offline", code)?;
+        let mut machine = crate::script::compile(&tokens)?;
+        let mut state = crate::script::default_state()?.draft();
+        let mut out = Vec::new();
+        let mut host = Host::new(
+            fux_wire::protocol::Context::default(),
+            Some(&mut state),
+            &mut out,
+        );
+        let mut recorder = Recorder(0);
+        let ran = crate::script::run(&mut machine, &mut host, &mut recorder, None);
+        drop(host);
+        let printed = String::from_utf8_lossy(&out).into_owned();
+        Ok((ran.err(), recorder.0, printed))
+    }
+
     #[test]
     fn targeted_and_watch_attach_refuse_explicit_creation_before_any_request() -> TestResult {
-        use crate::script::{Asks, Failed, Host, Local};
-        struct Recorder(usize);
-        impl Asks for Recorder {
-            fn ask(
-                &mut self,
-                _: &fux_wire::protocol::Asked,
-            ) -> Result<fux_wire::protocol::Reply, Failed> {
-                self.0 += 1;
-                Err(Failed::new(
-                    fux_wire::code::Code::Client,
-                    "unexpected request",
-                ))
-            }
-            fn local(
-                &mut self,
-                _: &Local,
-                _: Option<&mut crate::client_state::Draft>,
-                _: &mut dyn std::io::Write,
-            ) -> Result<Vec<fuxth::Value<crate::script::Fux>>, Failed> {
-                self.0 += 1;
-                Err(Failed::new(
-                    fux_wire::code::Code::Client,
-                    "unexpected local operation",
-                ))
-            }
-        }
         for selector in ["opts str main in", "opts watch"] {
             for option in [
                 "str x name",
@@ -2381,31 +2374,44 @@ mod tests {
         Ok(())
     }
 
+    /// Each word checks its operands as it runs: given one of a kind it
+    /// doesn't take, it fails there, after what came before it took effect
+    /// (a line printed), and before it asks the server anything. The
+    /// acting word refuses an option it takes none of (`unused`); a library
+    /// word's guard says what it takes (`fail`).
     #[test]
-    fn known_operand_kinds_are_checked_before_effects() -> TestResult {
+    fn a_wrong_operand_fails_its_word_as_it_runs_before_it_asks() -> TestResult {
         let version = "%2:0.0.0.0.0:48211-1867a3f9c2b8e7d6";
-        let mut invalid = vec![
-            "str c1 client capture version".to_owned(),
-            "@1 version".to_owned(),
-            "%1 str horizontal axis 30 str horizontal resize-pane".to_owned(),
-            "%1 str horizontal axis str click 0 0 send-mouse".to_owned(),
-            "str c1 client 0 timeout wait".to_owned(),
-            format!("str {version} expect 0 timeout wait"),
-            format!("str {version} changed str x text send-keys"),
-            format!("str {version} changed all-history capture"),
-            format!("str {version} changed str '' 0 next-events"),
-            "str x kill".to_owned(),
-            "str nope str horizontal axis split".to_owned(),
-            "str nope info".to_owned(),
-            // What a word leaves is known too: none of these is a number.
-            format!("str {version} version 1 add"),
-            "all info 1 add".to_owned(),
-            "%1 all-history 1 add".to_owned(),
-            "@1 wait capture".to_owned(),
-            "@1 0 timeout wait capture".to_owned(),
-            "@1 str x text send-keys capture".to_owned(),
-            "+1 wait str y text send-keys".to_owned(),
-            "+1 0 timeout wait str y text send-keys".to_owned(),
+        let mut cases = vec![
+            ("type", "@1 version".to_owned()),
+            (
+                "type",
+                "%1 str horizontal axis 30 str horizontal resize-pane".to_owned(),
+            ),
+            (
+                "type",
+                "%1 str horizontal axis str click 0 0 send-mouse".to_owned(),
+            ),
+            ("type", "str c1 client 0 timeout wait".to_owned()),
+            ("type", "str x kill".to_owned()),
+            ("type", "str nope str horizontal axis split".to_owned()),
+            ("unused", format!("str {version} expect 0 timeout wait")),
+            (
+                "unused",
+                format!("str {version} changed str x text send-keys"),
+            ),
+            (
+                "unused",
+                format!("str {version} changed all-history capture"),
+            ),
+            (
+                "type",
+                format!("str {version} changed str '' 0 next-events"),
+            ),
+            ("fail", "str nope info".to_owned()),
+            ("fail", "str c1 client info".to_owned()),
+            ("fail", "1 dump".to_owned()),
+            ("fail", "str c1 client dump".to_owned()),
         ];
         for suffix in [
             "kill",
@@ -2418,26 +2424,15 @@ mod tests {
             "attach",
             "str x rename",
         ] {
-            invalid.push(format!("all {suffix}"));
+            cases.push(("type", format!("all {suffix}")));
         }
         for suffix in [
-            "capture expect drop",
-            "capture changed drop",
             "full capture drop",
             "all-history capture drop",
             "0 1 rows capture drop",
             "main-screen capture drop",
         ] {
-            invalid.push(format!("str c1 client {suffix}"));
-        }
-        for prefix in ["str SIDE-EFFECT print", "%1 str renamed rename"] {
-            for body in [
-                "1 dump drop",
-                "all str 0:1-2 0 next-events dump drop",
-                "all dump 1 push drop",
-            ] {
-                invalid.push(format!("{prefix} {body}"));
-            }
+            cases.push(("type", format!("str c1 client {suffix}")));
         }
         for recipe in [
             "layout-current",
@@ -2447,53 +2442,41 @@ mod tests {
             "main-v",
             "tiled",
         ] {
-            for target in ["1", "%1", "+1", "all", "str tab"] {
-                invalid.push(format!("{target} {recipe}"));
+            for target in ["1", "%1", "+1", "all", "str tab", "str c1 client"] {
+                cases.push(("fail", format!("{target} {recipe}")));
             }
         }
-        for code in invalid {
-            let source = format!("str SIDE-EFFECT print {code}");
-            let failure = super::super::compile(&fuxth::token::source("preflight", &source)?)
-                .err()
-                .ok_or_else(|| format!("accepted {source}"))?;
-            assert_eq!(failure.code, Code::from(Raise::Type), "{source}: {failure}");
+        let mut wrong = Vec::new();
+        for (code, program) in cases {
+            let source = format!("str SIDE-EFFECT print {program}");
+            let (failed, asked, printed) = offline(&source)?;
+            let failed = failed.map(|f| f.to_string()).unwrap_or_default();
+            if !failed.starts_with(&format!("{code}:")) || asked != 0 || printed != "SIDE-EFFECT\n"
+            {
+                wrong.push(format!(
+                    "{source}: {failed}, {asked} asked, printed {printed:?}"
+                ));
+            }
         }
-        for code in [
-            "opts str agent in new-tab".to_owned(),
-            "opts 80 24 size new-tab clear-history".to_owned(),
-            "%1 str x text send-keys wait capture".to_owned(),
-            "all info drop".to_owned(),
-            "all dump drop".to_owned(),
-            "all str hello notify".to_owned(),
-            "all events".to_owned(),
-            "all str 0:1-2 0 next-events drop".to_owned(),
-            "%1 full capture expect drop".to_owned(),
-            "%1 all-history capture expect str x text send-keys wait capture drop".to_owned(),
-            "%1 str x text send-keys 0 quiet drop %1 capture drop".to_owned(),
-            format!("str {version} changed 0 timeout wait capture drop"),
-            "str c1 client capture json drop".to_owned(),
-        ] {
-            super::super::compile(&fuxth::token::source("accepted", &code)?)
-                .map_err(|f| f.to_string())?;
-        }
+        assert!(wrong.is_empty(), "{}", wrong.join("\n"));
         Ok(())
     }
 
+    /// A closed pane's answer and a client's capture have no version:
+    /// `changed`, `expect` and `version` refuse them as they run.
     #[test]
     fn closed_observations_have_no_version() -> TestResult {
-        for kind in ["closed-answer", "client-capture"] {
-            for suffix in ["changed drop", "expect drop", "version drop"] {
-                let mut vocabulary = super::super::vocabulary()?;
-                vocabulary.add("held", &format!("-- {kind}"))?;
-                let mut compiler = fuxth::Compiler::<Fux>::new(vocabulary);
-                let source = format!("held str SIDE-EFFECT print {suffix}");
-                let error = compiler
-                    .add(&fuxth::token::source("versionless", &source)?)
-                    .and_then(|()| compiler.finish())
-                    .err()
-                    .ok_or_else(|| format!("accepted {source}"))?;
-                assert_eq!(error.code, fuxth::Code::Type, "{source}: {error}");
-            }
+        let version: fux_wire::command::Version =
+            "%1:0.0.0.0.0:1-1".parse().map_err(|()| "version")?;
+        let mut capture = fux_wire::answer::Captured::default_styled(version);
+        capture.of = fux_wire::answer::Of::Client(fux_wire::id::ClientId::of(1));
+        for answer in [
+            super::super::Answer::Pane(fux_wire::answer::PaneAnswer::Closed(version.pane)),
+            super::super::Answer::Capture(Box::new(capture)),
+        ] {
+            let value = Value::App(Fux::Answer(Rc::new(answer), Some(version.run)));
+            let refused = super::version(&value).err().map(|f| f.code);
+            assert_eq!(refused, Some(fuxth::Code::Type), "{}", value.kind());
         }
         Ok(())
     }
@@ -2752,45 +2735,6 @@ mod tests {
                 .map_err(|f| f.message)?;
                 assert_eq!(actual.on, expected.on, "{target:?} {opt}");
                 assert_eq!(Fux::Opts(actual).name(), kind, "{target:?} {opt}");
-                let args = args
-                    .iter()
-                    .map(|v| match v {
-                        Value::Str(s) => format!("str {}", **s),
-                        Value::List(list) => format!(
-                            "list {} end",
-                            list.items()
-                                .iter()
-                                .map(|v| format!(
-                                    "str {}",
-                                    fux_wire::words::quote(&v.text().unwrap_or_default())
-                                ))
-                                .collect::<Vec<_>>()
-                                .join(" ")
-                        ),
-                        Value::Int(_) | Value::Bool(_) | Value::App(_) => {
-                            v.text().unwrap_or_default()
-                        }
-                    })
-                    .collect::<Vec<_>>()
-                    .join(" ");
-                for (candidate, ..) in KINDS {
-                    let mut vocabulary = super::super::vocabulary()?;
-                    vocabulary.add("false", "-- boolean")?;
-                    vocabulary.add("held", &format!("-- {}", target.name()))?;
-                    vocabulary.add("take-kind", &format!("{candidate} --"))?;
-                    let mut compiler = fuxth::Compiler::<Fux>::new(vocabulary);
-                    let source = format!("held {args} {opt} take-kind");
-                    let checked = compiler
-                        .add(&fuxth::token::source("modifier", &source)?)
-                        .and_then(|()| compiler.finish());
-                    // pane accepts answers directly, but none of these outputs is an answer.
-                    assert_eq!(
-                        checked.is_ok(),
-                        candidate == kind,
-                        "{source}: {} -> {candidate}: {checked:?}",
-                        target.name()
-                    );
-                }
             }
         }
         Ok(())

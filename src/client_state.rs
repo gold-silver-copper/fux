@@ -317,8 +317,6 @@ mod tests {
         ] {
             assert!(draft.set(name, &value).is_err(), "{name}: {value:?}");
         }
-        let tokens = fuxth::token::source("test", "str bell str off set")?;
-        assert!(crate::script::compile(&tokens).is_err());
         let tokens = fuxth::token::source("test", "false show-column")?;
         assert!(crate::script::compile(&tokens).is_err());
         Ok(())
