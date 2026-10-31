@@ -266,7 +266,7 @@ fn an_orphan_a_pane_leaves_is_read_and_reaped() -> Outcome {
         "str",
         &pidfile,
         "arg",
-        "run",
+        "new-tab",
     ])?;
     let pane = answer
         .split_whitespace()

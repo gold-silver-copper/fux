@@ -31,7 +31,7 @@ fn only_a_typing_terminal_loads_the_user_config() -> Outcome {
         "str",
         "sleep 1; echo observed",
         "arg",
-        "run",
+        "new-tab",
         "wait",
     ];
     // Exercise start on a fresh socket: an already running server would
@@ -277,7 +277,7 @@ fn an_imported_failure_keeps_the_whole_bundled_state() -> Outcome {
         "str",
         "sleep 1",
         "arg",
-        "run",
+        "new-tab",
         "wait",
     ])?;
     assert_eq!(
@@ -455,7 +455,7 @@ fn check_mode_is_explicit_and_independent_of_the_filename() -> Outcome {
 fn an_absent_selection_unsets_the_server_value() -> Outcome {
     let server = Server::start("")?;
     let code = "str copy-environment list str ENV end set agent-opts 80 24 size \
-        str /bin/sh program str -c arg str 'echo ${ENV-unset}' arg run";
+        str /bin/sh program str -c arg str 'echo ${ENV-unset}' arg new-tab";
     let out = std::process::Command::new(FUX)
         .arg(code)
         .env("FUX_SOCKET", &server.socket)
@@ -537,7 +537,7 @@ fn copy_environment_takes_the_clients_variables_or_none() -> Outcome {
             "str",
             "x",
             "env",
-            "run",
+            "new-tab",
         ])
         .env("FUX_SOCKET", &server.socket)
         .env("XDG_CONFIG_HOME", server.dir.join("config"))
@@ -611,7 +611,7 @@ fn a_program_uses_preferences_before_its_next_operation() -> Outcome {
         "str",
         "sleep 1",
         "arg",
-        "run",
+        "new-tab",
         "wait",
     ])?;
     assert_eq!(
@@ -638,7 +638,7 @@ fn history_rows(server: &Server) -> Result<usize, String> {
         "str",
         "i=0; while [ \"$i\" -lt 40 ]; do echo row; i=$((i+1)); done",
         "arg",
-        "run",
+        "new-tab",
     ])?;
     let pane = answer.trim().split(':').next().ok_or("pane")?;
     server.exits(pane)?;
@@ -829,10 +829,6 @@ fn launches_save_the_callers_argv_role_and_environment() -> Outcome {
             "opts str main in 80 24 size str /bin/cat program list str /bin/sh end shell-program new-tab",
             "unused",
         ),
-        (
-            "agent-opts 80 24 size list str /bin/sh end shell-program run",
-            "unused",
-        ),
     ] {
         let out = server.fux(&[conflict])?;
         assert_eq!(out.status, 1, "{conflict}");
@@ -845,7 +841,7 @@ fn launches_save_the_callers_argv_role_and_environment() -> Outcome {
     }
     let code = "str copy-environment list str F4_VALUE str ENV end set \
         agent-opts 80 24 size str /bin/sh program str -c arg \
-        str 'printf \"%s|%s\" \"$F4_VALUE\" \"${ENV-unset}\"' arg run";
+        str 'printf \"%s|%s\" \"$F4_VALUE\" \"${ENV-unset}\"' arg new-tab";
     let out = std::process::Command::new(FUX)
         .arg(code)
         .env("FUX_SOCKET", &server.socket)
@@ -909,7 +905,7 @@ fn presentation_updates_only_the_addressed_view_before_a_wait_finishes() -> Outc
 #[test]
 fn pane_creation_overrides_preserve_zero_and_false_and_dump_replays_them() -> Outcome {
     let server = Server::start("")?;
-    let created = server.ok(&["str history-bytes 4096 set str program-clipboard true set agent-opts 40 6 size 0 history-bytes false reflow 0 alternate-scroll-lines 0 picture-bytes false program-clipboard str /bin/cat program run"])?;
+    let created = server.ok(&["str history-bytes 4096 set str program-clipboard true set agent-opts 40 6 size 0 history-bytes false reflow 0 alternate-scroll-lines 0 picture-bytes false program-clipboard str /bin/cat program new-tab"])?;
     let pane = created.trim().split(':').next().ok_or("pane")?;
     assert_eq!(
         server.ok(&[pane, "str", "history_bytes", "get"])?.trim(),

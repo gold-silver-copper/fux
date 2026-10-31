@@ -165,7 +165,7 @@ codes! {
     /// A program still running, which a respawn would not end; or a
     /// respawn of the pane still under way.
     StillRunning "still_running",
-    /// A respawn of a pane whose program `run` did not start.
+    /// A respawn of a pane that was started with no program.
     NotRun "not_run",
     /// The pane only has its shell, which `signal` does not signal.
     OnlyShell "only_shell",

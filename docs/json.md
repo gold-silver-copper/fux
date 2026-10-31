@@ -28,7 +28,7 @@ for `id`, `name`, `label` and `pid` (it says `pane`):
 | Field | Value |
 | --- | --- |
 | `id` | `"%3"` |
-| `name` | its given name (`run ... name` or `rename`), else `null` |
+| `name` | its given name (`rename`), else `null` |
 | `label` | display text: its given name, else title, launch program basename, or id; never a lookup name |
 | `title` | what the program set (OSC 0 or 2), else `""`: its first 256 characters, without control characters |
 | `rows`, `cols` | its size |
@@ -40,7 +40,7 @@ for `id`, `name`, `label` and `pid` (it says `pane`):
 | `launch_argv` | the checked arguments of its saved launch, for both shell and program roles, retained separately from live observations |
 | `hung_up` | its program closed its terminal and runs on: keys are refused (Linux says so; macOS, where fux holds the terminal open, does not) |
 | `read_error` | an unexpected PTY read failure as errno text, or `null`: a failed reader is no longer polled and refuses keys; the cause stays after exit until respawn |
-| `exited` | the status its program exited with (a pane whose program is no shell: `run`'s, or a `split` with a program), else `null` |
+| `exited` | the status its program exited with (a pane started with a program, not a shell), else `null` |
 | `signal` | the signal that killed it (its number), else `null`; both `null` for a program that ended (its version's ENDED is 1) whose status was lost |
 | `alt_screen` | its program holds the full screen |
 | `mouse` | its program asked for mouse reports |
@@ -244,7 +244,7 @@ oversized reply ends that request's connection.
 
 ## What a word made
 
-`run`, `split`, `new-tab`, `new-workspace` and `respawn` leave an answer
+`split`, `new-tab`, `new-workspace` and `respawn` leave an answer
 (below), which is also the new pane: a word that wants a pane takes it as
 one, and `wait` waits from its version. `json` of a pane, tab or workspace is its id as a string, `"%4"`,
 and `X info json` all of it. `X panes json` and `X tabs json` are arrays
@@ -253,7 +253,7 @@ of them in layout order, `["%3","%4"]`.
 ## Answers and waits
 
 `json` of an action's answer (`send-keys`, `paste-buffer`, `send-mouse`,
-`signal`, `run`, `split`, `new-tab`, `new-workspace`, `respawn`) is
+`signal`, `split`, `new-tab`, `new-workspace`, `respawn`) is
 `{"pane":"%3","version":"%3:0.57.0.3.0:RUN","status":0}`: its pane's version from
 just before it acted, or as a new pane starts: one object for an action
 or wait on a pane, an array for one on a tab or workspace, however many
@@ -462,8 +462,8 @@ they run, so a `try` may name them too.
 ## `status`
 
 ```json
-{"socket":"/run/user/1000/fux/server.sock","release":"0.36.0","protocol":54,
- "server_release":"0.36.0","server_protocol":54,"server_pid":4242,"compatible":true}
+{"socket":"/run/user/1000/fux/server.sock","release":"0.36.0","protocol":55,
+ "server_release":"0.36.0","server_protocol":55,"server_pid":4242,"compatible":true}
 ```
 
 `status` returns an ordinary record with these locally readable fields. Plain

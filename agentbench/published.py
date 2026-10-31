@@ -58,7 +58,7 @@ def prepare(driver, recipe_name):
         wrapper.write_text(
             f'#!/bin/sh\nprintf ".\\n" >> {log}\n'
             'last=\nfor word do last=$word; done\n'
-            f'if [ "$last" = run ] && [ ! -e {marker} ]; then\n'
+            f'if [ "$last" = new-tab ] && [ ! -e {marker} ]; then\n'
             f'  {executable} "$@"\n  result=$?\n  : > {marker}\n'
             '  sleep 0.4\n  exit "$result"\nfi\n'
             f'exec {executable} "$@"\n')

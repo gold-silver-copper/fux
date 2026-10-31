@@ -419,7 +419,7 @@ fn a_run_answers_an_exit_with_the_last_of_the_output() -> Outcome {
         "str",
         code,
         "arg",
-        "run",
+        "new-tab",
     ])?;
     let pane = out.stdout.split(':').next().ok_or("its pane")?;
     assert_eq!(server.exits(pane)?, "0");

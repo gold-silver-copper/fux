@@ -41,7 +41,7 @@ SIGINT, SIGHUP, or until its last pane closes. It then hangs up every
 pane, tells each attached terminal why, and removes its socket.
 
 A pane runs your shell (the `shell` setting: `fux help set`), or the program
-it was given (`run`, `split`). A shell's pane closes when its shell exits,
+it was given (`new-tab`, `new-workspace`, `split`). A shell's pane closes when its shell exits,
 showing its viewers the exit status; a program's pane stays, its exit told,
 until `kill` closes it or `respawn` starts it again. A tab closes with its
 last pane, a workspace with its last tab.
@@ -109,7 +109,7 @@ values from a stack and leaving its own.
 
 ```sh
 fux ls listing                                    # what there is
-A=$(fux agent-opts 80 24 size str htop program run)     # start htop: %3:0.0.0.0.0:RUN, its version
+A=$(fux agent-opts 80 24 size str htop program new-tab)     # start htop: %3:0.0.0.0.0:RUN, its version
 fux str "$A" changed wait                         # until it differs: %3:0.412.0.0.0:RUN screen
 fux %3 capture                                    # its screen
 fux %3 str q text send-keys                       # press q: its version from before
@@ -126,7 +126,7 @@ fux %3 str q text send-keys                       # press q: its version from be
 - Every pane has a **version**, one word that names the pane, counts what
   only grows while its program runs (respawns, its screen's revision, bells,
   shell commands ended, its end) and names the server's run. An action
-  (`run`, `send-keys`, `signal` …) acts at once and answers its pane's
+  (`new-tab`, `send-keys`, `signal` …) acts at once and answers its pane's
   version from just before it acted; `str V changed wait` waits in V's pane
   until its version differs from V, and answers what changed. fux never
   judges whether a program is done: [docs/agents.md](docs/agents.md) says
@@ -142,7 +142,7 @@ fux %3 str q text send-keys                       # press q: its version from be
   (`str`, `define`, `let`, `if`, `begin`, `list`, `each`, `try`), listed by
   `fux help` and at length in [fuxth/README.md](fuxth/README.md).
   The rest of the language, its standard library, is written in fuxth;
-  fux's own words (`ls`, `run`, `send-keys` …) are fux's, not the
+  fux's own words (`ls`, `new-tab`, `send-keys` …) are fux's, not the
   language's.
 - A program is checked before it runs: a word given fewer values than the
   stack surely holds, a value the core's words never take (`str a 1 add`,
@@ -163,17 +163,18 @@ keeps.
 
 What a word that acts takes (**options**, a wait, keys) goes
 on the pane before it, in any order: the pane given them becomes a request,
-which the word at the end acts on. `run`, `new-tab` and `new-workspace` have
+which the word at the end acts on. `new-tab` and `new-workspace` have
 no pane yet, nor has `attach`: they start from `opts`, empty options.
 A single-valued option occurs once; arguments and input fragments accumulate
 in order. `split` requires `str horizontal axis` (side by side) or
 `str vertical axis` (stacked). `resize-pane` takes a pane, cells or a
 percent, and `str horizontal` or `str vertical`. Mouse events are positional:
 `%2 str click 3 10 send-mouse`.
-`all events` streams a finite run of journal batches; `next-events` returns one batch. Of
-the first three, only `run` takes a program (`program`, then each `arg`; a
-shell's line is `str sh program str -c arg str LINE arg`); `new-tab` and
-`new-workspace` start a shell. Their tab is laid out on `COLS ROWS size`, else on the
+`all events` streams a finite run of journal batches; `next-events` returns one batch. Both
+start a shell, or the program given (`program`, then each `arg`; a
+shell's line is `str sh program str -c arg str LINE arg`), whose pane stays
+once it exits. Asked from a key or prompt, they move its client to the new
+tab; from the command line, no client. Their tab is laid out on `COLS ROWS size`, else on the
 caller's own screen (a client's keys), else on the caller's tab (`fux`
 run in a pane): never on the screen of a client that does not show the
 caller's tab. Run from outside fux, a size must be given: fux makes none
@@ -194,7 +195,7 @@ takes a pane or direction. Directions are `str left`, `str right`, `str up`
 and `str down`.
 
 ```sh
-fux agent-opts str web name 120 40 size str ./app program str --verbose arg run
+fux agent-opts str web name 120 40 size str ./app program str --verbose arg new-tab
 fux %3 200 history capture
 fux %3 str 'make test' text str Enter key send-keys 60 timeout wait
 ```
@@ -202,7 +203,7 @@ fux %3 str 'make test' text str Enter key send-keys 60 timeout wait
 A program can name what it made; a wait on an action's answer waits from the version it holds:
 
 ```sh
-fux agent-opts 80 24 size str sh program str -c arg str 'echo hello; sleep 1' arg run let P   P wait drop   P capture
+fux agent-opts 80 24 size str sh program str -c arg str 'echo hello; sleep 1' arg new-tab let P   P wait drop   P capture
 ```
 
 A script plays well with the shell. `args` gives the arguments after
@@ -235,16 +236,16 @@ return their matching capture; `grows` waits for a counter increase within
 one program generation. Their timeouts apply to each change; use an outer
 shell deadline for the whole loop (`fux help agents`).
 
-`run` needs `in`; `agent-opts` is `opts str agent in`.
-`opts str new-workspace in ... run` starts its program in a fresh unnamed
+From outside fux, `new-tab` needs `in`; `agent-opts` is `opts str agent in`.
+`opts str new-workspace in ... new-tab` starts its tab in a fresh unnamed
 workspace.
 
 ### Finding things
 
 A pane is `%N`, a tab `@N`, a workspace `+N` or its name, a client `cN`:
 `str %3 pane`, `str @2 tab`, `str work workspace`, `str c1 client`. `pane`
-also takes a pane's given name: `str web pane`. `run ... name` names its
-pane; `new-tab ... name` names its tab. `tab` and `workspace` take a pane,
+also takes a pane's given name: `str web pane`. `new-tab ... name` names
+its tab; `%3 str web rename` names a pane. `tab` and `workspace` take a pane,
 the tab or workspace it is in. To choose a member of a container, use
 `panes` or `tabs`; a container never stands for its only member.
 A name is given or absent: `get name` is `null` for an unnamed thing,
@@ -265,7 +266,7 @@ or an agent:
 
 ```sh
 fux str test server start                         # returns once it answers: nothing in it yet
-fux str test server agent-opts 80 24 size str ./app program run
+fux str test server agent-opts 80 24 size str ./app program new-tab
 fux str test server kill-server
 ```
 
@@ -570,7 +571,7 @@ Emulator defaults are bundled in `src/script/client-defaults.fux`:
 | `cell-placement` | `false` | Per client; position after each non-ASCII glyph |
 
 The three pane settings also have typed creation options, for example
-`fux agent-opts false reflow 0 picture-bytes str /bin/cat program run`.
+`fux agent-opts false reflow 0 picture-bytes str /bin/cat program new-tab`.
 They survive terminal reset and respawn, and dump preserves them.
 Decoder changes take effect when reading begins idle, keeping an unfinished
 Escape or paste's existing timing. Zero waits for the next explicit timeout
@@ -795,7 +796,7 @@ str 'a =' str 'me focused tab even-h' bind str 'panes side by side' label
 ```
 
 A dump makes the layouts and launches again: each shell starts afresh in
-its directory, each program `run` started starts again. It never brings
+its directory, each program a pane was started with starts again. It never brings
 back what a process held: its screen, its history, what ran in a shell. A
 pane whose directory is not UTF-8 text, which fuxth cannot write, is dumped
 without it: it starts where the dump is run. A shell whose current directory
@@ -904,14 +905,14 @@ and width implementations.
   `tee`. On Linux (util-linux):
 
   ```sh
-  fux agent-opts str script program str -q arg str -e arg str -f arg str LOG arg str -c arg str 'make test' arg run
+  fux agent-opts str script program str -q arg str -e arg str -f arg str LOG arg str -c arg str 'make test' arg new-tab
   ```
 
   On macOS and the BSDs, whose `script` takes the command as its last
   words and flushes with `-F`:
 
   ```sh
-  fux agent-opts str script program str -q arg str -F arg str LOG arg str sh arg str -c arg str 'make test' arg run
+  fux agent-opts str script program str -q arg str -F arg str LOG arg str sh arg str -c arg str 'make test' arg new-tab
   ```
 
   LOG holds the raw bytes the program wrote to its terminal; util-linux
@@ -956,7 +957,7 @@ to `fux.log` beside it.
 - Messages are length-prefixed and at most 1 MiB. Saved launch inputs, including pending
   respawns, are limited to 16 MiB per session; dumps use the fuxth bounds above.
 
-Anyone who can open the socket can run anything as you (`run`,
+Anyone who can open the socket can run anything as you (`new-tab`,
 `send-keys`). As with tmux, the socket's permissions are the access
 control. The server never interprets a program: it takes typed requests,
 and from attached terminals typed actions and literal keys for a pane.

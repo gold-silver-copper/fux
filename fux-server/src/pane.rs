@@ -482,8 +482,8 @@ pub enum Process {
     HungUp(Child),
     /// Reading failed unexpectedly: no longer polled, with the cause retained.
     ReadFailed(Child, fuxix::Errno),
-    /// The program `fux run` started exited so: the pane stays, its last
-    /// screen kept to be read.
+    /// The program the pane was started with exited so: the pane stays,
+    /// its last screen kept to be read.
     Exited(Ended),
     /// Respawning (`PaneMut::let_go`): the old program is let go, and the
     /// new one is no program of the pane's till it takes its place.
@@ -527,7 +527,7 @@ impl Process {
 pub enum Runs {
     /// A shell with saved launch inputs: its exit closes the pane.
     Shell(Launch),
-    /// A program `fux run` was given, in place of the shell: its exit
+    /// A program the pane was given, in place of the shell: its exit
     /// leaves the pane, with its last screen and its status
     /// (`Process::Exited`); how it was started, which `fux respawn` starts
     /// again.

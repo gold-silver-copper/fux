@@ -34,7 +34,7 @@ pub enum Choice {
 }
 
 /// Bumped on any change to the frames below.
-pub const PROTOCOL: u32 = 54;
+pub const PROTOCOL: u32 = 55;
 /// The largest frame, kind byte included.
 pub const MAX_FRAME: usize = 1 << 20;
 /// The largest payload one frame carries.
@@ -105,7 +105,7 @@ impl std::fmt::Display for Mismatch {
 }
 
 /// A build of fux as it is told apart from another: its release and its
-/// protocol, as `fux 0.36.0 (protocol 54)`. Builds of one release may
+/// protocol, as `fux 0.36.0 (protocol 55)`. Builds of one release may
 /// speak different protocols.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Build<'a> {

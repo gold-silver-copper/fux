@@ -6,14 +6,14 @@ alone is not isolation. `fux start` starts an empty server.
 
 Words run left to right. `str WORD` pushes text; %2 is a pane, @2 a tab,
 +1 a workspace. Options precede the action. Remaining values print.
-Outside fux, give new tabs a size. `run` requires a workspace;
-`agent-opts` supplies `opts str agent in`.
+Outside fux, give new tabs a size and a workspace: `agent-opts`
+supplies `opts str agent in`.
 
 **Launch and wait for a prompt.** Run with `timeout 30 fux -` and this
 program on stdin; a banner alone is not the prompt:
 
 ```fux
-agent-opts 80 24 size str python3 program str -q arg run
+agent-opts 80 24 size str python3 program str -q arg new-tab
 str '>>>' 5 shows let seen
 seen string print seen version print
 ```
@@ -23,7 +23,7 @@ Run with `timeout 30 fux -` and this program on stdin:
 
 ```fux
 agent-opts 80 24 size str sh program str -c arg
-str 'echo result=42; exit 7' arg run
+str 'echo result=42; exit 7' arg new-tab
 10 until-ended let seen
 seen string print seen str exited get print
 ```
@@ -141,7 +141,7 @@ panes as it begins and answers changes in watch order, not exit chronology.
   observation succeeds immediately, including an unknown exit status.
 
   ```fux
-  agent-opts 80 24 size str cargo program str test arg run
+  agent-opts 80 24 size str cargo program str test arg new-tab
   600 until-ended str exited get
   ```
 - **A bell or notification:** its version's `BELLS`, `counts 2 at`, grows,
@@ -209,7 +209,7 @@ panes as it begins and answers changes in watch order, not exit chronology.
       try:
           for name, seconds in (("a", "0.3"), ("b", "0.05"), ("c", "0.15")):
               answer = fux("agent-opts", "80", "24", "size", "str", "sh", "program",
-                           "str", "-c", "arg", "str", "sleep " + seconds, "arg", "run")
+                           "str", "-c", "arg", "str", "sleep " + seconds, "arg", "new-tab")
               panes[answer.split(":")[0]] = name
           for _ in range(256):
               batch = json.loads(fux("all", "str", next_cursor, "5", "next-events", "json"))
@@ -250,7 +250,7 @@ panes as it begins and answers changes in watch order, not exit chronology.
   (a text it shows) before you type: its startup may drop what comes
   sooner. A command that must run is surer started as the program: `agent-opts
   80 24 size str sh program str -c arg str 'make test; exec
-  "${SHELL:-sh}"' arg run` (fux gives no `SHELL` of its own).
+  "${SHELL:-sh}"' arg new-tab` (fux gives no `SHELL` of its own).
 - **An agent's whole answer:** on the alternate screen a TUI redraws its
   whole screen each frame and nothing scrolls off, so fux keeps no
   history of it. Run it inline (`codex --no-alt-screen`, `claude
@@ -300,7 +300,7 @@ panes as it begins and answers changes in watch order, not exit chronology.
   that its program has not moved on before it reads them, nor what output
   is on its way that fux has not read. A pane closed since fails
   `no_pane` instead (a shell pane closes as its shell exits; a pane
-  `run` started stays, and fails `stale`); a version of another server
+  started with a program stays, and fails `stale`); a version of another server
   run, or with counts the pane can't have had, fails `bad_value`, as for
   `changed`. A version is one pane's: to a
   tab's panes, send each its own; keys to a client go to the pane the
@@ -398,7 +398,7 @@ In bash, a hook after `mark_end` sees the command's `$?`, though
 `PIPESTATUS` then holds `$?` alone. A remote shell (`ssh`) marks commands if
 its startup does. Or run a remote command in a pane of its own, and wait
 for its exit: `fux agent-opts 80 24 size str ssh program str -n arg str HOST arg
-str make arg run`.
+str make arg new-tab`.
 
 ## programs: A program
 
@@ -415,7 +415,7 @@ between steps:
 
 ```fux
 # test.fux: run the tests, wait until they end, read what they printed
-agent-opts str tests name 80 24 size str cargo program str test arg run   # its answer: %2:0.0.0.0.0:RUN
+agent-opts str tests name 80 24 size str cargo program str test arg new-tab   # its answer: %2:0.0.0.0.0:RUN
 begin 600 timeout wait dup counts 4 at 1 eq until  # ENDED, its last count, is 1
 all-history capture
 ```
@@ -526,7 +526,7 @@ read-file`. `X warn` prints on stderr:
 - To keep what a program writes, run it under `script` in its pane, so it
   still writes to a terminal (a pipe, as with `tee`, changes what it
   writes): `agent-opts str script program str -q arg str -e arg str -f arg str
-  LOG arg str -c arg str 'make test' arg run` (util-linux; on macOS and
+  LOG arg str -c arg str 'make test' arg new-tab` (util-linux; on macOS and
   the BSDs, `str -q arg str -F arg str LOG arg str sh arg str -c arg str
   'make test' arg`). LOG holds the terminal's raw bytes (util-linux adds a
   first and last line of its own). `all dump` prints the layout as a program

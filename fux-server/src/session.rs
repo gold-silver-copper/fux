@@ -619,7 +619,8 @@ impl Session {
     ) -> Result<Reply, Error> {
         let pane = self.pane(id)?;
         let Runs::Explicit(launch) = &pane.runs else {
-            let message = format!("{id} runs a shell; respawn restarts what run or split started");
+            let message =
+                format!("{id} runs a shell; respawn restarts a program a pane was started with");
             return Err(fail(Raise::NotRun, message));
         };
         if self.respawning.contains_key(&id) {
@@ -739,8 +740,8 @@ impl Session {
     }
 
     /// The process group `fux signal` signals in a pane: the terminal's
-    /// foreground group (a job its shell runs), or the program `run`
-    /// started; never the shell of a pane that runs one.
+    /// foreground group (a job its shell runs), or the program it was
+    /// started with; never the shell of a pane that runs one.
     fn signalled(&self, target: PaneId) -> Result<process::Pid, Error> {
         let pane = self.pane(target)?;
         if let Process::Respawning = pane.process() {
@@ -2398,7 +2399,7 @@ impl Session {
                 start,
                 options,
             } => {
-                let (cwd, fit, sized) = self.opening((cwd.as_deref(), *size), (here, true))?;
+                let (cwd, fit, sized) = self.opening((cwd.as_deref(), *size), here)?;
                 let new = NewPane::new(start, &cwd, env, *options, sized);
                 let made = self.create_workspace(name.clone(), None, fit, new, now)?;
                 self.follow(here, made.ws, None);
@@ -2413,41 +2414,19 @@ impl Session {
                 start,
                 options,
             } => {
-                let (cwd, fit, sized) = self.opening((cwd.as_deref(), *size), (here, true))?;
+                let (cwd, fit, sized) = self.opening((cwd.as_deref(), *size), here)?;
                 if let Some(name) = name {
                     self.check_tab_name(name, None)?;
                 }
                 let new = NewPane::new(start, &cwd, env, *options, sized);
-                // A workspace named that is not there is made, as `run`
-                // makes one, its first tab this one.
+                // A workspace named that is not there is made, its first tab
+                // this one.
                 let made = self.create_tab(target.as_ref(), here, name.clone(), fit, new, now)?;
                 let at = Spot {
                     tab: made.tab,
                     pane: None,
                 };
                 self.follow(here, made.ws, Some(at));
-                Ok(acted(self.pane(made.pane)?.version(self.run)))
-            }
-            Command::Run {
-                workspace,
-                name,
-                size,
-                cwd,
-                env,
-                argv,
-                options,
-            } => {
-                // Its place is out of every client's way: no client follows.
-                let (dir, fit, sized) = self.opening((cwd.as_deref(), *size), (here, false))?;
-                if let Some(name) = name {
-                    check_name(name)?;
-                }
-                let start = Start::Program(argv.clone());
-                let new = NewPane::new(&start, &dir, env, *options, sized);
-                let made = self.create_tab(Some(workspace), here, None, fit, new, now)?;
-                if let Some(name) = name {
-                    self.pane_mut(made.pane)?.rename(name.clone());
-                }
                 Ok(acted(self.pane(made.pane)?.version(self.run)))
             }
             &Command::Respawn {
@@ -2612,19 +2591,19 @@ impl Session {
         }
     }
 
-    /// What `new-workspace`, `new-tab` and `run` do before their pane
-    /// starts: the directory it starts in found,
-    /// and its tab's fit and the size settling gives its pane: if `follows`,
-    /// its client then shows it, on its screen, in the cell its terminal
-    /// said; else its fit's, in no cell, as no terminal draws it.
+    /// What `new-workspace` and `new-tab` do before their pane starts: the
+    /// directory it starts in found, and its tab's fit and the size settling
+    /// gives its pane: with a client asking, which then shows it, on its
+    /// screen, in the cell its terminal said; else its fit's, in no cell, as
+    /// no terminal draws it.
     fn opening(
         &mut self,
         (dir, size): (Option<&Path>, command::Size),
-        (here, follows): (Here, bool),
+        here: Here,
     ) -> Result<(PathBuf, Fit, Starts), Error> {
         let cwd = self.start_dir(here, dir, None)?;
         let fit = self.new_fit(size, here)?;
-        let follower = (here.client().filter(|_| follows)).and_then(|c| self.views.get(&c));
+        let follower = here.client().and_then(|c| self.views.get(&c));
         let screen = (follower.filter(|view| view.sizes())).and_then(Self::screen_size);
         let cell = follower.and_then(|view| view.terminal.cell);
         Ok((cwd, fit, (screen.unwrap_or(fit.size()), cell)))
@@ -3401,7 +3380,7 @@ fn no_tab_named<'a>(
     if tabs.is_empty() {
         return Ok(());
     }
-    // `run` with such a name: `str NAME tab` would not know which, so the
+    // A tab with such a name: `str NAME tab` would not know which, so the
     // program is not started. The tabs, then their panes.
     let panes = (tabs.iter()).flat_map(|t| t.root().panes());
     let tabs = tabs.iter().map(|t| t.id()).collect();
@@ -4026,7 +4005,7 @@ mod tests {
         let (mut s, _) = attached(12, 50)?;
         run(
             &mut s,
-            "opts str agent in 80 24 size str /bin/cat program run drop",
+            "opts str agent in 80 24 size str /bin/cat program new-tab drop",
         )?;
         s.end_program(PaneId::of(2), Ended::Lost);
         for code in ["ls listing", "%2 info listing"] {
@@ -4166,13 +4145,13 @@ mod tests {
         assert_eq!(
             output(
                 &mut s,
-                "opts str agent in 80 24 size str /bin/cat program run let held held str version get let before held pane kill held str version get before eq"
+                "opts str agent in 80 24 size str /bin/cat program new-tab let held held str version get let before held pane kill held str version get before eq"
             )?,
             "true\n"
         );
         run(
             &mut s,
-            "opts str agent in 80 24 size str /bin/cat program run drop",
+            "opts str agent in 80 24 size str /bin/cat program new-tab drop",
         )?;
         assert_eq!(
             output(
@@ -4930,14 +4909,14 @@ mod tests {
                     .into(),
             ),
         )?;
-        let command = Command::Run {
-            options: crate::pane::tests::options(0)?,
-            workspace: command::WsRef::New,
+        let command = Command::NewTab {
+            target: Some(command::WsRef::New),
             name: None,
             size: Some(fux_wire::command::Screen::new(24, 80)?),
             cwd: Some("/".into()),
             env,
-            argv: command::Program::new("/bin/cat".into(), Vec::new())?,
+            start: command::Start::Program(command::Program::new("/bin/cat".into(), Vec::new())?),
+            options: crate::pane::tests::options(0)?,
         };
         let origin = Origin::Cli(Caller::default());
         let mut refused = false;
@@ -4967,14 +4946,14 @@ mod tests {
                     .into(),
             ),
         )?;
-        let command = Command::Run {
-            options: crate::pane::tests::options(0)?,
-            workspace: command::WsRef::Name("quoted".into()),
+        let command = Command::NewTab {
+            target: Some(command::WsRef::Name("quoted".into())),
             name: None,
             size: Some(fux_wire::command::Screen::new(24, 80)?),
             cwd: Some("/".into()),
             env,
-            argv: command::Program::new("/bin/cat".into(), Vec::new())?,
+            start: command::Start::Program(command::Program::new("/bin/cat".into(), Vec::new())?),
+            options: crate::pane::tests::options(0)?,
         };
         for _ in 0..3 {
             s.execute(&command, &Origin::Cli(Caller::default()), Instant::now())?;
@@ -5346,7 +5325,7 @@ mod tests {
     #[test]
     fn a_paste_into_an_exited_pane_is_refused() -> TestResult {
         let mut s = started()?;
-        run(&mut s, "agent-opts 80 24 size str /bin/cat program run")?;
+        run(&mut s, "agent-opts 80 24 size str /bin/cat program new-tab")?;
         s.end_program(PaneId::of(2), fux_wire::answer::Ended::Exited(3));
         s.copied("x".into(), None, &[])?;
         let pasted = run(&mut s, "%2 newest paste-buffer");
@@ -5357,7 +5336,7 @@ mod tests {
     #[test]
     fn an_ended_pane_asks_for_no_reports_and_refuses_keys() -> TestResult {
         let (mut s, c) = attached(24, 80)?;
-        run(&mut s, "agent-opts 80 23 size str /bin/cat program run")?;
+        run(&mut s, "agent-opts 80 23 size str /bin/cat program new-tab")?;
         run(&mut s, &format!("str {c} client str +2 workspace show"))?;
         let id = PaneId::of(2);
         // A test's session starts no program: one is put in the pane.
@@ -5384,7 +5363,7 @@ mod tests {
     #[test]
     fn a_respawn_reads_what_the_old_program_left() -> TestResult {
         let mut s = started()?;
-        run(&mut s, "agent-opts 80 24 size str /bin/cat program run")?;
+        run(&mut s, "agent-opts 80 24 size str /bin/cat program new-tab")?;
         let id = PaneId::of(2);
         s.out(id, b"\x1b[?2026h\x1b]2;old\x07\x07");
         let mut pane = s.parts.pane_mut(id).ok_or("the pane")?;
@@ -5699,7 +5678,7 @@ mod tests {
     #[test]
     fn output_cut_at_an_end_is_told_with_the_end() -> TestResult {
         let (mut s, c) = attached(24, 80)?;
-        run(&mut s, "agent-opts 80 23 size str /bin/cat program run")?;
+        run(&mut s, "agent-opts 80 23 size str /bin/cat program new-tab")?;
         run(&mut s, &format!("str {c} client str +2 workspace show"))?;
         let id = PaneId::of(2);
         let notice = |s: &Session| s.views.get(&c).and_then(|v| v.notice.clone());
@@ -5752,7 +5731,7 @@ mod tests {
     #[test]
     fn a_respawn_refused_reads_nothing_of_the_old_program() -> TestResult {
         let mut s = started()?;
-        run(&mut s, "agent-opts 80 24 size str /bin/cat program run")?;
+        run(&mut s, "agent-opts 80 24 size str /bin/cat program new-tab")?;
         let id = PaneId::of(2);
         s.out(id, b"\x1b[?2026h\x1b]2;old\x07");
         // Programs are started, as a server starts them.
@@ -5810,7 +5789,7 @@ mod tests {
     #[test]
     fn a_replacements_caller_is_current_while_old_output_drains() -> TestResult {
         let mut s = started()?;
-        run(&mut s, "agent-opts 80 24 size str /bin/cat program run")?;
+        run(&mut s, "agent-opts 80 24 size str /bin/cat program new-tab")?;
         let id = PaneId::of(2);
         let left: Vec<_> = std::iter::repeat_n(crate::pane::tests::spends_the_budget(24, 80), 4)
             .flatten()
@@ -5867,7 +5846,7 @@ mod tests {
         let mut s = started()?;
         run(
             &mut s,
-            "agent-opts 80 24 size 4096 history-bytes false reflow 3 alternate-scroll-lines 1024 picture-bytes false program-clipboard str /bin/cat program run",
+            "agent-opts 80 24 size 4096 history-bytes false reflow 3 alternate-scroll-lines 1024 picture-bytes false program-clipboard str /bin/cat program new-tab",
         )?;
         let (id, origin) = (PaneId::of(2), Origin::Cli(Caller::default()));
         let mut stream = crate::journal::Reader::new(
@@ -5925,7 +5904,7 @@ mod tests {
     #[test]
     fn a_pane_closed_while_respawning_abandons_it() -> TestResult {
         let (mut s, c) = attached(24, 80)?;
-        run(&mut s, "agent-opts 80 23 size str /bin/cat program run")?;
+        run(&mut s, "agent-opts 80 23 size str /bin/cat program new-tab")?;
         run(&mut s, &format!("str {c} client str +2 workspace show"))?;
         let id = PaneId::of(2);
         s.out(id, &crate::pane::tests::spends_the_budget(23, 80));
@@ -5959,7 +5938,7 @@ mod tests {
     fn input_is_refused_while_respawning() -> TestResult {
         for (kill, exiting) in [(true, None), (false, Some(Ended::Exited(0)))] {
             let mut s = started()?;
-            run(&mut s, "agent-opts 80 24 size str /bin/cat program run")?;
+            run(&mut s, "agent-opts 80 24 size str /bin/cat program new-tab")?;
             let id = PaneId::of(2);
             let argv = ["/bin/cat".to_owned()];
             let size = (sized(24, 80)?, None);
@@ -6002,7 +5981,7 @@ mod tests {
     #[test]
     fn a_held_frame_is_a_turn_of_the_respawn() -> TestResult {
         let mut s = started()?;
-        run(&mut s, "agent-opts 80 24 size str /bin/cat program run")?;
+        run(&mut s, "agent-opts 80 24 size str /bin/cat program new-tab")?;
         let id = PaneId::of(2);
         s.out(id, b"\x1b[?2026hheld");
         let begun = s.begin_now(respawn_of(id, &[])?, &Origin::Cli(Caller::default()));
@@ -6019,7 +5998,7 @@ mod tests {
     #[test]
     fn a_resize_while_respawning_is_kept() -> TestResult {
         let mut s = started()?;
-        run(&mut s, "agent-opts 80 24 size str /bin/cat program run")?;
+        run(&mut s, "agent-opts 80 24 size str /bin/cat program new-tab")?;
         let id = PaneId::of(2);
         s.out(id, &crate::pane::tests::spends_the_budget(24, 80));
         let begun = s.begin_now(respawn_of(id, &[])?, &Origin::Cli(Caller::default()));
@@ -6036,7 +6015,7 @@ mod tests {
     #[test]
     fn a_respawned_program_that_ends_first_is_told_exited() -> TestResult {
         let mut s = started()?;
-        run(&mut s, "agent-opts 80 24 size str /bin/cat program run")?;
+        run(&mut s, "agent-opts 80 24 size str /bin/cat program new-tab")?;
         let id = PaneId::of(2);
         s.out(id, &crate::pane::tests::spends_the_budget(24, 80));
         let mut stream = crate::journal::Reader::new(
@@ -6087,7 +6066,7 @@ mod tests {
     #[test]
     fn a_program_starts_in_the_cell_of_the_terminal_drawing_it() -> TestResult {
         let (mut s, c) = attached(24, 80)?;
-        run(&mut s, "agent-opts 80 23 size str /bin/cat program run")?;
+        run(&mut s, "agent-opts 80 23 size str /bin/cat program new-tab")?;
         run(&mut s, &format!("str {c} client str +2 workspace show"))?;
         s.input(c, b"\x1b[6;20;10t");
         let id = PaneId::of(2);
@@ -6119,16 +6098,19 @@ mod tests {
     fn a_tab_its_client_follows_starts_in_its_terminals_cell() -> TestResult {
         let (mut s, c) = attached(24, 80)?;
         s.input(c, b"\x1b[6;20;10t");
-        let origin = Origin::Client(c);
-        let here = s.here(&origin)?;
-        let mut cell = |follows: bool| {
-            let opening = s.opening((Some(Path::new("/")), None), (here, follows));
+        let mut cell = |origin: Origin, size| {
+            let here = s.here(&origin).map_err(|e| e.to_string())?;
+            let opening = s.opening((Some(Path::new("/")), size), here);
             opening
                 .map(|(_, _, (_, cell))| cell)
                 .map_err(|e| e.to_string())
         };
-        assert_eq!(cell(true)?, fux_vt::CellSize::new(10, 20));
-        assert_eq!(cell(false)?, None);
+        assert_eq!(
+            cell(Origin::Client(c), None)?,
+            fux_vt::CellSize::new(10, 20)
+        );
+        let size = Some(fux_wire::command::Screen::new(24, 80)?);
+        assert_eq!(cell(Origin::Cli(Caller::default()), size)?, None);
         Ok(())
     }
 
@@ -6207,7 +6189,7 @@ mod tests {
     #[test]
     fn a_respawn_with_no_host_is_told_no_cell() -> TestResult {
         let (mut s, c) = attached(24, 80)?;
-        run(&mut s, "agent-opts 80 23 size str /bin/cat program run")?;
+        run(&mut s, "agent-opts 80 23 size str /bin/cat program new-tab")?;
         run(&mut s, &format!("str {c} client str +2 workspace show"))?;
         s.input(c, b"\x1b[6;20;10t");
         s.out(PaneId::of(2), b"x");
@@ -6221,7 +6203,7 @@ mod tests {
     #[test]
     fn input_an_ended_program_never_read_is_told() -> TestResult {
         let (mut s, c) = attached(24, 80)?;
-        run(&mut s, "agent-opts 80 23 size str /bin/cat program run")?;
+        run(&mut s, "agent-opts 80 23 size str /bin/cat program new-tab")?;
         run(&mut s, &format!("str {c} client str +2 workspace show"))?;
         let id = PaneId::of(2);
         let notice = |s: &Session| s.views.get(&c).and_then(|v| v.notice.clone());
@@ -6267,7 +6249,7 @@ mod tests {
     #[test]
     fn a_respawned_program_reads_no_report_the_ended_one_asked_for() -> TestResult {
         let (mut s, c) = attached(24, 80)?;
-        run(&mut s, "agent-opts 80 23 size str /bin/cat program run")?;
+        run(&mut s, "agent-opts 80 23 size str /bin/cat program new-tab")?;
         run(&mut s, &format!("str {c} client str +2 workspace show"))?;
         let id = PaneId::of(2);
         let queued = |s: &Session| {
@@ -6288,7 +6270,7 @@ mod tests {
     #[test]
     fn an_exit_told_is_not_told_again_at_a_respawn() -> TestResult {
         let mut s = started()?;
-        run(&mut s, "agent-opts 80 24 size str /bin/cat program run")?;
+        run(&mut s, "agent-opts 80 24 size str /bin/cat program new-tab")?;
         let lines = told(&mut s, |s| {
             s.end_program(PaneId::of(2), fux_wire::answer::Ended::Exited(3));
             let _ = run(s, "%2 respawn");
@@ -6301,7 +6283,7 @@ mod tests {
     #[test]
     fn a_pane_respawned_twice_in_its_grace_kills_both() -> TestResult {
         let mut s = started()?;
-        run(&mut s, "agent-opts 80 24 size str /bin/cat program run")?;
+        run(&mut s, "agent-opts 80 24 size str /bin/cat program new-tab")?;
         // A test's session starts no program: each is put in the pane.
         let argv = ["/bin/cat".to_owned()];
         for _ in 0..2 {
@@ -6347,7 +6329,10 @@ mod tests {
     fn exit_waits_for_the_last_screen_including_held_frames() -> TestResult {
         for (held, budgeted) in [(false, true), (true, false), (true, true)] {
             let mut s = started()?;
-            run(&mut s, "agent-opts 80 24 size str /bin/true program run")?;
+            run(
+                &mut s,
+                "agent-opts 80 24 size str /bin/true program new-tab",
+            )?;
             let id = PaneId::of(2);
             if !held {
                 let argv = ["/bin/sh", "-c", "exit 0"].map(str::to_owned);
@@ -6424,7 +6409,10 @@ mod tests {
     fn a_program_whose_terminal_is_written_on_still_exits() -> TestResult {
         // A large screen, where each ED is spent as 40,000 cells.
         let (mut s, _) = super::testing::attached(201, 200)?;
-        run(&mut s, "agent-opts 200 200 size str /bin/true program run")?;
+        run(
+            &mut s,
+            "agent-opts 200 200 size str /bin/true program new-tab",
+        )?;
         let id = PaneId::of(2);
         let argv = ["/bin/sh", "-c", "while :; do printf '\\033[2J'; done"].map(str::to_owned);
         let child = process::spawn(&argv, Path::new("/"), (&[], &[]), (sized(4, 20)?, None))?;
@@ -6507,7 +6495,7 @@ mod tests {
         );
         assert_eq!(queued(&mut s), Some(Vec::new()), "nothing sent");
         // A program's end is a change too: stale, not `not_running`.
-        run(&mut s, "agent-opts 80 24 size str /bin/cat program run")?;
+        run(&mut s, "agent-opts 80 24 size str /bin/cat program new-tab")?;
         let seen = s.pane(PaneId::of(2))?.version(s.run);
         s.end_program(PaneId::of(2), fux_wire::answer::Ended::Exited(0));
         let ended = output(&mut s, &format!("str {seen} expect str x text send-keys"));
@@ -7357,7 +7345,7 @@ mod tests {
         output_as(
             &mut s,
             Some(c),
-            "agent-opts str /bin/cat program str / cwd run me swap show",
+            "agent-opts str /bin/cat program str / cwd new-tab drop",
         )?;
         let pane = s.focused(c).ok_or("pane")?;
         s.out(pane, b"old text");
@@ -7519,7 +7507,7 @@ mod tests {
         }
         run(
             &mut s,
-            "agent-opts 80 24 size str web name str /bin/cat program run drop",
+            "agent-opts 80 24 size str /bin/cat program new-tab str web rename",
         )?;
         assert_eq!(
             output(&mut s, "str web pane dup tab str name get")?,
@@ -7679,7 +7667,7 @@ mod tests {
     #[test]
     fn structural_and_context_recovery_codes_are_shared() -> TestResult {
         let (mut s, _) = attached(10, 40)?;
-        for source in ["opts run", "opts str x arg new-tab", "%1 send-keys"] {
+        for source in ["opts str x arg new-tab", "%1 send-keys"] {
             let caught = output(
                 &mut s,
                 &format!("str usage try {source} drop catch 2drop str recovered end"),
@@ -7697,19 +7685,70 @@ mod tests {
     }
 
     #[test]
-    fn run_requires_an_explicit_workspace() -> TestResult {
-        let mut s = started()?;
-        let ids = s.ids.clone();
-        let error = output(&mut s, "opts 80 24 size str /bin/cat program run")
-            .err()
-            .ok_or("ran")?;
-        assert!(error.contains("run needs a workspace"), "{error}");
-        assert_eq!(s.ids, ids);
-        run(
+    fn new_tab_follows_sizes_and_lives_as_its_caller_asks() -> TestResult {
+        let (mut s, c) = attached(24, 80)?;
+        let viewport = s.pane(PaneId::of(1))?.size();
+        let viewport = (viewport.cols(), viewport.rows());
+        // From a key or prompt it follows, on its client's screen; from the
+        // command line no client moves, and it is laid out on its size.
+        for (from, source, follows, size, program) in [
+            (Some(c), "opts str / cwd new-tab", true, viewport, false),
+            (
+                Some(c),
+                "opts 100 30 size str / cwd str cat program new-tab",
+                true,
+                viewport,
+                true,
+            ),
+            (
+                None,
+                "agent-opts 100 30 size str / cwd new-tab",
+                false,
+                (100, 30),
+                false,
+            ),
+            (
+                None,
+                "agent-opts 100 30 size str / cwd str cat program new-tab",
+                false,
+                (100, 30),
+                true,
+            ),
+        ] {
+            let shown = s.focused(c);
+            output_as(&mut s, from, &format!("{source} drop"))?;
+            let made = *s.parts.panes().keys().max().ok_or("a pane")?;
+            let pane = s.pane(made)?;
+            assert_eq!((pane.size().cols(), pane.size().rows()), size, "{source}");
+            assert_eq!(matches!(pane.runs, Runs::Explicit(_)), program, "{source}");
+            let now = s.focused(c);
+            assert_eq!(now, if follows { Some(made) } else { shown }, "{source}");
+        }
+        // Refused before anything starts: no workspace or size from the
+        // command line, and a name another tab or a workspace has.
+        output(
             &mut s,
-            "agent-opts 80 24 size str /bin/cat program run drop",
+            "agent-opts 80 24 size str web name str cat program new-tab drop",
         )?;
-        assert_eq!(output(&mut s, "str agent workspace")?, "+2\n");
+        for (source, code) in [
+            ("opts 80 24 size new-tab", "no_target:"),
+            ("agent-opts new-tab", "size:"),
+            ("agent-opts 80 24 size str web name new-tab", "name_taken:"),
+            (
+                "agent-opts 80 24 size str agent name new-tab",
+                "name_taken:",
+            ),
+        ] {
+            let ids = s.ids.clone();
+            let refused = output(&mut s, source).err().ok_or(source)?;
+            assert!(refused.starts_with(code), "{source}: {refused}");
+            assert_eq!(s.ids, ids, "{source}");
+        }
+        // The name is the tab's; its pane's is given by a rename of its own.
+        assert_eq!(output(&mut s, "str web tab panes")?, "%6\n");
+        assert!(output(&mut s, "str web pane").is_err());
+        run(&mut s, "str web tab panes 0 at str ed rename")?;
+        assert_eq!(output(&mut s, "str ed pane str web tab")?, "%6\n@6\n");
         Ok(())
     }
 
@@ -8074,7 +8113,7 @@ mod tests {
         run(&mut source, "%1 str horizontal axis split drop")?;
         run(
             &mut source,
-            "opts +1 in 80 24 size str cat name str /bin/cat program run str new-workspace move",
+            "opts +1 in 80 24 size str /bin/cat program new-tab dup str cat rename str new-workspace move",
         )?;
         run(
             &mut source,
@@ -8152,14 +8191,14 @@ mod tests {
             .join(std::ffi::OsStr::from_bytes(b"caf\xe9"));
         std::fs::create_dir_all(&dir)?;
         let mut s = started()?;
-        let program = Command::Run {
-            options: fux::script::default_state()?.preferences.pane_options(),
-            workspace: WsRef::Name("agent".into()),
+        let program = Command::NewTab {
+            target: Some(WsRef::Name("agent".into())),
             name: None,
             size: Some(fux_wire::command::Screen::new(24, 80)?),
             cwd: Some(dir.clone()),
             env: fux_wire::command::EnvPatch::default(),
-            argv: command::Program::new("cat".into(), Vec::new())?,
+            start: command::Start::Program(command::Program::new("cat".into(), Vec::new())?),
+            options: fux::script::default_state()?.preferences.pane_options(),
         };
         s.execute(&program, &Origin::Cli(Caller::default()), Instant::now())?;
         let dump = s.dump_recipe(None)?;
@@ -8601,7 +8640,7 @@ mod journal_tests {
         let (mut s, client) = testing::attached(24, 80)?;
         run(
             &mut s,
-            "agent-opts 80 24 size str /bin/cat program run drop",
+            "agent-opts 80 24 size str /bin/cat program new-tab drop",
         )?;
         let id = PaneId::of(2);
         let from = s.parts.journal().end(s.run);
@@ -8700,7 +8739,7 @@ mod journal_tests {
         );
         run(
             &mut s,
-            "agent-opts 80 24 size false program-clipboard str /bin/cat program run drop",
+            "agent-opts 80 24 size false program-clipboard str /bin/cat program new-tab drop",
         )?;
         let from = s.parts.journal().end(s.run);
         s.output(PaneId::of(2), b"\x1b]52;c;bm8=\x07", Instant::now());

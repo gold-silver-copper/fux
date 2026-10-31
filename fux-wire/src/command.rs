@@ -850,6 +850,9 @@ wire! {
             start: Start,
             options: PaneOptions,
         },
+        /// A tab with a shell or a program, in the workspace given (made if
+        /// named and not there), else the caller's; a client asking from a
+        /// key or prompt is moved to it.
         NewTab {
             target: Option<WsRef>,
             name: Option<String>,
@@ -873,18 +876,7 @@ wire! {
             shares: Option<(NonZeroU32, NonZeroU32)>,
             options: PaneOptions,
         },
-        /// A program, started in place of a shell in a tab of its own, in a
-        /// workspace no client is moved to.
-        Run {
-            workspace: WsRef,
-            name: Option<String>,
-            size: Size,
-            cwd: Option<PathBuf>,
-            env: EnvPatch,
-            argv: Program,
-            options: PaneOptions,
-        },
-        /// The program `run` started, started again in its pane.
+        /// The program a pane was started with, started again in its pane.
         Respawn {
             target: PaneId,
             /// Ends it first if it still runs.
@@ -910,7 +902,7 @@ wire! {
             target: AnyRef,
         },
         /// A signal to what runs in the pane's foreground, what its terminal's
-        /// keys reach (a job its shell runs, or the program `run` started), never
+        /// keys reach (a job its shell runs, or the program it was started with), never
         /// a shell itself: for a program that ignores Ctrl-C and hangups.
         Signal {
             target: PaneId,
@@ -1238,7 +1230,6 @@ impl Command {
             C::NewWorkspace { .. }
             | C::NewTab { .. }
             | C::Split { .. }
-            | C::Run { .. }
             | C::Respawn { .. }
             | C::Notify { .. }
             | C::Resize(_)

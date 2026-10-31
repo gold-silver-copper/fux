@@ -13,7 +13,7 @@ fn held_handles_refuse_another_server_before_mutating_it() -> Outcome {
     let a = Server::start("")?;
     let b = Server::start("")?;
     for server in [&a, &b] {
-        server.words("agent-opts 80 24 size str cat program run")?;
+        server.words("agent-opts 80 24 size str cat program new-tab")?;
     }
     // A scoped attach must refuse the foreign run without changing b.
     std::fs::write(
@@ -33,7 +33,7 @@ fn held_handles_refuse_another_server_before_mutating_it() -> Outcome {
         ("%2 capture expect str forbidden text", "send-keys"),
         ("%2 capture changed", "0 timeout wait"),
         ("%2", "%1 swap-with"),
-        ("opts %2 workspace in", "str cat program run"),
+        ("opts %2 workspace in", "str cat program new-tab"),
         ("opts %2 workspace in 20 10 size", "attach"),
         (
             "%2 str version get let v %2 kill str closed try v changed wait catch drop end",
@@ -111,7 +111,7 @@ fn a_background_descendant_cannot_be_here_after_respawn() -> Outcome {
         "str",
         &script,
         "arg",
-        "run",
+        "new-tab",
     ])?;
     let descendant = pid_in(&pid)?;
     let _reap = Reap(vec![descendant]);
@@ -176,7 +176,7 @@ fn reserved_environment_names_are_refused_before_spawning() -> Outcome {
             "str",
             "cat",
             "program",
-            "run",
+            "new-tab",
         ])?;
         for (out, code) in [(inherited, "config:"), (explicit, "bad_value:")] {
             assert_eq!(out.status, 1, "{name}: {}", out.stderr);
@@ -211,7 +211,7 @@ fn reserved_environment_names_are_refused_before_spawning() -> Outcome {
         "str",
         "echo \"$FUX_PANE $FUX_EXTRA\"",
         "arg",
-        "run",
+        "new-tab",
     ])?;
     server.exits("%2")?;
     assert_eq!(server.ok(&["%2", "capture"])?, "%2:0 allowed\n");
@@ -236,7 +236,7 @@ fn foreground_metadata_observes_exec_and_keeps_launch_arguments_separate() -> Ou
         "str",
         "cd /; exec sleep 300",
         "arg",
-        "run",
+        "new-tab",
     ])?;
     eventually("exec sleep", || {
         Ok(server

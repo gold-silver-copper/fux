@@ -62,7 +62,7 @@ WORD` pushes WORD as text. What is left is printed. What a word that acts
 takes (options, keys, what to read) goes on the pane before it (`%2 str y
 text send-keys`, `%2 all-history capture`); only
 {from_opts} start from opts (`opts str jobs in str make
-program str test arg run`). A new pane is laid out on a size given
+program str test arg new-tab`). A new pane is laid out on a size given
 (`opts 80 24 size …`), else the caller's own screen or tab (`fux` run in
 a pane): run from outside fux, a size must be given, as fux makes none
 up. An action answers at once,
@@ -462,7 +462,7 @@ mod tests {
             assert!(explain(&doc.name).is_some(), "{}", doc.name);
         }
         // Each word's options go on what it takes.
-        for (name, on) in [("send-keys", "after the pane"), ("run", "after opts")] {
+        for (name, on) in [("send-keys", "after the pane"), ("new-tab", "after opts")] {
             let explained = explain(name).unwrap_or_default();
             assert!(explained.contains(&format!("options, {on}")), "{explained}");
         }
