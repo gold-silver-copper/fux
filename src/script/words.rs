@@ -385,7 +385,6 @@ words! {
     Screen {
         Clients Choose "choose" "client title list list list callback --" "a list of [payload,label] rows; current and selected are [] or [index]; callback receives captured arguments then client payload and leaves nothing" "fux str c1 client str hosts list list str host str Host end end list end list 0 end str 'drop drop' choose";
         Clients Prompt "prompt" "client name text callback --" "a line to type, titled name and starting as text: its submit key (Enter) runs code, the line on its stack" "fux str c1 client str 'rename tab' str logs str '@2 swap rename' prompt";
-        Clients Confirm "confirm" "client text callback --" "a question: its yes key (y) runs code" "fux str c1 client str 'close %3?' str '%3 kill' confirm";
         Clients CopyMode "copy-mode" "client --" "copy and select in the focused pane" "fux str c1 client copy-mode";
         Clients CommandPrompt "command-prompt" "client --" "a prompt for fuxth" "fux str c1 client command-prompt";
     }
@@ -399,7 +398,7 @@ words! {
         Config Unbind "unbind" "keys --" "keys after the prefix run nothing" "str 'g v' unbind";
         Config UnbindRoot "unbind-root" "key --" "a key without the prefix runs nothing" "str M-n unbind-root";
         Config BindAction "bind-action" "key code --" "an explicit executable list callback, receiving client payload; Escape cannot be bound" "str r str rename-prompt bind-action str rename label";
-        Config BindIn "bind-in" "screen key action --" "in one of fux's own screens (copy list line confirm), a key does one of its actions, as the default keys bind each" "str copy str g str top bind-in str top label";
+        Config BindIn "bind-in" "screen key action --" "in one of fux's own screens (copy list line), a key does one of its actions, as the default keys bind each" "str copy str g str top bind-in str top label";
         Config UnbindIn "unbind-in" "screen key --" "in that screen, the key does what it would unbound: in a line, a character types itself; a named key with modifiers does what it does alone" "str copy str g unbind-in";
         Config UnbindAll "unbind-all" "--" "no bindings at all, nor keys in fux's screens (Escape still leaves them)" "unbind-all";
     }
@@ -2224,11 +2223,6 @@ impl Host<'_> {
                     line,
                     action,
                 })
-            }
-            Screen::Confirm => {
-                let question = text(&next()?)?;
-                let action = Self::action(&next()?)?;
-                Open::Confirm(fux_wire::callback::Confirm { question, action })
             }
         };
         match here {

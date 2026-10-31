@@ -74,8 +74,7 @@ const BINDINGS: &[&str] = &[
     "wml", "rh", "rj", "rk", "rl", "mh", "mj", "mk", "ml",
 ];
 
-/// Keys for overlays: arrows, paging, Enter, Esc, and letters lists and
-/// confirmations take.
+/// Keys for overlays: arrows, paging, Enter, Esc, and letters lists take.
 const OVERLAY: &[&str] = &[
     "\x1b[A", "\x1b[B", "\x1b[5~", "\x1b[6~", "\x1b[H", "\x1b[F", "\r", "\x1b", "j", "k", "y", "n",
     "q", "r", "x", "h", "l", "\x7f",

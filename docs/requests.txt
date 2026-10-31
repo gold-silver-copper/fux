@@ -115,7 +115,6 @@ ClientAction::SelectTab pick: Pick<TabId>
 ClientAction::SelectWorkspace pick: Pick<WsRef>
 Open::List list: ListScreen
 Open::Prompt prompt: Prompt
-Open::Confirm confirm: Confirm
 Open::Copy
 ListScreen title: String, items: Vec<Item>, current: Option<usize>, selected: usize, about: Option<(AnyRef, Option<command::Run>)>, action: Callback, client: Data
 Item label: String, payload: Data
@@ -130,7 +129,6 @@ Data::Client v: ClientId, run: Option<Run>
 Data::All
 Callback code: String, args: Vec<Data>
 Prompt title: String, line: String, action: Option<Callback>
-Confirm question: String, action: Callback
 PanePick::Step step: Sibling
 PanePick::Id id: PaneId
 PanePick::Last

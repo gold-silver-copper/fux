@@ -1084,13 +1084,6 @@ pub fn compose_held(
             ];
             surface(grid, view, &lines);
         }
-        Mode::Panel(Panel::Confirm { question, hints }) => {
-            let lines: [Line<'_>; 2] = [
-                (question.as_str().into(), panel.with_bold(true)),
-                (hinted(hints).into(), panel),
-            ];
-            surface(grid, view, &lines);
-        }
         // A repeat mode shows in the bar, leaving the layout in view.
         Mode::Normal | Mode::Copy(_) | Mode::Panel(Panel::Repeat(_)) => {}
     }

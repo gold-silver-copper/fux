@@ -158,14 +158,12 @@ pub const JOB_BYTES: usize = 4 << 20;
 pub enum Open {
     List(ListScreen),
     Prompt(Prompt),
-    Confirm(Confirm),
     Copy,
 }
 
 crate::wire::shaped!(enum Open {
     List(list: ListScreen),
     Prompt(prompt: Prompt),
-    Confirm(confirm: Confirm),
     Copy,
 });
 
@@ -180,11 +178,7 @@ impl Wire for Open {
                 out.push(1);
                 prompt.put(out);
             }
-            Self::Confirm(confirm) => {
-                out.push(2);
-                confirm.put(out);
-            }
-            Self::Copy => out.push(3),
+            Self::Copy => out.push(2),
         }
     }
     fn get(r: &mut crate::wire::Reader<'_>) -> Result<Self, crate::wire::Error> {
@@ -192,8 +186,7 @@ impl Wire for Open {
             Ok(match u8::get(r)? {
                 0 => Self::List(ListScreen::get(r)?),
                 1 => Self::Prompt(Prompt::get(r)?),
-                2 => Self::Confirm(Confirm::get(r)?),
-                3 => Self::Copy,
+                2 => Self::Copy,
                 tag => return Err(crate::wire::Error::Tag("screen", tag)),
             })
         })
@@ -230,15 +223,6 @@ pub struct Prompt {
     /// None: the line is fuxth to run. Some: fuxth run with the line on its
     /// stack, a string.
     pub action: Option<Callback>,
-}
-
-wire! {
-    /// A question, and the fuxth its yes runs.
-    #[derive(Clone, Debug, PartialEq, Eq)]
-    pub struct Confirm {
-        pub question: String,
-        pub action: Callback,
-    }
 }
 
 // Its line goes on the wire as its text.
@@ -302,7 +286,6 @@ impl Open {
                 .capacity()
                 .saturating_add(p.line.before().len().saturating_add(p.line.after().len()))
                 .saturating_add(p.action.as_ref().map_or(0, callback)),
-            Open::Confirm(c) => c.question.capacity().saturating_add(callback(&c.action)),
             Open::Copy => 0,
         })
     }

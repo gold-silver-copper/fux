@@ -3279,16 +3279,17 @@ pub(crate) mod tests {
     /// makes it and from the screen that admits it alike.
     #[test]
     fn callback_source_past_its_bytes_is_too_long_from_the_word_and_admission() -> TestResult {
-        use fux_wire::callback::{Callback, Confirm, Open};
+        use fux_wire::callback::{Callback, Open, Prompt};
         let long: String = std::iter::repeat_n(' ', crate::screens::ACTION_MAX + 1).collect();
-        let word = format!("str c1 client str sure? str '{long}' confirm");
+        let word = format!("str c1 client str name str '' str '{long}' prompt");
         let word = evaluate(&word, None, &mut Refuse, &mut Vec::new());
-        let open = Open::Confirm(Confirm {
-            question: "sure?".into(),
-            action: Callback {
+        let open = Open::Prompt(Prompt {
+            title: "name".into(),
+            line: fux_wire::act::Line::new(String::new()),
+            action: Some(Callback {
                 code: long,
                 args: Vec::new(),
-            },
+            }),
         });
         let context = fux_wire::protocol::Context::default();
         let admitted = super::admit(open, None, &context);

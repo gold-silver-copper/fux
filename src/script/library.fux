@@ -80,6 +80,18 @@ define rename-prompt
   list list it end str rename end
   prompt
 end
+# client title callback -- : a question: a chooser with one row, Yes; choosing it runs the callback as choose runs one, the client and row dropped first; the title is choose's, text (a number or boolean: string it first) or [text,subject handle], closing when the subject goes
+define confirm
+  let action let question let c
+  action is-string if empty action else
+    action is-list if action len else 0 then 2 ne
+    if str 'a callback is source text or [captured arguments,source text]' fail then
+    action unpack
+  then
+  let source let captured
+  c question list list true str Yes end end empty list 0 end
+  list captured str '2drop ' source cat end choose
+end
 # client handle -- : close it, once confirmed
 define confirm-close
   dup kind str answer eq if pane then let it

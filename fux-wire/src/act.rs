@@ -1,8 +1,7 @@
 //! What an attached client sends the server about its terminal: typed
 //! actions, never keys to be read. The client reads its keyboard, runs its
 //! own bindings and owns every mode: the command column, repeat modes,
-//! choosers, prompts, confirmations, copy mode and its search
-//! (the client's `screens`). The server is sent a key only as literal input to
+//! choosers, prompts, copy mode and its search (the client's `screens`). The server is sent a key only as literal input to
 //! the pane the client focuses (`Act::Key`), what to draw of the client's
 //! screens (`ScreenAct::Show`), and the moves of copy mode, whose cursor is the
 //! server's as it alone holds the scrollback (`ScreenAct::Copy`).
@@ -66,8 +65,6 @@ wire! {
             after: String,
             hints: Vec<Hint>,
         },
-        /// A question answered yes or no.
-        Confirm { question: String, hints: Vec<Hint> },
     }
 }
 
