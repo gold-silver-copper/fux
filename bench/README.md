@@ -92,12 +92,12 @@ report of every run beside it.
 | Workload | What runs | Fed |
 | --- | --- | --- |
 | `vt/NAME` | fux-vt alone, fux's fixed facilities plus explicit reflow and pictures, 8 MiB of history | 4 KiB at a time, as `fux-vt/compare`'s `bench` feeds it |
-| `pane/NAME` | `fux::pane::Pane::output` | 16 KiB at a time, as fux's server gives a pane what it reads (up to 64 KiB a tick) |
+| `pane/NAME` | `fux_server::pane::Pane::output` | 16 KiB at a time, as fux's server gives a pane what it reads (up to 64 KiB a tick) |
 | `vt/corpus:NAME` | fux-vt alone on one recording at its size, repeated to 4 MiB (or to 256 resizes, for one that resizes) | 4 KiB at a time |
 | `vt/ascii@N`, `vt/corpus@N` | `vt/ascii` and `vt/corpus`, listed for N of 1, 64, 16384 and 65536 (any `vt/NAME@N` runs by name) | N bytes at a time |
 | `vt/resize-history` | a pane's parser at 50×200, its 8 MiB of history filled by `vt/ascii`, resized to 80 columns and back 4 times; the baseline only fills it | resizes, not bytes |
 | `vt/vtebench:NAME`, `vt/kitty:NAME`, `vt/avt:NAME`, `vt/foot:alt-random-writes`, `vt/yes:crlf`, `vt/yes:lf`, `vt/sixel:frames` | fux-vt alone on each of the census's speed payloads (`src/census.rs`; vendored data in `payloads/` with its licences; kitty's GPL payloads re-made by our own code), 8 MiB at 50×200 | 4 KiB at a time |
-| `paint/corpus` | a `fux::session::Session` without processes, one client whose pane is each recording's size; after each read the screen is composed (`render::compose_into`) and painted (`render::paint_into`) | every recording in turn, to 4 MiB |
+| `paint/corpus` | a `fux_server::session::Session` without processes, one client whose pane is each recording's size; after each read the screen is composed (`render::compose_into`) and painted (`render::paint_into`) | every recording in turn, to 4 MiB |
 | `paint/split` | the same with two panes side by side given the same output | the same |
 | `decode/legacy`, `decode/kitty` | fux's decoder of a client's terminal on the keys typed in the recordings, as a legacy terminal and as a kitty terminal with the flags fux pushes (5) send them | to 1 MiB |
 | `encode/legacy`, `encode/kitty` | those keys encoded for a pane, legacy and with every kitty flag | 2^20 keys |

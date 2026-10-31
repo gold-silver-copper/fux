@@ -3422,7 +3422,7 @@ fn round<T>(items: &[T], index: usize, toward: Sibling) -> Option<&T> {
 }
 
 /// A session itself, as what a program's requests go to, for the tests
-/// and the fuzz targets (`fux::script::InProcess`).
+/// and the fuzz targets (`fux::script::testing::InProcess`).
 #[cfg(any(test, feature = "in-process"))]
 impl Session {
     /// A program's request, answered in-process: begun at once, and a wait
