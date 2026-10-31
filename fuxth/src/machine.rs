@@ -13,7 +13,7 @@ use crate::error::{Error, Floor, Wants, underflow};
 use crate::token::Token;
 use crate::value::{AppValue, List, TOTAL, Text, Value};
 use crate::vocabulary::through;
-use crate::{BoundedString, BoundedVec, Refused, Region, Shared};
+use crate::{BoundedString, BoundedVec, Refused, Region, Reservation, Shared};
 use crate::{LONGEST, NESTING};
 use std::cmp::Ordering;
 use std::rc::Rc;
@@ -173,6 +173,8 @@ enum Body {
 /// program's, as every value it builds is.
 pub struct Machine<A> {
     program: Rc<Program<A>>,
+    /// The program's shared box, held while the run is.
+    _boxed: Reservation,
     stack: BoundedVec<Value<A>>,
     frames: BoundedVec<Frame>,
     /// Every frame's `let` names, each frame's from its `locals`.
@@ -209,6 +211,7 @@ impl<A: AppValue> Machine<A> {
     /// A run of `program`, in the region it was compiled in.
     pub fn new(program: Program<A>, limits: Limits) -> Result<Self, Refused> {
         let region = program.region.clone();
+        let boxed = region.reserve(size_of::<([usize; 2], Program<A>)>())?;
         let mut globals = BoundedVec::new(&region);
         globals.resize(program.globals, None)?;
         let mut frames = BoundedVec::new(&region);
@@ -220,6 +223,7 @@ impl<A: AppValue> Machine<A> {
         })?;
         Ok(Self {
             program: Rc::new(program),
+            _boxed: boxed,
             stack: BoundedVec::new(&region),
             frames,
             // The top level keeps no `let` names of its own: its are globals.

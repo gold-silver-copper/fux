@@ -28,7 +28,7 @@ impl Host for Toy {
         &mut self,
         word: usize,
         args: Args<'_, Nothing>,
-        _out: &mut Vec<Value<Nothing>>,
+        _out: &mut fuxth::BoundedVec<Value<Nothing>>,
     ) -> Result<Done<i64>, Failure> {
         let args: Vec<_> = args.collect();
         match (word, args.as_slice()) {
@@ -51,6 +51,9 @@ pub const LIMITS: Limits = Limits {
     calls: 100,
 };
 
+/// What a run may hold: small, so a fuzzed program meets it too.
+pub const RUN: usize = 16 << 20;
+
 /// Steps a run may take in all.
 pub const STEPS: u64 = 100_000;
 
@@ -58,6 +61,7 @@ pub const STEPS: u64 = 100_000;
 /// supplied: `require` is refused, so fuzz input never opens a path.
 pub fn compile(text: &str) -> Result<fuxth::Program<Nothing>, Error> {
     let mut compiler = READY.with(Clone::clone)?;
+    compiler.make_in(&fuxth::Region::new(RUN));
     compiler.add(&token::source("fuzz", text)?)?;
     compiler.finish()
 }
@@ -72,7 +76,7 @@ fn library() -> Result<Compiler<Nothing>, Error> {
     let _ = words.add("ask", "any -- integer");
     let _ = words.raises(fuxth::Code::Host("not_a_number"));
     let _ = words.raises(fuxth::Code::Host("negative"));
-    let mut compiler = Compiler::new(words);
+    let mut compiler = Compiler::new(words, &fuxth::Region::new(RUN));
     compiler.add(&token::source("stdlib.fux", fuxth::STDLIB)?)?;
     let maybe = "define maybe dup 0 gt if else drop then end";
     compiler.add(&token::source("maybe.fux", maybe)?)?;
@@ -85,7 +89,10 @@ pub fn run(
     program: fuxth::Program<Nothing>,
     budget: u64,
 ) -> Option<Result<Vec<Value<Nothing>>, Error>> {
-    let mut machine = Machine::new(program, LIMITS);
+    let mut machine = match Machine::new(program, LIMITS) {
+        Ok(machine) => machine,
+        Err(refused) => return Some(Err(refused.into())),
+    };
     let budget = budget.clamp(1, STEPS);
     let mut taken = 0u64;
     while taken < STEPS {
