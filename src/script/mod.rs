@@ -1224,7 +1224,7 @@ pub fn run_capped(
                 match asks.ask(&asked) {
                     Ok(reply) => match reply.end() {
                         End::Failed { code, message } => raised(machine, (code, message), reply)?,
-                        End::Done => pushed(machine, answered(reply))?,
+                        End::Done => pushed(machine, answered(reply, machine.imports()))?,
                     },
                     Err(failed) => pushed(machine, Err(failed))?,
                 }
@@ -1263,7 +1263,7 @@ fn raised(
     (code, message): (Code, String),
     reply: Reply,
 ) -> Result<(), Failed> {
-    let answer = answered(reply);
+    let answer = answered(reply, machine.imports());
     let Ok(Some(answer)) =
         answer.map(|mut a| a.pop().filter(|_| PaneAnswer::FAILURES.contains(&code)))
     else {
@@ -1328,7 +1328,7 @@ fn uncaught(machine: &Machine<Fux>, mut error: fuxth::Error) -> Failed {
 
 /// What a reply's answer puts on the stack: nothing, a string, handles, or
 /// an answer of fux's; a field's value as fuxth's own where it is one.
-pub fn answered(reply: Reply) -> Result<Vec<Value<Fux>>, Failed> {
+pub fn answered(reply: Reply, imports: &fuxth::Imports) -> Result<Vec<Value<Fux>>, Failed> {
     let run = reply.run;
     let body = match reply.response {
         Response::Answered(PaneResults::One(answer)) => {
@@ -1358,7 +1358,7 @@ pub fn answered(reply: Reply) -> Result<Vec<Value<Fux>>, Failed> {
             record::snapshot(*snapshot).map_err(|e| Failed::new(Code::of(e.code), e.message))?
         }
         Body::Events(batch) => {
-            record::events(*batch).map_err(|e| Failed::new(Code::of(e.code), e.message))?
+            record::events(*batch, imports).map_err(|e| Failed::new(Code::of(e.code), e.message))?
         }
         Body::Field(json) => {
             record::from_json(&json).map_err(|e| Failed::new(Code::of(e.code), e.message))?

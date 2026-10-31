@@ -77,7 +77,7 @@ impl Waiting {
     }
 
     /// Its answer, if it has one at `now`.
-    pub fn answer(&self, session: &Session, now: Instant) -> Option<Reply> {
+    pub fn answer(&mut self, session: &Session, now: Instant) -> Option<Reply> {
         match self {
             Waiting::Events(read) => read.answer(session, now),
             Waiting::Change(watch) => watch.answer(session, now),

@@ -6,7 +6,7 @@ use crate::inspect::{self, Projection, Scope};
 use crate::json::Json;
 use crate::wire::Budget;
 use fuxix::Allocation;
-use fuxth::{AppValue, Failure, List, Value};
+use fuxth::{AppValue, Failure, ImportLease, Imports, List, Shared, Text, Value};
 
 type V = Value<Fux>;
 
@@ -108,10 +108,15 @@ fn id(id: AnyRef, run: Run) -> V {
 struct Builder<'a> {
     budget: &'a mut Budget,
     nodes: usize,
+    lease: ImportLease,
 }
 impl<'a> Builder<'a> {
     fn new(budget: &'a mut Budget) -> Self {
-        Self { budget, nodes: 0 }
+        Self {
+            budget,
+            nodes: 0,
+            lease: ImportLease::default(),
+        }
     }
     fn nodes(&mut self, n: usize) -> Result<(), Failure> {
         self.nodes = self
@@ -175,13 +180,16 @@ impl<'a> Builder<'a> {
             return Err(fail());
         }
         self.budget.charge(fuxth::Shared::<Record>::bytes(0))?;
-        Ok(Value::App(Fux::Record(fuxth::Shared::new(Record {
-            fields,
-            depth,
-            weight,
-            bytes,
-            of,
-        }))))
+        Ok(Value::App(Fux::Record(Shared::leased(
+            Record {
+                fields,
+                depth,
+                weight,
+                bytes,
+                of,
+            },
+            std::mem::take(&mut self.lease),
+        ))))
     }
     fn json(&mut self, value: &Json, depth: u8) -> Result<V, Failure> {
         if depth >= inspect::DEPTH {
@@ -236,51 +244,30 @@ pub(super) fn from_json(value: &Json) -> Result<V, Failure> {
     Builder::new(&mut Budget::with_limit(inspect::BYTES)).json(value, 0)
 }
 
-pub(super) fn events(batch: crate::events::Batch) -> Result<V, Failure> {
+// Per event: one list slot, two records (at most 12 item fields and 3
+// origin fields), their keys, and four strings (up to 2,000 payload bytes).
+// 8 KiB covers these; 1 KiB covers the list/outer-record headers, five outer
+// fields, cursor/status and temporary cursor formatting. The maximum-shape
+// test checks this allowance; a stopped reason is reserved separately.
+fn event_bytes(events: usize, reason: Option<&str>) -> usize {
+    1024usize
+        .saturating_add(reason.map_or(0, |r| Text::size(r.len(), 0)))
+        .saturating_add(8192usize.saturating_mul(events))
+}
+
+pub(super) fn events(batch: crate::events::Batch, imports: &Imports) -> Result<V, Failure> {
+    use crate::events::{Actor, Status};
     let run = batch.next.run;
-    if batch.events.len() > crate::events::BATCH_EVENTS {
-        return Err(fail());
-    }
-    let mut budget = Budget::with_limit(inspect::BYTES);
+    let reason = match &batch.status {
+        Status::Stopped(reason) => Some(reason.as_str()),
+        Status::Continuing | Status::Timeout | Status::Gone => None,
+    };
+    let bytes = event_bytes(batch.events.len(), reason);
+    let lease = imports.lease(bytes)?;
+    // This builder spends only the allowance already held in the run.
+    let mut budget = Budget::with_limit(bytes);
     let mut b = Builder::new(&mut budget);
-    let mut previous = None;
     let events = b.list(&batch.events, |b, item| {
-        if item.next.run != run
-            || item.next.seq > batch.next.seq
-            || previous.is_some_and(|seq| item.next.seq <= seq)
-        {
-            return Err(fail());
-        }
-        previous = Some(item.next.seq);
-        if !matches!(item.data.get("event"), Some(Json::String(_))) {
-            return Err(fail());
-        }
-        let json = item.json();
-        let Json::Object(fields) = &json else {
-            return Err(fail());
-        };
-        let mut out = b.budget.vector(fields.len().saturating_add(2))?;
-        for (key, value) in fields
-            .iter()
-            .filter(|(key, _)| key != "origin" && key != "next")
-        {
-            b.nodes(1)?;
-            let native = match key.as_str() {
-                "pane" => item.pane.map(|p| id(AnyRef::Pane(p), run)),
-                "tab" => item.tab.map(|t| id(AnyRef::Tab(t), run)),
-                "workspace" => item.workspace.map(|w| id(AnyRef::Workspace(w), run)),
-                "client" => item.client.map(|c| Value::App(Fux::Client(c, Some(run)))),
-                "from_tab" => item.moved_from.map(|(_, t)| id(AnyRef::Tab(t), run)),
-                "from_workspace" => item.moved_from.map(|(w, _)| id(AnyRef::Workspace(w), run)),
-                _ => None,
-            };
-            let value = match native {
-                Some(value) => value,
-                None => b.json(value, 0)?,
-            };
-            out.push((b.budget.string(key)?, value));
-        }
-        use crate::events::Actor;
         let kind = b.text(item.origin.kind())?;
         let origin = match item.origin {
             Actor::Client(c) => b.record([
@@ -294,19 +281,51 @@ pub(super) fn events(batch: crate::events::Batch) -> Result<V, Failure> {
             ])?,
             Actor::Server | Actor::Unknown => b.record([("kind", kind)])?,
         };
-        b.nodes(2)?;
+        let next = b.text(&item.next.to_string())?;
+        let at = |r: Option<AnyRef>| r.map(|r| id(r, run));
+        let (from_workspace, from_tab) = item.moved_from.unzip();
+        let ids = [
+            ("pane", at(item.pane.map(AnyRef::Pane))),
+            ("tab", at(item.tab.map(AnyRef::Tab))),
+            ("workspace", at(item.workspace.map(AnyRef::Workspace))),
+            (
+                "client",
+                item.client.map(|c| Value::App(Fux::Client(c, Some(run)))),
+            ),
+            ("from_tab", at(from_tab.map(AnyRef::Tab))),
+            ("from_workspace", at(from_workspace.map(AnyRef::Workspace))),
+        ];
+        let Json::Object(data) = &item.data else {
+            return Err(fail());
+        };
+        let count = data
+            .len()
+            .saturating_add(ids.iter().filter(|(_, v)| v.is_some()).count())
+            .saturating_add(2);
+        b.nodes(count)?;
+        let mut out = b.budget.vector(count)?;
+        // The producer puts the event name first; IDs remain typed throughout.
+        for (key, value) in data.iter().take(1) {
+            out.push((b.budget.string(key)?, b.json(value, 0)?));
+        }
+        for (key, value) in ids {
+            if let Some(value) = value {
+                out.push((b.budget.string(key)?, value));
+            }
+        }
+        for (key, value) in data.iter().skip(1) {
+            out.push((b.budget.string(key)?, b.json(value, 0)?));
+        }
         out.push((b.budget.string("origin")?, origin));
-        out.push(("next".into(), b.text(&item.next.to_string())?));
+        out.push((b.budget.string("next")?, next));
         b.finish(out, None)
     })?;
     let next = b.text(&batch.next.to_string())?;
     let status = b.text(batch.status.name())?;
-    let reason = match &batch.status {
-        crate::events::Status::Stopped(reason) => b.text(reason)?,
-        crate::events::Status::Continuing
-        | crate::events::Status::Timeout
-        | crate::events::Status::Gone => null(),
-    };
+    let reason = b.optional(reason)?;
+    // The outer record holds the construction reservation until admission.
+    // retain then refunds the excess and gives each child its own lease.
+    b.lease = lease;
     b.record([
         ("events", events),
         ("next", next),
@@ -529,6 +548,199 @@ pub(super) fn answer_field(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_maximum_event_record_shape_fits_its_construction_allowance() -> Result<(), Failure> {
+        use crate::events::{Actor, Batch, Cursor, Item, Status};
+        use crate::id::{ClientId, PaneId, TabId, WsId};
+        let next: Cursor = "18446744073709551615:4294967295-ffffffffffffffff"
+            .parse()
+            .map_err(|()| fail())?;
+        let item = Item {
+            // Combine the independent maxima, even fields no single variant
+            // needs together: 12 item fields, 3 origin fields and all strings.
+            data: Json::object(vec![
+                (
+                    "event",
+                    Json::str(std::iter::repeat_n('x', 32).collect::<String>()),
+                ),
+                (
+                    "text",
+                    Json::str(
+                        std::iter::repeat_n('𐀀', crate::pane::NOTIFICATION_MAX).collect::<String>(),
+                    ),
+                ),
+                ("truncated", Json::Bool(true)),
+                ("input_unread", Json::Int(i64::MAX)),
+            ]),
+            pane: Some(PaneId::of(u32::MAX)),
+            tab: Some(TabId::of(u32::MAX)),
+            workspace: Some(WsId::of(u32::MAX)),
+            client: Some(ClientId::of(u32::MAX)),
+            moved_from: Some((WsId::of(u32::MAX), TabId::of(u32::MAX))),
+            origin: Actor::Program(PaneId::of(u32::MAX), u64::MAX / 2),
+            next,
+        };
+        for count in [0, 1, crate::events::BATCH_EVENTS] {
+            for reason in [
+                None,
+                Some(std::iter::repeat_n('𐀀', 500).collect::<String>()),
+            ] {
+                let bytes = event_bytes(count, reason.as_deref());
+                let batch = Batch {
+                    events: vec![item.clone(); count],
+                    next,
+                    missed: 0,
+                    status: reason.map_or(Status::Continuing, Status::Stopped),
+                };
+                let grant = Imports::new(bytes);
+                let value = events(batch, &grant)?;
+                assert_eq!(grant.remaining(), 0);
+                value.retain(&grant)?;
+                assert!(grant.remaining() > 0);
+                drop(value);
+                assert_eq!(grant.remaining(), bytes);
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn event_records_reserve_before_building_and_keep_typed_identities() -> Result<(), Failure> {
+        use crate::events::{Actor, Batch, Cursor, Item, Status};
+        use crate::id::{ClientId, PaneId, TabId, WsId};
+        let next: Cursor = "1:1-0".parse().map_err(|()| fail())?;
+        for origin in [
+            Actor::Unknown,
+            Actor::Server,
+            Actor::Client(ClientId::of(3)),
+            Actor::Pane(PaneId::of(4), 5),
+            Actor::Program(PaneId::of(4), 5),
+        ] {
+            let batch = Batch {
+                next,
+                missed: 0,
+                status: Status::Continuing,
+                events: vec![Item {
+                    data: Json::object(vec![
+                        ("event", Json::str("moved")),
+                        (
+                            "name",
+                            Json::str(std::iter::repeat_n('𐀀', 64).collect::<String>()),
+                        ),
+                    ]),
+                    pane: Some(PaneId::of(1)),
+                    tab: Some(TabId::of(2)),
+                    workspace: Some(WsId::of(3)),
+                    client: Some(ClientId::of(4)),
+                    moved_from: Some((WsId::of(5), TabId::of(6))),
+                    origin,
+                    next,
+                }],
+            };
+            let grant = Imports::new(32 << 10);
+            let root = events(batch.clone(), &grant)?;
+            let reserved = event_bytes(1, None);
+            assert_eq!(grant.remaining(), (32 << 10) - reserved);
+            root.retain(&grant)?;
+            let exact_bytes = (32 << 10) - grant.remaining();
+            assert!(
+                exact_bytes < reserved,
+                "admission trims the construction allowance"
+            );
+            let Value::App(Fux::Record(record)) = &root else {
+                return Err(fail());
+            };
+            let Value::List(list) = record.get("events")? else {
+                return Err(fail());
+            };
+            let Value::App(Fux::Record(event)) = list.items().first().ok_or_else(fail)? else {
+                return Err(fail());
+            };
+            assert_eq!(
+                event
+                    .fields
+                    .iter()
+                    .map(|(key, _)| key.as_str())
+                    .collect::<Vec<_>>(),
+                [
+                    "event",
+                    "pane",
+                    "tab",
+                    "workspace",
+                    "client",
+                    "from_tab",
+                    "from_workspace",
+                    "name",
+                    "origin",
+                    "next"
+                ]
+            );
+            assert_eq!(
+                event.get("pane")?,
+                id(AnyRef::Pane(PaneId::of(1)), next.run)
+            );
+            assert_eq!(
+                event.get("from_tab")?,
+                id(AnyRef::Tab(TabId::of(6)), next.run)
+            );
+            assert_eq!(
+                event.get("client")?,
+                Value::App(Fux::Client(ClientId::of(4), Some(next.run)))
+            );
+            let Value::App(Fux::Record(actor)) = event.get("origin")? else {
+                return Err(fail());
+            };
+            assert_eq!(actor.get("kind")?, Value::str(origin.kind()));
+            match origin {
+                Actor::Client(c) => assert_eq!(
+                    actor.get("client")?,
+                    Value::App(Fux::Client(c, Some(next.run)))
+                ),
+                Actor::Pane(p, generation) | Actor::Program(p, generation) => {
+                    assert_eq!(actor.get("pane")?, id(AnyRef::Pane(p), next.run));
+                    assert_eq!(actor.get("generation")?, number(generation)?);
+                }
+                Actor::Unknown | Actor::Server => {}
+            }
+            let full = reserved;
+            let small = Imports::new(full - 1);
+            assert!(events(batch.clone(), &small).is_err());
+            assert_eq!(
+                small.remaining(),
+                full - 1,
+                "failed builds refund their leases"
+            );
+            let exact = Imports::new(full);
+            for _ in 0..100 {
+                let held = events(batch.clone(), &exact)?;
+                assert_eq!(
+                    exact.remaining(),
+                    0,
+                    "the whole allowance stays held until admission"
+                );
+                held.retain(&exact)?;
+                assert_eq!(exact.remaining(), full - exact_bytes);
+                held.clone().retain(&exact)?;
+                assert_eq!(
+                    exact.remaining(),
+                    full - exact_bytes,
+                    "aliases do not charge twice"
+                );
+                drop(held);
+                assert_eq!(exact.remaining(), full);
+            }
+            let child = event.get("name")?;
+            drop(actor);
+            drop(list);
+            drop(root);
+            assert!(grant.remaining() < 32 << 10);
+            child.retain(&grant)?;
+            drop(child);
+            assert_eq!(grant.remaining(), 32 << 10);
+        }
+        Ok(())
+    }
 
     #[test]
     fn local_fields_preserve_null_lists_and_scalar_types() -> Result<(), Failure> {

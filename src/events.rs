@@ -6,14 +6,11 @@ use crate::inspect::Scope;
 use crate::json::Json;
 use crate::pane::{End, Left, NOTIFICATION_MAX, Said, TITLE_MAX};
 use crate::wire::wire;
-use std::cell::Cell;
 use std::collections::VecDeque;
 
 pub(crate) const KEPT: usize = 1 << 14;
-pub(crate) const KEPT_BYTES: usize = 8 << 20;
 pub const BATCH_EVENTS: usize = 64;
 pub const BATCH_SCAN: usize = 256;
-pub const BATCH_BYTES: usize = 256 << 10;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Seq(u64);
@@ -65,21 +62,6 @@ impl Actor {
             Self::Program(..) => "program",
         }
     }
-    fn json(self) -> Json {
-        let extra = match self {
-            Self::Unknown | Self::Server => Vec::new(),
-            Self::Client(c) => vec![("client", Json::str(c.to_string()))],
-            Self::Pane(p, generation) | Self::Program(p, generation) => vec![
-                ("pane", Json::str(p.to_string())),
-                ("generation", Json::uint(generation)),
-            ],
-        };
-        Json::object(
-            std::iter::once(("kind", Json::str(self.kind())))
-                .chain(extra)
-                .collect(),
-        )
-    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -90,9 +72,7 @@ pub enum ViewChange {
     Focused,
     Zoomed,
     Resized,
-    Presentation,
     Screen,
-    Notice,
 }
 impl ViewChange {
     fn name(self) -> &'static str {
@@ -103,9 +83,7 @@ impl ViewChange {
             Self::Focused => "focused",
             Self::Zoomed => "zoomed",
             Self::Resized => "view_resized",
-            Self::Presentation => "presentation",
             Self::Screen => "screen",
-            Self::Notice => "notice",
         }
     }
 }
@@ -115,14 +93,12 @@ struct Entry {
     seq: Seq,
     event: Event,
     actor: Actor,
-    bytes: usize,
 }
 
 #[derive(Debug, Default)]
 pub struct Journal {
     entries: VecDeque<Entry>,
     next: Seq,
-    bytes: usize,
     actor: Actor,
     exhausted: bool,
 }
@@ -143,56 +119,15 @@ impl Journal {
             self.exhausted = true;
             return;
         };
-        let heap = match &event {
-            Event::Tab(_, Change::Created(name)) | Event::Workspace(_, Change::Created(name)) => {
-                name.as_ref().map_or(0, String::capacity)
-            }
-            Event::Tab(_, Change::Renamed(name))
-            | Event::Workspace(_, Change::Renamed(name))
-            | Event::Pane(_, PaneEvent::Told(Told::Renamed(name))) => name.capacity(),
-            Event::Pane(_, PaneEvent::Told(Told::Notification(n))) => n.retained_bytes(),
-            Event::Pane(_, PaneEvent::Told(Told::Title(t))) => t.retained_bytes(),
-            Event::Pane(
-                _,
-                PaneEvent::Created
-                | PaneEvent::Closed
-                | PaneEvent::Moved(_)
-                | PaneEvent::Told(
-                    Told::Respawned(_)
-                    | Told::Bell
-                    | Told::Done(_)
-                    | Told::Resized(_)
-                    | Told::HistoryBudget(_)
-                    | Told::HistoryCleared
-                    | Told::Exited(_),
-                ),
-            )
-            | Event::Tab(_, Change::Closed | Change::Reordered)
-            | Event::Workspace(_, Change::Closed | Change::Reordered)
-            | Event::Layout(_)
-            | Event::Arranged(_)
-            | Event::View { .. }
-            | Event::Copied { .. } => 0,
-        };
-        let bytes = heap.saturating_add(std::mem::size_of::<Entry>());
         let seq = self.next;
         self.next = Seq(next);
-        if bytes > KEPT_BYTES {
-            return;
+        // Payloads are compact clones: names <= 256 bytes, titles <= 256
+        // chars, notifications <= 500 chars (2,000 UTF-8 bytes). Evict first
+        // so a full ring never grows. See docs/json.md for storage overhead.
+        if self.entries.len() == KEPT {
+            self.entries.pop_front();
         }
-        while self.entries.len() >= KEPT || self.bytes.saturating_add(bytes) > KEPT_BYTES {
-            let Some(old) = self.entries.pop_front() else {
-                break;
-            };
-            self.bytes = self.bytes.saturating_sub(old.bytes);
-        }
-        self.entries.push_back(Entry {
-            seq,
-            event,
-            actor,
-            bytes,
-        });
-        self.bytes = self.bytes.saturating_add(bytes);
+        self.entries.push_back(Entry { seq, event, actor });
     }
     pub(crate) fn teller(&mut self, at: PaneAt, generation: u64) -> Teller<'_> {
         Teller {
@@ -461,35 +396,7 @@ wire! {
         pub next: Cursor,
     }
 }
-impl Item {
-    pub fn json(&self) -> Json {
-        let mut fields = Vec::new();
-        if let Some(event) = self.data.get("event") {
-            fields.push(("event".into(), event.clone()));
-        }
-        for (key, value) in [
-            ("pane", self.pane.map(|id| id.to_string())),
-            ("tab", self.tab.map(|id| id.to_string())),
-            ("workspace", self.workspace.map(|id| id.to_string())),
-            ("client", self.client.map(|id| id.to_string())),
-            ("from_tab", self.moved_from.map(|(_, tab)| tab.to_string())),
-            (
-                "from_workspace",
-                self.moved_from.map(|(ws, _)| ws.to_string()),
-            ),
-        ] {
-            if let Some(value) = value {
-                fields.push((key.into(), Json::str(value)));
-            }
-        }
-        if let Json::Object(data) = &self.data {
-            fields.extend(data.iter().filter(|(k, _)| k != "event").cloned());
-        }
-        fields.push(("origin".into(), self.origin.json()));
-        fields.push(("next".into(), Json::str(self.next.to_string())));
-        Json::Object(fields)
-    }
-}
+
 wire! {
     #[derive(Clone, Debug, PartialEq, Eq)]
     pub enum Status { Continuing, Timeout, Gone, Stopped(reason: String), }
@@ -513,13 +420,52 @@ wire! {
         pub status: Status,
     }
 }
+
+#[cfg(test)]
 impl Batch {
     pub fn json(&self) -> Json {
+        let events = self
+            .events
+            .iter()
+            .map(|item| {
+                let mut fields = Vec::new();
+                if let Some(event) = item.data.get("event") {
+                    fields.push(("event".into(), event.clone()));
+                }
+                for (key, value) in [
+                    ("pane", item.pane.map(|id| id.to_string())),
+                    ("tab", item.tab.map(|id| id.to_string())),
+                    ("workspace", item.workspace.map(|id| id.to_string())),
+                    ("client", item.client.map(|id| id.to_string())),
+                    ("from_tab", item.moved_from.map(|(_, tab)| tab.to_string())),
+                    (
+                        "from_workspace",
+                        item.moved_from.map(|(ws, _)| ws.to_string()),
+                    ),
+                ] {
+                    if let Some(value) = value {
+                        fields.push((key.into(), Json::str(value)));
+                    }
+                }
+                if let Json::Object(data) = &item.data {
+                    fields.extend(data.iter().filter(|(k, _)| k != "event").cloned());
+                }
+                let mut origin = vec![("kind", Json::str(item.origin.kind()))];
+                match item.origin {
+                    Actor::Client(c) => origin.push(("client", Json::str(c.to_string()))),
+                    Actor::Pane(p, generation) | Actor::Program(p, generation) => {
+                        origin.push(("pane", Json::str(p.to_string())));
+                        origin.push(("generation", Json::uint(generation)));
+                    }
+                    Actor::Unknown | Actor::Server => {}
+                }
+                fields.push(("origin".into(), Json::object(origin)));
+                fields.push(("next".into(), Json::str(item.next.to_string())));
+                Json::Object(fields)
+            })
+            .collect();
         let mut fields = vec![
-            (
-                "events",
-                Json::Array(self.events.iter().map(Item::json).collect()),
-            ),
+            ("events", Json::Array(events)),
             ("next", Json::str(self.next.to_string())),
             ("missed", Json::uint(self.missed)),
             ("status", Json::str(self.status.name())),
@@ -530,6 +476,7 @@ impl Batch {
         Json::object(fields)
     }
 }
+
 impl Reader {
     pub fn new(
         scope: Scope,
@@ -596,7 +543,6 @@ impl Reader {
         let (mut missed, entries) = journal.from(self.next.seq);
         self.next.seq = Seq(self.next.seq.0.saturating_add(missed));
         let mut events = Vec::new();
-        let mut bytes = 0usize;
         let mut gone = false;
         let mut entries = entries;
         let mut scanned = 0usize;
@@ -642,17 +588,6 @@ impl Reader {
                     origin: entry.actor,
                     next,
                 };
-                let json = item.json();
-                let size = json.render().len();
-                // One event fits by the journal's payload bounds; stop before
-                // advancing over an event this reply cannot hold.
-                if size > BATCH_BYTES {
-                    return Err("one journal event exceeds the batch byte limit".into());
-                }
-                if bytes.saturating_add(size) > BATCH_BYTES {
-                    break;
-                }
-                bytes = bytes.saturating_add(size);
                 value = Some(item);
             }
             self.next.seq = Seq(entry.seq.0.saturating_add(1));
@@ -693,8 +628,11 @@ impl Reader {
             Err(why) => return (why, false),
         };
         let mut lines = String::new();
-        for item in batch.events {
-            let mut event = item.json();
+        let json = batch.json();
+        let Some(Json::Array(events)) = json.get("events") else {
+            return ("event array".into(), false);
+        };
+        for mut event in events.clone() {
             if let Json::Object(fields) = &mut event {
                 fields.retain(|(k, _)| k != "origin" && k != "next");
             }
@@ -707,8 +645,8 @@ impl Reader {
 
 /// A pending finite read, owned by its requesting connection.
 pub struct Read {
-    reader: Cell<Reader>,
-    scanned: Cell<usize>,
+    reader: Reader,
+    scanned: usize,
     pub deadline: std::time::Instant,
 }
 
@@ -725,17 +663,17 @@ fn reply(batch: Result<Batch, String>) -> crate::protocol::Reply {
 impl Read {
     pub fn new(reader: Reader, deadline: std::time::Instant) -> Self {
         Self {
-            reader: Cell::new(reader),
-            scanned: Cell::new(0),
+            reader,
+            scanned: 0,
             deadline,
         }
     }
     pub fn answer(
-        &self,
+        &mut self,
         session: &crate::session::Session,
         now: std::time::Instant,
     ) -> Option<crate::protocol::Reply> {
-        let mut reader = self.reader.get();
+        let reader = &mut self.reader;
         let journal = session.parts.journal();
         if journal.exhausted {
             return Some(crate::protocol::Reply::failed(
@@ -751,20 +689,16 @@ impl Read {
         if reader.next == journal.end(session.run) && exists && now < self.deadline {
             return None;
         }
-        let (mut batch, scanned) = match reader.scan(
-            journal,
-            exists,
-            BATCH_SCAN.saturating_sub(self.scanned.get()),
-        ) {
-            Ok(batch) => batch,
-            Err(why) => return Some(reply(Err(why))),
-        };
-        self.reader.set(reader);
-        self.scanned.set(self.scanned.get().saturating_add(scanned));
+        let (mut batch, scanned) =
+            match reader.scan(journal, exists, BATCH_SCAN.saturating_sub(self.scanned)) {
+                Ok(batch) => batch,
+                Err(why) => return Some(reply(Err(why))),
+            };
+        self.scanned = self.scanned.saturating_add(scanned);
         if batch.events.is_empty() && batch.missed == 0 && batch.status == Status::Continuing {
             if now >= self.deadline {
                 batch.status = Status::Timeout;
-            } else if self.scanned.get() < BATCH_SCAN {
+            } else if self.scanned < BATCH_SCAN {
                 return None;
             }
         }
@@ -775,13 +709,13 @@ impl Read {
         session: &crate::session::Session,
         reason: &str,
     ) -> crate::protocol::Reply {
-        let mut reader = self.reader.get();
+        let mut reader = self.reader;
         reply(
             reader
                 .scan(
                     session.parts.journal(),
                     true,
-                    BATCH_SCAN.saturating_sub(self.scanned.get()),
+                    BATCH_SCAN.saturating_sub(self.scanned),
                 )
                 .map(|(mut batch, _)| {
                     batch.status = Status::Stopped(reason.to_owned());
@@ -810,10 +744,44 @@ mod tests {
         )
     }
 
-    #[test]
-    fn the_event_and_status_tables_match_the_finite_schema() -> TestResult {
-        use std::collections::BTreeSet;
-        let at = ((WsId::of(1), TabId::of(1)), PaneId::of(1));
+    fn maximum_events(ch: char) -> Result<Vec<Event>, Box<dyn std::error::Error>> {
+        let at = (
+            (WsId::of(u32::MAX), TabId::of(u32::MAX)),
+            PaneId::of(u32::MAX),
+        );
+        let name: String = std::iter::repeat_n("\"\\", crate::session::NAME_MAX / 2).collect();
+        let mut session = started()?;
+        // Exercise the real producer: its bounded Said is cloned compactly
+        // into the journal, even when collection itself grew geometrically.
+        let sent: String = std::iter::repeat_n(ch, NOTIFICATION_MAX + 1).collect();
+        session.output(
+            PaneId::of(1),
+            format!("\x1b]2;{sent}\x07\x1b]9;{sent}\x07").as_bytes(),
+            Instant::now(),
+        );
+        let mut texts = session
+            .parts
+            .journal()
+            .entries
+            .iter()
+            .filter_map(|e| match &e.event {
+                Event::Pane(_, PaneEvent::Told(t @ (Told::Notification(_) | Told::Title(_)))) => {
+                    Some(t.clone())
+                }
+                Event::Pane(..)
+                | Event::Tab(..)
+                | Event::Arranged(_)
+                | Event::Workspace(..)
+                | Event::Layout(_)
+                | Event::View { .. }
+                | Event::Copied { .. } => None,
+            });
+        let title = texts.next().ok_or("title event")?;
+        let notification = texts.next().ok_or("notification event")?;
+        let left = Left {
+            output: crate::pane::Output::Cut,
+            input: usize::MAX,
+        };
         let mut events = vec![
             Event::Pane(at, PaneEvent::Created),
             Event::Pane(at, PaneEvent::Closed),
@@ -821,13 +789,16 @@ mod tests {
             Event::Arranged(at.0),
             Event::Layout(at.0),
             Event::Copied {
-                buffer: "b1:1-0".parse().map_err(|()| "buffer")?,
+                buffer: "b18446744073709551615:4294967295-ffffffffffffffff"
+                    .parse()
+                    .map_err(|()| "buffer")?,
                 at: Some(at),
             },
         ];
         for change in [
             Change::Created(None),
-            Change::Renamed(String::new()),
+            Change::Created(Some(name.clone())),
+            Change::Renamed(name.clone()),
             Change::Closed,
             Change::Reordered,
         ] {
@@ -835,18 +806,19 @@ mod tests {
             events.push(Event::Workspace(at.0.0, change));
         }
         for told in [
-            Told::Renamed(String::new()),
-            Told::Respawned(Left::default()),
+            Told::Renamed(name),
+            Told::Respawned(left),
             Told::Bell,
-            Told::Notification(Said::default()),
-            Told::Title(Said::default()),
+            notification,
+            title,
             Told::Done(None),
-            Told::Resized(fux_vt::Size::new(24, 80)?),
-            Told::HistoryBudget(0),
+            Told::Done(Some(i32::MIN)),
+            Told::Resized(fux_vt::Size::new(4096, 4096)?),
+            Told::HistoryBudget(usize::MAX),
             Told::HistoryCleared,
             Told::Exited(End {
                 ended: crate::process::Ended::Lost,
-                left: Left::default(),
+                left,
             }),
         ] {
             events.push(Event::Pane(at, PaneEvent::Told(told)));
@@ -858,16 +830,30 @@ mod tests {
             ViewChange::Focused,
             ViewChange::Zoomed,
             ViewChange::Resized,
-            ViewChange::Presentation,
             ViewChange::Screen,
-            ViewChange::Notice,
         ] {
             events.push(Event::View {
-                client: ClientId::of(1),
+                client: ClientId::of(u32::MAX),
                 at: Some(at),
                 change,
             });
         }
+        for ended in [
+            crate::process::Ended::Exited(i32::MIN),
+            crate::process::Ended::Signalled(i32::MIN),
+        ] {
+            events.push(Event::Pane(
+                at,
+                PaneEvent::Told(Told::Exited(End { ended, left })),
+            ));
+        }
+        Ok(events)
+    }
+
+    #[test]
+    fn the_event_and_status_tables_match_the_finite_schema() -> TestResult {
+        use std::collections::BTreeSet;
+        let events = maximum_events('𐀀')?;
         let mut names = BTreeSet::from(["ready".to_owned(), "missed".to_owned()]);
         for event in events {
             // New variants must bring this schema fixture up to date.
@@ -906,9 +892,7 @@ mod tests {
                         | ViewChange::Focused
                         | ViewChange::Zoomed
                         | ViewChange::Resized
-                        | ViewChange::Presentation
-                        | ViewChange::Screen
-                        | ViewChange::Notice,
+                        | ViewChange::Screen,
                     ..
                 }
                 | Event::Arranged(_)
@@ -951,7 +935,128 @@ mod tests {
         }
         assert_eq!(statuses, table("| `status` | Meaning |")?);
         assert!(docs.contains(&format!("last {},{:03} entries", KEPT / 1000, KEPT % 1000)));
-        assert!(docs.contains(&format!("{} MiB retained-entry", KEPT_BYTES / (1 << 20))));
+        Ok(())
+    }
+
+    #[test]
+    fn maximum_batches_fit_256_kib_with_their_envelope() -> TestResult {
+        let run: Run = "4294967295-ffffffffffffffff".parse().map_err(|()| "run")?;
+        let mut largest = 0;
+        // Four-byte text bounds retained storage; separators, quotes and
+        // backslashes bound escaped JSON. All variants share this fixture.
+        for ch in ['𐀀', '\u{2028}', '\u{2029}', '"', '\\'] {
+            for event in maximum_events(ch)? {
+                let mut journal = Journal {
+                    next: Seq(u64::MAX - 64),
+                    ..Journal::default()
+                };
+                let mut reader = Reader::new(Scope::All, &journal, run, None)?;
+                for _ in 0..BATCH_EVENTS {
+                    journal.push_from(
+                        event.clone(),
+                        Actor::Program(PaneId::of(u32::MAX), u64::MAX),
+                    );
+                }
+                let mut batch = reader.batch(&journal, true)?;
+                assert_eq!(batch.events.len(), BATCH_EVENTS);
+                assert_eq!(batch.next.seq, Seq(u64::MAX));
+                batch.missed = u64::MAX;
+                batch.status = Status::Stopped("server stopped".into());
+                let json = batch.json();
+                let Some(Json::Array(events)) = json.get("events") else {
+                    return Err("event array".into());
+                };
+                largest = largest.max(events.first().ok_or("event")?.render().len());
+                assert!(batch.json().render().len() < 256 << 10, "{event:?}");
+            }
+        }
+        // Truncated adds 17 bytes to the audit's 3,242-byte notification.
+        assert_eq!(largest, 3_242 + 17);
+        Ok(())
+    }
+
+    #[test]
+    fn compact_payloads_keep_the_full_count_window_without_growing_a_full_ring() -> TestResult {
+        let events = maximum_events('𐀀')?;
+        for event in &events {
+            let (capacity, limit) = match event {
+                Event::Tab(_, Change::Created(name))
+                | Event::Workspace(_, Change::Created(name)) => (
+                    name.as_ref().map_or(0, String::capacity),
+                    crate::session::NAME_MAX,
+                ),
+                Event::Tab(_, Change::Renamed(name))
+                | Event::Workspace(_, Change::Renamed(name))
+                | Event::Pane(_, PaneEvent::Told(Told::Renamed(name))) => {
+                    (name.capacity(), crate::session::NAME_MAX)
+                }
+                Event::Pane(_, PaneEvent::Told(Told::Notification(text))) => {
+                    (text.retained_bytes(), NOTIFICATION_MAX * 4)
+                }
+                Event::Pane(_, PaneEvent::Told(Told::Title(text))) => {
+                    (text.retained_bytes(), TITLE_MAX * 4)
+                }
+                Event::Pane(
+                    _,
+                    PaneEvent::Created
+                    | PaneEvent::Closed
+                    | PaneEvent::Moved(_)
+                    | PaneEvent::Told(
+                        Told::Respawned(_)
+                        | Told::Bell
+                        | Told::Done(_)
+                        | Told::Resized(_)
+                        | Told::HistoryBudget(_)
+                        | Told::HistoryCleared
+                        | Told::Exited(_),
+                    ),
+                )
+                | Event::Tab(_, Change::Closed | Change::Reordered)
+                | Event::Workspace(_, Change::Closed | Change::Reordered)
+                | Event::Layout(_)
+                | Event::Arranged(_)
+                | Event::View { .. }
+                | Event::Copied { .. } => (0, 0),
+            };
+            assert!(capacity <= limit, "{event:?}: {capacity} > {limit}");
+        }
+        let maximum = events
+            .iter()
+            .find(|e| matches!(e, Event::Pane(_, PaneEvent::Told(Told::Notification(_)))))
+            .ok_or("notification")?;
+        let mut journal = Journal::default();
+        assert_eq!(journal.entries.capacity(), 0, "no eager ring allocation");
+        let mut oldest = Reader::new(Scope::All, &journal, run()?, None)?;
+        for n in 1..=KEPT {
+            let old_capacity = journal.entries.capacity();
+            journal.push(maximum.clone());
+            assert_eq!(journal.entries.len(), n);
+            assert!(journal.entries.capacity() <= KEPT);
+            if n > old_capacity {
+                assert_eq!(journal.entries.capacity(), n.max(4).next_power_of_two());
+            }
+        }
+        let capacity = journal.entries.capacity();
+        assert_eq!(oldest.batch(&journal, true)?.missed, 0);
+        let mut lost = Reader::new(
+            Scope::All,
+            &journal,
+            run()?,
+            Some(Cursor {
+                seq: Seq(0),
+                run: run()?,
+            }),
+        )?;
+        journal.push(maximum.clone());
+        assert_eq!(journal.entries.capacity(), capacity);
+        assert_eq!(journal.entries.len(), KEPT);
+        assert_eq!(lost.batch(&journal, true)?.missed, 1);
+        assert_eq!(lost.batch(&journal, true)?.missed, 0);
+        if cfg!(target_pointer_width = "64") {
+            assert_eq!(std::mem::size_of::<Entry>(), 80);
+            assert_eq!(std::mem::size_of::<Journal>(), 64);
+            assert_eq!(std::mem::size_of::<Event>(), 56);
+        }
         Ok(())
     }
 
@@ -964,7 +1069,8 @@ mod tests {
             from: None,
             timeout: Limit::read(5)?,
         };
-        let Begun::Waiting(waiting) = session.begin(request, &Origin::Cli(Caller::default()), now)
+        let Begun::Waiting(mut waiting) =
+            session.begin(request, &Origin::Cli(Caller::default()), now)
         else {
             return Err("did not wait".into());
         };
@@ -1008,7 +1114,6 @@ mod tests {
         let first = reader.batch(&journal, true)?;
         assert_eq!(first.events.len(), BATCH_EVENTS);
         assert_eq!(first.events.last().map(|e| e.next), Some(first.next));
-        assert!(first.json().render().len() < BATCH_BYTES);
         let second =
             Reader::new(Scope::All, &journal, run()?, Some(first.next))?.batch(&journal, true)?;
         assert_eq!(second.events.len(), 3);
@@ -1055,48 +1160,16 @@ mod tests {
         assert_eq!(batch.missed, 3);
         assert!(batch.events.is_empty());
         assert_eq!(reader.batch(&journal, true)?.missed, 0);
-        let start = journal.end(run()?);
-        let mut strings = Journal::default();
-        let mut behind = Reader::new(Scope::All, &strings, run()?, None)?;
-        // Mutation owners admit names of at most NAME_MAX bytes. Make the
-        // stored capacity large to exercise byte retention independently.
-        for _ in 0..KEPT {
-            let mut name = String::with_capacity(1024);
-            name.push('x');
-            strings.push(Event::Workspace(WsId::of(1), Change::Renamed(name)));
-        }
-        assert!(strings.entries.len() < KEPT);
-        assert!(strings.bytes <= KEPT_BYTES);
-        let loss = behind.batch(&strings, true)?;
-        assert_eq!(
-            loss.missed,
-            u64::try_from(KEPT.saturating_sub(strings.entries.len()))?
-        );
-        assert!(start.seq > Seq(0));
         Ok(())
     }
 
     #[test]
-    fn impossible_entries_and_exhausted_cursors_refuse_without_unbounded_storage() -> TestResult {
+    fn exhausted_cursors_refuse_without_appending() -> TestResult {
         let mut journal = Journal::default();
         let mut reader = Reader::new(Scope::All, &journal, run()?, None)?;
-        journal.push(bell(1));
-        journal.push(Event::Workspace(
-            WsId::of(1),
-            Change::Renamed(String::with_capacity(KEPT_BYTES.saturating_add(1))),
-        ));
-        assert!(journal.bytes <= KEPT_BYTES);
-        let batch = reader.batch(&journal, true)?;
-        assert_eq!(batch.events.len(), 1);
-        assert_eq!(batch.missed, 1);
-        assert_eq!(batch.next, journal.end(run()?));
-        journal.push(Event::Workspace(
-            WsId::of(1),
-            Change::Renamed(std::iter::repeat_n('x', BATCH_BYTES.saturating_add(1)).collect()),
-        ));
-        assert!(reader.batch(&journal, true).is_err());
         journal.next = Seq(u64::MAX);
         journal.push(bell(1));
+        assert!(journal.entries.is_empty());
         assert!(Reader::new(Scope::All, &journal, run()?, None).is_err());
         assert!(reader.batch(&journal, true).is_err());
         Ok(())
@@ -1144,7 +1217,8 @@ mod tests {
             from: None,
             timeout: Limit::read(5)?,
         };
-        let Begun::Waiting(waiting) = session.begin(request, &Origin::Cli(Caller::default()), now)
+        let Begun::Waiting(mut waiting) =
+            session.begin(request, &Origin::Cli(Caller::default()), now)
         else {
             return Err("did not wait".into());
         };

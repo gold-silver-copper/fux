@@ -1530,15 +1530,7 @@ impl Session {
     /// attached.
     pub fn notify_to(&mut self, client: ClientId, text: impl Into<String>, error: bool) {
         if let Some(view) = self.views.get_mut(&client) {
-            let text = text.into();
-            let changed = view
-                .notice
-                .as_ref()
-                .is_none_or(|notice| notice.text != text || notice.error != error);
-            view.notify(text, error);
-            if changed {
-                self.view_event(client, crate::events::ViewChange::Notice);
-            }
+            view.notify(text.into(), error);
         }
     }
 
@@ -2367,7 +2359,7 @@ impl Session {
     }
 
     /// `waiting`'s answer, if it has one already at `now`; else the wait.
-    fn answered(&self, waiting: Waiting, now: Instant) -> Begun {
+    fn answered(&self, mut waiting: Waiting, now: Instant) -> Begun {
         match waiting.answer(self, now) {
             Some(outcome) => Begun::Done(outcome),
             None => Begun::Waiting(Box::new(waiting)),
@@ -3593,7 +3585,7 @@ impl crate::script::Asks for InProcess<'_> {
             // as they fall due, the soonest first, each answered at its
             // time, until it has an answer; at its deadline, once none
             // falls due before it.
-            Begun::Waiting(waiting) => loop {
+            Begun::Waiting(mut waiting) => loop {
                 let soonest = session.timers().min_by_key(|(at, _)| *at);
                 let due = soonest.map(|(at, _)| at).into_iter().chain(waiting.due());
                 let now = due.min().unwrap_or_else(Instant::now);
@@ -3916,7 +3908,10 @@ pub(crate) mod testing {
     /// What a reply's answer prints, a value a line, or why it failed.
     pub(crate) fn said(reply: &Result<Reply, super::Error>) -> String {
         let values = match reply {
-            Ok(reply) => crate::script::answered(reply.clone()).map_err(|f| f.to_string()),
+            Ok(reply) => {
+                crate::script::answered(reply.clone(), &fuxth::Imports::new(crate::inspect::BYTES))
+                    .map_err(|f| f.to_string())
+            }
             Err(error) => Err(error.to_string()),
         };
         match values {
@@ -4302,10 +4297,13 @@ mod tests {
                     ..
                 })
             ));
-            let held = crate::script::answered(Reply {
-                run: Some(s.run),
-                ..Body::Snapshot(snapshot).into()
-            })?;
+            let held = crate::script::answered(
+                Reply {
+                    run: Some(s.run),
+                    ..Body::Snapshot(snapshot).into()
+                },
+                &fuxth::Imports::new(crate::inspect::BYTES),
+            )?;
             assert!(!held.is_empty());
         }
         let before = s
@@ -5882,7 +5880,7 @@ mod tests {
 
     /// The turns that finish what `waiting` waits for, in pane `id`, to
     /// its answer; how many there were.
-    fn turns(s: &mut Session, id: PaneId, waiting: &Waiting) -> Result<(Reply, usize), String> {
+    fn turns(s: &mut Session, id: PaneId, waiting: &mut Waiting) -> Result<(Reply, usize), String> {
         for turns in 0..10_000 {
             if let Some(answer) = waiting.answer(s, Instant::now()) {
                 return Ok((answer, turns));
@@ -5902,7 +5900,7 @@ mod tests {
             .flatten()
             .collect();
         s.out(id, &left);
-        let Begun::Waiting(waiting) =
+        let Begun::Waiting(mut waiting) =
             s.begin_now(respawn_of(id, &[])?, &Origin::Cli(Caller::default()))
         else {
             return Err("the predecessor's output must still need turns".into());
@@ -5930,7 +5928,7 @@ mod tests {
             Some(Code::StrayPane)
         );
         assert!(s.respawning.contains_key(&id));
-        let (_, turns) = turns(&mut s, id, &waiting)?;
+        let (_, turns) = turns(&mut s, id, &mut waiting)?;
         assert!(turns > 1, "the old output needed {turns} turns");
         assert_eq!(
             s.command_now(&here, &caller(1)).end(),
@@ -5962,7 +5960,7 @@ mod tests {
         let mut left: Vec<u8> = std::iter::repeat_n(spends, 4).flatten().collect();
         left.push(0x07);
         s.out(id, &left);
-        let Begun::Waiting(waiting) = s.begin_now(respawn_of(id, &[])?, &origin) else {
+        let Begun::Waiting(mut waiting) = s.begin_now(respawn_of(id, &[])?, &origin) else {
             return Err("answered before what was left was read".into());
         };
         assert_eq!(waiting.due(), None);
@@ -5980,7 +5978,7 @@ mod tests {
             Some(4096)
         );
         run(&mut s, "%2 128 history-budget")?;
-        let (answer, turns) = turns(&mut s, id, &waiting)?;
+        let (answer, turns) = turns(&mut s, id, &mut waiting)?;
         assert!(turns > 1, "read in {turns} turns");
         assert_eq!(answer.end(), crate::protocol::End::Done);
         let pane = s.pane(id)?;
@@ -6015,7 +6013,7 @@ mod tests {
         s.launch = Some("/nonexistent/fux.sock".into());
         let begun = s.begin_now(respawn_of(id, &[])?, &Origin::Cli(Caller::default()));
         s.launch = None;
-        let Begun::Waiting(waiting) = begun else {
+        let Begun::Waiting(mut waiting) = begun else {
             return Err("answered before what was left was read".into());
         };
         assert_eq!(s.children().count(), 1, "the program started for it");
@@ -6064,7 +6062,7 @@ mod tests {
                 env: command::EnvPatch::default(),
                 argv: None,
             });
-            let Begun::Waiting(waiting) = s.begin_now(respawn, &Origin::Cli(Caller::default()))
+            let Begun::Waiting(mut waiting) = s.begin_now(respawn, &Origin::Cli(Caller::default()))
             else {
                 return Err("answered before what was left was read".into());
             };
@@ -6072,7 +6070,7 @@ mod tests {
             assert!(sent.is_err_and(|e| e.contains("respawning")));
             let signalled = s.signalled(id).map(drop).map_err(|e| e.to_string());
             assert!(signalled.is_err_and(|e| e.contains("respawning")));
-            turns(&mut s, id, &waiting)?;
+            turns(&mut s, id, &mut waiting)?;
             let lines = stream.lines(s.parts.journal(), |t| s.holder(t)).0;
             assert!(lines.contains(r#""respawned","pane":"%2""#), "{lines}");
             assert!(!lines.contains("input_unread"), "{lines}");
@@ -6088,12 +6086,12 @@ mod tests {
         let id = PaneId::of(2);
         s.out(id, b"\x1b[?2026hheld");
         let begun = s.begin_now(respawn_of(id, &[])?, &Origin::Cli(Caller::default()));
-        let Begun::Waiting(waiting) = begun else {
+        let Begun::Waiting(mut waiting) = begun else {
             return Err("answered with a frame held".into());
         };
         let timers: Vec<Timer> = s.timers().map(|(_, timer)| timer).collect();
         assert_eq!(timers, [Timer::Unread(id)]);
-        let (_, turns) = turns(&mut s, id, &waiting)?;
+        let (_, turns) = turns(&mut s, id, &mut waiting)?;
         assert_eq!(turns, 1);
         Ok(())
     }
@@ -6105,11 +6103,11 @@ mod tests {
         let id = PaneId::of(2);
         s.out(id, &crate::pane::tests::spends_the_budget(24, 80));
         let begun = s.begin_now(respawn_of(id, &[])?, &Origin::Cli(Caller::default()));
-        let Begun::Waiting(waiting) = begun else {
+        let Begun::Waiting(mut waiting) = begun else {
             return Err("answered before what was left was read".into());
         };
         run(&mut s, "%2 tab 100 30 resize")?;
-        turns(&mut s, id, &waiting)?;
+        turns(&mut s, id, &mut waiting)?;
         let pane = s.pane(id)?;
         assert_eq!((pane.respawns, pane.size()), (1, sized(30, 100)?));
         Ok(())
@@ -6130,7 +6128,7 @@ mod tests {
             &Origin::Cli(Caller::default()),
         );
         s.launch = None;
-        let Begun::Waiting(waiting) = begun else {
+        let Begun::Waiting(mut waiting) = begun else {
             return Err("answered before what was left was read".into());
         };
         let ended = |s: &Session| {
@@ -6146,7 +6144,7 @@ mod tests {
         let started = s.respawning.get(&id).and_then(|r| r.process.child());
         let started = started.map(|c| c.leader.pid());
         assert!(s.children().any(|c| Some(c.leader.pid()) == started));
-        turns(&mut s, id, &waiting)?;
+        turns(&mut s, id, &mut waiting)?;
         let lines = stream.lines(s.parts.journal(), |t| s.holder(t)).0;
         let at = |what: &str| {
             lines
@@ -7115,7 +7113,7 @@ mod tests {
             .first()
             .map(|w| w.id())
             .ok_or("a workspace")?;
-        let Begun::Waiting(waiting) = s.begin_now(wait(AnyRef::Workspace(ws)), &origin) else {
+        let Begun::Waiting(mut waiting) = s.begin_now(wait(AnyRef::Workspace(ws)), &origin) else {
             return Err("the workspace's wait answered at once".into());
         };
         assert!(waiting.answer(&s, Instant::now()).is_none());
@@ -7123,7 +7121,7 @@ mod tests {
         let answer = waiting.answer(&s, Instant::now()).ok_or("no answer")?;
         let text = said(&Ok(answer));
         assert!(text.starts_with("%2:") && !text.contains("%1"), "{text}");
-        let Begun::Waiting(waiting) = s.begin_now(wait(AnyRef::Pane(PaneId::of(1))), &origin)
+        let Begun::Waiting(mut waiting) = s.begin_now(wait(AnyRef::Pane(PaneId::of(1))), &origin)
         else {
             return Err("the pane's wait answered at once".into());
         };
@@ -7293,7 +7291,7 @@ mod tests {
             since: command::Since::Version(since),
             timeout: command::Limit::read(0)?,
         });
-        let Begun::Waiting(waiting) = s.begin_now(wait, &Origin::Cli(Caller::default())) else {
+        let Begun::Waiting(mut waiting) = s.begin_now(wait, &Origin::Cli(Caller::default())) else {
             return Err("a wait mid-frame answered at once".into());
         };
         let due = waiting.due().ok_or("a wait with no time")?;
@@ -8653,7 +8651,6 @@ mod journal_tests {
             "zoomed",
             "history_budget",
             "history_cleared",
-            "notice",
         ] {
             assert!(
                 !named(&b, name).is_empty(),
@@ -8866,25 +8863,38 @@ mod journal_tests {
     }
 
     #[test]
-    fn paste_invalidates_notice_dismissal() -> TestResult {
-        let (mut s, client) = testing::attached(24, 80)?;
-        s.typed(client);
-        s.notify_to(client, "notice", false);
-        let from = s.parts.journal().end(s.run);
-        s.apply(client, vec![crate::act::Act::Paste("quiet input".into())]);
-        assert!(
-            s.views
-                .get(&client)
-                .is_some_and(|view| view.notice.is_none())
-        );
-        let b = Reader::new(Scope::Client(client), s.parts.journal(), s.run, Some(from))?
-            .batch(s.parts.journal(), true)?;
-        assert!(!b.events.is_empty(), "notice cleared without invalidation");
-        assert!(b.events.iter().all(|e| e.origin == Actor::Client(client)));
+    fn notice_dismissal_and_preferences_paint_without_journal_entries() -> TestResult {
+        use crate::act::Act;
+        for paste in [false, true] {
+            let (mut s, client) = testing::attached(24, 80)?;
+            s.typed(client);
+            let from = s.parts.journal().end(s.run);
+            s.notify_to(client, "notice", false);
+            assert!(s.views.get(&client).ok_or("view")?.dirty);
+            s.views.get_mut(&client).ok_or("view")?.dirty = false;
+            if paste {
+                s.apply(client, vec![Act::Paste("quiet input".into())]);
+            } else {
+                s.input(client, b"x");
+            }
+            let view = s.views.get(&client).ok_or("view")?;
+            assert!(view.notice.is_none());
+            assert!(view.dirty);
+            assert_eq!(s.parts.journal().end(s.run), from);
+            let mut presentation = view.presentation.clone();
+            presentation.titles = !presentation.titles;
+            s.views.get_mut(&client).ok_or("view")?.dirty = false;
+            s.apply(client, vec![Act::Presentation(presentation.clone())]);
+            let view = s.views.get(&client).ok_or("view")?;
+            assert_eq!(view.presentation, presentation);
+            assert!(view.dirty);
+            assert_eq!(s.parts.journal().end(s.run), from);
+        }
         Ok(())
     }
+
     #[test]
-    fn copy_motion_only_invalidates_notice_changes() -> TestResult {
+    fn copy_motion_and_notices_paint_without_invalidating_the_opening() -> TestResult {
         let (mut s, client) = testing::attached(24, 80)?;
         run(&mut s, &format!("str {client} client copy-mode"))?;
         let from = s.parts.journal().end(s.run);
@@ -8895,15 +8905,17 @@ mod journal_tests {
                 .is_some_and(|view| matches!(view.mode, Mode::Copy(_)))
         );
         assert_eq!(s.parts.journal().end(s.run), from);
-        for (key, notice, changes) in [
-            (b"n", Some(("no search yet", true)), 1),
-            (b"n", Some(("no search yet", true)), 0),
-            (b"k", None, 1),
+        for (key, notice) in [
+            (b"n", Some(("no search yet", true))),
+            (b"n", Some(("no search yet", true))),
+            (b"k", None),
         ] {
             let from = s.parts.journal().end(s.run);
+            s.views.get_mut(&client).ok_or("view")?.dirty = false;
             s.input(client, key);
             let view = s.views.get(&client).ok_or("client")?;
             assert!(matches!(view.mode, Mode::Copy(_)));
+            assert!(view.dirty);
             assert_eq!(
                 view.notice.as_ref().map(|n| (n.text.as_str(), n.error)),
                 notice
@@ -8911,9 +8923,7 @@ mod journal_tests {
             for scope in [Scope::All, Scope::Client(client)] {
                 let b = Reader::new(scope, s.parts.journal(), s.run, Some(from))?
                     .batch(s.parts.journal(), true)?;
-                assert_eq!(named(&b, "notice").len(), changes, "{notice:?}");
-                assert!(named(&b, "screen").is_empty());
-                assert!(b.events.iter().all(|e| e.origin == Actor::Client(client)));
+                assert!(b.events.is_empty(), "{notice:?}");
             }
         }
         let from = s.parts.journal().end(s.run);

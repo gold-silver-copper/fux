@@ -737,7 +737,11 @@ mod tests {
                 decoded.end().status(),
                 code.map_or(0, |code| code.status().get())
             );
-            let values = crate::script::answered(decoded.clone()).map_err(|f| f.to_string())?;
+            let values = crate::script::answered(
+                decoded.clone(),
+                &fuxth::Imports::new(crate::inspect::BYTES),
+            )
+            .map_err(|f| f.to_string())?;
             let json = values
                 .first()
                 .map(|v| match v {

@@ -67,7 +67,6 @@ impl Session {
                     && view.presentation != presentation
                 {
                     view.presentation = presentation;
-                    self.view_event(client, crate::events::ViewChange::Presentation);
                 }
                 if !bell {
                     self.parts.clear_bells(client);
@@ -96,13 +95,12 @@ impl Session {
                 if !(fresh && starts || opening == view.opening && !view.mode.is_normal()) {
                     return false;
                 }
-                let notice = view.notice.clone();
                 if fresh {
                     view.opening = opening;
                     view.mode = Mode::Normal;
                     view.notice = None;
                 }
-                let changed = fresh || !matches!(act, ScreenAct::Copy(_));
+                let changed = fresh || matches!(act, ScreenAct::Hide);
                 match act {
                     ScreenAct::Show(panel) => view.mode = Mode::Panel(panel),
                     ScreenAct::Hide => {
@@ -111,13 +109,6 @@ impl Session {
                     }
                     ScreenAct::Copy(CopyAct::Enter { .. }) if !fresh => return false,
                     ScreenAct::Copy(act) => crate::copy::act(self, client, act),
-                }
-                if self
-                    .views
-                    .get(&client)
-                    .is_some_and(|view| view.notice != notice)
-                {
-                    self.view_event(client, crate::events::ViewChange::Notice);
                 }
                 if changed
                     || self
@@ -145,6 +136,7 @@ impl Session {
         };
         // The client sends a key for its pane once it shows none of its
         // own screens: one still drawn is gone.
+        let ended = !view.mode.is_normal();
         let shown = match view.mode {
             Mode::Normal => view.notice.take().is_some(),
             Mode::Panel(_) | Mode::Copy(_) => {
@@ -153,7 +145,7 @@ impl Session {
             }
         };
         view.dirty |= shown;
-        if shown {
+        if ended {
             self.view_event(client, crate::events::ViewChange::Screen);
         }
         // Encoded as its program asked.
@@ -212,9 +204,7 @@ impl Session {
         if !view.mode.is_normal() {
             return;
         }
-        if view.notice.take().is_some() {
-            self.view_event(client, crate::events::ViewChange::Notice);
-        }
+        view.notice = None;
         let _ = self.type_in(client, |screen, out| {
             crate::encode::paste(text, screen.mode(fux_vt::Mode::BracketedPaste), out)
         });
@@ -302,7 +292,7 @@ impl Session {
 /// takes them, and what it sends is what the server applies.
 #[cfg(test)]
 mod tests {
-    use crate::act::Panel;
+    use crate::act::{Act, CopyAct, Panel, ScreenAct};
     use crate::id::{ClientId, PaneId};
     use crate::screens::Screen;
     use crate::session::Session;
@@ -406,6 +396,161 @@ mod tests {
 
     /// A tab in the first workspace.
     const NEW_TAB: &str = "opts 80 24 size str +1 workspace in new-tab";
+
+    #[test]
+    fn openings_replacements_closes_and_copy_endings_invalidate_from_the_prior_cursor() -> Outcome {
+        use crate::events::{Actor, Reader};
+        use crate::inspect::Scope;
+        let (mut s, c) = session()?;
+        s.out(PaneId::of(1), b"first\r\nlast");
+        for (opening, act, normal) in [
+            (1, ScreenAct::Show(Panel::Repeat("first".into())), false),
+            (
+                2,
+                ScreenAct::Show(Panel::Repeat("replacement".into())),
+                false,
+            ),
+            (2, ScreenAct::Hide, true),
+            (
+                3,
+                ScreenAct::Copy(CopyAct::Enter {
+                    hints: vec![],
+                    typing: vec![],
+                }),
+                false,
+            ),
+            (3, ScreenAct::Copy(CopyAct::Leave), true),
+        ] {
+            let from = s.parts.journal().end(s.run);
+            s.apply(c, vec![Act::Screen { opening, act }]);
+            let batch = Reader::new(Scope::Client(c), s.parts.journal(), s.run, Some(from))?
+                .batch(s.parts.journal(), true)?;
+            assert_eq!(batch.events.len(), 1);
+            let event = batch.events.first().ok_or("screen event")?;
+            assert_eq!(
+                event.data.get("event"),
+                Some(&crate::json::Json::str("screen"))
+            );
+            assert_eq!(event.origin, Actor::Client(c));
+            let view = s.views.get(&c).ok_or("view")?;
+            assert_eq!(view.opening, opening);
+            assert_eq!(view.mode.is_normal(), normal);
+        }
+        for start in [
+            ScreenAct::Show(Panel::Repeat("key ends this".into())),
+            ScreenAct::Copy(CopyAct::Enter {
+                hints: vec![],
+                typing: vec![],
+            }),
+        ] {
+            let opening = s.views.get(&c).ok_or("view")?.opening + 1;
+            s.apply(
+                c,
+                vec![Act::Screen {
+                    opening,
+                    act: start,
+                }],
+            );
+            let from = s.parts.journal().end(s.run);
+            let key: crate::keys::KeyPress =
+                "x".parse().map_err(|e: crate::keys::Error| e.to_string())?;
+            s.apply(c, vec![Act::Key(key.into())]);
+            let batch = Reader::new(Scope::Client(c), s.parts.journal(), s.run, Some(from))?
+                .batch(s.parts.journal(), true)?;
+            assert_eq!(batch.events.len(), 1);
+            assert_eq!(
+                batch.events.first().ok_or("ending")?.data.get("event"),
+                Some(&crate::json::Json::str("screen"))
+            );
+            assert!(s.views.get(&c).ok_or("view")?.mode.is_normal());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn edits_within_an_opening_paint_without_screen_events() -> Outcome {
+        let (mut s, c) = session()?;
+        let prompt = |before: &str| Panel::Prompt {
+            title: "edit".into(),
+            before: before.into(),
+            after: String::new(),
+            hints: vec![],
+        };
+        let list = |selected| {
+            Panel::List(crate::act::List {
+                items: vec!["one".into(), "two".into()],
+                selected,
+                ..Default::default()
+            })
+        };
+        for (opening, before, after) in [(1, prompt("a"), prompt("ab")), (2, list(0), list(1))] {
+            s.apply(
+                c,
+                vec![Act::Screen {
+                    opening,
+                    act: ScreenAct::Show(before),
+                }],
+            );
+            let from = s.parts.journal().end(s.run);
+            s.views.get_mut(&c).ok_or("view")?.dirty = false;
+            s.apply(
+                c,
+                vec![Act::Screen {
+                    opening,
+                    act: ScreenAct::Show(after.clone()),
+                }],
+            );
+            let view = s.views.get(&c).ok_or("view")?;
+            assert!(matches!(&view.mode, Mode::Panel(panel) if *panel == after));
+            assert!(view.dirty);
+            assert_eq!(view.opening, opening);
+            assert_eq!(s.parts.journal().end(s.run), from);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn a_presentation_edit_that_resizes_a_pane_still_journals_the_resize() -> Outcome {
+        use crate::events::Reader;
+        use crate::inspect::Scope;
+        let (mut s, c) = session()?;
+        let mut presentation = s.views.get(&c).ok_or("view")?.presentation.clone();
+        presentation.bar = crate::presentation::Bar::new(
+            crate::presentation::BarPosition::Off,
+            vec![],
+            vec![],
+            false,
+        )?;
+        let from = s.parts.journal().end(s.run);
+        let rows = s
+            .parts
+            .panes()
+            .get(&PaneId::of(1))
+            .ok_or("pane")?
+            .screen()
+            .size()
+            .rows();
+        s.apply(c, vec![Act::Presentation(presentation)]);
+        assert_eq!(
+            s.parts
+                .panes()
+                .get(&PaneId::of(1))
+                .ok_or("pane")?
+                .screen()
+                .size()
+                .rows(),
+            rows + 1
+        );
+        let batch = Reader::new(Scope::All, s.parts.journal(), s.run, Some(from))?
+            .batch(s.parts.journal(), true)?;
+        assert!(
+            batch
+                .events
+                .iter()
+                .any(|e| e.data.get("event") == Some(&crate::json::Json::str("resized")))
+        );
+        Ok(())
+    }
 
     /// Every server-side screen action belongs to one opening, including
     /// edits and copy keys already in flight when that opening ended.

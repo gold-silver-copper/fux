@@ -306,13 +306,18 @@ tabs is reported to both its old and new scopes. A client scope reports
 changes to that client's view and seats.
 
 Each batch scans at most 256 entries, including nonmatches, returns at most
-64 whole events and 256 KiB of event JSON, and fits the ordinary finite-reply
-and record limits. `next` is exactly the consumed journal prefix, including
-filtered entries. It can advance with no matching events. Each event also
-has its own continuation `next`. A count of matches is never a cursor.
-In fuxth, subject and origin handles retain their server run; JSON renders
-them as short IDs for display. The cursor and buffer ID remain run-qualified
-when exported as text.
+64 whole events. Bounded payloads keep a complete batch, including its
+envelope, below 256 KiB of JSON; no per-event rendering is needed to admit
+it. The batch also fits the ordinary finite-reply and record limits. `next`
+is exactly the consumed journal prefix, including filtered entries. It can
+advance with no matching events. Each event also has its own continuation
+`next`. A count of matches is never a cursor. In fuxth, subject and origin
+handles retain their server run; JSON renders them as short IDs for display.
+The cursor and buffer ID remain run-qualified when exported as text. A run
+reserves a batch's record from its allocation grant before building it:
+1 KiB, plus 8 KiB per event, plus a `stopped` reason's text. Admission then
+trims the reservation to the record's exact storage, so a nearly full grant
+can refuse a batch whose exact record would still fit.
 
 `SECONDS` is an explicit 0 to 86,400 second timeout. With nothing to scan,
 the connection waits until a matching change, loss, closure, shutdown,
@@ -328,10 +333,25 @@ closes the pending read. Status is:
 | `gone` | the scoped object closed; the final close is included when retained |
 | `stopped` | the server stopped; `reason` says why; a final bounded prefix may leave unread entries |
 
-The journal keeps at most the last 16,384 entries and an 8 MiB retained-entry
-charge, plus its bounded deque storage. Either limit may evict entries.
-`missed` counts exactly the entries evicted or refused retention before this cursor, including
+The journal keeps the last 16,384 entries, with complete bounded payloads,
+evicting the oldest before appending to a full ring. Retention promises a
+number of entries, not seconds; scope filtering reserves no private window.
+`missed` counts exactly the entries evicted before this cursor, including
 nonmatches. On loss, resnapshot and reconcile, or fail the task explicitly.
+On the measured 64-bit build, each entry occupies 80 bytes and holds at
+most 2,000 bytes of compact text (a 500-character notification). Maximum
+live entry storage is `16,384 × (80 + 2,000) = 34,078,720` bytes (32.5 MiB),
+about 24.5 MiB above the former nominal 8 MiB entry charge. The 80-byte
+slots are the deque's backing allocation, not a second set of entries.
+The deque grows on demand, up to 16,384 slots (1.25 MiB); at a growth
+boundary its old and replacement backing blocks can coexist, so allow
+another 8,192 slots (0.625 MiB) during the final growth. The journal header
+is 64 bytes, and one incoming event can hold another 2,000 bytes of text
+plus its 56-byte stack value. Allocator metadata, size-class rounding and retained
+allocator pages are additional. This live-entry formula is not an exact
+process-heap ceiling. A full ring is evicted before append and cannot grow
+for entry 16,385.
+
 The journal guarantees ordered invalidations, not complete state replication:
 a later snapshot can already contain newer state. Live cwd, foreground
 process observations and continuous terminal cell changes are excluded.
@@ -347,9 +367,21 @@ server actions; an explicit detach retains its request origin. No agent
 label is inferred.
 
 Client-only keymaps, request preferences and local config evaluation are not
-server state. Committed presentation is journaled as an invalidation; pane
-history changes have their own event. Text and full trees are not copied
-into layout/view invalidations. The finite coverage schema is:
+server state. Notices, presentation preferences and edits or selection
+movement within an existing screen opening are not journaled. Client
+records retain `mode` and `opening`; `screen` invalidates a fresh opening
+(including replacement), a close or a mode ending, including repair and
+history loss. Actual pane resizes and host changes still invalidate their
+pane or layout after a presentation edit. Program `notification` and
+`title` events remain distinct from client notices.
+
+To observe an opening or ending, arm from the client snapshot's `cursor`,
+then resnapshot after `screen` and handle `missed` explicitly. A screen
+event is an invalidation, not an opening-success acknowledgment or an
+input lock. A failed notice-only open may require a timeout or capture.
+Preferences and screen contents cannot be cached solely from journal
+silence. Ordered keys still use the client's existing queue. Text and full
+trees are not copied into layout/view invalidations. The finite coverage schema is:
 
 | `event` | Also |
 | --- | --- |
@@ -362,7 +394,8 @@ into layout/view invalidations. The finite coverage schema is:
 | `moved` | `from_tab`, `from_workspace`; both old and new scopes receive it |
 | `attached`, `detached` | `client` and its last place if known |
 | `shown`, `focused`, `zoomed` | `client` and the affected place; departures invalidate both places; includes automatic repair |
-| `view_resized`, `presentation`, `screen`, `notice` | `client`; size, committed presentation, screen/copy state or notice invalidated |
+| `view_resized` | `client`; client size invalidated |
+| `screen` | `client`; fresh opening, close or mode ending invalidated |
 | `copied` | admitted stable `buffer` ID, no duplicate text; denied program copies emit none |
 | `history_budget` | pane's new `history_bytes` |
 | `history_cleared` | pane history invalidated |
