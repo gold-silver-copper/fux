@@ -20,6 +20,7 @@ use fux_wire::layout::{self, Axis, NoPane, Placement, Rect, Shares, Tree};
 use fux_wire::protocol::{Attach, Body, Reply, Response, ToAttached};
 use fux_wire::words::joined;
 use fuxix::Allocation;
+use fuxth_core::BoundedVec;
 use std::collections::{BTreeMap, VecDeque};
 use std::num::NonZeroU32;
 use std::path::{Path, PathBuf};
@@ -940,18 +941,20 @@ impl Session {
             }
         }
         // Every pane must take them, or none is sent them: each one's are
-        // made and fit first.
-        let (run, mut each) = (self.run, Vec::new());
-        for id in self.panes_of(to.target(), budget)? {
+        // made, in room charged to the request first, and fit first.
+        let (run, targets) = (self.run, self.panes_of(to.target(), budget)?);
+        let mut each = budget.vector(targets.len())?;
+        for id in targets {
             let mut pane = self.live_pane_mut(id)?;
-            let bytes = bytes(&pane, inputs);
+            let bytes = crate::request::input(pane.screen(), inputs, budget)?;
             pane.fits(bytes.len())?;
             each.push((pane.version(run), bytes));
         }
-        let mut answers = each.iter().map(|(version, _)| PaneAnswer::Acted(*version));
-        let mut reply: Reply = match (to.target(), answers.next()) {
-            (AnyRef::Pane(_), Some(one)) => PaneResults::One(one),
-            (_, first) => PaneResults::Many(first.into_iter().chain(answers).collect()),
+        let mut answers = budget.vector(each.len())?;
+        answers.extend(each.iter().map(|(version, _)| PaneAnswer::Acted(*version)));
+        let mut reply: Reply = match (to.target(), answers.as_slice()) {
+            (AnyRef::Pane(_), [one]) => PaneResults::One(one.clone()),
+            _ => PaneResults::Many(answers),
         }
         .into();
         reply.run = Some(self.run);
@@ -1060,9 +1063,14 @@ impl Session {
 
     // ------------------------------------------------------------ creation
 
-    /// The directory pane `pane`'s program is in, if it can be read.
-    fn dir_of(&self, pane: PaneId, budget: &mut fux_wire::wire::Budget) -> Option<PathBuf> {
-        self.dir_with(pane, budget).ok()?.ok().flatten()
+    /// The directory pane `pane`'s program is in, if it can be read: one
+    /// the request's budget has no room for is its refusal, not unknown.
+    fn dir_of(
+        &self,
+        pane: PaneId,
+        budget: &mut fux_wire::wire::Budget,
+    ) -> Result<Option<PathBuf>, Error> {
+        Ok(self.dir_with(pane, budget)?.ok().flatten())
     }
 
     fn dir_with<A: fuxix::Allocation>(
@@ -1106,8 +1114,11 @@ impl Session {
                 return Err(fail(Raise::Start, "the caller's own directory is unknown"));
             }
             Here::Cli(_, Some(cwd)) => Some(cwd.to_owned()),
-            Here::Cli(_, None) => near.and_then(|p| self.dir_of(p, budget)),
-            Here::Client(_, place) => self.dir_of(near.unwrap_or(place.pane), budget),
+            Here::Cli(_, None) => match near {
+                Some(pane) => self.dir_of(pane, budget)?,
+                None => None,
+            },
+            Here::Client(_, place) => self.dir_of(near.unwrap_or(place.pane), budget)?,
         };
         let base = known.ok_or_else(|| {
             fail(
@@ -2241,11 +2252,21 @@ impl Session {
         };
         let watches = match wait.since {
             command::Since::Now(AnyRef::Pane(id)) => Watches::Pane((id, self.pane(id)?.counts())),
-            command::Since::Now(target) => Watches::Panes(
-                (self.panes_of(target, budget)?.into_iter())
-                    .map(|id| Ok((id, self.pane(id)?.counts())))
-                    .collect::<Result<Vec<_>, Error>>()?,
-            ),
+            command::Since::Now(target) => {
+                let panes = self.panes_of(target, budget)?;
+                let pending = self.requests.pending();
+                let mut watched =
+                    BoundedVec::with_capacity(pending, panes.len()).map_err(|why| {
+                        fail(Raise::TooLong, format!("the waits under way hold {why}"))
+                    })?;
+                for id in panes {
+                    let counts = (id, self.pane(id)?.counts());
+                    watched
+                        .push(counts)
+                        .map_err(|why| fail(Raise::TooLong, why.to_string()))?;
+                }
+                Watches::Panes(watched)
+            }
             command::Since::Version(since) => {
                 Watches::Pane((since.pane, self.counts_since(since)?))
             }
@@ -2952,6 +2973,8 @@ impl Session {
             }
             ClientAction::Capture => {
                 let terminal = view()?;
+                let panes = self.parts.panes().len();
+                crate::request::composed((terminal.rows, terminal.cols), panes, budget)?;
                 let mut grid = crate::render::Grid::default();
                 let placement = &mut Placement::default();
                 crate::render::compose_view(self, terminal, &mut grid, placement)
@@ -4018,27 +4041,6 @@ pub(crate) mod testing {
     }
 }
 
-/// `inputs` as pane `p`'s program takes them: keys and pastes encoded as
-/// it asked for them, text and bytes as they are.
-fn bytes(p: &Pane, inputs: &[Input]) -> Vec<u8> {
-    let screen = p.screen();
-    let mut bytes = Vec::new();
-    for input in inputs {
-        match input {
-            Input::Key(key) => {
-                fux_vt::keys::encode::key_bytes((*key).into(), screen.key_mode(), &mut bytes)
-            }
-            Input::Text(text) => bytes.extend_from_slice(text.as_bytes()),
-            Input::Paste(text) => {
-                let bracketed = screen.mode(fux_vt::Mode::BracketedPaste);
-                fux_vt::keys::encode::paste(text, bracketed, &mut bytes);
-            }
-            Input::Bytes(given) => bytes.extend_from_slice(given),
-        }
-    }
-    bytes
-}
-
 #[cfg(test)]
 mod tests {
     use crate::session::testing::TestResult;
@@ -5100,6 +5102,38 @@ mod tests {
             assert_eq!(s.ids, ids);
             assert_eq!(s.parts.panes().len(), 3);
         }
+        Ok(())
+    }
+
+    /// A pane's directory that the request's budget has no room for is
+    /// refused `too_long`, not taken for unknown; a pane with no program to
+    /// read one of still starts nowhere, `start`.
+    #[test]
+    fn a_directory_past_the_requests_budget_is_refused_too_long() -> TestResult {
+        let mut s = Session::new(
+            "/nonexistent/fux.sock".into(),
+            true,
+            command::Run::now().ok_or("clock")?,
+        );
+        let initial = command::InitialWorkspace {
+            options: fux::script::default_state()?.preferences.pane_options(),
+            name: None,
+            start: command::Start::Shell(command::Program::new("/bin/sh".into(), Vec::new())?),
+            cwd: std::env::current_dir()?,
+            env: command::EnvPatch::default(),
+        };
+        s.start_now(sized(24, 80)?, &initial)?;
+        let (pane, here) = (PaneId::of(1), Here::Cli(None, None));
+        let none = &mut fux_wire::wire::Budget::with_limit(0);
+        let refused = s.start_dir(here, None, Some(pane), none).err();
+        let room = &mut fux_wire::wire::Budget::with_limit(1 << 20);
+        let found = s.start_dir(here, None, Some(pane), room);
+        s.shutdown(Instant::now());
+        reap(&mut s);
+        assert_eq!(refused.map(|e| e.code()), Some(Code::from(Raise::TooLong)));
+        assert_eq!(found?, initial.cwd);
+        let unknown = started()?.start_dir(here, None, Some(pane), room).err();
+        assert_eq!(unknown.map(|e| e.code()), Some(Code::Start));
         Ok(())
     }
 

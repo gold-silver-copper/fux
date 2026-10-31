@@ -229,12 +229,8 @@ impl Wire for EnvPatch {
         }
     }
     fn get(r: &mut Reader<'_>) -> Result<Self, Error> {
-        let mut env = EnvPatch::default();
-        for (name, value) in Vec::<(String, Option<std::ffi::OsString>)>::get(r)? {
-            env.push(name, value)
-                .map_err(|_| Error::Bad("variable name"))?;
-        }
-        Ok(env)
+        let entries = Vec::<(String, Option<std::ffi::OsString>)>::get(r)?;
+        EnvPatch::adopt(entries).map_err(|_| Error::Bad("variable name"))
     }
 }
 

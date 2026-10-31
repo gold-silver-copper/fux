@@ -26,7 +26,9 @@ use std::time::{Duration, Instant};
 /// workspace's panes, which answer together.
 pub enum Watches {
     Pane((PaneId, Counts)),
-    Panes(Vec<(PaneId, Counts)>),
+    /// Kept in the waits' own region (`Requests::pending`) till the wait
+    /// ends.
+    Panes(fuxth_core::BoundedVec<(PaneId, Counts)>),
 }
 
 impl Watches {

@@ -1227,12 +1227,20 @@ fn wait(recordings: &[Recording], baseline: bool, total: usize) -> Result<Done, 
     let mut s = session(4)?;
     let panes: Vec<_> = s.parts.panes().keys().copied().collect();
     let now = std::time::Instant::now();
-    let arm = |s: &fux_server::session::Session| {
-        let watches = (panes.iter())
-            .filter_map(|p| Some((*p, s.parts.panes().get(p)?.counts())))
-            .collect();
+    let arm = |s: &fux_server::session::Session| -> Result<_, String> {
+        let pending = s.requests.pending();
+        let mut watches =
+            fuxth::BoundedVec::with_capacity(pending, panes.len()).map_err(|e| e.to_string())?;
+        for p in &panes {
+            if let Some(pane) = s.parts.panes().get(p) {
+                watches
+                    .push((*p, pane.counts()))
+                    .map_err(|e| e.to_string())?;
+            }
+        }
         let watches = fux_server::wait::Watches::Panes(watches);
-        fux_server::wait::Waiting::new(watches, s.run, now, std::time::Duration::from_secs(3600))
+        let limit = std::time::Duration::from_secs(3600);
+        Ok(fux_server::wait::Waiting::new(watches, s.run, now, limit))
     };
     let all: Vec<u8> = recordings.iter().flat_map(Recording::bytes).collect();
     let bytes = repeated(&all, total);
@@ -1240,7 +1248,7 @@ fn wait(recordings: &[Recording], baseline: bool, total: usize) -> Result<Done, 
     let mut units = 0usize;
     let mut n = 0usize;
     for part in pieces(&bytes, each) {
-        let mut waiting = arm(&s);
+        let mut waiting = arm(&s)?;
         for read in pieces(part, PANE_READ) {
             let pane = panes
                 .get(n.checked_rem(panes.len()).unwrap_or(0))

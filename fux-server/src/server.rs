@@ -448,8 +448,8 @@ impl Conn {
     }
 
     /// Answers a request with its outcome, encoded once in the request's
-    /// region and sent in pieces as long as fit, then their end; and takes
-    /// the next.
+    /// region (one past it or the reply's cap is answered `too_long`) and
+    /// sent in pieces as long as fit, then their end; and takes the next.
     fn answer(&mut self, session: &mut Session, mut reply: Reply, budget: &Budget, now: Instant) {
         reply.run = Some(session.run);
         const REFUSED: &str = "finite reply exceeds its byte or allocation limit";
@@ -462,11 +462,10 @@ impl Conn {
             self.enter(session, Stage::Dead, now);
             return;
         }
-        let Ok(bytes) = crate::request::encoded(&reply, budget) else {
+        let Ok(bytes) = crate::request::encoded(reply, budget) else {
             self.end(session, &ToCommand::Exit(REFUSED), now);
             return;
         };
-        drop(reply);
         // Include every Part header and PartsEnd, before queuing any of it.
         let headers = bytes
             .len()
@@ -1883,27 +1882,45 @@ mod tests {
         Ok(())
     }
 
-    /// A refused finite reply queues one small failure, never a prefix
-    /// followed by a successful PartsEnd.
+    /// A reply past the reply's cap, or past its request's region, is
+    /// answered one small `too_long` failure, as the connection's frames
+    /// carry it, never a prefix followed by a successful PartsEnd; and the
+    /// connection takes the next request.
     #[test]
-    fn an_oversized_reply_sends_only_a_failure() -> Result<(), Box<dyn std::error::Error>> {
-        let (mut session, mut conn, _peer) = attached(Instant::now())?;
-        conn.stage = Stage::Command;
-        let text: String = std::iter::repeat_n('x', fux_wire::wire::MAX_REPLY).collect();
-        conn.reply(
-            &mut session,
-            fux_wire::protocol::Body::Field(fux_wire::json::Json::str(text)).into(),
-            Instant::now(),
-        );
-        assert!(matches!(conn.stage, Stage::Closing));
-        assert!(conn.out.len() < 256);
-        let mut decoder = Decoder::default();
-        decoder.push(conn.out.as_slice());
-        assert!(matches!(
-            decoder.frame::<ToCommand>()?,
-            Some(ToCommand::Exit(_))
-        ));
-        assert!(decoder.frame::<ToCommand>()?.is_none());
+    fn a_reply_past_its_cap_or_its_region_is_answered_too_long()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let field = |bytes| -> Reply {
+            let text: String = std::iter::repeat_n('x', bytes).collect();
+            fux_wire::protocol::Body::Field(fux_wire::json::Json::str(text)).into()
+        };
+        for (reply, region) in [
+            (
+                field(fux_wire::wire::MAX_REPLY),
+                crate::request::REQUEST_BYTES,
+            ),
+            (field(64 << 10), 32 << 10),
+        ] {
+            let (mut session, mut conn, _peer) = attached(Instant::now())?;
+            session.requests = crate::request::Requests::new(region, 0);
+            conn.stage = Stage::Command;
+            let budget = session.requests.open()?;
+            conn.answer(&mut session, reply, &budget, Instant::now());
+            assert!(matches!(conn.stage, Stage::Command));
+            assert!(conn.out.len() < 256);
+            let mut decoder = Decoder::default();
+            decoder.push(conn.out.as_slice());
+            let Some(ToCommand::Part(part)) = decoder.frame()? else {
+                return Err("no reply".into());
+            };
+            let reply = fux_wire::wire::decode::<Reply>(&part)?;
+            let too_long = Code::from(fux_wire::code::Raise::TooLong);
+            assert!(
+                matches!(reply.response, fux_wire::protocol::Response::Failed { code, .. } if code == too_long),
+                "{reply:?}"
+            );
+            assert_eq!(decoder.frame()?, Some(ToCommand::PartsEnd));
+            assert!(decoder.frame::<ToCommand>()?.is_none());
+        }
         Ok(())
     }
 
