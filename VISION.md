@@ -128,8 +128,8 @@ reference.
   processes outside them.
 - **Not a judge of readiness,** ever.
 - **Not an editor.** fuxed is its own project, with its own vision.
-- **Not a clone** of tmux or Forth. It takes Forth's mechanisms (the
-  dictionary, early binding, an extensible compiler), not its syntax.
+- **Not a clone** of tmux. fuxth is a real Forth: it takes Forth 2012's
+  words and syntax over typed cells (D-84, D-86).
 - **Not mouse-first, no floating panes** (rejected 2026-10-26).
 - **Not a general runtime.** No threads, floats, packages or network in
   fuxth. It is otherwise a real Forth (D-84). Its data space holds
