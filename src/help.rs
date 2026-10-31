@@ -333,6 +333,7 @@ fn bounds() -> Vec<(Amount, &'static str, Said)> {
         (Count(fux_wire::command::MAX_WAIT), "seconds a wait may be given", said![]),
         (Whole(script::PROGRAM_STEPS), "steps of a program a client runs (a config, a key's)", said![]),
         (Whole(script::LINE_STEPS), "steps of a command line's program", said![]),
+        (Bytes(script::RUN_BYTES), "what a fuxth run holds: its values, its stack, its calls and its program's literals", said![]),
         (Count(fuxth::LONGEST), "characters of a string fuxth builds", said![("agents", "at most {} characters")]),
         (Whole(fuxth::TOTAL), "elements a fuxth list holds, through the lists in it", said![]),
         (Bytes(script::SOURCE_MAX), "what read-file and input read", said![("input", "{} at most"), ("read-file", "{} at most")]),
