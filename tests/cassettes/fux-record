@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+# fux-record: a recording shim, first in PATH as `fux`. It runs the real fux
+# ($FUX_REAL) and appends one JSON line per call to $FUX_REC: argv, stdin
+# (for `fux -`), status, stdout, stderr (each cut to 4,000 characters, and
+# `out_cut`, `err_cut` saying so) and its start and end time. The cassette
+# runner and D-59 verifiers use it; quotes_check.py checks a transcript
+# against its log.
+real=${FUX_REAL:?FUX_REAL names the real fux}; log=${FUX_REC:-/dev/null}
+d=$(mktemp -d) || exit 2
+t0=${EPOCHREALTIME:-$(date +%s)}
+if [ "${!#}" = "-" ] || [ "$1" = "-" ]; then tee "$d/in" | "$real" "$@" >"$d/out" 2>"$d/err"; st=${PIPESTATUS[1]}
+else : >"$d/in"; "$real" "$@" >"$d/out" 2>"$d/err"; st=$?; fi
+t1=${EPOCHREALTIME:-$(date +%s)}
+python3 -I -c 'import json,sys;d=sys.argv[1];r=lambda n:open(d+"/"+n,errors="replace").read(4001)
+i,o,e=r("in"),r("out"),r("err")
+print(json.dumps({"t0":float(sys.argv[2]),"t1":float(sys.argv[3]),"argv":sys.argv[5:],"stdin":i[:4000],"status":int(sys.argv[4]),"out":o[:4000],"err":e[:4000],"out_cut":len(o)>4000,"err_cut":len(e)>4000}))' "$d" "$t0" "$t1" "$st" "$@" >>"$log"
+cat "$d/out"; cat "$d/err" >&2; rm -rf "$d"; exit "$st"

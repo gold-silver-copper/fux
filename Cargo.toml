@@ -39,6 +39,11 @@ fux-server = { path = "fux-server", features = ["in-process"] }
 fux-wire = { path = "fux-wire", features = ["testing"] }
 fux-vt-peak = { path = "fux-vt/peak" }
 
+# Replays tests/cassettes/ with its own arguments (tests/cassettes/README.md).
+[[test]]
+name = "cassettes"
+harness = false
+
 # Its binary plays the one a client follows, so it has a main of its own.
 [[test]]
 name = "follow"
