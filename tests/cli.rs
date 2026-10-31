@@ -301,11 +301,11 @@ fn errors_statuses_and_what_is_left() -> Outcome {
         str bad_name try str %1 pane tab str %7 rename str renamed catch nip end";
     let caught = server.ok(&program.split_whitespace().collect::<Vec<_>>())?;
     assert_eq!(caught, "unused\nunknown_word\nbad_name\n");
-    // A size past a client's screen's most is refused, saying the range
-    // it may take, past a cell's too.
+    // A size past a client's screen's most is refused, `size` as the
+    // server refuses it, saying the range it may take, past a cell's too.
     for size in ["4097", "65536"] {
         let wide = server.fux(&["str", "%1", "pane", size, "10", "resize"])?;
-        assert!(wide.stderr.starts_with("fux: range: "), "{}", wide.stderr);
+        assert!(wide.stderr.starts_with("fux: size: "), "{}", wide.stderr);
         assert!(wide.stderr.contains("1 to 4096"), "{}", wide.stderr);
         let opened = server.fux(&["opts", size, "10", "size", "new-tab"])?;
         assert!(opened.stderr.contains("1 to 4096"), "{}", opened.stderr);

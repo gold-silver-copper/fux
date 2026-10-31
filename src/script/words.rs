@@ -641,9 +641,7 @@ fn one_of<T: Clone>(value: &Value<Fux>, all: &[(&str, T)]) -> Result<T, Failure>
 /// A size: columns and rows each 1 to `command::MOST`, as a client's screen,
 /// and so a tab that fits clients, may be.
 fn laid_out(cols: &Value<Fux>, rows: &Value<Fux>) -> Result<fux_wire::command::Screen, Failure> {
-    let cells = 1..=i64::from(fux_wire::command::MOST);
-    let (cols, rows) = (within(cols, cells.clone())?, within(rows, cells)?);
-    fux_wire::command::Screen::new(rows, cols).map_err(|e| fail(Raise::Range, e))
+    Ok(fux_wire::command::Screen::new(int(rows)?, int(cols)?)?)
 }
 
 /// The pane a value is: a pane, or an action's or wait's answer of one
@@ -1829,9 +1827,7 @@ impl Host<'_> {
                 let Value::List(list) = &tree else {
                     return Err(wrong("a flat layout list", &tree));
                 };
-                if list.items().is_empty() || list.items().len() > fux_wire::layout::NODES_MAX {
-                    return Err(fail(Raise::TooLong, "a layout needs 1..2047 nodes"));
-                }
+                fux_wire::layout::admit_nodes(list.items().len())?;
                 let mut nodes = Vec::with_capacity(list.items().len());
                 let mut of = None;
                 for node in list.items() {
@@ -2295,12 +2291,7 @@ impl Host<'_> {
                 return Err(wrong("a callback", value));
             }
         };
-        if code.len() > crate::screens::ACTION_MAX {
-            return Err(fail(
-                Raise::TooLong,
-                "callback source exceeds its byte limit",
-            ));
-        }
+        crate::screens::admit_source(&code)?;
         Ok(fux_wire::callback::Callback { code, args })
     }
 

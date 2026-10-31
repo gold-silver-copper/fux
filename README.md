@@ -767,7 +767,8 @@ The tree is a flat list, rooted at index zero. Each leaf accepts a typed pane
 or its action/wait answer; all retained pane runs must agree. A split is
 `list str horizontal|vertical FIRST-SHARE SECOND-SHARE FIRST-INDEX SECOND-INDEX end`.
 Every index must be reached once; shares are nonzero u32 values. A proposal
-has at most 2,047 nodes and depth 64. Revision exhaustion refuses further
+has at most 2,047 nodes and depth 64; past either it fails `too_long`, as
+`arrange` checks or the server. Revision exhaustion refuses further
 guarded edits rather than reusing a token.
 
 The library's pure builders accept pane lists: `PANES str horizontal even-of`

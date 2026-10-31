@@ -368,6 +368,17 @@ impl Wire for std::time::Duration {
     }
 }
 
+// Its fields are std's own: as `put` writes them.
+#[cfg(test)]
+impl Reach for std::time::Duration {
+    fn reach(out: &mut Shapes) {
+        out.first::<Self>(
+            "Duration",
+            &[("Duration", &[("secs", "u64"), ("nanos", "u32")])],
+        );
+    }
+}
+
 impl Wire for std::num::NonZeroU32 {
     fn put(&self, out: &mut impl crate::wire::Sink) {
         self.get().put(out);
@@ -595,6 +606,14 @@ pub(crate) use closed_wire;
 
 closed_wire!(Direction, "direction"; MouseButton, "mouse button"; Signal, "signal");
 
+// Its fields are fux-vt's own: as `put` writes them.
+#[cfg(test)]
+impl Reach for fux_vt::Size {
+    fn reach(out: &mut Shapes) {
+        out.first::<Self>("Size", &[("Size", &[("rows", "u16"), ("cols", "u16")])]);
+    }
+}
+
 impl Wire for fux_vt::Size {
     fn put(&self, out: &mut impl crate::wire::Sink) {
         self.rows().put(out);
@@ -694,7 +713,9 @@ pub(crate) use wire_struct;
 /// (`Tuple(A, B)`), and `wire_enum!(Ty { Unit, Tuple(a, b), Named { x } })`:
 /// `a` and `b` only name the fields, as a macro can't make up names. A
 /// struct expands to itself and `wire_struct!`. A variant's tag and a
-/// field's place on the wire are their places in the declaration.
+/// field's place on the wire are their places in the declaration. In a
+/// test build, each is also `Reach`: its variants (a struct's one, its
+/// own name) and their fields, as declared, and what those hold.
 macro_rules! wire {
     (
         $(#[$m:meta])*
@@ -717,6 +738,24 @@ macro_rules! wire {
         $crate::wire::wire_enum!($ty $(<$g>)? {
             $($var $(( $($p),+ ))? $({ $($f),* })?),*
         });
+        #[cfg(test)]
+        impl$(<$g: $crate::wire::Reach>)? $crate::wire::Reach for $ty$(<$g>)? {
+            fn reach(out: &mut $crate::wire::Shapes) {
+                let shape: &[(&str, &[(&str, &str)])] = &[$((
+                    stringify!($var),
+                    &[
+                        $($((stringify!($p), stringify!($pt)),)+)?
+                        $($((stringify!($f), stringify!($ft)),)*)?
+                    ],
+                )),*];
+                if out.first::<Self>(stringify!($ty), shape) {
+                    $(
+                        $($(<$pt as $crate::wire::Reach>::reach(out);)+)?
+                        $($(<$ft as $crate::wire::Reach>::reach(out);)*)?
+                    )*
+                }
+            }
+        }
     };
     (
         $(#[$m:meta])*
@@ -729,9 +768,242 @@ macro_rules! wire {
             $($(#[$fm])* $fvis $f: $ft),*
         }
         $crate::wire::wire_struct!($ty { $($f),+ });
+        #[cfg(test)]
+        impl $crate::wire::Reach for $ty {
+            fn reach(out: &mut $crate::wire::Shapes) {
+                let shape: &[(&str, &[(&str, &str)])] =
+                    &[(stringify!($ty), &[$((stringify!($f), stringify!($ft))),+])];
+                if out.first::<Self>(stringify!($ty), shape) {
+                    $(<$ft as $crate::wire::Reach>::reach(out);)+
+                }
+            }
+        }
     };
 }
 pub(crate) use wire;
+
+/// `shaped!(struct Ty { a: A, b: B })`, `shaped!(struct Ty(a: A))` or
+/// `shaped!(enum Ty { Unit, Tuple(a: A), Named { b: B } })`, its variants in
+/// the order of their tags; `shaped!(codec struct Ty { … })` also gives
+/// `put_fields` and `get_fields`, so that a `Wire` that only checks what it
+/// reads puts and gets its fields in the order listed, never another:
+/// in a test build, `Reach` for a type whose `Wire` is written by hand, its
+/// fields as they go on the wire, in order. A field or variant the type
+/// has and the list does not fails to compile; their types are as listed.
+macro_rules! shaped {
+    (codec struct $ty:path { $($f:ident: $ft:ty),+ $(,)? }) => {
+        $crate::wire::shaped!(struct $ty { $($f: $ft),+ });
+        impl $ty {
+            /// Its fields on the wire, in the order its shape lists them.
+            fn put_fields(&self, out: &mut impl $crate::wire::Sink) {
+                $($crate::wire::Wire::put(&self.$f, out);)+
+            }
+            /// Its fields read back in that order, for its `get` to check.
+            fn get_fields(
+                r: &mut $crate::wire::Reader<'_>,
+            ) -> Result<($($ft,)+), $crate::wire::Error> {
+                Ok(($(<$ft as $crate::wire::Wire>::get(r)?,)+))
+            }
+        }
+    };
+    (struct $ty:ident ( $($f:ident: $ft:ty),+ $(,)? )) => {
+        #[cfg(test)]
+        impl $crate::wire::Reach for $ty {
+            fn reach(out: &mut $crate::wire::Shapes) {
+                let name = stringify!($ty).rsplit("::").next().unwrap_or_default();
+                let shape: &[(&str, &[(&str, &str)])] =
+                    &[(name, &[$((stringify!($f), stringify!($ft))),+])];
+                if out.first::<Self>(name, shape) {
+                    $(<$ft as $crate::wire::Reach>::reach(out);)+
+                }
+                let _every_field = |v: &Self| {
+                    let Self($($f),+) = v;
+                    $(let _ = $f;)+
+                };
+            }
+        }
+    };
+    (struct $ty:path { $($f:ident: $ft:ty),+ $(,)? }) => {
+        #[cfg(test)]
+        impl $crate::wire::Reach for $ty {
+            fn reach(out: &mut $crate::wire::Shapes) {
+                let name = stringify!($ty).rsplit("::").next().unwrap_or_default();
+                let shape: &[(&str, &[(&str, &str)])] =
+                    &[(name, &[$((stringify!($f), stringify!($ft))),+])];
+                if out.first::<Self>(name, shape) {
+                    $(<$ft as $crate::wire::Reach>::reach(out);)+
+                }
+                let _every_field = |v: &Self| {
+                    let Self { $($f: _),+ } = v;
+                };
+            }
+        }
+    };
+    (enum $ty:path {
+        $($var:ident $(( $($p:ident: $pt:ty),+ ))? $({ $($f:ident: $ft:ty),+ })?),+ $(,)?
+    }) => {
+        #[cfg(test)]
+        impl $crate::wire::Reach for $ty {
+            fn reach(out: &mut $crate::wire::Shapes) {
+                let name = stringify!($ty).rsplit("::").next().unwrap_or_default();
+                let shape: &[(&str, &[(&str, &str)])] = &[$((
+                    stringify!($var),
+                    &[
+                        $($((stringify!($p), stringify!($pt)),)+)?
+                        $($((stringify!($f), stringify!($ft)),)+)?
+                    ],
+                )),+];
+                if out.first::<Self>(name, shape) {
+                    $(
+                        $($(<$pt as $crate::wire::Reach>::reach(out);)+)?
+                        $($(<$ft as $crate::wire::Reach>::reach(out);)+)?
+                    )+
+                }
+                let _every_variant = |v: &Self| match v {
+                    $(Self::$var $(( $($p),+ ))? $({ $($f),+ })? => {
+                        $($(let _ = $p;)+)?
+                        $($(let _ = $f;)+)?
+                    })+
+                };
+            }
+        }
+    };
+}
+pub(crate) use shaped;
+
+/// What a request reaches on the wire: a type with fields lists its
+/// variants (a struct's one, its own name) and their fields' names and
+/// types, in their places on the wire, then each type they hold, each
+/// once (`wire!`, `shaped!`); a value with none (a number, text, an id)
+/// lists nothing. Every field's type is one, so none is left out.
+#[cfg(test)]
+pub(crate) trait Reach {
+    fn reach(_: &mut Shapes) {}
+}
+
+/// The shapes reached so far: each type's lines, `Ty::Variant fields` (a
+/// struct, `Ty fields`), in the order first reached.
+#[cfg(test)]
+#[derive(Default)]
+pub(crate) struct Shapes {
+    seen: Vec<&'static str>,
+    pub lines: Vec<String>,
+}
+
+#[cfg(test)]
+impl Shapes {
+    /// Lists `T`, named `name`, by `shape`, unless it was reached before:
+    /// whether it is new. A generic type's other instances share its lines.
+    pub(crate) fn first<T: ?Sized>(
+        &mut self,
+        name: &str,
+        shape: &[(&str, &[(&str, &str)])],
+    ) -> bool {
+        let key = std::any::type_name::<T>();
+        if self.seen.contains(&key) {
+            return false;
+        }
+        self.seen.push(key);
+        for (variant, fields) in shape {
+            let fields: Vec<String> = fields
+                .iter()
+                .map(|(field, ty)| format!("{field}: {}", ty.replace("crate::", "")))
+                .collect();
+            let head = match *variant == name {
+                true => name.to_owned(),
+                false => format!("{name}::{variant}"),
+            };
+            let line = format!("{head} {}", fields.join(", "))
+                .trim_end()
+                .to_owned();
+            if !self.lines.contains(&line) {
+                self.lines.push(line);
+            }
+        }
+        true
+    }
+}
+
+/// `Reach` for what goes on the wire as one value with no fields of its
+/// own; every type with fields has its own `Reach` (`wire!`, `shaped!`).
+#[cfg(test)]
+macro_rules! leaves {
+    ($($ty:ty),* $(,)?) => {$(impl Reach for $ty {})*};
+}
+#[cfg(test)]
+leaves!(
+    // A number.
+    u8,
+    u16,
+    u32,
+    u64,
+    i32,
+    i64,
+    usize,
+    std::num::NonZeroU32,
+    crate::command::Limit,
+    crate::command::Percent,
+    crate::command::ScrollLines,
+    // A flag.
+    bool,
+    // A string, or a system string's bytes.
+    String,
+    std::path::PathBuf,
+    std::ffi::OsString,
+    // An id: one number.
+    crate::id::PaneId,
+    crate::id::TabId,
+    crate::id::WsId,
+    crate::id::ClientId,
+    crate::events::Seq,
+    // Text read back by its spelling (`text_wire!`).
+    KeyPress,
+    crate::code::Code,
+    // One byte of a closed set (`closed_wire!`).
+    Direction,
+    MouseButton,
+    Signal,
+    crate::answer::Change,
+    fux_vt::ModeStatus,
+    fux_vt::keys::colour::Scheme,
+);
+#[cfg(test)]
+impl<const MIN: usize, const MAX: usize> Reach for crate::command::Number<MIN, MAX> {}
+
+/// What holds values reaches what they are.
+#[cfg(test)]
+impl<T: Reach> Reach for Option<T> {
+    fn reach(out: &mut Shapes) {
+        T::reach(out);
+    }
+}
+#[cfg(test)]
+impl<T: Reach> Reach for Vec<T> {
+    fn reach(out: &mut Shapes) {
+        T::reach(out);
+    }
+}
+#[cfg(test)]
+impl<T: Reach> Reach for Box<T> {
+    fn reach(out: &mut Shapes) {
+        T::reach(out);
+    }
+}
+#[cfg(test)]
+impl<A: Reach, B: Reach> Reach for (A, B) {
+    fn reach(out: &mut Shapes) {
+        A::reach(out);
+        B::reach(out);
+    }
+}
+#[cfg(test)]
+impl<A: Reach, B: Reach, C: Reach> Reach for (A, B, C) {
+    fn reach(out: &mut Shapes) {
+        A::reach(out);
+        B::reach(out);
+        C::reach(out);
+    }
+}
 
 impl Wire for Percent {
     fn put(&self, out: &mut impl crate::wire::Sink) {

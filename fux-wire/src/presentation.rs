@@ -105,6 +105,14 @@ impl Bar {
         self.tab_numbers
     }
 }
+crate::wire::shaped!(
+    struct Bar {
+        position: BarPosition,
+        left: Vec<Field>,
+        right: Vec<Field>,
+        tab_numbers: bool,
+    }
+);
 impl Wire for Bar {
     fn put(&self, out: &mut impl crate::wire::Sink) {
         self.position.put(out);
@@ -157,6 +165,7 @@ impl Slots {
             .map(|(_, text)| text.as_str())
     }
 }
+crate::wire::shaped!(struct Slots(slots: Vec<(u8, String)>));
 impl Wire for Slots {
     fn put(&self, out: &mut impl crate::wire::Sink) {
         self.0.put(out);

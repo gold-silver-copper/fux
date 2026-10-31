@@ -1290,8 +1290,7 @@ impl Session {
         }
         // A size no view has is refused before anything starts on it.
         let (rows, cols) = attach.size.nonzero();
-        let (rows, cols) = fux_wire::command::size(rows.get(), cols.get())
-            .map_err(|why| fail(Raise::Size, why))?;
+        let (rows, cols) = fux_wire::command::size(rows.get(), cols.get())?;
         let (ws, spot) = match &attach.target {
             Some(command::AttachTarget::Workspace(workspace)) => {
                 (self.resolve_ws(workspace)?, None)
@@ -1404,7 +1403,7 @@ impl Session {
         cols: u16,
         now: Instant,
     ) -> Result<bool, Error> {
-        let size = fux_wire::command::size(rows, cols).map_err(|why| fail(Raise::Size, why))?;
+        let size = fux_wire::command::size(rows, cols)?;
         let view = self.views.get_mut(&id).filter(|v| (v.rows, v.cols) != size);
         let Some(view) = view else { return Ok(false) };
         (view.rows, view.cols) = size;
@@ -2377,7 +2376,7 @@ impl Session {
                     let now = now.map_or_else(|| "exhausted".into(), |r| r.to_string());
                     return Err(fail(code, format!("{target} is at {now}, not {revision}")));
                 }
-                let root = layout::from_nodes(nodes).map_err(|why| fail(Raise::BadValue, why))?;
+                let root = layout::from_nodes(nodes)?;
                 if !root.same_panes(tab.root()) {
                     return Err(fail(
                         Raise::BadValue,

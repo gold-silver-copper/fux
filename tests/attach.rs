@@ -150,7 +150,7 @@ fn a_resize_reaches_the_program() -> Outcome {
     // Past 4096 a way, refused and said: the view keeps its size.
     client.resize(20, 5000)?;
     client.wait("the refusal", |t| {
-        t.contains("5000 columns by 20 rows: a client is")
+        t.contains("5000 columns by 20 rows: a screen is")
     })?;
     assert!(server.ok(&["ls", "listing"])?.contains("client c1 60x20"));
     Ok(())

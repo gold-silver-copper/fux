@@ -326,6 +326,111 @@ impl Event {
     }
 }
 
+/// One event of every kind at `at`, each with every field it can say:
+/// `name` for what is named, `said` a title and a notification a pane
+/// told, `left` for what an end left, `buffer` copied, `size` resized to. The test
+/// `the_event_and_status_tables_match_the_finite_schema` does not compile
+/// while a kind is missing; fux's list of records (`docs/records.txt`)
+/// reads them all.
+#[cfg(any(test, feature = "in-process"))]
+pub fn every_kind(
+    at: PaneAt,
+    name: &str,
+    said: [Told; 2],
+    left: Left,
+    buffer: BufferId,
+    size: fux_vt::Size,
+) -> Vec<Event> {
+    let mut events = vec![
+        Event::Pane(at, PaneEvent::Created),
+        Event::Pane(at, PaneEvent::Closed),
+        Event::Pane(at, PaneEvent::Moved(at.0)),
+        Event::Arranged(at.0),
+        Event::Layout(at.0),
+        Event::Copied {
+            buffer,
+            at: Some(at),
+        },
+    ];
+    for change in [
+        Change::Created(None),
+        Change::Created(Some(name.to_owned())),
+        Change::Renamed(name.to_owned()),
+        Change::Closed,
+        Change::Reordered,
+    ] {
+        events.push(Event::Tab(at.0, change.clone()));
+        events.push(Event::Workspace(at.0.0, change));
+    }
+    let [title, notification] = said;
+    let ended = |ended| Told::Exited(End { ended, left });
+    for told in [
+        Told::Renamed(name.to_owned()),
+        Told::Respawned(left),
+        Told::Bell,
+        notification,
+        title,
+        Told::Done(None),
+        Told::Done(Some(i32::MIN)),
+        Told::Resized(size),
+        // The most a pane's budget is (`command::HistoryBytes`).
+        Told::HistoryBudget(1 << 30),
+        Told::HistoryCleared,
+        ended(fux_wire::answer::Ended::Lost),
+        ended(fux_wire::answer::Ended::Exited(i32::MIN)),
+        ended(fux_wire::answer::Ended::Signalled(i32::MIN)),
+    ] {
+        events.push(Event::Pane(at, PaneEvent::Told(told)));
+    }
+    for change in [
+        ViewChange::Attached,
+        ViewChange::Detached,
+        ViewChange::Shown,
+        ViewChange::Focused,
+        ViewChange::Zoomed,
+        ViewChange::Resized,
+        ViewChange::Screen,
+    ] {
+        events.push(Event::View {
+            client: ClientId::of(u32::MAX),
+            at: Some(at),
+            change,
+        });
+    }
+    events
+}
+
+/// `every_kind`'s events, one batch read from a journal of them alone in
+/// server run `run`, each told by the next of every kind of teller.
+#[cfg(feature = "in-process")]
+pub fn every_kind_read(run: Run) -> Result<Batch, String> {
+    let at = ((WsId::of(1), TabId::of(2)), PaneId::of(3));
+    let said = [
+        Told::Title(Said::sent("title", true)),
+        Told::Notification(Said::sent("text", true)),
+    ];
+    let left = Left {
+        output: crate::pane::Output::Cut,
+        input: 1,
+    };
+    let buffer = format!("b1:{run}").parse().map_err(|()| "buffer")?;
+    let actors = [
+        Actor::Client(ClientId::of(1)),
+        Actor::Pane(at.1, 1),
+        Actor::Program(at.1, 1),
+        Actor::Server,
+        Actor::Unknown,
+    ];
+    let mut journal = Journal::default();
+    let mut reader = Reader::new(Scope::All, &journal, run, None)?;
+    let size = fux_vt::Size::new(24, 80).map_err(|e| e.to_string())?;
+    let events = every_kind(at, "name", said, left, buffer, size);
+    for (event, actor) in events.into_iter().zip(actors.into_iter().cycle()) {
+        journal.push_from(event, actor);
+    }
+    reader.batch(&journal, true)
+}
+
 /// One bounded scan, including entries excluded by its scope.
 #[derive(Clone, Copy)]
 pub struct Reader {
@@ -637,72 +742,18 @@ mod tests {
             output: crate::pane::Output::Cut,
             input: usize::MAX,
         };
-        let mut events = vec![
-            Event::Pane(at, PaneEvent::Created),
-            Event::Pane(at, PaneEvent::Closed),
-            Event::Pane(at, PaneEvent::Moved(at.0)),
-            Event::Arranged(at.0),
-            Event::Layout(at.0),
-            Event::Copied {
-                buffer: "b18446744073709551615:4294967295-ffffffffffffffff"
-                    .parse()
-                    .map_err(|()| "buffer")?,
-                at: Some(at),
-            },
-        ];
-        for change in [
-            Change::Created(None),
-            Change::Created(Some(name.clone())),
-            Change::Renamed(name.clone()),
-            Change::Closed,
-            Change::Reordered,
-        ] {
-            events.push(Event::Tab(at.0, change.clone()));
-            events.push(Event::Workspace(at.0.0, change));
-        }
-        for told in [
-            Told::Renamed(name),
-            Told::Respawned(left),
-            Told::Bell,
-            notification,
-            title,
-            Told::Done(None),
-            Told::Done(Some(i32::MIN)),
-            Told::Resized(fux_vt::Size::new(4096, 4096)?),
-            Told::HistoryBudget(usize::MAX),
-            Told::HistoryCleared,
-            Told::Exited(End {
-                ended: fux_wire::answer::Ended::Lost,
-                left,
-            }),
-        ] {
-            events.push(Event::Pane(at, PaneEvent::Told(told)));
-        }
-        for change in [
-            ViewChange::Attached,
-            ViewChange::Detached,
-            ViewChange::Shown,
-            ViewChange::Focused,
-            ViewChange::Zoomed,
-            ViewChange::Resized,
-            ViewChange::Screen,
-        ] {
-            events.push(Event::View {
-                client: ClientId::of(u32::MAX),
-                at: Some(at),
-                change,
-            });
-        }
-        for ended in [
-            fux_wire::answer::Ended::Exited(i32::MIN),
-            fux_wire::answer::Ended::Signalled(i32::MIN),
-        ] {
-            events.push(Event::Pane(
-                at,
-                PaneEvent::Told(Told::Exited(End { ended, left })),
-            ));
-        }
-        Ok(events)
+        let buffer = "b18446744073709551615:4294967295-ffffffffffffffff"
+            .parse()
+            .map_err(|()| "buffer")?;
+        let size = fux_vt::Size::new(4096, 4096)?;
+        Ok(every_kind(
+            at,
+            &name,
+            [title, notification],
+            left,
+            buffer,
+            size,
+        ))
     }
 
     #[test]
