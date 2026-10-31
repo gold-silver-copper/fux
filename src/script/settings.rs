@@ -20,6 +20,18 @@ pub(crate) enum Unread {
     Value(String),
 }
 
+impl Unread {
+    /// The same refusal, its words changed by `f`.
+    pub(crate) fn map(self, f: impl FnOnce(String) -> String) -> Unread {
+        match self {
+            Unread::Kind(why) => Unread::Kind(f(why)),
+            Unread::Value(why) => Unread::Value(f(why)),
+        }
+    }
+}
+
+impl std::error::Error for Unread {}
+
 impl From<String> for Unread {
     fn from(why: String) -> Unread {
         Unread::Value(why)

@@ -1,6 +1,6 @@
 //! The keys, frozen definitions and checked preferences owned by one client.
 use crate::keymap::Keymap;
-use crate::script::settings::Reads;
+use crate::script::settings::{Reads, Unread};
 use crate::script::{Config, Fux};
 use fux_wire::command::{
     DecodeMillis, EnvName, HistoryBytes, Limit, PictureBytes, Program, ScrollLines,
@@ -77,15 +77,17 @@ macro_rules! preferences {
         }
 
         impl PreferenceDraft {
-            pub fn set(&mut self, name: &str, value: &Value<Fux>) -> Result<(), String> {
+            /// Sets setting `name`: a value of a kind it doesn't take is
+            /// `Unread::Kind`, any other refusal `Unread::Value`.
+            pub(crate) fn set(&mut self, name: &str, value: &Value<Fux>) -> Result<(), Unread> {
                 match name {
                     $($name => {
                         self.$field = Some(<$reads as Reads>::update(value, self.$field.as_ref())
-                            .map_err(|why| format!("{name}: {why}"))?);
+                            .map_err(|why| why.map(|why| format!("{name}: {why}")))?);
                         self.changed = true;
                     },)*
                     other => return Err(format!("no setting {other:?}; the settings are {}",
-                        fux_wire::words::listed(NAMES, "and"))),
+                        fux_wire::words::listed(NAMES, "and")).into()),
                 }
                 Ok(())
             }

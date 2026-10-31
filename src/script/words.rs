@@ -450,13 +450,52 @@ pub fn usage(word: &str) -> Option<String> {
     Some(format!("use: {kind}{takes} {word}{leaves}{example}"))
 }
 
+/// `failure`, a value of a kind the word doesn't take, told as the word's
+/// effect names what it takes in that place (`taken`: the place and the
+/// value's kind), as help says it. Each word checks a value before it takes
+/// the next, so the value taken last is the one refused; a refusal of what
+/// a value holds (a list's element, of another kind) is left as it is.
+fn described(word: Word, taken: Option<(usize, &'static str)>, mut failure: Failure) -> Failure {
+    let Some((at, kind)) = taken else {
+        return failure;
+    };
+    let effect = word
+        .row()
+        .effect
+        .split_once("--")
+        .map_or("", |(takes, _)| takes);
+    let name = effect.split_whitespace().nth(at).unwrap_or_default();
+    let said = match name {
+        "integer" => Some("an integer"),
+        "string" => Some("a string"),
+        "boolean" => Some("a boolean"),
+        "list" => Some("a list"),
+        name => (NAMES.iter().map(|(n, said)| (*n, *said)))
+            .chain(KINDS.iter().map(|(n, said, _)| (*n, *said)))
+            .find(|(n, _)| *n == name)
+            .map(|(_, said)| said),
+    };
+    let refused = failure.code == fuxth::Code::Type
+        && failure.message.starts_with("takes ")
+        && failure.message.ends_with(&format!(", not {kind}"));
+    if let Some(said) = said.filter(|_| refused) {
+        failure.message = format!("takes {said}, not {kind}");
+    }
+    failure
+}
+
 /// A value read as `T`: one of a kind `T` doesn't take fails `type`, and one
 /// of its kind that `T` refuses fails `code`.
 fn read<T: Reads>(value: &Value<Fux>, code: Raise) -> Result<T, Failure> {
-    T::read(value).map_err(|unread| match unread {
+    T::read(value).map_err(|unread| refused(unread, code))
+}
+
+/// A reader's refusal: `type` for a value of another kind, else `code`.
+fn refused(unread: super::settings::Unread, code: Raise) -> Failure {
+    match unread {
         super::settings::Unread::Kind(why) => fail(Raise::Type, why),
         super::settings::Unread::Value(why) => fail(code, why),
-    })
+    }
 }
 
 fn wrong(wanted: &str, got: &Value<Fux>) -> Failure {
@@ -1257,6 +1296,8 @@ impl fuxth::Host for Host<'_> {
         };
         let mut of = self.context.of;
         let mut args = args;
+        // The place in the effect and the kind of the value taken last.
+        let mut taken: Option<(usize, &'static str)> = None;
         let mut next = || {
             let value = args.next().ok_or_else(|| {
                 fail(
@@ -1265,10 +1306,13 @@ impl fuxth::Host for Host<'_> {
                 )
             })?;
             of = super::same_run(of, super::scope(&value))?;
+            taken = Some((taken.map_or(0, |(i, _)| i.saturating_add(1)), value.kind()));
             Ok(value)
         };
         let from = out.len();
-        let result = self.dispatch(word, &mut next, out)?;
+        let result = self
+            .dispatch(word, &mut next, out)
+            .map_err(|failure| described(word, taken, failure))?;
         for value in out.iter_mut().skip(from) {
             match value {
                 Value::App(Fux::Opts(opts)) => {
@@ -1590,20 +1634,32 @@ impl Host<'_> {
             Act::Tabs => later(members_of(target(&next()?)?, Members::Tabs)),
             Act::Get => {
                 let value = next()?;
+                // A live field's handle, checked before the field is taken.
+                let live = match &value {
+                    Value::App(Fux::Record(_) | Fux::Answer(..)) => None,
+                    value @ (Value::Int(_)
+                    | Value::Bool(_)
+                    | Value::Str(_)
+                    | Value::List(_)
+                    | Value::App(_)) => Some(target(value)?),
+                };
                 let field = string(&next()?)?;
+                if let Some(target) = live {
+                    return later(ask(Command::Inspect {
+                        scope: fux_wire::inspect::Scope::Target(target),
+                        projection: fux_wire::inspect::Projection::Field(field),
+                    }));
+                }
                 match value {
                     Value::App(Fux::Record(record)) => now(out, record.get(&field)?),
                     Value::App(Fux::Answer(answer, run)) => {
                         now(out, super::record::answer_field(&answer, run, &field)?)
                     }
-                    value @ (Value::Int(_)
+                    other @ (Value::Int(_)
                     | Value::Bool(_)
                     | Value::Str(_)
                     | Value::List(_)
-                    | Value::App(_)) => later(ask(Command::Inspect {
-                        scope: fux_wire::inspect::Scope::Target(target(&value)?),
-                        projection: fux_wire::inspect::Projection::Field(field),
-                    })),
+                    | Value::App(_)) => Err(wrong("a handle or held observation", &other)),
                 }
             }
             Act::Json => match next()? {
@@ -1650,15 +1706,19 @@ impl Host<'_> {
                 tell(Command::Notify { target, text })
             }
             Act::Resize => {
-                let value = next()?;
-                let size = laid_out(&next()?, &next()?)?;
-                let resized = match value {
-                    Value::App(Fux::Client(c, _)) => Resized::Client(c, size),
+                // Checked before the size is taken.
+                let sized = match next()? {
+                    Value::App(Fux::Client(c, _)) => Err(c),
                     value @ (Value::Int(_)
                     | Value::Bool(_)
                     | Value::Str(_)
                     | Value::List(_)
-                    | Value::App(_)) => Resized::Tabs(target(&value)?, Some(size)),
+                    | Value::App(_)) => Ok(target(&value)?),
+                };
+                let size = laid_out(&next()?, &next()?)?;
+                let resized = match sized {
+                    Err(c) => Resized::Client(c, size),
+                    Ok(target) => Resized::Tabs(target, Some(size)),
                 };
                 tell(Command::Resize(resized))
             }
@@ -1893,7 +1953,7 @@ impl Host<'_> {
                 state
                     .preferences
                     .set(&name, &value)
-                    .map_err(|why| fail(Raise::Config, why))?;
+                    .map_err(|why| refused(why, Raise::Config))?;
                 Ok(Done::Now)
             }
             Act::Version => {
@@ -2462,6 +2522,40 @@ mod tests {
                 wrong.push(format!(
                     "{source}: {failed}, {asked} asked, printed {printed:?}"
                 ));
+            }
+        }
+        assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+        Ok(())
+    }
+
+    /// A value of a kind a word doesn't take is refused with what the word's
+    /// effect, as help says it, names in that place: all of what it takes.
+    #[test]
+    fn a_refusal_names_all_the_word_takes() -> TestResult {
+        let mut wrong = Vec::new();
+        for (program, word, place, named) in [
+            ("5 str done notify", "notify", 0, "all"),
+            ("str x send-keys", "send-keys", 0, "client"),
+            ("%1 5 swap-with", "swap-with", 1, "direction"),
+            ("str x 80 24 resize", "resize", 0, "headless client"),
+            ("5 str name get", "get", 0, "held observation"),
+            ("5 str facts snapshot", "snapshot", 0, "snapshot scope"),
+        ] {
+            let effect = Word::named(word)
+                .map(|w| w.row().effect)
+                .unwrap_or_default();
+            let name = effect.split_whitespace().nth(place).unwrap_or_default();
+            let said = NAMES
+                .iter()
+                .find(|(n, _)| *n == name)
+                .map(|(_, said)| *said);
+            let failed = offline(program)?
+                .0
+                .map(|f| f.to_string())
+                .unwrap_or_default();
+            let takes = format!("takes {}, not ", said.unwrap_or("?"));
+            if !failed.starts_with("type:") || !failed.contains(&takes) || !failed.contains(named) {
+                wrong.push(format!("{program}: {failed} (help: {takes})"));
             }
         }
         assert!(wrong.is_empty(), "{}", wrong.join("\n"));

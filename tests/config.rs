@@ -376,20 +376,20 @@ fn optional_config_reports_read_failures() -> Outcome {
 fn config_notices_show_the_cause_once_before_the_path() -> Outcome {
     let server = Server::start("")?;
     let path = server.dir.join("config/fux/config.fux");
-    std::fs::write(&path, "str bell 3 set").map_err(e)?;
+    std::fs::write(&path, "str history-bytes -1 set").map_err(e)?;
     let failure = fux::script::run_file(&path)
         .err()
         .ok_or("expected a bad setting")?;
     assert!(failure.place.is_some());
     let notice = failure.notice();
     assert!(
-        notice.starts_with("config: set: bell: takes true or false"),
+        notice.starts_with("config: set: history-bytes: -1 is out of range"),
         "{notice}"
     );
     assert_eq!(notice.matches("config:").count(), 1);
     assert!(notice.ends_with("config.fux:1)"), "{notice}");
     let mut terminal = Terminal::attach(&server, 10, 80, &[])?;
-    terminal.wait_for("bell: takes true or false")?;
+    terminal.wait_for("history-bytes: -1 is out of range")?;
     terminal.type_bytes(b"\x02d")?;
     terminal.wait_exit()?;
     Ok(())

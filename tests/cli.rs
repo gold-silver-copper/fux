@@ -359,7 +359,7 @@ fn mistakes_name_what_the_program_wrote() -> Outcome {
     let caught = server.words("str type try list 1 end 0 at str x type catch drop end")?;
     assert_eq!(
         caught,
-        "takes a pane, tab, workspace or client, or options, not an integer\n"
+        "takes the pane it goes on, under its own values (or a tab, workspace, client, a request on one, or opts), not an integer\n"
     );
     // `add` fails as it runs, after `new-tab` made its tab (D-25).
     let before = said(&[
