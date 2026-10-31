@@ -53,8 +53,6 @@ pub(crate) const DEFAULTS: &str = include_str!("client-defaults.fux");
 pub enum Fux {
     Null,
     Record(fuxth::Shared<record::Record>),
-    /// Rendered observations exceeding ordinary language string limits.
-    Rendered(fuxth::Shared<String>),
     Pane(PaneId, Option<Run>),
     Tab(TabId, Option<Run>),
     Workspace(WsId, Option<Run>),
@@ -85,7 +83,6 @@ impl AppValue for Fux {
         match self {
             Fux::Null => "null",
             Fux::Record(_) => "record",
-            Fux::Rendered(_) => "rendered",
             Fux::Pane(_, _) => "pane",
             Fux::Tab(_, _) => "tab",
             Fux::Workspace(_, _) => "workspace",
@@ -113,14 +110,13 @@ impl AppValue for Fux {
         {
             return Some(answer.retained_bytes());
         }
-        matches!(self, Fux::Rendered(_)).then(|| self.text_bytes())
+        None
     }
 
     fn retain(&self, imports: &fuxth::Imports) -> Result<(), fuxth::Failure> {
         match self {
             Fux::Record(record) => record::Record::retain(record, imports),
             Fux::Answer(answer, _) => answer.reserve(imports, answer.retained_bytes()),
-            Fux::Rendered(text) => text.reserve(imports, self.text_bytes()),
             Fux::Opts(opts) => opts.lease.reserve(imports, opts.bytes()),
             Fux::Null
             | Fux::Pane(..)
@@ -135,7 +131,6 @@ impl AppValue for Fux {
     fn weight(&self) -> u64 {
         match self {
             Fux::Record(r) => r.weight(),
-            Fux::Rendered(text) => text.len() as u64,
             Fux::Answer(a, _) => match &**a {
                 Answer::Capture(c) => {
                     let state = match &c.of {
@@ -170,8 +165,7 @@ impl AppValue for Fux {
     fn depth(&self) -> u8 {
         match self {
             Fux::Record(r) => r.depth(),
-            Fux::Rendered(_)
-            | Fux::All
+            Fux::All
             | Fux::Null
             | Fux::Pane(..)
             | Fux::Tab(..)
@@ -184,10 +178,6 @@ impl AppValue for Fux {
     }
 
     fn text_bytes(&self) -> usize {
-        if let Fux::Rendered(text) = self {
-            return fuxth::Shared::<String>::bytes(text.capacity());
-        }
-
         if let Fux::Record(r) = self {
             return r.bytes();
         }
@@ -208,7 +198,6 @@ impl AppValue for Fux {
         match self {
             Fux::Null => out.write_str("null"),
             Fux::Record(r) => r.write(out),
-            Fux::Rendered(text) => out.write_str(text),
             Fux::Pane(p, _) => write!(out, "{p}"),
             Fux::Tab(t, _) => write!(out, "{t}"),
             Fux::Workspace(w, _) => write!(out, "{w}"),
@@ -1636,8 +1625,7 @@ pub const PROGRAM_STEPS: u64 = 10_000_000;
 /// line. Its exit status (0, or what `exit` gave), or why it failed.
 pub fn main(args: &[String], out: &mut dyn Write) -> Result<u8, Failed> {
     if matches!(args, [flag] if matches!(flag.as_str(), "--version" | "-V")) {
-        writeln!(out, "{}", env!("CARGO_PKG_VERSION"))
-            .map_err(|e| Failed::new(Code::Output, format!("writing the output: {e}")))?;
+        writeln!(out, "{}", env!("CARGO_PKG_VERSION")).map_err(output_failed)?;
         return Ok(0);
     }
     let (tokens, from) = program(args)?;
@@ -1656,6 +1644,7 @@ pub fn main(args: &[String], out: &mut dyn Write) -> Result<u8, Failed> {
         Ok(stack) => stack.as_slice(),
         Err(_) => machine.stack(),
     };
+    let mut out = io::BufWriter::with_capacity(64 << 10, &mut *host.out);
     let printed = (stack.iter())
         // Empty pane outcomes and captures print no blank line;
         // options or a request, nothing.
@@ -1663,21 +1652,35 @@ pub fn main(args: &[String], out: &mut dyn Write) -> Result<u8, Failed> {
             !matches!(value, Value::App(Fux::Answer(a, _)) if a.is_empty())
                 && !matches!(value, Value::App(Fux::Opts(_)))
         })
-        .try_for_each(|value| {
-            let text = value
-                .text()
-                .map_err(|f| Failed::new(Code::of(f.code), f.message))?;
-            writeln!(host.out, "{text}")
-                .map_err(|e| Failed::new(Code::Output, format!("writing the output: {e}")))
-        })
-        .and_then(|()| {
-            host.out
-                .flush()
-                .map_err(|e| Failed::new(Code::Output, format!("writing the output: {e}")))
-        });
+        .try_for_each(|value| written(&mut out, value))
+        .and_then(|()| out.flush().map_err(output_failed));
     ran?;
     printed?;
     Ok(cli.status.unwrap_or(0))
+}
+
+fn output_failed(error: io::Error) -> Failed {
+    Failed::new(Code::Output, format!("writing the output: {error}"))
+}
+
+/// Writes a value's text without holding a second whole copy.
+fn written(out: &mut dyn Write, value: &Value<Fux>) -> Result<(), Failed> {
+    struct Out<'a>(&'a mut dyn Write, Option<io::Error>);
+    impl std::fmt::Write for Out<'_> {
+        fn write_str(&mut self, text: &str) -> std::fmt::Result {
+            self.0.write_all(text.as_bytes()).map_err(|error| {
+                self.1 = Some(error);
+                std::fmt::Error
+            })
+        }
+    }
+    let mut stream = Out(out, None);
+    let wrote = value.write_text(&mut stream);
+    if let Some(error) = stream.1 {
+        return Err(output_failed(error));
+    }
+    wrote.map_err(|f| Failed::new(Code::of(f.code), f.message))?;
+    writeln!(out).map_err(output_failed)
 }
 
 /// The program `args` give, and where it came from: none attaches; `-` is
@@ -2172,6 +2175,51 @@ pub(crate) mod tests {
             }
         }
         Ok(())
+    }
+
+    #[test]
+    fn final_output_streams_a_large_string_without_copying_it() -> TestResult {
+        use std::io::Write;
+        struct Count(usize);
+        impl Write for Count {
+            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                self.0 = self.0.saturating_add(bytes.len());
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let text =
+            fuxth::Value::<super::Fux>::str(std::iter::repeat_n('x', 2 << 20).collect::<String>());
+        let mut sink = Count(0);
+        let allocator = fux_vt_peak::ThreadPeak;
+        let base = allocator.live();
+        allocator.reset_peak();
+        {
+            let mut out = std::io::BufWriter::with_capacity(64 << 10, &mut sink);
+            super::written(&mut out, &text)?;
+            out.flush()?;
+        }
+        assert_eq!(sink.0, (2 << 20) + 1);
+        assert!(allocator.peak().saturating_sub(base) <= 64 << 10);
+        Ok(())
+    }
+
+    #[test]
+    fn final_output_reports_the_writers_failure() {
+        struct Broken;
+        impl std::io::Write for Broken {
+            fn write(&mut self, _: &[u8]) -> std::io::Result<usize> {
+                Err(std::io::Error::other("broken writer"))
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let failed = super::main(&["1".into()], &mut Broken).err();
+        assert!(failed.is_some_and(|f| f.code == crate::code::Code::Output
+            && f.message == "writing the output: broken writer"));
     }
 
     #[test]

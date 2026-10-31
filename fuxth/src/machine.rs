@@ -257,6 +257,7 @@ impl<A: AppValue> Machine<A> {
         self.push(value)
     }
 
+    #[inline(never)]
     fn admit(&mut self, value: &Value<A>) -> Result<(), Error> {
         fn valid<A: AppValue>(value: &Value<A>, bytes: &mut usize) -> bool {
             match value {
@@ -273,22 +274,27 @@ impl<A: AppValue> Machine<A> {
         }
         let weight = value.weight();
         self.cost(usize::try_from(weight).unwrap_or(usize::MAX));
-        let native = matches!(value, Value::App(app) if app.import_bytes().is_some());
-        if value.depth() > NESTING || (!native && weight > TOTAL) {
-            return Err(self.nested());
-        }
-        let mut bytes = 0;
-        if !valid(value, &mut bytes) {
-            return Err(self.fail(
-                Code::TooLong,
-                "host result exceeds the string or list length limit",
-            ));
-        }
-        if bytes > A::IMPORT_LIMIT {
-            return Err(self.fail(
-                Code::TooLong,
-                "host byte payload exceeds the import allocation limit",
-            ));
+        // Only a top-level string already reserved in this run uses the
+        // grant instead of the length and expanded-weight limits.
+        let reserved = matches!(value, Value::Str(text) if text.reserved(&self.imports));
+        if !reserved {
+            let native = matches!(value, Value::App(app) if app.import_bytes().is_some());
+            if value.depth() > NESTING || (!native && weight > TOTAL) {
+                return Err(self.nested());
+            }
+            let mut bytes = 0;
+            if !valid(value, &mut bytes) {
+                return Err(self.fail(
+                    Code::TooLong,
+                    "host result exceeds the string or list length limit",
+                ));
+            }
+            if bytes > A::IMPORT_LIMIT {
+                return Err(self.fail(
+                    Code::TooLong,
+                    "host byte payload exceeds the import allocation limit",
+                ));
+            }
         }
         value
             .retain(&self.imports)

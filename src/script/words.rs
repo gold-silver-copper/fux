@@ -201,7 +201,7 @@ pub fn from_opts(last: &str) -> String {
 /// fux's kinds of value, each as its values' `name` says it, as an error
 /// says it, and, for one that must be used, what one left over is told.
 #[rustfmt::skip]
-pub const KINDS: [(&str, &str, Option<&str>); 21] = [
+pub const KINDS: [(&str, &str, Option<&str>); 20] = [
     ("pane", "a pane", None), ("tab", "a tab", None), ("workspace", "a workspace", None),
     ("all", "the whole session", None),
     ("client", "a client", None), ("size", "a size (from percent)", None),
@@ -209,7 +209,6 @@ pub const KINDS: [(&str, &str, Option<&str>); 21] = [
     ("closed-answer", "a closed pane's answer", None),
     ("client-capture", "a client's capture", None),
     ("answers", "an answer of a tab's or workspace's panes", None), ("capture", "a capture", None),
-    ("rendered", "rendered observation text", None),
     ("record", "a record", None), ("null", "null", None),
     ("opts", "options (from opts, for run, new-tab, new-workspace, attach and attach-defaults; a pane's words take theirs on the pane: `%2 all-history capture`)", Some("nothing takes these options")),
     ("pane-request", "a pane request", Some("nothing acts on this request")),
@@ -258,10 +257,9 @@ pub const NAMES: &[(&str, &str, &str)] = &[
     ("text", "string integer boolean", "a string, a number or a boolean"),
     ("new", "integer boolean list", "a setting's value: a number, true or false, or a list (fux help set)"),
     ("var", "string integer boolean pane tab workspace answer closed-answer", "a string, a number, a boolean, or a pane, tab or workspace"),
-    ("value", "integer boolean string list pane tab workspace client size answer closed-answer answers capture client-capture record rendered null all",
+    ("value", "integer boolean string list pane tab workspace client size answer closed-answer answers capture client-capture record null all",
         "a value (options and requests are none: what acts on them gives one)"),
     ("seen", "string answer capture", "a version: an action's or wait's answer, a pane's capture, or its text"),
-    ("json-output", "string rendered", "JSON text"),
     ("readable", "pane tab workspace answer closed-answer capture client-capture record", "a handle or held observation"),
     ("snapshot-scope", "all pane tab workspace client answer closed-answer", "a snapshot scope"),
     ("extent", "integer size", "cells, or a percent"),
@@ -300,7 +298,7 @@ words! {
         Reading Capture "capture" "capture-source -- capture-source" "a pane screen with its options, or what a client terminal shows (without pane options or a version)" "fux %3 100 history capture" [Pane: History Wrapped Full Styles Marks MainScreen AltScreen LastOutput Rows Cols];
         Reading Snapshot "snapshot" "snapshot-scope projection -- record" "one bounded observation: facts, topology or recipe" "fux all str topology snapshot json" [];
         Reading Get "get" "readable field -- value" "a held answer, capture or record field, locally; or a live pane, tab or workspace field" "fux %3 str exited get" [];
-        Reading Json "json" "value -- json-output" "value as JSON (an answer as its JSON); a failed wait's answer is the message try's handler gets" "fux ls json" [];
+        Reading Json "json" "value -- string" "value as JSON (an answer as its JSON); a failed wait's answer is the message try's handler gets" "fux ls json" [];
         Reading NextEvents "next-events" "event-scope cursor secs -- record" "one bounded journal batch, with exact next cursor, missed count and status; empty cursor starts now" "fux all str '' 0 next-events json" [];
         Changing Kill "kill" "handle --" "close a pane, tab or workspace, without asking" "fux %3 kill" [];
         Changing Rename "rename" "handle text --" "rename a pane, tab or workspace" "fux %3 str editor rename" [];
@@ -477,17 +475,34 @@ fn wrong(wanted: &str, got: &Value<Fux>) -> Failure {
     fail(Raise::Type, format!("takes {wanted}, not {}", got.kind()))
 }
 
+/// Host arguments are bounded while borrowed, before copying or quoting.
+fn argument(text: &fuxth::Text) -> Result<&str, Failure> {
+    if text.chars_len() > fuxth::LONGEST {
+        let why = format!("string argument exceeds {} characters", fuxth::LONGEST);
+        return Err(fail(Raise::TooLong, why));
+    }
+    Ok(text)
+}
+
+fn arguments(value: &Value<Fux>) -> Result<(), Failure> {
+    match value {
+        Value::Str(text) => argument(text).map(drop),
+        Value::List(list) => list.items().iter().try_for_each(arguments),
+        Value::Int(_) | Value::Bool(_) | Value::App(_) => Ok(()),
+    }
+}
+
 fn string(value: &Value<Fux>) -> Result<String, Failure> {
     let Value::Str(s) = value else {
         return Err(wrong("a string", value));
     };
-    Ok(s.to_string())
+    Ok(argument(s)?.to_owned())
 }
 
 /// A value as words that take text read it: a string, or a number.
 fn text(value: &Value<Fux>) -> Result<String, Failure> {
     match value {
-        Value::Str(s) => Ok(s.to_string()),
+        Value::Str(_) => string(value),
         Value::Int(n) => Ok(n.to_string()),
         Value::Bool(b) => Ok(b.to_string()),
         other @ (Value::List(_) | Value::App(_)) => {
@@ -496,22 +511,22 @@ fn text(value: &Value<Fux>) -> Result<String, Failure> {
     }
 }
 
-/// Retained inputs and their rendered output share the observation grant.
-fn json_text(value: &Value<Fux>, limit: usize) -> Result<String, Failure> {
-    let mut budget = crate::wire::Budget::with_limit(limit);
-    let bytes = value
-        .storage_bytes(|app| {
-            if let Fux::Answer(answer, _) = app {
-                answer.retained_bytes()
-            } else {
-                fuxth::AppValue::text_bytes(app)
-            }
-        })
-        .ok_or_else(|| Failure::from(crate::wire::Budget::exceeded()))?;
-    budget.charge(bytes)?;
-    let text = crate::json::render(&mut budget, |out| write_json_value(value, out))?;
-    budget.text_value(&text)?;
-    Ok(text)
+/// Counts JSON, reserves its storage, then writes into that capacity.
+fn json_text(value: &Value<Fux>, imports: &fuxth::Imports) -> Result<Value<Fux>, Failure> {
+    let exceeded = || fail(Raise::TooLong, "JSON exceeds the run's allocation grant");
+    let mut count = fuxth::Render::new(imports.remaining());
+    write_json_value(value, &mut count).map_err(|_| exceeded())?;
+    let bytes = count.bytes();
+    // JSON is nonempty: chars=0 reserves the non-ASCII bound until admission.
+    let lease = imports.lease(fuxth::Text::size(bytes, 0))?;
+    let text = count.finish(
+        |out| write_json_value(value, out).map_err(|_| exceeded()),
+        exceeded,
+    )?;
+    Ok(Value::Str(fuxth::Shared::leased(
+        fuxth::Text::new(text),
+        lease,
+    )))
 }
 
 pub(super) fn write_json_value(
@@ -536,7 +551,6 @@ pub(super) fn write_json_value(
             Fux::Null => out.write_str("null"),
             Fux::All => out.write_str("\"all\""),
             Fux::Record(r) => r.write(out),
-            Fux::Rendered(text) => crate::json::write_str(out, text),
             Fux::Answer(answer, _) => answer.write_json(out),
             Fux::Pane(pane, _) => write!(out, "\"{pane}\""),
             Fux::Tab(tab, _) => write!(out, "\"{tab}\""),
@@ -764,7 +778,7 @@ fn version(value: &Value<Fux>) -> Result<crate::command::Version, Failure> {
         Value::App(Fux::Answer(answer, _)) => {
             return answer.version().ok_or_else(|| wrong(wanted, value));
         }
-        Value::Str(text) => text,
+        Value::Str(text) => argument(text)?,
         other @ (Value::Int(_) | Value::Bool(_) | Value::List(_) | Value::App(_)) => {
             return Err(wrong(wanted, other));
         }
@@ -772,7 +786,7 @@ fn version(value: &Value<Fux>) -> Result<crate::command::Version, Failure> {
     text.parse().map_err(|()| {
         let why = format!(
             "{:?} is no version: PANE:RESPAWNS.SCREEN.BELLS.DONE.ENDED:RUN, as an action answers it",
-            &***text
+            text
         );
         fail(Raise::BadValue, why)
     })
@@ -925,7 +939,10 @@ fn modify(
             let value = match (target(&value), text(&value)) {
                 (Ok(handle), _) => handle.to_string(),
                 (Err(_), Ok(text)) => text,
-                (Err(_), Err(_)) => {
+                (Err(_), Err(failure)) => {
+                    if failure.code != fuxth::Code::Type {
+                        return Err(failure);
+                    }
                     let what = "a string, a number, a boolean, or a pane, tab or workspace";
                     return Err(wrong(what, &value));
                 }
@@ -1242,16 +1259,20 @@ fn find(kind: Kind, found: Value<Fux>, out: &mut Vec<Value<Fux>>) -> Result<Done
         return Ok(Done::Now);
     }
     match found {
-        // An empty name names nothing: never the caller's own, which
-        // `here` is, so that an empty variable closes nothing.
-        Value::Str(s) if s.trim().is_empty() => Err(fail(
-            Raise::NoTarget,
-            format!(
-                "an empty name names no {}: `here` is the pane this runs in",
-                kind.name()
-            ),
-        )),
-        Value::Str(s) => resolve(s.to_string(), kind),
+        Value::Str(s) => {
+            let text = argument(&s)?;
+            // An empty name never names the caller's pane, which `here` is.
+            if text.trim().is_empty() {
+                return Err(fail(
+                    Raise::NoTarget,
+                    format!(
+                        "an empty name names no {}: `here` is the pane this runs in",
+                        kind.name()
+                    ),
+                ));
+            }
+            resolve(text.to_owned(), kind)
+        }
         other @ (Value::Int(_) | Value::Bool(_) | Value::List(_) | Value::App(_)) => {
             Err(wrong("a name, or a pane, tab or workspace", &other))
         }
@@ -1737,15 +1758,7 @@ impl Host<'_> {
                 | Value::Bool(_)
                 | Value::Str(_)
                 | Value::List(_)
-                | Value::App(_)) => {
-                    let text = json_text(&other, crate::wire::MAX_ALLOCATED)?;
-                    let value = if text.chars().count() <= fuxth::LONGEST {
-                        Value::str(text)
-                    } else {
-                        Value::App(Fux::Rendered(fuxth::Shared::new(text)))
-                    };
-                    now(out, value)
-                }
+                | Value::App(_)) => now(out, json_text(&other, imports)?),
             },
             Act::NextEvents => {
                 let scope = observation_scope(&next()?)?;
@@ -2016,6 +2029,7 @@ impl Host<'_> {
                     .map_err(|failed| fail(Raise::Config, failed.to_string()))?;
                 let name = string(&next()?)?;
                 let value = next()?;
+                arguments(&value)?;
                 let state = self
                     .state
                     .as_deref_mut()
@@ -2698,6 +2712,79 @@ mod tests {
     }
 
     #[test]
+    fn host_text_arguments_refuse_long_json_before_copying_or_quoting_it() -> TestResult {
+        let edge = fuxth::Text::new(std::iter::repeat_n('界', fuxth::LONGEST).collect::<String>());
+        assert!(argument(&edge).is_ok());
+        let grant = fuxth::Imports::new(crate::wire::MAX_ALLOCATED);
+        let input = Value::str(std::iter::repeat_n('\u{1}', fuxth::LONGEST).collect::<String>());
+        let json = json_text(&input, &grant).map_err(|f| f.message)?;
+        json.retain(&grant).map_err(|f| f.message)?;
+        assert!(matches!(&json, Value::Str(s) if s.chars_len() > fuxth::LONGEST));
+        let _room = grant
+            .lease(grant.remaining().saturating_sub(64 << 10))
+            .map_err(|f| f.message)?;
+        let opts = || {
+            Value::App(Fux::Opts(std::rc::Rc::new(Opts {
+                argv: vec!["sh".into()],
+                ..Opts::default()
+            })))
+        };
+        let row = fuxth::List::new(vec![json.clone(), Value::Int(0), Value::Int(0)])
+            .ok_or("style row")?;
+        let styles =
+            fuxth::List::new(vec![Value::List(fuxth::Shared::new(row))]).ok_or("styles")?;
+        let allocator = fux_vt_peak::ThreadPeak;
+        for (word, values) in [
+            (Word::Opt(Opt::Arg), vec![opts(), json.clone()]),
+            (Word::Opt(Opt::Axis), vec![opts(), json.clone()]),
+            (
+                Word::Opt(Opt::Env),
+                vec![opts(), Value::str("X"), json.clone()],
+            ),
+            (Word::Act(Act::Pane), vec![json.clone()]),
+            (Word::Act(Act::Version), vec![json.clone()]),
+            (
+                Word::Act(Act::Rename),
+                vec![Value::App(Fux::Pane(PaneId::of(1), None)), json.clone()],
+            ),
+            (
+                Word::Act(Act::Set),
+                vec![
+                    Value::str("styles"),
+                    Value::List(fuxth::Shared::new(styles)),
+                ],
+            ),
+        ] {
+            let mut values = values.into_iter();
+            let mut next = || {
+                values
+                    .next()
+                    .ok_or_else(|| fail(Raise::StackUnderflow, "test argument"))
+            };
+            let mut sink = std::io::sink();
+            let mut state = crate::client_state::Draft::default();
+            let mut host = Host::new(
+                crate::protocol::Context::default(),
+                Some(&mut state),
+                &mut sink,
+            );
+            let base = allocator.live();
+            allocator.reset_peak();
+            let failed = host
+                .dispatch(word, &grant, &mut next, &mut Vec::new())
+                .err();
+            let allocated = allocator.peak().saturating_sub(base);
+            assert!(allocated < 1 << 20, "{word:?}: {allocated}");
+            assert_eq!(
+                failed.map(|f| f.code),
+                Some(fuxth::Code::TooLong),
+                "{word:?}"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
     fn accumulating_options_preserve_order() -> TestResult {
         let grant = fuxth::Imports::new(usize::MAX);
         let mut value = Value::App(Fux::Opts(std::rc::Rc::default()));
@@ -2788,29 +2875,8 @@ mod tests {
         assert!(crate::help::AGENTS.contains(&input), "{input}");
     }
 
-    #[test]
-    fn nested_plain_text_shares_one_allocation_grant() -> TestResult {
-        std::thread_local! {
-            static WRITES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
-        }
-        #[derive(Clone, PartialEq)]
-        struct Limited(Fux);
-        impl fuxth::AppValue for Limited {
-            const TEXT_LIMIT: usize = 64 << 10;
-            fn kind(&self) -> &'static str {
-                "a bounded answer"
-            }
-            fn text_bytes(&self) -> usize {
-                fuxth::AppValue::text_bytes(&self.0)
-            }
-            fn write_text(&self, out: &mut dyn std::fmt::Write) -> Result<(), Failure> {
-                WRITES.with(|writes| writes.set(writes.get().saturating_add(1)));
-                fuxth::AppValue::write_text(&self.0, out)
-            }
-        }
-        let allocator = fux_vt_peak::ThreadPeak;
-        let base = allocator.live();
-        let captured = crate::capture::Captured {
+    fn styled_line() -> crate::capture::Captured {
+        crate::capture::Captured {
             of: crate::capture::Of::Client(crate::id::ClientId::of(1)),
             screen_rows: 1,
             screen_cols: 256,
@@ -2856,7 +2922,32 @@ mod tests {
                 .collect(),
             styled: true,
             marks: false,
-        };
+        }
+    }
+
+    #[test]
+    fn nested_plain_text_shares_one_allocation_grant() -> TestResult {
+        std::thread_local! {
+            static WRITES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+        }
+        #[derive(Clone, PartialEq)]
+        struct Limited(Fux);
+        impl fuxth::AppValue for Limited {
+            const TEXT_LIMIT: usize = 64 << 10;
+            fn kind(&self) -> &'static str {
+                "a bounded answer"
+            }
+            fn text_bytes(&self) -> usize {
+                fuxth::AppValue::text_bytes(&self.0)
+            }
+            fn write_text(&self, out: &mut dyn std::fmt::Write) -> Result<(), Failure> {
+                WRITES.with(|writes| writes.set(writes.get().saturating_add(1)));
+                fuxth::AppValue::write_text(&self.0, out)
+            }
+        }
+        let allocator = fux_vt_peak::ThreadPeak;
+        let base = allocator.live();
+        let captured = styled_line();
         let held = fuxth::List::new(vec![Value::App(Limited(Fux::Answer(
             fuxth::Shared::new(super::super::Answer::Capture(Box::new(captured))),
             None,
@@ -2898,56 +2989,96 @@ mod tests {
     }
 
     #[test]
-    fn capture_conversion_and_rendering_share_one_grant() -> TestResult {
+    fn text_and_json_of_shared_captures_are_reserved_before_they_are_made() -> TestResult {
+        const SCRATCH: usize = 1024;
         let allocator = fux_vt_peak::ThreadPeak;
         let base = allocator.live();
-        let line = crate::capture::Line {
-            text: std::iter::repeat_n("x\"\\\n界", 512).collect(),
-            runs: (0..512)
-                .map(|_| crate::capture::Run {
-                    bytes: 7,
-                    cells: 1,
-                    style: 0,
-                })
-                .collect(),
-        };
-        let capture = crate::capture::Captured {
-            of: crate::capture::Of::Client(crate::id::ClientId::of(1)),
-            screen_rows: 1,
-            screen_cols: 512,
-            screen_cursor: None,
-            lines: vec![line],
-            styles: vec![fux_vt::Attributes::new(
-                fux_vt::Color::Idx(1),
-                fux_vt::Color::Default,
-            )],
-            styled: true,
-            marks: false,
-        };
-        let value = Value::App(Fux::Answer(
-            fuxth::Shared::new(super::super::Answer::Capture(Box::new(capture))),
+        let grant = fuxth::Imports::new(64 << 10);
+        let captured = styled_line();
+        let answer = Value::App(Fux::Answer(
+            fuxth::Shared::new(super::super::Answer::Capture(Box::new(captured))),
             None,
         ));
-        assert!(
-            json_text(&value, 0).is_err(),
-            "conversion must refuse before allocating beyond the grant"
-        );
-        assert!(
-            json_text(&value, 31 << 10).is_err(),
-            "retained input and output must share admission"
-        );
-        let list = fuxth::List::new(vec![value]).ok_or("list")?;
-        let value = Value::List(fuxth::Shared::new(list));
+        answer.retain(&grant).map_err(|f| f.message)?;
+        let list = |item: &Value<Fux>, n| -> Result<Value<Fux>, String> {
+            let lease = grant
+                .lease(fuxth::List::<Fux>::size(n))
+                .map_err(|f| f.message)?;
+            let items = fuxth::List::new(vec![item.clone(); n]).ok_or("list")?;
+            Ok(Value::List(fuxth::Shared::leased(items, lease)))
+        };
+        let held = list(&answer, 1)?;
+        let text = |value: &Value<Fux>| {
+            value
+                .string_upto(usize::MAX, &grant)
+                .and_then(|v| v.ok_or_else(|| fail(Raise::TooLong, "text")))
+        };
+        let one = text(&held).map_err(|f| f.message)?;
+        let Value::Str(one) = one else {
+            return Err("string".into());
+        };
+        assert!(one.len().saturating_mul(8) > 64 << 10);
+        drop(one);
+        // Shared inputs are retained once, but every alias contributes
+        // text: count the complete output before allocating any of it.
+        let eight = list(&held, 8)?;
+        let left = grant.remaining();
         allocator.reset_peak();
-        let text = json_text(&value, 64 << 10).map_err(|f| f.message)?;
-        assert!(text.contains(r#""col":511,"len":1,"fg":1"#));
-        assert!(text.starts_with('['));
-        let imported = Value::<Fux>::str(text);
-        assert!(
-            allocator.peak().saturating_sub(base) <= 64 << 10,
-            "capture input, conversion, rendered text and host import must fit one grant"
+        assert_eq!(text(&eight).map_err(|f| f.code), Err(fuxth::Code::TooLong));
+        assert_eq!(
+            json_text(&eight, &grant).map_err(|f| f.code),
+            Err(fuxth::Code::TooLong)
         );
-        drop(imported);
+        assert_eq!(grant.remaining(), left);
+        assert!(allocator.peak().saturating_sub(base) <= (64 << 10) + SCRATCH);
+        let two = text(&list(&held, 2)?).map_err(|f| f.message)?;
+        let Value::Str(two) = two else {
+            return Err("string".into());
+        };
+        assert_eq!(two.matches('界').count(), 256);
+        drop(two);
+        let json = json_text(&held, &grant).map_err(|f| f.message)?;
+        let Value::Str(json) = json else {
+            return Err("JSON string".into());
+        };
+        assert!(
+            json.starts_with('[')
+                && json.contains(r#""col":254,"len":2"#)
+                && json.contains(r##""fg":"#fffe7f""##),
+            "{json:?}"
+        );
+        assert!(allocator.peak().saturating_sub(base) <= (64 << 10) + SCRATCH);
+        let needed = fuxth::Text::size(json.len(), json.chars_len());
+        drop(json);
+        assert_eq!(grant.remaining(), left);
+        // The text bytes still fit, but its wrapper and non-ASCII index
+        // do not: refuse the reservation before making either buffer.
+        let room = grant
+            .lease(left.saturating_sub(needed).saturating_add(1))
+            .map_err(|f| f.message)?;
+        let base = allocator.live();
+        allocator.reset_peak();
+        assert_eq!(
+            json_text(&held, &grant).map_err(|f| f.code),
+            Err(fuxth::Code::TooLong)
+        );
+        assert!(allocator.peak().saturating_sub(base) <= SCRATCH);
+        drop(room);
+        assert_eq!(
+            json_text(&held, &fuxth::Imports::new(0)).map_err(|f| f.code),
+            Err(fuxth::Code::TooLong)
+        );
+        let ascii = json_text(&list(&Value::Int(0), 128)?, &grant).map_err(|f| f.message)?;
+        ascii.retain(&grant).map_err(|f| f.message)?;
+        let Value::Str(ascii) = ascii else {
+            return Err("JSON string".into());
+        };
+        assert_eq!(
+            left.saturating_sub(grant.remaining()),
+            fuxth::Text::size(ascii.len(), ascii.chars_len())
+        );
+        drop(ascii);
+        assert_eq!(grant.remaining(), left);
         Ok(())
     }
 

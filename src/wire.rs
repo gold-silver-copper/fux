@@ -829,7 +829,7 @@ mod tests {
         assert!(charged.saturating_mul(3) <= MAX_ALLOCATED, "{charged}");
         let mut out = Vec::new();
         let result = crate::script::tests::held_reply(
-            "%1 all-history styles capture let h h json print list h h h h h h end json",
+            "%1 all-history styles capture let h h json dup len swap dup 0 8 slice print print list h h h h h h end json",
             reply,
             &mut out,
         );
@@ -837,7 +837,13 @@ mod tests {
             out.len() as u64 > fuxth::TOTAL,
             "admitted capture JSON was not printed: {result:?}"
         );
-        assert!(out.starts_with(b"{\"pane\":\"%1\"") && out.ends_with(b"}\n"));
+        assert!(out.starts_with(b"{\"pane\":\n{\"pane\":\"%1\"") && out.ends_with(b"}\n"));
+        assert!(
+            result
+                .as_ref()
+                .err()
+                .is_some_and(|e| e.message.contains("json"))
+        );
         assert_eq!(
             result.map_err(|e| e.code),
             Err(crate::code::Code::from(crate::code::Raise::TooLong))

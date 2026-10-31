@@ -63,7 +63,7 @@ pub(super) fn data(v: &Value<Fux>, b: &mut Budget) -> Result<Data, Failure> {
             Data::Handle(crate::command::AnyRef::Workspace(*w), *run)
         }
         Value::App(Fux::Client(c, run)) => Data::Client(*c, *run),
-        Value::App(Fux::Rendered(_) | Fux::Opts(_) | Fux::Extent(_) | Fux::Answer(..)) => {
+        Value::App(Fux::Opts(_) | Fux::Extent(_) | Fux::Answer(..)) => {
             return Err(fail());
         }
     })
