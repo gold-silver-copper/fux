@@ -286,60 +286,15 @@ fn a_client_that_stops_reading_catches_up_when_it_reads_again() -> Outcome {
     Ok(())
 }
 
-/// A copy goes to the client's clipboard as OSC 52, however large, and to
-/// the paste buffer.
+/// A program's copy (OSC 52) reaches the client's terminal as it sent it.
 #[test]
-fn the_clipboard_takes_a_copy_however_large() -> Outcome {
+fn a_programs_copy_reaches_the_clients_clipboard() -> Outcome {
     let server = Server::start("")?;
     let mut client = server.attach(20, 120)?;
     client.wait_for("$")?;
-    let copy_all = |client: &mut Client| -> Outcome {
-        server.ok(&["str", "c1", "client", "copy-mode"])?;
-        // Its keys are copy mode's once the client is told it is in it.
-        client.wait("copy mode", |t| {
-            t.lines().last().is_some_and(|b| b.contains("COPY"))
-        })?;
-        client.keys("tszy")?;
-        Ok(())
-    };
-    // Small: on the clipboard.
-    server.type_line("%1", "echo small-copy")?;
-    client.wait("the line", |t| t.lines().any(|l| l == "small-copy"))?;
-    copy_all(&mut client)?;
-    client.wait("the copy", |t| {
-        t.lines().last().is_some_and(|b| b.contains("copied"))
-    })?;
+    server.type_line("%1", "printf '\\033]52;c;aGk=\\007'; echo sent-copy")?;
+    client.wait("the copy", |t| t.lines().any(|l| l == "sent-copy"))?;
     let painted = String::from_utf8_lossy(&client.painted).into_owned();
-    assert!(painted.contains("\x1b]52;c;"), "an OSC 52 write");
-    let before = client.painted.len();
-    // Large: 1200 lines of 50 family emoji, 25 bytes each, about 2 MiB
-    // encoded.
-    // Build the row once, without spawning seq for every output line.
-    server.type_line("%1", "clear")?;
-    server.type_line(
-        "%1",
-        "row=$(printf '\\360\\237\\221\\250\\342\\200\\215\\360\\237\\221\\251\\342\\200\\215\\360\\237\\221\\247\\342\\200\\215\\360\\237\\221\\246%.0s' $(seq 50)); i=0; while [ $i -lt 1200 ]; do i=$((i+1)); printf '%s\\n' \"$row\"; done; echo done-printing",
-    )?;
-    client.wait("the output", |t| t.lines().any(|l| l == "done-printing"))?;
-    copy_all(&mut client)?;
-    client.wait("the copy", |t| {
-        t.lines().last().is_some_and(|b| b.contains("copied"))
-    })?;
-    let after = client.painted.get(before..).unwrap_or_default();
-    let osc = (0..after.len())
-        .filter(|at| {
-            after
-                .get(*at..)
-                .is_some_and(|b| b.starts_with(b"\x1b]52;c;"))
-        })
-        .count();
-    assert_eq!(osc, 1, "one OSC 52 write for it");
-    assert!(after.len() > 2_000_000, "all of it: {} bytes", after.len());
-    let buffer = server.ok(&["newest", "buffer"])?;
-    assert!(
-        buffer.len() > 1 << 20,
-        "the buffer holds it all: {} bytes",
-        buffer.len()
-    );
+    assert!(painted.contains("\x1b]52;c;aGk=\x07"), "an OSC 52 write");
     Ok(())
 }

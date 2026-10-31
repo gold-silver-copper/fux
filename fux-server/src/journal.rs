@@ -654,8 +654,9 @@ mod tests {
     fn run() -> Result<Run, String> {
         "1-0".parse().map_err(|()| "run".into())
     }
-    /// The events a test's journal keeps: few, so a ring fills fast.
-    const KEPT: usize = 16;
+    /// The events a test's journal keeps: as many as the bundled
+    /// `journal-entries`.
+    const KEPT: usize = 1 << 14;
     fn journal() -> Result<Journal, String> {
         let kept = fux_wire::command::JournalEntries::new(KEPT).ok_or("journal")?;
         Ok(Journal::new(kept))

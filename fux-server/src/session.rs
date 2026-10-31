@@ -6896,6 +6896,70 @@ mod tests {
         assert!(!dirty(&s), "a given pane name masks its title");
         Ok(())
     }
+
+    #[test]
+    fn only_screens_that_may_change_are_marked_for_painting() -> TestResult {
+        let (mut s, one) = attached(10, 40)?;
+        let two = s.attach(10, 40, None)?;
+        let clean = |s: &mut Session| {
+            for view in s.views.values_mut() {
+                view.dirty = false;
+            }
+        };
+        let dirty = |s: &Session, c: ClientId| s.views.get(&c).is_some_and(|v| v.dirty);
+        clean(&mut s);
+        // Keys for the pane's program show when it answers: its output
+        // marks every screen showing the pane.
+        s.input(one, b"ls");
+        assert!(
+            !dirty(&s, one) && !dirty(&s, two),
+            "typing into a pane repaints no one until the pane answers"
+        );
+        s.out(fux_wire::id::PaneId::of(1), b"ls");
+        assert!(dirty(&s, one) && dirty(&s, two), "its echo repaints both");
+        clean(&mut s);
+        // A key that changes the typist's own screen repaints it alone.
+        s.input(one, b"\x02");
+        assert!(
+            dirty(&s, one) && !dirty(&s, two),
+            "the prefix repaints the typist alone"
+        );
+        s.input(one, b"\x1b");
+        s.escape(one);
+        clean(&mut s);
+        for line in [
+            "ls",
+            "str %1 pane capture",
+            "list-keys",
+            "str %1 pane str x text send-keys",
+            "str c1 client str x text send-keys",
+        ] {
+            run(&mut s, line)?;
+        }
+        assert!(
+            !dirty(&s, one) && !dirty(&s, two),
+            "reading repaints no one"
+        );
+        assert!(run(&mut s, "str %9 pane kill").is_err());
+        assert!(
+            !dirty(&s, one) && !dirty(&s, two),
+            "a failure repaints no one"
+        );
+        run(&mut s, "str %1 pane str horizontal axis split")?;
+        assert!(
+            dirty(&s, one) && dirty(&s, two),
+            "a split repaints every client"
+        );
+        clean(&mut s);
+        // A binding that splits, typed by one client, repaints both.
+        s.input(one, b"\x02v");
+        assert!(
+            dirty(&s, one) && dirty(&s, two),
+            "a bound split repaints every client"
+        );
+        Ok(())
+    }
+
     #[test]
     fn only_a_size_that_changes_a_client_resizes_it() -> TestResult {
         let (mut s, c) = attached(10, 40)?;

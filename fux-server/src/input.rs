@@ -1120,7 +1120,7 @@ mod tests {
         assert_eq!(
             refused,
             [
-                "ak", "k", "l", "mk", "ml", "p", "s", "tmh", "tn", "v", "wmh", "wn"
+                "ak", "c", "k", "l", "mk", "ml", "s", "tmh", "tn", "v", "wmh", "wn"
             ]
         );
         Ok(())

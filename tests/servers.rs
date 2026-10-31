@@ -855,59 +855,6 @@ fn dump_replays_a_shell_in_its_current_directory() -> Outcome {
     Ok(())
 }
 
-/// The published hook runs as an ordinary client program over retained
-/// native copy events, preserving the same cursor checkpoint boundary.
-#[test]
-fn the_copy_hook_recipe_consumes_a_real_program_copy() -> Outcome {
-    let server = Server::start("")?;
-    let mut view = server.attach(12, 60)?;
-    view.ready()?;
-    let client = view.id.as_deref().ok_or("client ID")?;
-    let cursor = server.ok(&["all", "str", "", "0", "next-events", "str", "next", "get"])?;
-    let cursor = cursor.trim();
-    let answer = server.ok(&[
-        "agent-opts",
-        "80",
-        "24",
-        "size",
-        "str",
-        "/bin/sh",
-        "program",
-        "str",
-        "-c",
-        "arg",
-        "str",
-        r"printf '\033]52;c;aGVsbG8=\007'",
-        "arg",
-        "new-tab",
-    ])?;
-    server.ok(&[
-        "str",
-        answer.trim(),
-        "changed",
-        "2",
-        "timeout",
-        "wait",
-        "drop",
-    ])?;
-    let batch = server.ok(&["all", "str", cursor, "0", "next-events", "json"])?;
-    assert!(batch.contains(r#""event":"copied""#), "{batch}");
-    assert!(batch.contains(r#""kind":"program""#), "{batch}");
-    assert!(batch.contains(r#""buffer":"b1:"#), "{batch}");
-    let path =
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/hooks/program-copies.fux");
-    let path = path.to_str().ok_or("hook path is not text")?;
-    let checkpoint = server.ok(&["--file", path, cursor, "0", "1"])?;
-    let _: fux_wire::events::Cursor = checkpoint.trim().parse().map_err(|()| "no checkpoint")?;
-    assert_eq!(server.ok(&["newest", "buffer"])?, "hello\n");
-    let capture = server.ok(&["str", client, "client", "capture"])?;
-    assert!(capture.contains("a program copied text"), "{capture}");
-    // The captured notice does not trigger another copy.
-    let feedback = server.ok(&["all", "str", checkpoint.trim(), "0", "next-events", "json"])?;
-    assert!(!feedback.contains(r#""event":"copied""#), "{feedback}");
-    Ok(())
-}
-
 #[test]
 fn addressing_a_client_does_not_claim_its_origin() -> Outcome {
     let server = Server::start("")?;

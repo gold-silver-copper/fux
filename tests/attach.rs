@@ -1334,21 +1334,17 @@ fn existing_attach_ignores_unusable_optional_launch() -> Outcome {
 fn an_unusable_launch_is_left_out_and_said_only_on_refusal() -> Outcome {
     let existing = Server::start("")?;
     let empty = Server::empty()?;
-    let half = existing.dir.join("half-frame");
-    std::fs::write(&half, vec![b'x'; fux_wire::protocol::MAX_FRAME / 2]).map_err(e)?;
-    let half = half.to_string_lossy();
+    let big = existing.dir.join("near-a-frame");
+    std::fs::write(&big, vec![b'x'; fux_wire::protocol::MAX_FRAME - 40]).map_err(e)?;
+    let big = big.to_string_lossy();
     let malformed = ["str", "", "program"];
-    // Each fits a frame alone; together they do not.
+    // The program fits a frame alone; with the rest of the attach it does not.
     let oversized = [
         "str",
         "/bin/cat",
         "program",
         "str",
-        &half,
-        "read-file",
-        "arg",
-        "str",
-        &half,
+        &big,
         "read-file",
         "arg",
     ];

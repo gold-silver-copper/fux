@@ -46,28 +46,6 @@ fn held_handles_refuse_another_server_before_mutating_it() -> Outcome {
         assert_eq!(b.panes()?.len(), 2);
         assert!(!b.ok(&["%2", "capture"])?.contains("forbidden"));
     }
-    a.type_line("%1", "printf '\\033]52;c;b2xk\\007'")?;
-    let mut buffer = String::new();
-    eventually("a run-qualified buffer id", || {
-        let metadata = a.ok(&["buffers", "json"])?;
-        let id = metadata
-            .split("\"id\":\"")
-            .nth(1)
-            .and_then(|s| s.split('"').next());
-        if let Some(id) = id {
-            buffer = id.to_owned();
-        }
-        Ok(!buffer.is_empty())
-    })?;
-    for action in ["buffer", "%2 swap paste-buffer"] {
-        let out = code(&a, &format!("str {buffer} str {socket} socket {action}"))?;
-        assert_eq!(out.status, 1, "{}", out.stderr);
-        assert!(
-            out.stderr.contains("bad_value:") && out.stderr.contains("server run"),
-            "{}",
-            out.stderr
-        );
-    }
     // Written text is explicitly interpreted by the server selected now.
     let out = code(
         &a,

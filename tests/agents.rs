@@ -546,22 +546,12 @@ fn a_headless_client_is_sized_from_the_command_line() -> Outcome {
         "client-capture"
     );
     eventually("a paint", || Ok(server.ok(&capture)?.contains("main")))?;
-    // Keys typed at it are a person's: the prefix and `c` open copy mode.
-    let keys = [
-        "str",
-        "c1",
-        "client",
-        "str",
-        "C-b",
-        "key",
-        "str",
-        "c",
-        "text",
-        "send-keys",
-    ];
-    server.ok(&keys)?;
-    eventually("copy mode", || Ok(server.ok(&capture)?.contains("COPY")))?;
-    server.words("str c1 client str q text send-keys drop")?;
+    // Keys typed at it are a person's: the prefix opens the column.
+    server.ok(&["str", "c1", "client", "str", "C-b", "key", "send-keys"])?;
+    eventually("the column", || {
+        Ok(server.ok(&capture)?.contains("split side by side"))
+    })?;
+    server.words("str c1 client str Escape key send-keys drop")?;
     let mut terminal = server.attach(10, 40)?;
     terminal.ready()?;
     let refused = server.fux(&["str", "c2", "client", "60", "12", "resize"])?;
