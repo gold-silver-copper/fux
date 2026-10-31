@@ -80,7 +80,7 @@ define rename-prompt
   list list it end str rename end
   prompt
 end
-# client text callback -- : a question: a chooser titled text with one row, Yes; choosing it runs the callback as choose runs one, the client and row dropped first
+# client title callback -- : a question: a chooser with one row, Yes; choosing it runs the callback as choose runs one, the client and row dropped first; the title is choose's, text (a number or boolean: string it first) or [text,subject handle], closing when the subject goes
 define confirm
   let action let question let c
   action is-string if empty action else

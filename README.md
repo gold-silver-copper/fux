@@ -375,7 +375,9 @@ For example, bind `str 't q' str 'me str last step-tab' bind` in your config.
   runs your fuxth with the line on its stack, a string, and `confirm` a
   question, a chooser titled with it whose one row, Yes, runs it
   (`me str 'close it?' str '%3 kill' confirm`); its row is no pane, tab or
-  workspace, so `r` and `x` refuse there.
+  workspace, so `r` and `x` refuse there. The question is a chooser's
+  title: text (`42 string`, not `42`), or `[text,subject]`, which closes
+  when its subject goes.
   A callback may also be `[captured-arguments,source]`; captured arguments
   enter its stack before the submitted line, without becoming source:
   `me str Rename str '' list list %3 end str rename end prompt`.
