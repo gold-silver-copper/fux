@@ -189,7 +189,7 @@ impl Text {
 
     /// Bytes a string `bytes` long, of `chars` characters, holds in its
     /// region, its shared box with it.
-    fn bound(bytes: usize, chars: usize) -> usize {
+    pub(crate) fn bound(bytes: usize, chars: usize) -> usize {
         let marks = match bytes == chars {
             true => 0,
             false => chars.saturating_sub(1) / STRIDE,
@@ -241,6 +241,12 @@ impl Text {
     /// The region its stores are in.
     pub fn region(&self) -> &Region {
         self.text.region()
+    }
+
+    /// Its text and what its region holds for it, its marks given back:
+    /// moved, uncopied, into a failure's message.
+    pub(crate) fn parted(self) -> (std::string::String, crate::Reservation) {
+        self.text.parted()
     }
 
     /// The room its text and marks have, in all: what moves as it grows.
@@ -608,6 +614,52 @@ impl<A> Value<A> {
 }
 
 impl<A: AppValue> Value<A> {
+    /// It, with its strings and lists in `region`: one another region holds
+    /// is copied there, reserved whole before any of it is made, through
+    /// the lists it holds. What `region` holds already is shared.
+    pub(crate) fn homed(self, region: &Region) -> Result<Self, Refused> {
+        if self.home(region) {
+            return Ok(self);
+        }
+        match self {
+            Self::Str(text) => {
+                region.admits(Text::bound(text.len(), text.chars_len()))?;
+                text.copy(region)?.value()
+            }
+            Self::List(list) => {
+                let n = list.items().len();
+                region.admits(List::<A>::size(n))?;
+                // Its box and its values' store first: what it holds is
+                // copied after, each checked whole as it is.
+                let boxed = region.reserve(Shared::<List<A>>::BOX)?;
+                let mut items = BoundedVec::with_capacity(region, n)?;
+                for item in list.items() {
+                    items.push(item.clone().homed(region)?)?;
+                }
+                // Copied, it nests and holds as much as it did.
+                let (depth, weight) = (list.depth, list.weight);
+                let copy = List {
+                    items,
+                    depth,
+                    weight,
+                };
+                Ok(Self::List(Shared::holding(copy, boxed)))
+            }
+            Self::Int(_) | Self::Bool(_) | Self::App(_) => Ok(self),
+        }
+    }
+
+    /// Whether all its strings and lists are `region`'s.
+    fn home(&self, region: &Region) -> bool {
+        match self {
+            Self::Str(text) => text.region().same(region),
+            Self::List(list) => {
+                list.region().same(region) && list.items().iter().all(|item| item.home(region))
+            }
+            Self::Int(_) | Self::Bool(_) | Self::App(_) => true,
+        }
+    }
+
     /// Held in `region` as it is admitted into a run: the box of a string
     /// or list a host made without one (their stores are their region's),
     /// the values in a list, and an application value's own bytes.

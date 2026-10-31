@@ -1,8 +1,8 @@
 //! Why a program could not be read or run: a stable code, what went wrong,
 //! and where.
-use crate::Code;
 use crate::machine::Builtin;
 use crate::token::{Place, Token};
+use crate::{Code, Reservation};
 use std::rc::Rc;
 
 /// A failure, with where it happened: the token's place and text, when
@@ -13,6 +13,29 @@ pub struct Error {
     pub message: String,
     pub place: Option<Place>,
     pub word: Option<Rc<str>>,
+    /// What a run's region holds for its message, when the message was
+    /// made there (`fail`'s reason): it goes where the message goes.
+    pub(crate) held: Held,
+}
+
+/// A region's reservation for a failure's message; clones share it, and
+/// it says nothing of whether two failures are alike.
+#[derive(Clone, Default)]
+pub(crate) struct Held(pub(crate) Option<Rc<Reservation>>);
+
+impl PartialEq for Held {
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
+}
+
+impl Eq for Held {}
+
+impl std::fmt::Debug for Held {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let bytes = self.0.as_ref().map_or(0, |held| held.bytes());
+        write!(f, "Held({bytes})")
+    }
 }
 
 impl Error {
@@ -23,6 +46,7 @@ impl Error {
             message: message.into(),
             place: at.map(|t| t.place.clone()),
             word: at.map(|t| Rc::clone(&t.text)),
+            held: Held::default(),
         }
     }
 

@@ -913,6 +913,36 @@ fn concat_refuses_before_allocating_the_joined_value() -> Result<(), Error> {
             "concat allocated {allocated} bytes: {source}"
         );
     }
+    // Joined, a list, an ASCII string and another: in a region with room
+    // for all of it but a byte (its box), nothing is made; with room for
+    // all of it, it is.
+    let x = std::iter::repeat_n('x', 12000).collect::<String>();
+    let e = std::iter::repeat_n('é', 12000).collect::<String>();
+    // Resuming gives back the kinds the suspended word took.
+    let freed = 4 * size_of::<crate::check::Kinds>();
+    for (source, needed) in [
+        (copy, List::<Ticket>::size(1_000_000)),
+        ("str x 3000 copies let s list s s s s end", Text::size(&x)),
+        ("str é 3000 copies let s list s s s s end", Text::size(&e)),
+    ] {
+        let room = Region::new(usize::MAX);
+        let used = (room.budget()).saturating_sub(ready(source, &room)?.region().remaining());
+        for (room, fits) in [(needed - 1, false), (needed, true)] {
+            let region = Region::new(used - freed + room);
+            let mut machine = ready(source, &region)?;
+            let before = ALLOCATOR.live();
+            ALLOCATOR.reset_peak();
+            let result = machine.run(&mut Toy::default(), u64::MAX);
+            let allocated = ALLOCATOR.peak().saturating_sub(before);
+            match fits {
+                true => assert_eq!(result?, Outcome::Finished, "{source}"),
+                false => {
+                    assert_eq!(result.map_err(|e| e.code), Err(Code::TooLong), "{source}");
+                    assert!(allocated < 4096, "{source}: allocated {allocated}");
+                }
+            }
+        }
+    }
     Ok(())
 }
 
@@ -1872,6 +1902,36 @@ fn host_imports_bound_each_value_and_opaque_depth() -> Result<(), Error> {
     assert_eq!(machine.stack().len(), 3);
     assert!(list_of(vec![value.clone(), value]).is_none());
     assert!(list_of(vec![Value::App(Weighted(1, NESTING))]).is_none());
+    Ok(())
+}
+
+#[test]
+fn another_regions_strings_and_lists_are_charged_to_the_run_that_admits_them() -> Result<(), Error>
+{
+    let room = Region::new(32 << 10);
+    let compiler = Compiler::<Ticket>::new(Vocabulary::default(), &room);
+    let mut machine = Machine::new(compiler.finish()?, Limits::default())?;
+    let host = Region::new(1 << 20);
+    let long = std::iter::repeat_n('x', 500_000).collect::<String>();
+    let foreign = Value::<Ticket>::str(&host, &long)?;
+    let left = room.remaining();
+    let refused = machine.import(foreign).err().map(|e| e.code);
+    assert_eq!(refused, Some(Code::TooLong), "500,000 bytes into 32 KiB");
+    assert_eq!(room.remaining(), left, "the region is as it was");
+    // One that fits is copied in, charged, and given back as it drops;
+    // a list of it, the same.
+    let fits = std::iter::repeat_n('x', 1000).collect::<String>();
+    let short = Value::<Ticket>::str(&host, &fits)?;
+    machine.import(short.clone())?;
+    let mut items = BoundedVec::new(&host);
+    items.push(short)?;
+    let list = List::new(items).ok_or_else(|| Error::new(Code::TooLong, "list", None))?;
+    machine.import(list.value()?)?;
+    drop(host);
+    let held = left.saturating_sub(room.remaining());
+    assert!(held >= 2 * Text::size(&fits), "{held} bytes held");
+    drop(machine);
+    assert_eq!(room.remaining(), room.budget());
     Ok(())
 }
 

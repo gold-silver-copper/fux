@@ -79,6 +79,15 @@ impl Region {
         self.0.left.remaining()
     }
 
+    /// Refused, with nothing reserved, unless it has `bytes` left: what a
+    /// value of several stores takes in all, checked before any is made.
+    pub fn admits(&self, bytes: usize) -> Result<(), Refused> {
+        match bytes <= self.remaining() {
+            true => Ok(()),
+            false => Err(self.full(bytes)),
+        }
+    }
+
     /// `bytes` held from this region until the reservation drops.
     #[inline]
     pub fn reserve(&self, bytes: usize) -> Result<Reservation, Refused> {

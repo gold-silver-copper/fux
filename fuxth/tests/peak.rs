@@ -147,3 +147,54 @@ fn a_build_its_region_refuses_makes_nothing_and_leaves_the_region_whole() -> Res
     assert_eq!(HEAP.live(), base);
     Ok(())
 }
+
+#[test]
+fn a_long_reason_is_held_by_the_region_failed_or_caught() -> Result<(), Error> {
+    let library = library()?;
+    // A reason of 120,000 characters, its input still held as it is made:
+    // the run fails with it, or a `try` keeps it.
+    for (source, caught) in [
+        ("str x 120000 copies fail", false),
+        ("str fail try str x 120000 copies fail catch drop end", true),
+    ] {
+        compiled(&library, source, &Region::new(BUDGET))?;
+        let base = HEAP.live();
+        let region = Region::new(BUDGET);
+        let program = compiled(&library, source, &region)?;
+        let code = code(base, &region);
+        HEAP.reset_peak();
+        let mut machine = Machine::new(program, Limits::default())?;
+        let ran = machine.run(&mut Asker, u64::MAX);
+        let peak = HEAP.peak().saturating_sub(base);
+        assert!(
+            peak <= BUDGET + code + OVERHEAD,
+            "{source}: {peak} bytes at the peak: {code} of code"
+        );
+        match (ran, caught) {
+            (Ok(Outcome::Finished), true) => {
+                let kept = machine.stack().first().map(|reason| reason.weight());
+                assert_eq!(kept, Some(120_000), "the reason is kept whole");
+            }
+            (Err(error), false) => {
+                assert_eq!((error.code, error.message.len()), (Code::Fail, 120_000));
+                drop(error);
+            }
+            (ran, _) => {
+                return Err(Error::new(
+                    Code::Contract,
+                    format!("{source}: {ran:?}"),
+                    None,
+                ));
+            }
+        }
+        drop(machine);
+        assert_eq!(
+            region.remaining(),
+            BUDGET,
+            "{source}: the run gave all of it back"
+        );
+        drop(region);
+        assert_eq!(HEAP.live(), base, "{source}");
+    }
+    Ok(())
+}

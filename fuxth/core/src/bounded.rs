@@ -269,6 +269,23 @@ impl Bounded<String> {
         Self::of(region, self)
     }
 
+    /// Its string and what its region holds for it, to move elsewhere
+    /// whole, uncopied (a failure's message): the reservation goes with
+    /// the string, and [`Bounded::rejoined`] makes them one again.
+    pub fn parted(self) -> (String, Reservation) {
+        (self.store, self.held)
+    }
+
+    /// A string and the reservation [`Bounded::parted`] gave with it, a
+    /// store again; given back as they were unless the reservation holds
+    /// exactly the string's room.
+    pub fn rejoined(store: String, held: Reservation) -> Result<Self, (String, Reservation)> {
+        match held.bytes() == store.capacity() {
+            true => Ok(Self { store, held }),
+            false => Err((store, held)),
+        }
+    }
+
     pub fn push(&mut self, c: char) -> Result<(), Refused> {
         self.reserve(c.len_utf8())?;
         self.store.push(c);
