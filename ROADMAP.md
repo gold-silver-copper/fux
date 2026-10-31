@@ -2,7 +2,7 @@
 
 Each milestone is a **scenario that agents carry out**, never the owner. A
 milestone is done when:
-- a script checks its end state in CI;
+- a script checks its end state in the local gate (D-39);
 - the residents (`~/code/notes/projects/fux/vision/SYSTEM.md`) have worked with it for three days with no
   blocking obstacle.
 
