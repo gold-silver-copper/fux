@@ -6,10 +6,6 @@ use crate::json::Json;
 use crate::layout::Node;
 use crate::wire::wire;
 
-/// Aggregate construction space for a snapshot, including its temporary vectors.
-pub const BYTES: usize = 8 << 20;
-/// Aggregate records, tree nodes and scalar fields imported by a snapshot.
-pub const NODES: usize = 65_536;
 /// Nesting of records and their lists; layout trees are flat.
 pub const DEPTH: u8 = 32;
 
@@ -135,19 +131,17 @@ impl crate::wire::Wire for Snapshot {
         self.put_fields(out);
     }
     fn get(r: &mut crate::wire::Reader<'_>) -> Result<Self, crate::wire::Error> {
-        r.limited(BYTES, |r| {
-            let (run, cursor, scope, projection, workspaces, tabs, panes, clients) =
-                Self::get_fields(r)?;
-            Ok(Self {
-                run,
-                cursor,
-                scope,
-                projection,
-                workspaces,
-                tabs,
-                panes,
-                clients,
-            })
+        let (run, cursor, scope, projection, workspaces, tabs, panes, clients) =
+            Self::get_fields(r)?;
+        Ok(Self {
+            run,
+            cursor,
+            scope,
+            projection,
+            workspaces,
+            tabs,
+            panes,
+            clients,
         })
     }
 }
@@ -175,46 +169,28 @@ impl Snapshot {
     /// A closed schema also checks its cross references and flat topology.
     pub fn validate(&self) -> Result<(), crate::wire::Error> {
         use crate::wire::Error;
-        use fuxix::Allocation;
         let bad = || Error::Bad("snapshot topology or projection");
         if self.run != self.cursor.run || matches!(self.projection, Projection::Field(_)) {
             return Err(bad());
         }
-        self.node_count()
-            .filter(|n| *n <= NODES)
-            .ok_or(Error::Limit)?;
-        let budget = &mut crate::wire::Budget::with_limit(BYTES);
-        fn sorted<T: Ord + Copy>(
-            items: impl Iterator<Item = T>,
-            count: usize,
-            budget: &mut crate::wire::Budget,
-        ) -> Result<Vec<T>, Error> {
-            let mut out = budget.vector(count).map_err(|_| Error::Limit)?;
-            out.extend(items);
+        fn sorted<T: Ord + Copy>(items: impl Iterator<Item = T>) -> Result<Vec<T>, Error> {
+            let mut out: Vec<T> = items.collect();
             out.sort_unstable();
             if out.iter().zip(out.iter().skip(1)).any(|(a, b)| a == b) {
                 return Err(Error::Bad("duplicate snapshot identity"));
             }
             Ok(out)
         }
-        let ws = sorted(
-            self.workspaces.iter().map(|w| w.id),
-            self.workspaces.len(),
-            budget,
-        )?;
-        sorted(self.tabs.iter().map(|t| t.id), self.tabs.len(), budget)?;
-        let panes = sorted(self.panes.iter().map(|p| p.id), self.panes.len(), budget)?;
-        let _clients = sorted(
-            self.clients.iter().map(|c| c.id),
-            self.clients.len(),
-            budget,
-        )?;
+        let ws = sorted(self.workspaces.iter().map(|w| w.id))?;
+        sorted(self.tabs.iter().map(|t| t.id))?;
+        let panes = sorted(self.panes.iter().map(|p| p.id))?;
+        sorted(self.clients.iter().map(|c| c.id))?;
         let mut ordered_tabs = self.tabs.iter().peekable();
         for w in &self.workspaces {
             if w.tabs.is_empty() {
                 return Err(bad());
             }
-            sorted(w.tabs.iter().copied(), w.tabs.len(), budget)?;
+            sorted(w.tabs.iter().copied())?;
             for id in &w.tabs {
                 if ordered_tabs
                     .peek()
@@ -231,7 +207,7 @@ impl Snapshot {
             return Err(bad());
         }
         let mut ordered_panes = self.panes.iter();
-        let mut leaves = budget.vector(panes.len()).map_err(|_| Error::Limit)?;
+        let mut leaves = Vec::with_capacity(panes.len());
         for t in &self.tabs {
             if ws.binary_search(&t.workspace).is_err()
                 || t.rows == 0
@@ -242,12 +218,8 @@ impl Snapshot {
             {
                 return Err(bad());
             }
-            let mut seen = budget
-                .vector::<bool>(t.nodes.len())
-                .map_err(|_| Error::Limit)?;
-            seen.resize(t.nodes.len(), false);
-            let mut pending = budget.vector(1).map_err(|_| Error::Limit)?;
-            pending.push(0usize);
+            let mut seen = vec![false; t.nodes.len()];
+            let mut pending = vec![0usize];
             while let Some(at) = pending.pop() {
                 let visited = seen.get_mut(at).ok_or_else(bad)?;
                 if *visited {
@@ -256,7 +228,6 @@ impl Snapshot {
                 *visited = true;
                 match t.nodes.get(at).ok_or_else(bad)? {
                     Node::Pane(pane) => {
-                        budget.reserve(&mut leaves, 1).map_err(|_| Error::Limit)?;
                         leaves.push((*pane, t.id));
                         let omitted = matches!((self.scope, &self.projection), (Scope::Target(AnyRef::Pane(id)), Projection::Facts) if id != *pane);
                         if !omitted
@@ -268,7 +239,6 @@ impl Snapshot {
                         }
                     }
                     Node::Split { first, second, .. } => {
-                        budget.reserve(&mut pending, 2).map_err(|_| Error::Limit)?;
                         pending.extend([*second as usize, *first as usize]);
                     }
                 }
@@ -297,11 +267,7 @@ impl Snapshot {
                 return Err(bad());
             }
         }
-        let owners = sorted(
-            self.tabs.iter().map(|t| (t.id, t.workspace)),
-            self.tabs.len(),
-            budget,
-        )?;
+        let owners = sorted(self.tabs.iter().map(|t| (t.id, t.workspace)))?;
         for c in &self.clients {
             let tab_ws = c
                 .tab

@@ -19,7 +19,6 @@ use fux_wire::json::{Fields, Json};
 use fux_wire::layout::{self, Axis, NoPane, Placement, Rect, Shares, Tree};
 use fux_wire::protocol::{Attach, Body, Reply, Response, ToAttached};
 use fux_wire::words::joined;
-use fuxix::Allocation;
 use std::collections::{BTreeMap, VecDeque};
 use std::num::NonZeroU32;
 use std::path::{Path, PathBuf};
@@ -215,12 +214,9 @@ impl Here<'_> {
 
 impl From<pane::Error> for Error {
     fn from(error: pane::Error) -> Self {
-        let code = match error {
-            pane::Error::InputFull => Raise::InputFull,
-            pane::Error::TooLong(_) => Raise::TooLong,
-            pane::Error::Terminal { .. } => Raise::Start,
-        };
-        fail(code, error.to_string())
+        match error {
+            pane::Error::Terminal { .. } => fail(Raise::Start, error.to_string()),
+        }
     }
 }
 
@@ -281,8 +277,6 @@ struct Replacement {
 
 /// How long a closing pane's processes have to exit after the hangup.
 pub const GRACE: Duration = Duration::from_millis(100);
-/// Retained launch inputs, including pending replacements, in one session.
-pub const LAUNCH_BYTES: usize = 16 << 20;
 
 pub struct Session {
     /// Its workspaces, tabs and panes, and the journal of what happened to
@@ -641,7 +635,6 @@ impl Session {
             .env
             .overlay(env)
             .map_err(|why| fail(Raise::Start, why))?;
-        self.check_launch(&launch)?;
         // The program it starts is told its host's cell.
         let graphics = self.graphics(id);
         let size = (pane.size(), graphics.cell());
@@ -884,23 +877,10 @@ impl Session {
     }
 
     /// The panes `target` names: a pane, or a tab's or workspace's every
-    /// pane, in order. Charge the member vector's actual capacity.
-    fn panes_of(
-        &self,
-        target: AnyRef,
-        budget: &mut fux_wire::wire::Budget,
-    ) -> Result<Vec<PaneId>, Error> {
+    /// pane, in order.
+    fn panes_of(&self, target: AnyRef) -> Result<Vec<PaneId>, Error> {
         let mut ids = Vec::new();
-        let mut admitted = Ok(());
-        let mut take = |id: PaneId| {
-            if admitted.is_err() {
-                return;
-            }
-            admitted = budget.reserve(&mut ids, 1);
-            if admitted.is_ok() {
-                ids.push(id);
-            }
-        };
+        let mut take = |id: PaneId| ids.push(id);
         match target {
             AnyRef::Pane(id) => take(self.pane(id)?.id()),
             AnyRef::Tab(id) => self
@@ -913,7 +893,6 @@ impl Session {
                 }
             }
         }
-        admitted?;
         Ok(ids)
     }
 
@@ -932,12 +911,11 @@ impl Session {
             }
         }
         // Every pane must take them, or none is sent them: each one's are
-        // made and fit first.
+        // made first.
         let (run, mut each) = (self.run, Vec::new());
-        for id in self.panes_of(to.target(), &mut fux_wire::wire::Budget::new())? {
-            let mut pane = self.live_pane_mut(id)?;
+        for id in self.panes_of(to.target())? {
+            let pane = self.live_pane_mut(id)?;
             let bytes = bytes(&pane, inputs);
-            pane.fits(bytes.len())?;
             each.push((pane.version(run), bytes));
         }
         let mut answers = each.iter().map(|(version, _)| PaneAnswer::Acted(*version));
@@ -947,13 +925,8 @@ impl Session {
         }
         .into();
         reply.run = Some(self.run);
-        let mut capacity = fux_wire::wire::Writer::counting(fux_wire::wire::MAX_REPLY);
-        fux_wire::wire::Wire::put(&reply, &mut capacity);
-        capacity
-            .check()
-            .map_err(|_| fux_wire::wire::Budget::exceeded())?;
         for (version, bytes) in &each {
-            self.pane_mut(version.pane)?.push(bytes)?;
+            self.pane_mut(version.pane)?.push(bytes);
         }
         Ok(reply)
     }
@@ -1185,28 +1158,6 @@ impl Session {
         Ok(made)
     }
 
-    /// Retained launch inputs, including a pending replacement, share one bound.
-    fn check_launch(&self, launch: &pane::Launch) -> Result<(), Error> {
-        let bytes = self
-            .parts
-            .panes()
-            .values()
-            .map(|p| p.runs.launch().bytes())
-            .chain(
-                self.respawning
-                    .values()
-                    .map(|r| r.fresh.runs.launch().bytes()),
-            )
-            .fold(launch.bytes(), usize::saturating_add);
-        if bytes > LAUNCH_BYTES {
-            return Err(fail(
-                Raise::TooLong,
-                "saved launch inputs exceed the session's 16 MiB limit",
-            ));
-        }
-        Ok(())
-    }
-
     /// A new pane, its ID taken from `ids`, running what `new` says.
     fn new_pane(&self, ids: &mut Ids, new: NewPane<'_>, now: Instant) -> Result<Pane, Error> {
         let start = new.start;
@@ -1219,7 +1170,6 @@ impl Session {
             Start::Shell(..) => Runs::Shell(launch.clone()),
             Start::Program(..) => Runs::Explicit(launch.clone()),
         };
-        self.check_launch(&launch)?;
         let id = ids.pane()?;
         let pane = Pane::new(id, None, runs, new.size, new.options, now)?;
         let child = self.spawn(id, 0, &launch, (new.size, new.cell))?;
@@ -2032,8 +1982,7 @@ impl Session {
         }
         // Program copies go to viewers of the tab, including zoomed views
         // and watchers, when this pane permits them. Invalid copies are
-        // counted and reported. fux-vt's string bound fits the clipboard.
-        const _: () = assert!(fux_vt::OSC_PAYLOAD_LIMIT <= crate::copy::MAX_CLIPBOARD);
+        // counted and reported.
         let generation = pane.respawns;
         let (bell, copies) = pane.take_read();
         let changed_label = labelled.filter(|(was, _)| was != &*pane.label());
@@ -2110,16 +2059,15 @@ impl Session {
     }
 
     /// `text`, copied, goes to the paste buffers and to each client in `to`
-    /// whose terminal delivery is on (OSC 52): false if it
-    /// is too large for the clipboard. An exhausted id counter refuses the copy.
+    /// whose terminal delivery is on (OSC 52). An exhausted id counter
+    /// refuses the copy.
     pub(crate) fn copied(
         &mut self,
         text: String,
         pane: Option<PaneId>,
         to: &[ClientId],
-    ) -> Result<bool, Error> {
+    ) -> Result<(), Error> {
         let id = self.ids.buffer(self.run)?;
-        let mut fits = true;
         let views = &self.views;
         let mut recipients = to
             .iter()
@@ -2133,14 +2081,10 @@ impl Session {
         // Encoded once, before the text moves into the buffers.
         if recipients.peek().is_some() {
             let encoded = fux_wire::json::base64(text.as_bytes());
-            fits = encoded.len() <= crate::copy::MAX_CLIPBOARD;
-            if fits {
-                let osc = format!("\x1b]52;c;{encoded}\x07").into_bytes();
-                self.outbox.extend(
-                    recipients
-                        .map(|client| Outgoing::To(client, ToAttached::Paint(osc.clone().into()))),
-                );
-            }
+            let osc = format!("\x1b]52;c;{encoded}\x07").into_bytes();
+            self.outbox.extend(
+                recipients.map(|client| Outgoing::To(client, ToAttached::Paint(osc.clone().into()))),
+            );
         }
         let at = pane.and_then(|p| self.locate(p).map(|at| (at, p)));
         self.buffers.push_front((id, text));
@@ -2148,7 +2092,7 @@ impl Session {
             .journal_mut()
             .push(crate::journal::Event::Copied { buffer: id, at });
         self.buffers.truncate(BUFFER_LIMIT);
-        Ok(fits)
+        Ok(())
     }
 
     fn buffer(&self, buffer: command::Buffer) -> Result<&str, Error> {
@@ -2227,7 +2171,7 @@ impl Session {
             command::Since::Now(AnyRef::Pane(id)) => Watches::Pane((id, self.pane(id)?.counts())),
             command::Since::Now(target) => Watches::Panes(
                 (self
-                    .panes_of(target, &mut fux_wire::wire::Budget::new())?
+                    .panes_of(target)?
                     .into_iter())
                 .map(|id| Ok((id, self.pane(id)?.counts())))
                 .collect::<Result<Vec<_>, Error>>()?,
@@ -2546,18 +2490,16 @@ impl Session {
             }
             Command::Resolve { text, kind } => Ok(found(self.resolve(text, *kind, here)?)),
             &Command::Members { target, members } => {
-                let budget = &mut fux_wire::wire::Budget::new();
                 let ids = match members {
                     Members::Panes => {
-                        let panes = self.panes_of(target, budget)?;
-                        let mut ids = budget.vector(panes.len())?;
+                        let panes = self.panes_of(target)?;
+                        let mut ids = Vec::with_capacity(panes.len());
                         ids.extend(panes.into_iter().map(AnyRef::Pane));
                         ids
                     }
                     Members::Tabs => {
                         let mut ids = Vec::new();
                         for tab in self.tabs_of(target)? {
-                            budget.reserve(&mut ids, 1)?;
                             ids.push(AnyRef::Tab(tab));
                         }
                         ids
@@ -2765,7 +2707,7 @@ impl Session {
             return Err(fail(Raise::Mouse, message));
         }
         let version = p.version(run);
-        p.push_mouse(report, held)?;
+        p.push_mouse(report, held);
         Ok(acted(version))
     }
 
@@ -2921,7 +2863,7 @@ impl Session {
                 let placement = &mut Placement::default();
                 crate::render::compose_view(self, terminal, &mut grid, placement)
                     .map_err(|e| fail(Raise::Memory, format!("capturing {client}: {e}")))?;
-                let captured = crate::capture::client(client, &grid)?;
+                let captured = crate::capture::client(client, &grid);
                 return Ok(Body::Capture(Box::new(captured)).into());
             }
             ClientAction::Zoom => None,
@@ -3150,48 +3092,36 @@ impl Session {
     // ------------------------------------------------------------------ ls
 
     /// A pane's state, as `ls json` has it.
-    fn pane_json<'a>(
-        &'a self,
-        p: &'a Pane,
-        budget: &mut fux_wire::wire::Budget,
-    ) -> Result<Fields, Error> {
+    fn pane_json<'a>(&'a self, p: &'a Pane) -> Result<Fields, Error> {
         let pid = |c: &Child| Json::Int(i64::from(c.leader.pid().as_raw()));
         let values = [
-            ("id", Json::str(budget.format(format_args!("{}", p.id()))?)),
-            ("name", budget.optional_text(p.name())?),
+            ("id", Json::str(format!("{}", p.id()))),
+            ("name", p.name().map_or(Json::Null, Json::str)),
             (
                 "label",
-                Json::str(budget.format(format_args!("{}", p.display_label()))?),
+                Json::str(format!("{}", p.display_label())),
             ),
             ("rows", Json::int(p.size().rows())),
             ("cols", Json::int(p.size().cols())),
             ("pid", p.process().child().map_or(Json::Null, pid)),
             (
                 "version",
-                Json::str(budget.format(format_args!("{}", p.version(self.run)))?),
+                Json::str(format!("{}", p.version(self.run))),
             ),
         ];
-        let mut fields = budget.vector(values.len())?;
+        let mut fields = Vec::with_capacity(values.len());
         fields.extend(values);
-        let state = crate::capture::state(p, self.copying(p.id()), budget)?;
-        budget.reserve(&mut fields, state.len())?;
-        let bytes = state
-            .capacity()
-            .checked_mul(std::mem::size_of::<(&str, Json)>())
-            .ok_or_else(fux_wire::wire::Budget::exceeded)?;
-        fields.extend(state);
-        budget.release(bytes)?;
+        fields.extend(crate::capture::state(p, self.copying(p.id()))?);
         Ok(fields)
     }
 
     fn field(&self, target: AnyRef, field: &str) -> Result<Body, Error> {
-        let budget = &mut fux_wire::wire::Budget::new();
         if field == "id" {
             return Ok(Body::Found(target));
         }
         if field == "panes" && !matches!(target, AnyRef::Pane(_)) {
-            let panes = self.panes_of(target, budget)?;
-            let mut ids = budget.vector(panes.len())?;
+            let panes = self.panes_of(target)?;
+            let mut ids = Vec::with_capacity(panes.len());
             ids.extend(panes.into_iter().map(AnyRef::Pane));
             return Ok(Body::Handles(ids));
         }
@@ -3200,8 +3130,8 @@ impl Session {
             AnyRef::Pane(id) => {
                 let pane = self.pane(id)?;
                 match field {
-                    "name" => budget.optional_text(pane.name())?,
-                    "label" => Json::str(budget.format(format_args!("{}", pane.display_label()))?),
+                    "name" => pane.name().map_or(Json::Null, Json::str),
+                    "label" => Json::str(format!("{}", pane.display_label())),
                     "rows" => Json::int(pane.size().rows()),
                     "cols" => Json::int(pane.size().cols()),
                     "pid" => pane
@@ -3209,10 +3139,10 @@ impl Session {
                         .child()
                         .map_or(Json::Null, |c| Json::int(c.leader.pid().as_raw())),
                     "version" => {
-                        Json::str(budget.format(format_args!("{}", pane.version(self.run)))?)
+                        Json::str(format!("{}", pane.version(self.run)))
                     }
                     _ => self
-                        .pane_json(pane, budget)?
+                        .pane_json(pane)?
                         .into_iter()
                         .find(|(k, _)| *k == field)
                         .map(|(_, v)| v)
@@ -3224,17 +3154,15 @@ impl Session {
                 match field {
                     "host" => self
                         .host(Some(id))
-                        .map(|c| budget.format(format_args!("{c}")).map(Json::str))
-                        .transpose()?
-                        .unwrap_or(Json::Null),
-                    "layout_revision" => Json::str(budget.format(format_args!(
+                        .map_or(Json::Null, |c| Json::str(c.to_string())),
+                    "layout_revision" => Json::str(format!(
                             "{}",
                             tab.revision(self.run)
                                 .ok_or_else(|| fail(Raise::Range, "layout revision exhausted"))?
-                        ))?),
-                    "name" => budget.optional_text(tab.name())?,
+                        )),
+                    "name" => tab.name().map_or(Json::Null, Json::str),
                     "label" => Json::str(
-                        budget.format(format_args!("{}", tab.display_label(self.parts.panes())))?,
+                        format!("{}", tab.display_label(self.parts.panes())),
                     ),
                     _ => return Err(no_field()),
                 }
@@ -3242,10 +3170,10 @@ impl Session {
             AnyRef::Workspace(id) => {
                 let ws = self.workspace(id).ok_or(Error::NoWorkspace(id))?;
                 match field {
-                    "name" => budget.optional_text(ws.name())?,
-                    "label" => Json::str(budget.format(format_args!("{}", ws.display_label()))?),
+                    "name" => ws.name().map_or(Json::Null, Json::str),
+                    "label" => Json::str(format!("{}", ws.display_label())),
                     "tabs" => {
-                        let mut ids = budget.vector(ws.tabs().len())?;
+                        let mut ids = Vec::with_capacity(ws.tabs().len());
                         ids.extend(ws.tabs().iter().map(|t| AnyRef::Tab(t.id())));
                         return Ok(Body::Handles(ids));
                     }
@@ -3313,9 +3241,6 @@ fn drain_terminal(
     }
 }
 
-/// The most bytes a name holds.
-pub const NAME_MAX: usize = 256;
-
 /// The fixed number of shared paste buffers retained.
 pub const BUFFER_LIMIT: usize = 16;
 
@@ -3336,12 +3261,6 @@ fn check_name(name: &str) -> Result<(), Error> {
     if name.chars().any(|c| c.is_control() || invisible(c)) {
         let message = "a name cannot contain control or invisible characters";
         return Err(fail(Raise::BadName, message));
-    }
-    if name.len() > NAME_MAX {
-        return Err(fail(
-            Raise::BadName,
-            format!("a name is at most {NAME_MAX} bytes"),
-        ));
     }
     Ok(())
 }
@@ -4368,7 +4287,7 @@ mod tests {
                     Some(fux_wire::inspect::Path::Bytes(vec![255; 70_000])),
                 ));
             }
-            let bytes = fux_wire::wire::encode(&*snapshot)?;
+            let bytes = fux_wire::wire::encode(&*snapshot);
             assert_eq!(
                 fux_wire::wire::Reader::new(&bytes).whole::<fux_wire::inspect::Snapshot>()?,
                 *snapshot
@@ -6944,7 +6863,7 @@ mod tests {
     fn the_json_help_names_every_pane_field() -> TestResult {
         let (s, _) = attached(4, 30)?;
         let pane = s.parts.panes().values().next().ok_or("no pane")?;
-        for (name, _) in s.pane_json(pane, &mut fux_wire::wire::Budget::new())? {
+        for (name, _) in s.pane_json(pane)? {
             let named = include_str!("../../docs/json.md").contains(&format!("`{name}`"));
             assert!(named, "docs/json.md does not name a pane's {name:?}");
         }

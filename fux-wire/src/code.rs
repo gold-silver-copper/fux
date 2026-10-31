@@ -188,7 +188,7 @@ codes! {
     /// `resize-pane` the layout cannot give; a tab resized, a
     /// split or a pane moved where its tab's panes would not all show.
     Size "size",
-    /// Memory for a client capture's render grid was refused.
+    /// The OS refused memory for what was asked.
     Memory "memory",
     /// A mouse event the pane's program does not ask for.
     Mouse "mouse",

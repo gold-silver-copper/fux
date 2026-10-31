@@ -8,13 +8,8 @@ use crate::session::{self, Session};
 use crate::view::{Mode, Notice};
 use fux_vt::{Row, RowId, Screen};
 use fux_wire::act::{CopyAct, Hint, Seek};
-use fux_wire::code::{Code, Error};
+use fux_wire::code::Error;
 use fux_wire::id::{ClientId, PaneId};
-
-/// The most cells one copy takes.
-pub const MAX_CELLS: usize = 262_144;
-/// The largest OSC 52 payload, encoded.
-pub const MAX_CLIPBOARD: usize = 1 << 20;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Select {
@@ -161,10 +156,6 @@ impl Copy {
         }
     }
 }
-
-/// The most bytes a search holds: the line its client types it in
-/// (`screens`) holds no more, and one longer is refused.
-pub const SEARCH_MAX: usize = 1024;
 
 /// What copy mode's bar says it is doing: a label, or the search being
 /// typed after its prompt, which the bar scrolls as a prompt's line.
@@ -403,10 +394,9 @@ pub fn text(
     kind: Select,
     start: Place<'_>,
     end: Place<'_>,
-) -> Result<String, Error> {
+) -> String {
     let cols = screen.size().cols();
     let mut out = String::new();
-    let mut cells = 0usize;
     let (left, right) = (start.1.min(end.1), start.1.max(end.1));
     let (first, last) = (start.0.index(), end.0.index());
     let rows = std::iter::successors(Some(start.0), Row::below);
@@ -424,14 +414,6 @@ pub fn text(
             Select::Line => (0, cols.saturating_sub(1)),
             Select::Block => (left, right),
         };
-        // Refused long before it could saturate.
-        cells = cells.saturating_add(usize::from(to.saturating_sub(from)).saturating_add(1));
-        if cells > MAX_CELLS {
-            return Err(Error::Failed {
-                code: Code::Selection,
-                message: format!("the selection is larger than {MAX_CELLS} cells"),
-            });
-        }
         let copied = row.copied(usize::from(from), usize::from(to));
         let line: String = copied.map(|(_, glyph)| glyph).collect();
         let joined = kind != Select::Block && row.continues() && index < last;
@@ -444,7 +426,7 @@ pub fn text(
             }
         }
     }
-    Ok(out)
+    out
 }
 
 // ------------------------------------------------------------------- keys
@@ -514,11 +496,9 @@ fn leave(session: &mut Session, client: ClientId) {
     }
 }
 
-/// `text` as a search: no control characters; none past `SEARCH_MAX`
-/// bytes, which no client's line holds.
-fn clean(text: &str) -> Option<String> {
-    let text: String = text.chars().filter(|c| !c.is_control()).collect();
-    (text.len() <= SEARCH_MAX).then_some(text)
+/// `text` as a search: no control characters.
+fn clean(text: &str) -> String {
+    text.chars().filter(|c| !c.is_control()).collect()
 }
 
 /// An action in copy mode, its keys the client's (`keymap::Modes::copy`).
@@ -570,19 +550,12 @@ pub fn act(session: &mut Session, client: ClientId, act: CopyAct) {
         CopyAct::Enter { .. } => return,
         // The search line the client types, shown; the search it asks for.
         CopyAct::Typing(line) => {
-            copy.typing = line.and_then(|(seek, before, after)| {
-                let (before, after) = (clean(&before)?, clean(&after)?);
-                (before.len().saturating_add(after.len()) <= SEARCH_MAX)
-                    .then_some((seek, before, after))
-            });
+            copy.typing = line.map(|(seek, before, after)| (seek, clean(&before), clean(&after)));
             return;
         }
         CopyAct::Find { query, seek } => {
             copy.typing = None;
-            let Some(query) = clean(&query) else {
-                view.notify(format!("a search is at most {SEARCH_MAX} bytes"), true);
-                return;
-            };
+            let query = clean(&query);
             if !query.is_empty() {
                 let search = Search { query, seek };
                 jump(copy, screen, height, at, &search, &mut view.notice);
@@ -663,9 +636,7 @@ pub fn act(session: &mut Session, client: ClientId, act: CopyAct) {
         }
         CopyAct::Yank => {
             let copied = match at.ends() {
-                Some((kind, start, end)) => {
-                    text(screen, kind, start, end).map_err(|e| e.to_string())
-                }
+                Some((kind, start, end)) => Ok(text(screen, kind, start, end)),
                 None => Err("nothing selected: start a selection before copying".to_owned()),
             };
             yank(session, client, copied);
@@ -751,7 +722,7 @@ fn yank(session: &mut Session, client: ClientId, copied: Result<String, String>)
         }
     };
     let characters = copied.chars().count();
-    let mut note = format!(
+    let note = format!(
         "copied {characters} character{}",
         if characters == 1 { "" } else { "s" }
     );
@@ -765,12 +736,7 @@ fn yank(session: &mut Session, client: ClientId, copied: Result<String, String>)
     let result = session.copied(copied, pane, &[client]);
     leave(session, client);
     match result {
-        Ok(fits) => {
-            if !fits {
-                note.push_str(" to a paste buffer; too large for the clipboard");
-            }
-            session.notify_to(client, note, false);
-        }
+        Ok(()) => session.notify_to(client, note, false),
         Err(why) => session.notify_to(client, why.to_string(), true),
     }
 }

@@ -1,7 +1,7 @@
 //! Bounded journal invalidations, read as finite cursor batches
 //! (`fux_wire::events`). A later snapshot may see newer state; events do not
 //! replicate live OS facts.
-use crate::pane::{End, Left, NOTIFICATION_MAX, Said, TITLE_MAX};
+use crate::pane::{End, Left, Said};
 use fux_wire::command::{AnyRef, Run};
 use fux_wire::events::{Actor, Batch, Cursor, Item, Seq, Status};
 use fux_wire::id::{BufferId, ClientId, PaneId, TabId, WsId};
@@ -9,9 +9,9 @@ use fux_wire::inspect::Scope;
 use fux_wire::json::Json;
 use std::collections::VecDeque;
 
+/// The events the journal keeps: a reader further behind is told how many
+/// it missed.
 pub const KEPT: usize = 1 << 14;
-pub const BATCH_EVENTS: usize = 64;
-pub const BATCH_SCAN: usize = 256;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ViewChange {
@@ -70,9 +70,7 @@ impl Journal {
         };
         let seq = self.next;
         self.next = Seq(next);
-        // Payloads are compact clones: names <= 256 bytes, titles <= 256
-        // chars, notifications <= 500 chars (2,000 UTF-8 bytes). Evict first
-        // so a full ring never grows. See docs/json.md for storage overhead.
+        // Evict first so a full ring never grows.
         if self.entries.len() == KEPT {
             self.entries.pop_front();
         }
@@ -189,8 +187,8 @@ pub enum Told {
     /// that one left.
     Respawned(Left),
     Bell,
-    Notification(Said<NOTIFICATION_MAX>),
-    Title(Said<TITLE_MAX>),
+    Notification(Said),
+    Title(Said),
     /// A shell command ended, with its status if it is known.
     Done(Option<i32>),
     Resized(fux_vt::Size),
@@ -487,16 +485,9 @@ impl Reader {
             }
         }
     }
+    /// Every event it wants from its cursor to the journal's end, or to
+    /// the event that ends what it reads.
     pub fn batch(&mut self, journal: &Journal, exists: bool) -> Result<Batch, String> {
-        self.scan(journal, exists, BATCH_SCAN)
-            .map(|(batch, _)| batch)
-    }
-    fn scan(
-        &mut self,
-        journal: &Journal,
-        exists: bool,
-        limit: usize,
-    ) -> Result<(Batch, usize), String> {
         if journal.exhausted {
             return Err("journal cursor IDs exhausted".into());
         }
@@ -505,11 +496,7 @@ impl Reader {
         let mut events = Vec::new();
         let mut gone = false;
         let mut entries = entries;
-        let mut scanned = 0usize;
-        for _ in 0..limit {
-            if events.len() == BATCH_EVENTS {
-                break;
-            }
+        loop {
             let Some(entry) = entries.next() else {
                 missed = missed.saturating_add(journal.next.0.saturating_sub(self.next.seq.0));
                 self.next.seq = journal.next;
@@ -551,7 +538,6 @@ impl Reader {
                 value = Some(item);
             }
             self.next.seq = Seq(entry.seq.0.saturating_add(1));
-            scanned = scanned.saturating_add(1);
             events.extend(value);
             if self.ends(&entry.event) {
                 gone = true;
@@ -559,19 +545,16 @@ impl Reader {
             }
         }
         let caught_up = self.next == journal.end(self.next.run);
-        Ok((
-            Batch {
-                events,
-                next: self.next,
-                missed,
-                status: if gone || caught_up && !exists {
-                    Status::Gone
-                } else {
-                    Status::Continuing
-                },
+        Ok(Batch {
+            events,
+            next: self.next,
+            missed,
+            status: if gone || caught_up && !exists {
+                Status::Gone
+            } else {
+                Status::Continuing
             },
-            scanned,
-        ))
+        })
     }
     #[cfg(test)]
     pub(crate) fn lines(
@@ -606,27 +589,19 @@ impl Reader {
 /// A pending finite read, owned by its requesting connection.
 pub struct Read {
     reader: Reader,
-    scanned: usize,
     pub deadline: std::time::Instant,
 }
 
 fn reply(batch: Result<Batch, String>) -> fux_wire::protocol::Reply {
     match batch {
         Ok(batch) => fux_wire::protocol::Body::Events(Box::new(batch)).into(),
-        Err(why) => fux_wire::protocol::Reply::failed(
-            fux_wire::code::Code::from(fux_wire::code::Raise::TooLong),
-            why,
-        ),
+        Err(why) => fux_wire::protocol::Reply::failed(fux_wire::code::Code::IdsExhausted, why),
     }
 }
 
 impl Read {
     pub fn new(reader: Reader, deadline: std::time::Instant) -> Self {
-        Self {
-            reader,
-            scanned: 0,
-            deadline,
-        }
+        Self { reader, deadline }
     }
     pub fn answer(
         &mut self,
@@ -649,18 +624,15 @@ impl Read {
         if reader.next == journal.end(session.run) && exists && now < self.deadline {
             return None;
         }
-        let (mut batch, scanned) =
-            match reader.scan(journal, exists, BATCH_SCAN.saturating_sub(self.scanned)) {
-                Ok(batch) => batch,
-                Err(why) => return Some(reply(Err(why))),
-            };
-        self.scanned = self.scanned.saturating_add(scanned);
+        let mut batch = match reader.batch(journal, exists) {
+            Ok(batch) => batch,
+            Err(why) => return Some(reply(Err(why))),
+        };
         if batch.events.is_empty() && batch.missed == 0 && batch.status == Status::Continuing {
-            if now >= self.deadline {
-                batch.status = Status::Timeout;
-            } else if self.scanned < BATCH_SCAN {
+            if now < self.deadline {
                 return None;
             }
+            batch.status = Status::Timeout;
         }
         Some(reply(Ok(batch)))
     }
@@ -670,18 +642,10 @@ impl Read {
         reason: &str,
     ) -> fux_wire::protocol::Reply {
         let mut reader = self.reader;
-        reply(
-            reader
-                .scan(
-                    session.parts.journal(),
-                    true,
-                    BATCH_SCAN.saturating_sub(self.scanned),
-                )
-                .map(|(mut batch, _)| {
-                    batch.status = Status::Stopped(reason.to_owned());
-                    batch
-                }),
-        )
+        reply(reader.batch(session.parts.journal(), true).map(|mut batch| {
+            batch.status = Status::Stopped(reason.to_owned());
+            batch
+        }))
     }
 }
 

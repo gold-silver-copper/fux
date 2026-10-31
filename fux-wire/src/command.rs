@@ -29,24 +29,20 @@ impl Wire for ScrollLines {
 /// A finite decoder wait in milliseconds, bounded by its u16 representation.
 pub type DecodeMillis = Number<0, 65535>;
 
-/// The longest limit a wait may be given: a day.
-pub const MAX_WAIT: usize = 86_400;
-
-/// How long a wait waits before it times out: up to `MAX_WAIT` seconds, so its
-/// deadline is a time there is.
+/// How long a wait waits before it times out, in whole seconds.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Limit(u32);
 
 impl Limit {
-    /// `secs` seconds, if at most `MAX_WAIT`.
-    pub fn secs(secs: u64) -> Option<Limit> {
-        let within = |s: &u32| usize::try_from(*s).is_ok_and(|s| s <= MAX_WAIT);
-        u32::try_from(secs).ok().filter(within).map(Limit)
+    pub fn from_secs(secs: u32) -> Limit {
+        Limit(secs)
     }
 
-    /// `secs` seconds, or why not.
+    /// `secs` seconds, or why not: past what the wire's 32 bits hold.
     pub fn read(secs: u64) -> Result<Limit, String> {
-        Limit::secs(secs).ok_or_else(|| format!("{secs} s: a wait's limit is at most {MAX_WAIT} s"))
+        u32::try_from(secs)
+            .map(Limit)
+            .map_err(|_| format!("{secs} s: a wait's limit is at most {} s", u32::MAX))
     }
 
     pub fn duration(self) -> Duration {
@@ -125,17 +121,6 @@ impl Program {
             n.saturating_add(4).saturating_add(word.len())
         });
         frame <= crate::protocol::MAX_PAYLOAD
-    }
-
-    pub fn heap_bytes(&self) -> usize {
-        self.args.iter().fold(
-            self.program.capacity().saturating_add(
-                self.args
-                    .capacity()
-                    .saturating_mul(std::mem::size_of::<String>()),
-            ),
-            |bytes, arg| bytes.saturating_add(arg.capacity()),
-        )
     }
 
     pub fn iter(&self) -> impl Iterator<Item = &str> {
@@ -357,27 +342,17 @@ wire! {
     }
 }
 
-/// The most rows, and columns, a client's view has.
-pub const MOST: u16 = 4096;
-
 /// `rows` by `cols`, if a client's view, and so a screen a tab is laid out
-/// on, can be that size: 1 to `MOST` each way; else `size`, from the word
-/// that gives one or the server alike.
+/// on, can be that size: at least 1 each way, and a grid fux-vt can make;
+/// else `size`, from the word that gives one or the server alike.
 pub fn size(rows: impl Into<i64>, cols: impl Into<i64>) -> Result<(u16, u16), crate::code::Error> {
-    let (rows, cols) = (rows.into(), cols.into());
-    let fits = |n: i64| u16::try_from(n).ok().filter(|n| (1..=MOST).contains(n));
-    match (fits(rows), fits(cols)) {
-        (Some(rows), Some(cols)) => Ok((rows, cols)),
-        (None, _) | (_, None) => Err(crate::code::fail(
-            crate::code::Raise::Size,
-            format!("{cols} columns by {rows} rows: a screen is 1 to {MOST} each way"),
-        )),
-    }
+    Screen::new(rows, cols).map(|s| (s.0.rows(), s.0.cols()))
 }
 
-/// A size a client's screen, and so a tab, may be: 1 to `MOST` rows and
-/// columns. Every size a request gives is one, so each size the server
-/// holds is one a dump writes (`COLS ROWS size`) and makes again.
+/// A size a client's screen, and so a tab, may be: at least 1 row and
+/// column, and a grid fux-vt can make. Every size a request gives is one,
+/// so each size the server holds is one a dump writes (`COLS ROWS size`)
+/// and makes again.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Screen(fux_vt::Size);
 crate::wire::shaped!(struct Screen(size: fux_vt::Size));
@@ -385,10 +360,18 @@ crate::wire::shaped!(struct Screen(size: fux_vt::Size));
 impl Screen {
     /// `rows` by `cols`, if a screen can be that size; else why not.
     pub fn new(rows: impl Into<i64>, cols: impl Into<i64>) -> Result<Screen, crate::code::Error> {
-        let (rows, cols) = size(rows, cols)?;
-        fux_vt::Size::new(rows, cols)
-            .map(Screen)
-            .map_err(|e| crate::code::fail(crate::code::Raise::Size, e.to_string()))
+        let (rows, cols) = (rows.into(), cols.into());
+        let size = u16::try_from(rows)
+            .ok()
+            .zip(u16::try_from(cols).ok())
+            .and_then(|(rows, cols)| fux_vt::Size::new(rows, cols).ok())
+            .filter(|size| fux_vt::fits(*size));
+        size.map(Screen).ok_or_else(|| {
+            crate::code::fail(
+                crate::code::Raise::Size,
+                format!("{cols} columns by {rows} rows: no screen is that size"),
+            )
+        })
     }
     pub fn size(self) -> fux_vt::Size {
         self.0
@@ -1071,15 +1054,10 @@ pub struct EnvPatch(Vec<(String, Option<std::ffi::OsString>)>);
 crate::wire::shaped!(struct EnvPatch(entries: Vec<(String, Option<std::ffi::OsString>)>));
 
 impl EnvPatch {
-    /// The most distinct selected or explicit environment names in one launch.
-    pub const MAX_NAMES: usize = 1024;
     /// A distinct checked name, either set to bytes or explicitly unset.
     pub fn push(&mut self, name: String, value: Option<std::ffi::OsString>) -> Result<(), String> {
         use std::os::unix::ffi::OsStrExt;
         pane_var(&name)?;
-        if self.0.len() >= Self::MAX_NAMES {
-            return Err("environment patch exceeds 1024 names".to_owned());
-        }
         if self.0.iter().any(|(key, _)| key == &name) {
             return Err(format!("{name}: repeated environment name"));
         }
@@ -1096,40 +1074,19 @@ impl EnvPatch {
         self.0.push((name, value));
         Ok(())
     }
-    pub fn heap_bytes(&self) -> usize {
-        self.0.iter().fold(
-            self.0
-                .capacity()
-                .saturating_mul(std::mem::size_of::<(String, Option<std::ffi::OsString>)>()),
-            |bytes, (name, value)| {
-                bytes
-                    .saturating_add(name.capacity())
-                    .saturating_add(value.as_ref().map_or(0, std::ffi::OsString::capacity))
-            },
-        )
-    }
     pub fn as_slice(&self) -> &[(String, Option<std::ffi::OsString>)] {
         &self.0
     }
 
     /// Explicit operation values replace selected or saved values.
     pub fn overlay(&mut self, other: &Self) -> Result<(), String> {
-        let (names, bytes) = self
+        let bytes = self
             .0
             .iter()
             .filter(|(key, _)| !other.0.iter().any(|(k, _)| k == key))
-            .fold(
-                (other.0.len(), other.encoded_len()),
-                |(names, bytes), (k, v)| {
-                    (
-                        names.saturating_add(1),
-                        bytes.saturating_add(Self::entry_len(k, v)),
-                    )
-                },
-            );
-        if names > Self::MAX_NAMES {
-            return Err("environment patch exceeds 1024 names".to_owned());
-        }
+            .fold(other.encoded_len(), |bytes, (k, v)| {
+                bytes.saturating_add(Self::entry_len(k, v))
+            });
         if bytes > crate::protocol::MAX_PAYLOAD {
             return Err("environment patch exceeds the launch frame limit".to_owned());
         }

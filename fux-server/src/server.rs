@@ -62,13 +62,6 @@ const ACCEPTS: usize = 64;
 /// What a connection's buffers keep once they empty; beyond it, the memory
 /// a large frame or paint took is given back.
 const CONN_KEEP: usize = 64 * 1024;
-/// What may wait unwritten for an attached client, its generated paint
-/// aside, before the next addition detaches it. Checked before each
-/// complete addition, including every frame of a split clipboard copy:
-/// the queue holds one paint plus `OUT_MAX` plus one complete addition
-/// and its framing, then the final cursor restore and Exit. Closing
-/// accepts nothing more. A paint is made only once the queue empties.
-pub const OUT_MAX: usize = 4 << 20;
 /// How long a stopping server waits for its clients and processes.
 const STOP_WAIT: Duration = Duration::from_millis(500);
 /// A condition that persists is logged once, then at most this often.
@@ -269,22 +262,6 @@ impl PaintClock {
     }
 }
 
-/// A client detached because `waiting` bytes waited unwritten for it.
-struct Behind {
-    client: ClientId,
-    waiting: usize,
-}
-
-impl std::fmt::Display for Behind {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let (client, waiting) = (self.client, self.waiting);
-        write!(
-            f,
-            "{client} was detached: {waiting} bytes waited unwritten for it"
-        )
-    }
-}
-
 /// Writes `out` to `fd`, nonblocking, as far as it takes it; false if the
 /// write failed. The memory a large write took is given back.
 fn write_out(fd: impl std::os::fd::AsFd, out: &mut ByteQueue) -> bool {
@@ -349,11 +326,6 @@ impl Conn {
             paint: (0, 0),
             stage: Stage::Hello,
         }
-    }
-
-    /// What waits unwritten for the client, but for its paint.
-    fn backlog(&self) -> usize {
-        self.out.len().saturating_sub(self.paint.1)
     }
 
     /// Whether what the client sends is read: by its stage, and for a
@@ -442,7 +414,7 @@ impl Conn {
     /// as long as fit, then their end; and takes the next.
     fn answer(&mut self, session: &mut Session, mut reply: Reply, now: Instant) {
         reply.run = Some(session.run);
-        const REFUSED: &str = "finite reply exceeds its byte or allocation limit";
+        const REFUSED: &str = "the OS refused memory for the reply";
         // Keep the fixed failure frame available before trying the reply.
         if self
             .out
@@ -452,25 +424,12 @@ impl Conn {
             self.enter(session, Stage::Dead, now);
             return;
         }
-        let Ok(bytes) = fux_wire::wire::encode(&reply) else {
-            self.end(session, &ToCommand::Exit(REFUSED), now);
-            return;
-        };
+        let bytes = fux_wire::wire::encode(&reply);
         // Include every Part header and PartsEnd, before queuing any of it.
         let headers = bytes
             .len()
             .div_ceil(fux_wire::protocol::MAX_PAYLOAD)
             .checked_mul(5);
-        let queued = headers
-            .and_then(|n| n.checked_add(bytes.len()))
-            .and_then(|n| n.checked_add(5))
-            .and_then(|n| n.checked_add(self.out.len()));
-        if queued.is_none_or(|n| {
-            n > fux_wire::wire::MAX_REPLY.saturating_add(fux_wire::protocol::MAX_FRAME)
-        }) {
-            self.end(session, &ToCommand::Exit(REFUSED), now);
-            return;
-        }
         let reserve = headers
             .and_then(|n| n.checked_add(bytes.len()))
             .and_then(|n| n.checked_add(5));
@@ -493,23 +452,10 @@ impl Conn {
     }
 
     /// Sends the client attached here `frame`, an `Exit` as its last
-    /// frame. A client `OUT_MAX` behind is detached and told why.
-    fn tell(
-        &mut self,
-        session: &mut Session,
-        frame: &ToAttached,
-        now: Instant,
-    ) -> Result<(), Behind> {
-        let Some(client) = self.attached().map(|a| a.client) else {
-            return Ok(());
-        };
-        let waiting = self.backlog();
-        // A last frame lets the queue grow no more: it keeps its reason.
-        if waiting >= OUT_MAX && !matches!(frame, ToAttached::Exit(_)) {
-            let behind = Behind { client, waiting };
-            log!("{behind}");
-            self.end(session, &ToAttached::Exit(&behind.to_string()), now);
-            return Err(behind);
+    /// frame. A paint is made only once the queue empties.
+    fn tell(&mut self, session: &mut Session, frame: &ToAttached, now: Instant) {
+        if self.attached().is_none() {
+            return;
         }
         match frame {
             ToAttached::Paint(bytes) => Attached::paint(&mut self.out, bytes),
@@ -519,7 +465,6 @@ impl Conn {
             | ToAttached::Open(_)
             | ToAttached::Keys(_) => self.send(session, frame, now),
         }
-        Ok(())
     }
 
     /// Writes what waits for the client until it is all written or the
@@ -954,7 +899,7 @@ impl Server {
     /// Does what the session asks outside itself: sends its frames,
     /// then stops if it asks.
     fn deliver(&mut self, now: Instant) {
-        let _ = self.send_frames(now);
+        self.send_frames(now);
         let (stops, rest) = (mem::take(&mut self.session.outbox).into_iter())
             .partition(|o| matches!(o, Outgoing::Shutdown(_)));
         self.session.outbox = rest;
@@ -965,11 +910,9 @@ impl Server {
         }
     }
 
-    /// Sends the session's frames, detaching clients too far behind;
-    /// returns those an Open or Keys detached. A stop stays for `deliver`:
-    /// the answer that asked for it goes first.
-    fn send_frames(&mut self, now: Instant) -> Vec<Behind> {
-        let mut refused = Vec::new();
+    /// Sends the session's frames. A stop stays for `deliver`: the answer
+    /// that asked for it goes first.
+    fn send_frames(&mut self, now: Instant) {
         for outgoing in mem::take(&mut self.session.outbox) {
             let (client, frame) = match outgoing {
                 Outgoing::Shutdown(_) => {
@@ -978,14 +921,10 @@ impl Server {
                 }
                 Outgoing::To(client, frame) => (client, frame),
             };
-            if let Some(conn) = self.conns.iter_mut().find(|c| c.serves(client))
-                && let Err(no) = conn.tell(&mut self.session, &frame, now)
-                && matches!(frame, ToAttached::Open(_) | ToAttached::Keys(_))
-            {
-                refused.push(no);
+            if let Some(conn) = self.conns.iter_mut().find(|c| c.serves(client)) {
+                conn.tell(&mut self.session, &frame, now);
             }
         }
-        refused
     }
 
     /// Paints the client attached on connection `index`, whose paint is due.
@@ -1414,7 +1353,7 @@ impl Server {
             .iter()
             .any(|o| matches!(o, Outgoing::To(..)))
         {
-            let _ = self.send_frames(now);
+            self.send_frames(now);
         }
         match self.unprocessed(&asked) {
             Some(0) => self.request(
@@ -1494,19 +1433,14 @@ impl Server {
             None => cli,
         };
         let begun = self.session.begin(request, &origin, now);
-        // A program or keys that detach their recipient fail the request;
-        // conversation sent while settling preserves its actual outcome.
-        let refused = self.send_frames(now);
+        self.send_frames(now);
         let session = &mut self.session;
         let Some(conn) = self.conns.get_mut(index) else {
             return;
         };
-        match (refused.first(), begun) {
-            (Some(no), _) => {
-                conn.answer(session, Reply::failed(Code::NoClient, no.to_string()), now)
-            }
-            (None, Begun::Done(outcome)) => conn.answer(session, outcome, now),
-            (None, Begun::Waiting(waiting)) => conn.enter(session, Stage::Waiting(waiting), now),
+        match begun {
+            Begun::Done(outcome) => conn.answer(session, outcome, now),
+            Begun::Waiting(waiting) => conn.enter(session, Stage::Waiting(waiting), now),
         }
     }
 

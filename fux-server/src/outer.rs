@@ -150,19 +150,12 @@ pub struct Terminal {
 
 impl Terminal {
     /// Reports retain unknowns and even cell sizes refused for graphics.
-    pub(crate) fn facts(
-        &self,
-        budget: &mut fux_wire::wire::Budget,
-    ) -> Result<fux_wire::json::Json, fux_wire::code::Error> {
+    pub(crate) fn facts(&self) -> fux_wire::json::Json {
         use fux_wire::json::Json;
-        let cell = self
-            .said_cell
-            .map(|(width, height)| {
-                budget.object([("width", Json::int(width)), ("height", Json::int(height))])
-            })
-            .transpose()?
-            .unwrap_or(Json::Null);
-        budget.object([
+        let cell = self.said_cell.map_or(Json::Null, |(width, height)| {
+            Json::object(vec![("width", Json::int(width)), ("height", Json::int(height))])
+        });
+        Json::object(vec![
             ("sixel_reported", self.sixel.map_or(Json::Null, Json::Bool)),
             ("cell_reported", cell),
             (

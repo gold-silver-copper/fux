@@ -5,15 +5,12 @@
 use crate::command::{EnvPatch, Limit, Percent};
 use fux_vt::keys::mouse::MouseButton;
 use fux_vt::keys::{Direction, KeyPress};
-use fuxix::Allocation;
 use fuxix::process::Signal;
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
 
 /// Why bytes are not the value they should be.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Error {
-    /// A finite value exceeds its byte or allocation budget.
-    Limit,
     /// The bytes end before the value does.
     Truncated,
     /// A tag no variant has.
@@ -29,7 +26,6 @@ pub enum Error {
 impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Error::Limit => f.write_str("finite reply exceeds its byte or allocation limit"),
             Error::Truncated => f.write_str("the bytes end early"),
             Error::Tag(what, tag) => write!(f, "no {what} has tag {tag}"),
             Error::NotUtf8 => f.write_str("a text that is not UTF-8"),
@@ -42,28 +38,14 @@ impl std::fmt::Display for Error {
 impl std::error::Error for Error {}
 
 /// Bytes being read.
-pub struct Reader<'a>(&'a [u8], fuxth_core::Grant);
+pub struct Reader<'a>(&'a [u8]);
 
 impl<'a> Reader<'a> {
     pub fn new(bytes: &'a [u8]) -> Reader<'a> {
-        Reader(bytes, fuxth_core::Grant::new(MAX_ALLOCATED))
+        Reader(bytes)
     }
-    pub(crate) fn limited<T>(
-        &mut self,
-        bytes: usize,
-        read: impl FnOnce(&mut Self) -> Result<T, Error>,
-    ) -> Result<T, Error> {
-        let before = self.1.remaining();
-        let limit = before.min(bytes);
-        self.1 = fuxth_core::Grant::new(limit);
-        let result = read(self);
-        self.1 =
-            fuxth_core::Grant::new(before.saturating_sub(limit.saturating_sub(self.1.remaining())));
-        result
-    }
-    pub(crate) fn charge(&mut self, bytes: usize) -> Result<(), Error> {
-        self.1.charge(bytes).map_err(|_| Error::Limit)
-    }
+    /// A list: its count, then its items. Every item takes a byte at least,
+    /// so a count past the bytes left is refused before anything is made.
     pub(crate) fn list<T>(
         &mut self,
         mut read: impl FnMut(&mut Self) -> Result<T, Error>,
@@ -72,35 +54,11 @@ impl<'a> Reader<'a> {
         if count > self.0.len() {
             return Err(Error::Truncated);
         }
-        self.charge(
-            count
-                .checked_mul(std::mem::size_of::<T>())
-                .ok_or(Error::Limit)?,
-        )?;
-        let mut out = Vec::new();
-        out.try_reserve_exact(count).map_err(|_| Error::Limit)?;
+        let mut out = Vec::with_capacity(count);
         for _ in 0..count {
             out.push(read(self)?);
         }
         Ok(out)
-    }
-    pub(crate) fn bounded_list<T>(
-        &mut self,
-        max: usize,
-        read: impl FnMut(&mut Self) -> Result<T, Error>,
-    ) -> Result<Vec<T>, Error> {
-        let count = u32::get(&mut Reader::new(self.0))? as usize;
-        if count > max {
-            return Err(Error::Bad("list length"));
-        }
-        self.list(read)
-    }
-    pub(crate) fn bounded_text(&mut self, max: usize) -> Result<String, Error> {
-        let count = u32::get(&mut Reader::new(self.0))? as usize;
-        if count > max {
-            return Err(Error::Bad("text length"));
-        }
-        String::get(self)
     }
     fn take<const N: usize>(&mut self) -> Result<[u8; N], Error> {
         let (head, rest) = self.0.split_first_chunk().ok_or(Error::Truncated)?;
@@ -114,9 +72,6 @@ impl<'a> Reader<'a> {
     }
     /// The whole value: no bytes may follow.
     pub fn whole<T: Wire>(mut self) -> Result<T, Error> {
-        if self.0.len() > MAX_REPLY {
-            return Err(Error::Limit);
-        }
         let value = T::get(&mut self)?;
         self.0.is_empty().then_some(value).ok_or(Error::Trailing)
     }
@@ -128,119 +83,31 @@ pub trait Wire: Sized {
     fn get(r: &mut Reader<'_>) -> Result<Self, Error>;
 }
 
-/// The default-history styled capture measures 13.0 MB. The cap admits
-/// that observation, while bounding unfinished Part streams.
-pub const MAX_REPLY: usize = 32 << 20;
-/// Shared construction, decoding and rendering grant. The default styled
-/// capture peaks at 13,381,430 construction bytes, is charged 13,388,567
-/// on decode, and peaks at 25,528,285 during client rendering including
-/// its retained input. The grant admits all three phases.
-pub const MAX_ALLOCATED: usize = 128 << 20;
+/// fuxix's allocations, with no limit of fux's own: only the OS refuses
+/// one, as `memory`.
+pub struct Memory;
 
-/// Retained construction space, charged before cloning data or growing lists.
-pub struct Budget(fuxth_core::Grant);
-impl Budget {
-    pub fn new() -> Self {
-        Self::with_limit(MAX_ALLOCATED)
-    }
-    pub fn with_limit(bytes: usize) -> Self {
-        Self(fuxth_core::Grant::new(bytes))
-    }
-    pub fn format(&mut self, args: std::fmt::Arguments<'_>) -> Result<String, crate::code::Error> {
-        let mut out = String::new();
-        self.write(&mut out, args)?;
-        Ok(out)
-    }
-    pub fn optional_text(
-        &mut self,
-        text: Option<&str>,
-    ) -> Result<crate::json::Json, crate::code::Error> {
-        match text {
-            Some(text) => self.string(text).map(crate::json::Json::str),
-            None => Ok(crate::json::Json::Null),
-        }
-    }
-    /// Move a vector into admitted replacement slots while its old block lives.
-    pub fn map<T, U>(
-        &mut self,
-        input: Vec<T>,
-        mut map: impl FnMut(T, &mut Self) -> Result<U, crate::code::Error>,
-    ) -> Result<Vec<U>, crate::code::Error> {
-        let old = input
-            .capacity()
-            .checked_mul(std::mem::size_of::<T>())
-            .ok_or_else(Self::exceeded)?;
-        let mut out = self.vector(input.len())?;
-        for value in input {
-            out.push(map(value, self)?);
-        }
-        self.release(old)?;
-        Ok(out)
-    }
-
-    pub fn object<const N: usize>(
-        &mut self,
-        fields: [(&'static str, crate::json::Json); N],
-    ) -> Result<crate::json::Json, crate::code::Error> {
-        let mut out = self.vector(N)?;
-        for (key, value) in fields {
-            out.push((self.string(key)?, value));
-        }
-        Ok(crate::json::Json::Object(out))
-    }
-    pub fn fields(
-        &mut self,
-        fields: crate::json::Fields,
-    ) -> Result<Vec<(String, crate::json::Json)>, crate::code::Error> {
-        self.map(fields, |(key, value), budget| {
-            Ok((budget.string(key)?, value))
-        })
-    }
-    pub fn slots<T>(&mut self, count: usize) -> Result<(), crate::code::Error> {
-        self.charge(
-            count
-                .checked_mul(std::mem::size_of::<T>())
-                .ok_or_else(Self::exceeded)?,
-        )
-    }
-}
-impl Default for Budget {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl fuxix::Allocation for Budget {
+impl fuxix::Allocation for Memory {
     type Error = crate::code::Error;
     fn remaining(&self) -> usize {
-        self.0.remaining()
+        usize::MAX
     }
-    fn charge(&mut self, bytes: usize) -> Result<(), Self::Error> {
-        self.0.charge(bytes).map_err(|_| Self::exceeded())
+    fn charge(&mut self, _bytes: usize) -> Result<(), Self::Error> {
+        Ok(())
     }
-    fn release(&mut self, bytes: usize) -> Result<(), Self::Error> {
-        self.0.release(bytes).map_err(|_| Self::exceeded())
+    fn release(&mut self, _bytes: usize) -> Result<(), Self::Error> {
+        Ok(())
     }
     fn exceeded() -> Self::Error {
-        crate::code::fail(
-            crate::code::Raise::TooLong,
-            "finite reply exceeds its byte or allocation limit; request a smaller scope",
-        )
+        crate::code::fail(crate::code::Raise::Memory, "the OS refused memory")
     }
 }
 
-/// Where wire bytes go. Bounded encoders stop before reserving memory.
+/// Where wire bytes go.
 pub trait Sink {
-    /// Charge retained storage; true when only walking allocations.
-    fn storage(&mut self, _bytes: usize) -> bool {
-        false
-    }
     fn extend_from_slice(&mut self, bytes: &[u8]);
     fn push(&mut self, byte: u8) {
         self.extend_from_slice(&[byte]);
-    }
-    fn full(&self) -> bool {
-        false
     }
 }
 
@@ -250,92 +117,11 @@ impl Sink for Vec<u8> {
     }
 }
 
-/// Retained capacities follow the same fields as their wire encoding.
-/// Storage sinks skip scalar spellings and byte copies, and visit containers.
-pub fn retained(value: &impl Wire) -> usize {
-    struct Storage(usize);
-    impl Sink for Storage {
-        fn storage(&mut self, bytes: usize) -> bool {
-            self.0 = self.0.saturating_add(bytes);
-            true
-        }
-        fn extend_from_slice(&mut self, _: &[u8]) {}
-    }
-    let mut storage = Storage(0);
-    value.put(&mut storage);
-    storage.0
-}
-
-/// A fallible wire writer, or a count-only preflight of the same encoding.
-pub struct Writer {
-    bytes: Option<Vec<u8>>,
-    left: Option<usize>,
-}
-
-impl Writer {
-    pub fn counting(limit: usize) -> Self {
-        Self {
-            bytes: None,
-            left: Some(limit),
-        }
-    }
-    pub fn check_ref(&self) -> Result<(), Error> {
-        self.left.map(|_| ()).ok_or(Error::Limit)
-    }
-    pub fn check(self) -> Result<(), Error> {
-        self.check_ref()
-    }
-}
-
-impl Sink for Writer {
-    fn extend_from_slice(&mut self, bytes: &[u8]) {
-        self.left = self.left.and_then(|left| left.checked_sub(bytes.len()));
-        if self.left.is_some()
-            && let Some(out) = &mut self.bytes
-            && append(out, bytes).is_err()
-        {
-            self.left = None;
-        }
-    }
-    fn full(&self) -> bool {
-        self.left.is_none()
-    }
-}
-
-/// Admit a reply fragment before growing its accumulator. Reservations
-/// stop at the same cap as its length, including at the edge.
-pub fn append(out: &mut Vec<u8>, bytes: &[u8]) -> Result<(), Error> {
-    let needed = out.len().checked_add(bytes.len()).ok_or(Error::Limit)?;
-    if needed > MAX_REPLY {
-        return Err(Error::Limit);
-    }
-    if needed > out.capacity() {
-        let capacity = out.capacity().saturating_mul(2).max(needed).min(MAX_REPLY);
-        out.try_reserve_exact(capacity.saturating_sub(out.len()))
-            .map_err(|_| Error::Limit)?;
-    }
-    out.extend_from_slice(bytes);
-    Ok(())
-}
-
-/// Test a bounded encoding's size without constructing its byte vector.
-#[cfg(any(test, feature = "testing"))]
-pub fn size<T: Wire>(value: &T) -> Result<usize, Error> {
-    let mut out = Writer::counting(MAX_REPLY);
+/// A value's bytes.
+pub fn encode<T: Wire>(value: &T) -> Vec<u8> {
+    let mut out = Vec::new();
     value.put(&mut out);
-    out.check_ref()?;
-    Ok(MAX_REPLY.saturating_sub(out.left.ok_or(Error::Limit)?))
-}
-
-/// A finite reply's bytes, refused before a write exceeds the cap.
-pub fn encode<T: Wire>(value: &T) -> Result<Vec<u8>, Error> {
-    let mut out = Writer {
-        bytes: Some(Vec::new()),
-        left: Some(MAX_REPLY),
-    };
-    value.put(&mut out);
-    out.check_ref()?;
-    Ok(out.bytes.unwrap_or_default())
+    out
 }
 
 /// `int_wire!(u16, …)` expands to `impl Wire for u16` and so on: the
@@ -415,9 +201,6 @@ impl Wire for bool {
 fn put_list<T: Wire>(items: &[T], out: &mut impl crate::wire::Sink) {
     u32::try_from(items.len()).unwrap_or(u32::MAX).put(out);
     for item in items {
-        if out.full() {
-            break;
-        }
         item.put(out);
     }
 }
@@ -429,19 +212,13 @@ fn put_bytes(bytes: &[u8], out: &mut impl Sink) {
 
 impl Wire for String {
     fn put(&self, out: &mut impl crate::wire::Sink) {
-        if !out.storage(self.capacity()) {
-            put_bytes(self.as_bytes(), out);
-        }
+        put_bytes(self.as_bytes(), out);
     }
     fn get(r: &mut Reader<'_>) -> Result<Self, Error> {
         let len = u32::get(r)? as usize;
         let bytes = r.bytes(len)?;
         let text = std::str::from_utf8(bytes).map_err(|_| Error::NotUtf8)?;
-        r.charge(len)?;
-        let mut out = String::new();
-        out.try_reserve_exact(len).map_err(|_| Error::Limit)?;
-        out.push_str(text);
-        Ok(out)
+        Ok(text.to_owned())
     }
 }
 
@@ -449,9 +226,7 @@ impl Wire for String {
 /// is any bytes, never made text.
 impl Wire for std::ffi::OsString {
     fn put(&self, out: &mut impl crate::wire::Sink) {
-        if !out.storage(self.capacity()) {
-            put_bytes(self.as_bytes(), out);
-        }
+        put_bytes(self.as_bytes(), out);
     }
     fn get(r: &mut Reader<'_>) -> Result<Self, Error> {
         Vec::get(r).map(Self::from_vec)
@@ -461,9 +236,7 @@ impl Wire for std::ffi::OsString {
 /// A path, as its bytes.
 impl Wire for std::path::PathBuf {
     fn put(&self, out: &mut impl crate::wire::Sink) {
-        if !out.storage(self.capacity()) {
-            put_bytes(self.as_os_str().as_bytes(), out);
-        }
+        put_bytes(self.as_os_str().as_bytes(), out);
     }
     fn get(r: &mut Reader<'_>) -> Result<Self, Error> {
         std::ffi::OsString::get(r).map(Self::from)
@@ -474,9 +247,7 @@ impl Wire for std::path::PathBuf {
 /// refused.
 impl Wire for EnvPatch {
     fn put(&self, out: &mut impl crate::wire::Sink) {
-        if !out.storage(self.heap_bytes()) {
-            put_list(self.as_slice(), out);
-        }
+        put_list(self.as_slice(), out);
     }
     fn get(r: &mut Reader<'_>) -> Result<Self, Error> {
         let mut env = EnvPatch::default();
@@ -509,7 +280,6 @@ impl<T: Wire> Wire for Option<T> {
 
 impl<T: Wire> Wire for Vec<T> {
     fn put(&self, out: &mut impl crate::wire::Sink) {
-        out.storage(self.capacity().saturating_mul(std::mem::size_of::<T>()));
         put_list(self, out);
     }
     fn get(r: &mut Reader<'_>) -> Result<Self, Error> {
@@ -523,11 +293,9 @@ impl<T: Wire> Wire for Vec<T> {
 
 impl<T: Wire> Wire for Box<T> {
     fn put(&self, out: &mut impl crate::wire::Sink) {
-        out.storage(std::mem::size_of::<T>());
         (**self).put(out);
     }
     fn get(r: &mut Reader<'_>) -> Result<Self, Error> {
-        r.charge(std::mem::size_of::<T>())?;
         T::get(r).map(Box::new)
     }
 }
@@ -550,10 +318,7 @@ macro_rules! text_wire {
     ($ty:ty, $sigil:literal) => {
         impl Wire for $ty {
             fn put(&self, out: &mut impl crate::wire::Sink) {
-                // A spelling is temporary, not retained storage.
-                if !out.storage(0) {
-                    self.to_string().put(out);
-                }
+                self.to_string().put(out);
             }
             /// Only the text `put` writes for the value: another
             /// spelling of it (`S-.` for `.`) would decode to a value
@@ -571,14 +336,13 @@ macro_rules! text_wire {
 text_wire!(KeyPress, "key");
 text_wire!(crate::code::Code, "code");
 
-/// Its seconds, read back only if a wait may wait that long.
+/// Its seconds.
 impl Wire for Limit {
     fn put(&self, out: &mut impl crate::wire::Sink) {
         self.seconds().put(out);
     }
     fn get(r: &mut Reader<'_>) -> Result<Self, Error> {
-        let secs = u32::get(r)?;
-        Limit::secs(u64::from(secs)).ok_or(Error::Bad("wait limit"))
+        u32::get(r).map(Limit::from_secs)
     }
 }
 
@@ -1021,64 +785,10 @@ mod tests {
     type TestResult = Result<(), Box<dyn std::error::Error>>;
 
     #[test]
-    fn finite_bytes_are_admitted_before_allocation() -> TestResult {
-        let mut bytes = vec![0; 22 << 20];
-        let mut writer = Writer::counting(MAX_REPLY);
-        writer.extend_from_slice(&bytes);
-        writer.check()?;
-        bytes.resize(MAX_REPLY, 0);
-        let capacity = bytes.capacity();
-        assert_eq!(append(&mut bytes, &[1]), Err(Error::Limit));
-        assert_eq!((bytes.len(), bytes.capacity()), (MAX_REPLY, capacity));
-        // String length alone pushes this value past the cap.
-        assert_eq!(
-            encode(&std::iter::repeat_n('x', MAX_REPLY).collect::<String>()),
-            Err(Error::Limit)
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn decoded_allocations_share_one_budget() -> TestResult {
-        let bytes = encode(&vec![vec!["abc".to_owned()]; 2])?;
-        let slots = 2usize
-            .saturating_mul(std::mem::size_of::<Vec<String>>())
-            .saturating_add(2usize.saturating_mul(std::mem::size_of::<String>()));
-        let mut reader = Reader::new(&bytes);
-        reader.1 = fuxth_core::Grant::new(slots.saturating_add(5));
-        assert_eq!(reader.whole::<Vec<Vec<String>>>(), Err(Error::Limit));
-        let bytes = [5, 0, 0, 0, 4, 0, 0, 0, 0]; // four JSON nulls
-        let mut reader = Reader::new(&bytes);
-        reader.1 = fuxth_core::Grant::new(std::mem::size_of::<crate::json::Json>());
-        assert_eq!(reader.whole::<crate::json::Json>(), Err(Error::Limit));
-        Ok(())
-    }
-
-    /// The default-history styled capture's reply decodes within a third
-    /// of the shared grant (`script`'s tests take it on from there).
-    #[test]
-    fn default_styled_capture_fits_the_wire_grant() -> TestResult {
-        let version: crate::command::Version =
-            "%1:0.0.0.0.0:1-1".parse().map_err(|()| "version")?;
-        let capture = crate::answer::Captured::default_styled(version);
-        let reply = crate::protocol::Reply {
-            run: Some(version.run),
-            ..crate::protocol::Body::Capture(Box::new(capture)).into()
-        };
-        let bytes = encode(&reply)?;
-        let mut reader = Reader::new(&bytes);
-        crate::protocol::Reply::get(&mut reader)?;
-        let charged = MAX_ALLOCATED.saturating_sub(reader.1.remaining());
-        // Three distinct copies of it fit the grant.
-        assert!(charged.saturating_mul(3) <= MAX_ALLOCATED, "{charged}");
-        Ok(())
-    }
-
-    #[test]
     fn closed_enums_go_on_the_wire_as_their_place() {
         fn each<T: Wire + PartialEq + std::fmt::Debug + Copy>(all: &[T]) {
             for (place, value) in all.iter().enumerate() {
-                let bytes = encode(value).unwrap_or_default();
+                let bytes = encode(value);
                 assert_eq!(bytes, [u8::try_from(place).unwrap_or(u8::MAX)], "{value:?}");
                 assert_eq!(T::get(&mut Reader::new(&bytes)).ok(), Some(*value));
             }
@@ -1092,15 +802,12 @@ mod tests {
 
     #[test]
     fn a_size_past_a_screens_is_refused_as_it_is_read() -> TestResult {
-        use crate::command::{MOST, Screen};
-        let most = Screen::new(MOST, MOST)?;
-        assert_eq!(
-            Screen::get(&mut Reader::new(&encode(&most).unwrap_or_default())).ok(),
-            Some(most)
-        );
-        assert!(fux_vt::fits(most.size()));
-        let past = fux_vt::Size::new(10, MOST.saturating_add(1))?;
-        assert!(Screen::get(&mut Reader::new(&encode(&past).unwrap_or_default())).is_err());
+        use crate::command::Screen;
+        let big = Screen::new(4096, 4096)?;
+        assert_eq!(Screen::get(&mut Reader::new(&encode(&big))).ok(), Some(big));
+        let past = fux_vt::Size::new(u16::MAX, u16::MAX)?;
+        assert!(!fux_vt::fits(past));
+        assert!(Screen::get(&mut Reader::new(&encode(&past))).is_err());
         Ok(())
     }
 
@@ -1121,24 +828,22 @@ mod tests {
 
     #[test]
     fn a_value_written_as_text_reads_back_only_from_that_text() {
-        let text = |t: &str| encode(&t.to_owned()).unwrap_or_default();
+        let text = |t: &str| encode(&t.to_owned());
         assert!(KeyPress::get(&mut Reader::new(&text("S-."))).is_err());
         let dot = KeyPress::get(&mut Reader::new(&text("."))).ok();
-        assert_eq!(dot.map(|k| encode(&k).unwrap_or_default()), Some(text(".")));
+        assert_eq!(dot.map(|k| encode(&k)), Some(text(".")));
     }
 
     #[test]
-    fn numeric_tokens_round_trip_without_a_decode_allocation() -> TestResult {
+    fn numeric_tokens_round_trip() -> TestResult {
         fn token<T: Wire + std::str::FromStr + std::fmt::Debug + PartialEq>(
             text: &str,
             size: usize,
         ) -> TestResult {
             let value: T = text.parse().map_err(|_| "token")?;
-            let bytes = encode(&value)?;
+            let bytes = encode(&value);
             assert_eq!(bytes.len(), size);
-            let mut reader = Reader::new(&bytes);
-            reader.1 = fuxth_core::Grant::new(0);
-            assert_eq!(reader.whole::<T>()?, value);
+            assert_eq!(Reader::new(&bytes).whole::<T>()?, value);
             Ok(())
         }
         token::<crate::id::PaneId>("%4294967295", 4)?;
@@ -1162,27 +867,15 @@ mod tests {
     fn numeric_tokens_keep_their_value_checks() -> TestResult {
         let run = "1-2".parse::<crate::command::Run>().map_err(|()| "run")?;
         assert_eq!(
-            Reader::new(&encode(&(run, 0u64))?).whole::<crate::id::BufferId>(),
+            Reader::new(&encode(&(run, 0u64))).whole::<crate::id::BufferId>(),
             Err(Error::Bad("buffer id"))
         );
-        let mut counts = encode(&crate::command::Counts::default())?;
+        let mut counts = encode(&crate::command::Counts::default());
         *counts.last_mut().ok_or("ended byte")? = 2;
         assert_eq!(
             Reader::new(&counts).whole::<crate::command::Counts>(),
             Err(Error::Tag("flag", 2))
         );
-        Ok(())
-    }
-
-    #[test]
-    fn storage_counts_retained_allocations_without_temporary_spellings() -> TestResult {
-        let key = "C-a".parse::<KeyPress>()?;
-        let code = crate::code::Code::Closed;
-        let text = String::with_capacity(37);
-        let capacity = text.capacity();
-        assert_eq!(retained(&(key, code, text)), capacity);
-        assert_eq!(encode(&key)?, encode(&"C-a".to_owned())?);
-        assert_eq!(encode(&code)?, encode(&"closed".to_owned())?);
         Ok(())
     }
 
@@ -1195,7 +888,7 @@ mod tests {
         )?;
         patch.push("ABSENT".into(), None)?;
         assert_eq!(
-            Reader::new(&encode(&patch)?).whole::<EnvPatch>(),
+            Reader::new(&encode(&patch)).whole::<EnvPatch>(),
             Ok(patch.clone())
         );
         for name in [
@@ -1209,19 +902,19 @@ mod tests {
         ] {
             for value in [None, Some(std::ffi::OsString::from("forged"))] {
                 assert!(patch.push(name.into(), value.clone()).is_err());
-                let bytes = encode(&vec![(name.to_owned(), value)])?;
+                let bytes = encode(&vec![(name.to_owned(), value)]);
                 assert!(Reader::new(&bytes).whole::<EnvPatch>().is_err(), "{name}");
             }
         }
         let duplicate = vec![("A".to_owned(), None::<std::ffi::OsString>); 2];
         assert!(
-            Reader::new(&encode(&duplicate)?)
+            Reader::new(&encode(&duplicate))
                 .whole::<EnvPatch>()
                 .is_err()
         );
         assert!(patch.push("A_1".into(), None).is_err());
         let nul = vec![("A".to_owned(), Some(std::ffi::OsString::from_vec(vec![0])))];
-        assert!(Reader::new(&encode(&nul)?).whole::<EnvPatch>().is_err());
+        assert!(Reader::new(&encode(&nul)).whole::<EnvPatch>().is_err());
         assert!(
             patch
                 .push("A".into(), nul.into_iter().next().and_then(|(_, v)| v))
@@ -1246,13 +939,13 @@ mod tests {
     fn argv_is_nonempty_and_checked_at_decode() -> TestResult {
         for (program, args) in [("", vec![]), ("/bin/sh", vec!["bad\0arg".to_owned()])] {
             assert!(Program::new(program.into(), args.clone()).is_err());
-            let mut bytes = encode(&program.to_owned())?;
+            let mut bytes = encode(&program.to_owned());
             args.put(&mut bytes);
             assert!(Reader::new(&bytes).whole::<Program>().is_err());
         }
         let program = Program::new("a program".into(), vec!["".into(), "an argument".into()])?;
         assert_eq!(
-            Reader::new(&encode(&program)?).whole::<Program>(),
+            Reader::new(&encode(&program)).whole::<Program>(),
             Ok(program)
         );
         Ok(())
@@ -1276,7 +969,7 @@ mod tests {
             env: EnvPatch::default(),
             shares: None,
         };
-        let read = Command::get(&mut Reader::new(&encode(&split).unwrap_or_default())).ok();
+        let read = Command::get(&mut Reader::new(&encode(&split))).ok();
         assert!(matches!(read, Some(Command::Split {
             cwd: Some(cwd), .. }) if cwd == dir));
         Ok(())
@@ -1298,7 +991,7 @@ mod tests {
             Reader::new(&invalid_scroll).whole::<crate::command::ScrollLines>(),
             Err(Error::Bad("scroll lines"))
         );
-        let encoded = encode(&policy)?;
+        let encoded = encode(&policy);
         assert_eq!(Reader::new(&encoded).whole::<PaneOptions>(), Ok(policy));
         let mut invalid = Vec::new();
         ((1usize << 30) + 1).put(&mut invalid);
@@ -1324,7 +1017,7 @@ mod tests {
         let read = |n: u8| Extent::get(&mut Reader::new(&[1, n])).ok();
         assert!(read(250).is_none() && read(0).is_none());
         assert_eq!(
-            read(100).map(|e| encode(&e).unwrap_or_default()),
+            read(100).map(|e| encode(&e)),
             Some(vec![1, 100])
         );
     }

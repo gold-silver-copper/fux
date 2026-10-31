@@ -888,9 +888,7 @@ fn cells(c: char) -> u16 {
 
 /// Display width of a string, as a pane prints it (`fux_vt::str_width`).
 pub fn width(text: &str) -> u16 {
-    u16::try_from(fux_vt::str_width(text))
-        .unwrap_or(u16::MAX)
-        .min(fux_wire::command::MOST)
+    u16::try_from(fux_vt::str_width(text)).unwrap_or(u16::MAX)
 }
 
 /// Cuts `text` to `cols` cells, preserving their measured boundaries.

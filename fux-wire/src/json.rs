@@ -2,7 +2,6 @@
 //! no type of its own (a pane's state, a field), rendered at
 //! the client. fux never reads JSON text.
 use crate::wire::{Error, Reader, Wire};
-use fuxix::Allocation;
 
 /// A JSON object's fields as they are built, in order.
 pub type Fields = Vec<(&'static str, Json)>;
@@ -26,17 +25,6 @@ pub enum Json {
 }
 
 impl Json {
-    pub fn weight(&self) -> u64 {
-        match self {
-            Self::String(s) => (s.len() as u64).max(1),
-            Self::Array(a) => a.iter().fold(1u64, |n, v| n.saturating_add(v.weight())),
-            Self::Object(a) => a.iter().fold(1u64, |n, (k, v)| {
-                n.saturating_add(k.len() as u64).saturating_add(v.weight())
-            }),
-            Self::Null | Self::Bool(_) | Self::Int(_) | Self::Uint(_) => 1,
-        }
-    }
-
     pub fn str(text: impl Into<String>) -> Json {
         Json::String(text.into())
     }
@@ -195,21 +183,6 @@ pub(crate) fn escaped(out: &mut dyn std::fmt::Write, text: &str) -> std::fmt::Re
         }
     }
     Ok(())
-}
-
-/// Count without allocating, then reserve the exact output beside its live
-/// input. The second pass writes into that admitted capacity only.
-pub fn render(
-    budget: &mut crate::wire::Budget,
-    mut write: impl FnMut(&mut dyn std::fmt::Write) -> std::fmt::Result,
-) -> Result<String, crate::code::Error> {
-    let mut count = fuxth_core::Render::new(budget.remaining());
-    write(&mut count).map_err(|_| crate::wire::Budget::exceeded())?;
-    budget.charge(count.bytes())?;
-    count.finish(
-        |out| write(out).map_err(|_| crate::wire::Budget::exceeded()),
-        crate::wire::Budget::exceeded,
-    )
 }
 
 /// Standard base64's alphabet, each character's place its value.

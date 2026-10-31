@@ -181,15 +181,7 @@ impl Session {
         write: impl FnOnce(&fux_vt::Screen, &mut Vec<u8>),
     ) -> bool {
         let why = match self.live_pane_mut(pane).map(|mut p| p.push_with(write)) {
-            Ok(Ok(())) => return false,
-            Ok(Err(crate::pane::Error::InputFull)) => {
-                let input = crate::pane::Losses {
-                    input: 1,
-                    ..Default::default()
-                };
-                input.told(pane, false).join("; ")
-            }
-            Ok(Err(refused)) => refused.to_string(),
+            Ok(()) => return false,
             Err(refused) => refused.to_string(),
         };
         self.notify_to(client, why, true);

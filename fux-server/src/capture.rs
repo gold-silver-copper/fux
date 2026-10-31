@@ -8,10 +8,7 @@ use fux_wire::answer::{Captured, Line, Of, Run, highlighted};
 use fux_wire::command::{CaptureView, Source};
 use fux_wire::id::ClientId;
 use fux_wire::json::Json;
-use fuxix::Allocation;
-
-/// Synthesized output work: at most two cells per admitted wire byte.
-pub const OUTPUT_CELLS: usize = 2 * fux_wire::wire::MAX_REPLY;
+use fux_wire::wire::Memory;
 
 /// A pane's screen, and `history` rows before it, as `view` asks, read
 /// once with its version and state; with `copy_mode`, that says a client
@@ -22,18 +19,6 @@ pub fn pane(
     history: Option<usize>,
     view: CaptureView,
     copy_mode: bool,
-) -> Result<Captured, fux_wire::code::Error> {
-    let limits = cell_limit(pane.history_bytes(), pane.screen().size().into())?;
-    pane_with(pane, run, history, view, copy_mode, limits)
-}
-
-fn pane_with(
-    pane: &Pane,
-    run: fux_wire::command::Run,
-    history: Option<usize>,
-    view: CaptureView,
-    copy_mode: bool,
-    limits: usize,
 ) -> Result<Captured, fux_wire::code::Error> {
     let screen = pane.screen();
     let (read, above) = rows_of(screen, history, view);
@@ -49,22 +34,21 @@ fn pane_with(
     let cursor = (live && screen.mode(Mode::ShowCursor)).then(|| screen.cursor_position());
     // Joined, a line some of whose rows `rows` takes is taken whole: the
     // range widened to the whole lines at its ends.
-    let selection = selected_rows(read, view, limits)?;
+    let selection = selected_rows(read, view);
     let read = rows_of(screen, history, view)
         .0
         .skip(selection.start)
         .take(selection.len());
-    let mut budget = fux_wire::wire::Budget::new();
-    let mut state = state(pane, copy_mode, &mut budget)?;
+    let mut state = state(pane, copy_mode)?;
     // The history rows kept above the first row read: history it was not
     // asked for (rows a range leaves out are not counted).
     state.push(("above", above.map_or(Json::Null, Json::count)));
     let of = Of::Pane {
         version: pane.version(run),
         wrap_pending: cursor.is_some() && screen.pending_wrap(),
-        state: budget.fields(state)?,
+        state: state.into_iter().map(|(k, v)| (k.to_owned(), v)).collect(),
     };
-    build(read, of, (screen.size().into(), cursor), view, &mut budget)
+    Ok(build(read, of, (screen.size().into(), cursor), view))
 }
 
 fn build<'a>(
@@ -72,8 +56,7 @@ fn build<'a>(
     of: Of,
     (size, cursor): ((u16, u16), Option<(u16, u16)>),
     view: CaptureView,
-    budget: &mut fux_wire::wire::Budget,
-) -> Result<Captured, fux_wire::code::Error> {
+) -> Captured {
     // A row starts a line unless the row before it continues on it.
     let joined = move |row: &Row<'_>| !view.wrapped && row.continues();
     let count = read
@@ -83,70 +66,50 @@ fn build<'a>(
         })
         .filter(|starts| *starts)
         .count();
-    let mut built = Builder::new(budget.vector(count)?, &of)?;
+    let mut built = Builder::new(Vec::with_capacity(count));
     let (mut open, mut into) = (false, false);
     for (row, span) in read {
         if open && !into {
-            built.finish(budget)?;
+            built.finish();
         }
         (open, into) = (true, joined(&row));
         for (text, style) in cells_of(row, span, view) {
-            built.add(text, style, view, budget)?;
+            built.add(text, style, view);
         }
     }
     if open {
-        built.finish(budget)?;
+        built.finish();
     }
     for _ in 0..if view.full { built.empty } else { 0 } {
-        built.push(Line::default(), budget)?;
+        built.lines.push(Line::default());
     }
     let (lines, styles) = (built.lines, built.table.styles);
-    captured(of, size, cursor, lines, styles, view, budget)
+    captured(of, size, cursor, lines, styles, view)
 }
 
-/// A capture being built: its lines, the styles they name, its empty
-/// lines held back (dropped at the end unless `full`) and the reply's
-/// bytes left; and the line being read, in room reused from line to line:
+/// A capture being built: its lines, the styles they name and its empty
+/// lines held back (dropped at the end unless `full`); and the line being read, in room reused from line to line:
 /// its text, its runs with their styles, and what trimming keeps of it,
 /// if any: its bytes, its runs, and its last run as kept.
 struct Builder {
     lines: Vec<Line>,
     table: Table,
     empty: usize,
-    wire: fux_wire::wire::Writer,
     text: String,
     runs: Vec<(Attributes, Run)>,
     kept: Option<(usize, usize, Run)>,
 }
 
 impl Builder {
-    fn new(lines: Vec<Line>, of: &Of) -> Result<Self, fux_wire::code::Error> {
-        let mut wire =
-            fux_wire::wire::Writer::counting(fux_wire::wire::MAX_REPLY.saturating_sub(64));
-        fux_wire::wire::Wire::put(of, &mut wire);
-        wire.check_ref().map_err(|_| too_large())?;
-        Ok(Builder {
+    fn new(lines: Vec<Line>) -> Self {
+        Builder {
             lines,
             table: Table::default(),
             empty: 0,
-            wire,
             text: String::new(),
             runs: Vec::new(),
             kept: None,
-        })
-    }
-
-    /// Add `line`, its bytes on the wire counted against the reply's.
-    fn push(
-        &mut self,
-        line: Line,
-        budget: &mut fux_wire::wire::Budget,
-    ) -> Result<(), fux_wire::code::Error> {
-        fux_wire::wire::Wire::put(&line, &mut self.wire);
-        self.wire.check_ref().map_err(|_| too_large())?;
-        budget.reserve(&mut self.lines, 1)?;
-        self.lines.push(line);
-        Ok(())
+        }
     }
 
     /// Add a cell's text in `style` to the line, in a new run if the style
@@ -161,18 +124,16 @@ impl Builder {
         text: &str,
         style: Attributes,
         view: CaptureView,
-        budget: &mut fux_wire::wire::Budget,
-    ) -> Result<(), fux_wire::code::Error> {
-        budget.text(&mut self.text, text)?;
+    ) {
+        self.text.push_str(text);
         if view.styles || view.marks {
             if self.runs.last().is_none_or(|(last, _)| *last != style) {
-                budget.reserve(&mut self.runs, 1)?;
                 self.runs.push((style, Run::default()));
             }
             if let Some((_, run)) = self.runs.last_mut() {
-                let more = u32::try_from(text.len()).map_err(|_| too_large())?;
-                run.bytes = run.bytes.checked_add(more).ok_or_else(too_large)?;
-                run.cells = run.cells.checked_add(1).ok_or_else(too_large)?;
+                let more = u32::try_from(text.len()).unwrap_or(u32::MAX);
+                run.bytes = run.bytes.saturating_add(more);
+                run.cells = run.cells.saturating_add(1);
             }
         }
         let blank = !view.full
@@ -182,36 +143,32 @@ impl Builder {
             let last = self.runs.last().map_or(Run::default(), |(_, run)| *run);
             self.kept = Some((self.text.len(), self.runs.len(), last));
         }
-        Ok(())
     }
 
     /// Copy what trimming keeps of the line into exactly its room, then
     /// empty it for the next.
-    fn finish(&mut self, budget: &mut fux_wire::wire::Budget) -> Result<(), fux_wire::code::Error> {
+    fn finish(&mut self) {
         if let Some((bytes, runs, last)) = self.kept.take() {
             for _ in 0..std::mem::take(&mut self.empty) {
-                self.push(Line::default(), budget)?;
+                self.lines.push(Line::default());
             }
             let mut kept = Line {
-                text: room(budget, bytes)?,
-                runs: budget.vector(runs)?,
+                text: self.text.get(..bytes).unwrap_or_default().to_owned(),
+                runs: Vec::with_capacity(runs),
             };
-            kept.text
-                .push_str(self.text.get(..bytes).ok_or_else(too_large)?);
             for (style, run) in self.runs.iter().take(runs) {
-                let style = self.table.place(*style, budget, &mut self.wire)?;
+                let style = self.table.place(*style);
                 kept.runs.push(Run { style, ..*run });
             }
             if let Some(run) = kept.runs.last_mut() {
                 (run.bytes, run.cells) = (last.bytes, last.cells);
             }
-            self.push(kept, budget)?;
+            self.lines.push(kept);
         } else {
             self.empty = self.empty.saturating_add(1);
         }
         self.text.clear();
         self.runs.clear();
-        Ok(())
     }
 }
 
@@ -257,17 +214,6 @@ fn cells_of<'a>(
         })
 }
 
-/// Room for exactly `bytes` of text, admitted first.
-fn room(
-    budget: &mut fux_wire::wire::Budget,
-    bytes: usize,
-) -> Result<String, fux_wire::code::Error> {
-    budget.charge(bytes)?;
-    let mut text = String::new();
-    text.try_reserve_exact(bytes).map_err(|_| too_large())?;
-    Ok(text)
-}
-
 /// A capture's styles, in the order first used, and their places, found
 /// by fux-vt's keyed hash so that a program can't choose styles that
 /// collide: each slot holds a style's place plus one, or 0 for none. At
@@ -279,43 +225,30 @@ struct Table {
 }
 
 impl Table {
-    /// The place of `style`, added if new: its bytes on the wire counted,
-    /// the room for it and, if a new style needs them, more slots
-    /// admitted before they grow.
-    fn place(
-        &mut self,
-        style: Attributes,
-        budget: &mut fux_wire::wire::Budget,
-        wire: &mut fux_wire::wire::Writer,
-    ) -> Result<u32, fux_wire::code::Error> {
+    /// The place of `style`, added if new, with more slots if a new
+    /// style needs them.
+    fn place(&mut self, style: Attributes) -> u32 {
         let mut at = self.slot(style);
         if let Some(place) = self.slots.get(at).and_then(|taken| taken.checked_sub(1)) {
-            return Ok(place);
+            return place;
         }
         if self.styles.len().saturating_add(1).saturating_mul(2) > self.slots.len() {
             let size = self.slots.len().saturating_mul(2).max(16);
-            let old = std::mem::replace(&mut self.slots, budget.vector(size)?);
-            self.slots.resize(size, 0);
+            self.slots = vec![0; size];
             for (place, style) in (1..).zip(&self.styles) {
                 let at = self.slot(*style);
                 if let Some(slot) = self.slots.get_mut(at) {
                     *slot = place;
                 }
             }
-            let bytes = old.capacity().saturating_mul(std::mem::size_of::<u32>());
-            drop(old);
-            budget.release(bytes)?;
             at = self.slot(style);
         }
-        fux_wire::wire::Wire::put(&style, wire);
-        wire.check_ref().map_err(|_| too_large())?;
-        budget.reserve(&mut self.styles, 1)?;
         self.styles.push(style);
-        let place = u32::try_from(self.styles.len()).map_err(|_| too_large())?;
+        let place = u32::try_from(self.styles.len()).unwrap_or(u32::MAX);
         if let Some(slot) = self.slots.get_mut(at) {
             *slot = place;
         }
-        Ok(place.saturating_sub(1))
+        place.saturating_sub(1)
     }
 
     /// The slot that holds `style`, or the empty one it would take.
@@ -341,69 +274,33 @@ impl Table {
 fn selected_rows<'a>(
     read: impl Iterator<Item = (Row<'a>, std::ops::Range<usize>)>,
     view: CaptureView,
-    limits: usize,
-) -> Result<std::ops::Range<usize>, fux_wire::code::Error> {
+) -> std::ops::Range<usize> {
     let (first, end) = view
         .rows
         .map_or((0, usize::MAX), |(a, b)| (usize::from(a), usize::from(b)));
     if first >= end {
-        return Ok(0..0);
+        return 0..0;
     }
     let skip = if view.wrapped { first } else { 0 };
     let read = read.skip(skip);
-    let mut cells = 0usize;
-    let mut line_cells = 0usize;
     let (mut start, mut count, mut line_start) = (skip, 0usize, 0usize);
-    for (index, (row, span)) in read.enumerate() {
-        // The VT bounds retained rows; this scan allocates no row vector.
-        let work = columns(row, span, view).len();
-        if view.wrapped {
-            cells = cells.checked_add(work).ok_or_else(too_large)?;
-        } else {
-            line_cells = line_cells.checked_add(work).ok_or_else(too_large)?;
-            if index >= first {
-                cells = line_cells;
-            }
-        }
-        if cells > limits {
-            return Err(too_large());
-        }
+    for (index, (row, _)) in read.enumerate() {
         if !view.wrapped && index <= first {
             start = line_start;
         }
-        let past = index
-            .checked_add(skip)
-            .ok_or_else(too_large)?
-            .saturating_add(1);
+        let past = index.saturating_add(skip).saturating_add(1);
         count = past.saturating_sub(start);
         if past >= end && (view.wrapped || !row.continues()) {
             break;
         }
         if !row.continues() {
             line_start = index.saturating_add(1);
-            if index < first {
-                line_cells = 0;
-            }
         }
     }
     if !view.wrapped && first >= start.saturating_add(count) {
         count = 0;
     }
-    Ok(start..start.saturating_add(count))
-}
-
-/// Stored history work follows its byte budget; live cells follow the
-/// screen. Synthesized blanks explicitly kept by full or joined views
-/// have at most two cells per output byte. All terms are admitted here.
-fn cell_limit(
-    history_bytes: usize,
-    (rows, cols): (u16, u16),
-) -> Result<usize, fux_wire::code::Error> {
-    usize::from(rows)
-        .checked_mul(usize::from(cols))
-        .and_then(|live| history_bytes.checked_mul(2)?.checked_add(live))
-        .and_then(|cells| cells.checked_add(OUTPUT_CELLS))
-        .ok_or_else(too_large)
+    start..start.saturating_add(count)
 }
 
 fn columns(
@@ -426,13 +323,6 @@ fn columns(
     });
     let first = span.start.saturating_add(skip).min(end);
     first..first.saturating_add(count).min(end)
-}
-
-fn too_large() -> fux_wire::code::Error {
-    fux_wire::code::fail(
-        fux_wire::code::Raise::TooLong,
-        "capture exceeds its cell, byte or allocation limit; request fewer history rows or a narrower wrapped range",
-    )
 }
 
 /// The rows a capture reads, each with the columns of it it reads: the
@@ -506,45 +396,27 @@ fn last_output(screen: &Screen) -> Option<(std::ops::Range<usize>, std::ops::Ran
 }
 
 /// What a client's terminal shows, row by row.
-pub fn client(
-    client: ClientId,
-    grid: &crate::render::Grid,
-) -> Result<Captured, fux_wire::code::Error> {
-    let mut budget = fux_wire::wire::Budget::new();
+pub fn client(client: ClientId, grid: &crate::render::Grid) -> Captured {
     let of = Of::Client(client);
-    let mut built = Builder::new(budget.vector(usize::from(grid.rows))?, &of)?;
+    let mut lines = Vec::with_capacity(usize::from(grid.rows));
     for y in 0..grid.rows {
-        let glyphs = || {
-            grid.row(y)
-                .filter(|cell| !cell.is_wide_continuation())
-                .map(|cell| cell.shown())
-        };
-        let bytes = glyphs().try_fold(0usize, |n, text| n.checked_add(text.len()));
-        let mut text = room(&mut budget, bytes.ok_or_else(too_large)?)?;
-        glyphs().for_each(|glyph| text.push_str(glyph));
-        while text.chars().next_back().is_some_and(char::is_whitespace) {
-            text.pop();
-        }
-        let line = Line {
+        let mut text: String = grid
+            .row(y)
+            .filter(|cell| !cell.is_wide_continuation())
+            .map(|cell| cell.shown())
+            .collect();
+        text.truncate(text.trim_end().len());
+        lines.push(Line {
             text,
             runs: Vec::new(),
-        };
-        built.push(line, &mut budget)?;
+        });
     }
     let view = CaptureView {
         full: true,
         ..CaptureView::default()
     };
     let size = (grid.rows, grid.cols);
-    captured(
-        of,
-        size,
-        grid.cursor,
-        built.lines,
-        Vec::new(),
-        view,
-        &mut budget,
-    )
+    captured(of, size, grid.cursor, lines, Vec::new(), view)
 }
 
 /// What is known of a pane's program, for `json`: its foreground program,
@@ -555,7 +427,6 @@ pub fn client(
 pub(crate) fn state(
     pane: &Pane,
     copy_mode: bool,
-    budget: &mut fux_wire::wire::Budget,
 ) -> Result<Vec<(&'static str, Json)>, fux_wire::code::Error> {
     let screen = pane.screen();
     let cell = screen.graphics().cell();
@@ -568,27 +439,20 @@ pub(crate) fn state(
     });
     let leader = group.filter(|pid| fuxix::process::exists(*pid));
     let program = leader
-        .map(|pid| fuxix::process::name(pid, budget))
+        .map(|pid| fuxix::process::name(pid, &mut Memory))
         .transpose()?
         .flatten();
-    let (launch_argv, argv) = arguments(&pane.runs, budget, |budget| {
-        leader
-            .map(|pid| fuxix::process::argv(pid, budget))
-            .transpose()
-            .map(Option::flatten)
-    })?;
+    let observed = leader
+        .map(|pid| fuxix::process::argv(pid, &mut Memory))
+        .transpose()?
+        .flatten();
+    let (launch_argv, argv) = arguments(&pane.runs, observed);
     let cwd = match leader
-        .map(|pid| fuxix::process::cwd_observed(pid, budget).map(|r| r.ok().flatten()))
+        .map(|pid| fuxix::process::cwd_observed(pid, &mut Memory).map(|r| r.ok().flatten()))
         .transpose()?
         .flatten()
     {
-        Some(path) => {
-            let text = fuxix::Allocation::lossy(budget, path.as_os_str().as_encoded_bytes())?;
-            let capacity = path.capacity();
-            drop(path);
-            budget.release(capacity)?;
-            Json::str(text)
-        }
+        Some(path) => Json::str(path.as_os_str().to_string_lossy()),
         None => Json::Null,
     };
     let last_status = screen.commands().last_status;
@@ -601,12 +465,7 @@ pub(crate) fn state(
     let hung_up = matches!(pane.process(), Process::HungUp(_));
     let mouse = screen.mouse_protocol_mode();
     let bracketed_paste = screen.mode(Mode::BracketedPaste);
-    let mut pictures = Vec::new();
-    for shown in screen.pictures() {
-        budget.reserve(&mut pictures, 1)?;
-        pictures.push(picture(shown, budget)?);
-    }
-    let pictures = Json::Array(pictures);
+    let pictures = Json::Array(screen.pictures().map(picture).collect());
     let notification = pane.alerts.last.as_ref();
     // The fields whose value the program sent more of than is kept.
     let cut = [
@@ -615,29 +474,24 @@ pub(crate) fn state(
         ("output", pane.left.output == crate::pane::Output::Cut),
     ];
     let truncated = cut.into_iter().filter(|(_, cut)| *cut);
-    let mut cut_fields = budget.vector(3)?;
-    for (field, _) in truncated {
-        cut_fields.push(Json::str(budget.string(field)?));
-    }
+    let cut_fields = truncated.map(|(field, _)| Json::str(field)).collect();
     let losses = pane.lost();
-    let lost = budget.object([
-        ("input", Json::uint(losses.input)),
-        ("replies", Json::uint(losses.replies)),
+    let lost = Json::object(vec![
         ("copies_cut", Json::uint(losses.copies_cut)),
         ("copies_not_text", Json::uint(losses.copies_not_text)),
         ("pictures", Json::uint(losses.pictures)),
         ("memory", Json::uint(losses.memory)),
-    ])?;
+    ]);
     let cell = match cell {
-        Some(cell) => budget.object([
+        Some(cell) => Json::object(vec![
             ("width", Json::int(cell.width())),
             ("height", Json::int(cell.height())),
-        ])?,
+        ]),
         None => Json::Null,
     };
-    let read_error = pane.read_error().map(|e| e.message(budget)).transpose()?;
+    let read_error = pane.read_error().map(|e| e.message(&mut Memory)).transpose()?;
     let values = [
-        ("title", Json::str(budget.string(pane.title().as_str())?)),
+        ("title", Json::str(pane.title().as_str())),
         ("program", program.map_or(Json::Null, Json::str)),
         (
             "foreground_group",
@@ -661,11 +515,11 @@ pub(crate) fn state(
             "mouse_mode",
             match mouse {
                 MouseProtocolMode::None => Json::Null,
-                MouseProtocolMode::Press => Json::str(budget.string("press")?),
-                MouseProtocolMode::PressRelease => Json::str(budget.string("press_release")?),
-                MouseProtocolMode::Highlight => Json::str(budget.string("highlight")?),
-                MouseProtocolMode::ButtonMotion => Json::str(budget.string("button_motion")?),
-                MouseProtocolMode::AnyMotion => Json::str(budget.string("any_motion")?),
+                MouseProtocolMode::Press => Json::str("press"),
+                MouseProtocolMode::PressRelease => Json::str("press_release"),
+                MouseProtocolMode::Highlight => Json::str("highlight"),
+                MouseProtocolMode::ButtonMotion => Json::str("button_motion"),
+                MouseProtocolMode::AnyMotion => Json::str("any_motion"),
             },
         ),
         ("bracketed_paste", Json::Bool(bracketed_paste)),
@@ -694,53 +548,31 @@ pub(crate) fn state(
         ("bells", Json::uint(pane.alerts.rung)),
         (
             "notification",
-            budget.optional_text(notification.map(|n| n.as_str()))?,
+            notification.map_or(Json::Null, |n| Json::str(n.as_str())),
         ),
         ("truncated", Json::Array(cut_fields)),
         ("input_unread", Json::count(pane.left.input)),
         ("cwd", cwd),
         ("argv", argv),
     ];
-    let mut fields = budget.vector(
-        values
-            .len()
-            .checked_add(1)
-            .ok_or_else(fux_wire::wire::Budget::exceeded)?,
-    )?;
+    let mut fields = Vec::with_capacity(values.len().saturating_add(1));
     fields.extend(values);
     Ok(fields)
 }
 
-fn arguments(
-    runs: &Runs,
-    budget: &mut fux_wire::wire::Budget,
-    observe: impl FnOnce(
-        &mut fux_wire::wire::Budget,
-    ) -> Result<Option<Vec<std::ffi::OsString>>, fux_wire::code::Error>,
-) -> Result<(Json, Json), fux_wire::code::Error> {
-    let argv = match observe(budget)? {
-        Some(words) => {
-            let bytes = fux_wire::wire::retained(&words);
-            let mut values = budget.vector(words.len())?;
-            for word in &words {
-                values.push(Json::str(fuxix::Allocation::lossy(
-                    budget,
-                    word.as_encoded_bytes(),
-                )?));
-            }
-            drop(words);
-            budget.release(bytes)?;
-            Json::Array(values)
-        }
+/// The words a pane's program was launched with, and those its foreground
+/// program has now, if observed.
+fn arguments(runs: &Runs, observed: Option<Vec<std::ffi::OsString>>) -> (Json, Json) {
+    let argv = match observed {
+        Some(words) => Json::Array(
+            (words.iter())
+                .map(|word| Json::str(word.to_string_lossy()))
+                .collect(),
+        ),
         None => Json::Null,
     };
-    let program = &runs.launch().argv;
-    let mut values = budget.vector(program.word_count())?;
-    for word in program.iter() {
-        values.push(Json::str(budget.string(word)?));
-    }
-    let launch = Json::Array(values);
-    Ok((launch, argv))
+    let launch = Json::Array(runs.launch().argv.iter().map(Json::str).collect());
+    (launch, argv)
 }
 
 /// Where a picture is, for `json`: its top row (negative once scrolled
@@ -748,11 +580,8 @@ fn arguments(
 /// that are gone (`cropped`: scrolled off a region's top or a screen's
 /// that keeps no history, the rest shown below them), and its size in
 /// pixels.
-fn picture(
-    shown: fux_vt::Shown<'_>,
-    budget: &mut fux_wire::wire::Budget,
-) -> Result<Json, fux_wire::code::Error> {
-    budget.object([
+fn picture(shown: fux_vt::Shown<'_>) -> Json {
+    Json::object(vec![
         ("row", Json::Int(shown.row)),
         ("col", Json::int(shown.col)),
         ("rows", Json::int(shown.rows)),
@@ -771,10 +600,8 @@ fn captured(
     lines: Vec<Line>,
     styles: Vec<Attributes>,
     view: CaptureView,
-    budget: &mut fux_wire::wire::Budget,
-) -> Result<Captured, fux_wire::code::Error> {
-    budget.slots::<Captured>(1)?;
-    Ok(Captured {
+) -> Captured {
+    Captured {
         of,
         screen_rows,
         screen_cols,
@@ -783,7 +610,7 @@ fn captured(
         styles,
         styled: view.styles,
         marks: view.marks,
-    })
+    }
 }
 
 /// A blank's style shows on the screen: a background colour, reverse
@@ -1236,12 +1063,12 @@ mod tests {
             &pane, run, None, view, false,
         )?));
         assert_eq!(
-            Reader::new(&encode(&body).unwrap_or_default()).whole::<fux_wire::protocol::Body>()?,
+            Reader::new(&encode(&body)).whole::<fux_wire::protocol::Body>()?,
             body
         );
         let deep = (0..40).fold(Json::Null, |inner, _| Json::Array(vec![inner]));
         assert!(
-            Reader::new(&encode(&deep).unwrap_or_default())
+            Reader::new(&encode(&deep))
                 .whole::<Json>()
                 .is_err()
         );

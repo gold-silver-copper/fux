@@ -722,7 +722,7 @@ mod tests {
             since: Since::Now(AnyRef::Pane("%1".parse()?)),
             timeout: Limit::read(0)?,
         };
-        let bytes = crate::wire::encode(&wait)?;
+        let bytes = crate::wire::encode(&wait);
         assert_eq!(Reader::new(&bytes).whole::<Wait>()?, wait);
         let prefix = bytes.get(..bytes.len().saturating_sub(4)).ok_or("limit")?;
         assert!(Reader::new(prefix).whole::<Wait>().is_err());
