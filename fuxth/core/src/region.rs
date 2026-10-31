@@ -69,6 +69,11 @@ impl Region {
         self.0.budget
     }
 
+    /// Whether `other` is this same budget: a clone of it, not one alike.
+    pub fn same(&self, other: &Region) -> bool {
+        Rc::ptr_eq(&self.0, &other.0)
+    }
+
     /// Bytes not yet reserved.
     pub fn remaining(&self) -> usize {
         self.0.left.remaining()

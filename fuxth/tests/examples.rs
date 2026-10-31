@@ -22,7 +22,7 @@ fn run(name: &str, text: &str) -> Ended {
         };
         Ended::Refused(e.code.name().to_owned(), line)
     };
-    let mut compiler = Compiler::new(Vocabulary::default());
+    let mut compiler = Compiler::new(Vocabulary::default(), &fuxth::Region::new(128 << 20));
     let compiled = token::source("stdlib.fux", STDLIB)
         .and_then(|tokens| compiler.add(&tokens))
         .and_then(|()| token::source(name, text))
@@ -32,7 +32,9 @@ fn run(name: &str, text: &str) -> Ended {
         Ok(program) => program,
         Err(e) => return refused(e),
     };
-    let mut machine = Machine::new(program, Limits::default());
+    let Ok(mut machine) = Machine::new(program, Limits::default()) else {
+        return Ended::Failed("too_long".to_owned());
+    };
     let mut host = Toy::default();
     match machine.run(&mut host, 50_000_000) {
         Ok(Outcome::Finished) => {
@@ -41,7 +43,7 @@ fn run(name: &str, text: &str) -> Ended {
                     machine
                         .stack()
                         .iter()
-                        .map(|v| v.text().unwrap_or_else(|f| f.message)),
+                        .map(|v| (v.text(machine.region())).map_or_else(|f| f.message, |t| t.to_string())),
                 )
                 .collect();
             Ended::Left(left.join(" "))

@@ -53,6 +53,16 @@ impl std::fmt::Display for Error {
 
 impl std::error::Error for Error {}
 
+/// A region that can't hold what a compile or a run asks, said nowhere in
+/// particular: `too_long`.
+impl From<crate::Refused> for Error {
+    #[cold]
+    fn from(refused: crate::Refused) -> Self {
+        let failure = crate::Failure::from(refused);
+        Self::new(failure.code, failure.message, None)
+    }
+}
+
 /// What a step takes, as a value of another kind is told it: the same
 /// words whether the checker finds it before the run or the machine during
 /// it.

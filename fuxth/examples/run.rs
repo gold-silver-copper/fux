@@ -26,7 +26,7 @@ impl Host for Bare {
         &mut self,
         _word: usize,
         _args: Args<'_, Nothing>,
-        _out: &mut Vec<Value<Nothing>>,
+        _out: &mut fuxth::BoundedVec<Value<Nothing>>,
     ) -> Result<Done<()>, Failure> {
         Err(Failure::new(
             fuxth::Code::Host("no_words"),
@@ -41,15 +41,18 @@ impl Host for Bare {
     }
 }
 
+/// The bytes a run may hold: its values, its stack and its literals.
+const RUN: usize = 128 << 20;
+
 /// Steps a program may take before it counts as endless.
 const STEPS: u64 = 100_000_000;
 
-fn shown(value: &Value<Nothing>) -> String {
+fn shown(value: &Value<Nothing>, region: &fuxth::Region) -> String {
     match value {
         Value::Int(n) => n.to_string(),
         Value::Bool(b) => b.to_string(),
         Value::Str(_) | Value::List(_) | Value::App(_) => {
-            value.text().unwrap_or_else(|f| f.message)
+            value.text(region).map_or_else(|f| f.message, |text| text.to_string())
         }
     }
 }
@@ -57,16 +60,16 @@ fn shown(value: &Value<Nothing>) -> String {
 fn run(path: &str) -> Result<Vec<String>, String> {
     let text = std::fs::read_to_string(path).map_err(|e| format!("read: {path}: {e}"))?;
     // This in-memory embedding deliberately supplies no require loader.
-    let mut compiler = Compiler::new(Vocabulary::default());
+    let mut compiler = Compiler::new(Vocabulary::default(), &fuxth::Region::new(RUN));
     let compiled = token::source("stdlib.fux", STDLIB)
         .and_then(|t| compiler.add(&t))
         .and_then(|()| token::source(path, &text))
         .and_then(|t| compiler.add(&t))
         .and_then(|()| compiler.finish());
     let program = compiled.map_err(|e| e.to_string())?;
-    let mut machine = Machine::new(program, Limits::default());
+    let mut machine = Machine::new(program, Limits::default()).map_err(|e| e.to_string())?;
     match machine.run(&mut Bare, STEPS) {
-        Ok(Outcome::Finished) => Ok(machine.stack().iter().map(shown).collect()),
+        Ok(Outcome::Finished) => Ok(machine.stack().iter().map(|v| shown(v, machine.region())).collect()),
         Ok(Outcome::Paused | Outcome::Suspended(())) => {
             // The innermost step of the program's own, not the library's.
             let ours = machine

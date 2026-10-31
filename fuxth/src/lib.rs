@@ -40,8 +40,8 @@
 mod check;
 mod compile;
 mod error;
-mod import;
 mod machine;
+mod shared;
 mod source;
 pub mod token;
 mod value;
@@ -53,7 +53,7 @@ pub use fuxth_core::{
     Bounded, BoundedString, BoundedVec, Code, Failure, Grant, LONGEST, NESTING, Refused, Region,
     Render, Reservation, Unbounded, bounded_only,
 };
-pub use import::{ImportLease, Imports, Shared};
+pub use shared::{Lease, Shared};
 pub use machine::{Args, Builtin, Done, Host, Limits, Machine, Outcome};
 pub use source::{Loader, SOURCE_MAX, Source, SourceImage, SourceLimits};
 pub use token::{Place, Token};

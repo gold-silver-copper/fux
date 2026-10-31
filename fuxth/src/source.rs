@@ -223,7 +223,7 @@ mod tests {
 
     #[test]
     fn a_compiler_without_a_loader_refuses_require_explicitly() -> Result<(), Error> {
-        let mut compiler = crate::Compiler::<()>::new(crate::Vocabulary::default());
+        let mut compiler = crate::Compiler::<()>::new(crate::Vocabulary::default(), &crate::Region::new(1 << 20));
         for (source, code) in [
             ("require file.fux", Code::Require),
             ("require", Code::MissingToken),

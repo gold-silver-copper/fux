@@ -17,10 +17,16 @@ use std::ops::{Deref, DerefMut};
 /// let region = fuxth_core::Region::new(0);
 /// let boxed = fuxth_core::Bounded::<Box<[u64; 32]>>::new(&region);
 /// ```
-#[derive(Debug)]
 pub struct Bounded<S> {
     store: S,
     held: Reservation,
+}
+
+/// Its store alone: what its region holds for it is the region's to tell.
+impl<S: fmt::Debug> fmt::Debug for Bounded<S> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.store.fmt(f)
+    }
 }
 
 /// A vector in a region.
@@ -171,6 +177,37 @@ impl<T> Bounded<Vec<T>> {
         Ok(())
     }
 
+    /// Each of `items`, room for as many as they say they are reserved
+    /// first.
+    pub fn extend(&mut self, items: impl IntoIterator<Item = T>) -> Result<(), Refused> {
+        let items = items.into_iter();
+        self.reserve(items.size_hint().0)?;
+        for item in items {
+            self.push(item)?;
+        }
+        Ok(())
+    }
+
+    /// `len` long: cut there, or `value` added till it is.
+    pub fn resize(&mut self, len: usize, value: T) -> Result<(), Refused>
+    where
+        T: Clone,
+    {
+        self.reserve(len.saturating_sub(self.len()))?;
+        self.store.resize(len, value);
+        Ok(())
+    }
+
+    /// A copy in the same region, exactly as long as it.
+    pub fn copy(&self) -> Result<Self, Refused>
+    where
+        T: Clone,
+    {
+        let mut copy = Self::with_capacity(self.region(), self.len())?;
+        copy.store.extend_from_slice(&self.store);
+        Ok(copy)
+    }
+
     pub fn pop(&mut self) -> Option<T> {
         self.store.pop()
     }
@@ -178,6 +215,10 @@ impl<T> Bounded<Vec<T>> {
     /// Drops the elements past `len`, keeping the capacity it holds.
     pub fn truncate(&mut self, len: usize) {
         self.store.truncate(len);
+    }
+
+    pub fn retain(&mut self, keep: impl FnMut(&T) -> bool) {
+        self.store.retain(keep);
     }
 
     pub fn clear(&mut self) {
@@ -199,6 +240,18 @@ impl<T> DerefMut for Bounded<Vec<T>> {
 }
 
 impl Bounded<String> {
+    /// `text`, in exactly its room in `region`.
+    pub fn of(region: &Region, text: &str) -> Result<Self, Refused> {
+        let mut made = Self::with_capacity(region, text.len())?;
+        made.store.push_str(text);
+        Ok(made)
+    }
+
+    /// A copy in the same region, in exactly its room.
+    pub fn copy(&self) -> Result<Self, Refused> {
+        Self::of(self.region(), self)
+    }
+
     pub fn push(&mut self, c: char) -> Result<(), Refused> {
         self.reserve(c.len_utf8())?;
         self.store.push(c);

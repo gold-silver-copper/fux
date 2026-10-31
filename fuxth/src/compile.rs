@@ -9,8 +9,8 @@
 //! `each … end` and `try … catch … end`. Control flow is compiled to jumps,
 //! its open blocks kept on a compile-time stack. Every other word takes and
 //! gives values on the stack, and nothing else.
-use crate::Code;
 use crate::error::Error;
+use crate::{Code, Region};
 use crate::machine::Builtin;
 use crate::token::Token;
 use crate::value::Value;
@@ -171,11 +171,14 @@ pub(crate) enum Op<A> {
     /// `try`: the stack from here is the body's; a failure of one of its
     /// codes (behind one pointer, so no step is larger for them) goes to
     /// its handler, the step given.
-    Try(usize, Rc<Vec<Code>>),
+    Try(usize, Codes),
     /// `catch`: the body went through; on past the handler, to the step
     /// given.
     Tried(usize),
 }
+
+/// The codes a `try` catches, shared by the step and the runs at it.
+pub(crate) type Codes = Rc<Vec<Code>>;
 
 /// Steps, each with the token it came from, and how many `let` names of
 /// its own a definition keeps.
@@ -234,7 +237,8 @@ impl<A> Steps<A> {
     }
 }
 
-/// A compiled program: its top level, and its definitions.
+/// A compiled program: its top level, its definitions, and the region its
+/// literals were made in, which its run is held by.
 #[derive(Clone, Debug)]
 pub struct Program<A> {
     pub(crate) main: Steps<A>,
@@ -242,6 +246,7 @@ pub struct Program<A> {
     pub(crate) words: Vec<Rc<Steps<A>>>,
     pub(crate) globals: usize,
     pub(crate) vocabulary: Rc<Vocabulary>,
+    pub(crate) region: Region,
 }
 
 impl<A> Program<A> {
@@ -299,6 +304,8 @@ struct Current<A> {
 #[derive(Clone)]
 pub struct Compiler<A> {
     vocabulary: Rc<Vocabulary>,
+    /// What its literals are made in, and the program's run held by.
+    region: Region,
     names: HashMap<Rc<str>, Entry>,
     main: Steps<A>,
     words: Vec<Rc<Steps<A>>>,
@@ -363,7 +370,9 @@ impl<A: Clone> Compiler<A> {
         Ok(())
     }
 
-    pub fn new(vocabulary: Vocabulary) -> Self {
+    /// A compiler whose literals are made in `region`, which the
+    /// program's run is held by too.
+    pub fn new(vocabulary: Vocabulary, region: &Region) -> Self {
         let mut names = HashMap::new();
         for (id, name) in vocabulary.names().enumerate() {
             names.insert(Rc::from(name), Entry::App(id));
@@ -373,6 +382,7 @@ impl<A: Clone> Compiler<A> {
         }
         Self {
             vocabulary: Rc::new(vocabulary),
+            region: region.clone(),
             names,
             main: Steps::new(),
             words: Vec::new(),
@@ -397,6 +407,18 @@ impl<A: Clone> Compiler<A> {
             Some(current) => &mut current.code,
             None => &mut self.main,
         }
+    }
+
+    /// What it compiles from here on makes its literals in `region`, which
+    /// the program's run is held by: a compiler cloned from a library's
+    /// gives each program a region of its own.
+    pub fn make_in(&mut self, region: &Region) {
+        self.region = region.clone();
+    }
+
+    /// The region what it compiles from here on is made in.
+    pub fn region(&self) -> &Region {
+        &self.region
     }
 
     /// Adds an immutable host argument without reading any of its text as code.
@@ -473,7 +495,11 @@ impl<A: Clone> Compiler<A> {
                 }
                 Some(Parsing::Str) => {
                     let next = tokens.next().ok_or_else(|| missing(token, "a string"))?;
-                    self.code().push(Op::Push(Value::str(&*next.text)), token);
+                    let made = Value::str(&self.region, &next.text);
+                    let text = made.map_err(|refused| {
+                        Error::new(Code::TooLong, crate::Failure::from(refused).message, Some(next))
+                    })?;
+                    self.code().push(Op::Push(text), token);
                     self.literal = true;
                 }
                 Some(Parsing::Define) => {
@@ -787,6 +813,7 @@ impl<A: Clone> Compiler<A> {
             words: self.words.clone(),
             globals: self.globals,
             vocabulary: Rc::clone(&self.vocabulary),
+            region: self.region.clone(),
         };
         crate::check::definitions(&program, &mut self.known, self.library);
     }
@@ -843,6 +870,7 @@ impl<A: Clone> Compiler<A> {
             words: self.words,
             globals: self.globals,
             vocabulary: self.vocabulary,
+            region: self.region,
         };
         crate::check::check(&program, self.known, self.library)?;
         Ok(program)
