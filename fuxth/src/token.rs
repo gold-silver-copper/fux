@@ -1,7 +1,8 @@
 //! Tokens: the words of a program, each with where it came from. A file is
 //! split as a shell splits a line, quotes and all; command-line arguments
 //! arrive split already, and stay one token each.
-use crate::error::{Code, Error};
+use crate::Code;
+use crate::error::Error;
 use std::ops::Range;
 use std::rc::Rc;
 use std::sync::Arc;

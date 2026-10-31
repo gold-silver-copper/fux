@@ -9,7 +9,8 @@
 //! `each … end` and `try … catch … end`. Control flow is compiled to jumps,
 //! its open blocks kept on a compile-time stack. Every other word takes and
 //! gives values on the stack, and nothing else.
-use crate::error::{Code, Error};
+use crate::Code;
+use crate::error::Error;
 use crate::machine::Builtin;
 use crate::token::Token;
 use crate::value::Value;

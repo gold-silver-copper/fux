@@ -1,0 +1,13 @@
+[package]
+name = "fuxth-core"
+version = "0.7.0"
+edition = "2024"
+rust-version = "1.95"
+license = "MIT"
+description = "What fuxth's hosts share without its interpreter: failure codes, allocation grants and value bounds"
+repository = "https://github.com/gold-silver-copper/fux"
+
+[dependencies]
+
+[lints]
+workspace = true
