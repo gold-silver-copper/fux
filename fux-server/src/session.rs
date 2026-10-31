@@ -271,9 +271,11 @@ struct Replacement {
     fresh: Pane,
     process: Process,
     /// The program it is respawned over, while what it left on its
-    /// terminal is still being read (`Session::read_left`): till its grace
-    /// is over, then it dies as a closed pane's does.
-    old: Option<Dying>,
+    /// terminal is still being read (`Session::read_left`).
+    old: Option<Child>,
+    /// When the old program's grace after the hangup ends: then it is
+    /// killed, and what it left is still read. `None` once it is.
+    grace: Option<Instant>,
     /// When it began: its turns are due from then, a frame the old program
     /// holds, with nothing else to read, read by one.
     since: Instant,
@@ -670,13 +672,12 @@ impl Session {
                 child.leader.closed();
                 child.leader.hang_up();
             }
-            let deadline = match exiting.is_none() || draining {
-                true => crate::after(now, GRACE),
-                false => now,
-            };
-            match deadline > now {
-                true => old = Some(Dying { child, deadline }),
-                false => self.dying.push(Dying { child, deadline }),
+            match exiting.is_none() || draining {
+                true => old = Some(child),
+                false => self.dying.push(Dying {
+                    child,
+                    deadline: now,
+                }),
             }
         }
         let started = fresh.version(self.run);
@@ -687,6 +688,7 @@ impl Session {
             fresh,
             process,
             old,
+            grace: Some(crate::after(now, GRACE)),
             since,
         };
         self.respawning.insert(id, new);
@@ -1738,7 +1740,7 @@ impl Session {
     pub fn children(&self) -> impl Iterator<Item = &Child> {
         let panes = (self.parts.panes().values()).filter_map(|p| p.process().child());
         let replacements = (self.respawning.values())
-            .flat_map(|r| (r.process.child().into_iter()).chain(r.old.as_ref().map(|d| &d.child)));
+            .flat_map(|r| (r.process.child().into_iter()).chain(r.old.as_ref()));
         (panes.chain(replacements)).chain(self.dying.iter().map(|d| &d.child))
     }
 
@@ -1802,6 +1804,10 @@ impl Session {
             return;
         };
         self.end(abandoned.process, true, now);
+        if let Some(child) = abandoned.old {
+            let deadline = abandoned.grace.unwrap_or(now);
+            self.dying.push(Dying { child, deadline });
+        }
         let told = format!("{id} closed while respawning: the program started for it was ended");
         for client in viewers {
             self.notify_to(*client, told.clone(), true);
@@ -1911,13 +1917,19 @@ impl Session {
         if !self.pane(id).is_ok_and(|p| p.draining) {
             return;
         }
+        // A program respawned over that outlives its grace is killed; what
+        // it left on its terminal is read on.
+        if let Some(r) = self.respawning.get_mut(&id)
+            && r.grace.is_some_and(|grace| grace <= now)
+        {
+            r.grace = None;
+            if let Some(old) = &r.old {
+                old.leader.kill();
+            }
+        }
         let old = self.respawning.get(&id).and_then(|r| r.old.as_ref());
         let respawned = old.is_some();
-        let child = match old {
-            // A program respawned over that outlives its grace is killed.
-            Some(dying) => (dying.deadline > now).then_some(&dying.child),
-            None => self.pane(id).ok().and_then(|p| p.process().child()),
-        };
+        let child = old.or_else(|| self.pane(id).ok().and_then(|p| p.process().child()));
         let (left, drain) = child.map_or((Vec::new(), Drain::Done), |child| {
             left_turn(|bytes| fuxix::io::read(&child.master, bytes))
         });
@@ -1936,8 +1948,11 @@ impl Session {
         if let Ok(mut pane) = self.pane_mut(id) {
             pane.drain(false);
         }
-        if let Some(old) = self.respawning.get_mut(&id).and_then(|r| r.old.take()) {
-            self.dying.push(old);
+        if let Some(r) = self.respawning.get_mut(&id)
+            && let Some(child) = r.old.take()
+        {
+            let deadline = r.grace.unwrap_or(now);
+            self.dying.push(Dying { child, deadline });
         }
     }
 
@@ -5701,6 +5716,12 @@ mod tests {
             return Err("answered before what was left was read".into());
         };
         assert_eq!(s.children().count(), 1, "the program started for it");
+        // The program it is respawned over, one that ignores the hangup,
+        // as a respawn holds it while what it left is still read.
+        let argv = ["/bin/sh", "-c", "trap '' HUP; exec sleep 60"].map(str::to_owned);
+        let old = process::spawn(&argv, Path::new("/"), (&[], &[]), (sized(4, 20)?, None))?;
+        let old_pid = old.leader.pid();
+        (s.respawning.get_mut(&id).ok_or("the respawn")?).old = Some(old);
         run(&mut s, "%2 kill")?;
         let answer = waiting.answer(&s, Instant::now()).ok_or("no answer")?;
         assert_eq!(
@@ -5714,8 +5735,80 @@ mod tests {
             .map(|n| n.text);
         let said = said.unwrap_or_default();
         assert!(said.starts_with("%2 closed while respawning"), "{said}");
-        assert_eq!(s.dying.len(), 1, "the program started for it, ended");
+        assert_eq!(
+            s.dying.len(),
+            2,
+            "the program started for it and the old, ended"
+        );
         reap(&mut s);
+        let mut gone = false;
+        for _ in 0..200 {
+            gone = process::reaped(old_pid);
+            if gone {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(gone, "the program respawned over still runs");
+        Ok(())
+    }
+
+    #[test]
+    fn what_a_program_respawned_over_left_is_read_past_its_grace() -> TestResult {
+        let mut s = started()?;
+        run(&mut s, "agent-opts 80 24 size str /bin/cat program new-tab")?;
+        let id = PaneId::of(2);
+        // One that ignores the hangup, with a title and a bell left unread
+        // on its terminal as its grace ends.
+        let code = "trap '' HUP; printf '\\033]2;late\\007\\007'; exec sleep 60";
+        let argv = ["/bin/sh", "-c", code].map(str::to_owned);
+        let old = process::spawn(&argv, Path::new("/"), (&[], &[]), (sized(24, 80)?, None))?;
+        std::thread::sleep(Duration::from_millis(200));
+        let now = Instant::now();
+        let pane = s.pane(id)?;
+        let fresh = Pane::new(
+            id,
+            None,
+            pane.runs.clone(),
+            pane.size(),
+            pane.options(),
+            now,
+        )?;
+        let mut pane = s.parts.pane_mut(id).ok_or("the pane")?;
+        if let Process::Reading(child) = pane.set_process(Process::Respawning) {
+            s.dying.push(Dying {
+                child,
+                deadline: now,
+            });
+        }
+        let mut pane = s.parts.pane_mut(id).ok_or("the pane")?;
+        pane.drain(true);
+        let new = Replacement {
+            actor: s.parts.journal().current_actor(),
+            fresh,
+            process: Process::Absent,
+            old: Some(old),
+            grace: Some(now),
+            since: now,
+        };
+        s.respawning.insert(id, new);
+        let lines = told(&mut s, |s| {
+            for _ in 0..100 {
+                if !s.respawning.contains_key(&id) {
+                    break;
+                }
+                s.fire(Timer::Unread(id), crate::after(Instant::now(), GRACE));
+            }
+        });
+        reap(&mut s);
+        let at = |what: &str| {
+            lines
+                .find(&format!(r#""{what}","pane":"%2""#))
+                .ok_or(lines.clone())
+        };
+        assert!(lines.contains(r#""title":"late""#), "{lines}");
+        assert!(at("title")? < at("respawned")?, "{lines}");
+        assert!(at("bell")? < at("respawned")?, "{lines}");
         Ok(())
     }
 

@@ -164,6 +164,14 @@ impl Leader {
     /// for `reaped` to reap once it has. Called after `hang_up` and a grace
     /// period, with the master closed.
     pub fn finish(self) -> Result<(), Pid> {
+        self.kill();
+        reaped(self.0).then_some(()).ok_or(self.0)
+    }
+
+    /// Kills its group and, if its pane is closed by fux, the rest of its
+    /// session, without reaping it: what they wrote to its terminal can
+    /// still be read.
+    pub fn kill(&self) {
         // Its pane closed by fux: as the hangup, every process left in its
         // session, a job in a group of its own that ignored the hangup
         // (`nohup cmd &`) too, found first. A program that ended by itself
@@ -174,7 +182,6 @@ impl Leader {
             (Vec::new(), Scan::Complete)
         };
         self.signal(session, Signal::Kill);
-        reaped(self.0).then_some(()).ok_or(self.0)
     }
 }
 
