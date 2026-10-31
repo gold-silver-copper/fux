@@ -700,7 +700,7 @@ impl Session {
         if let Ok(mut pane) = self.pane_mut(id) {
             pane.drain(true);
         }
-        self.read_left(id, now);
+        self.read_left(id, true, now);
         self.after_turn(id, now);
         Ok(acted(started))
     }
@@ -1878,7 +1878,7 @@ impl Session {
                 pane.exiting(ended);
                 pane.drain(true);
             }
-            self.read_left(id, now);
+            self.read_left(id, false, now);
         }
         self.read_with(id, |p| p.release_frame(now), now);
         let viewers = self.viewers(self.locate(id).map(|(_, tab)| tab));
@@ -1937,7 +1937,10 @@ impl Session {
     /// its next turns (`fire`), till its terminal is empty or closed. One
     /// that goes on writing there is read for as long as it does, a turn
     /// at a time, and holds up no other pane.
-    fn read_left(&mut self, id: PaneId, now: Instant) {
+    /// `empty_ends`: whether a turn that finds it empty ends that; the
+    /// read at an exit's first word does not, as the server's own read
+    /// may have just emptied it.
+    fn read_left(&mut self, id: PaneId, empty_ends: bool, now: Instant) {
         if !self.pane(id).is_ok_and(|p| p.draining) {
             return;
         }
@@ -1955,7 +1958,7 @@ impl Session {
         let old = old.or(self.leftover.get(&id));
         let own = old.is_none();
         let child = old.or_else(|| self.pane(id).ok().and_then(|p| p.process().child()));
-        let (left, drain) = child.map_or((Vec::new(), Drain::Done), |child| {
+        let (left, drain) = child.map_or((Vec::new(), Drain::Closed), |child| {
             left_turn(|bytes| fuxix::io::read(&child.master, bytes))
         });
         if !left.is_empty() {
@@ -1963,7 +1966,8 @@ impl Session {
         }
         match drain {
             Drain::More => return,
-            Drain::Done => {}
+            Drain::Empty if !empty_ends => return,
+            Drain::Empty | Drain::Closed => {}
             Drain::Failed(error) => {
                 if own && let Ok(mut pane) = self.pane_mut(id) {
                     pane.read_failed(error);
@@ -2019,7 +2023,7 @@ impl Session {
                     && self.pane(id).is_ok_and(|p| p.frame_deadline().is_some());
                 let left = self.pane(id).is_ok_and(|p| p.draining && !p.has_unread());
                 match left {
-                    true => self.read_left(id, now),
+                    true => self.read_left(id, true, now),
                     false => self.read_with(
                         id,
                         |p| match frame {
@@ -3267,10 +3271,14 @@ fn found(found: AnyRef) -> Reply {
 /// How a turn of reading what a program left on its terminal ended.
 #[derive(Debug, PartialEq, Eq)]
 enum Drain {
-    /// A turn's worth read: there may be more.
+    /// Some read: there may be more, which the next turn reads. A read
+    /// that finds nothing just after one that found some is no empty
+    /// terminal: a terminal is handed on a piece at a time.
     More,
-    /// The terminal is empty or closed.
-    Done,
+    /// Nothing to read as the turn began.
+    Empty,
+    /// The terminal is closed.
+    Closed,
     Failed(fuxix::Errno),
 }
 
@@ -3287,7 +3295,9 @@ fn left_turn(mut read: impl FnMut(&mut [u8]) -> Result<usize, fuxix::Errno>) -> 
         match read(bytes) {
             Ok(n) if n > 0 => left.extend_from_slice(bytes.get(..n).unwrap_or_default()),
             Err(fuxix::Errno::INTR) => {}
-            Ok(_) | Err(fuxix::Errno::AGAIN | fuxix::Errno::IO) => return (left, Drain::Done),
+            Err(fuxix::Errno::AGAIN) if !left.is_empty() => return (left, Drain::More),
+            Err(fuxix::Errno::AGAIN) => return (left, Drain::Empty),
+            Ok(_) | Err(fuxix::Errno::IO) => return (left, Drain::Closed),
             Err(error) => return (left, Drain::Failed(error)),
         }
     }
@@ -5258,7 +5268,8 @@ mod tests {
             turns = turns.saturating_add(1);
             match drain {
                 Drain::More => {}
-                Drain::Done => break,
+                Drain::Closed => break,
+                Drain::Empty => return Err("empty before its end".into()),
                 Drain::Failed(error) => return Err(error.into()),
             }
         }
@@ -5266,8 +5277,14 @@ mod tests {
         let null = std::fs::File::open("/dev/null")?;
         assert_eq!(
             left_turn(|bytes| fuxix::io::read(&null, bytes)),
-            (Vec::new(), Drain::Done)
+            (Vec::new(), Drain::Closed)
         );
+        // Found empty just after some was read, it may hold more: the next
+        // turn says; found empty as a turn begins, it is drained.
+        let mut reads = [Ok(1), Err(fuxix::Errno::AGAIN)].into_iter();
+        let mut read = |_: &mut [u8]| reads.next().unwrap_or(Err(fuxix::Errno::AGAIN));
+        assert_eq!(left_turn(&mut read), (vec![0], Drain::More));
+        assert_eq!(left_turn(&mut read), (Vec::new(), Drain::Empty));
         Ok(())
     }
 
@@ -5284,9 +5301,11 @@ mod tests {
             (left, end),
             (b"x".to_vec(), Drain::Failed(fuxix::Errno::INVAL))
         );
-        for end in [Ok(0), Err(fuxix::Errno::AGAIN), Err(fuxix::Errno::IO)] {
-            assert_eq!(left_turn(|_| end), (Vec::new(), Drain::Done));
+        for end in [Ok(0), Err(fuxix::Errno::IO)] {
+            assert_eq!(left_turn(|_| end), (Vec::new(), Drain::Closed));
         }
+        let empty = left_turn(|_| Err(fuxix::Errno::AGAIN));
+        assert_eq!(empty, (Vec::new(), Drain::Empty));
         let directory = std::fs::File::open(".")?;
         let (_, end) = left_turn(|bytes| fuxix::io::read(&directory, bytes));
         assert!(matches!(end, Drain::Failed(_)), "{end:?}");
@@ -5294,7 +5313,7 @@ mod tests {
         fuxix::io::set_nonblocking(&reader, true)?;
         assert_eq!(
             left_turn(|bytes| fuxix::io::read(&reader, bytes)),
-            (Vec::new(), Drain::Done)
+            (Vec::new(), Drain::Empty)
         );
         let (mut session, client) = attached(10, 40)?;
         let id = *session.parts.panes().keys().next().ok_or("pane")?;
@@ -6349,12 +6368,15 @@ mod tests {
         let told = exited(&s);
         let writing = matches!(fuxix::process::ended(writer), Ok(None));
         let status = output(&mut s, "%2 1 until-ended str exited get");
-        // Its terminal is read on, a turn at a time, others served between.
+        let screen = |s: &Session| s.pane(id).map(|p| p.version(s.run).counts.screen);
+        let at_exit = screen(&s)?;
+        // Its terminal is read on, a turn at a time, others served between:
+        // its screen's revision grows.
         for _ in 0..20 {
             s.fire_now(crate::session::Timer::Unread(id));
             run(&mut s, "%1 str x text send-keys")?;
         }
-        let read_on = s.leftover.contains_key(&id);
+        let read_on = s.leftover.contains_key(&id) && screen(&s)? > at_exit;
         // Once the writing stops, its terminal drained, the pane is frozen.
         let _ = fuxix::process::kill_group(writer, fuxix::process::Signal::Kill);
         let mut drained = 0u32;
@@ -6362,7 +6384,11 @@ mod tests {
             s.fire_now(crate::session::Timer::Unread(id));
             drained = drained.saturating_add(1);
         }
-        let frozen = !s.leftover.contains_key(&id);
+        let drained_at = screen(&s)?;
+        for _ in 0..20 {
+            s.fire_now(crate::session::Timer::Unread(id));
+        }
+        let frozen = !s.leftover.contains_key(&id) && screen(&s)? == drained_at;
         if let Some(child) = s.leftover.remove(&id) {
             s.dying.push(Dying {
                 child,
@@ -6381,6 +6407,39 @@ mod tests {
             frozen,
             "still read in {drained} turns once the writing stopped"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn an_empty_read_at_the_exit_leaves_the_next_turn_to_say_it_is_drained() -> TestResult {
+        let mut s = started()?;
+        run(
+            &mut s,
+            "agent-opts 80 24 size str /bin/true program new-tab",
+        )?;
+        let id = PaneId::of(2);
+        // Its terminal empty as the exit is told: the server's own read
+        // may just have emptied it.
+        let argv = ["/bin/sh", "-c", "trap '' HUP; exec sleep 60"].map(str::to_owned);
+        let child = process::spawn(&argv, Path::new("/"), (&[], &[]), (sized(4, 20)?, None))?;
+        let pid = child.leader.pid();
+        (s.parts.pane_mut(id).ok_or("the pane")?).set_process(Process::Reading(child));
+        s.end_program(id, Ended::Exited(0));
+        let told = s.pane(id)?.process().exit_status().is_some();
+        let read_on = s.leftover.contains_key(&id);
+        s.fire_now(Timer::Unread(id));
+        let frozen = !s.leftover.contains_key(&id);
+        let _ = fuxix::process::kill_group(pid, fuxix::process::Signal::Kill);
+        if let Some(child) = s.leftover.remove(&id) {
+            s.dying.push(Dying {
+                child,
+                deadline: Instant::now(),
+            });
+        }
+        reap(&mut s);
+        assert!(told, "the exit not told");
+        assert!(read_on, "drained by the read at the exit");
+        assert!(frozen, "not drained by the next turn's empty read");
         Ok(())
     }
 

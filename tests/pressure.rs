@@ -337,17 +337,23 @@ fn a_run_answers_an_exit_with_the_last_of_the_output() -> Outcome {
 }
 
 /// A program that exits leaving a writer on its terminal, in a group of its
-/// own that ignores the hangup and never stops, holds up no one: what it
-/// leaves is read a turn at a time, as long as it writes, and other panes
-/// and commands are served meanwhile. Its exit is told as its leader is
-/// reaped, the writer still writing (D-90).
+/// own that ignores the hangup and keeps the terminal full, holds up no
+/// one (D-90): its exit is told as its leader is reaped, the writer still
+/// writing; its terminal is read on, its counts growing, while other panes
+/// and commands are served; once the writer is killed and its terminal
+/// drained, the pane is frozen.
 #[test]
 fn a_writer_left_on_a_terminal_holds_up_no_one() -> Outcome {
     let server = Server::start("")?;
     eventually("a prompt", || Ok(screen(&server, "%1")?.contains('$')))?;
+    // DECALN, which `cat` writes faster than fux reads it.
+    let fill = server.dir.join("decaln");
+    let decaln: Vec<u8> = std::iter::repeat_n(*b"\x1b#8", 1 << 18).flatten().collect();
+    std::fs::write(&fill, decaln).map_err(e)?;
     let pid_file = server.dir.join("writer.pid");
     let code = format!(
-        "set -m; trap '' HUP; while :; do printf '\\033[2J'; done & echo $! > '{}'; sleep 1; exit",
+        "set -m; trap '' HUP; (while :; do cat '{}'; done) & echo $! > '{}'; sleep 1; exit 3",
+        fill.display(),
         pid_file.display()
     );
     let words = ["agent-opts", "80", "24", "size", "str", "sh", "program"];
@@ -355,9 +361,21 @@ fn a_writer_left_on_a_terminal_holds_up_no_one() -> Outcome {
         .into_iter()
         .chain(["str", "-c", "arg", "str", &code, "arg", "new-tab"]);
     server.ok(&words.collect::<Vec<_>>())?;
-    let reap = Reap(vec![pid_in(&pid_file)?]);
-    // The program's own second, then its exit, the writer still writing.
-    std::thread::sleep(Duration::from_millis(1500));
+    let writer = pid_in(&pid_file)?;
+    let group = fuxix::process::Pid::from_raw(writer).ok_or("the writer's group")?;
+    let _reap = Reap(vec![writer]);
+    let listed = || server.ok(&["ls", "listing"]);
+    eventually("the exit told, the writer still writing", || {
+        Ok(listed()?.contains("%2 sh 80x24 exited 3"))
+    })?;
+    let screen_count = || -> Result<u64, String> {
+        let counts = server.ok(&["str", "%2", "pane", "counts"])?;
+        let count = counts.split_whitespace().nth(1).ok_or("its counts")?;
+        count.parse().map_err(e)
+    };
+    // Read on: its screen's revision grows.
+    let at_exit = screen_count()?;
+    eventually("its terminal read on", || Ok(screen_count()? > at_exit))?;
     server.ok(&[
         "str",
         "%1",
@@ -371,13 +389,17 @@ fn a_writer_left_on_a_terminal_holds_up_no_one() -> Outcome {
         "send-keys",
     ])?;
     server.shows("%1", "ready")?;
-    for _ in 0..5 {
-        let out = server.fux(&["ls"])?;
-        assert_eq!(out.status, 0, "{}", out.stderr);
-    }
-    eventually("the exit told, the writer still writing", || {
-        Ok(server.ok(&["ls", "listing"])?.contains("exited 0"))
+    // Once the writer is killed, its terminal drained, it is frozen.
+    let _ = fuxix::process::kill_group(group, fuxix::process::Signal::Kill);
+    let mut last = screen_count()?;
+    eventually("frozen once drained", || {
+        std::thread::sleep(Duration::from_millis(200));
+        let now = screen_count()?;
+        let still = now == last;
+        last = now;
+        Ok(still)
     })?;
-    drop(reap);
+    std::thread::sleep(Duration::from_millis(300));
+    assert_eq!(screen_count()?, last, "read on once drained");
     Ok(())
 }
