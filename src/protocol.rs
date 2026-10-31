@@ -20,7 +20,7 @@ use crate::wire::{Wire, wire};
 use std::borrow::Cow;
 
 /// Bumped on any change to the frames below.
-pub const PROTOCOL: u32 = 53;
+pub const PROTOCOL: u32 = 54;
 /// The largest frame, kind byte included.
 pub const MAX_FRAME: usize = 1 << 20;
 /// The largest payload one frame carries.
@@ -547,9 +547,6 @@ frames! {
         /// The answer to its `Attach`, before anything is painted: its id,
         /// which its bindings' `me` names and a headless client prints.
         Welcome(client: ClientId, run: crate::command::Run) = 12,
-        /// An empty writable untargeted attach needs complete creation inputs.
-        /// This connection is closed without admitting a client.
-        NeedsInitial = 19,
         /// Bytes for its terminal, which the client writes there: a paint,
         /// or what the server sends it outside one (a copy, the bell,
         /// questions for the terminal). Every paint comes so.
@@ -913,7 +910,6 @@ mod tests {
         round_trip!(ToAttached, 14, ToAttached::Ended(7));
         round_trip!(ToAttached, 15, ToAttached::Open(crate::screens::Open::Copy));
         round_trip!(ToAttached, 16, ToAttached::Keys(Vec::new()));
-        round_trip!(ToAttached, 19, ToAttached::NeedsInitial);
         for target in [
             crate::command::AttachTarget::Tab(crate::id::TabId::of(2)),
             crate::command::AttachTarget::Pane(crate::id::PaneId::of(3)),

@@ -474,14 +474,12 @@ pub struct Attaching {
 }
 
 impl Attaching {
-    fn initial(&self) -> Result<crate::command::InitialWorkspace, Error> {
+    fn initial(&self) -> Result<crate::command::InitialWorkspace, String> {
         let creation = &self.creation;
-        let (start, env) = creation
-            .launch(
-                &self.state.preferences.shell,
-                &self.state.preferences.copy_environment,
-            )
-            .map_err(Error::Failed)?;
+        let (start, env) = creation.launch(
+            &self.state.preferences.shell,
+            &self.state.preferences.copy_environment,
+        )?;
         Ok(crate::command::InitialWorkspace {
             name: creation.name.clone(),
             start,
@@ -806,10 +804,7 @@ impl Keyboard {
             ToAttached::Open(open) => self.run(Job::open(open), &mut acts),
             ToAttached::Keys(typed) => return self.inputs(typed.into_iter().flat_map(decoded)),
             // The attachment's own: `attached` reads them.
-            ToAttached::NeedsInitial
-            | ToAttached::Welcome(..)
-            | ToAttached::Paint(_)
-            | ToAttached::Exit(_) => {}
+            ToAttached::Welcome(..) | ToAttached::Paint(_) | ToAttached::Exit(_) => {}
         }
         acts.extend(self.release());
         acts
@@ -1077,20 +1072,36 @@ pub fn attach(
     } else {
         Role::Headless
     };
+    // An untargeted writable attach carries the launch an empty server starts.
+    // One unmade, or past the frame, is left out, said only on a refusal.
+    let creates = attaching.target.is_none() && !attaching.read_only;
+    let (initial, mut unusable) = match creates.then(|| attaching.initial()).transpose() {
+        Ok(initial) => (initial, None),
+        Err(why) => (None, Some(why)),
+    };
     let (mut stream, mut decoder, _) = connect(socket, role)?;
     let signals = early.map_or_else(Signals::new, Ok)?;
     let size = size.or_else(window_size).ok_or(Error::NoSize)?;
-    let raw = terminal
-        .then(|| Raw::enter_with(&stdin, &mut io::stdout()))
-        .transpose()?;
-    let attach = Attach {
+    let mut attach = Attach {
         of: attaching.of,
         size,
         target: attaching.target.clone(),
         read_only: attaching.read_only,
         presentation: attaching.state.preferences.presentation(),
-        initial: None,
+        initial,
     };
+    // Counted before it is encoded: past a frame, the launch is left out,
+    // and a request past one without it is refused.
+    if let Err(why) = fits(&attach) {
+        if attach.initial.take().is_none() {
+            return Err(Error::Failed(why));
+        }
+        unusable = Some(why);
+        fits(&attach).map_err(Error::Failed)?;
+    }
+    let raw = terminal
+        .then(|| Raw::enter_with(&stdin, &mut io::stdout()))
+        .transpose()?;
     // The server relays every paint, which the client writes to its
     // terminal; the keys are the client's to read.
     let mut output = terminal.then(Output::open).transpose()?;
@@ -1101,10 +1112,16 @@ pub fn attach(
             &mut decoder,
             &signals,
             &attaching,
-            &attach,
             output.as_mut(),
         )
     });
+    // Context for a refusal, not its cause: the server says why.
+    let result = match (result, unusable) {
+        (Err(Error::Refused(reason)), Some(why)) => Err(Error::Refused(format!(
+            "{reason}; local initial launch unavailable: {why}"
+        ))),
+        (result, _) => result,
+    };
     // What the server painted until it let go is written before the
     // terminal is put back, not after, on the shell.
     let finished = output.as_mut().map_or(Ok(()), Output::finish);
@@ -1112,6 +1129,14 @@ pub fn attach(
     let reason = result.and_then(|reason| finished.map(|()| reason))?;
     let _ = writeln!(io::stdout(), "[{reason}]");
     Ok(())
+}
+
+/// Whether `attach` fits one frame: counted, before it is encoded.
+fn fits(attach: &Attach) -> Result<(), String> {
+    let limit = crate::protocol::MAX_PAYLOAD;
+    let mut count = crate::wire::Writer::counting(limit);
+    crate::wire::Wire::put(attach, &mut count);
+    (count.check()).map_err(|_| format!("the attach request exceeds one frame ({limit} bytes)"))
 }
 
 /// Why a client detached when a signal told it to.
@@ -1298,7 +1323,6 @@ fn attached(
     decoder: &mut Decoder,
     signals: &Signals,
     attaching: &Attaching,
-    attach: &Attach,
     mut output: Option<&mut Output>,
 ) -> Result<String, Error> {
     let Signals { winch, stops } = signals;
@@ -1308,8 +1332,6 @@ fn attached(
     let terminal = output.is_some();
     let mut buffer = vec![0u8; 64 * 1024];
     let mut keyboard: Option<Keyboard> = None;
-    let mut retried = false;
-    let mut viewport = attach.size;
     let mut pending_resize = None;
     let mut acts = Vec::new();
     let mut frames = 0u64;
@@ -1327,32 +1349,6 @@ fn attached(
                     if let Some(output) = &mut output {
                         output.push(bytes.into_owned())?;
                     }
-                }
-                (ToAttached::NeedsInitial, None) => {
-                    if retried || attach.target.is_some() || attach.read_only {
-                        return Err(Error::Failed("unexpected needs-initial reply".into()));
-                    }
-                    let initial = attaching.initial()?;
-                    let role = if terminal {
-                        Role::Attach
-                    } else {
-                        Role::Headless
-                    };
-                    let (mut retry, fresh, _) = connect(socket, role)?;
-                    let mut request = attach.clone();
-                    // WINCH may still be pending when the reply arrives.
-                    if terminal && let Some(size) = window_size() {
-                        viewport = size;
-                    }
-                    request.size = viewport;
-                    request.initial = Some(initial);
-                    send(&mut retry, &request)?;
-                    wait_at_most(&retry, None);
-                    *stream = retry;
-                    *decoder = fresh;
-                    frames = 0;
-                    pending_resize = None;
-                    retried = true;
                 }
                 (ToAttached::Exit(reason), None) => return Err(Error::Refused(reason.to_owned())),
                 (ToAttached::Exit(reason), Some(_)) => return Ok(reason.to_owned()),
@@ -1480,7 +1476,6 @@ fn attached(
             crate::drain(winch.reader());
             // A terminal that says no size now keeps the last it said.
             if terminal && let Some(size) = window_size() {
-                viewport = size;
                 pending_resize = Some(size);
             }
         }
@@ -1557,8 +1552,7 @@ fn last_frames(
                 }
                 ToAttached::Exit(reason) if welcomed => return Some(Ok(reason.to_owned())),
                 ToAttached::Exit(reason) => return Some(Err(Error::Refused(reason.to_owned()))),
-                ToAttached::NeedsInitial
-                | ToAttached::Welcome(..)
+                ToAttached::Welcome(..)
                 | ToAttached::Ended(_)
                 | ToAttached::Open(_)
                 | ToAttached::Keys(_) => {}

@@ -479,7 +479,7 @@ impl Run {
             Outgoing::To(_, ToAttached::Paint(bytes)) => panic!("not a question: {bytes:?}"),
             Outgoing::To(client, ToAttached::Exit(_)) => self.detach(client),
             // Sent only as a client attaches, by the server.
-            Outgoing::To(_, ToAttached::NeedsInitial | ToAttached::Welcome(..)) => {
+            Outgoing::To(_, ToAttached::Welcome(..)) => {
                 panic!("an attachment reply from the session")
             }
             Outgoing::Shutdown { .. } => self.shut = true,

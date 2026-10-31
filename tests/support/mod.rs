@@ -656,8 +656,7 @@ impl Client {
                     );
                     self.id = Some(me.to_string());
                 }
-                frame @ (ToAttached::NeedsInitial
-                | ToAttached::Welcome(..)
+                frame @ (ToAttached::Welcome(..)
                 | ToAttached::Ended(_)
                 | ToAttached::Open(_)
                 | ToAttached::Keys(_)) => {
