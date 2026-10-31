@@ -93,11 +93,37 @@ impl Mismatch {
 
 impl std::fmt::Display for Mismatch {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let theirs = Build {
+            version: &self.version,
+            protocol: self.protocol,
+        };
         write!(
             f,
-            "the server speaks protocol {} (fux {}); use a matching client to keep its panes running. `fux force-kill-server` stops it and its panes; a new server does not resume them",
-            self.protocol, self.version
+            "the server runs {theirs}; use a matching client to keep its panes running. `fux force-kill-server` stops it and its panes; a new server does not resume them",
         )
+    }
+}
+
+/// A build of fux as it is told apart from another: its release and its
+/// protocol, as `fux 0.36.0 (protocol 54)`. Builds of one release may
+/// speak different protocols.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Build<'a> {
+    pub version: &'a str,
+    pub protocol: u32,
+}
+
+impl Build<'_> {
+    /// This build.
+    pub const OURS: Build<'static> = Build {
+        version: env!("CARGO_PKG_VERSION"),
+        protocol: PROTOCOL,
+    };
+}
+
+impl std::fmt::Display for Build<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "fux {} (protocol {})", self.version, self.protocol)
     }
 }
 
@@ -704,6 +730,33 @@ mod tests {
         invalid.extend_from_slice(&u32::MAX.to_be_bytes());
         assert!(Reader::new(&invalid).whole::<Wait>().is_err());
         Ok(())
+    }
+
+    /// A client goes on with a server of its own protocol, whatever either's
+    /// release; with one of another, it is told the server's protocol and
+    /// release; a kill goes on with any.
+    #[test]
+    fn only_the_protocol_decides_a_mismatch_and_a_kill_has_none() {
+        let hello = |protocol, version: &str, role| Hello {
+            protocol,
+            version: version.into(),
+            role,
+        };
+        let theirs = |protocol, version: &str| Mismatch {
+            protocol,
+            version: version.into(),
+        };
+        let client = hello(54, "0.36.0", Role::Command);
+        let between = |server: &Hello| Mismatch::between(&client, server);
+        assert_eq!(between(&hello(54, "0.36.0", Role::Command)), Ok(()));
+        assert_eq!(between(&hello(54, "0.37.0", Role::Command)), Ok(()));
+        let other = between(&hello(55, "0.36.0", Role::Command));
+        assert_eq!(other, Err(theirs(55, "0.36.0")));
+        let both = between(&hello(23, "0.37.0", Role::Command));
+        assert_eq!(both, Err(theirs(23, "0.37.0")));
+        let kill = hello(54, "0.36.0", Role::Kill);
+        let server = hello(23, "0.37.0", Role::Kill);
+        assert_eq!(Mismatch::between(&kill, &server), Ok(()));
     }
 
     /// A frame decodes only from the bytes it encodes to: an `Act` whose

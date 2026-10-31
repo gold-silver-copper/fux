@@ -144,9 +144,9 @@ fn against_another_protocol(
 fn following() -> Result<String, String> {
     let exe = std::env::current_exe().map_err(e)?;
     Ok(format!(
-        "fux: the server speaks protocol 999 (fux 9.9.9) and this client {} (fux {}): running the server's own binary, {}\n",
-        fux_wire::protocol::PROTOCOL,
+        "fux: the server runs fux 9.9.9 (protocol 999) and this client fux {} (protocol {}): running the server's own binary, {}\n",
         env!("CARGO_PKG_VERSION"),
+        fux_wire::protocol::PROTOCOL,
         exe.display()
     ))
 }
@@ -160,7 +160,7 @@ fn follows(name: &str, args: &[&str], stdin: &str, stdout: &str) -> Outcome {
     if cfg!(target_os = "macos") {
         return check(
             ran.status == Some(1)
-                && ran.stderr.contains("protocol 999 (fux 9.9.9)")
+                && ran.stderr.contains("fux 9.9.9 (protocol 999)")
                 && ran
                     .stderr
                     .contains("the system does not say which process the server is"),
@@ -220,7 +220,7 @@ fn a_program_that_acted_is_not_followed() -> Outcome {
             ran.stderr.starts_with(stderr)
                 && ran
                     .stderr
-                    .contains("the server speaks protocol 999 (fux 9.9.9)")
+                    .contains("the server runs fux 9.9.9 (protocol 999)")
                 && ran.stderr.contains("fux force-kill-server")
                 && ran.stderr.contains("running it again would do twice"),
             &ran,

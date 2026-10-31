@@ -51,6 +51,15 @@ fn private(dir: &std::path::Path) -> Result<std::path::PathBuf, String> {
 #[test]
 fn servers_are_named_and_kills_are_guarded() -> Outcome {
     let server = Server::start("")?;
+    // `status` names the server's process, where the system says it.
+    let ours = server.fux(&["status", "json"])?;
+    let pid = format!("\"server_pid\":{},", server.pid().ok_or("no pid")?);
+    assert_eq!(
+        ours.stdout.contains(&pid),
+        cfg!(not(target_os = "macos")),
+        "{}",
+        ours.stdout
+    );
     let rt = private(&server.dir)?;
     let started = named(&rt, &["str", "t", "server", "start"], &[])?;
     assert_eq!(started.status, 0, "{}", started.stderr);

@@ -458,11 +458,14 @@ they run, so a `try` may name them too.
 
 ```json
 {"socket":"/run/user/1000/fux/server.sock","release":"0.36.0","protocol":54,
- "server_release":"0.36.0","server_protocol":54,"compatible":true}
+ "server_release":"0.36.0","server_protocol":54,"server_pid":4242,"compatible":true}
 ```
 
 `status` returns an ordinary record with these locally readable fields. Plain
 output is JSON, including `compatible:false` for a protocol mismatch.
+`server_pid` is the server's process, as the system recorded it for the
+socket; where it says none (macOS), the field is left out. A command line
+against a server of another protocol runs again with that process's binary.
 
 With no server, `status` fails (`no_server`), saying the socket and whether
 a server that stopped left it there. Every server in fux's directory:

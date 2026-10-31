@@ -887,12 +887,8 @@ enum Follow {
     /// stays.
     #[default]
     Never,
-    /// A command line's, until it has acted: with its program, if it read
-    /// that from stdin.
-    Command {
-        program: Option<String>,
-        acted: Acted,
-    },
+    /// The `fux` binary's command line, until it has acted.
+    Command { rerun: client::Rerun, acted: Acted },
 }
 
 /// Whether a command line's program did anything outside its process yet,
@@ -1005,10 +1001,10 @@ impl Server {
     /// followed first, if this run follows one.
     fn failed(&self, error: client::Error) -> Failed {
         client_failed(match (&self.follow, error) {
-            (Follow::Command { program, acted }, client::Error::Mismatch { said, server })
+            (Follow::Command { rerun, acted }, client::Error::Mismatch { said, server })
                 if !acted.marked() =>
             {
-                client::follow(said, server, program.as_deref())
+                client::follow(said, server, rerun)
             }
             (Follow::Command { .. }, client::Error::Mismatch { said, .. }) => {
                 client::Error::Unfollowed {
@@ -1722,16 +1718,24 @@ pub const PROGRAM_STEPS: u64 = 10_000_000;
 
 /// The `fux` binary's words: attaches with none, runs `-` (stdin) or a file,
 /// or runs the words given. What is left on the stack is printed, a value a
-/// line. Its exit status (0, or what `exit` gave), or why it failed.
-pub fn main(args: &[String], out: &mut dyn Write) -> Result<u8, Failed> {
+/// line. Its exit status (0, or what `exit` gave), or why it failed. With
+/// `argv`, the process's whole command line, a server of another protocol
+/// is followed: the process runs it again with the server's binary
+/// (`client::follow`); with none, as in tests, never.
+pub fn main(
+    args: &[String],
+    argv: Option<Vec<std::ffi::OsString>>,
+    out: &mut dyn Write,
+) -> Result<u8, Failed> {
     if matches!(args, [flag] if matches!(flag.as_str(), "--version" | "-V")) {
-        writeln!(out, "{}", env!("CARGO_PKG_VERSION")).map_err(output_failed)?;
+        writeln!(out, "{}", fux_wire::protocol::Build::OURS).map_err(output_failed)?;
         return Ok(0);
     }
     let (tokens, from, program) = program(args)?;
+    let rerun = argv.map(|argv| client::Rerun { argv, program });
     let mut machine = match compiled(None, &tokens) {
         Ok(machine) => machine,
-        Err(error) => return Err(uncompiled(error.into(), program.as_deref())),
+        Err(error) => return Err(uncompiled(error.into(), rerun.as_ref())),
     };
     let mut state = Draft::default();
     let acted = Acted::default();
@@ -1742,10 +1746,10 @@ pub fn main(args: &[String], out: &mut dyn Write) -> Result<u8, Failed> {
     let mut host = Host::cli(client::context(), &mut state, &mut out);
     let mut cli = Cli {
         server: Server {
-            follow: Follow::Command {
-                program,
+            follow: rerun.map_or(Follow::Never, |rerun| Follow::Command {
+                rerun,
                 acted: acted.clone(),
-            },
+            }),
             ..Server::default()
         },
         from,
@@ -1777,16 +1781,19 @@ pub fn main(args: &[String], out: &mut dyn Write) -> Result<u8, Failed> {
 /// A command line this fux cannot compile, `failed`, which the server's
 /// may: a server of another protocol on the socket chosen before the
 /// program (`FUX_SOCKET`, else `server.sock`) is followed (`client::follow`)
-/// with `program`, if it read that from stdin, and nothing of it has run.
-/// Else, or if it cannot be, why it failed.
-fn uncompiled(failed: Failed, program: Option<&str>) -> Failed {
+/// with `rerun`, if given, as nothing of it has run. Else, or if it cannot
+/// be, why it failed.
+fn uncompiled(failed: Failed, rerun: Option<&client::Rerun>) -> Failed {
+    let Some(rerun) = rerun else {
+        return failed;
+    };
     let greeted = Server::default()
         .socket()
         .map(|socket| client::greet(&socket));
     let Ok(Err(client::Error::Mismatch { said, server })) = greeted else {
         return failed;
     };
-    let unfollowed = client::follow(said, server, program);
+    let unfollowed = client::follow(said, server, rerun);
     Failed {
         message: format!("{} ({unfollowed})", failed.message),
         ..failed
@@ -2548,7 +2555,7 @@ pub(crate) mod tests {
                 Ok(())
             }
         }
-        let failed = super::main(&["1".into()], &mut Broken).err();
+        let failed = super::main(&["1".into()], None, &mut Broken).err();
         assert!(
             failed.is_some_and(|f| f.code == fux_wire::code::Code::Output
                 && f.message == "writing the output: broken writer")
@@ -2781,13 +2788,17 @@ pub(crate) mod tests {
     fn release_flags_bypass_the_operand_taking_version_word() -> TestResult {
         for flag in ["--version", "-V"] {
             let mut out = Vec::new();
-            assert_eq!(super::main(&[flag.into()], &mut out)?, 0);
+            assert_eq!(super::main(&[flag.into()], None, &mut out)?, 0);
             assert_eq!(
                 String::from_utf8(out)?,
-                format!("{}\n", env!("CARGO_PKG_VERSION"))
+                format!(
+                    "fux {} (protocol {})\n",
+                    env!("CARGO_PKG_VERSION"),
+                    fux_wire::protocol::PROTOCOL
+                )
             );
         }
-        assert!(super::main(&["version".into()], &mut Vec::new()).is_err());
+        assert!(super::main(&["version".into()], None, &mut Vec::new()).is_err());
         Ok(())
     }
 

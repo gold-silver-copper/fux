@@ -358,7 +358,7 @@ pub fn kill_server(socket: &SocketPath) -> Result<(), Error> {
 }
 
 /// What answers on a socket: nothing, or a server, its protocol and
-/// version.
+/// version, and its process, where the system says it.
 pub enum Probe {
     Absent,
     /// A socket left by a server that stopped.
@@ -366,6 +366,7 @@ pub enum Probe {
     Server {
         protocol: u32,
         version: String,
+        pid: Option<fuxix::process::Pid>,
     },
 }
 
@@ -373,14 +374,19 @@ pub enum Probe {
 /// version answers.
 pub fn probe(socket: &SocketPath) -> Result<Probe, Error> {
     match connect(socket, Role::Command) {
-        Ok((.., version)) => Ok(Probe::Server {
+        Ok((stream, _, version)) => Ok(Probe::Server {
             protocol: PROTOCOL,
             version,
+            pid: fuxix::socket::peer(&stream).ok().and_then(|peer| peer.pid),
         }),
         Err(Error::Mismatch {
             said: Mismatch { protocol, version },
-            ..
-        }) => Ok(Probe::Server { protocol, version }),
+            server,
+        }) => Ok(Probe::Server {
+            protocol,
+            version,
+            pid: server,
+        }),
         Err(Error::Socket(socket::Error::NoServer(_))) => Ok(Probe::Absent),
         // A socket left by a server that is gone.
         Err(Error::Connect { source, .. })
@@ -395,26 +401,34 @@ pub fn probe(socket: &SocketPath) -> Result<Probe, Error> {
     }
 }
 
-/// Runs this process's command line again with the binary of the server
-/// that answered it in another protocol (`Error::Mismatch`), which speaks
-/// the server's: its process's `/proc/PID/exe`, which is the file it runs
-/// even once that was replaced or removed. The same first argument,
-/// arguments, environment, stdout and stderr, and the same stdin, or
-/// `program` as stdin where the command line read its program from there;
-/// the binary's exit status is this command's. Said on stderr first. A
+/// A command line as it runs again with another binary (`follow`): the
+/// process's arguments, its first among them, and the program it read
+/// from stdin, if it did.
+pub struct Rerun {
+    pub argv: Vec<std::ffi::OsString>,
+    pub program: Option<String>,
+}
+
+/// Runs a command line, `rerun`, again in this process, with the binary of
+/// the server that answered it in another protocol (`Error::Mismatch`),
+/// which speaks the server's: its process's `/proc/PID/exe`, which is the
+/// file it runs even once that was replaced or removed. The same
+/// arguments, environment, stdout and stderr, and the same stdin, or the
+/// program as stdin where the command line read it from there; the
+/// binary's exit status is this command's. Said on stderr first. A
 /// command follows once: the binary runs with `FUX_FOLLOWED` set to this
 /// process's ID, which an exec keeps, so a process that finds its own ID
 /// there followed already; a process it starts has another. Returns only
 /// if it cannot be, saying why.
-pub fn follow(said: Mismatch, server: Option<fuxix::process::Pid>, program: Option<&str>) -> Error {
-    let Err(why) = followed(&said, server, program);
+pub fn follow(said: Mismatch, server: Option<fuxix::process::Pid>, rerun: &Rerun) -> Error {
+    let Err(why) = followed(&said, server, rerun);
     Error::Unfollowed { said, why }
 }
 
 fn followed(
     said: &Mismatch,
     server: Option<fuxix::process::Pid>,
-    program: Option<&str>,
+    rerun: &Rerun,
 ) -> Result<std::convert::Infallible, String> {
     use std::os::unix::fs::MetadataExt;
     use std::os::unix::process::CommandExt;
@@ -433,20 +447,21 @@ fn followed(
             path.display()
         ));
     }
-    let mut args = std::env::args_os();
+    let (arg0, args) = rerun.argv.split_first().ok_or("no command line to run")?;
     let mut command = std::process::Command::new(&exe);
-    command.arg0(args.next().unwrap_or_default()).args(args);
-    command.env(FOLLOWED, us);
-    if let Some(program) = program {
+    command.arg0(arg0).args(args).env(FOLLOWED, us);
+    if let Some(program) = &rerun.program {
         let file = program_file(program).map_err(|e| format!("keeping the program: {e}"))?;
         command.stdin(file);
     }
+    let theirs = fux_wire::protocol::Build {
+        version: &said.version,
+        protocol: said.protocol,
+    };
+    let ours = fux_wire::protocol::Build::OURS;
     let _ = writeln!(
         io::stderr(),
-        "fux: the server speaks protocol {} (fux {}) and this client {PROTOCOL} (fux {}): running the server's own binary, {}",
-        said.protocol,
-        said.version,
-        env!("CARGO_PKG_VERSION"),
+        "fux: the server runs {theirs} and this client {ours}: running the server's own binary, {}",
         path.display()
     );
     let error = command.exec();
@@ -2502,14 +2517,18 @@ mod tests {
             protocol: PROTOCOL + 1,
             version: "0".into(),
         };
-        let unknown = followed(&said, None, None).err();
+        let rerun = Rerun {
+            argv: vec!["fux".into(), "ls".into()],
+            program: None,
+        };
+        let unknown = followed(&said, None, &rerun).err();
         let why = "the system does not say which process the server is";
         assert_eq!(unknown.as_deref(), Some(why));
         if cfg!(target_os = "macos") {
             return;
         }
         let us = fuxix::process::Pid::from_raw(std::process::id().cast_signed());
-        let same = followed(&said, us, None).err().unwrap_or_default();
+        let same = followed(&said, us, &rerun).err().unwrap_or_default();
         assert!(
             same.starts_with("the server runs this same binary, "),
             "{same}"

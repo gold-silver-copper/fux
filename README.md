@@ -185,7 +185,8 @@ tab or workspace. `WORKSPACE panes` lists panes, and `WORKSPACE tabs` lists tabs
 `capture` takes a pane or client; only panes take capture options and have
 versions. `PANE version` reads the current version; `ANSWER version` and
 `CAPTURE version` return the version held when observed. `--version` prints
-the binary release, and `status json` gives `release` and `server_release`.
+the binary's release and protocol (`fux RELEASE (protocol N)`), and `status
+json` gives `release`, `server_release` and both protocols.
 Capture `rows` and `cols` use half-open `start..end` ranges, like `slice`.
 `resize` takes a tab scope or headless client. `move` takes a tab,
 workspace, `str new-tab`, `str new-workspace`, or a direction; `swap-with`
