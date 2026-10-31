@@ -177,6 +177,7 @@ fn a_pane_runs_the_clients_shell_else_bin_sh() -> Outcome {
         command
             .arg(fux::SERVE)
             .arg(&socket)
+            .arg(journal()?)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())

@@ -174,7 +174,7 @@ reported, never gated on.
 The user's own servers are never touched. Each multiplexer runs on its
 own socket and configuration under `fux-feel-PID` (removed after), in
 `$TMPDIR` if it is short, else `~/.cache/fux`:
-fux as `fux __serve SOCKET` (as a client starts one) with `HOME` and
+fux as `fux __serve SOCKET ENTRIES` (as a client starts one) with `HOME` and
 `XDG_CONFIG_HOME` (its `config.fux`) there; tmux as `tmux
 -L fux-bench-PID-N -f /dev/null`; zellij in its own session with its
 config, data, `HOME` and `ZELLIJ_SOCKET_DIR` there, without plugins or pane

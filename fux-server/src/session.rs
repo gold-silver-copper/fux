@@ -390,9 +390,14 @@ fn failure(error: Error, origin: &Origin, session: &Session) -> Reply {
 }
 
 impl Session {
-    pub fn new(socket: PathBuf, launch: bool, run: command::Run) -> Self {
+    pub fn new(
+        socket: PathBuf,
+        launch: bool,
+        run: command::Run,
+        journal: command::JournalEntries,
+    ) -> Self {
         Self {
-            parts: Parts::default(),
+            parts: Parts::new(journal),
             views: BTreeMap::new(),
             launch: launch.then_some(socket),
             exe: std::env::current_exe().ok(),
@@ -3430,7 +3435,11 @@ pub(crate) mod testing {
         static RUN: std::sync::OnceLock<Option<fux_wire::command::Run>> =
             std::sync::OnceLock::new();
         let run = (*RUN.get_or_init(fux_wire::command::Run::now)).ok_or("no clock")?;
-        let mut session = Session::new("/nonexistent/fux.sock".into(), false, run);
+        let journal = fux::script::default_state()
+            .map_err(|e| e.to_string())?
+            .preferences
+            .journal_entries;
+        let mut session = Session::new("/nonexistent/fux.sock".into(), false, run, journal);
         let size = fux_vt::Size::new(24, 80).map_err(|e| e.to_string())?;
         let initial = fux_wire::command::InitialWorkspace {
             options: fux::script::default_state()
@@ -4734,6 +4743,7 @@ mod tests {
             "/nonexistent/fux.sock".into(),
             false,
             command::Run::now().ok_or("clock")?,
+            fux::script::default_state()?.preferences.journal_entries,
         );
         let size = sized(24, 80)?;
         let presentation = fux::script::default_state()?.preferences.presentation();
@@ -6502,7 +6512,8 @@ mod tests {
     #[test]
     fn a_pane_is_made_only_at_a_size_known() -> TestResult {
         let run_id = fux_wire::command::Run::now().ok_or("no clock")?;
-        let mut s = Session::new("/nonexistent/fux.sock".into(), false, run_id);
+        let journal = fux::script::default_state()?.preferences.journal_entries;
+        let mut s = Session::new("/nonexistent/fux.sock".into(), false, run_id, journal);
         s.test_keymap = fux::script::default_state()?.draft();
         let refused = run(&mut s, "opts new-workspace").err().unwrap_or_default();
         assert!(
@@ -8182,7 +8193,8 @@ mod journal_tests {
             &format!("all str {from} 0 next-events str events get first str pane get kind"),
         )?;
         assert_eq!(kind, "pane\n");
-        for _ in 0..crate::journal::KEPT.saturating_add(1) {
+        let kept = fux::script::default_state()?.preferences.journal_entries;
+        for _ in 0..kept.get().saturating_add(1) {
             s.output(PaneId::of(1), b"\x07", Instant::now());
         }
         let failed = output(&mut s, &format!("all str {from} 0 1 events-since drop"));

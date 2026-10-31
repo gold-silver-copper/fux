@@ -112,11 +112,10 @@ Each pane has `id`, `tab`, `name`, `label`, `title`, `pid`, `rows`, `cols`,
 and `version`. A name is given or null; a label is display text. Facts adds
 `state`, containing the process/terminal fields above. Topology uses only
 retained state and performs no process metadata queries. Recipe adds `launch`:
-`choice` (`shell` or `program`), ordered `argv`, `env`, `initial_cwd`,
+`choice` (`shell` or `program`), ordered `argv`, `initial_cwd`,
 `observed_cwd`, `history_bytes`, `program_clipboard`, `reflow`, `alternate_scroll_lines`, and
 `picture_bytes`. Both launch choices
-retain their original inputs. Environment entries have `name` and `value`;
-null means removal. OS text uses `{encoding: utf8, text: ...}` or
+retain their original inputs. OS text uses `{encoding: utf8, text: ...}` or
 `{encoding: hex, text: ...}` for exact non-UTF-8 bytes. Observed cwd is null
 when unknown, `{status: known, path: ...}`, or
 `{status: failed, operation: cwd, errno: N}`. Replay launches new processes;
@@ -301,8 +300,9 @@ closes the pending read. Status is:
 | `gone` | the scoped object closed; the final close is included when retained |
 | `stopped` | the server stopped; `reason` says why |
 
-The journal keeps the last 16,384 entries, its ring, evicting the oldest
-before appending to a full ring. Retention promises a number of entries, not
+The journal keeps the last `journal-entries` entries (16,384 unless the
+client that started the server set it otherwise), its ring, evicting the
+oldest before appending to a full ring. Retention promises a number of entries, not
 seconds; scope filtering reserves no private window. `missed` counts exactly
 the entries evicted before this cursor, including nonmatches. On loss,
 resnapshot and reconcile, or fail the task explicitly. A full ring is
@@ -423,8 +423,8 @@ they run, so a `try` may name them too.
 ## `status`
 
 ```json
-{"socket":"/run/user/1000/fux/server.sock","release":"0.36.0","protocol":57,
- "server_release":"0.36.0","server_protocol":57,"server_pid":4242,"compatible":true}
+{"socket":"/run/user/1000/fux/server.sock","release":"0.36.0","protocol":58,
+ "server_release":"0.36.0","server_protocol":58,"server_pid":4242,"compatible":true}
 ```
 
 `status` returns an ordinary record with these locally readable fields. Plain

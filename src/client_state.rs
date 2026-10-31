@@ -2,7 +2,9 @@
 use crate::keymap::Keymap;
 use crate::script::settings::Reads;
 use crate::script::{Config, Fux};
-use fux_wire::command::{DecodeMillis, HistoryBytes, PictureBytes, Program, ScrollLines};
+use fux_wire::command::{
+    DecodeMillis, HistoryBytes, JournalEntries, PictureBytes, Program, ScrollLines,
+};
 use fuxth::Value;
 
 /// A complete client state. A program changes a draft and commits it whole.
@@ -124,6 +126,8 @@ preferences! {
     shell "shell": Program;
     /// The history budget in bytes for panes this client creates.
     history_bytes "history-bytes": HistoryBytes;
+    /// The events the journal of a server this client starts keeps.
+    journal_entries "journal-entries": JournalEntries;
     /// Rewrap recorded primary-screen lines when a new pane is resized.
     reflow "reflow": bool;
     /// Arrows per alternate-screen wheel action; Ctrl keeps half-page scrolling.
@@ -186,6 +190,9 @@ impl PreferenceDraft {
     pub(crate) fn shell(&self) -> Result<&Program, String> {
         required(self.shell.as_ref(), "shell")
     }
+    pub(crate) fn journal_entries(&self) -> Result<JournalEntries, String> {
+        required(self.journal_entries, "journal-entries")
+    }
 }
 
 impl Preferences {
@@ -233,6 +240,7 @@ mod tests {
         draft.attach = None;
         assert!(draft.finish().is_err());
         assert_eq!(state.preferences.history_bytes.get(), 8 << 20);
+        assert_eq!(state.preferences.journal_entries.get(), 16_384);
         assert!(state.preferences.reflow);
         assert_eq!(state.preferences.alternate_scroll_lines.get(), 5);
         assert_eq!(state.preferences.picture_bytes.get(), fux_vt::PICTURE_BYTES);
@@ -278,6 +286,7 @@ mod tests {
             ("cell-placement", Value::str("cells")),
             ("history-bytes", Value::Int(-1)),
             ("history-bytes", Value::Int((1 << 30) + 1)),
+            ("journal-entries", Value::Int(0)),
             ("bell", Value::Int(0)),
             ("bell", Value::str("off")),
             ("shell", list(&[])?),

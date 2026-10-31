@@ -201,7 +201,7 @@ mod tests {
             size,
             crate::pane::tests::options(0)?,
             Instant::now(),
-        )?);
+        )?)?;
         let (since, run) = (pane.counts(), Run::now().ok_or("a clock")?);
         let mut frame = b"\x1b[?2026h".to_vec();
         frame.extend(crate::pane::tests::spends_the_budget(50, 200));

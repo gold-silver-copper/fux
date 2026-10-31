@@ -850,7 +850,7 @@ fn quoted(text: &str) -> String {
 /// Starts a fux server whose panes run `argv`, in a directory of its own
 /// under `fuxix::file::scratch`, as fux's own tests start one
 /// (`tests/support/mod.rs`); never the user's. Its panes run a script that
-/// runs `argv`, given as the server's `SHELL`: `fux __serve SOCKET` takes no
+/// runs `argv`, given as the server's `SHELL`: `fux __serve SOCKET ENTRIES` takes no
 /// config, and a client's `config.fux` (`str shell … set`) reaches only the
 /// panes made after it runs, never the first, which the server starts as
 /// it starts (`Session::start`), with the default shell.
@@ -882,6 +882,14 @@ fn server(fux: &Path, argv: &[String]) -> Result<Server, String> {
         Command::new(fux)
             .arg(fux::SERVE)
             .arg(&socket)
+            .arg(
+                fux::script::default_state()
+                    .map_err(|e| e.to_string())?
+                    .preferences
+                    .journal_entries
+                    .get()
+                    .to_string(),
+            )
             .env_clear()
             .env("PATH", std::env::var_os("PATH").unwrap_or_default())
             .env("HOME", &dir)

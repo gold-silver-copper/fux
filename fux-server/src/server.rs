@@ -535,7 +535,7 @@ impl std::error::Error for Error {}
 
 /// Runs a server on `socket` until it is told to stop or its last pane
 /// closes.
-pub fn serve(socket: &SocketPath) -> Result<(), Error> {
+pub fn serve(socket: &SocketPath, journal: fux_wire::command::JournalEntries) -> Result<(), Error> {
     let children = fuxix::signal::Pipe::new(&[fuxix::process::Signal::Chld])
         .map_err(|e| Error::Setup(e.into()))?;
     // Orphans the panes' programs leave stay the server's to read and reap.
@@ -549,7 +549,7 @@ pub fn serve(socket: &SocketPath) -> Result<(), Error> {
             "the system clock is before 1970 or past 2554: this run cannot be told from another",
         ))
     })?;
-    let session = Session::new(socket.path().to_owned(), true, run);
+    let session = Session::new(socket.path().to_owned(), true, run, journal);
     let read_buffer = read_buffer()?;
     // Last of what can fail: once it listens, a server that started
     // with it finds it there (`socket::bind_socket`).

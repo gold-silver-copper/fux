@@ -544,7 +544,10 @@ bundled state, preserves earlier explicit CLI settings, and shows one
 diagnostic. Evaluation and local setters send no requests. A wait without
 `timeout` waits until something changes; `SECS timeout`, or coreutils
 `timeout`, bounds it.
-Shared paste buffers retain the newest 16 copies; retention is fixed.
+`journal-entries` (16,384) is how many events the journal of a server this
+client starts keeps (`start`, or an attach that finds none running); a
+running server keeps the size it started with:
+`fux str journal-entries 65536 set start`.
 Shell argv, `history-bytes`, `program-clipboard`,
 `reflow`, `alternate-scroll-lines` and `picture-bytes`
 are local defaults for future creations. Explicit creation options override

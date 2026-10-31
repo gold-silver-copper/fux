@@ -387,7 +387,8 @@ pub fn run(r: &mut Rng, scale: usize) -> Outcome {
             std::time::Instant::now(),
         );
         let mut pane = b.map_err(|e| e.to_string())?;
-        let mut journal = fux_server::journal::Journal::default();
+        let kept = fux_wire::command::JournalEntries::new(1 << 14).ok_or("journal")?;
+        let mut journal = fux_server::journal::Journal::new(kept);
         let at = (
             "+1".parse().map_err(|_| "+1")?,
             "@1".parse().map_err(|_| "@1")?,

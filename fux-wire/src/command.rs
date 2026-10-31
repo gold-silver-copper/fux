@@ -13,6 +13,10 @@ use std::time::Duration;
 /// A pane's checked history budget, in bytes.
 pub type HistoryBytes = Number<0, { 1 << 30 }>;
 
+/// The events a server's journal keeps, from its start: a reader further
+/// behind is told how many it missed.
+pub type JournalEntries = Number<1, { usize::MAX }>;
+
 /// A lower picture budget, up to the emulator's native ceiling.
 pub type PictureBytes = Number<0, { fux_vt::PICTURE_BYTES }>;
 /// Alternate scrolling admits at most 32,767 arrows as one action.

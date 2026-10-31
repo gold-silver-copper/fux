@@ -9,10 +9,6 @@ use fux_wire::inspect::Scope;
 use fux_wire::json::Json;
 use std::collections::VecDeque;
 
-/// The events the journal keeps: a reader further behind is told how many
-/// it missed.
-pub const KEPT: usize = 1 << 14;
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ViewChange {
     Attached,
@@ -44,14 +40,26 @@ struct Entry {
     actor: Actor,
 }
 
-#[derive(Debug, Default)]
+/// What happened, the last `kept` events of it: a reader further behind is
+/// told how many it missed.
+#[derive(Debug)]
 pub struct Journal {
     entries: VecDeque<Entry>,
+    kept: usize,
     next: Seq,
     actor: Actor,
     exhausted: bool,
 }
 impl Journal {
+    pub fn new(kept: fux_wire::command::JournalEntries) -> Journal {
+        Journal {
+            entries: VecDeque::new(),
+            kept: kept.get(),
+            next: Seq::default(),
+            actor: Actor::default(),
+            exhausted: false,
+        }
+    }
     /// Request scopes restore the previous actor before returning; deferred
     /// work retains its own actor rather than inheriting a later request's.
     pub(crate) fn actor(&mut self, actor: Actor) -> Actor {
@@ -71,7 +79,7 @@ impl Journal {
         let seq = self.next;
         self.next = Seq(next);
         // Evict first so a full ring never grows.
-        if self.entries.len() == KEPT {
+        if self.entries.len() == self.kept {
             self.entries.pop_front();
         }
         self.entries.push_back(Entry { seq, event, actor });
@@ -400,7 +408,8 @@ pub fn every_kind_read(run: Run) -> Result<Batch, String> {
         Actor::Server,
         Actor::Unknown,
     ];
-    let mut journal = Journal::default();
+    let kept = fux_wire::command::JournalEntries::new(64).ok_or("journal")?;
+    let mut journal = Journal::new(kept);
     let mut reader = Reader::new(Scope::All, &journal, run, None)?;
     let size = fux_vt::Size::new(24, 80).map_err(|e| e.to_string())?;
     let events = every_kind(at, "name", said, left, size);
@@ -645,6 +654,12 @@ mod tests {
     fn run() -> Result<Run, String> {
         "1-0".parse().map_err(|()| "run".into())
     }
+    /// The events a test's journal keeps: few, so a ring fills fast.
+    const KEPT: usize = 16;
+    fn journal() -> Result<Journal, String> {
+        let kept = fux_wire::command::JournalEntries::new(KEPT).ok_or("journal")?;
+        Ok(Journal::new(kept))
+    }
     fn bell(pane: u32) -> Event {
         Event::Pane(
             ((WsId::of(1), TabId::of(1)), PaneId::of(pane)),
@@ -772,7 +787,7 @@ mod tests {
             statuses.insert(status.name().to_owned());
         }
         assert_eq!(statuses, table("| `status` | Meaning |")?);
-        assert!(docs.contains(&format!("last {},{:03} entries", KEPT / 1000, KEPT % 1000)));
+        assert!(docs.contains("last `journal-entries` entries (16,384"));
         Ok(())
     }
 
@@ -783,7 +798,7 @@ mod tests {
             .iter()
             .find(|e| matches!(e, Event::Pane(_, PaneEvent::Told(Told::Notification(_)))))
             .ok_or("notification")?;
-        let mut journal = Journal::default();
+        let mut journal = journal()?;
         assert_eq!(journal.entries.capacity(), 0, "no eager ring allocation");
         let mut oldest = Reader::new(Scope::All, &journal, run()?, None)?;
         for n in 1..=KEPT {
@@ -813,7 +828,7 @@ mod tests {
         assert_eq!(lost.batch(&journal, true)?.missed, 0);
         if cfg!(target_pointer_width = "64") {
             assert_eq!(std::mem::size_of::<Entry>(), 80);
-            assert_eq!(std::mem::size_of::<Journal>(), 64);
+            assert_eq!(std::mem::size_of::<Journal>(), 72);
             assert_eq!(std::mem::size_of::<Event>(), 56);
         }
         Ok(())
@@ -850,7 +865,7 @@ mod tests {
 
     #[test]
     fn batches_resume_at_the_exact_consumed_prefix() -> TestResult {
-        let mut journal = Journal::default();
+        let mut journal = journal()?;
         let mut reader = Reader::new(Scope::All, &journal, run()?, None)?;
         for _ in 0..1000 {
             journal.push(bell(1));
@@ -870,7 +885,7 @@ mod tests {
 
     #[test]
     fn filtered_entries_advance_the_cursor() -> TestResult {
-        let mut journal = Journal::default();
+        let mut journal = journal()?;
         let mut reader = Reader::new(
             Scope::Target(AnyRef::Pane(PaneId::of(2))),
             &journal,
@@ -893,7 +908,7 @@ mod tests {
 
     #[test]
     fn retention_loss_is_exact_even_for_a_filtered_scope() -> TestResult {
-        let mut journal = Journal::default();
+        let mut journal = journal()?;
         let mut reader = Reader::new(
             Scope::Target(AnyRef::Pane(PaneId::of(2))),
             &journal,
@@ -912,7 +927,7 @@ mod tests {
 
     #[test]
     fn exhausted_cursors_refuse_without_appending() -> TestResult {
-        let mut journal = Journal::default();
+        let mut journal = journal()?;
         let mut reader = Reader::new(Scope::All, &journal, run()?, None)?;
         journal.next = Seq(u64::MAX);
         journal.push(bell(1));
@@ -924,7 +939,7 @@ mod tests {
 
     #[test]
     fn cursors_refuse_other_runs_future_positions_and_noncanonical_text() -> TestResult {
-        let journal = Journal::default();
+        let journal = journal()?;
         for text in ["1:1-0", "0:2-0"] {
             let cursor = text.parse().map_err(|()| "cursor")?;
             assert!(Reader::new(Scope::All, &journal, run()?, Some(cursor)).is_err());
@@ -937,7 +952,7 @@ mod tests {
 
     #[test]
     fn moves_reach_both_places_and_closure_stops_the_prefix() -> TestResult {
-        let mut journal = Journal::default();
+        let mut journal = journal()?;
         let from = (WsId::of(1), TabId::of(1));
         let to = (WsId::of(2), TabId::of(2));
         let pane = PaneId::of(1);

@@ -696,10 +696,12 @@ fn a_dump_opens_its_workspace_with_the_first_tab_written() -> Outcome {
 /// The pid of the server that serves `socket`, found by its command line.
 #[cfg(target_os = "linux")]
 fn serving(socket: &std::path::Path) -> Option<i32> {
+    let journal = journal().ok()?;
     let line = [
         FUX.as_bytes(),
         fux::SERVE.as_bytes(),
         socket.as_os_str().as_encoded_bytes(),
+        journal.as_bytes(),
     ]
     .join(&0u8);
     std::fs::read_dir("/proc")

@@ -165,6 +165,7 @@ impl Server {
             let child = command
                 .arg(fux::SERVE)
                 .arg(&socket)
+                .arg(journal()?)
                 .env("PS1", "$ ")
                 .env("SHELL", "/bin/sh")
                 .env("ENV", "/dev/null")
@@ -828,6 +829,13 @@ pub fn signal(pid: i32, signal: fuxix::process::Signal) {
     if let Some(p) = fuxix::process::Pid::from_raw(pid) {
         let _ = fuxix::process::kill(p, signal);
     }
+}
+
+/// The events a server's journal keeps, as a client that starts one
+/// passes it (`fux __serve SOCKET ENTRIES`): the bundled `journal-entries`.
+pub fn journal() -> Result<String, String> {
+    let state = fux::script::default_state().map_err(e)?;
+    Ok(state.preferences.journal_entries.get().to_string())
 }
 
 /// Stops the server on `socket` as a person does: `kill` on its process

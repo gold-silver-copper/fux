@@ -180,6 +180,14 @@ impl Fixture {
         server
             .arg(fux::SERVE)
             .arg(&socket)
+            .arg(
+                fux::script::default_state()
+                    .map_err(|e| e.to_string())?
+                    .preferences
+                    .journal_entries
+                    .get()
+                    .to_string(),
+            )
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(log);

@@ -1764,7 +1764,11 @@ impl Host<'_> {
             Act::Socket => local(Local::Server(fux_wire::protocol::Choice::Path(
                 string(&next()?)?.into(),
             ))),
-            Act::Start => local(Local::Start),
+            Act::Start => {
+                self.prepare()
+                    .map_err(|why| fail(Raise::Config, why.to_string()))?;
+                local(Local::Start)
+            }
             Act::Status => local(Local::Status),
             Act::KillServer => tell(Command::KillServer),
             Act::AttachDefaults => {

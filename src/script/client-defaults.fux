@@ -6,6 +6,7 @@ str shell list
   dup str '' eq if drop str /bin/sh then
 end set
 str history-bytes 8388608 set
+str journal-entries 16384 set
 str reflow true set
 str alternate-scroll-lines 5 set
 str picture-bytes 100663296 set

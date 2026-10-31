@@ -41,6 +41,7 @@ fn a_second_server_on_the_same_socket_is_refused() -> Outcome {
     let out = std::process::Command::new(FUX)
         .arg(fux::SERVE)
         .arg(&server.socket)
+        .arg(journal()?)
         .output()
         .map_err(e)?;
     assert_eq!(out.status.code(), Some(1));

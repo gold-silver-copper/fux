@@ -693,6 +693,7 @@ fn replay(cassette: &Cassette, ctx: &Ctx, keep: bool, deadline: Instant) -> Resu
     let mut server = Command::new(&ctx.fux)
         .arg(fux::SERVE)
         .arg(&place.socket)
+        .arg(fux::script::default_state().map_err(e)?.preferences.journal_entries.get().to_string())
         .env_clear()
         .envs(place.env(ctx))
         .env("PS1", "$ ")

@@ -248,6 +248,10 @@ impl Through {
             PathBuf::from("/nonexistent/fux-vt-compare.sock"),
             false,
             fux_wire::command::Run::now().ok_or("the clock is before 1970")?,
+            fux::script::default_state()
+                .map_err(|e| e.to_string())?
+                .preferences
+                .journal_entries,
         );
         // The client attaching starts its first shell, on its screen.
         let client_rows = rows.checked_add(1).ok_or("too many rows for the bar")?;

@@ -1381,7 +1381,7 @@ fn local(
             // Watching or naming a run starts no replacement server.
             let socket = match *read_only || of.is_some() {
                 true => server.socket()?,
-                false => started(server)?,
+                false => started(server, committed.preferences.journal_entries)?,
             };
             if *read_only && !client::answers(&socket) {
                 let why = "no server answers: there is nothing to watch";
@@ -1399,7 +1399,12 @@ fn local(
             client::attach(&socket, attach, *size).map_err(|e| server.failed(e))?;
         }
         Local::Start => {
-            started(server)?;
+            let draft = draft.ok_or_else(|| {
+                Failed::new(Code::Config, "start needs this client's local state")
+            })?;
+            let journal = (draft.preferences.journal_entries())
+                .map_err(|why| Failed::new(Code::Config, why))?;
+            started(server, journal)?;
         }
         Local::Open(_) | Local::Shell(_) => return refuse_local(what),
         Local::Status => {
@@ -1415,11 +1420,15 @@ fn local(
     Ok(Vec::new())
 }
 
-/// The server's socket, starting it in the background if none answers.
-fn started(server: &mut Server) -> Result<SocketPath, Failed> {
+/// The server's socket, starting it in the background if none answers,
+/// its journal keeping `journal` events.
+fn started(
+    server: &mut Server,
+    journal: fux_wire::command::JournalEntries,
+) -> Result<SocketPath, Failed> {
     let socket = server.socket()?;
     if !client::answers(&socket) {
-        client::start_server(&socket).map_err(client_failed)?;
+        client::start_server(&socket, journal).map_err(client_failed)?;
     }
     Ok(socket)
 }
@@ -1759,11 +1768,15 @@ pub mod testing {
     ) -> Result<(fux_server::session::Session, fux_wire::id::ClientId), String> {
         use fux_wire::command::{InitialWorkspace, Run, Start};
         let run = Run::now().ok_or("no clock")?;
-        let mut session =
-            fux_server::session::Session::new("/nonexistent/fux.sock".into(), false, run);
         let preferences = super::default_state()
             .map_err(|e| e.to_string())?
             .preferences;
+        let mut session = fux_server::session::Session::new(
+            "/nonexistent/fux.sock".into(),
+            false,
+            run,
+            preferences.journal_entries,
+        );
         let size = fux_vt::Size::new(rows, cols).map_err(|e| e.to_string())?;
         let attach = fux_wire::protocol::Attach {
             initial: Some(InitialWorkspace {

@@ -494,13 +494,17 @@ pub fn answers(socket: &SocketPath) -> bool {
     UnixStream::connect(socket.path()).is_ok()
 }
 
-/// Starts a server in the background, in a new session with its log in
+/// Starts a server in the background, its journal keeping `journal`
+/// events, in a new session with its log in
 /// `fux.log` beside the socket, and waits for the line it writes once it
 /// listens (`server::READY`). Its stdout closing first means it failed, or
 /// found another server on the socket: one that answers, as a server that
 /// starts waits for the one starting before it (`socket::bind_socket`). A
 /// server that hangs before it listens holds the client too.
-pub fn start_server(socket: &SocketPath) -> Result<(), Error> {
+pub fn start_server(
+    socket: &SocketPath,
+    journal: fux_wire::command::JournalEntries,
+) -> Result<(), Error> {
     let exe = std::env::current_exe().map_err(failed("finding the fux binary"))?;
     socket::private_directory(socket, true)?;
     let log = socket.directory().join("fux.log");
@@ -509,6 +513,7 @@ pub fn start_server(socket: &SocketPath) -> Result<(), Error> {
     command
         .arg(crate::SERVE)
         .arg(socket.path())
+        .arg(journal.get().to_string())
         // A follow's mark is this command's, not its panes' (`follow`).
         .env_remove(FOLLOWED)
         .current_dir("/")
