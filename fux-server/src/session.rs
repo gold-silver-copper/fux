@@ -2973,8 +2973,7 @@ impl Session {
             }
             ClientAction::Capture => {
                 let terminal = view()?;
-                let panes = self.parts.panes().len();
-                crate::request::composed((terminal.rows, terminal.cols), panes, budget)?;
+                crate::request::composed(self, terminal, budget)?;
                 let mut grid = crate::render::Grid::default();
                 let placement = &mut Placement::default();
                 crate::render::compose_view(self, terminal, &mut grid, placement)

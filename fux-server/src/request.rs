@@ -162,18 +162,20 @@ const LINK: usize = std::mem::size_of::<Option<(fux_wire::id::PaneId, fux_vt::Hy
 /// The most bytes of short clusters a cell keeps (fux-vt's `SHORT`).
 const SHORT: usize = 17;
 
-/// What composing a client's screen, `rows` by `cols`, beside `panes`
-/// panes, may hold, charged to `budget` before it is composed: its cells,
-/// their text for long and short clusters (`Cells::text_limit`, 17 bytes a
-/// cell), each part three times over as it grows beside its old room,
-/// each cell's hyperlink, the list of rows with links as it grows, and
-/// where each pane and its separator are placed, likewise.
+/// What composing `view`'s screen may hold, charged to `budget` before it
+/// is composed: its cells, their text for long and short clusters
+/// (`Cells::text_limit`, 17 bytes a cell), each part three times over as it
+/// grows beside its old room, each cell's hyperlink, the list of rows with
+/// links as it grows, and where each pane and its separator are placed,
+/// likewise; and what composing makes beside the grid from what the screen
+/// shows (`render::scratch`: a prompt, a list, the bar).
 pub fn composed(
-    (rows, cols): (u16, u16),
-    panes: usize,
+    session: &crate::session::Session,
+    view: &crate::view::View,
     budget: &mut Budget,
 ) -> Result<(), fux_wire::code::Error> {
-    let cells = usize::from(rows).saturating_mul(usize::from(cols));
+    let (rows, panes) = (usize::from(view.rows), session.parts.panes().len());
+    let cells = rows.saturating_mul(usize::from(view.cols));
     let text = fux_vt::Cells::text_limit(cells).saturating_add(cells.saturating_mul(SHORT));
     let row = std::mem::size_of::<Option<std::vec::Vec<u8>>>();
     let placed = std::mem::size_of::<(fux_wire::id::PaneId, fux_wire::layout::Rect)>()
@@ -181,8 +183,9 @@ pub fn composed(
     let bytes = [
         cells.saturating_mul(CELL.saturating_add(LINK)),
         text.saturating_mul(3),
-        usize::from(rows).saturating_mul(row).saturating_mul(3),
+        rows.saturating_mul(row).saturating_mul(3),
         panes.saturating_mul(placed).saturating_mul(3),
+        crate::render::scratch(session, view),
     ];
     let bytes = bytes.into_iter().fold(0, usize::saturating_add);
     fuxix::Allocation::charge(budget, bytes)
@@ -294,6 +297,16 @@ mod tests {
             session.output(pane, text.as_bytes(), Instant::now());
         }
         let (mut tab, client) = attached(24, 80)?;
+        // A client of 10 by 10 typing a 4,096-byte line: what composing it
+        // makes is the line's, not the screen's.
+        let (mut prompted, typing) = attached(10, 10)?;
+        let view = prompted.views.get_mut(&typing).ok_or("client")?;
+        view.mode = crate::view::Mode::Panel(fux_wire::act::Panel::Prompt {
+            title: std::string::String::new(),
+            before: std::iter::repeat_n('x', fux_wire::act::LINE_MAX).collect(),
+            after: std::string::String::new(),
+            hints: std::vec::Vec::new(),
+        });
         for _ in 0..7 {
             run(&mut tab, "%1 str vertical axis split")?;
         }
@@ -326,20 +339,31 @@ mod tests {
             client: Some(client),
             action: ClientAction::Capture,
         };
+        let line = Command::Client {
+            client: Some(typing),
+            action: ClientAction::Capture,
+        };
         let too_long = Some(Code::from(Raise::TooLong));
-        // A workload, the session it runs in, its region and its answer.
-        for (command, on_tab, region, answered) in [
-            (&capture, false, 1 << 20, None),
-            (&capture, false, 512 << 10, too_long),
-            (&keys, false, 8 << 20, Some(Code::NoPane)),
-            (&keys, false, 1 << 20, too_long),
-            (&live, false, 64 << 10, too_long),
-            (&fan_out, true, 32 << 10, too_long),
-            (&env, false, 64 << 10, Some(Code::NoPane)),
-            (&screen, true, 512 << 10, None),
-            (&screen, true, 256 << 10, too_long),
+        // A workload, the session it runs in (one pane, a tab of eight, or
+        // a client typing), its region and its answer.
+        for (command, on, region, answered) in [
+            (&capture, 0, 1 << 20, None),
+            (&capture, 0, 512 << 10, too_long),
+            (&keys, 0, 8 << 20, Some(Code::NoPane)),
+            (&keys, 0, 1 << 20, too_long),
+            (&live, 0, 64 << 10, too_long),
+            (&fan_out, 1, 32 << 10, too_long),
+            (&env, 0, 64 << 10, Some(Code::NoPane)),
+            (&screen, 1, 1 << 20, None),
+            (&screen, 1, 256 << 10, too_long),
+            (&line, 2, 1 << 20, None),
+            (&line, 2, 32 << 10, too_long),
         ] {
-            let session = if on_tab { &mut tab } else { &mut session };
+            let session = match on {
+                0 => &mut session,
+                1 => &mut tab,
+                _ => &mut prompted,
+            };
             let asked = Asked {
                 after: None,
                 request: Request::Do(command.clone()),
@@ -392,9 +416,13 @@ mod tests {
     }
 
     /// A client's screen of long clusters, each in a hyperlink of its own,
-    /// composed holds no more than `composed` admits for it.
+    /// composed holds no more than `composed` admits for it: as it is, and
+    /// under each kind of panel at its longest (a typed line, a chooser, the
+    /// command column, a repeat mode's bar).
     #[test]
     fn a_composed_screen_holds_no_more_than_it_is_admitted() -> TestResult {
+        use crate::view::Mode;
+        use fux_wire::act::{Column, ColumnEntry, Hint, LINE_MAX, List, Panel};
         let allocator = fux_vt_peak::ThreadPeak;
         let (mut session, client) = attached(24, 80)?;
         run(&mut session, "%1 str vertical axis split")?;
@@ -406,21 +434,75 @@ mod tests {
                 session.output(pane, cell.as_bytes(), Instant::now());
             }
         }
-        let view = session.views.get(&client).ok_or("client")?;
-        let budget = &mut fux_wire::wire::Budget::with_limit(usize::MAX);
-        super::composed((view.rows, view.cols), session.parts.panes().len(), budget)?;
-        let admitted = usize::MAX - budget.region().remaining();
-        let base = allocator.live();
-        allocator.reset_peak();
-        let mut grid = crate::render::Grid::default();
-        let mut placement = fux_wire::layout::Placement::default();
-        crate::render::compose_view(&session, view, &mut grid, &mut placement)?;
-        let peak = allocator.peak().saturating_sub(base);
-        let long = grid.cells.text_len();
-        drop((grid, placement));
-        println!("composed {peak} of {admitted} admitted, {long} bytes of long clusters");
-        assert!(long > 24 * 80 * 16, "the clusters are long: {long}");
-        assert!(peak <= admitted, "{peak} > {admitted}");
+        let text = |n| -> std::string::String { std::iter::repeat_n('x', n).collect() };
+        let hints = || -> std::vec::Vec<Hint> {
+            let hint = |_| Hint {
+                keys: text(16),
+                label: text(64),
+            };
+            (0..16).map(hint).collect()
+        };
+        let key: fux_vt::keys::KeyPress = "C-M-S-F12".parse().map_err(|_| "key")?;
+        let entry = |n| ColumnEntry {
+            key,
+            label: text(64),
+            group: format!("group {}", n / 8),
+            layer: n % 2 == 0,
+            root: n > 500,
+        };
+        let modes = [
+            ("normal", Mode::Normal),
+            (
+                "prompt",
+                Mode::Panel(Panel::Prompt {
+                    title: text(64),
+                    before: text(LINE_MAX / 2),
+                    after: text(LINE_MAX / 2),
+                    hints: hints(),
+                }),
+            ),
+            (
+                "list",
+                Mode::Panel(Panel::List(List {
+                    title: text(64),
+                    items: (0..2000).map(|_| text(100)).collect(),
+                    current: Some(3),
+                    selected: 1990,
+                    about: None,
+                    hints: hints(),
+                })),
+            ),
+            (
+                "column",
+                Mode::Panel(Panel::Column(Column {
+                    title: text(64),
+                    keys: text(32),
+                    entries: (0..1000).map(entry).collect(),
+                    selected: 999,
+                })),
+            ),
+            ("repeat", Mode::Panel(Panel::Repeat(text(1000)))),
+        ];
+        for (shown, mode) in modes {
+            session.views.get_mut(&client).ok_or("client")?.mode = mode;
+            let view = session.views.get(&client).ok_or("client")?;
+            let budget = &mut fux_wire::wire::Budget::with_limit(usize::MAX);
+            super::composed(&session, view, budget)?;
+            let admitted = usize::MAX - budget.region().remaining();
+            let base = allocator.live();
+            allocator.reset_peak();
+            let mut grid = crate::render::Grid::default();
+            let mut placement = fux_wire::layout::Placement::default();
+            crate::render::compose_view(&session, view, &mut grid, &mut placement)?;
+            let peak = allocator.peak().saturating_sub(base);
+            let long = grid.cells.text_len();
+            drop((grid, placement));
+            println!(
+                "{shown}: composed {peak} of {admitted} admitted, {long} bytes of long clusters"
+            );
+            assert!(long > 24 * 80 * 8, "the clusters are long: {long}");
+            assert!(peak <= admitted, "{shown}: {peak} > {admitted}");
+        }
         Ok(())
     }
 
