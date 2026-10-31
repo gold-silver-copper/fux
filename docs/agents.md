@@ -420,6 +420,10 @@ begin 600 timeout wait dup counts 4 at 1 eq until  # ENDED, its last count, is 1
 all-history capture
 ```
 
+`name` there names the tab (`str tests tab`). A pane is named by a second
+request on its answer or handle: `new-tab dup str tests rename`, then
+`str tests pane`.
+
 `X let NAME` names a value, `define NAME … end` makes a word, `if … else …
 then` and `begin … until` decide and repeat, `list … end` gathers what its
 body leaves, `SEQ each … end` runs once per element, `CODES try … catch …
