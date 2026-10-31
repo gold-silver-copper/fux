@@ -1,6 +1,6 @@
 # fux: the vision
 
-Approved by the owner on 2026-10-31 (D-64 to D-66, D-81). It is grounded in a
+Approved by the owner on 2026-10-31 (D-64 to D-66, D-81 to D-85). It is grounded in a
 terminal multiplexer ontology
 (`~/code/notes/projects/fux/ontology-2026-10-31/ontologist/ONTOLOGY.md`)
 and a gap check of master against it
@@ -18,8 +18,7 @@ fuxth, a small Forth.** An agent driving it can:
 - get OS facts, such as a program's working directory, as live
   observations.
 
-Every action is bounded, acts on what was seen, says what it did, and never
-guesses.
+Every action acts on what was seen, says what it did, and never guesses.
 
 ## Who it is for
 
@@ -79,9 +78,15 @@ reference.
    on, and is refused as stale if the thing moved.
 3. **Every failure says what already happened.** A fuxth program can fail
    after it acted, so its error lists the actions that already took effect.
-4. **Hard bounds, refused out loud.** Memory, steps, sizes, queues and
-   history all have bounds. Crossing one is an error with a code, never a
-   slowdown or a crash. The bounds themselves can be read as data.
+4. **Limits belong to users and the OS** (D-83). fux sets no limits of
+   its own on memory, steps, time or queues:
+   - **the OS manages those:** `ulimit`, cgroups, `timeout`, `systemd-run`;
+   - **the user sets sizes** where fux must keep something, such as
+     history. Those are preferences with defaults, readable like any other
+     fact.
+
+   The one exception is parsing untrusted wire input safely. When something
+   does fail, the error says so with a code.
 5. **Deterministic, with its inputs stated.** The same source, the same
    starting state and the same host answers give the same result. The order
    in which competing agents arrive is an input, not something fux makes
@@ -126,8 +131,9 @@ reference.
 - **Not a clone** of tmux or Forth. It takes Forth's mechanisms (the
   dictionary, early binding, an extensible compiler), not its syntax.
 - **Not mouse-first, no floating panes** (rejected 2026-10-26).
-- **Not a general runtime.** No threads, floats, raw memory, packages or
-  network in fuxth.
+- **Not a general runtime.** No threads, floats, packages or network in
+  fuxth. It is otherwise a real Forth (D-84). Its data space holds
+  memory-safe cells, never host memory.
 - **Not a plugin platform.** Extension is fuxth source anyone can read.
 - **Not finished by audits.** An audit can find a bug; only the checklist
   says "done".
@@ -143,7 +149,11 @@ fux 1.0 is reached when all of these hold:
 - **the adopted removals are done** (D-68);
 - **every changed contract has been shown working in the real program** on
   the release head (D-48);
-- **the local gate passes.**
+- **the local gate passes;**
+- **fuxth's Forth core has landed** (D-84), since fux's words are fuxth
+  words;
+- **fux is smaller than it was on 2026-10-31** (D-85): its production
+  lines, not counting fux-vt and fuxix, end below master `1a8f860f`.
 
 Bounded journal batches read by cursor, with `missed` counts, count as
 complete.
@@ -163,4 +173,3 @@ The machine numbers hold throughout:
 | One `fux` command, cold | 8.25 M instructions | ≤ 10 M |
 | fuxth steps a second | 130–140 M | ≥ 100 M |
 | Longest hold of the server loop by one request | not gated | ≤ 16 ms |
-| Peak heap of a fuxth run | not gated | its byte budget + 1 MiB |

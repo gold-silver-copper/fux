@@ -1,10 +1,13 @@
 # fux: the roadmap
 
-Approved by the owner on 2026-10-31 (D-64 to D-66, D-79 to D-81). The
-road to 1.0 is a closed list, not a series of scenarios that keep growing.
-Every task is one PR, written by Opus (D-40) and reviewed by Sol and Astra
-(D-63). Each is verified with its own build in the real program (D-48) and
-merged on the local gate (D-39).
+Approved by the owner on 2026-10-31 (D-64 to D-66, D-79 to D-85). The road
+to 1.0 is a closed list, not a series of scenarios that keep growing.
+- Every task is one PR, written by Opus (D-40) and reviewed by Sol and
+  Astra (D-63).
+- Reviews keep fux minimal (D-85): must-fixes with evidence, at most three
+  notes, and no new surface.
+- Each task is verified with its own build in the real program (D-48) and
+  merged on the local gate (D-39).
 
 ## Done
 
@@ -18,54 +21,67 @@ merged on the local gate (D-39).
   - cassettes;
   - `run` removed;
   - `confirm` built on `choose`.
+- **M0b** was cancelled by D-83 after #333, #334 and #336. Limits belong to
+  users and the OS.
 
-## M0b, cut down (D-79): running
+## Now
 
-Three tasks are merged: `region` #333, `fuxth-region` #334 and
-`request-region` #336. Two remain:
-- **`pane-budget`:** it includes connection and pane admission (K10).
-- **`client-region`.**
+1. **`unlimit`** (D-83): one removal PR.
+   - **Removed:**
+     - the region and budget machinery (#333, #334, #336);
+     - fuxth's step and byte budgets;
+     - fux's own caps and admission limits.
+   - **Kept:** only the sizes a user sets as preferences (history, the
+     journal ring), and what parsing untrusted wire input safely needs.
+   - **Not touched:** fux-vt and fuxix, which are frozen (D-42 still holds
+     for them).
+   - It runs alone, because it touches every crate.
+2. **The fuxth design** (D-84), beside `unlimit` (no code): the staged plan
+   that turns fuxth into a real Forth. It covers:
+   - Forth 2012 Core, with each deviation and its reason;
+   - the standalone `fuxth` runner with the terminal and file words an
+     editor needs (`key`, `emit`, `type`, `at-xy`, `page`, the file word
+     set), leaning on the OS (D-82);
+   - the spec of fuxed version 0.
 
-Each proves its bound with a flood beside an interactive pane and a blocked
-or disconnecting client. The small `Session::check()` invariants also go in,
-under the existing `checks` feature. Page:
-`~/code/notes/projects/fux/live/milestones/M0b.md`.
+   It revises `/home/gsc/code/fux/prompts/fuxth-forth.md` and its page is
+   `~/code/notes/projects/fux/live/milestones/fuxth.md`.
 
-## The 1.0 list (D-80): next
+## Then, in parallel (two lanes at a time)
 
-One list, ordered by dependencies first and size second, worked in disjoint
-lanes. Page: `~/code/notes/projects/fux/live/milestones/1.0.md`. It
-contains:
-- **the gap check's tasks** (`GAPS.md`, "Candidate tasks"), minus task 31
-  (confinement, D-81);
-- **the removals** (D-68);
-- **`since` and `faint-marks`,** as facts of the terminal state;
-- **the fuxth support those tasks need:** code values for callbacks (D-68),
-  word and dictionary records (D-75) and failure reports;
-- **last, `agent-page`:** the agent guide rewritten around the finished
-  interface.
+- **The fuxth track:** the plan's PRs, in the fuxth crates.
+- **The fuxed experiment,** as soon as the runner can read keys, draw and
+  open files.
+  - **Where:** a completely independent fuxth program, which doesn't use
+    fux, in `fuxed/`.
+  - **Who:** an Opus agent writes it, and records every missing word or
+    mechanism as a finding.
+  - **Findings go into the fuxth track.**
+- **The fux 1.0 list** (D-80):
+  - the gap check's tasks, minus task 31 (confinement, D-81), task 9 (the
+    limits record, D-83) and task 25 (step and byte usage, D-83);
+  - the removals (D-68);
+  - `since` and `faint-marks`.
 
-The hidden bar (D-49) is in it as gap task 4.
+  Its fuxth lane (code values, word records, failure reports) moves to the
+  fuxth track. Page: `~/code/notes/projects/fux/live/milestones/1.0.md`.
 
-## fux 1.0 (D-65)
+## fux 1.0 (D-65, D-84, D-85)
 
-Every gap-check row is "have", the removals are done, each changed
-contract is shown in the real program, and the gate passes. Then the public
-interface freezes, as VISION.md says.
+It is reached when all of these hold:
+- every gap-check row is "have";
+- the removals are done;
+- fuxth's Forth core has landed;
+- each changed contract has been shown in the real program;
+- fux is smaller than on 2026-10-31;
+- the gate passes.
 
-## After 1.0, as separate projects
-
-- **fuxth on its own** (from the old M2): the dictionary and outer
-  interpreter, `SEMANTICS.md`, the `fuxth` runner and REPL.
-  `/home/gsc/code/fux/prompts/fuxth-forth.md` as cut by D-36.
-- **fuxed, the editor** (from the old M3), with its own vision: named
-  commands, live redefinition, edits checked against a buffer revision.
-- **Using the tools** (from the old M4): the owner's agents working in fux
-  every day. It is no longer a condition for 1.0. What they find becomes
-  bug fixes, or an ontology change for the owner to decide.
+Then fux's public interface freezes, as VISION.md says. fuxth and fuxed
+keep going toward their own 1.0.
 
 ## Not on this roadmap
 
 - Confinement, scope, or any sandboxing (D-81).
+- Limits fux imposes on its own (D-83).
 - A human-facing polish milestone (themes, reload, mouse). It waits for an
   owner request.
