@@ -183,7 +183,7 @@ impl PreferenceDraft {
         required(self.wait, "wait-seconds")
     }
     /// Seed an in-process client draft from its own view.
-    pub fn presentation(&mut self, p: crate::view::Presentation) {
+    pub fn presentation(&mut self, p: crate::presentation::Presentation) {
         self.styles = Some(p.styles);
         self.bar = Some(p.bar);
         self.slots = Some(p.slots);
@@ -218,8 +218,8 @@ impl Preferences {
             picture_bytes: self.picture_bytes,
         }
     }
-    pub fn presentation(&self) -> crate::view::Presentation {
-        crate::view::Presentation {
+    pub fn presentation(&self) -> crate::presentation::Presentation {
+        crate::presentation::Presentation {
             styles: self.styles,
             bar: self.bar.clone(),
             slots: self.slots.clone(),

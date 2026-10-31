@@ -3,6 +3,7 @@
 //! paints the server relays to its terminal;
 //! a headless one; and the connection a program's requests go over.
 use crate::act::Act;
+use crate::callback::JOB_BYTES;
 use crate::client_state::ClientState;
 use crate::code::Code;
 #[cfg(test)]
@@ -508,7 +509,10 @@ struct Ran {
 }
 
 enum Update {
-    Presentation(crate::view::Presentation, std::sync::mpsc::SyncSender<u64>),
+    Presentation(
+        crate::presentation::Presentation,
+        std::sync::mpsc::SyncSender<u64>,
+    ),
     Finished(Ran),
 }
 
@@ -536,10 +540,10 @@ impl Write for Said {
     }
 }
 
-/// Programs that may wait for the worker, and the bytes of their code:
-/// one that would take them past either is not run, and said not to be.
+/// Programs that may wait for the worker, beside the bytes of their code
+/// (`JOB_BYTES`): one that would take them past either is not run, and said
+/// not to be.
 pub(crate) const JOBS: usize = 64;
-pub(crate) const JOB_BYTES: usize = 4 << 20;
 /// Inputs that may wait for a program, and the bytes of their pastes: those
 /// past either are not taken, and said not to be (`Keyboard::holds`).
 pub(crate) const HELD: usize = 1024;
@@ -958,7 +962,7 @@ fn run_job(
     state: &Mutex<ClientState>,
     job: &Job,
     stop: &script::Stop,
-    present: &mut dyn FnMut(crate::view::Presentation),
+    present: &mut dyn FnMut(crate::presentation::Presentation),
 ) -> Ran {
     let mut changed = lock(state).draft();
     let config = changed.config.clone();
@@ -986,7 +990,11 @@ fn run_job(
     let mut result = (|| {
         stop.check()?;
         if let Some(open) = &job.screen {
-            asks.opened = Some(open.clone().admit(Some(&changed), &context)?);
+            asks.opened = Some(crate::script::admit(
+                open.clone(),
+                Some(&changed),
+                &context,
+            )?);
             return Ok(Vec::new());
         }
         let mut machine = job.machine(config.as_ref())?;
@@ -1923,10 +1931,10 @@ mod tests {
     -> Result<(), Box<dyn std::error::Error>> {
         let mut keyboard = keyboard(false)?;
         assert!(program(&mut keyboard, "me command-prompt begin false until".into()).is_empty());
-        let queued = keyboard.frame(ToAttached::Open(crate::screens::Open::Prompt(
-            crate::screens::Prompt {
+        let queued = keyboard.frame(ToAttached::Open(crate::callback::Open::Prompt(
+            crate::callback::Prompt {
                 title: ":".into(),
-                line: crate::view::Line::new(String::new()),
+                line: crate::act::Line::new(String::new()),
                 action: None,
             },
         )));
@@ -1993,7 +2001,7 @@ mod tests {
         assert!(ran.notice.is_none());
         assert_eq!(
             updates,
-            [crate::view::Presentation {
+            [crate::presentation::Presentation {
                 bell: false,
                 titles: true,
                 terminal_clipboard: false,
@@ -2131,9 +2139,9 @@ mod tests {
     fn a_screen_too_large_to_show_is_refused_as_it_opens() -> Result<(), Box<dyn std::error::Error>>
     {
         let mut keyboard = keyboard(false)?;
-        let prompt = crate::screens::Prompt {
+        let prompt = crate::callback::Prompt {
             title: std::iter::repeat_n('t', crate::protocol::MAX_FRAME - 2048).collect(),
-            line: crate::view::Line::new(String::new()),
+            line: crate::act::Line::new(String::new()),
             action: None,
         };
         let mut acts = Vec::new();

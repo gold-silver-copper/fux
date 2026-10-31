@@ -39,7 +39,7 @@ impl Watches {
 
 /// A request waiting for its answer.
 pub enum Waiting {
-    Events(crate::events::Read),
+    Events(crate::journal::Read),
     /// A wait (`wait`, or an action given wait words).
     Change(Watch),
     /// A respawn whose pane's old program left output still read, in

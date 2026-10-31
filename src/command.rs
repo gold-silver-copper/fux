@@ -1,5 +1,5 @@
 //! The requests a client sends the server: typed actions, each built by
-//! fuxth words in a client (`crate::script`) and carried whole over the
+//! fuxth words in a client (its `script`) and carried whole over the
 //! socket (`crate::wire`). The server never reads words.
 use crate::id::{BufferId, ClientId, PaneId, TabId, WsId};
 use crate::keys::mouse::MouseButton;
@@ -350,9 +350,43 @@ wire! {
     }
 }
 
+/// The most rows, and columns, a client's view has.
+pub const MOST: u16 = 4096;
+
+/// `rows` by `cols`, if a client's view can be that size: 1 to `MOST`
+/// each way; else why not.
+pub fn size(rows: u16, cols: u16) -> Result<(u16, u16), String> {
+    let fits = |n: u16| (1..=MOST).contains(&n);
+    match fits(rows) && fits(cols) {
+        true => Ok((rows, cols)),
+        false => Err(format!(
+            "{cols} columns by {rows} rows: a client is 1 to {MOST} each way"
+        )),
+    }
+}
+
+/// A size a client's screen, and so a tab, may be: 1 to `MOST` rows and
+/// columns. Every size a request gives is one, so each size the server
+/// holds is one a dump writes (`COLS ROWS size`) and makes again.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Screen(fux_vt::Size);
+
+impl Screen {
+    /// `rows` by `cols`, if a screen can be that size; else why not.
+    pub fn new(rows: u16, cols: u16) -> Result<Screen, String> {
+        let (rows, cols) = size(rows, cols)?;
+        fux_vt::Size::new(rows, cols)
+            .map(Screen)
+            .map_err(|e| e.to_string())
+    }
+    pub fn size(self) -> fux_vt::Size {
+        self.0
+    }
+}
+
 /// How a tab no client shows is laid out (`size`, `resize`): `None`,
 /// on a client's screen.
-pub type Size = Option<crate::view::Screen>;
+pub type Size = Option<Screen>;
 
 wire! {
     /// A pane's new width or height (`resize-pane`).
@@ -404,7 +438,7 @@ wire! {
         /// no client shows them, or as the clients showing them are.
         Tabs(target: AnyRef, size: Size),
         /// A headless client's screen.
-        Client(client: ClientId, size: crate::view::Screen),
+        Client(client: ClientId, size: crate::command::Screen),
     }
 }
 
@@ -935,7 +969,7 @@ wire! {
         /// it, bar and overlays included.
         Capture,
         /// Owned screen data and explicitly designated callback source.
-        Open(screen: crate::screens::Open),
+        Open(screen: crate::callback::Open),
         /// Keys as typed at its terminal: its bindings, overlays and prompts
         /// take them as a person's keys.
         Keys(inputs: Vec<Input>),

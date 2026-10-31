@@ -178,10 +178,10 @@ pub fn take(fixture: &mut Fixture, step: &Step, at: usize) -> Result<(), End> {
             let after = fixture
                 .listed_clients()
                 .map_err(|e| fail(at, "listing", e))?;
-            if !refused.contains(&fux::view::MOST.to_string()) || before != after {
+            if !refused.contains(&fux::command::MOST.to_string()) || before != after {
                 return Err(fail(
                     at,
-                    "a size past view::MOST is refused, and no client attached",
+                    "a size past crate::command::MOST is refused, and no client attached",
                     format!("9000 by 9000: {refused:?}; clients {before:?}, then {after:?}"),
                 ));
             }

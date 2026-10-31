@@ -305,7 +305,7 @@ wire! {
         pub size: fux_vt::Size,
         pub target: Option<crate::command::AttachTarget>,
         pub read_only: bool,
-        pub presentation: crate::view::Presentation,
+        pub presentation: crate::presentation::Presentation,
         pub initial: Option<crate::command::InitialWorkspace>,
     }
 }
@@ -316,7 +316,7 @@ impl OneKind for Attach {
 
 impl Attach {
     /// A noncreating client of `size` that types and asks for no workspace.
-    pub fn of(size: fux_vt::Size, presentation: crate::view::Presentation) -> Attach {
+    pub fn of(size: fux_vt::Size, presentation: crate::presentation::Presentation) -> Attach {
         Attach {
             of: None,
             size,
@@ -413,7 +413,7 @@ wire! {
         Found(id: AnyRef),
         /// The panes or tabs a place holds, in its order.
         Handles(ids: Vec<AnyRef>),
-        Capture(captured: Box<crate::capture::Captured>),
+        Capture(captured: Box<crate::answer::Captured>),
         Snapshot(snapshot: Box<crate::inspect::Snapshot>),
         Events(batch: Box<crate::events::Batch>),
         /// One field of a pane, tab or workspace (`get`).
@@ -558,7 +558,7 @@ frames! {
         /// confirmation whose subject closed), the mode being the client's.
         Ended(opening: u64) = 14,
         /// Owned screen data; callbacks are checked by the receiving client.
-        Open(screen: crate::screens::Open) = 15,
+        Open(screen: crate::callback::Open) = 15,
         /// Keys to take as typed at its terminal (`send-keys` to a client).
         Keys(keys: Vec<crate::command::Input>) = 16,
     }
@@ -912,7 +912,11 @@ mod tests {
         round_trip!(Greeting, 11, Greeting::Done(2));
         round_trip!(ToAttached, 12, ToAttached::Welcome(ClientId::of(2), run));
         round_trip!(ToAttached, 14, ToAttached::Ended(7));
-        round_trip!(ToAttached, 15, ToAttached::Open(crate::screens::Open::Copy));
+        round_trip!(
+            ToAttached,
+            15,
+            ToAttached::Open(crate::callback::Open::Copy)
+        );
         round_trip!(ToAttached, 16, ToAttached::Keys(Vec::new()));
         for target in [
             crate::command::AttachTarget::Tab(crate::id::TabId::of(2)),

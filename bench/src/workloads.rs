@@ -830,7 +830,7 @@ fn pane(loads: &[Load], baseline: bool) -> Result<Done, String> {
         });
     }
     // What it tells goes in a journal of its own, as in a session.
-    let mut journal = fux::events::Journal::default();
+    let mut journal = fux::journal::Journal::default();
     let at = (
         "+1".parse().map_err(|_| "+1")?,
         "@1".parse().map_err(|_| "@1")?,
@@ -1147,7 +1147,7 @@ fn encode(
     })
 }
 
-fn presentation() -> Result<fux::view::Presentation, String> {
+fn presentation() -> Result<fux::presentation::Presentation, String> {
     fux::script::default_state()
         .map(|s| s.preferences.presentation())
         .map_err(|e| e.to_string())

@@ -6,56 +6,14 @@
 //! cursor in the scrollback, which it alone holds (`ScreenAct::Copy`).
 //!
 //! What a screen's entry does is fuxth, run as the client runs a binding.
+use crate::act::Line;
 use crate::act::{Act, CopyAct, LineAct, List, ListAct, Panel, ScreenAct, Seek};
-use crate::callback::{Callback, Data};
-use crate::command::AnyRef;
+use crate::callback::{Callback, Confirm, Data, ListScreen, Open, Prompt};
 use crate::copy::SEARCH_MAX;
 use crate::decode::Input;
 use crate::keymap::{Held, Keymap, Modes};
 use crate::keys::{KeyPress, Keystroke};
 use crate::script;
-use crate::view::Line;
-use crate::wire::{Wire, wire};
-
-/// A typed screen request; only Callback.code is executable source.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Open {
-    List(ListScreen),
-    Prompt(Prompt),
-    Confirm(Confirm),
-    Copy,
-}
-
-impl Wire for Open {
-    fn put(&self, out: &mut impl crate::wire::Sink) {
-        match self {
-            Self::List(list) => {
-                out.push(0);
-                list.put(out);
-            }
-            Self::Prompt(prompt) => {
-                out.push(1);
-                prompt.put(out);
-            }
-            Self::Confirm(confirm) => {
-                out.push(2);
-                confirm.put(out);
-            }
-            Self::Copy => out.push(3),
-        }
-    }
-    fn get(r: &mut crate::wire::Reader<'_>) -> Result<Self, crate::wire::Error> {
-        r.limited(crate::client::JOB_BYTES, |r| {
-            Ok(match u8::get(r)? {
-                0 => Self::List(ListScreen::get(r)?),
-                1 => Self::Prompt(Prompt::get(r)?),
-                2 => Self::Confirm(Confirm::get(r)?),
-                3 => Self::Copy,
-                tag => return Err(crate::wire::Error::Tag("screen", tag)),
-            })
-        })
-    }
-}
 
 /// One of a client's screens, or none: its keys then go through its
 /// bindings, in the middle of what `Held` says. So nothing is held for the
@@ -68,70 +26,6 @@ pub enum Screen {
     Confirm(Confirm),
     /// Copy mode, and the search line being typed in it, forward or back.
     Copy(Option<(Seek, Line<SEARCH_MAX>)>),
-}
-
-wire! {
-    /// An admitted chooser with one callback and independent current and selection.
-    #[derive(Clone, Debug, PartialEq, Eq)]
-    pub struct ListScreen {
-        pub title: String,
-        pub items: Vec<Item>,
-        pub current: Option<usize>,
-        pub selected: usize,
-        pub about: Option<(AnyRef, Option<crate::command::Run>)>,
-        pub action: Callback,
-        pub client: Data,
-    }
-}
-wire! {
-    /// A row's inert label and actual immutable payload.
-    #[derive(Clone, Debug, PartialEq, Eq)]
-    pub struct Item {
-        pub label: String,
-        pub payload: Data,
-    }
-}
-
-/// A line being typed, and what Enter does with it.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Prompt {
-    pub title: String,
-    pub line: Line,
-    /// None: the line is fuxth to run. Some: fuxth run with the line on its
-    /// stack, a string.
-    pub action: Option<Callback>,
-}
-
-wire! {
-    /// A question, and the fuxth its yes runs.
-    #[derive(Clone, Debug, PartialEq, Eq)]
-    pub struct Confirm {
-        pub question: String,
-        pub action: Callback,
-    }
-}
-
-impl Wire for Prompt {
-    fn put(&self, out: &mut impl crate::wire::Sink) {
-        self.title.put(out);
-        self.line.clone().text().put(out);
-        self.action.put(out);
-    }
-    fn get(r: &mut crate::wire::Reader<'_>) -> Result<Self, crate::wire::Error> {
-        let title = String::get(r)?;
-        let text = r.bounded_text(crate::view::LINE_MAX)?;
-        let mut line = Line::new(String::new());
-        if text.contains(char::is_control) {
-            return Err(crate::wire::Error::Bad("prompt text"));
-        }
-        line.edit(&crate::act::Edit::Insert(text))
-            .map_err(|_| crate::wire::Error::Bad("prompt length"))?;
-        Ok(Self {
-            title,
-            line,
-            action: Option::get(r)?,
-        })
-    }
 }
 
 /// What a key leads to, in a screen or through the bindings: an action for
@@ -285,6 +179,15 @@ impl Job {
         fuxth::token::source("key", &self.code)
     }
 
+    /// Instantiate a checked callback without constructing source from data.
+    pub fn call(callback: &Callback, args: impl IntoIterator<Item = Data>) -> Self {
+        Self {
+            code: callback.code.clone(),
+            given: Some(callback.args.iter().cloned().chain(args).collect()),
+            screen: None,
+        }
+    }
+
     pub fn open(screen: Open) -> Self {
         Self {
             code: String::new(),
@@ -318,13 +221,13 @@ pub const ACTION_MAX: usize = 1 << 16;
 /// The effect that hides the screen showing.
 pub const HIDE: Effect = Effect::Screen(ScreenAct::Hide);
 
-impl Open {
-    pub fn build(self) -> Screen {
-        match self {
-            Self::List(list) => Screen::List(list),
-            Self::Prompt(prompt) => Screen::Prompt(prompt),
-            Self::Confirm(confirm) => Screen::Confirm(confirm),
-            Self::Copy => Screen::Copy(None),
+impl From<Open> for Screen {
+    fn from(open: Open) -> Self {
+        match open {
+            Open::List(list) => Screen::List(list),
+            Open::Prompt(prompt) => Screen::Prompt(prompt),
+            Open::Confirm(confirm) => Screen::Confirm(confirm),
+            Open::Copy => Screen::Copy(None),
         }
     }
 }
@@ -359,7 +262,7 @@ impl Screen {
     pub fn largest(&self, modes: &Modes) -> Option<ScreenAct> {
         let mut largest = self.clone();
         if let Self::Prompt(prompt) = &mut largest {
-            prompt.line = Line::new(std::iter::repeat_n('x', crate::view::LINE_MAX).collect());
+            prompt.line = Line::new(std::iter::repeat_n('x', crate::act::LINE_MAX).collect());
         }
         largest.opened(modes)
     }
@@ -436,7 +339,7 @@ impl Screen {
                 }
             },
             Self::Confirm(confirm) => match modes.confirm.get(press) {
-                Some(true) => vec![HIDE, Effect::Run(confirm.action.job([]))],
+                Some(true) => vec![HIDE, Effect::Run(Job::call(&confirm.action, []))],
                 Some(false) => vec![HIDE],
                 None => {
                     *self = Self::Confirm(confirm);
@@ -478,7 +381,10 @@ impl Screen {
         if let (Some(action), Some(item)) = (action, chosen) {
             return vec![
                 HIDE,
-                Effect::Run(action.job([list.client.clone(), item.payload.clone()])),
+                Effect::Run(Job::call(
+                    action,
+                    [list.client.clone(), item.payload.clone()],
+                )),
             ];
         }
         let moved = match act {
@@ -497,7 +403,7 @@ impl Screen {
             LineAct::Submit => {
                 let text = prompt.line.text();
                 let job = match prompt.action {
-                    Some(action) => Some(action.job([Data::Text(text)])),
+                    Some(action) => Some(Job::call(&action, [Data::Text(text)])),
                     None => Some(text).filter(|t| !t.trim().is_empty()).map(Job::from),
                 };
                 std::iter::once(HIDE).chain(job.map(Effect::Run)).collect()
@@ -572,6 +478,7 @@ fn refusal(text: String) -> Effect {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::callback::Item;
 
     /// Key `name` typed at `screen`, with the default bindings.
     fn key(screen: &mut Screen, name: &str) -> Result<Vec<Effect>, String> {
@@ -650,7 +557,10 @@ mod tests {
             key(&mut screen, "Enter")?,
             [
                 Effect::Screen(ScreenAct::Hide),
-                Effect::Run(Callback::from("2drop").job([Data::Int(0), Data::Int(2)]))
+                Effect::Run(Job::call(
+                    &Callback::from("2drop"),
+                    [Data::Int(0), Data::Int(2)]
+                ))
             ]
         );
         assert_eq!(screen, Screen::default());
@@ -659,7 +569,10 @@ mod tests {
             key(&mut screen, "x")?,
             [
                 Effect::Screen(ScreenAct::Hide),
-                Effect::Run(Callback::from("confirm-close").job([Data::Int(0), Data::Int(1)]))
+                Effect::Run(Job::call(
+                    &Callback::from("confirm-close"),
+                    [Data::Int(0), Data::Int(1)]
+                ))
             ]
         );
         let mut screen = list();

@@ -10,8 +10,9 @@
 //! as they make it, and by a pane's own, which a [`PaneMut`] gives the
 //! journal at the pane's place.
 use crate::command::Sibling;
-use crate::events::{Actor, Change, Event, Journal, PaneEvent, ViewChange};
+use crate::events::Actor;
 use crate::id::{ClientId, PaneId, TabId, WsId};
+use crate::journal::{Change, Event, Journal, PaneEvent, ViewChange};
 use crate::layout::{self, Axis, NoPane, Rect, Removed, Side, Tree};
 use crate::pane::{Pane, PaneMut};
 use std::collections::{BTreeMap, BTreeSet};
@@ -400,7 +401,7 @@ fn rename(
     }
 }
 
-fn place_of(workspaces: &[Workspace], client: ClientId) -> Option<crate::events::PaneAt> {
+fn place_of(workspaces: &[Workspace], client: ClientId) -> Option<crate::journal::PaneAt> {
     let ws = workspaces.iter().find(|w| w.viewers.contains(&client))?;
     let tab = ws.tab_of(client)?;
     Some(((ws.id, tab.id), tab.focus(client)?))

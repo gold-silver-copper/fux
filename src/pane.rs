@@ -1,10 +1,11 @@
 //! A pane: its terminal emulator, its process, and the input waiting for it.
 use crate::after;
+use crate::answer::Ended;
 use crate::bytes::ByteQueue;
-use crate::events::{Journal, Teller, Told};
 use crate::id::{PaneId, TabId, WsId};
+use crate::journal::{Journal, Teller, Told};
 use crate::outer::{Colours, Scheme};
-use crate::process::{Child, Ended, Pid};
+use crate::process::{Child, Pid};
 use fux_vt::{Event, Feature, Screen, Size};
 use std::collections::{BTreeSet, VecDeque};
 use std::time::{Duration, Instant};
@@ -245,7 +246,7 @@ pub const IDENTITY: fux_vt::Identity = fux_vt::Identity {
 /// keyboard protocol (fux encodes keys as each pane asks), hyperlinks,
 /// prompt marks, DECRQSS (neovim asks it whether the terminal keeps
 /// underline styles: a pane keeps them, and each client is painted them as
-/// far as its terminal draws them, `render::sgr`), the palette (a pane's
+/// far as its terminal draws them, `answer::sgr`), the palette (a pane's
 /// program sets and asks its colours, OSC 4, 10 to 19 and the rest, and
 /// is drawn in them, `render::pane_colours`, without its client's palette
 /// changing) and fux's identity.
@@ -2940,7 +2941,7 @@ pub(crate) mod tests {
         let mut pane = pane(3, 30, 1 << 10)?;
         let run = "1-0".parse().map_err(|()| "a run")?;
         let mut stream =
-            crate::events::Reader::new(crate::inspect::Scope::All, &pane.journal, run, None)?;
+            crate::journal::Reader::new(crate::inspect::Scope::All, &pane.journal, run, None)?;
         pane.output(
             b"\x1b]133;C\x07x\x1b]133;D;1\x07\x07\x1b]133;C\x07\x1b]133;D;0\x07\x1b]2;t\x07",
         );

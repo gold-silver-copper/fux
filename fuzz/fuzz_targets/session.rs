@@ -489,7 +489,7 @@ impl Run {
                     of: Some(self.s.run),
                     ..Default::default()
                 };
-                match open.admit(Some(&self.keymap.draft()), &context) {
+                match fux::script::admit(open, Some(&self.keymap.draft()), &context) {
                     Ok(screen) => self.open(client, screen),
                     Err(failed) => {
                         self.s.acts(
@@ -911,8 +911,8 @@ fuzz_target!(|data: &[u8]| {
             _ => {
                 let pick = input.next();
                 if let Some(p) = given.pane(pick) {
-                    given.s.exited(p, fux::process::Ended::Exited(0), now);
-                    bytewise.s.exited(p, fux::process::Ended::Exited(0), now);
+                    given.s.exited(p, fux::answer::Ended::Exited(0), now);
+                    bytewise.s.exited(p, fux::answer::Ended::Exited(0), now);
                 }
             }
         }

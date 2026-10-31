@@ -153,7 +153,7 @@ impl Terminal {
     pub(crate) fn facts(
         &self,
         budget: &mut crate::wire::Budget,
-    ) -> Result<crate::json::Json, crate::session::Error> {
+    ) -> Result<crate::json::Json, crate::code::Error> {
         use crate::json::Json;
         let cell = self
             .said_cell
@@ -931,10 +931,12 @@ mod tests {
             .preferences;
         s.apply(
             c,
-            vec![crate::act::Act::Presentation(crate::view::Presentation {
-                bell: false,
-                ..preferences.presentation()
-            })],
+            vec![crate::act::Act::Presentation(
+                crate::presentation::Presentation {
+                    bell: false,
+                    ..preferences.presentation()
+                },
+            )],
         );
         assert!(!tab_label(&s, c).contains('!'));
         s.apply(
@@ -944,10 +946,12 @@ mod tests {
         assert!(!tab_label(&s, c).contains('!'));
         s.apply(
             c,
-            vec![crate::act::Act::Presentation(crate::view::Presentation {
-                bell: false,
-                ..preferences.presentation()
-            })],
+            vec![crate::act::Act::Presentation(
+                crate::presentation::Presentation {
+                    bell: false,
+                    ..preferences.presentation()
+                },
+            )],
         );
         past_the_gap(&mut s);
         s.out(PaneId::of(1), b"\x07");
@@ -969,10 +973,12 @@ mod tests {
             .preferences;
         s.apply(
             c,
-            vec![crate::act::Act::Presentation(crate::view::Presentation {
-                titles: true,
-                ..preferences.presentation()
-            })],
+            vec![crate::act::Act::Presentation(
+                crate::presentation::Presentation {
+                    titles: true,
+                    ..preferences.presentation()
+                },
+            )],
         );
         assert!(s.before_paint(other).is_empty());
         let first = s.before_paint(c);
