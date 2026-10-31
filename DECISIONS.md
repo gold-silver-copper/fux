@@ -85,6 +85,21 @@ Ballot, votes and reasons: `~/code/notes/projects/fux/live/panel/2026-10-30-s2/`
 | D-46 (S2-6) | **Line count is a gate only for pure cleanup tasks;** correctness and bounds work is judged by its tests and by "nothing slower". Each PR still reports its counts | 10–0 | — |
 | D-47 (S2-7) | **fux 1.0:** the panel declares it after M0c, M0b and M1 pass and the residents work a week with nothing blocking. It freezes D-34's list for fux. After it, fux takes only bug fixes and reproduced findings, and new work goes to fuxth and fuxed, which have their own 1.0 later | 7–3 | AI researcher: only after a week of all ten residents |
 
+## Settled by the decision panel, sitting 3 (2026-10-31): fux's display, and how agents see fux
+
+Ballot, votes and reasons: `~/code/notes/projects/fux/live/panel/2026-10-31-s3/`.
+Proposals: `~/code/notes/projects/fux/live/findings.md` F-7 to F-14.
+
+| Id | Decision | Vote | Strongest dissent |
+|---|---|---|---|
+| D-49 (S3-1) | **The bar is hidden by default.** The bar, tab list and notices draw over the panes while the prefix is in use, then the covered rows are repainted. A bell or notification shows a brief corner notice that takes no layout space. Pane sizes never change because of fux's own UI. The default lives in the fuxth library; `bar on` restores today's row | 9–1 | power user: the notice should stay as a corner badge naming the tabs with unseen bells until this client views them, rather than fade |
+| D-50 (S3-2) | **Milestone M1b, after M0b and before M1's resident week:** prompt marks (D-51), changed rows (D-52) and joined lines (D-53), so they land before the interface freezes (D-44). Styling marks (D-54) join it. The other representation proposals wait for residents' findings | 8–1–1 | ontologist: include the facts header (F-13) too |
+| D-51 (S3-3) | **Shell prompt marks (OSC 133) are recorded as facts.** fux records the marks a program sends and answers from them (the last command's output and exit status). It never infers a prompt itself | 10–0 | — |
+| D-52 (S3-4) | **"What changed since version V" answers only the changed rows,** bounded like any capture | 10–0 | — |
+| D-53 (S3-5) | **Text captures rejoin soft-wrapped lines** into logical lines by default and state the width once; the raw grid is available on request | 10–0 | — |
+| D-54 (S3-6.2) | **Captures mark what only styling carries** (faint, as reverse already is, and what the program drew as a selection), on request through `marks`. A mark says "rendered faint", never "placeholder" | round 2: 9–1 | — |
+| D-55 (S3-6) | **Wait for residents' findings:** compact default answers (F-11, 7–3), a facts header on captures (F-13, round 2: 8–2), text stand-ins for pictures (F-14, 7–2–1) | as listed | three each wanted F-11 now; two wanted F-13 now |
+
 ## Recorded disagreements (for later evidence, not to reopen now)
 
 - **A pre-run lint as a separate tool** (computer scientist, Lisp expert:
