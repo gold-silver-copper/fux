@@ -90,10 +90,18 @@ fn addressed(
     check(unsafe { call(socket.as_fd().as_raw_fd(), address, length) }).map(drop)
 }
 
-/// The effective user ID of the process at the other end of the connected
-/// Unix socket `socket`, as the kernel recorded it.
+/// The process at the other end of a connected Unix socket, as the kernel
+/// recorded it when it connected or listened: its effective user ID, and
+/// its ID where the system says it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Peer {
+    pub uid: u32,
+    pub pid: Option<crate::process::Pid>,
+}
+
+/// The process at the other end of the connected Unix socket `socket`.
 #[cfg(not(target_os = "macos"))]
-pub fn peer_uid(socket: impl AsFd) -> Result<u32> {
+pub fn peer(socket: impl AsFd) -> Result<Peer> {
     let mut credentials = libc::ucred {
         pid: 0,
         uid: 0,
@@ -112,19 +120,22 @@ pub fn peer_uid(socket: impl AsFd) -> Result<u32> {
         )
     };
     check(got)?;
-    Ok(credentials.uid)
+    Ok(Peer {
+        uid: credentials.uid,
+        pid: crate::process::Pid::from_raw(credentials.pid),
+    })
 }
 
-/// The effective user ID of the process at the other end of the connected
-/// Unix socket `socket`, as the kernel recorded it.
+/// The process at the other end of the connected Unix socket `socket`:
+/// its user alone, which is all `getpeereid` says.
 #[cfg(target_os = "macos")]
-pub fn peer_uid(socket: impl AsFd) -> Result<u32> {
+pub fn peer(socket: impl AsFd) -> Result<Peer> {
     let mut uid: libc::uid_t = 0;
     let mut gid: libc::gid_t = 0;
     // SAFETY: the descriptor is valid for the call's duration and both
     // out-pointers point at initialised locals.
     check(unsafe { libc::getpeereid(socket.as_fd().as_raw_fd(), &mut uid, &mut gid) })?;
-    Ok(uid)
+    Ok(Peer { uid, pid: None })
 }
 
 #[cfg(test)]
@@ -150,9 +161,23 @@ mod tests {
         let client = stream().map_err(|e| e.to_string())?;
         connect(&client, &path).map_err(|e| e.to_string())?;
         let (served, _) = listener.accept().map_err(|e| e.to_string())?;
-        assert_eq!(peer_uid(&served), Ok(crate::process::geteuid()));
+        assert_eq!(peer(&served).map(|p| p.uid), Ok(crate::process::geteuid()));
         let client = UnixStream::from(client);
-        assert_eq!(peer_uid(&client), Ok(crate::process::geteuid()));
+        // The listener is this process: where the system says a peer's
+        // process, it is this one.
+        let ours = crate::process::Pid::from_raw(std::process::id().cast_signed());
+        let expected = if cfg!(target_os = "macos") {
+            None
+        } else {
+            ours
+        };
+        assert_eq!(
+            peer(&client),
+            Ok(Peer {
+                uid: crate::process::geteuid(),
+                pid: expected
+            })
+        );
         // Nowhere to connect: an error. (Not "the listener is dropped": on
         // macOS the socket is made close-on-exec a step after it is made,
         // and a child another test spawns in between keeps it listening.)

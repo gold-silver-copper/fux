@@ -883,6 +883,53 @@ pub struct Server {
     pub after: Option<std::rc::Rc<std::cell::Cell<fux_wire::protocol::Fence>>>,
     /// What stops a run from another thread, if one may.
     stop: Option<Stop>,
+    /// Whether a server of another protocol is followed.
+    follow: Follow,
+}
+
+/// Whether a run follows a server of another protocol: runs its command
+/// line again with the server's own binary (`client::follow`).
+#[derive(Default)]
+enum Follow {
+    /// Not a command line's: a key's or a config's program, whose client
+    /// stays.
+    #[default]
+    Never,
+    /// The `fux` binary's command line, until it has acted.
+    Command { rerun: client::Rerun, acted: Acted },
+}
+
+/// Whether a command line's program did anything outside its process yet,
+/// which running it again would do twice. Everything it does outside goes
+/// through one of two places, which mark it: its requests and local actions
+/// (`Cli`'s `Asks`), each once done, so that the connection that met another
+/// protocol is not one; and its stdout (`Watched`), before each write.
+#[derive(Clone, Default)]
+struct Acted(Rc<std::cell::Cell<bool>>);
+
+impl Acted {
+    fn mark(&self) {
+        self.0.set(true);
+    }
+    fn marked(&self) -> bool {
+        self.0.get()
+    }
+}
+
+/// A command line's stdout, which marks its program acted.
+struct Watched<'a> {
+    out: &'a mut dyn Write,
+    acted: Acted,
+}
+
+impl Write for Watched<'_> {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        self.acted.mark();
+        self.out.write(bytes)
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        self.out.flush()
+    }
 }
 
 /// What stops a run from another thread (the prefix then Esc, for a key's
@@ -957,6 +1004,28 @@ impl Server {
     pub fn socket(&self) -> Result<SocketPath, Failed> {
         fux_server::socket::socket_path(&self.chosen).map_err(|e| client_failed(e.into()))
     }
+
+    /// A connection's failure, as a run's: a server of another protocol is
+    /// followed first, if this run follows one.
+    fn failed(&self, error: client::Error) -> Failed {
+        client_failed(match (&self.follow, error) {
+            (Follow::Command { rerun, acted }, client::Error::Mismatch { said, server })
+                if !acted.marked() =>
+            {
+                client::follow(said, server, rerun)
+            }
+            (Follow::Command { .. }, client::Error::Mismatch { said, .. }) => {
+                client::Error::Unfollowed {
+                    said,
+                    why: "the program already did something outside fux's own process \
+                          (printed, warned, asked a server, started or stopped one, or read \
+                          stdin), which running it again would do twice"
+                        .to_owned(),
+                }
+            }
+            (_, error) => error,
+        })
+    }
 }
 
 /// A run stopped from another thread (`Stop`).
@@ -1020,7 +1089,7 @@ impl Asks for Server {
             Some(requests) => requests,
             None => {
                 let socket = self.socket()?;
-                let opened = client::Requests::open(&socket).map_err(client_failed)?;
+                let opened = client::Requests::open(&socket).map_err(|e| self.failed(e))?;
                 self.requests.insert(opened)
             }
         };
@@ -1048,11 +1117,12 @@ impl Asks for Server {
 }
 
 /// The command line's: a server, the client's own words, where the program
-/// came from, and the status `exit` gave, once it has.
+/// came from, the status `exit` gave, once it has, and whether it acted.
 pub struct Cli {
     server: Server,
     from: Given,
     status: Option<u8>,
+    acted: Acted,
 }
 
 /// Where a command line's program came from.
@@ -1068,13 +1138,41 @@ enum Given {
 
 impl Asks for Cli {
     fn ask(&mut self, asked: &Asked) -> Result<Reply, Failed> {
-        self.server.ask(asked)
+        let reply = self.server.ask(asked);
+        self.acted.mark();
+        reply
     }
     fn local(
         &mut self,
         what: &Local,
         state: Option<&mut Draft>,
         _out: &mut dyn Write,
+    ) -> Result<Vec<Value<Fux>>, Failed> {
+        let values = self.local_act(what, state);
+        // What only reads leaves the program as it was to run again; so does
+        // a start, which starts nothing where a server answers. A file
+        // that may not read the same again marks it itself (`read_file`).
+        let reads = matches!(
+            what,
+            Local::Server(_)
+                | Local::Start
+                | Local::Status
+                | Local::Shell(Shell::Args | Shell::ReadFile(_) | Shell::Getenv(_))
+        );
+        if !reads {
+            self.acted.mark();
+        }
+        values
+    }
+}
+
+impl Cli {
+    /// Does what the command line's program asks of its process, or the
+    /// client does itself.
+    fn local_act(
+        &mut self,
+        what: &Local,
+        state: Option<&mut Draft>,
     ) -> Result<Vec<Value<Fux>>, Failed> {
         let Local::Shell(shell) = what else {
             return local(what, &mut self.server, state);
@@ -1099,7 +1197,7 @@ impl Asks for Cli {
                     string(&read_text("stdin", io::stdin(), SOURCE_MAX)?)
                 }
             },
-            Shell::ReadFile(path) => string(&read_file(path.as_ref())?),
+            Shell::ReadFile(path) => string(&read_file(path.as_ref(), &self.acted)?),
             Shell::Getenv(name) => string(&getenv(name)?),
             Shell::Warn(line) => {
                 writeln!(io::stderr(), "{line}")
@@ -1458,7 +1556,7 @@ fn local(
                 state: committed,
                 problem,
             };
-            client::attach(&socket, attach, *size).map_err(client_failed)?;
+            client::attach(&socket, attach, *size).map_err(|e| server.failed(e))?;
         }
         Local::Start => {
             started(server)?;
@@ -1628,20 +1726,43 @@ pub const PROGRAM_STEPS: u64 = 10_000_000;
 
 /// The `fux` binary's words: attaches with none, runs `-` (stdin) or a file,
 /// or runs the words given. What is left on the stack is printed, a value a
-/// line. Its exit status (0, or what `exit` gave), or why it failed.
-pub fn main(args: &[String], out: &mut dyn Write) -> Result<u8, Failed> {
+/// line. Its exit status (0, or what `exit` gave), or why it failed. With
+/// `argv`, the process's whole command line, a server of another protocol
+/// is followed: the process runs it again with the server's binary
+/// (`client::follow`); with none, as in tests, never.
+pub fn main(
+    args: &[String],
+    argv: Option<Vec<std::ffi::OsString>>,
+    out: &mut dyn Write,
+) -> Result<u8, Failed> {
     if matches!(args, [flag] if matches!(flag.as_str(), "--version" | "-V")) {
-        writeln!(out, "{}", env!("CARGO_PKG_VERSION")).map_err(output_failed)?;
+        writeln!(out, "{}", fux_wire::protocol::Build::OURS).map_err(output_failed)?;
         return Ok(0);
     }
-    let (tokens, from) = program(args)?;
-    let mut machine = compiled(None, &tokens)?;
+    let (tokens, from, program) = program(args)?;
+    let rerun = argv.map(|argv| client::Rerun { argv, program });
+    let mut machine = match compiled(None, &tokens) {
+        Ok(machine) => machine,
+        Err(error) => return Err(uncompiled(error.into(), rerun.as_ref())),
+    };
     let mut state = Draft::default();
-    let mut host = Host::cli(client::context(), &mut state, out);
+    let acted = Acted::default();
+    let mut out = Watched {
+        out,
+        acted: acted.clone(),
+    };
+    let mut host = Host::cli(client::context(), &mut state, &mut out);
     let mut cli = Cli {
-        server: Server::default(),
+        server: Server {
+            follow: rerun.map_or(Follow::Never, |rerun| Follow::Command {
+                rerun,
+                acted: acted.clone(),
+            }),
+            ..Server::default()
+        },
         from,
         status: None,
+        acted,
     };
     let ran = run_capped(&mut machine, &mut host, &mut cli, Some(LINE_STEPS), None);
     // What the words before a failure left is printed too: their answers.
@@ -1663,6 +1784,31 @@ pub fn main(args: &[String], out: &mut dyn Write) -> Result<u8, Failed> {
     ran?;
     printed?;
     Ok(cli.status.unwrap_or(0))
+}
+
+/// A command line this fux cannot compile, `failed`, which the server's
+/// may: a server of another protocol on the socket chosen before the
+/// program (`FUX_SOCKET`, else `server.sock`) is followed (`client::follow`)
+/// with `rerun`, if given, as nothing of it has run. Else why it failed; or,
+/// a mismatch found and not followed, the mismatch, with that as context.
+fn uncompiled(failed: Failed, rerun: Option<&client::Rerun>) -> Failed {
+    let Some(rerun) = rerun else {
+        return failed;
+    };
+    let greeted = Server::default()
+        .socket()
+        .map(|socket| client::greet(&socket));
+    let Ok(Err(client::Error::Mismatch { said, server })) = greeted else {
+        return failed;
+    };
+    let unfollowed = client_failed(client::follow(said, server, rerun));
+    Failed {
+        message: format!(
+            "{}; this fux cannot compile it: {failed}",
+            unfollowed.message
+        ),
+        ..unfollowed
+    }
 }
 
 fn output_failed(error: io::Error) -> Failed {
@@ -1689,22 +1835,24 @@ fn written(out: &mut dyn Write, value: &Value<Fux>) -> Result<(), Failed> {
     writeln!(out).map_err(output_failed)
 }
 
-/// The program `args` give, and where it came from: none attaches; `-` is
-/// stdin; `--file FILE ARGS…` a file, the arguments after it its own
-/// (`#!/usr/bin/env -S fux --file`); help as other programs give it; any
-/// other one argument a whole program, as a shell passes `fux 'ls json'`,
-/// never a file, whatever it holds; else each is a word.
-fn program(args: &[String]) -> Result<(Vec<Token>, Given), Failed> {
+/// The program `args` give, where it came from, and its text if that was
+/// stdin, which it has then read: none attaches; `-` is stdin; `--file
+/// FILE ARGS…` a file, the arguments after it its own (`#!/usr/bin/env -S
+/// fux --file`); help as other programs give it; any other one argument a
+/// whole program, as a shell passes `fux 'ls json'`, never a file, whatever
+/// it holds; else each is a word.
+fn program(args: &[String]) -> Result<(Vec<Token>, Given, Option<String>), Failed> {
     let words = match args {
         [] => token::arguments(&["default-attach"]),
         // A program read whole, at most `SOURCE_MAX` of it.
         [dash] if dash == "-" => {
             let text = read_text("stdin", io::stdin(), SOURCE_MAX)?;
-            return Ok((source::text("stdin", &text)?.tokens(), Given::Stdin));
+            let tokens = source::text("stdin", &text)?.tokens();
+            return Ok((tokens, Given::Stdin, Some(text)));
         }
         [flag, file, rest @ ..] if flag == "--file" => {
             let tokens = source::file(file.as_ref())?.tokens();
-            return Ok((tokens, Given::File(rest.to_vec())));
+            return Ok((tokens, Given::File(rest.to_vec()), None));
         }
         [flag] if flag == "--file" => {
             return Err(Failed::new(
@@ -1716,10 +1864,13 @@ fn program(args: &[String]) -> Result<(Vec<Token>, Given), Failed> {
         // guide), `--help`. Release flags are handled before compilation.
         [help, topic] if help == "help" => token::arguments(&["str", topic, "explain"]),
         [flag] if matches!(flag.as_str(), "--help" | "-h") => token::arguments(&["help"]),
-        [line] => return Ok((source::text("command line", line)?.tokens(), Given::Words)),
+        [line] => {
+            let tokens = source::text("command line", line)?.tokens();
+            return Ok((tokens, Given::Words, None));
+        }
         words => token::arguments(words),
     };
-    Ok((source::arguments(&words)?.tokens(), Given::Words))
+    Ok((source::arguments(&words)?.tokens(), Given::Words, None))
 }
 
 /// The most steps a command line's program takes: one that loops without
@@ -1749,10 +1900,15 @@ fn read_text(name: &str, from: impl Read, limit: usize) -> Result<String, Failed
     String::from_utf8(bytes).map_err(|_| read_failed(name, "not UTF-8 text"))
 }
 
-/// The text of the file at `path`, as `read_text` reads it.
-fn read_file(path: &std::path::Path) -> Result<String, Failed> {
+/// The text of the file at `path`, as `read_text` reads it. What is not a
+/// regular file (a pipe, a terminal, `/dev/stdin`) may not give the same
+/// again: reading it marks the program `acted`, before anything is read.
+fn read_file(path: &std::path::Path, acted: &Acted) -> Result<String, Failed> {
     let name = path.display().to_string();
     let file = std::fs::File::open(path).map_err(|e| read_failed(&name, &e.to_string()))?;
+    if !file.metadata().is_ok_and(|m| m.is_file()) {
+        acted.mark();
+    }
     read_text(&name, file, SOURCE_MAX)
 }
 
@@ -2410,7 +2566,7 @@ pub(crate) mod tests {
                 Ok(())
             }
         }
-        let failed = super::main(&["1".into()], &mut Broken).err();
+        let failed = super::main(&["1".into()], None, &mut Broken).err();
         assert!(
             failed.is_some_and(|f| f.code == fux_wire::code::Code::Output
                 && f.message == "writing the output: broken writer")
@@ -2643,13 +2799,17 @@ pub(crate) mod tests {
     fn release_flags_bypass_the_operand_taking_version_word() -> TestResult {
         for flag in ["--version", "-V"] {
             let mut out = Vec::new();
-            assert_eq!(super::main(&[flag.into()], &mut out)?, 0);
+            assert_eq!(super::main(&[flag.into()], None, &mut out)?, 0);
             assert_eq!(
                 String::from_utf8(out)?,
-                format!("{}\n", env!("CARGO_PKG_VERSION"))
+                format!(
+                    "fux {} (protocol {})\n",
+                    env!("CARGO_PKG_VERSION"),
+                    fux_wire::protocol::PROTOCOL
+                )
             );
         }
-        assert!(super::main(&["version".into()], &mut Vec::new()).is_err());
+        assert!(super::main(&["version".into()], None, &mut Vec::new()).is_err());
         Ok(())
     }
 
@@ -2880,7 +3040,7 @@ pub(crate) mod tests {
     fn one_argument_is_a_program() -> Result<(), super::Failed> {
         let words = |args: &[&str]| -> Result<Vec<String>, super::Failed> {
             let args: Vec<String> = args.iter().map(|a| (*a).to_owned()).collect();
-            let (tokens, given) = super::program(&args)?;
+            let (tokens, given, _) = super::program(&args)?;
             assert_eq!(given, super::Given::Words);
             Ok(tokens.into_iter().map(|t| t.text.to_string()).collect())
         };
@@ -3039,7 +3199,7 @@ pub(crate) mod tests {
             ("%2 str hi paste", "send-keys"),
             ("opts str x in", "run, new-tab, attach or attach-defaults"),
         ] {
-            let tokens = super::program(&[code.to_owned()]).map(|(tokens, _)| tokens);
+            let tokens = super::program(&[code.to_owned()]).map(|(tokens, ..)| tokens);
             let compiled = super::compile(&tokens.unwrap_or_default());
             let error = compiled.err().map(|e| e.to_string()).unwrap_or_default();
             assert!(

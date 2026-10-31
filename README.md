@@ -185,7 +185,8 @@ tab or workspace. `WORKSPACE panes` lists panes, and `WORKSPACE tabs` lists tabs
 `capture` takes a pane or client; only panes take capture options and have
 versions. `PANE version` reads the current version; `ANSWER version` and
 `CAPTURE version` return the version held when observed. `--version` prints
-the binary release, and `status json` gives `release` and `server_release`.
+the binary's release and protocol (`fux RELEASE (protocol N)`), and `status
+json` gives `release`, `server_release` and both protocols.
 Capture `rows` and `cols` use half-open `start..end` ranges, like `slice`.
 `resize` takes a tab scope or headless client. `move` takes a tab,
 workspace, `str new-tab`, `str new-workspace`, or a direction; `swap-with`
@@ -728,9 +729,18 @@ live upgrade.
 
 Ordinary requests and attachments require exactly equal protocol numbers;
 release-version proximity does not suffice. On mismatch the existing server
-is left running. Use a client with its protocol to keep working in its panes.
-The frozen Hello/Kill exchange lets `fux force-kill-server` explicitly stop
-an incompatible server and its panes; starting another does not resume them.
+is left running, and a command line follows it: it runs again, unchanged,
+with the server's own binary (its process's `/proc/PID/exe`, the file it
+runs even once that was replaced), which speaks the server's protocol and
+vocabulary, and says so on stderr in one line. Its stdin, output and exit
+status are then that binary's. Where that cannot be, the command fails with
+`mismatch`, saying why: the system does not say the server's process (macOS),
+the server runs this same binary, or the program already did something
+outside fux's process (asked a server, started or stopped one, warned or
+read stdin), which running it again would do twice. A key's or a config's
+program never follows. The frozen Hello/Kill exchange lets
+`fux force-kill-server` explicitly stop an incompatible server and its
+panes; starting another does not resume them.
 A lost command reply leaves its outcome unknown: the server may already have
 created a process, killed a target or queued input. Repeating that request is
 not a safe way to discover whether the first one ran.

@@ -496,7 +496,9 @@ read-file`. `X warn` prints on stderr:
   who wants your panes apart from theirs gives you a server of your own
   (`FUX_SOCKET=PATH fux start`), which they watch by attaching to it.
   `kill-server` from inside its own server is refused;
-  `force-kill-server` stops it.
+  `force-kill-server` stops it. A command line against a server of another
+  fux protocol runs again with that server's own binary, saying so in one
+  line on stderr; where that cannot be, it fails with `mismatch`, saying why.
 - Nothing is saved on its own: a server that stops, or crashes, takes its
   session with it. `fux all dump > FILE` saves its layout and launches when you
   choose; `fux start && fux --file FILE` makes them again on a fresh server,

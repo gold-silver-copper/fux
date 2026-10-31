@@ -548,43 +548,6 @@ fn fake_server(
     Ok((dir, listener))
 }
 
-/// The client of a server of another protocol is told how to restart it,
-/// even when that server hangs up as soon as it has said so.
-#[test]
-fn a_server_of_another_protocol_is_named_by_the_client() -> Outcome {
-    use fux_wire::protocol::{Frame, Greeting, Hello, Role};
-    let (dir, listener) = fake_server("mismatch")?;
-    let server = std::thread::spawn(move || -> Outcome {
-        let (mut stream, _) = listener.accept().map_err(e)?;
-        let hello = Greeting::Hello(Hello {
-            protocol: 999,
-            version: "9.9.9".into(),
-            role: Role::Command,
-        });
-        let exit = Greeting::Exit("whatever the server says");
-        // In one write: the client may hang up once it has read the Hello,
-        // which is all it needs, and a second write would then fail.
-        let mut said = hello.encode().map_err(e)?;
-        said.extend(exit.encode().map_err(e)?);
-        std::io::Write::write_all(&mut stream, &said).map_err(e)?;
-        Ok(())
-    });
-    let out = std::process::Command::new(FUX)
-        .arg("ls")
-        .env("FUX_SOCKET", dir.join("fux.sock"))
-        .output()
-        .map_err(e)?;
-    server.join().map_err(|_| "the fake server panicked")??;
-    let _ = std::fs::remove_dir_all(&dir);
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    assert_eq!(out.status.code(), Some(1), "{stderr}");
-    assert!(
-        stderr.contains("protocol 999 (fux 9.9.9)") && stderr.contains("fux force-kill-server"),
-        "{stderr}"
-    );
-    Ok(())
-}
-
 /// A client whose server answers its Hello and then nothing more, while
 /// its terminal is raw, is still detached by a signal, and puts its
 /// terminal back.
