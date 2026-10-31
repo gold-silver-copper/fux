@@ -51,8 +51,18 @@ pub enum Error {
     },
     /// The server ended the connection, saying why.
     Refused(String),
-    /// The server speaks another protocol.
-    Mismatch(Mismatch),
+    /// The server speaks another protocol: what it said, and its process,
+    /// where the system says it (`fuxix::socket::peer`).
+    Mismatch {
+        said: Mismatch,
+        server: Option<fuxix::process::Pid>,
+    },
+    /// And this command could not run with the server's own binary
+    /// instead (`follow`): why.
+    Unfollowed {
+        said: Mismatch,
+        why: String,
+    },
     Protocol(fux_wire::protocol::Error),
     NotATerminal,
     /// The terminal says no size (`TIOCGWINSZ`), or 0 rows or columns.
@@ -68,7 +78,7 @@ impl Error {
     pub fn code(&self) -> Code {
         match self {
             Error::Socket(socket::Error::NoServer(_)) | Error::Connect { .. } => Code::NoServer,
-            Error::Mismatch(_) => Code::Mismatch,
+            Error::Mismatch { .. } | Error::Unfollowed { .. } => Code::Mismatch,
             Error::Output(_) => Code::Output,
             Error::Socket(_)
             | Error::Refused(_)
@@ -97,7 +107,10 @@ impl std::fmt::Display for Error {
                 write!(f, "connecting to {}: {source}", path.display())
             }
             Error::Refused(reason) => f.write_str(reason),
-            Error::Mismatch(mismatch) => mismatch.fmt(f),
+            Error::Mismatch { said, .. } => said.fmt(f),
+            Error::Unfollowed { said, why } => {
+                write!(f, "{said}. Running the server's own binary instead cannot be: {why}")
+            }
             Error::Protocol(error) => error.fmt(f),
             Error::NotATerminal => {
                 f.write_str("attaching needs a terminal on stdin and stdout, the same one")
@@ -160,9 +173,10 @@ fn restore() {
 const ANSWER: Duration = Duration::from_secs(5);
 
 /// The socket of the server at `socket`, once it is checked to be served by
-/// this user. fux is reached through its socket alone: where the system
-/// denies `connect` (a sandbox), it cannot be.
-fn open(socket: &SocketPath) -> Result<UnixStream, Error> {
+/// this user, and the server's process, where the system says it. fux is
+/// reached through its socket alone: where the system denies `connect` (a
+/// sandbox), it cannot be.
+fn open(socket: &SocketPath) -> Result<(UnixStream, Option<fuxix::process::Pid>), Error> {
     // Said of the socket chosen, which a hint starts again.
     let failed = |source| Error::Connect {
         path: socket.path().to_owned(),
@@ -172,10 +186,11 @@ fn open(socket: &SocketPath) -> Result<UnixStream, Error> {
     let stream = UnixStream::connect(socket.path()).map_err(failed)?;
     // Its server is this user's, whoever made the path's directories.
     let euid = fuxix::process::geteuid();
-    match fuxix::socket::peer_uid(&stream) {
-        Ok(uid) if uid == euid => Ok(stream),
-        Ok(uid) => Err(io::Error::other(format!(
-            "its server runs as uid {uid}, not this user's ({euid})"
+    match fuxix::socket::peer(&stream) {
+        Ok(peer) if peer.uid == euid => Ok((stream, peer.pid)),
+        Ok(peer) => Err(io::Error::other(format!(
+            "its server runs as uid {}, not this user's ({euid})",
+            peer.uid
         ))),
         Err(errno) => Err(errno.into()),
     }
@@ -185,30 +200,31 @@ fn open(socket: &SocketPath) -> Result<UnixStream, Error> {
 /// A connection to the server at `socket` as `role`, greeted, with the
 /// server's version.
 fn connect(socket: &SocketPath, role: Role) -> Result<(UnixStream, Decoder, String), Error> {
-    let mut stream = open(socket)?;
+    let (mut stream, server) = open(socket)?;
     let ours = Hello::ours(role);
     let sent = send(&mut stream, &ours);
     let mut decoder = Decoder::default();
     // A refusal may close the connection before the Hello is written: its
     // reason is still there to read.
     let answer = read_frame(&mut stream, &mut decoder, Some(ANSWER));
-    let version = greeted(&ours, answer, sent)?;
+    let version = greeted(&ours, server, answer, sent)?;
     Ok((stream, decoder, version))
 }
 
 /// The server's version, if its answer to our Hello, `ours`, and sending
 /// it let the client go on: a refusal, which may come before the Hello is
-/// read, wins; a server of another protocol is refused before anything it
-/// would not understand is sent.
+/// read, wins; a server of another protocol, its process `server`, is
+/// refused before anything it would not understand is sent.
 fn greeted(
     ours: &Hello,
+    server: Option<fuxix::process::Pid>,
     answer: Result<Option<Greeting>, Error>,
     sent: Result<(), Error>,
 ) -> Result<String, Error> {
     match (answer, sent) {
         (Ok(Some(Greeting::Exit(reason))), _) => Err(Error::Refused(reason.to_owned())),
         (Ok(Some(Greeting::Hello(theirs))), sent) => {
-            Mismatch::between(ours, &theirs).map_err(Error::Mismatch)?;
+            Mismatch::between(ours, &theirs).map_err(|said| Error::Mismatch { said, server })?;
             sent.map(|()| theirs.version.to_owned())
         }
         (_, Err(error)) | (Err(error), Ok(())) => Err(error),
@@ -361,9 +377,10 @@ pub fn probe(socket: &SocketPath) -> Result<Probe, Error> {
             protocol: PROTOCOL,
             version,
         }),
-        Err(Error::Mismatch(Mismatch { protocol, version })) => {
-            Ok(Probe::Server { protocol, version })
-        }
+        Err(Error::Mismatch {
+            said: Mismatch { protocol, version },
+            ..
+        }) => Ok(Probe::Server { protocol, version }),
         Err(Error::Socket(socket::Error::NoServer(_))) => Ok(Probe::Absent),
         // A socket left by a server that is gone.
         Err(Error::Connect { source, .. })
@@ -376,6 +393,74 @@ pub fn probe(socket: &SocketPath) -> Result<Probe, Error> {
         }
         Err(error) => Err(error),
     }
+}
+
+/// Runs this process's command line again with the binary of the server
+/// that answered it in another protocol (`Error::Mismatch`), which speaks
+/// the server's: its process's `/proc/PID/exe`, which is the file it runs
+/// even once that was replaced or removed. The same first argument,
+/// arguments, environment, stdout and stderr, and the same stdin, or
+/// `program` as stdin where the command line read its program from there;
+/// the binary's exit status is this command's. Said on stderr first.
+/// Returns only if it cannot be, saying why.
+pub fn follow(said: Mismatch, server: Option<fuxix::process::Pid>, program: Option<&str>) -> Error {
+    let Err(why) = followed(&said, server, program);
+    Error::Unfollowed { said, why }
+}
+
+fn followed(
+    said: &Mismatch,
+    server: Option<fuxix::process::Pid>,
+    program: Option<&str>,
+) -> Result<std::convert::Infallible, String> {
+    use std::os::unix::fs::MetadataExt;
+    use std::os::unix::process::CommandExt;
+    let pid = server.ok_or("the system does not say which process the server is")?;
+    let exe = PathBuf::from(format!("/proc/{pid}/exe"));
+    let named = |e: io::Error| format!("{}: {e}", exe.display());
+    let path = std::fs::read_link(&exe).map_err(named)?;
+    let theirs = std::fs::metadata(&exe).map_err(named)?;
+    let ours = std::fs::metadata("/proc/self/exe").map_err(|e| format!("/proc/self/exe: {e}"))?;
+    // Run again, it would meet the same server, and follow it again.
+    if (theirs.dev(), theirs.ino()) == (ours.dev(), ours.ino()) {
+        return Err(format!(
+            "the server runs this same binary, {}",
+            path.display()
+        ));
+    }
+    let mut args = std::env::args_os();
+    let mut command = std::process::Command::new(&exe);
+    command.arg0(args.next().unwrap_or_default()).args(args);
+    if let Some(program) = program {
+        let file = program_file(program).map_err(|e| format!("keeping the program: {e}"))?;
+        command.stdin(file);
+    }
+    let _ = writeln!(
+        io::stderr(),
+        "fux: the server speaks protocol {} (fux {}) and this client {PROTOCOL} (fux {}): running the server's own binary, {}",
+        said.protocol,
+        said.version,
+        env!("CARGO_PKG_VERSION"),
+        path.display()
+    );
+    let error = command.exec();
+    Err(format!("running {}: {error}", path.display()))
+}
+
+/// A file holding `program`, open to read from its start: removed from its
+/// directory at once, it goes with its last descriptor.
+fn program_file(program: &str) -> io::Result<std::fs::File> {
+    use std::io::Seek;
+    use std::os::unix::fs::OpenOptionsExt;
+    let path = fuxix::file::scratch()?.join(format!("fux-program-{}", std::process::id()));
+    let mut file = (std::fs::OpenOptions::new().read(true).write(true))
+        .create_new(true)
+        .mode(0o600)
+        .open(&path)?;
+    std::fs::remove_file(&path)?;
+    file.write_all(program.as_bytes())?;
+    file.rewind()?;
+    Ok(file)
 }
 
 /// Whether a server answers on `socket`.
@@ -2357,7 +2442,7 @@ mod tests {
         server(&mut peer);
         let mut decoder = Decoder::default();
         let answer = read_frame(&mut client, &mut decoder, Some(wait));
-        greeted(&ours(), answer, Ok(()))
+        greeted(&ours(), None, answer, Ok(()))
     }
 
     fn ours() -> Hello {
@@ -2370,6 +2455,28 @@ mod tests {
 
     fn write(peer: &mut UnixStream, frame: &Greeting) {
         let _ = frame.encode().map(|bytes| peer.write_all(&bytes));
+    }
+
+    /// A server whose process is not known, or which runs this same
+    /// binary, is not followed: it is said why, and nothing runs.
+    #[test]
+    fn a_server_that_cannot_be_followed_is_refused() {
+        let said = Mismatch {
+            protocol: PROTOCOL + 1,
+            version: "0".into(),
+        };
+        let unknown = followed(&said, None, None).err();
+        let why = "the system does not say which process the server is";
+        assert_eq!(unknown.as_deref(), Some(why));
+        if cfg!(target_os = "macos") {
+            return;
+        }
+        let us = fuxix::process::Pid::from_raw(std::process::id().cast_signed());
+        let same = followed(&said, us, None).err().unwrap_or_default();
+        assert!(
+            same.starts_with("the server runs this same binary, "),
+            "{same}"
+        );
     }
 
     /// A server that refuses says why; one that says nothing times out;
@@ -2385,7 +2492,9 @@ mod tests {
             ..ours()
         });
         let mismatched = answer(|peer| write(peer, &other), wait);
-        assert!(matches!(&mismatched, Err(Error::Mismatch(m)) if m.protocol == PROTOCOL + 1));
+        assert!(
+            matches!(&mismatched, Err(Error::Mismatch { said, .. }) if said.protocol == PROTOCOL + 1)
+        );
         let refused = answer(|peer| write(peer, &Greeting::Exit("busy")), wait);
         assert!(matches!(&refused, Err(Error::Refused(reason)) if reason == "busy"));
         let silent = answer(|_| {}, wait);
@@ -2406,7 +2515,12 @@ mod tests {
             )))
         ));
         // A refusal wins over a failure to send the Hello.
-        let both = greeted(&ours(), Ok(Some(Greeting::Exit("no"))), Err(no_answer()));
+        let both = greeted(
+            &ours(),
+            None,
+            Ok(Some(Greeting::Exit("no"))),
+            Err(no_answer()),
+        );
         assert!(matches!(both, Err(Error::Refused(_))));
     }
 }

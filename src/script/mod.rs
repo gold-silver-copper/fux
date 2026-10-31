@@ -875,6 +875,23 @@ pub struct Server {
     pub after: Option<std::rc::Rc<std::cell::Cell<fux_wire::protocol::Fence>>>,
     /// What stops a run from another thread, if one may.
     stop: Option<Stop>,
+    /// Whether a server of another protocol is followed.
+    follow: Follow,
+}
+
+/// Whether a run follows a server of another protocol: runs its command
+/// line again with the server's own binary (`client::follow`).
+#[derive(Default)]
+enum Follow {
+    /// Not a command line's: a key's or a config's program, whose client
+    /// stays.
+    #[default]
+    Never,
+    /// A command line's, before it did anything outside the process: with
+    /// its program, if it read that from stdin.
+    Before(Option<String>),
+    /// A command line's once it did: run again, it would do it twice.
+    After,
 }
 
 /// What stops a run from another thread (the prefix then Esc, for a key's
@@ -949,6 +966,24 @@ impl Server {
     pub fn socket(&self) -> Result<SocketPath, Failed> {
         fux_server::socket::socket_path(&self.chosen).map_err(|e| client_failed(e.into()))
     }
+
+    /// A connection's failure, as a run's: a server of another protocol is
+    /// followed first, if this run follows one.
+    fn failed(&self, error: client::Error) -> Failed {
+        client_failed(match (&self.follow, error) {
+            (Follow::Before(program), client::Error::Mismatch { said, server }) => {
+                client::follow(said, server, program.as_deref())
+            }
+            (Follow::After, client::Error::Mismatch { said, .. }) => client::Error::Unfollowed {
+                said,
+                why: "the program already did something outside fux's own process (asked \
+                      a server, started or stopped one, warned, or read stdin), which \
+                      running it again would do twice"
+                    .to_owned(),
+            },
+            (_, error) => error,
+        })
+    }
 }
 
 /// A run stopped from another thread (`Stop`).
@@ -1012,7 +1047,7 @@ impl Asks for Server {
             Some(requests) => requests,
             None => {
                 let socket = self.socket()?;
-                let opened = client::Requests::open(&socket).map_err(client_failed)?;
+                let opened = client::Requests::open(&socket).map_err(|e| self.failed(e))?;
                 self.requests.insert(opened)
             }
         };
@@ -1060,13 +1095,38 @@ enum Given {
 
 impl Asks for Cli {
     fn ask(&mut self, asked: &Asked) -> Result<Reply, Failed> {
-        self.server.ask(asked)
+        let reply = self.server.ask(asked);
+        self.server.follow = Follow::After;
+        reply
     }
     fn local(
         &mut self,
         what: &Local,
         state: Option<&mut Draft>,
         _out: &mut dyn Write,
+    ) -> Result<Vec<Value<Fux>>, Failed> {
+        let values = self.local_act(what, state);
+        // What only reads leaves the program as it was to run again.
+        let reads = matches!(
+            what,
+            Local::Server(_)
+                | Local::Status
+                | Local::Shell(Shell::Args | Shell::ReadFile(_) | Shell::Getenv(_))
+        );
+        if !reads {
+            self.server.follow = Follow::After;
+        }
+        values
+    }
+}
+
+impl Cli {
+    /// Does what the command line's program asks of its process, or the
+    /// client does itself.
+    fn local_act(
+        &mut self,
+        what: &Local,
+        state: Option<&mut Draft>,
     ) -> Result<Vec<Value<Fux>>, Failed> {
         let Local::Shell(shell) = what else {
             return local(what, &mut self.server, state);
@@ -1450,7 +1510,7 @@ fn local(
                 state: committed,
                 problem,
             };
-            client::attach(&socket, attach, *size).map_err(client_failed)?;
+            client::attach(&socket, attach, *size).map_err(|e| server.failed(e))?;
         }
         Local::Start => {
             started(server)?;
@@ -1626,12 +1686,15 @@ pub fn main(args: &[String], out: &mut dyn Write) -> Result<u8, Failed> {
         writeln!(out, "{}", env!("CARGO_PKG_VERSION")).map_err(output_failed)?;
         return Ok(0);
     }
-    let (tokens, from) = program(args)?;
+    let (tokens, from, stdin) = program(args)?;
     let mut machine = compiled(None, &tokens)?;
     let mut state = Draft::default();
     let mut host = Host::cli(client::context(), &mut state, out);
     let mut cli = Cli {
-        server: Server::default(),
+        server: Server {
+            follow: Follow::Before(stdin),
+            ..Server::default()
+        },
         from,
         status: None,
     };
@@ -1681,22 +1744,24 @@ fn written(out: &mut dyn Write, value: &Value<Fux>) -> Result<(), Failed> {
     writeln!(out).map_err(output_failed)
 }
 
-/// The program `args` give, and where it came from: none attaches; `-` is
-/// stdin; `--file FILE ARGS…` a file, the arguments after it its own
-/// (`#!/usr/bin/env -S fux --file`); help as other programs give it; any
-/// other one argument a whole program, as a shell passes `fux 'ls json'`,
-/// never a file, whatever it holds; else each is a word.
-fn program(args: &[String]) -> Result<(Vec<Token>, Given), Failed> {
+/// The program `args` give, where it came from, and its text if that was
+/// stdin, which it has then read: none attaches; `-` is stdin; `--file
+/// FILE ARGS…` a file, the arguments after it its own (`#!/usr/bin/env -S
+/// fux --file`); help as other programs give it; any other one argument a
+/// whole program, as a shell passes `fux 'ls json'`, never a file, whatever
+/// it holds; else each is a word.
+fn program(args: &[String]) -> Result<(Vec<Token>, Given, Option<String>), Failed> {
     let words = match args {
         [] => token::arguments(&["default-attach"]),
         // A program read whole, at most `SOURCE_MAX` of it.
         [dash] if dash == "-" => {
             let text = read_text("stdin", io::stdin(), SOURCE_MAX)?;
-            return Ok((source::text("stdin", &text)?.tokens(), Given::Stdin));
+            let tokens = source::text("stdin", &text)?.tokens();
+            return Ok((tokens, Given::Stdin, Some(text)));
         }
         [flag, file, rest @ ..] if flag == "--file" => {
             let tokens = source::file(file.as_ref())?.tokens();
-            return Ok((tokens, Given::File(rest.to_vec())));
+            return Ok((tokens, Given::File(rest.to_vec()), None));
         }
         [flag] if flag == "--file" => {
             return Err(Failed::new(
@@ -1708,10 +1773,13 @@ fn program(args: &[String]) -> Result<(Vec<Token>, Given), Failed> {
         // guide), `--help`. Release flags are handled before compilation.
         [help, topic] if help == "help" => token::arguments(&["str", topic, "explain"]),
         [flag] if matches!(flag.as_str(), "--help" | "-h") => token::arguments(&["help"]),
-        [line] => return Ok((source::text("command line", line)?.tokens(), Given::Words)),
+        [line] => {
+            let tokens = source::text("command line", line)?.tokens();
+            return Ok((tokens, Given::Words, None));
+        }
         words => token::arguments(words),
     };
-    Ok((source::arguments(&words)?.tokens(), Given::Words))
+    Ok((source::arguments(&words)?.tokens(), Given::Words, None))
 }
 
 /// The most steps a command line's program takes: one that loops without
@@ -2872,7 +2940,7 @@ pub(crate) mod tests {
     fn one_argument_is_a_program() -> Result<(), super::Failed> {
         let words = |args: &[&str]| -> Result<Vec<String>, super::Failed> {
             let args: Vec<String> = args.iter().map(|a| (*a).to_owned()).collect();
-            let (tokens, given) = super::program(&args)?;
+            let (tokens, given, _) = super::program(&args)?;
             assert_eq!(given, super::Given::Words);
             Ok(tokens.into_iter().map(|t| t.text.to_string()).collect())
         };
@@ -3031,7 +3099,7 @@ pub(crate) mod tests {
             ("%2 str hi paste", "send-keys"),
             ("opts str x in", "run, new-tab, attach or attach-defaults"),
         ] {
-            let tokens = super::program(&[code.to_owned()]).map(|(tokens, _)| tokens);
+            let tokens = super::program(&[code.to_owned()]).map(|(tokens, ..)| tokens);
             let compiled = super::compile(&tokens.unwrap_or_default());
             let error = compiled.err().map(|e| e.to_string()).unwrap_or_default();
             assert!(

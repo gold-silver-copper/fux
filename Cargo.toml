@@ -39,6 +39,11 @@ fux-server = { path = "fux-server", features = ["in-process"] }
 fux-wire = { path = "fux-wire", features = ["testing"] }
 fux-vt-peak = { path = "fux-vt/peak" }
 
+# Its binary plays the one a client follows, so it has a main of its own.
+[[test]]
+name = "follow"
+harness = false
+
 [profile.dev]
 debug = 0
 
