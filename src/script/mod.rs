@@ -2077,13 +2077,8 @@ pub(crate) mod tests {
             let allocator = fux_vt_peak::ThreadPeak;
             let base = allocator.live();
             allocator.reset_peak();
-            let started = std::time::Instant::now();
             let ran = run_capped(&mut machine, &mut host, &mut asks, None, None);
-            let elapsed = started.elapsed();
             let peak = allocator.peak().saturating_sub(base);
-            if lines == 9931 {
-                eprintln!("styled h json print: peak {peak} bytes, {elapsed:?}");
-            }
             let ran = ran.map(drop);
             assert_eq!(
                 ran.as_ref().copied().map_err(|failed| failed.code),

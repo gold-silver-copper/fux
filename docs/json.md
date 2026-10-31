@@ -11,7 +11,8 @@ allocations; clones and projected children keep their reservation without
 double charging. Dropping the last reference refunds its bytes, so polling and
 discarding results can continue. Per-value limits and traversal charges still
 apply; the length and expanded weight checks exempt only a top-level string
-already reserved in this run.
+already reserved in this run. Host text arguments still take at most
+1,000,000 characters, checked before copying or quoting.
 
 The JSON represents what a word left, as below; a string as a JSON string; a number or boolean
 as itself; a list as an array of these, each answer in it as `json` gives

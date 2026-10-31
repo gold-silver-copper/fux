@@ -1944,6 +1944,15 @@ fn only_a_top_level_string_reserved_in_this_run_uses_the_grant_as_its_length_bou
         &foreign,
     )?;
     assert!(machine.import(foreign).is_err());
+    // A host's undersized lease does not bypass storage admission.
+    let text = Text::new(std::iter::repeat_n('x', n).collect::<String>());
+    let bytes = Shared::<Text>::bytes(text.heap_bytes());
+    let lease = grant
+        .lease(0)
+        .map_err(|f| Error::new(f.code, f.message, None))?;
+    let left = grant.remaining();
+    machine.import(Value::Str(Shared::leased(text, lease)))?;
+    assert_eq!(left.saturating_sub(grant.remaining()), bytes);
     Ok(())
 }
 
