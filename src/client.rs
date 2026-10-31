@@ -1072,14 +1072,12 @@ pub fn attach(
     } else {
         Role::Headless
     };
-    // An untargeted writable attach carries the launch the server starts
-    // only if it holds no workspace. One that cannot be made, or does not
-    // fit the frame, is left out, and said only if the attach is refused.
+    // An untargeted writable attach carries the launch an empty server starts.
+    // One unmade, or past the frame, is left out, said only on a refusal.
     let creates = attaching.target.is_none() && !attaching.read_only;
-    let (initial, mut unusable) = match creates.then(|| attaching.initial()) {
-        Some(Ok(initial)) => (Some(initial), None),
-        Some(Err(why)) => (None, Some(why)),
-        None => (None, None),
+    let (initial, mut unusable) = match creates.then(|| attaching.initial()).transpose() {
+        Ok(initial) => (initial, None),
+        Err(why) => (None, Some(why)),
     };
     let (mut stream, mut decoder, _) = connect(socket, role)?;
     let signals = early.map_or_else(Signals::new, Ok)?;
@@ -1092,12 +1090,12 @@ pub fn attach(
         presentation: attaching.state.preferences.presentation(),
         initial,
     };
-    if let Err(why) = fits(&attach) {
-        if attach.initial.take().is_none() {
-            return Err(Error::Failed(why));
-        }
+    // The rest is bounded well within a frame; `send` refuses it past one.
+    if attach.initial.is_some()
+        && let Err(why) = fits(&attach)
+    {
+        attach.initial = None;
         unusable = Some(why);
-        fits(&attach).map_err(Error::Failed)?;
     }
     let raw = terminal
         .then(|| Raw::enter_with(&stdin, &mut io::stdout()))
@@ -1133,12 +1131,10 @@ pub fn attach(
 
 /// Whether `attach` fits one frame: counted, before it is encoded.
 fn fits(attach: &Attach) -> Result<(), String> {
-    let mut count = crate::wire::Writer::counting(crate::protocol::MAX_PAYLOAD);
+    let limit = crate::protocol::MAX_PAYLOAD;
+    let mut count = crate::wire::Writer::counting(limit);
     crate::wire::Wire::put(attach, &mut count);
-    (count.check()).map_err(|_| {
-        let limit = crate::protocol::MAX_PAYLOAD;
-        format!("the attach request exceeds one frame ({limit} bytes)")
-    })
+    (count.check()).map_err(|_| format!("the attach request exceeds one frame ({limit} bytes)"))
 }
 
 /// Why a client detached when a signal told it to.
