@@ -70,6 +70,20 @@ Ballots: `~/code/notes/projects/fux/vision/panel/ballot-1.md` and `~/code/notes/
 | D-39 | **The local test suite is the merge gate, not CI.** Before merging, run `~/code/notes/projects/fux/live/gate.sh` in the PR's worktree (CI's checks for what the branch changed, parallelism capped); merge when it passes. Nobody waits on CI; it still runs after merging, as a backstop, and a failure there becomes a fix-forward task. No long benchmarks or campaigns as part of the gate | Work fast; CI waits held merges for tens of minutes | owner, 2026-10-30 |
 | D-40 | **All code is written by Claude Opus.** Implementers, fix-ups and any agent that edits code are Opus. Sol, Astra and Fable review, research and sit on the decision panel. D-21's "a reviewer of another model" therefore means a non-Opus reviewer | Opus is the stronger coder | owner, 2026-10-30 |
 
+## Settled by the decision panel, sitting 2 (2026-10-30): how fux gets finished
+
+Ballot, votes and reasons: `~/code/notes/projects/fux/live/panel/2026-10-30-s2/`.
+
+| Id | Decision | Vote | Strongest dissent |
+|---|---|---|---|
+| D-41 (S2-1) | **The simplification pass ends after `events`.** `tab-creation` and `confirm-chooser` move into M0c; caps-and-codes' K10 (connection and pane admission caps) moves into M0b and its K11 (one bound, one refusal code) into M0c's error-code list; `caps-and-codes`, `encoders`, `session-tests` and `client-tests` are dropped | round 2: 7–3 (all ten end the pass after `events`; the three plain (a) votes asked for the same carry-over) | — |
+| D-42 (S2-2) | **fux-vt and fuxix are frozen:** only bug fixes and reproduced findings change them. M0b bounds a pane at the server's boundary from fux-vt's documented capacity formulas (`fux-vt/THREATS.md` §3); a failed peak test is a reproduced finding that may change fux-vt | round 2: 8–2 | two: let fux-vt change for M0b's bounds work |
+| D-43 (S2-3) | **M0b, bounds by construction, runs before M1:** a budgeted region per fuxth run, per request and per pane; growable stores only through bounded types; a peak-memory test per component; delete the per-site caps the structure makes redundant | 10–0 | — |
+| D-44 (S2-4) | **M0c, a finite interface, runs before M1:** the crate split (D-30, moved here), the server's requests, fux's words, record fields and error codes written as generated lists that every PR diffs, and the client-follows-server fallback (a client of another protocol runs the server's own binary, so it speaks the server's vocabulary). The interface freezes after M1, because M1 changes requests (scope, run-qualified ids, effect lists) | 7 for this form, 3 for freezing before M1 | three: freeze before M1 |
+| D-45 (S2-5) | **M0c first, then M0b:** the split gives M0b clean lanes and smaller PRs | 8–1–1 | strategist: the mechanical split first, then M0b, then the rest of M0c |
+| D-46 (S2-6) | **Line count is a gate only for pure cleanup tasks;** correctness and bounds work is judged by its tests and by "nothing slower". Each PR still reports its counts | 10–0 | — |
+| D-47 (S2-7) | **fux 1.0:** the panel declares it after M0c, M0b and M1 pass and the residents work a week with nothing blocking. It freezes D-34's list for fux. After it, fux takes only bug fixes and reproduced findings, and new work goes to fuxth and fuxed, which have their own 1.0 later | 7–3 | AI researcher: only after a week of all ten residents |
+
 ## Recorded disagreements (for later evidence, not to reopen now)
 
 - **A pre-run lint as a separate tool** (computer scientist, Lisp expert:
