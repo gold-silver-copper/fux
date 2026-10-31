@@ -44,6 +44,11 @@ fux-vt-peak = { path = "fux-vt/peak" }
 name = "cassettes"
 harness = false
 
+# Its binary plays the one a client follows, so it has a main of its own.
+[[test]]
+name = "follow"
+harness = false
+
 [profile.dev]
 debug = 0
 

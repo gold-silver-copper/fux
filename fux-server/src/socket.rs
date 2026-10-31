@@ -537,7 +537,10 @@ mod tests {
         // A client connects, and its peer is this user.
         let client = UnixStream::connect(&path).map_err(|e| e.to_string())?;
         let (served, _) = listener.accept().map_err(|e| e.to_string())?;
-        assert_eq!(fuxix::socket::peer_uid(&served).ok(), Some(geteuid()));
+        assert_eq!(
+            fuxix::socket::peer(&served).ok().map(|p| p.uid),
+            Some(geteuid())
+        );
         drop((client, served, listener, endpoint));
         assert!(!exists(&path), "the socket is removed at exit");
         // A stale socket (nothing listening) is replaced, even one whose

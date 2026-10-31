@@ -30,10 +30,10 @@ static ALLOCATOR: fux_vt_peak::ThreadPeak = fux_vt_peak::ThreadPeak;
 /// fuxth on stdin; `--file FILE ARGS…` runs a file; any other words are a
 /// fuxth program.
 pub fn main() -> ExitCode {
+    let argv: Vec<_> = std::env::args_os().collect();
     // Words are text: an argument that is not is refused, not mangled.
-    let args: Result<Vec<String>, _> = std::env::args_os()
-        .skip(1)
-        .map(|a| a.into_string())
+    let args: Result<Vec<String>, _> = (argv.iter().skip(1))
+        .map(|a| a.to_str().map(str::to_owned).ok_or(a))
         .collect();
     let args = args.map_err(|arg| {
         let why = format!("an argument is not text: {}", arg.display());
@@ -44,7 +44,8 @@ pub fn main() -> ExitCode {
     {
         return serve(rest);
     }
-    let status = match args.and_then(|args| script::main(&args, &mut std::io::stdout())) {
+    let ran = args.and_then(|args| script::main(&args, Some(argv), &mut std::io::stdout()));
+    let status = match ran {
         Ok(status) => status,
         Err(failed) => {
             // Nowhere is left to say that stderr failed.
@@ -81,8 +82,9 @@ fn serve(args: &[String]) -> ExitCode {
     }
 }
 
-/// `fux status`: the server that answers on `socket`, and whether it is
-/// one this fux can drive; with none, why not.
+/// `fux status`: the server that answers on `socket`, its process where
+/// the system says it, and whether it is one this fux can drive; with
+/// none, why not.
 pub(crate) fn status(socket: &socket::SocketPath, probe: &client::Probe) -> Result<Json, String> {
     let path = socket.path().display().to_string();
     let ours = env!("CARGO_PKG_VERSION");
@@ -93,11 +95,22 @@ pub(crate) fn status(socket: &socket::SocketPath, probe: &client::Probe) -> Resu
                 "no fux server at {path} (its socket is left from one that stopped)"
             ));
         }
-        client::Probe::Server { protocol, version } => vec![
-            ("server_release", Json::str(version.as_str())),
-            ("server_protocol", Json::int(*protocol)),
-            ("compatible", Json::Bool(*protocol == protocol::PROTOCOL)),
-        ],
+        client::Probe::Server {
+            protocol,
+            version,
+            pid,
+        } => {
+            let pid = pid.map(|pid| ("server_pid", Json::int(pid.as_raw())));
+            [
+                Some(("server_release", Json::str(version.as_str()))),
+                Some(("server_protocol", Json::int(*protocol))),
+                pid,
+                Some(("compatible", Json::Bool(*protocol == protocol::PROTOCOL))),
+            ]
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>()
+        }
     };
     let mut fields = vec![
         ("socket", Json::str(&path)),
