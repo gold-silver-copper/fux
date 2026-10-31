@@ -6,14 +6,14 @@
 //! cursor in the scrollback, which it alone holds (`ScreenAct::Copy`).
 //!
 //! What a screen's entry does is fuxth, run as the client runs a binding.
-use crate::act::Line;
-use crate::act::{Act, CopyAct, LineAct, List, ListAct, Panel, ScreenAct, Seek};
-use crate::callback::{Callback, Confirm, Data, ListScreen, Open, Prompt};
-use crate::copy::SEARCH_MAX;
-use crate::decode::Input;
 use crate::keymap::{Held, Keymap, Modes};
-use crate::keys::{KeyPress, Keystroke};
 use crate::script;
+use fux_server::copy::SEARCH_MAX;
+use fux_vt::keys::decode::Input;
+use fux_vt::keys::{KeyPress, Keystroke};
+use fux_wire::act::Line;
+use fux_wire::act::{Act, CopyAct, LineAct, List, ListAct, Panel, ScreenAct, Seek};
+use fux_wire::callback::{Callback, Confirm, Data, ListScreen, Open, Prompt};
 
 /// One of a client's screens, or none: its keys then go through its
 /// bindings, in the middle of what `Held` says. So nothing is held for the
@@ -64,7 +64,7 @@ impl Display {
 
     /// Open a new instance, admitted with room for its longest edit.
     pub fn open(&mut self, screen: Screen, modes: &Modes) -> Vec<Act> {
-        use crate::protocol::{AttachedFrame, Frame, MAX_FRAME};
+        use fux_wire::protocol::{AttachedFrame, Frame, MAX_FRAME};
         let opening = match self.next() {
             Ok(opening) => opening,
             Err(text) => return vec![Act::Notice { text, error: true }],
@@ -262,7 +262,7 @@ impl Screen {
     pub fn largest(&self, modes: &Modes) -> Option<ScreenAct> {
         let mut largest = self.clone();
         if let Self::Prompt(prompt) = &mut largest {
-            prompt.line = Line::new(std::iter::repeat_n('x', crate::act::LINE_MAX).collect());
+            prompt.line = Line::new(std::iter::repeat_n('x', fux_wire::act::LINE_MAX).collect());
         }
         largest.opened(modes)
     }
@@ -308,7 +308,7 @@ impl Screen {
             Input::FocusIn | Input::FocusOut | Input::Mouse(_) if read_only => Vec::new(),
             Input::Paste(text) => self.paste(&keymap.modes, &text),
             Input::PasteTooLong => {
-                let limit = crate::decode::PASTE_LIMIT / 1024;
+                let limit = fux_vt::keys::decode::PASTE_LIMIT / 1024;
                 let text = format!("paste exceeds {limit} KiB; discarded");
                 send(Act::Notice { text, error: true })
             }
@@ -354,7 +354,7 @@ impl Screen {
     /// pane does, and the column or a repeat mode ends; a list, a question
     /// or copy mode takes none, and says so.
     pub fn paste(&mut self, modes: &Modes, text: &str) -> Vec<Effect> {
-        let insert = LineAct::Edit(crate::act::Edit::Insert(text.to_owned()));
+        let insert = LineAct::Edit(fux_wire::act::Edit::Insert(text.to_owned()));
         match std::mem::take(self) {
             Self::Keys(Held::Normal) => vec![Effect::Send(Act::Paste(text.to_owned()))],
             Self::Keys(_) => vec![HIDE, Effect::Send(Act::Paste(text.to_owned()))],
@@ -478,7 +478,7 @@ fn refusal(text: String) -> Effect {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::callback::Item;
+    use fux_wire::callback::Item;
 
     /// Key `name` typed at `screen`, with the default bindings.
     fn key(screen: &mut Screen, name: &str) -> Result<Vec<Effect>, String> {
@@ -630,13 +630,15 @@ mod tests {
             .modes;
         let fits = |act: Option<ScreenAct>| {
             act.is_some_and(|act| {
-                use crate::protocol::Frame;
-                let frame =
-                    crate::protocol::AttachedFrame::Act(Box::new(Act::Screen { opening: 1, act }));
+                use fux_wire::protocol::Frame;
+                let frame = fux_wire::protocol::AttachedFrame::Act(Box::new(Act::Screen {
+                    opening: 1,
+                    act,
+                }));
                 frame.encode().is_ok()
             })
         };
-        let title = std::iter::repeat_n('t', crate::protocol::MAX_FRAME - 2048).collect();
+        let title = std::iter::repeat_n('t', fux_wire::protocol::MAX_FRAME - 2048).collect();
         let screen = Screen::Prompt(Prompt {
             title,
             line: Line::new(String::new()),

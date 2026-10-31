@@ -2,21 +2,21 @@
 //! its own bindings, and sends the server typed actions, writing the
 //! paints the server relays to its terminal;
 //! a headless one; and the connection a program's requests go over.
-use crate::act::Act;
-use crate::callback::JOB_BYTES;
 use crate::client_state::ClientState;
-use crate::code::Code;
+use crate::screens::{Dispatch, Display, Job, Screen};
+use crate::script;
+use fux_server::socket::{self, SocketPath};
+use fux_vt::keys::decode::Input;
+use fux_vt::keys::{Key, KeyPress, Modifiers};
+use fux_wire::act::Act;
+use fux_wire::callback::JOB_BYTES;
+use fux_wire::code::Code;
 #[cfg(test)]
-use crate::command::{Command, Request};
-use crate::decode::Input;
-use crate::keys::{Key, KeyPress, Modifiers};
-use crate::protocol::{
+use fux_wire::command::{Command, Request};
+use fux_wire::protocol::{
     Asked, Attach, AttachedFrame, Context, Decoder, Frame, Greeting, Hello, Mismatch, PROTOCOL,
     Reply, Role, ToAttached, ToCommand,
 };
-use crate::screens::{Dispatch, Display, Job, Screen};
-use crate::script;
-use crate::socket::{self, SocketPath};
 use fuxix::Errno;
 use fuxix::poll::{Events as PollFlags, PollFd};
 use fuxix::terminal::Termios;
@@ -53,7 +53,7 @@ pub enum Error {
     Refused(String),
     /// The server speaks another protocol.
     Mismatch(Mismatch),
-    Protocol(crate::protocol::Error),
+    Protocol(fux_wire::protocol::Error),
     NotATerminal,
     /// The terminal says no size (`TIOCGWINSZ`), or 0 rows or columns.
     NoSize,
@@ -137,8 +137,8 @@ impl From<socket::Error> for Error {
     }
 }
 
-impl From<crate::protocol::Error> for Error {
-    fn from(error: crate::protocol::Error) -> Error {
+impl From<fux_wire::protocol::Error> for Error {
+    fn from(error: fux_wire::protocol::Error) -> Error {
         Error::Protocol(error)
     }
 }
@@ -293,12 +293,12 @@ impl Requests {
             while let Some(frame) = self.decoder.frame()? {
                 match frame {
                     ToCommand::Part(bytes) => {
-                        crate::wire::append(&mut parts, &bytes)
-                            .map_err(crate::protocol::Error::Wire)?;
+                        fux_wire::wire::append(&mut parts, &bytes)
+                            .map_err(fux_wire::protocol::Error::Wire)?;
                     }
                     ToCommand::PartsEnd => {
-                        let reply = crate::wire::Reader::new(&parts).whole::<Reply>();
-                        return Ok(reply.map_err(crate::protocol::Error::Wire)?);
+                        let reply = fux_wire::wire::Reader::new(&parts).whole::<Reply>();
+                        return Ok(reply.map_err(fux_wire::protocol::Error::Wire)?);
                     }
                     ToCommand::Exit(reason) => return Err(Error::Refused(reason.to_owned())),
                 }
@@ -323,7 +323,7 @@ pub fn context() -> Context {
     let var = |name| std::env::var(name).ok().filter(|v: &String| !v.is_empty());
     Context {
         cwd: std::env::current_dir().unwrap_or_default(),
-        pane: var("FUX_PANE").and_then(|p| crate::id::program(&p)),
+        pane: var("FUX_PANE").and_then(|p| fux_wire::id::program(&p)),
         server: var("FUX_SERVER"),
         client: None,
         of: None,
@@ -412,7 +412,7 @@ pub fn start_server(socket: &SocketPath) -> Result<(), Error> {
         line.map_err(failed("reading the server"))?;
     }
     // Dropping a `Child` neither waits for nor kills it.
-    if said == crate::server::READY || answers(socket) {
+    if said == fux_server::server::READY || answers(socket) {
         return Ok(());
     }
     let status = child.wait().map_err(failed("waiting for the server"))?;
@@ -466,8 +466,8 @@ pub(crate) fn on_one_terminal() -> bool {
 /// keys (a typing terminal's config run on them already, else the bundled
 /// ones), and what was wrong with that config.
 pub struct Attaching {
-    pub of: Option<crate::command::Run>,
-    pub target: Option<crate::command::AttachTarget>,
+    pub of: Option<fux_wire::command::Run>,
+    pub target: Option<fux_wire::command::AttachTarget>,
     pub read_only: bool,
     pub creation: crate::script::Opts,
     pub state: ClientState,
@@ -475,13 +475,13 @@ pub struct Attaching {
 }
 
 impl Attaching {
-    fn initial(&self) -> Result<crate::command::InitialWorkspace, String> {
+    fn initial(&self) -> Result<fux_wire::command::InitialWorkspace, String> {
         let creation = &self.creation;
         let (start, env) = creation.launch(
             &self.state.preferences.shell,
             &self.state.preferences.copy_environment,
         )?;
-        Ok(crate::command::InitialWorkspace {
+        Ok(fux_wire::command::InitialWorkspace {
             name: creation.name.clone(),
             start,
             options: creation.pane_options(self.state.preferences.pane_options()),
@@ -510,7 +510,7 @@ struct Ran {
 
 enum Update {
     Presentation(
-        crate::presentation::Presentation,
+        fux_wire::presentation::Presentation,
         std::sync::mpsc::SyncSender<u64>,
     ),
     Finished(Ran),
@@ -590,7 +590,7 @@ pub struct Keyboard {
     state: std::sync::Arc<Mutex<ClientState>>,
     screen: Display,
     read_only: bool,
-    decoder: crate::decode::Decoder,
+    decoder: fux_vt::keys::decode::Decoder,
     jobs: std::sync::mpsc::Sender<(Job, u64)>,
     /// Bounded committed presentation updates and the dispatched program's result.
     told: std::sync::mpsc::Receiver<Update>,
@@ -622,8 +622,8 @@ impl Keyboard {
     /// `state`; `read_only` if it only watches.
     pub fn new(
         socket: &SocketPath,
-        me: crate::id::ClientId,
-        run: crate::command::Run,
+        me: fux_wire::id::ClientId,
+        run: fux_wire::command::Run,
         state: ClientState,
         read_only: bool,
     ) -> Result<Keyboard, Error> {
@@ -641,10 +641,10 @@ impl Keyboard {
         let spawned = std::thread::Builder::new()
             .name("keys".into())
             .spawn(move || {
-                let chosen = socket::Choice::Path(path);
+                let chosen = fux_wire::protocol::Choice::Path(path);
                 let mut server = script::Server::stoppable(chosen, stops.clone());
                 for (job, frames) in todo {
-                    let after = std::rc::Rc::new(std::cell::Cell::new(crate::protocol::Fence {
+                    let after = std::rc::Rc::new(std::cell::Cell::new(fux_wire::protocol::Fence {
                         run,
                         client: me,
                         frames,
@@ -660,7 +660,7 @@ impl Keyboard {
                         // Receipt follows transmission, not mailbox consumption.
                         // Dropping the keyboard drops the receipt sender too.
                         match received.recv() {
-                            Ok(frames) => after.set(crate::protocol::Fence {
+                            Ok(frames) => after.set(fux_wire::protocol::Fence {
                                 frames,
                                 ..after.get()
                             }),
@@ -677,7 +677,7 @@ impl Keyboard {
                 }
             });
         spawned?;
-        let mut decoder = crate::decode::Decoder::new(timing);
+        let mut decoder = fux_vt::keys::decode::Decoder::new(timing);
         // The server asks the terminal about itself as the client attaches.
         decoder.expect(Instant::now());
         Ok(Keyboard {
@@ -818,7 +818,7 @@ impl Keyboard {
     /// opens, what one said shows, and the keys that waited go on.
     /// Handle returned effects in order, as `Keyboard` requires.
     pub fn ran(&mut self) -> Vec<Dispatch> {
-        crate::drain(&self.wake);
+        fux_server::drain(&self.wake);
         let mut acts = Vec::new();
         for _ in 0..JOBS {
             let Ok(update) = self.told.try_recv() else {
@@ -941,16 +941,16 @@ impl Keyboard {
 
 /// A key the server says was typed here (`send-keys` to this client), as
 /// its terminal would have sent it.
-fn decoded(input: crate::command::Input) -> Vec<Input> {
+fn decoded(input: fux_wire::command::Input) -> Vec<Input> {
     match input {
-        crate::command::Input::Key(press) => vec![Input::Key(press.into())],
-        crate::command::Input::Text(text) => text
+        fux_wire::command::Input::Key(press) => vec![Input::Key(press.into())],
+        fux_wire::command::Input::Text(text) => text
             .chars()
             .map(|c| Input::Key(KeyPress::char(c).into()))
             .collect(),
-        crate::command::Input::Paste(text) => vec![Input::Paste(text)],
+        fux_wire::command::Input::Paste(text) => vec![Input::Paste(text)],
         // A pane's alone: `send-keys` refuses them for a client.
-        crate::command::Input::Bytes(_) => Vec::new(),
+        fux_wire::command::Input::Bytes(_) => Vec::new(),
     }
 }
 
@@ -958,11 +958,11 @@ fn decoded(input: crate::command::Input) -> Vec<Input> {
 /// `state`. Each checkpoint commits whole; a failure discards pending changes.
 fn run_job(
     server: &mut dyn script::Asks,
-    me: (crate::id::ClientId, crate::command::Run),
+    me: (fux_wire::id::ClientId, fux_wire::command::Run),
     state: &Mutex<ClientState>,
     job: &Job,
     stop: &script::Stop,
-    present: &mut dyn FnMut(crate::presentation::Presentation),
+    present: &mut dyn FnMut(fux_wire::presentation::Presentation),
 ) -> Ran {
     let mut changed = lock(state).draft();
     let config = changed.config.clone();
@@ -1141,9 +1141,9 @@ pub fn attach(
 
 /// Whether `attach` fits one frame: counted, before it is encoded.
 fn fits(attach: &Attach) -> Result<(), String> {
-    let limit = crate::protocol::MAX_PAYLOAD;
-    let mut count = crate::wire::Writer::counting(limit);
-    crate::wire::Wire::put(attach, &mut count);
+    let limit = fux_wire::protocol::MAX_PAYLOAD;
+    let mut count = fux_wire::wire::Writer::counting(limit);
+    fux_wire::wire::Wire::put(attach, &mut count);
     (count.check()).map_err(|_| format!("the attach request exceeds one frame ({limit} bytes)"))
 }
 
@@ -1162,7 +1162,7 @@ impl Signals {
         Ok(Signals {
             winch: fuxix::signal::Pipe::new(&[fuxix::process::Signal::Winch])
                 .map_err(io::Error::from)?,
-            stops: fuxix::signal::Pipe::new(&crate::STOPS).map_err(io::Error::from)?,
+            stops: fuxix::signal::Pipe::new(&fux_server::STOPS).map_err(io::Error::from)?,
         })
     }
 }
@@ -1288,7 +1288,7 @@ impl Output {
 
     /// The writer wrote some: an error if a write failed.
     fn woke(&mut self) -> Result<(), Error> {
-        crate::drain(&self.wake);
+        fux_server::drain(&self.wake);
         match self.failed.load(Ordering::Acquire) {
             true => self.ended(),
             false => Ok(()),
@@ -1481,7 +1481,7 @@ fn attached(
             output.woke()?;
         }
         if is(WINCH) {
-            crate::drain(winch.reader());
+            fux_server::drain(winch.reader());
             // A terminal that says no size now keeps the last it said.
             if terminal && let Some(size) = window_size() {
                 pending_resize = Some(size);
@@ -1588,11 +1588,11 @@ mod tests {
             peer.read_exact(&mut header)?;
             let mut request = vec![0; u32::from_be_bytes(header) as usize];
             peer.read_exact(&mut request)?;
-            let part = vec![0; crate::protocol::MAX_PAYLOAD];
+            let part = vec![0; fux_wire::protocol::MAX_PAYLOAD];
             let frame = ToCommand::Part(std::borrow::Cow::Borrowed(&part))
                 .encode()
                 .map_err(io::Error::other)?;
-            for _ in 0..=crate::wire::MAX_REPLY.div_ceil(part.len()) {
+            for _ in 0..=fux_wire::wire::MAX_REPLY.div_ceil(part.len()) {
                 if peer.write_all(&frame).is_err() {
                     break;
                 }
@@ -1616,15 +1616,15 @@ mod tests {
             after: None,
             context: Context::default(),
             request: Request::Do(Command::Inspect {
-                scope: crate::inspect::Scope::All,
-                projection: crate::inspect::Projection::Facts,
+                scope: fux_wire::inspect::Scope::All,
+                projection: fux_wire::inspect::Projection::Facts,
             }),
         };
         let result = requests.ask(&asked);
         assert!(matches!(
             result,
-            Err(Error::Protocol(crate::protocol::Error::Wire(
-                crate::wire::Error::Limit
+            Err(Error::Protocol(fux_wire::protocol::Error::Wire(
+                fux_wire::wire::Error::Limit
             )))
         ));
         drop(requests);
@@ -1703,7 +1703,7 @@ mod tests {
         let socket = socket::checked("/nowhere/fux/s.sock", "test")?;
         let mut a = script::default_state().map_err(|e| e.to_string())?;
         let b = a.clone();
-        a.preferences.escape_delay = crate::command::DecodeMillis::new(100).ok_or("delay")?;
+        a.preferences.escape_delay = fux_wire::command::DecodeMillis::new(100).ok_or("delay")?;
         let mut a = new_keyboard(&socket, a, false)?;
         let mut b = new_keyboard(&socket, b, false)?;
         let now = Instant::now();
@@ -1712,7 +1712,7 @@ mod tests {
         assert_eq!(a.deadline(), now.checked_add(Duration::from_millis(100)));
         assert_eq!(b.deadline(), now.checked_add(Duration::from_millis(35)));
         lock(&a.state).preferences.escape_delay =
-            crate::command::DecodeMillis::new(200).ok_or("delay")?;
+            fux_wire::command::DecodeMillis::new(200).ok_or("delay")?;
         assert!(a.bytes(b"[", now).is_empty());
         assert_eq!(a.deadline(), now.checked_add(Duration::from_millis(100)));
         a.timeout();
@@ -1786,7 +1786,7 @@ mod tests {
         let asked: Asked = read_frame(&mut peer, &mut decoder, Some(ANSWER))?.ok_or("request")?;
         assert_eq!(
             asked.after,
-            Some(crate::protocol::Fence {
+            Some(fux_wire::protocol::Fence {
                 run: "1-2".parse().map_err(|()| "run")?,
                 client: "c1".parse()?,
                 frames: 8
@@ -1798,9 +1798,9 @@ mod tests {
         ));
         let reply = Reply {
             run: asked.after.map(|f| f.run),
-            ..crate::protocol::Body::Found(crate::command::AnyRef::Pane("%1".parse()?)).into()
+            ..fux_wire::protocol::Body::Found(fux_wire::command::AnyRef::Pane("%1".parse()?)).into()
         };
-        let bytes = crate::wire::encode(&reply)?;
+        let bytes = fux_wire::wire::encode(&reply)?;
         send(&mut peer, &ToCommand::Part(bytes.into()))?;
         send(&mut peer, &ToCommand::PartsEnd)?;
         let next: Asked = read_frame(&mut peer, &mut decoder, Some(ANSWER))?.ok_or("send-keys")?;
@@ -1892,7 +1892,7 @@ mod tests {
         assert_ne!(fuxix::poll::poll(&mut done, Some(ANSWER))?, 0);
         let next = keyboard.ran();
         assert!(
-            matches!(next.as_slice(), [Dispatch::Send(Act::Screen { act: crate::act::ScreenAct::Show(_), .. }), Dispatch::Send(Act::Notice { text, .. }), Dispatch::Run(_)] if text == "ready")
+            matches!(next.as_slice(), [Dispatch::Send(Act::Screen { act: fux_wire::act::ScreenAct::Show(_), .. }), Dispatch::Send(Act::Notice { text, .. }), Dispatch::Run(_)] if text == "ready")
         );
         transport(&mut keyboard, next);
         all_ran(&mut keyboard)?;
@@ -1931,10 +1931,10 @@ mod tests {
     -> Result<(), Box<dyn std::error::Error>> {
         let mut keyboard = keyboard(false)?;
         assert!(program(&mut keyboard, "me command-prompt begin false until".into()).is_empty());
-        let queued = keyboard.frame(ToAttached::Open(crate::callback::Open::Prompt(
-            crate::callback::Prompt {
+        let queued = keyboard.frame(ToAttached::Open(fux_wire::callback::Open::Prompt(
+            fux_wire::callback::Prompt {
                 title: ":".into(),
-                line: crate::act::Line::new(String::new()),
+                line: fux_wire::act::Line::new(String::new()),
                 action: None,
             },
         )));
@@ -1989,7 +1989,7 @@ mod tests {
         }
         let state = Mutex::new(script::default_state().map_err(|e| e.to_string())?);
         let me = (
-            crate::id::ClientId::of(1),
+            fux_wire::id::ClientId::of(1),
             "1-2".parse().map_err(|()| "run")?,
         );
         let stop = script::Stop::default();
@@ -2001,7 +2001,7 @@ mod tests {
         assert!(ran.notice.is_none());
         assert_eq!(
             updates,
-            [crate::presentation::Presentation {
+            [fux_wire::presentation::Presentation {
                 bell: false,
                 titles: true,
                 terminal_clipboard: false,
@@ -2085,7 +2085,7 @@ mod tests {
                 acts.as_slice(),
                 [
                     Act::Screen {
-                        act: crate::act::ScreenAct::Hide,
+                        act: fux_wire::act::ScreenAct::Hide,
                         ..
                     },
                     Act::Notice { .. }
@@ -2102,7 +2102,7 @@ mod tests {
     #[test]
     fn a_jobs_notice_survives_its_screen() -> Result<(), Box<dyn std::error::Error>> {
         let mut keyboard = keyboard(false)?;
-        let (mut session, client) = crate::session::testing::attached(24, 80)?;
+        let (mut session, client) = crate::script::testing::attached(24, 80)?;
         for (suffix, failed) in [("str hello", false), ("str boom fail", true)] {
             program(
                 &mut keyboard,
@@ -2115,13 +2115,13 @@ mod tests {
                     .count(),
                 usize::from(!failed)
             );
-            session.apply(client, acts);
+            session.acts(client, acts, std::time::Instant::now());
             let view = session.views.get(&client).ok_or("view")?;
             let notice = view.notice.as_ref().ok_or("notice")?;
             assert_eq!(notice.error, failed);
             assert!(notice.text.contains(if failed { "boom" } else { "hello" }));
             if let Some(act) = keyboard.screen.close() {
-                session.apply(client, vec![act]);
+                session.acts(client, vec![act], std::time::Instant::now());
             }
         }
         keyboard.read_only = true;
@@ -2139,9 +2139,9 @@ mod tests {
     fn a_screen_too_large_to_show_is_refused_as_it_opens() -> Result<(), Box<dyn std::error::Error>>
     {
         let mut keyboard = keyboard(false)?;
-        let prompt = crate::callback::Prompt {
-            title: std::iter::repeat_n('t', crate::protocol::MAX_FRAME - 2048).collect(),
-            line: crate::act::Line::new(String::new()),
+        let prompt = fux_wire::callback::Prompt {
+            title: std::iter::repeat_n('t', fux_wire::protocol::MAX_FRAME - 2048).collect(),
+            line: fux_wire::act::Line::new(String::new()),
             action: None,
         };
         let mut acts = Vec::new();
@@ -2401,7 +2401,9 @@ mod tests {
         let garbled = answer(|peer| drop(peer.write_all(&[0, 0, 0, 1, 99])), wait);
         assert!(matches!(
             garbled,
-            Err(Error::Protocol(crate::protocol::Error::UnexpectedKind(99)))
+            Err(Error::Protocol(fux_wire::protocol::Error::UnexpectedKind(
+                99
+            )))
         ));
         // A refusal wins over a failure to send the Hello.
         let both = greeted(&ours(), Ok(Some(Greeting::Exit("no"))), Err(no_answer()));

@@ -517,7 +517,7 @@ fn ls_json_list_keys_and_help() -> Outcome {
         assert!(json.contains(field), "{field} in {json}");
     }
     let revision = server.ok(&["@1", "str", "layout_revision", "get"])?;
-    let parsed: fux::command::LayoutRevision =
+    let parsed: fux_wire::command::LayoutRevision =
         revision.trim().parse().map_err(|()| "layout revision")?;
     assert_eq!(parsed.tab.to_string(), "@1");
     assert!(
@@ -652,17 +652,17 @@ fn a_write_that_fails_stops_the_program() -> Outcome {
 fn a_stop_between_requests_leaves_the_connection_asking() -> Outcome {
     use fux::script::Asks;
     let server = Server::start("")?;
-    let path = fux::socket::Choice::Path(server.socket.clone());
+    let path = fux_wire::protocol::Choice::Path(server.socket.clone());
     let stop = fux::script::Stop::default();
     let mut asks = fux::script::Server::stoppable(path, stop.clone());
-    let ls = fux::protocol::Asked {
+    let ls = fux_wire::protocol::Asked {
         after: None,
-        request: fux::command::Command::Inspect {
-            scope: fux::inspect::Scope::All,
-            projection: fux::inspect::Projection::Facts,
+        request: fux_wire::command::Command::Inspect {
+            scope: fux_wire::inspect::Scope::All,
+            projection: fux_wire::inspect::Projection::Facts,
         }
         .into(),
-        context: fux::protocol::Context::default(),
+        context: fux_wire::protocol::Context::default(),
     };
     asks.ask(&ls).map_err(|f| f.to_string())?;
     stop.stop();

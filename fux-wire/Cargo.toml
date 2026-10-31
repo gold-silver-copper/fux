@@ -1,0 +1,25 @@
+[package]
+name = "fux-wire"
+version.workspace = true
+edition = "2024"
+rust-version = "1.95"
+license = "MIT"
+description = "fux's shared data: requests, answers, records, error codes and the frame codec its server and clients speak"
+repository = "https://github.com/gold-silver-copper/fux"
+
+[features]
+# What only tests use, for fux-server's and fux's tests too: ids by number,
+# ids used up, a batch of events as JSON, an encoding's size.
+testing = []
+
+[dependencies]
+fux-vt = { path = "../fux-vt", version = "0.15.0" }
+fuxix = { path = "../fuxix", version = "0.8.0" }
+fuxth-core = { path = "../fuxth/core", version = "0.7.0" }
+
+[dev-dependencies]
+# `words`' quoting is read back by fuxth's own reader.
+fuxth = { path = "../fuxth" }
+
+[lints]
+workspace = true

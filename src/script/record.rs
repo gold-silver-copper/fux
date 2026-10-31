@@ -1,12 +1,20 @@
 //! Immutable local projections. Only checked constructors can retain a record.
 use super::{Fux, handle};
-use crate::code::{Code, Raise};
-use crate::command::{AnyRef, Run};
-use crate::inspect::{self, Projection, Scope};
-use crate::json::Json;
-use crate::wire::Budget;
+use fux_wire::code::{Code, Raise};
+use fux_wire::command::{AnyRef, Run};
+use fux_wire::inspect::{self, Projection, Scope};
+use fux_wire::json::Json;
+use fux_wire::wire::Budget;
 use fuxix::Allocation;
 use fuxth::{AppValue, Failure, ImportLease, Imports, List, Shared, Text, Value};
+
+/// Charges `budget` for `text` imported into fuxth: it retains its String
+/// and builds an Rc and a non-ASCII character index. The String was
+/// already charged by render.
+pub(super) fn imported(budget: &mut Budget, text: &str) -> Result<(), Failure> {
+    let bytes = Text::import_bytes(text.chars().count(), text.is_ascii());
+    Ok(budget.charge(bytes.ok_or_else(Budget::exceeded)?)?)
+}
 
 type V = Value<Fux>;
 
@@ -76,7 +84,7 @@ impl Record {
             if i > 0 {
                 out.write_char(',')?;
             }
-            crate::json::write_str(out, key)?;
+            fux_wire::json::write_str(out, key)?;
             out.write_char(':')?;
             super::words::write_json_value(value, out)?;
         }
@@ -130,7 +138,7 @@ impl<'a> Builder<'a> {
         if text.chars().count() > fuxth::LONGEST {
             return Err(fail());
         }
-        self.budget.text_value(text)?;
+        imported(self.budget, text)?;
         Ok(Value::str(self.budget.string(text)?))
     }
     fn optional(&mut self, text: Option<&str>) -> Result<V, Failure> {
@@ -255,8 +263,8 @@ fn event_bytes(events: usize, reason: Option<&str>) -> usize {
         .saturating_add(8192usize.saturating_mul(events))
 }
 
-pub(super) fn events(batch: crate::events::Batch, imports: &Imports) -> Result<V, Failure> {
-    use crate::events::{Actor, Status};
+pub(super) fn events(batch: fux_wire::events::Batch, imports: &Imports) -> Result<V, Failure> {
+    use fux_wire::events::{Actor, Status};
     let run = batch.next.run;
     let reason = match &batch.status {
         Status::Stopped(reason) => Some(reason.as_str()),
@@ -352,9 +360,9 @@ pub(super) fn snapshot(s: inspect::Snapshot) -> Result<V, Failure> {
     })?;
     let tabs = b.list(&s.tabs, |b,t| {
         let nodes = b.list(&t.nodes, |b,n| match n {
-            crate::layout::Node::Pane(p) => Ok(id(AnyRef::Pane(*p), run)),
-            crate::layout::Node::Split { axis, first, second, first_share, second_share } => {
-                let row = [b.text(match axis { crate::layout::Axis::Horizontal => "horizontal", crate::layout::Axis::Vertical => "vertical" })?, number(first_share.get())?, number(second_share.get())?, number(*first)?, number(*second)?];
+            fux_wire::layout::Node::Pane(p) => Ok(id(AnyRef::Pane(*p), run)),
+            fux_wire::layout::Node::Split { axis, first, second, first_share, second_share } => {
+                let row = [b.text(match axis { fux_wire::layout::Axis::Horizontal => "horizontal", fux_wire::layout::Axis::Vertical => "vertical" })?, number(first_share.get())?, number(second_share.get())?, number(*first)?, number(*second)?];
                 b.list(&row, |_,v| Ok(v.clone()))
             }
         })?;
@@ -423,7 +431,7 @@ pub(super) fn answer_field(
     run: Option<Run>,
     field: &str,
 ) -> Result<V, Failure> {
-    use crate::answer::PaneAnswer;
+    use fux_wire::answer::PaneAnswer;
     let mut budget = Budget::with_limit(inspect::BYTES);
     let b = &mut Builder::new(&mut budget);
     let absent = || {
@@ -448,8 +456,8 @@ pub(super) fn answer_field(
             if let PaneAnswer::Changed { changed, ended, .. } = answer {
                 match (field, ended) {
                     ("changed", _) => return b.list(changed, |b, c| b.text(c.name())),
-                    ("exited", Some(crate::answer::Ended::Exited(n))) => return number(*n),
-                    ("signal", Some(crate::answer::Ended::Signalled(n))) => return number(*n),
+                    ("exited", Some(fux_wire::answer::Ended::Exited(n))) => return number(*n),
+                    ("signal", Some(fux_wire::answer::Ended::Signalled(n))) => return number(*n),
                     ("exited" | "signal", Some(_)) => return Ok(null()),
                     _ => {}
                 }
@@ -468,7 +476,7 @@ pub(super) fn answer_field(
                 }
                 "lines" => {
                     return b.list(&c.lines, |b, line| {
-                        let text = crate::json::render(b.budget, |out| {
+                        let text = fux_wire::json::render(b.budget, |out| {
                             c.write_line(out, line, false, &mut Vec::new())
                         })?;
                         b.text(&text)
@@ -490,11 +498,11 @@ pub(super) fn answer_field(
                                 {
                                     fields.push((b.budget.string(name)?, value));
                                 }
-                                for (name, value) in crate::answer::style_fields(style) {
+                                for (name, value) in fux_wire::answer::style_fields(style) {
                                     let value = match value {
-                                        crate::answer::StyleValue::Flag => Value::Bool(true),
-                                        crate::answer::StyleValue::Index(n) => number(n)?,
-                                        crate::answer::StyleValue::Rgb(fux_vt::Rgb {
+                                        fux_wire::answer::StyleValue::Flag => Value::Bool(true),
+                                        fux_wire::answer::StyleValue::Index(n) => number(n)?,
+                                        fux_wire::answer::StyleValue::Rgb(fux_vt::Rgb {
                                             r,
                                             g,
                                             b: blue,
@@ -518,7 +526,7 @@ pub(super) fn answer_field(
                 _ => {}
             }
             match &c.of {
-                crate::answer::Of::Pane {
+                fux_wire::answer::Of::Pane {
                     version,
                     wrap_pending,
                     state,
@@ -532,7 +540,7 @@ pub(super) fn answer_field(
                         .map(|(_, v)| b.json(v, 0))
                         .unwrap_or_else(|| Err(absent())),
                 },
-                crate::answer::Of::Client(client) => {
+                fux_wire::answer::Of::Client(client) => {
                     if field == "client" {
                         Ok(Value::App(Fux::Client(*client, run)))
                     } else {
@@ -551,8 +559,8 @@ mod tests {
 
     #[test]
     fn the_maximum_event_record_shape_fits_its_construction_allowance() -> Result<(), Failure> {
-        use crate::events::{Actor, Batch, Cursor, Item, Status};
-        use crate::id::{ClientId, PaneId, TabId, WsId};
+        use fux_wire::events::{Actor, Batch, Cursor, Item, Status};
+        use fux_wire::id::{ClientId, PaneId, TabId, WsId};
         let next: Cursor = "18446744073709551615:4294967295-ffffffffffffffff"
             .parse()
             .map_err(|()| fail())?;
@@ -567,7 +575,8 @@ mod tests {
                 (
                     "text",
                     Json::str(
-                        std::iter::repeat_n('𐀀', crate::pane::NOTIFICATION_MAX).collect::<String>(),
+                        std::iter::repeat_n('𐀀', fux_server::pane::NOTIFICATION_MAX)
+                            .collect::<String>(),
                     ),
                 ),
                 ("truncated", Json::Bool(true)),
@@ -581,7 +590,7 @@ mod tests {
             origin: Actor::Program(PaneId::of(u32::MAX), u64::MAX / 2),
             next,
         };
-        for count in [0, 1, crate::journal::BATCH_EVENTS] {
+        for count in [0, 1, fux_server::journal::BATCH_EVENTS] {
             for reason in [
                 None,
                 Some(std::iter::repeat_n('𐀀', 500).collect::<String>()),
@@ -607,8 +616,8 @@ mod tests {
 
     #[test]
     fn event_records_reserve_before_building_and_keep_typed_identities() -> Result<(), Failure> {
-        use crate::events::{Actor, Batch, Cursor, Item, Status};
-        use crate::id::{ClientId, PaneId, TabId, WsId};
+        use fux_wire::events::{Actor, Batch, Cursor, Item, Status};
+        use fux_wire::id::{ClientId, PaneId, TabId, WsId};
         let next: Cursor = "1:1-0".parse().map_err(|()| fail())?;
         for origin in [
             Actor::Unknown,

@@ -1,6 +1,6 @@
 //! Checked fuxth values for local preferences and request options.
 use super::Fux;
-use crate::command::{EnvName, Limit, MAX_WAIT, Number, Program};
+use fux_wire::command::{EnvName, Limit, MAX_WAIT, Number, Program};
 use fuxth::Value;
 
 /// A local setting's type, read once as `set` is given it.
@@ -108,7 +108,7 @@ impl Reads for Vec<EnvName> {
     }
     fn read(value: &Value<Fux>) -> Result<Vec<EnvName>, String> {
         let (n, names) = checked(value)?;
-        if n > crate::command::EnvPatch::MAX_NAMES {
+        if n > fux_wire::command::EnvPatch::MAX_NAMES {
             return Err("environment selection exceeds 1024 names".to_owned());
         }
         // Each name parsed from the list's own string: copied once.
@@ -124,7 +124,7 @@ impl Reads for Vec<EnvName> {
     }
 }
 
-impl Reads for crate::command::ScrollLines {
+impl Reads for fux_wire::command::ScrollLines {
     fn takes() -> String {
         "a number, 0 to 32767".to_owned()
     }
@@ -175,7 +175,7 @@ fn colour(value: &Value<Fux>) -> Result<fux_vt::Color, String> {
     }
 }
 
-impl Reads for crate::presentation::Styles {
+impl Reads for fux_wire::presentation::Styles {
     fn takes() -> String {
         "role rows: [name foreground background bold/dim/italic/underline...]".to_owned()
     }
@@ -199,7 +199,7 @@ impl Reads for crate::presentation::Styles {
                     Self::NAMES.join(" ")
                 ));
             }
-            let mut style = crate::presentation::Style {
+            let mut style = fux_wire::presentation::Style {
                 foreground: colour(fg)?,
                 background: colour(bg)?,
                 bold: false,
@@ -239,12 +239,12 @@ impl Reads for crate::presentation::Styles {
     }
 }
 
-impl Reads for crate::presentation::Bar {
+impl Reads for fux_wire::presentation::Bar {
     fn takes() -> String {
         "[top/bottom/off [left fields] [right fields] tab-numbers?]; fields: workspace tabs pane [slot 0..15]".to_owned()
     }
     fn read(value: &Value<Fux>) -> Result<Self, String> {
-        use crate::presentation::{BarPosition, Field};
+        use fux_wire::presentation::{BarPosition, Field};
         let [position, left, right, numbers] = items(value)? else {
             return Err(Self::takes());
         };
@@ -295,7 +295,7 @@ impl Reads for crate::presentation::Bar {
     }
 }
 
-impl Reads for crate::presentation::Slots {
+impl Reads for fux_wire::presentation::Slots {
     fn takes() -> String {
         "up to 16 [slot-number text] rows; 0..15, 256 bytes each, no controls; replaces all slots"
             .to_owned()

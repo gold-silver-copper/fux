@@ -21,7 +21,7 @@ fn held_handles_refuse_another_server_before_mutating_it() -> Outcome {
         "str shell list str /no/such/scope-shell end set",
     )
     .map_err(e)?;
-    let socket = fux::words::quote(&b.socket.to_string_lossy());
+    let socket = fux_wire::words::quote(&b.socket.to_string_lossy());
     for (held, action) in [
         ("%2", "kill"),
         ("%2 str forbidden text", "send-keys"),
@@ -304,7 +304,9 @@ fn a_keyboard_worker_cannot_act_as_a_client_of_a_replacement_run() -> Outcome {
     let mut notice = String::new();
     eventually("the old worker's refusal", || {
         for act in keyboard.ran() {
-            if let fux::screens::Dispatch::Send(fux::act::Act::Notice { text, error: true }) = act {
+            if let fux::screens::Dispatch::Send(fux_wire::act::Act::Notice { text, error: true }) =
+                act
+            {
                 notice = text;
             }
         }

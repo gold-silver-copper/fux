@@ -6,8 +6,22 @@ version = 4
 name = "fux"
 version = "0.36.0"
 dependencies = [
+ "fux-server",
  "fux-vt",
  "fux-vt-peak",
+ "fux-wire",
+ "fuxix",
+ "fuxth",
+]
+
+[[package]]
+name = "fux-server"
+version = "0.36.0"
+dependencies = [
+ "fux",
+ "fux-vt",
+ "fux-vt-peak",
+ "fux-wire",
  "fuxix",
  "fuxth",
 ]
@@ -26,6 +40,16 @@ name = "fux-vt-peak"
 version = "0.0.0"
 
 [[package]]
+name = "fux-wire"
+version = "0.36.0"
+dependencies = [
+ "fux-vt",
+ "fuxix",
+ "fuxth",
+ "fuxth-core",
+]
+
+[[package]]
 name = "fuxix"
 version = "0.8.0"
 dependencies = [
@@ -37,7 +61,12 @@ name = "fuxth"
 version = "0.7.0"
 dependencies = [
  "fux-vt-peak",
+ "fuxth-core",
 ]
+
+[[package]]
+name = "fuxth-core"
+version = "0.7.0"
 
 [[package]]
 name = "libc"

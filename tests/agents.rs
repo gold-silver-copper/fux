@@ -630,7 +630,7 @@ fn pictures_reach_a_terminal_that_draws_sixel() -> Outcome {
         .preferences
         .presentation();
     presentation.cell_placement = true;
-    client.act(fux::act::Act::Presentation(presentation))?;
+    client.act(fux_wire::act::Act::Presentation(presentation))?;
     eventually("the picture resent after placement changes", || {
         client.pump()?;
         Ok(painted(&client, b"\x1bP0;1;0q\"1;1;20;12"))

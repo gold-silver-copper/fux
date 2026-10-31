@@ -273,8 +273,8 @@ fn a_hidden_tab_goes_back_to_its_own_size() -> Outcome {
 #[test]
 fn a_bar_off_attach_keeps_pane_geometry_under_feedback() -> Outcome {
     let mut server = Server::empty()?;
-    server.state.preferences.bar = fux::presentation::Bar::new(
-        fux::presentation::BarPosition::Off,
+    server.state.preferences.bar = fux_wire::presentation::Bar::new(
+        fux_wire::presentation::BarPosition::Off,
         Vec::new(),
         Vec::new(),
         false,

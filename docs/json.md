@@ -431,7 +431,7 @@ client programs, with explicit source and bounded runs, never on the server.
 A failure is one line on stderr, `fux: CODE: MESSAGE`, the message naming
 the file, line and word it came from. Its exit status is 1, or a
 wait's own (above). CODE stays; every one fux gives
-(`src/code.rs` says what each means):
+(`fux-wire/src/code.rs` says what each means):
 
 - reaching a server: `no_server`, `mismatch`, `client`;
 - what a command names: `no_pane`, `no_tab`, `no_workspace`, `no_client`,

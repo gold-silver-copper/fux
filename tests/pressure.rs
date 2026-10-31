@@ -245,8 +245,8 @@ fn input_waits_while_the_queue_is_full() -> Outcome {
 /// arrive in order.
 #[test]
 fn frames_past_a_turn_wait_for_the_next() -> Outcome {
-    use fux::act::Act;
-    use fux::protocol::{AttachedFrame, Frame};
+    use fux_wire::act::Act;
+    use fux_wire::protocol::{AttachedFrame, Frame};
     let server = Server::start("")?;
     let mut client = server.attach(20, 100)?;
     client.ready()?;
@@ -332,8 +332,8 @@ fn a_program_that_closes_its_terminal_closes_its_pane_at_exit() -> Outcome {
 /// meanwhile, and the server's memory stays small.
 #[test]
 fn a_client_flooding_a_pane_that_does_not_read_holds_up_no_one() -> Outcome {
-    use fux::act::Act;
-    use fux::protocol::{Attach, AttachedFrame, Frame, Hello, PROTOCOL, Role};
+    use fux_wire::act::Act;
+    use fux_wire::protocol::{Attach, AttachedFrame, Frame, Hello, PROTOCOL, Role};
     use std::io::Write;
     let server = Server::start("")?;
     let pid = server.pid().ok_or("the server's pid")?;

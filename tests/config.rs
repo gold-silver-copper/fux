@@ -253,7 +253,7 @@ fn an_imported_failure_keeps_the_whole_bundled_state() -> Outcome {
     let failed = fux::script::run_file(&directory.join("config.fux"))
         .err()
         .ok_or("config acted on the server")?;
-    assert_eq!(failed.code, fux::code::Code::NotConfig);
+    assert_eq!(failed.code, fux_wire::code::Code::NotConfig);
     assert!(failed.notice().contains("shared.fux"));
     assert_eq!(server.ok(&["ls", "listing"])?, before);
     let mut terminal = Terminal::attach(&server, 10, 100, &[])?;
@@ -659,7 +659,7 @@ fn launch_defaults_do_not_change_either_selected_server() -> Outcome {
         } else {
             format!(
                 "str {} socket",
-                fux::words::quote(&b.socket.to_string_lossy())
+                fux_wire::words::quote(&b.socket.to_string_lossy())
             )
         };
         let runtime = [("XDG_RUNTIME_DIR", b.dir.to_str().ok_or("runtime path")?)];

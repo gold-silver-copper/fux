@@ -220,7 +220,7 @@ fn settings() -> String {
             wrapped(about, "\n      ", 78)
         ));
     }
-    out.push_str(&format!("\nShell, copy-environment, history-bytes, program-clipboard, reflow,\nalternate-scroll-lines and picture-bytes supply this client's future launches.\nUse PANE BYTES history-budget to change one pane.\nBell, titles, terminal-clipboard, cell-placement, styles, bar, bar-slots\nand show-column affect only this client's view: supplied with attach, then updated after local commits\nbefore following requests.\nWait-seconds supplies this client's observation wait limits.\nEscape-delay-ms and paste-timeout-ms change at an idle decoder boundary.\nSetters and config evaluation send no requests. Shared paste buffers\nretain the newest {} copies.\n", crate::session::BUFFER_LIMIT));
+    out.push_str(&format!("\nShell, copy-environment, history-bytes, program-clipboard, reflow,\nalternate-scroll-lines and picture-bytes supply this client's future launches.\nUse PANE BYTES history-budget to change one pane.\nBell, titles, terminal-clipboard, cell-placement, styles, bar, bar-slots\nand show-column affect only this client's view: supplied with attach, then updated after local commits\nbefore following requests.\nWait-seconds supplies this client's observation wait limits.\nEscape-delay-ms and paste-timeout-ms change at an idle decoder boundary.\nSetters and config evaluation send no requests. Shared paste buffers\nretain the newest {} copies.\n", fux_server::session::BUFFER_LIMIT));
     out.push_str("\nStyles rows: [role foreground background flags...]; roles: bar tab keys\nnotice error panel border border-focus. Colours: 0..255, default, #rrggbb.\nFlags: bold dim italic underline. A subset changes only its supplied roles.\nBar: [top/bottom/off [left fields] [right fields] tab-numbers?].\nFields: workspace tabs pane [slot 0..15]; at most 16, each once.\nNative notices, copy/prefix/repeat/zoom hints and clipping remain authoritative.\nOff overlays native feedback on the bottom pane row without resizing PTYs.\nBar-slots replaces all slots: up to 16 [0..15 text] rows, 256 bytes per\ntext, no controls. Text is inert. No paint-time programs or added timers.\nstr show-column false set hides the body, retaining dispatch, Escape and feedback.\n");
     out.push_str("\nBundled initialization (client-defaults.fux):\n");
     out.push_str(crate::script::DEFAULTS);
@@ -289,53 +289,54 @@ macro_rules! said {
 #[rustfmt::skip]
 fn bounds() -> Vec<(Amount, &'static str, Said)> {
     use Amount::{Bytes, Count, Pixels, Time, Whole};
-    use crate::{client, copy, pane, script, server};
+    use crate::{client, script};
+    use fux_server::{copy, pane, server};
     vec![
-        (Bytes(crate::wire::MAX_REPLY), "a finite reply's encoded bytes, including all its parts", said![]),
-        (Bytes(crate::wire::MAX_ALLOCATED), "a finite observation's allocation grant, shared by construction or nested decoding", said![]),
-        (Count(crate::capture::OUTPUT_CELLS), "additional capture cells for synthesized output, beside twice history-bytes and the live screen", said![]),
-        (Bytes(crate::protocol::MAX_FRAME), "a message between client and server", said![("README", "length-prefixed and at most {}")]),
-        (Bytes(crate::session::LAUNCH_BYTES), "saved launch inputs in one session, including pending replacements", said![]),
-        (Count(crate::command::EnvPatch::MAX_NAMES), "environment names selected or patched in one launch", said![]),
+        (Bytes(fux_wire::wire::MAX_REPLY), "a finite reply's encoded bytes, including all its parts", said![]),
+        (Bytes(fux_wire::wire::MAX_ALLOCATED), "a finite observation's allocation grant, shared by construction or nested decoding", said![]),
+        (Count(fux_server::capture::OUTPUT_CELLS), "additional capture cells for synthesized output, beside twice history-bytes and the live screen", said![]),
+        (Bytes(fux_wire::protocol::MAX_FRAME), "a message between client and server", said![("README", "length-prefixed and at most {}")]),
+        (Bytes(fux_server::session::LAUNCH_BYTES), "saved launch inputs in one session, including pending replacements", said![]),
+        (Count(fux_wire::command::EnvPatch::MAX_NAMES), "environment names selected or patched in one launch", said![]),
         (Bytes(server::OUT_MAX), "what may wait unsent for a client, its generated paint aside, before the next addition detaches it (one complete addition and its framing may exceed this)", said![]),
         (Bytes(client::OUTPUT_MAX), "what a client holds unwritten for its terminal before it reads the server no more", said![]),
         (Count(client::JOBS), "programs waiting for a client to run them", said![]),
-        (Bytes(crate::callback::JOB_BYTES), "the code of the programs waiting for a client", said![]),
+        (Bytes(fux_wire::callback::JOB_BYTES), "the code of the programs waiting for a client", said![]),
         (Count(client::HELD), "inputs a client holds while a program runs, and the prefix key one more", said![]),
         (Bytes(client::HELD_BYTES), "the pastes of the inputs a client holds", said![]),
         (Bytes(client::NOTICE_MAX), "a program's notice", said![]),
-        (Count(crate::journal::BATCH_EVENTS), "events returned in one next-events batch", said![]),
-        (Count(crate::journal::BATCH_SCAN), "entries scanned by one next-events read, including nonmatches", said![]),
-        (Count(crate::journal::KEPT), "complete events the journal keeps; up to 32.5 MiB live entries on 64-bit, plus overhead (docs/json.md); a reader further behind gets missed", said![]),
+        (Count(fux_server::journal::BATCH_EVENTS), "events returned in one next-events batch", said![]),
+        (Count(fux_server::journal::BATCH_SCAN), "entries scanned by one next-events read, including nonmatches", said![]),
+        (Count(fux_server::journal::KEPT), "complete events the journal keeps; up to 32.5 MiB live entries on 64-bit, plus overhead (docs/json.md); a reader further behind gets missed", said![]),
         (Bytes(pane::INPUT_BYTES), "input waiting for a pane's program", said![("agents", "({} its program has not read)")]),
         (Bytes(crate::script::INPUT_MAX), "keys one send-keys sends", said![("agents", "{} at most in all"), ("send-keys", "{} at most in all")]),
         (Bytes(fux_vt::keys::decode::PASTE_LIMIT), "a paste from a client's terminal", said![]),
         (Bytes(pane::REPLIES_MAX), "replies to one read of a program's output", said![("json", "past {} of replies")]),
-        (Bytes(crate::session::LEFT_MAX), "what is read of what a program left on its terminal as it ended", said![("json", "more than {} on its terminal")]),
+        (Bytes(fux_server::session::LEFT_MAX), "what is read of what a program left on its terminal as it ended", said![("json", "more than {} on its terminal")]),
         (Time(pane::FRAME_TIMEOUT), "how long a frame of synchronized output is held", said![("README", "held frames are released after {}")]),
         (Bytes(pane::FRAME_LIMIT), "a frame of synchronized output held", said![("README", "or past {}")]),
         (Count(pane::TITLE_MAX), "characters of a title kept", said![("json", "| `title` | what the program set (OSC 0 or 2), else `\"\"`: its first {} characters")]),
         (Count(pane::TITLE_STACK), "titles a program may push", said![]),
         (Count(pane::NOTIFICATION_MAX), "characters of a notification kept", said![("json", "| `notification` | the last notification's text, else `null`: its first {} characters")]),
-        (Bytes(crate::session::NAME_MAX), "a name", said![]),
+        (Bytes(fux_server::session::NAME_MAX), "a name", said![]),
         (Count(copy::MAX_CELLS), "cells a copy takes", said![("README", "at most {} cells")]),
         (Bytes(copy::MAX_CLIPBOARD), "a copy to your clipboard, encoded", said![("README", "to {} encoded")]),
         (Bytes(copy::SEARCH_MAX), "a search in copy mode", said![]),
-        (Bytes(crate::act::LINE_MAX), "a line typed at a prompt", said![]),
+        (Bytes(fux_wire::act::LINE_MAX), "a line typed at a prompt", said![]),
         (Bytes(fux_vt::OSC_PAYLOAD_LIMIT), "a string a program sends, as its copy (OSC 52)", said![("README", "up to {} encoded"), ("json", "the {} a string may be")]),
         (Whole(u64::from(fux_vt::sixel::MAX_SIDE)), "pixels a side of a sixel picture", said![("json", "{} pixels a side")]),
         (Count(fux_vt::sixel::MAX_PIXELS), "pixels of a sixel picture in all", said![("json", "{} pixels in all")]),
         (Pixels(fux_vt::CellSize::LEAST), "the least cell a terminal may say", said![("README", "{}")]),
-        (Time(crate::outer::BELL_GAP), "between two bells told", said![("README", "at most once every {}")]),
-        (Count(crate::session::BUFFER_LIMIT), "paste buffers kept", said![("README", "the newest {}")]),
-        (Count(crate::session::PREVIEW_MAX), "characters of a paste buffer's preview", said![("README", "at most {} characters"), ("json", "at most {} characters")]),
-        (Count(crate::command::MAX_WAIT), "seconds a wait may be given", said![]),
+        (Time(fux_server::outer::BELL_GAP), "between two bells told", said![("README", "at most once every {}")]),
+        (Count(fux_server::session::BUFFER_LIMIT), "paste buffers kept", said![("README", "the newest {}")]),
+        (Count(fux_server::session::PREVIEW_MAX), "characters of a paste buffer's preview", said![("README", "at most {} characters"), ("json", "at most {} characters")]),
+        (Count(fux_wire::command::MAX_WAIT), "seconds a wait may be given", said![]),
         (Whole(script::PROGRAM_STEPS), "steps of a program a client runs (a config, a key's)", said![]),
         (Whole(script::LINE_STEPS), "steps of a command line's program", said![]),
         (Count(fuxth::LONGEST), "characters of a string fuxth builds", said![("agents", "at most {} characters")]),
         (Whole(fuxth::TOTAL), "elements a fuxth list holds, through the lists in it", said![]),
         (Bytes(script::SOURCE_MAX), "what read-file and input read", said![("input", "{} at most"), ("read-file", "{} at most")]),
-        (Count(usize::from(crate::command::MOST)), "columns or rows of a size", said![("resize", "1 to {} each"), ("size", "1 to {} each")]),
+        (Count(usize::from(fux_wire::command::MOST)), "columns or rows of a size", said![("resize", "1 to {} each"), ("size", "1 to {} each")]),
         (Count(fuxix::process::TREE_MAX), "processes a pane's teardown looks through for its session (Linux)", said![]),
     ]
 }
@@ -376,18 +377,18 @@ mod tests {
                 assert!(place(at).contains(&words), "{about}: {at}: {words}");
             }
         }
-        let protocol = crate::protocol::PROTOCOL;
+        let protocol = fux_wire::protocol::PROTOCOL;
         for said in [
             format!("\"protocol\":{protocol},"),
             format!("\"server_protocol\":{protocol},"),
             // The language's codes fux's words raise, which a try catches
             // only as fux says so.
             {
-                let raised = crate::code::Raise::LANG.iter();
+                let raised = fux_wire::code::Raise::LANG.iter();
                 let declared = raised.filter(|c| !c.raised());
                 let quoted: Vec<String> = declared.map(|c| format!("`{}`", c.name())).collect();
                 let quoted: Vec<&str> = quoted.iter().map(String::as_str).collect();
-                crate::words::listed(&quoted, "and")
+                fux_wire::words::listed(&quoted, "and")
             },
         ] {
             assert!(JSON.contains(&said), "json.md: {said}");

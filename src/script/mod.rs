@@ -12,18 +12,19 @@ pub(crate) mod settings;
 mod source;
 mod words;
 
-use crate::answer::{PaneAnswer, PaneResults};
 use crate::client;
 use crate::client_state::{ClientState, Draft};
-use crate::code::{Code, Raise};
-use crate::command::{
+use fux_server::socket::SocketPath;
+use fux_wire::answer::{PaneAnswer, PaneResults};
+use fux_wire::code::{Code, Raise};
+use fux_wire::command::{
     AnyRef, EnvName, Extent, HistoryBytes, Input, Kind, Limit, Program, Request, Run, Version,
     WsRef,
 };
-use crate::id::{ClientId, PaneId, TabId, WsId};
-use crate::layout::Axis;
-use crate::protocol::{Asked, Body, Context, End, Reply, Response};
-use crate::socket::{Choice, SocketPath};
+use fux_wire::id::{ClientId, PaneId, TabId, WsId};
+use fux_wire::layout::Axis;
+use fux_wire::protocol::Choice;
+use fux_wire::protocol::{Asked, Body, Context, End, Reply, Response};
 use fuxix::Allocation;
 use fuxth::{AppValue, Code as Lang, Compiler, Limits, Machine, Outcome, Token, Value, token};
 use std::io::{self, Read, Write};
@@ -103,8 +104,8 @@ impl AppValue for Fux {
         }
     }
 
-    const TEXT_LIMIT: usize = crate::wire::MAX_ALLOCATED;
-    const IMPORT_LIMIT: usize = crate::wire::MAX_ALLOCATED;
+    const TEXT_LIMIT: usize = fux_wire::wire::MAX_ALLOCATED;
+    const IMPORT_LIMIT: usize = fux_wire::wire::MAX_ALLOCATED;
     fn import_bytes(&self) -> Option<usize> {
         if let Fux::Answer(answer, _) = self
             && matches!(&**answer, Answer::Capture(_))
@@ -135,11 +136,11 @@ impl AppValue for Fux {
             Fux::Answer(a, _) => match &**a {
                 Answer::Capture(c) => {
                     let state = match &c.of {
-                        crate::answer::Of::Pane { state, .. } => state
+                        fux_wire::answer::Of::Pane { state, .. } => state
                             .iter()
                             .map(|(k, v)| (k.len() as u64).saturating_add(v.weight()))
                             .fold(1u64, u64::saturating_add),
-                        crate::answer::Of::Client(_) => 1,
+                        fux_wire::answer::Of::Client(_) => 1,
                     };
                     // A line counts one, an empty one too, beside its text
                     // and runs.
@@ -209,13 +210,7 @@ impl AppValue for Fux {
             Fux::All => write!(out, "all"),
             Fux::Opts(_) => write!(out, "({})", self.kind()),
         }
-        .map_err(|_| fuxth::Failure::from(crate::wire::Budget::exceeded()))
-    }
-}
-
-impl From<crate::code::Error> for fuxth::Failure {
-    fn from(error: crate::code::Error) -> Self {
-        Self::new(error.code().into(), error.to_string())
+        .map_err(|_| fuxth::Failure::from(fux_wire::wire::Budget::exceeded()))
     }
 }
 
@@ -252,15 +247,15 @@ pub struct Opts {
     pub on: Option<On>,
     pub of: Option<Run>,
     pub name: Option<String>,
-    pub size: crate::command::Size,
+    pub size: fux_wire::command::Size,
     pub cwd: Option<std::path::PathBuf>,
-    pub env: crate::command::EnvPatch,
+    pub env: fux_wire::command::EnvPatch,
     pub argv: Vec<String>,
     pub shell: Option<bool>,
     pub history_bytes: Option<HistoryBytes>,
     pub reflow: Option<bool>,
-    pub alternate_scroll_lines: Option<crate::command::ScrollLines>,
-    pub picture_bytes: Option<crate::command::PictureBytes>,
+    pub alternate_scroll_lines: Option<fux_wire::command::ScrollLines>,
+    pub picture_bytes: Option<fux_wire::command::PictureBytes>,
     pub program_clipboard: Option<bool>,
     pub copy_environment: Option<Vec<EnvName>>,
     pub axis: Option<Axis>,
@@ -272,7 +267,7 @@ pub struct Opts {
     pub watch: bool,
     /// How long a wait waits before it times out.
     pub timeout: Option<Limit>,
-    pub view: crate::command::CaptureView,
+    pub view: fux_wire::command::CaptureView,
     pub history: Option<usize>,
     pub inputs: Vec<Input>,
     /// The words given, for the word they go on to refuse any it would not
@@ -283,9 +278,9 @@ pub struct Opts {
 impl Opts {
     pub(crate) fn pane_options(
         &self,
-        defaults: crate::command::PaneOptions,
-    ) -> crate::command::PaneOptions {
-        crate::command::PaneOptions {
+        defaults: fux_wire::command::PaneOptions,
+    ) -> fux_wire::command::PaneOptions {
+        fux_wire::command::PaneOptions {
             reflow: self.reflow.unwrap_or(defaults.reflow),
             alternate_scroll_lines: self
                 .alternate_scroll_lines
@@ -305,7 +300,7 @@ impl Opts {
         &self,
         shell: &Program,
         selection: &[EnvName],
-    ) -> Result<(crate::command::Start, crate::command::EnvPatch), String> {
+    ) -> Result<(fux_wire::command::Start, fux_wire::command::EnvPatch), String> {
         // Checked while borrowed: the copy is one launch frame's scratch.
         let argv = if self.argv.is_empty() {
             shell.clone()
@@ -314,14 +309,14 @@ impl Opts {
         } else {
             return Err("program argv exceeds the launch frame limit".to_owned());
         };
-        let mut env = crate::command::EnvPatch::selected(
+        let mut env = fux_wire::command::EnvPatch::selected(
             self.copy_environment.as_deref().unwrap_or(selection),
         )?;
         env.overlay(&self.env)?;
         let start = if self.shell == Some(false) {
-            crate::command::Start::Program(argv)
+            fux_wire::command::Start::Program(argv)
         } else {
-            crate::command::Start::Shell(argv)
+            fux_wire::command::Start::Shell(argv)
         };
         Ok((start, env))
     }
@@ -334,13 +329,13 @@ impl Opts {
 
     fn heap_bytes(&self) -> usize {
         [
-            crate::wire::retained(&self.name),
-            crate::wire::retained(&self.cwd),
-            crate::wire::retained(&self.env),
-            crate::wire::retained(&self.argv),
-            crate::wire::retained(&self.inputs),
-            crate::wire::retained(&self.copy_environment),
-            crate::wire::retained(&self.place),
+            fux_wire::wire::retained(&self.name),
+            fux_wire::wire::retained(&self.cwd),
+            fux_wire::wire::retained(&self.env),
+            fux_wire::wire::retained(&self.argv),
+            fux_wire::wire::retained(&self.inputs),
+            fux_wire::wire::retained(&self.copy_environment),
+            fux_wire::wire::retained(&self.place),
             self.given
                 .capacity()
                 .saturating_mul(std::mem::size_of::<words::Opt>()),
@@ -375,15 +370,15 @@ pub enum Answer {
     /// An action's or wait's on a tab or workspace: each pane's that
     /// answered, which is no one pane.
     Panes(Vec<PaneAnswer>),
-    Capture(Box<crate::answer::Captured>),
+    Capture(Box<fux_wire::answer::Captured>),
 }
 
 impl Answer {
     fn retained_bytes(&self) -> usize {
         fuxth::Shared::<Self>::bytes(match self {
-            Self::Capture(c) => crate::wire::retained(c),
-            Self::Pane(p) => crate::wire::retained(p),
-            Self::Panes(p) => crate::wire::retained(p),
+            Self::Capture(c) => fux_wire::wire::retained(c),
+            Self::Pane(p) => fux_wire::wire::retained(p),
+            Self::Panes(p) => fux_wire::wire::retained(p),
         })
     }
 
@@ -393,8 +388,8 @@ impl Answer {
             Answer::Pane(_) => ("answer", "an action's answer"),
             Answer::Panes(_) => ("answers", "an answer of a tab's or workspace's panes"),
             Answer::Capture(c) => match c.of {
-                crate::answer::Of::Pane { .. } => ("capture", "a capture"),
-                crate::answer::Of::Client(_) => ("client-capture", "a client's capture"),
+                fux_wire::answer::Of::Pane { .. } => ("capture", "a capture"),
+                fux_wire::answer::Of::Client(_) => ("client-capture", "a client's capture"),
             },
         }
     }
@@ -449,8 +444,8 @@ impl Answer {
         match self {
             Answer::Pane(answer) => answer.version(),
             Answer::Capture(captured) => match captured.of {
-                crate::answer::Of::Pane { version, .. } => Some(version),
-                crate::answer::Of::Client(_) => None,
+                fux_wire::answer::Of::Pane { version, .. } => Some(version),
+                fux_wire::answer::Of::Client(_) => None,
             },
             Answer::Panes(_) => None,
         }
@@ -479,11 +474,11 @@ pub enum Ask {
 #[derive(Clone, Debug, PartialEq)]
 pub enum Bound {
     /// Keys after the prefix.
-    Prefix(Vec<crate::keys::KeyPress>),
+    Prefix(Vec<fux_vt::keys::KeyPress>),
     /// One key, bound without the prefix.
-    Root(crate::keys::KeyPress),
+    Root(fux_vt::keys::KeyPress),
     /// One key of a screen of fux's own.
-    In(crate::keymap::Modal, crate::keys::KeyPress),
+    In(crate::keymap::Modal, fux_vt::keys::KeyPress),
 }
 
 /// What the client does itself.
@@ -492,7 +487,7 @@ pub enum Local {
     /// This terminal, or a client of no terminal of `size`.
     Attach {
         of: Option<Run>,
-        target: Option<crate::command::AttachTarget>,
+        target: Option<fux_wire::command::AttachTarget>,
         read_only: bool,
         size: Option<fux_vt::Size>,
         creation: Box<Opts>,
@@ -505,7 +500,7 @@ pub enum Local {
     ForceKill,
     /// Open one of the client's own screens: a client running its keys'
     /// programs does (`client::Keyboard`); nothing else has one.
-    Open(crate::callback::Open),
+    Open(fux_wire::callback::Open),
     /// What the command line's program asks of its process.
     Shell(Shell),
 }
@@ -604,6 +599,8 @@ impl Failed {
         }
     }
 }
+
+impl std::error::Error for Failed {}
 
 impl std::fmt::Display for Failed {
     /// One line, as `fux: CODE: MESSAGE` is read: a message of several (a
@@ -743,13 +740,13 @@ fn callback_source(config: Option<&Config>, tokens: &[Token]) -> Result<(), Fail
 pub(crate) fn callback_machine(
     config: Option<&Config>,
     tokens: &[Token],
-    args: Option<&[crate::callback::Data]>,
+    args: Option<&[fux_wire::callback::Data]>,
 ) -> Result<Machine<Fux>, Failed> {
     let Some(args) = args else {
         return compiled(config, tokens).map_err(Failed::from);
     };
     let mut compiler = base(config)?;
-    let mut budget = crate::wire::Budget::with_limit(crate::callback::JOB_BYTES);
+    let mut budget = fux_wire::wire::Budget::with_limit(fux_wire::callback::JOB_BYTES);
     for arg in args {
         compiler.argument(callback::value(arg, &mut budget).map_err(callback_failed)?);
     }
@@ -875,7 +872,7 @@ pub struct Server {
     chosen: Choice,
     requests: Option<client::Requests>,
     /// This job's source fence, kept on every request and across retries.
-    pub(crate) after: Option<std::rc::Rc<std::cell::Cell<crate::protocol::Fence>>>,
+    pub after: Option<std::rc::Rc<std::cell::Cell<fux_wire::protocol::Fence>>>,
     /// What stops a run from another thread, if one may.
     stop: Option<Stop>,
 }
@@ -950,7 +947,7 @@ impl Server {
 
     /// Its socket.
     pub fn socket(&self) -> Result<SocketPath, Failed> {
-        crate::socket::socket_path(&self.chosen).map_err(|e| client_failed(e.into()))
+        fux_server::socket::socket_path(&self.chosen).map_err(|e| client_failed(e.into()))
     }
 }
 
@@ -1751,11 +1748,237 @@ fn read_file(path: &std::path::Path) -> Result<String, Failed> {
     read_text(&name, file, SOURCE_MAX)
 }
 
+/// A session asked in-process, and programs run against one held reply:
+/// for the tests (fux-server's among them) and the fuzz targets.
+#[cfg(any(test, feature = "in-process"))]
+pub mod testing {
+    /// A session, as what a program's requests go to (`Session::answer`).
+    pub struct InProcess<'s>(pub &'s mut fux_server::session::Session);
+
+    impl super::Asks for InProcess<'_> {
+        fn published(
+            &mut self,
+            state: &crate::client_state::ClientState,
+            context: &fux_wire::protocol::Context,
+        ) {
+            self.0
+                .present(context.client, state.preferences.presentation());
+        }
+        fn ask(
+            &mut self,
+            asked: &fux_wire::protocol::Asked,
+        ) -> Result<super::Reply, super::Failed> {
+            Ok(self.0.answer(asked))
+        }
+    }
+
+    /// A session with a terminal client of `rows` by `cols` attached, its
+    /// first workspace started as this client's defaults start one.
+    pub fn attached(
+        rows: u16,
+        cols: u16,
+    ) -> Result<(fux_server::session::Session, fux_wire::id::ClientId), String> {
+        use fux_wire::command::{EnvPatch, InitialWorkspace, Run, Start};
+        let run = Run::now().ok_or("no clock")?;
+        let mut session =
+            fux_server::session::Session::new("/nonexistent/fux.sock".into(), false, run);
+        let preferences = super::default_state()
+            .map_err(|e| e.to_string())?
+            .preferences;
+        let size = fux_vt::Size::new(rows, cols).map_err(|e| e.to_string())?;
+        let attach = fux_wire::protocol::Attach {
+            initial: Some(InitialWorkspace {
+                name: None,
+                start: Start::Shell(preferences.shell.clone()),
+                options: preferences.pane_options(),
+                cwd: std::env::current_dir().map_err(|e| e.to_string())?,
+                env: EnvPatch::default(),
+            }),
+            ..fux_wire::protocol::Attach::of(size, preferences.presentation())
+        };
+        let kind = fux_server::view::ClientKind::Terminal;
+        let client = (session.attach_as(kind, attach, std::time::Instant::now()))
+            .map_err(|e| e.to_string())?;
+        Ok((session, client))
+    }
+
+    pub fn evaluate(
+        code: &str,
+        state: Option<&mut super::Draft>,
+        asks: &mut impl super::Asks,
+        out: &mut dyn std::io::Write,
+    ) -> Result<Vec<fuxth::Value<super::Fux>>, super::Failed> {
+        let mut machine = super::compile(&fuxth::token::source("test", code)?)?;
+        let mut host = super::Host::new(fux_wire::protocol::Context::default(), state, out);
+        super::run_capped(&mut machine, &mut host, asks, None, None)
+    }
+
+    pub fn held_reply(
+        code: &str,
+        reply: super::Reply,
+        out: &mut Vec<u8>,
+    ) -> Result<Vec<fuxth::Value<super::Fux>>, super::Failed> {
+        struct Once(Option<super::Reply>);
+        impl super::Asks for Once {
+            fn ask(
+                &mut self,
+                asked: &fux_wire::protocol::Asked,
+            ) -> Result<super::Reply, super::Failed> {
+                if let fux_wire::command::Request::Do(fux_wire::command::Command::Resolve {
+                    text,
+                    ..
+                }) = &asked.request
+                {
+                    let id = text.parse().map_err(|()| {
+                        super::Failed::new(fux_wire::code::Code::Usage, "test target")
+                    })?;
+                    return Ok(super::Reply {
+                        run: self.0.as_ref().and_then(|r| r.run),
+                        ..fux_wire::protocol::Body::Found(id).into()
+                    });
+                }
+                self.0.take().ok_or_else(|| {
+                    super::Failed::new(
+                        fux_wire::code::Code::Usage,
+                        "held field made another request",
+                    )
+                })
+            }
+        }
+        evaluate(code, None, &mut Once(Some(reply)), out)
+    }
+}
+
 #[cfg(test)]
 pub(crate) mod tests {
-    use crate::json::Json;
-    use crate::session::testing::TestResult;
-    impl std::error::Error for super::Failed {}
+    use super::testing::{evaluate, held_reply};
+    use crate::TestResult;
+    use fux_wire::json::Json;
+
+    /// Pane outcomes survive the wire with one status owner, including
+    /// mixed collections whose first failing member names the whole.
+    #[test]
+    fn pane_outcomes_determine_the_reply_status() -> Result<(), Box<dyn std::error::Error>> {
+        use fux_wire::answer::{PaneAnswer, PaneResults};
+        use fux_wire::code::Code;
+        use fux_wire::id::PaneId;
+        use fux_wire::protocol::{End, Reply};
+        let version = "%2:0.0.0.0.0:48211-1867a3f9c2b8e7d6"
+            .parse()
+            .map_err(|()| "version")?;
+        let changed = PaneAnswer::Changed {
+            version,
+            changed: vec![fux_wire::answer::Change::Screen],
+            ended: None,
+        };
+        let closed = PaneAnswer::Closed(PaneId::of(3));
+        let timeout = PaneAnswer::TimedOut {
+            since: version,
+            limit: std::time::Duration::from_millis(1500),
+        };
+        for (results, code) in [
+            (PaneResults::One(PaneAnswer::Acted(version)), None),
+            (PaneResults::One(changed.clone()), None),
+            (PaneResults::One(closed.clone()), Some(Code::Closed)),
+            (PaneResults::One(timeout.clone()), Some(Code::Timeout)),
+            (PaneResults::Many(vec![]), None),
+            (
+                PaneResults::Many(vec![changed.clone(), closed.clone(), timeout.clone()]),
+                Some(Code::Closed),
+            ),
+            (
+                PaneResults::Many(vec![changed, timeout, closed]),
+                Some(Code::Timeout),
+            ),
+        ] {
+            let reply = Reply {
+                run: Some(version.run),
+                ..results.into()
+            };
+            let bytes = fux_wire::wire::encode(&reply)?;
+            let decoded = fux_wire::wire::Reader::new(&bytes).whole::<Reply>()?;
+            assert_eq!(decoded, reply);
+            assert_eq!(decoded.end().code(), code);
+            assert_eq!(
+                decoded.end().status(),
+                code.map_or(0, |code| code.status().get())
+            );
+            let values = crate::script::answered(
+                decoded.clone(),
+                &fuxth::Imports::new(fux_wire::inspect::BYTES),
+            )
+            .map_err(|f| f.to_string())?;
+            let json = values
+                .first()
+                .map(|v| match v {
+                    fuxth::Value::App(crate::script::Fux::Answer(a, run)) => {
+                        assert_eq!(*run, Some(version.run));
+                        {
+                            let mut out = String::new();
+                            assert!(a.write_json(&mut out).is_ok());
+                            out
+                        }
+                    }
+                    fuxth::Value::Int(_)
+                    | fuxth::Value::Bool(_)
+                    | fuxth::Value::Str(_)
+                    | fuxth::Value::List(_)
+                    | fuxth::Value::App(_) => String::new(),
+                })
+                .ok_or("answer")?;
+            assert_eq!(json.contains(r#""status":124"#), has_timeout(&decoded));
+            if let End::Failed { message, .. } = decoded.end() {
+                assert!(!message.is_empty());
+                if has_timeout(&decoded) {
+                    assert!(message.contains("unchanged for 1.5s"), "{message}");
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn has_timeout(reply: &super::Reply) -> bool {
+        use fux_wire::code::Code;
+        matches!(&reply.response, super::Response::Answered(answers) if answers.all().iter().any(|a| a.failure() == Some(Code::Timeout)))
+    }
+
+    /// The default-history styled capture, decoded (`fux_wire::wire`'s
+    /// tests check it fits the wire's grant): its JSON is printed whole,
+    /// and six copies of it in one list are refused, not built.
+    #[test]
+    fn default_styled_capture_fits_the_script_grant() -> TestResult {
+        let version: fux_wire::command::Version =
+            "%1:0.0.0.0.0:1-1".parse().map_err(|()| "version")?;
+        let capture = fux_wire::answer::Captured::default_styled(version);
+        let reply = super::Reply {
+            run: Some(version.run),
+            ..super::Body::Capture(Box::new(capture)).into()
+        };
+        let bytes = fux_wire::wire::encode(&reply)?;
+        let reply = fux_wire::wire::Reader::new(&bytes).whole::<super::Reply>()?;
+        let mut out = Vec::new();
+        let result = held_reply(
+            "%1 all-history styles capture let h h json dup len swap dup 0 8 slice print print list h h h h h h end json",
+            reply,
+            &mut out,
+        );
+        assert!(
+            out.len() as u64 > fuxth::TOTAL,
+            "admitted capture JSON was not printed: {result:?}"
+        );
+        assert!(out.starts_with(b"{\"pane\":\n{\"pane\":\"%1\"") && out.ends_with(b"}\n"));
+        assert!(
+            result
+                .as_ref()
+                .err()
+                .is_some_and(|e| e.message.contains("json"))
+        );
+        assert_eq!(
+            result.map_err(|e| e.code),
+            Err(fux_wire::code::Code::from(fux_wire::code::Raise::TooLong))
+        );
+        Ok(())
+    }
 
     #[test]
     fn bundled_libraries_and_unused_user_definitions_are_checked() -> TestResult {
@@ -1806,52 +2029,10 @@ pub(crate) mod tests {
         Ok(())
     }
 
-    pub(crate) fn evaluate(
-        code: &str,
-        state: Option<&mut super::Draft>,
-        asks: &mut impl super::Asks,
-        out: &mut dyn std::io::Write,
-    ) -> Result<Vec<fuxth::Value<super::Fux>>, super::Failed> {
-        let mut machine = super::compile(&fuxth::token::source("test", code)?)?;
-        let mut host = super::Host::new(crate::protocol::Context::default(), state, out);
-        super::run_capped(&mut machine, &mut host, asks, None, None)
-    }
-
-    pub(crate) fn held_reply(
-        code: &str,
-        reply: super::Reply,
-        out: &mut Vec<u8>,
-    ) -> Result<Vec<fuxth::Value<super::Fux>>, super::Failed> {
-        struct Once(Option<super::Reply>);
-        impl super::Asks for Once {
-            fn ask(
-                &mut self,
-                asked: &crate::protocol::Asked,
-            ) -> Result<super::Reply, super::Failed> {
-                if let crate::command::Request::Do(crate::command::Command::Resolve {
-                    text, ..
-                }) = &asked.request
-                {
-                    let id = text.parse().map_err(|()| {
-                        super::Failed::new(crate::code::Code::Usage, "test target")
-                    })?;
-                    return Ok(super::Reply {
-                        run: self.0.as_ref().and_then(|r| r.run),
-                        ..crate::protocol::Body::Found(id).into()
-                    });
-                }
-                self.0.take().ok_or_else(|| {
-                    super::Failed::new(crate::code::Code::Usage, "held field made another request")
-                })
-            }
-        }
-        evaluate(code, None, &mut Once(Some(reply)), out)
-    }
-
     #[test]
     fn ended_answers_expose_both_exit_fields() -> TestResult {
         use super::*;
-        use crate::answer::Ended;
+        use fux_wire::answer::Ended;
         let version: Version = "%1:0.7.0.0.0:1-1".parse().map_err(|()| "version")?;
         for (ended, exited, signal) in [
             (Ended::Exited(7), Value::Int(7), Value::App(Fux::Null)),
@@ -1886,8 +2067,8 @@ pub(crate) mod tests {
     #[test]
     fn blank_capture_lines_weigh_one_each() -> TestResult {
         let rows = 1000;
-        let grid = crate::render::Grid::new(rows, 80)?;
-        let capture = crate::capture::client(crate::id::ClientId::of(1), &grid)?;
+        let grid = fux_server::render::Grid::new(rows, 80)?;
+        let capture = fux_server::capture::client(fux_wire::id::ClientId::of(1), &grid)?;
         assert!(capture.lines.iter().all(|line| line.text.is_empty()));
         let answer = super::Answer::Capture(Box::new(capture));
         let value = super::Fux::Answer(fuxth::Shared::new(answer), None);
@@ -1895,9 +2076,9 @@ pub(crate) mod tests {
         Ok(())
     }
 
-    fn large_plain(version: super::Version) -> crate::answer::Captured {
-        crate::answer::Captured {
-            of: crate::answer::Of::Pane {
+    fn large_plain(version: super::Version) -> fux_wire::answer::Captured {
+        fux_wire::answer::Captured {
+            of: fux_wire::answer::Of::Pane {
                 version,
                 wrap_pending: false,
                 state: Vec::new(),
@@ -1905,7 +2086,7 @@ pub(crate) mod tests {
             screen_rows: 24,
             screen_cols: 80,
             screen_cursor: None,
-            lines: vec![crate::answer::Line {
+            lines: vec![fux_wire::answer::Line {
                 text: std::iter::repeat_n('x', 17_000_000).collect(),
                 runs: Vec::new(),
             }],
@@ -1933,20 +2114,20 @@ pub(crate) mod tests {
     impl Styled {
         fn new(turns: usize, lines: usize, styled: bool, history: usize) -> Result<Self, String> {
             let version: super::Version = "%1:0.0.0.0.0:1-1".parse().map_err(|()| "version")?;
-            let line = crate::answer::Line {
+            let line = fux_wire::answer::Line {
                 text: std::iter::repeat_n('x', 100).collect(),
                 runs: (0..if styled { 100 } else { 0 })
-                    .map(|style| crate::answer::Run {
+                    .map(|style| fux_wire::answer::Run {
                         bytes: 1,
                         cells: 1,
                         style,
                     })
                     .collect(),
             };
-            let reply = |lines: Vec<crate::answer::Line>| super::Reply {
+            let reply = |lines: Vec<fux_wire::answer::Line>| super::Reply {
                 run: Some(version.run),
-                ..super::Body::Capture(Box::new(crate::answer::Captured {
-                    of: crate::answer::Of::Pane {
+                ..super::Body::Capture(Box::new(fux_wire::answer::Captured {
+                    of: fux_wire::answer::Of::Pane {
                         version,
                         wrap_pending: false,
                         state: Vec::new(),
@@ -1965,7 +2146,7 @@ pub(crate) mod tests {
                 }))
                 .into()
             };
-            let past = crate::answer::Line {
+            let past = fux_wire::answer::Line {
                 text: std::iter::repeat_n('y', 10).collect(),
                 runs: Vec::new(),
             };
@@ -1982,10 +2163,13 @@ pub(crate) mod tests {
     }
 
     impl super::Asks for Styled {
-        fn ask(&mut self, asked: &crate::protocol::Asked) -> Result<super::Reply, super::Failed> {
+        fn ask(
+            &mut self,
+            asked: &fux_wire::protocol::Asked,
+        ) -> Result<super::Reply, super::Failed> {
             use super::{AnyRef, Body, PaneAnswer, PaneResults, Reply, Request};
             let answer = match &asked.request {
-                Request::Do(crate::command::Command::Resolve { .. }) => {
+                Request::Do(fux_wire::command::Command::Resolve { .. }) => {
                     Body::Found(AnyRef::Pane(self.version.pane)).into()
                 }
                 Request::Wait(_) => {
@@ -2004,7 +2188,7 @@ pub(crate) mod tests {
                     };
                     PaneResults::One(answer).into()
                 }
-                Request::Do(crate::command::Command::CapturePane {
+                Request::Do(fux_wire::command::Command::CapturePane {
                     history: Some(_), ..
                 }) => return Ok(self.history.clone()),
                 Request::Do(_) | Request::NextEvents { .. } => return Ok(self.capture.clone()),
@@ -2023,7 +2207,7 @@ pub(crate) mod tests {
     /// And one answer decoded and not yet imported, or one text conversion,
     /// each within its own `MAX_ALLOCATED` grant, never at once; and a record
     /// projection (`counts`), within `inspect::BYTES`.
-    const ANSWERED: usize = crate::wire::MAX_ALLOCATED + crate::inspect::BYTES + MACHINE;
+    const ANSWERED: usize = fux_wire::wire::MAX_ALLOCATED + fux_wire::inspect::BYTES + MACHINE;
 
     #[test]
     fn a_run_holds_no_more_than_its_grant_and_a_fixed_overhead() -> TestResult {
@@ -2135,13 +2319,13 @@ pub(crate) mod tests {
             count: usize,
         }
         impl Asks for Captures {
-            fn ask(&mut self, asked: &crate::protocol::Asked) -> Result<Reply, Failed> {
+            fn ask(&mut self, asked: &fux_wire::protocol::Asked) -> Result<Reply, Failed> {
                 let version: Version = "%1:0.7.0.0.0:1-1"
                     .parse()
                     .map_err(|()| Failed::new(Code::Usage, "version"))?;
                 if matches!(
                     asked.request,
-                    Request::Do(crate::command::Command::Resolve { .. })
+                    Request::Do(fux_wire::command::Command::Resolve { .. })
                 ) {
                     return Ok(Reply {
                         run: Some(version.run),
@@ -2167,7 +2351,7 @@ pub(crate) mod tests {
             if retain {
                 assert_eq!(
                     result.map(|_| ()).map_err(|e| e.code),
-                    Err(Code::from(crate::code::Raise::TooLong))
+                    Err(Code::from(fux_wire::code::Raise::TooLong))
                 );
                 assert!(asks.count < 9);
             } else {
@@ -2219,8 +2403,10 @@ pub(crate) mod tests {
             }
         }
         let failed = super::main(&["1".into()], &mut Broken).err();
-        assert!(failed.is_some_and(|f| f.code == crate::code::Code::Output
-            && f.message == "writing the output: broken writer"));
+        assert!(
+            failed.is_some_and(|f| f.code == fux_wire::code::Code::Output
+                && f.message == "writing the output: broken writer")
+        );
     }
 
     #[test]
@@ -2229,9 +2415,9 @@ pub(crate) mod tests {
         let capture = large_plain(version);
         let reply = super::Reply {
             run: Some(version.run),
-            ..crate::protocol::Body::Capture(Box::new(capture)).into()
+            ..fux_wire::protocol::Body::Capture(Box::new(capture)).into()
         };
-        assert!(crate::wire::size(&reply)? <= crate::wire::MAX_REPLY);
+        assert!(fux_wire::wire::size(&reply)? <= fux_wire::wire::MAX_REPLY);
         let mut out = Vec::new();
         held_reply("%1 all-history capture print", reply, &mut out)?;
         assert_eq!(out.len(), 17_000_001);
@@ -2254,8 +2440,8 @@ pub(crate) mod tests {
             )?,
             vec![Value::str(version.to_string())]
         );
-        let capture = crate::answer::Captured {
-            of: crate::answer::Of::Pane {
+        let capture = fux_wire::answer::Captured {
+            of: fux_wire::answer::Of::Pane {
                 version,
                 wrap_pending: false,
                 state: vec![("last_status".into(), Json::Int(7))],
@@ -2288,15 +2474,15 @@ pub(crate) mod tests {
             )?,
             vec![Value::App(Fux::Pane(version.pane, Some(version.run)))]
         );
-        let client = crate::id::ClientId::of(1);
-        let capture = crate::answer::Captured {
-            of: crate::answer::Of::Client(client),
+        let client = fux_wire::id::ClientId::of(1);
+        let capture = fux_wire::answer::Captured {
+            of: fux_wire::answer::Of::Client(client),
             screen_rows: 24,
             screen_cols: 80,
             screen_cursor: Some((7, 3)),
-            lines: vec![crate::answer::Line {
+            lines: vec![fux_wire::answer::Line {
                 text: "x".into(),
-                runs: vec![crate::answer::Run {
+                runs: vec![fux_wire::answer::Run {
                     bytes: 1,
                     cells: 1,
                     style: 0,
@@ -2313,7 +2499,7 @@ pub(crate) mod tests {
             run: Some(version.run),
             ..Body::Capture(Box::new(capture)).into()
         };
-        let reply = crate::wire::Reader::new(&crate::wire::encode(&reply)?).whole()?;
+        let reply = fux_wire::wire::Reader::new(&fux_wire::wire::encode(&reply)?).whole()?;
         let values = held_reply(
             "str c1 client capture let held held str client get held str screen_cursor get held str lines get first held str styles get first first str fg get",
             reply,
@@ -2363,7 +2549,7 @@ pub(crate) mod tests {
     #[test]
     fn attach_words_accept_compiled_action_answers_and_keep_their_run() -> TestResult {
         use super::*;
-        use crate::command::{AttachTarget, Command, Request};
+        use fux_wire::command::{AttachTarget, Command, Request};
         struct Record {
             version: Version,
             sent: usize,
@@ -2373,7 +2559,7 @@ pub(crate) mod tests {
             fn ask(&mut self, asked: &Asked) -> Result<Reply, Failed> {
                 let mut reply: Reply = if matches!(
                     asked.request,
-                    Request::Do(crate::command::Command::Resolve { .. })
+                    Request::Do(fux_wire::command::Command::Resolve { .. })
                 ) {
                     Body::Found(AnyRef::Pane(self.version.pane)).into()
                 } else if matches!(asked.request, Request::Do(Command::SendKeys { .. })) {
@@ -2462,12 +2648,12 @@ pub(crate) mod tests {
     #[test]
     fn every_observation_wait_encodes_its_clients_limit() -> TestResult {
         use super::*;
-        use crate::command::{AnyRef, Command, Request};
-        use crate::wire::Reader;
+        use fux_wire::command::{AnyRef, Command, Request};
+        use fux_wire::wire::Reader;
         struct Record(Vec<u32>);
         impl Asks for Record {
             fn ask(&mut self, asked: &Asked) -> Result<Reply, Failed> {
-                let bytes = crate::wire::encode(asked)
+                let bytes = fux_wire::wire::encode(asked)
                     .map_err(|e| Failed::new(Code::Usage, e.to_string()))?;
                 let decoded: Asked = Reader::new(&bytes)
                     .whole()
@@ -2475,7 +2661,8 @@ pub(crate) mod tests {
                 if let Request::Wait(wait) = decoded.request {
                     self.0.push(wait.timeout.seconds());
                     Err(Failed::new(Code::NoServer, "recorded"))
-                } else if let Request::Do(crate::command::Command::Resolve { .. }) = decoded.request
+                } else if let Request::Do(fux_wire::command::Command::Resolve { .. }) =
+                    decoded.request
                 {
                     Ok(Body::Found(AnyRef::Pane(
                         "%1".parse()
@@ -2537,11 +2724,11 @@ pub(crate) mod tests {
                     .map_err(|()| Failed::new(Code::Usage, "cursor"))?;
                 Ok(Reply {
                     run: Some(run),
-                    ..Body::Snapshot(Box::new(crate::inspect::Snapshot {
+                    ..Body::Snapshot(Box::new(fux_wire::inspect::Snapshot {
                         run,
                         cursor,
-                        scope: crate::inspect::Scope::All,
-                        projection: crate::inspect::Projection::Facts,
+                        scope: fux_wire::inspect::Scope::All,
+                        projection: fux_wire::inspect::Projection::Facts,
                         workspaces: Vec::new(),
                         tabs: Vec::new(),
                         panes: Vec::new(),
@@ -2572,7 +2759,7 @@ pub(crate) mod tests {
     #[test]
     fn arrange_reconciles_its_pane_leaf_runs() -> TestResult {
         use super::*;
-        use crate::command::{Command, Request};
+        use fux_wire::command::{Command, Request};
         struct Leaves {
             runs: std::collections::VecDeque<Run>,
             submitted: Vec<Option<Run>>,
@@ -2581,7 +2768,7 @@ pub(crate) mod tests {
             fn ask(&mut self, asked: &Asked) -> Result<Reply, Failed> {
                 let mut run = None;
                 let body = match asked.request {
-                    Request::Do(crate::command::Command::Resolve { .. }) => {
+                    Request::Do(fux_wire::command::Command::Resolve { .. }) => {
                         Body::Found(AnyRef::Tab(TabId::of(1)))
                     }
                     Request::Do(Command::Members { .. }) => {
@@ -2637,7 +2824,7 @@ pub(crate) mod tests {
             }
         }
         let longest = "@4294967295:18446744073709551615:4294967295-ffffffffffffffff";
-        assert!(longest.parse::<crate::command::LayoutRevision>().is_ok());
+        assert!(longest.parse::<fux_wire::command::LayoutRevision>().is_ok());
         let allocator = fux_vt_peak::ThreadPeak;
         let bad = Value::str(std::iter::repeat_n('x', fuxth::LONGEST / 2).collect::<String>());
         let mut peaks = Vec::new();
@@ -2719,7 +2906,7 @@ pub(crate) mod tests {
 
     #[test]
     fn attach_defaults_replace_targets_and_clear_names_locally() -> Result<(), super::Failed> {
-        use crate::command::{AttachTarget, WsRef};
+        use fux_wire::command::{AttachTarget, WsRef};
         let mut draft = super::default_state()?.draft();
         let mut run = |code: &str| {
             super::run_quiet(

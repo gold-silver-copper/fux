@@ -1,0 +1,8867 @@
+//! The server's state: workspaces, tabs, panes and the clients' views, and
+//! every command that changes them.
+use crate::pane::{self, Pane, PaneMut, Process, Runs};
+use crate::process::{self, Child};
+use crate::view::{ClientKind, Mode, View};
+use crate::wait::{Waiting, Watches};
+use crate::workspace::{Destination, Fit, Parts, Seat, Split, Tab, Workspace};
+use fux_vt::Size;
+use fux_vt::keys::Direction;
+use fux_wire::answer::{self, Ended, PaneAnswer, PaneResults};
+use fux_wire::code::{Error, Raise, fail};
+use fux_wire::command::Start;
+use fux_wire::command::{
+    self, AnyRef, ClientAction, Command, Extent, Input, Kind, Members, Mouse, MoveTo, PanePick,
+    PaneResize, Pick, Request, Resized, Sibling, SwapWith, WsRef,
+};
+use fux_wire::id::{BufferId, ClientId, Ids, PaneId, TabId, WsId};
+use fux_wire::json::{Fields, Json};
+use fux_wire::layout::{self, Axis, NoPane, Placement, Rect, Shares, Tree};
+use fux_wire::protocol::{Attach, Body, Reply, Response, ToAttached};
+use fux_wire::words::joined;
+use fuxix::Allocation;
+use std::collections::{BTreeMap, VecDeque};
+use std::num::NonZeroU32;
+use std::path::{Path, PathBuf};
+mod inspect;
+use std::time::{Duration, Instant};
+
+/// What the server must do outside the session.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Outgoing {
+    /// A frame for a client: bytes for its terminal outside any paint
+    /// (questions for the terminal; the bell; the keyboard flags pushed;
+    /// clipboard copies),
+    /// fuxth to run as its own, keys to take as typed at its terminal
+    /// (`send-keys` to a client), its screen ended by the server, or its
+    /// detach, saying why.
+    To(ClientId, ToAttached<'static>),
+    /// Stop the server, saying why.
+    Shutdown(String),
+}
+
+/// A closed pane's program, hung up and given until the deadline to exit;
+/// then its terminal is closed and its group killed.
+pub struct Dying {
+    pub child: Child,
+    pub deadline: Instant,
+}
+
+impl Dying {
+    /// Kills the program, its terminal closed first (a dying writer can hold
+    /// on to it); its leader, if it has yet to exit.
+    pub fn kill(self) -> Option<process::Pid> {
+        drop(self.child.master);
+        self.child.leader.finish().err()
+    }
+}
+
+/// Something the session waits for until a moment (`Session::timers`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Timer {
+    /// A pane's frame of synchronized output is read, ended or not
+    /// (`Pane::frame_deadline`).
+    Frame(PaneId),
+    /// A pane's output, waiting since the parser did all the work one call
+    /// may, is read on (`Pane::read_unread`): due at once, after the
+    /// server's other work of this turn. A respawn under way in the pane
+    /// takes its turn too (`Session::after_turn`).
+    Unread(PaneId),
+}
+
+/// Where a command comes from, which says what it acts on when it names no
+/// pane, tab or workspace.
+#[derive(Clone, Debug)]
+pub enum Origin {
+    /// A client's key or prompt: where the client is.
+    Client(ClientId),
+    /// A request addressing a client, with its separately known source.
+    ClientContext {
+        client: ClientId,
+        actor: fux_wire::events::Actor,
+    },
+    /// The CLI: who runs the command, and from where.
+    Cli(Caller),
+}
+
+/// A command line's caller on the CLI.
+#[derive(Clone, Debug, Default)]
+pub struct Caller {
+    /// The pane and program generation it gave (`FUX_PANE`), of `within`.
+    pub gave: Option<(PaneId, u64)>,
+    /// The server whose pane it runs in, by its `FUX_SERVER`.
+    pub within: Within,
+    /// Its working directory.
+    pub cwd: Option<PathBuf>,
+}
+
+/// The server whose pane a caller on the CLI runs in, as its
+/// `FUX_SERVER` says.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Within {
+    /// None said: a pane it gives is no one's fux can tell, so it is
+    /// none.
+    #[default]
+    Unsaid,
+    /// This server: it runs in one of its panes, whether or not it gave it.
+    This,
+    /// Another server: the pane it gave is that server's, and nothing here
+    /// is done to it.
+    Other,
+}
+
+impl Caller {
+    /// Its pane, if it gave one of this server's.
+    fn pane(&self) -> Option<PaneId> {
+        match self.within {
+            Within::This => self.gave.map(|(pane, _)| pane),
+            Within::Unsaid | Within::Other => None,
+        }
+    }
+}
+
+/// A workspace, tab and pane: a client's place, or what a command made.
+#[derive(Clone, Copy)]
+pub struct Place {
+    pub ws: WsId,
+    pub tab: TabId,
+    pub pane: PaneId,
+}
+
+/// Where a select command takes a client: a workspace, and a tab and pane
+/// there if given.
+struct Picked {
+    ws: WsId,
+    at: Option<Spot>,
+}
+
+/// Where in a workspace a client is shown: a tab, and a pane in it if
+/// given.
+#[derive(Clone, Copy)]
+pub(crate) struct Spot {
+    pub tab: TabId,
+    pub pane: Option<PaneId>,
+}
+
+/// A pane's size to begin with, and the cell its program is told it
+/// starts in: none in a tab with no host yet (`Session::graphics`).
+type Starts = (Size, Option<fux_vt::CellSize>);
+
+/// A pane to make: what it starts, where, what it takes of its starter,
+/// and how it starts (`Starts`).
+#[derive(Clone, Copy)]
+struct NewPane<'a> {
+    start: &'a Start,
+    cwd: &'a Path,
+    env: &'a command::EnvPatch,
+    size: Size,
+    cell: Option<fux_vt::CellSize>,
+    options: command::PaneOptions,
+}
+
+impl<'a> NewPane<'a> {
+    fn new(
+        start: &'a Start,
+        cwd: &'a Path,
+        env: &'a command::EnvPatch,
+        options: command::PaneOptions,
+        (size, cell): Starts,
+    ) -> Self {
+        Self {
+            start,
+            cwd,
+            env,
+            options,
+            size,
+            cell,
+        }
+    }
+}
+
+/// What a command that names nothing acts on, found once from its origin.
+#[derive(Clone, Copy)]
+enum Here<'a> {
+    /// An attached client, where it is.
+    Client(ClientId, Place),
+    /// The CLI: its caller's pane (if it gave one) and the workspace that
+    /// pane is in, if it is still there; and its working directory.
+    Cli(Option<(PaneId, Option<WsId>)>, Option<&'a Path>),
+}
+
+impl Here<'_> {
+    fn ws(self) -> Option<WsId> {
+        match self {
+            Here::Client(_, place) => Some(place.ws),
+            Here::Cli(pane, _) => pane.and_then(|(_, ws)| ws),
+        }
+    }
+    fn pane(self) -> Option<PaneId> {
+        match self {
+            Here::Client(_, place) => Some(place.pane),
+            Here::Cli(pane, _) => pane.map(|(pane, _)| pane),
+        }
+    }
+    fn client(self) -> Option<ClientId> {
+        match self {
+            Here::Client(client, _) => Some(client),
+            Here::Cli(..) => None,
+        }
+    }
+    /// The caller's pane, for a command that acts on it when none is named.
+    fn caller_pane(self) -> Result<PaneId, Error> {
+        self.pane().ok_or(Error::NoPaneGiven)
+    }
+}
+
+impl From<pane::Error> for Error {
+    fn from(error: pane::Error) -> Self {
+        let code = match error {
+            pane::Error::InputFull => Raise::InputFull,
+            pane::Error::TooLong(_) => Raise::TooLong,
+            pane::Error::Terminal { .. } => Raise::Start,
+        };
+        fail(code, error.to_string())
+    }
+}
+
+/// Why `pane`'s program takes no input, if it takes none: the one check
+/// of input typed or sent, of the reports (mouse, focus) a terminal is
+/// asked to make for it, so that a pane none could reach asks for none,
+/// and of those fux queues it unasked (in-band resize, colour scheme), so
+/// that none waits for a program respawned there.
+pub(crate) fn refuses_input(pane: &Pane) -> Option<Error> {
+    let why = match pane.process() {
+        Process::HungUp(_) => "its program closed its terminal: nothing reads input there",
+        Process::ReadFailed(_, error) => {
+            return Some(fail(
+                Raise::NotRunning,
+                format!("{}: reading program terminal failed: {error}", pane.id()),
+            ));
+        }
+        Process::Respawning => {
+            "it is respawning: no program of its own reads input till it is done"
+        }
+        Process::Exited(status) => return Some(ended(pane.id(), *status)),
+        Process::Absent | Process::Reading(_) => return None,
+    };
+    Some(fail(Raise::NotRunning, format!("{}: {why}", pane.id())))
+}
+
+/// `pane`'s program has ended, with `status`: it takes no input.
+fn ended(pane: PaneId, status: Ended) -> Error {
+    let was = match status {
+        Ended::Exited(_) | Ended::Lost => "",
+        Ended::Signalled(_) => "was ",
+    };
+    let told = format!("the program in {pane} {was}{}", answer::told(status));
+    fail(Raise::NotRunning, told)
+}
+
+/// What a command line from the CLI begins: its outcome, now, or a wait
+/// for one (`wait`, or an action given wait words).
+pub enum Begun {
+    Done(Reply),
+    Waiting(Box<Waiting>),
+}
+
+/// A respawn under way: the pane made for the program started, and the
+/// program, which take the place of the pane's own once all its old
+/// program left is read, in turns as any pane's output is
+/// (`Session::after_turn`). The new program's output waits on its
+/// terminal till then. If the pane closes first, the respawn is abandoned
+/// (`Session::end_pane`), and said to be.
+struct Replacement {
+    actor: fux_wire::events::Actor,
+    fresh: Pane,
+    process: Process,
+    /// When it began: its turns are due from then, a frame the old program
+    /// holds, with nothing else to read, read by one.
+    since: Instant,
+}
+
+/// How long a closing pane's processes have to exit after the hangup.
+pub const GRACE: Duration = Duration::from_millis(100);
+/// Retained launch inputs, including pending replacements, in one session.
+pub const LAUNCH_BYTES: usize = 16 << 20;
+
+pub struct Session {
+    /// Its workspaces, tabs and panes, and the journal of what happened to
+    /// them, which events read.
+    pub parts: Parts,
+    pub views: BTreeMap<ClientId, View>,
+    /// Paste buffers, newest first.
+    pub buffers: VecDeque<(BufferId, String)>,
+    /// The socket a started pane is told to reach its server by, if panes
+    /// start real processes; tests of the state alone start none.
+    launch: Option<PathBuf>,
+    /// The running fux, a started pane's `FUX`, if it can be had.
+    exe: Option<PathBuf>,
+    /// Which run of a server this is: its panes' `FUX_SERVER`, by which a
+    /// command from a pane tells whether the pane is this server's, and
+    /// every version's, by which a wait tells its own.
+    pub run: command::Run,
+    pub outbox: Vec<Outgoing>,
+    /// Closed panes' programs: a pane respawned twice in its grace has two.
+    pub dying: Vec<Dying>,
+    /// Each respawn under way, by its pane: one at a time in a pane.
+    respawning: BTreeMap<PaneId, Replacement>,
+    /// Where `size_panes` gathers the rectangles each pane is shown in, and
+    /// lays out each view to find them; reused by every settle.
+    shown_sizes: Vec<(PaneId, (u16, u16))>,
+    placed: Placement,
+    /// The tabs clients sized at the last settle: one of a size of its own
+    /// none sizes now is laid out on that size again (`size_panes`).
+    sized: Vec<TabId>,
+    ids: Ids,
+    /// Commands run that may change what any client shows; input that runs
+    /// one repaints every client, input that runs none only its own.
+    changes: u64,
+    /// In tests, each client's keys as its own client would read them
+    /// (`Session::input`), and the keymap every client and run shares.
+    #[cfg(test)]
+    pub(crate) test_keys: BTreeMap<ClientId, testing::Keys>,
+    #[cfg(test)]
+    pub(crate) test_keymap: fux::client_state::Draft,
+}
+
+/// The one item of `items`; of several, why not: `many` says it from how
+/// many there are and their ids.
+fn one<T: Copy + std::fmt::Display>(
+    items: &[T],
+    many: impl FnOnce(usize, String) -> String,
+) -> Result<T, Error> {
+    match items {
+        [item] => Ok(*item),
+        items => Err(fail(Raise::NoTarget, many(items.len(), joined(items, " ")))),
+    }
+}
+
+/// A value a command can't take, as `Usage` says why.
+fn bad_value(usage: command::Usage) -> Error {
+    fail(Raise::BadValue, usage.to_string())
+}
+
+/// The answer of an action on a pane (keys, a mouse event, a signal, a
+/// program started): its version before it acted, or as it starts; what a
+/// wait for its effect waits to differ from.
+fn acted(version: command::Version) -> Reply {
+    PaneResults::One(PaneAnswer::Acted(version)).into()
+}
+
+/// A command that failed, told with its code (its status: 1, 4 or 124).
+fn failure(error: Error, origin: &Origin, session: &Session) -> Reply {
+    // A command that needed its caller's pane, tab or workspace, from a
+    // caller whose `FUX_PANE` is another server's pane, or no server's it
+    // says: why it got none.
+    let error = match (error, origin) {
+        (
+            Error::NoPaneGiven | Error::NoWorkspaceGiven,
+            Origin::Cli(Caller {
+                gave: Some((pane, generation)),
+                within: within @ (Within::Other | Within::Unsaid),
+                ..
+            }),
+        ) => {
+            let whose = match within {
+                Within::Unsaid => "comes with no FUX_SERVER to say whose pane it is",
+                Within::This | Within::Other => "is a pane of another fux server, not of this one",
+            };
+            fail(
+                Raise::StrayPane,
+                format!(
+                    "FUX_PANE {pane}:{generation} {whose}, so it is not acted on; name the pane"
+                ),
+            )
+        }
+        (
+            Error::NoPaneGiven | Error::NoWorkspaceGiven,
+            Origin::Cli(Caller {
+                gave: Some((pane, generation)),
+                within: Within::This,
+                ..
+            }),
+        ) => match session.parts.panes().contains_key(pane) {
+            true => fail(
+                Raise::StrayPane,
+                format!("FUX_PANE {pane}:{generation} no longer identifies its program"),
+            ),
+            false => Error::NoPane(*pane),
+        },
+        (error, _) => error,
+    };
+    Reply::failed(error.code(), error.to_string())
+}
+
+impl Session {
+    pub fn new(socket: PathBuf, launch: bool, run: command::Run) -> Self {
+        Self {
+            parts: Parts::default(),
+            views: BTreeMap::new(),
+            buffers: VecDeque::new(),
+            launch: launch.then_some(socket),
+            exe: std::env::current_exe().ok(),
+            run,
+            outbox: Vec::new(),
+            dying: Vec::new(),
+            respawning: BTreeMap::new(),
+            shown_sizes: Vec::new(),
+            placed: Placement::default(),
+            sized: Vec::new(),
+            ids: Ids::default(),
+            changes: 0,
+            #[cfg(test)]
+            test_keys: BTreeMap::new(),
+            #[cfg(test)]
+            test_keymap: fux::client_state::Draft::default(),
+        }
+    }
+
+    /// One workspace, holding one tab with its explicit launch, laid out on a
+    /// client's screen of `size`.
+    pub fn start(
+        &mut self,
+        size: Size,
+        initial: &command::InitialWorkspace,
+        now: Instant,
+    ) -> Result<(), Error> {
+        if !initial.cwd.is_absolute() {
+            return Err(fail(
+                Raise::Start,
+                "the caller's own directory is unknown; give an absolute cwd",
+            ));
+        }
+        let new = NewPane::new(
+            &initial.start,
+            &initial.cwd,
+            &initial.env,
+            initial.options,
+            (size, None),
+        );
+        self.create_workspace(initial.name.clone(), None, Fit::Clients(size), new, now)
+            .map(drop)
+    }
+
+    // ---------------------------------------------------------------- lookup
+
+    pub fn workspace(&self, id: WsId) -> Option<&Workspace> {
+        self.parts.workspaces().iter().find(|w| w.id() == id)
+    }
+    pub fn tab(&self, id: TabId) -> Option<&Tab> {
+        (self.parts.workspaces().iter().flat_map(Workspace::tabs)).find(|t| t.id() == id)
+    }
+    /// A tab's layout.
+    pub fn root(&self, tab: TabId) -> Option<&Tree> {
+        self.tab(tab).map(Tab::root)
+    }
+    /// The workspace and tab that hold a pane.
+    pub fn locate(&self, pane: PaneId) -> Option<(WsId, TabId)> {
+        self.parts.locate(pane)
+    }
+    /// The workspace a tab is in.
+    pub fn tab_workspace(&self, tab: TabId) -> Result<WsId, Error> {
+        let ws = (self.parts.workspaces().iter()).find(|w| w.tabs().iter().any(|t| t.id() == tab));
+        ws.map(|w| w.id()).ok_or(Error::NoTab(tab))
+    }
+    /// The workspace that holds `target` (a workspace, itself), if it is
+    /// there.
+    pub fn holder(&self, target: AnyRef) -> Option<WsId> {
+        match target {
+            AnyRef::Pane(p) => self.locate(p).map(|(ws, _)| ws),
+            AnyRef::Tab(t) => self.tab_workspace(t).ok(),
+            AnyRef::Workspace(w) => self.workspace(w).map(|w| w.id()),
+        }
+    }
+    /// The workspace client `client` shows.
+    pub fn shown_workspace(&self, client: ClientId) -> Option<&Workspace> {
+        (self.parts.workspaces().iter()).find(|w| w.viewers.contains(&client))
+    }
+    /// The tab client `client` shows.
+    pub fn shown_tab(&self, client: ClientId) -> Option<&Tab> {
+        self.shown_workspace(client)?.tab_of(client)
+    }
+    pub(crate) fn shown_tab_mut(&mut self, client: ClientId) -> Option<&mut Tab> {
+        let tab = self.shown_tab(client)?.id();
+        self.parts.tab_mut(tab)
+    }
+    /// The pane client `client` focuses.
+    pub fn focused(&self, client: ClientId) -> Option<PaneId> {
+        self.shown_tab(client)?.focus(client)
+    }
+    /// Whether client `client` shows tab `tab`.
+    pub(crate) fn shows(&self, client: ClientId, tab: TabId) -> bool {
+        self.shown_tab(client).is_some_and(|t| t.id() == tab)
+    }
+    fn resolve_ws(&self, r: &WsRef) -> Result<WsId, Error> {
+        match r {
+            WsRef::New => Err(fail(
+                Raise::BadValue,
+                "new-workspace is a creation destination, not an existing workspace",
+            )),
+            WsRef::Id(id) => self.workspace(*id).ok_or(Error::NoWorkspace(*id)),
+            WsRef::Name(name) => (self
+                .parts
+                .workspaces()
+                .iter()
+                .find(|w| w.name() == Some(name.as_str())))
+            .ok_or_else(|| fail(Raise::NoWorkspace, format!("no workspace named {name:?}"))),
+        }
+        .map(|w| w.id())
+    }
+    /// `target`, if it is there; else why not.
+    pub fn there(&self, target: AnyRef) -> Result<AnyRef, Error> {
+        match target {
+            AnyRef::Pane(p) => self.pane(p).map(|_| ()),
+            AnyRef::Tab(t) => self.tab(t).map(|_| ()).ok_or(Error::NoTab(t)),
+            AnyRef::Workspace(w) => self.workspace(w).map(|_| ()).ok_or(Error::NoWorkspace(w)),
+        }
+        .map(|()| target)
+    }
+
+    // ------------------------------------------------------------- targets
+
+    /// Where a command from `origin` acts: an attached client's place, or
+    /// the CLI caller's pane's.
+    fn here<'a>(&self, origin: &'a Origin) -> Result<Here<'a>, Error> {
+        match *origin {
+            Origin::Client(client) | Origin::ClientContext { client, .. } => {
+                let place = self.place(client).ok_or(Error::NoClient(client))?;
+                Ok(Here::Client(client, place))
+            }
+            Origin::Cli(ref caller) => {
+                let pane = caller
+                    .pane()
+                    .filter(|p| {
+                        caller.gave.is_some_and(|(_, generation)| {
+                            let current = self
+                                .respawning
+                                .get(p)
+                                .map(|new| &new.fresh)
+                                .or_else(|| self.parts.panes().get(p));
+                            current.is_some_and(|pane| pane.respawns == generation)
+                        })
+                    })
+                    .map(|p| (p, self.locate(p).map(|(ws, _)| ws)));
+                Ok(Here::Cli(pane, caller.cwd.as_deref()))
+            }
+        }
+    }
+
+    /// Where client `client` is, if it is attached: the workspace it is
+    /// shown, while there is any.
+    pub fn place(&self, client: ClientId) -> Option<Place> {
+        let ws = self.shown_workspace(client)?;
+        let tab = ws.tab_of(client)?;
+        let (ws, pane, tab) = (ws.id(), tab.focus(client)?, tab.id());
+        Some(Place { ws, tab, pane })
+    }
+
+    fn pane(&self, id: PaneId) -> Result<&Pane, Error> {
+        self.parts.panes().get(&id).ok_or(Error::NoPane(id))
+    }
+
+    fn pane_mut(&mut self, id: PaneId) -> Result<PaneMut<'_>, Error> {
+        self.parts.pane_mut(id).ok_or(Error::NoPane(id))
+    }
+
+    /// Starts `argv` with `env` as pane `id`'s program, in `cwd` at `size`
+    /// in cells of `cell`, if panes start real processes: told of its
+    /// server (`FUX_PANE`, `FUX_SOCKET`, `FUX_SERVER`, and `FUX`, the fux
+    /// running it, unset if it cannot be had). The saved environment patch
+    /// applies first, and the server supplies authoritative identity last.
+    fn spawn(
+        &self,
+        id: PaneId,
+        generation: u64,
+        launch: &pane::Launch,
+        size: (Size, Option<fux_vt::CellSize>),
+    ) -> Result<Option<Child>, Error> {
+        let Some(socket) = &self.launch else {
+            return Ok(None);
+        };
+        let (argv, env) = (launch.argv.argv(), launch.env.as_slice());
+        let mut vars: Vec<_> = env
+            .iter()
+            .filter_map(|(k, v)| v.as_ref().map(|v| (k.as_str(), v.clone())))
+            .collect();
+        vars.extend([
+            ("FUX_PANE", format!("{id}:{generation}").into()),
+            ("FUX_SOCKET", socket.as_os_str().to_owned()),
+            ("FUX_SERVER", self.run.to_string().into()),
+        ]);
+        vars.extend((self.exe.as_ref()).map(|exe| ("FUX", exe.as_os_str().to_owned())));
+        // No `FUX` to give: not one the server was started with either.
+        let unset: Vec<String> = env
+            .iter()
+            .filter(|(_, v)| v.is_none())
+            .map(|(k, _)| k.clone())
+            .chain(self.exe.is_none().then(|| "FUX".to_owned()))
+            .collect();
+        let child = process::spawn(&argv, &launch.cwd, (&vars, &unset), size)
+            .map_err(|m| fail(Raise::Start, m))?;
+        Ok(Some(child))
+    }
+
+    /// Starts the program pane `id` ran again in it: its words, or `argv`
+    /// if given, where it ran, with what it was given and `env` set; first
+    /// hanging up the one there with `kill`, else refused while it runs.
+    /// What the old program left is read before the new one takes its
+    /// place, its exit told if one waits on that, in as many turns as that
+    /// takes: till then the respawn is under way (`Replacement`), and
+    /// another refused. Its answer, the version the pane starts at, waits
+    /// for it (`Waiting::Respawn`).
+    fn respawn(
+        &mut self,
+        id: PaneId,
+        kill: bool,
+        env: &command::EnvPatch,
+        argv: Option<&command::Program>,
+        now: Instant,
+    ) -> Result<Reply, Error> {
+        let pane = self.pane(id)?;
+        let Runs::Explicit(launch) = &pane.runs else {
+            let message = format!("{id} runs a shell; respawn restarts what run or split started");
+            return Err(fail(Raise::NotRun, message));
+        };
+        if self.respawning.contains_key(&id) {
+            let message =
+                format!("{id} is respawning already: what its program left is still being read");
+            return Err(fail(Raise::StillRunning, message));
+        }
+        // One whose exit waits on what it left has ended.
+        if pane.process().child().is_some() && pane.exiting.is_none() && !kill {
+            let message = format!("the program in {id} still runs; `kill-first` ends it first");
+            return Err(fail(Raise::StillRunning, message));
+        }
+        let mut launch = launch.clone();
+        if let Some(argv) = argv {
+            launch.argv = argv.clone();
+        }
+        launch
+            .env
+            .overlay(env)
+            .map_err(|why| fail(Raise::Start, why))?;
+        self.check_launch(&launch)?;
+        // The program it starts is told its host's cell.
+        let graphics = self.graphics(id);
+        let size = (pane.size(), graphics.cell());
+        let respawns = pane.respawns.checked_add(1).ok_or_else(|| {
+            fail(
+                Raise::IdsExhausted,
+                format!("{id}'s program generations exhausted"),
+            )
+        })?;
+        let exiting = pane.exiting;
+        // All that can refuse it is done before its program starts, which
+        // nothing can then leave running.
+        let runs = Runs::Explicit(launch.clone());
+        let mut fresh = Pane::new(id, None, runs, size.0, pane.options(), now)?;
+        fresh.respawns = respawns;
+        // Its program starts sized in that cell, so no resize is due.
+        let _ = fresh.host(Default::default(), Default::default(), graphics);
+        let child = self.spawn(id, respawns, &launch, size)?;
+        // What one that runs left is read once another started (a start
+        // refused leaves it running, nothing of it cut). Then its program is
+        // taken: no more of it is read, and input is refused till the new
+        // one takes its place. One that runs is ended; one whose exit waits
+        // is let go as that exit lets it go.
+        if kill {
+            self.read_left(id, now);
+        }
+        if let Some(child) = self.pane_mut(id).ok().and_then(|mut p| p.let_go()) {
+            match exiting {
+                None => self.end(Process::Reading(child), true, now),
+                Some(_) => self.dying.push(Dying {
+                    child,
+                    deadline: now,
+                }),
+            }
+        }
+        let started = fresh.version(self.run);
+        let process = child.map_or(Process::Absent, Process::Reading);
+        let since = now;
+        let new = Replacement {
+            actor: self.parts.journal().current_actor(),
+            fresh,
+            process,
+            since,
+        };
+        self.respawning.insert(id, new);
+        self.after_turn(id, now);
+        Ok(acted(started))
+    }
+
+    /// What ends a turn of pane `id`'s reads: once nothing read waits, a
+    /// program that exited with output unread exits, and a respawn under
+    /// way takes its place, once a frame its old program holds is read
+    /// too, by a turn of its own (`fire`).
+    fn after_turn(&mut self, id: PaneId, now: Instant) {
+        let respawning = self.respawning.contains_key(&id);
+        let waits = |p: &&Pane| p.has_unread() || respawning && p.frame_deadline().is_some();
+        let Some(pane) = self.parts.panes().get(&id).filter(|p| !waits(p)) else {
+            return;
+        };
+        if let Some(ended) = pane.exiting {
+            self.exited(id, ended, now);
+        }
+        let Some(mut new) = self.respawning.remove(&id) else {
+            return;
+        };
+        let actor = self.parts.actor(new.actor);
+        let Some(mut pane) = self.parts.pane_mut(id) else {
+            self.parts.actor(actor);
+            self.end(new.process, true, now);
+            return;
+        };
+        // At the pane's size and history now, which may have changed while
+        // it waited.
+        let size = pane.size();
+        new.fresh.set_history_bytes(pane.options().history_bytes);
+        let (old, left) = pane.respawned(new.fresh, new.process);
+        pane.resize(size, now);
+        // An exit that came while it was no pane's program is told now: the
+        // server looks for exits as they are signalled (`Server::reap`).
+        let exited = pane.process().child().and_then(|c| c.leader.exited());
+        self.parts.actor(actor);
+        self.end(old, true, now);
+        let left = left.told("the program it ran");
+        if !left.is_empty() {
+            let told = format!("{id} respawned{left}");
+            for client in self.viewers(self.locate(id).map(|(_, t)| t)) {
+                self.notify_to(client, told.clone(), true);
+            }
+        }
+        if let Some(ended) = exited {
+            self.exited(id, ended, now);
+        }
+        // Hosted as its pane is now.
+        self.touch();
+        self.settle(now);
+    }
+
+    /// The process group `fux signal` signals in a pane: the terminal's
+    /// foreground group (a job its shell runs), or the program `run`
+    /// started; never the shell of a pane that runs one.
+    fn signalled(&self, target: PaneId) -> Result<process::Pid, Error> {
+        let pane = self.pane(target)?;
+        if let Process::Respawning = pane.process() {
+            let message = format!("{target} is respawning: no program is its own till it is done");
+            return Err(fail(Raise::StillRunning, message));
+        }
+        if let Some(status) = pane.process().exit_status() {
+            return Err(ended(pane.id(), status));
+        }
+        let program = match (&pane.runs, pane.process().child()) {
+            (Runs::Explicit(_), Some(child)) => Some(child.leader.pid()),
+            _ => None,
+        };
+        let job = pane.process().job().map_err(|errno| {
+            let why =
+                format!("{target}: its terminal does not say what runs in its foreground: {errno}");
+            fail(Raise::Signal, why)
+        })?;
+        job.or(program).ok_or_else(|| {
+            let message = format!("nothing is running in {} but its shell", pane.id());
+            fail(Raise::OnlyShell, message)
+        })
+    }
+
+    /// Refuses a name given to a tab (other than `except`, being renamed)
+    /// that `str NAME tab` could not find it by: one a target reads as an id, or
+    /// one another tab has.
+    fn check_tab_name(&self, name: &str, except: Option<TabId>) -> Result<(), Error> {
+        check_name(name)?;
+        // A workspace's name finds the workspace, never this tab.
+        if self
+            .parts
+            .workspaces()
+            .iter()
+            .any(|w| w.name() == Some(name))
+        {
+            return Err(Error::NameTaken(name.to_owned()));
+        }
+        no_tab_named(self.parts.workspaces(), name, except)
+    }
+
+    /// Whether a client is in copy mode on pane `pane`: keys typed there
+    /// go to copy mode, not the program.
+    pub(crate) fn copying(&self, pane: PaneId) -> bool {
+        self.views
+            .values()
+            .any(|v| matches!(&v.mode, Mode::Copy(copy) if copy.pane == pane))
+    }
+
+    /// What `id`, written `text`, stands for as a `kind`: itself; a pane's
+    /// or tab's id, its tab or workspace. Downward lookups require a member.
+    fn stands_for(&self, id: AnyRef, text: &str, kind: Kind) -> Result<AnyRef, Error> {
+        match (id, kind) {
+            (AnyRef::Pane(_), Kind::Pane)
+            | (AnyRef::Tab(_), Kind::Tab)
+            | (AnyRef::Workspace(_), Kind::Workspace) => self.there(id),
+            (AnyRef::Pane(p), Kind::Tab) => {
+                Ok(AnyRef::Tab(self.locate(p).ok_or(Error::NoPane(p))?.1))
+            }
+            (AnyRef::Pane(p), Kind::Workspace) => {
+                Ok(AnyRef::Workspace(self.locate(p).ok_or(Error::NoPane(p))?.0))
+            }
+            (AnyRef::Tab(t), Kind::Workspace) => self.tab_workspace(t).map(AnyRef::Workspace),
+            (AnyRef::Tab(_) | AnyRef::Workspace(_), Kind::Pane)
+            | (AnyRef::Workspace(_), Kind::Tab) => Err(fail(
+                Raise::NoTarget,
+                format!(
+                    "{text} is a {}, not a {}: choose a member explicitly",
+                    id.kind().name(),
+                    kind.name()
+                ),
+            )),
+        }
+    }
+
+    /// What `text` names as a pane, tab or workspace, `kind`: its id (`%3`),
+    /// or its given name.
+    /// A pane, nothing given: the caller's own.
+    fn resolve(&self, text: &str, kind: Kind, here: Here) -> Result<AnyRef, Error> {
+        if let Ok(id) = text.parse() {
+            return self.stands_for(id, text, kind);
+        }
+        // A version names its pane: one of this server run's.
+        if let Ok(version) = text.parse::<command::Version>() {
+            self.counts_since(version)?;
+            return self.stands_for(AnyRef::Pane(version.pane), text, kind);
+        }
+        match kind {
+            Kind::Pane if text.is_empty() => Ok(AnyRef::Pane(self.pane(here.caller_pane()?)?.id())),
+            Kind::Pane => self.pane_named(text).map(AnyRef::Pane),
+            Kind::Tab => {
+                let tabs: Vec<TabId> = self
+                    .parts
+                    .workspaces()
+                    .iter()
+                    .flat_map(Workspace::tabs)
+                    .filter(|tab| tab.name() == Some(text))
+                    .map(Tab::id)
+                    .collect();
+                if tabs.is_empty() {
+                    return Err(fail(Raise::NoTab, format!("no tab named {text:?}")));
+                }
+                one(&tabs, |n, ids| {
+                    format!("{text:?} names {n} tabs ({ids}): use an id")
+                })
+                .map(AnyRef::Tab)
+            }
+            Kind::Workspace => {
+                let ws = command::parse_workspace(text).map_err(bad_value)?;
+                Ok(AnyRef::Workspace(self.ws_target(Some(&ws), here)?))
+            }
+        }
+    }
+
+    /// The pane given `name`: never its display label or title.
+    fn pane_named(&self, name: &str) -> Result<PaneId, Error> {
+        let panes: Vec<PaneId> = (self.parts.panes().values())
+            .filter(|p| p.name() == Some(name))
+            .map(|p| p.id())
+            .collect();
+        if panes.is_empty() {
+            return Err(fail(Raise::NoPane, format!("no pane named {name:?}")));
+        }
+        let many = |n, ids| format!("{name:?} names {n} panes ({ids}): use an id");
+        one(&panes, many)
+    }
+
+    /// The tabs `target` is or holds: a pane's own, a tab, or a
+    /// workspace's every tab, in order.
+    fn tabs_of(&self, target: AnyRef) -> Result<impl Iterator<Item = TabId> + '_, Error> {
+        let (one, tabs): (Option<TabId>, &[Tab]) = match target {
+            AnyRef::Tab(tab) => (Some(self.tab(tab).ok_or(Error::NoTab(tab))?.id()), &[]),
+            AnyRef::Workspace(id) => (
+                None,
+                self.workspace(id).ok_or(Error::NoWorkspace(id))?.tabs(),
+            ),
+            AnyRef::Pane(pane) => (Some(self.locate(pane).ok_or(Error::NoPane(pane))?.1), &[]),
+        };
+        Ok(one.into_iter().chain(tabs.iter().map(|tab| tab.id())))
+    }
+
+    /// The panes `target` names: a pane, or a tab's or workspace's every
+    /// pane, in order. Charge the member vector's actual capacity.
+    fn panes_of(
+        &self,
+        target: AnyRef,
+        budget: &mut fux_wire::wire::Budget,
+    ) -> Result<Vec<PaneId>, Error> {
+        let mut ids = Vec::new();
+        let mut admitted = Ok(());
+        let mut take = |id: PaneId| {
+            if admitted.is_err() {
+                return;
+            }
+            admitted = budget.reserve(&mut ids, 1);
+            if admitted.is_ok() {
+                ids.push(id);
+            }
+        };
+        match target {
+            AnyRef::Pane(id) => take(self.pane(id)?.id()),
+            AnyRef::Tab(id) => self
+                .root(id)
+                .ok_or(Error::NoTab(id))?
+                .for_each_pane(&mut take),
+            AnyRef::Workspace(id) => {
+                for tab in self.workspace(id).ok_or(Error::NoWorkspace(id))?.tabs() {
+                    tab.root().for_each_pane(&mut take);
+                }
+            }
+        }
+        admitted?;
+        Ok(ids)
+    }
+
+    /// Sends `inputs` to the programs of the panes `to` names, each encoded
+    /// as its program asked for keys (`bytes`): to one seen, only if it is
+    /// still at that version as they are queued, else none, failing
+    /// `stale`. That is all it promises: not what its program does next.
+    fn send_keys(&mut self, to: command::To, inputs: &[Input]) -> Result<Reply, Error> {
+        // Stale before it is judged live: a program's end is a change.
+        if let command::To::Seen(seen) = to {
+            self.counts_since(seen)?;
+            let now = self.pane(seen.pane)?.version(self.run);
+            if now != seen {
+                let why = format!("{} changed since {seen}: it is at {now}", seen.pane);
+                return Err(fail(Raise::Stale, why));
+            }
+        }
+        // Every pane must take them, or none is sent them: each one's are
+        // made and fit first.
+        let (run, mut each) = (self.run, Vec::new());
+        for id in self.panes_of(to.target(), &mut fux_wire::wire::Budget::new())? {
+            let mut pane = self.live_pane_mut(id)?;
+            let bytes = bytes(&pane, inputs);
+            pane.fits(bytes.len())?;
+            each.push((pane.version(run), bytes));
+        }
+        let mut answers = each.iter().map(|(version, _)| PaneAnswer::Acted(*version));
+        let mut reply: Reply = match (to.target(), answers.next()) {
+            (AnyRef::Pane(_), Some(one)) => PaneResults::One(one),
+            (_, first) => PaneResults::Many(first.into_iter().chain(answers).collect()),
+        }
+        .into();
+        reply.run = Some(self.run);
+        let mut capacity = fux_wire::wire::Writer::counting(fux_wire::wire::MAX_REPLY);
+        fux_wire::wire::Wire::put(&reply, &mut capacity);
+        capacity
+            .check()
+            .map_err(|_| fux_wire::wire::Budget::exceeded())?;
+        for (version, bytes) in &each {
+            self.pane_mut(version.pane)?.push(bytes)?;
+        }
+        Ok(reply)
+    }
+
+    /// `pane_mut`, for input: a pane whose program takes none is refused
+    /// (`refuses_input`).
+    pub(crate) fn live_pane_mut(&mut self, id: PaneId) -> Result<PaneMut<'_>, Error> {
+        let pane = self.pane_mut(id)?;
+        match refuses_input(&pane) {
+            Some(refused) => Err(refused),
+            None => Ok(pane),
+        }
+    }
+
+    /// The split of `target` along `axis`, the two taking `shares` if
+    /// given, and the size the new pane starts at: the one settling gives
+    /// it in the layout the split makes, which its tab must have room for,
+    /// `followers` focusing it unzoomed. Shown on no screen (each zoomed
+    /// on another pane), it starts at its place on the tab's own size.
+    fn split_size(
+        &self,
+        target: PaneId,
+        (axis, shares): (Axis, Option<(NonZeroU32, NonZeroU32)>),
+        followers: &[ClientId],
+    ) -> Result<(Split, Size), Error> {
+        let new = self.ids.clone().pane()?;
+        let shares = shares.map_or(Shares::HALVED, |(a, b)| Shares::new(a, b));
+        let split = (self.parts.plan_split((target, new), axis, shares))
+            .map_err(|NoPane| Error::NoPane(target))?;
+        self.room(split.tab(), split.root(), None)?;
+        let seat = |view: &View, now| match followers.contains(&view.id) {
+            true => (false, Some(new)),
+            false => now,
+        };
+        let (mut placed, mut shown) = (Placement::default(), Vec::new());
+        self.shown_in((split.tab(), split.root()), seat, &mut placed, &mut shown);
+        let mut sizes = shown.into_iter().filter(|(p, _)| *p == new).map(|(_, s)| s);
+        let least = sizes
+            .next()
+            .map(|first| sizes.fold(first, |(rows, cols), (h, w)| (rows.min(h), cols.min(w))));
+        let own = || {
+            let area = self.tab(split.tab())?.fit().area();
+            let rect = layout::place(split.root(), area).rect(new)?;
+            Some((rect.h(), rect.w()))
+        };
+        let size = least
+            .or_else(own)
+            .and_then(|(rows, cols)| Size::new(rows, cols).ok());
+        Ok((split, size.ok_or(Error::NoPane(target))?))
+    }
+
+    /// Resizes `pane`, placed in `area`, to `cols` and `rows`, either or
+    /// both; nothing changes unless both can be met.
+    fn resize_pane_to(
+        &mut self,
+        pane: PaneId,
+        area: Rect,
+        axis: Axis,
+        extent: Extent,
+    ) -> Result<(), Error> {
+        let (_, tab) = self.locate(pane).ok_or(Error::NoPane(pane))?;
+        let mut root = self.root(tab).cloned().ok_or(Error::NoPane(pane))?;
+        let now = layout::place(&root, area)
+            .rect(pane)
+            .ok_or(Error::NoPane(pane))?;
+        let len = match extent {
+            Extent::Cells(n) => n,
+            Extent::Percent(p) => p.of(area.len(axis)),
+        };
+        let want = match axis {
+            Axis::Horizontal => (len, now.h()),
+            Axis::Vertical => (now.w(), len),
+        };
+        let refused = || {
+            let message = format!("{pane} cannot be made {}x{} in its tab", want.0, want.1);
+            fail(Raise::Size, message)
+        };
+        root = layout::resize_to(&root, area, pane, axis, len).ok_or_else(refused)?;
+        // A size the layout cannot give exactly is not met.
+        let got = layout::place(&root, area)
+            .rect(pane)
+            .map(|r| (r.w(), r.h()));
+        if got != Some(want) {
+            return Err(refused());
+        }
+        (self.parts.reshape(pane, |old| *old = root)).ok_or(Error::NoPane(pane))?;
+        Ok(())
+    }
+
+    fn ws_target(&self, explicit: Option<&WsRef>, here: Here) -> Result<WsId, Error> {
+        match explicit {
+            Some(r) => self.resolve_ws(r),
+            None => here.ws().ok_or(Error::NoWorkspaceGiven),
+        }
+    }
+
+    // ------------------------------------------------------------ creation
+
+    /// The directory pane `pane`'s program is in, if it can be read.
+    fn dir_of(&self, pane: PaneId) -> Option<PathBuf> {
+        let mut allocation = usize::MAX;
+        self.dir_with(pane, &mut allocation).ok()?.ok().flatten()
+    }
+
+    fn dir_with<A: fuxix::Allocation>(
+        &self,
+        pane: PaneId,
+        budget: &mut A,
+    ) -> Result<fuxix::Result<Option<PathBuf>>, A::Error> {
+        let Some(p) = self.parts.panes().get(&pane) else {
+            return Ok(Ok(None));
+        };
+        let child = p
+            .process()
+            .child()
+            .or_else(|| self.respawning.get(&pane)?.process.child());
+        match child {
+            Some(child) => fuxix::process::cwd_observed(child.leader.pid(), budget),
+            None => Ok(Ok(None)),
+        }
+    }
+
+    /// Where a new pane's program starts: `dir`, from the caller's
+    /// directory, or with none the directory of the caller, or of `near`.
+    /// A CLI caller's own directory that is unknown fails the start;
+    /// A pane's unreadable nearby directory also refuses the start.
+    /// Unchecked: one the program cannot start in fails its start, with
+    /// the system's error.
+    fn start_dir(
+        &self,
+        here: Here,
+        dir: Option<&Path>,
+        near: Option<PaneId>,
+    ) -> Result<PathBuf, Error> {
+        if let Some(dir) = dir.filter(|dir| dir.is_absolute()) {
+            return Ok(dir.to_owned());
+        }
+        let near = near.filter(|_| dir.is_none());
+        let known = match here {
+            // Empty: the caller could not read its own (`client::context`).
+            Here::Cli(_, Some(cwd)) if !cwd.is_absolute() => {
+                return Err(fail(Raise::Start, "the caller's own directory is unknown"));
+            }
+            Here::Cli(_, Some(cwd)) => Some(cwd.to_owned()),
+            Here::Cli(_, None) => near.and_then(|p| self.dir_of(p)),
+            Here::Client(_, place) => self.dir_of(near.unwrap_or(place.pane)),
+        };
+        let base = known.ok_or_else(|| {
+            fail(
+                Raise::Start,
+                "the nearby working directory is unknown; give an absolute cwd",
+            )
+        })?;
+        Ok(match dir {
+            Some(dir) => base.join(dir),
+            None => base,
+        })
+    }
+
+    /// A workspace with one tab, laid out on `fit`, holding one new pane.
+    fn create_workspace(
+        &mut self,
+        name: Option<String>,
+        tab_name: Option<String>,
+        fit: Fit,
+        new: NewPane<'_>,
+        now: Instant,
+    ) -> Result<Place, Error> {
+        if let Some(name) = &name {
+            check_workspace_name(name, self.parts.workspaces())?;
+        }
+        // The IDs are taken before the pane starts, so that none can run out
+        // after, and are committed once it has.
+        let mut ids = self.ids.clone();
+        let id = ids.workspace()?;
+        let tab = ids.tab()?;
+        let pane = self.new_pane(&mut ids, new, now)?;
+        self.ids = ids;
+        let made = Place {
+            ws: id,
+            tab,
+            pane: pane.id(),
+        };
+        let clients = self.views.keys().copied();
+        (self.parts).add_workspace((id, name), (tab, tab_name, fit), clients, pane);
+        Ok(made)
+    }
+
+    /// Adds a tab named `name` (checked by `new-tab`) to
+    /// the workspace `ws` names, or else `here`'s, laid out on `fit`,
+    /// holding one new pane. A workspace not there that `ws` names by its
+    /// name is made, the tab its first.
+    fn create_tab(
+        &mut self,
+        ws: Option<&WsRef>,
+        here: Here,
+        name: Option<String>,
+        fit: Fit,
+        new: NewPane<'_>,
+        now: Instant,
+    ) -> Result<Place, Error> {
+        let id = match (self.ws_target(ws, here), ws) {
+            (Ok(id), _) => id,
+            (Err(_), Some(WsRef::New)) => {
+                return self.create_workspace(None, name, fit, new, now);
+            }
+            (Err(_), Some(WsRef::Name(ws_name))) => {
+                return self.create_workspace(Some(ws_name.clone()), name, fit, new, now);
+            }
+            (Err(error), _) => return Err(error),
+        };
+        // Found before its pane's program starts, which nothing can then
+        // leave running. As for a workspace: the ID first, committed after
+        // the pane.
+        self.workspace(id).ok_or(Error::NoWorkspace(id))?;
+        let mut ids = self.ids.clone();
+        let tab = ids.tab()?;
+        let pane = self.new_pane(&mut ids, new, now)?;
+        let made = Place {
+            ws: id,
+            tab,
+            pane: pane.id(),
+        };
+        if let Err(pane) = self.parts.add_tab((id, tab), name, fit, pane) {
+            self.end(pane.into_process(), true, now);
+            return Err(Error::NoWorkspace(id));
+        }
+        self.ids = ids;
+        Ok(made)
+    }
+
+    /// Retained launch inputs, including a pending replacement, share one bound.
+    fn check_launch(&self, launch: &pane::Launch) -> Result<(), Error> {
+        let bytes = self
+            .parts
+            .panes()
+            .values()
+            .map(|p| p.runs.launch().bytes())
+            .chain(
+                self.respawning
+                    .values()
+                    .map(|r| r.fresh.runs.launch().bytes()),
+            )
+            .fold(launch.bytes(), usize::saturating_add);
+        if bytes > LAUNCH_BYTES {
+            return Err(fail(
+                Raise::TooLong,
+                "saved launch inputs exceed the session's 16 MiB limit",
+            ));
+        }
+        Ok(())
+    }
+
+    /// A new pane, its ID taken from `ids`, running what `new` says.
+    fn new_pane(&self, ids: &mut Ids, new: NewPane<'_>, now: Instant) -> Result<Pane, Error> {
+        let start = new.start;
+        let launch = pane::Launch {
+            argv: start.argv().clone(),
+            cwd: new.cwd.to_path_buf(),
+            env: new.env.clone(),
+        };
+        let runs = match start {
+            Start::Shell(..) => Runs::Shell(launch.clone()),
+            Start::Program(..) => Runs::Explicit(launch.clone()),
+        };
+        self.check_launch(&launch)?;
+        let id = ids.pane()?;
+        let pane = Pane::new(id, None, runs, new.size, new.options, now)?;
+        let child = self.spawn(id, 0, &launch, (new.size, new.cell))?;
+        Ok(match child {
+            Some(child) => pane.running(child),
+            None => pane,
+        })
+    }
+
+    // ------------------------------------------------------------- clients
+
+    /// A client attaches, viewing `workspace` or the first one (the tests'
+    /// terminal client).
+    #[cfg(test)]
+    pub(crate) fn attach(
+        &mut self,
+        rows: u16,
+        cols: u16,
+        workspace: Option<&str>,
+    ) -> Result<ClientId, Error> {
+        let workspace = workspace.map(command::parse_workspace).transpose();
+        let size = Size::new(rows, cols).map_err(|e| fail(Raise::Size, e.to_string()))?;
+        let workspace = workspace.map_err(bad_value)?;
+        let state = fux::script::default_state().map_err(|e| fail(Raise::Config, e.to_string()))?;
+        self.attach_as(
+            ClientKind::Terminal,
+            Attach {
+                initial: workspace.is_none().then(|| command::InitialWorkspace {
+                    name: None,
+                    start: command::Start::Shell(state.preferences.shell.clone()),
+                    options: state.preferences.pane_options(),
+                    cwd: std::env::current_dir().unwrap_or_default(),
+                    env: command::EnvPatch::default(),
+                }),
+                target: workspace.map(command::AttachTarget::Workspace),
+                ..Attach::of(size, state.preferences.presentation())
+            },
+            Instant::now(),
+        )
+    }
+
+    /// A client of `kind` attaches as `attach` says: one that only watches
+    /// is one from the start, and sizes nothing.
+    pub fn attach_as(
+        &mut self,
+        kind: ClientKind,
+        attach: Attach,
+        now: Instant,
+    ) -> Result<ClientId, Error> {
+        let client = self.ids.clone().client()?;
+        let previous = self.parts.actor(fux_wire::events::Actor::Client(client));
+        let result = self.attach_checked(kind, attach, now);
+        self.parts.actor(previous);
+        result
+    }
+
+    fn attach_checked(
+        &mut self,
+        kind: ClientKind,
+        attach: Attach,
+        now: Instant,
+    ) -> Result<ClientId, Error> {
+        self.check_run(attach.of)?;
+        if attach.initial.is_some() && (attach.target.is_some() || attach.read_only) {
+            return Err(fail(
+                Raise::BadValue,
+                "initial launch inputs require an untargeted writable attach",
+            ));
+        }
+        // A size no view has is refused before anything starts on it.
+        let (rows, cols) = attach.size.nonzero();
+        let (rows, cols) = fux_wire::command::size(rows.get(), cols.get())
+            .map_err(|why| fail(Raise::Size, why))?;
+        let (ws, spot) = match &attach.target {
+            Some(command::AttachTarget::Workspace(workspace)) => {
+                (self.resolve_ws(workspace)?, None)
+            }
+            Some(command::AttachTarget::Tab(tab)) => {
+                let ws = self.tab_workspace(*tab)?;
+                let pane = self.root(*tab).ok_or(Error::NoTab(*tab))?.first_pane();
+                (
+                    ws,
+                    Some(Spot {
+                        tab: *tab,
+                        pane: Some(pane),
+                    }),
+                )
+            }
+            Some(command::AttachTarget::Pane(pane)) => {
+                let (ws, tab) = self.locate(*pane).ok_or(Error::NoPane(*pane))?;
+                (
+                    ws,
+                    Some(Spot {
+                        tab,
+                        pane: Some(*pane),
+                    }),
+                )
+            }
+            None => {
+                // A server with nothing in it (just started, or its session
+                // did not come back) starts its first shell on this client's
+                // screen; one that only watches starts and sizes nothing.
+                if self.parts.workspaces().is_empty() && attach.read_only {
+                    let why =
+                        "the server holds nothing to watch: `fux` attaches and starts a shell";
+                    return Err(fail(Raise::NoWorkspace, why));
+                }
+                if self.parts.workspaces().is_empty() {
+                    let size = Size::new(
+                        rows.saturating_sub(u16::from(
+                            attach.presentation.bar.position()
+                                != fux_wire::presentation::BarPosition::Off,
+                        )),
+                        cols,
+                    )
+                    .map_err(|_| {
+                        let why =
+                            format!("a screen of {rows} rows has no room for a pane below its bar");
+                        fail(Raise::Size, why)
+                    })?;
+                    let initial = attach.initial.as_ref().ok_or_else(|| {
+                        let why =
+                            "the server holds no workspace, and the attach no launch to start one";
+                        fail(Raise::Start, why)
+                    })?;
+                    self.start(size, initial, now)?;
+                }
+                (
+                    (self.parts.workspaces().first().map(|w| w.id()))
+                        .ok_or_else(|| fail(Raise::NoWorkspace, "the server has no workspace"))?,
+                    None,
+                )
+            }
+        };
+        let id = self.ids.client()?;
+        let mut view = View::new(id, rows, cols, attach.presentation);
+        (view.kind, view.read_only) = (kind, attach.read_only);
+        self.views.insert(id, view);
+        self.parts.attach(id);
+        self.parts.show(id, ws, spot);
+        self.view_event(id, crate::journal::ViewChange::Attached);
+        self.ask(id, crate::outer::QUERIES);
+        self.settle(now);
+        Ok(id)
+    }
+
+    pub fn detach(&mut self, id: ClientId, now: Instant) {
+        if self.views.contains_key(&id) {
+            self.view_event(id, crate::journal::ViewChange::Detached);
+        }
+        self.views.remove(&id);
+        self.parts.forget(id);
+        self.settle(now);
+    }
+
+    /// The command's client follows what it made or moved, unzoomed.
+    /// Remember the place before the command: a move may already have
+    /// closed its old tab and selected a temporary replacement.
+    fn follow(&mut self, here: Here, ws: WsId, at: Option<Spot>) {
+        if let Here::Client(client, before) = here
+            && self.views.contains_key(&client)
+        {
+            self.parts.show(client, ws, at);
+            self.zoom_to(client, false);
+            if let (Some(after), Some(view)) = (self.place(client), self.views.get_mut(&client)) {
+                if before.tab != after.tab {
+                    view.last_tab = Some(before.tab);
+                }
+                if before.ws != after.ws {
+                    view.last_workspace = Some(before.ws);
+                }
+            }
+        }
+    }
+
+    /// A client's terminal is `rows` by `cols`: its view takes the size
+    /// and settles if that changes it, and says whether it did; a size no
+    /// view has (`command::size`) is refused, and the view kept.
+    pub fn resize(
+        &mut self,
+        id: ClientId,
+        rows: u16,
+        cols: u16,
+        now: Instant,
+    ) -> Result<bool, Error> {
+        let size = fux_wire::command::size(rows, cols).map_err(|why| fail(Raise::Size, why))?;
+        let view = self.views.get_mut(&id).filter(|v| (v.rows, v.cols) != size);
+        let Some(view) = view else { return Ok(false) };
+        (view.rows, view.cols) = size;
+        view.dirty = true;
+        self.view_event(id, crate::journal::ViewChange::Resized);
+        self.settle(now);
+        Ok(true)
+    }
+
+    /// Gives a client a notice, an error's if `error`, if it is still
+    /// attached.
+    pub fn notify_to(&mut self, client: ClientId, text: impl Into<String>, error: bool) {
+        if let Some(view) = self.views.get_mut(&client) {
+            view.notify(text.into(), error);
+        }
+    }
+
+    // -------------------------------------------------------------- layout
+
+    /// Where each pane of a view's current tab is on its screen.
+    pub fn placement(&self, view: &View) -> Placement {
+        let mut out = Placement::default();
+        self.placement_into(view, &mut out);
+        out
+    }
+
+    /// Where each pane of a view's current tab is on its screen, into
+    /// `out`, whatever it held, reusing its buffers.
+    pub fn placement_into(&self, view: &View, out: &mut Placement) {
+        let area = view.pane_area();
+        let tab = self.shown_tab(view.id);
+        let Some(root) = tab.map(Tab::root) else {
+            return out.clear();
+        };
+        if view.zoom
+            && let Some(focus) = tab.and_then(|t| t.focus(view.id))
+            && !area.is_empty()
+        {
+            out.clear();
+            return out.panes.push((focus, area));
+        }
+        layout::place_into(root, area, out);
+    }
+
+    /// The area to lay out a tab in for a command: the screen of a client
+    /// showing it that sizes its panes (not one that only watches), the
+    /// commanding one's first, else the smallest screen, else what its fit says.
+    fn reference_area(&self, tab: TabId, here: Here) -> Option<Rect> {
+        let own = (self.sizing(tab)).find(|v| Some(v.id) == here.client());
+        own.map(View::pane_area)
+            .or_else(|| {
+                self.smallest_screen(tab)
+                    .map(|(rows, cols)| Rect::screen(rows, cols))
+            })
+            .or_else(|| self.tab(tab).map(|t| t.fit().area()))
+    }
+
+    /// What a new tab is laid out on while no client shows it: `size`, if
+    /// given; else the caller's own screen, if it sizes panes; else the
+    /// size of the caller's tab: the smallest screen of the clients that
+    /// size it, or with none its fit's. Never the screen of a client that
+    /// does not show the caller's tab: a caller with neither, and no size
+    /// given, is refused.
+    fn new_fit(&self, size: command::Size, here: Here) -> Result<Fit, Error> {
+        if let Some(size) = size {
+            return Ok(Fit::Fixed(size.size()));
+        }
+        let own = (here.client().and_then(|c| self.views.get(&c)))
+            .filter(|view| view.sizes())
+            .and_then(Self::screen_size);
+        let tab = || {
+            let tab = match here {
+                Here::Client(_, place) => Some(place.tab),
+                Here::Cli(..) => here.pane().and_then(|p| self.locate(p)).map(|(_, tab)| tab),
+            };
+            let least = self
+                .smallest_screen(tab?)
+                .and_then(|(rows, cols)| Size::new(rows, cols).ok());
+            least.or_else(|| self.tab(tab?).map(|t| t.fit().size()))
+        };
+        let why = "the caller has no screen that sizes panes and no tab, and no size was given";
+        (own.or_else(tab).map(Fit::Clients)).ok_or_else(|| {
+            fail(
+                Raise::Size,
+                format!("{why}: give a size (`COLS ROWS size`)"),
+            )
+        })
+    }
+
+    /// The smallest screen of the clients sizing `tab`'s panes.
+    fn smallest_screen(&self, tab: TabId) -> Option<(u16, u16)> {
+        self.sizing(tab)
+            .map(View::pane_area)
+            .map(|area| (area.h(), area.w()))
+            .reduce(|(rows, cols), (h, w)| (rows.min(h), cols.min(w)))
+    }
+
+    /// The clients showing tab `tab` that size its panes.
+    fn sizing(&self, tab: TabId) -> impl Iterator<Item = &View> {
+        (self.views.values()).filter(move |v| v.sizes() && self.shows(v.id, tab))
+    }
+
+    /// The size a client's screen gives panes, below its bar, if any.
+    fn screen_size(view: &View) -> Option<Size> {
+        let area = view.pane_area();
+        Size::new(area.h(), area.w()).ok()
+    }
+
+    // -------------------------------------------------------------- repair
+
+    /// Ends each view's mode if what it shows is gone, then sizes the PTYs:
+    /// run after every event.
+    pub fn settle(&mut self, now: Instant) {
+        // Out of the session while they are repaired, which reads no view.
+        let mut views = std::mem::take(&mut self.views);
+        let ended: Vec<Outgoing> = (views.values_mut())
+            .filter_map(|view| Some(Outgoing::To(view.id, ToAttached::Ended(self.repair(view)?))))
+            .collect();
+        self.views = views;
+        for ended in &ended {
+            if let Outgoing::To(client, _) = ended {
+                self.view_event(*client, crate::journal::ViewChange::Screen);
+            }
+        }
+        self.outbox.extend(ended);
+        self.size_panes(now);
+        self.host_panes();
+        self.tell_schemes();
+        self.tell_lost();
+        self.hold_copies();
+    }
+
+    /// Each pane whose program was told other graphics than its host's
+    /// terminal draws now (`graphics`) is told those: as a terminal says
+    /// its cell or sixel, or the pane's host changes (another typed there,
+    /// the host left or shows another tab, or there is none). A new cell,
+    /// unknown too, sizes its terminal in pixels, which signals its
+    /// program, not left till it writes; and the clients showing it are
+    /// painted again, as its pictures show only while its host draws sixel
+    /// (`render::pictures`).
+    fn host_panes(&mut self) {
+        let told = |p: &&Pane| self.graphics(p.id()) != p.screen().graphics();
+        let stale: Vec<PaneId> = (self.parts.panes().values().filter(told))
+            .map(Pane::id)
+            .collect();
+        for id in stale {
+            let tab = self.locate(id).map(|(_, tab)| tab);
+            for client in self.viewers(tab) {
+                if let Some(view) = self.views.get_mut(&client) {
+                    view.dirty = true;
+                }
+            }
+            if let Some((mut pane, true)) = self.hosted(id) {
+                pane.size_terminal();
+            }
+        }
+    }
+
+    /// Output and sizing a pane can drop rows of its history: a copy mode
+    /// whose rows went ends. They are looked for only if the screen changed
+    /// since they were last found. Every change to workspaces, tabs, panes
+    /// and views does this as it is made; output, which changes none of
+    /// them, leaves it to the server's loop.
+    pub fn hold_copies(&mut self) {
+        for view in self.views.values_mut() {
+            let Mode::Copy(copy) = &mut view.mode else {
+                continue;
+            };
+            let Some(pane) = self.parts.panes().get(&copy.pane) else {
+                continue;
+            };
+            let screen = pane.screen();
+            let same = copy.respawns == pane.respawns;
+            if same && copy.held_at.is_some_and(|at| !screen.changed_since(at)) {
+                continue;
+            }
+            if copy.resolve(pane).is_some() {
+                copy.held_at = Some(screen.mark());
+            } else {
+                view.mode = Mode::Normal;
+                view.notify(
+                    if same {
+                        "copy mode ended: the history dropped the rows it held"
+                    } else {
+                        "copy mode ended: its pane respawned"
+                    },
+                    true,
+                );
+                let ended = ToAttached::Ended(view.opening);
+                self.outbox.push(Outgoing::To(view.id, ended));
+                let id = pane.id();
+                let at = self.parts.locate(id).map(|at| (at, id));
+                self.parts.journal_mut().push(crate::journal::Event::View {
+                    client: view.id,
+                    at,
+                    change: crate::journal::ViewChange::Screen,
+                });
+            }
+        }
+    }
+
+    /// Ends what a view shows if what it is about is gone: copy mode whose
+    /// pane closed or is no longer focused, a chooser about a pane, tab or
+    /// workspace that closed. Which opening it ended, if it did, which
+    /// its client is told (`ToAttached::Ended`), the mode being the client's.
+    /// Forgets remembered places that closed or that a close made current.
+    fn repair(&self, view: &mut View) -> Option<u64> {
+        use fux_wire::act::{List, Panel};
+        let place = self.place(view.id);
+        view.last_tab = view
+            .last_tab
+            .filter(|id| self.tab(*id).is_some() && place.is_none_or(|at| at.tab != *id));
+        view.last_workspace = view
+            .last_workspace
+            .filter(|id| self.workspace(*id).is_some() && place.is_none_or(|at| at.ws != *id));
+        let focus = self.focused(view.id);
+        // Copy mode's rows are looked for once the panes are sized
+        // (`hold_copies`).
+        let gone = match &view.mode {
+            Mode::Copy(copy) if !self.parts.panes().contains_key(&copy.pane) => {
+                "copy mode ended: its pane closed".to_owned()
+            }
+            Mode::Copy(copy) if Some(copy.pane) != focus => {
+                "copy mode ended: its pane is no longer focused".to_owned()
+            }
+            Mode::Panel(Panel::List(List {
+                about: Some(about), ..
+            })) if self.there(*about).is_err() => format!("closed: {} is gone", about),
+            Mode::Normal | Mode::Panel(_) | Mode::Copy(_) => return None,
+        };
+        view.mode = Mode::Normal;
+        view.notify(gone, true);
+        Some(view.opening)
+    }
+
+    /// A PTY is the smallest rectangle any client shows it in; one with
+    /// no cells shows it nowhere. A tab no client sizes whose layout changed
+    /// is laid out on what its fit says, as commands resizing it are, and
+    /// so is one with a size of its own that a client sized and none sizes
+    /// now (it switched away, detached, or sizes nothing); otherwise its
+    /// panes keep their size, so leaving a tab that fits clients resizes
+    /// nothing. A tab that fits clients takes the smallest screen showing
+    /// it as its size. Each tab is laid out as `shown_in` says, which a
+    /// pane about to start is sized by too.
+    fn size_panes(&mut self, now: Instant) {
+        let mut sizes = std::mem::take(&mut self.shown_sizes);
+        let mut placed = std::mem::take(&mut self.placed);
+        sizes.clear();
+        // Each tab a client sizes, and its smallest screen.
+        let mut screens = BTreeMap::new();
+        for view in self.views.values().filter(|v| v.sizes()) {
+            let size = Self::screen_size(view).map(Size::nonzero);
+            if let (Some(tab), Some((rows, cols))) = (self.shown_tab(view.id), size) {
+                let (r, c) = screens.entry(tab.id()).or_insert((rows, cols));
+                (*r, *c) = ((*r).min(rows), (*c).min(cols));
+            }
+        }
+        for (&tab, &size) in &screens {
+            self.parts.shown_on(tab, size.into());
+        }
+        let mut dropped = std::mem::take(&mut self.sized);
+        let fixed =
+            |tab: &TabId| (self.tab(*tab)).is_some_and(|t| matches!(t.fit(), Fit::Fixed(_)));
+        dropped.retain(|tab| !screens.contains_key(tab) && fixed(tab));
+        self.sized = screens.keys().copied().collect();
+        let mut changed = (self.parts).changed_unshown(|tab| screens.contains_key(&tab));
+        changed.retain(|tab| !dropped.contains(tab));
+        for tab in screens.into_keys().chain(changed).chain(dropped) {
+            if let Some(root) = self.root(tab) {
+                self.shown_in((tab, root), |_, now| now, &mut placed, &mut sizes);
+            }
+        }
+        self.placed = placed;
+        // A pane's rectangles side by side, for the smallest.
+        sizes.sort_unstable_by_key(|(pane, _)| *pane);
+        let mut resized = false;
+        for shown in sizes.chunk_by(|a, b| a.0 == b.0) {
+            let Some(&(id, first)) = shown.first() else {
+                continue;
+            };
+            let (rows, cols) = shown.iter().fold(first, |(rows, cols), (_, (h, w))| {
+                (rows.min(*h), cols.min(*w))
+            });
+            // A frame it holds is read as it resizes, as every read of
+            // its output is (`read_with`): its terminal's facts given it,
+            // its bells and copies taken.
+            let Ok(size) = Size::new(rows, cols) else {
+                continue;
+            };
+            if self.pane(id).is_ok_and(|p| p.size() != size) {
+                self.read_with(id, |pane| pane.resize(size, now), now);
+                resized = true;
+            } else if let Ok(mut pane) = self.pane_mut(id) {
+                pane.keeps_size();
+            }
+        }
+        self.shown_sizes = sizes;
+        if resized {
+            self.touch();
+        }
+    }
+
+    /// The rectangles, rows and columns, each pane of tab `tab` laid out as
+    /// `root` is shown in, into `out` (empty ones left out): on the screen
+    /// of each client that sizes the tab, zoomed and focusing as `seat`
+    /// makes of what the client is now (zoomed, its focus there); with
+    /// none, on what the tab's fit says. Settling sizes a pane to the
+    /// smallest it has here, and leaves one with none at its size.
+    fn shown_in(
+        &self,
+        (tab, root): (TabId, &Tree),
+        seat: impl Fn(&View, (bool, Option<PaneId>)) -> (bool, Option<PaneId>),
+        placed: &mut Placement,
+        out: &mut Vec<(PaneId, (u16, u16))>,
+    ) {
+        let Some(t) = self.tab(tab) else {
+            return;
+        };
+        let mut sizing = self.sizing(tab).peekable();
+        let fit = sizing.peek().is_none().then(|| (t.fit().area(), None));
+        let screens = sizing.map(|view| {
+            let zoomed = match seat(view, (view.zoom, t.focus(view.id))) {
+                (true, focus) => focus,
+                (false, _) => None,
+            };
+            (view.pane_area(), zoomed)
+        });
+        for (area, zoomed) in screens.chain(fit) {
+            match zoomed.filter(|_| !area.is_empty()) {
+                Some(focus) => {
+                    placed.clear();
+                    placed.panes.push((focus, area));
+                }
+                None => layout::place_into(root, area, placed),
+            }
+            let shown = placed.panes.iter().filter(|(_, r)| !r.is_empty());
+            out.extend(shown.map(|(p, r)| (*p, (r.h(), r.w()))));
+        }
+    }
+
+    fn touch(&mut self) {
+        self.views.values_mut().for_each(|view| view.dirty = true);
+    }
+
+    // ------------------------------------------------------------- closing
+
+    /// Hangs up a pane's process; it is killed and reaped after `GRACE`.
+    /// `closed`: fux closed it (`kill`, `kill-server`), not its program's
+    /// end: the rest of its session goes too.
+    fn end(&mut self, process: Process, closed: bool, now: Instant) {
+        if let Process::Reading(mut child)
+        | Process::HungUp(mut child)
+        | Process::ReadFailed(mut child, _) = process
+        {
+            if closed {
+                child.leader.closed();
+            }
+            child.leader.hang_up();
+            let deadline = crate::after(now, GRACE);
+            self.dying.push(Dying { child, deadline });
+        }
+    }
+
+    /// Every program started and not yet reaped: the panes', those
+    /// started for respawns under way, and the dying.
+    pub fn children(&self) -> impl Iterator<Item = &Child> {
+        let panes = (self.parts.panes().values()).filter_map(|p| p.process().child());
+        let replacements = self.respawning.values().filter_map(|r| r.process.child());
+        (panes.chain(replacements)).chain(self.dying.iter().map(|d| &d.child))
+    }
+
+    /// Removes a pane and its process. A tab its closing empties closes too,
+    /// as does a workspace left with no tabs.
+    pub fn close_pane(&mut self, id: PaneId, why: Option<String>, now: Instant) {
+        // Who sees the pane is known before its tab can go: a tab its
+        // closing empties takes its viewers elsewhere.
+        let viewers = self.viewers(self.locate(id).map(|(_, t)| t));
+        for client in &viewers {
+            if self.focused(*client) == Some(id) {
+                self.zoom_to(*client, false);
+            }
+        }
+        let mut notice = None;
+        if let Some(mut pane) = self.parts.close_pane(id) {
+            // Closed for its program's end (a reason given), or by fux.
+            let closed = why.is_none();
+            let failed = pane.has_terminal_errors();
+            let status =
+                why.map(|why| format!("{} {why}", fux_wire::words::labelled(id, &pane.label())));
+            let told = status
+                .into_iter()
+                .chain(pane.take_terminal_errors())
+                .collect::<Vec<_>>()
+                .join("; ");
+            if !told.is_empty() {
+                if failed && self.parts.panes().is_empty() {
+                    self.outbox.push(Outgoing::Shutdown(told.clone()));
+                }
+                notice = Some((told, failed));
+            }
+            self.end_pane(pane, closed, &viewers, now);
+        }
+        self.after_close(now);
+        if let Some((told, failed)) = notice {
+            for client in viewers {
+                self.notify_to(client, told.clone(), failed);
+            }
+        }
+    }
+
+    /// Removes a tab and whatever panes are in it (`Parts::remove_tab`).
+    fn remove_tab(&mut self, tab: TabId, now: Instant) {
+        let viewers = self.viewers(Some(tab));
+        for client in &viewers {
+            self.zoom_to(*client, false);
+        }
+        for gone in self.parts.remove_tab(tab) {
+            self.end_pane(gone, true, &viewers, now);
+        }
+    }
+
+    /// Ends the program of `pane`, closed (by fux if `closed`), and the one
+    /// a respawn under way there started, telling `viewers` the respawn
+    /// was abandoned.
+    fn end_pane(&mut self, pane: Pane, closed: bool, viewers: &[ClientId], now: Instant) {
+        let id = pane.id();
+        self.end(pane.into_process(), closed, now);
+        let Some(abandoned) = self.respawning.remove(&id) else {
+            return;
+        };
+        self.end(abandoned.process, true, now);
+        let told = format!("{id} closed while respawning: the program started for it was ended");
+        for client in viewers {
+            self.notify_to(*client, told.clone(), true);
+        }
+    }
+
+    /// The clients showing tab `tab`.
+    fn viewers(&self, tab: Option<TabId>) -> Vec<ClientId> {
+        let shows = |c: &ClientId| tab.is_some_and(|t| self.shows(*c, t));
+        self.views.keys().copied().filter(shows).collect()
+    }
+
+    fn after_close(&mut self, now: Instant) {
+        let shutting = (self.outbox.iter()).any(|o| matches!(o, Outgoing::Shutdown { .. }));
+        if self.parts.panes().is_empty() && !shutting {
+            (self.outbox).push(Outgoing::Shutdown("the last pane closed".into()));
+        }
+        self.touch();
+        self.settle(now);
+    }
+
+    /// A pane's program exited with `status`: a shell's pane closes, and a
+    /// program's stays, the status kept, for its last screen to be read.
+    /// What either wrote as it exited may still be on its terminal, or
+    /// read and waiting for the pane's next turns (`Pane::has_unread`): it
+    /// is told exited once all of it is on its screen, its bells, titles
+    /// and notifications journaled, from the turn that reads the last of
+    /// it (`Session::fire`); a shell's pane then closes.
+    pub fn exited(&mut self, id: PaneId, ended: Ended, now: Instant) {
+        let Some(generation) = self.parts.panes().get(&id).map(|p| p.respawns) else {
+            return;
+        };
+        let previous = self
+            .parts
+            .actor(fux_wire::events::Actor::Program(id, generation));
+        self.program_exited(id, ended, now);
+        self.parts.actor(previous);
+    }
+
+    fn program_exited(&mut self, id: PaneId, ended: Ended, now: Instant) {
+        let Some(first) = self.parts.panes().get(&id).map(|p| p.exiting.is_none()) else {
+            return;
+        };
+        // Once, at the first word of the exit, its terminal drained (what
+        // it left writing there is not waited for), and the status kept
+        // till the last of it is read; at each, a frame it holds read, one
+        // begun in output read since too.
+        if first {
+            if let Some(mut pane) = self.parts.pane_mut(id) {
+                pane.exiting(ended);
+            }
+            self.read_left(id, now);
+        }
+        self.read_with(id, |p| p.release_frame(now), now);
+        let viewers = self.viewers(self.locate(id).map(|(_, tab)| tab));
+        let Some(mut pane) = self.parts.pane_mut(id) else {
+            return;
+        };
+        if pane.has_unread() {
+            return;
+        }
+        match pane.runs {
+            Runs::Shell(_) => {
+                let left = pane.ended(ended).left.told("it");
+                let why = answer::shell_status(ended).map_or_else(
+                    || answer::told(ended),
+                    |s| format!("exited with status {s}"),
+                );
+                self.close_pane(id, Some(format!("{why}{left}")), now);
+            }
+            Runs::Explicit(_) => {
+                // Its leader, exited and unreaped, is reaped with the dying.
+                let (end, gone) = pane.exit(ended);
+                let errors: Vec<_> = if viewers.is_empty() {
+                    Vec::new()
+                } else {
+                    pane.take_terminal_errors().collect()
+                };
+                if let Process::Reading(child)
+                | Process::HungUp(child)
+                | Process::ReadFailed(child, _) = gone
+                {
+                    let deadline = now;
+                    self.dying.push(Dying { child, deadline });
+                }
+                let status = format!("{id} {}{}", answer::told(end.ended), end.left.told("it"));
+                let left = end.left != pane::Left::default() || !errors.is_empty();
+                let told = std::iter::once(status)
+                    .chain(errors)
+                    .collect::<Vec<_>>()
+                    .join("; ");
+                for client in viewers {
+                    self.notify_to(client, told.clone(), left);
+                }
+                self.touch();
+            }
+        }
+    }
+
+    /// Reads what pane `id`'s program left on its terminal as it ends, or
+    /// is respawned over (`unread`), up to `LEFT_MAX`; what is past it is
+    /// not, which the pane keeps (`Pane::left`) to say with its end.
+    fn read_left(&mut self, id: PaneId, now: Instant) {
+        let Some((left, end)) = self.pane(id).ok().map(|p| unread(p.process())) else {
+            return;
+        };
+        if !left.is_empty() {
+            self.output(id, &left, now);
+        }
+        if let Ok(mut pane) = self.pane_mut(id) {
+            match end {
+                DrainEnd::Empty => {}
+                DrainEnd::Cut => pane.left_cut(),
+                DrainEnd::Failed(error) => pane.read_failed(error),
+            }
+        }
+    }
+
+    /// Stops a failed reader and tells its viewers in this turn.
+    pub(crate) fn read_failed(&mut self, id: PaneId, error: fuxix::Errno, now: Instant) {
+        self.read_with(id, |pane| pane.read_failed(error), now);
+    }
+
+    /// Output from a pane's program.
+    pub fn output(&mut self, id: PaneId, bytes: &[u8], now: Instant) {
+        self.read_with(id, |pane| pane.output(bytes, now), now);
+    }
+
+    /// Everything the session waits for, each with when it is due: the
+    /// server polls no longer than the soonest, and fires those due
+    /// (`Session::fire`).
+    pub fn timers(&self) -> impl Iterator<Item = (Instant, Timer)> + '_ {
+        self.parts.panes().values().flat_map(|pane| {
+            let respawn = self.respawning.get(&pane.id()).map(|r| r.since);
+            // A respawn's turn reads a held frame: one parser call a round.
+            let frame = (pane.frame_deadline().filter(|_| respawn.is_none()))
+                .map(|at| (at, Timer::Frame(pane.id())));
+            let unread = (pane.unread_due().or(respawn)).map(|at| (at, Timer::Unread(pane.id())));
+            frame.into_iter().chain(unread)
+        })
+    }
+
+    /// What `timer` waited for is done, now that it is due.
+    pub fn fire(&mut self, timer: Timer, now: Instant) {
+        match timer {
+            Timer::Frame(id) => self.read_with(id, |p| p.release_frame(now), now),
+            Timer::Unread(id) => {
+                // A respawn under way reads a frame its old program holds.
+                let frame = self.respawning.contains_key(&id)
+                    && self.pane(id).is_ok_and(|p| p.frame_deadline().is_some());
+                self.read_with(
+                    id,
+                    |p| match frame {
+                        true => p.release_frame(now),
+                        false => p.read_unread(now),
+                    },
+                    now,
+                );
+                self.after_turn(id, now);
+            }
+        }
+    }
+
+    /// Reads into pane `id` with `read`, as every read of a pane's output
+    /// does: its tab's host colours and palette given it first; after, its
+    /// bell rung, its copies made in order, and the views showing it
+    /// repainted and told what it refused (`tell_refused`).
+    fn read_with(&mut self, id: PaneId, read: impl FnOnce(&mut PaneMut<'_>), now: Instant) {
+        let place = self.locate(id);
+        let viewers = self.viewers(place.map(|(_, tab)| tab));
+        let labelled = place.and_then(|(ws, tab)| {
+            let tab = self.tab(tab)?;
+            let pane = self.parts.panes().get(&id)?;
+            if tab.name().is_some() || tab.root().first_pane() != id || pane.name().is_some() {
+                return None;
+            }
+            let others: Vec<ClientId> = self
+                .workspace(ws)?
+                .viewers
+                .iter()
+                .copied()
+                .filter(|client| !viewers.contains(client))
+                .collect();
+            (!others.is_empty()).then(|| (pane.label().into_owned(), others))
+        });
+        let Some((mut pane, retold)) = self.hosted(id) else {
+            return;
+        };
+        read(&mut pane);
+        // Sized once for the new cell and what was read, a resize sized
+        // so already, which the system does not signal again.
+        if retold {
+            pane.size_terminal();
+        }
+        // Program copies go to viewers of the tab, including zoomed views
+        // and watchers, when this pane permits them. Invalid copies are
+        // counted and reported. fux-vt's string bound fits the clipboard.
+        const _: () = assert!(fux_vt::OSC_PAYLOAD_LIMIT <= crate::copy::MAX_CLIPBOARD);
+        let generation = pane.respawns;
+        let (bell, copies) = pane.take_read();
+        let changed_label = labelled.filter(|(was, _)| was != &*pane.label());
+        if bell {
+            self.ring(id, now);
+        }
+        if !copies.is_empty() {
+            let previous = self
+                .parts
+                .actor(fux_wire::events::Actor::Program(id, generation));
+            for text in copies {
+                if let Err(why) = self.copied(text, Some(id), &viewers) {
+                    log!("{id}: copy refused: {why}");
+                    for &client in &viewers {
+                        self.notify_to(client, why.to_string(), true);
+                    }
+                }
+            }
+            self.parts.actor(previous);
+        }
+        for view in self.views.values_mut() {
+            if viewers.contains(&view.id)
+                || changed_label
+                    .as_ref()
+                    .is_some_and(|(_, clients)| clients.contains(&view.id))
+            {
+                view.dirty = true;
+            }
+        }
+        self.tell_refused(id, &viewers);
+    }
+
+    /// Tells the clients showing each pane what it refused and has not
+    /// told (`tell_refused`); whether it told any. A pane no client shows
+    /// tells it once one does.
+    pub(crate) fn tell_lost(&mut self) -> bool {
+        let untold: Vec<PaneId> = (self.parts.panes().iter())
+            .filter(|(_, p)| p.loses() || p.has_terminal_errors())
+            .map(|(id, _)| *id)
+            .collect();
+        let mut told = false;
+        for id in untold {
+            let viewers = self.viewers(self.locate(id).map(|(_, tab)| tab));
+            told |= self.tell_refused(id, &viewers);
+        }
+        told
+    }
+
+    /// Tells `viewers`, the clients showing pane `id`, what it let go of
+    /// and has not told, each kind with how many (`Pane::take_untold`);
+    /// whether there was any. With no client showing it, it is kept for
+    /// one that does.
+    fn tell_refused(&mut self, id: PaneId, viewers: &[ClientId]) -> bool {
+        let pane = self.parts.pane_mut(id);
+        let Some(mut pane) =
+            pane.filter(|p| (p.loses() || p.has_terminal_errors()) && !viewers.is_empty())
+        else {
+            return false;
+        };
+        let mut notices = pane.take_untold().told(id, true);
+        // An exit reports terminal failures with its final status, after
+        // its remaining output and frame have been read.
+        if pane.exiting.is_none() {
+            notices.extend(pane.take_terminal_errors());
+        }
+        if notices.is_empty() {
+            return false;
+        }
+        let told = notices.join("; ");
+        for client in viewers {
+            self.notify_to(*client, told.clone(), true);
+        }
+        true
+    }
+
+    /// `text`, copied, goes to the paste buffers and to each client in `to`
+    /// whose terminal delivery is on (OSC 52): false if it
+    /// is too large for the clipboard. An exhausted id counter refuses the copy.
+    pub(crate) fn copied(
+        &mut self,
+        text: String,
+        pane: Option<PaneId>,
+        to: &[ClientId],
+    ) -> Result<bool, Error> {
+        let id = self.ids.buffer(self.run)?;
+        let mut fits = true;
+        let views = &self.views;
+        let mut recipients = to
+            .iter()
+            .copied()
+            .filter(|client| {
+                views
+                    .get(client)
+                    .is_some_and(|v| v.presentation.terminal_clipboard)
+            })
+            .peekable();
+        // Encoded once, before the text moves into the buffers.
+        if recipients.peek().is_some() {
+            let encoded = fux_wire::json::base64(text.as_bytes());
+            fits = encoded.len() <= crate::copy::MAX_CLIPBOARD;
+            if fits {
+                let osc = format!("\x1b]52;c;{encoded}\x07").into_bytes();
+                self.outbox.extend(
+                    recipients
+                        .map(|client| Outgoing::To(client, ToAttached::Paint(osc.clone().into()))),
+                );
+            }
+        }
+        let at = pane.and_then(|p| self.locate(p).map(|at| (at, p)));
+        self.buffers.push_front((id, text));
+        self.parts
+            .journal_mut()
+            .push(crate::journal::Event::Copied { buffer: id, at });
+        self.buffers.truncate(BUFFER_LIMIT);
+        Ok(fits)
+    }
+
+    fn buffer(&self, buffer: command::Buffer) -> Result<&str, Error> {
+        let found = match buffer {
+            command::Buffer::Newest => self.buffers.front(),
+            command::Buffer::Id(id) => self.buffers.iter().find(|(held, _)| *held == id),
+        };
+        found
+            .map(|(_, text)| text.as_str())
+            .ok_or(Error::NoBuffer(buffer))
+    }
+
+    /// Everything the server shuts down: every pane is hung up.
+    pub fn shutdown(&mut self, now: Instant) {
+        for pane in self.parts.close_all() {
+            self.end_pane(pane, true, &[], now);
+        }
+    }
+
+    // ------------------------------------------------------------ commands
+
+    /// Begins a request from a client: one that waits gives its wait,
+    /// which the server asks for its answer until it has one. Event reads
+    /// use the same bounded wait; commands run at once.
+    pub fn begin(&mut self, request: Request, origin: &Origin, now: Instant) -> Begun {
+        self.begin_request(request, origin, now)
+            .unwrap_or_else(|error| Begun::Done(failure(error, origin, self)))
+    }
+
+    /// `begin`'s work: what fails before a request runs is its error.
+    fn begin_request(
+        &mut self,
+        request: Request,
+        origin: &Origin,
+        now: Instant,
+    ) -> Result<Begun, Error> {
+        let wait = match request {
+            Request::Do(command) => {
+                let reply = self.run_command(&command, origin, now);
+                // A respawn is answered once its pane is at the version it
+                // answers: at once, unless what the old program left is
+                // still being read.
+                let waiting = match (&command, &reply.response) {
+                    (
+                        Command::Respawn { .. },
+                        Response::Answered(PaneResults::One(PaneAnswer::Acted(started))),
+                    ) => Waiting::Respawn {
+                        pane: started.pane,
+                        respawns: started.counts.respawns,
+                        reply: reply.clone(),
+                    },
+                    _ => return Ok(Begun::Done(reply)),
+                };
+                return Ok(self.answered(waiting, now));
+            }
+            Request::Wait(wait) => wait,
+            Request::NextEvents {
+                scope,
+                from,
+                timeout,
+            } => {
+                if !self.ids.gave_scope(scope) {
+                    return Err(fail(
+                        Raise::BadValue,
+                        "event scope was never issued by this server run",
+                    ));
+                }
+                let reader =
+                    crate::journal::Reader::new(scope, self.parts.journal(), self.run, from)
+                        .map_err(|why| fail(Raise::BadValue, why))?;
+                let read = crate::journal::Read::new(reader, crate::after(now, timeout.duration()));
+                return Ok(self.answered(Waiting::Events(read), now));
+            }
+        };
+        let watches = match wait.since {
+            command::Since::Now(AnyRef::Pane(id)) => Watches::Pane((id, self.pane(id)?.counts())),
+            command::Since::Now(target) => Watches::Panes(
+                (self
+                    .panes_of(target, &mut fux_wire::wire::Budget::new())?
+                    .into_iter())
+                .map(|id| Ok((id, self.pane(id)?.counts())))
+                .collect::<Result<Vec<_>, Error>>()?,
+            ),
+            command::Since::Version(since) => {
+                Watches::Pane((since.pane, self.counts_since(since)?))
+            }
+        };
+        // A wait on no pane would only time out.
+        if let Watches::Panes(none) = &watches
+            && none.is_empty()
+        {
+            return Err(fail(Raise::NoPane, "it holds no pane to wait on"));
+        }
+        let limit = wait.timeout.duration();
+        Ok(self.answered(Waiting::new(watches, self.run, now, limit), now))
+    }
+
+    /// `waiting`'s answer, if it has one already at `now`; else the wait.
+    fn answered(&self, mut waiting: Waiting, now: Instant) -> Begun {
+        match waiting.answer(self, now) {
+            Some(outcome) => Begun::Done(outcome),
+            None => Begun::Waiting(Box::new(waiting)),
+        }
+    }
+
+    /// The counts a wait from `since` waits to differ from: its own, if it
+    /// is a version of this server run's that its pane has had. A pane this
+    /// run gave that is gone closed, as ids are never given twice in one
+    /// run, and the wait says so; one it never gave is refused.
+    fn counts_since(&self, since: command::Version) -> Result<command::Counts, Error> {
+        if since.run != self.run {
+            let why = format!(
+                "{since} is from another server run ({}), not this one ({}): a server since stopped, or another socket's",
+                since.run, self.run
+            );
+            return Err(fail(Raise::BadValue, why));
+        }
+        if !self.ids.gave(since.pane) {
+            let why = format!("{since}: {} was never a pane of this run", since.pane);
+            return Err(fail(Raise::BadValue, why));
+        }
+        // Within one program every count only grows.
+        if let Some(pane) = self.parts.panes().get(&since.pane)
+            && !pane.counts().had(since.counts)
+        {
+            let why = format!(
+                "{since}: {} never had these counts; it is at {}",
+                since.pane,
+                pane.counts()
+            );
+            return Err(fail(Raise::BadValue, why));
+        }
+        Ok(since.counts)
+    }
+
+    /// A value from another run must be refused before anything is acted on.
+    pub fn check_run(&self, run: Option<command::Run>) -> Result<(), Error> {
+        if run.is_some_and(|run| run != self.run) {
+            return Err(fail(Raise::BadValue, "handle is from another server run"));
+        }
+        Ok(())
+    }
+
+    /// Runs a command, parsed already: from a line, a binding or a chooser.
+    pub fn run_command(&mut self, command: &Command, origin: &Origin, now: Instant) -> Reply {
+        let actor = self.request_actor(origin);
+        let previous = self.parts.actor(actor);
+        let outcome = self
+            .execute(command, origin, now)
+            .unwrap_or_else(|error| failure(error, origin, self));
+        if !command.shows_nothing_new() {
+            self.changes = self.changes.wrapping_add(1);
+            self.touch();
+        }
+        self.settle(now);
+        self.parts.actor(previous);
+        outcome
+    }
+
+    pub(crate) fn request_actor(&self, origin: &Origin) -> fux_wire::events::Actor {
+        use fux_wire::events::Actor;
+        match origin {
+            Origin::Client(client) => Actor::Client(*client),
+            Origin::ClientContext { actor, .. } => *actor,
+            Origin::Cli(caller) => match (caller.within, caller.gave) {
+                (Within::This, Some((pane, generation)))
+                    if self
+                        .parts
+                        .panes()
+                        .get(&pane)
+                        .is_some_and(|p| p.respawns == generation) =>
+                {
+                    Actor::Pane(pane, generation)
+                }
+                _ => Actor::Unknown,
+            },
+        }
+    }
+
+    fn zoom_to(&mut self, client: ClientId, zoom: bool) {
+        if let Some(view) = self.views.get_mut(&client).filter(|v| v.zoom != zoom) {
+            view.zoom = zoom;
+            self.view_event(client, crate::journal::ViewChange::Zoomed);
+        }
+    }
+
+    pub(crate) fn view_event(&mut self, client: ClientId, change: crate::journal::ViewChange) {
+        let at = self.place(client).map(|p| ((p.ws, p.tab), p.pane));
+        self.parts
+            .journal_mut()
+            .push(crate::journal::Event::View { client, at, change });
+    }
+
+    /// How many commands have run that may change what clients show.
+    pub fn changes(&self) -> u64 {
+        self.changes
+    }
+
+    fn execute(
+        &mut self,
+        command: &Command,
+        origin: &Origin,
+        now: Instant,
+    ) -> Result<Reply, Error> {
+        let here = self.here(origin)?;
+        match command {
+            Command::Inspect { scope, projection } => {
+                self.inspect(*scope, projection.clone()).map(Into::into)
+            }
+            Command::Arrange {
+                target,
+                revision,
+                nodes,
+            } => {
+                let tab = self.tab(*target).ok_or(Error::NoTab(*target))?;
+                let now = tab.revision(self.run);
+                if now != Some(*revision) {
+                    let behind = revision.tab == *target
+                        && revision.run == self.run
+                        && now.is_none_or(|n| revision.serial < n.serial);
+                    let code = if behind {
+                        Raise::Stale
+                    } else {
+                        Raise::BadValue
+                    };
+                    let now = now.map_or_else(|| "exhausted".into(), |r| r.to_string());
+                    return Err(fail(code, format!("{target} is at {now}, not {revision}")));
+                }
+                let root = layout::from_nodes(nodes).map_err(|why| fail(Raise::BadValue, why))?;
+                if !root.same_panes(tab.root()) {
+                    return Err(fail(
+                        Raise::BadValue,
+                        "layout must contain every current tab pane exactly once",
+                    ));
+                }
+                self.room(*target, &root, None)?;
+                self.parts
+                    .arrange(*target, root)
+                    .ok_or(Error::NoTab(*target))?;
+                Ok(Reply::default())
+            }
+            Command::KillServer => self.kill_server(origin),
+            Command::NewWorkspace {
+                name,
+                size,
+                cwd,
+                env,
+                start,
+                options,
+            } => {
+                let (cwd, fit, sized) = self.opening((cwd.as_deref(), *size), (here, true))?;
+                let new = NewPane::new(start, &cwd, env, *options, sized);
+                let made = self.create_workspace(name.clone(), None, fit, new, now)?;
+                self.follow(here, made.ws, None);
+                Ok(acted(self.pane(made.pane)?.version(self.run)))
+            }
+            Command::NewTab {
+                target,
+                name,
+                size,
+                cwd,
+                env,
+                start,
+                options,
+            } => {
+                let (cwd, fit, sized) = self.opening((cwd.as_deref(), *size), (here, true))?;
+                if let Some(name) = name {
+                    self.check_tab_name(name, None)?;
+                }
+                let new = NewPane::new(start, &cwd, env, *options, sized);
+                // A workspace named that is not there is made, as `run`
+                // makes one, its first tab this one.
+                let made = self.create_tab(target.as_ref(), here, name.clone(), fit, new, now)?;
+                let at = Spot {
+                    tab: made.tab,
+                    pane: None,
+                };
+                self.follow(here, made.ws, Some(at));
+                Ok(acted(self.pane(made.pane)?.version(self.run)))
+            }
+            Command::Run {
+                workspace,
+                name,
+                size,
+                cwd,
+                env,
+                argv,
+                options,
+            } => {
+                // Its place is out of every client's way: no client follows.
+                let (dir, fit, sized) = self.opening((cwd.as_deref(), *size), (here, false))?;
+                if let Some(name) = name {
+                    check_name(name)?;
+                }
+                let start = Start::Program(argv.clone());
+                let new = NewPane::new(&start, &dir, env, *options, sized);
+                let made = self.create_tab(Some(workspace), here, None, fit, new, now)?;
+                if let Some(name) = name {
+                    self.pane_mut(made.pane)?.rename(name.clone());
+                }
+                Ok(acted(self.pane(made.pane)?.version(self.run)))
+            }
+            &Command::Respawn {
+                target,
+                kill,
+                ref env,
+                ref argv,
+            } => self.respawn(target, kill, env, argv.as_ref(), now),
+            Command::Notify { target, text } => {
+                let to: Vec<ClientId> = match target {
+                    None => self.views.keys().copied().collect(),
+                    Some(target) => match self.there(*target)? {
+                        AnyRef::Pane(p) => self.viewers(self.locate(p).map(|(_, t)| t)),
+                        AnyRef::Tab(t) => self.viewers(Some(t)),
+                        AnyRef::Workspace(w) => (self.workspace(w))
+                            .map(|w| w.viewers.iter().copied().collect())
+                            .unwrap_or_default(),
+                    },
+                };
+                for client in to {
+                    self.notify_to(client, text.clone(), false);
+                }
+                Ok(Reply::default())
+            }
+            &Command::Resize(Resized::Tabs(target, size)) => {
+                self.resize_tabs(target, size)?;
+                Ok(Reply::default())
+            }
+            &Command::Resize(Resized::Client(client, size)) => {
+                let view = self.views.get(&client).ok_or(Error::NoClient(client))?;
+                if view.kind != ClientKind::Headless {
+                    let message = format!(
+                        "{client} has a terminal, which sets its size; resize sizes headless clients"
+                    );
+                    return Err(fail(Raise::NotHeadless, message));
+                }
+                let size = size.size();
+                self.resize(client, size.rows(), size.cols(), now)?;
+                Ok(Reply::default())
+            }
+            &Command::SendMouse {
+                target,
+                mouse,
+                row,
+                col,
+            } => self.send_mouse(target, mouse, row, col),
+            &Command::Split {
+                axis,
+                target,
+                ref start,
+                ref cwd,
+                ref env,
+                shares,
+                options,
+            } => self.split(
+                target,
+                (axis, shares),
+                (start, env, options),
+                cwd.as_deref(),
+                origin,
+                now,
+            ),
+
+            &Command::Signal { target, signal } => {
+                let group = self.signalled(target)?;
+                let version = self.pane(target)?.version(self.run);
+                fuxix::process::kill_group(group, signal)
+                    .map_err(|e| fail(Raise::Signal, format!("sending the signal: {e}")))?;
+                Ok(acted(version))
+            }
+            &Command::Kill { target } => self.kill(target, now).map(|()| Reply::default()),
+            Command::Rename { target, name } => {
+                let target = self.there(*target)?;
+                self.rename(target, name.clone()).map(|()| Reply::default())
+            }
+            &Command::MovePane { target, ref to } => {
+                self.move_pane(target, to, here).map(|()| Reply::default())
+            }
+            &Command::SwapPane { target, with } => {
+                let source = self.pane(target)?.id();
+                let other = match with {
+                    SwapWith::Pane(p) => self.pane(p)?.id(),
+                    SwapWith::Toward(direction) => self.neighbor(source, direction, here)?,
+                };
+                self.parts.swap(source, other);
+                Ok(Reply::default())
+            }
+            &Command::ResizePane { target, by } => self.resize_pane(target, by, here),
+            &Command::ClearHistory { target } => {
+                self.pane_mut(target)?.clear_history();
+                Ok(Reply::default())
+            }
+            &Command::SendKeys { to, ref inputs } => self.send_keys(to, inputs),
+            &Command::CapturePane {
+                target,
+                history,
+                view,
+            } => {
+                let pane = self.pane(target)?;
+                if view.source == command::Source::LastOutput && !pane.marked() {
+                    return Err(fail(
+                        Raise::NoMarks,
+                        format!("{target}: {}", pane::UNMARKED),
+                    ));
+                }
+                let copying = self.copying(pane.id());
+                let captured = crate::capture::pane(pane, self.run, history, view, copying)?;
+                Ok(Body::Capture(Box::new(captured)).into())
+            }
+            &Command::Reorder { ref target, toward } => {
+                let target = self.there(*target)?;
+                self.reorder(target, toward).map(|()| Reply::default())
+            }
+            &Command::HistoryBudget { target, bytes } => {
+                self.pane_mut(target)?.set_history_bytes(bytes);
+                Ok(Reply::default())
+            }
+            Command::Resolve { text, kind } => Ok(found(self.resolve(text, *kind, here)?)),
+            &Command::Members { target, members } => {
+                let budget = &mut fux_wire::wire::Budget::new();
+                let ids = match members {
+                    Members::Panes => {
+                        let panes = self.panes_of(target, budget)?;
+                        let mut ids = budget.vector(panes.len())?;
+                        ids.extend(panes.into_iter().map(AnyRef::Pane));
+                        ids
+                    }
+                    Members::Tabs => {
+                        let mut ids = Vec::new();
+                        for tab in self.tabs_of(target)? {
+                            budget.reserve(&mut ids, 1)?;
+                            ids.push(AnyRef::Tab(tab));
+                        }
+                        ids
+                    }
+                };
+                Ok(Body::Handles(ids).into())
+            }
+            &Command::ListBuffers => {
+                let metadata = |(id, text): &(BufferId, String)| {
+                    let preview: String = (text.chars())
+                        .map(|c| if c.is_control() { ' ' } else { c })
+                        .take(PREVIEW_MAX)
+                        .collect();
+                    Json::object(vec![
+                        ("id", Json::str(id.to_string())),
+                        ("bytes", Json::count(text.len())),
+                        ("preview", Json::str(preview)),
+                    ])
+                };
+                let list = self.buffers.iter().map(metadata).collect();
+                Ok(Body::Field(Json::Array(list)).into())
+            }
+            &Command::ShowBuffer { buffer } => self
+                .buffer(buffer)
+                .map(|text| Body::Field(Json::str(text)).into()),
+            &Command::PasteBuffer { buffer, target } => {
+                let paste = Input::Paste(self.buffer(buffer)?.to_owned());
+                self.send_keys(command::To::Now(AnyRef::Pane(target)), &[paste])
+            }
+            &Command::Client { client, ref action } => self.client(client, action, here, now),
+        }
+    }
+
+    /// What `new-workspace`, `new-tab` and `run` do before their pane
+    /// starts: the directory it starts in found,
+    /// and its tab's fit and the size settling gives its pane: if `follows`,
+    /// its client then shows it, on its screen, in the cell its terminal
+    /// said; else its fit's, in no cell, as no terminal draws it.
+    fn opening(
+        &mut self,
+        (dir, size): (Option<&Path>, command::Size),
+        (here, follows): (Here, bool),
+    ) -> Result<(PathBuf, Fit, Starts), Error> {
+        let cwd = self.start_dir(here, dir, None)?;
+        let fit = self.new_fit(size, here)?;
+        let follower = (here.client().filter(|_| follows)).and_then(|c| self.views.get(&c));
+        let screen = (follower.filter(|view| view.sizes())).and_then(Self::screen_size);
+        let cell = follower.and_then(|view| view.terminal.cell);
+        Ok((cwd, fit, (screen.unwrap_or(fit.size()), cell)))
+    }
+
+    /// `kill-server`: from the CLI, refused from one of the server's own
+    /// panes or with people attached.
+    fn kill_server(&mut self, origin: &Origin) -> Result<Reply, Error> {
+        if let Origin::Cli(caller) = origin {
+            let pane = caller.pane().filter(|p| self.parts.panes().contains_key(p));
+            if pane.is_some() || caller.within == Within::This {
+                let pane = pane.map_or_else(String::new, |p| format!(" {p},"));
+                let message = format!(
+                    "this runs in{pane} a pane of the server it would stop, with everything \
+                     else in it; force-kill-server stops it anyway"
+                );
+                return Err(fail(Raise::OwnServer, message));
+            }
+            let people = (self.views.values())
+                .filter(|v| v.kind == ClientKind::Terminal)
+                .count();
+            if people > 0 {
+                let who = match people {
+                    1 => "a person is".to_owned(),
+                    n => format!("{n} people are"),
+                };
+                let message =
+                    format!("{who} attached to this server; force-kill-server stops it anyway");
+                return Err(fail(Raise::PeopleAttached, message));
+            }
+        }
+        let reason = match origin {
+            Origin::Client(_) | Origin::ClientContext { .. } => {
+                "stopped by kill-server, in a client context"
+            }
+            Origin::Cli(_) => "stopped by fux kill-server",
+        };
+        self.outbox.push(Outgoing::Shutdown(reason.into()));
+        Ok(Reply::default())
+    }
+
+    /// `resize` of `target`'s tabs: laid out on `size`, or with none on
+    /// their clients' screens. A size that would hide one of a tab's
+    /// panes, as a split that would is, is refused.
+    fn resize_tabs(&mut self, target: AnyRef, size: command::Size) -> Result<(), Error> {
+        let size = size.map(fux_wire::command::Screen::size);
+        let tabs: Vec<_> = self.tabs_of(target)?.collect();
+        if let Some(size) = size {
+            let area = Fit::Fixed(size).area();
+            for tab in &tabs {
+                let Some(root) = self.root(*tab) else {
+                    continue;
+                };
+                if !layout::shows_all(root, area) {
+                    let message = format!(
+                        "{tab} cannot show its {} panes at that size; close some, or choose a bigger one",
+                        root.panes().len()
+                    );
+                    return Err(fail(Raise::Size, message));
+                }
+            }
+        }
+        // With no size, back to fitting clients, at the size it has until
+        // one shows it.
+        for tab in tabs {
+            let fit = |fit: Fit| size.map_or(Fit::Clients(fit.size()), Fit::Fixed);
+            self.parts.set_fit(tab, fit);
+        }
+        Ok(())
+    }
+
+    /// `send-mouse`: `mouse` at `row` and `col` of pane `target`, encoded
+    /// as its program asked for mouse reports.
+    fn send_mouse(
+        &mut self,
+        target: PaneId,
+        mouse: Mouse,
+        row: u16,
+        col: u16,
+    ) -> Result<Reply, Error> {
+        use fux_vt::MouseProtocolMode as Asked;
+        use fux_vt::keys::mouse::MouseAction::{Motion, Press, Release};
+        let run = self.run;
+        let mut p = self.live_pane_mut(target)?;
+        let size = p.size();
+        if row >= size.rows() || col >= size.cols() {
+            let (rows, cols) = (size.rows(), size.cols());
+            let message = format!(
+                "{} is {cols}x{rows}: rows count 0-{} and columns 0-{}",
+                p.id(),
+                rows.saturating_sub(1),
+                cols.saturating_sub(1)
+            );
+            return Err(fail(Raise::Mouse, message));
+        }
+        let event = |action| fux_vt::keys::mouse::MouseEvent {
+            action,
+            mods: fux_vt::keys::Modifiers::default(),
+            row,
+            col,
+        };
+        // A click is a press and, where the program takes them (not in X10
+        // mode), a release; a move while a button is held is a drag.
+        // Released, or clicked, it is held no more; another button's release
+        // leaves it held. X10 reports presses alone: a click is its press,
+        // and a release or the wheel, which it cannot say, is refused.
+        let unheld = |button| p.mouse_held.filter(|held| *held != button);
+        let (events, held, beyond_x10) = match mouse {
+            Mouse::Click(button) => {
+                let button = button.reported();
+                let events = vec![event(Press(button)), event(Release(Some(button)))];
+                (events, unheld(button), false)
+            }
+            Mouse::Press(button) => {
+                let button = button.reported();
+                (vec![event(Press(button))], Some(button), false)
+            }
+            Mouse::Wheel(way) => (vec![event(Press(way.reported()))], p.mouse_held, true),
+            Mouse::Release(button) => {
+                let button = button.reported();
+                (vec![event(Release(Some(button)))], unheld(button), true)
+            }
+            Mouse::Move => (vec![event(Motion(p.mouse_held))], p.mouse_held, false),
+        };
+        let mode = p.screen().mouse_protocol_mode();
+        let x10 = mode == Asked::Press;
+        let pane = p.id();
+        if x10 && beyond_x10 {
+            let message = format!(
+                "the program in {pane} asked for X10 mouse reports: presses alone, no releases or wheel"
+            );
+            return Err(fail(Raise::Mouse, message));
+        }
+        let mut report = Vec::new();
+        for event in events {
+            let release = matches!(event.action, Release(_));
+            if let Some(chunks) = p
+                .screen()
+                .encode_mouse(event, p.options().alternate_scroll_lines)
+            {
+                report.extend(chunks.flatten());
+                continue;
+            }
+            if release && x10 {
+                continue;
+            }
+            let message = match (mode, event.action) {
+                (Asked::None, _) => {
+                    format!("the program in {pane} has not asked for mouse reports")
+                }
+                (_, Motion(_)) => format!(
+                    "the program in {pane} takes no motion here: with no button pressed it asked for none, \
+                     and asking for clicks alone (mode 1000) it takes no drags either"
+                ),
+                (_, Press(_) | Release(_)) => format!(
+                    "the mouse encoding the program in {pane} asked for cannot say row {row}, column {col}"
+                ),
+            };
+            return Err(fail(Raise::Mouse, message));
+        }
+        let version = p.version(run);
+        p.push_mouse(report, held)?;
+        Ok(acted(version))
+    }
+
+    /// `split`: a new pane beside `target`, along `axis`, the two taking
+    /// `shares` if given, running `start` in `dir`, with the id `id` asked
+    /// for.
+    fn split(
+        &mut self,
+        target: PaneId,
+        (axis, shares): (Axis, Option<(NonZeroU32, NonZeroU32)>),
+        (start, env, options): (&Start, &command::EnvPatch, command::PaneOptions),
+        dir: Option<&Path>,
+        origin: &Origin,
+        now: Instant,
+    ) -> Result<Reply, Error> {
+        let here = self.here(origin)?;
+        let target = self.pane(target)?.id();
+        let cwd = self.start_dir(here, dir, Some(target))?;
+        // The splitting client follows the new pane, if it shows its tab;
+        // from the CLI, the clients that focus the split one.
+        let tab = self.locate(target).map(|(_, tab)| tab);
+        let shows = |c: &ClientId| tab.is_some_and(|t| self.shows(*c, t));
+        let shown = |c: &ClientId| self.focused(*c) == Some(target);
+        let followers: Vec<ClientId> = match here {
+            Here::Client(client, _) => [client].into_iter().filter(shows).collect(),
+            Here::Cli(..) => self.views.keys().copied().filter(shown).collect(),
+        };
+        // Its tab found (by `split_size`) before the program starts, which
+        // nothing can then leave running.
+        let (split, size) = self.split_size(target, (axis, shares), &followers)?;
+        let mut ids = self.ids.clone();
+        let new = NewPane::new(
+            start,
+            &cwd,
+            env,
+            options,
+            (size, self.graphics(target).cell()),
+        );
+        let pane = self.new_pane(&mut ids, new, now)?;
+        let new = pane.id();
+        if let Err(pane) = self.parts.split(pane, split) {
+            self.end(pane.into_process(), true, now);
+            return Err(Error::NoPane(target));
+        }
+        self.ids = ids;
+        let (_, tab) = self.locate(new).ok_or(Error::NoPane(new))?;
+        for client in followers {
+            self.parts.focus(tab, client, new);
+            self.zoom_to(client, false);
+        }
+        let version = self.pane(new)?.version(self.run);
+        Ok(acted(version))
+    }
+
+    /// `kill`: a pane closed, or a tab's or workspace's every pane.
+    fn kill(&mut self, target: AnyRef, now: Instant) -> Result<(), Error> {
+        match self.there(target)? {
+            AnyRef::Pane(pane) => self.close_pane(pane, None, now),
+            AnyRef::Tab(tab) => {
+                self.remove_tab(tab, now);
+                self.after_close(now);
+            }
+            AnyRef::Workspace(workspace) => {
+                while let Some(tab) = self
+                    .workspace(workspace)
+                    .and_then(|ws| ws.tabs().first())
+                    .map(Tab::id)
+                {
+                    self.remove_tab(tab, now);
+                }
+                self.after_close(now);
+            }
+        }
+        Ok(())
+    }
+
+    /// `resize-pane`: a border of pane `pane` moved, or the pane made a
+    /// size, its tab laid out as for the command.
+    fn resize_pane(&mut self, pane: PaneId, by: PaneResize, here: Here) -> Result<Reply, Error> {
+        let (_, tab) = self.locate(pane).ok_or(Error::NoPane(pane))?;
+        let area = self.reference_area(tab, here).ok_or(Error::NoPane(pane))?;
+        // A pane hidden has no place to resize from (`layout::resize`).
+        let root = self.root(tab).ok_or(Error::NoTab(tab))?;
+        if !layout::shows_all(root, area) {
+            let (cols, rows) = (area.w(), area.h());
+            let message = format!("{tab} does not show every pane on {cols}x{rows}");
+            return Err(fail(Raise::Size, message));
+        }
+        match by {
+            PaneResize::Border(direction, amount) => {
+                let resize = |root: &mut Tree| layout::resize(root, area, pane, direction, amount);
+                let way = direction.name();
+                let why = match self.parts.reshape(pane, resize) {
+                    // A move of 0 moves nothing, as asked.
+                    Some(Some(1..)) => return Ok(Reply::default()),
+                    Some(Some(0)) if amount == 0 => return Ok(Reply::default()),
+                    Some(Some(0)) => "the panes it would move are at their least",
+                    Some(None) | None => "it has no border there",
+                };
+                Err(fail(
+                    Raise::NothingThere,
+                    format!("{pane} cannot move {way}: {why}"),
+                ))
+            }
+            PaneResize::To(axis, extent) => {
+                (self.resize_pane_to(pane, area, axis, extent)).map(|()| Reply::default())
+            }
+        }
+    }
+
+    /// A command on a client's screen: the client named, else the one the
+    /// command came from. Targets it leaves out are the client's own.
+    fn client(
+        &mut self,
+        client: Option<ClientId>,
+        action: &ClientAction,
+        here: Here,
+        now: Instant,
+    ) -> Result<Reply, Error> {
+        let (client, place) = match (client, here) {
+            (Some(c), _) => (c, self.place(c).ok_or(Error::NoClient(c))?),
+            (None, Here::Client(client, place)) => (client, place),
+            (None, Here::Cli(..)) => {
+                return Err(fail(
+                    Raise::NoTarget,
+                    "this acts on a client's screen: name one (`str c1 client`; `fux ls` lists them)",
+                ));
+            }
+        };
+        let view = || self.views.get(&client).ok_or(Error::NoClient(client));
+        let picked = match *action {
+            ClientAction::Open(ref screen) => {
+                self.outbox
+                    .push(Outgoing::To(client, ToAttached::Open(screen.clone())));
+                return Ok(Reply::default());
+            }
+            // Taken as typed at its terminal: its bindings see them. No
+            // pane answers: they go to the pane the client chooses.
+            ClientAction::Keys(ref inputs) => {
+                let keys = ToAttached::Keys(inputs.clone());
+                self.outbox.push(Outgoing::To(client, keys));
+                return Ok(PaneResults::Many(Vec::new()).into());
+            }
+            ClientAction::Detach => {
+                self.detach(client, now);
+                let exit = ToAttached::Exit("detached");
+                self.outbox.push(Outgoing::To(client, exit));
+                return Ok(Reply::default());
+            }
+            ClientAction::Capture => {
+                let terminal = view()?;
+                let mut grid = crate::render::Grid::default();
+                let placement = &mut Placement::default();
+                crate::render::compose_view(self, terminal, &mut grid, placement)
+                    .map_err(|e| fail(Raise::Memory, format!("capturing {client}: {e}")))?;
+                let captured = crate::capture::client(client, &grid)?;
+                return Ok(Body::Capture(Box::new(captured)).into());
+            }
+            ClientAction::Zoom => None,
+            ClientAction::SelectPane(pick) => Some(self.pick_pane(view()?, place, pick)?),
+            ClientAction::SelectTab(pick) => Some(self.pick_tab(view()?, place, pick)?),
+            ClientAction::SelectWorkspace(ref pick) => Some(self.pick_ws(view()?, pick)?),
+        };
+        // A select shows the client where it picked, unzoomed.
+        match picked {
+            Some(Picked { ws, at }) => self.follow(Here::Client(client, place), ws, at),
+            None => {
+                if let Some(view) = self.views.get(&client) {
+                    let zoom = !view.zoom;
+                    self.zoom_to(client, zoom);
+                }
+            }
+        }
+        Ok(Reply::default())
+    }
+
+    fn rename(&mut self, target: AnyRef, name: String) -> Result<(), Error> {
+        check_name(&name)?;
+        match target {
+            AnyRef::Pane(p) => self.pane_mut(p)?.rename(name),
+            AnyRef::Tab(t) => {
+                self.check_tab_name(&name, Some(t))?;
+                self.parts.give_tab_name(t, name).ok_or(Error::NoTab(t))?;
+            }
+            AnyRef::Workspace(id) => {
+                // The one named (there: `Rename` checks it first), and the
+                // others, whose names it cannot take.
+                let others = self.parts.workspaces().iter().filter(|w| w.id() != id);
+                check_workspace_name(&name, others)?;
+                self.parts
+                    .rename_workspace(id, name)
+                    .ok_or(Error::NoWorkspace(id))?;
+            }
+        }
+        Ok(())
+    }
+
+    /// The pane beside `from` toward `direction`, its tab laid out as for
+    /// the command.
+    fn neighbor(&self, from: PaneId, direction: Direction, here: Here) -> Result<PaneId, Error> {
+        let found = self.locate(from).and_then(|(_, tab)| {
+            let area = self.reference_area(tab, here)?;
+            layout::neighbor(&layout::place(self.root(tab)?, area), from, direction)
+        });
+        found.ok_or(Error::NoNeighbor { from, direction })
+    }
+
+    fn move_pane(&mut self, target: PaneId, to: &MoveTo, here: Here) -> Result<(), Error> {
+        let pane = self.pane(target)?.id();
+        // A tab made for it fits clients at its tab's size until one shows it.
+        let (from_ws, from) = self.locate(pane).ok_or(Error::NoPane(pane))?;
+        let fit = Fit::Clients(self.tab(from).ok_or(Error::NoTab(from))?.fit().size());
+        let mut ids = self.ids.clone();
+        let (ws, dest) = match to {
+            &MoveTo::Beside(direction) => {
+                let destination = self.neighbor(pane, direction, here)?;
+                let root = self.root(from).ok_or(Error::NoTab(from))?;
+                let root = layout::move_beside(root, pane, destination, direction)
+                    .ok_or(Error::NoPane(pane))?;
+                self.room(from, &root, None)?;
+                self.parts.reshape(pane, |old| *old = root);
+                return Ok(());
+            }
+            &MoveTo::Tab(tab) => (self.tab_workspace(tab)?, Destination::Tab(tab)),
+            MoveTo::Workspace(r) => {
+                let ws = self.resolve_ws(r)?;
+                let first = self.workspace(ws).and_then(|w| w.tabs().first());
+                let tab = first.ok_or(Error::NoWorkspace(ws))?.id();
+                (ws, Destination::Tab(tab))
+            }
+            // A tab made for it holds it alone, which shows on every size
+            // it is laid out on (each has a cell: its fit's, and a screen
+            // that sizes panes, `View::sizes`): nothing after refuses the
+            // move.
+            MoveTo::NewTab => (from_ws, Destination::NewTab(from_ws, ids.tab()?, fit)),
+            MoveTo::NewWorkspace => {
+                let (id, tab) = (ids.workspace()?, ids.tab()?);
+                let first = (tab, None, fit);
+                (id, Destination::NewWorkspace((id, None), first))
+            }
+        };
+        let tab = match &dest {
+            Destination::Tab(tab) if *tab == from => return Ok(()),
+            Destination::Tab(tab) => {
+                let mut root = self.root(*tab).ok_or(Error::NoTab(*tab))?.clone();
+                root.append(pane);
+                self.room(*tab, &root, here.client())?;
+                *tab
+            }
+            Destination::NewTab(_, tab, _) | Destination::NewWorkspace(_, (tab, ..)) => *tab,
+        };
+        (self.parts.relocate(pane, dest)).ok_or(Error::NoTab(tab))?;
+        // Both IDs or neither: one taken alone would be lost.
+        self.ids = ids;
+        // The moving client follows its pane.
+        let pane = Some(pane);
+        self.follow(here, ws, Some(Spot { tab, pane }));
+        Ok(())
+    }
+
+    /// Refused unless tab `tab` laid out as `root` shows every pane on each
+    /// size it is laid out on: its own, which a dump makes it at (`size`,
+    /// or the screens it last fitted), and the screen of each client
+    /// showing it that sizes its panes, `follower` too, which is about to.
+    /// So a split or a move hides no pane, and a dump can make every
+    /// layout there is again.
+    fn room(&self, tab: TabId, root: &Tree, follower: Option<ClientId>) -> Result<(), Error> {
+        let own = self.tab(tab).ok_or(Error::NoTab(tab))?.fit().area();
+        let follower = follower
+            .and_then(|c| self.views.get(&c))
+            .filter(|v| v.sizes());
+        let screens = (self.sizing(tab).chain(follower)).map(|v| (Some(v.id), v.pane_area()));
+        let mut sizes = std::iter::once((None, own)).chain(screens);
+        let Some((client, area)) = sizes.find(|(_, a)| !layout::shows_all(root, *a)) else {
+            return Ok(());
+        };
+        let (cols, rows) = (area.w(), area.h());
+        let on = match client {
+            Some(client) => format!("{client}'s screen, {cols}x{rows}"),
+            None => format!("its size, {cols}x{rows} (`TAB COLS ROWS resize` makes it bigger)"),
+        };
+        let message = format!("{tab} has no room to show every pane laid out so on {on}");
+        Err(fail(Raise::Size, message))
+    }
+
+    fn reorder(&mut self, target: AnyRef, toward: Sibling) -> Result<(), Error> {
+        let moved = match target {
+            AnyRef::Pane(p) => {
+                let panes = self.locate(p).and_then(|(_, t)| self.root(t));
+                let panes = panes.map_or_else(Vec::new, Tree::panes);
+                let index = panes.iter().position(|x| *x == p);
+                let other = index
+                    .and_then(|i| match toward {
+                        Sibling::Next => i.checked_add(1),
+                        Sibling::Previous => i.checked_sub(1),
+                    })
+                    .and_then(|i| panes.get(i));
+                let other = other.copied().ok_or(Error::AtEnd(Kind::Pane))?;
+                self.parts.swap(p, other);
+                return Ok(());
+            }
+            AnyRef::Tab(t) => self.parts.reorder_tab(t, toward).ok_or(Error::NoTab(t))?,
+            AnyRef::Workspace(w) => {
+                (self.parts.reorder_workspace(w, toward)).ok_or(Error::NoWorkspace(w))?
+            }
+        };
+        moved.then_some(()).ok_or(Error::AtEnd(target.kind()))
+    }
+
+    /// The pane `focus` picks for client `view`, which is at `at`.
+    fn pick_pane(&self, view: &View, at: Place, pick: PanePick) -> Result<Picked, Error> {
+        let client = view.id;
+        let tab = self.tab(at.tab).ok_or(Error::NoTab(at.tab))?;
+        let panes = tab.root().panes();
+        let (current, last) = (tab.focus(client), tab.seat(client).and_then(Seat::last));
+        let target = match pick {
+            PanePick::Id(p) => p,
+            PanePick::Step(toward) => {
+                let index = current.and_then(|c| panes.iter().position(|p| *p == c));
+                let next = round(&panes, index.unwrap_or(0), toward);
+                *next.ok_or(Error::OnlyOne(Kind::Pane))?
+            }
+            PanePick::Last => {
+                last.ok_or_else(|| fail(Raise::NoPane, "no previously focused pane"))?
+            }
+            PanePick::Toward(direction) => {
+                let from = current.ok_or_else(|| fail(Raise::NoPane, "no pane focused"))?;
+                let placement = layout::place(tab.root(), view.pane_area());
+                layout::neighbor(&placement, from, direction)
+                    .ok_or(Error::NoNeighbor { from, direction })?
+            }
+        };
+        let (ws, tab) = self.locate(target).ok_or(Error::NoPane(target))?;
+        let pane = Some(target);
+        Ok(Picked {
+            ws,
+            at: Some(Spot { tab, pane }),
+        })
+    }
+
+    /// The tab `show` picks for a client at `at`.
+    fn pick_tab(&self, view: &View, at: Place, to: Pick<TabId>) -> Result<Picked, Error> {
+        let (ws, target) = match to {
+            Pick::Id(t) => (self.tab_workspace(t)?, t),
+            Pick::Last => {
+                let tab = view
+                    .last_tab
+                    .ok_or_else(|| fail(Raise::NoTab, "no previously shown tab"))?;
+                (self.tab_workspace(tab)?, tab)
+            }
+            Pick::Step(toward) => {
+                let tabs = self.workspace(at.ws).map_or(&[][..], Workspace::tabs);
+                let index = tabs.iter().position(|t| t.id() == at.tab);
+                let next = round(tabs, index.unwrap_or(0), toward);
+                (at.ws, next.ok_or(Error::OnlyOne(Kind::Tab))?.id())
+            }
+        };
+        let at = Some(Spot {
+            tab: target,
+            pane: None,
+        });
+        Ok(Picked { ws, at })
+    }
+
+    /// The workspace `show` picks for client `view`.
+    fn pick_ws(&self, view: &View, pick: &Pick<WsRef>) -> Result<Picked, Error> {
+        let ws = match pick {
+            Pick::Id(r) => self.resolve_ws(r)?,
+            Pick::Last => view
+                .last_workspace
+                .ok_or_else(|| fail(Raise::NoWorkspace, "no previously shown workspace"))?,
+            Pick::Step(toward) => {
+                let workspaces = self.parts.workspaces();
+                let index = workspaces.iter().position(|w| w.viewers.contains(&view.id));
+                let next = round(workspaces, index.unwrap_or(0), *toward);
+                next.ok_or(Error::OnlyOne(Kind::Workspace))?.id()
+            }
+        };
+        Ok(Picked { ws, at: None })
+    }
+
+    // ------------------------------------------------------------------ ls
+
+    /// A pane's state, as `ls json` has it.
+    fn pane_json<'a>(
+        &'a self,
+        p: &'a Pane,
+        budget: &mut fux_wire::wire::Budget,
+    ) -> Result<Fields, Error> {
+        let pid = |c: &Child| Json::Int(i64::from(c.leader.pid().as_raw()));
+        let values = [
+            ("id", Json::str(budget.format(format_args!("{}", p.id()))?)),
+            ("name", budget.optional_text(p.name())?),
+            (
+                "label",
+                Json::str(budget.format(format_args!("{}", p.display_label()))?),
+            ),
+            ("rows", Json::int(p.size().rows())),
+            ("cols", Json::int(p.size().cols())),
+            ("pid", p.process().child().map_or(Json::Null, pid)),
+            (
+                "version",
+                Json::str(budget.format(format_args!("{}", p.version(self.run)))?),
+            ),
+        ];
+        let mut fields = budget.vector(values.len())?;
+        fields.extend(values);
+        let state = crate::capture::state(p, self.copying(p.id()), budget)?;
+        budget.reserve(&mut fields, state.len())?;
+        let bytes = state
+            .capacity()
+            .checked_mul(std::mem::size_of::<(&str, Json)>())
+            .ok_or_else(fux_wire::wire::Budget::exceeded)?;
+        fields.extend(state);
+        budget.release(bytes)?;
+        Ok(fields)
+    }
+
+    fn field(&self, target: AnyRef, field: &str) -> Result<Body, Error> {
+        let budget = &mut fux_wire::wire::Budget::new();
+        if field == "id" {
+            return Ok(Body::Found(target));
+        }
+        if field == "panes" && !matches!(target, AnyRef::Pane(_)) {
+            let panes = self.panes_of(target, budget)?;
+            let mut ids = budget.vector(panes.len())?;
+            ids.extend(panes.into_iter().map(AnyRef::Pane));
+            return Ok(Body::Handles(ids));
+        }
+        let no_field = || fail(Raise::NoField, format!("{target} has no field {field:?}"));
+        let value = match target {
+            AnyRef::Pane(id) => {
+                let pane = self.pane(id)?;
+                match field {
+                    "name" => budget.optional_text(pane.name())?,
+                    "label" => Json::str(budget.format(format_args!("{}", pane.display_label()))?),
+                    "rows" => Json::int(pane.size().rows()),
+                    "cols" => Json::int(pane.size().cols()),
+                    "pid" => pane
+                        .process()
+                        .child()
+                        .map_or(Json::Null, |c| Json::int(c.leader.pid().as_raw())),
+                    "version" => {
+                        Json::str(budget.format(format_args!("{}", pane.version(self.run)))?)
+                    }
+                    _ => self
+                        .pane_json(pane, budget)?
+                        .into_iter()
+                        .find(|(k, _)| *k == field)
+                        .map(|(_, v)| v)
+                        .ok_or_else(no_field)?,
+                }
+            }
+            AnyRef::Tab(id) => {
+                let tab = self.tab(id).ok_or(Error::NoTab(id))?;
+                match field {
+                    "host" => self
+                        .host(Some(id))
+                        .map(|c| budget.format(format_args!("{c}")).map(Json::str))
+                        .transpose()?
+                        .unwrap_or(Json::Null),
+                    "layout_revision" => Json::str(budget.format(format_args!(
+                            "{}",
+                            tab.revision(self.run)
+                                .ok_or_else(|| fail(Raise::Range, "layout revision exhausted"))?
+                        ))?),
+                    "name" => budget.optional_text(tab.name())?,
+                    "label" => Json::str(
+                        budget.format(format_args!("{}", tab.display_label(self.parts.panes())))?,
+                    ),
+                    _ => return Err(no_field()),
+                }
+            }
+            AnyRef::Workspace(id) => {
+                let ws = self.workspace(id).ok_or(Error::NoWorkspace(id))?;
+                match field {
+                    "name" => budget.optional_text(ws.name())?,
+                    "label" => Json::str(budget.format(format_args!("{}", ws.display_label()))?),
+                    "tabs" => {
+                        let mut ids = budget.vector(ws.tabs().len())?;
+                        ids.extend(ws.tabs().iter().map(|t| AnyRef::Tab(t.id())));
+                        return Ok(Body::Handles(ids));
+                    }
+                    _ => return Err(no_field()),
+                }
+            }
+        };
+        Ok(Body::Field(value))
+    }
+}
+
+/// The answer of a lookup that found `found`: its id.
+fn found(found: AnyRef) -> Reply {
+    Body::Found(found).into()
+}
+
+/// The most read of what a program left on its terminal as it ends, in
+/// MiB, as it is said: a whole number of them.
+pub(crate) const LEFT_MIB: usize = 1;
+/// The same in bytes.
+pub const LEFT_MAX: usize = LEFT_MIB << 20;
+
+/// What a program's terminal holds, unread, up to `LEFT_MAX`, and whether
+/// it held more: read as it ends, so that its last screen is whole.
+fn unread(process: &Process) -> (Vec<u8>, DrainEnd) {
+    match process {
+        Process::Reading(child) => left_on(&child.master),
+        Process::HungUp(_)
+        | Process::ReadFailed(..)
+        | Process::Absent
+        | Process::Exited(_)
+        | Process::Respawning => (Vec::new(), DrainEnd::Empty),
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum DrainEnd {
+    Empty,
+    Cut,
+    Failed(fuxix::Errno),
+}
+
+/// What `fd` holds to read now, up to `LEFT_MAX`, and whether it held more.
+fn left_on(fd: impl std::os::fd::AsFd) -> (Vec<u8>, DrainEnd) {
+    drain_terminal(|bytes| fuxix::io::read(&fd, bytes))
+}
+
+fn drain_terminal(
+    mut read: impl FnMut(&mut [u8]) -> Result<usize, fuxix::Errno>,
+) -> (Vec<u8>, DrainEnd) {
+    let mut left = Vec::new();
+    let mut buffer = [0u8; 16384];
+    let most = buffer.len();
+    loop {
+        // A byte past the most, read, says there was more.
+        let room = LEFT_MAX.saturating_sub(left.len());
+        let bytes = buffer.get_mut(..room.clamp(1, most)).unwrap_or_default();
+        match read(bytes) {
+            Ok(n) if n > 0 && room == 0 => return (left, DrainEnd::Cut),
+            Ok(n) if n > 0 => left.extend_from_slice(bytes.get(..n).unwrap_or_default()),
+            Err(fuxix::Errno::INTR) => {}
+            Ok(_) | Err(fuxix::Errno::AGAIN | fuxix::Errno::IO) => return (left, DrainEnd::Empty),
+            Err(error) => return (left, DrainEnd::Failed(error)),
+        }
+    }
+}
+
+/// The most bytes a name holds.
+pub const NAME_MAX: usize = 256;
+
+/// The fixed number of shared paste buffers retained.
+pub const BUFFER_LIMIT: usize = 16;
+
+/// Characters kept in a paste buffer's metadata preview.
+pub const PREVIEW_MAX: usize = 50;
+
+fn check_name(name: &str) -> Result<(), Error> {
+    if name.trim().is_empty() {
+        return Err(fail(Raise::BadName, "a name cannot be empty or blank"));
+    }
+    if name.starts_with(['%', '@', '+']) {
+        return Err(Error::NameReadAsTarget(name.to_owned()));
+    }
+    // Control characters, and the invisible ones that change how text
+    // around them shows (zero-width, direction marks and overrides: UAX #9
+    // 2.6 names U+061C beside U+200E and U+200F).
+    let invisible = |c: char| matches!(c, '\u{061C}' | '\u{200B}'..='\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2060}'..='\u{2064}' | '\u{2066}'..='\u{2069}' | '\u{FEFF}');
+    if name.chars().any(|c| c.is_control() || invisible(c)) {
+        let message = "a name cannot contain control or invisible characters";
+        return Err(fail(Raise::BadName, message));
+    }
+    if name.len() > NAME_MAX {
+        return Err(fail(
+            Raise::BadName,
+            format!("a name is at most {NAME_MAX} bytes"),
+        ));
+    }
+    Ok(())
+}
+
+/// Refuses a workspace name any of `others` has: a workspace is found by
+/// its name.
+fn check_workspace_name<'a>(
+    name: &str,
+    others: impl IntoIterator<Item = &'a Workspace>,
+) -> Result<(), Error> {
+    check_name(name)?;
+    // check_name refused ID sigils; the remaining reserved destination
+    // is the explicit request to create an unnamed workspace.
+    if name == "new-workspace" {
+        return Err(Error::NameReadAsTarget(name.to_owned()));
+    }
+    let others: Vec<&Workspace> = others.into_iter().collect();
+    if others.iter().any(|ws| ws.name() == Some(name)) {
+        return Err(Error::NameTaken(name.to_owned()));
+    }
+    // A tab's name too: the workspace's would hide it from `str NAME tab`.
+    no_tab_named(others, name, None)
+}
+
+/// That no tab of `workspaces` but `except` was given the name `name`; else
+/// why not, with those tabs and their panes.
+fn no_tab_named<'a>(
+    workspaces: impl IntoIterator<Item = &'a Workspace>,
+    name: &str,
+    except: Option<TabId>,
+) -> Result<(), Error> {
+    let tabs: Vec<&Tab> = (workspaces.into_iter())
+        .flat_map(Workspace::tabs)
+        .filter(|t| t.name() == Some(name) && Some(t.id()) != except)
+        .collect();
+    if tabs.is_empty() {
+        return Ok(());
+    }
+    // `run` with such a name: `str NAME tab` would not know which, so the
+    // program is not started. The tabs, then their panes.
+    let panes = (tabs.iter()).flat_map(|t| t.root().panes());
+    let tabs = tabs.iter().map(|t| t.id()).collect();
+    let panes: Vec<PaneId> = panes.collect();
+    Err(Error::TabNameTaken(name.to_owned(), tabs, panes))
+}
+
+/// The item after the one at `index` among `items`, or before it, going
+/// round; none if it is alone.
+fn round<T>(items: &[T], index: usize, toward: Sibling) -> Option<&T> {
+    let len = items.len();
+    let next = match toward {
+        Sibling::Next => index.checked_add(1).filter(|next| *next < len).unwrap_or(0),
+        Sibling::Previous => index.checked_sub(1).unwrap_or(len.saturating_sub(1)),
+    };
+    items.get(next).filter(|_| len > 1)
+}
+
+/// A session itself, as what a program's requests go to, for the tests
+/// and the fuzz targets (`fux::script::InProcess`).
+#[cfg(any(test, feature = "in-process"))]
+impl Session {
+    /// A program's request, answered in-process: begun at once, and a wait
+    /// answered at its limit, there being no programs to wait on, once what
+    /// is due to be read is. Finite event reads use the same deadlines.
+    pub fn answer(&mut self, asked: &fux_wire::protocol::Asked) -> Reply {
+        let origin = match asked.context.client {
+            Some(client) if self.views.contains_key(&client) => Origin::Client(client),
+            Some(_) | None => Origin::Cli(Caller {
+                cwd: Some(asked.context.cwd.clone()),
+                ..Caller::default()
+            }),
+        };
+        let begun = match self.check_run(asked.context.of) {
+            Ok(()) => self.begin(asked.request.clone(), &origin, Instant::now()),
+            Err(error) => Begun::Done(Reply::failed(error.code(), error.to_string())),
+        };
+        let outcome = match begun {
+            Begun::Done(outcome) => outcome,
+            // As the server answers it: the panes' turns and frames come
+            // as they fall due, the soonest first, each answered at its
+            // time, until it has an answer; at its deadline, once none
+            // falls due before it.
+            Begun::Waiting(mut waiting) => loop {
+                let soonest = self.timers().min_by_key(|(at, _)| *at);
+                let due = soonest.map(|(at, _)| at).into_iter().chain(waiting.due());
+                let now = due.min().unwrap_or_else(Instant::now);
+                if let Some(answer) = waiting.answer(self, now) {
+                    break answer;
+                }
+                let Some((_, timer)) = soonest else {
+                    let why = "a wait nothing due answers is answered by a real server only";
+                    break Reply::failed(fux_wire::code::Code::NotHere, why);
+                };
+                self.fire(timer, now);
+            },
+        };
+        Reply {
+            run: Some(self.run),
+            ..outcome
+        }
+    }
+
+    /// A client's presentation, as its program publishes it: client
+    /// `client`'s, if it is attached and shows another.
+    pub fn present(
+        &mut self,
+        client: Option<ClientId>,
+        presentation: fux_wire::presentation::Presentation,
+    ) {
+        if let Some(client) = client
+            && self
+                .views
+                .get(&client)
+                .is_some_and(|view| view.presentation != presentation)
+        {
+            self.acts(
+                client,
+                vec![fux_wire::act::Act::Presentation(presentation)],
+                Instant::now(),
+            );
+        }
+    }
+}
+
+/// What the other modules' tests share: a session, a client attached,
+/// and a command line run in it.
+#[cfg(test)]
+pub(crate) mod testing {
+    pub(crate) type TestResult = Result<(), Box<dyn std::error::Error>>;
+
+    use super::{Reply, Session};
+
+    /// A session, as what a program's requests go to (`Session::answer`),
+    /// and its keymap, as its client's.
+    pub(crate) struct InProcess<'s>(pub(crate) &'s mut Session);
+
+    impl fux::script::Asks for InProcess<'_> {
+        fn published(
+            &mut self,
+            state: &fux::client_state::ClientState,
+            context: &fux_wire::protocol::Context,
+        ) {
+            self.0.test_keymap = state.draft();
+            self.0
+                .present(context.client, state.preferences.presentation());
+        }
+        fn ask(&mut self, asked: &fux_wire::protocol::Asked) -> Result<Reply, fux::script::Failed> {
+            Ok(self.0.answer(asked))
+        }
+    }
+    use fux_wire::command::{self, Command, Request};
+    use fux_wire::id::ClientId;
+
+    impl Session {
+        /// Exercise the library against exactly one held recipe, without mutating the session.
+        pub(super) fn dump_recipe(
+            &self,
+            only: Option<command::AnyRef>,
+        ) -> Result<String, fux::script::Failed> {
+            struct Once(Option<Reply>);
+            impl fux::script::Asks for Once {
+                fn ask(
+                    &mut self,
+                    asked: &fux_wire::protocol::Asked,
+                ) -> Result<Reply, fux::script::Failed> {
+                    assert!(matches!(
+                        asked.request,
+                        Request::Do(Command::Inspect {
+                            projection: fux_wire::inspect::Projection::Recipe,
+                            ..
+                        })
+                    ));
+                    self.0.take().ok_or_else(|| {
+                        fux::script::Failed::new(
+                            fux_wire::code::Code::Usage,
+                            "dump made more than one request",
+                        )
+                    })
+                }
+            }
+            let scope = only.map_or(
+                fux_wire::inspect::Scope::All,
+                fux_wire::inspect::Scope::Target,
+            );
+            let body = self
+                .inspect(scope, fux_wire::inspect::Projection::Recipe)
+                .map_err(|e| fux::script::Failed::new(e.code(), e.to_string()))?;
+            let tokens =
+                fuxth::token::source("dump", "all dump").map_err(fux::script::Failed::from)?;
+            let mut machine = fux::script::compile(&tokens)?;
+            let mut out = Vec::new();
+            let mut host =
+                fux::script::Host::new(fux_wire::protocol::Context::default(), None, &mut out);
+            let reply = Reply {
+                run: Some(self.run),
+                ..body.into()
+            };
+            let stack = fux::script::run_capped(
+                &mut machine,
+                &mut host,
+                &mut Once(Some(reply)),
+                Some(fux::script::PROGRAM_STEPS),
+                None,
+            );
+            assert!(
+                out.is_empty(),
+                "dump emitted before returning its complete source"
+            );
+            let stack = stack?;
+            match stack.as_slice() {
+                [fuxth::Value::Str(text)] => Ok(text.to_string()),
+                _ => Err(fux::script::Failed::new(
+                    fux_wire::code::Code::Usage,
+                    "dump did not return one string",
+                )),
+            }
+        }
+    }
+    use std::time::Instant;
+
+    impl Session {
+        pub(crate) fn out(&mut self, id: fux_wire::id::PaneId, bytes: &[u8]) {
+            self.output(id, bytes, Instant::now())
+        }
+        pub(crate) fn apply(&mut self, client: ClientId, acts: Vec<fux_wire::act::Act>) {
+            self.acts(client, acts, Instant::now())
+        }
+        pub(crate) fn size_client(
+            &mut self,
+            client: ClientId,
+            rows: u16,
+            cols: u16,
+        ) -> Result<bool, super::Error> {
+            self.resize(client, rows, cols, Instant::now())
+        }
+        pub(crate) fn end_program(
+            &mut self,
+            id: fux_wire::id::PaneId,
+            status: fux_wire::answer::Ended,
+        ) {
+            self.exited(id, status, Instant::now())
+        }
+        pub(crate) fn settled(&mut self) {
+            self.settle(Instant::now())
+        }
+        pub(crate) fn detach_client(&mut self, id: ClientId) {
+            self.detach(id, Instant::now())
+        }
+        pub(crate) fn attach_client(
+            &mut self,
+            kind: crate::view::ClientKind,
+            attach: fux_wire::protocol::Attach,
+        ) -> Result<ClientId, super::Error> {
+            self.attach_as(kind, attach, Instant::now())
+        }
+        pub(crate) fn close_now(&mut self, id: fux_wire::id::PaneId, why: Option<String>) {
+            self.close_pane(id, why, Instant::now())
+        }
+        pub(crate) fn begin_now(
+            &mut self,
+            request: Request,
+            origin: &super::Origin,
+        ) -> super::Begun {
+            self.begin(request, origin, Instant::now())
+        }
+        pub(crate) fn command_now(&mut self, command: &Command, origin: &super::Origin) -> Reply {
+            self.run_command(command, origin, Instant::now())
+        }
+        pub(crate) fn start_now(
+            &mut self,
+            size: fux_vt::Size,
+            initial: &command::InitialWorkspace,
+        ) -> Result<(), super::Error> {
+            self.start(size, initial, Instant::now())
+        }
+        pub(crate) fn fire_now(&mut self, timer: super::Timer) {
+            self.fire(timer, Instant::now())
+        }
+    }
+
+    /// A session with `/bin/sh`, started at 80 by 24.
+    pub(crate) fn started() -> Result<Session, String> {
+        // One run for every session of the tests: two that did the same
+        // list the same, their cursors too.
+        static RUN: std::sync::OnceLock<Option<fux_wire::command::Run>> =
+            std::sync::OnceLock::new();
+        let run = (*RUN.get_or_init(fux_wire::command::Run::now)).ok_or("no clock")?;
+        let mut session = Session::new("/nonexistent/fux.sock".into(), false, run);
+        let size = fux_vt::Size::new(24, 80).map_err(|e| e.to_string())?;
+        let initial = fux_wire::command::InitialWorkspace {
+            options: fux::script::default_state()
+                .map_err(|e| e.to_string())?
+                .preferences
+                .pane_options(),
+            name: None,
+            start: fux_wire::command::Start::Shell(command::Program::new(
+                "/bin/sh".into(),
+                Vec::new(),
+            )?),
+            cwd: std::env::current_dir().map_err(|e| e.to_string())?,
+            env: fux_wire::command::EnvPatch::default(),
+        };
+        session
+            .start_now(size, &initial)
+            .map_err(|e| e.to_string())?;
+        session.test_keymap = fux::script::default_state()
+            .map_err(|e| e.to_string())?
+            .draft();
+        Ok(session)
+    }
+
+    /// A session with a client of `rows`
+    /// by `cols` attached.
+    pub(crate) fn attached(rows: u16, cols: u16) -> Result<(Session, ClientId), String> {
+        let mut session = started()?;
+        let client = session
+            .attach(rows, cols, None)
+            .map_err(|e| e.to_string())?;
+        Ok((session, client))
+    }
+
+    /// Runs fuxth `code` as client `client` would, or from no client: what
+    /// it printed and what it left, a value a line; or its failure. A screen
+    /// it opens opens on the client (`Session::input` reads its keys), and
+    /// what the server sends clients meanwhile reaches them (`deliver`).
+    pub(crate) fn output_as(
+        session: &mut Session,
+        client: Option<ClientId>,
+        code: &str,
+    ) -> Result<String, String> {
+        output_job(session, client, &code.to_owned().into())
+    }
+
+    /// The same of a job: its code, given the line typed for it.
+    fn output_job(
+        session: &mut Session,
+        client: Option<ClientId>,
+        job: &fux::screens::Job,
+    ) -> Result<String, String> {
+        let (out, ended) = run_as(session, client, job);
+        let ended = ended.map_err(|e| match client {
+            Some(_) => e.notice(),
+            None => e.to_string(),
+        })?;
+        let mut text = String::from_utf8_lossy(&out).into_owned();
+        for value in &ended {
+            text.push_str(&value.text().map_err(|f| f.message)?);
+            text.push('\n');
+        }
+        Ok(text)
+    }
+
+    fn run_as(
+        session: &mut Session,
+        client: Option<ClientId>,
+        job: &fux::screens::Job,
+    ) -> (
+        Vec<u8>,
+        Result<Vec<fuxth::Value<fux::script::Fux>>, fux::script::Failed>,
+    ) {
+        let mut out = Vec::new();
+        let mut machine = match job.machine(None) {
+            Ok(machine) => machine,
+            Err(failed) => return (out, Err(failed)),
+        };
+        let mut keymap = session.test_keymap.clone();
+        if let Some(p) = client
+            .and_then(|c| session.views.get(&c))
+            .map(|v| v.presentation.clone())
+        {
+            keymap.preferences.presentation(p);
+        }
+        let context = fux_wire::protocol::Context {
+            client,
+            cwd: std::env::current_dir().unwrap_or_default(),
+            ..fux_wire::protocol::Context::default()
+        };
+        let mut host = fux::script::Host::new(context.clone(), Some(&mut keymap), &mut out);
+        let mut process = InProcess(session);
+        let mut asks = fux::script::AsClient {
+            asks: &mut process,
+            context: context.clone(),
+            opened: None,
+            on_commit: None,
+        };
+        let ended = fux::script::run_capped(&mut machine, &mut host, &mut asks, None, None)
+            .and_then(|stack| {
+                fux::script::Asks::commit(&mut asks, &mut keymap, context)?;
+                Ok(stack)
+            });
+        let opened = asks.opened;
+        if let (Some(client), Some(screen), true) = (client, opened, ended.is_ok()) {
+            session.open_screen(client, screen);
+        }
+        deliver(session);
+        (out, ended)
+    }
+
+    /// What the server sent clients, taken as their clients take it: a
+    /// program to run, keys typed, copy mode ended. The rest is left.
+    pub(crate) fn deliver(session: &mut Session) {
+        use fux_wire::protocol::ToAttached;
+        let outbox = std::mem::take(&mut session.outbox);
+        let mut kept = Vec::new();
+        for outgoing in outbox {
+            match outgoing {
+                super::Outgoing::To(client, ToAttached::Open(open)) => {
+                    let context = fux_wire::protocol::Context {
+                        client: Some(client),
+                        of: Some(session.run),
+                        ..Default::default()
+                    };
+                    match fux::script::admit(open, Some(&session.test_keymap), &context) {
+                        Ok(screen) => session.open_screen(client, screen),
+                        Err(failed) => {
+                            session.notify_to(client, failed.notice(), true);
+                        }
+                    }
+                }
+                super::Outgoing::To(client, ToAttached::Ended(opening)) => {
+                    if let Some(keys) = session.test_keys.get_mut(&client) {
+                        keys.screen.ended(opening);
+                    }
+                }
+                super::Outgoing::To(client, ToAttached::Keys(inputs)) => {
+                    use fux_vt::keys::decode::Input;
+                    let typed = inputs.into_iter().flat_map(|input| match input {
+                        fux_wire::command::Input::Key(press) => vec![Input::Key(press.into())],
+                        fux_wire::command::Input::Text(text) => text
+                            .chars()
+                            .map(|c| Input::Key(fux_vt::keys::KeyPress::char(c).into()))
+                            .collect(),
+                        fux_wire::command::Input::Paste(text) => vec![Input::Paste(text)],
+                        fux_wire::command::Input::Bytes(_) => Vec::new(),
+                    });
+                    session.inputs(client, typed.collect());
+                }
+                other @ (super::Outgoing::To(
+                    _,
+                    ToAttached::Paint(_) | ToAttached::Exit(_) | ToAttached::Welcome(..),
+                )
+                | super::Outgoing::Shutdown { .. }) => {
+                    kept.push(other);
+                }
+            }
+        }
+        kept.extend(std::mem::take(&mut session.outbox));
+        session.outbox = kept;
+    }
+
+    /// What a reply's answer prints, a value a line, or why it failed.
+    pub(crate) fn said(reply: &Result<Reply, super::Error>) -> String {
+        let values = match reply {
+            Ok(reply) => fux::script::answered(
+                reply.clone(),
+                &fuxth::Imports::new(fux_wire::inspect::BYTES),
+            )
+            .map_err(|f| f.to_string()),
+            Err(error) => Err(error.to_string()),
+        };
+        match values {
+            Ok(values) => values
+                .iter()
+                .map(fuxth::Value::text)
+                .collect::<Result<Vec<_>, _>>()
+                .map(|lines| lines.join("\n"))
+                .unwrap_or_else(|f| f.message),
+            Err(why) => why,
+        }
+    }
+
+    /// Runs fuxth `code` from no client: what it printed and left, or its
+    /// failure.
+    pub(crate) fn output(session: &mut Session, code: &str) -> Result<String, String> {
+        output_as(session, None, code)
+    }
+
+    /// Runs fuxth `code` from no client; its failure, if it fails.
+    pub(crate) fn run(session: &mut Session, code: &str) -> Result<(), String> {
+        output(session, code).map(drop)
+    }
+
+    /// What a program's requests would be, run as `client`: each asked of
+    /// no one, but for the names it resolves, a client's actions taken as
+    /// from the client asked.
+    pub(crate) fn requests(
+        s: &mut Session,
+        client: ClientId,
+        code: &str,
+    ) -> Result<Vec<fux_wire::command::Command>, String> {
+        struct Recorder<'s>(InProcess<'s>, Vec<fux_wire::command::Command>);
+        impl fux::script::Asks for Recorder<'_> {
+            fn ask(
+                &mut self,
+                asked: &fux_wire::protocol::Asked,
+            ) -> Result<Reply, fux::script::Failed> {
+                let recorded = match &asked.request {
+                    Request::Do(Command::Client { action, .. }) => Command::Client {
+                        client: None,
+                        action: action.clone(),
+                    },
+                    Request::Do(Command::Resolve { .. })
+                    | Request::Wait(..)
+                    | Request::NextEvents { .. } => return self.0.ask(asked),
+                    Request::Do(command) => command.clone(),
+                };
+                self.1.push(recorded);
+                Ok(Reply::default())
+            }
+        }
+        let tokens = fuxth::token::source("test", code).map_err(|e| e.to_string())?;
+        let mut machine = fux::script::compile(&tokens).map_err(|e| e.to_string())?;
+        let mut out = Vec::new();
+        let context = fux_wire::protocol::Context {
+            client: Some(client),
+            ..fux_wire::protocol::Context::default()
+        };
+        let mut host = fux::script::Host::new(context, None, &mut out);
+        let mut recorder = Recorder(InProcess(s), Vec::new());
+        fux::script::run_capped(&mut machine, &mut host, &mut recorder, None, None)
+            .map_err(|e| e.to_string())?;
+        Ok(recorder.1)
+    }
+
+    /// A client's keys, as its client reads them: its decoder, and the
+    /// screen it has open or what its keys are in the middle of.
+    pub(crate) struct Keys {
+        decoder: fux_vt::keys::decode::Decoder,
+        pub(crate) screen: fux::screens::Display,
+    }
+
+    impl Default for Keys {
+        fn default() -> Self {
+            Self {
+                decoder: fux_vt::keys::decode::Decoder::new(fux_vt::keys::decode::Timing::new(
+                    35, 5000,
+                )),
+                screen: Default::default(),
+            }
+        }
+    }
+
+    impl Session {
+        /// Bytes typed at client `client`'s terminal, as its client would
+        /// take them: through its screen, else its keys (the session's
+        /// `test_keymap`), each action sent, each program run as the client.
+        pub(crate) fn input(&mut self, client: ClientId, bytes: &[u8]) {
+            let mut inputs = Vec::new();
+            let now = Instant::now();
+            let keys = self.test_keys.entry(client).or_default();
+            keys.decoder.expire(now);
+            keys.decoder.bytes(bytes, &mut inputs);
+            keys.decoder.mark(now);
+            self.inputs(client, inputs);
+        }
+
+        /// The decoder's wait passed: what waited is taken as it is.
+        pub(crate) fn escape(&mut self, client: ClientId) {
+            let mut inputs = Vec::new();
+            self.test_keys
+                .entry(client)
+                .or_default()
+                .decoder
+                .timeout(&mut inputs);
+            self.inputs(client, inputs);
+        }
+
+        /// Opens a screen on client `client`, as its client does.
+        pub(crate) fn open_screen(&mut self, client: ClientId, screen: fux::screens::Screen) {
+            let keys = self.test_keys.entry(client).or_default();
+            let acts = keys.screen.open(screen, &self.test_keymap.keys.modes);
+            self.apply(client, acts);
+            deliver(self);
+        }
+
+        /// Runs fuxth as client `client`: a failure, or what it says, in its
+        /// notice, as its client shows them.
+        pub(crate) fn run_as(&mut self, client: ClientId, job: &fux::screens::Job) {
+            match output_job(self, Some(client), job) {
+                Err(error) => self.notify_to(client, error, true),
+                Ok(said) if !said.trim().is_empty() => {
+                    self.notify_to(client, said.trim().replace('\n', "  "), false);
+                }
+                Ok(_) => {}
+            }
+        }
+
+        fn effects(&mut self, client: ClientId, effects: Vec<fux::screens::Dispatch>) {
+            for effect in effects {
+                match effect {
+                    fux::screens::Dispatch::Send(act) => self.apply(client, vec![act]),
+                    fux::screens::Dispatch::Run(job) => self.run_as(client, &job),
+                    fux::screens::Dispatch::Fence => {}
+                }
+                deliver(self);
+            }
+        }
+
+        pub(crate) fn inputs(
+            &mut self,
+            client: ClientId,
+            inputs: Vec<fux_vt::keys::decode::Input>,
+        ) {
+            for input in inputs {
+                let Some(read_only) = self.views.get(&client).map(|v| v.read_only) else {
+                    return;
+                };
+                let keys = self.test_keys.entry(client).or_default();
+                let effects = keys.screen.input(&self.test_keymap.keys, input, read_only);
+                self.effects(client, effects);
+            }
+        }
+    }
+}
+
+/// `inputs` as pane `p`'s program takes them: keys and pastes encoded as
+/// it asked for them, text and bytes as they are.
+fn bytes(p: &Pane, inputs: &[Input]) -> Vec<u8> {
+    let screen = p.screen();
+    let mut bytes = Vec::new();
+    for input in inputs {
+        match input {
+            Input::Key(key) => {
+                fux_vt::keys::encode::key_bytes((*key).into(), screen.key_mode(), &mut bytes)
+            }
+            Input::Text(text) => bytes.extend_from_slice(text.as_bytes()),
+            Input::Paste(text) => {
+                let bracketed = screen.mode(fux_vt::Mode::BracketedPaste);
+                fux_vt::keys::encode::paste(text, bracketed, &mut bytes);
+            }
+            Input::Bytes(given) => bytes.extend_from_slice(given),
+        }
+    }
+    bytes
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::session::testing::TestResult;
+    /// `rows` by `cols`.
+    fn sized(rows: u16, cols: u16) -> Result<fux_vt::Size, String> {
+        fux_vt::Size::new(rows, cols).map_err(|e| e.to_string())
+    }
+
+    use super::testing::{InProcess, attached, output, output_as, requests, run, said, started};
+    use super::*;
+    use crate::pane::Left;
+    use fux_wire::code::Code;
+
+    fn reap(s: &mut Session) {
+        for dying in std::mem::take(&mut s.dying) {
+            if let Some(pid) = dying.kill() {
+                process::reaped(pid);
+            }
+        }
+    }
+
+    #[test]
+    fn listings_report_held_process_outcomes() -> TestResult {
+        use fux_wire::inspect::{Projection, Scope};
+        let (mut s, _) = attached(12, 50)?;
+        run(
+            &mut s,
+            "opts str agent in 80 24 size str /bin/cat program run drop",
+        )?;
+        s.end_program(PaneId::of(2), Ended::Lost);
+        for code in ["ls listing", "%2 info listing"] {
+            let text = output(&mut s, code)?;
+            assert!(text.contains("ended, its status lost"), "{text}");
+        }
+        for (pid, exited, signal, expected) in [
+            (Some(123), Json::Null, Json::Null, "pid 123"),
+            (None, Json::Int(7), Json::Null, "exited 7"),
+            (None, Json::Null, Json::Int(15), "signal 15"),
+            (None, Json::Null, Json::Null, "ended, its status lost"),
+        ] {
+            for (scope, code) in [
+                (Scope::All, "ls listing print"),
+                (
+                    Scope::Target(AnyRef::Pane(PaneId::of(2))),
+                    "%2 info listing print",
+                ),
+            ] {
+                let Body::Snapshot(mut snapshot) = s.inspect(scope, Projection::Facts)? else {
+                    return Err("snapshot".into());
+                };
+                let pane = snapshot
+                    .panes
+                    .iter_mut()
+                    .find(|p| p.id == PaneId::of(2))
+                    .ok_or("pane")?;
+                pane.pid = pid;
+                pane.state = Some(Json::Object(vec![
+                    ("exited".into(), exited.clone()),
+                    ("signal".into(), signal.clone()),
+                ]));
+                snapshot.validate()?;
+                let mut out = Vec::new();
+                fux::script::testing::held_reply(
+                    code,
+                    Reply {
+                        run: Some(s.run),
+                        ..Body::Snapshot(snapshot).into()
+                    },
+                    &mut out,
+                )?;
+                let text = String::from_utf8(out)?;
+                assert!(text.contains(expected), "{text}");
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn listing_walks_many_containers_within_the_client_step_budget() -> TestResult {
+        use fux_wire::inspect::{Projection, Scope};
+        struct Once(Option<Reply>);
+        impl fux::script::Asks for Once {
+            fn ask(&mut self, _: &fux_wire::protocol::Asked) -> Result<Reply, fux::script::Failed> {
+                self.0.take().ok_or_else(|| {
+                    fux::script::Failed::new(fux_wire::code::Code::Usage, "held listing refreshed")
+                })
+            }
+        }
+        let (s, _) = attached(12, 80)?;
+        let Body::Snapshot(template) = s.inspect(Scope::All, Projection::Topology)? else {
+            return Err("snapshot".into());
+        };
+        let workspace = template.workspaces.first().ok_or("workspace")?;
+        let tab = template.tabs.first().ok_or("tab")?;
+        let pane = template.panes.first().ok_or("pane")?;
+        for (workspaces, tabs_per_workspace) in [(1, 1000), (1000, 1)] {
+            let mut snapshot = (*template).clone();
+            snapshot.workspaces.clear();
+            snapshot.tabs.clear();
+            snapshot.panes.clear();
+            snapshot.clients.clear();
+            for ws in 1..=workspaces {
+                let mut w = workspace.clone();
+                w.id = WsId::of(ws);
+                w.label = w.id.to_string();
+                w.tabs.clear();
+                for _ in 0..tabs_per_workspace {
+                    let id = u32::try_from(snapshot.panes.len())?.saturating_add(1);
+                    let mut t = tab.clone();
+                    let mut p = pane.clone();
+                    t.id = TabId::of(id);
+                    t.workspace = w.id;
+                    t.label = PaneId::of(id).to_string();
+                    t.host = None;
+                    t.revision = None;
+                    t.nodes = vec![fux_wire::layout::Node::Pane(PaneId::of(id))];
+                    p.id = PaneId::of(id);
+                    p.tab = t.id;
+                    p.label = p.id.to_string();
+                    p.version.pane = p.id;
+                    w.tabs.push(t.id);
+                    snapshot.tabs.push(t);
+                    snapshot.panes.push(p);
+                }
+                snapshot.workspaces.push(w);
+            }
+            snapshot.validate()?;
+            let lines = snapshot
+                .workspaces
+                .len()
+                .saturating_add(snapshot.tabs.len())
+                .saturating_add(snapshot.panes.len())
+                .saturating_add(1);
+            let reply = Reply {
+                run: Some(s.run),
+                ..Body::Snapshot(Box::new(snapshot)).into()
+            };
+            let mut machine = fux::script::compile(&fuxth::token::source(
+                "many-tab-listing",
+                "all str topology snapshot listing print",
+            )?)?;
+            let mut out = Vec::new();
+            let mut host =
+                fux::script::Host::new(fux_wire::protocol::Context::default(), None, &mut out);
+            fux::script::run_capped(
+                &mut machine,
+                &mut host,
+                &mut Once(Some(reply)),
+                Some(fux::script::PROGRAM_STEPS),
+                None,
+            )?;
+            let text = String::from_utf8(out)?;
+            assert_eq!(text.lines().count(), lines);
+            assert!(
+                text.lines()
+                    .any(|line| line.trim_start().starts_with("%1000 "))
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn held_fields_survive_the_source_pane_closing() -> TestResult {
+        let (mut s, _) = attached(12, 50)?;
+        assert_eq!(
+            output(
+                &mut s,
+                "opts str agent in 80 24 size str /bin/cat program run let held held str version get let before held pane kill held str version get before eq"
+            )?,
+            "true\n"
+        );
+        run(
+            &mut s,
+            "opts str agent in 80 24 size str /bin/cat program run drop",
+        )?;
+        assert_eq!(
+            output(
+                &mut s,
+                "%3 capture let held %3 kill held str last_status get kind"
+            )?,
+            "null\n"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn scoped_topology_keeps_full_membership_and_the_shared_layout_revision() -> TestResult {
+        use fux_wire::inspect::{Projection, Scope};
+        let (mut s, _) = attached(12, 80)?;
+        run(
+            &mut s,
+            "opts +1 in 80 24 size new-tab drop %2 str horizontal axis split drop opts +1 in 80 24 size new-tab drop",
+        )?;
+        for scope in [
+            Scope::Target(AnyRef::Tab("@2".parse().map_err(|_| "tab")?)),
+            Scope::Target(AnyRef::Pane(PaneId::of(2))),
+        ] {
+            let Body::Snapshot(snapshot) = s.inspect(scope, Projection::Topology)? else {
+                return Err("snapshot".into());
+            };
+            snapshot.validate()?;
+            let ws = snapshot.workspaces.first().ok_or("workspace")?;
+            assert_eq!(ws.tabs.len(), 3);
+            assert_eq!(snapshot.tabs.len(), 1);
+            let tab = snapshot.tabs.first().ok_or("tab")?;
+            assert_eq!(tab.revision, s.tab(tab.id).and_then(|t| t.revision(s.run)));
+            assert!(matches!(
+                tab.nodes.first(),
+                Some(fux_wire::layout::Node::Split {
+                    first: 1,
+                    second: 2,
+                    ..
+                })
+            ));
+            let held = fux::script::answered(
+                Reply {
+                    run: Some(s.run),
+                    ..Body::Snapshot(snapshot).into()
+                },
+                &fuxth::Imports::new(fux_wire::inspect::BYTES),
+            )?;
+            assert!(!held.is_empty());
+        }
+        let before = s
+            .tab("@2".parse().map_err(|_| "tab")?)
+            .and_then(|t| t.revision(s.run));
+        s.out(PaneId::of(2), b"unchanged layout");
+        assert_eq!(
+            before,
+            s.tab("@2".parse().map_err(|_| "tab")?)
+                .and_then(|t| t.revision(s.run))
+        );
+        run(
+            &mut s,
+            "@2 str topology snapshot str tabs get first let observed_tab observed_tab str id get observed_tab str layout_revision get observed_tab str nodes get arrange",
+        )?;
+        assert_ne!(
+            before,
+            s.tab("@2".parse().map_err(|_| "tab")?)
+                .and_then(|t| t.revision(s.run))
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn snapshot_is_one_turn_and_local_fields_keep_their_typed_run() -> TestResult {
+        let (mut s, _) = attached(12, 50)?;
+        struct Once(Option<Reply>);
+        impl fux::script::Asks for Once {
+            fn ask(
+                &mut self,
+                asked: &fux_wire::protocol::Asked,
+            ) -> Result<Reply, fux::script::Failed> {
+                assert!(matches!(
+                    asked.request,
+                    Request::Do(Command::Inspect { .. })
+                ));
+                self.0
+                    .take()
+                    .ok_or_else(|| fux::script::Failed::new(Code::Usage, "a second roundtrip"))
+            }
+        }
+        let body = s.inspect(
+            fux_wire::inspect::Scope::All,
+            fux_wire::inspect::Projection::Topology,
+        )?;
+        let mut once = Once(Some(Reply {
+            run: Some(s.run),
+            ..body.into()
+        }));
+        let values = fux::script::testing::evaluate(
+            "all str topology snapshot let held held str panes get first str id get held str panes get first str name get kind",
+            None,
+            &mut once,
+            &mut Vec::new(),
+        )?;
+        assert!(once.0.is_none());
+        assert!(
+            matches!(values.first(), Some(fuxth::Value::App(fux::script::Fux::Pane(p, Some(run)))) if *p == PaneId::of(1) && *run == s.run)
+        );
+        assert_eq!(values.last(), Some(&fuxth::Value::str("null")));
+        assert_eq!(
+            output(
+                &mut s,
+                "all str facts snapshot let held %1 str changed rename held str panes get first str name get kind"
+            )?,
+            "null\n"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn last_places_follow_each_clients_visits_not_order() -> TestResult {
+        let (mut s, c) = attached(10, 40)?;
+        let d = s.attach(10, 40, None)?;
+        run(
+            &mut s,
+            "opts +1 in 80 24 size new-tab drop opts +1 in 80 24 size new-tab drop",
+        )?;
+        for (way, message) in [
+            ("step-tab", "no previously shown tab"),
+            ("step-workspace", "no previously shown workspace"),
+        ] {
+            let error = output_as(&mut s, Some(c), &format!("me str last {way}"))
+                .err()
+                .ok_or("last succeeded before a visit")?;
+            assert!(error.contains(message), "{error}");
+        }
+        output_as(
+            &mut s,
+            Some(c),
+            "me @3 show me @3 show @3 str previous reorder",
+        )?;
+        output_as(&mut s, Some(d), "me @2 show")?;
+        for tab in [1, 3, 1] {
+            output_as(&mut s, Some(c), "me str last step-tab")?;
+            assert_eq!(s.place(c).map(|p| p.tab), Some(TabId::of(tab)));
+            assert_eq!(s.place(d).map(|p| p.tab), Some(TabId::of(2)));
+        }
+        // Following a move must not remember the temporary replacement
+        // selected as its old tab closes.
+        output_as(&mut s, Some(c), "me @2 show %2 @3 move")?;
+        assert_eq!(s.views.get(&c).ok_or("view")?.last_tab, None);
+        output_as(&mut s, Some(c), "me @1 show")?;
+        // Creation follows its caller and records the place it left.
+        output_as(
+            &mut s,
+            Some(c),
+            "opts str / cwd 80 24 size new-workspace drop",
+        )?;
+        run(&mut s, "opts str / cwd 80 24 size new-workspace drop")?;
+        output_as(&mut s, Some(d), "me +3 show")?;
+        output_as(
+            &mut s,
+            Some(c),
+            "me +3 show me +3 show +3 str previous reorder",
+        )?;
+        for ws in [2, 3, 2] {
+            output_as(&mut s, Some(c), "me str last step-workspace")?;
+            assert_eq!(s.place(c).map(|p| p.ws), Some(WsId::of(ws)));
+            assert_eq!(s.place(d).map(|p| p.ws), Some(WsId::of(3)));
+        }
+        // Last tab remembers a visit across workspace boundaries too.
+        output_as(&mut s, Some(c), "me str last step-tab")?;
+        assert_eq!(s.place(c).map(|p| p.ws), Some(WsId::of(3)));
+        output_as(&mut s, Some(d), "me str last step-workspace")?;
+        assert_eq!(s.place(d).map(|p| p.ws), Some(WsId::of(1)));
+        Ok(())
+    }
+
+    #[test]
+    fn snapshot_projections_keep_order_tree_fit_launch_and_cursor() -> TestResult {
+        use fux_wire::inspect::{Projection, Scope};
+        use fux_wire::layout::Node;
+        let (mut s, c) = attached(12, 50)?;
+        run(&mut s, "%1 str horizontal axis 2 3 shares split drop")?;
+        for projection in [Projection::Facts, Projection::Topology, Projection::Recipe] {
+            let Body::Snapshot(mut snapshot) = s.inspect(Scope::Client(c), projection.clone())?
+            else {
+                return Err("no snapshot".into());
+            };
+            snapshot.validate()?;
+            assert_eq!(snapshot.cursor, s.parts.journal().end(s.run));
+            assert_eq!(
+                snapshot.panes.iter().map(|p| p.id).collect::<Vec<_>>(),
+                [PaneId::of(1), PaneId::of(2)]
+            );
+            let tab = snapshot.tabs.first().ok_or("no tab")?;
+            assert!(
+                matches!(tab.nodes.first(), Some(Node::Split { first_share,second_share,.. }) if first_share.get() == 2 && second_share.get() == 3)
+            );
+            assert!(!tab.fixed);
+            assert_eq!(
+                snapshot.clients.first().map(|v| (v.rows, v.pane_rows)),
+                Some((12, 11))
+            );
+            for pane in &snapshot.panes {
+                assert_eq!(pane.state.is_some(), projection == Projection::Facts);
+                assert_eq!(pane.recipe.is_some(), projection == Projection::Recipe);
+                if let Some(recipe) = &pane.recipe {
+                    assert!(recipe.shell);
+                    assert!(!recipe.argv.is_empty());
+                }
+            }
+            if let Some(recipe) = snapshot.panes.first_mut().and_then(|p| p.recipe.as_mut()) {
+                recipe.env.push((
+                    "RAW".into(),
+                    Some(fux_wire::inspect::Path::Bytes(vec![255; 70_000])),
+                ));
+            }
+            let bytes = fux_wire::wire::encode(&*snapshot)?;
+            assert_eq!(
+                fux_wire::wire::Reader::new(&bytes).whole::<fux_wire::inspect::Snapshot>()?,
+                *snapshot
+            );
+            let mut malformed = *snapshot;
+            if let Some(Node::Split { first, .. }) =
+                malformed.tabs.first_mut().and_then(|t| t.nodes.first_mut())
+            {
+                *first = u32::MAX;
+            }
+            assert!(malformed.validate().is_err());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn last_places_forget_closed_targets_and_detached_clients() -> TestResult {
+        let (mut s, c) = attached(10, 40)?;
+        output_as(&mut s, Some(c), "opts str / cwd +1 in new-tab drop")?;
+        run(&mut s, "@1 kill")?;
+        let error = output_as(&mut s, Some(c), "me str last step-tab")
+            .err()
+            .ok_or("closed tab remembered")?;
+        assert!(error.contains("no previously shown tab"), "{error}");
+        // Moving the last pane closes its old tab and workspace.
+        output_as(&mut s, Some(c), "opts str / cwd new-workspace drop")?;
+        run(&mut s, "%2 @3 move")?;
+        let view = s.views.get(&c).ok_or("view")?;
+        assert_eq!((view.last_tab, view.last_workspace), (None, None));
+        output_as(&mut s, Some(c), "opts str / cwd new-workspace drop")?;
+        // Closing the current place selects a survivor; it must not be its own last.
+        run(&mut s, "+3 kill")?;
+        let view = s.views.get(&c).ok_or("view")?;
+        assert_eq!((view.last_tab, view.last_workspace), (None, None));
+        s.detach_client(c);
+        let d = s.attach(10, 40, None)?;
+        let view = s.views.get(&d).ok_or("view")?;
+        assert_eq!((view.last_tab, view.last_workspace), (None, None));
+        Ok(())
+    }
+
+    #[test]
+    fn capability_facts_distinguish_reports_from_output_and_follow_one_host() -> TestResult {
+        fn facts(s: &Session, id: ClientId) -> Result<Json, Box<dyn std::error::Error>> {
+            let Body::Snapshot(snapshot) = s.inspect(
+                fux_wire::inspect::Scope::Client(id),
+                fux_wire::inspect::Projection::Facts,
+            )?
+            else {
+                return Err("snapshot".into());
+            };
+            let client = snapshot
+                .clients
+                .iter()
+                .find(|c| c.id == id)
+                .ok_or("client")?;
+            Ok(Json::Object(vec![
+                ("terminal".into(), client.terminal_facts.clone()),
+                ("output".into(), client.output.clone()),
+            ]))
+        }
+        let (mut s, c) = attached(10, 40)?;
+        let d = s.attach(10, 40, None)?;
+        let initial = facts(&s, c)?;
+        let terminal = initial.get("terminal").ok_or("terminal")?;
+        for name in [
+            "sixel_reported",
+            "cell_reported",
+            "underline_styles_reported",
+            "kitty_flags_reported",
+        ] {
+            assert_eq!(terminal.get(name), Some(&Json::Null), "{name}");
+        }
+        assert_eq!(
+            initial.get("output").and_then(|o| o.get("graphics")),
+            Some(&Json::str("text"))
+        );
+        s.input(c, b"\x1b[?62c");
+        assert_eq!(
+            facts(&s, c)?
+                .get("terminal")
+                .and_then(|t| t.get("sixel_reported")),
+            Some(&Json::Bool(false))
+        );
+        // Positive sixel evidence still needs an accepted cell size.
+        s.terminal_reply(c, fux_vt::keys::decode::Reply::Attributes { sixel: true });
+        s.terminal_reply(
+            c,
+            fux_vt::keys::decode::Reply::CellSize {
+                width: 1,
+                height: 2,
+            },
+        );
+        let refused = facts(&s, c)?;
+        assert_eq!(
+            refused
+                .get("terminal")
+                .and_then(|t| t.get("cell_reported"))
+                .and_then(|cell| cell.get("width")),
+            Some(&Json::int(1))
+        );
+        assert_eq!(
+            refused.get("output").and_then(|o| o.get("graphics")),
+            Some(&Json::str("text"))
+        );
+        s.terminal_reply(
+            c,
+            fux_vt::keys::decode::Reply::CellSize {
+                width: 10,
+                height: 20,
+            },
+        );
+        s.terminal_reply(c, fux_vt::keys::decode::Reply::UnderlineStyles);
+        s.terminal_reply(c, fux_vt::keys::decode::Reply::KittyFlags(0));
+        assert_eq!(
+            facts(&s, c)?
+                .get("terminal")
+                .and_then(|t| t.get("kitty_flags_reported")),
+            Some(&Json::int(0))
+        );
+        s.terminal_reply(c, fux_vt::keys::decode::Reply::KittyFlags(5));
+        s.settled();
+        let reported = facts(&s, c)?;
+        let terminal = reported.get("terminal").ok_or("terminal")?;
+        assert_eq!(terminal.get("sixel_reported"), Some(&Json::Bool(true)));
+        assert_eq!(
+            terminal.get("underline_styles_reported"),
+            Some(&Json::Bool(true))
+        );
+        assert_eq!(terminal.get("kitty_flags_reported"), Some(&Json::int(5)));
+        let effective = reported.get("output").ok_or("output")?;
+        assert_eq!(effective.get("graphics"), Some(&Json::str("sixel")));
+        assert_eq!(effective.get("underline_styles"), Some(&Json::Bool(true)));
+        assert_eq!(effective.get("clipboard"), Some(&Json::str("osc52")));
+        let requested = crate::outer::KITTY_FLAGS;
+        assert!(crate::outer::KITTY_PUSH.starts_with(format!("\x1b[>{requested}u").as_bytes()));
+        assert_eq!(
+            effective.get("kitty_flags_requested"),
+            Some(&Json::int(requested))
+        );
+        assert_eq!(output(&mut s, "@1 str host get")?, "c1\n");
+        s.input(d, b"x");
+        assert_eq!(output(&mut s, "@1 str host get")?, "c2\n");
+        assert_eq!(s.graphics(PaneId::of(1)), fux_vt::Graphics::Text);
+        assert_eq!(facts(&s, d)?.get("terminal"), initial.get("terminal"));
+        s.terminal_reply(
+            d,
+            fux_vt::keys::decode::Reply::CellSize {
+                width: 10,
+                height: 20,
+            },
+        );
+        s.views
+            .get_mut(&d)
+            .ok_or("view")?
+            .presentation
+            .terminal_clipboard = false;
+        let other = facts(&s, d)?;
+        let effective = other.get("output").ok_or("output")?;
+        assert_eq!(effective.get("graphics"), Some(&Json::str("cell")));
+        assert_eq!(effective.get("clipboard"), Some(&Json::Null));
+        s.detach_client(d);
+        assert_eq!(output(&mut s, "@1 str host get")?, "c1\n");
+        s.detach_client(c);
+        assert_eq!(output(&mut s, "@1 str host get")?, "null\n");
+        assert_eq!(s.graphics(PaneId::of(1)), fux_vt::Graphics::Text);
+        Ok(())
+    }
+
+    /// A client that only watches, of `rows` by `cols`, attached.
+    fn watch(s: &mut Session, rows: u16, cols: u16) -> Result<ClientId, String> {
+        let attach = Attach {
+            read_only: true,
+            ..Attach::of(
+                sized(rows, cols)?,
+                fux::script::default_state()
+                    .map_err(|e| e.to_string())?
+                    .preferences
+                    .presentation(),
+            )
+        };
+        s.attach_client(ClientKind::Terminal, attach)
+            .map_err(|e| e.to_string())
+    }
+
+    #[test]
+    fn arrange_refuses_invalid_or_stale_proposals_without_a_commit() -> TestResult {
+        let (mut s, client) = attached(24, 80)?;
+        run(
+            &mut s,
+            "%1 str horizontal axis split drop %2 str vertical axis split drop",
+        )?;
+        let tab = TabId::of(1);
+        let revision = s
+            .tab(tab)
+            .and_then(|t| t.revision(s.run))
+            .ok_or("revision")?;
+        s.parts
+            .tab_mut(tab)
+            .ok_or("tab")?
+            .set_focus(client, PaneId::of(3));
+        let before = s.root(tab).cloned().ok_or("tree")?;
+        let cursor = s.parts.journal().end(s.run);
+        let origin = Origin::Cli(Caller::default());
+        let valid = vec![
+            layout::Node::Split {
+                axis: Axis::Horizontal,
+                first_share: NonZeroU32::MIN,
+                second_share: NonZeroU32::MIN,
+                first: 1,
+                second: 2,
+            },
+            layout::Node::Pane(PaneId::of(1)),
+            layout::Node::Split {
+                axis: Axis::Horizontal,
+                first_share: NonZeroU32::MIN,
+                second_share: NonZeroU32::MIN,
+                first: 3,
+                second: 4,
+            },
+            layout::Node::Pane(PaneId::of(2)),
+            layout::Node::Pane(PaneId::of(3)),
+        ];
+        let mut duplicate = valid.clone();
+        if let Some(node) = duplicate.last_mut() {
+            *node = layout::Node::Pane(PaneId::of(1));
+        }
+        for (given, nodes, code) in [
+            (revision, vec![], Raise::BadValue),
+            (
+                revision,
+                vec![layout::Node::Pane(PaneId::of(1))],
+                Raise::BadValue,
+            ),
+            (
+                revision,
+                vec![layout::Node::Pane(PaneId::of(999))],
+                Raise::BadValue,
+            ),
+            (revision, duplicate, Raise::BadValue),
+            (
+                command::LayoutRevision {
+                    serial: revision.serial.saturating_sub(1),
+                    ..revision
+                },
+                valid.clone(),
+                Raise::Stale,
+            ),
+            (
+                command::LayoutRevision {
+                    tab: TabId::of(2),
+                    ..revision
+                },
+                valid.clone(),
+                Raise::BadValue,
+            ),
+            (
+                command::LayoutRevision {
+                    serial: revision.serial.saturating_add(1),
+                    ..revision
+                },
+                valid.clone(),
+                Raise::BadValue,
+            ),
+            (
+                command::LayoutRevision {
+                    run: "1-0".parse().map_err(|()| "run")?,
+                    ..revision
+                },
+                valid,
+                Raise::BadValue,
+            ),
+        ] {
+            let command = Command::Arrange {
+                target: tab,
+                revision: given,
+                nodes,
+            };
+            assert_eq!(
+                s.execute(&command, &origin, Instant::now())
+                    .err()
+                    .map(|e| e.code()),
+                Some(Code::from(code))
+            );
+            assert_eq!(s.root(tab), Some(&before));
+            assert_eq!(s.tab(tab).and_then(|t| t.revision(s.run)), Some(revision));
+            assert_eq!(s.parts.journal().end(s.run), cursor);
+        }
+        // Same membership after moving a border and moving it back is still stale.
+        run(
+            &mut s,
+            "%1 str right 3 move-border %1 str left 3 move-border",
+        )?;
+        let stale = format!("@1 str {revision} list %1 %2 %3 end str horizontal even-of arrange");
+        assert!(run(&mut s, &stale).is_err_and(|s| s.starts_with("stale:")));
+        let before_fit = s.tab(tab).and_then(|t| t.revision(s.run));
+        run(&mut s, "@1 90 30 resize")?;
+        assert_ne!(s.tab(tab).and_then(|t| t.revision(s.run)), before_fit);
+        for split in [
+            "list str horizontal 0 1 1 2 end",
+            "list str diagonal 1 1 1 2 end",
+        ] {
+            let invalid = format!("@1 dup str layout_revision get list {split} %1 %2 end arrange");
+            let cursor = s.parts.journal().end(s.run);
+            assert!(run(&mut s, &invalid).is_err());
+            assert_eq!(s.parts.journal().end(s.run), cursor);
+        }
+        // The valid commit preserves each client's focus and journals once.
+        let latest = output(&mut s, "@1 str layout_revision get")?;
+        let command = format!("@1 str {latest} list %3 %1 %2 end str horizontal even-of arrange");
+        let mut result = Ok(());
+        let events = told(&mut s, |s| result = run(s, &command));
+        result?;
+        assert_eq!(
+            events.matches("\"event\":\"arranged\"").count(),
+            1,
+            "{events}"
+        );
+        assert_eq!(
+            s.tab(tab).and_then(|t| t.focus(client)),
+            Some(PaneId::of(3))
+        );
+        assert_eq!(
+            s.root(tab).map(Tree::panes),
+            Some(vec![PaneId::of(3), PaneId::of(1), PaneId::of(2)])
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn arrange_accepts_the_split_answer_as_a_pane() -> TestResult {
+        let mut s = started()?;
+        run(
+            &mut s,
+            "%1 str horizontal axis split let b @1 dup str layout_revision get list %1 b end str vertical even-of arrange",
+        )?;
+        assert_eq!(
+            s.root(TabId::of(1)).map(Tree::panes),
+            Some(vec![PaneId::of(1), PaneId::of(2)])
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn arrange_checks_background_and_all_sizing_views_but_excludes_watchers() -> TestResult {
+        let mut s = started()?;
+        run(
+            &mut s,
+            "@1 7 40 resize %1 str vertical axis split drop %2 str vertical axis split drop",
+        )?;
+        let propose = "@1 even-h";
+        let before = s.root(TabId::of(1)).cloned();
+        let revision = s.tab(TabId::of(1)).and_then(|t| t.revision(s.run));
+        let cursor = s.parts.journal().end(s.run);
+        let refused = run(&mut s, propose)
+            .err()
+            .ok_or("background fit accepted")?;
+        assert!(refused.contains("its size, 7x40"), "{refused}");
+        assert_eq!(s.root(TabId::of(1)), before.as_ref());
+        assert_eq!(
+            s.tab(TabId::of(1)).and_then(|t| t.revision(s.run)),
+            revision
+        );
+        assert_eq!(s.parts.journal().end(s.run), cursor);
+        run(&mut s, "@1 80 40 resize")?;
+        let client = s.attach(40, 7, None)?;
+        watch(&mut s, 3, 3)?;
+        let refused = run(&mut s, propose)
+            .err()
+            .ok_or("small sizing client accepted")?;
+        assert!(refused.contains(&format!("{client}'s screen")), "{refused}");
+        s.size_client(client, 40, 80)?;
+        run(&mut s, propose)?;
+        Ok(())
+    }
+
+    #[test]
+    fn layout_presets_keep_membership_and_their_stated_shares() -> TestResult {
+        let mut s = started()?;
+        run(
+            &mut s,
+            "@1 120 40 resize %1 str horizontal axis split drop %2 str horizontal axis split drop %3 str horizontal axis split drop",
+        )?;
+        let tab = TabId::of(1);
+        run(
+            &mut s,
+            "@1 dup str layout_revision get list %4 %2 %1 %3 end str horizontal even-of arrange",
+        )?;
+        let order = vec![PaneId::of(4), PaneId::of(2), PaneId::of(1), PaneId::of(3)];
+        for (recipe, axis) in [("even-h", Axis::Horizontal), ("even-v", Axis::Vertical)] {
+            run(&mut s, &format!("@1 {recipe}"))?;
+            assert_eq!(s.root(tab).map(Tree::panes), Some(order.clone()));
+            let area = s.tab(tab).ok_or("tab")?.fit().area();
+            let placed = layout::place(s.root(tab).ok_or("tree")?, area);
+            let lengths: Vec<_> = placed.panes.iter().map(|(_, r)| r.len(axis)).collect();
+            let lo = lengths.iter().min().ok_or("lengths")?;
+            let hi = lengths.iter().max().ok_or("lengths")?;
+            assert!(hi.abs_diff(*lo) <= 1, "{lengths:?}");
+        }
+        for (recipe, axis, cross) in [
+            ("main-h", Axis::Vertical, Axis::Horizontal),
+            ("main-v", Axis::Horizontal, Axis::Vertical),
+        ] {
+            run(&mut s, &format!("@1 {recipe}"))?;
+            let Some(Tree::Split(split)) = s.root(tab) else {
+                return Err("main layout".into());
+            };
+            assert_eq!(split.axis(), axis);
+            assert_eq!(
+                split.shares().get(),
+                (NonZeroU32::MIN.saturating_add(1), NonZeroU32::MIN)
+            );
+            let (first, rest) = split.children();
+            assert_eq!(first, &Tree::Pane(PaneId::of(4)));
+            assert!(matches!(rest, Tree::Split(split) if split.axis() == cross));
+            assert_eq!(s.root(tab).map(Tree::panes), Some(order.clone()));
+        }
+        run(&mut s, "@1 tiled")?;
+        let Some(Tree::Split(split)) = s.root(tab) else {
+            return Err("tiled layout".into());
+        };
+        assert_eq!(split.axis(), Axis::Horizontal);
+        for child in [split.children().0, split.children().1] {
+            assert!(matches!(child, Tree::Split(split) if split.axis() == Axis::Vertical));
+        }
+        assert_eq!(s.root(tab).map(Tree::panes), Some(order));
+        for recipe in [
+            "str diagonal even-of",
+            "str diagonal str vertical main-of",
+            "str horizontal str diagonal main-of",
+        ] {
+            assert!(run(&mut s, &format!("list %1 end {recipe} drop")).is_err());
+        }
+        for recipe in [
+            "str horizontal even-of",
+            "str horizontal str vertical main-of",
+            "tiled-of",
+        ] {
+            assert!(run(&mut s, &format!("list end {recipe} drop")).is_err());
+            assert_eq!(
+                output(&mut s, &format!("list %1 end {recipe} json"))?,
+                "[\"%1\"]\n"
+            );
+            run(
+                &mut s,
+                &format!("@1 dup str layout_revision get list %1 %2 %3 %4 end {recipe} arrange"),
+            )?;
+        }
+        run(&mut s, "%2 kill %3 kill %4 kill")?;
+        for recipe in ["even-h", "even-v", "main-h", "main-v", "tiled"] {
+            run(&mut s, &format!("@1 {recipe}"))?;
+            assert_eq!(s.root(tab), Some(&Tree::Pane(PaneId::of(1))));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn layout_presets_submit_one_observations_revision_without_retry() -> TestResult {
+        struct Guarded<'s> {
+            session: &'s mut Session,
+            reads: usize,
+            commits: usize,
+            resize: bool,
+        }
+        impl fux::script::Asks for Guarded<'_> {
+            fn ask(
+                &mut self,
+                asked: &fux_wire::protocol::Asked,
+            ) -> Result<Reply, fux::script::Failed> {
+                match &asked.request {
+                    Request::Do(Command::Resolve { .. }) => {}
+                    Request::Do(Command::Inspect { scope, projection }) => {
+                        assert_eq!(
+                            *scope,
+                            fux_wire::inspect::Scope::Target(AnyRef::Tab(TabId::of(1)))
+                        );
+                        assert_eq!(*projection, fux_wire::inspect::Projection::Topology);
+                        self.reads = self.reads.saturating_add(1);
+                    }
+                    Request::Do(Command::Arrange { revision, .. }) => {
+                        self.commits = self.commits.saturating_add(1);
+                        assert_eq!(asked.context.of, Some(revision.run));
+                    }
+                    Request::Do(_) | Request::Wait(_) | Request::NextEvents { .. } => {
+                        return Err(fux::script::Failed::new(
+                            Code::Usage,
+                            "unexpected preset request",
+                        ));
+                    }
+                }
+                let reply = fux::script::Asks::ask(&mut InProcess(self.session), asked)?;
+                if self.resize && matches!(asked.request, Request::Do(Command::Inspect { .. })) {
+                    run(self.session, "@1 121 40 resize")
+                        .map_err(|e| fux::script::Failed::new(Code::Usage, e))?;
+                }
+                Ok(reply)
+            }
+        }
+        for recipe in ["even-h", "even-v", "main-h", "main-v", "tiled"] {
+            for resize in [false, true] {
+                let mut s = started()?;
+                run(&mut s, "%1 str horizontal axis split drop")?;
+                let before = s.root(TabId::of(1)).cloned();
+                let tokens = fuxth::token::source("preset", &format!("@1 {recipe}"))?;
+                let mut machine = fux::script::compile(&tokens)?;
+                let mut out = Vec::new();
+                let mut host =
+                    fux::script::Host::new(fux_wire::protocol::Context::default(), None, &mut out);
+                let mut guarded = Guarded {
+                    session: &mut s,
+                    reads: 0,
+                    commits: 0,
+                    resize,
+                };
+                let result =
+                    fux::script::run_capped(&mut machine, &mut host, &mut guarded, None, None);
+                assert_eq!((guarded.reads, guarded.commits), (1, 1));
+                if resize {
+                    assert!(result.is_err_and(|e| e.code == Code::from(Raise::Stale)));
+                    assert_eq!(s.root(TabId::of(1)), before.as_ref());
+                } else {
+                    assert!(result?.is_empty());
+                }
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn retained_launches_refuse_their_resource_limit() -> TestResult {
+        let mut s = started()?;
+        let mut env = command::EnvPatch::default();
+        env.push(
+            "TEXT".into(),
+            Some(
+                std::iter::repeat_n('\'', 1 << 19)
+                    .collect::<String>()
+                    .into(),
+            ),
+        )?;
+        let command = Command::Run {
+            options: crate::pane::tests::options(0)?,
+            workspace: command::WsRef::New,
+            name: None,
+            size: Some(fux_wire::command::Screen::new(24, 80)?),
+            cwd: Some("/".into()),
+            env,
+            argv: command::Program::new("/bin/cat".into(), Vec::new())?,
+        };
+        let origin = Origin::Cli(Caller::default());
+        let mut refused = false;
+        for _ in 0..40 {
+            let before = s.parts.panes().len();
+            if let Err(error) = s.execute(&command, &origin, Instant::now()) {
+                assert_eq!(error.code(), Code::from(Raise::TooLong));
+                assert!(error.to_string().contains("saved launch inputs"), "{error}");
+                assert_eq!(s.parts.panes().len(), before);
+                refused = true;
+                break;
+            }
+        }
+        assert!(refused);
+        Ok(())
+    }
+
+    #[test]
+    fn library_dump_refuses_source_expansion_before_emitting() -> TestResult {
+        let mut s = started()?;
+        let mut env = command::EnvPatch::default();
+        env.push(
+            "TEXT".into(),
+            Some(
+                std::iter::repeat_n(char::from(39), 90_000)
+                    .collect::<String>()
+                    .into(),
+            ),
+        )?;
+        let command = Command::Run {
+            options: crate::pane::tests::options(0)?,
+            workspace: command::WsRef::Name("quoted".into()),
+            name: None,
+            size: Some(fux_wire::command::Screen::new(24, 80)?),
+            cwd: Some("/".into()),
+            env,
+            argv: command::Program::new("/bin/cat".into(), Vec::new())?,
+        };
+        for _ in 0..3 {
+            s.execute(&command, &Origin::Cli(Caller::default()), Instant::now())?;
+        }
+        // This admits the recipe first, independently of the source expansion.
+        s.inspect(
+            fux_wire::inspect::Scope::All,
+            fux_wire::inspect::Projection::Recipe,
+        )?;
+        let error = s
+            .dump_recipe(None)
+            .err()
+            .ok_or("dump admitted oversized source")?;
+        assert_eq!(error.code, Code::from(Raise::TooLong));
+        assert!(error.to_string().contains("concat"), "{error}");
+        Ok(())
+    }
+
+    #[test]
+    fn attach_targets_choose_the_exact_place_without_reusing_another_seat() -> TestResult {
+        use command::AttachTarget as T;
+        let (mut s, incumbent) = attached(24, 80)?;
+        run(
+            &mut s,
+            "%1 str horizontal axis split drop opts str second name 80 24 size new-workspace drop",
+        )?;
+        run(&mut s, "str c1 client %2 show")?;
+        let presentation = fux::script::default_state()?.preferences.presentation();
+        for (target, pane) in [
+            (T::Tab(TabId::of(1)), PaneId::of(1)),
+            (T::Pane(PaneId::of(2)), PaneId::of(2)),
+            (T::Workspace(WsRef::Name("second".into())), PaneId::of(3)),
+        ] {
+            let client = s.attach_client(
+                ClientKind::Headless,
+                Attach {
+                    of: Some(s.run),
+                    target: Some(target),
+                    ..Attach::of(sized(24, 80)?, presentation.clone())
+                },
+            )?;
+            assert_eq!(s.focused(client), Some(pane));
+            s.detach_client(client);
+        }
+        assert_eq!(s.focused(incumbent), Some(PaneId::of(2)));
+        let ids = s.ids.clone();
+        for (of, target) in [
+            (None, T::Pane(PaneId::of(99))),
+            (None, T::Tab(TabId::of(99))),
+            (None, T::Workspace(WsRef::Name("missing".into()))),
+            (
+                Some("1-2".parse().map_err(|()| "run")?),
+                T::Pane(PaneId::of(1)),
+            ),
+        ] {
+            assert!(
+                s.attach_client(
+                    ClientKind::Headless,
+                    Attach {
+                        of,
+                        target: Some(target),
+                        ..Attach::of(sized(24, 80)?, presentation.clone())
+                    }
+                )
+                .is_err()
+            );
+            assert_eq!(s.ids, ids);
+            assert_eq!(s.parts.panes().len(), 3);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn failed_attach_does_not_consume_a_client_id() -> TestResult {
+        let mut s = Session::new(
+            "/nonexistent/fux.sock".into(),
+            false,
+            command::Run::now().ok_or("clock")?,
+        );
+        let size = sized(24, 80)?;
+        let presentation = fux::script::default_state()?.preferences.presentation();
+        let initial = command::InitialWorkspace {
+            options: fux::script::default_state()?.preferences.pane_options(),
+            name: None,
+            start: command::Start::Shell(command::Program::new("/bin/sh".into(), Vec::new())?),
+            cwd: "relative".into(),
+            env: command::EnvPatch::default(),
+        };
+        let ids = s.ids.clone();
+        let refused = s.attach_client(ClientKind::Headless, Attach::of(size, presentation.clone()));
+        assert!(refused.is_err_and(|why| why.code() == Code::Start));
+        for attach in [
+            Attach {
+                target: Some(command::AttachTarget::Workspace(WsRef::Name(
+                    "missing".into(),
+                ))),
+                ..Attach::of(size, presentation.clone())
+            },
+            Attach {
+                read_only: true,
+                ..Attach::of(size, presentation.clone())
+            },
+            Attach::of(sized(1, 80)?, presentation.clone()),
+            Attach {
+                initial: Some(initial),
+                ..Attach::of(size, presentation.clone())
+            },
+        ] {
+            assert!(s.attach_client(ClientKind::Terminal, attach).is_err());
+            assert_eq!(s.ids, ids);
+            assert!(s.views.is_empty() && s.parts.panes().is_empty());
+        }
+        let client = s.attach(24, 80, None)?;
+        assert_eq!(client, ClientId::of(1));
+        Ok(())
+    }
+
+    #[test]
+    fn an_unknown_nearby_directory_refuses_creation() -> TestResult {
+        let (mut s, client) = attached(24, 80)?;
+        let before = s.parts.panes().len();
+        let failure = output_as(&mut s, Some(client), "%1 str horizontal axis split")
+            .err()
+            .ok_or("unknown cwd accepted")?;
+        assert!(
+            failure.contains("working directory is unknown"),
+            "{failure}"
+        );
+        assert_eq!(s.parts.panes().len(), before);
+        output_as(
+            &mut s,
+            Some(client),
+            "%1 str horizontal axis str / cwd split drop",
+        )?;
+        assert_eq!(s.parts.panes().len(), before + 1);
+        Ok(())
+    }
+
+    #[test]
+    fn an_unknown_fux_path_is_not_taken_from_the_starter() -> TestResult {
+        let mut s = started()?;
+        s.launch = Some("/nonexistent/fux.sock".into());
+        s.exe = None;
+        let launch = pane::Launch {
+            argv: command::Program::new(
+                "/bin/sh".into(),
+                vec!["-c".into(), "[ -z \"${FUX+x}\" ]".into()],
+            )?,
+            cwd: "/".into(),
+            env: command::EnvPatch::default(),
+        };
+        let child = s
+            .spawn(PaneId::of(2), 0, &launch, (sized(24, 80)?, None))?
+            .ok_or("a child")?;
+        let deadline = Instant::now() + Duration::from_secs(3);
+        let mut status = None;
+        while Instant::now() < deadline {
+            status = child.leader.exited();
+            if status.is_some() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let _ = child.leader.finish();
+        assert_eq!(status, Some(Ended::Exited(0)));
+        Ok(())
+    }
+
+    #[test]
+    fn callerless_resize_uses_the_smallest_screen_in_either_attach_order() -> TestResult {
+        for sizes in [[(20, 100), (30, 60)], [(30, 60), (20, 100)]] {
+            let mut s = started()?;
+            watch(&mut s, 3, 5)?;
+            for (rows, cols) in sizes {
+                s.attach(rows, cols, None)?;
+            }
+            run(
+                &mut s,
+                "%1 str horizontal axis split drop %1 20 str horizontal resize-pane",
+            )?;
+            assert_eq!(
+                s.parts.panes().get(&PaneId::of(1)).map(Pane::size),
+                Some(sized(19, 20)?)
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn a_watchers_paste_is_told_it_only_watches() -> TestResult {
+        let mut s = started()?;
+        let c = watch(&mut s, 24, 80)?;
+        s.input(c, b"\x1b[200~hi\x1b[201~");
+        let said = s
+            .views
+            .get(&c)
+            .and_then(|v| v.notice.clone())
+            .map(|n| n.text);
+        assert!(said.is_some_and(|n| n.starts_with("watching only")));
+        Ok(())
+    }
+
+    #[test]
+    fn watchers_leave_tab_sizing_to_its_own_fit() -> TestResult {
+        for (rows, cols, resize) in [(10, 3, false), (30, 120, true)] {
+            let mut s = started()?;
+            watch(&mut s, rows, cols)?;
+            assert_eq!(s.pane(PaneId::of(1))?.size(), sized(24, 80)?);
+            if resize {
+                run(&mut s, "@1 100 10 resize")?;
+                assert_eq!(s.pane(PaneId::of(1))?.size(), sized(10, 100)?);
+            }
+            run(&mut s, "%1 str horizontal axis split drop")?;
+            assert_eq!(
+                s.pane(PaneId::of(1))?.size(),
+                if resize {
+                    sized(10, 50)?
+                } else {
+                    sized(24, 40)?
+                }
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn buffer_reads_keep_every_byte() -> TestResult {
+        let mut s = started()?;
+        for text in ["hello\n\n", "", "\n", "a\r\n\0界\n"] {
+            s.copied(text.into(), None, &[])?;
+            assert_eq!(
+                output(&mut s, "newest buffer len")?,
+                format!("{}\n", text.chars().count())
+            );
+            assert_eq!(output(&mut s, "newest buffer")?, format!("{text}\n"));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn buffer_ids_survive_copies_and_refuse_after_eviction() -> TestResult {
+        let mut s = started()?;
+        s.copied("chosen\n\n".into(), None, &[])?;
+        let id = s.buffers.front().ok_or("no copy")?.0;
+        // An unsolicited program copy also shifts the ring.
+        s.out(PaneId::of(1), b"\x1b]52;c;bmV3\x07");
+        assert_eq!(output(&mut s, &format!("str {id} buffer"))?, "chosen\n\n\n");
+        assert_eq!(output(&mut s, "newest buffer")?, "new\n");
+        run(&mut s, &format!("%1 str {id} paste-buffer drop"))?;
+        assert_eq!(
+            s.parts
+                .pane_mut(PaneId::of(1))
+                .ok_or("no pane")?
+                .drain_input(),
+            b"chosen\r\r"
+        );
+        for _ in 0..16 {
+            s.copied("later".into(), None, &[])?;
+        }
+        assert_eq!(s.buffers.len(), 16);
+        for code in [
+            format!("str {id} buffer"),
+            format!("%1 str {id} paste-buffer"),
+        ] {
+            assert!(run(&mut s, &code).is_err_and(|e| e.starts_with("no_buffer:")));
+        }
+        assert!(
+            s.parts
+                .pane_mut(PaneId::of(1))
+                .ok_or("no pane")?
+                .drain_input()
+                .is_empty()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn buffer_ids_belong_to_one_server_run() -> TestResult {
+        let mut s = started()?;
+        s.copied("old".into(), None, &[])?;
+        let id = s.buffers.front().ok_or("no copy")?.0;
+        let mut other = started()?;
+        other.run = "0-0".parse().map_err(|()| "a run")?;
+        other.copied("new".into(), None, &[])?;
+        for code in [
+            format!("str {id} buffer"),
+            format!("%1 str {id} paste-buffer"),
+        ] {
+            assert!(
+                run(&mut other, &code)
+                    .is_err_and(|e| e.starts_with("bad_value:") && e.contains("server run"))
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn buffer_metadata_is_bounded_and_has_the_exact_length() -> TestResult {
+        let mut s = started()?;
+        let text = std::iter::repeat_n("界\n", 100).collect::<String>();
+        s.copied(text.clone(), None, &[])?;
+        let id = s.buffers.front().ok_or("no copy")?.0;
+        let expected = Json::Array(vec![Json::object(vec![
+            ("id", Json::str(id.to_string())),
+            ("bytes", Json::count(text.len())),
+            (
+                "preview",
+                Json::str(std::iter::repeat_n("界 ", 25).collect::<String>()),
+            ),
+        ])]);
+        assert_eq!(
+            output(&mut s, "buffers json")?,
+            format!("{}\n", expected.render())
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn buffer_id_exhaustion_copies_nothing() -> TestResult {
+        let (mut s, c) = attached(24, 80)?;
+        s.copied("kept".into(), None, &[])?;
+        let before = s.buffers.clone();
+        s.outbox.clear();
+        s.ids.exhaust_buffers();
+        assert!(
+            s.copied("refused".into(), None, &[c])
+                .is_err_and(|e| e.code() == Code::IdsExhausted)
+        );
+        assert_eq!(s.buffers, before);
+        assert!(s.outbox.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn buffer_paste_keeps_its_native_size_and_atomic_admission() -> TestResult {
+        let mut s = started()?;
+        // Larger than script input, but still admitted as one native paste.
+        s.out(PaneId::of(1), b"\x1b[?2004h");
+        let text = format!(
+            "{}\n\n",
+            std::iter::repeat_n('x', crate::pane::INPUT_BYTES - 14).collect::<String>()
+        );
+        s.copied(text.clone(), None, &[])?;
+        run(&mut s, "%1 newest paste-buffer drop")?;
+        let queued = s
+            .parts
+            .pane_mut(PaneId::of(1))
+            .ok_or("no pane")?
+            .drain_input();
+        let expected = format!("\x1b[200~{}\x1b[201~", text.replace('\n', "\r"));
+        assert_eq!(queued.len(), crate::pane::INPUT_BYTES);
+        assert!(queued == expected.as_bytes(), "the whole encoded paste");
+        let mut pane = s.parts.pane_mut(PaneId::of(1)).ok_or("no pane")?;
+        pane.push(vec![b'y'; crate::pane::INPUT_BYTES - 1])?;
+        assert!(run(&mut s, "%1 newest paste-buffer").is_err_and(|e| e.starts_with("input_full:")));
+        let queued = s
+            .parts
+            .pane_mut(PaneId::of(1))
+            .ok_or("no pane")?
+            .drain_input();
+        assert_eq!(queued.len(), crate::pane::INPUT_BYTES - 1);
+        assert!(
+            queued.iter().all(|b| *b == b'y'),
+            "the refused paste added nothing"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_paste_into_an_exited_pane_is_refused() -> TestResult {
+        let mut s = started()?;
+        run(&mut s, "agent-opts 80 24 size str /bin/cat program run")?;
+        s.end_program(PaneId::of(2), fux_wire::answer::Ended::Exited(3));
+        s.copied("x".into(), None, &[])?;
+        let pasted = run(&mut s, "%2 newest paste-buffer");
+        assert!(pasted.is_err_and(|e| e.contains("exited")), "refused");
+        Ok(())
+    }
+
+    #[test]
+    fn an_ended_pane_asks_for_no_reports_and_refuses_keys() -> TestResult {
+        let (mut s, c) = attached(24, 80)?;
+        run(&mut s, "agent-opts 80 23 size str /bin/cat program run")?;
+        run(&mut s, &format!("str {c} client str +2 workspace show"))?;
+        let id = PaneId::of(2);
+        // A test's session starts no program: one is put in the pane.
+        let argv = ["/bin/cat".to_owned()];
+        let child = process::spawn(&argv, Path::new("/"), (&[], &[]), (sized(4, 20)?, None))?;
+        (s.parts.pane_mut(id).ok_or("the pane")?).set_process(Process::Reading(child));
+        s.out(id, b"\x1b[?1000h\x1b[?1004h");
+        let mouse = |s: &Session| crate::render::compose(s, c).map(|g| g.modes.mouse);
+        assert_eq!(mouse(&s), Some(1000), "asked while it runs");
+        s.end_program(id, Ended::Signalled(9));
+        assert_eq!(mouse(&s), Some(0), "asked for none once it ended");
+        let notice = |s: &mut Session, typed: &[u8]| {
+            let view = s.views.get_mut(&c).map(|v| v.notice = None);
+            s.input(c, typed);
+            view.and(s.views.get(&c)).and_then(|v| v.notice.clone())
+        };
+        assert_eq!(notice(&mut s, b"\x1b[I").map(|n| n.text), None);
+        let key = notice(&mut s, b"x").map(|n| n.text).unwrap_or_default();
+        assert!(key.contains("was killed by SIGKILL"), "{key}");
+        reap(&mut s);
+        Ok(())
+    }
+
+    #[test]
+    fn a_respawn_reads_what_the_old_program_left() -> TestResult {
+        let mut s = started()?;
+        run(&mut s, "agent-opts 80 24 size str /bin/cat program run")?;
+        let id = PaneId::of(2);
+        s.out(id, b"\x1b[?2026h\x1b]2;old\x07\x07");
+        let mut pane = s.parts.pane_mut(id).ok_or("the pane")?;
+        pane.exiting(fux_wire::answer::Ended::Exited(3));
+        let lines = told(&mut s, |s| {
+            let _ = run(s, "%2 kill-first respawn");
+        });
+        let at = |what: &str| {
+            lines
+                .find(&format!(r#""{what}","pane":"%2""#))
+                .ok_or(lines.clone())
+        };
+        assert!(at("title")? < at("exited")?, "{lines}");
+        assert!(at("bell")? < at("exited")?, "{lines}");
+        assert!(at("exited")? < at("respawned")?, "{lines}");
+        Ok(())
+    }
+
+    #[test]
+    fn what_is_left_past_the_most_read_is_said() -> TestResult {
+        let zeros = std::fs::File::open("/dev/zero")?;
+        let (left, more) = left_on(&zeros);
+        assert_eq!((left.len(), more), (LEFT_MAX, DrainEnd::Cut));
+        let null = std::fs::File::open("/dev/null")?;
+        assert_eq!(left_on(&null), (Vec::new(), DrainEnd::Empty));
+        Ok(())
+    }
+
+    #[test]
+    fn unexpected_terminal_read_errors_are_not_empty_output() -> TestResult {
+        let mut reads = [Ok(1), Err(fuxix::Errno::INTR), Err(fuxix::Errno::INVAL)].into_iter();
+        let (left, end) = drain_terminal(|bytes| {
+            if let Some(first) = bytes.first_mut() {
+                *first = b'x';
+            }
+            reads.next().ok_or(fuxix::Errno::INVAL)?
+        });
+        assert_eq!(
+            (left, end),
+            (b"x".to_vec(), DrainEnd::Failed(fuxix::Errno::INVAL))
+        );
+        for end in [Ok(0), Err(fuxix::Errno::AGAIN), Err(fuxix::Errno::IO)] {
+            assert_eq!(drain_terminal(|_| end), (Vec::new(), DrainEnd::Empty));
+        }
+        let directory = std::fs::File::open(".")?;
+        let (_, end) = left_on(&directory);
+        assert!(matches!(end, DrainEnd::Failed(_)), "{end:?}");
+        let (reader, _writer) = std::io::pipe()?;
+        fuxix::io::set_nonblocking(&reader, true)?;
+        assert_eq!(left_on(&reader), (Vec::new(), DrainEnd::Empty));
+        let (mut session, client) = attached(10, 40)?;
+        let id = *session.parts.panes().keys().next().ok_or("pane")?;
+        session
+            .parts
+            .pane_mut(id)
+            .ok_or("pane")?
+            .read_failed(fuxix::Errno::INVAL);
+        assert!(session.tell_lost());
+        let view = session.views.get(&client).ok_or("client")?;
+        let notice = &view.notice.as_ref().ok_or("notice")?.text;
+        assert!(notice.contains("reading program terminal"), "{notice}");
+        assert!(!session.tell_lost());
+        Ok(())
+    }
+
+    #[test]
+    fn a_final_read_failure_survives_the_exit_notice() -> TestResult {
+        for (explicit, last, live) in [
+            (true, false, true),
+            (false, false, true),
+            (false, true, true),
+            (true, false, false),
+            (false, false, false),
+            (false, true, false),
+        ] {
+            let (mut session, client) = attached(10, 40)?;
+            let id = PaneId::of(1);
+            if !last {
+                run(&mut session, "%1 str horizontal axis split")?;
+            }
+            if explicit {
+                let runs = Runs::Explicit(pane::Launch {
+                    argv: command::Program::new("/bin/sh".into(), Vec::new())?,
+                    cwd: "/".into(),
+                    env: command::EnvPatch::default(),
+                });
+                let fresh = Pane::new(
+                    id,
+                    Some("test".into()),
+                    runs,
+                    sized(9, 40)?,
+                    crate::pane::tests::options(1024)?,
+                    Instant::now(),
+                )?;
+                session
+                    .parts
+                    .pane_mut(id)
+                    .ok_or("pane")?
+                    .respawned(fresh, Process::Absent);
+            }
+            session.out(id, b"saved");
+            if live {
+                session.read_failed(id, fuxix::Errno::INVAL, Instant::now());
+            } else {
+                session
+                    .parts
+                    .pane_mut(id)
+                    .ok_or("pane")?
+                    .read_failed(fuxix::Errno::INVAL);
+            }
+            session.end_program(id, Ended::Exited(0));
+            let notice = session
+                .views
+                .get(&client)
+                .and_then(|view| view.notice.as_ref())
+                .ok_or("notice")?;
+            assert!(
+                notice.error
+                    && notice.text.contains("reading program terminal")
+                    && notice.text.contains(&fuxix::Errno::INVAL.to_string()),
+                "{notice:?}"
+            );
+            assert!(notice.text.contains("exited"), "{notice:?}");
+            assert_eq!(notice.text.matches("reading program terminal").count(), 1);
+            if explicit {
+                assert_eq!(session.pane(id)?.read_error(), Some(fuxix::Errno::INVAL));
+                assert!(
+                    session
+                        .pane(id)?
+                        .screen()
+                        .rows()
+                        .any(|row| row.cells_text().contains("saved"))
+                );
+            } else {
+                assert!(session.pane(id).is_err());
+            }
+            if last {
+                assert!(session.outbox.iter().any(|out| matches!(out, Outgoing::Shutdown(why) if why.contains(&fuxix::Errno::INVAL.to_string()))));
+            }
+        }
+        Ok(())
+    }
+
+    #[cfg(feature = "checks")]
+    #[test]
+    fn refused_client_capture_returns_an_error() -> TestResult {
+        let (mut session, client) = attached(10, 40)?;
+        fux_vt::refuse_next(1);
+        let result = session.client(
+            Some(client),
+            &ClientAction::Capture,
+            Here::Cli(None, None),
+            Instant::now(),
+        );
+        let error = result.err().ok_or("capture succeeded")?;
+        assert_eq!(error.code(), Code::Memory);
+        Ok(())
+    }
+
+    #[test]
+    fn a_frame_a_resize_reads_is_read_whole() -> TestResult {
+        let (mut s, c) = attached(24, 80)?;
+        let id = PaneId::of(1);
+        s.out(id, b"\x1b[?2026h\x07\x1b]52;c;aGk=\x07");
+        assert!(s.buffers.is_empty(), "held");
+        s.size_client(c, 30, 100)?;
+        assert_eq!(s.buffers.front().map(|(_, text)| text.as_str()), Some("hi"));
+        assert!(!s.pane(id)?.bell, "rung");
+        Ok(())
+    }
+
+    #[test]
+    fn a_fixed_tab_no_client_sizes_is_laid_out_on_its_size() -> TestResult {
+        let (mut s, c) = attached(24, 80)?;
+        run(&mut s, "opts 40 12 size str +1 workspace in new-tab drop")?;
+        run(&mut s, &format!("str {c} client str @2 tab show"))?;
+        let size = |s: &Session| {
+            s.pane(PaneId::of(2))
+                .map(|p| (p.size().cols(), p.size().rows()))
+        };
+        assert_eq!(size(&s).ok(), Some((80, 23)), "sized by the client");
+        s.size_client(c, 1, 80)?;
+        assert_eq!(size(&s).ok(), Some((40, 12)), "on its own size");
+        Ok(())
+    }
+
+    #[test]
+    fn a_small_screen_names_the_panes_it_cuts_and_hides() -> TestResult {
+        let (mut s, _) = attached(25, 80)?;
+        run(&mut s, "str %1 pane str vertical axis split drop")?;
+        let bar = |s: &mut Session, rows, cols| {
+            let grid = watch(s, rows, cols).map(|c| crate::render::compose(s, c));
+            Ok::<_, String>(grid?.map(|g| g.row_text(g.rows.saturating_sub(1))))
+        };
+        let roomy = bar(&mut s, 30, 100)?.unwrap_or_default();
+        assert!(!roomy.contains('['), "{roomy}");
+        let small = bar(&mut s, 6, 80)?.unwrap_or_default();
+        assert!(small.contains("[cut %1 %2] %1"), "{small}");
+        let short = bar(&mut s, 3, 80)?.unwrap_or_default();
+        assert!(short.contains("[hidden %2] [cut %1] %1"), "{short}");
+        // Named before the tabs and the title on a narrow bar.
+        let narrow = bar(&mut s, 3, 24)?.unwrap_or_default();
+        assert!(narrow.contains("[hidden %2] [cut %1]"), "{narrow}");
+        Ok(())
+    }
+
+    #[test]
+    fn a_new_tab_takes_the_screen_of_the_callers_tab() -> TestResult {
+        let (mut s, _small) = attached(24, 80)?;
+        let big = s.attach(50, 200, None)?;
+        run(&mut s, "opts 100 30 size str other name new-workspace drop")?;
+        run(
+            &mut s,
+            &format!("str {big} client str other workspace show"),
+        )?;
+        let caller = Caller {
+            gave: Some((PaneId::of(2), 0)),
+            within: Within::This,
+            ..Caller::default()
+        };
+        let new_tab = Command::NewTab {
+            options: fux::script::default_state()?.preferences.pane_options(),
+            start: command::Start::Shell(command::Program::new("/bin/sh".into(), Vec::new())?),
+            target: None,
+            name: None,
+            size: None,
+            cwd: Some("/".into()),
+            env: fux_wire::command::EnvPatch::default(),
+        };
+        s.execute(&new_tab, &Origin::Cli(caller), Instant::now())?;
+        let tab = s.tab("@3".parse()?).ok_or("the new tab")?;
+        let size = tab.fit().size();
+        assert_eq!((size.cols(), size.rows()), (200, 49));
+        Ok(())
+    }
+
+    #[test]
+    fn in_process_waits_answer_only_after_the_frame_is_released() -> TestResult {
+        for (budgeted, timeout) in [(true, 0), (false, 2)] {
+            let mut s = started()?;
+            let mut frame = b"\x1b[?2026h".to_vec();
+            if budgeted {
+                frame.extend(crate::pane::tests::spends_the_budget(24, 80));
+            }
+            frame.extend_from_slice(b"DONE");
+            if budgeted {
+                frame.extend_from_slice(b"\x1b[?2026l");
+            }
+            s.out(PaneId::of(1), &frame);
+            if budgeted {
+                assert!(s.pane(PaneId::of(1)).is_ok_and(Pane::mid_frame));
+            }
+            let answer = output(&mut s, &format!("%1 {timeout} timeout wait"))?;
+            assert!(answer.ends_with(" screen\n"), "{answer}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn a_split_elsewhere_leaves_the_splitters_zoom() -> TestResult {
+        let (mut s, c) = attached(24, 80)?;
+        run(&mut s, "%1 str horizontal axis str / cwd split drop")?;
+        run(&mut s, &format!("str {c} client zoom"))?;
+        run(&mut s, "opts 80 24 size str other name new-workspace drop")?;
+        output_as(
+            &mut s,
+            Some(c),
+            "%3 str horizontal axis str / cwd split drop",
+        )?;
+        assert!(s.views.get(&c).is_some_and(|v| v.zoom), "still zoomed");
+        Ok(())
+    }
+
+    #[test]
+    fn a_zoom_ends_with_its_pane() -> TestResult {
+        let (mut s, c1) = attached(24, 80)?;
+        let c2 = s.attach(24, 80, None)?;
+        run(&mut s, "%1 str horizontal axis split drop")?;
+        run(
+            &mut s,
+            &format!(
+                "str {c1} client %1 show str {c1} client zoom str {c2} client %2 show str {c2} client zoom"
+            ),
+        )?;
+        run(&mut s, "%1 kill")?;
+        assert!(!s.views.get(&c1).ok_or("first view")?.zoom);
+        assert!(s.views.get(&c2).ok_or("second view")?.zoom);
+        run(
+            &mut s,
+            "opts 80 24 size str +1 workspace in new-tab drop @1 kill",
+        )?;
+        assert!(
+            !s.views.get(&c2).ok_or("second view")?.zoom,
+            "closing its tab ends the zoom too"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_zoomed_tab_its_client_detaches_from_keeps_its_sizes() -> TestResult {
+        let sizes =
+            |s: &Session| [1, 2].map(|p| s.parts.panes().get(&PaneId::of(p)).map(Pane::size));
+        let (mut s, c) = attached(24, 80)?;
+        run(&mut s, "%1 str horizontal axis split drop")?;
+        run(&mut s, &format!("str {c} client zoom"))?;
+        let zoomed = sizes(&s);
+        s.detach_client(c);
+        assert_eq!(sizes(&s), zoomed);
+        Ok(())
+    }
+
+    #[test]
+    fn output_cut_at_an_end_is_told_with_the_end() -> TestResult {
+        let (mut s, c) = attached(24, 80)?;
+        run(&mut s, "agent-opts 80 23 size str /bin/cat program run")?;
+        run(&mut s, &format!("str {c} client str +2 workspace show"))?;
+        let id = PaneId::of(2);
+        let notice = |s: &Session| s.views.get(&c).and_then(|v| v.notice.clone());
+        let cut = |s: &mut Session| (s.parts.pane_mut(id)).map(|mut p| p.left_cut());
+        cut(&mut s);
+        let lines = told(&mut s, |s| s.end_program(id, Ended::Exited(3)));
+        assert!(
+            lines.contains(r#"{"event":"exited","pane":"%2""#)
+                && lines.contains(r#""truncated":true"#),
+            "{lines}"
+        );
+        let said = notice(&s).map(|n| n.text).unwrap_or_default();
+        assert!(
+            said.contains("%2 exited 3; it left more than 1 MiB"),
+            "{said}"
+        );
+        let json = output(&mut s, "%2 capture json")?;
+        assert!(json.contains(r#""truncated":["output"]"#), "{json}");
+        // Respawned, its cut was the old program's, told at its exit.
+        let lines = told(&mut s, |s| _ = run(s, "%2 respawn"));
+        assert!(!lines.contains("truncated"), "{lines}");
+        let json = output(&mut s, "%2 capture json")?;
+        assert!(json.contains(r#""truncated":[]"#), "{json}");
+        // So too with `kill-first`, which ends only a program that runs.
+        cut(&mut s);
+        s.end_program(id, Ended::Exited(3));
+        let lines = told(&mut s, |s| _ = run(s, "%2 kill-first respawn"));
+        assert!(!lines.contains("truncated"), "{lines}");
+        // One respawned over while it runs is told so at the respawn.
+        let argv = ["/bin/cat".to_owned()];
+        let child = process::spawn(&argv, Path::new("/"), (&[], &[]), (sized(4, 20)?, None))?;
+        (s.parts.pane_mut(id).ok_or("the pane")?).set_process(Process::Reading(child));
+        cut(&mut s);
+        let lines = told(&mut s, |s| _ = run(s, "%2 kill-first respawn"));
+        assert!(
+            lines.starts_with(r#"{"event":"respawned","pane":"%2""#)
+                && lines.contains(r#""truncated":true"#),
+            "{lines}"
+        );
+        assert!(!lines.contains("exited"), "{lines}");
+        let said = notice(&s).map(|n| n.text).unwrap_or_default();
+        assert!(
+            said.contains("respawned; the program it ran left more"),
+            "{said}"
+        );
+        reap(&mut s);
+        Ok(())
+    }
+
+    #[test]
+    fn a_respawn_refused_reads_nothing_of_the_old_program() -> TestResult {
+        let mut s = started()?;
+        run(&mut s, "agent-opts 80 24 size str /bin/cat program run")?;
+        let id = PaneId::of(2);
+        s.out(id, b"\x1b[?2026h\x1b]2;old\x07");
+        // Programs are started, as a server starts them.
+        s.launch = Some("/nonexistent/fux.sock".into());
+        let mut refused = String::new();
+        let lines = told(&mut s, |s| {
+            let respawn = run(s, "%2 str /no/such/bin program kill-first respawn");
+            refused = respawn.err().unwrap_or_default();
+        });
+        assert!(refused.contains("/no/such/bin"), "{refused}");
+        assert!(lines.is_empty(), "{lines}");
+        let pane = s.pane(id)?;
+        assert!(pane.frame_deadline().is_some() && pane.left == Left::default());
+        s.launch = None;
+        let lines = told(&mut s, |s| _ = run(s, "%2 kill-first respawn"));
+        let at = |what: &str| {
+            lines
+                .find(&format!(r#""{what}","pane":"%2""#))
+                .ok_or(lines.clone())
+        };
+        assert!(at("title")? < at("respawned")?, "{lines}");
+        Ok(())
+    }
+
+    /// A respawn of `id`, ending what runs there first; `argv` instead of
+    /// its program, if given.
+    fn respawn_of(id: PaneId, argv: &[&str]) -> Result<Request, String> {
+        Ok(Request::Do(Command::Respawn {
+            target: id,
+            kill: true,
+            env: command::EnvPatch::default(),
+            argv: match argv.split_first() {
+                Some((p, args)) => Some(command::Program::new(
+                    (*p).into(),
+                    args.iter().map(|a| (*a).into()).collect(),
+                )?),
+                None => None,
+            },
+        }))
+    }
+
+    /// The turns that finish what `waiting` waits for, in pane `id`, to
+    /// its answer; how many there were.
+    fn turns(s: &mut Session, id: PaneId, waiting: &mut Waiting) -> Result<(Reply, usize), String> {
+        for turns in 0..10_000 {
+            if let Some(answer) = waiting.answer(s, Instant::now()) {
+                return Ok((answer, turns));
+            }
+            assert!(s.timers().any(|t| t.1 == Timer::Unread(id)), "no turn due");
+            s.fire_now(Timer::Unread(id));
+        }
+        Err("never answered".into())
+    }
+
+    #[test]
+    fn a_replacements_caller_is_current_while_old_output_drains() -> TestResult {
+        let mut s = started()?;
+        run(&mut s, "agent-opts 80 24 size str /bin/cat program run")?;
+        let id = PaneId::of(2);
+        let left: Vec<_> = std::iter::repeat_n(crate::pane::tests::spends_the_budget(24, 80), 4)
+            .flatten()
+            .collect();
+        s.out(id, &left);
+        let Begun::Waiting(mut waiting) =
+            s.begin_now(respawn_of(id, &[])?, &Origin::Cli(Caller::default()))
+        else {
+            return Err("the predecessor's output must still need turns".into());
+        };
+        let caller = |generation| {
+            Origin::Cli(Caller {
+                gave: Some((id, generation)),
+                within: Within::This,
+                ..Caller::default()
+            })
+        };
+        let here = Command::Resolve {
+            text: String::new(),
+            kind: Kind::Pane,
+        };
+        let found = s.command_now(&here, &caller(1));
+        assert_eq!(
+            found.end(),
+            fux_wire::protocol::End::Done,
+            "the replacement's own identity: {found:?}"
+        );
+        assert_eq!(found, Body::Found(AnyRef::Pane(id)).into());
+        assert_eq!(
+            s.command_now(&here, &caller(0)).end().code(),
+            Some(Code::StrayPane)
+        );
+        assert!(s.respawning.contains_key(&id));
+        let (_, turns) = turns(&mut s, id, &mut waiting)?;
+        assert!(turns > 1, "the old output needed {turns} turns");
+        assert_eq!(
+            s.command_now(&here, &caller(1)).end(),
+            fux_wire::protocol::End::Done
+        );
+        assert_eq!(
+            s.command_now(&here, &caller(0)).end().code(),
+            Some(Code::StrayPane)
+        );
+        run(&mut s, "%2 kill")?;
+        assert_eq!(
+            s.command_now(&here, &caller(1)).end().code(),
+            Some(Code::NoPane)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_respawn_reads_what_was_left_in_turns() -> TestResult {
+        let mut s = started()?;
+        run(
+            &mut s,
+            "agent-opts 80 24 size 4096 history-bytes false reflow 3 alternate-scroll-lines 1024 picture-bytes false program-clipboard str /bin/cat program run",
+        )?;
+        let (id, origin) = (PaneId::of(2), Origin::Cli(Caller::default()));
+        let mut stream = crate::journal::Reader::new(
+            fux_wire::inspect::Scope::All,
+            s.parts.journal(),
+            s.run,
+            None,
+        )?;
+        let spends = crate::pane::tests::spends_the_budget(24, 80);
+        let mut left: Vec<u8> = std::iter::repeat_n(spends, 4).flatten().collect();
+        left.push(0x07);
+        s.out(id, &left);
+        let Begun::Waiting(mut waiting) = s.begin_now(respawn_of(id, &[])?, &origin) else {
+            return Err("answered before what was left was read".into());
+        };
+        assert_eq!(waiting.due(), None);
+        let Begun::Done(again) = s.begin_now(respawn_of(id, &[])?, &origin) else {
+            return Err("a second respawn under way".into());
+        };
+        assert_eq!(
+            again.end().code(),
+            Some(Code::StillRunning),
+            "{:?}",
+            again.end()
+        );
+        assert_eq!(
+            s.respawning.get(&id).map(|r| r.fresh.history_bytes()),
+            Some(4096)
+        );
+        run(&mut s, "%2 128 history-budget")?;
+        let (answer, turns) = turns(&mut s, id, &mut waiting)?;
+        assert!(turns > 1, "read in {turns} turns");
+        assert_eq!(answer.end(), fux_wire::protocol::End::Done);
+        let pane = s.pane(id)?;
+        assert_eq!(answer, acted(pane.version(s.run)));
+        assert_eq!(pane.history_bytes(), 128);
+        assert_eq!(pane.options().history_bytes.get(), 128);
+        assert!(!pane.options().program_clipboard);
+        assert!(!pane.options().reflow);
+        assert_eq!(pane.options().alternate_scroll_lines.get(), 3);
+        assert_eq!(pane.options().picture_bytes.get(), 1024);
+        assert!(output(&mut s, "%2 str history_bytes get")?.contains("128"));
+        assert!(output(&mut s, "all dump")?.contains("128 history-bytes false reflow 3 alternate-scroll-lines 1024 picture-bytes false program-clipboard"));
+        let lines = stream.lines(s.parts.journal(), |t| s.holder(t)).0;
+        let at = |what: &str| {
+            lines
+                .find(&format!(r#""{what}","pane":"%2""#))
+                .ok_or(lines.clone())
+        };
+        assert!(at("bell")? < at("respawned")?, "{lines}");
+        assert_eq!(lines.matches("history_budget").count(), 1, "{lines}");
+        Ok(())
+    }
+
+    #[test]
+    fn a_pane_closed_while_respawning_abandons_it() -> TestResult {
+        let (mut s, c) = attached(24, 80)?;
+        run(&mut s, "agent-opts 80 23 size str /bin/cat program run")?;
+        run(&mut s, &format!("str {c} client str +2 workspace show"))?;
+        let id = PaneId::of(2);
+        s.out(id, &crate::pane::tests::spends_the_budget(23, 80));
+        // Programs are started, as a server starts them.
+        s.launch = Some("/nonexistent/fux.sock".into());
+        let begun = s.begin_now(respawn_of(id, &[])?, &Origin::Cli(Caller::default()));
+        s.launch = None;
+        let Begun::Waiting(mut waiting) = begun else {
+            return Err("answered before what was left was read".into());
+        };
+        assert_eq!(s.children().count(), 1, "the program started for it");
+        run(&mut s, "%2 kill")?;
+        let answer = waiting.answer(&s, Instant::now()).ok_or("no answer")?;
+        assert_eq!(
+            answer.end().code(),
+            Some(Code::Closed),
+            "{:?}",
+            answer.end()
+        );
+        let said = (s.views.get(&c))
+            .and_then(|v| v.notice.clone())
+            .map(|n| n.text);
+        let said = said.unwrap_or_default();
+        assert!(said.starts_with("%2 closed while respawning"), "{said}");
+        assert_eq!(s.dying.len(), 1, "the program started for it, ended");
+        reap(&mut s);
+        Ok(())
+    }
+
+    #[test]
+    fn input_is_refused_while_respawning() -> TestResult {
+        for (kill, exiting) in [(true, None), (false, Some(Ended::Exited(0)))] {
+            let mut s = started()?;
+            run(&mut s, "agent-opts 80 24 size str /bin/cat program run")?;
+            let id = PaneId::of(2);
+            let argv = ["/bin/cat".to_owned()];
+            let size = (sized(24, 80)?, None);
+            let child = process::spawn(&argv, Path::new("/"), (&[], &[]), size)?;
+            let mut pane = s.parts.pane_mut(id).ok_or("the pane")?;
+            pane.set_process(Process::Reading(child));
+            if let Some(ended) = exiting {
+                pane.exiting(ended);
+            }
+            s.out(id, &crate::pane::tests::spends_the_budget(24, 80));
+            let mut stream = crate::journal::Reader::new(
+                fux_wire::inspect::Scope::All,
+                s.parts.journal(),
+                s.run,
+                None,
+            )?;
+            let respawn = Request::Do(Command::Respawn {
+                target: id,
+                kill,
+                env: command::EnvPatch::default(),
+                argv: None,
+            });
+            let Begun::Waiting(mut waiting) = s.begin_now(respawn, &Origin::Cli(Caller::default()))
+            else {
+                return Err("answered before what was left was read".into());
+            };
+            let sent = run(&mut s, "%2 str abc text send-keys");
+            assert!(sent.is_err_and(|e| e.contains("respawning")));
+            let signalled = s.signalled(id).map(drop).map_err(|e| e.to_string());
+            assert!(signalled.is_err_and(|e| e.contains("respawning")));
+            turns(&mut s, id, &mut waiting)?;
+            let lines = stream.lines(s.parts.journal(), |t| s.holder(t)).0;
+            assert!(lines.contains(r#""respawned","pane":"%2""#), "{lines}");
+            assert!(!lines.contains("input_unread"), "{lines}");
+            reap(&mut s);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn a_held_frame_is_a_turn_of_the_respawn() -> TestResult {
+        let mut s = started()?;
+        run(&mut s, "agent-opts 80 24 size str /bin/cat program run")?;
+        let id = PaneId::of(2);
+        s.out(id, b"\x1b[?2026hheld");
+        let begun = s.begin_now(respawn_of(id, &[])?, &Origin::Cli(Caller::default()));
+        let Begun::Waiting(mut waiting) = begun else {
+            return Err("answered with a frame held".into());
+        };
+        let timers: Vec<Timer> = s.timers().map(|(_, timer)| timer).collect();
+        assert_eq!(timers, [Timer::Unread(id)]);
+        let (_, turns) = turns(&mut s, id, &mut waiting)?;
+        assert_eq!(turns, 1);
+        Ok(())
+    }
+
+    #[test]
+    fn a_resize_while_respawning_is_kept() -> TestResult {
+        let mut s = started()?;
+        run(&mut s, "agent-opts 80 24 size str /bin/cat program run")?;
+        let id = PaneId::of(2);
+        s.out(id, &crate::pane::tests::spends_the_budget(24, 80));
+        let begun = s.begin_now(respawn_of(id, &[])?, &Origin::Cli(Caller::default()));
+        let Begun::Waiting(mut waiting) = begun else {
+            return Err("answered before what was left was read".into());
+        };
+        run(&mut s, "%2 tab 100 30 resize")?;
+        turns(&mut s, id, &mut waiting)?;
+        let pane = s.pane(id)?;
+        assert_eq!((pane.respawns, pane.size()), (1, sized(30, 100)?));
+        Ok(())
+    }
+
+    #[test]
+    fn a_respawned_program_that_ends_first_is_told_exited() -> TestResult {
+        let mut s = started()?;
+        run(&mut s, "agent-opts 80 24 size str /bin/cat program run")?;
+        let id = PaneId::of(2);
+        s.out(id, &crate::pane::tests::spends_the_budget(24, 80));
+        let mut stream = crate::journal::Reader::new(
+            fux_wire::inspect::Scope::All,
+            s.parts.journal(),
+            s.run,
+            None,
+        )?;
+        // Programs are started, as a server starts them.
+        s.launch = Some("/nonexistent/fux.sock".into());
+        let begun = s.begin_now(
+            respawn_of(id, &["/bin/sh", "-c", "exit 0"])?,
+            &Origin::Cli(Caller::default()),
+        );
+        s.launch = None;
+        let Begun::Waiting(mut waiting) = begun else {
+            return Err("answered before what was left was read".into());
+        };
+        let ended = |s: &Session| {
+            let replacement = s.respawning.get(&id).and_then(|r| r.process.child());
+            replacement.and_then(|c| c.leader.exited())
+        };
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while ended(&s).is_none() {
+            assert!(Instant::now() < deadline, "the program never ended");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        // The server reaps no orphan it holds: none but the children.
+        let started = s.respawning.get(&id).and_then(|r| r.process.child());
+        let started = started.map(|c| c.leader.pid());
+        assert!(s.children().any(|c| Some(c.leader.pid()) == started));
+        turns(&mut s, id, &mut waiting)?;
+        let lines = stream.lines(s.parts.journal(), |t| s.holder(t)).0;
+        let at = |what: &str| {
+            lines
+                .find(&format!(r#""{what}","pane":"%2""#))
+                .ok_or(lines.clone())
+        };
+        assert!(at("respawned")? < at("exited")?, "{lines}");
+        assert!(
+            lines.contains(r#""exited","pane":"%2","tab":"@2","workspace":"+2","exited":0"#),
+            "{lines}"
+        );
+        reap(&mut s);
+        Ok(())
+    }
+
+    #[test]
+    fn a_program_starts_in_the_cell_of_the_terminal_drawing_it() -> TestResult {
+        let (mut s, c) = attached(24, 80)?;
+        run(&mut s, "agent-opts 80 23 size str /bin/cat program run")?;
+        run(&mut s, &format!("str {c} client str +2 workspace show"))?;
+        s.input(c, b"\x1b[6;20;10t");
+        let id = PaneId::of(2);
+        s.launch = Some("/nonexistent/fux.sock".into());
+        (s.respawn(
+            id,
+            false,
+            &command::EnvPatch::default(),
+            None,
+            Instant::now(),
+        ))?;
+        let mut pane = s.parts.pane_mut(id).ok_or("the pane")?;
+        let size = pane.size();
+        let child = pane.set_process(Process::Absent);
+        let Process::Reading(child) = child else {
+            return Err("no program started".into());
+        };
+        let told = fuxix::terminal::window_size(&child.master).and_then(|(_, p)| p);
+        let told = told.map(|p| (p.width.get(), p.height.get()));
+        drop(child.master);
+        if let Err(pid) = child.leader.finish() {
+            process::reaped(pid);
+        }
+        assert_eq!(told, Some((size.cols() * 10, size.rows() * 20)));
+        Ok(())
+    }
+
+    #[test]
+    fn a_tab_its_client_follows_starts_in_its_terminals_cell() -> TestResult {
+        let (mut s, c) = attached(24, 80)?;
+        s.input(c, b"\x1b[6;20;10t");
+        let origin = Origin::Client(c);
+        let here = s.here(&origin)?;
+        let mut cell = |follows: bool| {
+            let opening = s.opening((Some(Path::new("/")), None), (here, follows));
+            opening
+                .map(|(_, _, (_, cell))| cell)
+                .map_err(|e| e.to_string())
+        };
+        assert_eq!(cell(true)?, fux_vt::CellSize::new(10, 20));
+        assert_eq!(cell(false)?, None);
+        Ok(())
+    }
+
+    #[test]
+    fn a_resize_and_a_new_cell_size_a_panes_terminal_once() -> TestResult {
+        let (mut s, c) = attached(24, 80)?;
+        let id = PaneId::of(1);
+        let size = s.pane(id)?.size();
+        let argv = ["/bin/cat".to_owned()];
+        let child = process::spawn(&argv, Path::new("/"), (&[], &[]), (size, None))?;
+        (s.parts.pane_mut(id).ok_or("the pane")?).set_process(Process::Reading(child));
+        let pixels = |pane: &Pane| {
+            let (_, pixels) = fuxix::terminal::window_size(&pane.process().child()?.master)?;
+            pixels.map(|p| (p.width.get(), p.height.get()))
+        };
+        let view = s.views.get_mut(&c).ok_or("the view")?;
+        view.terminal.cell = fux_vt::CellSize::new(10, 20);
+        let smaller = sized(10, 40)?;
+        let mut between = None;
+        let now = Instant::now();
+        s.read_with(
+            id,
+            |pane| {
+                between = pixels(pane);
+                pane.resize(smaller, now);
+            },
+            now,
+        );
+        assert_eq!(between, None, "not sized before the resize");
+        let pane = s.pane(id)?;
+        assert_eq!(pixels(pane), Some((400, 200)));
+        let mut pane = s.parts.pane_mut(id).ok_or("the pane")?;
+        if let Process::Reading(child) = pane.set_process(Process::Absent) {
+            drop(child.master);
+            if let Err(pid) = child.leader.finish() {
+                process::reaped(pid);
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn a_tab_with_no_host_tells_its_programs_no_cell() -> TestResult {
+        let (mut s, c) = attached(24, 80)?;
+        let id = PaneId::of(1);
+        let size = s.pane(id)?.size();
+        let argv = ["/bin/cat".to_owned()];
+        let child = process::spawn(&argv, Path::new("/"), (&[], &[]), (size, None))?;
+        (s.parts.pane_mut(id).ok_or("the pane")?).set_process(Process::Reading(child));
+        let winsize = |s: &Session| {
+            let pane = s.parts.panes().get(&id)?;
+            fuxix::terminal::window_size(&pane.process().child()?.master)
+        };
+        s.input(c, b"\x1b[6;20;10t");
+        let told = winsize(&s);
+        assert!(told.is_some_and(|(_, pixels)| pixels.is_some()), "{told:?}");
+        run(&mut s, "opts 80 24 size str other name new-workspace drop")?;
+        let show = |ws: &str| format!("str {c} client str {ws} workspace show");
+        let unknown = |s: &Session| winsize(s).is_some_and(|(_, pixels)| pixels.is_none());
+        run(&mut s, &show("other"))?;
+        assert!(unknown(&s), "hidden");
+        run(&mut s, &show("+1"))?;
+        assert_eq!(winsize(&s), told, "shown again");
+        s.detach_client(c);
+        assert!(unknown(&s), "detached");
+        let mut pane = s.parts.pane_mut(id).ok_or("the pane")?;
+        if let Process::Reading(child) = pane.set_process(Process::Absent) {
+            drop(child.master);
+            if let Err(pid) = child.leader.finish() {
+                process::reaped(pid);
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn a_respawn_with_no_host_is_told_no_cell() -> TestResult {
+        let (mut s, c) = attached(24, 80)?;
+        run(&mut s, "agent-opts 80 23 size str /bin/cat program run")?;
+        run(&mut s, &format!("str {c} client str +2 workspace show"))?;
+        s.input(c, b"\x1b[6;20;10t");
+        s.out(PaneId::of(2), b"x");
+        s.detach_client(c);
+        run(&mut s, "%2 respawn")?;
+        let json = output(&mut s, "%2 capture json")?;
+        assert!(json.contains(r#""cell":null"#), "{json}");
+        Ok(())
+    }
+
+    #[test]
+    fn input_an_ended_program_never_read_is_told() -> TestResult {
+        let (mut s, c) = attached(24, 80)?;
+        run(&mut s, "agent-opts 80 23 size str /bin/cat program run")?;
+        run(&mut s, &format!("str {c} client str +2 workspace show"))?;
+        let id = PaneId::of(2);
+        let notice = |s: &Session| s.views.get(&c).and_then(|v| v.notice.clone());
+        let queue = |s: &mut Session, bytes: &[u8]| {
+            let mut pane = s.parts.pane_mut(id).ok_or("the pane")?;
+            pane.push(bytes).map_err(|e| e.to_string())
+        };
+        queue(&mut s, b"abc")?;
+        let lines = told(&mut s, |s| s.end_program(id, Ended::Exited(0)));
+        assert!(
+            lines.contains(r#"{"event":"exited","pane":"%2","tab":"@2","workspace":"+2","exited":0,"input_unread":3}"#),
+            "{lines}"
+        );
+        let said = notice(&s).map(|n| n.text).unwrap_or_default();
+        assert!(
+            said.ends_with("; 3 bytes of input queued for it were never written to it"),
+            "{said}"
+        );
+        assert!(s.pane(id).is_ok_and(|p| p.input().is_empty()));
+        let json = output(&mut s, "%2 capture json")?;
+        assert!(json.contains(r#""input_unread":3"#), "{json}");
+        // Respawned over while it runs, with input it has not read.
+        let argv = ["/bin/cat".to_owned()];
+        let child = process::spawn(&argv, Path::new("/"), (&[], &[]), (sized(4, 20)?, None))?;
+        run(&mut s, "%2 respawn")?;
+        (s.parts.pane_mut(id).ok_or("the pane")?).set_process(Process::Reading(child));
+        queue(&mut s, b"de")?;
+        let lines = told(&mut s, |s| _ = run(s, "%2 kill-first respawn"));
+        assert!(
+            lines.contains(
+                r#"{"event":"respawned","pane":"%2","tab":"@2","workspace":"+2","input_unread":2}"#
+            ),
+            "{lines}"
+        );
+        let said = notice(&s).map(|n| n.text).unwrap_or_default();
+        assert!(said.starts_with("%2 respawned; 2 bytes of input"), "{said}");
+        let json = output(&mut s, "%2 capture json")?;
+        assert!(json.contains(r#""input_unread":0"#), "{json}");
+        reap(&mut s);
+        Ok(())
+    }
+
+    #[test]
+    fn a_respawned_program_reads_no_report_the_ended_one_asked_for() -> TestResult {
+        let (mut s, c) = attached(24, 80)?;
+        run(&mut s, "agent-opts 80 23 size str /bin/cat program run")?;
+        run(&mut s, &format!("str {c} client str +2 workspace show"))?;
+        let id = PaneId::of(2);
+        let queued = |s: &Session| {
+            s.pane(id)
+                .map(|p| p.input().len())
+                .map_err(|e| e.to_string())
+        };
+        s.out(id, b"\x1b[?2048h\x1b[?2031h");
+        s.end_program(id, Ended::Exited(0));
+        (s.parts.pane_mut(id).ok_or("the pane")?).resize(sized(10, 40)?, Instant::now());
+        s.input(c, b"\x1b[?997;1n");
+        assert_eq!(queued(&s)?, 0);
+        run(&mut s, "%2 respawn")?;
+        assert_eq!(queued(&s)?, 0);
+        Ok(())
+    }
+
+    #[test]
+    fn an_exit_told_is_not_told_again_at_a_respawn() -> TestResult {
+        let mut s = started()?;
+        run(&mut s, "agent-opts 80 24 size str /bin/cat program run")?;
+        let lines = told(&mut s, |s| {
+            s.end_program(PaneId::of(2), fux_wire::answer::Ended::Exited(3));
+            let _ = run(s, "%2 respawn");
+        });
+        let said: Vec<&str> = lines.lines().filter_map(|l| l.split('"').nth(3)).collect();
+        assert_eq!(said, ["exited", "respawned"], "{lines}");
+        Ok(())
+    }
+
+    #[test]
+    fn a_pane_respawned_twice_in_its_grace_kills_both() -> TestResult {
+        let mut s = started()?;
+        run(&mut s, "agent-opts 80 24 size str /bin/cat program run")?;
+        // A test's session starts no program: each is put in the pane.
+        let argv = ["/bin/cat".to_owned()];
+        for _ in 0..2 {
+            let child = process::spawn(&argv, Path::new("/"), (&[], &[]), (sized(4, 20)?, None))?;
+            let mut pane = s.parts.pane_mut(PaneId::of(2)).ok_or("the pane")?;
+            pane.set_process(Process::Reading(child));
+            run(&mut s, "%2 kill-first respawn")?;
+        }
+        let dying = std::mem::take(&mut s.dying);
+        let ended = dying.len();
+        for dying in dying {
+            if let Some(pid) = dying.kill() {
+                process::reaped(pid);
+            }
+        }
+        assert_eq!(ended, 2);
+        Ok(())
+    }
+
+    #[test]
+    fn json_of_several_panes_is_one_array() -> TestResult {
+        let mut s = started()?;
+        for split in [false, true] {
+            if split {
+                run(&mut s, "%1 str horizontal axis split")?;
+            }
+            let alone = output(&mut s, "@1 str x text send-keys json")?;
+            let mut expected = Vec::new();
+            for id in s.root(TabId::of(1)).ok_or("layout")?.panes() {
+                expected.push(format!(
+                    r#"{{"pane":"{id}","version":"{}","status":0}}"#,
+                    s.pane(id)?.version(s.run)
+                ));
+            }
+            assert_eq!(alone, format!("[{}]\n", expected.join(",")));
+            let listed = output(&mut s, "list @1 str x text send-keys end json")?;
+            assert_eq!(listed, format!("[{}]\n", alone.trim_end()));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn exit_waits_for_the_last_screen_including_held_frames() -> TestResult {
+        for (held, budgeted) in [(false, true), (true, false), (true, true)] {
+            let mut s = started()?;
+            run(&mut s, "agent-opts 80 24 size str /bin/true program run")?;
+            let id = PaneId::of(2);
+            if !held {
+                let argv = ["/bin/sh", "-c", "exit 0"].map(str::to_owned);
+                let child =
+                    process::spawn(&argv, Path::new("/"), (&[], &[]), (sized(4, 20)?, None))?;
+                (s.parts.pane_mut(id).ok_or("the pane")?).set_process(Process::Reading(child));
+                let exited = |s: &Session| {
+                    s.parts
+                        .panes()
+                        .get(&id)
+                        .and_then(|p| p.process().child()?.leader.exited())
+                        .is_some()
+                };
+                let until = crate::after(Instant::now(), Duration::from_secs(10));
+                while !exited(&s) && Instant::now() < until {
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                assert!(exited(&s), "the child did not exit");
+            }
+            let mut out = Vec::new();
+            if budgeted {
+                out.extend(
+                    std::iter::repeat_n(b"X\x1b[65535b", 2000)
+                        .flatten()
+                        .copied(),
+                );
+                out.extend_from_slice(b"\x1b[2J\x1b[H");
+            }
+            if held {
+                out.extend_from_slice(b"\x1b[?2026h");
+            }
+            out.extend_from_slice(b"DONE");
+            s.out(id, &out);
+            s.end_program(id, Ended::Exited(0));
+            if budgeted {
+                let pane = s.parts.panes().get(&id).ok_or("the pane")?;
+                assert!(pane.has_unread(), "the budget stopped no call");
+                assert!(
+                    pane.process().exit_status().is_none(),
+                    "exited with output unread"
+                );
+            }
+            let mut turns = 0u32;
+            while s
+                .parts
+                .panes()
+                .get(&id)
+                .is_some_and(|p| p.process().exit_status().is_none())
+                && turns < 10_000
+            {
+                s.fire_now(crate::session::Timer::Unread(id));
+                turns = turns.saturating_add(1);
+            }
+            assert!(
+                budgeted || turns == 0,
+                "held={held}: exit was not immediate"
+            );
+            let pane = s.parts.panes().get(&id).ok_or("the pane")?;
+            assert_eq!(pane.process().exit_status(), Some(Ended::Exited(0)));
+            let text = pane
+                .screen()
+                .rows()
+                .map(|r| r.cells_text())
+                .collect::<String>();
+            assert!(
+                text.contains("DONE"),
+                "held={held}, budgeted={budgeted}: {text:?}"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn a_program_whose_terminal_is_written_on_still_exits() -> TestResult {
+        // A large screen, where each ED is spent as 40,000 cells.
+        let (mut s, _) = super::testing::attached(201, 200)?;
+        run(&mut s, "agent-opts 200 200 size str /bin/true program run")?;
+        let id = PaneId::of(2);
+        let argv = ["/bin/sh", "-c", "while :; do printf '\\033[2J'; done"].map(str::to_owned);
+        let child = process::spawn(&argv, Path::new("/"), (&[], &[]), (sized(4, 20)?, None))?;
+        (s.parts.pane_mut(id).ok_or("the pane")?).set_process(Process::Reading(child));
+        let rows = s.parts.panes().get(&id).map(|p| p.screen().size().rows());
+        assert!(rows.is_some_and(|r| r >= 100), "{rows:?} rows");
+        std::thread::sleep(Duration::from_millis(200));
+        let exited = |s: &Session| {
+            s.parts
+                .panes()
+                .get(&id)
+                .is_some_and(|p| p.process().exit_status().is_some())
+        };
+        let mut turns = 0u32;
+        s.end_program(id, Ended::Exited(0));
+        while !exited(&s) && turns < 10_000 {
+            s.fire_now(crate::session::Timer::Unread(id));
+            // As each reap of another child does.
+            s.end_program(id, Ended::Exited(0));
+            turns = turns.saturating_add(1);
+        }
+        let told = exited(&s);
+        reap(&mut s);
+        if let Some(child) =
+            s.parts
+                .pane_mut(id)
+                .and_then(|mut p| match p.set_process(Process::Absent) {
+                    Process::Reading(child)
+                    | Process::HungUp(child)
+                    | Process::ReadFailed(child, _) => Some(child),
+                    Process::Absent | Process::Exited(_) | Process::Respawning => None,
+                })
+        {
+            drop(child.master);
+            let _ = child.leader.finish();
+        }
+        assert!(told, "not told exited in {turns} turns");
+        Ok(())
+    }
+
+    #[test]
+    fn keys_for_several_panes_go_to_all_or_none() -> TestResult {
+        let mut s = started()?;
+        run(&mut s, "%1 str horizontal axis split drop")?;
+        let mut second = s.parts.pane_mut(PaneId::of(2)).ok_or("no %2")?;
+        // Its program reads nothing, and its queue is full.
+        let full = vec![0; crate::pane::INPUT_BYTES];
+        second.push(full)?;
+        let sent = run(&mut s, "@1 str x text send-keys");
+        assert!(sent.is_err_and(|e| e.contains("input_full")), "refused");
+        let first = s.parts.panes().get(&PaneId::of(1)).ok_or("no %1")?;
+        assert_eq!(first.input().len(), 0, "the first pane got none");
+        // Keys too many for the room left are refused, and so is a key
+        // after them, until the program reads: none lands past a hole.
+        let mut pane = s.parts.pane_mut(PaneId::of(1)).ok_or("no %1")?;
+        let room = pane.input().room();
+        (pane.push(vec![0; room.saturating_sub(4)]))?;
+        assert!(run(&mut s, "%1 str 12345678 text send-keys").is_err());
+        assert!(
+            run(&mut s, "%1 str x text send-keys").is_err(),
+            "a key after a refusal"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn keys_at_a_version_go_only_while_the_pane_is_at_it() -> TestResult {
+        let mut s = started()?;
+        let queued =
+            |s: &mut Session| (s.parts.pane_mut(PaneId::of(1))).map(|mut p| p.drain_input());
+        run(&mut s, "%1 capture expect str x text send-keys")?;
+        assert_eq!(queued(&mut s), Some(b"x".to_vec()));
+        let seen = s.pane(PaneId::of(1))?.version(s.run);
+        s.out(PaneId::of(1), b"E");
+        let stale = output(&mut s, &format!("str {seen} expect str x text send-keys"));
+        let stale = stale.err().unwrap_or_default();
+        assert!(
+            stale.starts_with("stale: ") && stale.contains("%1 changed since"),
+            "{stale}"
+        );
+        assert_eq!(queued(&mut s), Some(Vec::new()), "nothing sent");
+        // A program's end is a change too: stale, not `not_running`.
+        run(&mut s, "agent-opts 80 24 size str /bin/cat program run")?;
+        let seen = s.pane(PaneId::of(2))?.version(s.run);
+        s.end_program(PaneId::of(2), fux_wire::answer::Ended::Exited(0));
+        let ended = output(&mut s, &format!("str {seen} expect str x text send-keys"));
+        let ended = ended.err().unwrap_or_default();
+        assert!(ended.starts_with("stale: "), "{ended}");
+        Ok(())
+    }
+
+    #[test]
+    fn history_budget_only_changes_its_target() -> TestResult {
+        let (mut s, client) = attached(5, 20)?;
+        s.out(
+            PaneId::of(1),
+            std::iter::repeat_n("line\r\n", 50)
+                .collect::<String>()
+                .as_bytes(),
+        );
+        let history = |s: &Session| {
+            s.parts
+                .panes()
+                .get(&PaneId::of(1))
+                .map(|p| p.screen().history_len())
+        };
+        assert!(history(&s) > Some(2));
+        // Two rows of four cells: 24 bytes a row and 8 a cell.
+        run(&mut s, "%1 str horizontal axis 4096 history-bytes split")?;
+        let other = s.pane(PaneId::of(2))?.history_bytes();
+        run(&mut s, "str history-bytes 0 set")?;
+        assert!(history(&s) > Some(2));
+        run(&mut s, "str c1 client %1 show str c1 client copy-mode")?;
+        s.input(client, b"t");
+        assert!(
+            s.views
+                .get(&client)
+                .is_some_and(|v| matches!(v.mode, Mode::Copy(_)))
+        );
+        run(&mut s, "%1 112 history-budget")?;
+        assert!(
+            s.views
+                .get(&client)
+                .is_some_and(|v| matches!(v.mode, Mode::Normal))
+        );
+        assert!(
+            s.views
+                .get(&client)
+                .and_then(|v| v.notice.as_ref())
+                .is_some_and(|n| n.text.contains("dropped the rows"))
+        );
+        assert_eq!(s.pane(PaneId::of(2))?.history_bytes(), other);
+        assert_eq!(history(&s), Some(2));
+        Ok(())
+    }
+
+    #[test]
+    fn a_programs_clipboard_write_is_a_copy() -> TestResult {
+        let (mut s, client) = attached(5, 20)?;
+        s.outbox.clear();
+        s.out(PaneId::of(1), b"\x1b]52;c;Zm9v\x07");
+        assert_eq!(
+            s.buffers.front().map(|(_, text)| text.as_str()),
+            Some("foo")
+        );
+        let sent = |s: &Session| {
+            s.outbox
+                .iter()
+                .any(|o| matches!(o, Outgoing::To(c, ToAttached::Paint(b)) if *c == client && **b == *b"\x1b]52;c;Zm9v\x07"))
+        };
+        assert!(sent(&s));
+        // One longer than fux-vt keeps of a string copies nothing, said.
+        let long = format!(
+            "\x1b]52;c;{}\x07",
+            std::iter::repeat_n('A', fux_vt::OSC_PAYLOAD_LIMIT).collect::<String>()
+        );
+        s.out(PaneId::of(1), long.as_bytes());
+        // Read a slice a turn, as the server does before it reads more.
+        while s.pane(PaneId::of(1))?.has_unread() {
+            s.fire_now(crate::session::Timer::Unread(PaneId::of(1)));
+        }
+        let notice = s.views.get(&client).and_then(|v| v.notice.clone());
+        assert!(notice.is_some_and(|n| n.error && n.text.contains("copies (OSC 52) not made (1)")));
+        assert_eq!(
+            s.buffers.front().map(|(_, text)| text.as_str()),
+            Some("foo")
+        );
+        // In one read: each copy made, in order, and the refusal between them told.
+        if let Some(view) = s.views.get_mut(&client) {
+            view.notice = None;
+        }
+        s.out(
+            PaneId::of(1),
+            b"\x1b]52;c;YQ==\x07\x1b]52;c;***\x07\x1b]52;c;Yg==\x07",
+        );
+        let buffers: Vec<&str> = s
+            .buffers
+            .iter()
+            .take(3)
+            .map(|(_, text)| text.as_str())
+            .collect();
+        assert_eq!(buffers, ["b", "a", "foo"]);
+        let notice = s.views.get(&client).and_then(|v| v.notice.clone());
+        assert!(notice.is_some_and(|n| n.text.contains("is not base64")));
+        // One in a tab no client shows is told once one does.
+        run(&mut s, "opts 20 4 size str other name new-workspace")?;
+        run(&mut s, "str c1 client str other workspace show")?;
+        if let Some(view) = s.views.get_mut(&client) {
+            view.notice = None;
+        }
+        s.out(PaneId::of(1), b"\x1b]52;c;***\x07\x1b]52;c;***\x07");
+        assert!(s.views.get(&client).is_some_and(|v| v.notice.is_none()));
+        run(&mut s, "str c1 client str +1 workspace show")?;
+        let notice = s.views.get(&client).and_then(|v| v.notice.clone());
+        assert!(notice.is_some_and(|n| n.text.contains("%1: copies (OSC 52) not made (2)")));
+        // Counted in its JSON too, for a reader no notice reaches.
+        let json = output(&mut s, "%1 capture json")?;
+        assert!(
+            json.contains(r#""copies_cut":1,"copies_not_text":3,"#),
+            "{json}"
+        );
+        s.outbox.clear();
+        run(
+            &mut s,
+            "%1 str horizontal axis false program-clipboard split",
+        )?;
+        s.outbox.clear();
+        s.out(PaneId::of(3), b"\x1b]52;c;YmFy\x07");
+        assert!(!sent(&s) && s.outbox.is_empty());
+        assert_eq!(s.buffers.front().map(|(_, text)| text.as_str()), Some("b"));
+        Ok(())
+    }
+
+    #[test]
+    fn invalid_presentation_data_discards_the_entire_local_draft() -> TestResult {
+        let (mut session, client) = attached(8, 80)?;
+        let before = session
+            .views
+            .get(&client)
+            .ok_or("view")?
+            .presentation
+            .clone();
+        let too_many = std::iter::repeat_n("str workspace ", 17).collect::<String>();
+        let too_long = std::iter::repeat_n('x', 257).collect::<String>();
+        let cases = [
+            "str styles list list str typo 0 1 end end set".to_owned(),
+            "str styles list list str bar 0 1 end list str bar 2 3 end end set".to_owned(),
+            "str styles list list str bar str '#12345g' 1 end end set".to_owned(),
+            "str styles list list str bar 256 1 end end set".to_owned(),
+            "str styles list list str bar 0 1 str bold str bold end end set".to_owned(),
+            "str bar list str bottom list str unknown end list end false end set".to_owned(),
+            "str bar list str bottom list str pane end list str pane end false end set".to_owned(),
+            format!("str bar list str bottom list {too_many} end list end false end set"),
+            "str bar list str top list list str slot 16 end end list end false end set".to_owned(),
+            "str bar-slots list list 0 str one end list 0 str two end end set".to_owned(),
+            "str bar-slots list list 0 10 char end end set".to_owned(),
+            format!("str bar-slots list list 0 str {too_long} end end set"),
+        ];
+        for invalid in cases {
+            // A valid preceding change is discarded with the refused draft.
+            let code = format!("str show-column false set {invalid}");
+            assert!(
+                output_as(&mut session, Some(client), &code).is_err(),
+                "{code}"
+            );
+            assert_eq!(
+                session.views.get(&client).map(|v| &v.presentation),
+                Some(&before),
+                "{code}"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn attach_supplies_presentation_before_any_program_output() -> TestResult {
+        let mut s = started()?;
+        let presentation = fux_wire::presentation::Presentation {
+            bell: true,
+            titles: true,
+            terminal_clipboard: true,
+            cell_placement: false,
+            ..fux::script::default_state()?.preferences.presentation()
+        };
+        let client = s.attach_client(
+            ClientKind::Terminal,
+            Attach::of(sized(8, 40)?, presentation.clone()),
+        )?;
+        assert_eq!(
+            s.views.get(&client).map(|v| v.presentation.clone()),
+            Some(presentation)
+        );
+        s.outbox.clear();
+        s.out(PaneId::of(1), b"\x1b]2;initial\x07\x07\x1b]52;c;Zm9v\x07");
+        assert!(
+            s.outbox
+                .iter()
+                .any(|out| matches!(out, Outgoing::To(c, ToAttached::Paint(b)) if *c == client && b.starts_with(b"\x1b]52;c;")))
+        );
+        assert!(s.outbox.iter().any(|out| matches!(out, Outgoing::To(c, ToAttached::Paint(bytes)) if *c == client && bytes.as_ref() == crate::outer::BELL)));
+        assert_eq!(s.before_paint(client), b"\x1b]2;initial\x1b\\");
+        Ok(())
+    }
+
+    #[test]
+    fn in_process_clients_keep_their_own_presentation() -> TestResult {
+        let (mut s, a) = attached(8, 40)?;
+        let b = s.attach(8, 40, None)?;
+        output_as(
+            &mut s,
+            Some(a),
+            "str titles true set str bell false set str terminal-clipboard false set",
+        )?;
+        output_as(&mut s, Some(b), "me zoom")?;
+        output_as(&mut s, Some(a), "me zoom")?;
+        for (client, titles, bell, terminal_clipboard) in
+            [(a, true, false, false), (b, false, true, true)]
+        {
+            assert_eq!(
+                s.views.get(&client).map(|v| v.presentation.clone()),
+                Some(fux_wire::presentation::Presentation {
+                    titles,
+                    bell,
+                    terminal_clipboard,
+                    cell_placement: false,
+                    ..fux::script::default_state()?.preferences.presentation()
+                })
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn in_process_commits_publish_presentation_at_each_checkpoint() -> TestResult {
+        use fux::script::{AsClient, Asks, Host};
+        let (mut s, client) = attached(8, 40)?;
+        let mut state = fux::script::default_state()?;
+        for (code, committed) in [
+            ("str titles true set %999 capture", true),
+            ("str titles false set str Nope prefix", false),
+        ] {
+            let mut draft = state.draft();
+            let mut published = false;
+            let mut publish = |next: &fux::client_state::ClientState| {
+                published = true;
+                state = next.clone();
+            };
+            let context = fux_wire::protocol::Context {
+                client: Some(client),
+                ..Default::default()
+            };
+            let mut process = InProcess(&mut s);
+            let mut asks = AsClient {
+                asks: &mut process,
+                context: context.clone(),
+                opened: None,
+                on_commit: Some(&mut publish),
+            };
+            let tokens = fuxth::token::source("commit", code)?;
+            let mut machine = fux::script::compile(&tokens)?;
+            let mut output = Vec::new();
+            let mut host = Host::new(context.clone(), Some(&mut draft), &mut output);
+            let result = fux::script::run_capped(&mut machine, &mut host, &mut asks, None, None)
+                .and_then(|_| asks.commit(&mut draft, context));
+            assert!(result.is_err());
+            assert_eq!(published, committed);
+            assert!(state.preferences.titles);
+            assert!(s.views.get(&client).is_some_and(|v| v.presentation.titles));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn clipboard_permission_and_delivery_have_separate_owners() -> TestResult {
+        use fux_wire::act::Act;
+        let (mut s, a) = attached(8, 40)?;
+        let b = s.attach(8, 40, None)?;
+        let presentation = fux::script::default_state()?.preferences.presentation();
+        s.apply(
+            a,
+            vec![Act::Presentation(fux_wire::presentation::Presentation {
+                terminal_clipboard: false,
+                cell_placement: false,
+                ..presentation.clone()
+            })],
+        );
+        run(
+            &mut s,
+            "%1 str horizontal axis false program-clipboard split",
+        )?;
+        if let Some(view) = s.views.get_mut(&b) {
+            view.zoom = true;
+            view.read_only = true;
+        }
+        s.outbox.clear();
+        s.out(PaneId::of(1), b"\x1b]52;c;Zm9v\x07");
+        assert_eq!(s.buffers.len(), 1);
+        let copies = |s: &Session| {
+            s.outbox
+                .iter()
+                .filter_map(|o| match o {
+                    Outgoing::To(c, ToAttached::Paint(b)) if b.starts_with(b"\x1b]52;c;") => {
+                        Some(*c)
+                    }
+                    Outgoing::To(..) | Outgoing::Shutdown(_) => None,
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(copies(&s), [b]);
+        s.outbox.clear();
+        s.out(PaneId::of(2), b"\x1b]52;c;YmFy\x07");
+        assert_eq!(s.buffers.len(), 1);
+        assert!(copies(&s).is_empty());
+        // Manual copying always stores; it targets only the copying client.
+        s.copied("manual".into(), None, &[a])?;
+        assert_eq!(s.buffers.len(), 2);
+        assert!(copies(&s).is_empty());
+        s.apply(a, vec![Act::Presentation(presentation)]);
+        s.copied("mine".into(), None, &[a])?;
+        assert_eq!(copies(&s), [a]);
+        Ok(())
+    }
+
+    #[test]
+    fn replies_dropped_are_counted_in_a_panes_json() -> TestResult {
+        let (mut s, c) = attached(5, 20)?;
+        s.detach_client(c);
+        let id = PaneId::of(1);
+        // `ESC [ 1 ; 1 R` each: as many as fit a read's replies, and one more.
+        let fit = crate::pane::REPLIES_MAX / b"\x1b[1;1R".len();
+        let queries: Vec<u8> = std::iter::repeat_n(&b"\x1b[6n"[..], fit + 1)
+            .flatten()
+            .copied()
+            .collect();
+        s.out(id, &queries);
+        let json = output(&mut s, "%1 capture json")?;
+        assert!(json.contains(r#""replies":1,"#), "{json}");
+        let mut pane = s.parts.pane_mut(id).ok_or("the pane")?;
+        let room = pane.input().room();
+        pane.push(vec![b'x'; room])?;
+        s.out(id, b"\x1b[6n\x1b[6n");
+        let json = output(&mut s, "%1 capture json")?;
+        assert!(json.contains(r#""replies":3,"#), "{json}");
+        // In-band resize reports the full queue refuses are counted: the
+        // one setting mode 2048 answers, and the one a resize sends.
+        s.out(id, b"\x1b[?2048h");
+        let json = output(&mut s, "%1 capture json")?;
+        assert!(json.contains(r#""replies":4,"#), "{json}");
+        run(&mut s, "@1 30 6 resize")?;
+        let json = output(&mut s, "%1 capture json")?;
+        assert!(json.contains(r#""replies":5,"#), "{json}");
+        Ok(())
+    }
+
+    #[test]
+    fn a_tab_no_client_shows_is_sized_as_on_a_clients_screen() -> TestResult {
+        let (mut s, c) = attached(11, 40)?;
+        output_as(
+            &mut s,
+            Some(c),
+            "opts str +1 workspace in str / cwd new-tab drop",
+        )?;
+        run(&mut s, "str c1 client str @1 tab show")?;
+        let size = |s: &Session, p| s.parts.panes().get(&PaneId::of(p)).map(Pane::size);
+        assert_eq!(size(&s, 2), Some(sized(10, 40)?));
+        run(&mut s, "str %2 pane str vertical axis str / cwd split")?;
+        let (top, bottom) = (size(&s, 2), size(&s, 3));
+        let rows = top
+            .zip(bottom)
+            .map(|(t, b)| (t.rows(), b.rows(), t.cols(), b.cols()));
+        assert_eq!(rows, Some((5, 4, 40, 40)), "stacked, a separator between");
+        // Leaving a tab whose layout is unchanged resizes nothing: a zoomed
+        // pane keeps the whole screen.
+        run(&mut s, "str c1 client str @2 tab show")?;
+        run(&mut s, "str c1 client zoom")?;
+        run(&mut s, "str c1 client str @1 tab show")?;
+        assert_eq!(size(&s, 2), Some(sized(10, 40)?));
+        // Nor does a swap or a move in another tab.
+        run(
+            &mut s,
+            "%1 str horizontal axis str / cwd split drop %1 %4 swap-with %4 str new-tab move",
+        )?;
+        assert_eq!(size(&s, 2), Some(sized(10, 40)?));
+        Ok(())
+    }
+
+    #[test]
+    fn a_pane_is_made_only_at_a_size_known() -> TestResult {
+        let run_id = fux_wire::command::Run::now().ok_or("no clock")?;
+        let mut s = Session::new("/nonexistent/fux.sock".into(), false, run_id);
+        s.test_keymap = fux::script::default_state()?.draft();
+        let refused = run(&mut s, "opts new-workspace").err().unwrap_or_default();
+        assert!(
+            refused.starts_with("size: ") && refused.contains("give a size"),
+            "{refused}"
+        );
+        assert!(s.parts.panes().is_empty());
+        // A client of a size no view has starts nothing, nor does one that
+        // only watches: there is nothing to watch.
+        assert!(
+            s.attach(fux_wire::command::MOST.saturating_add(1), 40, None)
+                .is_err()
+        );
+        assert!(watch(&mut s, 11, 40).is_err());
+        assert!(s.parts.panes().is_empty());
+        let size = |s: &Session, p| s.parts.panes().get(&PaneId::of(p)).map(|p| p.size().into());
+        let c = s.attach(11, 40, None)?;
+        assert_eq!(size(&s, 1), Some((10, 40)));
+        // Nor from a caller with no screen or tab of its own, whatever
+        // client is attached.
+        let refused = run(&mut s, "opts str +1 workspace in new-tab").err();
+        assert!(refused.is_some_and(|r| r.starts_with("size: ")));
+        run(&mut s, "str %1 pane str vertical axis split")?;
+        s.detach_client(c);
+        run(&mut s, "%2 kill")?;
+        assert_eq!(
+            size(&s, 1),
+            Some((10, 40)),
+            "laid out again on the last screen"
+        );
+        let refused = run(&mut s, "opts str +1 workspace in new-tab")
+            .err()
+            .unwrap_or_default();
+        assert!(refused.starts_with("size: "), "{refused}");
+        run(&mut s, "opts str +1 workspace in 30 8 size new-tab")?;
+        assert_eq!(size(&s, 3), Some((8, 30)));
+        Ok(())
+    }
+
+    #[test]
+    fn ls_of_a_target_lists_what_is_in_it() -> TestResult {
+        let (mut s, _) = attached(11, 40)?;
+        run(&mut s, "opts 40 10 size str +1 workspace in new-tab")?;
+        run(&mut s, "str %2 pane str vertical axis split")?;
+        let mut ids = |only: AnyRef| -> Result<String, String> {
+            let text = output(&mut s, &format!("{only} info listing"))?;
+            let words = text.lines().filter_map(|l| l.split_whitespace().next());
+            Ok(words.map(str::to_owned).collect::<Vec<_>>().join(" "))
+        };
+        let ws = "+1".parse::<WsId>()?;
+        let tab = "@2".parse::<TabId>()?;
+        assert_eq!(ids(AnyRef::Workspace(ws))?, "+1 @1 %1 @2 %2 %3");
+        assert_eq!(ids(AnyRef::Tab(tab))?, "@2 %2 %3");
+        assert_eq!(ids(AnyRef::Pane(PaneId::of(3)))?, "%3");
+        Ok(())
+    }
+
+    #[test]
+    fn the_json_help_names_every_pane_field() -> TestResult {
+        let (s, _) = attached(4, 30)?;
+        let pane = s.parts.panes().values().next().ok_or("no pane")?;
+        for (name, _) in s.pane_json(pane, &mut fux_wire::wire::Budget::new())? {
+            let named = include_str!("../../docs/json.md").contains(&format!("`{name}`"));
+            assert!(named, "docs/json.md does not name a pane's {name:?}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn json_escapes_what_it_says() -> TestResult {
+        let (mut s, _) = attached(4, 30)?;
+        run(&mut s, "str %1 pane str horizontal axis split")?;
+        run(&mut s, r#"str %1 pane str 'say "hi" \ 界' rename"#)?;
+        s.out(PaneId::of(2), "a\tb 界\x1b]2;tab\\title\x07".as_bytes());
+        let ls = output(&mut s, "ls json")?;
+        assert!(ls.contains(r#""name":"say \"hi\" \\ 界""#), "{ls}");
+        assert!(ls.contains(r#""title":"tab\\title""#), "{ls}");
+        assert!(ls.contains(r#""truncated":[]"#), "{ls}");
+        let long = format!(
+            "\x1b]2;{}\x07",
+            std::iter::repeat_n('t', crate::pane::TITLE_MAX + 1).collect::<String>()
+        );
+        s.out(PaneId::of(2), long.as_bytes());
+        let capture = output(&mut s, "str %2 pane capture json")?;
+        assert!(capture.contains(r#""truncated":["title"]"#), "{capture}");
+        assert!(capture.contains(r#""lines":["a       b 界"]"#), "{capture}");
+        Ok(())
+    }
+
+    #[test]
+    fn an_exit_is_told_even_when_it_closes_the_tab() -> TestResult {
+        let (mut s, client) = attached(10, 40)?;
+        let notice = |s: &Session| {
+            s.views
+                .get(&client)
+                .and_then(|v| v.notice.as_ref())
+                .map(|n| n.text.clone())
+        };
+        // Two panes: the tab stays.
+        run(&mut s, "str %1 pane str horizontal axis split")?;
+        s.end_program(PaneId::of(2), fux_wire::answer::Ended::Exited(3));
+        assert_eq!(notice(&s).as_deref(), Some("%2 exited with status 3"));
+        // A second tab, shown; its only pane exits, and the tab with it.
+        run(&mut s, "opts 40 9 size str +1 workspace in new-tab")?;
+        run(&mut s, "str c1 client str @2 tab show")?;
+        s.end_program(PaneId::of(3), fux_wire::answer::Ended::Exited(7));
+        assert_eq!(notice(&s).as_deref(), Some("%3 exited with status 7"));
+        Ok(())
+    }
+
+    #[test]
+    fn a_pane_moved_beside_another_stays_out_of_empty_tabs() -> TestResult {
+        let (mut s, _) = attached(10, 40)?;
+        run(&mut s, "str %1 pane str horizontal axis split")?;
+        run(&mut s, "opts 40 9 size str +1 workspace in new-tab")?;
+        run(&mut s, "str %3 pane str @1 tab move")?;
+        run(&mut s, "str %1 pane str right move")?;
+        let holding = |s: &Session, pane| {
+            let tabs = s.parts.workspaces().iter().flat_map(|w| w.tabs());
+            tabs.filter(|t| t.holds(pane)).count()
+        };
+        assert_eq!(holding(&s, PaneId::of(1)), 1);
+        run(&mut s, "str %1 pane kill")?;
+        assert_eq!(holding(&s, PaneId::of(1)), 0);
+        Ok(())
+    }
+
+    #[test]
+    fn a_wait_begun_answers_the_change_and_the_close_after_it() -> TestResult {
+        let mut s = started()?;
+        run(&mut s, "str %1 pane str horizontal axis split")?;
+        let origin = Origin::Cli(Caller::default());
+        let timeout = command::Limit::read(30)?;
+        let wait = |target| {
+            Request::Wait(command::Wait {
+                since: command::Since::Now(target),
+                timeout,
+            })
+        };
+        let ws = s
+            .parts
+            .workspaces()
+            .first()
+            .map(|w| w.id())
+            .ok_or("a workspace")?;
+        let Begun::Waiting(mut waiting) = s.begin_now(wait(AnyRef::Workspace(ws)), &origin) else {
+            return Err("the workspace's wait answered at once".into());
+        };
+        assert!(waiting.answer(&s, Instant::now()).is_none());
+        s.out(PaneId::of(2), b"E");
+        let answer = waiting.answer(&s, Instant::now()).ok_or("no answer")?;
+        let text = said(&Ok(answer));
+        assert!(text.starts_with("%2:") && !text.contains("%1"), "{text}");
+        let Begun::Waiting(mut waiting) = s.begin_now(wait(AnyRef::Pane(PaneId::of(1))), &origin)
+        else {
+            return Err("the pane's wait answered at once".into());
+        };
+        run(&mut s, "str %1 pane kill")?;
+        let answer = waiting.answer(&s, Instant::now()).ok_or("no answer")?;
+        assert_eq!(answer.end().code(), Some(Code::Closed), "{answer:?}");
+        Ok(())
+    }
+
+    #[test]
+    fn a_failed_wait_keeps_its_answer() -> TestResult {
+        let mut s = started()?;
+        let caught = "str timeout try %1 1 timeout wait catch drop end";
+        let json = output(&mut s, &format!("{caught} json"))?;
+        assert!(
+            json.starts_with(r#"{"pane":"%1","version":"%1:"#) && json.contains(r#""status":124"#),
+            "{json}"
+        );
+        let again = output(&mut s, &format!("{caught} 1 timeout wait")).err();
+        assert!(
+            again.as_ref().is_some_and(
+                |e| e.starts_with("timeout: ") && e.contains("still at version %1:0.0.0.0.0:")
+            ),
+            "{again:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn counts_use_the_pane_version() -> TestResult {
+        let (mut s, client) = attached(24, 80)?;
+        let shown = "%2:0.57.1.3.0:48211-1867a3f9c2b8e7d6";
+        s.out(PaneId::of(1), shown.as_bytes());
+        let capture = format!("str {client} client capture");
+        let text = output(&mut s, &format!("{capture} string"))?;
+        assert_eq!(text.split_whitespace().next(), Some(shown));
+        for source in [
+            format!("{capture} counts"),
+            format!("list {capture} end first counts"),
+        ] {
+            let refused = output(&mut s, &source)
+                .err()
+                .ok_or("client capture text supplied invented counts")?;
+            assert!(refused.starts_with("type: "), "{refused}");
+        }
+        assert_eq!(
+            output(&mut s, &format!("str {shown} counts json"))?.trim(),
+            "[0,57,1,3,0]"
+        );
+        let counts = s.pane(PaneId::of(1))?.counts();
+        let expected = format!(
+            "[{},{},{},{},{}]",
+            counts.respawns,
+            counts.screen,
+            counts.bells,
+            counts.done,
+            u8::from(counts.ended)
+        );
+        let baseline = output(&mut s, "%1 version")?;
+        for source in [
+            "%1 counts json",
+            "%1 capture counts json",
+            "%1 str x text send-keys counts json",
+            "%1 capture let sample %1 kill sample counts json",
+        ] {
+            assert_eq!(output(&mut s, source)?.trim(), expected, "{source}");
+        }
+        let closed = format!(
+            "str closed try str {} changed wait catch drop end counts",
+            baseline.trim()
+        );
+        let refused = output(&mut s, &closed)
+            .err()
+            .ok_or("closed answer supplied invented counts")?;
+        assert!(refused.starts_with("type: "), "{refused}");
+        Ok(())
+    }
+
+    #[test]
+    fn capture_and_quiet_keep_the_pane_recipe() -> TestResult {
+        let mut s = started()?;
+        let json = output(
+            &mut s,
+            "%1 capture expect str x text send-keys let sent \
+             str timeout try sent 0 timeout wait catch drop end \
+             0 quiet json",
+        )?;
+        assert!(
+            json.contains(r#""pane":"%1""#) && json.contains(r#""version":"%1:"#),
+            "{json}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_closed_panes_answer_names_its_pane() -> TestResult {
+        let mut s = started()?;
+        let version = output(&mut s, "%1 str vertical axis split")?;
+        run(&mut s, "%2 kill")?;
+        let caught = format!(
+            "str closed try str {} changed wait catch drop end",
+            version.trim()
+        );
+        assert_eq!(
+            output(&mut s, &format!("{caught} json"))?.trim(),
+            r#"{"pane":"%2","status":4}"#
+        );
+        assert_eq!(
+            output(&mut s, &format!("{caught} kind"))?.trim(),
+            "closed-answer"
+        );
+        let gone = output(&mut s, &format!("{caught} capture")).err();
+        assert!(
+            gone.as_ref().is_some_and(|e| e.starts_with("no_pane: ")),
+            "{gone:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_version_names_its_pane_and_its_server_run() -> TestResult {
+        let mut s = started()?;
+        run(&mut s, "str %1 pane str horizontal axis split")?;
+        let failed = |s: &mut Session, code: &str| output(s, code).err().unwrap_or_default();
+        let of = |s: &Session, pane| s.pane(PaneId::of(pane)).map(|p| p.version(s.run));
+        let (one, two) = (of(&s, 1)?, of(&s, 2)?);
+        s.out(PaneId::of(2), b"E");
+        // From %2's version, though asked nowhere else: %2's change.
+        let answer = output(&mut s, &format!("str {two} changed 0 timeout wait"))?;
+        assert!(
+            answer.starts_with("%2:") && answer.ends_with(" screen\n"),
+            "{answer}"
+        );
+        let answer = failed(&mut s, &format!("str {one} changed 0 timeout wait"));
+        assert!(answer.contains("timeout"), "{answer}");
+        let other = command::Version {
+            run: "1-0".parse().map_err(|()| "a run")?,
+            ..one
+        };
+        let refused = failed(&mut s, &format!("str {other} changed wait"));
+        assert!(refused.contains("from another server run"), "{refused}");
+        let never = command::Version {
+            counts: command::Counts {
+                bells: 9,
+                ..one.counts
+            },
+            ..one
+        };
+        let refused = failed(&mut s, &format!("str {never} changed wait"));
+        assert!(refused.contains("never had these counts"), "{refused}");
+        let unmade = command::Version {
+            pane: PaneId::of(99),
+            ..one
+        };
+        let refused = failed(&mut s, &format!("str {unmade} changed wait"));
+        assert!(refused.contains("never a pane of this run"), "{refused}");
+        run(&mut s, "%2 kill")?;
+        let closed = failed(&mut s, &format!("str {two} changed wait"));
+        assert!(closed.starts_with("closed: "), "{closed}");
+        // A frame part read at the limit.
+        let mut frame = b"\x1b[?2026h".to_vec();
+        frame.extend(crate::pane::tests::spends_the_budget(23, 80));
+        frame.extend_from_slice(b"DONE\x1b[?2026l");
+        let since = of(&s, 1)?;
+        s.out(PaneId::of(1), &frame);
+        let wait = Request::Wait(command::Wait {
+            since: command::Since::Version(since),
+            timeout: command::Limit::read(0)?,
+        });
+        let Begun::Waiting(mut waiting) = s.begin_now(wait, &Origin::Cli(Caller::default())) else {
+            return Err("a wait mid-frame answered at once".into());
+        };
+        let due = waiting.due().ok_or("a wait with no time")?;
+        while s.pane(PaneId::of(1))?.mid_frame() {
+            assert!(waiting.answer(&s, due).is_none());
+            s.fire_now(Timer::Unread(PaneId::of(1)));
+        }
+        let answer = waiting.answer(&s, due).ok_or("no answer")?;
+        let text = said(&Ok(answer));
+        assert!(text.ends_with(" screen"), "{text}");
+        Ok(())
+    }
+
+    #[test]
+    fn workspace_names_stay_unique_and_failures_use_no_ids() -> TestResult {
+        let mut s = started()?;
+        assert!(run(&mut s, "opts 80 24 size str +1 name new-workspace").is_err());
+        assert_eq!(
+            output(&mut s, "opts 80 24 size str workspace-3 name new-workspace")?,
+            format!("%2:0.0.0.0.0:{}\n", s.run)
+        );
+        assert!(run(&mut s, "opts 80 24 size str workspace-3 name new-workspace").is_err());
+        let third = format!("%3:0.0.0.0.0:{}\n", s.run);
+        assert_eq!(output(&mut s, "opts 80 24 size new-workspace")?, third);
+        let names: Vec<Option<&str>> = s.parts.workspaces().iter().map(|w| w.name()).collect();
+        assert_eq!(names, [None, Some("workspace-3"), None]);
+        // A move to a new workspace with no tab ID left takes no workspace
+        // ID either.
+        s.ids.exhaust_tabs();
+        let ids = s.ids.clone();
+        assert!(run(&mut s, "str %1 pane str new-workspace move").is_err());
+        assert_eq!(s.ids, ids);
+        Ok(())
+    }
+
+    #[test]
+    fn a_hidden_tabs_label_change_repaints_its_workspace() -> TestResult {
+        let (mut s, client) = attached(10, 80)?;
+        run(&mut s, "opts +1 in 80 24 size new-tab drop")?;
+        let pane = PaneId::of(2);
+        let clean = |s: &mut Session| {
+            for view in s.views.values_mut() {
+                view.dirty = false;
+            }
+        };
+        let dirty = |s: &Session| s.views.get(&client).is_some_and(|view| view.dirty);
+        clean(&mut s);
+        s.out(pane, b"ordinary output");
+        assert!(!dirty(&s), "ordinary hidden output");
+        s.out(pane, b"\x1b]2;finished\x07");
+        assert!(dirty(&s), "the hidden tab's label changed");
+        clean(&mut s);
+        s.out(pane, b"\x1b]2;finished\x07");
+        assert!(!dirty(&s), "the label stayed the same");
+        run(&mut s, "@2 str given rename")?;
+        clean(&mut s);
+        s.out(pane, b"\x1b]2;another title\x07");
+        assert!(!dirty(&s), "a given tab name masks its pane's title");
+        run(
+            &mut s,
+            "opts +1 in 80 24 size new-tab drop %3 str given-pane rename",
+        )?;
+        clean(&mut s);
+        s.out(PaneId::of(3), b"\x1b]2;another title\x07");
+        assert!(!dirty(&s), "a given pane name masks its title");
+        Ok(())
+    }
+
+    #[test]
+    fn only_screens_that_may_change_are_marked_for_painting() -> TestResult {
+        let (mut s, one) = attached(10, 40)?;
+        let two = s.attach(10, 40, None)?;
+        let clean = |s: &mut Session| {
+            for view in s.views.values_mut() {
+                view.dirty = false;
+            }
+        };
+        let dirty = |s: &Session, c: ClientId| s.views.get(&c).is_some_and(|v| v.dirty);
+        clean(&mut s);
+        // Keys for the pane's program show when it answers: its output
+        // marks every screen showing the pane.
+        s.input(one, b"ls");
+        assert!(
+            !dirty(&s, one) && !dirty(&s, two),
+            "typing into a pane repaints no one until the pane answers"
+        );
+        s.out(fux_wire::id::PaneId::of(1), b"ls");
+        assert!(dirty(&s, one) && dirty(&s, two), "its echo repaints both");
+        clean(&mut s);
+        // A key that changes the typist's own screen repaints it alone.
+        s.input(one, b"\x02");
+        assert!(
+            dirty(&s, one) && !dirty(&s, two),
+            "the prefix repaints the typist alone"
+        );
+        s.input(one, b"\x1b");
+        s.escape(one);
+        clean(&mut s);
+        for line in [
+            "ls",
+            "str %1 pane capture",
+            "list-keys",
+            "str %1 pane str x text send-keys",
+            "str c1 client str x text send-keys",
+        ] {
+            run(&mut s, line)?;
+        }
+        assert!(
+            !dirty(&s, one) && !dirty(&s, two),
+            "reading repaints no one"
+        );
+        assert!(run(&mut s, "str %9 pane kill").is_err());
+        assert!(
+            !dirty(&s, one) && !dirty(&s, two),
+            "a failure repaints no one"
+        );
+        run(&mut s, "str %1 pane str horizontal axis split")?;
+        assert!(
+            dirty(&s, one) && dirty(&s, two),
+            "a split repaints every client"
+        );
+        clean(&mut s);
+        // A binding that splits, typed by one client, repaints both.
+        s.input(one, b"\x02v");
+        assert!(
+            dirty(&s, one) && dirty(&s, two),
+            "a bound split repaints every client"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_copy_selection_cannot_cross_a_respawn() -> TestResult {
+        use fux_wire::act::{Act, CopyAct, ScreenAct};
+        let (mut s, c) = attached(24, 80)?;
+        output_as(
+            &mut s,
+            Some(c),
+            "agent-opts str /bin/cat program str / cwd run me swap show",
+        )?;
+        let pane = s.focused(c).ok_or("pane")?;
+        s.out(pane, b"old text");
+        s.input(c, b"\x02cv");
+        let view = s.views.get(&c).ok_or("view")?;
+        let opening = view.opening;
+        let Mode::Copy(copy) = &view.mode else {
+            return Err("copy mode".into());
+        };
+        let row = copy.cursor.0;
+        assert!(copy.selection.is_some());
+        run(&mut s, &format!("{pane} kill-first respawn"))?;
+        s.out(pane, b"new text");
+        assert!(
+            s.parts
+                .panes()
+                .get(&pane)
+                .ok_or("pane")?
+                .screen()
+                .row_by_id(row)
+                .is_some()
+        );
+        let view = s.views.get(&c).ok_or("view")?;
+        assert!(view.mode.is_normal());
+        assert!(
+            view.notice
+                .as_ref()
+                .is_some_and(|n| n.text.contains("respawned"))
+        );
+        s.apply(
+            c,
+            vec![Act::Screen {
+                opening,
+                act: ScreenAct::Copy(CopyAct::Yank),
+            }],
+        );
+        assert!(
+            s.buffers.is_empty(),
+            "the old selection cannot copy replacement text"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn copy_mode_ends_when_its_retained_rows_disappear() -> TestResult {
+        for resize in [false, true] {
+            let mut s = started()?;
+            run(&mut s, "%1 64 history-budget")?;
+            let client = s.attach(6, 20, None)?;
+            s.out(PaneId::of(1), b"a\r\nb\r\nc\r\nd\r\ne\r\nf\r\n");
+            run(&mut s, "str c1 client copy-mode")?;
+            s.input(client, b"g");
+            if resize {
+                s.size_client(client, 3, 20)?;
+            } else {
+                s.out(PaneId::of(1), b"g\r\nh\r\ni\r\nj\r\n");
+                s.hold_copies();
+            }
+            let view = s.views.get(&client).ok_or("the view")?;
+            assert!(view.mode.is_normal());
+            assert!(
+                view.notice
+                    .as_ref()
+                    .is_some_and(|n| n.text.contains("dropped the rows"))
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn only_a_size_that_changes_a_client_resizes_it() -> TestResult {
+        let (mut s, c) = attached(10, 40)?;
+        let past = fux_wire::command::MOST.saturating_add(1);
+        for (rows, changes) in [
+            (10, Some(false)),
+            (fux_wire::command::MOST, Some(true)),
+            (fux_wire::command::MOST, Some(false)),
+            (past, None),
+            (0, None),
+            (3, Some(true)),
+        ] {
+            if let Some(view) = s.views.get_mut(&c) {
+                view.dirty = false;
+            }
+            let resized = s.size_client(c, rows, 40).ok();
+            let dirty = s.views.get(&c).is_some_and(|v| v.dirty);
+            assert_eq!(
+                (resized, dirty),
+                (changes, changes == Some(true)),
+                "{rows} rows"
+            );
+        }
+        assert!(s.attach(past, 40, None).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn what_cannot_be_done_is_refused() -> TestResult {
+        let (mut s, _) = attached(10, 40)?;
+        let long = format!(
+            "str %1 pane str {} rename",
+            std::iter::repeat_n("x", NAME_MAX.saturating_add(1)).collect::<String>()
+        );
+        for code in [
+            "opts str %3 name new-workspace",
+            "str +1 workspace str +2 rename",
+            "str +1 workspace str @2 rename",
+            "str %1 pane str '' rename",
+            long.as_str(),
+            "str %1 pane str up 1 move-border",
+            "str c1 client str last focus",
+            "str @1 tab str next reorder",
+        ] {
+            assert!(run(&mut s, code).is_err(), "{code}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn a_screen_asked_from_elsewhere_is_the_clients() -> TestResult {
+        let (mut s, c) = attached(10, 40)?;
+        run(
+            &mut s,
+            "str c1 client str title list list 1 str inert end end list end list 0 end str missing-callback choose",
+        )?;
+        let notice = s
+            .views
+            .get(&c)
+            .and_then(|v| v.notice.as_ref())
+            .map(|n| n.text.as_str())
+            .unwrap_or_default();
+        assert!(notice.contains("missing-callback"), "{notice}");
+        assert!(matches!(
+            s.views.get(&c).map(|v| &v.mode),
+            Some(Mode::Normal)
+        ));
+        run(&mut s, "str c1 client choose-tab")?;
+        assert!(matches!(
+            s.views.get(&c).map(|v| &v.mode),
+            Some(Mode::Panel(fux_wire::act::Panel::List(_)))
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn only_given_names_are_resolved() -> TestResult {
+        let (mut s, _) = attached(10, 40)?;
+        assert_eq!(
+            output(&mut s, "%1 str name get @1 str name get +1 str name get")?,
+            "null\nnull\nnull\n"
+        );
+        for lookup in [
+            "str sh pane",
+            "str main tab",
+            "str main workspace",
+            "str workspace-1 workspace",
+        ] {
+            assert!(output(&mut s, lookup).is_err(), "{lookup}");
+        }
+        run(
+            &mut s,
+            "agent-opts 80 24 size str web name str /bin/cat program run drop",
+        )?;
+        assert_eq!(
+            output(&mut s, "str web pane dup tab str name get")?,
+            "%2\nnull\n"
+        );
+        run(&mut s, "%2 str horizontal axis split drop")?;
+        assert_eq!(output(&mut s, "str web pane")?, "%2\n");
+        s.out(PaneId::of(2), b"\x1b]2;spool\x07");
+        assert!(output(&mut s, "str spool pane").is_err());
+        assert!(output(&mut s, "str cat pane").is_err());
+        assert_eq!(output(&mut s, "str %1")?, "%1\n");
+        let json = output(&mut s, "%1 capture json")?;
+        assert!(json.starts_with(r#"{"pane":"%1""#), "{json}");
+        Ok(())
+    }
+
+    #[test]
+    fn lookups_do_not_depend_on_layout_shape() -> TestResult {
+        let mut s = started()?;
+        for split in [false, true] {
+            if split {
+                run(&mut s, "%1 str horizontal axis split drop")?;
+            }
+            for lookup in ["@1 pane", "+1 pane", "+1 tab", "@1 str rows get"] {
+                assert!(output(&mut s, lookup).is_err(), "{lookup}");
+            }
+            assert_eq!(output(&mut s, "%1 tab workspace")?, "+1\n");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn split_requires_an_explicit_axis() -> TestResult {
+        let (mut s, _) = attached(10, 40)?;
+        let ids = s.ids.clone();
+        for code in ["%1 split", "%1 str diagonal axis split"] {
+            assert!(output(&mut s, code).is_err(), "{code}");
+            assert_eq!(s.ids, ids);
+        }
+        run(&mut s, "%1 str vertical axis split drop")?;
+        assert_eq!(s.parts.panes().len(), 2);
+        Ok(())
+    }
+
+    #[test]
+    fn scalar_request_slots_are_given_once() -> TestResult {
+        let (mut s, _) = attached(10, 40)?;
+        let ids = s.ids.clone();
+        for (base, first, second, action) in [
+            ("opts", "str a name", "str b name", "new-tab"),
+            ("opts", "40 10 size", "40 10 size", "new-tab"),
+            ("opts", "str / cwd", "str / cwd", "new-tab"),
+            ("opts", "str a in", "str b in", "new-tab"),
+            ("opts", "str cat program", "str sh program", "new-tab"),
+            (
+                "opts",
+                "str cat program",
+                "list str sh end shell-program",
+                "new-tab",
+            ),
+            (
+                "opts",
+                "list str sh end shell-program",
+                "str cat program",
+                "new-tab",
+            ),
+            (
+                "opts",
+                "list end copy-environment",
+                "list end copy-environment",
+                "new-tab",
+            ),
+            ("opts", "0 history-bytes", "1 history-bytes", "new-tab"),
+            ("opts", "false reflow", "true reflow", "new-tab"),
+            (
+                "opts",
+                "0 alternate-scroll-lines",
+                "1 alternate-scroll-lines",
+                "new-tab",
+            ),
+            ("opts", "0 picture-bytes", "1 picture-bytes", "new-tab"),
+            (
+                "opts",
+                "false program-clipboard",
+                "true program-clipboard",
+                "new-tab",
+            ),
+            ("opts", "watch", "watch", "attach"),
+            ("%1", "str horizontal axis", "str vertical axis", "split"),
+            ("%1", "1 2 shares", "2 1 shares", "split"),
+            ("%1", "kill-first", "kill-first", "respawn"),
+            ("%1", "0 timeout", "1 timeout", "wait"),
+            ("%1", "0 history", "all-history", "capture"),
+            ("%1", "all-history", "0 history", "capture"),
+            ("%1", "0 1 rows", "0 2 rows", "capture"),
+            ("%1", "0 1 cols", "0 2 cols", "capture"),
+        ] {
+            let code = format!("{base} {first} {second} {action}");
+            let error = output(&mut s, &code)
+                .err()
+                .ok_or_else(|| format!("ran {code}"))?;
+            assert!(error.starts_with("unused: "), "{code}: {error}");
+            if second == "all-history" {
+                assert!(
+                    error.contains("inside all-history") && error.contains("is already given"),
+                    "{error}"
+                );
+            }
+            assert_eq!(s.ids, ids);
+        }
+        for first in [
+            "wrapped",
+            "full",
+            "styles",
+            "marks",
+            "main-screen",
+            "alt-screen",
+            "last-output",
+        ] {
+            let seconds: &[&str] = if matches!(first, "main-screen" | "alt-screen" | "last-output")
+            {
+                &["main-screen", "alt-screen", "last-output"]
+            } else {
+                &[first]
+            };
+            for second in seconds {
+                let code = format!("%1 {first} {second} capture");
+                let error = output(&mut s, &code)
+                    .err()
+                    .ok_or_else(|| format!("ran {code}"))?;
+                assert!(error.starts_with("unused: "), "{code}: {error}");
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn versions_keep_the_observation_they_name() -> TestResult {
+        let (mut s, _) = attached(10, 40)?;
+        let initial = s.pane(PaneId::of(1))?.version(s.run).to_string();
+        assert_eq!(output(&mut s, "%1 version")?, format!("{initial}\n"));
+        assert_eq!(
+            output(&mut s, &format!("str {initial} version"))?,
+            format!("{initial}\n")
+        );
+        assert!(output(&mut s, "str 1.2.3 version").is_err());
+        assert!(output(&mut s, "%1 str idle_ms get").is_err());
+        assert!(!output(&mut s, "%1 capture json")?.contains("idle_ms"));
+        let held = output(
+            &mut s,
+            "%1 str x text send-keys let action %1 capture let sample %1 kill action version sample version",
+        )?;
+        assert_eq!(held, format!("{initial}\n{initial}\n"));
+        Ok(())
+    }
+
+    #[test]
+    fn structural_and_context_recovery_codes_are_shared() -> TestResult {
+        let (mut s, _) = attached(10, 40)?;
+        for source in ["opts run", "opts str x arg new-tab", "%1 send-keys"] {
+            let caught = output(
+                &mut s,
+                &format!("str usage try {source} drop catch 2drop str recovered end"),
+            )?;
+            assert_eq!(caught, "recovered\n", "{source}");
+        }
+        assert_eq!(
+            output(
+                &mut s,
+                "str not_here try me drop catch 2drop str recovered end"
+            )?,
+            "recovered\n"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn run_requires_an_explicit_workspace() -> TestResult {
+        let mut s = started()?;
+        let ids = s.ids.clone();
+        let error = output(&mut s, "opts 80 24 size str /bin/cat program run")
+            .err()
+            .ok_or("ran")?;
+        assert!(error.contains("run needs a workspace"), "{error}");
+        assert_eq!(s.ids, ids);
+        run(
+            &mut s,
+            "agent-opts 80 24 size str /bin/cat program run drop",
+        )?;
+        assert_eq!(output(&mut s, "str agent workspace")?, "+2\n");
+        Ok(())
+    }
+
+    #[test]
+    fn names_are_not_reassigned_to_other_tabs() -> TestResult {
+        let mut s = started()?;
+        run(&mut s, "opts 80 24 size +1 in new-tab drop")?;
+        run(&mut s, "@1 str tab-2 rename")?;
+        assert_eq!(output(&mut s, "@2 str name get")?, "null\n");
+        run(&mut s, "@1 str given rename @2 str tab-2 rename")?;
+        assert_eq!(
+            output(&mut s, "@1 str name get @2 str name get")?,
+            "given\ntab-2\n"
+        );
+        assert!(s.dump_recipe(None)?.contains("str 'tab-2' rename"));
+        Ok(())
+    }
+
+    #[test]
+    fn a_captures_cursor_is_the_screens() -> TestResult {
+        let (mut s, _) = attached(10, 40)?;
+        let cursor = |s: &mut Session, read: &str| -> Result<String, String> {
+            let json = output(s, &format!("%1 {read} capture json"))?;
+            let after = json.split("\"screen_cursor\":").nth(1).unwrap_or_default();
+            Ok(after
+                .split(",\"lines\"")
+                .next()
+                .unwrap_or_default()
+                .to_owned())
+        };
+        s.out(PaneId::of(1), b"0123456789\x1b[1;6H");
+        assert_eq!(cursor(&mut s, "")?, "[0,5]");
+        assert_eq!(cursor(&mut s, "2 7 cols")?, "[0,5]");
+        assert_eq!(cursor(&mut s, "0 2 cols")?, "[0,5]");
+        s.out(PaneId::of(1), b"\x1b[?25l");
+        assert_eq!(cursor(&mut s, "")?, "null", "hidden");
+        s.out(PaneId::of(1), b"\x1b[?25h\x1b[3;1H");
+        assert_eq!(cursor(&mut s, "")?, "[2,0]", "on a blank row trimmed");
+        s.out(
+            PaneId::of(1),
+            &[b"\x1b[2J\x1b[H".as_slice(), &[b'A'; 45], b"\r\nBC"].concat(),
+        );
+        assert_eq!(cursor(&mut s, "")?, "[2,2]");
+        assert_eq!(cursor(&mut s, "wrapped")?, "[2,2]");
+        s.out(PaneId::of(1), b"\x1b[?1049h\x1b[HALT");
+        assert_eq!(cursor(&mut s, "alt-screen")?, "[0,3]");
+        assert_eq!(cursor(&mut s, "main-screen")?, "null");
+        s.out(PaneId::of(1), b"\x1b[?1049l");
+        assert_eq!(cursor(&mut s, "alt-screen")?, "null");
+        assert_eq!(cursor(&mut s, "main-screen")?, "[2,2]");
+        // What is highlighted is marked in JSON's lines too.
+        s.out(PaneId::of(1), b"\x1b[7mSEL\x1b[0m");
+        let json = output(&mut s, "%1 marks capture json")?;
+        assert!(json.contains("\"BC⟦SEL⟧\""), "{json}");
+        let inverted = output(&mut s, "%1 5 2 rows capture");
+        assert!(
+            inverted.as_ref().is_err_and(|e| e.starts_with("range: ")),
+            "{inverted:?}"
+        );
+        // A glyph in the last column leaves the cursor on it, the wrap
+        // pending: said so.
+        s.out(PaneId::of(1), &[b"\r\n".as_slice(), &[b'D'; 40]].concat());
+        assert_eq!(cursor(&mut s, "wrapped")?, "[3,39]");
+        let json = output(&mut s, "%1 capture json")?;
+        assert!(json.contains(r#""wrap_pending":true"#), "{json}");
+        s.out(PaneId::of(1), b"\r");
+        let json = output(&mut s, "%1 capture json")?;
+        assert!(json.contains(r#""wrap_pending":false"#), "{json}");
+        Ok(())
+    }
+
+    #[test]
+    fn an_actions_answer_keeps_held_fields_and_targets_its_pane() -> TestResult {
+        let (mut s, _) = attached(10, 40)?;
+        let act = "%1 str x text send-keys";
+        assert!(
+            output(&mut s, &format!("{act} str name get"))
+                .is_err_and(|e| e.starts_with("no_field:"))
+        );
+        assert_eq!(
+            output(&mut s, &format!("{act} pane str name get"))?,
+            "null\n"
+        );
+        assert_eq!(
+            output(&mut s, &format!("{act} dup tab swap workspace"))?,
+            "@1\n+1\n"
+        );
+        let alone = output(&mut s, &format!("{act} json"))?;
+        assert!(
+            alone.starts_with("{\"pane\":\"%1\",\"version\":"),
+            "{alone}"
+        );
+        let listed = output(&mut s, &format!("list {act} end json"))?;
+        assert_eq!(listed, format!("[{}]\n", alone.trim_end()));
+        Ok(())
+    }
+
+    #[test]
+    fn failures_say_what_a_word_takes() -> TestResult {
+        let (mut s, _) = attached(10, 40)?;
+        let failed = |s: &mut Session, code: &str| match output(s, code) {
+            Ok(out) => format!("ran: {out}"),
+            Err(error) => error,
+        };
+        let timeout = failed(&mut s, "%1 -1 timeout wait");
+        assert!(timeout.starts_with("range: "), "{timeout}");
+        assert!(
+            timeout.contains("-1 is out of range: from 0 (use: "),
+            "{timeout}"
+        );
+        let mouse = failed(&mut s, "%1 str click -1 0 send-mouse");
+        assert!(mouse.contains("out of range: 0 to 65535 (use: "), "{mouse}");
+        // The core's words say how they are used too; a library word by
+        // its own name.
+        for code in ["slice", "str a 1 add"] {
+            let core = failed(&mut s, code);
+            assert!(core.contains(" (use: "), "{core}");
+        }
+        let upper = failed(&mut s, "3 upper");
+        assert!(upper.contains("(use: S upper"), "{upper}");
+        // Caught, it is the failing word's own message (here `each`'s,
+        // inside `upper`): no place, word or usage added.
+        let caught = output(&mut s, "str type try 3 upper catch drop end");
+        assert_eq!(
+            caught.as_deref(),
+            Ok("each walks a string or a list, not an integer\n")
+        );
+        // A server word's answer that overflows the stack fails at the
+        // word, as an immediate word's would: a `try` catches it.
+        let full = "str stack_overflow try 0 1000000 range each end ls catch 2drop str caught end";
+        assert_eq!(output(&mut s, full).as_deref(), Ok("caught\n"));
+        // A wait's limit is a day at most: its deadline a time there is.
+        let long = failed(&mut s, "%1 9223372036854775807 timeout wait");
+        assert!(
+            long.starts_with("range: ") && long.contains("at most 86400 s"),
+            "{long}"
+        );
+        // A capture where text is taken: `string` makes it text.
+        let text = failed(&mut s, "%1 capture lines");
+        assert!(text.contains("`string` makes it text"), "{text}");
+        // A capture's option given what is no pane says where it goes.
+        for (code, shown) in [
+            ("%1 capture last-output", "fux %3 last-output capture"),
+            ("%1 capture 0 4 rows", "fux %3 0 4 rows capture"),
+        ] {
+            let option = failed(&mut s, code);
+            assert!(option.contains("(use: a capture option, PANE "), "{option}");
+            assert!(option.contains(&format!("; e.g. {shown})")), "{option}");
+        }
+        let env = failed(&mut s, "opts str 1bad str v env new-tab");
+        assert!(env.contains("not first a digit"), "{env}");
+        let missing = failed(&mut s, "str /no/such/file.fux str program check");
+        assert!(missing.contains("No such file"), "{missing}");
+        let split = failed(&mut s, "str 'two\nlines' fail");
+        assert!(split.ends_with(r"two\nlines"), "{split}");
+        let version = failed(&mut s, "str 1.2.3 changed wait");
+        assert!(version.contains("\"1.2.3\" is no version"), "{version}");
+        Ok(())
+    }
+
+    /// What a stream of events subscribed now is told of what `change`
+    /// does to `s`.
+    fn told(s: &mut Session, change: impl FnOnce(&mut Session)) -> String {
+        let stream = crate::journal::Reader::new(
+            fux_wire::inspect::Scope::All,
+            s.parts.journal(),
+            s.run,
+            None,
+        );
+        // From now is never refused; if it were, the caller's comparison
+        // shows why.
+        let mut stream = match stream {
+            Ok(stream) => stream,
+            Err(why) => return why,
+        };
+        change(s);
+        stream.lines(s.parts.journal(), |t| s.holder(t)).0
+    }
+
+    #[test]
+    fn a_rename_and_its_undo_are_both_told() -> TestResult {
+        let mut s = started()?;
+        let mut ran = Ok(());
+        let lines = told(&mut s, |s| {
+            ran = run(
+                s,
+                "str +1 workspace str x rename str +1 workspace str main rename",
+            );
+        });
+        ran?;
+        assert_eq!(
+            lines,
+            concat!(
+                r#"{"event":"renamed","workspace":"+1","name":"x"}"#,
+                "\n",
+                r#"{"event":"renamed","workspace":"+1","name":"main"}"#,
+                "\n"
+            )
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_tab_made_with_a_name_is_told_made_with_it() -> TestResult {
+        let mut s = started()?;
+        let mut ran = Ok(());
+        let lines = told(&mut s, |s| {
+            let tab = "opts 80 24 size str t name str +1 workspace in new-tab drop";
+            ran = run(s, tab);
+        });
+        ran?;
+        assert_eq!(
+            lines,
+            concat!(
+                r#"{"event":"created","tab":"@2","workspace":"+1","name":"t"}"#,
+                "\n",
+                r#"{"event":"created","pane":"%2","tab":"@2","workspace":"+1"}"#,
+                "\n"
+            )
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn events_are_told_in_the_order_they_happened() -> TestResult {
+        let mut s = started()?;
+        run(&mut s, "%1 str horizontal axis split drop")?;
+        let mut ran = Ok(());
+        let lines = told(&mut s, |s| {
+            s.out(PaneId::of(2), b"\x07");
+            ran = run(s, "str @1 tab str t rename");
+            s.out(PaneId::of(1), b"\x1b]2;title\x07");
+        });
+        ran?;
+        let said = concat!(
+            r#"{"event":"bell","pane":"%2","tab":"@1","workspace":"+1"}"#,
+            "\n",
+            r#"{"event":"renamed","tab":"@1","workspace":"+1","name":"t"}"#,
+            "\n",
+            r#"{"event":"title","pane":"%1","tab":"@1","workspace":"+1","title":"title"}"#,
+            "\n"
+        );
+        assert_eq!(lines, said);
+        Ok(())
+    }
+
+    #[test]
+    fn final_output_precedes_exit_close_and_sibling_resize() -> TestResult {
+        for (ended, status, output) in [
+            (Ended::Signalled(9), "\"signal\":9", false),
+            (Ended::Exited(0), "\"exited\":0", true),
+        ] {
+            let mut s = started()?;
+            run(&mut s, "%1 str horizontal axis split drop")?;
+            let lines = told(&mut s, |s| {
+                if output {
+                    s.out(PaneId::of(2), b"\x1b[?2026h\x07\x1b]2;bye\x07");
+                }
+                s.end_program(PaneId::of(2), ended);
+            });
+            let prefix = if output {
+                concat!(
+                    r#"{"event":"bell","pane":"%2","tab":"@1","workspace":"+1"}"#,
+                    "\n",
+                    r#"{"event":"title","pane":"%2","tab":"@1","workspace":"+1","title":"bye"}"#,
+                    "\n"
+                )
+            } else {
+                ""
+            };
+            assert_eq!(
+                lines,
+                format!(
+                    "{prefix}{{\"event\":\"exited\",\"pane\":\"%2\",\"tab\":\"@1\",\"workspace\":\"+1\",{status}}}\n{}\n{}\n",
+                    r#"{"event":"closed","pane":"%2","tab":"@1","workspace":"+1"}"#,
+                    r#"{"event":"resized","pane":"%1","tab":"@1","workspace":"+1","cols":80,"rows":24}"#
+                )
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn library_dump_replays_exact_shares_and_launch_inputs_in_its_scope() -> TestResult {
+        let mut source = started()?;
+        let value = "apostrophe' backslash\\\nstr INJECTED print\n# 雪";
+        let directory = format!("/saved/{value}");
+        run(
+            &mut source,
+            &format!(
+                "opts str new-workspace in 150 40 size str {} cwd str DATA str {} env str OLD unset-env str /bin/cat program str '' arg str {} arg new-tab drop",
+                fux_wire::words::quote(&directory),
+                fux_wire::words::quote(value),
+                fux_wire::words::quote(value)
+            ),
+        )?;
+        run(
+            &mut source,
+            "%2 str vertical axis 5 3 shares list str /bin/sh str -l str '' end shell-program split drop %2 str horizontal axis 7 2 shares str /bin/cat program split drop @2 str given rename %2 str sh rename",
+        )?;
+        let dump = output(&mut source, "@2 dump")?;
+        let mut again = started()?;
+        run(&mut again, &dump)?;
+        let recipe = |s: &Session, id| {
+            let Body::Snapshot(snapshot) = s
+                .inspect(
+                    fux_wire::inspect::Scope::Target(AnyRef::Tab(id)),
+                    fux_wire::inspect::Projection::Recipe,
+                )
+                .map_err(|e| e.to_string())?
+            else {
+                return Err("not a recipe".to_owned());
+            };
+            Ok(snapshot)
+        };
+        let before = recipe(&source, TabId::of(2))?;
+        let after = recipe(&again, TabId::of(2))?;
+        assert_eq!(
+            again.parts.workspaces().len(),
+            2,
+            "scoped dump exported another workspace"
+        );
+        assert_eq!(
+            before.workspaces.first().and_then(|w| w.name.as_ref()),
+            after.workspaces.first().and_then(|w| w.name.as_ref())
+        );
+        let (a, b) = (
+            before.tabs.first().ok_or("tab")?,
+            after.tabs.first().ok_or("replayed tab")?,
+        );
+        assert_eq!(
+            (&a.name, a.fixed, a.cols, a.rows),
+            (&b.name, b.fixed, b.cols, b.rows)
+        );
+        let shape = |nodes: &[fux_wire::layout::Node]| {
+            nodes
+                .iter()
+                .map(|node| match node {
+                    fux_wire::layout::Node::Pane(_) => fux_wire::layout::Node::Pane(PaneId::of(1)),
+                    split @ fux_wire::layout::Node::Split { .. } => split.clone(),
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(shape(&a.nodes), shape(&b.nodes), "{dump}");
+        let launches = |s: &fux_wire::inspect::Snapshot| {
+            s.panes
+                .iter()
+                .map(|p| (p.name.clone(), p.recipe.clone()))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(launches(&before), launches(&after), "{dump}");
+        Ok(())
+    }
+
+    #[test]
+    fn a_dump_preserves_given_and_absent_names() -> TestResult {
+        let mut source = started()?;
+        run(
+            &mut source,
+            "+1 str workspace-2 rename @1 str main rename %1 str sh rename",
+        )?;
+        run(&mut source, "%1 str horizontal axis split drop")?;
+        run(
+            &mut source,
+            "opts +1 in 80 24 size str cat name str /bin/cat program run str new-workspace move",
+        )?;
+        run(
+            &mut source,
+            "opts +2 in 80 24 size new-tab drop opts +2 in 80 24 size new-tab drop @3 kill opts +2 in 80 24 size new-tab str given rename",
+        )?;
+        run(&mut source, "str shell list str /bin/other end set")?;
+        let dump = source.dump_recipe(None)?;
+        assert!(!dump.contains("str other rename"), "{dump}");
+        assert!(dump.contains("given"), "{dump}");
+        let mut again = started()?;
+        run(&mut again, &dump).map_err(|error| format!("{error}\n{dump}"))?;
+        let names = |s: &Session| {
+            s.parts
+                .workspaces()
+                .iter()
+                .map(|ws| {
+                    (
+                        ws.name().map(str::to_owned),
+                        ws.tabs()
+                            .iter()
+                            .map(|tab| {
+                                (
+                                    tab.name().map(str::to_owned),
+                                    tab.root()
+                                        .panes()
+                                        .iter()
+                                        .filter_map(|id| s.parts.panes().get(id))
+                                        .map(|pane| pane.name().map(str::to_owned))
+                                        .collect::<Vec<_>>(),
+                                )
+                            })
+                            .collect::<Vec<_>>(),
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            names(&again).get(1..),
+            Some(names(&source).as_slice()),
+            "{dump}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_dump_keeps_the_saved_shell_directory() -> TestResult {
+        let s = started()?;
+        let dump = s.dump_recipe(None)?;
+        let cwd = std::env::current_dir()?;
+        let cwd = cwd.to_str().ok_or("cwd text")?;
+        let tokens = fuxth::token::source("dump", &dump)?;
+        assert!(
+            tokens
+                .iter()
+                .zip(tokens.iter().skip(1))
+                .zip(tokens.iter().skip(2))
+                .any(|((a, b), c)| a.text.as_ref() == "str"
+                    && b.text.as_ref() == cwd
+                    && c.text.as_ref() == "cwd"),
+            "{dump}"
+        );
+        assert!(dump.contains("shell-program"), "{dump}");
+        assert!(
+            dump.contains("its current directory is unknown, so it starts in its launch directory"),
+            "{dump}"
+        );
+        Ok(())
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_dump_leaves_out_a_directory_that_is_not_text() -> TestResult {
+        use std::os::unix::ffi::OsStrExt;
+        let dir = (fuxix::file::scratch()?.join(format!("fux-dump-{}", std::process::id())))
+            .join(std::ffi::OsStr::from_bytes(b"caf\xe9"));
+        std::fs::create_dir_all(&dir)?;
+        let mut s = started()?;
+        let program = Command::Run {
+            options: fux::script::default_state()?.preferences.pane_options(),
+            workspace: WsRef::Name("agent".into()),
+            name: None,
+            size: Some(fux_wire::command::Screen::new(24, 80)?),
+            cwd: Some(dir.clone()),
+            env: fux_wire::command::EnvPatch::default(),
+            argv: command::Program::new("cat".into(), Vec::new())?,
+        };
+        s.execute(&program, &Origin::Cli(Caller::default()), Instant::now())?;
+        let dump = s.dump_recipe(None)?;
+        let _ = dir.parent().map(std::fs::remove_dir_all);
+        let told = dump.contains("# %2: directory bytes (hex) ") && dump.contains("636166e9");
+        let written = dump
+            .lines()
+            .any(|l| !l.starts_with('#') && l.contains("caf"));
+        assert!(told && !written, "{dump}");
+        let mut again = started()?;
+        run(&mut again, &dump)?;
+        assert_eq!(again.parts.panes().len(), 3, "{dump}");
+        Ok(())
+    }
+
+    #[test]
+    fn dumps_preserve_tab_sizing_independently_of_client_views() -> TestResult {
+        let (mut s, c) = attached(11, 40)?;
+        run(&mut s, "opts 600 40 size +1 in new-tab drop")?;
+        run(
+            &mut s,
+            "%1 str horizontal axis split drop %1 str vertical axis split drop",
+        )?;
+        run(&mut s, "str c1 client %1 show str c1 client zoom")?;
+        for tiny in [false, true] {
+            if tiny {
+                run(&mut s, "str c1 client zoom")?;
+                s.size_client(c, 2, 2)?;
+            }
+            let dump = s.dump_recipe(None)?;
+            let mut again = started()?;
+            run(&mut again, &dump).map_err(|e| format!("{e}\n{dump}"))?;
+            let tabs = again
+                .parts
+                .workspaces()
+                .iter()
+                .flat_map(|w| w.tabs())
+                .collect::<Vec<_>>();
+            let fits = tabs
+                .iter()
+                .map(|t| matches!(t.fit(), Fit::Clients(_)))
+                .collect::<Vec<_>>();
+            assert!(fits.ends_with(&[true, false]), "{dump}");
+            assert_eq!(tabs.last().map(|t| t.fit().size()), Some(sized(40, 600)?));
+            assert_eq!(again.parts.panes().len(), s.parts.panes().len() + 1);
+            assert_eq!(replayed(&s, TabId::of(1))?, rects(&s, TabId::of(1)));
+        }
+        Ok(())
+    }
+
+    /// Tab `tab`'s panes' places on its own size, in tree order.
+    fn rects(s: &Session, tab: TabId) -> Vec<Rect> {
+        let Some((root, area)) = s.tab(tab).map(|t| (t.root(), t.fit().area())) else {
+            return Vec::new();
+        };
+        let placed = layout::place(root, area);
+        root.panes()
+            .iter()
+            .filter_map(|p| placed.rect(*p))
+            .collect()
+    }
+
+    /// Tab `tab` dumped and made again where no client is: its panes'
+    /// places there.
+    fn replayed(s: &Session, tab: TabId) -> Result<Vec<Rect>, String> {
+        let dump = s
+            .dump_recipe(Some(AnyRef::Tab(tab)))
+            .map_err(|e| e.to_string())?;
+        let mut again = started()?;
+        run(&mut again, &dump).map_err(|e| format!("{e}\n{dump}"))?;
+        let made = (again.parts.workspaces().iter())
+            .flat_map(|w| w.tabs())
+            .last();
+        Ok(made.map(|t| rects(&again, t.id())).unwrap_or_default())
+    }
+
+    #[test]
+    fn a_tab_given_a_size_splits_only_while_it_shows_every_pane() -> TestResult {
+        let (mut s, _) = attached(50, 200)?;
+        let tab = "opts 40 12 size str +1 workspace in new-tab drop";
+        run(&mut s, &format!("{tab} str c1 client str @2 tab show"))?;
+        // Four panes stacked take their 2 rows each and 3 separators.
+        run(
+            &mut s,
+            "%2 str vertical axis split drop %2 str vertical axis split drop %2 str vertical axis split drop",
+        )?;
+        let refused = run(&mut s, "%2 str vertical axis split drop")
+            .err()
+            .unwrap_or_default();
+        assert!(
+            refused.starts_with("size: ") && refused.contains("40x12"),
+            "{refused}"
+        );
+        let tab: TabId = "@2".parse().map_err(|_| "@2")?;
+        assert_eq!(replayed(&s, tab)?, rects(&s, tab));
+        Ok(())
+    }
+
+    #[test]
+    fn a_tab_fitting_clients_splits_only_while_each_screen_shows_every_pane() -> TestResult {
+        let (mut s, _) = attached(50, 200)?;
+        s.attach(50, 30, None)?;
+        watch(&mut s, 50, 8)?;
+        // Ten panes side by side take their 2 columns each and 9 separators.
+        for _ in 1..10 {
+            run(&mut s, "%1 str horizontal axis split drop")?;
+        }
+        let refused = run(&mut s, "%1 str horizontal axis split drop")
+            .err()
+            .unwrap_or_default();
+        assert!(
+            refused.starts_with("size: ") && refused.contains("30x"),
+            "{refused}"
+        );
+        let tab: TabId = "@1".parse().map_err(|_| "@1")?;
+        assert_eq!(replayed(&s, tab)?, rects(&s, tab));
+        Ok(())
+    }
+
+    #[test]
+    fn a_split_with_shares_starts_at_its_share() -> TestResult {
+        let mut s = started()?;
+        run(&mut s, "opts 100 10 size str +1 workspace in new-tab drop")?;
+        let lines = told(&mut s, |s| {
+            let _ = run(s, "%2 str horizontal axis 80 18 shares split drop");
+        });
+        assert!(lines.contains(r#""created","pane":"%3""#), "{lines}");
+        assert!(!lines.contains(r#""resized","pane":"%3""#), "{lines}");
+        let size = s.parts.panes().get(&PaneId::of(3)).map(Pane::size);
+        assert_eq!(size, Some(sized(10, 18)?));
+        Ok(())
+    }
+
+    #[test]
+    fn a_pane_starts_at_the_size_its_screens_give_it() -> TestResult {
+        let mut s = started()?;
+        let wide = s.attach(11, 101, None)?;
+        s.attach(11, 81, None)?;
+        let size = |s: &Session, id| s.parts.panes().get(&PaneId::of(id)).map(Pane::size);
+        // The narrow one, zoomed, follows the split unzoomed.
+        run(&mut s, "str c2 client zoom")?;
+        let lines = told(&mut s, |s| {
+            let _ = run(s, "%1 str horizontal axis str / cwd split drop");
+        });
+        assert!(
+            lines.contains(r#""created","pane":"%2""#)
+                && !lines.contains(r#""resized","pane":"%2""#),
+            "{lines}"
+        );
+        assert_eq!(size(&s, 2), Some(sized(10, 40)?));
+        let lines = told(&mut s, |s| {
+            let _ = output_as(s, Some(wide), "opts 30 5 size str / cwd new-tab drop");
+        });
+        assert!(
+            lines.contains(r#""created","pane":"%3""#)
+                && !lines.contains(r#""resized","pane":"%3""#),
+            "{lines}"
+        );
+        assert_eq!(size(&s, 3), Some(sized(10, 101)?));
+        Ok(())
+    }
+
+    #[test]
+    fn a_screen_with_no_room_sizes_no_pane() -> TestResult {
+        let mut s = started()?;
+        let small = s.attach(5, 6, None)?;
+        // A client of one row has no room: its tab, which the other
+        // client's screen sizes, sizes the tab it makes.
+        let one = s.attach(1, 40, None)?;
+        s.attach(11, 40, None)?;
+        s.detach_client(small);
+        output_as(
+            &mut s,
+            Some(one),
+            "opts str +1 workspace in str / cwd new-tab drop",
+        )?;
+        let size = s.parts.panes().get(&PaneId::of(2)).map(Pane::size);
+        assert_eq!(size, Some(sized(10, 40)?));
+        let small = s.attach(5, 6, None)?;
+        let made = "opts 100 10 size str +1 workspace in str / cwd new-tab \
+                    dup str horizontal axis str / cwd split drop dup str horizontal axis str / cwd split drop str horizontal axis str / cwd split drop";
+        run(&mut s, made)?;
+        let refused = output_as(&mut s, Some(small), "%2 str @3 tab move").err();
+        let refused = refused.unwrap_or_default();
+        assert!(
+            refused.contains("no room") && refused.contains("screen"),
+            "{refused}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_screen_with_no_room_refuses_nothing() -> TestResult {
+        let (mut s, _) = attached(11, 40)?;
+        let tiny = s.attach(1, 40, None)?;
+        run(
+            &mut s,
+            "%1 str horizontal axis split drop %1 str horizontal axis split drop",
+        )?;
+        for (pane, to) in [("%1", "new-tab"), ("%2", "new-workspace")] {
+            let lines = told(&mut s, |s| {
+                let moved = output_as(s, Some(tiny), &format!("{pane} str {to} move"));
+                assert!(moved.is_ok(), "{moved:?}");
+            });
+            assert!(
+                lines.contains(r#""created""#)
+                    && lines.contains(&format!(r#""moved","pane":"{pane}""#)),
+                "{lines}"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn no_border_moves_where_a_pane_is_hidden() -> TestResult {
+        let (mut s, c) = attached(11, 40)?;
+        run(
+            &mut s,
+            "%1 str horizontal axis split drop %2 str horizontal axis split drop",
+        )?;
+        s.size_client(c, 11, 6)?;
+        let refused = run(&mut s, "%1 str right 1 move-border").err();
+        let refused = refused.unwrap_or_default();
+        assert!(
+            refused.starts_with("size: ") && refused.contains("every pane on 6x"),
+            "{refused}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn shares_divide_the_split_panes_room() -> TestResult {
+        let tab: TabId = "@2".parse().map_err(|_| "@2")?;
+        let widths = |s: &Session| rects(s, tab).iter().map(Rect::w).collect::<Vec<u16>>();
+        let made = "opts 101 10 size +1 in new-tab drop";
+        for (cols, split, expected) in [
+            (
+                100,
+                "%2 str horizontal axis 80 18 shares split drop %3 str horizontal axis 10 8 shares split drop",
+                [81, 9, 8],
+            ),
+            (
+                101,
+                "%2 str horizontal axis split drop %3 str horizontal axis 2 1 shares split drop",
+                [50, 33, 16],
+            ),
+            (
+                101,
+                "%2 str horizontal axis 1 1 shares split drop %3 str horizontal axis 2 1 shares split drop",
+                [50, 33, 16],
+            ),
+        ] {
+            let mut s = started()?;
+            run(
+                &mut s,
+                &format!("opts {cols} 10 size +1 in new-tab drop {split}"),
+            )?;
+            assert_eq!(widths(&s), expected, "{split}");
+            assert_eq!(replayed(&s, tab)?, rects(&s, tab));
+        }
+        let mut s = started()?;
+        run(
+            &mut s,
+            &format!("{made} %2 str horizontal axis 4294967294 1 shares split drop"),
+        )?;
+        for split in [
+            "%3 str horizontal axis split drop",
+            "%3 str vertical axis 4294967295 1 shares split drop",
+        ] {
+            run(&mut s, split)?;
+            assert_eq!(replayed(&s, tab)?, rects(&s, tab), "{split}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn every_layout_change_dumps_as_it_is() -> TestResult {
+        let mut s = started()?;
+        let made = "opts 100 30 size str +1 workspace in new-tab drop \
+                    opts 100 30 size str +1 workspace in new-tab drop";
+        run(&mut s, made)?;
+        let tab: TabId = "@2".parse().map_err(|_| "@2")?;
+        let areas = [
+            Rect::screen(30, 100),
+            Rect::screen(11, 37),
+            Rect::screen(70, 250),
+        ];
+        for change in [
+            "%2 str horizontal axis 3 2 shares split drop",
+            "%4 str vertical axis 1 2 shares split drop",
+            "%5 str horizontal axis split drop",
+            "%5 str vertical axis split drop",
+            "%2 37 str horizontal resize-pane",
+            "%5 7 str vertical resize-pane",
+            "%6 str left 3 move-border",
+            "%2 30 percent str horizontal resize-pane",
+            "%2 %6 swap-with",
+            "%4 str left move",
+            "%5 kill",
+            "%3 str @2 tab move",
+            "%6 kill",
+        ] {
+            run(&mut s, change)?;
+            let dump = s.dump_recipe(Some(AnyRef::Tab(tab)))?;
+            let mut again = started()?;
+            run(&mut again, &dump).map_err(|e| format!("{change}: {e}\n{dump}"))?;
+            let made = (again.parts.workspaces().iter())
+                .flat_map(|w| w.tabs())
+                .last();
+            let (Some(root), Some(made)) = (s.root(tab), made.map(Tab::root)) else {
+                return Err(format!("{change}: no layout").into());
+            };
+            for area in areas {
+                let places = |root: &Tree| {
+                    let placed = layout::place(root, area);
+                    root.panes()
+                        .iter()
+                        .map(|p| placed.rect(*p))
+                        .collect::<Vec<_>>()
+                };
+                assert_eq!(places(made), places(root), "{change}\n{dump}");
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn a_pane_is_not_moved_where_it_would_be_hidden() -> TestResult {
+        let mut s = started()?;
+        let split =
+            "opts 5 4 size str +1 workspace in new-tab drop %2 str horizontal axis split drop";
+        run(&mut s, split)?;
+        let refused = run(&mut s, "%1 str @2 tab move").err();
+        let refused = refused.unwrap_or_default();
+        assert!(
+            refused.starts_with("size: ") && refused.contains("no room"),
+            "{refused}"
+        );
+        let tab: TabId = "@2".parse().map_err(|_| "@2")?;
+        assert_eq!(s.root(tab).map(|r| r.panes().len()), Some(2));
+        Ok(())
+    }
+
+    #[test]
+    fn failures_are_told_apart_by_kind() -> TestResult {
+        let (mut s, c) = attached(10, 40)?;
+        let origin = Origin::Client(c);
+        let mut run =
+            |code: &str| -> Result<Vec<Result<Reply, Error>>, Box<dyn std::error::Error>> {
+                let commands = requests(&mut s, c, code)?;
+                Ok(commands
+                    .iter()
+                    .map(|command| s.execute(command, &origin, Instant::now()))
+                    .collect())
+            };
+        assert!(matches!(
+            run("me str next focus")?.as_slice(),
+            [Err(Error::OnlyOne(Kind::Pane))]
+        ));
+        let kill = Command::Kill {
+            target: AnyRef::Pane(PaneId::of(9)),
+        };
+        assert!(matches!(
+            s.execute(&kill, &origin, Instant::now()),
+            Err(Error::NoPane(p)) if p == PaneId::of(9)
+        ));
+        assert!(matches!(
+            s.attach(10, 40, Some("%1")),
+            Err(e) if e.code() == Code::NoWorkspace
+        ));
+        assert!(matches!(
+            s.attach(10, 40, Some("+x")),
+            Err(e) if e.code() == Code::BadValue && e.to_string().contains("+x")
+        ));
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod journal_tests {
+    use super::*;
+    use crate::journal::Reader;
+    use crate::session::testing::TestResult;
+    use fux_wire::events::{Actor, Batch};
+    use fux_wire::inspect::Scope;
+    use testing::{output, run, started};
+
+    fn batch(s: &Session, from: fux_wire::events::Cursor) -> Result<Batch, String> {
+        Reader::new(Scope::All, s.parts.journal(), s.run, Some(from))?
+            .batch(s.parts.journal(), true)
+    }
+    fn named<'a>(b: &'a Batch, name: &str) -> Vec<&'a fux_wire::events::Item> {
+        b.events
+            .iter()
+            .filter(|e| e.data.get("event") == Some(&Json::str(name)))
+            .collect()
+    }
+
+    #[test]
+    fn discrete_layout_and_view_changes_invalidate_in_the_same_turn() -> TestResult {
+        let (mut s, client) = testing::attached(24, 80)?;
+        run(
+            &mut s,
+            "%1 str horizontal axis split drop opts 80 24 size str +1 workspace in new-tab drop",
+        )?;
+        let from = s.parts.journal().end(s.run);
+        run(&mut s, "%1 %2 swap-with @2 str previous reorder")?;
+        run(
+            &mut s,
+            &format!("str {client} client %1 show str {client} client zoom"),
+        )?;
+        run(
+            &mut s,
+            "%2 str right 3 move-border %1 128 history-budget %1 clear-history all str note notify",
+        )?;
+        let b = batch(&s, from)?;
+        for name in [
+            "laid_out",
+            "reordered",
+            "focused",
+            "zoomed",
+            "history_budget",
+            "history_cleared",
+        ] {
+            assert!(
+                !named(&b, name).is_empty(),
+                "missing {name}: {}",
+                b.json().render()
+            );
+        }
+        let from = b.next;
+        s.detach(client, Instant::now());
+        assert_eq!(named(&batch(&s, from)?, "detached").len(), 1);
+        Ok(())
+    }
+
+    #[test]
+    fn origins_distinguish_supplied_context_and_deferred_respawn() -> TestResult {
+        let (mut s, client) = testing::attached(24, 80)?;
+        run(
+            &mut s,
+            "agent-opts 80 24 size str /bin/cat program run drop",
+        )?;
+        let id = PaneId::of(2);
+        let from = s.parts.journal().end(s.run);
+        let rename = |name: &str| Command::Rename {
+            target: AnyRef::Pane(id),
+            name: name.into(),
+        };
+        s.run_command(&rename("client"), &Origin::Client(client), Instant::now());
+        let caller = Caller {
+            gave: Some((id, 0)),
+            within: Within::This,
+            ..Caller::default()
+        };
+        s.run_command(&rename("pane"), &Origin::Cli(caller), Instant::now());
+        s.run_command(
+            &rename("outside"),
+            &Origin::Cli(Caller::default()),
+            Instant::now(),
+        );
+        testing::output_as(&mut s, Some(client), "@2 90 24 resize")?;
+        s.output(id, b"\x07", Instant::now());
+        // Force the replacement to finish on a later parser turn.
+        let spends = crate::pane::tests::spends_the_budget(24, 80);
+        let left: Vec<u8> = std::iter::repeat_n(spends, 3).flatten().collect();
+        s.output(id, &left, Instant::now());
+        let replacement = Command::Respawn {
+            target: id,
+            kill: false,
+            env: command::EnvPatch::default(),
+            argv: None,
+        };
+        let begun = s.begin(
+            Request::Do(replacement),
+            &Origin::Client(client),
+            Instant::now(),
+        );
+        assert!(matches!(begun, Begun::Waiting(_)));
+        s.run_command(
+            &rename("later"),
+            &Origin::Cli(Caller::default()),
+            Instant::now(),
+        );
+        for _ in 0..32 {
+            if !s.respawning.contains_key(&id) {
+                break;
+            }
+            s.fire(Timer::Unread(id), Instant::now());
+        }
+        assert!(!s.respawning.contains_key(&id));
+        let b = batch(&s, from)?;
+        let actors: Vec<_> = named(&b, "renamed").iter().map(|e| e.origin).collect();
+        assert_eq!(
+            actors,
+            [
+                Actor::Client(client),
+                Actor::Pane(id, 0),
+                Actor::Unknown,
+                Actor::Unknown
+            ]
+        );
+        assert_eq!(
+            named(&b, "bell").first().map(|e| e.origin),
+            Some(Actor::Program(id, 0))
+        );
+        assert_eq!(
+            named(&b, "respawned").first().map(|e| e.origin),
+            Some(Actor::Client(client))
+        );
+        assert_eq!(
+            named(&b, "resized").first().map(|e| e.origin),
+            Some(Actor::Client(client))
+        );
+        assert_eq!(s.parts.journal().current_actor(), Actor::Server);
+        Ok(())
+    }
+
+    #[test]
+    fn copies_reference_only_the_admitted_stable_buffer() -> TestResult {
+        let mut s = started()?;
+        let from = s.parts.journal().end(s.run);
+        s.output(PaneId::of(1), b"\x1b]52;c;aGVsbG8=\x07", Instant::now());
+        let buffer = s.buffers.front().ok_or("buffer")?.0;
+        let b = batch(&s, from)?;
+        let copies = named(&b, "copied");
+        assert_eq!(copies.len(), 1);
+        let copied = copies.first().ok_or("copy event")?;
+        assert_eq!(
+            copied.data.get("buffer"),
+            Some(&Json::str(buffer.to_string()))
+        );
+        assert!(copied.data.get("text").is_none());
+        assert_eq!(copied.origin, Actor::Program(PaneId::of(1), 0));
+        assert_eq!(
+            output(&mut s, &format!("str {from} 0 1 copy-notices"))?,
+            format!("{}\n", b.next)
+        );
+        run(
+            &mut s,
+            "agent-opts 80 24 size false program-clipboard str /bin/cat program run drop",
+        )?;
+        let from = s.parts.journal().end(s.run);
+        s.output(PaneId::of(2), b"\x1b]52;c;bm8=\x07", Instant::now());
+        assert!(named(&batch(&s, from)?, "copied").is_empty());
+        assert_eq!(s.buffers.front().map(|(id, _)| *id), Some(buffer));
+        Ok(())
+    }
+
+    #[test]
+    fn library_streams_checkpoint_and_fail_before_effects_on_loss() -> TestResult {
+        let mut s = started()?;
+        let from = s.parts.journal().end(s.run);
+        run(&mut s, "%1 str hello rename")?;
+        let streamed = output(&mut s, &format!("all str {from} 0 1 events-since drop"))?;
+        assert!(streamed.contains(r#""event":"ready""#), "{streamed}");
+        assert!(streamed.contains(r#""event":"renamed""#), "{streamed}");
+        assert!(
+            streamed.contains(&format!(r#""next":"{}""#, s.parts.journal().end(s.run))),
+            "{streamed}"
+        );
+        // Real records retain the server run in their handles.
+        let kind = output(
+            &mut s,
+            &format!("all str {from} 0 next-events str events get first str pane get kind"),
+        )?;
+        assert_eq!(kind, "pane\n");
+        for _ in 0..crate::journal::KEPT.saturating_add(1) {
+            s.output(PaneId::of(1), b"\x07", Instant::now());
+        }
+        let failed = output(&mut s, &format!("all str {from} 0 1 events-since drop"));
+        assert!(failed.is_err_and(|e| e.contains("resnapshot")));
+        let marker = output(
+            &mut s,
+            &format!("str fail try all str {from} 0 1 events-since drop catch 2drop end"),
+        )?;
+        assert!(marker.contains(r#""event":"missed""#), "{marker}");
+        Ok(())
+    }
+    #[test]
+    fn client_departures_invalidate_former_tabs_and_workspaces() -> TestResult {
+        for target in ["@2", "str +2 workspace"] {
+            let (mut s, client) = testing::attached(24, 80)?;
+            run(
+                &mut s,
+                "opts 80 23 size str +1 workspace in new-tab drop opts 80 23 size new-workspace drop @1 80 23 resize @2 80 23 resize @3 80 23 resize",
+            )?;
+            let from = s.parts.journal().end(s.run);
+            run(&mut s, &format!("str {client} client {target} show"))?;
+            for scope in [
+                Scope::Target(AnyRef::Tab(TabId::of(1))),
+                Scope::Target(AnyRef::Workspace(WsId::of(1))),
+            ] {
+                let b = Reader::new(scope, s.parts.journal(), s.run, Some(from))?
+                    .batch(s.parts.journal(), true)?;
+                assert!(
+                    !named(&b, "shown").is_empty(),
+                    "departure from {scope:?}: {}",
+                    b.json().render()
+                );
+                assert!(named(&b, "resized").is_empty());
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn typing_invalidates_a_changed_host_once() -> TestResult {
+        let (mut s, first) = testing::attached(24, 80)?;
+        let second = s.attach(24, 80, None)?;
+        let tab = TabId::of(1);
+        assert_eq!(s.host(Some(tab)), Some(first));
+        let from = s.parts.journal().end(s.run);
+        s.input(second, b"x");
+        assert_eq!(s.host(Some(tab)), Some(second));
+        let b = Reader::new(
+            Scope::Target(AnyRef::Tab(tab)),
+            s.parts.journal(),
+            s.run,
+            Some(from),
+        )?
+        .batch(s.parts.journal(), true)?;
+        assert!(!b.events.is_empty(), "host changed without invalidation");
+        assert!(b.events.iter().all(|e| e.origin == Actor::Client(second)));
+        let after = s.parts.journal().end(s.run);
+        s.input(second, b"y");
+        assert_eq!(
+            s.parts.journal().end(s.run),
+            after,
+            "unchanged host must not journal every key"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn notice_dismissal_and_preferences_paint_without_journal_entries() -> TestResult {
+        use fux_wire::act::Act;
+        for paste in [false, true] {
+            let (mut s, client) = testing::attached(24, 80)?;
+            s.typed(client);
+            let from = s.parts.journal().end(s.run);
+            s.notify_to(client, "notice", false);
+            assert!(s.views.get(&client).ok_or("view")?.dirty);
+            s.views.get_mut(&client).ok_or("view")?.dirty = false;
+            if paste {
+                s.apply(client, vec![Act::Paste("quiet input".into())]);
+            } else {
+                s.input(client, b"x");
+            }
+            let view = s.views.get(&client).ok_or("view")?;
+            assert!(view.notice.is_none());
+            assert!(view.dirty);
+            assert_eq!(s.parts.journal().end(s.run), from);
+            let mut presentation = view.presentation.clone();
+            presentation.titles = !presentation.titles;
+            s.views.get_mut(&client).ok_or("view")?.dirty = false;
+            s.apply(client, vec![Act::Presentation(presentation.clone())]);
+            let view = s.views.get(&client).ok_or("view")?;
+            assert_eq!(view.presentation, presentation);
+            assert!(view.dirty);
+            assert_eq!(s.parts.journal().end(s.run), from);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn copy_motion_and_notices_paint_without_invalidating_the_opening() -> TestResult {
+        let (mut s, client) = testing::attached(24, 80)?;
+        run(&mut s, &format!("str {client} client copy-mode"))?;
+        let from = s.parts.journal().end(s.run);
+        s.input(client, b"k");
+        assert!(
+            s.views
+                .get(&client)
+                .is_some_and(|view| matches!(view.mode, Mode::Copy(_)))
+        );
+        assert_eq!(s.parts.journal().end(s.run), from);
+        for (key, notice) in [
+            (b"n", Some(("no search yet", true))),
+            (b"n", Some(("no search yet", true))),
+            (b"k", None),
+        ] {
+            let from = s.parts.journal().end(s.run);
+            s.views.get_mut(&client).ok_or("view")?.dirty = false;
+            s.input(client, key);
+            let view = s.views.get(&client).ok_or("client")?;
+            assert!(matches!(view.mode, Mode::Copy(_)));
+            assert!(view.dirty);
+            assert_eq!(
+                view.notice.as_ref().map(|n| (n.text.as_str(), n.error)),
+                notice
+            );
+            for scope in [Scope::All, Scope::Client(client)] {
+                let b = Reader::new(scope, s.parts.journal(), s.run, Some(from))?
+                    .batch(s.parts.journal(), true)?;
+                assert!(b.events.is_empty(), "{notice:?}");
+            }
+        }
+        let from = s.parts.journal().end(s.run);
+        s.input(client, b"q");
+        assert_eq!(named(&batch(&s, from)?, "screen").len(), 1);
+        Ok(())
+    }
+}

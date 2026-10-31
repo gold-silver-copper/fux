@@ -106,7 +106,7 @@ pub(super) fn arguments(tokens: &[Token]) -> Result<SourceImage, Failed> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::session::testing::TestResult;
+    use crate::TestResult;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     struct Fixture(PathBuf);
@@ -143,7 +143,7 @@ mod tests {
         let mut machine = crate::script::compile(&image.tokens()).map_err(|e| e.to_string())?;
         let mut out = Vec::new();
         let mut host =
-            crate::script::Host::new(crate::protocol::Context::default(), None, &mut out);
+            crate::script::Host::new(fux_wire::protocol::Context::default(), None, &mut out);
         assert!(matches!(
             machine.run(&mut host, 1000)?,
             fuxth::Outcome::Finished
@@ -285,7 +285,7 @@ mod tests {
             )?;
             let mut out = Vec::new();
             let mut host =
-                crate::script::Host::new(crate::protocol::Context::default(), None, &mut out);
+                crate::script::Host::new(fux_wire::protocol::Context::default(), None, &mut out);
             assert!(matches!(
                 machine.run(&mut host, 1000)?,
                 fuxth::Outcome::Finished

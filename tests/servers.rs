@@ -420,8 +420,8 @@ fn panes_and_tabs_are_lists_of_handles() -> Outcome {
 /// does; once it reads, every request is answered.
 #[test]
 fn a_client_that_reads_no_answers_is_read_no_more() -> Outcome {
-    use fux::command::{Command as Cmd, Request};
-    use fux::protocol::{
+    use fux_wire::command::{Command as Cmd, Request};
+    use fux_wire::protocol::{
         Asked, Context, Decoder, Frame, Greeting, Hello, PROTOCOL, Role, ToCommand,
     };
     use fuxix::poll::{Events, PollFd, poll};
@@ -439,8 +439,8 @@ fn a_client_that_reads_no_answers_is_read_no_more() -> Outcome {
     let ls = Asked {
         after: None,
         request: Request::Do(Cmd::Inspect {
-            scope: fux::inspect::Scope::All,
-            projection: fux::inspect::Projection::Facts,
+            scope: fux_wire::inspect::Scope::All,
+            projection: fux_wire::inspect::Projection::Facts,
         }),
         context: Context::default(),
     };
@@ -633,7 +633,7 @@ fn an_unnamed_workspace_replays_independently_of_the_default_shell() -> Outcome 
         prefix.extend(["end", "set"]);
         let prefix = prefix
             .iter()
-            .map(|w| fux::words::quote(w))
+            .map(|w| fux_wire::words::quote(w))
             .collect::<Vec<_>>()
             .join(" ");
         let file = server.dir.join("unnamed.fux");
@@ -773,7 +773,7 @@ fn dump_replays_the_saved_launch_after_the_program_changes_directory() -> Outcom
         )
         .map_err(e)?;
         std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).map_err(e)?;
-        let cwd = fux::words::quote(directory.to_str().ok_or("cwd text")?);
+        let cwd = fux_wire::words::quote(directory.to_str().ok_or("cwd text")?);
         let answer = server.ok(&[&format!("agent-opts 80 24 size str {cwd} cwd {argv} run")])?;
         let pane = answer.trim().split(':').next().ok_or("pane")?;
         eventually("the program changed directory", || {
@@ -802,9 +802,9 @@ fn dump_replays_a_shell_in_its_current_directory() -> Outcome {
     let directory = server.dir.join("launch");
     let child = directory.join("child");
     std::fs::create_dir_all(&child).map_err(e)?;
-    let cwd = fux::words::quote(directory.to_str().ok_or("cwd text")?);
-    let observed = fux::words::quote(child.to_str().ok_or("child text")?);
-    let body = fux::words::quote("cd \"$1\" && printf 'shell-directory\\n' && exec /bin/cat");
+    let cwd = fux_wire::words::quote(directory.to_str().ok_or("cwd text")?);
+    let observed = fux_wire::words::quote(child.to_str().ok_or("child text")?);
+    let body = fux_wire::words::quote("cd \"$1\" && printf 'shell-directory\\n' && exec /bin/cat");
     let answer = server.ok(&[&format!(
         "agent-opts 80 24 size str {cwd} cwd list str /bin/sh str -c str {body} str shell str {observed} end shell-program new-tab"
     )])?;
@@ -876,7 +876,7 @@ fn the_copy_hook_recipe_consumes_a_real_program_copy() -> Outcome {
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/hooks/program-copies.fux");
     let path = path.to_str().ok_or("hook path is not text")?;
     let checkpoint = server.ok(&["--file", path, cursor, "0", "1"])?;
-    let _: fux::events::Cursor = checkpoint.trim().parse().map_err(|()| "no checkpoint")?;
+    let _: fux_wire::events::Cursor = checkpoint.trim().parse().map_err(|()| "no checkpoint")?;
     assert_eq!(server.ok(&["newest", "buffer"])?, "hello\n");
     let capture = server.ok(&["str", client, "client", "capture"])?;
     assert!(capture.contains("a program copied text"), "{capture}");

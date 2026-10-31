@@ -76,8 +76,8 @@ fn a_pane_is_told_it_runs_in_fux() -> Outcome {
 /// as a script piping one in does, still gets the output and the status.
 #[test]
 fn a_client_that_shuts_its_side_still_gets_its_answer() -> Outcome {
-    use fux::command::Command;
-    use fux::protocol::{
+    use fux_wire::command::Command;
+    use fux_wire::protocol::{
         Asked, Context, Decoder, Frame, Greeting, Hello, PROTOCOL, Reply, Role, ToCommand,
     };
     use std::io::{Read, Write};
@@ -94,8 +94,8 @@ fn a_client_that_shuts_its_side_still_gets_its_answer() -> Outcome {
     let request = Asked {
         after: None,
         request: Command::Inspect {
-            scope: fux::inspect::Scope::All,
-            projection: fux::inspect::Projection::Facts,
+            scope: fux_wire::inspect::Scope::All,
+            projection: fux_wire::inspect::Projection::Facts,
         }
         .into(),
         context: Context {
@@ -120,13 +120,15 @@ fn a_client_that_shuts_its_side_still_gets_its_answer() -> Outcome {
     while let Some(frame) = decoder.frame::<ToCommand>().map_err(e)? {
         match frame {
             ToCommand::Part(bytes) => parts.extend_from_slice(&bytes),
-            ToCommand::PartsEnd => reply = Some(fux::wire::Reader::new(&parts).whole::<Reply>()),
+            ToCommand::PartsEnd => {
+                reply = Some(fux_wire::wire::Reader::new(&parts).whole::<Reply>())
+            }
             ToCommand::Exit(_) => {}
         }
     }
     let reply = reply.ok_or("no reply")?.map_err(e)?;
-    assert_eq!(reply.end(), fux::protocol::End::Done);
-    let fux::protocol::Response::Returned(fux::protocol::Body::Snapshot(snapshot)) =
+    assert_eq!(reply.end(), fux_wire::protocol::End::Done);
+    let fux_wire::protocol::Response::Returned(fux_wire::protocol::Body::Snapshot(snapshot)) =
         &reply.response
     else {
         return Err(format!("not a listing: {:?}", reply));
