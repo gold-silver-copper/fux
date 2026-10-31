@@ -1,0 +1,26 @@
+# fux cassette 1
+# guards: every program in examples/ prints exactly what its header says
+#   (`# expect:`, a line each) and exits with its status (`# status:`, else 0)
+# A workspace of its own keeps the server running when an example closes its
+# last pane.
+$ fux opts str hold name 80 24 size new-workspace >/dev/null
+$ bad=0
+> for f in "$REPO"/examples/*.fux; do
+>   fux --file "$f" >"$DIR/out"; status=$?
+>   sed -n 's/^# expect: //p' "$f" >"$DIR/want"
+>   want=$(sed -n 's/^# status: //p' "$f")
+>   if cmp -s "$DIR/out" "$DIR/want" && [ "$status" = "${want:-0}" ]; then
+>     echo "${f##*/}: as its header says"
+>   else
+>     echo "${f##*/}: exited $status, not as its header says"; bad=$((bad + 1))
+>   fi
+> done
+> echo "$bad differ"
+  = ask.fux: as its header says
+  = jobs.fux: as its header says
+  = watch.fux: as its header says
+  = 0 differ
+  ~ ask.fux: as its header says
+  ~ jobs.fux: as its header says
+  ~ watch.fux: as its header says
+  ~ 0 differ

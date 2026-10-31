@@ -1,0 +1,11 @@
+# fux cassette 1
+# guards: a wait from a version the pane has already moved past answers that
+#   change at once, never waiting for another
+# exercises: wait-across-change
+$ V=$(fux agent-opts 80 24 size str sh program str -c arg str 'read x; echo "got=$x"; read y' arg run)
+$ fux "${V%%:*}" str x text str Enter key send-keys
+  ~ %a:0.0.0.0.0:R1
+$ until fux "${V%%:*}" capture | grep -q '^got=x'; do sleep 0.05; done
+$ fux str "$V" changed 1 timeout wait
+  = %a:0.*.0.0.0:R1 screen
+  ~ %a:0.10.0.0.0:R1 screen
