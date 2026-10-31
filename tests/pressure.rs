@@ -124,6 +124,23 @@ fn a_bound_program_follows_the_keys_before_it() -> Outcome {
     received(&out, &expected)
 }
 
+/// Stops `pid` and waits until it has stopped, so it reads nothing more.
+fn stop(pid: i32) -> Outcome {
+    signal(pid, fuxix::process::Signal::Stop);
+    eventually("stopped", || {
+        let out = std::process::Command::new("ps")
+            .args(["-o", "stat=", "-p", &pid.to_string()])
+            .output()
+            .map_err(e)?;
+        Ok(out.stdout.starts_with(b"T"))
+    })
+}
+
+/// A bracketed paste of `text`, as a terminal sends one.
+fn paste(text: &[u8]) -> Vec<u8> {
+    [b"\x1b[200~".as_slice(), text, b"\x1b[201~"].concat()
+}
+
 /// Paste `i` of `len` bytes: letters that tell pastes and their order apart.
 fn pasted(i: usize, len: usize) -> Vec<u8> {
     (0..len)
@@ -131,6 +148,44 @@ fn pasted(i: usize, len: usize) -> Vec<u8> {
             b'a'.saturating_add(u8::try_from((i.wrapping_mul(7).wrapping_add(j)) % 26).unwrap_or(0))
         })
         .collect()
+}
+
+/// Input for a program that has stopped reading waits for it rather than
+/// being lost: thousands of single keys, from a client and from
+/// `send-keys`, and many pastes, all arrive in order once it reads again.
+#[test]
+fn input_waits_while_its_program_does_not_read() -> Outcome {
+    let server = Server::start("")?;
+    let mut client = server.attach(20, 100)?;
+    client.ready()?;
+    let (cat, out) = recorder(&server, "")?;
+    let _reap = Reap(vec![cat]);
+    let mut expected = Vec::new();
+
+    // Keys, one piece each.
+    stop(cat)?;
+    for i in 0..3000u32 {
+        let key = b'a'.saturating_add(u8::try_from(i % 26).map_err(e)?);
+        client.send(&[key])?;
+        expected.push(key);
+    }
+    for i in 0..200u32 {
+        let key = char::from(b'A'.saturating_add(u8::try_from(i % 26).map_err(e)?));
+        send_now(&server, "%1", &["str", &key.to_string(), "text"])?;
+        expected.extend(key.to_string().bytes());
+    }
+    signal(cat, fuxix::process::Signal::Cont);
+    received(&out, &expected)?;
+
+    // Eighty pastes of 2000 bytes.
+    stop(cat)?;
+    for i in 0..80 {
+        let text = pasted(i, 2000);
+        client.send(&paste(&text))?;
+        expected.extend(text);
+    }
+    signal(cat, fuxix::process::Signal::Cont);
+    received(&out, &expected)
 }
 
 /// Frames a client sends faster than a tick handles them wait for its
