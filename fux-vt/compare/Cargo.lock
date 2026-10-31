@@ -613,6 +613,7 @@ dependencies = [
  "fux-vt",
  "fux-wire",
  "fuxix",
+ "fuxth-core",
 ]
 
 [[package]]

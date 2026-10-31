@@ -223,8 +223,9 @@ wide glyph at either column boundary leaves a blank in the selected half.
 `CLIENT capture json`:
 `{"client":"c1","screen_rows":24,"screen_cols":80,"screen_cursor":[ROW,COL],"lines":["…"]}`.
 
-Finite observations have hard limits: 32 MiB of wire bytes and a 128 MiB
-allocation grant for construction or decoding. In the client, the run's region
+Finite observations have hard limits: 32 MiB of wire bytes, and 128 MiB that
+the server holds for one request (its decoded frame, what its answer builds
+and the answer's bytes) and a client for decoding one. In the client, the run's region
 holds what renders one: its JSON and its plain text are counted, then made in
 exactly their room beside the retained input, and JSON writes capture runs
 directly without constructing a second JSON object graph. Nested lists stream

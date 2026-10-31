@@ -18,6 +18,7 @@ use fux_wire::answer::{Change, PaneAnswer, PaneResults};
 use fux_wire::command::{Counts, Run, Version};
 use fux_wire::id::PaneId;
 use fux_wire::protocol::Reply;
+use fux_wire::wire::Budget;
 use std::time::{Duration, Instant};
 
 /// What a wait watches, each pane with the counts it waits for that
@@ -25,7 +26,9 @@ use std::time::{Duration, Instant};
 /// workspace's panes, which answer together.
 pub enum Watches {
     Pane((PaneId, Counts)),
-    Panes(Vec<(PaneId, Counts)>),
+    /// Kept in the waits' own region (`Requests::pending`) till the wait
+    /// ends.
+    Panes(fuxth_core::BoundedVec<(PaneId, Counts)>),
 }
 
 impl Watches {
@@ -76,11 +79,16 @@ impl Waiting {
         }
     }
 
-    /// Its answer, if it has one at `now`.
-    pub fn answer(&mut self, session: &Session, now: Instant) -> Option<Reply> {
+    /// Its answer, if it has one at `now`, made in `budget`.
+    pub fn answer(
+        &mut self,
+        session: &Session,
+        budget: &mut Budget,
+        now: Instant,
+    ) -> Option<Reply> {
         match self {
-            Waiting::Events(read) => read.answer(session, now),
-            Waiting::Change(watch) => watch.answer(session, now),
+            Waiting::Events(read) => read.answer(session, budget, now),
+            Waiting::Change(watch) => watch.answer(session, budget, now),
             Waiting::Respawn {
                 pane: id,
                 respawns,
@@ -111,28 +119,56 @@ impl Watch {
     /// the frame is whole, the rest of which is read already: so it holds
     /// the answer past the limit until then, rather than say it is
     /// unchanged.
-    pub fn answer(&self, session: &Session, now: Instant) -> Option<Reply> {
+    pub fn answer(&self, session: &Session, budget: &mut Budget, now: Instant) -> Option<Reply> {
         let pane = |id| session.parts.panes().get(id);
-        let told: Vec<PaneAnswer> = (self.watches.all().iter())
-            .filter_map(|(id, since)| told(*id, pane(id), *since, self.run))
-            .collect();
         let framing =
             (self.watches.all().iter()).any(|(id, _)| pane(id).is_some_and(Pane::mid_frame));
-        let told = match told.is_empty() {
-            false => told,
-            true if now >= self.deadline && !framing => (self.watches.all().iter())
-                .map(|(id, since)| PaneAnswer::TimedOut {
-                    since: self.version(*id, *since),
-                    limit: self.limit,
-                })
-                .collect(),
-            true => return None,
+        let panes = session.parts.panes();
+        let changed = self.each(
+            |id, since, b| told(id, panes.get(&id), (since, self.run), b),
+            budget,
+        );
+        let told = match changed {
+            Ok(told) if told.is_empty() && now >= self.deadline && !framing => {
+                let timed_out = |id, since, _: &mut Budget| {
+                    Ok(Some(PaneAnswer::TimedOut {
+                        since: self.version(id, since),
+                        limit: self.limit,
+                    }))
+                };
+                self.each(timed_out, budget)
+            }
+            Ok(told) if told.is_empty() => return None,
+            told => told,
+        };
+        let told = match told {
+            Ok(told) => told,
+            Err(error) => return Some(Reply::failed(error.code(), error.to_string())),
         };
         let answers = match (&self.watches, told.as_slice()) {
             (Watches::Pane(_), [one]) => PaneResults::One(one.clone()),
             _ => PaneResults::Many(told),
         };
         Some(answers.into())
+    }
+
+    /// What `answer` says of each pane it watches, if anything, in room
+    /// for all of them charged to `budget` first.
+    fn each(
+        &self,
+        answer: impl Fn(
+            PaneId,
+            Counts,
+            &mut Budget,
+        ) -> Result<Option<PaneAnswer>, fux_wire::code::Error>,
+        budget: &mut Budget,
+    ) -> Result<Vec<PaneAnswer>, fux_wire::code::Error> {
+        let all = self.watches.all();
+        let mut told = fuxix::Allocation::vector(budget, all.len())?;
+        for (id, since) in all {
+            told.extend(answer(*id, *since, budget)?);
+        }
+        Ok(told)
     }
 
     /// Pane `id`'s version in its run at `counts`.
@@ -146,39 +182,50 @@ impl Watch {
 }
 
 /// What pane `id` answers, if its counts differ from `since` or it
-/// closed.
-fn told(id: PaneId, pane: Option<&Pane>, since: Counts, run: Run) -> Option<PaneAnswer> {
+/// closed, its changes made in room charged to `budget` first.
+fn told(
+    id: PaneId,
+    pane: Option<&Pane>,
+    (since, run): (Counts, Run),
+    budget: &mut Budget,
+) -> Result<Option<PaneAnswer>, fux_wire::code::Error> {
     let Some(pane) = pane else {
-        return Some(PaneAnswer::Closed(id));
+        return Ok(Some(PaneAnswer::Closed(id)));
     };
     let now = pane.counts();
     // Part way through a frame (synchronized output, the rest of it already
     // read and kept for the next turn): its screen is one the program never
     // meant shown, so a wait answers once the frame is whole.
     if now == since || pane.mid_frame() {
-        return None;
+        return Ok(None);
     }
     // A program started again is a new one: what its counts are now says
     // nothing of the last one's.
-    let changed = match now.respawns == since.respawns {
-        false => vec![Change::Respawned],
+    let changes = match now.respawns == since.respawns {
+        false => [
+            (true, Change::Respawned),
+            (false, Change::Screen),
+            (false, Change::Bell),
+        ],
         true => [
             (now.screen != since.screen, Change::Screen),
             (now.bells != since.bells, Change::Bell),
             (now.done != since.done, Change::Done),
-        ]
-        .into_iter()
-        .filter_map(|(changed, what)| changed.then_some(what))
-        .collect(),
+        ],
     };
+    let changes = changes
+        .into_iter()
+        .filter_map(|(changed, what)| changed.then_some(what));
+    let mut changed = fuxix::Allocation::vector(budget, changes.clone().count())?;
+    changed.extend(changes);
     // Its end, if it ended since: a program started since is a new one,
     // whose end is news.
     let new = now.respawns != since.respawns || now.ended != since.ended;
-    Some(PaneAnswer::Changed {
+    Ok(Some(PaneAnswer::Changed {
         version: pane.version(run),
         changed,
         ended: (pane.process().exit_status()).filter(|_| new),
-    })
+    }))
 }
 
 #[cfg(test)]
@@ -208,11 +255,13 @@ mod tests {
         frame.extend_from_slice(b"DONE\x1b[?2026l");
         pane.output(&frame);
         assert!(pane.mid_frame());
-        assert!(super::told(pane.id(), Some(&pane.pane), since, run).is_none());
+        let budget = &mut fux_wire::wire::Budget::with_limit(1 << 10);
+        assert!(super::told(pane.id(), Some(&pane.pane), (since, run), budget)?.is_none());
         while pane.mid_frame() {
             pane.read_unread();
         }
-        let told = super::told(pane.id(), Some(&pane.pane), since, run).ok_or("no answer")?;
+        let told = super::told(pane.id(), Some(&pane.pane), (since, run), budget)?;
+        let told = told.ok_or("no answer")?;
         assert!(told.text().ends_with(" screen"), "{}", told.text());
         Ok(())
     }

@@ -232,6 +232,7 @@ pub(crate) fn sample() -> Result<Presentation, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::wire::decode;
 
     #[test]
     fn presentation_transport_refuses_excess_fields_and_slot_text() -> Result<(), String> {
@@ -239,27 +240,25 @@ mod tests {
         let mut bytes = Vec::new();
         p.put(&mut bytes);
         assert_eq!(
-            Reader::new(&bytes)
-                .whole::<crate::presentation::Presentation>()
-                .map_err(|e| e.to_string())?,
+            decode::<crate::presentation::Presentation>(&bytes).map_err(|e| e.to_string())?,
             p
         );
         bytes.clear();
         BarPosition::Bottom.put(&mut bytes);
         17u32.put(&mut bytes);
         assert!(matches!(
-            Reader::new(&bytes).whole::<Bar>(),
+            decode::<Bar>(&bytes),
             Err(Error::Bad("list length"))
         ));
         bytes.clear();
         vec![(0u8, std::iter::repeat_n('x', 257).collect::<String>())].put(&mut bytes);
         assert!(matches!(
-            Reader::new(&bytes).whole::<Slots>(),
+            decode::<Slots>(&bytes),
             Err(Error::Bad("text length"))
         ));
         bytes.clear();
         vec![(0u8, "escape\x1b".to_owned())].put(&mut bytes);
-        assert!(Reader::new(&bytes).whole::<Slots>().is_err());
+        assert!(decode::<Slots>(&bytes).is_err());
         Ok(())
     }
 }

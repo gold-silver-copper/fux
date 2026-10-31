@@ -303,7 +303,7 @@ mod tests {
         let item = screen.items.first().ok_or("row")?;
         let value = value(
             &item.payload,
-            &mut Budget::new(),
+            &mut Budget::with_limit(fux_wire::wire::MAX_ALLOCATED),
             &fuxth::Region::new(usize::MAX),
         )
         .map_err(|e| e.message)?;
@@ -353,17 +353,25 @@ mod tests {
         let root = values.pop().ok_or("snapshot")?;
         let grant = fuxth::Region::new(fux_wire::inspect::BYTES);
         root.retain(&grant).map_err(|e| e.message)?;
-        let payload = data(&root, &mut Budget::new()).map_err(|e| e.message)?;
+        let payload = data(
+            &root,
+            &mut Budget::with_limit(fux_wire::wire::MAX_ALLOCATED),
+        )
+        .map_err(|e| e.message)?;
         let bytes = fux_wire::wire::encode(&payload)?;
-        let payload: Data = fux_wire::wire::Reader::new(&bytes).whole()?;
+        let payload: Data = fux_wire::wire::decode(&bytes)?;
         let restored = value(
             &payload,
-            &mut Budget::new(),
+            &mut Budget::with_limit(fux_wire::wire::MAX_ALLOCATED),
             &fuxth::Region::new(usize::MAX),
         )
         .map_err(|e| e.message)?;
         assert_eq!(
-            data(&restored, &mut Budget::new()).map_err(|e| e.message)?,
+            data(
+                &restored,
+                &mut Budget::with_limit(fux_wire::wire::MAX_ALLOCATED)
+            )
+            .map_err(|e| e.message)?,
             payload
         );
         assert_eq!(restored, root);
@@ -406,7 +414,11 @@ mod tests {
             run(&Job::call(&screen.action, [screen.client, payload]))?,
             "all\n"
         );
-        let child = data(&child, &mut Budget::new()).map_err(|e| e.message)?;
+        let child = data(
+            &child,
+            &mut Budget::with_limit(fux_wire::wire::MAX_ALLOCATED),
+        )
+        .map_err(|e| e.message)?;
         let text = run(&Job::call(
             &Callback::from("str id get kind print"),
             [child],
@@ -431,16 +443,24 @@ mod tests {
         };
         let record =
             record::snapshot(snapshot, &fuxth::Region::new(usize::MAX)).map_err(|e| e.message)?;
-        let original = data(&record, &mut Budget::new()).map_err(|e| e.message)?;
+        let original = data(
+            &record,
+            &mut Budget::with_limit(fux_wire::wire::MAX_ALLOCATED),
+        )
+        .map_err(|e| e.message)?;
         let bytes = fux_wire::wire::encode(&original)?;
-        let decoded = fux_wire::wire::Reader::new(&bytes).whole()?;
+        let decoded = fux_wire::wire::decode(&bytes)?;
         let restored = value(
             &decoded,
-            &mut Budget::new(),
+            &mut Budget::with_limit(fux_wire::wire::MAX_ALLOCATED),
             &fuxth::Region::new(usize::MAX),
         )
         .map_err(|e| e.message)?;
-        let payload = data(&restored, &mut Budget::new()).map_err(|e| e.message)?;
+        let payload = data(
+            &restored,
+            &mut Budget::with_limit(fux_wire::wire::MAX_ALLOCATED),
+        )
+        .map_err(|e| e.message)?;
         assert_eq!(payload, original);
         assert!(admit(list(payload.clone(), "2drop"), None, &context).is_ok());
         let other = "3-4".parse().map_err(|()| "run")?;
@@ -544,7 +564,7 @@ mod tests {
             &std::iter::repeat_n(' ', crate::screens::ACTION_MAX + 1).collect::<String>(),
         );
         assert!(admit(huge, None, &context).is_err());
-        let mut budget = Budget::new();
+        let mut budget = Budget::with_limit(fux_wire::wire::MAX_ALLOCATED);
         assert!(
             data(
                 &Value::App(Fux::Opts(std::rc::Rc::new(Default::default()))),

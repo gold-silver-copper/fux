@@ -12,6 +12,10 @@ use std::collections::VecDeque;
 pub const KEPT: usize = 1 << 14;
 pub const BATCH_EVENTS: usize = 64;
 pub const BATCH_SCAN: usize = 256;
+/// What one event's item may hold, charged to the request's budget before
+/// it is made. The largest, a notification of `NOTIFICATION_MAX` four-byte
+/// characters, holds 2,198 (`an_event_holds_no_more_than_it_is_charged`).
+pub const EVENT_BYTES: usize = 4096;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ViewChange {
@@ -487,16 +491,23 @@ impl Reader {
             }
         }
     }
+    /// One batch, made in a budget of its own.
+    #[cfg(any(test, feature = "in-process"))]
     pub fn batch(&mut self, journal: &Journal, exists: bool) -> Result<Batch, String> {
-        self.scan(journal, exists, BATCH_SCAN)
+        let budget = &mut fux_wire::wire::Budget::with_limit(fux_wire::wire::MAX_ALLOCATED);
+        self.scan(journal, exists, BATCH_SCAN, budget)
             .map(|(batch, _)| batch)
     }
+    /// What it makes is charged to `budget` first: the batch's room for
+    /// one more item, and `EVENT_BYTES` for it.
     fn scan(
         &mut self,
         journal: &Journal,
         exists: bool,
         limit: usize,
+        budget: &mut fux_wire::wire::Budget,
     ) -> Result<(Batch, usize), String> {
+        use fuxix::Allocation;
         if journal.exhausted {
             return Err("journal cursor IDs exhausted".into());
         }
@@ -519,6 +530,10 @@ impl Reader {
             self.next.seq = entry.seq;
             let mut value = None;
             if self.wants(&entry.event) {
+                let charged = budget.reserve(&mut events, 1);
+                charged
+                    .and_then(|()| budget.charge(EVENT_BYTES))
+                    .map_err(|e| e.to_string())?;
                 let next = Cursor {
                     seq: Seq(entry.seq.0.saturating_add(1)),
                     run: self.next.run,
@@ -628,9 +643,11 @@ impl Read {
             deadline,
         }
     }
+    /// Its answer, if it has one at `now`, made in `budget`.
     pub fn answer(
         &mut self,
         session: &crate::session::Session,
+        budget: &mut fux_wire::wire::Budget,
         now: std::time::Instant,
     ) -> Option<fux_wire::protocol::Reply> {
         let reader = &mut self.reader;
@@ -649,11 +666,15 @@ impl Read {
         if reader.next == journal.end(session.run) && exists && now < self.deadline {
             return None;
         }
-        let (mut batch, scanned) =
-            match reader.scan(journal, exists, BATCH_SCAN.saturating_sub(self.scanned)) {
-                Ok(batch) => batch,
-                Err(why) => return Some(reply(Err(why))),
-            };
+        let (mut batch, scanned) = match reader.scan(
+            journal,
+            exists,
+            BATCH_SCAN.saturating_sub(self.scanned),
+            budget,
+        ) {
+            Ok(batch) => batch,
+            Err(why) => return Some(reply(Err(why))),
+        };
         self.scanned = self.scanned.saturating_add(scanned);
         if batch.events.is_empty() && batch.missed == 0 && batch.status == Status::Continuing {
             if now >= self.deadline {
@@ -668,19 +689,19 @@ impl Read {
         &self,
         session: &crate::session::Session,
         reason: &str,
+        budget: &mut fux_wire::wire::Budget,
     ) -> fux_wire::protocol::Reply {
+        use fuxix::Allocation;
         let mut reader = self.reader;
+        let left = BATCH_SCAN.saturating_sub(self.scanned);
         reply(
-            reader
-                .scan(
-                    session.parts.journal(),
-                    true,
-                    BATCH_SCAN.saturating_sub(self.scanned),
-                )
-                .map(|(mut batch, _)| {
-                    batch.status = Status::Stopped(reason.to_owned());
-                    batch
-                }),
+            (reader.scan(session.parts.journal(), true, left, budget)).and_then(
+                |(mut batch, _)| {
+                    let reason = budget.string(reason).map_err(|e| e.to_string())?;
+                    batch.status = Status::Stopped(reason);
+                    Ok(batch)
+                },
+            ),
         )
     }
 }
@@ -754,6 +775,33 @@ mod tests {
             buffer,
             size,
         ))
+    }
+
+    /// The largest event of each kind, as a batch's item, holds no more
+    /// than a batch charges for it.
+    #[test]
+    fn an_event_holds_no_more_than_it_is_charged() -> TestResult {
+        let next = Cursor {
+            seq: Seq(0),
+            run: run()?,
+        };
+        for ch in ['a', '𐀀'] {
+            for event in maximum_events(ch)? {
+                let item = Item {
+                    data: event.json(),
+                    pane: None,
+                    tab: None,
+                    workspace: None,
+                    client: None,
+                    moved_from: None,
+                    origin: Actor::Unknown,
+                    next,
+                };
+                let held = fux_wire::wire::retained(&item);
+                assert!(held <= EVENT_BYTES, "{event:?}: {held}");
+            }
+        }
+        Ok(())
     }
 
     #[test]
@@ -975,9 +1023,12 @@ mod tests {
             from: None,
             timeout: Limit::read(5)?,
         };
-        let Begun::Waiting(mut waiting) =
-            session.begin(request, &Origin::Cli(Caller::default()), now)
-        else {
+        let Begun::Waiting(mut waiting) = session.begin(
+            request,
+            &Origin::Cli(Caller::default()),
+            &mut session.budget(),
+            now,
+        ) else {
             return Err("did not wait".into());
         };
         for _ in 0..BATCH_SCAN / 2 {
@@ -988,7 +1039,9 @@ mod tests {
         }
         for _ in 0..3 {
             assert!(
-                waiting.answer(&session, now).is_none(),
+                waiting
+                    .answer(&session, &mut session.budget(), now)
+                    .is_none(),
                 "unrelated entries ended the wait"
             );
         }
@@ -999,7 +1052,7 @@ mod tests {
                 .push(Event::Workspace(WsId::of(2), Change::Reordered));
         }
         let reply = waiting
-            .answer(&session, now)
+            .answer(&session, &mut session.budget(), now)
             .ok_or("scan limit did not return progress")?;
         let Response::Returned(Body::Events(batch)) = reply.response else {
             return Err("batch".into());
@@ -1123,18 +1176,29 @@ mod tests {
             from: None,
             timeout: Limit::read(5)?,
         };
-        let Begun::Waiting(mut waiting) =
-            session.begin(request, &Origin::Cli(Caller::default()), now)
-        else {
+        let Begun::Waiting(mut waiting) = session.begin(
+            request,
+            &Origin::Cli(Caller::default()),
+            &mut session.budget(),
+            now,
+        ) else {
             return Err("did not wait".into());
         };
         assert_eq!(
             waiting.due(),
             Some(crate::after(now, Duration::from_secs(5)))
         );
-        assert!(waiting.answer(&session, now).is_none());
+        assert!(
+            waiting
+                .answer(&session, &mut session.budget(), now)
+                .is_none()
+        );
         let answer = waiting
-            .answer(&session, crate::after(now, Duration::from_secs(5)))
+            .answer(
+                &session,
+                &mut session.budget(),
+                crate::after(now, Duration::from_secs(5)),
+            )
             .ok_or("timeout")?;
         let Response::Returned(Body::Events(batch)) = answer.response else {
             return Err("batch".into());
@@ -1144,7 +1208,9 @@ mod tests {
         let crate::wait::Waiting::Events(read) = &*waiting else {
             return Err("event read".into());
         };
-        let Response::Returned(Body::Events(stopped)) = read.stopped(&session, "test").response
+        let Response::Returned(Body::Events(stopped)) = read
+            .stopped(&session, "test", &mut session.budget())
+            .response
         else {
             return Err("stopped batch".into());
         };
@@ -1160,6 +1226,7 @@ mod tests {
                     timeout: Limit::read(0)?
                 },
                 &Origin::Cli(Caller::default()),
+                &mut session.budget(),
                 now
             ),
             Begun::Done(_)

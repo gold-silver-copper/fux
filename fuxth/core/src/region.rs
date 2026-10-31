@@ -98,8 +98,9 @@ impl Region {
         })
     }
 
-    /// A reservation holding nothing yet.
-    pub(crate) fn nothing(&self) -> Reservation {
+    /// A reservation holding nothing yet, to grow as what it pays for
+    /// grows (a store's, a builder's charges).
+    pub fn nothing(&self) -> Reservation {
         Reservation {
             region: self.clone(),
             bytes: 0,

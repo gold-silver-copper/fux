@@ -20,6 +20,7 @@ use fux_wire::layout::{self, Axis, NoPane, Placement, Rect, Shares, Tree};
 use fux_wire::protocol::{Attach, Body, Reply, Response, ToAttached};
 use fux_wire::words::joined;
 use fuxix::Allocation;
+use fuxth_core::BoundedVec;
 use std::collections::{BTreeMap, VecDeque};
 use std::num::NonZeroU32;
 use std::path::{Path, PathBuf};
@@ -301,6 +302,8 @@ pub struct Session {
     /// every version's, by which a wait tells its own.
     pub run: command::Run,
     pub outbox: Vec<Outgoing>,
+    /// What the server holds for the request it answers.
+    pub requests: crate::request::Requests,
     /// Closed panes' programs: a pane respawned twice in its grace has two.
     pub dying: Vec<Dying>,
     /// Each respawn under way, by its pane: one at a time in a pane.
@@ -402,6 +405,7 @@ impl Session {
             exe: std::env::current_exe().ok(),
             run,
             outbox: Vec::new(),
+            requests: crate::request::Requests::default(),
             dying: Vec::new(),
             respawning: BTreeMap::new(),
             shown_sizes: Vec::new(),
@@ -921,7 +925,12 @@ impl Session {
     /// as its program asked for keys (`bytes`): to one seen, only if it is
     /// still at that version as they are queued, else none, failing
     /// `stale`. That is all it promises: not what its program does next.
-    fn send_keys(&mut self, to: command::To, inputs: &[Input]) -> Result<Reply, Error> {
+    fn send_keys(
+        &mut self,
+        to: command::To,
+        inputs: &[Input],
+        budget: &mut fux_wire::wire::Budget,
+    ) -> Result<Reply, Error> {
         // Stale before it is judged live: a program's end is a change.
         if let command::To::Seen(seen) = to {
             self.counts_since(seen)?;
@@ -932,18 +941,20 @@ impl Session {
             }
         }
         // Every pane must take them, or none is sent them: each one's are
-        // made and fit first.
-        let (run, mut each) = (self.run, Vec::new());
-        for id in self.panes_of(to.target(), &mut fux_wire::wire::Budget::new())? {
+        // made, in room charged to the request first, and fit first.
+        let (run, targets) = (self.run, self.panes_of(to.target(), budget)?);
+        let mut each = budget.vector(targets.len())?;
+        for id in targets {
             let mut pane = self.live_pane_mut(id)?;
-            let bytes = bytes(&pane, inputs);
+            let bytes = crate::request::input(pane.screen(), inputs, budget)?;
             pane.fits(bytes.len())?;
             each.push((pane.version(run), bytes));
         }
-        let mut answers = each.iter().map(|(version, _)| PaneAnswer::Acted(*version));
-        let mut reply: Reply = match (to.target(), answers.next()) {
-            (AnyRef::Pane(_), Some(one)) => PaneResults::One(one),
-            (_, first) => PaneResults::Many(first.into_iter().chain(answers).collect()),
+        let mut answers = budget.vector(each.len())?;
+        answers.extend(each.iter().map(|(version, _)| PaneAnswer::Acted(*version)));
+        let mut reply: Reply = match (to.target(), answers.as_slice()) {
+            (AnyRef::Pane(_), [one]) => PaneResults::One(one.clone()),
+            _ => PaneResults::Many(answers),
         }
         .into();
         reply.run = Some(self.run);
@@ -1052,10 +1063,14 @@ impl Session {
 
     // ------------------------------------------------------------ creation
 
-    /// The directory pane `pane`'s program is in, if it can be read.
-    fn dir_of(&self, pane: PaneId) -> Option<PathBuf> {
-        let mut allocation = usize::MAX;
-        self.dir_with(pane, &mut allocation).ok()?.ok().flatten()
+    /// The directory pane `pane`'s program is in, if it can be read: one
+    /// the request's budget has no room for is its refusal, not unknown.
+    fn dir_of(
+        &self,
+        pane: PaneId,
+        budget: &mut fux_wire::wire::Budget,
+    ) -> Result<Option<PathBuf>, Error> {
+        Ok(self.dir_with(pane, budget)?.ok().flatten())
     }
 
     fn dir_with<A: fuxix::Allocation>(
@@ -1087,6 +1102,7 @@ impl Session {
         here: Here,
         dir: Option<&Path>,
         near: Option<PaneId>,
+        budget: &mut fux_wire::wire::Budget,
     ) -> Result<PathBuf, Error> {
         if let Some(dir) = dir.filter(|dir| dir.is_absolute()) {
             return Ok(dir.to_owned());
@@ -1098,8 +1114,11 @@ impl Session {
                 return Err(fail(Raise::Start, "the caller's own directory is unknown"));
             }
             Here::Cli(_, Some(cwd)) => Some(cwd.to_owned()),
-            Here::Cli(_, None) => near.and_then(|p| self.dir_of(p)),
-            Here::Client(_, place) => self.dir_of(near.unwrap_or(place.pane)),
+            Here::Cli(_, None) => match near {
+                Some(pane) => self.dir_of(pane, budget)?,
+                None => None,
+            },
+            Here::Client(_, place) => self.dir_of(near.unwrap_or(place.pane), budget)?,
         };
         let base = known.ok_or_else(|| {
             fail(
@@ -2173,8 +2192,15 @@ impl Session {
     /// Begins a request from a client: one that waits gives its wait,
     /// which the server asks for its answer until it has one. Event reads
     /// use the same bounded wait; commands run at once.
-    pub fn begin(&mut self, request: Request, origin: &Origin, now: Instant) -> Begun {
-        self.begin_request(request, origin, now)
+    /// What it makes is charged to `budget`, the request's.
+    pub fn begin(
+        &mut self,
+        request: Request,
+        origin: &Origin,
+        budget: &mut fux_wire::wire::Budget,
+        now: Instant,
+    ) -> Begun {
+        self.begin_request(request, origin, budget, now)
             .unwrap_or_else(|error| Begun::Done(failure(error, origin, self)))
     }
 
@@ -2183,11 +2209,12 @@ impl Session {
         &mut self,
         request: Request,
         origin: &Origin,
+        budget: &mut fux_wire::wire::Budget,
         now: Instant,
     ) -> Result<Begun, Error> {
         let wait = match request {
             Request::Do(command) => {
-                let reply = self.run_command(&command, origin, now);
+                let reply = self.run_command(&command, origin, budget, now);
                 // A respawn is answered once its pane is at the version it
                 // answers: at once, unless what the old program left is
                 // still being read.
@@ -2202,7 +2229,7 @@ impl Session {
                     },
                     _ => return Ok(Begun::Done(reply)),
                 };
-                return Ok(self.answered(waiting, now));
+                return Ok(self.answered(waiting, budget, now));
             }
             Request::Wait(wait) => wait,
             Request::NextEvents {
@@ -2220,18 +2247,26 @@ impl Session {
                     crate::journal::Reader::new(scope, self.parts.journal(), self.run, from)
                         .map_err(|why| fail(Raise::BadValue, why))?;
                 let read = crate::journal::Read::new(reader, crate::after(now, timeout.duration()));
-                return Ok(self.answered(Waiting::Events(read), now));
+                return Ok(self.answered(Waiting::Events(read), budget, now));
             }
         };
         let watches = match wait.since {
             command::Since::Now(AnyRef::Pane(id)) => Watches::Pane((id, self.pane(id)?.counts())),
-            command::Since::Now(target) => Watches::Panes(
-                (self
-                    .panes_of(target, &mut fux_wire::wire::Budget::new())?
-                    .into_iter())
-                .map(|id| Ok((id, self.pane(id)?.counts())))
-                .collect::<Result<Vec<_>, Error>>()?,
-            ),
+            command::Since::Now(target) => {
+                let panes = self.panes_of(target, budget)?;
+                let pending = self.requests.pending();
+                let mut watched =
+                    BoundedVec::with_capacity(pending, panes.len()).map_err(|why| {
+                        fail(Raise::TooLong, format!("the waits under way hold {why}"))
+                    })?;
+                for id in panes {
+                    let counts = (id, self.pane(id)?.counts());
+                    watched
+                        .push(counts)
+                        .map_err(|why| fail(Raise::TooLong, why.to_string()))?;
+                }
+                Watches::Panes(watched)
+            }
             command::Since::Version(since) => {
                 Watches::Pane((since.pane, self.counts_since(since)?))
             }
@@ -2243,12 +2278,17 @@ impl Session {
             return Err(fail(Raise::NoPane, "it holds no pane to wait on"));
         }
         let limit = wait.timeout.duration();
-        Ok(self.answered(Waiting::new(watches, self.run, now, limit), now))
+        Ok(self.answered(Waiting::new(watches, self.run, now, limit), budget, now))
     }
 
     /// `waiting`'s answer, if it has one already at `now`; else the wait.
-    fn answered(&self, mut waiting: Waiting, now: Instant) -> Begun {
-        match waiting.answer(self, now) {
+    fn answered(
+        &self,
+        mut waiting: Waiting,
+        budget: &mut fux_wire::wire::Budget,
+        now: Instant,
+    ) -> Begun {
+        match waiting.answer(self, budget, now) {
             Some(outcome) => Begun::Done(outcome),
             None => Begun::Waiting(Box::new(waiting)),
         }
@@ -2293,11 +2333,18 @@ impl Session {
     }
 
     /// Runs a command, parsed already: from a line, a binding or a chooser.
-    pub fn run_command(&mut self, command: &Command, origin: &Origin, now: Instant) -> Reply {
+    /// What it makes is charged to `budget`, the request's.
+    pub fn run_command(
+        &mut self,
+        command: &Command,
+        origin: &Origin,
+        budget: &mut fux_wire::wire::Budget,
+        now: Instant,
+    ) -> Reply {
         let actor = self.request_actor(origin);
         let previous = self.parts.actor(actor);
         let outcome = self
-            .execute(command, origin, now)
+            .execute(command, origin, budget, now)
             .unwrap_or_else(|error| failure(error, origin, self));
         if !command.shows_nothing_new() {
             self.changes = self.changes.wrapping_add(1);
@@ -2351,12 +2398,13 @@ impl Session {
         &mut self,
         command: &Command,
         origin: &Origin,
+        budget: &mut fux_wire::wire::Budget,
         now: Instant,
     ) -> Result<Reply, Error> {
         let here = self.here(origin)?;
         match command {
             Command::Inspect { scope, projection } => {
-                self.inspect(*scope, projection.clone()).map(Into::into)
+                (self.inspect(*scope, projection.clone(), budget)).map(Into::into)
             }
             Command::Arrange {
                 target,
@@ -2399,7 +2447,7 @@ impl Session {
                 start,
                 options,
             } => {
-                let (cwd, fit, sized) = self.opening((cwd.as_deref(), *size), here)?;
+                let (cwd, fit, sized) = self.opening((cwd.as_deref(), *size), here, budget)?;
                 let new = NewPane::new(start, &cwd, env, *options, sized);
                 let made = self.create_workspace(name.clone(), None, fit, new, now)?;
                 self.follow(here, made.ws, None);
@@ -2414,7 +2462,7 @@ impl Session {
                 start,
                 options,
             } => {
-                let (cwd, fit, sized) = self.opening((cwd.as_deref(), *size), here)?;
+                let (cwd, fit, sized) = self.opening((cwd.as_deref(), *size), here, budget)?;
                 if let Some(name) = name {
                     self.check_tab_name(name, None)?;
                 }
@@ -2485,7 +2533,7 @@ impl Session {
                 target,
                 (axis, shares),
                 (start, env, options),
-                cwd.as_deref(),
+                (cwd.as_deref(), budget),
                 origin,
                 now,
             ),
@@ -2519,7 +2567,7 @@ impl Session {
                 self.pane_mut(target)?.clear_history();
                 Ok(Reply::default())
             }
-            &Command::SendKeys { to, ref inputs } => self.send_keys(to, inputs),
+            &Command::SendKeys { to, ref inputs } => self.send_keys(to, inputs, budget),
             &Command::CapturePane {
                 target,
                 history,
@@ -2533,7 +2581,8 @@ impl Session {
                     ));
                 }
                 let copying = self.copying(pane.id());
-                let captured = crate::capture::pane(pane, self.run, history, view, copying)?;
+                let captured =
+                    crate::capture::pane(pane, self.run, history, view, copying, budget)?;
                 Ok(Body::Capture(Box::new(captured)).into())
             }
             &Command::Reorder { ref target, toward } => {
@@ -2546,7 +2595,6 @@ impl Session {
             }
             Command::Resolve { text, kind } => Ok(found(self.resolve(text, *kind, here)?)),
             &Command::Members { target, members } => {
-                let budget = &mut fux_wire::wire::Budget::new();
                 let ids = match members {
                     Members::Panes => {
                         let panes = self.panes_of(target, budget)?;
@@ -2566,28 +2614,34 @@ impl Session {
                 Ok(Body::Handles(ids).into())
             }
             &Command::ListBuffers => {
-                let metadata = |(id, text): &(BufferId, String)| {
-                    let preview: String = (text.chars())
-                        .map(|c| if c.is_control() { ' ' } else { c })
-                        .take(PREVIEW_MAX)
-                        .collect();
-                    Json::object(vec![
-                        ("id", Json::str(id.to_string())),
+                let mut list = budget.vector(self.buffers.len())?;
+                for (id, text) in &self.buffers {
+                    let mut preview = String::new();
+                    let shown = text.chars().map(|c| if c.is_control() { ' ' } else { c });
+                    for c in shown.take(PREVIEW_MAX) {
+                        budget.text(&mut preview, c.encode_utf8(&mut [0; 4]))?;
+                    }
+                    let id = Json::str(budget.format(format_args!("{id}"))?);
+                    list.push(budget.object([
+                        ("id", id),
                         ("bytes", Json::count(text.len())),
                         ("preview", Json::str(preview)),
-                    ])
-                };
-                let list = self.buffers.iter().map(metadata).collect();
+                    ])?);
+                }
                 Ok(Body::Field(Json::Array(list)).into())
             }
-            &Command::ShowBuffer { buffer } => self
-                .buffer(buffer)
-                .map(|text| Body::Field(Json::str(text)).into()),
-            &Command::PasteBuffer { buffer, target } => {
-                let paste = Input::Paste(self.buffer(buffer)?.to_owned());
-                self.send_keys(command::To::Now(AnyRef::Pane(target)), &[paste])
+            &Command::ShowBuffer { buffer } => {
+                let text = budget.string(self.buffer(buffer)?)?;
+                Ok(Body::Field(Json::str(text)).into())
             }
-            &Command::Client { client, ref action } => self.client(client, action, here, now),
+            &Command::PasteBuffer { buffer, target } => {
+                let paste = Input::Paste(budget.string(self.buffer(buffer)?)?);
+                let to = command::To::Now(AnyRef::Pane(target));
+                self.send_keys(to, &[paste], budget)
+            }
+            &Command::Client { client, ref action } => {
+                self.client(client, action, here, budget, now)
+            }
         }
     }
 
@@ -2600,8 +2654,9 @@ impl Session {
         &mut self,
         (dir, size): (Option<&Path>, command::Size),
         here: Here,
+        budget: &mut fux_wire::wire::Budget,
     ) -> Result<(PathBuf, Fit, Starts), Error> {
-        let cwd = self.start_dir(here, dir, None)?;
+        let cwd = self.start_dir(here, dir, None, budget)?;
         let fit = self.new_fit(size, here)?;
         let follower = here.client().and_then(|c| self.views.get(&c));
         let screen = (follower.filter(|view| view.sizes())).and_then(Self::screen_size);
@@ -2777,13 +2832,13 @@ impl Session {
         target: PaneId,
         (axis, shares): (Axis, Option<(NonZeroU32, NonZeroU32)>),
         (start, env, options): (&Start, &command::EnvPatch, command::PaneOptions),
-        dir: Option<&Path>,
+        (dir, budget): (Option<&Path>, &mut fux_wire::wire::Budget),
         origin: &Origin,
         now: Instant,
     ) -> Result<Reply, Error> {
         let here = self.here(origin)?;
         let target = self.pane(target)?.id();
-        let cwd = self.start_dir(here, dir, Some(target))?;
+        let cwd = self.start_dir(here, dir, Some(target), budget)?;
         // The splitting client follows the new pane, if it shows its tab;
         // from the CLI, the clients that focus the split one.
         let tab = self.locate(target).map(|(_, tab)| tab);
@@ -2883,6 +2938,7 @@ impl Session {
         client: Option<ClientId>,
         action: &ClientAction,
         here: Here,
+        budget: &mut fux_wire::wire::Budget,
         now: Instant,
     ) -> Result<Reply, Error> {
         let (client, place) = match (client, here) {
@@ -2917,11 +2973,12 @@ impl Session {
             }
             ClientAction::Capture => {
                 let terminal = view()?;
+                crate::request::composed(self, terminal, budget)?;
                 let mut grid = crate::render::Grid::default();
                 let placement = &mut Placement::default();
                 crate::render::compose_view(self, terminal, &mut grid, placement)
                     .map_err(|e| fail(Raise::Memory, format!("capturing {client}: {e}")))?;
-                let captured = crate::capture::client(client, &grid)?;
+                let captured = crate::capture::client(client, &grid, budget)?;
                 return Ok(Body::Capture(Box::new(captured)).into());
             }
             ClientAction::Zoom => None,
@@ -3184,8 +3241,12 @@ impl Session {
         Ok(fields)
     }
 
-    fn field(&self, target: AnyRef, field: &str) -> Result<Body, Error> {
-        let budget = &mut fux_wire::wire::Budget::new();
+    pub(super) fn field(
+        &self,
+        target: AnyRef,
+        field: &str,
+        budget: &mut fux_wire::wire::Budget,
+    ) -> Result<Body, Error> {
         if field == "id" {
             return Ok(Body::Found(target));
         }
@@ -3414,9 +3475,15 @@ impl Session {
                 ..Caller::default()
             }),
         };
-        let begun = match self.check_run(asked.context.of) {
-            Ok(()) => self.begin(asked.request.clone(), &origin, Instant::now()),
-            Err(error) => Begun::Done(Reply::failed(error.code(), error.to_string())),
+        let begun = match (self.check_run(asked.context.of), self.requests.open()) {
+            (Ok(()), Ok(mut budget)) => {
+                self.begin(asked.request.clone(), &origin, &mut budget, Instant::now())
+            }
+            (Err(error), _) => Begun::Done(Reply::failed(error.code(), error.to_string())),
+            (Ok(()), Err(refused)) => Begun::Done(Reply::failed(
+                fux_wire::code::Code::from(Raise::TooLong),
+                crate::request::refused(refused),
+            )),
         };
         let outcome = match begun {
             Begun::Done(outcome) => outcome,
@@ -3428,7 +3495,14 @@ impl Session {
                 let soonest = self.timers().min_by_key(|(at, _)| *at);
                 let due = soonest.map(|(at, _)| at).into_iter().chain(waiting.due());
                 let now = due.min().unwrap_or_else(Instant::now);
-                if let Some(answer) = waiting.answer(self, now) {
+                let answer = match self.requests.open() {
+                    Ok(mut budget) => waiting.answer(self, &mut budget, now),
+                    Err(why) => Some(Reply::failed(
+                        fux_wire::code::Code::from(Raise::TooLong),
+                        crate::request::refused(why),
+                    )),
+                };
+                if let Some(answer) = answer {
                     break answer;
                 }
                 let Some((_, timer)) = soonest else {
@@ -3527,7 +3601,11 @@ pub(crate) mod testing {
                 fux_wire::inspect::Scope::Target,
             );
             let body = self
-                .inspect(scope, fux_wire::inspect::Projection::Recipe)
+                .inspect(
+                    scope,
+                    fux_wire::inspect::Projection::Recipe,
+                    &mut self.budget(),
+                )
                 .map_err(|e| fux::script::Failed::new(e.code(), e.to_string()))?;
             let tokens =
                 fuxth::token::source("dump", "all dump").map_err(fux::script::Failed::from)?;
@@ -3605,10 +3683,17 @@ pub(crate) mod testing {
             request: Request,
             origin: &super::Origin,
         ) -> super::Begun {
-            self.begin(request, origin, Instant::now())
+            let budget = &mut self.budget();
+            self.begin(request, origin, budget, Instant::now())
         }
         pub(crate) fn command_now(&mut self, command: &Command, origin: &super::Origin) -> Reply {
-            self.run_command(command, origin, Instant::now())
+            let budget = &mut self.budget();
+            self.run_command(command, origin, budget, Instant::now())
+        }
+        /// A request's budget: none, so what it makes is refused, if
+        /// another request's is still open.
+        pub(crate) fn budget(&self) -> fux_wire::wire::Budget {
+            (self.requests.open()).unwrap_or_else(|_| fux_wire::wire::Budget::with_limit(0))
         }
         pub(crate) fn start_now(
             &mut self,
@@ -3955,27 +4040,6 @@ pub(crate) mod testing {
     }
 }
 
-/// `inputs` as pane `p`'s program takes them: keys and pastes encoded as
-/// it asked for them, text and bytes as they are.
-fn bytes(p: &Pane, inputs: &[Input]) -> Vec<u8> {
-    let screen = p.screen();
-    let mut bytes = Vec::new();
-    for input in inputs {
-        match input {
-            Input::Key(key) => {
-                fux_vt::keys::encode::key_bytes((*key).into(), screen.key_mode(), &mut bytes)
-            }
-            Input::Text(text) => bytes.extend_from_slice(text.as_bytes()),
-            Input::Paste(text) => {
-                let bracketed = screen.mode(fux_vt::Mode::BracketedPaste);
-                fux_vt::keys::encode::paste(text, bracketed, &mut bytes);
-            }
-            Input::Bytes(given) => bytes.extend_from_slice(given),
-        }
-    }
-    bytes
-}
-
 #[cfg(test)]
 mod tests {
     use crate::session::testing::TestResult;
@@ -4023,7 +4087,9 @@ mod tests {
                     "%2 info listing print",
                 ),
             ] {
-                let Body::Snapshot(mut snapshot) = s.inspect(scope, Projection::Facts)? else {
+                let Body::Snapshot(mut snapshot) =
+                    s.inspect(scope, Projection::Facts, &mut s.budget())?
+                else {
                     return Err("snapshot".into());
                 };
                 let pane = snapshot
@@ -4065,7 +4131,9 @@ mod tests {
             }
         }
         let (s, _) = attached(12, 80)?;
-        let Body::Snapshot(template) = s.inspect(Scope::All, Projection::Topology)? else {
+        let Body::Snapshot(template) =
+            s.inspect(Scope::All, Projection::Topology, &mut s.budget())?
+        else {
             return Err("snapshot".into());
         };
         let workspace = template.workspaces.first().ok_or("workspace")?;
@@ -4173,7 +4241,9 @@ mod tests {
             Scope::Target(AnyRef::Tab("@2".parse().map_err(|_| "tab")?)),
             Scope::Target(AnyRef::Pane(PaneId::of(2))),
         ] {
-            let Body::Snapshot(snapshot) = s.inspect(scope, Projection::Topology)? else {
+            let Body::Snapshot(snapshot) =
+                s.inspect(scope, Projection::Topology, &mut s.budget())?
+            else {
                 return Err("snapshot".into());
             };
             snapshot.validate()?;
@@ -4241,6 +4311,7 @@ mod tests {
         let body = s.inspect(
             fux_wire::inspect::Scope::All,
             fux_wire::inspect::Projection::Topology,
+            &mut s.budget(),
         )?;
         let mut once = Once(Some(Reply {
             run: Some(s.run),
@@ -4334,7 +4405,8 @@ mod tests {
         let (mut s, c) = attached(12, 50)?;
         run(&mut s, "%1 str horizontal axis 2 3 shares split drop")?;
         for projection in [Projection::Facts, Projection::Topology, Projection::Recipe] {
-            let Body::Snapshot(mut snapshot) = s.inspect(Scope::Client(c), projection.clone())?
+            let Body::Snapshot(mut snapshot) =
+                s.inspect(Scope::Client(c), projection.clone(), &mut s.budget())?
             else {
                 return Err("no snapshot".into());
             };
@@ -4369,7 +4441,7 @@ mod tests {
             }
             let bytes = fux_wire::wire::encode(&*snapshot)?;
             assert_eq!(
-                fux_wire::wire::Reader::new(&bytes).whole::<fux_wire::inspect::Snapshot>()?,
+                fux_wire::wire::decode::<fux_wire::inspect::Snapshot>(&bytes)?,
                 *snapshot
             );
             let mut malformed = *snapshot;
@@ -4415,6 +4487,7 @@ mod tests {
             let Body::Snapshot(snapshot) = s.inspect(
                 fux_wire::inspect::Scope::Client(id),
                 fux_wire::inspect::Projection::Facts,
+                &mut s.budget(),
             )?
             else {
                 return Err("snapshot".into());
@@ -4647,7 +4720,7 @@ mod tests {
                 nodes,
             };
             assert_eq!(
-                s.execute(&command, &origin, Instant::now())
+                s.execute(&command, &origin, &mut s.budget(), Instant::now())
                     .err()
                     .map(|e| e.code()),
                 Some(Code::from(code))
@@ -4921,7 +4994,7 @@ mod tests {
         let mut refused = false;
         for _ in 0..40 {
             let before = s.parts.panes().len();
-            if let Err(error) = s.execute(&command, &origin, Instant::now()) {
+            if let Err(error) = s.execute(&command, &origin, &mut s.budget(), Instant::now()) {
                 assert_eq!(error.code(), Code::from(Raise::TooLong));
                 assert!(error.to_string().contains("saved launch inputs"), "{error}");
                 assert_eq!(s.parts.panes().len(), before);
@@ -4955,12 +5028,18 @@ mod tests {
             options: crate::pane::tests::options(0)?,
         };
         for _ in 0..3 {
-            s.execute(&command, &Origin::Cli(Caller::default()), Instant::now())?;
+            s.execute(
+                &command,
+                &Origin::Cli(Caller::default()),
+                &mut s.budget(),
+                Instant::now(),
+            )?;
         }
         // This admits the recipe first, independently of the source expansion.
         s.inspect(
             fux_wire::inspect::Scope::All,
             fux_wire::inspect::Projection::Recipe,
+            &mut s.budget(),
         )?;
         let error = s
             .dump_recipe(None)
@@ -5022,6 +5101,38 @@ mod tests {
             assert_eq!(s.ids, ids);
             assert_eq!(s.parts.panes().len(), 3);
         }
+        Ok(())
+    }
+
+    /// A pane's directory that the request's budget has no room for is
+    /// refused `too_long`, not taken for unknown; a pane with no program to
+    /// read one of still starts nowhere, `start`.
+    #[test]
+    fn a_directory_past_the_requests_budget_is_refused_too_long() -> TestResult {
+        let mut s = Session::new(
+            "/nonexistent/fux.sock".into(),
+            true,
+            command::Run::now().ok_or("clock")?,
+        );
+        let initial = command::InitialWorkspace {
+            options: fux::script::default_state()?.preferences.pane_options(),
+            name: None,
+            start: command::Start::Shell(command::Program::new("/bin/sh".into(), Vec::new())?),
+            cwd: std::env::current_dir()?,
+            env: command::EnvPatch::default(),
+        };
+        s.start_now(sized(24, 80)?, &initial)?;
+        let (pane, here) = (PaneId::of(1), Here::Cli(None, None));
+        let none = &mut fux_wire::wire::Budget::with_limit(0);
+        let refused = s.start_dir(here, None, Some(pane), none).err();
+        let room = &mut fux_wire::wire::Budget::with_limit(1 << 20);
+        let found = s.start_dir(here, None, Some(pane), room);
+        s.shutdown(Instant::now());
+        reap(&mut s);
+        assert_eq!(refused.map(|e| e.code()), Some(Code::from(Raise::TooLong)));
+        assert_eq!(found?, initial.cwd);
+        let unknown = started()?.start_dir(here, None, Some(pane), room).err();
+        assert_eq!(unknown.map(|e| e.code()), Some(Code::Start));
         Ok(())
     }
 
@@ -5515,6 +5626,7 @@ mod tests {
             Some(client),
             &ClientAction::Capture,
             Here::Cli(None, None),
+            &mut session.budget(),
             Instant::now(),
         );
         let error = result.err().ok_or("capture succeeded")?;
@@ -5592,7 +5704,12 @@ mod tests {
             cwd: Some("/".into()),
             env: fux_wire::command::EnvPatch::default(),
         };
-        s.execute(&new_tab, &Origin::Cli(caller), Instant::now())?;
+        s.execute(
+            &new_tab,
+            &Origin::Cli(caller),
+            &mut s.budget(),
+            Instant::now(),
+        )?;
         let tab = s.tab("@3".parse()?).ok_or("the new tab")?;
         let size = tab.fit().size();
         assert_eq!((size.cols(), size.rows()), (200, 49));
@@ -5776,7 +5893,7 @@ mod tests {
     /// its answer; how many there were.
     fn turns(s: &mut Session, id: PaneId, waiting: &mut Waiting) -> Result<(Reply, usize), String> {
         for turns in 0..10_000 {
-            if let Some(answer) = waiting.answer(s, Instant::now()) {
+            if let Some(answer) = waiting.answer(s, &mut s.budget(), Instant::now()) {
                 return Ok((answer, turns));
             }
             assert!(s.timers().any(|t| t.1 == Timer::Unread(id)), "no turn due");
@@ -5916,7 +6033,9 @@ mod tests {
         };
         assert_eq!(s.children().count(), 1, "the program started for it");
         run(&mut s, "%2 kill")?;
-        let answer = waiting.answer(&s, Instant::now()).ok_or("no answer")?;
+        let answer = waiting
+            .answer(&s, &mut s.budget(), Instant::now())
+            .ok_or("no answer")?;
         assert_eq!(
             answer.end().code(),
             Some(Code::Closed),
@@ -6099,7 +6218,7 @@ mod tests {
         s.input(c, b"\x1b[6;20;10t");
         let mut cell = |origin: Origin, size| {
             let here = s.here(&origin).map_err(|e| e.to_string())?;
-            let opening = s.opening((Some(Path::new("/")), size), here);
+            let opening = s.opening((Some(Path::new("/")), size), here, &mut s.budget());
             opening
                 .map(|(_, _, (_, cell))| cell)
                 .map_err(|e| e.to_string())
@@ -6943,7 +7062,7 @@ mod tests {
     fn the_json_help_names_every_pane_field() -> TestResult {
         let (s, _) = attached(4, 30)?;
         let pane = s.parts.panes().values().next().ok_or("no pane")?;
-        for (name, _) in s.pane_json(pane, &mut fux_wire::wire::Budget::new())? {
+        for (name, _) in s.pane_json(pane, &mut s.budget())? {
             let named = include_str!("../../docs/json.md").contains(&format!("`{name}`"));
             assert!(named, "docs/json.md does not name a pane's {name:?}");
         }
@@ -7030,9 +7149,15 @@ mod tests {
         let Begun::Waiting(mut waiting) = s.begin_now(wait(AnyRef::Workspace(ws)), &origin) else {
             return Err("the workspace's wait answered at once".into());
         };
-        assert!(waiting.answer(&s, Instant::now()).is_none());
+        assert!(
+            waiting
+                .answer(&s, &mut s.budget(), Instant::now())
+                .is_none()
+        );
         s.out(PaneId::of(2), b"E");
-        let answer = waiting.answer(&s, Instant::now()).ok_or("no answer")?;
+        let answer = waiting
+            .answer(&s, &mut s.budget(), Instant::now())
+            .ok_or("no answer")?;
         let text = said(&Ok(answer));
         assert!(text.starts_with("%2:") && !text.contains("%1"), "{text}");
         let Begun::Waiting(mut waiting) = s.begin_now(wait(AnyRef::Pane(PaneId::of(1))), &origin)
@@ -7040,7 +7165,9 @@ mod tests {
             return Err("the pane's wait answered at once".into());
         };
         run(&mut s, "str %1 pane kill")?;
-        let answer = waiting.answer(&s, Instant::now()).ok_or("no answer")?;
+        let answer = waiting
+            .answer(&s, &mut s.budget(), Instant::now())
+            .ok_or("no answer")?;
         assert_eq!(answer.end().code(), Some(Code::Closed), "{answer:?}");
         Ok(())
     }
@@ -7210,10 +7337,12 @@ mod tests {
         };
         let due = waiting.due().ok_or("a wait with no time")?;
         while s.pane(PaneId::of(1))?.mid_frame() {
-            assert!(waiting.answer(&s, due).is_none());
+            assert!(waiting.answer(&s, &mut s.budget(), due).is_none());
             s.fire_now(Timer::Unread(PaneId::of(1)));
         }
-        let answer = waiting.answer(&s, due).ok_or("no answer")?;
+        let answer = waiting
+            .answer(&s, &mut s.budget(), due)
+            .ok_or("no answer")?;
         let text = said(&Ok(answer));
         assert!(text.ends_with(" screen"), "{text}");
         Ok(())
@@ -8056,6 +8185,7 @@ mod tests {
                 .inspect(
                     fux_wire::inspect::Scope::Target(AnyRef::Tab(id)),
                     fux_wire::inspect::Projection::Recipe,
+                    &mut s.budget(),
                 )
                 .map_err(|e| e.to_string())?
             else {
@@ -8199,7 +8329,12 @@ mod tests {
             start: command::Start::Program(command::Program::new("cat".into(), Vec::new())?),
             options: fux::script::default_state()?.preferences.pane_options(),
         };
-        s.execute(&program, &Origin::Cli(Caller::default()), Instant::now())?;
+        s.execute(
+            &program,
+            &Origin::Cli(Caller::default()),
+            &mut s.budget(),
+            Instant::now(),
+        )?;
         let dump = s.dump_recipe(None)?;
         let _ = dir.parent().map(std::fs::remove_dir_all);
         let told = dump.contains("# %2: directory bytes (hex) ") && dump.contains("636166e9");
@@ -8550,7 +8685,7 @@ mod tests {
                 let commands = requests(&mut s, c, code)?;
                 Ok(commands
                     .iter()
-                    .map(|command| s.execute(command, &origin, Instant::now()))
+                    .map(|command| s.execute(command, &origin, &mut s.budget(), Instant::now()))
                     .collect())
             };
         assert!(matches!(
@@ -8561,7 +8696,7 @@ mod tests {
             target: AnyRef::Pane(PaneId::of(9)),
         };
         assert!(matches!(
-            s.execute(&kill, &origin, Instant::now()),
+            s.execute(&kill, &origin, &mut s.budget(), Instant::now()),
             Err(Error::NoPane(p)) if p == PaneId::of(9)
         ));
         assert!(matches!(
@@ -8647,16 +8782,27 @@ mod journal_tests {
             target: AnyRef::Pane(id),
             name: name.into(),
         };
-        s.run_command(&rename("client"), &Origin::Client(client), Instant::now());
+        s.run_command(
+            &rename("client"),
+            &Origin::Client(client),
+            &mut s.budget(),
+            Instant::now(),
+        );
         let caller = Caller {
             gave: Some((id, 0)),
             within: Within::This,
             ..Caller::default()
         };
-        s.run_command(&rename("pane"), &Origin::Cli(caller), Instant::now());
+        s.run_command(
+            &rename("pane"),
+            &Origin::Cli(caller),
+            &mut s.budget(),
+            Instant::now(),
+        );
         s.run_command(
             &rename("outside"),
             &Origin::Cli(Caller::default()),
+            &mut s.budget(),
             Instant::now(),
         );
         testing::output_as(&mut s, Some(client), "@2 90 24 resize")?;
@@ -8674,12 +8820,14 @@ mod journal_tests {
         let begun = s.begin(
             Request::Do(replacement),
             &Origin::Client(client),
+            &mut s.budget(),
             Instant::now(),
         );
         assert!(matches!(begun, Begun::Waiting(_)));
         s.run_command(
             &rename("later"),
             &Origin::Cli(Caller::default()),
+            &mut s.budget(),
             Instant::now(),
         );
         for _ in 0..32 {

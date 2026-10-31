@@ -23,6 +23,7 @@ pub mod outer;
 pub mod pane;
 pub mod process;
 pub mod render;
+pub mod request;
 pub mod server;
 pub mod session;
 pub mod socket;

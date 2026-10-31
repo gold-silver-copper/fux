@@ -940,6 +940,144 @@ pub fn compose_view(
     compose_held(session, view, grid, placement, None)
 }
 
+/// The most bytes composing `view` makes beside its grid (`compose_view`),
+/// from what its screen shows rather than its size: each term below as its
+/// code makes it, a vector three times over, as it grows beside its old
+/// room. So a request that composes one admits it first
+/// (`request::composed`).
+pub fn scratch(session: &Session, view: &View) -> usize {
+    use std::mem::size_of;
+    const GROWN: usize = 3;
+    let (cell, line) = (size_of::<(&str, u16)>(), size_of::<Line<'_>>());
+    let part = size_of::<(String, Attributes)>();
+    let rows = usize::from(view.rows);
+    // A line of hints, `hinted`: each hint's text and its separator, kept
+    // in a list of strings, then joined.
+    let hints = |hints: &[fux_wire::act::Hint]| -> usize {
+        let text = (hints.iter())
+            .map(|h| h.keys.len().saturating_add(h.label.len()).saturating_add(4))
+            .fold(0, usize::saturating_add);
+        text.saturating_mul(2).saturating_add(
+            hints
+                .len()
+                .saturating_mul(size_of::<String>())
+                .saturating_mul(GROWN),
+        )
+    };
+    // A prompt's line, `prompt_line`: a cell for each of its clusters (a
+    // byte at least each), the bar and two ellipses, collected, then those
+    // shown.
+    let prompt = |before: &str, after: &str| -> usize {
+        let clusters = before.len().saturating_add(after.len()).saturating_add(3);
+        clusters
+            .saturating_mul(cell)
+            .saturating_mul(GROWN)
+            .saturating_mul(2)
+    };
+    // A panel's lines, `windowed`: the rows it shows, a title, the help and
+    // the two that say how many more, each with its text.
+    let lines = |entries: usize| {
+        entries
+            .saturating_add(rows)
+            .saturating_add(4)
+            .saturating_mul(line)
+            .saturating_mul(GROWN)
+    };
+    let panel = match &view.mode {
+        Mode::Panel(Panel::Prompt {
+            before,
+            after,
+            hints: shown,
+            ..
+        }) => prompt(before, after).saturating_add(hints(shown)),
+        Mode::Panel(Panel::List(list)) => {
+            let items = (list.items.iter())
+                .map(|item| item.len().saturating_add(2))
+                .fold(0, usize::saturating_add);
+            lines(0)
+                .saturating_add(items)
+                .saturating_add(64)
+                .saturating_add(hints(&list.hints))
+        }
+        Mode::Panel(Panel::Column(column)) => {
+            let entries = (column.entries.iter())
+                .map(|e| {
+                    let key = shown_len(&e.key);
+                    // The key, padded to the widest, as a string beside
+                    // its line, the label and a layer's ellipsis.
+                    key.saturating_mul(3)
+                        .saturating_add(e.label.len())
+                        .saturating_add(8)
+                })
+                .fold(0, usize::saturating_add);
+            let headings = column.entries.len().saturating_mul(2);
+            lines(headings)
+                .saturating_add(entries)
+                .saturating_add(column.keys.len().saturating_add(8))
+        }
+        Mode::Panel(Panel::Repeat(text)) => text.len(),
+        // Its search, as typed, a prompt's line of `SEARCH_MAX` bytes at
+        // most; its badge and its hints, one at a time.
+        Mode::Copy(_) => prompt("", "")
+            .saturating_add(
+                (crate::copy::SEARCH_MAX.saturating_mul(cell)).saturating_mul(GROWN * 2),
+            )
+            .saturating_add(256),
+        Mode::Normal => 0,
+    };
+    // The bar: a notice; the panes of its tab it can't show whole
+    // (`unseen`); and its fields, a tab or a slot each, cut off once the
+    // row is full (`bar_fields`).
+    let tab = session.shown_tab(view.id);
+    let mut tab_panes = 0usize;
+    if let Some(tab) = tab {
+        tab.root()
+            .for_each_pane(&mut |_| tab_panes = tab_panes.saturating_add(1));
+    }
+    let unseen = tab_panes
+        .saturating_mul(size_of::<PaneId>().saturating_add(24))
+        .saturating_mul(GROWN);
+    let ws = session.shown_workspace(view.id);
+    let labels = ws.map_or(0, |ws| {
+        let tabs = (ws.tabs().iter())
+            .map(|t| t.label(session.parts.panes()).len().saturating_add(24))
+            .fold(0, usize::saturating_add);
+        tabs.saturating_add(ws.label().len())
+            .saturating_add(ws.tabs().len().saturating_mul(part).saturating_mul(GROWN))
+    });
+    let pane = (session.focused(view.id))
+        .and_then(|f| session.parts.panes().get(&f))
+        .map_or(0, |p| p.label().len().saturating_add(32));
+    use fux_wire::presentation::Slots;
+    let slots = Slots::MAX.saturating_mul(Slots::TEXT_MAX.saturating_add(2).saturating_add(part));
+    let notice = view.notice.as_ref().map_or(0, |n| n.text.len());
+    let fields = 8usize.saturating_mul(part).saturating_mul(GROWN);
+    // Each placed pane's row keys, the grid's memo (`put_panes`): a row of
+    // the screen at most for each row a pane shows.
+    let keys = usize::from(view.rows)
+        .saturating_mul(usize::from(view.cols))
+        .saturating_mul(size_of::<RowKey>())
+        .saturating_add(tab_panes.saturating_mul(size_of::<Vec<RowKey>>()))
+        .saturating_mul(GROWN);
+    [panel, unseen, labels, pane, slots, notice, fields, keys]
+        .into_iter()
+        .fold(0, usize::saturating_add)
+}
+
+/// The bytes `value` is shown in, counted, not made.
+fn shown_len(value: &impl std::fmt::Display) -> usize {
+    struct Counted(usize);
+    impl std::fmt::Write for Counted {
+        fn write_str(&mut self, text: &str) -> std::fmt::Result {
+            self.0 = self.0.saturating_add(text.len());
+            Ok(())
+        }
+    }
+    let mut counted = Counted(0);
+    let _ = std::fmt::write(&mut counted, format_args!("{value}"));
+    counted.0
+}
+
 /// What a client was last painted: the grid, and where each pane was on
 /// it. A pane part way through a frame (`Pane::mid_frame`) shows as it was
 /// there.
