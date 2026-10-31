@@ -17,16 +17,10 @@ use std::ops::{Deref, DerefMut};
 /// let region = fuxth_core::Region::new(0);
 /// let boxed = fuxth_core::Bounded::<Box<[u64; 32]>>::new(&region);
 /// ```
+#[derive(Debug)]
 pub struct Bounded<S> {
     store: S,
     held: Reservation,
-}
-
-/// Its store alone: what its region holds for it is the region's to tell.
-impl<S: fmt::Debug> fmt::Debug for Bounded<S> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.store.fmt(f)
-    }
 }
 
 /// A vector in a region.
@@ -104,9 +98,7 @@ impl<S: Room> Bounded<S> {
     /// Empty, with room for exactly `capacity` elements, reserved first.
     pub fn with_capacity(region: &Region, capacity: usize) -> Result<Self, Refused> {
         let mut made = Self::new(region);
-        if capacity > 0 {
-            made.regrow(capacity, false)?;
-        }
+        made.regrow(capacity, false)?;
         Ok(made)
     }
 
@@ -164,23 +156,8 @@ impl<S: Room> Bounded<S> {
 }
 
 impl<T> Bounded<Vec<T>> {
-    /// `item` at the end. Full, it moves to a larger buffer first: the
-    /// same test std's own push makes, so a push with room makes it once.
-    #[inline]
     pub fn push(&mut self, item: T) -> Result<(), Refused> {
-        if self.store.len() == self.store.capacity() {
-            return self.grown(item);
-        }
-        self.store.push(item);
-        Ok(())
-    }
-
-    /// `item` at the end of a store with no room for it: all out of the
-    /// way of a push that has room.
-    #[cold]
-    #[inline(never)]
-    fn grown(&mut self, item: T) -> Result<(), Refused> {
-        self.regrow(1, true)?;
+        self.reserve(1)?;
         self.store.push(item);
         Ok(())
     }
@@ -194,37 +171,6 @@ impl<T> Bounded<Vec<T>> {
         Ok(())
     }
 
-    /// Each of `items`, room for as many as they say they are reserved
-    /// first.
-    pub fn extend(&mut self, items: impl IntoIterator<Item = T>) -> Result<(), Refused> {
-        let items = items.into_iter();
-        self.reserve(items.size_hint().0)?;
-        for item in items {
-            self.push(item)?;
-        }
-        Ok(())
-    }
-
-    /// `len` long: cut there, or `value` added till it is.
-    pub fn resize(&mut self, len: usize, value: T) -> Result<(), Refused>
-    where
-        T: Clone,
-    {
-        self.reserve(len.saturating_sub(self.len()))?;
-        self.store.resize(len, value);
-        Ok(())
-    }
-
-    /// A copy in `region`, exactly as long as it.
-    pub fn copy(&self, region: &Region) -> Result<Self, Refused>
-    where
-        T: Clone,
-    {
-        let mut copy = Self::with_capacity(region, self.len())?;
-        copy.store.extend_from_slice(&self.store);
-        Ok(copy)
-    }
-
     pub fn pop(&mut self) -> Option<T> {
         self.store.pop()
     }
@@ -232,10 +178,6 @@ impl<T> Bounded<Vec<T>> {
     /// Drops the elements past `len`, keeping the capacity it holds.
     pub fn truncate(&mut self, len: usize) {
         self.store.truncate(len);
-    }
-
-    pub fn retain(&mut self, keep: impl FnMut(&T) -> bool) {
-        self.store.retain(keep);
     }
 
     pub fn clear(&mut self) {
@@ -257,35 +199,6 @@ impl<T> DerefMut for Bounded<Vec<T>> {
 }
 
 impl Bounded<String> {
-    /// `text`, in exactly its room in `region`.
-    pub fn of(region: &Region, text: &str) -> Result<Self, Refused> {
-        let mut made = Self::with_capacity(region, text.len())?;
-        made.store.push_str(text);
-        Ok(made)
-    }
-
-    /// A copy in `region`, in exactly its room.
-    pub fn copy(&self, region: &Region) -> Result<Self, Refused> {
-        Self::of(region, self)
-    }
-
-    /// Its string and what its region holds for it, to move elsewhere
-    /// whole, uncopied (a failure's message): the reservation goes with
-    /// the string, and [`Bounded::rejoined`] makes them one again.
-    pub fn parted(self) -> (String, Reservation) {
-        (self.store, self.held)
-    }
-
-    /// A string and the reservation [`Bounded::parted`] gave with it, a
-    /// store again; given back as they were unless the reservation holds
-    /// exactly the string's room.
-    pub fn rejoined(store: String, held: Reservation) -> Result<Self, (String, Reservation)> {
-        match held.bytes() == store.capacity() {
-            true => Ok(Self { store, held }),
-            false => Err((store, held)),
-        }
-    }
-
     pub fn push(&mut self, c: char) -> Result<(), Refused> {
         self.reserve(c.len_utf8())?;
         self.store.push(c);

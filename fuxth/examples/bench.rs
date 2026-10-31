@@ -24,9 +24,9 @@ impl Host for Ticks {
         &mut self,
         _word: usize,
         _args: fuxth::Args<'_, Nothing>,
-        out: &mut fuxth::BoundedVec<Value<Nothing>>,
+        out: &mut Vec<Value<Nothing>>,
     ) -> Result<Done<()>, Failure> {
-        out.push(Value::Int(1))?;
+        out.push(Value::Int(1));
         Ok(Done::Now)
     }
 
@@ -76,10 +76,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let compiling = Instant::now();
             let mut words = Vocabulary::default();
             words.add("tick", "-- integer")?;
-            let mut compiler = Compiler::new(words, &fuxth::Region::new(128 << 20));
+            let mut compiler = Compiler::new(words);
             compiler.add(&fuxth::token::source("stdlib.fux", STDLIB)?)?;
             compiler.add(&fuxth::token::source("bench", text)?)?;
-            let mut machine = Machine::new(compiler.finish()?, Limits::default())?;
+            let mut machine = Machine::new(compiler.finish()?, Limits::default());
             let compiled = compiling.elapsed();
             let started = Instant::now();
             while machine.run(&mut Ticks, u64::MAX)? != Outcome::Finished {}

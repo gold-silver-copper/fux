@@ -343,9 +343,8 @@ impl Run {
             });
         *opened = asks.opened.filter(|_| client.is_some() && ended.is_ok());
         let mut text = String::from_utf8_lossy(&out).into_owned();
-        let region = fuxth::Region::new(fux::script::RUN_BYTES);
         for value in &ended.map_err(told)? {
-            text.push_str(&value.text(&region).map_err(|failure| failure.message)?);
+            text.push_str(&value.text().map_err(|failure| failure.message)?);
             text.push('\n');
         }
         Ok(text)

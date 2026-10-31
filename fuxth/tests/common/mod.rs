@@ -13,9 +13,6 @@ use std::collections::{HashMap, HashSet};
 /// Steps either interpreter takes before a run counts as endless.
 pub const STEPS: u64 = 50_000;
 
-/// The bytes a run may hold.
-pub const RUN: usize = 128 << 20;
-
 /// The limits both keep to.
 pub const LIMITS: Limits = Limits {
     stack: 10_000,
@@ -81,7 +78,7 @@ impl Host for Toy {
         &mut self,
         word: usize,
         args: Args<'_, Nothing>,
-        _out: &mut fuxth::BoundedVec<Value<Nothing>>,
+        _out: &mut Vec<Value<Nothing>>,
     ) -> Result<Done<i64>, Failure> {
         let args: Vec<_> = args.collect();
         match (word, args.as_slice()) {
@@ -161,7 +158,6 @@ fn value(v: &Value<Nothing>) -> V {
 /// Compiles `text` after the standard library.
 pub fn compile(text: &str) -> Result<fuxth::Program<Nothing>, Error> {
     let mut compiler = READY.with(Clone::clone)?;
-    compiler.make_in(&fuxth::Region::new(RUN));
     compiler.add(&token::source("program", text)?)?;
     compiler.finish()
 }
@@ -172,7 +168,7 @@ thread_local! {
 }
 
 fn library() -> Result<Compiler<Nothing>, Error> {
-    let mut compiler = Compiler::new(vocabulary(), &fuxth::Region::new(RUN));
+    let mut compiler = Compiler::new(vocabulary());
     compiler.add(&token::source("stdlib.fux", STDLIB)?)?;
     compiler.add(&token::source("maybe.fux", MAYBE)?)?;
     compiler.prepare();
@@ -185,9 +181,7 @@ pub fn fuxth(text: &str, budget: u64) -> Ended {
         Ok(program) => program,
         Err(e) => return Ended::Refused(e.code.name().to_owned(), line(e.place.as_ref())),
     };
-    let Ok(mut machine) = Machine::new(program, LIMITS) else {
-        return Ended::Failed("too_long".to_owned(), 0);
-    };
+    let mut machine = Machine::new(program, LIMITS);
     let mut host = Toy::default();
     let budget = budget.min(STEPS);
     let mut taken = 0u64;

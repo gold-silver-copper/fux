@@ -1167,12 +1167,9 @@ fn run_job(
 /// left, each line that is not blank. Made only as far as `NOTICE_MAX`:
 /// one longer is said not to be shown.
 fn said(mut said: String, stack: &[fuxth::Value<script::Fux>]) -> Option<(String, bool)> {
-    // Room for the longest text a notice shows, its characters' marks and
-    // a writer's workspace: each value's is made there, then dropped.
-    let region = fuxth::Region::new(NOTICE_MAX.saturating_mul(5));
     for value in stack {
         let room = NOTICE_MAX.saturating_sub(said.len());
-        match value.text_upto(room, &region) {
+        match value.text_upto(room) {
             Ok(Some(text)) if text.len() < room => {
                 said.push_str(&text);
                 said.push('\n');

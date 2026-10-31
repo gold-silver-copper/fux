@@ -163,38 +163,31 @@ opaque records cannot hide their children from list and work limits.
 `Machine::import` bounds each incoming value and charges its traversal work
 before retaining a suspended result. Immediate host results use that
 same admission automatically, and host argument traversal is charged too.
-A run is held by one `Region`, a byte budget its host gives the compiler
-(`Compiler::new(vocabulary, &region)`, or `make_in` for a compiler cloned
-from a library's): the program's literals are made in it, and its machine
-runs in it. Every string and list is a store of the region (`BoundedString`,
-`BoundedVec`), reserved before it is allocated and given back as it drops,
-and so are the machine's stack, calls, `let` names and the rest of its state:
-their types say so, and `bounded_only!` at the top of those modules refuses
-std's stores there. A host word makes its values in the run's region too
-(`Args::region`, `Value::str`, `List::value`). What a region refuses is
-`too_long`, before anything is made. Heap-owning application values
-implement `retain(&Region)`, holding their `Shared<T>` storage (or a `Lease`
-they carry) there as they are admitted; a string or list a host boxed with
-`Shared::new` has its box held the same way. The wrapper keeps its
-reservation when the value is edited; copying the storage starts a fresh
-one. Shared children hold their own; clones hold nothing twice. The last
-reference's drop gives it all back, so polling does not consume a lifetime
-allowance.
+`AppValue::IMPORT_LIMIT` fixes the aggregate grant for the live storage of every
+string and list a run builds or imports (default 128 MiB). What the machine
+builds is born holding its reservation, taken before the payload is allocated;
+a host word does the same with `Args::imports`, `Imports::lease` and
+`Shared::leased`. Heap-owning application
+values implement `retain(&Imports)` with `Shared<T>` storage, as the language's
+strings and lists do. The machine's opaque import grant can only be charged or
+refunded through those reservations. The wrapper keeps its reservation when the value is edited;
+copying the storage starts a fresh reservation. Values whose ownership leaves a
+shared wrapper carry an `ImportLease` with the owned data instead. Shared children reserve themselves;
+clones do not reserve their allocation twice. The last reference's drop refunds
+its reservation, so polling does not consume a lifetime allowance.
 
-Native byte payloads say `AppValue::native` to be bounded by the region
-instead of the per-value language weight ceiling. Their full weight still
-charges traversal and inclusion in lists. All other host values continue to
-obey the ordinary string, nesting and list limits; only a top-level string
-held in the run's region already is bounded by the region instead.
+Native byte payloads can report `AppValue::import_bytes` to use the native grant
+instead of the per-value language weight ceiling. Their full weight still charges
+traversal and inclusion in lists. All other host values continue to obey the
+ordinary string, nesting and list limits.
 
-Application values stream their text through `AppValue::write_text` and
-declare the workspace their writer allocates with `scratch`. A conversion
-counts its whole output first, then is made in exactly its room in the run's
-region, beside that workspace: nested lists share the one region, rather than
-giving each member its own limit, and one the region can't hold is refused
-before any of it is made. Shared references count at each occurrence. Text
-writers describe the same immutable text on the counting and output passes,
-and propagate a sink failure.
+Application values stream their text through `AppValue::write_text` and declare
+retained data and formatter workspace with `text_bytes`. `TEXT_LIMIT` lets a host
+bound one whole conversion: nested lists share it, rather than giving each member
+its own limit. Admission counts the output before reserving its exact capacity;
+`string` reserves the string it makes from the run's grant. Shared references are charged
+conservatively at each occurrence. Text writers describe the same immutable text
+on the admission and output passes, and propagate a sink failure.
 
 The host implements [`Host`]: `call(word, args, out)` gets the word's values
 (an iterator, the deepest first) and pushes its results, and answers

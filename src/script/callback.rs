@@ -69,12 +69,7 @@ pub(super) fn data(v: &Value<Fux>, b: &mut Budget) -> Result<Data, Failure> {
     })
 }
 
-/// `v` as a value made in `region`, `b` charged first for each part.
-pub(super) fn value(
-    v: &Data,
-    b: &mut Budget,
-    region: &fuxth::Region,
-) -> Result<Value<Fux>, Failure> {
+pub(super) fn value(v: &Data, b: &mut Budget) -> Result<Value<Fux>, Failure> {
     b.slots::<Value<Fux>>(1)?;
     Ok(match v {
         Data::Int(v) => Value::Int(*v),
@@ -83,16 +78,16 @@ pub(super) fn value(
             if v.chars().count() > fuxth::LONGEST {
                 return Err(fail());
             }
-            b.charge(fuxth::Text::size(v))?;
-            Value::str(region, v)?
+            record::imported(b, v)?;
+            Value::str(b.string(v)?)
         }
         Data::List(v) => {
-            b.charge(fuxth::List::<Fux>::size(v.len()))?;
-            let mut out = fuxth::BoundedVec::with_capacity(region, v.len())?;
+            let mut out = b.vector(v.len())?;
             for v in v {
-                out.push(value(v, b, region)?)?;
+                out.push(value(v, b)?);
             }
-            fuxth::List::new(out).ok_or_else(fail)?.value()?
+            b.charge(fuxth::Shared::<fuxth::List<Fux>>::bytes(0))?;
+            Value::List(fuxth::Shared::new(fuxth::List::new(out).ok_or_else(fail)?))
         }
         Data::Record {
             of,
@@ -100,9 +95,9 @@ pub(super) fn value(
         } => {
             let mut fields = b.vector(entries.len())?;
             for (key, v) in entries {
-                fields.push((b.string(key)?, value(v, b, region)?));
+                fields.push((b.string(key)?, value(v, b)?));
             }
-            record::from_fields(fields, *of, b, region)?
+            record::from_fields(fields, *of, b)?
         }
         Data::All => Value::App(Fux::All),
         Data::Null => Value::App(Fux::Null),
@@ -180,13 +175,10 @@ pub fn admit(
             }
             let mut kinds = std::collections::HashSet::new();
             let mut budget = Budget::with_limit(fux_wire::callback::JOB_BYTES);
-            // Each payload is made to be told its kind, then dropped.
-            let region = fuxth::Region::new(fux_wire::callback::JOB_BYTES);
             for item in &mut l.items {
                 let mut of = context.of;
                 runs(&item.payload, &mut of).map_err(super::callback_failed)?;
-                let v =
-                    value(&item.payload, &mut budget, &region).map_err(super::callback_failed)?;
+                let v = value(&item.payload, &mut budget).map_err(super::callback_failed)?;
                 if kinds.insert(v.kind_name()) {
                     let args = vec![l.client.clone(), item.payload.clone()];
                     check(&l.action, args)?;
@@ -301,12 +293,7 @@ mod tests {
                 .any(|i| i.label.contains(char::is_control))
         );
         let item = screen.items.first().ok_or("row")?;
-        let value = value(
-            &item.payload,
-            &mut Budget::new(),
-            &fuxth::Region::new(usize::MAX),
-        )
-        .map_err(|e| e.message)?;
+        let value = value(&item.payload, &mut Budget::new()).map_err(|e| e.message)?;
         let Value::App(Fux::Record(record)) = value else {
             return Err("record".into());
         };
@@ -349,19 +336,14 @@ mod tests {
             .into(),
         })?;
         let mut values =
-            crate::script::answered(reply, &fuxth::Region::new(fux_wire::inspect::BYTES))?;
+            crate::script::answered(reply, &fuxth::Imports::new(fux_wire::inspect::BYTES))?;
         let root = values.pop().ok_or("snapshot")?;
-        let grant = fuxth::Region::new(fux_wire::inspect::BYTES);
+        let grant = fuxth::Imports::new(fux_wire::inspect::BYTES);
         root.retain(&grant).map_err(|e| e.message)?;
         let payload = data(&root, &mut Budget::new()).map_err(|e| e.message)?;
         let bytes = fux_wire::wire::encode(&payload)?;
         let payload: Data = fux_wire::wire::Reader::new(&bytes).whole()?;
-        let restored = value(
-            &payload,
-            &mut Budget::new(),
-            &fuxth::Region::new(usize::MAX),
-        )
-        .map_err(|e| e.message)?;
+        let restored = value(&payload, &mut Budget::new()).map_err(|e| e.message)?;
         assert_eq!(
             data(&restored, &mut Budget::new()).map_err(|e| e.message)?,
             payload
@@ -429,17 +411,11 @@ mod tests {
             panes: Vec::new(),
             clients: Vec::new(),
         };
-        let record =
-            record::snapshot(snapshot, &fuxth::Region::new(usize::MAX)).map_err(|e| e.message)?;
+        let record = record::snapshot(snapshot).map_err(|e| e.message)?;
         let original = data(&record, &mut Budget::new()).map_err(|e| e.message)?;
         let bytes = fux_wire::wire::encode(&original)?;
         let decoded = fux_wire::wire::Reader::new(&bytes).whole()?;
-        let restored = value(
-            &decoded,
-            &mut Budget::new(),
-            &fuxth::Region::new(usize::MAX),
-        )
-        .map_err(|e| e.message)?;
+        let restored = value(&decoded, &mut Budget::new()).map_err(|e| e.message)?;
         let payload = data(&restored, &mut Budget::new()).map_err(|e| e.message)?;
         assert_eq!(payload, original);
         assert!(admit(list(payload.clone(), "2drop"), None, &context).is_ok());

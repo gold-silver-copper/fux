@@ -2,6 +2,7 @@
 //! no type of its own (a pane's state, a field), rendered at
 //! the client. fux never reads JSON text.
 use crate::wire::{Error, Reader, Wire};
+use fuxix::Allocation;
 
 /// A JSON object's fields as they are built, in order.
 pub type Fields = Vec<(&'static str, Json)>;
@@ -194,6 +195,21 @@ pub(crate) fn escaped(out: &mut dyn std::fmt::Write, text: &str) -> std::fmt::Re
         }
     }
     Ok(())
+}
+
+/// Count without allocating, then reserve the exact output beside its live
+/// input. The second pass writes into that admitted capacity only.
+pub fn render(
+    budget: &mut crate::wire::Budget,
+    mut write: impl FnMut(&mut dyn std::fmt::Write) -> std::fmt::Result,
+) -> Result<String, crate::code::Error> {
+    let mut count = fuxth_core::Render::new(budget.remaining());
+    write(&mut count).map_err(|_| crate::wire::Budget::exceeded())?;
+    budget.charge(count.bytes())?;
+    count.finish(
+        |out| write(out).map_err(|_| crate::wire::Budget::exceeded()),
+        crate::wire::Budget::exceeded,
+    )
 }
 
 /// Standard base64's alphabet, each character's place its value.

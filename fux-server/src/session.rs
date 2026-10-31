@@ -3687,9 +3687,8 @@ pub(crate) mod testing {
             None => e.to_string(),
         })?;
         let mut text = String::from_utf8_lossy(&out).into_owned();
-        let region = fuxth::Region::new(fux_wire::inspect::BYTES);
         for value in &ended {
-            text.push_str(&value.text(&region).map_err(|f| f.message)?);
+            text.push_str(&value.text().map_err(|f| f.message)?);
             text.push('\n');
         }
         Ok(text)
@@ -3795,15 +3794,18 @@ pub(crate) mod testing {
 
     /// What a reply's answer prints, a value a line, or why it failed.
     pub(crate) fn said(reply: &Result<Reply, super::Error>) -> String {
-        let region = fuxth::Region::new(fux_wire::inspect::BYTES);
         let values = match reply {
-            Ok(reply) => fux::script::answered(reply.clone(), &region).map_err(|f| f.to_string()),
+            Ok(reply) => fux::script::answered(
+                reply.clone(),
+                &fuxth::Imports::new(fux_wire::inspect::BYTES),
+            )
+            .map_err(|f| f.to_string()),
             Err(error) => Err(error.to_string()),
         };
         match values {
             Ok(values) => values
                 .iter()
-                .map(|value| value.text(&region).map(|text| text.to_string()))
+                .map(fuxth::Value::text)
                 .collect::<Result<Vec<_>, _>>()
                 .map(|lines| lines.join("\n"))
                 .unwrap_or_else(|f| f.message),
@@ -4195,7 +4197,7 @@ mod tests {
                     run: Some(s.run),
                     ..Body::Snapshot(snapshot).into()
                 },
-                &fuxth::Region::new(fux_wire::inspect::BYTES),
+                &fuxth::Imports::new(fux_wire::inspect::BYTES),
             )?;
             assert!(!held.is_empty());
         }
@@ -4256,8 +4258,7 @@ mod tests {
         assert!(
             matches!(values.first(), Some(fuxth::Value::App(fux::script::Fux::Pane(p, Some(run)))) if *p == PaneId::of(1) && *run == s.run)
         );
-        let null = fuxth::Value::str(&fuxth::Region::new(1 << 10), "null")?;
-        assert_eq!(values.last(), Some(&null));
+        assert_eq!(values.last(), Some(&fuxth::Value::str("null")));
         assert_eq!(
             output(
                 &mut s,

@@ -13,12 +13,10 @@ use crate::error::{Error, Floor, Wants, underflow};
 use crate::token::Token;
 use crate::value::{AppValue, List, TOTAL, Text, Value};
 use crate::vocabulary::through;
-use crate::{BoundedString, BoundedVec, Refused, Region, Reservation, Shared};
+use crate::{ImportLease, Imports, Shared};
 use crate::{LONGEST, NESTING};
 use std::cmp::Ordering;
 use std::rc::Rc;
-
-fuxth_core::bounded_only!();
 
 /// What runs the application's words.
 pub trait Host {
@@ -34,7 +32,7 @@ pub trait Host {
         &mut self,
         word: usize,
         args: Args<'_, Self::Value>,
-        out: &mut BoundedVec<Value<Self::Value>>,
+        out: &mut Vec<Value<Self::Value>>,
     ) -> Result<Done<Self::Request>, Failure>;
 
     /// Prints a line (`print`), now.
@@ -60,17 +58,17 @@ fn returns_from<A>(ops: &[Op<A>], mut at: usize) -> bool {
 /// The values an application word takes, the deepest first, moved off the
 /// stack as they are read. Those not read go too.
 pub struct Args<'a, A> {
-    stack: &'a mut BoundedVec<Value<A>>,
+    stack: &'a mut Vec<Value<A>>,
     /// Where the word's values start.
     from: usize,
     at: usize,
-    region: &'a Region,
+    imports: &'a Imports,
 }
 
 impl<A> Args<'_, A> {
-    /// The run's region, which what the word builds is made in.
-    pub fn region(&self) -> &Region {
-        self.region
+    /// The run's grant, for what the word builds ([`Imports::lease`]).
+    pub fn imports(&self) -> &Imports {
+        self.imports
     }
 }
 
@@ -140,7 +138,7 @@ const PER_STEP: u64 = 64;
 struct Given {
     depth: usize,
     word: usize,
-    taken: BoundedVec<crate::check::Kinds>,
+    taken: Vec<crate::check::Kinds>,
 }
 
 /// A call under way: which code (`None`, the top level), its next step, and
@@ -162,85 +160,75 @@ struct Frame {
 enum Body {
     List,
     Try {
-        codes: crate::compile::Codes,
+        codes: Rc<Vec<Code>>,
         handler: usize,
         frames: usize,
         iters: usize,
     },
 }
 
-/// A program being run. Everything it holds is a store of its region, the
-/// program's, as every value it builds is.
+/// A program being run.
 pub struct Machine<A> {
     program: Rc<Program<A>>,
-    /// The program's shared box, held while the run is.
-    _boxed: Reservation,
-    stack: BoundedVec<Value<A>>,
-    frames: BoundedVec<Frame>,
+    stack: Vec<Value<A>>,
+    frames: Vec<Frame>,
     /// Every frame's `let` names, each frame's from its `locals`.
-    locals: BoundedVec<Option<Value<A>>>,
-    globals: BoundedVec<Option<Value<A>>>,
+    locals: Vec<Option<Value<A>>>,
+    globals: Vec<Option<Value<A>>>,
     /// Where each open `list` or `try` body began on the stack, and which:
     /// nothing below may be taken inside it.
-    marks: BoundedVec<(usize, Body)>,
+    marks: Vec<(usize, Body)>,
     /// Each open `each`: what it walks, and where its next element is: an
     /// index in a list, a byte in a string (so each step finds it at once).
-    iters: BoundedVec<(Sequence<A>, usize)>,
+    iters: Vec<(Sequence<A>, usize)>,
     limits: Limits,
     /// What application words give, kept between calls.
-    out: BoundedVec<Value<A>>,
+    out: Vec<Value<A>>,
     /// A suspended application word: what it is to give.
     pending: Option<Given>,
     /// Steps the last long step costs beyond its own.
     extra: u64,
     /// Steps taken in all, through every run, long steps' costs counted.
     steps: u64,
-    /// What all of it is reserved from.
-    region: Region,
+    /// What every string and list the run holds is reserved from.
+    imports: Imports,
     /// The one-character ASCII strings made so far, by code.
-    chars: BoundedVec<Option<Value<A>>>,
+    chars: Vec<Option<Value<A>>>,
     /// The names of the codes caught so far: a closed set, so made once a
-    /// run.
-    codes: BoundedVec<(Code, Value<A>)>,
+    /// run, holding nothing, as a literal does.
+    codes: Vec<(Code, Value<A>)>,
     /// The step taken last: how many frames there were, its code, and its
     /// place in it.
     last: Option<(usize, Option<usize>, usize)>,
 }
 
 impl<A: AppValue> Machine<A> {
-    /// A run of `program`, in the region it was compiled in.
-    pub fn new(program: Program<A>, limits: Limits) -> Result<Self, Refused> {
-        let region = program.region.clone();
-        let boxed = region.reserve(size_of::<([usize; 2], Program<A>)>())?;
-        let mut globals = BoundedVec::new(&region);
-        globals.resize(program.globals, None)?;
-        let mut frames = BoundedVec::new(&region);
-        frames.push(Frame {
-            code: None,
-            step: 0,
-            via: None,
-            locals: 0,
-        })?;
-        Ok(Self {
+    pub fn new(program: Program<A>, limits: Limits) -> Self {
+        let globals = vec![None; program.globals];
+        Self {
             program: Rc::new(program),
-            _boxed: boxed,
-            stack: BoundedVec::new(&region),
-            frames,
+            stack: Vec::new(),
+            frames: vec![Frame {
+                code: None,
+                step: 0,
+                via: None,
+                locals: 0,
+            }],
             // The top level keeps no `let` names of its own: its are globals.
-            locals: BoundedVec::new(&region),
+            locals: Vec::new(),
             globals,
-            marks: BoundedVec::new(&region),
-            iters: BoundedVec::new(&region),
+            marks: Vec::new(),
+            iters: Vec::new(),
             limits,
-            out: BoundedVec::new(&region),
+            out: Vec::new(),
             pending: None,
             extra: 0,
             steps: 0,
-            chars: BoundedVec::new(&region),
-            codes: BoundedVec::new(&region),
-            region,
+            imports: Imports::new(A::IMPORT_LIMIT),
+            chars: Vec::new(),
+            codes: Vec::new(),
             last: None,
-        })
+        }
     }
 
     /// The stack, deepest first.
@@ -248,9 +236,9 @@ impl<A: AppValue> Machine<A> {
         &self.stack
     }
 
-    /// The region all of the run is held by.
-    pub fn region(&self) -> &Region {
-        &self.region
+    /// The grant every string and list the run holds is reserved from.
+    pub fn imports(&self) -> &Imports {
+        &self.imports
     }
 
     /// Pushes an internal value, already admitted.
@@ -258,59 +246,59 @@ impl<A: AppValue> Machine<A> {
         if self.stack.len() >= self.limits.stack {
             return Err(self.fail(Code::StackOverflow, "the stack is full"));
         }
-        self.stack.push(value).map_err(|refused| self.full(refused))
-    }
-
-    /// The run's region refused what a step asked: `too_long`, said at the
-    /// step.
-    #[cold]
-    #[inline(never)]
-    fn full(&self, refused: Refused) -> Error {
-        self.failed(refused.into())
+        self.stack.push(value);
+        Ok(())
     }
 
     /// Imports a bounded host result, charging its expanded traversal.
     /// Hosts use this instead of `push` for newly received values.
     pub fn import(&mut self, value: Value<A>) -> Result<(), Error> {
-        let value = self.admit(value)?;
+        self.admit(&value)?;
         self.push(value)
     }
 
     #[inline(never)]
-    fn admit(&mut self, value: Value<A>) -> Result<Value<A>, Error> {
-        fn valid<A: AppValue>(value: &Value<A>) -> bool {
+    fn admit(&mut self, value: &Value<A>) -> Result<(), Error> {
+        fn valid<A: AppValue>(value: &Value<A>, bytes: &mut usize) -> bool {
             match value {
                 Value::Str(s) => s.chars_len() <= LONGEST,
                 Value::List(list) => {
-                    list.items().len() <= LONGEST && list.items().iter().all(valid)
+                    list.items().len() <= LONGEST && list.items().iter().all(|v| valid(v, bytes))
                 }
-                Value::App(_) | Value::Int(_) | Value::Bool(_) => true,
+                Value::App(app) => {
+                    *bytes = bytes.saturating_add(app.import_bytes().unwrap_or(0));
+                    true
+                }
+                Value::Int(_) | Value::Bool(_) => true,
             }
         }
         let weight = value.weight();
         self.cost(usize::try_from(weight).unwrap_or(usize::MAX));
-        // Only a top-level string held in this run's region already is
-        // bounded by the region instead of the length and expanded-weight
-        // limits; a native payload, by the region instead of the weight's.
-        let held = matches!(&value, Value::Str(text) if text.region().same(&self.region));
-        if !held {
-            let native = matches!(&value, Value::App(app) if app.native());
+        // Only a top-level string already reserved in this run uses the
+        // grant instead of the length and expanded-weight limits.
+        let reserved = matches!(value, Value::Str(text) if text.reserved(&self.imports));
+        if !reserved {
+            let native = matches!(value, Value::App(app) if app.import_bytes().is_some());
             if value.depth() > NESTING || (!native && weight > TOTAL) {
                 return Err(self.nested());
             }
-            if !valid(&value) {
+            let mut bytes = 0;
+            if !valid(value, &mut bytes) {
                 return Err(self.fail(
                     Code::TooLong,
                     "host result exceeds the string or list length limit",
                 ));
             }
+            if bytes > A::IMPORT_LIMIT {
+                return Err(self.fail(
+                    Code::TooLong,
+                    "host byte payload exceeds the import allocation limit",
+                ));
+            }
         }
-        // What a run holds is its region's: another region's strings and
-        // lists are held here too, before it keeps them.
         value
-            .retain(&self.region)
-            .map_err(|failure| self.failed(failure))?;
-        Ok(value)
+            .retain(&self.imports)
+            .map_err(|failure| self.failed(failure))
     }
 
     /// Raises a suspended word's failure at it, as if the word had failed
@@ -331,10 +319,10 @@ impl<A: AppValue> Machine<A> {
             .check_carried(failure.code, &value)
             .map_err(|message| self.fail(Code::Contract, message))?;
         self.pending = None;
-        let value = match self.admit(value) {
-            Ok(value) => value,
-            Err(error) => return self.recover(error, None),
-        };
+        if let Err(error) = self.admit(&value) {
+            drop(value);
+            return self.recover(error, None);
+        }
         let error = self.failed(failure);
         self.recover(error, Some(value))
     }
@@ -384,55 +372,24 @@ impl<A: AppValue> Machine<A> {
             // `try` further out to catch.
             let message = match carried.take() {
                 Some(value) => Ok(value),
-                None => self.message(&mut error),
+                None => self.text(&error.message),
             };
             let made = self.codes.iter().find(|(code, _)| *code == error.code);
             let code = match made.map(|(_, name)| name.clone()) {
-                Some(name) => Ok(name),
-                None => self.text(error.code.name()).and_then(|name| {
-                    let made = self.codes.push((error.code, name.clone()));
-                    made.map(|()| name).map_err(|refused| self.full(refused))
-                }),
+                Some(name) => name,
+                None => {
+                    let name = Value::str(error.code.name());
+                    self.codes.push((error.code, name.clone()));
+                    name
+                }
             };
             let pushed = message.and_then(|value| self.push(value));
-            let pushed = pushed.and(code);
-            let pushed = pushed.and_then(|code| self.push(code));
+            let pushed = pushed.and_then(|()| self.push(code));
             match pushed {
                 Ok(()) => return Ok(()),
                 Err(again) => error = again,
             }
         }
-    }
-
-    /// `error`'s message as a string: the one made in this region (`fail`'s
-    /// reason) taken back whole, uncopied; any other made anew.
-    fn message(&mut self, error: &mut Error) -> Result<Value<A>, Error> {
-        let held = error
-            .held
-            .0
-            .take()
-            .and_then(|held| Rc::try_unwrap(held).ok());
-        if let Some(held) = held.filter(|held| held.region().same(&self.region)) {
-            let text = std::mem::take(&mut error.message);
-            match BoundedString::rejoined(text, held) {
-                Ok(text) => {
-                    let made = Text::made(text).and_then(Text::value);
-                    return made.map_err(|refused| self.full(refused));
-                }
-                Err((text, _)) => error.message = text,
-            }
-        }
-        self.text(&error.message)
-    }
-
-    /// A failure whose message is `text`, moved out of this run's region
-    /// with what the region holds for it.
-    #[cold]
-    fn failing(&self, code: Code, text: Text) -> Error {
-        let (message, held) = text.parted();
-        let mut error = self.fail(code, message);
-        error.held = crate::error::Held(Some(Rc::new(held)));
-        error
     }
 
     /// The step each call under way is at, the outermost first: the word
@@ -485,7 +442,7 @@ impl<A: AppValue> Machine<A> {
     }
 
     #[cold]
-    fn fail(&self, code: Code, message: impl Into<std::string::String>) -> Error {
+    fn fail(&self, code: Code, message: impl Into<String>) -> Error {
         Error::new(code, message, self.at().as_ref())
     }
 
@@ -600,15 +557,13 @@ impl<A: AppValue> Machine<A> {
                     if end > self.limits.stack {
                         return Err(self.fail(Code::StackOverflow, "let names fill the stack"));
                     }
-                    let frame = Frame {
+                    self.locals.resize(end, None);
+                    self.frames.push(Frame {
                         code: Some(*id),
                         step: 0,
                         via,
                         locals: base,
-                    };
-                    let made = self.locals.resize(end, None);
-                    made.and_then(|()| self.frames.push(frame))
-                        .map_err(|refused| self.full(refused))?;
+                    });
                 }
                 Op::Jump(to) => frame.step = *to,
                 Op::JumpUnless(to) => {
@@ -638,12 +593,7 @@ impl<A: AppValue> Machine<A> {
                     let value = self.globals.get(*slot).cloned().flatten();
                     self.named(value)?;
                 }
-                Op::Mark => {
-                    let mark = (self.stack.len(), Body::List);
-                    self.marks
-                        .push(mark)
-                        .map_err(|refused| self.full(refused))?;
-                }
+                Op::Mark => self.marks.push((self.stack.len(), Body::List)),
                 Op::Gather => {
                     let from = self
                         .marks
@@ -651,23 +601,20 @@ impl<A: AppValue> Machine<A> {
                         .map_or(0, |(at, _)| at)
                         .min(self.stack.len());
                     let n = self.stack.len().saturating_sub(from);
-                    let mut items = self.room(n)?;
+                    let lease = self.build(n, List::<A>::size(n))?;
+                    let mut items = Vec::with_capacity(n);
                     while self.stack.len() > from {
-                        let moved = items.extend(self.stack.pop());
-                        moved.map_err(|refused| self.full(refused))?;
+                        items.extend(self.stack.pop());
                     }
                     items.reverse();
-                    let list = self.list(items)?;
+                    let list = self.list(items, lease)?;
                     self.push(list)?;
                 }
                 Op::EachStart => {
                     let walked = self.pop()?;
                     let app = matches!(walked, Value::App(_));
                     match Seq::of(walked) {
-                        Ok(seq) => {
-                            let walk = self.iters.push((seq, 0));
-                            walk.map_err(|refused| self.full(refused))?;
-                        }
+                        Ok(seq) => self.iters.push((seq, 0)),
                         Err(kind) => return Err(self.fail(Code::Type, Wants::Each.not(kind, app))),
                     }
                 }
@@ -692,10 +639,7 @@ impl<A: AppValue> Machine<A> {
                         frames: depth,
                         iters: self.iters.len(),
                     };
-                    let mark = (self.stack.len(), body);
-                    self.marks
-                        .push(mark)
-                        .map_err(|refused| self.full(refused))?;
+                    self.marks.push((self.stack.len(), body));
                 }
                 Op::Tried(out) => {
                     self.marks.pop();
@@ -718,22 +662,25 @@ impl<A: AppValue> Machine<A> {
         let words = &self.program.vocabulary;
         let from = self.depth(words.word(id).map_or(0, |w| w.takes.len()))?;
         // The kinds it takes, for what it passes through.
-        let mut taken = BoundedVec::new(&self.region);
-        let kinds = self.stack.iter().skip(from).map(|v| words.kind_of(v));
-        taken.extend(kinds).map_err(|refused| self.full(refused))?;
+        let taken = self
+            .stack
+            .iter()
+            .skip(from)
+            .map(|v| words.kind_of(v))
+            .collect();
         let walked = self
             .stack
             .iter()
             .skip(from)
             .fold(0u64, |n, value| n.saturating_add(value.weight()));
         self.cost(usize::try_from(walked).unwrap_or(usize::MAX));
-        let mut out = std::mem::replace(&mut self.out, BoundedVec::new(&self.region));
+        let mut out = std::mem::take(&mut self.out);
         out.clear();
         let args = Args {
             stack: &mut self.stack,
             from,
             at: from,
-            region: &self.region,
+            imports: &self.imports,
         };
         let done = host.call(id, args, &mut out).map_err(|f| self.failed(f))?;
         let given = Given {
@@ -919,16 +866,14 @@ impl<A: AppValue> Machine<A> {
         self.extra = self.extra.saturating_add(n / PER_STEP);
     }
 
-    /// Room for a list `n` values long, reserved before it is made: past
-    /// what one value may hold, or the region, `too_long`.
-    /// Its box is checked with it, so nothing is made unless all of the
-    /// list fits.
-    fn room(&mut self, n: usize) -> Result<BoundedVec<Value<A>>, Error> {
+    /// The lease of `bytes` for a string or list `n` elements long, taken
+    /// before it is made: past what one value or the run may hold, `too_long`.
+    fn build(&mut self, n: usize, bytes: usize) -> Result<ImportLease, Error> {
         self.fits(n)?;
         self.cost(n);
-        let room = self.region.admits(List::<A>::size(n));
-        room.and_then(|()| BoundedVec::with_capacity(&self.region, n))
-            .map_err(|refused| self.full(refused))
+        (self.imports)
+            .lease(bytes)
+            .map_err(|failure| self.failed(failure))
     }
 
     /// `text` as a new string, reserved before it is made.
@@ -942,18 +887,12 @@ impl<A: AppValue> Machine<A> {
         &mut self,
         chars: usize,
         bytes: usize,
-        mut parts: impl Iterator<Item = &'p str>,
+        parts: impl Iterator<Item = &'p str>,
     ) -> Result<Value<A>, Error> {
-        self.fits(chars)?;
-        self.cost(chars);
-        // Its text, marks and box, checked whole before any is made.
-        let room = self.region.admits(Text::bound(bytes, chars));
-        let made = room.and_then(|()| BoundedString::with_capacity(&self.region, bytes));
-        let made = made.and_then(|mut text| {
-            parts.try_for_each(|part| text.push_str(part))?;
-            Text::made(text)?.value()
-        });
-        made.map_err(|refused| self.full(refused))
+        let lease = self.build(chars, Text::size(bytes, chars))?;
+        let mut text = String::with_capacity(bytes);
+        text.extend(parts);
+        Ok(Value::Str(Shared::leased(Text::new(text), lease)))
     }
 
     /// The string of `c`, an ASCII one made once a run.
@@ -964,8 +903,7 @@ impl<A: AppValue> Machine<A> {
         }
         let made = self.text(c.encode_utf8(&mut [0; 4]))?;
         if c.is_ascii() {
-            let room = self.chars.resize(128, None);
-            room.map_err(|refused| self.full(refused))?;
+            self.chars.resize(128, None);
         }
         if let Some(slot) = self.chars.get_mut(code) {
             *slot = Some(made.clone());
@@ -973,10 +911,10 @@ impl<A: AppValue> Machine<A> {
         Ok(made)
     }
 
-    /// A list of `items`, in shared storage reserved before it is made.
-    fn list(&self, items: BoundedVec<Value<A>>) -> Result<Value<A>, Error> {
+    /// A list of `items`, holding `lease`.
+    fn list(&self, items: Vec<Value<A>>, lease: ImportLease) -> Result<Value<A>, Error> {
         match List::new(items) {
-            Some(list) => list.value().map_err(|refused| self.full(refused)),
+            Some(list) => Ok(Value::List(Shared::leased(list, lease))),
             None => Err(self.nested()),
         }
     }
@@ -1065,58 +1003,42 @@ impl<A: AppValue> Machine<A> {
                 }),
             );
         }
-        let mut items = self.room(n)?;
+        let lease = self.build(n, List::<A>::size(n))?;
+        let mut items = Vec::with_capacity(n);
         for item in list.items() {
             if let Value::List(l) = item {
-                let joined = items.extend_from_slice(l.items());
-                joined.map_err(|refused| self.full(refused))?;
+                items.extend_from_slice(l.items());
             }
         }
-        self.list(items)
+        self.list(items, lease)
     }
 
-    /// `shared`'s value, to change in place: when something else holds it,
-    /// or another region (a literal's, a host's), a copy in this run's,
-    /// `n` elements long, taking `bytes` in all, its box with it: checked
-    /// whole before any of it is made. What a run grows is its region's.
-    fn own<'s, T>(
+    /// `shared`'s value and lease, to change in place: when something else
+    /// holds it, a copy, `n` elements in `bytes`, reserved before it is made.
+    fn own<'s, T: Clone>(
         &mut self,
         shared: &'s mut Shared<T>,
-        (n, bytes): (usize, usize),
-        region: fn(&T) -> &Region,
-        copy: fn(&T, &Region) -> Result<T, Refused>,
-    ) -> Result<&'s mut T, Error> {
-        if Shared::get_mut(shared).is_none() || !region(shared).same(&self.region) {
-            self.fits(n)?;
-            self.cost(n);
-            let room = self.region.admits(bytes);
-            let copied = room.and_then(|()| copy(shared, &self.region));
-            let copied = copied.and_then(|copy| Shared::made(&self.region, copy));
-            *shared = copied.map_err(|refused| self.full(refused))?;
+        n: usize,
+        bytes: usize,
+    ) -> Result<(&'s mut T, &'s mut ImportLease), Error> {
+        let copy = Shared::get_mut(shared).is_none();
+        let copy = copy.then(|| self.build(n, bytes)).transpose()?;
+        let (value, lease) = Shared::make_mut(shared);
+        if let Some(copy) = copy {
+            *lease = copy;
         }
-        Shared::get_mut(shared).ok_or_else(|| self.fail(Code::Contract, "a copy still shared"))
+        Ok((value, lease))
     }
 
     /// `x` added at the end, in place ([`Machine::own`]). Room it grows to
-    /// is reserved before it is made, and what it held given back after;
-    /// growing, it is charged a walk over what it moves.
+    /// is reserved before it is made, and what it held given back after.
     fn pushed(&mut self, seq: Sequence<A>, x: Value<A>) -> Result<Value<A>, Error> {
         match (seq, x) {
             (Sequence::List(mut list), x) => {
                 let len = list.items().len();
                 self.fits(len.saturating_add(1))?;
-                let items = self.own(
-                    &mut list,
-                    (len, List::<A>::size(len)),
-                    List::region,
-                    List::copy,
-                )?;
-                let moves = len == items.capacity();
-                let grown = items.reserve(1);
-                if moves {
-                    self.cost(len);
-                }
-                grown.map_err(|refused| self.full(refused))?;
+                let (items, lease) = self.own(&mut list, len, List::<A>::size(len))?;
+                items.grow(lease, |bytes| self.build(len, bytes))?;
                 match items.push(x) {
                     Some(()) => Ok(Value::List(list)),
                     None => Err(self.nested()),
@@ -1125,14 +1047,9 @@ impl<A: AppValue> Machine<A> {
             (Sequence::Str(mut s), Value::Str(x)) => {
                 let (len, chars) = (s.chars_len(), s.chars_len().saturating_add(x.chars_len()));
                 self.fits(chars)?;
-                let bytes = Text::bound(s.len(), len);
-                let text = self.own(&mut s, (len, bytes), Text::region, Text::copy)?;
-                let before = text.capacity();
-                let marked = text.append(&x);
-                if text.capacity() != before {
-                    self.cost(len);
-                }
-                let marked = marked.map_err(|refused| self.full(refused))?;
+                let copy = Text::size(s.len(), len);
+                let (text, lease) = self.own(&mut s, len, copy)?;
+                let marked = text.append(&x, lease, |bytes| self.build(len, bytes))?;
                 // What it adds, and the marks an ASCII string gets once, a
                 // mark per 64 of its characters: charged as a walk over them.
                 self.cost(marked.saturating_add(x.chars_len()));
@@ -1160,12 +1077,7 @@ impl<A: AppValue> Machine<A> {
         match (seq, x) {
             (Sequence::List(mut list), x) => {
                 let len = list.items().len();
-                let items = self.own(
-                    &mut list,
-                    (len, List::<A>::size(len)),
-                    List::region,
-                    List::copy,
-                )?;
+                let (items, _) = self.own(&mut list, len, List::<A>::size(len))?;
                 let looked = items.put(i, x).ok_or_else(|| self.nested())?;
                 self.cost(looked);
                 Ok(Value::List(list))
@@ -1210,8 +1122,8 @@ fn next<A: Clone>(seq: &Sequence<A>, at: &mut usize) -> Option<Result<Value<A>, 
 
 /// Why `lt` can't order two values: their kinds, or, in two lists, the
 /// first elements that can't be ordered, found through nested lists.
-fn unordered<A: AppValue>(a: &Value<A>, b: &Value<A>) -> std::string::String {
-    let mut path = None;
+fn unordered<A: AppValue>(a: &Value<A>, b: &Value<A>) -> String {
+    let mut path = Vec::new();
     let (mut a, mut b) = (a, b);
     // As deep as lists nest, at most `NESTING`.
     while let (Value::List(x), Value::List(y)) = (a, b) {
@@ -1220,22 +1132,19 @@ fn unordered<A: AppValue>(a: &Value<A>, b: &Value<A>) -> std::string::String {
         let Some((i, (p, q))) = next else {
             break;
         };
-        path = Some(match path {
-            None => format!("element {i}"),
-            Some(path) => format!("{path}, element {i}"),
-        });
+        path.push(format!("element {i}"));
         (a, b) = (p, q);
     }
-    match path {
-        None => {
-            let app = matches!(a, Value::App(_)) || matches!(b, Value::App(_));
-            Wants::Ordered.not(format_args!("{} and {}", a.kind(), b.kind()), app)
-        }
-        Some(path) => format!(
-            "lt compares lists element by element, and at {path} it finds {} and {}",
+    if path.is_empty() {
+        let app = matches!(a, Value::App(_)) || matches!(b, Value::App(_));
+        Wants::Ordered.not(format_args!("{} and {}", a.kind(), b.kind()), app)
+    } else {
+        format!(
+            "lt compares lists element by element, and at {} it finds {} and {}",
+            path.join(", "),
             a.kind(),
             b.kind()
-        ),
+        )
     }
 }
 
@@ -1527,10 +1436,9 @@ builtins! { m host;
         let part = match &s {
             Sequence::Str(s) => m.text(s.part(a, b))?,
             Sequence::List(list) => {
-                let mut items = m.room(n)?;
-                let part = items.extend(list.items().iter().skip(a).take(n).cloned());
-                part.map_err(|refused| m.full(refused))?;
-                m.list(items)?
+                let lease = m.build(n, List::<A>::size(n))?;
+                let items = list.items().iter().skip(a).take(n).cloned().collect();
+                m.list(items, lease)?
             }
         };
         m.push(part)
@@ -1569,7 +1477,7 @@ builtins! { m host;
     String "string" (x: Any) "x -- s" "x as text, as print shows it" {
         m.walk(&x);
         // Made only as far as a string may be long.
-        let text = x.string_upto(LONGEST, &m.region).map_err(|f| m.failed(f))?;
+        let text = x.string_upto(LONGEST, &m.imports).map_err(|f| m.failed(f))?;
         let Some(text) = text else {
             return Err(m.fail(Code::TooLong, format!(
                 "the text is longer than a string may be ({LONGEST})"
@@ -1580,18 +1488,18 @@ builtins! { m host;
     }
     Print "print" (x: Any) "x --" "print x now, a line" {
         m.walk(&x);
-        let text = x.text(&m.region).map_err(|f| m.fail(f.code, f.message))?;
+        let text = x.text().map_err(|f| m.fail(f.code, f.message))?;
         host.print(&text).map_err(|f| m.fail(f.code, f.message))
     }
     Fail "fail" (x: Any) "x --" "stop the program, with x as the reason" {
         // Its reason is a string a try may keep: made as `string` makes one.
         m.walk(&x);
-        let Some(text) = x.text_upto(LONGEST, &m.region).map_err(|f| m.fail(f.code, f.message))? else {
+        let Some(text) = x.text_upto(LONGEST).map_err(|f| m.fail(f.code, f.message))? else {
             return Err(m.fail(Code::TooLong, format!(
                 "the reason is longer than a string may be ({LONGEST})"
             )));
         };
         m.cost(text.chars_len());
-        Err(m.failing(Code::Fail, text))
+        Err(m.fail(Code::Fail, text.into_string()))
     }
 }
