@@ -101,9 +101,10 @@ panes as it begins and answers changes in watch order, not exit chronology.
   input, then count, so it is in the count, not in what you wait for; a
   program that draws the input again (a TUI that keeps it above the
   reply) counts it again. `hits` counts the lines of the last 1000 of
-  history and the screen (a string holds at most 1,000,000 characters,
-  less than `history-bytes` may keep), so a count can fall as lines
-  scroll past them: choose a window the reply surely comes within.
+  history and the screen (its `string` conversion holds
+  at most 1,000,000 characters, less than `history-bytes` may keep),
+  so a count can fall as lines scroll past them: choose a window the reply
+  surely comes within.
 
   ```fux
   define hits 1000 history capture string lines 0 swap each str 42 contains if 1 add then end end

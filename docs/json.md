@@ -1,14 +1,17 @@
 # What `json` gives
 
-(`fux help json`.) `json` turns the value on top of the stack into JSON.
-Small results are ordinary strings. Beyond 1,000,000 characters it returns shared text of kind
-`rendered`: `print` and implicit command output emit it under the existing
-128 MiB finite-observation grant. Explicit `string` conversion still obeys
-the language string limit. All live imported storage shares one 128 MiB grant: captures, rendered output,
-records, strings, lists and options. Reservations follow shared allocations;
-clones and projected children keep their reservation without double charging.
-Dropping the last reference refunds its bytes, so polling and discarding results
-can continue. Per-value limits and traversal charges still apply.
+(`fux help json`.) `json` turns the value on top of the stack into an ordinary
+string, including results longer than 1,000,000 characters. `len`, `slice`,
+`print`, and implicit command output accept it. JSON storage is counted and
+reserved from the run's 128 MiB grant before writing; retained inputs and JSON
+output share that grant. Explicit `string` conversion still obeys the language
+string limit. All live imported storage shares the grant: captures, JSON
+output, records, strings, lists and options. Reservations follow shared
+allocations; clones and projected children keep their reservation without
+double charging. Dropping the last reference refunds its bytes, so polling and
+discarding results can continue. Per-value limits and traversal charges still
+apply; the length and expanded weight checks exempt only a top-level string
+already reserved in this run.
 
 The JSON represents what a word left, as below; a string as a JSON string; a number or boolean
 as itself; a list as an array of these, each answer in it as `json` gives
