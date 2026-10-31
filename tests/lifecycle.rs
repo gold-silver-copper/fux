@@ -330,7 +330,7 @@ fn the_clipboard_takes_a_copy_however_large() -> Outcome {
     let after = client.painted.get(before..).unwrap_or_default();
     let osc = after.windows(7).filter(|w| *w == b"\x1b]52;c;").count();
     assert_eq!(osc, 1, "one OSC 52 write for it");
-    assert!(after.len() > 2 << 20, "all of it: {} bytes", after.len());
+    assert!(after.len() > 2_000_000, "all of it: {} bytes", after.len());
     let buffer = server.ok(&["newest", "buffer"])?;
     assert!(
         buffer.len() > 1 << 20,

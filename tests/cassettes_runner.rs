@@ -226,7 +226,7 @@ mod runner {
             // key of that name, no keys at all.
             let refused = [
                 call(
-                    &["str", &v, "changed", "86401", "timeout", "wait"],
+                    &["str", &v, "changed", "4294967296", "timeout", "wait"],
                     1,
                     "fux: range: timeout",
                 ),

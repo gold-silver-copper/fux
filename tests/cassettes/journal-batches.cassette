@@ -1,6 +1,6 @@
 # fux cassette 1
 # guards: the journal read on from each batch's next, as text through the
-#   CLI, gives every event once: 64 to a batch, then the rest, none missed
+#   CLI, gives every event once: all of them in one batch, none missed
 # fix: #320
 $ C=$(fux all str '' 0 next-events str next get)
 $ fux - <<'EOF'
@@ -14,13 +14,13 @@ $ fux - <<EOF
 > two str events get len print two str missed get print
 > all two str next get 0 next-events str events get len print
 > EOF
-  = 64
+  = 73
   = continuing
-  = 9
   = 0
   = 0
-  ~ 64
+  = 0
+  ~ 73
   ~ continuing
-  ~ 9
+  ~ 0
   ~ 0
   ~ 0

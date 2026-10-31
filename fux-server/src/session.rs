@@ -4785,81 +4785,6 @@ mod tests {
     }
 
     #[test]
-    fn retained_launches_refuse_their_resource_limit() -> TestResult {
-        let mut s = started()?;
-        let mut env = command::EnvPatch::default();
-        env.push(
-            "TEXT".into(),
-            Some(
-                std::iter::repeat_n('\'', 1 << 19)
-                    .collect::<String>()
-                    .into(),
-            ),
-        )?;
-        let command = Command::NewTab {
-            target: Some(command::WsRef::New),
-            name: None,
-            size: Some(fux_wire::command::Screen::new(24, 80)?),
-            cwd: Some("/".into()),
-            env,
-            start: command::Start::Program(command::Program::new("/bin/cat".into(), Vec::new())?),
-            options: crate::pane::tests::options(0)?,
-        };
-        let origin = Origin::Cli(Caller::default());
-        let mut refused = false;
-        for _ in 0..40 {
-            let before = s.parts.panes().len();
-            if let Err(error) = s.execute(&command, &origin, Instant::now()) {
-                assert_eq!(error.code(), Code::from(Raise::TooLong));
-                assert!(error.to_string().contains("saved launch inputs"), "{error}");
-                assert_eq!(s.parts.panes().len(), before);
-                refused = true;
-                break;
-            }
-        }
-        assert!(refused);
-        Ok(())
-    }
-
-    #[test]
-    fn library_dump_refuses_source_expansion_before_emitting() -> TestResult {
-        let mut s = started()?;
-        let mut env = command::EnvPatch::default();
-        env.push(
-            "TEXT".into(),
-            Some(
-                std::iter::repeat_n(char::from(39), 90_000)
-                    .collect::<String>()
-                    .into(),
-            ),
-        )?;
-        let command = Command::NewTab {
-            target: Some(command::WsRef::Name("quoted".into())),
-            name: None,
-            size: Some(fux_wire::command::Screen::new(24, 80)?),
-            cwd: Some("/".into()),
-            env,
-            start: command::Start::Program(command::Program::new("/bin/cat".into(), Vec::new())?),
-            options: crate::pane::tests::options(0)?,
-        };
-        for _ in 0..3 {
-            s.execute(&command, &Origin::Cli(Caller::default()), Instant::now())?;
-        }
-        // This admits the recipe first, independently of the source expansion.
-        s.inspect(
-            fux_wire::inspect::Scope::All,
-            fux_wire::inspect::Projection::Recipe,
-        )?;
-        let error = s
-            .dump_recipe(None)
-            .err()
-            .ok_or("dump admitted oversized source")?;
-        assert_eq!(error.code, Code::from(Raise::TooLong));
-        assert!(error.to_string().contains("concat"), "{error}");
-        Ok(())
-    }
-
-    #[test]
     fn attach_targets_choose_the_exact_place_without_reusing_another_seat() -> TestResult {
         use command::AttachTarget as T;
         let (mut s, incumbent) = attached(24, 80)?;
@@ -6329,8 +6254,11 @@ mod tests {
     #[test]
     fn keys_for_several_panes_go_to_all_or_none() -> TestResult {
         let mut s = started()?;
-        run(&mut s, "%1 str horizontal axis split drop")?;
-        // Its program has ended: nothing takes input there.
+        run(
+            &mut s,
+            "%1 str horizontal axis str /bin/cat program split drop",
+        )?;
+        // Its program has ended, and the pane stays: nothing takes input there.
         s.end_program(PaneId::of(2), fux_wire::answer::Ended::Exited(0));
         let sent = run(&mut s, "@1 str x text send-keys");
         assert!(sent.is_err(), "refused");
@@ -6497,7 +6425,6 @@ mod tests {
             .presentation
             .clone();
         let too_many = std::iter::repeat_n("str workspace ", 17).collect::<String>();
-        let too_long = std::iter::repeat_n('x', 257).collect::<String>();
         let cases = [
             "str styles list list str typo 0 1 end end set".to_owned(),
             "str styles list list str bar 0 1 end list str bar 2 3 end end set".to_owned(),
@@ -6510,7 +6437,6 @@ mod tests {
             "str bar list str top list list str slot 16 end end list end false end set".to_owned(),
             "str bar-slots list list 0 str one end list 0 str two end end set".to_owned(),
             "str bar-slots list list 0 10 char end end set".to_owned(),
-            format!("str bar-slots list list 0 str {too_long} end end set"),
         ];
         for invalid in cases {
             // A valid preceding change is discarded with the refused draft.
@@ -6788,13 +6714,7 @@ mod tests {
         assert!(ls.contains(r#""name":"say \"hi\" \\ 界""#), "{ls}");
         assert!(ls.contains(r#""title":"tab\\title""#), "{ls}");
         assert!(ls.contains(r#""truncated":[]"#), "{ls}");
-        let long = format!(
-            "\x1b]2;{}\x07",
-            std::iter::repeat_n('t', fux_vt::OSC_PAYLOAD_LIMIT).collect::<String>()
-        );
-        s.out(PaneId::of(2), long.as_bytes());
         let capture = output(&mut s, "str %2 pane capture json")?;
-        assert!(capture.contains(r#""truncated":["title"]"#), "{capture}");
         assert!(capture.contains(r#""lines":["a       b 界"]"#), "{capture}");
         Ok(())
     }

@@ -301,14 +301,22 @@ fn errors_statuses_and_what_is_left() -> Outcome {
         str bad_name try str %1 pane tab str %7 rename str renamed catch nip end";
     let caught = server.ok(&program.split_whitespace().collect::<Vec<_>>())?;
     assert_eq!(caught, "unused\nunknown_word\nbad_name\n");
-    // A size past a client's screen's most is refused, `size` as the
-    // server refuses it, saying the range it may take, past a cell's too.
-    for size in ["4097", "65536"] {
-        let wide = server.fux(&["str", "%1", "pane", size, "10", "resize"])?;
+    // A size no screen can have is refused, `size` as the server refuses
+    // it: past what a grid holds, or past a cell's range.
+    for (cols, rows) in [("65535", "65535"), ("65536", "10")] {
+        let wide = server.fux(&["str", "%1", "pane", cols, rows, "resize"])?;
         assert!(wide.stderr.starts_with("fux: size: "), "{}", wide.stderr);
-        assert!(wide.stderr.contains("1 to 4096"), "{}", wide.stderr);
-        let opened = server.fux(&["opts", size, "10", "size", "new-tab"])?;
-        assert!(opened.stderr.contains("1 to 4096"), "{}", opened.stderr);
+        assert!(
+            wide.stderr.contains("no screen is that size"),
+            "{}",
+            wide.stderr
+        );
+        let opened = server.fux(&["opts", cols, rows, "size", "new-tab"])?;
+        assert!(
+            opened.stderr.contains("no screen is that size"),
+            "{}",
+            opened.stderr
+        );
     }
     // A new tab from outside a pane is told the option that places it.
     let nowhere = server.fux(&["opts", "80", "24", "size", "str", "logs", "name", "new-tab"])?;

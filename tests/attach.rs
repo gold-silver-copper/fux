@@ -147,10 +147,11 @@ fn a_resize_reaches_the_program() -> Outcome {
     client.keys("stty size\r")?;
     client.wait("the new size", |t| t.lines().any(|l| l == "19 60"))?;
     assert!(server.ok(&["ls", "listing"])?.contains("%1 60x19"));
-    // Past 4096 a way, refused and said: the view keeps its size.
-    client.resize(20, 5000)?;
+    // Past what a grid holds, refused and said: the view keeps its size.
+    let past = fux_wire::protocol::AttachedFrame::Resize(sized(60000, 60000)?);
+    client.frame(&past)?;
     client.wait("the refusal", |t| {
-        t.contains("5000 columns by 20 rows: a screen is")
+        t.contains("60000 columns by 60000 rows: no screen")
     })?;
     assert!(server.ok(&["ls", "listing"])?.contains("client c1 60x20"));
     Ok(())

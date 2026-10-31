@@ -746,11 +746,11 @@ const EXPECTED: &str = "takes no request expect made: only send-keys checks a ve
 /// The version `value` holds (`Answer::version`), or is as text.
 fn version(value: &Value<Fux>) -> Result<fux_wire::command::Version, Failure> {
     let wanted = "a version: an action's or wait's answer, a pane's capture, or its text";
-    let text = match value {
+    let text: &str = match value {
         Value::App(Fux::Answer(answer, _)) => {
             return answer.version().ok_or_else(|| wrong(wanted, value));
         }
-        Value::Str(text) => &**text,
+        Value::Str(text) => text,
         other @ (Value::Int(_) | Value::Bool(_) | Value::List(_) | Value::App(_)) => {
             return Err(wrong(wanted, other));
         }
