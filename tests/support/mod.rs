@@ -838,22 +838,46 @@ pub fn journal() -> Result<String, String> {
     Ok(state.preferences.journal_entries.get().to_string())
 }
 
-/// Stops the server on `socket` as a person does: `kill` on its process
-/// (`status`'s `server_pid`); where the system names no process (macOS),
-/// `kill-server`.
-pub fn stop_server(socket: &Path) {
-    let peer = UnixStream::connect(socket).and_then(|s| Ok(fuxix::socket::peer(&s)?));
-    match peer.ok().and_then(|peer| peer.pid) {
-        Some(pid) => drop(fuxix::process::kill(pid, fuxix::process::Signal::Term)),
-        None => drop(
-            Command::new(fux())
+/// Stops the server on `socket` as a person does, and waits, bounded, till
+/// its socket is gone: `kill` on its process (`status`'s `server_pid`);
+/// where the system names no process (macOS), `kill-server`, which refuses
+/// while a terminal is attached, so the test ends its own clients first.
+/// None answering is stopped already.
+pub fn stop_server(socket: &Path) -> Outcome {
+    let Ok(stream) = UnixStream::connect(socket) else {
+        return Ok(());
+    };
+    match fuxix::socket::peer(&stream).map_err(e)?.pid {
+        Some(pid) => fuxix::process::kill(pid, fuxix::process::Signal::Term).map_err(e)?,
+        None => {
+            let out = Command::new(fux())
                 .arg("kill-server")
                 .env("FUX_SOCKET", socket)
                 .env_remove("FUX_PANE")
                 .env_remove("FUX_SERVER")
-                .output(),
-        ),
+                .output()
+                .map_err(e)?;
+            if !out.status.success() {
+                return Err(String::from_utf8_lossy(&out.stderr).into_owned());
+            }
+        }
     }
+    drop(stream);
+    eventually("the server to stop", || Ok(!socket.exists()))
+}
+
+/// Ends `child`, a process the test started: SIGTERM, a bounded wait, and
+/// SIGKILL if it is still there; whether the SIGTERM ended it.
+pub fn end(child: &mut Child) -> Outcome {
+    if let Ok(pid) = i32::try_from(child.id()) {
+        signal(pid, fuxix::process::Signal::Term);
+    }
+    let ended = eventually("the process to end", || {
+        Ok(child.try_wait().map_err(e)?.is_some())
+    });
+    let _ = child.kill();
+    let _ = child.wait();
+    ended
 }
 
 /// Processes a test started outside fux's care, killed when it ends,

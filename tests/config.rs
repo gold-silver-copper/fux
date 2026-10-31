@@ -33,8 +33,9 @@ fn only_a_typing_terminal_loads_the_user_config() -> Outcome {
         }
         Ok(())
     })();
-    stop_server(std::path::Path::new(socket));
+    let stopped = stop_server(std::path::Path::new(socket));
     started?;
+    stopped?;
     assert!(server.ok(&["list-keys"])?.contains("str C-b prefix"));
     for args in [
         &["opts", "watch", "attach"][..],

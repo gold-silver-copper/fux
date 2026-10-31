@@ -369,11 +369,15 @@ fn attach_starts_a_server_when_none_answers() -> Outcome {
         Ok(String::from_utf8_lossy(&out.stdout).contains("client c1"))
     });
     let log = std::fs::read_to_string(dir.join("s").join("fux.log"));
-    stop_server(&socket);
-    let _ = child.wait();
+    // The client first: a server a terminal is attached to refuses
+    // `kill-server`, which stops it where the system names no process.
+    let ended = end(&mut child);
+    let stopped = stop_server(&socket);
     drop(master);
     let _ = std::fs::remove_dir_all(&dir);
     result?;
+    ended?;
+    stopped?;
     assert!(log.is_ok(), "the server logs beside its socket");
     Ok(())
 }
@@ -476,49 +480,58 @@ fn focus_events_reach_a_pane_that_asked_and_cursor_shapes_pass_through() -> Outc
     Ok(())
 }
 
+/// A client of another protocol is answered the server's `Hello`, then its
+/// mismatch, so that it can follow: whatever role it says, one this
+/// protocol has (attach) or not (byte 3, protocol 57's headless attach).
 #[test]
-fn a_protocol_mismatch_refuses_attach() -> Outcome {
-    use fux_wire::protocol::{Frame, Greeting, Hello};
+fn a_protocol_mismatch_is_answered_whatever_the_role() -> Outcome {
+    use fux_wire::protocol::{Frame, Greeting, Hello, Role};
     use std::io::{Read, Write};
     let server = Server::start("")?;
-    let mut stream = std::os::unix::net::UnixStream::connect(&server.socket).map_err(e)?;
-    // Set before writing: macOS refuses a timeout on a socket its peer
-    // has closed, as the server may have by the time the writes are done.
-    stream.set_read_timeout(Some(PATIENCE)).map_err(e)?;
-    let hello = Hello {
-        protocol: 999,
-        version: "0.0.0".into(),
-        role: fux_wire::protocol::Role::Attach,
-    };
-    stream.write_all(&hello.encode().map_err(e)?).map_err(e)?;
-    let mut decoder = fux_wire::protocol::Decoder::default();
-    let mut buffer = [0u8; 4096];
-    let mut exit = None;
-    loop {
-        // A signal interrupts a read with a timeout rather than restarting
-        // it; under emulation that happens nearly every run.
-        let n = match stream.read(&mut buffer) {
-            Ok(0) => break,
-            Ok(n) => n,
-            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
-            Err(error) => return Err(format!("reading the server's answer: {error}")),
+    for (protocol, role) in [(999, Role::Attach), (57, Role::Unknown(3))] {
+        let mut stream = std::os::unix::net::UnixStream::connect(&server.socket).map_err(e)?;
+        // Set before writing: macOS refuses a timeout on a socket its peer
+        // has closed, as the server may have by the time the writes are done.
+        stream.set_read_timeout(Some(PATIENCE)).map_err(e)?;
+        let hello = Hello {
+            protocol,
+            version: "0.36.0".into(),
+            role,
         };
-        decoder.push(buffer.get(..n).unwrap_or_default());
-        while let Some(frame) = decoder.frame().map_err(e)? {
-            if let Greeting::Exit(reason) = frame {
-                exit = Some(reason.to_owned());
+        stream.write_all(&hello.encode().map_err(e)?).map_err(e)?;
+        let mut decoder = fux_wire::protocol::Decoder::default();
+        let mut buffer = [0u8; 4096];
+        let mut frames = Vec::new();
+        loop {
+            // A signal interrupts a read with a timeout rather than restarting
+            // it; under emulation that happens nearly every run.
+            let n = match stream.read(&mut buffer) {
+                Ok(0) => break,
+                Ok(n) => n,
+                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(error) => return Err(format!("reading the server's answer: {error}")),
+            };
+            decoder.push(buffer.get(..n).unwrap_or_default());
+            while let Some(frame) = decoder.frame::<Greeting>().map_err(e)? {
+                frames.push(match frame {
+                    Greeting::Hello(theirs) => Ok(theirs.protocol),
+                    Greeting::Exit(reason) => Err(reason.to_owned()),
+                });
             }
         }
+        let [Ok(theirs), Err(reason)] = frames.as_slice() else {
+            return Err(format!("{role:?}: not a Hello then an Exit: {frames:?}"));
+        };
+        assert_eq!(*theirs, fux_wire::protocol::PROTOCOL, "{role:?}");
+        assert!(
+            reason.contains(&format!("protocol {}", fux_wire::protocol::PROTOCOL))
+                && reason.contains("use a matching client")
+                && reason.contains("`kill` on its process")
+                && reason.contains("stops it and its panes")
+                && reason.contains("a new server does not resume them"),
+            "{reason}"
+        );
     }
-    let reason = exit.ok_or("no Exit frame")?;
-    assert!(
-        reason.contains(&format!("protocol {}", fux_wire::protocol::PROTOCOL))
-            && reason.contains("use a matching client")
-            && reason.contains("`kill` on the `server_pid` `fux status` gives")
-            && reason.contains("stops it and its panes")
-            && reason.contains("a new server does not resume them"),
-        "{reason}"
-    );
     Ok(())
 }
 
@@ -890,12 +903,13 @@ fn a_server_a_client_started_outlives_the_clients_terminal() -> Outcome {
         let out = ls()?;
         Ok(out.status.success() && !String::from_utf8_lossy(&out.stdout).contains("client c1"))
     });
-    stop_server(&socket);
+    let stopped = stop_server(&socket);
     drop(terminal);
     let _ = std::fs::remove_dir_all(&dir);
     started?;
     gone?;
-    after
+    after?;
+    stopped
 }
 
 /// The first pane uses the invoking client's directory, regardless of HOME.
@@ -932,7 +946,7 @@ fn a_first_shell_starts_in_the_invocation_directory() -> Outcome {
         terminal.wait_for("%1")?;
         terminal.type_bytes(format!("pwd > '{}'; exit\r", marker.display()).as_bytes())?;
         let status = terminal.wait_exit();
-        stop_server(&socket);
+        stop_server(&socket)?;
         assert!(status?.success());
         assert_eq!(
             std::fs::read_to_string(&marker).map_err(e)?.trim(),

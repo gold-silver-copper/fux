@@ -244,10 +244,11 @@ fn a_pane_runs_the_clients_shell_else_bin_sh() -> Outcome {
                         .any(|line| line == expected))
             })
         })();
-        stop_server(&socket);
-        let _ = child.wait();
+        // The test started this server: its own process is the one to end.
+        let ended = end(&mut child);
         let _ = std::fs::remove_dir_all(&dir);
         shown?;
+        ended?;
     }
     Ok(())
 }
