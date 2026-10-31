@@ -371,7 +371,8 @@ mod tests {
             }
             .into(),
         })?;
-        let mut values = crate::script::answered(reply)?;
+        let mut values =
+            crate::script::answered(reply, &fuxth::Imports::new(crate::inspect::BYTES))?;
         let root = values.pop().ok_or("snapshot")?;
         let grant = fuxth::Imports::new(crate::inspect::BYTES);
         root.retain(&grant).map_err(|e| e.message)?;

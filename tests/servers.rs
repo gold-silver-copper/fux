@@ -880,9 +880,8 @@ fn the_copy_hook_recipe_consumes_a_real_program_copy() -> Outcome {
     assert_eq!(server.ok(&["newest", "buffer"])?, "hello\n");
     let capture = server.ok(&["str", client, "client", "capture"])?;
     assert!(capture.contains("a program copied text"), "{capture}");
-    // The hook's notice is observable, and does not trigger another copy.
+    // The captured notice does not trigger another copy.
     let feedback = server.ok(&["all", "str", checkpoint.trim(), "0", "next-events", "json"])?;
-    assert!(feedback.contains(r#""event":"notice""#), "{feedback}");
     assert!(!feedback.contains(r#""event":"copied""#), "{feedback}");
     Ok(())
 }

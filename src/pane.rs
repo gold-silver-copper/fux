@@ -292,6 +292,7 @@ impl<const MAX: usize> Said<MAX> {
     pub fn as_str(&self) -> &str {
         &self.text
     }
+    #[cfg(test)]
     pub(crate) fn retained_bytes(&self) -> usize {
         self.text.capacity()
     }
