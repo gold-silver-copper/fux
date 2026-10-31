@@ -87,11 +87,15 @@ impl<T> Shared<T> {
 
     /// `value` in a box reserved from `region` before it is made.
     pub fn made(region: &Region, value: T) -> Result<Self, Refused> {
-        let held = region.reserve(Self::BOX)?;
-        Ok(Self(Rc::new(Storage {
+        Ok(Self::holding(value, region.reserve(Self::BOX)?))
+    }
+
+    /// `value` in a box `held` was reserved for.
+    pub(crate) fn holding(value: T, held: Reservation) -> Self {
+        Self(Rc::new(Storage {
             value,
             lease: Lease(RefCell::new(Some(held))),
-        })))
+        }))
     }
 
     pub fn get_mut(this: &mut Self) -> Option<&mut T> {

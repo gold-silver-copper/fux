@@ -250,8 +250,8 @@ impl Text {
 
     /// In shared storage reserved from its region: a string value.
     pub fn value<A>(self) -> Result<Value<A>, Refused> {
-        let region = self.region().clone();
-        Ok(Value::Str(Shared::made(&region, self)?))
+        let held = self.region().reserve(Shared::<Text>::BOX)?;
+        Ok(Value::Str(Shared::holding(self, held)))
     }
 
     /// How many characters it has.
@@ -431,8 +431,8 @@ impl<A> List<A> {
 
     /// In shared storage reserved from its region: a list value.
     pub fn value(self) -> Result<Value<A>, Refused> {
-        let region = self.region().clone();
-        Ok(Value::List(Shared::made(&region, self)?))
+        let held = self.region().reserve(Shared::<Self>::BOX)?;
+        Ok(Value::List(Shared::holding(self, held)))
     }
 }
 

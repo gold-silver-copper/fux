@@ -104,7 +104,9 @@ impl<S: Room> Bounded<S> {
     /// Empty, with room for exactly `capacity` elements, reserved first.
     pub fn with_capacity(region: &Region, capacity: usize) -> Result<Self, Refused> {
         let mut made = Self::new(region);
-        made.regrow(capacity, false)?;
+        if capacity > 0 {
+            made.regrow(capacity, false)?;
+        }
         Ok(made)
     }
 
@@ -162,8 +164,23 @@ impl<S: Room> Bounded<S> {
 }
 
 impl<T> Bounded<Vec<T>> {
+    /// `item` at the end. Full, it moves to a larger buffer first: the
+    /// same test std's own push makes, so a push with room makes it once.
+    #[inline]
     pub fn push(&mut self, item: T) -> Result<(), Refused> {
-        self.reserve(1)?;
+        if self.store.len() == self.store.capacity() {
+            return self.grown(item);
+        }
+        self.store.push(item);
+        Ok(())
+    }
+
+    /// `item` at the end of a store with no room for it: all out of the
+    /// way of a push that has room.
+    #[cold]
+    #[inline(never)]
+    fn grown(&mut self, item: T) -> Result<(), Refused> {
+        self.regrow(1, true)?;
         self.store.push(item);
         Ok(())
     }

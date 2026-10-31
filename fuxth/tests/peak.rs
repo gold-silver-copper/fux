@@ -135,7 +135,10 @@ fn a_build_its_region_refuses_makes_nothing_and_leaves_the_region_whole() -> Res
     let refused = machine.run(&mut Asker, u64::MAX).err().map(|e| e.code);
     assert_eq!(refused, Some(Code::TooLong));
     assert_eq!(region.remaining(), left, "the region is as it was");
-    assert!(HEAP.peak().saturating_sub(live) < 4096, "nothing was made: its failure alone");
+    assert!(
+        HEAP.peak().saturating_sub(live) < 4096,
+        "nothing was made: its failure alone"
+    );
     drop(machine);
     assert_eq!(region.remaining(), BUDGET);
     drop(region);

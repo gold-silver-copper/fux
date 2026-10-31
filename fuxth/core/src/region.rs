@@ -80,10 +80,13 @@ impl Region {
     }
 
     /// `bytes` held from this region until the reservation drops.
+    #[inline]
     pub fn reserve(&self, bytes: usize) -> Result<Reservation, Refused> {
-        let mut held = self.nothing();
-        held.resize(bytes)?;
-        Ok(held)
+        self.0.left.charge(bytes).map_err(|_| self.full(bytes))?;
+        Ok(Reservation {
+            region: self.clone(),
+            bytes,
+        })
     }
 
     /// A reservation holding nothing yet.
@@ -94,6 +97,7 @@ impl Region {
         }
     }
 
+    #[cold]
     fn full(&self, asked: usize) -> Refused {
         Refused::Full {
             asked,
