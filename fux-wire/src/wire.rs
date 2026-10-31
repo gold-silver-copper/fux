@@ -41,9 +41,7 @@ impl std::fmt::Display for Error {
 impl std::error::Error for Error {}
 
 mod region;
-#[cfg(any(test, feature = "testing"))]
-pub use region::size;
-pub use region::{Budget, Reader, Store, Writer, append, decode, encode, encode_in};
+pub use region::{Budget, Reader, Store, Writer, append, decode, encode, encode_in, size};
 
 /// A value that goes on the wire.
 pub trait Wire: Sized {

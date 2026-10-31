@@ -290,8 +290,9 @@ impl Store for BoundedVec<u8> {
 }
 
 /// A fallible wire writer into a store, or a count-only preflight of the
-/// same encoding.
-pub struct Writer<S = std::vec::Vec<u8>> {
+/// same encoding. A count is a writer of a request's reply that keeps
+/// nothing, so that one encoder serves both.
+pub struct Writer<S = BoundedVec<u8>> {
     bytes: Option<S>,
     left: Option<usize>,
 }
