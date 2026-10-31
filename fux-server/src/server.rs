@@ -501,11 +501,15 @@ impl Conn {
     fn reply(&mut self, session: &mut Session, reply: Reply, now: Instant) {
         match session.requests.open() {
             Ok(budget) => self.answer(session, reply, &budget, now),
-            Err(refused) => {
-                let why = crate::request::refused(refused);
-                self.end(session, &ToCommand::Exit(&why), now);
-            }
+            Err(why) => self.refused(session, why, now),
         }
+    }
+
+    /// Ends a command connection whose answer the server had no region to
+    /// make in, saying why.
+    fn refused(&mut self, session: &mut Session, why: fuxth_core::Refused, now: Instant) {
+        let why = crate::request::refused(why);
+        self.end(session, &ToCommand::Exit(&why), now);
     }
 
     /// Sends the connection's last frame, its client detached and its
@@ -843,8 +847,16 @@ impl Server {
             let Stage::Waiting(waiting) = &mut conn.stage else {
                 continue;
             };
-            if let Some(outcome) = waiting.answer(&self.session, now) {
-                conn.reply(&mut self.session, outcome, now);
+            // Its answer's region, carved as it asks, given back with it.
+            let mut budget = match self.session.requests.open() {
+                Ok(budget) => budget,
+                Err(why) => {
+                    conn.refused(&mut self.session, why, now);
+                    continue;
+                }
+            };
+            if let Some(outcome) = waiting.answer(&self.session, &mut budget, now) {
+                conn.answer(&mut self.session, outcome, &budget, now);
                 answered = true;
             }
         }
@@ -958,8 +970,15 @@ impl Server {
             if let Stage::Waiting(waiting) = &conn.stage
                 && let Waiting::Events(read) = &**waiting
             {
-                let reply = read.stopped(&self.session, &reason);
-                conn.reply(&mut self.session, reply, now);
+                let mut budget = match self.session.requests.open() {
+                    Ok(budget) => budget,
+                    Err(why) => {
+                        conn.refused(&mut self.session, why, now);
+                        continue;
+                    }
+                };
+                let reply = read.stopped(&self.session, &reason, &mut budget);
+                conn.answer(&mut self.session, reply, &budget, now);
             }
         }
         self.session.shutdown(now);
@@ -1450,26 +1469,16 @@ impl Server {
         payload: &[u8],
         now: Instant,
     ) -> Result<(), fux_wire::protocol::Error> {
-        let mut budget = opened(&self.session)?;
-        let asked = match Asked::decode(kind, payload, &mut budget) {
-            Err(fux_wire::protocol::Error::Wire(fux_wire::wire::Error::Limit)) => {
-                // Its answer is made in a region of its own, as what the
-                // decode made is held in this one till it drops.
-                drop(budget);
-                let each = self.session.requests.each();
-                let why = format!("the request exceeds the {each} bytes a request may hold");
-                if let Some(conn) = self.conns.get_mut(index) {
-                    conn.reply(
-                        &mut self.session,
-                        Reply::failed(Code::from(fux_wire::code::Raise::TooLong), why),
-                        now,
-                    );
-                }
-                return Ok(());
+        match crate::request::decoded(&self.session.requests, kind, payload)? {
+            Ok((asked, budget)) => {
+                self.ordered_request(index, asked, (kind, payload), budget, now);
             }
-            decoded => decoded?,
-        };
-        self.ordered_request(index, asked, (kind, payload), budget, now);
+            Err(refused) => {
+                if let Some(conn) = self.conns.get_mut(index) {
+                    conn.reply(&mut self.session, refused, now);
+                }
+            }
+        }
         Ok(())
     }
 

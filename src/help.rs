@@ -293,7 +293,7 @@ fn bounds() -> Vec<(Amount, &'static str, Said)> {
     use fux_server::{copy, pane, server};
     vec![
         (Bytes(fux_wire::wire::MAX_REPLY), "a finite reply's encoded bytes, including all its parts", said![]),
-        (Bytes(fux_wire::wire::MAX_ALLOCATED), "a finite observation's allocation grant, shared by construction or nested decoding", said![]),
+        (Bytes(fux_server::request::REQUEST_BYTES), "what the server holds for one request: its decoded frame, what its answer builds and the answer's bytes; and what a client makes decoding one reply", said![]),
         (Count(fux_server::capture::OUTPUT_CELLS), "additional capture cells for synthesized output, beside twice history-bytes and the live screen", said![]),
         (Bytes(fux_wire::protocol::MAX_FRAME), "a message between client and server", said![("README", "length-prefixed and at most {}")]),
         (Bytes(fux_server::session::LAUNCH_BYTES), "saved launch inputs in one session, including pending replacements", said![]),

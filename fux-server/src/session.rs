@@ -2218,7 +2218,7 @@ impl Session {
                     },
                     _ => return Ok(Begun::Done(reply)),
                 };
-                return Ok(self.answered(waiting, now));
+                return Ok(self.answered(waiting, budget, now));
             }
             Request::Wait(wait) => wait,
             Request::NextEvents {
@@ -2236,7 +2236,7 @@ impl Session {
                     crate::journal::Reader::new(scope, self.parts.journal(), self.run, from)
                         .map_err(|why| fail(Raise::BadValue, why))?;
                 let read = crate::journal::Read::new(reader, crate::after(now, timeout.duration()));
-                return Ok(self.answered(Waiting::Events(read), now));
+                return Ok(self.answered(Waiting::Events(read), budget, now));
             }
         };
         let watches = match wait.since {
@@ -2257,12 +2257,17 @@ impl Session {
             return Err(fail(Raise::NoPane, "it holds no pane to wait on"));
         }
         let limit = wait.timeout.duration();
-        Ok(self.answered(Waiting::new(watches, self.run, now, limit), now))
+        Ok(self.answered(Waiting::new(watches, self.run, now, limit), budget, now))
     }
 
     /// `waiting`'s answer, if it has one already at `now`; else the wait.
-    fn answered(&self, mut waiting: Waiting, now: Instant) -> Begun {
-        match waiting.answer(self, now) {
+    fn answered(
+        &self,
+        mut waiting: Waiting,
+        budget: &mut fux_wire::wire::Budget,
+        now: Instant,
+    ) -> Begun {
+        match waiting.answer(self, budget, now) {
             Some(outcome) => Begun::Done(outcome),
             None => Begun::Waiting(Box::new(waiting)),
         }
@@ -3468,7 +3473,14 @@ impl Session {
                 let soonest = self.timers().min_by_key(|(at, _)| *at);
                 let due = soonest.map(|(at, _)| at).into_iter().chain(waiting.due());
                 let now = due.min().unwrap_or_else(Instant::now);
-                if let Some(answer) = waiting.answer(self, now) {
+                let answer = match self.requests.open() {
+                    Ok(mut budget) => waiting.answer(self, &mut budget, now),
+                    Err(why) => Some(Reply::failed(
+                        fux_wire::code::Code::from(Raise::TooLong),
+                        crate::request::refused(why),
+                    )),
+                };
+                if let Some(answer) = answer {
                     break answer;
                 }
                 let Some((_, timer)) = soonest else {
@@ -5847,7 +5859,7 @@ mod tests {
     /// its answer; how many there were.
     fn turns(s: &mut Session, id: PaneId, waiting: &mut Waiting) -> Result<(Reply, usize), String> {
         for turns in 0..10_000 {
-            if let Some(answer) = waiting.answer(s, Instant::now()) {
+            if let Some(answer) = waiting.answer(s, &mut s.budget(), Instant::now()) {
                 return Ok((answer, turns));
             }
             assert!(s.timers().any(|t| t.1 == Timer::Unread(id)), "no turn due");
@@ -5987,7 +5999,9 @@ mod tests {
         };
         assert_eq!(s.children().count(), 1, "the program started for it");
         run(&mut s, "%2 kill")?;
-        let answer = waiting.answer(&s, Instant::now()).ok_or("no answer")?;
+        let answer = waiting
+            .answer(&s, &mut s.budget(), Instant::now())
+            .ok_or("no answer")?;
         assert_eq!(
             answer.end().code(),
             Some(Code::Closed),
@@ -7101,9 +7115,15 @@ mod tests {
         let Begun::Waiting(mut waiting) = s.begin_now(wait(AnyRef::Workspace(ws)), &origin) else {
             return Err("the workspace's wait answered at once".into());
         };
-        assert!(waiting.answer(&s, Instant::now()).is_none());
+        assert!(
+            waiting
+                .answer(&s, &mut s.budget(), Instant::now())
+                .is_none()
+        );
         s.out(PaneId::of(2), b"E");
-        let answer = waiting.answer(&s, Instant::now()).ok_or("no answer")?;
+        let answer = waiting
+            .answer(&s, &mut s.budget(), Instant::now())
+            .ok_or("no answer")?;
         let text = said(&Ok(answer));
         assert!(text.starts_with("%2:") && !text.contains("%1"), "{text}");
         let Begun::Waiting(mut waiting) = s.begin_now(wait(AnyRef::Pane(PaneId::of(1))), &origin)
@@ -7111,7 +7131,9 @@ mod tests {
             return Err("the pane's wait answered at once".into());
         };
         run(&mut s, "str %1 pane kill")?;
-        let answer = waiting.answer(&s, Instant::now()).ok_or("no answer")?;
+        let answer = waiting
+            .answer(&s, &mut s.budget(), Instant::now())
+            .ok_or("no answer")?;
         assert_eq!(answer.end().code(), Some(Code::Closed), "{answer:?}");
         Ok(())
     }
@@ -7281,10 +7303,12 @@ mod tests {
         };
         let due = waiting.due().ok_or("a wait with no time")?;
         while s.pane(PaneId::of(1))?.mid_frame() {
-            assert!(waiting.answer(&s, due).is_none());
+            assert!(waiting.answer(&s, &mut s.budget(), due).is_none());
             s.fire_now(Timer::Unread(PaneId::of(1)));
         }
-        let answer = waiting.answer(&s, due).ok_or("no answer")?;
+        let answer = waiting
+            .answer(&s, &mut s.budget(), due)
+            .ok_or("no answer")?;
         let text = said(&Ok(answer));
         assert!(text.ends_with(" screen"), "{text}");
         Ok(())

@@ -971,9 +971,11 @@ fn paint(
             env: command::EnvPatch::default(),
             shares: None,
         };
+        let budget = &mut s.requests.open().map_err(|e| e.to_string())?;
         s.run_command(
             &split,
             &fux_server::session::Origin::Cli(fux_server::session::Caller::default()),
+            budget,
             now,
         );
     }
@@ -1199,9 +1201,11 @@ fn session(panes: usize) -> Result<fux_server::session::Session, String> {
             env: command::EnvPatch::default(),
             shares: None,
         };
+        let budget = &mut s.requests.open().map_err(|e| e.to_string())?;
         s.run_command(
             &split,
             &fux_server::session::Origin::Cli(fux_server::session::Caller::default()),
+            budget,
             now,
         );
     }
@@ -1308,15 +1312,18 @@ fn capture_history(baseline: bool, history: usize) -> Result<Done, String> {
     }
     if !baseline {
         let pane = s.parts.panes().get(&id).ok_or("no pane")?;
+        let budget = &mut s.requests.open().map_err(|e| e.to_string())?;
         let capture = fux_server::capture::pane(
             pane,
             s.run,
             Some(usize::MAX),
             command::CaptureView::default(),
             false,
+            budget,
         )
         .map_err(|e| e.to_string())?;
-        black_box(fux_wire::wire::encode(&capture).map_err(|e| e.to_string())?);
+        let bytes = fux_wire::wire::encode_in(&capture, budget.region());
+        black_box(bytes.map_err(|e| e.to_string())?);
     }
     Ok(Done {
         units: 1,

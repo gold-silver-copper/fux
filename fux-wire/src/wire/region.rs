@@ -345,8 +345,7 @@ pub fn append(out: &mut std::vec::Vec<u8>, bytes: &[u8]) -> Result<(), Error> {
     Ok(())
 }
 
-/// Test a bounded encoding's size without constructing its byte vector.
-#[cfg(any(test, feature = "testing"))]
+/// A bounded encoding's size, counted without making its bytes.
 pub fn size<T: Wire>(value: &T) -> Result<usize, Error> {
     let mut out = Writer::counting(MAX_REPLY);
     value.put(&mut out);
@@ -371,8 +370,10 @@ pub fn encode<T: Wire>(value: &T) -> Result<std::vec::Vec<u8>, Error> {
     encode_into(value, std::vec::Vec::new())
 }
 
-/// A finite reply's bytes in `region`, each growth reserved there first,
-/// refused before a write exceeds the cap or the region.
+/// A finite reply's bytes in `region`, in exactly their room: counted
+/// first, and refused before they are made if they pass the cap or the
+/// region.
 pub fn encode_in<T: Wire>(value: &T, region: &Region) -> Result<BoundedVec<u8>, Error> {
-    encode_into(value, BoundedVec::new(region))
+    let room = BoundedVec::with_capacity(region, size(value)?);
+    encode_into(value, room.map_err(|_| Error::Limit)?)
 }
