@@ -280,3 +280,48 @@ fn a_run_answers_an_exit_with_the_last_of_the_output() -> Outcome {
     );
     Ok(())
 }
+
+/// A program that exits leaving a writer on its terminal, in a group of its
+/// own that ignores the hangup and never stops, holds up no one: what it
+/// leaves is read a turn at a time, as long as it writes, and other panes
+/// and commands are served meanwhile. Its exit is told once the writing
+/// stops.
+#[test]
+fn a_writer_left_on_a_terminal_holds_up_no_one() -> Outcome {
+    let server = Server::start("")?;
+    eventually("a prompt", || Ok(screen(&server, "%1")?.contains('$')))?;
+    let pid_file = server.dir.join("writer.pid");
+    let code = format!(
+        "set -m; trap '' HUP; while :; do printf '\\033[2J'; done & echo $! > '{}'; sleep 1; exit",
+        pid_file.display()
+    );
+    let words = ["agent-opts", "80", "24", "size", "str", "sh", "program"];
+    let words = words
+        .into_iter()
+        .chain(["str", "-c", "arg", "str", &code, "arg", "new-tab"]);
+    server.ok(&words.collect::<Vec<_>>())?;
+    let reap = Reap(vec![pid_in(&pid_file)?]);
+    // The program's own second, then its exit, the writer still writing.
+    std::thread::sleep(Duration::from_millis(1500));
+    server.ok(&[
+        "str",
+        "%1",
+        "pane",
+        "str",
+        "echo rea''dy",
+        "text",
+        "str",
+        "Enter",
+        "key",
+        "send-keys",
+    ])?;
+    server.shows("%1", "ready")?;
+    for _ in 0..5 {
+        let out = server.fux(&["ls"])?;
+        assert_eq!(out.status, 0, "{}", out.stderr);
+    }
+    drop(reap);
+    eventually("the exit told once the writing stops", || {
+        Ok(server.ok(&["ls", "listing"])?.contains("exited 0"))
+    })
+}

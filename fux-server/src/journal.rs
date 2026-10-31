@@ -407,10 +407,7 @@ pub fn every_kind_read(run: Run) -> Result<Batch, String> {
         Told::Title(Said::sent("title", true)),
         Told::Notification(Said::sent("text", true)),
     ];
-    let left = Left {
-        output: crate::pane::Output::Cut,
-        input: 1,
-    };
+    let left = Left { input: 1 };
     let buffer = format!("b1:{run}").parse().map_err(|()| "buffer")?;
     let actors = [
         Actor::Client(ClientId::of(1)),
@@ -705,10 +702,7 @@ mod tests {
             });
         let title = texts.next().ok_or("title event")?;
         let notification = texts.next().ok_or("notification event")?;
-        let left = Left {
-            output: crate::pane::Output::Cut,
-            input: usize::MAX,
-        };
+        let left = Left { input: usize::MAX };
         let buffer = "b18446744073709551615:4294967295-ffffffffffffffff"
             .parse()
             .map_err(|()| "buffer")?;

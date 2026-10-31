@@ -52,7 +52,7 @@ for `id`, `name`, `label` and `pid` (it says `pane`):
 | `last_status` | the last shell command's status, else `null` |
 | `bells` | bells and notifications rung since it started |
 | `notification` | the last notification's text, else `null`, without control characters |
-| `truncated` | which of `"title"`, `"notification"` and `"output"`, in that order, were cut, else `[]`: the fields above that the program sent more of than fux-vt keeps of a string (64 KiB), the rest dropped (`["notification"]`, `["title","notification"]`); `"output"` once its program left more than 1 MiB on its terminal as it ended, the rest not read (till it is respawned) |
+| `truncated` | which of `"title"` and `"notification"`, in that order, were cut, else `[]`: the fields above that the program sent more of than fux-vt keeps of a string (64 KiB), the rest dropped (`["notification"]`, `["title","notification"]`) |
 | `input_unread` | bytes of input fux queued for its program and had not yet written to its terminal as it ended, let go (till it is respawned), else 0. Input written to its terminal that the program never read is not counted: the system does not say |
 | `cwd`, `argv` | the observed foreground leader's directory and arguments, each `null` where unknown; separate OS reads may race with a process changing or exiting. No launch arguments stand in for unknown live arguments. JSON's text being UTF-8, a byte that is not is shown as U+FFFD |
 
@@ -353,8 +353,8 @@ trees are not copied into layout/view invalidations. The finite coverage schema 
 | `copied` | admitted stable `buffer` ID, no duplicate text; denied program copies emit none |
 | `history_budget` | pane's new `history_bytes` |
 | `history_cleared` | pane history invalidated |
-| `respawned` | generation changed; `truncated` and `input_unread` describe the old program's unread output/input |
-| `exited` | `exited` (null when lost) or `signal`; optional `truncated` and `input_unread`; a shell's pane then closes |
+| `respawned` | generation changed; optional `input_unread`, the old program's input not written to its terminal |
+| `exited` | `exited` (null when lost) or `signal`; optional `input_unread`; a shell's pane then closes |
 | `done` | shell command's `status`, null when unreported |
 | `bell` | |
 | `notification` | `text`, optional `truncated` |

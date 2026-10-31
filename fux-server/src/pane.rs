@@ -598,6 +598,9 @@ pub struct Pane {
     /// How its program exited, from when fux hears of it till that is
     /// told, while what it wrote is still being read (`Session::exited`).
     pub exiting: Option<Ended>,
+    /// What its program left on its terminal as it ended is still being
+    /// read, a turn at a time (`Session::read_left`).
+    pub draining: bool,
     /// What the program's colour queries are answered with, as the session
     /// finds them before each read of output (`outer`).
     pub colours: Colours,
@@ -817,9 +820,10 @@ impl<'a> PaneMut<'a> {
             }
         }
     }
-    /// Its program left more on its terminal than is read.
-    pub fn left_cut(&mut self) {
-        self.pane.left.output = Output::Cut;
+    /// Whether more of what its program left on its terminal is to be read
+    /// (`Session::read_left`).
+    pub fn drain(&mut self, more: bool) {
+        self.pane.draining = more;
     }
     pub fn clear_history(&mut self) {
         self.pane.clear_history();
@@ -865,8 +869,6 @@ impl std::ops::Deref for PaneMut<'_> {
 /// and in the notice of its end.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Left {
-    /// What it wrote to its terminal.
-    pub output: Output,
     /// Bytes of input queued for it and not yet written to its terminal,
     /// let go (`InputQueue::discard`): what was written and not read is
     /// not known.
@@ -874,37 +876,22 @@ pub struct Left {
 }
 
 impl Left {
-    /// What an event says of it: `truncated` (`true`) if it left more on
-    /// its terminal than is read (`Output::Cut`), and `input_unread`, the
-    /// bytes of input queued for it not yet written to its terminal, if
-    /// any.
+    /// What an event says of it: `input_unread`, the bytes of input queued
+    /// for it not yet written to its terminal, if any.
     pub fn fields(self) -> impl Iterator<Item = (&'static str, fux_wire::json::Json)> {
-        use fux_wire::json::Json;
-        let cut = match self.output {
-            Output::Read => None,
-            Output::Cut => Some(("truncated", Json::Bool(true))),
-        };
-        let input = (self.input > 0).then(|| ("input_unread", Json::count(self.input)));
-        cut.into_iter().chain(input)
+        let input = self.input;
+        (input > 0)
+            .then(|| ("input_unread", fux_wire::json::Json::count(input)))
+            .into_iter()
     }
 
-    /// What a notice says of it, after the end's own words, of a program
-    /// `who`: nothing, if it left neither.
-    pub fn told(self, who: &str) -> String {
-        let mib = crate::session::LEFT_MIB;
-        let mut told = match self.output {
-            Output::Read => String::new(),
-            Output::Cut => {
-                format!("; {who} left more than {mib} MiB on its terminal: the rest was not read")
-            }
-        };
-        if self.input > 0 {
-            told.push_str(&format!(
-                "; {} bytes of input queued for it were never written to it",
-                self.input
-            ));
+    /// What a notice says of it, after the end's own words: nothing, if it
+    /// left no input unwritten.
+    pub fn told(self) -> String {
+        match self.input {
+            0 => String::new(),
+            input => format!("; {input} bytes of input queued for it were never written to it"),
         }
-        told
     }
 }
 
@@ -914,15 +901,6 @@ impl Left {
 pub struct End {
     pub ended: Ended,
     pub left: Left,
-}
-
-/// What a program left on its terminal as it ended: read whole, or cut at
-/// the most that is read (`Session::read_left`), the rest not read.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum Output {
-    #[default]
-    Read,
-    Cut,
 }
 
 /// What is said of a pane where no shell command was ever marked.
@@ -972,6 +950,7 @@ impl Pane {
             resize_to: None,
             slice_left: SLICE,
             exiting: None,
+            draining: false,
             colours: Colours::default(),
             scheme_told: None,
             bell: false,
@@ -1027,7 +1006,7 @@ impl Pane {
     /// waits: since it began to wait, so that it is due on the server's
     /// next turn, whenever that reads the clock.
     pub fn unread_due(&self) -> Option<Instant> {
-        self.has_unread().then_some(self.unread.since)
+        (self.has_unread() || self.draining).then_some(self.unread.since)
     }
 
     /// Whether the screen is part way through a frame drawn in
@@ -1550,7 +1529,7 @@ impl Pane {
         let input = self.input.discard();
         let over = match self.process.exit_status() {
             Some(_) => Left::default(),
-            None => Left { input, ..self.left },
+            None => Left { input },
         };
         tell.tell(Told::Respawned(over));
         // Every field is explicit so additions require a respawn decision.
@@ -1576,6 +1555,7 @@ impl Pane {
             resize_to: fresh.resize_to,
             slice_left: fresh.slice_left,
             exiting: fresh.exiting,
+            draining: fresh.draining,
             scheme_told: fresh.scheme_told,
             mouse_held: fresh.mouse_held,
             left: fresh.left,
