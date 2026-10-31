@@ -170,8 +170,8 @@ in order. `split` requires `str horizontal axis` (side by side) or
 `str vertical axis` (stacked). `resize-pane` takes a pane, cells or a
 percent, and `str horizontal` or `str vertical`. Mouse events are positional:
 `%2 str click 3 10 send-mouse`.
-`all events` streams a finite run of journal batches; `next-events` returns one batch. Both
-start a shell, or the program given (`program`, then each `arg`; a
+`all events` streams a finite run of journal batches; `next-events` returns one batch.
+`new-tab` and `new-workspace` start a shell, or the program given (`program`, then each `arg`; a
 shell's line is `str sh program str -c arg str LINE arg`), whose pane stays
 once it exits. Asked from a key or prompt, they move its client to the new
 tab; from the command line, no client. Their tab is laid out on `COLS ROWS size`, else on the

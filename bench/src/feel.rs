@@ -151,8 +151,8 @@ fn output(command: &mut Command) -> Result<String, String> {
 }
 
 /// A word quoted for `sh`.
-/// A program and its arguments as fuxth's options for `new-tab`, `split`
-/// and `run`: `str PROGRAM program str ARG arg`…
+/// A program and its arguments as fuxth's options for `new-tab` and
+/// `split`: `str PROGRAM program str ARG arg`…
 fn program_words(program: &[String]) -> Vec<&str> {
     let mut words = Vec::new();
     for (i, word) in program.iter().enumerate() {
