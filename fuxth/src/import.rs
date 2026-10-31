@@ -124,6 +124,13 @@ impl<T> Shared<T> {
             .saturating_add(std::mem::size_of::<[usize; 2]>())
     }
 
+    pub(crate) fn reserved(&self, imports: &Imports) -> bool {
+        self.0.lease.0.try_borrow().is_ok_and(|held| {
+            held.as_ref()
+                .is_some_and(|r| Rc::ptr_eq(&r.grant, &imports.0))
+        })
+    }
+
     pub fn reserve(&self, imports: &Imports, bytes: usize) -> Result<(), Failure> {
         self.0.lease.reserve(imports, bytes)
     }

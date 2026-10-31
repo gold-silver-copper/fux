@@ -542,7 +542,8 @@ impl<A: AppValue> Value<A> {
             .map(Some)
     }
 
-    fn write_text(&self, out: &mut dyn std::fmt::Write) -> Result<(), Failure> {
+    /// Streams the text without allocating a whole rendered copy.
+    pub fn write_text(&self, out: &mut dyn std::fmt::Write) -> Result<(), Failure> {
         match self {
             Self::Int(n) => write!(out, "{n}").map_err(|_| text_limit()),
             Self::Bool(b) => write!(out, "{b}").map_err(|_| text_limit()),

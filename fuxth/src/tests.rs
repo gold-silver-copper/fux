@@ -1883,6 +1883,71 @@ fn native_imports_share_reservations_and_refuse_independent_storage() -> Result<
 }
 
 #[test]
+fn only_a_top_level_string_reserved_in_this_run_uses_the_grant_as_its_length_bound()
+-> Result<(), Error> {
+    #[derive(Clone, Debug, PartialEq)]
+    struct Record(Shared<Text>);
+    impl AppValue for Record {
+        fn kind(&self) -> &'static str {
+            "record"
+        }
+        fn weight(&self) -> u64 {
+            self.0.chars_len() as u64
+        }
+    }
+    let compiler = Compiler::<Record>::new(Vocabulary::default());
+    let mut machine = Machine::new(compiler.finish()?, Limits::default());
+    let grant = machine.imports().clone();
+    let make = |n, imports: &Imports| -> Result<Value<Record>, Error> {
+        let lease = imports
+            .lease(Text::size(n, n))
+            .map_err(|f| Error::new(f.code, f.message, None))?;
+        Ok(Value::Str(Shared::leased(
+            Text::new(std::iter::repeat_n('x', n).collect::<String>()),
+            lease,
+        )))
+    };
+    let n = usize::try_from(TOTAL.saturating_add(1)).unwrap_or(usize::MAX);
+    let text = make(n, &grant)?;
+    let left = grant.remaining();
+    machine.import(text.clone())?;
+    assert_eq!(grant.remaining(), left);
+    assert_eq!(machine.stack(), std::slice::from_ref(&text));
+    assert!(List::new(vec![text.clone()]).is_none());
+    let Value::Str(storage) = text else {
+        return Err(Error::new(Code::Contract, "string", None));
+    };
+    assert_eq!(
+        machine
+            .import(Value::App(Record(storage)))
+            .map_err(|e| e.code),
+        Err(Code::TooLong)
+    );
+    // Unreserved strings, other runs' strings, and nested strings keep
+    // the language's length and expanded-weight limits.
+    let n = LONGEST.saturating_add(1);
+    let nested = make(n, &grant)?;
+    let list = List::new(vec![nested]).ok_or_else(|| Error::new(Code::Contract, "list", None))?;
+    let foreign = Imports::new(128 << 20);
+    for value in [
+        Value::str(std::iter::repeat_n('x', n).collect::<String>()),
+        make(n, &foreign)?,
+        Value::List(Shared::new(list)),
+    ] {
+        assert_eq!(
+            machine.import(value).map_err(|e| e.code),
+            Err(Code::TooLong)
+        );
+    }
+    let foreign = make(
+        usize::try_from(TOTAL.saturating_add(1)).unwrap_or(usize::MAX),
+        &foreign,
+    )?;
+    assert!(machine.import(foreign).is_err());
+    Ok(())
+}
+
+#[test]
 fn imported_strings_and_lists_hold_and_release_their_storage() -> Result<(), Failure> {
     let grant = Imports::new(1024);
     let text = || Value::<Ticket>::str(std::iter::repeat_n('x', 500).collect::<String>());

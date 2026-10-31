@@ -257,6 +257,7 @@ impl<A: AppValue> Machine<A> {
         self.push(value)
     }
 
+    #[inline(never)]
     fn admit(&mut self, value: &Value<A>) -> Result<(), Error> {
         fn valid<A: AppValue>(value: &Value<A>, bytes: &mut usize) -> bool {
             match value {
@@ -273,6 +274,13 @@ impl<A: AppValue> Machine<A> {
         }
         let weight = value.weight();
         self.cost(usize::try_from(weight).unwrap_or(usize::MAX));
+        // Only a top-level string already reserved in this run uses the
+        // grant instead of the length and expanded-weight limits.
+        if let Value::Str(text) = value
+            && text.reserved(&self.imports)
+        {
+            return Ok(());
+        }
         let native = matches!(value, Value::App(app) if app.import_bytes().is_some());
         if value.depth() > NESTING || (!native && weight > TOTAL) {
             return Err(self.nested());
