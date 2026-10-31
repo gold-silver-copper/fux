@@ -31,7 +31,21 @@ fn fail() -> Failure {
         "a callback argument must be an immutable value: scalar, handle, record, null or list",
     )
 }
+/// `v` as a callback's argument goes on the wire: refused if its lists and
+/// records nest deeper than the wire carries (`callback::DEPTH`).
 pub(super) fn data(v: &Value<Fux>) -> Result<Data, Failure> {
+    data_within(v, fux_wire::callback::DEPTH.saturating_add(1))
+}
+
+fn data_within(v: &Value<Fux>, depth: u8) -> Result<Data, Failure> {
+    let depth = depth.checked_sub(1).ok_or_else(|| {
+        let why = "a callback argument nests deeper than the wire carries";
+        Failure::new(
+            fux_wire::code::Code::from(fux_wire::code::Raise::TooLong).into(),
+            why,
+        )
+    })?;
+    let data = |v| data_within(v, depth);
     Ok(match v {
         Value::Int(v) => Data::Int(*v),
         Value::Bool(v) => Data::Bool(*v),
@@ -65,7 +79,7 @@ pub(super) fn value(v: &Data) -> Result<Value<Fux>, Failure> {
         Data::Text(v) => Value::str(v.as_str()),
         Data::List(v) => {
             let out = v.iter().map(value).collect::<Result<_, _>>()?;
-            Value::List(Rc::new(fuxth::List::new(out).ok_or_else(fail)?))
+            Value::List(Rc::new(fuxth::List::new(out)))
         }
         Data::Record {
             of,

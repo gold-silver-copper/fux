@@ -499,37 +499,51 @@ fn json_text(value: &Value<Fux>) -> Value<Fux> {
     Value::str(text)
 }
 
+/// `value` as JSON: a list's items walked with a stack of the lists under
+/// way, not as a recursion, so lists nested however deep are written.
 pub(super) fn write_json_value(
     value: &Value<Fux>,
     out: &mut dyn std::fmt::Write,
 ) -> std::fmt::Result {
-    match value {
-        Value::Int(n) => write!(out, "{n}"),
-        Value::Bool(b) => write!(out, "{b}"),
-        Value::Str(s) => fux_wire::json::write_str(out, s),
-        Value::List(list) => {
-            out.write_char('[')?;
-            for (i, item) in list.items().iter().enumerate() {
-                if i > 0 {
+    let mut lists: Vec<(std::slice::Iter<'_, Value<Fux>>, bool)> = Vec::new();
+    let mut value = value;
+    loop {
+        match value {
+            Value::Int(n) => write!(out, "{n}")?,
+            Value::Bool(b) => write!(out, "{b}")?,
+            Value::Str(s) => fux_wire::json::write_str(out, s)?,
+            Value::List(list) => {
+                out.write_char('[')?;
+                lists.push((list.items().iter(), false));
+            }
+            Value::App(app) => match app {
+                Fux::Null => out.write_str("null"),
+                Fux::All => out.write_str("\"all\""),
+                Fux::Record(r) => r.write(out),
+                Fux::Answer(answer, _) => answer.write_json(out),
+                Fux::Pane(pane, _) => write!(out, "\"{pane}\""),
+                Fux::Tab(tab, _) => write!(out, "\"{tab}\""),
+                Fux::Workspace(workspace, _) => write!(out, "\"{workspace}\""),
+                Fux::Client(client, _) => write!(out, "\"{client}\""),
+                Fux::Extent(Extent::Cells(n)) => write!(out, "\"{n}\""),
+                Fux::Extent(Extent::Percent(n)) => write!(out, "\"{}%\"", n.get()),
+                Fux::Opts(_) => write!(out, "\"({})\"", fuxth::AppValue::kind(app)),
+            }?,
+        }
+        // The next item of the innermost list under way.
+        value = loop {
+            let Some((items, started)) = lists.last_mut() else {
+                return Ok(());
+            };
+            if let Some(item) = items.next() {
+                if std::mem::replace(started, true) {
                     out.write_char(',')?;
                 }
-                write_json_value(item, out)?;
+                break item;
             }
-            out.write_char(']')
-        }
-        Value::App(app) => match app {
-            Fux::Null => out.write_str("null"),
-            Fux::All => out.write_str("\"all\""),
-            Fux::Record(r) => r.write(out),
-            Fux::Answer(answer, _) => answer.write_json(out),
-            Fux::Pane(pane, _) => write!(out, "\"{pane}\""),
-            Fux::Tab(tab, _) => write!(out, "\"{tab}\""),
-            Fux::Workspace(workspace, _) => write!(out, "\"{workspace}\""),
-            Fux::Client(client, _) => write!(out, "\"{client}\""),
-            Fux::Extent(Extent::Cells(n)) => write!(out, "\"{n}\""),
-            Fux::Extent(Extent::Percent(n)) => write!(out, "\"{}%\"", n.get()),
-            Fux::Opts(_) => write!(out, "\"({})\"", fuxth::AppValue::kind(app)),
-        },
+            lists.pop();
+            out.write_char(']')?;
+        };
     }
 }
 
@@ -2488,8 +2502,8 @@ mod tests {
     fn options_past_a_launch_frame_are_refused_before_they_are_copied() -> TestResult {
         let allocator = fux_vt_peak::ThreadPeak;
         let list = |item: &str, n| {
-            let list = fuxth::List::new(vec![Value::str(item); n]).ok_or("list");
-            list.map(|list| Value::List(std::rc::Rc::new(list)))
+            let list = fuxth::List::new(vec![Value::str(item); n]);
+            Ok::<_, String>(Value::List(std::rc::Rc::new(list)))
         };
         let big = std::iter::repeat_n('x', 1 << 20).collect::<String>();
         // 8 MiB of options on a pane; a list of the same 8 MiB, past a
@@ -2693,12 +2707,14 @@ mod tests {
                     | Opt::UnsetEnv => {
                         vec![Value::str("x")]
                     }
-                    Opt::ShellProgram => vec![Value::List(std::rc::Rc::new(
-                        fuxth::List::new(vec![Value::str("sh")]).ok_or("list")?,
-                    ))],
-                    Opt::CopyEnvironment => vec![Value::List(std::rc::Rc::new(
-                        fuxth::List::new(vec![]).ok_or("list")?,
-                    ))],
+                    Opt::ShellProgram => {
+                        vec![Value::List(std::rc::Rc::new(fuxth::List::new(vec![
+                            Value::str("sh"),
+                        ])))]
+                    }
+                    Opt::CopyEnvironment => {
+                        vec![Value::List(std::rc::Rc::new(fuxth::List::new(vec![])))]
+                    }
                     Opt::Size | Opt::Shares => vec![Value::Int(1), Value::Int(1)],
                     Opt::Rows | Opt::Cols => vec![Value::Int(0), Value::Int(1)],
                     Opt::Env => vec![Value::str("X"), Value::Int(1)],

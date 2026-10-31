@@ -48,7 +48,7 @@ mod vocabulary;
 
 pub use compile::{Compiler, Doc, Parsing, Program, Read, Vocabulary};
 pub use error::Error;
-pub use fuxth_core::{Code, Failure, NESTING};
+pub use fuxth_core::{Code, Failure};
 pub use machine::{Args, Builtin, Done, Host, Machine, Outcome};
 pub use source::{Loader, Source, SourceImage};
 pub use token::{Place, Token};

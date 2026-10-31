@@ -104,21 +104,6 @@ impl AppValue for Fux {
         }
     }
 
-    fn depth(&self) -> u8 {
-        match self {
-            Fux::Record(r) => r.depth(),
-            Fux::All
-            | Fux::Null
-            | Fux::Pane(..)
-            | Fux::Tab(..)
-            | Fux::Workspace(..)
-            | Fux::Client(..)
-            | Fux::Opts(_)
-            | Fux::Extent(_)
-            | Fux::Answer(..) => 0,
-        }
-    }
-
     fn write_text(&self, out: &mut dyn std::fmt::Write) -> Result<(), fuxth::Failure> {
         match self {
             Fux::Null => out.write_str("null"),
@@ -1072,8 +1057,7 @@ impl Cli {
                     Given::File(args) => args.iter().map(|a| Value::str(a.as_str())).collect(),
                     Given::Words | Given::Stdin => Vec::new(),
                 };
-                let list = fuxth::List::new(args)
-                    .ok_or_else(|| Failed::new(Code::Usage, "more arguments than a list holds"))?;
+                let list = fuxth::List::new(args);
                 vec![Value::List(Rc::new(list))]
             }
             Shell::Input => match self.from {
@@ -1321,8 +1305,7 @@ pub fn answered(reply: Reply) -> Result<Vec<Value<Fux>>, Failed> {
             .into_iter()
             .map(|id| Value::App(handle(id, run)))
             .collect();
-        let list = fuxth::List::new(ids)
-            .ok_or_else(|| Failed::new(Code::from(Raise::TooLong), "more ids than a list holds"))?;
+        let list = fuxth::List::new(ids);
         Ok::<_, Failed>(Value::List(Rc::new(list)))
     };
     Ok(vec![match body {
@@ -2250,9 +2233,10 @@ pub(crate) mod tests {
             values,
             vec![
                 Value::App(Fux::Client(client, Some(version.run))),
-                Value::List(Rc::new(
-                    fuxth::List::new(vec![Value::Int(7), Value::Int(3)]).ok_or("cursor")?
-                )),
+                Value::List(Rc::new(fuxth::List::new(vec![
+                    Value::Int(7),
+                    Value::Int(3)
+                ]))),
                 Value::str("x"),
                 Value::Int(1)
             ]
@@ -2767,6 +2751,28 @@ pub(crate) mod tests {
     /// codes, the word's then the server's (or the screen's admission).
     fn both(failed: [Result<(), super::Failed>; 2]) -> [Option<fux_wire::code::Code>; 2] {
         failed.map(|f| f.err().map(|f| f.code))
+    }
+
+    /// A list nested 100,000 deep is written as JSON, and let go, without
+    /// recursion; made a callback's argument, one deeper than the wire
+    /// carries is refused, not walked.
+    #[test]
+    fn a_deep_list_is_written_as_json_and_refused_past_the_wire() -> TestResult {
+        let deep =
+            "list end let l 0 begin list l end let l 1 add dup 100000 eq until drop l json len";
+        let left = evaluate(deep, None, &mut Refuse, &mut Vec::new())?;
+        assert_eq!(left, vec![fuxth::Value::Int(200_002)]);
+        let mut value = fuxth::Value::<super::Fux>::Int(0);
+        for _ in 0..fux_wire::callback::DEPTH {
+            value = fuxth::Value::List(std::rc::Rc::new(fuxth::List::new(vec![value])));
+        }
+        assert!(
+            super::callback::data(&value).is_ok(),
+            "as deep as the wire carries"
+        );
+        value = fuxth::Value::List(std::rc::Rc::new(fuxth::List::new(vec![value])));
+        assert!(super::callback::data(&value).is_err());
+        Ok(())
     }
 
     /// A screen past what a grid holds is `size` from the word `size` and

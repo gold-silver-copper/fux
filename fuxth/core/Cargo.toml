@@ -4,7 +4,7 @@ version = "0.7.0"
 edition = "2024"
 rust-version = "1.95"
 license = "MIT"
-description = "What fuxth's hosts share without its interpreter: failure codes and how deep a value nests"
+description = "What fuxth's hosts share without its interpreter: failure codes"
 repository = "https://github.com/gold-silver-copper/fux"
 
 [dependencies]

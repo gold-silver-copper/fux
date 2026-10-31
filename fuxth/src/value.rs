@@ -1,7 +1,7 @@
 //! Values on the stack: integers, booleans, strings, lists, and the
 //! application's own.
+use crate::Code;
 use crate::Failure;
-use crate::{Code, NESTING};
 use std::rc::Rc;
 
 /// An application's own values: what it puts on the stack (a handle, a
@@ -15,11 +15,6 @@ pub trait AppValue: Clone + PartialEq {
     fn name(&self) -> &'static str {
         bare(self.kind())
     }
-    /// Nesting below this value, including opaque records.
-    fn depth(&self) -> u8 {
-        0
-    }
-
     /// Streams how it reads as text into `out`, propagating its failure.
     fn write_text(&self, out: &mut dyn std::fmt::Write) -> Result<(), Failure> {
         out.write_str(self.kind()).map_err(|_| unwritten())
@@ -84,7 +79,7 @@ kinds! {
     App "an application value",
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug)]
 pub enum Value<A> {
     Int(i64),
     Bool(bool),
@@ -203,11 +198,10 @@ impl std::fmt::Display for Text {
     }
 }
 
-/// A list's values, and how deep it nests (1 for a list of no lists).
+/// A list's values.
 #[derive(Clone, Debug)]
 pub struct List<A> {
     items: Vec<Value<A>>,
-    depth: u8,
 }
 
 /// Two lists are equal when their values are.
@@ -217,43 +211,65 @@ impl<A: PartialEq> PartialEq for List<A> {
     }
 }
 
-impl<A> List<A> {
-    /// Its values. Only `List`'s own ways change them, so how deep it
-    /// nests stays true.
-    pub fn items(&self) -> &[Value<A>] {
-        &self.items
+/// The lists in it are let go one after another, not as a recursion, so a
+/// list nested however deep never overflows the stack.
+impl<A> Drop for List<A> {
+    fn drop(&mut self) {
+        let mut items = std::mem::take(&mut self.items);
+        while let Some(item) = items.pop() {
+            if let Value::List(list) = item
+                && let Ok(mut list) = Rc::try_unwrap(list)
+            {
+                items.append(&mut list.items);
+            }
+        }
     }
 }
 
-impl<A: AppValue> List<A> {
-    /// A list of `items`; `None` if it would nest deeper than [`NESTING`].
-    pub fn new(items: Vec<Value<A>>) -> Option<Self> {
-        let inner = items.iter().map(Value::depth).max().unwrap_or(0);
-        let depth = inner.checked_add(1).filter(|d| *d <= NESTING)?;
-        Some(Self { items, depth })
+impl<A> List<A> {
+    pub fn new(items: Vec<Value<A>>) -> Self {
+        Self { items }
     }
 
-    /// `value` added at the end; `None` past [`NESTING`].
-    pub fn push(&mut self, value: Value<A>) -> Option<()> {
-        let depth = value.depth().checked_add(1).filter(|d| *d <= NESTING)?;
-        self.depth = self.depth.max(depth);
+    pub fn items(&self) -> &[Value<A>] {
+        &self.items
+    }
+
+    /// `value` added at the end.
+    pub fn push(&mut self, value: Value<A>) {
         self.items.push(value);
-        Some(())
     }
 
-    /// Item `at` replaced by `value`; `None` past [`NESTING`] or the end.
+    /// Item `at` replaced by `value`; `None` past the end.
     pub fn put(&mut self, at: usize, value: Value<A>) -> Option<()> {
-        let depth = value.depth().checked_add(1).filter(|d| *d <= NESTING)?;
-        let slot = self.items.get_mut(at)?;
-        let old_depth = std::mem::replace(slot, value).depth();
-        // The deepest item may be the one replaced: then look again.
-        if old_depth.saturating_add(1) >= self.depth && depth < self.depth {
-            let inner = self.items.iter().map(Value::depth).max().unwrap_or(0);
-            self.depth = inner.saturating_add(1);
-            return Some(());
-        }
-        self.depth = self.depth.max(depth);
+        *self.items.get_mut(at)? = value;
         Some(())
+    }
+}
+
+/// Two values are equal when they are of one kind and hold the same: lists
+/// element by element, walked with a stack of their own, not as a
+/// recursion, so lists nested however deep compare.
+impl<A: PartialEq> PartialEq for Value<A> {
+    fn eq(&self, other: &Self) -> bool {
+        let mut pairs = vec![(self, other)];
+        while let Some(pair) = pairs.pop() {
+            match pair {
+                (Self::List(a), Self::List(b)) if a.items.len() == b.items.len() => {
+                    if !Rc::ptr_eq(a, b) {
+                        pairs.extend(a.items.iter().zip(&b.items));
+                    }
+                }
+                (Self::Int(a), Self::Int(b)) if a == b => {}
+                (Self::Bool(a), Self::Bool(b)) if a == b => {}
+                (Self::Str(a), Self::Str(b)) if a == b => {}
+                (Self::App(a), Self::App(b)) if a == b => {}
+                (Self::Int(_) | Self::Bool(_) | Self::Str(_) | Self::List(_) | Self::App(_), _) => {
+                    return false;
+                }
+            }
+        }
+        true
     }
 }
 
@@ -282,22 +298,33 @@ impl<A: AppValue> Value<A> {
         Ok(out)
     }
 
-    /// Streams its text into `out`, without a whole rendered copy.
+    /// Streams its text into `out`, without a whole rendered copy: a
+    /// list's items a space apart, walked with a stack of the lists under
+    /// way, not as a recursion, so lists nested however deep are written.
     pub fn write_text(&self, out: &mut dyn std::fmt::Write) -> Result<(), Failure> {
-        match self {
-            Self::Int(n) => write!(out, "{n}").map_err(|_| unwritten()),
-            Self::Bool(b) => write!(out, "{b}").map_err(|_| unwritten()),
-            Self::Str(text) => out.write_str(text).map_err(|_| unwritten()),
-            Self::List(list) => {
-                for (i, item) in list.items.iter().enumerate() {
-                    if i > 0 {
+        let mut lists: Vec<(std::slice::Iter<'_, Self>, bool)> = Vec::new();
+        let mut value = self;
+        loop {
+            match value {
+                Self::Int(n) => write!(out, "{n}").map_err(|_| unwritten())?,
+                Self::Bool(b) => write!(out, "{b}").map_err(|_| unwritten())?,
+                Self::Str(text) => out.write_str(text).map_err(|_| unwritten())?,
+                Self::List(list) => lists.push((list.items.iter(), false)),
+                Self::App(app) => app.write_text(out)?,
+            }
+            // The next item of the innermost list under way.
+            value = loop {
+                let Some((items, started)) = lists.last_mut() else {
+                    return Ok(());
+                };
+                if let Some(item) = items.next() {
+                    if std::mem::replace(started, true) {
                         out.write_char(' ').map_err(|_| unwritten())?;
                     }
-                    item.write_text(out)?;
+                    break item;
                 }
-                Ok(())
-            }
-            Self::App(app) => app.write_text(out),
+                lists.pop();
+            };
         }
     }
 }
@@ -310,16 +337,5 @@ fn unwritten() -> Failure {
 impl<A> Value<A> {
     pub fn str(text: impl Into<String>) -> Self {
         Self::Str(Rc::new(Text::new(text)))
-    }
-}
-
-impl<A: AppValue> Value<A> {
-    /// How deep it nests: 0 for anything but a list.
-    pub fn depth(&self) -> u8 {
-        match self {
-            Self::List(list) => list.depth,
-            Self::App(app) => app.depth(),
-            Self::Int(_) | Self::Bool(_) | Self::Str(_) => 0,
-        }
     }
 }

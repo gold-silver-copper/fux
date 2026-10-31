@@ -7,7 +7,6 @@
 //! stack, and stopping is just dropping it.
 use crate::Code;
 use crate::Failure;
-use crate::NESTING;
 use crate::check::{ANY, INT, Kinds, LIST, SEQ, STR};
 use crate::compile::{Op, Program};
 use crate::error::{Error, Floor, Wants, underflow};
@@ -474,7 +473,7 @@ impl<A: AppValue> Machine<A> {
                         items.extend(self.stack.pop());
                     }
                     items.reverse();
-                    let list = self.list(items)?;
+                    let list = Self::list(items);
                     self.push(list);
                 }
                 Op::EachStart => {
@@ -715,16 +714,8 @@ impl<A: AppValue> Machine<A> {
     }
 
     /// A list of `items`.
-    fn list(&self, items: Vec<Value<A>>) -> Result<Value<A>, Error> {
-        match List::new(items) {
-            Some(list) => Ok(Value::List(Rc::new(list))),
-            None => Err(self.nested()),
-        }
-    }
-
-    #[cold]
-    fn nested(&self) -> Error {
-        self.fail(Code::TooLong, format!("lists nest at most {NESTING} deep"))
+    fn list(items: Vec<Value<A>>) -> Value<A> {
+        Value::List(Rc::new(List::new(items)))
     }
 
     fn pick(&mut self, n: usize) -> Result<(), Error> {
@@ -795,17 +786,17 @@ impl<A: AppValue> Machine<A> {
                 items.extend_from_slice(l.items());
             }
         }
-        self.list(items)
+        Ok(Self::list(items))
     }
 
     /// `x` added at the end, in place: copied first when something else
     /// holds it.
     fn pushed(&self, seq: Sequence<A>, x: Value<A>) -> Result<Value<A>, Error> {
         match (seq, x) {
-            (Sequence::List(mut list), x) => match Rc::make_mut(&mut list).push(x) {
-                Some(()) => Ok(Value::List(list)),
-                None => Err(self.nested()),
-            },
+            (Sequence::List(mut list), x) => {
+                Rc::make_mut(&mut list).push(x);
+                Ok(Value::List(list))
+            }
             (Sequence::Str(mut s), Value::Str(x)) => {
                 Rc::make_mut(&mut s).append(&x);
                 Ok(Value::Str(s))
@@ -820,7 +811,8 @@ impl<A: AppValue> Machine<A> {
     fn put(&self, seq: Sequence<A>, i: usize, x: Value<A>) -> Result<Value<A>, Error> {
         match (seq, x) {
             (Sequence::List(mut list), x) => {
-                (Rc::make_mut(&mut list).put(i, x)).ok_or_else(|| self.nested())?;
+                let put = Rc::make_mut(&mut list).put(i, x);
+                put.ok_or_else(|| self.fail(Code::Range, format!("index {i}, past the end")))?;
                 Ok(Value::List(list))
             }
             (Sequence::Str(s), Value::Str(x)) => {
@@ -858,7 +850,6 @@ fn next<A: Clone>(seq: &Sequence<A>, at: &mut usize) -> Option<Result<Value<A>, 
 fn unordered<A: AppValue>(a: &Value<A>, b: &Value<A>) -> String {
     let mut path = Vec::new();
     let (mut a, mut b) = (a, b);
-    // As deep as lists nest, at most `NESTING`.
     while let (Value::List(x), Value::List(y)) = (a, b) {
         let next = (x.items().iter().zip(y.items()).enumerate())
             .find(|(_, (p, q))| p != q && compare(p, q).is_none());
@@ -883,21 +874,26 @@ fn unordered<A: AppValue>(a: &Value<A>, b: &Value<A>) -> String {
 
 /// How `lt` orders two values: integers by value, strings by their
 /// characters' codes, lists element by element (a shorter prefix first);
-/// `None` for any other two. As deep as lists nest, at most `NESTING`.
-fn compare<A: PartialEq>(a: &Value<A>, b: &Value<A>) -> Option<Ordering> {
-    match (a, b) {
-        (Value::Int(a), Value::Int(b)) => Some(a.cmp(b)),
-        (Value::Str(a), Value::Str(b)) => Some(a.as_ref().cmp(b.as_ref())),
-        (Value::List(a), Value::List(b)) => {
-            for (x, y) in a.items().iter().zip(b.items()) {
-                if x != y {
-                    return compare(x, y);
-                }
+/// `None` for any other two. Lists are walked down to their first unequal
+/// elements, not as a recursion, so lists nested however deep compare.
+fn compare<A: PartialEq>(mut a: &Value<A>, mut b: &Value<A>) -> Option<Ordering> {
+    loop {
+        match (a, b) {
+            (Value::Int(a), Value::Int(b)) => return Some(a.cmp(b)),
+            (Value::Str(a), Value::Str(b)) => return Some(a.as_ref().cmp(b.as_ref())),
+            (Value::List(x), Value::List(y)) => {
+                let unequal = x.items().iter().zip(y.items()).find(|(p, q)| p != q);
+                let Some((p, q)) = unequal else {
+                    return Some(x.items().len().cmp(&y.items().len()));
+                };
+                (a, b) = (p, q);
             }
-            Some(a.items().len().cmp(&b.items().len()))
-        }
-        (Value::Int(_) | Value::Bool(_) | Value::Str(_) | Value::List(_) | Value::App(_), _) => {
-            None
+            (
+                Value::Int(_) | Value::Bool(_) | Value::Str(_) | Value::List(_) | Value::App(_),
+                _,
+            ) => {
+                return None;
+            }
         }
     }
 }
@@ -1165,7 +1161,7 @@ builtins! { m host;
         };
         let part = match &s {
             Sequence::Str(s) => Machine::text(s.part(a, b)),
-            Sequence::List(list) => m.list(list.items().get(a..b).unwrap_or_default().to_vec())?,
+            Sequence::List(list) => Machine::list(list.items().get(a..b).unwrap_or_default().to_vec()),
         };
         m.push(part);
         Ok(())

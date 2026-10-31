@@ -21,6 +21,10 @@ pub enum Data {
     Client(ClientId, Option<Run>),
 }
 
+/// How deep a callback's lists and records may nest on the wire: decoding
+/// one, or making one, is a recursion that goes no deeper.
+pub const DEPTH: u8 = 64;
+
 impl Data {
     fn read(r: &mut Reader<'_>, depth: u8) -> Result<Self, Error> {
         let depth = depth.checked_sub(1).ok_or(Error::Bad("callback depth"))?;
@@ -94,7 +98,7 @@ impl Wire for Data {
         }
     }
     fn get(r: &mut Reader<'_>) -> Result<Self, Error> {
-        Self::read(r, fuxth_core::NESTING.saturating_add(1))
+        Self::read(r, DEPTH.saturating_add(1))
     }
 }
 

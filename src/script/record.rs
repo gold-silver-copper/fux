@@ -12,7 +12,6 @@ type V = Value<Fux>;
 #[derive(Clone, Debug)]
 pub struct Record {
     pub(super) fields: Vec<(String, V)>,
-    depth: u8,
     pub(super) of: Option<Run>,
 }
 
@@ -34,9 +33,6 @@ impl Record {
                     format!("record has no field {field:?}"),
                 )
             })
-    }
-    pub(super) fn depth(&self) -> u8 {
-        self.depth
     }
     pub(super) fn write(&self, out: &mut dyn std::fmt::Write) -> std::fmt::Result {
         out.write_char('{')?;
@@ -91,7 +87,7 @@ impl Builder {
         for item in items {
             out.push(value(self, item)?);
         }
-        let list = List::new(out).ok_or_else(fail)?;
+        let list = List::new(out);
         Ok(Value::List(Rc::new(list)))
     }
     fn record<const N: usize>(&mut self, fields: [(&str, V); N]) -> Result<V, Failure> {
@@ -102,15 +98,7 @@ impl Builder {
         self.finish(out, None)
     }
     fn finish(&mut self, fields: Vec<(String, V)>, of: Option<Run>) -> Result<V, Failure> {
-        let depth = fields.iter().map(|(_, value)| value.depth()).max();
-        let depth = (depth.unwrap_or(0).checked_add(1))
-            .filter(|d| *d <= inspect::DEPTH)
-            .ok_or_else(fail)?;
-        Ok(Value::App(Fux::Record(Rc::new(Record {
-            fields,
-            depth,
-            of,
-        }))))
+        Ok(Value::App(Fux::Record(Rc::new(Record { fields, of }))))
     }
     fn json(&mut self, value: &Json, depth: u8) -> Result<V, Failure> {
         if depth >= inspect::DEPTH {
@@ -497,7 +485,7 @@ fn styles(
         }
         col = col.checked_add(cells).ok_or_else(fail)?;
     }
-    Ok(Value::List(Rc::new(List::new(values).ok_or_else(fail)?)))
+    Ok(Value::List(Rc::new(List::new(values))))
 }
 
 #[cfg(test)]

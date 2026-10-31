@@ -1085,8 +1085,8 @@ fn a_caught_failure_undoes_what_the_body_began() -> Result<(), Error> {
     let blocks = "list 1 str fail try 2 list 3 4 end each dup 4 eq if str four fail then end
         catch drop end 5 end list 6 7 end each end";
     let list = List::new([ints(&[1]), strs(&["four"]), ints(&[5])].concat());
-    let list = list.map(|l| Value::List(std::rc::Rc::new(l)));
-    assert_eq!(run(blocks)?, [Vec::from_iter(list), ints(&[6, 7])].concat());
+    let list = Value::List(std::rc::Rc::new(list));
+    assert_eq!(run(blocks)?, [vec![list], ints(&[6, 7])].concat());
     let names = "1 let x str fail try 2 let x x fail catch drop drop end x";
     assert_eq!(
         run(names)?,
@@ -1237,22 +1237,6 @@ fn carried_values_obey_their_contract() -> Result<(), Error> {
 }
 
 #[test]
-fn an_opaque_values_depth_counts_toward_nesting() {
-    #[derive(Clone, PartialEq)]
-    struct Deep(u8);
-    impl AppValue for Deep {
-        fn kind(&self) -> &'static str {
-            "deep"
-        }
-        fn depth(&self) -> u8 {
-            self.0
-        }
-    }
-    assert!(List::new(vec![Value::App(Deep(NESTING.saturating_sub(1)))]).is_some());
-    assert!(List::new(vec![Value::App(Deep(NESTING))]).is_none());
-}
-
-#[test]
 fn a_prepared_library_serves_every_clone() -> Result<(), Error> {
     let mut ready = Compiler::<Ticket>::new(vocabulary());
     ready.add(&token::source(
@@ -1349,17 +1333,9 @@ fn let_names_and_what_they_may_hide() -> Result<(), Error> {
 
 #[test]
 fn sequence_mutation_preserves_shared_values() -> Result<(), Error> {
-    let list = |items: Vec<Value<Ticket>>| {
-        crate::List::new(items).map(|l| Value::List(std::rc::Rc::new(l)))
-    };
-    assert_eq!(
-        run("list 1 end 2 push")?,
-        list(ints(&[1, 2])).into_iter().collect::<Vec<_>>()
-    );
-    let both: Vec<_> = list(ints(&[1, 2]))
-        .into_iter()
-        .chain(list(ints(&[9, 2])))
-        .collect();
+    let list = |items: Vec<Value<Ticket>>| Value::List(std::rc::Rc::new(crate::List::new(items)));
+    assert_eq!(run("list 1 end 2 push")?, vec![list(ints(&[1, 2]))]);
+    let both = vec![list(ints(&[1, 2])), list(ints(&[9, 2]))];
     assert_eq!(run("list 1 2 end dup 0 9 put")?, both);
     assert_eq!(
         run("str x 1000 copies 0 let i begin 0 str y put i 1 add let i i 17000 eq until len")?,
@@ -1494,27 +1470,25 @@ fn what_can_not_be_known_is_never_refused() -> Result<(), Error> {
     Ok(())
 }
 
+/// A list nests as deep as memory lets it, however it is made; one 100,000
+/// deep is compared, ordered, written and let go, all without recursion,
+/// so none overflows the stack.
 #[test]
-fn lists_nest_no_deeper_than_nesting_however_they_are_made() -> Result<(), Error> {
+fn lists_nest_as_deep_as_memory_lets_them() -> Result<(), Error> {
     for source in [
-        "list end let l 0 begin list l end let l 1 add dup 70 eq until",
-        "list end let l 0 begin list end l push let l 1 add dup 70 eq until",
-        "list 0 end let l 0 begin list 0 end 0 l put let l 1 add dup 70 eq until",
+        "list end let l 0 begin list l end let l 1 add dup 70 eq until drop l len",
+        "list end let l 0 begin list end l push let l 1 add dup 70 eq until drop l len",
+        "list 0 end let l 0 begin list 0 end 0 l put let l 1 add dup 70 eq until drop l len",
     ] {
-        let mut machine = Machine::new(compile(source)?);
-        assert_eq!(
-            machine
-                .run(&mut Toy::default(), u64::MAX)
-                .map_err(|e| e.code),
-            Err(Code::TooLong),
-            "{source}"
-        );
+        assert_eq!(run_by(source, u64::MAX)?, ints(&[1]), "{source}");
     }
-    let x = "list list list 1 end end end 0 5 put let x 0 begin list x end let x 1 add dup 63 eq until drop x len";
+    let deep = "list end let l list end let m
+        0 begin list l end let l list m end let m 1 add dup 100000 eq until drop
+        l m eq l m lt l string len";
+    let truth = |b| Value::<Ticket>::Bool(b);
     assert_eq!(
-        run(x)?,
-        ints(&[1]),
-        "replaced, the deepest item counts no more"
+        run_by(deep, u64::MAX)?,
+        [truth(true), truth(false), Value::Int(0)]
     );
     Ok(())
 }
