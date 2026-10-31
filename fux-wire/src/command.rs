@@ -166,14 +166,20 @@ impl Program {
     }
 }
 
+crate::wire::shaped!(
+    codec struct Program {
+        program: String,
+        args: Vec<String>,
+    }
+);
+
 /// Read back only checked argv.
 impl Wire for Program {
     fn put(&self, out: &mut impl crate::wire::Sink) {
-        self.program.put(out);
-        self.args.put(out);
+        self.put_fields(out);
     }
     fn get(r: &mut Reader<'_>) -> Result<Self, Error> {
-        let (program, args) = (String::get(r)?, Vec::get(r)?);
+        let (program, args) = Self::get_fields(r)?;
         Program::new(program, args).map_err(|_| Error::Bad("program"))
     }
 }
@@ -374,6 +380,7 @@ pub fn size(rows: impl Into<i64>, cols: impl Into<i64>) -> Result<(u16, u16), cr
 /// holds is one a dump writes (`COLS ROWS size`) and makes again.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Screen(fux_vt::Size);
+crate::wire::shaped!(struct Screen(size: fux_vt::Size));
 
 impl Screen {
     /// `rows` by `cols`, if a screen can be that size; else why not.
@@ -1069,6 +1076,7 @@ fn pane_var(name: &str) -> Result<(), String> {
 /// identity, checked from words and the wire alike.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct EnvPatch(Vec<(String, Option<std::ffi::OsString>)>);
+crate::wire::shaped!(struct EnvPatch(entries: Vec<(String, Option<std::ffi::OsString>)>));
 
 impl EnvPatch {
     /// The most distinct selected or explicit environment names in one launch.

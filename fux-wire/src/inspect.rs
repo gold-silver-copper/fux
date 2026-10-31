@@ -117,28 +117,36 @@ wire! {
     }
 }
 
+crate::wire::shaped!(
+    codec struct Snapshot {
+        run: Run,
+        cursor: Cursor,
+        scope: Scope,
+        projection: Projection,
+        workspaces: Vec<Workspace>,
+        tabs: Vec<Tab>,
+        panes: Vec<Pane>,
+        clients: Vec<Client>,
+    }
+);
+
 impl crate::wire::Wire for Snapshot {
     fn put(&self, out: &mut impl crate::wire::Sink) {
-        self.run.put(out);
-        self.cursor.put(out);
-        self.scope.put(out);
-        self.projection.put(out);
-        self.workspaces.put(out);
-        self.tabs.put(out);
-        self.panes.put(out);
-        self.clients.put(out);
+        self.put_fields(out);
     }
     fn get(r: &mut crate::wire::Reader<'_>) -> Result<Self, crate::wire::Error> {
         r.limited(BYTES, |r| {
+            let (run, cursor, scope, projection, workspaces, tabs, panes, clients) =
+                Self::get_fields(r)?;
             Ok(Self {
-                run: Run::get(r)?,
-                cursor: Cursor::get(r)?,
-                scope: Scope::get(r)?,
-                projection: Projection::get(r)?,
-                workspaces: Vec::get(r)?,
-                tabs: Vec::get(r)?,
-                panes: Vec::get(r)?,
-                clients: Vec::get(r)?,
+                run,
+                cursor,
+                scope,
+                projection,
+                workspaces,
+                tabs,
+                panes,
+                clients,
             })
         })
     }

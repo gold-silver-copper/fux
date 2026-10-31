@@ -1,7 +1,9 @@
 # Every record a program reads, and each held answer's and capture's fields `get` reads, by where it is (`[]` a list's items; `[NAME]` its event, kind or status, or which answer), each with its fields in order. Generated: FUX_BLESS=1 cargo test -p fux --lib lists
 answer[acted]: pane version status
 answer[changed]: pane version status changed
+answer[closed]: pane status
 answer[ended]: pane version status changed exited signal
+answer[timed_out]: pane version status
 buffers[]: id bytes preview
 capture[client]: screen_rows screen_cols screen_cursor lines client
 capture[pane].cell: width height

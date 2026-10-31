@@ -70,6 +70,19 @@ impl Data {
     }
 }
 
+// In the order of their tags.
+crate::wire::shaped!(enum Data {
+    Int(v: i64),
+    Bool(v: bool),
+    Text(v: String),
+    List(v: Vec<Data>),
+    Record { of: Option<Run>, fields: Vec<(String, Data)> },
+    Null,
+    Handle(v: AnyRef, run: Option<Run>),
+    Client(v: ClientId, run: Option<Run>),
+    All,
+});
+
 impl Wire for Data {
     fn put(&self, out: &mut impl crate::wire::Sink) {
         match self {

@@ -368,6 +368,17 @@ impl Wire for std::time::Duration {
     }
 }
 
+// Its fields are std's own: as `put` writes them.
+#[cfg(test)]
+impl Reach for std::time::Duration {
+    fn reach(out: &mut Shapes) {
+        out.first::<Self>(
+            "Duration",
+            &[("Duration", &[("secs", "u64"), ("nanos", "u32")])],
+        );
+    }
+}
+
 impl Wire for std::num::NonZeroU32 {
     fn put(&self, out: &mut impl crate::wire::Sink) {
         self.get().put(out);
@@ -595,6 +606,14 @@ pub(crate) use closed_wire;
 
 closed_wire!(Direction, "direction"; MouseButton, "mouse button"; Signal, "signal");
 
+// Its fields are fux-vt's own: as `put` writes them.
+#[cfg(test)]
+impl Reach for fux_vt::Size {
+    fn reach(out: &mut Shapes) {
+        out.first::<Self>("Size", &[("Size", &[("rows", "u16"), ("cols", "u16")])]);
+    }
+}
+
 impl Wire for fux_vt::Size {
     fn put(&self, out: &mut impl crate::wire::Sink) {
         self.rows().put(out);
@@ -763,11 +782,30 @@ macro_rules! wire {
 }
 pub(crate) use wire;
 
-/// `shaped!(struct Ty { a: A, b: B })` or `shaped!(enum Ty { Unit, Tuple(a: A) })`:
+/// `shaped!(struct Ty { a: A, b: B })`, `shaped!(struct Ty(a: A))` or
+/// `shaped!(enum Ty { Unit, Tuple(a: A), Named { b: B } })`, its variants in
+/// the order of their tags; `shaped!(codec struct Ty { … })` also gives
+/// `put_fields` and `get_fields`, so that a `Wire` that only checks what it
+/// reads puts and gets its fields in the order listed, never another:
 /// in a test build, `Reach` for a type whose `Wire` is written by hand, its
 /// fields as they go on the wire, in order. A field or variant the type
 /// has and the list does not fails to compile; their types are as listed.
 macro_rules! shaped {
+    (codec struct $ty:path { $($f:ident: $ft:ty),+ $(,)? }) => {
+        $crate::wire::shaped!(struct $ty { $($f: $ft),+ });
+        impl $ty {
+            /// Its fields on the wire, in the order its shape lists them.
+            fn put_fields(&self, out: &mut impl $crate::wire::Sink) {
+                $($crate::wire::Wire::put(&self.$f, out);)+
+            }
+            /// Its fields read back in that order, for its `get` to check.
+            fn get_fields(
+                r: &mut $crate::wire::Reader<'_>,
+            ) -> Result<($($ft,)+), $crate::wire::Error> {
+                Ok(($(<$ft as $crate::wire::Wire>::get(r)?,)+))
+            }
+        }
+    };
     (struct $ty:ident ( $($f:ident: $ft:ty),+ $(,)? )) => {
         #[cfg(test)]
         impl $crate::wire::Reach for $ty {
@@ -801,19 +839,31 @@ macro_rules! shaped {
             }
         }
     };
-    (enum $ty:path { $($var:ident $(( $($p:ident: $pt:ty),+ ))?),+ $(,)? }) => {
+    (enum $ty:path {
+        $($var:ident $(( $($p:ident: $pt:ty),+ ))? $({ $($f:ident: $ft:ty),+ })?),+ $(,)?
+    }) => {
         #[cfg(test)]
         impl $crate::wire::Reach for $ty {
             fn reach(out: &mut $crate::wire::Shapes) {
+                let name = stringify!($ty).rsplit("::").next().unwrap_or_default();
                 let shape: &[(&str, &[(&str, &str)])] = &[$((
                     stringify!($var),
-                    &[$($((stringify!($p), stringify!($pt)),)+)?],
+                    &[
+                        $($((stringify!($p), stringify!($pt)),)+)?
+                        $($((stringify!($f), stringify!($ft)),)+)?
+                    ],
                 )),+];
-                if out.first::<Self>(stringify!($ty), shape) {
-                    $($($(<$pt as $crate::wire::Reach>::reach(out);)+)?)+
+                if out.first::<Self>(name, shape) {
+                    $(
+                        $($(<$pt as $crate::wire::Reach>::reach(out);)+)?
+                        $($(<$ft as $crate::wire::Reach>::reach(out);)+)?
+                    )+
                 }
                 let _every_variant = |v: &Self| match v {
-                    $(Self::$var $(( $($p),+ ))? => { $($(let _ = $p;)+)? })+
+                    $(Self::$var $(( $($p),+ ))? $({ $($f),+ })? => {
+                        $($(let _ = $p;)+)?
+                        $($(let _ = $f;)+)?
+                    })+
                 };
             }
         }
@@ -874,14 +924,15 @@ impl Shapes {
     }
 }
 
-/// `Reach` for values with no fields: numbers, text, ids, keys, and what
-/// is written as one (`text_wire!`, `closed_wire!`).
+/// `Reach` for what goes on the wire as one value with no fields of its
+/// own; every type with fields has its own `Reach` (`wire!`, `shaped!`).
 #[cfg(test)]
 macro_rules! leaves {
     ($($ty:ty),* $(,)?) => {$(impl Reach for $ty {})*};
 }
 #[cfg(test)]
 leaves!(
+    // A number.
     u8,
     u16,
     u32,
@@ -889,39 +940,32 @@ leaves!(
     i32,
     i64,
     usize,
+    std::num::NonZeroU32,
+    crate::command::Limit,
+    crate::command::Percent,
+    crate::command::ScrollLines,
+    // A flag.
     bool,
+    // A string, or a system string's bytes.
     String,
     std::path::PathBuf,
     std::ffi::OsString,
-    std::time::Duration,
-    std::num::NonZeroU32,
-    KeyPress,
-    crate::code::Code,
-    Direction,
-    MouseButton,
-    Signal,
-    fux_vt::Size,
+    // An id: one number.
     crate::id::PaneId,
     crate::id::TabId,
     crate::id::WsId,
     crate::id::ClientId,
-    crate::id::BufferId,
     crate::events::Seq,
-    crate::json::Json,
-    crate::callback::Data,
-    crate::command::Program,
-    crate::command::EnvPatch,
-    crate::command::Limit,
-    crate::command::Screen,
-    crate::command::Percent,
-    crate::command::ScrollLines,
-    crate::answer::Ended,
+    // Text read back by its spelling (`text_wire!`).
+    KeyPress,
+    crate::code::Code,
+    // One byte of a closed set (`closed_wire!`).
+    Direction,
+    MouseButton,
+    Signal,
     crate::answer::Change,
-    crate::inspect::Snapshot,
-    // What only an attached client's `Act` holds, which no request reaches.
-    fux_vt::keys::decode::Reply,
-    fux_vt::keys::Keystroke,
-    fux_vt::keys::mouse::MouseEvent,
+    fux_vt::ModeStatus,
+    fux_vt::keys::colour::Scheme,
 );
 #[cfg(test)]
 impl<const MIN: usize, const MAX: usize> Reach for crate::command::Number<MIN, MAX> {}

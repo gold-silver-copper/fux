@@ -40,8 +40,12 @@ Projection::Facts
 Projection::Topology
 Projection::Recipe
 Projection::Field field: String
+Screen size: fux_vt::Size
+Size rows: u16, cols: u16
+EnvPatch entries: Vec<(String, Option<std::ffi::OsString>)>
 Start::Shell argv: Program
 Start::Program argv: Program
+Program program: String, args: Vec<String>
 PaneOptions history_bytes: HistoryBytes, program_clipboard: bool, reflow: bool, alternate_scroll_lines: ScrollLines, picture_bytes: PictureBytes
 WsRef::Id id: WsId
 WsRef::Name name: String
@@ -101,6 +105,7 @@ Members::Panes
 Members::Tabs
 Buffer::Newest
 Buffer::Id id: BufferId
+BufferId run: Run, number: u64
 ClientAction::Detach
 ClientAction::Capture
 ClientAction::Open screen: callback::Open
@@ -115,6 +120,15 @@ Open::Confirm confirm: Confirm
 Open::Copy
 ListScreen title: String, items: Vec<Item>, current: Option<usize>, selected: usize, about: Option<(AnyRef, Option<command::Run>)>, action: Callback, client: Data
 Item label: String, payload: Data
+Data::Int v: i64
+Data::Bool v: bool
+Data::Text v: String
+Data::List v: Vec<Data>
+Data::Record of: Option<Run>, fields: Vec<(String, Data)>
+Data::Null
+Data::Handle v: AnyRef, run: Option<Run>
+Data::Client v: ClientId, run: Option<Run>
+Data::All
 Callback code: String, args: Vec<Data>
 Prompt title: String, line: String, action: Option<Callback>
 Confirm question: String, action: Callback

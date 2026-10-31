@@ -126,6 +126,16 @@ impl Json {
     }
 }
 
+crate::wire::shaped!(enum Json {
+    Null,
+    Bool(b: bool),
+    Int(n: i64),
+    Uint(n: u64),
+    String(s: String),
+    Array(items: Vec<Json>),
+    Object(fields: Vec<(String, Json)>),
+});
+
 /// A tag, then its value: an array's or object's count, then its items.
 impl Wire for Json {
     fn put(&self, out: &mut impl crate::wire::Sink) {

@@ -79,6 +79,7 @@ impl Change {
 
 closed_wire!(Change, "change");
 wire_enum!(Ended { Exited(code), Signalled(signal), Lost });
+crate::wire::shaped!(enum Ended { Exited(code: i32), Signalled(signal: i32), Lost });
 
 impl PaneAnswer {
     pub fn pane(&self) -> PaneId {

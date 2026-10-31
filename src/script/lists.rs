@@ -110,8 +110,8 @@ fn held(answer: &super::Answer) -> Vec<String> {
 ///   picture, styled text and a copy, a pane split with a variable set,
 ///   and each kind of directory a launch observes;
 /// - a capture of that pane, with styles, and of the client;
-/// - held answers: an action's, a wait's that saw a change, and one that
-///   saw its program end;
+/// - held answers of every kind: an action's, a wait's that saw a change,
+///   one that saw its program end, one whose pane closed, one timed out;
 /// - `buffers`, `status`, and a batch of every kind of event.
 #[test]
 fn records_list_is_current() -> Result<(), Box<dyn std::error::Error>> {
@@ -198,6 +198,17 @@ fn records_list_is_current() -> Result<(), Box<dyn std::error::Error>> {
         ("answer[acted]", PaneAnswer::Acted(version)),
         ("answer[changed]", changed(None)),
         ("answer[ended]", changed(Some(Ended::Exited(0)))),
+        (
+            "answer[closed]",
+            PaneAnswer::Closed(fux_wire::id::PaneId::of(1)),
+        ),
+        (
+            "answer[timed_out]",
+            PaneAnswer::TimedOut {
+                since: version,
+                limit: std::time::Duration::from_secs(1),
+            },
+        ),
     ] {
         let value = super::Answer::Pane(answer).in_run(Some(run));
         records(path, &value, &mut lines);
