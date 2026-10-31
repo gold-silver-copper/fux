@@ -15,7 +15,7 @@ static HEAP: ThreadPeak = ThreadPeak;
 fuxth::bounded_only!();
 
 /// The run's region: small, so the loops below fill and refill it.
-const BUDGET: usize = 256 << 10;
+const BUDGET: usize = 320 << 10;
 
 /// What a run holds on the heap beside its region and its program's code:
 /// the region's own counter, and a refusal's message as a `try` catches
@@ -122,7 +122,7 @@ fn a_build_its_region_refuses_makes_nothing_and_leaves_the_region_whole() -> Res
     // A list of 2,000 strings, kept, then their text joined: more than the
     // region holds in all.
     let source =
-        "str x 128 copies let s list 0 2000 range each drop s end end let l ask drop l concat";
+        "str x 200 copies let s list 0 2000 range each drop s end end let l ask drop l concat";
     compiled(&library, source, &Region::new(BUDGET))?;
     let base = HEAP.live();
     let region = Region::new(BUDGET);

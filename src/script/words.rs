@@ -3006,6 +3006,7 @@ mod tests {
             return Err("string".into());
         };
         assert!(one.len().saturating_mul(8) > 64 << 10);
+        let one_size = fuxth::Text::size(&one);
         drop(one);
         // Shared inputs are retained once, but every alias contributes
         // text: count the complete output before allocating any of it.
@@ -3049,6 +3050,13 @@ mod tests {
             json_text(&held, &grant).map_err(|f| f.code),
             Err(fuxth::Code::TooLong)
         );
+        assert!(allocator.peak().saturating_sub(base) <= SCRATCH);
+        drop(room);
+        // So is a string of its text.
+        let room = fuxth::Lease::of(&grant, left.saturating_sub(one_size).saturating_add(1))
+            .map_err(|f| f.message)?;
+        allocator.reset_peak();
+        assert_eq!(text(&held).map_err(|f| f.code), Err(fuxth::Code::TooLong));
         assert!(allocator.peak().saturating_sub(base) <= SCRATCH);
         drop(room);
         assert_eq!(
