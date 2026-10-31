@@ -1999,9 +1999,9 @@ mod tests {
     fn queued_programs_commit_the_whole_local_state() -> Result<(), Box<dyn std::error::Error>> {
         let mut keyboard = keyboard(false)?;
         for code in [
-            "str C-a prefix str wait-seconds 2 set",
+            "str C-a prefix str history-bytes 2 set",
             "str F5 str ls bind-root str titles true set",
-            "str F6 str ls bind-root str wait-seconds 0 set str bell false set str Nope prefix",
+            "str F6 str ls bind-root str history-bytes 0 set str bell false set str Nope prefix",
         ] {
             assert!(program(&mut keyboard, Job::from(code)).is_empty());
         }
@@ -2020,7 +2020,7 @@ mod tests {
             ),
             ("C-a".into(), vec!["F5".into()])
         );
-        assert_eq!(state.preferences.wait.seconds(), 2);
+        assert_eq!(state.preferences.history_bytes.get(), 2);
         assert!(state.preferences.titles);
         assert!(state.preferences.bell);
         drop(state);

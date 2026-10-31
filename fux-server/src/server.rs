@@ -1617,7 +1617,7 @@ mod tests {
             crate::wait::Watches::Pane((pane, counts)),
             server.session.run,
             now,
-            Duration::from_secs(1),
+            Some(Duration::from_secs(1)),
         );
         server.conns.first_mut().ok_or("worker")?.stage = Stage::Waiting(Box::new(waiting));
         server.session.output(pane, b"changed", now);
@@ -1646,7 +1646,7 @@ mod tests {
             crate::wait::Watches::Pane((pane, counts)),
             server.session.run,
             after(now, Duration::from_millis(1)),
-            crate::pane::FRAME_TIMEOUT,
+            Some(crate::pane::FRAME_TIMEOUT),
         );
         let late = after(waiting.due().ok_or("deadline")?, Duration::from_millis(1));
         server.conns.first_mut().ok_or("worker")?.stage = Stage::Waiting(Box::new(waiting));

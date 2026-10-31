@@ -716,7 +716,7 @@ mod tests {
         use crate::wire::Reader;
         let wait = Wait {
             since: Since::Now(AnyRef::Pane("%1".parse()?)),
-            timeout: Limit::read(0)?,
+            timeout: Some(Limit::read(0)?),
         };
         let bytes = crate::wire::encode(&wait);
         assert_eq!(Reader::new(&bytes).whole::<Wait>()?, wait);
@@ -993,12 +993,12 @@ mod tests {
             (server, vec![0, 0, 0, 1, 17], "unexpected frame kind 17"),
             (
                 greeting,
-                vec![0, 0, 0, 1, 11],
+                vec![0, 0, 0, 1, 1],
                 "a frame's payload: the bytes end early",
             ),
             (
                 greeting,
-                vec![0, 0, 0, 3, 11, 0, 0],
+                vec![0, 0, 0, 11, 1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 9],
                 "a frame's payload: bytes after the value",
             ),
             (
@@ -1031,7 +1031,7 @@ mod tests {
             ),
             (
                 attach,
-                vec![0, 0, 0, 7, 2, 0, 0, 1, 0, 1, 2],
+                vec![0, 0, 0, 8, 2, 0, 0, 0, 1, 0, 1, 2],
                 "a frame's payload: no option has tag 2",
             ),
             (

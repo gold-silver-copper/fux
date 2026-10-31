@@ -363,7 +363,7 @@ words! {
         Starting Watch "watch" "x -- x" "attach without typing: keys do nothing but the prefix, then d, which detaches" "fux opts watch attach";
         Starting KillFirst "kill-first" "x -- x" "respawn: end the program first if it still runs" "fux %3 kill-first respawn";
         Waiting Changed "changed" "seen -- changed-request" "a wait from this version (%2:0.57.0.3.0:RUN, as an action, a wait or `str version get` gives it; or an answer or capture, its version) of the pane it names, not from now" "A=$(fux %3 str y text send-keys); fux str \"$A\" changed 60 timeout wait";
-        Waiting Timeout "timeout" "x secs -- x" "how long a wait waits for a change before it answers timeout, else this client's wait-seconds" "fux %3 300 timeout wait";
+        Waiting Timeout "timeout" "x secs -- x" "how long a wait waits for a change before it answers timeout; with none, until something changes" "fux %3 300 timeout wait";
         Input Expect "expect" "seen -- expected-request" "keys for the pane this version names, which send-keys sends only if the pane is still at it as they are queued, else sends none and fails stale; a version as changed takes it: a capture's is its pane's as it was read" "fux %3 capture let seen seen string str '[y/N]' contains if seen expect str y text send-keys drop then";
         Input Text "text" "x text -- x" "text, typed" "fux %3 str 'ls -l' text str Enter key send-keys";
         Input Key "key" "x key -- x" "a key by its name: Enter, C-c, Up, F5" "fux %3 str C-c key send-keys";
@@ -1498,19 +1498,7 @@ impl Host<'_> {
                 };
                 let wait = Wait {
                     since,
-                    timeout: match built.timeout {
-                        Some(limit) => limit,
-                        None => {
-                            self.prepare()
-                                .map_err(|why| fail(Raise::Config, why.to_string()))?;
-                            self.state
-                                .as_deref()
-                                .ok_or_else(|| fail(Raise::Config, "wait needs client defaults"))?
-                                .preferences
-                                .wait()
-                                .map_err(|why| fail(Raise::Config, why))?
-                        }
-                    },
+                    timeout: built.timeout,
                 };
                 later(ask(Request::Wait(wait)))
             }

@@ -747,12 +747,12 @@ impl To {
 
 wire! {
     /// A wait: until a version of the panes it waits on differs from the
-    /// one it waits from, or its pane closes; how long before it times out.
+    /// one it waits from, or its pane closes; how long before it times out,
+    /// if ever.
     #[derive(Clone, Debug, PartialEq, Eq)]
     pub struct Wait {
         pub since: Since,
-        /// How long before it times out, supplied by the caller.
-        pub timeout: Limit,
+        pub timeout: Option<Limit>,
     }
 }
 

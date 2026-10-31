@@ -546,8 +546,9 @@ commands use only the bundled state; they never load this file.
 Its `set` and key words build one candidate client state. Keys, frozen
 definitions and preferences commit together; a failed config keeps the whole
 bundled state, preserves earlier explicit CLI settings, and shows one
-diagnostic. Evaluation and local setters send no requests. Each observation wait sends
-this client's `wait-seconds` unless it has an explicit `timeout`.
+diagnostic. Evaluation and local setters send no requests. A wait without
+`timeout` waits until something changes; `SECS timeout`, or coreutils
+`timeout`, bounds it.
 Shared paste buffers retain the newest 16 copies; retention is fixed.
 Shell argv, environment selection, `history-bytes`, `program-clipboard`,
 `reflow`, `alternate-scroll-lines` and `picture-bytes`
@@ -586,8 +587,8 @@ keep fux's stored cell geometry. Neither guesses from locale or terminal name.
 The bounded comparison in `bench/examples/placement.rs` measures output bytes,
 thread CPU and paint latency; it does not measure transport or display latency.
 
-Client defaults load when `set`, `attach-defaults`, `list-keys`, `attach`, a launch or an
-observation wait without `timeout` needs them; ordinary queries and server
+Client defaults load when `set`, `attach-defaults`, `list-keys`, `attach` or a
+launch needs them; ordinary queries and server
 controls do not load them. Bundled
 `client-defaults.fux` reads this client's `$SHELL` once and chooses `/bin/sh`
 for an unset or empty value. A non-text value is reported and falls back as

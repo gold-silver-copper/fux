@@ -2,9 +2,7 @@
 use crate::keymap::Keymap;
 use crate::script::settings::Reads;
 use crate::script::{Config, Fux};
-use fux_wire::command::{
-    DecodeMillis, EnvName, HistoryBytes, Limit, PictureBytes, Program, ScrollLines,
-};
+use fux_wire::command::{DecodeMillis, EnvName, HistoryBytes, PictureBytes, Program, ScrollLines};
 use fuxth::Value;
 
 /// A complete client state. A program changes a draft and commits it whole.
@@ -138,8 +136,6 @@ preferences! {
     paste_timeout "paste-timeout-ms": DecodeMillis;
     /// Position after each non-ASCII glyph; bounds drift, not glyph footprints.
     cell_placement "cell-placement": bool;
-    /// This client's limit for waits without an explicit timeout.
-    wait "wait-seconds": Limit;
     /// Whether newly created panes may copy program output to paste buffers.
     program_clipboard "program-clipboard": bool;
     /// Whether copies are delivered to this client's terminal clipboard.
@@ -178,9 +174,6 @@ impl PreferenceDraft {
             history_bytes: required(self.history_bytes, "history-bytes")?,
             program_clipboard: required(self.program_clipboard, "program-clipboard")?,
         })
-    }
-    pub(crate) fn wait(&self) -> Result<Limit, String> {
-        required(self.wait, "wait-seconds")
     }
     /// Seed an in-process client draft from its own view.
     pub fn presentation(&mut self, p: fux_wire::presentation::Presentation) {
@@ -243,13 +236,9 @@ mod tests {
         assert!(Draft::default().finish().is_err());
         let state = crate::script::default_state()?;
         let mut draft = state.draft();
-        draft.preferences.wait = None;
-        assert!(draft.finish().is_err());
-        let mut draft = state.draft();
         draft.attach = None;
         assert!(draft.finish().is_err());
         assert_eq!(state.preferences.history_bytes.get(), 8 << 20);
-        assert_eq!(state.preferences.wait.seconds(), 30);
         assert!(state.preferences.reflow);
         assert_eq!(state.preferences.alternate_scroll_lines.get(), 5);
         assert_eq!(state.preferences.picture_bytes.get(), fux_vt::PICTURE_BYTES);
@@ -278,7 +267,6 @@ mod tests {
         let mut draft = PreferenceDraft::default();
         for (name, value) in [
             ("history-bytes", Value::Int(0)),
-            ("wait-seconds", Value::Int(0)),
             ("program-clipboard", Value::Bool(false)),
             ("show-column", Value::Bool(false)),
             ("terminal-clipboard", Value::Bool(false)),
@@ -298,8 +286,6 @@ mod tests {
             ("cell-placement", Value::str("cells")),
             ("history-bytes", Value::Int(-1)),
             ("history-bytes", Value::Int((1 << 30) + 1)),
-            ("wait-seconds", Value::Int(1 << 32)),
-            ("wait-seconds", Value::Int(-1)),
             ("bell", Value::Int(0)),
             ("bell", Value::str("off")),
             ("shell", list(&[])?),

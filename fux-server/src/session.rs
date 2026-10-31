@@ -2267,7 +2267,7 @@ impl Session {
         {
             return Err(fail(Raise::NoPane, "it holds no pane to wait on"));
         }
-        let limit = wait.timeout.duration();
+        let limit = wait.timeout.map(command::Limit::duration);
         Ok(self.answered(Waiting::new(watches, self.run, now, limit), now))
     }
 
@@ -4504,8 +4504,7 @@ mod tests {
                     .presentation(),
             )
         };
-        s.attach_client(attach)
-            .map_err(|e| e.to_string())
+        s.attach_client(attach).map_err(|e| e.to_string())
     }
 
     #[test]
@@ -4866,12 +4865,11 @@ mod tests {
             (T::Workspace(WsRef::Name("second".into())), PaneId::of(3)),
         ] {
             let client = s.attach_client(Attach {
-                    of: Some(s.run),
-                    headless: true,
-                    target: Some(target),
-                    ..Attach::of(sized(24, 80)?, presentation.clone())
-                },
-            )?;
+                of: Some(s.run),
+                headless: true,
+                target: Some(target),
+                ..Attach::of(sized(24, 80)?, presentation.clone())
+            })?;
             assert_eq!(s.focused(client), Some(pane));
             s.detach_client(client);
         }
@@ -4888,12 +4886,11 @@ mod tests {
         ] {
             assert!(
                 s.attach_client(Attach {
-                        of,
-                        headless: true,
-                        target: Some(target),
-                        ..Attach::of(sized(24, 80)?, presentation.clone())
-                    }
-                )
+                    of,
+                    headless: true,
+                    target: Some(target),
+                    ..Attach::of(sized(24, 80)?, presentation.clone())
+                })
                 .is_err()
             );
             assert_eq!(s.ids, ids);
@@ -6945,7 +6942,7 @@ mod tests {
         let mut s = started()?;
         run(&mut s, "str %1 pane str horizontal axis split")?;
         let origin = Origin::Cli(Caller::default());
-        let timeout = command::Limit::read(30)?;
+        let timeout = Some(command::Limit::read(30)?);
         let wait = |target| {
             Request::Wait(command::Wait {
                 since: command::Since::Now(target),
@@ -7134,7 +7131,7 @@ mod tests {
         s.out(PaneId::of(1), &frame);
         let wait = Request::Wait(command::Wait {
             since: command::Since::Version(since),
-            timeout: command::Limit::read(0)?,
+            timeout: Some(command::Limit::read(0)?),
         });
         let Begun::Waiting(mut waiting) = s.begin_now(wait, &Origin::Cli(Caller::default())) else {
             return Err("a wait mid-frame answered at once".into());

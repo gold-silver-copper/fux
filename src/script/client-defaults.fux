@@ -12,7 +12,6 @@ str picture-bytes 100663296 set
 str escape-delay-ms 35 set
 str paste-timeout-ms 5000 set
 str cell-placement false set
-str wait-seconds 30 set
 str program-clipboard true set
 str terminal-clipboard true set
 str bell true set

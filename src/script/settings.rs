@@ -1,6 +1,6 @@
 //! Checked fuxth values for local preferences and request options.
 use super::Fux;
-use fux_wire::command::{EnvName, Limit, Number, Program};
+use fux_wire::command::{EnvName, Number, Program};
 use fuxth::Value;
 
 /// A local setting's type, read once as `set` is given it.
@@ -63,18 +63,6 @@ impl<const MIN: usize, const MAX: usize> Reads for Number<MIN, MAX> {
         let n = int(value)?;
         (usize::try_from(n).ok().and_then(Number::new))
             .ok_or_else(|| format!("{n} is out of range, {MIN} to {MAX}"))
-    }
-}
-
-/// A wait's limit, in seconds.
-impl Reads for Limit {
-    fn takes() -> String {
-        format!("seconds, 0 to {}", u32::MAX)
-    }
-    fn read(value: &Value<Fux>) -> Result<Limit, String> {
-        let n = int(value)?;
-        let secs = u64::try_from(n).map_err(|_| format!("{n} s: a wait waits 0 s or more"))?;
-        Limit::read(secs)
     }
 }
 

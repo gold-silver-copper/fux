@@ -68,8 +68,8 @@ a pane): run from outside fux, a size must be given, as fux makes none
 up. An action answers at once,
 with its pane's version from before it acted, one word
 (`%2:0.57.0.3.0:RUN`); `str V changed wait` waits in V's pane until its
-version differs from V, else answers `timeout` at this client's wait-seconds
-limit unless `SECS timeout` says (see client-defaults.fux). A failure prints
+version differs from V, for as long as that takes unless `SECS timeout`
+bounds it, answering `timeout`. A failure prints
 `fux: CODE: MESSAGE` on stderr.
 Driving programs from a script or an agent: `fux help agents`; one word:
 `fux help WORD`.
@@ -219,7 +219,7 @@ fn settings() -> String {
             wrapped(about, "\n      ", 78)
         ));
     }
-    out.push_str(&format!("\nShell, copy-environment, history-bytes, program-clipboard, reflow,\nalternate-scroll-lines and picture-bytes supply this client's future launches.\nUse PANE BYTES history-budget to change one pane.\nBell, titles, terminal-clipboard, cell-placement, styles, bar, bar-slots\nand show-column affect only this client's view: supplied with attach, then updated after local commits\nbefore following requests.\nWait-seconds supplies this client's observation wait limits.\nEscape-delay-ms and paste-timeout-ms change at an idle decoder boundary.\nSetters and config evaluation send no requests. Shared paste buffers\nretain the newest {} copies.\n", fux_server::session::BUFFER_LIMIT));
+    out.push_str(&format!("\nShell, copy-environment, history-bytes, program-clipboard, reflow,\nalternate-scroll-lines and picture-bytes supply this client's future launches.\nUse PANE BYTES history-budget to change one pane.\nBell, titles, terminal-clipboard, cell-placement, styles, bar, bar-slots\nand show-column affect only this client's view: supplied with attach, then updated after local commits\nbefore following requests.\nEscape-delay-ms and paste-timeout-ms change at an idle decoder boundary.\nSetters and config evaluation send no requests. Shared paste buffers\nretain the newest {} copies.\n", fux_server::session::BUFFER_LIMIT));
     out.push_str("\nStyles rows: [role foreground background flags...]; roles: bar tab keys\nnotice error panel border border-focus. Colours: 0..255, default, #rrggbb.\nFlags: bold dim italic underline. A subset changes only its supplied roles.\nBar: [top/bottom/off [left fields] [right fields] tab-numbers?].\nFields: workspace tabs pane [slot 0..15]; each once.\nNative notices, copy/prefix/repeat/zoom hints and clipping remain authoritative.\nOff overlays native feedback on the bottom pane row without resizing PTYs.\nBar-slots replaces all slots: [0..15 text] rows, each slot once, text\nwith no controls. Text is inert. No paint-time programs or added timers.\nstr show-column false set hides the body, retaining dispatch, Escape and feedback.\n");
     out.push_str("\nBundled initialization (client-defaults.fux):\n");
     out.push_str(crate::script::DEFAULTS);

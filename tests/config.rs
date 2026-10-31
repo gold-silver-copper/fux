@@ -9,30 +9,13 @@ fn only_a_typing_terminal_loads_the_user_config() -> Outcome {
     let server = Server::start("")?;
     std::fs::write(
         server.dir.join("config/fux/config.fux"),
-        "str wait-seconds 0 set\nstr C-a prefix\n",
+        "str shell list str /no/such/leaked-shell end set\nstr C-a prefix\n",
     )
     .map_err(e)?;
-    // With the bundled wait, this waits for the child's output/exit. A
-    // leaked wait=0 instead answers timeout before the child writes.
+    // With the bundled shell, this starts a shell and waits for its
+    // prompt. A leaked shell instead fails to start.
     let waiting = [
-        "opts",
-        "str",
-        "main",
-        "in",
-        "80",
-        "24",
-        "size",
-        "str",
-        "/bin/sh",
-        "program",
-        "str",
-        "-c",
-        "arg",
-        "str",
-        "sleep 1; echo observed",
-        "arg",
-        "new-tab",
-        "wait",
+        "opts", "str", "main", "in", "80", "24", "size", "new-tab", "wait",
     ];
     // Exercise start on a fresh socket: an already running server would
     // bypass the old startup config path. Clean up even on a refusal.
@@ -213,7 +196,7 @@ fn launch_preferences_apply_only_to_new_requests() -> Outcome {
 /// An imported config cannot act on the server or commit half its local state.
 #[test]
 fn an_imported_failure_keeps_the_whole_bundled_state() -> Outcome {
-    let server = Server::start("str wait-seconds 0 set")?;
+    let server = Server::start("")?;
     let directory = server.dir.join("config/fux");
     let mut a = server.attach(8, 80)?;
     let mut b = server.attach(8, 80)?;
@@ -223,11 +206,11 @@ fn an_imported_failure_keeps_the_whole_bundled_state() -> Outcome {
     std::fs::write(directory.join("config.fux"), "require shared.fux").map_err(e)?;
     std::fs::write(
         directory.join("shared.fux"),
-        "str wait-seconds 2 set str titles true set str history-bytes 0 set",
+        "str titles true set str history-bytes 0 set",
     )
     .map_err(e)?;
     let configured = fux::script::run_file(&directory.join("config.fux")).map_err(e)?;
-    assert_eq!(configured.preferences.wait.seconds(), 2);
+    assert_eq!(configured.preferences.history_bytes.get(), 0);
     assert!(configured.preferences.titles);
     server.ok(&[
         "str",
@@ -243,7 +226,7 @@ fn an_imported_failure_keeps_the_whole_bundled_state() -> Outcome {
     assert!(!String::from_utf8_lossy(&b.painted).contains("\x1b]2;"));
     std::fs::write(
         directory.join("shared.fux"),
-        "str C-a prefix str wait-seconds 0 set str titles true set \
+        "str C-a prefix str titles true set \
          opts str missing in attach-defaults \
          define only-in-failed-config 41 end \
          %1 str horizontal axis split drop",
@@ -593,32 +576,6 @@ fn a_program_uses_preferences_before_its_next_operation() -> Outcome {
         result.stderr
     );
     assert_eq!(server.panes()?.len(), 1);
-    let result = server.fux(&[
-        "str",
-        "wait-seconds",
-        "0",
-        "set",
-        "agent-opts",
-        "80",
-        "24",
-        "size",
-        "str",
-        "/bin/sh",
-        "program",
-        "str",
-        "-c",
-        "arg",
-        "str",
-        "sleep 1",
-        "arg",
-        "new-tab",
-        "wait",
-    ])?;
-    assert_eq!(
-        result.status, 124,
-        "wait used the previous limit: {}",
-        result.stderr
-    );
     Ok(())
 }
 

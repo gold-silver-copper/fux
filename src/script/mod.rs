@@ -1788,8 +1788,8 @@ pub mod testing {
             }),
             ..fux_wire::protocol::Attach::of(size, preferences.presentation())
         };
-        let client = (session.attach_as(attach, std::time::Instant::now()))
-            .map_err(|e| e.to_string())?;
+        let client =
+            (session.attach_as(attach, std::time::Instant::now())).map_err(|e| e.to_string())?;
         Ok((session, client))
     }
 
@@ -2357,11 +2357,11 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn every_observation_wait_encodes_its_clients_limit() -> TestResult {
+    fn every_observation_wait_encodes_its_timeout_and_a_bare_one_none() -> TestResult {
         use super::*;
         use fux_wire::command::{AnyRef, Command, Request};
         use fux_wire::wire::Reader;
-        struct Record(Vec<u32>);
+        struct Record(Vec<Option<u32>>);
         impl Asks for Record {
             fn ask(&mut self, asked: &Asked) -> Result<Reply, Failed> {
                 let bytes = fux_wire::wire::encode(asked);
@@ -2369,7 +2369,7 @@ pub(crate) mod tests {
                     .whole()
                     .map_err(|e| Failed::new(Code::Usage, e.to_string()))?;
                 if let Request::Wait(wait) = decoded.request {
-                    self.0.push(wait.timeout.seconds());
+                    self.0.push(wait.timeout.map(Limit::seconds));
                     Err(Failed::new(Code::NoServer, "recorded"))
                 } else if let Request::Do(fux_wire::command::Command::Resolve { .. }) =
                     decoded.request
@@ -2390,18 +2390,13 @@ pub(crate) mod tests {
             }
         }
         let bundled = default_state()?;
-        let personal = run_config(source::text("personal", "str wait-seconds 2 set")?)?;
         for subject in [
             "%1",
             "str %1:0.0.0.0.0:1-2 changed",
             "%1 str Enter key send-keys",
         ] {
-            for (state, option, limit) in [
-                (&personal, "", 2),
-                (&bundled, "", 30),
-                (&personal, "0 timeout", 0),
-            ] {
-                let mut draft = state.draft();
+            for (option, limit) in [("", None), ("0 timeout", Some(0)), ("7 timeout", Some(7))] {
+                let mut draft = bundled.draft();
                 let mut out = io::sink();
                 let mut record = Record(Vec::new());
                 let failed = evaluate(
