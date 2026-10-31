@@ -110,7 +110,7 @@ keep their versions. An edit sent against an old buffer revision is
 refused. A crash of the editor loses no saved work.
 
 **What it needs:**
-- **`fed` (package `fux-fed`, D-33), version 0:** one buffer kind (a list of lines), named
+- **`fuxed` (D-38), version 0:** one buffer kind (a list of lines), named
   commands, `describe-key`, `apropos` and `doc`, undo, save by writing a
   temporary file and renaming it, and keymaps that hold names.
 - **A precise interface for agents** (D-29): fuxth units sent to the
