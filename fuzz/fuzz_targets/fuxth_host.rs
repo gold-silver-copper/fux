@@ -6,7 +6,7 @@
 //! (n -- [n]), defined after the standard library, gives n back only above
 //! 0, a value given only sometimes.
 use fuxth::{
-    AppValue, Args, Compiler, Done, Error, Failure, Host, Limits, Machine, Outcome, Place, Value,
+    AppValue, Args, Compiler, Done, Error, Failure, Host, Machine, Outcome, Place, Value,
     Vocabulary, token,
 };
 
@@ -45,13 +45,8 @@ impl Host for Toy {
     }
 }
 
-/// Small limits, so a fuzzed program meets them quickly.
-pub const LIMITS: Limits = Limits {
-    stack: 1000,
-    calls: 100,
-};
-
-/// Steps a run may take in all.
+/// Steps a run may take in all: past them it counts as endless, as a
+/// user would stop it.
 pub const STEPS: u64 = 100_000;
 
 /// `text` compiled after the standard library. No filesystem loader is
@@ -85,7 +80,7 @@ pub fn run(
     program: fuxth::Program<Nothing>,
     budget: u64,
 ) -> Option<Result<Vec<Value<Nothing>>, Error>> {
-    let mut machine = Machine::new(program, LIMITS);
+    let mut machine = Machine::new(program);
     let budget = budget.clamp(1, STEPS);
     let mut taken = 0u64;
     while taken < STEPS {
@@ -94,12 +89,13 @@ pub fn run(
             Ok(Outcome::Finished) => return Some(Ok(machine.stack().to_vec())),
             Ok(Outcome::Paused) => {}
             Ok(Outcome::Suspended(n)) => {
-                let answered = match n < 0 {
-                    true => machine.raise(Failure::new(fuxth::Code::Host("negative"), "below 0")),
-                    false => machine.import(Value::Int(n.saturating_mul(10))),
-                };
-                if let Err(e) = answered {
-                    return Some(Err(e));
+                if n < 0 {
+                    let failure = Failure::new(fuxth::Code::Host("negative"), "below 0");
+                    if let Err(e) = machine.raise(failure) {
+                        return Some(Err(e));
+                    }
+                } else {
+                    machine.push(Value::Int(n.saturating_mul(10)));
                 }
             }
             Err(e) => return Some(Err(e)),

@@ -290,7 +290,7 @@ words! {
         Starting NewWorkspace "new-workspace" "opts -- answer" "a workspace with a tab and the client's shell or explicit launch" "fux opts str work name 80 24 size new-workspace" [Opts: Name Size Cwd Env UnsetEnv CopyEnvironment HistoryBytes Reflow AlternateScrollLines PictureBytes ProgramClipboard Program ShellProgram Arg];
         Starting Respawn "respawn" "subject -- answer" "start again in its pane the program it was given (new-tab, new-workspace, split), or the one given now" "fux %3 kill-first respawn" [Pane: KillFirst Env UnsetEnv Program Arg];
         Waiting Wait "wait" "place -- place" "wait until the pane's version differs from the one changed gives, else an action's answer's (%2 str y text send-keys wait), else now's, or the pane closes; a tab or workspace: any of the panes there as it begins" "A=$(fux %3 str y text send-keys); fux str \"$A\" changed 60 timeout wait" [Pane: Changed Timeout];
-        Input SendKeys "send-keys" "target -- target" "send the keys on it to a pane, every pane of a tab, or a client as typed at its terminal; 900 KiB at most in all" "fux %3 str 'ls -l' text str Enter key send-keys" [Pane: Text Key Paste Bytes Expect];
+        Input SendKeys "send-keys" "target -- target" "send the keys on it to a pane, every pane of a tab, or a client as typed at its terminal; as much as one request (1 MiB) carries" "fux %3 str 'ls -l' text str Enter key send-keys" [Pane: Text Key Paste Bytes Expect];
         Input SendMouse "send-mouse" "pane action row col -- answer" "click right middle press release wheel-up wheel-down or move, at a cell from 0" "fux %3 str click 2 10 send-mouse" [];
         Input Signal "signal" "subject name -- answer" "TERM KILL INT HUP QUIT USR1 USR2 STOP CONT TSTP WINCH ILL ABRT FPE SEGV PIPE ALRM BUS TRAP SYS XCPU XFSZ VTALRM PROF TTIN TTOU URG CHLD, to the pane's foreground" "fux %3 str TERM signal" [];
         Reading Capture "capture" "capture-source -- capture-source" "a pane screen with its options, or what a client terminal shows (without pane options or a version)" "fux %3 100 history capture" [Pane: History Wrapped Full Styles Marks MainScreen AltScreen LastOutput Rows Cols];
@@ -332,15 +332,15 @@ words! {
         Config Set "set" "setting new --" "a preference for this client only: `fux help set` lists their effects" "fux str history-bytes 16777216 set" [];
         Reading Version "version" "pane-or-seen -- string" "a pane's current version, or the version an answer, pane capture or canonical text holds" "fux %3 capture version" [];
         Shell Args "args" "-- list" "the strings after fux --file FILE (none for any other program)" "fux args len" [];
-        Shell Input "input" "-- string" "the rest of stdin, as UTF-8 text, 16 MiB at most; not when the program came from stdin" "ls | fux input lines len" [];
-        Shell ReadFile "read-file" "path -- string" "a file's text, as UTF-8, 16 MiB at most" "fux str notes.txt read-file lines len" [];
+        Shell Input "input" "-- string" "the rest of stdin, as UTF-8 text; not when the program came from stdin" "ls | fux input lines len" [];
+        Shell ReadFile "read-file" "path -- string" "a file's text, as UTF-8" "fux str notes.txt read-file lines len" [];
         Shell Getenv "getenv" "name -- string" "an environment variable's value; one not set fails unset_var" "fux str HOME getenv" [];
         Shell Warn "warn" "value --" "print a value on stderr, a line" "fux str 'no tests found' warn 2 exit" [];
         Shell Exit "exit" "n --" "end the program now, what is left printed, with exit status n, 0 to 255" "fux str 'no tests found' warn 2 exit" [];
         Config ListKeys "list-keys" "--" "this client's keys (the bundled keys from the CLI), as config lines that make them" "fux list-keys" [];
         Config KeyNames "key-names" "--" "the names keys go by" "fux key-names" [];
         Help Help "help" "--" "the words, under their headings" "fux help" [];
-        Help Explain "explain" "word --" "one word at length (json's says what json gives); or the guide to driving programs from a script or an agent: agents, its first screen, enough for most work; a topic of it (recipes keys read shells programs servers); guide, all of it; or limits, the bounds fux keeps" "fux str capture explain" [];
+        Help Explain "explain" "word --" "one word at length (json's says what json gives); or the guide to driving programs from a script or an agent: agents, its first screen, enough for most work; a topic of it (recipes keys read shells programs servers); or guide, all of it" "fux str capture explain" [];
         Help Check "check" "file mode --" "check a file as program (compile only) or config (also run dry)" "fux str config.fux str config check" [];
     }
     Opt {
@@ -1627,7 +1627,7 @@ impl Host<'_> {
                 } else {
                     Some(cursor(&Value::str(text))?)
                 };
-                let timeout = Limit::read(within(&next()?, 0..=86400)?)
+                let timeout = Limit::read(within(&next()?, 0..=i64::from(u32::MAX))?)
                     .map_err(|why| fail(Raise::Range, why))?;
                 tell(Request::NextEvents {
                     scope,

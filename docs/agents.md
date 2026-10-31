@@ -101,9 +101,7 @@ panes as it begins and answers changes in watch order, not exit chronology.
   input, then count, so it is in the count, not in what you wait for; a
   program that draws the input again (a TUI that keeps it above the
   reply) counts it again. `hits` counts the lines of the last 1000 of
-  history and the screen (its `string` conversion holds
-  at most 1,000,000 characters, less than `history-bytes` may keep),
-  so a count can fall as lines scroll past them: choose a window the reply
+  history and the screen, so a count can fall as lines scroll past them: choose a window the reply
   surely comes within.
 
   ```fux
@@ -171,7 +169,7 @@ panes as it begins and answers changes in watch order, not exit chronology.
   let seen seen string print seen version print
   ```
 - **What changes anywhere:** `all str CURSOR SECONDS next-events` returns
-  a bounded record of ordered events, exact `next`, `missed`, and status.
+  a record of ordered events, exact `next`, `missed`, and status.
   Empty cursor starts now. Acquire the cursor before launching jobs to
   observe their first recorded exit; group waits do not give exit chronology.
   Fail or reconcile a fresh snapshot on `missed`; events invalidate state,
@@ -185,7 +183,7 @@ panes as it begins and answers changes in watch order, not exit chronology.
 
   The library stream prints NDJSON and checkpoints and ends after its
   explicit batch bound. Save the last successful checkpoint for the next
-  finite run; interpreter budgets remain in force. For hooks, use an
+  finite run. For hooks, use an
   ordinary program such as [program-copies.fux](../examples/hooks/program-copies.fux),
   filtering the triggering event and state as well as known origin.
   Origins identify supplied client/pane/program context; an external CLI
@@ -266,13 +264,13 @@ panes as it begins and answers changes in watch order, not exit chronology.
   key` (tmux's names: `Enter`, `Escape`, `Tab`, `BSpace`, `Up`, `PageDown`,
   `F5`, `C-c`, `M-s`, `S-Tab`; `Esc`, `Backspace`, `PgUp` too; a typo is
   refused; `key-names` lists the vocabulary), `str T paste` (bracketed if the program
-  asked), `str HEX bytes` (`1b5b41`). 900 KiB at most in all. A key
+  asked), `str HEX bytes` (`1b5b41`), as much as one request (1 MiB) carries. A key
   N times is a loop: `%2 0 3 range each drop str Down key end
   send-keys`. fuxth reads no files; the shell gives a file's text:
 
   ```sh
   fux %2 str "$(cat FILE)" paste send-keys   # drops its last line ends; one argument's size at most (Linux: 32 memory pages)
-  { printf "%s str '" %2; sed "s/'/'\\\\''/g" FILE; printf "' paste send-keys"; } | fux -   # all of it, send-keys' 900 KiB at most, quoted for fuxth
+  { printf "%s str '" %2; sed "s/'/'\\\\''/g" FILE; printf "' paste send-keys"; } | fux -   # all of it, quoted for fuxth
   ```
 - They are written together, in order, as the program's terminal takes
   them; an action answers once they are queued, not once the program
@@ -281,9 +279,8 @@ panes as it begins and answers changes in watch order, not exit chronology.
   `send-keys` or two, as one key: send Escape, wait until the program shows
   it took it (its mode line), then the next key. Keys sent to a program
   that exited or that closed its terminal (where the system says so:
-  Linux) are refused (`not_running`), and keys past what the pane's input
-  queue holds (1,048,768 bytes its program has not read) are refused whole
-  (`input_full`; more than the queue ever holds, `too_long`).
+  Linux) are refused (`not_running`). Keys a program does not read wait
+  for it, as many as memory holds.
 
   ```fux
   %2 str Escape key send-keys
@@ -406,8 +403,7 @@ Use `require profiles/agent.fux` to explicitly load shared definitions or
 policy before the whole program is checked. Paths are literal, relative to
 the requiring file or the invocation cwd for command-line/stdin roots.
 Canonical paths load once; cycles fail. No user config is imported implicitly
-by a CLI program. The source graph is capped at 16 MiB, 256 files, 32 require
-levels and 1,000,000 tokens; only regular files are admitted.
+by a CLI program. Only regular files are admitted.
 
 A file of fuxth runs with `fux --file FILE ARGS…` (or `fux -` from stdin;
 a script may start `#!/usr/bin/env -S fux --file`), and keeps its names
@@ -522,8 +518,8 @@ read-file`. `X warn` prints on stderr:
 - A tab no client shows, or only clients that watch, is laid out on its
   `size`; `TAB 40 12 resize` changes it, `resize-auto` gives it back to a
   client's screen, `PANE 95 percent str horizontal resize-pane` sizes a pane in its tab. A
-  size that cannot be had is refused (`size`, as is a screen past 4096 a
-  side, from `COLS ROWS size` or the server), and nothing changes; so is a split
+  size that cannot be had is refused (`size`, as is a screen past what a
+  grid holds, from `COLS ROWS size` or the server), and nothing changes; so is a split
   or a move that would hide a pane on the tab's own size or on a screen
   showing it (but one that sizes nothing: that only watches, or has no
   room below its bar).

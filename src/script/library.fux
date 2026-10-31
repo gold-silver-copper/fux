@@ -360,7 +360,7 @@ end
 define events-since
   let batches let seconds let cursor let scope
   batches 0 lt if str 'events takes 0 batches or more' fail then
-  seconds 0 lt seconds 86400 gt or if str 'events takes 0 to 86400 seconds' fail then
+  seconds 0 lt if str 'events takes 0 seconds or more' fail then
   scope cursor 0 next-events events-checked let batch
   cursor str '' eq if batch str next get let cursor then
   list str '{"event":"ready","from":' cursor json str '}' end glue print
@@ -388,7 +388,7 @@ define events str '' 30 0 events-since drop end
 define copy-notices
   let batches let seconds let cursor
   batches 1 lt if str 'copy-notices takes 1 batch or more' fail then
-  seconds 0 lt seconds 86400 gt or if str 'copy-notices takes 0 to 86400 seconds' fail then
+  seconds 0 lt if str 'copy-notices takes 0 seconds or more' fail then
   false let ended
   0 let taken
   begin

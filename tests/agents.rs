@@ -857,11 +857,11 @@ fn an_answer_selects_its_pane_explicitly_for_live_fields() -> Outcome {
     Ok(())
 }
 
-/// Input as large as one send-keys sends (900 KiB, far past a typed
-/// paste's 64 KiB) goes in one, all of it, from a program read from a
-/// file; more is refused as too long, before anything is sent.
+/// Input as large as one request carries (far past a typed paste's
+/// 64 KiB) goes in one, all of it, from a program read from a file; more
+/// than its frame holds is refused, before anything is sent.
 #[test]
-fn send_keys_takes_input_up_to_its_limit() -> Outcome {
+fn send_keys_takes_input_up_to_its_frame() -> Outcome {
     let server = Server::start("")?;
     let count = "stty -echo; head -c 921600 | wc -c; cat > /dev/null";
     let sink = id(&server.ok(&launch(&[], &["sh", "-c", count]))?);
@@ -874,21 +874,11 @@ fn send_keys_takes_input_up_to_its_limit() -> Outcome {
         &server.ok(&["--file", &file.to_string_lossy()])?,
         "921600",
     )?;
-    let long: String = std::iter::repeat_n('b', 1000).collect();
+    let long: String = std::iter::repeat_n('b', 1100).collect();
     let many = format!("{sink} 0 1000 range each drop str {long} text end send-keys");
     let refused = server.fux(&[&many])?;
     assert_eq!(refused.status, 1);
-    assert!(refused.stderr.contains("too_long"), "{}", refused.stderr);
-    // A key's encoded name and per-input overhead also count: adding one
-    // to the admitted full paste crosses the request boundary.
-    std::fs::write(
-        &file,
-        format!("{sink} str '{text}' paste str C-M-F12 key send-keys"),
-    )
-    .map_err(e)?;
-    let refused = server.fux(&["--file", &file.to_string_lossy()])?;
-    assert_eq!(refused.status, 1);
-    assert!(refused.stderr.contains("too_long"), "{}", refused.stderr);
+    assert!(refused.stderr.contains("exceeds"), "{}", refused.stderr);
     Ok(())
 }
 

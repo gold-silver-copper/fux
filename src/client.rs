@@ -2114,7 +2114,7 @@ mod tests {
     {
         let mut keyboard = keyboard(false)?;
         let prompt = fux_wire::callback::Prompt {
-            title: std::iter::repeat_n('t', fux_wire::protocol::MAX_FRAME - 2048).collect(),
+            title: std::iter::repeat_n('t', fux_wire::protocol::MAX_FRAME).collect(),
             line: fux_wire::act::Line::new(String::new()),
             action: None,
         };

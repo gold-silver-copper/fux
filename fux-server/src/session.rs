@@ -7696,14 +7696,10 @@ mod tests {
             caught.as_deref(),
             Ok("each walks a string or a list, not an integer\n")
         );
-        // A server word's answer that overflows the stack fails at the
-        // word, as an immediate word's would: a `try` catches it.
-        let full = "str stack_overflow try 0 1000000 range each end ls catch 2drop str caught end";
-        assert_eq!(output(&mut s, full).as_deref(), Ok("caught\n"));
-        // A wait's limit is a day at most: its deadline a time there is.
+        // A wait's limit is what the wire's 32 bits hold.
         let long = failed(&mut s, "%1 9223372036854775807 timeout wait");
         assert!(
-            long.starts_with("range: ") && long.contains("at most 86400 s"),
+            long.starts_with("range: ") && long.contains("at most 4294967295 s"),
             "{long}"
         );
         // A capture where text is taken: `string` makes it text.

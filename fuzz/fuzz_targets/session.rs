@@ -19,8 +19,7 @@ use fux::client_state::ClientState;
 use fux::keymap::Held;
 use fux::screens::{Dispatch, Job, Screen};
 use fux::script::testing::InProcess;
-use fux::script::{AsClient, Host, run_capped};
-use fux_server::copy::MAX_CLIPBOARD;
+use fux::script::{AsClient, Host, run};
 use fux_server::outer;
 use fux_server::render::{Grid, compose_view, paint_into};
 use fux_server::session::{Outgoing, Session};
@@ -176,12 +175,10 @@ fn size(rows: u8, cols: u8) -> (u16, u16) {
 }
 
 /// Words that read files, which a program typed at a prompt is not run
-/// with: a fuzzer finds /dev/zero.
-const READS: &[&str] = &["check"];
-
-/// How many steps a program may take: enough for any binding, few enough
-/// for a loop typed at the prompt to end.
-const BUDGET: u64 = 20_000;
+/// with: a fuzzer finds /dev/zero. And the words that loop or recurse,
+/// with which a program typed at a prompt might never end: fux leaves
+/// stopping one to its user.
+const READS: &[&str] = &["check", "begin", "define"];
 
 /// What anyone can tell apart: the session's items, each client's mode,
 /// notice and screen, the paste buffers, and each
@@ -295,7 +292,7 @@ impl Run {
         code: &str,
     ) -> (Result<String, String>, Option<Screen>) {
         let mut opened = None;
-        let said = self.program_opening(client, &code.into(), &mut opened, BUDGET);
+        let said = self.program_opening(client, &code.into(), &mut opened);
         (said, opened)
     }
 
@@ -304,7 +301,6 @@ impl Run {
         client: Option<ClientId>,
         job: &Job,
         opened: &mut Option<Screen>,
-        steps: u64,
     ) -> Result<String, String> {
         let told = |failed: fux::script::Failed| match client {
             Some(_) => failed.notice(),
@@ -312,7 +308,7 @@ impl Run {
         };
         let tokens = job.tokens().map_err(|e| told(e.into()))?;
         if tokens.iter().any(|t| READS.contains(&&*t.text)) {
-            return Err("reads a file".to_owned());
+            return Err("reads a file, or may not end".to_owned());
         }
         let mut machine = job.machine(self.keymap.config.as_ref()).map_err(told)?;
         let mut keymap = self.keymap.draft();
@@ -336,11 +332,10 @@ impl Run {
             opened: None,
             on_commit: Some(&mut publish),
         };
-        let ended =
-            run_capped(&mut machine, &mut host, &mut asks, Some(steps), None).and_then(|stack| {
-                fux::script::Asks::commit(&mut asks, &mut keymap, context)?;
-                Ok(stack)
-            });
+        let ended = run(&mut machine, &mut host, &mut asks, None).and_then(|stack| {
+            fux::script::Asks::commit(&mut asks, &mut keymap, context)?;
+            Ok(stack)
+        });
         *opened = asks.opened.filter(|_| client.is_some() && ended.is_ok());
         let mut text = String::from_utf8_lossy(&out).into_owned();
         for value in &ended.map_err(told)? {
@@ -412,7 +407,7 @@ impl Run {
     /// does with its bindings' and its prompt's programs.
     fn run_as(&mut self, client: ClientId, job: &Job) {
         let mut opened = None;
-        let said = self.program_opening(Some(client), job, &mut opened, BUDGET);
+        let said = self.program_opening(Some(client), job, &mut opened);
         if let Some(screen) = opened {
             self.open(client, screen);
         }
@@ -471,13 +466,12 @@ impl Run {
                     outer::BELL,
                 ]
                 .contains(&&*bytes) => {}
-            // A copy: OSC 52, with at most MAX_CLIPBOARD bytes of base64.
+            // A copy: OSC 52, its text in base64.
             Outgoing::To(_, ToAttached::Paint(bytes)) if bytes.starts_with(b"\x1b]52;c;") => {
                 let payload = bytes
                     .strip_prefix(b"\x1b]52;c;")
                     .and_then(|b| b.strip_suffix(b"\x07"))
                     .unwrap_or_else(|| panic!("not OSC 52: {bytes:?}"));
-                assert!(payload.len() <= MAX_CLIPBOARD, "{} bytes", payload.len());
                 assert!(
                     payload
                         .iter()
@@ -743,15 +737,8 @@ impl Run {
 
     /// What anyone can tell apart, as `State` lists it.
     fn state(&mut self) -> State {
-        // Formatting the observation uses the client budget; arbitrary side
-        // and key programs retain BUDGET. Large states must remain observable.
         let ls = self
-            .program_opening(
-                None,
-                &"ls listing".into(),
-                &mut None,
-                fux::script::PROGRAM_STEPS,
-            )
+            .program_opening(None, &"ls listing".into(), &mut None)
             .unwrap_or_else(|e| e);
         let screens = self
             .s

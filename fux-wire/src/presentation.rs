@@ -219,7 +219,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn presentation_transport_refuses_excess_fields_and_slot_text() -> Result<(), String> {
+    fn presentation_transport_refuses_what_no_bar_has() -> Result<(), String> {
         let p = sample()?;
         let mut bytes = Vec::new();
         p.put(&mut bytes);
@@ -231,16 +231,18 @@ mod tests {
         );
         bytes.clear();
         BarPosition::Bottom.put(&mut bytes);
-        17u32.put(&mut bytes);
+        vec![Field::Pane, Field::Pane].put(&mut bytes);
+        Vec::<Field>::new().put(&mut bytes);
+        false.put(&mut bytes);
         assert!(matches!(
             Reader::new(&bytes).whole::<Bar>(),
-            Err(Error::Bad("list length"))
+            Err(Error::Bad("bar description"))
         ));
         bytes.clear();
-        vec![(0u8, std::iter::repeat_n('x', 257).collect::<String>())].put(&mut bytes);
+        vec![(16u8, "x".to_owned())].put(&mut bytes);
         assert!(matches!(
             Reader::new(&bytes).whole::<Slots>(),
-            Err(Error::Bad("text length"))
+            Err(Error::Bad("bar slots"))
         ));
         bytes.clear();
         vec![(0u8, "escape\x1b".to_owned())].put(&mut bytes);

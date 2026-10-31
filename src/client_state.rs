@@ -299,7 +299,7 @@ mod tests {
             ("cell-placement", Value::str("cells")),
             ("history-bytes", Value::Int(-1)),
             ("history-bytes", Value::Int((1 << 30) + 1)),
-            ("wait-seconds", Value::Int(86_401)),
+            ("wait-seconds", Value::Int(1 << 32)),
             ("wait-seconds", Value::Int(-1)),
             ("bell", Value::Int(0)),
             ("bell", Value::str("off")),

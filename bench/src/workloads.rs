@@ -1316,7 +1316,7 @@ fn capture_history(baseline: bool, history: usize) -> Result<Done, String> {
             false,
         )
         .map_err(|e| e.to_string())?;
-        black_box(fux_wire::wire::encode(&capture).map_err(|e| e.to_string())?);
+        black_box(fux_wire::wire::encode(&capture));
     }
     Ok(Done {
         units: 1,

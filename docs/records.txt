@@ -7,7 +7,7 @@ answer[timed_out]: pane version status
 buffers[]: id bytes preview
 capture[client]: screen_rows screen_cols screen_cursor lines client
 capture[pane].cell: width height
-capture[pane].lost: input replies copies_cut copies_not_text pictures memory
+capture[pane].lost: copies_cut copies_not_text pictures memory
 capture[pane].pictures[]: row col rows cropped cols width height
 capture[pane].styles[][]: col len fg bg bold inverse hidden dim italic strikeout underline blink
 capture[pane]: screen_rows screen_cols screen_cursor lines styles pane version wrap_pending title program foreground_group foreground_leader launch_argv hung_up read_error exited signal alt_screen mouse mouse_mode bracketed_paste pictures lost cell cursor_visible history_bytes program_clipboard reflow alternate_scroll_lines picture_bytes history_lines copy_mode command_running last_status bells notification truncated input_unread cwd argv above
@@ -54,7 +54,7 @@ snapshot.facts.clients[].terminal.cell_reported: width height
 snapshot.facts.clients[].terminal: sixel_reported cell_reported underline_styles_reported kitty_flags_reported
 snapshot.facts.clients[]: id kind terminal output read_only rows cols pane_rows pane_cols workspace tab pane zoom opening mode
 snapshot.facts.panes[].state.cell: width height
-snapshot.facts.panes[].state.lost: input replies copies_cut copies_not_text pictures memory
+snapshot.facts.panes[].state.lost: copies_cut copies_not_text pictures memory
 snapshot.facts.panes[].state.pictures[]: row col rows cropped cols width height
 snapshot.facts.panes[].state: title program foreground_group foreground_leader launch_argv hung_up read_error exited signal alt_screen mouse mouse_mode bracketed_paste pictures lost cell cursor_visible history_bytes program_clipboard reflow alternate_scroll_lines picture_bytes history_lines copy_mode command_running last_status bells notification truncated input_unread cwd argv
 snapshot.facts.panes[]: id tab name label title pid rows cols version state
