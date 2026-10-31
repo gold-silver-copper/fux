@@ -116,6 +116,34 @@ The plan: `~/code/notes/projects/fux/testing-2026-10-31/PLAN.md`.
 | D-61 (S4-5) | **The second wave:** server structural assertions (`checks` feature), the flood bounds monitor and real-server fault cassettes (blocked reader, disconnect, exit during output) join M0b. The CLI state-machine model and the multi-client history check join M1, claiming only what recorded calls and observed effects establish. Action-sequence fuzzing and metamorphic relations wait for a finding | 8–2 | strategist: general lifecycle models and history-check frameworks wait for a reproduced coverage gap |
 | D-62 (S4-6) | **Only on a reproduced finding that needs them:** tapes, virtual-time replay, rr, Kani, TLA+/Quint, Antithesis. **Ruled out:** recording the frame protocol, a recording mode inside the server, whole-screen golden files, self-healing tests, replaying recorded model replies, external agent benchmarks as a gate | 10–0 | — |
 
+## Settled by the decision panel, sitting 5 (2026-10-31): fux as a minimal, introspectable multiplexer
+
+Ballot, votes and reasons: `~/code/notes/projects/fux/live/panel/2026-10-31-s5/`. Inputs: the ontology
+(`~/code/notes/projects/fux/ontology-2026-10-31/ontologist/ONTOLOGY.md`) and the gap check against master
+`04f4bd38` (`~/code/notes/projects/fux/ontology-2026-10-31/gaps/GAPS.md`). D-64 to D-66 change `VISION.md`, so they are
+**proposals to the owner** and take effect only on the owner's yes. D-67 to D-79 are settled now; D-80 waits
+for D-64 to D-66.
+
+| Id | Decision | Vote | Strongest dissent |
+|---|---|---|---|
+| D-64 (S5-1) | **Proposed goal:** "fux is a minimal terminal multiplexer, driven and configured entirely in fuxth, a small Forth, in which an agent can read every fact the ontology defines, learn every multiplexer and program-lifecycle change from the bounded journal, see screen changes through versions and captures, and get OS facts as live observations." The principles stay. The editor, the residents, the weekly report and the work-share measure leave fux's release conditions | 10–0 (round 2, all with this exact-promise wording) | Round 1: six for (a) as written; four said "every change" overclaims, since screen changes are counted, not journaled |
+| D-65 (S5-2) | **Proposed finish line for fux 1.0:** every row of the gap check, as amended by this sitting, is "have", and the adopted removals are done. Each changed contract is shown in the real app on the release head (D-48), and the gate passes. Bounded journal batches read by cursor (with `missed` counts) count as complete. Then fux's public words, records, events and codes freeze. Bug fixes, library definitions and internals stay free, and only a new thing, fact or event needs the owner. No resident week | 10–0 (round 2) | Round 1 "(a)" voters accepted the round-2 wording |
+| D-66 (S5-3) | **Proposed things table:** server, workspace, tab, pane, program, client, clip, journal; plus dictionary and word on the language side. The editor's rows move to fuxed's own vision | 10–0 | — |
+| D-67 (S5-4) | **Every terminal-state fact stays readable** (styles, OSC 8 links, sixel pictures, notifications, OSC 133 marks, the alternate screen, input modes): they are what the program drew, and fux-vt is frozen (D-42) | 10–0 | — |
+| D-68 (S5-5) | **Removals, all as 1.0 work:** buffers become clips and `unknown` becomes `outside`; `arranged` merges into `laid_out`; zoom has one owner; internal helpers become private; optional client-library policy leaves the public vocabulary; source-string callbacks become code values or word names; duplicate representations are derived | 10–0 | — |
+| D-69 (S5-6) | **One namespace for workspace, tab and pane names;** a taken name is refused (`name_taken`) | 10–0 | — |
+| D-70 (S5-7) | **Scope is a list of workspaces (or all)** carried by a pane: fixed when the pane is created, and inherited by its splits and programs. An attached client carries its own, and an outside caller is unconfined. An act outside scope is refused with its own code. **Confinement is in 1.0.** Reads and journal visibility stay global, as ROADMAP's M1 says | 8–2 | Architect, strategist: the same, stated as "every mutation enforced centrally" |
+| D-71 (S5-8) | **The journal records `input` and `signalled` for requests:** the pane, the kind and the byte count, never the text. Typing at a terminal stays out | 10–0 | — |
+| D-72 (S5-9) | **Zoom is a fact of the tab** | 10–0 | — |
+| D-73 (S5-10) | **One layout event, `laid_out`** | 10–0 | — |
+| D-74 (S5-11) | **A `limits` record word,** generated from the bounds' own definitions | 10–0 | — |
+| D-75 (S5-12) | **The dictionary as data:** `str NAME word` gives a record (name, effect, documentation, definition, codes, provenance), and `dictionary` gives the list in definition order. The string-splitting `words` is renamed | 8–2 | Computer scientist: effect and codes may be "unknown" for user definitions. Ontologist: give each definition its own identity |
+| D-76 (S5-13) | **Keys and preferences stay in each client,** and are readable as records | 10–0 | — |
+| D-77 (S5-14) | **No per-pane user variables** until a finding needs them | 10–0 | — |
+| D-78 (S5-15) | **The remaining input modes become facts:** `app_cursor`, `app_keypad`, `focus_events`, `mouse_encoding`, `keyboard_flags` | 10–0 | — |
+| D-79 (S5-16) | **M0b shrinks to two tasks:** `pane-budget`, including connection and pane admission (K10), and `client-region`. Each proves its bound with a flood beside an interactive pane and a blocked or disconnecting client. `caps-left` folds into the `limits` record (D-74). The small `Session::check()` invariants stay under the existing `checks` feature (counts only grow, an ended program is frozen, ids are never reused, the journal is ordered, a pane is in exactly one tab). The flood monitor and the wider fault framework wait for a finding | 8–2 (round 2) | Two for (a) without the checks |
+| D-80 (S5-17) | **After M0b, one list replaces M1b, M1 and the later milestones before 1.0:** the adopted gap tasks and removals, plus `since` and `faint-marks`, deduplicated and ordered by dependencies, then size, in disjoint lanes. `overlay-bar` is gap task 4, and `agent-page` comes last. Only the fuxth support those tasks need (code values for callbacks, word records, failure reports) comes before 1.0. The rest of fuxth (M2) and fuxed (M3) follow 1.0 as separate projects. Takes effect with D-64 to D-66 | 10–0 (round 2) | Round 1 split 5–5 only on ordering by dependencies, not size alone |
+
 ## Recorded disagreements (for later evidence, not to reopen now)
 
 - **A pre-run lint as a separate tool** (computer scientist, Lisp expert:
