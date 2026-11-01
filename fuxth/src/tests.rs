@@ -1348,3 +1348,61 @@ fn include_and_require_read_files_through_the_host() -> Result<(), Error> {
     assert_eq!(run_at("require c0.fux", u64::MAX, &mut host)?, ints(&[7]));
     Ok(())
 }
+
+/// An xt runs only in the machine that made it (or a copy made after it):
+/// its calls name versions by index, which mean other code in another
+/// machine, so another refuses it rather than run those.
+#[test]
+fn an_xt_of_another_machine_is_refused() -> Result<(), Error> {
+    let mut a = compile("define a 1 2 add end define b a end tick b")?;
+    assert_eq!(a.run(&mut Toy::default(), u64::MAX)?, Outcome::Finished);
+    let xt = a.stack().last().cloned().unwrap_or(Value::Int(0));
+    let mut copy = a.clone();
+    copy.read(token::source("t", "execute")?, None);
+    assert_eq!(copy.run(&mut Toy::default(), u64::MAX)?, Outcome::Finished);
+    assert_eq!(copy.stack().last(), Some(&Value::Int(3)), "a copy made after it runs it");
+    let mut b = compile("define c 5 end")?;
+    assert_eq!(b.run(&mut Toy::default(), u64::MAX)?, Outcome::Finished);
+    b.push(xt);
+    b.read(token::source("t", "execute")?, None);
+    let refused = b.run(&mut Toy::default(), 100_000).err();
+    assert_eq!(refused.map(|e| e.code), Some(Code::Type));
+    Ok(())
+}
+
+/// Lists in code in lists, however deep, are let go without a recursion.
+#[test]
+fn lists_and_code_nested_alternately_are_let_go_on_a_small_stack() -> Result<(), String> {
+    let nest = "code stop-compiling swap start-compiling literal end list end swap push\n";
+    let text = format!("list end\n{}drop", nest.repeat(20_000));
+    std::thread::Builder::new()
+        .stack_size(128 << 10)
+        .spawn(move || -> Result<(), String> {
+            let mut machine = compile(&text).map_err(|e| e.to_string())?;
+            let ran = machine.run(&mut Toy::default(), u64::MAX);
+            assert_eq!(ran.map_err(|e| e.to_string())?, Outcome::Finished);
+            assert!(machine.stack().is_empty());
+            drop(machine);
+            Ok(())
+        })
+        .map_err(|e| e.to_string())?
+        .join()
+        .map_err(|_| "letting the values go overflowed the stack".to_owned())?
+}
+
+/// A number or `str` written before a place a jump lands on is no count of
+/// the word after it, nor a `try`'s codes: each way through takes its own.
+#[test]
+fn a_count_before_a_jump_target_is_not_folded() -> Result<(), Error> {
+    let branches = "define f if 3 else 2 then pick end";
+    assert_eq!(run(&format!("{branches} 1 2 3 4 true f"))?, ints(&[1, 2, 3, 4, 1]));
+    assert_eq!(run(&format!("{branches} 1 2 3 4 false f"))?, ints(&[1, 2, 3, 4, 2]));
+    // Each pass of the loop takes its count from the stack.
+    let looped = "define g 0 begin pick 1 add nip dup 3 eq 0 swap until drop end 1 g";
+    let mut machine = compile(looped)?;
+    assert_eq!(machine.run(&mut Toy::default(), 100_000)?, Outcome::Finished);
+    assert_eq!(machine.stack(), ints(&[3]).as_slice());
+    let codes = "define h if str fail else str timeout then try 1 catch end end";
+    assert_eq!(code(run(codes)), Some("bad_codes"));
+    Ok(())
+}

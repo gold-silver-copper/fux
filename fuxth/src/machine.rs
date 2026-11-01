@@ -123,16 +123,43 @@ impl<A> Steps<A> {
     }
 }
 
-/// The code it holds is let go one after another, not as a recursion, so
-/// code values nested however deep never overflow the stack.
+/// The values it holds are let go one after another, not as a recursion
+/// (`value::release`), so code and lists nested however deep never
+/// overflow the stack.
 impl<A> Drop for Steps<A> {
     fn drop(&mut self) {
-        let mut ops = std::mem::take(&mut self.ops);
-        while let Some(op) = ops.pop() {
-            if let Op::Compile(code) | Op::Push(Value::Xt(Xt(code))) = op
-                && let Ok(mut code) = Rc::try_unwrap(code)
-            {
-                ops.append(&mut code.ops);
+        let mut values = Vec::new();
+        self.held(&mut values);
+        crate::value::release(values);
+    }
+}
+
+impl<A> Steps<A> {
+    /// The values its steps hold, moved into `values`.
+    pub(crate) fn held(&mut self, values: &mut Vec<Value<A>>) {
+        for op in std::mem::take(&mut self.ops) {
+            match op {
+                Op::Push(value) => values.push(value),
+                Op::Compile(code) => values.push(Value::Xt(Xt(code))),
+                Op::Builtin(_)
+                | Op::PickN(_)
+                | Op::RollN(_)
+                | Op::App(_)
+                | Op::Call(..)
+                | Op::Recurse
+                | Op::Leave
+                | Op::Jump(_)
+                | Op::JumpUnless(_)
+                | Op::SetLocal(_)
+                | Op::GetLocal(_)
+                | Op::SetGlobal(_)
+                | Op::GetGlobal(_)
+                | Op::ListStart
+                | Op::Gather
+                | Op::EachStart
+                | Op::EachNext(_)
+                | Op::Try(..)
+                | Op::Tried(_) => {}
             }
         }
     }
@@ -309,9 +336,6 @@ pub struct Machine<A> {
     versions: Rc<Vec<Rc<Steps<A>>>>,
     /// The versions made since the last `merge`, after `versions`.
     fresh: Vec<Rc<Steps<A>>>,
-    /// Where code another machine made (an xt it gave) is kept here, by
-    /// its address: kept, it is never freed for the address to be reused.
-    foreign: HashMap<usize, usize>,
     /// Each name's word, the latest version: code compiled before keeps
     /// the version it was compiled against.
     pub(crate) names: HashMap<Rc<str>, Entry<A>>,
@@ -365,7 +389,6 @@ impl<A: AppValue> Machine<A> {
             vocabulary: Rc::new(vocabulary),
             versions: Rc::new(Vec::new()),
             fresh: Vec::new(),
-            foreign: HashMap::new(),
             names: HashMap::with_capacity(Builtin::ALL.len().saturating_add(words)),
             latest: None,
             globals: Vec::new(),
@@ -434,23 +457,17 @@ impl<A: AppValue> Machine<A> {
         }
     }
 
-    /// Where `xt` is kept here: where it was made, or, made by another
-    /// machine, where it is kept from now on.
-    pub(crate) fn index_of(&mut self, xt: &Rc<Steps<A>>) -> usize {
-        if self
-            .version_at(xt.index)
-            .is_some_and(|code| Rc::ptr_eq(code, xt))
-        {
-            return xt.index;
+    /// Where `xt` is kept here, if this machine made it (or the machine it
+    /// was copied from, before the copy): its calls name versions by index,
+    /// which mean other code in another machine.
+    pub(crate) fn index_of(&self, xt: &Rc<Steps<A>>) -> Result<usize, Error> {
+        match self.version_at(xt.index) {
+            Some(code) if Rc::ptr_eq(code, xt) => Ok(xt.index),
+            Some(_) | None => {
+                let why = "an xt of another machine's: it runs only where it was made";
+                Err(self.fail(Code::Type, why))
+            }
         }
-        let address = Rc::as_ptr(xt) as usize;
-        if let Some(index) = self.foreign.get(&address) {
-            return *index;
-        }
-        let index = self.versions.len().saturating_add(self.fresh.len());
-        self.fresh.push(Rc::clone(xt));
-        self.foreign.insert(address, index);
-        index
     }
 
     /// The versions made since, kept with the rest: copied first only if a
@@ -649,9 +666,9 @@ impl<A: AppValue> Machine<A> {
         }
     }
 
-    /// Runs `code` in a frame of its own.
-    pub(crate) fn enter(&mut self, code: Rc<Steps<A>>) {
-        let index = self.index_of(&code);
+    /// Runs `code`, one of this machine's, in a frame of its own.
+    pub(crate) fn enter(&mut self, code: &Rc<Steps<A>>) -> Result<(), Error> {
+        let index = self.index_of(code)?;
         let base = self.locals.len();
         self.locals.resize(base.saturating_add(code.locals), None);
         self.frames.push(Frame::Code {
@@ -660,6 +677,7 @@ impl<A: AppValue> Machine<A> {
             via: None,
             locals: base,
         });
+        Ok(())
     }
 
     /// Runs up to `budget` steps: each word read is one, as each step of
@@ -910,10 +928,7 @@ impl<A: AppValue> Machine<A> {
                 self.push(value.clone());
                 Ok(None)
             }
-            _ => {
-                self.enter(xt);
-                Ok(None)
-            }
+            _ => self.enter(&xt).map(|()| None),
         }
     }
 
@@ -1668,8 +1683,7 @@ builtins! { m host;
         Err(m.fail(Code::Fail, text))
     }
     Execute "execute" [cold] (xt: Exec) "xt --" "run the word xt is" {
-        m.enter(xt);
-        Ok(())
+        m.enter(&xt)
     }
     Find "find" [cold] (s: Str) "s -- xt true | s false"
         "the word named s, as the dictionary has it now, and true; else s and false" {

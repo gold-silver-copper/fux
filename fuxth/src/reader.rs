@@ -272,7 +272,10 @@ impl<A: AppValue> Machine<A> {
             let why = format!("{} is compiled: it goes in a definition", xt.name);
             return Err(self.fail(Code::NotTopLevel, why));
         }
-        let call = xt.leaf().is_none().then(|| self.index_of(xt));
+        let call = match xt.leaf() {
+            Some(_) => None,
+            None => Some(self.index_of(xt)?),
+        };
         let Some(building) = self.building.last_mut() else {
             return Ok(());
         };
@@ -325,6 +328,9 @@ impl<A: AppValue> Machine<A> {
             return;
         };
         building.open = building.open.saturating_add(1);
+        // Where a construct begins is where a jump lands: a number written
+        // before it is no count of the word after it.
+        building.literal = false;
         let of = building.id;
         let mark = Mark {
             construct,
@@ -390,20 +396,23 @@ impl<A: AppValue> Machine<A> {
         self.stack.pop();
         if let Some(building) = self.building.last_mut() {
             building.open = building.open.saturating_sub(1);
+            // Where it closes is where a jump lands, as where it opens is.
+            building.literal = false;
         }
         Ok(mark)
     }
 
     /// After a construct closes: the top level's own code, none of its
     /// constructs open now, runs.
-    fn closed(&mut self) {
+    fn closed(&mut self) -> Result<(), Error> {
         let done =
             (self.building.last()).is_some_and(|b| matches!(b.kind, Kind::Temp) && b.open == 0);
         if done && let Some(building) = self.building.pop() {
             self.compiling = building.was_compiling;
             let code = self.version(building.code);
-            self.enter(code);
+            return self.enter(&code);
         }
+        Ok(())
     }
 
     fn len(&self) -> usize {
@@ -432,16 +441,14 @@ impl<A: AppValue> Machine<A> {
         let mark = self.close(&[Construct::If, Construct::Else], "no if is open")?;
         let here = self.len();
         self.patch(mark.at, here);
-        self.closed();
-        Ok(())
+        self.closed()
     }
 
     /// `until`.
     pub(crate) fn until(&mut self) -> Result<(), Error> {
         let mark = self.close(&[Construct::Begin], "no begin is open")?;
         self.compile(Op::JumpUnless(mark.at));
-        self.closed();
-        Ok(())
+        self.closed()
     }
 
     /// `try`, its codes the string written just before it: compiled
@@ -513,8 +520,7 @@ impl<A: AppValue> Machine<A> {
             }
             Construct::If | Construct::Else | Construct::Begin | Construct::Try => {}
         }
-        self.closed();
-        Ok(())
+        self.closed()
     }
 
     /// A definition or `code … end` closed: the word defined, or its xt

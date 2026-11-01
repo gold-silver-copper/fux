@@ -203,17 +203,31 @@ impl<A: PartialEq> PartialEq for List<A> {
     }
 }
 
-/// The lists in it are let go one after another, not as a recursion, so a
-/// list nested however deep never overflows the stack.
+/// The lists and code in it are let go one after another, not as a
+/// recursion, so values nested however deep never overflow the stack.
 impl<A> Drop for List<A> {
     fn drop(&mut self) {
-        let mut items = std::mem::take(&mut self.items);
-        while let Some(item) = items.pop() {
-            if let Value::List(list) = item
-                && let Ok(mut list) = Rc::try_unwrap(list)
-            {
-                items.append(&mut list.items);
+        release(std::mem::take(&mut self.items));
+    }
+}
+
+/// Lets `values` go, and what each held that nothing else holds: lists'
+/// items, and code's values (a list in code in a list…), from a stack of
+/// its own, not as a recursion.
+pub(crate) fn release<A>(mut values: Vec<Value<A>>) {
+    while let Some(value) = values.pop() {
+        match value {
+            Value::List(list) => {
+                if let Ok(mut list) = Rc::try_unwrap(list) {
+                    values.append(&mut list.items);
+                }
             }
+            Value::Xt(Xt(code)) => {
+                if let Ok(mut code) = Rc::try_unwrap(code) {
+                    code.held(&mut values);
+                }
+            }
+            Value::Int(_) | Value::Bool(_) | Value::Str(_) | Value::App(_) | Value::Mark(_) => {}
         }
     }
 }
