@@ -770,7 +770,8 @@ fn an_unnamed_workspace_replays_independently_of_the_default_shell() -> Outcome 
             "2\n"
         );
         for name in ["first", "second", "third"] {
-            let pid = server.ok(&["str", name, "pane", "str", "pid", "get"])?;
+            let program = ["str", name, "pane", "str", "program", "get"];
+            let pid = server.ok(&[&program[..], &["str", "pid", "get"]].concat())?;
             assert!(pid.trim().parse::<u32>().is_ok(), "{name}: {pid}");
         }
     }

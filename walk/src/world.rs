@@ -79,7 +79,7 @@ impl World {
                         rows: size(pane, "rows")?,
                         cols: size(pane, "cols")?,
                         pid: pane
-                            .get("pid")
+                            .pointer("/program/pid")
                             .and_then(Value::as_i64)
                             .and_then(|p| i32::try_from(p).ok())
                             .unwrap_or(0),

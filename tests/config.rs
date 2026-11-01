@@ -591,11 +591,12 @@ fn launches_save_the_callers_argv_role_and_environment() -> Outcome {
             Ok(!server.panes()?.iter().any(|(p, _)| p == pane))
         })?;
     }
+    let split = server.ok(&["%1", "str", "horizontal", "axis", "split", "info", "json"])?;
     assert!(
-        server
-            .ok(&["%1", "str", "horizontal", "axis", "split", "info", "json"])?
-            .contains("\"launch\":{\"choice\":\"shell\",\"argv\":[\"/bin/sh\"]")
+        split.contains(r#""generation":0,"argv":["/bin/sh"]"#),
+        "{split}"
     );
+    assert!(split.contains(r#""launch":{"choice":"shell""#), "{split}");
     let before = server.panes()?.len();
     for (conflict, code) in [
         (

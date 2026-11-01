@@ -82,14 +82,14 @@ impl Session {
                 } else {
                     let fields = crate::capture::state(pane)?;
                     let fields = fields.into_iter().map(|(k, v)| (k.to_owned(), v));
-                    let launch = pane.runs.launch();
                     let launch = inspect::Launch {
                         shell: matches!(pane.runs, crate::pane::Runs::Shell(_)),
-                        argv: launch.argv.iter().map(str::to_owned).collect(),
-                        cwd: path(launch.cwd.as_os_str()),
+                        cwd: path(pane.runs.launch().cwd.as_os_str()),
                     };
                     (Some(Json::Object(fields.collect())), Some(launch))
                 };
+                let program =
+                    (projection != Projection::Topology).then(|| crate::capture::program(pane));
                 let cwd = if projection == Projection::Recipe {
                     Some(match self.dir_with(*id, &mut Memory)? {
                         Ok(Some(dir)) => inspect::Directory::Known(path(dir.as_os_str())),
@@ -110,10 +110,10 @@ impl Session {
                     row: at.get(id).map(Rect::y),
                     col: at.get(id).map(Rect::x),
                     version: pane.version(self.run),
+                    program: program.transpose()?,
                     state,
                     launch,
                     cwd,
-                    pid: pane.process().child().map(|c| c.leader.pid().as_raw()),
                 };
                 snapshot.panes.push(fact);
             }

@@ -246,6 +246,27 @@ pub(super) fn from_json(value: &Json) -> Result<V, Failure> {
     Builder.json(value, 0)
 }
 
+/// A fact of a pane's as the server sent it (a live field, a captured one,
+/// its program in a snapshot): as JSON gives it, but that a record's `pane`
+/// is the handle it names in `run`, as a capture's own `pane` is.
+pub(super) fn pane_fact(value: &Json, run: Option<Run>) -> Result<V, Failure> {
+    let b = &mut Builder;
+    let Json::Object(fields) = value else {
+        return b.json(value, 0);
+    };
+    let mut out = Vec::with_capacity(fields.len());
+    for (key, value) in fields {
+        let value = match (key.as_str(), value) {
+            ("pane", Json::String(pane)) => {
+                Value::App(Fux::Pane(pane.parse().map_err(|_| fail())?, run))
+            }
+            _ => b.json(value, 1)?,
+        };
+        out.push((key.to_owned(), value));
+    }
+    b.finish(out, None)
+}
+
 pub(super) fn events(batch: fux_wire::events::Batch) -> Result<V, Failure> {
     use fux_wire::events::{Actor, Status};
     let run = batch.next.run;
@@ -378,17 +399,17 @@ pub(super) fn snapshot(s: inspect::Snapshot) -> Result<V, Failure> {
         let base = [
             ("id", id(AnyRef::Pane(p.id),run)), ("tab", id(AnyRef::Tab(p.tab),run)),
             ("name", b.optional(p.name.as_deref())?), ("label", b.text(&p.label)?), ("title", b.text(&p.title)?),
-            ("pid", p.pid.map(number).unwrap_or_else(|| Ok(null()))?),
             ("rows", number(p.rows)?), ("cols", number(p.cols)?),
             ("row", p.row.map(number).unwrap_or_else(|| Ok(null()))?), ("col", p.col.map(number).unwrap_or_else(|| Ok(null()))?),
             ("version", b.text(&p.version.to_string())?),
         ];
-        let mut fields = Vec::with_capacity(base.len().saturating_add(3));
+        let mut fields = Vec::with_capacity(base.len().saturating_add(4));
         for (key, value) in base { fields.push((key.to_owned(), value)); }
+        if let Some(program) = &p.program { fields.push(("program".to_owned(), pane_fact(program, Some(run))?)); }
         if let Some(state) = &p.state { fields.push(("state".to_owned(), b.json(state, 0)?)); }
         if let Some(l) = &p.launch {
             let launch = record! { b; "choice" => b.text(if l.shell { "shell" } else { "program" })?,
-                "argv" => b.list(&l.argv, |b,s| b.text(s))?, "cwd" => b.path(&l.cwd)?
+                "cwd" => b.path(&l.cwd)?
             }?;
             fields.push(("launch".to_owned(), launch));
         }
@@ -552,7 +573,7 @@ pub(super) fn answer_field(
                 (Of::Pane { state, .. }, None) => state
                     .iter()
                     .find(|(name, _)| name == field)
-                    .map(|(_, v)| b.json(v, 0))
+                    .map(|(_, v)| pane_fact(v, run))
                     .unwrap_or_else(|| Err(absent())),
                 (Of::Client(client), Some(CapturedField::Client)) => {
                     Ok(Value::App(Fux::Client(*client, run)))

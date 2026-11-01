@@ -2145,7 +2145,10 @@ mod tests {
         );
         for json in [capture?, info?] {
             let value = fux_wire::json::Json::str(Errno::SRCH.to_string()).render();
-            assert!(json.contains(&format!("\"read_error\":{value}")), "{json}");
+            let failed = format!(
+                r#""state":"read_failed","exited":null,"signal":null,"read_error":{value}"#
+            );
+            assert!(json.contains(&failed), "{json}");
         }
         Ok(())
     }

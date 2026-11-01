@@ -896,7 +896,7 @@ impl std::ops::Deref for PaneMut<'_> {
 }
 
 /// What a program left as it ended, or was respawned over: said with its
-/// end (`exited`, `respawned`), in its pane's JSON till it is respawned,
+/// end (`exited`, `respawned`), in its program's record till it is respawned,
 /// and in the notice of its end.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Left {

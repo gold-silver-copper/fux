@@ -1160,8 +1160,9 @@ fn keys_to_a_program_that_closed_its_terminal_are_refused() -> Outcome {
         let keys = server.fux(&["str", &pane, "pane", "str", "x", "text", "send-keys"])?;
         Ok(keys.stderr.starts_with("fux: not_running: "))
     })?;
-    let hung_up = server.ok(&["str", &pane, "pane", "str", "hung_up", "get"])?;
-    assert_eq!(hung_up, "true\n");
+    let state = ["str", "program", "get", "str", "state", "get"];
+    let hung_up = server.ok(&[&["str", &pane, "pane"][..], &state].concat())?;
+    assert_eq!(hung_up, "hung_up\n");
     let events = server.ok(&[
         "str",
         &pane,
@@ -1273,10 +1274,10 @@ fn until_ended_checks_before_waiting_and_keeps_status() -> Outcome {
     let pane = id(&server.ok(&launch(&[], &["sh", "-c", "exit 7"]))?);
     server.exits(&pane)?;
     for source in [pane.clone(), format!("{pane} capture")] {
-        let code = format!("{source} 1 until-ended 1 until-ended str exited get");
+        let code = format!("{source} 1 until-ended 1 until-ended str program get str exited get");
         assert_eq!(server.ok(&[&code])?, "7\n");
     }
-    let code = "opts str agent in 80 24 size str sh program str -c arg str 'sleep 0.1; exit 7' arg new-tab 1 timeout wait 1 until-ended str exited get";
+    let code = "opts str agent in 80 24 size str sh program str -c arg str 'sleep 0.1; exit 7' arg new-tab 1 timeout wait 1 until-ended str program get str exited get";
     assert_eq!(server.ok(&[code])?, "7\n");
     Ok(())
 }

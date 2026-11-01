@@ -13,8 +13,8 @@ panes an array of their objects). Rows and columns count from 0; times are milli
 
 ## A pane
 
-`ls json` gives each pane its identity and size, with process fields under `state` and what it was started as under `launch` (below); `PANE capture json` gives the identity and `state` fields too, but
-for `id`, `name`, `label` and `pid` (it says `pane`):
+`ls json` gives each pane its identity and size, its program under `program`, its terminal's fields under `state` and what it was started as under `launch` (below); `PANE capture json` gives the identity, `program` and `state` fields too, but
+for `id`, `name` and `label` (it says `pane`):
 
 | Field | Value |
 | --- | --- |
@@ -24,13 +24,8 @@ for `id`, `name`, `label` and `pid` (it says `pane`):
 | `title` | what the program set (OSC 0 or 2), else `""`, without control characters |
 | `rows`, `cols` | its size |
 | `row`, `col` | where it is in its tab, laid out on the tab's effective size; `null` where it has no place |
-| `pid` | its program's process, `null` once it exited, and while a respawn of it is under way |
 | `version` | its version, `%3:RESPAWNS.SCREEN.BELLS.DONE.ENDED:RUN`: its pane, its counts and the server's run (`fux help agents` says what each counts) |
-| `foreground_group` | the terminal's observed foreground process group id `G`, or `null` if unknown; its leader may have exited while other members still run. The OS says what it runs: `ps -o comm=,args= -p G`, `/proc/G/cmdline`, `readlink /proc/G/cwd` and `pgrep -a -g G` (every member) on Linux; `ps -o`, `lsof -a -p G -d cwd -Fn` and `pgrep -lf -g G` on macOS. Each is a separate read that may race with the group changing |
-| `hung_up` | its program closed its terminal and runs on: keys are refused (Linux says so; macOS, where fux holds the terminal open, does not) |
-| `read_error` | an unexpected PTY read failure as errno text, or `null`: a failed reader is no longer polled and refuses keys; the cause stays after exit until respawn |
-| `exited` | the status its program exited with (a pane started with a program, not a shell), else `null` |
-| `signal` | the signal that killed it (its number), else `null`; both `null` for a program that ended (its version's ENDED is 1) whose status was lost |
+| `program` | the program it holds, one record (below): the one it runs, or the one that ended, till a respawn's new program takes its place; `null` while a respawn lets go of a program that still ran, as the pane then holds none |
 | `alt_screen` | its program holds the full screen |
 | `mouse_mode` | the mouse reports its program asked for: `"press"`, `"press_release"`, `"button_motion"`, `"any_motion"`, `"highlight"`, or `null` for none |
 | `mouse_encoding` | how it asked for mouse reports to be spelled: `"default"` (coordinates as single bytes), `"utf8"` (1005), `"sgr"` (1006) or `"urxvt"` (1015) |
@@ -56,7 +51,25 @@ for `id`, `name`, `label` and `pid` (it says `pane`):
 | `notification` | the last notification's text, else `null`, without control characters |
 | `truncated` | which of `"title"` and `"notification"`, in that order, were cut, else `[]`: the fields above that the program sent more of than fux-vt keeps of a string (64 KiB), the rest dropped (`["notification"]`, `["title","notification"]`) |
 | `input_queued` | bytes of input fux accepted for its program and has not yet written to its terminal |
-| `input_unread` | bytes of input fux queued for its program and had not yet written to its terminal as it ended, let go (till it is respawned), else 0. Input written to its terminal that the program never read is not counted: the system does not say |
+
+A pane's `program` is one run of the process fux started in it, as its
+terminal's session leader: the pane and its `generation` name it, as
+`FUX_PANE` (`%3:GENERATION`) does. A respawn starts the next generation;
+until its program takes the pane's place, an ended program's record stays,
+its status with it:
+
+| Field | Value |
+| --- | --- |
+| `pane` | its pane, `"%3"` (a handle in fuxth) |
+| `generation` | how many times the pane was respawned before it started, its version's RESPAWNS |
+| `argv` | the checked words it was started with, which `respawn` and `dump` start again |
+| `pid` | its process, `null` once it ended |
+| `state` | `"running"`; `"hung_up"`, it closed its terminal and runs on: keys are refused (Linux says so; macOS, where fux holds the terminal open, does not); `"read_failed"`, reading its terminal failed (`read_error`): it is no longer read and refuses keys; `"ended"`, its version's ENDED is 1 |
+| `exited` | the status it exited with (a pane started with a program, not a shell), else `null` |
+| `signal` | the signal that killed it (its number), else `null`; both `null` for one that ended whose status was lost |
+| `read_error` | an unexpected PTY read failure as errno text, or `null`; it stays after its exit |
+| `input_unread` | bytes of input fux queued for it and had not yet written to its terminal as it ended, let go, else 0. Input written to its terminal that it never read is not counted: the system does not say |
+| `foreground_group` | the terminal's observed foreground process group id `G`, or `null` if unknown; its leader may have exited while other members still run. The OS says what it runs: `ps -o comm=,args= -p G`, `/proc/G/cmdline`, `readlink /proc/G/cwd` and `pgrep -a -g G` (every member) on Linux; `ps -o`, `lsof -a -p G -d cwd -Fn` and `pgrep -lf -g G` on macOS. Each is a separate read that may race with the group changing |
 
 ## Snapshots and local records
 
@@ -118,11 +131,11 @@ a tab's layout (a split, a close, a move or swap, `arrange`, a reshape, its fit
 or size, the clients' screens giving it another) emits one `laid_out` event with its new
 `layout_revision`; one with another host, its layout as it was, emits one at the same revision.
 
-Each pane has `id`, `tab`, `name`, `label`, `title`, `pid`, `rows`, `cols`,
+Each pane has `id`, `tab`, `name`, `label`, `title`, `rows`, `cols`,
 `row`, `col` and `version`. A name is given or null; a label is display text. Facts adds
-`state`, containing the process/terminal fields above but `title`, and
-`launch`, what it was started as: `choice` (`shell` or `program`), ordered
-`argv` and `cwd`, both choices' original inputs. Topology uses only
+`program`, `state`, containing the terminal fields above but `title`, and
+`launch`, what it was started as: `choice` (`shell` or `program`) and
+`cwd`, both choices' original inputs, with its program's `argv`. Topology uses only
 retained state and performs no process metadata queries. Recipe adds `cwd`,
 where the pane's program is now, which `dump` starts a shell in: null when
 unknown, `{status: known, path: ...}`, or
@@ -497,8 +510,8 @@ Of the language's own, fux's words give `unused`, `unknown_word` and
 ## `status`
 
 ```json
-{"socket":"/run/user/1000/fux/server.sock","release":"0.36.0","protocol":71,
- "server_release":"0.36.0","server_protocol":71,"server_pid":4242,"compatible":true}
+{"socket":"/run/user/1000/fux/server.sock","release":"0.36.0","protocol":72,
+ "server_release":"0.36.0","server_protocol":72,"server_pid":4242,"compatible":true}
 ```
 
 `status` returns an ordinary record with these locally readable fields. Plain

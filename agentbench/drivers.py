@@ -636,7 +636,7 @@ class Fux(Driver):
         return json.loads(self.fux(*self.pane(pane), "capture", "json").stdout)
 
     def exit_status(self, pane):
-        s = self.state(pane)
+        s = self.state(pane)["program"]
         if s["exited"] is not None:
             return s["exited"]
         return 128 + s["signal"] if s.get("signal") else None
