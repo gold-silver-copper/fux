@@ -2,15 +2,19 @@
 //! read of the libraries' words (`crate::script::docs`), so that it
 //! always says what this binary does; and the guide to driving programs
 //! from a script or an agent (`str agents explain`), which is
-//! `docs/agents.md`, built in.
+//! `docs/agents.md`, and the recipes (`str cookbook explain`), which are
+//! `docs/cookbook.md`, built in.
 use crate::script::{Act, After, Word};
 
 /// `docs/agents.md`.
 pub const AGENTS: &str = include_str!("../docs/agents.md");
 
+/// `docs/cookbook.md`.
+pub const COOKBOOK: &str = include_str!("../docs/cookbook.md");
+
 /// Of the guide, `agents` its first screen (all before its first topic),
-/// `guide` all of it, else the topic's section, headed `## TOPIC:`; `None`
-/// if it has none so named.
+/// `guide` all of it, `cookbook` the recipes, else the topic's section,
+/// headed `## TOPIC:`; `None` if it has none so named.
 fn guide(topic: &str) -> Option<String> {
     let first = AGENTS
         .split_once("\n## ")
@@ -18,6 +22,7 @@ fn guide(topic: &str) -> Option<String> {
     match topic {
         "agents" => return Some(first.to_owned()),
         "guide" => return Some(AGENTS.to_owned()),
+        "cookbook" => return Some(COOKBOOK.to_owned()),
         _ => {}
     }
     let heading = format!("\n## {topic}:");
@@ -32,7 +37,7 @@ fn guide(topic: &str) -> Option<String> {
 /// topics, as the guide's headings name them.
 pub fn unknown(name: &str) -> String {
     let topics = topics().join(" ");
-    format!("no word or topic {name:?}; the topics: agents {topics} guide")
+    format!("no word or topic {name:?}; the topics: agents {topics} guide cookbook")
 }
 
 /// The guide's topics, as its headings name them.
@@ -81,7 +86,7 @@ bounds it, answering `timeout`. A failure prints nothing more on stdout:
   124  timeout: a wait's limit came first
   141  stdout's reader went (a closed pipe), said nowhere
 Driving programs from a script or an agent: `fux help agents`; one word:
-`fux help WORD`.
+`fux help WORD`; recipes to copy: `fux help cookbook`.
 ",
     );
     // The language's parsing words and core, as fuxth says them: a block's
@@ -264,6 +269,7 @@ mod tests {
 
     /// The guide's topics, as `explain` and the guide's first screen
     /// list them, are its headings, which `explain` reads; none is a word.
+    /// The cookbook is a topic too, linked from there and from `fux help`.
     #[test]
     fn the_guide_lists_its_topics_as_its_headings_are() {
         let topics = super::topics();
@@ -280,7 +286,9 @@ mod tests {
         }
         let first = explain("agents").unwrap_or_default();
         let advertised = first.split_once("More:").map_or("", |(_, links)| links);
-        for topic in topics.iter().chain(&["guide"]) {
+        assert!(explain("cookbook").is_some_and(|text| text == COOKBOOK));
+        assert!(overview().contains("`fux help cookbook`"));
+        for topic in topics.iter().chain(&["guide", "cookbook"]) {
             let link = format!("`{topic}`");
             let command = format!("`fux help {topic}`");
             assert!(
