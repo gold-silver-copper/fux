@@ -2,16 +2,13 @@
 # expect: 3a2b1c4d
 # s -- s
 define encode
-  let s 0 let i
+  let s 0 let p
   list str ''
-    begin
-      i s len lt if
-        s i at let c 0 let n
-        begin i s len lt if s i at c eq else false then dup if i 1 add let i n 1 add let n then not until
-        n string c char
-        false
-      else true then
-    until
+    begin p s len lt while
+      s p at let c 0 let n
+      begin p s len lt if s p at c eq else false then while p 1 add to p n 1 add to n end
+      n string c char
+    end
   end concat
 end
 str aaabbcdddd encode
