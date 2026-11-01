@@ -3,11 +3,11 @@
 //! - A line starting with 0xff is a config statement: its next byte picks
 //!   `bind`, `bind-root`, `unbind`, `unbind-root`, `unbind-all`, `prefix`,
 //!   `label`, `group` or `repeat`, and each byte after picks a word for its
-//!   next slot. It is written as fuxth, compiled and run as a config is.
+//!   next slot. It is written as fuxth, and run as a config is.
 //! - A line starting with 0xfe is keys typed at the client: its next byte
 //!   says whether the client only watches (its top bit), and each byte
 //!   after picks a key for `Held::press`.
-//! - Any other line is fuxth source: split into tokens, compiled, and run
+//! - Any other line is fuxth source: split into tokens, and run
 //!   as a config for a bounded number of steps, up to its first request
 //!   for the server.
 use fux::keymap::{Binding, Held, Keymap, Layer, Node};
@@ -24,7 +24,7 @@ const KEYS: &[&str] = &[
     "é", "", "S-t", "s-g", "M-S-x", "C-S-a", "Escape", "Esc", "M-Escape", "C-b", "Enter", "F5",
     "Up", "Nope", "g n", "t m h", "r", "t n", "y l", "y h", "  ", "a Escape", "g Nope",
 ];
-/// Code to bind: programs that compile, and some that do not.
+/// Code to bind: programs that split into words, and some that do not.
 const CODES: &[&str] = &[
     "me zoom",
     "opts new-tab drop",
@@ -168,8 +168,9 @@ impl Models {
             |k: &KeyPress| k.key == fux_vt::keys::Key::Escape && !k.mods.ctrl && !k.mods.alt;
         match statement {
             Statement::Bind { keys, code, root } => {
-                // The code is compiled as it is bound.
-                if !compiles(code) {
+                // The code is split into words as it is bound; its words
+                // are found as it runs.
+                if !splits(code) {
                     return false;
                 }
                 let Ok(keys) = fux::keymap::keys(keys) else {
@@ -308,10 +309,8 @@ fn models_of(layer: &Layer) -> Vec<Model> {
         .collect()
 }
 
-fn compiles(code: &str) -> bool {
-    fuxth::token::source("binding", code)
-        .ok()
-        .is_some_and(|tokens| fux::script::compile(&tokens).is_ok())
+fn splits(code: &str) -> bool {
+    fuxth::token::source("binding", code).is_ok()
 }
 
 /// The rules every keymap keeps that its types do not: no empty layer, no
@@ -399,13 +398,13 @@ impl Client {
             .collect();
         for step in &steps {
             if let Effect::Run(fux::screens::Job { code, .. }) = step {
-                // Only a bound program runs, and it compiles: it did when it
-                // was bound.
+                // Only a bound program runs, and it splits into words: it
+                // did when it was bound.
                 assert!(
                     codes.contains(&code.as_str()) || (read_only && code == "me detach"),
                     "{code:?} runs but is not bound"
                 );
-                assert!(compiles(code), "{code:?} runs but does not compile");
+                assert!(splits(code), "{code:?} runs but does not split");
             }
         }
         if !read_only && held_before == Held::Normal {

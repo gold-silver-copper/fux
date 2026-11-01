@@ -165,7 +165,7 @@ number ( s -- n )
 join ( list sep -- s )
 split-on ( s sep -- list )
 is-space ( c -- flag )
-words ( s -- list )
+fields ( s -- list )
 lines ( s -- list )
 trim ( s -- s )
 starts-with ( s p -- flag )
@@ -197,14 +197,15 @@ rename-prompt ( client handle -- )
 confirm ( client title callback -- )
 confirm-close ( client handle -- )
 ls ( -- record )
+chooser-row ( record -- row )
 listing ( record -- string )
 dump-text ( text -- source )
 dump-id ( handle -- source )
 dump-first ( nodes index -- pane )
-dump-warnings ( pane-record -- source )
 dump-cwd ( launch -- path )
-dump-create ( pane-record prefix action -- source )
+dump-warnings ( pane-record -- source )
 dump-name ( pane source -- source )
+dump-create ( pane-record prefix action -- source )
 dump-recipe ( recipe -- source )
 dump ( scope -- text )
 layout-axis ( way -- way )
@@ -223,7 +224,6 @@ main-h ( tab -- )
 main-v ( tab -- )
 tiled ( tab -- )
 chooser-find ( records id -- record )
-chooser-row ( record -- row )
 chooser-container-row ( snapshot record -- row )
 chooser-index ( rows id -- index )
 chooser-selected ( rows current -- selected )
@@ -248,24 +248,39 @@ slice ( seq from to -- seq )
 concat ( list -- seq )
 push ( seq x -- seq )
 put ( seq i x -- seq )
-code ( c -- n )
-char ( n -- c )
+char ( c -- s )
 kind ( x -- name )
 string ( x -- s )
 print ( x -- )
+write ( x -- )
+emit ( c -- )
 fail ( x -- )
-## the language's syntax
-str str WORD
-require require PATH
-define define NAME … end
-end define NAME … end
-let X let NAME
-if BOOL if … else … then
-else BOOL if … else … then
-then BOOL if … else … then
-begin begin … BOOL until
-until begin … BOOL until
-list list … end
-each SEQ each … end
-try CODES try … catch … end
-catch CODES try … catch … end
+execute ( xt -- )
+find ( s -- xt true | s false )
+next-word ( -- s )
+immediate ( -- )
+compiling ( -- flag )
+start-compiling ( -- )
+stop-compiling ( -- ) immediate
+str ( -- s ) immediate
+define ( -- ) immediate
+end ( -- ) immediate
+code ( -- xt ) immediate
+let ( x -- ) immediate
+to ( x -- ) immediate
+tick ( -- xt ) immediate
+postpone ( -- ) immediate
+literal ( x -- ) immediate
+recurse ( -- ) immediate
+leave-definition ( -- ) immediate
+if ( flag -- ) immediate
+else ( -- ) immediate
+then ( -- ) immediate
+begin ( -- ) immediate
+until ( flag -- ) immediate
+list ( -- list ) immediate
+each ( seq -- ) immediate
+try ( codes -- ) immediate
+catch ( -- ) immediate
+include ( -- ) immediate
+require ( -- ) immediate

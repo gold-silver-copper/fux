@@ -20,13 +20,13 @@ use fux_server::socket::SocketPath;
 use fux_wire::answer::{PaneAnswer, PaneResults};
 use fux_wire::code::{Code, Raise};
 use fux_wire::command::{
-    AnyRef, Extent, HistoryBytes, Input, Kind, Limit, Program, Request, Run, Version, WsRef,
+    AnyRef, Extent, HistoryBytes, Input, Limit, Program, Request, Run, Version, WsRef,
 };
 use fux_wire::id::{ClientId, PaneId, TabId, WsId};
 use fux_wire::layout::Axis;
 use fux_wire::protocol::Choice;
 use fux_wire::protocol::{Asked, Body, Context, End, Reply, Response};
-use fuxth::{AppValue, Code as Lang, Compiler, Machine, Outcome, Token, Value, token};
+use fuxth::{AppValue, Code as Lang, Machine, Outcome, Token, Value, token};
 use std::io::{self, Read, Write};
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -36,8 +36,9 @@ pub use callback::admit;
 pub(crate) use words::NAMES;
 pub use words::{Act, After, Group, Keys, Opt, Row, Screen, Takes, Word, from_opts, usage};
 
-/// The frozen source image whose definitions a client's bindings and prompt see.
-pub type Config = Arc<fuxth::SourceImage>;
+/// The sources a client's config was read from, whose definitions its
+/// bindings and prompt see.
+pub type Config = Arc<source::Frozen>;
 
 /// The bundled words, written in fuxth.
 const LIBRARY: &str = include_str!("library.fux");
@@ -132,7 +133,13 @@ fn scope(value: &Value<Fux>) -> Option<Run> {
             | Fux::Answer(_, run),
         ) => *run,
         Value::App(Fux::Opts(opts)) => opts.of,
-        Value::Int(_) | Value::Bool(_) | Value::Str(_) | Value::List(_) | Value::App(_) => None,
+        Value::Int(_)
+        | Value::Bool(_)
+        | Value::Str(_)
+        | Value::List(_)
+        | Value::App(_)
+        | Value::Xt(_)
+        | Value::Mark(_) => None,
     }
 }
 
@@ -397,6 +404,8 @@ pub struct Host<'a> {
     /// Whether the word running failed on what one of its values holds,
     /// not on the value: told as the word said it (`words::described`).
     held: bool,
+    /// Where `include` and `require` read files.
+    pub(crate) files: source::Files,
 }
 
 impl<'a> Host<'a> {
@@ -408,6 +417,7 @@ impl<'a> Host<'a> {
             out,
             cli: false,
             held: false,
+            files: source::Files::default(),
         }
     }
 
@@ -530,8 +540,10 @@ fn told(mut error: fuxth::Error, usage: bool) -> Failed {
     }
 }
 
-/// The vocabulary fuxth compiles fux's programs with: the kinds that must
-/// be used, the words, and the codes they raise.
+/// The vocabulary fuxth runs fux's programs with: the kinds that must be
+/// used, the words, the codes they raise, and the ids it reads as handles:
+/// `%3` is `str %3 pane`, `@2` is `str @2 tab`, `+1` is `str +1
+/// workspace`, which no name may be.
 pub fn vocabulary() -> Result<fuxth::Vocabulary, fuxth::Error> {
     let mut vocabulary = fuxth::Vocabulary::default();
     for (kind, _, unused) in words::KINDS {
@@ -545,71 +557,58 @@ pub fn vocabulary() -> Result<fuxth::Vocabulary, fuxth::Error> {
     for code in Code::all().filter(|c| c.raised()) {
         vocabulary.raises(code.into())?;
     }
+    vocabulary.literals(|text| Some(text.parse::<AnyRef>().ok()?.kind().name()));
     Ok(vocabulary)
 }
 
-/// The bundled dictionary and this client's frozen definitions.
-fn base(config: Option<&Config>) -> Result<Compiler<Fux>, fuxth::Error> {
-    let broken = |f: Failed| fuxth::Error::new(Lang::Contract, f.located(), None);
-    let ready = READY.with(|ready| ready.as_ref().map(|(c, _)| c.clone()).map_err(Clone::clone));
-    let compiler = ready.map_err(broken)?;
+/// The bundled dictionary, and this client's config's definitions.
+fn base(config: Option<&Config>) -> Result<Machine<Fux>, Failed> {
+    let ready = READY.with(|ready| ready.as_ref().map(|(m, _)| m.clone()).map_err(Clone::clone))?;
     match config {
-        Some(config) => configured_compiler(config, compiler),
-        None => Ok(compiler),
+        Some(config) => configured_machine(config, ready),
+        None => Ok(ready),
     }
 }
 
-/// Compiles `tokens` after the library: a program ready to run.
+/// A machine with the library, to read `tokens`: a program ready to run.
 pub fn compile(tokens: &[Token]) -> Result<Machine<Fux>, Failed> {
-    compiled(None, tokens).map_err(Failed::from)
+    compiled(None, tokens)
 }
 
-/// Compiles `tokens` after the library and, for a key's or the prompt's
-/// program, its client's config's definitions (`config`); its mistake as
-/// fuxth says it.
-pub(crate) fn compiled(
-    config: Option<&Config>,
-    tokens: &[Token],
-) -> Result<Machine<Fux>, fuxth::Error> {
-    let mut compiler = base(config)?;
-    compiler.add(&handles(tokens)?)?;
-    Ok(Machine::new(compiler.finish()?))
+/// A machine with the library and, for a key's or the prompt's program,
+/// its client's config's definitions (`config`), to read `tokens`.
+pub(crate) fn compiled(config: Option<&Config>, tokens: &[Token]) -> Result<Machine<Fux>, Failed> {
+    let mut machine = base(config)?;
+    machine.read(tokens.to_vec(), None);
+    Ok(machine)
 }
 
 fn callback_failed(f: fuxth::Failure) -> Failed {
     Failed::new(Code::of(f.code), f.message)
 }
 
-/// Resolve executable callback source now; its input kinds are supplied at opening.
-fn callback_source(config: Option<&Config>, tokens: &[Token]) -> Result<(), Failed> {
-    let mut compiler = base(config)?;
-    compiler.add(&handles(tokens)?)?;
-    compiler.source_complete().map_err(Failed::from)
-}
-
-/// Compile explicit callback source with actual immutable arguments.
+/// A callback's machine: its immutable arguments on the stack, to be used
+/// up, and its source to read.
 pub(crate) fn callback_machine(
     config: Option<&Config>,
     tokens: &[Token],
     args: Option<&[fux_wire::callback::Data]>,
 ) -> Result<Machine<Fux>, Failed> {
-    let Some(args) = args else {
-        return compiled(config, tokens).map_err(Failed::from);
-    };
-    let mut compiler = base(config)?;
-    for arg in args {
-        compiler.argument(callback::value(arg).map_err(callback_failed)?);
+    let mut machine = base(config)?;
+    if let Some(args) = args {
+        for arg in args {
+            machine.push(callback::value(arg).map_err(callback_failed)?);
+        }
+        machine.callback();
     }
-    compiler.add(&handles(tokens)?)?;
-    Ok(Machine::new(compiler.finish_callback()?))
+    machine.read(tokens.to_vec(), None);
+    Ok(machine)
 }
 
-/// Config definitions, checked eagerly and cached for this thread's last
-/// config. Library summaries are shared with `READY` as words are reached.
-fn configured_compiler(
-    config: &Config,
-    mut compiler: Compiler<Fux>,
-) -> Result<Compiler<Fux>, fuxth::Error> {
+/// The dictionary a config leaves: the config read again, from the
+/// sources it was read from, on a client state of its own that is let go,
+/// as it changes nothing else. Cached for this thread's last config.
+fn configured_machine(config: &Config, mut machine: Machine<Fux>) -> Result<Machine<Fux>, Failed> {
     if let Some(ready) = CONFIGURED.with_borrow(|c| {
         (c.as_ref())
             .filter(|(of, _)| of == config)
@@ -617,36 +616,38 @@ fn configured_compiler(
     }) {
         return Ok(ready);
     }
-    compiler.add(&handles(&config.tokens())?)?;
-    let ready = compiler.definitions();
-    CONFIGURED.set(Some((Arc::clone(config), ready.clone())));
-    Ok(ready)
+    let mut draft = default_state()?.draft();
+    machine.read(config.tokens()?, config.path.clone());
+    let mut out = io::sink();
+    let mut host = Host::new(Context::default(), Some(&mut draft), &mut out);
+    host.files = source::Files::frozen(Arc::clone(config));
+    run(&mut machine, &mut host, &mut ConfigOnly::default(), None)?;
+    machine.clear();
+    CONFIGURED.set(Some((Arc::clone(config), machine.clone())));
+    Ok(machine)
 }
 
 thread_local! {
-    /// The libraries, compiled once a thread, and their help. Clones share
-    /// library summaries checked on demand by programs and bound actions.
-    static READY: Result<(Compiler<Fux>, Rc<[fuxth::Doc]>), Failed> = libraries();
-    /// The last config's, as `configured_compiler` made it.
-    static CONFIGURED: std::cell::RefCell<Option<(Config, Compiler<Fux>)>> =
+    /// The libraries, read once a thread, and their help.
+    static READY: Result<(Machine<Fux>, Rc<[fuxth::Doc]>), Failed> = libraries();
+    /// The last config's, as `configured_machine` made it.
+    static CONFIGURED: std::cell::RefCell<Option<(Config, Machine<Fux>)>> =
         const { std::cell::RefCell::new(None) };
 }
 
-/// The client's libraries, compiled with an empty shared summary cache;
-/// the bench counts this initialization cold. Its mistake is told
-/// without a word's usage, which would read `READY` as it is made.
-pub fn libraries() -> Result<(Compiler<Fux>, Rc<[fuxth::Doc]>), Failed> {
+/// The client's libraries, read; the bench counts this initialization
+/// cold. Its mistake is told without a word's usage, which would read
+/// `READY` as it is made.
+pub fn libraries() -> Result<(Machine<Fux>, Rc<[fuxth::Doc]>), Failed> {
     let told = |error| told(error, false);
-    let mut compiler = Compiler::new(vocabulary().map_err(told)?);
-    let mut docs = compiler
-        .library("stdlib.fux", fuxth::STDLIB)
-        .map_err(told)?;
-    docs.extend(compiler.library("library.fux", LIBRARY).map_err(told)?);
-    Ok((compiler, docs.into()))
+    let mut machine = Machine::new(vocabulary().map_err(told)?);
+    let mut docs = machine.library("stdlib.fux", fuxth::STDLIB).map_err(told)?;
+    docs.extend(machine.library("library.fux", LIBRARY).map_err(told)?);
+    Ok((machine, docs.into()))
 }
 
 /// The standard library's and fux's library's words, as help says them.
-/// Libraries that fail to compile leave none, but no help asks then: every
+/// Libraries that fail to read leave none, but no help asks then: every
 /// program, `help` too, fails first with why.
 pub fn docs() -> Rc<[fuxth::Doc]> {
     READY.with(|ready| {
@@ -654,49 +655,6 @@ pub fn docs() -> Rc<[fuxth::Doc]> {
             .as_ref()
             .map_or_else(|_| Rc::from([]), |(_, docs)| Rc::clone(docs))
     })
-}
-
-/// A bare id is the handle it names: `%3` is `str %3 pane`, `@2` is
-/// `str @2 tab`, `+1` is `str +1 workspace`; but not where it is the token
-/// a parsing word reads (`str`'s text). Nor may one be given as a name
-/// (by `define` or `let`): it would always be the handle. Nor may a name
-/// be a word an id becomes (`pane`): every id would then be its.
-fn handles(tokens: &[Token]) -> Result<Vec<Token>, fuxth::Error> {
-    let mut out = Vec::with_capacity(tokens.len());
-    let mut after: Option<fuxth::Read> = None;
-    for token in tokens {
-        let id = token.text.parse::<AnyRef>().ok();
-        let named = |why: String| fuxth::Error::new(Lang::BadName, why, Some(token));
-        match (after, id) {
-            (Some(fuxth::Read::Name), None)
-                if Kind::ALL.iter().any(|k| k.name() == &*token.text) =>
-            {
-                let kind = &token.text;
-                return Err(named(format!(
-                    "cannot be defined: a {kind} id is `str ID {kind}`"
-                )));
-            }
-            (Some(fuxth::Read::Name), Some(id)) => {
-                return Err(named(format!(
-                    "cannot be defined: it names a {}",
-                    id.kind().name()
-                )));
-            }
-            (None, Some(id)) => {
-                let at = |text: &str| Token {
-                    text: text.into(),
-                    place: token.place.clone(),
-                };
-                out.extend([at("str"), token.clone(), at(id.kind().name())]);
-            }
-            (Some(fuxth::Read::Name), None) | (Some(fuxth::Read::Text), _) | (None, None) => {
-                out.push(token.clone())
-            }
-        }
-        let reads = fuxth::Parsing::named(&token.text).and_then(fuxth::Parsing::reads);
-        after = after.is_none().then_some(reads).flatten();
-    }
-    Ok(out)
 }
 
 /// Where a program's requests go: a connection made when the first is.
@@ -1434,9 +1392,8 @@ fn config_state(defaults: &ClientState) -> Result<ClientState, Failed> {
     let Some(path) = default_path() else {
         return Ok(defaults.clone());
     };
-    let shown = path.display().to_string();
-    let (path, file) = match source::root(&path) {
-        Ok(file) => file,
+    let config = match source::Frozen::file(&path) {
+        Ok(config) => config,
         Err(error)
             if error.kind() == io::ErrorKind::NotFound
                 && path
@@ -1445,31 +1402,39 @@ fn config_state(defaults: &ClientState) -> Result<ClientState, Failed> {
         {
             return Ok(defaults.clone());
         }
-        Err(error) => return Err(read_failed(&shown, &error.to_string())),
+        Err(error) => return Err(read_failed(&path.display().to_string(), &error.to_string())),
     };
-    run_config_on(source::opened_file(path, file)?, defaults)
+    run_config_on(config, defaults)
 }
 
-/// Reads a frozen config graph and runs it without a transport capability.
+/// Reads a config file and runs it without a transport capability, its
+/// sources kept for its bindings.
 pub fn run_file(path: &std::path::Path) -> Result<ClientState, Failed> {
-    run_config(source::file(path)?)
+    let config = source::Frozen::file(path)
+        .map_err(|e| read_failed(&path.display().to_string(), &e.to_string()))?;
+    run_config_on(config, &default_state()?)
 }
 
-fn run_config(image: fuxth::SourceImage) -> Result<ClientState, Failed> {
-    run_config_on(image, &default_state()?)
-}
-
-fn run_config_on(image: fuxth::SourceImage, defaults: &ClientState) -> Result<ClientState, Failed> {
-    let tokens = image.tokens();
+fn run_config_on(config: source::Frozen, defaults: &ClientState) -> Result<ClientState, Failed> {
     let mut draft = defaults.draft();
-    draft.config = Some(Arc::new(image));
-    run_quiet(&tokens, Some(&mut draft), false)?;
+    let mut machine = base(None)?;
+    machine.read(config.tokens()?, config.path.clone());
+    let files = quiet(machine, Some(&mut draft), false)?;
+    draft.config = Some(Arc::new(config.with(files)));
     draft.finish().map_err(|why| Failed::new(Code::Config, why))
 }
 
 /// Runs config code with only local reads and draft mutations.
 fn run_quiet(tokens: &[Token], state: Option<&mut Draft>, diagnostics: bool) -> Result<(), Failed> {
-    let mut machine = compile(tokens)?;
+    quiet(compile(tokens)?, state, diagnostics).map(drop)
+}
+
+/// Runs `machine`'s config code as `run_quiet` does: the files it read.
+fn quiet(
+    mut machine: Machine<Fux>,
+    state: Option<&mut Draft>,
+    diagnostics: bool,
+) -> Result<source::Files, Failed> {
     let mut out = io::sink();
     let mut host = Host::new(Context::default(), state, &mut out);
     run(
@@ -1477,8 +1442,8 @@ fn run_quiet(tokens: &[Token], state: Option<&mut Draft>, diagnostics: bool) -> 
         &mut host,
         &mut ConfigOnly { diagnostics },
         None,
-    )
-    .map(drop)
+    )?;
+    Ok(host.files)
 }
 
 /// Config evaluation has no server or connection, even through imports.
@@ -1549,12 +1514,14 @@ pub fn main(
         writeln!(out, "{}", fux_wire::protocol::Build::OURS).map_err(output_failed)?;
         return Ok(0);
     }
-    let (tokens, from, program) = program(args)?;
+    let (tokens, path, from, program) = program(args)?;
+    let again = (argv.clone()).map(|argv| client::Rerun {
+        argv,
+        program: program.clone(),
+    });
     let rerun = argv.map(|argv| client::Rerun { argv, program });
-    let mut machine = match compiled(None, &tokens) {
-        Ok(machine) => machine,
-        Err(error) => return Err(uncompiled(error.into(), rerun.as_ref())),
-    };
+    let mut machine = base(None).map_err(|failed| uncompiled(failed, again.as_ref()))?;
+    machine.read(tokens, path);
     let mut state = Draft::default();
     let acted = Acted::default();
     let mut out = Watched {
@@ -1575,6 +1542,12 @@ pub fn main(
         acted,
     };
     let ran = run(&mut machine, &mut host, &mut cli, None);
+    // A word this fux lacks, met before the program did anything outside
+    // it, may be the server's: its binary is followed.
+    let ran = ran.map_err(|failed| match failed.code == Code::of(Lang::UnknownWord) {
+        true if !cli.acted.marked() => uncompiled(failed, again.as_ref()),
+        true | false => failed,
+    });
     // What the words before a failure left is printed too: their answers.
     // The run's failure, if it failed, came first, and is the one told.
     let stack = match &ran {
@@ -1596,11 +1569,12 @@ pub fn main(
     Ok(cli.status.unwrap_or(0))
 }
 
-/// A command line this fux cannot compile, `failed`, which the server's
-/// may: a server of another protocol on the socket chosen before the
-/// program (`FUX_SOCKET`, else `server.sock`) is followed (`client::follow`)
-/// with `rerun`, if given, as nothing of it has run. Else why it failed; or,
-/// a mismatch found and not followed, the mismatch, with that as context.
+/// A command line this fux cannot read, `failed`, which the server's may:
+/// a server of another protocol on the socket chosen before the program
+/// (`FUX_SOCKET`, else `server.sock`) is followed (`client::follow`) with
+/// `rerun`, if given, as nothing it did reached outside. Else why it
+/// failed; or, a mismatch found and not followed, the mismatch, with that
+/// as context.
 fn uncompiled(failed: Failed, rerun: Option<&client::Rerun>) -> Failed {
     let Some(rerun) = rerun else {
         return failed;
@@ -1613,10 +1587,7 @@ fn uncompiled(failed: Failed, rerun: Option<&client::Rerun>) -> Failed {
     };
     let unfollowed = client_failed(client::follow(said, server, rerun));
     Failed {
-        message: format!(
-            "{}; this fux cannot compile it: {failed}",
-            unfollowed.message
-        ),
+        message: format!("{}; this fux cannot read it: {failed}", unfollowed.message),
         ..unfollowed
     }
 }
@@ -1645,24 +1616,36 @@ fn written(out: &mut dyn Write, value: &Value<Fux>) -> Result<(), Failed> {
     writeln!(out).map_err(output_failed)
 }
 
-/// The program `args` give, where it came from, and its text if that was
-/// stdin, which it has then read: none attaches; `-` is stdin; `--file
-/// FILE ARGS…` a file, the arguments after it its own (`#!/usr/bin/env -S
-/// fux --file`); help as other programs give it; any other one argument a
-/// whole program, as a shell passes `fux 'ls json'`, never a file, whatever
-/// it holds; else each is a word.
-fn program(args: &[String]) -> Result<(Vec<Token>, Given, Option<String>), Failed> {
+/// The program `args` give, its file, where it came from, and its text if
+/// that was stdin, which it has then read: none attaches; `-` is stdin;
+/// `--file FILE ARGS…` a file, any that reads, the arguments after it its
+/// own (`#!/usr/bin/env -S fux --file`); help as other programs give it;
+/// any other one argument a whole program, as a shell passes `fux 'ls
+/// json'`, never a file, whatever it holds; else each is a word.
+/// A program as `program` gives it: its words, its file, where it came
+/// from, and its text if it was stdin's.
+type Loaded = (
+    Vec<Token>,
+    Option<std::path::PathBuf>,
+    Given,
+    Option<String>,
+);
+
+fn program(args: &[String]) -> Result<Loaded, Failed> {
     let words = match args {
         [] => token::arguments(&["default-attach"]),
         // A program read whole.
         [dash] if dash == "-" => {
             let text = read_text("stdin", io::stdin())?;
-            let tokens = source::text("stdin", &text)?.tokens();
-            return Ok((tokens, Given::Stdin, Some(text)));
+            let tokens = token::source("stdin", &text)?;
+            return Ok((tokens, None, Given::Stdin, Some(text)));
         }
         [flag, file, rest @ ..] if flag == "--file" => {
-            let tokens = source::file(file.as_ref())?.tokens();
-            return Ok((tokens, Given::File(rest.to_vec()), None));
+            let failed = |e: io::Error| read_failed(file, &e.to_string());
+            let path = std::path::Path::new(file).canonicalize().map_err(failed)?;
+            let text = source::read(&path).map_err(failed)?;
+            let tokens = token::source(&path.display().to_string(), &text)?;
+            return Ok((tokens, Some(path), Given::File(rest.to_vec()), None));
         }
         [flag] if flag == "--file" => {
             return Err(Failed::new(
@@ -1675,12 +1658,12 @@ fn program(args: &[String]) -> Result<(Vec<Token>, Given, Option<String>), Faile
         [help, topic] if help == "help" => token::arguments(&["str", topic, "explain"]),
         [flag] if matches!(flag.as_str(), "--help" | "-h") => token::arguments(&["help"]),
         [line] => {
-            let tokens = source::text("command line", line)?.tokens();
-            return Ok((tokens, Given::Words, None));
+            let tokens = token::source("command line", line)?;
+            return Ok((tokens, None, Given::Words, None));
         }
         words => token::arguments(words),
     };
-    Ok((source::arguments(&words)?.tokens(), Given::Words, None))
+    Ok((words, None, Given::Words, None))
 }
 
 fn read_failed(name: &str, why: &str) -> Failed {
@@ -1876,6 +1859,8 @@ pub(crate) mod tests {
                         }
                     }
                     fuxth::Value::Int(_)
+                    | fuxth::Value::Xt(_)
+                    | fuxth::Value::Mark(_)
                     | fuxth::Value::Bool(_)
                     | fuxth::Value::Str(_)
                     | fuxth::Value::List(_)
@@ -1979,7 +1964,7 @@ pub(crate) mod tests {
         let mut told = Vec::new();
         for depth in [10, 5000] {
             let code = format!(
-                "define deep dup 0 eq if drop list end first else 1 sub deep 1 add then end {depth} deep"
+                "define deep dup 0 eq if drop list end first else 1 sub recurse 1 add then end {depth} deep"
             );
             let mut machine = compile(&token::source("deep", &code)?)?;
             let mut sink = io::sink();
@@ -2500,7 +2485,7 @@ pub(crate) mod tests {
     fn one_argument_is_a_program() -> Result<(), super::Failed> {
         let words = |args: &[&str]| -> Result<Vec<String>, super::Failed> {
             let args: Vec<String> = args.iter().map(|a| (*a).to_owned()).collect();
-            let (tokens, given, _) = super::program(&args)?;
+            let (tokens, _, given, _) = super::program(&args)?;
             assert_eq!(given, super::Given::Words);
             Ok(tokens.into_iter().map(|t| t.text.to_string()).collect())
         };

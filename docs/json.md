@@ -407,9 +407,9 @@ memory where fux asks for it, the failure is `memory`.
 `docs/codes.txt` lists every code with its exit status.
 
 A program catches the failures its words give, by code, with `try` (`fux
-help try`); a code no running word gives is refused before it runs. Of the
-language's own, fux's words give `unused`, `unknown_word` and `bad_name` as
-they run, so a `try` may name them too.
+help try`); a code no running word gives is refused as the `try` is read.
+Of the language's own, fux's words give `unused`, `unknown_word` and
+`bad_name` as they run, so a `try` may name them too.
 
 ## `status`
 

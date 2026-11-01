@@ -385,13 +385,13 @@ fn mistakes_name_what_the_program_wrote() -> Outcome {
     for (words, usage) in [
         (
             &["str", "a", "if", "1", "then"][..],
-            "(use: BOOL if … else … then)",
+            "(use: flag if … else … then)",
         ),
-        (&["3", "each", "1", "end"][..], "(use: SEQ each … end)"),
-        (&["let", "X"][..], "(use: X let NAME)"),
+        (&["3", "each", "1", "end"][..], "(use: seq each … end)"),
+        (&["let", "X"][..], "(use: x let NAME)"),
         (
             &["begin", "str", "x", "until"][..],
-            "(use: begin … BOOL until)",
+            "(use: begin … flag until)",
         ),
     ] {
         let wrong = said(words)?;
@@ -405,7 +405,7 @@ fn mistakes_name_what_the_program_wrote() -> Outcome {
     );
     let named = said(&["1", "let", "+7"])?;
     assert!(
-        named.contains("+7: cannot be defined: it names a workspace"),
+        named.contains("cannot be defined: it is read as `str +7 workspace`"),
         "{named}"
     );
     let client = said(&["str", "c9", "client", "focused"])?;

@@ -582,6 +582,11 @@ impl<A: AppValue> Machine<A> {
 
     /// `let NAME`.
     pub(crate) fn let_name(&mut self) -> Result<(), Error> {
+        // Its value first, so too few values are said at `let`.
+        let value = match self.compiling {
+            true => None,
+            false => Some(self.pop()?),
+        };
         let name = self.next_word(Builtin::Let, "a name")?;
         self.check_name(&name)?;
         if let Some(locals) = self.compiling_locals() {
@@ -590,10 +595,6 @@ impl<A: AppValue> Machine<A> {
             self.compile(Op::SetLocal(slot));
             return Ok(());
         }
-        let value = match self.compiling {
-            true => None,
-            false => Some(self.pop()?),
-        };
         let slot = match self.value_of(&name.text) {
             Some(slot) => slot,
             None => {
@@ -621,6 +622,10 @@ impl<A: AppValue> Machine<A> {
 
     /// `to NAME`.
     pub(crate) fn set_name(&mut self) -> Result<(), Error> {
+        let value = match self.compiling {
+            true => None,
+            false => Some(self.pop()?),
+        };
         let name = self.next_word(Builtin::To, "a let name")?;
         if let Some(slot) = self
             .compiling_locals()
@@ -633,13 +638,13 @@ impl<A: AppValue> Machine<A> {
             let why = "to sets a let name, and this is none";
             return Err(Error::new(Code::BadName, why, Some(&name)));
         };
-        if self.compiling {
-            self.compile(Op::SetGlobal(slot));
-            return Ok(());
-        }
-        let value = self.pop()?;
-        if let Some(global) = self.globals.get_mut(slot) {
-            *global = Some(value);
+        match value {
+            Some(value) => {
+                if let Some(global) = self.globals.get_mut(slot) {
+                    *global = Some(value);
+                }
+            }
+            None => self.compile(Op::SetGlobal(slot)),
         }
         Ok(())
     }
@@ -824,7 +829,7 @@ impl<A: AppValue> Machine<A> {
             Some("a number".to_owned())
         } else if let Some(id) = self.vocabulary.literal(text) {
             let word = self.vocabulary.names().nth(id).unwrap_or_default();
-            Some(format!("read as a value: {text} is `str {text} {word}`"))
+            Some(format!("read as `str {text} {word}`"))
         } else if Builtin::named(text).is_some() {
             Some("a word of the core".to_owned())
         } else {

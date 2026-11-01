@@ -1,28 +1,115 @@
-//! Filesystem admission for compile-time sources. Every image has its own
-//! loader and captured cwd; replay needs neither.
-use super::{Failed, read_failed, read_text};
-use fuxth::{Loader, Source, SourceImage, Token};
+//! The files a program reads (`include`, `require`, `--file` and the
+//! config): any readable file, a FIFO or `<(…)` among them, relative to the
+//! file naming it, else to where fux started. A config's are kept as they
+//! were read, so its definitions are read again from the same text.
+use super::{Config, Failed};
+use fuxth::Token;
 use std::io;
-use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 
-struct Files {
-    cwd: io::Result<PathBuf>,
+/// The text of the file at `path`, read to its end: UTF-8, of any kind of
+/// file that reads.
+pub(super) fn read(path: &Path) -> io::Result<String> {
+    let bytes = std::fs::read(path)?;
+    String::from_utf8(bytes)
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "not UTF-8 text"))
 }
 
-impl Files {
-    fn new() -> Self {
+/// A config's sources: the file it was, and each file it read in, as it
+/// was named, from which file, the file it was, and its text.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Frozen {
+    name: String,
+    text: String,
+    pub(super) path: Option<PathBuf>,
+    resolved: Vec<(String, Option<PathBuf>, PathBuf)>,
+    read: Vec<(PathBuf, String)>,
+}
+
+impl Frozen {
+    /// The file at `path`, read.
+    pub(super) fn file(path: &Path) -> io::Result<Self> {
+        let path = path.canonicalize()?;
+        let text = read(&path)?;
+        Ok(Self {
+            name: path.display().to_string(),
+            text,
+            path: Some(path),
+            resolved: Vec::new(),
+            read: Vec::new(),
+        })
+    }
+
+    /// `text`, a source named `name` and no file's.
+    #[cfg(test)]
+    pub(super) fn text(name: &str, text: &str) -> Self {
         Self {
-            cwd: std::env::current_dir(),
+            name: name.to_owned(),
+            text: text.to_owned(),
+            path: None,
+            resolved: Vec::new(),
+            read: Vec::new(),
+        }
+    }
+
+    pub(super) fn tokens(&self) -> Result<Vec<Token>, Failed> {
+        Ok(fuxth::token::source(&self.name, &self.text)?)
+    }
+
+    /// It, with the files `files` read while it was read.
+    pub(super) fn with(self, files: Files) -> Self {
+        Self {
+            resolved: files.resolved,
+            read: files.read,
+            ..self
         }
     }
 }
 
-impl Loader for Files {
-    fn resolve(&mut self, path: &str, from: Option<&Path>) -> Result<PathBuf, String> {
-        let path = Path::new(path);
-        let full = if path.is_absolute() {
-            path.to_owned()
+/// Where a program's `include` and `require` read files: the file system,
+/// relative to the directory fux started in, each file it read kept; or a
+/// config's sources only, as they were read.
+pub struct Files {
+    cwd: io::Result<PathBuf>,
+    frozen: Option<Config>,
+    resolved: Vec<(String, Option<PathBuf>, PathBuf)>,
+    read: Vec<(PathBuf, String)>,
+}
+
+impl Default for Files {
+    fn default() -> Self {
+        Self {
+            cwd: std::env::current_dir(),
+            frozen: None,
+            resolved: Vec::new(),
+            read: Vec::new(),
+        }
+    }
+}
+
+impl Files {
+    /// Only `config`'s sources, as they were read.
+    pub(super) fn frozen(config: Config) -> Self {
+        Self {
+            frozen: Some(config),
+            ..Self::default()
+        }
+    }
+
+    /// The file `path` names, as one identity: its canonical path.
+    pub(super) fn resolve(&mut self, path: &str, from: Option<&Path>) -> Result<PathBuf, String> {
+        if let Some(frozen) = &self.frozen {
+            let found = frozen
+                .resolved
+                .iter()
+                .find(|(p, f, _)| p == path && f.as_deref() == from);
+            return found
+                .map(|(.., file)| file.clone())
+                .ok_or_else(|| unread(path));
+        }
+        let named = Path::new(path);
+        let full = if named.is_absolute() {
+            named.to_owned()
         } else {
             let base = match from.and_then(Path::parent) {
                 Some(parent) => parent,
@@ -31,66 +118,30 @@ impl Loader for Files {
                     .as_deref()
                     .map_err(|e| format!("the invocation directory is unknown: {e}"))?,
             };
-            base.join(path)
+            base.join(named)
         };
-        full.canonicalize().map_err(|e| e.to_string())
+        let file = full.canonicalize().map_err(|e| e.to_string())?;
+        self.resolved
+            .push((path.to_owned(), from.map(Path::to_owned), file.clone()));
+        Ok(file)
     }
 
-    fn read(&mut self, path: &Path) -> Result<String, String> {
-        let file = open(path).map_err(|e| e.to_string())?;
-        read_text(&path.display().to_string(), file).map_err(|f| f.to_string())
+    /// The text of the file `resolve` gave.
+    pub(super) fn read(&mut self, path: &Path) -> Result<String, String> {
+        if let Some(frozen) = &self.frozen {
+            let found = frozen.read.iter().find(|(p, _)| p == path);
+            return found
+                .map(|(_, text)| text.clone())
+                .ok_or_else(|| unread(&path.display().to_string()));
+        }
+        let text = read(path).map_err(|e| e.to_string())?;
+        self.read.push((path.to_owned(), text.clone()));
+        Ok(text)
     }
 }
 
-pub(super) fn open(path: &Path) -> io::Result<std::fs::File> {
-    let file = std::fs::OpenOptions::new()
-        .read(true)
-        .custom_flags(fuxix::file::NONBLOCK | fuxix::file::NOCTTY)
-        .open(path)?;
-    if !file.metadata()?.is_file() {
-        return Err(io::Error::other("not a regular source file"));
-    }
-    Ok(file)
-}
-
-pub(super) fn root(path: &Path) -> io::Result<(PathBuf, std::fs::File)> {
-    let path = path.canonicalize()?;
-    let file = open(&path)?;
-    Ok((path, file))
-}
-
-pub(super) fn file(path: &Path) -> Result<SourceImage, Failed> {
-    let (path, file) =
-        root(path).map_err(|e| read_failed(&path.display().to_string(), &e.to_string()))?;
-    opened_file(path, file)
-}
-
-pub(super) fn opened_file(path: PathBuf, file: std::fs::File) -> Result<SourceImage, Failed> {
-    let name = path.display().to_string();
-    let text = read_text(&name, file)?;
-    Ok(SourceImage::load(
-        Source {
-            name,
-            text: text.into(),
-            path: Some(path),
-        },
-        &mut Files::new(),
-    )?)
-}
-
-pub(super) fn text(name: &str, text: &str) -> Result<SourceImage, Failed> {
-    Ok(SourceImage::load(
-        Source {
-            name: name.into(),
-            text: text.into(),
-            path: None,
-        },
-        &mut Files::new(),
-    )?)
-}
-
-pub(super) fn arguments(tokens: &[Token]) -> Result<SourceImage, Failed> {
-    Ok(SourceImage::arguments(tokens, &mut Files::new())?)
+fn unread(path: &str) -> String {
+    format!("{path}: the config read no such file")
 }
 
 #[cfg(test)]
@@ -129,54 +180,62 @@ mod tests {
         }
     }
 
-    fn run(image: &SourceImage) -> Result<String, Box<dyn std::error::Error>> {
-        let mut machine = crate::script::compile(&image.tokens()).map_err(|e| e.to_string())?;
+    /// The program in the file at `path`, read and run as `fux --file`
+    /// runs it: what it printed, or why it failed.
+    fn run(path: &Path) -> Result<String, Box<dyn std::error::Error>> {
+        let path = path.canonicalize()?;
+        let tokens = fuxth::token::source(&path.display().to_string(), &read(&path)?)?;
+        let mut machine = crate::script::base(None)?;
+        machine.read(tokens, Some(path));
         let mut out = Vec::new();
         let mut host =
             crate::script::Host::new(fux_wire::protocol::Context::default(), None, &mut out);
-        assert!(matches!(
-            machine.run(&mut host, 1000)?,
-            fuxth::Outcome::Finished
-        ));
-        Ok(String::from_utf8(out)?)
+        let ran = machine.run(&mut host, u64::MAX);
+        drop(host);
+        let failed = |e| crate::script::Failed::from(e).to_string();
+        match ran.map_err(failed)? {
+            fuxth::Outcome::Finished => Ok(String::from_utf8(out)?),
+            other @ (fuxth::Outcome::Suspended(_) | fuxth::Outcome::Paused) => {
+                Err(format!("{other:?}").into())
+            }
+        }
     }
 
     #[test]
-    fn a_diamond_runs_each_canonical_file_once_and_keeps_its_sources() -> TestResult {
+    fn a_diamond_runs_each_canonical_file_once() -> TestResult {
         let f = Fixture::new()?;
         let root = f.write("main.fux", "require sub/a.fux require b.fux answer print")?;
         f.write("sub/a.fux", "require '../shared file.fux'")?;
         f.write("b.fux", "require alias.fux")?;
         let shared = f.write("shared file.fux", "str once print define answer 41 end")?;
         std::os::unix::fs::symlink(&shared, f.0.join("alias.fux"))?;
-        let image = file(&root)?;
-        assert_eq!(run(&image)?, "once\n41\n");
-        std::fs::remove_file(&shared)?;
-        assert_eq!(run(&image)?, "once\n41\n");
-        // Parsing operands never become imports; includes work even in an
-        // unexecuted branch, because they are resolved before execution.
-        assert_eq!(run(&text("literal", "str require print")?)?, "require\n");
-        assert!(text("branch", "false if require /no/such/fux-source then").is_err());
+        assert_eq!(run(&root)?, "once\n41\n");
+        // A word read as text is never a file; `require` reads its file
+        // as it is read, in a branch too.
+        let literal = f.write("literal.fux", "str require print")?;
+        assert_eq!(run(&literal)?, "require\n");
+        let branch = f.write("branch.fux", "false if require /no/such/fux-source then")?;
+        assert!(run(&branch).is_err());
         Ok(())
     }
 
-    /// A chain of requires, each file requiring the next, expands in order
-    /// on a thread whose stack holds a few dozen calls: the expansion is
-    /// no recursion, so no chain overflows the stack.
+    /// A chain of requires, each file requiring the next, reads in order
+    /// on a thread whose stack holds a few dozen calls: the sources being
+    /// read are the machine's data, so no chain overflows the stack.
     #[test]
-    fn a_long_chain_of_requires_expands_on_a_small_stack() -> TestResult {
+    fn a_long_chain_of_requires_reads_on_a_small_stack() -> TestResult {
         let f = Fixture::new()?;
         let root = f.write("f0.fux", "str first print require f1.fux")?;
         for i in 1..1000 {
             f.write(&format!("f{i}.fux"), &format!("require f{}.fux", i + 1))?;
         }
         f.write("f1000.fux", "str last print")?;
-        let image = std::thread::Builder::new()
+        let printed = std::thread::Builder::new()
             .stack_size(128 << 10)
-            .spawn(move || file(&root).map_err(|e| e.to_string()))?
+            .spawn(move || run(&root).map_err(|e| e.to_string()))?
             .join()
-            .map_err(|_| "the expansion overflowed its stack")??;
-        assert_eq!(run(&image)?, "first\nlast\n");
+            .map_err(|_| "reading overflowed its stack")??;
+        assert_eq!(printed, "first\nlast\n");
         Ok(())
     }
 
@@ -185,34 +244,21 @@ mod tests {
         let f = Fixture::new()?;
         let root = f.write("main.fux", "str before print\nrequire child.fux")?;
         f.write("child.fux", "\nrequire main.fux")?;
-        let cycle = file(&root).err().ok_or("cycle accepted")?.to_string();
+        let cycle = run(&root).err().ok_or("cycle accepted")?.to_string();
         assert!(cycle.contains("main.fux:2 ->"), "{cycle}");
         assert!(cycle.contains("child.fux:2: require"), "{cycle}");
         assert!(cycle.contains("cycle"), "{cycle}");
-        for broken in ["\nno-such-word", "\nstr 'open", "\nrequire missing.fux"] {
+        for broken in [
+            "\nno-such-word",
+            "\nstr 'open",
+            "\nrequire missing.fux",
+            "\n1 true add",
+        ] {
             f.write("child.fux", broken)?;
-            let error = file(&root)
-                .and_then(|image| crate::script::compile(&image.tokens()).map(drop))
-                .err()
-                .ok_or("bad source accepted")?
-                .to_string();
+            let error = run(&root).err().ok_or("bad source accepted")?.to_string();
             assert!(error.contains("main.fux:2 ->"), "{error}");
             assert!(error.contains("child.fux:2"), "{error}");
         }
-        // A word that fails as it runs names the chain too, after what ran
-        // before it took effect.
-        f.write("child.fux", "\n1 true add")?;
-        let image = file(&root)?;
-        let mut machine = crate::script::compile(&image.tokens()).map_err(|e| e.to_string())?;
-        let mut out = Vec::new();
-        let mut host =
-            crate::script::Host::new(fux_wire::protocol::Context::default(), None, &mut out);
-        let error = machine.run(&mut host, 1000).err().ok_or("1 true add ran")?;
-        drop(host);
-        let error = crate::script::Failed::from(error).to_string();
-        assert!(error.contains("main.fux:2 ->"), "{error}");
-        assert!(error.contains("child.fux:2"), "{error}");
-        assert_eq!(String::from_utf8(out)?, "before\n");
         Ok(())
     }
 
@@ -224,7 +270,10 @@ mod tests {
         for kind in [io::ErrorKind::NotFound, io::ErrorKind::PermissionDenied] {
             let cause = io::Error::from(kind);
             let said = cause.to_string();
-            let mut unknown = Files { cwd: Err(cause) };
+            let mut unknown = Files {
+                cwd: Err(cause),
+                ..Files::default()
+            };
             let error = unknown
                 .resolve("relative.fux", None)
                 .err()
@@ -242,8 +291,10 @@ mod tests {
         Ok(())
     }
 
+    /// Any file that reads is a source: a FIFO, as `<(…)` gives, is read
+    /// to its end; a directory doesn't read.
     #[test]
-    fn source_admission_refuses_fifos_devices_and_directories() -> TestResult {
+    fn any_readable_file_is_a_source() -> TestResult {
         let f = Fixture::new()?;
         let fifo = f.0.join("pipe");
         assert!(
@@ -252,16 +303,20 @@ mod tests {
                 .status()?
                 .success()
         );
-        for path in [&fifo, &f.0, Path::new("/dev/zero")] {
-            assert!(file(path).is_err(), "{} admitted", path.display());
-        }
-        let root = f.write("main.fux", "require pipe")?;
-        assert!(file(&root).is_err());
+        let writing = fifo.clone();
+        let writer = std::thread::spawn(move || std::fs::write(writing, "define piped 7 end"));
+        let root = f.write("main.fux", "require pipe piped print")?;
+        let printed = run(&root);
+        writer.join().map_err(|_| "the writer failed")??;
+        assert_eq!(printed?, "7\n");
+        assert!(run(&f.0).is_err());
+        let directory = f.write("dir.fux", &format!("require {}", f.0.display()))?;
+        assert!(run(&directory).is_err());
         Ok(())
     }
 
     #[test]
-    fn client_definitions_use_the_frozen_image_until_a_new_load() -> TestResult {
+    fn client_definitions_use_the_frozen_sources_until_a_new_load() -> TestResult {
         let f = Fixture::new()?;
         let root = f.write("main.fux", "require child.fux")?;
         f.write("child.fux", "define answer 41 end")?;

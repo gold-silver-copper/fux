@@ -35,7 +35,7 @@ const SOURCES: &[&str] = &[
     include_str!("../../fux-server/src/view.rs"),
     include_str!("../../fux-server/src/wait.rs"),
     include_str!("../../fux-wire/src/words.rs"),
-    include_str!("../../fuxth/src/compile.rs"),
+    include_str!("../../fuxth/src/reader.rs"),
     include_str!("../../fuxth/src/error.rs"),
     include_str!("../../fuxth/src/machine.rs"),
     include_str!("../../fuxth/src/token.rs"),

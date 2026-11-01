@@ -15,7 +15,7 @@ define agent-opts opts str agent in end
 define shell agent-opts new-tab end
 # x kinds about -- x : x, if its kind is one of kinds (names between spaces); else fails, saying it takes about
 define assert-kind
-  let about words over kind contains not if
+  let about fields over kind contains not if
     kind let got list str 'takes ' about str '; its kind is ' got end concat fail
   then
 end
@@ -76,6 +76,7 @@ define grows
   dup counts let before
   before 0 at let generation
   before index at amount add let goal
+  goal before index at lt if str 'count growth past what an integer holds' fail then
   begin
     dup counts let now
     now 0 at generation ne if str 'program respawned during count wait' fail then
@@ -127,6 +128,11 @@ end
 # -- record : one facts observation of all workspaces, tabs, panes and clients
 define ls all info end
 
+# record -- row : typed identity and an inert display label
+define chooser-row
+  let item item str id get let id
+  list id list id string item str label get dup id string eq if drop else str ' ' swap then end glue end
+end
 # record -- string : a held snapshot hierarchy; facts include process outcomes
 define listing
   let s s str scope get kind let sk
@@ -194,6 +200,17 @@ define dump-first
   swap let nodes
   begin nodes swap at dup is-list if 3 at false else true then until
 end
+# launch -- path : shells prefer observed cwd; programs always keep launch cwd
+define dump-cwd
+  let launch launch str initial_cwd get let cwd
+  launch str choice get str shell eq if
+    launch str observed_cwd get let observed
+    observed kind str null ne if observed str status get str known eq if
+      observed str path get let cwd
+    then then
+  then
+  cwd
+end
 # pane-record -- source : warnings for unknown directories and non-text directories
 define dump-warnings
   let p p str launch get let launch
@@ -210,16 +227,12 @@ define dump-warnings
     then
   end glue
 end
-# launch -- path : shells prefer observed cwd; programs always keep launch cwd
-define dump-cwd
-  let launch launch str initial_cwd get let cwd
-  launch str choice get str shell eq if
-    launch str observed_cwd get let observed
-    observed kind str null ne if observed str status get str known eq if
-      observed str path get let cwd
-    then then
+# pane source -- source : restore a given name; a null name emits nothing
+define dump-name
+  let name let target
+  name kind str null eq if str '' else
+    list target str ' ' name dump-text str rename 10 char end glue
   then
-  cwd
 end
 # pane-record prefix action -- source : one complete creation, including its saved options and launch role
 define dump-create
@@ -244,13 +257,6 @@ define dump-create
     action str ' let ' p str id get dump-id 10 char
     p str id get dump-id p str name get dump-name
   end glue
-end
-# pane source -- source : restore a given name; a null name emits nothing
-define dump-name
-  let name let target
-  name kind str null eq if str '' else
-    list target str ' ' name dump-text str rename 10 char end glue
-  then
 end
 # recipe -- source : serialize one held recipe; flat traversal retains the exact tree and shares
 define dump-recipe
@@ -325,8 +331,8 @@ define layout-of
       way str horizontal eq if str vertical else str horizontal then
     else way then let next-way
     list list way a b base 1 add base a 2 mul add end end
-    ps 0 a slice next-way alternate base 1 add layout-of cat
-    ps a n slice next-way alternate base a 2 mul add layout-of cat
+    ps 0 a slice next-way alternate base 1 add recurse cat
+    ps a n slice next-way alternate base a 2 mul add recurse cat
   then
 end
 # panes way -- tree : balanced equal-share row or column, rejecting empty input
@@ -412,11 +418,6 @@ define chooser-find
   string let wanted let records
   list records each dup str id get string wanted eq if else drop then end end
   dup len 1 ne if str 'chooser target is absent or ambiguous' fail then first
-end
-# record -- row : typed identity and an inert display label
-define chooser-row
-  let item item str id get let id
-  list id list id string item str label get dup id string eq if drop else str ' ' swap then end glue end
 end
 # snapshot record -- row : a tab/workspace label with its pane summary
 define chooser-container-row

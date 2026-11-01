@@ -18,11 +18,11 @@ fn words_list_is_current() -> Result<(), String> {
     let docs = super::docs();
     lines.extend(docs.iter().map(|d| format!("{} ( {} )", d.name, d.effect)));
     lines.push("## the core's words".to_owned());
-    let core = fuxth::Builtin::ALL.map(|b| format!("{} ( {} )", b.name(), b.effect()));
-    lines.extend(core);
-    lines.push("## the language's syntax".to_owned());
-    let syntax = fuxth::Parsing::ALL.map(|p| format!("{} {}", p.name(), p.syntax().0));
-    lines.extend(syntax);
+    let core = fuxth::Builtin::ALL.into_iter().filter(|b| !b.hosted());
+    lines.extend(core.map(|b| match b.immediate() {
+        true => format!("{} ( {} ) immediate", b.name(), b.effect()),
+        false => format!("{} ( {} )", b.name(), b.effect()),
+    }));
     let head = format!(
         "Every word a fux program may use, with its stack effect as `fux help WORD` \
          shows it. Generated: FUX_BLESS=1 {TEST}"
@@ -75,7 +75,12 @@ fn records(path: &str, value: &Value<Fux>, out: &mut Vec<String>) {
             line(path, &names);
             fields
         }
-        Value::Int(_) | Value::Bool(_) | Value::Str(_) | Value::App(_) => return,
+        Value::Int(_)
+        | Value::Bool(_)
+        | Value::Str(_)
+        | Value::App(_)
+        | Value::Xt(_)
+        | Value::Mark(_) => return,
     };
     for (key, value) in &fields {
         records(&format!("{path}.{key}"), value, out);

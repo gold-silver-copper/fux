@@ -46,9 +46,9 @@
 //!   its answer and when it is due
 //!   after each 64 KiB tick (in 16 KiB reads) of the recordings: the server's
 //!   look at each output while a wait is armed.
-//! - `script/compile`: fuxth's compiler on command lines an
-//!   agent sends (`fux::script::compile`), over and over: what every
-//!   `fux WORDS` does before it runs.
+//! - `script/compile`: fuxth reading command lines an agent sends
+//!   (`fux::script::compile`, then run up to the first request), over and
+//!   over: what every `fux WORDS` does before it asks the server.
 //!
 //! Each workload has a baseline: the same run without the part measured.
 //! For most that is making the bytes; for `paint/*` it is also feeding the
@@ -351,7 +351,7 @@ pub fn list(recordings: &[Recording]) -> Vec<Spec> {
         ),
         (
             "script/compile",
-            "fuxth's compiler on five command lines, including a bound action, 2000 times",
+            "fuxth reading five command lines up to their first request, including a bound action, 2000 times",
         ),
     ] {
         out.push(spec(name.into(), about.into()));
@@ -1345,7 +1345,10 @@ fn compile(baseline: bool, compiles: usize) -> Result<Done, String> {
             black_box(tokens);
             continue;
         }
-        black_box(fux::script::compile(tokens).map_err(|e| format!("{e:?}"))?);
+        let mut machine = fux::script::compile(tokens).map_err(|e| format!("{e:?}"))?;
+        let mut out = Vec::new();
+        let mut host = fux::script::Host::new(Default::default(), None, &mut out);
+        black_box(machine.run(&mut host, u64::MAX).is_ok());
     }
     Ok(Done {
         units: compiles,

@@ -411,6 +411,20 @@ impl<A: AppValue> Machine<A> {
         self.stack.push(value);
     }
 
+    /// Stops what it runs and reads, and empties its stacks: its
+    /// dictionary and its let names' values are kept.
+    pub fn clear(&mut self) {
+        while !self.frames.is_empty() {
+            self.leave();
+        }
+        self.stack.clear();
+        self.marks.clear();
+        self.iters.clear();
+        self.building.clear();
+        self.compiling = false;
+        self.last = None;
+    }
+
     /// It is a callback's: what it is given must be used up, so it fails
     /// as it ends with values left (`unused`).
     pub fn callback(&mut self) {
@@ -1605,7 +1619,7 @@ builtins! { m host;
         "define NAME … end: a word of your own, found from its end on (end closes code, list, each and try too)" {
         m.define()
     }
-    End "end" [immediate] () "--" "closes the innermost of define, code, list, each and try … catch" {
+    End "end" [immediate] () "--" "… end: closes the innermost of define, code, list, each and try … catch" {
         m.end()
     }
     Code "code" [immediate] () "-- xt" "code … end: the words between, compiled, as an xt" {
@@ -1625,7 +1639,7 @@ builtins! { m host;
         "postpone NAME: in a definition, what NAME does when compiled, done when the definition runs" {
         m.postpone()
     }
-    Literal "literal" [immediate] (x: Any) "x --" "in a definition: x, pushed when the definition runs" {
+    Literal "literal" [immediate] (x: Any) "x --" "x literal: in a definition, x, pushed when the definition runs" {
         m.literal(x)
     }
     Recurse "recurse" [immediate] () "--" "in a definition: a call to the definition itself" {
@@ -1642,13 +1656,13 @@ builtins! { m host;
     Else "else" [immediate] () "--" "flag if … else … then: the part run when flag is false" {
         m.otherwise()
     }
-    Then "then" [immediate] () "--" "closes if … then" {
+    Then "then" [immediate] () "--" "flag if … else … then: closes it" {
         m.then()
     }
     Begin "begin" [immediate] () "--" "begin … flag until: the body until flag is true" {
         m.open(crate::reader::Construct::Begin, &[])
     }
-    Until "until" [immediate] () "flag --" "closes begin … until" {
+    Until "until" [immediate] () "flag --" "begin … flag until: closes it" {
         m.until()
     }
     List "list" [immediate] () "-- list"

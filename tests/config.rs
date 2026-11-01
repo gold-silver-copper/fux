@@ -289,29 +289,21 @@ fn a_bad_config_is_reported() -> Outcome {
     );
     std::fs::write(&config, "str C-a prefix\n").map_err(e)?;
     fux::script::run_file(&config).map_err(e)?;
-    // A binding sees the config's definitions, written anywhere in it; a
-    // mistake in one, or in a binding, is said at its own line and word.
+    // A binding sees the config's definitions, written anywhere in it, as
+    // its words are found when it runs; a binding that doesn't split into
+    // words is said at its own line.
     let ok = "str v str sr bind\ndefine sr me focused str horizontal axis split drop end\n";
     std::fs::write(&config, ok).map_err(e)?;
     fux::script::run_file(&config).map_err(e)?;
-    for (text, said) in [
-        (
-            "str C-a prefix\nstr v str sr bind\n",
-            "config.fux:2: sr: no such word; text is `str WORD`, in the binding for v",
-        ),
-        (
-            "5 let n\ndefine go n end\nstr v str go bind\n",
-            "config.fux:3: go: reads let names",
-        ),
-    ] {
-        std::fs::write(&config, text).map_err(e)?;
-        let failed = fux::script::run_file(&config)
-            .err()
-            .ok_or(text)?
-            .to_string();
-        assert!(failed.contains(&path.replace("config.fux", "")), "{failed}");
-        assert!(failed.contains(said), "{failed}");
-    }
+    let text = "str C-a prefix\nstr v str \"'sr\" bind\n";
+    std::fs::write(&config, text).map_err(e)?;
+    let failed = fux::script::run_file(&config)
+        .err()
+        .ok_or(text)?
+        .to_string();
+    assert!(failed.contains(&path.replace("config.fux", "")), "{failed}");
+    let said = "config.fux:2: bind: a ' opened here is never closed, in the binding for v";
+    assert!(failed.contains(said), "{failed}");
     Ok(())
 }
 
