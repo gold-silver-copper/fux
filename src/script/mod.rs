@@ -1581,7 +1581,7 @@ pub fn main(
         Err(failed) => {
             let mut err = io::stderr();
             let _ = writeln!(err, "fux: {failed}");
-            let _ = printed(&left, &mut err);
+            let _ = printed(&left, &mut err, Batch::Whole);
             Err(failed)
         }
         ran => ran,
@@ -1630,7 +1630,7 @@ fn ran(
     };
     match run(&mut machine, &mut host, &mut cli, None) {
         Ok(stack) => {
-            printed(&stack, host.out)?;
+            printed(&stack, host.out, Batch::Events)?;
             Ok(cli.status.unwrap_or(0))
         }
         Err(failed) => {
@@ -1640,10 +1640,20 @@ fn ran(
     }
 }
 
+/// How a `next-events` batch left on the stack is written.
+#[derive(Clone, Copy)]
+enum Batch {
+    /// On stdout: its events alone, refused if it missed entries.
+    Events,
+    /// In a failure's report on stderr: its whole record, never refused,
+    /// so what comes after it is told too.
+    Whole,
+}
+
 /// Writes what a run left, a value a line.
-fn printed(stack: &[Value<Fux>], out: &mut dyn Write) -> Result<(), Failed> {
+fn printed(stack: &[Value<Fux>], out: &mut dyn Write, batch: Batch) -> Result<(), Failed> {
     let mut out = io::BufWriter::with_capacity(64 << 10, out);
-    (stack.iter()).try_for_each(|value| written(&mut out, value))?;
+    (stack.iter()).try_for_each(|value| written(&mut out, value, batch))?;
     out.flush().map_err(output_failed)
 }
 
@@ -1678,18 +1688,18 @@ fn output_failed(error: io::Error) -> Failed {
 
 /// Writes a value left on the stack, without holding a second whole copy:
 /// a list an item a line, a list in it as one line of JSON; a `next-events`
-/// batch its events, refused if it missed entries. An empty string, list,
-/// capture or answer of no panes writes nothing, and options or a request
-/// nothing; an empty string in a list is a blank line.
-fn written(out: &mut dyn Write, value: &Value<Fux>) -> Result<(), Failed> {
+/// batch as `batch` says. An empty string, list, capture or answer of no
+/// panes writes nothing, and options or a request nothing; an empty string
+/// in a list is a blank line.
+fn written(out: &mut dyn Write, value: &Value<Fux>, batch: Batch) -> Result<(), Failed> {
     match value {
         Value::List(list) => list.items().iter().try_for_each(|item| line(out, item)),
         Value::Str(text) if text.is_empty() => Ok(()),
         Value::App(Fux::Answer(answer, _)) if answer.is_empty() => Ok(()),
         Value::App(Fux::Opts(_)) => Ok(()),
-        Value::App(Fux::Record(record)) => {
+        Value::App(Fux::Record(record)) if matches!(batch, Batch::Events) => {
             match (record.printed_events()).map_err(|f| Failed::new(Code::of(f.code), f.message))? {
-                Some(events) => written(out, &events),
+                Some(events) => written(out, &events, batch),
                 None => line(out, value),
             }
         }
@@ -2100,7 +2110,7 @@ pub(crate) mod tests {
         allocator.reset_peak();
         {
             let mut out = std::io::BufWriter::with_capacity(64 << 10, &mut sink);
-            super::written(&mut out, &text)?;
+            super::written(&mut out, &text, super::Batch::Events)?;
             out.flush()?;
         }
         assert_eq!(sink.0, (2 << 20) + 1);
@@ -2157,6 +2167,7 @@ pub(crate) mod tests {
             let printed = super::written(
                 &mut out,
                 &super::record::events(batch).map_err(|f| f.message)?,
+                super::Batch::Events,
             );
             let said = printed.map_err(|f| f.to_string());
             match written {

@@ -763,6 +763,31 @@ fn a_batch_left_prints_its_events() -> Outcome {
     Ok(())
 }
 
+/// A failure's report tells every value left, a batch that missed entries
+/// whole among them, and stdout nothing: the action after the batch is told.
+#[test]
+fn a_failure_tells_what_follows_a_lost_batch() -> Outcome {
+    let server = Server::start_journal(2)?;
+    let cursor = server.ok(&["all", "str", "", "0", "next-events", "str", "next", "get"])?;
+    for name in ["a", "b", "c", "d"] {
+        server.ok(&["%1", "str", name, "rename"])?;
+    }
+    let lost = ["all", "str", cursor.trim(), "0", "next-events"];
+    let keys = ["%1", "str", "x", "text", "send-keys", "str", "boom", "fail"];
+    let failed = server.fux(&[&lost[..], &keys].concat())?;
+    assert_eq!(failed.status, 1, "{}", failed.stderr);
+    assert_eq!(failed.stdout, "");
+    let told: Vec<_> = failed.stderr.lines().collect();
+    assert!(
+        matches!(&told[..], [why, batch, answer]
+            if why.starts_with("fux: fail: ") && batch.contains(r#""missed":2"#)
+                && answer.starts_with("%1:")),
+        "{}",
+        failed.stderr
+    );
+    Ok(())
+}
+
 /// A stop between requests ends the run, not the connection: the next
 /// run's request is asked on it, as one after a stop under way is asked on
 /// a new one.
