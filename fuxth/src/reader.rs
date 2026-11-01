@@ -853,10 +853,12 @@ impl<A: AppValue> Machine<A> {
         if let (Some(made), Some(from), Some(to)) = (&mut self.made, building.from, at) {
             made.push((from, to));
             // A library's own: its words from its `define` to its `end`,
-            // where they are in the one source read, which gathered none.
-            let words = self
-                .source()
-                .and_then(|read| Words::of(&read.tokens, from..to.saturating_add(1)));
+            // where they are in the one source read, the first frame's,
+            // which gathered none.
+            let words = match self.frames.first() {
+                Some(Frame::Read(read)) => Words::of(&read.tokens, from..to.saturating_add(1)),
+                Some(Frame::Code { .. }) | None => None,
+            };
             source = words.map(|words| Source::of(Vec::new(), words));
         }
         // Its words gathered: none known if a source it was read from

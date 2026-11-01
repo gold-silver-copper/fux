@@ -37,19 +37,28 @@ pub struct Token {
 #[derive(Clone, Debug)]
 pub(crate) struct Words {
     tokens: Rc<[Token]>,
-    range: Range<usize>,
+    from: u32,
+    to: u32,
 }
 
 impl Words {
-    /// The words `range` of `tokens`, if it has them.
+    /// The words `range` of `tokens`, if it has them: none past the 2^32
+    /// words a run says, so a dictionary's entries stay small to copy.
     pub(crate) fn of(tokens: &Rc<[Token]>, range: Range<usize>) -> Option<Words> {
         tokens.get(range.clone())?;
+        let (from, to) = (
+            u32::try_from(range.start).ok()?,
+            u32::try_from(range.end).ok()?,
+        );
         let tokens = Rc::clone(tokens);
-        Some(Words { tokens, range })
+        Some(Words { tokens, from, to })
     }
 
     pub(crate) fn tokens(&self) -> &[Token] {
-        self.tokens.get(self.range.clone()).unwrap_or_default()
+        let at = |n: u32| usize::try_from(n).unwrap_or(usize::MAX);
+        self.tokens
+            .get(at(self.from)..at(self.to))
+            .unwrap_or_default()
     }
 }
 
