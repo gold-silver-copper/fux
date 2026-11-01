@@ -51,10 +51,15 @@ gives the key Ctrl and a letter sends. A line's error shows on the status
 row, and the editor goes on.
 
 **Saving** writes a new file beside FILE, `.FILE.fuxed-save`, made
-exclusively, so it never opens a file that exists. It gets FILE's mode, and
-its last line ends with a line end only if FILE's did (a new file's does).
-It is closed, then renamed over FILE. Anything refused stops the save
-before FILE is replaced, and the status row shows the OS's error.
+exclusively, so it never opens a file that exists. When FILE exists, the new
+file is made 0600 before anything is written, and gets FILE's mode once
+written and closed. Its last line ends with a line end only if FILE's did
+(a new file's does). Then it is renamed over FILE. Only a FILE confirmed
+missing is opened and saved as new: when its metadata can't be read for
+another reason (a symlink loop, a directory it can't search), it opens
+empty with the OS's error on the status row, and isn't saved over.
+Anything refused stops the save before FILE is replaced, and the status
+row shows the OS's error.
 
 **Out of version 0, on purpose:** sideways scrolling (a long line is cut at
 the edge), tabs and wide characters drawn at their width (a tab shows as
@@ -68,5 +73,7 @@ copy of `in.txt` (none for a file that doesn't exist), reads `keys` (in
 printf's `%b` notation) from stdin, and must quit by itself, leaving the
 saved file equal to `out.txt` byte for byte and no other file. A case's
 `mode` is the file's mode before, which the save must keep; its `beside/`
-holds files put next to it, which must stay as they were. The checks look
-at the saved file, never the screen.
+holds files put next to it, which must stay as they were; its `setup` and
+`check` are shell run before and after (a file size limit that makes a
+save's write fail, a symlink loop). The checks look at the files, never the
+screen.

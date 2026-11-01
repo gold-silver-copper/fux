@@ -55,13 +55,21 @@ define guarded
 end
 
 # ---- Opening: a file that doesn't exist opens empty
+# -- flag : whether FILE is confirmed missing: reading it fails as ENOENT,
+# which only the OS's message tells (finding fuxed-3)
+define missing
+  str all try filename read-file drop false catch string str '(os error 2)' contains end
+end
+# A file whose metadata can't be read for another reason opens empty, with
+# the OS's error on the status row, and isn't saved over.
 define load
-  filename file-mode nip 0 eq if
+  filename file-mode let known drop
+  known 0 eq if
     filename read-file
     dup len 0 gt if dup last 10 eq else false then to final-newline
     final-newline if dup len 1 sub let n 0 n slice then
     lines to buffer
-  else str 'new file' to message then
+  else missing if str 'new file' else known string then to message then
 end
 
 # ---- Drawing: each frame built as one string and written once
@@ -179,16 +187,20 @@ define write-lines
   buffer 0 buffer len 1 sub slice each file write-line throw end
   buffer last file final-newline if write-line else write-file then throw
 end
-# Saves to a new file beside FILE, made exclusively, with FILE's mode, then
-# renamed over FILE; anything refused stops it before FILE is replaced.
+# Saves to a new file beside FILE, made exclusively, then renamed over FILE.
+# For a FILE that exists, it is 0600 before a byte is written and gets FILE's
+# mode before the rename. Only a FILE confirmed missing is saved as new;
+# anything refused stops the save before FILE is replaced.
 define save
   list filename directory-of str . filename base-of str .fuxed-save end glue let temp
   str all try
-    filename file-mode let exists let mode
+    filename file-mode let known let mode
+    known 0 eq not if missing not if known throw then then
     temp create-file throw let file
+    known 0 eq if 384 temp set-file-mode throw then
     file write-lines
     file close-file throw
-    exists 0 eq if mode temp set-file-mode throw then
+    known 0 eq if mode temp set-file-mode throw then
     temp filename rename-file throw
     false to dirty
     str saved to message

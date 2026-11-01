@@ -1,0 +1,2 @@
+# FILE's metadata fails with ELOOP, not "no such file".
+ln -s notes.txt notes.txt

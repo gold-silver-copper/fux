@@ -1,0 +1,5 @@
+# The save was refused before anything was made or replaced. One test a
+# line, as bash -e runs it.
+[ -L notes.txt ]
+[ "$(readlink notes.txt)" = notes.txt ]
+[ "$(ls -A | wc -l)" -eq 1 ]
