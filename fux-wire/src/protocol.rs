@@ -391,7 +391,8 @@ wire! {
         pub presentation: crate::presentation::Presentation,
         pub initial: Option<crate::command::InitialWorkspace>,
         /// The client's pid and its ancestors', nearest first, as far as
-        /// the OS says: one a pane's program, the client runs in that pane,
+        /// the OS says: one a pane's program, or the client in its session,
+        /// the client runs in that pane,
         /// which it is shown as a placeholder and neither sizes nor types
         /// into.
         pub ancestry: Vec<u32>,

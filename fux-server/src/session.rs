@@ -1295,11 +1295,19 @@ impl Session {
         };
         view.read_only = attach.read_only;
         // The pane it runs in, if any: the one whose program it descends
-        // from. A headless client shows on no terminal, so on none.
+        // from, or whose session it is in, as the OS says (a parent between
+        // them may have gone). A headless client shows on no terminal, so on
+        // none.
+        let client = attach.ancestry.first();
+        let session = client.and_then(|pid| process::Pid::from_raw(i32::try_from(*pid).ok()?));
+        let session = session.and_then(fuxix::process::session);
         let leads = |pane: &Pane| {
-            let leader = pane.process().child().map(|c| c.leader.pid().as_raw());
-            let leader = leader.and_then(|pid| u32::try_from(pid).ok());
-            !attach.headless && leader.is_some_and(|pid| attach.ancestry.contains(&pid))
+            let Some(leader) = pane.process().child().map(|c| c.leader.pid()) else {
+                return false;
+            };
+            let descends =
+                u32::try_from(leader.as_raw()).is_ok_and(|pid| attach.ancestry.contains(&pid));
+            !attach.headless && (descends || session == Some(leader))
         };
         let runs_in = self.parts.panes().iter().find(|(_, pane)| leads(pane));
         view.runs_in = runs_in.map(|(id, _)| *id);

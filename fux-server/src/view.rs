@@ -67,7 +67,8 @@ pub struct View {
     /// detach it.
     pub read_only: bool,
     /// The pane its client runs in, if one of this server's: the one whose
-    /// program is among its ancestors (`Attach::ancestry`). Composed from
+    /// program is among its ancestors (`Attach::ancestry`), or leads its
+    /// session. Composed from
     /// the client's own screen it would draw itself forever, and typed into
     /// it would read its own keys back, so it shows as a placeholder
     /// (`render`) and takes none of the client's input (`input`).

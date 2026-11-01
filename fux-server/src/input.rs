@@ -386,6 +386,39 @@ mod tests {
     /// A tab in the first workspace.
     const NEW_TAB: &str = "opts 80 24 size str +1 workspace in new-tab";
 
+    /// What a client types into the pane it runs in (`View::runs_in`),
+    /// a key or a paste, is refused with a notice and queued nowhere; into
+    /// any other pane, it goes.
+    #[test]
+    fn input_to_the_clients_own_pane_is_refused_and_queued_nowhere() -> Outcome {
+        let (mut s, c) = session()?;
+        let own = s.focused(c).ok_or("a focused pane")?;
+        let _ = queued_focused(&mut s, c);
+        let x: fux_vt::keys::KeyPress = "x"
+            .parse()
+            .map_err(|e: fux_vt::keys::Error| e.to_string())?;
+        for runs_in in [Some(own), None] {
+            s.views.get_mut(&c).ok_or("view")?.runs_in = runs_in;
+            s.apply(c, vec![Act::Key(x.into()), Act::Paste("y".into())]);
+            let typed = queued_focused(&mut s, c);
+            match runs_in {
+                Some(_) => {
+                    assert!(typed.is_empty(), "{typed:?}");
+                    assert!(
+                        notice(&s, c).contains("runs this client"),
+                        "{}",
+                        notice(&s, c)
+                    );
+                }
+                None => assert!(
+                    typed.starts_with(b"x") && typed.ends_with(b"y"),
+                    "{typed:?}"
+                ),
+            }
+        }
+        Ok(())
+    }
+
     #[test]
     fn openings_replacements_and_closes_invalidate_from_the_prior_cursor() -> Outcome {
         use crate::journal::Reader;

@@ -325,7 +325,8 @@ fn edit_history_opens_the_terminals_editor_at_the_end() -> Outcome {
 /// placeholder rather than its own screen, which would draw itself again
 /// with each paint, and types nothing into it, which it would read back:
 /// the pane's screen count stays still. So does a client behind another
-/// terminal in that pane (`script(1)`), whose session is its own.
+/// terminal in that pane (`script(1)`), whose session is its own, and one
+/// whose parent left before it attached, which is in the pane's session.
 #[test]
 fn a_client_shown_its_own_pane_does_not_loop() -> Outcome {
     let attach = "unset FUX_PANE; exec \"$FUX\" opts str viewer in attach";
@@ -335,7 +336,11 @@ fn a_client_shown_its_own_pane_does_not_loop() -> Outcome {
          then exec script -qfc '{attach}' /dev/null; \
          else exec script -q /dev/null sh -c '{attach}'; fi"
     );
-    for program in [attach.to_owned(), behind] {
+    // Its parent gone before it attaches, it is in the pane's session but
+    // descends from no pane: a background job keeps the terminal as stdin
+    // only when told to.
+    let orphaned = format!("( ( sleep 1; {attach} </dev/tty ) & ); sleep 120");
+    for program in [attach.to_owned(), behind, orphaned] {
         let server = Server::start("")?;
         let launch = [
             "opts",
@@ -372,8 +377,6 @@ fn a_client_shown_its_own_pane_does_not_loop() -> Outcome {
             server.ok(&[&pane, "str", "x", input, "send-keys"])?;
             server.shows(&pane, "runs this client")?;
             eventually("the pane's screen still", still)?;
-            let queued = server.ok(&["str", &pane, "pane", "str", "input_unread", "get"])?;
-            assert_eq!(queued.trim(), "0");
         }
     }
     Ok(())
