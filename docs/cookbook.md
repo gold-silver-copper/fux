@@ -272,6 +272,24 @@ echo args > args.fux && fuxth args.fux one two
 echo '1 0 div' | fuxth || [ $? -eq 1 ]
 ```
 
+## Keep data in cells
+
+fuxth's data space holds a value a cell. `variable` and `create` name
+cells, `store-next` and `allot` add them, `fetch` and `store` read and
+write one, and an address plus n is the cell n on. A defining word is
+`create`, then `does` for what the words it makes do.
+
+```sh
+fuxth <<'EOF'
+create squares 1 store-next 4 store-next 9 store-next
+squares 2 add fetch print
+variable count 0 count store 3 0 do 1 count add-store loop count fetch print
+define table create allot does swap add end
+3 table slots str hi 1 slots store 1 slots fetch print
+EOF
+fux 5 constant five five five mul
+```
+
 ## Edit a file with fuxed
 
 fuxed is a small screen editor written in fuxth, in a checkout of fux at

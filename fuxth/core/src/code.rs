@@ -107,6 +107,15 @@ codes! {
     /// An index or slice past a string's or list's end, or a number out of
     /// a word's range (a character code, a negative depth).
     Range "range" -24,
+    /// `fetch`, `store` and the other data-space words given an address
+    /// outside the data space.
+    InvalidAddress "invalid_address" -9,
+    /// The OS refused memory for what was asked: more cells of the data
+    /// space, or what a host's word asked for.
+    Memory "memory" -8,
+    /// Every id of a kind has been given: a machine's data space, or one
+    /// of the application's own.
+    IdsExhausted "ids_exhausted",
     /// `fail`: the program stopped itself, saying why.
     Fail "fail" -2,
     /// `abort`: the program stopped itself.

@@ -508,7 +508,8 @@ fn text(value: &Value<Fux>) -> Result<String, Failure> {
         | Value::App(_)
         | Value::Xt(_)
         | Value::Mark(_)
-        | Value::Failure(_)) => Err(wrong("a string, a number or a boolean", other)),
+        | Value::Failure(_)
+        | Value::Addr(_)) => Err(wrong("a string, a number or a boolean", other)),
     }
 }
 
@@ -551,7 +552,7 @@ pub(super) fn write_json_value(
                 Fux::Opts(_) => write!(out, "\"({})\"", fuxth::AppValue::kind(app)),
             }?,
             Value::Failure(thrown) => super::record::failure(thrown).write(out)?,
-            Value::Xt(_) | Value::Mark(_) => {
+            Value::Xt(_) | Value::Mark(_) | Value::Addr(_) => {
                 let text = value.text().map_err(|_| std::fmt::Error)?;
                 fux_wire::json::write_str(out, &text)?
             }
@@ -698,7 +699,8 @@ fn scope(value: &Value<Fux>) -> Result<Option<AnyRef>, Failure> {
         | Value::App(_)
         | Value::Xt(_)
         | Value::Mark(_)
-        | Value::Failure(_)) => target(value).map(Some),
+        | Value::Failure(_)
+        | Value::Addr(_)) => target(value).map(Some),
     }
 }
 
@@ -771,7 +773,8 @@ fn held(value: &Value<Fux>) -> Option<fux_wire::command::Version> {
         | Value::App(_)
         | Value::Xt(_)
         | Value::Mark(_)
-        | Value::Failure(_) => None,
+        | Value::Failure(_)
+        | Value::Addr(_) => None,
     }
 }
 
@@ -794,7 +797,8 @@ fn version(value: &Value<Fux>) -> Result<fux_wire::command::Version, Failure> {
         | Value::App(_)
         | Value::Xt(_)
         | Value::Mark(_)
-        | Value::Failure(_)) => {
+        | Value::Failure(_)
+        | Value::Addr(_)) => {
             return Err(wrong(wanted, other));
         }
     };
@@ -820,7 +824,8 @@ fn modifying(value: Value<Fux>) -> Result<std::rc::Rc<Opts>, Failure> {
         | Value::App(_)
         | Value::Xt(_)
         | Value::Mark(_)
-        | Value::Failure(_)) => {
+        | Value::Failure(_)
+        | Value::Addr(_)) => {
             let on = on(&other)
                 .map_err(|_| wrong("a pane, tab, workspace or client, or options", &other))?;
             std::rc::Rc::new(Opts {
@@ -991,7 +996,8 @@ fn request(word: Act, value: Value<Fux>) -> Result<(On, Opts), Failure> {
         | Value::App(_)
         | Value::Xt(_)
         | Value::Mark(_)
-        | Value::Failure(_)) => Opts {
+        | Value::Failure(_)
+        | Value::Addr(_)) => Opts {
             on: Some(on(&other)?),
             ..Opts::default()
         },
@@ -1038,7 +1044,8 @@ fn finished(word: Act, value: Value<Fux>) -> Result<Opts, Failure> {
         | Value::App(_)
         | Value::Xt(_)
         | Value::Mark(_)
-        | Value::Failure(_)) => Err(wrong(
+        | Value::Failure(_)
+        | Value::Addr(_)) => Err(wrong(
             &format!("options (from opts), as {word} takes"),
             &other,
         )),
@@ -1155,7 +1162,8 @@ fn resize_to(next: &mut dyn FnMut() -> Result<Value<Fux>, Failure>) -> Result<Do
         | Value::App(_)
         | Value::Xt(_)
         | Value::Mark(_)
-        | Value::Failure(_)) => {
+        | Value::Failure(_)
+        | Value::Addr(_)) => {
             return Err(wrong("cells or a percent", &other));
         }
     };
@@ -1200,7 +1208,8 @@ fn find(kind: Kind, found: Value<Fux>, out: &mut Vec<Value<Fux>>) -> Result<Done
         | Value::App(_)
         | Value::Xt(_)
         | Value::Mark(_)
-        | Value::Failure(_)) => Err(wrong("a name, or a pane, tab or workspace", &other)),
+        | Value::Failure(_)
+        | Value::Addr(_)) => Err(wrong("a name, or a pane, tab or workspace", &other)),
     }
 }
 
@@ -1329,7 +1338,8 @@ impl fuxth::Host for Host<'_> {
                 | Value::App(_)
                 | Value::Xt(_)
                 | Value::Mark(_)
-                | Value::Failure(_) => {}
+                | Value::Failure(_)
+                | Value::Addr(_) => {}
             }
         }
         match result {
@@ -1622,7 +1632,8 @@ impl Host<'_> {
                     | Value::List(_)
                     | Value::App(_)
                     | Value::Xt(_)
-                    | Value::Mark(_)) => Some(target(value)?),
+                    | Value::Mark(_)
+                    | Value::Addr(_)) => Some(target(value)?),
                 };
                 let field = string(&next()?)?;
                 if let Some(target) = live {
@@ -1645,7 +1656,8 @@ impl Host<'_> {
                     | Value::List(_)
                     | Value::App(_)
                     | Value::Xt(_)
-                    | Value::Mark(_)) => Err(wrong("a handle or held observation", &other)),
+                    | Value::Mark(_)
+                    | Value::Addr(_)) => Err(wrong("a handle or held observation", &other)),
                 }
             }
             Act::Json => match next()? {
@@ -1662,7 +1674,8 @@ impl Host<'_> {
                 | Value::App(_)
                 | Value::Xt(_)
                 | Value::Mark(_)
-                | Value::Failure(_)) => now(out, json_text(&other)),
+                | Value::Failure(_)
+                | Value::Addr(_)) => now(out, json_text(&other)),
             },
             Act::NextEvents => {
                 let scope = observation_scope(&next()?)?;
@@ -1705,7 +1718,8 @@ impl Host<'_> {
                     | Value::App(_)
                     | Value::Xt(_)
                     | Value::Mark(_)
-                    | Value::Failure(_)) => Ok(target(&value)?),
+                    | Value::Failure(_)
+                    | Value::Addr(_)) => Ok(target(&value)?),
                 };
                 let size = laid_out(&next()?, &next()?)?;
                 let resized = match sized {
@@ -1825,7 +1839,8 @@ impl Host<'_> {
                     | Value::App(_)
                     | Value::Xt(_)
                     | Value::Mark(_)
-                    | Value::Failure(_)) => {
+                    | Value::Failure(_)
+                    | Value::Addr(_)) => {
                         return Err(wrong(
                             "a tab, workspace, new-tab, new-workspace or direction",
                             &value,
@@ -1845,7 +1860,8 @@ impl Host<'_> {
                     | Value::App(_)
                     | Value::Xt(_)
                     | Value::Mark(_)
-                    | Value::Failure(_)) => SwapWith::Pane(pane(&value)?),
+                    | Value::Failure(_)
+                    | Value::Addr(_)) => SwapWith::Pane(pane(&value)?),
                 };
                 tell(Command::SwapPane { target, with })
             }
@@ -2061,7 +2077,8 @@ impl Host<'_> {
                     | Value::App(_)
                     | Value::Xt(_)
                     | Value::Mark(_)
-                    | Value::Failure(_) => {
+                    | Value::Failure(_)
+                    | Value::Addr(_) => {
                         return Err(wrong("a title or [text,subject handle]", &heading));
                     }
                 };
@@ -2174,7 +2191,8 @@ impl Host<'_> {
             | Value::App(_)
             | Value::Xt(_)
             | Value::Mark(_)
-            | Value::Failure(_) => {
+            | Value::Failure(_)
+            | Value::Addr(_) => {
                 return Err(wrong("a callback", value));
             }
         };

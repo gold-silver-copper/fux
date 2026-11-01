@@ -176,6 +176,7 @@ fn left(runner: &mut Runner, stack: &[Value<File>]) -> Result<(), Failure> {
                         | Value::Xt(_)
                         | Value::Mark(_)
                         | Value::Failure(_)
+                        | Value::Addr(_)
                         | Value::Bool(_) => item.write_text(&mut text)?,
                     }
                     text.push('\n');
@@ -188,6 +189,7 @@ fn left(runner: &mut Runner, stack: &[Value<File>]) -> Result<(), Failure> {
             | Value::Xt(_)
             | Value::Mark(_)
             | Value::Failure(_)
+            | Value::Addr(_)
             | Value::Bool(_) => {
                 value.write_text(&mut text)?;
                 text.push('\n');

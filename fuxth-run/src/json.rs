@@ -24,7 +24,7 @@ pub fn write(value: &Value<File>, out: &mut String) -> Result<(), Failure> {
                 out.push('[');
                 lists.push((list.items().iter(), false));
             }
-            Value::App(_) | Value::Xt(_) | Value::Mark(_) | Value::Failure(_) => {
+            Value::App(_) | Value::Xt(_) | Value::Mark(_) | Value::Failure(_) | Value::Addr(_) => {
                 string(&value.text()?, out)
             }
         }

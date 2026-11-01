@@ -5165,7 +5165,7 @@ mod tests {
             Instant::now(),
         );
         let error = result.err().ok_or("capture succeeded")?;
-        assert_eq!(error.code(), Code::Memory);
+        assert_eq!(error.code(), Code::from(Raise::Memory));
         Ok(())
     }
 

@@ -137,6 +137,7 @@ impl Runner {
                 | Value::App(_)
                 | Value::Xt(_)
                 | Value::Failure(_)
+                | Value::Addr(_)
                 | Value::Bool(_) => {
                     value.write_text(&mut said)?;
                     said.push(' ');
@@ -451,6 +452,7 @@ fn int(value: Value<File>, name: &str) -> Result<i64, Failure> {
         | Value::Xt(_)
         | Value::Mark(_)
         | Value::Failure(_)
+        | Value::Addr(_)
         | Value::Bool(_)) => Err(refused(name, "an integer", &other)),
     }
 }
@@ -464,6 +466,7 @@ fn string(value: Value<File>, name: &str) -> Result<Rc<fuxth::Text>, Failure> {
         | Value::Xt(_)
         | Value::Mark(_)
         | Value::Failure(_)
+        | Value::Addr(_)
         | Value::Bool(_)) => Err(refused(name, "a string", &other)),
     }
 }
@@ -477,6 +480,7 @@ fn app(value: Value<File>, name: &str) -> Result<File, Failure> {
         | Value::Xt(_)
         | Value::Mark(_)
         | Value::Failure(_)
+        | Value::Addr(_)
         | Value::Bool(_)) => Err(refused(name, "a file", &other)),
     }
 }

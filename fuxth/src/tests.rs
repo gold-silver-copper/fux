@@ -1059,6 +1059,14 @@ fn every_core_word_documents_its_effect_and_meaning() {
                         | Builtin::DigitsBegin
                         | Builtin::Hold
                         | Builtin::Holds
+                        | Builtin::Allot
+                        | Builtin::StoreNext
+                        | Builtin::Store
+                        | Builtin::Fill
+                        | Builtin::CopyCells
+                        | Builtin::Create
+                        | Builtin::Variable
+                        | Builtin::Constant
                 ),
             "{}",
             builtin.name()
@@ -1160,12 +1168,12 @@ fn the_machine_says_what_and_where() -> Result<(), Error> {
     let said = |text: &str| run(text).err().map(|e| e.to_string()).unwrap_or_default();
     assert_eq!(
         said("ticket 1 add"),
-        "type: t:1: add: add takes an integer, not a ticket"
+        "type: t:1: add: add takes an integer or an address, not a ticket"
     );
     // Inside a definition, at its step; a place of several, by what it takes.
     assert_eq!(
         said("define f str x add end\n1 f"),
-        "type: t:1: add: add takes an integer, not a string"
+        "type: t:1: add: add takes an integer or an address, not a string"
     );
     assert_eq!(
         said("1 2 3 slice"),
@@ -1177,7 +1185,7 @@ fn the_machine_says_what_and_where() -> Result<(), Error> {
     let error = machine.run(&mut Toy::default(), u64::MAX).err();
     assert_eq!(
         error.map(|e| e.to_string()).as_deref(),
-        Some("type: argument 4: add: add takes an integer, not a string")
+        Some("type: argument 4: add: add takes an integer or an address, not a string")
     );
     assert_eq!(
         said("1 ticket lt"),
@@ -1581,6 +1589,61 @@ fn an_xt_of_another_machine_is_refused() -> Result<(), Error> {
     Ok(())
 }
 
+/// An address works only in the machine whose data space made it (or a
+/// copy made after it), as an xt does: another refuses it, -9, and the
+/// xt of a word `create` made, for `body-of`.
+#[test]
+fn an_address_of_another_machine_is_refused() -> Result<(), Error> {
+    let mut a = compile("create a 111 store-next a tick a")?;
+    a.run(&mut Toy::default(), u64::MAX)?;
+    let [address, xt] = [0, 1].map(|i| a.stack().get(i).cloned().unwrap_or(Value::Int(0)));
+    let mut b = compile("create b 222 store-next")?;
+    b.run(&mut Toy::default(), u64::MAX)?;
+    // The words run on a copy of `machine`, with `given` on its stack.
+    let ran = |machine: &Machine<Ticket>, given: &[&Value<Ticket>], words: &str| {
+        let mut machine = machine.clone();
+        machine.clear();
+        given.iter().for_each(|v| machine.push((*v).clone()));
+        machine.read(token::source("t", words)?, None);
+        machine.run(&mut Toy::default(), u64::MAX)?;
+        Ok(machine.stack().to_vec())
+    };
+    assert_eq!(code(ran(&b, &[&address], "fetch")), Some("invalid_address"));
+    let stored = "let place let x str all try x place store catch drop end b fetch";
+    assert_eq!(ran(&b, &[&Value::Int(5), &address], stored)?, ints(&[222]));
+    assert_eq!(
+        code(ran(&b, &[&Value::Int(5), &address], "store")),
+        Some("invalid_address")
+    );
+    assert_eq!(code(ran(&b, &[&xt], "body-of")), Some("type"));
+    assert_eq!(ran(&a, &[&address], "fetch")?, ints(&[111]));
+    assert_eq!(ran(&a, &[&xt], "body-of fetch")?, ints(&[111]));
+    Ok(())
+}
+
+/// An address is one word, its data space's id beside its cell, so making
+/// one allocates nothing and no value is larger for it; a data space grows
+/// no further than its addresses can say, and ids end, never wrap.
+#[test]
+fn an_address_is_one_word() -> Result<(), Error> {
+    use crate::value::DATA_SPACES;
+    assert_eq!(std::mem::size_of::<Address>(), 8);
+    assert_eq!(std::mem::size_of::<Value<()>>(), 16);
+    let last = Address::new(DATA_SPACES.saturating_sub(1), 0xFF_FFFF_FFFF);
+    assert_eq!(
+        last.map(|a| (a.space(), a.at())),
+        Some((0xFF_FFFF, 0xFF_FFFF_FFFF))
+    );
+    assert_eq!(Address::new(DATA_SPACES, 0), None);
+    assert_eq!(Address::new(0, 0x100_0000_0000), None);
+    let past = run("str all try 1099511627775 allot catch end next-address next-address sub")?;
+    assert!(
+        matches!(past.as_slice(), [Value::Failure(f), Value::Int(0)] if f.error.code == Code::Memory),
+        "{past:?}"
+    );
+    Ok(())
+}
+
 /// Lists in code in lists, however deep, are let go without a recursion.
 #[test]
 fn lists_and_code_nested_alternately_are_let_go_on_a_small_stack() -> Result<(), String> {
@@ -1627,5 +1690,83 @@ fn a_count_before_a_jump_target_is_not_folded() -> Result<(), Error> {
     assert_eq!(machine.stack(), ints(&[3]).as_slice());
     let codes = "define h if str fail else str timeout then try 1 catch end end";
     assert_eq!(code(run(codes)), Some("bad_codes"));
+    Ok(())
+}
+
+/// An address is only one the data space gave, never an integer; every
+/// access is checked against the cells allotted, and fails -9 outside
+/// them; and a cell is read only once a value was stored there.
+#[test]
+fn every_data_space_access_is_checked() -> Result<(), Error> {
+    for wrong in [
+        "5 fetch",
+        "next-address next-address add",
+        "1 next-address sub",
+    ] {
+        assert_eq!(code(run(wrong)), Some("type"), "{wrong}");
+    }
+    for outside in [
+        "next-address fetch",
+        "1 next-address store",
+        "next-address 1 allot 1 add fetch",
+        "next-address -9223372036854775807 add",
+        "create b 2 allot b 3 0 fill",
+        "create b 2 allot b b 1 add 2 copy-cells",
+        "create b 2 allot -2 allot b fetch",
+    ] {
+        assert_eq!(code(run(outside)), Some("invalid_address"), "{outside}");
+    }
+    // Both ranges are checked before a cell is copied: a range past the
+    // end, of either, changes nothing.
+    for copy in ["b next-address 1000000", "b 1 add b 1000000"] {
+        let refused = format!(
+            "create b 1 store-next 999999 allot str all try {copy} copy-cells catch end b fetch"
+        );
+        let left = run(&refused)?;
+        assert!(
+            matches!(left.as_slice(), [Value::Failure(f), Value::Int(1)] if f.number == Some(-9)),
+            "{copy}: {left:?}"
+        );
+    }
+    let caught = run("str all try next-address fetch catch end")?;
+    assert!(matches!(caught.as_slice(), [Value::Failure(f)] if f.number == Some(-9)));
+    assert_eq!(code(run("variable v v fetch")), Some("unset"));
+    // A refused store changes nothing.
+    let kept = "create b 1 store-next str all try 2 b 1 add store catch drop end b fetch";
+    assert_eq!(run(kept)?, ints(&[1]));
+    Ok(())
+}
+
+/// The data space has no size of fuxth's own: what the allocator refuses
+/// fails -8, `memory`, and the data space stays as it was.
+#[test]
+fn a_refused_allocation_fails_memory() -> Result<(), Error> {
+    let refused =
+        "next-address str all try 9223372036854775807 allot catch end swap next-address eq";
+    let left = run(refused)?;
+    assert!(
+        matches!(left.as_slice(), [Value::Failure(f), Value::Bool(true)]
+            if f.error.code == Code::Memory && f.number == Some(-8)),
+        "{left:?}"
+    );
+    Ok(())
+}
+
+/// `does` gives the word `create` made last the rest of its definition,
+/// as a new version: code compiled before keeps the one it was compiled
+/// against, as with any word defined again. A word `create` didn't make
+/// has no data to give it.
+#[test]
+fn does_gives_the_word_create_made_last_what_it_does() -> Result<(), Error> {
+    let counted = "define counting does dup dup fetch 1 add swap store end
+        create c 5 store-next code c end let early
+        counting early execute c fetch early execute";
+    let left = run(counted)?;
+    assert!(
+        matches!(left.as_slice(), [Value::Addr(a), Value::Int(6), Value::Addr(b)] if a == b),
+        "{left:?}"
+    );
+    assert_eq!(code(run("define f does end define g end f")), Some("type"));
+    assert_eq!(code(run("define f does end f")), Some("type"));
     Ok(())
 }

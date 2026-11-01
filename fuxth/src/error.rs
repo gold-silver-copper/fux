@@ -64,6 +64,8 @@ pub(crate) enum Wants {
     Seq(Builtin),
     /// An integer, for the word.
     Int(Builtin),
+    /// An integer or an address, for the word.
+    Number(Builtin),
     /// `lt`'s two values.
     Ordered,
     /// What `concat` joins.
@@ -86,6 +88,9 @@ impl Wants {
                 return format!("takes a boolean (from eq or lt) or an integer, not {got}");
             }
             Self::Int(word) => return format!("{} takes an integer, not {got}", word.name()),
+            Self::Number(word) => {
+                return format!("{} takes an integer or an address, not {got}", word.name());
+            }
             Self::Concat => {
                 return format!("concat takes a list of strings or of lists, not {got}");
             }
