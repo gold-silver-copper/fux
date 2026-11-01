@@ -560,15 +560,23 @@ impl Parts {
     /// changes: at the place it left, if any, and at the one it reached
     /// (none, with the last workspace gone).
     fn viewing<R>(&mut self, change: impl FnOnce(&mut Parts) -> R) -> R {
-        let places = |parts: &Parts| -> BTreeMap<ClientId, _> {
-            let clients = parts.workspaces.shown.keys().copied();
-            clients
-                .map(|c| (c, place_of(&parts.workspaces, c)))
-                .collect()
-        };
-        let before = places(self);
+        let before = self.places();
         let out = change(self);
-        let after = places(self);
+        self.moved(before);
+        out
+    }
+
+    /// Where each client is.
+    fn places(&self) -> BTreeMap<ClientId, Option<crate::journal::PaneAt>> {
+        let clients = self.workspaces.shown.keys().copied();
+        clients
+            .map(|c| (c, place_of(&self.workspaces, c)))
+            .collect()
+    }
+
+    /// Journals `shown` for each client whose place is not as `before`.
+    fn moved(&mut self, before: BTreeMap<ClientId, Option<crate::journal::PaneAt>>) {
+        let after = self.places();
         let clients: BTreeSet<ClientId> = before.keys().chain(after.keys()).copied().collect();
         for client in clients {
             let place = |places: &BTreeMap<ClientId, _>| places.get(&client).copied().flatten();
@@ -580,7 +588,6 @@ impl Parts {
                 }
             }
         }
-        out
     }
 
     /// A client attaches: it is shown each workspace's first tab and each
