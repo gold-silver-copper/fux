@@ -541,7 +541,16 @@ impl Tree {
         }
     }
     pub fn contains(&self, pane: PaneId) -> bool {
-        self.walk(None).any(|tree| tree.pane() == Some(pane))
+        let mut left = vec![self];
+        while let Some(tree) = left.pop() {
+            match tree {
+                Tree::Pane(p) if *p == pane => return true,
+                Tree::Pane(_) => {}
+                Tree::Split(split) => left.extend([&split.first, &split.second]),
+                Tree::Stack(stack) => left.extend(stack.children()),
+            }
+        }
+        false
     }
 
     /// The stack nearest `pane` that holds it, if one does.
