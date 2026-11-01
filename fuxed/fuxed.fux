@@ -1,0 +1,283 @@
+# fuxed, a minimal screen editor written in fuxth: fuxth fuxed.fux FILE
+#
+# Emacs's command loop: read a key, look up the name the keymap gives it,
+# find the word of that name now and run it, then redraw. Commands change
+# the buffer and the values beside it; drawing is separate.
+
+args len 1 ne if str 'usage: fuxth fuxed.fux FILE' fail then
+
+# ---- The state: top-level values, which commands set with `to`
+args first let filename
+# the lines, each without its line end
+list str '' end let buffer
+# the cursor's line and character, and the first line shown, from 0
+0 let row  0 let col  0 let top
+# whether the buffer differs from the file, and whether the file's last line ends with a line end
+false let dirty  true let final-newline
+# the status row's news, cleared at each key
+str '' let message
+# the key being run, and whether the command loop goes on
+0 let last-key  true let running
+# whether the last key asked to quit, and whether the one before did
+false let asked  false let asked-before
+# whether M-x's prompt is open, and what it holds
+false let prompting  str '' let input
+# pairs of a key and the name of the word it runs
+list end let keymap
+
+# ---- Helpers
+# -- s : the cursor's line
+define line buffer row at end
+# s -- : the cursor's line replaced, the buffer modified
+define set-line buffer row rot put to buffer true to dirty end
+# list i x -- list : x put in before element i
+define insert-at let x let n let l l 0 n slice list x end cat l n l len slice cat end
+# -- : the column kept within the cursor's line
+define clamp-col col line len min to col end
+# -- n : the rows lines are shown on: all but the status row
+define text-rows screen-size drop 1 sub 1 max end
+# k -- flag : whether k types a character
+define printable let k k 32 ge k 127 ne and k key-up lt and end
+# s -- s : the directory part of a path, its last slash kept, or empty
+define directory-of
+  let path 0 let cut 0 let n
+  path each 47 eq if n 1 add let cut then n 1 add let n end
+  path 0 cut slice
+end
+# s -- s : a path's last part
+define base-of let path path directory-of len let n path n path len slice end
+# xt -- : runs xt; a failure goes to the status row, Ctrl-C as "interrupted"
+define guarded
+  let xt
+  str all try
+    str interrupt try xt execute catch drop str interrupted to message end
+  catch string to message end
+end
+
+# ---- Opening: a file that doesn't exist opens empty
+define load
+  filename file-mode nip 0 eq if
+    filename read-file
+    dup len 0 gt if dup last 10 eq else false then to final-newline
+    final-newline if dup len 1 sub let n 0 n slice then
+    lines to buffer
+  else str 'new file' to message then
+end
+
+# ---- Drawing: each frame built as one string and written once
+# s -- s : Esc and s
+define esc 27 char swap cat end
+# row col -- s : what puts the cursor there, from 0
+define place
+  let c let r
+  list str '[' r 1 add string str ';' c 1 add string str H end glue esc
+end
+# s cols -- s : s as drawn: cut at cols, a tab as a space, other controls as ?
+define shown
+  let cols let s
+  list
+    s 0 s len cols min slice each
+      let c
+      c 9 eq if 32 else
+        c 32 lt c 127 eq or c 128 ge c 160 lt and or if 63 else c then
+      then char
+    end
+  end glue
+end
+# height -- : the view moved to show the cursor
+define scroll
+  let h
+  row top lt if row to top then
+  row top h add ge if row h sub 1 add to top then
+end
+define status-text
+  prompting if str 'M-x ' input cat else
+    list
+      filename
+      list row 1 add string str : col 1 add string end glue
+      dirty if str modified then
+      message len 0 gt if message then
+    end str '  ' join
+  then
+end
+define draw
+  screen-size let cols let rows
+  rows 1 sub 1 max let h
+  h scroll
+  list
+    str '[?25l' esc
+    0 h range each
+      let y
+      y 0 place
+      top y add let n
+      n buffer len lt if buffer n at cols shown then
+      str '[K' esc
+    end
+    h 0 place status-text cols shown str '[K' esc
+    prompting if h input len 4 add else row top sub col then cols 1 sub min place
+    str '[?25h' esc
+  end glue write
+end
+
+# ---- Commands
+define cursor-left
+  col 0 gt if col 1 sub to col else
+    row 0 gt if row 1 sub to row line len to col then
+  then
+end
+define cursor-right
+  col line len lt if col 1 add to col else
+    row buffer len 1 sub lt if row 1 add to row 0 to col then
+  then
+end
+define cursor-up row 0 gt if row 1 sub to row clamp-col then end
+define cursor-down row buffer len 1 sub lt if row 1 add to row clamp-col then end
+define line-start 0 to col end
+define line-end line len to col end
+define page-up
+  text-rows let h
+  top h sub 0 max to top  row h sub 0 max to row  clamp-col
+end
+define page-down
+  text-rows let h buffer len 1 sub let last-row
+  top h add last-row min to top  row h add last-row min to row  clamp-col
+end
+define insert-char
+  line let s
+  s 0 col slice last-key char cat s col s len slice cat set-line
+  col 1 add to col
+end
+define newline
+  line let s
+  s 0 col slice set-line
+  buffer row 1 add s col s len slice insert-at to buffer
+  row 1 add to row 0 to col
+end
+define delete-back
+  col 0 gt if
+    line let s s 0 col 1 sub slice s col s len slice cat set-line
+    col 1 sub to col
+  else row 0 gt if
+    buffer row 1 sub at let above
+    above line cat let joined
+    buffer row remove to buffer
+    row 1 sub to row  above len to col
+    joined set-line
+  then then
+end
+define delete-forward
+  col line len lt if
+    line let s s 0 col slice s col 1 add s len slice cat set-line
+  else row buffer len 1 sub lt if
+    line buffer row 1 add at cat let joined
+    buffer row 1 add remove to buffer
+    joined set-line
+  then then
+end
+# file -- : the buffer's lines, the last with a line end only if the file's had one
+define write-lines
+  let file
+  buffer 0 buffer len 1 sub slice each file write-line throw end
+  buffer last file final-newline if write-line else write-file then throw
+end
+# Saves to a new file beside FILE, made exclusively, with FILE's mode, then
+# renamed over FILE; anything refused stops it before FILE is replaced.
+define save
+  list filename directory-of str . filename base-of str .fuxed-save end glue let temp
+  str all try
+    filename file-mode let exists let mode
+    temp create-file throw let file
+    file write-lines
+    file close-file throw
+    exists 0 eq if mode temp set-file-mode throw then
+    temp filename rename-file throw
+    false to dirty
+    str saved to message
+  catch string str 'not saved: ' swap cat to message end
+end
+# The first press with unsaved changes asks; a second one in a row quits.
+define quit-editor
+  dirty asked-before not and if
+    true to asked
+    str 'unsaved changes: C-q again quits without saving' to message
+  else false to running then
+end
+# Runs M-x's line; what it leaves goes to the status row.
+define run-line
+  false to prompting
+  list code input evaluate end guarded end let values
+  values len 0 gt if values str ' ' join to message then
+end
+# -- flag : what one key does at the prompt, and whether the prompt is done
+define prompt-key
+  let k
+  k 13 eq if run-line true else
+  k 27 eq if true else
+  k 127 eq k 8 eq or if input len 0 gt if input 0 input len 1 sub slice to input then false else
+  k printable if input k char cat to input then false
+  then then then
+end
+define command-line
+  true to prompting str '' to input
+  begin draw read-key prompt-key until
+  false to prompting
+end
+# ---- The keymap
+# k s -- : k runs the word named s, found when the key is pressed
+define bind
+  let name let k
+  list keymap each let pair pair first k ne if pair then end list k name end end to keymap
+end
+# c -- k : the key Ctrl and c sends, c a letter or one of @ [ \ ] ^ _
+define ctrl 32 mod end
+# k -- s true / false : the name k is bound to
+define bound let k false keymap each let pair pair first k eq if drop pair 1 at true then end end
+define run-key
+  asked to asked-before false to asked
+  last-key bound if
+    find if execute else str ': no such word' cat to message then
+  else
+    last-key printable if insert-char else str 'unbound key' to message then
+  then
+end
+# Esc, then a key: the key with Alt.
+define meta-prefix read-key alt-mask add to last-key run-key end
+
+key-left str cursor-left bind
+key-right str cursor-right bind
+key-up str cursor-up bind
+key-down str cursor-down bind
+key-home str line-start bind
+key-end str line-end bind
+key-page-up str page-up bind
+key-page-down str page-down bind
+13 str newline bind
+127 str delete-back bind
+8 str delete-back bind
+key-delete str delete-forward bind
+str s first ctrl str save bind
+str q first ctrl str quit-editor bind
+str x first alt-mask add str command-line bind
+27 str meta-prefix bind
+
+# ---- The command loop
+define enter-screen 27 emit str '[?1049h' write end
+define leave-screen str '[?25h' esc str '[?1049l' esc cat write end
+# -- k : the next key, or -1 when Ctrl-C came instead
+define next-key str interrupt try read-key catch drop str interrupted to message -1 end end
+define fuxed
+  enter-screen
+  str all try
+    begin
+      draw next-key
+      dup 0 lt if drop else
+        to last-key str '' to message
+        tick run-key guarded false to prompting
+      then
+      running not
+    until
+  catch leave-screen throw end
+  leave-screen
+end
+load
+fuxed
