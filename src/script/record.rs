@@ -535,47 +535,30 @@ pub(super) fn answer_field(
             if let Some(own) = CaptureField::named(field) {
                 return capture_field(b, c, own).unwrap_or_else(|| Err(absent()));
             }
-            let named = CapturedField::named(field);
-            match (&c.of, named) {
-                (Of::Pane { pane, .. }, Some(CapturedField::Id)) => {
-                    Ok(id(AnyRef::Pane(pane.id), pane.version.run))
+            use CapturedField as F;
+            match (&c.of, CapturedField::named(field)) {
+                (Of::Pane { pane: p, .. }, Some(F::Id)) => {
+                    Ok(id(AnyRef::Pane(p.id), p.version.run))
                 }
-                (Of::Pane { pane, .. }, Some(CapturedField::Tab)) => {
-                    Ok(id(AnyRef::Tab(pane.tab), pane.version.run))
+                (Of::Pane { pane: p, .. }, Some(F::Tab)) => {
+                    Ok(id(AnyRef::Tab(p.tab), p.version.run))
                 }
-                (Of::Pane { pane, .. }, Some(CapturedField::Version)) => {
-                    b.text(&pane.version.to_string())
-                }
-                (Of::Pane { wrap_pending, .. }, Some(CapturedField::WrapPending)) => {
+                (Of::Pane { pane: p, .. }, Some(F::Version)) => b.text(&p.version.to_string()),
+                (Of::Pane { wrap_pending, .. }, Some(F::WrapPending)) => {
                     Ok(Value::Bool(*wrap_pending))
                 }
-                (Of::Pane { pane, .. }, None) => pane
-                    .fact(field)
-                    .map(|v| pane_fact(v, run))
-                    .unwrap_or_else(|| Err(absent())),
-                (Of::Client { client, .. }, Some(CapturedField::Client)) => {
+                (Of::Pane { pane: p, .. }, None) => {
+                    (p.fact(field)).map_or_else(|| Err(absent()), |v| pane_fact(v, run))
+                }
+                (Of::Client { client, .. }, Some(F::Client)) => {
                     Ok(Value::App(Fux::Client(*client, run)))
                 }
-                (Of::Client { rows, .. }, Some(CapturedField::ScreenRows)) => number(*rows),
-                (Of::Client { cols, .. }, Some(CapturedField::ScreenCols)) => number(*cols),
-                (
-                    Of::Pane { .. },
-                    Some(
-                        CapturedField::Client
-                        | CapturedField::ScreenRows
-                        | CapturedField::ScreenCols,
-                    ),
-                )
-                | (
-                    Of::Client { .. },
-                    None
-                    | Some(
-                        CapturedField::Id
-                        | CapturedField::Tab
-                        | CapturedField::Version
-                        | CapturedField::WrapPending,
-                    ),
-                ) => Err(absent()),
+                (Of::Client { rows, .. }, Some(F::ScreenRows)) => number(*rows),
+                (Of::Client { cols, .. }, Some(F::ScreenCols)) => number(*cols),
+                (Of::Pane { .. }, Some(F::Client | F::ScreenRows | F::ScreenCols))
+                | (Of::Client { .. }, None | Some(F::Id | F::Tab | F::Version | F::WrapPending)) => {
+                    Err(absent())
+                }
             }
         }
         super::Answer::Panes(_) => Err(absent()),

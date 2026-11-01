@@ -138,8 +138,8 @@ fn changed_lines<'a>(
 }
 
 /// A pane's screen, and `history` rows before it, as `view` asks, read
-/// once with its observation (`observed`, `Session::observe`) and the
-/// `journal`'s cursor: `events` from that cursor reads the pane's journal
+/// once with its observation (`observed`, `Session::observe`), and after
+/// its facts the `journal`'s cursor: `events` from that cursor reads the pane's journal
 /// entries after this read; a change only to the screen shows in versions
 /// and captures.
 pub fn pane(
@@ -189,14 +189,8 @@ pub fn pane(
         ("above", above.map_or(Json::Null, Json::count)),
         ("wrapped_rows", Json::Array(wrapped.collect())),
         ("links", links(read.clone(), selection.start, view)),
-    ]
-    .map(|(k, v)| (k.to_owned(), v));
-    // The journal's cursor beside the version, the rest after the facts.
-    let [cursor_read, rest @ ..] = read_here;
-    observed.facts = std::iter::once(cursor_read)
-        .chain(std::mem::take(&mut observed.facts))
-        .chain(rest)
-        .collect();
+    ];
+    (observed.facts).extend(read_here.map(|(k, v)| (k.to_owned(), v)));
     let of = Of::Pane {
         pane: observed,
         wrap_pending: cursor.is_some() && screen.pending_wrap(),
@@ -799,9 +793,7 @@ pub(crate) fn state(pane: &Pane) -> Result<Vec<(&'static str, Json)>, fux_wire::
         // Input accepted and not yet written to its terminal.
         ("input_queued", Json::count(pane.input().len())),
     ];
-    let mut fields = Vec::with_capacity(values.len().saturating_add(1));
-    fields.extend(values);
-    Ok(fields)
+    Ok(values.into())
 }
 
 /// What a pane was started as, for `json`: a shell or a program, and
@@ -832,16 +824,16 @@ pub fn directory(dir: Result<Option<&std::ffi::OsStr>, i32>) -> Json {
 /// in hex.
 fn path(value: &std::ffi::OsStr) -> Json {
     use std::os::unix::ffi::OsStrExt;
+    let hex = || {
+        value
+            .as_bytes()
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect()
+    };
     let (encoding, text) = match value.to_str() {
         Some(text) => ("utf8", text.to_owned()),
-        None => (
-            "hex",
-            value
-                .as_bytes()
-                .iter()
-                .map(|b| format!("{b:02x}"))
-                .collect(),
-        ),
+        None => ("hex", hex()),
     };
     Json::object(vec![
         ("encoding", Json::str(encoding)),

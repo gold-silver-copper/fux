@@ -207,7 +207,7 @@ changing; the journal does not promise a complete stream of terminal replies.
 ## `PANE capture json`
 
 ```json
-{"id":"%1","tab":"@1","version":"…","cursor":"SEQ:RUN",PANE FIELDS…,"above":0,"wrapped_rows":[false,…],"links":[{"row":0,"col":2,"len":4,"uri":"https://…"}],"wrap_pending":false,"screen_cursor":[ROW,COL],"lines":["…"]}
+{"id":"%1","tab":"@1","version":"…",PANE FIELDS…,"cursor":"SEQ:RUN","above":0,"wrapped_rows":[false,…],"links":[{"row":0,"col":2,"len":4,"uri":"https://…"}],"wrap_pending":false,"screen_cursor":[ROW,COL],"lines":["…"]}
 ```
 
 A pane's capture is its observation (the pane's fields above, read in

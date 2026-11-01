@@ -277,7 +277,7 @@ wire! {
 
 wire! {
     /// What a capture read: a pane, its observation read with it (its
-    /// facts with what the capture read beside its lines: the journal's
+    /// facts, then what the capture read beside its lines, the journal's
     /// `cursor` first) and its pending wrap; or a client's terminal, of
     /// its size.
     #[derive(Clone, Debug, PartialEq, Eq)]
