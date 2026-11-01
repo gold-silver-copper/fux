@@ -297,7 +297,7 @@ words! {
         Changing HistoryBudget "history-budget" "pane integer --" "change this pane's history budget in bytes; lowering evicts old rows" "fux %3 4194304 history-budget" [];
         Changing ClearHistory "clear-history" "pane --" "drop the pane's history" "fux %3 clear-history" [];
         Changing Zoom "zoom" "pane --" "fill its tab with the pane on every screen showing it, or restore the tab if it does" "fux %3 zoom" [];
-        Clients Attach "attach" "attachable --" "show the server in this terminal (bare fux uses default-attach); with a size, be a client of no terminal instead; explicit targets and watch refuse creation options" "fux @2 attach (or bare fux, which runs default-attach)" [Either: In Size Watch Cwd HistoryBytes Reflow AlternateScrollLines PictureBytes ProgramClipboard Program ShellProgram Arg Name];
+        Clients Attach "attach" "attachable --" "show the server in this terminal (bare fux runs opts attach); with a size, be a client of no terminal instead; explicit targets and watch refuse creation options" "fux @2 attach (or bare fux, which runs opts attach)" [Either: In Size Watch Cwd HistoryBytes Reflow AlternateScrollLines PictureBytes ProgramClipboard Program ShellProgram Arg Name];
         Clients Focus "focus" "client way --" "left right up down next previous or last pane" "fux str c1 client str left focus" [];
         Clients Show "show" "client handle --" "show and follow a pane, tab or workspace" "fux str c1 client %3 show" [];
         Clients StepTab "step-tab" "client way --" "show the next, previous or last visited tab" "fux str c1 client str next step-tab" [];
@@ -323,17 +323,17 @@ words! {
         Help Explain "explain" "word --" "one word at length (json's says what json gives); or the guide to driving programs from a script or an agent: agents, its first screen, enough for most work; a topic of it (recipes keys read shells programs servers); or guide, all of it" "fux str capture explain" [];
     }
     Opt {
-        Starting Name "name" "x name -- x" "the given name: new-tab's tab, or new-workspace's workspace" "fux agent-opts str web name 80 24 size str ./app program new-tab";
-        Starting Size "size" "x cols rows -- x" "what its tab is laid out on while no client shows it, each at least 1, as large as a screen's grid holds; needed from outside fux, else the caller's own screen or tab, as fux makes no size up; attach: be a client with no terminal, of this size, which prints its id and runs until signalled" "fux agent-opts 80 24 size str ./app program new-tab";
-        Starting Cwd "cwd" "x dir -- x" "where it starts" "fux agent-opts str /srv cwd 80 24 size str ./app program new-tab";
-        Starting Program "program" "x path -- x" "the program to start, in place of a shell; its pane stays once it exits" "fux agent-opts 80 24 size str ./app program new-tab";
-        Starting HistoryBytes "history-bytes" "x integer -- x" "history budget for the new pane, in bytes" "fux agent-opts 0 history-bytes str /bin/cat program new-tab";
-        Starting Reflow "reflow" "x boolean -- x" "whether the new pane rewraps primary-screen lines on resize" "fux agent-opts false reflow str /bin/cat program new-tab";
-        Starting AlternateScrollLines "alternate-scroll-lines" "x integer -- x" "arrows per alternate-screen wheel action (0 to 32767)" "fux agent-opts 3 alternate-scroll-lines str /bin/cat program new-tab";
-        Starting PictureBytes "picture-bytes" "x integer -- x" "picture budget for the new pane (0 to 96 MiB); zero disables pictures" "fux agent-opts 0 picture-bytes str /bin/cat program new-tab";
-        Starting ProgramClipboard "program-clipboard" "x boolean -- x" "whether the new pane's program may copy to the attached terminals' clipboards (OSC 52)" "fux agent-opts false program-clipboard str /bin/cat program new-tab";
+        Starting Name "name" "x name -- x" "the given name: new-tab's tab, or new-workspace's workspace" "fux opts str agent in str web name 80 24 size str ./app program new-tab";
+        Starting Size "size" "x cols rows -- x" "what its tab is laid out on while no client shows it, each at least 1, as large as a screen's grid holds; needed from outside fux, else the caller's own screen or tab, as fux makes no size up; attach: be a client with no terminal, of this size, which prints its id and runs until signalled" "fux opts str agent in 80 24 size str ./app program new-tab";
+        Starting Cwd "cwd" "x dir -- x" "where it starts" "fux opts str agent in str /srv cwd 80 24 size str ./app program new-tab";
+        Starting Program "program" "x path -- x" "the program to start, in place of a shell; its pane stays once it exits" "fux opts str agent in 80 24 size str ./app program new-tab";
+        Starting HistoryBytes "history-bytes" "x integer -- x" "history budget for the new pane, in bytes" "fux opts str agent in 0 history-bytes str /bin/cat program new-tab";
+        Starting Reflow "reflow" "x boolean -- x" "whether the new pane rewraps primary-screen lines on resize" "fux opts str agent in false reflow str /bin/cat program new-tab";
+        Starting AlternateScrollLines "alternate-scroll-lines" "x integer -- x" "arrows per alternate-screen wheel action (0 to 32767)" "fux opts str agent in 3 alternate-scroll-lines str /bin/cat program new-tab";
+        Starting PictureBytes "picture-bytes" "x integer -- x" "picture budget for the new pane (0 to 96 MiB); zero disables pictures" "fux opts str agent in 0 picture-bytes str /bin/cat program new-tab";
+        Starting ProgramClipboard "program-clipboard" "x boolean -- x" "whether the new pane's program may copy to the attached terminals' clipboards (OSC 52)" "fux opts str agent in false program-clipboard str /bin/cat program new-tab";
         Starting ShellProgram "shell-program" "x list -- x" "the checked argv list to start with shell role; its exit closes the pane" "fux opts 80 24 size list str /bin/sh end shell-program new-tab";
-        Starting Arg "arg" "x text -- x" "an argument for the program" "fux agent-opts 80 24 size str ./app program str -v arg new-tab";
+        Starting Arg "arg" "x text -- x" "an argument for the program" "fux opts str agent in 80 24 size str ./app program str -v arg new-tab";
         Starting Axis "axis" "x way -- x" "horizontal (side by side) or vertical (stacked); split requires it" "fux %3 str horizontal axis split";
         Starting Shares "shares" "x n n -- x" "split: how the pane and the new one divide the pane's room, A to B (default: halved)" "fux %3 str horizontal axis 2 1 shares split";
         Starting In "in" "x workspace -- x" "the workspace for new-tab, attach or attach-defaults; new-tab creates a missing name, or a fresh unnamed workspace with str new-workspace in" "fux opts str agent in 80 24 size new-tab";
@@ -2504,16 +2504,14 @@ mod tests {
         ] {
             cases.push(("type", format!("str c1 client {suffix}")));
         }
-        for recipe in [
-            "layout-current",
-            "even-h",
-            "even-v",
-            "main-h",
-            "main-v",
-            "tiled",
-        ] {
+        let layouts = concat!(
+            "require ",
+            env!("CARGO_MANIFEST_DIR"),
+            "/recipes/layouts.fux"
+        );
+        for recipe in ["even-h", "even-v", "main-h", "main-v", "tiled"] {
             for target in ["1", "%1", "+1", "all", "str tab", "str c1 client"] {
-                cases.push(("fail", format!("{target} {recipe}")));
+                cases.push(("fail", format!("{layouts} {target} {recipe}")));
             }
         }
         let mut wrong = Vec::new();

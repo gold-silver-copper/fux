@@ -240,7 +240,8 @@ impl<A: AppValue> Machine<A> {
     /// Reads `text`, a library named `source`, to its end, and gives each
     /// of its definitions' help, which the comment on the line just above
     /// its `define` says: `# EFFECT : ABOUT`; the dictionary keeps it with
-    /// the definition (`Definition`). A definition without it is refused,
+    /// the definition (`Definition`), and a definition the library hid
+    /// (`hide`) gives none. A definition without it is refused,
     /// and the machine is as it was. A library is read on a machine at
     /// rest, run as any program is, on `host` (the one its programs run on,
     /// so the machine's code is made for one host), and may not wait for it.
@@ -272,12 +273,13 @@ impl<A: AppValue> Machine<A> {
         });
         match docs {
             Ok(docs) => {
-                let docs: Vec<Rc<Doc>> = docs.into_iter().map(Rc::new).collect();
-                for doc in &docs {
-                    if let Some(entry) = self.names.get_mut(doc.name.as_str()) {
-                        entry.doc = Some(Rc::clone(doc));
-                    }
-                }
+                let mut docs: Vec<Rc<Doc>> = docs.into_iter().map(Rc::new).collect();
+                docs.retain(|doc| {
+                    let entry = self.names.get_mut(doc.name.as_str());
+                    entry
+                        .map(|entry| entry.doc = Some(Rc::clone(doc)))
+                        .is_some()
+                });
                 Ok(docs)
             }
             Err(error) => {

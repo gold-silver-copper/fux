@@ -708,6 +708,13 @@ mod tests {
         Ok(())
     }
 
+    /// The confirmation's recipe file, loaded.
+    const CONFIRM: &str = concat!(
+        "require ",
+        env!("CARGO_MANIFEST_DIR"),
+        "/../recipes/confirm.fux"
+    );
+
     /// A question's or a prompt's action is checked as it opens: one with
     /// a mistake opens nothing.
     #[test]
@@ -721,7 +728,7 @@ mod tests {
                 "a callback is",
             ),
         ] {
-            let open = format!("me str sure? {action} confirm");
+            let open = format!("{CONFIRM} me str sure? {action} confirm");
             let refused = output_as(&mut s, Some(c), &open).err().unwrap_or_default();
             assert!(refused.contains(said), "{refused}");
             assert_eq!(mode(&s, c), "normal");
@@ -741,7 +748,8 @@ mod tests {
     #[test]
     fn a_confirmation_runs_its_callback_by_y_or_enter_alone() -> Outcome {
         let (mut s, c) = session()?;
-        let ask = "me str sure? list list %1 end code str yes rename end end confirm";
+        let ask =
+            &format!("{CONFIRM} me str sure? list list %1 end code str yes rename end end confirm");
         for key in ["n", "Escape", "r", "x"] {
             output_as(&mut s, Some(c), ask)?;
             assert_eq!(mode(&s, c), "list sure? 0");
@@ -1486,7 +1494,10 @@ mod tests {
     #[test]
     fn a_key_into_an_exited_program_is_refused_and_told() -> Outcome {
         let (mut s, c) = session()?;
-        run(&mut s, "agent-opts 80 24 size str /bin/cat program new-tab")?;
+        run(
+            &mut s,
+            "opts str agent in 80 24 size str /bin/cat program new-tab",
+        )?;
         run(&mut s, "str c1 client str %2 pane show")?;
         s.end_program(PaneId::of(2), fux_wire::answer::Ended::Exited(3));
         for typed in [b"x".as_slice(), b"\x1b[200~z\x1b[201~"] {

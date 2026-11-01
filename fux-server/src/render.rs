@@ -2405,7 +2405,7 @@ mod tests {
         output_as(
             &mut s,
             Some(c),
-            "agent-opts str / cwd str x program new-tab drop",
+            "opts str agent in str / cwd str x program new-tab drop",
         )?;
         let id = s.focused(c).ok_or("the pane")?;
         let respawn = format!("{id} kill-first respawn");

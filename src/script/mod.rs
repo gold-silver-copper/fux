@@ -1926,7 +1926,7 @@ type Loaded = (
 /// json'`, never a file, whatever it holds; else each is a word.
 fn program(args: &[String]) -> Result<Loaded, Failed> {
     let words = match args {
-        [] => token::arguments(&["default-attach"]),
+        [] => token::arguments(&["opts", "attach"]),
         // A program read whole.
         [dash] if dash == "-" => {
             let text = read_text("stdin", io::stdin())?;
@@ -2840,7 +2840,7 @@ pub(crate) mod tests {
             };
             let mut machine = compile(&token::source(
                 "layout",
-                "@1 panes let a @1 panes let b @1 str @1:0:1-0 list a first b first end str horizontal even-of arrange",
+                "@1 panes let a @1 panes let b @1 str @1:0:1-0 list list str horizontal 1 1 1 2 end a first b first end arrange",
             )?)?;
             let mut sink = Vec::new();
             let mut host = Host::new(Context::default(), None, &mut sink);

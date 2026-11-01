@@ -207,14 +207,7 @@ fn errors_statuses_and_what_is_left() -> Outcome {
     // A program's path holding a line end fails to start, the line end
     // shown as `\n`, as is a line separator in a message.
     let path = server.fux(&[
-        "agent-opts",
-        "80",
-        "24",
-        "size",
-        "str",
-        "no\nsuch",
-        "program",
-        "new-tab",
+        "opts", "str", "agent", "in", "80", "24", "size", "str", "no\nsuch", "program", "new-tab",
     ])?;
     assert!(
         path.stderr.starts_with("fux: start: ") && path.stderr.contains(r"starting no\nsuch in "),
@@ -229,20 +222,8 @@ fn errors_statuses_and_what_is_left() -> Outcome {
     );
     // A pane that never changes is waited on until the time is up.
     let timed_out = server.fux(&[
-        "agent-opts",
-        "80",
-        "24",
-        "size",
-        "str",
-        "sleep",
-        "program",
-        "str",
-        "30",
-        "arg",
-        "new-tab",
-        "1",
-        "timeout",
-        "wait",
+        "opts", "str", "agent", "in", "80", "24", "size", "str", "sleep", "program", "str", "30",
+        "arg", "new-tab", "1", "timeout", "wait",
     ])?;
     assert_eq!(timed_out.status, 124, "{}", timed_out.stderr);
     assert!(
@@ -384,21 +365,11 @@ fn mistakes_name_what_the_program_wrote() -> Outcome {
     );
     // `add` fails as it runs, after `new-tab` made its tab (D-25).
     let before = said(&[
-        "agent-opts",
-        "80",
-        "24",
-        "size",
-        "str",
-        "sh",
-        "program",
-        "new-tab",
-        "str",
-        "a",
-        "1",
-        "add",
+        "opts", "str", "agent", "in", "80", "24", "size", "str", "sh", "program", "new-tab", "str",
+        "a", "1", "add",
     ])?;
     assert!(
-        before.starts_with("fux: type: argument 12: add: "),
+        before.starts_with("fux: type: argument 15: add: "),
         "{before}"
     );
     assert!(
@@ -409,7 +380,7 @@ fn mistakes_name_what_the_program_wrote() -> Outcome {
     // failure holds them, with its number in Forth's table (gap 26).
     assert_eq!(
         before.lines().nth(1),
-        Some("fux: already took effect: argument 8: new-tab"),
+        Some("fux: already took effect: argument 11: new-tab"),
         "{before}"
     );
     let caught = "str all try %1 str x text send-keys drop 1 0 div
@@ -600,17 +571,8 @@ fn a_directory_named_in_any_bytes_is_where_a_run_starts() -> Outcome {
     std::fs::create_dir(&dir).map_err(e)?;
     let out = std::process::Command::new(fux())
         .args([
-            "agent-opts",
-            "80",
-            "24",
-            "size",
-            "str",
-            "touch",
-            "program",
-            "str",
-            "here",
-            "arg",
-            "new-tab",
+            "opts", "str", "agent", "in", "80", "24", "size", "str", "touch", "program", "str",
+            "here", "arg", "new-tab",
         ])
         .current_dir(&dir)
         .env("FUX_SOCKET", &server.socket)
@@ -694,18 +656,8 @@ fn a_write_that_fails_stops_the_program() -> Outcome {
     };
     let ran = full()?
         .args([
-            "help",
-            "agent-opts",
-            "80",
-            "24",
-            "size",
-            "str",
-            "sleep",
-            "program",
-            "str",
-            "9",
-            "arg",
-            "new-tab",
+            "help", "opts", "str", "agent", "in", "80", "24", "size", "str", "sleep", "program",
+            "str", "9", "arg", "new-tab",
         ])
         .output()
         .map_err(e)?;
@@ -788,14 +740,7 @@ fn an_action_acts_though_stdout_is_closed() -> Outcome {
     assert_eq!(renamed.status.code(), Some(0));
     assert_eq!(server.ok(&["str", "renamed", "pane"])?, "%1\n");
     let launch = [
-        "agent-opts",
-        "80",
-        "24",
-        "size",
-        "str",
-        "sh",
-        "program",
-        "new-tab",
+        "opts", "str", "agent", "in", "80", "24", "size", "str", "sh", "program", "new-tab",
     ];
     let made = closed(&launch)?;
     assert_eq!(made.status.code(), Some(141));

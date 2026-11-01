@@ -37,7 +37,7 @@ def measure(bin_):
     pid = server()
     base = rss(pid)
     fill = "python3 -c \"import sys\nfor i in range(60000): sys.stdout.write('%05d ' % i + 'x' * 73 + '\\n')\"; read x"
-    started = run(bin_, e, "str", "history-bytes", str(50000 * (24 + 8 * 79)), "set", "agent-opts", "80", "24", "size", "str", "sh", "program", "str", "-c", "arg", "str", fill, "arg", "new-tab")
+    started = run(bin_, e, "str", "history-bytes", str(50000 * (24 + 8 * 79)), "set", "opts", "str", "agent", "in", "80", "24", "size", "str", "sh", "program", "str", "-c", "arg", "str", fill, "arg", "new-tab")
     pane = until_text(bin_, e, started.stdout, "59999 ", 120)
     kept = run(bin_, e, pane, "all-history", "capture").stdout.count("\n")
     time.sleep(1)

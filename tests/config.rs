@@ -238,21 +238,8 @@ fn an_imported_failure_keeps_the_whole_bundled_state() -> Outcome {
     terminal.wait_exit()?;
     assert_eq!(server.panes()?.len(), 1);
     let probe = server.fux(&[
-        "agent-opts",
-        "80",
-        "24",
-        "size",
-        "str",
-        "/bin/sh",
-        "program",
-        "str",
-        "-c",
-        "arg",
-        "str",
-        "sleep 1",
-        "arg",
-        "new-tab",
-        "wait",
+        "opts", "str", "agent", "in", "80", "24", "size", "str", "/bin/sh", "program", "str", "-c",
+        "arg", "str", "sleep 1", "arg", "new-tab", "wait",
     ])?;
     assert_eq!(
         probe.status, 0,
@@ -426,7 +413,10 @@ fn a_program_uses_preferences_before_its_next_operation() -> Outcome {
 /// A new small pane uses its invocation's history budget.
 fn history_rows(server: &Server) -> Result<usize, String> {
     let answer = server.ok(&[
-        "agent-opts",
+        "opts",
+        "str",
+        "agent",
+        "in",
         "80",
         "5",
         "size",
@@ -611,7 +601,7 @@ fn launches_save_the_callers_argv_role_and_environment() -> Outcome {
     assert!(
         server
             .ok(&["%1", "str", "horizontal", "axis", "split", "info", "json"])?
-            .contains("\"launch_argv\":[\"/bin/sh\"]")
+            .contains("\"launch\":{\"choice\":\"shell\",\"argv\":[\"/bin/sh\"]")
     );
     let before = server.panes()?.len();
     for (conflict, code) in [
@@ -658,7 +648,7 @@ fn presentation_updates_only_the_addressed_view_before_a_wait_finishes() -> Outc
 #[test]
 fn pane_creation_overrides_preserve_zero_and_false_and_dump_replays_them() -> Outcome {
     let server = Server::start("")?;
-    let created = server.ok(&["str history-bytes 4096 set str program-clipboard true set agent-opts 40 6 size 0 history-bytes false reflow 0 alternate-scroll-lines 0 picture-bytes false program-clipboard str /bin/cat program new-tab"])?;
+    let created = server.ok(&["str history-bytes 4096 set str program-clipboard true set opts str agent in 40 6 size 0 history-bytes false reflow 0 alternate-scroll-lines 0 picture-bytes false program-clipboard str /bin/cat program new-tab"])?;
     let pane = created.trim().split(':').next().ok_or("pane")?;
     assert_eq!(
         server.ok(&[pane, "str", "history_bytes", "get"])?.trim(),

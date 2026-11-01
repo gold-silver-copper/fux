@@ -355,21 +355,22 @@ pub(super) fn snapshot(s: inspect::Snapshot) -> Result<V, Failure> {
             ("pid", p.pid.map(number).unwrap_or_else(|| Ok(null()))?),
             ("rows", number(p.rows)?), ("cols", number(p.cols)?), ("version", b.text(&p.version.to_string())?),
         ];
-        let mut fields = Vec::with_capacity(base.len().saturating_add(2));
+        let mut fields = Vec::with_capacity(base.len().saturating_add(3));
         for (key, value) in base { fields.push((key.to_owned(), value)); }
         if let Some(state) = &p.state { fields.push(("state".to_owned(), b.json(state, 0)?)); }
-        if let Some(r) = &p.recipe {
-            let recipe = record! { b; "choice" => b.text(if r.shell { "shell" } else { "program" })?,
-                "argv" => b.list(&r.argv, |b,s| b.text(s))?, "initial_cwd" => b.path(&r.initial_cwd)?,
-                "observed_cwd" => match &r.observed_cwd {
-                    inspect::Directory::Known(path) => record! { b; "status" => b.text("known")?, "path" => b.path(path)? }?,
-                    inspect::Directory::Unknown => null(),
-                    inspect::Directory::Failed(errno) => record! { b; "status" => b.text("failed")?, "operation" => b.text("cwd")?, "errno" => number(*errno)? }?,
-                },
-                "history_bytes" => number(r.options.history_bytes.get())?, "program_clipboard" => Value::Bool(r.options.program_clipboard),
-                "reflow" => Value::Bool(r.options.reflow), "alternate_scroll_lines" => number(r.options.alternate_scroll_lines.get())?, "picture_bytes" => number(r.options.picture_bytes.get())?
+        if let Some(l) = &p.launch {
+            let launch = record! { b; "choice" => b.text(if l.shell { "shell" } else { "program" })?,
+                "argv" => b.list(&l.argv, |b,s| b.text(s))?, "cwd" => b.path(&l.cwd)?
             }?;
-            fields.push(("launch".to_owned(), recipe));
+            fields.push(("launch".to_owned(), launch));
+        }
+        if let Some(cwd) = &p.cwd {
+            let cwd = match cwd {
+                inspect::Directory::Known(path) => record! { b; "status" => b.text("known")?, "path" => b.path(path)? }?,
+                inspect::Directory::Unknown => null(),
+                inspect::Directory::Failed(errno) => record! { b; "status" => b.text("failed")?, "operation" => b.text("cwd")?, "errno" => number(*errno)? }?,
+            };
+            fields.push(("cwd".to_owned(), cwd));
         }
         b.finish(fields, None)
     })?;

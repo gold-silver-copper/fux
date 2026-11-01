@@ -176,9 +176,9 @@ fn records_list_is_current() -> Result<(), Box<dyn std::error::Error>> {
             Directory::Known(Path::Bytes(vec![0xff])),
             Directory::Failed(2),
         ];
-        let recipes = s.panes.iter_mut().filter_map(|p| p.recipe.as_mut());
-        for (recipe, observed) in recipes.zip(observed) {
-            recipe.observed_cwd = observed;
+        let cwds = s.panes.iter_mut().filter_map(|p| p.cwd.as_mut());
+        for (cwd, observed) in cwds.zip(observed) {
+            *cwd = observed;
         }
         let snapshot = record::snapshot(*s).map_err(|e| e.message)?;
         records(&format!("snapshot.{name}"), &snapshot, &mut lines);

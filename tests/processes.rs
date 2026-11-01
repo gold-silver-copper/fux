@@ -247,26 +247,8 @@ fn an_orphan_a_pane_leaves_is_read_and_reaped() -> Outcome {
     let code = "mkfifo \"$0\"; (cat </dev/tty & echo $! > \"$1\"); read x <> \"$0\"";
     let (fifo, pidfile) = (fifo.to_string_lossy(), pidfile.to_string_lossy());
     let answer = server.ok(&[
-        "agent-opts",
-        "80",
-        "24",
-        "size",
-        "str",
-        "sh",
-        "program",
-        "str",
-        "-c",
-        "arg",
-        "str",
-        code,
-        "arg",
-        "str",
-        &fifo,
-        "arg",
-        "str",
-        &pidfile,
-        "arg",
-        "new-tab",
+        "opts", "str", "agent", "in", "80", "24", "size", "str", "sh", "program", "str", "-c",
+        "arg", "str", code, "arg", "str", &fifo, "arg", "str", &pidfile, "arg", "new-tab",
     ])?;
     let pane = answer
         .split_whitespace()
