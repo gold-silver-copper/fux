@@ -3,6 +3,7 @@
 //! replicate live OS facts.
 use crate::pane::{End, Left, Said};
 use crate::view::ClientKind;
+use fux_wire::act::Opening;
 use fux_wire::command::{AnyRef, Run, Version};
 use fux_wire::events::{Actor, Batch, Cursor, Item, Seq, Status};
 use fux_wire::id::{ClientId, PaneId, TabId, WsId};
@@ -76,34 +77,6 @@ impl Detach {
             Self::Disconnected => "disconnected",
             Self::ServerStopped => "server_stopped",
             Self::Failed => "failed",
-        }
-    }
-}
-
-/// Which of its client's screens a client shows over its panes.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Opening {
-    Column,
-    Repeat,
-    List,
-    Prompt,
-}
-impl Opening {
-    pub fn of(panel: &fux_wire::act::Panel) -> Opening {
-        use fux_wire::act::Panel;
-        match panel {
-            Panel::Column(_) => Opening::Column,
-            Panel::Repeat(_) => Opening::Repeat,
-            Panel::List(_) => Opening::List,
-            Panel::Prompt { .. } => Opening::Prompt,
-        }
-    }
-    fn name(self) -> &'static str {
-        match self {
-            Self::Column => "column",
-            Self::Repeat => "repeat",
-            Self::List => "list",
-            Self::Prompt => "prompt",
         }
     }
 }
