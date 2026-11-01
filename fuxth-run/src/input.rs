@@ -601,7 +601,7 @@ fn line_end(bytes: &VecDeque<u8>, most: usize) -> Option<(usize, bool)> {
 fn stty() -> Result<(), Failure> {
     let ran = std::process::Command::new("stty")
         .args([
-            "-icanon", "-echo", "-iexten", "-ixon", "min", "1", "time", "0",
+            "-icanon", "-echo", "-iexten", "-ixon", "-icrnl", "min", "1", "time", "0",
         ])
         .stdin(std::process::Stdio::inherit())
         .output()

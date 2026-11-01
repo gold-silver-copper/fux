@@ -62,8 +62,10 @@ changed a file is listed with a failure after it.
 ## On a terminal
 
 A key word puts the terminal in the mode keys need: no line editing or
-echo, `IEXTEN` and `IXON` off, signals kept, set once with `stty`. It lasts
-till the program ends, or, in the REPL, while the key word waits. From
+echo, `IEXTEN`, `IXON` and `ICRNL` off (so Enter reads as 13, as the
+terminal sent it, and Ctrl-J as 10), signals kept, set once with `stty`. It
+lasts till the program ends, or, in the REPL, while the key word waits; a
+line (`accept`) is read in the terminal's own modes. From
 then on Ctrl-Z stops the runner with the terminal's own modes back, set
 again when it goes on, and SIGTERM, SIGHUP and SIGQUIT end it with them
 back, its status 128 and the signal's number; every other way out puts
