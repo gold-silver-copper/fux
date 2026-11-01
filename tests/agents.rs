@@ -1181,6 +1181,50 @@ fn keys_to_a_program_that_closed_its_terminal_are_refused() -> Outcome {
     Ok(())
 }
 
+/// A request's input and signal are journaled when they are accepted: the
+/// pane, its program's generation, how the input came (`keys`, `paste`,
+/// `mouse`), its bytes and the version `expect` admitted it at, or the
+/// signal; never what the input says.
+#[test]
+fn requests_journal_their_input_and_signals_never_the_text() -> Outcome {
+    let server = Server::start("")?;
+    let cursor = server.ok(&["all", "str", "", "0", "next-events", "str", "next", "get"])?;
+    let clicks = "printf '\\033[?1000h\\033[?1006hready'; exec cat";
+    let started = server.ok(&named("m", &["20", "5", "size"], &["sh", "-c", clicks]))?;
+    shows_after(&server, &started, "ready")?;
+    let seen = server.ok(&["str", "m", "pane", "capture", "version"])?;
+    let seen = seen.trim();
+    server.ok(&["str", seen, "expect", "str", "secret", "text", "send-keys"])?;
+    server.ok(&["str", "m", "pane", "str", "secret", "paste", "send-keys"])?;
+    server.ok(&["str", "m", "pane", "str", "click", "0", "0", "send-mouse"])?;
+    server.ok(&["str", "m", "pane", "str", "INT", "signal"])?;
+    let events = server.ok(&["str", "m", "pane", "str", cursor.trim(), "0", "next-events"])?;
+    let told: Vec<_> = (events.lines())
+        .filter(|line| {
+            line.contains(r#""event":"input""#) || line.contains(r#""event":"signalled""#)
+        })
+        .map(|line| {
+            line.split_once(r#","origin""#)
+                .map_or(line, |(told, _)| told)
+        })
+        .collect();
+    let pane = id(&started);
+    let at = format!(r#""pane":"{pane}","tab":"@2","workspace":"+2","generation":0"#);
+    assert_eq!(
+        told,
+        [
+            format!(r#"{{"event":"input",{at},"kind":"keys","bytes":6,"expected":"{seen}""#),
+            format!(r#"{{"event":"input",{at},"kind":"paste","bytes":6"#),
+            // An SGR press and release at row 1, column 1.
+            format!(r#"{{"event":"input",{at},"kind":"mouse","bytes":18"#),
+            format!(r#"{{"event":"signalled",{at},"signal":2"#),
+        ],
+        "{events}"
+    );
+    assert!(!events.contains("secret"), "{events}");
+    Ok(())
+}
+
 /// Every promised input kind reaches the condition, and the matched capture
 /// keeps its text and version for local reads and guarded input.
 #[test]
