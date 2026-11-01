@@ -121,7 +121,8 @@ fn held(answer: &super::Answer) -> Vec<String> {
 /// - held answers of every kind: an action's, a wait's that saw a change,
 ///   one that saw its program end, one whose pane closed, one timed out;
 /// - `buffers`, `status`, a batch of every kind of event, a word's record
-///   and the dictionary's.
+///   and the dictionary's;
+/// - the bundled keys' and preferences' records, as a client answers them.
 #[test]
 fn records_list_is_current() -> Result<(), Box<dyn std::error::Error>> {
     use super::testing::{InProcess, attached, evaluate};
@@ -252,6 +253,20 @@ fn records_list_is_current() -> Result<(), Box<dyn std::error::Error>> {
         &record::from_json(&status).map_err(|e| e.message)?,
         &mut lines,
     );
+    // What a client answers of its own: every kind of key it binds, and
+    // its preferences.
+    let state = super::default_state()?;
+    let own = [
+        ("keys", state.keys.record(&[])),
+        ("preferences", state.preferences.record()),
+    ];
+    for (path, json) in own {
+        records(
+            path,
+            &record::from_json(&json).map_err(|e| e.message)?,
+            &mut lines,
+        );
+    }
     let batch = fux_server::journal::every_kind_read(run)?;
     let events = record::events(batch).map_err(|e| e.message)?;
     records("events", &events, &mut lines);

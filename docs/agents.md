@@ -73,7 +73,7 @@ exits; stop on `missed`. This gives first recorded exit, never OS chronology
 or group-wait order. `fux help recipes` gives the complete recipe ("First
 recorded exit across jobs").
 
-More: `fux help recipes`, `keys`, `read`, `shells`, `programs`, `servers`;
+More: `fux help recipes`, `typing`, `read`, `shells`, `programs`, `servers`;
 `fux help guide` gives all topics, `fux help json` the full schema,
 `fux help WORD` a word's contract; `fux help cookbook` recipes to copy.
 
@@ -280,7 +280,7 @@ panes as it begins and answers changes in watch order, not exit chronology.
   leader exited); macOS: `ps -o comm=,args= -p G`, `lsof -a -p G -d cwd
   -Fn`, `pgrep -lf -g G`.
 
-## keys: Keys, the mouse and stopping
+## typing: Keys, the mouse and stopping
 
 - **Keys** go between the pane and `send-keys`: `str T text`, `str NAME
   key` (tmux's names: `Enter`, `Escape`, `Tab`, `BSpace`, `Up`, `PageDown`,

@@ -98,8 +98,7 @@ wire! {
     /// The command column as a client shows it.
     #[derive(Clone, Debug, PartialEq, Eq, Default)]
     pub struct Column {
-        pub title: String,
-        /// The keys typed so far, as the bar shows them: `C-b t`.
+        /// The keys typed so far, which head it: `C-b t`.
         pub keys: String,
         pub entries: Vec<ColumnEntry>,
         pub selected: usize,
@@ -107,17 +106,14 @@ wire! {
 }
 
 wire! {
-    /// One binding of a column: its key, what it does, the group it is listed
-    /// under, and whether it opens a layer of more keys.
+    /// One key of a column: what it does, the group it is listed under, and
+    /// whether it holds a map of more keys.
     #[derive(Clone, Debug, PartialEq, Eq)]
     pub struct ColumnEntry {
         pub key: KeyPress,
         pub label: String,
         pub group: String,
-        pub layer: bool,
-        /// Bound without the prefix: listed after the rest, under headings of
-        /// their own.
-        pub root: bool,
+        pub map: bool,
     }
 }
 

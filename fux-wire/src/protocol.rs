@@ -21,7 +21,7 @@ use fux_vt::bytes::ByteQueue;
 use std::borrow::Cow;
 
 /// Bumped on any change to the frames below.
-pub const PROTOCOL: u32 = 70;
+pub const PROTOCOL: u32 = 71;
 /// The largest frame, kind byte included.
 pub const MAX_FRAME: usize = 1 << 20;
 /// The largest payload one frame carries.
@@ -412,6 +412,8 @@ frames! {
         Act(act: Box<Act>) = 3,
         Resize(size: fux_vt::Size) = 4,
         Detach = 5,
+        /// Its answer to the server's `Read` of this number.
+        Answer(asked: u64, value: Json) = 9,
     }
 }
 
@@ -634,6 +636,9 @@ frames! {
         Open(screen: crate::callback::Open) = 15,
         /// Keys to take as typed at its terminal (`send-keys` to a client).
         Keys(keys: Vec<crate::command::Input>) = 16,
+        /// What only it knows, asked for a request: it sends its `Answer`
+        /// with this number.
+        Read(asked: u64, read: crate::command::ClientRead) = 13,
     }
 }
 

@@ -61,7 +61,7 @@ fux str shell pane str vertical axis str sh program str -c arg str 'exit 5' arg 
 ## Type a line, send keys
 
 `line` types a line and presses Enter; `send-keys` sends text and named
-keys (`fux help keys` lists the names).
+keys (`fux key-names` lists the names).
 
 ```sh
 fux str shell pane str 'echo hello' line
@@ -344,15 +344,33 @@ The config is fuxth that each terminal runs as it attaches;
 opens the focused pane's history in this terminal's `$EDITOR` (else `vi`)
 at its last line, bundled on `C-b c`. A binding runs a code value,
 `code … end`, never a string; a word of the config's is defined before
-the binding that names it. This config moves the prefix to `C-a`, binds
-`edit-history` on `e` too, and binds a word of its own on `v`.
+the binding that names it. A key maps to a binding or to a map of more
+keys: the prefix is a key that holds one, and `bind` takes keys from the
+root. This config moves the prefix, and every key after it, to `C-a`,
+binds `edit-history` on `C-a e` too, a word of its own on `C-a v`, and a
+map `C-a g` of its own that repeats, so `C-a g h h h` moves a border
+three cells.
 
 ```fux
 # ~/.config/fux/config.fux
-str C-a prefix
-str e code me edit-history end bind  str 'history in the editor' label
+str C-b str C-a move-keys
+str 'C-a e' code me edit-history end bind  str 'history in the editor' label
 define split-right me focused str horizontal axis split drop end
-str v code split-right end bind
+str 'C-a v' code split-right end bind
+str 'C-a g h' code me focused str left 1 move-border end bind  str 'C-a g' repeat
+```
+
+Another program reads a client's keys, and the map it is in now, from
+that client itself, and its preferences. Here a client of no terminal
+says its id, and two of its keys and one preference are read from it.
+
+```sh
+fux opts 80 24 size attach > client.id &
+A=$!
+until [ -s client.id ]; do kill -0 "$A"; sleep 0.1; done
+fux str "$(cat client.id)" client keys | jq -c '.at, (.keymap[] | select(.keys == "C-b d" or .keys == "C-b r"))'
+fux str "$(cat client.id)" client preferences | jq -c 'select(.name == "bell")'
+kill "$A"
 ```
 
 A config's `require` reads beside it: this one, beside a copy of fux's
@@ -361,7 +379,7 @@ A config's `require` reads beside it: this one, beside a copy of fux's
 ```fux
 # ~/.config/fux/config.fux
 require recipes/confirm.fux
-str X code me str 'terminate its command?' list list me focused end code str TERM signal drop end end confirm end bind
+str 'C-b X' code me str 'terminate its command?' list list me focused end code str TERM signal drop end end confirm end bind
 ```
 
 ## The bar on a row of its own

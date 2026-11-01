@@ -345,10 +345,8 @@ pub enum Ask {
 /// The keys of a binding just made.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Bound {
-    /// Keys after the prefix.
-    Prefix(Vec<fux_vt::keys::KeyPress>),
-    /// One key, bound without the prefix.
-    Root(fux_vt::keys::KeyPress),
+    /// Keys from the root.
+    Keys(Vec<fux_vt::keys::KeyPress>),
     /// One key of a screen of fux's own.
     In(crate::keymap::Modal, fux_vt::keys::KeyPress),
 }
@@ -979,9 +977,10 @@ pub trait Asks {
         Ok(())
     }
 
-    /// Pending preferences must arrive before a later server operation.
+    /// Pending preferences and keys must arrive before a later server
+    /// operation, a relayed read of them among them.
     fn checkpoint(&mut self, draft: &mut Draft, context: Context) -> Result<(), Failed> {
-        if draft.preferences.changed() {
+        if draft.changed() {
             self.commit(draft, context)?;
         }
         Ok(())
@@ -1327,6 +1326,7 @@ fn acts(request: &Request) -> bool {
         request,
         Request::Wait(_)
             | Request::NextEvents { .. }
+            | Request::Read { .. }
             | Request::Do(
                 Command::Inspect { .. }
                     | Command::CapturePane { .. }
@@ -2893,7 +2893,10 @@ pub(crate) mod tests {
                         self.submitted.push(asked.context.of);
                         Body::Empty
                     }
-                    Request::Do(_) | Request::Wait(_) | Request::NextEvents { .. } => {
+                    Request::Do(_)
+                    | Request::Wait(_)
+                    | Request::NextEvents { .. }
+                    | Request::Read { .. } => {
                         return Err(Failed::new(Code::Usage, "unexpected request"));
                     }
                 };
@@ -3077,28 +3080,28 @@ pub(crate) mod tests {
             super::run_quiet(&super::token::source(name, text)?, Some(state), false)
         };
         let mut keymap = super::default_state()?.draft();
-        let (screens, keys): (Vec<&str>, Vec<&str>) = (super::KEYS.lines())
-            .filter(|l| !l.is_empty() && !l.starts_with('#') && !l.starts_with("define "))
-            .partition(|l| l.contains(" bind-in") || l.contains(" bind-action"));
-        assert_eq!(
-            keymap.keys.bindings.all().len(),
-            keys.len().saturating_sub(1)
-        );
+        let bound = |text: &str| {
+            (text.lines())
+                .filter(|l| l.contains(" end bind") && !l.contains(" bind-action"))
+                .count()
+        };
+        let screens =
+            |text: &str| text.matches(" bind-in").count() + text.matches(" bind-action").count();
         let listed = keymap.keys.describe();
-        assert_eq!(
-            listed.matches(" bind-in").count() + listed.matches(" bind-action").count(),
-            screens.len()
-        );
-        // Quotes, a backslash and a line end, as a config writes them.
-        let mine = r#"str M-t code me focused zoom end bind-root str Mine group
-            str g code me focused str horizontal axis str sh program str "echo it's" arg split drop end bind
+        assert_eq!(bound(&listed), bound(super::KEYS));
+        assert_eq!(screens(&listed), screens(super::KEYS));
+        // Quotes, a backslash and a line end, as a config writes them; a
+        // key at the root, and a map three deep that repeats.
+        let mine = r#"str M-t code me focused zoom end bind str Mine group
+            str 'C-b g' code me focused str horizontal axis str sh program str "echo it's" arg split drop end bind
             str "a \\ and
-            a line" label"#;
+            a line" label
+            str 'C-b y u i' code me focused zoom end bind  str 'C-b y u' repeat"#;
         run("mine", mine, &mut keymap)?;
         let mut again = super::default_state()?.draft();
         run(
             "other",
-            "str C-a prefix str M-n code me me focused tab str next step end bind-root",
+            "str C-b str C-a move-keys str M-n code me me focused tab str next step end bind",
             &mut again,
         )?;
         run("listed", &keymap.keys.describe(), &mut again)?;

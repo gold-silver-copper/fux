@@ -23,6 +23,7 @@ impl ClientState {
             config: self.config.clone(),
             preferences: self.preferences.clone().into(),
             attach: Some(self.attach.clone()),
+            rebound: false,
         }
     }
 }
@@ -42,17 +43,21 @@ pub struct Draft {
     pub config: Option<Config>,
     pub preferences: PreferenceDraft,
     pub attach: Option<AttachDefaults>,
+    /// Whether a key word ran, even if it changed nothing.
+    pub rebound: bool,
 }
 
 impl Draft {
+    /// Whether a setter or a key word ran since it was drafted.
+    pub fn changed(&self) -> bool {
+        self.rebound || self.preferences.changed()
+    }
+
     pub fn initialized(&self) -> bool {
-        self.keys.prefix.is_some()
+        self.attach.is_some()
     }
 
     pub fn finish(self) -> Result<ClientState, String> {
-        if self.keys.prefix.is_none() {
-            return Err("bundled initialization did not set the prefix".to_owned());
-        }
         Ok(ClientState {
             keys: self.keys,
             config: self.config,
@@ -111,6 +116,19 @@ macro_rules! preferences {
         }
 
         pub const NAMES: &[&str] = &[$($name),*];
+
+        impl Preferences {
+            /// The `preferences` record: each one's name, its value as
+            /// `set` takes it, and what it takes.
+            pub fn record(&self) -> fux_wire::json::Json {
+                use fux_wire::json::Json;
+                Json::Array(vec![$(Json::object(vec![
+                    ("name", Json::str($name)),
+                    ("value", self.$field.json()),
+                    ("type", Json::str(<$reads as Reads>::takes())),
+                ]),)*])
+            }
+        }
 
         /// Help describes policy's source without evaluating defaults.
         pub fn table() -> Vec<[String; 3]> {
@@ -235,7 +253,7 @@ mod tests {
     use std::rc::Rc;
 
     #[test]
-    fn initialization_requires_every_preference_and_the_prefix() -> TestResult {
+    fn initialization_requires_every_preference() -> TestResult {
         assert!(Draft::default().finish().is_err());
         let state = crate::script::default_state()?;
         let mut draft = state.draft();

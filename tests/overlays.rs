@@ -50,7 +50,7 @@ fn the_column_runs_the_selected_command_and_explains_unavailable_ones() -> Outco
     client.wait_for("$")?;
     client.keys(PREFIX)?;
     client.wait("the column", |t| {
-        t.contains("Commands") && t.contains("split side by side")
+        t.contains("C-b") && t.contains("split side by side")
     })?;
     // Down to the second binding, `split stacked`, and Enter.
     client.keys(DOWN)?;
@@ -58,11 +58,11 @@ fn the_column_runs_the_selected_command_and_explains_unavailable_ones() -> Outco
     pumped(&mut client, "a stacked split", || {
         Ok(focused(&server)? == "%2")
     })?;
-    client.wait("the column closed", |t| !t.contains("Commands"))?;
+    client.wait("the column closed", |t| !t.contains("split side by side"))?;
     // Arrows, Home/End and PageUp move; Esc closes without running anything.
     client.keys(&format!("{PREFIX}{DOWN}{DOWN}{UP}\x1b[F\x1b[H\x1b[5~"))?;
     client.keys("\x1b")?;
-    client.wait("closed by Esc", |t| !t.contains("Commands"))?;
+    client.wait("closed by Esc", |t| !t.contains("split side by side"))?;
     assert_eq!(panes(&server)?.len(), 2);
     // An unavailable command is shown dimmed, and running it says why.
     server.ok(&["str", "%2", "pane", "kill"])?;
@@ -81,7 +81,7 @@ fn the_column_runs_the_selected_command_and_explains_unavailable_ones() -> Outco
     bar_has(&mut client, "only one pane")?;
     // And by its key, straight from the column.
     client.keys(PREFIX)?;
-    client.wait_for("Commands")?;
+    client.wait_for("split side by side")?;
     client.keys("o")?;
     bar_has(&mut client, "only one pane")?;
     Ok(())
@@ -124,7 +124,7 @@ fn closing_asks_first_and_acts_on_what_it_asked_about() -> Outcome {
 #[test]
 fn pane_actions_are_bindings_a_config_extends() -> Outcome {
     let server =
-        Server::start("str 'a g' code me focused str hello notify end bind  str greet label")?;
+        Server::start("str 'C-b a g' code me focused str hello notify end bind  str greet label")?;
     let mut client = server.attach(30, 100)?;
     client.wait_for("$")?;
     server.ok(&["str", "%1", "pane", "str", "horizontal", "axis", "split"])?;

@@ -301,6 +301,9 @@ pub struct Session {
     /// How each tab was laid out at the last settle (`tell_laid_out`).
     laid: BTreeMap<TabId, Laid>,
     ids: Ids,
+    /// Questions relayed to clients (`Waiting::Read`): the last one's
+    /// number, which its answer carries back.
+    asked: u64,
     /// Commands run that may change what any client shows; input that runs
     /// one repaints every client, input that runs none only its own.
     changes: u64,
@@ -388,6 +391,7 @@ impl Session {
             placed: Placement::default(),
             laid: BTreeMap::new(),
             ids: Ids::default(),
+            asked: 0,
             changes: 0,
             #[cfg(test)]
             test_keys: BTreeMap::new(),
@@ -2112,6 +2116,13 @@ impl Session {
         now: Instant,
     ) -> Result<Begun, Error> {
         let wait = match request {
+            Request::Read { client, read } => {
+                self.views.get(&client).ok_or(Error::NoClient(client))?;
+                self.asked = self.asked.wrapping_add(1);
+                let asked = self.asked;
+                (self.outbox).push(Outgoing::To(client, ToAttached::Read(asked, read)));
+                return Ok(Begun::Waiting(Box::new(Waiting::Read { client, asked })));
+            }
             Request::Do(command) => {
                 let reply = self.run_command(&command, origin, now);
                 // A respawn is answered once its pane is at the version it
@@ -3603,7 +3614,10 @@ pub(crate) mod testing {
                 }
                 other @ (super::Outgoing::To(
                     _,
-                    ToAttached::Paint(_) | ToAttached::Exit(_) | ToAttached::Welcome(..),
+                    ToAttached::Paint(_)
+                    | ToAttached::Exit(_)
+                    | ToAttached::Welcome(..)
+                    | ToAttached::Read(..),
                 )
                 | super::Outgoing::Shutdown { .. }) => {
                     kept.push(other);
@@ -3663,7 +3677,8 @@ pub(crate) mod testing {
                     },
                     Request::Do(Command::Resolve { .. })
                     | Request::Wait(..)
-                    | Request::NextEvents { .. } => return self.0.ask(asked),
+                    | Request::NextEvents { .. }
+                    | Request::Read { .. } => return self.0.ask(asked),
                     Request::Do(command) => command.clone(),
                 };
                 self.1.push(recorded);
@@ -3753,7 +3768,7 @@ pub(crate) mod testing {
                 match effect {
                     fux::screens::Dispatch::Send(act) => self.apply(client, vec![act]),
                     fux::screens::Dispatch::Run(job) => self.run_as(client, &job),
-                    fux::screens::Dispatch::Fence => {}
+                    fux::screens::Dispatch::Fence | fux::screens::Dispatch::Answer(..) => {}
                 }
                 deliver(self);
             }
@@ -4804,7 +4819,10 @@ mod tests {
                         self.commits = self.commits.saturating_add(1);
                         assert_eq!(asked.context.of, Some(revision.run));
                     }
-                    Request::Do(_) | Request::Wait(_) | Request::NextEvents { .. } => {
+                    Request::Do(_)
+                    | Request::Wait(_)
+                    | Request::NextEvents { .. }
+                    | Request::Read { .. } => {
                         return Err(fux::script::Failed::new(
                             Code::Usage,
                             "unexpected preset request",
@@ -6976,7 +6994,7 @@ mod tests {
         let mut state = fux::script::default_state()?;
         for (code, committed) in [
             ("str titles true set %999 capture", true),
-            ("str titles false set str Nope prefix", false),
+            ("str titles false set str Nope unbind", false),
         ] {
             let mut draft = state.draft();
             let mut published = false;

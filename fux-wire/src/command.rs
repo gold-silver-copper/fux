@@ -936,6 +936,17 @@ wire! {
     }
 }
 
+wire! {
+    /// What a client is asked of its own (`keys`, `preferences`).
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub enum ClientRead {
+        /// Its keymap, its screens' keys and the keys it holds.
+        Keys,
+        /// Each of its preferences: its name, value and type.
+        Preferences,
+    }
+}
+
 /// A request the server cannot make sense of.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Usage {
@@ -1070,6 +1081,9 @@ wire! {
             from: Option<crate::events::Cursor>,
             timeout: Limit,
         },
+        /// What only a client knows, which it answers itself: the server
+        /// relays the question and the answer, keeping no copy.
+        Read { client: ClientId, read: ClientRead },
     }
 }
 

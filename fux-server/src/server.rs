@@ -13,10 +13,11 @@ use fux_vt::bytes::ByteQueue;
 use fux_wire::code::Code;
 use fux_wire::events::Actor;
 use fux_wire::id::{ClientId, PaneId};
+use fux_wire::json::Json;
 use fux_wire::layout::Placement;
 use fux_wire::protocol::{
-    Asked, Attach, AttachedFrame, Context, Decoder, Frame, Greeting, Hello, Mismatch, Reply, Role,
-    ToAttached, ToCommand, split_into,
+    Asked, Attach, AttachedFrame, Body, Context, Decoder, Frame, Greeting, Hello, Mismatch, Reply,
+    Role, ToAttached, ToCommand, split_into,
 };
 use fuxix::Errno;
 use fuxix::poll::{Events as PollFlags, PollFd};
@@ -471,7 +472,8 @@ impl Conn {
             ToAttached::Welcome(..)
             | ToAttached::Ended(_)
             | ToAttached::Open(_)
-            | ToAttached::Keys(_) => self.send(frame),
+            | ToAttached::Keys(_)
+            | ToAttached::Read(..) => self.send(frame),
         }
     }
 
@@ -1245,6 +1247,7 @@ impl Server {
         let Some(conn) = self.conns.get_mut(index) else {
             return Ok(false);
         };
+        let mut answered = None;
         match &mut conn.stage {
             Stage::Hello => {
                 let Some(hello) = decoder.frame::<Hello>()? else {
@@ -1307,6 +1310,9 @@ impl Server {
                         conn.exit(session, Detach::Detached, "detached", now);
                         session.parts.actor(actor);
                     }
+                    Some(AttachedFrame::Answer(asked, value)) => {
+                        answered = Some((attached.client, asked, value));
+                    }
                     None => return Ok(false),
                 }
                 if let Some(attached) = conn.attached() {
@@ -1335,7 +1341,22 @@ impl Server {
                 return Ok(false);
             }
         }
+        if let Some((client, asked, value)) = answered {
+            self.answered(client, asked, value, now);
+        }
         Ok(true)
+    }
+
+    /// A client's answer to the question numbered `asked` it was relayed
+    /// (`Waiting::Read`): the reply of the request that asked it, if that
+    /// still waits; else nobody's.
+    fn answered(&mut self, client: ClientId, asked: u64, value: Json, now: Instant) {
+        let asks = |w: &Waiting| matches!(*w, Waiting::Read { client: c, asked: a } if (c, a) == (client, asked));
+        let asker = (self.conns.iter_mut())
+            .find(|conn| matches!(&conn.stage, Stage::Waiting(w) if asks(w)));
+        if let Some(conn) = asker {
+            conn.answer(&mut self.session, Body::Field(value).into(), now);
+        }
     }
 
     /// How many attached frames the source has yet to process: zero with
@@ -2186,7 +2207,8 @@ mod tests {
                 ToAttached::Welcome(..)
                 | ToAttached::Ended(_)
                 | ToAttached::Open(_)
-                | ToAttached::Keys(_) => {}
+                | ToAttached::Keys(_)
+                | ToAttached::Read(..) => {}
             }
         }
         (painted, exit)
@@ -2464,6 +2486,64 @@ mod tests {
                     .iter()
                     .any(|c| matches!(c.stage, Stage::Blocked(_)))
             );
+        }
+        Ok(())
+    }
+
+    /// What only a client knows is asked of it, and its answer with the
+    /// question's number replies to the request that asked; a client that
+    /// detaches first fails the request, `no_client`.
+    #[test]
+    fn a_read_is_answered_by_its_client_or_fails_as_it_detaches()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use fux_wire::command::{ClientRead, Request};
+        use fux_wire::protocol::{End, Response};
+        for answers in [true, false] {
+            let (mut server, _peers, client) = ordered_fixture()?;
+            let read = Request::Read {
+                client,
+                read: ClientRead::Keys,
+            };
+            let now = Instant::now();
+            server.request(0, read, Context::default(), None, now);
+            let source = server.conns.get_mut(1).ok_or("source")?;
+            let mut decoder = Decoder::default();
+            decoder.push(source.out.as_slice());
+            let mut asked = None;
+            while let Some(frame) = decoder.frame::<ToAttached>()? {
+                if let ToAttached::Read(n, ClientRead::Keys) = frame {
+                    asked = Some(n);
+                }
+            }
+            let asked = asked.ok_or("the client was not asked")?;
+            let frame = match answers {
+                true => AttachedFrame::Answer(asked, Json::str("its keys")),
+                false => AttachedFrame::Detach,
+            };
+            source.decoder.push(&frame.encode());
+            server.serve_conn(1, PollFlags::IN, now);
+            server.answer_waits(now);
+            let conn = server.conns.first().ok_or("worker")?;
+            assert!(matches!(conn.stage, Stage::Command));
+            let mut decoder = Decoder::default();
+            decoder.push(conn.out.as_slice());
+            let Some(ToCommand::Part(part)) = decoder.frame()? else {
+                return Err("no reply".into());
+            };
+            let reply = fux_wire::wire::Reader::new(&part).whole::<Reply>()?;
+            match answers {
+                true => assert_eq!(
+                    reply.response,
+                    Response::Returned(Body::Field(Json::str("its keys")))
+                ),
+                false => assert!(matches!(
+                    reply.end(),
+                    End::Failed {
+                        code: Code::NoClient,
+                        ..
+                    }
+                )),
+            }
         }
         Ok(())
     }

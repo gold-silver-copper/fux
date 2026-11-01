@@ -2,6 +2,7 @@
 Request::Do command: Command
 Request::Wait wait: Wait
 Request::NextEvents scope: inspect::Scope, from: Option<events::Cursor>, timeout: Limit
+Request::Read client: ClientId, read: ClientRead
 Command::Inspect scope: inspect::Scope, projection: inspect::Projection
 Command::KillServer
 Command::NewTab target: Vec<WsRef>, name: Option<String>, size: Size, cwd: Option<PathBuf>, start: Start, options: PaneOptions
@@ -132,6 +133,8 @@ Wait since: Since, timeout: Option<Limit>
 Since::Now target: AnyRef
 Since::Version version: Version
 Cursor seq: Seq, run: Run
+ClientRead::Keys
+ClientRead::Preferences
 Attach of: Option<command::Run>, headless: bool, size: fux_vt::Size, target: Option<command::AttachTarget>, read_only: bool, presentation: presentation::Presentation, initial: Option<command::InitialWorkspace>, ancestry: Vec<u32>
 AttachTarget::Workspace workspace: WsRef
 AttachTarget::Tab tab: TabId

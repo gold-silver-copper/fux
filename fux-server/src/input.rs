@@ -295,7 +295,7 @@ mod tests {
     fn mode(s: &Session, c: ClientId) -> String {
         match s.views.get(&c).map(|v| &v.mode) {
             Some(Mode::Normal) => "normal".into(),
-            // Its keys after the prefix: `C-b g` is the layer `g`.
+            // Its keys after the prefix: `C-b g` is the map `g`.
             Some(Mode::Panel(Panel::Column(column))) => match column.keys.split_once(' ') {
                 None => format!("column {}", column.selected),
                 Some((_, layer)) => format!("column {layer} {}", column.selected),
@@ -829,34 +829,35 @@ mod tests {
         Ok(())
     }
 
-    /// A layer and a repeat mode, bound here rather than by default.
-    fn with_layers(s: &mut Session) -> Outcome {
+    /// A map, and one that repeats, bound here rather than by default.
+    fn with_maps(s: &mut Session) -> Outcome {
         run(
             s,
-            "str 'g n' code opts str / cwd new-tab drop end bind str 'new tab' label str Tabs group",
+            "str 'C-b g n' code opts str / cwd new-tab drop end bind str 'new tab' label str Tabs group",
         )?;
         run(
             s,
-            "str 'y l' code me focused str right 1 move-border end bind str Grow group repeat",
+            "str 'C-b y l' code me focused str right 1 move-border end bind str Grow group",
         )?;
         run(
             s,
-            "str 'y h' code me focused str left 1 move-border end bind str Grow group repeat",
-        )
+            "str 'C-b y h' code me focused str left 1 move-border end bind str Grow group",
+        )?;
+        run(s, "str 'C-b y' repeat")
     }
 
-    /// A layer's key opens it, its column titled and showing the keys so
-    /// far; a key it does not bind keeps it open, saying so; its binding
-    /// runs on the next key; the prefix inside it goes to the pane; and
-    /// Enter on its entry in the column opens it too.
+    /// A map's key opens it, its column headed by the keys so far; a key
+    /// it does not bind keeps it open, saying so; its binding runs on the
+    /// next key; the prefix inside it goes to the pane; and Enter on its
+    /// entry in the column opens it too.
     #[test]
-    fn a_layer_runs_its_binding_on_the_next_key() -> Outcome {
+    fn a_map_runs_its_binding_on_the_next_key() -> Outcome {
         let (mut s, c) = session()?;
-        with_layers(&mut s)?;
+        with_maps(&mut s)?;
         s.input(c, b"\x02g");
         assert_eq!(mode(&s, c), "column g 0");
         let text = screen_text(&s, c)?;
-        assert!(text.contains("C-b g: Tabs"), "{text}");
+        assert!(text.contains("C-b g") && text.contains("Tabs"), "{text}");
         assert!(text.contains("new tab"), "{text}");
         s.input(c, b"f");
         assert_eq!(mode(&s, c), "column g 0");
@@ -868,10 +869,16 @@ mod tests {
         s.input(c, b"\x02g\x02");
         assert_eq!(mode(&s, c), "normal");
         assert_eq!(queued_focused(&mut s, c), b"\x02");
-        let at = (s.test_keymap.keys.column(&[], 0).ok_or("a column")?.entries)
+        let prefix = fux::keymap::keys("C-b")?;
+        let at = (s
+            .test_keymap
+            .keys
+            .column(&prefix, 0)
+            .ok_or("a column")?
+            .entries)
             .iter()
             .position(|e| e.key.to_string() == "g")
-            .ok_or("the layer is listed")?;
+            .ok_or("the map is listed")?;
         s.input(c, b"\x02");
         s.input(c, &downs(at));
         s.input(c, b"\r");
@@ -880,9 +887,9 @@ mod tests {
     }
 
     #[test]
-    fn a_repeating_binding_keeps_its_layer_until_enter_or_esc() -> Outcome {
+    fn a_map_that_repeats_keeps_its_keys_until_enter_or_esc() -> Outcome {
         let (mut s, c) = session()?;
-        with_layers(&mut s)?;
+        with_maps(&mut s)?;
         run(&mut s, "str %1 pane str horizontal axis split")?;
         run(&mut s, "str c1 client str %1 pane show")?;
         let start = pane_width(&s, 1);
@@ -916,7 +923,7 @@ mod tests {
     #[test]
     fn another_key_leaves_a_repeat_mode_without_reaching_the_pane() -> Outcome {
         let (mut s, c) = session()?;
-        with_layers(&mut s)?;
+        with_maps(&mut s)?;
         s.input(c, b"\x02yl");
         let _ = queued(&mut s, 1);
         s.input(c, b"f");
@@ -937,7 +944,7 @@ mod tests {
         let start = pane_width(&s, 1);
         run(
             &mut s,
-            "str 'r Enter' code me focused str right 1 move-border end bind repeat",
+            "str 'C-b r Enter' code me focused str right 1 move-border end bind",
         )?;
         s.input(c, &prefixed("r\r\r"));
         assert!(mode(&s, c).starts_with("repeat "), "{}", mode(&s, c));
@@ -973,7 +980,7 @@ mod tests {
     }
 
     #[test]
-    fn the_tab_layer_reorders_in_a_repeat_mode() -> Outcome {
+    fn the_tab_map_reorders_in_a_repeat_mode() -> Outcome {
         let (mut s, c) = session()?;
         run(
             &mut s,
@@ -1001,7 +1008,10 @@ mod tests {
     #[test]
     fn keys_after_the_prefix_match_as_typed() -> Outcome {
         let (mut s, c) = session()?;
-        run(&mut s, "str V code opts str / cwd new-tab drop end bind")?;
+        run(
+            &mut s,
+            "str 'C-b V' code opts str / cwd new-tab drop end bind",
+        )?;
         s.input(c, &prefixed("V"));
         assert_eq!(tabs(&s), Some(2));
         assert_eq!(mode(&s, c), "normal");
@@ -1024,7 +1034,10 @@ mod tests {
         s.input(c, &prefixed("\x1b[B\x1b[B\x1b[A"));
         assert_eq!(mode(&s, c), "column 1");
         escape(&mut s, c);
-        run(&mut s, "str Up code opts str / cwd new-tab drop end bind")?;
+        run(
+            &mut s,
+            "str 'C-b Up' code opts str / cwd new-tab drop end bind",
+        )?;
         s.input(c, &prefixed("\x1b[A"));
         assert_eq!(tabs(&s), Some(2));
         assert_eq!(mode(&s, c), "normal");
@@ -1032,11 +1045,14 @@ mod tests {
         s.input(c, &prefixed("\x1b[B"));
         assert_eq!(mode(&s, c), "column 1");
         escape(&mut s, c);
-        // The prefix twice sends it, until the layer binds it.
+        // The prefix twice sends it, until its map binds it.
         let _ = queued_focused(&mut s, c);
         s.input(c, &[0x02, 0x02]);
         assert_eq!(queued_focused(&mut s, c), b"\x02");
-        run(&mut s, "str C-b code opts str / cwd new-tab drop end bind")?;
+        run(
+            &mut s,
+            "str 'C-b C-b' code opts str / cwd new-tab drop end bind",
+        )?;
         s.input(c, &[0x02, 0x02]);
         assert_eq!(tabs(&s), Some(3));
         assert!(queued_focused(&mut s, c).is_empty());
@@ -1044,7 +1060,7 @@ mod tests {
         for key in ["1", "F5", "M-n"] {
             run(
                 &mut s,
-                &format!("str {key} code opts str / cwd new-tab drop end bind"),
+                &format!("str 'C-b {key}' code opts str / cwd new-tab drop end bind"),
             )?;
         }
         s.input(c, &prefixed("1"));
@@ -1054,29 +1070,10 @@ mod tests {
         Ok(())
     }
 
-    /// Keys bound without the prefix are listed under headings of their
-    /// own, even one named as a group of keys typed after it is.
-    #[test]
-    fn keys_without_the_prefix_share_no_heading() -> Outcome {
-        let (mut s, c) = crate::session::testing::attached(100, 100)?;
-        run(
-            &mut s,
-            "str F2 code me focused zoom end bind-root str Session group",
-        )?;
-        s.input(c, b"\x02");
-        let text = screen_text(&s, c)?;
-        let headings = text.lines().filter(|l| l.trim() == "Session").count();
-        assert_eq!(headings, 2, "{text}");
-        Ok(())
-    }
-
     #[test]
     fn a_key_bound_without_the_prefix_runs_at_once_and_reaches_no_pane() -> Outcome {
         let (mut s, c) = session()?;
-        run(
-            &mut s,
-            "str M-t code opts str / cwd new-tab drop end bind-root",
-        )?;
+        run(&mut s, "str M-t code opts str / cwd new-tab drop end bind")?;
         s.input(c, b"\x1bt");
         assert_eq!(tabs(&s), Some(2));
         assert!(queued_focused(&mut s, c).is_empty());
@@ -1087,14 +1084,6 @@ mod tests {
         s.input(c, &prefixed("\x1bt"));
         assert_eq!(tabs(&s), Some(2));
         assert_eq!(notice(&s, c), "C-b M-t is not bound");
-        escape(&mut s, c);
-        // The column lists it last, and runs it.
-        let entries = s.test_keymap.keys.column(&[], 0).ok_or("a column")?.entries;
-        assert!(entries.last().is_some_and(|e| e.root), "{entries:?}");
-        s.input(c, b"\x02");
-        s.input(c, &downs(entries.len().saturating_sub(1)));
-        s.input(c, b"\r");
-        assert_eq!(tabs(&s), Some(3));
         Ok(())
     }
 
@@ -1173,11 +1162,23 @@ mod tests {
         let keymap = fux::script::default_state()
             .map(|state| state.keys)
             .map_err(|e| e.to_string())?;
-        let bindings = keymap.bindings.all();
+        let bindings: Vec<_> = (keymap.root.all().into_iter())
+            .filter_map(|(path, entry)| match entry {
+                fux::keymap::Entry::Run(binding) => Some((path, binding)),
+                fux::keymap::Entry::Map(_) => None,
+            })
+            .collect();
         assert!(!bindings.is_empty());
         let mut refused = Vec::new();
-        for (path, binding, repeat) in bindings {
-            let keys: String = path.iter().map(fux_vt::keys::KeyPress::to_string).collect();
+        for (path, binding) in bindings {
+            let map = path.split_last().map_or(&[][..], |(_, map)| map);
+            let repeat = keymap.root.map(map).is_some_and(|m| m.repeat);
+            // Every default key follows the prefix, C-b.
+            let after = path.get(1..).unwrap_or_default();
+            let keys: String = after
+                .iter()
+                .map(fux_vt::keys::KeyPress::to_string)
+                .collect();
             let (mut typed, c) = busy()?;
             typed.input(c, &prefixed(&keys));
             if repeat {

@@ -40,6 +40,8 @@ pub enum Dispatch {
     Run(Job),
     /// Tell the worker the frame count after all preceding sends completed.
     Fence,
+    /// The answer to the server's question numbered so (`ToAttached::Read`).
+    Answer(u64, fux_wire::json::Json),
 }
 
 /// A client's display and its opening counter, kept for the attachment's life.
@@ -87,7 +89,7 @@ impl Display {
     }
 
     fn shown(&self) -> bool {
-        !matches!(self.screen, Screen::Keys(Held::Normal | Held::Prefixed))
+        !matches!(self.screen, Screen::Keys(Held::Normal | Held::Prefixed(_)))
     }
 
     pub fn input(&mut self, keymap: &Keymap, input: Input, read_only: bool) -> Vec<Dispatch> {
