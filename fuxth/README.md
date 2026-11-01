@@ -143,7 +143,7 @@ which only its own code's words resolve; `end` closes the innermost.
 | `immediate-word` | xt -- flag | whether the word xt is runs while compiling (Forth's `find` gives 1 for one) |
 | `next-word` | -- s | the next word of the input, for a word that reads one |
 | `immediate` | -- | the word defined last runs while compiling: made again as a version of its own, so an xt taken before stays as it was |
-| `see NAME`, `words`, `print-stack` | -- | write what made NAME (a comment saying where it was read, then its words as read, quoted to be read back; of a word in Rust, its effect); every word's name, a line each, oldest first; the values `depth` counts, a line each, deepest first, left as they are (Forth's `see words .s`) |
+| `see NAME`, `words`, `print-stack` | -- | write what made NAME (a comment saying where it was read, then its words as read from every source that gave them, quoted to be read back: a `define … end` reads back as the same word, and a word another made shows the word that made it, which the reader read and ran, up to its name; of a word in Rust, its effect); every word's name, a line each, oldest first; the values `depth` counts, a line each, deepest first, left as they are (Forth's `see words .s`) |
 | `compiling`, `start-compiling` | -- flag / -- | whether words are compiled; compile again |
 | `compile-call` | xt -- | a call to xt compiled into the definition open, though its words are run (Forth's `compile,`) |
 | `evaluate` | s -- | reads s as a source file is read, here; only where the host enables it |

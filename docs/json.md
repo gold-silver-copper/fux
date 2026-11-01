@@ -446,9 +446,9 @@ a server that stopped left it there. Every server in fux's directory:
 ## `word` and `dictionary`
 
 ```json
-{"name":"dup","provenance":"library","effect":"a -- a a","documentation":"a copy of the top","definition":"define dup 0 pick end"}
-{"name":"split","provenance":"fux","effect":"subject -- answer","documentation":"split a pane along its required axis: a shell, or the program given","definition":"native"}
-{"name":"sq","provenance":"run","effect":null,"documentation":null,"definition":"define sq dup mul end"}
+{"name":"dup","provenance":"library","effect":"a -- a a","documentation":"a copy of the top","definition":"define dup 0 pick end","codes":null}
+{"name":"split","provenance":"fux","effect":"subject -- answer","documentation":"split a pane along its required axis: a shell, or the program given","definition":"native","codes":null}
+{"name":"sq","provenance":"run","effect":null,"documentation":null,"definition":"define sq dup mul end","codes":null}
 ```
 
 `str NAME word` gives the record of the word NAME names now in the
@@ -458,8 +458,16 @@ current definition of each name once, in the order they were defined: the
 core's, fux's, the libraries', then the program's own (a config's too).
 `provenance` is `core`, `fux`, `library`, or `run` for the program's own.
 `effect` and `documentation` are as declared, `null` for a word the program
-defined. `definition` is the words that made it as they were read, each
-quoted to be read back (`define … end`; for a word `create`, `variable`,
-`constant`, `defer`, `let` or a defining word made, that word and the
-name), then `immediate` if it is; `native` for a word in Rust. `see NAME`
-writes the same, after a comment saying where it was read.
+defined. `definition` is the words that made it as they were read, from
+every source that gave them (a definition begun in one line or file and
+ended in the next), each quoted to be read back, then `immediate` if it is.
+A `define … end` reads back as the same word. A word `create`, `variable`,
+`constant`, `defer` or `let` made shows the words from its maker, the word
+the reader read and ran (that word, or a defining word of the program's),
+to its name; a value its maker took from the stack isn't among them, so
+`constant k` alone doesn't make `k` again. `definition` is `native` for a
+word in Rust, and `null` for one whose words its source couldn't keep.
+`codes` is `null` for every word: unknown, since no word declares the
+codes it fails with yet (a `try` names them as `docs/codes.txt` lists).
+`see NAME` writes the definition, after a comment saying where it was
+read, or says its source is unknown.

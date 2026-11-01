@@ -444,6 +444,11 @@ fn the_repl_on_a_terminal_prints_the_stack_and_keeps_the_dictionary_through_erro
         ("define square dup", "1 2 compiled"),
         ("mul end", "1 2 ok"),
         ("square", "1 4 ok"),
+        // A definition over two lines keeps its words.
+        (
+            "see square",
+            "# evaluate:1\r\ndefine square dup mul end\r\n1 4 ok",
+        ),
         ("str 'two", ""),
         ("words'", "1 4 two\r\nwords ok"),
         (

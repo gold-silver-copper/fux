@@ -53,6 +53,28 @@ impl Words {
     }
 }
 
+/// The words that made a word, as read: the runs read from other sources
+/// before, if any (a definition begun in one `evaluate`d line and ended in
+/// the next), then a run of one source's.
+#[derive(Clone, Debug)]
+pub(crate) struct Source {
+    before: Option<Rc<[Words]>>,
+    last: Words,
+}
+
+impl Source {
+    /// `before`, then `last`, in the order read.
+    pub(crate) fn of(before: Vec<Words>, last: Words) -> Source {
+        let before = (!before.is_empty()).then(|| before.into());
+        Source { before, last }
+    }
+
+    pub(crate) fn tokens(&self) -> impl Iterator<Item = &Token> {
+        let before = self.before.iter().flat_map(|runs| runs.iter());
+        before.flat_map(Words::tokens).chain(self.last.tokens())
+    }
+}
+
 /// Command-line arguments, each one token, never split again.
 pub fn arguments<S: AsRef<str>>(args: &[S]) -> Vec<Token> {
     (args.iter().zip(1u32..))

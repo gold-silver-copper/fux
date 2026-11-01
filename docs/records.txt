@@ -1,4 +1,4 @@
-# Every record a program reads, and each held answer's and capture's fields `get` reads, by where it is (`[]` a list's items; `[NAME]` its event, kind or status, or which answer), each with its fields in order. Generated: FUX_BLESS=1 cargo test -p fux --lib lists
+# Every record a program reads, and each held answer's and capture's fields `get` reads, by where it is (`[]` a list's items; `[NAME]` its event, kind or status, or which answer), each with its fields in order. A word's `codes` is null, unknown: no word declares the codes it fails with yet. Generated: FUX_BLESS=1 cargo test -p fux --lib lists
 answer[acted]: pane version status
 answer[changed]: pane version status changed
 answer[closed]: pane status
@@ -10,7 +10,7 @@ capture[pane].lost: copies_cut copies_not_text pictures memory
 capture[pane].pictures[]: row col rows cropped cols width height
 capture[pane].styles[][]: col len fg bg bold inverse hidden dim italic strikeout underline blink
 capture[pane]: screen_rows screen_cols screen_cursor lines styles pane version wrap_pending title foreground_group launch_argv hung_up read_error exited signal alt_screen mouse mouse_mode bracketed_paste pictures lost cell cursor_visible history_bytes program_clipboard reflow alternate_scroll_lines picture_bytes history_lines command_running last_status bells notification truncated input_unread above
-dictionary[]: name provenance effect documentation definition
+dictionary[]: name provenance effect documentation definition codes
 events.events[].origin[client]: kind client
 events.events[].origin[outside]: kind
 events.events[].origin[pane]: kind pane generation
@@ -81,4 +81,4 @@ snapshot.topology.tabs[]: id workspace name label fit cols rows host nodes layou
 snapshot.topology.workspaces[]: id name label tabs
 snapshot.topology: run cursor scope projection workspaces tabs panes clients
 status: socket release protocol server_release server_protocol server_pid compatible
-word: name provenance effect documentation definition
+word: name provenance effect documentation definition codes

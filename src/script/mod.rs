@@ -2542,7 +2542,7 @@ pub(crate) mod tests {
         };
         let record = |name: &str, provenance: &str, effect: &str, about: &str, definition: &str| {
             format!(
-                "{{\"name\":\"{name}\",\"provenance\":\"{provenance}\",\"effect\":{effect},\"documentation\":{about},\"definition\":\"{definition}\"}}"
+                "{{\"name\":\"{name}\",\"provenance\":\"{provenance}\",\"effect\":{effect},\"documentation\":{about},\"definition\":\"{definition}\",\"codes\":null}}"
             )
         };
         assert_eq!(*sq, record("sq", "run", "null", "null", "define sq 0 end"));
@@ -2553,7 +2553,10 @@ pub(crate) mod tests {
         );
         assert!(split.contains("\"provenance\":\"fux\",\"effect\":\"subject -- answer\",\"documentation\":\"split a pane"), "{split}");
         assert!(add.contains("\"provenance\":\"core\""), "{add}");
-        assert!(add.ends_with("\"definition\":\"native\"}"), "{add}");
+        assert!(
+            add.ends_with("\"definition\":\"native\",\"codes\":null}"),
+            "{add}"
+        );
         assert!(
             dictionary.ends_with(&format!(
                 ",{},{sq}]",

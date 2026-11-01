@@ -10,7 +10,7 @@ use crate::Code;
 use crate::Failure;
 use crate::error::{Error, Floor, Wants, underflow};
 use crate::reader::{Building, Doc, Read};
-use crate::token::{Token, Words};
+use crate::token::{Source, Token, Words};
 use crate::value::{Address, AppValue, List, Text, Thrown, Value, Xt};
 use crate::vocabulary::Vocabulary;
 use std::cmp::Ordering;
@@ -385,7 +385,7 @@ pub(crate) struct Entry<A> {
     pub(crate) xt: Rc<Steps<A>>,
     order: u64,
     origin: Origin,
-    pub(crate) words: Option<Words>,
+    pub(crate) words: Option<Source>,
     pub(crate) doc: Option<Rc<Doc>>,
 }
 
@@ -406,8 +406,7 @@ pub enum Origin {
 /// name; where it came from; whether it runs even while a definition is
 /// compiled; what it does to the stack and what it does, as the core, the
 /// host (its effect) or a library's comment declare them (a program's
-/// own declare neither); and the words that made it, as read, none for
-/// the core's and the host's, which are Rust.
+/// own declare neither); and the words that made it, as read (`source`).
 #[derive(Clone, Copy, Debug)]
 pub struct Definition<'a> {
     pub name: &'a str,
@@ -415,16 +414,21 @@ pub struct Definition<'a> {
     pub immediate: bool,
     pub effect: Option<&'a str>,
     pub about: Option<&'a str>,
-    pub words: Option<&'a [Token]>,
+    words: Option<&'a Source>,
 }
 
 impl Definition<'_> {
+    /// Whether it is Rust, the core's or the host's, and has no source.
+    pub fn native(&self) -> bool {
+        matches!(self.origin, Origin::Core | Origin::Host)
+    }
+
     /// The words that made it, as read, each quoted to be read back, a
-    /// blank apart, then `immediate` if it is: none for a word in Rust.
+    /// blank apart, then `immediate` if it is: none for a word in Rust, nor
+    /// for one whose words a source it was read from couldn't keep.
     pub fn source(&self) -> Option<String> {
-        let words = self.words?;
-        let mut text = (words.iter())
-            .map(|word| fuxth_core::quote(&word.text))
+        let words = self.words?.tokens();
+        let mut text = (words.map(|word| fuxth_core::quote(&word.text)))
             .collect::<Vec<_>>()
             .join(" ");
         if self.immediate {
@@ -435,25 +439,23 @@ impl Definition<'_> {
 }
 
 /// As `see` writes it: a comment saying where it was read, then its
-/// source; a word in Rust, a comment saying what it does to the stack.
+/// source; a word in Rust, a comment saying what it does to the stack;
+/// one whose source is unknown, a comment saying so.
 impl std::fmt::Display for Definition<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let place = self.words.and_then(|words| words.first());
+        let place = self.words.and_then(|words| words.tokens().next());
         if let (Some(source), Some(first)) = (self.source(), place) {
             return write!(f, "# {}\n{source}\n", first.place);
         }
-        let whose = if self.origin == Origin::Core {
-            "the core's"
-        } else {
-            "the host's"
-        };
         let immediate = if self.immediate { ", immediate" } else { "" };
-        let effect = self.effect.unwrap_or_default();
-        writeln!(
-            f,
-            "# {} ( {effect} ): native, {whose}{immediate}",
-            self.name
-        )
+        let (name, effect) = (self.name, self.effect.unwrap_or_default());
+        match self.origin {
+            Origin::Core => writeln!(f, "# {name} ( {effect} ): native, the core's{immediate}"),
+            Origin::Host => writeln!(f, "# {name} ( {effect} ): native, the host's{immediate}"),
+            Origin::Library | Origin::Program => {
+                writeln!(f, "# {name}: its source is unknown{immediate}")
+            }
+        }
     }
 }
 
@@ -603,7 +605,7 @@ impl<A: AppValue> Machine<A> {
 
     /// `xt` defined as `name`, made by `words` (as read), the latest
     /// definition: a program's, or, while one is read, a library's.
-    pub(crate) fn define_word(&mut self, name: Rc<str>, xt: Rc<Steps<A>>, words: Option<Words>) {
+    pub(crate) fn define_word(&mut self, name: Rc<str>, xt: Rc<Steps<A>>, words: Option<Source>) {
         let origin = match self.made {
             Some(_) => Origin::Library,
             None => Origin::Program,
@@ -611,7 +613,7 @@ impl<A: AppValue> Machine<A> {
         self.insert(name, xt, origin, words);
     }
 
-    fn insert(&mut self, name: Rc<str>, xt: Rc<Steps<A>>, origin: Origin, words: Option<Words>) {
+    fn insert(&mut self, name: Rc<str>, xt: Rc<Steps<A>>, origin: Origin, words: Option<Source>) {
         self.defined = self.defined.saturating_add(1);
         let entry = Entry {
             xt,
@@ -654,7 +656,7 @@ impl<A: AppValue> Machine<A> {
             immediate: entry.xt.immediate,
             effect,
             about,
-            words: entry.words.as_ref().map(Words::tokens),
+            words: entry.words.as_ref(),
         }
     }
 
@@ -944,6 +946,7 @@ impl<A: AppValue> Machine<A> {
         match self.frames.pop() {
             Some(Frame::Code { locals, .. }) => self.locals.truncate(locals),
             Some(Frame::Read(read)) => {
+                self.source_left(&read);
                 if let Some(path) = read.path {
                     self.loaded.remove(&path);
                 }
@@ -2640,7 +2643,7 @@ builtins! { m host;
         Ok(())
     }
     See "see" [cold] () "--"
-        "see NAME: write the words that made NAME, as read, after where they were read; of a word in Rust, what it does to the stack"
+        "see NAME: write the words that made NAME, as read, after where they were read: a define … end reads back as the same word, a word another made shows its maker and name; of a word in Rust, what it does to the stack"
         { m.see(host) }
     Words "words" [cold] () "--" "write every word's name, a line each, in the order they were defined" {
         let mut text = String::new();

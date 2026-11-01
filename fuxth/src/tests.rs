@@ -1978,6 +1978,58 @@ fn see_writes_source_that_reads_back_as_the_same_definition() -> Result<(), Erro
     Ok(())
 }
 
+/// A definition read from several sources keeps the words each gave, in
+/// the order read: separate reads (a REPL's lines), and a file `include`d
+/// that the source including it goes on after. A file a word of the
+/// definition includes is that word's.
+#[test]
+fn a_definition_keeps_its_words_across_the_sources_it_is_read_from() -> Result<(), Error> {
+    let mut host = Toy::default();
+    host.files
+        .insert("/part.fux".into(), "define foo dup".into());
+    host.files.insert("/body.fux".into(), "dup mul".into());
+    let mut machine = with_stdlib();
+    // Each read is read before the one given before it.
+    let lines = [
+        "define sq include body.fux end 3 sq",
+        "include part.fux mul end",
+    ];
+    for line in lines.into_iter().chain(["mul end", "define square dup"]) {
+        machine.read(token::source("line", line)?, None);
+    }
+    machine.run(&mut host, u64::MAX)?;
+    assert_eq!(machine.stack(), ints(&[9]));
+    let source = |name| machine.definition(name).and_then(|d| d.source());
+    assert_eq!(
+        source("square").as_deref(),
+        Some("define square dup mul end")
+    );
+    assert_eq!(source("foo").as_deref(), Some("define foo dup mul end"));
+    assert_eq!(
+        source("sq").as_deref(),
+        Some("define sq include body.fux end")
+    );
+    Ok(())
+}
+
+/// What makes a word `create` made is the word the reader read and ran
+/// that made it, to the name, whatever that word read in between.
+#[test]
+fn a_created_word_is_made_by_the_word_that_ran() -> Result<(), Error> {
+    let program = "define make-two create create end make-two first second
+        define named next-word drop create end named junk thing";
+    let machine = {
+        let mut machine = compile(program)?;
+        machine.run(&mut Toy::default(), u64::MAX)?;
+        machine
+    };
+    let source = |name| machine.definition(name).and_then(|d| d.source());
+    assert_eq!(source("first").as_deref(), Some("make-two first"));
+    assert_eq!(source("second").as_deref(), Some("make-two first second"));
+    assert_eq!(source("thing").as_deref(), Some("named junk thing"));
+    Ok(())
+}
+
 /// `immediate` makes the word defined last again, as a version of its own:
 /// an xt taken, and code compiled, before keep the one that isn't.
 #[test]

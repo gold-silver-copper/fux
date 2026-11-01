@@ -195,8 +195,10 @@ pub(super) fn failure(thrown: &fuxth::Thrown<Fux>) -> Record {
 /// The dictionary's record of a word: its `name`; its `provenance`, where
 /// it came from: `core`, `fux`, `library`, or `run` for the program's own
 /// (a config's too); its `effect` and `documentation`, as declared, or
-/// null for the program's own; and its `definition`, the words that made
-/// it as they were read, or `native` for a word in Rust.
+/// null for the program's own; its `definition`, the words that made it as
+/// they were read, `native` for a word in Rust, or null where a source it
+/// was read from couldn't keep them; and its `codes`, null: no word
+/// declares the codes it fails with yet, so they are unknown.
 pub(super) fn word(definition: &fuxth::Definition<'_>) -> V {
     use fuxth::Origin;
     let provenance = match definition.origin {
@@ -212,16 +214,17 @@ pub(super) fn word(definition: &fuxth::Definition<'_>) -> V {
         Origin::Core | Origin::Library | Origin::Program => definition.about,
     };
     let text = |text: Option<&str>| text.map_or_else(null, Value::str);
-    let source = definition.source();
+    let source = match definition.native() {
+        true => Value::str("native"),
+        false => definition.source().map_or_else(null, Value::str),
+    };
     let fields = [
         ("name", Value::str(definition.name)),
         ("provenance", Value::str(provenance)),
         ("effect", text(definition.effect)),
         ("documentation", text(about)),
-        (
-            "definition",
-            Value::str(source.as_deref().unwrap_or("native")),
-        ),
+        ("definition", source),
+        ("codes", null()),
     ];
     let fields = fields.map(|(key, value)| (key.to_owned(), value)).into();
     let record = Record {
