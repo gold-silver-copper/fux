@@ -1293,7 +1293,8 @@ impl<A: AppValue> Machine<A> {
         self.fail(Code::StackUnderflow, underflow(n, has, inside))
     }
 
-    pub(crate) fn pop(&mut self) -> Result<Value<A>, Error> {
+    /// Takes the top value.
+    pub fn pop(&mut self) -> Result<Value<A>, Error> {
         self.depth(1)?;
         let [value] = self.moved();
         Ok(value)
@@ -2485,7 +2486,10 @@ builtins! { m host;
     StartCompiling "start-compiling" [cold] () "--" "compile the words read again, into the definition open"
         { m.start_compiling() }
     CompileCall "compile-call" [cold] (xt: Exec) "xt --" "a call to xt compiled into the definition open"
-        { m.compile_call(&xt) }
+        {
+            m.index_of(&xt)?;
+            m.compile_call(&xt)
+        }
     Evaluate "evaluate" [hosted] (s: Str) "s --"
         "read s as a source file is read, and run it here" { m.evaluate(&s) }
     StopCompiling "stop-compiling" [immediate] () "--"

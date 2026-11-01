@@ -190,11 +190,14 @@ impl Job {
         }
     }
 
+    /// Its machine, ready to run: compiling its code values stops at
+    /// `stop`.
     pub fn machine(
         &self,
         config: Option<&script::Config>,
+        stop: Option<&script::Stop>,
     ) -> Result<fuxth::Machine<script::Fux>, script::Failed> {
-        script::callback_machine(config, &self.program, self.given.as_deref())
+        script::callback_machine(config, &self.program, self.given.as_deref(), stop)
     }
 }
 

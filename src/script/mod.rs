@@ -623,11 +623,12 @@ fn callback_failed(f: fuxth::Failure) -> Failed {
 /// A key's or a callback's machine: its immutable arguments on the stack,
 /// to be used up, each code value among them compiled in its dictionary;
 /// then its code, compiled there, to run. Or a line typed at the prompt,
-/// to read as a program is.
+/// to read as a program is. Compiling stops at `stop`.
 pub(crate) fn callback_machine(
     config: Option<&Config>,
     program: &crate::screens::Program,
     args: Option<&[fux_wire::callback::Data]>,
+    stop: Option<&Stop>,
 ) -> Result<Machine<Fux>, Failed> {
     let mut machine = base(config)?;
     let code = match program {
@@ -638,10 +639,10 @@ pub(crate) fn callback_machine(
         crate::screens::Program::Code(code) => code,
     };
     for arg in args.unwrap_or_default() {
-        let value = callback::value(arg, &mut |code| code_value(&mut machine, code));
-        machine.push(value.map_err(callback_failed)?);
+        let value = callback::value(arg, &mut |code| code_value(&mut machine, code, stop))?;
+        machine.push(value);
     }
-    let xt = code_value(&mut machine, code).map_err(callback_failed)?;
+    let xt = code_value(&mut machine, code, stop)?;
     machine.push(xt);
     if args.is_some() {
         machine.callback();
@@ -650,24 +651,48 @@ pub(crate) fn callback_machine(
     Ok(machine)
 }
 
-/// `code`, compiled in `machine`'s dictionary, which is at rest: its xt.
-/// Its words are said at `key`, as a key's program is.
+/// `code`, compiled in `machine`'s dictionary as `code … end` compiles
+/// its words: its xt. Its immediate words run as a key's program runs,
+/// reading no file and stopping at `stop`, and ask nothing of the server;
+/// they close only what they open. Its words are said at `key`.
 fn code_value(
     machine: &mut Machine<Fux>,
     code: &fux_wire::callback::Code,
-) -> Result<Value<Fux>, fuxth::Failure> {
+    stop: Option<&Stop>,
+) -> Result<Value<Fux>, Failed> {
     let place = token::Place::Line {
         source: Arc::from("key"),
         line: 1,
     };
-    let word = |w: &String| Token {
-        text: Rc::from(w.as_str()),
+    let word = |w: &str| Token {
+        text: Rc::from(w),
         place: place.clone(),
     };
-    let (mut out, words) = (io::sink(), code.words.iter().map(word).collect());
+    let words = code.words.iter().map(String::as_str);
+    let tokens = ["code"].into_iter().chain(words).chain(["end"]).map(word);
+    let depth = machine.stack().len();
+    machine.read(tokens.collect(), None);
+    let mut out = io::sink();
     let mut host = Host::new(Context::default(), None, &mut out);
-    (machine.compile_code(words, &mut host).map(Value::Xt))
-        .map_err(|e| fuxth::Failure::new(e.code, e.located()))
+    host.files = source::Files::sealed();
+    run(machine, &mut host, &mut Compiling, stop)?;
+    match machine.pop() {
+        Ok(xt @ Value::Xt(_)) if machine.stack().len() == depth => Ok(xt),
+        _ => Err(Failed::new(
+            Code::BadValue,
+            "a code value's words close what they did not open",
+        )),
+    }
+}
+
+/// What compiling a code value asks: nothing of the server.
+struct Compiling;
+
+impl Asks for Compiling {
+    fn ask(&mut self, _: &Asked) -> Result<Reply, Failed> {
+        let why = "a code value's words ask nothing of the server as it is compiled";
+        Err(Failed::new(Code::Client, why))
+    }
 }
 
 /// The dictionary a config leaves: the config read again, from the
@@ -1113,6 +1138,8 @@ pub struct AsClient<'a> {
     pub context: Context,
     pub opened: Option<crate::screens::Screen>,
     pub on_commit: Option<&'a mut dyn FnMut(&ClientState)>,
+    /// What stops compiling a screen's code values as it opens.
+    pub stop: Option<&'a Stop>,
 }
 
 impl Asks for AsClient<'_> {
@@ -1133,7 +1160,7 @@ impl Asks for AsClient<'_> {
     ) -> Result<Vec<Value<Fux>>, Failed> {
         match what {
             Local::Open(open) => {
-                let screen = admit(open.clone(), state.as_deref(), &self.context)?;
+                let screen = admit(open.clone(), state.as_deref(), &self.context, self.stop)?;
                 self.opened = Some(screen);
                 Ok(Vec::new())
             }

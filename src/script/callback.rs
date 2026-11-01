@@ -33,17 +33,21 @@ fn fail() -> Failure {
 }
 
 /// `v` as a code value goes on the wire: the words of `code … end`'s xt,
-/// which only it keeps.
+/// which only it keeps, and only when `code` WORDS `end` makes it again.
 pub(super) fn code(v: &Value<Fux>) -> Result<Code, Failure> {
-    let refused = |why| Failure::new(fuxth::Code::Type, why);
     let Value::Xt(xt) = v else {
-        return Err(refused(format!("takes code … end, not {}", v.kind())));
+        let why = format!("takes code … end, not {}", v.kind());
+        return Err(Failure::new(fuxth::Code::Type, why));
     };
-    let words = xt.words().ok_or_else(|| {
-        let name = xt.name();
-        refused(format!(
-            "{name} is a word's xt, with no words to send: code {name} end is one"
-        ))
+    let words = xt.words().ok_or_else(|| match xt.name() {
+        "" => Failure::new(
+            fux_wire::code::Code::BadValue.into(),
+            "this code value can't go as its words: a word other than code or end opened or closed it",
+        ),
+        name => Failure::new(
+            fuxth::Code::Type,
+            format!("{name} is a word's xt, with no words to send: code {name} end is one"),
+        ),
     })?;
     Ok(Code {
         words: words.iter().map(|t| t.text.to_string()).collect(),
@@ -98,8 +102,8 @@ fn data_within(v: &Value<Fux>, depth: u8) -> Result<Data, Failure> {
 /// compiled there by `compile`.
 pub(super) fn value(
     v: &Data,
-    compile: &mut dyn FnMut(&Code) -> Result<Value<Fux>, Failure>,
-) -> Result<Value<Fux>, Failure> {
+    compile: &mut dyn FnMut(&Code) -> Result<Value<Fux>, super::Failed>,
+) -> Result<Value<Fux>, super::Failed> {
     Ok(match v {
         Data::Int(v) => Value::Int(*v),
         Data::Bool(v) => Value::Bool(*v),
@@ -113,7 +117,8 @@ pub(super) fn value(
             fields: entries,
         } => {
             let fields = (entries.iter()).map(|(key, v)| Ok((key.clone(), value(v, compile)?)));
-            record::from_fields(fields.collect::<Result<_, Failure>>()?, *of)?
+            record::from_fields(fields.collect::<Result<_, super::Failed>>()?, *of)
+                .map_err(super::callback_failed)?
         }
         Data::All => Value::App(Fux::All),
         Data::Null => Value::App(Fux::Null),
@@ -124,17 +129,23 @@ pub(super) fn value(
 }
 
 /// The receiving dictionary checks actual arguments before publishing a
-/// screen: its callback's code values compiled there, its values read.
+/// screen: its callback's captured values of its server's run, its code
+/// values compiled there (stopping at `stop`), its values read.
 pub fn admit(
     mut open: Open,
     state: Option<&crate::client_state::Draft>,
     context: &fux_wire::protocol::Context,
+    stop: Option<&super::Stop>,
 ) -> Result<crate::screens::Screen, super::Failed> {
     let refused = |why| super::Failed::new(fux_wire::code::Code::BadValue, why);
     let config = state.and_then(|s| s.config.as_ref());
     let check = |action: &fux_wire::callback::Callback, given: &[&Data]| {
+        let mut of = context.of;
+        for arg in &action.args {
+            runs(arg, &mut of).map_err(super::callback_failed)?;
+        }
         let mut machine = super::base(config)?;
-        let mut compile = |code: &Code| super::code_value(&mut machine, code);
+        let mut compile = |code: &Code| super::code_value(&mut machine, code, stop);
         let values = action.args.iter().chain(given.iter().copied());
         let read = values.map(|v| value(v, &mut compile).map(drop));
         let checked = (read.collect::<Result<(), _>>()).and_then(|()| compile(&action.code));
@@ -149,11 +160,6 @@ pub fn admit(
                 return Err(refused("a list needs its receiving client"));
             };
             l.client = Data::Client(client, context.of);
-            let mut of = context.of;
-            for arg in &l.action.args {
-                runs(arg, &mut of).map_err(super::callback_failed)?;
-            }
-
             if l.current.is_some_and(|n| n >= l.items.len())
                 || (!l.items.is_empty() && l.selected >= l.items.len())
                 || (l.items.is_empty() && l.selected != 0)
@@ -225,11 +231,14 @@ mod tests {
         })
     }
     /// Data with no code value in it needs no machine to read.
-    fn no_code(_: &Code) -> Result<Value<Fux>, Failure> {
-        Err(Failure::new(fuxth::Code::Type, "no code value here"))
+    fn no_code(_: &Code) -> Result<Value<Fux>, Failed> {
+        Err(Failed::new(
+            fux_wire::code::Code::Client,
+            "no code value here",
+        ))
     }
     fn run(job: &crate::screens::Job) -> Result<String, Failed> {
-        let mut machine = job.machine(None)?;
+        let mut machine = job.machine(None, None)?;
         let mut out = Vec::new();
         let mut host = Host::new(Context::default(), None, &mut out);
         crate::script::run(&mut machine, &mut host, &mut NoRequests, None)?;
@@ -266,7 +275,7 @@ mod tests {
         let Some(ToAttached::Open(spec)) = decoder.frame::<ToAttached>()? else {
             return Err("typed screen relay".into());
         };
-        let Screen::List(screen) = admit(spec, Some(&state), &context)? else {
+        let Screen::List(screen) = admit(spec, Some(&state), &context, None)? else {
             return Err("list".into());
         };
         assert!(
@@ -292,7 +301,7 @@ mod tests {
         );
         assert_eq!(values.items().get(1), Some(&Value::App(Fux::Null)));
         let job = Job::call(&screen.action, [screen.client, item.payload.clone()]);
-        let mut machine = job.machine(state.config.as_ref())?;
+        let mut machine = job.machine(state.config.as_ref(), None)?;
         let mut out = Vec::new();
         let mut host = Host::new(context, None, &mut out);
         crate::script::run(&mut machine, &mut host, &mut NoRequests, None)?;
@@ -349,6 +358,7 @@ mod tests {
             list(payload, "nip str scope get kind print"),
             None,
             &context,
+            None,
         )?
         else {
             return Err("list".into());
@@ -388,13 +398,13 @@ mod tests {
         let restored = value(&decoded, &mut no_code).map_err(|e| e.message)?;
         let payload = data(&restored).map_err(|e| e.message)?;
         assert_eq!(payload, original);
-        assert!(admit(list(payload.clone(), "2drop"), None, &context).is_ok());
+        assert!(admit(list(payload.clone(), "2drop"), None, &context, None).is_ok());
         let other = "3-4".parse().map_err(|()| "run")?;
         let stale = Context {
             of: Some(other),
             ..context.clone()
         };
-        assert!(admit(list(payload.clone(), "2drop"), None, &stale).is_err());
+        assert!(admit(list(payload.clone(), "2drop"), None, &stale, None).is_err());
         let mut inferred = None;
         runs(&payload, &mut inferred).map_err(|e| e.message)?;
         assert_eq!(inferred, Some(run));
@@ -413,8 +423,8 @@ mod tests {
                 ]),
             )],
         };
-        assert!(admit(list(nested.clone(), "2drop"), None, &context).is_ok());
-        assert!(admit(list(nested.clone(), "2drop"), None, &stale).is_err());
+        assert!(admit(list(nested.clone(), "2drop"), None, &context, None).is_ok());
+        assert!(admit(list(nested.clone(), "2drop"), None, &stale, None).is_err());
         let mixed = Data::List(vec![
             nested,
             Data::Client(fux_wire::id::ClientId::of(2), Some(other)),
@@ -426,7 +436,8 @@ mod tests {
                 &Context {
                     of: None,
                     ..context
-                }
+                },
+                None
             )
             .is_err()
         );
@@ -444,7 +455,7 @@ mod tests {
             (Data::Int(1), "2drop 7"),
         ] {
             assert!(
-                admit(list(payload.clone(), code), None, &context).is_ok(),
+                admit(list(payload.clone(), code), None, &context, None).is_ok(),
                 "{code}"
             );
             let job = Job::call(&crate::testing::code(code).into(), [Data::Null, payload]);
@@ -455,13 +466,13 @@ mod tests {
             &callback,
             [Data::Null, Data::List(vec![Data::Text("inert".into())])],
         );
-        assert!(job.machine(None).is_ok());
+        assert!(job.machine(None, None).is_ok());
         assert!(run(&job).is_err());
         let job = Job::call(
             &crate::testing::code("2drop list 7 end each end").into(),
             [Data::Null, Data::Int(1)],
         );
-        assert!(job.machine(None).is_ok());
+        assert!(job.machine(None, None).is_ok());
         assert!(run(&job).is_err_and(|e| e.message.contains("empty stack")));
         Ok(())
     }
@@ -483,8 +494,59 @@ mod tests {
                 Some("3-4".parse().map_err(|()| "run")?),
             ),
         });
-        assert!(admit(spec, None, &context).is_err());
+        assert!(admit(spec, None, &context, None).is_err());
         assert!(data(&Value::App(Fux::Opts(std::rc::Rc::new(Default::default())))).is_err());
+        Ok(())
+    }
+
+    /// A prompt's captured values are of its client's server run, as a
+    /// list's are, however deep.
+    #[test]
+    fn prompt_admission_checks_its_captured_values_run() -> TestResult {
+        let context = context()?;
+        let pane = |run: &str| -> Result<Data, String> {
+            let run = Some(run.parse().map_err(|()| "run")?);
+            Ok(Data::Handle("%1".parse().map_err(|()| "pane")?, run))
+        };
+        let prompt = |args| {
+            Open::Prompt(fux_wire::callback::Prompt {
+                title: "t".into(),
+                line: fux_wire::act::Line::new(String::new()),
+                action: Some(fux_wire::callback::Callback {
+                    code: crate::testing::code("2drop"),
+                    args,
+                }),
+            })
+        };
+        assert!(admit(prompt(vec![pane("1-2")?]), None, &context, None).is_ok());
+        for args in [vec![pane("3-4")?], vec![Data::List(vec![pane("3-4")?])]] {
+            let refused = admit(prompt(args), None, &context, None).err();
+            assert!(refused.is_some_and(|e| e.message.contains("different server runs")));
+        }
+        Ok(())
+    }
+
+    /// A code value is compiled as a key's program runs: an `include` in
+    /// it reads no file, though the file is there; and words that close
+    /// more than they open compile to nothing.
+    #[test]
+    fn a_code_value_compiles_as_a_keys_program_runs() -> TestResult {
+        let dir = fuxix::file::scratch()?.join(format!("callbacks-{}", std::process::id()));
+        std::fs::create_dir_all(&dir)?;
+        let file = dir.join("action.fux");
+        std::fs::write(&file, "str read")?;
+        let words = vec!["include".into(), file.display().to_string(), "drop".into()];
+        let job = Job::from(Code { words });
+        let refused = job.machine(None, None).err().map(|e| e.to_string());
+        std::fs::remove_dir_all(&dir)?;
+        assert!(
+            refused
+                .as_ref()
+                .is_some_and(|e| e.contains("reads no files")),
+            "{refused:?}"
+        );
+        let refused = Job::from(crate::testing::code("end 1 code")).machine(None, None);
+        assert!(refused.is_err_and(|e| e.message.contains("close what they did not open")));
         Ok(())
     }
 }

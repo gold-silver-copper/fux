@@ -2527,6 +2527,27 @@ mod tests {
 
     /// A value of a kind a word doesn't take is refused with what the word's
     /// effect, as help says it, names in that place: all of what it takes.
+    /// A code value that `code` WORDS `end` wouldn't make again, as one a
+    /// word of the program's own closed, is never sent as its words.
+    #[test]
+    fn a_code_value_its_words_would_not_make_again_is_refused() -> TestResult {
+        let seal = "define seal 7 postpone literal postpone print postpone end end immediate ";
+        for program in [
+            "str F5 code seal bind-root",
+            "str c1 client str T str s code seal prompt",
+        ] {
+            let failed = offline(&format!("{seal}{program}"))?
+                .0
+                .map(|f| f.to_string());
+            let said = failed.unwrap_or_default();
+            assert!(
+                said.starts_with("bad_value:") && said.contains("can't go as its words"),
+                "{said}"
+            );
+        }
+        Ok(())
+    }
+
     #[test]
     fn a_refusal_names_all_the_word_takes() -> TestResult {
         let mut wrong = Vec::new();

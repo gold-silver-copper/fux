@@ -694,10 +694,18 @@ fn a_deferred_word_runs_the_xt_given_last_where_calls_bind_early() -> Result<(),
 
 #[test]
 fn code_keeps_the_words_it_read_and_compiles_again_from_them() -> Result<(), Error> {
+    // What `execute` of the xt the program leaves on top gives, on a
+    // copy of the machine that made it.
+    let executed = |machine: &Machine<Ticket>| {
+        let mut machine = machine.clone();
+        machine.read(token::source("t", "execute")?, None);
+        machine.run(&mut Toy::default(), u64::MAX)?;
+        Ok::<_, Error>(shown(machine.stack()))
+    };
     for (program, words) in [
         (
-            "code 1 str 'a b' push end",
-            &["1", "str", "a b", "push"][..],
+            "code str x str 'a b' push end",
+            &["str", "x", "str", "a b", "push"][..],
         ),
         (
             "define f code 1 if 2 then end end f",
@@ -707,42 +715,52 @@ fn code_keeps_the_words_it_read_and_compiles_again_from_them() -> Result<(), Err
             "code code 2 end execute end",
             &["code", "2", "end", "execute"],
         ),
+        (
+            "code list 3 1 2 end sort end",
+            &["list", "3", "1", "2", "end", "sort"],
+        ),
         ("code end", &[]),
     ] {
         let mut machine = compile(program)?;
-        assert_eq!(
-            machine.run(&mut Toy::default(), u64::MAX)?,
-            Outcome::Finished
-        );
+        machine.run(&mut Toy::default(), u64::MAX)?;
         let [Value::Xt(xt)] = machine.stack() else {
             return Err(Error::new(Code::Type, "code gives one xt", None));
         };
-        let read: Vec<&str> = xt
-            .words()
-            .unwrap_or_default()
-            .iter()
+        let read: Vec<&str> = (xt.words().unwrap_or_default().iter())
             .map(|t| &*t.text)
             .collect();
         assert_eq!(read, words, "{program}");
-        // Compiled again, it runs as the first did.
-        let tokens = xt.words().unwrap_or_default().to_vec();
+        // `code` WORDS `end`, read by another machine, does as it did.
         let mut again = with_stdlib();
-        let xt = again.compile_code(tokens, &mut Toy::default())?;
-        assert_eq!(xt.words().map(<[Token]>::len), Some(words.len()));
+        let code = [Token {
+            text: "code".into(),
+            place: Place::Argument(0),
+        }];
+        let end = [Token {
+            text: "end".into(),
+            place: Place::Argument(0),
+        }];
+        let tokens = code
+            .into_iter()
+            .chain(xt.words().unwrap_or_default().iter().cloned());
+        again.read(tokens.chain(end).collect(), None);
+        again.run(&mut Toy::default(), u64::MAX)?;
+        assert_eq!(executed(&again)?, executed(&machine)?, "{program}");
     }
-    let mut machine = compile("1 tick dup")?;
-    machine.run(&mut Toy::default(), u64::MAX)?;
-    assert!(matches!(machine.stack(), [_, Value::Xt(xt)] if xt.words().is_none()));
-    // Words that close what they did not open, or leave open what they
-    // did, compile to no xt.
-    for words in [&["end", "1", "code"][..], &["1", "if"], &["end", "1"]] {
-        let tokens = token::arguments(words);
-        assert!(
-            with_stdlib()
-                .compile_code(tokens, &mut Toy::default())
-                .is_err(),
-            "{words:?}"
-        );
+    // A word's xt has none; nor has code a word of a program's own opened
+    // or closed, which `code` WORDS `end` would not make again.
+    for program in [
+        "1 tick dup",
+        "define seal 7 postpone literal postpone print postpone end end immediate code seal",
+        "define open postpone code end immediate open 7 end",
+    ] {
+        let mut machine = compile(program)?;
+        machine.run(&mut Toy::default(), u64::MAX)?;
+        let words = match machine.stack().last() {
+            Some(Value::Xt(xt)) => xt.words().map(<[Token]>::len),
+            _ => return Err(Error::new(Code::Type, "an xt on top", None)),
+        };
+        assert_eq!(words, None, "{program}");
     }
     Ok(())
 }
@@ -1652,6 +1670,29 @@ fn an_xt_of_another_machine_is_refused() -> Result<(), Error> {
     b.read(token::source("t", "execute")?, None);
     let refused = b.run(&mut Toy::default(), 100_000).err();
     assert_eq!(refused.map(|e| e.code), Some(Code::Type));
+    // compile-call refuses one too, a one-step word (a let name's, whose
+    // slot means another value here) as a longer one; a copy takes both.
+    let mut a = compile("11 let x define two 1 1 add end tick x tick two")?;
+    a.run(&mut Toy::default(), u64::MAX)?;
+    let compiled = "define f stop-compiling swap compile-call start-compiling end f";
+    for at in [0, 1] {
+        let xt = a.stack().get(at).cloned().unwrap_or(Value::Int(0));
+        let mut b = compile("22 let y")?;
+        b.run(&mut Toy::default(), u64::MAX)?;
+        b.push(xt.clone());
+        b.read(token::source("t", compiled)?, None);
+        assert_eq!(
+            code(b.run(&mut Toy::default(), u64::MAX).map(|_| Vec::new())),
+            Some("type")
+        );
+        let mut copy = a.clone();
+        copy.clear();
+        copy.push(xt);
+        copy.read(token::source("t", compiled)?, None);
+        copy.run(&mut Toy::default(), u64::MAX)?;
+        let want = if at == 0 { 11 } else { 2 };
+        assert_eq!(copy.stack(), [Value::Int(want)], "{at}");
+    }
     Ok(())
 }
 

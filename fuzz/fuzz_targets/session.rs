@@ -315,7 +315,9 @@ impl Run {
         if words.iter().any(|w| LOOPS.contains(&w.as_str())) {
             return Err("reads a file, or may not end".to_owned());
         }
-        let mut machine = job.machine(self.keymap.config.as_ref()).map_err(told)?;
+        let mut machine = job
+            .machine(self.keymap.config.as_ref(), None)
+            .map_err(told)?;
         let mut keymap = self.keymap.draft();
         if let Some(view) = client.and_then(|c| self.s.views.get(&c)) {
             keymap.preferences.presentation(view.presentation.clone());
@@ -336,6 +338,7 @@ impl Run {
             context: context.clone(),
             opened: None,
             on_commit: Some(&mut publish),
+            stop: None,
         };
         let ended = run(&mut machine, &mut host, &mut asks, None).and_then(|stack| {
             fux::script::Asks::commit(&mut asks, &mut keymap, context)?;
@@ -496,7 +499,7 @@ impl Run {
                     of: Some(self.s.run),
                     ..Default::default()
                 };
-                match fux::script::admit(open, Some(&self.keymap.draft()), &context) {
+                match fux::script::admit(open, Some(&self.keymap.draft()), &context, None) {
                     Ok(screen) => self.open(client, screen),
                     Err(failed) => {
                         self.s.acts(

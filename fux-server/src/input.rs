@@ -1204,6 +1204,7 @@ mod tests {
                 context: context.clone(),
                 opened: None,
                 on_commit: None,
+                stop: None,
             };
             let mut machine = fux::script::compile(
                 &fuxth::token::source("chooser", code).map_err(|e| e.to_string())?,

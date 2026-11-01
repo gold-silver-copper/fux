@@ -137,8 +137,9 @@ impl<A> Xt<A> {
         &self.0.name
     }
 
-    /// The words `code … end` read between, as read, which
-    /// `Machine::compile_code` compiles again: none for any other word's.
+    /// The words `code … end` read between, as read, so `code` WORDS
+    /// `end` read again compiles them again: none for any other word's,
+    /// nor for code opened or closed by another word.
     pub fn words(&self) -> Option<&[Token]> {
         self.0.words.as_deref()
     }

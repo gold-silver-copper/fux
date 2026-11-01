@@ -1060,6 +1060,7 @@ fn run_job(
         context: context.clone(),
         opened: None,
         on_commit: Some(&mut publish),
+        stop: Some(stop),
     };
     let mut result = (|| {
         stop.check()?;
@@ -1068,10 +1069,11 @@ fn run_job(
                 open.clone(),
                 Some(&changed),
                 &context,
+                Some(stop),
             )?);
             return Ok(Vec::new());
         }
-        let mut machine = job.machine(config.as_ref())?;
+        let mut machine = job.machine(config.as_ref(), Some(stop))?;
         let mut host = script::Host::job(context.clone(), &mut changed, &mut out);
         script::run(&mut machine, &mut host, &mut asks, Some(stop))
     })();

@@ -3557,7 +3557,7 @@ pub(crate) mod testing {
         Result<Vec<fuxth::Value<fux::script::Fux>>, fux::script::Failed>,
     ) {
         let mut out = Vec::new();
-        let mut machine = match job.machine(None) {
+        let mut machine = match job.machine(None, None) {
             Ok(machine) => machine,
             Err(failed) => return (out, Err(failed)),
         };
@@ -3580,6 +3580,7 @@ pub(crate) mod testing {
             context: context.clone(),
             opened: None,
             on_commit: None,
+            stop: None,
         };
         let ended = fux::script::run(&mut machine, &mut host, &mut asks, None).and_then(|stack| {
             fux::script::Asks::commit(&mut asks, &mut keymap, context)?;
@@ -3607,7 +3608,7 @@ pub(crate) mod testing {
                         of: Some(session.run),
                         ..Default::default()
                     };
-                    match fux::script::admit(open, Some(&session.test_keymap), &context) {
+                    match fux::script::admit(open, Some(&session.test_keymap), &context, None) {
                         Ok(screen) => session.open_screen(client, screen),
                         Err(failed) => {
                             session.notify_to(client, failed.notice(), true);
@@ -6466,6 +6467,7 @@ mod tests {
                 context: context.clone(),
                 opened: None,
                 on_commit: Some(&mut publish),
+                stop: None,
             };
             let tokens = fuxth::token::source("commit", code)?;
             let mut machine = fux::script::compile(&tokens)?;

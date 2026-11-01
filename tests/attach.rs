@@ -1242,6 +1242,25 @@ fn a_stopped_key_program_leaves_the_next_one_asking() -> Outcome {
     terminal.wait_for("next-ok")
 }
 
+/// The prefix, then Esc, stops a key's code value as it is compiled again,
+/// in the dictionary of its config's end, where an immediate word loops;
+/// the next key runs.
+#[test]
+fn a_stopped_compilation_leaves_the_next_key_running() -> Outcome {
+    let keys = "define spin end  str F5 code spin end bind-root \
+                define spin begin again end immediate \
+                str k code me focused str next-''ok text send-keys end bind";
+    let server = Server::start(keys)?;
+    let mut terminal = Terminal::attach(&server, 12, 50, &[])?;
+    terminal.wait_for("$")?;
+    terminal.type_bytes(b"\x1b[15~")?;
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    terminal.type_bytes(b"\x02\x1b")?;
+    terminal.wait_for("stopped")?;
+    terminal.type_bytes(b"\x02k")?;
+    terminal.wait_for("next-ok")
+}
+
 /// Commands from the command line are not ended by signals either, when
 /// one arrives while they wait for the server.
 #[test]

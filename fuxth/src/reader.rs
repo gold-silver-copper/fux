@@ -176,44 +176,6 @@ impl<A: AppValue> Machine<A> {
         docs
     }
 
-    /// `tokens` compiled as `code … end` compiles the words between: an
-    /// xt of this machine's dictionary, whose words are `tokens`. They are
-    /// read on a machine at rest, its stack kept, run on `host` as a
-    /// library is, and may not wait for it; they close only what they
-    /// open. Failing, the machine is left where it failed, as a run is.
-    pub fn compile_code<H: Host<Value = A>>(
-        &mut self,
-        mut tokens: Vec<Token>,
-        host: &mut H,
-    ) -> Result<Xt<A>, Error> {
-        if !self.frames.is_empty() || !self.building.is_empty() {
-            let why = "code is compiled on a machine at rest";
-            return Err(Error::new(Code::Contract, why, None));
-        }
-        let depth = self.stack.len();
-        let place = tokens
-            .last()
-            .map_or(token::Place::Argument(0), |t| t.place.clone());
-        tokens.push(Token {
-            text: Rc::from(Builtin::End.name()),
-            place,
-        });
-        self.read(tokens, None);
-        self.code()?;
-        let finished = matches!(self.run(host, u64::MAX)?, crate::Outcome::Finished);
-        match self
-            .stack
-            .pop()
-            .filter(|_| finished && self.stack.len() == depth)
-        {
-            Some(Value::Xt(xt)) => Ok(xt),
-            _ => {
-                let why = "code's words close what they did not open, or wait for the host";
-                Err(Error::new(Code::Unmatched, why, None))
-            }
-        }
-    }
-
     /// The next word of the source on top, read and run (or compiled);
     /// past its last, the source ends. What an application word it ran
     /// waits for, if it does.
@@ -709,18 +671,16 @@ impl<A: AppValue> Machine<A> {
         self.compiling = building.was_compiling;
         let mut code = building.code;
         code.locals = building.locals.len();
-        // The words read from its source since, but the one that closed
-        // it, if it was read there.
+        // The words read from its source between `code` and `end`, both
+        // read there, so `code` WORDS `end` read again does as they did;
+        // none if it opened or closed otherwise.
         code.words = building.words.and_then(|(id, from)| {
-            let read = self.frames.iter().find_map(|frame| match frame {
-                Frame::Read(read) if read.id == id => Some(read),
-                Frame::Read(_) | Frame::Code { .. } => None,
-            })?;
-            let closer = self.source().is_some_and(|r| r.id == id);
-            Some(Rc::from(
-                read.tokens
-                    .get(from..read.next.checked_sub(usize::from(closer))?)?,
-            ))
+            let read = self.source().filter(|read| read.id == id)?;
+            let to = read.next.checked_sub(1)?;
+            let word = |at: usize| read.tokens.get(at).map(|t| &*t.text);
+            let exact = word(from.checked_sub(1)?) == Some(Builtin::Code.name())
+                && word(to) == Some(Builtin::End.name());
+            exact.then(|| read.tokens.get(from..to).map(Rc::from))?
         });
         let code = self.version(code);
         let Kind::Define(name) = building.kind else {
