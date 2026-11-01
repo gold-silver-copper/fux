@@ -106,13 +106,12 @@ define draw
   h scroll
   list
     str '[?25l' esc
-    0 h range each
-      let y
-      y 0 place
-      top y add let n
+    h 0 do
+      i 0 place
+      top i add let n
       n buffer len lt if buffer n at cols shown then
       str '[K' esc
-    end
+    loop
     h 0 place status-text cols shown str '[K' esc
     prompting if h input len 4 add else row top sub col then cols 1 sub min place
     str '[?25h' esc
@@ -229,7 +228,7 @@ define bind
   list keymap each let pair pair first k ne if pair then end list k name end end to keymap
 end
 # c -- k : the key Ctrl and c sends, c a letter or one of @ [ \ ] ^ _
-define ctrl 32 mod end
+define ctrl 31 and end
 # k -- s true / false : the name k is bound to
 define bound let k false keymap each let pair pair first k eq if drop pair 1 at true then end end
 define run-key
@@ -241,7 +240,7 @@ define run-key
   then
 end
 # Esc, then a key: the key with Alt.
-define meta-prefix read-key alt-mask add to last-key run-key end
+define meta-prefix read-key alt-mask or to last-key run-key end
 
 key-left str cursor-left bind
 key-right str cursor-right bind
