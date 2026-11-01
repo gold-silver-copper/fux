@@ -86,10 +86,10 @@ const SIDE: &[&str] = &[
     "str c1 client str c1 client focused tab confirm-close",
     "str c2 client str c2 client focused workspace rename-prompt",
     "str c1 client command-prompt",
-    "str t code me focused zoom end bind",
-    "str t unbind",
-    "str r unbind",
-    "str 't m' unbind",
+    "str 'C-b t' code me focused zoom end bind",
+    "str 'C-b t' unbind",
+    "str 'C-b r' unbind",
+    "str 'C-b t m' unbind",
     "unbind-all",
     "str 'g h' str 'me focused str left 1 move-border' bind repeat",
     "str 't m j' str 'me focused zoom' bind str Grow group repeat",
@@ -101,8 +101,8 @@ const SIDE: &[&str] = &[
     "str c1 client str %3 pane show",
     "str c1 client str @1 tab show",
     "str g unbind",
-    "str C-a prefix",
-    "str C-b prefix",
+    "str C-b str C-a move-keys",
+    "str C-a str C-b move-keys",
     "str program-clipboard false set",
     "str program-clipboard true set",
     "str c1 client str hjkl text send-keys",
@@ -114,10 +114,11 @@ const SIDE: &[&str] = &[
     "str Up str 'me focused zoom' bind",
     "str C-b str 'opts new-tab drop' bind",
     "str 'g Enter' str 'me focused str right 1 move-border' bind repeat",
-    "str M-t str 'opts new-tab drop' bind-root",
-    "str x str 'me focused zoom' bind-root",
-    "str y str 'str %1 pane str z key send-keys' bind-root",
-    "str x unbind-root",
+    "str M-t code opts new-tab drop end bind",
+    "str x code me focused zoom end bind",
+    "str y code str %1 pane str z key send-keys end bind",
+    "str x unbind",
+    "str 'C-b g h' code me focused str left 1 move-border end bind str 'C-b g' repeat",
     "str titles true set",
     "str titles false set",
     "str bell false set",
@@ -515,6 +516,9 @@ impl Run {
                     }
                 }
             }
+            // A question for a client's own: the session holds no request
+            // that waits for it.
+            Outgoing::To(_, ToAttached::Read(..)) => {}
             Outgoing::To(client, ToAttached::Ended(opening)) => {
                 if let Some(keys) = self.keys.get_mut(&client) {
                     keys.screen.ended(opening);
@@ -629,7 +633,7 @@ impl Run {
             match effect {
                 Dispatch::Send(act) => self.s.acts(client, vec![act], self.now),
                 Dispatch::Run(job) => self.run_as(client, &job),
-                Dispatch::Fence => {}
+                Dispatch::Fence | Dispatch::Answer(..) => {}
             }
         }
     }
@@ -673,7 +677,7 @@ impl Run {
                     );
                     self.s.acts(client, vec![act], self.now);
                 }
-                Dispatch::Fence => {}
+                Dispatch::Fence | Dispatch::Answer(..) => {}
                 Dispatch::Run(job) => {
                     let said = words(&job).unwrap_or_default();
                     writes |= said.iter().any(|w| WRITES.contains(&w.as_str()));

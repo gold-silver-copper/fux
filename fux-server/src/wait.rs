@@ -16,7 +16,7 @@ use crate::pane::Pane;
 use crate::session::Session;
 use fux_wire::answer::{Change, PaneAnswer, PaneResults};
 use fux_wire::command::{Counts, Run, Version};
-use fux_wire::id::PaneId;
+use fux_wire::id::{ClientId, PaneId};
 use fux_wire::protocol::Reply;
 use std::time::{Duration, Instant};
 
@@ -52,6 +52,13 @@ pub enum Waiting {
         respawns: u64,
         reply: Reply,
     },
+    /// What only a client knows (`keys`, `preferences`), asked of it with
+    /// the number `asked`: its `Answer` with that number replies
+    /// (`Server`); a failure if it goes first.
+    Read {
+        client: ClientId,
+        asked: u64,
+    },
 }
 
 impl Waiting {
@@ -71,7 +78,7 @@ impl Waiting {
         match self {
             Waiting::Events(read) => Some(read.deadline),
             Waiting::Change(watch) => watch.deadline.map(|(at, _)| at),
-            Waiting::Respawn { .. } => None,
+            Waiting::Respawn { .. } | Waiting::Read { .. } => None,
         }
     }
 
@@ -88,6 +95,10 @@ impl Waiting {
                 None => Some(PaneResults::One(PaneAnswer::Closed(*id)).into()),
                 Some(pane) => (pane.respawns >= *respawns).then(|| reply.clone()),
             },
+            Waiting::Read { client, .. } => (!session.views.contains_key(client)).then(|| {
+                let why = format!("{client} detached before it answered");
+                Reply::failed(fux_wire::code::Code::NoClient, why)
+            }),
         }
     }
 }

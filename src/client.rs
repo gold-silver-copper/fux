@@ -10,6 +10,7 @@ use fux_vt::keys::decode::Input;
 use fux_vt::keys::{Key, KeyPress, Modifiers};
 use fux_wire::act::Act;
 use fux_wire::code::Code;
+use fux_wire::command::ClientRead;
 #[cfg(test)]
 use fux_wire::command::Command;
 use fux_wire::command::Request;
@@ -878,15 +879,12 @@ impl Keyboard {
         acts
     }
 
-    /// Whether `input` is Esc after the prefix, the last key waiting.
+    /// Whether `input` is Esc after the prefix (a key of the root that
+    /// holds a map), the last key waiting.
     fn stops(&self, input: &Input) -> bool {
-        let is = |input: Option<&Input>, key: KeyPress| matches!(input, Some(Input::Key(stroke)) if stroke.press == key);
         let escape = KeyPress::new(Key::Escape, Modifiers::NONE);
-        is(Some(input), escape)
-            && lock(&self.state)
-                .keys
-                .prefix
-                .is_some_and(|prefix| is(self.waiting.back(), prefix))
+        matches!(input, Input::Key(stroke) if stroke.press == escape)
+            && matches!(self.waiting.back(), Some(Input::Key(stroke)) if lock(&self.state).keys.leads(stroke.press))
     }
 
     /// What waits, taken unless a program runs.
@@ -912,6 +910,18 @@ impl Keyboard {
             ToAttached::Ended(opening) => self.screen.ended(opening),
             ToAttached::Open(open) => self.run(Job::open(open), &mut acts),
             ToAttached::Keys(typed) => return self.inputs(typed.into_iter().flat_map(decoded)),
+            ToAttached::Read(asked, read) => {
+                // The keys held, none while a screen takes them.
+                let held = match &self.screen.screen {
+                    Screen::Keys(held) => held.at(),
+                    Screen::List(_) | Screen::Prompt(_) => &[],
+                };
+                let value = match read {
+                    ClientRead::Keys => lock(&self.state).keys.record(held),
+                    ClientRead::Preferences => lock(&self.state).preferences.record(),
+                };
+                acts.push(Dispatch::Answer(asked, value));
+            }
             // The attachment's own: `attached` reads them.
             ToAttached::Welcome(..) | ToAttached::Paint(_) | ToAttached::Exit(_) => {}
         }
@@ -1012,7 +1022,9 @@ impl Keyboard {
         for effect in effects {
             match effect {
                 Dispatch::Run(job) => self.run(job, acts),
-                effect @ (Dispatch::Send(_) | Dispatch::Fence) => acts.push(effect),
+                effect @ (Dispatch::Send(_) | Dispatch::Fence | Dispatch::Answer(..)) => {
+                    acts.push(effect)
+                }
             }
         }
     }
@@ -1503,6 +1515,7 @@ fn attached(
                     continue;
                 }
                 Dispatch::Send(act) => AttachedFrame::Act(Box::new(act)),
+                Dispatch::Answer(asked, value) => AttachedFrame::Answer(asked, value),
             };
             if let Err(ended) = tell(
                 stream,
@@ -1659,7 +1672,8 @@ fn last_frames(
                 ToAttached::Welcome(..)
                 | ToAttached::Ended(_)
                 | ToAttached::Open(_)
-                | ToAttached::Keys(_) => {}
+                | ToAttached::Keys(_)
+                | ToAttached::Read(..) => {}
             }
         }
         if !matches!(read_more(stream, decoder), Ok(true)) {
@@ -1707,6 +1721,7 @@ mod tests {
                     assert!(keyboard.dispatch(job, 0).is_ok());
                     None
                 }
+                Dispatch::Answer(..) => None,
             })
             .collect()
     }
@@ -1804,7 +1819,7 @@ mod tests {
                     frames = next_frame(frames)?;
                 }
                 Dispatch::Fence => keyboard.fence(frames),
-                Dispatch::Run(_) => return Err("another job".into()),
+                Dispatch::Run(_) | Dispatch::Answer(..) => return Err("another job".into()),
             }
         }
         let sent: AttachedFrame =
@@ -1891,9 +1906,9 @@ mod tests {
     fn a_binding_emits_its_job_after_prior_keys() -> Result<(), Box<dyn std::error::Error>> {
         let socket = socket::checked("/nowhere/fux/s.sock", "test")?;
         let mut state = script::default_state().map_err(|e| e.to_string())?;
-        state.keys.bind_root(
-            KeyPress::char('y'),
-            crate::keymap::Binding::new(crate::testing::code("str done"), true),
+        state.keys.bind(
+            &[KeyPress::char('y')],
+            crate::keymap::Binding::new(crate::testing::code("str done")),
         )?;
         let mut typed = vec![b'a'; 3000];
         typed.extend_from_slice(b"yx");
@@ -2054,7 +2069,7 @@ mod tests {
         );
         updates.clear();
         let committed = lock(&state).clone();
-        let failed = "str titles false set str Nope prefix";
+        let failed = "str titles false set str Nope unbind";
         let ran = run_job(&mut Refuse, me, &state, &failed.into(), &stop, &mut |p| {
             updates.push(p)
         });
@@ -2080,26 +2095,20 @@ mod tests {
     fn queued_programs_commit_the_whole_local_state() -> Result<(), Box<dyn std::error::Error>> {
         let mut keyboard = keyboard(false)?;
         for code in [
-            "str C-a prefix str history-bytes 2 set",
-            "str F5 code ls end bind-root str titles true set",
-            "str F6 code ls end bind-root str history-bytes 0 set str bell false set str Nope prefix",
+            "str C-b str C-a move-keys str history-bytes 2 set",
+            "str F5 code ls end bind str titles true set",
+            "str F6 code ls end bind str history-bytes 0 set str bell false set str Nope unbind",
         ] {
             assert!(program(&mut keyboard, Job::from(code)).is_empty());
         }
         all_ran(&mut keyboard)?;
         let state = lock(&keyboard.state);
-        let root: Vec<String> = state
-            .keys
-            .root
-            .iter()
-            .map(|(key, _)| key.to_string())
-            .collect();
+        let bound = |name: &str| -> Result<bool, String> {
+            Ok(state.keys.root.get(crate::keymap::key(name)?).is_some())
+        };
         assert_eq!(
-            (
-                state.keys.prefix.map(|p| p.to_string()).unwrap_or_default(),
-                root
-            ),
-            ("C-a".into(), vec!["F5".into()])
+            [bound("C-a")?, bound("F5")?, bound("C-b")?, bound("F6")?],
+            [true, true, false, false]
         );
         assert_eq!(state.preferences.history_bytes.get(), 2);
         assert!(state.preferences.titles);
@@ -2120,7 +2129,7 @@ mod tests {
             action: None,
         });
         keyboard.open(prompt.clone(), &mut Vec::new());
-        program(&mut keyboard, Job::from("str F5 code ls end bind-root"));
+        program(&mut keyboard, Job::from("str F5 code ls end bind"));
         assert_eq!(all_ran(&mut keyboard)?, []);
         assert_eq!(keyboard.screen.screen, prompt);
         program(&mut keyboard, Job::from("str line str F2 str home bind-in"));
@@ -2185,8 +2194,8 @@ mod tests {
     fn a_stop_is_the_same_however_the_reads_split() -> Result<(), Box<dyn std::error::Error>> {
         let socket = socket::checked("/nowhere/fux/s.sock", "test")?;
         let mut state = script::default_state().map_err(|e| e.to_string())?;
-        let forever = crate::keymap::Binding::new(crate::testing::code("begin false until"), true);
-        state.keys.bind_root(KeyPress::char('y'), forever)?;
+        let forever = crate::keymap::Binding::new(crate::testing::code("begin false until"));
+        state.keys.bind(&[KeyPress::char('y')], forever)?;
         let typed = b"y\x02\x1b[27ux";
         for split in 0..=typed.len() {
             let mut keyboard = new_keyboard(&socket, state.clone(), false)?;

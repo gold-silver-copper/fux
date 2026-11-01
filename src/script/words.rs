@@ -9,9 +9,9 @@ use fux_vt::keys::Direction;
 use fux_wire::callback::Open;
 use fux_wire::code::{Code, Raise};
 use fux_wire::command::{
-    AnyRef, Beside, Button, ClientAction, Command, Extent, HistoryBytes, Input, Kind, Limit,
-    Members, Mouse, MoveTo, PaneResize, Percent, Program, Request, Resized, Sibling, Since, Source,
-    SwapWith, To, Usage, Wait, Way, Wheel, WsRef,
+    AnyRef, Beside, Button, ClientAction, ClientRead, Command, Extent, HistoryBytes, Input, Kind,
+    Limit, Members, Mouse, MoveTo, PaneResize, Percent, Program, Request, Resized, Sibling, Since,
+    Source, SwapWith, To, Usage, Wait, Way, Wheel, WsRef,
 };
 use fux_wire::id::{ClientId, PaneId};
 use fux_wire::layout::Axis;
@@ -315,7 +315,7 @@ words! {
         Finding Workspace "workspace" "ref -- workspace" raises(Type NoTarget asks) "the workspace ref names: its name, +N, or a pane's or tab's workspace" "fux str agent workspace kill" [];
         Finding Here "here" "-- pane" raises(asks) "the pane this runs in (FUX_PANE)" "fux here str done notify" [];
         Finding Client "client" "name -- client" raises(Type) "a client by its id, c2" "fux str c1 client detach" [];
-        Finding Me "me" "-- client" raises(NotHere) "the client whose key or prompt runs this" "str z code me focused zoom end bind" [];
+        Finding Me "me" "-- client" raises(NotHere) "the client whose key or prompt runs this" "str 'C-b z' code me focused zoom end bind" [];
         Finding Panes "panes" "scope -- list" raises(Type asks) "the panes in a pane (itself), a tab, a workspace or all, in layout order" "fux str agent workspace panes each capture print end" [];
         Finding Tabs "tabs" "scope -- list" raises(Type asks) "the tabs in a tab (itself), a workspace or all, in order; a pane holds none" "fux str agent workspace tabs each str name get print end" [];
         Finding All "all" "-- all" raises() "the whole session, for the words that take a scope: info, panes, tabs, kill, notify, events and dump" "fux all info" [];
@@ -353,6 +353,8 @@ words! {
         Clients Show "show" "client handle --" raises(Type asks) "show a client a pane, tab or workspace, and each that holds it, a pane's stacks too" "fux str c1 client %3 show" [];
         Clients Step "step" "client handle way --" raises(Type asks) "show a client the next, previous or last shown of the handle's siblings (a pane's: the children of the stack nearest it, else its tab's panes shown), or a pane's neighbour left right up or down; a pane other than a zoomed one ends the zoom" "fux str c1 client @2 str next step" [];
         Clients Detach "detach" "client --" raises(Type asks) "detach a client" "fux str c1 client detach" [];
+        Clients Keymap "keys" "client -- record" raises(Type asks) "the client's keys, as it answers: at, the keys it has typed into the map it is in; keymap, each key it binds, depth first, a map (kind map: keys, repeat) before its own (kind binding: keys, code, label, group), then its screens' (kind list or line: keys, action or code, label)" "fux str c1 client keys json" [];
+        Clients Preferences "preferences" "client -- list" raises(Type asks) "each of the client's preferences, as it answers: its name, its value as set takes it, and its type" "fux str c1 client preferences json" [];
         Server Start "start" "--" raises(NotHere asks) "start the server in the background, if none answers" "fux start" [];
         Server Status "status" "-- record" raises(NotHere asks) "the server that answers, and its version; with none, fails no_server" "fux status || fux start" [];
         Server KillServer "kill-server" "--" raises(asks) "stop the server: not from its own panes, nor with people attached" "FUX_SOCKET=$PWD/test.sock fux kill-server" [];
@@ -370,7 +372,7 @@ words! {
         Help Help "help" "--" raises(Output) "the words, under their headings" "fux help" [];
         Help Word "word" "word -- record" raises(Type UnknownWord) "the dictionary's record of the word named so now: its name, provenance (core, fux, library, or run for this program's own), effect, documentation, definition (its words as read, or native) and codes (what it can fail with as it runs, or null where unknown)" "fux str dup word str definition get" [];
         Help Dictionary "dictionary" "-- list" raises() "a record of each word in this program's dictionary now, as word gives it, in the order they were defined" "fux dictionary | jq -r 'select(.provenance == \"run\") | .name'" [];
-        Help Explain "explain" "word --" raises(Type UnknownWord Output) "one word at length (json's says what json gives); or the guide to driving programs from a script or an agent: agents, its first screen, enough for most work; a topic of it (recipes keys read shells programs servers); or guide, all of it" "fux str capture explain" [];
+        Help Explain "explain" "word --" raises(Type UnknownWord Output) "one word at length (json's says what json gives); or the guide to driving programs from a script or an agent: agents, its first screen, enough for most work; a topic of it (recipes typing read shells programs servers); or guide, all of it" "fux str capture explain" [];
     }
     Opt {
         Starting Name "name" "x name -- x" raises(Type Unused) "the given name: new-tab's tab" "fux opts str agent in str web name 80 24 size str ./app program new-tab";
@@ -414,14 +416,12 @@ words! {
         Clients CommandPrompt "command-prompt" "client --" raises(Type NotHere asks) "a prompt for fuxth" "fux str c1 client command-prompt";
     }
     Keys {
-        Config Prefix "prefix" "key --" raises(Type NotConfig BadBinding) "this client's prefix (config)" "str C-a prefix";
-        Config Bind "bind" "keys code --" raises(Type NotConfig BadBinding) "keys after the prefix run code (config)" "str 'g v' code me focused str horizontal axis split drop end bind";
-        Config BindRoot "bind-root" "key code --" raises(Type NotConfig BadBinding) "a key without the prefix runs code (config)" "str M-n code me me focused tab str next step end bind-root";
-        Config Label "label" "text --" raises(Type NotConfig BadBinding) "what the column says the last binding does, or a screen's hints the last key bound in it (keys of one label shown together)" "str 'g v' code me focused str horizontal axis split drop end bind str 'split right' label";
-        Config Group "group" "name --" raises(Type NotConfig BadBinding) "the column's heading for the last binding" "str 'g v' code me focused str horizontal axis split drop end bind str panes group";
-        Config Repeat "repeat" "--" raises(NotConfig BadBinding) "the last binding's layer repeats until Esc" "str H code me focused str left 2 move-border end bind repeat";
-        Config Unbind "unbind" "keys --" raises(Type NotConfig BadBinding) "keys after the prefix run nothing" "str 'g v' unbind";
-        Config UnbindRoot "unbind-root" "key --" raises(Type NotConfig BadBinding) "a key without the prefix runs nothing" "str M-n unbind-root";
+        Config Bind "bind" "keys code --" raises(Type NotConfig BadBinding) "keys run code: each key but the last holds a map of more keys, made as needed, the first in the map a client is in while it holds none (config)" "str 'C-b g v' code me focused str horizontal axis split drop end bind";
+        Config MoveKeys "move-keys" "from to --" raises(Type NotConfig BadBinding) "what keys run or hold, others do instead, and they nothing (config)" "str C-b str C-a move-keys";
+        Config Label "label" "text --" raises(Type NotConfig BadBinding) "what the column says the last binding does, or a screen's hints the last key bound in it (keys of one label shown together)" "str 'C-b g v' code me focused str horizontal axis split drop end bind str 'split right' label";
+        Config Group "group" "name --" raises(Type NotConfig BadBinding) "the column's heading for the last binding" "str 'C-b g v' code me focused str horizontal axis split drop end bind str panes group";
+        Config Repeat "repeat" "keys --" raises(Type NotConfig BadBinding) "the map the keys hold repeats: it stays after a key of it runs, until Esc (config)" "str 'C-b g h' code me focused str left 2 move-border end bind str 'C-b g' repeat";
+        Config Unbind "unbind" "keys --" raises(Type NotConfig BadBinding) "keys run or hold nothing, and a map they leave empty goes" "str 'C-b g v' unbind";
         Config BindAction "bind-action" "key code --" raises(Type NotConfig BadBinding) "a list's key runs code, receiving client payload; Escape cannot be bound" "str r code rename-prompt end bind-action str rename label";
         Config BindIn "bind-in" "screen key action --" raises(Type NotConfig BadBinding) "in one of fux's own screens (list line), a key does one of its actions, as the default keys bind each" "str list str g str first bind-in str first label";
         Config UnbindIn "unbind-in" "screen key --" raises(Type NotConfig BadBinding) "in that screen, the key does what it would unbound: in a line, a character types itself; a named key with modifiers does what it does alone" "str list str g unbind-in";
@@ -1297,6 +1297,16 @@ fn on_client(client: ClientId, action: ClientAction) -> Ask {
     ask_as(client, command)
 }
 
+/// What only `client` knows, asked of it (`Request::Read`).
+fn read_client(client: ClientId, read: ClientRead) -> Result<Done<Ask>, Failure> {
+    let request = Box::new(Request::Read { client, read });
+    Ok(Done::Later(Ask::Server {
+        request,
+        client: Some(client),
+        of: None,
+    }))
+}
+
 /// An order to a client that answers nothing.
 fn order(client: ClientId, action: ClientAction) -> Result<Done<Ask>, Failure> {
     Ok(Done::Later(on_client(client, action)))
@@ -1970,6 +1980,8 @@ impl Host<'_> {
                 order(c, ClientAction::Step { from, way })
             }
             Act::Detach => order(client(&next()?)?, ClientAction::Detach),
+            Act::Keymap => read_client(client(&next()?)?, ClientRead::Keys),
+            Act::Preferences => read_client(client(&next()?)?, ClientRead::Preferences),
             // ------------------------------------------------------ server
             Act::Start => {
                 self.prepare()
@@ -2077,10 +2089,7 @@ fn just_made<'k>(
 ) -> Result<&'k mut crate::keymap::Binding, Failure> {
     let refused = |why: &str| fail(Raise::BadBinding, why);
     let binding = match bound.ok_or_else(|| refused("changes the binding just made: bind first"))? {
-        Bound::Root(key) => (keymap.root.iter_mut())
-            .find(|(k, _)| k == key)
-            .map(|(_, b)| b),
-        Bound::Prefix(keys) => keymap.binding_mut(keys),
+        Bound::Keys(keys) => keymap.binding_mut(keys),
         Bound::In(..) => return Err(refused("a screen's key has a label only")),
     };
     binding.ok_or_else(|| refused("the binding just made is gone"))
@@ -2266,37 +2275,22 @@ impl Host<'_> {
         let state = self.state.as_deref_mut().ok_or_else(refused_context)?;
         let refused = |why: String| fail(Raise::BadBinding, why);
         let keymap = &mut state.keys;
+        let mut pressed = || crate::keymap::keys(&string(&next()?)?).map_err(refused);
         match keys {
-            Keys::Prefix => {
-                let key = crate::keymap::key(&string(&next()?)?).map_err(refused)?;
-                keymap.set_prefix(key).map_err(refused)?;
-            }
-            Keys::Bind | Keys::BindRoot => {
+            Keys::Bind => {
                 let keys_text = string(&next()?)?;
                 let code = super::callback::code(&next()?)?;
-                let keymap = &mut state.keys;
-                let binding = crate::keymap::Binding::new(code, keys == Keys::BindRoot);
+                let binding = crate::keymap::Binding::new(code);
                 let pressed = crate::keymap::keys(&keys_text).map_err(refused)?;
-                match (keys == Keys::BindRoot, pressed.as_slice()) {
-                    (true, [key]) => {
-                        keymap.bind_root(*key, binding).map_err(refused)?;
-                        self.last_bound = Some(Bound::Root(*key));
-                    }
-                    (true, _) => return Err(refused("takes one key".to_owned())),
-                    (false, _) => {
-                        keymap.bind(&pressed, binding, false).map_err(refused)?;
-                        self.last_bound = Some(Bound::Prefix(pressed));
-                    }
-                }
+                keymap.bind(&pressed, binding).map_err(refused)?;
+                self.last_bound = Some(Bound::Keys(pressed));
             }
-            Keys::Unbind => {
-                let pressed = crate::keymap::keys(&string(&next()?)?).map_err(refused)?;
-                keymap.unbind(&pressed).map_err(refused)?;
+            Keys::MoveKeys => {
+                let (from, to) = (pressed()?, pressed()?);
+                keymap.move_keys(&from, &to).map_err(refused)?;
             }
-            Keys::UnbindRoot => {
-                let key = crate::keymap::key(&string(&next()?)?).map_err(refused)?;
-                keymap.unbind_root(key).map_err(refused)?;
-            }
+            Keys::Unbind => keymap.unbind(&pressed()?).map_err(refused)?,
+            Keys::Repeat => keymap.set_repeat(&pressed()?).map_err(refused)?,
             Keys::BindAction => {
                 let key = crate::keymap::key(&string(&next()?)?).map_err(refused)?;
                 let action = super::callback::code(&next()?)?.into();
@@ -2331,14 +2325,6 @@ impl Host<'_> {
             Keys::Group => {
                 let binding = just_made(keymap, self.last_bound.as_ref())?;
                 binding.group = string(&next()?)?;
-            }
-            Keys::Repeat => {
-                just_made(keymap, self.last_bound.as_ref())?;
-                let Some(Bound::Prefix(keys)) = &self.last_bound else {
-                    let why = "a binding without the prefix does not repeat";
-                    return Err(refused(why.to_owned()));
-                };
-                keymap.set_repeat(keys).map_err(refused)?;
             }
         }
         Ok(Done::Now)
@@ -2589,7 +2575,7 @@ mod tests {
             let ran = (failed.map(|f| f.to_string()), printed);
             assert_eq!(ran, (None, "7\n".to_owned()), "{code}");
             for program in [
-                format!("str F5 {code} bind-root"),
+                format!("str F5 {code} bind"),
                 format!("str c1 client str T str s {code} prompt"),
             ] {
                 let failed = offline(&format!("{words}{program}"))?.0;
@@ -2658,7 +2644,7 @@ mod tests {
             "str c1 client str T str s str 'str x print' prompt",
             "str c1 client str T list end list end list end str 2drop choose",
             "str v str 'me focused zoom' bind",
-            "str F5 str ls bind-root",
+            "str F5 str ls bind",
             "str r str rename-prompt bind-action",
         ] {
             let failed = offline(program)?

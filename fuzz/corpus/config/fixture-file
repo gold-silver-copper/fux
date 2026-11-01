@@ -1,13 +1,15 @@
 # comment
 str shell list str /bin/sh end set
-str C-a prefix
+str C-b str C-a move-keys
 
-str 'g n' code opts new-tab drop end bind str Tools group # trailing
-str 'y l' code me focused str right 1 move-border end bind str Grow group repeat
-str M-t code me focused zoom end bind-root str 'zoom it' label
-str C-a code me focused zoom end bind-root
-str Nope prefix
-str 'g' code me focused zoom end bind
-str 't n m' unbind
+str 'C-a g n' code opts new-tab drop end bind str Tools group # trailing
+str 'C-a y l' code me focused str right 1 move-border end bind str Grow group
+str 'C-a y' repeat
+str M-t code me focused zoom end bind str 'zoom it' label
+str C-a code me focused zoom end bind
+str Nope str C-a move-keys
+str 'C-a g' code me focused zoom end bind
+str 'C-a t n m' unbind
 define split-wide me focused str horizontal axis split drop end
 begin 1 until
+unbind-all

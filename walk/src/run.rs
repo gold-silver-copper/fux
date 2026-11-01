@@ -44,9 +44,9 @@ const GRACE: Duration = Duration::from_secs(3);
 const OVERLAY_MARKS: &[&str] = &[
     "Enter y select",
     "Enter accept",
-    "Commands",
-    "C-b t:",
-    "C-b w:",
+    "split side by side",
+    "new tab",
+    "new workspace",
 ];
 
 impl Checker {
@@ -163,8 +163,10 @@ pub fn take(fixture: &mut Fixture, step: &Step, at: usize) -> Result<(), End> {
             let text = match config {
                 Config::Valid => CONFIG_VALID.to_owned(),
                 Config::Invalid => format!("{CONFIG_VALID}str C-Left code nonsense end bind\n"),
-                Config::PrefixA => format!("{CONFIG_VALID}str C-a prefix\n"),
-                Config::PrefixB => format!("{CONFIG_VALID}str C-b prefix\n"),
+                Config::PrefixA => format!("{CONFIG_VALID}str C-b str C-a move-keys\n"),
+                Config::PrefixB => {
+                    format!("{CONFIG_VALID}str C-b str C-a move-keys str C-a str C-b move-keys\n")
+                }
             };
             std::fs::write(&fixture.config, text)
                 .map_err(|e| fail(at, "writing the configuration", e.to_string()))?;

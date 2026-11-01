@@ -71,8 +71,8 @@ splits, then `resize`. After every placement:
 - `neighbor` names only another placed pane.
 
 **`config`**: one client's keys, from the default keymap. Lines are
-config statements (a leading `0xff`: `bind`, `bind-root`, `unbind`,
-`unbind-root`, `unbind-all`, `prefix`, `label`, `group` or `repeat`, written
+config statements (a leading `0xff`: `bind`, `unbind`, `unbind-all`,
+`move-keys`, `label`, `group` or `repeat`, written
 as fuxth, compiled with `script::compile` and run as a config is, against
 the `Keymap`), keys typed (a leading `0xfe`: through `keymap::Held::press`,
 as a client that types or only watches), or
@@ -81,20 +81,20 @@ run as a config for a bounded number of steps up to its first request for
 the server; words that read files are not run). After every line:
 - a failing statement changes nothing;
 - a small model of the statements, written from the README's rules (a
-  sequence is a binding or a layer, never both; no Escape after the
-  prefix; the prefix never bound without it; code compiled as it is
-  bound), accepts the same ones and holds the same prefix, bindings,
-  labels, groups and repeats;
+  key is a binding or a map, never both; no Escape in a map; a map whose
+  last key goes goes too; moved keys go whole or not at all; code compiled
+  as it is bound), accepts the same ones and holds the same bindings,
+  labels, groups and maps that repeat;
 - source's tokens, quoted as native hints and list-keys quote words, split back to
   the same tokens; a program that does not compile fails with status 1
   and a code;
-- after a change to the keymap: no empty layer, no Escape after the
-  prefix, no binding of the prefix without it nor of one key twice, and
-  every layer's column shows;
+- after a change to the keymap: no empty map, no Escape in a map, no key
+  bound twice in one, and every map's column shows;
 - a key runs only a program that is bound, and that compiles; with
-  nothing held the prefix opens the column, a key bound without the prefix runs its program, and
-  any other key goes to the pane; the column a client shows and its repeat
-  mode are of layers that exist (unless the keymap changed under them).
+  nothing held a key of the root that holds a map opens its column, one
+  that runs a binding runs it, and any other key goes to the pane; the
+  column a client shows and its repeat mode are of maps that exist (unless
+  the keymap changed under them).
 
 **`session`**: clients typing into a whole `Session` with no processes
 while fuxth programs arrive from the side. Each client reads its keys as
@@ -107,7 +107,7 @@ session hands it (`ToAttached::Open`) and the keys sent to it
 (`ToAttached::Keys`); `ToAttached::Ended` ends its screen of that kind. Operations: bytes a
 client types (whole or in pieces), the Escape deadline, resizes, one to
 three clients attaching and detaching, a fixed list of programs (tabs,
-splits, overlays for a client, `bind`/`unbind`, `prefix`, `set`, `detach`,
+splits, overlays for a client, `bind`/`unbind`, `move-keys`, `set`, `detach`,
 `send-keys` to panes and clients and more), pane output, a
 shell exiting. Waits are not waited on, and words that read files are not
 run. After each, the target does what the server does (settles, acts on

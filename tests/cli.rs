@@ -411,7 +411,7 @@ fn mistakes_name_what_the_program_wrote() -> Outcome {
     assert_eq!(
         said(&["help", "no-such-word"])?,
         "fux: unknown_word: argument 3: explain: no word or topic \"no-such-word\"; the topics: \
-         agents recipes keys read shells programs servers guide cookbook (`fux help` lists every word)\n"
+         agents recipes typing read shells programs servers guide cookbook (`fux help` lists every word)\n"
     );
     let named = said(&["1", "let", "+7"])?;
     assert!(
@@ -546,7 +546,10 @@ fn ls_json_list_keys_and_help() -> Outcome {
     );
     // The command line's own keymap: the defaults.
     let keys = server.ok(&["list-keys"])?;
-    assert!(keys.contains("\nstr C-b prefix\n"), "{keys}");
+    assert!(
+        keys.contains("\nstr 'C-b d' code me detach end bind"),
+        "{keys}"
+    );
     // help lists every word.
     let help = server.ok(&["help"])?;
     for word in fux::script::Word::ALL.iter().map(|w| w.row().name) {
