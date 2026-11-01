@@ -734,6 +734,7 @@ leaves!(
     MouseButton,
     Signal,
     crate::answer::Change,
+    crate::inspect::Terminal,
     fux_vt::ModeStatus,
     fux_vt::keys::colour::Scheme,
 );

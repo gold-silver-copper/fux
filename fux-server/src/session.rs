@@ -16,7 +16,7 @@ use fux_wire::command::{
     PaneResize, Request, Resized, Sibling, SwapWith, Way, WsRef,
 };
 use fux_wire::id::{ClientId, Ids, PaneId, TabId, WsId};
-use fux_wire::json::{Fields, Json};
+use fux_wire::json::Json;
 use fux_wire::layout::{self, Axis, NoPane, Placement, Rect, Shares, Side, Tree};
 use fux_wire::protocol::{Attach, Body, Reply, Response, ToAttached};
 use std::collections::{BTreeMap, BTreeSet};
@@ -2439,7 +2439,8 @@ impl Session {
                     ));
                 }
                 let cursor = self.parts.journal().end(self.run);
-                let captured = crate::capture::pane(pane, cursor, history, view)?;
+                let observed = self.observed(pane.id())?;
+                let captured = crate::capture::pane(observed, pane, cursor, history, view)?;
                 Ok(Body::Capture(Box::new(captured)).into())
             }
             &Command::Reorder { ref target, toward } => {
@@ -3024,54 +3025,20 @@ impl Session {
     // ------------------------------------------------------------------ ls
 
     /// A pane's state, as `ls json` has it.
-    fn pane_json<'a>(&'a self, p: &'a Pane) -> Result<Fields, Error> {
-        let tab = self.locate(p.id()).and_then(|(_, tab)| self.tab(tab));
-        let at = tab.and_then(|tab| self.sized(tab).rect(p.id()));
-        let values = [
-            ("id", Json::str(format!("{}", p.id()))),
-            ("name", p.name().map_or(Json::Null, Json::str)),
-            ("label", Json::str(format!("{}", p.display_label()))),
-            ("title", Json::str(p.title().as_str())),
-            ("rows", Json::int(p.size().rows())),
-            ("cols", Json::int(p.size().cols())),
-            ("row", at.map_or(Json::Null, |r| Json::int(r.y()))),
-            ("col", at.map_or(Json::Null, |r| Json::int(r.x()))),
-            ("version", Json::str(format!("{}", p.version(self.run)))),
-            ("program", crate::capture::program(p)?),
-        ];
-        let mut fields = Vec::with_capacity(values.len());
-        fields.extend(values);
-        fields.extend(crate::capture::state(p)?);
-        Ok(fields)
-    }
-
     fn field(&self, target: AnyRef, field: &str) -> Result<Body, Error> {
+        let no_field = || fail(Raise::NoField, format!("{target} has no field {field:?}"));
+        if let AnyRef::Pane(id) = target {
+            return self.observed_field(id, field)?.ok_or_else(no_field);
+        }
         if field == "id" {
             return Ok(Body::Found(target));
         }
-        if field == "panes" && !matches!(target, AnyRef::Pane(_)) {
+        if field == "panes" {
             let panes = self.panes_of(Some(target))?;
             return Ok(Body::Handles(panes.into_iter().map(AnyRef::Pane).collect()));
         }
-        let no_field = || fail(Raise::NoField, format!("{target} has no field {field:?}"));
         let value = match target {
-            AnyRef::Pane(id) => {
-                let pane = self.pane(id)?;
-                match field {
-                    "name" => pane.name().map_or(Json::Null, Json::str),
-                    "label" => Json::str(format!("{}", pane.display_label())),
-                    "rows" => Json::int(pane.size().rows()),
-                    "cols" => Json::int(pane.size().cols()),
-                    "version" => Json::str(format!("{}", pane.version(self.run))),
-                    "program" => crate::capture::program(pane)?,
-                    _ => self
-                        .pane_json(pane)?
-                        .into_iter()
-                        .find(|(k, _)| *k == field)
-                        .map(|(_, v)| v)
-                        .ok_or_else(no_field)?,
-                }
-            }
+            AnyRef::Pane(_) => return Err(no_field()),
             AnyRef::Tab(id) => {
                 let tab = self.tab(id).ok_or(Error::NoTab(id))?;
                 match field {
@@ -3867,11 +3834,11 @@ mod tests {
                     .iter_mut()
                     .find(|p| p.id == PaneId::of(2))
                     .ok_or("pane")?;
-                pane.program = Some(Json::Object(vec![
+                pane.facts.as_mut().ok_or("facts")?.program = Json::Object(vec![
                     ("pid".into(), pid.map_or(Json::Null, Json::Int)),
                     ("exited".into(), exited.clone()),
                     ("signal".into(), signal.clone()),
-                ]));
+                ]);
                 snapshot.validate()?;
                 let mut out = Vec::new();
                 fux::script::testing::held_reply(
@@ -4383,19 +4350,20 @@ mod tests {
                 Some((12, 12))
             );
             for pane in &snapshot.panes {
-                assert_eq!(pane.state.is_some(), projection != Projection::Topology);
+                assert_eq!(pane.facts.is_some(), projection != Projection::Topology);
                 assert_eq!(pane.cwd.is_some(), projection == Projection::Recipe);
-                if let Some(launch) = &pane.launch {
-                    assert!(launch.shell);
-                    let Some(Json::Object(program)) = &pane.program else {
+                if let Some(facts) = &pane.facts {
+                    assert!(facts.launch.shell);
+                    let Json::Object(program) = &facts.program else {
                         return Err("no program".into());
                     };
                     let argv = program.iter().find(|(k, _)| k == "argv");
                     assert!(matches!(argv, Some((_, Json::Array(a))) if !a.is_empty()));
                 }
             }
-            if let Some(launch) = snapshot.panes.first_mut().and_then(|p| p.launch.as_mut()) {
-                launch.cwd = fux_wire::inspect::Path::Bytes(vec![255; 70_000]);
+            // A launch directory of 70,000 bytes not UTF-8.
+            if let Some(facts) = snapshot.panes.first_mut().and_then(|p| p.facts.as_mut()) {
+                facts.launch.cwd = fux_wire::inspect::Path::Bytes(vec![255; 70_000]);
             }
             let bytes = fux_wire::wire::encode(&*snapshot);
             assert_eq!(
@@ -7195,11 +7163,37 @@ mod tests {
         Ok(())
     }
 
+    /// A pane's facts are one observation: its snapshot's record, a
+    /// capture and a live get read each field alike, and a write between
+    /// two observations moves its version and the journal's cursor.
+    #[test]
+    fn a_pane_reads_as_one_observation_wherever_it_is_read() -> TestResult {
+        let (mut s, _) = attached(6, 30)?;
+        run(&mut s, "%1 str horizontal axis split drop")?;
+        s.out(PaneId::of(1), b"hi\x1b]2;title\x07\x1b[?1h");
+        for (name, _) in s.observed(PaneId::of(1))?.fields() {
+            let read =
+                |s: &mut Session, from: &str| output(s, &format!("{from} str {name} get json"));
+            let listed = read(&mut s, "%1 info str panes get first")?;
+            assert_eq!(read(&mut s, "%1 capture")?, listed, "{name}");
+            assert_eq!(read(&mut s, "%1")?, listed, "{name}");
+        }
+        let seen =
+            |s: &mut Session| output(s, "%1 capture dup str version get swap str cursor get");
+        let before = seen(&mut s)?;
+        s.out(PaneId::of(1), b"more");
+        run(&mut s, "%1 str written rename")?;
+        let after = seen(&mut s)?;
+        let moved = before.lines().zip(after.lines()).filter(|(a, b)| a != b);
+        assert_eq!(moved.count(), 2, "{before} {after}");
+        Ok(())
+    }
+
     #[test]
     fn the_json_help_names_every_pane_field() -> TestResult {
         let (s, _) = attached(4, 30)?;
-        let pane = s.parts.panes().values().next().ok_or("no pane")?;
-        for (name, _) in s.pane_json(pane)? {
+        let pane = *s.parts.panes().keys().next().ok_or("no pane")?;
+        for (name, _) in s.observed(pane)?.fields() {
             let named = include_str!("../../docs/json.md").contains(&format!("`{name}`"));
             assert!(named, "docs/json.md does not name a pane's {name:?}");
         }
@@ -7689,7 +7683,7 @@ mod tests {
         assert!(output(&mut s, "str cat pane").is_err());
         assert_eq!(output(&mut s, "str %1")?, "%1\n");
         let json = output(&mut s, "%1 capture json")?;
-        assert!(json.starts_with(r#"{"pane":"%1""#), "{json}");
+        assert!(json.starts_with(r#"{"id":"%1""#), "{json}");
         Ok(())
     }
 
@@ -8493,16 +8487,20 @@ mod tests {
             s.panes
                 .iter()
                 .map(|p| {
-                    let state = p.state.as_ref();
-                    let options = [
+                    [
+                        "name",
+                        "launch",
+                        "cwd",
                         "history_bytes",
                         "program_clipboard",
                         "reflow",
                         "alternate_scroll_lines",
                         "picture_bytes",
                     ]
-                    .map(|key| state.and_then(|s| s.get(key)).cloned());
-                    (p.name.clone(), p.launch.clone(), p.cwd.clone(), options)
+                    .map(|key| {
+                        let mut fields = p.fields();
+                        fields.find_map(|(k, v)| (k == key).then(|| v.into_owned()))
+                    })
                 })
                 .collect::<Vec<_>>()
         };

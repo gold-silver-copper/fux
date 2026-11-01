@@ -258,7 +258,7 @@ impl Answer {
             Answer::Panes(_) => ("answers", "an answer of a tab's or workspace's panes"),
             Answer::Capture(c) => match c.of {
                 fux_wire::answer::Of::Pane { .. } => ("capture", "a capture"),
-                fux_wire::answer::Of::Client(_) => ("client-capture", "a client's capture"),
+                fux_wire::answer::Of::Client { .. } => ("client-capture", "a client's capture"),
             },
         }
     }
@@ -313,8 +313,8 @@ impl Answer {
         match self {
             Answer::Pane(answer) => answer.version(),
             Answer::Capture(captured) => match captured.of {
-                fux_wire::answer::Of::Pane { version, .. } => Some(version),
-                fux_wire::answer::Of::Client(_) => None,
+                fux_wire::answer::Of::Pane { ref pane, .. } => Some(pane.version),
+                fux_wire::answer::Of::Client { .. } => None,
             },
             Answer::Panes(_) => None,
         }
@@ -2255,7 +2255,7 @@ pub(crate) mod tests {
         let result = held_reply("%1 all-history styles capture json print", reply, &mut out);
         assert!(result.is_ok(), "{result:?}");
         assert!(out.len() > 20 << 20, "{}", out.len());
-        assert!(out.starts_with(b"{\"pane\":\"%1\"") && out.ends_with(b"}\n"));
+        assert!(out.starts_with(b"{\"id\":\"%1\"") && out.ends_with(b"}\n"));
         Ok(())
     }
 
@@ -2292,15 +2292,42 @@ pub(crate) mod tests {
         Ok(())
     }
 
+    /// A pane's observation, in tab `@1`, of these terminal facts.
+    fn observed(
+        version: super::Version,
+        terminal: Vec<(fux_wire::inspect::Terminal, Json)>,
+    ) -> fux_wire::inspect::Pane {
+        let launch = fux_wire::inspect::Launch {
+            shell: false,
+            cwd: fux_wire::inspect::Path::Utf8("/".into()),
+        };
+        fux_wire::inspect::Pane {
+            id: version.pane,
+            tab: fux_wire::id::TabId::of(1),
+            version,
+            name: None,
+            label: String::new(),
+            title: String::new(),
+            rows: 24,
+            cols: 80,
+            row: None,
+            col: None,
+            facts: Some(fux_wire::inspect::Facts {
+                program: Json::Null,
+                launch,
+                terminal,
+            }),
+            cwd: None,
+        }
+    }
+
     fn large_plain(version: super::Version) -> fux_wire::answer::Captured {
         fux_wire::answer::Captured {
             of: fux_wire::answer::Of::Pane {
-                version,
+                pane: Box::new(observed(version, Vec::new())),
+                read: Vec::new(),
                 wrap_pending: false,
-                state: Vec::new(),
             },
-            screen_rows: 24,
-            screen_cols: 80,
             screen_cursor: None,
             lines: vec![fux_wire::answer::Line {
                 text: std::iter::repeat_n('x', 17_000_000).collect(),
@@ -2484,12 +2511,13 @@ pub(crate) mod tests {
         );
         let capture = fux_wire::answer::Captured {
             of: fux_wire::answer::Of::Pane {
-                version,
+                pane: Box::new(observed(
+                    version,
+                    vec![(fux_wire::inspect::Terminal::LastStatus, Json::Int(7))],
+                )),
+                read: Vec::new(),
                 wrap_pending: false,
-                state: vec![("last_status".into(), Json::Int(7))],
             },
-            screen_rows: 24,
-            screen_cols: 80,
             screen_cursor: None,
             lines: Vec::new(),
             styles: Vec::new(),
@@ -2519,9 +2547,11 @@ pub(crate) mod tests {
         );
         let client = fux_wire::id::ClientId::of(1);
         let capture = fux_wire::answer::Captured {
-            of: fux_wire::answer::Of::Client(client),
-            screen_rows: 24,
-            screen_cols: 80,
+            of: fux_wire::answer::Of::Client {
+                client,
+                rows: 24,
+                cols: 80,
+            },
             screen_cursor: Some((7, 3)),
             lines: vec![fux_wire::answer::Line {
                 text: "x".into(),

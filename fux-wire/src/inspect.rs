@@ -5,6 +5,7 @@ use crate::id::{ClientId, PaneId, TabId, WsId};
 use crate::json::Json;
 use crate::layout::Node;
 use crate::wire::wire;
+use std::borrow::Cow;
 
 /// Nesting of records and their lists; layout trees are flat.
 pub const DEPTH: u8 = 32;
@@ -62,10 +63,15 @@ wire! {
     }
 }
 wire! {
+    /// A pane's observation, read in one server turn (`Session::observe`):
+    /// its identity, tab and version, its name, label, title, size and
+    /// place; but in a topology, its program, launch and terminal's facts;
+    /// a recipe's, also where its program is now. `fields` gives it flat.
     #[derive(Clone, Debug, PartialEq, Eq)]
     pub struct Pane {
         pub id: PaneId,
         pub tab: TabId,
+        pub version: Version,
         pub name: Option<String>,
         pub label: String,
         pub title: String,
@@ -74,14 +80,21 @@ wire! {
         /// Where it is in its tab, as it is sized; none if it has no place.
         pub row: Option<u16>,
         pub col: Option<u16>,
-        pub version: Version,
-        /// Its program, by generation: none in a topology, null while a
-        /// respawn is under way.
-        pub program: Option<Json>,
-        pub state: Option<Json>,
-        pub launch: Option<Launch>,
+        /// None in a topology.
+        pub facts: Option<Facts>,
         /// Where it is now, which only the recipe reads.
         pub cwd: Option<Directory>,
+    }
+}
+wire! {
+    /// What a pane holds and was started as: its program, by generation
+    /// (null while a respawn is under way); its launch; and its terminal's
+    /// facts and its options, in order.
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    pub struct Facts {
+        pub program: Json,
+        pub launch: Launch,
+        pub terminal: Vec<(Terminal, Json)>,
     }
 }
 wire! {
@@ -102,6 +115,183 @@ wire! {
     #[derive(Clone, Debug, PartialEq, Eq)]
     pub enum Path { Utf8(text: String), Bytes(bytes: Vec<u8>), }
 }
+
+/// `named!(Ty { Variant "name", … })`: a closed set of named values, an
+/// enum, with `Ty::ALL` in order, each one's `name` and the one `named`.
+macro_rules! named {
+    ($(#[$doc:meta])* $ty:ident { $($var:ident $name:literal),+ $(,)? }) => {
+        $(#[$doc])*
+        #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+        pub enum $ty {
+            $($var),+
+        }
+        impl $ty {
+            pub const ALL: &[$ty] = &[$($ty::$var),+];
+            pub fn name(self) -> &'static str {
+                match self {
+                    $($ty::$var => $name),+
+                }
+            }
+            pub fn named(name: &str) -> Option<$ty> {
+                Self::ALL.iter().copied().find(|t| t.name() == name)
+            }
+        }
+    };
+}
+
+named!(
+    /// The facts a pane's terminal says, each named once, in order: what a
+    /// pane's `Facts::terminal` holds, each read by the server's
+    /// `capture::terminal`. A name is none of the pane's own fields.
+    Terminal {
+        AltScreen "alt_screen",
+        MouseMode "mouse_mode",
+        MouseEncoding "mouse_encoding",
+        BracketedPaste "bracketed_paste",
+        FocusEvents "focus_events",
+        AppCursor "app_cursor",
+        AppKeypad "app_keypad",
+        KeyboardFlags "keyboard_flags",
+        Pictures "pictures",
+        Lost "lost",
+        Cell "cell",
+        CursorVisible "cursor_visible",
+        HistoryBytes "history_bytes",
+        ProgramClipboard "program_clipboard",
+        Reflow "reflow",
+        AlternateScrollLines "alternate_scroll_lines",
+        PictureBytes "picture_bytes",
+        HistoryLines "history_lines",
+        CommandRunning "command_running",
+        LastStatus "last_status",
+        LastOutput "last_output",
+        Bells "bells",
+        Notification "notification",
+        Truncated "truncated",
+        InputQueued "input_queued",
+    }
+);
+
+crate::wire::closed_wire!(Terminal, "terminal fact");
+
+/// A field of a pane's observation after its `id`, `tab` and `version`,
+/// not yet read: its terminal's, by its place in `Facts::terminal`.
+#[derive(Clone, Copy)]
+enum Field {
+    Name,
+    Label,
+    Title,
+    Rows,
+    Cols,
+    Row,
+    Col,
+    Program,
+    Launch,
+    Terminal(usize),
+    Cwd,
+}
+
+impl Pane {
+    /// Its fields after `id`, `tab` and `version`, in order, as `json`
+    /// gives them: what a snapshot's record and a capture hold.
+    pub fn fields(&self) -> impl Iterator<Item = (&'static str, Cow<'_, Json>)> {
+        self.names().map(|(name, field)| (name, self.read(field)))
+    }
+
+    /// One of `fields`, read alone.
+    pub fn field(&self, name: &str) -> Option<Cow<'_, Json>> {
+        let (_, field) = self.names().find(|(n, _)| *n == name)?;
+        Some(self.read(field))
+    }
+
+    /// Its fields' names, in order: its own, then those it holds.
+    fn names(&self) -> impl Iterator<Item = (&'static str, Field)> + '_ {
+        let own = [
+            ("name", Field::Name),
+            ("label", Field::Label),
+            ("title", Field::Title),
+            ("rows", Field::Rows),
+            ("cols", Field::Cols),
+            ("row", Field::Row),
+            ("col", Field::Col),
+        ];
+        let facts = self.facts.iter().flat_map(|facts| {
+            let terminal = facts.terminal.iter().enumerate();
+            let terminal = terminal.map(|(at, (t, _))| (t.name(), Field::Terminal(at)));
+            [("program", Field::Program), ("launch", Field::Launch)]
+                .into_iter()
+                .chain(terminal)
+        });
+        let cwd = self.cwd.iter().map(|_| ("cwd", Field::Cwd));
+        own.into_iter().chain(facts).chain(cwd)
+    }
+
+    /// A field `names` gives: null where it is not held.
+    fn read(&self, field: Field) -> Cow<'_, Json> {
+        let place = |at: Option<u16>| Cow::Owned(at.map_or(Json::Null, Json::int));
+        let facts = self.facts.as_ref();
+        let none = || Cow::Owned(Json::Null);
+        match field {
+            Field::Name => Cow::Owned(self.name.as_deref().map_or(Json::Null, Json::str)),
+            Field::Label => Cow::Owned(Json::str(self.label.as_str())),
+            Field::Title => Cow::Owned(Json::str(self.title.as_str())),
+            Field::Rows => Cow::Owned(Json::int(self.rows)),
+            Field::Cols => Cow::Owned(Json::int(self.cols)),
+            Field::Row => place(self.row),
+            Field::Col => place(self.col),
+            Field::Program => facts.map_or_else(none, |f| Cow::Borrowed(&f.program)),
+            Field::Launch => facts.map_or_else(none, |f| Cow::Owned(f.launch.json())),
+            Field::Terminal(at) => (facts.and_then(|f| f.terminal.get(at)))
+                .map_or_else(none, |(_, v)| Cow::Borrowed(v)),
+            Field::Cwd => self
+                .cwd
+                .as_ref()
+                .map_or_else(none, |c| Cow::Owned(c.json())),
+        }
+    }
+}
+
+impl Launch {
+    pub fn json(&self) -> Json {
+        let choice = if self.shell { "shell" } else { "program" };
+        Json::object(vec![
+            ("choice", Json::str(choice)),
+            ("cwd", self.cwd.json()),
+        ])
+    }
+}
+
+impl Directory {
+    /// Null when the OS says none.
+    pub fn json(&self) -> Json {
+        match self {
+            Directory::Known(path) => {
+                Json::object(vec![("status", Json::str("known")), ("path", path.json())])
+            }
+            Directory::Unknown => Json::Null,
+            Directory::Failed(errno) => Json::object(vec![
+                ("status", Json::str("failed")),
+                ("operation", Json::str("cwd")),
+                ("errno", Json::int(*errno)),
+            ]),
+        }
+    }
+}
+
+impl Path {
+    /// UTF-8 as itself, else its bytes in hex.
+    pub fn json(&self) -> Json {
+        let (encoding, text) = match self {
+            Path::Utf8(text) => ("utf8", text.clone()),
+            Path::Bytes(bytes) => ("hex", bytes.iter().map(|b| format!("{b:02x}")).collect()),
+        };
+        Json::object(vec![
+            ("encoding", Json::str(encoding)),
+            ("text", Json::str(text)),
+        ])
+    }
+}
+
 wire! {
     #[derive(Clone, Debug, PartialEq, Eq)]
     pub struct Client {
@@ -294,9 +484,7 @@ impl Snapshot {
         for p in &self.panes {
             if p.version.run != self.run
                 || p.version.pane != p.id
-                || p.program.is_some() != (self.projection != Projection::Topology)
-                || p.state.is_some() != (self.projection != Projection::Topology)
-                || p.launch.is_some() != (self.projection != Projection::Topology)
+                || p.facts.is_some() != (self.projection != Projection::Topology)
                 || p.cwd.is_some() != (self.projection == Projection::Recipe)
             {
                 return Err(bad());
@@ -333,6 +521,51 @@ impl Snapshot {
                 }
             }
         }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A pane's flat fields name each fact once: a terminal fact, keyed by
+    /// the one table of them, can't be a `rows` or `launch` over the
+    /// typed ones, and a name past the table is refused as it is read.
+    #[test]
+    fn a_terminal_fact_names_none_of_the_panes_own() -> Result<(), crate::wire::Error> {
+        let version: Version = "%1:0.0.0.0.0:1-1"
+            .parse()
+            .map_err(|()| crate::wire::Error::Bad("version"))?;
+        let pane = Pane {
+            id: version.pane,
+            tab: TabId::of(1),
+            version,
+            name: None,
+            label: String::new(),
+            title: String::new(),
+            rows: 6,
+            cols: 30,
+            row: None,
+            col: None,
+            facts: Some(Facts {
+                program: Json::Null,
+                launch: Launch {
+                    shell: true,
+                    cwd: Path::Utf8("/".into()),
+                },
+                terminal: Terminal::ALL.iter().map(|t| (*t, Json::Null)).collect(),
+            }),
+            cwd: Some(Directory::Unknown),
+        };
+        let mut names: Vec<&str> = pane.fields().map(|(name, _)| name).collect();
+        let count = names.len();
+        names.sort_unstable();
+        names.dedup();
+        assert_eq!(names.len(), count, "{names:?}");
+        assert_eq!(pane.field("rows"), Some(Cow::Owned(Json::int(6u16))));
+        let past = [u8::try_from(Terminal::ALL.len()).unwrap_or(u8::MAX)];
+        assert!(crate::wire::Reader::new(&past).whole::<Terminal>().is_err());
         Ok(())
     }
 }

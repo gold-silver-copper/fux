@@ -349,8 +349,9 @@ holds the workspace's ordered tabs, panes, tree and client placement. Its
 `str panes get` is a local list of records; each record's `str id get` is a
 handle and `str title get` is the retained title. Use `json` to read the flat
 collections in another language. Topology makes no process metadata queries;
-`facts` adds each pane's program and terminal state, and `recipe` adds saved
-launch inputs.
+`facts` gives each pane's whole observation, its program, launch and
+terminal state with it, as `PANE capture json` does, and `recipe` adds
+where each program is now.
 
 `PANE READ capture`, READ any of: `100 history`, `all-history`,
 `main-screen` (what was printed before a program took the screen),
@@ -366,8 +367,9 @@ paints its whole background is marked whole; text rendered faint as
 changed since that version, each written after its row, `3:text`;
 `stale` where fux can't say which: after a scroll, resize or respawn).
 Blanks at a line's end are trimmed, so a prompt's `>>> ` reads `>>>`;
-`full` keeps every cell. Then `json` for the screen and what is known of the pane:
-`screen_cursor` is `[ROW,COL]` (`screen_rows` and `screen_cols` the
+`full` keeps every cell. Then `json` for the screen and the pane's whole
+observation, its fields as `ls` gives them read in the same turn:
+`screen_cursor` is `[ROW,COL]` (`rows` and `cols` the
 screen's size), `alt_screen` whether a program holds the
 alternate screen, `history_lines` the history kept, `above` the history
 rows kept above the first row read, `wrapped_rows` which rows go on in

@@ -256,8 +256,8 @@ impl std::fmt::Display for Told {
 }
 
 wire! {
-    /// A capture, read once: what it read, its screen's size and cursor
-    /// (its row and column, if it shows on the screen read), its lines,
+    /// A capture, read once: what it read, its screen's cursor (its row
+    /// and column, if it shows on the screen read), its lines,
     /// trimmed as its view asked, and the styles their runs name; and
     /// whether it was read with styles (its text shows them as SGR, its
     /// JSON lists them) and marks. Read `since` a version, its lines are
@@ -266,8 +266,6 @@ wire! {
     #[derive(Clone, Debug, PartialEq, Eq)]
     pub struct Captured {
         pub of: Of,
-        pub screen_rows: u16,
-        pub screen_cols: u16,
         pub screen_cursor: Option<(u16, u16)>,
         pub lines: Vec<Line>,
         /// The styles runs name, in the order first used.
@@ -279,18 +277,23 @@ wire! {
 }
 
 wire! {
-    /// What a capture read: a pane, at its version, read with it, its
-    /// pending wrap and its state (`state`); or a client's terminal.
+    /// What a capture read: a pane, its observation read with it, what
+    /// the capture read beside its lines (`read`: the journal's `cursor`
+    /// first) and its pending wrap; or a client's terminal, of its size.
     #[derive(Clone, Debug, PartialEq, Eq)]
     pub enum Of {
         Pane {
-            version: Version,
+            pane: Box<crate::inspect::Pane>,
+            read: Vec<(String, Json)>,
             /// A glyph went into the last column: the next one goes on the
             /// next line, though the cursor shows on this one's last cell.
             wrap_pending: bool,
-            state: Vec<(String, Json)>,
         },
-        Client(client: ClientId),
+        Client {
+            client: ClientId,
+            rows: u16,
+            cols: u16,
+        },
     }
 }
 
@@ -441,12 +444,23 @@ impl Captured {
         };
         Captured {
             of: Of::Pane {
-                version,
+                pane: Box::new(crate::inspect::Pane {
+                    id: version.pane,
+                    tab: crate::id::TabId::of(1),
+                    version,
+                    name: None,
+                    label: String::new(),
+                    title: String::new(),
+                    rows: 40,
+                    cols: 120,
+                    row: None,
+                    col: None,
+                    facts: None,
+                    cwd: None,
+                }),
+                read: Vec::new(),
                 wrap_pending: false,
-                state: Vec::new(),
             },
-            screen_rows: 40,
-            screen_cols: 120,
             screen_cursor: None,
             lines: std::iter::repeat_n(line, 9931).collect(),
             styles: (0u8..100)
@@ -484,14 +498,36 @@ impl Captured {
     /// JSON directly from the capture: no second graph of owned run objects.
     pub fn write_json(&self, out: &mut dyn std::fmt::Write) -> std::fmt::Result {
         match &self.of {
-            Of::Pane { version, .. } => write!(out, "{{\"pane\":\"{}\"", version.pane)?,
-            Of::Client(client) => write!(out, "{{\"client\":\"{client}\"")?,
+            Of::Pane {
+                pane,
+                read,
+                wrap_pending,
+            } => {
+                let (id, tab, version) = (pane.id, pane.tab, pane.version);
+                write!(
+                    out,
+                    "{{\"id\":\"{id}\",\"tab\":\"{tab}\",\"version\":\"{version}\""
+                )?;
+                let mut field = |key: &str, value: &Json| {
+                    out.write_char(',')?;
+                    crate::json::write_str(out, key)?;
+                    out.write_char(':')?;
+                    value.write(out)
+                };
+                for (key, value) in pane.fields() {
+                    field(key, &value)?;
+                }
+                for (key, value) in read {
+                    field(key, value)?;
+                }
+                write!(out, ",\"wrap_pending\":{wrap_pending}")?;
+            }
+            Of::Client { client, rows, cols } => write!(
+                out,
+                "{{\"client\":\"{client}\",\"screen_rows\":{rows},\"screen_cols\":{cols}"
+            )?,
         }
-        write!(
-            out,
-            ",\"screen_rows\":{},\"screen_cols\":{},\"screen_cursor\":",
-            self.screen_rows, self.screen_cols
-        )?;
+        out.write_str(",\"screen_cursor\":")?;
         match self.screen_cursor {
             Some((y, x)) => write!(out, "[{y},{x}]")?,
             None => out.write_str("null")?,
@@ -522,9 +558,6 @@ impl Captured {
             }
             out.write_char(']')?;
         }
-        if let Of::Pane { wrap_pending, .. } = &self.of {
-            write!(out, ",\"wrap_pending\":{wrap_pending}")?;
-        }
         if self.styled {
             out.write_str(",\"styles\":[")?;
             for (i, line) in self.lines.iter().enumerate() {
@@ -550,15 +583,6 @@ impl Captured {
                 out.write_char(']')?;
             }
             out.write_char(']')?;
-        }
-        if let Of::Pane { version, state, .. } = &self.of {
-            write!(out, ",\"version\":\"{version}\"")?;
-            for (key, value) in state {
-                out.write_char(',')?;
-                crate::json::write_str(out, key)?;
-                out.write_char(':')?;
-                value.write(out)?;
-            }
         }
         out.write_char('}')
     }
