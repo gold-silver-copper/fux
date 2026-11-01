@@ -546,12 +546,11 @@ impl Tree {
 
     /// The stack nearest `pane` that holds it, if one does.
     pub fn stack_of(&self, pane: PaneId) -> Option<&Stack> {
-        let way = self.way(pane)?;
-        let stacks = self.along(&way).filter_map(|tree| match tree {
+        let way = self.down_to(pane)?;
+        way.into_iter().rev().find_map(|(tree, _)| match tree {
             Tree::Stack(stack) => Some(&**stack),
             Tree::Pane(_) | Tree::Split(_) => None,
-        });
-        stacks.last()
+        })
     }
 
     /// Shows `client` `pane` at each stack that holds it: whether that
@@ -857,18 +856,18 @@ impl Tree {
     /// The way from it to `pane`: the index of each child it goes into, in
     /// turn; none if it does not hold it.
     fn way(&self, pane: PaneId) -> Option<Vec<usize>> {
+        Some(self.down_to(pane)?.into_iter().map(|(_, at)| at).collect())
+    }
+    /// Each node on the way from it to `pane`, and the index of the child
+    /// it goes into.
+    fn down_to(&self, pane: PaneId) -> Option<Vec<(&Tree, usize)>> {
         let mut walk = self.walk(None);
         walk.find(|tree| tree.pane() == Some(pane))?;
-        Some(walk.way())
-    }
-
-    /// Each node on `way` from it, the last the one it ends at.
-    fn along<'a>(&'a self, way: &[usize]) -> impl Iterator<Item = &'a Tree> {
-        let below = way.iter().scan(self, |tree, at| {
-            *tree = tree.children().nth(*at)?;
-            Some(*tree)
-        });
-        std::iter::once(self).chain(below)
+        let down = walk.down.into_iter();
+        Some(
+            down.map(|(tree, met)| (tree, met.saturating_sub(1)))
+                .collect(),
+        )
     }
 
     /// The node `way` ends at.
@@ -916,39 +915,25 @@ struct Walk<'a> {
     client: Option<ClientId>,
 }
 
-impl<'a> Walk<'a> {
-    /// Meets `tree`, to go down into next if it has children.
-    fn meet(&mut self, tree: &'a Tree) -> Option<&'a Tree> {
-        if tree.pane().is_none() {
-            self.down.push((tree, 0));
-        }
-        Some(tree)
-    }
-
-    /// The way from the root to the last pane met (`Tree::way`).
-    fn way(&self) -> Vec<usize> {
-        (self.down.iter())
-            .map(|(_, met)| met.saturating_sub(1))
-            .collect()
-    }
-}
-
 impl<'a> Iterator for Walk<'a> {
     type Item = &'a Tree;
 
     fn next(&mut self) -> Option<&'a Tree> {
-        if let Some(root) = self.root.take() {
-            return self.meet(root);
-        }
-        while let Some((tree, met)) = self.down.last_mut() {
-            let Some(child) = tree.child(*met, self.client) else {
+        let tree = match self.root.take() {
+            Some(root) => root,
+            None => loop {
+                let (tree, met) = self.down.last_mut()?;
+                if let Some(child) = tree.child(*met, self.client) {
+                    *met = met.saturating_add(1);
+                    break child;
+                }
                 self.down.pop();
-                continue;
-            };
-            *met = met.saturating_add(1);
-            return self.meet(child);
+            },
+        };
+        if tree.pane().is_none() {
+            self.down.push((tree, 0));
         }
-        None
+        Some(tree)
     }
 }
 
@@ -1008,9 +993,8 @@ impl Eq for Tree {}
 impl std::fmt::Debug for Tree {
     /// Its nodes in preorder, each without its children.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_list()
-            .entries(self.walk(None).map(Tree::own))
-            .finish()
+        let nodes = self.walk(None).map(Tree::own);
+        f.debug_list().entries(nodes).finish()
     }
 }
 
@@ -1161,8 +1145,7 @@ pub fn place(root: &Tree, area: Rect) -> Placement {
 }
 
 /// Places `root` in `area` into `out`, whatever it held, reusing its
-/// buffers: a placement made into again allocates nothing. With `client`,
-/// only what it is shown: at each stack, its child.
+/// buffers. With `client`, only what it is shown: at each stack, its child.
 pub fn place_into(root: &Tree, area: Rect, client: Option<ClientId>, out: &mut Placement) {
     out.clear();
     place_tree(root, area, client, out);
@@ -1335,9 +1318,9 @@ impl Tree {
     /// the nearest alone. How far they moved; `None` if the pane has no
     /// border on that side here.
     fn shift(&mut self, area: Rect, shift: Shift, left: &mut u16) -> Option<u16> {
-        let way = self.way(shift.pane)?;
+        let down = self.down_to(shift.pane)?;
         // The area of each node on the way, before it moves.
-        let areas: Vec<Rect> = (self.along(&way).zip(&way))
+        let areas: Vec<Rect> = (down.iter())
             .scan(area, |area, (tree, at)| {
                 let here = *area;
                 if let Tree::Split(split) = tree {
@@ -1347,6 +1330,7 @@ impl Tree {
                 Some(here)
             })
             .collect();
+        let way: Vec<usize> = down.into_iter().map(|(_, at)| at).collect();
         // From the pane out, each border moving after those nearer it.
         let mut moved: Option<u16> = None;
         for (depth, (at, area)) in way.iter().zip(areas).enumerate().rev() {
