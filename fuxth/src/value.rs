@@ -1,6 +1,6 @@
-//! Values on the stack: integers, booleans, strings, lists, execution
-//! tokens, failures, the marks of constructs being compiled, and the
-//! application's own.
+//! Values on the stack: integers, booleans, strings, lists, addresses,
+//! execution tokens, failures, the marks of constructs being compiled, and
+//! the application's own.
 use crate::Code;
 use crate::Error;
 use crate::Failure;
@@ -52,6 +52,22 @@ pub enum Value<A> {
     /// A failure, as a `try`'s handler gets it.
     Failure(Rc<Thrown<A>>),
     Bool(bool),
+    /// A cell of the data space.
+    Addr(Address),
+}
+
+/// Where a cell of the data space is: only the machine's words make one
+/// (`next-address`, `create`), and an integer never becomes one.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Address(pub(crate) usize);
+
+impl Address {
+    /// How many cells on from `other` it is. An address is from 0 to the
+    /// largest integer (`Machine::moved_by`), so this never wraps.
+    pub(crate) fn cells_from(self, other: Address) -> i64 {
+        let at = |a: Address| i64::try_from(a.0).unwrap_or(i64::MAX);
+        at(self).wrapping_sub(at(other))
+    }
 }
 
 /// A failure as a value: what a `try`'s handler gets, and `throw` raises
@@ -250,7 +266,12 @@ pub(crate) fn release<A>(mut values: Vec<Value<A>>) {
                     values.extend(thrown.carried);
                 }
             }
-            Value::Int(_) | Value::Bool(_) | Value::Str(_) | Value::App(_) | Value::Mark(_) => {}
+            Value::Int(_)
+            | Value::Bool(_)
+            | Value::Str(_)
+            | Value::App(_)
+            | Value::Mark(_)
+            | Value::Addr(_) => {}
         }
     }
 }
@@ -291,6 +312,7 @@ impl<A: PartialEq> PartialEq for Value<A> {
                 }
                 (Self::Int(a), Self::Int(b)) if a == b => {}
                 (Self::Bool(a), Self::Bool(b)) if a == b => {}
+                (Self::Addr(a), Self::Addr(b)) if a == b => {}
                 (Self::Str(a), Self::Str(b)) if a == b => {}
                 (Self::App(a), Self::App(b)) if a == b => {}
                 (Self::Xt(a), Self::Xt(b)) if a == b => {}
@@ -313,7 +335,8 @@ impl<A: PartialEq> PartialEq for Value<A> {
                     | Self::App(_)
                     | Self::Xt(_)
                     | Self::Mark(_)
-                    | Self::Failure(_),
+                    | Self::Failure(_)
+                    | Self::Addr(_),
                     _,
                 ) => {
                     return false;
@@ -336,11 +359,13 @@ impl<A: AppValue> Value<A> {
             Self::Xt(_) => "an xt",
             Self::Mark(_) => "a mark",
             Self::Failure(_) => "a failure",
+            Self::Addr(_) => "an address",
         }
     }
 
     /// What kind it is, as `kind` says it: `integer`, `boolean`, `string`,
-    /// `list`, or the application's kind without its article (`pane`).
+    /// `list`, `address`, or the application's kind without its article
+    /// (`pane`).
     pub fn kind_name(&self) -> &'static str {
         match self {
             Self::App(a) => a.name(),
@@ -350,7 +375,8 @@ impl<A: AppValue> Value<A> {
             | Self::List(_)
             | Self::Xt(_)
             | Self::Mark(_)
-            | Self::Failure(_) => bare(self.kind()),
+            | Self::Failure(_)
+            | Self::Addr(_) => bare(self.kind()),
         }
     }
 
@@ -380,6 +406,9 @@ impl<A: AppValue> Value<A> {
                 }
                 Self::Failure(thrown) => {
                     write!(out, "{}", thrown.error).map_err(|_| unwritten())?
+                }
+                Self::Addr(Address(at)) => {
+                    write!(out, "(address {at})").map_err(|_| unwritten())?
                 }
             }
             // The next item of the innermost list under way.

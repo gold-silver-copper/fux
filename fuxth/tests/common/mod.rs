@@ -146,7 +146,7 @@ pub fn value(v: &Value<Nothing>) -> V {
         Value::Str(s) => V::Str(s.to_string()),
         Value::List(l) => V::List(l.items().iter().map(value).collect()),
         Value::Failure(f) => V::Failure(f.error.code.name().to_owned(), f.number),
-        Value::App(_) | Value::Xt(_) | Value::Mark(_) => {
+        Value::App(_) | Value::Xt(_) | Value::Mark(_) | Value::Addr(_) => {
             V::Str(v.text().unwrap_or_else(|f| f.message))
         }
     }

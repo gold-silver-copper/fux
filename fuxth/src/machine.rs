@@ -11,7 +11,7 @@ use crate::Failure;
 use crate::error::{Error, Floor, Wants, underflow};
 use crate::reader::{Building, Read};
 use crate::token::Token;
-use crate::value::{AppValue, List, Text, Thrown, Value, Xt};
+use crate::value::{Address, AppValue, List, Text, Thrown, Value, Xt};
 use crate::vocabulary::Vocabulary;
 use std::cmp::Ordering;
 use std::collections::HashMap;
@@ -55,8 +55,9 @@ pub trait Host {
 
 /// Code: steps, each with the token it came from (none for a word of the
 /// core's or the host's own), how many `let` names of its own it keeps,
-/// the name it was defined with, and, a version of a machine's, where the
-/// machine keeps it (`Machine::version`).
+/// the name it was defined with, a version of a machine's, where the
+/// machine keeps it (`Machine::version`), and, a word `create` made, where
+/// its data starts (`body-of`).
 #[derive(Clone, Debug)]
 pub(crate) struct Steps<A> {
     pub(crate) ops: Vec<Op<A>>,
@@ -64,6 +65,7 @@ pub(crate) struct Steps<A> {
     pub(crate) locals: usize,
     pub(crate) name: Rc<str>,
     pub(crate) index: usize,
+    pub(crate) body: Option<Address>,
 }
 
 impl<A> Steps<A> {
@@ -74,6 +76,7 @@ impl<A> Steps<A> {
             locals: 0,
             name,
             index: 0,
+            body: None,
         }
     }
 
@@ -170,7 +173,9 @@ impl<A> Steps<A> {
                 | Op::Tried(_)
                 | Op::Do(_)
                 | Op::Loop(_)
-                | Op::LoopBy(_) => {}
+                | Op::LoopBy(_)
+                | Op::Does
+                | Op::Resume(..) => {}
             }
         }
     }
@@ -229,6 +234,12 @@ pub(crate) enum Op<A> {
     Loop(usize),
     /// `loop-by`: takes how far the index moves, as `loop` moves it by 1.
     LoopBy(usize),
+    /// `does`: the word `create` made last runs the rest of the code, and
+    /// the frame returns.
+    Does,
+    /// Runs the code at the index from the step given, in a frame of its
+    /// own: what `does` gave a word.
+    Resume(usize, usize),
 }
 
 /// Whether the code returns from step `at` doing nothing more: it is past
@@ -409,6 +420,8 @@ pub struct Machine<A> {
     /// The digits held so far between `digits-begin` and `digits-end`, the
     /// last first.
     digits: String,
+    /// The data space: its cells, each a value once one is stored there.
+    space: Vec<Option<Value<A>>>,
     /// What application words give, kept between calls.
     out: Vec<Value<A>>,
     /// Steps taken in all, through every run.
@@ -454,6 +467,7 @@ impl<A: AppValue> Machine<A> {
             loops: Vec::new(),
             returns: Vec::new(),
             digits: String::new(),
+            space: Vec::new(),
             out: Vec::new(),
             steps: 0,
             chars: Vec::new(),
@@ -678,7 +692,8 @@ impl<A: AppValue> Machine<A> {
             | Value::List(_)
             | Value::App(_)
             | Value::Xt(_)
-            | Value::Mark(_)) => {
+            | Value::Mark(_)
+            | Value::Addr(_)) => {
                 let app = matches!(other, Value::App(_));
                 let wants = Wants::Takes(Builtin::Throw, "0, a number or a failure");
                 return Err(self.refused(Some(wants), other.kind(), app));
@@ -905,7 +920,16 @@ impl<A: AppValue> Machine<A> {
                         self.call(called, code, index, after);
                         continue 'frames;
                     }
-                    Op::Leave => {
+                    Op::Resume(called, from) => {
+                        let slots = self.version_at(*called).map_or(0, |c| c.locals);
+                        self.call((*called, slots), code, index, after);
+                        self.jump(*from);
+                        continue 'frames;
+                    }
+                    Op::Leave | Op::Does => {
+                        if let Op::Does = op {
+                            self.does(index, after)?;
+                        }
                         self.iters.retain(|(.., frames)| *frames < depth);
                         self.loops.retain(|l| l.frames < depth);
                         while self.marks.last().is_some_and(|(_, b)| b.frames() >= depth) {
@@ -1276,9 +1300,8 @@ impl<A: AppValue> Machine<A> {
             | Value::App(_)
             | Value::Xt(_)
             | Value::Mark(_)
-            | Value::Failure(_)) => {
-                Err(self.fail(Code::Type, Wants::Flag.not(other.kind(), false)))
-            }
+            | Value::Failure(_)
+            | Value::Addr(_)) => Err(self.fail(Code::Type, Wants::Flag.not(other.kind(), false))),
         }
     }
 
@@ -1422,7 +1445,8 @@ impl<A: AppValue> Machine<A> {
                 | Value::App(_)
                 | Value::Xt(_)
                 | Value::Mark(_)
-                | Value::Failure(_) => {
+                | Value::Failure(_)
+                | Value::Addr(_) => {
                     return Err(self.fail(
                         Code::Type,
                         format!(
@@ -1448,7 +1472,8 @@ impl<A: AppValue> Machine<A> {
                 | Value::App(_)
                 | Value::Xt(_)
                 | Value::Mark(_)
-                | Value::Failure(_) => None,
+                | Value::Failure(_)
+                | Value::Addr(_) => None,
             });
             return Ok(Self::text(&strings.collect::<String>()));
         }
@@ -1502,6 +1527,66 @@ impl<A: AppValue> Machine<A> {
     /// Writes `text` through the host, said at the word.
     fn written<H: Host<Value = A>>(&self, host: &mut H, text: &str) -> Result<(), Error> {
         host.write(text).map_err(|f| self.fail(f.code, f.message))
+    }
+
+    /// Where the data space goes on: the address `store-next` stores at.
+    pub(crate) fn next_address(&self) -> Address {
+        Address(self.space.len())
+    }
+
+    /// The `n` cells from `at`, if the data space has them all.
+    fn cells(&mut self, at: Address, n: usize) -> Result<&mut [Option<Value<A>>], Error> {
+        let has = self.space.len();
+        let Some(end) = at.0.checked_add(n).filter(|end| *end <= has) else {
+            let what = match n {
+                1 => format!("address {}", at.0),
+                _ => format!("{n} cells from address {}", at.0),
+            };
+            let cells = if has == 1 { "cell" } else { "cells" };
+            let why = format!("{what}, and the data space has {has} {cells}");
+            return Err(self.fail(Code::InvalidAddress, why));
+        };
+        Ok(self.space.get_mut(at.0..end).unwrap_or_default())
+    }
+
+    /// Room for `n` more cells, unless the allocator refuses it.
+    fn grow(&mut self, n: usize) -> Result<(), Error> {
+        let reserved = self.space.try_reserve(n);
+        reserved.map_err(|e| self.fail(Code::Memory, format!("{n} more cells: {e}")))
+    }
+
+    /// `allot`: `n` empty cells added, or, `n` below 0, the last -`n` given
+    /// back.
+    fn allot(&mut self, n: i64) -> Result<(), Error> {
+        let has = self.space.len();
+        if let Ok(n) = usize::try_from(n) {
+            self.grow(n)?;
+            self.space.resize(has.saturating_add(n), None);
+            return Ok(());
+        }
+        let back = usize::try_from(n.unsigned_abs()).unwrap_or(usize::MAX);
+        let Some(left) = has.checked_sub(back) else {
+            let why = format!("allot gives back {back} cells, and the data space has {has}");
+            return Err(self.fail(Code::Range, why));
+        };
+        self.space.truncate(left);
+        Ok(())
+    }
+
+    /// `at` moved `n` cells on: an address is from 0 to the largest
+    /// integer, so two subtract to an integer (`Address::cells_from`).
+    fn moved_by(&self, at: Address, n: i128) -> Result<Value<A>, Error> {
+        let to = i128::try_from(at.0).unwrap_or(i128::MAX).saturating_add(n);
+        match i64::try_from(to)
+            .ok()
+            .and_then(|to| usize::try_from(to).ok())
+        {
+            Some(to) => Ok(Value::Addr(Address(to))),
+            None => {
+                let why = format!("address {} moved {n} cells is no address", at.0);
+                Err(self.fail(Code::InvalidAddress, why))
+            }
+        }
     }
 }
 
@@ -1599,7 +1684,8 @@ fn compare<A: PartialEq>(mut a: &Value<A>, mut b: &Value<A>) -> Option<Ordering>
                 | Value::App(_)
                 | Value::Xt(_)
                 | Value::Mark(_)
-                | Value::Failure(_),
+                | Value::Failure(_)
+                | Value::Addr(_),
                 _,
             ) => {
                 return None;
@@ -1658,6 +1744,58 @@ impl Int {
             | Value::App(_)
             | Value::Xt(_)
             | Value::Mark(_)
+            | Value::Failure(_)
+            | Value::Addr(_)) => Err(other.kind()),
+        }
+    }
+}
+
+/// An integer or an address: what `add` and `sub` take.
+enum Number {
+    Int(i64),
+    Addr(Address),
+}
+
+struct Num;
+
+impl Num {
+    fn wants(word: Builtin) -> Option<Wants> {
+        Some(Wants::Number(word))
+    }
+
+    fn of<A: AppValue>(value: Value<A>) -> Result<Number, &'static str> {
+        match value {
+            Value::Int(n) => Ok(Number::Int(n)),
+            Value::Addr(at) => Ok(Number::Addr(at)),
+            other @ (Value::Bool(_)
+            | Value::Str(_)
+            | Value::List(_)
+            | Value::App(_)
+            | Value::Xt(_)
+            | Value::Mark(_)
+            | Value::Failure(_)) => Err(other.kind()),
+        }
+    }
+}
+
+/// An address.
+struct Addr;
+
+impl Addr {
+    fn wants(word: Builtin) -> Option<Wants> {
+        Some(Wants::Takes(word, "an address"))
+    }
+
+    fn of<A: AppValue>(value: Value<A>) -> Result<Address, &'static str> {
+        match value {
+            Value::Addr(at) => Ok(at),
+            other @ (Value::Int(_)
+            | Value::Bool(_)
+            | Value::Str(_)
+            | Value::List(_)
+            | Value::App(_)
+            | Value::Xt(_)
+            | Value::Mark(_)
             | Value::Failure(_)) => Err(other.kind()),
         }
     }
@@ -1680,7 +1818,8 @@ impl Str {
             | Value::App(_)
             | Value::Xt(_)
             | Value::Mark(_)
-            | Value::Failure(_)) => Err(other.kind()),
+            | Value::Failure(_)
+            | Value::Addr(_)) => Err(other.kind()),
         }
     }
 }
@@ -1702,7 +1841,8 @@ impl Exec {
             | Value::List(_)
             | Value::App(_)
             | Value::Mark(_)
-            | Value::Failure(_)) => Err(other.kind()),
+            | Value::Failure(_)
+            | Value::Addr(_)) => Err(other.kind()),
         }
     }
 }
@@ -1724,7 +1864,8 @@ impl Seq {
             | Value::App(_)
             | Value::Xt(_)
             | Value::Mark(_)
-            | Value::Failure(_)) => Err(other.kind()),
+            | Value::Failure(_)
+            | Value::Addr(_)) => Err(other.kind()),
         }
     }
 }
@@ -1746,7 +1887,8 @@ impl Joined {
             | Value::App(_)
             | Value::Xt(_)
             | Value::Mark(_)
-            | Value::Failure(_)) => Err(other.kind()),
+            | Value::Failure(_)
+            | Value::Addr(_)) => Err(other.kind()),
         }
     }
 }
@@ -1888,12 +2030,33 @@ builtins! { m host;
         let n = m.count(Builtin::Roll, n)?;
         m.roll(n)
     }
-    Add "add" (a: Int, b: Int) "n m -- n+m" "integer arithmetic; past 64 bits it wraps around" {
-        m.push(Value::Int(a.wrapping_add(b)));
+    Add "add" (a: Num, b: Num) "n m -- n+m"
+        "integer arithmetic, past 64 bits wrapping around; an address plus n is the address n cells on" {
+        let sum = match (a, b) {
+            (Number::Int(a), Number::Int(b)) => Value::Int(a.wrapping_add(b)),
+            (Number::Addr(at), Number::Int(n)) | (Number::Int(n), Number::Addr(at)) => {
+                m.moved_by(at, n.into())?
+            }
+            (Number::Addr(_), Number::Addr(_)) => {
+                let why = "add takes two integers, or an address and an integer, not two addresses";
+                return Err(m.fail(Code::Type, why));
+            }
+        };
+        m.push(sum);
         Ok(())
     }
-    Sub "sub" (a: Int, b: Int) "n m -- n-m" "integer arithmetic; past 64 bits it wraps around" {
-        m.push(Value::Int(a.wrapping_sub(b)));
+    Sub "sub" (a: Num, b: Num) "n m -- n-m"
+        "integer arithmetic, past 64 bits wrapping around; an address minus n is the address n cells back, and two addresses subtract to how many cells apart they are" {
+        let difference = match (a, b) {
+            (Number::Int(a), Number::Int(b)) => Value::Int(a.wrapping_sub(b)),
+            (Number::Addr(at), Number::Int(n)) => m.moved_by(at, i128::from(n).saturating_neg())?,
+            (Number::Addr(a), Number::Addr(b)) => Value::Int(a.cells_from(b)),
+            (Number::Int(_), Number::Addr(_)) => {
+                let why = "sub takes an address from an address, not from an integer";
+                return Err(m.fail(Code::Type, why));
+            }
+        };
+        m.push(difference);
         Ok(())
     }
     Mul "mul" (a: Int, b: Int) "n m -- n*m" "integer arithmetic; past 64 bits it wraps around" {
@@ -2070,7 +2233,47 @@ builtins! { m host;
         m.push(Value::str(text));
         Ok(())
     }
-    Kind "kind" (x: Any) "x -- name" "integer, boolean, string, list, xt, or the host's kind" {
+    NextAddress "next-address" [cold] () "-- addr" "the address where the data space goes on, which store-next stores at" {
+        let at = m.next_address();
+        m.push(Value::Addr(at));
+        Ok(())
+    }
+    Allot "allot" [cold] (n: Int) "n --"
+        "n cells added to the data space, empty until a value is stored there; below 0, the last cells given back" {
+        m.allot(n)
+    }
+    StoreNext "store-next" [cold] (x: Any) "x --" "x stored in a cell added to the data space" {
+        m.grow(1)?;
+        m.space.push(Some(x));
+        Ok(())
+    }
+    Fetch "fetch" [cold] (at: Addr) "addr -- x" "the value stored in the cell at addr" {
+        let value = m.cells(at, 1)?.first().cloned().flatten();
+        let value = value.ok_or_else(|| m.fail(Code::Unset, "the cell has no value stored yet"))?;
+        m.push(value);
+        Ok(())
+    }
+    Store "store" [cold] (x: Any, at: Addr) "x addr --" "x stored in the cell at addr" {
+        if let Some(cell) = m.cells(at, 1)?.first_mut() {
+            *cell = Some(x);
+        }
+        Ok(())
+    }
+    Fill "fill" [cold] (at: Addr, n: Int, x: Any) "addr u x --" "x stored in the u cells from addr" {
+        let n = m.count(Builtin::Fill, n)?;
+        m.cells(at, n)?.fill(Some(x));
+        Ok(())
+    }
+    CopyCells "copy-cells" [cold] (from: Addr, to: Addr, n: Int) "from to u --"
+        "the u cells from `from` copied to the u from `to`, which may overlap them" {
+        let n = m.count(Builtin::CopyCells, n)?;
+        let copied = m.cells(from, n)?.to_vec();
+        for (cell, value) in m.cells(to, n)?.iter_mut().zip(copied) {
+            *cell = value;
+        }
+        Ok(())
+    }
+    Kind "kind" (x: Any) "x -- name" "integer, boolean, string, list, address, xt, or the host's kind" {
         m.push(Machine::text(x.kind_name()));
         Ok(())
     }
@@ -2108,6 +2311,17 @@ builtins! { m host;
     }
     Execute "execute" [cold] (xt: Exec) "xt --" "run the word xt is" {
         m.enter(&xt)
+    }
+    Create "create" [cold] () "--"
+        "create NAME: a word that gives the address where the data space goes on, for the data stored after (store-next, allot)"
+        { m.create() }
+    BodyOf "body-of" [cold] (xt: Exec) "xt -- addr" "the address the word create made, xt, gives" {
+        let at = xt.body.ok_or_else(|| {
+            let why = "body-of takes the xt of a word create made, and this is none";
+            m.fail(Code::Type, why)
+        })?;
+        m.push(Value::Addr(at));
+        Ok(())
     }
     Find "find" [cold] (s: Str) "s -- xt true | s false"
         "the word named s, as the dictionary has it now, and true; else s and false" {
@@ -2155,6 +2369,9 @@ builtins! { m host;
     LeaveDefinition "leave-definition" [immediate] () "--"
         "in a definition: return from it now, its loops left"
         { m.compile_only(Builtin::LeaveDefinition, Op::Leave) }
+    Does "does" [immediate] () "--"
+        "in a definition: return from it, the word create made last running the rest of the definition from then on, its address pushed first"
+        { m.compile_only(Builtin::Does, Op::Does) }
     If "if" [immediate] () "flag --"
         "flag if … else … then: the first part if flag is true (or an integer not 0), else the second"
         { m.open(crate::reader::Construct::If) }

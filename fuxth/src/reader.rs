@@ -16,7 +16,7 @@ use crate::Code;
 use crate::error::Error;
 use crate::machine::{Builtin, Entry, Frame, Host, Machine, Op, Steps};
 use crate::token::{self, Token};
-use crate::value::{AppValue, Mark, Text, Value, Xt};
+use crate::value::{Address, AppValue, Mark, Text, Value, Xt};
 use std::collections::HashMap;
 use std::ops::Range;
 use std::path::PathBuf;
@@ -679,6 +679,51 @@ impl<A: AppValue> Machine<A> {
         Ok(())
     }
 
+    /// `create NAME`: a word that pushes where the data space goes on.
+    pub(crate) fn create(&mut self) -> Result<(), Error> {
+        let name = self.next_word(Builtin::Create, "a name")?;
+        self.check_name(&name)?;
+        let body = self.next_address();
+        self.created(Rc::clone(&name.text), body, false, None);
+        self.latest = Some(name.text);
+        Ok(())
+    }
+
+    /// `does`, run at step `step` of the code at `code`: the word `create`
+    /// made last pushes its address, then runs that code from that step.
+    pub(crate) fn does(&mut self, code: usize, step: usize) -> Result<(), Error> {
+        let latest = (self.latest.as_ref()).and_then(|name| self.names.get_key_value(name));
+        let made = latest.and_then(|(name, e)| Some((Rc::clone(name), e.xt.body?, e.immediate)));
+        let Some((name, body, immediate)) = made else {
+            let why = "does gives the word create made last what it does, \
+                       and the word defined last is none of create's";
+            return Err(self.fail(Code::Type, why));
+        };
+        let at = step.checked_sub(1);
+        let token = (self.version_at(code)).and_then(|c| c.tokens.get(at?).cloned().flatten());
+        self.created(name, body, immediate, Some((Op::Resume(code, step), token)));
+        Ok(())
+    }
+
+    /// `name` defined as a word `create` made, which pushes `body`, then
+    /// takes the step `then`, if one.
+    fn created(
+        &mut self,
+        name: Rc<str>,
+        body: Address,
+        immediate: bool,
+        then: Option<(Op<A>, Option<Token>)>,
+    ) {
+        let mut code = Steps::new(Rc::clone(&name));
+        code.body = Some(body);
+        code.push(Op::Push(Value::Addr(body)), None);
+        if let Some((op, token)) = then {
+            code.push(op, token);
+        }
+        let xt = self.version(code);
+        self.names.insert(name, Entry { xt, immediate });
+    }
+
     /// `code`.
     pub(crate) fn code(&mut self) -> Result<(), Error> {
         let at = self.reading();
@@ -935,7 +980,8 @@ impl<A: AppValue> Machine<A> {
             | Value::List(_)
             | Value::App(_)
             | Value::Xt(_)
-            | Value::Failure(_) => None,
+            | Value::Failure(_)
+            | Value::Addr(_) => None,
         });
         match mark {
             Some(mark) => Error::new(

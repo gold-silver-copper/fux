@@ -1059,6 +1059,12 @@ fn every_core_word_documents_its_effect_and_meaning() {
                         | Builtin::DigitsBegin
                         | Builtin::Hold
                         | Builtin::Holds
+                        | Builtin::Allot
+                        | Builtin::StoreNext
+                        | Builtin::Store
+                        | Builtin::Fill
+                        | Builtin::CopyCells
+                        | Builtin::Create
                 ),
             "{}",
             builtin.name()
@@ -1160,12 +1166,12 @@ fn the_machine_says_what_and_where() -> Result<(), Error> {
     let said = |text: &str| run(text).err().map(|e| e.to_string()).unwrap_or_default();
     assert_eq!(
         said("ticket 1 add"),
-        "type: t:1: add: add takes an integer, not a ticket"
+        "type: t:1: add: add takes an integer or an address, not a ticket"
     );
     // Inside a definition, at its step; a place of several, by what it takes.
     assert_eq!(
         said("define f str x add end\n1 f"),
-        "type: t:1: add: add takes an integer, not a string"
+        "type: t:1: add: add takes an integer or an address, not a string"
     );
     assert_eq!(
         said("1 2 3 slice"),
@@ -1177,7 +1183,7 @@ fn the_machine_says_what_and_where() -> Result<(), Error> {
     let error = machine.run(&mut Toy::default(), u64::MAX).err();
     assert_eq!(
         error.map(|e| e.to_string()).as_deref(),
-        Some("type: argument 4: add: add takes an integer, not a string")
+        Some("type: argument 4: add: add takes an integer or an address, not a string")
     );
     assert_eq!(
         said("1 ticket lt"),
@@ -1627,5 +1633,71 @@ fn a_count_before_a_jump_target_is_not_folded() -> Result<(), Error> {
     assert_eq!(machine.stack(), ints(&[3]).as_slice());
     let codes = "define h if str fail else str timeout then try 1 catch end end";
     assert_eq!(code(run(codes)), Some("bad_codes"));
+    Ok(())
+}
+
+/// An address is only one the data space gave, never an integer; every
+/// access is checked against the cells allotted, and fails -9 outside
+/// them; and a cell is read only once a value was stored there.
+#[test]
+fn every_data_space_access_is_checked() -> Result<(), Error> {
+    for wrong in [
+        "5 fetch",
+        "next-address next-address add",
+        "1 next-address sub",
+    ] {
+        assert_eq!(code(run(wrong)), Some("type"), "{wrong}");
+    }
+    for outside in [
+        "next-address fetch",
+        "1 next-address store",
+        "next-address 1 allot 1 add fetch",
+        "next-address -9223372036854775807 add",
+        "create b 2 allot b 3 0 fill",
+        "create b 2 allot b b 1 add 2 copy-cells",
+        "create b 2 allot -2 allot b fetch",
+    ] {
+        assert_eq!(code(run(outside)), Some("invalid_address"), "{outside}");
+    }
+    let caught = run("str all try next-address fetch catch end")?;
+    assert!(matches!(caught.as_slice(), [Value::Failure(f)] if f.number == Some(-9)));
+    assert_eq!(code(run("variable v v fetch")), Some("unset"));
+    // A refused store changes nothing.
+    let kept = "create b 1 store-next str all try 2 b 1 add store catch drop end b fetch";
+    assert_eq!(run(kept)?, ints(&[1]));
+    Ok(())
+}
+
+/// The data space has no size of fuxth's own: what the allocator refuses
+/// fails -8, `memory`, and the data space stays as it was.
+#[test]
+fn a_refused_allocation_fails_memory() -> Result<(), Error> {
+    let refused =
+        "next-address str all try 9223372036854775807 allot catch end swap next-address eq";
+    let left = run(refused)?;
+    assert!(
+        matches!(left.as_slice(), [Value::Failure(f), Value::Bool(true)]
+            if f.error.code == Code::Memory && f.number == Some(-8)),
+        "{left:?}"
+    );
+    Ok(())
+}
+
+/// `does` gives the word `create` made last the rest of its definition,
+/// as a new version: code compiled before keeps the one it was compiled
+/// against, as with any word defined again. A word `create` didn't make
+/// has no data to give it.
+#[test]
+fn does_gives_the_word_create_made_last_what_it_does() -> Result<(), Error> {
+    let counted = "define counting does dup dup fetch 1 add swap store end
+        create c 5 store-next code c end let early
+        counting early execute c fetch early execute";
+    let left = run(counted)?;
+    assert!(
+        matches!(left.as_slice(), [Value::Addr(a), Value::Int(6), Value::Addr(b)] if a == b),
+        "{left:?}"
+    );
+    assert_eq!(code(run("define f does end define g end f")), Some("type"));
+    assert_eq!(code(run("define f does end f")), Some("type"));
     Ok(())
 }

@@ -576,3 +576,166 @@ fn core_number_text() {
         assert_eq!(fuxth(program, u64::MAX), mixed(&[left]), "{program}");
     }
 }
+
+/// HERE ALLOT , @ ! +! CELL+, as `next-address allot store-next fetch
+/// store add-store 1 add`. Deviations (§2 of the plan): a cell is one
+/// address unit, so `cell+` and `cells` are `1 add` and `mul` by 1;
+/// addresses are a kind of their own, compared with `eq` and subtracted to
+/// an integer, where Forth has `u<`; a cell holds any value, so 1S is a
+/// list here.
+#[test]
+fn core_data_space() {
+    // HERE 1 , HERE 2 , CONSTANT 2ND CONSTANT 1ST
+    let cells = "next-address 1 store-next next-address 2 store-next let 2nd let 1st ";
+    for (program, left) in [
+        // T{ HERE 1 ALLOT HERE SWAP - -> 1 CHARS }T
+        (
+            "next-address 1 allot next-address swap sub",
+            &[V::Int(1)][..],
+        ),
+        // T{ 1ST CELL+ -> 2ND }T  T{ 2ND 1ST - -> 1 }T
+        ("1st 1 add 2nd eq 2nd 1st sub", &[V::Bool(true), V::Int(1)]),
+        // T{ 1ST @ 2ND @ -> 1 2 }T
+        ("1st fetch 2nd fetch", &[V::Int(1), V::Int(2)]),
+        // T{ 5 1ST ! -> }T  T{ 1ST @ 2ND @ -> 5 2 }T
+        ("5 1st store 1st fetch 2nd fetch", &[V::Int(5), V::Int(2)]),
+        // T{ 1S 1ST ! 1ST @ -> 1S }T: a cell holds any one value.
+        (
+            "list 1 2 end 1st store 1st fetch",
+            &[V::List(vec![V::Int(1), V::Int(2)])],
+        ),
+        // T{ 0 1ST ! -> }T  T{ 1 1ST +! -> }T  T{ 1ST @ -> 1 }T
+        // T{ -1 1ST +! 1ST @ -> 0 }T
+        (
+            "0 1st store 1 1st add-store 1st fetch -1 1st add-store 1st fetch",
+            &[V::Int(1), V::Int(0)],
+        ),
+    ] {
+        let program = format!("{cells}{program}");
+        assert_eq!(fuxth(&program, u64::MAX), mixed(left), "{program}");
+    }
+}
+
+/// CONSTANT VARIABLE CREATE DOES> >BODY, as `constant variable create does
+/// body-of`.
+#[test]
+fn core_defining_words() {
+    let does = "define does1 does fetch 1 add end define does2 does fetch 2 add end
+        define weird create does 1 add does 2 add end ";
+    for (program, left) in [
+        // T{ 123 CONSTANT X123 -> }T  T{ X123 -> 123 }T
+        ("123 constant x123 x123", &[V::Int(123)][..]),
+        // T{ : EQU CONSTANT ; -> }T  T{ X123 EQU Y123 -> }T  T{ Y123 -> 123 }T
+        (
+            "123 constant x123 define equ constant end x123 equ y123 y123",
+            &[V::Int(123)],
+        ),
+        // T{ VARIABLE V1 -> }T  T{ 123 V1 ! -> }T  T{ V1 @ -> 123 }T
+        ("variable v1 123 v1 store v1 fetch", &[V::Int(123)]),
+        // T{ CREATE CR1 -> }T  T{ CR1 -> HERE }T  T{ ' CR1 >BODY -> HERE }T
+        (
+            "create cr1 cr1 next-address eq tick cr1 body-of next-address eq",
+            &[V::Bool(true), V::Bool(true)],
+        ),
+        // T{ 1 , -> }T  T{ CR1 @ -> 1 }T  T{ DOES1 -> }T  T{ CR1 -> 2 }T
+        // T{ DOES2 -> }T  T{ CR1 -> 3 }T
+        (
+            "create cr1 1 store-next cr1 fetch does1 cr1 does2 cr1",
+            &[V::Int(1), V::Int(2), V::Int(3)],
+        ),
+        // T{ WEIRD: W1 -> }T  T{ ' W1 >BODY -> HERE }T
+        // T{ W1 -> HERE 1 + }T  T{ W1 -> HERE 2 + }T
+        (
+            "weird w1 tick w1 body-of next-address eq
+             w1 next-address 1 add eq w1 next-address 2 add eq",
+            &[V::Bool(true), V::Bool(true), V::Bool(true)],
+        ),
+    ] {
+        let program = format!("{does}{program}");
+        assert_eq!(fuxth(&program, u64::MAX), mixed(left), "{program}");
+    }
+}
+
+/// FILL MOVE ERASE, as `fill copy-cells erase`, on cells, not characters.
+#[test]
+fn core_fill_and_move() {
+    // CREATE FBUF 00 C, 00 C, 00 C,  CREATE SBUF 12 C, 34 C, 56 C,
+    // : SEEBUF FBUF C@ FBUF CHAR+ C@ FBUF CHAR+ CHAR+ C@ ;
+    let bufs = "create fbuf 0 store-next 0 store-next 0 store-next
+        create sbuf 12 store-next 34 store-next 56 store-next
+        define seebuf fbuf fetch fbuf 1 add fetch fbuf 2 add fetch end ";
+    for (program, left) in [
+        // T{ FBUF 0 20 FILL -> }T  T{ SEEBUF -> 0 0 0 }T
+        ("fbuf 0 20 fill seebuf", &[0, 0, 0][..]),
+        // T{ FBUF 1 20 FILL -> }T  T{ SEEBUF -> 20 0 0 }T
+        ("fbuf 1 20 fill seebuf", &[20, 0, 0]),
+        // T{ FBUF 3 20 FILL -> }T  T{ SEEBUF -> 20 20 20 }T
+        ("fbuf 3 20 fill seebuf", &[20, 20, 20]),
+        // T{ FBUF FBUF 3 CHARS MOVE -> }T  T{ SBUF FBUF 0 CHARS MOVE -> }T
+        (
+            "fbuf 3 20 fill fbuf fbuf 3 copy-cells sbuf fbuf 0 copy-cells seebuf",
+            &[20, 20, 20],
+        ),
+        // T{ SBUF FBUF 1 CHARS MOVE -> }T  T{ SEEBUF -> 12 20 20 }T
+        (
+            "fbuf 3 20 fill sbuf fbuf 1 copy-cells seebuf",
+            &[12, 20, 20],
+        ),
+        // T{ SBUF FBUF 3 CHARS MOVE -> }T  T{ SEEBUF -> 12 34 56 }T
+        ("sbuf fbuf 3 copy-cells seebuf", &[12, 34, 56]),
+        // T{ FBUF FBUF CHAR+ 2 CHARS MOVE -> }T  T{ SEEBUF -> 12 12 34 }T
+        (
+            "sbuf fbuf 3 copy-cells fbuf fbuf 1 add 2 copy-cells seebuf",
+            &[12, 12, 34],
+        ),
+        // T{ FBUF CHAR+ FBUF 2 CHARS MOVE -> }T  T{ SEEBUF -> 12 34 34 }T
+        (
+            "sbuf fbuf 3 copy-cells fbuf fbuf 1 add 2 copy-cells fbuf 1 add fbuf 2 copy-cells seebuf",
+            &[12, 34, 34],
+        ),
+        // ERASE (Core extensions): FBUF 3 ERASE
+        ("fbuf 3 20 fill fbuf 3 erase seebuf", &[0, 0, 0]),
+    ] {
+        let program = format!("{bufs}{program}");
+        assert_eq!(fuxth(&program, u64::MAX), ints(left), "{program}");
+    }
+}
+
+/// BASE DECIMAL HEX and >NUMBER, as `base decimal hex number`: T{ GN2 ->
+/// 10 A }T with `: GN2 BASE @ >R HEX BASE @ DECIMAL BASE @ R> BASE ! ;`.
+/// Deviations: `number` takes one string and gives one integer, failing
+/// where >NUMBER stops at the first character that is no digit; `digit`,
+/// Forth's #, writes in `base` too.
+#[test]
+fn core_base() {
+    let gn2 = "define gn2 base fetch to-return hex base fetch decimal base fetch
+        from-return base store end ";
+    let text = |s: &str| V::Str(s.to_owned());
+    for (program, left) in [
+        ("gn2", &[V::Int(16), V::Int(10)][..]),
+        ("gn2 base fetch", &[V::Int(16), V::Int(10), V::Int(10)]),
+        (
+            "hex str FF number str -ff number decimal str 255 number",
+            &[V::Int(255), V::Int(-255), V::Int(255)],
+        ),
+        ("2 base store str 101 number", &[V::Int(5)]),
+        (
+            "hex 255 digits-begin digits digits-end decimal",
+            &[text("FF")],
+        ),
+        (
+            "36 base store 35 digits-begin digits digits-end",
+            &[text("Z")],
+        ),
+    ] {
+        let program = format!("{gn2}{program}");
+        assert_eq!(fuxth(&program, u64::MAX), mixed(left), "{program}");
+    }
+    // A digit past the base is no digit; and a base past 2 to 36 writes none.
+    assert!(ends("fail")(&fuxth("hex str g number", u64::MAX)));
+    assert!(ends("fail")(&fuxth("8 base store str 8 number", u64::MAX)));
+    assert!(ends("fail")(&fuxth(
+        "1 base store 5 digits-begin digits",
+        u64::MAX
+    )));
+}

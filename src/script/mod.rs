@@ -140,7 +140,8 @@ fn scope(value: &Value<Fux>) -> Option<Run> {
         | Value::App(_)
         | Value::Xt(_)
         | Value::Mark(_)
-        | Value::Failure(_) => None,
+        | Value::Failure(_)
+        | Value::Addr(_) => None,
     }
 }
 
@@ -1796,7 +1797,8 @@ fn written(out: &mut dyn Write, value: &Value<Fux>, batch: Batch) -> Result<(), 
         | Value::App(_)
         | Value::Xt(_)
         | Value::Mark(_)
-        | Value::Failure(_) => line(out, value),
+        | Value::Failure(_)
+        | Value::Addr(_) => line(out, value),
     }
 }
 
@@ -1821,7 +1823,8 @@ fn line(out: &mut dyn Write, value: &Value<Fux>) -> Result<(), Failed> {
         | Value::App(_)
         | Value::Xt(_)
         | Value::Mark(_)
-        | Value::Failure(_) => {
+        | Value::Failure(_)
+        | Value::Addr(_) => {
             (value.write_text(&mut stream)).map_err(|f| Failed::new(Code::of(f.code), f.message))
         }
     };
@@ -2078,6 +2081,7 @@ pub(crate) mod tests {
                     | fuxth::Value::Xt(_)
                     | fuxth::Value::Mark(_)
                     | fuxth::Value::Failure(_)
+                    | fuxth::Value::Addr(_)
                     | fuxth::Value::Bool(_)
                     | fuxth::Value::Str(_)
                     | fuxth::Value::List(_)
