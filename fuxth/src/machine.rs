@@ -2194,13 +2194,17 @@ fn out_of_line<R>(f: impl FnOnce() -> R) -> R {
 }
 
 /// Expands rows `Variant "name" [flag] (arg: Marker, …) "effect"
-/// raises(Code … writes) "about" { body }` to the enum `Builtin` of those
+/// raises(Code … writes) compiles(Op, …) "about" { body }` to the enum
+/// `Builtin` of those
 /// variants: `Builtin::ALL` in that order; `name`, `effect` and `about`,
 /// each a match giving that row's column; `immediate` and `hosted`, whether
 /// its row is flagged so (a flagged row, `cold` too, runs out of line);
 /// `raises`, the codes its body fails with as its row names them (`writes`
 /// for what the host's writing text fails with; `any` for unknown), and
-/// whether it takes values and any of a kind (`Any` takes every kind); and
+/// whether it takes values and any of a kind (`Any` takes every kind);
+/// `compiles`, the steps a word that shapes the program compiles, each
+/// kind once, which fail as they run (`compiles(…)`, none if left out);
+/// and
 /// `Machine::builtin`, which runs one. It takes as many values as the row
 /// names (`take::<N>`; too few fail it), turns each into what its marker
 /// gives (a value of another kind fails the word), and runs the row's body
@@ -2235,7 +2239,7 @@ macro_rules! builtins {
     (@arm $arm:block $flag:ident) => { out_of_line(move || $arm) };
     ($m:ident $host:ident; $(
         $variant:ident $name:literal $([$flag:ident])? ($($arg:ident: $ty:ident),*) $effect:literal
-        raises($($raises:ident)*) $about:literal $body:block
+        raises($($raises:ident)*) $(compiles($($op:expr),*))? $about:literal $body:block
     )*) => {
         /// The words fuxth itself gives: its core. Everything else is the
         /// standard library, written in fuxth.
@@ -2294,6 +2298,13 @@ macro_rules! builtins {
                         !<[&str]>::is_empty(&[$(stringify!($arg)),*]),
                         false $(|| builtins!(@typed $ty))*,
                     ),)*
+                }
+            }
+
+            /// The kinds of step it compiles, each once.
+            pub(crate) fn compiles<A>(self) -> Vec<Op<A>> {
+                match self {
+                    $(Builtin::$variant => vec![$($($op),*)?],)*
                 }
             }
 
@@ -2709,79 +2720,79 @@ builtins! { m host;
         m.compiling = false;
         Ok(())
     }
-    Str "str" [immediate] () "-- s" raises(MissingToken) "str WORD: WORD as text, whatever it looks like"
+    Str "str" [immediate] () "-- s" raises(MissingToken) compiles(Op::Push(Value::Int(0))) "str WORD: WORD as text, whatever it looks like"
         { m.string(Builtin::Str) }
     Define "define" [immediate] () "--" raises(MissingToken BadName NotTopLevel)
         "define NAME … end: a word of your own, found from its end on (end closes code, list, each and try too)"
         { m.define() }
-    End "end" [immediate] () "--" raises(Unmatched) "… end: closes the innermost of define, code, list, each and try … catch"
+    End "end" [immediate] () "--" raises(Unmatched) compiles(Op::Gather, Op::Jump(0), Op::Builtin(Builtin::Drop)) "… end: closes the innermost of define, code, list, each and try … catch"
         { m.end() }
     Code "code" [immediate] () "-- xt" raises() "code … end: the words between, compiled, as an xt"
         { m.code() }
-    Let "let" [immediate] () "x --" raises(MissingToken BadName StackUnderflow)
+    Let "let" [immediate] () "x --" raises(MissingToken BadName StackUnderflow) compiles(Op::SetLocal(0), Op::SetGlobal(0))
         "x let NAME: NAME gives x from then on (in a definition, for that call)" { m.let_name() }
-    To "to" [immediate] () "x --" raises(MissingToken BadName StackUnderflow) "x to NAME: the let name NAME gives x from then on"
+    To "to" [immediate] () "x --" raises(MissingToken BadName StackUnderflow) compiles(Op::SetLocal(0), Op::SetGlobal(0)) "x to NAME: the let name NAME gives x from then on"
         { m.set_name() }
-    Tick "tick" [immediate] () "-- xt" raises(UnknownWord MissingToken) "tick NAME: the xt of the word NAME" { m.tick() }
-    Is "is" [immediate] () "xt --" raises(UnknownWord MissingToken BadName StackUnderflow InvalidAddress) "xt is NAME: the word defer made, NAME, runs xt from then on"
+    Tick "tick" [immediate] () "-- xt" raises(UnknownWord MissingToken) compiles(Op::Push(Value::Int(0))) "tick NAME: the xt of the word NAME" { m.tick() }
+    Is "is" [immediate] () "xt --" raises(UnknownWord MissingToken BadName StackUnderflow InvalidAddress) compiles(Op::Push(Value::Int(0)), Op::Builtin(Builtin::Store)) "xt is NAME: the word defer made, NAME, runs xt from then on"
         { m.action(Builtin::Is, Builtin::Store) }
-    ActionOf "action-of" [immediate] () "-- xt" raises(UnknownWord MissingToken BadName Unset InvalidAddress) "action-of NAME: the xt the word defer made, NAME, runs"
+    ActionOf "action-of" [immediate] () "-- xt" raises(UnknownWord MissingToken BadName Unset InvalidAddress) compiles(Op::Push(Value::Int(0)), Op::Builtin(Builtin::Fetch)) "action-of NAME: the xt the word defer made, NAME, runs"
         { m.action(Builtin::ActionOf, Builtin::Fetch) }
-    Postpone "postpone" [immediate] () "--" raises(UnknownWord MissingToken NotTopLevel)
+    Postpone "postpone" [immediate] () "--" raises(UnknownWord MissingToken NotTopLevel) compiles(Op::Compile(Rc::new(Steps::new(Rc::from("")))))
         "postpone NAME: in a definition, what NAME does when compiled, done when the definition runs"
         { m.postpone() }
-    Literal "literal" [immediate] (x: Any) "x --" raises(NotTopLevel) "x literal: in a definition, x, pushed when the definition runs"
+    Literal "literal" [immediate] (x: Any) "x --" raises(NotTopLevel) compiles(Op::Push(Value::Int(0))) "x literal: in a definition, x, pushed when the definition runs"
         { m.literal(x) }
-    Recurse "recurse" [immediate] () "--" raises(NotTopLevel) "in a definition: a call to the definition itself"
+    Recurse "recurse" [immediate] () "--" raises(NotTopLevel) compiles(Op::Recurse) "in a definition: a call to the definition itself"
         { m.compile_only(Builtin::Recurse, Op::Recurse) }
-    LeaveDefinition "leave-definition" [immediate] () "--" raises(NotTopLevel)
+    LeaveDefinition "leave-definition" [immediate] () "--" raises(NotTopLevel) compiles(Op::Leave)
         "in a definition: return from it now, its loops left"
         { m.compile_only(Builtin::LeaveDefinition, Op::Leave) }
-    Does "does" [immediate] () "--" raises(NotTopLevel)
+    Does "does" [immediate] () "--" raises(NotTopLevel) compiles(Op::Does(0))
         "in a definition: return from it, the word create made last running the rest of the definition from then on, its address pushed first"
         { m.does_part() }
-    If "if" [immediate] () "flag --" raises()
+    If "if" [immediate] () "flag --" raises() compiles(Op::JumpUnless(0))
         "flag if … else … then: the first part if flag is true (or an integer not 0), else the second"
         { m.open(crate::reader::Construct::If) }
-    Else "else" [immediate] () "--" raises(Unmatched) "flag if … else … then: the part run when flag is false"
+    Else "else" [immediate] () "--" raises(Unmatched) compiles(Op::Jump(0)) "flag if … else … then: the part run when flag is false"
         { m.otherwise() }
     Then "then" [immediate] () "--" raises(Unmatched) "flag if … else … then: closes it" { m.then() }
     Begin "begin" [immediate] () "--" raises()
         "begin … flag until: the body until flag is true; begin … flag while … end, begin … again"
         { m.open(crate::reader::Construct::Begin) }
-    Until "until" [immediate] () "flag --" raises(Unmatched) "begin … flag until: closes it" { m.until() }
-    While "while" [immediate] () "flag --" raises(Unmatched)
+    Until "until" [immediate] () "flag --" raises(Unmatched) compiles(Op::JumpUnless(0)) "begin … flag until: closes it" { m.until() }
+    While "while" [immediate] () "flag --" raises(Unmatched) compiles(Op::JumpUnless(0))
         "begin … flag while … end: while flag is true, the part after while, then begin's again"
         { m.test_loop() }
-    Again "again" [immediate] () "--" raises(Unmatched)
+    Again "again" [immediate] () "--" raises(Unmatched) compiles(Op::Jump(0))
         "begin … again: closes it, the body run for ever (until leave-definition or a failure)"
         { m.again() }
-    Do "do" [immediate] () "limit first --" raises()
+    Do "do" [immediate] () "limit first --" raises() compiles(Op::Do(0))
         "limit first do … loop: the body for each index from first up to before limit, none when the two are equal; i gives it"
         { m.open(crate::reader::Construct::Do) }
-    Loop "loop" [immediate] () "--" raises(Unmatched) "limit first do … loop: closes it, the index 1 on each time"
+    Loop "loop" [immediate] () "--" raises(Unmatched) compiles(Op::Loop(0)) "limit first do … loop: closes it, the index 1 on each time"
         { m.close_loop(Op::Loop) }
-    LoopBy "loop-by" [immediate] () "n --" raises(Unmatched)
+    LoopBy "loop-by" [immediate] () "n --" raises(Unmatched) compiles(Op::LoopBy(0))
         "limit first do … n loop-by: closes it, the index n on each time, until it crosses from under the limit to it"
         { m.close_loop(Op::LoopBy) }
     Case "case" [immediate] () "x --" raises()
         "x case v of … end … end: the part after the first v equal to x, x dropped; else the part before the last end, which drops x"
         { m.open(crate::reader::Construct::Case) }
-    Of "of" [immediate] () "x v -- | x" raises(Unmatched)
+    Of "of" [immediate] () "x v -- | x" raises(Unmatched) compiles(Op::PickN(1), Op::Builtin(Builtin::Eq), Op::JumpUnless(0), Op::Builtin(Builtin::Drop))
         "x case v of … end … end: when v equals x, x dropped and the part to of's end, then on after the case's"
         { m.of() }
-    Ahead "ahead" [immediate] () "--" raises() "ahead … then: a jump past the words up to then"
+    Ahead "ahead" [immediate] () "--" raises() compiles(Op::Jump(0)) "ahead … then: a jump past the words up to then"
         { m.open(crate::reader::Construct::Ahead) }
-    List "list" [immediate] () "-- list" raises()
+    List "list" [immediate] () "-- list" raises() compiles(Op::ListStart)
         "list … end: a list of the values its body leaves; the body starts with an empty stack"
         { m.open(crate::reader::Construct::List) }
-    Each "each" [immediate] () "seq --" raises()
+    Each "each" [immediate] () "seq --" raises() compiles(Op::EachStart, Op::EachNext(0))
         "seq each … end: the body once per element, the element pushed (a string's are character codes)"
         { m.open(crate::reader::Construct::Each) }
-    Try "try" [immediate] () "codes --" raises(BadCodes)
+    Try "try" [immediate] () "codes --" raises(BadCodes) compiles(Op::Try(0, Rc::new(Vec::new())))
         "codes try … catch … end: the body from an empty stack, its values left; if it fails with one of codes (str 'timeout closed' just before try, str all for any), the handler instead, on the stack as it was at try and the failure"
         { m.try_body() }
-    Catch "catch" [immediate] () "--" raises(Unmatched) "codes try … catch … end: the handler" { m.catch() }
+    Catch "catch" [immediate] () "--" raises(Unmatched) compiles(Op::Tried(0)) "codes try … catch … end: the handler" { m.catch() }
     Include "include" [immediate] () "--" raises(any) "include PATH: the file's words read here, relative to the file naming it"
         { m.include(host, Builtin::Include) }
     Require "require" [immediate] () "--" raises(any)

@@ -61,8 +61,6 @@ impl<A: AppValue> Machine<A> {
 
     /// What `code`, the version at `at`, fails with, its callees' known.
     fn raised_by(&self, code: &Steps<A>, at: usize, known: &Known) -> Option<Rc<[Code]>> {
-        use Code::{NotTopLevel, StackUnderflow, Type, Unset};
-        let words = &self.vocabulary;
         let mut raised = Vec::new();
         // The `try` bodies the step is in: where each ends, and what it
         // catches.
@@ -75,62 +73,70 @@ impl<A: AppValue> Machine<A> {
                 tries.push((*end, caught));
                 continue;
             }
-            let mut add = |codes: &[Code]| {
-                for code in codes {
-                    let caught = tries.iter().any(|(_, caught)| caught.contains(code));
-                    if !caught && !raised.contains(code) {
-                        raised.push(*code);
-                    }
+            for code in self.step(op, at, known)? {
+                let caught = tries.iter().any(|(_, caught)| caught.contains(&code));
+                if !caught && !raised.contains(&code) {
+                    raised.push(code);
                 }
-            };
-            match op {
-                Op::Push(_)
-                | Op::Recurse
-                | Op::Leave
-                | Op::Jump(_)
-                | Op::ListStart
-                | Op::Gather
-                | Op::EachNext(_)
-                | Op::Tried(_)
-                | Op::Loop(_)
-                | Op::Try(..) => {}
-                Op::Builtin(word) => {
-                    let (Codes::Listed(codes, writes), takes, typed) = word.raises() else {
-                        return None;
-                    };
-                    add(codes);
-                    if writes {
-                        add(words.written()?);
-                    }
-                    add(if takes { &[StackUnderflow] } else { &[] });
-                    add(if typed { &[Type] } else { &[] });
-                }
-                Op::App(id) => {
-                    add(&words.codes(*id)?);
-                    add(if words.takes(*id) > 0 {
-                        &[StackUnderflow]
-                    } else {
-                        &[]
-                    });
-                }
-                Op::Call(called, _) if *called < at => add(known.0.get(called).cloned()??.as_ref()),
-                Op::Call(..) => return None,
-                Op::PickN(_) | Op::RollN(_) | Op::SetLocal(_) | Op::SetGlobal(_) => {
-                    add(&[StackUnderflow]);
-                }
-                Op::GetLocal(_) | Op::GetGlobal(_) => add(&[Unset]),
-                Op::JumpUnless(_) | Op::EachStart | Op::Do(_) | Op::LoopBy(_) => {
-                    add(&[StackUnderflow, Type]);
-                }
-                Op::Compile(_) => add(&[NotTopLevel, Type]),
-                Op::Does(_) => add(&[Type]),
             }
         }
         let order = |code: &Code| {
-            let mut all = Code::ALL.iter().chain(words.declared());
-            all.position(|c| c == code).unwrap_or(usize::MAX)
+            let all = Code::ALL.iter().chain(self.vocabulary.declared());
+            all.clone().position(|c| c == code).unwrap_or(usize::MAX)
         };
         raised.sort_by_key(order);
         Some(raised.into())
+    }
+
+    /// What step `op` of the version at `at` fails with: a word of the
+    /// core's, what its row names, and what the steps it compiles do, which
+    /// run where it is read at the top level; none known for one that runs
+    /// code it is given. A call's are its callee's, known first.
+    fn step(&self, op: &Op<A>, at: usize, known: &Known) -> Option<Vec<Code>> {
+        use Code::{NotTopLevel, StackUnderflow, Type, Unset};
+        let words = &self.vocabulary;
+        Some(match op {
+            Op::Push(_)
+            | Op::Recurse
+            | Op::Leave
+            | Op::Jump(_)
+            | Op::ListStart
+            | Op::Gather
+            | Op::EachNext(_)
+            | Op::Tried(_)
+            | Op::Loop(_)
+            | Op::Try(..) => Vec::new(),
+            Op::Builtin(word) => {
+                let (Codes::Listed(codes, writes), takes, typed) = word.raises() else {
+                    return None;
+                };
+                let mut all = codes.to_vec();
+                if writes {
+                    all.extend(words.written()?);
+                }
+                all.extend([StackUnderflow].iter().filter(|_| takes));
+                all.extend([Type].iter().filter(|_| typed));
+                for compiled in word.compiles() {
+                    all.extend(self.step(&compiled, at, known)?);
+                }
+                all
+            }
+            Op::App(id) => {
+                let mut all = words.codes(*id)?;
+                all.extend([StackUnderflow].iter().filter(|_| words.takes(*id) > 0));
+                all
+            }
+            Op::Call(called, _) if *called < at => known.0.get(called).cloned()??.to_vec(),
+            Op::Call(..) => return None,
+            Op::PickN(_) | Op::RollN(_) | Op::SetLocal(_) | Op::SetGlobal(_) => {
+                vec![StackUnderflow]
+            }
+            Op::GetLocal(_) | Op::GetGlobal(_) => vec![Unset],
+            Op::JumpUnless(_) | Op::EachStart | Op::Do(_) | Op::LoopBy(_) => {
+                vec![StackUnderflow, Type]
+            }
+            Op::Compile(_) => vec![NotTopLevel, Type],
+            Op::Does(_) => vec![Type],
+        })
     }
 }

@@ -470,12 +470,13 @@ to its name; a value its maker took from the stack isn't among them, so
 word in Rust, and `null` for one whose words its source couldn't keep.
 `codes` is what the word can fail with as it runs, each code once, as a
 `try` names them (`docs/codes.txt`). The core's words and fux's declare
-theirs, each beside its effect; a word of fux's that asks the server lists
+theirs, each beside its effect, and a word that shapes the program (`if`,
+`each`, `of`) adds what the steps it compiles fail with; a word of fux's that asks the server lists
 every code asking a request can fail with (the server's answers, and the
 client's own as it asks). A definition's are those of its steps and the
 words it calls, but those a `try` around them catches. `codes` is `null`,
-unknown, for a word that runs code it is given (`execute`, `evaluate`,
-`include`, `require`, a word `defer` made) or raises a failure it is given
+unknown, for a word that runs code it is given (`execute`, `include`,
+`require`, a word `defer` made) or raises a failure it is given
 (`throw`), and for a definition that calls one. A mistake found compiling
 or at a program's end (`unclosed`) is no word's.
 `see NAME` writes the definition, after a comment saying where it was
