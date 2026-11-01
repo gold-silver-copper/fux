@@ -2,17 +2,16 @@
 //! checking its own values as it runs. A file word that can fail as the
 //! OS refuses gives an ior: 0, or a failure that holds the OS's message,
 //! for `throw` or a test.
-use crate::input::{self, Input};
+use crate::input::{self, Input, Stop};
 use fuxth::{AppValue, Args, Code, Done, Error, Failure, Host, List, Thrown, Value, Vocabulary};
 use std::io::Write;
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
-/// The codes of the runner's failures.
-pub const INTERRUPT: &str = "interrupt";
-pub const END_OF_INPUT: &str = "end_of_input";
-const UNSUPPORTED: &str = "unsupported";
+/// The codes of the runner's own failures; its others are the language's
+/// (`interrupt`, `end_of_input`, `unsupported`), which carry Forth's
+/// numbers.
 const UNSET_VAR: &str = "unset_var";
 pub const READ: &str = "read";
 pub const IO: &str = "io";
@@ -36,6 +35,8 @@ pub enum Request {
     Acted,
     /// End the program, with this status.
     Exit(u8),
+    /// End the runner, as this signal asks.
+    End(fuxix::process::Signal),
 }
 
 /// Expands `Variant "name" "effect",` to the enum `Word` and `WORDS`, in
@@ -85,15 +86,7 @@ pub fn vocabulary(repl: bool) -> Result<Vocabulary, Error> {
     for (name, effect) in names.chain(constants) {
         vocabulary.add(name, effect)?;
     }
-    for code in [
-        INTERRUPT,
-        END_OF_INPUT,
-        UNSUPPORTED,
-        UNSET_VAR,
-        READ,
-        IO,
-        OUTPUT,
-    ] {
+    for code in [UNSET_VAR, READ, IO, OUTPUT] {
         vocabulary.raises(Code::Host(code))?;
     }
     vocabulary.evaluate();
@@ -132,7 +125,7 @@ impl Runner {
     /// `compiled` while a definition is open; then the next line, with
     /// any line after it that a quote left open goes on to. Ctrl-C drops
     /// the line and prompts again. None at the end of input.
-    pub fn prompt(&mut self, stack: &[Value<File>]) -> Result<Option<String>, Failure> {
+    pub fn prompt(&mut self, stack: &[Value<File>]) -> Result<Option<String>, Stop> {
         let mut said = String::new();
         let mut open = false;
         for value in stack {
@@ -154,17 +147,17 @@ impl Runner {
         loop {
             self.out(&said)?;
             match self.entry() {
-                Err(failure) if failure.code == Code::Host(INTERRUPT) => self.out("\n")?,
+                Err(Stop::Failed(failure)) if failure.code == Code::Interrupt => self.out("\n")?,
                 entry => return entry,
             }
         }
     }
 
     /// The REPL's next line, and those a quote left open goes on to.
-    fn entry(&mut self) -> Result<Option<String>, Failure> {
+    fn entry(&mut self) -> Result<Option<String>, Stop> {
         let mut text = String::new();
         loop {
-            let Some(line) = self.input.line()? else {
+            let Some(line) = self.input.line(usize::MAX)? else {
                 return Ok(None);
             };
             text.push_str(&line);
@@ -198,9 +191,54 @@ impl Host for Runner {
     fn call(
         &mut self,
         word: usize,
-        mut args: Args<'_, File>,
+        args: Args<'_, File>,
         out: &mut Vec<Value<File>>,
     ) -> Result<Done<Request>, Failure> {
+        match self.word(word, args, out) {
+            Ok(done) => Ok(done),
+            Err(Stop::Failed(failure)) => Err(failure),
+            Err(Stop::Signal(signal)) => Ok(Done::Later(Request::End(signal))),
+        }
+    }
+
+    fn write(&mut self, text: &str) -> Result<(), Failure> {
+        self.out(text)
+    }
+
+    /// The file `path` names, relative to the file naming it, else to
+    /// where fuxth started: its canonical path, or, for one that has none
+    /// (`<(…)`'s `/dev/fd/63`), the path itself.
+    fn resolve(&mut self, path: &str, from: Option<&Path>) -> Result<PathBuf, String> {
+        let base = from.and_then(Path::parent).map(Path::to_owned);
+        let full = match base {
+            Some(base) => base.join(path),
+            None => PathBuf::from(path),
+        };
+        identity(&full).map_err(|e| e.to_string())
+    }
+
+    /// The file's text. Stopped by Ctrl-C or a signal, `include` fails,
+    /// and the signal is raised at the next check.
+    fn read(&mut self, path: &Path) -> Result<String, String> {
+        self.input.file(path).unwrap_or_else(|stop| {
+            let why = match &stop {
+                Stop::Failed(failure) => failure.message.clone(),
+                Stop::Signal(signal) => format!("SIG{}", signal.name()),
+            };
+            self.input.defer(stop);
+            Err(why)
+        })
+    }
+}
+
+impl Runner {
+    /// Runs the runner's word `word` on `args`.
+    fn word(
+        &mut self,
+        word: usize,
+        mut args: Args<'_, File>,
+        out: &mut Vec<Value<File>>,
+    ) -> Result<Done<Request>, Stop> {
         let Some(&(word, name, _)) = WORDS.get(word).filter(|_| word < self.words) else {
             let constant = word
                 .checked_sub(self.words)
@@ -231,7 +269,7 @@ impl Host for Runner {
                 let (col, row) = (int(next()?, name)?, int(next()?, name)?);
                 if col < 0 || row < 0 {
                     let why = "cursor-at takes a column and a row from 0";
-                    return Err(Failure::new(Code::Range, why));
+                    return Err(Failure::new(Code::Range, why).into());
                 }
                 let (row, col) = (row.saturating_add(1), col.saturating_add(1));
                 self.out(&format!("\x1b[{row};{col}H"))?;
@@ -240,13 +278,13 @@ impl Host for Runner {
             Word::ScreenSize => {
                 let (rows, cols) = self.input.screen_size().ok_or_else(|| {
                     let why = "no terminal on stdin, and LINES and COLUMNS are not both set";
-                    Failure::new(Code::Host(UNSUPPORTED), why)
+                    Failure::new(Code::Unsupported, why)
                 })?;
                 out.extend([Value::Int(rows), Value::Int(cols)]);
             }
             Word::ReadFile => {
                 let path = string(next()?, name)?;
-                let text = read_text(Path::new(&**path))
+                let text = (self.input.file(Path::new(&**path))?)
                     .map_err(|why| Failure::new(Code::Host(READ), format!("{why} ({path})")))?;
                 out.push(Value::str(text));
             }
@@ -309,14 +347,12 @@ impl Host for Runner {
                 let value = match std::env::var(&**name) {
                     Ok(value) => value,
                     Err(std::env::VarError::NotPresent) => {
-                        return Err(Failure::new(
-                            Code::Host(UNSET_VAR),
-                            format!("{name} is not set"),
-                        ));
+                        let why = format!("{name} is not set");
+                        return Err(Failure::new(Code::Host(UNSET_VAR), why).into());
                     }
                     Err(std::env::VarError::NotUnicode(_)) => {
                         let why = format!("{name}: its value is not text");
-                        return Err(Failure::new(Code::Host(READ), why));
+                        return Err(Failure::new(Code::Host(READ), why).into());
                     }
                 };
                 out.push(Value::str(value));
@@ -334,40 +370,16 @@ impl Host for Runner {
         }
         Ok(Done::Now)
     }
-
-    fn write(&mut self, text: &str) -> Result<(), Failure> {
-        self.out(text)
-    }
-
-    /// The file `path` names, relative to the file naming it, else to
-    /// where fuxth started: its canonical path, or, for one that has none
-    /// (`<(…)`'s `/dev/fd/63`), the path itself.
-    fn resolve(&mut self, path: &str, from: Option<&Path>) -> Result<PathBuf, String> {
-        let base = from.and_then(Path::parent).map(Path::to_owned);
-        let full = match base {
-            Some(base) => base.join(path),
-            None => PathBuf::from(path),
-        };
-        identity(&full).map_err(|e| e.to_string())
-    }
-
-    fn read(&mut self, path: &Path) -> Result<String, String> {
-        read_text(path)
-    }
 }
 
-/// The program file `file`: its one identity, and its text.
-pub fn source(file: &str) -> Result<(PathBuf, String), Failure> {
-    let failed = |why: String| Failure::new(Code::Host(READ), format!("{why} ({file})"));
-    let path = identity(Path::new(file)).map_err(|e| failed(e.to_string()))?;
-    let text = read_text(&path).map_err(failed)?;
-    Ok((path, text))
-}
-
-/// The UTF-8 text of the file at `path`, any that reads.
-fn read_text(path: &Path) -> Result<String, String> {
-    let bytes = std::fs::read(path).map_err(|e| e.to_string())?;
-    String::from_utf8(bytes).map_err(|_| "not UTF-8 text".to_owned())
+impl Runner {
+    /// The program file `file`: its one identity, and its text.
+    pub fn source(&mut self, file: &str) -> Result<(PathBuf, String), Stop> {
+        let failed = |why: String| Failure::new(Code::Host(READ), format!("{why} ({file})"));
+        let path = identity(Path::new(file)).map_err(|e| failed(e.to_string()))?;
+        let text = self.input.file(&path)?.map_err(failed)?;
+        Ok((path, text))
+    }
 }
 
 /// The one identity of the file at `path`: its canonical path, or the path
@@ -390,6 +402,7 @@ fn failure(message: String) -> Value<File> {
         number: None,
         carried: None,
         actions: Vec::new(),
+        calls: Vec::new(),
     }))
 }
 

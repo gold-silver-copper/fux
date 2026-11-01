@@ -11,10 +11,12 @@
 //! exits 1; Ctrl-C, uncaught, exits 130. A program is stopped as any
 //! program is: Ctrl-C, `timeout`, `ulimit`.
 mod input;
+mod json;
 mod words;
 
+use fuxix::process::Signal;
 use fuxth::{Code, Error, Failure, Host, Machine, Outcome, STDLIB, Value, token};
-use input::Input;
+use input::{Input, Stop};
 use std::io::{IsTerminal, Write};
 use std::process::ExitCode;
 use words::{File, Request, Runner};
@@ -31,6 +33,7 @@ enum Ended {
     Finished,
     Exit(u8),
     Failed(Error),
+    Signal(Signal),
 }
 
 fn main() -> ExitCode {
@@ -54,13 +57,14 @@ fn main() -> ExitCode {
     }
     let read = match &file {
         Some(file) => {
-            words::source(file).map(|(path, text)| (path.display().to_string(), text, Some(path)))
+            (runner.source(file)).map(|(path, text)| (path.display().to_string(), text, Some(path)))
         }
         None => (runner.input.all()).map(|text| ("stdin".to_owned(), text, None)),
     };
     let (name, text, path) = match read {
         Ok(read) => read,
-        Err(failure) => return failed(failure),
+        Err(Stop::Failed(failure)) => return failed(failure),
+        Err(Stop::Signal(signal)) => return ended_by(signal),
     };
     match token::source(&name, &text) {
         Ok(tokens) => machine.read(tokens, path),
@@ -68,7 +72,8 @@ fn main() -> ExitCode {
     }
     let status = match drive(&mut machine, &mut runner) {
         _ if runner.closed() => return ExitCode::from(PIPE),
-        Ended::Failed(error) => return report(&error, machine.actions()),
+        Ended::Failed(error) => return report(&uncaught(&machine, error), machine.actions()),
+        Ended::Signal(signal) => return ended_by(signal),
         Ended::Finished => ExitCode::SUCCESS,
         Ended::Exit(status) => ExitCode::from(status),
     };
@@ -88,8 +93,9 @@ fn repl(machine: &mut Machine<File>, runner: &mut Runner) -> ExitCode {
         machine.read(repl.clone(), None);
         match drive(machine, runner) {
             Ended::Exit(status) => return ExitCode::from(status),
+            Ended::Signal(signal) => return ended_by(signal),
             Ended::Failed(error) => {
-                let _ = report(&error, machine.actions());
+                let _ = report(&uncaught(machine, error), machine.actions());
                 machine.clear();
             }
             Ended::Finished => {}
@@ -101,18 +107,19 @@ fn repl(machine: &mut Machine<File>, runner: &mut Runner) -> ExitCode {
 }
 
 /// Runs what `machine` was given to its end, doing what its words wait
-/// for: between slices of steps, a Ctrl-C raised as `interrupt` and a
-/// Ctrl-Z done.
+/// for. Each time it stops, before it goes on, Ctrl-C is raised as
+/// `interrupt`, Ctrl-Z done, and an ending signal ends it.
 fn drive(machine: &mut Machine<File>, runner: &mut Runner) -> Ended {
     loop {
-        let raised = match machine.run(runner, SLICE) {
+        let done = match machine.run(runner, SLICE) {
             Ok(Outcome::Finished) => return Ended::Finished,
             Err(error) => return Ended::Failed(error),
             Ok(Outcome::Suspended(Request::Exit(status))) => return Ended::Exit(status),
+            Ok(Outcome::Suspended(Request::End(signal))) => return Ended::Signal(signal),
+            Ok(Outcome::Paused) if runner.closed() => return Ended::Finished,
+            Ok(Outcome::Paused) => Ok(()),
             Ok(Outcome::Suspended(Request::Acted)) => {
-                if let Some(step) = machine.at() {
-                    machine.acted(step);
-                }
+                machine.acted(|_| false);
                 Ok(())
             }
             Ok(Outcome::Suspended(Request::Line)) => match runner.prompt(machine.stack()) {
@@ -121,27 +128,63 @@ fn drive(machine: &mut Machine<File>, runner: &mut Runner) -> Ended {
                     Ok(())
                 }
                 Ok(None) => return Ended::Exit(0),
-                Err(failure) => Err(failure),
+                Err(stop) => Err(stop),
             },
-            Ok(Outcome::Paused) if runner.closed() => return Ended::Finished,
-            Ok(Outcome::Paused) => runner.input.check(),
         };
-        if let Err(failure) = raised
-            && let Err(error) = machine.raise(failure, None)
-        {
+        let raised = match done.and_then(|()| runner.input.check()) {
+            Ok(()) => continue,
+            Err(Stop::Signal(signal)) => return Ended::Signal(signal),
+            Err(Stop::Failed(failure)) => machine.raise(failure, None),
+        };
+        if let Err(error) = raised {
             return Ended::Failed(error);
         }
     }
 }
 
-/// Writes the values a program left on stdout, a value a line.
+/// Writes the values a program left on stdout, as fux does (D-93): a value
+/// a line, a list an item a line, a list in it as one line of JSON. An
+/// empty list or string writes nothing; an empty string in a list, a
+/// blank line.
 fn left(runner: &mut Runner, stack: &[Value<File>]) -> Result<(), Failure> {
     let mut text = String::new();
     for value in stack {
-        value.write_text(&mut text)?;
-        text.push('\n');
+        match value {
+            Value::List(list) => {
+                for item in list.items() {
+                    match item {
+                        Value::List(_) => json::write(item, &mut text)?,
+                        Value::Int(_)
+                        | Value::Str(_)
+                        | Value::App(_)
+                        | Value::Xt(_)
+                        | Value::Mark(_)
+                        | Value::Failure(_)
+                        | Value::Bool(_) => item.write_text(&mut text)?,
+                    }
+                    text.push('\n');
+                }
+            }
+            Value::Str(s) if s.is_empty() => {}
+            Value::Int(_)
+            | Value::Str(_)
+            | Value::App(_)
+            | Value::Xt(_)
+            | Value::Mark(_)
+            | Value::Failure(_)
+            | Value::Bool(_) => {
+                value.write_text(&mut text)?;
+                text.push('\n');
+            }
+        }
     }
     runner.write(&text)
+}
+
+/// The runner ended by `signal`, the terminal already back in its own
+/// modes: the status a shell gives a program it killed.
+fn ended_by(signal: Signal) -> ExitCode {
+    ExitCode::from(u8::try_from(signal.raw()).map_or(255, |n| n.saturating_add(128)))
 }
 
 /// A failure of the runner's own, before or after the program, reported.
@@ -149,9 +192,25 @@ fn failed(failure: Failure) -> ExitCode {
     report(&Error::new(failure.code, failure.message, None), &[])
 }
 
+/// A failure no `try` caught, from `machine` where it failed: one inside
+/// a word of the standard library's placed at the program's step that
+/// called it, with the library word's own step in the message.
+fn uncaught(machine: &Machine<File>, mut error: Error) -> Error {
+    let stdlib = |place: &fuxth::Place| matches!(place, fuxth::Place::Line { source, .. } if &**source == "stdlib.fux");
+    let step = (error.place.as_ref().is_some_and(stdlib))
+        .then(|| machine.failed_calls().rev().find(|t| !stdlib(&t.place)));
+    if let Some(step) = step.flatten() {
+        let inner = error.word.as_deref().unwrap_or_default();
+        error.message = format!("inside {}, {inner}: {}", step.text, error.message);
+        error.place = Some(step.place);
+        error.word = Some(step.text);
+    }
+    error
+}
+
 /// Says on stderr why a program failed, then each step that had taken
 /// effect: the status, 130 for Ctrl-C, else 1.
-fn report(error: &Error, actions: &[fuxth::Token]) -> ExitCode {
+fn report<'a>(error: &Error, actions: impl IntoIterator<Item = &'a fuxth::Token>) -> ExitCode {
     let mut err = std::io::stderr().lock();
     let _ = writeln!(err, "fuxth: {error}");
     for step in actions {
@@ -161,7 +220,7 @@ fn report(error: &Error, actions: &[fuxth::Token]) -> ExitCode {
             step.place, step.text
         );
     }
-    match error.code == Code::Host(words::INTERRUPT) {
+    match error.code == Code::Interrupt {
         true => ExitCode::from(130),
         false => ExitCode::FAILURE,
     }

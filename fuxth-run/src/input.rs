@@ -1,14 +1,21 @@
-//! stdin: keys, lines and the whole of it, and the terminal it may be.
+//! stdin: keys, lines and the whole of it, the terminal it may be, and
+//! the signals that reach the runner.
 //!
 //! The OS does what it already does. Ctrl-C is SIGINT, raised in the
-//! program as `interrupt` at its next slice of steps or key wait; Ctrl-Z
-//! is SIGTSTP, the terminal restored while the runner is stopped and its
-//! key mode set again once it goes on. A key word puts the terminal in
-//! the mode keys need (no line editing, no echo, `IEXTEN` and `IXON` off,
-//! signals kept), set once by `stty` and kept from then; the terminal's
-//! own modes come back on every way out. Off a terminal, stdin is read as
-//! it comes, a key's escape sequence decoded however long it takes.
-use crate::words::{END_OF_INPUT, INTERRUPT, IO, READ};
+//! program as `interrupt` (-28) between slices of steps, after a word
+//! the runner waited on, and while it waits for input. A key word puts
+//! the terminal in the mode keys need (no line editing, no echo, `IEXTEN`
+//! and `IXON` off, signals kept), set once by `stty` and kept from then;
+//! from then on Ctrl-Z (SIGTSTP) stops the runner with the terminal's own
+//! modes back, set again as it goes on, and SIGTERM, SIGHUP and SIGQUIT
+//! end it with them back. Every other way out puts them back too. Off a
+//! terminal, stdin is read as it comes, a key's escape sequence decoded
+//! however long it takes.
+//!
+//! Keys and lines take from one queue of bytes read, in order: a key is
+//! decoded from as few bytes as make it, so what follows is still there
+//! for a line.
+use crate::words::{IO, READ};
 use fux_vt::keys::decode::{Decoder, Input as Decoded, Timing};
 use fux_vt::keys::{Direction, Key, KeyPress};
 use fuxix::Errno;
@@ -19,6 +26,9 @@ use fuxix::terminal::{Termios, attributes, set_attributes, window_size};
 use fuxth::{Code, Failure};
 use std::collections::VecDeque;
 use std::io::IsTerminal;
+use std::os::fd::{AsFd, BorrowedFd};
+use std::os::unix::fs::OpenOptionsExt;
+use std::path::Path;
 use std::time::Instant;
 
 /// The first key id: past every character's code.
@@ -63,10 +73,27 @@ pub const CONSTANTS: &[(&str, i64)] = &[
 /// (`escape-delay-ms`), and an unfinished paste.
 const TIMING: Timing = Timing::new(35, 5000);
 
-/// The terminal's modes as found, and for keys.
+/// The signals that end the runner once the terminal was in key mode,
+/// with its own modes put back first.
+const ENDING: [Signal; 3] = [Signal::Term, Signal::Hup, Signal::Quit];
+
+/// Why a wait stopped short: a failure to raise in the program (Ctrl-C
+/// among them), or a signal that ends the runner.
+pub enum Stop {
+    Failed(Failure),
+    Signal(Signal),
+}
+
+impl From<Failure> for Stop {
+    fn from(failure: Failure) -> Self {
+        Stop::Failed(failure)
+    }
+}
+
+/// The terminal's modes as found, and for keys once `stty` made them.
 struct Modes {
     cooked: Termios,
-    raw: Termios,
+    raw: Option<Termios>,
 }
 
 pub struct Input {
@@ -75,15 +102,21 @@ pub struct Input {
     /// REPL, only while a key word waits.
     stays_raw: bool,
     modes: Option<Modes>,
+    /// The terminal may be out of its own modes: they are put back.
     raw: bool,
     decoder: Decoder,
+    /// Keys decoded and not yet taken: a paste's characters after the
+    /// first.
     keys: VecDeque<i64>,
-    /// Bytes read for lines, not yet taken.
-    bytes: Vec<u8>,
+    /// Bytes read and not yet taken.
+    bytes: VecDeque<u8>,
     ended: bool,
     interrupt: Pipe,
-    /// SIGTSTP, caught once the terminal is first in key mode.
-    stop: Option<Pipe>,
+    /// SIGTSTP, then each of `ENDING`, caught once the terminal is first
+    /// in key mode.
+    caught: Vec<(Signal, Pipe)>,
+    /// What a wait that could not raise it stopped for, raised next.
+    pending: Option<Stop>,
 }
 
 impl Input {
@@ -93,106 +126,166 @@ impl Input {
             stays_raw,
             modes: None,
             raw: false,
-            decoder: Decoder::new(TIMING),
+            // A paste of any length is kept whole: no limit of the runner's.
+            decoder: Decoder::with_paste_limit(TIMING, usize::MAX),
             keys: VecDeque::new(),
-            bytes: Vec::new(),
+            bytes: VecDeque::new(),
             ended: false,
             interrupt: Pipe::new(&[Signal::Int]).map_err(|e| errno("catching SIGINT", e))?,
-            stop: None,
+            caught: Vec::new(),
+            pending: None,
         })
     }
 
-    /// Ctrl-Z, done; Ctrl-C, as the failure to raise.
-    pub fn check(&mut self) -> Result<(), Failure> {
-        if self.stop.as_ref().is_some_and(drained) {
+    /// Ctrl-Z, done; Ctrl-C, as the failure to raise; an ending signal,
+    /// the terminal's modes put back.
+    pub fn check(&mut self) -> Result<(), Stop> {
+        if let Some(stop) = self.pending.take() {
+            return Err(stop);
+        }
+        let came: Vec<Signal> = (self.caught.iter())
+            .filter(|(_, pipe)| drained(pipe))
+            .map(|(signal, _)| *signal)
+            .collect();
+        if let Some(&signal) = came.iter().find(|signal| ENDING.contains(signal)) {
+            self.cook()?;
+            return Err(Stop::Signal(signal));
+        }
+        if came.contains(&Signal::Tstp) {
             self.suspend()?;
         }
         match drained(&self.interrupt) {
-            true => Err(Failure::new(Code::Host(INTERRUPT), "interrupted (Ctrl-C)")),
+            true => Err(Stop::Failed(interrupted())),
             false => Ok(()),
         }
     }
 
+    /// Raises `stop` at the next check: for a wait whose caller can only
+    /// fail (`include`).
+    pub fn defer(&mut self, stop: Stop) {
+        self.pending = Some(stop);
+    }
+
     /// `read-key`: the next key, waiting for it.
-    pub fn key(&mut self) -> Result<i64, Failure> {
+    pub fn key(&mut self) -> Result<i64, Stop> {
         self.keys_mode(Self::next_key)
     }
 
     /// `key-ready`: whether `read-key` would not wait.
-    pub fn key_ready(&mut self) -> Result<bool, Failure> {
+    pub fn key_ready(&mut self) -> Result<bool, Stop> {
         self.keys_mode(|input| {
-            input.decode_bytes();
-            if input.keys.is_empty() && !input.ended && input.wait(Some(Instant::now()))? {
-                input.fill_keys()?;
-            }
-            if input.keys.is_empty()
-                && input.terminal
-                && input
+            loop {
+                if !input.keys.is_empty() {
+                    return Ok(true);
+                }
+                if let Some(byte) = input.bytes.pop_front() {
+                    input.decode(byte);
+                    continue;
+                }
+                let late = input
                     .decoder
                     .deadline()
-                    .is_some_and(|d| d <= Instant::now())
-            {
-                input.timeout();
+                    .is_some_and(|d| d <= Instant::now());
+                if input.ended || (input.terminal && late) {
+                    input.timeout();
+                    return Ok(!input.keys.is_empty() || input.ended);
+                }
+                if !input.wait(std::io::stdin().as_fd(), Some(Instant::now()))? {
+                    return Ok(false);
+                }
+                input.fill()?;
             }
-            Ok(!input.keys.is_empty() || input.ended)
         })
     }
 
     /// `accept`: the next line, of at most `most` characters; the rest of
     /// a longer one is left to read. A terminal edits and echoes it.
-    pub fn accept(&mut self, most: usize) -> Result<String, Failure> {
+    pub fn accept(&mut self, most: usize) -> Result<String, Stop> {
         let raw = self.raw;
         self.cook()?;
-        let line = self.line();
+        let line = self.line(most);
         if raw {
             self.make_raw()?;
         }
-        let line = line?.ok_or_else(ended)?;
-        let Some((kept, rest)) =
-            (line.char_indices().nth(most)).and_then(|(at, _)| line.split_at_checked(at))
-        else {
-            return Ok(line);
-        };
-        self.bytes = [rest.as_bytes(), b"\n", &self.bytes].concat();
-        Ok(kept.to_owned())
+        Ok(line?.ok_or_else(ended)?)
     }
 
-    /// The next line, without its newline; the last, if it has none; none
-    /// at the end.
-    pub fn line(&mut self) -> Result<Option<String>, Failure> {
+    /// The next line, of at most `most` characters, without its newline;
+    /// the last, if it has none; none at the end.
+    pub fn line(&mut self, most: usize) -> Result<Option<String>, Stop> {
+        // Keys decoded but not taken come before the bytes after them.
+        let keys = std::mem::take(&mut self.keys);
+        let typed: String = keys
+            .iter()
+            .filter_map(|&k| u32::try_from(k).ok().and_then(char::from_u32))
+            .collect();
+        for &byte in typed.as_bytes().iter().rev() {
+            self.bytes.push_front(byte);
+        }
         loop {
-            if let Some(at) = self.bytes.iter().position(|&b| b == b'\n') {
-                let rest = self
-                    .bytes
-                    .get(at.saturating_add(1)..)
-                    .unwrap_or_default()
-                    .to_vec();
-                let mut line = std::mem::replace(&mut self.bytes, rest);
-                line.truncate(at);
-                return text(line).map(Some);
+            if let Some((end, newline)) = line_end(&self.bytes, most) {
+                let line: Vec<u8> = (0..end).filter_map(|_| self.bytes.pop_front()).collect();
+                if newline {
+                    self.bytes.pop_front();
+                }
+                return Ok(Some(text(line)?));
             }
             if self.ended {
                 return match self.bytes.is_empty() {
                     true => Ok(None),
-                    false => text(std::mem::take(&mut self.bytes)).map(Some),
+                    false => Ok(Some(text(std::mem::take(&mut self.bytes).into())?)),
                 };
             }
-            if self.wait(None)? {
-                let mut buffer = [0; 4096];
-                let n = self.read(&mut buffer)?;
-                self.bytes.extend(buffer.get(..n).unwrap_or_default());
+            if self.wait(std::io::stdin().as_fd(), None)? {
+                self.fill()?;
             }
         }
     }
 
-    /// All of stdin, to its end: a program.
-    pub fn all(&mut self) -> Result<String, Failure> {
-        let mut all = Vec::new();
-        while let Some(line) = self.line()? {
-            all.extend(line.into_bytes());
-            all.push(b'\n');
+    /// All of stdin, to its end, as it is: a program.
+    pub fn all(&mut self) -> Result<String, Stop> {
+        while !self.ended {
+            if self.wait(std::io::stdin().as_fd(), None)? {
+                self.fill()?;
+            }
         }
-        text(all)
+        Ok(text(std::mem::take(&mut self.bytes).into())?)
+    }
+
+    /// The text of the file at `path`, or why there is none. A file that
+    /// may make a read wait (a FIFO, `<(…)`) is read as stdin is, so that
+    /// Ctrl-C reaches the program meanwhile; a plain file at once.
+    pub fn file(&mut self, path: &Path) -> Result<Result<String, String>, Stop> {
+        let meta = match std::fs::metadata(path) {
+            Ok(meta) => meta,
+            Err(e) => return Ok(Err(e.to_string())),
+        };
+        if meta.is_file() {
+            let read = std::fs::read(path).map_err(|e| e.to_string());
+            return Ok(read.and_then(|bytes| String::from_utf8(bytes).map_err(|_| unreadable())));
+        }
+        let open = std::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NONBLOCK)
+            .open(path);
+        let file = match open {
+            Ok(file) => file,
+            Err(e) => return Ok(Err(e.to_string())),
+        };
+        let mut bytes = Vec::new();
+        let mut buffer = [0; 4096];
+        loop {
+            if !self.wait(file.as_fd(), None)? {
+                continue;
+            }
+            match fuxix::io::read(&file, &mut buffer) {
+                Ok(0) => break,
+                Ok(n) => bytes.extend(buffer.get(..n).unwrap_or_default()),
+                Err(Errno::AGAIN | Errno::INTR) => {}
+                Err(e) => return Ok(Err(std::io::Error::from_raw_os_error(e.raw()).to_string())),
+            }
+        }
+        Ok(String::from_utf8(bytes).map_err(|_| unreadable()))
     }
 
     /// The terminal's rows and columns: stdin's, else `LINES` and
@@ -214,10 +307,7 @@ impl Input {
     }
 
     /// `run` in key mode, which the REPL leaves after it.
-    fn keys_mode<T>(
-        &mut self,
-        run: impl FnOnce(&mut Self) -> Result<T, Failure>,
-    ) -> Result<T, Failure> {
+    fn keys_mode<T>(&mut self, run: impl FnOnce(&mut Self) -> Result<T, Stop>) -> Result<T, Stop> {
         self.make_raw()?;
         let ran = run(self);
         if !self.stays_raw {
@@ -226,44 +316,33 @@ impl Input {
         ran
     }
 
-    fn next_key(&mut self) -> Result<i64, Failure> {
+    fn next_key(&mut self) -> Result<i64, Stop> {
         loop {
-            self.decode_bytes();
             if let Some(key) = self.keys.pop_front() {
                 return Ok(key);
             }
+            if let Some(byte) = self.bytes.pop_front() {
+                self.decode(byte);
+                continue;
+            }
             if self.ended {
                 self.timeout();
-                return self.keys.pop_front().ok_or_else(ended);
+                return Ok(self.keys.pop_front().ok_or_else(ended)?);
             }
             // Off a terminal, a sequence begun waits for the rest however
             // long it takes.
             let deadline = self.decoder.deadline().filter(|_| self.terminal);
-            match self.wait(deadline)? {
-                true => self.fill_keys()?,
+            match self.wait(std::io::stdin().as_fd(), deadline)? {
+                true => self.fill()?,
                 false => self.timeout(),
             }
         }
     }
 
-    /// Bytes read for lines, decoded as keys.
-    fn decode_bytes(&mut self) {
-        if !self.bytes.is_empty() {
-            let bytes = std::mem::take(&mut self.bytes);
-            self.decode(&bytes);
-        }
-    }
-
-    fn fill_keys(&mut self) -> Result<(), Failure> {
-        let mut buffer = [0; 4096];
-        let n = self.read(&mut buffer)?;
-        self.decode(buffer.get(..n).unwrap_or_default());
-        Ok(())
-    }
-
-    fn decode(&mut self, bytes: &[u8]) {
+    /// One more byte for the decoder, which keeps what it decodes.
+    fn decode(&mut self, byte: u8) {
         let mut inputs = Vec::new();
-        self.decoder.bytes(bytes, &mut inputs);
+        self.decoder.bytes(&[byte], &mut inputs);
         self.decoder.mark(Instant::now());
         self.taken(inputs);
     }
@@ -292,39 +371,41 @@ impl Input {
         }
     }
 
-    /// Reads what stdin has: none at its end.
-    fn read(&mut self, buffer: &mut [u8]) -> Result<usize, Failure> {
+    /// Reads what stdin has into the bytes not yet taken; its end, at none.
+    fn fill(&mut self) -> Result<(), Stop> {
+        let mut buffer = [0; 4096];
         loop {
-            match fuxix::io::read(std::io::stdin(), buffer) {
+            match fuxix::io::read(std::io::stdin(), &mut buffer) {
                 Ok(n) => {
                     self.ended |= n == 0;
-                    return Ok(n);
+                    self.bytes.extend(buffer.get(..n).unwrap_or_default());
+                    return Ok(());
                 }
                 Err(Errno::INTR) => self.check()?,
-                Err(e) => return Err(errno("reading stdin", e)),
+                Err(e) => return Err(errno("reading stdin", e).into()),
             }
         }
     }
 
-    /// Waits until stdin can be read, or `until`: whether it can. Ctrl-C
-    /// fails it, and Ctrl-Z stops the runner meanwhile.
-    fn wait(&mut self, until: Option<Instant>) -> Result<bool, Failure> {
+    /// Waits until `fd` can be read, or `until`: whether it can. Ctrl-C
+    /// and the ending signals stop it, and Ctrl-Z stops the runner
+    /// meanwhile.
+    fn wait(&mut self, fd: BorrowedFd<'_>, until: Option<Instant>) -> Result<bool, Stop> {
         loop {
             let timeout = until.map(|until| until.saturating_duration_since(Instant::now()));
-            let stdin = std::io::stdin();
             let mut fds = vec![
-                PollFd::new(&stdin, Events::IN),
+                PollFd::new(&fd, Events::IN),
                 PollFd::new(self.interrupt.reader(), Events::IN),
             ];
             fds.extend(
-                self.stop
-                    .as_ref()
-                    .map(|stop| PollFd::new(stop.reader(), Events::IN)),
+                self.caught
+                    .iter()
+                    .map(|(_, pipe)| PollFd::new(pipe.reader(), Events::IN)),
             );
             let ready = match poll(&mut fds, timeout) {
                 Ok(ready) => ready,
                 Err(Errno::INTR) => 1,
-                Err(e) => return Err(errno("waiting for stdin", e)),
+                Err(e) => return Err(errno("waiting for input", e).into()),
             };
             let readable = fds.first().is_some_and(|fd| !fd.revents().is_empty());
             drop(fds);
@@ -354,31 +435,46 @@ impl Input {
         Ok(())
     }
 
-    /// The terminal in key mode, if stdin is one.
+    /// The terminal in key mode, if stdin is one. The first time, its own
+    /// modes are kept, then the signals caught, then `stty` run.
     fn make_raw(&mut self) -> Result<(), Failure> {
         if self.raw || !self.terminal {
             return Ok(());
         }
-        let raw = match &self.modes {
-            Some(modes) => modes.raw.clone(),
+        if self.modes.is_none() {
+            let cooked = attributes(std::io::stdin())
+                .map_err(|e| errno("reading the terminal's modes", e))?;
+            self.modes = Some(Modes { cooked, raw: None });
+            for signal in std::iter::once(Signal::Tstp).chain(ENDING) {
+                let pipe = Pipe::new(&[signal]).map_err(|e| errno("catching a signal", e))?;
+                self.caught.push((signal, pipe));
+            }
+        }
+        let raw = match self.modes.as_ref().and_then(|modes| modes.raw.clone()) {
+            Some(raw) => raw,
             None => {
-                let failed = |e| errno("reading the terminal's modes", e);
-                let cooked = attributes(std::io::stdin()).map_err(failed)?;
-                self.stop =
-                    Some(Pipe::new(&[Signal::Tstp]).map_err(|e| errno("catching SIGTSTP", e))?);
-                stty()?;
-                let raw = attributes(std::io::stdin()).map_err(failed)?;
-                self.modes = Some(Modes {
-                    cooked,
-                    raw: raw.clone(),
+                // From here the terminal may change: its own modes are put
+                // back on any way out, a failed `stty` among them.
+                self.raw = true;
+                let made = stty().and_then(|()| {
+                    attributes(std::io::stdin())
+                        .map_err(|e| errno("reading the terminal's modes", e))
                 });
+                let raw = match made {
+                    Ok(raw) => raw,
+                    Err(failure) => {
+                        let _ = self.cook();
+                        return Err(failure);
+                    }
+                };
+                if let Some(modes) = &mut self.modes {
+                    modes.raw = Some(raw.clone());
+                }
                 raw
             }
         };
-        set_attributes(std::io::stdin(), &raw)
-            .map_err(|e| errno("setting the terminal's modes", e))?;
         self.raw = true;
-        Ok(())
+        set_attributes(std::io::stdin(), &raw).map_err(|e| errno("setting the terminal's modes", e))
     }
 
     /// The terminal in its own modes again.
@@ -396,6 +492,26 @@ impl Drop for Input {
     fn drop(&mut self) {
         let _ = self.cook();
     }
+}
+
+/// Where the line at the start of `bytes` ends: before its newline, or
+/// before its character past `most`; and whether a newline ends it. None
+/// while neither is there yet.
+fn line_end(bytes: &VecDeque<u8>, most: usize) -> Option<(usize, bool)> {
+    let mut chars = 0usize;
+    for (at, &byte) in bytes.iter().enumerate() {
+        if byte == b'\n' {
+            return Some((at, true));
+        }
+        // A character starts at any byte but a UTF-8 continuation.
+        if byte & 0xc0 != 0x80 {
+            if chars == most {
+                return Some((at, false));
+            }
+            chars = chars.saturating_add(1);
+        }
+    }
+    None
 }
 
 /// Puts the terminal on stdin in key mode, as `stty` does it.
@@ -465,12 +581,20 @@ fn drained(pipe: &Pipe) -> bool {
     any
 }
 
+pub fn interrupted() -> Failure {
+    Failure::new(Code::Interrupt, "interrupted (Ctrl-C)")
+}
+
 fn text(bytes: Vec<u8>) -> Result<String, Failure> {
     String::from_utf8(bytes).map_err(|_| Failure::new(Code::Host(READ), "stdin: not UTF-8 text"))
 }
 
+fn unreadable() -> String {
+    "not UTF-8 text".to_owned()
+}
+
 fn ended() -> Failure {
-    Failure::new(Code::Host(END_OF_INPUT), "stdin ended")
+    Failure::new(Code::EndOfInput, "stdin ended")
 }
 
 fn errno(doing: &str, error: Errno) -> Failure {
