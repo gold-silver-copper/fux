@@ -121,7 +121,7 @@ define listing
   sk str all eq sk str client eq or let clients
   clients sk str workspace eq or let whole
   sk str pane eq let one
-  # Workspaces come before those in them, tabs as shown: each workspace's row before its first tab's.
+  # Workspaces come before those in them: a row before its first tab's.
   list end wss each str parent get wids swap index-of dup 0 lt if drop 0 else over swap at 1 add then push end let depths
   0 let wi 0 let pi
   list
@@ -239,7 +239,6 @@ define dump-recipe
   list panes each str id get end end let ids
   recipe str workspaces get let wss
   list wss each str id get end end let wids
-  # The workspaces whose workspace it does not hold go in the one its first argument names.
   list end let tops list end let inner
   wss each let w
     wids w str parent get index-of 0 lt if tops w push let tops else inner w push let inner then
@@ -271,7 +270,7 @@ dup len 0 gt if first let taken opts taken in taken name 80 24 size str / cwd ne
       tab str nodes get let nodes
       nodes 0 dump-first let first-pane
       panes ids first-pane index-of at let p
-      # Workspaces come before those in them, tabs as shown: those from wi to the tab's are made with it.
+      # Workspaces come before those in them: those from wi to its own are made with it.
       wids tab str workspace get index-of let x
       x wi lt if tab str workspace get else wss wi at str parent get then let up
       x 1 add wi max let upto
