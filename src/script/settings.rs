@@ -72,7 +72,7 @@ fn int(value: &Value<Fux>) -> Result<i64, Unread> {
 }
 
 /// The strings a list holds, borrowed, and how many: checked to be all
-/// strings, fitting a launch frame, before any is copied.
+/// strings before any is copied.
 fn checked(value: &Value<Fux>) -> Result<(usize, impl Iterator<Item = &str>), Unread> {
     let takes = "a list of strings";
     let Value::List(list) = value else {
@@ -86,9 +86,6 @@ fn checked(value: &Value<Fux>) -> Result<(usize, impl Iterator<Item = &str>), Un
     };
     if let Some(item) = list.items().iter().find(|i| !matches!(i, Value::Str(_))) {
         return Err(format!("takes {takes}, not one holding {}", item.kind()).into());
-    }
-    if !Program::fits(words()) {
-        return Err("the list of strings exceeds the launch frame limit".into());
     }
     Ok((list.items().len(), words()))
 }

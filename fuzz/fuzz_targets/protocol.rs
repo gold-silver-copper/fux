@@ -56,9 +56,7 @@ type Next = fn(&mut Decoder) -> Result<Option<Vec<u8>>, Error>;
 
 /// A decoded frame encodes again.
 fn encoded<'a>(frame: &impl Frame<'a>) -> Vec<u8> {
-    let bytes = frame.encode();
-    assert!(bytes.is_ok(), "a decoded frame does not encode: {bytes:?}");
-    bytes.unwrap_or_default()
+    frame.encode()
 }
 
 /// A stream's frame, `bytes`, is what the stream writes for its payload

@@ -201,13 +201,10 @@ impl Opts {
     }
 
     pub(crate) fn launch(&self, shell: &Program) -> Result<fux_wire::command::Start, String> {
-        // Checked while borrowed: the copy is one launch frame's scratch.
         let argv = if self.argv.is_empty() {
             shell.clone()
-        } else if Program::fits(self.argv.iter().map(String::as_str)) {
-            Program::from_argv(self.argv.clone())?
         } else {
-            return Err("program argv exceeds the launch frame limit".to_owned());
+            Program::from_argv(self.argv.clone())?
         };
         Ok(match self.shell {
             Some(false) => fux_wire::command::Start::Program(argv),

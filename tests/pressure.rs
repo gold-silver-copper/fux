@@ -204,7 +204,7 @@ fn frames_past_a_turn_wait_for_the_next() -> Outcome {
     let mut frames = Vec::new();
     for &byte in &expected {
         let act = Act::Paste(char::from(byte).to_string());
-        frames.extend(AttachedFrame::Act(Box::new(act)).encode().map_err(e)?);
+        frames.extend(AttachedFrame::Act(Box::new(act)).encode());
     }
     client.write(&frames)?;
     received(&out, &expected)
@@ -280,13 +280,12 @@ fn a_client_flooding_a_pane_that_does_not_read_holds_up_no_one() -> Outcome {
                 .preferences
                 .presentation(),
         };
-        stream.write_all(&hello.encode().map_err(e)?).map_err(e)?;
-        stream.write_all(&attach.encode().map_err(e)?).map_err(e)?;
+        stream.write_all(&hello.encode()).map_err(e)?;
+        stream.write_all(&attach.encode()).map_err(e)?;
         let input = AttachedFrame::Act(Box::new(Act::Paste(
             std::iter::repeat_n('a', 500_000).collect(),
         )))
-        .encode()
-        .map_err(e)?;
+        .encode();
         // Until the server stops reading, or the test ends and it goes.
         for _ in 0..128 {
             stream.write_all(&input).map_err(e)?;

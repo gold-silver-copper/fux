@@ -242,9 +242,8 @@ fn wait_at_most(stream: &UnixStream, timeout: Option<Duration>) {
 }
 
 fn send<'a>(stream: &mut UnixStream, frame: &impl Frame<'a>) -> Result<(), Error> {
-    let bytes = frame.encode()?;
     stream
-        .write_all(&bytes)
+        .write_all(&frame.encode())
         .map_err(failed("writing to the server"))
 }
 
@@ -672,10 +671,6 @@ enum Update {
     Finished(Ran),
 }
 
-/// The longest a program's notice may be: the frame it goes to the server
-/// in holds no more. One longer is not shown, but said not to be.
-const NOTICE_MAX: usize = fux_wire::protocol::MAX_PAYLOAD - 64;
-
 /// The state the worker and the client share. A program changes a copy,
 /// put in its place whole (`run_job`), so one that panicked holding it
 /// left no change half made.
@@ -788,7 +783,9 @@ impl Keyboard {
                 }
             });
         spawned?;
-        let mut decoder = fux_vt::keys::decode::Decoder::new(timing);
+        // A paste of any length is kept: the user's terminal and memory
+        // bound it, not fux.
+        let mut decoder = fux_vt::keys::decode::Decoder::with_paste_limit(timing, usize::MAX);
         // The server asks the terminal about itself as the client attaches.
         decoder.expect(Instant::now());
         Ok(Keyboard {
@@ -1093,13 +1090,6 @@ fn run_job(
         Err(failed) => Some((failed.notice(), true)),
         Ok(stack) => said(String::from_utf8_lossy(&out).into_owned(), &stack),
     };
-    let notice = notice.map(|(text, error)| match text.len() {
-        0..=NOTICE_MAX => (text, error),
-        n => (
-            format!("a notice of {n} bytes, longer than {NOTICE_MAX}, was not shown"),
-            true,
-        ),
-    });
     Ran {
         notice,
         opened,
@@ -1137,16 +1127,16 @@ pub fn attach(
     // connecting still ends fux, and before it goes raw.
     let early = (!terminal).then(Signals::new).transpose()?;
     // An untargeted writable attach carries the launch an empty server starts.
-    // One unmade, or past the frame, is left out, said only on a refusal.
+    // One unmade is left out, said only on a refusal.
     let creates = attaching.target.is_none() && !attaching.read_only;
-    let (initial, mut unusable) = match creates.then(|| attaching.initial()).transpose() {
+    let (initial, unusable) = match creates.then(|| attaching.initial()).transpose() {
         Ok(initial) => (initial, None),
         Err(why) => (None, Some(why)),
     };
     let (mut stream, mut decoder, _) = connect(socket, Role::Attach)?;
     let signals = early.map_or_else(Signals::new, Ok)?;
     let size = size.or_else(window_size).ok_or(Error::NoSize)?;
-    let mut attach = Attach {
+    let attach = Attach {
         of: attaching.of,
         headless: !terminal,
         size,
@@ -1155,15 +1145,6 @@ pub fn attach(
         presentation: attaching.state.preferences.presentation(),
         initial,
     };
-    // Counted before it is encoded: past a frame, the launch is left out,
-    // and a request past one without it is refused.
-    if let Err(why) = fits(&attach) {
-        if attach.initial.take().is_none() {
-            return Err(Error::Failed(why));
-        }
-        unusable = Some(why);
-        fits(&attach).map_err(Error::Failed)?;
-    }
     let raw = terminal
         .then(|| Raw::enter_with(&stdin, &mut io::stdout()))
         .transpose()?;
@@ -1194,14 +1175,6 @@ pub fn attach(
     let reason = result.and_then(|reason| finished.map(|()| reason))?;
     let _ = writeln!(io::stdout(), "[{reason}]");
     Ok(())
-}
-
-/// Whether `attach` fits the one frame it is sent in.
-fn fits(attach: &Attach) -> Result<(), String> {
-    let limit = fux_wire::protocol::MAX_PAYLOAD;
-    (fux_wire::wire::encode(attach).len() <= limit)
-        .then_some(())
-        .ok_or_else(|| format!("the attach request exceeds one frame ({limit} bytes)"))
 }
 
 /// Why a client detached when a signal told it to.
@@ -2140,30 +2113,6 @@ mod tests {
         Ok(())
     }
 
-    /// A screen opens only if it fits a frame at its largest with the keys
-    /// as they are when it opens; else it says so and opens nothing.
-    #[test]
-    fn a_screen_too_large_to_show_is_refused_as_it_opens() -> Result<(), Box<dyn std::error::Error>>
-    {
-        let mut keyboard = keyboard(false)?;
-        let prompt = fux_wire::callback::Prompt {
-            title: std::iter::repeat_n('t', fux_wire::protocol::MAX_FRAME).collect(),
-            line: fux_wire::act::Line::new(String::new()),
-            action: None,
-        };
-        let mut acts = Vec::new();
-        keyboard.open(Screen::Prompt(prompt), &mut acts);
-        assert!(
-            matches!(
-                acts.as_slice(),
-                [Dispatch::Send(Act::Notice { error: true, .. })]
-            ),
-            "{acts:?}"
-        );
-        assert_eq!(keyboard.screen.screen, Screen::default());
-        Ok(())
-    }
-
     /// A binding's program, then the prefix, Esc (as `CSI 27 u`) and a key,
     /// stop the program and leave the key for after it, however the reads
     /// split them: the cancel is checked at each key, not at a read's end.
@@ -2338,7 +2287,7 @@ mod tests {
     }
 
     fn write(peer: &mut UnixStream, frame: &Greeting) {
-        let _ = frame.encode().map(|bytes| peer.write_all(&bytes));
+        let _ = peer.write_all(&frame.encode());
     }
 
     /// A process follows once: not one that finds its own ID marked, which

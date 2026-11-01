@@ -2579,57 +2579,6 @@ mod tests {
     }
 
     #[test]
-    fn options_past_a_launch_frame_are_refused_before_they_are_copied() -> TestResult {
-        let allocator = fux_vt_peak::ThreadPeak;
-        let list = |item: &str, n| {
-            let list = fuxth::List::new(vec![Value::str(item); n]);
-            Ok::<_, String>(Value::List(std::rc::Rc::new(list)))
-        };
-        let big = std::iter::repeat_n('x', 1 << 20).collect::<String>();
-        // 8 MiB of options on a pane; a list of the same 8 MiB, past a
-        // launch frame.
-        let request_of = |argv| Opts {
-            on: Some(On::Target(AnyRef::Pane(fux_wire::id::PaneId::of(1)))),
-            argv,
-            ..Opts::default()
-        };
-        let unique = || {
-            Value::App(Fux::Opts(std::rc::Rc::new(request_of(vec![
-                big.clone();
-                8
-            ]))))
-        };
-        let fresh = || Value::App(Fux::Opts(std::rc::Rc::default()));
-        let bad = fail(Raise::BadValue, "").code;
-        // An option on what `values` give, or an action consuming them.
-        for (step, values, code) in [
-            (Ok(Opt::ShellProgram), vec![fresh(), list(&big, 8)?], bad),
-            (Err(Act::Respawn), vec![unique()], bad),
-        ] {
-            let mut values = values.into_iter();
-            let mut next = || {
-                values
-                    .next()
-                    .ok_or_else(|| fail(Raise::StackUnderflow, "test argument"))
-            };
-            let mut sink = Vec::new();
-            let mut host = Host::new(fux_wire::protocol::Context::default(), None, &mut sink);
-            let base = allocator.live();
-            allocator.reset_peak();
-            let refused = match step {
-                Ok(opt) => modify(opt, &mut next).err(),
-                Err(act) => {
-                    let word = Word::Act(act);
-                    host.dispatch(word, &mut next, &mut Vec::new()).err()
-                }
-            };
-            assert_eq!(refused.map(|f| f.code), Some(code), "{step:?}");
-            assert!(allocator.peak().saturating_sub(base) < 64 << 10, "{step:?}");
-        }
-        Ok(())
-    }
-
-    #[test]
     fn accumulating_options_preserve_order() -> TestResult {
         let mut value = Value::App(Fux::Opts(std::rc::Rc::default()));
         for (opt, values) in [

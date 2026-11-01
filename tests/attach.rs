@@ -93,7 +93,7 @@ fn a_connection_that_ends_takes_its_client_with_it() -> Outcome {
         version: "test".into(),
         role: Role::Attach,
     };
-    for broken in [attach.encode().map_err(e)?, hello.encode().map_err(e)?] {
+    for broken in [attach.encode(), hello.encode()] {
         let mut client = server.attach(5, 20)?;
         client.wait_for("$")?;
         eventually("two clients", || Ok(clients()? == 2))?;
@@ -105,9 +105,8 @@ fn a_connection_that_ends_takes_its_client_with_it() -> Outcome {
     let mut client = server.attach(5, 20)?;
     client.wait_for("$")?;
     let detach = fux_wire::protocol::AttachedFrame::Detach
-        .encode()
-        .map_err(e)?;
-    client.write(&[detach, attach.encode().map_err(e)?].concat())?;
+        .encode();
+    client.write(&[detach, attach.encode()].concat())?;
     assert_eq!(client.wait_exit()?, "detached");
     eventually("only the first client", || Ok(clients()? == 1))?;
     // The one left still sizes its pane alone.
@@ -504,7 +503,7 @@ fn a_protocol_mismatch_is_answered_whatever_the_role() -> Outcome {
             version: "0.36.0".into(),
             role,
         };
-        stream.write_all(&hello.encode().map_err(e)?).map_err(e)?;
+        stream.write_all(&hello.encode()).map_err(e)?;
         let mut decoder = fux_wire::protocol::Decoder::default();
         let mut buffer = [0u8; 4096];
         let mut frames = Vec::new();
@@ -589,7 +588,7 @@ fn a_signal_detaches_a_client_waiting_on_a_stalled_server() -> Outcome {
             version: "0".into(),
             role: Role::Attach,
         });
-        std::io::Write::write_all(&mut stream, &hello.encode().map_err(e)?).map_err(e)?;
+        std::io::Write::write_all(&mut stream, &hello.encode()).map_err(e)?;
         Ok(stream)
     });
     let socket = dir.join("fux.sock");
@@ -644,7 +643,7 @@ fn a_signal_detached_client_writes_the_last_paint_before_leaving() -> Outcome {
         );
         let ready = ToAttached::Paint(b"READY"[..].into());
         for frame in [hello.encode(), welcome.encode(), ready.encode()] {
-            stream.write_all(&frame.map_err(e)?).map_err(e)?;
+            stream.write_all(&frame).map_err(e)?;
         }
         // Its Detach, the last frame it sends.
         let detach = [0, 0, 0, 1, 5];
@@ -658,7 +657,7 @@ fn a_signal_detached_client_writes_the_last_paint_before_leaving() -> Outcome {
         }
         let last = ToAttached::Paint(b"LAST"[..].into());
         for frame in [last.encode(), ToAttached::Exit("detached").encode()] {
-            stream.write_all(&frame.map_err(e)?).map_err(e)?;
+            stream.write_all(&frame).map_err(e)?;
         }
         Ok(())
     });
@@ -1242,7 +1241,7 @@ fn concurrent_empty_attaches_create_one_workspace() -> Outcome {
         let mut stream = UnixStream::connect(&server.socket).map_err(e)?;
         stream.set_read_timeout(Some(PATIENCE)).map_err(e)?;
         stream
-            .write_all(&Hello::ours(Role::Attach).encode().map_err(e)?)
+            .write_all(&Hello::ours(Role::Attach).encode())
             .map_err(e)?;
         let mut decoder = Decoder::default();
         decoder.push(&wire(&mut stream)?);
@@ -1250,7 +1249,7 @@ fn concurrent_empty_attaches_create_one_workspace() -> Outcome {
             decoder.frame::<Greeting>().map_err(e)?,
             Some(Greeting::Hello(_))
         ));
-        stream.write_all(&attach.encode().map_err(e)?).map_err(e)?;
+        stream.write_all(&attach.encode()).map_err(e)?;
         Ok(stream)
     }
 
@@ -1358,63 +1357,45 @@ fn existing_attach_ignores_unusable_optional_launch() -> Outcome {
     Ok(())
 }
 
-/// A launch the client cannot make, or that does not fit the attach frame
-/// with the rest, is left out: an existing workspace still attaches, and an
-/// empty server refuses, saying its own reason and then the launch's.
+/// A launch the client cannot make is left out: an existing workspace
+/// still attaches, and an empty server refuses, saying its own reason and
+/// then the launch's.
 #[test]
 fn an_unusable_launch_is_left_out_and_said_only_on_refusal() -> Outcome {
     let existing = Server::start("")?;
     let empty = Server::empty()?;
-    let big = existing.dir.join("near-a-frame");
-    std::fs::write(&big, vec![b'x'; fux_wire::protocol::MAX_FRAME - 40]).map_err(e)?;
-    let big = big.to_string_lossy();
-    let malformed = ["str", "", "program"];
-    // The program fits a frame alone; with the rest of the attach it does not.
-    let oversized = [
-        "str",
-        "/bin/cat",
-        "program",
-        "str",
-        &big,
-        "read-file",
-        "arg",
-    ];
-    for (launch, why) in [
-        (&malformed[..], "a program is needed"),
-        (&oversized[..], "exceeds one frame"),
+    let (launch, why) = (["str", "", "program"], "a program is needed");
+    for (server, rows, refused) in [
+        (&existing, "10", None),
+        (&empty, "10", Some("no launch to start one")),
+        // The server's own reason stays first: a size that fits no pane.
+        (&empty, "1", Some("no room for a pane below its bar")),
     ] {
-        for (server, rows, refused) in [
-            (&existing, "10", None),
-            (&empty, "10", Some("no launch to start one")),
-            // The server's own reason stays first: a size that fits no pane.
-            (&empty, "1", Some("no room for a pane below its bar")),
-        ] {
-            let args: Vec<&str> = ["opts", "40", rows, "size"]
-                .into_iter()
-                .chain(launch.iter().copied())
-                .chain(["attach"])
-                .collect();
-            let panes = server.panes()?.len();
-            let mut terminal = Terminal::attach(server, 10, 80, &args)?;
-            match refused {
-                None => {
-                    eventually("the attached client", || {
-                        Ok(server.ok(&["ls", "listing"])?.contains("client "))
-                    })?;
-                }
-                Some(reason) => {
-                    assert!(!terminal.wait_exit()?.success());
-                    let output = String::from_utf8_lossy(&terminal.output);
-                    let said = format!("{reason}; local initial launch unavailable: ");
-                    assert!(output.contains(&said) && output.contains(why), "{output}");
-                }
+        let args: Vec<&str> = ["opts", "40", rows, "size"]
+            .into_iter()
+            .chain(launch.iter().copied())
+            .chain(["attach"])
+            .collect();
+        let panes = server.panes()?.len();
+        let mut terminal = Terminal::attach(server, 10, 80, &args)?;
+        match refused {
+            None => {
+                eventually("the attached client", || {
+                    Ok(server.ok(&["ls", "listing"])?.contains("client "))
+                })?;
             }
-            drop(terminal);
-            assert_eq!(server.panes()?.len(), panes, "{why}: {args:?}");
-            eventually("the client gone", || {
-                Ok(!server.ok(&["ls", "listing"])?.contains("client "))
-            })?;
+            Some(reason) => {
+                assert!(!terminal.wait_exit()?.success());
+                let output = String::from_utf8_lossy(&terminal.output);
+                let said = format!("{reason}; local initial launch unavailable: ");
+                assert!(output.contains(&said) && output.contains(why), "{output}");
+            }
         }
+        drop(terminal);
+        assert_eq!(server.panes()?.len(), panes, "{why}: {args:?}");
+        eventually("the client gone", || {
+            Ok(!server.ok(&["ls", "listing"])?.contains("client "))
+        })?;
     }
     Ok(())
 }
@@ -1423,17 +1404,9 @@ fn an_unusable_launch_is_left_out_and_said_only_on_refusal() -> Outcome {
 #[test]
 fn a_targeted_attach_resolves_no_launch() -> Outcome {
     let server = Server::empty()?;
-    // A shell that fits a launch frame alone, which the rest of the attach
-    // request takes past it.
-    let half: String = std::iter::repeat_n('x', 524_250).collect();
-    std::fs::write(
-        server.dir.join("config/fux/config.fux"),
-        format!("str shell list str /bin/sh str {half} dup end set\n"),
-    )
-    .map_err(e)?;
     for (args, said) in [
-        (&["opts", "attach"][..], true),
-        (&["opts", "str", "work", "in", "attach"], false),
+        (&["opts", "str", "", "program", "attach"][..], true),
+        (&["opts", "str", "", "program", "str", "work", "in", "attach"], false),
     ] {
         let mut terminal =
             Terminal::start(10, 40, &[[fux()].as_slice(), args].concat(), |command| {
@@ -1443,44 +1416,11 @@ fn a_targeted_attach_resolves_no_launch() -> Outcome {
             })?;
         assert!(!terminal.wait_exit()?.success());
         let output = String::from_utf8_lossy(&terminal.output);
-        let unused = "local initial launch unavailable: the attach request exceeds one frame";
+        let unused = "local initial launch unavailable: a program is needed";
         assert_eq!(output.contains(unused), said, "{output}");
         assert_eq!(output.contains("launch unavailable"), said, "{output}");
     }
     assert!(server.panes()?.is_empty());
-    Ok(())
-}
-
-/// A request past one frame with no launch to leave out is refused before
-/// the terminal goes raw, and before it is encoded.
-#[test]
-fn an_attach_past_a_frame_is_refused_before_raw_mode() -> Outcome {
-    let server = Server::start("")?;
-    // Fewer characters than a script's text may hold, more bytes than a frame.
-    let name = server.dir.join("wide-name");
-    let wide: String = std::iter::repeat_n('\u{1F600}', 300_000).collect();
-    std::fs::write(&name, wide).map_err(e)?;
-    let mut terminal = Terminal::attach(
-        &server,
-        10,
-        40,
-        &[
-            "opts",
-            "str",
-            &name.to_string_lossy(),
-            "read-file",
-            "in",
-            "attach",
-        ],
-    )?;
-    assert!(!terminal.wait_exit()?.success());
-    let output = String::from_utf8_lossy(&terminal.output);
-    assert!(
-        output.contains("the attach request exceeds one frame"),
-        "{output}"
-    );
-    assert!(!output.contains("\x1b[?1049h"), "{output}");
-    assert!(!server.ok(&["ls", "listing"])?.contains("client "));
     Ok(())
 }
 

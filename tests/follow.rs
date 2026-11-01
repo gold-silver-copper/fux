@@ -135,8 +135,8 @@ fn against_another_protocol(
             let exit = Greeting::Exit("the server speaks protocol 999");
             // In one write: the client may hang up once it has read the
             // Hello.
-            let mut said = hello.encode().map_err(e)?;
-            said.extend(exit.encode().map_err(e)?);
+            let mut said = hello.encode();
+            said.extend(exit.encode());
             stream.write_all(&said).map_err(e)?;
         }
         Ok(())

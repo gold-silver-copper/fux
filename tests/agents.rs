@@ -830,28 +830,31 @@ fn an_answer_selects_its_pane_explicitly_for_live_fields() -> Outcome {
     Ok(())
 }
 
-/// Input as large as one request carries (far past a typed paste's
-/// 64 KiB) goes in one, all of it, from a program read from a file; more
-/// than its frame holds is refused, before anything is sent.
+/// Input of any size goes in one request, in as many frames as it takes,
+/// and arrives as one paste: its start marker, all of the text, its end.
 #[test]
-fn send_keys_takes_input_up_to_its_frame() -> Outcome {
+fn send_keys_sends_input_of_any_size_as_one_paste() -> Outcome {
     let server = Server::start("")?;
-    let count = "stty -echo; head -c 921600 | wc -c; cat > /dev/null";
-    let sink = id(&server.ok(&launch(&[], &["sh", "-c", count]))?);
     let line: String = std::iter::repeat_n('a', 99).chain(['\n']).collect();
-    let text: String = std::iter::repeat_n(line, 9216).collect();
-    let file = server.dir.join("paste.fux");
-    std::fs::write(&file, format!("{sink} str '{text}' paste send-keys")).map_err(e)?;
-    shows_after(
-        &server,
-        &server.ok(&["--file", &file.to_string_lossy()])?,
-        "921600",
+    let text: String = std::iter::repeat_n(line, 25_600).collect();
+    let crs = text.replace('\n', "\r");
+    let pasted = [&b"\x1b[200~"[..], crs.as_bytes(), b"\x1b[201~"].concat();
+    let got = server.dir.join("got");
+    let take = format!(
+        "stty raw -echo; printf '\\033[?2004hready'; head -c {} > '{}'; printf done",
+        pasted.len(),
+        got.display()
+    );
+    let sink = id(&server.ok(&launch(&[], &["sh", "-c", &take]))?);
+    server.shows(&sink, "ready")?;
+    let sent = server.piped(
+        std::path::Path::new(fux()),
+        &[&sink, "input", "paste", "send-keys"],
+        &text,
     )?;
-    let long: String = std::iter::repeat_n('b', 1100).collect();
-    let many = format!("{sink} 0 1000 range each drop str {long} text end send-keys");
-    let refused = server.fux(&[&many])?;
-    assert_eq!(refused.status, 1);
-    assert!(refused.stderr.contains("exceeds"), "{}", refused.stderr);
+    assert_eq!(sent.status, 0, "{}", sent.stderr);
+    server.shows(&sink, "done")?;
+    assert!(std::fs::read(&got).map_err(e)? == pasted, "not one whole paste");
     Ok(())
 }
 

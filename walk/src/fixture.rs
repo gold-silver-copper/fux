@@ -379,7 +379,7 @@ impl Fixture {
         };
         for frame in [hello.encode(), attach.encode()] {
             stream
-                .write_all(&frame.map_err(|e| e.to_string())?)
+                .write_all(&frame)
                 .map_err(|e| e.to_string())?;
         }
         stream

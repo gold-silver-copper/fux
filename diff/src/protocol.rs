@@ -188,9 +188,7 @@ decoded!(base, baseline::protocol::Decoder, |d, kind| {
 decoded!(cur, fux_wire::protocol::Decoder, |d, kind| {
     use fux_wire::protocol::{AttachedFrame, Frame, Greeting, Hello, ToAttached, ToCommand};
     fn again<'a>(frame: Option<impl Frame<'a>>) -> Result<Option<Vec<u8>>, String> {
-        frame
-            .map(|f| f.encode().map_err(|e| format!("{e:?}")))
-            .transpose()
+        Ok(frame.map(|f| f.encode()))
     }
     let error = |e| format!("{e:?}");
     match kind {
@@ -231,15 +229,13 @@ fn encode(spec: &Spec) -> Result<Vec<u8>, String> {
         0 => Role::Attach,
         _ => Role::Command,
     };
-    let error = |e| format!("{e:?}");
-    match spec.clone() {
+    Ok(match spec.clone() {
         Spec::Hello(protocol, version, r) => Hello {
             protocol,
             role: role(r),
             version,
         }
-        .encode()
-        .map_err(error),
+        .encode(),
         Spec::Attach(rows, cols, read_only) => Attach {
             of: None,
             headless: false,
@@ -252,16 +248,14 @@ fn encode(spec: &Spec) -> Result<Vec<u8>, String> {
                 .preferences
                 .presentation(),
         }
-        .encode()
-        .map_err(error),
+        .encode(),
         Spec::Resize(rows, cols) => AttachedFrame::Resize(crate::size(rows, cols))
-            .encode()
-            .map_err(error),
-        Spec::Detach => AttachedFrame::Detach.encode().map_err(error),
-        Spec::Paint(bytes) => ToAttached::Paint(Cow::Owned(bytes)).encode().map_err(error),
-        Spec::Exit(reason) => Greeting::Exit(&reason).encode().map_err(error),
-        Spec::Part(bytes) => ToCommand::Part(Cow::Owned(bytes)).encode().map_err(error),
-    }
+            .encode(),
+        Spec::Detach => AttachedFrame::Detach.encode(),
+        Spec::Paint(bytes) => ToAttached::Paint(Cow::Owned(bytes)).encode(),
+        Spec::Exit(reason) => Greeting::Exit(&reason).encode(),
+        Spec::Part(bytes) => ToCommand::Part(Cow::Owned(bytes)).encode(),
+    })
 }
 
 pub fn run(r: &mut Rng, scale: usize) -> Outcome {
