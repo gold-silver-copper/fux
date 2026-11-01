@@ -215,8 +215,12 @@ impl<A: AppValue> Machine<A> {
             // A word of the core's that shapes the program runs here, in
             // no frame of its own.
             if let (true, Some(Op::Builtin(word))) = (*immediate, xt.leaf()) {
+                // The core word itself, not a word of one step made of it.
+                self.read_here = *xt.name == *word.name();
                 let word = *word;
-                return self.builtin(word, host).map(|()| None);
+                let ran = self.builtin(word, host);
+                self.read_here = false;
+                return ran.map(|()| None);
             }
             let xt = Rc::clone(xt);
             if self.compiling && !immediate {
@@ -348,7 +352,9 @@ impl<A: AppValue> Machine<A> {
     fn begin(&mut self, kind: Kind, name: Rc<str>, from: Option<usize>) {
         self.begun = self.begun.saturating_add(1);
         let words = match kind {
-            Kind::Code => self.source().map(|read| (read.id, read.next)),
+            Kind::Code => (self.source())
+                .filter(|_| self.read_here)
+                .map(|read| (read.id, read.next)),
             Kind::Define(_) | Kind::Does | Kind::Temp => None,
         };
         self.building.push(Building {
@@ -671,16 +677,16 @@ impl<A: AppValue> Machine<A> {
         self.compiling = building.was_compiling;
         let mut code = building.code;
         code.locals = building.locals.len();
-        // The words read from its source between `code` and `end`, both
-        // read there, so `code` WORDS `end` read again does as they did;
-        // none if it opened or closed otherwise.
+        // The words read from its source between the `code` and the `end`
+        // the reader itself read there and ran, so `code` WORDS `end` read
+        // again does as they did; none if another word opened or closed it.
         code.words = building.words.and_then(|(id, from)| {
-            let read = self.source().filter(|read| read.id == id)?;
-            let to = read.next.checked_sub(1)?;
-            let word = |at: usize| read.tokens.get(at).map(|t| &*t.text);
-            let exact = word(from.checked_sub(1)?) == Some(Builtin::Code.name())
-                && word(to) == Some(Builtin::End.name());
-            exact.then(|| read.tokens.get(from..to).map(Rc::from))?
+            let read = self
+                .source()
+                .filter(|read| read.id == id && self.read_here)?;
+            read.tokens
+                .get(from..read.next.checked_sub(1)?)
+                .map(Rc::from)
         });
         let code = self.version(code);
         let Kind::Define(name) = building.kind else {

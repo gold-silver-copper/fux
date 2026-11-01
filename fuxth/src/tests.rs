@@ -748,11 +748,14 @@ fn code_keeps_the_words_it_read_and_compiles_again_from_them() -> Result<(), Err
         assert_eq!(executed(&again)?, executed(&machine)?, "{program}");
     }
     // A word's xt has none; nor has code a word of a program's own opened
-    // or closed, which `code` WORDS `end` would not make again.
+    // or closed, which `code` WORDS `end` would not make again, though it
+    // read the word `code` itself.
     for program in [
         "1 tick dup",
         "define seal 7 postpone literal postpone print postpone end end immediate code seal",
         "define open postpone code end immediate open 7 end",
+        "define prefixed-code next-word drop postpone code 7 postpone literal postpone print end
+         immediate prefixed-code code end",
     ] {
         let mut machine = compile(program)?;
         machine.run(&mut Toy::default(), u64::MAX)?;

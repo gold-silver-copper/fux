@@ -448,6 +448,10 @@ pub struct Machine<A> {
     /// The step taken last: how many frames there were, its code, and its
     /// place in it.
     last: Option<(usize, usize, usize)>,
+    /// Whether the word of the core's running was read and run by the
+    /// reader itself, from its source: so `code` and `end` can tell a
+    /// quotation their words alone make again.
+    pub(crate) read_here: bool,
 }
 
 impl<A: AppValue> Machine<A> {
@@ -485,6 +489,7 @@ impl<A: AppValue> Machine<A> {
             sources: 0,
             raised: Vec::new(),
             last: None,
+            read_here: false,
         };
         let vocabulary = Rc::clone(&machine.vocabulary);
         for builtin in Builtin::ALL {
