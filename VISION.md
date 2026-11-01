@@ -127,6 +127,10 @@ reference.
 
     They compose through arguments, stdin, stdout, stderr, exit codes and
     files.
+
+    **The boundary:** the shell composes `fux` commands, fuxth does what
+    must happen inside one request or one key binding, and ordinary
+    programs do everything else.
 11. **Finished parts stay finished.** A part marked frozen changes only for
     a bug or an owner decision, never because an audit had an idea.
 
