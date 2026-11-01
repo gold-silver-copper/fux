@@ -340,9 +340,10 @@ fn a_run_answers_an_exit_with_the_last_of_the_output() -> Outcome {
 /// A program that exits leaving a writer on its terminal, in a group of its
 /// own that ignores the hangup and keeps the terminal full, holds up no
 /// one (D-90): its exit is told as its leader is reaped, the writer still
-/// writing; its terminal is read on, its counts growing, while other panes
-/// and commands are served; once the writer is killed and its terminal
-/// drained, the pane is frozen.
+/// writing; its terminal is read on, its counts growing (where the OS
+/// leaves the writer its terminal), while other panes and commands are
+/// served; once the writer is killed and its terminal drained, the pane is
+/// frozen.
 #[test]
 fn a_writer_left_on_a_terminal_holds_up_no_one() -> Outcome {
     let server = Server::start("")?;
@@ -374,9 +375,13 @@ fn a_writer_left_on_a_terminal_holds_up_no_one() -> Outcome {
         let count = counts.split_whitespace().nth(1).ok_or("its counts")?;
         count.parse().map_err(e)
     };
-    // Read on: its screen's revision grows.
-    let at_exit = screen_count()?;
-    eventually("its terminal read on", || Ok(screen_count()? > at_exit))?;
+    // Read on: its screen's revision grows. macOS takes the terminal from
+    // the session as its leader exits (the writer's writes fail, EIO), so
+    // there is nothing more to read there.
+    if !cfg!(target_os = "macos") {
+        let at_exit = screen_count()?;
+        eventually("its terminal read on", || Ok(screen_count()? > at_exit))?;
+    }
     server.ok(&[
         "str",
         "%1",
