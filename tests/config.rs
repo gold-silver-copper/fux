@@ -737,13 +737,34 @@ fn another_program_reads_a_clients_keys_and_preferences() -> Outcome {
     })?;
     // A key bound, then read, in one program at its prompt: the read finds
     // it, as pending keys are committed before the program asks anything.
+    // What it prints is joined as it runs, so the line typed never shows
+    // either answer.
     terminal.type_bytes(b"\x02e")?;
     terminal.wait_for("Enter accept")?;
     terminal.type_bytes(
         b"str 'C-b y' code me focused zoom end bind  \
-          me keys json str 'C-b y' contains if str read-back-new else str read-back-old then print\r",
+          me keys json str 'C-b y' contains if str fresh else str stale then \
+          str read-back- swap cat print\r",
     )?;
-    terminal.wait_for("read-back-new")?;
+    let mut said = String::new();
+    eventually("the program's answer", || {
+        terminal.pump();
+        let shown = format!(
+            "{}{}",
+            terminal.text(),
+            String::from_utf8_lossy(&terminal.output)
+        );
+        said = ["read-back-fresh", "read-back-stale"]
+            .into_iter()
+            .find(|answer| shown.contains(answer))
+            .unwrap_or_default()
+            .to_owned();
+        Ok(!said.is_empty())
+    })?;
+    assert_eq!(
+        said, "read-back-fresh",
+        "the read found the keys before the bind"
+    );
     terminal.type_bytes(b"\x02d")?;
     terminal.wait_exit()?;
     let gone = server.fux(&["str", &id, "client", "keys"])?;
