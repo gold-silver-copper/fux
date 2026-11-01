@@ -375,7 +375,10 @@ trees are not copied into layout/view invalidations. The finite coverage schema 
 | `history_budget` | pane's new `history_bytes` |
 | `history_cleared` | pane history invalidated |
 | `respawned` | generation changed; optional `input_unread`, the old program's input not written to its terminal |
+| `hung_up` | its program closed its terminal and runs on (`hung_up`) |
+| `read_failed` | `read_error`, the errno text of an unexpected PTY read failure |
 | `exited` | `exited` (null when lost) or `signal`; optional `input_unread`; a shell's pane then closes |
+| `command_started` | a shell command's output began (OSC 133 `C`) |
 | `done` | shell command's `status`, null when unreported |
 | `bell` | |
 | `notification` | `text`, optional `truncated` |

@@ -2039,7 +2039,7 @@ mod tests {
     }
 
     #[test]
-    fn a_live_read_failure_is_told_without_another_event() -> Result<(), Box<dyn std::error::Error>>
+    fn a_live_read_failure_is_told_and_journaled_at_once() -> Result<(), Box<dyn std::error::Error>>
     {
         let (mut server, _peer) = server()?;
         let id = *server.session.parts.panes().keys().next().ok_or("pane")?;
@@ -2061,6 +2061,7 @@ mod tests {
             view.notice = None;
             view.dirty = false;
         }
+        let from = server.session.parts.journal().end(server.session.run);
         server.read_pane(
             id,
             |_, bytes| {
@@ -2069,6 +2070,14 @@ mod tests {
             },
             Instant::now(),
         );
+        let told = crate::journal::Reader::new(
+            fux_wire::inspect::Scope::All,
+            server.session.parts.journal(),
+            server.session.run,
+            Some(from),
+        )?
+        .batch(server.session.parts.journal(), true)?
+        .events;
         let notice = server
             .session
             .views
@@ -2091,6 +2100,16 @@ mod tests {
             "{notice:?}"
         );
         assert!(dirty);
+        let error = fux_wire::json::Json::str(Errno::INVAL.to_string());
+        let failed = fux_wire::json::Json::object(vec![
+            ("event", fux_wire::json::Json::str("read_failed")),
+            ("read_error", error),
+        ]);
+        assert!(
+            matches!(&told[..], [one] if one.data == failed
+                && one.origin == fux_wire::events::Actor::Program(id, 0)),
+            "{told:?}"
+        );
         for json in [capture?, info?] {
             let value = fux_wire::json::Json::str(Errno::INVAL.to_string()).render();
             assert!(json.contains(&format!("\"read_error\":{value}")), "{json}");

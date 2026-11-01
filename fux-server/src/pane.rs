@@ -271,6 +271,10 @@ struct Sink<'a, 't> {
     /// The scheme a `CSI ? 996 n` among `replies` answered, last: its
     /// program was told it once they are queued (`Pane::scheme_told`).
     told: Option<Scheme>,
+    /// Whether a command ran as the read began and has not ended since.
+    running: bool,
+    /// How many commands this read told begun.
+    started: u64,
 }
 
 impl Sink<'_, '_> {
@@ -318,7 +322,15 @@ impl fux_vt::Sink for Sink<'_, '_> {
                         .ok_or(Uncopied::NotText),
                 });
             }
-            Event::CommandEnded(status) => self.tell.tell(Told::Done(status)),
+            // A D ends a command that ran: one that did not run as the read
+            // began, nor since a D before, a C in this read began.
+            Event::CommandEnded(status) => {
+                if !std::mem::take(&mut self.running) {
+                    self.tell.tell(Told::CommandStarted);
+                    self.started = self.started.wrapping_add(1);
+                }
+                self.tell.tell(Told::Done(status));
+            }
             Event::IconName(_) => {}
         }
     }
@@ -714,6 +726,7 @@ impl<'a> PaneMut<'a> {
         self.pane.terminal_sized(result);
     }
     pub(crate) fn read_failed(&mut self, error: fuxix::Errno) {
+        self.tell.tell(Told::ReadFailed(error));
         self.pane.terminal_errors.1.get_or_insert(error);
         self.pane.read_error = Some(error);
         self.pane.process = match std::mem::replace(&mut self.pane.process, Process::Absent) {
@@ -841,7 +854,7 @@ impl<'a> PaneMut<'a> {
         }
     }
     pub fn stop_reading(&mut self) {
-        self.pane.stop_reading();
+        self.pane.stop_reading(&mut self.tell);
     }
     /// `n` bytes of its input were written to its terminal, as
     /// `write_input` writes them: for fux-diff's queue.
@@ -1156,6 +1169,7 @@ impl Pane {
         tell: &mut Teller<'_>,
     ) -> Option<(usize, fux_vt::Stop)> {
         let refused = self.parser.refused();
+        let commands = self.screen().commands();
         let mut sink = Sink {
             replies: Vec::new(),
             pictures: Vec::new(),
@@ -1167,6 +1181,8 @@ impl Pane {
             copied: &mut self.copied,
             colours: &self.colours,
             told: None,
+            running: commands.running(),
+            started: 0,
         };
         // The parser refuses only allocations beyond its limits; the screen
         // stays as it was and output continues.
@@ -1191,6 +1207,11 @@ impl Pane {
         self.slice_left = self.slice_left.saturating_sub(read);
         if begun.is_none() && slice.len() < bytes.len() {
             begun = Some((read, fux_vt::Stop::Budget));
+        }
+        // A command begun after the read's last D, still running.
+        let started = (self.parser.screen().commands().started).wrapping_sub(commands.started);
+        if started != sink.started {
+            sink.tell.tell(Told::CommandStarted);
         }
         if !sink.replies.is_empty() {
             self.input.push(&sink.replies);
@@ -1606,11 +1627,15 @@ impl Pane {
     }
 
     /// The program's terminal hung up: it is read no more, and waits to be
-    /// reaped.
-    fn stop_reading(&mut self) {
+    /// reaped. Told as it stops being read.
+    fn stop_reading(&mut self, tell: &mut Teller<'_>) {
         self.process = match std::mem::replace(&mut self.process, Process::Absent) {
-            Process::Reading(child) | Process::HungUp(child) => Process::HungUp(child),
+            Process::Reading(child) => {
+                tell.tell(Told::HungUp);
+                Process::HungUp(child)
+            }
             other @ (Process::Absent
+            | Process::HungUp(_)
             | Process::Exited(_)
             | Process::Respawning
             | Process::ReadFailed(..)) => other,
@@ -2435,32 +2460,36 @@ pub(crate) mod tests {
         Ok(())
     }
 
-    /// Each shell command that ends goes in the journal with its own
-    /// status, though several end in one read; and a bell and a title
-    /// with them, in order.
+    /// Each shell command that begins and ends goes in the journal, with
+    /// its own status, in order with a bell and a title, though several
+    /// begin and end in one read; one begun in a read ends in the next,
+    /// and a C while one runs moves its start and begins none.
     #[test]
-    fn commands_ended_in_one_read_are_journaled_each() -> Result<(), Box<dyn std::error::Error>> {
+    fn commands_begun_and_ended_in_one_read_are_journaled_each()
+    -> Result<(), Box<dyn std::error::Error>> {
         let mut pane = pane(3, 30, 1 << 10)?;
         let run = "1-0".parse().map_err(|()| "a run")?;
         let mut stream =
             crate::journal::Reader::new(fux_wire::inspect::Scope::All, &pane.journal, run, None)?;
         pane.output(
-            b"\x1b]133;C\x07x\x1b]133;D;1\x07\x07\x1b]133;C\x07\x1b]133;D;0\x07\x1b]2;t\x07",
+            b"\x1b]133;C\x07x\x1b]133;D;1\x07\x07\x1b]133;C\x07\x1b]133;D;0\x07\x1b]2;t\x07\x1b]133;C\x07",
         );
+        pane.output(b"\x1b]133;C\x07\x1b]133;D;2\x07\x1b]133;D\x07");
         let (said, _) = stream.lines(&pane.journal, |_| None);
-        assert_eq!(
-            said,
-            concat!(
-                r#"{"event":"done","pane":"%1","tab":"@1","workspace":"+1","status":1}"#,
-                "\n",
-                r#"{"event":"bell","pane":"%1","tab":"@1","workspace":"+1"}"#,
-                "\n",
-                r#"{"event":"done","pane":"%1","tab":"@1","workspace":"+1","status":0}"#,
-                "\n",
-                r#"{"event":"title","pane":"%1","tab":"@1","workspace":"+1","title":"t"}"#,
-                "\n"
-            )
-        );
+        let at = r#""pane":"%1","tab":"@1","workspace":"+1""#;
+        let started = format!(r#"{{"event":"command_started",{at}}}"#);
+        let done = |status: u8| format!(r#"{{"event":"done",{at},"status":{status}}}"#);
+        let lines = [
+            started.clone(),
+            done(1),
+            format!(r#"{{"event":"bell",{at}}}"#),
+            started.clone(),
+            done(0),
+            format!(r#"{{"event":"title",{at},"title":"t"}}"#),
+            started,
+            done(2),
+        ];
+        assert_eq!(said, lines.map(|line| line + "\n").concat());
         Ok(())
     }
 }

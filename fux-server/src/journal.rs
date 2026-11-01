@@ -126,7 +126,10 @@ impl Teller<'_> {
             Told::Bell
             | Told::Notification(_)
             | Told::Title(_)
+            | Told::CommandStarted
             | Told::Done(_)
+            | Told::HungUp
+            | Told::ReadFailed(_)
             | Told::Exited(_) => Actor::Program(self.at.1, self.generation),
             Told::Renamed(_)
             | Told::Respawned(_)
@@ -195,12 +198,18 @@ pub enum Told {
     Bell,
     Notification(Said),
     Title(Said),
+    /// A shell command's output began (OSC 133 `C`).
+    CommandStarted,
     /// A shell command ended, with its status if it is known.
     Done(Option<i32>),
     Resized(fux_vt::Size),
     /// The pane's retained history budget changed.
     HistoryBudget(usize),
     HistoryCleared,
+    /// Its program closed its terminal and runs on.
+    HungUp,
+    /// Reading its program's terminal failed unexpectedly, so.
+    ReadFailed(fuxix::Errno),
     /// Its program ended.
     Exited(End),
 }
@@ -257,6 +266,7 @@ impl Told {
             Told::Bell => ("bell", Vec::new()),
             Told::Notification(n) => ("notification", said("text", n.as_str(), n.cut())),
             Told::Title(title) => ("title", said("title", title.as_str(), title.cut())),
+            Told::CommandStarted => ("command_started", Vec::new()),
             Told::Done(status) => (
                 "done",
                 vec![("status", status.map_or(Json::Null, Json::int))],
@@ -266,6 +276,11 @@ impl Told {
                 vec![("history_bytes", Json::count(*bytes))],
             ),
             Told::HistoryCleared => ("history_cleared", Vec::new()),
+            Told::HungUp => ("hung_up", Vec::new()),
+            Told::ReadFailed(error) => (
+                "read_failed",
+                vec![("read_error", Json::str(error.to_string()))],
+            ),
             Told::Resized(size) => {
                 let cols = ("cols", Json::int(size.cols()));
                 ("resized", vec![cols, ("rows", Json::int(size.rows()))])
@@ -371,12 +386,15 @@ pub fn every_kind(
         Told::Bell,
         notification,
         title,
+        Told::CommandStarted,
         Told::Done(None),
         Told::Done(Some(i32::MIN)),
         Told::Resized(size),
         // The most a pane's budget is (`command::HistoryBytes`).
         Told::HistoryBudget(isize::MAX.unsigned_abs()),
         Told::HistoryCleared,
+        Told::HungUp,
+        Told::ReadFailed(fuxix::Errno::INVAL),
         ended(fux_wire::answer::Ended::Lost),
         ended(fux_wire::answer::Ended::Exited(i32::MIN)),
         ended(fux_wire::answer::Ended::Signalled(i32::MIN)),
@@ -726,10 +744,13 @@ mod tests {
                         | Told::Bell
                         | Told::Notification(_)
                         | Told::Title(_)
+                        | Told::CommandStarted
                         | Told::Done(_)
                         | Told::Resized(_)
                         | Told::HistoryBudget(_)
                         | Told::HistoryCleared
+                        | Told::HungUp
+                        | Told::ReadFailed(_)
                         | Told::Exited(_),
                     ),
                 )
