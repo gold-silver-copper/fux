@@ -2,11 +2,12 @@
 
 Short recipes for what agents and people do with fux. Each is a heading,
 what it's for, and a block to copy. The `sh` blocks run as they stand, top
-to bottom, each in a `sh -e` of its own (what one exports stays in it),
-against the server `FUX_SOCKET` names: the second recipe makes the shell
-named `shell` that later ones type into, and the last closes everything
-they made. A test runs every recipe, so a recipe here is one this fux
-runs.
+to bottom, each in a shell of its own with `set -e -o pipefail`, against
+the server `FUX_SOCKET` names: the second recipe makes the shell named
+`shell` that later ones type into (the lines they type are POSIX `sh`),
+and the last closes everything they made. A command expected to fail says
+the exit status it expects, `|| [ $? -eq N ]`. A test runs every recipe,
+so a recipe here is one this fux runs.
 
 **The boundary:** the shell composes `fux` commands, fuxth does what must
 happen inside one request or one key binding, and ordinary programs do
@@ -30,9 +31,11 @@ refuses one anyone else may open. A server of your own keeps your panes
 apart from anyone else's; stop it with `kill`.
 
 ```sh
-export FUX_SOCKET="$PWD/mine/fux.sock"
-fux status > /dev/null 2>&1 || fux start
-kill "$(fux status str server_pid get)"
+(
+  export FUX_SOCKET="$PWD/mine/fux.sock"
+  fux status > /dev/null 2>&1 || fux start
+  kill "$(fux status str server_pid get)"
+)
 ```
 
 ## A shell to type into
@@ -67,8 +70,10 @@ fux str shell pane str 'echo hello again' text str Enter key send-keys
 ## Wait for text on the screen
 
 Wait for a text only the output holds: the typed line shows `$((6*7))`,
-never `42`. `shows` prints the screen it matched; a text that isn't there
-in 30 seconds fails with `timeout` (exit 124).
+never `42`. `shows` prints the screen it matched. Its 30 seconds bound
+each wait for a change, not the whole: a screen that changes without the
+text keeps it waiting. For a deadline on the whole, use `timeout(1)`
+(below).
 
 ```sh
 fux str shell pane str 'sleep 1; echo "built: $((6*7))"' line
@@ -118,12 +123,13 @@ fux ls | jq -r '.panes[] | [.id, .name // "", .state.exited // ""] | @tsv'
 `events` prints the journal's events, one JSON object a line, each with
 its `next` cursor, until the scope is gone or the server stops. Take a
 cursor before you act and you miss nothing in between; `head`, `jq` or
-`timeout` ends it.
+`timeout` ends it. When its reader stops early, fux ends quietly with
+141, as `cat` does.
 
 ```sh
 C=$(fux ls str cursor get)
 fux opts str work in 80 24 size str true program new-tab > /dev/null
-fux all str "$C" events | jq -nc 'first(inputs | select(.event == "exited"))'
+fux all str "$C" events | jq -nc 'first(inputs | select(.event == "exited"))' || [ $? -eq 141 ]
 ```
 
 An empty cursor starts now; to go on after a stop, pass the last line's
@@ -132,32 +138,36 @@ An empty cursor starts now; to go on after a stop, pass the last line's
 ## Keep a journal file
 
 The journal file is your redirect, written as long as the reader runs;
-read it with `jq`, `grep` or `tail -f`.
+read it with `jq`, `grep` or `tail -f`. Here the loop waits until the
+file holds the program's exit, failing if the reader ended (`kill -0`),
+then stops the reader.
 
 ```sh
 fux all str "$(fux ls str cursor get)" events >> journal.ndjson &
 J=$!
 fux opts str work in 80 24 size str true program new-tab > /dev/null
+until grep -q '"exited"' journal.ndjson; do kill -0 "$J"; sleep 1; done
 kill "$J"
 ```
 
 ## Act only on the screen you saw
 
 `expect` sends keys only if the pane is still at the version you read;
-otherwise it sends nothing and fails `stale` (exit 1).
+otherwise it sends nothing and fails `stale` (exit 1): read the screen
+again.
 
 ```sh
 V=$(fux str shell pane capture version)
-fux str "$V" expect str 'echo yes' line || echo "the screen moved on: read it again"
+fux str "$V" expect str 'echo yes' line || [ $? -eq 1 ]
 ```
 
 ## Stop a runaway with timeout
 
-fux sets no time limits of its own: `timeout(1)` bounds a fux command, and
-a program in a pane.
+fux sets no time limits of its own: `timeout(1)` bounds a fux command
+(exit 124 when it stops it), and a program in a pane.
 
 ```sh
-timeout 2 fux str shell pane str 'never shown' 600 shows || echo "gave up: $?"
+timeout 2 fux str shell pane str 'never shown' 600 shows || [ $? -eq 124 ]
 fux opts str work in 80 24 size str timeout program str 2 arg str sleep arg str 600 arg new-tab 60 until-ended str exited get
 ```
 
@@ -169,10 +179,12 @@ fresh server.
 
 ```sh
 fux str work workspace dump > work.fux
-export FUX_SOCKET="$PWD/copy/fux.sock"
-fux start
-fux --file work.fux
-kill "$(fux status str server_pid get)"
+(
+  export FUX_SOCKET="$PWD/copy/fux.sock"
+  fux start
+  fux --file work.fux
+  kill "$(fux status str server_pid get)"
+)
 ```
 
 ## Key bindings and config
