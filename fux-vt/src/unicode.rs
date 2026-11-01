@@ -14,7 +14,6 @@
 mod tables;
 mod width;
 
-pub use tables::UNICODE_VERSION;
 pub(crate) use width::cluster_width;
 pub use width::{char_width, clusters, str_width};
 

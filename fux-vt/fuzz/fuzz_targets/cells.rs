@@ -1,6 +1,6 @@
 //! Native `Cells` operations keep their contracts: exact or reported
 //! partial text, copied shapes and styles, untouched cells outside edits,
-//! clipped fills, preserved resize prefixes, bounded text and exact copies.
+//! clipped fills, blank resets and exact copies.
 //! Structured input includes tiny runs, spilling and huge-size refusals.
 #![no_main]
 use fux_vt::{CellRef, Cells};
@@ -15,7 +15,7 @@ enum Op {
     SetFrom(u8, u8, u8, bool, u8),
     SetAttributes(u8, u8),
     Fill(u8, u8, bool, u8),
-    Resize(u8),
+    Reset(u8),
 }
 
 /// Lengths past the most cells a run holds: one past it, a large one, the
@@ -37,7 +37,7 @@ fuzz_target!(|input: (u8, Vec<Op>)| {
             .unwrap_or_default()
     };
     // A length past what `Cells` holds (64 Mi cells, `THREATS.md` B39) is
-    // refused, by `new` and by `resize`, with nothing changed: the largest
+    // refused, by `new` and by `reset`, with nothing changed: the largest
     // `usize` too, which overflowed at BASE.
     if let Some(huge) = HUGE
         .get(usize::from(len.saturating_sub(0xfc)))
@@ -52,7 +52,7 @@ fuzz_target!(|input: (u8, Vec<Op>)| {
             );
             small.set(1, blank);
             let before = small.clone();
-            assert!(small.resize(*huge, blank).is_err(), "{huge} cells made");
+            assert!(small.reset(*huge).is_err(), "{huge} cells made");
             assert_eq!(small, before);
         }
     }
@@ -99,22 +99,11 @@ fuzz_target!(|input: (u8, Vec<Op>)| {
                 assert!(cells.range(range.clone()).all(|got| got == fill));
                 Some(range)
             }
-            Op::Resize(len) => {
+            Op::Reset(len) => {
                 let len = usize::from(*len % 9);
-                assert!(cells.resize(len, CellRef::default()).is_ok());
+                assert!(cells.reset(len).is_ok());
                 assert_eq!(cells.len(), len);
-                if len >= before.len() {
-                    assert!(cells.range(0..before.len()).eq(before.iter()));
-                }
-                for (i, source) in before.iter().take(len).enumerate() {
-                    let whole = cells.get(i).is_some_and(|got| got == source);
-                    models::stored(&cells, i, source, whole);
-                }
-                assert!(
-                    cells
-                        .range(before.len()..len)
-                        .all(|got| got == CellRef::default())
-                );
+                assert!(cells.range(0..len).all(|got| got == CellRef::default()));
                 None
             }
         };
@@ -122,7 +111,12 @@ fuzz_target!(|input: (u8, Vec<Op>)| {
             assert_eq!(cells.len(), before.len());
             models::unchanged(&cells, &before, range);
         }
-        assert!(cells.text_len() <= Cells::text_limit(cells.len()));
-        assert!(Cells::try_from_iter(cells.iter()).is_ok_and(|copy| copy == cells));
+        // Copied cell by cell, with their text, they are the same.
+        assert!(Cells::new(cells.len()).is_ok_and(|mut copy| {
+            for (i, cell) in cells.range(0..cells.len()).enumerate() {
+                copy.set(i, cell);
+            }
+            copy == cells
+        }));
     }
 });

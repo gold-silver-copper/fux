@@ -9,10 +9,35 @@ type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
 mod lines;
 use lines::lines;
 
+#[path = "corpus/feed.rs"]
+#[expect(dead_code, reason = "each test binary uses some of the helpers")]
+mod feed;
+use feed::{Feed, Look, cells_text};
+
 fn run(rows: u16, cols: u16, bytes: &[u8]) -> Result<Parser> {
     let mut parser = Parser::new(Size::new(rows, cols)?, 0)?;
     parser.process(bytes)?;
     Ok(parser)
+}
+
+/// The scroll region's top and bottom rows, zero-based, as SU shows them:
+/// each row labelled with its number, the rows one SU moves are the
+/// region's. The screen is overwritten.
+fn scroll_region(parser: &mut Parser) -> Result<(u16, u16)> {
+    let rows = parser.screen().size().rows();
+    let labels: Vec<String> = (0..rows).map(|y| y.to_string()).collect();
+    let mut bytes = String::from("\x1b[?6l");
+    for (y, label) in (1..).zip(&labels) {
+        bytes.push_str(&format!("\x1b[{y};1H\x1b[2K{label}"));
+    }
+    parser.process(format!("{bytes}\x1b[S").as_bytes())?;
+    let moved: Vec<u16> = (0..rows)
+        .zip(labels.iter().zip(lines(parser)))
+        .filter(|(_, (label, now))| *label != now)
+        .map(|(y, _)| y)
+        .collect();
+    let (top, bottom) = (moved.first(), moved.last());
+    Ok((*top.ok_or("no region")?, *bottom.ok_or("no region")?))
 }
 
 /// DEC STD 070, Appendix D.6.1 (Auto Wrap Mode) and "Insert or Replace
@@ -46,11 +71,11 @@ fn a_pending_wrap_is_a_flag_on_the_last_column() -> Result {
     // LF keeps the column; CUU and RI move up from it, wrapping nothing.
     let p = run(2, 5, b"abcde\nX")?;
     assert_eq!(lines(&p), ["abcde", "    X"]);
-    assert!(!p.screen().row_wrapped(0));
+    assert!(!p.screen().row_continues(0));
     for up in [&b"\x1b[A"[..], b"\x1bM"] {
         let p = run(2, 5, &[&b"zzzzz\r\nabcde"[..], up, b"X"].concat())?;
         assert_eq!(lines(&p), ["zzzzX", "abcde"], "{up:?}");
-        assert!(!p.screen().row_wrapped(0), "{up:?}");
+        assert!(!p.screen().row_continues(0), "{up:?}");
     }
     // A glyph printed in the last column after a tab waits there, so BS
     // puts the next one before it.
@@ -78,7 +103,7 @@ fn a_pending_wrap_is_saved_with_the_cursor_and_kept_by_what_does_not_move_it() -
             &[&b"abcde"[..], save, b"\x1b[2;3H", restore, b"X"].concat(),
         )?;
         assert_eq!(lines(&p), ["abcde", "X"], "{save:?}");
-        assert!(p.screen().row_wrapped(0), "{save:?}");
+        assert!(p.screen().row_continues(0), "{save:?}");
     }
     for keep in [&b"\x1b[1m"[..], b"\x1b[?25l"] {
         let p = run(2, 5, &[&b"abcde"[..], keep, b"X"].concat())?;
@@ -117,7 +142,7 @@ fn the_last_column_flag_is_set_with_autowrap_alone() -> Result {
     assert!(!p.screen().pending_wrap());
     let p = run(2, 5, b"abcde\x1b[?7l\x1b[?7hX")?;
     assert_eq!(lines(&p), ["abcdX", ""]);
-    assert!(!p.screen().row_wrapped(0));
+    assert!(!p.screen().row_continues(0));
     // A flag DECRC restores is the Last Column Flag ("restored when a
     // Restore Cursor operation is performed"), which only resetting
     // DECAWM clears, not setting it: with DECAWM set again, DECSET or
@@ -154,22 +179,20 @@ fn the_last_column_flag_is_set_with_autowrap_alone() -> Result {
 /// line goes on there: the row it leaves is soft-wrapped, however its last
 /// column ends, as xterm marks it (`fux-vt-compare cases
 /// wide-glyph-wrapping-marks-the-row wide-glyph-wrapping-at-four-columns`),
-/// and a copy joins the rows.
+/// for a copy to join the rows.
 #[test]
 fn a_glyph_that_wraps_marks_its_row_soft_wrapped() -> Result {
     let p = run(2, 5, "あいう".as_bytes())?;
     assert_eq!(lines(&p), ["あい", "う"]);
-    assert!(p.screen().row_wrapped(0));
-    let window = p.screen().window();
-    assert_eq!(window.text((0, 0), (1, 1), 100, 100)?, "あいう");
+    assert!(p.screen().row_continues(0));
     let p = run(2, 4, "abc界x".as_bytes())?;
     assert_eq!(lines(&p), ["abc", "界x"]);
-    assert!(p.screen().row_wrapped(0));
+    assert!(p.screen().row_continues(0));
     // A wrap left pending past an SU, which blanks the row: xterm marks it
     // all the same (`replay --engines all --size 2x5 'abcde\e[SX'`).
     let p = run(2, 5, b"abcde\x1b[SX")?;
     assert_eq!(lines(&p), ["", "X"]);
-    assert!(p.screen().row_wrapped(0));
+    assert!(p.screen().row_continues(0));
     Ok(())
 }
 
@@ -191,31 +214,38 @@ fn styled(sgr: &str, check: impl FnOnce(CellRef<'_>)) -> Result {
 #[test]
 fn sgr_colours_take_the_colon_forms_with_a_colour_space() -> Result {
     let red = Color::Rgb([255, 0, 0].into());
-    styled("\x1b[38:2::255:0:0m", |c| assert_eq!(c.fgcolor(), red))?;
+    styled("\x1b[38:2::255:0:0m", |c| {
+        assert_eq!(c.attributes().foreground(), red)
+    })?;
     styled("\x1b[48:2::0:255:0m", |c| {
-        assert_eq!(c.bgcolor(), Color::Rgb([0, 255, 0].into()));
+        assert_eq!(c.attributes().background(), Color::Rgb([0, 255, 0].into()));
     })?;
     styled("\x1b[58:2::9:8:7m", |c| {
-        assert_eq!(c.underline_color(), Color::Rgb([9, 8, 7].into()));
+        assert_eq!(
+            c.attributes().underline_color(),
+            Color::Rgb([9, 8, 7].into())
+        );
     })?;
     // The colour space is ignored, whatever it is; so is all after blue.
     styled("\x1b[38:2:9:1:2:3m", |c| {
-        assert_eq!(c.fgcolor(), Color::Rgb([1, 2, 3].into()));
+        assert_eq!(c.attributes().foreground(), Color::Rgb([1, 2, 3].into()));
     })?;
     styled("\x1b[38:2:1:2:3:4:5:6m", |c| {
-        assert_eq!(c.fgcolor(), Color::Rgb([2, 3, 4].into()));
+        assert_eq!(c.attributes().foreground(), Color::Rgb([2, 3, 4].into()));
     })?;
     styled("\x1b[38:2:1:2:3m", |c| {
-        assert_eq!(c.fgcolor(), Color::Rgb([1, 2, 3].into()));
+        assert_eq!(c.attributes().foreground(), Color::Rgb([1, 2, 3].into()));
     })?;
     // Too few elements: no colour.
     styled("\x1b[38:2:1:2m", |c| {
-        assert_eq!(c.fgcolor(), Color::Default)
+        assert_eq!(c.attributes().foreground(), Color::Default)
     })?;
-    styled("\x1b[38:5m", |c| assert_eq!(c.fgcolor(), Color::Default))?;
+    styled("\x1b[38:5m", |c| {
+        assert_eq!(c.attributes().foreground(), Color::Default)
+    })?;
     styled("\x1b[1;38:2::10:20:30;4m", |c| {
-        assert_eq!(c.fgcolor(), Color::Rgb([10, 20, 30].into()));
-        assert!(c.bold() && c.underline());
+        assert_eq!(c.attributes().foreground(), Color::Rgb([10, 20, 30].into()));
+        assert!(c.attributes().bold() && c.attributes().underline());
     })?;
     Ok(())
 }
@@ -228,22 +258,26 @@ fn sgr_colours_take_the_colon_forms_with_a_colour_space() -> Result {
 #[test]
 fn an_invalid_sgr_colour_skips_only_itself() -> Result {
     styled("\x1b[38;5;300;1m", |c| {
-        assert_eq!(c.fgcolor(), Color::Default);
-        assert!(c.bold());
+        assert_eq!(c.attributes().foreground(), Color::Default);
+        assert!(c.attributes().bold());
     })?;
     styled("\x1b[38:5:300;1m", |c| {
-        assert_eq!(c.fgcolor(), Color::Default);
-        assert!(c.bold());
+        assert_eq!(c.attributes().foreground(), Color::Default);
+        assert!(c.attributes().bold());
     })?;
     styled("\x1b[38;2;256;0;0;3m", |c| {
-        assert_eq!(c.fgcolor(), Color::Default);
-        assert!(c.italic());
+        assert_eq!(c.attributes().foreground(), Color::Default);
+        assert!(c.attributes().italic());
     })?;
-    styled("\x1b[38;9;1m", |c| assert!(c.bold() && !c.strikeout()))?;
+    styled("\x1b[38;9;1m", |c| {
+        assert!(c.attributes().bold() && !c.attributes().strikeout())
+    })?;
     styled("\x1b[38;2;1;2m", |c| {
-        assert_eq!(c.fgcolor(), Color::Rgb([1, 2, 0].into()));
+        assert_eq!(c.attributes().foreground(), Color::Rgb([1, 2, 0].into()));
     })?;
-    styled("\x1b[48;5m", |c| assert_eq!(c.bgcolor(), Color::Idx(0)))?;
+    styled("\x1b[48;5m", |c| {
+        assert_eq!(c.attributes().background(), Color::Idx(0))
+    })?;
     Ok(())
 }
 
@@ -276,11 +310,13 @@ fn underline_styles_are_kept_and_replace_one_another() -> Result {
         ("\x1b[4:3m\x1b[0m", None),
     ] {
         styled(sgr, |c| {
-            assert_eq!(c.underline_style(), style, "{sgr:?}");
-            assert_eq!(c.underline(), style != None, "{sgr:?}");
+            assert_eq!(c.attributes().underline_style(), style, "{sgr:?}");
+            assert_eq!(c.attributes().underline(), style != None, "{sgr:?}");
         })?;
     }
-    styled("\x1b[1;4:3;9m", |c| assert!(c.bold() && c.strikeout()))?;
+    styled("\x1b[1;4:3;9m", |c| {
+        assert!(c.attributes().bold() && c.attributes().strikeout())
+    })?;
     Ok(())
 }
 
@@ -294,15 +330,21 @@ fn underline_styles_are_kept_and_replace_one_another() -> Result {
 fn sgr_21_underlines_doubly_and_bold_and_dim_are_kept_apart() -> Result {
     use fux_vt::UnderlineStyle;
     styled("\x1b[21m", |c| {
-        assert_eq!(c.underline_style(), UnderlineStyle::Double);
+        assert_eq!(c.attributes().underline_style(), UnderlineStyle::Double);
     })?;
     styled("\x1b[21;4m", |c| {
-        assert_eq!(c.underline_style(), UnderlineStyle::Single);
+        assert_eq!(c.attributes().underline_style(), UnderlineStyle::Single);
     })?;
-    styled("\x1b[21;24m", |c| assert!(!c.underline()))?;
-    styled("\x1b[1;2m", |c| assert!(c.bold() && c.dim()))?;
-    styled("\x1b[2;1m", |c| assert!(c.bold() && c.dim()))?;
-    styled("\x1b[1;2;22m", |c| assert!(!c.bold() && !c.dim()))?;
+    styled("\x1b[21;24m", |c| assert!(!c.attributes().underline()))?;
+    styled("\x1b[1;2m", |c| {
+        assert!(c.attributes().bold() && c.attributes().dim())
+    })?;
+    styled("\x1b[2;1m", |c| {
+        assert!(c.attributes().bold() && c.attributes().dim())
+    })?;
+    styled("\x1b[1;2;22m", |c| {
+        assert!(!c.attributes().bold() && !c.attributes().dim())
+    })?;
     Ok(())
 }
 
@@ -318,12 +360,12 @@ fn sgr_21_underlines_doubly_and_bold_and_dim_are_kept_apart() -> Result {
 fn a_soft_reset_restores_the_modes_and_keeps_the_screen() -> Result {
     let p = run(2, 5, b"ab\x1b[1m\x1b[!pX")?;
     assert_eq!(lines(&p), ["abX", ""]);
-    assert!(!p.screen().cell(0, 2).ok_or("no cell")?.bold());
+    assert!(!p.screen().cell(0, 2).ok_or("no cell")?.attributes().bold());
     // Autowrap is on again.
     let p = run(1, 3, b"\x1b[?7l\x1b[!pabcd")?;
     assert_eq!(lines(&p), ["d"]);
     assert!(p.screen().mode(Mode::Autowrap));
-    let p = run(
+    let mut p = run(
         3,
         5,
         b"\x1b[?25l\x1b[?6h\x1b[?1h\x1b=\x1b[2;3r\x1b[?2004h\x1b[?1004h\x1b[!p",
@@ -333,12 +375,12 @@ fn a_soft_reset_restores_the_modes_and_keeps_the_screen() -> Result {
     assert!(!screen.mode(Mode::Origin));
     assert!(!screen.mode(Mode::ApplicationCursor));
     assert!(!screen.mode(Mode::ApplicationKeypad));
-    assert_eq!(screen.scroll_region(), (0, 2));
     assert!(screen.mode(Mode::BracketedPaste) && screen.mode(Mode::FocusReporting));
+    assert_eq!(scroll_region(&mut p)?, (0, 2));
     // The saved cursor goes home, with the normal rendition.
     let p = run(3, 5, b"\x1b[2;2H\x1b[1m\x1b7\x1b[m\x1b[!p\x1b[3;3H\x1b8X")?;
     assert_eq!(lines(&p), ["X", "", ""]);
-    assert!(!p.screen().cell(0, 0).ok_or("no cell")?.bold());
+    assert!(!p.screen().cell(0, 0).ok_or("no cell")?.attributes().bold());
     // A wrap waiting at the last column still waits.
     let p = run(2, 5, b"abcde\x1b[!pX")?;
     assert_eq!(lines(&p), ["abcde", "X"]);
@@ -350,11 +392,11 @@ fn a_soft_reset_restores_the_modes_and_keeps_the_screen() -> Result {
 fn blank_in_colours(p: &Parser, y: u16, cols: std::ops::Range<u16>) -> bool {
     cols.into_iter().all(|x| {
         p.screen().cell(y, x).is_some_and(|c| {
-            !c.has_contents()
-                && c.fgcolor() == Color::Idx(2)
-                && c.bgcolor() == Color::Idx(1)
-                && !c.bold()
-                && !c.underline()
+            c.contents().is_empty()
+                && c.attributes().foreground() == Color::Idx(2)
+                && c.attributes().background() == Color::Idx(1)
+                && !c.attributes().bold()
+                && !c.attributes().underline()
         })
     })
 }
@@ -634,8 +676,8 @@ fn rep_repeats_the_preceding_graphic_character() -> Result {
     assert_eq!(p.screen().cursor_position(), (1, 3));
     assert!(p.screen().pending_wrap());
     assert_eq!(p.screen().history_len(), 3);
-    let window = p.screen().rows().next().ok_or("a row")?.window();
-    assert_eq!(window.text((0, 0), (1, 3), 100, 100)?, "xxxxxxxx");
+    let history: Vec<String> = p.screen().rows().take(3).map(|r| cells_text(&r)).collect();
+    assert_eq!(history, ["xxxx"; 3]);
     let p = run(2, 5, "界\x1b[65533b".as_bytes())?;
     assert_eq!(lines(&p), ["界界", "界界"]);
     assert_eq!(p.screen().cursor_position(), (1, 4));
@@ -687,23 +729,23 @@ fn rep_repeats_the_preceding_graphic_character() -> Result {
 /// (`fux-vt-compare replay --engines all --size 5x5`).
 #[test]
 fn decstbm_homes_the_cursor_and_ignores_a_region_it_cannot_set() -> Result {
-    let p = run(5, 5, b"abc\x1b[3;5rX")?;
+    let mut p = run(5, 5, b"abc\x1b[3;5rX")?;
     assert_eq!(lines(&p), ["Xbc", "", "", "", ""]);
-    assert_eq!(p.screen().scroll_region(), (2, 4));
+    assert_eq!(scroll_region(&mut p)?, (2, 4));
     let p = run(5, 5, b"\x1b[?6h\x1b[3;5rX")?;
     assert_eq!(lines(&p), ["", "", "X", "", ""]);
     for invalid in [&b"\x1b[4;2r"[..], b"\x1b[3;3r", b"\x1b[9;99r"] {
-        let p = run(5, 5, &[&b"\x1b[2;4r\x1b[3;3H"[..], invalid, b"X"].concat())?;
+        let mut p = run(5, 5, &[&b"\x1b[2;4r\x1b[3;3H"[..], invalid, b"X"].concat())?;
         assert_eq!(lines(&p), ["", "", "  X", "", ""], "{invalid:?}");
-        assert_eq!(p.screen().scroll_region(), (1, 3), "{invalid:?}");
+        assert_eq!(scroll_region(&mut p)?, (1, 3), "{invalid:?}");
     }
     for past in [&b"\x1b[2;99r"[..], b"\x1b[2;6r"] {
-        let p = run(5, 5, &[&b"\x1b[2;4r\x1b[3;3H"[..], past, b"X"].concat())?;
-        assert_eq!(p.screen().scroll_region(), (1, 4), "{past:?}");
+        let mut p = run(5, 5, &[&b"\x1b[2;4r\x1b[3;3H"[..], past, b"X"].concat())?;
         assert_eq!(lines(&p), ["X", "", "", "", ""], "{past:?}");
+        assert_eq!(scroll_region(&mut p)?, (1, 4), "{past:?}");
     }
-    let p = run(5, 5, b"\x1b[2;4r\x1b[2;5rX")?;
-    assert_eq!(p.screen().scroll_region(), (1, 4));
+    let mut p = run(5, 5, b"\x1b[2;4r\x1b[2;5rX")?;
+    assert_eq!(scroll_region(&mut p)?, (1, 4));
     // An ignored DECSTBM leaves a pending wrap waiting.
     let p = run(2, 5, b"abcde\x1b[2;2rX")?;
     assert_eq!(lines(&p), ["abcde", "X"]);
@@ -721,7 +763,7 @@ fn a_region_at_the_top_scrolls_its_rows_into_history() -> Result {
     assert_eq!(lines(&p), ["c", "d", "e", "stat"]);
     let history: Vec<String> = (p.screen().rows())
         .take(p.screen().history_len())
-        .map(|r| r.cells_text().trim_end().to_owned())
+        .map(|r| cells_text(&r).trim_end().to_owned())
         .collect();
     assert_eq!(history, ["a", "b"]);
     let mut p = Parser::new(Size::new(4, 5)?, 1 << 16)?;
@@ -862,10 +904,10 @@ fn ind_and_nel_feed_a_line() -> Result {
     assert_eq!(lines(&run(2, 3, b"a\r\nb\x1bDc")?), ["b", " c"]);
     let p = run(2, 5, b"abcde\x1bDX")?;
     assert_eq!(lines(&p), ["abcde", "    X"]);
-    assert!(!p.screen().row_wrapped(0));
+    assert!(!p.screen().row_continues(0));
     let p = run(2, 5, b"abcde\x1bEX")?;
     assert_eq!(lines(&p), ["abcde", "X"]);
-    assert!(!p.screen().row_wrapped(0));
+    assert!(!p.screen().row_continues(0));
     Ok(())
 }
 
@@ -977,7 +1019,7 @@ fn hpb_vpb_ctc_tsr_and_decst8c() -> Result {
 fn mode_41_has_ht_carry_out_a_pending_wrap() -> Result {
     let p = run(2, 10, b"\x1b[?41h0123456789\tX")?;
     assert_eq!(lines(&p), ["0123456789", "        X"]);
-    assert!(!p.screen().row_wrapped(0));
+    assert!(!p.screen().row_continues(0));
     let p = run(2, 10, b"0123456789\tX")?;
     assert_eq!(lines(&p), ["012345678X", ""]);
     let p = run(2, 10, b"\x1b[?41h\x1b[?41l0123456789\tX")?;
@@ -999,7 +1041,7 @@ fn modes_1047_and_1048() -> Result {
     // What the program drew is kept to read until the screen is shown
     // again, cleared, as 1049's and 47's are.
     let kept: Vec<String> = (p.screen().alternate_rows())
-        .map(|r| r.cells_text().trim_end().to_owned())
+        .map(|r| cells_text(&r).trim_end().to_owned())
         .collect();
     assert_eq!(kept, ["  X", ""]);
     p.process(b"\x1b[?47h")?;
@@ -1025,7 +1067,7 @@ fn insert_mode_moves_what_is_there() -> Result {
     assert_eq!(row(5, "ab\r\x1b[4h界".as_bytes())?, "界ab");
     let p = run(2, 5, b"abcdefgh\x1b[4h\x1b[1;1Hx")?;
     assert_eq!(lines(&p), ["xabcd", "fgh"]);
-    assert!(p.screen().row_wrapped(0));
+    assert!(p.screen().row_continues(0));
     assert!(p.screen().mode(Mode::Insert));
     for reset in [&b"\x1b[!p"[..], b"\x1bc"] {
         let p = run(1, 5, &[&b"\x1b[4h"[..], reset].concat())?;
@@ -1034,12 +1076,12 @@ fn insert_mode_moves_what_is_there() -> Result {
     assert!(
         run(2, 5, b"abcdefgh\x1b[1;1H\x1b[@")?
             .screen()
-            .row_wrapped(0)
+            .row_continues(0)
     );
     assert!(
         !run(2, 5, b"abcdefgh\x1b[1;1H\x1b[P")?
             .screen()
-            .row_wrapped(0)
+            .row_continues(0)
     );
     Ok(())
 }
@@ -1079,14 +1121,14 @@ fn switching_screens_keeps_the_cursor() -> Result {
         ["abc", "X"]
     );
     // Origin mode and the margins go along.
-    let p = run(4, 5, b"\x1b[2;3r\x1b[?6h\x1b[?47h\x1b[1;1HX")?;
+    let mut p = run(4, 5, b"\x1b[2;3r\x1b[?6h\x1b[?47h\x1b[1;1HX")?;
     assert_eq!(lines(&p), ["", "X", "", ""]);
     assert!(p.screen().mode(Mode::Origin));
-    assert_eq!(p.screen().scroll_region(), (1, 2));
+    assert_eq!(scroll_region(&mut p)?, (1, 2));
     // The cleared screen takes the pen's colours.
     let p = run(2, 3, b"\x1b[41m\x1b[?1049h")?;
     let cell = p.screen().cell(1, 2).ok_or("no cell")?;
-    assert_eq!(cell.bgcolor(), Color::Idx(1));
+    assert_eq!(cell.attributes().background(), Color::Idx(1));
     // Each screen has its own saved cursor, which a clear keeps.
     let p = run(1, 2, b"x\x1b[?1049h\x1b[?1049h\x1b[?1048l")?;
     assert_eq!(p.screen().cursor_position(), (0, 1));
@@ -1105,7 +1147,7 @@ fn switching_screens_keeps_the_cursor() -> Result {
 #[test]
 fn each_screen_saves_its_own_pen_and_character_sets() -> Result {
     let p = run(2, 8, b"a\x1b[1m\x1b[?1049h\x1b[0m\x1b7b\x1b[?1049lX")?;
-    assert!(p.screen().cell(0, 1).ok_or("no cell")?.bold());
+    assert!(p.screen().cell(0, 1).ok_or("no cell")?.attributes().bold());
     let p = run(1, 8, b"\x1b(0\x1b7\x1b(B\x1b[?1047h\x1b7\x1b[?1047l\x1b8q")?;
     assert_eq!(lines(&p), ["\u{2500}"]);
     let p = run(
@@ -1114,7 +1156,7 @@ fn each_screen_saves_its_own_pen_and_character_sets() -> Result {
         b"\x1b[2;3H\x1b[1m\x1b7\x1b[0m\x1b[H\x1b[?1047h\x1b[!p\x1b[?1047l\x1b8X",
     )?;
     assert_eq!(p.screen().cursor_position(), (1, 3));
-    assert!(p.screen().cell(1, 2).ok_or("no cell")?.bold());
+    assert!(p.screen().cell(1, 2).ok_or("no cell")?.attributes().bold());
     Ok(())
 }
 
@@ -1141,7 +1183,7 @@ fn invalid_utf8_prints_a_replacement_character() -> Result {
     // Cut off by ESC, which still begins its sequence.
     let p = run(1, 12, b"a\xe7\x1b[1mb")?;
     assert_eq!(lines(&p), ["a\u{fffd}b"]);
-    assert!(p.screen().cell(0, 2).ok_or("no cell")?.bold());
+    assert!(p.screen().cell(0, 2).ok_or("no cell")?.attributes().bold());
     // Across writes: a sequence completed later is one character, one
     // cut off later is U+FFFD.
     let mut p = Parser::new(Size::new(1, 12)?, 0)?;
@@ -1185,8 +1227,11 @@ fn parameters_past_the_32nd_are_ignored_and_the_sequence_runs() -> Result {
         for p in [at_once, split] {
             let c = p.screen().cell(0, 0).ok_or("no cell")?;
             assert_eq!(c.contents(), "X", "{sgr:?}");
-            assert!(c.bold() && c.underline() && !c.inverse(), "{sgr:?}");
-            assert!(!c.dim() && !c.hidden(), "{sgr:?}");
+            assert!(
+                c.attributes().bold() && c.attributes().underline() && !c.attributes().inverse(),
+                "{sgr:?}"
+            );
+            assert!(!c.attributes().dim() && !c.attributes().hidden(), "{sgr:?}");
         }
     }
     Ok(())
@@ -1238,7 +1283,7 @@ fn a_prepend_character_joins_what_follows_it() -> Result {
     for p in [at_once, split] {
         let cells: Vec<String> = (0..12)
             .filter_map(|x| p.screen().cell(0, x))
-            .filter(|c| !c.is_wide_continuation() && c.has_contents())
+            .filter(|c| !c.is_wide_continuation() && !c.contents().is_empty())
             .map(|c| c.contents().to_owned())
             .collect();
         assert_eq!(cells, ["a", "b", "\u{600}c", "\u{600}\u{915}", "d"]);
@@ -1272,7 +1317,7 @@ fn a_wide_glyph_with_no_room_is_not_printed() -> Result {
     assert_eq!(lines(&p), ["a", "", ""]);
     assert_eq!(p.screen().cursor_position(), (1, 0));
     assert!(!p.screen().pending_wrap());
-    assert!(p.screen().row_wrapped(0));
+    assert!(p.screen().row_continues(0));
     Ok(())
 }
 
@@ -1460,7 +1505,7 @@ fn a_cluster_widened_is_placed_as_a_wide_glyph() -> Result {
     let p = run(1, 6, format!("x\u{4e00}\r\x1b[41m{heart}").as_bytes())?;
     assert_eq!(cells(&p), [heart, "", "", "", "", ""]);
     let orphan = p.screen().cell(0, 2).ok_or("cell 2")?;
-    assert_eq!(orphan.bgcolor(), Color::Idx(1));
+    assert_eq!(orphan.attributes().background(), Color::Idx(1));
     Ok(())
 }
 

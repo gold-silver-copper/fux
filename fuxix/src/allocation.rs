@@ -56,18 +56,6 @@ pub trait Allocation {
         self.release(old)
     }
 
-    /// Copy text without an uncharged temporary or amortized growth.
-    fn string(&mut self, text: &str) -> Result<String, Self::Error> {
-        self.charge(text.len())?;
-        let mut out = String::new();
-        if out.try_reserve_exact(text.len()).is_err() {
-            self.release(text.len())?;
-            return Err(Self::exceeded());
-        }
-        out.push_str(text);
-        Ok(out)
-    }
-
     /// Append text, including the peak replacement capacity.
     fn text(&mut self, out: &mut String, text: &str) -> Result<(), Self::Error> {
         let needed = out

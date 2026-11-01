@@ -4,7 +4,10 @@
 //! written rule tailors it), plus cell-operation fixtures and contracts.
 #![allow(dead_code, reason = "each user takes the models it needs")]
 
-use fux_vt::{Attributes, CLUSTER_CAPACITY, CellRef, Cells, Color};
+use fux_vt::{Attributes, CellRef, Cells, Color};
+
+/// The most bytes a cell's cluster keeps.
+const CLUSTER_CAPACITY: usize = 128;
 
 use std::collections::VecDeque;
 use unicode_segmentation::UnicodeSegmentation;

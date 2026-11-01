@@ -202,8 +202,16 @@ fn error_notice(client: &crate::fixture::Client) -> Option<String> {
     let bar = window.row(client.rows.saturating_sub(1))?;
     let text: String = bar
         .cells()
-        .filter(|c| c.fgcolor() == fux_vt::Color::Idx(9) && !c.is_wide_continuation())
-        .map(|c| if c.has_contents() { c.contents() } else { " " })
+        .filter(|c| {
+            c.attributes().foreground() == fux_vt::Color::Idx(9) && !c.is_wide_continuation()
+        })
+        .map(|c| {
+            if c.contents().is_empty() {
+                " "
+            } else {
+                c.contents()
+            }
+        })
         .collect();
     let text = text.trim().to_owned();
     (!text.is_empty()).then_some(text)
@@ -539,8 +547,10 @@ fn has_notice(client: &crate::fixture::Client) -> bool {
     window
         .row(client.rows.saturating_sub(1))
         .is_some_and(|bar| {
-            bar.cells()
-                .any(|c| matches!(c.fgcolor(), fux_vt::Color::Idx(9 | 11)) && c.has_contents())
+            bar.cells().any(|c| {
+                matches!(c.attributes().foreground(), fux_vt::Color::Idx(9 | 11))
+                    && !c.contents().is_empty()
+            })
         })
 }
 

@@ -382,7 +382,7 @@ impl Through {
                 Outgoing::To(client, ToAttached::Exit(reason)) if client == self.client => {
                     return Err(format!("fux detached the client: {reason}"));
                 }
-                Outgoing::Shutdown(reason) => return Err(format!("fux stopped: {reason}")),
+                Outgoing::Shutdown(reason, _) => return Err(format!("fux stopped: {reason}")),
                 Outgoing::To(
                     _,
                     ToAttached::Paint(_)
@@ -1386,7 +1386,9 @@ impl Drop for Client {
         {
             let _ = self.from.recv_timeout(Duration::from_millis(20));
         }
-        if let Some(pid) = fuxix::process::Pid::of(&self.child)
+        if let Some(pid) = i32::try_from(self.child.id())
+            .ok()
+            .and_then(fuxix::process::Pid::from_raw)
             && matches!(self.child.try_wait(), Ok(None))
         {
             let _ = fuxix::process::kill_group(pid, fuxix::process::Signal::Kill);

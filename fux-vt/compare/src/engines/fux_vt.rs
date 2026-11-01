@@ -50,18 +50,19 @@ fn color(c: fux_vt::Color) -> Color {
 }
 
 fn cell(c: &CellRef<'_>) -> Cell {
+    let a = c.attributes();
     let style = Style {
-        fg: color(c.fgcolor()),
-        bg: color(c.bgcolor()),
-        underline_color: color(c.underline_color()),
-        bold: c.bold(),
-        dim: c.dim(),
-        italic: c.italic(),
-        underline: c.underline(),
-        blink: c.blink() != Blink::None,
-        inverse: c.inverse(),
-        hidden: c.hidden(),
-        strikeout: c.strikeout(),
+        fg: color(a.foreground()),
+        bg: color(a.background()),
+        underline_color: color(a.underline_color()),
+        bold: a.bold(),
+        dim: a.dim(),
+        italic: a.italic(),
+        underline: a.underline(),
+        blink: a.blink() != Blink::None,
+        inverse: a.inverse(),
+        hidden: a.hidden(),
+        strikeout: a.strikeout(),
     };
     let width = if c.is_wide_continuation() {
         Width::Tail
@@ -70,8 +71,7 @@ fn cell(c: &CellRef<'_>) -> Cell {
     } else {
         Width::Narrow
     };
-    let text = if c.has_contents() { c.contents() } else { "" };
-    Cell::new(text, width, style)
+    Cell::new(c.contents(), width, style)
 }
 
 /// The bytes of history's budget beside its rows, with any history, for
@@ -121,9 +121,7 @@ impl Engine for Vt {
     }
 
     fn process(&mut self, bytes: &[u8]) -> Result<(), String> {
-        self.parser
-            .process_with(bytes, &mut self.heard)
-            .map_err(|e| format!("fux-vt: {e}"))
+        crate::feed(&mut self.parser, bytes, &mut self.heard).map_err(|e| format!("fux-vt: {e}"))
     }
 
     fn resize(&mut self, rows: u16, cols: u16) -> Result<(), String> {
@@ -139,24 +137,28 @@ impl Engine for Vt {
         let (rows, cols) = s.size().into();
         let cursor = s.cursor_position();
         let pending_wrap = s.pending_wrap();
+        let window = s.window();
+        // fux-vt tells no prompt marks (`SUBJECT`'s `Can`).
         let screen = (0..rows)
-            .map(|y| Line {
-                unread_from: None,
-                prompt: s.starts_prompt(y),
-                cells: (0..cols)
-                    .map(|x| {
-                        let link = s
-                            .link(y, x)
-                            .map(|l| (l.uri().to_owned(), l.key().to_string()));
-                        s.cell(y, x)
-                            .map_or_else(
-                                || Cell::new("", Width::Narrow, Style::default()),
-                                |c| cell(&c),
-                            )
-                            .linked(link)
-                    })
-                    .collect(),
-                wrapped: s.row_wrapped(y),
+            .map(|y| {
+                let row = window.row(y);
+                Line {
+                    unread_from: None,
+                    prompt: false,
+                    cells: (0..usize::from(cols))
+                        .map(|x| {
+                            let link = (row.as_ref().and_then(|r| r.link(x)))
+                                .map(|l| (l.uri().to_owned(), l.key().to_string()));
+                            (row.as_ref().and_then(|r| r.cell(x)))
+                                .map_or_else(
+                                    || Cell::new("", Width::Narrow, Style::default()),
+                                    |c| cell(&c),
+                                )
+                                .linked(link)
+                        })
+                        .collect(),
+                    wrapped: row.is_some_and(|r| r.continues()),
+                }
             })
             .collect();
         let history = s
@@ -167,9 +169,9 @@ impl Engine for Vt {
                     unread_from: None,
                     prompt: false,
                     cells: row.cells().map(|c| cell(&c)).collect(),
-                    wrapped: row.wrapped(),
+                    wrapped: row.continues(),
                 };
-                (line.text(), row.wrapped())
+                (line.text(), row.continues())
             })
             .collect();
         Ok(Snapshot {
@@ -206,8 +208,6 @@ impl Engine for Vt {
 /// and the protected cells by what a selective erase of the whole screen
 /// leaves (DECSED, `CSI ? 2 J`): those holding text.
 fn device(parser: &Parser) -> Device {
-    struct Deaf;
-    impl fux_vt::Sink for Deaf {}
     let s = parser.screen();
     let (rows, cols) = s.size().into();
     let renditions = (0..rows)
@@ -222,10 +222,10 @@ fn device(parser: &Parser) -> Device {
     let mut tab_stops = Vec::new();
     // Margins and origin mode off first, as the stops are the screen's,
     // and the row made single width, whose end would stop the tabs.
-    let _ = tabs.process_with(b"\x1b[?6l\x1b[?69l\x1b[r\x1b#5\r", &mut Deaf);
+    let _ = crate::feed_deaf(&mut tabs, b"\x1b[?6l\x1b[?69l\x1b[r\x1b#5\r");
     for _ in 0..cols {
         let before = tabs.screen().cursor_position().1;
-        let _ = tabs.process_with(b"\t", &mut Deaf);
+        let _ = crate::feed_deaf(&mut tabs, b"\t");
         let at = tabs.screen().cursor_position().1;
         if at <= before || at.saturating_add(1) >= cols {
             break;
@@ -233,11 +233,14 @@ fn device(parser: &Parser) -> Device {
         tab_stops.push(at);
     }
     let mut erased = parser.clone();
-    let _ = erased.process_with(b"\x1b[?2J", &mut Deaf);
-    let e = erased.screen();
+    let _ = crate::feed_deaf(&mut erased, b"\x1b[?2J");
+    let e = erased.screen().window();
     let protected = (0..rows)
         .flat_map(|y| (0..cols).map(move |x| (y, x)))
-        .filter(|&(y, x)| e.cell(y, x).is_some_and(|c| !c.contents().is_empty()))
+        .filter(|&(y, x)| {
+            (e.row(y).and_then(|r| r.cell(usize::from(x))))
+                .is_some_and(|c| !c.contents().is_empty())
+        })
         .collect();
     Device {
         // Ps 0 and 1 are one shape, a blinking block, as 1; the terminal's

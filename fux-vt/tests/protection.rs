@@ -16,6 +16,11 @@ type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
 mod lines;
 use lines::lines;
 
+#[path = "corpus/feed.rs"]
+#[expect(dead_code, reason = "each test binary uses some of the helpers")]
+mod feed;
+use feed::{Feed, Look};
+
 /// The screen's two rows after `bytes`, on a screen of two rows of ten.
 fn after(bytes: &str) -> Result<Vec<String>> {
     let mut parser = Parser::new(Size::new(2, 10)?, 0)?;
@@ -134,14 +139,16 @@ fn selective_erase_leaves_each_position_its_rendition() -> Result {
         for x in [0, 1] {
             let erased = cell(x).is_some_and(|c| {
                 c.contents() == " "
-                    && c.fgcolor() == Color::Idx(1)
-                    && c.bgcolor() == Color::Idx(4)
+                    && c.attributes().foreground() == Color::Idx(1)
+                    && c.attributes().background() == Color::Idx(4)
                     && c.attributes().bold()
             });
             assert!(erased, "{bytes:?}, column {x}");
         }
         assert_eq!(lines(&p), ["  c", ""], "{bytes:?}");
-        let empty = cell(3).is_some_and(|c| !c.has_contents() && c.bgcolor() == Color::Default);
+        let empty = cell(3).is_some_and(|c| {
+            c.contents().is_empty() && c.attributes().background() == Color::Default
+        });
         assert!(empty, "{bytes:?}");
     }
     Ok(())
@@ -208,7 +215,7 @@ fn protection_goes_with_the_glyph() -> Result {
     let blue = |x: u16| {
         p.screen()
             .cell(0, x)
-            .map(|c| (c.has_contents(), c.bgcolor()))
+            .map(|c| (!c.contents().is_empty(), c.attributes().background()))
     };
     assert_eq!(blue(2), Some((false, Color::Idx(4))));
     Ok(())

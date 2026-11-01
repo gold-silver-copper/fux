@@ -19,11 +19,8 @@ fn stored_cells_read_back_as_they_were_made() {
         assert!(cells.set(i, CellRef::new(text, true, attributes)));
         let view = cells.get(i).unwrap_or_default();
         assert_eq!(view.contents(), text);
-        assert!(view.is_wide() && view.has_contents() && !view.is_wide_continuation());
+        assert!(view.is_wide() && !view.contents().is_empty() && !view.is_wide_continuation());
         assert_eq!(view.attributes(), attributes);
-        assert!(view.bold() && view.dim() && view.italic() && view.underline() && view.inverse());
-        assert!(view.hidden() && view.strikeout() && view.blink() == Blink::Slow);
-        assert_eq!(view.underline_color(), Color::Idx(4));
     }
 }
 
@@ -43,7 +40,7 @@ fn cells_past_a_locator_s_reach_say_their_text_was_not_kept() -> Result<(), Erro
         assert_eq!(cells.get(i).map(|c| c.contents()), Some(cluster.as_str()));
         i = i.saturating_add(1);
     }
-    assert!(i > 500_000 && cells.text_len() <= 1 << 24, "{i} kept");
+    assert!(i > 500_000 && cells.text.long_len() <= 1 << 24, "{i} kept");
     assert!(!set(&mut cells, i.saturating_add(1)) && !set(&mut cells, i.saturating_add(2)));
     Ok(())
 }
@@ -105,7 +102,10 @@ fn owned_cells_copy_text_from_wherever_it_is_and_compare_by_it() {
     assert_eq!(b.get(1).map(|c| c.contents()), Some(family));
     b.set_attributes(1, Attributes::default().with_bold(true));
     assert_ne!(a, b);
-    assert!(b.get(1).is_some_and(|c| c.bold() && c.contents() == family));
+    assert!(
+        b.get(1)
+            .is_some_and(|c| c.attributes().bold() && c.contents() == family)
+    );
     b.fill(0..4, CellRef::default());
     assert_eq!(b, Cells::new(4).unwrap_or_default());
     assert_eq!(b.range(2..9).len(), 2);

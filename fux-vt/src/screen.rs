@@ -7,7 +7,7 @@ use crate::parser::Chars;
 use crate::unicode::{Cluster, Properties};
 use crate::{
     Attributes, Blink, CellRef, Color, Error, Feature, Hyperlink, Identity, LineRendition, Mark,
-    Options, Reply, Rgb, Row, RowId, Rows, SgrForm, UnderlineStyle, Window,
+    Options, Reply, Rgb, RowId, Rows, SgrForm, UnderlineStyle, Window,
     geometry::{Size, Span},
     grid::{Cursor, Erase, Grid, Scroll, put},
     palette::Colours,
@@ -551,9 +551,11 @@ pub struct Screen {
     /// The character and the copies of it a REP stopped at the budget
     /// left, made first by the next call (`resume_repeat`).
     left: Option<(char, usize)>,
-    /// Pictures placed on either grid (`pictures`), the last one's number,
-    /// and what the host's terminal draws.
+    /// Pictures placed on either grid (`pictures`), and what the host's
+    /// terminal draws.
     pictures: VecDeque<pictures::Placement>,
+    /// The last picture's number (`Placement::id`).
+    #[cfg(test)]
     picture_ids: u64,
     graphics: Graphics,
     /// The most bytes the pictures may hold (`PICTURE_BYTES`).
@@ -626,7 +628,7 @@ pub struct Screen {
 impl Screen {
     /// Checks every invariant its state alone shows, and says which checks
     /// ran and the faults found. The work counters do not see it.
-    pub fn check(&self) -> crate::Checked {
+    pub(crate) fn check(&self) -> crate::Checked {
         crate::check::unseen(|| {
             let mut report = crate::Checked::default();
             for (which, grid) in [("primary", &self.primary), ("alternate", &self.alternate)] {
@@ -804,6 +806,7 @@ impl Screen {
             // Its cells are made when a program first shows it.
             alternate: Grid::unmade(size, &mut next_id, 1)?,
             pictures: VecDeque::new(),
+            #[cfg(test)]
             picture_ids: 0,
             graphics: Graphics::default(),
             picture_budget: PICTURE_BYTES,
@@ -984,13 +987,13 @@ impl Screen {
         self.terminal.cursor_shape
     }
     /// The top and bottom margins (DECSTBM), zero-based and inclusive.
-    pub fn scroll_region(&self) -> (u16, u16) {
+    pub(crate) fn scroll_region(&self) -> (u16, u16) {
         let lines = self.grid().lines;
         (lines.first(), lines.last())
     }
     /// The left and right margins (DECSLRM, with DECLRMM set), zero-based
     /// and inclusive.
-    pub fn left_right_margins(&self) -> (u16, u16) {
+    pub(crate) fn left_right_margins(&self) -> (u16, u16) {
         let columns = self.grid().columns();
         (columns.first(), columns.last())
     }
@@ -1010,7 +1013,7 @@ impl Screen {
     /// The xterm modifyOtherKeys level set by `CSI > 4 ; Pv m`, `None` when
     /// it is off (`Pv` 0 or absent, or past 3, which ctlseqs gives no keys).
     /// Always `None` without [`Feature::KittyKeyboard`].
-    pub fn modify_other_keys(&self) -> Option<OtherKeysLevel> {
+    pub(crate) fn modify_other_keys(&self) -> Option<OtherKeysLevel> {
         self.terminal.modify_other_keys
     }
     /// The one-based cursor position a DSR 6n or DECXCPR reports, counted
@@ -1023,29 +1026,6 @@ impl Screen {
         // In origin mode from the left margin, as xterm reports it.
         let col = col.saturating_sub(g.addressed().1.first());
         (u32::from(g.cursor_line()) + 1, u32::from(col) + 1)
-    }
-    /// The pen: the colours and rendition of the next glyph printed.
-    pub fn attributes(&self) -> Attributes {
-        self.attributes
-    }
-    /// The cell at `row`, `col` of the screen.
-    pub fn cell(&self, row: u16, col: u16) -> Option<CellRef<'_>> {
-        self.grid().cell(row, col)
-    }
-    /// The hyperlink of the cell at `row`, `col` of the screen (see
-    /// [`Row::link`]). Always `None` without [`Feature::Hyperlinks`].
-    pub fn link(&self, row: u16, col: u16) -> Option<&Hyperlink> {
-        self.grid().live_row(row)?.link(usize::from(col))
-    }
-    /// The hyperlink the program has open (`OSC 8 ; params ; URI ST`), which
-    /// glyphs printed now take: its URI and `id`.
-    pub fn hyperlink(&self) -> Option<(&str, Option<&str>)> {
-        self.link.as_ref().map(|link| (link.uri(), link.id()))
-    }
-    /// Whether row `row` of the screen is where a prompt starts (see
-    /// [`Row::starts_prompt`]).
-    pub fn starts_prompt(&self, row: u16) -> bool {
-        self.grid().live_row(row).is_some_and(|r| r.starts_prompt())
     }
 
     /// The colour palette entry `index` shows if the program changed it
@@ -1143,11 +1123,6 @@ impl Screen {
             self.prompted();
         }
     }
-    /// Whether row `row` of the screen is soft-wrapped: its line goes on in
-    /// the next row.
-    pub fn row_wrapped(&self, row: u16) -> bool {
-        self.grid().live_wrapped(row)
-    }
     /// The line rendition of row `row` of the screen (DECDWL, DECDHL).
     pub fn line_rendition(&self, row: u16) -> LineRendition {
         let g = self.grid();
@@ -1159,10 +1134,6 @@ impl Screen {
     /// How many rows of history the screen keeps now.
     pub fn history_len(&self) -> usize {
         self.grid().history_len()
-    }
-    /// The retained row with identity `id`, if it is still kept.
-    pub fn row_by_id(&self, id: RowId) -> Option<Row<'_>> {
-        self.grid().row_by_id(id)
     }
     /// The rows retained, history's oldest first, then the screen's.
     pub fn rows(&self) -> Rows<'_> {
@@ -1194,14 +1165,6 @@ impl Screen {
     pub fn mark(&self) -> Mark {
         Mark(self.version)
     }
-    /// The screen's version: one more for each call that processes
-    /// output (whether or not it changed a cell), each resize, and each
-    /// change to its history (`clear_history`, or `set_history_bytes` when rows are evicted). Each
-    /// row keeps the one that last changed it (`Row::version`). How the
-    /// output was cut into calls changes it; `revision` does not.
-    pub fn version(&self) -> u64 {
-        self.version
-    }
     /// The screen's revision: the bytes of output read, one held back
     /// while a call has stopped at its budget with work left, plus one for
     /// each resize to another size and each change to its history
@@ -1212,28 +1175,10 @@ impl Screen {
     pub fn revision(&self) -> u64 {
         self.revision
     }
-    /// Whether the screen may have changed since `mark`: true after any
-    /// processing at all, as the README says; false, nothing changed.
-    pub fn changed_since(&self, mark: Mark) -> bool {
-        mark.0 != self.version
-    }
     /// Whether a reader of `mark` must read every row again: a scroll,
     /// resize, reset or switch of screens happened since.
     pub fn full_refresh_since(&self, mark: Mark) -> bool {
         mark.0 < self.structural || mark.0 > self.version
-    }
-    /// Independent readers can use the same mark; consuming this iterator does
-    /// not acknowledge or clear changes for anyone else.
-    pub fn dirty_rows_since(&self, mark: Mark) -> impl Iterator<Item = Row<'_>> {
-        let full = self.full_refresh_since(mark);
-        self.rows().filter(move |r| full || r.version > mark.0)
-    }
-    /// Retained allocation in cells, for capacity/plateau diagnostics.
-    pub fn storage_cells(&self) -> usize {
-        // Each is a Vec's capacity, far below the limit of a usize.
-        self.primary
-            .storage_cells()
-            .saturating_add(self.alternate.storage_cells())
     }
     /// How many style sweeps both grids have made, with the `checks`
     /// feature: for the bounds tests.

@@ -173,10 +173,12 @@ fn a_started_server_keeps_nothing_of_its_client() -> Outcome {
     let held = here.join("held");
     let started = {
         let _guard = spawning()?;
-        let file = std::fs::File::create(&held).map_err(e)?;
-        let _leaked = fuxix::io::duplicate_inheritable(&file).map_err(e)?;
-        Command::new(FUX)
-            .arg("start")
+        // A shell that leaks a descriptor into its child.
+        Command::new("/bin/sh")
+            .arg("-c")
+            .arg("exec 9>\"$0\" && exec \"$1\" start")
+            .arg(&held)
+            .arg(FUX)
             .current_dir(&here)
             .env("XDG_RUNTIME_DIR", &rt)
             .env("FUX_SOCKET", rt.join("fux").join("d.sock"))

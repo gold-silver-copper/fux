@@ -1,6 +1,14 @@
 use super::*;
 use crate::Attributes;
 
+impl Text {
+    /// Bytes of long clusters kept, live or left behind. Short clusters
+    /// are not counted.
+    pub(crate) fn long_len(&self) -> usize {
+        self.long.len()
+    }
+}
+
 /// The texts of a row's cells, joined by bars.
 fn texts(line: &Line<'_>) -> String {
     (0..line.cells.len())
@@ -38,7 +46,11 @@ fn cells_read_back_what_they_were_made_with() {
     for (cell, contents, wide, continuation) in cells {
         let read = cell.read(&text, &styles);
         assert_eq!(read.contents(), contents, "{cell:?}");
-        assert_eq!(read.has_contents(), !contents.is_empty(), "{cell:?}");
+        assert_eq!(
+            !read.contents().is_empty(),
+            !contents.is_empty(),
+            "{cell:?}"
+        );
         assert_eq!(
             (read.is_wide(), read.is_wide_continuation()),
             (wide, continuation)

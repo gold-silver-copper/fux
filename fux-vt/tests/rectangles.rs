@@ -11,6 +11,11 @@ type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
 mod lines;
 use lines::lines;
 
+#[path = "corpus/feed.rs"]
+#[expect(dead_code, reason = "each test binary uses some of the helpers")]
+mod feed;
+use feed::{Feed, Look};
+
 /// Four rows of `abcdef`, `ghijkl`, `mnopqr` and `stuvwx`, then `bytes`,
 /// on a screen of four rows of six.
 fn after(bytes: &str) -> Result<Parser> {
@@ -113,7 +118,7 @@ fn decera_and_decsera_erase_a_rectangle() -> Result {
     let screen = parser.screen();
     let erased = screen.cell(0, 0);
     assert!(erased.is_some_and(|c| c.contents() == " " && c.attributes().bold()));
-    assert!(screen.cell(1, 4).is_some_and(|c| !c.has_contents()));
+    assert!(screen.cell(1, 4).is_some_and(|c| c.contents().is_empty()));
     // DECERA "clearing all character attributes": each character becomes
     // a space, an occupied position, and "any unoccupied character
     // positions remain unoccupied".
@@ -122,7 +127,7 @@ fn decera_and_decsera_erase_a_rectangle() -> Result {
     let space = |c: &fux_vt::CellRef| c.contents() == " " && !c.attributes().bold();
     assert!(screen.cell(0, 0).is_some_and(|c| space(&c)));
     assert!(screen.cell(1, 2).is_some_and(|c| space(&c)));
-    assert!(screen.cell(1, 4).is_some_and(|c| !c.has_contents()));
+    assert!(screen.cell(1, 4).is_some_and(|c| c.contents().is_empty()));
     Ok(())
 }
 
@@ -134,7 +139,7 @@ fn rectangles_keep_soft_wraps() -> Result {
     for op in ["\x1b[88;1;1;1;3$x", "\x1b[1;1;1;3$z", "\x1b[1;1;1;3${"] {
         let mut parser = Parser::new(Size::new(2, 3)?, 0)?;
         parser.process(format!("abcdef{op}").as_bytes())?;
-        let rows: Vec<bool> = parser.screen().rows().map(|r| r.wrapped()).collect();
+        let rows: Vec<bool> = parser.screen().rows().map(|r| r.continues()).collect();
         assert_eq!(rows, [true, false], "{op:?}");
     }
     Ok(())
@@ -204,15 +209,18 @@ fn deccra_blanks_a_wide_glyph_it_cuts() -> Result {
 /// blink, inverse)`, `None` for an unoccupied position.
 fn renditions(p: &Parser, y: u16, cols: std::ops::Range<u16>) -> Vec<Option<[bool; 4]>> {
     cols.map(|x| {
-        p.screen().cell(y, x).filter(|c| c.has_contents()).map(|c| {
-            let a = c.attributes();
-            [
-                a.bold(),
-                a.underline(),
-                a.blink() != fux_vt::Blink::None,
-                a.inverse(),
-            ]
-        })
+        p.screen()
+            .cell(y, x)
+            .filter(|c| !c.contents().is_empty())
+            .map(|c| {
+                let a = c.attributes();
+                [
+                    a.bold(),
+                    a.underline(),
+                    a.blink() != fux_vt::Blink::None,
+                    a.inverse(),
+                ]
+            })
     })
     .collect()
 }

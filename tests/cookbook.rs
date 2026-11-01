@@ -126,7 +126,10 @@ fn run(
             Ok(None) | Err(_) => break -1,
         }
     };
-    if let Some(group) = fuxix::process::Pid::of(&child) {
+    if let Some(group) = i32::try_from(child.id())
+        .ok()
+        .and_then(fuxix::process::Pid::from_raw)
+    {
         let _ = fuxix::process::kill_group(group, fuxix::process::Signal::Kill);
     }
     let _ = child.wait();

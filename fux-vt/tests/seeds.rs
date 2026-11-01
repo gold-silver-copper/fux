@@ -6,8 +6,8 @@
 //! seed exercises the limit; whether fux-vt stays within it is the bounds
 //! suite's row (`tests/bounds.rs`).
 //!
-//! A row whose reproducer is a host call (a clone, a picture built or
-//! encoded, a size, a refused allocation, an encoder) has its seed's host
+//! A row whose reproducer is a host call (a clone, a picture encoded, a
+//! size, a refused allocation, an encoder) has its seed's host
 //! calls in `reaches`, and in `deep`'s format where that target makes the
 //! call. A row whose bound no defect ever broke (kept by a guard) says so,
 //! "a guard: no defect", beside its seed.
@@ -18,8 +18,15 @@
 use std::path::{Path, PathBuf};
 
 use fux_vt::keys::decode::{Decoder, Input};
-use fux_vt::sixel::Picture;
 use fux_vt::{Event, Feature, Options, Parser, Sink, Size};
+
+/// The paste limit the tests' decoders keep.
+const PASTE_LIMIT: usize = 64 * 1024;
+
+#[path = "corpus/feed.rs"]
+#[expect(dead_code, reason = "each test binary uses some of the helpers")]
+mod feed;
+use feed::{Feed, Look, cells_text};
 
 type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
 
@@ -104,7 +111,7 @@ fn text_shows(r: &Replayed, text: &str) -> std::result::Result<(), String> {
         .parser
         .screen()
         .main_rows()
-        .map(|row| row.cells_text())
+        .map(|row| cells_text(&row))
         .collect();
     ensure(shown.contains(text), || {
         format!("{text:?} not on the screen")
@@ -364,7 +371,7 @@ fn seeds() -> Vec<Seed> {
                 let s = r.parser.screen();
                 let newest = s.history_len().checked_sub(1).and_then(|i| s.rows().nth(i));
                 let full = newest
-                    .is_some_and(|row| row.cells_text().bytes().eq(std::iter::repeat_n(b'x', 200)));
+                    .is_some_and(|row| cells_text(&row).bytes().eq(std::iter::repeat_n(b'x', 200)));
                 ensure(full && s.history_len() > 5000, || {
                     format!("{} rows", s.history_len())
                 })
@@ -499,10 +506,12 @@ fn seeds() -> Vec<Seed> {
                 out.extend(repeat("\u{200b}".as_bytes(), 1000));
                 out
             },
-            // The row's long text at its limit, within 20 bytes.
+            // The row's text at its limit, within 20 bytes: its clusters'
+            // bytes.
             reaches: |r| {
                 let row = r.parser.screen().window().row(0);
-                let held = row.map_or(0, |row| row.text_len());
+                let held: usize =
+                    row.map_or(0, |row| row.cells().map(|c| c.contents().len()).sum());
                 ensure(held >= 6_500, || format!("{held} bytes of text"))
             },
             fuzz: Fuzz::Terminal,
@@ -633,7 +642,7 @@ fn seeds() -> Vec<Seed> {
             reaches: |r| {
                 let s = r.parser.screen();
                 let top = s.window().row(0).map(|row| row.id());
-                let found = top.is_some_and(|id| s.row_by_id(id).is_some());
+                let found = top.is_some_and(|id| s.row_index(id).is_some());
                 ensure(found && FULL.contains(&s.history_len()), || {
                     "not found".into()
                 })
@@ -698,30 +707,6 @@ fn seeds() -> Vec<Seed> {
             // Drawn, encoded by the host, let go by a budget of none, read
             // again (deep's `01 ESC \`, `f6`, `f4 00`, `f6`).
             fuzz: Fuzz::Deep(&[0x01, 0x1b, b'\\', 0xf6, 0xf4, 0x00, 0xf6]),
-        },
-        Seed {
-            name: "b07-picture-sizes",
-            row: "B07",
-            size: defaults,
-            prefix: Prefix::None,
-            bytes: Vec::new,
-            // `Picture::new` takes exactly w × h × 4 bytes and sides up to
-            // 4,096; an empty u32::MAX square, whose crop `encode` once
-            // never finished, is refused. Host calls only: `deep`
-            // makes no picture of its own.
-            reaches: |_| {
-                let made = |w: u32, h: u32, len: usize| Picture::new(w, h, vec![0; len]).is_some();
-                let all = [
-                    !made(u32::MAX, u32::MAX, 0),
-                    !made(5, 3, 59),
-                    made(5, 3, 60),
-                    !made(5, 3, 61),
-                    made(4096, 1, 4096 * 4),
-                    !made(4097, 1, 4097 * 4),
-                ];
-                ensure(all.iter().all(|ok| *ok), || format!("{all:?}"))
-            },
-            fuzz: Fuzz::None,
         },
         Seed {
             name: "b08-encode-colours",
@@ -828,11 +813,16 @@ fn seeds() -> Vec<Seed> {
             },
             // Past the parameters kept, the sequence still carried out
             // with those it kept (DEC STD 070: extra parameters are
-            // ignored): bold. A guard: no defect.
+            // ignored): bold, as the next glyph printed shows. A guard: no
+            // defect.
             reaches: |r| {
-                ensure(r.parser.screen().attributes().bold(), || {
-                    "the SGR was not carried out".into()
-                })
+                let mut parser = r.parser.clone();
+                parser.process(b"x").map_err(|e| e.to_string())?;
+                let bold = parser
+                    .screen()
+                    .cell(0, 0)
+                    .is_some_and(|c| c.attributes().bold());
+                ensure(bold, || "the SGR was not carried out".into())
             },
             fuzz: Fuzz::Terminal,
         },
@@ -935,17 +925,16 @@ fn seeds() -> Vec<Seed> {
             size: defaults,
             prefix: Prefix::None,
             bytes: Vec::new,
-            // `Cells::new` and `resize` past 64 Mi cells are refused, and
-            // `resize` leaves the cells as they were; `Cells::new(usize::
+            // `Cells::new` and `reset` past 64 Mi cells are refused, and
+            // `reset` leaves the cells as they were; `Cells::new(usize::
             // MAX)` once panicked. Host calls only.
             reaches: |_| {
                 let past = [(64 << 20) + 1, usize::MAX];
                 let refused = past.iter().all(|&len| {
                     let new = fux_vt::Cells::new(len).is_err();
-                    let resized = fux_vt::Cells::new(4).is_ok_and(|mut cells| {
-                        cells.resize(len, fux_vt::CellRef::default()).is_err() && cells.len() == 4
-                    });
-                    new && resized
+                    let reset = fux_vt::Cells::new(4)
+                        .is_ok_and(|mut cells| cells.reset(len).is_err() && cells.len() == 4);
+                    new && reset
                 });
                 ensure(refused, || "Cells past 64 Mi made".into())
             },
@@ -1025,16 +1014,16 @@ fn seeds() -> Vec<Seed> {
             row: "B45",
             size: defaults,
             prefix: Prefix::None,
-            bytes: Vec::new,
+            // Any motion reported, in SGR.
+            bytes: || b"\x1b[?1003;1006h".to_vec(),
             // The longest keys: a kitty report of the largest code points
             // with every modifier bit, and an SGR mouse report at the
             // largest position, each within 64 bytes, a maximum
-            // once stated nowhere. Host calls only.
-            reaches: |_| {
+            // once stated nowhere. Host calls after the bytes.
+            reaches: |r| {
                 use fux_vt::keys::encode::{KeyMode, Report, key_bytes};
-                use fux_vt::keys::mouse::{MouseAction, MouseButton, MouseEvent, mouse_bytes};
+                use fux_vt::keys::mouse::{MouseAction, MouseButton, MouseEvent, ScrollLines};
                 use fux_vt::keys::{Key, KeyPress, Keystroke, Kitty, Modifiers};
-                use fux_vt::{MouseProtocolEncoding, MouseProtocolMode};
                 let mods = Modifiers {
                     shift: true,
                     alt: true,
@@ -1054,7 +1043,7 @@ fn seeds() -> Vec<Seed> {
                     report: Report::AllKeysWithText,
                     backarrow: false,
                 };
-                let (mut key, mut mouse) = (Vec::new(), Vec::new());
+                let mut key = Vec::new();
                 key_bytes(stroke, mode, &mut key);
                 let event = MouseEvent {
                     action: MouseAction::Motion(Some(MouseButton::ALL[0])),
@@ -1062,12 +1051,14 @@ fn seeds() -> Vec<Seed> {
                     row: u16::MAX,
                     col: u16::MAX,
                 };
-                let (any, sgr) = (MouseProtocolMode::AnyMotion, MouseProtocolEncoding::Sgr);
-                mouse_bytes(event, any, sgr, &mut mouse);
-                let within = |out: &Vec<u8>| (1..=64).contains(&out.len());
-                ensure(within(&key) && within(&mouse), || {
-                    format!("{} and {} bytes", key.len(), mouse.len())
-                })
+                let lines = ScrollLines::new(1).ok_or("a line's scroll")?;
+                let reported = r.parser.screen().encode_mouse(event, lines);
+                let mouse: Vec<Vec<u8>> = reported.into_iter().flatten().collect();
+                let within = |out: &[u8]| (1..=64).contains(&out.len());
+                ensure(
+                    within(&key) && mouse.len() == 1 && mouse.iter().all(|m| within(m)),
+                    || format!("{} bytes, and {:?}", key.len(), mouse.iter().map(Vec::len)),
+                )
             },
             fuzz: Fuzz::None,
         },
@@ -1159,7 +1150,8 @@ fn replay(seed: &Seed) -> Result<Replayed> {
     let bytes = (seed.bytes)();
     let (before, mut events, mut inputs) = (fux_vt::work_spent(), Events::default(), Vec::new());
     if seed.fuzz == Fuzz::Keys {
-        let mut decoder = Decoder::new(fux_vt::keys::decode::Timing::new(35, 5000));
+        let mut decoder =
+            Decoder::with_paste_limit(fux_vt::keys::decode::Timing::new(35, 5000), PASTE_LIMIT);
         for piece in pieces(&bytes) {
             decoder.bytes(piece, &mut inputs);
         }

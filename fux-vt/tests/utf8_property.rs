@@ -24,6 +24,11 @@ use lines::lines;
 mod test_rng;
 use test_rng::Rng;
 
+#[path = "corpus/feed.rs"]
+#[expect(dead_code, reason = "each test binary uses some of the helpers")]
+mod feed;
+use feed::Feed;
+
 /// Well-formed characters one column wide in every width rule (none of
 /// them East Asian ambiguous, wide or combining), of each encoded length.
 const WIDE_ONE: &[char] = &['ĉ', 'ա', 'א', 'ก', 'ｱ', '\u{10348}', '\u{1d400}'];

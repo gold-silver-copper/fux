@@ -637,7 +637,7 @@ fn launch(
 
 /// Ends `child` and its process group.
 fn stop(child: &mut Child) {
-    if let Some(pid) = Pid::of(child) {
+    if let Some(pid) = i32::try_from(child.id()).ok().and_then(Pid::from_raw) {
         let _ = fuxix::process::kill_group(pid, Signal::Kill);
     }
     let _ = child.kill();
@@ -688,7 +688,7 @@ fn parse<S: fux_vt::Sink + Default>(
     let mut sink = S::default();
     // The parser refuses only allocations past its limits, and output goes
     // on regardless, as in fux.
-    let _ = parser.process_with(bytes, &mut sink);
+    let _ = crate::feed(parser, bytes, &mut sink);
     take(&mut sink)
 }
 

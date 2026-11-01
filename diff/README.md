@@ -129,36 +129,36 @@ commit it.
 Each side is read into one model (`oracle/src/model.rs`) through fux-vt's
 public API (`oracle/src/side.rs`) after every step:
 
-- **The screen's state:** size, cursor, pending wrap, every mode both
-  sides have, by name (all but DECHCCM, which the DECRQM probe compares), both
-  pairs of margins (`scroll_region`, `left_right_margins`), the pen, the
-  open link, history length, `storage_cells`, marks, `resize_report`, the
-  options reported, the 256 palette entries and the dynamic colours as the
-  program set them, the pictures shown (number, place, size and a sample
-  of their pixels), the live rows of the screen not in use (identity, wrap
-  and their cells hashed).
+- **The screen's state:** size, cursor, pending wrap, every mode, the key
+  encoding, history length, the mark, `resize_report`, the window's size,
+  the 256 palette entries and the dynamic colours as the program set them,
+  the pictures shown (place, size and a sample of their pixels), the live
+  rows of the screen not in use (identity, whether each line goes on, and
+  their cells hashed).
 - **The host's calls,** as steps between outputs (`Step::Host`): history
   budgets, `clear_history`, and the host's palette and graphics.
-- **Every retained row:** identity and version, soft wrap, prompt mark,
-  length, `text_len`, `has_links`; each cell's text, width, attributes,
-  colours and link, through every getter.
-- **Marks** (`changed_since`, `full_refresh_since`, dirty rows), **rows by
-  identity** (`row_by_id`, `Row::index`, including rows since dropped),
-  and **copies** (`Window::text`, random windows and selections).
+- **Every retained row:** identity and version, whether its line goes on
+  (`Row::continues`), length, `has_links`; each cell's text, halves,
+  attributes and link; and whether `Window::row` and `Row::cell` agree.
+- **Marks** (whether the mark moved, `full_refresh_since`, the rows
+  `Row::changed_since` names) and **rows by identity** (`row_index`,
+  including rows since dropped).
 - **Everything the host is given,** in order: replies byte for byte, events,
   unhandled sequences, each call's result and error.
 - **Probes,** on clones, for what no accessor shows: every query's reply
   (DECRQM, DSR, DA1/2/3, XTVERSION, DECRQSS, DECRQCRA, colour queries and
-  more), the saved cursor, character sets, tab stops, the cluster the next
+  more), the saved cursor and pen, character sets, tab stops, both pairs
+  of margins (where origin mode's corners are), the pen and the open link
+  (a glyph printed), what a selective erase leaves, the cluster the next
   character would join, REP, the kitty keyboard stacks.
-- **The standalone types:** `Cells` under random edits, `CellRef::new`,
-  `continues_cluster`, and the constants and limits.
+- **The standalone types:** `Cells` under random edits, `CellRef::new`
+  and `continues_cluster`.
 
 Not compared: allocation failure itself (forcing one needs `unsafe`; the
 sizes fux-vt refuses before allocating are compared instead); `Debug`
 output, which a storage redesign changes on purpose (`RowId` and `Mark` are
-compared by number); `process` and `process_with_replies`, which are
-`process_with` with less kept.
+compared by number); and what fux-vt tells no host: prompt marks, the raw
+soft-wrap flag, link ids and picture numbers.
 
 ### The inputs
 

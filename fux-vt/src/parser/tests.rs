@@ -195,7 +195,7 @@ fn text_runs_keep_their_printing_context() -> Result<(), Error> {
         parser.process(format!("{link}AAШA\r").as_bytes())?;
         parser.process("ЖШШШ".as_bytes())?;
         for (x, text) in ["Ж", "Ш", "Ш", "Ш"].into_iter().enumerate() {
-            let x = u16::try_from(x).map_err(|_| Error::InvalidRange)?;
+            let x = u16::try_from(x).map_err(|_| Error::Capacity)?;
             assert_eq!(parser.screen().cell(0, x).map(|c| c.contents()), Some(text));
             assert_eq!(
                 parser.screen().link(0, x).map(|l| l.uri()),
@@ -232,7 +232,7 @@ fn a_run_over_a_wide_glyph_costs_its_length() -> Result<(), Error> {
     p.process(&text)?;
     let spent = start.elapsed();
     assert!(spent < std::time::Duration::from_secs(1), "{spent:?}");
-    let row = p.screen().window().text((39, 0), (39, 7999), 8000, 8000)?;
+    let row = p.screen().row_text(39);
     assert_eq!(row, std::iter::repeat_n('a', 8000).collect::<String>());
     Ok(())
 }
@@ -288,8 +288,7 @@ fn copies_left_at_the_budget_are_made_before_later_text() -> Result<(), Error> {
             parser.screen().cursor_position(),
             whole.screen().cursor_position()
         );
-        let row = |p: &Parser| p.screen().window().text((0, 0), (0, 4095), 4096, 4096);
-        assert_eq!(row(&parser)?, row(&whole)?);
+        assert_eq!(parser.screen().row_text(0), whole.screen().row_text(0));
         assert_eq!(parser.process_until_stop(&[], &mut Deaf)?, None);
     }
     Ok(())
@@ -501,7 +500,7 @@ fn a_frame_scan_stops_at_the_first_synchronized_output_reset() -> Result<(), Err
                     let (mut held, mut found) = (0usize, None);
                     while held < input.len() && found.is_none() {
                         held = (held + chunk).min(input.len());
-                        found = scan.end(input.get(..held).ok_or(Error::InvalidRange)?);
+                        found = scan.end(input.get(..held).ok_or(Error::Capacity)?);
                         assert_eq!(
                             found,
                             expected.filter(|&at| at <= held),
@@ -524,7 +523,7 @@ fn a_frame_scan_stops_at_the_first_synchronized_output_reset() -> Result<(), Err
                                 None => piece.len(),
                             };
                             assert!(taken > 0, "a small frame must make progress");
-                            piece = piece.get(taken..).ok_or(Error::InvalidRange)?;
+                            piece = piece.get(taken..).ok_or(Error::Capacity)?;
                             offset += taken;
                         }
                     }

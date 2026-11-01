@@ -590,12 +590,6 @@ impl Grid {
     pub fn retained_len(&self) -> usize {
         self.history.len().saturating_add(self.order.len())
     }
-    /// The cells retained, screen and history.
-    pub fn storage_cells(&self) -> usize {
-        self.cells
-            .capacity()
-            .saturating_add(self.history.kept_cells())
-    }
 
     fn cells_of(&self, slot: usize) -> Option<Range<usize>> {
         let cols = usize::from(self.size.cols());
@@ -652,9 +646,6 @@ impl Grid {
             });
         };
         self.slot_row(*self.order.get(row)?, row)
-    }
-    pub fn row_by_id(&self, id: RowId) -> Option<Row<'_>> {
-        self.index_of(id).and_then(|index| self.row_at(index))
     }
     /// The retained index of the row with identity `id`, searching the
     /// screen first, then history.

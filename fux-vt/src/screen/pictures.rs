@@ -114,8 +114,9 @@ pub(crate) struct Placement {
     /// off is gone, the rest stays), noted by the scroll that took them
     /// (`crop_pictures`), whatever margins are set later.
     cropped: u16,
-    /// Its number, never reused, so a host can tell it from another.
-    id: u64,
+    /// Its number, in the order placed: how the tests tell pictures apart.
+    #[cfg(test)]
+    pub(super) id: u64,
 }
 
 /// A picture as the screen shows it now: its top row on the screen, which
@@ -123,8 +124,6 @@ pub(crate) struct Placement {
 /// first column, the cells it covers, and its pixel size per cell.
 #[derive(Clone, Copy, Debug)]
 pub struct Shown<'a> {
-    /// Its number, never another picture's.
-    pub id: u64,
     /// Its pixels.
     pub picture: &'a Arc<Picture>,
     /// Its top row, from the screen's top.
@@ -303,7 +302,10 @@ impl Screen {
         let Some(top) = placed_top else {
             return false;
         };
-        self.picture_ids = self.picture_ids.wrapping_add(1);
+        #[cfg(test)]
+        {
+            self.picture_ids = self.picture_ids.wrapping_add(1);
+        }
         self.pictures.push_back(Placement {
             picture,
             top,
@@ -316,6 +318,7 @@ impl Screen {
             alternate,
             whole_at: self.version,
             cropped: 0,
+            #[cfg(test)]
             id: self.picture_ids,
         });
         // Its rows, and others', may have gone into history.
@@ -696,7 +699,6 @@ impl Screen {
         }
         let history = i64::try_from(grid.history_len()).ok()?;
         Some(Shown {
-            id: placement.id,
             picture: &placement.picture,
             row: first.saturating_sub(history),
             col: placement.col,
@@ -768,14 +770,10 @@ impl Screen {
 /// The pictures' part of the invariant checker (THREATS.md section 6).
 #[cfg(feature = "checks")]
 impl Screen {
-    /// 30: at most [`MAX_PICTURES`] on both screens together, their
-    /// numbers rising.
+    /// 30: at most [`MAX_PICTURES`] on both screens together.
     pub(super) fn check_picture_count(&self) -> Result<(), String> {
         let kept = self.pictures.len();
-        crate::check::ensure(kept <= MAX_PICTURES, || format!("{kept} pictures kept"))?;
-        let rising =
-            (self.pictures.iter().zip(self.pictures.iter().skip(1))).all(|(a, b)| a.id < b.id);
-        crate::check::ensure(rising, || "picture numbers out of order".into())
+        crate::check::ensure(kept <= MAX_PICTURES, || format!("{kept} pictures kept"))
     }
 
     /// 31: the pictures kept, and `drawing` bytes of the one being drawn,
@@ -811,8 +809,8 @@ impl Screen {
             };
             crate::check::ensure(shown.cropped == noted, || {
                 format!(
-                    "picture {} shown with {} rows cropped, {noted} noted",
-                    shown.id, shown.cropped
+                    "the picture at {}, {} shown with {} rows cropped, {noted} noted",
+                    shown.row, shown.col, shown.cropped
                 )
             })?;
         }
@@ -831,7 +829,8 @@ impl Screen {
                     })
                 });
                 crate::check::ensure(whole, || {
-                    format!("picture {} shown without its cells", shown.id)
+                    let (row, col) = (shown.row, shown.col);
+                    format!("the picture at {row}, {col} shown without its cells")
                 })?;
             }
         }
@@ -897,6 +896,17 @@ fn overlaps(
     row < e && r < end && col < ri && c < right
 }
 
+#[cfg(test)]
+impl Screen {
+    /// The pictures the screen shows, each with its number.
+    pub(crate) fn numbered_pictures(&self) -> impl Iterator<Item = (u64, Shown<'_>)> {
+        self.track_pictures();
+        (self.pictures.iter())
+            .filter(|p| p.alternate == self.alternate_active)
+            .filter_map(|p| Some((p.id, self.shown(p)?)))
+    }
+}
+
 /// The pictures' checks, each shown pictures with their one fault.
 #[cfg(all(test, feature = "checks"))]
 mod faults {
@@ -904,7 +914,7 @@ mod faults {
     use crate::{Error, Size};
 
     /// A placement of one pixel, its bytes in room for `room`.
-    fn placed(id: u64, room: usize, top: RowId) -> Option<Placement> {
+    fn placed(room: usize, top: RowId) -> Option<Placement> {
         let mut rgba = Vec::with_capacity(room);
         rgba.extend([0; 4]);
         Some(Placement {
@@ -919,7 +929,7 @@ mod faults {
             alternate: false,
             whole_at: 0,
             cropped: 0,
-            id,
+            id: 0,
         })
     }
 
@@ -932,7 +942,7 @@ mod faults {
         let mut screen = Screen::new(size, 0)?;
         let top = screen.primary.live_row(0).map_or(RowId(0), |r| r.id());
         assert!(screen.check_pictures_shown().is_ok());
-        let stale = placed(1, 4, top).map(|p| Placement {
+        let stale = placed(4, top).map(|p| Placement {
             whole_at: u64::MAX,
             ..p
         });
@@ -943,34 +953,30 @@ mod faults {
     }
 
     #[test]
-    fn too_many_pictures_out_of_order_or_too_large_are_faults() -> Result<(), Error> {
+    fn too_many_pictures_or_too_large_are_faults() -> Result<(), Error> {
         let size = Size::new(3, 6).map_err(|_| Error::Capacity)?;
         let screen = Screen::new(size, 0)?;
         let top = screen.primary.live_row(0).map_or(RowId(0), |r| r.id());
         assert!(screen.check_picture_count().is_ok());
         let mut many = screen.clone();
-        for id in 0..65 {
-            many.pictures.extend(placed(id, 4, top));
+        for _ in 0..65 {
+            many.pictures.extend(placed(4, top));
         }
         assert!(many.check_picture_count().is_err(), "65 pictures");
         // 33 on each screen: 66 in all.
         let mut both = screen.clone();
         for id in 0..66 {
-            let mut picture = placed(id, 4, top);
+            let mut picture = placed(4, top);
             if let Some(p) = picture.as_mut() {
                 p.alternate = id % 2 == 1;
             }
             both.pictures.extend(picture);
         }
         assert!(both.check_picture_count().is_err(), "33 pictures a screen");
-        let mut backwards = screen.clone();
-        backwards.pictures.extend(placed(2, 4, top));
-        backwards.pictures.extend(placed(1, 4, top));
-        assert!(backwards.check_picture_count().is_err(), "out of order");
         let mut large = screen.clone();
         large
             .pictures
-            .extend(placed(1, PICTURE_BYTES.saturating_add(1), top));
+            .extend(placed(PICTURE_BYTES.saturating_add(1), top));
         assert!(large.check_picture_bytes(0).is_err(), "past the bytes");
         let mut small = screen;
         small.picture_budget = 0;

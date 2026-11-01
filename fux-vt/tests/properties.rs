@@ -17,6 +17,11 @@ type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
 mod test_rng;
 use test_rng::Rng;
 
+#[path = "corpus/feed.rs"]
+#[expect(dead_code, reason = "each test binary uses some of the helpers")]
+mod feed;
+use feed::{Feed, Look, cells_text};
+
 // Printing and grapheme clusters.
 
 /// GB9 joins each modifier; GB999 breaks before the vowel jamo. The
@@ -40,7 +45,7 @@ fn a_full_cell_drops_zero_width_clusters_after_gb999() -> Result {
         .next()
         .ok_or("row")?
         .cells()
-        .filter(|c| c.has_contents() && !c.is_wide_continuation())
+        .filter(|c| !c.contents().is_empty() && !c.is_wide_continuation())
         .map(|c| (c.contents().to_owned(), c.is_wide()))
         .collect();
     assert_eq!(actual, expected);
@@ -65,7 +70,7 @@ fn a_dropped_zero_width_prepend_still_ends_the_cell() -> Result {
             .next()
             .ok_or("row")?
             .cells()
-            .filter(|c| c.has_contents() && !c.is_wide_continuation())
+            .filter(|c| !c.contents().is_empty() && !c.is_wide_continuation())
             .map(|c| (c.contents().to_owned(), c.is_wide()))
             .collect();
         assert_eq!(actual, expected, "{text:?}");
@@ -140,7 +145,7 @@ fn printed_text_is_segmented_as_the_model_says() -> Result {
             col = col.saturating_add(if *wide { 2 } else { 1 });
         }
         assert!(
-            row.cell(col).is_some_and(|c| !c.has_contents()),
+            row.cell(col).is_some_and(|c| c.contents().is_empty()),
             "case {case}: {text:?}"
         );
         assert_eq!(
@@ -170,14 +175,14 @@ fn the_three_column_character_takes_one_column() -> Result {
     let mut parser = Parser::new(Size::new(1, 10)?, 0)?;
     parser.process("XYZW\r\u{17D8}".as_bytes())?;
     assert_eq!(
-        parser.screen().window().row(0).map(|r| r.cells_text()),
+        parser.screen().window().row(0).map(|r| cells_text(&r)),
         Some("\u{17D8}YZW      ".into())
     );
     assert_eq!(parser.screen().cursor_position(), (0, 1));
     let mut parser = Parser::new(Size::new(1, 10)?, 0)?;
     parser.process("\x1b[?69h\x1b[1;2s\u{17D8}x".as_bytes())?;
     assert_eq!(
-        parser.screen().window().row(0).map(|r| r.cells_text()),
+        parser.screen().window().row(0).map(|r| cells_text(&r)),
         Some("\u{17D8}x        ".into())
     );
     Ok(())
@@ -218,18 +223,18 @@ fn lines(parser: &Parser) -> Vec<String> {
         let last = row.len().saturating_sub(1);
         let mut line = out.pop().unwrap_or_default();
         for (col, cell) in row.cells().enumerate() {
-            let spacer = row.wrapped() && col == last && next_wide && !cell.has_contents();
+            let spacer = row.continues() && col == last && next_wide && cell.contents().is_empty();
             if cell.is_wide_continuation() || spacer {
                 continue;
             }
-            line.push_str(if cell.has_contents() {
+            line.push_str(if !cell.contents().is_empty() {
                 cell.contents()
             } else {
                 " "
             });
         }
         out.push(line);
-        if !row.wrapped() {
+        if !row.continues() {
             out.push(String::new());
         }
     }
@@ -335,11 +340,17 @@ fn cells_set_and_borrowed_copy_keep_text_shape_and_report_truncation() -> Result
     assert!(!cells.set(1, source));
     models::stored(&cells, 1, source, false);
     assert_eq!(cells.get(1).ok_or("partial")?.contents(), repeated('界', 5));
-    assert_eq!(cells, Cells::try_from_iter(cells.iter())?);
+    // Copied cell by cell, the cut text with them, they are the same.
+    let mut copy = Cells::new(cells.len())?;
+    for (i, cell) in cells.range(0..cells.len()).enumerate() {
+        copy.set(i, cell);
+    }
+    assert_eq!(cells, copy);
 
     // Live long text admits exactly the row limit after compaction; a
     // cluster one byte past it is cut, with or without overwritten text.
-    let limit = Cells::text_limit(2);
+    // The limit: 32 bytes a cell, and one longest cluster more (`Cells`).
+    let limit: usize = 2 * 32 + 128;
     let over = repeated('c', limit.saturating_sub(127));
     for overwritten in [false, true] {
         let mut cells = Cells::new(2)?;
@@ -350,9 +361,6 @@ fn cells_set_and_borrowed_copy_keep_text_shape_and_report_truncation() -> Result
             }
         }
         assert!(cells.set(1, CellRef::new(&repeated('a', 128), false, attributes)));
-        if overwritten {
-            assert_eq!(cells.text_len(), limit);
-        }
         assert!(!cells.set(0, CellRef::new(&over, false, attributes)));
         assert_eq!(cells.get(0).ok_or("cut")?.contents(), repeated('c', 17));
     }
@@ -400,46 +408,6 @@ fn cell_fill_clips_ranges_and_preserves_outside_cells() -> Result {
             assert!(cells.range(start..end).all(|got| got == fill));
         }
     }
-    Ok(())
-}
-
-#[test]
-fn cell_resize_preserves_prefix_fills_growth_trims_in_order_and_refuses_atomically() -> Result {
-    let [_, attributes, other_attributes] = models::STYLES;
-    let mut cells = Cells::new(8)?;
-    let text = repeated('x', 128);
-    let source = CellRef::new(&text, true, attributes);
-    for i in 0..3 {
-        assert!(cells.set(i, source));
-    }
-    let before = cells.clone();
-    let fill = CellRef::new("z", false, other_attributes);
-    cells.resize(10, fill)?;
-    assert_eq!(cells.len(), 10);
-    assert!(cells.range(0..8).eq(before.iter()));
-    assert!(cells.range(8..10).all(|got| got == fill));
-    cells.resize(3, fill)?;
-    assert_eq!(cells.len(), 3);
-    for (i, kept) in [128, 17, 17].into_iter().enumerate() {
-        assert_eq!(
-            cells.get(i),
-            Some(CellRef::new(
-                text.get(..kept).ok_or("prefix")?,
-                true,
-                attributes
-            ))
-        );
-    }
-    for huge in [(64 << 20) + 1, usize::MAX] {
-        let before = cells.clone();
-        let text_len = cells.text_len();
-        assert!(cells.resize(huge, fill).is_err());
-        assert_eq!(cells, before);
-        assert_eq!(cells.text_len(), text_len);
-    }
-    cells.resize(0, fill)?;
-    assert!(cells.is_empty());
-    assert_eq!(cells.text_len(), 0);
     Ok(())
 }
 

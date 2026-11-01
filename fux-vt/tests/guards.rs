@@ -5,10 +5,22 @@ use std::ops::Range;
 use std::time::Instant;
 
 use fux_vt::keys::decode::{Decoder, Input};
-use fux_vt::{
-    Attributes, CLUSTER_CAPACITY, CellRef, Cells, Feature, Graphics, Options, Parser, Size, Stop,
-    URI_LIMIT,
-};
+use fux_vt::{Cells, Feature, Graphics, Options, Parser, Size, Stop};
+
+/// The paste limit the tests' decoders keep.
+const PASTE_LIMIT: usize = 64 * 1024;
+
+/// The most bytes a cell's cluster keeps.
+#[cfg(feature = "checks")]
+const CLUSTER_CAPACITY: usize = 128;
+
+/// The longest hyperlink URI kept (README, `Hyperlinks`).
+const URI_LIMIT: usize = 2083;
+
+#[path = "corpus/feed.rs"]
+#[expect(dead_code, reason = "each test binary uses some of the helpers")]
+mod feed;
+use feed::{Feed, Look};
 
 #[path = "corpus/lines.rs"]
 mod lines;
@@ -25,8 +37,9 @@ fn times(text: &str, n: usize) -> String {
 }
 
 /// A cell holding `text`, narrow, in the default style.
-fn cell(text: &str) -> CellRef<'_> {
-    CellRef::new(text, false, Attributes::default())
+#[cfg(feature = "checks")]
+fn cell(text: &str) -> fux_vt::CellRef<'_> {
+    fux_vt::CellRef::new(text, false, fux_vt::Attributes::default())
 }
 
 /// B39: exactly 64 Mi cells are made.
@@ -41,16 +54,19 @@ fn cells_at_the_most_are_made() -> Result {
     Ok(())
 }
 
-/// B30: text that ends exactly at the limit is stored without compacting.
+/// B30: text that ends exactly at the limit, a cell's 32 bytes and one
+/// whole cluster, is stored without compacting: the second cluster's
+/// work is its bytes alone, the first's text not read again.
+#[cfg(feature = "checks")]
 #[test]
 fn a_long_cluster_that_ends_at_the_limit_does_not_compact() -> Result {
-    let limit = Cells::text_limit(1);
-    assert_eq!(limit, 32 + CLUSTER_CAPACITY);
     let (first, second) = (times("a", 32), times("b", CLUSTER_CAPACITY));
     let mut cells = Cells::new(1)?;
     assert!(cells.set(0, cell(&first)));
+    let before = fux_vt::work_spent();
     assert!(cells.set(0, cell(&second)));
-    assert_eq!(cells.text_len(), limit);
+    let spent = fux_vt::work_spent().saturating_sub(before);
+    assert_eq!(spent, u64::try_from(CLUSTER_CAPACITY)?);
     assert_eq!(cells.get(0).map(|c| c.contents()), Some(second.as_str()));
     Ok(())
 }
@@ -478,7 +494,8 @@ fn a_paste_of_64_kib_is_kept_and_one_byte_more_is_not() {
         bytes.extend(std::iter::repeat_n(b'x', n));
         bytes.extend_from_slice(b"\x1b[201~");
         let mut out = Vec::new();
-        Decoder::new(fux_vt::keys::decode::Timing::new(35, 5000)).bytes(&bytes, &mut out);
+        Decoder::with_paste_limit(fux_vt::keys::decode::Timing::new(35, 5000), PASTE_LIMIT)
+            .bytes(&bytes, &mut out);
         out
     };
     assert!(matches!(
@@ -495,14 +512,16 @@ fn a_long_read_gives_what_is_held_259_bytes_and_returns() -> Result {
     let (held, idle) = in_time(|| {
         let mut out = Vec::new();
         // An Escape held, then a read of 1,000 `a`s.
-        let mut d = Decoder::new(fux_vt::keys::decode::Timing::new(35, 5000));
+        let mut d =
+            Decoder::with_paste_limit(fux_vt::keys::decode::Timing::new(35, 5000), PASTE_LIMIT);
         d.bytes(b"\x1b", &mut out);
         let before = fux_vt::work_spent();
         d.bytes(&[b'a'; 1000], &mut out);
         let held = fux_vt::work_spent().saturating_sub(before);
         // Nothing held, then 516 `a`s and an Escape: 258 bytes are left
         // after the first 259, and they leave the Escape held.
-        let mut d = Decoder::new(fux_vt::keys::decode::Timing::new(35, 5000));
+        let mut d =
+            Decoder::with_paste_limit(fux_vt::keys::decode::Timing::new(35, 5000), PASTE_LIMIT);
         let mut read = vec![b'a'; 516];
         read.push(0x1b);
         let before = fux_vt::work_spent();
@@ -528,7 +547,8 @@ fn a_sequence_begun_in_the_bytes_given_the_held_is_read_where_it_lies() -> Resul
     read.extend([b'b'; 1000]);
     let (keys, out) = in_time(move || {
         let mut out = Vec::new();
-        let mut d = Decoder::new(fux_vt::keys::decode::Timing::new(35, 5000));
+        let mut d =
+            Decoder::with_paste_limit(fux_vt::keys::decode::Timing::new(35, 5000), PASTE_LIMIT);
         d.bytes(b"\x1b", &mut out);
         let before = fux_vt::work_spent();
         d.bytes(&read, &mut out);
@@ -536,7 +556,7 @@ fn a_sequence_begun_in_the_bytes_given_the_held_is_read_where_it_lies() -> Resul
     })?;
     assert_eq!(keys, 1 + 1260 + 258 + 2 * 8);
     let mut short = Vec::new();
-    let mut d = Decoder::new(fux_vt::keys::decode::Timing::new(35, 5000));
+    let mut d = Decoder::with_paste_limit(fux_vt::keys::decode::Timing::new(35, 5000), PASTE_LIMIT);
     d.bytes(b"\x1b", &mut short);
     for byte in [vec![b'a'; 250], b"\x1b[1;2;3;4A".to_vec(), vec![b'b'; 1000]].concat() {
         d.bytes(&[byte], &mut short);
@@ -552,7 +572,8 @@ fn a_sequence_begun_in_what_was_held_is_held_on() -> Result {
     payload.resize(256, b'0');
     let read = [b"P".as_slice(), &payload, b"\x1b\\x"].concat();
     let decoded = |reads: &[&[u8]]| {
-        let mut d = Decoder::new(fux_vt::keys::decode::Timing::new(35, 5000));
+        let mut d =
+            Decoder::with_paste_limit(fux_vt::keys::decode::Timing::new(35, 5000), PASTE_LIMIT);
         d.expect(Instant::now());
         let mut out = Vec::new();
         d.bytes(b"\x1b\x1b", &mut out);
@@ -576,7 +597,7 @@ fn a_sequence_begun_in_what_was_held_is_held_on() -> Result {
 #[cfg(feature = "checks")]
 #[test]
 fn a_long_read_while_a_string_is_dropped_is_read_whole() {
-    let mut d = Decoder::new(fux_vt::keys::decode::Timing::new(35, 5000));
+    let mut d = Decoder::with_paste_limit(fux_vt::keys::decode::Timing::new(35, 5000), PASTE_LIMIT);
     let mut out = Vec::new();
     // An OSC answer past its 128 bytes: dropped to its end as it comes.
     let mut long = b"\x1b]1".to_vec();
@@ -599,7 +620,8 @@ fn a_dcs_answer_at_its_limit_decodes_alike_whole_and_split() -> Result {
     payload.resize(256, b'0');
     let answer = [b"\x1bP".as_slice(), &payload, b"\x1b\\"].concat();
     let decoded = |reads: &[&[u8]]| {
-        let mut d = Decoder::new(fux_vt::keys::decode::Timing::new(35, 5000));
+        let mut d =
+            Decoder::with_paste_limit(fux_vt::keys::decode::Timing::new(35, 5000), PASTE_LIMIT);
         d.expect(Instant::now());
         let mut out = Vec::new();
         for read in reads {
@@ -623,7 +645,8 @@ fn a_long_csi_answer_is_held_up_to_256_bytes() -> Result {
     for (len, holds) in [(65usize, true), (256, true), (257, false)] {
         let mut read = b"\x1b[?".to_vec();
         read.resize(len.saturating_add(2), b'1');
-        let mut d = Decoder::new(fux_vt::keys::decode::Timing::new(35, 5000));
+        let mut d =
+            Decoder::with_paste_limit(fux_vt::keys::decode::Timing::new(35, 5000), PASTE_LIMIT);
         let mut out = Vec::new();
         let kept = grown(|| {
             d.bytes(&read, &mut out);
@@ -804,7 +827,7 @@ fn a_sweep_takes_the_oldest_links_until_half_the_bound_is_left() -> Result {
 fn a_key_csi_of_32_parameter_bytes_is_typed_at_the_timeout() {
     let mut read = b"\x1b[".to_vec();
     read.resize(34, b'1');
-    let mut d = Decoder::new(fux_vt::keys::decode::Timing::new(35, 5000));
+    let mut d = Decoder::with_paste_limit(fux_vt::keys::decode::Timing::new(35, 5000), PASTE_LIMIT);
     let mut out = Vec::new();
     d.bytes(&read, &mut out);
     assert!(out.is_empty(), "{out:?}");
@@ -841,7 +864,8 @@ fn a_repeat_on_a_one_column_screen_makes_every_copy() -> Result {
 #[test]
 fn a_read_of_259_bytes_that_ends_on_a_dropped_answer_s_escape_returns() -> Result {
     let (dropped, after, typed) = in_time(|| {
-        let mut d = Decoder::new(fux_vt::keys::decode::Timing::new(35, 5000));
+        let mut d =
+            Decoder::with_paste_limit(fux_vt::keys::decode::Timing::new(35, 5000), PASTE_LIMIT);
         let mut out = Vec::new();
         d.bytes(b"\x1b", &mut out);
         // `] 1`, 256 `a`s and an ESC: with the Escape held, an OSC answer
@@ -890,26 +914,12 @@ fn a_frame_in_two_reads_is_scanned_as_in_one() -> Result {
     Ok(())
 }
 
-/// B39: a resize to the same length changes nothing, its store's text included.
-#[test]
-fn a_resize_to_the_same_length_changes_nothing() -> Result {
-    let (first, second) = (times("a", 21), times("b", 21));
-    let mut cells = Cells::new(1)?;
-    assert!(cells.set(0, cell(&first)));
-    assert!(cells.set(0, cell(&second)));
-    let text = cells.text_len();
-    cells.resize(1, CellRef::default())?;
-    assert_eq!(cells.text_len(), text);
-    assert_eq!(cells.get(0).map(|c| c.contents()), Some(second.as_str()));
-    Ok(())
-}
-
 /// B25: an OSC answer exactly at its 128 bytes, not ended yet, is held
 /// whole: its 130 bytes decoded once and copied once to be held.
 #[cfg(feature = "checks")]
 #[test]
 fn an_osc_answer_at_its_limit_is_held_whole() {
-    let mut d = Decoder::new(fux_vt::keys::decode::Timing::new(35, 5000));
+    let mut d = Decoder::with_paste_limit(fux_vt::keys::decode::Timing::new(35, 5000), PASTE_LIMIT);
     let mut out = Vec::new();
     let mut read = b"\x1b]".to_vec();
     read.extend([b'1'; 128]);
@@ -925,7 +935,7 @@ fn an_osc_answer_at_its_limit_is_held_whole() {
 #[cfg(feature = "checks")]
 #[test]
 fn a_read_of_258_bytes_behind_an_escape_is_fed_once() {
-    let mut d = Decoder::new(fux_vt::keys::decode::Timing::new(35, 5000));
+    let mut d = Decoder::with_paste_limit(fux_vt::keys::decode::Timing::new(35, 5000), PASTE_LIMIT);
     let mut out = Vec::new();
     d.bytes(b"\x1b", &mut out);
     let mut read = vec![b'a'; 257];

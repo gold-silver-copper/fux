@@ -61,11 +61,10 @@ pub struct Style {
     pub strikeout: bool,
 }
 
-/// A cell's hyperlink.
+/// A cell's hyperlink: its URI, and the key cells of one link share.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Link {
     pub uri: String,
-    pub id: Option<String>,
     pub key: u64,
 }
 
@@ -74,14 +73,10 @@ pub struct Link {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Cell {
     pub end: usize,
-    pub has_contents: bool,
     pub wide: bool,
     pub continuation: bool,
     /// Through `CellRef::attributes`.
     pub style: Style,
-    /// Whether `CellRef`'s own accessors (`fgcolor`, `bold`, ...) say what
-    /// its attributes say.
-    pub getters_agree: bool,
 }
 
 /// A retained row: its identity, version, flags and cells.
@@ -89,19 +84,17 @@ pub struct Cell {
 pub struct Row {
     pub id: u64,
     pub version: u64,
-    pub wrapped: bool,
-    pub prompt: bool,
+    /// `Row::continues`: its line goes on in the next row.
+    pub continues: bool,
     pub len: usize,
     pub is_empty: bool,
-    pub text_len: usize,
     pub has_links: bool,
     pub text: String,
     pub cells: Vec<Cell>,
     /// Each cell's link, by column, for the cells that have one.
     pub links: Vec<(usize, Link)>,
     /// The accessors that answered otherwise than the row's cells: for a
-    /// live row, `Screen::cell`, `Screen::link`, `Screen::row_wrapped` and
-    /// `Screen::starts_prompt`; for any, `Row::cell` beside `Row::cells`.
+    /// live row, `Window::row`; for any, `Row::cell` beside `Row::cells`.
     pub disagreeing: Vec<&'static str>,
 }
 
@@ -110,11 +103,9 @@ impl Row {
     pub fn clear(&mut self) {
         self.id = 0;
         self.version = 0;
-        self.wrapped = false;
-        self.prompt = false;
+        self.continues = false;
         self.len = 0;
         self.is_empty = false;
-        self.text_len = 0;
         self.has_links = false;
         self.text.clear();
         self.cells.clear();
@@ -138,17 +129,11 @@ impl Row {
             Some(c) => {
                 let link = self.links.iter().find(|(col, _)| *col == i);
                 format!(
-                    "{:?} contents {} wide {} continuation {} {:?}{} link {:?}",
+                    "{:?} wide {} continuation {} {:?} link {:?}",
                     self.text_of(i),
-                    c.has_contents,
                     c.wide,
                     c.continuation,
                     c.style,
-                    if c.getters_agree {
-                        ""
-                    } else {
-                        " (its getters disagree)"
-                    },
                     link.map(|(_, l)| l)
                 )
             }
@@ -304,44 +289,37 @@ pub struct State {
     /// whether it is set.
     pub modes: Vec<(String, bool)>,
     pub cursor_shape: u16,
-    pub scroll_region: (u16, u16),
     /// The mouse reporting and encoding, as their `Debug` names them.
     pub mouse: String,
     pub encoding: String,
     pub kitty_keyboard_flags: u8,
-    pub modify_other_keys: String,
-    /// The pen, through `Screen::attributes`.
-    pub pen: Style,
-    /// The link the program has open: its URI and id.
-    pub hyperlink: Option<(String, Option<String>)>,
+    /// How keys are encoded (`Screen::key_mode`), as its `Debug` names it.
+    pub key_mode: String,
     pub history_len: usize,
-    pub storage_cells: usize,
     /// `Screen::mark`, as a number.
     pub mark: u64,
     pub resize_report: Option<Vec<u8>>,
-    /// The options the parser says it has.
-    pub options: Setup,
     /// Whether the program changed a colour (`Screen::colors_changed`).
     pub colors_changed: bool,
     /// Whether the rows read from the bottom end where the history and
     /// screen do.
     pub rows_end_there: bool,
-    /// `Screen::left_right_margins`.
-    pub left_right_margins: (u16, u16),
+    /// The window's rows and columns (`Window::rows`, `Window::cols`).
+    pub window: (u16, u16),
     /// The 256 palette entries and the dynamic colours (OSC 10 to 19), as
     /// the program has them: `None` where it set none.
     pub palette: Vec<Option<(u8, u8, u8)>>,
     pub dynamic: Vec<Option<(u8, u8, u8)>>,
     pub pictures: Vec<Shown>,
-    /// The screen not in use: its rows' identities, wrap flags and a hash
-    /// of their cells, as `Screen::main_rows` or `alternate_rows` gives
+    /// The screen not in use: its rows' identities, whether each goes on
+    /// in the next (`Row::continues`) and a hash of their cells, as `Screen::main_rows` or `alternate_rows` gives
     /// them.
     pub inactive: Vec<(u64, bool, u64)>,
 }
 
-/// A picture shown: its number, top row, first column, columns, rows,
-/// size in pixels, and a hash of its pixels.
-pub type Shown = (u64, i64, u16, u16, u16, (u32, u32), u64);
+/// A picture shown: its top row, first column, columns, rows, size in
+/// pixels, and a hash of its pixels.
+pub type Shown = (i64, u16, u16, u16, (u32, u32), u64);
 
 /// A host's call between outputs (`Step::Host`): what fux does to a pane's
 /// parser other than feed it and resize it.
@@ -390,55 +368,32 @@ impl Call {
 /// What a mark taken earlier says now.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Marked {
+    /// Whether `Screen::mark` moved on from it.
     pub changed: bool,
     pub full_refresh: bool,
-    /// The identities of the rows `dirty_rows_since` gives.
+    /// The identities of the rows a host redraws: every row after a full
+    /// refresh, else those `Row::changed_since` names.
     pub dirty: Vec<u64>,
 }
 
-/// A row looked up by its identity: how many rows up into history a window
-/// starts at it, if one can, and the version of the row `row_by_id` finds.
+/// A row looked up by its identity: its index in the retained rows
+/// (`Screen::row_index`), if it is still one, and the version of the row
+/// there.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Lookup {
     pub id: u64,
-    pub offset: Option<usize>,
+    pub index: Option<usize>,
     pub version: Option<u64>,
 }
 
-/// A window to read, `offset` rows up into history (at most all of it), and
-/// a selection to copy from it (`Window::text`).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Selection {
-    pub offset: usize,
-    pub from: (u16, u16),
-    pub to: (u16, u16),
-    pub max_cells: usize,
-    pub max_bytes: usize,
-}
-
-/// What a window showed: its size, each row's wrap flag and each cell as
-/// `Window::cell` gives it, and the copy.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Seen {
-    pub rows: u16,
-    pub cols: u16,
-    pub wrapped: Vec<bool>,
-    /// Each row's identity and width as `Window::row` gives it.
-    pub row_ids: Vec<Option<(u64, usize)>>,
-    /// Each cell's text, halves and style as `Window::cell` gives it, one
-    /// line a row.
-    pub cells: Vec<String>,
-    pub text: Result<String, Error>,
-}
-
-/// The light state a probe reads after each of its sequences: the cursor
-/// and pen, and the row the cursor is on.
+/// The light state a probe reads after each of its sequences: the cursor,
+/// and the row the cursor is on, whose cells show the pen they were
+/// printed with.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Glance {
     pub cursor: (u16, u16),
     pub pending_wrap: bool,
     pub origin_mode: bool,
-    pub pen: Style,
     pub kitty_keyboard_flags: u8,
     pub row: String,
 }

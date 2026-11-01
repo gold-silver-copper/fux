@@ -42,7 +42,7 @@ mod rng;
 pub use case::{Case, Count, Difference, Step, check};
 pub use side::{base, work};
 
-use model::{Call, Error, Heard, Lookup, Marked, Row, Seen, Selection, Setup, State, Stop};
+use model::{Call, Error, Heard, Lookup, Marked, Row, Setup, State, Stop};
 
 /// One side: a parser of one fux-vt, read into the model.
 pub trait Side: Clone {
@@ -50,7 +50,10 @@ pub trait Side: Clone {
     const NAME: &'static str;
     /// A parser of `rows` by `cols` with `history_bytes` of history.
     fn new(rows: u16, cols: u16, history_bytes: usize, setup: &Setup) -> Result<Self, Error>;
-    /// `Parser::process_with`, with what it gave the host.
+    /// Every byte of `bytes` read, as a host reads them:
+    /// `Parser::process_until_stop` again after each stop. What it gave
+    /// the host, and `Error::Capacity` if room was refused on the way
+    /// (`Parser::refused`).
     fn process(&mut self, bytes: &[u8], heard: &mut Vec<Heard>) -> Result<(), Error>;
     /// `Parser::process_until_stop`: how many bytes it took if it
     /// stopped, and why: a frame began or ended, or the budget was spent.
@@ -67,8 +70,8 @@ pub trait Side: Clone {
     fn state(&self) -> State;
     /// How many rows the screen retains: its history and its live rows.
     fn retained(&self) -> usize;
-    /// Row `offset` from the bottom (`Screen::row_from_bottom`), read into
-    /// `out`; `false` if there is none.
+    /// Row `offset` from the bottom, read into `out`; `false` if there is
+    /// none.
     fn row(&self, offset: usize, out: &mut Row) -> bool;
     /// Takes a mark of the screen as it is now, into `slot`.
     fn take_mark(&mut self, slot: usize);
@@ -77,8 +80,6 @@ pub trait Side: Clone {
     /// The rows at `offsets` from the bottom looked up by identity, and the
     /// oldest row of the last lookup, which may be gone.
     fn lookups(&mut self, offsets: &[usize]) -> Vec<Lookup>;
-    /// A window and a copy from it; each cell of it too, if `cells`.
-    fn copy(&self, selection: &Selection, cells: bool) -> Seen;
     /// What fux-vt's invariant checker (`Parser::check`, its `checks`
     /// feature) finds wrong with this side, if it has the checker: the
     /// working tree's side has.

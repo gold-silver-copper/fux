@@ -596,8 +596,8 @@ closed! {
         /// OSC 8 is ignored.
         Hyperlinks,
         /// Keep prompt marks (`OSC 133 ; A`, semantic prompts): the row a prompt
-        /// starts on is marked, read with [`crate::Row::starts_prompt`], and `A`
-        /// and `L` start a fresh line. Off, OSC 133 is ignored.
+        /// starts on is marked, and `A` and `L` start a fresh line. Off, OSC
+        /// 133 is ignored.
         PromptMarks,
         /// Answer DECRQCRA, a checksum of a rectangle of the screen, with
         /// DECCKSR, as xterm and the VT520 sum it. It lets a program read what
@@ -659,7 +659,7 @@ impl Options {
         self
     }
     /// Whether `feature` is on.
-    pub const fn has(&self, feature: Feature) -> bool {
+    pub(crate) const fn has(&self, feature: Feature) -> bool {
         matches!(
             self.on.split_at_checked(feature as usize),
             Some((_, [true, ..]))
@@ -671,7 +671,7 @@ impl Options {
         self
     }
     /// Who the terminal answers as: see [`Identity`].
-    pub const fn identity(&self) -> Option<Identity> {
+    pub(crate) const fn identity(&self) -> Option<Identity> {
         self.identity
     }
 }
@@ -723,7 +723,7 @@ pub struct Identity {
 
 impl Identity {
     /// The most bytes of name and version XTVERSION reports.
-    pub const MAX_LEN: usize = 48;
+    pub(crate) const MAX_LEN: usize = 48;
 
     /// The version as DA2's firmware field: its parts, at most three, as
     /// digits in base 100, anything past a `-` or `+` dropped: `0.5.0` is
@@ -835,17 +835,16 @@ pub trait Sink {
     /// A complete sequence fux-vt does not implement.
     fn unhandled(&mut self, _sequence: Unhandled<'_>) {}
     /// A sixel picture, with [`Feature::Pictures`], ended: placed whole,
-    /// or not (counted in [`Parser::pictures_refused`]). One that drew
-    /// nothing, or that CAN ended, is neither. Told in order, as each
-    /// ends.
+    /// or not: begun while the host drew no sixel (`set_host_graphics`),
+    /// and not kept; ended once it had no cell size; lifted past a scroll
+    /// region's top as it was placed; or cut, placed or not: what it drew
+    /// past what a picture may keep ([`crate::sixel::MAX_SIDE`] a side,
+    /// [`crate::sixel::MAX_PIXELS`] in all, and the pictures' budget,
+    /// [`Parser::set_picture_bytes`]) is not kept. One that drew nothing,
+    /// or that CAN ended, is neither. Told in order, as each ends; one
+    /// placed whole and let go later, the oldest first as newer ones need
+    /// the room, is not told again, as history let go is not.
     fn picture(&mut self, _placed: bool) {}
-}
-
-struct Replies<F>(F);
-impl<F: FnMut(&[u8])> Sink for Replies<F> {
-    fn reply(&mut self, bytes: &[u8]) {
-        (self.0)(bytes);
-    }
 }
 
 /// Incremental byte parser and its terminal state. Replies and events are
@@ -870,21 +869,14 @@ pub struct Parser {
     /// reads small still stops at the budget.
     spent: u64,
     /// Where this thread's spending reaches the budget in the call of
-    /// `process_until_stop` under way; `u64::MAX` in `process_with`, which
-    /// does not stop.
+    /// `process_until_stop` under way; `u64::MAX` between calls.
     end: u64,
     refused: u64,
-    /// Sixel pictures not placed (`Parser::pictures_refused`).
-    pictures_refused: u64,
 }
 #[cfg(test)]
 mod tests;
 
 impl Parser {
-    /// [`Parser::with_options`] with [`Options::default`].
-    pub fn new(size: Size, history_bytes: usize) -> Result<Self, Error> {
-        Self::with_options(size, history_bytes, Options::default())
-    }
     /// A parser with a screen of `size` keeping up to `history_bytes` of
     /// history (24 bytes a row, 8 a cell, and its text). More cells than a
     /// grid may hold are refused.
@@ -910,7 +902,6 @@ impl Parser {
             spent: 0,
             end: u64::MAX,
             refused: 0,
-            pictures_refused: 0,
         })
     }
     /// Checks every invariant of the parser and its screen that the state
@@ -1072,49 +1063,13 @@ impl Parser {
             .mode(Mode::InBandResize)
             .then(|| self.screen.size_report().as_bytes().to_vec())
     }
-    /// The options the parser was made with.
-    pub fn options(&self) -> Options {
-        self.options
-    }
     /// How many times carrying out output, or a resize, was refused room
     /// (THREATS.md 1.3). Each refusal loses only what it was for.
     pub fn refused(&self) -> u64 {
         self.refused
     }
-    /// How many sixel pictures the program sent, with [`Feature::Pictures`],
-    /// that were not placed whole, each counted as it ends: begun while the
-    /// host drew no sixel (`set_host_graphics`), and not kept; ended once
-    /// it had no cell size; lifted past a scroll region's top as it was
-    /// placed; or cut, placed or not: what it drew past what a picture may
-    /// keep ([`crate::sixel::MAX_SIDE`] a side,
-    /// [`crate::sixel::MAX_PIXELS`] in all, and the pictures' budget,
-    /// [`Parser::set_picture_bytes`]) is not kept. One that drew nothing,
-    /// or that CAN ended, is none. One placed whole and let go later, the
-    /// oldest first as newer ones need the room, is not counted, as
-    /// history let go is not.
-    pub fn pictures_refused(&self) -> u64 {
-        self.pictures_refused
-    }
-    /// Process output while deliberately discarding terminal query replies.
-    pub fn process(&mut self, bytes: &[u8]) -> Result<(), Error> {
-        self.process_with_replies(bytes, |_| {})
-    }
-    /// Process output, delivering query replies to `reply`.
-    pub fn process_with_replies(
-        &mut self,
-        bytes: &[u8],
-        reply: impl FnMut(&[u8]),
-    ) -> Result<(), Error> {
-        self.process_with(bytes, &mut Replies(reply))
-    }
     /// Process output, delivering replies and (with [`Feature::Events`])
-    /// events. Every byte is read: `Err(Error::Capacity)` says room was
-    /// refused on the way ([`Parser::refused`]).
-    pub fn process_with(&mut self, bytes: &[u8], sink: &mut impl Sink) -> Result<(), Error> {
-        self.run::<false>(bytes, sink).map(|_| ())
-    }
-    /// Process output as [`Parser::process_with`] does, but stop right after
-    /// a sequence that begins or ends a frame drawn in synchronized output
+    /// events to `sink`, and stop right after a sequence that begins or ends a frame drawn in synchronized output
     /// ([`Stop::Begun`], [`Stop::Ended`]), or at the byte where the call has
     /// spent its work budget ([`Stop::Budget`]), and say how many bytes that
     /// took and why; `None` if every byte was processed. A frame's start or
@@ -1137,15 +1092,15 @@ impl Parser {
     /// call that ends a frame ([`Stop::Begun`], [`Stop::Ended`]) past the
     /// budget leaves its stop to the next, which makes it before any byte.
     ///
-    /// As in [`Parser::process_with`], a refusal of room is counted
-    /// ([`Parser::refused`]) and the rest read; `Err(Error::Capacity)` says
+    /// A refusal of room is counted ([`Parser::refused`]) and the rest
+    /// read; `Err(Error::Capacity)` says
     /// one happened in a call that read every byte.
     pub fn process_until_stop(
         &mut self,
         bytes: &[u8],
         sink: &mut impl Sink,
     ) -> Result<Option<(usize, Stop)>, Error> {
-        self.run::<true>(bytes, sink)
+        self.run(bytes, sink)
     }
     /// Whether the last call of [`Parser::process_until_stop`] stopped at
     /// its budget with work left to do: another call is owed, of no bytes
@@ -1164,15 +1119,9 @@ impl Parser {
             saved: self.screen.saved_mode(Mode::SynchronizedOutput),
         }
     }
-    /// Processes `bytes`, stopping as `process_until_stop` does if
-    /// `UNTIL_STOP`: a constant, so that `process_with` compiles without the
-    /// checks for a stop.
-    fn run<const UNTIL_STOP: bool>(
-        &mut self,
-        bytes: &[u8],
-        sink: &mut impl Sink,
-    ) -> Result<Option<(usize, Stop)>, Error> {
-        let ran = self.run_on::<UNTIL_STOP>(bytes, sink);
+    /// Processes `bytes`, stopping as `process_until_stop` does.
+    fn run(&mut self, bytes: &[u8], sink: &mut impl Sink) -> Result<Option<(usize, Stop)>, Error> {
+        let ran = self.run_on(bytes, sink);
         // Every byte is read but those after a stop.
         let read = match ran {
             Ok(Some((taken, _))) => taken,
@@ -1182,7 +1131,7 @@ impl Parser {
         ran
     }
     /// `run`, but for counting the bytes read.
-    fn run_on<const UNTIL_STOP: bool>(
+    fn run_on(
         &mut self,
         bytes: &[u8],
         sink: &mut impl Sink,
@@ -1195,19 +1144,17 @@ impl Parser {
         let (start, refused) = (crate::budget::spent(), self.refused);
         let degrades = crate::degrades();
         // Every call leaves `end` and `stop_at` at u64::MAX: no budget.
-        if UNTIL_STOP {
-            // A call that ended a frame past the budget owes its stop: this
-            // one makes it before anything, so a frame's boundary is no way
-            // past the budget.
-            if self.spent >= crate::budget::LIMIT {
-                self.spent = 0;
-                return Ok(Some((0, Stop::Budget)));
-            }
-            self.end = start.saturating_add(crate::budget::LIMIT.saturating_sub(self.spent));
-            (self.screen.stop_at, self.screen.stopped) = (self.end, false);
+        // A call that ended a frame past the budget owes its stop: this one
+        // makes it before anything, so a frame's boundary is no way past
+        // the budget.
+        if self.spent >= crate::budget::LIMIT {
+            self.spent = 0;
+            return Ok(Some((0, Stop::Budget)));
         }
+        self.end = start.saturating_add(crate::budget::LIMIT.saturating_sub(self.spent));
+        (self.screen.stop_at, self.screen.stopped) = (self.end, false);
         // What the last call left at its budget goes first.
-        if self.screen.left_over() && self.resume::<UNTIL_STOP>() {
+        if self.screen.left_over() && self.resume() {
             (self.screen.stop_at, self.screen.stopped) = (u64::MAX, false);
             self.spend_since(start, Stop::Budget);
             self.count_degrades(degrades);
@@ -1226,7 +1173,7 @@ impl Parser {
                 let taken = self.screen.ascii(run);
                 remaining = rest;
                 // A wrap scrolled inside margins past the budget.
-                if UNTIL_STOP && self.screen.stopped {
+                if self.screen.stopped {
                     remaining = (bytes.len().saturating_sub(remaining.len()))
                         .checked_sub(length)
                         .and_then(|at| bytes.get(at.saturating_add(taken)..))
@@ -1235,7 +1182,7 @@ impl Parser {
                     Some(Stop::Budget)
                 } else {
                     // A run that ends before the margin printed too.
-                    self.over::<UNTIL_STOP>()
+                    self.over()
                 }
             } else if ground && byte < 0x20 && byte != 0x1b {
                 // CR LF, which ends most lines, as one.
@@ -1251,19 +1198,19 @@ impl Parser {
                 self.screen.forget_repeat();
                 // A line feed can move a row's text into history; a SUB
                 // prints and a tab looks for stops, which look themselves.
-                self.over_after::<UNTIL_STOP>(false, fed)
+                self.over_after(false, fed)
             } else if ground
                 && byte >= 0x80
                 && let Some(length) = self.text(remaining)
             {
                 remaining = remaining.get(length..).unwrap_or_default();
                 self.screen.stopped = false;
-                self.over::<UNTIL_STOP>()
+                self.over()
             } else if ground && byte == 0x1b && remaining.get(1) == Some(&b'[') {
                 self.screen.cancel_single_shift();
                 let (length, framed) = self.csi_sequence(remaining, sink);
                 remaining = remaining.get(length..).unwrap_or_default();
-                framed.or_else(|| self.over_after::<UNTIL_STOP>(true, false))
+                framed.or_else(|| self.over_after(true, false))
             } else if let Some(rest) = self.string(remaining) {
                 remaining = rest;
                 None
@@ -1273,9 +1220,9 @@ impl Parser {
                 let framed = self.byte(byte, sink);
                 // Whatever left the parser in ground: a sequence's end, a
                 // character completed or printed alone.
-                framed.or_else(|| self.over_after::<UNTIL_STOP>(true, fed))
+                framed.or_else(|| self.over_after(true, fed))
             };
-            if UNTIL_STOP && let Some(stop) = framed {
+            if let Some(stop) = framed {
                 (self.screen.stop_at, self.screen.stopped) = (u64::MAX, false);
                 self.spend_since(start, stop);
                 self.count_degrades(degrades);
@@ -1283,10 +1230,8 @@ impl Parser {
                 return Ok(Some((taken, stop)));
             }
         }
-        if UNTIL_STOP {
-            (self.screen.stop_at, self.screen.stopped) = (u64::MAX, false);
-            self.spend_since(start, Stop::Ended);
-        }
+        (self.screen.stop_at, self.screen.stopped) = (u64::MAX, false);
+        self.spend_since(start, Stop::Ended);
         self.count_degrades(degrades);
         match self.refused == refused {
             true => Ok(None),
@@ -1325,14 +1270,14 @@ impl Parser {
     /// done. A rule of states, so the fast paths look where `byte` alone
     /// would.
     #[inline]
-    fn over_after<const UNTIL_STOP: bool>(&mut self, sequence: bool, fed: bool) -> Option<Stop> {
+    fn over_after(&mut self, sequence: bool, fed: bool) -> Option<Stop> {
         let printed = self.screen.stopped;
         let at = fed || printed || sequence && matches!(self.state, State::Ground | State::Sixel);
-        if !UNTIL_STOP || !at {
+        if !at {
             return None;
         }
         self.screen.stopped = false;
-        self.over::<UNTIL_STOP>()
+        self.over()
     }
     /// Whether the parser is in a string or a DCS, where a C0 control is
     /// not carried out.
@@ -1350,14 +1295,14 @@ impl Parser {
     /// call stops at once, its budget spent again (`Screen::check_budget`).
     #[cold]
     #[inline(never)]
-    pub(super) fn resume<const UNTIL_STOP: bool>(&mut self) -> bool {
+    pub(super) fn resume(&mut self) -> bool {
         self.screen.resume_repeat();
         let stopped = std::mem::take(&mut self.screen.stopped);
-        UNTIL_STOP && stopped && self.over::<true>().is_some()
+        stopped && self.over().is_some()
     }
     #[inline]
-    fn over<const UNTIL_STOP: bool>(&self) -> Option<Stop> {
-        (UNTIL_STOP && crate::budget::spent() >= self.end).then_some(Stop::Budget)
+    fn over(&self) -> Option<Stop> {
+        (crate::budget::spent() >= self.end).then_some(Stop::Budget)
     }
     /// Prints the run of valid non-ASCII UTF-8 `bytes` begins with; how many
     /// bytes it took, or `None` for invalid or incomplete UTF-8, left to the
@@ -1670,7 +1615,6 @@ impl Parser {
                     let drawn = keeps && self.screen.sixel();
                     let placed = picture.map(|p| drawn && self.screen.place_picture(p));
                     if !whole || placed == Some(false) {
-                        self.pictures_refused = self.pictures_refused.saturating_add(1);
                         sink.picture(false);
                     } else if placed == Some(true) {
                         sink.picture(true);

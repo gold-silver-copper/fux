@@ -2,8 +2,8 @@
 
 The system calls [fux](https://github.com/gold-silver-copper/fux) makes on
 Linux, Android and macOS, over `libc`, each behind a safe function. It
-holds only what fux and the tools in its repository use. On any other
-platform it does not build.
+holds only what fux's own crates call, and the one clock fux-bench times
+with. On any other platform it does not build.
 
 ## Rules
 
@@ -39,31 +39,28 @@ quickly, by any processes (see [the report for Apple](https://github.com/gold-si
 | `io::read`, `io::write` | `read`, `write` | the same | on a borrowed descriptor, with `AGAIN` and `INTR` as values |
 | `io::set_nonblocking` | `fcntl(F_SETFL, O_NONBLOCK)` | the same | not offered on a bare descriptor |
 | `io::redirect_stdout` | `dup2(fd, 1)` | the same | not offered |
-| `io::cloexec_from` | `close_range(CLOSE_RANGE_CLOEXEC)`, else `fcntl` on each up to past the descriptors `io::open_end` listed (Android: always) | `fcntl` on each up to past the descriptors `io::open_end` listed | not offered |
-| `io::open_end` | the highest number in `/dev/fd`, before `fork` | the same | not offered |
-| `io::duplicate_inheritable` | `dup` | the same | std's copies are close-on-exec |
-| `signal::notify`, `signal::Pipe` | `sigaction(SA_RESTART)`, a handler that writes a byte to each non-blocking pipe held for its signal (64 at most), saving `errno`; `Pipe` is one pipe for several signals | the same | not offered |
+| `signal::Pipe` | `sigaction(SA_RESTART)`, a handler that writes a byte to each non-blocking pipe held for its signal (64 at most), saving `errno`: one pipe for several signals | the same | not offered |
 | `poll::poll` | `ppoll`, with an exact timeout | `poll`, the timeout rounded up to a millisecond | not offered |
-| `process::kill`, `kill_group`, `exists` | `kill`, `killpg`, `kill(pid, 0)` | the same | std signals only its own children, and only with SIGKILL |
+| `process::kill`, `kill_group` | `kill`, `killpg` | the same | std signals only its own children, and only with SIGKILL |
 | `process::geteuid`, `session` | `geteuid`, `getsid` | the same | not offered |
-| `process::lead_session`, `pty::Slave::spawn` | `io::open_end` before `fork`; between `fork` and `exec` (`pre_exec`): `io::cloexec_from(3, listed)`, `setsid`, `TIOCSCTTY` | the same | std's spawn makes no session |
-| `process::thread_cpu_time` | `clock_gettime(CLOCK_THREAD_CPUTIME_ID)` | the same | not offered |
+| `process::lead_session`, `pty::Slave::spawn` | before `fork`, the highest descriptor in `/dev/fd`; between `fork` and `exec` (`pre_exec`): every descriptor from 3 up marked close-on-exec (`close_range(CLOSE_RANGE_CLOEXEC)`, else `fcntl` on each up to past those listed; Android: always the latter), `setsid`, `TIOCSCTTY` | the same, by `fcntl` on each up to past those listed | std's spawn makes no session |
+| `process::thread_cpu_time` (for fux-bench) | `clock_gettime(CLOCK_THREAD_CPUTIME_ID)` | the same | not offered |
 | `process::ended` | `waitid(WEXITED, WNOHANG, WNOWAIT)` | the same, ignoring the stops macOS reports | std's `try_wait` reaps |
 | `process::reap` | `waitid(WEXITED, WNOHANG)` | the same, ignoring the stops macOS reports | for a pid, not a `Child` |
 | `process::adopt_orphans`, `reap_orphans` | `prctl(PR_SET_CHILD_SUBREAPER)`; `waitpid(WNOHANG)` on each child in `/proc/self/task/*/children` not kept | nothing: macOS has no subreaper, so orphans go to launchd | not offered |
 | `process::tree` | this process's descendants, by `/proc/PID/task/*/children` | every process (`proc_listallpids`), as orphans leave the tree | not offered |
-| `process::cwd` | `/proc/PID/cwd` | `proc_pidinfo(PROC_PIDVNODEPATHINFO)` | not offered |
+| `process::cwd_observed` | `/proc/PID/cwd` | `proc_pidinfo(PROC_PIDVNODEPATHINFO)` | not offered |
 | `pty::open` | `posix_openpt(O_CLOEXEC)`, `grantpt`, `unlockpt`, `ptsname_r` | `posix_openpt(O_CLOEXEC)` (retried as above; marked close-on-exec after if a release refuses the flag), `TIOCPTYGNAME` and a check of the replica, `grantpt` under a watchdog, `unlockpt` | not offered |
-| `terminal::attributes`, `set_attributes`, `Termios::make_raw`, `modes` | `tcgetattr`, `tcsetattr`, `cfmakeraw`, the `ECHO` and `ICANON` flags of `c_lflag` | the same | not offered |
+| `terminal::attributes`, `set_attributes`, `Termios::make_raw` | `tcgetattr`, `tcsetattr`, `cfmakeraw` | the same | not offered |
 | `terminal::window_size`, `set_window_size` | `TIOCGWINSZ`, `TIOCSWINSZ` | the same | not offered |
 | `terminal::foreground_group` | `tcgetpgrp` | the same | not offered |
 | `socket::stream`, `bind`, `listen`, `connect` | `socket(SOCK_CLOEXEC)`, `bind`, `listen`, `connect` | `socket`, then close-on-exec | `UnixListener::bind` binds and listens in one step; fux sets the socket's mode between them |
-| `socket::peer_uid` | `SO_PEERCRED` | `getpeereid` | `peer_cred` is unstable |
+| `socket::peer` | `SO_PEERCRED` | `getpeereid` | `peer_cred` is unstable |
 | `file::pin` | `open(O_PATH \| O_NOFOLLOW)` | none | `O_PATH` has no name in std |
 
 `file::NOFOLLOW` is `O_NOFOLLOW`, for `OpenOptions::custom_flags`.
 `socket::max_path_len` is the longest path a socket address holds: its
 `sun_path` less the NUL (107 bytes on Linux and Android, 103 on macOS).
 `process::Signal` is the signals fuxix sends and those a program dies of,
-each found by its number (`from_raw`) or its name (`named`, `TERM`), and
-giving both back (`raw`, `name`).
+each found by its number (`from_raw`), and giving it and its name back
+(`raw`, `name`, `TERM`).

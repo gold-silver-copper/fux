@@ -1,4 +1,28 @@
 use super::*;
+use crate::test_feed::Refused;
+
+impl Screen {
+    /// The cell at `row`, `col` of the screen.
+    pub(crate) fn cell(&self, row: u16, col: u16) -> Option<CellRef<'_>> {
+        self.grid().cell(row, col)
+    }
+    /// The text of the screen's row `row`, each cell's contents in turn.
+    pub(crate) fn row_text(&self, row: u16) -> String {
+        let row = self.grid().live_row(row);
+        row.iter()
+            .flat_map(|r| r.cells())
+            .map(|c| c.contents())
+            .collect()
+    }
+    /// The hyperlink of the cell at `row`, `col` of the screen.
+    pub(crate) fn link(&self, row: u16, col: u16) -> Option<&Hyperlink> {
+        self.grid().live_row(row)?.link(usize::from(col))
+    }
+    /// The cells both grids retain, screen and history.
+    pub(crate) fn storage_cells(&self) -> usize {
+        (self.primary.storage_cells()).saturating_add(self.alternate.storage_cells())
+    }
+}
 
 #[test]
 fn sgr_colour_parameters_name_the_sixteen_palette_colours() -> Result<(), Error> {
@@ -245,7 +269,7 @@ fn sweeping_the_styles_changes_nothing_a_reader_sees() -> Result<(), Error> {
                     && looks(&a.alternate) == looks(&b.alternate),
                 "step {step}"
             );
-            assert_eq!(a.attributes(), b.attributes(), "step {step}");
+            assert_eq!(a.attributes, b.attributes, "step {step}");
         }
     }
     Ok(())
@@ -276,11 +300,15 @@ fn styles_in_use_survive_the_sweeps_that_new_ones_bring() -> Result<(), Error> {
     let cells = u32::try_from(retained.saturating_mul(usize::from(cols))).unwrap_or(0);
     let mut n = glyphs.saturating_sub(cells);
     for i in 0..retained {
-        let row = grid.row_at(i).ok_or(Error::InvalidRange)?;
+        let row = grid.row_at(i).ok_or(Error::Capacity)?;
         for cell in row.cells() {
             let (r, g, b) = colour(n);
             assert_eq!(cell.contents(), "x", "glyph {n}");
-            assert_eq!(cell.bgcolor(), Color::Rgb([r, g, b].into()), "glyph {n}");
+            assert_eq!(
+                cell.attributes().background(),
+                Color::Rgb([r, g, b].into()),
+                "glyph {n}"
+            );
             n = n.saturating_add(1);
         }
     }
@@ -299,11 +327,7 @@ fn a_clear_moves_no_commands_output() -> Result<(), Error> {
         let begun = p.screen().commands().output_start;
         p.process(clear)?;
         p.process(b"AFTER\r\n\x1b]133;D;0\x07$ ")?;
-        let (from, _) = p
-            .screen()
-            .commands()
-            .last_output
-            .ok_or(Error::InvalidRange)?;
+        let (from, _) = p.screen().commands().last_output.ok_or(Error::Capacity)?;
         assert_eq!(Some(from), begun, "{clear:?}");
     }
     Ok(())
@@ -323,7 +347,7 @@ fn command_marks_follow_a_reflow() -> Result<(), Error> {
     // The glyph `back` columns before `mark`.
     let glyph = |p: &crate::Parser, mark: Option<CommandMark>, back: usize| {
         let mark = mark?;
-        let row = p.screen().row_by_id(mark.row)?;
+        let row = p.screen().rows().nth(p.screen().row_index(mark.row)?)?;
         let cell = row.cell(usize::from(mark.col).checked_sub(back)?)?;
         Some(cell.contents().to_owned())
     };
@@ -354,7 +378,7 @@ fn command_marks_on_left_out_glyphs_keep_their_output() -> Result<(), Error> {
         let mut p = crate::Parser::with_options(Size::of(4, 6), 1 << 16, options)?;
         p.process(output.as_bytes())?;
         p.resize(Size::of(4, 1))?;
-        let (from, to) = (p.screen().commands().last_output).ok_or(Error::InvalidRange)?;
+        let (from, to) = (p.screen().commands().last_output).ok_or(Error::Capacity)?;
         let at = |mark: CommandMark| (p.screen().row_index(mark.row), mark.col);
         assert_eq!(at(from), (Some(start.0), start.1), "{output:?}");
         assert_eq!(at(to), (Some(end.0), end.1), "{output:?}");
@@ -459,7 +483,7 @@ fn picture(width: u32, height: u32) -> Vec<u8> {
 
 /// The numbers of the pictures the screen shows.
 fn shown(p: &crate::Parser) -> Vec<u64> {
-    p.screen().pictures().map(|s| s.id).collect()
+    p.screen().numbered_pictures().map(|(id, _)| id).collect()
 }
 
 /// Past the budget, pictures no longer shown go first, then the oldest
@@ -606,7 +630,7 @@ fn a_picture_covers_only_the_pixels_it_lies_on() -> Result<(), Error> {
     };
     // The first picture's pixels still opaque, if it is shown.
     let left = |p: &crate::Parser| {
-        let first = p.screen().pictures().find(|s| s.id == 1);
+        let first = (p.screen().numbered_pictures()).find_map(|(id, s)| (id == 1).then_some(s));
         first.map(|s| {
             let pixels = (0..40).flat_map(|y| (0..20).map(move |x| (x, y)));
             pixels
@@ -727,7 +751,7 @@ fn a_declared_extent_keeps_no_pixels() -> Result<(), Error> {
         let mut p = pictured(Size::of(24, 80), 8 << 20)?;
         p.process(format!("\x1bP0;{p2}q\"1;1;4096;2160\x1b\\").as_bytes())?;
         assert_eq!(p.screen().picture_bytes(), 0, "P2 {p2}");
-        let shown = p.screen().pictures().next().ok_or(Error::InvalidRange)?;
+        let shown = p.screen().pictures().next().ok_or(Error::Capacity)?;
         let size = (shown.picture.width(), shown.picture.height());
         assert_eq!(size, (4096, 2160), "P2 {p2}");
         assert_eq!(shown.picture.pixel(4095, 2159), Some(pixel), "P2 {p2}");
@@ -802,10 +826,11 @@ fn a_picture_needs_a_host_cell_of_a_sixel_band_or_more() -> Result<(), Error> {
         let size = crate::CellSize::new(cell.0, cell.1);
         assert_eq!(size.is_some(), placed, "{cell:?}");
         p.set_host_graphics(size.map_or(crate::Graphics::Text, crate::Graphics::Sixel));
-        p.process(&picture(6, 12))?;
+        let mut refused = Refused::default();
+        p.process_with(&picture(6, 12), &mut refused)?;
         let shown = p.screen().pictures().next().map(|s| s.cell);
         assert_eq!(shown, placed.then_some(cell), "{cell:?}");
-        assert_eq!(p.pictures_refused(), u64::from(!placed), "{cell:?}");
+        assert_eq!(refused.0, u64::from(!placed), "{cell:?}");
     }
     Ok(())
 }
@@ -819,12 +844,13 @@ fn a_picture_refused_room_is_counted() -> Result<(), Error> {
     p.set_host_graphics(
         crate::CellSize::new(10, 20).map_or(crate::Graphics::Text, crate::Graphics::Sixel),
     );
-    p.process(b"\x1bP9q\x1b\\\x1bP9q~\x18")?;
-    assert_eq!(p.pictures_refused(), 0);
+    let mut refused = Refused::default();
+    p.process_with(b"\x1bP9q\x1b\\\x1bP9q~\x18", &mut refused)?;
+    assert_eq!(refused.0, 0);
     p.set_picture_bytes(0);
-    p.process(b"\x1bP9q~\x1b\\")?;
+    p.process_with(b"\x1bP9q~\x1b\\", &mut refused)?;
     assert_eq!(p.screen().pictures().count(), 0);
-    assert_eq!(p.pictures_refused(), 1);
+    assert_eq!(refused.0, 1);
     Ok(())
 }
 
@@ -835,10 +861,14 @@ fn a_picture_refused_room_is_counted() -> Result<(), Error> {
 fn a_picture_no_host_draws_is_counted_as_it_ends() -> Result<(), Error> {
     let options = crate::Options::from(crate::Feature::Pictures);
     let mut p = crate::Parser::with_options(Size::of(24, 80), 0, options)?;
-    p.process(b"\x1bPq\x1b\\\x1bPq~\x18\x1bPq#1;2;100;0;0\x1b\\")?;
-    assert_eq!(p.pictures_refused(), 0);
-    p.process(b"\x1bPq~\x1b\\")?;
-    assert_eq!(p.pictures_refused(), 1);
+    let mut refused = Refused::default();
+    p.process_with(
+        b"\x1bPq\x1b\\\x1bPq~\x18\x1bPq#1;2;100;0;0\x1b\\",
+        &mut refused,
+    )?;
+    assert_eq!(refused.0, 0);
+    p.process_with(b"\x1bPq~\x1b\\", &mut refused)?;
+    assert_eq!(refused.0, 1);
     assert_eq!(p.screen().pictures().count(), 0);
     Ok(())
 }
@@ -849,19 +879,214 @@ fn a_picture_no_host_draws_is_counted_as_it_ends() -> Result<(), Error> {
 #[test]
 fn a_picture_whose_host_went_as_it_was_read_is_counted() -> Result<(), Error> {
     let options = crate::Options::from(crate::Feature::Pictures);
-    let cell = crate::CellSize::new(10, 20).ok_or(Error::InvalidRange)?;
+    let cell = crate::CellSize::new(10, 20).ok_or(Error::Capacity)?;
     for gone in [crate::Graphics::Text, crate::Graphics::Cell(cell)] {
         let mut p = crate::Parser::with_options(Size::of(24, 80), 0, options)?;
         p.set_host_graphics(crate::Graphics::Sixel(cell));
         let bytes = picture(6, 12);
         let (begun, rest) = bytes
             .split_at_checked(bytes.len() / 2)
-            .ok_or(Error::InvalidRange)?;
-        p.process(begun)?;
+            .ok_or(Error::Capacity)?;
+        let mut refused = Refused::default();
+        p.process_with(begun, &mut refused)?;
         p.set_host_graphics(gone);
-        p.process(rest)?;
+        p.process_with(rest, &mut refused)?;
         assert_eq!(p.screen().pictures().count(), 0, "{gone:?}");
-        assert_eq!(p.pictures_refused(), 1, "{gone:?}");
+        assert_eq!(refused.0, 1, "{gone:?}");
     }
     Ok(())
+}
+
+/// Prompt marks (OSC 133 `A`, `N`, primary `P`): which rows they mark, and
+/// how a mark goes with its row. No host reads them, so they are checked
+/// here, where `Row::starts_prompt` is in reach.
+mod prompts {
+    use super::*;
+    use crate::{Feature, Options, Parser};
+
+    const MARKS: Options = Options::new().with(Feature::PromptMarks);
+
+    fn parser(rows: u16, cols: u16, history: usize, options: Options) -> Result<Parser, Error> {
+        Parser::with_options(Size::of(rows, cols), history, options)
+    }
+
+    /// The retained rows a prompt starts on, counted from the oldest.
+    fn marks(p: &Parser) -> Vec<usize> {
+        (p.screen().rows().enumerate())
+            .filter(|(_, r)| r.starts_prompt())
+            .map(|(i, _)| i)
+            .collect()
+    }
+
+    /// A shell's commands: a prompt, the command, its output.
+    const SESSION: &[u8] =
+        b"\x1b]133;A\x07$ \x1b]133;B\x07ls\r\n\x1b]133;C\x07a\r\nb\r\n\x1b]133;D;0\x07\
+        \x1b]133;A;cl=m;aid=12\x1b\\$ \x1b]133;B\x1b\\true\r\n\x1b]133;D;0\x07\x1b]133;A\x07$ ";
+
+    #[test]
+    fn a_prompt_marks_its_row_and_the_others_mark_nothing() -> Result<(), Error> {
+        let mut p = parser(8, 10, 10, MARKS)?;
+        p.process(SESSION)?;
+        assert_eq!(marks(&p), [0, 3, 4]);
+        // B, C, D and a continuation prompt mark nothing.
+        let mut q = parser(8, 10, 10, MARKS)?;
+        q.process(b"ab\x1b]133;B\x07\x1b]133;C\x07\x1b]133;D;1\x07\x1b]133;P;k=c\x07c")?;
+        assert_eq!(marks(&q), Vec::<usize>::new());
+        // The same whatever pieces the output came in, and with every option.
+        for size in [1, 2, 5] {
+            let options = MARKS.with(Feature::Events).with(Feature::Hyperlinks);
+            let mut q = parser(8, 10, 10, options)?;
+            let mut rest = SESSION;
+            while let Some((piece, after)) = rest.split_at_checked(size.min(rest.len()))
+                && !piece.is_empty()
+            {
+                q.process(piece)?;
+                rest = after;
+            }
+            assert_eq!(marks(&q), marks(&p), "pieces of {size}");
+        }
+        // Without the option, OSC 133 marks nothing.
+        let mut q = parser(4, 10, 0, Options::default())?;
+        q.process(b"ab\x1b]133;A\x07cd")?;
+        assert_eq!(marks(&q), Vec::<usize>::new());
+        Ok(())
+    }
+
+    /// `A`'s fresh line comes first: the mark is on the new line, which
+    /// at the bottom scrolls in.
+    #[test]
+    fn a_marks_the_row_after_its_fresh_line() -> Result<(), Error> {
+        let mut p = parser(4, 10, 0, MARKS)?;
+        p.process(b"out\x1b]133;A\x07$ \x1b]133;L\x07x\x1b]133;L\x07\x1b]133;L\x07y")?;
+        assert_eq!(marks(&p), [1]);
+        let mut p = parser(2, 10, 1 << 10, MARKS)?;
+        p.process(b"a\r\nb\x1b]133;A\x07$")?;
+        assert_eq!(marks(&p), [2]);
+        Ok(())
+    }
+
+    /// `N` is `A`: a fresh line, then the mark, ending a command that runs.
+    /// `P` of the primary kind (`k=i`, or none) marks the cursor's row;
+    /// right-side and continuation prompts mark nothing.
+    #[test]
+    fn n_and_a_primary_p_mark_their_row() -> Result<(), Error> {
+        let mut p = parser(6, 10, 0, MARKS)?;
+        p.process(b"x\x1b]133;N\x07$ ")?;
+        assert_eq!(marks(&p), [1]);
+        p.process(b"\r\n\x1b]133;P;k=c\x07> \x1b]133;P;k=r\x07")?;
+        assert_eq!(marks(&p), [1], "continuation and right prompts");
+        p.process(b"\r\nab\x1b]133;P;k=i\x07$ \r\n\x1b]133;P\x07$ ")?;
+        assert_eq!(marks(&p), [1, 3, 4], "primary prompts");
+        let mut p = parser(6, 10, 0, MARKS)?;
+        p.process(b"$ ls\r\n\x1b]133;C\x07out\x1b]133;N\x07$ ")?;
+        assert_eq!(marks(&p), [2]);
+        Ok(())
+    }
+
+    /// Marks go into history with their rows, move with IL and DL, leave with
+    /// the rows a scroll drops, and go when ED erases their row whole; EL, and
+    /// ED from the cursor, leave the cursor's row its mark, as a shell erases
+    /// from its prompt to redraw it; RIS and DECALN take them.
+    #[test]
+    fn marks_go_with_their_rows() -> Result<(), Error> {
+        // Two rows of up to five cells: 24 bytes a row and 8 a cell.
+        let mut p = parser(3, 6, 2 * 64, MARKS)?;
+        p.process(b"\x1b]133;A\x07$ one\r\nout\r\n\x1b]133;A\x07$ two\r\nout\r\n\x1b]133;A\x07$")?;
+        assert_eq!(marks(&p), [0, 2, 4]);
+        // Past the history, the first row leaves.
+        p.process(b"\r\nx\r\ny")?;
+        assert_eq!(marks(&p), [0, 2]);
+        // IL in the screen's rows moves the marks below it.
+        let mut p = parser(4, 6, 0, MARKS)?;
+        p.process(b"a\r\n\x1b]133;A\x07b\x1b[1;1H\x1b[L")?;
+        assert_eq!(marks(&p), [2]);
+        p.process(b"\x1b[M\x1b[M")?;
+        assert_eq!(marks(&p), [0]);
+        p.process(b"\x1b[M")?;
+        assert_eq!(marks(&p), Vec::<usize>::new());
+        // EL and ED 0 at the prompt keep it; ED 2 does not.
+        let mut p = parser(3, 6, 0, MARKS)?;
+        p.process(b"\x1b]133;A\x07$ ls\r\n\x1b]133;A\x07$ \r\x1b[K\x1b[J")?;
+        assert_eq!(marks(&p), [0, 1]);
+        p.process(b"\x1b[1;1H\x1b[J")?;
+        assert_eq!(marks(&p), [0]);
+        p.process(b"\x1b[2J")?;
+        assert_eq!(marks(&p), Vec::<usize>::new());
+        // RIS forgets them.
+        let mut p = parser(3, 6, 0, MARKS)?;
+        p.process(b"\x1b]133;A\x07\x1bc")?;
+        assert_eq!(marks(&p), Vec::<usize>::new());
+        // DECALN takes the mark with the row's text, as ED's erase does.
+        let mut p = parser(2, 3, 0, MARKS)?;
+        p.process(b"\x1b]133;A\x07$ \x1b#8")?;
+        assert_eq!(marks(&p), Vec::<usize>::new());
+        Ok(())
+    }
+
+    /// A resize keeps the marks of the rows it keeps; a reflow puts each on
+    /// the row its prompt's first character goes to.
+    #[test]
+    fn marks_survive_resize_and_reflow() -> Result<(), Error> {
+        let input = b"\x1b]133;A\x07$ long command\r\noutput\r\n\x1b]133;A\x07$ ";
+        let mut p = parser(4, 20, 1 << 12, MARKS)?;
+        p.process(input)?;
+        p.resize(Size::of(4, 6))?;
+        assert_eq!(marks(&p), [0, 2]);
+        let mut p = parser(4, 20, 1 << 12, MARKS.with(Feature::Reflow))?;
+        p.process(input)?;
+        // "$ long command" takes three rows of six.
+        p.resize(Size::of(4, 6))?;
+        assert_eq!(marks(&p), [0, 4]);
+        p.resize(Size::of(4, 20))?;
+        assert_eq!(marks(&p), [0, 2]);
+        // A mark on a line's second row goes where that row's first cell goes:
+        // narrower, its own row; wider, the line's first. A mark is a row's, so
+        // from there on it is the first row's.
+        let mut p = parser(3, 4, 10, MARKS.with(Feature::Reflow))?;
+        p.process(b"abcde\r\x1b]133;A\x07")?;
+        assert_eq!(marks(&p), [1]);
+        p.resize(Size::of(3, 2))?;
+        assert_eq!(marks(&p), [2]);
+        p.resize(Size::of(3, 8))?;
+        assert_eq!(marks(&p), [0]);
+        p.resize(Size::of(3, 2))?;
+        assert_eq!(marks(&p), [0]);
+        Ok(())
+    }
+
+    /// Marking a row, or taking its mark away, gives it a new version, and
+    /// the row is newer than a mark taken before (`THREATS.md` section 6,
+    /// invariant 28); a mark that stays as it was changes nothing.
+    #[test]
+    fn a_prompt_mark_changes_its_row_s_version() -> Result<(), Error> {
+        let mut p = parser(4, 10, 0, MARKS)?;
+        p.process(b"\x1b[2;1H")?;
+        let version = |p: &Parser| p.screen().rows().nth(1).map(|r| r.version());
+        let dirty = |p: &Parser, mark| {
+            let s = p.screen();
+            let full = s.full_refresh_since(mark);
+            (s.rows().enumerate())
+                .filter(|(_, r)| full || r.changed_since(mark))
+                .map(|(i, _)| i)
+                .collect::<Vec<_>>()
+        };
+        let (before, mark) = (version(&p), p.screen().mark());
+        // A at the first column: no fresh line, the blank row marked.
+        p.process(b"\x1b]133;A\x07")?;
+        assert_eq!(marks(&p), [1]);
+        assert!(version(&p) > before, "marked with no new version");
+        assert_eq!(dirty(&p, mark), [1]);
+        // P with no `k`: the row marked again, as it was.
+        let (before, mark) = (version(&p), p.screen().mark());
+        p.process(b"\x1b]133;P\x07")?;
+        assert_eq!(version(&p), before, "a mark as it was changed the row");
+        assert_eq!(dirty(&p, mark), Vec::<usize>::new());
+        // ED 2 takes it away from the blank row: a change of its own.
+        let (before, mark) = (version(&p), p.screen().mark());
+        p.process(b"\x1b[2J")?;
+        assert_eq!(marks(&p), Vec::<usize>::new());
+        assert!(version(&p) > before, "unmarked with no new version");
+        assert!(dirty(&p, mark).contains(&1));
+        Ok(())
+    }
 }

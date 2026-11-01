@@ -8,7 +8,7 @@
 //! byte at a time, its row versions checked after every byte while it
 //! holds few enough rows; and between the outputs the host's calls:
 //! resizes, history budgets, palettes, pictures
-//! listed and encoded, the picture budget, windows read. fux-vt's
+//! listed and encoded, the picture budget. fux-vt's
 //! invariant checker runs after every operation, on both, and the two must
 //! agree.
 //!
@@ -29,7 +29,6 @@
 //!   many rows went;
 //! - `f5 c`: the host's cell for pictures;
 //! - `f4 b`: the picture budget, `PICTURES[b % 4]`;
-//! - `f3` and eight bytes: a window's text, as in `terminal`;
 //! - `f2 n k` and k + 1 bytes: those bytes as output, (n + 1) × 16 times;
 //! - `f1 n` and n bytes: a character of `tests/corpus/graphemes.rs` for
 //!   each;
@@ -38,7 +37,7 @@ use fux_vt::{Feature, Graphics, Identity, Options, Parser, Rgb, Size};
 use libfuzzer_sys::fuzz_target;
 mod common;
 use common::{
-    Record, Rows, features_reached, marks_sound, pick, reached, until_stops, versions_follow,
+    Record, Rows, features_reached, fed, marks_sound, pick, reached, until_stops, versions_follow,
 };
 #[path = "../../tests/corpus/graphemes.rs"]
 mod graphemes;
@@ -72,11 +71,6 @@ const READS: usize = 4;
 
 /// The work `sixel::encode` may do a crop pixel (`THREATS.md` B08).
 const C_ENC: u64 = 3;
-
-/// Whether every item of `items` is equal.
-pub fn alike<T: PartialEq>(items: &[T]) -> bool {
-    items.iter().all(|item| items.first() == Some(item))
-}
 
 /// A size of 1 + 2r by 1 + 2c.
 fn size(r: u8, c: u8) -> Option<Size> {
@@ -142,11 +136,7 @@ impl Run {
                 self.hashed = self.hashed.saturating_add(cells);
             }
             let before = few.then(|| kept.take().unwrap_or_else(|| Rows::of(&self.split)));
-            assert!(
-                (self.split)
-                    .process_with(std::slice::from_ref(byte), &mut b)
-                    .is_ok()
-            );
+            assert!(fed(&mut self.split, std::slice::from_ref(byte), &mut b));
             if let Some(before) = before {
                 let after = Rows::of(&self.split);
                 versions_follow(&before, &after);
@@ -231,7 +221,7 @@ fuzz_target!(|data: &[u8]| {
     };
     whole.set_host_graphics(graphics(cell));
     reached("call set_host_graphics");
-    features_reached(&whole);
+    features_reached(options);
     let split = whole.clone();
     let mut run = Run {
         whole,
@@ -304,27 +294,6 @@ fuzz_target!(|data: &[u8]| {
                 run.both()
                     .into_iter()
                     .for_each(|p| p.set_picture_bytes(bytes.unwrap_or(0)));
-            }
-            0xf3 => {
-                reached("call Window::text");
-                let Some((parameters, rest)) = input.split_first_chunk::<8>() else {
-                    break;
-                };
-                input = rest;
-                let [offset, _, _, ay, ax, by, bx, cells] = parameters.map(u16::from);
-                let (cells, offset) = (usize::from(cells), usize::from(offset));
-                let bytes = cells.saturating_mul(4);
-                let texts: Vec<_> = (run.both().into_iter())
-                    .map(|p| {
-                        let window = p.screen().window();
-                        let window = window.row(0).map_or(window, |top| top.up(offset).window());
-                        window.text((ay, ax), (by, bx), cells, bytes)
-                    })
-                    .collect();
-                assert!(alike(&texts));
-                for text in texts.iter().flatten() {
-                    assert!(text.len() <= bytes);
-                }
             }
             0xf2 => {
                 let (n, k) = (usize::from(arg()), usize::from(arg()));

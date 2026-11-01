@@ -29,6 +29,11 @@ type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
 mod lines;
 use lines::lines;
 
+#[path = "corpus/feed.rs"]
+#[expect(dead_code, reason = "each test binary uses some of the helpers")]
+mod feed;
+use feed::Feed;
+
 const ROWS: u16 = 4;
 const COLS: u16 = 10;
 /// A cursor position report's row and column.

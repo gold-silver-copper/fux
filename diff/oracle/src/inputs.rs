@@ -5,15 +5,15 @@
 //!   pane (8 MiB of history, fux's) and with every option off;
 //! - random cases drawing from fux-vt-compare's families
 //!   (`fux-vt/compare/src/families.rs`, shared as it is written there), in
-//!   random sizes, histories and options, with resizes, frames, copies,
-//!   and output cut anywhere;
+//!   random sizes, histories and options, with resizes, frames, host
+//!   calls, and output cut anywhere;
 //! - a stream that resizes often with its history full;
 //! - the limits: OSC strings past their bound, links past their count and
 //!   bytes, clusters past their capacity, rows past their text, and sizes
 //!   too big to allocate.
 use crate::case::{Case, Step};
 use crate::families::{FAMILIES, RESIZE};
-use crate::model::{Call, IDENTITIES, Selection, Setup};
+use crate::model::{Call, IDENTITIES, Setup};
 use crate::rng::Rng;
 use std::path::{Path, PathBuf};
 
@@ -136,13 +136,6 @@ pub fn corpus() -> Result<Vec<Recording>, String> {
 /// fux's history for a pane, in bytes, which the corpus is run with.
 pub const PANE_HISTORY_BYTES: usize = 8 << 20;
 
-/// The history rows a budget may hold at the most, as far as a window is
-/// looked up into it: 24 bytes a row, empty (`fux-vt/THREATS.md` B17), up
-/// to 2,000.
-fn history_rows(history_bytes: usize) -> usize {
-    (history_bytes / 24).min(2_000)
-}
-
 /// A size: mostly small, so edges are near; now and then one or two
 /// cells, or wide (as fux-vt-compare's cases draw them).
 fn size(r: &mut Rng, small: usize, large: usize) -> u16 {
@@ -169,28 +162,6 @@ fn setup(r: &mut Rng) -> Setup {
         setup.identity = r.pick(IDENTITIES).copied();
     }
     setup
-}
-
-/// A window and a selection in it, now and then out of it, or past the
-/// copy's limits; `rows` and `cols` are the screen's.
-fn selection(r: &mut Rng, rows: u16, cols: u16, history_bytes: usize) -> Selection {
-    let near =
-        |r: &mut Rng, n: u16| u16::try_from(r.below(usize::from(n).saturating_add(3))).unwrap_or(0);
-    Selection {
-        offset: r.below(history_rows(history_bytes).saturating_add(3)),
-        from: (near(r, rows), near(r, cols)),
-        to: (near(r, rows), near(r, cols)),
-        max_cells: if r.chance(30) {
-            r.below(64)
-        } else {
-            usize::MAX
-        },
-        max_bytes: if r.chance(30) {
-            r.below(256)
-        } else {
-            usize::MAX
-        },
-    }
 }
 
 /// Output from the families, cut anywhere into steps now and then.
@@ -223,7 +194,7 @@ fn call(r: &mut Rng) -> Call {
 }
 
 /// A random case: output from a few families, or every one, with resizes
-/// if the resize family is drawn, frames, copies, at a random size,
+/// if the resize family is drawn, frames, host calls, at a random size,
 /// history and options.
 fn random(r: &mut Rng) -> Case {
     let all: Vec<usize> = (0..FAMILIES.len()).collect();
@@ -259,11 +230,9 @@ fn random(r: &mut Rng) -> Case {
         let roll = r.below(100);
         if (resizes && roll < 20) || roll < 5 {
             steps.push(Step::Resize(size(r, 8, 40), size(r, 16, 100)));
-        } else if roll < 30 {
-            steps.push(Step::Copy(selection(r, rows, cols, history_bytes)));
-        } else if roll < 34 {
+        } else if (20..24).contains(&roll) {
             steps.push(Step::Host(call(r)));
-        } else if roll < 40 {
+        } else if (24..30).contains(&roll) {
             steps.push(Step::Frame(output(r, &chosen).concat()));
         } else {
             steps.extend(output(r, &chosen).into_iter().map(Step::Output));
@@ -497,6 +466,7 @@ pub fn limits_cases(seed: u64) -> Vec<Case> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::Side;
 
     #[test]
     fn every_generated_case_is_safe_to_allocate() {
@@ -533,11 +503,11 @@ mod tests {
             steps: vec![Step::Output(lines.clone())],
         };
         crate::case::check(&case).map_err(|d| d.to_string())?;
-        let size = fux_vt::Size::new(24, 80).map_err(|e| e.to_string())?;
-        let mut parser =
-            fux_vt::Parser::new(size, case.history_bytes).map_err(|e| e.to_string())?;
-        parser.process(&lines).map_err(|e| e.to_string())?;
-        let held = parser.screen().history_len();
+        let mut terminal =
+            <crate::work::Terminal as Side>::new(24, 80, case.history_bytes, &Setup::default())
+                .map_err(|e| e.0)?;
+        terminal.process(&lines, &mut Vec::new()).map_err(|e| e.0)?;
+        let held = terminal.state().history_len;
         assert!(held > 4096 / 80, "{held} rows of history, a block's worth");
         Ok(())
     }

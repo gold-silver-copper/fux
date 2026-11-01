@@ -10,7 +10,18 @@ use fux_vt::keys::mouse::{MouseAction, MouseButton, MouseEvent, ScrollLines};
 use fux_vt::{
     Feature, Graphics, Mode, MouseProtocolEncoding, MouseProtocolMode, Options, Parser, Size,
 };
+
+#[path = "corpus/feed.rs"]
+#[expect(dead_code, reason = "each test binary uses some of the helpers")]
+mod feed;
+use feed::Feed;
 type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
+
+/// Control alone.
+const CTRL: Modifiers = Modifiers {
+    ctrl: true,
+    ..Modifiers::NONE
+};
 
 fn parser(input: &[u8]) -> Result<Parser> {
     let mut p = Parser::with_options(
@@ -147,10 +158,7 @@ fn alternate_scroll_sends_the_cursor_keys_on_the_alternate_screen() -> Result {
     let p = parser(b"\x1b[?1007h\x1b[?1049h")?;
     assert_eq!(sent(&p, up).as_deref(), Some("^[[A^[[A^[[A^[[A^[[A"));
     assert_eq!(sent(&p, down).as_deref(), Some("^[[B^[[B^[[B^[[B^[[B"));
-    let ctrl = MouseEvent {
-        mods: Modifiers::CTRL,
-        ..down
-    };
+    let ctrl = MouseEvent { mods: CTRL, ..down };
     assert_eq!(
         sent(&p, ctrl),
         Some(std::iter::repeat_n("^[[B", 12).collect::<String>())
@@ -186,7 +194,7 @@ fn alternate_scroll_keeps_negotiated_arrows_in_bounded_chunks() -> Result {
                     (Modifiers::NONE, 0, 0),
                     (Modifiers::NONE, 3, 3),
                     (Modifiers::NONE, 32767, 32767),
-                    (Modifiers::CTRL, 3, rows / 2),
+                    (CTRL, 3, rows / 2),
                 ] {
                     let event = MouseEvent {
                         mods,

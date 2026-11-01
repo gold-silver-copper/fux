@@ -210,7 +210,7 @@ impl Default for Keys {
     fn default() -> Self {
         Self {
             screen: Default::default(),
-            decoder: Decoder::new(defaults().preferences.decode_timing()),
+            decoder: Decoder::with_paste_limit(defaults().preferences.decode_timing(), usize::MAX),
         }
     }
 }

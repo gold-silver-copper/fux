@@ -109,9 +109,9 @@ const TEXT: u8 = 16;
 const LOCKS: u8 = CAPS_LOCK_BIT | NUM_LOCK_BIT;
 
 /// What a bracketed paste begins with (`CSI 200 ~`).
-pub const PASTE_START: &[u8] = b"\x1b[200~";
+pub(crate) const PASTE_START: &[u8] = b"\x1b[200~";
 /// What a bracketed paste ends with (`CSI 201 ~`).
-pub const PASTE_END: &[u8] = b"\x1b[201~";
+pub(crate) const PASTE_END: &[u8] = b"\x1b[201~";
 
 /// Appends a paste as the pane should receive it to `out`: each line end
 /// (`\n` or `\r\n`) one CR, as xterm 411 sends a `\n` (`button.c`, its

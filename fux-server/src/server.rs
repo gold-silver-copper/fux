@@ -1846,9 +1846,7 @@ mod tests {
         view.terminal.cell = fux_vt::CellSize::new(12, 12);
         server.session.settled();
         server.paint(0, Instant::now());
-        let picture = std::sync::Arc::new(
-            fux_vt::sixel::Picture::new(12, 24, vec![255; 12 * 24 * 4]).ok_or("picture")?,
-        );
+        let picture = crate::test_picture::solid(12, 24, [true, true, true])?;
         // Under the corner the notice will cover.
         let full = vec![
             render::Visible {
@@ -2080,7 +2078,7 @@ mod tests {
             id,
             |_, bytes| {
                 assert_eq!(bytes.len(), PANE_CHUNK);
-                Err(Errno::INVAL)
+                Err(Errno::SRCH)
             },
             Instant::now(),
         );
@@ -2110,11 +2108,11 @@ mod tests {
         server.finish();
         let notice = notice.ok_or("read failure was not delivered")?;
         assert!(
-            notice.error && notice.text.contains(&Errno::INVAL.to_string()),
+            notice.error && notice.text.contains(&Errno::SRCH.to_string()),
             "{notice:?}"
         );
         assert!(dirty);
-        let error = fux_wire::json::Json::str(Errno::INVAL.to_string());
+        let error = fux_wire::json::Json::str(Errno::SRCH.to_string());
         let failed = fux_wire::json::Json::object(vec![
             ("event", fux_wire::json::Json::str("read_failed")),
             ("read_error", error),
@@ -2125,7 +2123,7 @@ mod tests {
             "{told:?}"
         );
         for json in [capture?, info?] {
-            let value = fux_wire::json::Json::str(Errno::INVAL.to_string()).render();
+            let value = fux_wire::json::Json::str(Errno::SRCH.to_string()).render();
             assert!(json.contains(&format!("\"read_error\":{value}")), "{json}");
         }
         Ok(())

@@ -5,7 +5,13 @@
 //! decoding, the fifth file's assertion (The Unicode Standard, 3.9, Tables
 //! 3-8 to 3-11), is `conformance::utf8_tables_3_8_to_3_11_substitute_maximal_subparts`.
 
-use fux_vt::{Parser, Size, UNICODE_VERSION, char_width};
+use fux_vt::{Parser, Size, char_width};
+use unicode_width::UNICODE_VERSION;
+
+#[path = "corpus/feed.rs"]
+#[expect(dead_code, reason = "each test binary uses some of the helpers")]
+mod feed;
+use feed::{Feed, Look};
 
 type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
 

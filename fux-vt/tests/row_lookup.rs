@@ -1,4 +1,4 @@
-//! Finding a row by its identity (`Screen::row_index`, `row_by_id`) after
+//! Finding a row by its identity (`Screen::row_index`) after
 //! random scrolls of every kind: line feeds into history, regions scrolled
 //! up and down (RI, IL, DL, SU, SD, DECSTBM), erasing and resizing, which
 //! make rows above older ones (`THREATS.md` B40). Every row kept is found
@@ -12,6 +12,11 @@ type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
 #[path = "../src/test_rng.rs"]
 mod test_rng;
 use test_rng::Rng;
+
+#[path = "corpus/feed.rs"]
+#[expect(dead_code, reason = "each test binary uses some of the helpers")]
+mod feed;
+use feed::Feed;
 
 /// One random step: mostly lines and line feeds, with every kind of
 /// scroll, margins, erasing and now and then a resize.
@@ -53,7 +58,6 @@ fn every_row_kept_is_found_where_it_is() -> Result {
             let ids: Vec<RowId> = screen.rows().map(|row| row.id()).collect();
             for (index, &id) in ids.iter().enumerate() {
                 assert_eq!(screen.row_index(id), Some(index), "case {case}, step {at}");
-                assert_eq!(screen.row_by_id(id).map(|row| row.id()), Some(id));
                 found = found.saturating_add(1);
             }
             for id in seen.iter().filter(|id| !ids.contains(id)) {

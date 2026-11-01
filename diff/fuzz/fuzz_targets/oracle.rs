@@ -1,5 +1,5 @@
 //! The working tree's fux-vt beside the pinned commit's (`diff/oracle`),
-//! fed the same random bytes, resizes, frames and copies: everything its
+//! fed the same random bytes, resizes, frames and host calls: everything its
 //! API shows must be equal after every step.
 //!
 //! Input: a case as `fux-vt-oracle --replay` reads it (text starting
@@ -16,8 +16,6 @@
 //! - `ff rows cols`: a resize, to 1 to 40 rows and 1 to 100 columns.
 //! - `fb n`: a resize fux-vt refuses for capacity, to 65,535 rows and
 //!   1,100 columns or more (`n` picks), or to 65,535 by 65,535.
-//! - `fe` and eight bytes: a window (offset, rows, columns), two corners
-//!   and the copy's cell and byte limits.
 //! - `fa k n`: a host's call, `k` naming which (`model::Call`), `n` its
 //!   argument.
 //! - `fd n` and n bytes: output through `process_until_stop`.
@@ -26,7 +24,7 @@
 //! - Any other byte `b`: the next `b + 1` bytes as output.
 #![no_main]
 use fux_vt_oracle::graphemes::CHARACTERS;
-use fux_vt_oracle::model::{Call, IDENTITIES, Selection, Setup};
+use fux_vt_oracle::model::{Call, IDENTITIES, Setup};
 use fux_vt_oracle::{Case, Step, check};
 use libfuzzer_sys::fuzz_target;
 
@@ -116,23 +114,6 @@ fn case(data: &[u8]) -> Option<Case> {
                     1_100u16.saturating_add(u16::from(n))
                 };
                 case.steps.push(Step::Resize(u16::MAX, cols));
-            }
-            0xfe => {
-                let (&[offset, _, _, y0, x0, y1, x1, limit], rest) =
-                    input.split_first_chunk::<8>()?;
-                input = rest;
-                let cells = usize::from(limit);
-                case.steps.push(Step::Copy(Selection {
-                    offset: usize::from(offset),
-                    from: (u16::from(y0 % 32), u16::from(x0)),
-                    to: (u16::from(y1 % 32), u16::from(x1)),
-                    max_cells: if limit == 0xff { usize::MAX } else { cells },
-                    max_bytes: if limit == 0xff {
-                        usize::MAX
-                    } else {
-                        cells.saturating_mul(4)
-                    },
-                }));
             }
             0xfa => {
                 let (&[which, n], rest) = input.split_first_chunk::<2>()?;
