@@ -20,8 +20,8 @@ fux                               # attach, starting a server if none runs
 
 `fux` alone runs `opts attach`, starting a server in the
 background if none answers. `fux opts str work in attach` attaches to workspace
-`work`; `fux @2 attach` shows a tab's first pane in layout order, and
-`fux %3 attach` focuses that pane. Explicit targets must exist.
+`work`; `fux @2 attach` shows a tab's first pane in layout order (its
+zoomed pane, while it has one), and `fux %3 attach` focuses that pane. Explicit targets must exist.
 `fux opts watch attach` only watches (keys do nothing but `C-b d`, which
 detaches), and never starts a server or creates a workspace.
 

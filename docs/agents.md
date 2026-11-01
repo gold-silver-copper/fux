@@ -533,7 +533,7 @@ read-file`. `X warn` prints on stderr:
 - fux is controlled through its Unix socket alone: a sandbox that denies
   `connect` to it (Codex's denies every `connect`) cannot drive fux. Run
   fux commands outside such a sandbox, or allow the socket.
-- `@2 attach` shows that tab's first pane; `%3 attach` focuses that pane.
+- `@2 attach` shows that tab's first pane (its zoomed one, if zoomed); `%3 attach` focuses that pane.
   `opts str work in attach` requires that workspace to exist. Without a target,
   attach uses the first stored workspace; a writable attach carries its launch,
   which only an empty server starts, serialized by the server. One viewport
