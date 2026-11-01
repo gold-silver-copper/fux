@@ -1197,6 +1197,31 @@ mod tests {
                 self.0.ask(asked)
             }
         }
+        // A workspace that closed, or a pane to move to, opens none.
+        let gone = "opts str gone in str / cwd 80 24 size new-tab workspace let w w kill";
+        for (code, refused) in [
+            (
+                format!("{gone} me w choose-among"),
+                "chooser target is absent",
+            ),
+            (
+                format!("{gone} me %2 w choose-move"),
+                "chooser target is absent",
+            ),
+            (
+                "me %2 %2 choose-move".to_owned(),
+                "takes a tab or workspace",
+            ),
+        ] {
+            let code = code.as_str();
+            let (mut s, c) = busy()?;
+            let error = output_as(&mut s, Some(c), code).err().unwrap_or_default();
+            assert!(error.contains(refused), "{code}: {error}");
+            assert!(
+                s.views.get(&c).is_some_and(|v| v.mode.is_normal()),
+                "{code}"
+            );
+        }
         for (code, captures) in [
             ("me me focused tab choose-among", 0),
             ("me me focused workspace choose-among", 0),

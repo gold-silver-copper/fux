@@ -342,7 +342,7 @@ end
 # snapshot handle -- rows : a row for each of the handle's siblings, among what holds it
 define chooser-siblings
   let it let s
-  it kind str workspace eq if s str workspaces get else
+  it kind str workspace eq if s str workspaces get dup it chooser-find drop else
     it kind str tab eq if str tabs str workspace else str panes str tab then let holder let kinds
     s kinds get it chooser-find holder get let held
     list s kinds get each dup holder get held eq if else drop then end end
@@ -357,8 +357,9 @@ define choose-among
   rows it chooser-index let current
   c list it kind str s end glue rows current rows current chooser-selected code show end choose
 end
-# client pane handle -- : choose where among the handle's siblings to move the pane, from one topology observation
+# client pane handle -- : choose where to move the pane: one of the siblings of handle, a tab or workspace, from one topology observation
 define choose-move
+  str 'tab workspace' str 'a tab or workspace, where the pane moves' assert-kind
   let it let source let c all str topology snapshot let s
   s str panes get source chooser-find drop
   s it chooser-siblings let rows

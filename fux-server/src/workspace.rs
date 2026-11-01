@@ -110,13 +110,6 @@ impl<C: Child> Stack<C> {
         self.get(self.shown.get(&client)?.current)
     }
 
-    /// `client` is shown the first child, unless it is shown one.
-    fn attach(&mut self, client: ClientId) {
-        if let Some(first) = self.children.first().map(C::id) {
-            self.shown.entry(client).or_insert(Shown::on(first));
-        }
-    }
-
     /// Shows `client` child `id`, if it is one.
     fn show(&mut self, client: ClientId, id: C::Id) {
         let child = self.children.iter().any(|c| c.id() == id);
@@ -512,6 +505,12 @@ fn rename(
     }
 }
 
+/// A client's place, and its current child in each node (`Parts::places`).
+type Place = (
+    Option<crate::journal::PaneAt>,
+    Vec<(Option<AnyRef>, AnyRef)>,
+);
+
 /// Where `client` is: the workspace it is shown, the tab it is shown there
 /// and the pane it focuses in it.
 fn place_of(workspaces: &Stack<Workspace>, client: ClientId) -> Option<crate::journal::PaneAt> {
@@ -556,9 +555,36 @@ impl Parts {
         tab_mut(&mut self.workspaces, id).map(|(_, tab)| tab)
     }
 
-    /// Does `change`, journaling `shown` for each client whose place it
-    /// changes: at the place it left, if any, and at the one it reached
-    /// (none, with the last workspace gone).
+    /// What `client` is shown of the workspaces, of each workspace's tabs
+    /// and of each tab's panes, in that order.
+    pub fn seats(&self, client: ClientId) -> Vec<fux_wire::inspect::Seat> {
+        let seat = |within, shown: Option<Shown<AnyRef>>| {
+            shown.map(|Shown { current, last }| fux_wire::inspect::Seat {
+                within,
+                current,
+                last,
+            })
+        };
+        let root = self
+            .workspaces
+            .shown(client)
+            .map(|s| s.map(AnyRef::Workspace));
+        let mut seats: Vec<_> = seat(None, root).into_iter().collect();
+        for ws in self.workspaces() {
+            let tabs = ws.tabs.shown(client).map(|s| s.map(AnyRef::Tab));
+            seats.extend(seat(Some(AnyRef::Workspace(ws.id)), tabs));
+            for tab in ws.tabs() {
+                let focus = tab.seat(client).map(|s| s.focus.map(AnyRef::Pane));
+                seats.extend(seat(Some(AnyRef::Tab(tab.id)), focus));
+            }
+        }
+        seats
+    }
+
+    /// Does `change`, journaling `shown` for each client whose place, or
+    /// current child anywhere, it changes: at the place it left, if
+    /// another, and at the one it is at (none, with the last workspace
+    /// gone).
     fn viewing<R>(&mut self, change: impl FnOnce(&mut Parts) -> R) -> R {
         let before = self.places();
         let out = change(self);
@@ -566,43 +592,69 @@ impl Parts {
         out
     }
 
-    /// Where each client is.
-    fn places(&self) -> BTreeMap<ClientId, Option<crate::journal::PaneAt>> {
+    /// Where each client is, and its current child at every node.
+    fn places(&self) -> BTreeMap<ClientId, Place> {
         let clients = self.workspaces.shown.keys().copied();
+        let currents = |c| {
+            self.seats(c)
+                .into_iter()
+                .map(|s| (s.within, s.current))
+                .collect()
+        };
         clients
-            .map(|c| (c, place_of(&self.workspaces, c)))
+            .map(|c| (c, (place_of(&self.workspaces, c), currents(c))))
             .collect()
     }
 
     /// Journals `shown` for each client whose place is not as `before`.
-    fn moved(&mut self, before: BTreeMap<ClientId, Option<crate::journal::PaneAt>>) {
+    fn moved(&mut self, before: BTreeMap<ClientId, Place>) {
         let after = self.places();
         let clients: BTreeSet<ClientId> = before.keys().chain(after.keys()).copied().collect();
-        for client in clients {
-            let place = |places: &BTreeMap<ClientId, _>| places.get(&client).copied().flatten();
+        for client in clients
+            .into_iter()
+            .filter(|c| before.get(c) != after.get(c))
+        {
+            let place = |of: &BTreeMap<ClientId, Place>| of.get(&client).and_then(|p| p.0);
             let (was, now) = (place(&before), place(&after));
-            if was != now {
-                for at in was.map(Some).into_iter().chain([now]) {
-                    let change = ViewChange::Shown;
-                    self.journal.push(Event::View { client, at, change });
-                }
+            for at in (was.filter(|was| Some(*was) != now).map(Some).into_iter()).chain([now]) {
+                let change = ViewChange::Shown;
+                self.journal.push(Event::View { client, at, change });
             }
         }
     }
 
-    /// A client attaches: it is shown each workspace's first tab and each
-    /// tab's first pane, and then `at` and each that holds it.
+    /// A client attaches, shown `at` and each that holds it, and elsewhere
+    /// each first child, with nothing shown before.
     pub(crate) fn attach(&mut self, client: ClientId, at: AnyRef) {
+        let path = match at {
+            AnyRef::Pane(pane) => self
+                .locate(pane)
+                .map(|(ws, tab)| (ws, Some(tab), Some(pane))),
+            AnyRef::Tab(tab) => {
+                tab_mut(&mut self.workspaces, tab).map(|(ws, _)| (ws, Some(tab), None))
+            }
+            AnyRef::Workspace(ws) => Some((ws, None, None)),
+        };
+        let Some((ws, tab, pane)) = path else {
+            return;
+        };
         self.viewing(|parts| {
-            parts.workspaces.attach(client);
+            parts.workspaces.shown.insert(client, Shown::on(ws));
             for w in &mut parts.workspaces.children {
-                w.tabs.attach(client);
-                for tab in &mut w.tabs.children {
-                    let first = tab.root.first_pane();
-                    tab.seats.entry(client).or_insert(Seat::on(first));
+                let first = w.tabs.children.first().map(|t| t.id);
+                if let Some(current) = tab.filter(|_| w.id == ws).or(first) {
+                    w.tabs.shown.insert(client, Shown::on(current));
+                }
+                for t in &mut w.tabs.children {
+                    let focus = pane.filter(|_| Some(t.id) == tab);
+                    t.seats
+                        .insert(client, Seat::on(focus.unwrap_or(t.root.first_pane())));
+                    // Focusing another pane than the zoomed one ends the zoom.
+                    if let Some(focus) = focus.filter(|f| t.zoomed.is_some_and(|z| z != *f)) {
+                        t.set_focus(&mut parts.journal, w.id, client, focus);
+                    }
                 }
             }
-            parts.show_path(client, at);
         });
     }
 

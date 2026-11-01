@@ -1,8 +1,7 @@
 use super::{Error, Session};
 use crate::view::{ClientKind, Mode};
-use crate::workspace::{Child, Fit, Shown};
+use crate::workspace::{Child, Fit};
 use fux_wire::command::AnyRef;
-use fux_wire::id::ClientId;
 use fux_wire::inspect::{self, Projection, Scope, Snapshot};
 use fux_wire::json::Json;
 use fux_wire::layout::{Node, Tree};
@@ -188,40 +187,13 @@ impl Session {
                 workspace: place.map(|p| p.ws),
                 tab: place.map(|p| p.tab),
                 pane: place.map(|p| p.pane),
-                seats: self.seats(view.id),
+                seats: self.parts.seats(view.id),
                 opening: (!view.mode.is_normal()).then_some(view.opening),
                 mode: mode.to_owned(),
             };
             snapshot.clients.push(fact);
         }
         Ok(Body::Snapshot(Box::new(snapshot)))
-    }
-
-    /// What `client` is shown of the workspaces, of each workspace's tabs
-    /// and of each tab's panes, in that order.
-    pub(super) fn seats(&self, client: ClientId) -> Vec<inspect::Seat> {
-        let seat = |within, shown: Option<Shown<AnyRef>>| {
-            shown.map(|Shown { current, last }| inspect::Seat {
-                within,
-                current,
-                last,
-            })
-        };
-        let root = self
-            .parts
-            .stack()
-            .shown(client)
-            .map(|s| s.map(AnyRef::Workspace));
-        let mut seats: Vec<_> = seat(None, root).into_iter().collect();
-        for ws in self.parts.workspaces() {
-            let tabs = ws.stack().shown(client).map(|s| s.map(AnyRef::Tab));
-            seats.extend(seat(Some(AnyRef::Workspace(ws.id())), tabs));
-            for tab in ws.tabs() {
-                let focus = tab.seat(client).map(|s| s.focus.map(AnyRef::Pane));
-                seats.extend(seat(Some(AnyRef::Tab(tab.id())), focus));
-            }
-        }
-        seats
     }
 }
 

@@ -2817,28 +2817,17 @@ impl Session {
     /// shown there before, or a pane's neighbour on its screen.
     fn step(&self, view: &View, from: AnyRef, way: Way) -> Result<AnyRef, Error> {
         let kind = from.kind();
-        let (within, siblings): (_, Vec<AnyRef>) = match from {
-            AnyRef::Pane(p) => {
-                let tab = Some(AnyRef::Tab(self.locate(p).ok_or(Error::NoPane(p))?.1));
-                (
-                    tab,
-                    (self.panes_of(tab)?.into_iter().map(AnyRef::Pane)).collect(),
-                )
-            }
-            AnyRef::Tab(t) => {
-                let ws = Some(AnyRef::Workspace(self.tab_workspace(t)?));
-                (
-                    ws,
-                    (self.tabs_of(ws)?.into_iter().map(AnyRef::Tab)).collect(),
-                )
-            }
-            AnyRef::Workspace(_) => {
-                let workspaces = self.parts.workspaces().iter();
-                (
-                    None,
-                    workspaces.map(|w| AnyRef::Workspace(w.id())).collect(),
-                )
-            }
+        let within = match from {
+            AnyRef::Pane(p) => Some(AnyRef::Tab(self.locate(p).ok_or(Error::NoPane(p))?.1)),
+            AnyRef::Tab(t) => Some(AnyRef::Workspace(self.tab_workspace(t)?)),
+            AnyRef::Workspace(_) => None,
+        };
+        let siblings: Vec<AnyRef> = match from {
+            AnyRef::Pane(_) => (self.panes_of(within)?.into_iter().map(AnyRef::Pane)).collect(),
+            AnyRef::Tab(_) => (self.tabs_of(within)?.into_iter().map(AnyRef::Tab)).collect(),
+            AnyRef::Workspace(_) => (self.parts.workspaces().iter())
+                .map(|w| AnyRef::Workspace(w.id()))
+                .collect(),
         };
         match (way, from) {
             (Way::Step(toward), _) => {
@@ -2846,7 +2835,7 @@ impl Session {
                 let next = round(&siblings, index.unwrap_or(0), toward);
                 next.copied().ok_or(Error::OnlyOne(kind))
             }
-            (Way::Last, _) => (self.seats(view.id).into_iter())
+            (Way::Last, _) => (self.parts.seats(view.id).into_iter())
                 .find_map(|seat| seat.last.filter(|_| seat.within == within))
                 .ok_or_else(|| {
                     let code = match kind {
@@ -2864,14 +2853,11 @@ impl Session {
                     .map(AnyRef::Pane)
                     .ok_or(Error::NoNeighbor { from, direction })
             }
-            (Way::Toward(direction), AnyRef::Tab(_) | AnyRef::Workspace(_)) => Err(fail(
-                Raise::BadValue,
-                format!(
-                    "{} steps among a tab's panes: {from} is a {}",
-                    direction.name(),
-                    kind.name()
-                ),
-            )),
+            (Way::Toward(direction), AnyRef::Tab(_) | AnyRef::Workspace(_)) => {
+                let (way, kind) = (direction.name(), kind.name());
+                let why = format!("{way} steps among a tab's panes: {from} is a {kind}");
+                Err(fail(Raise::BadValue, why))
+            }
         }
     }
 
@@ -3999,6 +3985,43 @@ mod tests {
         let e = s.attach(10, 40, None)?;
         assert_eq!(shown(&s, e), at(3, None));
         invariants(&s)?;
+        Ok(())
+    }
+
+    /// An attach shows its target and what holds it with nothing shown
+    /// before (D-112): no last, and a close goes to the next one.
+    #[test]
+    fn an_attach_shows_its_target_with_no_last() -> TestResult {
+        use crate::workspace::Shown;
+        let (mut s, _) = attached(10, 40)?;
+        for ws in ["two", "two", "two", "three"] {
+            run(&mut s, &format!("opts str {ws} in 80 24 size new-tab drop"))?;
+        }
+        let state = fux::script::default_state().map_err(|e| e.to_string())?;
+        let size = Size::new(10, 40).map_err(|e| e.to_string())?;
+        let attach = Attach {
+            target: Some(command::AttachTarget::Tab(TabId::of(3))),
+            ..Attach::of(size, state.preferences.presentation())
+        };
+        let e = s.attach_as(attach, Instant::now())?;
+        fn on<I>(current: I, last: Option<I>) -> Option<Shown<I>> {
+            Some(Shown { current, last })
+        }
+        let tabs = |s: &Session, ws| s.workspace(WsId::of(ws)).and_then(|w| w.stack().shown(e));
+        assert_eq!(s.parts.stack().shown(e), on(WsId::of(2), None));
+        assert_eq!(tabs(&s, 2), on(TabId::of(3), None));
+        assert_eq!(tabs(&s, 1), on(TabId::of(1), None));
+        for (from, refused) in [
+            ("@3", "no previously shown tab"),
+            ("+2", "no previously shown workspace"),
+        ] {
+            let error = output_as(&mut s, Some(e), &format!("me {from} str last step")).err();
+            assert!(error.is_some_and(|e| e.contains(refused)), "{from}");
+        }
+        run(&mut s, "@3 kill")?;
+        assert_eq!(tabs(&s, 2), on(TabId::of(4), None));
+        run(&mut s, "+2 kill")?;
+        assert_eq!(s.parts.stack().shown(e), on(WsId::of(3), None));
         Ok(())
     }
 
@@ -8215,6 +8238,33 @@ mod journal_tests {
             .iter()
             .filter(|e| e.data.get("event") == Some(&Json::str(name)))
             .collect()
+    }
+
+    /// A client's reader is told every change of its current child: one
+    /// a zoom hides from its place, and a repair in a tab it is not shown.
+    #[test]
+    fn every_change_of_a_clients_current_child_is_shown() -> TestResult {
+        let (mut s, c) = testing::attached(24, 80)?;
+        run(
+            &mut s,
+            "%1 str horizontal axis split drop opts +1 in 80 24 size new-tab drop",
+        )?;
+        run(&mut s, "%1 zoom")?;
+        let shown = |s: &Session, from| -> Result<Vec<Option<TabId>>, String> {
+            let b = Reader::new(Scope::Client(c), s.parts.journal(), s.run, Some(from))?
+                .batch(s.parts.journal(), true)?;
+            Ok(named(&b, "shown").iter().map(|e| e.tab).collect())
+        };
+        // Its own focus moves to the zoomed pane it already shows.
+        let from = s.parts.journal().end(s.run);
+        run(&mut s, &format!("str {c} client %1 show"))?;
+        assert_eq!(shown(&s, from)?, [Some(TabId::of(1))]);
+        // Its focus in @1 is repaired while it is shown @2.
+        run(&mut s, &format!("str {c} client @2 show"))?;
+        let from = s.parts.journal().end(s.run);
+        run(&mut s, "%1 kill")?;
+        assert_eq!(shown(&s, from)?, [Some(TabId::of(2))]);
+        Ok(())
     }
 
     #[test]

@@ -374,7 +374,8 @@ the step refuses. Detaching discards it all. For example, bind
   They are three library words over one `choose` primitive:
   `CLIENT HANDLE choose-among` shows the sibling chosen (`t g` is
   `me-focused tab choose-among`), `CLIENT PANE HANDLE choose-move` moves the
-  pane to it (`a t` is `me-focused dup tab choose-move`), and `choose-pane`
+  pane to the tab or workspace chosen among the siblings of HANDLE, a tab or
+  workspace (`a t` is `me-focused dup tab choose-move`), and `choose-pane`
   swaps. Each reads one topology snapshot for its rows, source and current
   marker.
   Custom lists use `choose (client title rows current selected callback --)`:
