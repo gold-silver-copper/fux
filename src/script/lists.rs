@@ -114,7 +114,7 @@ fn held(answer: &super::Answer) -> Vec<String> {
 /// fields in order, sorted by where it is, each made by its own builder:
 /// - a session's snapshots in each projection, its client having told
 ///   its terminal's facts (sixel, its cell's size) and its pane shown a
-///   picture, styled text and a copy, a pane split with a variable set,
+///   picture, styled text, a copy, a link and a marked command, a pane split with a variable set,
 ///   and each kind of directory a launch observes;
 /// - a capture of that pane, with styles, and of the client;
 /// - held answers of every kind: an action's, a wait's that saw a change,
@@ -139,10 +139,13 @@ fn records_list_is_current() -> Result<(), Box<dyn std::error::Error>> {
     let acts = replies.map(fux_wire::act::Act::Reply).to_vec();
     session.acts(client, acts, now);
     // Every style there is, a picture on a line of its own (so no text
-    // covers it), a copy (OSC 52) and a title.
+    // covers it), a copy (OSC 52), a title, a link (OSC 8) and a marked
+    // command (OSC 133).
     let shown = "\x1b[1;2;3;4;5;7;8;9;38;5;1;48;2;1;2;3mstyled\x1b[0m\r\n\
                  \x1bP9q#1;2;100;0;0!20~-!20~\x1b\\\r\n\
-                 \x1b]52;c;aGVsbG8=\x07\x1b]2;title\x07";
+                 \x1b]52;c;aGVsbG8=\x07\x1b]2;title\x07\
+                 \x1b]8;;https://example.test\x1b\\link\x1b]8;;\x1b\\\r\n\
+                 \x1b]133;C\x07out\x1b]133;D;0\x07";
     let pane = fux_wire::id::PaneId::of(1);
     session.output(pane, shown.as_bytes(), now);
     let mut draft = super::default_state()?.draft();

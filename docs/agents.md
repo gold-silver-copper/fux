@@ -363,7 +363,9 @@ every cell. Then `json` for the screen and what is known of the pane:
 `screen_cursor` is `[ROW,COL]` (`screen_rows` and `screen_cols` the
 screen's size), `alt_screen` whether a program holds the
 alternate screen, `history_lines` the history kept, `above` the history
-rows kept above the first row read. Rows and columns are half-open
+rows kept above the first row read, `wrapped_rows` which rows go on in
+the next, `links` the hyperlinks (OSC 8) as `row`, `col`, `len` and `uri`,
+`last_output` where `last-output` reads (`fux help json`). Rows and columns are half-open
 `start..end` ranges from 0, like `slice`; equal endpoints select nothing.
 A joined row range includes each whole logical line it touches; `wrapped`
 selects physical rows only.
