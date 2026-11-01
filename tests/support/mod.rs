@@ -100,12 +100,12 @@ impl Server {
     /// `config` to prepare the scripted clients' whole local state;
     /// also save it for real typing terminals to load.
     pub fn start(config: &str) -> Result<Server, String> {
-        Server::start_limited(config, None)
+        Server::start_with(config, None, false, true, &journal()?).map(|(server, _)| server)
     }
 
-    /// The same, with at most `open_files` descriptors (`ulimit -n`).
-    pub fn start_limited(config: &str, open_files: Option<u32>) -> Result<Server, String> {
-        Server::start_with(config, open_files, false, true, &journal()?).map(|(server, _)| server)
+    /// The same, its resources limited as `ulimit LIMITS` limits them.
+    pub fn start_limited(config: &str, limits: &str) -> Result<Server, String> {
+        Server::start_with(config, Some(limits), false, true, &journal()?).map(|(server, _)| server)
     }
 
     /// The same, its journal keeping `entries` events.
@@ -129,7 +129,7 @@ impl Server {
 
     fn start_with(
         config: &str,
-        open_files: Option<u32>,
+        limits: Option<&str>,
         inherit: bool,
         create: bool,
         journal: &str,
@@ -161,12 +161,12 @@ impl Server {
             } else {
                 None
             };
-            let mut command = match open_files {
+            let mut command = match limits {
                 // `exec` keeps the pid, so `pid()` is the server's.
-                Some(n) => {
+                Some(limits) => {
                     let mut sh = Command::new("/bin/sh");
                     sh.arg("-c")
-                        .arg(format!("ulimit -n {n} && exec \"$0\" \"$@\""))
+                        .arg(format!("ulimit {limits} && exec \"$0\" \"$@\""))
                         .arg(fux());
                     sh
                 }
