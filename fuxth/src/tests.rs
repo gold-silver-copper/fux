@@ -141,6 +141,14 @@ fn vocabulary() -> Vocabulary {
         .and_then(|()| words.raises(Code::Host("far")))
         .and_then(|()| words.raises(Code::Unused));
     assert!(added.is_ok(), "{added:?}");
+    // `no-text` declares none.
+    words.fails(|id| match id {
+        1 => Some(["not_a_number", "negative", "far"].map(Code::Host).to_vec()),
+        2 => Some(vec![Code::Unused]),
+        0 | 3 => Some(Vec::new()),
+        _ => None,
+    });
+    words.writes(&[Code::Host("refused")]);
     words
 }
 
@@ -2136,5 +2144,168 @@ fn a_hosts_read_failure_keeps_its_code() -> Result<(), Error> {
     let caught = ran(&format!("{opt} opt stop"))?;
     assert_eq!(caught, [Value::str("caught")]);
     assert_eq!(ran("include gone").map_err(|e| e.code), Err(Code::Require));
+    Ok(())
+}
+
+/// The codes the word `name` fails with, as the dictionary says.
+fn codes_of(machine: &Machine<Ticket>, name: &str) -> Option<Vec<&'static str>> {
+    let definition = machine.definition(name)?;
+    let codes = machine.codes(&definition, &mut Known::default())?;
+    Some(codes.iter().map(|code| code.name()).collect())
+}
+
+#[test]
+fn every_core_word_fails_only_with_the_codes_it_declares() -> Result<(), Error> {
+    let mut machine = with_stdlib();
+    machine.read(token::source("t", "base dup 1000 add tick drop")?, None);
+    machine.run(&mut Toy::default(), u64::MAX)?;
+    let mut values = machine.stack().to_vec();
+    values.extend(ints(&[0, -1, 3, i64::MAX]));
+    values.extend([Value::str(""), Value::str("ab"), Value::Bool(true)]);
+    values.extend([Value::App(Ticket(i64::MIN))]);
+    values.push(Value::List(std::rc::Rc::new(List::new(ints(&[1])))));
+    let mut stacks = vec![Vec::new()];
+    for depth in 0..3 {
+        let deeper = stacks.iter().filter(|s: &&Vec<_>| s.len() == depth);
+        let deeper =
+            deeper.flat_map(|s| values.iter().map(|v| [s.clone(), vec![v.clone()]].concat()));
+        stacks.extend(deeper.collect::<Vec<_>>());
+    }
+    for builtin in Builtin::ALL {
+        let name = builtin.name();
+        let Some(codes) = codes_of(&machine, name) else {
+            continue;
+        };
+        // A word that reads the next word reads a name.
+        let source = token::source("t", &format!("{name} dup"))?;
+        let mut tried = machine.clone();
+        for stack in &stacks {
+            tried.clear();
+            for value in stack {
+                tried.push(value.clone());
+            }
+            tried.read(source.clone(), None);
+            let Err(error) = tried.run(&mut Toy::default(), 10_000) else {
+                continue;
+            };
+            // What the program's end finds is no word's; nor is a
+            // failure of `dup` after a word that reads none.
+            let at_word = error.word.as_deref() == Some(name);
+            if error.code.raised() && at_word {
+                let code = error.code.name();
+                assert!(codes.contains(&code), "{name} fails {code}: {codes:?}");
+            }
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn a_definitions_codes_are_its_calls_but_those_a_try_catches() -> Result<(), Error> {
+    let mut machine = compile(
+        "define half 2 div end \
+         define safe str div_by_zero try half catch drop 0 end end \
+         define asks ask end \
+         define runs execute end \
+         defer later",
+    )?;
+    machine.run(&mut Toy::default(), u64::MAX)?;
+    let half = ["stack_underflow", "type", "div_by_zero"];
+    assert_eq!(codes_of(&machine, "half"), Some(half.to_vec()));
+    assert_eq!(
+        codes_of(&machine, "safe"),
+        Some(vec!["stack_underflow", "type"])
+    );
+    let asks = ["stack_underflow", "not_a_number", "negative", "far"];
+    assert_eq!(codes_of(&machine, "asks"), Some(asks.to_vec()));
+    assert_eq!(codes_of(&machine, "dup"), Some(vec!["stack_underflow"]));
+    // Unknown: what runs code it is given, and a host's word that
+    // declares none.
+    for unknown in ["runs", "later", "execute", "no-text"] {
+        assert_eq!(codes_of(&machine, unknown), None, "{unknown}");
+    }
+    Ok(())
+}
+
+#[test]
+fn a_control_word_declares_what_the_steps_it_compiles_fail_with() -> Result<(), Error> {
+    let mut machine = compile("defer d")?;
+    machine.run(&mut Toy::default(), u64::MAX)?;
+    let values = [Value::str("x"), Value::Int(1), Value::Bool(false)];
+    let mut stacks = vec![Vec::new()];
+    stacks.extend(values.iter().map(|v| vec![v.clone()]));
+    stacks.extend(values.iter().map(|v| vec![Value::Int(3), v.clone()]));
+    // Each construct as a program writes it, run after none or a value of
+    // each kind: at the top level, and as a definition.
+    let constructs = [
+        "if then",
+        "if else then",
+        "begin until",
+        "begin while end",
+        "do loop",
+        "do loop-by",
+        "case 1 of end end",
+        "each end",
+        "list end",
+        "let x",
+        "0 let x to x",
+        "is d",
+        "action-of d",
+        "does",
+    ];
+    let run = |machine: &Machine<Ticket>, stack: &[Value<Ticket>], text: &str| {
+        let mut tried = machine.clone();
+        for value in stack {
+            tried.push(value.clone());
+        }
+        tried.read(token::source("t", text)?, None);
+        tried.run(&mut Toy::default(), 10_000).map(drop)
+    };
+    for construct in constructs {
+        let mut defined = machine.clone();
+        defined.read(
+            token::source("t", &format!("define t {construct} end"))?,
+            None,
+        );
+        defined.run(&mut Toy::default(), u64::MAX)?;
+        let held = codes_of(&defined, "t").unwrap_or_default();
+        // A definition holding it fails only as its words declare.
+        let words: Vec<&str> = construct.split(' ').collect();
+        let declared: Vec<_> = (words.iter())
+            .filter(|w| Builtin::named(w).is_some())
+            .flat_map(|w| codes_of(&machine, w).unwrap_or_default())
+            .collect();
+        assert!(
+            held.iter().all(|c| declared.contains(c)),
+            "{construct}: {held:?}"
+        );
+        for stack in &stacks {
+            if let Err(e) = run(&machine, stack, construct) {
+                // Said at the word it failed at: a word of unknown codes
+                // (`d`, which `defer` made) may fail with any.
+                let word = e.word.as_deref().unwrap_or_default();
+                if let Some(codes) = codes_of(&machine, word).filter(|_| e.code.raised()) {
+                    let code = e.code.name();
+                    assert!(codes.contains(&code), "{construct}: {word} {code}");
+                }
+            }
+            if let Err(e) = run(&defined, stack, "t") {
+                assert!(
+                    held.contains(&e.code.name()),
+                    "{construct}: t {}",
+                    e.code.name()
+                );
+            }
+        }
+        // A try around it catches what it names.
+        for code in &held {
+            let mut caught = defined.clone();
+            let text = format!("define u str {code} try t catch end end");
+            caught.read(token::source("t", &text)?, None);
+            caught.run(&mut Toy::default(), u64::MAX)?;
+            let left = codes_of(&caught, "u").unwrap_or_default();
+            assert!(!left.contains(code), "{construct}: {code} caught");
+        }
+    }
     Ok(())
 }

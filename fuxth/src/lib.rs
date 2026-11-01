@@ -38,6 +38,7 @@
 //! A call that is a definition's last step replaces its caller's frame, so
 //! recursion in last place is a loop.
 #![forbid(clippy::print_stderr)]
+mod codes;
 mod error;
 mod machine;
 mod reader;
@@ -45,6 +46,7 @@ pub mod token;
 mod value;
 mod vocabulary;
 
+pub use codes::Known;
 pub use error::Error;
 pub use fuxth_core::{Code, Failure};
 pub use machine::{Args, Builtin, Definition, Done, Host, Machine, Origin, Outcome};

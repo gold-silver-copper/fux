@@ -197,9 +197,10 @@ pub(super) fn failure(thrown: &fuxth::Thrown<Fux>) -> Record {
 /// (a config's too); its `effect` and `documentation`, as declared, or
 /// null for the program's own; its `definition`, the words that made it as
 /// they were read, `native` for a word in Rust, or null where a source it
-/// was read from couldn't keep them; and its `codes`, null: no word
-/// declares the codes it fails with yet, so they are unknown.
-pub(super) fn word(definition: &fuxth::Definition<'_>) -> V {
+/// was read from couldn't keep them; and its `codes`, the codes it can
+/// fail with as it runs, each once (`Machine::codes`), or null where they
+/// are unknown.
+pub(super) fn word(definition: &fuxth::Definition<'_>, codes: Option<&[fuxth::Code]>) -> V {
     use fuxth::Origin;
     let provenance = match definition.origin {
         Origin::Core => "core",
@@ -224,7 +225,13 @@ pub(super) fn word(definition: &fuxth::Definition<'_>) -> V {
         ("effect", text(definition.effect)),
         ("documentation", text(about)),
         ("definition", source),
-        ("codes", null()),
+        (
+            "codes",
+            codes.map_or_else(null, |codes| {
+                let names = codes.iter().map(|code| Value::str(code.name()));
+                Value::List(Rc::new(List::new(names.collect())))
+            }),
+        ),
     ];
     let fields = fields.map(|(key, value)| (key.to_owned(), value)).into();
     let record = Record {

@@ -244,7 +244,7 @@ fn records_list_is_current() -> Result<(), Box<dyn std::error::Error>> {
         "Every record a program reads, and each held answer's and capture's \
          fields `get` reads, by where it is (`[]` a list's items; `[NAME]` its \
          event, kind or status, or which answer), each with its fields in order. \
-         A word's `codes` is null, unknown: no word declares the codes it fails with yet. \
+         A word's `codes` is the codes it can fail with, or null where they are unknown. \
          Generated: FUX_BLESS=1 {TEST}"
     );
     Ok(check("records.txt", &file(&head, lines), TEST)?)
