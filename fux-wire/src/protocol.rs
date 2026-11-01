@@ -21,7 +21,7 @@ use fux_vt::bytes::ByteQueue;
 use std::borrow::Cow;
 
 /// Bumped on any change to the frames below.
-pub const PROTOCOL: u32 = 59;
+pub const PROTOCOL: u32 = 60;
 /// The largest frame, kind byte included.
 pub const MAX_FRAME: usize = 1 << 20;
 /// The largest payload one frame carries.

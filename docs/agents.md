@@ -491,17 +491,17 @@ read-file`. `X warn` prints on stderr:
   `fux agent-opts 80 24 size str env program str PORT=8080 arg str ./app arg new-tab`.
 - Handle values returned by a server retain its run through lists, bindings,
   answers and request options; using one against another run is refused.
-  A hand-written `%N`, `@N`, `+N` or `str cN client` means the selected server
-  now. Printing one of these handles loses its run: that text is not durable
+  A hand-written `%N`, `@N`, `+N` or `str cN client` means the server
+  `FUX_SOCKET` names, now. Printing one of these handles loses its run: that text is not durable
   across restarts.
-- `FUX_SOCKET=PATH fux …` talks to the server on that socket, else
-  `server.sock` in fux's directory; `start` starts one, with nothing in it
-  (the first client to attach starts a shell on its screen; one that only
-  watches is refused, as there is nothing to watch), `status` says which
-  answers, and fails (`no_server`) where none does: `fux status || fux
-  start`. One `fux` command talks to one server; join two with a pipe:
-  `fux %1 capture | FUX_SOCKET=B fux %1 input paste send-keys`. The
-  servers in fux's directory (`$XDG_RUNTIME_DIR/fux` whenever
+- `FUX_SOCKET=PATH fux …` talks to the server on that socket (an absolute
+  path), else `server.sock` in fux's directory; `start` starts one, with
+  nothing in it (the first client to attach starts a shell on its screen;
+  one that only watches is refused, as there is nothing to watch), `status`
+  says which answers, and fails (`no_server`) where none does: `fux status
+  || fux start`. One `fux` command talks to one server; join two with a
+  pipe: `fux %1 capture | FUX_SOCKET="$XDG_RUNTIME_DIR/fux/b.sock" fux %1
+  input paste send-keys`. The servers in fux's directory (`$XDG_RUNTIME_DIR/fux` whenever
   `XDG_RUNTIME_DIR` is set, else `$TMPDIR/fux`) are its `.sock` files:
   `status` each.
 

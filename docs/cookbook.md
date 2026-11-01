@@ -125,19 +125,34 @@ fux ls | jq -r '.panes[] | [.id, .name // "", .state.exited // ""] | @tsv'
 fux gives the pane's process (`pid`) and its terminal's foreground
 process group (`foreground_group`); the OS says what they run. The
 group's leader may have exited while the rest of a pipeline runs on:
-then `ps -p` fails and `pgrep -g` still lists the group.
+then `ps -p` fails, the leader's command and directory are unknown, and
+`pgrep -g` still lists the group. Here a second pane, `piped`, runs a
+pipeline whose leader `true` exits at once.
 
 ```sh
-G=$(fux str shell pane str foreground_group get)
-ps -o comm=,args= -p "$G"
-if [ "$(uname)" = Linux ]; then
-  tr '\0' '\n' < "/proc/$G/cmdline"
-  readlink "/proc/$G/cwd"
-  pgrep -a -g "$G"
-else
-  lsof -a -p "$G" -d cwd -Fn
-  pgrep -lf -g "$G"
-fi
+fux opts str work in 80 24 size str sh program new-tab str piped rename > /dev/null
+fux str piped pane str '$' 30 shows > /dev/null
+fux str piped pane str 'true | sleep 300' line > /dev/null
+until G=$(fux str piped pane str foreground_group get) &&
+  [ "$G" != "$(fux str piped pane str pid get)" ] && ! kill -0 "$G" 2> /dev/null; do sleep 0.1; done
+```
+
+```sh
+for p in shell piped; do
+  G=$(fux str "$p" pane str foreground_group get)
+  if ps -o comm=,args= -p "$G"; then
+    if [ "$(uname)" = Linux ]; then
+      tr '\0' '\n' < "/proc/$G/cmdline"
+      readlink "/proc/$G/cwd"
+    else
+      lsof -a -p "$G" -d cwd -Fn
+    fi
+  else
+    echo "$p: group $G's leader is gone"
+  fi
+  if [ "$(uname)" = Linux ]; then pgrep -a -g "$G"; else pgrep -lf -g "$G"; fi
+done
+fux str piped pane kill
 ```
 
 ## Follow events from a cursor

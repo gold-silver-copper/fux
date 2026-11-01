@@ -304,7 +304,7 @@ words! {
         Clients Detach "detach" "client --" "detach a client" "fux str c1 client detach" [];
         Server Start "start" "--" "start the server in the background, if none answers" "fux start" [];
         Server Status "status" "-- record" "the server that answers, and its version; with none, fails no_server" "fux status || fux start" [];
-        Server KillServer "kill-server" "--" "stop the server: not from its own panes, nor with people attached" "FUX_SOCKET=./test.sock fux kill-server" [];
+        Server KillServer "kill-server" "--" "stop the server: not from its own panes, nor with people attached" "FUX_SOCKET=$PWD/test.sock fux kill-server" [];
         Config AttachDefaults "attach-defaults" "attachable --" "replace this client's preferred attach place; target-only retains the first name, name-only or empty clears the target; target and name conflict" "opts str main name attach-defaults" [Either: In Name];
         Config Set "set" "setting new --" "a preference for this client only: `fux help set` lists their effects" "fux str history-bytes 16777216 set" [];
         Reading Version "version" "pane-or-seen -- string" "a pane's current version, or the version an answer, pane capture or canonical text holds" "fux %3 capture version" [];
