@@ -5,15 +5,17 @@ use crate::Code;
 use crate::error::Error;
 use crate::value::{AppValue, Value};
 
-/// A word: its name, what it does to the stack, how many values it
-/// takes, and the codes it fails with, if declared.
+/// A word: its name, what it does to the stack, and how many values it
+/// takes.
 #[derive(Clone, Debug)]
 struct Word {
     name: String,
     effect: String,
     takes: usize,
-    codes: Option<Vec<Code>>,
 }
+
+/// The codes word `id` fails with, if its host declares them.
+pub type Fails = fn(usize) -> Option<Vec<Code>>;
 
 /// The application's words, the codes of its failures, and the kinds of
 /// its values that must be used, each with what one left over is told.
@@ -26,6 +28,7 @@ pub struct Vocabulary {
     unused: Vec<(String, String)>,
     codes: Vec<Code>,
     writes: Option<Vec<Code>>,
+    fails: Option<Fails>,
     literals: Option<fn(&str) -> Option<&'static str>>,
     evaluates: bool,
 }
@@ -69,26 +72,15 @@ impl Vocabulary {
             name: name.to_owned(),
             effect: effect.trim().to_owned(),
             takes: before.split_whitespace().count(),
-            codes: None,
         });
         Ok(self.words.len().saturating_sub(1))
     }
 
-    /// Word `id` fails only with `codes` (and `stack_underflow`, given too
-    /// few values): a word's are unknown until they are declared, once.
-    pub fn fails(&mut self, id: usize, codes: &[Code]) -> Result<(), Error> {
-        let word = self
-            .words
-            .get_mut(id)
-            .ok_or_else(|| refused(format!("no word {id}")))?;
-        if word.codes.is_some() {
-            return Err(refused(format!(
-                "{}: its codes are declared already",
-                word.name
-            )));
-        }
-        word.codes = Some(codes.to_vec());
-        Ok(())
+    /// The codes each word fails with (and `stack_underflow`, given too
+    /// few values), by id, worked out when asked: none, unknown, for one it
+    /// declares none for, as for every word until this is given.
+    pub fn fails(&mut self, codes: Fails) {
+        self.fails = Some(codes);
     }
 
     /// Writing text fails only with `codes`: the host's `write`, and the
@@ -174,8 +166,8 @@ impl Vocabulary {
     }
 
     /// The codes word `id` fails with, if declared.
-    pub(crate) fn codes(&self, id: usize) -> Option<&[Code]> {
-        self.words.get(id)?.codes.as_deref()
+    pub(crate) fn codes(&self, id: usize) -> Option<Vec<Code>> {
+        (self.fails?)(id)
     }
 
     /// The codes writing text fails with, if declared.

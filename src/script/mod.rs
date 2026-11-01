@@ -588,9 +588,9 @@ pub fn vocabulary() -> Result<fuxth::Vocabulary, fuxth::Error> {
         }
     }
     for word in Word::ALL {
-        let id = vocabulary.add(word.row().name, word.row().effect)?;
-        vocabulary.fails(id, &word.codes())?;
+        vocabulary.add(word.row().name, word.row().effect)?;
     }
+    vocabulary.fails(|id| Some(Word::ALL.get(id)?.codes()));
     vocabulary.writes(&[Code::Output.into()]);
     for code in Code::all().filter(|c| c.raised()) {
         vocabulary.raises(code.into())?;

@@ -106,7 +106,7 @@ impl<A: AppValue> Machine<A> {
                     add(if typed { &[Type] } else { &[] });
                 }
                 Op::App(id) => {
-                    add(words.codes(*id)?);
+                    add(&words.codes(*id)?);
                     add(if words.takes(*id) > 0 {
                         &[StackUnderflow]
                     } else {

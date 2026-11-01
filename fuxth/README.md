@@ -172,7 +172,7 @@ use fuxth::{Code, Done, Failure, Host, Machine, Outcome, STDLIB, Value, Vocabula
 let mut words = Vocabulary::default();
 let ask = words.add("ask", "n -- ticket")?;       // takes one value, gives a ticket
 words.raises(Code::Host("refused"))?;            // a failure of its words, for `try`
-words.fails(ask, &[Code::Host("refused")])?;      // all `ask` fails with
+words.fails(|_| Some(vec![Code::Host("refused")])); // all its words fail with
 words.writes(&[]);                               // its write and text never fail
 let mut machine = Machine::new(words);
 machine.library("stdlib.fux", STDLIB)?;

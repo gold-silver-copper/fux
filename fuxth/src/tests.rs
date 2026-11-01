@@ -141,16 +141,13 @@ fn vocabulary() -> Vocabulary {
         .and_then(|()| words.raises(Code::Host("far")))
         .and_then(|()| words.raises(Code::Unused));
     assert!(added.is_ok(), "{added:?}");
-    let asks = [
-        Code::Host("not_a_number"),
-        Code::Host("negative"),
-        Code::Host("far"),
-    ];
-    let declared = (words.fails(0, &[]))
-        .and_then(|()| words.fails(1, &asks))
-        .and_then(|()| words.fails(2, &[Code::Unused]))
-        .and_then(|()| words.fails(3, &[]));
-    assert!(declared.is_ok(), "{declared:?}");
+    // `no-text` declares none.
+    words.fails(|id| match id {
+        1 => Some(["not_a_number", "negative", "far"].map(Code::Host).to_vec()),
+        2 => Some(vec![Code::Unused]),
+        0 | 3 => Some(Vec::new()),
+        _ => None,
+    });
     words.writes(&[Code::Host("refused")]);
     words
 }
