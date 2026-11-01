@@ -2293,7 +2293,10 @@ pub(crate) mod tests {
     }
 
     /// A pane's observation, in tab `@1`, of these terminal facts.
-    fn observed(version: super::Version, terminal: Vec<(String, Json)>) -> fux_wire::inspect::Pane {
+    fn observed(
+        version: super::Version,
+        terminal: Vec<(fux_wire::inspect::Terminal, Json)>,
+    ) -> fux_wire::inspect::Pane {
         let launch = fux_wire::inspect::Launch {
             shell: false,
             cwd: fux_wire::inspect::Path::Utf8("/".into()),
@@ -2510,7 +2513,7 @@ pub(crate) mod tests {
             of: fux_wire::answer::Of::Pane {
                 pane: Box::new(observed(
                     version,
-                    vec![("last_status".into(), Json::Int(7))],
+                    vec![(fux_wire::inspect::Terminal::LastStatus, Json::Int(7))],
                 )),
                 read: Vec::new(),
                 wrap_pending: false,

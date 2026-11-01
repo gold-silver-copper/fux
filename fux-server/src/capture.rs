@@ -10,6 +10,7 @@ use fux_wire::answer::{Captured, Line, Of, Run, highlighted};
 use fux_wire::code::{Raise, fail};
 use fux_wire::command::{CaptureView, Source, Version};
 use fux_wire::id::ClientId;
+use fux_wire::inspect::Terminal;
 use fux_wire::json::Json;
 use fux_wire::wire::Memory;
 
@@ -692,112 +693,88 @@ pub(crate) fn program(pane: &Pane) -> Result<Json, fux_wire::code::Error> {
     ]))
 }
 
-/// How one fact of a pane is read.
-pub(crate) type Fact = fn(&Pane) -> Json;
-
-/// What is known of a pane's terminal, for `json`, each fact read alone
+/// What a pane's terminal says of `fact`, for `json`, each fact read alone
 /// (a live `get` reads one): the modes that say how its program takes
 /// input, the input queued for it, and the cell its program is told, by
 /// its tab's host (`Session::host_panes`); and the pane's options.
-pub(crate) const TERMINAL: &[(&str, Fact)] = &[
-    ("alt_screen", |p| {
-        Json::Bool(p.screen().mode(Mode::AlternateScreen))
-    }),
-    // What it asked for: whether a move without a button is reported.
-    ("mouse_mode", |p| match p.screen().mouse_protocol_mode() {
-        MouseProtocolMode::None => Json::Null,
-        MouseProtocolMode::Press => Json::str("press"),
-        MouseProtocolMode::PressRelease => Json::str("press_release"),
-        MouseProtocolMode::Highlight => Json::str("highlight"),
-        MouseProtocolMode::ButtonMotion => Json::str("button_motion"),
-        MouseProtocolMode::AnyMotion => Json::str("any_motion"),
-    }),
-    // How it asked for mouse reports to be spelled.
-    ("mouse_encoding", |p| {
-        Json::str(match p.screen().mouse_protocol_encoding() {
+pub(crate) fn terminal(fact: Terminal, p: &Pane) -> Json {
+    match fact {
+        Terminal::AltScreen => Json::Bool(p.screen().mode(Mode::AlternateScreen)),
+        // What it asked for: whether a move without a button is reported.
+        Terminal::MouseMode => match p.screen().mouse_protocol_mode() {
+            MouseProtocolMode::None => Json::Null,
+            MouseProtocolMode::Press => Json::str("press"),
+            MouseProtocolMode::PressRelease => Json::str("press_release"),
+            MouseProtocolMode::Highlight => Json::str("highlight"),
+            MouseProtocolMode::ButtonMotion => Json::str("button_motion"),
+            MouseProtocolMode::AnyMotion => Json::str("any_motion"),
+        },
+        // How it asked for mouse reports to be spelled.
+        Terminal::MouseEncoding => Json::str(match p.screen().mouse_protocol_encoding() {
             MouseProtocolEncoding::Default => "default",
             MouseProtocolEncoding::Utf8 => "utf8",
             MouseProtocolEncoding::Sgr => "sgr",
             MouseProtocolEncoding::Urxvt => "urxvt",
-        })
-    }),
-    ("bracketed_paste", |p| {
-        Json::Bool(p.screen().mode(Mode::BracketedPaste))
-    }),
-    ("focus_events", |p| {
-        Json::Bool(p.screen().mode(Mode::FocusReporting))
-    }),
-    ("app_cursor", |p| {
-        Json::Bool(p.screen().mode(Mode::ApplicationCursor))
-    }),
-    ("app_keypad", |p| {
-        Json::Bool(p.screen().mode(Mode::ApplicationKeypad))
-    }),
-    ("keyboard_flags", |p| {
-        Json::int(p.screen().kitty_keyboard_flags())
-    }),
-    ("pictures", |p| {
-        Json::Array(p.screen().pictures().map(picture).collect())
-    }),
-    ("lost", |p| {
-        let losses = p.lost();
-        Json::object(vec![
-            ("copies_cut", Json::uint(losses.copies_cut)),
-            ("copies_not_text", Json::uint(losses.copies_not_text)),
-            ("pictures", Json::uint(losses.pictures)),
-            ("memory", Json::uint(losses.memory)),
-        ])
-    }),
-    ("cell", |p| match p.screen().graphics().cell() {
-        Some(cell) => Json::object(vec![
-            ("width", Json::int(cell.width())),
-            ("height", Json::int(cell.height())),
-        ]),
-        None => Json::Null,
-    }),
-    ("cursor_visible", |p| {
-        Json::Bool(p.screen().mode(Mode::ShowCursor))
-    }),
-    ("history_bytes", |p| Json::count(p.history_bytes())),
-    ("program_clipboard", |p| {
-        Json::Bool(p.options().program_clipboard)
-    }),
-    ("reflow", |p| Json::Bool(p.options().reflow)),
-    ("alternate_scroll_lines", |p| {
-        Json::count(usize::from(p.options().alternate_scroll_lines.get()))
-    }),
-    ("picture_bytes", |p| {
-        Json::count(p.options().picture_bytes.get())
-    }),
-    ("history_lines", |p| Json::count(p.screen().history_len())),
-    ("command_running", |p| Json::Bool(p.command_running())),
-    ("last_status", |p| {
-        p.screen()
+        }),
+        Terminal::BracketedPaste => Json::Bool(p.screen().mode(Mode::BracketedPaste)),
+        Terminal::FocusEvents => Json::Bool(p.screen().mode(Mode::FocusReporting)),
+        Terminal::AppCursor => Json::Bool(p.screen().mode(Mode::ApplicationCursor)),
+        Terminal::AppKeypad => Json::Bool(p.screen().mode(Mode::ApplicationKeypad)),
+        Terminal::KeyboardFlags => Json::int(p.screen().kitty_keyboard_flags()),
+        Terminal::Pictures => Json::Array(p.screen().pictures().map(picture).collect()),
+        Terminal::Lost => {
+            let losses = p.lost();
+            Json::object(vec![
+                ("copies_cut", Json::uint(losses.copies_cut)),
+                ("copies_not_text", Json::uint(losses.copies_not_text)),
+                ("pictures", Json::uint(losses.pictures)),
+                ("memory", Json::uint(losses.memory)),
+            ])
+        }
+        Terminal::Cell => match p.screen().graphics().cell() {
+            Some(cell) => Json::object(vec![
+                ("width", Json::int(cell.width())),
+                ("height", Json::int(cell.height())),
+            ]),
+            None => Json::Null,
+        },
+        Terminal::CursorVisible => Json::Bool(p.screen().mode(Mode::ShowCursor)),
+        Terminal::HistoryBytes => Json::count(p.history_bytes()),
+        Terminal::ProgramClipboard => Json::Bool(p.options().program_clipboard),
+        Terminal::Reflow => Json::Bool(p.options().reflow),
+        Terminal::AlternateScrollLines => {
+            Json::count(usize::from(p.options().alternate_scroll_lines.get()))
+        }
+        Terminal::PictureBytes => Json::count(p.options().picture_bytes.get()),
+        Terminal::HistoryLines => Json::count(p.screen().history_len()),
+        Terminal::CommandRunning => Json::Bool(p.command_running()),
+        Terminal::LastStatus => p
+            .screen()
             .commands()
             .last_status
-            .map_or(Json::Null, Json::int)
-    }),
-    ("last_output", |p| output_range(p.screen())),
-    ("bells", |p| Json::uint(p.alerts.rung)),
-    ("notification", |p| {
-        let notification = p.alerts.last.as_ref();
-        notification.map_or(Json::Null, |n| Json::str(n.as_str()))
-    }),
-    // The fields whose value the program sent more of than is kept.
-    ("truncated", |p| {
-        let cut = [
-            ("title", p.title().cut()),
-            (
-                "notification",
-                p.alerts.last.as_ref().is_some_and(|n| n.cut()),
-            ),
-        ];
-        let truncated = cut.into_iter().filter(|(_, cut)| *cut);
-        Json::Array(truncated.map(|(field, _)| Json::str(field)).collect())
-    }),
-    // Input accepted and not yet written to its terminal.
-    ("input_queued", |p| Json::count(p.input().len())),
-];
+            .map_or(Json::Null, Json::int),
+        Terminal::LastOutput => output_range(p.screen()),
+        Terminal::Bells => Json::uint(p.alerts.rung),
+        Terminal::Notification => {
+            let notification = p.alerts.last.as_ref();
+            notification.map_or(Json::Null, |n| Json::str(n.as_str()))
+        }
+        // The fields whose value the program sent more of than is kept.
+        Terminal::Truncated => {
+            let cut = [
+                ("title", p.title().cut()),
+                (
+                    "notification",
+                    p.alerts.last.as_ref().is_some_and(|n| n.cut()),
+                ),
+            ];
+            let truncated = cut.into_iter().filter(|(_, cut)| *cut);
+            Json::Array(truncated.map(|(field, _)| Json::str(field)).collect())
+        }
+        // Input accepted and not yet written to its terminal.
+        Terminal::InputQueued => Json::count(p.input().len()),
+    }
+}
 
 /// What a pane was started as: a shell or a program, and where.
 pub(crate) fn launch(pane: &Pane) -> fux_wire::inspect::Launch {
@@ -878,11 +855,11 @@ mod tests {
         history: Option<usize>,
         view: CaptureView,
     ) -> Result<fux_wire::answer::Captured, fux_wire::code::Error> {
-        let terminal = super::TERMINAL.iter();
+        let terminal = fux_wire::inspect::Terminal::ALL.into_iter();
         let facts = fux_wire::inspect::Facts {
             program: super::program(pane)?,
             launch: super::launch(pane),
-            terminal: terminal.map(|(k, f)| ((*k).to_owned(), f(pane))).collect(),
+            terminal: terminal.map(|t| (t, super::terminal(t, pane))).collect(),
         };
         let observed = fux_wire::inspect::Pane {
             id: pane.id(),

@@ -8498,7 +8498,7 @@ mod tests {
                         "picture_bytes",
                     ]
                     .map(|key| {
-                        let mut fields = p.fields().into_iter();
+                        let mut fields = p.fields();
                         fields.find_map(|(k, v)| (k == key).then(|| v.into_owned()))
                     })
                 })

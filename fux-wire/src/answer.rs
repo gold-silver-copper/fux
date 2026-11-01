@@ -7,7 +7,6 @@ use crate::json::Json;
 use crate::wire::{closed_wire, wire, wire_enum};
 use fux_vt::{Attributes, Blink, Color, Rgb, UnderlineStyle};
 use fuxix::process::{Signal, Status};
-use std::borrow::Cow;
 
 wire! {
     /// What one pane answers, of an action or a wait on it.
@@ -509,12 +508,17 @@ impl Captured {
                     out,
                     "{{\"id\":\"{id}\",\"tab\":\"{tab}\",\"version\":\"{version}\""
                 )?;
-                let read = read.iter().map(|(k, v)| (k.as_str(), Cow::Borrowed(v)));
-                for (key, value) in pane.fields().into_iter().chain(read) {
+                let mut field = |key: &str, value: &Json| {
                     out.write_char(',')?;
                     crate::json::write_str(out, key)?;
                     out.write_char(':')?;
-                    value.write(out)?;
+                    value.write(out)
+                };
+                for (key, value) in pane.fields() {
+                    field(key, &value)?;
+                }
+                for (key, value) in read {
+                    field(key, value)?;
                 }
                 write!(out, ",\"wrap_pending\":{wrap_pending}")?;
             }

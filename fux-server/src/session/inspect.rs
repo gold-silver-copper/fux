@@ -26,11 +26,13 @@ impl Session {
         let facts = if *projection == Projection::Topology {
             None
         } else {
-            let terminal = crate::capture::TERMINAL.iter();
+            let terminal = inspect::Terminal::ALL.into_iter();
             Some(inspect::Facts {
                 program: crate::capture::program(pane)?,
                 launch: crate::capture::launch(pane),
-                terminal: terminal.map(|(k, f)| ((*k).to_owned(), f(pane))).collect(),
+                terminal: terminal
+                    .map(|t| (t, crate::capture::terminal(t, pane)))
+                    .collect(),
             })
         };
         let cwd = if *projection == Projection::Recipe {
@@ -87,8 +89,8 @@ impl Session {
             "col" => place(at()?.as_ref().map(Rect::x)),
             "program" => crate::capture::program(pane)?,
             "launch" => crate::capture::launch(pane).json(),
-            _ => match crate::capture::TERMINAL.iter().find(|(k, _)| *k == field) {
-                Some((_, fact)) => fact(pane),
+            _ => match inspect::Terminal::named(field) {
+                Some(fact) => crate::capture::terminal(fact, pane),
                 None => return Ok(None),
             },
         };

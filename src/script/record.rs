@@ -549,10 +549,11 @@ pub(super) fn answer_field(
                 }
                 (Of::Pane { pane: p, read, .. }, None) => {
                     let read = read.iter().find(|(k, _)| k == field).map(|(_, v)| v);
-                    let fields = || p.fields().into_iter().find(|(k, _)| *k == field);
                     match read {
                         Some(v) => pane_fact(v, run),
-                        None => fields().map_or_else(|| Err(absent()), |(_, v)| pane_fact(&v, run)),
+                        None => p
+                            .field(field)
+                            .map_or_else(|| Err(absent()), |v| pane_fact(&v, run)),
                     }
                 }
                 (Of::Client { client, .. }, Some(F::Client)) => {

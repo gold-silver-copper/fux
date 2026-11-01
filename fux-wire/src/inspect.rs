@@ -94,7 +94,7 @@ wire! {
     pub struct Facts {
         pub program: Json,
         pub launch: Launch,
-        pub terminal: Vec<(String, Json)>,
+        pub terminal: Vec<(Terminal, Json)>,
     }
 }
 wire! {
@@ -116,33 +116,181 @@ wire! {
     pub enum Path { Utf8(text: String), Bytes(bytes: Vec<u8>), }
 }
 
+/// The facts a pane's terminal says, each named once, in order: what a
+/// pane's `Facts::terminal` holds, each read by the server's
+/// `capture::terminal`. A name is none of the pane's own fields.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Terminal {
+    AltScreen,
+    MouseMode,
+    MouseEncoding,
+    BracketedPaste,
+    FocusEvents,
+    AppCursor,
+    AppKeypad,
+    KeyboardFlags,
+    Pictures,
+    Lost,
+    Cell,
+    CursorVisible,
+    HistoryBytes,
+    ProgramClipboard,
+    Reflow,
+    AlternateScrollLines,
+    PictureBytes,
+    HistoryLines,
+    CommandRunning,
+    LastStatus,
+    LastOutput,
+    Bells,
+    Notification,
+    Truncated,
+    InputQueued,
+}
+
+impl Terminal {
+    pub const ALL: [Terminal; 25] = {
+        use Terminal::*;
+        [
+            AltScreen,
+            MouseMode,
+            MouseEncoding,
+            BracketedPaste,
+            FocusEvents,
+            AppCursor,
+            AppKeypad,
+            KeyboardFlags,
+            Pictures,
+            Lost,
+            Cell,
+            CursorVisible,
+            HistoryBytes,
+            ProgramClipboard,
+            Reflow,
+            AlternateScrollLines,
+            PictureBytes,
+            HistoryLines,
+            CommandRunning,
+            LastStatus,
+            LastOutput,
+            Bells,
+            Notification,
+            Truncated,
+            InputQueued,
+        ]
+    };
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Terminal::AltScreen => "alt_screen",
+            Terminal::MouseMode => "mouse_mode",
+            Terminal::MouseEncoding => "mouse_encoding",
+            Terminal::BracketedPaste => "bracketed_paste",
+            Terminal::FocusEvents => "focus_events",
+            Terminal::AppCursor => "app_cursor",
+            Terminal::AppKeypad => "app_keypad",
+            Terminal::KeyboardFlags => "keyboard_flags",
+            Terminal::Pictures => "pictures",
+            Terminal::Lost => "lost",
+            Terminal::Cell => "cell",
+            Terminal::CursorVisible => "cursor_visible",
+            Terminal::HistoryBytes => "history_bytes",
+            Terminal::ProgramClipboard => "program_clipboard",
+            Terminal::Reflow => "reflow",
+            Terminal::AlternateScrollLines => "alternate_scroll_lines",
+            Terminal::PictureBytes => "picture_bytes",
+            Terminal::HistoryLines => "history_lines",
+            Terminal::CommandRunning => "command_running",
+            Terminal::LastStatus => "last_status",
+            Terminal::LastOutput => "last_output",
+            Terminal::Bells => "bells",
+            Terminal::Notification => "notification",
+            Terminal::Truncated => "truncated",
+            Terminal::InputQueued => "input_queued",
+        }
+    }
+
+    pub fn named(name: &str) -> Option<Terminal> {
+        Self::ALL.into_iter().find(|t| t.name() == name)
+    }
+}
+
+crate::wire::closed_wire!(Terminal, "terminal fact");
+
+/// A field of a pane's observation after its `id`, `tab` and `version`,
+/// not yet read: its terminal's, by its place in `Facts::terminal`.
+#[derive(Clone, Copy)]
+enum Field {
+    Name,
+    Label,
+    Title,
+    Rows,
+    Cols,
+    Row,
+    Col,
+    Program,
+    Launch,
+    Terminal(usize),
+    Cwd,
+}
+
 impl Pane {
     /// Its fields after `id`, `tab` and `version`, in order, as `json`
     /// gives them: what a snapshot's record and a capture hold.
-    pub fn fields(&self) -> Vec<(&str, Cow<'_, Json>)> {
-        let place = |at: Option<u16>| Cow::Owned(at.map_or(Json::Null, Json::int));
-        let mut fields = vec![
-            (
-                "name",
-                Cow::Owned(self.name.as_deref().map_or(Json::Null, Json::str)),
-            ),
-            ("label", Cow::Owned(Json::str(self.label.as_str()))),
-            ("title", Cow::Owned(Json::str(self.title.as_str()))),
-            ("rows", Cow::Owned(Json::int(self.rows))),
-            ("cols", Cow::Owned(Json::int(self.cols))),
-            ("row", place(self.row)),
-            ("col", place(self.col)),
+    pub fn fields(&self) -> impl Iterator<Item = (&'static str, Cow<'_, Json>)> {
+        self.names().map(|(name, field)| (name, self.read(field)))
+    }
+
+    /// One of `fields`, read alone.
+    pub fn field(&self, name: &str) -> Option<Cow<'_, Json>> {
+        let (_, field) = self.names().find(|(n, _)| *n == name)?;
+        Some(self.read(field))
+    }
+
+    /// Its fields' names, in order: its own, then those it holds.
+    fn names(&self) -> impl Iterator<Item = (&'static str, Field)> + '_ {
+        let own = [
+            ("name", Field::Name),
+            ("label", Field::Label),
+            ("title", Field::Title),
+            ("rows", Field::Rows),
+            ("cols", Field::Cols),
+            ("row", Field::Row),
+            ("col", Field::Col),
         ];
-        if let Some(facts) = &self.facts {
-            fields.push(("program", Cow::Borrowed(&facts.program)));
-            fields.push(("launch", Cow::Owned(facts.launch.json())));
-            let terminal = facts.terminal.iter();
-            fields.extend(terminal.map(|(k, v)| (k.as_str(), Cow::Borrowed(v))));
+        let facts = self.facts.iter().flat_map(|facts| {
+            let terminal = facts.terminal.iter().enumerate();
+            let terminal = terminal.map(|(at, (t, _))| (t.name(), Field::Terminal(at)));
+            [("program", Field::Program), ("launch", Field::Launch)]
+                .into_iter()
+                .chain(terminal)
+        });
+        let cwd = self.cwd.iter().map(|_| ("cwd", Field::Cwd));
+        own.into_iter().chain(facts).chain(cwd)
+    }
+
+    /// A field `names` gives: null where it is not held.
+    fn read(&self, field: Field) -> Cow<'_, Json> {
+        let place = |at: Option<u16>| Cow::Owned(at.map_or(Json::Null, Json::int));
+        let facts = self.facts.as_ref();
+        let none = || Cow::Owned(Json::Null);
+        match field {
+            Field::Name => Cow::Owned(self.name.as_deref().map_or(Json::Null, Json::str)),
+            Field::Label => Cow::Owned(Json::str(self.label.as_str())),
+            Field::Title => Cow::Owned(Json::str(self.title.as_str())),
+            Field::Rows => Cow::Owned(Json::int(self.rows)),
+            Field::Cols => Cow::Owned(Json::int(self.cols)),
+            Field::Row => place(self.row),
+            Field::Col => place(self.col),
+            Field::Program => facts.map_or_else(none, |f| Cow::Borrowed(&f.program)),
+            Field::Launch => facts.map_or_else(none, |f| Cow::Owned(f.launch.json())),
+            Field::Terminal(at) => (facts.and_then(|f| f.terminal.get(at)))
+                .map_or_else(none, |(_, v)| Cow::Borrowed(v)),
+            Field::Cwd => self
+                .cwd
+                .as_ref()
+                .map_or_else(none, |c| Cow::Owned(c.json())),
         }
-        if let Some(cwd) = &self.cwd {
-            fields.push(("cwd", Cow::Owned(cwd.json())));
-        }
-        fields
     }
 }
 
@@ -416,6 +564,51 @@ impl Snapshot {
                 }
             }
         }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A pane's flat fields name each fact once: a terminal fact, keyed by
+    /// the one table of them, can't be a `rows` or `launch` over the
+    /// typed ones, and a name past the table is refused as it is read.
+    #[test]
+    fn a_terminal_fact_names_none_of_the_panes_own() -> Result<(), crate::wire::Error> {
+        let version: Version = "%1:0.0.0.0.0:1-1"
+            .parse()
+            .map_err(|()| crate::wire::Error::Bad("version"))?;
+        let pane = Pane {
+            id: version.pane,
+            tab: TabId::of(1),
+            version,
+            name: None,
+            label: String::new(),
+            title: String::new(),
+            rows: 6,
+            cols: 30,
+            row: None,
+            col: None,
+            facts: Some(Facts {
+                program: Json::Null,
+                launch: Launch {
+                    shell: true,
+                    cwd: Path::Utf8("/".into()),
+                },
+                terminal: Terminal::ALL.map(|t| (t, Json::Null)).into(),
+            }),
+            cwd: Some(Directory::Unknown),
+        };
+        let mut names: Vec<&str> = pane.fields().map(|(name, _)| name).collect();
+        let count = names.len();
+        names.sort_unstable();
+        names.dedup();
+        assert_eq!(names.len(), count, "{names:?}");
+        assert_eq!(pane.field("rows"), Some(Cow::Owned(Json::int(6u16))));
+        let past = [u8::try_from(Terminal::ALL.len()).unwrap_or(u8::MAX)];
+        assert!(crate::wire::Reader::new(&past).whole::<Terminal>().is_err());
         Ok(())
     }
 }

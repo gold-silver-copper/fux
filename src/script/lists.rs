@@ -102,7 +102,7 @@ fn held(answer: &super::Answer) -> Vec<String> {
             let mut fields: Vec<String> = names(CaptureField::ALL);
             fields.extend(names(CapturedField::ALL));
             if let fux_wire::answer::Of::Pane { pane, read, .. } = &c.of {
-                fields.extend(pane.fields().into_iter().map(|(name, _)| name.to_owned()));
+                fields.extend(pane.fields().map(|(name, _)| name.to_owned()));
                 fields.extend(read.iter().map(|(name, _)| name.clone()));
             }
             fields
