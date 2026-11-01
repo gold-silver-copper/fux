@@ -139,7 +139,8 @@ fn scope(value: &Value<Fux>) -> Option<Run> {
         | Value::App(_)
         | Value::Xt(_)
         | Value::Mark(_)
-        | Value::Failure(_) => None,
+        | Value::Failure(_)
+        | Value::Addr(_) => None,
     }
 }
 
@@ -1782,7 +1783,8 @@ fn written(out: &mut dyn Write, value: &Value<Fux>, batch: Batch) -> Result<(), 
         | Value::App(_)
         | Value::Xt(_)
         | Value::Mark(_)
-        | Value::Failure(_) => line(out, value),
+        | Value::Failure(_)
+        | Value::Addr(_) => line(out, value),
     }
 }
 
@@ -1807,7 +1809,8 @@ fn line(out: &mut dyn Write, value: &Value<Fux>) -> Result<(), Failed> {
         | Value::App(_)
         | Value::Xt(_)
         | Value::Mark(_)
-        | Value::Failure(_) => {
+        | Value::Failure(_)
+        | Value::Addr(_) => {
             (value.write_text(&mut stream)).map_err(|f| Failed::new(Code::of(f.code), f.message))
         }
     };
@@ -2064,6 +2067,7 @@ pub(crate) mod tests {
                     | fuxth::Value::Xt(_)
                     | fuxth::Value::Mark(_)
                     | fuxth::Value::Failure(_)
+                    | fuxth::Value::Addr(_)
                     | fuxth::Value::Bool(_)
                     | fuxth::Value::Str(_)
                     | fuxth::Value::List(_)
@@ -2426,6 +2430,23 @@ pub(crate) mod tests {
             .collect::<Result<_, _>>()
             .map_err(|f| f.message)?;
         assert_eq!(text, [other, "0 0 0 0 0"]);
+        Ok(())
+    }
+
+    /// A version's counts are decimal, as the server writes them, whatever
+    /// base the program reads its own numbers in.
+    #[test]
+    fn counts_read_a_version_in_decimal_whatever_the_base() -> TestResult {
+        use super::*;
+        let code = "hex str %1:0.1552.0.0.0:1-0 counts 2 base store str 101 number";
+        let mut machine = compile(&fuxth::token::source("key", code)?)?;
+        let mut out = Vec::new();
+        let mut host = Host::new(Context::default(), None, &mut out);
+        let left = run(&mut machine, &mut host, &mut ConfigOnly::default(), None)?;
+        let text: Vec<String> = (left.iter().map(Value::text))
+            .collect::<Result<_, _>>()
+            .map_err(|f| f.message)?;
+        assert_eq!(text, ["0 1552 0 0 0", "5"]);
         Ok(())
     }
 

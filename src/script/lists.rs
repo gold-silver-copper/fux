@@ -81,7 +81,8 @@ fn records(path: &str, value: &Value<Fux>, out: &mut Vec<String>) {
         | Value::App(_)
         | Value::Xt(_)
         | Value::Mark(_)
-        | Value::Failure(_) => return,
+        | Value::Failure(_)
+        | Value::Addr(_) => return,
     };
     for (key, value) in &fields {
         records(&format!("{path}.{key}"), value, out);

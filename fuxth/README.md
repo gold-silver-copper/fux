@@ -41,9 +41,17 @@ once.
   truncates toward zero, and by zero it fails), a boolean, a string (its
   elements are its characters' codes: `str abc 0 at` is 97), a list (of any
   values, nested however deep), an execution token (an xt: `tick NAME`,
-  `find`, `code … end`), or the application's own. A flag is a boolean
-  or an integer, true unless it is 0; comparisons give booleans, and
-  arithmetic on one fails.
+  `find`, `code … end`), an address, or the application's own. A flag is
+  a boolean or an integer, true unless it is 0; comparisons give booleans,
+  and arithmetic on one fails.
+- **A data space of typed cells.** Forth's memory for variables and
+  tables holds values, a cell each, and never host memory. An address is a
+  kind of its own, made only by `next-address` and `create` and the words
+  over them, never from an integer: an address plus n is the cell n on,
+  two addresses subtract to how far apart they are, and every access is
+  checked against the cells allotted (outside them, `invalid_address`,
+  -9). A cell allotted but never stored fails `unset` when read. When the
+  allocator refuses more cells, the word fails `memory` (-8).
 - **Recursion in last place loops**: a call that is a definition's last step
   replaces its caller's frame.
 - **Pauses for its host.** An application word can suspend the run while the
@@ -98,7 +106,7 @@ which only its own code's words resolve; `end` closes the innermost.
 | `drop` | x -- | |
 | `pick` | xn … x0 n -- xn … x0 xn | `0 pick` copies the top |
 | `roll` | xn … x0 n -- xn-1 … x0 xn | `1 roll` swaps |
-| `add sub mul div` | n m -- r | `add sub mul` wrap around |
+| `add sub mul div` | n m -- r | `add sub mul` wrap around; `add` and `sub` move an address by n cells, and `sub` gives two addresses' distance |
 | `mul-div-mod` | n k d -- r q | n×k divided by d, the product exact (Forth's `*/mod`) |
 | `and or xor` | a b -- x | logical on booleans, bitwise on integers (the library's `invert` too) |
 | `shift-left shift-right` | n u -- n | 0s come in; past 63 places, 0 |
@@ -116,7 +124,12 @@ which only its own code's words resolve; `end` closes the innermost.
 | `to-return from-return copy-return` | x -- / -- x / -- x | the return stack: values only, never where a word returns to; a `try`'s body takes none from below where it began, so a caught failure restores it |
 | `i j leave` | -- n / -- n / -- | in a `do` loop of the code running: its index, the outer loop's, end it now |
 | `digits-begin hold holds digits-end` | -- / c -- / s -- / n -- s | a number's text, built from its end (Forth's `<# hold holds #>`) |
-| `kind` | x -- name | `integer`, `boolean`, `string`, `list`, `xt`, or the host's |
+| `next-address allot store-next` | -- addr / n -- / x -- | where the data space goes on; n empty cells added (below 0, given back); x stored in a cell added (Forth's `here allot ,`) |
+| `fetch store fill copy-cells` | addr -- x / x addr -- / addr u x -- / from to u -- | a cell read, written; x in u cells; u cells copied, overlapping or not (Forth's `@ ! fill move`) |
+| `create NAME`, `does`, `body-of` | -- / -- / xt -- addr | a word that gives where the data space goes on; in a definition, the rest of it what the word `create` made last does, its address pushed first; the address a `create`d word gives (Forth's `>body`) |
+| `variable NAME`, `constant NAME` | -- / x -- | a word that gives the address of a cell of its own; a word that gives x |
+| `base`, `number` | -- addr / s -- n | the address of the base `number` reads and `digit` writes in (10 to begin with); the integer s writes in it, or after Forth's prefixes `#`, `$` and `%` in base 10, 16 or 2 |
+| `kind` | x -- name | `integer`, `boolean`, `string`, `list`, `address`, `xt`, or the host's |
 | `string` | x -- s | as `print` shows it: a list's elements with spaces |
 | `print`, `write`, `emit` | x -- / x -- / c -- | now: a line; text with no line end; a character |
 | `fail` | x -- | stops the program, x the reason (Forth's `abort"`, -2) |
@@ -131,10 +144,11 @@ which only its own code's words resolve; `end` closes the innermost.
 
 The standard library adds, among others: `dup swap over rot nip -rot
 2dup 2drop tuck dup-nonzero 2swap 2over`, `true false not invert`, `gt le
-ge ne min max`, `mod negate abs even pow div-mod mul-div`, `is-int
+ge ne min max`, `mod negate abs even pow div-mod mul-div`, `add-store
+erase decimal hex`, `is-int
 is-string is-list`, `empty cat glue first last pop shift remove range
 reverse index-of contains count sum largest smallest merge sort pack
-unpack`, `quote number digit digits sign join split-on fields lines trim
+unpack`, `quote digit digits sign join split-on fields lines trim
 starts-with is-space is-digit is-upper is-lower is-letter upper lower copies
 pad`.
 

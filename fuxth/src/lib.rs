@@ -11,9 +11,9 @@
 //! `dup`), and none uses a character a shell treats specially, so a
 //! program can be a shell command's arguments as well as a file.
 //!
-//! The core is small (arithmetic, `lt eq`, sequences, the dictionary's
-//! words and the immediate ones); everything else is the standard library
-//! ([`STDLIB`]), written in fuxth.
+//! The core is small (arithmetic, `lt eq`, sequences, the data space,
+//! the dictionary's words and the immediate ones); everything else is the
+//! standard library ([`STDLIB`]), written in fuxth.
 //!
 //! ```text
 //! define squares let n list 1 n 1 add range each dup mul end end end
@@ -50,7 +50,7 @@ pub use fuxth_core::{Code, Failure};
 pub use machine::{Args, Builtin, Done, Host, Machine, Outcome};
 pub use reader::Doc;
 pub use token::{Place, Token};
-pub use value::{AppValue, List, Mark, Text, Thrown, Value, Xt};
+pub use value::{Address, AppValue, List, Mark, Text, Thrown, Value, Xt};
 pub use vocabulary::Vocabulary;
 
 /// fuxth's standard library, written in fuxth: every word beyond the core

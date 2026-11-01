@@ -117,7 +117,7 @@ codes! {
     // program's end: `unused`, options a word would leave unused;
     // `unknown_word`, `explain`'s word that is none; `bad_name`, a name a
     // pane, tab or workspace cannot have.
-    raises [Type, Range, StackUnderflow, TooLong, Unused, UnknownWord, BadName];
+    raises [Type, Range, StackUnderflow, TooLong, Unused, UnknownWord, BadName, Memory, IdsExhausted];
     // What only the loop running a program gives, never a word: no `try`
     // catches it.
     run_loop [
@@ -151,8 +151,6 @@ codes! {
     NothingThere "nothing_there",
     /// A name taken by another pane, tab or workspace.
     NameTaken "name_taken",
-    /// Every id of a kind has been given.
-    IdsExhausted "ids_exhausted",
     /// A value out of what a word takes.
     BadValue "bad_value",
     /// A command used wrongly.
@@ -185,8 +183,6 @@ codes! {
     /// `resize-pane` the layout cannot give; a tab resized, a
     /// split or a pane moved where its tab's panes would not all show.
     Size "size",
-    /// The OS refused memory for what was asked.
-    Memory "memory",
     /// A mouse event the pane's program does not ask for.
     Mouse "mouse",
     /// A signal that could not be sent.

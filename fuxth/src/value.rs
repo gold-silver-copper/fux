@@ -1,6 +1,6 @@
-//! Values on the stack: integers, booleans, strings, lists, execution
-//! tokens, failures, the marks of constructs being compiled, and the
-//! application's own.
+//! Values on the stack: integers, booleans, strings, lists, addresses,
+//! execution tokens, failures, the marks of constructs being compiled, and
+//! the application's own.
 use crate::Code;
 use crate::Error;
 use crate::Failure;
@@ -42,6 +42,8 @@ fn bare(kind: &str) -> &str {
 pub enum Value<A> {
     Int(i64),
     Str(Rc<Text>),
+    /// A cell of the data space.
+    Addr(Address),
     List(Rc<List<A>>),
     App(A),
     /// An execution token: a word's code, which `execute` runs.
@@ -52,6 +54,54 @@ pub enum Value<A> {
     /// A failure, as a `try`'s handler gets it.
     Failure(Rc<Thrown<A>>),
     Bool(bool),
+}
+
+/// Where a cell is: which machine's data space, and which of its cells.
+/// Only the machine's words make one (`next-address`, `create`), and an
+/// integer never becomes one. A machine takes only its own data space's,
+/// as it runs only its own xts; a copy of a machine has the same data
+/// space's identity, so the addresses copied with it stay its own. The
+/// two are one word, so no value is larger for them and making one
+/// allocates nothing: the cell in the low `CELL_BITS` bits, the data
+/// space above.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Address(u64);
+
+/// How many bits say which cell: 2^40 cells are more than any machine's
+/// memory holds (16 bytes or more each), so a data space never reaches
+/// more before its allocator refuses it. The 24 above say which data space.
+const CELL_BITS: u32 = 40;
+/// The bits that say which cell.
+const CELL_MASK: u64 = 0xFF_FFFF_FFFF;
+/// How many data spaces there may be in a process: 2^24.
+pub(crate) const DATA_SPACES: u32 = 0x100_0000;
+
+impl Address {
+    /// The address of cell `at` of data space `space`, if they fit: `at`
+    /// below 2^40, `space` below `DATA_SPACES`.
+    pub(crate) fn new(space: u32, at: usize) -> Option<Self> {
+        let at = u64::try_from(at).ok().filter(|at| *at <= CELL_MASK)?;
+        let space = (space < DATA_SPACES).then_some(u64::from(space))?;
+        Some(Self(space.checked_shl(CELL_BITS)? | at))
+    }
+
+    /// Which data space it is of.
+    pub(crate) fn space(self) -> u32 {
+        u32::try_from(self.0.checked_shr(CELL_BITS).unwrap_or(0)).unwrap_or(u32::MAX)
+    }
+
+    /// Which cell it is.
+    pub(crate) fn at(self) -> usize {
+        usize::try_from(self.0 & CELL_MASK).unwrap_or(usize::MAX)
+    }
+
+    /// How many cells on from `other` it is, if they are of one data
+    /// space. An address is from 0 to the largest integer
+    /// (`Machine::moved_by`), so this never wraps.
+    pub(crate) fn cells_from(self, other: Address) -> Option<i64> {
+        let at = |a: Address| i64::try_from(a.at()).unwrap_or(i64::MAX);
+        (self.space() == other.space()).then(|| at(self).wrapping_sub(at(other)))
+    }
 }
 
 /// A failure as a value: what a `try`'s handler gets, and `throw` raises
@@ -250,7 +300,12 @@ pub(crate) fn release<A>(mut values: Vec<Value<A>>) {
                     values.extend(thrown.carried);
                 }
             }
-            Value::Int(_) | Value::Bool(_) | Value::Str(_) | Value::App(_) | Value::Mark(_) => {}
+            Value::Int(_)
+            | Value::Bool(_)
+            | Value::Str(_)
+            | Value::App(_)
+            | Value::Mark(_)
+            | Value::Addr(_) => {}
         }
     }
 }
@@ -291,6 +346,7 @@ impl<A: PartialEq> PartialEq for Value<A> {
                 }
                 (Self::Int(a), Self::Int(b)) if a == b => {}
                 (Self::Bool(a), Self::Bool(b)) if a == b => {}
+                (Self::Addr(a), Self::Addr(b)) if a == b => {}
                 (Self::Str(a), Self::Str(b)) if a == b => {}
                 (Self::App(a), Self::App(b)) if a == b => {}
                 (Self::Xt(a), Self::Xt(b)) if a == b => {}
@@ -313,7 +369,8 @@ impl<A: PartialEq> PartialEq for Value<A> {
                     | Self::App(_)
                     | Self::Xt(_)
                     | Self::Mark(_)
-                    | Self::Failure(_),
+                    | Self::Failure(_)
+                    | Self::Addr(_),
                     _,
                 ) => {
                     return false;
@@ -336,11 +393,13 @@ impl<A: AppValue> Value<A> {
             Self::Xt(_) => "an xt",
             Self::Mark(_) => "a mark",
             Self::Failure(_) => "a failure",
+            Self::Addr(_) => "an address",
         }
     }
 
     /// What kind it is, as `kind` says it: `integer`, `boolean`, `string`,
-    /// `list`, or the application's kind without its article (`pane`).
+    /// `list`, `address`, or the application's kind without its article
+    /// (`pane`).
     pub fn kind_name(&self) -> &'static str {
         match self {
             Self::App(a) => a.name(),
@@ -350,7 +409,8 @@ impl<A: AppValue> Value<A> {
             | Self::List(_)
             | Self::Xt(_)
             | Self::Mark(_)
-            | Self::Failure(_) => bare(self.kind()),
+            | Self::Failure(_)
+            | Self::Addr(_) => bare(self.kind()),
         }
     }
 
@@ -381,6 +441,7 @@ impl<A: AppValue> Value<A> {
                 Self::Failure(thrown) => {
                     write!(out, "{}", thrown.error).map_err(|_| unwritten())?
                 }
+                Self::Addr(at) => write!(out, "(address {})", at.at()).map_err(|_| unwritten())?,
             }
             // The next item of the innermost list under way.
             value = loop {

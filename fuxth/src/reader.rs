@@ -16,7 +16,7 @@ use crate::Code;
 use crate::error::Error;
 use crate::machine::{Builtin, Entry, Frame, Host, Machine, Op, Steps};
 use crate::token::{self, Token};
-use crate::value::{AppValue, Mark, Text, Value, Xt};
+use crate::value::{Address, AppValue, Mark, Text, Value, Xt};
 use std::collections::HashMap;
 use std::ops::Range;
 use std::path::PathBuf;
@@ -64,6 +64,7 @@ pub(crate) enum Construct {
     Each,
     Try,
     Catch,
+    Does,
 }
 
 impl Construct {
@@ -83,6 +84,7 @@ impl Construct {
             Construct::Each => "each … end",
             Construct::Try => "try … catch",
             Construct::Catch => "try … catch … end",
+            Construct::Does => "does … end",
         }
     }
 }
@@ -94,6 +96,8 @@ pub(crate) enum Kind {
     Define(Rc<str>),
     /// An xt (`code … end`).
     Code,
+    /// What follows `does` in a definition.
+    Does,
     /// The top level's own, run once its constructs close.
     Temp,
 }
@@ -375,7 +379,8 @@ impl<A: AppValue> Machine<A> {
             | Construct::Of
             | Construct::Endof
             | Construct::Try
-            | Construct::Catch => Vec::new(),
+            | Construct::Catch
+            | Construct::Does => Vec::new(),
         };
         self.opened(construct, ops)
     }
@@ -571,12 +576,17 @@ impl<A: AppValue> Machine<A> {
 
     /// `end`.
     pub(crate) fn end(&mut self) -> Result<(), Error> {
-        use Construct::{Case, Catch, Code as Coded, Define, Each, Endof, List, Of, While};
+        use Construct::{Case, Catch, Code as Coded, Define, Does, Each, Endof, List, Of, While};
         let none = "no block that end closes is open";
-        let mark = self.close(
-            &[Define, Coded, List, Each, Catch, While, Of, Case, Endof],
-            none,
-        )?;
+        let closes = [
+            Define, Coded, Does, List, Each, Catch, While, Of, Case, Endof,
+        ];
+        let mut mark = self.close(&closes, none)?;
+        // What follows each `does` closes with its definition.
+        while mark.construct == Does {
+            self.end_does(&mark);
+            mark = self.close(&[Define, Coded, Does], none)?;
+        }
         match mark.construct {
             List => self.compile(Op::Gather),
             While => {
@@ -621,7 +631,8 @@ impl<A: AppValue> Machine<A> {
             | Construct::Begin
             | Construct::Do
             | Construct::Ahead
-            | Construct::Try => {}
+            | Construct::Try
+            | Does => {}
         }
         self.closed()
     }
@@ -679,6 +690,93 @@ impl<A: AppValue> Machine<A> {
         Ok(())
     }
 
+    /// `create NAME`: a word that pushes where the data space goes on;
+    /// `variable NAME`, one with a cell of its own there; `x constant
+    /// NAME`, one that pushes x, copied in where it is compiled.
+    pub(crate) fn create(&mut self, word: Builtin, x: Option<Value<A>>) -> Result<(), Error> {
+        let name = self.next_word(word, "a name")?;
+        self.check_name(&name)?;
+        let body = self.next_address()?;
+        if word == Builtin::Variable {
+            self.allot(1)?;
+        }
+        match x {
+            Some(x) => self.created(name.text, None, false, vec![(Op::Push(x), None)]),
+            None => self.created(name.text, Some(body), false, Vec::new()),
+        }
+        Ok(())
+    }
+
+    /// `does` in a definition: a step that gives the word `create` made
+    /// last what follows, which is compiled as code of its own, until the
+    /// definition's `end` (`end_does`).
+    pub(crate) fn does_part(&mut self) -> Result<(), Error> {
+        if self.compiling_locals().is_none() {
+            return Err(self.fail(Code::NotTopLevel, "does goes in a definition"));
+        }
+        let name = (self.building.last()).map_or_else(|| Rc::from(""), |b| Rc::clone(&b.code.name));
+        let at = self.len();
+        self.compile(Op::Does(0));
+        let token = self.reading();
+        self.begin(Kind::Does, name, None);
+        self.mark(Construct::Does, at, token);
+        Ok(())
+    }
+
+    /// The code after a `does`, closed by its definition's `end`: the
+    /// code it is in steps to it.
+    fn end_does(&mut self, mark: &Mark) {
+        let Some(building) = self.building.pop() else {
+            return;
+        };
+        self.compiling = building.was_compiling;
+        let mut code = building.code;
+        code.locals = building.locals.len();
+        let action = self.version(code);
+        self.patch(mark.at, action.index);
+    }
+
+    /// `does`, run in the code on top: the word `create` made last calls
+    /// `action` after pushing its address, and the code returns. Out of
+    /// the step loop's line: inlined there, it made every program slower
+    /// (fuxth's bench, +1% instructions).
+    #[cold]
+    #[inline(never)]
+    pub(crate) fn does(&mut self, action: usize) -> Result<(), Error> {
+        let latest = (self.latest.as_ref()).and_then(|name| self.names.get_key_value(name));
+        let made = latest.and_then(|(name, e)| Some((Rc::clone(name), e.xt.body?, e.immediate)));
+        let Some((name, body, immediate)) = made else {
+            let why = "does gives the word create made last what it does, \
+                       and the word defined last is none of create's";
+            return Err(self.fail(Code::Type, why));
+        };
+        let slots = self.version_at(action).map_or(0, |code| code.locals);
+        let call = vec![(Op::Call(action, slots), self.at())];
+        self.created(name, Some(body), immediate, call);
+        self.leave_definition(self.frames.len());
+        Ok(())
+    }
+
+    /// `name` defined as the word defined last: it pushes `body`, if one,
+    /// for `body-of`, then takes `steps`.
+    fn created(
+        &mut self,
+        name: Rc<str>,
+        body: Option<Address>,
+        immediate: bool,
+        steps: Vec<(Op<A>, Option<Token>)>,
+    ) {
+        let mut code = Steps::new(Rc::clone(&name));
+        code.body = body;
+        let pushed = body.map(|body| (Op::Push(Value::Addr(body)), None));
+        for (op, token) in pushed.into_iter().chain(steps) {
+            code.push(op, token);
+        }
+        let xt = self.version(code);
+        self.names.insert(Rc::clone(&name), Entry { xt, immediate });
+        self.latest = Some(name);
+    }
+
     /// `code`.
     pub(crate) fn code(&mut self) -> Result<(), Error> {
         let at = self.reading();
@@ -700,7 +798,7 @@ impl<A: AppValue> Machine<A> {
     fn compiling_locals(&mut self) -> Option<&mut HashMap<Rc<str>, usize>> {
         let building = self.building.last_mut().filter(|_| self.compiling)?;
         match building.kind {
-            Kind::Define(_) | Kind::Code => Some(&mut building.locals),
+            Kind::Define(_) | Kind::Code | Kind::Does => Some(&mut building.locals),
             Kind::Temp => None,
         }
     }
@@ -935,7 +1033,8 @@ impl<A: AppValue> Machine<A> {
             | Value::List(_)
             | Value::App(_)
             | Value::Xt(_)
-            | Value::Failure(_) => None,
+            | Value::Failure(_)
+            | Value::Addr(_) => None,
         });
         match mark {
             Some(mark) => Error::new(
