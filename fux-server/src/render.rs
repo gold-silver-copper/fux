@@ -3379,14 +3379,14 @@ mod tests {
     }
 
     /// The blanks fux fills itself where a pane's screen is smaller than
-    /// its place (a smaller client attached), past its rows' ends and below
-    /// its last row, are in the pane's colours too: with DECSCNM set they
-    /// are reversed, as the whole screen is (DEC STD 070, Screen Mode).
+    /// its place (a resize its screen refused), past its rows' ends and
+    /// below its last row, are in the pane's colours too: with DECSCNM set
+    /// they are reversed, as the whole screen is (DEC STD 070, Screen Mode).
     #[test]
     fn a_reversed_panes_own_blanks_are_reversed() -> Result<(), Box<dyn std::error::Error>> {
         let (mut s, c) = crate::session::testing::attached(6, 41)?;
         s.out(PaneId::of(1), b"\x1b[?5ha");
-        s.attach(3, 20, None)?;
+        s.resize_screen(PaneId::of(1), fux_vt::Size::new(3, 20)?);
         let grid = compose(&s, c).ok_or("a screen")?;
         let inverse = |y, x| grid.get(y, x).map(|cell| cell.inverse());
         assert_eq!(inverse(0, 0), Some(true));

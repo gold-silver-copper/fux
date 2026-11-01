@@ -17,7 +17,7 @@ use crate::pane::{Pane, PaneMut};
 use fux_wire::command::{AnyRef, Sibling};
 use fux_wire::events::Actor;
 use fux_wire::id::{ClientId, PaneId, TabId, WsId};
-use fux_wire::layout::{self, NoPane, Rect, Removed, Tree};
+use fux_wire::layout::{NoPane, Rect, Removed, Tree};
 use std::collections::{BTreeMap, BTreeSet};
 
 pub use fux_wire::layout::Shown;
@@ -152,22 +152,19 @@ impl Child for Tab {
     }
 }
 
-/// What a tab no client shows is laid out on: a size every tab has, given
-/// or a client's, never made up. A client that shows it lays it out on its
-/// own screen, whichever this is.
+/// The size a tab stores, given or a client's, never made up, and whether
+/// the clients showing it size it (`Session::effective`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Fit {
-    /// The screens of the clients showing it: while none does, the last
-    /// it was laid out on (the smallest, of several) that showed every
-    /// pane, or the one it was made on.
+    /// The smallest screen of the clients showing it, if every pane fits
+    /// there; else this, the last that did, or the one it was made on.
     Clients(fux_vt::Size),
-    /// A screen of this size, while no client sizes the tab: `size` and
-    /// `resize`.
+    /// Always this size, whatever shows it: `size` and `resize`.
     Fixed(fux_vt::Size),
 }
 
 impl Fit {
-    /// The size it lays a tab out in while no client shows it.
+    /// Its stored size.
     pub fn size(self) -> fux_vt::Size {
         match self {
             Fit::Clients(size) | Fit::Fixed(size) => size,
@@ -396,14 +393,11 @@ impl Tab {
         }
     }
 
-    /// Clients showing it lay it out on `size`, the smallest of their
-    /// screens: laid out on clients' screens, that is its size while none
-    /// does, if it shows every pane. A screen too small to is not: the tab
-    /// keeps the last size that showed them all, which a dump makes it at.
+    /// It is laid out on `size`, its effective size: fitting clients,
+    /// that is its stored size, the last that showed every pane, which a
+    /// dump makes it at.
     fn shown_on(&mut self, journal: &mut Journal, ws: WsId, size: fux_vt::Size) {
-        let area = Fit::Clients(size).area();
-        let shows_all = layout::shows_all(&self.root, area);
-        if let (Fit::Clients(last), true) = (&mut self.fit, shows_all)
+        if let Fit::Clients(last) = &mut self.fit
             && *last != size
         {
             *last = size;
@@ -991,7 +985,7 @@ impl Parts {
         }
     }
 
-    /// Clients showing tab `id` lay it out on `size` (`Tab::shown_on`).
+    /// Tab `id` is laid out on `size`, its effective size (`Tab::shown_on`).
     pub(crate) fn shown_on(&mut self, id: TabId, size: fux_vt::Size) {
         if let Some((ws, tab)) = tab_mut(&mut self.workspaces, id) {
             tab.shown_on(&mut self.journal, ws, size);
@@ -1016,14 +1010,13 @@ impl Parts {
         Some(())
     }
 
-    /// The tabs no client sizes (`sized` says which do) whose layout
-    /// changed since their panes were sized, for sizing them on their fit.
-    /// Those are then taken as sized, as is a sized one, by its clients.
-    pub(crate) fn changed_unshown(&mut self, sized: impl Fn(TabId) -> bool) -> Vec<TabId> {
+    /// The tabs whose layout changed since their panes were sized, for
+    /// sizing them; they are then taken as sized.
+    pub(crate) fn take_changed(&mut self) -> Vec<TabId> {
         let mut changed = Vec::new();
         self.each_ws_mut(|ws| {
             for tab in ws.tabs_mut() {
-                if std::mem::take(&mut tab.changed) && !sized(tab.id) {
+                if std::mem::take(&mut tab.changed) {
                     changed.push(tab.id);
                 }
             }

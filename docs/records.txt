@@ -70,7 +70,7 @@ snapshot.facts.panes[].state.last_output: start end
 snapshot.facts.panes[].state.lost: copies_cut copies_not_text pictures memory
 snapshot.facts.panes[].state.pictures[]: row col rows cropped cols width height
 snapshot.facts.panes[].state: foreground_group hung_up read_error exited signal alt_screen mouse_mode mouse_encoding bracketed_paste focus_events app_cursor app_keypad keyboard_flags pictures lost cell cursor_visible history_bytes program_clipboard reflow alternate_scroll_lines picture_bytes history_lines command_running last_status last_output bells notification truncated input_queued input_unread
-snapshot.facts.panes[]: id tab name label title pid rows cols version state launch
+snapshot.facts.panes[]: id tab name label title pid rows cols row col version state launch
 snapshot.facts.tabs[]: id workspace name label fit cols rows host nodes layout_revision zoomed
 snapshot.facts.workspaces[]: id parent name label children
 snapshot.facts: run cursor scope projection workspaces tabs panes clients
@@ -90,7 +90,7 @@ snapshot.recipe.panes[].state.last_output: start end
 snapshot.recipe.panes[].state.lost: copies_cut copies_not_text pictures memory
 snapshot.recipe.panes[].state.pictures[]: row col rows cropped cols width height
 snapshot.recipe.panes[].state: foreground_group hung_up read_error exited signal alt_screen mouse_mode mouse_encoding bracketed_paste focus_events app_cursor app_keypad keyboard_flags pictures lost cell cursor_visible history_bytes program_clipboard reflow alternate_scroll_lines picture_bytes history_lines command_running last_status last_output bells notification truncated input_queued input_unread
-snapshot.recipe.panes[]: id tab name label title pid rows cols version state launch cwd
+snapshot.recipe.panes[]: id tab name label title pid rows cols row col version state launch cwd
 snapshot.recipe.tabs[]: id workspace name label fit cols rows host nodes layout_revision zoomed
 snapshot.recipe.workspaces[]: id parent name label children
 snapshot.recipe: run cursor scope projection workspaces tabs panes clients
@@ -100,7 +100,7 @@ snapshot.topology.clients[].seats[]: in current last
 snapshot.topology.clients[].terminal.cell_reported: width height
 snapshot.topology.clients[].terminal: sixel_reported cell_reported underline_styles_reported kitty_flags_reported
 snapshot.topology.clients[]: id kind terminal output read_only rows cols pane_rows pane_cols workspace tab pane seats choices opening mode
-snapshot.topology.panes[]: id tab name label title pid rows cols version
+snapshot.topology.panes[]: id tab name label title pid rows cols row col version
 snapshot.topology.tabs[]: id workspace name label fit cols rows host nodes layout_revision zoomed
 snapshot.topology.workspaces[]: id parent name label children
 snapshot.topology: run cursor scope projection workspaces tabs panes clients

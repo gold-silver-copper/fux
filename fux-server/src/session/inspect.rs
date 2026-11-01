@@ -60,6 +60,7 @@ impl Session {
         // The tabs whose whole layout is here, which choices index.
         let mut laid_out = Vec::new();
         for (ws, tab) in tabs {
+            let sized = self.sized(tab);
             // A pane's tab as far as it is in scope: the pane alone.
             let tree = match target {
                 Some(AnyRef::Pane(pane)) => vec![Node::Pane(pane)],
@@ -103,6 +104,8 @@ impl Session {
                     title: pane.title().as_str().to_owned(),
                     rows: pane.size().rows(),
                     cols: pane.size().cols(),
+                    row: sized.rect(*id).map(|r| r.y()),
+                    col: sized.rect(*id).map(|r| r.x()),
                     version: pane.version(self.run),
                     state,
                     launch,

@@ -229,11 +229,12 @@ fn client_capture_includes_ui_without_a_pane_version() -> Outcome {
     Ok(())
 }
 
-/// A tab with a size of its own, shown to a client, takes the client's
-/// screen; hidden again (another tab of its workspace, or another
-/// workspace, shown), it goes back to its own size.
+/// A tab with a size of its own keeps it while a client shows it; given
+/// back to the clients (`resize-auto`), it takes the client's screen, and
+/// keeps that once hidden (another tab of its workspace, or another
+/// workspace, shown).
 #[test]
-fn a_hidden_tab_goes_back_to_its_own_size() -> Outcome {
+fn a_fixed_tab_keeps_its_size_and_a_fitting_one_its_last_screen() -> Outcome {
     let server = Server::start("")?;
     let mut client = server.attach(25, 84)?;
     client.wait_for("$")?;
@@ -250,16 +251,16 @@ fn a_hidden_tab_goes_back_to_its_own_size() -> Outcome {
     };
     eventually("its own size", || sized("100x40"))?;
     server.ok(&["str", "c1", "client", pane, "tab", "show"])?;
+    assert!(sized("100x40")?, "its own size, shown");
+    server.ok(&[pane, "resize-auto"])?;
     eventually("the client's size", || sized("84x25"))?;
     let other =
-        server.words("opts str agent in 84 25 size str sleep program str 60 arg new-tab")?;
+        server.words("opts str agent in 60 20 size str sleep program str 60 arg new-tab")?;
     let other = other.split(':').next().unwrap_or_default();
     server.ok(&["str", "c1", "client", other, "tab", "show"])?;
-    eventually("its own size, another tab shown", || sized("100x40"))?;
-    server.ok(&["str", "c1", "client", pane, "tab", "show"])?;
-    eventually("the client's size again", || sized("84x25"))?;
+    assert!(sized("84x25")?, "its last screen, another tab shown");
     server.ok(&["str", "c1", "client", "str", "main", "workspace", "show"])?;
-    eventually("its own size again", || sized("100x40"))?;
+    assert!(sized("84x25")?, "its last screen, another workspace shown");
     Ok(())
 }
 

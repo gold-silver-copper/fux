@@ -338,7 +338,7 @@ words! {
         Changing Rename "rename" "handle text --" raises(Type asks) "rename a pane, tab or workspace, to a name no other one has" "fux %3 str editor rename" [];
         Changing Notify "notify" "scope text --" raises(Type asks) "a notice on the clients showing it, or every client with all" "fux all str done notify" [];
         Changing Resize "resize" "sized cols rows --" raises(Type Size asks) "a tab layout or headless client size, each at least 1, as large as a screen's grid holds; a pane selects its tab" "fux @2 120 40 resize" [];
-        Changing ResizeAuto "resize-auto" "handle --" raises(Type asks) "a tab laid out on a client's screen again (at its size until one shows it)" "fux @2 resize-auto" [];
+        Changing ResizeAuto "resize-auto" "handle --" raises(Type asks) "a tab laid out on the screens of the clients showing it again (at its size until one shows it)" "fux @2 resize-auto" [];
         Changing ResizePane "resize-pane" "pane extent way --" raises(Type Range asks) "a pane's horizontal or vertical extent: cells, or a percent" "fux %3 30 percent str horizontal resize-pane" [];
         Changing Percent "percent" "n -- size" raises(Type Range) "n percent of the tab, for resize-pane" "fux %3 30 percent str horizontal resize-pane" [];
         Changing Arrange "arrange" "tab revision tree --" raises(Type Range asks) "replace the whole layout at a run-qualified structural revision" "fux @2 str REVISION list %3 end arrange" [];
@@ -374,7 +374,7 @@ words! {
     }
     Opt {
         Starting Name "name" "x name -- x" raises(Type Unused) "the given name: new-tab's tab" "fux opts str agent in str web name 80 24 size str ./app program new-tab";
-        Starting Size "size" "x cols rows -- x" raises(Type Unused Size) "what its tab is laid out on while no client shows it, each at least 1, as large as a screen's grid holds; needed from outside fux, else the caller's own screen or tab, as fux makes no size up; attach: be a client with no terminal, of this size, which prints its id and runs until signalled" "fux opts str agent in 80 24 size str ./app program new-tab";
+        Starting Size "size" "x cols rows -- x" raises(Type Unused Size) "what its tab is always laid out on, each at least 1, as large as a screen's grid holds; needed from outside fux, else the caller's own screen or tab, as fux makes no size up; attach: be a client with no terminal, of this size, which prints its id and runs until signalled" "fux opts str agent in 80 24 size str ./app program new-tab";
         Starting Cwd "cwd" "x dir -- x" raises(Type Unused) "where it starts" "fux opts str agent in str /srv cwd 80 24 size str ./app program new-tab";
         Starting Program "program" "x path -- x" raises(Type Unused) "the program to start, in place of a shell; its pane stays once it exits" "fux opts str agent in 80 24 size str ./app program new-tab";
         Starting HistoryBytes "history-bytes" "x integer -- x" raises(Type Unused Range) "history budget for the new pane, in bytes" "fux opts str agent in 0 history-bytes str /bin/cat program new-tab";
