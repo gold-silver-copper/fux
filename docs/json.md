@@ -213,15 +213,16 @@ history not asked for (`null` for `last-output`; rows a `rows` range
 leaves out are not counted).
 
 `wrapped_rows` and `links` are of the rows the capture read, and only
-those (`since`: of the lines it reads). `wrapped_rows` holds each row's `true` where its line goes on in
-the next row (the rows a joined capture joins), in order: with
-`wrapped`, a row each of `lines`; joined, a `rows` range reads each line
-whole, so it may begin above the range. `links` holds a run of cells side
-by side in one hyperlink (OSC 8) each, of the columns read: on row `row`,
-numbered as `rows` counts rows (the screen's rows, without `history` or
-`rows`), from column `col` (the row's own, counted from 0), `len` cells
-long, its target `uri`; a link that wraps has a run on each row. A
-link's text is what the screen shows; its `uri` is not.
+those (`since`: of the lines it reads). `wrapped_rows` holds each row's
+`true` where its line goes on in the next row (the rows a joined capture
+joins), in order: with `wrapped`, a row each of `lines`; joined, a
+`rows` range reads each line whole, so it may begin above the range.
+`links` holds a run of cells side by side in one hyperlink (OSC 8) each,
+of the columns read: on row `row`, numbered as `rows` counts rows (the
+screen's rows, without `history` or `rows`), from column `col` (the
+row's own, counted from 0), `len` cells long, its target `uri`; a link
+that wraps has a run on each row. A link's text is what the screen
+shows; its `uri` is not.
 
 `lines` join a line wrapped at the pane's width whole, unless `wrapped`
 (each screen row a line). Blanks at a line's end are trimmed, but with

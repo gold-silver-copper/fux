@@ -196,12 +196,14 @@ after its row as `grep -n` writes lines; its JSON holds the rows as
 `changed_rows`, and the `version` to read from next. It suits a program
 that redraws in place. Where fux can't say which rows changed (they moved
 in a scroll or resize, or the program respawned) it fails `stale` (exit
-1): capture the pane whole and go on from its version.
+1): capture the pane whole and go on from its version. Here the program
+redraws its first row once it reads a line.
 
 ```sh
-fux opts str work in 40 6 size str sh program str -c arg str 'printf "a\nb\nc"; sleep 2; printf "\033[1;1HA"; exec sleep 60' arg new-tab str watched rename
+fux opts str work in 40 6 size str sh program str -c arg str 'stty -echo; printf "a\nb\nc"; read x; printf "\033[1;1HA"; exec sleep 60' arg new-tab str watched rename
 fux str watched pane str c 30 shows > /dev/null
 V=$(fux str watched pane capture version)
+fux str watched pane str x line
 fux str watched pane str A 30 shows > /dev/null
 [ "$(fux str watched pane str "$V" since capture)" = 0:A ]
 fux str watched pane str "$V" since capture json | jq -c '{changed_rows, version}'
