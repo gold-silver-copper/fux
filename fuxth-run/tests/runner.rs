@@ -470,6 +470,15 @@ fn the_repl_on_a_terminal_prints_the_stack_and_keeps_the_dictionary_through_erro
     repl.wait_until_keys()?;
     repl.type_in("\r")?;
     assert_eq!(repl.wait_for("ok\r\n")?, "13\r\nok\r\n");
+    // A key typed ahead with the lines after it, which the key read reads
+    // with it: each line still ends at its Enter, for `accept` and for the
+    // REPL's next line.
+    repl.type_in("read-key print 99 accept print\r")?;
+    repl.wait_for("read-key print 99 accept print\r\n")?;
+    repl.wait_until_keys()?;
+    repl.type_in("xhello\r1 2 add print\r")?;
+    let ahead = "120\r\nhello\r\nok\r\n3\r\nok\r\n";
+    assert_eq!(repl.wait_for(ahead)?, ahead);
     repl.type_in("\x04")?;
     let status = repl.child.wait().map_err(e)?;
     assert!(status.success(), "{status:?}");
