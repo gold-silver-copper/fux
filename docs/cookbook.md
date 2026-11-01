@@ -243,6 +243,29 @@ fux str agent2 workspace str parent get str name get
 fux str agent2 workspace kill
 ```
 
+## An orchestrator's agents
+
+An agent that starts agents gives each level a workspace: the fleet, each
+orchestrator in it, and each of its tasks, where a task's implementer and
+reviewers get a tab apiece, so the bar shows `fleet › orch1 › task1`. A
+finished task closes with one `kill`, an orchestrator's `kill` stops all
+its tasks, and the fleet, left empty, closes with its last child. Names
+are one namespace on a server, so each task and agent has a name of its
+own.
+
+```sh
+fux opts str fleet in str orch1 in str task1 in 80 24 size str sh program new-tab str task1-impl rename
+fux opts str fleet in str orch1 in str task1 in 80 24 size str sh program new-tab str task1-review rename
+fux opts str fleet in str orch1 in str task2 in 80 24 size str sh program new-tab str task2-impl rename
+fux str task1-impl pane str 'echo implementing' line
+[ "$(fux str task1 workspace panes len)" -eq 2 ]
+[ "$(fux str orch1 workspace panes len)" -eq 3 ]
+fux str task1 workspace kill
+[ "$(fux str orch1 workspace panes len)" -eq 1 ]
+fux str orch1 workspace kill
+fux str fleet workspace || [ $? -eq 1 ]
+```
+
 ## An editor beside switchable terminals
 
 `stack` puts a new pane on another's rectangle, as `split` puts one beside
